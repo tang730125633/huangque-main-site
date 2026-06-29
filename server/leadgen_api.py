@@ -130,7 +130,7 @@ def gen_leads(payload):
     targets   = payload.get("channels_targets") or []
     raw = []
 
-    def pull(platform, vid_id, title):
+    def pull(platform, vid_id, title, video_url=None):
         for pg in range(pages):
             try:
                 cm = tikhub.comments(platform, vid_id, cursor=(pg * 20 if platform == "douyin" else None), count=20)
@@ -139,7 +139,8 @@ def gen_leads(payload):
             for c in cm["items"]:
                 raw.append({"content": c.get("text"), "user_id": c.get("user_id"), "nickname": c.get("user"),
                             "ip_location": c.get("ip"), "like_count": c.get("likes") or 0,
-                            "profile_url": c.get("profile_url"), "platform": platform, "source": title})
+                            "profile_url": c.get("profile_url"), "platform": platform, "source": title,
+                            "video_url": video_url})
             if not cm.get("has_more"):
                 break
 
@@ -151,7 +152,7 @@ def gen_leads(payload):
         except tikhub.TikHubError:
             continue
         for v in sr["items"][:nvid]:
-            pull(platform, v["id"], v.get("title"))
+            pull(platform, v["id"], v.get("title"), v.get("url"))
 
     if "channels" in platforms:
         for tgt in targets:
@@ -160,7 +161,7 @@ def gen_leads(payload):
                 if not uname:
                     continue
                 for v in tikhub.ch_user_videos(uname)["items"][:nvid]:
-                    pull("channels", v["id"], v.get("title"))
+                    pull("channels", v["id"], v.get("title"), v.get("url"))
             except tikhub.TikHubError:
                 continue
 
@@ -184,7 +185,7 @@ def gen_leads(payload):
     out_leads = [{"nickname": c.get("nickname"), "user_unique_id": c.get("user_id"),
                   "ip_location": c.get("ip_location"), "content": c.get("content"),
                   "title": c.get("source"), "platform": c.get("platform"),
-                  "profile_url": c.get("profile_url")} for c in leads]
+                  "profile_url": c.get("profile_url"), "video_url": c.get("video_url")} for c in leads]
     return {"type": "leads", "keyword": keyword, "platforms": platforms,
             "leads_count": len(out_leads), "spam": spam, "chat": chat, "total": len(raw),
             "leads": out_leads, "url": None, "prompt": keyword}
