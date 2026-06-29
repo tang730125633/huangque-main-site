@@ -192,13 +192,20 @@
 
   // 共享：提交 → 轮询 → 显示。任务存 localStorage，切走再回来自动续传（后端不中断）
   var lastPayload=null, lastResultUrl=null, lastEndpoint='/api/gen/image';
+  // gpt-image 内容审核拒绝会返回 HTTP 400，原文对用户无意义 → 给可操作提示
+  function errMsg(e){
+    var s=String(e||'');
+    if(lastEndpoint==='/api/gen/image' && /400|bad request/i.test(s))
+      return '该提示词可能被 OpenAI 内容审核拒绝，换个说法，或改用 Nano Banana 引擎（对人物/中文更宽松）· 已退点';
+    return '失败：'+s+' · 已退点';
+  }
   function poll(id, t0, label){
     var iv=setInterval(function(){
       fetch('/api/gen/job/'+id).then(function(r){return r.json();}).then(function(d){
         if(!d.status){ clearInterval(iv); busy(false); localStorage.removeItem('hq_active_job'); return; }
         var sec=Math.round((Date.now()-t0)/1000);
         if(d.status==='done'){ clearInterval(iv); res.src=d.result.url+'?t='+Date.now(); lastResultUrl=d.result.url; busy(false); setNote('✅ 出图完成（'+sec+'s）· 点数已更新','#2bd576'); localStorage.removeItem('hq_active_job'); localStorage.setItem('hq_last_result', d.result.url); if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints(); loadHistory(); }
-        else if(d.status==='error'){ clearInterval(iv); busy(false); setNote('失败：'+(d.error||'')+' · 已退点','#f4708a'); localStorage.removeItem('hq_active_job'); }
+        else if(d.status==='error'){ clearInterval(iv); busy(false); setNote(errMsg(d.error||''),'#f4708a'); localStorage.removeItem('hq_active_job'); }
         else if(sec>400){ clearInterval(iv); busy(false); setNote('生成超时（'+sec+'s）· 已自动退点，请重试','#f4708a'); localStorage.removeItem('hq_active_job'); }
         else setNote((label||'生成中')+'（'+sec+'s）· 可切去别的页，回来自动接上','#2dd4bf');
       }).catch(function(){});
