@@ -53,17 +53,17 @@
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:22px; margin-top:22px;">
         <div>
           <div style="font-size:13.5px; font-weight:600; margin-bottom:10px;">清晰度</div>
-          <div style="display:grid; grid-template-columns:repeat(2,1fr); gap:10px;">
-            <div style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">标准</div>
-            <div style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">高清</div>
+          <div id="qualityRow" style="display:grid; grid-template-columns:repeat(2,1fr); gap:10px;">
+            <div data-q="std" style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">标准</div>
+            <div data-q="hd" style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">高清</div>
           </div>
         </div>
         <div>
           <div style="font-size:13.5px; font-weight:600; margin-bottom:10px;">生成数量</div>
-          <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px;">
-            <div style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">1</div>
-            <div style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">2</div>
-            <div style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">4</div>
+          <div id="countRow" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px;">
+            <div data-n="1" style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">1</div>
+            <div data-n="2" style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">2</div>
+            <div data-n="4" style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">4</div>
           </div>
         </div>
       </div>
@@ -136,16 +136,19 @@
   var pr=document.getElementById('bPrompt'), gen=document.getElementById('bGen'),
       res=document.getElementById('bResult'), note=document.getElementById('bNote');
   if(!gen) return;
-  var ratio='9:16', engine='nb2';
-  var COSTS={nb2:10, pro:18, gpt:12};
+  var ratio='9:16', engine='nb2', quality='hd', count=1;
+  // 质量基价(最终=基价×数量)；nb/pro/gpt/zelong 各档
+  var COSTBASE={nb2:{std:10,hd:14}, pro:{std:18,hd:26}, gpt:{std:8,hd:12}, zelong:{std:8,hd:12}};
+  var ENGINE_MAXN={nb2:2, pro:2, gpt:4, zelong:2};  // 数量上限(中转/循环慢→低)
+  function costFor(){ var t=COSTBASE[engine]||COSTBASE.nb2; return (t[quality]||t.hd)*count; }
   function tok(){ return localStorage.getItem('hq_token')||''; }
-  function genLabel(){ return '立即生成（'+COSTS[engine]+' 点）'; }
+  function genLabel(){ return '立即生成（'+costFor()+' 点）'; }
   function updateCost(){
     gen.textContent=genLabel();
-    note.innerHTML='本次预计消耗 <span style="color:#e7b24c; font-family:\'JetBrains Mono\',monospace;">'+COSTS[engine]+'</span> 点 · 失败自动退点';
+    note.innerHTML='本次预计消耗 <span style="color:#e7b24c; font-family:\'JetBrains Mono\',monospace;">'+costFor()+'</span> 点 · 失败自动退点';
     note.style.color='#5c6b82';
     var rs=document.getElementById('refSection');
-    if(rs) rs.style.display='';  // 图生图三引擎都支持，参考图上传区常显
+    if(rs) rs.style.display='';  // 图生图各引擎都支持，参考图上传区常显
   }
   function setNote(t,c){ note.innerHTML=t; note.style.color=c||'#5c6b82'; }
   function busy(on){ gen.style.pointerEvents=on?'none':'auto'; gen.style.opacity=on?'.7':'1'; gen.textContent=on?'生成中…':genLabel(); res.style.filter=on?'blur(3px) brightness(.6)':'none'; }
@@ -158,11 +161,26 @@
     });
     var c=document.querySelector('#engineRow [data-engine="'+e+'"]');
     if(c){ c.style.color='#e7b24c'; c.style.background='rgba(231,178,76,.1)'; c.style.borderColor='rgba(231,178,76,.32)'; var sub=c.querySelector('div:last-child'); if(sub) sub.style.color='#e7b24c'; }
-    engine=e; updateCost();
+    engine=e; updateCost(); adaptCount();
     if(refImg) showInp(engine==='gpt');  // 切引擎时同步：局部修改(像素蒙版)按钮仅 gpt
   }
   document.querySelectorAll('#engineRow > div').forEach(function(c){ c.onclick=function(){ selectEngine(c.getAttribute('data-engine')); }; });
-  updateCost(); // init: apply nb2 defaults + show refSection(图生图三引擎通用)
+
+  // 清晰度 / 数量 选择(仿 ratioRow 高亮)
+  function pickIn(rowId, el){
+    document.querySelectorAll('#'+rowId+' > div').forEach(function(x){ x.style.color='#94a4bb'; x.style.background='rgba(148,164,187,.05)'; x.style.borderColor='rgba(148,164,187,.14)'; });
+    if(el){ el.style.color='#e7b24c'; el.style.background='rgba(231,178,76,.1)'; el.style.borderColor='rgba(231,178,76,.32)'; }
+  }
+  document.querySelectorAll('#qualityRow > div').forEach(function(c){ c.onclick=function(){ pickIn('qualityRow',c); quality=c.getAttribute('data-q'); updateCost(); }; });
+  function selectCount(n){ pickIn('countRow', document.querySelector('#countRow [data-n="'+n+'"]')); count=n; updateCost(); }
+  document.querySelectorAll('#countRow > div').forEach(function(c){ c.onclick=function(){ selectCount(parseInt(c.getAttribute('data-n'),10)); }; });
+  function adaptCount(){  // 引擎自适应数量上限：gpt 1/2/4，其余 1/2
+    var mx=ENGINE_MAXN[engine]||2;
+    document.querySelectorAll('#countRow > div').forEach(function(x){ x.style.display=(parseInt(x.getAttribute('data-n'),10)<=mx)?'':'none'; });
+    if(count>mx) selectCount(mx);
+  }
+
+  updateCost(); adaptCount(); // init: nb2 默认 + 数量上限 + refSection 常显
 
   document.querySelectorAll('#ratioRow > div').forEach(function(c){ c.onclick=function(){
     document.querySelectorAll('#ratioRow > div').forEach(function(x){ x.style.color='#94a4bb'; x.style.background='rgba(148,164,187,.05)'; x.style.borderColor='rgba(148,164,187,.14)'; });
@@ -199,12 +217,31 @@
       return '该提示词可能被 OpenAI 内容审核拒绝，换个说法，或改用 Nano Banana 引擎（对人物/中文更宽松）· 已退点';
     return '失败：'+s+' · 已退点';
   }
+  // 结果展示：单图走 #bResult；多图(数量>1)在下方渲染缩略图条，点选驱动当前图
+  function showResult(result){
+    var us=(result&&result.urls&&result.urls.length)?result.urls:[result.url];
+    res.src=us[0]+'?t='+Date.now(); lastResultUrl=us[0]; localStorage.setItem('hq_last_result',us[0]);
+    renderThumbs(us);
+  }
+  function renderThumbs(us){
+    var box=document.getElementById('bThumbs');
+    if(!box){ box=document.createElement('div'); box.id='bThumbs';
+      box.style.cssText='display:none; grid-template-columns:repeat(auto-fill,minmax(58px,1fr)); gap:8px; margin-top:10px;';
+      res.parentElement.parentElement.insertBefore(box, res.parentElement.nextSibling); }
+    if(!us || us.length<=1){ box.style.display='none'; box.innerHTML=''; return; }
+    box.style.display='grid'; box.innerHTML='';
+    us.forEach(function(u,i){ var im=document.createElement('img'); im.src=u+'?t='+Date.now();
+      im.style.cssText='width:100%; aspect-ratio:1; object-fit:cover; border-radius:8px; cursor:pointer; border:2px solid '+(i===0?'#e7b24c':'transparent')+';';
+      im.onclick=function(){ res.src=u+'?t='+Date.now(); lastResultUrl=u; localStorage.setItem('hq_last_result',u);
+        box.querySelectorAll('img').forEach(function(x){x.style.borderColor='transparent';}); im.style.borderColor='#e7b24c'; };
+      box.appendChild(im); });
+  }
   function poll(id, t0, label){
     var iv=setInterval(function(){
       fetch('/api/gen/job/'+id).then(function(r){return r.json();}).then(function(d){
         if(!d.status){ clearInterval(iv); busy(false); localStorage.removeItem('hq_active_job'); return; }
         var sec=Math.round((Date.now()-t0)/1000);
-        if(d.status==='done'){ clearInterval(iv); res.src=d.result.url+'?t='+Date.now(); lastResultUrl=d.result.url; busy(false); setNote('✅ 出图完成（'+sec+'s）· 点数已更新','#2bd576'); localStorage.removeItem('hq_active_job'); localStorage.setItem('hq_last_result', d.result.url); if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints(); loadHistory(); }
+        if(d.status==='done'){ clearInterval(iv); showResult(d.result); busy(false); setNote('✅ 出图完成（'+sec+'s）· 点数已更新','#2bd576'); localStorage.removeItem('hq_active_job'); if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints(); loadHistory(); }
         else if(d.status==='error'){ clearInterval(iv); busy(false); setNote(errMsg(d.error||''),'#f4708a'); localStorage.removeItem('hq_active_job'); }
         else if(sec>400){ clearInterval(iv); busy(false); setNote('生成超时（'+sec+'s）· 已自动退点，请重试','#f4708a'); localStorage.removeItem('hq_active_job'); }
         else setNote((label||'生成中')+'（'+sec+'s）· 可切去别的页，回来自动接上','#2dd4bf');
@@ -232,12 +269,13 @@
 
   // 文生图 / 图生图（gpt）/ nano banana 文生图
   gen.onclick=function(){
-    if(engine==='gpt'){
-      submit(refImg?{prompt:(pr.value||'').trim(),ratio:ratio,image:refImg}:{prompt:(pr.value||'').trim(),ratio:ratio},
-             refImg?'图生图中（在参考图上改）':'文生图中', '/api/gen/image');
+    var bp={prompt:(pr.value||'').trim(), ratio:ratio, quality:quality, count:count};
+    if(refImg) bp.image=refImg;  // 有参考图 → 图生图(整图编辑)
+    if(engine==='gpt' || engine==='zelong'){
+      if(engine==='zelong') bp.provider='zelong';  // 走中转站 gpt-image-2
+      submit(bp, (engine==='zelong'?'泽龙Ai ':'')+(refImg?'图生图中（在参考图上改）':(engine==='gpt'?'文生图中':'生成中')), '/api/gen/image');
     } else {
-      var bp={prompt:(pr.value||'').trim(),ratio:ratio,model:engine};
-      if(refImg) bp.image=refImg;  // 有参考图 → nano banana 图生图(整图编辑)
+      bp.model=engine;
       submit(bp, (engine==='pro'?'Nano Banana Pro ':'Nano Banana 2 ')+(refImg?'图生图中（在参考图上改）':'生成中'), '/api/gen/banana');
     }
   };
@@ -291,7 +329,7 @@
       var mask=mc.toDataURL('image/png').split(',')[1];
       var ip=(modal.querySelector('#inpPrompt').value||'').trim();
       modal.style.display='none';
-      submit({prompt:ip, ratio:nearestRatio(), image:refImg, mask:mask}, '局部修改中（涂抹处重绘）', '/api/gen/image');
+      submit({prompt:ip, ratio:nearestRatio(), image:refImg, mask:mask, quality:quality}, '局部修改中（涂抹处重绘）', '/api/gen/image');
     };
     modal.style.display='flex';
   }

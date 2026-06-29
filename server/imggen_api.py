@@ -28,7 +28,9 @@ GEMINI_KEY  = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_BASE = os.environ.get("GEMINI_BASE", "https://generativelanguage.googleapis.com").rstrip("/")
 
 MODELS = {"nb2": "gemini-3.1-flash-image", "pro": "gemini-3-pro-image"}
-COST   = {"nb2": 10, "pro": 18}  # 点数：NB2 ~$0.067/张、NB Pro ~$0.134/张
+# 质量基价(最终点数=基价×数量) + 清晰度→imageSize(按 model 分档，大写K)
+BASE_COST   = {"nb2": {"std": 10, "hd": 14}, "pro": {"std": 18, "hd": 26}}
+IMAGE_SIZES = {"nb2": {"std": "1K", "hd": "2K"}, "pro": {"std": "2K", "hd": "4K"}}
 RATIOS = {"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"}
 
 
@@ -62,31 +64,23 @@ def verify(token):
 
 
 # ============ 出图：nano banana / Gemini ============
-def _build_banana_body(prompt, ratio, image=None):
-    """Gemini generateContent 请求体：有 image=图生图(整图编辑)，无=文生图。"""
+def _build_banana_body(prompt, ratio, image=None, image_size=None):
+    """Gemini generateContent 请求体：有 image=图生图(整图编辑)，无=文生图；image_size=清晰度(1K/2K/4K)。"""
     parts = []
     if image:
         # ponytail: 前端三入口(上传/继续改/结果)均经 canvas 转 PNG，恒为 PNG
         parts.append({"inlineData": {"mimeType": "image/png", "data": image}})
     parts.append({"text": prompt})
+    img_cfg = {"aspectRatio": ratio}
+    if image_size:
+        img_cfg["imageSize"] = image_size  # ⚠️ preview 模型可能忽略，部署后 live 验证
     return {
         "contents": [{"parts": parts}],
-        "generationConfig": {"responseModalities": ["IMAGE"], "imageConfig": {"aspectRatio": ratio}},
+        "generationConfig": {"responseModalities": ["IMAGE"], "imageConfig": img_cfg},
     }
 
-def gen_banana(payload):
-    prompt = (payload.get("prompt") or "").strip()
-    if not prompt:
-        raise ValueError("提示词不能为空")
-    mkey = (payload.get("model") or "nb2").strip().lower()
-    model = MODELS.get(mkey, MODELS["nb2"])
-    ratio = payload.get("ratio") or "1:1"
-    if ratio not in RATIOS:
-        ratio = "1:1"
-    image = payload.get("image")  # base64(无 data: 前缀) 参考图 → 图生图(整图编辑)
-    if not GEMINI_KEY:
-        raise ValueError("GEMINI_API_KEY 未配置")
-    body = json.dumps(_build_banana_body(prompt, ratio, image)).encode()
+def _banana_one(model, body, idx):
+    """单次出图 → 写盘，返回文件名。"""
     req = urllib.request.Request(
         GEMINI_BASE + "/v1beta/models/" + model + ":generateContent",
         data=body, headers={"Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY}, method="POST")
@@ -99,10 +93,33 @@ def gen_banana(payload):
     img = next((p.get("inlineData") for p in parts if p.get("inlineData")), None)
     if not img:
         raise ValueError("出图失败：" + str((d.get("error") or {}).get("message") or d)[:140])
-    fn = "nb_%d.png" % int(time.time() * 1000)
+    fn = "nb_%d_%d.png" % (int(time.time() * 1000), idx)
     (OUT_DIR / fn).write_bytes(base64.b64decode(img["data"]))
+    return fn
+
+def gen_banana(payload):
+    prompt = (payload.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("提示词不能为空")
+    mkey = (payload.get("model") or "nb2").strip().lower()
+    if mkey not in MODELS:
+        mkey = "nb2"
+    model = MODELS[mkey]
+    ratio = payload.get("ratio") or "1:1"
+    if ratio not in RATIOS:
+        ratio = "1:1"
+    image = payload.get("image")  # base64(无 data: 前缀) 参考图 → 图生图(整图编辑)
+    q = "hd" if (payload.get("quality") or "hd") == "hd" else "std"
+    image_size = IMAGE_SIZES[mkey][q]
+    count = max(1, min(2, int(payload.get("count") or 1)))  # nano banana 循环出图，上限2(防6分钟清道夫)
+    if not GEMINI_KEY:
+        raise ValueError("GEMINI_API_KEY 未配置")
+    body = json.dumps(_build_banana_body(prompt, ratio, image, image_size)).encode()
+    files = [_banana_one(model, body, i) for i in range(count)]
+    urls = ["/api/gen/file/" + f for f in files]
     return {"type": "image", "mode": ("nanobanana_img2img_" if image else "nanobanana_") + mkey, "model": model,
-            "file": fn, "url": "/api/gen/file/" + fn, "ratio": ratio, "prompt": prompt}
+            "image_size": image_size, "count": count, "file": files[0], "url": urls[0], "files": files, "urls": urls,
+            "ratio": ratio, "prompt": prompt}
 
 
 # ============ worker（失败退点；清道夫由 content_api 统一跑） ============
@@ -149,7 +166,11 @@ class H(BaseHTTPRequestHandler):
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             body = self._json_body()
-            cost = COST.get((body.get("model") or "nb2").strip().lower(), COST["nb2"])
+            mk = (body.get("model") or "nb2").strip().lower()
+            if mk not in BASE_COST: mk = "nb2"
+            cq = "hd" if (body.get("quality") or "hd") == "hd" else "std"
+            cn = max(1, min(2, int(body.get("count") or 1)))
+            cost = BASE_COST[mk][cq] * cn  # 质量基价 × 数量
             if get_points(user["username"]) < cost:
                 return self._send(402, {"detail": "点数不足", "need": cost})
             add_points(user["username"], -cost)
@@ -176,6 +197,11 @@ def _selftest():
     assert p[0]["inlineData"] == {"mimeType": "image/png", "data": "QUJD"}, b2
     assert p[1] == {"text": "把背景换成红色"}, b2
     assert b2["generationConfig"]["imageConfig"]["aspectRatio"] == "9:16", b2
+    assert "imageSize" not in b2["generationConfig"]["imageConfig"], b2  # 没传 size 时不带
+    b3 = _build_banana_body("x", "1:1", None, "4K")
+    assert b3["generationConfig"]["imageConfig"]["imageSize"] == "4K", b3
+    assert IMAGE_SIZES["pro"]["hd"] == "4K" and IMAGE_SIZES["nb2"]["std"] == "1K"
+    assert BASE_COST["pro"]["hd"] == 26 and BASE_COST["nb2"]["std"] == 10
     print("imggen selftest OK")
 
 if __name__ == "__main__":

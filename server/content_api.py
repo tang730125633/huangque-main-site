@@ -62,6 +62,9 @@ def _resolve_out_file(rel):
 # ---- 能力定义：成本(点数) + 处理函数 ----
 COST = {"image": 12, "copy": 3, "audio": 4, "video": 0}  # 视频任务壳暂不扣点；collect/leads 走 cost_of() 动态算
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
+ZELONG_KEY  = os.environ.get("ZELONG_KEY", "")                              # 泽龙Ai 中转站(OpenAI 兼容)
+ZELONG_BASE = os.environ.get("ZELONG_BASE", "https://api.xiaoleai.team")
+_NOPROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))     # 直连(绕过 HTTPS_PROXY)，给国内中转用
 COPY_MODEL  = os.environ.get("COPY_MODEL", "gpt-4o")
 TTS_MODEL   = os.environ.get("TTS_MODEL", "gpt-4o-mini-tts")  # 配音(同事的 audio 能力)
 DOUBAO_APPID = os.environ.get("DOUBAO_APPID", "")
@@ -82,6 +85,11 @@ def cost_of(kind, body):
         n = max(1, min(30, int(body.get("count") or 12)))
         p = max(1, min(3, int(body.get("pages") or 1)))
         return 6 + (n * p) // 4
+    if kind == "image":
+        base = 12 if (body.get("quality") or "hd") == "hd" else 8  # 高清12/标准8(gpt-image2)
+        cap = 2 if (body.get("provider") or "").strip().lower() == "zelong" else 4
+        cnt = 1 if body.get("mask") else max(1, min(cap, int(body.get("count") or 1)))
+        return base * cnt  # 质量基价 × 数量
     return COST.get(kind, 0)
 
 # ============ 任务库 ============
@@ -915,10 +923,13 @@ def _multipart(fields, files):
     out.append(("--%s--\r\n" % b).encode())
     return b"".join(out), "multipart/form-data; boundary=" + b
 
-def _post(path, data, ctype):
-    req = urllib.request.Request(OPENAI_BASE + path, data=data,
-                                 headers={"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": ctype}, method="POST")
-    with urllib.request.urlopen(req, timeout=300) as r:
+def _post(path, data, ctype, base=None, key=None, proxy=True):
+    req = urllib.request.Request((base or OPENAI_BASE) + path, data=data,
+                                 headers={"Authorization": "Bearer " + (key or OPENAI_KEY), "Content-Type": ctype}, method="POST")
+    if proxy:
+        with urllib.request.urlopen(req, timeout=300) as r:
+            return json.loads(r.read())
+    with _NOPROXY.open(req, timeout=300) as r:  # 国内中转直连，不走 mihomo
         return json.loads(r.read())
 
 def _post_bytes(path, data, ctype):  # 返回原始字节(TTS 拿 mp3 二进制)
@@ -935,20 +946,43 @@ def gen_image(payload):
     size  = SIZES.get(ratio, "1024x1024")
     img   = payload.get("image")   # base64(无 data: 前缀) — 上传参考图 → 图生图 / 局部修改
     mask  = payload.get("mask")    # base64 — 蒙版(透明处=要重绘的区域) → 局部修改
+    quality = "high" if (payload.get("quality") or "hd") == "hd" else "medium"  # 标准=medium/高清=high
+    provider = (payload.get("provider") or "openai").strip().lower()
+    if provider == "zelong":
+        base, key, proxy = ZELONG_BASE, ZELONG_KEY, False   # 泽龙Ai：国内中转，直连不走代理
+        if not key:
+            raise ValueError("泽龙Ai(中转站)未配置 key")
+    else:
+        base, key, proxy = OPENAI_BASE, OPENAI_KEY, True
+    cap = 2 if provider == "zelong" else 4                   # 中转出图慢，数量上限低
+    count = 1 if mask else max(1, min(cap, int(payload.get("count") or 1)))  # 局部修改只出 1 张
     if img:
         files = [("image", "in.png", base64.b64decode(img))]
         if mask:
             files.append(("mask", "mask.png", base64.b64decode(mask)))
-        body, ct = _multipart({"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": "high", "n": "1"}, files)
-        d = _post("/v1/images/edits", body, ct)
+        body, ct = _multipart({"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": quality, "n": str(count)}, files)
+        d = _post("/v1/images/edits", body, ct, base=base, key=key, proxy=proxy)
         mode = "inpaint" if mask else "img2img"
     else:
-        body = json.dumps({"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": "high", "n": 1}).encode()
-        d = _post("/v1/images/generations", body, "application/json")
+        body = json.dumps({"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": quality, "n": count}).encode()
+        d = _post("/v1/images/generations", body, "application/json", base=base, key=key, proxy=proxy)
         mode = "text2img"
-    fn = "img_%d.png" % int(time.time() * 1000)
-    (OUT_DIR / fn).write_bytes(base64.b64decode(d["data"][0]["b64_json"]))
-    return {"type": "image", "mode": mode, "file": fn, "url": "/api/gen/file/" + fn, "ratio": ratio, "prompt": prompt}
+    files_out, urls = [], []
+    for i, item in enumerate(d.get("data") or []):
+        fn = "img_%d_%d.png" % (int(time.time() * 1000), i)
+        if item.get("b64_json"):
+            (OUT_DIR / fn).write_bytes(base64.b64decode(item["b64_json"]))
+        elif item.get("url"):                                # 部分中转返回 url 而非 b64
+            opener = urllib.request.urlopen if proxy else _NOPROXY.open
+            with opener(item["url"], timeout=120) as rr:
+                (OUT_DIR / fn).write_bytes(rr.read())
+        else:
+            continue
+        files_out.append(fn); urls.append("/api/gen/file/" + fn)
+    if not files_out:
+        raise ValueError("出图返回为空")
+    return {"type": "image", "mode": mode, "provider": provider, "count": len(files_out),
+            "file": files_out[0], "url": urls[0], "files": files_out, "urls": urls, "ratio": ratio, "prompt": prompt}
 
 # ============ 文案能力：LLM（chat completions，走同一代理） ============
 def _chat(sysmsg, usermsg, temp):
@@ -1407,6 +1441,8 @@ def reaper():
                 for r in stuck:
                     if r["kind"] == "video" and r["updated_at"] >= int(time.time()) - 1800:
                         continue
+                    if r["kind"] == "image" and r["updated_at"] >= int(time.time()) - 900:
+                        continue  # 多图/中转出图慢，给 image 15 分钟余量
                     add_points(r["username"], r["cost"])  # 退点
                     c.execute("UPDATE jobs SET status='error', error='生成超时自动结束(>6分钟)，已退点', updated_at=? WHERE id=?",
                               (int(time.time()), r["id"]))
