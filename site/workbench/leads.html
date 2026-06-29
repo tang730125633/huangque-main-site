@@ -156,14 +156,16 @@
 
   function rowHTML(L,i){
     var n=L.nickname||'匿名', g=GRAD[i%GRAD.length], first=(n.trim()[0]||'客');
-    var uid=L.user_unique_id||'—';
+    var uid=((L.platform==='xhs'?(L.red_id||L.user_unique_id):L.user_unique_id))||'—';
     var src=L.title||'—';
     var url=L.profile_url||'';
     var nameInner=url
       ?'<a href="'+esc(url)+'" target="_blank" rel="noopener" style="font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#eaf1fa; text-decoration:none;" class="hv-gold">'+esc(n)+'</a>'
       :'<div style="font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+esc(n)+'</div>';
-    // action: "进主页" link if url, else grayed out
-    var actionHTML=url
+    // 小红书主页打不开(平台墙,无 xsec_token)→ 复制小红书号去 app 搜;其余平台进主页
+    var actionHTML=(L.platform==='xhs' && L.red_id)
+      ?'<button class="hv-gold" onclick="navigator.clipboard.writeText(\''+esc(L.red_id)+'\');this.textContent=\'已复制 ✓\';" title="复制小红书号,去小红书 App 搜索联系" style="display:inline-flex; align-items:center; gap:5px; padding:5px 10px; font-size:12px; font-weight:500; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); border-radius:8px; cursor:pointer; white-space:nowrap; font-family:inherit;">复制小红书号</button>'
+      :url
       ?'<a href="'+esc(url)+'" target="_blank" rel="noopener" class="hv-gold" style="display:inline-flex; align-items:center; gap:5px; padding:5px 10px; font-size:12px; font-weight:500; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); border-radius:8px; cursor:pointer; white-space:nowrap; text-decoration:none;"><span style="display:flex; width:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg></span>进主页</a>'
       :'<div style="display:inline-flex; align-items:center; gap:5px; padding:5px 10px; font-size:12px; font-weight:500; color:#3d4a5c; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.1); border-radius:8px; cursor:default; white-space:nowrap;">— 无主页</div>';
     return '<div class="hqRow lrowg">'+

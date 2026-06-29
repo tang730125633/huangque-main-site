@@ -126,7 +126,7 @@ def gen_leads(payload):
     keyword   = (payload.get("keyword") or "").strip()
     platforms = payload.get("platforms") or ["douyin"]
     nvid      = max(1, min(30, int(payload.get("count") or 12)))
-    pages     = max(1, min(3, int(payload.get("pages") or 1)))
+    pages     = max(1, min(3, int(payload.get("pages") or 2)))
     targets   = payload.get("channels_targets") or []
     raw = []
 
@@ -140,7 +140,7 @@ def gen_leads(payload):
                 raw.append({"content": c.get("text"), "user_id": c.get("user_id"), "nickname": c.get("user"),
                             "ip_location": c.get("ip"), "like_count": c.get("likes") or 0,
                             "profile_url": c.get("profile_url"), "platform": platform, "source": title,
-                            "video_url": video_url})
+                            "video_url": video_url, "time": c.get("time"), "red_id": c.get("red_id")})
             if not cm.get("has_more"):
                 break
 
@@ -190,11 +190,13 @@ def gen_leads(payload):
             seen.add(k); leads.append(c)
         else:
             chat += 1
-    leads.sort(key=lambda c: (len(c.get("content", "")), c.get("like_count", 0)), reverse=True)
+    # 时间优先(抓最近用户)→ 再按评论长度 → 再点赞。新评论不再被埋。
+    leads.sort(key=lambda c: (c.get("time") or 0, len(c.get("content", "")), c.get("like_count", 0)), reverse=True)
     out_leads = [{"nickname": c.get("nickname"), "user_unique_id": c.get("user_id"),
                   "ip_location": c.get("ip_location"), "content": c.get("content"),
                   "title": c.get("source"), "platform": c.get("platform"),
-                  "profile_url": c.get("profile_url"), "video_url": c.get("video_url")} for c in leads]
+                  "profile_url": c.get("profile_url"), "video_url": c.get("video_url"),
+                  "red_id": c.get("red_id")} for c in leads]
     return {"type": "leads", "keyword": keyword, "platforms": platforms,
             "leads_count": len(out_leads), "spam": spam, "chat": chat, "total": len(raw),
             "leads": out_leads, "url": None, "prompt": keyword}

@@ -170,6 +170,8 @@ def _dy_item(a):
     }
 
 def dy_search(keyword, cursor=0, video_only=True):
+    # sort_type="0"=综合:实测它返回的视频评论本就含当天最新(sort_type="1" 反而更旧)。
+    # 抓"最近用户"靠 leadgen 按评论 time 排序,不靠搜索排序。
     d = _p(DY + "/search/fetch_general_search_v1",
            keyword=keyword, cursor=int(cursor), sort_type="0",
            publish_time="0", filter_duration="0", content_type=("1" if video_only else "0"))
@@ -325,7 +327,7 @@ def xhs_comments(note_id, cursor=None, count=20):
         uid = u.get("userid")
         items.append({"text": c.get("content"), "ip": c.get("ip_location"),
                       "likes": c.get("like_count"), "time": c.get("time"),
-                      "user": u.get("nickname"), "user_id": uid,
+                      "user": u.get("nickname"), "user_id": uid, "red_id": u.get("red_id"),
                       "avatar": _xhs_img(u.get("images")), "profile_url": _profile_url("xhs", uid),
                       "cid": c.get("id"), "replies": c.get("sub_comment_count")})
     return {"items": items, "cursor": d.get("cursor"), "has_more": d.get("has_more"), "total": d.get("comment_count")}
