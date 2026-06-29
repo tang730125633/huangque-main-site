@@ -13,8 +13,9 @@ git branch --show-current
 git log --oneline -5
 ```
 
-- 不直接在 `main`、`design-sync` 上开发或 push。
-- 使用自己的分支：`codex/...`、`claude/...`、`cursor/...`、`feature/...`。
+- **`main` 已上分支保护**：禁止直接 push，必须开 PR；CI「代码与安全门禁」绿了才能合，合并后分支自动删。
+- 用自己的分支（从最新 `main` 开）：`codex/<任务>`、`claude/<任务>`、`feature/<任务>`。`design-sync` 已废弃删除，别用。
+- 完整流程：`git checkout main && git pull` → 开分支 → 改 → `commit && push` → 开 PR → CI 绿 → 合并 → 从 `main` 部署。
 - 如果发现本地有别人未提交的改动，不要覆盖、reset、checkout 或删除，先说明。
 
 ## 修改范围
