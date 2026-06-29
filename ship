@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# ship — 黄雀一键上线：pull → commit → push → 部署 → 重启 → 验证
+#
+# 用法：  ./ship "提交说明" 文件1 [文件2 ...]
+#   后端：./ship "修获客超时" server/leadgen_api.py
+#   前端：./ship "改采集页文案" site/workbench/collect.html
+#   多个：./ship "联调获客" server/leadgen_api.py site/workbench/collect.html
+#
+# 全程在 git 里：自动备份 + 完整历史 + 一条命令回滚。绝不在服务器上直接改。
+
+SSH_KEY="$HOME/.ssh/dapeng_server_ed25519"
+SSHC="ssh -i $SSH_KEY -o IdentitiesOnly=yes"
+REMOTE="dapeng-server"
+WWW="/var/www/huangquechuanmei"
+
+[ $# -lt 2 ] && { echo "用法: ./ship \"提交说明\" 文件1 [文件2 ...]"; exit 1; }
+MSG="$1"; shift
+
+# 1. 先拉最新（治"覆盖别人的活"）
+echo "==> 1/5 git pull --rebase（先同步对方的改动）"
+git pull --rebase || { echo "❌ pull 有冲突，先解决再 ship"; exit 1; }
+
+# 2. commit + push（进 git = 自动有备份）
+echo "==> 2/5 commit + push"
+git add "$@" || { echo "❌ 文件路径有误"; exit 1; }
+if git diff --cached --quiet; then
+  echo "  （这些文件没改动，跳过提交）"
+else
+  git commit -m "$MSG" || exit 1
+fi
+git push || { echo "❌ push 失败（先 pull？）"; exit 1; }
+
+# 3. 部署每个文件到对应位置 + 记下要重启的服务
+echo "==> 3/5 部署到服务器"
+RESTART=""
+add_svc(){ for s in $1; do case " $RESTART " in *" $s "*) ;; *) RESTART="$RESTART $s";; esac; done; }
+for f in "$@"; do
+  case "$f" in
+    server/auth_server.py) dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
+    server/content_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-content ;;
+    server/leadgen_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-leadgen-api ;;
+    server/imggen_api.py)  dest=/home/ubuntu/content-api/;  svc=huangque-imggen-api ;;
+    server/dl_service.py)  dest=/home/ubuntu/dl-service/;   svc=huangque-dl ;;
+    server/tikhub.py)      dest=/home/ubuntu/content-api/;  svc="huangque-leadgen-api huangque-content huangque-imggen-api" ;;
+    site/workbench/*)      dest="$WWW/workbench/"; svc="" ;;
+    site/*)  rel="${f#site/}"
+             case "$rel" in */*) dest="$WWW/${rel%/*}/" ;; *) dest="$WWW/" ;; esac
+             svc="" ;;
+    *) echo "  ⚠ 不认识 $f —— 不知道部署到哪，跳过（需要的话告诉我加进映射）"; continue ;;
+  esac
+  rsync -az --rsync-path="sudo rsync" -e "$SSHC" "$f" "$REMOTE:$dest" \
+    && echo "  ✓ $f → $dest" || { echo "  ❌ $f 部署失败"; exit 1; }
+  add_svc "$svc"
+done
+
+# 4. 重启受影响的后端服务（纯前端则跳过）
+if [ -n "$RESTART" ]; then
+  echo "==> 4/5 重启服务:$RESTART"
+  $SSHC "$REMOTE" "sudo systemctl restart $RESTART" || { echo "  ❌ 重启失败"; exit 1; }
+else
+  echo "==> 4/5 纯前端，无需重启"
+fi
+
+# 5. 验证 + 给回滚命令
+echo "==> 5/5 验证"
+curl -s -o /dev/null -w "  健康检查: HTTP %{http_code}\n" https://huangquechuanmei.com/api/gen/health --max-time 10
+SHA=$(git rev-parse --short HEAD)
+echo "✅ 上线完成 | 本次提交 $SHA"
+echo "   ↩ 要回滚这次：  git revert $SHA --no-edit && ./ship \"回滚 $SHA\" $*"
