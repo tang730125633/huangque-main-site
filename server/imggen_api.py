@@ -62,6 +62,18 @@ def verify(token):
 
 
 # ============ 出图：nano banana / Gemini ============
+def _build_banana_body(prompt, ratio, image=None):
+    """Gemini generateContent 请求体：有 image=图生图(整图编辑)，无=文生图。"""
+    parts = []
+    if image:
+        # ponytail: 前端三入口(上传/继续改/结果)均经 canvas 转 PNG，恒为 PNG
+        parts.append({"inlineData": {"mimeType": "image/png", "data": image}})
+    parts.append({"text": prompt})
+    return {
+        "contents": [{"parts": parts}],
+        "generationConfig": {"responseModalities": ["IMAGE"], "imageConfig": {"aspectRatio": ratio}},
+    }
+
 def gen_banana(payload):
     prompt = (payload.get("prompt") or "").strip()
     if not prompt:
@@ -71,12 +83,10 @@ def gen_banana(payload):
     ratio = payload.get("ratio") or "1:1"
     if ratio not in RATIOS:
         ratio = "1:1"
+    image = payload.get("image")  # base64(无 data: 前缀) 参考图 → 图生图(整图编辑)
     if not GEMINI_KEY:
         raise ValueError("GEMINI_API_KEY 未配置")
-    body = json.dumps({
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"responseModalities": ["IMAGE"], "imageConfig": {"aspectRatio": ratio}},
-    }).encode()
+    body = json.dumps(_build_banana_body(prompt, ratio, image)).encode()
     req = urllib.request.Request(
         GEMINI_BASE + "/v1beta/models/" + model + ":generateContent",
         data=body, headers={"Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY}, method="POST")
@@ -91,7 +101,7 @@ def gen_banana(payload):
         raise ValueError("出图失败：" + str((d.get("error") or {}).get("message") or d)[:140])
     fn = "nb_%d.png" % int(time.time() * 1000)
     (OUT_DIR / fn).write_bytes(base64.b64decode(img["data"]))
-    return {"type": "image", "mode": "nanobanana_" + mkey, "model": model,
+    return {"type": "image", "mode": ("nanobanana_img2img_" if image else "nanobanana_") + mkey, "model": model,
             "file": fn, "url": "/api/gen/file/" + fn, "ratio": ratio, "prompt": prompt}
 
 
@@ -158,6 +168,19 @@ class H(BaseHTTPRequestHandler):
         self._send(404, {"detail": "not found"})
 
 
+def _selftest():
+    b = _build_banana_body("画只猫", "1:1", None)
+    assert b["contents"][0]["parts"] == [{"text": "画只猫"}], b
+    b2 = _build_banana_body("把背景换成红色", "9:16", "QUJD")
+    p = b2["contents"][0]["parts"]
+    assert p[0]["inlineData"] == {"mimeType": "image/png", "data": "QUJD"}, b2
+    assert p[1] == {"text": "把背景换成红色"}, b2
+    assert b2["generationConfig"]["imageConfig"]["aspectRatio"] == "9:16", b2
+    print("imggen selftest OK")
+
 if __name__ == "__main__":
+    import sys
+    if "--selftest" in sys.argv:
+        _selftest(); raise SystemExit(0)
     print("huangque-imggen-api on 127.0.0.1:%d  models=%s" % (PORT, MODELS))
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
