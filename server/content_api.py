@@ -27,9 +27,40 @@ JOB_DB     = str(BASE / "content_jobs.db")
 AUDIO_DB   = str(BASE / "audio_assets.db")
 OUT_DIR    = pathlib.Path(os.environ.get("CONTENT_OUT", str(BASE / "content_out")))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+AUDIO_OUT_DIR = OUT_DIR / "audio"
+VIDEO_OUT_DIR = OUT_DIR / "video"
+AUDIO_OUT_DIR.mkdir(parents=True, exist_ok=True)
+VIDEO_OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+def _out_path(rel):
+    rel = str(rel or "").replace("\\", "/").lstrip("/")
+    parts = [p for p in rel.split("/") if p and p not in {".", ".."}]
+    if not parts:
+        raise ValueError("文件路径不能为空")
+    return OUT_DIR.joinpath(*parts)
+
+def _file_url(rel):
+    return "/api/gen/file/" + str(rel or "").replace("\\", "/").lstrip("/")
+
+def _resolve_out_file(rel):
+    rel = urllib.parse.unquote(str(rel or "")).replace("\\", "/").lstrip("/")
+    if not rel or ".." in rel.split("/"):
+        return None
+    fp = OUT_DIR / rel
+    if fp.exists() and fp.is_file():
+        return fp
+    legacy = OUT_DIR / os.path.basename(rel)
+    if legacy.exists() and legacy.is_file():
+        return legacy
+    name = os.path.basename(rel)
+    for folder in (AUDIO_OUT_DIR, VIDEO_OUT_DIR):
+        fp = folder / name
+        if fp.exists() and fp.is_file():
+            return fp
+    return None
 
 # ---- 能力定义：成本(点数) + 处理函数 ----
-COST = {"image": 12, "copy": 3, "audio": 4, "video": 13}  # 定额能力；collect/leads 走 cost_of() 动态算
+COST = {"image": 12, "copy": 3, "audio": 4, "video": 0}  # 视频任务壳暂不扣点；collect/leads 走 cost_of() 动态算
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
 COPY_MODEL  = os.environ.get("COPY_MODEL", "gpt-4o")
 TTS_MODEL   = os.environ.get("TTS_MODEL", "gpt-4o-mini-tts")  # 配音(同事的 audio 能力)
@@ -38,6 +69,10 @@ DOUBAO_TOKEN = os.environ.get("DOUBAO_TOKEN", "")
 DOUBAO_CLONE_RESOURCE = os.environ.get("DOUBAO_CLONE_RESOURCE", "volc.megatts.voiceclone")
 DOUBAO_CLONE_MODEL_TYPE = int(os.environ.get("DOUBAO_CLONE_MODEL_TYPE", "4"))
 DOUBAO_TTS_RESOURCE = os.environ.get("DOUBAO_TTS_RESOURCE", "seed-icl-2.0")
+HEYGEN_API_KEY = os.environ.get("HEYGEN_API_KEY", "")
+HEYGEN_API_BASE = os.environ.get("HEYGEN_API_BASE", "https://api.heygen.com/v3")
+HEYGEN_POLL_INTERVAL = max(3, int(os.environ.get("HEYGEN_POLL_INTERVAL", "8")))
+HEYGEN_TIMEOUT = max(60, int(os.environ.get("HEYGEN_TIMEOUT", "1200")))
 
 def cost_of(kind, body):
     """动态点数：TikHub 按次计费，采集/获客调用数随参数变。约 5x buff 折算成点。"""
@@ -129,6 +164,25 @@ def init_audio_db():
             used_username TEXT,
             used_at INTEGER,
             created_at INTEGER NOT NULL
+        )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS video_assets(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER UNIQUE,
+            username TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            image_file TEXT,
+            audio_file TEXT,
+            video_file TEXT,
+            video_url TEXT,
+            text TEXT,
+            voice_key TEXT,
+            resolution TEXT,
+            ratio TEXT,
+            motion TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            error TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
         )""")
         _ensure_column(c, "audio_voices", "slot_id", "TEXT")
         _ensure_column(c, "audio_voice_slots", "reclone_count", "INTEGER NOT NULL DEFAULT 0")
@@ -335,9 +389,9 @@ def generate_doubao_preview(speaker_id, text=None, speech_rate=0, loudness_rate=
             pass
     if not chunks:
         raise ValueError("\u8bd5\u542c\u97f3\u9891\u751f\u6210\u8fd4\u56de\u4e3a\u7a7a")
-    fn = "voice_preview_%d.mp3" % int(time.time() * 1000)
-    (OUT_DIR / fn).write_bytes(b"".join(chunks))
-    return {"file": fn, "url": "/api/gen/file/" + fn, "text": text}
+    fn = "audio/voice_preview_%d.mp3" % int(time.time() * 1000)
+    _out_path(fn).write_bytes(b"".join(chunks))
+    return {"file": fn, "url": _file_url(fn), "text": text}
 
 def query_doubao_clone_status(slot_id):
     body = json.dumps({"appid": DOUBAO_APPID, "speaker_id": slot_id}).encode()
@@ -398,17 +452,18 @@ def clear_voice_preview(username, slot_id):
         rows = c.execute("""SELECT id, preview_file, preview_url FROM audio_voices
             WHERE username=? AND slot_id=?""", (username, slot_id)).fetchall()
         for r in rows:
-            names = []
+            refs = []
             if r["preview_file"]:
-                names.append(os.path.basename(str(r["preview_file"])))
+                refs.append(str(r["preview_file"]))
             url = r["preview_url"] or ""
             if url.startswith("/api/gen/file/"):
-                names.append(os.path.basename(url.rsplit("/", 1)[1]))
-            for name in names:
+                refs.append(url[len("/api/gen/file/"):])
+            for ref in refs:
+                name = os.path.basename(str(ref))
                 if name.startswith("voice_preview_") and name.endswith(".mp3"):
-                    fp = OUT_DIR / name
+                    fp = _resolve_out_file(ref)
                     try:
-                        if fp.exists():
+                        if fp and fp.exists():
                             fp.unlink()
                             removed += 1
                     except Exception as e:
@@ -558,8 +613,8 @@ def prepare_clone_audio(audio_b64, audio_format):
     raw = base64.b64decode(audio_b64)
     ts = int(time.time() * 1000)
     safe_format = re.sub(r"[^a-zA-Z0-9]", "", audio_format or "mp3")[:8] or "mp3"
-    src = OUT_DIR / ("clone_src_%d.%s" % (ts, safe_format))
-    dst = OUT_DIR / ("clone_60s_%d.mp3" % ts)
+    src = _out_path("audio/clone_src_%d.%s" % (ts, safe_format))
+    dst = _out_path("audio/clone_60s_%d.mp3" % ts)
     src.write_bytes(raw)
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
@@ -781,6 +836,40 @@ def list_audio_assets(username, limit=120):
             LEFT JOIN audio_voices v ON v.id = a.voice_id
             WHERE a.username=?
             ORDER BY a.id DESC LIMIT ?""", (username, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+def record_video_asset(job_id, username, result):
+    now = int(time.time())
+    with closing(adb()) as c:
+        c.execute("""INSERT OR REPLACE INTO video_assets
+            (job_id, username, mode, image_file, audio_file, video_file, video_url, text, voice_key,
+             resolution, ratio, motion, status, error, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (job_id, username, result.get("mode"), result.get("image_file"), result.get("audio_file"),
+             result.get("video_file"), result.get("video_url"), result.get("text"), result.get("voice"),
+             result.get("resolution"), result.get("ratio"), result.get("motion"), result.get("status") or "pending",
+             result.get("error"), now, now))
+        c.commit()
+
+def record_video_pending_asset(job_id, username, payload):
+    record_video_asset(job_id, username, {
+        "mode": payload.get("mode") or "text",
+        "text": payload.get("text") or "",
+        "voice": payload.get("voice") or "",
+        "resolution": payload.get("resolution") or "1080p",
+        "ratio": payload.get("ratio") or "9:16",
+        "motion": payload.get("motion") or "medium",
+        "status": "running",
+    })
+
+def list_video_assets(username, limit=120):
+    limit = max(1, min(120, int(limit or 120)))
+    with closing(adb()) as c:
+        rows = c.execute("""SELECT id, job_id, username, mode, image_file, audio_file, video_file, video_url,
+                   text, voice_key, resolution, ratio, motion, status, error, created_at, updated_at
+            FROM video_assets
+            WHERE username=?
+            ORDER BY id DESC LIMIT ?""", (username, limit)).fetchall()
     return [dict(r) for r in rows]
 
 def get_points(username):
@@ -1071,12 +1160,210 @@ def gen_audio(payload):
         "instructions": instructions, "response_format": "mp3", "speed": speed,
     }, ensure_ascii=False).encode()
     data = _post_bytes("/v1/audio/speech", body, "application/json")
-    fn = "aud_%d.mp3" % int(time.time() * 1000)
-    (OUT_DIR / fn).write_bytes(data)
-    return {"type": "audio", "file": fn, "url": "/api/gen/file/" + fn, "voice": voice_key,
+    fn = "audio/aud_%d.mp3" % int(time.time() * 1000)
+    _out_path(fn).write_bytes(data)
+    return {"type": "audio", "file": fn, "url": _file_url(fn), "voice": voice_key,
             "speed": speed, "pitch": pitch, "volume": volume, "text": text, "prompt": text}
 
-HANDLERS = {"image": gen_image, "copy": gen_copy, "collect": gen_collect, "leads": gen_leads, "audio": gen_audio}
+def _save_data_file(data_url, prefix, allowed_ext):
+    raw = (data_url or "").strip()
+    if not raw:
+        return None
+    if "," in raw and raw.lower().startswith("data:"):
+        meta, raw = raw.split(",", 1)
+        mime = meta.split(";", 1)[0].replace("data:", "").lower()
+    else:
+        mime = ""
+    ext = ""
+    for k, v in {
+        "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
+        "audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/wav": ".wav",
+        "audio/x-wav": ".wav", "audio/mp4": ".m4a", "audio/x-m4a": ".m4a"
+    }.items():
+        if mime == k:
+            ext = v
+            break
+    if not ext:
+        ext = allowed_ext[0]
+    if ext not in allowed_ext:
+        raise ValueError("不支持的文件格式")
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except Exception:
+        raise ValueError("文件内容解析失败")
+    max_size = 35 * 1024 * 1024
+    if len(data) > max_size:
+        raise ValueError("文件过大，请压缩后再上传")
+    folder = "audio/" if ext in {".mp3", ".wav", ".m4a"} else ""
+    fn = "%s%s_%d%s" % (folder, prefix, int(time.time() * 1000), ext)
+    _out_path(fn).write_bytes(data)
+    return fn
+
+def _heygen_request_json(method, path, body=None, headers=None, timeout=180):
+    if not HEYGEN_API_KEY:
+        raise ValueError("视频生成服务未配置")
+    h = {"x-api-key": HEYGEN_API_KEY}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(HEYGEN_API_BASE + path, data=body, headers=h, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:600]
+        raise RuntimeError("HeyGen接口失败: HTTP %s %s" % (e.code, detail))
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except Exception:
+        raise RuntimeError("HeyGen返回解析失败: %s" % raw[:300].decode("utf-8", "replace"))
+
+def _heygen_upload_asset(file_path):
+    path = pathlib.Path(file_path)
+    if not path.is_file():
+        raise ValueError("视频素材文件不存在")
+    mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    boundary = "----huangque-heygen-%d" % int(time.time() * 1000)
+    head = (
+        "--%s\r\n"
+        'Content-Disposition: form-data; name="file"; filename="%s"\r\n'
+        "Content-Type: %s\r\n\r\n"
+    ) % (boundary, path.name.replace('"', ''), mime)
+    body = head.encode() + path.read_bytes() + ("\r\n--%s--\r\n" % boundary).encode()
+    data = _heygen_request_json("POST", "/assets", body, {
+        "Content-Type": "multipart/form-data; boundary=%s" % boundary,
+        "Content-Length": str(len(body)),
+    }, timeout=240)
+    asset_id = ((data.get("data") or {}).get("asset_id") or "").strip()
+    if not asset_id:
+        raise RuntimeError("HeyGen素材上传未返回asset_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
+    return asset_id
+
+def _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion):
+    title = "huangque video %d" % int(time.time())
+    body = json.dumps({
+        "title": title,
+        "type": "image",
+        "image": {"type": "asset_id", "asset_id": image_asset_id},
+        "audio_asset_id": audio_asset_id,
+        "resolution": resolution,
+        "aspect_ratio": ratio,
+        "fit": "cover",
+        "expressiveness": motion,
+        "output_format": "mp4",
+    }, ensure_ascii=False).encode()
+    data = _heygen_request_json("POST", "/videos", body, {
+        "Content-Type": "application/json",
+    }, timeout=90)
+    video_id = ((data.get("data") or {}).get("video_id") or "").strip()
+    if not video_id:
+        raise RuntimeError("HeyGen未返回video_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
+    return video_id
+
+def _heygen_poll_video(video_id):
+    deadline = time.time() + HEYGEN_TIMEOUT
+    last_status = ""
+    while time.time() < deadline:
+        data = _heygen_request_json("GET", "/videos/" + urllib.parse.quote(video_id), timeout=90)
+        info = data.get("data") or {}
+        status = str(info.get("status") or "").lower()
+        if status != last_status:
+            print("[heygen] video_id=%s status=%s" % (video_id, status), flush=True)
+            last_status = status
+        if status == "completed":
+            if not info.get("video_url"):
+                raise RuntimeError("HeyGen完成但未返回video_url")
+            return info
+        if status in {"failed", "error"}:
+            raise RuntimeError("HeyGen视频生成失败: %s" % json.dumps(info, ensure_ascii=False)[:500])
+        time.sleep(HEYGEN_POLL_INTERVAL)
+    raise TimeoutError("HeyGen视频生成超时")
+
+def _download_video_file(url, prefix="vid"):
+    req = urllib.request.Request(url, headers={"User-Agent": "huangque-content/1.0"})
+    with urllib.request.urlopen(req, timeout=360) as r:
+        data = r.read()
+    if not data:
+        raise RuntimeError("视频下载失败")
+    fn = "video/%s_%d.mp4" % (prefix, int(time.time() * 1000))
+    _out_path(fn).write_bytes(data)
+    return fn
+
+def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
+    image_fp = _resolve_out_file(image_file)
+    audio_fp = _resolve_out_file(audio_file)
+    if not image_fp or not audio_fp:
+        raise ValueError("视频素材文件不存在")
+    image_asset_id = _heygen_upload_asset(image_fp)
+    audio_asset_id = _heygen_upload_asset(audio_fp)
+    video_id = _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion)
+    info = _heygen_poll_video(video_id)
+    video_file = _download_video_file(info["video_url"], "heygen")
+    return {
+        "video_id": video_id,
+        "image_asset_id": image_asset_id,
+        "audio_asset_id": audio_asset_id,
+        "video_file": video_file,
+        "video_url": _file_url(video_file),
+        "source_video_url": info.get("video_url"),
+        "thumbnail_url": info.get("thumbnail_url"),
+        "duration": info.get("duration"),
+    }
+
+def gen_video(payload):
+    mode = (payload.get("mode") or "text").strip()
+    if mode not in {"text", "audio"}:
+        raise ValueError("生成方式不正确")
+    image_file = _save_data_file(payload.get("image_data"), "vid_img", [".jpg", ".png", ".webp"])
+    if not image_file:
+        raise ValueError("请先上传人物形象图片")
+    text = (payload.get("text") or "").strip()
+    voice = (payload.get("voice") or "").strip()
+    audio_file = None
+    audio_url = None
+    if mode == "text":
+        if not text:
+            raise ValueError("请先输入口播文案")
+        if not voice:
+            raise ValueError("请先选择音色")
+        audio_result = gen_audio({
+            "_username": (payload.get("_username") or "").strip(),
+            "text": text,
+            "voice": voice,
+            "speed": payload.get("speed", 1.0),
+            "pitch": payload.get("pitch", 0),
+            "volume": payload.get("volume", 0),
+        })
+        audio_file = audio_result.get("file")
+        audio_url = audio_result.get("url")
+        if not audio_file:
+            raise ValueError("口播音频生成失败")
+    else:
+        audio_file = _save_data_file(payload.get("audio_data"), "vid_aud", [".mp3", ".wav", ".m4a"])
+        if not audio_file:
+            raise ValueError("请先选择口播音频")
+        audio_url = _file_url(audio_file)
+    resolution = (payload.get("resolution") or "1080p").strip()
+    ratio = (payload.get("ratio") or "9:16").strip()
+    motion = (payload.get("motion") or "medium").strip()
+    if resolution not in {"720p", "1080p", "4k"}:
+        resolution = "1080p"
+    if ratio not in {"9:16", "16:9", "1:1", "4:5", "5:4"}:
+        ratio = "9:16"
+    if motion not in {"low", "medium", "high"}:
+        motion = "medium"
+    video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
+    return {
+        "type": "video", "status": "done", "mode": mode,
+        "image_file": image_file, "image_url": _file_url(image_file),
+        "audio_file": audio_file, "audio_url": audio_url, "text": text, "voice": voice,
+        "video_file": video_result.get("video_file"), "video_url": video_result.get("video_url"),
+        "provider_video_id": video_result.get("video_id"),
+        "thumbnail_url": video_result.get("thumbnail_url"), "duration": video_result.get("duration"),
+        "resolution": resolution, "ratio": ratio, "motion": motion,
+        "message": "视频生成完成"
+    }
+
+HANDLERS = {"image": gen_image, "copy": gen_copy, "collect": gen_collect, "leads": gen_leads, "audio": gen_audio, "video": gen_video}
 
 # ============ 后台 worker（串行跑任务，失败退点） ============
 def run_job(job_id):
@@ -1084,7 +1371,7 @@ def run_job(job_id):
         r = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
     if not r: return
     kind = r["kind"]; payload = json.loads(r["payload"] or "{}")
-    if kind == "audio":
+    if kind in {"audio", "video"}:
         payload["_username"] = r["username"]
     try:
         with closing(jdb()) as c:
@@ -1092,10 +1379,19 @@ def run_job(job_id):
         result = HANDLERS[kind](payload)
         if kind == "audio":
             record_audio_asset(job_id, r["username"], result)
+        if kind == "video":
+            record_video_asset(job_id, r["username"], result)
         with closing(jdb()) as c:
             c.execute("UPDATE jobs SET status='done', result=?, updated_at=? WHERE id=?",
                       (json.dumps(result, ensure_ascii=False), int(time.time()), job_id)); c.commit()
     except Exception as e:
+        if kind == "video":
+            try:
+                failed = dict(payload)
+                failed.update({"status": "failed", "error": str(e)[:300]})
+                record_video_asset(job_id, r["username"], failed)
+            except Exception:
+                pass
         add_points(r["username"], r["cost"])  # 失败退点
         with closing(jdb()) as c:
             c.execute("UPDATE jobs SET status='error', error=?, updated_at=? WHERE id=?",
@@ -1107,8 +1403,10 @@ def reaper():
         try:
             cutoff = int(time.time()) - 360
             with closing(jdb()) as c:
-                stuck = c.execute("SELECT id, username, cost FROM jobs WHERE status='running' AND updated_at < ?", (cutoff,)).fetchall()
+                stuck = c.execute("SELECT id, username, cost, kind, updated_at FROM jobs WHERE status='running' AND updated_at < ?", (cutoff,)).fetchall()
                 for r in stuck:
+                    if r["kind"] == "video" and r["updated_at"] >= int(time.time()) - 1800:
+                        continue
                     add_points(r["username"], r["cost"])  # 退点
                     c.execute("UPDATE jobs SET status='error', error='生成超时自动结束(>6分钟)，已退点', updated_at=? WHERE id=?",
                               (int(time.time()), r["id"]))
@@ -1168,6 +1466,8 @@ class H(BaseHTTPRequestHandler):
                 cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)",
                                 (kind, user["username"], cost, json.dumps(body, ensure_ascii=False), now, now))
                 c.commit(); jid = cur.lastrowid
+            if kind == "video":
+                record_video_pending_asset(jid, user["username"], body)
             threading.Thread(target=run_job, args=(jid,), daemon=True).start()
             return self._send(200, {"job_id": jid, "cost": cost, "points_left": get_points(user["username"])})
         self._send(404, {"detail": "not found"})
@@ -1219,8 +1519,10 @@ class H(BaseHTTPRequestHandler):
                 up.close()
             return
         if p.startswith("/api/gen/file/"):
-            fn = os.path.basename(p.rsplit("/", 1)[1]); fp = OUT_DIR / fn
-            if not fp.exists(): return self._send(404, {"detail": "no file"})
+            rel = p[len("/api/gen/file/"):]
+            fp = _resolve_out_file(rel)
+            if not fp: return self._send(404, {"detail": "no file"})
+            fn = fp.name
             data = fp.read_bytes()
             ctype = mimetypes.guess_type(str(fp))[0] or "application/octet-stream"
             self.send_response(200); self.send_header("Content-Type", ctype)
@@ -1243,6 +1545,13 @@ class H(BaseHTTPRequestHandler):
             try: lim = int((q.get("limit") or ["120"])[0])
             except Exception: lim = 120
             return self._send(200, {"items": list_audio_assets(user["username"], lim)})
+        if p == "/api/gen/video/assets":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try: lim = int((q.get("limit") or ["120"])[0])
+            except Exception: lim = 120
+            return self._send(200, {"items": list_video_assets(user["username"], lim)})
         if p == "/api/gen/audio/slots":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})

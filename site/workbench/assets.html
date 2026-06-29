@@ -52,6 +52,7 @@
     <span class="chip" data-cat="img2img" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">图生图</span>
     <span class="chip" data-cat="inpaint" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">局部修改</span>
     <span class="chip" data-cat="audio" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">音频资产</span>
+    <span class="chip" data-cat="video" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">视频资产</span>
   </div>
 
   <!-- 真实资产网格（生成历史，JS 填充；有作品时显示、空态隐藏） -->
@@ -232,6 +233,82 @@
       audio.play().catch(function(){ stopActivePreviewAudio(); });
     };
     w.appendChild(top); w.appendChild(body); w.appendChild(params); w.appendChild(actions); return w;
+  }
+  function videoStatusLabel(status){
+    var s=String(status||'pending').toLowerCase();
+    if(s==='done' || s==='ready' || s==='success') return '已完成';
+    if(s==='running' || s==='processing') return '生成中';
+    if(s==='failed' || s==='error') return '失败';
+    return '待生成';
+  }
+  function videoCard(x){
+    var status=videoStatusLabel(x.status);
+    var videoUrl=x.video_url||x.url||'';
+    var imageUrl=x.image_url||(x.image_file?('/api/gen/file/'+x.image_file):'');
+    var created=x.created_at?new Date(Number(x.created_at)*1000):null;
+    var dateText=created&&!isNaN(created.getTime())?(String(created.getMonth()+1).padStart(2,'0')+'-'+String(created.getDate()).padStart(2,'0')+' '+String(created.getHours()).padStart(2,'0')+':'+String(created.getMinutes()).padStart(2,'0')):'最近创建';
+    var title=x.prompt||x.text||'视频资产';
+    var w=document.createElement('div');
+    w.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.56), rgba(9,14,24,.44)); overflow:hidden; display:flex; flex-direction:column; min-height:260px;';
+    var media=document.createElement('div');
+    media.style.cssText='position:relative; aspect-ratio:4/3; background:rgba(7,11,19,.38); display:flex; align-items:center; justify-content:center; color:#5c6b82; overflow:hidden;';
+    if(videoUrl){
+      var v=document.createElement('video');
+      v.controls=true; v.preload='none'; v.dataset.src=videoUrl;
+      if(imageUrl) v.poster=imageUrl;
+      v.style.cssText='width:100%;height:100%;object-fit:cover;display:block;background:#050812;';
+      var hydrateVideo=function(){
+        if(!v.getAttribute('src')) v.setAttribute('src',v.dataset.src);
+      };
+      v.addEventListener('pointerdown',hydrateVideo);
+      v.addEventListener('click',hydrateVideo);
+      v.addEventListener('play',hydrateVideo);
+      media.appendChild(v);
+    }else if(imageUrl){
+      var im=document.createElement('img');
+      im.src=imageUrl; im.loading='lazy';
+      im.style.cssText='width:100%;height:100%;object-fit:cover;display:block;';
+      media.appendChild(im);
+    }else{
+      media.innerHTML='<span style="display:flex;width:36px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span>';
+    }
+    var tag=document.createElement('span');
+    tag.textContent=status;
+    tag.style.cssText='position:absolute;top:11px;left:11px;z-index:2;padding:3px 9px;font-size:11px;font-weight:700;border-radius:6px;background:rgba(7,11,19,.66);color:'+(status==='失败'?'#f4708a':status==='已完成'?'#2dd4bf':'#e7b24c')+';';
+    media.appendChild(tag);
+    var body=document.createElement('div');
+    body.style.cssText='padding:13px 14px 14px;display:flex;flex-direction:column;gap:10px;flex:1;';
+    var head=document.createElement('div');
+    head.style.cssText='display:flex;align-items:flex-start;justify-content:space-between;gap:10px;';
+    var name=document.createElement('div');
+    name.textContent=title; name.title=title;
+    name.style.cssText='font-size:13.5px;color:#eaf1fa;font-weight:700;line-height:1.45;height:40px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;';
+    var time=document.createElement('span');
+    time.textContent=dateText;
+    time.style.cssText='font-size:11px;color:#5c6b82;white-space:nowrap;margin-top:2px;';
+    head.appendChild(name); head.appendChild(time);
+    var meta=document.createElement('div');
+    meta.style.cssText='display:flex;gap:7px;flex-wrap:wrap;';
+    [['分辨率',x.resolution||'--'],['比例',x.ratio||'--'],['强度',x.motion||'--']].forEach(function(p){
+      var pill=document.createElement('span');
+      pill.textContent=p[0]+' '+p[1];
+      pill.style.cssText='padding:4px 8px;border-radius:8px;border:1px solid rgba(148,164,187,.1);background:rgba(7,11,19,.25);font-size:11px;color:#94a4bb;';
+      meta.appendChild(pill);
+    });
+    var foot=document.createElement('div');
+    foot.style.cssText='margin-top:auto;display:flex;align-items:center;justify-content:space-between;gap:10px;padding-top:10px;border-top:1px solid rgba(148,164,187,.1);';
+    var hint=document.createElement('span');
+    hint.textContent=videoUrl?'可预览 / 下载':'任务已创建，完成后可预览';
+    hint.style.cssText='font-size:11.5px;color:#5c6b82;';
+    var dl=document.createElement('a');
+    dl.textContent=videoUrl?'下载':'去生成';
+    dl.href=videoUrl||'video.html';
+    if(videoUrl) dl.setAttribute('download','huangque-video.mp4');
+    dl.style.cssText='height:30px;padding:0 12px;border-radius:9px;border:1px solid rgba(231,178,76,.28);background:rgba(231,178,76,.08);color:#e7b24c;text-decoration:none;font-size:12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;';
+    foot.appendChild(hint); foot.appendChild(dl);
+    body.appendChild(head); body.appendChild(meta); body.appendChild(foot);
+    w.appendChild(media); w.appendChild(body);
+    return w;
   }
   function sectionTitle(t){
     var h=document.createElement('div'); h.textContent=t; h.style.cssText='grid-column:1/-1; margin:4px 0 -4px; font-size:14px; font-weight:700; color:#eaf1fa;';
@@ -674,6 +751,24 @@
   }
   function render(){
     if(cat==='audio'){ renderAudioAssets(); return; }
+    if(cat==='video'){
+      grid.innerHTML='';
+      if(!ALL.length){
+        grid.style.display='none';
+        if(empty) empty.style.display='flex';
+        if(skelH) skelH.style.display='none';
+        if(skelG) skelG.style.display='none';
+        var p=empty&&empty.querySelector('p');
+        var a=empty&&empty.querySelector('a');
+        if(p) p.textContent='暂无视频资产，去视频模块生成后会自动入库。';
+        if(a){ a.href='video.html'; a.lastChild.textContent='去生成视频'; }
+        return;
+      }
+      if(empty) empty.style.display='none'; if(skelH) skelH.style.display='none'; if(skelG) skelG.style.display='none';
+      grid.style.display='grid';
+      ALL.forEach(function(x){ grid.appendChild(videoCard(x)); });
+      return;
+    }
     var list = cat==='all' ? ALL : (cat==='audio' ? ALL.filter(function(x){ return x.type==='audio' || x.url; }) : ALL.filter(function(x){ return (x.mode||'text2img')===cat; }));
     grid.innerHTML='';
     if(!ALL.length){ grid.style.display='none'; if(empty) empty.style.display='flex'; return; }
@@ -684,7 +779,7 @@
   }
   function load(kind){
     currentLoadKind=kind;
-    var url=kind==='audio'?'/api/gen/audio/assets?limit=120':'/api/gen/history?limit=120';
+    var url=kind==='audio'?'/api/gen/audio/assets?limit=120':(kind==='video'?'/api/gen/video/assets?limit=120':'/api/gen/history?limit=120');
     fetch(url,{headers:{'Authorization':'Bearer '+tok}}).then(function(r){return r.json();}).then(function(d){
       ALL=d.items||[];
       if(kind==='audio' && !ALL.length){
@@ -697,7 +792,7 @@
   }
   document.querySelectorAll('#catRow .chip').forEach(function(ch){ ch.onclick=function(){
     setCat(ch.getAttribute('data-cat'));
-    load(cat==='audio'?'audio':'image');
+    load(cat==='audio'?'audio':(cat==='video'?'video':'image'));
   };});
   function setCat(next){
     cat=next||'all';
@@ -710,7 +805,7 @@
     });
   }
   setCat(cat);
-  load(cat==='audio'?'audio':'image');
+  load(cat==='audio'?'audio':(cat==='video'?'video':'image'));
 })();
 </script>
 </body>
