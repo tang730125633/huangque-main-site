@@ -156,8 +156,17 @@ def gen_leads(payload):
 
     if "channels" in platforms:
         for tgt in targets:
+            tgt = (tgt or "").strip()
+            if not tgt:
+                continue
             try:
-                uname = tgt if "@finder" in tgt else (tikhub.ch_id_to_username(tgt).get("username"))
+                if "@finder" in tgt:
+                    uname = tgt
+                elif tgt.startswith("http") or "weixin.qq.com" in tgt:
+                    # 视频号视频/分享链接 → 解析出发布账号(盯号入口)
+                    uname = ((tikhub.ch_detail(tgt) or {}).get("author") or {}).get("id")
+                else:
+                    uname = (tikhub.ch_id_to_username(tgt) or {}).get("username")
                 if not uname:
                     continue
                 for v in tikhub.ch_user_videos(uname)["items"][:nvid]:
