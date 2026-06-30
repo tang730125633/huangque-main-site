@@ -47,10 +47,7 @@
     <button class="hv-gold" style="display:flex; align-items:center; gap:6px; padding:9px 14px; font-size:12.5px; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer;"><span style="display:flex; width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></span>排序</button>
   </div>
   <div id="catRow" style="display:flex; align-items:center; gap:9px; margin-bottom:26px; flex-wrap:wrap;">
-    <span class="chip" data-cat="all" style="padding:7px 15px; font-size:13px; font-weight:600; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.3); border-radius:99px; cursor:pointer;">全部</span>
-    <span class="chip" data-cat="text2img" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">文生图</span>
-    <span class="chip" data-cat="img2img" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">图生图</span>
-    <span class="chip" data-cat="inpaint" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">局部修改</span>
+    <span class="chip" data-cat="image" style="padding:7px 15px; font-size:13px; font-weight:600; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.3); border-radius:99px; cursor:pointer;">图片资产</span>
     <span class="chip" data-cat="audio" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">音频资产</span>
     <span class="chip" data-cat="video" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">视频资产</span>
   </div>
@@ -123,8 +120,12 @@
   var grid=document.getElementById('assetGrid'), empty=document.getElementById('assetEmpty'),
       skelH=document.getElementById('skelHdr'), skelG=document.getElementById('skelGrid'), cnt=document.getElementById('cntWorks');
   var MODE={text2img:'文生图', img2img:'图生图', inpaint:'局部修改'};
+  function normCat(m){ m=m||''; if(m.indexOf('inpaint')>=0) return 'inpaint'; if(m.indexOf('img2img')>=0) return 'img2img'; return 'text2img'; }  // 各引擎mode→标准类(含 nanobanana_*)
   var params=new URLSearchParams(location.search);
-  var ALL=[], cat=params.get('cat')||'all';
+  var ALL=[], cat=params.get('cat')||'image', imgSub=params.get('imgSub')||'all';
+  // 兼容旧链接：旧的「全部/文生图/图生图/局部修改」顶层 → 图片资产 + 子筛选
+  if(cat==='all'){ cat='image'; }
+  else if(cat==='text2img'||cat==='img2img'||cat==='inpaint'){ imgSub=cat; cat='image'; }
   var AUDIO_TAB=params.get('audioTab')||(cat==='audio'?'audio':'public');
   var currentLoadKind='';
   var personalVoiceLoadSeq=0, activePreviewAudio=null, activePreviewButton=null;
@@ -152,7 +153,7 @@
     btn.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor" style="width:17px;height:17px;"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>';
   }
   function card(x){
-    var label=MODE[x.mode]||'作图', p=(x.prompt||'').slice(0,22)||'—';
+    var label=MODE[normCat(x.mode)]||'作图', p=(x.prompt||'').slice(0,22)||'—';
     var w=document.createElement('div'); w.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;';
     var tag=document.createElement('span'); tag.textContent=label; tag.style.cssText='position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.62); color:#e7b24c;';
     var im=document.createElement('img'); im.src=x.url; im.loading='lazy'; im.style.cssText='display:block; width:100%; aspect-ratio:4/3; object-fit:cover; cursor:pointer;'; im.onclick=function(){ window.open(x.url,'_blank'); };
@@ -769,13 +770,35 @@
       ALL.forEach(function(x){ grid.appendChild(videoCard(x)); });
       return;
     }
-    var list = cat==='all' ? ALL : (cat==='audio' ? ALL.filter(function(x){ return x.type==='audio' || x.url; }) : ALL.filter(function(x){ return (x.mode||'text2img')===cat; }));
+    renderImageAssets();
+  }
+  // 图片资产：顶层一类，内部子筛选(样式仿音频资产子tab) 全部/文生图/图生图/局部修改
+  function renderImageAssets(){
     grid.innerHTML='';
-    if(!ALL.length){ grid.style.display='none'; if(empty) empty.style.display='flex'; return; }
+    if(!ALL.length){ grid.style.display='none'; if(skelH) skelH.style.display='none'; if(skelG) skelG.style.display='none';
+      if(empty){ empty.style.display='flex'; var ep=empty.querySelector('p'), ea=empty.querySelector('a');
+        if(ep) ep.textContent='暂无图片资产，去作图模块生成后会自动入库。'; if(ea){ ea.href='banana.html'; if(ea.lastChild) ea.lastChild.textContent='去作图'; } }
+      return; }
     if(empty) empty.style.display='none'; if(skelH) skelH.style.display='none'; if(skelG) skelG.style.display='none';
     grid.style.display='grid';
+    var tabs=document.createElement('div');
+    tabs.style.cssText='grid-column:1/-1; display:flex; gap:8px; margin-bottom:2px; padding:4px; border:1px solid rgba(148,164,187,.12); border-radius:12px; background:rgba(7,11,19,.35);';
+    [['all','全部'],['text2img','文生图'],['img2img','图生图'],['inpaint','局部修改']].forEach(function(t){
+      var on=t[0]===imgSub;
+      var b=document.createElement('button'); b.type='button'; b.textContent=t[1]; b.setAttribute('data-img-tab',t[0]);
+      b.style.cssText='flex:1; height:34px; border:none; border-radius:9px; cursor:pointer; color:'+(on?'#1a1206':'#94a4bb')+'; background:'+(on?'linear-gradient(135deg,#f4cd72,#e7b24c)':'transparent')+'; font-size:12.5px; font-weight:700; font-family:inherit;';
+      b.onclick=function(){ var u=new URL(location.href); u.searchParams.set('cat','image'); u.searchParams.set('imgSub',t[0]); history.replaceState(null,'',u.toString()); imgSub=t[0]; renderImageGrid(); };
+      tabs.appendChild(b);
+    });
+    grid.appendChild(tabs);
+    renderImageGrid();
+  }
+  function renderImageGrid(){
+    [].slice.call(grid.children).forEach(function(n,idx){ if(idx>0) grid.removeChild(n); });  // 保留首行子tab，清旧卡片
+    document.querySelectorAll('[data-img-tab]').forEach(function(b){ var on=b.getAttribute('data-img-tab')===imgSub; b.style.color=on?'#1a1206':'#94a4bb'; b.style.background=on?'linear-gradient(135deg,#f4cd72,#e7b24c)':'transparent'; });
+    var list = imgSub==='all' ? ALL : ALL.filter(function(x){ return normCat(x.mode)===imgSub; });
     if(!list.length){ var e=document.createElement('div'); e.style.cssText='grid-column:1/-1; padding:30px; text-align:center; font-size:13px; color:#5c6b82;'; e.textContent='该分类下暂无作品'; grid.appendChild(e); return; }
-    list.forEach(function(x){ grid.appendChild(cat==='audio' ? audioCard(x) : card(x)); });
+    list.forEach(function(x){ grid.appendChild(card(x)); });
   }
   function load(kind){
     currentLoadKind=kind;
