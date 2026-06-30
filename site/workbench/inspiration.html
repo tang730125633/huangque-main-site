@@ -176,13 +176,16 @@
 
   // ===== 灵感案例：数据驱动(inspirations.json) + 分类筛选 + 做同款 =====
   var grid=document.getElementById('caseGrid');
-  var MODEL_BADGE={nb2:'Nano Banana', pro:'Nano Banana Pro', gpt:'gpt-image-2'};
+  var MODEL_BADGE={nb2:'Nano Banana', pro:'Nano Banana Pro', gpt:'gpt-image-2', seedance:'Seedance', heygen:'HeyGen', veo:'Veo', grok:'Grok'};
   var DATA=[], curCat='all';
   function card(x){
     var a=document.createElement('div'); a.className='hv-lift';
     a.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:14px; overflow:hidden; background:rgba(16,24,39,.4); cursor:pointer;';
-    var badge=MODEL_BADGE[x.model]||x.model||'';
+    var badge=MODEL_BADGE[x.model]||x.model||'', isVid=(x.type==='video');
+    var play=isVid?'<div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none;"><div style="width:46px; height:46px; border-radius:50%; background:rgba(7,11,19,.55); backdrop-filter:blur(4px); border:1px solid rgba(231,178,76,.42); display:flex; align-items:center; justify-content:center; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;"><path d="M7 4v16l13-8z"/></svg></div></div>':'';
+    var dur=(isVid&&x.duration)?'<span style="position:absolute; right:10px; top:10px; padding:2px 7px; font-size:10px; border-radius:5px; background:rgba(7,11,19,.7); color:#eaf1fa; font-family:\'JetBrains Mono\',monospace;">'+x.duration+'</span>':'';
     a.innerHTML='<img src="'+x.image+'" loading="lazy" style="display:block; width:100%; height:auto; object-fit:cover;">'
+      +play+dur
       +'<span style="position:absolute; top:10px; left:10px; padding:3px 9px; font-size:10.5px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.62); color:#e7b24c;">'+badge+'</span>'
       +'<div style="position:absolute; left:0; right:0; bottom:0; padding:26px 12px 11px; background:linear-gradient(transparent,rgba(7,11,19,.85));">'
       +'<div style="font-size:13px; font-weight:600; color:#eaf1fa; margin-bottom:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">'+(x.title||'')+'</div>'
@@ -190,7 +193,8 @@
       +'<span style="font-size:11px; color:#94a4bb;">'+(x.category||'')+(x.count?(' · ♥ '+x.count):'')+'</span>'
       +'<span class="btn-gold" style="padding:5px 12px; font-size:11.5px; font-weight:600; border-radius:8px; white-space:nowrap;">做同款</span>'
       +'</div></div>';
-    a.onclick=function(){ location.href='banana.html?prompt='+encodeURIComponent(x.prompt||'')+(x.model?('&engine='+encodeURIComponent(x.model)):''); };
+    a.onclick=function(){ var dest=isVid?'video.html':'banana.html';
+      location.href=dest+'?prompt='+encodeURIComponent(x.prompt||'')+((!isVid&&x.model)?('&engine='+encodeURIComponent(x.model)):''); };
     return a;
   }
   function renderCards(){
@@ -200,7 +204,11 @@
     if(!list.length){ var e=document.createElement('div'); e.style.cssText='padding:30px; text-align:center; font-size:13px; color:#5c6b82;'; e.textContent='该分类暂无案例，去作图生成一张吧'; grid.appendChild(e); return; }
     list.forEach(function(x){ grid.appendChild(card(x)); });
   }
-  fetch('inspirations.json',{cache:'no-cache'}).then(function(r){return r.json();}).then(function(d){ DATA=d||[]; renderCards(); }).catch(function(){ /* 拉取失败则保留静态占位卡 */ });
+  function syncChips(){  // 空分类自动隐藏：数据里没有的分类不显示，新增数据(如数字人视频)后自动出现
+    var cats={}; DATA.forEach(function(x){ if(x.category) cats[x.category]=1; });
+    document.querySelectorAll('.chip').forEach(function(c){ var dc=c.getAttribute('data-cat'); c.style.display=(dc==='all'||cats[dc])?'':'none'; });
+  }
+  fetch('inspirations.json',{cache:'no-cache'}).then(function(r){return r.json();}).then(function(d){ DATA=d||[]; syncChips(); renderCards(); }).catch(function(){ /* 拉取失败则保留静态占位卡 */ });
 
   // 分类筛选(真生效)
   document.querySelectorAll('.chip').forEach(function(c){ c.onclick=function(){
