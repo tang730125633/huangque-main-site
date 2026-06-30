@@ -42,7 +42,8 @@
   <div style="display:flex; align-items:center; gap:14px; margin-bottom:16px; flex-wrap:wrap;">
     <div style="display:flex; align-items:center; gap:9px; flex:1; min-width:220px; max-width:340px; padding:9px 14px; border:1px solid rgba(148,164,187,.14); border-radius:11px; background:rgba(148,164,187,.04);">
       <span style="display:flex; width:16px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span>
-      <input type="text" autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" placeholder="搜索作品、素材或标签…" style="flex:1; min-width:0; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; font-family:inherit;">
+      <input type="text" name="hq_asset_search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" readonly onfocus="this.removeAttribute('readonly')" aria-label="搜索资产" placeholder="搜索作品、素材或标签…" style="flex:1; min-width:0; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; font-family:inherit;">
+
     </div>
     <button class="hv-gold" style="display:flex; align-items:center; gap:6px; padding:9px 14px; font-size:12.5px; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer;"><span style="display:flex; width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></span>排序</button>
   </div>
@@ -315,11 +316,11 @@
     var h=document.createElement('div'); h.textContent=t; h.style.cssText='grid-column:1/-1; margin:4px 0 -4px; font-size:14px; font-weight:700; color:#eaf1fa;';
     return h;
   }
-  function voiceAssetCard(name, sub, tagText, accent, href, onClick){
+  function voiceAssetCard(name, sub, tagText, accent, href, onClick, previewUrl){
     var w=document.createElement(href?'a':'div');
     if(href) w.href=href;
     if(onClick){ w.tabIndex=0; w.setAttribute('role','button'); }
-    w.style.cssText='min-height:126px; box-sizing:border-box; padding:16px; border:1px '+(href?'dashed':'solid')+' '+(accent?'rgba(231,178,76,.28)':'rgba(148,164,187,.12)')+'; border-radius:16px; background:'+(accent?'rgba(231,178,76,.05)':'rgba(16,24,39,.4)')+'; text-decoration:none; display:flex; flex-direction:column; justify-content:space-between; gap:13px;'+(onClick?' cursor:pointer;':'');
+    w.style.cssText='position:relative; min-height:126px; box-sizing:border-box; padding:16px; border:1px '+(href?'dashed':'solid')+' '+(accent?'rgba(231,178,76,.28)':'rgba(148,164,187,.12)')+'; border-radius:16px; background:'+(accent?'rgba(231,178,76,.05)':'rgba(16,24,39,.4)')+'; text-decoration:none; display:flex; flex-direction:column; justify-content:space-between; gap:13px;'+(onClick?' cursor:pointer;':'');
     if(onClick){
       w.onclick=onClick;
       w.onkeydown=function(e){ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); onClick(e); } };
@@ -328,7 +329,63 @@
     var title=document.createElement('div'); title.innerHTML='<div style="font-size:13px; color:#eaf1fa; font-weight:700; line-height:1.5;">'+name+'</div><div style="font-size:11.5px; color:#94a4bb; margin-top:4px; line-height:1.5;">'+sub+'</div>';
     var bars=document.createElement('div'); bars.style.cssText='display:flex; align-items:center; gap:3px; height:20px;';
     [6,13,9,17,11,7,15,10,18,6].forEach(function(n){ var b=document.createElement('span'); b.style.cssText='width:3px; height:'+n+'px; border-radius:2px; background:'+(accent?'rgba(231,178,76,.45)':'rgba(148,164,187,.3)')+';'; bars.appendChild(b); });
-    w.appendChild(tag); w.appendChild(title); w.appendChild(bars); return w;
+    w.appendChild(tag); w.appendChild(title); w.appendChild(bars);
+    if(previewUrl){
+      var playBtn=document.createElement('button');
+      playBtn.type='button';
+      resetPreviewButton(playBtn);
+      playBtn.style.cssText='position:absolute;right:14px;top:14px;width:34px;height:34px;border:none;border-radius:50%;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 10px 24px rgba(231,178,76,.18);';
+      playBtn.onclick=function(e){
+        e.preventDefault(); e.stopPropagation();
+        if(activePreviewButton===playBtn && activePreviewAudio && !activePreviewAudio.paused){
+          stopActivePreviewAudio();
+          return;
+        }
+        stopActivePreviewAudio();
+        activePreviewAudio=new Audio(freshUrl(previewUrl));
+        activePreviewButton=playBtn;
+        activePreviewAudio.onended=stopActivePreviewAudio;
+        activePreviewAudio.play().then(function(){ setPreviewButtonPlaying(playBtn); }).catch(function(){ stopActivePreviewAudio(); });
+      };
+      w.appendChild(playBtn);
+    }
+    return w;
+  }
+  function openRenameVoiceModal(slot){
+    var old=document.getElementById('renameVoiceModal'); if(old) old.remove();
+    var wrap=document.createElement('div'); wrap.id='renameVoiceModal';
+    wrap.style.cssText='position:fixed; inset:0; z-index:10000; display:flex; align-items:center; justify-content:center; padding:22px; background:rgba(3,7,15,.72); backdrop-filter:blur(10px);';
+    var modal=document.createElement('div');
+    modal.style.cssText='width:min(420px,100%); border:1px solid rgba(148,164,187,.16); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.98), rgba(8,13,24,.98)); box-shadow:0 28px 80px rgba(0,0,0,.48); overflow:hidden;';
+    modal.innerHTML='<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 20px;border-bottom:1px solid rgba(148,164,187,.12);">'
+      +'<div><div style="font-size:17px;font-weight:700;color:#eaf1fa;">修改音色名称</div><div style="margin-top:5px;font-size:12.5px;color:#94a4bb;">给这个个人音色设置一个更好识别的名字</div></div>'
+      +'<button type="button" data-close-rename style="width:34px;height:34px;border:none;border-radius:9px;background:rgba(148,164,187,.08);color:#94a4bb;cursor:pointer;font-size:20px;line-height:1;">×</button></div>'
+      +'<div style="padding:20px;display:flex;flex-direction:column;gap:14px;">'
+      +'<label style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:12.5px;font-weight:600;color:#eaf1fa;">音色名称</span><input id="renameVoiceInput" maxlength="40" autocomplete="off" placeholder="请输入音色名称" style="height:42px;border:1px solid rgba(148,164,187,.16);border-radius:11px;background:rgba(7,11,19,.5);color:#eaf1fa;outline:none;padding:0 12px;font-family:inherit;font-size:13px;"></label>'
+      +'<div id="renameVoiceNote" style="font-size:12px;color:#5c6b82;line-height:1.6;">名称只会显示在你的个人音色卡片和选择音色列表中。</div>'
+      +'</div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid rgba(148,164,187,.12);"><button type="button" data-close-rename style="height:38px;padding:0 15px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-family:inherit;">取消</button><button type="button" id="renameVoiceSubmit" style="height:38px;padding:0 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;font-weight:700;cursor:pointer;font-family:inherit;">保存</button></div>';
+    wrap.appendChild(modal); document.body.appendChild(wrap);
+    function close(){ wrap.remove(); }
+    wrap.querySelectorAll('[data-close-rename]').forEach(function(b){ b.onclick=close; });
+    wrap.addEventListener('click',function(e){ if(e.target===wrap) close(); });
+    var input=wrap.querySelector('#renameVoiceInput'), note=wrap.querySelector('#renameVoiceNote'), submit=wrap.querySelector('#renameVoiceSubmit');
+    input.value=slot.voice_name||'';
+    setTimeout(function(){ input.focus(); input.select(); },0);
+    submit.onclick=function(){
+      var name=input.value.trim();
+      if(!name){ note.style.color='#f4708a'; note.textContent='请输入音色名称'; return; }
+      submit.disabled=true; submit.style.opacity='.72'; note.style.color='#e7b24c'; note.textContent='正在保存...';
+      fetch('/api/gen/audio/voice-name',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({slot_id:slot.slot_id,name:name})})
+        .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+        .then(function(res){
+          if(res.status===401){ HQ.login(); return; }
+          if(!res.data.ok) throw new Error(res.data.detail||'保存失败');
+          close(); renderAudioTab('personal');
+        })
+        .catch(function(err){ submit.disabled=false; submit.style.opacity='1'; note.style.color='#f4708a'; note.textContent=err.message||'保存失败'; });
+    };
+    input.onkeydown=function(e){ if(e.key==='Enter') submit.click(); };
   }
   function slotAssetCard(slot){
     var used=!!slot.voice_id;
@@ -353,6 +410,15 @@
       : '<div style="font-size:13px; color:#eaf1fa; font-weight:700; line-height:1.5;">\u4e2a\u4eba\u97f3\u8272\u69fd\u4f4d</div><div style="font-size:11.5px; color:#94a4bb; margin-top:4px; line-height:1.5;">\u70b9\u51fb\u4e0a\u4f20\u6837\u97f3\u8fdb\u884c\u590d\u523b</div>';
     var meta=document.createElement('div'); meta.textContent=training?'\u6b63\u5728\u590d\u523b\uff0c\u5b8c\u6210\u540e\u4f1a\u751f\u6210\u8bd5\u542c\u97f3\u9891':(used?'\u5df2\u751f\u6210\u8bd5\u542c\uff0c\u53ef\u5728\u97f3\u9891\u6a21\u5757\u4e2d\u4f7f\u7528':'\u53ef\u7528\u4e8e\u590d\u523b\u4e2a\u4eba\u97f3\u8272'); meta.style.cssText='font-size:11.5px;color:'+(used?'#94a4bb':'#5c6b82')+';line-height:1.5;';
     w.appendChild(tag); w.appendChild(title); w.appendChild(meta);
+    if(completed && !readonly){
+      var renameBtn=document.createElement('button');
+      renameBtn.type='button';
+      renameBtn.title='修改音色名称';
+      renameBtn.textContent='改名';
+      renameBtn.style.cssText='position:absolute;right:14px;top:14px;height:26px;padding:0 9px;border:1px solid rgba(45,212,191,.28);border-radius:8px;background:rgba(45,212,191,.08);color:#2dd4bf;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;';
+      renameBtn.onclick=function(e){ e.preventDefault(); e.stopPropagation(); openRenameVoiceModal(slot); };
+      w.appendChild(renameBtn);
+    }
     if(completed && !readonly){
       var actions=document.createElement('div');
       actions.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:2px;padding-top:12px;border-top:1px solid rgba(148,164,187,.1);';
@@ -730,6 +796,39 @@
       b.style.background=on?'linear-gradient(135deg,#f4cd72,#e7b24c)':'transparent';
     });
     if(tab==='public'){
+      var loading=document.createElement('div');
+      loading.style.cssText='grid-column:1/-1; padding:18px; border:1px dashed rgba(148,164,187,.14); border-radius:14px; color:#94a4bb; font-size:12.5px; text-align:center;';
+      loading.textContent='正在加载公共音色...';
+      grid.appendChild(loading);
+      fetch(freshUrl('/api/gen/audio/voices'),{cache:'no-store',headers:{'Authorization':'Bearer '+tok,'Cache-Control':'no-cache'}})
+        .then(function(r){ if(r.status===401){ HQ.login(); return Promise.reject(); } return r.json(); })
+        .then(function(d){
+          if(AUDIO_TAB!=='public') return;
+          if(loading.parentNode) loading.remove();
+          var items=(d.items||[]).filter(function(v){ return v.scope==='public'; });
+          if(!items.length){
+            items=[
+              {display_name:'大鹏 IVC',sub:'克隆 · 亲切'},
+              {display_name:'泽龙 IVC',sub:'克隆 · 磁性'},
+              {display_name:'Paul 男声',sub:'官方 · 沉稳'}
+            ];
+          }
+          items.forEach(function(v){
+            grid.appendChild(voiceAssetCard(v.display_name||v.voice_key||'公共音色', v.sub||'公共音色', '公共音色', false, null, null, v.preview_url));
+          });
+        })
+        .catch(function(){
+          if(AUDIO_TAB!=='public') return;
+          if(loading.parentNode) loading.remove();
+          [
+            ['大鹏 IVC','克隆 · 亲切','公共音色'],
+            ['泽龙 IVC','克隆 · 磁性','公共音色'],
+            ['Paul 男声','官方 · 沉稳','公共音色']
+          ].forEach(function(v){ grid.appendChild(voiceAssetCard(v[0],v[1],v[2],false)); });
+        });
+      return;
+    }
+    if(false && tab==='public'){
       [
         ['大鹏 IVC','克隆 · 亲切','公共音色'],
         ['泽龙 IVC','克隆 · 磁性','公共音色'],

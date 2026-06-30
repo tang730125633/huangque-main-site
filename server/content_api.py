@@ -207,6 +207,10 @@ def init_audio_db():
             ("public", "", "dapeng", "\u5927\u9e4f IVC", VOICE_MAP.get("dapeng", "alloy")),
             ("public", "", "zelong", "\u6cfd\u9f99 IVC", VOICE_MAP.get("zelong", "onyx")),
             ("public", "", "paul", "Paul \u7537\u58f0", VOICE_MAP.get("paul", "echo")),
+            ("public", "", "S_d21F8OR62", "\u516c\u5171\u97f3\u8272 1", "S_d21F8OR62"),
+            ("public", "", "S_l8wE8OR62", "\u516c\u5171\u97f3\u8272 2", "S_l8wE8OR62"),
+            ("public", "", "S_pa0E8OR62", "\u516c\u5171\u97f3\u8272 3", "S_pa0E8OR62"),
+            ("public", "", "S_xaUB8OR62", "\u516c\u5171\u97f3\u8272 4", "S_xaUB8OR62"),
         ]
         for scope, username, voice_key, display_name, provider_voice in public:
             c.execute("""INSERT OR IGNORE INTO audio_voices
@@ -754,6 +758,10 @@ def ensure_audio_voice(username, voice_key):
     public_keys = {"dapeng", "zelong", "paul"}
     public_key = voice_key.lower()
     now = int(time.time())
+    with closing(adb()) as c:
+        r = c.execute("SELECT id FROM audio_voices WHERE scope='public' AND username='' AND voice_key=?",
+                      (voice_key,)).fetchone()
+        if r: return r["id"]
     if public_key in public_keys:
         voice_key = public_key
         with closing(adb()) as c:
@@ -784,6 +792,12 @@ def resolve_audio_provider_voice(username, voice_key):
     voice_key = (voice_key or "dapeng").strip()
     public_keys = {"dapeng", "zelong", "paul"}
     public_key = voice_key.lower()
+    with closing(adb()) as c:
+        r = c.execute("""SELECT provider_voice FROM audio_voices
+            WHERE scope='public' AND username='' AND voice_key=?""",
+            (voice_key,)).fetchone()
+    if r:
+        return r["provider_voice"]
     if public_key in public_keys:
         ensure_audio_voice(username, public_key)
         return VOICE_MAP.get(public_key, VOICE_MAP["dapeng"])
@@ -834,6 +848,31 @@ def list_audio_voices(username):
             WHERE scope='public' OR (scope='personal' AND username=?)
             ORDER BY CASE scope WHEN 'public' THEN 0 ELSE 1 END, id""", (username,)).fetchall()
     return [dict(r) for r in rows]
+
+def rename_audio_voice(username, slot_id, display_name):
+    slot_id = (slot_id or "").strip()
+    name = (display_name or "").strip()
+    if not slot_id:
+        raise Exception("缺少音色槽位")
+    if not name:
+        raise Exception("请输入音色名称")
+    name = name[:40]
+    now = int(time.time())
+    with closing(adb()) as c:
+        slot = c.execute("""SELECT voice_id FROM audio_voice_slots
+            WHERE username=? AND slot_id=?""", (username, slot_id)).fetchone()
+        if not slot or not slot["voice_id"]:
+            raise Exception("音色不存在")
+        cur = c.execute("""UPDATE audio_voices
+            SET display_name=?, updated_at=?
+            WHERE id=? AND username=? AND scope='personal'""",
+            (name, now, slot["voice_id"], username))
+        if cur.rowcount < 1:
+            raise Exception("音色不存在")
+        c.execute("UPDATE audio_voice_slots SET updated_at=? WHERE username=? AND slot_id=?",
+                  (now, username, slot_id))
+        c.commit()
+    return {"slot_id": slot_id, "display_name": name, "updated_at": now}
 
 def list_audio_assets(username, limit=120):
     limit = max(1, min(120, int(limit or 120)))
@@ -1476,6 +1515,15 @@ class H(BaseHTTPRequestHandler):
             try:
                 slot = redeem_audio_voice_slot(user["username"], body.get("code"))
                 return self._send(200, {"ok": True, "slot": slot})
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
+        if p == "/api/gen/audio/voice-name":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
+            body = self._json_body()
+            try:
+                voice = rename_audio_voice(user["username"], body.get("slot_id"), body.get("name"))
+                return self._send(200, {"ok": True, "voice": voice})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/audio/clone-vip":
