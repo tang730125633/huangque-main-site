@@ -181,6 +181,11 @@
   }
 
   updateCost(); adaptCount(); // init: nb2 默认 + 数量上限 + refSection 常显
+  // 灵感页「做同款」：从 ?prompt= / ?engine= 预填提示词 + 切引擎
+  try{ var ip=new URLSearchParams(location.search);
+    var pp=ip.get('prompt'); if(pp){ pr.value=pp; }
+    var pe=ip.get('engine'); if(pe && document.querySelector('#engineRow [data-engine="'+pe+'"]')) selectEngine(pe);
+  }catch(e){}
 
   document.querySelectorAll('#ratioRow > div').forEach(function(c){ c.onclick=function(){
     document.querySelectorAll('#ratioRow > div').forEach(function(x){ x.style.color='#94a4bb'; x.style.background='rgba(148,164,187,.05)'; x.style.borderColor='rgba(148,164,187,.14)'; });

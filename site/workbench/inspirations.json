@@ -1,0 +1,14 @@
+[
+  {"id":1,"image":"../assets/meiye_poster.webp","model":"nb2","category":"美业海报","title":"科技焕肤美业海报","count":328,"prompt":"科技焕肤·逆龄新生，高级感美业海报，金色光效，9:16竖版，留白标题区，柔光质感，主体居中，氛围高级，适合朋友圈与门店屏幕投放"},
+  {"id":2,"image":"../assets/huangque_poster.webp","model":"nb2","category":"活动促销","title":"开业大促主视觉","count":286,"prompt":"美业门店开业大促海报，暖金色调，中间大字优惠信息，高级质感，9:16竖版，留白文案区，吸睛但不廉价"},
+  {"id":3,"image":"../assets/midautumn.webp","model":"nb2","category":"节日营销","title":"中秋养肤海报","count":241,"prompt":"中秋美业养肤主题海报，月圆与桂花氛围，暖金质感，留白文案区，温馨高级，9:16竖版"},
+  {"id":4,"image":"../assets/duanwu.webp","model":"nb2","category":"节日营销","title":"端午国风活动图","count":197,"prompt":"端午美业活动海报，国风粽叶与艾草元素，高级感配色，留白标题区，9:16竖版"},
+  {"id":5,"image":"../assets/cyberpunk.webp","model":"gpt","category":"创意","title":"赛博美容科技","count":312,"prompt":"赛博朋克风格美容科技海报，霓虹光效，未来感界面，写实质感，冷色调高级感"},
+  {"id":6,"image":"../assets/comic.webp","model":"nb2","category":"创意","title":"漫画插画风宣传","count":176,"prompt":"漫画插画风格美业宣传图，活泼可爱，明亮色彩，大字标题，年轻化受众"},
+  {"id":7,"image":"../assets/guofeng_search.webp","model":"pro","category":"写实","title":"国风护肤主视觉","count":268,"prompt":"国风雅韵护肤主视觉，水墨留白，淡金点缀，高级写实质感，4K，主体居中"},
+  {"id":8,"image":"../assets/guofeng_cube.webp","model":"nb2","category":"创意","title":"国风立体场景","count":154,"prompt":"国风立体场景合成，传统纹样与现代美学融合，暖金光影，精致质感"},
+  {"id":9,"image":"../assets/wechat_matrix.webp","model":"nb2","category":"小红书封面","title":"护肤种草封面","count":225,"prompt":"小红书护肤种草封面，清新治愈风，大字标题，3:4竖版，留白排版，真实质感"},
+  {"id":10,"image":"../assets/brand_v3.webp","model":"nb2","category":"活动促销","title":"品牌活动主视觉","count":203,"prompt":"美业品牌活动主视觉，高级暖金色调，留白展示区，质感光效，适合投放"},
+  {"id":11,"image":"../assets/guofeng_bg.webp","model":"nb2","category":"护肤科普","title":"护肤科普配图","count":138,"prompt":"护肤成分科普配图，干净浅色背景，专业医美质感，留白信息区，可叠加文字说明"},
+  {"id":12,"image":"../assets/layer_search.webp","model":"gpt","category":"探店种草","title":"门店探店种草图","count":167,"prompt":"美业门店探店种草图，温馨氛围光，真实场景质感，写实风格，适合小红书"}
+]
