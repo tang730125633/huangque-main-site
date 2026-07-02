@@ -758,6 +758,46 @@ def verify(token):
 
 # ============ 图片能力：gpt-image-2 ============
 # 三种模式同一入口：无图=文生图(generations)；有图无蒙版=图生图(edits)；有图有蒙版=局部修改(edits+mask)
+def _clean_b64(value):
+    raw = (value or "").strip()
+    if raw.startswith("data:") and "," in raw:
+        raw = raw.split(",", 1)[1]
+    return "".join(raw.split())
+
+def _require_b64_image(body, field):
+    raw = _clean_b64(body.get(field))
+    if not raw:
+        return
+    try:
+        base64.b64decode(raw, validate=True)
+    except Exception:
+        raise ValueError("%s 必须是合法 base64；文生图请不要传 image/mask" % field)
+    body[field] = raw
+
+def validate_submit_payload(kind, body):
+    if not isinstance(body, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+    if kind != "image":
+        return body
+    prompt = (body.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("提示词不能为空")
+    ratio = (body.get("ratio") or "1:1").strip()
+    if ratio not in SIZES:
+        raise ValueError("ratio 仅支持: " + ", ".join(SIZES))
+    if body.get("mask") and not body.get("image"):
+        raise ValueError("使用 mask 局部修改时必须同时传 image")
+    body["prompt"] = prompt
+    body["ratio"] = ratio
+    _require_b64_image(body, "image")
+    _require_b64_image(body, "mask")
+    try:
+        if "count" in body:
+            body["count"] = max(1, min(4, int(body.get("count") or 1)))
+    except Exception:
+        raise ValueError("count 必须是数字")
+    return body
+
 SIZES = {"1:1": "1024x1024", "9:16": "1024x1536", "16:9": "1536x1024", "3:4": "1024x1536"}
 
 def _multipart(fields, files):
@@ -775,8 +815,21 @@ def _multipart(fields, files):
 def _post(path, data, ctype):
     req = urllib.request.Request(OPENAI_BASE + path, data=data,
                                  headers={"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": ctype}, method="POST")
-    with urllib.request.urlopen(req, timeout=300) as r:
-        return json.loads(r.read())
+    last = None
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=300) as r:
+                return json.loads(r.read())
+        except Exception as e:
+            last = e
+            msg = str(e)
+            transient = ("Remote end closed connection" in msg or
+                         "Connection reset" in msg or
+                         "timed out" in msg)
+            if not transient or attempt:
+                break
+            time.sleep(1.5)
+    raise RuntimeError("上游生成服务连接中断，请稍后重试") from last
 
 def _post_bytes(path, data, ctype):  # 返回原始字节(TTS 拿 mp3 二进制)
     req = urllib.request.Request(OPENAI_BASE + path, data=data,
@@ -1095,6 +1148,10 @@ class H(BaseHTTPRequestHandler):
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             body = self._json_body()
+            try:
+                body = validate_submit_payload(kind, body)
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
             cost = cost_of(kind, body)
             if get_points(user["username"]) < cost:
                 return self._send(402, {"detail": "点数不足", "need": cost})
@@ -1111,11 +1168,15 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         p = self.path.split("?")[0]
         if p.startswith("/api/gen/job/"):
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
             try: jid = int(p.rsplit("/", 1)[1])
             except Exception: return self._send(400, {"detail": "bad id"})
             with closing(jdb()) as c:
                 r = c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
             if not r: return self._send(404, {"detail": "任务不存在"})
+            if r["username"] != user.get("username") and user.get("role") != "admin":
+                return self._send(404, {"detail": "任务不存在"})
             d = dict(r)
             if d.get("result"):
                 try: d["result"] = json.loads(d["result"])

@@ -33,12 +33,25 @@
     "/api/auth/login": {
       "post": {
         "tags": ["认证"], "summary": "登录(拿 token)", "security": [],
+        "description": "账号密码登录。成功后返回 Bearer token，前端保存后用于调用需要登录的接口。\n\n安全策略：新签发 token 默认 30 天过期；登录失败会按 IP+账号做 5 分钟窗口限流，连续失败 5 次后暂时返回 429。",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["username", "password"], "properties": { "username": { "type": "string", "example": "fang" }, "password": { "type": "string" } } } } } },
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object", "properties": { "token": { "type": "string" }, "user": { "$ref": "#/components/schemas/User" } } } } } }, "401": { "description": "账号或密码错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } }
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object", "properties": { "token": { "type": "string" }, "user": { "$ref": "#/components/schemas/User" } } } } } }, "400": { "description": "请求体不是合法 JSON", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }, "401": { "description": "账号或密码错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }, "429": { "description": "登录失败次数过多，请稍后再试", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } }
+      }
+    },
+    "/api/auth/register": {
+      "post": {
+        "tags": ["认证"], "summary": "注册新账号(创建用户并返回 token)", "security": [],
+        "description": "用于前端登录页的“注册新账号”功能。提交账号、密码和可选昵称后，后端会创建普通用户账号，并立即签发登录 token。\n\n规则：username 必填，最长 64 位，不能包含空白字符；password 必填，至少 6 位；display_name 可选，不传时默认等于 username，最多 32 个字符。\n\n安全策略：注册接口按 IP 限流，默认 5 分钟最多 5 次成功注册，超过返回 429。\n\n默认账户属性：points=0，role=member，must_change=false。\n\n注册成功后前端可直接保存 token，并继续调用 /api/auth/me 或跳转工作台。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["username", "password"], "properties": { "username": { "type": "string", "maxLength": 64, "example": "test001" }, "password": { "type": "string", "minLength": 6, "example": "12345678" }, "display_name": { "type": "string", "maxLength": 32, "example": "测试用户" } } } } } },
+        "responses": { "200": { "description": "注册成功", "content": { "application/json": { "schema": { "type": "object", "properties": { "token": { "type": "string" }, "user": { "$ref": "#/components/schemas/User" } } } } } }, "400": { "description": "参数不合法：账号/密码缺失、账号过长、账号含空白字符、昵称超过 32 字符或密码少于 6 位", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }, "409": { "description": "账号已存在：username 与现有用户重复", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }, "429": { "description": "注册次数过多，请稍后再试", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } }
       }
     },
     "/api/auth/logout": {
-      "post": { "tags": ["认证"], "summary": "登出(撤销 token)", "responses": { "200": { "description": "OK" } } }
+      "post": {
+        "tags": ["认证"], "summary": "登出(撤销 token)",
+        "description": "撤销当前 Bearer token。有效 token 首次登出返回 200；同一个 token 在本服务进程内重复登出仍返回 200，便于前端幂等处理；无 token、错误认证格式或从未存在的 token 返回 401。",
+        "responses": { "200": { "description": "OK" }, "401": { "description": "未登录 / token 无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } }
+      }
     },
     "/api/auth/change_password": {
       "post": {
@@ -155,7 +168,7 @@
     },
     "/api/gen/job/{id}": {
       "get": {
-        "tags": ["任务/历史/文件"], "summary": "轮询异步任务结果", "security": [],
+        "tags": ["任务/历史/文件"], "summary": "轮询异步任务结果",
         "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
         "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobStatus" } } } } }
       }

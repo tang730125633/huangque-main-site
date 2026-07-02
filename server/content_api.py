@@ -12,7 +12,7 @@
 
 P1：图片(gpt-image-2)。P2 文案 / P3 视频按同样的 register_capability 往里加。
 """
-import os, re, sqlite3, json, time, threading, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess
+import os, re, sqlite3, json, time, threading, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess, hashlib
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
@@ -203,20 +203,16 @@ def init_audio_db():
         _ensure_column(c, "audio_voice_slots", "clone_baseline_version", "TEXT")
         _ensure_column(c, "audio_voice_slots", "clone_baseline_icl_speaker_id", "TEXT")
         _ensure_column(c, "audio_voice_slots", "clone_baseline_demo_audio", "TEXT")
-        public = [
-            ("public", "", "dapeng", "\u5927\u9e4f IVC", VOICE_MAP.get("dapeng", "alloy")),
-            ("public", "", "zelong", "\u6cfd\u9f99 IVC", VOICE_MAP.get("zelong", "onyx")),
-            ("public", "", "paul", "Paul \u7537\u58f0", VOICE_MAP.get("paul", "echo")),
-            ("public", "", "S_d21F8OR62", "\u516c\u5171\u97f3\u8272 1", "S_d21F8OR62"),
-            ("public", "", "S_l8wE8OR62", "\u516c\u5171\u97f3\u8272 2", "S_l8wE8OR62"),
-            ("public", "", "S_pa0E8OR62", "\u516c\u5171\u97f3\u8272 3", "S_pa0E8OR62"),
-            ("public", "", "S_xaUB8OR62", "\u516c\u5171\u97f3\u8272 4", "S_xaUB8OR62"),
-        ]
-        for scope, username, voice_key, display_name, provider_voice in public:
+        public = public_audio_voice_defs()
+        for scope, username, voice_key, display_name, provider_voice, preview_file, preview_url in public:
             c.execute("""INSERT OR IGNORE INTO audio_voices
-                (scope, username, voice_key, display_name, provider_voice, created_at, updated_at)
-                VALUES(?,?,?,?,?,?,?)""",
-                (scope, username, voice_key, display_name, provider_voice, now, now))
+                (scope, username, voice_key, display_name, provider_voice, preview_file, preview_url, created_at, updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?)""",
+                (scope, username, voice_key, display_name, provider_voice, preview_file, preview_url, now, now))
+            c.execute("""UPDATE audio_voices
+                SET display_name=?, provider_voice=?, preview_file=?, preview_url=?, updated_at=?
+                WHERE scope=? AND username=? AND voice_key=?""",
+                (display_name, provider_voice, preview_file, preview_url, now, scope, username, voice_key))
         c.commit()
     backfill_audio_assets()
 
@@ -768,11 +764,12 @@ def ensure_audio_voice(username, voice_key):
             r = c.execute("SELECT id FROM audio_voices WHERE scope='public' AND username='' AND voice_key=?",
                           (voice_key,)).fetchone()
             if r: return r["id"]
-            display = {"dapeng": "\u5927\u9e4f IVC", "zelong": "\u6cfd\u9f99 IVC", "paul": "Paul \u7537\u58f0"}.get(voice_key, voice_key)
+            display = PUBLIC_VOICE_LABELS.get(voice_key, voice_key)
             cur = c.execute("""INSERT INTO audio_voices
-                (scope, username, voice_key, display_name, provider_voice, created_at, updated_at)
-                VALUES('public','',?,?,?,?,?)""",
-                (voice_key, display, VOICE_MAP.get(voice_key, "alloy"), now, now))
+                (scope, username, voice_key, display_name, provider_voice, preview_file, preview_url, created_at, updated_at)
+                VALUES('public','',?,?,?,?,?,?,?)""",
+                (voice_key, display, VOICE_MAP.get(voice_key, "alloy"),
+                 _public_preview_file(voice_key), _public_preview_url(voice_key), now, now))
             c.commit()
             return cur.lastrowid
     with closing(adb()) as c:
@@ -948,6 +945,46 @@ def verify(token):
 
 # ============ 图片能力：gpt-image-2 ============
 # 三种模式同一入口：无图=文生图(generations)；有图无蒙版=图生图(edits)；有图有蒙版=局部修改(edits+mask)
+def _clean_b64(value):
+    raw = (value or "").strip()
+    if raw.startswith("data:") and "," in raw:
+        raw = raw.split(",", 1)[1]
+    return "".join(raw.split())
+
+def _require_b64_image(body, field):
+    raw = _clean_b64(body.get(field))
+    if not raw:
+        return
+    try:
+        base64.b64decode(raw, validate=True)
+    except Exception:
+        raise ValueError("%s 必须是合法 base64；文生图请不要传 image/mask" % field)
+    body[field] = raw
+
+def validate_submit_payload(kind, body):
+    if not isinstance(body, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+    if kind != "image":
+        return body
+    prompt = (body.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("提示词不能为空")
+    ratio = (body.get("ratio") or "1:1").strip()
+    if ratio not in SIZES:
+        raise ValueError("ratio 仅支持: " + ", ".join(SIZES))
+    if body.get("mask") and not body.get("image"):
+        raise ValueError("使用 mask 局部修改时必须同时传 image")
+    body["prompt"] = prompt
+    body["ratio"] = ratio
+    _require_b64_image(body, "image")
+    _require_b64_image(body, "mask")
+    try:
+        if "count" in body:
+            body["count"] = max(1, min(4, int(body.get("count") or 1)))
+    except Exception:
+        raise ValueError("count 必须是数字")
+    return body
+
 SIZES = {"1:1": "1024x1024", "9:16": "1024x1536", "16:9": "1536x1024", "3:4": "1024x1536"}
 
 def _multipart(fields, files):
@@ -966,8 +1003,21 @@ def _post(path, data, ctype, base=None, key=None, proxy=True):
     req = urllib.request.Request((base or OPENAI_BASE) + path, data=data,
                                  headers={"Authorization": "Bearer " + (key or OPENAI_KEY), "Content-Type": ctype}, method="POST")
     if proxy:
-        with urllib.request.urlopen(req, timeout=300) as r:
-            return json.loads(r.read())
+        last = None
+        for attempt in range(2):
+            try:
+                with urllib.request.urlopen(req, timeout=300) as r:
+                    return json.loads(r.read())
+            except Exception as e:
+                last = e
+                msg = str(e)
+                transient = ("Remote end closed connection" in msg or
+                             "Connection reset" in msg or
+                             "timed out" in msg)
+                if not transient or attempt:
+                    break
+                time.sleep(1.5)
+        raise RuntimeError("上游生成服务连接中断，请稍后重试") from last
     with _NOPROXY.open(req, timeout=300) as r:  # 国内中转直连，不走 mihomo
         return json.loads(r.read())
 
@@ -1198,6 +1248,48 @@ VOICE_MAP = {
     "fable": "fable", "nova": "nova", "onyx": "onyx", "sage": "sage", "shimmer": "shimmer",
 }
 SPEED_MAP = {"slow": 0.88, "normal": 1.0, "fast": 1.12, "偏慢": 0.88, "正常": 1.0, "偏快": 1.12}
+
+PUBLIC_VOICE_PREVIEW_ENV = {
+    "dapeng": "VOICE_DAPENG_PREVIEW_URL",
+    "zelong": "VOICE_ZELONG_PREVIEW_URL",
+    "paul": "VOICE_PAUL_PREVIEW_URL",
+}
+
+PUBLIC_VOICE_LABELS = {
+    "dapeng": "大鹏 IVC（清晰男声·短视频口播）",
+    "zelong": "泽龙 IVC（沉稳男声·商务旁白）",
+    "paul": "Paul（英文男声·产品解说）",
+    "S_d21F8OR62": "温柔女声（情感种草）",
+    "S_l8wE8OR62": "活力女声（广告推荐）",
+    "S_pa0E8OR62": "沉稳男声（知识口播）",
+    "S_xaUB8OR62": "亲和女声（本地生活）",
+}
+
+def _public_preview_file(voice_key):
+    rel = os.environ.get("VOICE_%s_PREVIEW_FILE" % voice_key.upper())
+    return rel.strip() if rel else None
+
+def _public_preview_url(voice_key):
+    url = os.environ.get(PUBLIC_VOICE_PREVIEW_ENV.get(voice_key, ""))
+    if url:
+        return url.strip()
+    rel = _public_preview_file(voice_key)
+    return _file_url(rel) if rel else None
+
+def public_audio_voice_defs():
+    items = [
+        ("dapeng", VOICE_MAP.get("dapeng", "alloy")),
+        ("zelong", VOICE_MAP.get("zelong", "onyx")),
+        ("paul", VOICE_MAP.get("paul", "echo")),
+        ("S_d21F8OR62", "S_d21F8OR62"),
+        ("S_l8wE8OR62", "S_l8wE8OR62"),
+        ("S_pa0E8OR62", "S_pa0E8OR62"),
+        ("S_xaUB8OR62", "S_xaUB8OR62"),
+    ]
+    return [
+        ("public", "", key, PUBLIC_VOICE_LABELS.get(key, key), provider, _public_preview_file(key), _public_preview_url(key))
+        for key, provider in items
+    ]
 
 def gen_audio(payload):
     text = (payload.get("text") or payload.get("prompt") or "").strip()
@@ -1493,9 +1585,12 @@ def reaper():
 # ============ HTTP ============
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
-    def _send(self, code, obj):
+    def _send(self, code, obj, headers=None):
         b = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(code); self.send_header("Content-Type", "application/json; charset=utf-8")
+        if headers:
+            for k, v in headers.items():
+                self.send_header(k, v)
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def _token(self):
         a = self.headers.get("Authorization") or ""
@@ -1508,6 +1603,8 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        if p == "/api/gen/audio/voices":
+            return self._send(405, {"detail": "Method Not Allowed"}, {"Allow": "GET"})
         if p == "/api/gen/audio/redeem-slot":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
@@ -1541,6 +1638,10 @@ class H(BaseHTTPRequestHandler):
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             body = self._json_body()
+            try:
+                body = validate_submit_payload(kind, body)
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
             cost = cost_of(kind, body)
             if get_points(user["username"]) < cost:
                 return self._send(402, {"detail": "点数不足", "need": cost})
@@ -1559,11 +1660,15 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         p = self.path.split("?")[0]
         if p.startswith("/api/gen/job/"):
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
             try: jid = int(p.rsplit("/", 1)[1])
             except Exception: return self._send(400, {"detail": "bad id"})
             with closing(jdb()) as c:
                 r = c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
             if not r: return self._send(404, {"detail": "任务不存在"})
+            if r["username"] != user.get("username") and user.get("role") != "admin":
+                return self._send(404, {"detail": "任务不存在"})
             d = dict(r)
             if d.get("result"):
                 try: d["result"] = json.loads(d["result"])
@@ -1620,8 +1725,17 @@ class H(BaseHTTPRequestHandler):
             self.end_headers(); self.wfile.write(data); return
         if p == "/api/gen/audio/voices":
             user = verify(self._token())
-            if not user: return self._send(401, {"detail": "???"})
-            return self._send(200, {"items": list_audio_voices(user["username"])})
+            if not user: return self._send(401, {"detail": "未登录或 token 无效"})
+            body = {"items": list_audio_voices(user["username"])}
+            raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+            etag = '"' + hashlib.sha256(raw).hexdigest()[:16] + '"'
+            if self.headers.get("If-None-Match") == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.send_header("Cache-Control", "private, max-age=60")
+                self.end_headers()
+                return
+            return self._send(200, body, {"Cache-Control": "private, max-age=60", "ETag": etag})
         if p == "/api/gen/audio/assets":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "???"})
