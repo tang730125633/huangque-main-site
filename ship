@@ -61,6 +61,10 @@ else
   echo "==> 4/5 纯前端，无需重启"
 fi
 
+# 刷新漂移哨兵基线（这次是合法部署，让线上=新基线，只有绕过 ship 的热改才会告警）
+$SSHC "$REMOTE" "test -f /home/ubuntu/hq-drift/drift_sentinel.py && python3 /home/ubuntu/hq-drift/drift_sentinel.py --bless" >/dev/null 2>&1 \
+  && echo "  ✓ 漂移基线已刷新" || echo "  （跳过漂移基线刷新：哨兵未安装）"
+
 # 5. 验证 + 给回滚命令
 echo "==> 5/5 验证"
 curl -s -o /dev/null -w "  健康检查: HTTP %{http_code}\n" https://huangquechuanmei.com/api/gen/health --max-time 10
