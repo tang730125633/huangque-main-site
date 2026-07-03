@@ -321,6 +321,49 @@
   function esc(s){return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
   function fresh(u){return u+(u.indexOf('?')>=0?'&':'?')+'_='+Date.now();}
   function toast(msg){var t=$('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},1700);}
+  function hasAllowedFileType(file, allowedTypes, allowedExts){
+    var type=String((file&&file.type)||'').toLowerCase();
+    var name=String((file&&file.name)||'').toLowerCase();
+    if(type && allowedTypes.indexOf(type)>=0) return true;
+    return allowedExts.some(function(ext){return name.endsWith(ext);});
+  }
+  function fallbackMime(file, extMimes){
+    var type=String((file&&file.type)||'').toLowerCase();
+    var name=String((file&&file.name)||'').toLowerCase();
+    if(type) return type;
+    extMimes=extMimes||{};
+    var found='';
+    Object.keys(extMimes).some(function(ext){
+      if(name.endsWith(ext)){found=extMimes[ext];return true;}
+      return false;
+    });
+    return found||'application/octet-stream';
+  }
+  function bytesToBase64(bytes){
+    var binary='', chunk=0x8000;
+    for(var i=0;i<bytes.length;i+=chunk){
+      binary+=String.fromCharCode.apply(null,bytes.subarray(i,i+chunk));
+    }
+    return btoa(binary);
+  }
+  function readJsonResponse(r){
+    return r.text().then(function(text){
+      var data={};
+      if(text){
+        try{data=JSON.parse(text);}
+        catch(e){data={detail:text.slice(0,180)};}
+      }
+      return {status:r.status, ok:r.ok, data:data};
+    });
+  }
+  function submitErrorMessage(res){
+    var detail=(res.data&&(res.data.detail||res.data.error||res.data.message))||'';
+    if(res.status===400) return detail||'提交内容不完整，请检查图片、文案、配音和视频参数';
+    if(res.status===401) return '登录已失效，请重新登录';
+    if(res.status===402) return detail||'点数不足，暂时不能创建视频任务';
+    if(res.status>=500) return detail||'视频服务暂时不可用，请稍后再试';
+    return detail||'提交失败，请稍后重试';
+  }
   function motionLabel(v){return v==='high'?'高':(v==='medium'?'中等':'低');}
   function nowText(){var d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
   function setOutputImage(src){
@@ -459,12 +502,27 @@
     $('generateBtn').style.opacity=on?'.72':'1';
     $('generateBtn').style.cursor=on?'wait':'pointer';
   }
-  function readFileData(file){
+  function readFileData(file, options){
+    options=options||{};
+    if(options.allowedTypes && !hasAllowedFileType(file, options.allowedTypes, options.allowedExts||[])){
+      return Promise.reject(new Error(options.typeError||'文件格式不支持'));
+    }
+    if(file && file.size > (options.maxSize || 35 * 1024 * 1024)){
+      return Promise.reject(new Error(options.sizeError||'文件过大，请压缩后再上传'));
+    }
     return new Promise(function(resolve,reject){
       var reader=new FileReader();
-      reader.onload=function(){resolve(reader.result);};
+      reader.onload=function(){
+        if(file && !file.type && options.extMimes){
+          var bytes=new Uint8Array(reader.result);
+          resolve('data:'+fallbackMime(file,options.extMimes)+';base64,'+bytesToBase64(bytes));
+        }else{
+          resolve(reader.result);
+        }
+      };
       reader.onerror=function(){reject(new Error('文件读取失败'));};
-      reader.readAsDataURL(file);
+      if(file && !file.type && options.extMimes) reader.readAsArrayBuffer(file);
+      else reader.readAsDataURL(file);
     });
   }
   function updateMode(next){
@@ -597,14 +655,28 @@
   function bindImageInput(input){
     input.onchange=function(){
     var f=this.files&&this.files[0]; if(!f)return;
-    var url=URL.createObjectURL(f), box=$('imageDrop');
-    readFileData(f).then(function(data){ imageData=data; updateChecklist(); }).catch(function(e){ toast(e.message); });
-    box.classList.add('has-img');
-    box.innerHTML='<input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+url+'" alt="人物形象预览">';
-    $('previewFrame').innerHTML='<img src="'+url+'" alt="人物形象预览">';
-    setOutputImage(url);
-    bindImageInput(box.querySelector('input'));
-    updateChecklist();
+    var box=$('imageDrop');
+    readFileData(f,{
+      allowedTypes:['image/png','image/jpeg','image/webp'],
+      allowedExts:['.png','.jpg','.jpeg','.webp'],
+      extMimes:{'.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp'},
+      typeError:'人物图片只支持 PNG、JPG、WebP',
+      sizeError:'人物图片过大，请压缩到 35MB 以内'
+    }).then(function(data){
+      var url=URL.createObjectURL(f);
+      imageData=data;
+      box.classList.add('has-img');
+      box.innerHTML='<input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+url+'" alt="人物形象预览">';
+      $('previewFrame').innerHTML='<img src="'+url+'" alt="人物形象预览">';
+      setOutputImage(url);
+      bindImageInput(box.querySelector('input'));
+      updateChecklist();
+    }).catch(function(e){
+      imageData='';
+      box.classList.remove('has-img');
+      toast(e.message);
+      updateChecklist();
+    });
   };
   }
   bindImageInput($('imageFile'));
@@ -612,7 +684,18 @@
     var f=this.files&&this.files[0];
     if(f){
       $('audioFileName').textContent=f.name;
-      readFileData(f).then(function(data){ audioData=data; updateChecklist(); }).catch(function(e){ toast(e.message); });
+      readFileData(f,{
+        allowedTypes:['audio/mpeg','audio/mp3','audio/wav','audio/x-wav','audio/mp4','audio/x-m4a'],
+        allowedExts:['.mp3','.wav','.m4a'],
+        extMimes:{'.mp3':'audio/mpeg','.wav':'audio/wav','.m4a':'audio/mp4'},
+        typeError:'口播音频只支持 MP3、WAV、M4A',
+        sizeError:'口播音频过大，请压缩到 35MB 以内'
+      }).then(function(data){ audioData=data; updateChecklist(); }).catch(function(e){
+        audioData='';
+        $('audioFileName').textContent='未选择文件';
+        toast(e.message);
+        updateChecklist();
+      });
     }
     updateChecklist();
   };
@@ -641,6 +724,8 @@
     if(!imageData){ toast('请先上传人物形象图片'); return; }
     var text=$('scriptText').value.trim();
     if(mode==='text' && !text){ toast('请先输入口播文案'); return; }
+    if(mode==='text' && text.length>1200){ toast('口播文案过长，请控制在 1200 字以内'); return; }
+    if(mode==='text' && !selectedVoice){ toast('请先选择音色'); return; }
     var assetSelected=document.querySelector('.source-card[data-source="asset"].on');
     if(mode==='audio' && assetSelected && !selectedAssetAudio){ toast('请选择一条配音资产'); return; }
     if(mode==='audio' && !assetSelected && !audioData){ toast('请先上传口播音频'); return; }
@@ -650,9 +735,8 @@
     updateOutputMeta();
     if($('outputDuration')) $('outputDuration').textContent='生成中';
     if($('outputCreated')) $('outputCreated').textContent='创建于：'+nowText();
-    if($('outputPreviewText')) $('outputPreviewText').innerHTML='视频正在生成中<br>完成后会自动预览';
+    if($('outputPreviewText')) $('outputPreviewText').innerHTML='正在提交任务<br>请稍候';
     if($('outputDownload')){$('outputDownload').href='#';$('outputDownload').style.pointerEvents='none';$('outputDownload').style.opacity='.45';}
-    renderVideoHistory([{image_url:imageData,text:text||'视频生成记录',ratio:selectedRatio,motion:selectedMotion,status:'processing',created_at:Math.floor(Date.now()/1000)}]);
     $('statusText').textContent='正在提交视频任务...';
     fetch('/api/gen/video',{
       method:'POST',
@@ -667,11 +751,13 @@
         ratio:selectedRatio,
         motion:selectedMotion
       })
-    }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+    }).then(readJsonResponse)
       .then(function(res){
         if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
+        if(!res.ok) throw new Error(submitErrorMessage(res));
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
         $('statusText').textContent='视频任务已提交...';
+        renderVideoHistory([{image_url:imageData,text:text||'视频生成记录',ratio:selectedRatio,motion:selectedMotion,status:'processing',created_at:Math.floor(Date.now()/1000)}]);
         setTimeout(loadVideoHistory,700);
         pollJob(res.data.job_id,0);
       })

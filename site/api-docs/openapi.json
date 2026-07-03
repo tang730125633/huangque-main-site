@@ -5,1409 +5,208 @@
     "version": "2.0.0",
     "description": "黄雀主站全部自有后端接口(认证/作图/文案/配音/视频/采集获客/下载/任务)。\n\n**认证**:除登录和健康检查外,均需 `Authorization: Bearer <token>`(登录拿)。点右上 Authorize 填 token 即可 Try it。\n\n**异步任务**:作图/文案/配音/视频/采集/获客 都返回 `job_id`,再轮询 `GET /api/gen/job/{id}` 取结果。\n\n**点数**:生成类接口预扣点数(见各接口说明),任务失败自动退点;点数不足返回 402。\n\n外部 TikHub 接口见另一份 spec(右上切换)。"
   },
-  "servers": [
-    {
-      "url": "https://huangquechuanmei.com",
-      "description": "线上(nginx 按路径路由到各后端)"
-    }
-  ],
+  "servers": [{ "url": "https://huangquechuanmei.com", "description": "线上(nginx 按路径路由到各后端)" }],
   "tags": [
-    {
-      "name": "认证",
-      "description": "登录 / 用户信息 / 点数(auth 8095)"
-    },
-    {
-      "name": "作图",
-      "description": "gpt-image + nano banana(content 8096 / imggen 8101)"
-    },
-    {
-      "name": "文案",
-      "description": "AI 文案 / 分镜脚本(content 8096)"
-    },
-    {
-      "name": "配音音色",
-      "description": "TTS 配音 + 个人音色克隆(content 8096)"
-    },
-    {
-      "name": "视频",
-      "description": "HeyGen 数字人视频(content 8096)"
-    },
-    {
-      "name": "采集获客",
-      "description": "内容爬取 + 关键词获客(leadgen 8100)"
-    },
-    {
-      "name": "下载",
-      "description": "无水印视频下载(dl 8097)"
-    },
-    {
-      "name": "任务/历史/文件",
-      "description": "异步任务轮询、生成历史、文件下载"
-    },
-    {
-      "name": "健康",
-      "description": "各服务健康检查"
-    }
+    { "name": "认证", "description": "登录 / 用户信息 / 点数(auth 8095)" },
+    { "name": "作图", "description": "gpt-image + nano banana(content 8096 / imggen 8101)" },
+    { "name": "文案", "description": "AI 文案 / 分镜脚本(content 8096)" },
+    { "name": "配音音色", "description": "TTS 配音 + 个人音色克隆(content 8096)" },
+    { "name": "视频", "description": "HeyGen 数字人视频(content 8096)" },
+    { "name": "采集获客", "description": "内容爬取 + 关键词获客(leadgen 8100)" },
+    { "name": "下载", "description": "无水印视频下载(dl 8097)" },
+    { "name": "任务/历史/文件", "description": "异步任务轮询、生成历史、文件下载" },
+    { "name": "健康", "description": "各服务健康检查" }
   ],
   "components": {
     "securitySchemes": {
-      "bearerAuth": {
-        "type": "http",
-        "scheme": "bearer",
-        "description": "登录 /api/auth/login 拿到的 token"
-      }
+      "bearerAuth": { "type": "http", "scheme": "bearer", "description": "登录 /api/auth/login 拿到的 token" }
     },
     "schemas": {
-      "JobAccepted": {
-        "type": "object",
-        "description": "异步任务受理",
-        "properties": {
-          "job_id": {
-            "type": "integer"
-          },
-          "cost": {
-            "type": "integer",
-            "description": "本次扣的点数"
-          },
-          "points_left": {
-            "type": "integer"
-          }
-        }
-      },
-      "JobStatus": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "integer"
-          },
-          "kind": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "pending",
-              "running",
-              "done",
-              "error"
-            ]
-          },
-          "result": {
-            "type": "object",
-            "description": "成功时结果(结构随 kind 不同)"
-          },
-          "error": {
-            "type": "string"
-          },
-          "created_at": {
-            "type": "integer"
-          },
-          "updated_at": {
-            "type": "integer"
-          }
-        }
-      },
-      "User": {
-        "type": "object",
-        "properties": {
-          "username": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "points": {
-            "type": "integer"
-          },
-          "role": {
-            "type": "string"
-          },
-          "must_change": {
-            "type": "boolean"
-          }
-        }
-      },
-      "Error": {
-        "type": "object",
-        "properties": {
-          "detail": {
-            "type": "string"
-          }
-        }
-      }
+      "JobAccepted": { "type": "object", "description": "异步任务受理", "properties": { "job_id": { "type": "integer" }, "cost": { "type": "integer", "description": "本次扣的点数" }, "points_left": { "type": "integer" } } },
+      "JobStatus": { "type": "object", "properties": { "id": { "type": "integer" }, "kind": { "type": "string" }, "status": { "type": "string", "enum": ["pending", "running", "done", "error"] }, "result": { "type": "object", "description": "成功时结果(结构随 kind 不同)" }, "error": { "type": "string" }, "created_at": { "type": "integer" }, "updated_at": { "type": "integer" } } },
+      "User": { "type": "object", "properties": { "username": { "type": "string" }, "name": { "type": "string" }, "points": { "type": "integer" }, "role": { "type": "string" }, "must_change": { "type": "boolean" } } },
+      "Error": { "type": "object", "properties": { "detail": { "type": "string" } } }
     }
   },
-  "security": [
-    {
-      "bearerAuth": []
-    }
-  ],
+  "security": [{ "bearerAuth": [] }],
   "paths": {
     "/api/auth/login": {
       "post": {
-        "tags": [
-          "认证"
-        ],
-        "summary": "登录(拿 token)",
-        "security": [],
+        "tags": ["认证"], "summary": "登录(拿 token)", "security": [],
         "description": "账号密码登录。成功后返回 Bearer token，前端保存后用于调用需要登录的接口。\n\n安全策略：新签发 token 默认 30 天过期；登录失败会按 IP+账号做 5 分钟窗口限流，连续失败 5 次后暂时返回 429。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "username",
-                  "password"
-                ],
-                "properties": {
-                  "username": {
-                    "type": "string",
-                    "example": "fang"
-                  },
-                  "password": {
-                    "type": "string"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "token": {
-                      "type": "string"
-                    },
-                    "user": {
-                      "$ref": "#/components/schemas/User"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "请求体不是合法 JSON",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "账号或密码错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "登录失败次数过多，请稍后再试",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["username", "password"], "properties": { "username": { "type": "string", "example": "fang" }, "password": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object", "properties": { "token": { "type": "string" }, "user": { "$ref": "#/components/schemas/User" } } } } } }, "400": { "description": "请求体不是合法 JSON", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }, "401": { "description": "账号或密码错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }, "429": { "description": "登录失败次数过多，请稍后再试", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } }
       }
     },
     "/api/auth/register": {
       "post": {
-        "tags": [
-          "认证"
-        ],
-        "summary": "注册新账号(创建用户并返回 token)",
-        "security": [],
+        "tags": ["认证"], "summary": "注册新账号(创建用户并返回 token)", "security": [],
         "description": "用于前端登录页的“注册新账号”功能。提交账号、密码和可选昵称后，后端会创建普通用户账号，并立即签发登录 token。\n\n规则：username 必填，最长 64 位，不能包含空白字符；password 必填，至少 6 位；display_name 可选，不传时默认等于 username，最多 32 个字符。\n\n安全策略：注册接口按 IP 限流，默认 5 分钟最多 5 次成功注册，超过返回 429。\n\n默认账户属性：points=0，role=member，must_change=false。\n\n注册成功后前端可直接保存 token，并继续调用 /api/auth/me 或跳转工作台。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "username",
-                  "password"
-                ],
-                "properties": {
-                  "username": {
-                    "type": "string",
-                    "maxLength": 64,
-                    "example": "test001"
-                  },
-                  "password": {
-                    "type": "string",
-                    "minLength": 6,
-                    "example": "12345678"
-                  },
-                  "display_name": {
-                    "type": "string",
-                    "maxLength": 32,
-                    "example": "测试用户"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "注册成功",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "token": {
-                      "type": "string"
-                    },
-                    "user": {
-                      "$ref": "#/components/schemas/User"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "参数不合法：账号/密码缺失、账号过长、账号含空白字符、昵称超过 32 字符或密码少于 6 位",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "账号已存在：username 与现有用户重复",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "注册次数过多，请稍后再试",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["username", "password"], "properties": { "username": { "type": "string", "maxLength": 64, "example": "test001" }, "password": { "type": "string", "minLength": 6, "example": "12345678" }, "display_name": { "type": "string", "maxLength": 32, "example": "测试用户" } } } } } },
+        "responses": { "200": { "description": "注册成功", "content": { "application/json": { "schema": { "type": "object", "properties": { "token": { "type": "string" }, "user": { "$ref": "#/components/schemas/User" } } } } } }, "400": { "description": "参数不合法：账号/密码缺失、账号过长、账号含空白字符、昵称超过 32 字符或密码少于 6 位", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }, "409": { "description": "账号已存在：username 与现有用户重复", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }, "429": { "description": "注册次数过多，请稍后再试", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } }
       }
     },
     "/api/auth/logout": {
       "post": {
-        "tags": [
-          "认证"
-        ],
-        "summary": "登出(撤销 token)",
+        "tags": ["认证"], "summary": "登出(撤销 token)",
         "description": "撤销当前 Bearer token。有效 token 首次登出返回 200；同一个 token 在本服务进程内重复登出仍返回 200，便于前端幂等处理；无 token、错误认证格式或从未存在的 token 返回 401。",
-        "responses": {
-          "200": {
-            "description": "OK"
-          },
-          "401": {
-            "description": "未登录 / token 无效",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
+        "responses": { "200": { "description": "OK" }, "401": { "description": "未登录 / token 无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } }
       }
     },
     "/api/auth/change_password": {
       "post": {
-        "tags": [
-          "认证"
-        ],
-        "summary": "改密码",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "new_password"
-                ],
-                "properties": {
-                  "new_password": {
-                    "type": "string",
-                    "description": "至少 6 位"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "OK"
-          },
-          "400": {
-            "description": "新密码太短"
-          },
-          "401": {
-            "description": "未登录"
-          }
-        }
+        "tags": ["认证"], "summary": "改密码",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["new_password"], "properties": { "new_password": { "type": "string", "description": "至少 6 位" } } } } } },
+        "responses": { "200": { "description": "OK" }, "400": { "description": "新密码太短" }, "401": { "description": "未登录" } }
       }
     },
     "/api/auth/me": {
-      "get": {
-        "tags": [
-          "认证"
-        ],
-        "summary": "当前用户信息 / 点数",
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "user": {
-                      "$ref": "#/components/schemas/User"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "未登录"
-          }
-        }
-      }
+      "get": { "tags": ["认证"], "summary": "当前用户信息 / 点数", "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object", "properties": { "user": { "$ref": "#/components/schemas/User" } } } } } }, "401": { "description": "未登录" } } }
     },
     "/api/gen/image": {
       "post": {
-        "tags": [
-          "作图"
-        ],
-        "summary": "gpt-image 作图(文生图/图生图/局部修改) · 12点",
+        "tags": ["作图"], "summary": "gpt-image 作图(文生图/图生图/局部修改) · 12点",
         "description": "异步,返回 job_id。带 image 进图生图;再带 mask 进局部修改。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "prompt"
-                ],
-                "properties": {
-                  "prompt": {
-                    "type": "string",
-                    "maxLength": 2000
-                  },
-                  "provider": {
-                    "type": "string",
-                    "enum": [
-                      "openai",
-                      "zelong"
-                    ],
-                    "default": "openai",
-                    "description": "openai 失败时后端会自动 fallback 到 zelong"
-                  },
-                  "ratio": {
-                    "type": "string",
-                    "enum": [
-                      "1:1",
-                      "9:16",
-                      "16:9",
-                      "3:4"
-                    ],
-                    "default": "1:1",
-                    "description": "3:4 对应 900x1200"
-                  },
-                  "image": {
-                    "type": "string",
-                    "description": "base64(无 data: 前缀),参考图→图生图"
-                  },
-                  "mask": {
-                    "type": "string",
-                    "description": "base64 蒙版→局部修改"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "受理",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobAccepted"
-                }
-              }
-            }
-          },
-          "402": {
-            "description": "点数不足"
-          }
-        }
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["prompt"], "properties": { "prompt": { "type": "string" }, "ratio": { "type": "string", "enum": ["1:1", "9:16", "16:9", "3:4"], "default": "1:1" }, "image": { "type": "string", "description": "base64(无 data: 前缀),参考图→图生图" }, "mask": { "type": "string", "description": "base64 蒙版→局部修改" } } } } } },
+        "responses": { "200": { "description": "受理", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } }, "402": { "description": "点数不足" } }
       }
     },
     "/api/gen/banana": {
       "post": {
-        "tags": [
-          "作图"
-        ],
-        "summary": "nano banana 作图(NB2 std 10点/hd 14点；Pro std 18点/hd 26点)",
-        "description": "异步返回 job_id。带 image 进图生图。提交前会校验 prompt/model/ratio/quality/count/image，参数错误直接 400，不扣点。生成完成后轮询 GET /api/gen/job/{id}，banana 结果会包含 url/files/width/height/dimensions；如果请求里传了 image，任务查询时 payload.image 会显示为 [hidden]。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "prompt"
-                ],
-                "properties": {
-                  "prompt": {
-                    "type": "string",
-                    "maxLength": 2000
-                  },
-                  "model": {
-                    "type": "string",
-                    "enum": [
-                      "nb2",
-                      "pro"
-                    ],
-                    "default": "nb2",
-                    "description": "nb2=gemini-3.1-flash-image,pro=gemini-3-pro-image"
-                  },
-                  "ratio": {
-                    "type": "string",
-                    "default": "1:1",
-                    "description": "1:1 / 2:3 / 3:2 / 3:4 / 4:3 / 4:5 / 5:4 / 9:16 / 16:9 / 21:9"
-                  },
-                  "image": {
-                    "type": "string",
-                    "description": "base64 参考图，可带 data:image/...;base64, 前缀；传错会返回 400"
-                  },
-                  "quality": {
-                    "type": "string",
-                    "enum": [
-                      "std",
-                      "hd"
-                    ],
-                    "default": "std",
-                    "description": "std=标准清晰度；hd=高清。默认 std，NB2 10点/张，Pro 18点/张"
-                  },
-                  "count": {
-                    "type": "integer",
-                    "enum": [
-                      1,
-                      2
-                    ],
-                    "default": 1,
-                    "description": "生成张数，只支持 1 或 2；按张扣点"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "受理",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobAccepted"
-                },
-                "examples": {
-                  "accepted": {
-                    "summary": "受理成功",
-                    "value": {
-                      "job_id": 352,
-                      "cost": 10,
-                      "points_left": 9601
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "402": {
-            "description": "点数不足"
-          },
-          "400": {
-            "description": "参数错误，例如 prompt 为空、model/ratio/quality/count 不支持、image 不是合法 base64"
-          },
-          "401": {
-            "description": "未登录或 token 过期"
-          }
-        }
+        "tags": ["作图"], "summary": "nano banana 作图(NB2 10点 / Pro 18点)",
+        "description": "异步,返回 job_id。带 image 进图生图。Pro=最强中文/4K。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["prompt"], "properties": { "prompt": { "type": "string" }, "model": { "type": "string", "enum": ["nb2", "pro"], "default": "nb2", "description": "nb2=gemini-3.1-flash-image,pro=gemini-3-pro-image" }, "ratio": { "type": "string", "default": "1:1", "description": "1:1 / 2:3 / 3:2 / 3:4 / 4:3 / 4:5 / 5:4 / 9:16 / 16:9 / 21:9" }, "image": { "type": "string", "description": "base64 参考图(可选)" } } } } } },
+        "responses": { "200": { "description": "受理", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } }, "402": { "description": "点数不足" } }
       }
     },
     "/api/gen/copy": {
       "post": {
-        "tags": [
-          "文案"
-        ],
-        "summary": "AI 文案 / 分镜脚本 · 3点",
+        "tags": ["文案"], "summary": "AI 文案 / 分镜脚本 · 3点",
         "description": "异步。format=script → 返回分镜脚本;否则返回 n 条通用文案。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "prompt"
-                ],
-                "properties": {
-                  "prompt": {
-                    "type": "string",
-                    "description": "文案需求/选题"
-                  },
-                  "ctype": {
-                    "type": "string",
-                    "default": "通用"
-                  },
-                  "format": {
-                    "type": "string",
-                    "description": "填 script 出分镜脚本"
-                  },
-                  "style": {
-                    "type": "string",
-                    "example": "口播",
-                    "description": "format=script 时"
-                  },
-                  "dur": {
-                    "type": "string",
-                    "example": "30s",
-                    "description": "format=script 时"
-                  },
-                  "platform": {
-                    "type": "string",
-                    "example": "抖音",
-                    "description": "format=script 时"
-                  },
-                  "n": {
-                    "type": "integer",
-                    "default": 2,
-                    "description": "1-3,通用文案条数"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "受理",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobAccepted"
-                }
-              }
-            }
-          },
-          "402": {
-            "description": "点数不足"
-          }
-        }
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["prompt"], "properties": { "prompt": { "type": "string", "description": "文案需求/选题" }, "ctype": { "type": "string", "default": "通用" }, "format": { "type": "string", "description": "填 script 出分镜脚本" }, "style": { "type": "string", "example": "口播", "description": "format=script 时" }, "dur": { "type": "string", "example": "30s", "description": "format=script 时" }, "platform": { "type": "string", "example": "抖音", "description": "format=script 时" }, "n": { "type": "integer", "default": 2, "description": "1-3,通用文案条数" } } } } } },
+        "responses": { "200": { "description": "受理", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } }, "402": { "description": "点数不足" } }
       }
     },
     "/api/gen/audio": {
       "post": {
-        "tags": [
-          "配音音色"
-        ],
-        "summary": "TTS 配音 · 4点",
+        "tags": ["配音音色"], "summary": "TTS 配音 · 4点",
         "description": "异步。voice 可填预设(dapeng/zelong/paul)或个人 VIP 音色 key。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "text"
-                ],
-                "properties": {
-                  "text": {
-                    "type": "string",
-                    "description": "配音文案(最长1200字)"
-                  },
-                  "voice": {
-                    "type": "string",
-                    "default": "dapeng"
-                  },
-                  "speed": {
-                    "type": "number",
-                    "default": 1.0,
-                    "description": "0.5-2.0"
-                  },
-                  "pitch": {
-                    "type": "number",
-                    "default": 0,
-                    "description": "-12~12"
-                  },
-                  "volume": {
-                    "type": "number",
-                    "default": 0,
-                    "description": "-50~100"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "受理",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobAccepted"
-                }
-              }
-            }
-          },
-          "402": {
-            "description": "点数不足"
-          }
-        }
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["text"], "properties": { "text": { "type": "string", "description": "配音文案(最长1200字)" }, "voice": { "type": "string", "default": "dapeng" }, "speed": { "type": "number", "default": 1.0, "description": "0.5-2.0" }, "pitch": { "type": "number", "default": 0, "description": "-12~12" }, "volume": { "type": "number", "default": 0, "description": "-50~100" } } } } } },
+        "responses": { "200": { "description": "受理", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } }, "402": { "description": "点数不足" } }
       }
     },
     "/api/gen/audio/voices": {
-      "get": {
-        "tags": [
-          "配音音色"
-        ],
-        "summary": "可用音色列表(公开预设+个人VIP)",
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
+      "get": { "tags": ["配音音色"], "summary": "可用音色列表(公开预设+个人VIP)", "responses": { "200": { "description": "OK" } } }
     },
     "/api/gen/audio/assets": {
-      "get": {
-        "tags": [
-          "配音音色"
-        ],
-        "summary": "个人历史音频资产",
-        "parameters": [
-          {
-            "name": "limit",
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "default": 120
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
+      "get": { "tags": ["配音音色"], "summary": "个人历史音频资产", "parameters": [{ "name": "limit", "in": "query", "schema": { "type": "integer", "default": 120 } }], "responses": { "200": { "description": "OK" } } }
     },
     "/api/gen/audio/slots": {
-      "get": {
-        "tags": [
-          "配音音色"
-        ],
-        "summary": "音色克隆槽位 + 训练状态",
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
+      "get": { "tags": ["配音音色"], "summary": "音色克隆槽位 + 训练状态", "responses": { "200": { "description": "OK" } } }
     },
     "/api/gen/audio/clone-status": {
-      "get": {
-        "tags": [
-          "配音音色"
-        ],
-        "summary": "查音色克隆训练状态",
-        "parameters": [
-          {
-            "name": "slot_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK · status=training/ready/failed"
-          },
-          "400": {
-            "description": "缺少 slot_id 或参数错误"
-          },
-          "401": {
-            "description": "未登录或 token 无效"
-          },
-          "404": {
-            "description": "音色槽位不存在或无权访问"
-          },
-          "405": {
-            "description": "Method Not Allowed"
-          }
-        }
-      }
+      "get": { "tags": ["配音音色"], "summary": "查音色克隆训练状态", "parameters": [{ "name": "slot_id", "in": "query", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "OK · status=training/ready/failed" } } }
     },
     "/api/gen/audio/redeem-slot": {
-      "post": {
-        "tags": [
-          "配音音色"
-        ],
-        "summary": "兑换码领取音色克隆槽位",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "code"
-                ],
-                "properties": {
-                  "code": {
-                    "type": "string"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
+      "post": { "tags": ["配音音色"], "summary": "兑换码领取音色克隆槽位", "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "properties": { "code": { "type": "string" } } } } } }, "responses": { "200": { "description": "OK" } } }
     },
     "/api/gen/audio/clone-vip": {
       "post": {
-        "tags": [
-          "配音音色"
-        ],
-        "summary": "上传样音 → 触发音色克隆训练",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "slot_id",
-                  "audio"
-                ],
-                "properties": {
-                  "slot_id": {
-                    "type": "string"
-                  },
-                  "name": {
-                    "type": "string",
-                    "default": "我的VIP复制音色"
-                  },
-                  "audio": {
-                    "type": "string",
-                    "description": "base64 样本音频"
-                  },
-                  "audio_format": {
-                    "type": "string",
-                    "default": "mp3",
-                    "description": "mp3/wav/m4a/aac/ogg"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "OK · 返回 voice(status=training,后续轮询 clone-status)"
-          }
-        }
+        "tags": ["配音音色"], "summary": "上传样音 → 触发音色克隆训练",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["slot_id", "audio"], "properties": { "slot_id": { "type": "string" }, "name": { "type": "string", "default": "我的VIP复制音色" }, "audio": { "type": "string", "description": "base64 样本音频" }, "audio_format": { "type": "string", "default": "mp3", "description": "mp3/wav/m4a/aac/ogg" } } } } } },
+        "responses": { "200": { "description": "OK · 返回 voice(status=training,后续轮询 clone-status)" } }
       }
     },
     "/api/gen/video": {
       "post": {
-        "tags": [
-          "视频"
-        ],
-        "summary": "HeyGen 数字人视频(图+音→视频)",
-        "description": "异步。mode=text:文案+音色生配音;mode=audio:直接导入音频。image_data 必填(data URL)。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "image_data"
-                ],
-                "properties": {
-                  "mode": {
-                    "type": "string",
-                    "enum": [
-                      "text",
-                      "audio"
-                    ],
-                    "default": "text"
-                  },
-                  "image_data": {
-                    "type": "string",
-                    "description": "data:image/png;base64,... 人物形象图"
-                  },
-                  "text": {
-                    "type": "string",
-                    "description": "mode=text 必填"
-                  },
-                  "voice": {
-                    "type": "string",
-                    "description": "mode=text 必填"
-                  },
-                  "audio_data": {
-                    "type": "string",
-                    "description": "mode=audio 必填,data:audio/mp3;base64,..."
-                  },
-                  "speed": {
-                    "type": "number",
-                    "default": 1.0
-                  },
-                  "pitch": {
-                    "type": "number",
-                    "default": 0
-                  },
-                  "volume": {
-                    "type": "number",
-                    "default": 0
-                  },
-                  "resolution": {
-                    "type": "string",
-                    "enum": [
-                      "720p",
-                      "1080p",
-                      "4k"
-                    ],
-                    "default": "1080p"
-                  },
-                  "ratio": {
-                    "type": "string",
-                    "enum": [
-                      "9:16",
-                      "16:9",
-                      "1:1",
-                      "4:5",
-                      "5:4"
-                    ],
-                    "default": "9:16"
-                  },
-                  "motion": {
-                    "type": "string",
-                    "enum": [
-                      "low",
-                      "medium",
-                      "high"
-                    ],
-                    "default": "medium"
-                  }
-                }
-              }
-            }
-          }
-        },
+        "tags": ["视频"], "summary": "HeyGen 数字人视频(图+音→视频) · 默认20点",
+        "description": "异步。提交前校验参数,校验失败直接 400,不创建任务。mode=text: image_data + text + voice 必填; mode=audio: image_data + audio_data 必填。image_data/audio_data 必须是合法 data URL。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["image_data"], "properties": { "mode": { "type": "string", "enum": ["text", "audio"], "default": "text" }, "image_data": { "type": "string", "description": "data:image/png;base64,... 人物形象图" }, "text": { "type": "string", "description": "mode=text 必填" }, "voice": { "type": "string", "description": "mode=text 必填" }, "audio_data": { "type": "string", "description": "mode=audio 必填,data:audio/mp3;base64,..." }, "speed": { "type": "number", "default": 1.0 }, "pitch": { "type": "number", "default": 0 }, "volume": { "type": "number", "default": 0 }, "resolution": { "type": "string", "enum": ["720p", "1080p", "4k"], "default": "1080p" }, "ratio": { "type": "string", "enum": ["9:16", "16:9", "1:1", "4:5", "5:4"], "default": "9:16" }, "motion": { "type": "string", "enum": ["low", "medium", "high"], "default": "medium" } } } } } },
         "responses": {
-          "200": {
-            "description": "受理",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobAccepted"
-                }
-              }
-            }
-          }
+          "200": { "description": "受理", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } },
+          "400": { "description": "参数错误：非法 JSON、缺少 image_data、mode 不支持、mode=text 缺 text/voice、mode=audio 缺 audio_data、素材不是合法图片/音频、resolution/ratio/motion 不支持", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录或 token 无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "402": { "description": "点数不足", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "502": { "description": "HeyGen / TTS 等上游视频服务失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         }
       }
     },
     "/api/gen/video/assets": {
-      "get": {
-        "tags": [
-          "视频"
-        ],
-        "summary": "个人历史视频资产",
-        "parameters": [
-          {
-            "name": "limit",
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "default": 120
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
+      "get": { "tags": ["视频"], "summary": "个人历史视频资产", "parameters": [{ "name": "limit", "in": "query", "schema": { "type": "integer", "default": 120 } }], "responses": { "200": { "description": "OK" } } }
     },
     "/api/gen/collect": {
       "post": {
-        "tags": [
-          "采集获客"
-        ],
-        "summary": "单条视频/笔记采集(文案+评论+口播) · 3点起",
+        "tags": ["采集获客"], "summary": "单条视频/笔记采集(文案+评论+口播) · 3点起",
         "description": "异步。url 与 id 二选一。want 含 transcript 时 +3 点。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "platform": {
-                    "type": "string",
-                    "enum": [
-                      "douyin",
-                      "xiaohongshu",
-                      "channels"
-                    ],
-                    "default": "douyin"
-                  },
-                  "url": {
-                    "type": "string",
-                    "description": "视频链接(与 id 二选一)"
-                  },
-                  "id": {
-                    "type": "string"
-                  },
-                  "note_type": {
-                    "type": "string",
-                    "default": "video"
-                  },
-                  "want": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    },
-                    "default": [
-                      "copy",
-                      "comments"
-                    ],
-                    "description": "copy/comments/transcript"
-                  },
-                  "comment_count": {
-                    "type": "integer",
-                    "default": 20
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "受理",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobAccepted"
-                }
-              }
-            }
-          },
-          "402": {
-            "description": "点数不足"
-          }
-        }
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "platform": { "type": "string", "enum": ["douyin", "xiaohongshu", "channels"], "default": "douyin" }, "url": { "type": "string", "description": "视频链接(与 id 二选一)" }, "id": { "type": "string" }, "note_type": { "type": "string", "default": "video" }, "want": { "type": "array", "items": { "type": "string" }, "default": ["copy", "comments"], "description": "copy/comments/transcript" }, "comment_count": { "type": "integer", "default": 20 } } } } } },
+        "responses": { "200": { "description": "受理", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } }, "402": { "description": "点数不足" } }
       }
     },
     "/api/gen/leads": {
       "post": {
-        "tags": [
-          "采集获客"
-        ],
-        "summary": "关键词获客(搜视频→扒评论→意图过滤→名单) · 6点起",
+        "tags": ["采集获客"], "summary": "关键词获客(搜视频→扒评论→意图过滤→名单) · 6点起",
         "description": "异步。点数 = 6 + count×pages/4。视频号用 channels_targets 传 sph号/finder号/视频链接。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "keyword"
-                ],
-                "properties": {
-                  "keyword": {
-                    "type": "string",
-                    "example": "美业获客"
-                  },
-                  "platforms": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    },
-                    "default": [
-                      "douyin"
-                    ],
-                    "description": "douyin/xiaohongshu/channels"
-                  },
-                  "count": {
-                    "type": "integer",
-                    "default": 12,
-                    "description": "每平台视频数 1-30"
-                  },
-                  "pages": {
-                    "type": "integer",
-                    "default": 2,
-                    "description": "每视频评论页数 1-3"
-                  },
-                  "channels_targets": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    },
-                    "description": "视频号目标:sph号/finder号/视频链接(仅 channels)"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "受理",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobAccepted"
-                }
-              }
-            }
-          },
-          "402": {
-            "description": "点数不足"
-          }
-        }
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["keyword"], "properties": { "keyword": { "type": "string", "example": "美业获客" }, "platforms": { "type": "array", "items": { "type": "string" }, "default": ["douyin"], "description": "douyin/xiaohongshu/channels" }, "count": { "type": "integer", "default": 12, "description": "每平台视频数 1-30" }, "pages": { "type": "integer", "default": 2, "description": "每视频评论页数 1-3" }, "channels_targets": { "type": "array", "items": { "type": "string" }, "description": "视频号目标:sph号/finder号/视频链接(仅 channels)" } } } } } },
+        "responses": { "200": { "description": "受理", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } }, "402": { "description": "点数不足" } }
       }
     },
     "/api/gen/collect/search": {
       "get": {
-        "tags": [
-          "采集获客"
-        ],
-        "summary": "即时搜视频(选片用,同步) · 1点",
+        "tags": ["采集获客"], "summary": "即时搜视频(选片用,同步) · 1点",
         "parameters": [
-          {
-            "name": "keyword",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "platform",
-            "in": "query",
-            "schema": {
-              "type": "string",
-              "default": "douyin"
-            }
-          },
-          {
-            "name": "page",
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "default": 1
-            }
-          }
+          { "name": "keyword", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "platform", "in": "query", "schema": { "type": "string", "default": "douyin" } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } }
         ],
-        "responses": {
-          "200": {
-            "description": "OK · {items, cost, points_left}"
-          },
-          "402": {
-            "description": "点数不足"
-          }
-        }
+        "responses": { "200": { "description": "OK · {items, cost, points_left}" }, "402": { "description": "点数不足" } }
       }
     },
     "/api/gen/dl": {
       "get": {
-        "tags": [
-          "下载"
-        ],
-        "summary": "无水印视频下载代理(流式 mp4)",
-        "security": [],
+        "tags": ["下载"], "summary": "无水印视频下载代理(流式 mp4)", "security": [],
         "description": "url 必须是白名单 CDN 域名(防 SSRF)。",
         "parameters": [
-          {
-            "name": "url",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "视频 CDN 链接"
-          },
-          {
-            "name": "name",
-            "in": "query",
-            "schema": {
-              "type": "string",
-              "default": "video"
-            }
-          }
+          { "name": "url", "in": "query", "required": true, "schema": { "type": "string" }, "description": "视频 CDN 链接" },
+          { "name": "name", "in": "query", "schema": { "type": "string", "default": "video" } }
         ],
-        "responses": {
-          "200": {
-            "description": "video/mp4 二进制流"
-          },
-          "400": {
-            "description": "不支持的下载地址"
-          },
-          "502": {
-            "description": "下载失败(地址可能过期)"
-          }
-        }
+        "responses": { "200": { "description": "video/mp4 二进制流" }, "400": { "description": "不支持的下载地址" }, "502": { "description": "下载失败(地址可能过期)" } }
       }
     },
     "/api/gen/job/{id}": {
       "get": {
-        "tags": [
-          "任务/历史/文件"
-        ],
-        "summary": "轮询异步任务结果",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobStatus"
-                },
-                "examples": {
-                  "banana_done": {
-                    "summary": "banana 作图完成",
-                    "value": {
-                      "id": 352,
-                      "kind": "image",
-                      "username": "qilin",
-                      "cost": 10,
-                      "status": "done",
-                      "payload": "{\"prompt\": \"banana regression test\", \"model\": \"nb2\", \"ratio\": \"1:1\", \"quality\": \"std\", \"count\": 1, \"image\": \"[hidden]\"}",
-                      "result": {
-                        "type": "image",
-                        "mode": "nanobanana_nb2",
-                        "model": "gemini-3.1-flash-image",
-                        "image_size": "1K",
-                        "quality": "std",
-                        "count": 1,
-                        "file": "nb_1783065719106_0.png",
-                        "url": "/api/gen/file/nb_1783065719106_0.png",
-                        "files": [
-                          "nb_1783065719106_0.png"
-                        ],
-                        "urls": [
-                          "/api/gen/file/nb_1783065719106_0.png"
-                        ],
-                        "ratio": "1:1",
-                        "prompt": "banana regression test",
-                        "width": 1024,
-                        "height": 1024,
-                        "dimensions": [
-                          {
-                            "width": 1024,
-                            "height": 1024
-                          }
-                        ]
-                      },
-                      "error": null,
-                      "created_at": 1783065709,
-                      "updated_at": 1783065719
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        "description": "轮询异步任务结果。banana 作图完成后 result 会包含图片 URL、文件名、比例和最终宽高；payload 中的 image/mask 等大字段会隐藏为 [hidden]。"
+        "tags": ["任务/历史/文件"], "summary": "轮询异步任务结果",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobStatus" } } } } }
       }
     },
     "/api/gen/history": {
       "get": {
-        "tags": [
-          "任务/历史/文件"
-        ],
-        "summary": "本人生成历史",
+        "tags": ["任务/历史/文件"], "summary": "本人生成历史",
         "parameters": [
-          {
-            "name": "kind",
-            "in": "query",
-            "schema": {
-              "type": "string",
-              "enum": [
-                "image",
-                "copy",
-                "audio",
-                "video",
-                "collect",
-                "leads"
-              ],
-              "default": "image"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "default": 60
-            }
-          }
+          { "name": "kind", "in": "query", "schema": { "type": "string", "enum": ["image", "copy", "audio", "video", "collect", "leads"], "default": "image" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 60 } }
         ],
-        "responses": {
-          "200": {
-            "description": "OK · {items:[...]}"
-          }
-        }
+        "responses": { "200": { "description": "OK · {items:[...]}" } }
       }
     },
     "/api/gen/file/{name}": {
       "get": {
-        "tags": [
-          "任务/历史/文件"
-        ],
-        "summary": "下载生成的图片/音频/视频文件",
-        "security": [],
-        "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "文件相对路径"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "文件二进制流"
-          },
-          "404": {
-            "description": "不存在"
-          }
-        }
+        "tags": ["任务/历史/文件"], "summary": "下载生成的图片/音频/视频文件", "security": [],
+        "parameters": [{ "name": "name", "in": "path", "required": true, "schema": { "type": "string" }, "description": "文件相对路径" }],
+        "responses": { "200": { "description": "文件二进制流" }, "404": { "description": "不存在" } }
       }
     },
     "/api/auth/health": {
-      "get": {
-        "tags": [
-          "健康"
-        ],
-        "summary": "auth 服务健康(8095)",
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
+      "get": { "tags": ["健康"], "summary": "auth 服务健康(8095)", "security": [], "responses": { "200": { "description": "OK" } } }
     },
     "/api/gen/health": {
-      "get": {
-        "tags": [
-          "健康"
-        ],
-        "summary": "content 服务健康 + 能力清单(8096)",
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "OK · caps/has_openai/has_tikhub"
-          }
-        }
-      }
+      "get": { "tags": ["健康"], "summary": "content 服务健康 + 能力清单(8096)", "security": [], "responses": { "200": { "description": "OK · caps/has_openai/has_tikhub" } } }
     },
     "/api/gen/leadgen/health": {
-      "get": {
-        "tags": [
-          "健康"
-        ],
-        "summary": "leadgen 服务健康(8100)",
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "OK · caps=[collect,leads]"
-          }
-        }
-      }
+      "get": { "tags": ["健康"], "summary": "leadgen 服务健康(8100)", "security": [], "responses": { "200": { "description": "OK · caps=[collect,leads]" } } }
     },
     "/api/gen/banana/health": {
-      "get": {
-        "tags": [
-          "健康"
-        ],
-        "summary": "imggen 服务健康(8101)",
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "OK · models/has_key"
-          }
-        }
-      }
+      "get": { "tags": ["健康"], "summary": "imggen 服务健康(8101)", "security": [], "responses": { "200": { "description": "OK · models/has_key" } } }
     }
   }
 }
