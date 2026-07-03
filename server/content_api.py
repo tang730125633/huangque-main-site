@@ -188,6 +188,14 @@ def init_audio_db():
             resolution TEXT,
             ratio TEXT,
             motion TEXT,
+            phase TEXT,
+            image_asset_id TEXT,
+            audio_asset_id TEXT,
+            reference_asset_id TEXT,
+            provider_video_id TEXT,
+            provider_avatar_id TEXT,
+            provider_avatar_group_id TEXT,
+            source_video_url TEXT,
             status TEXT NOT NULL DEFAULT 'pending',
             error TEXT,
             created_at INTEGER NOT NULL,
@@ -205,6 +213,14 @@ def init_audio_db():
         _ensure_column(c, "audio_voice_slots", "clone_baseline_icl_speaker_id", "TEXT")
         _ensure_column(c, "audio_voice_slots", "clone_baseline_demo_audio", "TEXT")
         _ensure_column(c, "video_assets", "reference_video_file", "TEXT")
+        _ensure_column(c, "video_assets", "phase", "TEXT")
+        _ensure_column(c, "video_assets", "image_asset_id", "TEXT")
+        _ensure_column(c, "video_assets", "audio_asset_id", "TEXT")
+        _ensure_column(c, "video_assets", "reference_asset_id", "TEXT")
+        _ensure_column(c, "video_assets", "provider_video_id", "TEXT")
+        _ensure_column(c, "video_assets", "provider_avatar_id", "TEXT")
+        _ensure_column(c, "video_assets", "provider_avatar_group_id", "TEXT")
+        _ensure_column(c, "video_assets", "source_video_url", "TEXT")
         public = [
             ("public", "", "dapeng", "\u5927\u9e4f IVC", VOICE_MAP.get("dapeng", "alloy")),
             ("public", "", "zelong", "\u6cfd\u9f99 IVC", VOICE_MAP.get("zelong", "onyx")),
@@ -890,15 +906,75 @@ def list_audio_assets(username, limit=120):
 def record_video_asset(job_id, username, result):
     now = int(time.time())
     with closing(adb()) as c:
-        c.execute("""INSERT OR REPLACE INTO video_assets
+        c.execute("""INSERT INTO video_assets
             (job_id, username, mode, image_file, audio_file, reference_video_file, video_file, video_url, text, voice_key,
-             resolution, ratio, motion, status, error, created_at, updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             resolution, ratio, motion, phase, image_asset_id, audio_asset_id, reference_asset_id, provider_video_id,
+             provider_avatar_id, provider_avatar_group_id, source_video_url, status, error, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(job_id) DO UPDATE SET
+                mode=COALESCE(excluded.mode, video_assets.mode),
+                image_file=COALESCE(excluded.image_file, video_assets.image_file),
+                audio_file=COALESCE(excluded.audio_file, video_assets.audio_file),
+                reference_video_file=COALESCE(excluded.reference_video_file, video_assets.reference_video_file),
+                video_file=COALESCE(excluded.video_file, video_assets.video_file),
+                video_url=COALESCE(excluded.video_url, video_assets.video_url),
+                text=COALESCE(excluded.text, video_assets.text),
+                voice_key=COALESCE(excluded.voice_key, video_assets.voice_key),
+                resolution=COALESCE(excluded.resolution, video_assets.resolution),
+                ratio=COALESCE(excluded.ratio, video_assets.ratio),
+                motion=COALESCE(excluded.motion, video_assets.motion),
+                phase=COALESCE(excluded.phase, video_assets.phase),
+                image_asset_id=COALESCE(excluded.image_asset_id, video_assets.image_asset_id),
+                audio_asset_id=COALESCE(excluded.audio_asset_id, video_assets.audio_asset_id),
+                reference_asset_id=COALESCE(excluded.reference_asset_id, video_assets.reference_asset_id),
+                provider_video_id=COALESCE(excluded.provider_video_id, video_assets.provider_video_id),
+                provider_avatar_id=COALESCE(excluded.provider_avatar_id, video_assets.provider_avatar_id),
+                provider_avatar_group_id=COALESCE(excluded.provider_avatar_group_id, video_assets.provider_avatar_group_id),
+                source_video_url=COALESCE(excluded.source_video_url, video_assets.source_video_url),
+                status=COALESCE(excluded.status, video_assets.status),
+                error=excluded.error,
+                updated_at=excluded.updated_at""",
             (job_id, username, result.get("mode"), result.get("image_file"), result.get("audio_file"),
              result.get("reference_video_file"), result.get("video_file"), result.get("video_url"), result.get("text"), result.get("voice"),
-             result.get("resolution"), result.get("ratio"), result.get("motion"), result.get("status") or "pending",
-             result.get("error"), now, now))
+             result.get("resolution"), result.get("ratio"), result.get("motion"), result.get("phase"),
+             result.get("image_asset_id"), result.get("audio_asset_id"), result.get("reference_asset_id"),
+             result.get("provider_video_id") or result.get("video_id"), result.get("provider_avatar_id") or result.get("avatar_item_id"),
+             result.get("provider_avatar_group_id") or result.get("avatar_group_id"), result.get("source_video_url"),
+             result.get("status") or "pending", result.get("error"), now, now))
         c.commit()
+
+def update_video_asset_phase(job_id, phase, **fields):
+    if not job_id:
+        return
+    now = int(time.time())
+    allowed = {
+        "mode", "image_file", "audio_file", "reference_video_file", "video_file", "video_url",
+        "text", "voice_key", "resolution", "ratio", "motion", "image_asset_id",
+        "audio_asset_id", "reference_asset_id", "provider_video_id", "provider_avatar_id",
+        "provider_avatar_group_id", "source_video_url", "status", "error"
+    }
+    if "voice" in fields and "voice_key" not in fields:
+        fields["voice_key"] = fields.pop("voice")
+    updates = {"phase": phase, "status": fields.pop("status", "running")}
+    if "error" in fields:
+        updates["error"] = fields.pop("error")
+    for k, v in fields.items():
+        if k in allowed and v is not None:
+            updates[k] = v
+    sets = ", ".join("%s=?" % k for k in updates)
+    vals = list(updates.values()) + [now, job_id]
+    try:
+        with closing(adb()) as c:
+            c.execute("UPDATE video_assets SET %s, updated_at=? WHERE job_id=?" % sets, vals)
+            c.commit()
+    except Exception:
+        pass
+    try:
+        with closing(jdb()) as c:
+            c.execute("UPDATE jobs SET updated_at=? WHERE id=? AND status='running'", (now, job_id))
+            c.commit()
+    except Exception:
+        pass
 
 def record_video_pending_asset(job_id, username, payload):
     record_video_asset(job_id, username, {
@@ -908,6 +984,7 @@ def record_video_pending_asset(job_id, username, payload):
         "resolution": payload.get("resolution") or "1080p",
         "ratio": payload.get("ratio") or "9:16",
         "motion": payload.get("motion") or "medium",
+        "phase": "queued",
         "status": "running",
     })
 
@@ -915,7 +992,9 @@ def list_video_assets(username, limit=120):
     limit = max(1, min(120, int(limit or 120)))
     with closing(adb()) as c:
         rows = c.execute("""SELECT id, job_id, username, mode, image_file, audio_file, reference_video_file, video_file, video_url,
-                   text, voice_key, resolution, ratio, motion, status, error, created_at, updated_at
+                   text, voice_key, resolution, ratio, motion, phase, image_asset_id, audio_asset_id, reference_asset_id,
+                   provider_video_id, provider_avatar_id, provider_avatar_group_id, source_video_url,
+                   status, error, created_at, updated_at
             FROM video_assets
             WHERE username=?
             ORDER BY id DESC LIMIT ?""", (username, limit)).fetchall()
@@ -1406,11 +1485,11 @@ def _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id=""):
         payloads = []
         if avatar_group_id:
             try:
-                payloads.append(_heygen_request_json("GET", "/avatars/" + urllib.parse.quote(avatar_group_id), timeout=90))
+                payloads.append(_heygen_request_json("GET", "/avatars/" + urllib.parse.quote(avatar_group_id), timeout=20))
             except Exception as e:
                 last_status = str(e)[:120]
         try:
-            payloads.append(_heygen_request_json("GET", "/avatars", timeout=90))
+            payloads.append(_heygen_request_json("GET", "/avatars", timeout=20))
         except Exception as e:
             last_status = str(e)[:120]
         for data in payloads:
@@ -1502,17 +1581,32 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
         "duration": info.get("duration"),
     }
 
-def generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration):
+def generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration, job_id=None):
     image_fp = _resolve_out_file(image_file)
     reference_fp = _resolve_out_file(reference_video_file)
     if not image_fp or not reference_fp:
         raise ValueError("动作模仿素材文件不存在")
+    update_video_asset_phase(job_id, "uploading_image_asset")
     image_asset_id = _heygen_upload_asset(image_fp)
+    update_video_asset_phase(job_id, "uploading_reference_asset", image_asset_id=image_asset_id)
     reference_asset_id = _heygen_upload_asset(reference_fp)
+    update_video_asset_phase(job_id, "creating_photo_avatar", image_asset_id=image_asset_id,
+                             reference_asset_id=reference_asset_id)
     avatar_item_id, avatar_group_id = _heygen_create_photo_avatar(image_asset_id)
+    update_video_asset_phase(job_id, "waiting_photo_avatar", image_asset_id=image_asset_id,
+                             reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
+                             provider_avatar_group_id=avatar_group_id)
     _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id)
+    update_video_asset_phase(job_id, "creating_cinematic_video", image_asset_id=image_asset_id,
+                             reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
+                             provider_avatar_group_id=avatar_group_id)
     video_id = _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration)
+    update_video_asset_phase(job_id, "polling_video", image_asset_id=image_asset_id,
+                             reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
+                             provider_avatar_group_id=avatar_group_id, provider_video_id=video_id)
     info = _heygen_poll_video(video_id)
+    update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
+                             source_video_url=info.get("video_url"))
     video_file = _download_video_file(info["video_url"], "cinematic")
     return {
         "video_id": video_id,
@@ -1528,6 +1622,7 @@ def generate_heygen_motion_video(image_file, reference_video_file, resolution, r
     }
 
 def gen_video(payload):
+    job_id = payload.get("_job_id")
     mode = (payload.get("mode") or "text").strip()
     if mode not in {"text", "audio", "motion"}:
         raise ValueError("生成方式不正确")
@@ -1544,6 +1639,9 @@ def gen_video(payload):
         if not reference_video_file:
             raise ValueError("请先上传参考动作视频")
         text = text or "动作模仿"
+        update_video_asset_phase(job_id, "files_saved", mode=mode, image_file=image_file,
+                                 reference_video_file=reference_video_file, text=text,
+                                 voice=voice)
     elif mode == "text":
         if not text:
             raise ValueError("请先输入口播文案")
@@ -1583,7 +1681,9 @@ def gen_video(payload):
     if mode == "motion":
         if resolution not in {"720p", "1080p"}:
             resolution = "720p"
-        video_result = generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration)
+        update_video_asset_phase(job_id, "motion_parameters_ready", resolution=resolution,
+                                 ratio=ratio, motion=motion)
+        video_result = generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration, job_id)
     else:
         video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
     return {
@@ -1596,8 +1696,14 @@ def gen_video(payload):
         "video_file": video_result.get("video_file"), "video_url": video_result.get("video_url"),
         "provider_video_id": video_result.get("video_id"),
         "provider_avatar_id": video_result.get("avatar_item_id"),
+        "provider_avatar_group_id": video_result.get("avatar_group_id"),
+        "image_asset_id": video_result.get("image_asset_id"),
+        "audio_asset_id": video_result.get("audio_asset_id"),
+        "reference_asset_id": video_result.get("reference_asset_id"),
+        "source_video_url": video_result.get("source_video_url"),
         "thumbnail_url": video_result.get("thumbnail_url"), "duration": video_result.get("duration"),
         "resolution": resolution, "ratio": ratio, "motion": motion,
+        "phase": "done",
         "message": "视频生成完成"
     }
 
@@ -1611,6 +1717,7 @@ def run_job(job_id):
     kind = r["kind"]; payload = json.loads(r["payload"] or "{}")
     if kind in {"audio", "video"}:
         payload["_username"] = r["username"]
+        payload["_job_id"] = job_id
     try:
         with closing(jdb()) as c:
             c.execute("UPDATE jobs SET status='running', updated_at=? WHERE id=?", (int(time.time()), job_id)); c.commit()
