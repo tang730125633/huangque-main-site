@@ -12,11 +12,16 @@
 
 P1：图片(gpt-image-2)。P2 文案 / P3 视频按同样的 register_capability 往里加。
 """
-import os, re, sqlite3, json, time, threading, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess, hashlib
+import os, re, sqlite3, json, time, threading, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess, hashlib, io
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
 import mimetypes  # 文件服务按扩展名识别 mime（png / mp3 …）
+
+try:
+    from PIL import Image
+except Exception:
+    Image = None
 
 PORT       = int(os.environ.get("CONTENT_API_PORT", "8096"))
 AUTH_BASE  = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
@@ -213,6 +218,8 @@ def init_audio_db():
                 SET display_name=?, provider_voice=?, preview_file=?, preview_url=?, updated_at=?
                 WHERE scope=? AND username=? AND voice_key=?""",
                 (display_name, provider_voice, preview_file, preview_url, now, scope, username, voice_key))
+        c.execute("""DELETE FROM audio_voices
+            WHERE scope='public' AND username='' AND voice_key IN ('dapeng','zelong','paul')""")
         c.commit()
     backfill_audio_assets()
 
@@ -327,10 +334,22 @@ def list_user_audio_voice_slots(username):
                       (username, d.get("slot_id"), str(e)[:240]), flush=True)
         if d.get("preview_url") and d.get("voice_id") and d.get("status") == "training":
             d["status"] = "ready"
+        voice_name = str(d.get("voice_name") or "").strip()
+        if not voice_name or voice_name.isdigit():
+            d["voice_name"] = "我的复刻音色 %s" % (voice_name or d.get("id") or len(items) + 1)
         items.append(d)
     return items
 
-def generate_doubao_preview(speaker_id, text=None, speech_rate=0, loudness_rate=0, pitch_rate=0):
+def audio_slots_response(username):
+    items = list_user_audio_voice_slots(username)
+    return {
+        "items": items,
+        "total": len(items),
+        "can_redeem": True,
+        "message": "" if items else "暂无音色克隆槽位",
+    }
+
+def generate_doubao_preview(speaker_id, text=None, speech_rate=0, loudness_rate=0, pitch_rate=0, purpose="preview"):
     text = (text or "\u4f60\u597d\uff0c\u8fd9\u662f\u6211\u7684\u4e13\u5c5e\u590d\u523b\u97f3\u8272\u8bd5\u542c\u3002\u58f0\u97f3\u6e05\u6670\u81ea\u7136\uff0c\u9002\u5408\u7528\u4e8e\u77ed\u89c6\u9891\u53e3\u64ad\u548c\u6587\u6848\u914d\u97f3\u3002").strip()
     reqid = "hq_preview_%d" % int(time.time() * 1000)
     body = json.dumps({
@@ -397,7 +416,8 @@ def generate_doubao_preview(speaker_id, text=None, speech_rate=0, loudness_rate=
             pass
     if not chunks:
         raise ValueError("\u8bd5\u542c\u97f3\u9891\u751f\u6210\u8fd4\u56de\u4e3a\u7a7a")
-    fn = "audio/voice_preview_%d.mp3" % int(time.time() * 1000)
+    prefix = "aud" if purpose == "asset" else "voice_preview"
+    fn = "audio/%s_%d.mp3" % (prefix, int(time.time() * 1000))
     _out_path(fn).write_bytes(b"".join(chunks))
     return {"file": fn, "url": _file_url(fn), "text": text}
 
@@ -563,6 +583,32 @@ def check_clone_status(username, slot_id):
             c.commit()
         return {"status": "failed", "doubao_status": st}
     return {"status": "training", "doubao_status": st}
+
+def validate_clone_vip_request(username, payload):
+    username = (username or "").strip()
+    payload = payload or {}
+    slot_id = (payload.get("slot_id") or "").strip()
+    audio_b64 = payload.get("audio") or ""
+    audio_format = (payload.get("audio_format") or "mp3").strip().lower().lstrip(".")
+    if not slot_id:
+        raise ValueError("缺少音色槽位 ID")
+    if not audio_b64:
+        raise ValueError("请先上传样音")
+    if audio_format not in {"mp3", "wav", "m4a", "aac", "ogg"}:
+        raise ValueError("audio_format 仅支持 mp3/wav/m4a/aac/ogg")
+    now = int(time.time())
+    with closing(adb()) as c:
+        slot = c.execute("""SELECT id, status, voice_id, COALESCE(reclone_count, 0) AS reclone_count, updated_at, clone_upload_at
+            FROM audio_voice_slots WHERE username=? AND slot_id=?""", (username, slot_id)).fetchone()
+    if not slot:
+        raise LookupError("音色槽位不存在或不属于当前账号")
+    if slot["status"] == "training":
+        last_at = int(slot["clone_upload_at"] or slot["updated_at"] or 0)
+        if last_at and now - last_at < 600:
+            raise ValueError("音色正在复刻中，请等待完成")
+    if slot["status"] == "ready" and bool(slot["voice_id"]) and int(slot["reclone_count"] or 0) >= 10:
+        raise ValueError("该音色已达到最高10次重新复刻上限")
+    return slot_id
 
 def mark_clone_training(username, slot_id, name):
     username = (username or "").strip()
@@ -750,14 +796,18 @@ def clone_vip_voice(username, payload):
 
 def ensure_audio_voice(username, voice_key):
     username = (username or "").strip()
-    voice_key = (voice_key or "dapeng").strip()
-    public_keys = {"dapeng", "zelong", "paul"}
+    voice_key = (voice_key or DEFAULT_PUBLIC_VOICE).strip()
+    if voice_key.lower() in OBSOLETE_PUBLIC_VOICE_KEYS:
+        raise ValueError("该预设音色已下架，请重新选择音色")
+    public_keys = set(PUBLIC_VOICE_KEYS)
     public_key = voice_key.lower()
+    if voice_key in public_keys:
+        public_key = voice_key
     now = int(time.time())
     with closing(adb()) as c:
         r = c.execute("SELECT id FROM audio_voices WHERE scope='public' AND username='' AND voice_key=?",
                       (voice_key,)).fetchone()
-        if r: return r["id"]
+        if r and voice_key in public_keys: return r["id"]
     if public_key in public_keys:
         voice_key = public_key
         with closing(adb()) as c:
@@ -786,21 +836,25 @@ def ensure_audio_voice(username, voice_key):
 
 def resolve_audio_provider_voice(username, voice_key):
     username = (username or "").strip()
-    voice_key = (voice_key or "dapeng").strip()
-    public_keys = {"dapeng", "zelong", "paul"}
+    voice_key = (voice_key or DEFAULT_PUBLIC_VOICE).strip()
+    if voice_key.lower() in OBSOLETE_PUBLIC_VOICE_KEYS:
+        raise ValueError("该预设音色已下架，请重新选择音色")
+    public_keys = set(PUBLIC_VOICE_KEYS)
     public_key = voice_key.lower()
+    if voice_key in public_keys:
+        public_key = voice_key
     with closing(adb()) as c:
         r = c.execute("""SELECT provider_voice FROM audio_voices
             WHERE scope='public' AND username='' AND voice_key=?""",
             (voice_key,)).fetchone()
-    if r:
+    if r and voice_key in public_keys:
         return r["provider_voice"]
     if public_key in public_keys:
         ensure_audio_voice(username, public_key)
-        return VOICE_MAP.get(public_key, VOICE_MAP["dapeng"])
+        return public_key
     if voice_key == "personal":
         ensure_audio_voice(username, voice_key)
-        return VOICE_MAP.get("personal", VOICE_MAP["dapeng"])
+        return VOICE_MAP.get("personal", "alloy")
     with closing(adb()) as c:
         r = c.execute("""SELECT provider_voice FROM audio_voices
             WHERE scope='personal' AND username=? AND voice_key=?""",
@@ -813,8 +867,8 @@ def record_audio_asset(job_id, username, result):
     if not result or result.get("type") != "audio":
         return
     now = int(time.time())
-    raw_voice_key = (result.get("voice") or "dapeng").strip()
-    voice_key = raw_voice_key.lower() if raw_voice_key.lower() in {"dapeng", "zelong", "paul"} else raw_voice_key
+    raw_voice_key = (result.get("voice") or DEFAULT_PUBLIC_VOICE).strip()
+    voice_key = raw_voice_key
     voice_id = ensure_audio_voice(username, voice_key)
     with closing(adb()) as c:
         c.execute("""INSERT OR REPLACE INTO audio_assets
@@ -839,11 +893,14 @@ def backfill_audio_assets():
         pass
 
 def list_audio_voices(username):
+    public_keys = list(PUBLIC_VOICE_KEYS)
+    placeholders = ",".join("?" for _ in public_keys)
     with closing(adb()) as c:
         rows = c.execute("""SELECT id, scope, username, voice_key, display_name, provider_voice, preview_file, preview_url, slot_id, created_at, updated_at
             FROM audio_voices
-            WHERE scope='public' OR (scope='personal' AND username=?)
-            ORDER BY CASE scope WHEN 'public' THEN 0 ELSE 1 END, id""", (username,)).fetchall()
+            WHERE (scope='public' AND username='' AND voice_key IN (%s)) OR (scope='personal' AND username=?)
+            ORDER BY CASE scope WHEN 'public' THEN 0 ELSE 1 END, id""" % placeholders,
+            tuple(public_keys) + (username,)).fetchall()
     return [dict(r) for r in rows]
 
 def rename_audio_voice(username, slot_id, display_name):
@@ -871,8 +928,18 @@ def rename_audio_voice(username, slot_id, display_name):
         c.commit()
     return {"slot_id": slot_id, "display_name": name, "updated_at": now}
 
+def parse_limit(value, default=120, minv=1, maxv=120):
+    raw = str(value if value is not None else default).strip()
+    try:
+        limit = int(raw)
+    except Exception:
+        raise ValueError("limit 必须是 1-120 的整数")
+    if limit < minv or limit > maxv:
+        raise ValueError("limit 必须是 1-120 的整数")
+    return limit
+
 def list_audio_assets(username, limit=120):
-    limit = max(1, min(120, int(limit or 120)))
+    limit = parse_limit(limit)
     with closing(adb()) as c:
         rows = c.execute("""SELECT a.id, a.job_id, a.username, a.voice_id, a.voice_key, a.file, a.url, a.text,
                    a.speed, a.pitch, a.volume, a.created_at, v.display_name AS voice_name, v.preview_url
@@ -880,7 +947,17 @@ def list_audio_assets(username, limit=120):
             LEFT JOIN audio_voices v ON v.id = a.voice_id
             WHERE a.username=?
             ORDER BY a.id DESC LIMIT ?""", (username, limit)).fetchall()
-    return [dict(r) for r in rows]
+    items = []
+    for r in rows:
+        d = dict(r)
+        if d.get("voice_key") in OBSOLETE_PUBLIC_VOICE_KEYS and not d.get("voice_name"):
+            d["voice_name"] = "%s（已下架）" % {
+                "dapeng": "大鹏 IVC",
+                "zelong": "泽龙 IVC",
+                "paul": "Paul 男声",
+            }.get(d.get("voice_key"), "已下架音色")
+        items.append(d)
+    return items
 
 def record_video_asset(job_id, username, result):
     now = int(time.time())
@@ -969,13 +1046,19 @@ def validate_submit_payload(kind, body):
     prompt = (body.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("提示词不能为空")
+    if len(prompt) > 2000:
+        raise ValueError("提示词不能超过 2000 字")
     ratio = (body.get("ratio") or "1:1").strip()
     if ratio not in SIZES:
         raise ValueError("ratio 仅支持: " + ", ".join(SIZES))
+    provider = (body.get("provider") or "openai").strip().lower()
+    if provider not in {"openai", "zelong"}:
+        raise ValueError("provider 仅支持 openai/zelong")
     if body.get("mask") and not body.get("image"):
         raise ValueError("使用 mask 局部修改时必须同时传 image")
     body["prompt"] = prompt
     body["ratio"] = ratio
+    body["provider"] = provider
     _require_b64_image(body, "image")
     _require_b64_image(body, "mask")
     try:
@@ -985,7 +1068,53 @@ def validate_submit_payload(kind, body):
         raise ValueError("count 必须是数字")
     return body
 
-SIZES = {"1:1": "1024x1024", "9:16": "1024x1536", "16:9": "1536x1024", "3:4": "1024x1536"}
+def redact_payload_for_response(payload_text):
+    try:
+        payload = json.loads(payload_text or "{}")
+    except Exception:
+        return payload_text
+    for field in ("image", "mask", "audio", "audio_data", "image_data"):
+        if field in payload and payload[field]:
+            payload[field] = "[hidden]"
+    return json.dumps(payload, ensure_ascii=False)
+
+SIZES = {"1:1": "1024x1024", "9:16": "1024x1536", "16:9": "1536x1024", "3:4": "900x1200"}
+
+def _parse_image_size(size):
+    try:
+        w, h = (int(x) for x in str(size).lower().split("x", 1))
+        if w > 0 and h > 0:
+            return w, h
+    except Exception:
+        pass
+    return None
+
+def _normalize_image_bytes(raw, size):
+    target = _parse_image_size(size)
+    if not target or Image is None:
+        return raw, None
+    tw, th = target
+    with Image.open(io.BytesIO(raw)) as im:
+        im.load()
+        mode = "RGBA" if im.mode in ("RGBA", "LA") else "RGB"
+        im = im.convert(mode)
+        sw, sh = im.size
+        src_ratio = sw / sh
+        dst_ratio = tw / th
+        if abs(src_ratio - dst_ratio) > 0.001:
+            if src_ratio > dst_ratio:
+                nw = int(sh * dst_ratio)
+                left = max(0, (sw - nw) // 2)
+                im = im.crop((left, 0, left + nw, sh))
+            else:
+                nh = int(sw / dst_ratio)
+                top = max(0, (sh - nh) // 2)
+                im = im.crop((0, top, sw, top + nh))
+        resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.BICUBIC)
+        im = im.resize((tw, th), resample)
+        out = io.BytesIO()
+        im.save(out, format="PNG")
+        return out.getvalue(), {"width": tw, "height": th}
 
 def _multipart(fields, files):
     """手搓 multipart/form-data；files=[(name, filename, bytes)]"""
@@ -1074,6 +1203,93 @@ def gen_image(payload):
             "file": files_out[0], "url": urls[0], "files": files_out, "urls": urls, "ratio": ratio, "prompt": prompt}
 
 # ============ 文案能力：LLM（chat completions，走同一代理） ============
+def gen_image(payload):
+    prompt = (payload.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("提示词不能为空")
+    if len(prompt) > 2000:
+        raise ValueError("提示词不能超过 2000 字")
+    ratio = payload.get("ratio") or "1:1"
+    size = SIZES.get(ratio, "1024x1024")
+    img = payload.get("image")
+    mask = payload.get("mask")
+    quality = "high" if (payload.get("quality") or "hd") == "hd" else "medium"
+    requested_provider = (payload.get("provider") or "openai").strip().lower()
+
+    def provider_config(provider):
+        if provider == "zelong":
+            if not ZELONG_KEY:
+                raise ValueError("泽龙Ai(中转站)未配置 key")
+            return ZELONG_BASE, ZELONG_KEY, False, 2
+        if provider == "openai":
+            return OPENAI_BASE, OPENAI_KEY, True, 4
+        raise ValueError("provider 仅支持 openai/zelong")
+
+    def call_provider(provider):
+        base, key, proxy, cap = provider_config(provider)
+        count = 1 if mask else max(1, min(cap, int(payload.get("count") or 1)))
+        if img:
+            upload_files = [("image", "in.png", base64.b64decode(img))]
+            if mask:
+                upload_files.append(("mask", "mask.png", base64.b64decode(mask)))
+            body, ct = _multipart(
+                {"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": quality, "n": str(count)},
+                upload_files,
+            )
+            data = _post("/v1/images/edits", body, ct, base=base, key=key, proxy=proxy)
+            mode = "inpaint" if mask else "img2img"
+        else:
+            body = json.dumps(
+                {"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": quality, "n": count}
+            ).encode()
+            data = _post("/v1/images/generations", body, "application/json", base=base, key=key, proxy=proxy)
+            mode = "text2img"
+        return data, mode, proxy
+
+    provider = requested_provider
+    fallback_from = None
+    try:
+        d, mode, proxy = call_provider(provider)
+    except Exception as e:
+        if provider != "openai":
+            raise
+        fallback_from = "openai"
+        provider = "zelong"
+        try:
+            d, mode, proxy = call_provider(provider)
+        except Exception:
+            raise RuntimeError("上游生成服务连接中断，请稍后重试") from e
+
+    files_out, urls, dimensions = [], [], []
+    for i, item in enumerate(d.get("data") or []):
+        fn = "img_%d_%d.png" % (int(time.time() * 1000), i)
+        if item.get("b64_json"):
+            raw = base64.b64decode(item["b64_json"])
+        elif item.get("url"):
+            opener = urllib.request.urlopen if proxy else _NOPROXY.open
+            with opener(item["url"], timeout=120) as rr:
+                raw = rr.read()
+        else:
+            continue
+        raw, dim = _normalize_image_bytes(raw, size)
+        (OUT_DIR / fn).write_bytes(raw)
+        files_out.append(fn)
+        urls.append("/api/gen/file/" + fn)
+        if dim:
+            dimensions.append(dim)
+    if not files_out:
+        raise ValueError("出图返回为空")
+    result = {"type": "image", "mode": mode, "provider": provider, "count": len(files_out),
+              "file": files_out[0], "url": urls[0], "files": files_out, "urls": urls,
+              "ratio": ratio, "size": size, "prompt": prompt}
+    if dimensions:
+        result["width"] = dimensions[0]["width"]
+        result["height"] = dimensions[0]["height"]
+        result["dimensions"] = dimensions
+    if fallback_from:
+        result["fallback_from"] = fallback_from
+    return result
+
 def _chat(sysmsg, usermsg, temp):
     body = json.dumps({"model": COPY_MODEL,
                        "messages": [{"role": "system", "content": sysmsg}, {"role": "user", "content": usermsg}],
@@ -1249,16 +1465,11 @@ VOICE_MAP = {
 }
 SPEED_MAP = {"slow": 0.88, "normal": 1.0, "fast": 1.12, "偏慢": 0.88, "正常": 1.0, "偏快": 1.12}
 
-PUBLIC_VOICE_PREVIEW_ENV = {
-    "dapeng": "VOICE_DAPENG_PREVIEW_URL",
-    "zelong": "VOICE_ZELONG_PREVIEW_URL",
-    "paul": "VOICE_PAUL_PREVIEW_URL",
-}
+PUBLIC_VOICE_KEYS = ("S_d21F8OR62", "S_l8wE8OR62", "S_pa0E8OR62", "S_xaUB8OR62")
+DEFAULT_PUBLIC_VOICE = PUBLIC_VOICE_KEYS[0]
+OBSOLETE_PUBLIC_VOICE_KEYS = {"dapeng", "zelong", "paul"}
 
 PUBLIC_VOICE_LABELS = {
-    "dapeng": "大鹏 IVC（清晰男声·短视频口播）",
-    "zelong": "泽龙 IVC（沉稳男声·商务旁白）",
-    "paul": "Paul（英文男声·产品解说）",
     "S_d21F8OR62": "温柔女声（情感种草）",
     "S_l8wE8OR62": "活力女声（广告推荐）",
     "S_pa0E8OR62": "沉稳男声（知识口播）",
@@ -1270,22 +1481,14 @@ def _public_preview_file(voice_key):
     return rel.strip() if rel else None
 
 def _public_preview_url(voice_key):
-    url = os.environ.get(PUBLIC_VOICE_PREVIEW_ENV.get(voice_key, ""))
+    url = os.environ.get("VOICE_%s_PREVIEW_URL" % voice_key.upper())
     if url:
         return url.strip()
     rel = _public_preview_file(voice_key)
     return _file_url(rel) if rel else None
 
 def public_audio_voice_defs():
-    items = [
-        ("dapeng", VOICE_MAP.get("dapeng", "alloy")),
-        ("zelong", VOICE_MAP.get("zelong", "onyx")),
-        ("paul", VOICE_MAP.get("paul", "echo")),
-        ("S_d21F8OR62", "S_d21F8OR62"),
-        ("S_l8wE8OR62", "S_l8wE8OR62"),
-        ("S_pa0E8OR62", "S_pa0E8OR62"),
-        ("S_xaUB8OR62", "S_xaUB8OR62"),
-    ]
+    items = [(key, key) for key in PUBLIC_VOICE_KEYS]
     return [
         ("public", "", key, PUBLIC_VOICE_LABELS.get(key, key), provider, _public_preview_file(key), _public_preview_url(key))
         for key, provider in items
@@ -1298,8 +1501,8 @@ def gen_audio(payload):
     if len(text) > 1200:
         raise ValueError("配音文案过长，请控制在 1200 字以内")
     username = (payload.get("_username") or "").strip()
-    raw_voice_key = (payload.get("voice") or "dapeng").strip()
-    voice_key = raw_voice_key.lower() if raw_voice_key.lower() in {"dapeng", "zelong", "paul"} else raw_voice_key
+    raw_voice_key = (payload.get("voice") or DEFAULT_PUBLIC_VOICE).strip()
+    voice_key = raw_voice_key
     voice = resolve_audio_provider_voice(username, voice_key)
     raw_speed = payload.get("speed")
     if isinstance(raw_speed, (int, float)):
@@ -1315,7 +1518,7 @@ def gen_audio(payload):
     volume = knob("volume", -50, 100, 0)
     if str(voice).startswith("S_"):
         speech_rate = int(round((speed - 1.0) * 100))
-        preview = generate_doubao_preview(voice, text, speech_rate=speech_rate, loudness_rate=volume, pitch_rate=pitch)
+        preview = generate_doubao_preview(voice, text, speech_rate=speech_rate, loudness_rate=volume, pitch_rate=pitch, purpose="asset")
         fn = preview.get("file")
         return {"type": "audio", "file": fn, "url": preview.get("url"), "voice": voice_key,
                 "speed": speed, "pitch": pitch, "volume": volume, "text": text, "prompt": text}
@@ -1599,11 +1802,46 @@ class H(BaseHTTPRequestHandler):
         try:
             n = int(self.headers.get("Content-Length") or 0)
             return json.loads(self.rfile.read(n) or b"{}")
-        except Exception: return {}
+        except Exception as e:
+            raise ValueError("请求体不是合法 JSON") from e
+    def _send_generated_file(self, p, include_body=True):
+        rel = p[len("/api/gen/file/"):]
+        fp = _resolve_out_file(rel)
+        if not fp: return self._send(404, {"detail": "no file"})
+        fn = fp.name
+        ctype = mimetypes.guess_type(str(fp))[0] or "application/octet-stream"
+        self.send_response(200); self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(fp.stat().st_size))
+        if fn.startswith("voice_preview_"):
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+        else:
+            self.send_header("Cache-Control", "public, max-age=86400")
+        self.end_headers()
+        if include_body:
+            with fp.open("rb") as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk: break
+                    self.wfile.write(chunk)
+        return
+
+    def do_HEAD(self):
+        p = self.path.split("?")[0]
+        if p.startswith("/api/gen/file/"):
+            return self._send_generated_file(p, include_body=False)
+        self.send_response(404); self.end_headers()
 
     def do_POST(self):
         p = self.path.split("?")[0]
         if p == "/api/gen/audio/voices":
+            return self._send(405, {"detail": "Method Not Allowed"}, {"Allow": "GET"})
+        if p == "/api/gen/audio/assets":
+            return self._send(405, {"detail": "Method Not Allowed"}, {"Allow": "GET"})
+        if p == "/api/gen/audio/slots":
+            return self._send(405, {"detail": "Method Not Allowed"}, {"Allow": "GET"})
+        if p == "/api/gen/audio/clone-status":
             return self._send(405, {"detail": "Method Not Allowed"}, {"Allow": "GET"})
         if p == "/api/gen/audio/redeem-slot":
             user = verify(self._token())
@@ -1625,14 +1863,19 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/audio/clone-vip":
             user = verify(self._token())
-            if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
-            body = self._json_body()
             try:
+                if not user: return self._send(401, {"detail": "未登录或 token 无效"})
+                body = self._json_body()
+                validate_clone_vip_request(user["username"], body)
                 voice = mark_clone_training(user["username"], body.get("slot_id"), body.get("name"))
                 threading.Thread(target=clone_vip_voice_background, args=(user["username"], body), daemon=True).start()
                 return self._send(200, {"ok": True, "voice": voice})
-            except Exception as e:
+            except LookupError as e:
+                return self._send(404, {"detail": str(e)[:220]})
+            except ValueError as e:
                 return self._send(400, {"detail": str(e)[:220]})
+            except Exception as e:
+                return self._send(500, {"detail": str(e)[:220]})
         if p.startswith("/api/gen/") and p[9:] in HANDLERS:
             kind = p[9:]
             user = verify(self._token())
@@ -1659,6 +1902,8 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path.split("?")[0]
+        if p == "/api/gen/audio/clone-vip":
+            return self._send(405, {"detail": "Method Not Allowed"}, {"Allow": "POST"})
         if p.startswith("/api/gen/job/"):
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
@@ -1670,6 +1915,7 @@ class H(BaseHTTPRequestHandler):
             if r["username"] != user.get("username") and user.get("role") != "admin":
                 return self._send(404, {"detail": "任务不存在"})
             d = dict(r)
+            d["payload"] = redact_payload_for_response(d.get("payload"))
             if d.get("result"):
                 try: d["result"] = json.loads(d["result"])
                 except Exception: pass
@@ -1708,21 +1954,7 @@ class H(BaseHTTPRequestHandler):
                 up.close()
             return
         if p.startswith("/api/gen/file/"):
-            rel = p[len("/api/gen/file/"):]
-            fp = _resolve_out_file(rel)
-            if not fp: return self._send(404, {"detail": "no file"})
-            fn = fp.name
-            data = fp.read_bytes()
-            ctype = mimetypes.guess_type(str(fp))[0] or "application/octet-stream"
-            self.send_response(200); self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(data)))
-            if fn.startswith("voice_preview_"):
-                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-                self.send_header("Pragma", "no-cache")
-                self.send_header("Expires", "0")
-            else:
-                self.send_header("Cache-Control", "public, max-age=86400")
-            self.end_headers(); self.wfile.write(data); return
+            return self._send_generated_file(p)
         if p == "/api/gen/audio/voices":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或 token 无效"})
@@ -1738,11 +1970,22 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, body, {"Cache-Control": "private, max-age=60", "ETag": etag})
         if p == "/api/gen/audio/assets":
             user = verify(self._token())
-            if not user: return self._send(401, {"detail": "???"})
+            if not user: return self._send(401, {"detail": "未登录或 token 无效"})
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            try: lim = int((q.get("limit") or ["120"])[0])
-            except Exception: lim = 120
-            return self._send(200, {"items": list_audio_assets(user["username"], lim)})
+            raw_limit = (q.get("limit") or ["120"])[0]
+            try:
+                body = {"items": list_audio_assets(user["username"], raw_limit)}
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+            etag = '"' + hashlib.sha256(raw).hexdigest()[:16] + '"'
+            if self.headers.get("If-None-Match") == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.send_header("Cache-Control", "private, max-age=30")
+                self.end_headers()
+                return
+            return self._send(200, body, {"Cache-Control": "private, max-age=30", "ETag": etag})
         if p == "/api/gen/video/assets":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
@@ -1752,16 +1995,32 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": list_video_assets(user["username"], lim)})
         if p == "/api/gen/audio/slots":
             user = verify(self._token())
-            if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
-            return self._send(200, {"items": list_user_audio_voice_slots(user["username"])})
+            if not user: return self._send(401, {"detail": "未登录或 token 无效"})
+            body = audio_slots_response(user["username"])
+            raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+            etag = '"' + hashlib.sha256(raw).hexdigest()[:16] + '"'
+            if self.headers.get("If-None-Match") == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.send_header("Cache-Control", "private, max-age=30")
+                self.end_headers()
+                return
+            return self._send(200, body, {"Cache-Control": "private, max-age=30", "ETag": etag})
         if p == "/api/gen/audio/clone-status":
             user = verify(self._token())
-            if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
+            if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55\u6216 token \u65e0\u6548"})
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            slot_id = (q.get("slot_id") or [""])[0].strip()
+            if not slot_id:
+                return self._send(400, {"detail": "\u7f3a\u5c11\u97f3\u8272\u69fd\u4f4d ID"}, {"Cache-Control": "no-store"})
             try:
-                return self._send(200, {"ok": True, "result": check_clone_status(user["username"], (q.get("slot_id") or [""])[0])})
+                return self._send(200, {"ok": True, "result": check_clone_status(user["username"], slot_id)}, {"Cache-Control": "no-store"})
+            except ValueError as e:
+                detail = str(e)[:220]
+                code = 404 if "\u97f3\u8272\u69fd\u4f4d\u4e0d\u5b58\u5728" in detail else 400
+                return self._send(code, {"detail": detail}, {"Cache-Control": "no-store"})
             except Exception as e:
-                return self._send(400, {"detail": str(e)[:220]})
+                return self._send(500, {"detail": str(e)[:220]}, {"Cache-Control": "no-store"})
         if p == "/api/gen/history":   # 本人生成历史（资产/最近作品都读这）
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})

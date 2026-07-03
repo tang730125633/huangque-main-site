@@ -161,7 +161,7 @@
   }
 
   // ===== 登录弹窗（全站共用，替代跳 /login 页）=====
-  var _hqPhone=true;
+  var _hqPhone=true, _hqMode='login';
   function buildLoginModal(){
     if(document.getElementById('hqLoginOv')) return;
     var st=document.createElement('style');
@@ -188,13 +188,17 @@
       '<div class="hqlm" role="dialog" aria-modal="true">'+
       '<button class="hqlx" id="hqLx" aria-label="关闭"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>'+
       '<div style="display:flex;align-items:center;gap:9px;margin-bottom:16px;"><span style="width:8px;height:8px;border-radius:50%;background:#e7b24c;box-shadow:0 0 10px #e7b24c;"></span><span style="font-size:14px;font-weight:600;">黄雀 AI</span></div>'+
-      '<div style="font-size:20px;font-weight:600;">欢迎回来</div>'+
-      '<div style="font-size:13px;color:#9a9ba2;margin-top:8px;">登录后开启智能获客与内容创作</div>'+
-      '<div class="hqlt"><div class="on" id="hqTP">手机号登录</div><div id="hqTW">密码登录</div></div>'+
+      '<div id="hqTitle" style="font-size:20px;font-weight:600;">欢迎回来</div>'+
+      '<div id="hqSubtitle" style="font-size:13px;color:#9a9ba2;margin-top:8px;">登录后开启智能获客与内容创作</div>'+
+      '<div class="hqlt" id="hqTabs"><div class="on" id="hqTP">手机号登录</div><div id="hqTW">密码登录</div></div>'+
       '<div style="margin-top:20px;display:flex;flex-direction:column;gap:12px;">'+
         '<div class="hqlf"><span style="'+SI+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span><input id="hqU" placeholder="请输入手机号 / 账号"></div>'+
         '<div id="hqRP" style="display:flex;gap:10px;"><div class="hqlf" style="flex:1;"><span style="'+SI+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 11v1a10 10 0 1 1-5.9-9.1"/><path d="M22 4L12 14l-3-3"/></svg></span><input id="hqC" placeholder="请输入验证码"></div><button type="button" id="hqGc" style="height:48px;padding:0 14px;white-space:nowrap;font-size:13px;color:#e7b24c;background:rgba(231,178,76,.08);border:1px solid rgba(231,178,76,.26);border-radius:13px;cursor:pointer;font-family:inherit;">获取验证码</button></div>'+
         '<div id="hqRW" class="hqlf" style="display:none;"><span style="'+SI+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><input id="hqP" type="password" placeholder="请输入密码"></div>'+
+        '<div id="hqRegFields" style="display:none;flex-direction:column;gap:12px;">'+
+          '<div class="hqlf"><span style="'+SI+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><input id="hqP2" type="password" placeholder="请再次输入密码"></div>'+
+          '<div class="hqlf"><span style="'+SI+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/></svg></span><input id="hqD" maxlength="32" placeholder="昵称（可选，最多32字）"></div>'+
+        '</div>'+
       '</div>'+
       '<button type="button" class="hqlb" id="hqSub">登 录</button>'+
       '<div id="hqMsg" style="text-align:center;font-size:12.5px;margin-top:11px;min-height:15px;color:#f4708a;"></div>'+
@@ -204,17 +208,54 @@
     document.body.appendChild(ov);
     ov.addEventListener('click',function(e){ if(e.target===ov) closeLogin(); });
     document.getElementById('hqLx').onclick=closeLogin;
-    var tP=document.getElementById('hqTP'),tW=document.getElementById('hqTW'),rP=document.getElementById('hqRP'),rW=document.getElementById('hqRW');
-    tP.onclick=function(){_hqPhone=true;tP.classList.add('on');tW.classList.remove('on');rP.style.display='flex';rW.style.display='none';};
-    tW.onclick=function(){_hqPhone=false;tW.classList.add('on');tP.classList.remove('on');rP.style.display='none';rW.style.display='flex';};
+    var tP=document.getElementById('hqTP'),tW=document.getElementById('hqTW');
+    tP.onclick=function(){_hqPhone=true;setLoginMode('login');};
+    tW.onclick=function(){_hqPhone=false;setLoginMode('login');};
     document.getElementById('hqGc').onclick=function(){ hqMsg('验证码登录即将上线，请用密码登录','err'); };
-    document.getElementById('hqSub').onclick=hqDoLogin;
-    document.getElementById('hqTeam').onclick=hqDoLogin;
-    ['hqU','hqC','hqP'].forEach(function(id){var el=document.getElementById(id);if(el)el.addEventListener('keydown',function(e){if(e.key==='Enter')hqDoLogin();});});
+    document.getElementById('hqSub').onclick=function(){ if(_hqMode==='register') hqDoRegister(); else hqDoLogin(); };
+    document.getElementById('hqTeam').onclick=function(){ if(_hqMode==='register') setLoginMode('login'); else hqDoLogin(); };
+    ['hqU','hqC','hqP','hqP2','hqD'].forEach(function(id){var el=document.getElementById(id);if(el)el.addEventListener('keydown',function(e){if(e.key==='Enter'){ if(_hqMode==='register') hqDoRegister(); else hqDoLogin(); }});});
+  }
+  function setLoginMode(mode){
+    buildLoginModal(); _hqMode=mode==='register'?'register':'login';
+    var title=document.getElementById('hqTitle'), sub=document.getElementById('hqSubtitle'), tabs=document.getElementById('hqTabs');
+    var tP=document.getElementById('hqTP'), tW=document.getElementById('hqTW'), rP=document.getElementById('hqRP'), rW=document.getElementById('hqRW');
+    var reg=document.getElementById('hqRegFields'), btn=document.getElementById('hqSub'), team=document.getElementById('hqTeam'), u=document.getElementById('hqU'), p=document.getElementById('hqP');
+    hqMsg('');
+    if(_hqMode==='register'){
+      if(title) title.textContent='注册账号';
+      if(sub) sub.textContent='创建账号后自动登录黄雀 AI 工作台';
+      if(tabs) tabs.style.display='none';
+      if(rP) rP.style.display='none';
+      if(rW) rW.style.display='flex';
+      if(reg) reg.style.display='flex';
+      if(btn) btn.textContent='注 册';
+      if(team) team.textContent='已有账号，返回登录';
+      if(u) u.placeholder='请输入账号';
+      if(p) p.placeholder='请输入密码（至少6位）';
+      return;
+    }
+    if(title) title.textContent='欢迎回来';
+    if(sub) sub.textContent='登录后开启智能获客与内容创作';
+    if(tabs) tabs.style.display='flex';
+    if(reg) reg.style.display='none';
+    if(btn) btn.textContent='登 录';
+    if(team) team.textContent='团队口令登录 →';
+    if(tP&&tW){ tP.classList.toggle('on',_hqPhone); tW.classList.toggle('on',!_hqPhone); }
+    if(rP) rP.style.display=_hqPhone?'flex':'none';
+    if(rW) rW.style.display=_hqPhone?'none':'flex';
+    if(u) u.placeholder=_hqPhone?'请输入手机号 / 账号':'请输入账号';
+    if(p) p.placeholder='请输入密码';
   }
   function hqMsg(t,k){ var m=document.getElementById('hqMsg'); if(m){ m.textContent=t||''; m.style.color=k==='ok'?'#2bd576':'#f4708a'; } }
-  function openLogin(){ buildLoginModal(); var ov=document.getElementById('hqLoginOv'); if(ov){ ov.classList.add('on'); var u=document.getElementById('hqU'); if(u) setTimeout(function(){try{u.focus();}catch(e){}},60); } }
+  function openLogin(mode){ setLoginMode(mode); var ov=document.getElementById('hqLoginOv'); if(ov){ ov.classList.add('on'); var u=document.getElementById('hqU'); if(u) setTimeout(function(){try{u.focus();}catch(e){}},60); } }
+  function openRegister(){ openLogin('register'); }
   function closeLogin(){ var ov=document.getElementById('hqLoginOv'); if(ov) ov.classList.remove('on'); }
+  function authSuccess(res,msg){
+    try{ localStorage.removeItem('hq_role'); localStorage.setItem('hq_token',res.d.token); if(res.d.user) localStorage.setItem('hq_user',JSON.stringify(res.d.user)); }catch(e){}
+    hqMsg(msg||'操作成功','ok');
+    setTimeout(function(){ closeLogin(); refreshPoints(); renderUser(); },450);
+  }
   function hqDoLogin(){
     var username=(document.getElementById('hqU').value||'').trim();
     var secret=_hqPhone?(document.getElementById('hqC').value||''):(document.getElementById('hqP').value||'');
@@ -225,12 +266,34 @@
     .then(function(res){
       b.disabled=false; b.style.opacity='1';
       if(res.ok&&res.d&&res.d.token){
-        try{ localStorage.removeItem('hq_role'); localStorage.setItem('hq_token',res.d.token); if(res.d.user) localStorage.setItem('hq_user',JSON.stringify(res.d.user)); }catch(e){}
-        var m=document.getElementById('hqMsg'); if(m){ m.style.color='#2bd576'; m.textContent='登录成功'; }
-        setTimeout(function(){ closeLogin(); refreshPoints(); renderUser(); },450);
+        authSuccess(res,'登录成功');
       } else { hqMsg((res.d&&res.d.detail)||'账号或密码错误','err'); }
     })
     .catch(function(err){ b.disabled=false; b.style.opacity='1'; hqMsg(err&&err.message==='__nobackend__'?'登录服务即将上线（账号体系开发中）':'网络错误，请重试','err'); });
+  }
+  function hqDoRegister(){
+    var username=(document.getElementById('hqU').value||'').trim();
+    var password=(document.getElementById('hqP').value||'');
+    var password2=(document.getElementById('hqP2').value||'');
+    var displayName=(document.getElementById('hqD').value||'').trim();
+    if(!username||!password){ hqMsg('请填写账号和密码','err'); return; }
+    if(password.length<6){ hqMsg('密码至少需要 6 位','err'); return; }
+    if(password!==password2){ hqMsg('两次输入的密码不一致','err'); return; }
+    if(displayName.length>32){ hqMsg('昵称最多 32 个字符','err'); return; }
+    var payload={username:username,password:password};
+    if(displayName) payload.display_name=displayName;
+    var b=document.getElementById('hqSub'); b.disabled=true; b.style.opacity='.7'; hqMsg('注册中…');
+    fetch('/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    .then(function(r){ if(r.status===404) throw new Error('__nobackend__'); return r.json().then(function(d){return {ok:r.ok,status:r.status,d:d};}); })
+    .then(function(res){
+      b.disabled=false; b.style.opacity='1';
+      if(res.ok&&res.d&&res.d.token){ authSuccess(res,'注册成功'); return; }
+      var detail=(res.d&&res.d.detail)||'注册失败，请重试';
+      if(res.status===409) detail='账号已存在，请换一个账号';
+      if(res.status===429) detail='注册太频繁，请稍后再试';
+      hqMsg(detail,'err');
+    })
+    .catch(function(err){ b.disabled=false; b.style.opacity='1'; hqMsg(err&&err.message==='__nobackend__'?'注册服务暂不可用':'网络错误，请重试','err'); });
   }
   document.addEventListener('keydown',function(e){ if(e.key==='Escape') closeLogin(); });
 
@@ -261,11 +324,13 @@
     }
     [card,auth].forEach(function(el){ if(!el) return; el.onclick=function(e){
       var t=e.target.closest?e.target.closest('[data-login],[data-register],[data-logout]'):null; if(!t) return;
-      if(t.getAttribute('data-logout')) _logout(); else if(window.HQ&&HQ.login) HQ.login();
+      if(t.getAttribute('data-logout')) _logout();
+      else if(t.getAttribute('data-register')&&window.HQ&&HQ.register) HQ.register();
+      else if(window.HQ&&HQ.login) HQ.login();
     };});
   }
 
-  window.HQ={ icon:icon, nav:NAV, isAdmin:isAdmin, refreshPoints:refreshPoints, login:openLogin, closeLogin:closeLogin, renderUser:renderUser };
+  window.HQ={ icon:icon, nav:NAV, isAdmin:isAdmin, refreshPoints:refreshPoints, login:openLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser };
   function _hqInit(){ build(); buildLoginModal(); }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_hqInit); else _hqInit();
 })();

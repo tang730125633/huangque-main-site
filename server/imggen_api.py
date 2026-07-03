@@ -1,22 +1,27 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-黄雀 · 作图后端(nano banana / Gemini 图像)—— 独立服务，不进 content_api.py。
-背景：content_api.py 被多人共改反复覆盖。把 nano banana 作图做成独立端口(8101)+独立 systemd 单元，
-nginx 用 location = /api/gen/banana 精确路由过来；同事怎么改/重启 content_api 都碰不到这里。
+榛勯泙 路 浣滃浘鍚庣(nano banana / Gemini 鍥惧儚)鈥斺€?鐙珛鏈嶅姟锛屼笉杩?content_api.py銆?
+鑳屾櫙锛歝ontent_api.py 琚浜哄叡鏀瑰弽澶嶈鐩栥€傛妸 nano banana 浣滃浘鍋氭垚鐙珛绔彛(8101)+鐙珛 systemd 鍗曞厓锛?
+nginx 鐢?location = /api/gen/banana 绮剧‘璺敱杩囨潵锛涘悓浜嬫€庝箞鏀?閲嶅惎 content_api 閮界涓嶅埌杩欓噷銆?
 
-模型(nano banana = Gemini 原生作图能力的总称，三个模型)：
-  nb2 → gemini-3.1-flash-image (Nano Banana 2，主力，快+便宜+中文好)
-  pro → gemini-3-pro-image     (Nano Banana Pro，精品，4K/Thinking/最强中文)
-共用基础设施：content_jobs.db(轮询/历史走 content_api 8096)、users.db 点数、auth(8095)、
-content_out/ 出图目录(文件由 content_api 的 /api/gen/file 服务)。
+妯″瀷(nano banana = Gemini 鍘熺敓浣滃浘鑳藉姏鐨勬€荤О锛屼笁涓ā鍨?锛?
+  nb2 鈫?gemini-3.1-flash-image (Nano Banana 2锛屼富鍔涳紝蹇?渚垮疁+涓枃濂?
+  pro 鈫?gemini-3-pro-image     (Nano Banana Pro锛岀簿鍝侊紝4K/Thinking/鏈€寮轰腑鏂?
+鍏辩敤鍩虹璁炬柦锛歝ontent_jobs.db(杞/鍘嗗彶璧?content_api 8096)銆乽sers.db 鐐规暟銆乤uth(8095)銆?
+content_out/ 鍑哄浘鐩綍(鏂囦欢鐢?content_api 鐨?/api/gen/file 鏈嶅姟)銆?
 
-⚠️ 服务器在大陆，Google API 被墙 → 本服务**走环境代理**(content.env 里的 HTTPS_PROXY=mihomo)出墙，
-   与 TikHub(强制直连)相反。systemd 加载同一份 content.env。
+鈿狅笍 鏈嶅姟鍣ㄥ湪澶ч檰锛孏oogle API 琚 鈫?鏈湇鍔?*璧扮幆澧冧唬鐞?*(content.env 閲岀殑 HTTPS_PROXY=mihomo)鍑哄锛?
+   涓?TikHub(寮哄埗鐩磋繛)鐩稿弽銆俿ystemd 鍔犺浇鍚屼竴浠?content.env銆?
 """
-import os, json, time, base64, threading, sqlite3, pathlib, urllib.request, urllib.error
+import os, json, time, base64, threading, sqlite3, pathlib, urllib.request, urllib.error, io
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+try:
+    from PIL import Image
+except Exception:
+    Image = None
 
 PORT        = int(os.environ.get("IMGGEN_API_PORT", "8101"))
 AUTH_BASE   = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
@@ -28,13 +33,95 @@ GEMINI_KEY  = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_BASE = os.environ.get("GEMINI_BASE", "https://generativelanguage.googleapis.com").rstrip("/")
 
 MODELS = {"nb2": "gemini-3.1-flash-image", "pro": "gemini-3-pro-image"}
-# 质量基价(最终点数=基价×数量) + 清晰度→imageSize(按 model 分档，大写K)
+# 璐ㄩ噺鍩轰环(鏈€缁堢偣鏁?鍩轰环脳鏁伴噺) + 娓呮櫚搴︹啋imageSize(鎸?model 鍒嗘。锛屽ぇ鍐橩)
 BASE_COST   = {"nb2": {"std": 10, "hd": 14}, "pro": {"std": 18, "hd": 26}}
 IMAGE_SIZES = {"nb2": {"std": "1K", "hd": "2K"}, "pro": {"std": "2K", "hd": "4K"}}
 RATIOS = {"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"}
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
+def _clean_b64(value):
+    raw = (value or "").strip()
+    if raw.startswith("data:") and "," in raw:
+        raw = raw.split(",", 1)[1]
+    return "".join(raw.split())
+
+def _validate_b64_image(body, field):
+    raw = _clean_b64(body.get(field))
+    if not raw:
+        return
+    try:
+        decoded = base64.b64decode(raw, validate=True)
+    except Exception:
+        raise ValueError("%s 必须是合法 base64" % field)
+    if len(decoded) > MAX_IMAGE_BYTES:
+        raise ValueError("图片太大，请压缩到 10MB 以内后重试")
+    body[field] = raw
+
+def validate_banana_payload(body):
+    if not isinstance(body, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+    prompt = (body.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("提示词不能为空")
+    if len(prompt) > 2000:
+        raise ValueError("提示词不能超过 2000 字")
+    mkey = (body.get("model") or "nb2").strip().lower()
+    if mkey not in MODELS:
+        raise ValueError("model 仅支持 nb2/pro")
+    ratio = (body.get("ratio") or "1:1").strip()
+    if ratio not in RATIOS:
+        raise ValueError("ratio 仅支持: " + ", ".join(sorted(RATIOS)))
+    q = (body.get("quality") or "std").strip().lower()
+    if q not in {"std", "hd"}:
+        raise ValueError("quality 仅支持 std/hd")
+    try:
+        count = int(body.get("count") or 1)
+    except Exception:
+        raise ValueError("count 必须是 1 或 2")
+    if count not in {1, 2}:
+        raise ValueError("count 必须是 1 或 2")
+    _validate_b64_image(body, "image")
+    body["prompt"] = prompt
+    body["model"] = mkey
+    body["ratio"] = ratio
+    body["quality"] = q
+    body["count"] = count
+    return body
+
+def _parse_ratio(ratio):
+    try:
+        w, h = (int(x) for x in str(ratio).split(":", 1))
+        if w > 0 and h > 0:
+            return w / h
+    except Exception:
+        pass
+    return None
+
+def _normalize_image_ratio(raw, ratio):
+    target_ratio = _parse_ratio(ratio)
+    if not target_ratio or Image is None:
+        return raw, None
+    with Image.open(io.BytesIO(raw)) as im:
+        im.load()
+        mode = "RGBA" if im.mode in ("RGBA", "LA") else "RGB"
+        im = im.convert(mode)
+        sw, sh = im.size
+        src_ratio = sw / sh
+        if abs(src_ratio - target_ratio) > 0.001:
+            if src_ratio > target_ratio:
+                nw = max(1, int(sh * target_ratio))
+                left = max(0, (sw - nw) // 2)
+                im = im.crop((left, 0, left + nw, sh))
+            else:
+                nh = max(1, int(sw / target_ratio))
+                top = max(0, (sh - nh) // 2)
+                im = im.crop((0, top, sw, top + nh))
+        out = io.BytesIO()
+        im.save(out, format="PNG")
+        return out.getvalue(), {"width": im.size[0], "height": im.size[1]}
 
 
-# ============ 共享管道：任务库 / 点数 / 鉴权 ============
+# ============ 鍏变韩绠￠亾锛氫换鍔″簱 / 鐐规暟 / 閴存潈 ============
 def jdb():
     c = sqlite3.connect(JOB_DB, timeout=10); c.row_factory = sqlite3.Row; return c
 
@@ -63,29 +150,29 @@ def verify(token):
         return None
 
 
-# ============ 出图：nano banana / Gemini ============
+# ============ Nano Banana / Gemini image generation ============
 def _build_banana_body(prompt, ratio, image=None, image_size=None):
-    """Gemini generateContent 请求体：有 image=图生图(整图编辑)，无=文生图；image_size=清晰度(1K/2K/4K)。"""
+    """Build Gemini generateContent request body."""
     parts = []
     if image:
-        # ponytail: 前端三入口(上传/继续改/结果)均经 canvas 转 PNG，恒为 PNG
+        # Frontend sends uploaded/reference/result images as PNG base64.
         parts.append({"inlineData": {"mimeType": "image/png", "data": image}})
     parts.append({"text": prompt})
     img_cfg = {"aspectRatio": ratio}
     if image_size:
-        img_cfg["imageSize"] = image_size  # ⚠️ preview 模型可能忽略，部署后 live 验证
+        img_cfg["imageSize"] = image_size
     return {
         "contents": [{"parts": parts}],
         "generationConfig": {"responseModalities": ["IMAGE"], "imageConfig": img_cfg},
     }
 
-def _banana_one(model, body, idx):
-    """单次出图 → 写盘，返回文件名。"""
+def _banana_one(model, body, idx, ratio=None):
+    """Generate one image, save it, and return filename plus dimensions."""
     req = urllib.request.Request(
         GEMINI_BASE + "/v1beta/models/" + model + ":generateContent",
         data=body, headers={"Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY}, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=180) as r:  # 走环境代理(HTTPS_PROXY)出墙到 Google
+        with urllib.request.urlopen(req, timeout=180) as r:
             d = json.loads(r.read())
     except urllib.error.HTTPError as e:
         raise ValueError("Gemini %s: %s" % (e.code, e.read()[:160].decode("u8", "ignore")))
@@ -93,36 +180,39 @@ def _banana_one(model, body, idx):
     img = next((p.get("inlineData") for p in parts if p.get("inlineData")), None)
     if not img:
         raise ValueError("出图失败：" + str((d.get("error") or {}).get("message") or d)[:140])
+    raw = base64.b64decode(img["data"])
+    raw, dim = _normalize_image_ratio(raw, ratio)
     fn = "nb_%d_%d.png" % (int(time.time() * 1000), idx)
-    (OUT_DIR / fn).write_bytes(base64.b64decode(img["data"]))
-    return fn
+    (OUT_DIR / fn).write_bytes(raw)
+    return fn, dim
 
+# ============ worker锛堝け璐ラ€€鐐癸紱娓呴亾澶敱 content_api 缁熶竴璺戯級 ============
 def gen_banana(payload):
-    prompt = (payload.get("prompt") or "").strip()
-    if not prompt:
-        raise ValueError("提示词不能为空")
-    mkey = (payload.get("model") or "nb2").strip().lower()
-    if mkey not in MODELS:
-        mkey = "nb2"
+    payload = validate_banana_payload(payload)
+    prompt = payload["prompt"]
+    mkey = payload["model"]
     model = MODELS[mkey]
-    ratio = payload.get("ratio") or "1:1"
-    if ratio not in RATIOS:
-        ratio = "1:1"
-    image = payload.get("image")  # base64(无 data: 前缀) 参考图 → 图生图(整图编辑)
-    q = "hd" if (payload.get("quality") or "hd") == "hd" else "std"
+    ratio = payload["ratio"]
+    image = payload.get("image")
+    q = payload["quality"]
     image_size = IMAGE_SIZES[mkey][q]
-    count = max(1, min(2, int(payload.get("count") or 1)))  # nano banana 循环出图，上限2(防6分钟清道夫)
+    count = payload["count"]
     if not GEMINI_KEY:
         raise ValueError("GEMINI_API_KEY 未配置")
     body = json.dumps(_build_banana_body(prompt, ratio, image, image_size)).encode()
-    files = [_banana_one(model, body, i) for i in range(count)]
+    items = [_banana_one(model, body, i, ratio) for i in range(count)]
+    files = [fn for fn, _ in items]
+    dimensions = [dim for _, dim in items if dim]
     urls = ["/api/gen/file/" + f for f in files]
-    return {"type": "image", "mode": ("nanobanana_img2img_" if image else "nanobanana_") + mkey, "model": model,
-            "image_size": image_size, "count": count, "file": files[0], "url": urls[0], "files": files, "urls": urls,
-            "ratio": ratio, "prompt": prompt}
+    result = {"type": "image", "mode": ("nanobanana_img2img_" if image else "nanobanana_") + mkey, "model": model,
+            "image_size": image_size, "quality": q, "count": count, "file": files[0], "url": urls[0],
+            "files": files, "urls": urls, "ratio": ratio, "prompt": prompt}
+    if dimensions:
+        result["width"] = dimensions[0]["width"]
+        result["height"] = dimensions[0]["height"]
+        result["dimensions"] = dimensions
+    return result
 
-
-# ============ worker（失败退点；清道夫由 content_api 统一跑） ============
 def run_job(job_id):
     with closing(jdb()) as c:
         r = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -137,7 +227,7 @@ def run_job(job_id):
             c.execute("UPDATE jobs SET status='done', result=?, updated_at=? WHERE id=?",
                       (json.dumps(result, ensure_ascii=False), int(time.time()), job_id)); c.commit()
     except Exception as e:
-        add_points(r["username"], r["cost"])  # 失败退点
+        add_points(r["username"], r["cost"])  # 澶辫触閫€鐐?
         with closing(jdb()) as c:
             c.execute("UPDATE jobs SET status='error', error=?, updated_at=? WHERE id=?",
                       (str(e)[:300], int(time.time()), job_id)); c.commit()
@@ -166,11 +256,14 @@ class H(BaseHTTPRequestHandler):
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             body = self._json_body()
-            mk = (body.get("model") or "nb2").strip().lower()
-            if mk not in BASE_COST: mk = "nb2"
-            cq = "hd" if (body.get("quality") or "hd") == "hd" else "std"
-            cn = max(1, min(2, int(body.get("count") or 1)))
-            cost = BASE_COST[mk][cq] * cn  # 质量基价 × 数量
+            try:
+                body = validate_banana_payload(body)
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            mk = body["model"]
+            cq = body["quality"]
+            cn = body["count"]
+            cost = BASE_COST[mk][cq] * cn  # 璐ㄩ噺鍩轰环 脳 鏁伴噺
             if get_points(user["username"]) < cost:
                 return self._send(402, {"detail": "点数不足", "need": cost})
             add_points(user["username"], -cost)
@@ -190,14 +283,14 @@ class H(BaseHTTPRequestHandler):
 
 
 def _selftest():
-    b = _build_banana_body("画只猫", "1:1", None)
-    assert b["contents"][0]["parts"] == [{"text": "画只猫"}], b
-    b2 = _build_banana_body("把背景换成红色", "9:16", "QUJD")
+    b = _build_banana_body("draw a cat", "1:1", None)
+    assert b["contents"][0]["parts"] == [{"text": "draw a cat"}], b
+    b2 = _build_banana_body("change background to red", "9:16", "QUJD")
     p = b2["contents"][0]["parts"]
     assert p[0]["inlineData"] == {"mimeType": "image/png", "data": "QUJD"}, b2
-    assert p[1] == {"text": "把背景换成红色"}, b2
+    assert p[1] == {"text": "change background to red"}, b2
     assert b2["generationConfig"]["imageConfig"]["aspectRatio"] == "9:16", b2
-    assert "imageSize" not in b2["generationConfig"]["imageConfig"], b2  # 没传 size 时不带
+    assert "imageSize" not in b2["generationConfig"]["imageConfig"], b2
     b3 = _build_banana_body("x", "1:1", None, "4K")
     assert b3["generationConfig"]["imageConfig"]["imageSize"] == "4K", b3
     assert IMAGE_SIZES["pro"]["hd"] == "4K" and IMAGE_SIZES["nb2"]["std"] == "1K"
