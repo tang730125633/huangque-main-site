@@ -410,9 +410,7 @@
   var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='';
   var motionAvatars=[], selectedMotionAvatarId=null, useNewMotionImage=true, avatarsLoaded=false;
   var currentVideoDraft=null;
-  var motionPresets=[
-    {id:'gesture-01',name:'口播手势 01',video:'assets/motions/gesture-01.mp4',thumb:'assets/motions/gesture-01.jpg'}
-  ];
+  var motionPresets=[];
   var publicFallback=[
     {scope:'public',voice_key:'dapeng',display_name:'大鹏 IVC',provider_voice:'dapeng',sub:'克隆男声 · 亲切'},
     {scope:'public',voice_key:'zelong',display_name:'泽龙 IVC',provider_voice:'zelong',sub:'克隆男声 · 磁性'},
@@ -700,6 +698,10 @@
   function renderMotionPresets(){
     var grid=$('motionPresetGrid'); if(!grid) return;
     grid.innerHTML='';
+    if(!motionPresets.length){
+      grid.innerHTML='<div class="avatar-empty" style="grid-column:1/-1;">暂无预设动作，可上传自有视频</div>';
+      return;
+    }
     motionPresets.forEach(function(p){
       var btn=document.createElement('button');
       btn.type='button';
@@ -735,6 +737,29 @@
         setMotionSourceText(e.message||'预设动作读取失败');
         renderMotionPresets();
         toast(e.message||'预设动作读取失败');
+      });
+  }
+  function loadMotionPresets(){
+    fetch(fresh('assets/motions/index.json'),{cache:'no-store'})
+      .then(function(r){return r.ok?r.json():[];})
+      .then(function(items){
+        motionPresets=(Array.isArray(items)?items:[]).map(function(item,idx){
+          var file=String(item.file||'').trim();
+          var thumb=String(item.thumb||'').trim();
+          if(!file) return null;
+          return {
+            id:file,
+            name:String(item.name||('预设动作 '+(idx+1))).trim(),
+            video:'assets/motions/'+file,
+            thumb:thumb?('assets/motions/'+thumb):'../assets/cloud/logo-bird.png'
+          };
+        }).filter(Boolean);
+        renderMotionPresets();
+      })
+      .catch(function(){
+        motionPresets=[];
+        setMotionSourceText('预设动作暂不可用，可上传自有视频');
+        renderMotionPresets();
       });
   }
   function updateMode(next){
@@ -921,7 +946,7 @@
   }
   bindMotionFile($('motionImageFile'),'image');
   bindMotionFile($('motionVideoFile'),'video');
-  renderMotionPresets();
+  loadMotionPresets();
   $('audioFile').onchange=function(){
     var f=this.files&&this.files[0];
     if(f){
