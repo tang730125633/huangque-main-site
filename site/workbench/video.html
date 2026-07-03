@@ -43,6 +43,24 @@
   .motion-drop span{font-size:11.5px;line-height:1.6;color:#5c6b82}
   .motion-drop img,.motion-drop video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
   .motion-drop.has-media:after{content:"更换素材";position:absolute;left:10px;right:10px;bottom:10px;height:30px;display:flex;align-items:center;justify-content:center;border-radius:9px;background:rgba(7,11,19,.72);color:#eaf1fa;font-size:12px}
+  .avatar-panel{margin-top:16px;border:1px solid rgba(148,164,187,.12);border-radius:14px;background:rgba(7,11,19,.22);padding:14px}
+  .avatar-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
+  .avatar-card{position:relative;min-height:126px;border:1px solid rgba(148,164,187,.14);border-radius:13px;background:rgba(148,164,187,.04);color:#94a4bb;cursor:pointer;overflow:hidden;text-align:left;font-family:inherit;transition:.16s}
+  .avatar-card:hover{border-color:rgba(231,178,76,.34);transform:translateY(-1px)}
+  .avatar-card.on{border-color:rgba(231,178,76,.42);background:rgba(231,178,76,.08);box-shadow:0 0 0 1px rgba(231,178,76,.08) inset}
+  .avatar-new{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;padding:14px;text-align:center}
+  .avatar-new b{font-size:13px;color:#eaf1fa}.avatar-new span{font-size:11px;color:#5c6b82;line-height:1.45}
+  .avatar-thumb{height:82px;background:rgba(148,164,187,.07);border-bottom:1px solid rgba(148,164,187,.1);overflow:hidden}
+  .avatar-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+  .avatar-meta{padding:10px 10px 38px}
+  .avatar-name{font-size:12.5px;font-weight:800;color:#eaf1fa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .avatar-sub{font-size:10.5px;color:#5c6b82;margin-top:4px}
+  .avatar-actions{position:absolute;left:9px;right:9px;bottom:8px;display:flex;gap:7px}
+  .avatar-action{flex:1;height:28px;border:1px solid rgba(148,164,187,.14);border-radius:8px;background:rgba(7,11,19,.62);color:#94a4bb;font:800 11px inherit;cursor:pointer}
+  .avatar-action:hover{color:#e7b24c;border-color:rgba(231,178,76,.3)}
+  .avatar-empty{grid-column:1/-1;padding:14px;border:1px dashed rgba(148,164,187,.16);border-radius:12px;color:#5c6b82;font-size:12px;text-align:center}
+  .motion-grid.use-avatar{grid-template-columns:1fr}
+  .motion-grid.use-avatar #motionImageDrop{display:none}
   .form-grid{--video-input-height:168px;display:grid;grid-template-columns:calc(var(--video-input-height) * .75) 1fr;gap:16px;margin-top:22px;align-items:start}
   .upload-box{position:relative;height:var(--video-input-height);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:11px;text-align:center;padding:16px;border:1px dashed rgba(148,164,187,.26);background:rgba(148,164,187,.04);border-radius:14px;color:#94a4bb;cursor:pointer;overflow:hidden;transition:.16s}
   .upload-box:hover{border-color:rgba(231,178,76,.38);color:#e7b24c}
@@ -138,7 +156,7 @@
   .mini-action span{font-size:11px}
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;transition:.2s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:12px;padding:11px 16px;color:#eaf1fa;font-size:13px;z-index:80}
   .toast.show{opacity:1;transform:translateX(-50%)}
-  @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source{grid-template-columns:1fr}.output-text{white-space:normal}.output-stage{width:min(202px,100%)}}
+  @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source,.avatar-grid{grid-template-columns:1fr}.output-text{white-space:normal}.output-stage{width:min(202px,100%)}}
 </style>
 </head>
 <body>
@@ -263,7 +281,16 @@
           </div>
           <span class="faint" style="font-size:11.5px;">参考动作，不是逐帧复制</span>
         </div>
-        <div class="motion-grid">
+        <div class="avatar-panel">
+          <div class="row">
+            <span class="label">我的形象</span>
+            <button id="refreshAvatarBtn" type="button" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font-family:inherit;font-size:12px;">刷新</button>
+          </div>
+          <div id="motionAvatarGrid" class="avatar-grid">
+            <div class="avatar-empty">正在读取我的形象...</div>
+          </div>
+        </div>
+        <div id="motionGrid" class="motion-grid">
           <label id="motionImageDrop" class="motion-drop">
             <input id="motionImageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
             <strong>人物形象图片</strong>
@@ -351,13 +378,14 @@
 <div id="toast" class="toast"></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=14"></script>
+<script src="cloud-shell.js?v=15"></script>
 <script>
 (function(){
   var token=localStorage.getItem('hq_token')||'';
   var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='dapeng', activePreview=null, activePreviewBtn=null;
   var imageData='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
   var motionImageData='', motionReferenceVideoData='';
+  var motionAvatars=[], selectedMotionAvatarId=null, useNewMotionImage=true, avatarsLoaded=false;
   var publicFallback=[
     {scope:'public',voice_key:'dapeng',display_name:'大鹏 IVC',provider_voice:'dapeng',sub:'克隆男声 · 亲切'},
     {scope:'public',voice_key:'zelong',display_name:'泽龙 IVC',provider_voice:'zelong',sub:'克隆男声 · 磁性'},
@@ -506,6 +534,80 @@
       .then(function(d){renderVideoHistory(d.items||[]);})
       .catch(function(){});
   }
+  function selectMotionAvatar(id){
+    selectedMotionAvatarId=id||null;
+    useNewMotionImage=!id;
+    if($('motionGrid')) $('motionGrid').classList.toggle('use-avatar',!!id);
+    var picked=motionAvatars.find(function(a){return String(a.id)===String(id);});
+    if(picked && picked.image_url) setOutputImage(picked.image_url);
+    renderMotionAvatars();
+  }
+  function renderMotionAvatars(){
+    var grid=$('motionAvatarGrid'); if(!grid) return;
+    grid.innerHTML='';
+    var add=document.createElement('button');
+    add.type='button';
+    add.className='avatar-card avatar-new'+(useNewMotionImage?' on':'');
+    add.innerHTML='<b>＋ 上传新照片</b><span>生成成功后会自动保存为我的形象</span>';
+    add.onclick=function(){selectMotionAvatar(null);};
+    grid.appendChild(add);
+    if(!motionAvatars.length){
+      var empty=document.createElement('div');
+      empty.className='avatar-empty';
+      empty.textContent='暂无已保存形象，先用新照片生成一次动作模仿';
+      grid.appendChild(empty);
+      return;
+    }
+    motionAvatars.forEach(function(a){
+      var card=document.createElement('div');
+      card.className='avatar-card'+(String(selectedMotionAvatarId)===String(a.id)?' on':'');
+      card.innerHTML='<div class="avatar-thumb"><img src="'+esc(fresh(a.image_url||'../assets/cloud/logo-bird.png'))+'" alt=""></div>'
+        +'<div class="avatar-meta"><div class="avatar-name">'+esc(a.name||'未命名形象')+'</div><div class="avatar-sub">'+esc(formatTime(a.created_at)||'已保存')+'</div></div>'
+        +'<div class="avatar-actions"><button class="avatar-action" type="button" data-act="rename">改名</button><button class="avatar-action" type="button" data-act="delete">删除</button></div>';
+      card.onclick=function(){selectMotionAvatar(a.id);};
+      var rename=card.querySelector('[data-act="rename"]');
+      var del=card.querySelector('[data-act="delete"]');
+      rename.onclick=function(e){
+        e.stopPropagation();
+        var name=prompt('输入新的形象名称',a.name||'');
+        if(name===null) return;
+        name=String(name||'').trim();
+        if(!name){toast('名称不能为空');return;}
+        fetch('/api/gen/video/avatar-name',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({id:a.id,name:name})})
+          .then(function(r){if(r.status===401){location.href='../login.html?redirect=workbench/video';return null;} return r.json().then(function(d){if(!r.ok) throw new Error(d.detail||'改名失败'); return d;});})
+          .then(function(d){if(!d) return; toast('已改名'); loadMotionAvatars(true);})
+          .catch(function(err){toast(err.message||'改名失败');});
+      };
+      del.onclick=function(e){
+        e.stopPropagation();
+        if(!confirm('确定删除这个形象吗？只会从我的形象列表移除。')) return;
+        fetch('/api/gen/video/avatar-delete',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({id:a.id})})
+          .then(function(r){if(r.status===401){location.href='../login.html?redirect=workbench/video';return null;} return r.json().then(function(d){if(!r.ok) throw new Error(d.detail||'删除失败'); return d;});})
+          .then(function(d){if(!d) return; if(String(selectedMotionAvatarId)===String(a.id)) selectMotionAvatar(null); toast('已删除'); loadMotionAvatars(true);})
+          .catch(function(err){toast(err.message||'删除失败');});
+      };
+      grid.appendChild(card);
+    });
+  }
+  function loadMotionAvatars(force){
+    if(!token) return;
+    if(avatarsLoaded && !force){renderMotionAvatars();return;}
+    avatarsLoaded=true;
+    var grid=$('motionAvatarGrid');
+    if(grid) grid.innerHTML='<div class="avatar-empty">正在读取我的形象...</div>';
+    fetch(fresh('/api/gen/video/avatars?limit=120'),{cache:'no-store',headers:{Authorization:'Bearer '+token,'Cache-Control':'no-cache'}})
+      .then(function(r){if(r.status===401){location.href='../login.html?redirect=workbench/video';return null;} return r.ok?r.json():Promise.reject(new Error('形象列表读取失败'));})
+      .then(function(d){
+        if(!d) return;
+        motionAvatars=d.items||[];
+        if(selectedMotionAvatarId && !motionAvatars.some(function(a){return String(a.id)===String(selectedMotionAvatarId);})){
+          selectedMotionAvatarId=null; useNewMotionImage=true;
+          if($('motionGrid')) $('motionGrid').classList.remove('use-avatar');
+        }
+        renderMotionAvatars();
+      })
+      .catch(function(e){if(grid) grid.innerHTML='<div class="avatar-empty" style="color:#f4708a;">'+esc(e.message||'形象列表读取失败')+'</div>';});
+  }
   function setBusy(on){
     ['generateBtn','motionGenerateBtn'].forEach(function(id){
       var btn=$(id); if(!btn) return;
@@ -541,6 +643,7 @@
     if(videoFunction==='motion'){
       $('modeSummary').textContent='上传人物形象和参考动作视频，生成同款动作视频';
       if($('modeName')) $('modeName').textContent='动作模仿';
+      loadMotionAvatars();
     }else{
       updateMode(mode);
     }
@@ -684,6 +787,7 @@
       readFileData(f).then(function(data){
         if(type==='image'){
           motionImageData=data;
+          selectMotionAvatar(null);
           setOutputImage(url);
         }else{
           motionReferenceVideoData=data;
@@ -718,6 +822,7 @@
           setBusy(false);
           renderVideoHistory([Object.assign({created_at:Math.floor(Date.now()/1000)}, result)]);
           setTimeout(loadVideoHistory,800);
+          if(result.mode==='motion') setTimeout(function(){loadMotionAvatars(true);},900);
           setVideoStatus('任务已创建，已保存到视频资产');
           $('previewTitle').textContent='任务已创建';
           $('previewSub').textContent='生成完成后可在视频资产中查看';
@@ -731,31 +836,39 @@
   }
   function submitMotionVideo(){
     if(!token){ location.href='../login.html?redirect=workbench/video'; return; }
-    if(!motionImageData){ toast('请先上传人物形象图片'); return; }
+    var pickedAvatar=selectedMotionAvatarId?motionAvatars.find(function(a){return String(a.id)===String(selectedMotionAvatarId);}):null;
+    if(useNewMotionImage && !motionImageData){ toast('请先上传人物形象图片'); return; }
+    if(!useNewMotionImage && !pickedAvatar){ toast('请选择一个我的形象'); return; }
     if(!motionReferenceVideoData){ toast('请先上传参考动作视频'); return; }
     setBusy(true);
-    setOutputImage(motionImageData);
+    var motionPreviewImage=useNewMotionImage?motionImageData:(pickedAvatar&&pickedAvatar.image_url);
+    setOutputImage(motionPreviewImage);
     if($('outputText')) $('outputText').textContent='动作模仿视频生成记录';
     if($('outputMotion')) $('outputMotion').textContent='动作模仿';
     if($('outputRatio')) $('outputRatio').textContent='9:16';
     if($('outputDuration')) $('outputDuration').textContent='生成中';
     if($('outputCreated')) $('outputCreated').textContent='创建于：'+nowText();
     if($('outputPreviewText')) $('outputPreviewText').innerHTML='动作模仿视频正在生成中<br>完成后会自动预览';
-    renderVideoHistory([{mode:'motion',image_url:motionImageData,text:'动作模仿视频',ratio:'9:16',motion:'medium',status:'processing',created_at:Math.floor(Date.now()/1000)}]);
+    renderVideoHistory([{mode:'motion',image_url:motionPreviewImage,text:'动作模仿视频',ratio:'9:16',motion:'medium',status:'processing',created_at:Math.floor(Date.now()/1000)}]);
     setVideoStatus('正在提交动作模仿任务...');
+    var body={
+      mode:'motion',
+      reference_video_data:motionReferenceVideoData,
+      text:'动作模仿视频',
+      resolution:'720p',
+      ratio:'9:16',
+      duration:10,
+      motion:'medium'
+    };
+    if(useNewMotionImage){
+      body.image_data=motionImageData;
+    }else{
+      body.avatar_id=selectedMotionAvatarId;
+    }
     fetch('/api/gen/video',{
       method:'POST',
       headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-      body:JSON.stringify({
-        mode:'motion',
-        image_data:motionImageData,
-        reference_video_data:motionReferenceVideoData,
-        text:'动作模仿视频',
-        resolution:'720p',
-        ratio:'9:16',
-        duration:10,
-        motion:'medium'
-      })
+      body:JSON.stringify(body)
     }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
       .then(function(res){
         if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
@@ -810,6 +923,7 @@
   };
   $('generateBtn').onclick=submitVideo;
   $('motionGenerateBtn').onclick=submitMotionVideo;
+  if($('refreshAvatarBtn')) $('refreshAvatarBtn').onclick=function(){loadMotionAvatars(true);};
   $('scriptText').dispatchEvent(new Event('input'));
   updateFunction('talking');
   loadVoices();
