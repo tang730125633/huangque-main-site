@@ -201,6 +201,18 @@ def init_audio_db():
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         )""")
+        c.execute("""CREATE TABLE IF NOT EXISTS avatars(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            name TEXT NOT NULL,
+            image_file TEXT NOT NULL,
+            provider_avatar_id TEXT NOT NULL,
+            provider_avatar_group_id TEXT,
+            status TEXT NOT NULL DEFAULT 'ready',
+            created_at INTEGER,
+            updated_at INTEGER,
+            UNIQUE(username, provider_avatar_id)
+        )""")
         _ensure_column(c, "audio_voices", "slot_id", "TEXT")
         _ensure_column(c, "audio_voice_slots", "reclone_count", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(c, "audio_voice_slots", "clone_started_at", "INTEGER")
@@ -221,6 +233,8 @@ def init_audio_db():
         _ensure_column(c, "video_assets", "provider_avatar_id", "TEXT")
         _ensure_column(c, "video_assets", "provider_avatar_group_id", "TEXT")
         _ensure_column(c, "video_assets", "source_video_url", "TEXT")
+        _ensure_column(c, "avatars", "provider_avatar_group_id", "TEXT")
+        _ensure_column(c, "avatars", "status", "TEXT NOT NULL DEFAULT 'ready'")
         public = [
             ("public", "", "S_d21F8OR62", "\u516c\u5171\u97f3\u8272 1", "S_d21F8OR62"),
             ("public", "", "S_l8wE8OR62", "\u516c\u5171\u97f3\u8272 2", "S_l8wE8OR62"),
@@ -997,6 +1011,86 @@ def list_video_assets(username, limit=120):
             ORDER BY id DESC LIMIT ?""", (username, limit)).fetchall()
     return [dict(r) for r in rows]
 
+def _avatar_display_name(username):
+    with closing(adb()) as c:
+        row = c.execute("SELECT COUNT(*) AS n FROM avatars WHERE username=?", (username,)).fetchone()
+    return "形象 %d" % ((row["n"] if row else 0) + 1)
+
+def record_video_avatar(username, image_file, provider_avatar_id, provider_avatar_group_id=None, name=None):
+    username = (username or "").strip()
+    provider_avatar_id = (provider_avatar_id or "").strip()
+    image_file = (image_file or "").strip()
+    if not username or not provider_avatar_id or not image_file:
+        return None
+    now = int(time.time())
+    name = (name or _avatar_display_name(username)).strip()[:40] or _avatar_display_name(username)
+    with closing(adb()) as c:
+        c.execute("""INSERT INTO avatars
+            (username, name, image_file, provider_avatar_id, provider_avatar_group_id, status, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?,?)
+            ON CONFLICT(username, provider_avatar_id) DO UPDATE SET
+                image_file=COALESCE(excluded.image_file, avatars.image_file),
+                provider_avatar_group_id=COALESCE(excluded.provider_avatar_group_id, avatars.provider_avatar_group_id),
+                status=COALESCE(excluded.status, avatars.status),
+                updated_at=excluded.updated_at""",
+            (username, name, image_file, provider_avatar_id, provider_avatar_group_id, "ready", now, now))
+        c.commit()
+        row = c.execute("""SELECT id, username, name, image_file, provider_avatar_id, provider_avatar_group_id,
+                   status, created_at, updated_at
+            FROM avatars WHERE username=? AND provider_avatar_id=?""", (username, provider_avatar_id)).fetchone()
+    return dict(row) if row else None
+
+def list_video_avatars(username, limit=120):
+    limit = max(1, min(120, int(limit or 120)))
+    with closing(adb()) as c:
+        rows = c.execute("""SELECT id, username, name, image_file, provider_avatar_id, provider_avatar_group_id,
+                   status, created_at, updated_at
+            FROM avatars WHERE username=? AND status!='deleted' ORDER BY id DESC LIMIT ?""", (username, limit)).fetchall()
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["image_url"] = _file_url(d["image_file"]) if d.get("image_file") else None
+        items.append(d)
+    return items
+
+def get_video_avatar(username, avatar_id):
+    try:
+        avatar_id = int(avatar_id)
+    except Exception:
+        raise ValueError("形象不存在")
+    with closing(adb()) as c:
+        row = c.execute("""SELECT id, username, name, image_file, provider_avatar_id, provider_avatar_group_id,
+                   status, created_at, updated_at
+            FROM avatars WHERE id=? AND username=? AND status!='deleted'""", (avatar_id, username)).fetchone()
+    if not row:
+        raise ValueError("形象不存在")
+    return dict(row)
+
+def rename_video_avatar(username, avatar_id, name):
+    avatar = get_video_avatar(username, avatar_id)
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("名称不能为空")
+    name = name[:40]
+    now = int(time.time())
+    with closing(adb()) as c:
+        c.execute("UPDATE avatars SET name=?, updated_at=? WHERE id=? AND username=?",
+                  (name, now, avatar["id"], username))
+        c.commit()
+    avatar["name"] = name
+    avatar["updated_at"] = now
+    avatar["image_url"] = _file_url(avatar["image_file"]) if avatar.get("image_file") else None
+    return avatar
+
+def delete_video_avatar(username, avatar_id):
+    avatar = get_video_avatar(username, avatar_id)
+    now = int(time.time())
+    with closing(adb()) as c:
+        c.execute("UPDATE avatars SET status='deleted', updated_at=? WHERE id=? AND username=?",
+                  (now, avatar["id"], username))
+        c.commit()
+    return {"id": avatar["id"], "status": "deleted"}
+
 def get_points(username):
     try:
         with closing(sqlite3.connect(AUTH_DB, timeout=10)) as c:
@@ -1581,34 +1675,69 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
         "duration": info.get("duration"),
     }
 
-def generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration, job_id=None):
+def generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration, job_id=None, avatar=None):
     image_fp = _resolve_out_file(image_file)
     reference_fp = _resolve_out_file(reference_video_file)
     if not image_fp or not reference_fp:
         raise ValueError("动作模仿素材文件不存在")
-    update_video_asset_phase(job_id, "uploading_image_asset")
-    image_asset_id = _heygen_upload_asset(image_fp)
-    update_video_asset_phase(job_id, "uploading_reference_asset", image_asset_id=image_asset_id)
+    image_asset_id = None
+    avatar_item_id = ""
+    avatar_group_id = ""
+    if avatar:
+        avatar_item_id = (avatar.get("provider_avatar_id") or "").strip()
+        avatar_group_id = (avatar.get("provider_avatar_group_id") or "").strip()
+        if not avatar_item_id:
+            raise ValueError("avatar provider id missing")
+        update_video_asset_phase(job_id, "reusing_photo_avatar", provider_avatar_id=avatar_item_id,
+                                 provider_avatar_group_id=avatar_group_id)
+    else:
+        update_video_asset_phase(job_id, "uploading_image_asset")
+        image_asset_id = _heygen_upload_asset(image_fp)
+    update_video_asset_phase(job_id, "uploading_reference_asset", image_asset_id=image_asset_id,
+                             provider_avatar_id=avatar_item_id or None,
+                             provider_avatar_group_id=avatar_group_id or None)
     reference_asset_id = _heygen_upload_asset(reference_fp)
-    update_video_asset_phase(job_id, "creating_photo_avatar", image_asset_id=image_asset_id,
-                             reference_asset_id=reference_asset_id)
-    avatar_item_id, avatar_group_id = _heygen_create_photo_avatar(image_asset_id)
-    update_video_asset_phase(job_id, "waiting_photo_avatar", image_asset_id=image_asset_id,
-                             reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
-                             provider_avatar_group_id=avatar_group_id)
-    _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id)
+    if not avatar_item_id:
+        update_video_asset_phase(job_id, "creating_photo_avatar", image_asset_id=image_asset_id,
+                                 reference_asset_id=reference_asset_id)
+        avatar_item_id, avatar_group_id = _heygen_create_photo_avatar(image_asset_id)
+        update_video_asset_phase(job_id, "waiting_photo_avatar", image_asset_id=image_asset_id,
+                                 reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
+                                 provider_avatar_group_id=avatar_group_id)
+        _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id)
     update_video_asset_phase(job_id, "creating_cinematic_video", image_asset_id=image_asset_id,
                              reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
                              provider_avatar_group_id=avatar_group_id)
     video_id = None
     last_create_error = None
+    rebuilt_avatar = False
     for attempt in range(1, 7):
         try:
             video_id = _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration)
             break
         except RuntimeError as e:
             last_create_error = str(e)
-            retryable = "not ready" in last_create_error.lower() or "status: pending" in last_create_error.lower()
+            lowered = last_create_error.lower()
+            invalid_avatar = avatar and (not rebuilt_avatar) and "avatar" in lowered and (
+                "not found" in lowered or "does not exist" in lowered or "invalid" in lowered
+            )
+            if invalid_avatar:
+                update_video_asset_phase(job_id, "rebuilding_photo_avatar", image_asset_id=image_asset_id,
+                                         reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
+                                         provider_avatar_group_id=avatar_group_id,
+                                         error=last_create_error[:180])
+                if not image_asset_id:
+                    image_asset_id = _heygen_upload_asset(image_fp)
+                avatar_item_id, avatar_group_id = _heygen_create_photo_avatar(image_asset_id)
+                if avatar.get("username"):
+                    record_video_avatar(avatar.get("username"), image_file, avatar_item_id, avatar_group_id, avatar.get("name"))
+                update_video_asset_phase(job_id, "waiting_rebuilt_photo_avatar", image_asset_id=image_asset_id,
+                                         reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
+                                         provider_avatar_group_id=avatar_group_id)
+                _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id)
+                rebuilt_avatar = True
+                continue
+            retryable = "not ready" in lowered or "status: pending" in lowered
             if not retryable or attempt >= 6:
                 raise
             update_video_asset_phase(job_id, "waiting_avatar_look", image_asset_id=image_asset_id,
@@ -1643,7 +1772,13 @@ def gen_video(payload):
     mode = (payload.get("mode") or "text").strip()
     if mode not in {"text", "audio", "motion"}:
         raise ValueError("生成方式不正确")
-    image_file = _save_data_file(payload.get("image_data"), "vid_img", [".jpg", ".png", ".webp"])
+    avatar = None
+    avatar_id = payload.get("avatar_id")
+    if mode == "motion" and avatar_id:
+        avatar = get_video_avatar((payload.get("_username") or "").strip(), avatar_id)
+        image_file = avatar.get("image_file")
+    else:
+        image_file = _save_data_file(payload.get("image_data"), "vid_img", [".jpg", ".png", ".webp"])
     if not image_file:
         raise ValueError("请先上传人物形象图片")
     text = (payload.get("text") or "").strip()
@@ -1695,12 +1830,16 @@ def gen_video(payload):
     except Exception:
         duration = 10
     duration = max(5, min(30, duration))
+    created_avatar = None
     if mode == "motion":
         if resolution not in {"720p", "1080p"}:
             resolution = "720p"
         update_video_asset_phase(job_id, "motion_parameters_ready", resolution=resolution,
                                  ratio=ratio, motion=motion)
-        video_result = generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration, job_id)
+        video_result = generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration, job_id, avatar=avatar)
+        if not avatar:
+            created_avatar = record_video_avatar((payload.get("_username") or "").strip(), image_file,
+                                                 video_result.get("avatar_item_id"), video_result.get("avatar_group_id"))
     else:
         video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
     return {
@@ -1714,6 +1853,7 @@ def gen_video(payload):
         "provider_video_id": video_result.get("video_id"),
         "provider_avatar_id": video_result.get("avatar_item_id"),
         "provider_avatar_group_id": video_result.get("avatar_group_id"),
+        "avatar_id": (avatar.get("id") if avatar else (created_avatar or {}).get("id")),
         "image_asset_id": video_result.get("image_asset_id"),
         "audio_asset_id": video_result.get("audio_asset_id"),
         "reference_asset_id": video_result.get("reference_asset_id"),
@@ -1825,6 +1965,23 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "voice": voice})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:220]})
+        if p == "/api/gen/video/avatar-name":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
+            body = self._json_body()
+            try:
+                avatar = rename_video_avatar(user["username"], body.get("id"), body.get("name"))
+                return self._send(200, {"ok": True, "avatar": avatar})
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
+        if p == "/api/gen/video/avatar-delete":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
+            body = self._json_body()
+            try:
+                return self._send(200, {"ok": True, "avatar": delete_video_avatar(user["username"], body.get("id"))})
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
         if p.startswith("/api/gen/") and p[9:] in HANDLERS:
             kind = p[9:]
             user = verify(self._token())
@@ -1918,6 +2075,13 @@ class H(BaseHTTPRequestHandler):
             try: lim = int((q.get("limit") or ["120"])[0])
             except Exception: lim = 120
             return self._send(200, {"items": list_audio_assets(user["username"], lim)})
+        if p == "/api/gen/video/avatars":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try: lim = int((q.get("limit") or ["120"])[0])
+            except Exception: lim = 120
+            return self._send(200, {"items": list_video_avatars(user["username"], lim)})
         if p == "/api/gen/video/assets":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
