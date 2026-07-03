@@ -43,6 +43,14 @@
   .motion-drop span{font-size:11.5px;line-height:1.6;color:#5c6b82}
   .motion-drop img,.motion-drop video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
   .motion-drop.has-media:after{content:"更换素材";position:absolute;left:10px;right:10px;bottom:10px;height:30px;display:flex;align-items:center;justify-content:center;border-radius:9px;background:rgba(7,11,19,.72);color:#eaf1fa;font-size:12px}
+  .motion-preset-panel{margin-top:16px;border:1px solid rgba(148,164,187,.12);border-radius:14px;background:rgba(148,164,187,.03);padding:14px}
+  .motion-preset-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
+  .motion-preset-card{position:relative;min-height:128px;border:1px solid rgba(148,164,187,.14);border-radius:13px;background:rgba(7,11,19,.34);overflow:hidden;cursor:pointer;text-align:left;font-family:inherit;color:#eaf1fa;transition:.16s}
+  .motion-preset-card:hover{border-color:rgba(231,178,76,.32);transform:translateY(-1px)}
+  .motion-preset-card.on{border-color:rgba(231,178,76,.5);box-shadow:0 0 0 1px rgba(231,178,76,.12) inset}
+  .motion-preset-card img{width:100%;height:94px;object-fit:cover;display:block;opacity:.88}
+  .motion-preset-card span{display:block;padding:9px 10px;font-size:12.5px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .motion-preset-card.on:after{content:"已选择";position:absolute;right:8px;top:8px;padding:3px 7px;border-radius:7px;background:rgba(231,178,76,.92);color:#1b1205;font-size:10.5px;font-weight:900}
   .avatar-panel{margin-top:16px;border:1px solid rgba(148,164,187,.12);border-radius:14px;background:rgba(7,11,19,.22);padding:14px}
   .avatar-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
   .avatar-card{position:relative;min-height:126px;border:1px solid rgba(148,164,187,.14);border-radius:13px;background:rgba(148,164,187,.04);color:#94a4bb;cursor:pointer;overflow:hidden;text-align:left;font-family:inherit;transition:.16s}
@@ -164,7 +172,7 @@
   .mini-action span{font-size:11px}
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;transition:.2s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:12px;padding:11px 16px;color:#eaf1fa;font-size:13px;z-index:80}
   .toast.show{opacity:1;transform:translateX(-50%)}
-  @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source,.avatar-grid{grid-template-columns:1fr}.output-text{white-space:normal}.output-stage{width:min(202px,100%)}}
+  @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source,.avatar-grid,.motion-preset-grid{grid-template-columns:1fr}.output-text{white-space:normal}.output-stage{width:min(202px,100%)}}
 </style>
 </head>
 <body>
@@ -310,6 +318,13 @@
             <span>上传要模仿的动作、节奏和画面参考</span>
           </label>
         </div>
+        <div class="motion-preset-panel">
+          <div class="row">
+            <span class="label">预设动作</span>
+            <span id="motionSourceText" class="faint" style="font-size:11.5px;">可选预设，或上传自有视频</span>
+          </div>
+          <div id="motionPresetGrid" class="motion-preset-grid"></div>
+        </div>
         <button id="motionGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:20px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
           生成动作模仿视频
         </button>
@@ -392,9 +407,12 @@
   var token=localStorage.getItem('hq_token')||'';
   var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='dapeng', activePreview=null, activePreviewBtn=null;
   var imageData='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
-  var motionImageData='', motionReferenceVideoData='';
+  var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='';
   var motionAvatars=[], selectedMotionAvatarId=null, useNewMotionImage=true, avatarsLoaded=false;
   var currentVideoDraft=null;
+  var motionPresets=[
+    {id:'gesture-01',name:'口播手势 01',video:'assets/motions/gesture-01.mp4',thumb:'assets/motions/gesture-01.jpg'}
+  ];
   var publicFallback=[
     {scope:'public',voice_key:'dapeng',display_name:'大鹏 IVC',provider_voice:'dapeng',sub:'克隆男声 · 亲切'},
     {scope:'public',voice_key:'zelong',display_name:'泽龙 IVC',provider_voice:'zelong',sub:'克隆男声 · 磁性'},
@@ -676,6 +694,49 @@
       reader.readAsDataURL(file);
     });
   }
+  function setMotionSourceText(text){
+    if($('motionSourceText')) $('motionSourceText').textContent=text||'可选预设，或上传自有视频';
+  }
+  function renderMotionPresets(){
+    var grid=$('motionPresetGrid'); if(!grid) return;
+    grid.innerHTML='';
+    motionPresets.forEach(function(p){
+      var btn=document.createElement('button');
+      btn.type='button';
+      btn.className='motion-preset-card'+(selectedMotionPreset===p.id?' on':'');
+      btn.innerHTML='<img src="'+esc(p.thumb)+'" alt=""><span>'+esc(p.name)+'</span>';
+      btn.onclick=function(){selectMotionPreset(p);};
+      grid.appendChild(btn);
+    });
+  }
+  function resetMotionVideoDrop(){
+    var box=$('motionVideoDrop'); if(!box) return;
+    box.classList.remove('has-media');
+    box.innerHTML='<input id="motionVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden><strong>参考动作视频</strong><span>上传要模仿的动作、节奏和画面参考</span>';
+    bindMotionFile(box.querySelector('input'),'video');
+  }
+  function selectMotionPreset(p){
+    if(!p) return;
+    selectedMotionPreset=p.id;
+    setMotionSourceText('正在读取预设动作...');
+    renderMotionPresets();
+    fetch(p.video,{cache:'force-cache'})
+      .then(function(r){return r.ok?r.blob():Promise.reject(new Error('预设动作读取失败'));})
+      .then(function(blob){return readFileData(blob);})
+      .then(function(data){
+        motionReferenceVideoData=data;
+        resetMotionVideoDrop();
+        setMotionSourceText('已选择预设动作：'+p.name);
+        toast('已选择预设动作');
+      })
+      .catch(function(e){
+        selectedMotionPreset='';
+        motionReferenceVideoData='';
+        setMotionSourceText(e.message||'预设动作读取失败');
+        renderMotionPresets();
+        toast(e.message||'预设动作读取失败');
+      });
+  }
   function updateMode(next){
     mode=next;
     document.querySelectorAll('.mode-tab').forEach(function(b){b.classList.toggle('on',b.dataset.mode===mode);});
@@ -843,6 +904,9 @@
           setOutputImage(url);
         }else{
           motionReferenceVideoData=data;
+          selectedMotionPreset='';
+          renderMotionPresets();
+          setMotionSourceText('已选择上传的自有视频');
         }
       }).catch(function(e){toast(e.message||'文件读取失败');});
       box.classList.add('has-media');
@@ -857,6 +921,7 @@
   }
   bindMotionFile($('motionImageFile'),'image');
   bindMotionFile($('motionVideoFile'),'video');
+  renderMotionPresets();
   $('audioFile').onchange=function(){
     var f=this.files&&this.files[0];
     if(f){
