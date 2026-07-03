@@ -43,8 +43,8 @@ def is_safe_video_url(u):
         return False
 
 DB = os.path.join(os.path.dirname(__file__), "jobs.db")
-PASSWORD = os.environ.get("LEADGEN_PASSWORD", "meiye2026")
-WORKER_TOKEN = os.environ.get("LEADGEN_WORKER_TOKEN", "worker-secret-2026")
+PASSWORD = os.environ.get("LEADGEN_PASSWORD", "")
+WORKER_TOKEN = os.environ.get("LEADGEN_WORKER_TOKEN", "")
 BASE = os.path.dirname(os.path.abspath(__file__))
 INDEX_HTML = os.path.join(BASE, "index.html")
 DISCOVERED = os.path.join(BASE, "discovered.json")

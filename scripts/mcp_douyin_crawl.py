@@ -26,7 +26,7 @@ def _password():
                 return line.split("=", 1)[1].strip().strip('"')
     except Exception:
         pass
-    return "meiye2026"
+    return ""
 
 
 def submit_crawl(keyword, count=10):

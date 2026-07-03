@@ -6,8 +6,8 @@ After=network.target
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/leadgen-B
-Environment=LEADGEN_PASSWORD=DaPengAI@2026
-Environment=LEADGEN_WORKER_TOKEN=worker-secret-2026
+# 口令/令牌不再写死在单元里（旧值已作废）。真实值放服务器本地 /etc/huangque/leadgen.env（权限 600，不进 git）。
+EnvironmentFile=/etc/huangque/leadgen.env
 ExecStart=/home/ubuntu/MediaCrawler/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8092
 Restart=always
 RestartSec=3

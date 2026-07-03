@@ -8,6 +8,7 @@
 
 输出为给群友看的纯文本，小冬据此整理成飞书消息。
 """
+import os
 import sys
 import time
 import json
@@ -16,7 +17,8 @@ import urllib.request
 import urllib.parse
 
 BASE = "http://127.0.0.1:8090"
-PASSWORD = "DaPengAI@2026"
+# 口令从环境变量读，不再硬编码（旧默认值已作废）。
+PASSWORD = os.environ.get("LEADGEN_PASSWORD", "")
 
 
 def post(path, data):

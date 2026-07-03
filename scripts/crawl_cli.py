@@ -9,7 +9,7 @@
 
 环境变量：
   LEADGEN_SERVER    后端地址，默认 http://129.204.166.13:8090
-  LEADGEN_PASSWORD  提交口令，默认 DaPengAI@2026
+  LEADGEN_PASSWORD  提交口令（必填，不再有硬编码默认值）
 """
 import os
 import sys
@@ -21,7 +21,7 @@ import urllib.request
 import urllib.parse
 
 SERVER = os.environ.get("LEADGEN_SERVER", "http://129.204.166.13:8090")
-PASSWORD = os.environ.get("LEADGEN_PASSWORD", "DaPengAI@2026")
+PASSWORD = os.environ.get("LEADGEN_PASSWORD", "")
 
 
 def post(path, data):
