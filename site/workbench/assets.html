@@ -51,6 +51,7 @@
     <span class="chip" data-cat="image" style="padding:7px 15px; font-size:13px; font-weight:600; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.3); border-radius:99px; cursor:pointer;">图片资产</span>
     <span class="chip" data-cat="audio" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">音频资产</span>
     <span class="chip" data-cat="video" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">视频资产</span>
+    <span class="chip" data-cat="avatar" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">数字人形象</span>
   </div>
 
   <!-- 真实资产网格（生成历史，JS 填充；有作品时显示、空态隐藏） -->
@@ -311,6 +312,90 @@
     body.appendChild(head); body.appendChild(meta); body.appendChild(foot);
     w.appendChild(media); w.appendChild(body);
     return w;
+  }
+  function escapeHtml(s){
+    return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});
+  }
+  function avatarDate(ts){
+    var d=ts?new Date(Number(ts)*1000):null;
+    if(!d || isNaN(d.getTime())) return '已保存';
+    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+  }
+  function avatarCard(x){
+    var image=x.image_url||'../assets/cloud/logo-bird.png';
+    var name=x.name||'未命名形象';
+    var w=document.createElement('div');
+    w.style.cssText='position:relative; min-height:252px; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.56), rgba(9,14,24,.44)); overflow:hidden; display:flex; flex-direction:column; box-shadow:0 16px 42px rgba(0,0,0,.12);';
+    var media=document.createElement('div');
+    media.style.cssText='position:relative; aspect-ratio:4/3; background:rgba(7,11,19,.38); overflow:hidden;';
+    media.innerHTML='<img src="'+escapeHtml(freshUrl(image))+'" loading="lazy" alt="" style="width:100%;height:100%;object-fit:cover;display:block;">'
+      +'<span style="position:absolute;top:11px;left:11px;z-index:2;padding:3px 9px;font-size:11px;font-weight:700;border-radius:6px;background:rgba(7,11,19,.66);color:#2dd4bf;">数字人形象</span>';
+    var body=document.createElement('div');
+    body.style.cssText='padding:13px 14px 14px;display:flex;flex-direction:column;gap:10px;flex:1;';
+    body.innerHTML='<div style="font-size:14px;color:#eaf1fa;font-weight:800;line-height:1.45;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+escapeHtml(name)+'">'+escapeHtml(name)+'</div>'
+      +'<div style="font-size:11.5px;color:#94a4bb;line-height:1.5;">保存于 '+escapeHtml(avatarDate(x.created_at))+'</div>'
+      +'<div style="font-size:11px;color:#5c6b82;line-height:1.5;min-height:16px;">可在视频模块动作模仿中复用</div>';
+    var actions=document.createElement('div');
+    actions.style.cssText='display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:auto;padding-top:10px;border-top:1px solid rgba(148,164,187,.1);';
+    var rename=document.createElement('button');
+    rename.type='button'; rename.textContent='改名';
+    rename.style.cssText='height:32px;border:1px solid rgba(231,178,76,.28);border-radius:9px;background:rgba(231,178,76,.08);color:#e7b24c;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;';
+    rename.onclick=function(e){ e.preventDefault(); e.stopPropagation(); openRenameAvatarModal(x); };
+    var del=document.createElement('button');
+    del.type='button'; del.textContent='删除';
+    del.style.cssText='height:32px;border:1px solid rgba(244,112,138,.24);border-radius:9px;background:rgba(244,112,138,.07);color:#f4708a;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;';
+    del.onclick=function(e){ e.preventDefault(); e.stopPropagation(); deleteAvatar(x); };
+    actions.appendChild(rename); actions.appendChild(del);
+    body.appendChild(actions);
+    w.appendChild(media); w.appendChild(body);
+    return w;
+  }
+  function openRenameAvatarModal(avatar){
+    var old=document.getElementById('renameAvatarModal'); if(old) old.remove();
+    var wrap=document.createElement('div'); wrap.id='renameAvatarModal';
+    wrap.style.cssText='position:fixed; inset:0; z-index:10000; display:flex; align-items:center; justify-content:center; padding:22px; background:rgba(3,7,15,.72); backdrop-filter:blur(10px);';
+    var modal=document.createElement('div');
+    modal.style.cssText='width:min(420px,100%); border:1px solid rgba(148,164,187,.16); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.98), rgba(8,13,24,.98)); box-shadow:0 28px 80px rgba(0,0,0,.48); overflow:hidden;';
+    modal.innerHTML='<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 20px;border-bottom:1px solid rgba(148,164,187,.12);">'
+      +'<div><div style="font-size:17px;font-weight:700;color:#eaf1fa;">修改形象名称</div><div style="margin-top:5px;font-size:12.5px;color:#94a4bb;">名称会同步显示在视频页「我的形象」里</div></div>'
+      +'<button type="button" data-close-avatar style="width:34px;height:34px;border:none;border-radius:9px;background:rgba(148,164,187,.08);color:#94a4bb;cursor:pointer;font-size:20px;line-height:1;">×</button></div>'
+      +'<div style="padding:20px;display:flex;flex-direction:column;gap:14px;">'
+      +'<label style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:12.5px;font-weight:600;color:#eaf1fa;">形象名称</span><input id="renameAvatarInput" maxlength="40" autocomplete="off" placeholder="请输入形象名称" style="height:42px;border:1px solid rgba(148,164,187,.16);border-radius:11px;background:rgba(7,11,19,.5);color:#eaf1fa;outline:none;padding:0 12px;font-family:inherit;font-size:13px;"></label>'
+      +'<div id="renameAvatarNote" style="font-size:12px;color:#5c6b82;line-height:1.6;">用于区分不同人物形象，不会影响已生成的视频。</div>'
+      +'</div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid rgba(148,164,187,.12);"><button type="button" data-close-avatar style="height:38px;padding:0 15px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-family:inherit;">取消</button><button type="button" id="renameAvatarSubmit" style="height:38px;padding:0 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;font-weight:700;cursor:pointer;font-family:inherit;">保存</button></div>';
+    wrap.appendChild(modal); document.body.appendChild(wrap);
+    function close(){ wrap.remove(); }
+    wrap.querySelectorAll('[data-close-avatar]').forEach(function(b){ b.onclick=close; });
+    wrap.addEventListener('click',function(e){ if(e.target===wrap) close(); });
+    var input=wrap.querySelector('#renameAvatarInput'), note=wrap.querySelector('#renameAvatarNote'), submit=wrap.querySelector('#renameAvatarSubmit');
+    input.value=avatar.name||'';
+    setTimeout(function(){ input.focus(); input.select(); },0);
+    submit.onclick=function(){
+      var name=input.value.trim();
+      if(!name){ note.style.color='#f4708a'; note.textContent='请输入形象名称'; return; }
+      submit.disabled=true; submit.style.opacity='.72'; note.style.color='#e7b24c'; note.textContent='正在保存...';
+      fetch('/api/gen/video/avatar-name',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({id:avatar.id,name:name})})
+        .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+        .then(function(res){
+          if(res.status===401){ HQ.login(); return; }
+          if(!res.data.ok) throw new Error(res.data.detail||'保存失败');
+          close(); load('avatar');
+        })
+        .catch(function(err){ submit.disabled=false; submit.style.opacity='1'; note.style.color='#f4708a'; note.textContent=err.message||'保存失败'; });
+    };
+    input.onkeydown=function(e){ if(e.key==='Enter') submit.click(); };
+  }
+  function deleteAvatar(avatar){
+    if(!confirm('确定删除这个数字人形象吗？只会从形象库移除，不会删除已生成的视频。')) return;
+    fetch('/api/gen/video/avatar-delete',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({id:avatar.id})})
+      .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+      .then(function(res){
+        if(res.status===401){ HQ.login(); return; }
+        if(!res.data.ok) throw new Error(res.data.detail||'删除失败');
+        load('avatar');
+      })
+      .catch(function(err){ alert(err.message||'删除失败'); });
   }
   function sectionTitle(t){
     var h=document.createElement('div'); h.textContent=t; h.style.cssText='grid-column:1/-1; margin:4px 0 -4px; font-size:14px; font-weight:700; color:#eaf1fa;';
@@ -851,6 +936,7 @@
   }
   function render(){
     if(cat==='audio'){ renderAudioAssets(); return; }
+    if(cat==='avatar'){ renderAvatarAssets(); return; }
     if(cat==='video'){
       grid.innerHTML='';
       if(!ALL.length){
@@ -870,6 +956,21 @@
       return;
     }
     renderImageAssets();
+  }
+  function renderAvatarAssets(){
+    grid.innerHTML='';
+    if(empty) empty.style.display='none';
+    if(skelH) skelH.style.display='none';
+    if(skelG) skelG.style.display='none';
+    grid.style.display='grid';
+    if(!ALL.length){
+      var e=document.createElement('div');
+      e.style.cssText='grid-column:1/-1; padding:34px 24px; text-align:center; font-size:13px; color:#94a4bb; border:1px dashed rgba(148,164,187,.16); border-radius:16px; background:rgba(148,164,187,.02); line-height:1.8;';
+      e.innerHTML='<div style="font-size:15px;font-weight:700;color:#eaf1fa;margin-bottom:6px;">还没有数字人形象</div><div>去「视频 → 动作模仿」用照片生成一次，形象会自动保存到这里。</div><a href="video.html" style="display:inline-flex;margin-top:14px;height:34px;padding:0 14px;align-items:center;justify-content:center;border-radius:9px;background:rgba(231,178,76,.1);border:1px solid rgba(231,178,76,.28);color:#e7b24c;text-decoration:none;font-size:12px;font-weight:700;">去生成数字人形象</a>';
+      grid.appendChild(e);
+      return;
+    }
+    ALL.forEach(function(x){ grid.appendChild(avatarCard(x)); });
   }
   // 图片资产：顶层一类，内部子筛选(样式仿音频资产子tab) 全部/文生图/图生图/局部修改
   function renderImageAssets(){
@@ -901,8 +1002,12 @@
   }
   function load(kind){
     currentLoadKind=kind;
-    var url=kind==='audio'?'/api/gen/audio/assets?limit=120':(kind==='video'?'/api/gen/video/assets?limit=120':'/api/gen/history?limit=120');
-    fetch(url,{headers:{'Authorization':'Bearer '+tok}}).then(function(r){return r.json();}).then(function(d){
+    var url=kind==='audio'?'/api/gen/audio/assets?limit=120':(kind==='video'?'/api/gen/video/assets?limit=120':(kind==='avatar'?'/api/gen/video/avatars?limit=120':'/api/gen/history?limit=120'));
+    var fetchUrl=kind==='avatar'?freshUrl(url):url;
+    var headers={'Authorization':'Bearer '+tok};
+    if(kind==='avatar') headers['Cache-Control']='no-cache';
+    fetch(fetchUrl,{cache:kind==='avatar'?'no-store':'default',headers:headers}).then(function(r){ if(r.status===401){ HQ.login(); return null; } return r.json(); }).then(function(d){
+      if(!d) return;
       ALL=d.items||[];
       if(kind==='audio' && !ALL.length){
         return fetch('/api/gen/history?limit=120&kind=audio',{headers:{'Authorization':'Bearer '+tok}})
@@ -914,7 +1019,7 @@
   }
   document.querySelectorAll('#catRow .chip').forEach(function(ch){ ch.onclick=function(){
     setCat(ch.getAttribute('data-cat'));
-    load(cat==='audio'?'audio':(cat==='video'?'video':'image'));
+    load(cat==='audio'?'audio':(cat==='video'?'video':(cat==='avatar'?'avatar':'image')));
   };});
   function setCat(next){
     cat=next||'all';
@@ -927,7 +1032,7 @@
     });
   }
   setCat(cat);
-  load(cat==='audio'?'audio':(cat==='video'?'video':'image'));
+  load(cat==='audio'?'audio':(cat==='video'?'video':(cat==='avatar'?'avatar':'image')));
 })();
 </script>
 </body>
