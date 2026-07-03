@@ -280,6 +280,14 @@
             <div class="faint" style="font-size:12px;margin-bottom:8px;">表情动作强度</div>
             <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-motion="low">低</button><button class="on" data-motion="medium">中等</button><button data-motion="high">高</button></div>
           </div>
+          <div>
+            <div class="faint" style="font-size:12px;margin-bottom:8px;">自动字幕 <span style="color:#47536a;">· 识别口播并烧录进画面</span></div>
+            <div class="seg" style="grid-template-columns:repeat(2,1fr);"><button class="on" data-subtitle="off">关闭</button><button data-subtitle="on">开启</button></div>
+          </div>
+          <div id="subtitleStyleRow" style="display:none;">
+            <div class="faint" style="font-size:12px;margin-bottom:8px;">字幕样式</div>
+            <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button class="on" data-substyle="white">白字黑边</button><button data-substyle="variety">综艺大字</button><button data-substyle="bar">底部半透条</button></div>
+          </div>
         </div>
       </div>
 
@@ -407,6 +415,7 @@
   var token=localStorage.getItem('hq_token')||'';
   var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='dapeng', activePreview=null, activePreviewBtn=null;
   var imageData='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
+  var selectedSubtitle='off', selectedSubtitleStyle='white';  // F4 字幕：默认关闭，不勾选时行为与原来一致
   var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='';
   var motionAvatars=[], selectedMotionAvatarId=null, useNewMotionImage=true, avatarsLoaded=false;
   var currentVideoDraft=null;
@@ -502,7 +511,8 @@
       waiting_avatar_look:{label:'数字人生成中（较久）',step:3,percent:68,eta:'预计还需 1-2 分钟'},
       creating_cinematic_video:{label:'生成视频',step:4,percent:76,eta:'预计还需 1-2 分钟'},
       polling_video:{label:'视频渲染中（较久）',step:4,percent:84,eta:'预计还需 1-2 分钟'},
-      downloading_video:{label:'下载成品',step:5,percent:94,eta:'即将完成'}
+      downloading_video:{label:'下载成品',step:5,percent:94,eta:'即将完成'},
+      burning_subtitle:{label:'烧录字幕',step:5,percent:97,eta:'即将完成'}
     };
     return map[ph] || {label:statusLabel(st)||'生成中',step:1,percent:12,eta:'正在处理'};
   }
@@ -899,6 +909,8 @@
     if(b.dataset.resolution) selectedResolution=b.dataset.resolution;
     if(b.dataset.ratio) selectedRatio=b.dataset.ratio;
     if(b.dataset.motion) selectedMotion=b.dataset.motion;
+    if(b.dataset.subtitle){selectedSubtitle=b.dataset.subtitle;var sr=$('subtitleStyleRow');if(sr)sr.style.display=(selectedSubtitle==='on'?'':'none');}
+    if(b.dataset.substyle) selectedSubtitleStyle=b.dataset.substyle;
     updateChecklist();
   };});
   $('scriptText').addEventListener('input',function(){$('charCount').textContent=$('scriptText').value.length+' / 1200';updateChecklist();});
@@ -968,6 +980,7 @@
           setTimeout(loadVideoHistory,800);
           if(result.mode==='motion') setTimeout(function(){loadMotionAvatars(true);},900);
           setVideoStatus('任务已创建，已保存到视频资产');
+          if(result.subtitle_error){toast('字幕生成失败，已保留无字幕视频');}
           $('previewTitle').textContent='任务已创建';
           $('previewSub').textContent='生成完成后可在视频资产中查看';
           return;
@@ -1063,7 +1076,9 @@
         voice:mode==='text'?selectedVoice:'',
         resolution:selectedResolution,
         ratio:selectedRatio,
-        motion:selectedMotion
+        motion:selectedMotion,
+        subtitle:selectedSubtitle==='on',
+        subtitle_style:selectedSubtitleStyle
       })
     }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
       .then(function(res){

@@ -12,7 +12,7 @@
 
 P1：图片(gpt-image-2)。P2 文案 / P3 视频按同样的 register_capability 往里加。
 """
-import os, re, sqlite3, json, time, threading, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess
+import os, re, sqlite3, json, time, threading, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess, uuid
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
@@ -1775,6 +1775,168 @@ def generate_heygen_motion_video(image_file, reference_video_file, resolution, r
         "duration": info.get("duration") or duration,
     }
 
+# ============ F4 · 口播视频自动字幕（whisper 时间轴 + libass 烧录） ============
+# 仅 text/audio 口播模式生效；motion 动作模仿不做字幕（多无语音，价值低）。
+# whisper 吃 CPU，用信号量把同时转写数限到 WHISPER_MAX_CONCURRENCY（默认 1），避免打满核。
+WHISPER_MODEL_NAME = os.environ.get("WHISPER_MODEL", "base")
+_whisper_sem = threading.BoundedSemaphore(max(1, int(os.environ.get("WHISPER_MAX_CONCURRENCY", "1") or "1")))
+_whisper_model = None
+_whisper_model_lock = threading.Lock()
+SUBTITLE_FONT = os.environ.get("SUBTITLE_FONT", "Noto Sans SC")  # 服务器已装，libass 可用
+# 三个预设样式；数值是相对视频高度的比例。ASS 颜色为 &HAABBGGRR。
+_SUB_STYLES = {
+    "white":   {"fs": 0.052, "primary": "&H00FFFFFF", "outline": "&H00000000", "back": "&H00000000", "border": 1, "ow": 3.0, "shadow": 1, "mv": 0.060},
+    "variety": {"fs": 0.066, "primary": "&H0000E5FF", "outline": "&H00202020", "back": "&H00000000", "border": 1, "ow": 4.0, "shadow": 1, "mv": 0.072},
+    "bar":     {"fs": 0.050, "primary": "&H00FFFFFF", "outline": "&H00000000", "back": "&H80101010", "border": 3, "ow": 8.0, "shadow": 0, "mv": 0.050},
+}
+
+def _sub_ffmpeg(cmd, timeout, cwd=None):
+    try:
+        subprocess.run(cmd, check=True, timeout=timeout, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        raise ValueError("服务器未安装 ffmpeg，无法烧录字幕")
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or b"").decode("utf-8", "replace")[-220:]
+        raise ValueError("字幕处理失败" + (": " + detail if detail else ""))
+    except subprocess.TimeoutExpired:
+        raise ValueError("字幕处理超时")
+
+def _get_whisper_model():
+    global _whisper_model
+    if _whisper_model is None:
+        with _whisper_model_lock:
+            if _whisper_model is None:
+                from faster_whisper import WhisperModel  # 服务器已装；本地/CI 不触发 import
+                _whisper_model = WhisperModel(WHISPER_MODEL_NAME, device="cpu", compute_type="int8")
+    return _whisper_model
+
+def _probe_video_size(fp):
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=width,height", "-of", "csv=s=x:p=0", str(fp)],
+            check=True, timeout=30, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        ).stdout.decode("utf-8", "replace").strip()
+        w, h = out.split("x")[:2]
+        return max(16, int(w)), max(16, int(h))
+    except Exception:
+        return 1080, 1920  # 兜底按 9:16 竖屏
+
+def _ass_time(sec):
+    cs = max(0, int(round(float(sec) * 100)))
+    h, cs = divmod(cs, 360000)
+    m, cs = divmod(cs, 6000)
+    s, cs = divmod(cs, 100)
+    return "%d:%02d:%02d.%02d" % (h, m, s, cs)
+
+def _ass_escape(t):
+    t = (t or "").replace("\\", "\\\\").replace("{", "(").replace("}", ")")  # 防 ASS 覆盖块注入
+    return t.replace("\r", " ").replace("\n", "\\N").strip()
+
+def _wrap_cn(text, max_chars):
+    text = (text or "").strip()
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    lines, cur = [], text
+    while len(cur) > max_chars and len(lines) < 2:
+        cut = cur.rfind("，", 0, max_chars + 1)
+        if cut < max_chars * 0.5:
+            cut = max_chars
+        lines.append(cur[:cut].strip("，"))
+        cur = cur[cut:].strip("，")
+    lines.append(cur)
+    return "\\N".join(l for l in lines if l)
+
+def _redistribute_known_text(known_text, segs):
+    # text 模式：保留 whisper 时间轴，用已知文案替换识别文本（按各段识别字数比例切分，减少错字）
+    kt = re.sub(r"\s+", "", known_text or "")
+    if not kt or not segs:
+        return segs
+    total = sum(max(1, len(s[2])) for s in segs)
+    out, pos, n = [], 0, len(segs)
+    for i, (st, en, rec) in enumerate(segs):
+        if i == n - 1:
+            chunk = kt[pos:]
+        else:
+            take = max(1, int(round(len(rec) / total * len(kt))))
+            chunk = kt[pos:pos + take]
+            pos += len(chunk)
+        out.append((st, en, chunk or rec))
+    return out
+
+def _build_ass(segs, style_key, w, h):
+    st = _SUB_STYLES.get(style_key) or _SUB_STYLES["white"]
+    fs = max(18, int(h * st["fs"]))
+    mv = max(10, int(h * st["mv"]))
+    mlr = max(10, int(w * 0.06))
+    max_chars = max(8, int(w / (fs * 0.62)))
+    head = [
+        "[Script Info]", "ScriptType: v4.00+", "PlayResX: %d" % w, "PlayResY: %d" % h,
+        "WrapStyle: 0", "ScaledBorderAndShadow: yes", "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        "Style: Default,%s,%d,%s,&H000000FF,%s,%s,-1,0,0,0,100,100,0,0,%d,%.1f,%d,2,%d,%d,%d,1" % (
+            SUBTITLE_FONT, fs, st["primary"], st["outline"], st["back"], st["border"], st["ow"], st["shadow"], mlr, mlr, mv),
+        "", "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, Effect, Text",
+    ]
+    body = []
+    for (start, end, text) in segs:
+        try:
+            start = float(start); end = float(end)
+        except Exception:
+            continue
+        if end <= start:
+            end = start + 1.2
+        line = _wrap_cn(_ass_escape(text), max_chars)  # 先转义再断行：否则 \N 的反斜杠会被二次转义成 \\N，画面出现多余反斜杠
+        if line:
+            body.append("Dialogue: 0,%s,%s,Default,,0,0,,%s" % (_ass_time(start), _ass_time(end), line))
+    return "\n".join(head + body) + "\n"
+
+def burn_subtitle(video_file, known_text=None, style_key="white", job_id=None):
+    """把 video_file 抽音频→whisper 转写→生成 .ass→ffmpeg 烧录，返回带字幕视频的相对路径。"""
+    src = _resolve_out_file(video_file)
+    if not src:
+        raise ValueError("字幕烧录：视频文件不存在")
+    tok = "%d_%s" % (int(time.time() * 1000), uuid.uuid4().hex[:8])  # 唯一，防同毫秒并发撞名/互相覆盖
+    wav = VIDEO_OUT_DIR / ("sub_%s.wav" % tok)
+    ass = VIDEO_OUT_DIR / ("sub_%s.ass" % tok)
+    out_rel = "video/subtitled_%s.mp4" % tok
+    out_fp = _out_path(out_rel)
+    try:
+        _sub_ffmpeg(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(src),
+                     "-vn", "-ar", "16000", "-ac", "1", str(wav)], timeout=300)
+        with _whisper_sem:  # 限制并发转写，避免多任务把 CPU 打满
+            update_video_asset_phase(job_id, "burning_subtitle")  # 心跳：拿到信号量、开始转写，刷新 updated_at 防 reaper 误杀
+            model = _get_whisper_model()
+            seg_iter, _info = model.transcribe(str(wav), language="zh", vad_filter=True)
+            segs = [(s.start, s.end, (s.text or "").strip()) for s in seg_iter if (s.text or "").strip()]
+        if not segs:
+            raise ValueError("字幕识别结果为空")
+        if known_text:  # text 模式：用已知文案替换识别文本，时间轴仍用 whisper
+            try:
+                segs = _redistribute_known_text(known_text, segs)
+            except Exception:
+                pass
+        w, h = _probe_video_size(src)
+        ass.write_text(_build_ass(segs, (style_key or "white"), w, h), encoding="utf-8")
+        update_video_asset_phase(job_id, "burning_subtitle")  # 心跳：开始烧录
+        # cwd=视频目录 + ass 用文件名，避免 filtergraph 路径转义问题
+        _sub_ffmpeg(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(src),
+                     "-vf", "ass=" + ass.name, "-c:v", "libx264", "-preset", "veryfast",
+                     "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "copy", str(out_fp)],
+                    timeout=600, cwd=str(VIDEO_OUT_DIR))
+        if not out_fp.exists() or out_fp.stat().st_size <= 0:
+            raise ValueError("字幕烧录输出为空")
+        return out_rel
+    finally:
+        for tmp in (wav, ass):
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
+
 def gen_video(payload):
     job_id = payload.get("_job_id")
     mode = (payload.get("mode") or "text").strip()
@@ -1850,6 +2012,23 @@ def gen_video(payload):
                                                  video_result.get("avatar_item_id"), video_result.get("avatar_group_id"))
     else:
         video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
+    # F4：口播模式（text/audio）可选自动字幕；失败不影响已生成的视频（保留原片 + 记录错误）
+    subtitle_on = False
+    subtitle_error = None
+    subtitle_style = (payload.get("subtitle_style") or "white").strip()
+    if subtitle_style not in _SUB_STYLES:
+        subtitle_style = "white"
+    if payload.get("subtitle") and mode in {"text", "audio"} and video_result.get("video_file"):
+        try:
+            update_video_asset_phase(job_id, "burning_subtitle")
+            known = text if mode == "text" else None
+            subtitled = burn_subtitle(video_result["video_file"], known_text=known, style_key=subtitle_style, job_id=job_id)
+            video_result["plain_video_file"] = video_result.get("video_file")
+            video_result["video_file"] = subtitled
+            video_result["video_url"] = _file_url(subtitled)
+            subtitle_on = True
+        except Exception as e:
+            subtitle_error = str(e)[:200]
     return {
         "type": "video", "status": "done", "mode": mode,
         "image_file": image_file, "image_url": _file_url(image_file),
@@ -1869,6 +2048,10 @@ def gen_video(payload):
         "thumbnail_url": video_result.get("thumbnail_url"), "duration": video_result.get("duration"),
         "resolution": resolution, "ratio": ratio, "motion": motion,
         "phase": "done",
+        "subtitle": subtitle_on,
+        "subtitle_style": subtitle_style if subtitle_on else None,
+        "subtitle_error": subtitle_error,
+        "plain_video_file": video_result.get("plain_video_file"),
         "message": "视频生成完成"
     }
 
