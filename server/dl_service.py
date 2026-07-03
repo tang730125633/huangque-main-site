@@ -17,7 +17,8 @@ UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML,
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # 直连，绕过环境代理(服务器有 HTTPS_PROXY 给 OpenAI 用)
 ALLOW = (".zjcdn.com", ".douyinvod.com", ".douyinstatic.com", ".douyinpic.com", ".amemv.com",
          ".bytecdn.cn", ".ixigua.com", ".pstatp.com", ".snssdk.com", ".byteimg.com",
-         ".xhscdn.com", ".rednotecdn.com", ".xiaohongshu.com")  # 防 SSRF：只允许已知视频 CDN
+         ".xhscdn.com", ".rednotecdn.com", ".xiaohongshu.com",
+         "wxapp.tc.qq.com")  # 视频号视频 CDN(加密时效直链)；防 SSRF 只放精确域名不放泛 .qq.com
 
 
 class H(BaseHTTPRequestHandler):

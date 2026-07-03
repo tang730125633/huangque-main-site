@@ -202,7 +202,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=14"></script>
+<script src="cloud-shell.js?v=15"></script>
 <script>
 /* 编导页接 /api/gen/copy（format=script）→ 结构化分镜脚本 */
 (function(){
@@ -248,7 +248,7 @@
         if(x.s===402){ setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
         if(!x.d.job_id){ setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+((x.d&&x.d.detail)||'未知')+'</div>'; return; }
         var iv=setInterval(function(){
-          fetch('/api/gen/job/'+x.d.job_id).then(function(r){return r.json();}).then(function(d){
+          fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
             if(d.status==='done'){ clearInterval(iv); setBtn(orig,false); render(d.result, t, style, dur); if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints(); }
             else if(d.status==='error'){ clearInterval(iv); setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">失败：'+(d.error||'')+' · 已退点</div>'; }
           }).catch(function(){});

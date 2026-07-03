@@ -131,17 +131,33 @@
 </div></div>
 <div id="toast" class="toast"></div>
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=14"></script>
+<script src="cloud-shell.js?v=15"></script>
 <script>
 (function(){
   var tok=localStorage.getItem('hq_token')||'';
   if(!tok){ location.href='../login.html?redirect=workbench/audio'; return; }
   var publicFallback=[
-    {scope:'public',voice_key:'dapeng',display_name:'大鹏 IVC',provider_voice:'dapeng',sub:'克隆 · 亲切'},
-    {scope:'public',voice_key:'zelong',display_name:'泽龙 IVC',provider_voice:'zelong',sub:'克隆 · 磁性'},
-    {scope:'public',voice_key:'paul',display_name:'Paul 男声',provider_voice:'paul',sub:'官方 · 沉稳'}
+    {scope:'public',voice_key:'S_d21F8OR62',display_name:'温柔女声',provider_voice:'S_d21F8OR62',sub:'情感种草 · 柔和自然'},
+    {scope:'public',voice_key:'S_l8wE8OR62',display_name:'活力女声',provider_voice:'S_l8wE8OR62',sub:'广告推荐 · 明亮有记忆点'},
+    {scope:'public',voice_key:'S_pa0E8OR62',display_name:'沉稳男声',provider_voice:'S_pa0E8OR62',sub:'知识口播 · 稳重清晰'},
+    {scope:'public',voice_key:'S_xaUB8OR62',display_name:'亲和女声',provider_voice:'S_xaUB8OR62',sub:'本地生活 · 真实亲切'}
   ];
-  var voices=[], voiceTab='public', selectedVoice='dapeng', activePreview=null, activePreviewBtn=null, currentAudioUrl='';
+  var publicVoiceMeta={
+    S_d21F8OR62:{display_name:'温柔女声',sub:'情感种草 · 柔和自然'},
+    S_l8wE8OR62:{display_name:'活力女声',sub:'广告推荐 · 明亮有记忆点'},
+    S_pa0E8OR62:{display_name:'沉稳男声',sub:'知识口播 · 稳重清晰'},
+    S_xaUB8OR62:{display_name:'亲和女声',sub:'本地生活 · 真实亲切'}
+  };
+  function normalizeVoice(v){
+    v=Object.assign({},v||{});
+    var meta=publicVoiceMeta[v.voice_key];
+    if(v.scope==='public' && meta){
+      v.display_name=meta.display_name;
+      v.sub=meta.sub;
+    }
+    return v;
+  }
+  var voices=[], voiceTab='public', selectedVoice='S_d21F8OR62', activePreview=null, activePreviewBtn=null, currentAudioUrl='';
   var params={speed:1.0,pitch:0,volume:0};
   var el=function(id){return document.getElementById(id);};
   function toast(msg){var t=el('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},1800);}
@@ -183,12 +199,12 @@
       .then(function(r){if(r.status===401){location.href='../login.html?redirect=workbench/audio';return Promise.reject();}return r.json();})
       .then(function(d){
         var got=d.items||[];
-        var publics=got.filter(function(v){return v.scope==='public';});
+        var publics=got.filter(function(v){return v.scope==='public';}).map(normalizeVoice);
         var personals=got.filter(function(v){return v.scope==='personal' && v.provider_voice && v.preview_url;});
-        voices=(publics.length?publics:publicFallback).concat(personals);
+        voices=(publics.length?publics:publicFallback.map(normalizeVoice)).concat(personals);
         if(!voices.some(function(v){return v.voice_key===selectedVoice;})) selectedVoice=(voices[0]||publicFallback[0]).voice_key;
         renderVoices();
-      }).catch(function(){voices=publicFallback;renderVoices();});
+      }).catch(function(){voices=publicFallback.map(normalizeVoice);renderVoices();});
   }
   function loadRecent(){
     fetch(fresh('/api/gen/audio/assets?limit=8'),{cache:'no-store',headers:{Authorization:'Bearer '+tok,'Cache-Control':'no-cache'}})

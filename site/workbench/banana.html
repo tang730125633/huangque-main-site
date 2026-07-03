@@ -129,7 +129,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=14"></script>
+<script src="cloud-shell.js?v=15"></script>
 <script>
 /* 作图页接后端能力中心 /api/gen/image + /api/gen/banana
    三模式同一入口：无图=文生图 / 有图=图生图 / 有图+蒙版=局部修改（gpt-image专属）。点数后端统一扣。 */
@@ -244,7 +244,7 @@
   }
   function poll(id, t0, label){
     var iv=setInterval(function(){
-      fetch('/api/gen/job/'+id).then(function(r){return r.json();}).then(function(d){
+      fetch('/api/gen/job/'+id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
         if(!d.status){ clearInterval(iv); busy(false); localStorage.removeItem('hq_active_job'); return; }
         var sec=Math.round((Date.now()-t0)/1000);
         if(d.status==='done'){ clearInterval(iv); showResult(d.result); busy(false); setNote('✅ 出图完成（'+sec+'s）· 点数已更新','#2bd576'); localStorage.removeItem('hq_active_job'); if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints(); loadHistory(); }

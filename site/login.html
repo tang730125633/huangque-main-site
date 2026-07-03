@@ -161,6 +161,14 @@
           <span style="display:flex; width:17px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></span>
           <input id="password" type="password" placeholder="请输入密码" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
         </div>
+        <div id="rowDisplayName" style="display:none; align-items:center; gap:11px; padding:0 15px; height:48px; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px;">
+          <span style="display:flex; width:17px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg></span>
+          <input id="displayName" maxlength="32" placeholder="昵称（可选，最多32字）" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
+        </div>
+        <div id="rowConfirmPwd" style="display:none; align-items:center; gap:11px; padding:0 15px; height:48px; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px;">
+          <span style="display:flex; width:17px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
+          <input id="confirmPassword" type="password" placeholder="请再次输入密码" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
+        </div>
       </div>
       <div style="display:flex; align-items:center; justify-content:space-between; margin-top:18px;">
         <label id="remember" style="display:flex; align-items:center; gap:8px; font-size:13px; color:#94a4bb; cursor:pointer;">
@@ -172,6 +180,7 @@
       <div id="msg" style="text-align:center; font-size:12.5px; margin-top:12px; min-height:16px; color:#f4708a;"></div>
       <div style="display:flex; align-items:center; gap:14px; margin:16px 0 16px; color:#5c6b82; font-size:12px;"><div style="flex:1; height:1px; background:rgba(148,164,187,.12);"></div>或<div style="flex:1; height:1px; background:rgba(148,164,187,.12);"></div></div>
       <div id="teamLogin" style="text-align:center; font-size:14px; color:#2dd4bf; cursor:pointer; font-weight:500;">团队口令登录 →</div>
+      <div id="registerToggle" style="text-align:center; font-size:13.5px; color:#e7b24c; cursor:pointer; font-weight:600; margin-top:12px;">注册新账号</div>
       <div style="text-align:center; font-size:11.5px; color:#5c6b82; margin-top:18px;">登录即代表您同意 <span style="color:#94a4bb;">《用户协议》</span> 与 <span style="color:#94a4bb;">《隐私政策》</span></div>
     </div>
   </div>
@@ -181,12 +190,15 @@
 <script>
 (function(){
   "use strict";
-  var phone=true, remember=false;
+  var phone=true, remember=false, registering=false;
   var tabPhone=document.getElementById("tabPhone"), tabPwd=document.getElementById("tabPwd");
   var rowPhone=document.getElementById("rowPhone"), rowPwd=document.getElementById("rowPwd");
+  var rowDisplayName=document.getElementById("rowDisplayName"), rowConfirmPwd=document.getElementById("rowConfirmPwd");
+  var registerToggle=document.getElementById("registerToggle"), teamLogin=document.getElementById("teamLogin");
   var msg=document.getElementById("msg"), btn=document.getElementById("submitBtn");
   function setMsg(t,kind){ msg.textContent=t||""; msg.style.color=(kind==="ok")?"#2bd576":(kind==="err"?"#f4708a":"#94a4bb"); }
   function setTab(p){
+    if(registering) p=false;
     phone=p;
     tabPhone.style.borderBottomColor=p?"#e7b24c":"transparent"; tabPhone.style.color=p?"#eaf1fa":"#94a4bb";
     tabPwd.style.borderBottomColor=p?"transparent":"#e7b24c"; tabPwd.style.color=p?"#94a4bb":"#eaf1fa";
@@ -201,7 +213,65 @@
   };
   document.getElementById("getCode").onclick=function(){ setMsg("验证码登录即将上线，请用密码登录","err"); };
 
+  function enterWorkbench(user){
+    try{
+      localStorage.removeItem("hq_role");
+      if(user) localStorage.setItem("hq_user",JSON.stringify(user));
+    }catch(e){}
+    var role=(user && user.role) || "member";
+    var rd=new URLSearchParams(location.search).get("redirect");
+    var dest=(rd && /^[a-zA-Z0-9_-]+$/.test(rd)) ? rd : (role==="admin" ? "dashboard" : "inspiration");
+    location.href="workbench/"+dest+".html";
+  }
+  function saveToken(token,user){
+    try{ localStorage.setItem("hq_token",token); }catch(e){}
+    enterWorkbench(user);
+  }
+  function setRegisterMode(on){
+    registering=!!on;
+    setMsg("");
+    setTab(false);
+    rowDisplayName.style.display=registering?"flex":"none";
+    rowConfirmPwd.style.display=registering?"flex":"none";
+    tabPhone.style.display=registering?"none":"block";
+    tabPwd.textContent=registering?"注册账号":"密码登录";
+    btn.textContent=registering?"注 册":"登 录";
+    registerToggle.textContent=registering?"已有账号，返回登录":"注册新账号";
+    teamLogin.style.display=registering?"none":"block";
+    document.getElementById("remember").style.visibility=registering?"hidden":"visible";
+  }
+  function doRegister(){
+    var username=(document.getElementById("username").value||"").trim();
+    var displayName=(document.getElementById("displayName").value||"").trim();
+    var password=document.getElementById("password").value||"";
+    var confirmPassword=document.getElementById("confirmPassword").value||"";
+    if(!username||!password){ setMsg("请填写账号和密码","err"); return; }
+    if(displayName.length>32){ setMsg("昵称最多 32 个字符","err"); return; }
+    if(password.length<6){ setMsg("密码至少 6 位","err"); return; }
+    if(password!==confirmPassword){ setMsg("两次输入的密码不一致","err"); return; }
+    btn.disabled=true; btn.style.opacity=".7"; setMsg("注册中…");
+    fetch("/api/auth/register",{
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({username:username,password:password,display_name:displayName})
+    }).then(function(r){
+      if(r.status===404){ throw new Error("__nobackend__"); }
+      return r.json().then(function(d){ return {ok:r.ok,d:d}; });
+    }).then(function(res){
+      if(res.ok && res.d && res.d.token){
+        setMsg("注册成功，正在进入…","ok");
+        saveToken(res.d.token,res.d.user);
+      }else{
+        btn.disabled=false; btn.style.opacity="1"; setMsg((res.d&&res.d.detail)||"注册失败，请重试","err");
+      }
+    }).catch(function(err){
+      btn.disabled=false; btn.style.opacity="1";
+      if(err&&err.message==="__nobackend__"){ setMsg("注册服务尚未上线，请先部署认证后端","err"); }
+      else if(location.protocol==="file:"){ setMsg("请通过网站地址打开页面，本地文件无法连接注册接口","err"); }
+      else{ setMsg("注册接口连接失败，请确认认证服务已部署","err"); }
+    });
+  }
   function doLogin(){
+    if(registering){ return doRegister(); }
     var username=(document.getElementById("username").value||"").trim();
     var secret=phone ? (document.getElementById("code").value||"") : (document.getElementById("password").value||"");
     if(!username||!secret){ setMsg(phone?"请填写账号和验证码":"请填写账号和密码","err"); return; }
@@ -214,12 +284,8 @@
       return r.json().then(function(d){ return {ok:r.ok,d:d}; });
     }).then(function(res){
       if(res.ok && res.d && res.d.token){
-        try{ localStorage.removeItem("hq_role"); localStorage.setItem("hq_token",res.d.token); if(res.d.user) localStorage.setItem("hq_user",JSON.stringify(res.d.user)); }catch(e){}
         setMsg("登录成功，正在进入…","ok");
-        var role=(res.d.user && res.d.user.role) || "member";
-        var rd=new URLSearchParams(location.search).get("redirect");
-        var dest=(rd && /^[a-zA-Z0-9_-]+$/.test(rd)) ? rd : (role==="admin" ? "dashboard" : "inspiration");
-        location.href="workbench/"+dest+".html";
+        saveToken(res.d.token,res.d.user);
       }else{
         btn.disabled=false; btn.style.opacity="1"; setMsg((res.d&&res.d.detail)||"账号或密码错误","err");
       }
@@ -230,9 +296,10 @@
     });
   }
   btn.onclick=doLogin;
-  document.getElementById("teamLogin").onclick=doLogin;
+  teamLogin.onclick=doLogin;
+  registerToggle.onclick=function(){ setRegisterMode(!registering); };
   [["username","code","password"]].forEach(function(){});
-  ["username","code","password"].forEach(function(id){
+  ["username","code","password","displayName","confirmPassword"].forEach(function(id){
     var el=document.getElementById(id); if(el) el.addEventListener("keydown",function(e){ if(e.key==="Enter") doLogin(); });
   });
 
