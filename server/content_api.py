@@ -1469,10 +1469,16 @@ def _heygen_create_photo_avatar(image_asset_id):
         raise RuntimeError("HeyGen未返回avatar_item_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
     return avatar_item_id, avatar_group_id
 
-def _avatar_ready_from_payload(data, avatar_item_id):
-    def is_item(d):
-        return str(d.get("id") or "") == avatar_item_id
-    item = _find_nested_dict(data, is_item)
+def _avatar_ready_from_payload(data, avatar_item_id, avatar_group_id=""):
+    def is_avatar(d):
+        current_id = str(d.get("id") or "")
+        preview_url = str(d.get("preview_image_url") or "")
+        return (
+            current_id == avatar_item_id
+            or bool(avatar_group_id and current_id == avatar_group_id)
+            or bool(avatar_item_id and avatar_item_id in preview_url)
+        )
+    item = _find_nested_dict(data, is_avatar)
     if not item:
         return False
     status = str(item.get("status") or item.get("state") or "").lower()
@@ -1493,9 +1499,9 @@ def _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id=""):
         except Exception as e:
             last_status = str(e)[:120]
         for data in payloads:
-            if _avatar_ready_from_payload(data, avatar_item_id):
+            if _avatar_ready_from_payload(data, avatar_item_id, avatar_group_id):
                 return True
-            item = _find_nested_dict(data, lambda d: str(d.get("id") or "") == avatar_item_id)
+            item = _find_nested_dict(data, lambda d: str(d.get("id") or "") in {avatar_item_id, avatar_group_id})
             if item:
                 status = str(item.get("status") or item.get("state") or "processing")
                 if status != last_status:
