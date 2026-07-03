@@ -1011,6 +1011,14 @@ def list_video_assets(username, limit=120):
             ORDER BY id DESC LIMIT ?""", (username, limit)).fetchall()
     return [dict(r) for r in rows]
 
+def get_video_job_phase(job_id):
+    try:
+        with closing(adb()) as c:
+            row = c.execute("SELECT phase FROM video_assets WHERE job_id=?", (job_id,)).fetchone()
+        return row["phase"] if row else None
+    except Exception:
+        return None
+
 def _avatar_display_name(username):
     with closing(adb()) as c:
         row = c.execute("SELECT COUNT(*) AS n FROM avatars WHERE username=?", (username,)).fetchone()
@@ -2014,6 +2022,8 @@ class H(BaseHTTPRequestHandler):
             if d.get("result"):
                 try: d["result"] = json.loads(d["result"])
                 except Exception: pass
+            if d.get("kind") == "video":
+                d["phase"] = get_video_job_phase(jid)
             return self._send(200, d)
         if p == "/api/gen/dl":   # 无水印视频下载代理：直连拉 CDN → 附件流回(强制下载)
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
