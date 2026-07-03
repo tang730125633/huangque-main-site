@@ -76,6 +76,14 @@ HEYGEN_API_KEY = os.environ.get("HEYGEN_API_KEY", "")
 HEYGEN_API_BASE = os.environ.get("HEYGEN_API_BASE", "https://api.heygen.com/v3")
 HEYGEN_POLL_INTERVAL = max(3, int(os.environ.get("HEYGEN_POLL_INTERVAL", "8")))
 HEYGEN_TIMEOUT = max(60, int(os.environ.get("HEYGEN_TIMEOUT", "1200")))
+try:
+    VIDEO_COST = max(0, int(os.environ.get("VIDEO_COST", "20")))
+except Exception:
+    VIDEO_COST = 20
+COST["video"] = VIDEO_COST
+VIDEO_RESOLUTIONS = {"720p", "1080p", "4k"}
+VIDEO_RATIOS = {"9:16", "16:9", "1:1", "4:5", "5:4"}
+VIDEO_MOTIONS = {"low", "medium", "high"}
 
 def cost_of(kind, body):
     """动态点数：TikHub 按次计费，采集/获客调用数随参数变。约 5x buff 折算成点。"""
@@ -884,15 +892,36 @@ def list_audio_assets(username, limit=120):
 
 def record_video_asset(job_id, username, result):
     now = int(time.time())
+    status = result.get("status") or "pending"
+    error = result.get("error")
     with closing(adb()) as c:
-        c.execute("""INSERT OR REPLACE INTO video_assets
+        cur = c.execute("""UPDATE video_assets SET
+            mode=COALESCE(?, mode),
+            image_file=COALESCE(?, image_file),
+            audio_file=COALESCE(?, audio_file),
+            video_file=COALESCE(?, video_file),
+            video_url=COALESCE(?, video_url),
+            text=COALESCE(?, text),
+            voice_key=COALESCE(?, voice_key),
+            resolution=COALESCE(?, resolution),
+            ratio=COALESCE(?, ratio),
+            motion=COALESCE(?, motion),
+            status=?,
+            error=?,
+            updated_at=?
+            WHERE job_id=? AND username=?""",
+            (result.get("mode"), result.get("image_file"), result.get("audio_file"),
+             result.get("video_file"), result.get("video_url"), result.get("text"), result.get("voice"),
+             result.get("resolution"), result.get("ratio"), result.get("motion"), status, error,
+             now, job_id, username))
+        if cur.rowcount < 1:
+            c.execute("""INSERT INTO video_assets
             (job_id, username, mode, image_file, audio_file, video_file, video_url, text, voice_key,
              resolution, ratio, motion, status, error, created_at, updated_at)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (job_id, username, result.get("mode"), result.get("image_file"), result.get("audio_file"),
              result.get("video_file"), result.get("video_url"), result.get("text"), result.get("voice"),
-             result.get("resolution"), result.get("ratio"), result.get("motion"), result.get("status") or "pending",
-             result.get("error"), now, now))
+             result.get("resolution"), result.get("ratio"), result.get("motion"), status, error, now, now))
         c.commit()
 
 def record_video_pending_asset(job_id, username, payload):
@@ -961,9 +990,95 @@ def _require_b64_image(body, field):
         raise ValueError("%s 必须是合法 base64；文生图请不要传 image/mask" % field)
     body[field] = raw
 
+def _decode_data_url(value, field, allowed_mimes, required=False):
+    raw = (value or "").strip()
+    if not raw:
+        if required:
+            raise ValueError("%s 不能为空" % field)
+        return "", "", b""
+    if not raw.lower().startswith("data:") or "," not in raw:
+        raise ValueError("%s 必须是 data URL，例如 data:image/png;base64,..." % field)
+    meta, b64 = raw.split(",", 1)
+    mime = meta.split(";", 1)[0].replace("data:", "").lower()
+    if mime not in allowed_mimes:
+        raise ValueError("%s 文件格式不支持" % field)
+    if ";base64" not in meta.lower():
+        raise ValueError("%s 必须是 base64 编码" % field)
+    try:
+        data = base64.b64decode("".join(b64.split()), validate=True)
+    except Exception:
+        raise ValueError("%s 内容不是合法 base64" % field)
+    if not data:
+        raise ValueError("%s 文件内容不能为空" % field)
+    if len(data) > 35 * 1024 * 1024:
+        raise ValueError("%s 文件过大，请压缩后再上传" % field)
+    return mime, b64, data
+
+def _looks_like_image(mime, data):
+    if mime == "image/png":
+        return data.startswith(b"\x89PNG\r\n\x1a\n")
+    if mime == "image/jpeg":
+        return data.startswith(b"\xff\xd8\xff")
+    if mime == "image/webp":
+        return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+    return False
+
+def _looks_like_audio(mime, data):
+    if mime in {"audio/mpeg", "audio/mp3"}:
+        return data.startswith(b"ID3") or data[:2] in {b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"}
+    if mime in {"audio/wav", "audio/x-wav"}:
+        return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
+    if mime in {"audio/mp4", "audio/x-m4a"}:
+        return len(data) >= 12 and data[4:8] == b"ftyp"
+    return False
+
+def _validate_video_payload(body):
+    mode = (body.get("mode") or "text").strip()
+    if mode not in {"text", "audio"}:
+        raise ValueError("mode 仅支持 text 或 audio")
+    mime, _, image_data = _decode_data_url(
+        body.get("image_data"), "image_data",
+        {"image/png", "image/jpeg", "image/webp"}, required=True)
+    if not _looks_like_image(mime, image_data):
+        raise ValueError("image_data 不是有效的人物形象图片")
+    resolution = (body.get("resolution") or "1080p").strip()
+    ratio = (body.get("ratio") or "9:16").strip()
+    motion = (body.get("motion") or "medium").strip()
+    if resolution not in VIDEO_RESOLUTIONS:
+        raise ValueError("resolution 仅支持: " + ", ".join(sorted(VIDEO_RESOLUTIONS)))
+    if ratio not in VIDEO_RATIOS:
+        raise ValueError("ratio 仅支持: " + ", ".join(sorted(VIDEO_RATIOS)))
+    if motion not in VIDEO_MOTIONS:
+        raise ValueError("motion 仅支持: " + ", ".join(sorted(VIDEO_MOTIONS)))
+    body["mode"] = mode
+    body["resolution"] = resolution
+    body["ratio"] = ratio
+    body["motion"] = motion
+    if mode == "text":
+        text = (body.get("text") or "").strip()
+        voice = (body.get("voice") or "").strip()
+        if not text:
+            raise ValueError("mode=text 时 text 必填")
+        if len(text) > 1200:
+            raise ValueError("口播文案过长，请控制在 1200 字以内")
+        if not voice:
+            raise ValueError("mode=text 时 voice 必填")
+        body["text"] = text
+        body["voice"] = voice
+    else:
+        mime, _, audio_data = _decode_data_url(
+            body.get("audio_data"), "audio_data",
+            {"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/mp4", "audio/x-m4a"},
+            required=True)
+        if not _looks_like_audio(mime, audio_data):
+            raise ValueError("audio_data 不是有效的口播音频")
+    return body
+
 def validate_submit_payload(kind, body):
     if not isinstance(body, dict):
         raise ValueError("请求体必须是 JSON 对象")
+    if kind == "video":
+        return _validate_video_payload(body)
     if kind != "image":
         return body
     prompt = (body.get("prompt") or "").strip()
@@ -1575,6 +1690,11 @@ def reaper():
                     if r["kind"] == "image" and r["updated_at"] >= int(time.time()) - 900:
                         continue  # 多图/中转出图慢，给 image 15 分钟余量
                     add_points(r["username"], r["cost"])  # 退点
+                    if r["kind"] == "video":
+                        record_video_asset(r["id"], r["username"], {
+                            "status": "failed",
+                            "error": "生成超时自动结束(>6分钟)，已退点",
+                        })
                     c.execute("UPDATE jobs SET status='error', error='生成超时自动结束(>6分钟)，已退点', updated_at=? WHERE id=?",
                               (int(time.time()), r["id"]))
                 if stuck: c.commit()
@@ -1599,7 +1719,8 @@ class H(BaseHTTPRequestHandler):
         try:
             n = int(self.headers.get("Content-Length") or 0)
             return json.loads(self.rfile.read(n) or b"{}")
-        except Exception: return {}
+        except Exception:
+            raise ValueError("请求体不是合法 JSON")
 
     def do_POST(self):
         p = self.path.split("?")[0]
@@ -1608,37 +1729,43 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/gen/audio/redeem-slot":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
-            body = self._json_body()
             try:
+                body = self._json_body()
                 slot = redeem_audio_voice_slot(user["username"], body.get("code"))
                 return self._send(200, {"ok": True, "slot": slot})
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/audio/voice-name":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
-            body = self._json_body()
             try:
+                body = self._json_body()
                 voice = rename_audio_voice(user["username"], body.get("slot_id"), body.get("name"))
                 return self._send(200, {"ok": True, "voice": voice})
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/audio/clone-vip":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
-            body = self._json_body()
             try:
+                body = self._json_body()
                 voice = mark_clone_training(user["username"], body.get("slot_id"), body.get("name"))
                 threading.Thread(target=clone_vip_voice_background, args=(user["username"], body), daemon=True).start()
                 return self._send(200, {"ok": True, "voice": voice})
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:220]})
         if p.startswith("/api/gen/") and p[9:] in HANDLERS:
             kind = p[9:]
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
-            body = self._json_body()
             try:
+                body = self._json_body()
                 body = validate_submit_payload(kind, body)
             except ValueError as e:
                 return self._send(400, {"detail": str(e)})
