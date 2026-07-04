@@ -60,7 +60,7 @@ def _resolve_out_file(rel):
     return None
 
 # ---- 能力定义：成本(点数) + 处理函数 ----
-COST = {"image": 12, "copy": 3, "audio": 10, "video": 0}  # 视频任务壳暂不扣点；collect/leads 走 cost_of() 动态算
+COST = {"image": 12, "copy": 3, "audio": 10, "video": 0, "tryon": 40}  # 视频任务壳暂不扣点；collect/leads/tryon 走 cost_of() 动态算
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
 ZELONG_KEY  = os.environ.get("ZELONG_KEY", "")                              # 泽龙Ai 中转站(OpenAI 兼容)
 ZELONG_BASE = os.environ.get("ZELONG_BASE", "https://api.xiaoleai.team")
@@ -385,7 +385,7 @@ def run_job(job_id):
         r = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
     if not r: return
     kind = r["kind"]; payload = json.loads(r["payload"] or "{}")
-    if kind in {"audio", "video"}:
+    if kind in {"audio", "video", "tryon"}:
         payload["_username"] = r["username"]
         payload["_job_id"] = job_id
     try:
@@ -395,13 +395,13 @@ def run_job(job_id):
         audio_domain, _, video_domain = _domains()
         if kind == "audio":
             audio_domain.record_audio_asset(job_id, r["username"], result)
-        if kind == "video":
+        if kind in {"video", "tryon"}:
             video_domain.record_video_asset(job_id, r["username"], result)
         with closing(jdb()) as c:
             c.execute("UPDATE jobs SET status='done', result=?, updated_at=? WHERE id=?",
                       (json.dumps(result, ensure_ascii=False), int(time.time()), job_id)); c.commit()
     except Exception as e:
-        if kind == "video":
+        if kind in {"video", "tryon"}:
             try:
                 failed = dict(payload)
                 failed.update({"status": "failed", "error": str(e)[:300]})
@@ -423,6 +423,8 @@ def reaper():
             with closing(jdb()) as c:
                 stuck = c.execute("SELECT id, username, cost, kind, updated_at FROM jobs WHERE status='running' AND updated_at < ?", (cutoff,)).fetchall()
                 for r in stuck:
+                    if r["kind"] == "tryon" and r["updated_at"] >= int(time.time()) - 2400:
+                        continue  # 换装+换背景两段式慢，心跳会刷新 updated_at，给 40 分钟余量
                     if r["kind"] == "video" and r["updated_at"] >= int(time.time()) - 1800:
                         continue
                     if r["kind"] == "image" and r["updated_at"] >= int(time.time()) - 900:
@@ -534,7 +536,7 @@ class H(BaseHTTPRequestHandler):
                 cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)",
                                 (kind, user["username"], cost, json.dumps(body, ensure_ascii=False), now, now))
                 c.commit(); jid = cur.lastrowid
-            if kind == "video":
+            if kind in {"video", "tryon"}:
                 video_domain.record_video_pending_asset(jid, user["username"], body)
             threading.Thread(target=run_job, args=(jid,), daemon=True).start()
             return self._send(200, {"job_id": jid, "cost": cost, "points_left": points_left})
@@ -562,7 +564,7 @@ class H(BaseHTTPRequestHandler):
             if d.get("result"):
                 try: d["result"] = json.loads(d["result"])
                 except Exception: pass
-            if d.get("kind") == "video":
+            if d.get("kind") in {"video", "tryon"}:
                 d["phase"] = video_domain.get_video_job_phase(jid)
             return self._send(200, d)
         if p == "/api/gen/dl":   # 无水印视频下载代理：直连拉 CDN → 附件流回(强制下载)

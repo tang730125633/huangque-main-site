@@ -199,6 +199,7 @@
       <div class="function-tabs" aria-label="视频功能分页">
         <button class="function-tab on" type="button" data-function="talking">数字人口播</button>
         <button class="function-tab" type="button" data-function="motion">动作模仿</button>
+        <button class="function-tab" type="button" data-function="tryon">换装换背景</button>
       </div>
 
       <div id="templatePanel" class="template-panel">
@@ -354,6 +355,39 @@
         </button>
         <div id="motionStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">生成完成后会自动保存到视频资产</div>
       </div>
+
+      <div id="tryonPanel" class="function-panel motion-panel hidden">
+        <div class="row">
+          <div>
+            <div class="label">换装换背景</div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">给真人视频换衣服和/或换背景</div>
+          </div>
+          <span class="faint" style="font-size:11.5px;">保持原人脸/动作/镜头，只换衣服和背景</span>
+        </div>
+        <div id="tryonGrid" class="motion-grid" style="grid-template-columns:1fr 1fr 1fr;">
+          <label id="tryonVideoDrop" class="motion-drop">
+            <input id="tryonVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden>
+            <strong>换装视频（必选）</strong>
+            <span>上传需要换装/换背景的真人视频</span>
+          </label>
+          <label id="tryonClothesDrop" class="motion-drop">
+            <input id="tryonClothesFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+            <strong>衣服图（可选）</strong>
+            <span>上传目标衣服参考图</span>
+          </label>
+          <label id="tryonBgDrop" class="motion-drop">
+            <input id="tryonBgFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+            <strong>背景图（可选）</strong>
+            <span>上传目标背景参考图</span>
+          </label>
+        </div>
+        <div id="tryonModeHint" class="faint" style="font-size:12px;margin-top:14px;">请至少上传衣服图或背景图</div>
+        <div class="faint" style="font-size:11.5px;margin-top:8px;">两段式生成较慢，建议视频 ≤10 秒；生成失败自动退点，消耗积分见提交返回。</div>
+        <button id="tryonGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:20px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
+          生成换装换背景视频
+        </button>
+        <div id="tryonStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">生成完成后会自动保存到视频资产</div>
+      </div>
     </section>
 
     <aside class="vid-card vid-side">
@@ -433,6 +467,7 @@
   var imageData='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
   var selectedSubtitle='off', selectedSubtitleStyle='white';  // F4 字幕：默认关闭，不勾选时行为与原来一致
   var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='';
+  var tryonVideoData='', tryonClothesData='', tryonBackgroundData='';
   var motionAvatars=[], selectedMotionAvatarId=null, useNewMotionImage=true, avatarsLoaded=false;
   var currentVideoDraft=null;
   var motionPresets=[];
@@ -517,6 +552,7 @@
   function setVideoStatus(msg){
     if($('statusText')) $('statusText').textContent=msg;
     if($('motionStatus')) $('motionStatus').textContent=msg;
+    if($('tryonStatus')) $('tryonStatus').textContent=msg;
   }
   function motionLabel(v){return v==='high'?'高':(v==='medium'?'中等':'低');}
   function nowText(){var d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
@@ -596,7 +632,11 @@
       creating_cinematic_video:{label:'生成视频',step:4,percent:76,eta:'预计还需 1-2 分钟'},
       polling_video:{label:'视频渲染中（较久）',step:4,percent:84,eta:'预计还需 1-2 分钟'},
       downloading_video:{label:'下载成品',step:5,percent:94,eta:'即将完成'},
-      burning_subtitle:{label:'烧录字幕',step:5,percent:97,eta:'即将完成'}
+      burning_subtitle:{label:'烧录字幕',step:5,percent:97,eta:'即将完成'},
+      uploading:{label:'上传素材',step:1,percent:20,eta:'预计还需 3-6 分钟'},
+      tryon_running:{label:'换装生成中（较久）',step:3,percent:55,eta:'预计还需 2-5 分钟'},
+      bg_running:{label:'换背景生成中（较久）',step:4,percent:80,eta:'预计还需 2-5 分钟'},
+      downloading:{label:'下载成品',step:5,percent:94,eta:'即将完成'}
     };
     return map[ph] || {label:statusLabel(st)||'生成中',step:1,percent:12,eta:'正在处理'};
   }
@@ -771,7 +811,7 @@
       .catch(function(e){if(grid) grid.innerHTML='<div class="avatar-empty" style="color:#f4708a;">'+esc(e.message||'形象列表读取失败')+'</div>';});
   }
   function setBusy(on){
-    ['generateBtn','motionGenerateBtn'].forEach(function(id){
+    ['generateBtn','motionGenerateBtn','tryonGenerateBtn'].forEach(function(id){
       var btn=$(id); if(!btn) return;
       btn.disabled=on;
       btn.style.opacity=on?'.72':'1';
@@ -872,10 +912,15 @@
     document.querySelectorAll('[data-function]').forEach(function(b){b.classList.toggle('on',b.dataset.function===videoFunction);});
     $('talkingPanel').classList.toggle('hidden',videoFunction!=='talking');
     $('motionPanel').classList.toggle('hidden',videoFunction!=='motion');
+    if($('tryonPanel')) $('tryonPanel').classList.toggle('hidden',videoFunction!=='tryon');
     if(videoFunction==='motion'){
       $('modeSummary').textContent='上传人物形象和参考动作视频，生成同款动作视频';
       if($('modeName')) $('modeName').textContent='动作模仿';
       loadMotionAvatars();
+    }else if(videoFunction==='tryon'){
+      $('modeSummary').textContent='上传换装视频，选填衣服图或背景图，一键换装换背景';
+      if($('modeName')) $('modeName').textContent='换装换背景';
+      updateTryonHint();
     }else{
       updateMode(mode);
     }
@@ -1044,6 +1089,55 @@
   bindMotionFile($('motionImageFile'),'image');
   bindMotionFile($('motionVideoFile'),'video');
   loadMotionPresets();
+  function updateTryonHint(){
+    var hint=$('tryonModeHint'), btn=$('tryonGenerateBtn');
+    var hasClothes=!!tryonClothesData, hasBg=!!tryonBackgroundData, hasVideo=!!tryonVideoData;
+    var text, enable=true;
+    if(!hasVideo){
+      text='请先上传换装视频'; enable=false;
+    }else if(hasClothes && hasBg){
+      text='将执行：换装+换背景';
+    }else if(hasClothes){
+      text='将执行：只换装';
+    }else if(hasBg){
+      text='将执行：只换背景';
+    }else{
+      text='请至少上传衣服图或背景图'; enable=false;
+    }
+    if(hint) hint.textContent=text;
+    if(btn){
+      btn.disabled=!enable;
+      btn.style.opacity=enable?'1':'.55';
+      btn.style.cursor=enable?'pointer':'not-allowed';
+    }
+  }
+  function bindTryonFile(input, kind){
+    input.onchange=function(){
+      var f=this.files&&this.files[0]; if(!f) return;
+      var url=URL.createObjectURL(f);
+      var box=kind==='video'?$('tryonVideoDrop'):(kind==='clothes'?$('tryonClothesDrop'):$('tryonBgDrop'));
+      readFileData(f).then(function(data){
+        if(kind==='video') tryonVideoData=data;
+        else if(kind==='clothes') tryonClothesData=data;
+        else tryonBackgroundData=data;
+        updateTryonHint();
+      }).catch(function(e){toast(e.message||'文件读取失败');});
+      box.classList.add('has-media');
+      if(kind==='video'){
+        box.innerHTML='<input id="tryonVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden><video src="'+url+'" muted playsinline></video>';
+        bindTryonFile(box.querySelector('input'),'video');
+      }else if(kind==='clothes'){
+        box.innerHTML='<input id="tryonClothesFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+url+'" alt="衣服图预览">';
+        bindTryonFile(box.querySelector('input'),'clothes');
+      }else{
+        box.innerHTML='<input id="tryonBgFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+url+'" alt="背景图预览">';
+        bindTryonFile(box.querySelector('input'),'bg');
+      }
+    };
+  }
+  bindTryonFile($('tryonVideoFile'),'video');
+  bindTryonFile($('tryonClothesFile'),'clothes');
+  bindTryonFile($('tryonBgFile'),'bg');
   $('audioFile').onchange=function(){
     var f=this.files&&this.files[0];
     if(f){
@@ -1131,6 +1225,44 @@
         setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');
       });
   }
+  function submitTryon(){
+    if(!token){ location.href='../login.html?redirect=workbench/video'; return; }
+    if(!tryonVideoData){ toast('请先上传换装视频'); return; }
+    if(!tryonClothesData && !tryonBackgroundData){ toast('请至少上传衣服图或背景图'); return; }
+    setBusy(true);
+    if($('outputText')) $('outputText').textContent='换装换背景视频生成记录';
+    if($('outputMotion')) $('outputMotion').textContent='换装换背景';
+    if($('outputRatio')) $('outputRatio').textContent='9:16';
+    if($('outputDuration')) $('outputDuration').textContent='生成中';
+    if($('outputCreated')) $('outputCreated').textContent='创建于：'+nowText();
+    if($('outputPreviewText')) $('outputPreviewText').innerHTML='换装换背景视频正在生成中<br>完成后会自动预览';
+    currentVideoDraft={mode:'tryon',text:'换装换背景视频',ratio:'9:16',motion:'medium',status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
+    renderVideoHistory([currentVideoDraft]);
+    setVideoStatus('正在提交换装换背景任务...');
+    fetch('/api/gen/tryon',{
+      method:'POST',
+      headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+      body:JSON.stringify({
+        person_video_data:tryonVideoData,
+        clothes_data:tryonClothesData||'',
+        background_data:tryonBackgroundData||'',
+        seconds:6,
+        text:'换装换背景视频'
+      })
+    }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+      .then(function(res){
+        if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
+        if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
+        setVideoStatus('换装换背景任务已提交...');
+        setTimeout(loadVideoHistory,700);
+        pollJob(res.data.job_id,0);
+      })
+      .catch(function(e){
+        setBusy(false);
+        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}
+        setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');
+      });
+  }
   function submitVideo(){
     if(!token){ location.href='../login.html?redirect=workbench/video'; return; }
     if(!imageData){ toast('请先上传人物形象图片'); return; }
@@ -1182,6 +1314,7 @@
   };
   $('generateBtn').onclick=submitVideo;
   $('motionGenerateBtn').onclick=submitMotionVideo;
+  $('tryonGenerateBtn').onclick=submitTryon;
   if($('refreshAvatarBtn')) $('refreshAvatarBtn').onclick=function(){loadMotionAvatars(true);};
   $('scriptText').dispatchEvent(new Event('input'));
   updateFunction('talking');
