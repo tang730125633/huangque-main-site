@@ -98,13 +98,14 @@
           <div class="settings-card-head">
             <div>
               <div class="settings-card-title">修改密码</div>
-              <div class="settings-card-note">当前接口只需要新密码；密码至少 6 位。</div>
+              <div class="settings-card-note">需要先验证当前密码；保存成功后需重新登录。</div>
             </div>
           </div>
           <form id="passwordForm" class="settings-form">
+            <label class="field"><span>当前密码</span><input id="oldPassword" type="password" autocomplete="current-password" minlength="6" placeholder="输入当前登录密码"></label>
             <label class="field"><span>新密码</span><input id="newPassword" type="password" autocomplete="new-password" minlength="6" placeholder="输入 6 位以上新密码"></label>
             <label class="field"><span>确认新密码</span><input id="confirmPassword" type="password" autocomplete="new-password" minlength="6" placeholder="再次输入新密码"></label>
-            <div id="passwordNote" class="settings-card-note">修改成功后，下次登录请使用新密码。</div>
+            <div id="passwordNote" class="settings-card-note">改密成功会退出当前登录态，请用新密码重新登录。</div>
             <div class="action-row"><button id="passwordSubmit" class="btn primary" type="submit">保存新密码</button></div>
           </form>
         </div>
@@ -212,9 +213,11 @@
   }
   $('passwordForm').addEventListener('submit',function(e){
     e.preventDefault();
+    var old=$('oldPassword').value;
     var p=$('newPassword').value;
     var c=$('confirmPassword').value;
     var note=$('passwordNote');
+    if(old.length<6){note.style.color='#f4708a';note.textContent='请填写当前密码';return;}
     if(p.length<6){note.style.color='#f4708a';note.textContent='新密码至少 6 位';return;}
     if(p!==c){note.style.color='#f4708a';note.textContent='两次输入的新密码不一致';return;}
     var btn=$('passwordSubmit');
@@ -223,16 +226,18 @@
     authFetch('/api/auth/change_password',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({new_password:p})
+      body:JSON.stringify({old_password:old,new_password:p})
     }).then(function(res){
       if(!res) return;
       if(res.status>=400 || !res.data.ok) throw new Error(res.data.detail||'修改失败');
+      $('oldPassword').value='';
       $('newPassword').value='';
       $('confirmPassword').value='';
       note.style.color='#2bd576';
-      note.textContent='密码已更新，下次登录请使用新密码。';
-      toast('密码已更新');
-      loadMe();
+      note.textContent='密码已更新，请用新密码重新登录。';
+      toast('密码已更新，请重新登录');
+      clearLocalAuth();
+      setTimeout(function(){location.href='../login.html?redirect=workbench/settings';},900);
     }).catch(function(err){
       note.style.color='#f4708a';
       note.textContent=err.message||'修改失败';

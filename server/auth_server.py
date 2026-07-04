@@ -157,6 +157,12 @@ def issue_token(username, c=None):
         c.commit(); c.close()
     return tok
 
+def bearer_token(auth):
+    parts = (auth or "").strip().split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return ""
+    return parts[1].strip()
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def _send(self, code, obj):
@@ -204,10 +210,9 @@ class H(BaseHTTPRequestHandler):
         REGISTER_HITS[key] = [t for t in REGISTER_HITS.get(key, []) if now - t < REGISTER_WINDOW]
         REGISTER_HITS[key].append(now)
     def _user(self):
-        auth = self.headers.get("Authorization") or ""
-        if not auth.startswith("Bearer "):
+        tok = bearer_token(self.headers.get("Authorization"))
+        if not tok:
             return None
-        tok = auth[7:].strip()
         c = db()
         r = c.execute("""SELECT u.* FROM tokens t JOIN users u ON u.username=t.username
                          WHERE t.token=? AND (t.expires_at IS NULL OR t.expires_at > ?)""",
@@ -310,10 +315,7 @@ class H(BaseHTTPRequestHandler):
                 "username": u, "name": row["display_name"], "points": row["points"],
                 "role": row["role"], "must_change": bool(row["must_change"])}})
         if p == "/api/auth/logout":
-            auth = self.headers.get("Authorization") or ""
-            if not auth.startswith("Bearer "):
-                return self._send(401, {"detail": "未登录"})
-            tok = auth[7:].strip()
+            tok = bearer_token(self.headers.get("Authorization"))
             if not tok:
                 return self._send(401, {"detail": "未登录"})
             if tok in REVOKED_TOKENS:
@@ -328,14 +330,29 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/auth/change_password":
             row = self._user()
             if not row: return self._send(401, {"detail": "未登录"})
-            d = self._body(); newp = d.get("new_password") or ""
+            d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
+            oldp = d.get("old_password") or ""
+            newp = d.get("new_password") or ""
+            if not oldp: return self._send(400, {"detail": "请填写当前密码"})
             if len(newp) < 6: return self._send(400, {"detail": "新密码至少 6 位"})
             salt = secrets.token_hex(16)
-            c = db(); c.execute("UPDATE users SET pw_hash=?, pw_salt=?, must_change=0 WHERE username=?",
-                                (hash_pw(newp, salt), salt, row["username"])); c.commit(); c.close()
-            return self._send(200, {"ok": True})
+            c = db()
+            try:
+                fresh = c.execute("SELECT pw_hash,pw_salt FROM users WHERE username=?", (row["username"],)).fetchone()
+                if not fresh or hash_pw(oldp, fresh["pw_salt"]) != fresh["pw_hash"]:
+                    return self._send(400, {"detail": "当前密码不正确"})
+                c.execute("UPDATE users SET pw_hash=?, pw_salt=?, must_change=0 WHERE username=?",
+                          (hash_pw(newp, salt), salt, row["username"]))
+                c.execute("DELETE FROM tokens WHERE username=?", (row["username"],))
+                c.commit()
+            except Exception:
+                c.rollback()
+                return self._send(500, {"detail": "修改密码失败"})
+            finally:
+                c.close()
+            return self._send(200, {"ok": True, "reauth": True})
         self._send(404, {"detail": "not found"})
 
     def do_GET(self):

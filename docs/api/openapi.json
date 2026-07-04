@@ -42,9 +42,9 @@
     },
     "/api/auth/change_password": {
       "post": {
-        "tags": ["认证"], "summary": "改密码",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["new_password"], "properties": { "new_password": { "type": "string", "description": "至少 6 位" } } } } } },
-        "responses": { "200": { "description": "OK" }, "400": { "description": "新密码太短" }, "401": { "description": "未登录" } }
+        "tags": ["认证"], "summary": "改密码(需当前密码，成功后旧 token 全部失效)",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["old_password", "new_password"], "properties": { "old_password": { "type": "string", "description": "当前密码" }, "new_password": { "type": "string", "description": "至少 6 位" } } } } } },
+        "responses": { "200": { "description": "OK，当前用户所有已签发 token 失效，需要重新登录" }, "400": { "description": "当前密码错误 / 新密码太短" }, "401": { "description": "未登录" } }
       }
     },
     "/api/auth/me": {
