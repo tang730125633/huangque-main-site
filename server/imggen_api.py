@@ -25,7 +25,7 @@ except Exception:
 
 PORT        = int(os.environ.get("IMGGEN_API_PORT", "8101"))
 AUTH_BASE   = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
-AUTH_DB     = os.environ.get("AUTH_DB", "/home/ubuntu/auth-service/users.db")
+INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
 JOB_DB      = os.environ.get("CONTENT_JOB_DB", "/home/ubuntu/content-api/content_jobs.db")
 OUT_DIR     = pathlib.Path(os.environ.get("CONTENT_OUT", "/home/ubuntu/content-api/content_out"))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -125,20 +125,33 @@ def _normalize_image_ratio(raw, ratio):
 def jdb():
     c = sqlite3.connect(JOB_DB, timeout=10); c.row_factory = sqlite3.Row; return c
 
-def get_points(username):
+def _auth_points(path, username, amount):
+    if not INTERNAL_TOKEN:
+        return 500, {"detail": "HQ_INTERNAL_TOKEN 未配置"}
+    body = json.dumps({"username": username, "amount": int(amount)}, ensure_ascii=False).encode()
+    req = urllib.request.Request(
+        AUTH_BASE + path,
+        data=body,
+        headers={"Content-Type": "application/json", "X-HQ-Internal-Token": INTERNAL_TOKEN},
+        method="POST",
+    )
     try:
-        with closing(sqlite3.connect(AUTH_DB, timeout=10)) as c:
-            r = c.execute("SELECT points FROM users WHERE username=?", (username,)).fetchone()
-            return r[0] if r else 0
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            data = json.loads(e.read() or b"{}")
+        except Exception:
+            data = {"detail": "points update failed"}
+        return e.code, data
     except Exception:
-        return 0
+        return 500, {"detail": "points update failed"}
 
-def add_points(username, delta):
-    try:
-        with closing(sqlite3.connect(AUTH_DB, timeout=10)) as c:
-            c.execute("UPDATE users SET points = MAX(0, points + ?) WHERE username=?", (delta, username)); c.commit()
-    except Exception:
-        pass
+def deduct_points(username, amount):
+    return _auth_points("/api/auth/points/deduct", username, amount)
+
+def refund_points(username, amount):
+    return _auth_points("/api/auth/points/refund", username, amount)
 
 def verify(token):
     if not token: return None
@@ -227,7 +240,11 @@ def run_job(job_id):
             c.execute("UPDATE jobs SET status='done', result=?, updated_at=? WHERE id=?",
                       (json.dumps(result, ensure_ascii=False), int(time.time()), job_id)); c.commit()
     except Exception as e:
-        add_points(r["username"], r["cost"])  # 澶辫触閫€鐐?
+        refund_status, refund_data = refund_points(r["username"], r["cost"])
+        if refund_status != 200:
+            print("imggen refund failed job=%s user=%s status=%s detail=%s" % (
+                job_id, r["username"], refund_status, (refund_data or {}).get("detail")
+            ))
         with closing(jdb()) as c:
             c.execute("UPDATE jobs SET status='error', error=?, updated_at=? WHERE id=?",
                       (str(e)[:300], int(time.time()), job_id)); c.commit()
@@ -255,6 +272,8 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/gen/banana":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
+            if user.get("must_change"):
+                return self._send(403, {"detail": "请先修改初始密码后再使用"})
             body = self._json_body()
             try:
                 body = validate_banana_payload(body)
@@ -264,16 +283,27 @@ class H(BaseHTTPRequestHandler):
             cq = body["quality"]
             cn = body["count"]
             cost = BASE_COST[mk][cq] * cn  # 璐ㄩ噺鍩轰环 脳 鏁伴噺
-            if get_points(user["username"]) < cost:
+            deduct_status, deduct_data = deduct_points(user["username"], cost)
+            if deduct_status == 402:
                 return self._send(402, {"detail": "点数不足", "need": cost})
-            add_points(user["username"], -cost)
+            if deduct_status != 200:
+                return self._send(500, {"detail": (deduct_data or {}).get("detail") or "点数扣除失败"})
+            points_left = (deduct_data.get("points") if isinstance(deduct_data, dict) else None)
             now = int(time.time())
-            with closing(jdb()) as c:
-                cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at) VALUES('image',?,?,?,?,?)",
-                                (user["username"], cost, json.dumps(body, ensure_ascii=False), now, now))
-                c.commit(); jid = cur.lastrowid
+            try:
+                with closing(jdb()) as c:
+                    cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at) VALUES('image',?,?,?,?,?)",
+                                    (user["username"], cost, json.dumps(body, ensure_ascii=False), now, now))
+                    c.commit(); jid = cur.lastrowid
+            except Exception:
+                refund_status, refund_data = refund_points(user["username"], cost)
+                if refund_status != 200:
+                    print("imggen refund failed after job insert error user=%s status=%s detail=%s" % (
+                        user["username"], refund_status, (refund_data or {}).get("detail")
+                    ))
+                return self._send(500, {"detail": "任务创建失败，已尝试退点"})
             threading.Thread(target=run_job, args=(jid,), daemon=True).start()
-            return self._send(200, {"job_id": jid, "cost": cost, "points_left": get_points(user["username"])})
+            return self._send(200, {"job_id": jid, "cost": cost, "points_left": points_left})
         self._send(404, {"detail": "not found"})
 
     def do_GET(self):
@@ -295,6 +325,15 @@ def _selftest():
     assert b3["generationConfig"]["imageConfig"]["imageSize"] == "4K", b3
     assert IMAGE_SIZES["pro"]["hd"] == "4K" and IMAGE_SIZES["nb2"]["std"] == "1K"
     assert BASE_COST["pro"]["hd"] == 26 and BASE_COST["nb2"]["std"] == 10
+    if Image is not None:
+        buf = io.BytesIO()
+        Image.new("RGB", (1, 1), (255, 255, 255)).save(buf, format="PNG")
+        raw = buf.getvalue()
+        encoded = base64.b64encode(raw).decode("ascii")
+        checked = validate_banana_payload({"prompt": "use reference", "image": "data:image/png;base64," + encoded})
+        assert checked["image"] == encoded, checked
+        normalized, dim = _normalize_image_ratio(raw, "1:1")
+        assert normalized and dim == {"width": 1, "height": 1}, dim
     print("imggen selftest OK")
 
 if __name__ == "__main__":
