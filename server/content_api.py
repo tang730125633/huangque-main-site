@@ -20,7 +20,7 @@ import mimetypes  # 文件服务按扩展名识别 mime（png / mp3 …）
 
 PORT       = int(os.environ.get("CONTENT_API_PORT", "8096"))
 AUTH_BASE  = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
-AUTH_DB    = os.environ.get("AUTH_DB", "/home/ubuntu/auth-service/users.db")  # 点数扣减直接落这
+AUTH_INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 BASE       = pathlib.Path(__file__).resolve().parent
 JOB_DB     = str(BASE / "content_jobs.db")
@@ -99,10 +99,6 @@ def jdb():
 def adb():
     c = sqlite3.connect(AUDIO_DB, timeout=10)
     c.row_factory = sqlite3.Row
-    try:
-        c.execute("ATTACH DATABASE ? AS auth", (AUTH_DB,))
-    except Exception:
-        pass
     return c
 
 def init_db():
@@ -256,9 +252,9 @@ def _ensure_column(c, table, column, spec):
 
 def get_user_id(username):
     try:
-        with closing(sqlite3.connect(AUTH_DB, timeout=10)) as c:
-            r = c.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
-            return r[0] if r else None
+        q = urllib.parse.quote(str(username or ""), safe="")
+        res = _auth_points_request("/api/auth/points?username=" + q, method="GET")
+        return (res.get("user") or {}).get("user_id")
     except Exception:
         return None
 
@@ -1099,21 +1095,78 @@ def delete_video_avatar(username, avatar_id):
         c.commit()
     return {"id": avatar["id"], "status": "deleted"}
 
-def get_points(username):
+class AuthPointsError(Exception):
+    def __init__(self, status, detail, data=None):
+        super().__init__(detail)
+        self.status = status
+        self.detail = detail
+        self.data = data or {}
+
+def _auth_points_request(path, payload=None, method="POST"):
+    if not AUTH_INTERNAL_TOKEN:
+        raise AuthPointsError(500, "未配置内部点数接口密钥")
+    data = None
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode()
+    req = urllib.request.Request(
+        AUTH_BASE + path,
+        data=data,
+        headers={
+            "Content-Type": "application/json; charset=utf-8",
+            "X-HQ-Internal-Token": AUTH_INTERNAL_TOKEN,
+        },
+        method=method,
+    )
     try:
-        with closing(sqlite3.connect(AUTH_DB, timeout=10)) as c:
-            r = c.execute("SELECT points FROM users WHERE username=?", (username,)).fetchone()
-            return r[0] if r else 0
+        with urllib.request.urlopen(req, timeout=6) as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read() or b"{}")
+        except Exception:
+            body = {}
+        raise AuthPointsError(e.code, body.get("detail") or "点数接口调用失败", body)
+    except AuthPointsError:
+        raise
+    except Exception as e:
+        raise AuthPointsError(502, "点数接口不可用: " + str(e)[:120])
+
+def get_points(username):
+    username = urllib.parse.quote(str(username or ""), safe="")
+    try:
+        res = _auth_points_request("/api/auth/points?username=" + username, method="GET")
+        return int(res.get("points") or 0)
     except Exception:
         return 0
 
+def deduct_points(username, amount):
+    amount = int(amount or 0)
+    if amount <= 0:
+        return get_points(username)
+    res = _auth_points_request("/api/auth/points/deduct", {"username": username, "amount": amount})
+    return int(res.get("points") or 0)
+
+def refund_points(username, amount):
+    amount = int(amount or 0)
+    if amount <= 0:
+        return get_points(username)
+    res = _auth_points_request("/api/auth/points/refund", {"username": username, "amount": amount})
+    return int(res.get("points") or 0)
+
+def safe_refund_points(username, amount):
+    try:
+        return refund_points(username, amount)
+    except Exception:
+        return get_points(username)
+
 def add_points(username, delta):
     try:
-        with closing(sqlite3.connect(AUTH_DB, timeout=10)) as c:
-            c.execute("UPDATE users SET points = MAX(0, points + ?) WHERE username=?", (delta, username))
-            c.commit()
+        delta = int(delta or 0)
+        if delta >= 0:
+            return refund_points(username, delta)
+        return deduct_points(username, -delta)
     except Exception:
-        pass
+        return get_points(username)
 
 # ============ 鉴权（向 auth 服务核验 token） ============
 def verify(token):
@@ -2150,7 +2203,7 @@ def run_job(job_id):
                 record_video_asset(job_id, r["username"], failed)
             except Exception:
                 pass
-        add_points(r["username"], r["cost"])  # 失败退点
+        safe_refund_points(r["username"], r["cost"])  # 失败退点
         with closing(jdb()) as c:
             c.execute("UPDATE jobs SET status='error', error=?, updated_at=? WHERE id=?",
                       (str(e)[:300], int(time.time()), job_id)); c.commit()
@@ -2167,7 +2220,7 @@ def reaper():
                         continue
                     if r["kind"] == "image" and r["updated_at"] >= int(time.time()) - 900:
                         continue  # 多图/中转出图慢，给 image 15 分钟余量
-                    add_points(r["username"], r["cost"])  # 退点
+                    safe_refund_points(r["username"], r["cost"])  # 退点
                     c.execute("UPDATE jobs SET status='error', error='生成超时自动结束(>6分钟)，已退点', updated_at=? WHERE id=?",
                               (int(time.time()), r["id"]))
                 if stuck: c.commit()
@@ -2244,9 +2297,11 @@ class H(BaseHTTPRequestHandler):
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             body = self._json_body()
             cost = cost_of(kind, body)
-            if get_points(user["username"]) < cost:
-                return self._send(402, {"detail": "点数不足", "need": cost})
-            add_points(user["username"], -cost)  # 预扣
+            try:
+                points_left = deduct_points(user["username"], cost)  # 原子预扣
+            except AuthPointsError as e:
+                code = 402 if e.status == 402 else 502
+                return self._send(code, {"detail": e.detail, "need": cost})
             now = int(time.time())
             with closing(jdb()) as c:
                 cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)",
@@ -2255,7 +2310,7 @@ class H(BaseHTTPRequestHandler):
             if kind == "video":
                 record_video_pending_asset(jid, user["username"], body)
             threading.Thread(target=run_job, args=(jid,), daemon=True).start()
-            return self._send(200, {"job_id": jid, "cost": cost, "points_left": get_points(user["username"])})
+            return self._send(200, {"job_id": jid, "cost": cost, "points_left": points_left})
         self._send(404, {"detail": "not found"})
 
     def do_GET(self):
@@ -2388,17 +2443,21 @@ class H(BaseHTTPRequestHandler):
             try: page = int(q.get("page", ["1"])[0] or 1)
             except Exception: page = 1
             if not keyword: return self._send(400, {"detail": "缺少关键词"})
-            if get_points(user["username"]) < 1: return self._send(402, {"detail": "点数不足", "need": 1})
+            try:
+                points_left = deduct_points(user["username"], 1)
+            except AuthPointsError as e:
+                code = 402 if e.status == 402 else 502
+                return self._send(code, {"detail": e.detail, "need": 1})
             try:
                 r = tikhub.search(platform, keyword, page=page, video_only=False)  # 含图文
             except tikhub.TikHubError as e:
+                safe_refund_points(user["username"], 1)
                 return self._send(502, {"detail": str(e)[:160]})
-            add_points(user["username"], -1)
             items = [{"id": it.get("id"), "platform": it.get("platform"), "title": it.get("title"),
                       "cover": it.get("cover"), "author": it.get("author"), "url": it.get("url"),
                       "note_type": it.get("note_type"),
                       "stats": {"like": it.get("like"), "comment": it.get("comment")}} for it in (r.get("items") or [])]
-            return self._send(200, {"items": items, "cost": 1, "points_left": get_points(user["username"])})
+            return self._send(200, {"items": items, "cost": 1, "points_left": points_left})
         if p == "/api/gen/health":
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS),
                                     "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})

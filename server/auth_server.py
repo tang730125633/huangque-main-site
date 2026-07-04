@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # 黄雀 AI · 独立认证服务（零依赖，标准库）
 # 端口 127.0.0.1:8095，nginx 把 /api/auth/ 路由过来。与 leadgen(8090) 完全隔离。
-import sqlite3, hashlib, secrets, json, os, sys, time
+import sqlite3, hashlib, secrets, json, os, sys, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
 PORT = 8095
 ITER = 200000
 TOKEN_TTL = int(os.environ.get("HQ_AUTH_TOKEN_TTL", str(30 * 24 * 3600)))
+INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
 LOGIN_FAIL_WINDOW = int(os.environ.get("HQ_AUTH_FAIL_WINDOW", "300"))
 LOGIN_FAIL_MAX = int(os.environ.get("HQ_AUTH_FAIL_MAX", "5"))
 REGISTER_WINDOW = int(os.environ.get("HQ_AUTH_REGISTER_WINDOW", "300"))
@@ -69,6 +70,74 @@ def public_user(username, display_name=None, points=0, role='member', must_chang
         "role": role,
         "must_change": bool(must_change)
     }
+
+def public_points(row):
+    return {
+        "username": row["username"],
+        "user_id": row["id"],
+        "points": row["points"],
+    }
+
+def get_points_row(username, c=None):
+    own = c is None
+    if own: c = db()
+    row = c.execute("SELECT id, username, points FROM users WHERE username=?", (username,)).fetchone()
+    if own: c.close()
+    return row
+
+def deduct_points(username, amount):
+    amount = int(amount or 0)
+    if amount < 0:
+        raise ValueError("amount must be >= 0")
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        if amount:
+            cur = c.execute(
+                "UPDATE users SET points = points - ? WHERE username=? AND points >= ?",
+                (amount, username, amount),
+            )
+            if cur.rowcount != 1:
+                row = get_points_row(username, c)
+                c.rollback()
+                if row:
+                    return None, "insufficient"
+                return None, "not_found"
+        row = get_points_row(username, c)
+        if not row:
+            c.rollback()
+            return None, "not_found"
+        c.commit()
+        return public_points(row), None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+def refund_points(username, amount):
+    amount = int(amount or 0)
+    if amount < 0:
+        raise ValueError("amount must be >= 0")
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        if amount:
+            cur = c.execute("UPDATE users SET points = points + ? WHERE username=?", (amount, username))
+            if cur.rowcount != 1:
+                c.rollback()
+                return None, "not_found"
+        row = get_points_row(username, c)
+        if not row:
+            c.rollback()
+            return None, "not_found"
+        c.commit()
+        return public_points(row), None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
 
 def cleanup_expired_tokens(c=None):
     own = c is None
@@ -145,9 +214,47 @@ class H(BaseHTTPRequestHandler):
                       (tok, int(time.time()))).fetchone()
         c.close()
         return r
+    def _internal_auth(self):
+        if not INTERNAL_TOKEN:
+            return False
+        token = self.headers.get("X-HQ-Internal-Token") or ""
+        return secrets.compare_digest(token, INTERNAL_TOKEN)
+
+    def _require_internal(self):
+        if self._internal_auth():
+            return True
+        self._send(403, {"detail": "forbidden"})
+        return False
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        if p in {"/api/auth/points/deduct", "/api/auth/points/refund"}:
+            if not self._require_internal():
+                return
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            username = (d.get("username") or "").strip()
+            try:
+                amount = int(d.get("amount") or 0)
+            except Exception:
+                return self._send(400, {"detail": "amount must be an integer"})
+            if not username:
+                return self._send(400, {"detail": "missing username"})
+            if amount < 0:
+                return self._send(400, {"detail": "amount must be >= 0"})
+            try:
+                if p.endswith("/deduct"):
+                    points, err = deduct_points(username, amount)
+                    if err == "insufficient":
+                        return self._send(402, {"detail": "点数不足", "need": amount})
+                else:
+                    points, err = refund_points(username, amount)
+                if err == "not_found":
+                    return self._send(404, {"detail": "user not found"})
+                return self._send(200, {"ok": True, "points": points["points"], "user": points})
+            except Exception:
+                return self._send(500, {"detail": "points update failed"})
         if p == "/api/auth/register":
             d = self._body()
             if self._bad_json():
@@ -233,6 +340,17 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path.split("?")[0]
+        if p == "/api/auth/points":
+            if not self._require_internal():
+                return
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            username = (q.get("username", [""])[0] or "").strip()
+            if not username:
+                return self._send(400, {"detail": "missing username"})
+            row = get_points_row(username)
+            if not row:
+                return self._send(404, {"detail": "user not found"})
+            return self._send(200, {"ok": True, "points": row["points"], "user": public_points(row)})
         if p == "/api/auth/me":
             row = self._user()
             if not row: return self._send(401, {"detail": "未登录"})
