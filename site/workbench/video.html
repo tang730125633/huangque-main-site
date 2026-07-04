@@ -935,7 +935,8 @@
         voices=(publics.length?publics:publicFallback).concat(personals);
         if(!voices.some(function(v){return v.voice_key===selectedVoice;})) selectedVoice=(voices[0]||publicFallback[0]).voice_key;
         renderVoices();
-      }).catch(function(){voices=publicFallback;renderVoices();});
+        _applyPrefillVoice();
+      }).catch(function(){voices=publicFallback;renderVoices();_applyPrefillVoice();});
   }
   function renderAssetAudios(items){
     var box=$('assetAudioBox'); if(!box) return;
@@ -1184,6 +1185,24 @@
   if($('refreshAvatarBtn')) $('refreshAvatarBtn').onclick=function(){loadMotionAvatars(true);};
   $('scriptText').dispatchEvent(new Event('input'));
   updateFunction('talking');
+  // F7 联动：资产页视频「重生成」跳转过来时，读 localStorage 预填(一次性)
+  var _prefillVoice='';
+  function applyAssetPrefill(){
+    try{
+      if(new URLSearchParams(location.search).get('prefill')!=='asset') return;
+      var d=JSON.parse(localStorage.getItem('hq_video_prefill')||'null');
+      localStorage.removeItem('hq_video_prefill');
+      if(!d) return;
+      if(d.prompt && $('scriptText')) $('scriptText').value=d.prompt;
+      if(d.resolution) clickDataButton('resolution',d.resolution);
+      if(d.ratio) clickDataButton('ratio',d.ratio);
+      if(d.motion) clickDataButton('motion',d.motion);
+      _prefillVoice=d.voice||'';
+      if(typeof toast==='function') toast('已按所选作品预填参数');
+    }catch(e){}
+  }
+  function _applyPrefillVoice(){ if(_prefillVoice){ applyTemplateVoice(_prefillVoice); _prefillVoice=''; } }
+  applyAssetPrefill();
   loadVoices();
   loadVideoTemplates();
   loadVideoHistory();
