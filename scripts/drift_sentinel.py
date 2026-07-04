@@ -34,6 +34,11 @@ SERVER_FILES = [
     '/home/ubuntu/dl-service/dl_service.py',
 ]
 
+# 后端目录：整目录下的 .py 都监控（T8 拆分后业务逻辑在 content_domains/）
+SERVER_GLOBS = [
+    '/home/ubuntu/content-api/content_domains/*.py',
+]
+
 
 def monitored_files():
     """当前应监控的文件全集：webroot(排除 assets/ 与 .bak) + 后端文件。"""
@@ -46,6 +51,8 @@ def monitored_files():
             continue
         files.append(p)
     files += [p for p in SERVER_FILES if os.path.isfile(p)]
+    for pat in SERVER_GLOBS:
+        files += [p for p in glob.glob(pat) if os.path.isfile(p) and '__pycache__' not in p]
     return sorted(set(files))
 
 
