@@ -32,6 +32,16 @@
   .function-tab{height:36px;padding:0 18px;border:1px solid transparent;border-radius:10px;background:transparent;color:#94a4bb;font:800 13px inherit;cursor:pointer}
   .function-tab.on{color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);box-shadow:0 10px 24px rgba(231,178,76,.14)}
   .function-panel{min-height:0}
+  .template-panel{display:none;margin-top:16px;border:1px solid rgba(148,164,187,.12);border-radius:15px;background:rgba(7,11,19,.28);padding:15px}
+  .template-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
+  .template-card{min-height:118px;border:1px solid rgba(148,164,187,.14);border-radius:13px;background:rgba(148,164,187,.04);padding:13px;text-align:left;color:#94a4bb;cursor:pointer;font-family:inherit;transition:.16s}
+  .template-card:hover{border-color:rgba(231,178,76,.34);transform:translateY(-1px)}
+  .template-card.on{border-color:rgba(231,178,76,.46);background:rgba(231,178,76,.1);box-shadow:0 0 0 1px rgba(231,178,76,.08) inset}
+  .template-name{font-size:13px;font-weight:800;color:#eaf1fa;line-height:1.45}
+  .template-card.on .template-name{color:#e7b24c}
+  .template-desc{margin-top:6px;font-size:11px;line-height:1.55;color:#5c6b82;min-height:34px}
+  .template-meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+  .template-meta span{height:24px;padding:0 8px;border-radius:7px;background:rgba(7,11,19,.34);border:1px solid rgba(148,164,187,.1);font-size:10.5px;color:#cbd5e1;display:inline-flex;align-items:center;font-weight:700}
   .motion-panel{margin-top:22px;border:1px solid rgba(148,164,187,.12);border-radius:15px;background:rgba(7,11,19,.28);padding:18px}
   .motion-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}
   .motion-drop{height:188px;border:1px dashed rgba(148,164,187,.24);border-radius:14px;background:rgba(148,164,187,.04);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;color:#94a4bb}
@@ -170,7 +180,7 @@
   .mini-action span{font-size:11px}
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;transition:.2s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:12px;padding:11px 16px;color:#eaf1fa;font-size:13px;z-index:80}
   .toast.show{opacity:1;transform:translateX(-50%)}
-  @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source,.avatar-grid,.motion-preset-grid{grid-template-columns:1fr}.output-text{white-space:normal}.output-stage{width:min(202px,100%)}}
+  @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source,.avatar-grid,.motion-preset-grid,.template-grid{grid-template-columns:1fr}.output-text{white-space:normal}.output-stage{width:min(202px,100%)}}
 </style>
 </head>
 <body>
@@ -189,6 +199,14 @@
       <div class="function-tabs" aria-label="视频功能分页">
         <button class="function-tab on" type="button" data-function="talking">数字人口播</button>
         <button class="function-tab" type="button" data-function="motion">动作模仿</button>
+      </div>
+
+      <div id="templatePanel" class="template-panel">
+        <div class="row">
+          <span class="label">视频模板</span>
+          <span id="templateHint" class="faint" style="font-size:11.5px;">参数预设</span>
+        </div>
+        <div id="templateGrid" class="template-grid"></div>
       </div>
 
       <div id="talkingPanel" class="function-panel">
@@ -418,6 +436,7 @@
   var motionAvatars=[], selectedMotionAvatarId=null, useNewMotionImage=true, avatarsLoaded=false;
   var currentVideoDraft=null;
   var motionPresets=[];
+  var videoTemplates=[], selectedVideoTemplate='';
   var publicFallback=[
     {scope:'public',voice_key:'dapeng',display_name:'大鹏 IVC',provider_voice:'dapeng',sub:'克隆男声 · 亲切'},
     {scope:'public',voice_key:'zelong',display_name:'泽龙 IVC',provider_voice:'zelong',sub:'克隆男声 · 磁性'},
@@ -428,6 +447,73 @@
   function esc(s){return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
   function fresh(u){return u+(u.indexOf('?')>=0?'&':'?')+'_='+Date.now();}
   function toast(msg){var t=$('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},1700);}
+  function dataButton(name,value){
+    var nodes=document.querySelectorAll('[data-'+name+']');
+    for(var i=0;i<nodes.length;i++){ if(nodes[i].dataset[name]===String(value)) return nodes[i]; }
+    return null;
+  }
+  function clickDataButton(name,value){
+    var btn=dataButton(name,value);
+    if(btn){ btn.click(); return true; }
+    return false;
+  }
+  function shortFunctionName(v){return v==='motion'?'动作':'口播';}
+  function subtitleName(v){return v==='on'?'字幕':'无字幕';}
+  function substyleName(v){return v==='variety'?'综艺':(v==='bar'?'底栏':'白字');}
+  function renderVideoTemplates(){
+    var panel=$('templatePanel'), grid=$('templateGrid');
+    if(!panel || !grid) return;
+    if(!videoTemplates.length){ panel.style.display='none'; return; }
+    panel.style.display='block';
+    grid.innerHTML='';
+    videoTemplates.forEach(function(t,idx){
+      var id=String(t.id||t.name||idx);
+      var btn=document.createElement('button');
+      btn.type='button';
+      btn.className='template-card'+(selectedVideoTemplate===id?' on':'');
+      btn.innerHTML='<div class="template-name">'+esc(t.name||('模板 '+(idx+1)))+'</div>'
+        +'<div class="template-desc">'+esc(t.description||'')+'</div>'
+        +'<div class="template-meta"><span>'+esc(shortFunctionName(t.function))+'</span><span>'+esc(t.resolution||'1080p')+'</span><span>'+esc(t.ratio||'9:16')+'</span><span>'+esc(motionLabel(t.motion||'medium'))+'</span><span>'+esc(subtitleName(t.subtitle||'off'))+'</span></div>';
+      btn.onclick=function(){applyVideoTemplate(t,id);};
+      grid.appendChild(btn);
+    });
+  }
+  function applyTemplateVoice(key){
+    if(!key) return true;
+    var match=voices.find(function(v){return v.voice_key===key;});
+    if(!match) return false;
+    selectedVoice=key;
+    voiceTab=match.scope||voiceTab;
+    document.querySelectorAll('[data-voice-tab]').forEach(function(b){b.classList.toggle('on',b.dataset.voiceTab===voiceTab);});
+    renderVoices();
+    return true;
+  }
+  function applyVideoTemplate(t,id){
+    selectedVideoTemplate=id||String(t.name||'');
+    if(t.function) updateFunction(t.function);
+    if(t.mode) updateMode(t.mode);
+    if(t.resolution) clickDataButton('resolution',t.resolution);
+    if(t.ratio) clickDataButton('ratio',t.ratio);
+    if(t.motion) clickDataButton('motion',t.motion);
+    if(t.subtitle) clickDataButton('subtitle',t.subtitle);
+    if(t.subtitle_style){
+      var ok=clickDataButton('substyle',t.subtitle_style);
+      if(!ok) selectedSubtitleStyle=t.subtitle_style;
+    }
+    var voiceOk=applyTemplateVoice(t.voice);
+    renderVideoTemplates();
+    updateChecklist();
+    toast(voiceOk?'已套用视频模板':'已套用模板，音色不可用已跳过');
+  }
+  function loadVideoTemplates(){
+    fetch(fresh('assets/video-templates.json'),{cache:'no-store'})
+      .then(function(r){return r.ok?r.json():[];})
+      .then(function(items){
+        videoTemplates=Array.isArray(items)?items.filter(function(t){return t&&t.name;}):[];
+        renderVideoTemplates();
+      })
+      .catch(function(){videoTemplates=[];renderVideoTemplates();});
+  }
   function setVideoStatus(msg){
     if($('statusText')) $('statusText').textContent=msg;
     if($('motionStatus')) $('motionStatus').textContent=msg;
@@ -1099,6 +1185,7 @@
   $('scriptText').dispatchEvent(new Event('input'));
   updateFunction('talking');
   loadVoices();
+  loadVideoTemplates();
   loadVideoHistory();
 })();
 </script>

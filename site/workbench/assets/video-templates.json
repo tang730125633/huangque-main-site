@@ -1,0 +1,56 @@
+[
+  {
+    "name": "美业口播·竖屏带字幕",
+    "description": "适合门店种草、项目讲解和团购引流",
+    "function": "talking",
+    "voice": "dapeng",
+    "resolution": "1080p",
+    "ratio": "9:16",
+    "motion": "medium",
+    "subtitle": "on",
+    "subtitle_style": "white"
+  },
+  {
+    "name": "综艺大字·短视频",
+    "description": "节奏更强，适合促销活动和爆款口播",
+    "function": "talking",
+    "voice": "zelong",
+    "resolution": "1080p",
+    "ratio": "9:16",
+    "motion": "high",
+    "subtitle": "on",
+    "subtitle_style": "variety"
+  },
+  {
+    "name": "横屏讲解·无字幕",
+    "description": "适合课程讲解、案例复盘和团队演示",
+    "function": "talking",
+    "voice": "paul",
+    "resolution": "1080p",
+    "ratio": "16:9",
+    "motion": "low",
+    "subtitle": "off",
+    "subtitle_style": "white"
+  },
+  {
+    "name": "方图产品·轻动作",
+    "description": "适合朋友圈、私域海报和产品介绍",
+    "function": "talking",
+    "voice": "dapeng",
+    "resolution": "720p",
+    "ratio": "1:1",
+    "motion": "low",
+    "subtitle": "on",
+    "subtitle_style": "bar"
+  },
+  {
+    "name": "动作模仿·竖屏试片",
+    "description": "适合用参考动作快速试出数字人动态",
+    "function": "motion",
+    "resolution": "720p",
+    "ratio": "9:16",
+    "motion": "medium",
+    "subtitle": "off",
+    "subtitle_style": "white"
+  }
+]
