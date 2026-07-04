@@ -762,7 +762,7 @@ def gen_audio(payload):
     data = _post_bytes("/v1/audio/speech", body, "application/json")
     fn = "audio/aud_%d.mp3" % int(time.time() * 1000)
     _out_path(fn).write_bytes(data)
-    return {"type": "audio", "file": fn, "url": _file_url(fn), "voice": voice_key,
+    return {"type": "audio", "file": fn, "url": public_url(fn, "audio/mpeg"), "voice": voice_key,
             "speed": speed, "pitch": pitch, "volume": volume, "text": text, "prompt": text}
 
 HANDLERS = {"audio": gen_audio}

@@ -42,7 +42,7 @@ def gen_image(payload):
                 (OUT_DIR / fn).write_bytes(rr.read())
         else:
             continue
-        files_out.append(fn); urls.append("/api/gen/file/" + fn)
+        files_out.append(fn); urls.append(public_url(fn, "image/png"))
     if not files_out:
         raise ValueError("出图返回为空")
     return {"type": "image", "mode": mode, "provider": provider, "count": len(files_out),

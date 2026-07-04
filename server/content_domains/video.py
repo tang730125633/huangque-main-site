@@ -877,7 +877,7 @@ def gen_video(payload):
         "reference_video_file": reference_video_file,
         "reference_video_url": _file_url(reference_video_file) if reference_video_file else None,
         "text": text, "voice": voice,
-        "video_file": video_result.get("video_file"), "video_url": video_result.get("video_url"),
+        "video_file": video_result.get("video_file"), "video_url": public_url(video_result.get("video_file"), "video/mp4"),
         "provider_video_id": video_result.get("video_id"),
         "provider_avatar_id": video_result.get("avatar_item_id"),
         "provider_avatar_group_id": video_result.get("avatar_group_id"),
