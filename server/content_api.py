@@ -1806,8 +1806,18 @@ def _get_whisper_model():
     if _whisper_model is None:
         with _whisper_model_lock:
             if _whisper_model is None:
-                from faster_whisper import WhisperModel  # 服务器已装；本地/CI 不触发 import
-                _whisper_model = WhisperModel(WHISPER_MODEL_NAME, device="cpu", compute_type="int8")
+                # whisper 用本地缓存模型、无需联网；但服务继承了全局 SOCKS 代理(ALL_PROXY)，
+                # huggingface_hub 的 httpx 会因缺 socksio 而报错。加载期间临时清代理即可
+                # （一次性 + 已加锁，窗口极小；模型走缓存不发请求）。
+                _proxy_keys = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                               "http_proxy", "https_proxy", "all_proxy")
+                _saved = {k: os.environ.pop(k) for k in _proxy_keys if k in os.environ}
+                os.environ.setdefault("HF_HUB_OFFLINE", "1")
+                try:
+                    from faster_whisper import WhisperModel  # 服务器已装；本地/CI 不触发 import
+                    _whisper_model = WhisperModel(WHISPER_MODEL_NAME, device="cpu", compute_type="int8")
+                finally:
+                    os.environ.update(_saved)
     return _whisper_model
 
 def _probe_video_size(fp):
