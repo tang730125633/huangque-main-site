@@ -1849,13 +1849,59 @@ def _wrap_cn(text, max_chars):
         return text
     lines, cur = [], text
     while len(cur) > max_chars and len(lines) < 2:
-        cut = cur.rfind("，", 0, max_chars + 1)
+        cut = cur.rfind(" ", 0, max_chars + 1)   # 停顿已转空格，优先在空格处断
         if cut < max_chars * 0.5:
             cut = max_chars
-        lines.append(cur[:cut].strip("，"))
-        cur = cur[cut:].strip("，")
+        lines.append(cur[:cut].strip())
+        cur = cur[cut:].strip()
     lines.append(cur)
     return "\\N".join(l for l in lines if l)
+
+
+# 字幕文本清洗 + 短卡片切分（短视频风格：不显示句末标点、停顿转空格、单卡不过长）
+_SENT_PUNCT = "。.!！?？,，、;；:：…"
+
+def _clean_sub_text(t):
+    t = (t or "").strip()
+    t = re.sub(r"[。.!！?？…]+", "", t)      # 去句末标点（短视频不显示）
+    t = re.sub(r"[，,、;；:：]+", " ", t)      # 停顿标点 → 空格
+    t = re.sub(r"\s+", " ", t)
+    return t.strip()
+
+def _split_to_cards(segs, max_chars):
+    """把每个 whisper 段按标点切成 ≤max_chars 的短卡片，时间按（清洗后）字数比例分。"""
+    cap = max(6, int(max_chars))
+    cards = []
+    for (start, end, text) in segs:
+        try:
+            start = float(start); end = float(end)
+        except Exception:
+            continue
+        text = (text or "").strip()
+        if not text:
+            continue
+        phrases = re.findall(r"[^。.!！?？,，、;；:：…]+[。.!！?？,，、;；:：…]?", text)
+        phrases = [p for p in phrases if p.strip()] or [text]
+        pieces, buf = [], ""
+        for ph in phrases:
+            if buf and len(_clean_sub_text(buf)) + len(_clean_sub_text(ph)) > cap:
+                pieces.append(buf); buf = ph
+            else:
+                buf += ph
+        if buf:
+            pieces.append(buf)
+        cleaned = [c for c in (_clean_sub_text(p) for p in pieces) if c]
+        if not cleaned:
+            continue
+        tot = sum(len(c) for c in cleaned) or 1
+        pos = start
+        for k, c in enumerate(cleaned):
+            e = end if k == len(cleaned) - 1 else pos + (end - start) * (len(c) / tot)
+            if e <= pos:
+                e = pos + 0.4
+            cards.append((pos, e, c))
+            pos = e
+    return cards
 
 def _redistribute_known_text(known_text, segs):
     # text 模式：保留 whisper 时间轴，用已知文案替换识别文本（按各段识别字数比例切分，减少错字）
@@ -1869,8 +1915,17 @@ def _redistribute_known_text(known_text, segs):
             chunk = kt[pos:]
         else:
             take = max(1, int(round(len(rec) / total * len(kt))))
-            chunk = kt[pos:pos + take]
-            pos += len(chunk)
+            end = pos + take
+            lo, hi = max(pos + 1, end - 6), min(len(kt), end + 6)   # 切点吸附到最近标点，别切半个词
+            best = -1
+            for j in range(lo, hi + 1):
+                if 0 < j <= len(kt) and kt[j - 1] in _SENT_PUNCT:
+                    if best < 0 or abs(j - end) < abs(best - end):
+                        best = j
+            if best > 0:
+                end = best
+            chunk = kt[pos:end]
+            pos = end
         out.append((st, en, chunk or rec))
     return out
 
@@ -1891,7 +1946,7 @@ def _build_ass(segs, style_key, w, h):
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, Effect, Text",
     ]
     body = []
-    for (start, end, text) in segs:
+    for (start, end, text) in _split_to_cards(segs, max_chars):  # 先按标点切成短卡片(去标点/分时间)
         try:
             start = float(start); end = float(end)
         except Exception:
