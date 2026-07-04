@@ -38,6 +38,9 @@ jobs:
       - name: 检查敏感文件与静态资源
         run: python scripts/ci_validate.py
 
+      - name: Verify workbench shell cache stamps
+        run: python scripts/stamp_assets.py --check
+
       - name: 测试 CI 检查器
         run: python -m unittest discover -s tests -v
 
