@@ -1031,9 +1031,21 @@ def generate_tryon_video(person_video_file, clothes_file, background_file, secon
         work_dir.rmdir()
     except Exception:
         pass
+    # 成片对外链接：优先上传 COS 用直链；未配置或失败则回退本地 /api/gen/file/ 链接
+    video_url = _file_url(video_file)
+    try:
+        from . import cos
+        if cos.enabled():
+            video_url = cos.upload(_out_path(video_file), video_file, "video/mp4")
+            if cos.delete_local_after_upload():
+                try: _out_path(video_file).unlink()
+                except Exception: pass
+    except Exception as _cos_ex:
+        print("[tryon] COS 上传失败，回退本地链接: %s" % _cos_ex, flush=True)
+        video_url = _file_url(video_file)
     return {
         "video_file": video_file,
-        "video_url": _file_url(video_file),
+        "video_url": video_url,
         "duration": seconds,
     }
 
