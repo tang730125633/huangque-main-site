@@ -345,6 +345,30 @@ def _domains():
     from . import audio, points, video
     return audio, points, video
 
+def _must_change_password(user):
+    return bool(user and user.get("must_change"))
+
+def _job_public_dict(row, phase=None):
+    d = {
+        "id": row["id"],
+        "kind": row["kind"],
+        "username": row["username"],
+        "cost": row["cost"],
+        "status": row["status"],
+        "result": row["result"],
+        "error": row["error"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+    if d.get("result"):
+        try:
+            d["result"] = json.loads(d["result"])
+        except Exception:
+            pass
+    if phase is not None:
+        d["phase"] = phase
+    return d
+
 # ============ 图片能力：gpt-image-2 ============
 # 三种模式同一入口：无图=文生图(generations)；有图无蒙版=图生图(edits)；有图有蒙版=局部修改(edits+mask)
 SIZES = {"1:1": "1024x1024", "9:16": "1024x1536", "16:9": "1536x1024", "3:4": "1024x1536"}
@@ -496,6 +520,7 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/gen/audio/clone-vip":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
+            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
             body = self._json_body()
             try:
                 voice = audio_domain.mark_clone_training(user["username"], body.get("slot_id"), body.get("name"))
@@ -524,6 +549,7 @@ class H(BaseHTTPRequestHandler):
             kind = p[9:]
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
             body = self._json_body()
             cost = points_domain.cost_of(kind, body)
             try:
@@ -555,17 +581,17 @@ class H(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
         if p.startswith("/api/gen/job/"):
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
             try: jid = int(p.rsplit("/", 1)[1])
             except Exception: return self._send(400, {"detail": "bad id"})
             with closing(jdb()) as c:
                 r = c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
             if not r: return self._send(404, {"detail": "任务不存在"})
-            d = dict(r)
-            if d.get("result"):
-                try: d["result"] = json.loads(d["result"])
-                except Exception: pass
-            if d.get("kind") in {"video", "tryon"}:
-                d["phase"] = video_domain.get_video_job_phase(jid)
+            if r["username"] != user.get("username"):
+                return self._send(404, {"detail": "任务不存在"})
+            phase = video_domain.get_video_job_phase(jid) if r["kind"] in {"video", "tryon"} else None
+            d = _job_public_dict(r, phase)
             return self._send(200, d)
         if p == "/api/gen/dl":   # 无水印视频下载代理：直连拉 CDN → 附件流回(强制下载)
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -676,6 +702,7 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/gen/collect/search":   # 关键词搜（即时，扣 1 点）— 采集页选片用
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
+            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             platform = (q.get("platform", ["douyin"])[0]).strip()
             keyword  = (q.get("keyword", [""])[0]).strip()
