@@ -469,6 +469,11 @@ class H(BaseHTTPRequestHandler):
         b = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(code); self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+    def _method_not_allowed(self):
+        b = json.dumps({"detail": "Method Not Allowed"}, ensure_ascii=False).encode()
+        self.send_response(405); self.send_header("Allow", "POST")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def _token(self):
         a = self.headers.get("Authorization") or ""
         return a[7:].strip() if a.startswith("Bearer ") else ""
@@ -477,6 +482,13 @@ class H(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
             return json.loads(self.rfile.read(n) or b"{}")
         except Exception: return {}
+    def _json_body_strict(self):
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n) or b"{}"
+            return json.loads(raw)
+        except Exception:
+            raise ValueError("请求体不是合法 JSON")
 
     def do_POST(self):
         p = self.path.split("?")[0]
@@ -519,13 +531,18 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/audio/clone-vip":
             user = verify(self._token())
-            if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
+            if not user: return self._send(401, {"detail": "未登录"})
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
-            body = self._json_body()
             try:
+                body = self._json_body_strict()
+                body = audio_domain.validate_clone_vip_payload(user["username"], body)
                 voice = audio_domain.mark_clone_training(user["username"], body.get("slot_id"), body.get("name"))
                 threading.Thread(target=audio_domain.clone_vip_voice_background, args=(user["username"], body), daemon=True).start()
                 return self._send(200, {"ok": True, "voice": voice})
+            except audio_domain.CloneVipValidationError as e:
+                return self._send(e.status, {"detail": e.detail})
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)[:220]})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:220]})
         if p == "/api/gen/video/avatar-name":
@@ -571,6 +588,8 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
+        if p == "/api/gen/audio/clone-vip":
+            return self._method_not_allowed()
         if p == "/api/gen/asset/marks":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
@@ -727,6 +746,21 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/gen/health":
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS),
                                     "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
+        self._send(404, {"detail": "not found"})
+
+    def do_PUT(self):
+        if self.path.split("?")[0] == "/api/gen/audio/clone-vip":
+            return self._method_not_allowed()
+        self._send(404, {"detail": "not found"})
+
+    def do_PATCH(self):
+        if self.path.split("?")[0] == "/api/gen/audio/clone-vip":
+            return self._method_not_allowed()
+        self._send(404, {"detail": "not found"})
+
+    def do_DELETE(self):
+        if self.path.split("?")[0] == "/api/gen/audio/clone-vip":
+            return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
 
 if __name__ == "__main__":

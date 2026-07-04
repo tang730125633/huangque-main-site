@@ -1,6 +1,10 @@
 import importlib
+import base64
+import sqlite3
 import sys
+import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 
@@ -56,6 +60,96 @@ class ContentDomainTests(unittest.TestCase):
         self.assertTrue(core._must_change_password({"must_change": True}))
         self.assertFalse(core._must_change_password({"must_change": False}))
         self.assertFalse(core._must_change_password(None))
+
+    def test_clone_vip_validation_rejects_before_mutation(self):
+        audio = importlib.import_module("content_domains.audio")
+        original_adb = audio.adb
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "audio.db"
+
+            def test_adb():
+                c = sqlite3.connect(db_path)
+                c.row_factory = sqlite3.Row
+                return c
+
+            audio.adb = test_adb
+            try:
+                with closing(test_adb()) as c:
+                    c.execute("""CREATE TABLE audio_voice_slots(
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        username TEXT, slot_id TEXT, status TEXT, voice_id INTEGER,
+                        reclone_count INTEGER, updated_at INTEGER, clone_upload_at INTEGER
+                    )""")
+                    c.execute("""INSERT INTO audio_voice_slots
+                        (username, slot_id, status, voice_id, reclone_count, updated_at, clone_upload_at)
+                        VALUES('fang','S_demo','ready',7,9,100,100)""")
+                    c.commit()
+
+                before = self._slot_snapshot(test_adb, "fang", "S_demo")
+                cases = [
+                    ({"slot_id": "S_demo", "audio_format": "wav"}, 400, "请先上传样音"),
+                    ({"slot_id": "S_demo", "audio": "YQ==", "audio_format": "exe"}, 400, "audio_format 仅支持"),
+                    ({"slot_id": "S_missing", "audio": "YQ==", "audio_format": "wav"}, 404, "音色槽位不存在"),
+                ]
+                for payload, status, msg in cases:
+                    with self.subTest(payload=payload):
+                        with self.assertRaises(audio.CloneVipValidationError) as cm:
+                            audio.validate_clone_vip_payload("fang", payload)
+                        self.assertEqual(cm.exception.status, status)
+                        self.assertIn(msg, cm.exception.detail)
+                        self.assertEqual(before, self._slot_snapshot(test_adb, "fang", "S_demo"))
+
+                with closing(test_adb()) as c:
+                    c.execute("UPDATE audio_voice_slots SET reclone_count=10 WHERE username='fang' AND slot_id='S_demo'")
+                    c.commit()
+                before_limit = self._slot_snapshot(test_adb, "fang", "S_demo")
+                with self.assertRaises(audio.CloneVipValidationError) as cm:
+                    audio.validate_clone_vip_payload("fang", {"slot_id": "S_demo", "audio": base64.b64encode(b'audio').decode(), "audio_format": "wav"})
+                self.assertEqual(cm.exception.status, 409)
+                self.assertIn("复刻上限", cm.exception.detail)
+                self.assertEqual(before_limit, self._slot_snapshot(test_adb, "fang", "S_demo"))
+            finally:
+                audio.adb = original_adb
+
+    def test_clone_vip_validation_normalizes_valid_payload(self):
+        audio = importlib.import_module("content_domains.audio")
+        original_adb = audio.adb
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "audio.db"
+
+            def test_adb():
+                c = sqlite3.connect(db_path)
+                c.row_factory = sqlite3.Row
+                return c
+
+            audio.adb = test_adb
+            try:
+                with closing(test_adb()) as c:
+                    c.execute("""CREATE TABLE audio_voice_slots(
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        username TEXT, slot_id TEXT, status TEXT, voice_id INTEGER,
+                        reclone_count INTEGER, updated_at INTEGER, clone_upload_at INTEGER
+                    )""")
+                    c.execute("""INSERT INTO audio_voice_slots
+                        (username, slot_id, status, voice_id, reclone_count, updated_at, clone_upload_at)
+                        VALUES('fang','S_demo','active',NULL,0,100,100)""")
+                    c.commit()
+                payload = audio.validate_clone_vip_payload("fang", {
+                    "slot_id": " S_demo ",
+                    "audio": "data:audio/wav;base64," + base64.b64encode(b'audio').decode(),
+                    "audio_format": ".WAV",
+                })
+                self.assertEqual(payload["slot_id"], "S_demo")
+                self.assertEqual(payload["audio"], base64.b64encode(b'audio').decode())
+                self.assertEqual(payload["audio_format"], "wav")
+            finally:
+                audio.adb = original_adb
+
+    def _slot_snapshot(self, adb, username, slot_id):
+        with closing(adb()) as c:
+            row = c.execute("""SELECT status, voice_id, reclone_count, updated_at, clone_upload_at
+                FROM audio_voice_slots WHERE username=? AND slot_id=?""", (username, slot_id)).fetchone()
+        return tuple(row) if row else None
 
 
 if __name__ == "__main__":

@@ -345,6 +345,62 @@ def check_clone_status(username, slot_id):
         return {"status": "failed", "doubao_status": st}
     return {"status": "training", "doubao_status": st}
 
+ALLOWED_CLONE_AUDIO_FORMATS = {"mp3", "wav", "m4a", "aac", "ogg"}
+
+class CloneVipValidationError(ValueError):
+    def __init__(self, status, detail):
+        super().__init__(detail)
+        self.status = status
+        self.detail = detail
+
+def _clone_audio_format(audio_format):
+    return (audio_format or "mp3").strip().lower().lstrip(".")
+
+def _clone_audio_b64(audio):
+    audio = (audio or "").strip()
+    if "," in audio:
+        audio = audio.split(",", 1)[1].strip()
+    return audio
+
+def validate_clone_vip_payload(username, payload):
+    username = (username or "").strip()
+    if not isinstance(payload, dict):
+        raise CloneVipValidationError(400, "请求体不是合法 JSON")
+    slot_id = (payload.get("slot_id") or "").strip()
+    if not slot_id:
+        raise CloneVipValidationError(400, "缺少音色槽位 ID")
+    audio_b64 = _clone_audio_b64(payload.get("audio"))
+    if not audio_b64:
+        raise CloneVipValidationError(400, "请先上传样音")
+    audio_format = _clone_audio_format(payload.get("audio_format"))
+    if audio_format not in ALLOWED_CLONE_AUDIO_FORMATS:
+        raise CloneVipValidationError(400, "audio_format 仅支持 mp3/wav/m4a/aac/ogg")
+    try:
+        base64.b64decode(audio_b64, validate=True)
+    except Exception:
+        raise CloneVipValidationError(400, "样音不是有效的 base64 音频")
+    with closing(adb()) as c:
+        slot = c.execute("""SELECT id, status, voice_id, COALESCE(reclone_count, 0) AS reclone_count,
+                updated_at, clone_upload_at
+            FROM audio_voice_slots
+            WHERE username=? AND slot_id=?""", (username, slot_id)).fetchone()
+    if not slot:
+        raise CloneVipValidationError(404, "音色槽位不存在或不属于当前账号")
+    now = int(time.time())
+    if slot["status"] == "training":
+        last_at = int(slot["clone_upload_at"] or slot["updated_at"] or 0)
+        if last_at and now - last_at < 600:
+            raise CloneVipValidationError(409, "音色正在复刻中，请等待完成")
+    is_reclone = slot["status"] == "ready" and bool(slot["voice_id"])
+    reclone_count = int(slot["reclone_count"] or 0)
+    if is_reclone and reclone_count >= 10:
+        raise CloneVipValidationError(409, "该槽位已达复刻上限")
+    checked = dict(payload)
+    checked["slot_id"] = slot_id
+    checked["audio"] = audio_b64
+    checked["audio_format"] = audio_format
+    return checked
+
 def mark_clone_training(username, slot_id, name):
     username = (username or "").strip()
     slot_id = (slot_id or "").strip()
@@ -434,10 +490,10 @@ def clone_vip_voice(username, payload):
     username = (username or "").strip()
     slot_id = (payload.get("slot_id") or "").strip()
     name = (payload.get("name") or "\u6211\u7684VIP\u590d\u523b\u97f3\u8272").strip()[:40]
-    audio_b64 = payload.get("audio") or ""
-    audio_format = (payload.get("audio_format") or "mp3").strip().lower().lstrip(".")
-    if audio_format not in {"mp3", "wav", "m4a", "aac", "ogg"}:
-        audio_format = "mp3"
+    audio_b64 = _clone_audio_b64(payload.get("audio"))
+    audio_format = _clone_audio_format(payload.get("audio_format"))
+    if audio_format not in ALLOWED_CLONE_AUDIO_FORMATS:
+        raise ValueError("audio_format 仅支持 mp3/wav/m4a/aac/ogg")
     if not slot_id:
         raise ValueError("\u7f3a\u5c11\u97f3\u8272\u69fd\u4f4d")
     if not audio_b64:
