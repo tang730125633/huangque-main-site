@@ -14,7 +14,9 @@ def gen_collect(payload):
         ident = info.get("id")
         note_type = info.get("note_type")
         if not ident:
-            raise ValueError("链接无法解析，请检查链接或改用关键词搜索")
+            raise ValueError("没解析出视频链接：若是抖音「口令」（如 x.xx CQ:/ … 复制打开抖音），"
+                             "因平台风控无法直接解析，请在抖音里改用「复制链接」分享（含 v.douyin.com 链接）后再粘贴；"
+                             "或改用关键词搜索。")
     else:
         ident = raw
     if platform not in tikhub.PLATFORMS:

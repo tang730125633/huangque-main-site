@@ -410,24 +410,58 @@ def ch_comments(object_id, last_buffer=""):
 # ====================================================================
 # 链接解析：贴任意分享链/短链 → {platform, id, note_type}
 # ====================================================================
+# 从分享文案里抠 URL：只吃合法 URL 字符（RFC3986），天然在中文/省略号/全角标点处断开。
+# 抖音分享常见「…https://v.douyin.com/xxx/…复制此链接，打开抖音」——链接后直接粘中文，
+# 旧的 https?://[^\s]+ 会把后面的中文一并吞进来 → 短链带脏字 → get_aweme_id 400 失败。
+_URL_RE = re.compile(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+")
+_DY_HOST_RE = re.compile(r"(?:v\.douyin\.com|douyin\.com|iesdouyin\.com|douyinvod)", re.I)
+
+def _extract_url(text):
+    """从分享文案里提取第一个干净 URL；没有则返回 None（口令式分享无 URL）。"""
+    m = _URL_RE.search(text or "")
+    return m.group(0) if m else None
+
+def dy_share_code(text):
+    """抖音「口令式」无链接分享 → aweme_id（best-effort）。
+    ⚠ 抖音风控(shark)会拦截服务端口令解析，实测多数返回 invalid_command/shark_fail，
+    故这是兜底：主路径永远是从文案里提取 v.douyin.com/iesdouyin 链接再解。"""
+    try:
+        r = _g("/api/v1/douyin/app/v3/fetch_share_info_by_share_code", share_code=(text or "").strip())
+    except TikHubError:
+        return None
+    if not isinstance(r, dict) or r.get("invalid_command"):
+        return None
+    blob = json.dumps(r)   # 成功时在返回里找 aweme_id / schema / 链接
+    m = re.search(r"/video/(\d+)", blob) or re.search(r"(\d{15,21})", blob)
+    return m.group(1) if m else None
+
 def dy_resolve(url):
+    """抖音链接/短链/纯 id → aweme_id。非抖音链接返回 None（不再把杂串瞎丢给上游）。"""
+    url = (url or "").strip()
     m = re.search(r"/video/(\d+)", url) or re.search(r"(\d{15,21})", url)
     if m:
         return m.group(1)
-    r = _g("/api/v1/douyin/web/get_aweme_id", url=url)  # v.douyin.com 短链等→aweme_id
-    return r if isinstance(r, str) else (r.get("aweme_id") if isinstance(r, dict) else None)
+    if _DY_HOST_RE.search(url):   # v.douyin.com 短链 / iesdouyin 分享链 → 解出 aweme_id
+        r = _g("/api/v1/douyin/web/get_aweme_id", url=url)
+        return r if isinstance(r, str) else (r.get("aweme_id") if isinstance(r, dict) else None)
+    return None
 
 def parse_link(text):
-    m = re.search(r"https?://[^\s]+", text or "")
-    url = m.group(0) if m else (text or "").strip()
-    low = url.lower()
+    text = text or ""
+    url = _extract_url(text)         # 干净 URL（截断粘连的中文）；口令式分享无 URL → None
+    probe = (url or text).strip()
+    low = probe.lower()
     if "xiaohongshu.com" in low or "xhslink" in low:
-        nm = re.search(r"(?:explore|discovery/item|item)/([0-9a-fA-F]+)", url)
-        nid = nm.group(1) if nm else (_g("/api/v1/xiaohongshu/app/extract_share_info", share_link=url) or {}).get("note_id")
+        nm = re.search(r"(?:explore|discovery/item|item)/([0-9a-fA-F]+)", probe)
+        nid = nm.group(1) if nm else (_g("/api/v1/xiaohongshu/app/extract_share_info", share_link=probe) or {}).get("note_id")
         return {"platform": "xhs", "id": nid, "note_type": None}
     if "weixin.qq.com" in low or "/sph" in low or "channels" in low or "finder" in low:
-        return {"platform": "channels", "id": url, "note_type": "video"}
-    return {"platform": "douyin", "id": dy_resolve(url), "note_type": "video"}
+        return {"platform": "channels", "id": probe, "note_type": "video"}
+    # 抖音：优先链接解析；纯口令(无链接)退回 best-effort 口令解析
+    aid = dy_resolve(probe)
+    if not aid and url is None:
+        aid = dy_share_code(text)
+    return {"platform": "douyin", "id": aid, "note_type": "video"}
 
 
 # ====================================================================
