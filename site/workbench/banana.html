@@ -35,10 +35,10 @@
 
       <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">引擎</div>
       <div id="engineRow" style="display:grid; grid-template-columns:repeat(2,1fr); gap:10px;">
-        <div data-engine="nb2" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; line-height:1.5;"><div style="font-weight:600;">Nano Banana 2</div><div style="font-size:11px; margin-top:3px; color:#e7b24c;">快·中文好 · 10点 ✦推荐</div></div>
-        <div data-engine="pro" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">Nano Banana Pro</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">精品·最强中文/4K · 18点</div></div>
-        <div data-engine="gpt" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">gpt-image-2</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">OpenAI·写实/局部改 · 12点</div></div>
-        <div data-engine="zelong" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">泽龙AI</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">实惠·偏不稳 · 8点</div></div>
+        <div data-engine="nb2" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; line-height:1.5;"><div style="font-weight:600;">Nano Banana 2</div><div style="font-size:11px; margin-top:3px; color:#e7b24c;">快·中文好 · <span data-engine-cost="nb2">10点</span> ✦推荐</div></div>
+        <div data-engine="pro" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">Nano Banana Pro</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">精品·最强中文/4K · <span data-engine-cost="pro">18点</span></div></div>
+        <div data-engine="gpt" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">gpt-image-2</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">OpenAI·写实/局部改 · <span data-engine-cost="gpt">12点</span></div></div>
+        <div data-engine="zelong" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">泽龙AI</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">实惠·偏不稳 · <span data-engine-cost="zelong">8点</span></div></div>
       </div>
 
       <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">比例</div>
@@ -139,10 +139,17 @@
   // 质量基价(最终=基价×数量)；nb/pro/gpt/zelong 各档
   var COSTBASE={nb2:{std:10,hd:14}, pro:{std:18,hd:26}, gpt:{std:8,hd:12}, zelong:{std:8,hd:12}};
   var ENGINE_MAXN={nb2:2, pro:2, gpt:4, zelong:2};  // 数量上限(中转/循环慢→低)
-  function costFor(){ var t=COSTBASE[engine]||COSTBASE.nb2; return (t[quality]||t.hd)*count; }
+  function engineCost(eng){ var t=COSTBASE[eng]||COSTBASE.nb2; return (t[quality]||t.hd)*count; }
+  function costFor(){ return engineCost(engine); }
+  function updateEngineCosts(){
+    document.querySelectorAll('[data-engine-cost]').forEach(function(x){
+      x.textContent=engineCost(x.getAttribute('data-engine-cost'))+'点';
+    });
+  }
   function tok(){ return localStorage.getItem('hq_token')||''; }
   function genLabel(){ return '立即生成（'+costFor()+' 点）'; }
   function updateCost(){
+    updateEngineCosts();
     gen.textContent=genLabel();
     note.innerHTML='本次预计消耗 <span style="color:#e7b24c; font-family:\'JetBrains Mono\',monospace;">'+costFor()+'</span> 点 · 失败自动退点';
     note.style.color='#5c6b82';
