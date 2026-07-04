@@ -13,6 +13,12 @@
   .skel-shimmer{ background:linear-gradient(100deg, rgba(148,164,187,.04) 30%, rgba(45,212,191,.08) 50%, rgba(148,164,187,.04) 70%); background-size:200% 100%; animation:hq-shimmer 2.6s linear infinite; }
   .chip{ transition:.16s; }
   .chip:hover{ border-color:rgba(231,178,76,.4)!important; color:#eaf1fa!important; }
+  .asset-action{height:28px;padding:0 10px;border-radius:8px;border:1px solid rgba(148,164,187,.13);background:rgba(148,164,187,.04);color:#94a4bb;text-decoration:none;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;font-family:inherit;white-space:nowrap}
+  .asset-action:hover{color:#e7b24c;border-color:rgba(231,178,76,.28)}
+  .asset-action.gold{border-color:rgba(231,178,76,.28);background:rgba(231,178,76,.08);color:#e7b24c}
+  .asset-select{position:absolute;top:10px;right:10px;z-index:4;width:30px;height:30px;display:none;align-items:center;justify-content:center;border:1px solid rgba(231,178,76,.34);border-radius:9px;background:rgba(7,11,19,.72);backdrop-filter:blur(8px)}
+  .asset-select input{width:16px;height:16px;accent-color:#e7b24c;cursor:pointer}
+  .multi-on .asset-select{display:flex}
   @media (max-width:1100px){ .gAsset{ grid-template-columns:repeat(3,1fr);} }
   @media (max-width:760px){ .gAsset{ grid-template-columns:repeat(2,1fr);} }
   @media (max-width:480px){ .gAsset{ grid-template-columns:1fr;} }
@@ -43,7 +49,8 @@
       <input type="text" name="hq_asset_search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" readonly onfocus="this.removeAttribute('readonly')" aria-label="搜索资产" placeholder="搜索作品、素材或标签…" style="flex:1; min-width:0; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; font-family:inherit;">
 
     </div>
-    <button class="hv-gold" style="display:flex; align-items:center; gap:6px; padding:9px 14px; font-size:12.5px; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer;"><span style="display:flex; width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></span>排序</button>
+    <button id="bulkToggle" class="hv-gold" type="button" style="display:flex; align-items:center; gap:6px; padding:9px 14px; font-size:12.5px; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; font-family:inherit;"><span style="display:flex; width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span>多选</button>
+    <button id="bulkAll" class="hv-gold" type="button" style="display:none; align-items:center; gap:6px; padding:9px 14px; font-size:12.5px; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; font-family:inherit;">全选</button>
   </div>
   <div id="catRow" style="display:flex; align-items:center; gap:9px; margin-bottom:26px; flex-wrap:wrap;">
     <span class="chip" data-cat="image" style="padding:7px 15px; font-size:13px; font-weight:600; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.3); border-radius:99px; cursor:pointer;">图片资产</span>
@@ -54,6 +61,11 @@
 
   <!-- 真实资产网格（生成历史，JS 填充；有作品时显示、空态隐藏） -->
   <div id="assetGrid" class="gAsset" style="display:none; gap:16px; margin-bottom:26px;"></div>
+  <div id="bulkBar" style="display:none; position:fixed; left:50%; bottom:22px; transform:translateX(-50%); z-index:20; align-items:center; gap:12px; padding:10px 12px; border:1px solid rgba(231,178,76,.28); border-radius:14px; background:rgba(7,11,19,.86); box-shadow:0 12px 34px rgba(0,0,0,.32); backdrop-filter:blur(14px);">
+    <span id="bulkCount" style="min-width:74px; font-size:12.5px; color:#eaf1fa; font-weight:700;">已选 0 个</span>
+    <button id="bulkDownload" class="asset-action gold" type="button" style="height:32px;">批量下载</button>
+    <button id="bulkCancel" class="asset-action" type="button" style="height:32px;">取消</button>
+  </div>
 
   <!-- 居中大空态 -->
   <div id="assetEmpty" style="display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:44px 24px 40px; border:1px solid rgba(148,164,187,.1); border-radius:20px; background:linear-gradient(165deg, rgba(16,24,39,.55), rgba(12,18,32,.4)); margin-bottom:26px;">
@@ -129,8 +141,94 @@
   var AUDIO_TAB=params.get('audioTab')||(cat==='audio'?'audio':'public');
   var currentLoadKind='';
   var personalVoiceLoadSeq=0, activePreviewAudio=null, activePreviewButton=null;
+  var searchInput=document.querySelector('input[name="hq_asset_search"]');
+  var bulkToggle=document.getElementById('bulkToggle'), bulkAll=document.getElementById('bulkAll'), bulkBar=document.getElementById('bulkBar'),
+      bulkCount=document.getElementById('bulkCount'), bulkDownload=document.getElementById('bulkDownload'), bulkCancel=document.getElementById('bulkCancel');
+  var searchTerm='', multi=false, selected={}, visibleItems=[];
   function freshUrl(url){
     return url+(url.indexOf('?')>=0?'&':'?')+'_='+(Date.now());
+  }
+  function assetUrl(x){ return x.url||x.video_url||x.audio_url||x.image_url||x.preview_url||''; }
+  function assetKey(x,kind){ return [kind||cat, x.id||x.job_id||x.asset_id||'', assetUrl(x), x.prompt||x.text||''].join('|'); }
+  function searchableText(x,kind){
+    return [
+      kind||cat, x.prompt, x.text, x.mode, x.ratio, x.quality, x.model, x.voice, x.voice_key,
+      x.voice_name, x.status, x.title, x.display_name, x.sub, x.created_at
+    ].filter(Boolean).join(' ').toLowerCase();
+  }
+  function filterAssets(list,kind){
+    var q=(searchTerm||'').trim().toLowerCase();
+    if(!q) return list;
+    return list.filter(function(x){ return searchableText(x,kind).indexOf(q)>=0; });
+  }
+  function setVisible(list,kind){
+    visibleItems=list.map(function(x){ return {key:assetKey(x,kind), url:assetUrl(x)}; }).filter(function(x){ return !!x.url; });
+    updateBulk();
+    return list;
+  }
+  function selectedCount(){ return Object.keys(selected).filter(function(k){ return selected[k]; }).length; }
+  function updateBulk(){
+    var n=selectedCount();
+    if(grid) grid.classList.toggle('multi-on', !!multi);
+    if(bulkToggle){
+      bulkToggle.style.color=multi?'#e7b24c':'#94a4bb';
+      bulkToggle.style.borderColor=multi?'rgba(231,178,76,.32)':'rgba(148,164,187,.14)';
+    }
+    if(bulkAll) bulkAll.style.display=multi?'flex':'none';
+    if(bulkBar) bulkBar.style.display=(multi&&n)?'flex':'none';
+    if(bulkCount) bulkCount.textContent='已选 '+n+' 个';
+    if(bulkDownload) bulkDownload.disabled=!n;
+  }
+  function addSelectBox(cardEl,x,kind){
+    var key=assetKey(x,kind), box=document.createElement('label'), ck=document.createElement('input');
+    box.className='asset-select'; ck.type='checkbox'; ck.checked=!!selected[key];
+    ck.onchange=function(){ selected[key]=ck.checked; if(!ck.checked) delete selected[key]; updateBulk(); };
+    box.onclick=function(e){ e.stopPropagation(); };
+    box.appendChild(ck); cardEl.appendChild(box); return cardEl;
+  }
+  function selectVisible(on){
+    visibleItems.forEach(function(v){ if(on) selected[v.key]=true; else delete selected[v.key]; });
+    [].slice.call(grid.querySelectorAll('.asset-select input')).forEach(function(ck){ ck.checked=!!on; });
+    updateBulk();
+  }
+  function triggerDownload(url,idx){
+    if(!url) return;
+    var a=document.createElement('a'); a.href=url; a.download='huangque-asset-'+(idx+1); a.style.display='none';
+    document.body.appendChild(a); a.click(); setTimeout(function(){ a.remove(); }, 60);
+  }
+  function downloadSelected(){
+    var urls=visibleItems.filter(function(v){ return selected[v.key]; }).map(function(v){ return v.url; });
+    urls.forEach(function(url,idx){ setTimeout(function(){ triggerDownload(url,idx); }, idx*320); });
+  }
+  function toast(msg,ok){
+    var n=document.createElement('div');
+    n.textContent=msg;
+    n.style.cssText='position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:40;padding:10px 14px;border-radius:10px;background:'+(ok?'rgba(45,212,191,.16)':'rgba(244,112,138,.16)')+';border:1px solid '+(ok?'rgba(45,212,191,.28)':'rgba(244,112,138,.28)')+';color:#eaf1fa;font-size:12.5px;font-weight:700;box-shadow:0 12px 32px rgba(0,0,0,.28);';
+    document.body.appendChild(n); setTimeout(function(){ n.remove(); }, 2200);
+  }
+  function regenPayload(x,kind){
+    if(kind==='audio') return {url:'/api/gen/audio', body:{text:x.text||x.prompt||'', voice:x.voice||x.voice_key||'', speed:x.speed||1, pitch:x.pitch||0, volume:x.volume||1}};
+    if(kind==='video'){
+      localStorage.setItem('hq_video_prefill', JSON.stringify({prompt:x.prompt||x.text||'', voice:x.voice||x.voice_key||'', ratio:x.ratio||'9:16', resolution:x.resolution||'', motion:x.motion||''}));
+      location.href='video.html?prefill=asset';
+      return null;
+    }
+    var mode=(x.mode||'').toLowerCase(), body={prompt:x.prompt||'', ratio:x.ratio||'1:1', quality:x.quality||'std', count:1};
+    if(mode.indexOf('nanobanana')>=0){ return {url:'/api/gen/banana', body:Object.assign(body,{model:x.model||'nb2'})}; }
+    if(mode.indexOf('zelong')>=0){ return {url:'/api/gen/image', body:Object.assign(body,{provider:'zelong'})}; }
+    return {url:'/api/gen/image', body:body};
+  }
+  function regenerate(x,kind,btn){
+    var cfg=regenPayload(x,kind); if(!cfg) return;
+    btn.disabled=true; btn.textContent='提交中';
+    fetch(cfg.url,{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify(cfg.body)})
+      .then(function(r){ if(r.status===401){ HQ.login(); return null; } return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
+      .then(function(res){ if(!res) return; if(!res.ok) throw new Error((res.data&&res.data.detail)||'重生成失败'); toast('已提交重生成任务',true); })
+      .catch(function(e){ toast(e.message||'重生成失败',false); })
+      .finally(function(){ btn.disabled=false; btn.textContent='重生成'; });
+  }
+  function actionBtn(text,fn){
+    var b=document.createElement('button'); b.type='button'; b.textContent=text; b.className='asset-action'; b.onclick=fn; return b;
   }
   function stopActivePreviewAudio(){
     if(activePreviewAudio){
@@ -159,8 +257,11 @@
     var im=document.createElement('img'); im.src=x.url; im.loading='lazy'; im.style.cssText='display:block; width:100%; aspect-ratio:4/3; object-fit:cover; cursor:pointer;'; im.onclick=function(){ window.open(x.url,'_blank'); };
     var foot=document.createElement('div'); foot.style.cssText='padding:11px 13px; display:flex; align-items:center; justify-content:space-between; gap:8px;';
     var pt=document.createElement('div'); pt.textContent=p; pt.style.cssText='font-size:12px; color:#94a4bb; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
-    var dl=document.createElement('a'); dl.textContent='下载'; dl.href=x.url; dl.setAttribute('download','huangque.png'); dl.style.cssText='flex:none; font-size:11.5px; color:#e7b24c; text-decoration:none;';
-    foot.appendChild(pt); foot.appendChild(dl); w.appendChild(tag); w.appendChild(im); w.appendChild(foot); return w;
+    var actions=document.createElement('div'); actions.style.cssText='display:flex;align-items:center;gap:6px;flex:none;';
+    var regen=actionBtn('重生成',function(){ regenerate(x,'image',regen); });
+    var dl=document.createElement('a'); dl.textContent='下载'; dl.href=x.url; dl.setAttribute('download','huangque.png'); dl.className='asset-action gold';
+    actions.appendChild(regen); actions.appendChild(dl);
+    foot.appendChild(pt); foot.appendChild(actions); w.appendChild(tag); w.appendChild(im); w.appendChild(foot); return addSelectBox(w,x,'image');
   }
   function audioCard(x){
     var text=x.text||x.prompt||'配音资产';
@@ -209,12 +310,17 @@
     var hint=document.createElement('div');
     hint.textContent=url?'可试听 / 下载 MP3':'音频文件缺失';
     hint.style.cssText='font-size:11.5px;color:'+(url?'#5c6b82':'#f4708a')+';';
+    var buttons=document.createElement('div');
+    buttons.style.cssText='display:flex;align-items:center;gap:6px;flex:0 0 auto;';
+    var regen=actionBtn('重生成',function(){ regenerate(x,'audio',regen); });
     var dl=document.createElement('a');
     dl.href=url||'#';
     dl.setAttribute('download','huangque-audio.mp3');
     dl.textContent='下载';
-    dl.style.cssText='height:30px;padding:0 12px;border-radius:9px;border:1px solid rgba(231,178,76,.28);background:rgba(231,178,76,.08);color:#e7b24c;text-decoration:none;font-size:12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;';
-    actions.appendChild(hint); actions.appendChild(dl);
+    dl.className='asset-action gold';
+    dl.style.height='30px';
+    buttons.appendChild(regen); buttons.appendChild(dl);
+    actions.appendChild(hint); actions.appendChild(buttons);
     var audio=null;
     play.onclick=function(e){
       e.preventDefault(); e.stopPropagation();
@@ -233,7 +339,7 @@
       setPreviewButtonPlaying(play);
       audio.play().catch(function(){ stopActivePreviewAudio(); });
     };
-    w.appendChild(top); w.appendChild(body); w.appendChild(params); w.appendChild(actions); return w;
+    w.appendChild(top); w.appendChild(body); w.appendChild(params); w.appendChild(actions); return addSelectBox(w,x,'audio');
   }
   function videoStatusLabel(status){
     var s=String(status||'pending').toLowerCase();
@@ -301,15 +407,20 @@
     var hint=document.createElement('span');
     hint.textContent=videoUrl?'可预览 / 下载':'任务已创建，完成后可预览';
     hint.style.cssText='font-size:11.5px;color:#5c6b82;';
+    var buttons=document.createElement('div');
+    buttons.style.cssText='display:flex;align-items:center;gap:6px;flex:0 0 auto;';
+    var regen=actionBtn('重生成',function(){ regenerate(x,'video',regen); });
     var dl=document.createElement('a');
     dl.textContent=videoUrl?'下载':'去生成';
     dl.href=videoUrl||'video.html';
     if(videoUrl) dl.setAttribute('download','huangque-video.mp4');
-    dl.style.cssText='height:30px;padding:0 12px;border-radius:9px;border:1px solid rgba(231,178,76,.28);background:rgba(231,178,76,.08);color:#e7b24c;text-decoration:none;font-size:12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;';
-    foot.appendChild(hint); foot.appendChild(dl);
+    dl.className='asset-action gold';
+    dl.style.height='30px';
+    buttons.appendChild(regen); buttons.appendChild(dl);
+    foot.appendChild(hint); foot.appendChild(buttons);
     body.appendChild(head); body.appendChild(meta); body.appendChild(foot);
     w.appendChild(media); w.appendChild(body);
-    return w;
+    return addSelectBox(w,x,'video');
   }
   function escapeHtml(s){
     return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});
@@ -346,7 +457,7 @@
     actions.appendChild(rename); actions.appendChild(del);
     body.appendChild(actions);
     w.appendChild(media); w.appendChild(body);
-    return w;
+    return addSelectBox(w,x,'avatar');
   }
   function openRenameAvatarModal(avatar){
     var old=document.getElementById('renameAvatarModal'); if(old) old.remove();
@@ -896,6 +1007,8 @@
               {display_name:'Paul 男声',sub:'官方 · 沉稳'}
             ];
           }
+          items=filterAssets(items,'voice');
+          if(!items.length){ var pe=document.createElement('div'); pe.style.cssText='grid-column:1/-1; padding:24px; text-align:center; font-size:13px; color:#5c6b82;'; pe.textContent='没有匹配的公共音色'; grid.appendChild(pe); return; }
           items.forEach(function(v){
             grid.appendChild(voiceAssetCard(v.display_name||v.voice_key||'公共音色', v.sub||'公共音色', '公共音色', false, null, null, v.preview_url));
           });
@@ -930,9 +1043,13 @@
     if(!ALL.length){
       var e=document.createElement('div'); e.style.cssText='grid-column:1/-1; padding:24px; text-align:center; font-size:13px; color:#5c6b82; border:1px dashed rgba(148,164,187,.16); border-radius:16px; background:rgba(148,164,187,.02);'; e.textContent='暂无生成配音，去音频模块生成后会自动入库'; grid.appendChild(e); return;
     }
-    ALL.forEach(function(x){ grid.appendChild(audioCard(x)); });
+    var list=setVisible(filterAssets(ALL,'audio'),'audio');
+    if(!list.length){ var ae=document.createElement('div'); ae.style.cssText='grid-column:1/-1; padding:24px; text-align:center; font-size:13px; color:#5c6b82; border:1px dashed rgba(148,164,187,.16); border-radius:16px; background:rgba(148,164,187,.02);'; ae.textContent=searchTerm?'没有匹配的配音资产':'暂无生成配音，去音频模块生成后会自动入库'; grid.appendChild(ae); return; }
+    list.forEach(function(x){ grid.appendChild(audioCard(x)); });
   }
   function render(){
+    visibleItems=[];
+    updateBulk();
     if(cat==='audio'){ renderAudioAssets(); return; }
     if(cat==='avatar'){ renderAvatarAssets(); return; }
     if(cat==='video'){
@@ -950,7 +1067,9 @@
       }
       if(empty) empty.style.display='none'; if(skelH) skelH.style.display='none'; if(skelG) skelG.style.display='none';
       grid.style.display='grid';
-      ALL.forEach(function(x){ grid.appendChild(videoCard(x)); });
+      var videos=setVisible(filterAssets(ALL,'video'),'video');
+      if(!videos.length){ var ve=document.createElement('div'); ve.style.cssText='grid-column:1/-1; padding:30px; text-align:center; font-size:13px; color:#5c6b82;'; ve.textContent=searchTerm?'没有匹配的视频资产':'暂无视频资产'; grid.appendChild(ve); return; }
+      videos.forEach(function(x){ grid.appendChild(videoCard(x)); });
       return;
     }
     renderImageAssets();
@@ -968,7 +1087,9 @@
       grid.appendChild(e);
       return;
     }
-    ALL.forEach(function(x){ grid.appendChild(avatarCard(x)); });
+    var avatars=setVisible(filterAssets(ALL,'avatar'),'avatar');
+    if(!avatars.length){ var ne=document.createElement('div'); ne.style.cssText='grid-column:1/-1; padding:30px; text-align:center; font-size:13px; color:#5c6b82;'; ne.textContent='没有匹配的数字人形象'; grid.appendChild(ne); return; }
+    avatars.forEach(function(x){ grid.appendChild(avatarCard(x)); });
   }
   // 图片资产：顶层一类，内部子筛选(样式仿音频资产子tab) 全部/文生图/图生图/局部修改
   function renderImageAssets(){
@@ -995,7 +1116,8 @@
     [].slice.call(grid.children).forEach(function(n,idx){ if(idx>0) grid.removeChild(n); });  // 保留首行子tab，清旧卡片
     document.querySelectorAll('[data-img-tab]').forEach(function(b){ var on=b.getAttribute('data-img-tab')===imgSub; b.style.color=on?'#1a1206':'#94a4bb'; b.style.background=on?'linear-gradient(135deg,#f4cd72,#e7b24c)':'transparent'; });
     var list = imgSub==='all' ? ALL : ALL.filter(function(x){ return normCat(x.mode)===imgSub; });
-    if(!list.length){ var e=document.createElement('div'); e.style.cssText='grid-column:1/-1; padding:30px; text-align:center; font-size:13px; color:#5c6b82;'; e.textContent='该分类下暂无作品'; grid.appendChild(e); return; }
+    list=setVisible(filterAssets(list,'image'),'image');
+    if(!list.length){ var e=document.createElement('div'); e.style.cssText='grid-column:1/-1; padding:30px; text-align:center; font-size:13px; color:#5c6b82;'; e.textContent=searchTerm?'没有匹配的图片资产':'该分类下暂无作品'; grid.appendChild(e); return; }
     list.forEach(function(x){ grid.appendChild(card(x)); });
   }
   function load(kind){
@@ -1017,6 +1139,7 @@
   }
   document.querySelectorAll('#catRow .chip').forEach(function(ch){ ch.onclick=function(){
     setCat(ch.getAttribute('data-cat'));
+    selected={}; updateBulk();
     load(cat==='audio'?'audio':(cat==='video'?'video':(cat==='avatar'?'avatar':'image')));
   };});
   function setCat(next){
@@ -1030,6 +1153,17 @@
     });
   }
   setCat(cat);
+  if(searchInput){
+    searchInput.addEventListener('input',function(){
+      searchTerm=searchInput.value||'';
+      selected={};
+      render();
+    });
+  }
+  if(bulkToggle){ bulkToggle.onclick=function(){ multi=!multi; if(!multi) selected={}; render(); }; }
+  if(bulkAll){ bulkAll.onclick=function(){ selectVisible(visibleItems.some(function(v){return !selected[v.key];})); }; }
+  if(bulkCancel){ bulkCancel.onclick=function(){ multi=false; selected={}; render(); }; }
+  if(bulkDownload){ bulkDownload.onclick=downloadSelected; }
   load(cat==='audio'?'audio':(cat==='video'?'video':(cat==='avatar'?'avatar':'image')));
 })();
 </script>
