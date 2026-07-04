@@ -60,7 +60,7 @@ def _resolve_out_file(rel):
     return None
 
 # ---- 能力定义：成本(点数) + 处理函数 ----
-COST = {"image": 12, "copy": 3, "audio": 4, "video": 0}  # 视频任务壳暂不扣点；collect/leads 走 cost_of() 动态算
+COST = {"image": 12, "copy": 3, "audio": 10, "video": 0}  # 视频任务壳暂不扣点；collect/leads 走 cost_of() 动态算
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
 ZELONG_KEY  = os.environ.get("ZELONG_KEY", "")                              # 泽龙Ai 中转站(OpenAI 兼容)
 ZELONG_BASE = os.environ.get("ZELONG_BASE", "https://api.xiaoleai.team")
