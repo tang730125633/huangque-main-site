@@ -38,6 +38,7 @@ for f in "$@"; do
   case "$f" in
     server/auth_server.py) dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
     server/content_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-content ;;
+    server/content_domains/*) dest=/home/ubuntu/content-api/content_domains/;  svc=huangque-content ;;
     server/leadgen_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-leadgen-api ;;
     server/imggen_api.py)  dest=/home/ubuntu/content-api/;  svc=huangque-imggen-api ;;
     server/dl_service.py)  dest=/home/ubuntu/dl-service/;   svc=huangque-dl ;;
@@ -50,6 +51,11 @@ for f in "$@"; do
   esac
   rsync -az --rsync-path="sudo rsync" -e "$SSHC" "$f" "$REMOTE:$dest" \
     && echo "  ✓ $f → $dest" || { echo "  ❌ $f 部署失败"; exit 1; }
+  if [ "$f" = "server/content_api.py" ] && [ -d server/content_domains ]; then
+    $SSHC "$REMOTE" "sudo mkdir -p /home/ubuntu/content-api/content_domains" || { echo "  ❌ content_domains 目录创建失败"; exit 1; }
+    rsync -az --delete --exclude='__pycache__' --exclude='*.db' --rsync-path="sudo rsync" -e "$SSHC" server/content_domains/ "$REMOTE:/home/ubuntu/content-api/content_domains/" \
+      && echo "  ✓ server/content_domains/ → /home/ubuntu/content-api/content_domains/" || { echo "  ❌ content_domains 部署失败"; exit 1; }
+  fi
   add_svc "$svc"
 done
 
