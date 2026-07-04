@@ -14,7 +14,7 @@ class ContentDomainTests(unittest.TestCase):
         content_api = importlib.import_module("content_api")
         self.assertEqual(
             sorted(content_api.HANDLERS),
-            ["audio", "collect", "copy", "image", "leads", "video"],
+            ["audio", "collect", "copy", "image", "leads", "tryon", "video"],
         )
         self.assertIs(content_api.HANDLERS, content_api.registry.HANDLERS)
 

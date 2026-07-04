@@ -78,8 +78,10 @@ def update_video_asset_phase(job_id, phase, **fields):
         pass
 
 def record_video_pending_asset(job_id, username, payload):
+    # 换装/换背景(tryon)与常规视频共用 video_assets 表；tryon 没有 mode/voice 等字段，兜底为空即可
+    is_tryon = bool(payload.get("person_video_data") or payload.get("clothes_data") or payload.get("background_data"))
     record_video_asset(job_id, username, {
-        "mode": payload.get("mode") or "text",
+        "mode": ("tryon" if is_tryon else (payload.get("mode") or "text")),
         "text": payload.get("text") or "",
         "voice": payload.get("voice") or "",
         "resolution": payload.get("resolution") or "1080p",
@@ -894,4 +896,190 @@ def gen_video(payload):
         "message": "视频生成完成"
     }
 
-HANDLERS = {"video": gen_video}
+# ============ F8 · 视频换装 / 换背景（RunningHub 两段式 AI App） ============
+# 两段：换装(Wan2.2 Animate) → 换背景(VideoRefusion)。按有无衣服图/背景图裁剪阶段。
+# clothes+bg → both；仅 clothes → 只换装；仅 bg → 只换背景。
+TRYON_WEBAPP_ID = "1969605116187844610"   # 换装 AI App
+BG_WEBAPP_ID    = "1986353521488523266"   # 换背景 AI App
+TRYON_MAX_WAIT  = 40 * 60                  # 单段最长等待(秒)，超时判失败退点
+
+def _rh_uploaded_name(upload_response):
+    """RunningHub upload_file 返回体里取文件名（不同版本字段名不一）。"""
+    for attr in ("fileName", "file_name", "file", "url", "key", "objectName", "object_name"):
+        value = getattr(upload_response, attr, None)
+        if value:
+            return value
+    if isinstance(upload_response, dict):
+        for attr in ("fileName", "file_name", "file", "url", "key", "objectName", "object_name"):
+            value = upload_response.get(attr)
+            if value:
+                return value
+    raise RuntimeError("RunningHub 上传响应解析失败: %r" % (upload_response,))
+
+def _rh_task_id(response):
+    return (
+        getattr(response, "task_id", None)
+        or getattr(response, "taskId", None)
+        or (response.get("taskId") if isinstance(response, dict) else None)
+        or str(response)
+    )
+
+def _rh_wait_success(client, task_id, job_id, phase, fail_msg):
+    """轮询 RunningHub 任务；每轮发一次 phase 心跳刷新 updated_at，防 reaper 误杀。"""
+    deadline = time.time() + TRYON_MAX_WAIT
+    while True:
+        status = client.get_status(task_id)
+        s = str(status)
+        if s.endswith("SUCCESS"):
+            return
+        if s.endswith("FAILED"):
+            raise RuntimeError(fail_msg)
+        if time.time() > deadline:
+            raise TimeoutError(fail_msg + "(超时)")
+        update_video_asset_phase(job_id, phase)  # 心跳
+        time.sleep(20)
+
+def _store_tryon_video(local_path, prefix="tryon"):
+    """把 RunningHub 下载到本地工作目录的成片，复制进内容输出库，返回相对路径(video/...)。"""
+    src = pathlib.Path(local_path)
+    if not src.is_file():
+        raise RuntimeError("换装成片文件不存在")
+    ext = src.suffix.lower() or ".mp4"
+    if ext not in {".mp4", ".mov", ".webm"}:
+        ext = ".mp4"
+    fn = "video/%s_%d%s" % (prefix, int(time.time() * 1000), ext)
+    _out_path(fn).write_bytes(src.read_bytes())
+    return fn
+
+def generate_tryon_video(person_video_file, clothes_file, background_file, seconds, job_id=None, username=None):
+    """RunningHub 两段式换装/换背景驱动。返回 {video_file, video_url, ...}。"""
+    try:
+        from runninghub_sdk import RunningHubClient  # 服务器 pip 装；本地/CI 不触发 import
+    except ImportError:
+        raise RuntimeError("服务器未安装 runninghub_sdk")
+    API_KEY = os.environ.get("RUNNINGHUB_API_KEY", "")
+    if not API_KEY:
+        raise RuntimeError("未配置 RUNNINGHUB_API_KEY")
+    client = RunningHubClient(API_KEY, base_url="https://www.runninghub.cn", timeout=120)
+
+    person_fp = _resolve_out_file(person_video_file)
+    if not person_fp:
+        raise ValueError("换装视频文件不存在")
+    clothes_fp = _resolve_out_file(clothes_file) if clothes_file else None
+    background_fp = _resolve_out_file(background_file) if background_file else None
+    if clothes_file and not clothes_fp:
+        raise ValueError("衣服图文件不存在")
+    if background_file and not background_fp:
+        raise ValueError("背景图文件不存在")
+
+    work_dir = VIDEO_OUT_DIR / ("tryon_work_%d" % int(time.time() * 1000))
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    # ---- Stage 1 换装（仅有衣服图时执行） ----
+    if clothes_fp:
+        update_video_asset_phase(job_id, "uploading")
+        src = _rh_uploaded_name(client.upload_file(str(person_fp)))
+        cloth = _rh_uploaded_name(client.upload_file(str(clothes_fp)))
+        update_video_asset_phase(job_id, "tryon_running")
+        nodes = [
+            {"nodeId": "363", "fieldName": "video", "fieldValue": src},
+            {"nodeId": "373", "fieldName": "image", "fieldValue": cloth},
+            {"nodeId": "362", "fieldName": "value", "fieldValue": str(seconds)},
+            {"nodeId": "358", "fieldName": "value", "fieldValue": "576"},
+            {"nodeId": "359", "fieldName": "value", "fieldValue": "1024"},
+            {"nodeId": "372", "fieldName": "text", "fieldValue": "Clothes"},
+        ]
+        resp = client.run_ai_app(TRYON_WEBAPP_ID, node_info_list=nodes)
+        task_id = _rh_task_id(resp)
+        _rh_wait_success(client, task_id, job_id, "tryon_running", "换装失败")
+        outputs = client.get_outputs(task_id)
+        paths = client.download_outputs(outputs, work_dir, overwrite=True)
+        if not paths:
+            raise RuntimeError("换装未产出视频")
+        working_video = str(paths[0])
+    else:
+        working_video = str(person_fp)
+
+    # ---- Stage 2 换背景（仅有背景图时执行） ----
+    if background_fp:
+        update_video_asset_phase(job_id, "bg_running")
+        vid = _rh_uploaded_name(client.upload_file(working_video))
+        bg = _rh_uploaded_name(client.upload_file(str(background_fp)))
+        nodes = [
+            {"nodeId": "352", "fieldName": "video", "fieldValue": vid},
+            {"nodeId": "318", "fieldName": "image", "fieldValue": bg},
+            {"nodeId": "339", "fieldName": "int", "fieldValue": str(seconds)},
+        ]
+        resp = client.run_ai_app(BG_WEBAPP_ID, node_info_list=nodes)
+        task_id = _rh_task_id(resp)
+        _rh_wait_success(client, task_id, job_id, "bg_running", "换背景失败")
+        outputs = client.get_outputs(task_id)
+        paths = client.download_outputs(outputs, work_dir, overwrite=True)
+        if not paths:
+            raise RuntimeError("换背景未产出视频")
+        final_video = str(paths[0])
+    else:
+        final_video = working_video
+
+    # ---- 收尾：成片入库 ----
+    update_video_asset_phase(job_id, "downloading")
+    video_file = _store_tryon_video(final_video, "tryon")
+    try:
+        for tmp in work_dir.glob("*"):
+            try: tmp.unlink()
+            except Exception: pass
+        work_dir.rmdir()
+    except Exception:
+        pass
+    return {
+        "video_file": video_file,
+        "video_url": _file_url(video_file),
+        "duration": seconds,
+    }
+
+def gen_tryon(payload):
+    job_id = payload.get("_job_id")
+    username = (payload.get("_username") or "").strip()
+    person_video_file = _save_data_file(payload.get("person_video_data"), "tryon_person", [".mp4", ".mov", ".webm"])
+    if not person_video_file:
+        raise ValueError("请上传换装视频")
+    clothes_file = _save_data_file(payload.get("clothes_data"), "tryon_cloth", [".jpg", ".jpeg", ".png", ".webp"])
+    background_file = _save_data_file(payload.get("background_data"), "tryon_bg", [".jpg", ".jpeg", ".png", ".webp"])
+    if not clothes_file and not background_file:
+        raise ValueError("请至少上传衣服图或背景图")
+    if clothes_file and background_file:
+        tryon_mode = "both"          # 换装 + 换背景
+    elif clothes_file:
+        tryon_mode = "clothes_only"  # 只换装
+    else:
+        tryon_mode = "bg_only"       # 只换背景
+    try:
+        seconds = int(payload.get("seconds") or 6)
+    except Exception:
+        seconds = 6
+    seconds = max(1, min(15, seconds))
+    text = (payload.get("text") or "").strip() or "换装换背景"
+    update_video_asset_phase(job_id, "queued", mode="tryon", text=text,
+                             reference_video_file=person_video_file, image_file=clothes_file)
+    video_result = generate_tryon_video(person_video_file, clothes_file, background_file, seconds,
+                                        job_id=job_id, username=username)
+    return {
+        "type": "video", "status": "done", "mode": "tryon",
+        "tryon_mode": tryon_mode,
+        "person_video_file": person_video_file,
+        "reference_video_file": person_video_file,
+        "reference_video_url": _file_url(person_video_file),
+        "clothes_file": clothes_file,
+        "background_file": background_file,
+        "image_file": clothes_file,
+        "image_url": _file_url(clothes_file) if clothes_file else None,
+        "text": text,
+        "video_file": video_result.get("video_file"), "video_url": video_result.get("video_url"),
+        "source_video_url": video_result.get("video_url"),
+        "duration": video_result.get("duration"),
+        "seconds": seconds,
+        "phase": "done",
+        "message": "换装换背景视频生成完成"
+    }
+
+HANDLERS = {"video": gen_video, "tryon": gen_tryon}

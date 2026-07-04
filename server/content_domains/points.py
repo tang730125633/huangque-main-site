@@ -15,6 +15,11 @@ def cost_of(kind, body):
         cap = 2 if (body.get("provider") or "").strip().lower() == "zelong" else 4
         cnt = 1 if body.get("mask") else max(1, min(cap, int(body.get("count") or 1)))
         return base * cnt  # 质量基价 × 数量
+    if kind == "tryon":
+        has_clothes = bool(body.get("clothes_data"))
+        has_bg = bool(body.get("background_data"))
+        return 40 if (has_clothes and has_bg) else 25  # 两段(换装+换背景)40/单段25
+        # TODO: 上线前与 kongli 确认点数
     return COST.get(kind, 0)
 
 class AuthPointsError(Exception):
