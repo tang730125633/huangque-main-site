@@ -32,6 +32,47 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 GEMINI_KEY  = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_BASE = os.environ.get("GEMINI_BASE", "https://generativelanguage.googleapis.com").rstrip("/")
 
+# ============ COS 出图存储（可选，与 content_api 共用同一个 content.env 的 COS_* 环境变量）============
+# 配置齐全且文件存在 → 上传 COS 返回直链；未配置/失败 → 回退本地 /api/gen/file/，零影响。密钥仅走环境变量。
+_COS_ID     = os.environ.get("COS_SECRET_ID", "").strip()
+_COS_KEY    = os.environ.get("COS_SECRET_KEY", "").strip()
+_COS_REGION = os.environ.get("COS_REGION", "").strip()
+_COS_BUCKET = os.environ.get("COS_BUCKET", "").strip()
+_COS_PREFIX = os.environ.get("COS_PREFIX", "").strip().strip("/")
+_COS_DOMAIN = os.environ.get("COS_DOMAIN", "").strip().rstrip("/")
+_cos_client = None
+
+def _cos_enabled():
+    return bool(_COS_ID and _COS_KEY and _COS_REGION and _COS_BUCKET)
+
+def _cos_get_client():
+    global _cos_client
+    if _cos_client is None:
+        from qcloud_cos import CosConfig, CosS3Client  # 服务器已装；懒加载，本地/CI 不触发
+        _cos_client = CosS3Client(CosConfig(Region=_COS_REGION, SecretId=_COS_ID, SecretKey=_COS_KEY, Scheme="https"))
+    return _cos_client
+
+def _public_url(rel, content_type=None):
+    local = "/api/gen/file/" + str(rel or "").replace("\\", "/").lstrip("/")
+    if not rel:
+        return local
+    try:
+        if _cos_enabled():
+            fp = OUT_DIR / rel
+            if fp.is_file():
+                key = (_COS_PREFIX + "/" + str(rel).lstrip("/")) if _COS_PREFIX else str(rel).lstrip("/")
+                with open(fp, "rb") as f:
+                    kw = {"Bucket": _COS_BUCKET, "Key": key, "Body": f}
+                    if content_type:
+                        kw["ContentType"] = content_type
+                    _cos_get_client().put_object(**kw)
+                if _COS_DOMAIN:
+                    return _COS_DOMAIN + "/" + key
+                return "https://%s.cos.%s.myqcloud.com/%s" % (_COS_BUCKET, _COS_REGION, key)
+    except Exception as e:
+        print("[imggen] COS 上传失败，回退本地: %s -> %s" % (rel, e), flush=True)
+    return local
+
 MODELS = {"nb2": "gemini-3.1-flash-image", "pro": "gemini-3-pro-image"}
 # 璐ㄩ噺鍩轰环(鏈€缁堢偣鏁?鍩轰环脳鏁伴噺) + 娓呮櫚搴︹啋imageSize(鎸?model 鍒嗘。锛屽ぇ鍐橩)
 BASE_COST   = {"nb2": {"std": 10, "hd": 14}, "pro": {"std": 18, "hd": 26}}
@@ -216,7 +257,7 @@ def gen_banana(payload):
     items = [_banana_one(model, body, i, ratio) for i in range(count)]
     files = [fn for fn, _ in items]
     dimensions = [dim for _, dim in items if dim]
-    urls = ["/api/gen/file/" + f for f in files]
+    urls = [_public_url(f, "image/png") for f in files]
     result = {"type": "image", "mode": ("nanobanana_img2img_" if image else "nanobanana_") + mkey, "model": model,
             "image_size": image_size, "quality": q, "count": count, "file": files[0], "url": urls[0],
             "files": files, "urls": urls, "ratio": ratio, "prompt": prompt}
