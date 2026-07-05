@@ -26,7 +26,6 @@
 
       <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 9px;">
         <span style="font-size:13.5px; font-weight:600;">提示词</span>
-        <button style="display:flex; align-items:center; gap:5px; padding:5px 11px; font-size:12px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.24); border-radius:8px; cursor:pointer; font-family:inherit;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 14l.7 1.9L22 17l-2.3.6L19 20l-.7-2.4L16 17l2.3-.5z"/></svg></span>灵感描述</button>
       </div>
       <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:14px 15px;">
         <textarea id="bPrompt" rows="3" placeholder="科技焕肤 · 逆龄新生，高级感美业海报，金色光效，9:16…" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;">科技焕肤 · 逆龄新生，高级感美业海报，金色光效，9:16 竖版，留白标题区，柔光质感，主体居中，氛围高级，适合朋友圈与门店屏幕投放</textarea>
@@ -76,25 +75,6 @@
         <img src="../assets/comic.webp" alt="风格参考" style="display:block; width:66px; height:66px; border-radius:11px; object-fit:cover; border:1px solid rgba(148,164,187,.12);">
         <img src="../assets/guofeng_search.webp" alt="风格参考" style="display:block; width:66px; height:66px; border-radius:11px; object-fit:cover; border:1px solid rgba(148,164,187,.12);">
       </div>
-      </div>
-
-      <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 10px;">
-        <span style="font-size:13.5px; font-weight:600;">灵感案例 · 做同款</span>
-        <button style="display:flex; align-items:center; gap:5px; font-size:12px; color:#94a4bb; background:none; border:none; cursor:pointer; font-family:inherit;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.8-3.4L23 10M1 14l4.7 4.4A9 9 0 0 0 20.5 15"/></svg></span>换一批</button>
-      </div>
-      <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px;">
-        <div style="padding:6px 13px; font-size:12.5px; border-radius:8px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">美业海报</div>
-        <div style="padding:6px 13px; font-size:12.5px; border-radius:8px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">节日热点</div>
-        <div style="padding:6px 13px; font-size:12.5px; border-radius:8px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">国风雅韵</div>
-        <div style="padding:6px 13px; font-size:12.5px; border-radius:8px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">赛博光感</div>
-        <div style="padding:6px 13px; font-size:12.5px; border-radius:8px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">漫画插画</div>
-      </div>
-      <div style="display:grid; grid-template-columns:repeat(5,1fr); gap:10px;">
-        <img src="../assets/meiye_poster.webp" alt="灵感案例" class="hv-lift" style="display:block; width:100%; aspect-ratio:3/4; border-radius:11px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">
-        <img src="../assets/duanwu.webp" alt="灵感案例" class="hv-lift" style="display:block; width:100%; aspect-ratio:3/4; border-radius:11px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">
-        <img src="../assets/huangque_poster.webp" alt="灵感案例" class="hv-lift" style="display:block; width:100%; aspect-ratio:3/4; border-radius:11px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">
-        <img src="../assets/cyberpunk.webp" alt="灵感案例" class="hv-lift" style="display:block; width:100%; aspect-ratio:3/4; border-radius:11px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">
-        <img src="../assets/comic.webp" alt="灵感案例" class="hv-lift" style="display:block; width:100%; aspect-ratio:3/4; border-radius:11px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">
       </div>
 
       <button id="bGen" class="hv-lift" style="width:100%; height:54px; margin-top:22px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit;">立即生成（10 点）</button>
