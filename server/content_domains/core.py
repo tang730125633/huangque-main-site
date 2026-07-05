@@ -31,6 +31,19 @@ AUDIO_OUT_DIR = OUT_DIR / "audio"
 VIDEO_OUT_DIR = OUT_DIR / "video"
 AUDIO_OUT_DIR.mkdir(parents=True, exist_ok=True)
 VIDEO_OUT_DIR.mkdir(parents=True, exist_ok=True)
+DL_MIME_EXT = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+}
+
+def _download_content_type_ext(headers):
+    ctype = (headers.get("Content-Type") or "application/octet-stream").split(";", 1)[0].strip().lower()
+    return ctype or "application/octet-stream", DL_MIME_EXT.get(ctype, ".mp4")
 
 def _out_path(rel):
     rel = str(rel or "").replace("\\", "/").lstrip("/")
@@ -746,10 +759,11 @@ class H(BaseHTTPRequestHandler):
                 up = tikhub._OPENER.open(req, timeout=120)  # 直连，绕过环境代理
             except Exception as e:
                 return self._send(502, {"detail": "下载失败:" + str(e)[:80]})
+            ctype, ext = _download_content_type_ext(up.headers)
             self.send_response(200)
-            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Type", ctype)
             self.send_header("Content-Disposition",
-                             "attachment; filename=\"%s.mp4\"; filename*=UTF-8''%s" % (ascii_name, urllib.parse.quote(raw_name + ".mp4")))
+                             "attachment; filename=\"%s%s\"; filename*=UTF-8''%s" % (ascii_name, ext, urllib.parse.quote(raw_name + ext)))
             clen = up.headers.get("Content-Length")
             if clen: self.send_header("Content-Length", clen)
             self.end_headers()

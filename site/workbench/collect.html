@@ -536,7 +536,6 @@
               setTimeout(function () {
                 var a = document.createElement('a');
                 a.href = '/api/gen/dl?url=' + encodeURIComponent(u) + '&name=' + encodeURIComponent('img_' + (i + 1));
-                a.target = '_blank';
                 a.rel = 'noopener';
                 document.body.appendChild(a); a.click(); a.remove();
               }, i * 260);
