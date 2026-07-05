@@ -69,7 +69,7 @@
       </div>
 
       <div id="refSection">
-      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">参考图 <span id="upHint" style="font-size:12px; color:#5c6b82; font-weight:400;">(可选 · 上传后变「图生图」，在参考图基础上改)</span></div>
+      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">参考图 <span id="upHint" style="font-size:12px; color:#5c6b82; font-weight:400;">(可选 · 上传或在提示词框 Ctrl/⌘V 粘贴图片，变「图生图」)</span></div>
       <div style="display:flex; gap:10px;">
         <label id="upBox" class="hv-gold" style="position:relative; width:66px; height:66px; flex:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; border:1px dashed rgba(148,164,187,.26); background:rgba(148,164,187,.04); border-radius:11px; color:#94a4bb; cursor:pointer; transition:.16s; overflow:hidden; background-size:cover; background-position:center;"><input id="upFile" type="file" accept="image/*" style="display:none"><span id="upIcon" style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg></span><span id="upText" style="font-size:10px;">上传</span></label>
       </div>
@@ -293,19 +293,36 @@
   var upBox=document.getElementById('upBox'), upFile=document.getElementById('upFile'),
       upIcon=document.getElementById('upIcon'), upText=document.getElementById('upText'), upHint=document.getElementById('upHint');
   function showInp(on){ if(inpBtn) inpBtn.style.display=on?'inline-flex':'none'; }
-  if(upFile){ upFile.onchange=function(){
-    var f=upFile.files&&upFile.files[0]; if(!f) return;
-    var im=new Image(); im.onload=function(){
+  // 把一张图片文件/Blob（上传或粘贴）缩到 ≤1024 设为参考图（上传与粘贴共用）
+  function refFromFile(f){
+    if(!f) return;
+    var url=URL.createObjectURL(f), im=new Image();
+    im.onload=function(){
       var mx=1024, s=Math.min(1,mx/Math.max(im.width,im.height)), cv=document.createElement('canvas');
       cv.width=Math.round(im.width*s); cv.height=Math.round(im.height*s);
       cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
       setRef(cv.toDataURL('image/png'), cv.width, cv.height);
-    }; im.src=URL.createObjectURL(f);
-  };}
+      try{ URL.revokeObjectURL(url); }catch(e){}
+    };
+    im.onerror=function(){ setNote('这张图读取失败，换一张试试','#f4708a'); };
+    im.src=url;
+  }
+  if(upFile){ upFile.onchange=function(){ refFromFile(upFile.files&&upFile.files[0]); }; }
+  // 直接在提示词框 Ctrl/⌘+V 粘贴剪贴板图片 → 设为参考图（图生图），不把图当乱码塞进文本
+  if(pr){ pr.addEventListener('paste', function(e){
+    var items=(e.clipboardData&&e.clipboardData.items)||[];
+    for(var i=0;i<items.length;i++){
+      if(items[i].kind==='file' && items[i].type && items[i].type.indexOf('image/')===0){
+        var f=items[i].getAsFile();
+        if(f){ e.preventDefault(); refFromFile(f);
+          setNote('✅ 已把剪贴板图片设为参考图 · 改下提示词，点生成即走「图生图」','#2bd576'); return; }
+      }
+    }
+  }); }
   if(upText){ upText.addEventListener('click',function(e){ if(refImg){ e.preventDefault(); e.stopPropagation();
     refImg=null; refW=refH=0; upFile.value=''; upBox.style.backgroundImage='none'; upBox.style.borderStyle='dashed'; upBox.style.borderColor='rgba(148,164,187,.26)';
     if(upIcon) upIcon.style.display='flex'; upText.textContent='上传'; upText.style.background='none'; upText.style.padding='0';
-    if(upHint) upHint.textContent='(可选 · 上传后变「图生图」，在参考图基础上改)'; showInp(false);
+    if(upHint) upHint.textContent='(可选 · 上传或在提示词框 Ctrl/⌘V 粘贴图片，变「图生图」)'; showInp(false);
   } }); }
   if(upBox){
     inpBtn=document.createElement('button');
@@ -368,6 +385,16 @@
     if(upHint) upHint.textContent='(已就绪 ·「图生图」改全图'+(engine==='gpt'?'，或「局部修改」只改涂抹处':'')+')';
     showInp(engine==='gpt');  // 局部修改(像素蒙版)仅 gpt-image-2
   }
+
+  // 灵感页详情弹窗「跟创」带来的粘贴参考图（经 sessionStorage 传递）→ 载入即设为参考图（图生图）
+  try{ var _fcref=sessionStorage.getItem('hq_followcreate_ref');
+    if(_fcref){ sessionStorage.removeItem('hq_followcreate_ref');  // 一次性消费，防下次误带
+      var _fim=new Image();
+      _fim.onload=function(){ setRef(_fcref, _fim.width, _fim.height);
+        setNote('✅ 已带入你在灵感页粘贴的参考图 · 改下提示词，点生成即走「图生图」','#2bd576'); };
+      _fim.src=_fcref;
+    }
+  }catch(e){}
 
   // 文生图 / 图生图（有参考图）/ nano banana
   gen.onclick=function(){

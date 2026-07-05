@@ -227,12 +227,13 @@
   }
   // ===== 详情弹窗「一键跟创」：看完整创作描述 / 复制 / 编辑 / 下载 / 跳转生成 =====
   var dlgEl=null;
+  function closeDlg(){ try{ sessionStorage.removeItem('hq_followcreate_ref'); }catch(e){} if(dlgEl) dlgEl.style.display='none'; }  // 关弹窗即清掉待带的粘贴图
   function openDetail(x){
     var isVid=(x.type==='video'), badge=MODEL_BADGE[x.model]||x.model||'';
     if(!dlgEl){
       dlgEl=document.createElement('div');
       dlgEl.style.cssText='position:fixed; inset:0; z-index:9999; background:rgba(5,8,13,.82); backdrop-filter:blur(5px); display:none; align-items:center; justify-content:center; padding:22px;';
-      dlgEl.addEventListener('click', function(e){ if(e.target===dlgEl) dlgEl.style.display='none'; });
+      dlgEl.addEventListener('click', function(e){ if(e.target===dlgEl) closeDlg(); });
       document.body.appendChild(dlgEl);
     }
     var jumpLabel=isVid?'🎬 一键跟创（去视频页）':'🎨 一键跟创（去作图）';
@@ -248,12 +249,37 @@
       +      '<button id="dlgCopy" style="flex:1; padding:10px; font-size:12.5px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.28); border-radius:10px; cursor:pointer; font-family:inherit;">复制提示词</button>'
       +      '<button id="dlgDl" style="flex:1; padding:10px; font-size:12.5px; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.18); border-radius:10px; cursor:pointer; font-family:inherit;">下载样图</button>'
       +    '</div>'
+      +    (isVid?'':'<div style="font-size:11px; color:#5c6b82; margin-top:10px;">💡 在上面描述框 Ctrl/⌘V 粘贴你的图，跟创时把这个风格套到你的图上（图生图）</div>')
+      +    '<div id="dlgRefChip" style="display:none; align-items:center; gap:8px; margin-top:8px; padding:8px 11px; font-size:12px; color:#2bd576; background:rgba(43,213,118,.08); border:1px solid rgba(43,213,118,.28); border-radius:9px;"><span style="flex:1;">📎 已附你的参考图 · 跟创时带上</span><span id="dlgRefX" style="cursor:pointer; color:#94a4bb; font-size:15px; padding:0 3px;">&times;</span></div>'
       +    '<button id="dlgGo" class="btn-gold" style="margin-top:10px; padding:13px; font-size:14.5px; font-weight:700; border-radius:12px; cursor:pointer; border:none; width:100%;">'+jumpLabel+'</button>'
       +    (isVid?'<div style="font-size:11px; color:#5c6b82; text-align:center; margin-top:8px;">视频功能完善中，部分能力陆续开放</div>':'')
       +  '</div>'
       +'</div>';
     var ta=dlgEl.querySelector('#dlgPrompt'); ta.value=x.prompt||'';
-    dlgEl.querySelector('#dlgClose').onclick=function(){ dlgEl.style.display='none'; };
+    dlgEl.querySelector('#dlgClose').onclick=closeDlg;
+    // 弹窗内粘贴你的图 → 跟创时带去作图页当参考图（把这个灵感风格套到你的图上，图生图）
+    try{ sessionStorage.removeItem('hq_followcreate_ref'); }catch(e){}  // 每次开弹窗清掉上次待带的图
+    var refChip=dlgEl.querySelector('#dlgRefChip');
+    function showRefChip(on){ if(refChip) refChip.style.display=on?'flex':'none'; }
+    showRefChip(false);
+    var refX=dlgEl.querySelector('#dlgRefX');
+    if(refX) refX.onclick=function(){ try{ sessionStorage.removeItem('hq_followcreate_ref'); }catch(e){} showRefChip(false); };  // 撤销粘贴
+    if(!isVid){ ta.addEventListener('paste', function(e){
+      var items=(e.clipboardData&&e.clipboardData.items)||[];
+      for(var i=0;i<items.length;i++){
+        if(items[i].kind==='file' && items[i].type && items[i].type.indexOf('image/')===0){
+          var f=items[i].getAsFile();
+          if(f){ e.preventDefault();
+            var url=URL.createObjectURL(f), im=new Image();
+            im.onload=function(){ var mx=1024, s=Math.min(1,mx/Math.max(im.width,im.height)), cv=document.createElement('canvas');
+              cv.width=Math.round(im.width*s); cv.height=Math.round(im.height*s); cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
+              try{ sessionStorage.setItem('hq_followcreate_ref', cv.toDataURL('image/png')); showRefChip(true); }
+              catch(err){ alert('图片太大，换张小一点的'); }
+              try{ URL.revokeObjectURL(url); }catch(e2){} };
+            im.src=url; return; }
+        }
+      }
+    }); }
     dlgEl.querySelector('#dlgCopy').onclick=function(){
       var b=dlgEl.querySelector('#dlgCopy'), done=function(){ b.textContent='✓ 已复制'; setTimeout(function(){ b.textContent='复制提示词'; },1500); };
       if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(ta.value||'').then(done,function(){ ta.select(); try{document.execCommand('copy');}catch(e){} done(); }); }
@@ -266,7 +292,7 @@
     };
     dlgEl.style.display='flex';
   }
-  document.addEventListener('keydown', function(e){ if(e.key==='Escape' && dlgEl && dlgEl.style.display==='flex') dlgEl.style.display='none'; });
+  document.addEventListener('keydown', function(e){ if(e.key==='Escape' && dlgEl && dlgEl.style.display==='flex') closeDlg(); });
 
   function shuffle(a){ for(var i=a.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=a[i]; a[i]=a[j]; a[j]=t; } return a; }
   fetch('inspirations.json',{cache:'no-cache'}).then(function(r){return r.json();}).then(function(d){
