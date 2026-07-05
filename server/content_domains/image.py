@@ -16,6 +16,7 @@ def gen_image(payload):
         base, key, proxy = ZELONG_BASE, ZELONG_KEY, False   # 泽龙Ai：国内中转，直连不走代理
         if not key:
             raise ValueError("泽龙Ai(中转站)未配置 key")
+        size = "1024x1024"   # 泽龙/小乐图片渠道只支持 1024x1024；其它尺寸(9:16/16:9/auto)会 400 INVALID_IMAGE_SIZE，强制正方形保稳定出图
     else:
         base, key, proxy = OPENAI_BASE, OPENAI_KEY, True
     cap = 2 if provider == "zelong" else 4                   # 中转出图慢，数量上限低
