@@ -27,11 +27,12 @@ def gen_collect(payload):
         # 内容全空 = TikHub 偶发限流/抽风 或 私密/已删 → 报错退点，让前端提示重试，别甩空卡片
         raise ValueError("内容获取失败（可能是上游限流或内容私密/已删），请重试")
     au = det.get("author") or {}
+    play_url = _collect_cos_play_url(platform, det.get("id") or ident, det.get("play_url"))
     out = {
         "type": "collect", "platform": platform, "source": det.get("url") or ident,
         "video": {"title": det.get("title"), "author": au.get("name"), "authorAvatar": None,
                   "profile_url": au.get("profile_url"),
-                  "cover": det.get("cover"), "play_url": det.get("play_url"), "url": det.get("url"),
+                  "cover": det.get("cover"), "play_url": play_url, "url": det.get("url"),
                   "duration": det.get("duration"), "publish_time": det.get("publish_time"),
                   "stats": det.get("stats")},
         "copy": {"title": det.get("title"), "desc": det.get("desc"), "tags": det.get("tags")},

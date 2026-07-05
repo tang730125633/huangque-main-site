@@ -21,6 +21,37 @@ PORT      = int(os.environ.get("LEADGEN_API_PORT", "8100"))
 AUTH_BASE = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
 AUTH_DB   = os.environ.get("AUTH_DB", "/home/ubuntu/auth-service/users.db")
 JOB_DB    = os.environ.get("CONTENT_JOB_DB", "/home/ubuntu/content-api/content_jobs.db")  # 共用 content_api 的任务库
+COS_COLLECT = os.environ.get("COS_COLLECT", "1").strip().lower() not in ("0", "false", "no")  # 采集视频转存 COS 开关
+
+
+# ============ 采集视频转存 COS（永久直链；未配置/失败/关闭时回退原 CDN 链接） ============
+def public_url_from_remote(remote_url, rel_key, content_type=None):
+    """远程 URL(如抖音 CDN 直链)字节 → COS 永久直链。
+    COS 已启用且 remote_url 非空 → urllib 拉字节(带 UA/超时) → cos put → 返回直链；
+    未配置 / COS_COLLECT=0 / 拉取失败 / 上传失败 → 返回原 remote_url（回退，绝不因转存失败中断采集）。"""
+    remote_url = (remote_url or "").strip()
+    if not remote_url or not COS_COLLECT:
+        return remote_url
+    try:
+        from content_domains import cos
+        if not cos.enabled():
+            return remote_url
+        data = tikhub._http_get(remote_url)  # 带 UA + 绕代理直连，限 26MB
+        if not data:
+            return remote_url
+        return cos.put_bytes(data, str(rel_key), content_type)
+    except Exception as e:
+        print("[cos] 采集转存失败，回退原链接: %s -> %s" % (rel_key, e), flush=True)
+        return remote_url
+
+def _collect_cos_play_url(platform, vid_id, play_url):
+    """采集视频 play_url → COS 永久直链。图集/无 play_url(视频号加密流 play_url=None)跳过、保持原样。
+    对象键 collect/<platform>/<id>.mp4。转存失败/未配置回退原 play_url。"""
+    if not play_url:
+        return play_url
+    ident = re.sub(r"[^A-Za-z0-9_.-]", "", str(vid_id or "")) or "v"
+    key = "collect/%s/%s.mp4" % ((platform or "x"), ident)
+    return public_url_from_remote(play_url, key, "video/mp4")
 
 
 # ============ 共享管道：任务库 / 点数 / 鉴权 ============
@@ -86,11 +117,12 @@ def gen_collect(payload):
     if not (det.get("title") or det.get("desc") or det.get("images")):
         raise ValueError("内容获取失败（可能是上游限流或内容私密/已删），请重试")
     au = det.get("author") or {}
+    play_url = _collect_cos_play_url(platform, det.get("id") or ident, det.get("play_url"))
     out = {
         "type": "collect", "platform": platform, "source": det.get("url") or ident,
         "video": {"title": det.get("title"), "author": au.get("name"), "authorAvatar": None,
                   "profile_url": au.get("profile_url"),
-                  "cover": det.get("cover"), "play_url": det.get("play_url"), "url": det.get("url"),
+                  "cover": det.get("cover"), "play_url": play_url, "url": det.get("url"),
                   "duration": det.get("duration"), "publish_time": det.get("publish_time"),
                   "stats": det.get("stats")},
         "copy": {"title": det.get("title"), "desc": det.get("desc"), "tags": det.get("tags")},

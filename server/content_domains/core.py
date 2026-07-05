@@ -61,6 +61,36 @@ def public_url(rel, content_type=None):
         print("[cos] 上传失败，回退本地: %s -> %s" % (rel, e), flush=True)
     return local
 
+COS_COLLECT = os.environ.get("COS_COLLECT", "1").strip().lower() not in ("0", "false", "no")
+
+def public_url_from_remote(remote_url, rel_key, content_type=None):
+    """把一个远程 URL(如抖音 CDN 直链)的字节转存到 COS，返回 COS 永久直链。
+    COS 已启用且 remote_url 非空 → urllib 拉字节(带 UA/超时) → cos put → 返回直链；
+    未配置 / COS_COLLECT=0 / 拉取失败 / 上传失败 → 返回原 remote_url（回退，绝不因转存失败中断采集）。"""
+    remote_url = (remote_url or "").strip()
+    if not remote_url or not COS_COLLECT:
+        return remote_url
+    try:
+        from . import cos
+        if not cos.enabled():
+            return remote_url
+        data = tikhub._http_get(remote_url)  # 带 UA + 绕代理直连，限 26MB
+        if not data:
+            return remote_url
+        return cos.put_bytes(data, str(rel_key), content_type)
+    except Exception as e:
+        print("[cos] 采集转存失败，回退原链接: %s -> %s" % (rel_key, e), flush=True)
+        return remote_url
+
+def _collect_cos_play_url(platform, vid_id, play_url):
+    """采集视频 play_url → COS 永久直链。图集/无 play_url(视频号加密流 play_url=None)跳过、保持原样。
+    对象键 collect/<platform>/<id>.mp4。转存失败/未配置回退原 play_url。"""
+    if not play_url:
+        return play_url  # 图集 / 视频号加密流：保持原样
+    ident = re.sub(r"[^A-Za-z0-9_.-]", "", str(vid_id or "")) or "v"
+    key = "collect/%s/%s.mp4" % ((platform or "x"), ident)
+    return public_url_from_remote(play_url, key, "video/mp4")
+
 def _resolve_out_file(rel):
     rel = urllib.parse.unquote(str(rel or "")).replace("\\", "/").lstrip("/")
     if not rel or ".." in rel.split("/"):

@@ -77,3 +77,16 @@ def upload(local_path, rel_key, content_type=None):
             kwargs["ContentType"] = content_type
         _client().put_object(**kwargs)
     return _url(full_key)
+
+
+def put_bytes(data, rel_key, content_type=None):
+    """把内存字节直接上传到 COS，返回可访问 URL。用于转存远程 URL(如采集视频 CDN 直链)。
+    未启用或失败会抛异常，由调用方回退原链接。"""
+    if not enabled():
+        raise RuntimeError("COS 未配置")
+    full_key = _object_key(rel_key)
+    kwargs = {"Bucket": _BUCKET, "Key": full_key, "Body": data}
+    if content_type:
+        kwargs["ContentType"] = content_type
+    _client().put_object(**kwargs)
+    return _url(full_key)
