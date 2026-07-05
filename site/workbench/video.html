@@ -685,7 +685,11 @@
     add.type='button';
     add.className='avatar-card avatar-new'+(useNewMotionImage?' on':'');
     add.innerHTML='<b>＋ 上传新照片</b><span>生成成功后会自动保存为我的形象</span>';
-    add.onclick=function(){selectMotionAvatar(null);};
+    add.onclick=function(){
+      selectMotionAvatar(null);
+      var inp=$('motionImageFile');
+      if(inp) inp.click();
+    };
     grid.appendChild(add);
     if(!motionAvatars.length){
       var empty=document.createElement('div');
