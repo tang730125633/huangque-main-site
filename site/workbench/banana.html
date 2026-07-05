@@ -26,6 +26,7 @@
 
       <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 9px;">
         <span style="font-size:13.5px; font-weight:600;">提示词</span>
+        <button id="luckyBtn" title="不知道写什么？帮你装一条" style="display:flex; align-items:center; gap:5px; padding:5px 11px; font-size:12px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.24); border-radius:8px; cursor:pointer; font-family:inherit;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 14l.7 1.9L22 17l-2.3.6L19 20l-.7-2.4L16 17l2.3-.5z"/></svg></span>手气不错</button>
       </div>
       <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:14px 15px;">
         <textarea id="bPrompt" rows="3" placeholder="科技焕肤 · 逆龄新生，高级感美业海报，金色光效，9:16…" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;">科技焕肤 · 逆龄新生，高级感美业海报，金色光效，9:16 竖版，留白标题区，柔光质感，主体居中，氛围高级，适合朋友圈与门店屏幕投放</textarea>
@@ -192,6 +193,28 @@
     var pp=ip.get('prompt'); if(pp){ pr.value=pp; }
     var pe=ip.get('engine'); if(pe && document.querySelector('#engineRow [data-engine="'+pe+'"]')) selectEngine(pe);
   }catch(e){}
+
+  // 手气不错：不知道写啥 → 从灵感提示词库随机装一条进输入框（复用 inspirations.json，随灵感页自动更新）
+  var luckyBtn=document.getElementById('luckyBtn'), luckyPool=[], luckyLast=-1;
+  var LUCKY_FALLBACK=[
+    '科技焕肤 · 逆龄新生，高级感美业海报，金色光效，9:16 竖版，留白标题区，柔光质感，主体居中，适合朋友圈与门店屏投放',
+    '高端护肤精华玻璃瓶特写，暖金光效，大理石台面，满天星与丝绸点缀，顶部留白放标题，杂志级广告质感，无水印，9:16 竖版',
+    '医美水光焕肤项目竖版海报，东方女性水润通透侧脸，清透冷调，左侧留白放标题与功效，高级感，杂志级打光，9:16',
+    '美妆口红产品海报，哑光唇膏立于米色大理石，暖金柔光，干花瓣点缀，顶部留白放中文标题，高级广告质感，9:16 竖版'
+  ];
+  function fillLucky(){
+    var pool=luckyPool.length?luckyPool:LUCKY_FALLBACK;
+    if(!pool.length) return;
+    var i=0; do{ i=Math.floor(Math.random()*pool.length); }while(pool.length>1 && i===luckyLast);
+    luckyLast=i; pr.value=pool[i]; try{ pr.focus(); }catch(e){}
+    setNote('✨ 已装入一条示例提示词，可直接生成，也可以改改','#2bd576');
+  }
+  if(luckyBtn){
+    fetch('inspirations.json',{cache:'no-cache'}).then(function(r){return r.json();}).then(function(d){
+      luckyPool=(d||[]).map(function(x){return x&&x.prompt;}).filter(function(p){return p && p.length>8;});
+    }).catch(function(){});
+    luckyBtn.onclick=fillLucky;
+  }
 
   document.querySelectorAll('#ratioRow > div').forEach(function(c){ c.onclick=function(){
     document.querySelectorAll('#ratioRow > div').forEach(function(x){ x.style.color='#94a4bb'; x.style.background='rgba(148,164,187,.05)'; x.style.borderColor='rgba(148,164,187,.14)'; });
