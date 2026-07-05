@@ -58,23 +58,12 @@
         </div>
         <div>
           <div style="font-size:13.5px; font-weight:600; margin-bottom:10px;">生成数量</div>
-          <div id="countRow" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px;">
-            <div data-n="1" style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">1</div>
-            <div data-n="2" style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">2</div>
-            <div data-n="4" style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">4</div>
+          <div id="countRow" style="display:grid; grid-template-columns:44px 1fr 44px; gap:10px; align-items:center;">
+            <button id="countMinus" type="button" aria-label="减少生成数量" style="height:42px; border-radius:11px; border:1px solid rgba(148,164,187,.14); background:rgba(148,164,187,.05); color:#94a4bb; font-size:22px; line-height:1; cursor:pointer; transition:.16s; font-family:inherit;">-</button>
+            <input id="countInput" type="text" inputmode="numeric" pattern="[0-9]*" value="1" aria-label="生成数量" autocomplete="off" style="height:42px; box-sizing:border-box; border-radius:11px; border:1px solid rgba(231,178,76,.32); background:rgba(231,178,76,.1); color:#e7b24c; text-align:center; font-size:15px; font-weight:700; outline:none; font-family:'JetBrains Mono',monospace;">
+            <button id="countPlus" type="button" aria-label="增加生成数量" style="height:42px; border-radius:11px; border:1px solid rgba(148,164,187,.14); background:rgba(148,164,187,.05); color:#94a4bb; font-size:22px; line-height:1; cursor:pointer; transition:.16s; font-family:inherit;">+</button>
           </div>
         </div>
-      </div>
-
-      <div id="refSection" style="display:none;">
-      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">参考图 <span id="upHint" style="font-size:12px; color:#5c6b82; font-weight:400;">(可选 · 上传后变「图生图」，在参考图基础上改)</span></div>
-      <div style="display:flex; gap:10px;">
-        <label id="upBox" class="hv-gold" style="position:relative; width:66px; height:66px; flex:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; border:1px dashed rgba(148,164,187,.26); background:rgba(148,164,187,.04); border-radius:11px; color:#94a4bb; cursor:pointer; transition:.16s; overflow:hidden; background-size:cover; background-position:center;"><input id="upFile" type="file" accept="image/*" style="display:none"><span id="upIcon" style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg></span><span id="upText" style="font-size:10px;">上传</span></label>
-        <img src="../assets/duanwu.webp" alt="风格参考" style="display:block; width:66px; height:66px; border-radius:11px; object-fit:cover; border:1px solid rgba(148,164,187,.12);">
-        <img src="../assets/cyberpunk.webp" alt="风格参考" style="display:block; width:66px; height:66px; border-radius:11px; object-fit:cover; border:1px solid rgba(148,164,187,.12);">
-        <img src="../assets/comic.webp" alt="风格参考" style="display:block; width:66px; height:66px; border-radius:11px; object-fit:cover; border:1px solid rgba(148,164,187,.12);">
-        <img src="../assets/guofeng_search.webp" alt="风格参考" style="display:block; width:66px; height:66px; border-radius:11px; object-fit:cover; border:1px solid rgba(148,164,187,.12);">
-      </div>
       </div>
 
       <button id="bGen" class="hv-lift" style="width:100%; height:54px; margin-top:22px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit;">立即生成（10 点）</button>
@@ -87,9 +76,8 @@
         <img id="bResult" src="../assets/meiye_poster.webp" alt="生成结果 · 美业海报" style="display:block; width:100%; aspect-ratio:9/13; object-fit:cover;">
         <div style="position:absolute; top:12px; right:12px; padding:5px 10px; background:rgba(7,11,19,.55); backdrop-filter:blur(6px); border-radius:8px; font-family:'JetBrains Mono',monospace; font-size:11.5px; color:#e7b24c;">9:16</div>
       </div>
-      <div id="actRow" style="display:grid; grid-template-columns:repeat(6,1fr); gap:7px; margin-top:14px;">
+      <div id="actRow" style="display:grid; grid-template-columns:repeat(5,1fr); gap:7px; margin-top:14px;">
         <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.8-3.4L23 10M1 14l4.7 4.4A9 9 0 0 0 20.5 15"/></svg></span><span style="font-size:11px; color:#94a4bb;">再生成</span></div>
-        <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></span><span style="font-size:11px; color:#94a4bb;">继续改</span></div>
         <a href="video.html" class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s; text-decoration:none;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span><span style="font-size:11px; color:#94a4bb;">转视频</span></a>
         <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span><span style="font-size:11px; color:#94a4bb;">发飞书</span></div>
         <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></span><span style="font-size:11px; color:#94a4bb;">下载</span></div>
@@ -109,8 +97,7 @@
 <script src="../assets/cloud.js?v=8"></script>
 <script src="cloud-shell.js?v=cccb4993"></script>
 <script>
-/* 作图页接后端能力中心 /api/gen/image + /api/gen/banana
-   三模式同一入口：无图=文生图 / 有图=图生图 / 有图+蒙版=局部修改（gpt-image专属）。点数后端统一扣。 */
+/* 作图页接后端能力中心 /api/gen/image + /api/gen/banana，点数后端统一扣。 */
 (function(){
   var pr=document.getElementById('bPrompt'), gen=document.getElementById('bGen'),
       res=document.getElementById('bResult'), note=document.getElementById('bNote');
@@ -125,7 +112,7 @@
     document.querySelectorAll('[data-engine-cost]').forEach(function(x){
       x.textContent=engineCost(x.getAttribute('data-engine-cost'))+'点';
     });
-  }
+  };
   function tok(){ return localStorage.getItem('hq_token')||''; }
   function genLabel(){ return '立即生成（'+costFor()+' 点）'; }
   function updateCost(){
@@ -133,8 +120,6 @@
     gen.textContent=genLabel();
     note.innerHTML='本次预计消耗 <span style="color:#e7b24c; font-family:\'JetBrains Mono\',monospace;">'+costFor()+'</span> 点 · 失败自动退点';
     note.style.color='#5c6b82';
-    var rs=document.getElementById('refSection');
-    if(rs) rs.style.display='';  // 图生图各引擎都支持，参考图上传区常显
   }
   function setNote(t,c){ note.innerHTML=t; note.style.color=c||'#5c6b82'; }
   function busy(on){ gen.style.pointerEvents=on?'none':'auto'; gen.style.opacity=on?'.7':'1'; gen.textContent=on?'生成中…':genLabel(); res.style.filter=on?'blur(3px) brightness(.6)':'none'; }
@@ -147,8 +132,7 @@
     });
     var c=document.querySelector('#engineRow [data-engine="'+e+'"]');
     if(c){ c.style.color='#e7b24c'; c.style.background='rgba(231,178,76,.1)'; c.style.borderColor='rgba(231,178,76,.32)'; var sub=c.querySelector('div:last-child'); if(sub) sub.style.color='#e7b24c'; }
-    engine=e; updateCost(); adaptCount();
-    if(refImg) showInp(engine==='gpt');  // 切引擎时同步：局部修改(像素蒙版)按钮仅 gpt
+    engine=e; adaptCount();
   }
   document.querySelectorAll('#engineRow > div').forEach(function(c){ c.onclick=function(){ selectEngine(c.getAttribute('data-engine')); }; });
 
@@ -158,15 +142,41 @@
     if(el){ el.style.color='#e7b24c'; el.style.background='rgba(231,178,76,.1)'; el.style.borderColor='rgba(231,178,76,.32)'; }
   }
   document.querySelectorAll('#qualityRow > div').forEach(function(c){ c.onclick=function(){ pickIn('qualityRow',c); quality=c.getAttribute('data-q'); updateCost(); }; });
-  function selectCount(n){ pickIn('countRow', document.querySelector('#countRow [data-n="'+n+'"]')); count=n; updateCost(); }
-  document.querySelectorAll('#countRow > div').forEach(function(c){ c.onclick=function(){ selectCount(parseInt(c.getAttribute('data-n'),10)); }; });
-  function adaptCount(){  // 引擎自适应数量上限：gpt 1/2/4，其余 1/2
-    var mx=ENGINE_MAXN[engine]||2;
-    document.querySelectorAll('#countRow > div').forEach(function(x){ x.style.display=(parseInt(x.getAttribute('data-n'),10)<=mx)?'':'none'; });
-    if(count>mx) selectCount(mx);
+  var countMinus=document.getElementById('countMinus'), countInput=document.getElementById('countInput'), countPlus=document.getElementById('countPlus');
+  function countMax(){ return ENGINE_MAXN[engine]||1; }
+  function clampCount(n){
+    n=parseInt(n,10);
+    if(!isFinite(n) || n<1) n=1;
+    return Math.min(countMax(), n);
   }
+  function styleCountButton(btn, disabled){
+    if(!btn) return;
+    btn.disabled=!!disabled;
+    btn.style.opacity=disabled?'.45':'1';
+    btn.style.cursor=disabled?'not-allowed':'pointer';
+    btn.style.color=disabled?'#5c6b82':'#94a4bb';
+  }
+  function syncCount(){
+    count=clampCount(count);
+    if(countInput) countInput.value=String(count);
+    styleCountButton(countMinus, count<=1);
+    styleCountButton(countPlus, count>=countMax());
+    updateCost();
+  }
+  function setCount(n){ count=clampCount(n); syncCount(); }
+  if(countMinus) countMinus.onclick=function(){ setCount(count-1); };
+  if(countPlus) countPlus.onclick=function(){ setCount(count+1); };
+  if(countInput){
+    countInput.oninput=function(){
+      var clean=countInput.value.replace(/[^\d]/g,'');
+      if(clean!==countInput.value) countInput.value=clean;
+      if(clean) setCount(clean);
+    };
+    countInput.onblur=function(){ setCount(countInput.value); };
+  }
+  function adaptCount(){ syncCount(); }
 
-  updateCost(); adaptCount(); // init: nb2 默认 + 数量上限 + refSection 常显
+  adaptCount(); // init: nb2 默认 + 数量上限
   // 灵感页「做同款」：从 ?prompt= / ?engine= 预填提示词 + 切引擎
   try{ var ip=new URLSearchParams(location.search);
     var pp=ip.get('prompt'); if(pp){ pr.value=pp; }
@@ -178,26 +188,6 @@
     c.style.color='#e7b24c'; c.style.background='rgba(231,178,76,.1)'; c.style.borderColor='rgba(231,178,76,.32)';
     var m=c.textContent.match(/\d+:\d+/); if(m) ratio=m[0];
   };});
-
-  // 参考图上传 → 缩到≤1024 PNG base64（存尺寸供蒙版用）
-  var refImg=null, refW=0, refH=0, inpBtn=null;
-  var upBox=document.getElementById('upBox'), upFile=document.getElementById('upFile'),
-      upIcon=document.getElementById('upIcon'), upText=document.getElementById('upText'), upHint=document.getElementById('upHint');
-  function showInp(on){ if(inpBtn) inpBtn.style.display=on?'inline-flex':'none'; }
-  if(upFile){ upFile.onchange=function(){
-    var f=upFile.files&&upFile.files[0]; if(!f) return;
-    var im=new Image(); im.onload=function(){
-      var mx=1024, s=Math.min(1,mx/Math.max(im.width,im.height)), cv=document.createElement('canvas');
-      cv.width=Math.round(im.width*s); cv.height=Math.round(im.height*s);
-      cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
-      setRef(cv.toDataURL('image/png'), cv.width, cv.height);
-    }; im.src=URL.createObjectURL(f);
-  };}
-  if(upText){ upText.addEventListener('click',function(e){ if(refImg){ e.preventDefault(); e.stopPropagation();
-    refImg=null; refW=refH=0; upFile.value=''; upBox.style.backgroundImage='none'; upBox.style.borderStyle='dashed'; upBox.style.borderColor='rgba(148,164,187,.26)';
-    if(upIcon) upIcon.style.display='flex'; upText.textContent='上传'; upText.style.background='none'; upText.style.padding='0';
-    if(upHint) upHint.textContent='(可选 · 上传后变「图生图」，在参考图基础上改)'; showInp(false);
-  } }); }
 
   // 共享：提交 → 轮询 → 显示。任务存 localStorage，切走再回来自动续传（后端不中断）
   var lastPayload=null, lastResultUrl=null, lastEndpoint='/api/gen/image';
@@ -258,82 +248,17 @@
       }).catch(function(){ busy(false); setNote('网络错误，请重试','#f4708a'); });
   }
 
-  // 文生图 / 图生图（gpt）/ nano banana 文生图
+  // 文本生成图片
   gen.onclick=function(){
     var bp={prompt:(pr.value||'').trim(), ratio:ratio, quality:quality, count:count};
-    if(refImg) bp.image=refImg;  // 有参考图 → 图生图(整图编辑)
     if(engine==='gpt' || engine==='zelong'){
       if(engine==='zelong') bp.provider='zelong';  // 走中转站 gpt-image-2
-      submit(bp, (engine==='zelong'?'泽龙Ai ':'')+(refImg?'图生图中（在参考图上改）':(engine==='gpt'?'文生图中':'生成中')), '/api/gen/image');
+      submit(bp, (engine==='zelong'?'泽龙Ai ':'')+(engine==='gpt'?'文生图中':'生成中'), '/api/gen/image');
     } else {
       bp.model=engine;
-      submit(bp, (engine==='pro'?'Nano Banana Pro ':'Nano Banana 2 ')+(refImg?'图生图中（在参考图上改）':'生成中'), '/api/gen/banana');
+      submit(bp, (engine==='pro'?'Nano Banana Pro ':'Nano Banana 2 ')+'生成中', '/api/gen/banana');
     }
   };
-
-  // ===== 局部修改（inpainting）：原生 canvas 画蒙版，涂抹处=透明=重绘（gpt-image 专属）=====
-  if(upBox){
-    inpBtn=document.createElement('button');
-    inpBtn.id='inpBtn'; inpBtn.textContent='✏️ 局部修改'; inpBtn.style.cssText='display:none; align-items:center; gap:5px; margin-top:10px; padding:7px 13px; font-size:12.5px; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); border-radius:9px; cursor:pointer; font-family:inherit;';
-    upBox.parentElement.parentElement.insertBefore(inpBtn, upBox.parentElement.nextSibling);
-    inpBtn.onclick=openInp;
-  }
-  function nearestRatio(){ var ar=refW/refH, opt={'9:16':0.5625,'3:4':0.75,'1:1':1,'16:9':1.7778}, best='1:1', bd=9; for(var k in opt){ var dd=Math.abs(ar-opt[k]); if(dd<bd){bd=dd;best=k;} } return best; }
-  var modal=null;
-  function openInp(){
-    if(!refImg) return;
-    if(!modal){
-      modal=document.createElement('div');
-      modal.style.cssText='position:fixed; inset:0; z-index:9999; background:rgba(5,8,13,.86); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; padding:24px;';
-      modal.innerHTML='<div style="background:#0d1119; border:1px solid rgba(231,178,76,.22); border-radius:18px; padding:22px; max-width:560px; width:100%; max-height:92vh; overflow:auto;">'
-        +'<div style="font-size:16px; font-weight:700; margin-bottom:4px;">局部修改 · 涂抹要改的区域</div>'
-        +'<div style="font-size:12px; color:#94a4bb; margin-bottom:14px;">用画笔涂掉要替换的部分，在下方写「这块换成什么」，点生成。</div>'
-        +'<div id="inpWrap" style="position:relative; line-height:0; border-radius:12px; overflow:hidden; border:1px solid rgba(148,164,187,.18); touch-action:none; cursor:crosshair;"></div>'
-        +'<div style="display:flex; align-items:center; gap:12px; margin:14px 0;"><span style="font-size:12px; color:#94a4bb;">画笔</span><input id="inpBrush" type="range" min="10" max="90" value="42" style="flex:1;"><button id="inpClear" style="font-size:12px; color:#94a4bb; background:rgba(148,164,187,.08); border:1px solid rgba(148,164,187,.16); border-radius:8px; padding:5px 11px; cursor:pointer; font-family:inherit;">清除涂抹</button></div>'
-        +'<textarea id="inpPrompt" rows="2" placeholder="例如：把涂掉的背景换成节日红金氛围" style="width:100%; resize:none; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.16); border-radius:10px; color:#eaf1fa; font-size:13px; padding:10px; font-family:inherit; outline:none; box-sizing:border-box;"></textarea>'
-        +'<div style="display:flex; gap:10px; margin-top:14px;"><button id="inpCancel" style="flex:1; padding:11px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.16); border-radius:11px; cursor:pointer; font-family:inherit;">取消</button><button id="inpGo" style="flex:2; padding:11px; font-size:14px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:11px; cursor:pointer; font-family:inherit;">生成（12 点）</button></div>'
-        +'</div>';
-      document.body.appendChild(modal);
-    }
-    var wrap=modal.querySelector('#inpWrap'); wrap.innerHTML='';
-    var bg=new Image(); bg.src='data:image/png;base64,'+refImg; bg.style.cssText='display:block; width:100%;'; wrap.appendChild(bg);
-    var cv=document.createElement('canvas'); cv.width=refW; cv.height=refH; cv.style.cssText='position:absolute; inset:0; width:100%; height:100%;'; wrap.appendChild(cv);
-    var ctx=cv.getContext('2d'); ctx.strokeStyle='rgba(231,178,76,.55)'; ctx.lineCap='round'; ctx.lineJoin='round';
-    var brush=modal.querySelector('#inpBrush'), drawing=false, last=null;
-    function pt(e){ var r=cv.getBoundingClientRect(), cx=(e.touches?e.touches[0].clientX:e.clientX), cy=(e.touches?e.touches[0].clientY:e.clientY); return {x:(cx-r.left)*(cv.width/r.width), y:(cy-r.top)*(cv.height/r.height), bw:(+brush.value)*(cv.width/r.width)}; }
-    function down(e){ e.preventDefault(); drawing=true; last=pt(e); ctx.lineWidth=last.bw; ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(last.x+0.1,last.y+0.1); ctx.stroke(); }
-    function move(e){ if(!drawing) return; e.preventDefault(); var p=pt(e); ctx.lineWidth=p.bw; ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(p.x,p.y); ctx.stroke(); last=p; }
-    function up(){ drawing=false; }
-    cv.onmousedown=down; cv.onmousemove=move; window.addEventListener('mouseup',up);
-    cv.ontouchstart=down; cv.ontouchmove=move; cv.ontouchend=up;
-    modal.querySelector('#inpClear').onclick=function(){ ctx.clearRect(0,0,cv.width,cv.height); };
-    modal.querySelector('#inpCancel').onclick=function(){ modal.style.display='none'; };
-    modal.querySelector('#inpPrompt').value=(pr.value||'');
-    modal.querySelector('#inpGo').onclick=function(){
-      var src=ctx.getImageData(0,0,cv.width,cv.height).data, painted=0;
-      var mc=document.createElement('canvas'); mc.width=cv.width; mc.height=cv.height; var m2=mc.getContext('2d');
-      m2.fillStyle='#ffffff'; m2.fillRect(0,0,mc.width,mc.height);
-      var od=m2.getImageData(0,0,mc.width,mc.height);
-      for(var i=0;i<src.length;i+=4){ if(src[i+3]>10){ od.data[i+3]=0; painted++; } }
-      if(painted<50){ alert('请先用画笔涂抹要修改的区域'); return; }
-      m2.putImageData(od,0,0);
-      var mask=mc.toDataURL('image/png').split(',')[1];
-      var ip=(modal.querySelector('#inpPrompt').value||'').trim();
-      modal.style.display='none';
-      submit({prompt:ip, ratio:nearestRatio(), image:refImg, mask:mask, quality:quality}, '局部修改中（涂抹处重绘）', '/api/gen/image');
-    };
-    modal.style.display='flex';
-  }
-
-  // setRef：把一张 PNG dataURL 设为参考图（上传 + 继续改共用）
-  function setRef(dataUrl, w, h){
-    refImg=dataUrl.split(',')[1]; refW=w; refH=h;
-    upBox.style.backgroundImage='url('+dataUrl+')'; upBox.style.borderStyle='solid'; upBox.style.borderColor='rgba(231,178,76,.5)';
-    if(upIcon) upIcon.style.display='none';
-    if(upText){ upText.textContent='✕ 清除'; upText.style.background='rgba(7,11,19,.65)'; upText.style.padding='1px 5px'; upText.style.borderRadius='4px'; }
-    if(upHint) upHint.textContent='(已就绪 ·「图生图」改全图'+(engine==='gpt'?'，或「局部修改」只改涂抹处':'')+')';
-    showInp(engine==='gpt');  // 局部修改(像素蒙版)仅 gpt-image-2
-  }
   // 最近作品：读真实历史（生成即自动入库）
   function loadHistory(){
     var grid=document.getElementById('recentGrid'); if(!grid||!tok()) return;
@@ -344,22 +269,15 @@
     }).catch(function(){});
   }
   loadHistory();
-  // 刷新还原：把上次的结果图放回结果区，刷新后也能直接「继续改 / 再生成」
+  // 刷新还原：把上次的结果图放回结果区，刷新后也能直接再生成
   try{ var lr0=localStorage.getItem('hq_last_result'); if(lr0){ res.src=lr0+'?t='+Date.now(); lastResultUrl=lr0; } }catch(e){}
   // 续传：切回页面时接上进行中的任务（后端没中断）
   try{ var aj=JSON.parse(localStorage.getItem('hq_active_job')||'null'); if(aj&&aj.id){ busy(true); poll(aj.id, aj.t0||Date.now(), aj.label); } }catch(e){}
 
-  // 结果区 6 按钮
+  // 结果区按钮
   function actBtn(label){ var n=null; document.querySelectorAll('#actRow > *').forEach(function(el){ if(el.textContent.indexOf(label)>=0) n=el; }); return n; }
-  var bRegen=actBtn('再生成'), bEdit=actBtn('继续改'), bFeishu=actBtn('发飞书'), bDl=actBtn('下载'), bStore=actBtn('入库');
+  var bRegen=actBtn('再生成'), bFeishu=actBtn('发飞书'), bDl=actBtn('下载'), bStore=actBtn('入库');
   if(bRegen) bRegen.onclick=function(){ if(!lastPayload){ setNote('先生成一张，再「再生成」','#f4708a'); return; } submit(lastPayload,'重新生成中',lastEndpoint); };
-  if(bEdit) bEdit.onclick=function(){ if(!lastResultUrl){ setNote('先生成一张，再「继续改」','#f4708a'); return; }
-    selectEngine('gpt'); // 继续改是 gpt-image 专属，自动切换引擎并显示参考图区
-    setNote('正在把当前图载入为参考…','#2dd4bf');
-    var im=new Image(); im.onload=function(){ var mx=1024,s=Math.min(1,mx/Math.max(im.width,im.height)),cv=document.createElement('canvas'); cv.width=Math.round(im.width*s); cv.height=Math.round(im.height*s); cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
-      try{ setRef(cv.toDataURL('image/png'),cv.width,cv.height); pr.scrollIntoView({block:'center'}); setNote('已把当前图设为参考，改下提示词再点生成（图生图）','#2bd576'); }catch(err){ setNote('继续改失败：'+err,'#f4708a'); } };
-    im.onerror=function(){ setNote('继续改：图片读取失败','#f4708a'); }; im.src=lastResultUrl+'?t='+Date.now();
-  };
   if(bDl) bDl.onclick=function(){ if(!lastResultUrl){ setNote('先生成一张再下载','#f4708a'); return; } var a=document.createElement('a'); a.href=lastResultUrl; a.download='huangque_'+Date.now()+'.png'; document.body.appendChild(a); a.click(); a.remove(); };
   if(bStore) bStore.onclick=function(e){ if(e&&e.preventDefault) e.preventDefault(); if(!lastResultUrl){ setNote('先生成一张','#f4708a'); return; } setNote('✅ 生成即自动入库 · <a href="assets.html" style="color:#e7b24c">去「资产」查看</a>','#2bd576'); };
   if(bFeishu) bFeishu.onclick=function(){ setNote('飞书推送即将上线（bot 接入阶段）','#f4cd72'); };
