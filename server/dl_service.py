@@ -23,6 +23,20 @@ ALLOW = (
     "wxapp.tc.qq.com",
 )  # 抖音(TikHub play_addr)/小红书/视频号 等直链 CDN 域名；防 SSRF。覆盖 collect 解析 + 生成产出下载。
 DECRYPT_API = "http://127.0.0.1:3001/api/decrypt"  # Isaac64 WASM 解密服务(Evil0ctal)
+MIME_EXT = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+}
+
+
+def content_type_ext(headers):
+    ctype = (headers.get("Content-Type") or "application/octet-stream").split(";", 1)[0].strip().lower()
+    return ctype or "application/octet-stream", MIME_EXT.get(ctype, ".mp4")
 
 
 class H(BaseHTTPRequestHandler):
@@ -97,10 +111,11 @@ class H(BaseHTTPRequestHandler):
             up = OPENER.open(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=120)
         except Exception:
             return self._err(502, "下载失败(地址可能已过期，请重新爬取)")
+        ctype, ext = content_type_ext(up.headers)
         self.send_response(200)
-        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Disposition",
-                         "attachment; filename=\"%s.mp4\"; filename*=UTF-8''%s" % (ascii_name, urllib.parse.quote(raw + ".mp4")))
+                         "attachment; filename=\"%s%s\"; filename*=UTF-8''%s" % (ascii_name, ext, urllib.parse.quote(raw + ext)))
         clen = up.headers.get("Content-Length")
         if clen:
             self.send_header("Content-Length", clen)
