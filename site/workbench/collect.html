@@ -533,9 +533,13 @@
           galDlBtn.style.display = '';
           galDlBtn.onclick = function () {
             imgs.forEach(function (u, i) {
-              var a = document.createElement('a');
-              a.href = u; a.download = 'img_' + (i + 1) + '.jpg'; a.target = '_blank'; a.rel = 'noopener';
-              document.body.appendChild(a); a.click(); a.remove();
+              setTimeout(function () {
+                var a = document.createElement('a');
+                a.href = '/api/gen/dl?url=' + encodeURIComponent(u) + '&name=' + encodeURIComponent('img_' + (i + 1));
+                a.target = '_blank';
+                a.rel = 'noopener';
+                document.body.appendChild(a); a.click(); a.remove();
+              }, i * 260);
             });
           };
         }
