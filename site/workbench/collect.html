@@ -237,6 +237,7 @@
   var currentResult = null;
   var copyFields = {};     // field key → text, used by copy buttons
   var pollIv = null;
+  var transcriptBusy = false;
 
   function tok() { return localStorage.getItem('hq_token') || ''; }
 
@@ -657,20 +658,46 @@
     var note = document.getElementById('transcriptExtractNote');
     if (btn) { btn.disabled = true; btn.style.opacity = '.7'; btn.style.pointerEvents = 'none'; btn.textContent = '提取中…'; }
     if (note) { note.textContent = '口播提取约 20-40 秒，请稍候…'; note.style.color = '#2dd4bf'; }
+    requestTranscript()
+      .then(function (text) {
+        showTranscript(text);
+        if (window.HQ && window.HQ.refreshPoints) window.HQ.refreshPoints();
+      })
+      .catch(function (err) {
+        if (err && err.login) { HQ.login(); return; }
+        resetTranscriptBtn((err && err.message) || '提取失败', true);
+      });
+  }
+
+  function requestTranscript() {
+    if (transcriptBusy) return Promise.reject(new Error('正在提取中，请稍候'));
+    if (!currentUrl) return Promise.reject(new Error('当前内容无可提取链接'));
+    transcriptBusy = true;
     var t0 = Date.now();
-    fetch('/api/gen/collect', {
+    return fetch('/api/gen/collect', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + tok(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: currentUrl, want: ['transcript'] })
     })
-    .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
-    .then(function (x) {
-      if (x.s === 401) { HQ.login(); return; }
-      if (x.s === 402) { resetTranscriptBtn('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>', true); return; }
-      if (!x.d || !x.d.job_id) { resetTranscriptBtn('提交失败：' + ((x.d && x.d.detail) || ''), true); return; }
-      pollTranscript(x.d.job_id, t0);
-    })
-    .catch(function () { resetTranscriptBtn('网络错误，请重试', true); });
+      .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
+      .then(function (x) {
+        if (x.s === 401) {
+          var loginErr = new Error('请先登录');
+          loginErr.login = true;
+          throw loginErr;
+        }
+        if (x.s === 402) throw new Error('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>');
+        if (!x.d || !x.d.job_id) throw new Error('提交失败：' + ((x.d && x.d.detail) || ''));
+        return pollTranscript(x.d.job_id, t0);
+      })
+      .catch(function (err) {
+        if (err && err.login) throw err;
+        if (err && err.name !== 'TypeError' && err.message) throw err;
+        throw new Error('网络错误，请重试');
+      })
+      .finally(function () {
+        transcriptBusy = false;
+      });
   }
 
   function resetTranscriptBtn(msg, isErr) {
@@ -688,31 +715,32 @@
   }
 
   function pollTranscript(id, t0) {
-    var iv = setInterval(function () {
-      fetch('/api/gen/job/' + id, { headers: { 'Authorization': 'Bearer ' + tok() } })
-        .then(function (r) { return r.json(); })
-        .then(function (d) {
-          var sec = Math.round((Date.now() - t0) / 1000);
-          if (!d.status) { clearInterval(iv); resetTranscriptBtn('提取失败', true); return; }
-          if (d.status === 'done') {
-            clearInterval(iv);
-            var tr = d.result && d.result.transcript;
-            if (tr && tr.text) {
-              showTranscript(tr.text);
-            } else {
-              resetTranscriptBtn('该内容无口播文案', true);
+    return new Promise(function (resolve, reject) {
+      var iv = setInterval(function () {
+        fetch('/api/gen/job/' + id, { headers: { 'Authorization': 'Bearer ' + tok() } })
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            var sec = Math.round((Date.now() - t0) / 1000);
+            if (!d.status) { clearInterval(iv); reject(new Error('提取失败')); return; }
+            if (d.status === 'done') {
+              clearInterval(iv);
+              var tr = d.result && d.result.transcript;
+              if (tr && tr.text) resolve(tr.text);
+              else reject(new Error('该内容无口播文案'));
+            } else if (d.status === 'error') {
+              clearInterval(iv);
+              reject(new Error('提取失败：' + (d.error || '')));
+            } else if (sec > 120) {
+              clearInterval(iv);
+              reject(new Error('提取超时，请重试'));
             }
-            if (window.HQ && window.HQ.refreshPoints) window.HQ.refreshPoints();
-          } else if (d.status === 'error') {
+            // else: pending, keep polling
+          }).catch(function () {
             clearInterval(iv);
-            resetTranscriptBtn('提取失败：' + (d.error || ''), true);
-          } else if (sec > 120) {
-            clearInterval(iv);
-            resetTranscriptBtn('提取超时，请重试', true);
-          }
-          // else: pending, keep polling
-        }).catch(function () {});
-    }, 4000);
+            reject(new Error('网络错误，请重试'));
+          });
+      }, 4000);
+    });
   }
 
   function showTranscript(text) {
@@ -763,6 +791,31 @@
     }
   }
 
+  function getTranscriptText() {
+    var el = document.getElementById('transcriptText');
+    return (el && el.textContent ? el.textContent : '').trim();
+  }
+
+  function copyLegacyText() {
+    var c = currentResult.copy || {};
+    return [c.title, c.desc, copyFields.tags].filter(Boolean).join('\n\n');
+  }
+
+  function setActionLoading(el, text) {
+    if (!el) return function () {};
+    var oldHtml = el.innerHTML;
+    var oldPointer = el.style.pointerEvents;
+    var oldOpacity = el.style.opacity;
+    el.style.pointerEvents = 'none';
+    el.style.opacity = '.72';
+    el.innerHTML = '<div style="font-size:12px;font-weight:700;color:#e7b24c;">' + escHtml(text) + '</div>';
+    return function () {
+      el.innerHTML = oldHtml;
+      el.style.pointerEvents = oldPointer || 'auto';
+      el.style.opacity = oldOpacity || '1';
+    };
+  }
+
   function exportComments(comments, videoTitle) {
     if (!comments || !comments.length) { setNote('没有评论数据可导出', '#f4708a'); return; }
     var rows = ['序号,用户,点赞,时间,内容'];
@@ -789,10 +842,39 @@
 
   if (actCopy) actCopy.onclick = function () {
     if (!currentResult) { setNote('先爬取一条视频', '#f4708a'); return; }
-    var c = currentResult.copy || {};
-    var all = [c.title, c.desc, copyFields.tags].filter(Boolean).join('\n\n');
-    copyText(all, null);
-    setNote('✅ 文案已复制到剪贴板', '#2bd576');
+    var existed = getTranscriptText();
+    if (existed) {
+      copyText(existed, null);
+      setNote('✅ 口播文案已复制到剪贴板', '#2bd576');
+      return;
+    }
+
+    var hasImages = currentResult.images && currentResult.images.length;
+    if (hasImages || !currentUrl) {
+      var legacy = copyLegacyText();
+      if (!legacy) { setNote('该内容无口播可提取', '#f4708a'); return; }
+      copyText(legacy, null);
+      setNote('✅ 文案已复制到剪贴板', '#2bd576');
+      return;
+    }
+
+    if (!tok()) { HQ.login(); return; }
+    var restore = setActionLoading(actCopy, '提取并复制中…');
+    var note = document.getElementById('transcriptExtractNote');
+    if (note) { note.textContent = '正在提取口播文案，完成后自动复制…'; note.style.color = '#2dd4bf'; }
+    requestTranscript()
+      .then(function (text) {
+        showTranscript(text);
+        copyText(text, null);
+        setNote('✅ 文案已提取并复制', '#2bd576');
+        if (window.HQ && window.HQ.refreshPoints) window.HQ.refreshPoints();
+      })
+      .catch(function (err) {
+        if (err && err.login) { HQ.login(); return; }
+        resetTranscriptBtn((err && err.message) || '提取失败', true);
+        setNote((err && err.message) || '提取失败', '#f4708a');
+      })
+      .finally(restore);
   };
   if (actExport) actExport.onclick = function () {
     if (!currentResult) { setNote('先爬取一条视频', '#f4708a'); return; }
