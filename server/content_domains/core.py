@@ -18,6 +18,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
 import mimetypes  # 文件服务按扩展名识别 mime（png / mp3 …）
 
+try:
+    from . import feature_flags
+except ImportError:  # Running core.py directly during local checks.
+    import feature_flags
+
 PORT       = int(os.environ.get("CONTENT_API_PORT", "8096"))
 AUTH_BASE  = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
 AUTH_INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
@@ -168,6 +173,7 @@ def init_db():
             created_at INTEGER, updated_at INTEGER)""")
         _ensure_column(c, "jobs", "deleted", "INTEGER DEFAULT 0")
         c.commit()
+    feature_flags.init_db()
     init_audio_db()
 
 def init_audio_db():
@@ -669,6 +675,10 @@ class H(BaseHTTPRequestHandler):
             if not user: return self._send(401, {"detail": "未登录"})
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
             try:
+                feature_flags.require_enabled("audio")
+            except feature_flags.FeatureDisabled as e:
+                return self._send(503, {"detail": str(e)})
+            try:
                 body = self._json_body_strict()
                 body = audio_domain.validate_clone_vip_payload(user["username"], body)
                 voice = audio_domain.mark_clone_training(user["username"], body.get("slot_id"), body.get("name"))
@@ -702,6 +712,10 @@ class H(BaseHTTPRequestHandler):
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            try:
+                feature_flags.require_enabled(kind)
+            except feature_flags.FeatureDisabled as e:
+                return self._send(503, {"detail": str(e)})
             try:
                 body = self._json_body_strict() if kind == "video" else self._json_body()
                 if kind == "video":
@@ -753,6 +767,10 @@ class H(BaseHTTPRequestHandler):
             d = _job_public_dict(r, phase)
             return self._send(200, d)
         if p == "/api/gen/dl":   # 无水印视频下载代理：直连拉 CDN → 附件流回(强制下载)
+            try:
+                feature_flags.require_enabled("dl")
+            except feature_flags.FeatureDisabled as e:
+                return self._send(503, {"detail": str(e)})
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             url = (q.get("url", [""])[0]).strip()
             raw_name = ((q.get("name", ["video"])[0])[:40]) or "video"
@@ -870,6 +888,10 @@ class H(BaseHTTPRequestHandler):
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            try:
+                feature_flags.require_enabled("collect")
+            except feature_flags.FeatureDisabled as e:
+                return self._send(503, {"detail": str(e)})
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             platform = (q.get("platform", ["douyin"])[0]).strip()
             keyword  = (q.get("keyword", [""])[0]).strip()

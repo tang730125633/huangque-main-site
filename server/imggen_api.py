@@ -19,6 +19,11 @@ from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
+    from content_domains import feature_flags
+except ImportError:
+    feature_flags = None
+
+try:
     from PIL import Image
 except Exception:
     Image = None
@@ -315,6 +320,11 @@ class H(BaseHTTPRequestHandler):
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             if user.get("must_change"):
                 return self._send(403, {"detail": "请先修改初始密码后再使用"})
+            if feature_flags is not None:
+                try:
+                    feature_flags.require_enabled("banana")
+                except feature_flags.FeatureDisabled as e:
+                    return self._send(503, {"detail": str(e)})
             body = self._json_body()
             try:
                 body = validate_banana_payload(body)
@@ -381,5 +391,7 @@ if __name__ == "__main__":
     import sys
     if "--selftest" in sys.argv:
         _selftest(); raise SystemExit(0)
+    if feature_flags is not None:
+        feature_flags.init_db()
     print("huangque-imggen-api on 127.0.0.1:%d  models=%s" % (PORT, MODELS))
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()

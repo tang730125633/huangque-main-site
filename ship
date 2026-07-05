@@ -39,10 +39,12 @@ for f in "$@"; do
     server/auth_server.py) dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
     server/content_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-content ;;
     server/content_domains/*) dest=/home/ubuntu/content-api/content_domains/;  svc=huangque-content ;;
+    server/admin_api.py)   dest=/home/ubuntu/content-api/;  svc=huangque-admin ;;
     server/leadgen_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-leadgen-api ;;
     server/imggen_api.py)  dest=/home/ubuntu/content-api/;  svc=huangque-imggen-api ;;
     server/dl_service.py)  dest=/home/ubuntu/dl-service/;   svc=huangque-dl ;;
     server/tikhub.py)      dest=/home/ubuntu/content-api/;  svc="huangque-leadgen-api huangque-content huangque-imggen-api" ;;
+    site/admin/*)          dest="$WWW/admin/"; svc="" ;;
     site/workbench/*)      dest="$WWW/workbench/"; svc="" ;;
     site/*)  rel="${f#site/}"
              case "$rel" in */*) dest="$WWW/${rel%/*}/" ;; *) dest="$WWW/" ;; esac

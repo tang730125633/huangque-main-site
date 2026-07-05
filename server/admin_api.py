@@ -18,6 +18,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+try:
+    from content_domains import feature_flags
+except ImportError:
+    feature_flags = None
+
 
 BASE = pathlib.Path(__file__).resolve().parent
 PORT = int(os.environ.get("ADMIN_API_PORT", "8099"))
@@ -123,6 +128,8 @@ def init_db():
             )"""
         )
         c.commit()
+    if feature_flags is not None:
+        feature_flags.init_db()
 
 
 def verify(token):
@@ -297,6 +304,12 @@ def load_channels():
     return items
 
 
+def load_features(services=None):
+    if feature_flags is None:
+        return []
+    return feature_flags.list_features(services or service_status())
+
+
 def _validate_config(value, prefix="config"):
     if not isinstance(value, dict):
         raise ValueError("config must be an object")
@@ -342,6 +355,24 @@ def save_channel(actor, body):
         )
         c.commit()
     return next(item for item in load_channels() if item["key"] == channel)
+
+
+def save_feature(actor, body):
+    if feature_flags is None:
+        raise RuntimeError("feature flags unavailable")
+    feature = str(body.get("feature") or body.get("key") or "").strip()
+    enabled = bool(body.get("enabled"))
+    reason = str(body.get("reason") or "").strip()[:200]
+    item = feature_flags.set_enabled(feature, enabled, actor)
+    now = int(time.time())
+    detail = {"enabled": enabled, "reason": reason}
+    with closing(db()) as c:
+        c.execute(
+            "INSERT INTO admin_audit(actor, action, target, detail, created_at) VALUES(?,?,?,?,?)",
+            (actor, "feature.toggle", feature, json.dumps(detail, ensure_ascii=False), now),
+        )
+        c.commit()
+    return item
 
 
 def _empty_stats(message=None):
@@ -464,6 +495,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": key_status()})
         if path == "/api/admin/channels":
             return self._send(200, {"items": load_channels()})
+        if path == "/api/admin/features":
+            return self._send(200, {"items": load_features()})
         if path == "/api/admin/users":
             q = urllib.parse.urlparse(self.path).query
             suffix = "/api/auth/admin/users" + (("?" + q) if q else "")
@@ -490,14 +523,16 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, job_stats((q.get("days") or ["7"])[0]))
         if path == "/api/admin/overview":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            services = service_status()
             return self._send(
                 200,
                 {
                     "ok": True,
                     "user": {"username": user.get("username"), "name": user.get("name"), "role": user.get("role")},
-                    "services": service_status(),
+                    "services": services,
                     "keys": key_status(),
                     "channels": load_channels(),
+                    "features": load_features(services),
                     "stats": job_stats((q.get("days") or ["7"])[0]),
                 },
             )
@@ -518,6 +553,14 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 return self._send(500, {"detail": "保存失败"})
             return self._send(200, {"ok": True, "channel": item})
+        if path == "/api/admin/features/toggle":
+            try:
+                item = save_feature(user.get("username") or "admin", self._body())
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return self._send(500, {"detail": str(e)[:160] or "保存失败"})
+            return self._send(200, {"ok": True, "feature": item})
         if path == "/api/admin/points/adjust":
             try:
                 return self._send(
