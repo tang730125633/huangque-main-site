@@ -49,6 +49,11 @@
     .switch input{accent-color:var(--primary);width:18px;height:18px}
     textarea{width:100%;min-height:96px;margin-top:10px;border:1px solid var(--line);background:#111613;color:var(--text);border-radius:6px;padding:10px;font:12px/1.45 "JetBrains Mono",Consolas,monospace;resize:vertical}
     input.reason{width:100%;height:34px;border:1px solid var(--line);background:#111613;color:var(--text);border-radius:6px;padding:0 10px;margin:10px 0}
+    .field,select{height:36px;border:1px solid var(--line);background:#111613;color:var(--text);border-radius:6px;padding:0 10px}
+    .field{min-width:220px}
+    .actions{display:flex;gap:6px;flex-wrap:wrap}
+    .mini{height:30px;padding:0 10px;font-size:12px}
+    .danger{color:#ffd0cc;border-color:rgba(224,107,100,.32);background:rgba(224,107,100,.08)}
     .empty,.error{padding:18px;border:1px dashed var(--line);border-radius:8px;color:var(--muted);background:rgba(23,29,26,.7)}
     .error{color:#ffd0cc;border-color:rgba(224,107,100,.3)}
     .bar{height:8px;background:#111613;border-radius:999px;overflow:hidden;border:1px solid var(--line)}
@@ -99,6 +104,29 @@
         <h2>渠道开关 / 配置</h2>
         <div id="channelBox" class="channels"></div>
       </section>
+      <section class="card span12">
+        <div class="row" style="margin-bottom:12px">
+          <h2 style="margin:0">用户管理</h2>
+          <span class="muted" id="userCount">-</span>
+        </div>
+        <div class="toolbar">
+          <input class="field" id="userSearch" autocomplete="off" placeholder="搜索 username / 昵称">
+          <select id="userSort">
+            <option value="created_at">按注册时间</option>
+            <option value="points">按点数</option>
+            <option value="username">按账号</option>
+            <option value="role">按角色</option>
+          </select>
+          <select id="userDir">
+            <option value="desc">降序</option>
+            <option value="asc">升序</option>
+          </select>
+          <button id="userRefresh">刷新用户</button>
+        </div>
+        <div id="usersBox"></div>
+        <h2 style="margin-top:18px">点数流水</h2>
+        <div id="auditBox"></div>
+      </section>
       <section class="card span6">
         <h2>调用统计</h2>
         <div id="statsBox"></div>
@@ -114,7 +142,7 @@
 <script>
 (function(){
   var token = localStorage.getItem('hq_token') || '';
-  var state = {days:7, data:null};
+  var state = {days:7, data:null, userTimer:null};
   var el = function(id){return document.getElementById(id)};
   function toast(msg){var t=el('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(t._tm); t._tm=setTimeout(function(){t.style.display='none'},2600)}
   function authHeaders(extra){return Object.assign({'Authorization':'Bearer '+token}, extra||{})}
@@ -156,6 +184,54 @@
       };
     });
   }
+  function roleName(role){return role==='admin'?'管理员':'成员'}
+  function renderUsers(d){
+    var items=d.items||[];
+    el('userCount').textContent='当前 '+items.length+' / 总 '+(d.total||0)+' 个账号';
+    if(!items.length){el('usersBox').innerHTML='<div class="empty">暂无用户</div>';return}
+    el('usersBox').innerHTML='<table><thead><tr><th>账号</th><th>昵称</th><th>点数</th><th>角色</th><th>改密</th><th>注册时间</th><th>操作</th></tr></thead><tbody>'+items.map(function(u){
+      return '<tr><td><b>'+esc(u.username)+'</b></td><td>'+esc(u.display_name||'')+'</td><td><code>'+Number(u.points||0).toLocaleString()+'</code></td><td>'+esc(roleName(u.role))+'</td><td>'+(u.must_change?'<span class="pill warn">需改密</span>':'<span class="pill ok">正常</span>')+'</td><td><code>'+esc(u.created_at||'')+'</code></td><td><div class="actions"><button class="mini" data-act="plus" data-user="'+esc(u.username)+'">加点</button><button class="mini danger" data-act="minus" data-user="'+esc(u.username)+'">扣点</button><button class="mini" data-act="audit" data-user="'+esc(u.username)+'">流水</button></div></td></tr>';
+    }).join('')+'</tbody></table>';
+    Array.prototype.forEach.call(document.querySelectorAll('#usersBox button'), function(btn){
+      btn.onclick=function(){
+        var act=btn.getAttribute('data-act'), username=btn.getAttribute('data-user');
+        if(act==='audit') return loadAudit(username);
+        adjustPoints(username, act==='minus'?-1:1);
+      };
+    });
+  }
+  function renderAudit(d, username){
+    var items=d.items||[];
+    var title=username?(' · '+username):'';
+    if(!items.length){el('auditBox').innerHTML='<div class="empty">暂无点数流水'+esc(title)+'</div>';return}
+    el('auditBox').innerHTML='<table><thead><tr><th>时间</th><th>管理员</th><th>用户</th><th>变化</th><th>前</th><th>后</th><th>原因</th></tr></thead><tbody>'+items.map(function(x){
+      var delta=Number(x.delta||0);
+      return '<tr><td><code>'+new Date(Number(x.created_at||0)*1000).toLocaleString()+'</code></td><td>'+esc(x.who_admin)+'</td><td><b>'+esc(x.username)+'</b></td><td><span class="pill '+(delta>=0?'ok':'fail')+'">'+(delta>0?'+':'')+delta+'</span></td><td><code>'+Number(x.before_points||0).toLocaleString()+'</code></td><td><code>'+Number(x.after_points||0).toLocaleString()+'</code></td><td>'+esc(x.reason||'')+'</td></tr>';
+    }).join('')+'</tbody></table>';
+  }
+  function userQuery(){
+    return '?q='+encodeURIComponent(el('userSearch').value||'')+'&sort='+encodeURIComponent(el('userSort').value||'created_at')+'&dir='+encodeURIComponent(el('userDir').value||'desc')+'&limit=120';
+  }
+  function loadUsers(){
+    if(!token) return;
+    api('/api/admin/users'+userQuery()).then(renderUsers).catch(function(e){el('usersBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
+    loadAudit();
+  }
+  function loadAudit(username){
+    var q='?limit=80'+(username?'&username='+encodeURIComponent(username):'');
+    api('/api/admin/points/audit'+q).then(function(d){renderAudit(d, username)}).catch(function(e){el('auditBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
+  }
+  function adjustPoints(username, sign){
+    var raw=prompt((sign>0?'给 ':'从 ')+username+(sign>0?' 加多少点？':' 扣多少点？'));
+    if(raw==null) return;
+    var amount=Math.abs(parseInt(raw,10)||0);
+    if(!amount){toast('请输入非 0 点数');return}
+    var reason=prompt('填写调整原因');
+    if(reason==null) return;
+    api('/api/admin/points/adjust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,delta:sign*amount,reason:reason})})
+      .then(function(){toast('点数已调整');loadUsers()})
+      .catch(function(e){toast(e.message)});
+  }
   function renderStats(st){
     var rows=(st.by_kind||[]).map(function(x){
       return '<tr><td><b>'+esc(x.kind)+'</b></td><td>'+x.total+'</td><td>'+x.done+'</td><td>'+x.error+'</td><td>'+pct(x.success_rate)+'</td><td><div class="bar"><i style="width:'+pct(x.failure_rate)+'"></i></div><span class="muted">'+pct(x.failure_rate)+'</span></td></tr>';
@@ -175,6 +251,7 @@
     el('failKinds').textContent=((d.stats&&d.stats.high_failure)||[]).length;
     el('updatedAt').textContent='更新于 '+new Date().toLocaleTimeString();
     renderServices(d.services||[]); renderKeys(d.keys||[]); renderChannels(d.channels||[]); renderStats(d.stats||{});
+    loadUsers();
   }
   function load(){
     if(!token){el('gate').style.display='block';return}
@@ -187,6 +264,10 @@
   el('refreshBtn').onclick=load;
   el('days7').onclick=function(){state.days=7;load()};
   el('days30').onclick=function(){state.days=30;load()};
+  el('userRefresh').onclick=loadUsers;
+  el('userSort').onchange=loadUsers;
+  el('userDir').onchange=loadUsers;
+  el('userSearch').oninput=function(){clearTimeout(state.userTimer);state.userTimer=setTimeout(loadUsers,260)};
   load();
 })();
 </script>

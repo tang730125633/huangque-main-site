@@ -41,6 +41,16 @@ def init_db():
         created_at TEXT DEFAULT (datetime('now')),
         expires_at INTEGER
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS points_audit(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        who_admin TEXT NOT NULL,
+        username TEXT NOT NULL,
+        delta INTEGER NOT NULL,
+        before_points INTEGER NOT NULL,
+        after_points INTEGER NOT NULL,
+        reason TEXT,
+        created_at INTEGER NOT NULL
+    )""")
     cols = {r["name"] for r in c.execute("PRAGMA table_info(tokens)").fetchall()}
     if "expires_at" not in cols:
         c.execute("ALTER TABLE tokens ADD COLUMN expires_at INTEGER")
@@ -139,6 +149,100 @@ def refund_points(username, amount):
     finally:
         c.close()
 
+def public_admin_user(row):
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "display_name": row["display_name"] or row["username"],
+        "points": row["points"],
+        "role": row["role"],
+        "must_change": bool(row["must_change"]),
+        "created_at": row["created_at"],
+    }
+
+def list_admin_users(query="", sort="created_at", direction="desc", limit=100):
+    allowed_sort = {"username", "display_name", "points", "role", "must_change", "created_at"}
+    sort = sort if sort in allowed_sort else "created_at"
+    direction = "ASC" if str(direction).lower() == "asc" else "DESC"
+    limit = max(1, min(300, int(limit or 100)))
+    query = (query or "").strip()
+    sql = "SELECT id, username, display_name, points, role, must_change, created_at FROM users"
+    args = []
+    if query:
+        sql += " WHERE username LIKE ? OR display_name LIKE ?"
+        like = "%" + query + "%"
+        args.extend([like, like])
+    sql += " ORDER BY %s %s LIMIT ?" % (sort, direction)
+    args.append(limit)
+    c = db()
+    try:
+        rows = c.execute(sql, args).fetchall()
+        total = c.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+        return {"items": [public_admin_user(r) for r in rows], "total": total}
+    finally:
+        c.close()
+
+def adjust_points_admin(who_admin, username, delta, reason=""):
+    username = (username or "").strip()
+    delta = int(delta or 0)
+    reason = (reason or "").strip()[:300]
+    if not username:
+        return None, "missing_username"
+    if delta == 0:
+        return None, "zero_delta"
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("SELECT id, username, points FROM users WHERE username=?", (username,)).fetchone()
+        if not row:
+            c.rollback()
+            return None, "not_found"
+        before = int(row["points"] or 0)
+        after = before + delta
+        if after < 0:
+            c.rollback()
+            return {"before": before, "after": before}, "insufficient"
+        c.execute("UPDATE users SET points=? WHERE username=?", (after, username))
+        now = int(time.time())
+        c.execute(
+            """INSERT INTO points_audit(who_admin, username, delta, before_points, after_points, reason, created_at)
+               VALUES(?,?,?,?,?,?,?)""",
+            (who_admin, username, delta, before, after, reason, now),
+        )
+        c.commit()
+        return {
+            "username": username,
+            "points": after,
+            "before": before,
+            "after": after,
+            "delta": delta,
+            "reason": reason,
+            "at": now,
+        }, None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+def list_points_audit(username="", limit=100):
+    limit = max(1, min(300, int(limit or 100)))
+    username = (username or "").strip()
+    sql = """SELECT id, who_admin, username, delta, before_points, after_points, reason, created_at
+             FROM points_audit"""
+    args = []
+    if username:
+        sql += " WHERE username=?"
+        args.append(username)
+    sql += " ORDER BY id DESC LIMIT ?"
+    args.append(limit)
+    c = db()
+    try:
+        rows = c.execute(sql, args).fetchall()
+        return {"items": [dict(r) for r in rows]}
+    finally:
+        c.close()
+
 def cleanup_expired_tokens(c=None):
     own = c is None
     if own: c = db()
@@ -231,8 +335,48 @@ class H(BaseHTTPRequestHandler):
         self._send(403, {"detail": "forbidden"})
         return False
 
+    def _require_admin_user(self):
+        row = self._user()
+        if not row:
+            self._send(401, {"detail": "未登录或登录已过期"})
+            return None
+        if row["role"] != "admin":
+            self._send(403, {"detail": "需要管理员权限"})
+            return None
+        return row
+
     def do_POST(self):
         p = self.path.split("?")[0]
+        if p == "/api/auth/admin/points/adjust":
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            username = (d.get("username") or "").strip()
+            reason = (d.get("reason") or "").strip()
+            try:
+                delta = int(d.get("delta") or 0)
+            except Exception:
+                return self._send(400, {"detail": "delta must be an integer"})
+            if not username:
+                return self._send(400, {"detail": "missing username"})
+            if delta == 0:
+                return self._send(400, {"detail": "delta cannot be 0"})
+            try:
+                result, err = adjust_points_admin(admin["username"], username, delta, reason)
+                if err == "not_found":
+                    return self._send(404, {"detail": "user not found"})
+                if err == "insufficient":
+                    return self._send(400, {"detail": "点数不能扣成负数", "user": result})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, "adjustment": result})
+            except Exception:
+                return self._send(500, {"detail": "points adjust failed"})
         if p in {"/api/auth/points/deduct", "/api/auth/points/refund"}:
             if not self._require_internal():
                 return
@@ -357,6 +501,38 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path.split("?")[0]
+        if p == "/api/auth/admin/users":
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                data = list_admin_users(
+                    query=(q.get("q") or [""])[0],
+                    sort=(q.get("sort") or ["created_at"])[0],
+                    direction=(q.get("dir") or ["desc"])[0],
+                    limit=(q.get("limit") or ["100"])[0],
+                )
+                return self._send(200, {"ok": True, **data})
+            except Exception:
+                return self._send(500, {"detail": "users query failed"})
+        if p == "/api/auth/admin/points/audit":
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                data = list_points_audit(
+                    username=(q.get("username") or [""])[0],
+                    limit=(q.get("limit") or ["100"])[0],
+                )
+                return self._send(200, {"ok": True, **data})
+            except Exception:
+                return self._send(500, {"detail": "audit query failed"})
         if p == "/api/auth/points":
             if not self._require_internal():
                 return

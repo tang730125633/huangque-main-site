@@ -22,6 +22,7 @@ import urllib.request
 BASE = pathlib.Path(__file__).resolve().parent
 PORT = int(os.environ.get("ADMIN_API_PORT", "8099"))
 AUTH_BASE = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095").rstrip("/")
+AUTH_INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
 JOB_DB = pathlib.Path(os.environ.get("CONTENT_JOB_DB", str(BASE / "content_jobs.db")))
 ADMIN_DB = pathlib.Path(os.environ.get("ADMIN_DB", str(BASE / "admin_config.db")))
 
@@ -136,6 +137,38 @@ def verify(token):
             return json.loads(r.read().decode("utf-8")).get("user")
     except Exception:
         return None
+
+
+def auth_admin_request(path, token, method="GET", payload=None):
+    if not AUTH_INTERNAL_TOKEN:
+        raise RuntimeError("未配置内部点数接口密钥")
+    data = None
+    headers = {
+        "Authorization": "Bearer " + (token or ""),
+        "X-HQ-Internal-Token": AUTH_INTERNAL_TOKEN,
+    }
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json; charset=utf-8"
+    req = urllib.request.Request(AUTH_BASE + path, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read() or b"{}")
+        except Exception:
+            body = {}
+        err = RuntimeError(body.get("detail") or "auth admin request failed")
+        err.status = e.code
+        err.body = body
+        raise err
+
+
+def auth_error_response(handler, exc):
+    status = int(getattr(exc, "status", 502) or 502)
+    body = getattr(exc, "body", None) or {"detail": str(exc)[:180]}
+    return handler._send(status, body)
 
 
 def _read_env_file(path):
@@ -431,6 +464,20 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": key_status()})
         if path == "/api/admin/channels":
             return self._send(200, {"items": load_channels()})
+        if path == "/api/admin/users":
+            q = urllib.parse.urlparse(self.path).query
+            suffix = "/api/auth/admin/users" + (("?" + q) if q else "")
+            try:
+                return self._send(200, auth_admin_request(suffix, self._token()))
+            except Exception as e:
+                return auth_error_response(self, e)
+        if path == "/api/admin/points/audit":
+            q = urllib.parse.urlparse(self.path).query
+            suffix = "/api/auth/admin/points/audit" + (("?" + q) if q else "")
+            try:
+                return self._send(200, auth_admin_request(suffix, self._token()))
+            except Exception as e:
+                return auth_error_response(self, e)
         if path == "/api/admin/stats":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(200, job_stats((q.get("days") or ["7"])[0]))
@@ -464,6 +511,16 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 return self._send(500, {"detail": "保存失败"})
             return self._send(200, {"ok": True, "channel": item})
+        if path == "/api/admin/points/adjust":
+            try:
+                return self._send(
+                    200,
+                    auth_admin_request("/api/auth/admin/points/adjust", self._token(), method="POST", payload=self._body()),
+                )
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return auth_error_response(self, e)
         return self._send(404, {"detail": "not found"})
 
     def do_OPTIONS(self):
