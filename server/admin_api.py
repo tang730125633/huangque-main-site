@@ -447,6 +447,44 @@ def job_stats(days=7):
     }
 
 
+def call_logs(days=7, limit=200):
+    days = max(1, min(int(days or 7), 90))
+    limit = max(1, min(int(limit or 200), 500))
+    if not JOB_DB.exists():
+        return {"days": days, "limit": limit, "items": [], "message": "content_jobs.db not found"}
+    since = int(time.time()) - days * 86400
+    with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as c:
+        c.row_factory = sqlite3.Row
+        rows = c.execute(
+            """SELECT id, username, kind, cost, status, created_at, updated_at
+               FROM jobs
+               WHERE created_at >= ?
+               ORDER BY created_at DESC, id DESC
+               LIMIT ?""",
+            (since, limit),
+        ).fetchall()
+    items = []
+    for row in rows:
+        created_at = int(row["created_at"] or 0)
+        updated_at = int(row["updated_at"] or 0)
+        duration = None
+        if created_at and updated_at and updated_at >= created_at:
+            duration = updated_at - created_at
+        items.append(
+            {
+                "id": row["id"],
+                "username": row["username"] or "-",
+                "kind": row["kind"] or "unknown",
+                "cost": int(row["cost"] or 0),
+                "status": row["status"] or "unknown",
+                "created_at": created_at,
+                "updated_at": updated_at,
+                "duration_sec": duration,
+            }
+        )
+    return {"days": days, "limit": limit, "items": items}
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
@@ -521,9 +559,19 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/admin/stats":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(200, job_stats((q.get("days") or ["7"])[0]))
+        if path == "/api/admin/call-logs":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._send(
+                200,
+                call_logs(
+                    (q.get("days") or ["7"])[0],
+                    (q.get("limit") or ["200"])[0],
+                ),
+            )
         if path == "/api/admin/overview":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             services = service_status()
+            days = (q.get("days") or ["7"])[0]
             return self._send(
                 200,
                 {
@@ -533,7 +581,8 @@ class H(BaseHTTPRequestHandler):
                     "keys": key_status(),
                     "channels": load_channels(),
                     "features": load_features(services),
-                    "stats": job_stats((q.get("days") or ["7"])[0]),
+                    "stats": job_stats(days),
+                    "call_logs": call_logs(days, 200),
                 },
             )
         return self._send(404, {"detail": "not found"})

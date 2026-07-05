@@ -38,6 +38,7 @@
     .pill.ok{color:var(--ok);border-color:rgba(79,212,126,.22);background:rgba(79,212,126,.1)}
     .pill.fail{color:var(--error);border-color:rgba(224,107,100,.25);background:rgba(224,107,100,.1)}
     .pill.warn{color:var(--warn);border-color:rgba(217,155,53,.28);background:rgba(217,155,53,.1)}
+    .pill.neutral{color:var(--muted);border-color:rgba(154,166,159,.18);background:rgba(154,166,159,.08)}
     .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
     .module-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}
     .tab{height:38px;border-radius:6px;border:1px solid var(--line);background:rgba(32,40,34,.75);color:var(--muted);font-weight:800;padding:0 14px;cursor:pointer}
@@ -180,7 +181,7 @@
         <div id="statsBox"></div>
       </section>
       <section class="card span6 module-card" data-module="ops">
-        <div class="section-head"><div><h2>近日报表</h2><div class="hint">最近任务按日期和状态汇总。</div></div></div>
+        <div class="section-head"><div><h2>用户调用日志</h2><div class="hint">每次调用的时间、功能、耗时、状态与点数消耗。</div></div></div>
         <div id="trendBox"></div>
       </section>
     </div>
@@ -202,8 +203,30 @@
   function statusPill(ok, text){return '<span class="pill '+(ok?'ok':'fail')+'">'+text+'</span>'}
   function statusIcon(cls, text){return '<span><i class="dot '+cls+'"></i>'+esc(text)+'</span>'}
   function fmtTime(ts){return ts ? new Date(Number(ts)*1000).toLocaleString() : '-'}
-  function kindName(k){return ({image:'图片生成',banana:'Nano Banana',audio:'配音生成',video:'视频口播',tryon:'换装换背景',collect:'内容采集',leads:'获客分析',dl:'下载代理',copy:'文案生成'})[k]||k}
+  function fmtMinute(ts){
+    if(!ts) return '-';
+    var d=new Date(Number(ts)*1000);
+    var pad=function(n){return String(n).padStart(2,'0')};
+    return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes());
+  }
+  function fmtDuration(sec){
+    sec=Number(sec);
+    if(!isFinite(sec) || sec<0) return '-';
+    sec=Math.round(sec);
+    if(sec<60) return sec+'秒';
+    var m=Math.floor(sec/60), s=sec%60;
+    if(m<60) return m+'分'+(s?s+'秒':'');
+    var h=Math.floor(m/60); m=m%60;
+    return h+'小时'+(m?m+'分':'');
+  }
+  function kindName(k){return ({image:'图片生成',banana:'Nano Banana',audio:'配音生成',video:'视频口播',motion:'动作模仿',tryon:'换装换背景',collect:'内容采集',leads:'获客分析',leadgen:'获客分析',dl:'下载代理',copy:'文案生成'})[k]||k}
   function jobStatusName(s){return ({done:'已完成',error:'失败',running:'生成中',queued:'排队中',pending:'待处理'})[s]||s}
+  function jobStatusPill(s){
+    var cls='neutral';
+    if(s==='done') cls='ok';
+    else if(s==='error') cls='fail';
+    return '<span class="pill '+cls+'">'+esc(jobStatusName(s))+'</span>';
+  }
   function setUser(user){
     el('userBox').innerHTML='<div class="avatar">'+(user.username||'?').slice(0,1).toUpperCase()+'</div><div><b>'+esc(user.username||'admin')+'</b><div class="muted">'+esc(user.role||'')+'</div></div>';
   }
@@ -344,8 +367,14 @@
       return '<tr><td><b>'+esc(kindName(x.kind))+'</b><div class="muted">'+esc(x.kind)+'</div></td><td>'+Number(x.total||0).toLocaleString()+'</td><td>'+Number(x.done||0).toLocaleString()+'</td><td>'+Number(x.error||0).toLocaleString()+'</td><td>'+pct(x.success_rate)+'</td><td><div class="bar"><i style="width:'+pct(x.failure_rate)+'"></i></div><span class="muted">'+pct(x.failure_rate)+'</span></td></tr>';
     }).join('');
     el('statsBox').innerHTML=rows?'<div class="table-wrap"><table><thead><tr><th>类型</th><th>总量</th><th>成功</th><th>失败</th><th>成功率</th><th>失败率</th></tr></thead><tbody>'+rows+'</tbody></table></div>':'<div class="empty">'+esc(st.message||'暂无调用数据')+'</div>';
-    var trend=(st.trend||[]).slice(-24).map(function(x){return '<tr><td>'+esc(x.day)+'</td><td>'+esc(kindName(x.kind))+'</td><td>'+esc(jobStatusName(x.status))+'</td><td class="right">'+Number(x.count||0).toLocaleString()+'</td></tr>'}).join('');
-    el('trendBox').innerHTML=trend?'<div class="table-wrap"><table><thead><tr><th>日期</th><th>类型</th><th>状态</th><th class="right">数量</th></tr></thead><tbody>'+trend+'</tbody></table></div>':'<div class="empty">暂无趋势数据</div>';
+  }
+  function renderCallLogs(logs){
+    logs=logs||{};
+    var items=logs.items||[];
+    if(!items.length){el('trendBox').innerHTML='<div class="empty">'+esc(logs.message||'暂无用户调用日志')+'</div>';return}
+    el('trendBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>调用时间</th><th>用户</th><th>调用功能</th><th>响应时间</th><th>完成状态</th><th class="right">点数消耗</th></tr></thead><tbody>'+items.map(function(x){
+      return '<tr><td><code>'+fmtMinute(x.created_at)+'</code></td><td><b>'+esc(x.username||'-')+'</b></td><td><b>'+esc(kindName(x.kind))+'</b><div class="muted">'+esc(x.kind||'')+'</div></td><td><code>'+esc(fmtDuration(x.duration_sec))+'</code></td><td>'+jobStatusPill(x.status)+'</td><td class="right"><code>'+Number(x.cost||0).toLocaleString()+'</code></td></tr>';
+    }).join('')+'</tbody></table></div>';
   }
   function switchModule(name){
     state.module=name;
@@ -362,7 +391,7 @@
     el('jobTotal').textContent=(d.stats&&d.stats.total)||0; el('statDays').textContent='近 '+((d.stats&&d.stats.days)||state.days)+' 天';
     el('failKinds').textContent=((d.stats&&d.stats.high_failure)||[]).length;
     el('updatedAt').textContent='更新于 '+new Date().toLocaleTimeString();
-    renderServices(d.services||[]); renderKeys(d.keys||[]); renderChannels(d.channels||[]); renderFeatures(d.features||[]); renderStats(d.stats||{});
+    renderServices(d.services||[]); renderKeys(d.keys||[]); renderChannels(d.channels||[]); renderFeatures(d.features||[]); renderStats(d.stats||{}); renderCallLogs(d.call_logs||{});
     switchModule(state.module);
     loadUsers(); loadRecharge();
   }
