@@ -127,6 +127,23 @@
         <h2 style="margin-top:18px">点数流水</h2>
         <div id="auditBox"></div>
       </section>
+      <section class="card span12">
+        <div class="row" style="margin-bottom:12px">
+          <h2 style="margin:0">充值审批</h2>
+          <span class="muted" id="rechargeCount">-</span>
+        </div>
+        <div class="toolbar">
+          <select id="rechargeStatus">
+            <option value="pending">待审批</option>
+            <option value="">全部订单</option>
+            <option value="approved">已通过</option>
+            <option value="rejected">已驳回</option>
+          </select>
+          <input class="field" id="rechargeUser" autocomplete="off" placeholder="按用户筛选">
+          <button id="rechargeRefresh">刷新充值申请</button>
+        </div>
+        <div id="rechargeBox"></div>
+      </section>
       <section class="card span6">
         <h2>调用统计</h2>
         <div id="statsBox"></div>
@@ -232,6 +249,41 @@
       .then(function(){toast('点数已调整');loadUsers()})
       .catch(function(e){toast(e.message)});
   }
+  function orderStatus(s){
+    if(s==='approved') return '<span class="pill ok">已通过</span>';
+    if(s==='rejected') return '<span class="pill fail">已驳回</span>';
+    return '<span class="pill warn">待审批</span>';
+  }
+  function rechargeQuery(){
+    var q='?limit=120';
+    if(el('rechargeStatus').value) q+='&status='+encodeURIComponent(el('rechargeStatus').value);
+    if(el('rechargeUser').value) q+='&username='+encodeURIComponent(el('rechargeUser').value);
+    return q;
+  }
+  function renderRecharge(d){
+    var items=d.items||[];
+    el('rechargeCount').textContent='当前 '+items.length+' 条';
+    if(!items.length){el('rechargeBox').innerHTML='<div class="empty">暂无充值申请</div>';return}
+    el('rechargeBox').innerHTML='<table><thead><tr><th>订单</th><th>用户</th><th>金额</th><th>点数</th><th>状态</th><th>提交时间</th><th>备注</th><th>审核</th></tr></thead><tbody>'+items.map(function(x){
+      var pending=x.status==='pending';
+      return '<tr><td><code>'+esc(x.order_id)+'</code></td><td><b>'+esc(x.username)+'</b></td><td><code>¥'+Number(x.amount||0).toFixed(2)+'</code></td><td><code>'+Number(x.points||0).toLocaleString()+'</code></td><td>'+orderStatus(x.status)+'</td><td><code>'+new Date(Number(x.created_at||0)*1000).toLocaleString()+'</code></td><td>'+esc(x.note||x.review_note||'')+'</td><td><div class="actions">'+(pending?'<button class="mini" data-act="approve" data-id="'+esc(x.order_id)+'">确认到账</button><button class="mini danger" data-act="reject" data-id="'+esc(x.order_id)+'">驳回</button>':'<span class="muted">'+esc(x.reviewed_by||'')+'</span>')+'</div></td></tr>';
+    }).join('')+'</tbody></table>';
+    Array.prototype.forEach.call(document.querySelectorAll('#rechargeBox button'), function(btn){
+      btn.onclick=function(){reviewRecharge(btn.getAttribute('data-id'), btn.getAttribute('data-act'))};
+    });
+  }
+  function loadRecharge(){
+    if(!token) return;
+    api('/api/admin/recharge/orders'+rechargeQuery()).then(renderRecharge).catch(function(e){el('rechargeBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
+  }
+  function reviewRecharge(orderId, action){
+    var text=action==='approve'?'确认该订单已到账并给用户加点？':'填写驳回原因';
+    var reason=prompt(text);
+    if(reason==null) return;
+    api('/api/admin/recharge/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:orderId,action:action,reason:reason})})
+      .then(function(){toast(action==='approve'?'已确认到账':'已驳回');loadRecharge();loadUsers()})
+      .catch(function(e){toast(e.message)});
+  }
   function renderStats(st){
     var rows=(st.by_kind||[]).map(function(x){
       return '<tr><td><b>'+esc(x.kind)+'</b></td><td>'+x.total+'</td><td>'+x.done+'</td><td>'+x.error+'</td><td>'+pct(x.success_rate)+'</td><td><div class="bar"><i style="width:'+pct(x.failure_rate)+'"></i></div><span class="muted">'+pct(x.failure_rate)+'</span></td></tr>';
@@ -251,7 +303,7 @@
     el('failKinds').textContent=((d.stats&&d.stats.high_failure)||[]).length;
     el('updatedAt').textContent='更新于 '+new Date().toLocaleTimeString();
     renderServices(d.services||[]); renderKeys(d.keys||[]); renderChannels(d.channels||[]); renderStats(d.stats||{});
-    loadUsers();
+    loadUsers(); loadRecharge();
   }
   function load(){
     if(!token){el('gate').style.display='block';return}
@@ -268,6 +320,9 @@
   el('userSort').onchange=loadUsers;
   el('userDir').onchange=loadUsers;
   el('userSearch').oninput=function(){clearTimeout(state.userTimer);state.userTimer=setTimeout(loadUsers,260)};
+  el('rechargeRefresh').onclick=loadRecharge;
+  el('rechargeStatus').onchange=loadRecharge;
+  el('rechargeUser').oninput=function(){clearTimeout(state.rechargeTimer);state.rechargeTimer=setTimeout(loadRecharge,260)};
   load();
 })();
 </script>

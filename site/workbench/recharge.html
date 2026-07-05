@@ -31,7 +31,7 @@
       <div style="position:absolute; right:-30px; top:-30px; width:200px; height:200px; background:radial-gradient(circle, rgba(231,178,76,.16), transparent 70%);"></div>
       <div style="display:flex; align-items:center; gap:18px; padding-right:30px; border-right:1px solid rgba(231,178,76,.18);">
         <div style="width:52px; height:52px; border-radius:50%; background:radial-gradient(circle at 35% 30%, #f6d488, #c8902f); flex:none; box-shadow:0 8px 22px -6px rgba(231,178,76,.6);"></div>
-        <div><div style="font-size:13px; color:#94a4bb;">剩余点数</div><div style="font-family:'JetBrains Mono',monospace; font-size:48px; font-weight:700; color:#e7b24c; line-height:1; letter-spacing:1px;">340</div></div>
+        <div><div style="font-size:13px; color:#94a4bb;">剩余点数</div><div id="pointsBalance" style="font-family:'JetBrains Mono',monospace; font-size:48px; font-weight:700; color:#e7b24c; line-height:1; letter-spacing:1px;">--</div></div>
       </div>
       <div style="position:relative;"><div style="font-size:13px; color:#94a4bb;">本月已消耗</div><div style="font-family:'JetBrains Mono',monospace; font-size:23px; font-weight:700; margin-top:8px; color:#eaf1fa;">1,280</div></div>
       <div style="position:relative;"><div style="font-size:13px; color:#94a4bb;">本月毛利</div><div style="font-family:'JetBrains Mono',monospace; font-size:23px; font-weight:700; margin-top:8px; color:#2bd576;">¥8,960</div></div>
@@ -46,14 +46,14 @@
         <div style="font-family:'JetBrains Mono',monospace; font-size:34px; font-weight:700; margin-top:6px;">100 <span style="font-size:16px; color:#94a4bb; font-family:inherit;">点</span></div>
         <div style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#eaf1fa; margin:18px 0 14px;">¥39</div>
         <div style="font-size:13px; color:#94a4bb; margin-bottom:20px;">适合首次体验</div>
-        <button style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#eaf1fa; background:rgba(148,164,187,.07); border:1px solid rgba(148,164,187,.16); border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">立即购买</button>
+        <button data-recharge data-points="100" data-amount="39" style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#eaf1fa; background:rgba(148,164,187,.07); border:1px solid rgba(148,164,187,.16); border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">提交充值申请</button>
       </div>
       <!-- 500 点 -->
       <div class="hv-lift" style="position:relative; padding:26px 22px; border:1px solid rgba(148,164,187,.14); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); cursor:pointer; text-align:center; transition:.18s;">
         <div style="font-family:'JetBrains Mono',monospace; font-size:34px; font-weight:700; margin-top:6px;">500 <span style="font-size:16px; color:#94a4bb; font-family:inherit;">点</span></div>
         <div style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#eaf1fa; margin:18px 0 14px;">¥168</div>
         <div style="font-size:13px; color:#2bd576; margin-bottom:20px;">送 50 点</div>
-        <button style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#eaf1fa; background:rgba(148,164,187,.07); border:1px solid rgba(148,164,187,.16); border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">立即购买</button>
+        <button data-recharge data-points="550" data-amount="168" style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#eaf1fa; background:rgba(148,164,187,.07); border:1px solid rgba(148,164,187,.16); border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">提交充值申请</button>
       </div>
       <!-- 2000 点 · 推荐 -->
       <div class="hv-lift" style="position:relative; padding:26px 22px; border:1px solid rgba(231,178,76,.5); border-radius:16px; background:linear-gradient(165deg, rgba(231,178,76,.08), rgba(20,17,10,.4)); cursor:pointer; text-align:center; transition:.18s;">
@@ -61,7 +61,7 @@
         <div style="font-family:'JetBrains Mono',monospace; font-size:34px; font-weight:700; margin-top:6px;">2000 <span style="font-size:16px; color:#94a4bb; font-family:inherit;">点</span></div>
         <div style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#e7b24c; margin:18px 0 14px;">¥598</div>
         <div style="font-size:13px; color:#2bd576; margin-bottom:20px;">送 400 点</div>
-        <button style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:1px solid transparent; border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">立即购买</button>
+        <button data-recharge data-points="2400" data-amount="598" style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:1px solid transparent; border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">提交充值申请</button>
       </div>
       <!-- 企业版 -->
       <div class="hv-lift" style="position:relative; padding:26px 22px; border:1px solid rgba(45,212,191,.2); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); cursor:pointer; text-align:center; transition:.18s;">
@@ -72,8 +72,8 @@
       </div>
     </div>
 
-    <!-- 支付方式 -->
-    <div style="font-size:17px; font-weight:600; margin-bottom:14px;">支付方式</div>
+    <!-- 提交信息 -->
+    <div style="font-size:17px; font-weight:600; margin-bottom:14px;">提交信息</div>
     <div class="gPay" style="display:grid; gap:16px; max-width:660px; margin-bottom:28px;">
       <div style="display:flex; align-items:center; gap:12px; padding:16px 20px; border:1px solid rgba(231,178,76,.3); border-radius:14px; background:rgba(231,178,76,.05); cursor:pointer; transition:.16s;">
         <div style="width:26px; height:26px; border-radius:7px; flex:none; background:#07c160; display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:700;">微</div>
@@ -86,14 +86,18 @@
         <span style="width:18px; height:18px; border-radius:50%; border:2px solid rgba(148,164,187,.3); display:flex; align-items:center; justify-content:center;"><span style="width:9px; height:9px; border-radius:50%; background:#e7b24c; transform:scale(0); transition:.14s;"></span></span>
       </div>
     </div>
+    <div style="max-width:660px; margin:-14px 0 28px;">
+      <textarea id="rechargeNote" placeholder="填写付款方式、转账备注或需要说明的信息，提交后等待管理员确认到账。" style="width:100%; min-height:88px; resize:vertical; padding:13px 14px; color:#eaf1fa; background:rgba(16,24,39,.55); border:1px solid rgba(148,164,187,.16); border-radius:12px; font-family:inherit; outline:none;"></textarea>
+      <div id="rechargeTip" style="min-height:22px; margin-top:8px; font-size:12.5px; color:#94a4bb;">提交申请后不会立即到账，管理员确认后自动增加点数。</div>
+    </div>
 
-    <!-- 消费明细 -->
+    <!-- 充值申请记录 -->
     <div style="border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(180deg, rgba(16,24,39,.5), rgba(12,18,32,.4)); overflow:hidden;">
       <div style="display:flex; align-items:center; justify-content:space-between; padding:18px 22px; border-bottom:1px solid rgba(148,164,187,.08);">
-        <div style="font-size:15.5px; font-weight:600;">消费明细</div>
-        <div class="lk" style="display:flex; align-items:center; gap:4px; font-size:12.5px; color:#94a4bb; cursor:pointer;">查看全部 <span style="display:flex; width:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 18l6-6-6-6"/></svg></span></div>
+        <div style="font-size:15.5px; font-weight:600;">充值申请记录</div>
+        <div id="orderRefresh" class="lk" style="display:flex; align-items:center; gap:4px; font-size:12.5px; color:#94a4bb; cursor:pointer;">刷新 <span style="display:flex; width:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 18l6-6-6-6"/></svg></span></div>
       </div>
-      <div class="txscroll">
+      <div class="txscroll" id="orderBox">
         <div class="txhead" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:12px 22px; font-size:12px; color:#5c6b82; border-bottom:1px solid rgba(148,164,187,.07);">
           <div>时间</div><div>项目</div><div>类型</div><div>消耗点数</div><div>余额</div><div>订单号</div>
         </div>
@@ -185,5 +189,75 @@
 
 <script src="../assets/cloud.js?v=8"></script>
 <script src="cloud-shell.js?v=cccb4993"></script>
+<script>
+(function(){
+  var token=localStorage.getItem('hq_token')||'';
+  var $=function(id){return document.getElementById(id)};
+  function setTip(msg,color){var el=$('rechargeTip'); if(el){el.textContent=msg; el.style.color=color||'#94a4bb'}}
+  function api(path,opt){
+    opt=opt||{};
+    opt.headers=Object.assign({'Authorization':'Bearer '+token}, opt.headers||{});
+    return fetch(path,opt).then(function(r){
+      return r.json().catch(function(){return {detail:'响应不是 JSON'}}).then(function(d){
+        if(!r.ok){var e=new Error(d.detail||('HTTP '+r.status)); e.status=r.status; throw e}
+        return d;
+      });
+    });
+  }
+  function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+  function statusLabel(s){
+    if(s==='approved') return '<span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(43,213,118,.12); color:#2bd576;">已到账</span>';
+    if(s==='rejected') return '<span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(244,112,138,.12); color:#f4708a;">已驳回</span>';
+    return '<span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(231,178,76,.12); color:#e7b24c;">待确认</span>';
+  }
+  function loadMe(){
+    if(!token){$('pointsBalance').textContent='--';return}
+    api('/api/auth/me').then(function(d){
+      var p=d&&d.user&&d.user.points;
+      $('pointsBalance').textContent=Number(p||0).toLocaleString();
+    }).catch(function(){ $('pointsBalance').textContent='--' });
+  }
+  function renderOrders(items){
+    var box=$('orderBox');
+    if(!box) return;
+    if(!items.length){
+      box.innerHTML='<div style="padding:24px 22px; color:#94a4bb;">暂无充值申请</div>';
+      return;
+    }
+    box.innerHTML='<div class="txhead" style="display:grid; grid-template-columns:1.3fr 1fr 1fr 1fr 1.5fr 1.7fr; gap:14px; min-width:760px; padding:12px 22px; font-size:12px; color:#5c6b82; border-bottom:1px solid rgba(148,164,187,.07);"><div>提交时间</div><div>金额</div><div>点数</div><div>状态</div><div>订单号</div><div>备注</div></div>'+
+        items.map(function(x){
+          return '<div class="txrow" style="display:grid; grid-template-columns:1.3fr 1fr 1fr 1fr 1.5fr 1.7fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">'+
+            '<div style="font-family:&quot;JetBrains Mono&quot;,monospace; color:#94a4bb;">'+new Date(Number(x.created_at||0)*1000).toLocaleString()+'</div>'+
+            '<div style="font-family:&quot;JetBrains Mono&quot;,monospace; color:#eaf1fa;">¥'+Number(x.amount||0).toFixed(2)+'</div>'+
+            '<div style="font-family:&quot;JetBrains Mono&quot;,monospace; color:#e7b24c;">'+Number(x.points||0).toLocaleString()+'</div>'+
+            '<div>'+statusLabel(x.status)+'</div>'+
+            '<div style="font-family:&quot;JetBrains Mono&quot;,monospace; color:#5c6b82; font-size:12px;">'+esc(x.order_id)+'</div>'+
+            '<div style="color:#94a4bb;">'+esc(x.review_note||x.note||'')+'</div></div>';
+        }).join('');
+  }
+  function loadOrders(){
+    if(!token){renderOrders([]);return}
+    api('/api/auth/recharge/orders?limit=50').then(function(d){renderOrders(d.items||[])}).catch(function(e){setTip(e.message,'#f4708a')});
+  }
+  function submitOrder(btn){
+    if(!token){setTip('请先登录后再提交充值申请','#f4708a');return}
+    var points=parseInt(btn.getAttribute('data-points')||'0',10);
+    var amount=parseFloat(btn.getAttribute('data-amount')||'0');
+    var note=($('rechargeNote')&&$('rechargeNote').value)||'';
+    if(!points||!amount){setTip('套餐信息不完整','#f4708a');return}
+    btn.disabled=true;
+    api('/api/auth/recharge/order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:points,amount:amount,note:note})})
+      .then(function(d){setTip('充值申请已提交，订单 '+(d.order&&d.order.order_id||''),'#2bd576'); loadOrders();})
+      .catch(function(e){setTip(e.message,'#f4708a')})
+      .finally(function(){btn.disabled=false});
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('[data-recharge]'),function(btn){
+    btn.addEventListener('click',function(){submitOrder(btn)});
+  });
+  if($('orderRefresh')) $('orderRefresh').onclick=loadOrders;
+  loadMe();
+  loadOrders();
+})();
+</script>
 </body>
 </html>

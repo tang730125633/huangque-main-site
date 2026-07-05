@@ -478,6 +478,13 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, auth_admin_request(suffix, self._token()))
             except Exception as e:
                 return auth_error_response(self, e)
+        if path == "/api/admin/recharge/orders":
+            q = urllib.parse.urlparse(self.path).query
+            suffix = "/api/auth/admin/recharge/orders" + (("?" + q) if q else "")
+            try:
+                return self._send(200, auth_admin_request(suffix, self._token()))
+            except Exception as e:
+                return auth_error_response(self, e)
         if path == "/api/admin/stats":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(200, job_stats((q.get("days") or ["7"])[0]))
@@ -516,6 +523,16 @@ class H(BaseHTTPRequestHandler):
                 return self._send(
                     200,
                     auth_admin_request("/api/auth/admin/points/adjust", self._token(), method="POST", payload=self._body()),
+                )
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return auth_error_response(self, e)
+        if path == "/api/admin/recharge/review":
+            try:
+                return self._send(
+                    200,
+                    auth_admin_request("/api/auth/admin/recharge/review", self._token(), method="POST", payload=self._body()),
                 )
             except ValueError as e:
                 return self._send(400, {"detail": str(e)})
