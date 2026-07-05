@@ -41,6 +41,7 @@
   .motion-drop span{font-size:11.5px;line-height:1.6;color:#5c6b82}
   .motion-drop img,.motion-drop video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
   .motion-drop.has-media:after{content:"更换素材";position:absolute;left:10px;right:10px;bottom:10px;height:30px;display:flex;align-items:center;justify-content:center;border-radius:9px;background:rgba(7,11,19,.72);color:#eaf1fa;font-size:12px}
+  .motion-drop.has-video::after{content:none}
   .motion-preset-panel{margin-top:16px;border:1px solid rgba(148,164,187,.12);border-radius:14px;background:rgba(148,164,187,.03);padding:14px}
   .motion-preset-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
   .motion-preset-card{position:relative;min-height:128px;border:1px solid rgba(148,164,187,.14);border-radius:13px;background:rgba(7,11,19,.34);overflow:hidden;cursor:pointer;text-align:left;font-family:inherit;color:#eaf1fa;transition:.16s}
@@ -190,7 +191,7 @@
 
       <div class="function-tabs" aria-label="视频功能分页">
         <button class="function-tab on" type="button" data-function="talking">数字人口播</button>
-        <button class="function-tab" type="button" data-function="motion">动作模仿</button>
+        <button class="function-tab" type="button" data-function="motion">影视级模仿</button>
         <button class="function-tab" type="button" data-function="tryon">换装换背景</button>
       </div>
 
@@ -301,10 +302,10 @@
       <div id="motionPanel" class="function-panel motion-panel hidden">
         <div class="row">
           <div>
-            <div class="label">动作模仿</div>
-            <div class="muted" style="font-size:12px;margin-top:6px;">上传人物形象和参考动作视频，生成同款动作视频</div>
+            <div class="label">影视级模仿</div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">上传人物形象和参考片段，把自己「演」成同款大片</div>
           </div>
-          <span class="faint" style="font-size:11.5px;">参考动作，不是逐帧复制</span>
+          <span class="faint" style="font-size:11.5px;">照参考片重演，不是逐帧换脸</span>
         </div>
         <div class="avatar-panel">
           <div class="row">
@@ -321,21 +322,21 @@
             <strong>人物形象图片</strong>
             <span>上传需要生成动作视频的人物形象</span>
           </label>
-          <label id="motionVideoDrop" class="motion-drop">
+          <div id="motionVideoDrop" class="motion-drop">
             <input id="motionVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden>
-            <strong>参考动作视频</strong>
-            <span>上传要模仿的动作、节奏和画面参考</span>
-          </label>
+            <strong>参考片段</strong>
+            <span>点击上传要模仿的片段（建议 ≤15 秒）</span>
+          </div>
         </div>
         <div class="motion-preset-panel">
           <div class="row">
-            <span class="label">预设动作</span>
-            <span id="motionSourceText" class="faint" style="font-size:11.5px;">可选预设，或上传自有视频</span>
+            <span class="label">预设片段</span>
+            <span id="motionSourceText" class="faint" style="font-size:11.5px;">可选预设片段，或上传自有片段（建议 ≤15 秒）</span>
           </div>
           <div id="motionPresetGrid" class="motion-preset-grid"></div>
         </div>
         <button id="motionGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:20px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
-          生成动作模仿视频
+          生成影视级模仿视频
         </button>
         <div id="motionStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">生成完成后会自动保存到视频资产</div>
       </div>
@@ -719,7 +720,7 @@
     if(!motionAvatars.length){
       var empty=document.createElement('div');
       empty.className='avatar-empty';
-      empty.textContent='暂无已保存形象，先用新照片生成一次动作模仿';
+      empty.textContent='暂无已保存形象，先用新照片生成一次影视级模仿';
       grid.appendChild(empty);
       return;
     }
@@ -801,13 +802,13 @@
     });
   }
   function setMotionSourceText(text){
-    if($('motionSourceText')) $('motionSourceText').textContent=text||'可选预设，或上传自有视频';
+    if($('motionSourceText')) $('motionSourceText').textContent=text||'可选预设片段，或上传自有片段（建议 ≤15 秒）';
   }
   function renderMotionPresets(){
     var grid=$('motionPresetGrid'); if(!grid) return;
     grid.innerHTML='';
     if(!motionPresets.length){
-      grid.innerHTML='<div class="avatar-empty" style="grid-column:1/-1;">暂无预设动作，可上传自有视频</div>';
+      grid.innerHTML='<div class="avatar-empty" style="grid-column:1/-1;">暂无预设片段，可上传自有片段</div>';
       return;
     }
     motionPresets.forEach(function(p){
@@ -819,32 +820,58 @@
       grid.appendChild(btn);
     });
   }
+  // 清除已选参考片段（预设或上传）→ 回到空态可重选
+  function clearMotionRef(){
+    motionReferenceVideoData='';
+    selectedMotionPreset='';
+    resetMotionVideoDrop();
+    renderMotionPresets();
+    setMotionSourceText('');
+  }
+  // 预览态：带原生 controls 的播放器 + 右上角取消按钮（drop 已是 div，点击不再误触上传）
+  function showMotionVideoPreview(url){
+    var box=$('motionVideoDrop'); if(!box) return;
+    box.classList.add('has-media','has-video');
+    box.onclick=null;
+    box.innerHTML='<input id="motionVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden>'
+      +'<video src="'+url+'" controls playsinline preload="metadata" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#05070c;"></video>'
+      +'<button type="button" class="motion-clear" title="取消所选片段" style="position:absolute;right:8px;top:8px;z-index:3;width:26px;height:26px;border-radius:50%;border:1px solid rgba(148,164,187,.35);background:rgba(7,11,19,.82);color:#eaf1fa;font-size:12px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;">✕</button>';
+    bindMotionFile(box.querySelector('input'),'video');
+    var clr=box.querySelector('.motion-clear');
+    if(clr) clr.onclick=function(e){e.stopPropagation();clearMotionRef();toast('已取消所选片段');};
+  }
+  // 空态：div（非 label），显式点击才开选择器，杜绝与播放器 controls 抢点击
   function resetMotionVideoDrop(){
     var box=$('motionVideoDrop'); if(!box) return;
-    box.classList.remove('has-media');
-    box.innerHTML='<input id="motionVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden><strong>参考动作视频</strong><span>上传要模仿的动作、节奏和画面参考</span>';
-    bindMotionFile(box.querySelector('input'),'video');
+    box.classList.remove('has-media','has-video');
+    box.innerHTML='<input id="motionVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden><strong>参考片段</strong><span>点击上传要模仿的片段（建议 ≤15 秒）</span>';
+    var inp=box.querySelector('input');
+    bindMotionFile(inp,'video');
+    box.onclick=function(){ inp.click(); };
   }
   function selectMotionPreset(p){
     if(!p) return;
+    if(selectedMotionPreset===p.id){ clearMotionRef(); toast('已取消所选片段'); return; }   // 再点已选=取消
     selectedMotionPreset=p.id;
-    setMotionSourceText('正在读取预设动作...');
+    setMotionSourceText('正在读取预设片段…');
     renderMotionPresets();
     fetch(p.video,{cache:'force-cache'})
-      .then(function(r){return r.ok?r.blob():Promise.reject(new Error('预设动作读取失败'));})
-      .then(function(blob){return readFileData(blob);})
-      .then(function(data){
-        motionReferenceVideoData=data;
-        resetMotionVideoDrop();
-        setMotionSourceText('已选择预设动作：'+p.name);
-        toast('已选择预设动作');
+      .then(function(r){return r.ok?r.blob():Promise.reject(new Error('预设片段读取失败'));})
+      .then(function(blob){
+        var burl=URL.createObjectURL(blob);
+        return readFileData(blob).then(function(data){
+          motionReferenceVideoData=data;
+          showMotionVideoPreview(burl);
+          setMotionSourceText('已选择预设片段：'+p.name+'（可点播放预览）');
+          toast('已选择，可点播放预览');
+        });
       })
       .catch(function(e){
         selectedMotionPreset='';
         motionReferenceVideoData='';
-        setMotionSourceText(e.message||'预设动作读取失败');
+        setMotionSourceText(e.message||'预设片段读取失败');
         renderMotionPresets();
-        toast(e.message||'预设动作读取失败');
+        toast(e.message||'预设片段读取失败');
       });
   }
   function loadMotionPresets(){
@@ -857,7 +884,7 @@
           if(!file) return null;
           return {
             id:file,
-            name:String(item.name||('预设动作 '+(idx+1))).trim(),
+            name:String(item.name||('预设片段 '+(idx+1))).trim(),
             video:'assets/motions/'+file,
             thumb:thumb?('assets/motions/'+thumb):'../assets/cloud/logo-bird.png'
           };
@@ -866,7 +893,7 @@
       })
       .catch(function(){
         motionPresets=[];
-        setMotionSourceText('预设动作暂不可用，可上传自有视频');
+        setMotionSourceText('预设片段暂不可用，可上传自有片段');
         renderMotionPresets();
       });
   }
@@ -888,8 +915,8 @@
     $('motionPanel').classList.toggle('hidden',videoFunction!=='motion');
     if($('tryonPanel')) $('tryonPanel').classList.toggle('hidden',videoFunction!=='tryon');
     if(videoFunction==='motion'){
-      $('modeSummary').textContent='上传人物形象和参考动作视频，生成同款动作视频';
-      if($('modeName')) $('modeName').textContent='动作模仿';
+      $('modeSummary').textContent='上传人物形象和参考片段，把自己「演」成同款大片';
+      if($('modeName')) $('modeName').textContent='影视级模仿';
       loadMotionAvatars();
     }else if(videoFunction==='tryon'){
       $('modeSummary').textContent='上传换装视频，选填衣服图或背景图，一键换装换背景';
@@ -1049,7 +1076,7 @@
           motionReferenceVideoData=data;
           selectedMotionPreset='';
           renderMotionPresets();
-          setMotionSourceText('已选择上传的自有视频');
+          setMotionSourceText('已选择上传的自有片段（可点播放预览）');
         }
       }).catch(function(e){toast(e.message||'文件读取失败');});
       box.classList.add('has-media');
@@ -1057,13 +1084,12 @@
         box.innerHTML='<input id="motionImageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+url+'" alt="人物形象预览">';
         bindMotionFile(box.querySelector('input'),'image');
       }else{
-        box.innerHTML='<input id="motionVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden><video src="'+url+'" muted playsinline></video>';
-        bindMotionFile(box.querySelector('input'),'video');
+        showMotionVideoPreview(url);
       }
     };
   }
   bindMotionFile($('motionImageFile'),'image');
-  bindMotionFile($('motionVideoFile'),'video');
+  resetMotionVideoDrop();
   loadMotionPresets();
   function updateTryonHint(){
     var hint=$('tryonModeHint'), btn=$('tryonGenerateBtn');
@@ -1156,23 +1182,23 @@
     var pickedAvatar=selectedMotionAvatarId?motionAvatars.find(function(a){return String(a.id)===String(selectedMotionAvatarId);}):null;
     if(useNewMotionImage && !motionImageData){ toast('请先上传人物形象图片'); return; }
     if(!useNewMotionImage && !pickedAvatar){ toast('请选择一个我的形象'); return; }
-    if(!motionReferenceVideoData){ toast('请先上传参考动作视频'); return; }
+    if(!motionReferenceVideoData){ toast('请先选择或上传参考片段'); return; }
     setBusy(true);
     var motionPreviewImage=useNewMotionImage?motionImageData:(pickedAvatar&&pickedAvatar.image_url);
     setOutputImage(motionPreviewImage);
-    if($('outputText')) $('outputText').textContent='动作模仿视频生成记录';
-    if($('outputMotion')) $('outputMotion').textContent='动作模仿';
+    if($('outputText')) $('outputText').textContent='影视级模仿视频生成记录';
+    if($('outputMotion')) $('outputMotion').textContent='影视级模仿';
     if($('outputRatio')) $('outputRatio').textContent='9:16';
     if($('outputDuration')) $('outputDuration').textContent='生成中';
     if($('outputCreated')) $('outputCreated').textContent='创建于：'+nowText();
-    if($('outputPreviewText')) $('outputPreviewText').innerHTML='动作模仿视频正在生成中<br>完成后会自动预览';
-    currentVideoDraft={mode:'motion',image_url:motionPreviewImage,text:'动作模仿视频',ratio:'9:16',motion:'medium',status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
+    if($('outputPreviewText')) $('outputPreviewText').innerHTML='影视级模仿视频正在生成中<br>完成后会自动预览';
+    currentVideoDraft={mode:'motion',image_url:motionPreviewImage,text:'影视级模仿视频',ratio:'9:16',motion:'medium',status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
     renderVideoHistory([currentVideoDraft]);
-    setVideoStatus('正在提交动作模仿任务...');
+    setVideoStatus('正在提交影视级模仿任务...');
     var body={
       mode:'motion',
       reference_video_data:motionReferenceVideoData,
-      text:'动作模仿视频',
+      text:'影视级模仿视频',
       resolution:'720p',
       ratio:'9:16',
       duration:10,
@@ -1191,7 +1217,7 @@
       .then(function(res){
         if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
-        setVideoStatus('动作模仿任务已提交...');
+        setVideoStatus('影视级模仿任务已提交...');
         setTimeout(loadVideoHistory,700);
         pollJob(res.data.job_id,0);
       })
