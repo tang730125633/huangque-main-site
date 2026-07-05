@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>黄雀 AI · 运营后台</title>
+  <link rel="icon" href="/assets/cloud/logo-bird.png">
+  <style>
+    :root{
+      --bg:#101412;--surface:#171d1a;--surface2:#202822;--line:#2e3832;
+      --text:#ecf1ea;--muted:#9aa69f;--primary:#22c5a5;--gold:#f0be55;
+      --warn:#d99b35;--error:#e06b64;--ok:#4fd47e;--info:#6ea8ff;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 "Source Sans 3","PingFang SC",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    body:before{content:"";position:fixed;inset:0;pointer-events:none;background:
+      radial-gradient(circle at 16% 8%,rgba(240,190,85,.11),transparent 26%),
+      linear-gradient(135deg,rgba(34,197,165,.09),transparent 34%,rgba(240,190,85,.05));opacity:.7}
+    .shell{position:relative;max-width:1440px;margin:0 auto;padding:28px 28px 44px}
+    header{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:22px}
+    h1{margin:0;font-size:26px;letter-spacing:0;font-weight:800}
+    .sub{color:var(--muted);margin-top:6px}
+    .user{display:flex;gap:10px;align-items:center;padding:10px 12px;border:1px solid var(--line);background:rgba(23,29,26,.8);border-radius:8px}
+    .avatar{width:32px;height:32px;border-radius:8px;background:#9b642f;color:#fff;display:grid;place-items:center;font-weight:800}
+    .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}
+    .card{background:rgba(23,29,26,.86);border:1px solid var(--line);border-radius:8px;padding:16px;box-shadow:0 20px 60px rgba(0,0,0,.16)}
+    .span3{grid-column:span 3}.span4{grid-column:span 4}.span6{grid-column:span 6}.span8{grid-column:span 8}.span12{grid-column:span 12}
+    .metric{display:flex;justify-content:space-between;align-items:center;min-height:86px}
+    .metric b{font-size:30px;font-variant-numeric:tabular-nums;color:var(--gold)}
+    .metric span,.label{font-size:12px;color:var(--muted)}
+    h2{font-size:16px;margin:0 0 12px}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:10px 8px;border-bottom:1px solid rgba(46,56,50,.8);text-align:left;vertical-align:middle}
+    th{font-size:12px;color:var(--muted);font-weight:700}
+    td{font-size:13px}
+    code{font-family:"Geist Mono","JetBrains Mono",Consolas,monospace;font-size:12px;color:#cfe1d8}
+    .pill{display:inline-flex;align-items:center;height:24px;padding:0 9px;border-radius:6px;font-size:12px;font-weight:700;border:1px solid var(--line);background:var(--surface2)}
+    .pill.ok{color:var(--ok);border-color:rgba(79,212,126,.22);background:rgba(79,212,126,.1)}
+    .pill.fail{color:var(--error);border-color:rgba(224,107,100,.25);background:rgba(224,107,100,.1)}
+    .pill.warn{color:var(--warn);border-color:rgba(217,155,53,.28);background:rgba(217,155,53,.1)}
+    .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+    button,.btn{height:36px;border-radius:6px;border:1px solid var(--line);background:var(--surface2);color:var(--text);font-weight:700;padding:0 13px;cursor:pointer}
+    button.primary{background:linear-gradient(135deg,#ffd979,#e5ad35);color:#201604;border-color:rgba(240,190,85,.7)}
+    button:disabled{opacity:.55;cursor:not-allowed}
+    .channels{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    .channel{border:1px solid var(--line);border-radius:8px;padding:14px;background:rgba(32,40,34,.72)}
+    .row{display:flex;justify-content:space-between;gap:12px;align-items:center}
+    .switch{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:12px}
+    .switch input{accent-color:var(--primary);width:18px;height:18px}
+    textarea{width:100%;min-height:96px;margin-top:10px;border:1px solid var(--line);background:#111613;color:var(--text);border-radius:6px;padding:10px;font:12px/1.45 "JetBrains Mono",Consolas,monospace;resize:vertical}
+    input.reason{width:100%;height:34px;border:1px solid var(--line);background:#111613;color:var(--text);border-radius:6px;padding:0 10px;margin:10px 0}
+    .empty,.error{padding:18px;border:1px dashed var(--line);border-radius:8px;color:var(--muted);background:rgba(23,29,26,.7)}
+    .error{color:#ffd0cc;border-color:rgba(224,107,100,.3)}
+    .bar{height:8px;background:#111613;border-radius:999px;overflow:hidden;border:1px solid var(--line)}
+    .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--primary),var(--gold))}
+    .muted{color:var(--muted)}
+    .right{text-align:right}
+    .toast{position:fixed;right:22px;bottom:22px;background:#111613;border:1px solid var(--line);border-radius:8px;padding:12px 14px;box-shadow:0 18px 44px rgba(0,0,0,.3);display:none}
+    @media (max-width:960px){.shell{padding:20px 14px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels{grid-template-columns:1fr}header{flex-direction:column}.user{width:100%}}
+  </style>
+</head>
+<body>
+<main class="shell">
+  <header>
+    <div>
+      <h1>运营后台</h1>
+      <div class="sub">接口状态、密钥配置、渠道开关与调用统计</div>
+    </div>
+    <div class="user" id="userBox"><div class="avatar">?</div><div><b>未登录</b><div class="muted">等待校验</div></div></div>
+  </header>
+
+  <section id="gate" class="empty" style="display:none">
+    当前没有可用登录态。请先使用管理员账号登录黄雀工作台。
+    <a class="btn" href="/login?redirect=/admin-console/" style="margin-left:10px;text-decoration:none">去登录</a>
+  </section>
+
+  <section id="app" style="display:none">
+    <div class="toolbar">
+      <button class="primary" id="refreshBtn">刷新状态</button>
+      <button id="days7">近 7 天</button>
+      <button id="days30">近 30 天</button>
+      <span class="muted" id="updatedAt"></span>
+    </div>
+    <div class="grid">
+      <div class="card metric span3"><div><span>服务在线</span><b id="svcOnline">-</b></div><span id="svcTotal">-</span></div>
+      <div class="card metric span3"><div><span>密钥已配置</span><b id="keyReady">-</b></div><span id="keyTotal">-</span></div>
+      <div class="card metric span3"><div><span>调用总量</span><b id="jobTotal">-</b></div><span id="statDays">-</span></div>
+      <div class="card metric span3"><div><span>高失败项</span><b id="failKinds">-</b></div><span>失败率 >= 50%</span></div>
+
+      <section class="card span8">
+        <h2>服务健康</h2>
+        <div id="serviceBox"></div>
+      </section>
+      <section class="card span4">
+        <h2>密钥状态</h2>
+        <div id="keyBox"></div>
+      </section>
+      <section class="card span12">
+        <h2>渠道开关 / 配置</h2>
+        <div id="channelBox" class="channels"></div>
+      </section>
+      <section class="card span6">
+        <h2>调用统计</h2>
+        <div id="statsBox"></div>
+      </section>
+      <section class="card span6">
+        <h2>近日报表</h2>
+        <div id="trendBox"></div>
+      </section>
+    </div>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+(function(){
+  var token = localStorage.getItem('hq_token') || '';
+  var state = {days:7, data:null};
+  var el = function(id){return document.getElementById(id)};
+  function toast(msg){var t=el('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(t._tm); t._tm=setTimeout(function(){t.style.display='none'},2600)}
+  function authHeaders(extra){return Object.assign({'Authorization':'Bearer '+token}, extra||{})}
+  function api(path,opt){
+    opt=opt||{}; opt.headers=authHeaders(opt.headers);
+    return fetch(path,opt).then(function(r){return r.json().catch(function(){return {detail:'响应不是 JSON'}}).then(function(d){if(!r.ok){var e=new Error(d.detail||('HTTP '+r.status)); e.status=r.status; throw e} return d})})
+  }
+  function pct(v){return Math.round((v||0)*100)+'%'}
+  function statusPill(ok, text){return '<span class="pill '+(ok?'ok':'fail')+'">'+text+'</span>'}
+  function setUser(user){
+    el('userBox').innerHTML='<div class="avatar">'+(user.username||'?').slice(0,1).toUpperCase()+'</div><div><b>'+esc(user.username||'admin')+'</b><div class="muted">'+esc(user.role||'')+'</div></div>';
+  }
+  function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+  function renderServices(items){
+    if(!items.length){el('serviceBox').innerHTML='<div class="empty">暂无服务数据</div>';return}
+    el('serviceBox').innerHTML='<table><thead><tr><th>服务</th><th>状态</th><th>端口</th><th>耗时</th><th>文件</th></tr></thead><tbody>'+items.map(function(s){
+      return '<tr><td><b>'+esc(s.name)+'</b><div class="muted">'+esc(s.error||'')+'</div></td><td>'+statusPill(s.online,s.online?'在线':'离线')+'</td><td><code>'+esc(s.port)+'</code></td><td>'+esc(s.latency_ms)+' ms</td><td><code>'+esc(s.service_file)+'</code></td></tr>';
+    }).join('')+'</tbody></table>';
+  }
+  function renderKeys(items){
+    el('keyBox').innerHTML=items.map(function(k){
+      var src=(k.sources||[]).map(function(s){return '<div><code>'+esc(s.env)+'</code><span class="muted"> · '+esc(s.source)+'</span></div>'}).join('') || '<div class="muted">未检测到</div>';
+      return '<div style="padding:10px 0;border-bottom:1px solid var(--line)"><div class="row"><b>'+esc(k.name)+'</b>'+statusPill(k.configured,k.configured?'已配置':'缺失')+'</div><div style="margin-top:6px">'+src+'</div></div>';
+    }).join('');
+  }
+  function renderChannels(items){
+    el('channelBox').innerHTML=items.map(function(c){
+      return '<div class="channel" data-channel="'+esc(c.key)+'"><div class="row"><div><b>'+esc(c.name)+'</b><div class="muted">'+(c.configured?'密钥已配置':'密钥未配置')+'</div></div><label class="switch"><input type="checkbox" '+(c.enabled?'checked':'')+'> 启用</label></div><textarea spellcheck="false">'+esc(JSON.stringify(c.config||{},null,2))+'</textarea><input class="reason" placeholder="变更原因"><button>保存</button><span class="muted" style="margin-left:8px">'+(c.updated_at?new Date(c.updated_at*1000).toLocaleString():'')+'</span></div>';
+    }).join('');
+    Array.prototype.forEach.call(document.querySelectorAll('.channel button'), function(btn){
+      btn.onclick=function(){
+        var box=btn.closest('.channel'), key=box.getAttribute('data-channel'), config={};
+        try{config=JSON.parse(box.querySelector('textarea').value||'{}')}catch(e){toast('配置不是合法 JSON');return}
+        btn.disabled=true;
+        api('/api/admin/channel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:key,enabled:box.querySelector('input[type=checkbox]').checked,config:config,reason:box.querySelector('.reason').value||''})})
+          .then(function(){toast('已保存');load()})
+          .catch(function(e){toast(e.message)})
+          .finally(function(){btn.disabled=false});
+      };
+    });
+  }
+  function renderStats(st){
+    var rows=(st.by_kind||[]).map(function(x){
+      return '<tr><td><b>'+esc(x.kind)+'</b></td><td>'+x.total+'</td><td>'+x.done+'</td><td>'+x.error+'</td><td>'+pct(x.success_rate)+'</td><td><div class="bar"><i style="width:'+pct(x.failure_rate)+'"></i></div><span class="muted">'+pct(x.failure_rate)+'</span></td></tr>';
+    }).join('');
+    el('statsBox').innerHTML=rows?'<table><thead><tr><th>类型</th><th>总量</th><th>成功</th><th>失败</th><th>成功率</th><th>失败率</th></tr></thead><tbody>'+rows+'</tbody></table>':'<div class="empty">'+esc(st.message||'暂无调用数据')+'</div>';
+    var trend=(st.trend||[]).slice(-24).map(function(x){return '<tr><td>'+esc(x.day)+'</td><td>'+esc(x.kind)+'</td><td>'+esc(x.status)+'</td><td class="right">'+x.count+'</td></tr>'}).join('');
+    el('trendBox').innerHTML=trend?'<table><thead><tr><th>日期</th><th>类型</th><th>状态</th><th class="right">数量</th></tr></thead><tbody>'+trend+'</tbody></table>':'<div class="empty">暂无趋势数据</div>';
+  }
+  function render(d){
+    state.data=d; setUser(d.user||{});
+    el('app').style.display='block'; el('gate').style.display='none';
+    var online=(d.services||[]).filter(function(x){return x.online}).length;
+    var keys=(d.keys||[]).filter(function(x){return x.configured}).length;
+    el('svcOnline').textContent=online; el('svcTotal').textContent='共 '+(d.services||[]).length+' 个服务';
+    el('keyReady').textContent=keys; el('keyTotal').textContent='共 '+(d.keys||[]).length+' 组密钥';
+    el('jobTotal').textContent=(d.stats&&d.stats.total)||0; el('statDays').textContent='近 '+((d.stats&&d.stats.days)||state.days)+' 天';
+    el('failKinds').textContent=((d.stats&&d.stats.high_failure)||[]).length;
+    el('updatedAt').textContent='更新于 '+new Date().toLocaleTimeString();
+    renderServices(d.services||[]); renderKeys(d.keys||[]); renderChannels(d.channels||[]); renderStats(d.stats||{});
+  }
+  function load(){
+    if(!token){el('gate').style.display='block';return}
+    el('refreshBtn').disabled=true;
+    api('/api/admin/overview?days='+state.days).then(render).catch(function(e){
+      el('app').style.display='none'; el('gate').style.display='block';
+      el('gate').innerHTML='<div class="error">'+esc(e.message)+'</div>';
+    }).finally(function(){el('refreshBtn').disabled=false});
+  }
+  el('refreshBtn').onclick=load;
+  el('days7').onclick=function(){state.days=7;load()};
+  el('days30').onclick=function(){state.days=30;load()};
+  load();
+})();
+</script>
+</body>
+</html>
