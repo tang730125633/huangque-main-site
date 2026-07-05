@@ -178,7 +178,7 @@
             <span style="font-size:14px; font-weight:600;">口播文案</span>
             <button class="copy-btn" id="copyTranscriptBtn" style="display:none;">复制</button>
           </div>
-          <div id="transcriptText" style="font-size:13px; line-height:1.8; color:#5c6b82;"></div>
+          <textarea id="transcriptText" rows="6" placeholder="点上方「提取文案」后，口播文案会显示在这里 · 可直接选中 / 编辑 / 复制" style="width:100%; box-sizing:border-box; resize:vertical; min-height:120px; background:rgba(7,11,19,.5); border:1px solid rgba(148,164,187,.16); border-radius:10px; padding:12px 13px; font-size:13px; line-height:1.8; color:#eaf1fa; font-family:inherit; outline:none;"></textarea>
         </div>
       </div>
 
@@ -629,8 +629,8 @@
     var trBlock  = document.getElementById('transcriptBlock');
     var trText   = document.getElementById('transcriptText');
     var trCopyBtn = document.getElementById('copyTranscriptBtn');
-    if (trBlock)   trBlock.style.display = 'none';
-    if (trText)    { trText.textContent = ''; trText.style.color = '#5c6b82'; }
+    if (trBlock)   trBlock.style.display = (imgs.length > 0) ? 'none' : '';  // 视频类采集后就常驻显示文案文本框(空+提示)，图文无口播则藏
+    if (trText)    trText.value = '';
     if (trCopyBtn) trCopyBtn.style.display = 'none';
 
     var extractWrap = document.getElementById('transcriptExtractWrap');
@@ -748,7 +748,7 @@
     var textEl  = document.getElementById('transcriptText');
     var copyBtn = document.getElementById('copyTranscriptBtn');
     if (block)  block.style.display = '';
-    if (textEl) { textEl.style.color = '#eaf1fa'; textEl.textContent = text; }
+    if (textEl) textEl.value = text;
     if (copyBtn) {
       copyBtn.style.display = '';
       copyBtn.onclick = function () { copyText(text, copyBtn); };
@@ -793,7 +793,7 @@
 
   function getTranscriptText() {
     var el = document.getElementById('transcriptText');
-    return (el && el.textContent ? el.textContent : '').trim();
+    return (el && el.value ? el.value : '').trim();
   }
 
   function copyLegacyText() {
