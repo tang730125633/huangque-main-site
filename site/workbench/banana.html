@@ -68,6 +68,22 @@
         </div>
       </div>
 
+      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">🔍 提示词反推 <span style="font-size:12px; color:#5c6b82; font-weight:400;">(上传/粘贴一张喜欢的图，AI 反推出提示词)</span></div>
+      <div style="display:flex; gap:10px; align-items:flex-start;">
+        <label id="revUpBox" tabindex="0" class="hv-gold" style="position:relative; width:66px; height:66px; flex:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; border:1px dashed rgba(148,164,187,.26); background:rgba(148,164,187,.04); border-radius:11px; color:#94a4bb; cursor:pointer; overflow:hidden; background-size:cover; background-position:center;"><input id="revFile" type="file" accept="image/*" style="display:none"><span id="revIcon" style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg></span><span id="revText" style="font-size:10px;">上传/粘贴</span></label>
+        <div style="flex:1;">
+          <button id="revBtn" type="button" style="width:100%; padding:11px; font-size:13px; font-weight:600; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); border-radius:11px; cursor:pointer; font-family:inherit;">反推提示词（2 点）</button>
+          <div id="revNote" style="font-size:11px; color:#5c6b82; margin-top:6px;">上传或粘贴图片后点这里，AI 生成可编辑的提示词</div>
+        </div>
+      </div>
+      <div id="revResult" style="display:none; margin-top:12px;">
+        <textarea id="revPrompt" rows="3" maxlength="600" style="width:100%; box-sizing:border-box; resize:none; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.16); border-radius:10px; color:#eaf1fa; font-size:13px; line-height:1.7; padding:11px; font-family:inherit; outline:none;"></textarea>
+        <div style="display:flex; gap:8px; margin-top:8px;">
+          <button id="revFill" type="button" style="flex:1; padding:9px; font-size:12.5px; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); border-radius:9px; cursor:pointer; font-family:inherit;">填入提示词框</button>
+          <button id="revFillImg" type="button" style="flex:1; padding:9px; font-size:12.5px; color:#2bd576; background:rgba(43,213,118,.08); border:1px solid rgba(43,213,118,.28); border-radius:9px; cursor:pointer; font-family:inherit;">连图一起用（图生图）</button>
+        </div>
+      </div>
+
       <div id="refSection">
       <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">参考图 <span id="upHint" style="font-size:12px; color:#5c6b82; font-weight:400;">(可选 · 上传或在提示词框 Ctrl/⌘V 粘贴图片，变「图生图」)</span></div>
       <div style="display:flex; gap:10px;">
@@ -319,6 +335,53 @@
       }
     }
   }); }
+
+  // ===== 提示词反推：上传/粘贴图 → Gemini 反推提示词 → 填入提示词框 / 连图做图生图 =====
+  var revImgData=null, revImgUrl=null, revW=0, revH=0;
+  var revUpBox=document.getElementById('revUpBox'), revFile=document.getElementById('revFile'),
+      revIcon=document.getElementById('revIcon'), revText=document.getElementById('revText'),
+      revBtn=document.getElementById('revBtn'), revNote=document.getElementById('revNote'),
+      revResult=document.getElementById('revResult'), revPrompt=document.getElementById('revPrompt'),
+      revFill=document.getElementById('revFill'), revFillImg=document.getElementById('revFillImg');
+  function revMsg(t,c){ if(revNote){ revNote.textContent=t; revNote.style.color=c||'#5c6b82'; } }
+  function revSet(dataUrl,w,h){
+    revImgUrl=dataUrl; revImgData=dataUrl.split(',')[1]; revW=w; revH=h;
+    if(revUpBox){ revUpBox.style.backgroundImage='url('+dataUrl+')'; revUpBox.style.borderStyle='solid'; revUpBox.style.borderColor='rgba(231,178,76,.5)'; }
+    if(revIcon) revIcon.style.display='none'; if(revText) revText.textContent='已选图';
+    revMsg('已就绪，点「反推提示词」','#5c6b82');
+  }
+  function revLoad(f){ if(!f) return; var url=URL.createObjectURL(f), im=new Image();
+    im.onload=function(){ var mx=1024,s=Math.min(1,mx/Math.max(im.width,im.height)),cv=document.createElement('canvas');
+      cv.width=Math.round(im.width*s); cv.height=Math.round(im.height*s); cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
+      revSet(cv.toDataURL('image/png'), cv.width, cv.height); try{URL.revokeObjectURL(url);}catch(e){} };
+    im.onerror=function(){ revMsg('这张图读取失败，换一张','#f4708a'); }; im.src=url;
+  }
+  if(revFile) revFile.onchange=function(){ revLoad(revFile.files&&revFile.files[0]); };
+  if(revUpBox) revUpBox.addEventListener('paste', function(e){
+    var items=(e.clipboardData&&e.clipboardData.items)||[];
+    for(var i=0;i<items.length;i++){ if(items[i].kind==='file'&&items[i].type&&items[i].type.indexOf('image/')===0){ var f=items[i].getAsFile(); if(f){ e.preventDefault(); revLoad(f); return; } } }
+  });
+  if(revBtn) revBtn.onclick=function(){
+    if(!revImgData){ revMsg('请先上传或粘贴一张图片','#f4708a'); return; }
+    if(!tok()){ HQ.login(); return; }
+    revBtn.disabled=true; revBtn.textContent='反推中…'; revMsg('AI 正在看图反推提示词…','#2dd4bf');
+    fetch('/api/gen/reverse',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({image:revImgData})})
+      .then(function(r){ return r.json().then(function(d){ return {s:r.status,d:d}; }); })
+      .then(function(x){
+        revBtn.disabled=false; revBtn.textContent='反推提示词（2 点）';
+        if(x.s===401){ HQ.login(); return; }
+        if(x.s===402){ revMsg('点数不足 · 去充值','#f4708a'); return; }
+        if(!x.d.prompt){ revMsg('反推失败：'+((x.d&&x.d.detail)||'未知'),'#f4708a'); return; }
+        revPrompt.value=x.d.prompt; revResult.style.display='block';
+        revMsg('✅ 反推完成，可编辑后填入','#2bd576');
+        if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
+      }).catch(function(){ revBtn.disabled=false; revBtn.textContent='反推提示词（2 点）'; revMsg('网络错误，请重试','#f4708a'); });
+  };
+  if(revFill) revFill.onclick=function(){ pr.value=revPrompt.value||''; if(typeof updCount==='function') updCount(); try{pr.focus();}catch(e){} setNote('✅ 反推提示词已填入','#2bd576'); };
+  if(revFillImg) revFillImg.onclick=function(){ pr.value=revPrompt.value||''; if(typeof updCount==='function') updCount();
+    if(revImgUrl && typeof setRef==='function') setRef(revImgUrl, revW, revH);
+    setNote('✅ 提示词+参考图都已带上，点生成即走「图生图」','#2bd576'); };
+
   if(upText){ upText.addEventListener('click',function(e){ if(refImg){ e.preventDefault(); e.stopPropagation();
     refImg=null; refW=refH=0; upFile.value=''; upBox.style.backgroundImage='none'; upBox.style.borderStyle='dashed'; upBox.style.borderColor='rgba(148,164,187,.26)';
     if(upIcon) upIcon.style.display='flex'; upText.textContent='上传'; upText.style.background='none'; upText.style.padding='0';
