@@ -12,14 +12,18 @@ def gen_image(payload):
     mask  = payload.get("mask")    # base64 — 蒙版(透明处=要重绘的区域) → 局部修改
     quality = "high" if (payload.get("quality") or "hd") == "hd" else "medium"  # 标准=medium/高清=high
     provider = (payload.get("provider") or "openai").strip().lower()
-    if provider == "zelong":
-        base, key, proxy = ZELONG_BASE, ZELONG_KEY, False   # 泽龙Ai：国内中转，直连不走代理
+    if provider in {"zelong", "zelong2"}:
+        if provider == "zelong2":
+            base, key, provider_label = ZELONG2_BASE, ZELONG2_KEY, "泽龙2(chatgpt2api)"   # 专供生图号池
+        else:
+            base, key, provider_label = ZELONG_BASE, ZELONG_KEY, "泽龙Ai(中转站)"
+        proxy = False   # 国内中转/本方上游直连，不走代理
         if not key:
-            raise ValueError("泽龙Ai(中转站)未配置 key")
-        size = "1024x1024"   # 泽龙/小乐图片渠道只支持 1024x1024；其它尺寸(9:16/16:9/auto)会 400 INVALID_IMAGE_SIZE，强制正方形保稳定出图
+            raise ValueError(provider_label + "未配置 key")
+        size = "1024x1024"   # 泽龙系图片渠道只支持 1024x1024；其它尺寸(9:16/16:9/auto)会 400 INVALID_IMAGE_SIZE，强制正方形保稳定出图
     else:
         base, key, proxy = OPENAI_BASE, OPENAI_KEY, True
-    cap = 2 if provider == "zelong" else 4                   # 中转出图慢，数量上限低
+    cap = 2 if provider in {"zelong", "zelong2"} else 4      # 中转出图慢，数量上限低
     count = 1 if mask else max(1, min(cap, int(payload.get("count") or 1)))  # 局部修改只出 1 张
     if img:
         files = [("image", "in.png", base64.b64decode(img))]
