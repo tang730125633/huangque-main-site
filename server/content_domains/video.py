@@ -293,7 +293,7 @@ def _save_data_file(data_url, prefix, allowed_ext):
     if len(data) > max_size:
         raise ValueError("文件过大，请压缩后再上传")
     folder = "audio/" if ext in {".mp3", ".wav", ".m4a"} else ("video/" if ext in {".mp4", ".mov", ".webm"} else "")
-    fn = "%s%s_%d%s" % (folder, prefix, int(time.time() * 1000), ext)
+    fn = "%s%s_%s%s" % (folder, prefix, uuid.uuid4().hex, ext)  # 不可猜键(#185)：上传的真人素材防猜测
     _out_path(fn).write_bytes(data)
     return fn
 
@@ -504,7 +504,7 @@ def _download_video_file(url, prefix="vid"):
         data = r.read()
     if not data:
         raise RuntimeError("视频下载失败")
-    fn = "video/%s_%d.mp4" % (prefix, int(time.time() * 1000))
+    fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键(#185)：真人视频防猜测枚举
     _out_path(fn).write_bytes(data)
     return fn
 
