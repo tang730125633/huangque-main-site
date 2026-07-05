@@ -466,7 +466,7 @@ def call_func_name(kind, payload):
             return "作图 · Nano Banana Pro"
         if provider == "openai":
             return "作图 · GPT Image"
-        if provider == "zelong":
+        if provider.startswith("zelong"):
             return "作图 · 泽龙"
         return "作图"
     if kind == "video":
