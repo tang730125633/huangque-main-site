@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 榛勯泙 路 浣滃浘鍚庣(nano banana / Gemini 鍥惧儚)鈥斺€?鐙珛鏈嶅姟锛屼笉杩?content_api.py銆?
@@ -43,6 +43,8 @@ REVERSE_INSTRUCTION = ("你是资深美业广告视觉分析师。仔细看这�
     "用来生成同风格但全新原创的图（不是逐字描述这张图，而是能复现其风格气质、可换主体细节，版权安全）。"
     "需覆盖：主体、构图/机位、场景与材质道具、光影与色调、留白位置、画面内中文文案（若有）。"
     "约 60-120 字，直接输出这条提示词本身，不要任何解释、前后缀或引号。")
+# 反推并发闸：同步调 Gemini 会占住 HTTP 线程，限并发防打爆上游/线程池（可 env 覆盖）
+_reverse_sem = threading.BoundedSemaphore(max(1, int(os.environ.get("REVERSE_MAX_CONCURRENCY", "2") or "2")))
 
 # ============ COS 出图存储（可选，与 content_api 共用同一个 content.env 的 COS_* 环境变量）============
 # 配置齐全且文件存在 → 上传 COS 返回直链；未配置/失败 → 回退本地 /api/gen/file/，零影响。密钥仅走环境变量。
@@ -411,7 +413,8 @@ class H(BaseHTTPRequestHandler):
                 return self._send(500, {"detail": (deduct_data or {}).get("detail") or "点数扣除失败"})
             points_left = (deduct_data.get("points") if isinstance(deduct_data, dict) else None)
             try:
-                prompt = gen_reverse(image)
+                with _reverse_sem:                       # 限并发，防同步调用打爆上游/线程池
+                    prompt = gen_reverse(image)
             except Exception as e:
                 refund_points(user["username"], cost)   # 失败退点
                 return self._send(502, {"detail": "反推失败：" + str(e)[:160]})
