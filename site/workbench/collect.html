@@ -12,6 +12,9 @@
   .gCollect { grid-template-columns: 1.1fr 1fr; }
   @media (max-width: 1100px) { .gCollect { grid-template-columns: 1fr; } }
   @keyframes hq-spin { to { transform: rotate(360deg); } }
+  @keyframes hq-prog-flow { from { background-position:220% 0; } to { background-position:-120% 0; } }
+  .col-prog { position:relative; height:9px; margin:16px auto 0; max-width:280px; border-radius:999px; background:rgba(148,164,187,.12); overflow:hidden; }
+  .col-prog::after { content:""; position:absolute; inset:0; border-radius:inherit; background:linear-gradient(100deg,transparent 15%,rgba(45,212,191,.85) 50%,transparent 85%); background-size:200% 100%; animation:hq-prog-flow 1.15s linear infinite; }
   /* inner card level: 12px */
   .sr-card { border: 1px solid rgba(148,164,187,.14); border-radius: 12px; overflow: hidden; cursor: pointer; transition: .16s; background: rgba(148,164,187,.03); }
   .sr-card:hover { border-color: rgba(231,178,76,.3); background: rgba(231,178,76,.05); }
@@ -116,6 +119,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:36px; height:36px;"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
           </div>
           <div id="loadingNote" style="font-size:14px; color:#2dd4bf; font-weight:500;"></div>
+          <div class="col-prog"></div>
           <div style="font-size:12px; color:#5c6b82; margin-top:8px;">可切到其他页，回来自动接上</div>
         </div>
       </div>
@@ -419,7 +423,8 @@
             setNote('爬取超时（' + sec + 's）· 已自动退点，请重试', '#f4708a');
             localStorage.removeItem('hq_active_collect_job');
           } else {
-            setLoadNote('爬取中（' + sec + 's）');
+            var stage = sec < 6 ? '解析链接' : (sec < 18 ? '拉取详情' : '提取评论/文案');
+            setLoadNote(stage + '中（' + sec + 's）');
           }
         }).catch(function () {});
     }, 4000);

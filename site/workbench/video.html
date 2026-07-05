@@ -143,8 +143,10 @@
   .job-progress{display:flex;flex-direction:column;gap:8px;padding:10px 11px;border:1px solid rgba(148,164,187,.1);border-radius:11px;background:rgba(148,164,187,.04)}
   .job-progress-top{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:11.5px;font-weight:800;color:#eaf1fa}
   .job-progress-eta{color:#e7b24c;font-weight:700;white-space:nowrap}
-  .job-progress-bar{height:5px;border-radius:999px;background:rgba(148,164,187,.12);overflow:hidden}
-  .job-progress-fill{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#e7b24c,#f4cd72);transition:width .24s ease}
+  .job-progress-bar{position:relative;height:9px;border-radius:999px;background:rgba(148,164,187,.12);overflow:hidden}
+  .job-progress-fill{position:relative;display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#e7b24c,#f4cd72);transition:width .5s ease;overflow:hidden}
+  .job-progress-fill.busy::after{content:"";position:absolute;inset:0;background:linear-gradient(100deg,transparent 18%,rgba(255,255,255,.5) 50%,transparent 82%);background-size:220% 100%;animation:hq-prog-flow 1.15s linear infinite}
+  @keyframes hq-prog-flow{from{background-position:220% 0}to{background-position:-120% 0}}
   .job-steps{display:grid;grid-template-columns:repeat(5,1fr);gap:5px}
   .job-step{height:4px;border-radius:999px;background:rgba(148,164,187,.14)}
   .job-step.on{background:rgba(231,178,76,.86)}
@@ -577,7 +579,9 @@
   function progressMarkup(info){
     var steps='';
     for(var i=1;i<=5;i++) steps+='<span class="job-step'+(i<=info.step?' on':'')+'"></span>';
-    return '<div class="job-progress"><div class="job-progress-top"><span>'+esc(info.label)+'</span><span class="job-progress-eta">'+esc(info.eta||'')+'</span></div><div class="job-progress-bar"><span class="job-progress-fill" style="width:'+Math.max(0,Math.min(100,info.percent||0))+'%"></span></div><div class="job-steps">'+steps+'</div></div>';
+    var pct=Math.max(0,Math.min(100,info.percent||0));
+    var busy=(pct<100 && /较久|中/.test(info.label))?' busy':'';  // 进行中/较久阶段流动光带，表示仍在跑而非卡死
+    return '<div class="job-progress"><div class="job-progress-top"><span>'+esc(info.label)+'</span><span class="job-progress-eta">'+esc(info.eta||'')+'</span></div><div class="job-progress-bar"><span class="job-progress-fill'+busy+'" style="width:'+pct+'%"></span></div><div class="job-steps">'+steps+'</div></div>';
   }
   function formatTime(sec){
     if(!sec) return '';
@@ -748,6 +752,15 @@
       })
       .catch(function(e){if(grid) grid.innerHTML='<div class="avatar-empty" style="color:#f4708a;">'+esc(e.message||'形象列表读取失败')+'</div>';});
   }
+  var _vidTick=null, _vidStart=0;
+  function _fmtUsed(s){ s=Math.max(0,Math.round(s)); return s<60?('已用 '+s+' 秒'):('已用 '+Math.floor(s/60)+' 分 '+(s%60)+' 秒'); }
+  function startVidTick(){ _vidStart=Date.now(); if(_vidTick) return;
+    _vidTick=setInterval(function(){
+      var eta=document.querySelector('#outputHistory .job-progress-eta');
+      if(eta) eta.textContent=_fmtUsed((Date.now()-_vidStart)/1000);  // 真实已用时间，取代写死的假 ETA
+    },1000);
+  }
+  function stopVidTick(){ if(_vidTick){ clearInterval(_vidTick); _vidTick=null; } }
   function setBusy(on){
     ['generateBtn','motionGenerateBtn','tryonGenerateBtn'].forEach(function(id){
       var btn=$(id); if(!btn) return;
@@ -755,6 +768,7 @@
       btn.style.opacity=on?'.72':'1';
       btn.style.cursor=on?'wait':'pointer';
     });
+    if(on) startVidTick(); else stopVidTick();
   }
   function readFileData(file){
     return new Promise(function(resolve,reject){
