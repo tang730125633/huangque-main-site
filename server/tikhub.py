@@ -414,12 +414,18 @@ def ch_comments(object_id, last_buffer=""):
 # 抖音分享常见「…https://v.douyin.com/xxx/…复制此链接，打开抖音」——链接后直接粘中文，
 # 旧的 https?://[^\s]+ 会把后面的中文一并吞进来 → 短链带脏字 → get_aweme_id 400 失败。
 _URL_RE = re.compile(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+")
-_DY_HOST_RE = re.compile(r"(?:v\.douyin\.com|douyin\.com|iesdouyin\.com|douyinvod)", re.I)
+_DY_HOST_SUFFIXES = ("douyin.com", "iesdouyin.com")
+_DY_HOSTS = {"v.douyin.com", "douyinvod.com"}
 
 def _extract_url(text):
     """从分享文案里提取第一个干净 URL；没有则返回 None（口令式分享无 URL）。"""
     m = _URL_RE.search(text or "")
     return m.group(0) if m else None
+
+def _is_douyin_url(url):
+    """只按 hostname 判断抖音链接，避免 notdouyin.com 这类子串误判。"""
+    host = (urllib.parse.urlparse(url or "").hostname or "").lower().rstrip(".")
+    return host in _DY_HOSTS or any(host == suffix or host.endswith("." + suffix) for suffix in _DY_HOST_SUFFIXES)
 
 def dy_share_code(text):
     """抖音「口令式」无链接分享 → aweme_id（best-effort）。
@@ -438,10 +444,14 @@ def dy_share_code(text):
 def dy_resolve(url):
     """抖音链接/短链/纯 id → aweme_id。非抖音链接返回 None（不再把杂串瞎丢给上游）。"""
     url = (url or "").strip()
-    m = re.search(r"/video/(\d+)", url) or re.search(r"(\d{15,21})", url)
+    m = re.fullmatch(r"\d{15,21}", url)
     if m:
-        return m.group(1)
-    if _DY_HOST_RE.search(url):   # v.douyin.com 短链 / iesdouyin 分享链 → 解出 aweme_id
+        return url
+    if _is_douyin_url(url):
+        m = re.search(r"/video/(\d{15,21})", url)
+        if m:
+            return m.group(1)
+        # v.douyin.com 短链 / iesdouyin 分享链 → 解出 aweme_id
         r = _g("/api/v1/douyin/web/get_aweme_id", url=url)
         return r if isinstance(r, str) else (r.get("aweme_id") if isinstance(r, dict) else None)
     return None

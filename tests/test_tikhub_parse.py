@@ -47,6 +47,16 @@ def test_dy_resolve_none_for_junk_offline():
     assert tikhub.dy_resolve("随便一段没有链接也没有id的文字") is None
 
 
+def test_dy_resolve_none_for_fake_douyin_host_offline():
+    # notdouyin.com 不能因为包含 douyin.com 子串就被当成抖音链接
+    assert tikhub.dy_resolve("https://notdouyin.com/foo") is None
+
+
+def test_dy_resolve_none_for_foreign_video_url_offline():
+    # 只有抖音域名里的 /video/<id> 才能直接提取，避免跨平台 URL 串台
+    assert tikhub.dy_resolve("https://example.com/video/7654380745624879025") is None
+
+
 def test_parse_link_channels_routes_without_network():
     info = tikhub.parse_link("https://channels.weixin.qq.com/sph/ABCdef 看看这个视频号")
     assert info["platform"] == "channels"
