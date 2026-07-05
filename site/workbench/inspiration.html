@@ -77,7 +77,7 @@
   <div id="paneCase">
     <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px; padding:13px 16px; border:1px solid rgba(231,178,76,.18); background:linear-gradient(165deg, rgba(231,178,76,.06), rgba(7,11,19,.4)); border-radius:13px; flex-wrap:wrap;">
       <span style="display:flex; width:17px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg></span>
-      <div style="flex:1; min-width:200px; font-size:13px; color:#94a4bb;">已收录 <strong style="color:#e7b24c;">19</strong> 张原创美业样片（黄雀作图生成）· 美妆产品 / 护肤精华 · 点击卡片「做同款」一键复现。</div>
+      <div style="flex:1; min-width:200px; font-size:13px; color:#94a4bb;">已收录 <strong style="color:#e7b24c;">48</strong> 张原创样片（黄雀作图生成）· 美业6类 + 美女 / 帅哥 / 风景 · 点任意图看创作详情、一键跟创。</div>
       <a href="banana.html" class="btn-gold" style="padding:8px 16px; font-size:12.5px; font-weight:600; border-radius:9px; white-space:nowrap;">去创作</a>
     </div>
     <div class="masonry" id="caseGrid"></div>
@@ -176,8 +176,7 @@
       +'</div></div>';
     a.onmouseenter = function(){ a.style.boxShadow='0 10px 30px rgba(0,0,0,.35)'; };
     a.onmouseleave = function(){ a.style.boxShadow=''; };
-    a.onclick=function(){ var dest=isVid?'video.html':'banana.html';
-      location.href=dest+'?prompt='+encodeURIComponent(x.prompt||'')+((!isVid&&x.model)?('&engine='+encodeURIComponent(x.model)):''); };
+    a.onclick=function(){ openDetail(x); };
     return a;
   }
   function renderCards(){
@@ -233,8 +232,53 @@
   if(searchInput){
     searchInput.addEventListener('input', function(){ renderCards(); });
   }
+  // ===== 详情弹窗「一键跟创」：看完整创作描述 / 复制 / 编辑 / 下载 / 跳转生成 =====
+  var dlgEl=null;
+  function openDetail(x){
+    var isVid=(x.type==='video'), badge=MODEL_BADGE[x.model]||x.model||'';
+    if(!dlgEl){
+      dlgEl=document.createElement('div');
+      dlgEl.style.cssText='position:fixed; inset:0; z-index:9999; background:rgba(5,8,13,.82); backdrop-filter:blur(5px); display:none; align-items:center; justify-content:center; padding:22px;';
+      dlgEl.addEventListener('click', function(e){ if(e.target===dlgEl) dlgEl.style.display='none'; });
+      document.body.appendChild(dlgEl);
+    }
+    var jumpLabel=isVid?'🎬 一键跟创（去视频页）':'🎨 一键跟创（去作图）';
+    dlgEl.innerHTML=''
+      +'<div style="display:flex; max-width:880px; width:100%; max-height:88vh; background:#0d1119; border:1px solid rgba(231,178,76,.2); border-radius:18px; overflow:hidden;">'
+      +  '<div style="flex:1.1; min-width:0; background:#05080d; display:flex; align-items:center; justify-content:center;"><img src="'+x.image+'" style="display:block; max-width:100%; max-height:88vh; object-fit:contain;"></div>'
+      +  '<div style="flex:1; min-width:280px; display:flex; flex-direction:column; padding:22px; overflow:auto;">'
+      +    '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;"><div style="font-size:18px; font-weight:700;">'+(x.title||'创作详情')+'</div><span id="dlgClose" style="cursor:pointer; color:#94a4bb; font-size:24px; line-height:1; padding:0 4px;">&times;</span></div>'
+      +    '<div style="font-size:12px; color:#94a4bb; margin-bottom:16px;">'+(x.category||'')+(badge?(' · '+badge):'')+(x.count?(' · &#9829; '+x.count):'')+'</div>'
+      +    '<div style="font-size:13px; font-weight:600; margin-bottom:8px;">创作描述 <span style="font-size:11px; color:#5c6b82; font-weight:400;">(可直接编辑，跟创时用改后的)</span></div>'
+      +    '<textarea id="dlgPrompt" style="flex:1; min-height:130px; resize:none; width:100%; box-sizing:border-box; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.16); border-radius:10px; color:#eaf1fa; font-size:13px; line-height:1.7; padding:12px; font-family:inherit; outline:none;"></textarea>'
+      +    '<div style="display:flex; gap:8px; margin-top:14px;">'
+      +      '<button id="dlgCopy" style="flex:1; padding:10px; font-size:12.5px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.28); border-radius:10px; cursor:pointer; font-family:inherit;">复制提示词</button>'
+      +      '<button id="dlgDl" style="flex:1; padding:10px; font-size:12.5px; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.18); border-radius:10px; cursor:pointer; font-family:inherit;">下载样图</button>'
+      +    '</div>'
+      +    '<button id="dlgGo" class="btn-gold" style="margin-top:10px; padding:13px; font-size:14.5px; font-weight:700; border-radius:12px; cursor:pointer; border:none; width:100%;">'+jumpLabel+'</button>'
+      +    (isVid?'<div style="font-size:11px; color:#5c6b82; text-align:center; margin-top:8px;">视频功能完善中，部分能力陆续开放</div>':'')
+      +  '</div>'
+      +'</div>';
+    var ta=dlgEl.querySelector('#dlgPrompt'); ta.value=x.prompt||'';
+    dlgEl.querySelector('#dlgClose').onclick=function(){ dlgEl.style.display='none'; };
+    dlgEl.querySelector('#dlgCopy').onclick=function(){
+      var b=dlgEl.querySelector('#dlgCopy'), done=function(){ b.textContent='✓ 已复制'; setTimeout(function(){ b.textContent='复制提示词'; },1500); };
+      if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(ta.value||'').then(done,function(){ ta.select(); try{document.execCommand('copy');}catch(e){} done(); }); }
+      else { ta.select(); try{document.execCommand('copy');}catch(e){} done(); }
+    };
+    dlgEl.querySelector('#dlgDl').onclick=function(){ var a=document.createElement('a'); a.href=x.image; a.download=(x.title||'huangque')+'.webp'; document.body.appendChild(a); a.click(); a.remove(); };
+    dlgEl.querySelector('#dlgGo').onclick=function(){
+      var dest=isVid?'video.html':'banana.html';
+      location.href=dest+'?prompt='+encodeURIComponent(ta.value||'')+((!isVid&&x.model)?('&engine='+encodeURIComponent(x.model)):'');
+    };
+    dlgEl.style.display='flex';
+  }
+  document.addEventListener('keydown', function(e){ if(e.key==='Escape' && dlgEl && dlgEl.style.display==='flex') dlgEl.style.display='none'; });
+
+  function shuffle(a){ for(var i=a.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=a[i]; a[i]=a[j]; a[j]=t; } return a; }
   fetch('inspirations.json',{cache:'no-cache'}).then(function(r){return r.json();}).then(function(d){
-    DATA=d||[]; syncChips(); renderCards();
+    // 「全部」及各分类载入时随机洗牌一次，每次进页顺序都新鲜；点卡片弹详情
+    DATA=shuffle(d||[]); syncChips(); renderCards();
   }).catch(function(){ /* fallback */ });
 
   // 分类筛选由 syncChips 动态绑定
