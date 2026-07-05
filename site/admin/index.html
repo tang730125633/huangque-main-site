@@ -373,7 +373,7 @@
     var items=logs.items||[];
     if(!items.length){el('trendBox').innerHTML='<div class="empty">'+esc(logs.message||'暂无用户调用日志')+'</div>';return}
     el('trendBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>调用时间</th><th>用户</th><th>调用功能</th><th>响应时间</th><th>完成状态</th><th class="right">点数消耗</th></tr></thead><tbody>'+items.map(function(x){
-      return '<tr><td><code>'+fmtMinute(x.created_at)+'</code></td><td><b>'+esc(x.username||'-')+'</b></td><td><b>'+esc(kindName(x.kind))+'</b><div class="muted">'+esc(x.kind||'')+'</div></td><td><code>'+esc(fmtDuration(x.duration_sec))+'</code></td><td>'+jobStatusPill(x.status)+'</td><td class="right"><code>'+Number(x.cost||0).toLocaleString()+'</code></td></tr>';
+      return '<tr><td><code>'+fmtMinute(x.created_at)+'</code></td><td><b>'+esc(x.username||'-')+'</b></td><td><b>'+esc(x.func||kindName(x.kind))+'</b><div class="muted">'+esc(x.kind||'')+'</div></td><td><code>'+esc(fmtDuration(x.duration_sec))+'</code></td><td>'+jobStatusPill(x.status)+'</td><td class="right"><code>'+Number(x.cost||0).toLocaleString()+'</code></td></tr>';
     }).join('')+'</tbody></table></div>';
   }
   function switchModule(name){
