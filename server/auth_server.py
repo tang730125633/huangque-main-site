@@ -51,6 +51,18 @@ def init_db():
         reason TEXT,
         created_at INTEGER NOT NULL
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS recharge_orders(
+        order_id TEXT PRIMARY KEY,
+        username TEXT NOT NULL,
+        amount REAL NOT NULL,
+        points INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        note TEXT,
+        created_at INTEGER NOT NULL,
+        reviewed_by TEXT,
+        reviewed_at INTEGER,
+        review_note TEXT
+    )""")
     cols = {r["name"] for r in c.execute("PRAGMA table_info(tokens)").fetchall()}
     if "expires_at" not in cols:
         c.execute("ALTER TABLE tokens ADD COLUMN expires_at INTEGER")
@@ -243,6 +255,119 @@ def list_points_audit(username="", limit=100):
     finally:
         c.close()
 
+def public_recharge_order(row):
+    return {
+        "order_id": row["order_id"],
+        "username": row["username"],
+        "amount": row["amount"],
+        "points": row["points"],
+        "status": row["status"],
+        "note": row["note"] or "",
+        "created_at": row["created_at"],
+        "reviewed_by": row["reviewed_by"] or "",
+        "reviewed_at": row["reviewed_at"],
+        "review_note": row["review_note"] or "",
+    }
+
+def create_recharge_order(username, amount, points, note=""):
+    username = (username or "").strip()
+    amount = float(amount or 0)
+    points = int(points or 0)
+    note = (note or "").strip()[:300]
+    if not username:
+        return None, "missing_username"
+    if amount <= 0:
+        return None, "amount_invalid"
+    if points <= 0:
+        return None, "points_invalid"
+    now = int(time.time())
+    order_id = "R%d%s" % (now, secrets.token_hex(3).upper())
+    c = db()
+    try:
+        c.execute(
+            """INSERT INTO recharge_orders(order_id, username, amount, points, status, note, created_at)
+               VALUES(?,?,?,?,?,?,?)""",
+            (order_id, username, amount, points, "pending", note, now),
+        )
+        c.commit()
+        row = c.execute("SELECT * FROM recharge_orders WHERE order_id=?", (order_id,)).fetchone()
+        return public_recharge_order(row), None
+    finally:
+        c.close()
+
+def list_recharge_orders(username="", status="", limit=100):
+    username = (username or "").strip()
+    status = (status or "").strip()
+    limit = max(1, min(300, int(limit or 100)))
+    sql = "SELECT * FROM recharge_orders"
+    args = []
+    where = []
+    if username:
+        where.append("username=?")
+        args.append(username)
+    if status:
+        where.append("status=?")
+        args.append(status)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY created_at DESC, order_id DESC LIMIT ?"
+    args.append(limit)
+    c = db()
+    try:
+        rows = c.execute(sql, args).fetchall()
+        return {"items": [public_recharge_order(r) for r in rows]}
+    finally:
+        c.close()
+
+def review_recharge_order(who_admin, order_id, action, reason=""):
+    who_admin = (who_admin or "").strip()
+    order_id = (order_id or "").strip()
+    action = (action or "").strip().lower()
+    reason = (reason or "").strip()[:300]
+    if action not in {"approve", "reject"}:
+        return None, "bad_action"
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        order = c.execute("SELECT * FROM recharge_orders WHERE order_id=?", (order_id,)).fetchone()
+        if not order:
+            c.rollback()
+            return None, "not_found"
+        if order["status"] != "pending":
+            c.rollback()
+            return public_recharge_order(order), "already_reviewed"
+        now = int(time.time())
+        if action == "approve":
+            user = c.execute("SELECT id, username, points FROM users WHERE username=?", (order["username"],)).fetchone()
+            if not user:
+                c.rollback()
+                return None, "user_not_found"
+            before = int(user["points"] or 0)
+            delta = int(order["points"] or 0)
+            after = before + delta
+            c.execute("UPDATE users SET points=? WHERE username=?", (after, order["username"]))
+            c.execute(
+                """INSERT INTO points_audit(who_admin, username, delta, before_points, after_points, reason, created_at)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (who_admin, order["username"], delta, before, after, "充值审批: %s %s" % (order_id, reason), now),
+            )
+            status = "approved"
+        else:
+            status = "rejected"
+        c.execute(
+            """UPDATE recharge_orders SET status=?, reviewed_by=?, reviewed_at=?, review_note=?
+               WHERE order_id=?""",
+            (status, who_admin, now, reason, order_id),
+        )
+        row = c.execute("SELECT * FROM recharge_orders WHERE order_id=?", (order_id,)).fetchone()
+        c.commit()
+        return public_recharge_order(row), None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
 def cleanup_expired_tokens(c=None):
     own = c is None
     if own: c = db()
@@ -377,6 +502,51 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "adjustment": result})
             except Exception:
                 return self._send(500, {"detail": "points adjust failed"})
+        if p == "/api/auth/admin/recharge/review":
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                order, err = review_recharge_order(
+                    admin["username"],
+                    d.get("order_id"),
+                    d.get("action"),
+                    d.get("reason") or d.get("review_note") or "",
+                )
+                if err == "not_found":
+                    return self._send(404, {"detail": "order not found"})
+                if err == "user_not_found":
+                    return self._send(404, {"detail": "user not found"})
+                if err == "already_reviewed":
+                    return self._send(409, {"detail": "订单已审批", "order": order})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, "order": order})
+            except Exception:
+                return self._send(500, {"detail": "recharge review failed"})
+        if p == "/api/auth/recharge/order":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                order, err = create_recharge_order(row["username"], d.get("amount"), d.get("points"), d.get("note") or "")
+                if err == "amount_invalid":
+                    return self._send(400, {"detail": "充值金额必须大于 0"})
+                if err == "points_invalid":
+                    return self._send(400, {"detail": "充值点数必须大于 0"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, "order": order})
+            except Exception:
+                return self._send(500, {"detail": "充值申请提交失败"})
         if p in {"/api/auth/points/deduct", "/api/auth/points/refund"}:
             if not self._require_internal():
                 return
@@ -533,6 +703,36 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, **data})
             except Exception:
                 return self._send(500, {"detail": "audit query failed"})
+        if p == "/api/auth/admin/recharge/orders":
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                data = list_recharge_orders(
+                    username=(q.get("username") or [""])[0],
+                    status=(q.get("status") or [""])[0],
+                    limit=(q.get("limit") or ["100"])[0],
+                )
+                return self._send(200, {"ok": True, **data})
+            except Exception:
+                return self._send(500, {"detail": "recharge orders query failed"})
+        if p == "/api/auth/recharge/orders":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                data = list_recharge_orders(
+                    username=row["username"],
+                    status=(q.get("status") or [""])[0],
+                    limit=(q.get("limit") or ["50"])[0],
+                )
+                return self._send(200, {"ok": True, **data})
+            except Exception:
+                return self._send(500, {"detail": "充值申请查询失败"})
         if p == "/api/auth/points":
             if not self._require_internal():
                 return

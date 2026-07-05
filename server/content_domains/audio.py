@@ -674,13 +674,43 @@ def backfill_audio_assets():
     except Exception:
         pass
 
+PUBLIC_VOICE_SAMPLE_TEXT = "大家好，这是我的声音示范，很高兴为你服务。"
+
+def _ensure_public_voice_preview(row):
+    """公共音色缺 preview_url 时懒生成一段试听样音、上 COS、回填 DB。
+    幂等：只在 preview_url 为空时合成，生成后写回，后续走缓存。
+    非致命：合成失败不影响音色列表返回（该音色本次暂无 ▶，下次再试）。"""
+    d = dict(row)
+    if d.get("scope") != "public" or d.get("preview_url"):
+        return d
+    speaker = (d.get("provider_voice") or d.get("voice_key") or "").strip()
+    if not speaker.startswith("S_"):   # 仅豆包/火山 S_ 音色可合成试听样音
+        return d
+    try:
+        preview = generate_doubao_preview(speaker, PUBLIC_VOICE_SAMPLE_TEXT)
+        fn = preview.get("file")
+        if fn:
+            url = public_url(fn, "audio/mpeg")   # 走 COS 直链（与其它产出一致）
+            now = int(time.time())
+            with closing(adb()) as c:
+                c.execute("UPDATE audio_voices SET preview_file=?, preview_url=?, updated_at=? WHERE id=?",
+                          (fn, url, now, d["id"]))
+                c.commit()
+            d["preview_file"] = fn
+            d["preview_url"] = url
+    except Exception as e:
+        print("[list_audio_voices] 公共音色试听样音生成失败 voice=%s error=%s" %
+              (d.get("voice_key"), str(e)[:200]), flush=True)
+    return d
+
 def list_audio_voices(username):
     with closing(adb()) as c:
         rows = c.execute("""SELECT id, scope, username, voice_key, display_name, provider_voice, preview_file, preview_url, slot_id, created_at, updated_at
             FROM audio_voices
             WHERE scope='public' OR (scope='personal' AND username=?)
             ORDER BY CASE scope WHEN 'public' THEN 0 ELSE 1 END, id""", (username,)).fetchall()
-    return [dict(r) for r in rows]
+    # 公共音色缺试听样音时按需懒生成一次并缓存（前端只在有 preview_url 时才显示 ▶ 试听）
+    return [_ensure_public_voice_preview(r) for r in rows]
 
 def rename_audio_voice(username, slot_id, display_name):
     slot_id = (slot_id or "").strip()
