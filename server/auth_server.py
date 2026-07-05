@@ -412,8 +412,17 @@ class H(BaseHTTPRequestHandler):
     def _bad_json(self):
         return getattr(self, "_json_error", False)
     def _client_ip(self):
-        xf = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
-        return xf or (self.client_address[0] if self.client_address else "")
+        # 限流真实 IP：只信 nginx 下发的 X-Real-IP(=$remote_addr，客户端发的会被 nginx 覆盖)。
+        # 绝不取 X-Forwarded-For 首段——那是客户端可控的，伪造+轮换即可让限流 key 每次都变、
+        # 对任意账号无限撞密码/批量刷号(#189)。auth 只监听 127.0.0.1、外部必经 nginx，故 X-Real-IP 可信。
+        xr = (self.headers.get("X-Real-IP") or "").strip()
+        if xr:
+            return xr
+        # 回退：XFF 最后一跳(=nginx 追加的 $remote_addr，仍不取客户端可控的首段)
+        parts = [p.strip() for p in (self.headers.get("X-Forwarded-For") or "").split(",") if p.strip()]
+        if parts:
+            return parts[-1]
+        return self.client_address[0] if self.client_address else ""
     def _rate_key(self, username):
         return self._client_ip() + "|" + (username or "")
     def _login_limited(self, username):
