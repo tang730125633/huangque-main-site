@@ -180,6 +180,11 @@
     return a;
   }
   var searchInput = document.getElementById('caseSearch');
+  // 分类 → 金调3D图标（render3d 香槟金，与首页能力卡同一套）
+  var CAT_ICON = {
+    '护肤精华':'cat_serum','医美焕肤':'cat_medical','防晒':'cat_sun','面膜护肤':'cat_mask',
+    '门店拓客':'cat_store','美妆产品':'cat_makeup','美女':'cat_woman','帅哥':'cat_man','风景':'cat_scenery'
+  };
   function syncChips(){
     var cats = {}; DATA.forEach(function(x){ if(x.category) cats[x.category] = (cats[x.category]||0) + 1; });
     var chipsEl = document.getElementById('chips');
@@ -192,7 +197,16 @@
     chipsEl.appendChild(all);
     Object.keys(cats).sort().forEach(function(cat){
       var s = document.createElement('span');
-      s.className = 'chip'; s.setAttribute('data-cat',cat); s.textContent = cat;
+      s.className = 'chip'; s.setAttribute('data-cat',cat);
+      s.style.display='inline-flex'; s.style.alignItems='center'; s.style.gap='6px';
+      var icoName = CAT_ICON[cat];
+      if(icoName){
+        var im = document.createElement('img');
+        im.src = '../assets/icons/ic_'+icoName+'.png'; im.alt='';
+        im.style.cssText = 'width:20px;height:20px;object-fit:contain;flex:none;';
+        s.appendChild(im);
+      }
+      var tx = document.createElement('span'); tx.textContent = cat; s.appendChild(tx);
       if(curCat===cat){ s.style.color='#e7b24c'; s.style.fontWeight='600'; }
       s.onclick = function(){ setCat(cat); };
       chipsEl.appendChild(s);
