@@ -73,7 +73,11 @@ def _load_rows():
 def _cached_rows():
     now = time.time()
     if now - _CACHE["loaded_at"] > _TTL:
-        _CACHE["items"] = _load_rows()
+        try:
+            _CACHE["items"] = _load_rows()
+        except Exception as e:
+            print("[feature_flags] read failed, fail-open: %s" % e, flush=True)
+            return _CACHE.get("items") or {}
         _CACHE["loaded_at"] = now
     return _CACHE["items"]
 
