@@ -710,11 +710,12 @@ def rename_audio_voice(username, slot_id, display_name):
 def list_audio_assets(username, limit=120):
     limit = max(1, min(120, int(limit or 120)))
     with closing(adb()) as c:
+        _ensure_column(c, "audio_assets", "deleted", "INTEGER DEFAULT 0")
         rows = c.execute("""SELECT a.id, a.job_id, a.username, a.voice_id, a.voice_key, a.file, a.url, a.text,
                    a.speed, a.pitch, a.volume, a.created_at, v.display_name AS voice_name, v.preview_url
             FROM audio_assets a
             LEFT JOIN audio_voices v ON v.id = a.voice_id
-            WHERE a.username=?
+            WHERE a.username=? AND COALESCE(a.deleted,0)=0
             ORDER BY a.id DESC LIMIT ?""", (username, limit)).fetchall()
     return [dict(r) for r in rows]
 

@@ -99,7 +99,7 @@ def list_video_assets(username, limit=120):
                    provider_video_id, provider_avatar_id, provider_avatar_group_id, source_video_url,
                    status, error, created_at, updated_at
             FROM video_assets
-            WHERE username=?
+            WHERE username=? AND status!='deleted'
             ORDER BY id DESC LIMIT ?""", (username, limit)).fetchall()
     return [dict(r) for r in rows]
 

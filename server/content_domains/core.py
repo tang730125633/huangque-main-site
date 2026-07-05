@@ -145,6 +145,7 @@ def init_db():
             kind TEXT, username TEXT, cost INTEGER,
             status TEXT DEFAULT 'pending', payload TEXT, result TEXT, error TEXT,
             created_at INTEGER, updated_at INTEGER)""")
+        _ensure_column(c, "jobs", "deleted", "INTEGER DEFAULT 0")
         c.commit()
     init_audio_db()
 
@@ -257,6 +258,7 @@ def init_audio_db():
             UNIQUE(username, asset_kind, asset_key)
         )""")
         _ensure_column(c, "audio_voices", "slot_id", "TEXT")
+        _ensure_column(c, "audio_assets", "deleted", "INTEGER DEFAULT 0")
         _ensure_column(c, "audio_voice_slots", "reclone_count", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(c, "audio_voice_slots", "clone_started_at", "INTEGER")
         _ensure_column(c, "audio_voice_slots", "previous_preview_url", "TEXT")
@@ -375,6 +377,58 @@ def _list_asset_marks(username, kind):
             "updated_at": row["updated_at"],
         }
     return marks
+
+def _delete_asset_mark(username, kind, key):
+    try:
+        key = _clean_asset_key(key)
+        kind = _clean_asset_kind(kind)
+    except Exception:
+        return
+    with closing(adb()) as c:
+        c.execute("DELETE FROM asset_marks WHERE username=? AND asset_kind=? AND asset_key=?",
+                  (username, kind, key))
+        c.commit()
+
+def delete_user_asset(username, kind, asset_id):
+    kind = str(kind or "").strip().lower()
+    if kind not in {"image", "audio", "video"}:
+        raise ValueError("不支持的资产类型")
+    try:
+        asset_id = int(asset_id)
+    except Exception:
+        raise ValueError("缺少资产标识")
+    now = int(time.time())
+    if kind == "image":
+        with closing(jdb()) as c:
+            _ensure_column(c, "jobs", "deleted", "INTEGER DEFAULT 0")
+            cur = c.execute("""UPDATE jobs SET deleted=1, updated_at=?
+                               WHERE id=? AND username=? AND kind='image' AND COALESCE(deleted,0)=0""",
+                            (now, asset_id, username))
+            c.commit()
+        if cur.rowcount < 1:
+            raise LookupError("资产不存在或不属于当前账号")
+        _delete_asset_mark(username, "image", str(asset_id))
+        return {"kind": kind, "id": asset_id, "deleted": True}
+    if kind == "audio":
+        with closing(adb()) as c:
+            _ensure_column(c, "audio_assets", "deleted", "INTEGER DEFAULT 0")
+            cur = c.execute("""UPDATE audio_assets SET deleted=1
+                               WHERE id=? AND username=? AND COALESCE(deleted,0)=0""",
+                            (asset_id, username))
+            c.commit()
+        if cur.rowcount < 1:
+            raise LookupError("资产不存在或不属于当前账号")
+        _delete_asset_mark(username, "audio", str(asset_id))
+        return {"kind": kind, "id": asset_id, "deleted": True}
+    with closing(adb()) as c:
+        cur = c.execute("""UPDATE video_assets SET status='deleted', updated_at=?
+                           WHERE id=? AND username=? AND status!='deleted'""",
+                        (now, asset_id, username))
+        c.commit()
+    if cur.rowcount < 1:
+        raise LookupError("资产不存在或不属于当前账号")
+    _delete_asset_mark(username, "video", str(asset_id))
+    return {"kind": kind, "id": asset_id, "deleted": True}
 
 
 
@@ -558,6 +612,17 @@ class H(BaseHTTPRequestHandler):
             try:
                 mark = _upsert_asset_mark(user["username"], body.get("kind"), body.get("key"), tags=body.get("tags"))
                 return self._send(200, {"ok": True, "mark": mark})
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
+        if p == "/api/gen/asset/delete":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            body = self._json_body()
+            try:
+                deleted = delete_user_asset(user["username"], body.get("kind"), body.get("id"))
+                return self._send(200, {"ok": True, "asset": deleted})
+            except LookupError as e:
+                return self._send(404, {"detail": str(e)[:160]})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/audio/redeem-slot":
@@ -759,7 +824,10 @@ class H(BaseHTTPRequestHandler):
             kind = self.path.split("kind=")[1].split("&")[0] if "kind=" in self.path else "image"
             if kind not in HANDLERS: kind = "image"
             with closing(jdb()) as c:
-                rows = c.execute("SELECT id,result,created_at FROM jobs WHERE username=? AND status='done' AND kind=? ORDER BY id DESC LIMIT ?",
+                _ensure_column(c, "jobs", "deleted", "INTEGER DEFAULT 0")
+                rows = c.execute("""SELECT id,result,created_at FROM jobs
+                                 WHERE username=? AND status='done' AND kind=? AND COALESCE(deleted,0)=0
+                                 ORDER BY id DESC LIMIT ?""",
                                  (user["username"], kind, lim)).fetchall()
             items = []
             for r in rows:

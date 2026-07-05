@@ -16,6 +16,8 @@
   .asset-action{height:28px;padding:0 10px;border-radius:8px;border:1px solid rgba(148,164,187,.13);background:rgba(148,164,187,.04);color:#94a4bb;text-decoration:none;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;font-family:inherit;white-space:nowrap}
   .asset-action:hover{color:#e7b24c;border-color:rgba(231,178,76,.28)}
   .asset-action.gold{border-color:rgba(231,178,76,.28);background:rgba(231,178,76,.08);color:#e7b24c}
+  .asset-action.danger{border-color:rgba(244,112,138,.24);background:rgba(244,112,138,.07);color:#f4708a}
+  .asset-action.danger:hover{border-color:rgba(244,112,138,.42);color:#ff9bae}
   .asset-select{position:absolute;top:10px;right:10px;z-index:4;width:30px;height:30px;display:none;align-items:center;justify-content:center;border:1px solid rgba(231,178,76,.34);border-radius:9px;background:rgba(7,11,19,.72);backdrop-filter:blur(8px)}
   .asset-select input{width:16px;height:16px;accent-color:#e7b24c;cursor:pointer}
   .multi-on .asset-select{display:flex}
@@ -303,6 +305,30 @@
       .catch(function(e){ toast(e.message||'重生成失败',false); })
       .finally(function(){ btn.disabled=false; btn.textContent='重生成'; });
   }
+  function deleteAsset(x,kind,btn){
+    var id = kind==='image' ? (x.id||x.job_id) : x.id;
+    if(!id){ toast('缺少资产标识，无法删除',false); return; }
+    if(!confirm('确定删除该资产？删除后将从资产库移除')) return;
+    btn.disabled=true; btn.textContent='删除中';
+    fetch('/api/gen/asset/delete',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({kind:kind,id:id})})
+      .then(function(r){ if(r.status===401){ HQ.login(); return null; } return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
+      .then(function(res){
+        if(!res) return;
+        if(!res.ok) throw new Error((res.data&&res.data.detail)||'删除失败');
+        var sid=String(id);
+        ALL=ALL.filter(function(item){
+          var iid = kind==='image' ? (item.id||item.job_id) : item.id;
+          return String(iid)!==sid;
+        });
+        delete MARKS[markKey(x,kind)];
+        selected={};
+        if(cnt) cnt.textContent=ALL.length;
+        toast('已删除',true);
+        render();
+      })
+      .catch(function(e){ toast(e.message||'删除失败',false); })
+      .finally(function(){ btn.disabled=false; btn.textContent='删除'; });
+  }
   function actionBtn(text,fn){
     var b=document.createElement('button'); b.type='button'; b.textContent=text; b.className='asset-action'; b.onclick=fn; return b;
   }
@@ -335,8 +361,9 @@
     var pt=document.createElement('div'); pt.textContent=p; pt.style.cssText='font-size:12px; color:#94a4bb; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
     var actions=document.createElement('div'); actions.style.cssText='display:flex;align-items:center;gap:6px;flex:none;';
     var regen=actionBtn('重生成',function(){ regenerate(x,'image',regen); });
+    var del=actionBtn('删除',function(){ deleteAsset(x,'image',del); }); del.className+=' danger';
     var dl=document.createElement('a'); dl.textContent='下载'; dl.href=x.url; dl.setAttribute('download','huangque.png'); dl.className='asset-action gold';
-    actions.appendChild(regen); actions.appendChild(dl);
+    actions.appendChild(regen); actions.appendChild(del); actions.appendChild(dl);
     foot.appendChild(pt); foot.appendChild(actions); w.appendChild(tag); w.appendChild(im); w.appendChild(foot); addMarkTools(w,x,'image'); return addSelectBox(w,x,'image');
   }
   function audioCard(x){
@@ -389,13 +416,14 @@
     var buttons=document.createElement('div');
     buttons.style.cssText='display:flex;align-items:center;gap:6px;flex:0 0 auto;';
     var regen=actionBtn('重生成',function(){ regenerate(x,'audio',regen); });
+    var del=actionBtn('删除',function(){ deleteAsset(x,'audio',del); }); del.className+=' danger';
     var dl=document.createElement('a');
     dl.href=url||'#';
     dl.setAttribute('download','huangque-audio.mp3');
     dl.textContent='下载';
     dl.className='asset-action gold';
     dl.style.height='30px';
-    buttons.appendChild(regen); buttons.appendChild(dl);
+    buttons.appendChild(regen); buttons.appendChild(del); buttons.appendChild(dl);
     actions.appendChild(hint); actions.appendChild(buttons);
     var audio=null;
     play.onclick=function(e){
@@ -486,13 +514,14 @@
     var buttons=document.createElement('div');
     buttons.style.cssText='display:flex;align-items:center;gap:6px;flex:0 0 auto;';
     var regen=actionBtn('重生成',function(){ regenerate(x,'video',regen); });
+    var del=actionBtn('删除',function(){ deleteAsset(x,'video',del); }); del.className+=' danger';
     var dl=document.createElement('a');
     dl.textContent=videoUrl?'下载':'去生成';
     dl.href=videoUrl||'video.html';
     if(videoUrl) dl.setAttribute('download','huangque-video.mp4');
     dl.className='asset-action gold';
     dl.style.height='30px';
-    buttons.appendChild(regen); buttons.appendChild(dl);
+    buttons.appendChild(regen); buttons.appendChild(del); buttons.appendChild(dl);
     foot.appendChild(hint); foot.appendChild(buttons);
     body.appendChild(head); body.appendChild(meta); body.appendChild(foot);
     w.appendChild(media); w.appendChild(body); addMarkTools(w,x,'video');
