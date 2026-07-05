@@ -14,7 +14,7 @@
 环境变量：TIKHUB_KEY（必填）、TIKHUB_BASE（默认 api.tikhub.io；大陆服务器改 api.tikhub.dev）、
          OPENAI_API_KEY / OPENAI_BASE（口播 ASR 用，与 content_api 同源）。
 """
-import os, re, json, time, threading, sqlite3, urllib.request, urllib.parse, urllib.error
+import os, re, json, time, threading, sqlite3, subprocess, tempfile, urllib.request, urllib.parse, urllib.error
 from contextlib import closing
 
 KEY  = os.environ.get("TIKHUB_KEY", "")
@@ -22,6 +22,8 @@ BASE = os.environ.get("TIKHUB_BASE", "https://api.tikhub.io").rstrip("/")
 UA   = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 OPENAI_KEY  = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
+# 口播转写模型：默认 gpt-4o-mini-transcribe（中文口播更准、更便宜），可 env 回退 whisper-1
+TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
 
 PLATFORMS = ("douyin", "xhs", "channels")
 
@@ -546,13 +548,33 @@ def _srt_to_text(srt):
         out.append(line)
     return " ".join(out)
 
+def _extract_audio(mp4_bytes):
+    """ffmpeg 抽音轨 → 低码率 mp3（16kHz 单声道 64k）。音频体积仅 mp4 的 1/10~1/20，
+    规避 OpenAI 转写端点 25MB 上限（长/高清视频也能转）、上传更快。失败抛异常由上层兜底。"""
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+        f.write(mp4_bytes); path = f.name
+    try:
+        p = subprocess.run(
+            ["ffmpeg", "-y", "-i", path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k", "-f", "mp3", "pipe:1"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        if p.returncode != 0 or not p.stdout:
+            raise TikHubError("ffmpeg 抽音轨失败：" + (p.stderr[-160:].decode("u8", "ignore") if p.stderr else "无输出"))
+        return p.stdout
+    finally:
+        try: os.unlink(path)
+        except Exception: pass
+
 def _whisper(mp4_bytes, filename="v.mp4"):
     if not OPENAI_KEY:
         raise TikHubError("OPENAI_API_KEY 未配置，无法 ASR")
+    try:                                      # 优先抽音轨转 mp3（小、快、不撞 25MB）
+        audio, aname, ctype = _extract_audio(mp4_bytes), "a.mp3", "audio/mpeg"
+    except Exception:                         # ffmpeg 出问题兜底：直接传原 mp4（老行为，赌 <25MB）
+        audio, aname, ctype = mp4_bytes, filename, "video/mp4"
     b = "----hqtikhub7e3f"
-    parts = [("--%s\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper-1\r\n" % b).encode(),
-             ("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\nContent-Type: video/mp4\r\n\r\n" % (b, filename)).encode(),
-             mp4_bytes, b"\r\n", ("--%s--\r\n" % b).encode()]
+    parts = [("--%s\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n%s\r\n" % (b, TRANSCRIBE_MODEL)).encode(),
+             ("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\nContent-Type: %s\r\n\r\n" % (b, aname, ctype)).encode(),
+             audio, b"\r\n", ("--%s--\r\n" % b).encode()]
     body = b"".join(parts)
     req = urllib.request.Request(OPENAI_BASE + "/v1/audio/transcriptions", data=body,
                                  headers={"Authorization": "Bearer " + OPENAI_KEY,
