@@ -61,6 +61,47 @@ class ContentDomainTests(unittest.TestCase):
         self.assertFalse(core._must_change_password({"must_change": False}))
         self.assertFalse(core._must_change_password(None))
 
+    def test_video_cost_defaults_to_positive_value(self):
+        core = importlib.import_module("content_domains.core")
+        self.assertEqual(core.COST["video"], 20)
+
+    def test_video_payload_validation_rejects_bad_submit_payloads(self):
+        video = importlib.import_module("content_domains.video")
+        image = "data:image/png;base64," + base64.b64encode(b"img").decode()
+        audio = "data:audio/wav;base64," + base64.b64encode(b"aud").decode()
+        cases = [
+            ({}, "image_data 不能为空"),
+            ({"mode": "bad", "image_data": image}, "mode 仅支持 text/audio/motion"),
+            ({"mode": "text", "image_data": "not-base64", "text": "hello", "voice": "v"}, "image_data 不是有效的人物形象图片"),
+            ({"mode": "text", "image_data": image, "text": "hello"}, "mode=text 时 voice 必填"),
+            ({"mode": "audio", "image_data": image}, "audio_data 不能为空"),
+            ({"mode": "audio", "image_data": image, "audio_data": audio, "ratio": "3:2"}, "ratio 仅支持"),
+            ({"mode": "audio", "image_data": image, "audio_data": audio, "resolution": "8k"}, "resolution 仅支持"),
+            ({"mode": "audio", "image_data": image, "audio_data": audio, "motion": "wild"}, "motion 仅支持"),
+        ]
+        for payload, msg in cases:
+            with self.subTest(payload=payload):
+                with self.assertRaises(video.VideoValidationError) as cm:
+                    video.validate_video_payload("fang", payload)
+                self.assertIn(msg, cm.exception.detail)
+
+    def test_video_payload_validation_normalizes_valid_payload(self):
+        video = importlib.import_module("content_domains.video")
+        image = "data:image/webp;base64," + base64.b64encode(b"img").decode()
+        payload = video.validate_video_payload("fang", {
+            "mode": " text ",
+            "image_data": image,
+            "text": "hello",
+            "voice": "S_demo",
+            "resolution": "720p",
+            "ratio": "1:1",
+            "motion": "low",
+        })
+        self.assertEqual(payload["mode"], "text")
+        self.assertEqual(payload["resolution"], "720p")
+        self.assertEqual(payload["ratio"], "1:1")
+        self.assertEqual(payload["motion"], "low")
+
     def test_clone_vip_validation_rejects_before_mutation(self):
         audio = importlib.import_module("content_domains.audio")
         original_adb = audio.adb

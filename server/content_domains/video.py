@@ -111,6 +111,67 @@ def get_video_job_phase(job_id):
     except Exception:
         return None
 
+class VideoValidationError(ValueError):
+    def __init__(self, detail):
+        super().__init__(detail)
+        self.detail = detail
+
+def _validate_data_url(data_url, allowed_mimes, field, required=True):
+    raw = (data_url or "").strip()
+    if not raw:
+        if required:
+            raise VideoValidationError("%s 不能为空" % field)
+        return
+    if not raw.lower().startswith("data:") or "," not in raw:
+        msg = "image_data 不是有效的人物形象图片" if field == "image_data" else "%s 不是有效的文件" % field
+        raise VideoValidationError(msg)
+    meta, b64 = raw.split(",", 1)
+    mime = meta.split(";", 1)[0].replace("data:", "").lower()
+    if mime not in allowed_mimes:
+        msg = "image_data 不是有效的人物形象图片" if field == "image_data" else "%s 不是支持的文件格式" % field
+        raise VideoValidationError(msg)
+    try:
+        base64.b64decode(b64, validate=True)
+    except Exception:
+        msg = "image_data 不是有效的人物形象图片" if field == "image_data" else "%s 内容不是有效 base64" % field
+        raise VideoValidationError(msg)
+
+def validate_video_payload(username, payload):
+    if not isinstance(payload, dict):
+        raise VideoValidationError("请求体不是合法 JSON")
+    mode = (payload.get("mode") or "text").strip()
+    if mode not in {"text", "audio", "motion"}:
+        raise VideoValidationError("mode 仅支持 text/audio/motion")
+    has_avatar = bool((payload.get("avatar_id") or "").strip() if isinstance(payload.get("avatar_id"), str) else payload.get("avatar_id"))
+    if mode == "motion" and has_avatar:
+        get_video_avatar((username or "").strip(), payload.get("avatar_id"))
+    else:
+        _validate_data_url(payload.get("image_data"), {"image/jpeg", "image/png", "image/webp"}, "image_data")
+    if mode == "text":
+        if not (payload.get("text") or "").strip():
+            raise VideoValidationError("mode=text 时 text 必填")
+        if not (payload.get("voice") or "").strip():
+            raise VideoValidationError("mode=text 时 voice 必填")
+    elif mode == "audio":
+        _validate_data_url(payload.get("audio_data"), {"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/mp4", "audio/x-m4a"}, "audio_data")
+    else:
+        _validate_data_url(payload.get("reference_video_data"), {"video/mp4", "video/quicktime", "video/webm"}, "reference_video_data")
+    resolution = (payload.get("resolution") or "1080p").strip()
+    ratio = (payload.get("ratio") or "9:16").strip()
+    motion = (payload.get("motion") or "medium").strip()
+    if resolution not in {"720p", "1080p", "4k"}:
+        raise VideoValidationError("resolution 仅支持 720p/1080p/4k")
+    if ratio not in {"9:16", "16:9", "1:1", "4:5", "5:4"}:
+        raise VideoValidationError("ratio 仅支持 9:16/16:9/1:1/4:5/5:4")
+    if motion not in {"low", "medium", "high"}:
+        raise VideoValidationError("motion 仅支持 low/medium/high")
+    checked = dict(payload)
+    checked["mode"] = mode
+    checked["resolution"] = resolution
+    checked["ratio"] = ratio
+    checked["motion"] = motion
+    return checked
+
 def _avatar_display_name(username):
     with closing(adb()) as c:
         row = c.execute("SELECT COUNT(*) AS n FROM avatars WHERE username=?", (username,)).fetchone()
