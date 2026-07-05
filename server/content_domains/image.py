@@ -11,7 +11,7 @@ def gen_image(payload):
     img   = payload.get("image")   # base64(无 data: 前缀) — 上传参考图 → 图生图 / 局部修改
     mask  = payload.get("mask")    # base64 — 蒙版(透明处=要重绘的区域) → 局部修改
     quality = "high" if (payload.get("quality") or "hd") == "hd" else "medium"  # 标准=medium/高清=high
-    provider = (payload.get("provider") or "openai").strip().lower()
+    provider = (payload.get("provider") or "zelong").strip().lower()  # 默认走泽龙/小乐中转(已配 key、直连稳)；GPT Image2(openai) 需另配 OPENAI_API_KEY
     if provider == "zelong":
         base, key, proxy = ZELONG_BASE, ZELONG_KEY, False   # 泽龙Ai：国内中转，直连不走代理
         if not key:
