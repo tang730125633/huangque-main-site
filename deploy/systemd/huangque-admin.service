@@ -5,12 +5,13 @@ After=network.target
 [Service]
 User=ubuntu
 WorkingDirectory=/home/ubuntu/content-api
+# 真实 env 路径（systemd 以 root 读取，可读 root:600 的密钥文件）
 EnvironmentFile=-/home/ubuntu/content-api/content.env
-EnvironmentFile=-/home/ubuntu/content-api/runninghub.env
-EnvironmentFile=-/home/ubuntu/content-api/whisper.env
+EnvironmentFile=-/etc/huangque/runninghub.env
 EnvironmentFile=-/home/ubuntu/auth-service/auth.env
 EnvironmentFile=-/etc/leadgen-secrets.env
-Environment=ADMIN_API_PORT=8099
+# 8099 被 nginx zhipu-proxy 占用，改用 8098
+Environment=ADMIN_API_PORT=8098
 Environment=CONTENT_JOB_DB=/home/ubuntu/content-api/content_jobs.db
 Environment=ADMIN_DB=/home/ubuntu/content-api/admin_config.db
 ExecStart=/usr/bin/python3 /home/ubuntu/content-api/admin_api.py
