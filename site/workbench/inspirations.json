@@ -1,1086 +1,173 @@
 [
  {
   "id": 1,
-  "image": "../assets/inspirations/00_109fcd121889f1c26f309e36c75cfd.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "实木家具厂",
-  "count": 251,
-  "prompt": "实木家具厂"
+  "image": "../assets/inspirations/beauty_001.webp",
+  "model": "pro",
+  "category": "美妆产品",
+  "title": "雪松香水",
+  "count": 422,
+  "prompt": "竖幅特写，一瓶通用无品牌方形玻璃香水瓶，黑金瓶盖，居中悬浮于层层旋转的米白色雪纺绸缎之中，绸缎如漩涡般环绕包裹瓶身；米白背景，暖调柔光，丝绸半透质感与柔和阴影。顶部留白放标题。画面内渲染中文标题“雪松木质香氛”与小字“一缕温柔萦绕”。高级广告质感，杂志级打光，无水印，无英文乱码"
  },
  {
   "id": 2,
-  "image": "../assets/inspirations/00_6537f3d237af2eae174f8fe2e14f97.webp",
-  "model": "nb2",
-  "category": "写实",
-  "title": "白背景服装替换",
-  "count": 498,
-  "prompt": "白背景服装替换"
+  "image": "../assets/inspirations/beauty_002.webp",
+  "model": "pro",
+  "category": "美妆产品",
+  "title": "木质护手霜",
+  "count": 289,
+  "prompt": "四宫格拼版编辑风海报，米色极简底，展示一支通用无品牌管状护手霜的不同角度：单支带引线标注、立于两块鹅卵石上、挤出膏体特写。带水珠磨砂管身，柔和自然光，投影干净。大量留白排版。画面内渲染中文标题“温暖木质调香氛护手霜”与小字“融化肌肤间”。高级广告质感，杂志级打光，无水印，无英文乱码"
  },
  {
   "id": 3,
-  "image": "../assets/inspirations/07_463b02e9efcdcc6cb279d4c1d4fce9.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "随和利落",
-  "count": 254,
-  "prompt": "随和利落"
+  "image": "../assets/inspirations/beauty_003.webp",
+  "model": "pro",
+  "category": "美妆产品",
+  "title": "焕亮精华",
+  "count": 485,
+  "prompt": "竖幅海报，一瓶通用无品牌绿色玻璃滴管精华液居中，背景巨大半透明大字作衬底，光束斜射。旁配新鲜柑橘切片、绿叶与晶莹水珠道具，渐变墨绿背景，清透高光。上方大字区域留白。画面内渲染中文标题“焕亮光采”与小字“提亮均匀肤色”。高级广告质感，杂志级打光，无水印，无英文乱码"
  },
  {
   "id": 4,
-  "image": "../assets/inspirations/07_adaff51b1a25d8a484a43bc0231cab.webp",
-  "model": "nb2",
-  "category": "写实",
-  "title": "女士蓝色正式感外搭",
-  "count": 105,
-  "prompt": "女士蓝色正式感外搭"
+  "image": "../assets/inspirations/beauty_004.webp",
+  "model": "pro",
+  "category": "美妆产品",
+  "title": "清爽防晒",
+  "count": 347,
+  "prompt": "竖幅海报，一支通用无品牌防晒霜与一瓶防晒喷雾并列悬浮，白色磨砂瓶身配银盖，蓝天白云与蓝色弧形色块背景，卡通水滴与太阳图形点缀，清爽冷调柔光。顶部留白放大标题。画面内渲染中文标题“8h高倍养肤防晒”与小字“清爽轻松度日 SPF50+”。高级广告质感，杂志级打光，无水印，无英文乱码"
  },
  {
   "id": 5,
-  "image": "../assets/inspirations/08_713a9fea0cb1a1d06e3d290b60df98.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "男模特在塑料帘幕中向前走",
-  "count": 304,
-  "prompt": "男模特在塑料帘幕中向前走",
-  "type": "video"
+  "image": "../assets/inspirations/beauty_005.webp",
+  "model": "pro",
+  "category": "美妆产品",
+  "title": "春日身体护理",
+  "count": 488,
+  "prompt": "竖幅海报，一组通用无品牌身体护理套装（乳液泵瓶、面霜罐、洁面管、沐浴露）错落陈列于原木树桩台面上，旁插一枝优雅百合，雾感墨绿背景，晨雾柔光，静谧氛围。上方大片留白。画面内渲染中文标题“慢度时间，迎一场春日呵护”。高级广告质感，杂志级打光，无水印，无英文乱码"
  },
  {
   "id": 6,
-  "image": "../assets/inspirations/0a_a44778616c13e342f99a8a1ef81cb6.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "女子与星空",
-  "count": 217,
-  "prompt": "女子与星空",
-  "type": "video"
+  "image": "../assets/inspirations/beauty_006.webp",
+  "model": "pro",
+  "category": "美妆产品",
+  "title": "清痘护肤方案",
+  "count": 214,
+  "prompt": "竖幅护肤信息图海报，多件通用无品牌产品（洁面管、精华滴管瓶、面霜罐、防晒管）环绕排列，穿插乳液飞溅、绿叶与水珠，绿紫渐变柔光背景，清新通透。左上留白放大标题。画面内渲染中文标题“清透毛孔 告别黑白头”与小字“洁面·修护·保湿”。高级广告质感，杂志级打光，无水印，无英文乱码"
  },
  {
   "id": 7,
-  "image": "../assets/inspirations/0d_d187713d7472edd383f46df89d1647.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "电脑桌前",
-  "count": 349,
-  "prompt": "电脑桌前"
+  "image": "../assets/inspirations/beauty_007.webp",
+  "model": "pro",
+  "category": "美妆产品",
+  "title": "触手可及呵护",
+  "count": 424,
+  "prompt": "竖幅创意海报，暖米色极简背景，中央立一部竖屏手机，屏内一位戴墨镜的时髦女子俯身，一只手伸出屏幕外轻触画面前方一支通用无品牌白金护手霜。柔和暖光，长投影，超现实趣味构图。顶部留白放标题。画面内渲染中文标题“触手可及的呵护”。高级广告质感，杂志级打光，无水印，无英文乱码"
  },
  {
   "id": 8,
-  "image": "../assets/inspirations/0f_3b519627b3b68e0179a57f99b04c5d.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "尼日利亚拉各斯市居民",
-  "count": 492,
-  "prompt": "尼日利亚拉各斯市居民",
-  "type": "video"
+  "image": "../assets/inspirations/beauty_008.webp",
+  "model": "pro",
+  "category": "美妆产品",
+  "title": "镜面唇釉",
+  "count": 385,
+  "prompt": "竖幅海报，两支通用无品牌银色金属方管镜面唇釉动态倾斜悬浮，露出琥珀色膏体，下方水面倒影与涟漪，冷调银灰渐变背景，锐利高光与水感反射。上方留白放标题。画面内渲染中文标题“波浪镜面唇釉”与小字“晶冻成膜 高透高亮”。高级广告质感，杂志级打光，无水印，无英文乱码"
  },
  {
   "id": 9,
-  "image": "../assets/inspirations/12_c18da8b1cce9955b4f676a7a03c44e.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "头盔上插着一根巨大羽毛的骑士",
-  "count": 317,
-  "prompt": "头盔上插着一根巨大羽毛的骑士",
-  "type": "video"
+  "image": "../assets/inspirations/beauty_009.webp",
+  "model": "pro",
+  "category": "美妆产品",
+  "title": "果冻面霜",
+  "count": 251,
+  "prompt": "竖幅海报，一罐通用无品牌粉色果冻面霜悬浮空中，透明啫喱质地环绕流动，背景为蓝天白云、青翠草地与飘落花瓣，明媚梦幻，清新柔光。顶部留白放大标题。画面内渲染中文标题“水润焕亮果冻面霜”与小字“让肌肤发光”。高级广告质感，杂志级打光，无水印，无英文乱码"
  },
  {
   "id": 10,
-  "image": "../assets/inspirations/13_b97469f6d88a902d0710b121199c65.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "猫咪李云龙",
-  "count": 358,
-  "prompt": "猫咪李云龙",
-  "type": "video"
+  "image": "../assets/inspirations/beauty_010.webp",
+  "model": "pro",
+  "category": "美妆产品",
+  "title": "焕光提拉面膜",
+  "count": 476,
+  "prompt": "竖幅海报，一支通用无品牌炫彩镭射银管睡眠面膜配红色管盖，斜立于晶莹啫喱与气泡之间，冷调蓝银背景，水润高光与折射光晕。左侧留白放标题与功效图标。画面内渲染中文标题“焕光提拉紧致面膜”与小字“深层补水 弹润提亮”。高级广告质感，杂志级打光，无水印，无英文乱码"
  },
  {
   "id": 11,
-  "image": "../assets/inspirations/13_baeb0c7260f093213dc62765c2aa8a.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "塑料注塑加工厂",
-  "count": 284,
-  "prompt": "塑料注塑加工厂"
+  "image": "../assets/inspirations/beauty_011.webp",
+  "model": "pro",
+  "category": "美妆产品",
+  "title": "玫瑰洁面",
+  "count": 128,
+  "prompt": "竖幅海报，一支通用无品牌淡紫色洁面管沉入深蓝水下，周围环绕大朵粉红玫瑰与细密气泡，水面波光粼粼，深邃暗调，戏剧性冷光，超现实水下摄影质感。中部留白放标题。画面内渲染中文标题“玫瑰净透洁面”与小字“温和深层清洁”。高级广告质感，杂志级打光，无水印，无英文乱码"
  },
  {
   "id": 12,
-  "image": "../assets/inspirations/14_e2b027f0654f60d5d585e050170e4b.webp",
-  "model": "seedance",
-  "category": "数字人口播",
-  "title": "室内沙发・粉长袖上衣・情感分享",
-  "count": 229,
-  "prompt": "室内沙发・粉长袖上衣・情感分享",
-  "type": "video"
+  "image": "../assets/inspirations/beauty_012.webp",
+  "model": "pro",
+  "category": "美妆产品",
+  "title": "玻光精华套装",
+  "count": 482,
+  "prompt": "竖幅护肤质地信息图海报，三件通用无品牌透明青蓝护肤品（喷雾瓶、滴管精华、面霜管）上方陈列，下方分栏展示啫喱、精华、面霜质地涂抹特写，冷调清透浅蓝背景，玻璃反光柔光。左上留白放标题。画面内渲染中文标题“感受质地 见证透亮玻光肌”。高级广告质感，杂志级打光，无水印，无英文乱码"
  },
  {
   "id": 13,
-  "image": "../assets/inspirations/16_990f246ae7ffd834f376362c3a850e.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "朝气蓬勃",
-  "count": 454,
-  "prompt": "朝气蓬勃"
+  "image": "../assets/inspirations/beauty_013.webp",
+  "model": "pro",
+  "category": "美妆产品",
+  "title": "日间保湿面霜",
+  "count": 226,
+  "prompt": "竖幅海报，一罐通用无品牌淡蓝面霜配金色瓶盖，立于晶莹亚克力圆台上，周围乳白水花飞溅、水珠飞散，晨光斜射，金蓝冷暖交融，通透水感高光。顶部留白放大标题。画面内渲染中文标题“保湿·防护·焕亮”与小字“24小时水润日间光采”。高级广告质感，杂志级打光，无水印，无英文乱码"
  },
  {
   "id": 14,
-  "image": "../assets/inspirations/1a_408b446da79c124f710d46c22abc1c.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "温柔阳光",
-  "count": 127,
-  "prompt": "温柔阳光"
+  "image": "../assets/inspirations/beauty_014.webp",
+  "model": "pro",
+  "category": "美妆产品",
+  "title": "石英磨砂膏",
+  "count": 217,
+  "prompt": "竖幅极简编辑风海报，米白背景，一支通用无品牌银色金属磨砂膏管居中特写，管身随意褶皱，冷峻高级。左右配质地色块与产地小字，顶部大面积留白。画面内渲染中文标题“细石英温和磨砂膏”与小字“净澈焕新 澳洲植萃”。高级广告质感，杂志级打光，无水印，无英文乱码"
  },
  {
   "id": 15,
-  "image": "../assets/inspirations/1b_36ba636d5351f39326d46f4fec61fc.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "复古壁挂",
-  "count": 326,
-  "prompt": "复古壁挂"
+  "image": "../assets/inspirations/beauty_015.webp",
+  "model": "pro",
+  "category": "美妆产品",
+  "title": "裸感粉底液",
+  "count": 217,
+  "prompt": "竖幅海报，一瓶通用无品牌裸金色玻璃粉底液配金盖居中，周围环绕米色绸缎、奶油质地涂抹色块、粉底刷与浅色花朵，暖香槟色调，柔焦光晕与细腻高光。中部留白放标题。画面内渲染中文标题“裸感精致底妆”与小字“轻盈无瑕 触发肌肤蜕变”。高级广告质感，杂志级打光，无水印，无英文乱码"
  },
  {
   "id": 16,
-  "image": "../assets/inspirations/1b_7a0f19e1775f75480dd733a559468c.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "电影感射箭瞬间命中靶心",
-  "count": 432,
-  "prompt": "电影感射箭瞬间命中靶心",
-  "type": "video"
+  "image": "../assets/inspirations/beauty_016.webp",
+  "model": "pro",
+  "category": "美妆产品",
+  "title": "抗老修护霜",
+  "count": 166,
+  "prompt": "竖幅海报，一罐通用无品牌面霜与一支软管交叠悬浮，左侧三颗晶莹水泡内分别封入绿叶、金色精油滴与生姜切片作成分示意，清透蓝色水花背景，冷调水润柔光。顶部留白放大标题。画面内渲染中文标题“抗老紧致养肤霜”与小字“天然萃取 温和无负担”。高级广告质感，杂志级打光，无水印，无英文乱码"
  },
  {
   "id": 17,
-  "image": "../assets/inspirations/21_b26da6e62e830777d19d2dfda1145b.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "阳光随和",
-  "count": 483,
-  "prompt": "阳光随和"
+  "image": "../assets/inspirations/beauty_017.webp",
+  "model": "pro",
+  "category": "美妆产品",
+  "title": "丝滑口红",
+  "count": 88,
+  "prompt": "竖幅美妆信息图海报，三支通用无品牌银管口红交叠陈列于透明亚克力块上，玫粉与豆沙色膏体，粉色大理石流光背景，甜美柔光。左侧留白配功效图标与标题。画面内渲染中文标题“心动必备口红”与小字“显色饱满 丝滑顺滑一抹上色”。高级广告质感，杂志级打光，无水印，无英文乱码"
  },
  {
   "id": 18,
-  "image": "../assets/inspirations/26_1d25053f75a4c82a3936625f3c8276.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "超级英雄室内设计",
-  "count": 179,
-  "prompt": "超级英雄室内设计"
+  "image": "../assets/inspirations/beauty_018.webp",
+  "model": "pro",
+  "category": "护肤精华",
+  "title": "暖金滋养油",
+  "count": 362,
+  "prompt": "竖版海报，一支无品牌金色油质精华泵瓶立式陈列于米金反光台面，瓶身盛满金色油液带细密光泽，周围散布晶莹琥珀色玻璃球与柔焦金光背景，暖金奢华调，杂志柔光。画面左上方大面积留白用于标题，画面内渲染中文标题「焕活滋养精华」。竖版9:16海报，高级广告质感，杂志级打光，无水印，无英文乱码"
  },
  {
   "id": 19,
-  "image": "../assets/inspirations/26_80ad67f621fbdd10144cc6e447066d.webp",
-  "model": "nb2",
-  "category": "电商带货",
-  "title": "商品展示",
-  "count": 364,
-  "prompt": "商品展示"
- },
- {
-  "id": 20,
-  "image": "../assets/inspirations/27_855c7c967e7d78e6e79be29c3ea72d.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "运动模糊人群肖像",
-  "count": 393,
-  "prompt": "运动模糊人群肖像"
- },
- {
-  "id": 21,
-  "image": "../assets/inspirations/2b_b281f716d616c5e064e2ca7417b813.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "挺拔清秀",
-  "count": 332,
-  "prompt": "挺拔清秀"
- },
- {
-  "id": 22,
-  "image": "../assets/inspirations/2b_d207f9a916ba38f17a592496464d9c.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "老式电视机",
-  "count": 500,
-  "prompt": "老式电视机",
-  "type": "video"
- },
- {
-  "id": 23,
-  "image": "../assets/inspirations/30_d910a0055571525f0133c0c006c6c6.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "床头柜",
-  "count": 153,
-  "prompt": "床头柜"
- },
- {
-  "id": 24,
-  "image": "../assets/inspirations/31_b142937953a0f77a733b5748471d98.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "奔跑的象群",
-  "count": 213,
-  "prompt": "奔跑的象群",
-  "type": "video"
- },
- {
-  "id": 25,
-  "image": "../assets/inspirations/32_ea72af30275fcefb4bd9a5128e911f.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "人物姿势修改",
-  "count": 294,
-  "prompt": "人物姿势修改"
- },
- {
-  "id": 26,
-  "image": "../assets/inspirations/33_285f637d9db94aa4d36cd1a2b467c0.webp",
-  "model": "seedance",
-  "category": "电商带货",
-  "title": "包包",
-  "count": 152,
-  "prompt": "包包",
-  "type": "video"
- },
- {
-  "id": 27,
-  "image": "../assets/inspirations/35_a8988fe720b655de4a43fa54651f14.webp",
-  "model": "nb2",
-  "category": "写实",
-  "title": "女士棕色吊带",
-  "count": 261,
-  "prompt": "女士棕色吊带"
- },
- {
-  "id": 28,
-  "image": "../assets/inspirations/36_69500d1b6a197dd2f05da5ffade28d.webp",
-  "model": "nb2",
-  "category": "美食探店",
-  "title": "一盘麻辣香锅",
-  "count": 435,
-  "prompt": "一盘麻辣香锅"
- },
- {
-  "id": 29,
-  "image": "../assets/inspirations/36_856ece1813e5ecdb7b8c521ff55a5b.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "排队的顾客",
-  "count": 241,
-  "prompt": "排队的顾客"
- },
- {
-  "id": 30,
-  "image": "../assets/inspirations/37_1ba2429743326fd5e4a89053a11343.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "高空跳伞",
-  "count": 482,
-  "prompt": "高空跳伞",
-  "type": "video"
- },
- {
-  "id": 31,
-  "image": "../assets/inspirations/37_e5d420cdd0be4bc527bd8841c51d8e.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "笑容爽朗",
-  "count": 350,
-  "prompt": "笑容爽朗"
- },
- {
-  "id": 32,
-  "image": "../assets/inspirations/38_fd608418e9628b915fb09b339fb080.webp",
-  "model": "seedance",
-  "category": "数字人口播",
-  "title": "暖光室内・露肩针织・职场口播",
-  "count": 213,
-  "prompt": "暖光室内・露肩针织・职场口播",
-  "type": "video"
- },
- {
-  "id": 33,
-  "image": "../assets/inspirations/3a_d789df7d92d8ba801f6e72ab659ed4.webp",
-  "model": "nb2",
-  "category": "写实",
-  "title": "简约半身男",
-  "count": 275,
-  "prompt": "简约半身男"
- },
- {
-  "id": 34,
-  "image": "../assets/inspirations/3b_ab4c21d5b23614dac6af5580be9315.webp",
-  "model": "nb2",
-  "category": "电商带货",
-  "title": "奢华腕表商业海报",
-  "count": 427,
-  "prompt": "奢华腕表商业海报"
- },
- {
-  "id": 35,
-  "image": "../assets/inspirations/3d_96c7c737b7e8a54f2687f2c49328a1.webp",
-  "model": "nb2",
-  "category": "写实",
-  "title": "女士黑色吊带",
-  "count": 423,
-  "prompt": "女士黑色吊带"
- },
- {
-  "id": 36,
-  "image": "../assets/inspirations/3d_f92aff6d0f9467c15bb689be66a137.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "阳光室内",
-  "count": 306,
-  "prompt": "阳光室内"
- },
- {
-  "id": 37,
-  "image": "../assets/inspirations/3e_e364d9396f26ee39a43d3236f3ab78.webp",
-  "model": "seedance",
-  "category": "数字人口播",
-  "title": "客厅窗边・露肩毛衣・干货讲解",
-  "count": 455,
-  "prompt": "客厅窗边・露肩毛衣・干货讲解",
-  "type": "video"
- },
- {
-  "id": 38,
-  "image": "../assets/inspirations/42_c0c071a475cfd3a1117fb9cda00343.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "卡通袋鼠",
-  "count": 479,
-  "prompt": "卡通袋鼠",
-  "type": "video"
- },
- {
-  "id": 39,
-  "image": "../assets/inspirations/43_f1fa0a47ee7b197ea5cded8d198ba2.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "干净成熟",
-  "count": 280,
-  "prompt": "干净成熟"
- },
- {
-  "id": 40,
-  "image": "../assets/inspirations/4c_7e3fda61132619b085bf7a1cae8b33.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "俏皮俯视行李箱照片",
-  "count": 314,
-  "prompt": "俏皮俯视行李箱照片"
- },
- {
-  "id": 41,
-  "image": "../assets/inspirations/4d_c23467e8f0952b53a508e6fd0f0d2f.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "开放式饭厅与厨房",
-  "count": 131,
-  "prompt": "开放式饭厅与厨房"
- },
- {
-  "id": 42,
-  "image": "../assets/inspirations/4e_09098da8434d0168035d30fe9e4fb8.webp",
-  "model": "nb2",
-  "category": "美食探店",
-  "title": "极简主义食物摄影作品",
-  "count": 340,
-  "prompt": "极简主义食物摄影作品"
- },
- {
-  "id": 43,
-  "image": "../assets/inspirations/52_ac697fd97b21fc546defb4717b8200.webp",
-  "model": "nb2",
-  "category": "电商带货",
-  "title": "椰奶草莓爆爆珠",
-  "count": 144,
-  "prompt": "椰奶草莓爆爆珠"
- },
- {
-  "id": 44,
-  "image": "../assets/inspirations/53_fbd6a6f9dca5a12060bb11cf6ae968.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "拟人化的小兔",
-  "count": 292,
-  "prompt": "拟人化的小兔"
- },
- {
-  "id": 45,
-  "image": "../assets/inspirations/58_aeb86d10d0290f81e9b724a34536d4.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "清新户外",
-  "count": 484,
-  "prompt": "清新户外"
- },
- {
-  "id": 46,
-  "image": "../assets/inspirations/58_e3ecc76dec0939e3ae68478add5301.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "不同时代自己的照片",
-  "count": 300,
-  "prompt": "不同时代自己的照片"
- },
- {
-  "id": 47,
-  "image": "../assets/inspirations/59_b8cef581229e97f51bcd35e98b2188.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "日常快照风格",
-  "count": 327,
-  "prompt": "日常快照风格"
- },
- {
-  "id": 48,
-  "image": "../assets/inspirations/61_e4c57027aa6810b93859d5a27566ab.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "竹林",
-  "count": 413,
-  "prompt": "竹林",
-  "type": "video"
- },
- {
-  "id": 49,
-  "image": "../assets/inspirations/62_260c17a9c1b491b01e54c785eb1c60.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "户外清爽",
-  "count": 187,
-  "prompt": "户外清爽"
- },
- {
-  "id": 50,
-  "image": "../assets/inspirations/62_fb5d649e3474ea06127f7ced604a16.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "制鞋厂",
-  "count": 239,
-  "prompt": "制鞋厂"
- },
- {
-  "id": 51,
-  "image": "../assets/inspirations/66_7617adcd29b713936ce31e6f25d288.webp",
-  "model": "seedance",
-  "category": "数字人口播",
-  "title": "电竞房・海洋风吊带・游戏闲聊",
-  "count": 413,
-  "prompt": "电竞房・海洋风吊带・游戏闲聊",
-  "type": "video"
- },
- {
-  "id": 52,
-  "image": "../assets/inspirations/67_faee85ed4ce32e6c5a579d3f73fe89.webp",
-  "model": "nb2",
-  "category": "写实",
-  "title": "女士白背景吊带",
-  "count": 378,
-  "prompt": "女士白背景吊带"
- },
- {
-  "id": 53,
-  "image": "../assets/inspirations/6b_f6d4f33b30bd2bb0a7916d44c17e2a.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "太空人的冒险",
-  "count": 317,
-  "prompt": "太空人的冒险",
-  "type": "video"
- },
- {
-  "id": 54,
-  "image": "../assets/inspirations/6c_8957e6b05d54b527a8b6adba9629e1.webp",
-  "model": "nb2",
-  "category": "写实",
-  "title": "白背景换装",
-  "count": 384,
-  "prompt": "白背景换装"
- },
- {
-  "id": 55,
-  "image": "../assets/inspirations/73_3b96f6a16230392eb1158dde12bc30.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "户外游艇",
-  "count": 424,
-  "prompt": "户外游艇"
- },
- {
-  "id": 56,
-  "image": "../assets/inspirations/76_01c1710798538eea3aa7606e3c3d12.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "小怪物",
-  "count": 473,
-  "prompt": "小怪物",
-  "type": "video"
- },
- {
-  "id": 57,
-  "image": "../assets/inspirations/76_1ea7c8c1f510e722110a161d80ae0f.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "模型武士",
-  "count": 344,
-  "prompt": "模型武士",
-  "type": "video"
- },
- {
-  "id": 58,
-  "image": "../assets/inspirations/76_615f39e755d85b8d4b8c607c7e5c54.webp",
-  "model": "seedance",
-  "category": "数字人口播",
-  "title": "百叶窗前・黄吊带长裙・温柔分享",
-  "count": 258,
-  "prompt": "百叶窗前・黄吊带长裙・温柔分享",
-  "type": "video"
- },
- {
-  "id": 59,
-  "image": "../assets/inspirations/76_f76310e8a9344366aa16b9a999ab7c.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "半透明水母",
-  "count": 424,
-  "prompt": "半透明水母",
-  "type": "video"
- },
- {
-  "id": 60,
-  "image": "../assets/inspirations/78_17578d9f76f22bf31a0b6aa2dcc160.webp",
-  "model": "nb2",
-  "category": "写实",
-  "title": "女士粉色可爱吊带",
-  "count": 256,
-  "prompt": "女士粉色可爱吊带"
- },
- {
-  "id": 61,
-  "image": "../assets/inspirations/79_a74df351eee1860bf5079c60be5e95.webp",
-  "model": "seedance",
-  "category": "数字人口播",
-  "title": "夜晚书桌・白蕾丝吊带・夜谈分享",
-  "count": 106,
-  "prompt": "夜晚书桌・白蕾丝吊带・夜谈分享",
-  "type": "video"
- },
- {
-  "id": 62,
-  "image": "../assets/inspirations/7b_5b87f82d3f414cbd33c0daf8f0b241.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "边境牧羊犬",
-  "count": 228,
-  "prompt": "边境牧羊犬",
-  "type": "video"
- },
- {
-  "id": 63,
-  "image": "../assets/inspirations/7b_ea221b7d95f3e0940ae120293f4ad9.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "戴着眼镜的猫",
-  "count": 217,
-  "prompt": "戴着眼镜的猫",
-  "type": "video"
- },
- {
-  "id": 64,
-  "image": "../assets/inspirations/7d_84eea64ea1e39bbdc219769fd4725c.webp",
-  "model": "seedance",
-  "category": "数字人口播",
-  "title": "沙发窗边・蓝吊带上衣・情感倾诉",
-  "count": 382,
-  "prompt": "沙发窗边・蓝吊带上衣・情感倾诉",
-  "type": "video"
- },
- {
-  "id": 65,
-  "image": "../assets/inspirations/80_47e4774178b463b7ba11008e41ca0c.webp",
-  "model": "seedance",
-  "category": "电商带货",
-  "title": "珠宝展示",
-  "count": 389,
-  "prompt": "珠宝展示",
-  "type": "video"
- },
- {
-  "id": 66,
-  "image": "../assets/inspirations/80_ec1a53231ea9d09f085cf07d0cafc8.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "活字印刷",
-  "count": 327,
-  "prompt": "活字印刷",
-  "type": "video"
- },
- {
-  "id": 67,
-  "image": "../assets/inspirations/82_e922d7dbb9ebea48419f3f470e2979.webp",
-  "model": "nb2",
-  "category": "电商带货",
-  "title": "柔粉极简护肤静物",
-  "count": 267,
-  "prompt": "柔粉极简护肤静物"
- },
- {
-  "id": 68,
-  "image": "../assets/inspirations/89_b8c50f575d3cc478753bd44976c263.webp",
-  "model": "nb2",
-  "category": "写实",
-  "title": "白底换装",
-  "count": 429,
-  "prompt": "白底换装"
- },
- {
-  "id": 69,
-  "image": "../assets/inspirations/8b_7efc9fb04d43676c4df76f920ff350.webp",
-  "model": "seedance",
-  "category": "电商带货",
-  "title": "质朴木纹与美食烟火的高清广告分镜",
-  "count": 237,
-  "prompt": "质朴木纹与美食烟火的高清广告分镜",
-  "type": "video"
- },
- {
-  "id": 70,
-  "image": "../assets/inspirations/90_6b3efb0488309816bfc879cee6f313.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "玻璃乌龟",
-  "count": 198,
-  "prompt": "玻璃乌龟",
-  "type": "video"
- },
- {
-  "id": 71,
-  "image": "../assets/inspirations/91_9794107809b6b1f842cbf91513b2a7.webp",
-  "model": "seedance",
-  "category": "数字人口播",
-  "title": "动物电台 播音主持",
-  "count": 449,
-  "prompt": "动物电台 播音主持",
-  "type": "video"
- },
- {
-  "id": 72,
-  "image": "../assets/inspirations/95_8d67fcb9cdcb22fa4ee575e5ede12c.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "家具诧寂设计",
-  "count": 358,
-  "prompt": "家具诧寂设计"
- },
- {
-  "id": 73,
-  "image": "../assets/inspirations/96_068f2446e432ffa1319119dfa1f032.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "拳击手高举双手以示胜利",
-  "count": 304,
-  "prompt": "拳击手高举双手以示胜利",
-  "type": "video"
- },
- {
-  "id": 74,
-  "image": "../assets/inspirations/97_5a36592dc4bfb8e62ac4c07526cc04.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "外星人",
-  "count": 129,
-  "prompt": "外星人",
-  "type": "video"
- },
- {
-  "id": 75,
-  "image": "../assets/inspirations/97_8e626f68a98e8317c7bbc44c049faf.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "茶几",
-  "count": 156,
-  "prompt": "茶几"
- },
- {
-  "id": 76,
-  "image": "../assets/inspirations/9c_72fabc6325ec83c23065743cd2f10e.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "时光旅行分屏",
-  "count": 176,
-  "prompt": "时光旅行分屏"
- },
- {
-  "id": 77,
-  "image": "../assets/inspirations/9d_fe4a1f713434f57f87377c8c1980f4.webp",
-  "model": "seedance",
-  "category": "数字人口播",
-  "title": "海边日落・清新吊带・情感倾诉",
-  "count": 475,
-  "prompt": "海边日落・清新吊带・情感倾诉",
-  "type": "video"
- },
- {
-  "id": 78,
-  "image": "../assets/inspirations/a3_c133bc31b929100a02a7814765a2d7.webp",
-  "model": "nb2",
-  "category": "写实",
-  "title": "女士黄色内搭吊带",
-  "count": 135,
-  "prompt": "女士黄色内搭吊带"
- },
- {
-  "id": 79,
-  "image": "../assets/inspirations/a6_5c4ea7ece98dc4c660391b04f3bb50.webp",
-  "model": "nb2",
-  "category": "写实",
-  "title": "白背景换装",
-  "count": 359,
-  "prompt": "白背景换装"
- },
- {
-  "id": 80,
-  "image": "../assets/inspirations/a6_9382bd4e92b293bc2d5427cdd78043.webp",
-  "model": "nb2",
-  "category": "数字人口播",
-  "title": "居家口播",
-  "count": 212,
-  "prompt": "居家口播"
- },
- {
-  "id": 81,
-  "image": "../assets/inspirations/a7_1e3b32cacb9a22f9a15c21694832ea.webp",
-  "model": "seedance",
-  "category": "数字人口播",
-  "title": "客厅沙发・白针织背心・生活闲聊",
-  "count": 392,
-  "prompt": "客厅沙发・白针织背心・生活闲聊",
-  "type": "video"
- },
- {
-  "id": 82,
-  "image": "../assets/inspirations/ad_b94981c2f866ca9c2d0579c8ca8228.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "服装厂",
-  "count": 259,
-  "prompt": "服装厂"
- },
- {
-  "id": 83,
-  "image": "../assets/inspirations/b1_a2d9f19d153b6e041fe2f93798c3c0.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "美女打开一本书，书中的信件开始缓缓从书页中飘浮而出",
-  "count": 280,
-  "prompt": "美女打开一本书，书中的信件开始缓缓从书页中飘浮而出",
-  "type": "video"
- },
- {
-  "id": 84,
-  "image": "../assets/inspirations/b2_944623d4cbaa932fa1ebec0998daea.webp",
-  "model": "nb2",
-  "category": "写实",
-  "title": "女士白色吊带",
-  "count": 328,
-  "prompt": "女士白色吊带"
- },
- {
-  "id": 85,
-  "image": "../assets/inspirations/b4_7633d650f748509ad670fc927f0680.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "简约自然",
-  "count": 427,
-  "prompt": "简约自然"
- },
- {
-  "id": 86,
-  "image": "../assets/inspirations/b5_cf3dc0c0060142809eee33ff6207a3.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "龙猫",
-  "count": 286,
-  "prompt": "龙猫"
- },
- {
-  "id": 87,
-  "image": "../assets/inspirations/bc_e5126a2f3fe70d414efc410c5e6bfb.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "头顶花束的男人",
-  "count": 398,
-  "prompt": "头顶花束的男人",
-  "type": "video"
- },
- {
-  "id": 88,
-  "image": "../assets/inspirations/bd_7284e0c3a5a3b965631ab675409ebe.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "俊朗利落",
-  "count": 216,
-  "prompt": "俊朗利落"
- },
- {
-  "id": 89,
-  "image": "../assets/inspirations/bf_5f30eb4d5a7710178d7c9266715b3a.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "船缓缓向前航行",
-  "count": 390,
-  "prompt": "船缓缓向前航行",
-  "type": "video"
- },
- {
-  "id": 90,
-  "image": "../assets/inspirations/c1_d8fc09e33e4ff3b3b2e28f186758ec.webp",
-  "model": "seedance",
-  "category": "数字人口播",
-  "title": "窗边书桌・黄吊带上衣・干货分享",
-  "count": 482,
-  "prompt": "窗边书桌・黄吊带上衣・干货分享",
-  "type": "video"
- },
- {
-  "id": 91,
-  "image": "../assets/inspirations/c5_c074454038dc457e1b0a9e635636d3.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "电子厂",
-  "count": 111,
-  "prompt": "电子厂"
- },
- {
-  "id": 92,
-  "image": "../assets/inspirations/c6_43ca78f2f5c21a4cb578dd00d70544.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "崎岖的悬崖",
-  "count": 469,
-  "prompt": "崎岖的悬崖",
-  "type": "video"
- },
- {
-  "id": 93,
-  "image": "../assets/inspirations/c8_2f81a9cb39e16d17ec637384cac029.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "友善的狗",
-  "count": 248,
-  "prompt": "友善的狗",
-  "type": "video"
- },
- {
-  "id": 94,
-  "image": "../assets/inspirations/c8_bbb76b679e29aa521bf968d14fb17c.webp",
-  "model": "seedance",
-  "category": "数字人口播",
-  "title": "海边日落・彩条背心・旅行分享",
-  "count": 339,
-  "prompt": "海边日落・彩条背心・旅行分享",
-  "type": "video"
- },
- {
-  "id": 95,
-  "image": "../assets/inspirations/c9_b59e4c36a6ca0f987e007e94d62884.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "潜水员",
-  "count": 295,
-  "prompt": "潜水员",
-  "type": "video"
- },
- {
-  "id": 96,
-  "image": "../assets/inspirations/ca_6fb92dedf653d6105d365e78480ac1.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "闺蜜的婚礼，我的秀场",
-  "count": 291,
-  "prompt": "闺蜜的婚礼，我的秀场",
-  "type": "video"
- },
- {
-  "id": 97,
-  "image": "../assets/inspirations/cd_773b52fc0db7de7dd6d7dab9a6442b.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "柴犬",
-  "count": 202,
-  "prompt": "柴犬"
- },
- {
-  "id": 98,
-  "image": "../assets/inspirations/ce_752fdc6ebe47c0fa9441b0b562c808.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "电影级运镜 太空宇航员",
-  "count": 266,
-  "prompt": "电影级运镜 太空宇航员",
-  "type": "video"
- },
- {
-  "id": 99,
-  "image": "../assets/inspirations/d0_2ff86f89c2925f241206c3f37f8fff.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "天空拉链下的赛博真相",
-  "count": 317,
-  "prompt": "天空拉链下的赛博真相",
-  "type": "video"
- },
- {
-  "id": 100,
-  "image": "../assets/inspirations/d5_ab80cd09d43d6a5ee5dc9b84cfe9e0.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "水獭开飞机的自然探索之旅",
-  "count": 170,
-  "prompt": "水獭开飞机的自然探索之旅",
-  "type": "video"
- },
- {
-  "id": 101,
-  "image": "../assets/inspirations/d6_0f97b136e07ba30b1f4971c0bd1cde.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "清新少年",
-  "count": 413,
-  "prompt": "清新少年"
- },
- {
-  "id": 102,
-  "image": "../assets/inspirations/d8_1f83ca24dbc99b925e53fe55a47c64.webp",
-  "model": "nb2",
-  "category": "电商带货",
-  "title": "高级摄影椰奶碗",
-  "count": 111,
-  "prompt": "高级摄影椰奶碗"
- },
- {
-  "id": 103,
-  "image": "../assets/inspirations/df_2f1a5fb0000c6aae41484e4f22ddd8.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "儒雅帅气",
-  "count": 229,
-  "prompt": "儒雅帅气"
- },
- {
-  "id": 104,
-  "image": "../assets/inspirations/e2_c4340952e191800011b3fdf4507703.webp",
-  "model": "seedance",
-  "category": "数字人口播",
-  "title": "海边黄昏・碎花吊带裙・治愈分享",
-  "count": 338,
-  "prompt": "海边黄昏・碎花吊带裙・治愈分享",
-  "type": "video"
- },
- {
-  "id": 105,
-  "image": "../assets/inspirations/e5_2945627b48726f6a06babd4e3fc3ac.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "旅程中破碎提示",
-  "count": 411,
-  "prompt": "旅程中破碎提示"
- },
- {
-  "id": 106,
-  "image": "../assets/inspirations/f2_77e32fbfe2a2942a03aba3ca0dc9d3.webp",
-  "model": "nb2",
-  "category": "电商带货",
-  "title": "裸眼3D LED广告牌",
-  "count": 137,
-  "prompt": "裸眼3D LED广告牌"
- },
- {
-  "id": 107,
-  "image": "../assets/inspirations/f2_c123039bbb8555114ce8d9365b80dd.webp",
-  "model": "nb2",
-  "category": "数字人口播",
-  "title": "金毛直播",
-  "count": 315,
-  "prompt": "金毛直播"
- },
- {
-  "id": 108,
-  "image": "../assets/inspirations/f6_1a00d62dec1f2fdb7a92231696998e.webp",
-  "model": "nb2",
-  "category": "电商带货",
-  "title": "手持便携式车载吸尘器",
-  "count": 450,
-  "prompt": "手持便携式车载吸尘器"
- },
- {
-  "id": 109,
-  "image": "../assets/inspirations/f6_9f97de2481328e8c8ea6dddb61c2d7.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "软装设计获奖作品",
-  "count": 462,
-  "prompt": "软装设计获奖作品"
- },
- {
-  "id": 110,
-  "image": "../assets/inspirations/f8_ba91e81c1a7b02544c6b61d852aacc.webp",
-  "model": "seedance",
-  "category": "创意",
-  "title": "绝美风景",
-  "count": 188,
-  "prompt": "绝美风景",
-  "type": "video"
- },
- {
-  "id": 111,
-  "image": "../assets/inspirations/f8_f803ba981ec6effbbd7301ae065b79.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "俊朗干练",
-  "count": 109,
-  "prompt": "俊朗干练"
- },
- {
-  "id": 112,
-  "image": "../assets/inspirations/fa_486e7ee458a580256162c4c2b0cd47.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "写实风格",
-  "count": 266,
-  "prompt": "写实风格"
- },
- {
-  "id": 113,
-  "image": "../assets/inspirations/fa_84bba20bf284d01185099fc1a29b47.webp",
-  "model": "seedance",
-  "category": "数字人口播",
-  "title": "室外游艇・白吊带・旅行知识分享",
-  "count": 312,
-  "prompt": "室外游艇・白吊带・旅行知识分享",
-  "type": "video"
- },
- {
-  "id": 114,
-  "image": "../assets/inspirations/fb_0f921026b1a5cdb8224937ab8ce612.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "灯具",
-  "count": 164,
-  "prompt": "灯具"
- },
- {
-  "id": 115,
-  "image": "../assets/inspirations/fe_3f868745d4e9a111964eacaae88fe1.webp",
-  "model": "nb2",
-  "category": "创意",
-  "title": "棱角分明",
-  "count": 338,
-  "prompt": "棱角分明"
+  "image": "../assets/inspirations/beauty_019.webp",
+  "model": "pro",
+  "category": "护肤精华",
+  "title": "水润清透",
+  "count": 410,
+  "prompt": "竖版海报，一支无品牌白管精华霜横卧漂浮于清澈水面上，四周荡开涟漪水波、晶莹水珠与积雪草绿叶点缀，左下方一抹透明啫喱质地涂抹，冷调蓝白清透水感光影。画面左侧留白用于标题，画面内渲染中文标题「补水如泉」。竖版9:16海报，高级广告质感，杂志级打光，无水印，无英文乱码"
  }
 ]
