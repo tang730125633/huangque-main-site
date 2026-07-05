@@ -38,7 +38,7 @@ def gen_image(payload):
         mode = "text2img"
     files_out, urls = [], []
     for i, item in enumerate(d.get("data") or []):
-        fn = "img_%d_%d.png" % (int(time.time() * 1000), i)
+        fn = "img_%s_%d.png" % (uuid.uuid4().hex, i)  # 不可猜键(#185)：杜绝时间戳猜测
         if item.get("b64_json"):
             (OUT_DIR / fn).write_bytes(base64.b64decode(item["b64_json"]))
         elif item.get("url"):                                # 部分中转返回 url 而非 b64

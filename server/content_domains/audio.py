@@ -178,7 +178,7 @@ def generate_doubao_preview(speaker_id, text=None, speech_rate=0, loudness_rate=
             pass
     if not chunks:
         raise ValueError("\u8bd5\u542c\u97f3\u9891\u751f\u6210\u8fd4\u56de\u4e3a\u7a7a")
-    fn = "audio/voice_preview_%d.mp3" % int(time.time() * 1000)
+    fn = "audio/voice_preview_%s.mp3" % uuid.uuid4().hex  # 不可猜键(#185)
     _out_path(fn).write_bytes(b"".join(chunks))
     return {"file": fn, "url": _file_url(fn), "text": text}
 
