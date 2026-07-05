@@ -174,6 +174,7 @@ def init_db():
             status TEXT DEFAULT 'pending', payload TEXT, result TEXT, error TEXT,
             created_at INTEGER, updated_at INTEGER)""")
         _ensure_column(c, "jobs", "deleted", "INTEGER DEFAULT 0")
+        _ensure_column(c, "jobs", "refunded", "INTEGER DEFAULT 0")  # 退点幂等键(#187)
         c.commit()
     feature_flags.init_db()
     init_audio_db()
@@ -536,60 +537,91 @@ def _post_bytes(path, data, ctype):  # 返回原始字节(TTS 拿 mp3 二进制)
 
 
 # ============ 后台 worker（串行跑任务，失败退点） ============
+def _set_terminal(job_id, status, result=None, error=None):
+    """CAS 抢终态：仅当仍是 running 才迁移，返回是否抢到迁移权(rowcount>=1)。
+    防 reaper 与 worker 竞态——谁先抢到 running→done/error 谁定终态，败者放弃写状态与副作用(#187)。"""
+    now = int(time.time())
+    with closing(jdb()) as c:
+        if status == "done":
+            cur = c.execute("UPDATE jobs SET status='done', result=?, updated_at=? WHERE id=? AND status='running'",
+                            (json.dumps(result, ensure_ascii=False), now, job_id))
+        else:
+            cur = c.execute("UPDATE jobs SET status='error', error=?, updated_at=? WHERE id=? AND status='running'",
+                            (str(error or "")[:300], now, job_id))
+        c.commit()
+        return cur.rowcount >= 1
+
+def _refund_once(job_id, username, cost):
+    """退点 job 级幂等：refunded 列 CAS，仅第一次真正加回点数，之后跳过(#187)。"""
+    try:
+        cost = int(cost or 0)
+    except Exception:
+        cost = 0
+    if cost <= 0:
+        return
+    with closing(jdb()) as c:
+        # 双重保险：仅当终态确为 error 且尚未退过，才置位并退点
+        cur = c.execute("UPDATE jobs SET refunded=1 WHERE id=? AND refunded=0 AND status='error'", (job_id,))
+        c.commit()
+        if cur.rowcount < 1:
+            return  # 已退过 / 非 error 终态，跳过
+    _domains()[1].safe_refund_points(username, cost)
+
 def run_job(job_id):
     with closing(jdb()) as c:
         r = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
     if not r: return
     kind = r["kind"]; payload = json.loads(r["payload"] or "{}")
+    username = r["username"]; cost = r["cost"]
     if kind in {"audio", "video", "tryon"}:
-        payload["_username"] = r["username"]
+        payload["_username"] = username
         payload["_job_id"] = job_id
     try:
         with closing(jdb()) as c:
             c.execute("UPDATE jobs SET status='running', updated_at=? WHERE id=?", (int(time.time()), job_id)); c.commit()
         result = HANDLERS[kind](payload)
-        audio_domain, _, video_domain = _domains()
-        if kind == "audio":
-            audio_domain.record_audio_asset(job_id, r["username"], result)
-        if kind in {"video", "tryon"}:
-            video_domain.record_video_asset(job_id, r["username"], result)
-        with closing(jdb()) as c:
-            c.execute("UPDATE jobs SET status='done', result=?, updated_at=? WHERE id=?",
-                      (json.dumps(result, ensure_ascii=False), int(time.time()), job_id)); c.commit()
+        # 先 CAS 抢 done 终态：仅当仍是 running 才写 done，防 reaper 已判 error 又被无条件覆盖(既出片又退点)
+        if not _set_terminal(job_id, "done", result=result):
+            return  # 已被 reaper 接管为 error+退点：放弃成功副作用(不入库、不覆盖状态)
+        # 已确认拿到 done 终态；入库是次要副作用，失败也不改状态、不退点
+        try:
+            audio_domain, _, video_domain = _domains()
+            if kind == "audio":
+                audio_domain.record_audio_asset(job_id, username, result)
+            if kind in {"video", "tryon"}:
+                video_domain.record_video_asset(job_id, username, result)
+        except Exception:
+            pass
     except Exception as e:
-        if kind in {"video", "tryon"}:
+        # 生成失败：CAS 抢 error 终态；抢到才记失败资产。退点走幂等(reaper 若已退则跳过)
+        claimed = _set_terminal(job_id, "error", error=str(e))
+        if claimed and kind in {"video", "tryon"}:
             try:
                 failed = dict(payload)
                 failed.update({"phase": "failed", "status": "failed", "error": str(e)[:300]})
                 _, _, video_domain = _domains()
-                video_domain.record_video_asset(job_id, r["username"], failed)
+                video_domain.record_video_asset(job_id, username, failed)
             except Exception:
                 pass
-        points_domain = _domains()[1]
-        points_domain.safe_refund_points(r["username"], r["cost"])  # 失败退点
-        with closing(jdb()) as c:
-            c.execute("UPDATE jobs SET status='error', error=?, updated_at=? WHERE id=?",
-                      (str(e)[:300], int(time.time()), job_id)); c.commit()
+        _refund_once(job_id, username, cost)  # 幂等：最多退一次
 
 # ============ 超时清道夫：running 超 6 分钟的僵尸任务自动判失败 + 退点 ============
 def reaper():
     while True:
         try:
-            cutoff = int(time.time()) - 360
+            now = int(time.time()); cutoff = now - 360
             with closing(jdb()) as c:
                 stuck = c.execute("SELECT id, username, cost, kind, updated_at FROM jobs WHERE status='running' AND updated_at < ?", (cutoff,)).fetchall()
-                for r in stuck:
-                    if r["kind"] == "tryon" and r["updated_at"] >= int(time.time()) - 2400:
-                        continue  # 换装+换背景两段式慢，心跳会刷新 updated_at，给 40 分钟余量
-                    if r["kind"] == "video" and r["updated_at"] >= int(time.time()) - 1800:
-                        continue
-                    if r["kind"] == "image" and r["updated_at"] >= int(time.time()) - 900:
-                        continue  # 多图/中转出图慢，给 image 15 分钟余量
-                    points_domain = _domains()[1]
-                    points_domain.safe_refund_points(r["username"], r["cost"])  # ??
-                    c.execute("UPDATE jobs SET status='error', error='生成超时自动结束(>6分钟)，已退点', updated_at=? WHERE id=?",
-                              (int(time.time()), r["id"]))
-                if stuck: c.commit()
+            for r in stuck:
+                if r["kind"] == "tryon" and r["updated_at"] >= now - 2400:
+                    continue  # 换装+换背景两段式慢，心跳会刷新 updated_at，给 40 分钟余量
+                if r["kind"] == "video" and r["updated_at"] >= now - 1800:
+                    continue
+                if r["kind"] == "image" and r["updated_at"] >= now - 900:
+                    continue  # 多图/中转出图慢，给 image 15 分钟余量
+                # CAS 抢 error 终态；抢到(说明 worker 尚未写 done)才退点，退点本身再幂等一层
+                if _set_terminal(r["id"], "error", error="生成超时自动结束(>6分钟)，已退点"):
+                    _refund_once(r["id"], r["username"], r["cost"])
         except Exception:
             pass
         time.sleep(60)
