@@ -667,9 +667,12 @@ class H(BaseHTTPRequestHandler):
             raw_name = ((q.get("name", ["video"])[0])[:40]) or "video"
             ascii_name = re.sub(r"[^a-zA-Z0-9_\-]+", "_", raw_name).strip("_") or "video"  # header 必须 ASCII
             host = (urllib.parse.urlparse(url).hostname or "").lower()
-            ALLOW = (".zjcdn.com", ".douyinvod.com", ".douyinstatic.com", ".douyinpic.com", ".amemv.com",
-                     ".bytecdn.cn", ".ixigua.com", ".pstatp.com", ".snssdk.com", ".byteimg.com",
-                     ".xhscdn.com", ".rednotecdn.com", ".xiaohongshu.com")  # 防 SSRF：只允许已知视频 CDN
+            ALLOW = (
+                ".zjcdn.com", ".douyinvod.com", ".douyinstatic.com", ".douyinpic.com", ".amemv.com",
+                ".bytecdn.cn", ".ixigua.com", ".pstatp.com", ".snssdk.com", ".byteimg.com",
+                ".xhscdn.com", ".rednotecdn.com", ".xiaohongshu.com",
+                ".bytedance.net", ".lf-douyin.com", ".365yg.com",
+            )  # 抖音(TikHub play_addr)/小红书 等直链 CDN；防 SSRF。覆盖 collect 解析视频下载。
             if not (url.startswith("http") and any(host.endswith(h) for h in ALLOW)):
                 return self._send(400, {"detail": "不支持的下载地址"})
             try:

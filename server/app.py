@@ -28,8 +28,11 @@ from fastapi import FastAPI, Form, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse
 
 # 只允许抖音系域名（防 SSRF：禁止内网/localhost/任意URL）
-_ALLOW_DOMAINS = ("douyin.com", "douyinvod.com", "amemv.com", "iesdouyin.com",
-                  "bytecdn.cn", "pstatp.com", "ixigua.com", "snssdk.com", "zjcdn.com")
+_ALLOW_DOMAINS = (
+    "douyin.com", "iesdouyin.com", "douyinvod.com", "amemv.com",
+    "bytecdn.cn", "pstatp.com", "ixigua.com", "snssdk.com", "zjcdn.com",
+    "bytedance.net", "lf-douyin.com", "365yg.com",
+)  # 抖音系域名校验（resolve / download_video 等）；与 dl 代理白名单保持一致
 
 
 def is_safe_video_url(u):

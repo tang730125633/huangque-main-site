@@ -14,10 +14,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 PORT = 8097
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # 直连，绕过环境代理
-ALLOW = (".zjcdn.com", ".douyinvod.com", ".douyinstatic.com", ".douyinpic.com", ".amemv.com",
-         ".bytecdn.cn", ".ixigua.com", ".pstatp.com", ".snssdk.com", ".byteimg.com",
-         ".xhscdn.com", ".rednotecdn.com", ".xiaohongshu.com",
-         "wxapp.tc.qq.com")  # 视频号视频 CDN(加密时效直链)；防 SSRF 只放精确域名不放泛 .qq.com
+ALLOW = (
+    ".zjcdn.com", ".douyinvod.com", ".douyinstatic.com", ".douyinpic.com", ".amemv.com",
+    ".bytecdn.cn", ".ixigua.com", ".pstatp.com", ".snssdk.com", ".byteimg.com",
+    ".xhscdn.com", ".rednotecdn.com", ".xiaohongshu.com",
+    ".bytedance.net", ".lf-douyin.com", ".365yg.com",
+    "wxapp.tc.qq.com",
+)  # 抖音(TikHub play_addr)/小红书/视频号 等直链 CDN 域名；防 SSRF。覆盖 collect 解析 + 生成产出下载。
 DECRYPT_API = "http://127.0.0.1:3001/api/decrypt"  # Isaac64 WASM 解密服务(Evil0ctal)
 
 
