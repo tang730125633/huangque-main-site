@@ -8,7 +8,17 @@
   {"id":7,"image":"../assets/guofeng_search.webp","model":"pro","category":"写实","title":"国风护肤主视觉","count":268,"prompt":"国风雅韵护肤主视觉，水墨留白，淡金点缀，高级写实质感，4K，主体居中"},
   {"id":8,"image":"../assets/guofeng_cube.webp","model":"nb2","category":"创意","title":"国风立体场景","count":154,"prompt":"国风立体场景合成，传统纹样与现代美学融合，暖金光影，精致质感"},
   {"id":9,"image":"../assets/wechat_matrix.webp","model":"nb2","category":"小红书封面","title":"护肤种草封面","count":225,"prompt":"小红书护肤种草封面，清新治愈风，大字标题，3:4竖版，留白排版，真实质感"},
-  {"id":10,"image":"../assets/brand_v3.webp","model":"nb2","category":"活动促销","title":"品牌活动主视觉","count":203,"prompt":"美业品牌活动主视觉，高级暖金色调，留白展示区，质感光效，适合投放"},
+  {"id":10,"image":"../assets/brand_v3.webp","model":"nb2","category":"品牌主视觉","title":"美业品牌主视觉","count":203,"prompt":"美业品牌活动主视觉，高级暖金色调，留白展示区，质感光效，适合投放"},
   {"id":11,"image":"../assets/guofeng_bg.webp","model":"nb2","category":"护肤科普","title":"护肤科普配图","count":138,"prompt":"护肤成分科普配图，干净浅色背景，专业医美质感，留白信息区，可叠加文字说明"},
-  {"id":12,"image":"../assets/layer_search.webp","model":"gpt","category":"探店种草","title":"门店探店种草图","count":167,"prompt":"美业门店探店种草图，温馨氛围光，真实场景质感，写实风格，适合小红书"}
+  {"id":12,"image":"../assets/layer_search.webp","model":"gpt","category":"探店种草","title":"门店探店种草图","count":167,"prompt":"美业门店探店种草图，温馨氛围光，真实场景质感，写实风格，适合小红书"},
+  {"id":13,"image":"../assets/layer_bg.webp","model":"nb2","category":"创意","title":"分层创意护肤图","count":189,"prompt":"分层透明质感创意合成，现代医美风格，高级光影，9:16竖版"},
+  {"id":14,"image":"../assets/layer_cube.webp","model":"nb2","category":"创意","title":"国风3D立体场景","count":142,"prompt":"国风传统纹样与3D现代融合，精致光影，适合品牌视觉"},
+  {"id":15,"image":"../assets/guofeng_bg.webp","model":"nb2","category":"国风设计","title":"国风雅韵背景图","count":156,"prompt":"水墨国风护肤背景，淡金点缀，高级留白，4K质感"},
+  {"id":16,"image":"../assets/brand_v3.webp","model":"nb2","category":"品牌主视觉","title":"高端品牌VI展示","count":178,"prompt":"美业品牌VI主视觉，简洁高级金色调，留白信息区"},
+  {"id":17,"image":"../assets/comic.webp","model":"nb2","category":"创意","title":"可爱漫画美业风","count":134,"prompt":"活泼漫画风格美业宣传，亮色系，年轻亲和力"},
+  {"id":18,"image":"../assets/cyberpunk.webp","model":"gpt","category":"创意","title":"未来赛博美容","count":245,"prompt":"赛博朋克霓虹美容科技，未来界面，冷调高级"},
+  {"id":19,"image":"../assets/meiye_poster.webp","model":"seedance","category":"数字人口播","title":"专业数字人首帧","count":289,"prompt":"高级美业数字人形象首帧，专业造型，适合口播视频生成"},
+  {"id":20,"image":"../assets/huangque_poster.webp","model":"nb2","category":"电商带货","title":"产品电商主图","count":167,"prompt":"美业产品电商带货图，突出卖点，吸引眼球"},
+  {"id":21,"image":"../assets/layer_search.webp","model":"gpt","category":"美食探店","title":"高端探店美食图","count":198,"prompt":"高端门店探店美食图，温馨专业光影"},
+  {"id":22,"image":"../assets/wechat_matrix.webp","model":"nb2","category":"小红书封面","title":"治愈护肤种草封面","count":231,"prompt":"清新治愈小红书护肤封面，3:4竖版"}
 ]

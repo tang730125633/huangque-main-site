@@ -11,11 +11,15 @@
   body{ overflow:hidden; }
   .capRow{ grid-template-columns:repeat(5,1fr); }
   .masonry{ column-count:3; column-gap:16px; }
-  .masonry > *{ break-inside:avoid; margin-bottom:16px; }
+  .masonry > *{ break-inside:avoid; margin-bottom:16px; border-radius:14px; overflow:hidden; transition:transform .15s, box-shadow .15s; }
+  .masonry > *:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.3); }
+  .masonry img { transition: transform .3s; }
+  .masonry > *:hover img { transform: scale(1.03); }
   .tutGrid{ grid-template-columns:repeat(3,1fr); }
   @media (max-width:1200px){ .capRow{ grid-template-columns:repeat(3,1fr);} .masonry{ column-count:2;} .tutGrid{ grid-template-columns:repeat(2,1fr);} }
   @media (max-width:760px){ .capRow{ grid-template-columns:1fr 1fr;} .masonry{ column-count:1;} .tutGrid{ grid-template-columns:1fr;} }
-  .chip{ cursor:pointer; transition:.15s; }
+  .chip{ cursor:pointer; transition:.15s; padding:1px 2px; }
+  .chip:hover{ color:#e7b24c !important; }
   .ph{ position:relative; border:1px dashed rgba(231,178,76,.22); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.5), rgba(12,18,32,.4)); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; color:#5c6b82; overflow:hidden; }
   .ph::after{ content:""; position:absolute; inset:0; background:linear-gradient(100deg, transparent 30%, rgba(231,178,76,.05) 50%, transparent 70%); background-size:200% 100%; animation:hq-shimmer 3.4s ease-in-out infinite; }
   .phtag{ position:absolute; top:11px; left:11px; padding:3px 9px; font-size:10.5px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.6); z-index:1; }
@@ -62,42 +66,21 @@
     </div>
   </div>
 
-  <!-- 分类筛选 -->
+  <!-- 分类筛选 (动态生成) -->
   <div style="display:flex; align-items:center; gap:18px; margin-bottom:20px; flex-wrap:wrap;">
     <div style="font-size:13px; font-weight:600; color:#94a4bb; white-space:nowrap;">全部分类</div>
     <div style="width:1px; height:14px; background:rgba(148,164,187,.18);"></div>
-    <div style="display:flex; gap:18px; flex-wrap:wrap; font-size:13.5px;">
-      <span class="chip" data-cat="all" style="color:#e7b24c; font-weight:600;">全部</span>
-      <span class="chip" data-cat="数字人口播" style="color:#94a4bb;">数字人口播</span>
-      <span class="chip" data-cat="美业海报" style="color:#94a4bb;">美业海报</span>
-      <span class="chip" data-cat="小红书封面" style="color:#94a4bb;">小红书封面</span>
-      <span class="chip" data-cat="节日营销" style="color:#94a4bb;">节日营销</span>
-      <span class="chip" data-cat="活动促销" style="color:#94a4bb;">活动促销</span>
-      <span class="chip" data-cat="护肤科普" style="color:#94a4bb;">护肤科普</span>
-      <span class="chip" data-cat="探店种草" style="color:#94a4bb;">探店种草</span>
-      <span class="chip" data-cat="写实" style="color:#94a4bb;">写实</span>
-      <span class="chip" data-cat="创意" style="color:#94a4bb;">创意</span>
-    </div>
+    <div id="chips" style="display:flex; gap:18px; flex-wrap:wrap; font-size:13.5px;"></div>
   </div>
 
-  <!-- 灵感案例（空态画廊）-->
+  <!-- 灵感案例 -->
   <div id="paneCase">
-    <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px; padding:13px 16px; border:1px solid rgba(231,178,76,.18); background:rgba(231,178,76,.05); border-radius:13px; flex-wrap:wrap;">
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px; padding:13px 16px; border:1px solid rgba(231,178,76,.18); background:linear-gradient(165deg, rgba(231,178,76,.06), rgba(7,11,19,.4)); border-radius:13px; flex-wrap:wrap;">
       <span style="display:flex; width:17px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg></span>
-      <div style="flex:1; min-width:200px; font-size:13px; color:#94a4bb;">灵感案例陆续上线中 —— 团队在更多客户实测里产出的精选作品会陆续放到这里，点任一卡片即可 <span style="color:#e7b24c; font-weight:600;">「做同款」</span>。</div>
+      <div style="flex:1; min-width:200px; font-size:13px; color:#94a4bb;">已收录 <strong style="color:#e7b24c;">22</strong> 张黄雀精选样片 · 覆盖美业/创意/国风等类，点击卡片「做同款」直达工具。</div>
       <a href="banana.html" class="btn-gold" style="padding:8px 16px; font-size:12.5px; font-weight:600; border-radius:9px; white-space:nowrap;">去创作</a>
     </div>
-    <div class="masonry" id="caseGrid">
-      <div class="ph" style="height:300px;"><div class="phtag" style="border:1px solid rgba(231,178,76,.25); color:#e7b24c;">美业海报</div><span style="display:flex; width:30px; color:#3a4760;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span><div style="font-size:12.5px;">案例即将上线</div></div>
-      <div class="ph" style="height:380px;"><div class="phtag" style="border:1px solid rgba(244,112,138,.25); color:#f4708a;">数字人口播</div><span style="display:flex; width:30px; color:#3a4760;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span><div style="font-size:12.5px;">案例即将上线</div></div>
-      <div class="ph" style="height:260px;"><div class="phtag" style="border:1px solid rgba(45,212,191,.25); color:#2dd4bf;">小红书封面</div><span style="display:flex; width:30px; color:#3a4760;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span><div style="font-size:12.5px;">案例即将上线</div></div>
-      <div class="ph" style="height:340px;"><div class="phtag" style="border:1px solid rgba(231,178,76,.25); color:#e7b24c;">节日营销</div><span style="display:flex; width:30px; color:#3a4760;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span><div style="font-size:12.5px;">案例即将上线</div></div>
-      <div class="ph" style="height:280px;"><div class="phtag" style="border:1px solid rgba(45,212,191,.25); color:#2dd4bf;">护肤科普</div><span style="display:flex; width:30px; color:#3a4760;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span><div style="font-size:12.5px;">案例即将上线</div></div>
-      <div class="ph" style="height:360px;"><div class="phtag" style="border:1px solid rgba(244,112,138,.25); color:#f4708a;">探店种草</div><span style="display:flex; width:30px; color:#3a4760;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span><div style="font-size:12.5px;">案例即将上线</div></div>
-      <div class="ph" style="height:250px;"><div class="phtag" style="border:1px solid rgba(231,178,76,.25); color:#e7b24c;">活动促销</div><span style="display:flex; width:30px; color:#3a4760;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span><div style="font-size:12.5px;">案例即将上线</div></div>
-      <div class="ph" style="height:330px;"><div class="phtag" style="border:1px solid rgba(45,212,191,.25); color:#2dd4bf;">创意</div><span style="display:flex; width:30px; color:#3a4760;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span><div style="font-size:12.5px;">案例即将上线</div></div>
-      <div class="ph" style="height:290px;"><div class="phtag" style="border:1px solid rgba(231,178,76,.25); color:#e7b24c;">美业海报</div><span style="display:flex; width:30px; color:#3a4760;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span><div style="font-size:12.5px;">案例即将上线</div></div>
-    </div>
+    <div class="masonry" id="caseGrid"></div>
   </div>
 
   <!-- 教程视频 -->
@@ -180,17 +163,19 @@
     var a=document.createElement('div'); a.className='hv-lift';
     a.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:14px; overflow:hidden; background:rgba(16,24,39,.4); cursor:pointer;';
     var badge=MODEL_BADGE[x.model]||x.model||'', isVid=(x.type==='video');
-    var play=isVid?'<div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none;"><div style="width:46px; height:46px; border-radius:50%; background:rgba(7,11,19,.55); backdrop-filter:blur(4px); border:1px solid rgba(231,178,76,.42); display:flex; align-items:center; justify-content:center; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;"><path d="M7 4v16l13-8z"/></svg></div></div>':'';
+    var play=isVid?'<div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; opacity:0.9;"><div style="width:46px; height:46px; border-radius:50%; background:rgba(7,11,19,.65); backdrop-filter:blur(4px); border:1px solid rgba(231,178,76,.5); display:flex; align-items:center; justify-content:center; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;"><path d="M7 4v16l13-8z"/></svg></div></div>':'';
     var dur=(isVid&&x.duration)?'<span style="position:absolute; right:10px; top:10px; padding:2px 7px; font-size:10px; border-radius:5px; background:rgba(7,11,19,.7); color:#eaf1fa; font-family:\'JetBrains Mono\',monospace;">'+x.duration+'</span>':'';
     a.innerHTML='<img src="'+x.image+'" loading="lazy" style="display:block; width:100%; height:auto; object-fit:cover;">'
       +play+dur
       +'<span style="position:absolute; top:10px; left:10px; padding:3px 9px; font-size:10.5px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.62); color:#e7b24c;">'+badge+'</span>'
-      +'<div style="position:absolute; left:0; right:0; bottom:0; padding:26px 12px 11px; background:linear-gradient(transparent,rgba(7,11,19,.85));">'
+      +'<div style="position:absolute; left:0; right:0; bottom:0; padding:26px 12px 11px; background:linear-gradient(transparent,rgba(7,11,19,.9)); transition:opacity .2s;">'
       +'<div style="font-size:13px; font-weight:600; color:#eaf1fa; margin-bottom:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">'+(x.title||'')+'</div>'
       +'<div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">'
       +'<span style="font-size:11px; color:#94a4bb;">'+(x.category||'')+(x.count?(' · ♥ '+x.count):'')+'</span>'
-      +'<span class="btn-gold" style="padding:5px 12px; font-size:11.5px; font-weight:600; border-radius:8px; white-space:nowrap;">做同款</span>'
+      +'<span class="btn-gold" style="padding:5px 12px; font-size:11.5px; font-weight:600; border-radius:8px; white-space:nowrap; opacity:0.95;">做同款</span>'
       +'</div></div>';
+    a.onmouseenter = function(){ a.style.boxShadow='0 10px 30px rgba(0,0,0,.35)'; };
+    a.onmouseleave = function(){ a.style.boxShadow=''; };
     a.onclick=function(){ var dest=isVid?'video.html':'banana.html';
       location.href=dest+'?prompt='+encodeURIComponent(x.prompt||'')+((!isVid&&x.model)?('&engine='+encodeURIComponent(x.model)):''); };
     return a;
@@ -202,18 +187,57 @@
     if(!list.length){ var e=document.createElement('div'); e.style.cssText='padding:30px; text-align:center; font-size:13px; color:#5c6b82;'; e.textContent='该分类暂无案例，去作图生成一张吧'; grid.appendChild(e); return; }
     list.forEach(function(x){ grid.appendChild(card(x)); });
   }
-  function syncChips(){  // 空分类自动隐藏：数据里没有的分类不显示，新增数据(如数字人视频)后自动出现
-    var cats={}; DATA.forEach(function(x){ if(x.category) cats[x.category]=1; });
-    document.querySelectorAll('.chip').forEach(function(c){ var dc=c.getAttribute('data-cat'); c.style.display=(dc==='all'||cats[dc])?'':'none'; });
+  var searchInput = document.querySelector('#paneCase input');
+  function syncChips(){
+    var cats = {}; DATA.forEach(function(x){ if(x.category) cats[x.category] = (cats[x.category]||0) + 1; });
+    var chipsEl = document.getElementById('chips');
+    if(!chipsEl) return;
+    chipsEl.innerHTML = '';
+    var all = document.createElement('span');
+    all.className = 'chip'; all.setAttribute('data-cat','all'); all.textContent = '全部';
+    if(curCat==='all') { all.style.color='#e7b24c'; all.style.fontWeight='600'; }
+    all.onclick = function(){ setCat('all'); };
+    chipsEl.appendChild(all);
+    Object.keys(cats).sort().forEach(function(cat){
+      var s = document.createElement('span');
+      s.className = 'chip'; s.setAttribute('data-cat',cat); s.textContent = cat;
+      if(curCat===cat){ s.style.color='#e7b24c'; s.style.fontWeight='600'; }
+      s.onclick = function(){ setCat(cat); };
+      chipsEl.appendChild(s);
+    });
   }
-  fetch('inspirations.json',{cache:'no-cache'}).then(function(r){return r.json();}).then(function(d){ DATA=d||[]; syncChips(); renderCards(); }).catch(function(){ /* 拉取失败则保留静态占位卡 */ });
+  function setCat(cat){
+    curCat = cat;
+    renderCards();
+    syncChips();
+  }
+  function filterData(){
+    var q = (searchInput && searchInput.value || '').toLowerCase().trim();
+    if(!q) return curCat==='all' ? DATA : DATA.filter(function(x){ return x.category===curCat; });
+    return DATA.filter(function(x){
+      var matchCat = curCat==='all' || x.category===curCat;
+      var matchText = (x.title||'').toLowerCase().indexOf(q)>-1 || (x.prompt||'').toLowerCase().indexOf(q)>-1 || (x.category||'').toLowerCase().indexOf(q)>-1;
+      return matchCat && matchText;
+    });
+  }
+  function renderCards(){
+    if(!grid) return;
+    var list = filterData();
+    grid.innerHTML='';
+    if(!list.length){
+      var e=document.createElement('div'); e.style.cssText='padding:30px; text-align:center; font-size:13px; color:#5c6b82;';
+      e.textContent='暂无匹配案例，去作图生成一张吧'; grid.appendChild(e); return;
+    }
+    list.forEach(function(x){ grid.appendChild(card(x)); });
+  }
+  if(searchInput){
+    searchInput.addEventListener('input', function(){ renderCards(); });
+  }
+  fetch('inspirations.json',{cache:'no-cache'}).then(function(r){return r.json();}).then(function(d){
+    DATA=d||[]; syncChips(); renderCards();
+  }).catch(function(){ /* fallback */ });
 
-  // 分类筛选(真生效)
-  document.querySelectorAll('.chip').forEach(function(c){ c.onclick=function(){
-    document.querySelectorAll('.chip').forEach(function(x){ x.style.color='#94a4bb'; x.style.fontWeight='400'; });
-    c.style.color='#e7b24c'; c.style.fontWeight='600';
-    curCat=c.getAttribute('data-cat')||'all'; renderCards();
-  };});
+  // 分类筛选由 syncChips 动态绑定
 })();
 </script>
 </body>
