@@ -4,6 +4,77 @@ globals().update({k: getattr(_core, k) for k in dir(_core) if not k.startswith("
 
 from .audio import gen_audio
 
+VALID_VIDEO_MODES = {"text", "audio", "motion"}
+VALID_VIDEO_RATIOS = {"9:16", "16:9", "1:1", "4:5", "5:4"}
+VALID_VIDEO_RESOLUTIONS = {"720p", "1080p", "4k"}
+VALID_VIDEO_MOTIONS = {"low", "medium", "high"}
+VALID_IMAGE_MIMES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
+VALID_AUDIO_MIMES = {"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/mp4", "audio/m4a", "audio/x-m4a"}
+VALID_REFERENCE_VIDEO_MIMES = {"video/mp4", "video/quicktime", "video/webm"}
+
+def _is_valid_data_url(value, allowed_mimes):
+    raw = (value or "").strip()
+    if not raw.startswith("data:") or "," not in raw:
+        return False
+    meta, encoded = raw.split(",", 1)
+    if ";base64" not in meta.lower():
+        return False
+    mime = meta.split(";", 1)[0].replace("data:", "", 1).lower()
+    if mime not in allowed_mimes:
+        return False
+    try:
+        base64.b64decode(encoded, validate=True)
+        return True
+    except Exception:
+        return False
+
+def validate_video_payload(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("请求体不是合法 JSON")
+    mode = (payload.get("mode") or "text").strip().lower()
+    if mode not in VALID_VIDEO_MODES:
+        raise ValueError("mode 仅支持 text/audio/motion")
+
+    image_data = (payload.get("image_data") or "").strip()
+    avatar_id = str(payload.get("avatar_id") or "").strip()
+    if not image_data and not (mode == "motion" and avatar_id):
+        raise ValueError("image_data 不能为空")
+    if image_data and not _is_valid_data_url(image_data, VALID_IMAGE_MIMES):
+        raise ValueError("image_data 不是有效的人物形象图片")
+
+    if mode == "text":
+        if not (payload.get("voice") or "").strip():
+            raise ValueError("mode=text 时 voice 必填")
+    elif mode == "audio":
+        audio_data = (payload.get("audio_data") or "").strip()
+        if not audio_data:
+            raise ValueError("audio_data 不能为空")
+        if not _is_valid_data_url(audio_data, VALID_AUDIO_MIMES):
+            raise ValueError("audio_data 不是有效的音频文件")
+    elif mode == "motion":
+        reference_video_data = (payload.get("reference_video_data") or "").strip()
+        if not reference_video_data:
+            raise ValueError("reference_video_data 不能为空")
+        if not _is_valid_data_url(reference_video_data, VALID_REFERENCE_VIDEO_MIMES):
+            raise ValueError("reference_video_data 不是有效的参考动作视频")
+
+    ratio = (payload.get("ratio") or "9:16").strip()
+    if ratio not in VALID_VIDEO_RATIOS:
+        raise ValueError("ratio 仅支持 9:16、16:9、1:1、4:5、5:4")
+    resolution = (payload.get("resolution") or "1080p").strip().lower()
+    if resolution not in VALID_VIDEO_RESOLUTIONS:
+        raise ValueError("resolution 仅支持 720p、1080p、4k")
+    motion = (payload.get("motion") or "medium").strip().lower()
+    if motion not in VALID_VIDEO_MOTIONS:
+        raise ValueError("motion 仅支持 low、medium、high")
+
+    cleaned = dict(payload)
+    cleaned["mode"] = mode
+    cleaned["ratio"] = ratio
+    cleaned["resolution"] = resolution
+    cleaned["motion"] = motion
+    return cleaned
+
 def record_video_asset(job_id, username, result):
     now = int(time.time())
     with closing(adb()) as c:

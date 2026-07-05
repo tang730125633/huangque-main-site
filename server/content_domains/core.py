@@ -122,7 +122,15 @@ def _resolve_out_file(rel):
     return None
 
 # ---- 能力定义：成本(点数) + 处理函数 ----
-COST = {"image": 12, "copy": 3, "audio": 10, "video": 0, "tryon": 40}  # 视频任务壳暂不扣点；collect/leads/tryon 走 cost_of() 动态算
+def _env_positive_int(name, default):
+    try:
+        value = int(os.environ.get(name, str(default)) or default)
+    except Exception:
+        value = default
+    return max(1, value)
+
+VIDEO_COST = _env_positive_int("VIDEO_COST", 20)
+COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40}  # collect/leads/tryon 走 cost_of() 动态算
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
 ZELONG_KEY  = os.environ.get("ZELONG_KEY", "")                              # 泽龙Ai 中转站(OpenAI 兼容)
 ZELONG_BASE = os.environ.get("ZELONG_BASE", "https://api.xiaoleai.team")
@@ -544,7 +552,7 @@ def run_job(job_id):
         if kind in {"video", "tryon"}:
             try:
                 failed = dict(payload)
-                failed.update({"status": "failed", "error": str(e)[:300]})
+                failed.update({"phase": "failed", "status": "failed", "error": str(e)[:300]})
                 _, _, video_domain = _domains()
                 video_domain.record_video_asset(job_id, r["username"], failed)
             except Exception:
@@ -694,7 +702,12 @@ class H(BaseHTTPRequestHandler):
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
-            body = self._json_body()
+            try:
+                body = self._json_body_strict() if kind == "video" else self._json_body()
+                if kind == "video":
+                    body = video_domain.validate_video_payload(body)
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)[:220]})
             cost = points_domain.cost_of(kind, body)
             try:
                 points_left = points_domain.deduct_points(user["username"], cost)  # 原子预扣
