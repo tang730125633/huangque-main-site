@@ -447,6 +447,54 @@ def job_stats(days=7):
     }
 
 
+def _job_payload(raw):
+    try:
+        data = json.loads(raw or "{}")
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def call_func_name(kind, payload):
+    kind = kind or "unknown"
+    if kind == "image":
+        model = str(payload.get("model") or "").strip().lower()
+        provider = str(payload.get("provider") or "").strip().lower()
+        if model == "nb2":
+            return "作图 · Nano Banana 2"
+        if model == "pro":
+            return "作图 · Nano Banana Pro"
+        if provider == "openai":
+            return "作图 · GPT Image"
+        if provider == "zelong":
+            return "作图 · 泽龙"
+        return "作图"
+    if kind == "video":
+        mode = str(payload.get("mode") or "").strip().lower()
+        if mode == "text":
+            return "视频 · 文案口播"
+        if mode == "audio":
+            return "视频 · 音频口播"
+        if mode == "motion":
+            return "视频 · 动作模仿"
+        return "视频生成"
+    if kind == "collect":
+        if str(payload.get("keyword") or "").strip():
+            return "内容采集 · 关键词搜索"
+        if str(payload.get("url") or "").strip():
+            return "内容采集 · 贴链接"
+        return "内容采集"
+    names = {
+        "tryon": "换装换背景",
+        "audio": "配音生成",
+        "leads": "获客分析",
+        "leadgen": "获客分析",
+        "copy": "文案生成",
+        "dl": "无水印下载",
+    }
+    return names.get(kind, kind)
+
+
 def call_logs(days=7, limit=200):
     days = max(1, min(int(days or 7), 90))
     limit = max(1, min(int(limit or 200), 500))
@@ -456,7 +504,7 @@ def call_logs(days=7, limit=200):
     with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as c:
         c.row_factory = sqlite3.Row
         rows = c.execute(
-            """SELECT id, username, kind, cost, status, created_at, updated_at
+            """SELECT id, username, kind, cost, status, payload, created_at, updated_at
                FROM jobs
                WHERE created_at >= ?
                ORDER BY created_at DESC, id DESC
@@ -467,6 +515,8 @@ def call_logs(days=7, limit=200):
     for row in rows:
         created_at = int(row["created_at"] or 0)
         updated_at = int(row["updated_at"] or 0)
+        kind = row["kind"] or "unknown"
+        payload = _job_payload(row["payload"])
         duration = None
         if created_at and updated_at and updated_at >= created_at:
             duration = updated_at - created_at
@@ -474,7 +524,8 @@ def call_logs(days=7, limit=200):
             {
                 "id": row["id"],
                 "username": row["username"] or "-",
-                "kind": row["kind"] or "unknown",
+                "kind": kind,
+                "func": call_func_name(kind, payload),
                 "cost": int(row["cost"] or 0),
                 "status": row["status"] or "unknown",
                 "created_at": created_at,
