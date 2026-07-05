@@ -172,7 +172,16 @@ def list_video_assets(username, limit=120):
             FROM video_assets
             WHERE username=? AND status!='deleted'
             ORDER BY id DESC LIMIT ?""", (username, limit)).fetchall()
-    return [dict(r) for r in rows]
+    items = [dict(r) for r in rows]
+    try:
+        from . import cos
+        if cos.enabled():
+            for item in items:
+                if item.get("video_file") and str(item.get("video_url") or "").startswith("http"):
+                    item["video_url"] = cos.object_url(item["video_file"], private=True)
+    except Exception as e:
+        print("[video-assets] COS 签名刷新失败: %s" % e, flush=True)
+    return items
 
 def get_video_job_phase(job_id):
     try:
@@ -948,7 +957,7 @@ def gen_video(payload):
         "reference_video_file": reference_video_file,
         "reference_video_url": _file_url(reference_video_file) if reference_video_file else None,
         "text": text, "voice": voice,
-        "video_file": video_result.get("video_file"), "video_url": public_url(video_result.get("video_file"), "video/mp4"),
+        "video_file": video_result.get("video_file"), "video_url": public_url(video_result.get("video_file"), "video/mp4", private=True),
         "provider_video_id": video_result.get("video_id"),
         "provider_avatar_id": video_result.get("avatar_item_id"),
         "provider_avatar_group_id": video_result.get("avatar_group_id"),
@@ -1107,7 +1116,7 @@ def generate_tryon_video(person_video_file, clothes_file, background_file, secon
     try:
         from . import cos
         if cos.enabled():
-            video_url = cos.upload(_out_path(video_file), video_file, "video/mp4")
+            video_url = cos.upload(_out_path(video_file), video_file, "video/mp4", private=True)
             if cos.delete_local_after_upload():
                 try: _out_path(video_file).unlink()
                 except Exception: pass

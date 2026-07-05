@@ -157,7 +157,14 @@
   var favOnly=document.getElementById('favOnly'), tagFilter=document.getElementById('tagFilter');
   var searchTerm='', multi=false, selected={}, visibleItems=[], MARKS={}, onlyFav=false, activeTag='';
   function freshUrl(url){
-    return url+(url.indexOf('?')>=0?'&':'?')+'_='+(Date.now());
+    url=String(url||'');
+    return /[?&]q-sign-/.test(url)?url:url+(url.indexOf('?')>=0?'&':'?')+'_='+(Date.now());
+  }
+  function playableUrl(url){
+    if(String(url||'').indexOf('/api/gen/file/')!==0) return Promise.resolve(freshUrl(url));
+    return fetch(freshUrl(url),{cache:'no-store',headers:{Authorization:'Bearer '+tok}})
+      .then(function(r){if(r.status===401){HQ.login();throw new Error('登录已过期');}if(!r.ok)throw new Error('素材读取失败');return r.blob();})
+      .then(function(blob){return URL.createObjectURL(blob);});
   }
   // 缩略图：COS 图走 imageMogr2 缩略+webp(体积降数十倍)，且不加缓存穿透→让浏览器缓存缩略图，避免每次进页面全量重下 4.9MB 原图导致裂图(#225)。非COS/本地/视频原样返回。点开/下载仍用原图 x.url。
   function thumbUrl(url, px){
@@ -441,15 +448,15 @@
         stopActivePreviewAudio(); return;
       }
       stopActivePreviewAudio();
-      if(!audio || audio.src.indexOf(url)<0){
-        audio=new Audio(freshUrl(url));
+      playableUrl(url).then(function(src){
+        audio=new Audio(src);
         audio.onended=stopActivePreviewAudio;
         audio.onpause=function(){ if(activePreviewAudio===audio) resetPreviewButton(play); };
-      }
-      activePreviewAudio=audio;
-      activePreviewButton=play;
-      setPreviewButtonPlaying(play);
-      audio.play().catch(function(){ stopActivePreviewAudio(); });
+        activePreviewAudio=audio;
+        activePreviewButton=play;
+        setPreviewButtonPlaying(play);
+        return audio.play();
+      }).catch(function(){ stopActivePreviewAudio(); });
     };
     w.appendChild(top); w.appendChild(body); w.appendChild(params); w.appendChild(actions); addMarkTools(w,x,'audio'); return addSelectBox(w,x,'audio');
   }
@@ -649,10 +656,11 @@
           return;
         }
         stopActivePreviewAudio();
-        activePreviewAudio=new Audio(freshUrl(previewUrl));
         activePreviewButton=playBtn;
-        activePreviewAudio.onended=stopActivePreviewAudio;
-        activePreviewAudio.play().then(function(){ setPreviewButtonPlaying(playBtn); }).catch(function(){ stopActivePreviewAudio(); });
+        playableUrl(previewUrl).then(function(src){
+          activePreviewAudio=new Audio(src);activePreviewAudio.onended=stopActivePreviewAudio;
+          return activePreviewAudio.play();
+        }).then(function(){setPreviewButtonPlaying(playBtn);}).catch(function(){stopActivePreviewAudio();});
       };
       w.appendChild(playBtn);
     }
@@ -758,31 +766,23 @@
           return;
         }
         var baseSrc=playBtn.getAttribute('data-preview-url')||'';
-        var version=playBtn.getAttribute('data-preview-version')||Date.now();
-        var src=baseSrc+(baseSrc.indexOf('?')>=0?'&':'?')+'v='+encodeURIComponent(version)+'-'+Date.now();
-        if(!previewAudio || previewAudio.src.indexOf(src)<0){
-          previewAudio=new Audio(src);
+        var src=freshUrl(baseSrc);
+        playableUrl(src).then(function(resolved){
+          previewAudio=new Audio(resolved);
           previewAudio.onended=function(){
             resetPreviewButton(playBtn);
             if(activePreviewAudio===previewAudio) activePreviewAudio=null;
             if(activePreviewButton===playBtn) activePreviewButton=null;
           };
-        }
-        if(previewAudio.paused){
           if(activePreviewAudio && activePreviewAudio!==previewAudio){
             try{ activePreviewAudio.pause(); activePreviewAudio.currentTime=0; }catch(e){}
             if(activePreviewButton) resetPreviewButton(activePreviewButton);
           }
           activePreviewAudio=previewAudio;
           activePreviewButton=playBtn;
-          previewAudio.play();
+          previewAudio.play().catch(function(){stopActivePreviewAudio();});
           setPreviewButtonPlaying(playBtn);
-        }else{
-          previewAudio.pause();
-          if(activePreviewAudio===previewAudio) activePreviewAudio=null;
-          if(activePreviewButton===playBtn) activePreviewButton=null;
-          resetPreviewButton(playBtn);
-        }
+        }).catch(function(){stopActivePreviewAudio();});
       };
       w.appendChild(playBtn);
     }

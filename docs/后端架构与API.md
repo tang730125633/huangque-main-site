@@ -70,7 +70,7 @@ location ^~ /api/auth/               → 8095  (登录)
   ```
 
 ### 视频下载（8097）
-- `GET /api/gen/dl?url=<无水印play_url>&name=<文件名>` → 直接下载 mp4（附件，强制下载，限定视频CDN域名防SSRF）
+- `GET /api/gen/dl?url=<无水印play_url>&name=<文件名>` + Bearer → 直接下载 mp4（附件，强制下载，限定视频CDN域名防SSRF）
 
 ### 作图 nano banana（8101）
 - `POST /api/gen/banana` body `{prompt, model:"nb2"|"pro", ratio}` → `{job_id, cost, points_left}`；轮询 result `{type:"image", url, ratio, model}`
@@ -82,7 +82,7 @@ location ^~ /api/auth/               → 8095  (登录)
 - `POST /api/gen/image`（作图，12点）· `POST /api/gen/copy`（文案，3点）· `POST /api/gen/audio`（配音，4点）
 - `GET /api/gen/job/{id}`（轮询任意任务状态）
 - `GET /api/gen/history?kind=collect|image|...`（资产/最近作品）
-- `GET /api/gen/file/{name}`（取生成的图/音频文件）
+- `GET /api/gen/file/{name}`（取生成文件；真人视频/参考图/个人音色试听需 Bearer 且校验归属）
 - `GET /api/gen/health` → `{caps:[...]}`（看 8096 当前装了哪些能力）
 
 > 豆包音色克隆相关接口在 8096（同事维护），细节问同事 / 待其补文档。

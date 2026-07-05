@@ -3,15 +3,16 @@
 """
 黄雀 · 视频下载微服务 —— 故意独立于 content_api.py。
 监听 127.0.0.1:8097；nginx 用 `location = /api/gen/dl` 精确路由过来(优先级高于 ^~ /api/gen/)。
-无鉴权(只是公开 CDN 视频的下载代理)，但严格限定视频 CDN 域名防 SSRF。纯标准库。
+要求有效登录态，并严格限定视频 CDN 域名防 SSRF。纯标准库。
 
 视频号(wxapp.tc.qq.com)特殊：直链是加密流，需调 :3001 Isaac64 解密服务(传 decode_key)解成可播放 mp4。
 前端对视频号下载会带 &dk=<decode_key>，代理识别后走解密路径。
 """
-import os, re, tempfile, urllib.request, urllib.parse, subprocess
+import os, re, json, tempfile, urllib.request, urllib.parse, subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 8097
+AUTH_BASE = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # 直连，绕过环境代理
 ALLOW = (
@@ -37,6 +38,18 @@ MIME_EXT = {
 def content_type_ext(headers):
     ctype = (headers.get("Content-Type") or "application/octet-stream").split(";", 1)[0].strip().lower()
     return ctype or "application/octet-stream", MIME_EXT.get(ctype, ".mp4")
+
+
+def verify_token(token):
+    if not token:
+        return False
+    try:
+        req = urllib.request.Request(AUTH_BASE + "/api/auth/me",
+                                     headers={"Authorization": "Bearer " + token})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            return bool(json.loads(r.read()).get("user"))
+    except Exception:
+        return False
 
 
 class H(BaseHTTPRequestHandler):
@@ -94,6 +107,10 @@ class H(BaseHTTPRequestHandler):
         pr = urllib.parse.urlparse(self.path)
         if pr.path != "/api/gen/dl":
             return self._err(404, "not found")
+        auth = (self.headers.get("Authorization") or "").strip()
+        token = auth.split(None, 1)[1].strip() if auth.lower().startswith("bearer ") else ""
+        if not verify_token(token):
+            return self._err(401, "未登录")
         q = urllib.parse.parse_qs(pr.query)
         url = (q.get("url", [""])[0]).strip()
         raw = ((q.get("name", ["video"])[0])[:40]) or "video"

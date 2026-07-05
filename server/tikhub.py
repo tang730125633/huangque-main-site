@@ -385,6 +385,13 @@ def ch_detail(object_id):
     media = (obj.get("media") or [{}])[0] or {}  # 视频号真实字段都在 objectDesc.media[0]
     title = obj.get("description") or obj.get("shortTitle") or ""
     play = _ch_play_url(media)
+    # ponytail: TikHub 偶发返回缺播放地址或解密密钥的不完整 media，重取一次即可。
+    if not play or not media.get("decodeKey"):
+        d = _p(CH + "/fetch_video_detail", raw=True, **loc)
+        obj = d.get("objectDesc") or {}
+        media = (obj.get("media") or [{}])[0] or {}
+        title = obj.get("description") or obj.get("shortTitle") or title
+        play = _ch_play_url(media)
     return {
         "platform": "channels", "id": d.get("id") or object_id, "url": None,
         "title": title, "desc": title, "tags": _tags_from_text(title),

@@ -8,8 +8,8 @@
 <link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
 <link rel="stylesheet" href="../assets/cloud.css?v=8">
 <style>
-  body{ overflow:hidden; }
-  .nc-wrap{ height:calc(100vh - 118px); min-height:520px; display:flex; flex-direction:column; gap:12px; }
+  /* 适配 shell 布局：去掉 body overflow:hidden 和 vh calc，避免与 100vh flex + scroll 冲突导致菜单不可点、页面卡 */
+  .nc-wrap{ height:100%; min-height:520px; max-height:680px; display:flex; flex-direction:column; gap:12px; }
   .nc-bar{ flex:none; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
   .nc-add{ display:inline-flex; align-items:center; gap:6px; padding:8px 13px; font-size:13px; font-weight:600; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.3); border-radius:10px; cursor:pointer; font-family:inherit; }
   .nc-add:hover{ background:rgba(231,178,76,.16); }
