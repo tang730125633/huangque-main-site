@@ -386,6 +386,16 @@
     showInp(engine==='gpt');  // 局部修改(像素蒙版)仅 gpt-image-2
   }
 
+  // 灵感页详情弹窗「跟创」带来的粘贴参考图（经 sessionStorage 传递）→ 载入即设为参考图（图生图）
+  try{ var _fcref=sessionStorage.getItem('hq_followcreate_ref');
+    if(_fcref){ sessionStorage.removeItem('hq_followcreate_ref');  // 一次性消费，防下次误带
+      var _fim=new Image();
+      _fim.onload=function(){ setRef(_fcref, _fim.width, _fim.height);
+        setNote('✅ 已带入你在灵感页粘贴的参考图 · 改下提示词，点生成即走「图生图」','#2bd576'); };
+      _fim.src=_fcref;
+    }
+  }catch(e){}
+
   // 文生图 / 图生图（有参考图）/ nano banana
   gen.onclick=function(){
     var bp={prompt:(pr.value||'').trim(), ratio:ratio, quality:quality, count:count};
