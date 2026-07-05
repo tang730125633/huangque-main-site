@@ -33,6 +33,9 @@
   /* JS-rendered SR card text corrections */
   .sr-card > div:last-child { padding: 8px !important; }
   .sr-card > div:last-child > div:last-child { font-size: 12px !important; }
+  /* 视频下载模式：只留视频卡+下载，隐藏评论/文案/图集/转写 */
+  #resultState.dl-only #copyBlock, #resultState.dl-only #cmtBlock, #resultState.dl-only #galleryBlock,
+  #resultState.dl-only #transcriptExtractWrap, #resultState.dl-only #transcriptBlock { display:none !important; }
 </style>
 </head>
 <body>
@@ -52,6 +55,7 @@
       <div style="display:flex; gap:0; margin:20px 0 16px; border:1px solid rgba(148,164,187,.14); border-radius:12px; padding:3px; background:rgba(7,11,19,.3);">
         <button id="tabLink" style="flex:1; padding:9px; font-size:13px; font-weight:500; border:none; border-radius:8px; cursor:pointer; font-family:inherit; transition:.16s; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c);">贴链接</button>
         <button id="tabKw" style="flex:1; padding:9px; font-size:13px; font-weight:500; border:none; border-radius:8px; cursor:pointer; font-family:inherit; transition:.16s; color:#94a4bb; background:transparent;">关键词搜</button>
+        <button id="tabDl" style="flex:1; padding:9px; font-size:13px; font-weight:500; border:none; border-radius:8px; cursor:pointer; font-family:inherit; transition:.16s; color:#94a4bb; background:transparent;">视频下载</button>
       </div>
 
       <!-- Link mode — hero -->
@@ -127,7 +131,7 @@
       <!-- Result state -->
       <div id="resultState" style="display:none;">
         <!-- Video card -->
-        <div style="border:1px solid rgba(148,164,187,.1); border-radius:12px; overflow:hidden; margin-bottom:12px; background:rgba(7,11,19,.4);">
+        <div id="videoCard" style="border:1px solid rgba(148,164,187,.1); border-radius:12px; overflow:hidden; margin-bottom:12px; background:rgba(7,11,19,.4);">
           <div style="display:flex;">
             <img id="vcCover" src="" alt="封面" style="width:90px; flex:none; object-fit:cover; aspect-ratio:9/16; border-right:1px solid rgba(148,164,187,.1); background:rgba(148,164,187,.06);">
             <div style="padding:14px 16px; flex:1; min-width:0;">
@@ -161,7 +165,7 @@
         </div>
 
         <!-- Comments block -->
-        <div style="border:1px solid rgba(148,164,187,.1); border-radius:12px; padding:16px; margin-bottom:12px; background:rgba(7,11,19,.3);">
+        <div id="cmtBlock" style="border:1px solid rgba(148,164,187,.1); border-radius:12px; padding:16px; margin-bottom:12px; background:rgba(7,11,19,.3);">
           <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
             <span style="font-size:14px; font-weight:600;">评论区 <span id="cmtCount" style="font-size:12px; color:#5c6b82; font-weight:400;"></span></span>
             <button class="copy-btn" id="exportCmtBtn">导出评论</button>
@@ -235,7 +239,8 @@
 
   /* ---- state ---- */
   var platform = 'douyin';
-  var mode = 'link';       // 'link' | 'keyword'
+  var mode = 'link';       // 'link' | 'keyword' | 'download'
+  var downloadOnly = false; // 视频下载模式：只解析下载视频本身，不拉评论/文案
   var selectedUrl = '';    // set when user picks from search grid
   var currentUrl  = '';    // ponytail: saved at submit time, reused for transcript extraction
   var currentResult = null;
@@ -310,21 +315,29 @@
   /* ---- mode toggle ---- */
   var tabLink = document.getElementById('tabLink');
   var tabKw   = document.getElementById('tabKw');
+  var tabDl   = document.getElementById('tabDl');
   var linkModeEl = document.getElementById('linkMode');
   var kwModeEl   = document.getElementById('kwMode');
 
   function setMode(m) {
     mode = m;
+    var ON = 'linear-gradient(135deg,#f4cd72,#e7b24c)';
     tabLink.style.color      = m === 'link' ? '#1a1206' : '#94a4bb';
-    tabLink.style.background = m === 'link' ? 'linear-gradient(135deg,#f4cd72,#e7b24c)' : 'transparent';
+    tabLink.style.background = m === 'link' ? ON : 'transparent';
     tabKw.style.color        = m === 'keyword' ? '#1a1206' : '#94a4bb';
-    tabKw.style.background   = m === 'keyword' ? 'linear-gradient(135deg,#f4cd72,#e7b24c)' : 'transparent';
-    linkModeEl.style.display = m === 'link' ? '' : 'none';
+    tabKw.style.background   = m === 'keyword' ? ON : 'transparent';
+    if (tabDl) { tabDl.style.color = m === 'download' ? '#1a1206' : '#94a4bb'; tabDl.style.background = m === 'download' ? ON : 'transparent'; }
+    // 下载模式复用「贴链接」的输入框
+    linkModeEl.style.display = (m === 'link' || m === 'download') ? '' : 'none';
     kwModeEl.style.display   = m === 'keyword' ? '' : 'none';
+    if (colBtn) colBtn.textContent = m === 'download' ? '⬇ 解析并下载视频' : '爬取';
+    var cn = document.getElementById('colNote');
+    if (cn) cn.textContent = m === 'download' ? '仅解析并下载视频本身 · 不提取评论/文案' : '文案 + 评论默认提取 · 失败自动退点';
     selectedUrl = '';
   }
   tabLink.onclick = function () { setMode('link'); };
   tabKw.onclick   = function () { setMode('keyword'); };
+  if (tabDl) tabDl.onclick = function () { setMode('download'); };
 
   /* ---- URL clear ---- */
   var urlInput = document.getElementById('urlInput');
@@ -425,8 +438,8 @@
             clearInterval(pollIv);
             busy(false);
             localStorage.removeItem('hq_active_collect_job');
-            if (d.result) { currentResult = d.result; renderResult(d.result); }
-            setNote('✅ 爬取完成（' + sec + 's）· 点数已更新', '#2bd576');
+            if (d.result) { currentResult = d.result; renderResult(d.result); applyDownloadView(); }
+            setNote(downloadOnly ? '✅ 视频已解析，可下载（' + sec + 's）' : '✅ 爬取完成（' + sec + 's）· 点数已更新', '#2bd576');
             if (window.HQ && window.HQ.refreshPoints) window.HQ.refreshPoints();
             loadHistory();
           } else if (d.status === 'error') {
@@ -448,19 +461,20 @@
   }
 
   /* ---- submit collect ---- */
-  function submitCollect(url) {
+  function submitCollect(url, dlOnly) {
     if (!url) { setNote('请粘贴视频链接或选择视频', '#f4708a'); return; }
     if (!tok()) { HQ.login(); return; }
+    downloadOnly = !!dlOnly;   // 视频下载模式：跳过评论/文案，产出只留视频+下载
     currentUrl = url;  // ponytail: save for on-demand transcript extraction
     busy(true);
     showState('loadingState');
-    setLoadNote('提交爬取任务…');
+    setLoadNote(downloadOnly ? '解析视频链接…' : '提交爬取任务…');
     var t0 = Date.now();
     // ponytail: no platform in body — backend auto-detects from URL
     fetch('/api/gen/collect', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + tok(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: url, want: ['comments'] })
+      body: JSON.stringify({ url: url, want: downloadOnly ? ['video'] : ['comments'] })
     })
     .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
     .then(function (x) {
@@ -488,15 +502,33 @@
   /* ---- collect button ---- */
   if (colBtn) colBtn.onclick = function () {
     var url = '';
-    if (mode === 'link') {
+    if (mode === 'link' || mode === 'download') {
       url = urlInput ? urlInput.value.trim() : '';
       var m = url.match(/https?:\/\/\S+/);
       if (m) url = m[0];
     } else {
       url = selectedUrl;
     }
-    submitCollect(url);
+    submitCollect(url, mode === 'download');
   };
+
+  /* ---- 视频下载模式：只留视频卡 + 大号下载按钮，隐藏评论/文案 ---- */
+  function applyDownloadView() {
+    var rs = document.getElementById('resultState');
+    if (rs) rs.classList.toggle('dl-only', downloadOnly);
+    var old = document.getElementById('dlBigBtn'); if (old) old.remove();
+    if (!downloadOnly) return;
+    var v = (currentResult && currentResult.video) || {};
+    var card = document.getElementById('videoCard');
+    if (!card || !v.play_url) { setNote('未解析到可下载的视频直链，请换条链接重试', '#f4708a'); return; }
+    var href = '/api/gen/dl?url=' + encodeURIComponent(v.play_url) + (v.decode_key ? '&dk=' + encodeURIComponent(v.decode_key) : '') + '&name=' + encodeURIComponent((v.title || 'video').slice(0, 30));
+    var btn = document.createElement('button');
+    btn.id = 'dlBigBtn'; btn.className = 'hv-lift';
+    btn.style.cssText = 'width:100%;height:50px;margin-bottom:12px;font-size:15px;font-weight:700;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:12px;cursor:pointer;font-family:inherit;';
+    btn.textContent = '⬇ 下载视频';
+    btn.onclick = function () { downloadProxy(href).catch(function (err) { setNote(escHtml(err.message), '#f4708a'); }); };
+    card.parentNode.insertBefore(btn, card.nextSibling);
+  }
 
   /* ---- render result ---- */
   function renderResult(r) {
@@ -922,12 +954,12 @@
     setNote('✅ 采集即自动入库 · <a href="assets.html" style="color:#e7b24c">去「资产」查看</a>', '#2bd576');
   };
   if (actRetry) actRetry.onclick = function () {
-    var url = mode === 'link'
+    var url = (mode === 'link' || mode === 'download')
       ? (urlInput ? urlInput.value.trim() : '')
       : selectedUrl;
     var m = url.match(/https?:\/\/\S+/);
     if (m) url = m[0];
-    submitCollect(url);
+    submitCollect(url, mode === 'download');
   };
 
   /* ---- history ---- */
@@ -951,7 +983,7 @@
             fetch('/api/gen/job/' + jid, { headers: { 'Authorization': 'Bearer ' + tok() } })
               .then(function (r) { return r.json(); })
               .then(function (d) {
-                if (d.result) { currentResult = d.result; renderResult(d.result); setNote('已载入历史采集', '#2dd4bf'); }
+                if (d.result) { downloadOnly = false; currentResult = d.result; renderResult(d.result); applyDownloadView(); setNote('已载入历史采集', '#2dd4bf'); }
               }).catch(function () {});
           };
         });
