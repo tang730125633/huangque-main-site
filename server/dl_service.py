@@ -19,6 +19,7 @@ ALLOW = (
     ".bytecdn.cn", ".ixigua.com", ".pstatp.com", ".snssdk.com", ".byteimg.com",
     ".xhscdn.com", ".rednotecdn.com", ".xiaohongshu.com",
     ".bytedance.net", ".lf-douyin.com", ".365yg.com",
+    ".cos.ap-guangzhou.myqcloud.com",  # 采集视频转存 COS 后的直链下载(COS-COLLECT #113)
     "wxapp.tc.qq.com",
 )  # 抖音(TikHub play_addr)/小红书/视频号 等直链 CDN 域名；防 SSRF。覆盖 collect 解析 + 生成产出下载。
 DECRYPT_API = "http://127.0.0.1:3001/api/decrypt"  # Isaac64 WASM 解密服务(Evil0ctal)
