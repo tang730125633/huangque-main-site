@@ -57,8 +57,11 @@
   function safeUrl(value){
     var s=String(value == null ? '' : value).trim();
     if(!s) return '';
-    if(/^(https?:|mailto:|tel:|\/(?!\/)|\.{0,2}\/)/i.test(s)) return s;
-    return '#';
+    if(/^\/\//.test(s)) return '#';                                    // 协议相对 //host → 挡(防跳外站)
+    if(/^[a-z][a-z0-9+.-]*:/i.test(s)){                                // 带 scheme(有协议冒号)
+      return /^(https?|mailto|tel):/i.test(s) ? s : '#';              // 仅放行 http(s)/mailto/tel；js/data/vbscript 等挡
+    }
+    return s;                                                          // 无 scheme = 相对路径(banana.html/./x/../y//abs) → 放行(修全站导航href变#的回归)
   }
 
   // 角色分化：仅 今日(运营台)+成本(统计看板) 是管理员专属；其余功能(含获客)所有用户都有；用户侧导以灵感为首页
