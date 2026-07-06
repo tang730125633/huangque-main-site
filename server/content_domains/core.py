@@ -64,7 +64,7 @@ def _out_path(rel):
 def _file_url(rel):
     return "/api/gen/file/" + str(rel or "").replace("\\", "/").lstrip("/")
 
-def public_url(rel, content_type=None):
+def public_url(rel, content_type=None, private=False):
     """产出文件的对外链接：COS 已配置且文件存在 → 上传 COS 返回直链；未配置/失败 → 回退本地 /api/gen/file/。
     只在"产出入库"这类一次性点调用；别放进资产列表端点（否则每次刷新都会重复上传）。"""
     local = _file_url(rel)
@@ -78,7 +78,7 @@ def public_url(rel, content_type=None):
                 import mimetypes
                 ctype = content_type or mimetypes.guess_type(str(rel))[0]
                 # 只上传、不删本地：部分产出(如配音)会被下游(口播视频)复用，删了会断链。
-                return cos.upload(fp, str(rel), ctype)
+                return cos.upload(fp, str(rel), ctype, private=private)
     except Exception as e:
         print("[cos] 上传失败，回退本地: %s -> %s" % (rel, e), flush=True)
     return local
@@ -129,6 +129,38 @@ def _resolve_out_file(rel):
         if fp.exists() and fp.is_file():
             return fp
     return None
+
+def _sensitive_output_file(rel):
+    rel = str(rel or "").replace("\\", "/").lstrip("/")
+    name = os.path.basename(rel)
+    return (rel.startswith("video/") or
+            rel.startswith("audio/voice_preview_") or
+            rel.startswith("audio/clone_") or
+            rel.startswith("audio/vid_aud_") or
+            name.startswith("vid_img_") or
+            name.startswith("tryon_cloth_") or
+            name.startswith("tryon_bg_"))
+
+def _user_owns_output_file(username, rel):
+    """敏感本地文件只允许其资产归属用户读取；删除后的资产不再放行。"""
+    if not username or not rel:
+        return False
+    with closing(adb()) as c:
+        row = c.execute("""SELECT 1 FROM video_assets
+            WHERE username=? AND status!='deleted'
+              AND ? IN (image_file,audio_file,reference_video_file,video_file)
+            LIMIT 1""", (username, rel)).fetchone()
+        if row:
+            return True
+        row = c.execute("""SELECT 1 FROM avatars
+            WHERE username=? AND status!='deleted' AND image_file=? LIMIT 1""",
+            (username, rel)).fetchone()
+        if row:
+            return True
+        row = c.execute("""SELECT 1 FROM audio_voices
+            WHERE username=? AND scope='personal' AND preview_file=? LIMIT 1""",
+            (username, rel)).fetchone()
+        return bool(row)
 
 # ---- 能力定义：成本(点数) + 处理函数 ----
 def _env_positive_int(name, default):
@@ -904,6 +936,8 @@ class H(BaseHTTPRequestHandler):
             d = _job_public_dict(r, phase)
             return self._send(200, d)
         if p == "/api/gen/dl":   # 无水印视频下载代理：直连拉 CDN → 附件流回(强制下载)
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
             try:
                 feature_flags.require_enabled("dl")
             except feature_flags.FeatureDisabled as e:
@@ -949,12 +983,22 @@ class H(BaseHTTPRequestHandler):
             rel = p[len("/api/gen/file/"):]
             fp = _resolve_out_file(rel)
             if not fp: return self._send(404, {"detail": "no file"})
+            try:
+                canonical_rel = fp.resolve().relative_to(OUT_DIR.resolve()).as_posix()
+            except Exception:
+                return self._send(404, {"detail": "no file"})
+            sensitive = _sensitive_output_file(canonical_rel)
+            if sensitive:
+                user = verify(self._token())
+                if not user: return self._send(401, {"detail": "未登录"})
+                if not _user_owns_output_file(user.get("username"), canonical_rel):
+                    return self._send(404, {"detail": "no file"})
             fn = fp.name
             data = fp.read_bytes()
             ctype = mimetypes.guess_type(str(fp))[0] or "application/octet-stream"
             self.send_response(200); self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
-            if fn.startswith("voice_preview_"):
+            if sensitive or fn.startswith("voice_preview_"):
                 self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
                 self.send_header("Pragma", "no-cache")
                 self.send_header("Expires", "0")

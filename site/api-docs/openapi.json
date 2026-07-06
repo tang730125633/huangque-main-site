@@ -1214,8 +1214,7 @@
           "下载"
         ],
         "summary": "无水印视频下载代理(流式 mp4)",
-        "security": [],
-        "description": "url 必须是白名单 CDN 域名(防 SSRF)。",
+        "description": "需要 Bearer 登录态；url 必须是白名单 CDN 域名(防 SSRF)。",
         "parameters": [
           {
             "name": "url",
@@ -1241,6 +1240,9 @@
           },
           "400": {
             "description": "不支持的下载地址"
+          },
+          "401": {
+            "description": "未登录"
           },
           "502": {
             "description": "下载失败(地址可能过期)"
@@ -1324,6 +1326,7 @@
         ],
         "summary": "下载生成的图片/音频/视频文件",
         "security": [],
+        "description": "普通公开产物可直接读取；真人视频、参考图、个人音色试听等敏感文件必须携带 Bearer 登录态且只能由所属用户读取。",
         "parameters": [
           {
             "name": "name",

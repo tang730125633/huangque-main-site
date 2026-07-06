@@ -253,6 +253,23 @@
     n.style.color = color || '#5c6b82';
   }
 
+  function downloadProxy(href) {
+    return fetch(href, { headers: { 'Authorization': 'Bearer ' + tok() } })
+      .then(function (r) {
+        if (r.status === 401) { HQ.login(); throw new Error('登录已过期'); }
+        if (!r.ok) return r.json().then(function (d) { throw new Error(d.detail || '下载失败'); });
+        return r.blob();
+      })
+      .then(function (blob) {
+        var q = new URL(href, location.origin).searchParams;
+        var ext = ({'image/jpeg':'.jpg','image/png':'.png','image/webp':'.webp','video/mp4':'.mp4'})[blob.type] || '';
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(blob); a.download = (q.get('name') || 'download') + ext;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+      });
+  }
+
   /* ---- busy state ---- */
   var colBtn = document.getElementById('colBtn');
   var origBtnText = colBtn ? colBtn.textContent : '爬取';
@@ -520,8 +537,10 @@
       if (v.publish_time) parts.push(v.publish_time);
       var metaHtml = escHtml(parts.join(' · '));
       if (v.url) metaHtml += (metaHtml ? ' · ' : '') + '<a href="' + escAttr(safeUrl(v.url)) + '" target="_blank" rel="noopener" style="color:#e7b24c;text-decoration:none;">看原视频 ↗</a>';
-      if (v.play_url) metaHtml += (metaHtml ? ' · ' : '') + '<a href="/api/gen/dl?url=' + encodeURIComponent(v.play_url) + (v.decode_key ? '&dk=' + encodeURIComponent(v.decode_key) : '') + '&name=' + encodeURIComponent((v.title || 'video').slice(0, 30)) + '" style="color:#2dd4bf;text-decoration:none;font-weight:600;">⬇ 下载无水印视频</a>';
+      if (v.play_url) metaHtml += (metaHtml ? ' · ' : '') + '<a data-proxy-download href="/api/gen/dl?url=' + encodeURIComponent(v.play_url) + (v.decode_key ? '&dk=' + encodeURIComponent(v.decode_key) : '') + '&name=' + encodeURIComponent((v.title || 'video').slice(0, 30)) + '" style="color:#2dd4bf;text-decoration:none;font-weight:600;">⬇ 下载无水印视频</a>';
       vcMeta.innerHTML = metaHtml;
+      var proxyDownload = vcMeta.querySelector('[data-proxy-download]');
+      if (proxyDownload) proxyDownload.onclick = function (e) { e.preventDefault(); downloadProxy(proxyDownload.href).catch(function (err) { setNote(escHtml(err.message), '#f4708a'); }); };
     }
 
     /* image gallery (图文笔记) */
@@ -541,10 +560,8 @@
           galDlBtn.onclick = function () {
             imgs.forEach(function (u, i) {
               setTimeout(function () {
-                var a = document.createElement('a');
-                a.href = '/api/gen/dl?url=' + encodeURIComponent(u) + '&name=' + encodeURIComponent('img_' + (i + 1));
-                a.rel = 'noopener';
-                document.body.appendChild(a); a.click(); a.remove();
+                downloadProxy('/api/gen/dl?url=' + encodeURIComponent(u) + '&name=' + encodeURIComponent('img_' + (i + 1)))
+                  .catch(function (err) { setNote(escHtml(err.message), '#f4708a'); });
               }, i * 260);
             });
           };

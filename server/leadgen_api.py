@@ -54,13 +54,68 @@ def public_url_from_remote(remote_url, rel_key, content_type=None):
         return remote_url
 
 def _collect_cos_play_url(platform, vid_id, play_url):
-    """采集视频 play_url → COS 永久直链。图集/无 play_url(视频号加密流 play_url=None)跳过、保持原样。
-    对象键 collect/<platform>/<id>.mp4。转存失败/未配置回退原 play_url。"""
+    """采集视频 play_url → COS 永久直链。图集/无 play_url 跳过、保持原样。
+    对象键 collect/<platform>/<id>.mp4。转存失败/未配置回退原 play_url。
+    注意：视频号(channels)是加密流，不能走这里直存——用 _collect_channels_play_url 先解密。"""
     if not play_url:
         return play_url
     ident = re.sub(r"[^A-Za-z0-9_.-]", "", str(vid_id or "")) or "v"
     key = "collect/%s/%s.mp4" % ((platform or "x"), ident)
     return public_url_from_remote(play_url, key, "video/mp4")
+
+
+DECRYPT_API = os.environ.get("WXCH_DECRYPT_API", "http://127.0.0.1:3001/api/decrypt")  # 视频号 Isaac64 解密服务(与 dl_service 同一个)
+
+def _collect_channels_play_url(vid_id, play_url, decode_key):
+    """视频号：加密流先解密再存 COS，返回可播放的永久直链。
+    视频号 CDN 直链是加密流(无 mp4 容器)，直接转存会得到打不开的乱码文件——
+    必须先下加密流 → 本地 :3001 解密 → 存解密后的 mp4。
+    缺 decode_key / 解密服务不可用 / 解密结果非法 / COS 未开 → 返回 None
+    (绝不落地加密垃圾，也绝不因转存失败而中断采集：文案/评论照常返回)。"""
+    play_url = (play_url or "").strip()
+    dk = (decode_key or "").strip()
+    if not play_url or not dk or not COS_COLLECT:
+        return None
+    enc_path = None
+    try:
+        import tempfile, subprocess
+        from content_domains import cos
+        if not cos.enabled():
+            return None
+        # 1) 下加密流(视频号 CDN 需带 Referer)
+        req = urllib.request.Request(play_url, headers={
+            "User-Agent": tikhub.UA, "Referer": "https://channels.weixin.qq.com/"})
+        with urllib.request.urlopen(req, timeout=90) as r:
+            enc = r.read(100 * 1024 * 1024)
+        if not enc:
+            return None
+        with tempfile.NamedTemporaryFile(suffix=".enc", delete=False) as tf:
+            tf.write(enc); enc_path = tf.name
+        # 2) 调本地解密服务(multipart: decode_key + video 文件)
+        proc = subprocess.run(
+            ["curl", "-sS", "-X", "POST", DECRYPT_API,
+             "-F", "decode_key=" + dk, "-F", "video=@" + enc_path, "-o", "-"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        if proc.returncode != 0 or not proc.stdout:
+            print("[cos] 视频号解密失败，跳过转存: %s" % (
+                (proc.stderr or b"")[:120].decode("u8", "ignore") or "解密服务无响应"), flush=True)
+            return None
+        dec = proc.stdout
+        # 3) 校验确实解成了 mp4(含 ftyp 盒)，杜绝再落地垃圾
+        if b"ftyp" not in dec[:4096]:
+            print("[cos] 视频号解密结果非合法 mp4，跳过转存", flush=True)
+            return None
+        ident = re.sub(r"[^A-Za-z0-9_.-]", "", str(vid_id or "")) or "v"
+        return cos.put_bytes(dec, "collect/channels/%s.mp4" % ident, "video/mp4")
+    except Exception as e:
+        print("[cos] 视频号解密转存失败，跳过: %s" % e, flush=True)
+        return None
+    finally:
+        if enc_path:
+            try:
+                os.unlink(enc_path)
+            except Exception:
+                pass
 
 
 # ============ 共享管道：任务库 / 点数 / 鉴权 ============
@@ -126,7 +181,10 @@ def gen_collect(payload):
     if not (det.get("title") or det.get("desc") or det.get("images")):
         raise ValueError("内容获取失败（可能是上游限流或内容私密/已删），请重试")
     au = det.get("author") or {}
-    play_url = _collect_cos_play_url(platform, det.get("id") or ident, det.get("play_url"))
+    if platform == "channels":   # 视频号是加密流：先解密再存 COS，否则存下来是打不开的乱码
+        play_url = _collect_channels_play_url(det.get("id") or ident, det.get("play_url"), det.get("decode_key"))
+    else:
+        play_url = _collect_cos_play_url(platform, det.get("id") or ident, det.get("play_url"))
     out = {
         "type": "collect", "platform": platform, "source": det.get("url") or ident,
         "video": {"title": det.get("title"), "author": au.get("name"), "authorAvatar": None,

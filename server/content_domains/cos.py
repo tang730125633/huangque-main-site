@@ -57,7 +57,9 @@ def _object_key(rel):
     return (_PREFIX + "/" + rel) if _PREFIX else rel
 
 
-def _url(full_key):
+def _url(full_key, private=False):
+    if private:
+        return _client().get_presigned_url(Method="GET", Bucket=_BUCKET, Key=full_key, Expired=_SIGN_EXPIRE)
     if _DOMAIN:
         return _DOMAIN + "/" + full_key
     if _PUBLIC:
@@ -66,7 +68,14 @@ def _url(full_key):
     return _client().get_presigned_url(Method="GET", Bucket=_BUCKET, Key=full_key, Expired=_SIGN_EXPIRE)
 
 
-def upload(local_path, rel_key, content_type=None):
+def object_url(rel_key, private=False):
+    """为已上传对象生成访问地址；私有对象每次调用都会刷新短期签名。"""
+    if not enabled():
+        raise RuntimeError("COS 未配置")
+    return _url(_object_key(rel_key), private=private)
+
+
+def upload(local_path, rel_key, content_type=None, private=False):
     """把本地文件上传到 COS，返回可访问 URL。未启用或失败会抛异常，由调用方回退本地。"""
     if not enabled():
         raise RuntimeError("COS 未配置")
@@ -75,11 +84,13 @@ def upload(local_path, rel_key, content_type=None):
         kwargs = {"Bucket": _BUCKET, "Key": full_key, "Body": fp}
         if content_type:
             kwargs["ContentType"] = content_type
+        if private:
+            kwargs["ACL"] = "private"
         _client().put_object(**kwargs)
-    return _url(full_key)
+    return _url(full_key, private=private)
 
 
-def put_bytes(data, rel_key, content_type=None):
+def put_bytes(data, rel_key, content_type=None, private=False):
     """把内存字节直接上传到 COS，返回可访问 URL。用于转存远程 URL(如采集视频 CDN 直链)。
     未启用或失败会抛异常，由调用方回退原链接。"""
     if not enabled():
@@ -88,5 +99,7 @@ def put_bytes(data, rel_key, content_type=None):
     kwargs = {"Bucket": _BUCKET, "Key": full_key, "Body": data}
     if content_type:
         kwargs["ContentType"] = content_type
+    if private:
+        kwargs["ACL"] = "private"
     _client().put_object(**kwargs)
-    return _url(full_key)
+    return _url(full_key, private=private)
