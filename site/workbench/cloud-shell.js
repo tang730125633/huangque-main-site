@@ -72,6 +72,10 @@
     {k:'canvas',l:'画布',i:'layers'}, {k:'assets',l:'资产',i:'folder'},
     {k:'cost',l:'成本',i:'coins', admin:true}, {k:'settings',l:'设置',i:'gear'}
   ];
+  // 导航金调3D图标(render3d香槟金,与灵感页能力卡同套)；缺失项回退线性svg
+  var NAV3D={dashboard:'home', inspiration:'inspiration', leads:'leads', collect:'collect',
+    banana:'banana', video:'video', audio:'audio', script:'script', canvas:'canvas',
+    assets:'assets', cost:'recharge', settings:'settings'};
 
   // 管理员判定：已登录则一律以真实账号角色(hq_user.role)为准，忽略测试开关；
   // 仅在"未登录预览"时才用 ?admin=1/0 测试开关(写入 hq_role)。
@@ -93,7 +97,7 @@
       var ntxt=on?'#eaf1fa':'#94a4bb', nbg=on?'rgba(231,178,76,.08)':'transparent', nfg=on?'#e7b24c':'#94a4bb', nbar=on?'1':'0';
       return '<a href="'+escapeAttr(safeUrl(it.k+'.html'))+'" class="hq-navitem" style="position:relative; display:flex; align-items:center; gap:12px; padding:10px 13px; border-radius:11px; cursor:pointer; color:'+ntxt+'; background:'+nbg+'; font-size:14px; font-weight:500; transition:.16s;">'+
         '<span style="position:absolute; left:-12px; top:50%; transform:translateY(-50%); width:3px; height:18px; border-radius:0 3px 3px 0; background:#e7b24c; opacity:'+nbar+';"></span>'+
-        '<span style="display:flex; width:18px; color:'+nfg+';">'+icon(it.i)+'</span>'+escapeHtml(it.l)+'</a>';
+        '<span style="display:flex; align-items:center; justify-content:center; width:22px; color:'+nfg+';">'+(NAV3D[it.k]?'<img src="../assets/icons/ic_'+NAV3D[it.k]+'.png" alt="" style="width:22px;height:22px;object-fit:contain;flex:none;">':icon(it.i))+'</span>'+escapeHtml(it.l)+'</a>';
     }).join('');
   }
 
