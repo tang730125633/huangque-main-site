@@ -204,14 +204,16 @@
           <span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span>
           <span style="font-size:12px; color:#94a4bb;">转作图</span>
         </div>
-        <div id="actFeishu" class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:12px 4px; border:1px solid rgba(148,164,187,.1); border-radius:8px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;">
-          <span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span>
-          <span style="font-size:12px; color:#94a4bb;">发飞书</span>
+        <div id="actFeishu" aria-disabled="true" title="飞书推送即将上线" style="display:flex; flex-direction:column; align-items:center; gap:5px; padding:10px 4px; border:1px solid rgba(148,164,187,.08); border-radius:8px; background:rgba(148,164,187,.025); cursor:not-allowed; opacity:.48;">
+          <span style="display:flex; width:17px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span>
+          <span style="font-size:12px; color:#7b8ca3;">发飞书</span>
+          <span style="font-size:10px; color:#e7b24c; line-height:1;">即将上线</span>
         </div>
-        <div id="actStore" class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:12px 4px; border:1px solid rgba(148,164,187,.1); border-radius:8px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;">
-          <span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v6M9 14h6"/></svg></span>
-          <span style="font-size:12px; color:#94a4bb;">入库</span>
-        </div>
+        <a id="actStore" class="hv-gold" href="assets.html" style="display:flex; flex-direction:column; align-items:center; gap:5px; padding:10px 4px; border:1px solid rgba(45,212,191,.16); border-radius:8px; background:rgba(45,212,191,.05); cursor:pointer; transition:.16s; text-decoration:none;">
+          <span style="display:flex; width:17px; color:#2dd4bf;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M20 6 9 17l-5-5"/><path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span>
+          <span style="font-size:12px; color:#bff7ee;">已自动入库</span>
+          <span style="font-size:10px; color:#5c6b82; line-height:1;">去资产查看</span>
+        </a>
         <div id="actRetry" class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:12px 4px; border:1px solid rgba(148,164,187,.1); border-radius:8px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;">
           <span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.8-3.4L23 10M1 14l4.7 4.4A9 9 0 0 0 20.5 15"/></svg></span>
           <span style="font-size:12px; color:#94a4bb;">再爬取</span>
@@ -947,11 +949,7 @@
     location.href = 'banana.html';
   };
   if (actFeishu) actFeishu.onclick = function () {
-    setNote('飞书推送即将上线（bot 接入阶段）', '#f4cd72');
-  };
-  if (actStore) actStore.onclick = function () {
-    if (!currentResult) { setNote('先爬取一条视频', '#f4708a'); return; }
-    setNote('✅ 采集即自动入库 · <a href="assets.html" style="color:#e7b24c">去「资产」查看</a>', '#2bd576');
+    setNote('飞书推送即将上线，当前不可用', '#94a4bb');
   };
   if (actRetry) actRetry.onclick = function () {
     var url = (mode === 'link' || mode === 'download')
