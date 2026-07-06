@@ -64,6 +64,19 @@ def _out_path(rel):
 def _file_url(rel):
     return "/api/gen/file/" + str(rel or "").replace("\\", "/").lstrip("/")
 
+def _cos_module():
+    try:
+        from . import cos
+    except ImportError:
+        import cos
+    return cos
+
+def _cos_enabled():
+    try:
+        return bool(_cos_module().enabled())
+    except Exception:
+        return False
+
 def public_url(rel, content_type=None, private=False):
     """产出文件的对外链接：COS 已配置且文件存在 → 上传 COS 返回直链；未配置/失败 → 回退本地 /api/gen/file/。
     只在"产出入库"这类一次性点调用；别放进资产列表端点（否则每次刷新都会重复上传）。"""
@@ -71,14 +84,17 @@ def public_url(rel, content_type=None, private=False):
     if not rel:
         return local
     try:
-        from . import cos
-        if cos.enabled():
-            fp = _out_path(rel)
-            if fp.is_file():
-                import mimetypes
-                ctype = content_type or mimetypes.guess_type(str(rel))[0]
-                # 只上传、不删本地：部分产出(如配音)会被下游(口播视频)复用，删了会断链。
-                return cos.upload(fp, str(rel), ctype, private=private)
+        cos = _cos_module()
+        enabled = cos.enabled()
+        fp = _out_path(rel)
+        if not enabled or not fp.is_file():
+            print("[cos] skip upload: enabled=%s exists=%s rel=%s" %
+                  (enabled, fp.is_file(), rel), flush=True)
+            return local
+        import mimetypes
+        ctype = content_type or mimetypes.guess_type(str(rel))[0]
+        # 只上传、不删本地：部分产出(如配音)会被下游(口播视频)复用，删了会断链。
+        return cos.upload(fp, str(rel), ctype, private=private)
     except Exception as e:
         print("[cos] 上传失败，回退本地: %s -> %s" % (rel, e), flush=True)
     return local
@@ -1098,7 +1114,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": items, "cost": 1, "points_left": points_left})
         if p == "/api/gen/health":
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS),
-                                    "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
+                                    "has_openai": bool(OPENAI_KEY), "has_cos": _cos_enabled(),
+                                    "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
 
     def do_PUT(self):
