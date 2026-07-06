@@ -16,7 +16,6 @@
   .vid-main::-webkit-scrollbar-thumb{background:rgba(148,164,187,.18);border-radius:99px}
   .vid-main::-webkit-scrollbar-track{background:rgba(7,11,19,.18);border-radius:99px}
   .vid-side{position:relative;top:auto;height:100%;overflow:hidden;border-color:rgba(231,178,76,.16);background:linear-gradient(165deg,rgba(20,17,10,.6),rgba(12,16,26,.5))}
-  .vid-side > :not(.output-card){display:none!important}
   .muted{color:#94a4bb}.faint{color:#5c6b82}
   .label{font-size:13.5px;font-weight:700;color:#eaf1fa}
   .row{display:flex;align-items:center;justify-content:space-between;gap:12px}
@@ -407,36 +406,6 @@
           <div style="padding:18px 10px;border:1px dashed rgba(148,164,187,.16);border-radius:12px;color:#5c6b82;font-size:12px;text-align:center;">暂无历史记录</div>
         </div>
       </div>
-      </div>
-      <div style="font-size:16px;font-weight:700;margin-bottom:14px;">生成结果</div>
-      <div style="display:flex;justify-content:center;">
-        <div id="previewFrame" class="preview-frame">
-          <span id="previewIcon" style="display:flex;width:46px;color:rgba(231,178,76,.55);"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="12" r="10"/><path d="M10 8l6 4-6 4z"/></svg></span>
-          <div id="previewTitle" style="font-size:13px;color:#94a4bb;font-weight:700;">生成后在此预览口播视频</div>
-          <div id="previewSub" style="font-size:11.5px;color:#5c6b82;line-height:1.6;">先上传人物图，再选择文案音色或上传音频</div>
-        </div>
-      </div>
-
-      <div class="action-grid">
-        <div class="mini-action"><span>重新生成</span></div>
-        <div class="mini-action"><span>继续改</span></div>
-        <div class="mini-action"><span>转飞书</span></div>
-        <div class="mini-action"><span>下载</span></div>
-      </div>
-
-      <div class="row" style="margin:24px 0 12px;">
-        <span style="font-size:15px;font-weight:700;">素材检查</span>
-        <span id="modeName" class="mono" style="font-size:11.5px;color:#e7b24c;">文案配音</span>
-      </div>
-      <div id="sideChecklist" style="display:flex;flex-direction:column;gap:9px;"></div>
-
-      <div class="row" style="margin:24px 0 12px;">
-        <span style="font-size:15px;font-weight:700;">最近口播</span>
-        <a href="assets.html?cat=video" style="font-size:12.5px;color:#94a4bb;text-decoration:none;">全部作品 ›</a>
-      </div>
-      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:11px;text-align:center;padding:28px 18px;border:1px dashed rgba(148,164,187,.18);border-radius:14px;background:rgba(148,164,187,.02);">
-        <span style="display:flex;width:30px;color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span>
-        <div style="font-size:12.5px;color:#94a4bb;">暂无作品，生成后自动入库</div>
       </div>
     </aside>
   </div>
@@ -904,7 +873,7 @@
     $('voicePanel').classList.toggle('hidden',mode!=='text');
     $('audioMode').classList.toggle('hidden',mode!=='audio');
     $('modeSummary').textContent=mode==='text'?'上传人物图，输入文案并选择音色生成口播视频':'上传人物图，选择本地或资产库音频生成口播视频';
-    $('modeName').textContent=mode==='text'?'文案配音':'现成音频';
+    if($('modeName')) $('modeName').textContent=mode==='text'?'文案配音':'现成音频';
     if($('inputCheckTitle')) $('inputCheckTitle').textContent=mode==='text'?'口播文案':'口播音频';
     updateChecklist();
   }
@@ -937,7 +906,7 @@
       [mode==='text'?'口播文案':'口播音频',mode==='text'?(textReady?'已准备':'待填写'):(audioReady?'已准备':'待选择')],
       [mode==='text'?'音色':'视频设置',mode==='text'?'可选择公共或个人音色':'可选择比例和清晰度']
     ];
-    $('sideChecklist').innerHTML=items.map(function(x){return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 11px;border:1px solid rgba(148,164,187,.1);border-radius:12px;background:rgba(148,164,187,.03);"><span style="font-size:12.5px;color:#cbd5e1;">'+esc(x[0])+'</span><span style="font-size:11.5px;color:#e7b24c;">'+esc(x[1])+'</span></div>';}).join('');
+    if($('sideChecklist')) $('sideChecklist').innerHTML=items.map(function(x){return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 11px;border:1px solid rgba(148,164,187,.1);border-radius:12px;background:rgba(148,164,187,.03);"><span style="font-size:12.5px;color:#cbd5e1;">'+esc(x[0])+'</span><span style="font-size:11.5px;color:#e7b24c;">'+esc(x[1])+'</span></div>';}).join('');
     updateOutputMeta();
   }
   function stopPreview(){
@@ -1055,7 +1024,6 @@
     readFileData(f).then(function(data){ imageData=data; updateChecklist(); }).catch(function(e){ toast(e.message); });
     box.classList.add('has-img');
     box.innerHTML='<input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+url+'" alt="人物形象预览">';
-    $('previewFrame').innerHTML='<img src="'+url+'" alt="人物形象预览">';
     setOutputImage(url);
     bindImageInput(box.querySelector('input'));
     updateChecklist();
@@ -1162,8 +1130,6 @@
           if(result.mode==='motion') setTimeout(function(){loadMotionAvatars(true);},900);
           setVideoStatus('任务已创建，已保存到视频资产');
           if(result.subtitle_error){toast('字幕生成失败，已保留无字幕视频');}
-          $('previewTitle').textContent='任务已创建';
-          $('previewSub').textContent='生成完成后可在视频资产中查看';
           return;
         }
         if(d.status==='error') throw new Error(d.error||'生成失败');
