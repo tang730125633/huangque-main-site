@@ -159,6 +159,14 @@
   function freshUrl(url){
     return url+(url.indexOf('?')>=0?'&':'?')+'_='+(Date.now());
   }
+  // 缩略图：COS 图走 imageMogr2 缩略+webp(体积降数十倍)，且不加缓存穿透→让浏览器缓存缩略图，避免每次进页面全量重下 4.9MB 原图导致裂图(#225)。非COS/本地/视频原样返回。点开/下载仍用原图 x.url。
+  function thumbUrl(url, px){
+    if(!url || url.indexOf('myqcloud.com')<0) return url;
+    if(url.indexOf('imageMogr2')>=0 || url.indexOf('?')>=0) return url;
+    if(!/\.(png|jpe?g|webp|gif|bmp)(\?|$)/i.test(url)) return url;
+    px=px||420;
+    return url+'?imageMogr2/thumbnail/!'+px+'x'+px+'r/format/webp/quality/82';
+  }
   function assetUrl(x){ return x.url||x.video_url||x.audio_url||x.image_url||x.preview_url||''; }
   function assetKey(x,kind){ return [kind||cat, x.id||x.job_id||x.asset_id||'', assetUrl(x), x.prompt||x.text||''].join('|'); }
   function markKey(x,kind){ return String(x.job_id||x.id||x.asset_id||assetUrl(x)||x.voice_key||x.provider_avatar_id||''); }
@@ -356,7 +364,7 @@
     var label=MODE[normCat(x.mode)]||'作图', p=(x.prompt||'').slice(0,22)||'—';
     var w=document.createElement('div'); w.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;';
     var tag=document.createElement('span'); tag.textContent=label; tag.style.cssText='position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.62); color:#e7b24c;';
-    var im=document.createElement('img'); im.src=x.url; im.loading='lazy'; im.style.cssText='display:block; width:100%; aspect-ratio:4/3; object-fit:cover; cursor:pointer;'; im.onclick=function(){ window.open(x.url,'_blank'); };
+    var im=document.createElement('img'); im.src=thumbUrl(x.url,420); im.loading='lazy'; im.style.cssText='display:block; width:100%; aspect-ratio:4/3; object-fit:cover; cursor:pointer;'; im.onclick=function(){ window.open(x.url,'_blank'); };
     var foot=document.createElement('div'); foot.style.cssText='padding:11px 13px; display:flex; align-items:center; justify-content:space-between; gap:8px;';
     var pt=document.createElement('div'); pt.textContent=p; pt.style.cssText='font-size:12px; color:#94a4bb; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
     var actions=document.createElement('div'); actions.style.cssText='display:flex;align-items:center;gap:6px;flex:none;';
@@ -466,7 +474,7 @@
     if(videoUrl){
       var v=document.createElement('video');
       v.controls=true; v.preload='none'; v.dataset.src=videoUrl;
-      if(imageUrl) v.poster=imageUrl;
+      if(imageUrl) v.poster=thumbUrl(imageUrl,420);
       v.style.cssText='width:100%;height:100%;object-fit:cover;display:block;background:#050812;';
       var hydrateVideo=function(){
         if(!v.getAttribute('src')) v.setAttribute('src',v.dataset.src);
@@ -542,7 +550,7 @@
     w.style.cssText='position:relative; min-height:252px; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.56), rgba(9,14,24,.44)); overflow:hidden; display:flex; flex-direction:column; box-shadow:0 16px 42px rgba(0,0,0,.12);';
     var media=document.createElement('div');
     media.style.cssText='position:relative; aspect-ratio:4/3; background:rgba(7,11,19,.38); overflow:hidden;';
-    media.innerHTML='<img src="'+escapeHtml(freshUrl(image))+'" loading="lazy" alt="" style="width:100%;height:100%;object-fit:cover;display:block;">'
+    media.innerHTML='<img src="'+escapeHtml(thumbUrl(image,420))+'" loading="lazy" alt="" style="width:100%;height:100%;object-fit:cover;display:block;">'
       +'<span style="position:absolute;top:11px;left:11px;z-index:2;padding:3px 9px;font-size:11px;font-weight:700;border-radius:6px;background:rgba(7,11,19,.66);color:#2dd4bf;">数字人形象</span>';
     var body=document.createElement('div');
     body.style.cssText='padding:13px 14px 14px;display:flex;flex-direction:column;gap:10px;flex:1;';
