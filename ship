@@ -33,6 +33,7 @@ git push || { echo "❌ push 失败（先 pull？）"; exit 1; }
 # 3. 部署每个文件到对应位置 + 记下要重启的服务
 echo "==> 3/5 部署到服务器"
 RESTART=""
+DEPLOYED=""
 add_svc(){ for s in $1; do case " $RESTART " in *" $s "*) ;; *) RESTART="$RESTART $s";; esac; done; }
 for f in "$@"; do
   case "$f" in
@@ -44,6 +45,7 @@ for f in "$@"; do
     server/imggen_api.py)  dest=/home/ubuntu/content-api/;  svc=huangque-imggen-api ;;
     server/dl_service.py)  dest=/home/ubuntu/dl-service/;   svc=huangque-dl ;;
     server/tikhub.py)      dest=/home/ubuntu/content-api/;  svc="huangque-leadgen-api huangque-content huangque-imggen-api" ;;
+    scripts/drift_sentinel.py) dest=/home/ubuntu/hq-drift/; svc="" ;;
     site/admin/*)          dest="$WWW/admin/"; svc="" ;;
     site/workbench/*)      dest="$WWW/workbench/"; svc="" ;;
     site/*)  rel="${f#site/}"
@@ -51,8 +53,12 @@ for f in "$@"; do
              svc="" ;;
     *) echo "  ⚠ 不认识 $f —— 不知道部署到哪，跳过（需要的话告诉我加进映射）"; continue ;;
   esac
+  if [ "$f" = "scripts/drift_sentinel.py" ]; then
+    $SSHC "$REMOTE" "mkdir -p /home/ubuntu/hq-drift" || { echo "  ❌ hq-drift 目录创建失败"; exit 1; }
+  fi
   rsync -az --rsync-path="sudo rsync" -e "$SSHC" "$f" "$REMOTE:$dest" \
     && echo "  ✓ $f → $dest" || { echo "  ❌ $f 部署失败"; exit 1; }
+  DEPLOYED="$DEPLOYED $f"
   if [ "$f" = "server/content_api.py" ] && [ -d server/content_domains ]; then
     $SSHC "$REMOTE" "sudo mkdir -p /home/ubuntu/content-api/content_domains" || { echo "  ❌ content_domains 目录创建失败"; exit 1; }
     rsync -az --delete --exclude='__pycache__' --exclude='*.db' --rsync-path="sudo rsync" -e "$SSHC" server/content_domains/ "$REMOTE:/home/ubuntu/content-api/content_domains/" \
@@ -69,9 +75,26 @@ else
   echo "==> 4/5 纯前端，无需重启"
 fi
 
-# 刷新漂移哨兵基线（这次是合法部署，让线上=新基线，只有绕过 ship 的热改才会告警）
-$SSHC "$REMOTE" "test -f /home/ubuntu/hq-drift/drift_sentinel.py && python3 /home/ubuntu/hq-drift/drift_sentinel.py --bless" >/dev/null 2>&1 \
-  && echo "  ✓ 漂移基线已刷新" || echo "  （跳过漂移基线刷新：哨兵未安装）"
+# 部署后校验：只校验本次 ship 实际推送的文件线上 == git origin/main。
+if [ -n "$DEPLOYED" ]; then
+  $SSHC "$REMOTE" "test -f /home/ubuntu/hq-drift/drift_sentinel.py && python3 /home/ubuntu/hq-drift/drift_sentinel.py --verify-deploy $DEPLOYED" \
+    && echo "  ✓ 部署后漂移校验通过" || { echo "  ❌ 部署后漂移校验失败"; exit 1; }
+  $SSHC "$REMOTE" "python3 /home/ubuntu/hq-drift/drift_sentinel.py --bless-deploy $DEPLOYED" >/dev/null 2>&1 \
+    && echo "  ✓ 本次部署文件已记录" || echo "  （跳过部署记录：哨兵未安装）"
+fi
+
+# 服务器 checkout 只作为 git 镜像，不允许在服务器上直接提交热改。
+$SSHC "$REMOTE" 'if [ -d /home/ubuntu/huangque-main-site/.git ]; then
+  cd /home/ubuntu/huangque-main-site &&
+  mkdir -p .githooks-readonly &&
+  cat > .githooks-readonly/pre-commit <<'"'"'EOF'"'"'
+#!/usr/bin/env bash
+echo "禁止在服务器 checkout 直接提交。请在本地分支开 PR，合并后用 ./ship 部署。" >&2
+exit 1
+EOF
+  chmod +x .githooks-readonly/pre-commit &&
+  git config core.hooksPath .githooks-readonly
+fi' >/dev/null 2>&1 && echo "  ✓ 服务器 checkout 提交保护已安装" || echo "  （跳过 checkout 提交保护）"
 
 # 5. 验证 + 给回滚命令
 echo "==> 5/5 验证"

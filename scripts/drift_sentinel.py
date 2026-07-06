@@ -2,77 +2,68 @@
 # -*- coding: utf-8 -*-
 """黄雀主站「漂移哨兵」——检测有人绕过 ship 直接热改服务器文件。
 
-原理：把"当前线上文件"的 md5（剔除 CRLF）存成基线；日后每天重算并比对。
-  - 内容变了 / 文件被删 / 冒出基线里没有的新文件  → 判定为漂移 → 飞书告警
-合法部署（走 ship）后应调 `--bless` 刷新基线，这样只有"绕过 ship 的热改"才会报警。
+巡检不再依赖上次 bless 的基线，而是直接比较：
+  线上运行文件 == 服务器 checkout 中的 git origin/main 文件
+
+这样即使有人错误执行过 bless，只要线上与 git 不一致仍会报警。
 
 用法：
-  drift_sentinel.py            巡检(cron 用)，有漂移则飞书告警(带冷却)
-  drift_sentinel.py --bless    以当前线上为准重建基线（部署后/首次执行）
-  drift_sentinel.py --test     发一条飞书自检消息
-  drift_sentinel.py --print    只打印漂移，不告警（人工排查用）
+  drift_sentinel.py                         巡检(cron 用)，有漂移则飞书告警(带冷却)
+  drift_sentinel.py --print                 只打印漂移，不告警
+  drift_sentinel.py --bless                 兼容旧调用：记录当前 origin/main 应有清单
+  drift_sentinel.py --bless-deploy file...  记录本次 ship 部署的文件清单，不改变巡检判断
+  drift_sentinel.py --verify-deploy file... 校验本次 ship 文件线上 == git origin/main
+  drift_sentinel.py --test                  发一条飞书自检消息
 
 告警渠道复用 openclaw 的飞书（~/.openclaw/openclaw.json）+ balance_alert 的告警群。
 零依赖（仅标准库）。
 """
-import os, sys, json, hashlib, glob, time, urllib.request
+import argparse
+import glob
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except Exception:
+    pass
 
 HOME = os.path.expanduser('~')
-BASELINE = os.path.join(HOME, 'hq-drift', 'baseline.json')
-STATE = os.path.join(HOME, 'hq-drift', '.state.json')
-LOG = os.path.join(HOME, 'hq-drift', 'sentinel.log')
-COOLDOWN = 6 * 3600  # 同一漂移集 6h 内不重复告警
+DRIFT_DIR = os.path.join(HOME, 'hq-drift')
+BASELINE = os.path.join(DRIFT_DIR, 'baseline.json')
+DEPLOY_LOG = os.path.join(DRIFT_DIR, 'deploy_bless.jsonl')
+STATE = os.path.join(DRIFT_DIR, '.state.json')
+LOG = os.path.join(DRIFT_DIR, 'sentinel.log')
+COOLDOWN = 6 * 3600
 
-WEBROOT = '/var/www/huangquechuanmei'
-# 受监控的后端文件（git server/* → 线上路径）
-SERVER_FILES = [
-    '/home/ubuntu/auth-service/auth_server.py',
-    '/home/ubuntu/content-api/content_api.py',
-    '/home/ubuntu/content-api/imggen_api.py',
-    '/home/ubuntu/content-api/leadgen_api.py',
-    '/home/ubuntu/content-api/tikhub.py',
-    '/home/ubuntu/dl-service/dl_service.py',
-]
+WEBROOT = os.environ.get('HQ_WEBROOT', '/var/www/huangquechuanmei')
+REPO = os.environ.get('HQ_REPO', os.path.join(HOME, 'huangque-main-site'))
+GIT_REF = os.environ.get('HQ_DRIFT_REF', 'origin/main')
 
-# 后端目录：整目录下的 .py 都监控（T8 拆分后业务逻辑在 content_domains/）
-SERVER_GLOBS = [
-    '/home/ubuntu/content-api/content_domains/*.py',
-]
+BACKEND_RUNTIME = {
+    'server/auth_server.py': '/home/ubuntu/auth-service/auth_server.py',
+    'server/content_api.py': '/home/ubuntu/content-api/content_api.py',
+    'server/imggen_api.py': '/home/ubuntu/content-api/imggen_api.py',
+    'server/leadgen_api.py': '/home/ubuntu/content-api/leadgen_api.py',
+    'server/tikhub.py': '/home/ubuntu/content-api/tikhub.py',
+    'server/dl_service.py': '/home/ubuntu/dl-service/dl_service.py',
+    'server/admin_api.py': '/home/ubuntu/content-api/admin_api.py',
+    'scripts/drift_sentinel.py': '/home/ubuntu/hq-drift/drift_sentinel.py',
+}
 
-
-def monitored_files():
-    """当前应监控的文件全集：webroot(排除 assets/ 与 .bak) + 后端文件。"""
-    files = []
-    for p in glob.glob(os.path.join(WEBROOT, '**', '*'), recursive=True):
-        if not os.path.isfile(p):
-            continue
-        rel = os.path.relpath(p, WEBROOT)
-        if rel.startswith('assets' + os.sep) or '.bak' in os.path.basename(p):
-            continue
-        files.append(p)
-    files += [p for p in SERVER_FILES if os.path.isfile(p)]
-    for pat in SERVER_GLOBS:
-        files += [p for p in glob.glob(pat) if os.path.isfile(p) and '__pycache__' not in p]
-    return sorted(set(files))
-
-
-def md5_norm(path):
-    """剔除 CRLF 后算 md5，避免换行符差异误报。"""
-    try:
-        with open(path, 'rb') as f:
-            data = f.read().replace(b'\r\n', b'\n')
-        return hashlib.md5(data).hexdigest()
-    except Exception:
-        return None
-
-
-def snapshot():
-    return {p: md5_norm(p) for p in monitored_files()}
+CONTENT_DOMAINS_RUNTIME = os.environ.get('HQ_CONTENT_DOMAINS_RUNTIME', '/home/ubuntu/content-api/content_domains')
 
 
 def log(msg):
     line = time.strftime('%Y-%m-%d %H:%M:%S ') + msg
     try:
+        os.makedirs(DRIFT_DIR, exist_ok=True)
         with open(LOG, 'a', encoding='utf-8') as f:
             f.write(line + '\n')
     except Exception:
@@ -80,7 +71,176 @@ def log(msg):
     print(line)
 
 
-# ---------- 飞书告警（复用 balance_alert 的路径）----------
+def norm_bytes(data):
+    return data.replace(b'\r\n', b'\n')
+
+
+def md5_bytes(data):
+    return hashlib.md5(norm_bytes(data)).hexdigest()
+
+
+def md5_file(path):
+    try:
+        with open(path, 'rb') as f:
+            return md5_bytes(f.read())
+    except Exception:
+        return None
+
+
+def git(args, check=True):
+    return subprocess.run(
+        ['git', '-C', REPO] + list(args),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=check,
+    )
+
+
+def ensure_repo_ref():
+    if not os.path.isdir(os.path.join(REPO, '.git')):
+        raise RuntimeError('git checkout 不存在：%s' % REPO)
+    git(['fetch', '--quiet', 'origin'], check=False)
+    git(['rev-parse', '--verify', GIT_REF], check=True)
+
+
+def git_ls_tree(prefix):
+    p = git(['ls-tree', '-r', '--name-only', GIT_REF, prefix], check=False)
+    if p.returncode != 0:
+        return []
+    return [x.strip() for x in p.stdout.decode('utf-8', 'ignore').splitlines() if x.strip()]
+
+
+def git_md5(git_path):
+    p = git(['show', '%s:%s' % (GIT_REF, git_path)], check=False)
+    if p.returncode != 0:
+        return None
+    return md5_bytes(p.stdout)
+
+
+def git_path_to_runtime(git_path):
+    git_path = git_path.replace('\\', '/')
+    if git_path.startswith('site/'):
+        return os.path.join(WEBROOT, git_path[len('site/'):])
+    if git_path in BACKEND_RUNTIME:
+        return BACKEND_RUNTIME[git_path]
+    if git_path.startswith('server/content_domains/') and git_path.endswith('.py'):
+        return os.path.join(CONTENT_DOMAINS_RUNTIME, os.path.basename(git_path))
+    return None
+
+
+def runtime_to_git_path(path):
+    path = os.path.normpath(path)
+    webroot = os.path.normpath(WEBROOT)
+    if path.startswith(webroot + os.sep):
+        rel = os.path.relpath(path, webroot).replace(os.sep, '/')
+        if rel.startswith('assets/') or '.bak' in os.path.basename(rel):
+            return None
+        return 'site/' + rel
+    for git_path, runtime in BACKEND_RUNTIME.items():
+        if path == os.path.normpath(runtime):
+            return git_path
+    domain_dir = os.path.normpath(CONTENT_DOMAINS_RUNTIME)
+    if path.startswith(domain_dir + os.sep) and path.endswith('.py') and '__pycache__' not in path:
+        return 'server/content_domains/' + os.path.basename(path)
+    return None
+
+
+def expected_git_paths():
+    paths = []
+    for p in git_ls_tree('site'):
+        if p.startswith('site/assets/') or '.bak' in os.path.basename(p):
+            continue
+        paths.append(p)
+    for p in BACKEND_RUNTIME:
+        if git_md5(p) is not None:
+            paths.append(p)
+    for p in git_ls_tree('server/content_domains'):
+        if p.endswith('.py') and '__pycache__' not in p:
+            paths.append(p)
+    return sorted(set(paths))
+
+
+def runtime_files():
+    files = []
+    for p in glob.glob(os.path.join(WEBROOT, '**', '*'), recursive=True):
+        if os.path.isfile(p) and runtime_to_git_path(p):
+            files.append(p)
+    for p in BACKEND_RUNTIME.values():
+        if os.path.isfile(p):
+            files.append(p)
+    for p in glob.glob(os.path.join(CONTENT_DOMAINS_RUNTIME, '*.py')):
+        if os.path.isfile(p) and runtime_to_git_path(p):
+            files.append(p)
+    return sorted(set(files))
+
+
+def diff_paths(git_paths=None):
+    ensure_repo_ref()
+    wanted = sorted(set(git_paths or expected_git_paths()))
+    changed, missing, added = [], [], []
+    expected_runtime = {}
+    for gp in wanted:
+        rp = git_path_to_runtime(gp)
+        if rp:
+            expected_runtime[gp] = rp
+            if not os.path.exists(rp):
+                missing.append(gp)
+                continue
+            if md5_file(rp) != git_md5(gp):
+                changed.append(gp)
+
+    if git_paths is None:
+        expected_git = set(expected_runtime)
+        for rp in runtime_files():
+            gp = runtime_to_git_path(rp)
+            if gp and gp not in expected_git and git_md5(gp) is None:
+                added.append(gp)
+
+    return {
+        'changed': sorted(changed),
+        'missing': sorted(missing),
+        'added': sorted(set(added)),
+    }
+
+
+def snapshot():
+    ensure_repo_ref()
+    return {
+        gp: {
+            'runtime': git_path_to_runtime(gp),
+            'git_md5': git_md5(gp),
+            'runtime_md5': md5_file(git_path_to_runtime(gp)) if git_path_to_runtime(gp) else None,
+        }
+        for gp in expected_git_paths()
+    }
+
+
+def bless(paths=None):
+    os.makedirs(DRIFT_DIR, exist_ok=True)
+    paths = [p.replace('\\', '/') for p in (paths or [])]
+    if paths:
+        d = diff_paths(paths)
+        record = {
+            'deployed_at': int(time.time()),
+            'git_ref': GIT_REF,
+            'repo': REPO,
+            'files': paths,
+            'verify': d,
+        }
+        with open(DEPLOY_LOG, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+        log('部署 bless 已记录：%d 个文件' % len(paths))
+        return
+    snap = snapshot()
+    with open(BASELINE, 'w', encoding='utf-8') as f:
+        json.dump({'blessed_at': int(time.time()), 'git_ref': GIT_REF, 'files': snap}, f, ensure_ascii=False, indent=0)
+    log('git 基线清单已记录：%d 个文件（巡检仍以 %s 为准）' % (len(snap), GIT_REF))
+
+
+def short(git_path):
+    return git_path
+
+
 def _feishu_send(text):
     try:
         fe = json.load(open(os.path.join(HOME, '.openclaw', 'openclaw.json')))['channels']['feishu']
@@ -113,59 +273,73 @@ def _feishu_send(text):
         log('飞书发送失败: %s' % e); return False
 
 
-def bless():
-    os.makedirs(os.path.dirname(BASELINE), exist_ok=True)
-    snap = snapshot()
-    json.dump({'blessed_at': int(time.time()), 'files': snap},
-              open(BASELINE, 'w', encoding='utf-8'), ensure_ascii=False, indent=0)
-    log('基线已重建：%d 个文件' % len(snap))
-
-
-def diff():
-    if not os.path.exists(BASELINE):
-        return None
-    base = json.load(open(BASELINE, encoding='utf-8'))['files']
-    cur = snapshot()
-    changed = [p for p in cur if p in base and cur[p] != base[p]]
-    missing = [p for p in base if p not in cur]
-    added = [p for p in cur if p not in base]
-    return {'changed': sorted(changed), 'missing': sorted(missing), 'added': sorted(added)}
-
-
-def main():
-    if '--test' in sys.argv:
-        print('飞书自检:', _feishu_send('【漂移哨兵自检】黄雀主站文件漂移监测通道正常，可忽略 🙏'))
-        return
-    if '--bless' in sys.argv:
-        bless(); return
-    d = diff()
-    if d is None:
-        log('无基线，请先运行 --bless'); return
+def format_diff(d):
     total = len(d['changed']) + len(d['missing']) + len(d['added'])
-    if total == 0:
-        log('巡检正常：线上与基线一致，无漂移'); return
-
-    def short(p):
-        return p.replace(WEBROOT, 'webroot').replace('/home/ubuntu', '~')
-    lines = ['⚠️ 黄雀主站检测到 %d 处文件漂移（有人可能绕过 ship 直接改了服务器）' % total]
+    lines = ['⚠️ 黄雀主站检测到 %d 处文件漂移（线上与 git %s 不一致）' % (total, GIT_REF)]
     for tag, key in (('改动', 'changed'), ('删除', 'missing'), ('新增', 'added')):
         if d[key]:
             lines.append('【%s %d】%s' % (tag, len(d[key]), '、'.join(short(p) for p in d[key][:12])))
-    lines.append('→ 如是正常部署请走 ship 并在部署后 `drift_sentinel.py --bless`；如非本人所为请排查。')
-    msg = '\n'.join(lines)
-    log('检测到漂移: changed=%d missing=%d added=%d' % (len(d['changed']), len(d['missing']), len(d['added'])))
+    lines.append('→ 请勿直接改服务器；正常上线必须走 PR 合并后由审核方执行 ship。')
+    return '\n'.join(lines)
 
-    if '--print' in sys.argv:
-        print(msg); return
-    # 冷却：同一漂移指纹 6h 内只报一次
+
+def handle_detect(print_only=False):
+    d = diff_paths()
+    total = len(d['changed']) + len(d['missing']) + len(d['added'])
+    if total == 0:
+        log('巡检正常：线上与 git %s 一致，无漂移' % GIT_REF)
+        return 0
+    msg = format_diff(d)
+    log('检测到漂移: changed=%d missing=%d added=%d' % (len(d['changed']), len(d['missing']), len(d['added'])))
+    if print_only:
+        print(msg)
+        return 1
     fp = hashlib.md5(msg.encode('utf-8')).hexdigest()
     st = json.load(open(STATE)) if os.path.exists(STATE) else {}
     if st.get('fp') == fp and time.time() - st.get('ts', 0) < COOLDOWN:
-        log('漂移未变且在冷却期内，跳过告警'); return
+        log('漂移未变且在冷却期内，跳过告警')
+        return 1
     ok = _feishu_send(msg)
+    os.makedirs(DRIFT_DIR, exist_ok=True)
     json.dump({'fp': fp, 'ts': int(time.time())}, open(STATE, 'w'))
     log('已发飞书告警: %s' % ok)
+    return 1
+
+
+def handle_verify(paths):
+    paths = [p.replace('\\', '/') for p in paths]
+    d = diff_paths(paths)
+    total = len(d['changed']) + len(d['missing']) + len(d['added'])
+    if total == 0:
+        log('部署后校验通过：%d 个文件线上 == git %s' % (len(paths), GIT_REF))
+        return 0
+    print(format_diff(d))
+    log('部署后校验失败：changed=%d missing=%d added=%d' % (len(d['changed']), len(d['missing']), len(d['added'])))
+    return 2
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--test', action='store_true')
+    ap.add_argument('--print', dest='print_only', action='store_true')
+    ap.add_argument('--bless', action='store_true')
+    ap.add_argument('--bless-deploy', nargs='*')
+    ap.add_argument('--verify-deploy', nargs='*')
+    args = ap.parse_args()
+
+    if args.test:
+        print('飞书自检:', _feishu_send('【漂移哨兵自检】黄雀主站文件漂移监测通道正常，可忽略'))
+        return 0
+    if args.verify_deploy is not None:
+        return handle_verify(args.verify_deploy)
+    if args.bless_deploy is not None:
+        bless(args.bless_deploy)
+        return 0
+    if args.bless:
+        bless()
+        return 0
+    return handle_detect(args.print_only)
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
