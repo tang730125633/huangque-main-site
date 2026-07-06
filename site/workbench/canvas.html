@@ -3,234 +3,269 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>画布 · 海报编辑 · 黄雀 AI 工作台</title>
+<title>画布 · 节点生产 · 黄雀 AI 工作台</title>
 <link rel="icon" href="../assets/cloud/logo-bird.png">
 <link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
 <link rel="stylesheet" href="../assets/cloud.css?v=8">
 <style>
   body{ overflow:hidden; }
-  .gCanvas{ display:grid; grid-template-columns:60px 1fr 292px; gap:16px; height:calc(100vh - 134px); min-height:560px; }
-  @media (max-width:1100px){ .gCanvas{ grid-template-columns:1fr; height:auto; } }
-
-  .cv-tool{ width:44px; height:46px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; border-radius:11px; cursor:pointer; color:#94a4bb; transition:.16s; }
-  .cv-tool:hover{ background:rgba(148,164,187,.06); color:#eaf1fa; }
-  .cv-tool.on{ background:rgba(231,178,76,.12); color:#e7b24c; }
-  .cv-tool .tl{ font-size:9px; line-height:1; }
-  .cv-ico{ display:flex; align-items:center; flex:none; }
-
-  .cv-stage{ position:relative; display:flex; flex-direction:column; border:1px solid rgba(148,164,187,.1); border-radius:16px; background:radial-gradient(120% 100% at 50% 0%, rgba(18,26,42,.6), rgba(8,12,20,.65)); overflow:hidden; min-height:440px; }
-  .cv-bar{ flex:none; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:11px 16px; border-bottom:1px solid rgba(148,164,187,.08); background:rgba(7,11,19,.4); }
-  .cv-mini{ width:32px; height:32px; display:flex; align-items:center; justify-content:center; border-radius:9px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; }
-  .cv-mini:hover{ border-color:rgba(231,178,76,.4); color:#eaf1fa; }
-  .cv-drop{ flex:1; margin:22px; border:1.5px dashed rgba(148,164,187,.24); border-radius:16px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; text-align:center; padding:24px; background:rgba(148,164,187,.02); }
-
-  .cv-panel{ border:1px solid rgba(148,164,187,.1); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.58), rgba(12,18,32,.46)); padding:16px; }
-  .cv-phead{ display:flex; align-items:center; justify-content:space-between; margin-bottom:13px; }
-  .cv-ptitle{ font-size:13.5px; font-weight:600; }
-  .cv-empty{ border:1px dashed rgba(148,164,187,.24); border-radius:12px; background:rgba(148,164,187,.03); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; padding:22px 12px; text-align:center; color:#5c6b82; }
-  .cv-flab{ font-size:11.5px; color:#5c6b82; margin-bottom:6px; display:block; }
-  .cv-in{ width:100%; padding:9px 11px; font-size:13px; color:#eaf1fa; background:rgba(7,11,19,.5); border:1px solid rgba(148,164,187,.16); border-radius:10px; outline:none; font-family:inherit; transition:.16s; }
-  .cv-in:focus{ border-color:rgba(231,178,76,.4); }
-  .cv-row2{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-  .cv-sel{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding:9px 11px; font-size:13px; color:#eaf1fa; background:rgba(7,11,19,.5); border:1px solid rgba(148,164,187,.16); border-radius:10px; cursor:pointer; transition:.16s; }
-  .cv-sel:hover{ border-color:rgba(231,178,76,.4); }
-  .cv-sw{ width:26px; height:26px; border-radius:8px; cursor:pointer; border:1px solid rgba(148,164,187,.2); transition:.16s; }
-  .cv-sw.on{ box-shadow:0 0 0 2px #070b13, 0 0 0 3.5px #e7b24c; }
+  .nc-wrap{ height:calc(100vh - 118px); min-height:520px; display:flex; flex-direction:column; gap:12px; }
+  .nc-bar{ flex:none; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .nc-add{ display:inline-flex; align-items:center; gap:6px; padding:8px 13px; font-size:13px; font-weight:600; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.3); border-radius:10px; cursor:pointer; font-family:inherit; }
+  .nc-add:hover{ background:rgba(231,178,76,.16); }
+  .nc-run{ margin-left:auto; padding:8px 16px; font-size:13px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:10px; cursor:pointer; font-family:inherit; }
+  .nc-canvas{ position:relative; flex:1; min-height:0; border:1px solid rgba(148,164,187,.12); border-radius:16px; overflow:auto;
+    background:radial-gradient(rgba(148,164,187,.08) 1px, transparent 1px) 0 0/22px 22px, linear-gradient(165deg, rgba(12,18,30,.6), rgba(8,12,20,.66)); }
+  .nc-inner{ position:relative; width:2400px; height:1500px; }
+  .nc-edges{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:1; }
+  .nc-node{ position:absolute; z-index:2; width:238px; border:1px solid rgba(148,164,187,.16); border-radius:13px; background:rgba(13,19,28,.96); box-shadow:0 12px 30px -14px rgba(0,0,0,.7); font-size:12.5px; }
+  .nc-node.sel{ border-color:rgba(231,178,76,.6); }
+  .nc-head{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding:9px 11px; border-bottom:1px solid rgba(148,164,187,.1); cursor:move; border-radius:13px 13px 0 0; font-weight:700; }
+  .nc-head .dot{ width:8px; height:8px; border-radius:50%; flex:none; }
+  .nc-x{ cursor:pointer; color:#5c6b82; font-size:15px; line-height:1; }
+  .nc-x:hover{ color:#f4708a; }
+  .nc-body{ padding:10px 11px; display:flex; flex-direction:column; gap:9px; }
+  .nc-lab{ font-size:10.5px; color:#5c6b82; }
+  .nc-in{ width:100%; box-sizing:border-box; padding:7px 9px; font-size:12px; color:#eaf1fa; background:rgba(7,11,19,.55); border:1px solid rgba(148,164,187,.16); border-radius:8px; outline:none; font-family:inherit; resize:none; }
+  .nc-in:focus{ border-color:rgba(231,178,76,.4); }
+  .nc-seg{ display:flex; gap:5px; flex-wrap:wrap; }
+  .nc-chip{ padding:4px 8px; font-size:11px; border-radius:7px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.14); }
+  .nc-chip.on{ color:#e7b24c; background:rgba(231,178,76,.1); border-color:rgba(231,178,76,.32); }
+  .nc-go{ width:100%; padding:8px; font-size:12.5px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:9px; cursor:pointer; font-family:inherit; }
+  .nc-go:disabled{ opacity:.6; cursor:wait; }
+  .nc-note{ font-size:10.5px; color:#5c6b82; min-height:13px; }
+  .nc-thumb{ width:100%; border-radius:8px; display:block; border:1px solid rgba(148,164,187,.12); }
+  .nc-drop{ width:100%; aspect-ratio:1; display:flex; align-items:center; justify-content:center; text-align:center; font-size:11px; color:#5c6b82; border:1.4px dashed rgba(148,164,187,.26); border-radius:9px; cursor:pointer; background-size:cover; background-position:center; }
+  /* ports */
+  .nc-port{ position:absolute; width:13px; height:13px; border-radius:50%; background:#0d131c; border:2px solid #94a4bb; cursor:crosshair; z-index:3; }
+  .nc-port:hover{ border-color:#e7b24c; }
+  .nc-port.pin{ left:-7px; }
+  .nc-port.pout{ right:-7px; }
+  .nc-port.img{ border-color:#46b4ff; }
+  .nc-port.img:hover{ border-color:#e7b24c; }
 </style>
 </head>
 <body>
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
 
 <div class="hq-app"><div class="hq-content" data-active="canvas">
-
-  <!-- 模块面包屑 -->
-  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;">
+  <div class="nc-wrap">
     <div style="display:flex; align-items:center; gap:10px;">
-      <span style="display:flex; width:21px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 2l9 5-9 5-9-5z"/><path d="M3 12l9 5 9-5M3 17l9 5 9-5"/></svg></span>
-      <span style="font-size:15px; color:#5c6b82;">画布</span>
-      <span style="color:#5c6b82;">·</span>
-      <span style="font-size:15px; font-weight:600;">海报编辑</span>
-      <span style="margin-left:6px; padding:3px 10px; font-size:11.5px; border-radius:7px; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.12);">仙颜美容 · 未命名海报</span>
+      <span style="display:flex; width:20px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 2l9 5-9 5-9-5z"/><path d="M3 12l9 5 9-5M3 17l9 5 9-5"/></svg></span>
+      <span style="font-size:15px; font-weight:600;">节点生产画布</span>
+      <span style="font-size:12px; color:#5c6b82;">· 把功能拼成流水线：拖动、连线、调参、并行生产</span>
     </div>
-    <div style="display:flex; align-items:center; gap:9px;">
-      <button class="cv-mini" title="撤销"><span class="cv-ico" style="width:16px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M3 7v6h6"/><path d="M3 13a9 9 0 1 0 3-7.7L3 8"/></svg></span></button>
-      <button class="cv-mini" title="重做"><span class="cv-ico" style="width:16px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 7v6h-6"/><path d="M21 13a9 9 0 1 1-3-7.7L21 8"/></svg></span></button>
+    <div class="nc-bar">
+      <button class="nc-add" data-add="text">＋ 文本</button>
+      <button class="nc-add" data-add="image">＋ 图片</button>
+      <button class="nc-add" data-add="reverse">＋ 提示词反推</button>
+      <button class="nc-add" data-add="gen">＋ 作图</button>
+      <span style="font-size:11px; color:#5c6b82;">连线：点一个「输出口」再点一个「输入口」</span>
+      <button id="ncRunAll" class="nc-run">▶ 运行全部（并行）</button>
     </div>
-  </div>
-
-  <div class="gCanvas">
-
-    <!-- 左：浮动工具栏 -->
-    <div style="display:flex; flex-direction:column; align-items:center; gap:5px; padding:9px 0; border:1px solid rgba(148,164,187,.1); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.58), rgba(12,18,32,.46)); align-self:start;">
-      <div class="cv-tool on">
-        <span class="cv-ico" style="width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M4 3l7 17 2.3-6.7L20 11 4 3z"/></svg></span>
-        <span class="tl">选择</span>
-      </div>
-      <div class="cv-tool">
-        <span class="cv-ico" style="width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M4 7V5h16v2"/><path d="M9 19h6"/><path d="M12 5v14"/></svg></span>
-        <span class="tl">文字</span>
-      </div>
-      <div class="cv-tool">
-        <span class="cv-ico" style="width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="9" height="9" rx="1.5"/><circle cx="17" cy="16.5" r="4"/></svg></span>
-        <span class="tl">图形</span>
-      </div>
-      <div class="cv-tool">
-        <span class="cv-ico" style="width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span>
-        <span class="tl">图片</span>
-      </div>
-      <div class="cv-tool">
-        <span class="cv-ico" style="width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg></span>
-        <span class="tl">裁剪</span>
-      </div>
-      <div style="width:26px; height:1px; background:rgba(148,164,187,.14); margin:4px 0;"></div>
-      <div class="cv-tool">
-        <span class="cv-ico" style="width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 14l.7 1.9L22 17l-2.3.6L19 20l-.7-2.4L16 17l2.3-.5z"/></svg></span>
-        <span class="tl" style="color:#e7b24c;">AI重绘</span>
+    <div id="ncCanvas" class="nc-canvas">
+      <div id="ncInner" class="nc-inner">
+        <svg id="ncEdges" class="nc-edges"></svg>
       </div>
     </div>
-
-    <!-- 中：画布舞台（空态） -->
-    <div class="cv-stage">
-      <div class="cv-bar">
-        <div style="display:flex; align-items:center; gap:10px;">
-          <span style="font-size:13px; font-weight:600;">海报画布</span>
-          <span class="mono" style="font-size:11.5px; color:#5c6b82; padding:3px 8px; border-radius:6px; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.1);">1080 × 1350</span>
-          <span style="font-size:11.5px; color:#5c6b82;">3:4 竖版</span>
-        </div>
-        <div style="display:flex; align-items:center; gap:7px;">
-          <button class="cv-mini" title="缩小"><span class="cv-ico" style="width:15px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M5 12h14"/></svg></span></button>
-          <span class="mono" style="font-size:12.5px; color:#94a4bb; min-width:44px; text-align:center;">100%</span>
-          <button class="cv-mini" title="放大"><span class="cv-ico" style="width:15px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 5v14M5 12h14"/></svg></span></button>
-          <button class="cv-mini" title="适应屏幕"><span class="cv-ico" style="width:15px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg></span></button>
-        </div>
-      </div>
-
-      <div class="cv-drop">
-        <div style="width:78px; height:78px; display:flex; align-items:center; justify-content:center; border-radius:20px; background:rgba(231,178,76,.07); border:1px solid rgba(231,178,76,.18); color:#e7b24c;">
-          <span class="cv-ico" style="width:36px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span>
-        </div>
-        <div>
-          <div style="font-size:16px; font-weight:600; color:#eaf1fa;">拖入素材或从作图结果导入</div>
-          <div style="font-size:13px; color:#94a4bb; margin-top:7px;">开始编辑海报 · 支持 JPG / PNG / WebP</div>
-        </div>
-        <div style="display:flex; gap:11px; margin-top:4px;">
-          <a href="banana.html" class="hv-lift" style="display:inline-flex; align-items:center; gap:7px; padding:10px 18px; font-size:13.5px; font-weight:600; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:11px; cursor:pointer; box-shadow:0 10px 26px -12px rgba(231,178,76,.7); transition:.2s; text-decoration:none;">
-            <span class="cv-ico" style="width:16px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span>从作图结果导入
-          </a>
-          <button class="cv-mini" style="width:auto; padding:0 16px; gap:7px; display:inline-flex; font-size:13.5px;">
-            <span class="cv-ico" style="width:16px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg></span>上传素材
-          </button>
-        </div>
-      </div>
-
-      <!-- 底部：模板栏（空态） -->
-      <div style="flex:none; display:flex; align-items:center; gap:12px; padding:11px 16px; border-top:1px solid rgba(148,164,187,.08); background:rgba(7,11,19,.34);">
-        <span style="font-size:12px; color:#5c6b82;">模板</span>
-        <div style="display:flex; align-items:center; gap:9px; overflow:hidden;">
-          <div style="width:46px; height:58px; flex:none; border:1px dashed rgba(148,164,187,.24); border-radius:8px; display:flex; align-items:center; justify-content:center; color:#5c6b82;"><span class="cv-ico" style="width:15px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 5v14M5 12h14"/></svg></span></div>
-          <div style="width:46px; height:58px; flex:none; border:1px dashed rgba(148,164,187,.18); border-radius:8px; background:rgba(148,164,187,.03);"></div>
-          <div style="width:46px; height:58px; flex:none; border:1px dashed rgba(148,164,187,.18); border-radius:8px; background:rgba(148,164,187,.03);"></div>
-          <span style="font-size:11.5px; color:#5c6b82; margin-left:4px;">模板陆续上线中</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- 右：图层 + 属性 + 导出 -->
-    <div style="display:flex; flex-direction:column; gap:14px; min-height:0; overflow-y:auto;">
-
-      <!-- 图层面板 -->
-      <div class="cv-panel">
-        <div class="cv-phead">
-          <div style="display:flex; align-items:center; gap:8px;">
-            <span class="cv-ico" style="width:16px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 2l9 5-9 5-9-5z"/><path d="M3 12l9 5 9-5M3 17l9 5 9-5"/></svg></span>
-            <span class="cv-ptitle">图层</span>
-          </div>
-          <button class="cv-mini" style="width:28px; height:28px;" title="新建图层"><span class="cv-ico" style="width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 5v14M5 12h14"/></svg></span></button>
-        </div>
-        <div class="cv-empty">
-          <span class="cv-ico" style="width:22px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 2l9 5-9 5-9-5z"/><path d="M3 12l9 5 9-5M3 17l9 5 9-5"/></svg></span>
-          <div style="font-size:13px; color:#94a4bb;">暂无图层</div>
-          <div style="font-size:11.5px;">添加文字 / 图形 / 素材后在此显示</div>
-        </div>
-      </div>
-
-      <!-- 属性面板 -->
-      <div class="cv-panel">
-        <div class="cv-phead">
-          <div style="display:flex; align-items:center; gap:8px;">
-            <span class="cv-ico" style="width:16px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></span>
-            <span class="cv-ptitle">属性</span>
-          </div>
-          <span style="font-size:11px; color:#5c6b82;">未选中图层</span>
-        </div>
-
-        <div style="display:flex; flex-direction:column; gap:14px;">
-          <div>
-            <span class="cv-flab">位置</span>
-            <div class="cv-row2">
-              <input class="cv-in mono" type="text" value="X  0" disabled>
-              <input class="cv-in mono" type="text" value="Y  0" disabled>
-            </div>
-          </div>
-          <div>
-            <span class="cv-flab">尺寸</span>
-            <div class="cv-row2">
-              <input class="cv-in mono" type="text" value="W  —" disabled>
-              <input class="cv-in mono" type="text" value="H  —" disabled>
-            </div>
-          </div>
-          <div>
-            <span class="cv-flab">字体</span>
-            <div class="cv-sel">
-              <span>思源黑体 · Bold</span>
-              <span class="cv-ico" style="width:14px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M6 9l6 6 6-6"/></svg></span>
-            </div>
-          </div>
-          <div>
-            <span class="cv-flab">字号 · 行距</span>
-            <div class="cv-row2">
-              <input class="cv-in mono" type="text" value="64" disabled>
-              <input class="cv-in mono" type="text" value="1.3" disabled>
-            </div>
-          </div>
-          <div>
-            <span class="cv-flab">颜色</span>
-            <div style="display:flex; align-items:center; gap:9px;">
-              <span class="cv-sw on" style="background:#e7b24c;"></span>
-              <span class="cv-sw" style="background:#2dd4bf;"></span>
-              <span class="cv-sw" style="background:#f4708a;"></span>
-              <span class="cv-sw" style="background:#2bd576;"></span>
-              <span class="cv-sw" style="background:#eaf1fa;"></span>
-              <span class="cv-sw" style="background:#070b13;"></span>
-              <input class="cv-in mono" type="text" value="#E7B24C" style="width:96px; text-align:center;" disabled>
-            </div>
-          </div>
-          <div>
-            <span class="cv-flab">不透明度</span>
-            <div style="display:flex; align-items:center; gap:11px;">
-              <div style="flex:1; height:6px; border-radius:99px; background:rgba(148,164,187,.14); position:relative;">
-                <div style="position:absolute; left:0; top:0; bottom:0; width:100%; border-radius:99px; background:linear-gradient(90deg,#f4cd72,#e7b24c);"></div>
-                <div style="position:absolute; right:-2px; top:50%; transform:translateY(-50%); width:14px; height:14px; border-radius:50%; background:#f6d488; box-shadow:0 0 0 3px rgba(231,178,76,.18);"></div>
-              </div>
-              <span class="mono" style="font-size:12.5px; color:#94a4bb;">100%</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 导出 -->
-      <button class="hv-lift" style="width:100%; height:50px; flex:none; font-size:15px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit; display:flex; align-items:center; justify-content:center; gap:9px;">
-        <span class="cv-ico" style="width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></span>
-        导出 · 入库
-      </button>
-      <div style="text-align:center; margin-top:-4px;"><span style="font-size:11.5px; color:#5c6b82;">导出高清海报并同步到资产库</span></div>
-
-    </div>
-
   </div>
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
 <script src="cloud-shell.js?v=cccb4993"></script>
+<script>
+/* 节点生产画布：文本→反推→作图 节点图，拖动/连线/调参/并行运行。复用 /api/gen/reverse|banana|image + 轮询。 */
+(function(){
+  var inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas');
+  var nodes={}, edges=[], nid=0, pendingPort=null;
+  function tok(){ try{ return localStorage.getItem('hq_token')||''; }catch(e){ return ''; } }
+  var TYPE={
+    text:  {name:'文本 · 提示词', color:'#e7b24c', outs:['prompt']},
+    image: {name:'图片 · 素材',   color:'#46b4ff', outs:['image']},
+    reverse:{name:'提示词反推',   color:'#8a5cf6', ins:['image'], outs:['prompt']},
+    gen:   {name:'作图',          color:'#2bd576', ins:['prompt','image'], outs:['image']}
+  };
+
+  // ---------- 连线绘制 ----------
+  function portCenter(nodeId, kind, port){
+    var n=nodes[nodeId]; if(!n) return null;
+    var p=n.el.querySelector('.nc-port[data-kind="'+kind+'"][data-port="'+port+'"]'); if(!p) return null;
+    return { x:n.x + p.offsetLeft + 6.5, y:n.y + p.offsetTop + 6.5 };
+  }
+  function redraw(){
+    var s='';
+    edges.forEach(function(e){
+      var a=portCenter(e.from.node,'out',e.from.port), b=portCenter(e.to.node,'in',e.to.port);
+      if(!a||!b) return;
+      var dx=Math.max(40,Math.abs(b.x-a.x)*0.5);
+      s+='<path d="M'+a.x+','+a.y+' C'+(a.x+dx)+','+a.y+' '+(b.x-dx)+','+b.y+' '+b.x+','+b.y+'" fill="none" stroke="rgba(231,178,76,.55)" stroke-width="2"/>';
+    });
+    svg.innerHTML=s;
+  }
+
+  // ---------- 建节点 ----------
+  function addNode(type, x, y){
+    var t=TYPE[type], id='n'+(++nid);
+    var node={ id:id, type:type, x:(x==null?60+((nid*30)%400):x), y:(y==null?50+((nid*40)%300):y), params:{engine:'nb2',ratio:'9:16',quality:'hd'}, outputs:{}, image:null };
+    var el=document.createElement('div'); el.className='nc-node'; el.style.left=node.x+'px'; el.style.top=node.y+'px';
+    var body='';
+    if(type==='text') body='<textarea class="nc-in" data-f="text" rows="3" placeholder="输入提示词，作为下游作图的词…"></textarea>';
+    if(type==='image') body='<div class="nc-lab">上传 / 粘贴一张图</div><label class="nc-drop" data-f="drop"><input type="file" accept="image/*" data-f="file" style="display:none">点此上传<br>或 Ctrl/⌘V 粘贴</label>';
+    if(type==='reverse') body='<div class="nc-lab">输入：图片 → 输出：提示词</div><button class="nc-go" data-f="run">反推提示词（2点）</button><textarea class="nc-in" data-f="out" rows="3" placeholder="反推结果会出现在这里" style="margin-top:8px;"></textarea>';
+    if(type==='gen') body='<div class="nc-lab">引擎</div><div class="nc-seg" data-f="engine"><span class="nc-chip on" data-v="nb2">Nano2</span><span class="nc-chip" data-v="pro">Pro</span><span class="nc-chip" data-v="gpt">gpt</span></div>'
+      +'<div class="nc-seg" data-f="ratio"><span class="nc-chip on" data-v="9:16">9:16</span><span class="nc-chip" data-v="1:1">1:1</span><span class="nc-chip" data-v="16:9">16:9</span><span class="nc-chip" data-v="3:4">3:4</span></div>'
+      +'<textarea class="nc-in" data-f="text" rows="2" placeholder="提示词（也可由上游文本/反推节点连入）"></textarea>'
+      +'<button class="nc-go" data-f="run">生成图片</button><div class="nc-drop" data-f="result" style="display:none;"></div>';
+    el.innerHTML='<div class="nc-head" data-f="head"><span style="display:flex;align-items:center;gap:7px;"><span class="dot" style="background:'+t.color+'"></span>'+t.name+'</span><span class="nc-x" data-f="del">×</span></div>'
+      +'<div class="nc-body">'+body+'<div class="nc-note" data-f="note"></div></div>';
+    inner.appendChild(el); node.el=el;
+    // ports
+    (t.ins||[]).forEach(function(p,i){ var d=document.createElement('div'); d.className='nc-port pin'+(p==='image'?' img':''); d.setAttribute('data-kind','in'); d.setAttribute('data-port',p); d.title='输入:'+p; d.style.top=(46+i*22)+'px'; el.appendChild(d); });
+    (t.outs||[]).forEach(function(p,i){ var d=document.createElement('div'); d.className='nc-port pout'+(p==='image'?' img':''); d.setAttribute('data-kind','out'); d.setAttribute('data-port',p); d.title='输出:'+p; d.style.top=(46+i*22)+'px'; el.appendChild(d); });
+    nodes[id]=node; wireNode(node); redraw();
+    return node;
+  }
+  function noteOf(node,msg,color){ var n=node.el.querySelector('[data-f="note"]'); if(n){ n.textContent=msg||''; n.style.color=color||'#5c6b82'; } }
+
+  // ---------- 节点交互 ----------
+  function wireNode(node){
+    var el=node.el, head=el.querySelector('[data-f="head"]');
+    head.addEventListener('pointerdown', function(e){
+      if(e.target&&e.target.getAttribute('data-f')==='del') return;
+      selectNode(node); e.preventDefault();
+      var sx=e.clientX, sy=e.clientY, ox=node.x, oy=node.y;
+      function mv(ev){ node.x=Math.max(0,ox+(ev.clientX-sx)); node.y=Math.max(0,oy+(ev.clientY-sy)); el.style.left=node.x+'px'; el.style.top=node.y+'px'; redraw(); }
+      function up(){ window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up); }
+      window.addEventListener('pointermove',mv); window.addEventListener('pointerup',up);
+    });
+    el.querySelector('[data-f="del"]').onclick=function(){ delNode(node.id); };
+    el.addEventListener('mousedown', function(){ selectNode(node); });
+    // ports: 点输出口→点输入口 连线
+    el.querySelectorAll('.nc-port').forEach(function(p){
+      p.addEventListener('click', function(ev){ ev.stopPropagation();
+        var kind=p.getAttribute('data-kind'), port=p.getAttribute('data-port');
+        if(kind==='out'){ pendingPort={node:node.id, port:port}; noteOf(node,'已选输出口「'+port+'」，点一个输入口连上','#2dd4bf'); }
+        else if(kind==='in' && pendingPort){
+          edges=edges.filter(function(e){ return !(e.to.node===node.id && e.to.port===port); }); // 一个输入口只连一条
+          edges.push({from:pendingPort, to:{node:node.id, port:port}}); pendingPort=null; redraw();
+        }
+      });
+    });
+    // 表单
+    var txt=el.querySelector('[data-f="text"]'); if(txt) txt.oninput=function(){ node.params.text=txt.value; };
+    var out=el.querySelector('[data-f="out"]'); if(out) out.oninput=function(){ node.outputs.prompt=out.value; };
+    el.querySelectorAll('.nc-seg').forEach(function(seg){ var f=seg.getAttribute('data-f');
+      seg.querySelectorAll('.nc-chip').forEach(function(c){ c.onclick=function(){ seg.querySelectorAll('.nc-chip').forEach(function(x){x.classList.remove('on');}); c.classList.add('on'); node.params[f]=c.getAttribute('data-v'); }; }); });
+    // 图片节点上传/粘贴
+    var file=el.querySelector('[data-f="file"]'), drop=el.querySelector('[data-f="drop"]');
+    if(file){ file.onchange=function(){ imgToNode(node, file.files&&file.files[0]); }; }
+    if(drop){ drop.setAttribute('tabindex','0'); drop.addEventListener('paste', function(e){ var it=(e.clipboardData&&e.clipboardData.items)||[]; for(var i=0;i<it.length;i++){ if(it[i].kind==='file'&&it[i].type&&it[i].type.indexOf('image/')===0){ var f=it[i].getAsFile(); if(f){ e.preventDefault(); imgToNode(node,f); return; } } } }); }
+    var run=el.querySelector('[data-f="run"]'); if(run) run.onclick=function(){ runNode(node.id); };
+  }
+  function imgToNode(node, f){ if(!f) return; var url=URL.createObjectURL(f), im=new Image();
+    im.onload=function(){ var mx=1024,s=Math.min(1,mx/Math.max(im.width,im.height)),cv=document.createElement('canvas');
+      cv.width=Math.round(im.width*s); cv.height=Math.round(im.height*s); cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
+      var durl=cv.toDataURL('image/png'); node.image=durl; node.outputs.image=durl;
+      var d=node.el.querySelector('[data-f="drop"]'); if(d){ d.style.backgroundImage='url('+durl+')'; d.innerHTML=''; }
+      try{URL.revokeObjectURL(url);}catch(e){} };
+    im.src=url;
+  }
+  function selectNode(node){ Object.keys(nodes).forEach(function(k){ nodes[k].el.classList.remove('sel'); }); if(node) node.el.classList.add('sel'); }
+  function delNode(id){ if(nodes[id]){ nodes[id].el.remove(); delete nodes[id]; edges=edges.filter(function(e){ return e.from.node!==id && e.to.node!==id; }); redraw(); } }
+  canvas.addEventListener('click', function(e){ if(e.target===canvas||e.target===inner){ pendingPort=null; selectNode(null); } });
+
+  // ---------- 取上游输入 ----------
+  function inputVal(nodeId, port){
+    var e=edges.find(function(x){ return x.to.node===nodeId && x.to.port===port; });
+    if(!e) return null; var up=nodes[e.from.node]; if(!up) return null;
+    return up.outputs[e.from.port];
+  }
+
+  // ---------- 运行单个节点（返回 Promise，供并行/串行）----------
+  function runNode(id){
+    var node=nodes[id]; if(!node) return Promise.resolve();
+    if(!tok()){ if(window.HQ&&HQ.login) HQ.login(); return Promise.reject('未登录'); }
+    if(node.type==='reverse'){
+      var img=inputVal(id,'image')||node.image;
+      if(!img){ noteOf(node,'请把一个图片节点连到输入口','#f4708a'); return Promise.reject('无图'); }
+      var b64=img.indexOf(',')>=0?img.split(',')[1]:img;
+      var run=node.el.querySelector('[data-f="run"]'); run.disabled=true; noteOf(node,'反推中…','#2dd4bf');
+      return fetch('/api/gen/reverse',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({image:b64})})
+        .then(function(r){return r.json();}).then(function(d){ run.disabled=false;
+          if(!d.prompt) throw new Error(d.detail||'反推失败');
+          node.outputs.prompt=d.prompt; var o=node.el.querySelector('[data-f="out"]'); if(o) o.value=d.prompt;
+          noteOf(node,'✅ 反推完成','#2bd576'); if(window.HQ&&HQ.refreshPoints) HQ.refreshPoints(); })
+        .catch(function(e){ run.disabled=false; noteOf(node,'失败：'+(e.message||e),'#f4708a'); throw e; });
+    }
+    if(node.type==='gen'){
+      var prompt=inputVal(id,'prompt')||node.params.text||'';
+      if(!prompt.trim()){ noteOf(node,'需要提示词（自己填或从上游连入）','#f4708a'); return Promise.reject('无词'); }
+      var refImg=inputVal(id,'image'); var eng=node.params.engine||'nb2';
+      var bp={prompt:prompt.trim(), ratio:node.params.ratio||'9:16', quality:node.params.quality||'hd', count:1};
+      if(refImg) bp.image=refImg.indexOf(',')>=0?refImg.split(',')[1]:refImg;
+      var endpoint, gbtn=node.el.querySelector('[data-f="run"]');
+      if(eng==='gpt'){ endpoint='/api/gen/image'; } else { endpoint='/api/gen/banana'; bp.model=eng; }
+      gbtn.disabled=true; noteOf(node,'提交中…','#2dd4bf');
+      return fetch(endpoint,{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(bp)})
+        .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
+        .then(function(x){ if(x.s===402){ throw new Error('点数不足'); } if(!x.d.job_id){ throw new Error(x.d.detail||'提交失败'); }
+          return new Promise(function(res,rej){
+            var t0=Date.now();
+            var iv=setInterval(function(){
+              fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+                var sec=Math.round((Date.now()-t0)/1000);
+                if(d.status==='done'){ clearInterval(iv); var rr=typeof d.result==='string'?JSON.parse(d.result):d.result; res(rr); }
+                else if(d.status==='error'){ clearInterval(iv); rej(new Error(d.error||'生成失败')); }
+                else if(sec>420){ clearInterval(iv); rej(new Error('超时')); }
+                else noteOf(node,'生成中… 已用 '+sec+'s','#2dd4bf');
+              }).catch(function(){});
+            },3000);
+          });
+        })
+        .then(function(result){ gbtn.disabled=false;
+          var url=(result&&(result.url||(result.urls&&result.urls[0])))||'';
+          node.outputs.image=url;
+          var box=node.el.querySelector('[data-f="result"]'); if(box){ box.style.display='block'; box.style.backgroundImage='url("'+url+'?t='+Date.now()+'")'; box.innerHTML=''; }
+          noteOf(node,'✅ 出图完成','#2bd576'); if(window.HQ&&HQ.refreshPoints) HQ.refreshPoints(); })
+        .catch(function(e){ gbtn.disabled=false; noteOf(node,'失败：'+(e.message||e),'#f4708a'); throw e; });
+    }
+    return Promise.resolve();
+  }
+
+  // ---------- 运行全部：按依赖分波并行 ----------
+  document.getElementById('ncRunAll').onclick=function(){
+    var done={}, running={};
+    function ready(node){ // 所有输入口都有上游输出
+      var t=TYPE[node.type]; if(!t.ins) return true;
+      return t.ins.every(function(p){
+        var e=edges.find(function(x){ return x.to.node===node.id && x.to.port===p; });
+        if(p==='image' && node.image) return true;           // 图片节点自带图
+        if(p==='prompt' && (node.params.text||'').trim()) return true; // 自填词
+        if(!e) return p==='image'?true:false;                // image 可选、prompt 必须(除非自填)
+        return !!(nodes[e.from.node] && nodes[e.from.node].outputs[e.from.port]);
+      });
+    }
+    function tick(){
+      var runnable=Object.keys(nodes).map(function(k){return nodes[k];}).filter(function(n){
+        return (n.type==='reverse'||n.type==='gen') && !done[n.id] && !running[n.id] && ready(n);
+      });
+      if(!runnable.length) return;
+      runnable.forEach(function(n){ running[n.id]=true;
+        runNode(n.id).then(function(){ done[n.id]=true; running[n.id]=false; tick(); })
+                     .catch(function(){ done[n.id]=true; running[n.id]=false; tick(); });
+      });
+    }
+    tick();
+  };
+
+  // ---------- 顶部添加 ----------
+  document.querySelectorAll('.nc-add').forEach(function(b){ b.onclick=function(){ addNode(b.getAttribute('data-add')); }; });
+
+  // 初始给个示例：文本 → 作图
+  var t=addNode('text',60,60), g=addNode('gen',360,60);
+  t.params.text=''; var ta=t.el.querySelector('[data-f="text"]'); if(ta){ ta.value='科技焕肤 · 逆龄新生，高级感美业海报，金色光效，9:16 竖版，留白标题区'; t.params.text=ta.value; }
+  edges.push({from:{node:t.id,port:'prompt'}, to:{node:g.id,port:'prompt'}}); redraw();
+})();
+</script>
 </body>
 </html>

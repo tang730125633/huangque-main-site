@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 榛勯泙 路 浣滃浘鍚庣(nano banana / Gemini 鍥惧儚)鈥斺€?鐙珛鏈嶅姟锛屼笉杩?content_api.py銆?
@@ -36,6 +36,15 @@ OUT_DIR     = pathlib.Path(os.environ.get("CONTENT_OUT", "/home/ubuntu/content-a
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 GEMINI_KEY  = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_BASE = os.environ.get("GEMINI_BASE", "https://generativelanguage.googleapis.com").rstrip("/")
+# ---- 提示词反推（图→文，多模态文本模型）----
+REVERSE_MODEL = os.environ.get("REVERSE_MODEL", "gemini-2.5-flash")   # 反推用的多模态文本模型，可 env 覆盖
+REVERSE_COST  = int(os.environ.get("REVERSE_COST", "2"))              # 反推点数
+REVERSE_INSTRUCTION = ("你是资深美业广告视觉分析师。仔细看这张图，反推出一条可直接用于文生图的中文提示词，"
+    "用来生成同风格但全新原创的图（不是逐字描述这张图，而是能复现其风格气质、可换主体细节，版权安全）。"
+    "需覆盖：主体、构图/机位、场景与材质道具、光影与色调、留白位置、画面内中文文案（若有）。"
+    "约 60-120 字，直接输出这条提示词本身，不要任何解释、前后缀或引号。")
+# 反推并发闸：同步调 Gemini 会占住 HTTP 线程，限并发防打爆上游/线程池（可 env 覆盖）
+_reverse_sem = threading.BoundedSemaphore(max(1, int(os.environ.get("REVERSE_MAX_CONCURRENCY", "2") or "2")))
 
 # ============ COS 出图存储（可选，与 content_api 共用同一个 content.env 的 COS_* 环境变量）============
 # 配置齐全且文件存在 → 上传 COS 返回直链；未配置/失败 → 回退本地 /api/gen/file/，零影响。密钥仅走环境变量。
@@ -296,6 +305,34 @@ def run_job(job_id):
                       (str(e)[:300], int(time.time()), job_id)); c.commit()
 
 
+# ============ 提示词反推：图 → Gemini 多模态 → 文生图提示词（同步，不建 job） ============
+def gen_reverse(image):
+    if not GEMINI_KEY:
+        raise ValueError("GEMINI_API_KEY 未配置")
+    if not image:
+        raise ValueError("缺少图片")
+    body = json.dumps({
+        "contents": [{"parts": [
+            {"inlineData": {"mimeType": "image/png", "data": image}},
+            {"text": REVERSE_INSTRUCTION},
+        ]}],
+        "generationConfig": {"responseModalities": ["TEXT"], "temperature": 0.7, "maxOutputTokens": 500},
+    }).encode()
+    req = urllib.request.Request(
+        GEMINI_BASE + "/v1beta/models/" + REVERSE_MODEL + ":generateContent",
+        data=body, headers={"Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            d = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        raise ValueError("Gemini %s: %s" % (e.code, e.read()[:160].decode("u8", "ignore")))
+    parts = (d.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
+    text = " ".join(p.get("text", "") for p in parts if p.get("text")).strip().strip('"“”')
+    if not text:
+        raise ValueError("反推失败：" + str((d.get("error") or {}).get("message") or d)[:140])
+    return text[:600]
+
+
 # ============ HTTP ============
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -355,6 +392,33 @@ class H(BaseHTTPRequestHandler):
                 return self._send(500, {"detail": "任务创建失败，已尝试退点"})
             threading.Thread(target=run_job, args=(jid,), daemon=True).start()
             return self._send(200, {"job_id": jid, "cost": cost, "points_left": points_left})
+        if p == "/api/gen/reverse":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录或登录已过期"})
+            if user.get("must_change"):
+                return self._send(403, {"detail": "请先修改初始密码后再使用"})
+            body = self._json_body()
+            image = (body.get("image") or "").strip()
+            if image.startswith("data:") and "," in image:
+                image = image.split(",", 1)[1]  # 去掉 data URL 前缀，只留 base64
+            if not image:
+                return self._send(400, {"detail": "请先上传或粘贴一张图片"})
+            if len(image) > 8 * 1024 * 1024:     # base64 ~8MB ≈ 原图 6MB
+                return self._send(400, {"detail": "图片太大，请压缩后再试"})
+            cost = REVERSE_COST
+            deduct_status, deduct_data = deduct_points(user["username"], cost)
+            if deduct_status == 402:
+                return self._send(402, {"detail": "点数不足", "need": cost})
+            if deduct_status != 200:
+                return self._send(500, {"detail": (deduct_data or {}).get("detail") or "点数扣除失败"})
+            points_left = (deduct_data.get("points") if isinstance(deduct_data, dict) else None)
+            try:
+                with _reverse_sem:                       # 限并发，防同步调用打爆上游/线程池
+                    prompt = gen_reverse(image)
+            except Exception as e:
+                refund_points(user["username"], cost)   # 失败退点
+                return self._send(502, {"detail": "反推失败：" + str(e)[:160]})
+            return self._send(200, {"prompt": prompt, "cost": cost, "points_left": points_left})
         self._send(404, {"detail": "not found"})
 
     def do_GET(self):
