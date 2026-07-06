@@ -12,6 +12,12 @@
   .gKpi{ grid-template-columns:repeat(5,1fr); }
   .gTwo{ grid-template-columns:1.25fr .75fr; }
   .gTri{ grid-template-columns:repeat(3,1fr); }
+  .fakeui-notice{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin:0 0 18px;padding:13px 15px;border:1px solid rgba(231,178,76,.28);border-radius:12px;background:rgba(231,178,76,.08);color:#eaf1fa}
+  .fakeui-notice b{font-size:14px}
+  .fakeui-notice p{margin:4px 0 0;color:#94a4bb;font-size:12.5px;line-height:1.5}
+  .fakeui-badge{display:inline-flex;align-items:center;height:24px;padding:0 9px;border-radius:6px;background:rgba(231,178,76,.16);color:#e7b24c;font-size:12px;font-weight:700;white-space:nowrap}
+  .fakeui-link{display:inline-flex;align-items:center;height:30px;padding:0 11px;border:1px solid rgba(231,178,76,.32);border-radius:8px;color:#e7b24c;text-decoration:none;font-size:12.5px;white-space:nowrap}
+  .hq-content button:disabled{opacity:.45;cursor:not-allowed}
   @media (max-width:1200px){ .gKpi{ grid-template-columns:repeat(3,1fr);} .gTri{ grid-template-columns:1fr;} }
   @media (max-width:900px){ .gKpi{ grid-template-columns:repeat(2,1fr);} .gTwo{ grid-template-columns:1fr;} }
   .gUser{ grid-template-columns:repeat(4,1fr); }
@@ -33,12 +39,20 @@
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
 
 <div class="hq-app"><div class="hq-content" data-active="dashboard">
+  <div class="fakeui-notice">
+    <div>
+      <span class="fakeui-badge">示例预览</span>
+      <b style="margin-left:8px;">今日运营台暂未接入实时统计</b>
+      <p>本页数字、趋势、行动列表为工作台样式预览，不能作为真实经营数据使用。真实服务状态、调用统计、用户与充值数据请前往运营后台查看。</p>
+    </div>
+    <a class="fakeui-link" href="/admin/index.html">打开真实运营后台</a>
+  </div>
   <div style="display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:24px; gap:18px; flex-wrap:wrap;">
     <div>
       <h1 style="margin:0; font-size:27px; font-weight:700;">早上好，仙颜美容 · 示例 <span style="font-weight:400;">👋</span></h1>
       <p style="margin:9px 0 0; font-size:14px; color:#94a4bb;">开启高效创作的一天，今日已为你准备好所有关键数据</p>
     </div>
-    <div class="mono" style="font-size:13px; color:#5c6b82;">2026-06-26 星期五</div>
+    <div class="mono" style="font-size:13px; color:#5c6b82;">示例数据 · 非实时统计</div>
   </div>
 
   <!-- KPI -->
@@ -250,6 +264,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
+<script>document.querySelectorAll('.hq-content button').forEach(function(btn){btn.disabled=true;btn.title='示例预览暂不可操作，请前往真实运营后台';});</script>
 <script src="cloud-shell.js?v=603c221c"></script>
 </body>
 </html>
