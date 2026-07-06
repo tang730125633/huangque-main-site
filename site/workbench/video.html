@@ -463,7 +463,18 @@
   var voices=publicFallback.slice();
   var $=function(id){return document.getElementById(id);};
   function esc(s){return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
-  function fresh(u){return u+(u.indexOf('?')>=0?'&':'?')+'_='+Date.now();}
+  function fresh(u){u=String(u||'');return /[?&]q-sign-/.test(u)?u:u+(u.indexOf('?')>=0?'&':'?')+'_='+Date.now();}
+  function isProtectedLocal(u){return String(u||'').indexOf('/api/gen/file/')===0;}
+  function assetUrl(u){
+    if(!isProtectedLocal(u)) return Promise.resolve(fresh(u));
+    return fetch(fresh(u),{cache:'no-store',headers:{Authorization:'Bearer '+token}}).then(function(r){
+      if(r.status===401){location.href='../login.html?redirect=workbench/video';throw new Error('登录已过期');}
+      if(!r.ok) throw new Error('素材读取失败');
+      return r.blob();
+    }).then(function(blob){return URL.createObjectURL(blob);});
+  }
+  function setAssetImage(img,u){if(img&&u) assetUrl(u).then(function(src){img.src=src;}).catch(function(){});}
+  function downloadAsset(u,name){return assetUrl(u).then(function(src){var a=document.createElement('a');a.href=src;a.download=name||'huangque-video.mp4';document.body.appendChild(a);a.click();a.remove();});}
   function toast(msg){var t=$('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},1700);}
   function dataButton(name,value){
     var nodes=document.querySelectorAll('[data-'+name+']');
@@ -494,8 +505,8 @@
   function nowText(){var d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
   function setOutputImage(src){
     if(!src) return;
-    if($('outputThumb')) $('outputThumb').src=src;
-    if($('outputPreviewBg')) $('outputPreviewBg').style.background='url(\"'+src+'\") center/cover';
+    setAssetImage($('outputThumb'),src);
+    assetUrl(src).then(function(u){if($('outputPreviewBg')) $('outputPreviewBg').style.background='url(\"'+u+'\") center/cover';}).catch(function(){});
   }
   function updateOutputMeta(){
     var text=$('scriptText')?$('scriptText').value.trim():'';
@@ -511,11 +522,13 @@
     if($('outputCreated')) $('outputCreated').textContent='创建于：'+nowText();
     var box=$('outputPreview');
     if(box && result.video_url){
-      box.innerHTML='<video data-src="'+esc(fresh(result.video_url))+'" controls playsinline preload="none"></video>';
+      box.innerHTML='<video data-src="'+esc(result.video_url)+'" controls playsinline preload="none"></video>';
       var outputVideo=box.querySelector('video');
       if(outputVideo){
         var hydrateOutputVideo=function(){
-          if(!outputVideo.getAttribute('src')) outputVideo.setAttribute('src',outputVideo.getAttribute('data-src'));
+          if(outputVideo.getAttribute('src')||outputVideo.dataset.loading) return;
+          outputVideo.dataset.loading='1';
+          assetUrl(outputVideo.getAttribute('data-src')).then(function(src){outputVideo.src=src;}).catch(function(){toast('视频读取失败');});
         };
         outputVideo.addEventListener('pointerdown',hydrateOutputVideo);
         outputVideo.addEventListener('click',hydrateOutputVideo);
@@ -528,6 +541,7 @@
     if(dl && result.video_url){
       dl.href=result.video_url;
       dl.setAttribute('download','huangque-video.mp4');
+      dl.onclick=isProtectedLocal(result.video_url)?function(e){e.preventDefault();downloadAsset(result.video_url,'huangque-video.mp4').catch(function(){toast('下载失败');});}:null;
       dl.style.pointerEvents='auto';
       dl.style.opacity='1';
     }
@@ -602,12 +616,12 @@
       card.className='history-item';
       var image=x.image_url||'../assets/cloud/logo-bird.png';
       var isMotion=x.mode==='motion';
-      var head=isMotion?'':'<div class="history-head"><img class="history-thumb" src="'+esc(image)+'" alt="">'
+      var head=isMotion?'':'<div class="history-head"><img class="history-thumb" data-asset-src="'+esc(image)+'" alt="">'
         +'<button class="history-audio" type="button" title="播放口播音频">'
         +'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px"><path d="M4 12v-2M8 16V8M12 19V5M16 16V8M20 12v-2"/></svg>'
         +'</button></div>';
       var preview=x.video_url
-        ?'<video data-src="'+esc(fresh(x.video_url))+'" controls playsinline preload="none" poster="'+esc(image)+'"></video><button class="history-play" type="button" title="播放视频"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>'
+        ?'<video data-src="'+esc(x.video_url)+'" controls playsinline preload="none"></video><button class="history-play" type="button" title="播放视频"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>'
         :'<div class="blur-bg" style="background:url(&quot;'+esc(image)+'&quot;) center/cover"></div><div class="output-overlay"><div class="output-info">i</div><div>'+esc(statusLabel(x.status))+'</div></div>';
       var duration=x.duration?Math.round(Number(x.duration))+'秒':statusLabel(x.status);
       var progress=(!x.video_url && (x.phase || x.status==='processing' || x.status==='running'))?progressMarkup(phaseInfo(x.phase,x.status)):'';
@@ -621,6 +635,8 @@
         +(x.video_url?'<a class="history-link" href="'+esc(x.video_url)+'" download>下载</a>':'<span class="history-link" style="color:#5c6b82;">等待</span>')
         +'</div>';
       var audioBtn=card.querySelector('.history-audio');
+      var historyThumb=card.querySelector('[data-asset-src]');
+      if(historyThumb) setAssetImage(historyThumb,historyThumb.getAttribute('data-asset-src'));
       if(audioBtn){
         if(x.audio_url){
           audioBtn.onclick=function(e){e.stopPropagation();playPreview(x.audio_url,audioBtn);};
@@ -634,19 +650,24 @@
       if(videoEl){
         var playBtn=card.querySelector('.history-play');
         var hydrateVideo=function(){
-          if(!videoEl.getAttribute('src')) videoEl.setAttribute('src',videoEl.getAttribute('data-src'));
-          if(playBtn) playBtn.style.display='none';
+          if(videoEl.getAttribute('src')) return Promise.resolve();
+          if(videoEl._assetLoading) return videoEl._assetLoading;
+          videoEl._assetLoading=assetUrl(videoEl.getAttribute('data-src')).then(function(src){videoEl.src=src;if(playBtn) playBtn.style.display='none';});
+          return videoEl._assetLoading;
         };
         if(playBtn){
           playBtn.onclick=function(e){
             e.stopPropagation();
-            hydrateVideo();
-            videoEl.play().catch(function(){});
+            hydrateVideo().then(function(){videoEl.play().catch(function(){});}).catch(function(){toast('视频读取失败');});
           };
         }
         videoEl.addEventListener('pointerdown',hydrateVideo);
         videoEl.addEventListener('click',hydrateVideo);
         videoEl.addEventListener('play',hydrateVideo);
+      }
+      var downloadLink=card.querySelector('.history-link[href]');
+      if(downloadLink && isProtectedLocal(x.video_url)){
+        downloadLink.onclick=function(e){e.preventDefault();downloadAsset(x.video_url,'huangque-video.mp4').catch(function(){toast('下载失败');});};
       }
       card.onclick=function(e){
         if(e.target && (e.target.tagName==='A' || e.target.tagName==='BUTTON' || e.target.tagName==='VIDEO')) return;
@@ -705,10 +726,11 @@
     motionAvatars.forEach(function(a){
       var card=document.createElement('div');
       card.className='avatar-card'+(String(selectedMotionAvatarId)===String(a.id)?' on':'');
-      card.innerHTML='<div class="avatar-thumb"><img src="'+esc(fresh(a.image_url||'../assets/cloud/logo-bird.png'))+'" alt=""></div>'
+      card.innerHTML='<div class="avatar-thumb"><img data-asset-src="'+esc(a.image_url||'../assets/cloud/logo-bird.png')+'" alt=""></div>'
         +'<div class="avatar-meta"><div class="avatar-name">'+esc(a.name||'未命名形象')+'</div><div class="avatar-sub">'+esc(formatTime(a.created_at)||'已保存')+'</div></div>'
         +'<div class="avatar-actions"><button class="avatar-action" type="button" data-act="rename">改名</button><button class="avatar-action" type="button" data-act="delete">删除</button></div>';
       card.onclick=function(){selectMotionAvatar(a.id);};
+      setAssetImage(card.querySelector('[data-asset-src]'),a.image_url||'../assets/cloud/logo-bird.png');
       var rename=card.querySelector('[data-act="rename"]');
       var del=card.querySelector('[data-act="delete"]');
       rename.onclick=function(e){
@@ -899,9 +921,11 @@
   function playPreview(url,btn){
     if(activePreviewBtn===btn && activePreview && !activePreview.paused){stopPreview();return;}
     stopPreview();
-    activePreview=new Audio(fresh(url)); activePreviewBtn=btn; btn.textContent='Ⅱ';
-    activePreview.onended=stopPreview;
-    activePreview.play().catch(function(){stopPreview();toast('试听失败');});
+    activePreviewBtn=btn; btn.textContent='Ⅱ';
+    assetUrl(url).then(function(src){
+      activePreview=new Audio(src);activePreview.onended=stopPreview;
+      return activePreview.play();
+    }).catch(function(){stopPreview();toast('试听失败');});
   }
   function renderVoices(){
     var grid=$('voiceGrid'), list=voices.filter(function(v){return v.scope===voiceTab;});
