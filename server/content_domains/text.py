@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-from . import core as _core
-globals().update({k: getattr(_core, k) for k in dir(_core) if not k.startswith("__")})
+from .core import COPY_MODEL, _post, json
 
 def _chat(sysmsg, usermsg, temp):
     body = json.dumps({"model": COPY_MODEL,

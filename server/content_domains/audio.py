@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
-from . import core as _core
-globals().update({k: getattr(_core, k) for k in dir(_core) if not k.startswith("__")})
+from .core import (
+    DOUBAO_APPID, DOUBAO_CLONE_MODEL_TYPE, DOUBAO_CLONE_RESOURCE,
+    DOUBAO_TOKEN, DOUBAO_TTS_RESOURCE, TTS_MODEL,
+    _ensure_column, _file_url, _out_path, _post_bytes, _resolve_out_file,
+    adb, base64, closing, jdb, json, os, public_url, re, subprocess,
+    threading, time, urllib, uuid,
+)
+from .points import _auth_points_request
 
 def get_user_id(username):
     try:

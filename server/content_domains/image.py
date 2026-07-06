@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
-from . import core as _core
-globals().update({k: getattr(_core, k) for k in dir(_core) if not k.startswith("__")})
+from .core import (
+    OPENAI_BASE, OPENAI_KEY, OUT_DIR, SIZES, ZELONG2_BASE, ZELONG2_KEY,
+    ZELONG_BASE, ZELONG_KEY, _NOPROXY, _multipart, _post,
+    base64, json, public_url, urllib, uuid,
+)
 
 def gen_image(payload):
     prompt = (payload.get("prompt") or "").strip()

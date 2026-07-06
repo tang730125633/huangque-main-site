@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-from . import core as _core
-globals().update({k: getattr(_core, k) for k in dir(_core) if not k.startswith("__")})
+from .core import AUTH_BASE, AUTH_INTERNAL_TOKEN, COST, json, urllib
 
 def cost_of(kind, body):
     """动态点数：TikHub 按次计费，采集/获客调用数随参数变。约 5x buff 折算成点。"""

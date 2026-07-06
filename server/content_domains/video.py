@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
-from . import core as _core
-globals().update({k: getattr(_core, k) for k in dir(_core) if not k.startswith("__")})
+from .core import (
+    AUDIO_OUT_DIR, HEYGEN_API_BASE, HEYGEN_API_KEY, HEYGEN_POLL_INTERVAL,
+    HEYGEN_TIMEOUT, VIDEO_OUT_DIR, _file_url, _out_path, _resolve_out_file,
+    adb, base64, closing, jdb, json, mimetypes, os, pathlib, public_url,
+    re, subprocess, threading, time, urllib, uuid,
+)
 
 from .audio import gen_audio
 

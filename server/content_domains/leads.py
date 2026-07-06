@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-from . import core as _core
-globals().update({k: getattr(_core, k) for k in dir(_core) if not k.startswith("__")})
+from .core import _collect_cos_play_url, re, tikhub
 
 def gen_collect(payload):
     platform = (payload.get("platform") or "douyin").strip()
