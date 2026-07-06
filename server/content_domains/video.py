@@ -317,8 +317,13 @@ def _heygen_request_json(method, path, body=None, headers=None, timeout=180):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read()
     except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")[:600]
-        raise RuntimeError("HeyGen接口失败: HTTP %s %s" % (e.code, detail))
+        detail = e.read().decode("utf-8", "replace").replace("\n", " ")[:600]
+        print("[heygen] FAIL %s %s -> HTTP %s %s" % (method, path, e.code, detail), flush=True)
+        raise RuntimeError("HeyGen接口失败: HTTP %s %s" % (e.code, detail)) from e
+    except urllib.error.URLError as e:
+        detail = str(e.reason)[:300]
+        print("[heygen] FAIL %s %s -> network %s" % (method, path, detail), flush=True)
+        raise RuntimeError("HeyGen接口网络失败: %s" % detail) from e
     try:
         return json.loads(raw.decode("utf-8"))
     except Exception:
@@ -441,15 +446,20 @@ def _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id=""):
     last_status = ""
     while time.time() < deadline:
         payloads = []
+        errors = []
         if avatar_group_id:
             try:
                 payloads.append(_heygen_request_json("GET", "/avatars/" + urllib.parse.quote(avatar_group_id), timeout=20))
             except Exception as e:
+                errors.append(e)
                 last_status = str(e)[:120]
         try:
             payloads.append(_heygen_request_json("GET", "/avatars", timeout=20))
         except Exception as e:
+            errors.append(e)
             last_status = str(e)[:120]
+        if not payloads and errors:
+            raise errors[-1]
         for data in payloads:
             if _avatar_ready_from_payload(data, avatar_item_id, avatar_group_id):
                 return True
@@ -503,7 +513,9 @@ def _heygen_poll_video(video_id):
                 raise RuntimeError("HeyGen完成但未返回video_url")
             return info
         if status in {"failed", "error"}:
-            raise RuntimeError("HeyGen视频生成失败: %s" % json.dumps(info, ensure_ascii=False)[:500])
+            detail = json.dumps(info, ensure_ascii=False)[:500]
+            print("[heygen] FAIL GET /videos/%s -> provider %s" % (video_id, detail), flush=True)
+            raise RuntimeError("HeyGen视频生成失败: %s" % detail)
         time.sleep(HEYGEN_POLL_INTERVAL)
     raise TimeoutError("HeyGen视频生成超时")
 
@@ -863,6 +875,8 @@ def gen_video(payload):
     mode = (payload.get("mode") or "text").strip()
     if mode not in {"text", "audio", "motion"}:
         raise ValueError("生成方式不正确")
+    if not HEYGEN_API_KEY:
+        raise ValueError("视频生成服务未配置")
     avatar = None
     avatar_id = payload.get("avatar_id")
     if mode == "motion" and avatar_id:
