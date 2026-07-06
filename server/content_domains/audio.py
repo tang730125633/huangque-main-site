@@ -96,16 +96,6 @@ def list_user_audio_voice_slots(username):
     items = []
     for r in rows:
         d = dict(r)
-        if d.get("slot_id") and d.get("status") in ("training", "ready") and not d.get("preview_url"):
-            try:
-                synced = check_clone_status(username, d["slot_id"])
-                if synced.get("status"):
-                    d["status"] = synced["status"]
-                if synced.get("preview_url"):
-                    d["preview_url"] = synced["preview_url"]
-            except Exception as e:
-                print("[list_user_audio_voice_slots] sync failed username=%s slot_id=%s error=%s" %
-                      (username, d.get("slot_id"), str(e)[:240]), flush=True)
         if d.get("preview_url") and d.get("voice_id") and d.get("status") == "training":
             d["status"] = "ready"
         items.append(d)
@@ -675,6 +665,9 @@ def backfill_audio_assets():
         pass
 
 PUBLIC_VOICE_SAMPLE_TEXT = "大家好，这是我的声音示范，很高兴为你服务。"
+_preview_warm_lock = threading.Lock()
+_preview_warm_running = False
+_preview_warm_next_at = 0
 
 def _ensure_public_voice_preview(row):
     """公共音色缺 preview_url 时懒生成一段试听样音、上 COS、回填 DB。
@@ -699,9 +692,32 @@ def _ensure_public_voice_preview(row):
             d["preview_file"] = fn
             d["preview_url"] = url
     except Exception as e:
-        print("[list_audio_voices] 公共音色试听样音生成失败 voice=%s error=%s" %
+        print("[audio-preview-warmup] 公共音色试听样音生成失败 voice=%s error=%s" %
               (d.get("voice_key"), str(e)[:200]), flush=True)
     return d
+
+def _warm_public_voice_previews(rows):
+    global _preview_warm_running, _preview_warm_next_at
+    try:
+        for row in rows:
+            _ensure_public_voice_preview(row)
+    finally:
+        with _preview_warm_lock:
+            _preview_warm_running = False
+            _preview_warm_next_at = time.time() + 300
+
+def _schedule_public_preview_warmup(rows):
+    """缺失试听样音时最多启动一个后台补齐线程；失败后冷却 5 分钟。"""
+    global _preview_warm_running
+    missing = [dict(r) for r in rows if r.get("scope") == "public" and not r.get("preview_url")]
+    if not missing:
+        return
+    with _preview_warm_lock:
+        if _preview_warm_running or time.time() < _preview_warm_next_at:
+            return
+        _preview_warm_running = True
+    threading.Thread(target=_warm_public_voice_previews, args=(missing,),
+                     name="audio-preview-warmup", daemon=True).start()
 
 def list_audio_voices(username):
     with closing(adb()) as c:
@@ -709,8 +725,9 @@ def list_audio_voices(username):
             FROM audio_voices
             WHERE scope='public' OR (scope='personal' AND username=?)
             ORDER BY CASE scope WHEN 'public' THEN 0 ELSE 1 END, id""", (username,)).fetchall()
-    # 公共音色缺试听样音时按需懒生成一次并缓存（前端只在有 preview_url 时才显示 ▶ 试听）
-    return [_ensure_public_voice_preview(r) for r in rows]
+    items = [dict(r) for r in rows]
+    _schedule_public_preview_warmup(items)
+    return items
 
 def rename_audio_voice(username, slot_id, display_name):
     slot_id = (slot_id or "").strip()
