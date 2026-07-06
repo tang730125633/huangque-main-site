@@ -459,6 +459,27 @@
     }
   }catch(e){}
 
+  // 采集页「转作图」带来的封面图（经 localStorage 传递）→ 载入设为参考图（图生图）。#233:原来 collect 存了 hq_collect_to_banana 但 banana 侧从没读取，图传不过来。
+  try{ var _cb=localStorage.getItem('hq_collect_to_banana');
+    if(_cb){ localStorage.removeItem('hq_collect_to_banana');  // 一次性消费，防下次误带
+      var _cbd=JSON.parse(_cb);
+      if(_cbd && _cbd.cover){
+        var _cim=new Image(); _cim.crossOrigin='anonymous';
+        _cim.onload=function(){
+          var mx=1024, s=Math.min(1,mx/Math.max(_cim.width,_cim.height)), cv=document.createElement('canvas');
+          cv.width=Math.round(_cim.width*s); cv.height=Math.round(_cim.height*s);
+          cv.getContext('2d').drawImage(_cim,0,0,cv.width,cv.height);
+          try{ setRef(cv.toDataURL('image/png'), cv.width, cv.height);
+            if(_cbd.title && pr && !(pr.value||'').trim()) pr.value=_cbd.title;
+            setNote('✅ 已带入采集封面作参考图 · 改下提示词，点生成即走「图生图」','#2bd576');
+          }catch(err){ setNote('采集图跨域无法载入，请改用上传','#f4708a'); }
+        };
+        _cim.onerror=function(){ setNote('采集封面读取失败，请手动上传参考图','#f4708a'); };
+        _cim.src=_cbd.cover+(_cbd.cover.indexOf('?')>=0?'&':'?')+'t='+Date.now();
+      }
+    }
+  }catch(e){}
+
   // 文生图 / 图生图（有参考图）/ nano banana
   gen.onclick=function(){
     var bp={prompt:(pr.value||'').trim(), ratio:ratio, quality:quality, count:count};
