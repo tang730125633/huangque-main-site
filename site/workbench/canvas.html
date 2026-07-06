@@ -8,18 +8,41 @@
 <link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
 <link rel="stylesheet" href="../assets/cloud.css?v=8">
 <style>
-  /* 适配 shell 布局：去掉 body overflow:hidden 和 vh calc，避免与 100vh flex + scroll 冲突导致菜单不可点、页面卡 */
-  .nc-wrap{ height:100%; min-height:520px; max-height:680px; display:flex; flex-direction:column; gap:12px; }
-  .nc-bar{ flex:none; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-  .nc-add{ display:inline-flex; align-items:center; gap:6px; padding:8px 13px; font-size:13px; font-weight:600; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.3); border-radius:10px; cursor:pointer; font-family:inherit; }
-  .nc-add:hover{ background:rgba(231,178,76,.16); }
-  .nc-run{ margin-left:auto; padding:8px 16px; font-size:13px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:10px; cursor:pointer; font-family:inherit; }
-  .nc-canvas{ position:relative; flex:1; min-height:0; border:1px solid rgba(148,164,187,.12); border-radius:16px; overflow:auto;
-    background:radial-gradient(rgba(148,164,187,.08) 1px, transparent 1px) 0 0/22px 22px, linear-gradient(165deg, rgba(12,18,30,.6), rgba(8,12,20,.66)); }
-  .nc-inner{ position:relative; width:2400px; height:1500px; }
+  body{ overflow:hidden; }
+  .nc-wrap{ height:calc(100vh - 104px); min-height:520px; display:flex; flex-direction:column; gap:12px; }
+  .nc-hero{ flex:none; display:flex; align-items:flex-start; justify-content:space-between; gap:18px; padding:12px 16px; border:1px solid rgba(148,164,187,.1); border-radius:16px; background:linear-gradient(150deg, rgba(16,24,39,.7), rgba(9,14,24,.44)); }
+  .nc-title{ display:flex; align-items:center; gap:10px; min-width:0; }
+  .nc-title strong{ display:block; font-size:17px; line-height:1.2; }
+  .nc-title span:last-child{ display:block; margin-top:4px; font-size:12px; color:#94a4bb; }
+  .nc-stats{ display:grid; grid-template-columns:.8fr .8fr 1.35fr; gap:8px; min-width:340px; }
+  .nc-stat{ padding:7px 10px; border:1px solid rgba(148,164,187,.12); border-radius:11px; background:rgba(148,164,187,.04); }
+  .nc-stat b{ display:block; font-family:var(--mono,ui-monospace,monospace); font-size:16px; color:#eaf1fa; line-height:1.1; }
+  #ncRunState{ font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .nc-stat span{ display:block; margin-top:3px; font-size:10.5px; color:#5c6b82; }
+  .nc-bar{ flex:none; display:flex; align-items:center; gap:9px; flex-wrap:wrap; padding:8px; border:1px solid rgba(148,164,187,.1); border-radius:14px; background:rgba(7,11,19,.34); }
+  .nc-group{ display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+  .nc-add,.nc-ghost{ display:inline-flex; align-items:center; gap:6px; min-height:34px; padding:8px 12px; font-size:12.5px; font-weight:650; color:#e7b24c; background:rgba(231,178,76,.09); border:1px solid rgba(231,178,76,.28); border-radius:10px; cursor:pointer; font-family:inherit; transition:.16s; }
+  .nc-add:hover,.nc-ghost:hover{ background:rgba(231,178,76,.15); transform:translateY(-1px); }
+  .nc-ghost{ color:#94a4bb; background:rgba(148,164,187,.05); border-color:rgba(148,164,187,.14); }
+  .nc-run{ margin-left:auto; min-height:36px; padding:8px 16px; font-size:13px; font-weight:800; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:10px; cursor:pointer; font-family:inherit; box-shadow:0 12px 28px -16px rgba(231,178,76,.8); }
+  .nc-run:disabled{ opacity:.65; cursor:wait; }
+  .nc-zoom{ min-width:50px; justify-content:center; color:#eaf1fa; font-family:var(--mono,ui-monospace,monospace); }
+  .nc-help{ display:flex; align-items:center; gap:8px; min-width:180px; font-size:11.5px; color:#5c6b82; }
+  .nc-help i{ width:6px; height:6px; border-radius:50%; background:#2dd4bf; box-shadow:0 0 8px rgba(45,212,191,.8); flex:none; }
+  .nc-canvas-shell{ position:relative; flex:1; min-height:0; }
+  .nc-canvas{ position:relative; flex:1; min-height:0; border:1px solid rgba(148,164,187,.12); border-radius:16px; overflow:auto; cursor:grab;
+    height:100%; background:radial-gradient(rgba(148,164,187,.08) 1px, transparent 1px) 0 0/22px 22px, linear-gradient(165deg, rgba(12,18,30,.6), rgba(8,12,20,.66)); }
+  .nc-canvas.panning{ cursor:grabbing; user-select:none; }
+  .nc-canvas.connecting{ cursor:crosshair; }
+  .nc-inner{ position:relative; width:2400px; height:1500px; transform-origin:0 0; }
   .nc-edges{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:1; }
-  .nc-node{ position:absolute; z-index:2; width:238px; border:1px solid rgba(148,164,187,.16); border-radius:13px; background:rgba(13,19,28,.96); box-shadow:0 12px 30px -14px rgba(0,0,0,.7); font-size:12.5px; }
-  .nc-node.sel{ border-color:rgba(231,178,76,.6); }
+  .nc-edge-hit{ pointer-events:stroke; cursor:pointer; }
+  .nc-edge-sel{ stroke:#2dd4bf; stroke-width:3; filter:drop-shadow(0 0 6px rgba(45,212,191,.45)); }
+  .nc-node{ position:absolute; z-index:2; width:250px; border:1px solid rgba(148,164,187,.16); border-radius:13px; background:rgba(13,19,28,.96); box-shadow:0 12px 30px -14px rgba(0,0,0,.7); font-size:12.5px; transition:border-color .16s, box-shadow .16s, transform .16s; }
+  .nc-node.sel{ border-color:rgba(231,178,76,.7); box-shadow:0 16px 36px -16px rgba(231,178,76,.35),0 16px 30px -18px rgba(0,0,0,.8); }
+  .nc-node[data-state="running"]{ border-color:rgba(45,212,191,.55); }
+  .nc-node[data-state="done"]{ border-color:rgba(43,213,118,.45); }
+  .nc-node[data-state="error"]{ border-color:rgba(244,112,138,.55); }
   .nc-head{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding:9px 11px; border-bottom:1px solid rgba(148,164,187,.1); cursor:move; border-radius:13px 13px 0 0; font-weight:700; }
   .nc-head .dot{ width:8px; height:8px; border-radius:50%; flex:none; }
   .nc-x{ cursor:pointer; color:#5c6b82; font-size:15px; line-height:1; }
@@ -33,16 +56,41 @@
   .nc-chip.on{ color:#e7b24c; background:rgba(231,178,76,.1); border-color:rgba(231,178,76,.32); }
   .nc-go{ width:100%; padding:8px; font-size:12.5px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:9px; cursor:pointer; font-family:inherit; }
   .nc-go:disabled{ opacity:.6; cursor:wait; }
-  .nc-note{ font-size:10.5px; color:#5c6b82; min-height:13px; }
+  .nc-note{ font-size:10.5px; color:#5c6b82; min-height:15px; line-height:1.45; }
   .nc-thumb{ width:100%; border-radius:8px; display:block; border:1px solid rgba(148,164,187,.12); }
   .nc-drop{ width:100%; aspect-ratio:1; display:flex; align-items:center; justify-content:center; text-align:center; font-size:11px; color:#5c6b82; border:1.4px dashed rgba(148,164,187,.26); border-radius:9px; cursor:pointer; background-size:cover; background-position:center; }
+  .nc-drop:hover{ border-color:rgba(231,178,76,.42); color:#94a4bb; }
+  .nc-mini{ display:inline-flex; align-items:center; gap:5px; padding:3px 7px; border-radius:7px; font-size:10.5px; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.12); }
+  .nc-float{ position:absolute; z-index:5; left:16px; bottom:16px; display:flex; align-items:center; gap:9px; padding:10px 12px; border:1px solid rgba(148,164,187,.12); border-radius:12px; background:rgba(9,14,24,.88); backdrop-filter:blur(10px); color:#94a4bb; font-size:11.5px; box-shadow:0 16px 38px -22px rgba(0,0,0,.9); }
+  .nc-legend{ position:absolute; z-index:5; right:16px; bottom:16px; display:flex; align-items:center; gap:8px; padding:9px 11px; border:1px solid rgba(148,164,187,.12); border-radius:12px; background:rgba(9,14,24,.88); backdrop-filter:blur(10px); font-size:11px; color:#5c6b82; }
+  .nc-legend span{ display:inline-flex; align-items:center; gap:5px; white-space:nowrap; }
+  .nc-legend i{ width:9px; height:9px; border-radius:50%; border:2px solid #94a4bb; }
+  .nc-legend .img i{ border-color:#46b4ff; }
+  .nc-empty{ position:absolute; inset:0; display:none; align-items:center; justify-content:center; pointer-events:none; z-index:4; }
+  .nc-empty.on{ display:flex; }
+  .nc-empty-card{ width:min(420px, calc(100% - 32px)); padding:22px; border:1px dashed rgba(148,164,187,.22); border-radius:16px; background:rgba(9,14,24,.72); text-align:center; color:#94a4bb; pointer-events:auto; }
+  .nc-empty-card b{ display:block; margin-bottom:7px; color:#eaf1fa; font-size:16px; }
+  .nc-empty-card p{ margin-bottom:14px; color:#5c6b82; font-size:12.5px; }
   /* ports */
   .nc-port{ position:absolute; width:13px; height:13px; border-radius:50%; background:#0d131c; border:2px solid #94a4bb; cursor:crosshair; z-index:3; }
   .nc-port:hover{ border-color:#e7b24c; }
+  .nc-port.can-connect{ border-color:#2bd576; box-shadow:0 0 0 4px rgba(43,213,118,.12),0 0 14px rgba(43,213,118,.45); }
+  .nc-port.dragging{ border-color:#e7b24c; box-shadow:0 0 0 4px rgba(231,178,76,.13),0 0 14px rgba(231,178,76,.5); }
   .nc-port.pin{ left:-7px; }
   .nc-port.pout{ right:-7px; }
   .nc-port.img{ border-color:#46b4ff; }
   .nc-port.img:hover{ border-color:#e7b24c; }
+  @media (max-width:900px){
+    body{ overflow:auto; }
+    .nc-wrap{ height:auto; min-height:0; }
+    .nc-hero{ flex-direction:column; }
+    .nc-stats{ width:100%; min-width:0; }
+    .nc-run{ margin-left:0; width:100%; justify-content:center; }
+    .nc-help{ width:100%; }
+    .nc-canvas-shell{ height:68vh; min-height:520px; max-height:620px; overflow:hidden; display:flex; flex-direction:column; gap:8px; }
+    .nc-canvas{ flex:1; height:auto; min-height:0; }
+    .nc-float,.nc-legend{ position:static; margin-top:8px; flex-wrap:wrap; }
+  }
 </style>
 </head>
 <body>
@@ -50,22 +98,65 @@
 
 <div class="hq-app"><div class="hq-content" data-active="canvas">
   <div class="nc-wrap">
-    <div style="display:flex; align-items:center; gap:10px;">
-      <span style="display:flex; width:20px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 2l9 5-9 5-9-5z"/><path d="M3 12l9 5 9-5M3 17l9 5 9-5"/></svg></span>
-      <span style="font-size:15px; font-weight:600;">节点生产画布</span>
-      <span style="font-size:12px; color:#5c6b82;">· 把功能拼成流水线：拖动、连线、调参、并行生产</span>
+    <div class="nc-hero">
+      <div class="nc-title">
+        <span style="display:flex; width:22px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 2l9 5-9 5-9-5z"/><path d="M3 12l9 5 9-5M3 17l9 5 9-5"/></svg></span>
+        <div>
+          <strong>节点生产画布</strong>
+          <span>把提示词、图片、反推和作图拼成一条可复用的内容流水线。</span>
+        </div>
+      </div>
+      <div class="nc-stats" aria-label="画布状态">
+        <div class="nc-stat"><b id="ncNodeCount">0</b><span>节点</span></div>
+        <div class="nc-stat"><b id="ncEdgeCount">0</b><span>连线</span></div>
+        <div class="nc-stat"><b id="ncRunState">就绪</b><span>状态</span></div>
+      </div>
     </div>
     <div class="nc-bar">
-      <button class="nc-add" data-add="text">＋ 文本</button>
-      <button class="nc-add" data-add="image">＋ 图片</button>
-      <button class="nc-add" data-add="reverse">＋ 提示词反推</button>
-      <button class="nc-add" data-add="gen">＋ 作图</button>
-      <span style="font-size:11px; color:#5c6b82;">连线：点一个「输出口」再点一个「输入口」</span>
+      <div class="nc-group" aria-label="添加节点">
+        <button class="nc-add" data-add="text">+ 文本</button>
+        <button class="nc-add" data-add="image">+ 图片</button>
+        <button class="nc-add" data-add="reverse">+ 提示词反推</button>
+        <button class="nc-add" data-add="gen">+ 作图</button>
+      </div>
+      <div class="nc-group" aria-label="画布操作">
+        <button id="ncUndo" class="nc-ghost" disabled>撤销</button>
+        <button id="ncCopy" class="nc-ghost">复制</button>
+        <button id="ncPaste" class="nc-ghost">粘贴</button>
+        <button id="ncLayout" class="nc-ghost">自动整理</button>
+        <button id="ncZoomOut" class="nc-ghost" title="缩小">-</button>
+        <span id="ncZoomLabel" class="nc-ghost nc-zoom">100%</span>
+        <button id="ncZoomIn" class="nc-ghost" title="放大">+</button>
+        <button id="ncZoomFit" class="nc-ghost">适应</button>
+        <button id="ncResetDemo" class="nc-ghost">重置示例</button>
+        <button id="ncClear" class="nc-ghost">清空画布</button>
+        <a class="nc-ghost" href="banana.html">打开作图页</a>
+      </div>
+      <span class="nc-help"><i></i>先点右侧输出口，再点左侧输入口即可连线。</span>
       <button id="ncRunAll" class="nc-run">▶ 运行全部（并行）</button>
     </div>
-    <div id="ncCanvas" class="nc-canvas">
-      <div id="ncInner" class="nc-inner">
-        <svg id="ncEdges" class="nc-edges"></svg>
+    <div class="nc-canvas-shell">
+      <div id="ncCanvas" class="nc-canvas">
+        <div id="ncInner" class="nc-inner">
+          <svg id="ncEdges" class="nc-edges"></svg>
+          <div id="ncEmpty" class="nc-empty">
+            <div class="nc-empty-card">
+              <b>从一个节点开始搭流程</b>
+              <p>添加文本、图片、反推或作图节点，连起来后可以一键并行运行。</p>
+              <button class="nc-add" data-add="text">+ 添加文本节点</button>
+              <button class="nc-add" data-add="gen">+ 添加作图节点</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="nc-float">
+        <span class="nc-mini">拖动节点</span>
+        <span class="nc-mini">点击端口连线</span>
+        <span class="nc-mini">上传图可粘贴</span>
+      </div>
+      <div class="nc-legend">
+        <span><i></i>提示词</span>
+        <span class="img"><i></i>图片</span>
       </div>
     </div>
   </div>
@@ -76,8 +167,11 @@
 <script>
 /* 节点生产画布：文本→反推→作图 节点图，拖动/连线/调参/并行运行。复用 /api/gen/reverse|banana|image + 轮询。 */
 (function(){
-  var inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas');
-  var nodes={}, edges=[], nid=0, pendingPort=null;
+  var inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty');
+  var nodeCountEl=document.getElementById('ncNodeCount'), edgeCountEl=document.getElementById('ncEdgeCount'), runStateEl=document.getElementById('ncRunState');
+  var undoBtn=document.getElementById('ncUndo'), zoomLabel=document.getElementById('ncZoomLabel');
+  var nodes={}, edges=[], nid=0, pendingPort=null, runLabel='就绪', undoStack=[], restoring=false, dragPort=null, suppressPortClick=false;
+  var selectedNode=null, selectedEdge=-1, clipNode=null, zoom=1;
   function tok(){ try{ return localStorage.getItem('hq_token')||''; }catch(e){ return ''; } }
   var TYPE={
     text:  {name:'文本 · 提示词', color:'#e7b24c', outs:['prompt']},
@@ -85,6 +179,54 @@
     reverse:{name:'提示词反推',   color:'#8a5cf6', ins:['image'], outs:['prompt']},
     gen:   {name:'作图',          color:'#2bd576', ins:['prompt','image'], outs:['image']}
   };
+  function updateState(label){
+    if(label) runLabel=label;
+    var count=Object.keys(nodes).length;
+    if(nodeCountEl) nodeCountEl.textContent=count;
+    if(edgeCountEl) edgeCountEl.textContent=edges.length;
+    if(runStateEl) runStateEl.textContent=runLabel;
+    if(empty) empty.classList.toggle('on', count===0);
+    if(undoBtn) undoBtn.disabled=!undoStack.length;
+    if(zoomLabel) zoomLabel.textContent=Math.round(zoom*100)+'%';
+  }
+  function setNodeState(node,state,msg,color){
+    if(!node) return;
+    if(state) node.el.setAttribute('data-state',state); else node.el.removeAttribute('data-state');
+    if(msg!=null) noteOf(node,msg,color);
+  }
+  function cloneData(v){ return JSON.parse(JSON.stringify(v)); }
+  function snapshot(){
+    return {
+      nid:nid,
+      runLabel:runLabel,
+      edges:cloneData(edges),
+      nodes:Object.keys(nodes).map(function(k){
+        var n=nodes[k];
+        return {id:n.id,type:n.type,x:n.x,y:n.y,params:cloneData(n.params||{}),outputs:cloneData(n.outputs||{}),image:n.image||null,state:n.el?n.el.getAttribute('data-state')||'':n.state||'',note:n.el?(n.el.querySelector('[data-f="note"]')||{}).textContent||'':n.note||''};
+      })
+    };
+  }
+  function pushUndo(snap){
+    if(restoring) return;
+    undoStack.push(snap||snapshot());
+    if(undoStack.length>60) undoStack.shift();
+    updateState();
+  }
+  function restoreSnapshot(snap){
+    if(!snap) return;
+    restoring=true;
+    Object.keys(nodes).forEach(function(id){ if(nodes[id]&&nodes[id].el) nodes[id].el.remove(); });
+    nodes={}; edges=cloneData(snap.edges||[]); nid=snap.nid||0; pendingPort=null; dragPort=null; selectedNode=null; selectedEdge=-1; runLabel=snap.runLabel||'就绪';
+    (snap.nodes||[]).forEach(function(n){ addNode(n.type,n.x,n.y,n); });
+    redraw();
+    updateState('已撤销');
+    restoring=false;
+  }
+  function undo(){
+    var snap=undoStack.pop();
+    restoreSnapshot(snap);
+    updateState('已撤销');
+  }
 
   // ---------- 连线绘制 ----------
   function portCenter(nodeId, kind, port){
@@ -92,21 +234,31 @@
     var p=n.el.querySelector('.nc-port[data-kind="'+kind+'"][data-port="'+port+'"]'); if(!p) return null;
     return { x:n.x + p.offsetLeft + 6.5, y:n.y + p.offsetTop + 6.5 };
   }
+  function edgePath(a,b){
+    var dx=Math.max(40,Math.abs(b.x-a.x)*0.5);
+    return 'M'+a.x+','+a.y+' C'+(a.x+dx)+','+a.y+' '+(b.x-dx)+','+b.y+' '+b.x+','+b.y;
+  }
   function redraw(){
     var s='';
-    edges.forEach(function(e){
+    edges.forEach(function(e,i){
       var a=portCenter(e.from.node,'out',e.from.port), b=portCenter(e.to.node,'in',e.to.port);
       if(!a||!b) return;
-      var dx=Math.max(40,Math.abs(b.x-a.x)*0.5);
-      s+='<path d="M'+a.x+','+a.y+' C'+(a.x+dx)+','+a.y+' '+(b.x-dx)+','+b.y+' '+b.x+','+b.y+'" fill="none" stroke="rgba(231,178,76,.55)" stroke-width="2"/>';
+      var d=edgePath(a,b), cls=i===selectedEdge?' nc-edge-sel':'';
+      s+='<path class="nc-edge-line'+cls+'" d="'+d+'" fill="none" stroke="rgba(231,178,76,.55)" stroke-width="2"/>';
+      s+='<path class="nc-edge-hit" data-edge="'+i+'" d="'+d+'" fill="none" stroke="rgba(255,255,255,0)" stroke-width="14"/>';
     });
+    if(dragPort&&dragPort.active&&dragPort.start){
+      s+='<path d="'+edgePath(dragPort.start,{x:dragPort.x,y:dragPort.y})+'" fill="none" stroke="rgba(45,212,191,.72)" stroke-width="2.5" stroke-dasharray="6 6"/>';
+    }
     svg.innerHTML=s;
+    updateState();
   }
 
   // ---------- 建节点 ----------
-  function addNode(type, x, y){
+  function addNode(type, x, y, data){
     var t=TYPE[type], id='n'+(++nid);
-    var node={ id:id, type:type, x:(x==null?60+((nid*30)%400):x), y:(y==null?50+((nid*40)%300):y), params:{engine:'nb2',ratio:'9:16',quality:'hd'}, outputs:{}, image:null };
+    if(data&&data.id){ id=data.id; var m=String(id).match(/\d+/); if(m) nid=Math.max(nid,parseInt(m[0],10)); }
+    var node={ id:id, type:type, x:(x==null?60+((nid*30)%400):x), y:(y==null?50+((nid*40)%300):y), params:Object.assign({engine:'nb2',ratio:'9:16',quality:'hd'},(data&&data.params)||{}), outputs:cloneData((data&&data.outputs)||{}), image:(data&&data.image)||null };
     var el=document.createElement('div'); el.className='nc-node'; el.style.left=node.x+'px'; el.style.top=node.y+'px';
     var body='';
     if(type==='text') body='<textarea class="nc-in" data-f="text" rows="3" placeholder="输入提示词，作为下游作图的词…"></textarea>';
@@ -122,57 +274,272 @@
     // ports
     (t.ins||[]).forEach(function(p,i){ var d=document.createElement('div'); d.className='nc-port pin'+(p==='image'?' img':''); d.setAttribute('data-kind','in'); d.setAttribute('data-port',p); d.title='输入:'+p; d.style.top=(46+i*22)+'px'; el.appendChild(d); });
     (t.outs||[]).forEach(function(p,i){ var d=document.createElement('div'); d.className='nc-port pout'+(p==='image'?' img':''); d.setAttribute('data-kind','out'); d.setAttribute('data-port',p); d.title='输出:'+p; d.style.top=(46+i*22)+'px'; el.appendChild(d); });
-    nodes[id]=node; wireNode(node); redraw();
+    nodes[id]=node; applyNodeUI(node); wireNode(node);
+    if(data&&data.state) node.el.setAttribute('data-state',data.state);
+    if(data&&data.note) noteOf(node,data.note);
+    redraw(); updateState();
     return node;
   }
+  function applyNodeUI(node){
+    var el=node.el;
+    var txt=el.querySelector('[data-f="text"]');
+    if(txt) txt.value=node.params.text||node.outputs.prompt||'';
+    var out=el.querySelector('[data-f="out"]');
+    if(out) out.value=node.outputs.prompt||'';
+    el.querySelectorAll('.nc-seg').forEach(function(seg){
+      var f=seg.getAttribute('data-f'), val=node.params[f];
+      seg.querySelectorAll('.nc-chip').forEach(function(c){ c.classList.toggle('on', c.getAttribute('data-v')===val); });
+    });
+    var drop=el.querySelector('[data-f="drop"]');
+    if(drop&&node.image){ drop.style.backgroundImage='url('+node.image+')'; drop.innerHTML=''; }
+    var result=el.querySelector('[data-f="result"]');
+    if(result&&node.outputs.image){ result.style.display='block'; result.style.backgroundImage='url("'+node.outputs.image+'")'; result.innerHTML=''; }
+  }
   function noteOf(node,msg,color){ var n=node.el.querySelector('[data-f="note"]'); if(n){ n.textContent=msg||''; n.style.color=color||'#5c6b82'; } }
+  function setConnectHints(port){
+    document.querySelectorAll('.nc-port.can-connect,.nc-port.dragging').forEach(function(p){ p.classList.remove('can-connect','dragging'); });
+    if(!port) return;
+    document.querySelectorAll('.nc-port[data-kind="in"][data-port="'+port+'"]').forEach(function(p){ p.classList.add('can-connect'); });
+  }
+  function clearConnectHints(){ setConnectHints(null); canvas.classList.remove('connecting'); }
+  function connectEdge(from,to){
+    if(!from||!to||from.port!==to.port||from.node===to.node) return false;
+    edges=edges.filter(function(e){ return !(e.to.node===to.node && e.to.port===to.port); });
+    edges.push({from:{node:from.node,port:from.port}, to:{node:to.node,port:to.port}});
+    pendingPort=null; redraw(); updateState('已连线');
+    return true;
+  }
+  function innerPoint(ev){
+    var r=inner.getBoundingClientRect();
+    return {x:(ev.clientX-r.left)/zoom,y:(ev.clientY-r.top)/zoom};
+  }
+  function inputPortAt(ev, port){
+    var el=document.elementFromPoint(ev.clientX,ev.clientY);
+    var p=el&&el.closest?el.closest('.nc-port[data-kind="in"]'):null;
+    if(!p||p.getAttribute('data-port')!==port) return null;
+    var n=p.closest('.nc-node');
+    return n?{node:n.getAttribute('data-node-id'), port:port}:null;
+  }
+  function setZoom(next, cx, cy){
+    next=Math.max(.5,Math.min(1.6,next));
+    if(Math.abs(next-zoom)<.001) return;
+    var old=zoom;
+    cx=cx==null?canvas.clientWidth/2:cx;
+    cy=cy==null?canvas.clientHeight/2:cy;
+    var wx=(canvas.scrollLeft+cx)/old, wy=(canvas.scrollTop+cy)/old;
+    zoom=next;
+    inner.style.transform='scale('+zoom+')';
+    canvas.scrollLeft=wx*zoom-cx;
+    canvas.scrollTop=wy*zoom-cy;
+    updateState();
+  }
+  function selectEdge(i){
+    selectNode(null);
+    selectedEdge=(i==null?-1:i);
+    pendingPort=null;
+    clearConnectHints();
+    redraw();
+    if(selectedEdge>=0) updateState('已选连线');
+  }
+  function delSelectedEdge(){
+    if(selectedEdge<0||!edges[selectedEdge]) return;
+    pushUndo();
+    edges.splice(selectedEdge,1);
+    selectedEdge=-1;
+    redraw();
+    updateState('已删除连线');
+  }
+  function copyNode(){
+    if(!selectedNode||!nodes[selectedNode]) return;
+    var n=nodes[selectedNode];
+    clipNode={type:n.type,params:cloneData(n.params||{}),outputs:cloneData(n.outputs||{}),image:n.image||null,note:(n.el.querySelector('[data-f="note"]')||{}).textContent||''};
+    updateState('已复制节点');
+  }
+  function pasteNode(){
+    if(!clipNode) return;
+    pushUndo();
+    var base=selectedNode&&nodes[selectedNode]?nodes[selectedNode]:null;
+    var data=cloneData(clipNode);
+    var x=base?base.x+34:canvas.scrollLeft/zoom+90, y=base?base.y+34:canvas.scrollTop/zoom+90;
+    var node=addNode(data.type,Math.max(0,x),Math.max(0,y),data);
+    selectNode(node);
+    updateState('已粘贴节点');
+  }
+  function autoLayout(){
+    var ids=Object.keys(nodes);
+    if(!ids.length) return;
+    pushUndo();
+    var indeg={}, level={}, outgoing={};
+    ids.forEach(function(id){ indeg[id]=0; level[id]=0; outgoing[id]=[]; });
+    edges.forEach(function(e){ if(nodes[e.from.node]&&nodes[e.to.node]){ indeg[e.to.node]++; outgoing[e.from.node].push(e.to.node); } });
+    var q=ids.filter(function(id){ return !indeg[id]; }), seen={};
+    while(q.length){
+      var id=q.shift(); seen[id]=true;
+      outgoing[id].forEach(function(to){ level[to]=Math.max(level[to],level[id]+1); indeg[to]--; if(indeg[to]===0) q.push(to); });
+    }
+    ids.forEach(function(id){ if(!seen[id]) level[id]=level[id]||0; });
+    var buckets={};
+    ids.forEach(function(id){ (buckets[level[id]]||(buckets[level[id]]=[])).push(id); });
+    Object.keys(buckets).sort(function(a,b){ return a-b; }).forEach(function(l){
+      buckets[l].forEach(function(id,i){
+        var n=nodes[id];
+        n.x=60+Number(l)*310; n.y=60+i*190;
+        n.el.style.left=n.x+'px'; n.el.style.top=n.y+'px';
+      });
+    });
+    redraw();
+    updateState('已自动整理');
+  }
+  function fitView(){
+    var ids=Object.keys(nodes);
+    if(!ids.length){ setZoom(1); canvas.scrollLeft=0; canvas.scrollTop=0; return; }
+    var minX=Infinity,minY=Infinity,maxX=0,maxY=0;
+    ids.forEach(function(id){
+      var n=nodes[id], w=n.el.offsetWidth||250, h=n.el.offsetHeight||160;
+      minX=Math.min(minX,n.x); minY=Math.min(minY,n.y); maxX=Math.max(maxX,n.x+w); maxY=Math.max(maxY,n.y+h);
+    });
+    var pad=80, bw=Math.max(1,maxX-minX+pad*2), bh=Math.max(1,maxY-minY+pad*2);
+    var next=Math.min(1.2,Math.max(.5,Math.min(canvas.clientWidth/bw,canvas.clientHeight/bh)));
+    setZoom(next);
+    canvas.scrollLeft=Math.max(0,(minX-pad)*zoom);
+    canvas.scrollTop=Math.max(0,(minY-pad)*zoom);
+    updateState('已适应视图');
+  }
 
   // ---------- 节点交互 ----------
   function wireNode(node){
     var el=node.el, head=el.querySelector('[data-f="head"]');
+    el.setAttribute('data-node-id',node.id);
     head.addEventListener('pointerdown', function(e){
       if(e.target&&e.target.getAttribute('data-f')==='del') return;
       selectNode(node); e.preventDefault();
-      var sx=e.clientX, sy=e.clientY, ox=node.x, oy=node.y;
-      function mv(ev){ node.x=Math.max(0,ox+(ev.clientX-sx)); node.y=Math.max(0,oy+(ev.clientY-sy)); el.style.left=node.x+'px'; el.style.top=node.y+'px'; redraw(); }
-      function up(){ window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up); }
+      var sx=e.clientX, sy=e.clientY, ox=node.x, oy=node.y, moved=false, before=snapshot();
+      function mv(ev){
+        var nx=Math.max(0,ox+(ev.clientX-sx)/zoom), ny=Math.max(0,oy+(ev.clientY-sy)/zoom);
+        if(Math.abs(nx-ox)+Math.abs(ny-oy)>2) moved=true;
+        node.x=nx; node.y=ny; el.style.left=node.x+'px'; el.style.top=node.y+'px'; redraw();
+      }
+      function up(){ if(moved) pushUndo(before); window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up); }
       window.addEventListener('pointermove',mv); window.addEventListener('pointerup',up);
     });
     el.querySelector('[data-f="del"]').onclick=function(){ delNode(node.id); };
     el.addEventListener('mousedown', function(){ selectNode(node); });
     // ports: 点输出口→点输入口 连线
     el.querySelectorAll('.nc-port').forEach(function(p){
-      p.addEventListener('click', function(ev){ ev.stopPropagation();
+      p.addEventListener('pointerdown', function(ev){
+        if(ev.button!==0) return;
         var kind=p.getAttribute('data-kind'), port=p.getAttribute('data-port');
-        if(kind==='out'){ pendingPort={node:node.id, port:port}; noteOf(node,'已选输出口「'+port+'」，点一个输入口连上','#2dd4bf'); }
+        if(kind!=='out') return;
+        ev.stopPropagation();
+        var pt=innerPoint(ev);
+        dragPort={from:{node:node.id,port:port}, start:portCenter(node.id,'out',port), x:pt.x, y:pt.y, active:false, sx:ev.clientX, sy:ev.clientY};
+        p.classList.add('dragging');
+        function mv(moveEv){
+          if(!dragPort) return;
+          var mpt=innerPoint(moveEv);
+          dragPort.x=mpt.x; dragPort.y=mpt.y;
+          if(!dragPort.active && Math.abs(moveEv.clientX-dragPort.sx)+Math.abs(moveEv.clientY-dragPort.sy)>4){
+            dragPort.active=true; suppressPortClick=true; canvas.classList.add('connecting'); setConnectHints(port);
+          }
+          if(dragPort.active) redraw();
+        }
+        function up(upEv){
+          window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up);
+          var wasActive=dragPort&&dragPort.active;
+          if(wasActive){
+            var target=inputPortAt(upEv,port);
+            if(target){ pushUndo(); connectEdge(dragPort.from,target); }
+            else updateState('连线已取消');
+          }
+          dragPort=null; redraw(); clearConnectHints();
+          setTimeout(function(){ suppressPortClick=false; },0);
+        }
+        window.addEventListener('pointermove',mv); window.addEventListener('pointerup',up);
+      });
+      p.addEventListener('click', function(ev){ ev.stopPropagation();
+        if(suppressPortClick) return;
+        var kind=p.getAttribute('data-kind'), port=p.getAttribute('data-port');
+        if(kind==='out'){ pendingPort={node:node.id, port:port}; setConnectHints(port); noteOf(node,'已选输出口「'+port+'」，点一个输入口连上','#2dd4bf'); }
         else if(kind==='in' && pendingPort){
-          edges=edges.filter(function(e){ return !(e.to.node===node.id && e.to.port===port); }); // 一个输入口只连一条
-          edges.push({from:pendingPort, to:{node:node.id, port:port}}); pendingPort=null; redraw();
+          if(pendingPort.port===port){ pushUndo(); connectEdge(pendingPort,{node:node.id,port:port}); clearConnectHints(); }
+          else noteOf(node,'端口类型不匹配：'+pendingPort.port+' 不能连到 '+port,'#f4708a');
         }
       });
     });
     // 表单
-    var txt=el.querySelector('[data-f="text"]'); if(txt) txt.oninput=function(){ node.params.text=txt.value; };
-    var out=el.querySelector('[data-f="out"]'); if(out) out.oninput=function(){ node.outputs.prompt=out.value; };
+    var txt=el.querySelector('[data-f="text"]'); if(txt){
+      txt.addEventListener('focus',function(){ node._editSnap=snapshot(); node._editValue=txt.value; });
+      txt.addEventListener('blur',function(){ if(node._editSnap&&txt.value!==node._editValue) pushUndo(node._editSnap); node._editSnap=null; });
+      txt.oninput=function(){ node.params.text=txt.value; if(node.type==='text') node.outputs.prompt=txt.value; };
+    }
+    var out=el.querySelector('[data-f="out"]'); if(out){
+      out.addEventListener('focus',function(){ node._editSnap=snapshot(); node._editValue=out.value; });
+      out.addEventListener('blur',function(){ if(node._editSnap&&out.value!==node._editValue) pushUndo(node._editSnap); node._editSnap=null; });
+      out.oninput=function(){ node.outputs.prompt=out.value; };
+    }
     el.querySelectorAll('.nc-seg').forEach(function(seg){ var f=seg.getAttribute('data-f');
-      seg.querySelectorAll('.nc-chip').forEach(function(c){ c.onclick=function(){ seg.querySelectorAll('.nc-chip').forEach(function(x){x.classList.remove('on');}); c.classList.add('on'); node.params[f]=c.getAttribute('data-v'); }; }); });
+      seg.querySelectorAll('.nc-chip').forEach(function(c){ c.onclick=function(){ if(node.params[f]!==c.getAttribute('data-v')) pushUndo(); seg.querySelectorAll('.nc-chip').forEach(function(x){x.classList.remove('on');}); c.classList.add('on'); node.params[f]=c.getAttribute('data-v'); }; }); });
     // 图片节点上传/粘贴
     var file=el.querySelector('[data-f="file"]'), drop=el.querySelector('[data-f="drop"]');
     if(file){ file.onchange=function(){ imgToNode(node, file.files&&file.files[0]); }; }
     if(drop){ drop.setAttribute('tabindex','0'); drop.addEventListener('paste', function(e){ var it=(e.clipboardData&&e.clipboardData.items)||[]; for(var i=0;i<it.length;i++){ if(it[i].kind==='file'&&it[i].type&&it[i].type.indexOf('image/')===0){ var f=it[i].getAsFile(); if(f){ e.preventDefault(); imgToNode(node,f); return; } } } }); }
     var run=el.querySelector('[data-f="run"]'); if(run) run.onclick=function(){ runNode(node.id); };
   }
-  function imgToNode(node, f){ if(!f) return; var url=URL.createObjectURL(f), im=new Image();
+  function imgToNode(node, f){ if(!f) return; var before=snapshot(), url=URL.createObjectURL(f), im=new Image();
     im.onload=function(){ var mx=1024,s=Math.min(1,mx/Math.max(im.width,im.height)),cv=document.createElement('canvas');
       cv.width=Math.round(im.width*s); cv.height=Math.round(im.height*s); cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
+      pushUndo(before);
       var durl=cv.toDataURL('image/png'); node.image=durl; node.outputs.image=durl;
       var d=node.el.querySelector('[data-f="drop"]'); if(d){ d.style.backgroundImage='url('+durl+')'; d.innerHTML=''; }
       try{URL.revokeObjectURL(url);}catch(e){} };
     im.src=url;
   }
-  function selectNode(node){ Object.keys(nodes).forEach(function(k){ nodes[k].el.classList.remove('sel'); }); if(node) node.el.classList.add('sel'); }
-  function delNode(id){ if(nodes[id]){ nodes[id].el.remove(); delete nodes[id]; edges=edges.filter(function(e){ return e.from.node!==id && e.to.node!==id; }); redraw(); } }
-  canvas.addEventListener('click', function(e){ if(e.target===canvas||e.target===inner){ pendingPort=null; selectNode(null); } });
+  function selectNode(node){
+    Object.keys(nodes).forEach(function(k){ nodes[k].el.classList.remove('sel'); });
+    selectedNode=node?node.id:null;
+    selectedEdge=-1;
+    if(node) node.el.classList.add('sel');
+  }
+  function delNode(id){ if(nodes[id]){ pushUndo(); nodes[id].el.remove(); delete nodes[id]; if(selectedNode===id) selectedNode=null; edges=edges.filter(function(e){ return e.from.node!==id && e.to.node!==id; }); redraw(); updateState('已更新'); } }
+  function clearCanvas(){
+    Object.keys(nodes).forEach(function(id){ if(nodes[id]&&nodes[id].el) nodes[id].el.remove(); });
+    nodes={}; edges=[]; pendingPort=null; selectedNode=null; selectedEdge=-1; redraw(); updateState('空画布');
+  }
+  function resetDemo(){
+    clearCanvas();
+    var t=addNode('text',60,60), r=addNode('reverse',360,230), img=addNode('image',60,260), g=addNode('gen',690,90);
+    var ta=t.el.querySelector('[data-f="text"]');
+    if(ta){ ta.value='科技焕肤 · 逆龄新生，高级感美业海报，金色光效，9:16 竖版，留白标题区'; t.params.text=ta.value; t.outputs.prompt=ta.value; }
+    edges.push({from:{node:t.id,port:'prompt'}, to:{node:g.id,port:'prompt'}});
+    edges.push({from:{node:img.id,port:'image'}, to:{node:r.id,port:'image'}});
+    redraw(); updateState('示例已重置');
+    canvas.scrollLeft=0; canvas.scrollTop=0;
+  }
+  svg.addEventListener('click', function(e){
+    var hit=e.target&&e.target.closest?e.target.closest('.nc-edge-hit'):null;
+    if(!hit) return;
+    e.stopPropagation();
+    selectEdge(parseInt(hit.getAttribute('data-edge'),10));
+  });
+  canvas.addEventListener('click', function(e){ if(e.target===canvas||e.target===inner){ pendingPort=null; selectedEdge=-1; selectNode(null); redraw(); } });
+  canvas.addEventListener('pointerdown', function(e){
+    if(e.button!==0) return;
+    var t=e.target;
+    if(t&&t.closest&&t.closest('.nc-node,.nc-port,.nc-edge-hit,button,a,input,textarea,.nc-empty-card')) return;
+    e.preventDefault();
+    pendingPort=null; clearConnectHints(); selectNode(null);
+    var sx=e.clientX, sy=e.clientY, sl=canvas.scrollLeft, st=canvas.scrollTop;
+    canvas.classList.add('panning');
+    function mv(ev){ canvas.scrollLeft=sl-(ev.clientX-sx); canvas.scrollTop=st-(ev.clientY-sy); }
+    function up(){ canvas.classList.remove('panning'); window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up); }
+    window.addEventListener('pointermove',mv); window.addEventListener('pointerup',up);
+  });
+  canvas.addEventListener('wheel',function(e){
+    if(!e.ctrlKey&&!e.metaKey) return;
+    e.preventDefault();
+    var r=canvas.getBoundingClientRect();
+    setZoom(zoom*(e.deltaY>0?.9:1.1),e.clientX-r.left,e.clientY-r.top);
+  },{passive:false});
 
   // ---------- 取上游输入 ----------
   function inputVal(nodeId, port){
@@ -184,28 +551,28 @@
   // ---------- 运行单个节点（返回 Promise，供并行/串行）----------
   function runNode(id){
     var node=nodes[id]; if(!node) return Promise.resolve();
-    if(!tok()){ if(window.HQ&&HQ.login) HQ.login(); return Promise.reject('未登录'); }
+    if(!tok()){ if(window.HQ&&HQ.login) HQ.login(); updateState('需登录'); return Promise.reject('未登录'); }
     if(node.type==='reverse'){
       var img=inputVal(id,'image')||node.image;
-      if(!img){ noteOf(node,'请把一个图片节点连到输入口','#f4708a'); return Promise.reject('无图'); }
+      if(!img){ setNodeState(node,'error','请把一个图片节点连到输入口','#f4708a'); updateState('缺少图片'); return Promise.reject('无图'); }
       var b64=img.indexOf(',')>=0?img.split(',')[1]:img;
-      var run=node.el.querySelector('[data-f="run"]'); run.disabled=true; noteOf(node,'反推中…','#2dd4bf');
+      var run=node.el.querySelector('[data-f="run"]'); run.disabled=true; setNodeState(node,'running','反推中…','#2dd4bf'); updateState('运行中');
       return fetch('/api/gen/reverse',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({image:b64})})
         .then(function(r){return r.json();}).then(function(d){ run.disabled=false;
           if(!d.prompt) throw new Error(d.detail||'反推失败');
           node.outputs.prompt=d.prompt; var o=node.el.querySelector('[data-f="out"]'); if(o) o.value=d.prompt;
-          noteOf(node,'✅ 反推完成','#2bd576'); if(window.HQ&&HQ.refreshPoints) HQ.refreshPoints(); })
-        .catch(function(e){ run.disabled=false; noteOf(node,'失败：'+(e.message||e),'#f4708a'); throw e; });
+          setNodeState(node,'done','反推完成','#2bd576'); updateState('已完成'); if(window.HQ&&HQ.refreshPoints) HQ.refreshPoints(); })
+        .catch(function(e){ run.disabled=false; setNodeState(node,'error','失败：'+(e.message||e),'#f4708a'); updateState('有错误'); throw e; });
     }
     if(node.type==='gen'){
       var prompt=inputVal(id,'prompt')||node.params.text||'';
-      if(!prompt.trim()){ noteOf(node,'需要提示词（自己填或从上游连入）','#f4708a'); return Promise.reject('无词'); }
+      if(!prompt.trim()){ setNodeState(node,'error','需要提示词（自己填或从上游连入）','#f4708a'); updateState('缺少提示词'); return Promise.reject('无词'); }
       var refImg=inputVal(id,'image'); var eng=node.params.engine||'nb2';
       var bp={prompt:prompt.trim(), ratio:node.params.ratio||'9:16', quality:node.params.quality||'hd', count:1};
       if(refImg) bp.image=refImg.indexOf(',')>=0?refImg.split(',')[1]:refImg;
       var endpoint, gbtn=node.el.querySelector('[data-f="run"]');
       if(eng==='gpt'){ endpoint='/api/gen/image'; } else { endpoint='/api/gen/banana'; bp.model=eng; }
-      gbtn.disabled=true; noteOf(node,'提交中…','#2dd4bf');
+      gbtn.disabled=true; setNodeState(node,'running','提交中…','#2dd4bf'); updateState('运行中');
       return fetch(endpoint,{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(bp)})
         .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
         .then(function(x){ if(x.s===402){ throw new Error('点数不足'); } if(!x.d.job_id){ throw new Error(x.d.detail||'提交失败'); }
@@ -217,7 +584,7 @@
                 if(d.status==='done'){ clearInterval(iv); var rr=typeof d.result==='string'?JSON.parse(d.result):d.result; res(rr); }
                 else if(d.status==='error'){ clearInterval(iv); rej(new Error(d.error||'生成失败')); }
                 else if(sec>420){ clearInterval(iv); rej(new Error('超时')); }
-                else noteOf(node,'生成中… 已用 '+sec+'s','#2dd4bf');
+                else setNodeState(node,'running','生成中… 已用 '+sec+'s','#2dd4bf');
               }).catch(function(){});
             },3000);
           });
@@ -226,8 +593,8 @@
           var url=(result&&(result.url||(result.urls&&result.urls[0])))||'';
           node.outputs.image=url;
           var box=node.el.querySelector('[data-f="result"]'); if(box){ box.style.display='block'; box.style.backgroundImage='url("'+url+'?t='+Date.now()+'")'; box.innerHTML=''; }
-          noteOf(node,'✅ 出图完成','#2bd576'); if(window.HQ&&HQ.refreshPoints) HQ.refreshPoints(); })
-        .catch(function(e){ gbtn.disabled=false; noteOf(node,'失败：'+(e.message||e),'#f4708a'); throw e; });
+          setNodeState(node,'done','出图完成','#2bd576'); updateState('已完成'); if(window.HQ&&HQ.refreshPoints) HQ.refreshPoints(); })
+        .catch(function(e){ gbtn.disabled=false; setNodeState(node,'error','失败：'+(e.message||e),'#f4708a'); updateState('有错误'); throw e; });
     }
     return Promise.resolve();
   }
@@ -235,6 +602,7 @@
   // ---------- 运行全部：按依赖分波并行 ----------
   document.getElementById('ncRunAll').onclick=function(){
     var done={}, running={};
+    updateState('排队中');
     function ready(node){ // 所有输入口都有上游输出
       var t=TYPE[node.type]; if(!t.ins) return true;
       return t.ins.every(function(p){
@@ -249,7 +617,12 @@
       var runnable=Object.keys(nodes).map(function(k){return nodes[k];}).filter(function(n){
         return (n.type==='reverse'||n.type==='gen') && !done[n.id] && !running[n.id] && ready(n);
       });
-      if(!runnable.length) return;
+      var active=Object.keys(running).some(function(k){return running[k];});
+      var pending=Object.keys(nodes).map(function(k){return nodes[k];}).filter(function(n){ return (n.type==='reverse'||n.type==='gen') && !done[n.id]; });
+      if(!runnable.length){
+        if(!active) updateState(pending.length?'等待输入':'已完成');
+        return;
+      }
       runnable.forEach(function(n){ running[n.id]=true;
         runNode(n.id).then(function(){ done[n.id]=true; running[n.id]=false; tick(); })
                      .catch(function(){ done[n.id]=true; running[n.id]=false; tick(); });
@@ -259,12 +632,36 @@
   };
 
   // ---------- 顶部添加 ----------
-  document.querySelectorAll('.nc-add').forEach(function(b){ b.onclick=function(){ addNode(b.getAttribute('data-add')); }; });
+  document.querySelectorAll('.nc-add').forEach(function(b){ b.onclick=function(){ pushUndo(); addNode(b.getAttribute('data-add')); updateState('已添加'); }; });
+  document.getElementById('ncClear').onclick=function(){ if(Object.keys(nodes).length){ pushUndo(); clearCanvas(); } };
+  document.getElementById('ncResetDemo').onclick=function(){ pushUndo(); resetDemo(); };
+  document.getElementById('ncCopy').onclick=function(){ copyNode(); };
+  document.getElementById('ncPaste').onclick=function(){ pasteNode(); };
+  document.getElementById('ncLayout').onclick=function(){ autoLayout(); };
+  document.getElementById('ncZoomOut').onclick=function(){ setZoom(zoom-.1); };
+  document.getElementById('ncZoomIn').onclick=function(){ setZoom(zoom+.1); };
+  document.getElementById('ncZoomFit').onclick=function(){ fitView(); };
+  if(undoBtn) undoBtn.onclick=function(){ undo(); };
+  document.addEventListener('keydown',function(e){
+    var tag=(e.target&&e.target.tagName||'').toLowerCase();
+    var editing=tag==='input'||tag==='textarea';
+    if((e.ctrlKey||e.metaKey)&&String(e.key).toLowerCase()==='z' && tag!=='input' && tag!=='textarea'){
+      e.preventDefault(); undo();
+    }
+    if((e.ctrlKey||e.metaKey)&&String(e.key).toLowerCase()==='c' && !editing){
+      e.preventDefault(); copyNode();
+    }
+    if((e.ctrlKey||e.metaKey)&&String(e.key).toLowerCase()==='v' && !editing){
+      e.preventDefault(); pasteNode();
+    }
+    if((e.key==='Delete'||e.key==='Backspace') && !editing){
+      if(selectedEdge>=0){ e.preventDefault(); delSelectedEdge(); }
+      else if(selectedNode){ e.preventDefault(); delNode(selectedNode); }
+    }
+  });
 
-  // 初始给个示例：文本 → 作图
-  var t=addNode('text',60,60), g=addNode('gen',360,60);
-  t.params.text=''; var ta=t.el.querySelector('[data-f="text"]'); if(ta){ ta.value='科技焕肤 · 逆龄新生，高级感美业海报，金色光效，9:16 竖版，留白标题区'; t.params.text=ta.value; }
-  edges.push({from:{node:t.id,port:'prompt'}, to:{node:g.id,port:'prompt'}}); redraw();
+  // 初始示例：文本 → 作图，图片 → 反推可按需接入。
+  resetDemo();
 })();
 </script>
 </body>
