@@ -26,6 +26,7 @@ core.HANDLERS = HANDLERS
 
 def main():
     core.init_db()
+    core.start_job_workers()
     threading.Thread(target=core.reaper, daemon=True).start()
     print("huangque-content-api on 127.0.0.1:%d  caps=%s" % (PORT, list(HANDLERS)))
     ThreadingHTTPServer(("127.0.0.1", PORT), core.H).serve_forever()

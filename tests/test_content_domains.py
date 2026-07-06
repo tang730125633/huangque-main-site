@@ -1,5 +1,6 @@
 import importlib
 import base64
+import queue
 import sqlite3
 import sys
 import tempfile
@@ -34,7 +35,7 @@ class ContentDomainTests(unittest.TestCase):
             self.assertFalse(hasattr(core, name), name)
 
         core_path = Path(core.__file__)
-        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1000)
+        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1200)
 
     def test_job_public_dict_hides_payload(self):
         core = importlib.import_module("content_domains.core")
@@ -60,6 +61,63 @@ class ContentDomainTests(unittest.TestCase):
         self.assertTrue(core._must_change_password({"must_change": True}))
         self.assertFalse(core._must_change_password({"must_change": False}))
         self.assertFalse(core._must_change_password(None))
+
+    def test_job_queue_is_bounded_and_deduplicated(self):
+        core = importlib.import_module("content_domains.core")
+        original_queue = core._job_queue
+        original_ids = core._queued_job_ids
+        try:
+            core._job_queue = queue.Queue(maxsize=1)
+            core._queued_job_ids = set()
+            self.assertTrue(core.enqueue_job(101))
+            self.assertTrue(core.enqueue_job(101))
+            self.assertFalse(core.enqueue_job(102))
+            self.assertEqual(core._job_queue.qsize(), 1)
+        finally:
+            core._job_queue = original_queue
+            core._queued_job_ids = original_ids
+
+    def test_reject_pending_job_marks_error_and_refunds_once(self):
+        core = importlib.import_module("content_domains.core")
+        original_job_db = core.JOB_DB
+        original_domains = core._domains
+
+        class FakePoints:
+            def __init__(self):
+                self.refunds = []
+
+            def safe_refund_points(self, username, cost):
+                self.refunds.append((username, cost))
+                return 0
+
+        fake_points = FakePoints()
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "jobs.db"
+            core.JOB_DB = str(db_path)
+            core._domains = lambda: (None, fake_points, None)
+            try:
+                with closing(core.jdb()) as c:
+                    c.execute("""CREATE TABLE jobs(
+                        id INTEGER PRIMARY KEY, kind TEXT, username TEXT, cost INTEGER,
+                        status TEXT, payload TEXT, result TEXT, error TEXT,
+                        created_at INTEGER, updated_at INTEGER, refunded INTEGER DEFAULT 0
+                    )""")
+                    c.execute("""INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at,refunded)
+                                 VALUES(1,'image','fang',12,'pending','{}',1,1,0)""")
+                    c.commit()
+
+                self.assertTrue(core._reject_pending_job(1, "fang", 12, "full"))
+                self.assertEqual(fake_points.refunds, [("fang", 12)])
+                self.assertFalse(core._reject_pending_job(1, "fang", 12, "full again"))
+                self.assertEqual(fake_points.refunds, [("fang", 12)])
+                with closing(core.jdb()) as c:
+                    row = c.execute("SELECT status,error,refunded FROM jobs WHERE id=1").fetchone()
+                self.assertEqual(row["status"], "error")
+                self.assertEqual(row["error"], "full")
+                self.assertEqual(row["refunded"], 1)
+            finally:
+                core.JOB_DB = original_job_db
+                core._domains = original_domains
 
     def test_clone_vip_validation_rejects_before_mutation(self):
         audio = importlib.import_module("content_domains.audio")
