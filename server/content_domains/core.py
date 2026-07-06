@@ -64,6 +64,16 @@ def _out_path(rel):
 def _file_url(rel):
     return "/api/gen/file/" + str(rel or "").replace("\\", "/").lstrip("/")
 
+_cos_disabled_warned = False
+def _warn_cos_disabled_once():
+    # COS 未启用(通常是 content 进程没加载 COS_* env)会让所有产出回退本地/api/gen/file(私有需鉴权)。
+    # 每进程只告警一次，避免刷屏；出现即说明该重启 content 或检查 content.env 的 COS 配置。
+    global _cos_disabled_warned
+    if not _cos_disabled_warned:
+        _cos_disabled_warned = True
+        print("[cos] 未启用：COS_SECRET_ID/KEY/REGION/BUCKET 有缺失，本进程所有产出回退本地 /api/gen/file（音频/图片/视频不会走 COS）。检查 content.env 并重启 content。", flush=True)
+
+
 def public_url(rel, content_type=None, private=False):
     """产出文件的对外链接：COS 已配置且文件存在 → 上传 COS 返回直链；未配置/失败 → 回退本地 /api/gen/file/。
     只在"产出入库"这类一次性点调用；别放进资产列表端点（否则每次刷新都会重复上传）。"""
@@ -79,6 +89,11 @@ def public_url(rel, content_type=None, private=False):
                 ctype = content_type or mimetypes.guess_type(str(rel))[0]
                 # 只上传、不删本地：部分产出(如配音)会被下游(口播视频)复用，删了会断链。
                 return cos.upload(fp, str(rel), ctype, private=private)
+            else:
+                # COS 已启用却因文件不在预期路径跳过上传 → 产出会回退本地私有链(需鉴权)。记录便于定位。
+                print("[cos] 跳过上传(产出文件不在预期路径)，回退本地: rel=%s fp=%s" % (rel, fp), flush=True)
+        else:
+            _warn_cos_disabled_once()
     except Exception as e:
         print("[cos] 上传失败，回退本地: %s -> %s" % (rel, e), flush=True)
     return local
