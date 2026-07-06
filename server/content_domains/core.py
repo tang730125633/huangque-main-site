@@ -12,7 +12,7 @@
 
 P1：图片(gpt-image-2)。P2 文案 / P3 视频按同样的 register_capability 往里加。
 """
-import os, re, sqlite3, json, time, threading, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess, uuid
+import os, re, sqlite3, json, time, threading, queue, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess, uuid
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
@@ -139,6 +139,8 @@ def _env_positive_int(name, default):
     return max(1, value)
 
 VIDEO_COST = _env_positive_int("VIDEO_COST", 20)
+JOB_WORKERS = _env_positive_int("CONTENT_JOB_WORKERS", 3)
+JOB_QUEUE_MAX = _env_positive_int("CONTENT_JOB_QUEUE_MAX", 32)
 COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40}  # collect/leads/tryon 走 cost_of() 动态算
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
 ZELONG_KEY  = os.environ.get("ZELONG_KEY", "")                              # 泽龙Ai 中转站(OpenAI 兼容)
@@ -559,7 +561,12 @@ def _post_bytes(path, data, ctype):  # 返回原始字节(TTS 拿 mp3 二进制)
 
 
 
-# ============ 后台 worker（串行跑任务，失败退点） ============
+# ============ 后台 worker（有界队列 + 固定 worker，失败退点） ============
+_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)
+_queued_job_ids = set()
+_job_queue_lock = threading.Lock()
+_workers_started = False
+
 def _set_terminal(job_id, status, result=None, error=None):
     """CAS 抢终态：仅当仍是 running 才迁移，返回是否抢到迁移权(rowcount>=1)。
     防 reaper 与 worker 竞态——谁先抢到 running→done/error 谁定终态，败者放弃写状态与副作用(#187)。"""
@@ -589,6 +596,75 @@ def _refund_once(job_id, username, cost):
         if cur.rowcount < 1:
             return  # 已退过 / 非 error 终态，跳过
     _domains()[1].safe_refund_points(username, cost)
+
+def enqueue_job(job_id):
+    try:
+        job_id = int(job_id)
+    except Exception:
+        return False
+    with _job_queue_lock:
+        if job_id in _queued_job_ids:
+            return True
+        try:
+            _job_queue.put_nowait(job_id)
+        except queue.Full:
+            return False
+        _queued_job_ids.add(job_id)
+        return True
+
+def _reject_pending_job(job_id, username, cost, reason):
+    now = int(time.time())
+    with closing(jdb()) as c:
+        cur = c.execute("""UPDATE jobs SET status='error', error=?, updated_at=?
+                           WHERE id=? AND status='pending'""",
+                        (str(reason or "")[:300], now, job_id))
+        c.commit()
+        claimed = cur.rowcount >= 1
+    if claimed:
+        _refund_once(job_id, username, cost)
+    return claimed
+
+def _job_worker_loop():
+    while True:
+        job_id = _job_queue.get()
+        try:
+            run_job(job_id)
+        finally:
+            with _job_queue_lock:
+                _queued_job_ids.discard(job_id)
+            _job_queue.task_done()
+
+def _recover_pending_jobs(limit=None):
+    limit = int(limit or JOB_QUEUE_MAX)
+    with closing(jdb()) as c:
+        rows = c.execute("""SELECT id FROM jobs
+                            WHERE status='pending'
+                            ORDER BY id ASC LIMIT ?""", (limit,)).fetchall()
+    recovered = 0
+    for row in rows:
+        if not enqueue_job(row["id"]):
+            break
+        recovered += 1
+    return recovered
+
+def _pending_job_scanner():
+    while True:
+        try:
+            _recover_pending_jobs(JOB_QUEUE_MAX)
+        except Exception:
+            pass
+        time.sleep(30)
+
+def start_job_workers():
+    global _workers_started
+    with _job_queue_lock:
+        if _workers_started:
+            return
+        _workers_started = True
+    for i in range(JOB_WORKERS):
+        threading.Thread(target=_job_worker_loop, name="content-job-worker-%d" % (i + 1), daemon=True).start()
+    threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start()
+    _recover_pending_jobs(JOB_QUEUE_MAX)
 
 def run_job(job_id):
     with closing(jdb()) as c:
@@ -792,7 +868,11 @@ class H(BaseHTTPRequestHandler):
                 c.commit(); jid = cur.lastrowid
             if kind in {"video", "tryon"}:
                 video_domain.record_video_pending_asset(jid, user["username"], body)
-            threading.Thread(target=run_job, args=(jid,), daemon=True).start()
+            if not enqueue_job(jid):
+                _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
+                if kind in {"video", "tryon"}:
+                    video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
+                return self._send(429, {"detail": "任务队列已满，请稍后再试", "need": cost})
             return self._send(200, {"job_id": jid, "cost": cost, "points_left": points_left})
         self._send(404, {"detail": "not found"})
 
@@ -992,6 +1072,7 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     init_db()
+    start_job_workers()
     threading.Thread(target=reaper, daemon=True).start()  # 僵尸任务清道夫
     print("huangque-content-api on 127.0.0.1:%d  caps=%s" % (PORT, list(HANDLERS)))
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
