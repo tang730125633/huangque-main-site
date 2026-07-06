@@ -228,7 +228,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=cccb4993"></script>
+<script src="cloud-shell.js?v=96efb555"></script>
 <script>
 (function () {
   'use strict';
@@ -367,7 +367,7 @@
       var likes = it.stats && it.stats.like != null ? fmtNum(it.stats.like) : '';
       return '<div class="sr-card" data-idx="' + i + '">' +
         '<div style="position:relative; aspect-ratio:9/16; overflow:hidden; background:rgba(7,11,19,.5);">' +
-          '<img src="' + esc(it.cover || '') + '" alt="" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display=\'none\'">' +
+          '<img src="' + escAttr(safeUrl(it.cover || '')) + '" alt="" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display=\'none\'">' +
           (likes ? '<div style="position:absolute; bottom:5px; left:5px; padding:2px 7px; background:rgba(7,11,19,.65); border-radius:5px; font-size:10.5px; color:#eaf1fa; font-family:\'JetBrains Mono\',monospace;">♥ ' + likes + '</div>' : '') +
         '</div>' +
         '<div style="padding:7px 9px 9px;">' +
@@ -415,7 +415,7 @@
           } else if (d.status === 'error') {
             clearInterval(pollIv);
             busy(false); showState('emptyState');
-            setNote('爬取失败：' + (d.error || '') + ' · 已退点', '#f4708a');
+            setNote('爬取失败：' + escHtml(d.error || '') + ' · 已退点', '#f4708a');
             localStorage.removeItem('hq_active_collect_job');
           } else if (sec > 400) {
             clearInterval(pollIv);
@@ -455,7 +455,7 @@
       }
       if (!x.d || !x.d.job_id) {
         busy(false); showState('emptyState');
-        setNote('提交失败：' + ((x.d && x.d.detail) || '未知'), '#f4708a');
+        setNote('提交失败：' + escHtml((x.d && x.d.detail) || '未知'), '#f4708a');
         return;
       }
       localStorage.setItem('hq_active_collect_job', JSON.stringify({ id: x.d.job_id, t0: t0, url: url }));
@@ -519,7 +519,7 @@
       if (v.duration)     parts.push(v.duration + 's');
       if (v.publish_time) parts.push(v.publish_time);
       var metaHtml = escHtml(parts.join(' · '));
-      if (v.url) metaHtml += (metaHtml ? ' · ' : '') + '<a href="' + esc(v.url) + '" target="_blank" rel="noopener" style="color:#e7b24c;text-decoration:none;">看原视频 ↗</a>';
+      if (v.url) metaHtml += (metaHtml ? ' · ' : '') + '<a href="' + escAttr(safeUrl(v.url)) + '" target="_blank" rel="noopener" style="color:#e7b24c;text-decoration:none;">看原视频 ↗</a>';
       if (v.play_url) metaHtml += (metaHtml ? ' · ' : '') + '<a href="/api/gen/dl?url=' + encodeURIComponent(v.play_url) + (v.decode_key ? '&dk=' + encodeURIComponent(v.decode_key) : '') + '&name=' + encodeURIComponent((v.title || 'video').slice(0, 30)) + '" style="color:#2dd4bf;text-decoration:none;font-weight:600;">⬇ 下载无水印视频</a>';
       vcMeta.innerHTML = metaHtml;
     }
@@ -530,8 +530,9 @@
       if (imgs.length) {
         document.getElementById('galCount').textContent = '共 ' + imgs.length + ' 张';
         document.getElementById('galleryGrid').innerHTML = imgs.map(function (u) {
-          return '<a href="' + escHtml(u) + '" target="_blank" rel="noopener" style="display:block; aspect-ratio:3/4; border-radius:8px; overflow:hidden; background:rgba(148,164,187,.06);">' +
-            '<img src="' + escHtml(u) + '" alt="" loading="lazy" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.style.opacity=.25"></a>';
+          var imgUrl = safeUrl(u);
+          return '<a href="' + escAttr(imgUrl) + '" target="_blank" rel="noopener" style="display:block; aspect-ratio:3/4; border-radius:8px; overflow:hidden; background:rgba(148,164,187,.06);">' +
+            '<img src="' + escAttr(imgUrl) + '" alt="" loading="lazy" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.style.opacity=.25"></a>';
         }).join('');
         galBlock.style.display = '';
         var galDlBtn = document.getElementById('galDownloadBtn');
@@ -605,9 +606,9 @@
         cmtList.innerHTML = '<div style="padding:16px 0; text-align:center; font-size:12.5px; color:#5c6b82;">暂无评论数据</div>';
       } else {
         cmtList.innerHTML = comments.slice(0, 20).map(function (c) {
-          var prof = c.profile_url ? esc(c.profile_url) : '';
+          var prof = c.profile_url ? escAttr(safeUrl(c.profile_url)) : '';
           var avatarInner = c.avatar
-            ? '<img src="' + esc(c.avatar) + '" alt="" style="width:28px;height:28px;border-radius:50%;object-fit:cover;flex:none;margin-top:1px;background:rgba(148,164,187,.2);" onerror="this.style.display=\'none\'">'
+            ? '<img src="' + escAttr(safeUrl(c.avatar)) + '" alt="" style="width:28px;height:28px;border-radius:50%;object-fit:cover;flex:none;margin-top:1px;background:rgba(148,164,187,.2);" onerror="this.style.display=\'none\'">'
             : '<div style="width:28px;height:28px;border-radius:50%;flex:none;background:rgba(148,164,187,.15);display:flex;align-items:center;justify-content:center;font-size:11px;color:#5c6b82;">' + escHtml((c.user || '?').charAt(0)) + '</div>';
           var avatar = prof ? '<a href="' + prof + '" target="_blank" rel="noopener" style="display:contents;">' + avatarInner + '</a>' : avatarInner;
           var userEl = prof
@@ -670,7 +671,7 @@
       })
       .catch(function (err) {
         if (err && err.login) { HQ.login(); return; }
-        resetTranscriptBtn((err && err.message) || '提取失败', true);
+        resetTranscriptBtn(escHtml((err && err.message) || '提取失败'), true);
       });
   }
 
@@ -876,8 +877,8 @@
       })
       .catch(function (err) {
         if (err && err.login) { HQ.login(); return; }
-        resetTranscriptBtn((err && err.message) || '提取失败', true);
-        setNote((err && err.message) || '提取失败', '#f4708a');
+        resetTranscriptBtn(escHtml((err && err.message) || '提取失败'), true);
+        setNote(escHtml((err && err.message) || '提取失败'), '#f4708a');
       })
       .finally(restore);
   };
@@ -921,8 +922,8 @@
       .then(function (d) {
         if (!d.items || !d.items.length) return;
         grid.innerHTML = d.items.slice(0, 6).map(function (it) {
-          return '<div class="hv-lift" data-jid="' + esc(it.job_id || '') + '" style="cursor:pointer; border:1px solid rgba(148,164,187,.12); border-radius:11px; overflow:hidden; background:rgba(7,11,19,.4); transition:.16s;">' +
-            '<img src="' + esc(it.url || '') + '" alt="" style="display:block; width:100%; aspect-ratio:9/16; object-fit:cover;" onerror="this.parentElement.style.background=\'rgba(148,164,187,.06)\'">' +
+          return '<div class="hv-lift" data-jid="' + escAttr(it.job_id || '') + '" style="cursor:pointer; border:1px solid rgba(148,164,187,.12); border-radius:11px; overflow:hidden; background:rgba(7,11,19,.4); transition:.16s;">' +
+            '<img src="' + escAttr(safeUrl(it.url || '')) + '" alt="" style="display:block; width:100%; aspect-ratio:9/16; object-fit:cover;" onerror="this.parentElement.style.background=\'rgba(148,164,187,.06)\'">' +
             '<div style="padding:6px 8px; font-size:11.5px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:#94a4bb;">' + escHtml(it.prompt || '') + '</div>' +
           '</div>';
         }).join('');
@@ -947,9 +948,15 @@
     return n >= 10000 ? (n / 10000).toFixed(1) + 'w' : String(n);
   }
   function escHtml(s) {
-    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    if (window.HQ && HQ.escapeHtml) return HQ.escapeHtml(s);
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/\//g, '&#x2F;');
   }
-  function esc(s) { return String(s).replace(/"/g, '&quot;'); }
+  function escAttr(s) { return window.HQ && HQ.escapeAttr ? HQ.escapeAttr(s) : escHtml(s); }
+  function safeUrl(s) {
+    if (window.HQ && HQ.safeUrl) return HQ.safeUrl(s);
+    s = String(s == null ? '' : s).trim();
+    return /^(https?:|mailto:|tel:|\/(?!\/)|\.{0,2}\/)/i.test(s) ? s : '#';
+  }
 
   /* ---- init ---- */
   loadHistory();

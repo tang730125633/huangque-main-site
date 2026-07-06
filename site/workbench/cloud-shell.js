@@ -44,6 +44,22 @@
     var p=I[name]||I.search;
     return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:'+(w||'100%')+';height:'+(w||'100%')+'">'+p+'</svg>';
   }
+  function escapeHtml(value){
+    return String(value == null ? '' : value)
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;')
+      .replace(/'/g,'&#39;')
+      .replace(/\//g,'&#x2F;');
+  }
+  function escapeAttr(value){ return escapeHtml(value); }
+  function safeUrl(value){
+    var s=String(value == null ? '' : value).trim();
+    if(!s) return '';
+    if(/^(https?:|mailto:|tel:|\/(?!\/)|\.{0,2}\/)/i.test(s)) return s;
+    return '#';
+  }
 
   // 角色分化：仅 今日(运营台)+成本(统计看板) 是管理员专属；其余功能(含获客)所有用户都有；用户侧导以灵感为首页
   var NAV=[
@@ -72,9 +88,9 @@
     return NAV.filter(function(it){ return admin || !it.admin; }).map(function(it){
       var on=it.k===active;
       var ntxt=on?'#eaf1fa':'#94a4bb', nbg=on?'rgba(231,178,76,.08)':'transparent', nfg=on?'#e7b24c':'#94a4bb', nbar=on?'1':'0';
-      return '<a href="'+it.k+'.html" class="hq-navitem" style="position:relative; display:flex; align-items:center; gap:12px; padding:10px 13px; border-radius:11px; cursor:pointer; color:'+ntxt+'; background:'+nbg+'; font-size:14px; font-weight:500; transition:.16s;">'+
+      return '<a href="'+escapeAttr(safeUrl(it.k+'.html'))+'" class="hq-navitem" style="position:relative; display:flex; align-items:center; gap:12px; padding:10px 13px; border-radius:11px; cursor:pointer; color:'+ntxt+'; background:'+nbg+'; font-size:14px; font-weight:500; transition:.16s;">'+
         '<span style="position:absolute; left:-12px; top:50%; transform:translateY(-50%); width:3px; height:18px; border-radius:0 3px 3px 0; background:#e7b24c; opacity:'+nbar+';"></span>'+
-        '<span style="display:flex; width:18px; color:'+nfg+';">'+icon(it.i)+'</span>'+it.l+'</a>';
+        '<span style="display:flex; width:18px; color:'+nfg+';">'+icon(it.i)+'</span>'+escapeHtml(it.l)+'</a>';
     }).join('');
   }
 
@@ -306,12 +322,13 @@
     var av='linear-gradient(150deg,#9a6a3a,#5a3d22)';
     if(inn){
       var name=(u&&(u.nickname||u.username))||'我的账号', ch=(String(name).trim()[0]||'我').toUpperCase();
+      var safeName=escapeHtml(name), safeCh=escapeHtml(ch);
       var role=(u&&u.role==='admin')?'管理员':'会员';
       if(card) card.innerHTML='<div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-radius:10px;">'+
-        '<div style="width:34px;height:34px;border-radius:50%;flex:none;background:'+av+';display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:600;">'+ch+'</div>'+
-        '<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+name+'</div><div style="font-size:11px;color:#e7b24c;">'+role+'</div></div>'+
+        '<div style="width:34px;height:34px;border-radius:50%;flex:none;background:'+av+';display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:600;">'+safeCh+'</div>'+
+        '<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+safeName+'</div><div style="font-size:11px;color:#e7b24c;">'+role+'</div></div>'+
         '<span data-logout="1" title="退出登录" style="display:flex;width:16px;color:#5c6b82;cursor:pointer;">'+icon('logout')+'</span></div>';
-      if(auth) auth.innerHTML='<div style="width:38px;height:38px;border-radius:11px;background:'+av+';display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:600;">'+ch+'</div>';
+      if(auth) auth.innerHTML='<div style="width:38px;height:38px;border-radius:11px;background:'+av+';display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:600;">'+safeCh+'</div>';
       if(biz) biz.style.display='flex';
     } else {
       if(card) card.innerHTML='<div data-login="1" style="display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:11px;cursor:pointer;border:1px solid rgba(148,164,187,.16);background:rgba(148,164,187,.04);">'+
@@ -330,7 +347,7 @@
     };});
   }
 
-  window.HQ={ icon:icon, nav:NAV, isAdmin:isAdmin, refreshPoints:refreshPoints, login:openLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser };
+  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, refreshPoints:refreshPoints, login:openLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser };
   function _hqInit(){ build(); buildLoginModal(); }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_hqInit); else _hqInit();
 })();
