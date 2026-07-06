@@ -218,7 +218,7 @@
   function renderRecent(items){
     var box=el('recentList'); box.innerHTML='';
     if(!items.length){box.innerHTML='<div style="padding:24px 18px;border:1px dashed rgba(148,164,187,.18);border-radius:14px;background:rgba(148,164,187,.02);text-align:center;color:#94a4bb;font-size:12.5px;">暂无音频，生成后自动入库</div>';return;}
-    items.forEach(function(a){var row=document.createElement('div');row.className='recent-item';row.innerHTML='<button class="play-main" style="width:30px;height:30px" type="button">▶</button><div style="min-width:0;flex:1"><div style="font-size:12.5px;color:#eaf1fa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc((a.text||'配音资产').slice(0,34))+'</div><div class="mono" style="font-size:10.5px;color:#5c6b82;margin-top:3px;">'+esc(a.voice_name||a.voice_key||'')+' · '+(a.speed||'1.0')+'</div></div><a href="'+esc(a.url||'#')+'" download style="color:#e7b24c;text-decoration:none;font-size:12px;">下载</a>';row.querySelector('button').onclick=function(){setResult(a.url,a.text||'配音资产',true);};box.appendChild(row);});
+    items.forEach(function(a){var row=document.createElement('div');row.className='recent-item';row.innerHTML='<button class="play-main" style="width:30px;height:30px" type="button">▶</button><div style="min-width:0;flex:1"><div style="font-size:12.5px;color:#eaf1fa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc((a.text||'配音资产').slice(0,34))+'</div><div class="mono" style="font-size:10.5px;color:#5c6b82;margin-top:3px;">'+esc(a.voice_name||a.voice_key||'')+' · '+(a.speed||'1.0')+'</div></div><a href="#" class="rec-dl" style="color:#e7b24c;text-decoration:none;font-size:12px;">下载</a>';row.querySelector('button').onclick=function(){setResult(a.url,a.text||'配音资产',true);};row.querySelector('.rec-dl').onclick=function(e){e.preventDefault();downloadAudio(a.url);};box.appendChild(row);});
   }
   function updateParams(){
     el('speedVal').value=params.speed.toFixed(1); el('pitchVal').value=params.pitch; el('volumeVal').value=params.volume;
@@ -246,7 +246,14 @@
     }).catch(function(e){setBusy(false);el('statusText').textContent=e.message||'生成失败';toast(el('statusText').textContent);});
   }
   function setResult(url,title,play){
-    currentAudioUrl=url||''; var a=el('resultAudio'); a.src=fresh(currentAudioUrl); el('resultTitle').textContent=title||'配音结果'; el('resultSub').textContent=currentAudioUrl?'已生成，可试听或下载':'暂无音频'; if(play)a.play().catch(function(){});
+    currentAudioUrl=url||''; var a=el('resultAudio'); el('resultTitle').textContent=title||'配音结果'; el('resultSub').textContent=currentAudioUrl?'已生成，可试听或下载':'暂无音频';
+    if(!currentAudioUrl){a.removeAttribute('src');return;}
+    // /api/gen/file 私有音频需带 token 取回 blob 再播放，裸 src 会 401（试听/下载失败根因）
+    playableUrl(currentAudioUrl).then(function(src){a.src=src; if(play)a.play().catch(function(){});}).catch(function(){toast('音频加载失败');});
+  }
+  function downloadAudio(url){
+    if(!url){toast('暂无可下载音频');return;}
+    playableUrl(url).then(function(src){var x=document.createElement('a');x.href=src;x.download='huangque-audio-'+Date.now()+'.mp3';document.body.appendChild(x);x.click();x.remove();}).catch(function(){toast('下载失败');});
   }
   el('generateBtn').onclick=generate;
   el('mainPlay').onclick=function(){var a=el('resultAudio');if(!currentAudioUrl){toast('暂无可播放音频');return;}if(a.paused){a.play();}else{a.pause();}};
