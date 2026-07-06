@@ -509,7 +509,7 @@
 
   // 结果区按钮
   function actBtn(label){ var n=null; document.querySelectorAll('#actRow > *').forEach(function(el){ if(el.textContent.indexOf(label)>=0) n=el; }); return n; }
-  var bRegen=actBtn('再生成'), bEdit=actBtn('继续改'), bFeishu=actBtn('发飞书'), bDl=actBtn('下载'), bStore=actBtn('入库');
+  var bRegen=actBtn('再生成'), bEdit=actBtn('继续改'), bVideo=actBtn('转视频'), bFeishu=actBtn('发飞书'), bDl=actBtn('下载'), bStore=actBtn('入库');
   if(bRegen) bRegen.onclick=function(){ if(!lastPayload){ setNote('先生成一张，再「再生成」','#f4708a'); return; } submit(lastPayload,'重新生成中',lastEndpoint); };
   if(bEdit) bEdit.onclick=function(){ if(!lastResultUrl){ setNote('先生成一张，再「继续改」','#f4708a'); return; }
     selectEngine('gpt'); // 继续改是 gpt-image 专属，自动切换引擎并显示参考图区
@@ -517,6 +517,14 @@
     var im=new Image(); im.onload=function(){ var mx=1024,s=Math.min(1,mx/Math.max(im.width,im.height)),cv=document.createElement('canvas'); cv.width=Math.round(im.width*s); cv.height=Math.round(im.height*s); cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
       try{ setRef(cv.toDataURL('image/png'),cv.width,cv.height); pr.scrollIntoView({block:'center'}); setNote('已把当前图设为参考，改下提示词再点生成（图生图）','#2bd576'); }catch(err){ setNote('继续改失败（图片跨域，换上传方式）：'+err,'#f4708a'); } };
     im.crossOrigin='anonymous'; im.onerror=function(){ setNote('继续改：图片读取失败','#f4708a'); }; im.src=lastResultUrl+'?t='+Date.now();
+  };
+  if(bVideo) bVideo.onclick=function(e){
+    if(!lastResultUrl) return;
+    if(e&&e.preventDefault) e.preventDefault();
+    try{
+      localStorage.setItem('hq_video_prefill', JSON.stringify({image_url:lastResultUrl, from:'banana', ts:Date.now()}));
+    }catch(err){}
+    location.href='video.html?prefill=image';
   };
   if(bDl) bDl.onclick=function(){ if(!lastResultUrl){ setNote('先生成一张再下载','#f4708a'); return; } var a=document.createElement('a'); a.href=lastResultUrl; a.download='huangque_'+Date.now()+'.png'; document.body.appendChild(a); a.click(); a.remove(); };
   if(bStore) bStore.onclick=function(e){ if(e&&e.preventDefault) e.preventDefault(); if(!lastResultUrl){ setNote('先生成一张','#f4708a'); return; } setNote('✅ 生成即自动入库 · <a href="assets.html" style="color:#e7b24c">去「资产」查看</a>','#2bd576'); };

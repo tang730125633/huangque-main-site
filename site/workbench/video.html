@@ -433,7 +433,7 @@
   var voices=publicFallback.slice();
   var $=function(id){return document.getElementById(id);};
   function esc(s){return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
-  function fresh(u){u=String(u||'');return /[?&]q-sign-/.test(u)?u:u+(u.indexOf('?')>=0?'&':'?')+'_='+Date.now();}
+  function fresh(u){u=String(u||'');return /^(blob:|data:)/.test(u)||/[?&]q-sign-/.test(u)?u:u+(u.indexOf('?')>=0?'&':'?')+'_='+Date.now();}
   function isProtectedLocal(u){return String(u||'').indexOf('/api/gen/file/')===0;}
   function assetUrl(u){
     if(!isProtectedLocal(u)) return Promise.resolve(fresh(u));
@@ -442,6 +442,43 @@
       if(!r.ok) throw new Error('素材读取失败');
       return r.blob();
     }).then(function(blob){return URL.createObjectURL(blob);});
+  }
+  function blobToDataUrl(blob){
+    return new Promise(function(resolve,reject){
+      var reader=new FileReader();
+      reader.onload=function(){resolve(reader.result);};
+      reader.onerror=function(){reject(new Error('图片读取失败'));};
+      reader.readAsDataURL(blob);
+    });
+  }
+  function fetchImagePrefill(src){
+    src=String(src||'');
+    if(!src) return Promise.reject(new Error('缺少图片'));
+    if(src.indexOf('data:image/')===0) return Promise.resolve({dataUrl:src,previewUrl:src});
+    var headers=isProtectedLocal(src)?{Authorization:'Bearer '+token}:undefined;
+    return fetch(fresh(src),{cache:'no-store',headers:headers}).then(function(r){
+      if(r.status===401){location.href='../login.html?redirect=workbench/video';throw new Error('登录已过期');}
+      if(!r.ok) throw new Error('图片读取失败');
+      return r.blob();
+    }).then(function(blob){
+      return blobToDataUrl(blob).then(function(dataUrl){return {dataUrl:dataUrl,previewUrl:URL.createObjectURL(blob)};});
+    }).catch(function(){
+      return new Promise(function(resolve,reject){
+        var im=new Image();
+        im.crossOrigin='anonymous';
+        im.onload=function(){
+          try{
+            var cv=document.createElement('canvas');
+            cv.width=im.naturalWidth||im.width; cv.height=im.naturalHeight||im.height;
+            cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
+            var dataUrl=cv.toDataURL('image/png');
+            resolve({dataUrl:dataUrl,previewUrl:dataUrl});
+          }catch(e){reject(new Error('图片跨域读取失败，请手动上传图片'));}
+        };
+        im.onerror=function(){reject(new Error('图片读取失败，请手动上传图片'));};
+        im.src=fresh(src);
+      });
+    });
   }
   function setAssetImage(img,u){if(img&&u) assetUrl(u).then(function(src){img.src=src;}).catch(function(){});}
   function downloadAsset(u,name){return assetUrl(u).then(function(src){var a=document.createElement('a');a.href=src;a.download=name||'huangque-video.mp4';document.body.appendChild(a);a.click();a.remove();});}
@@ -1029,6 +1066,16 @@
     updateChecklist();
   };
   }
+  function setImageFromPrefill(dataUrl, previewUrl){
+    var box=$('imageDrop');
+    if(!box||!dataUrl) return;
+    imageData=dataUrl;
+    box.classList.add('has-img');
+    box.innerHTML='<input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+esc(previewUrl||dataUrl)+'" alt="人物形象预览">';
+    bindImageInput(box.querySelector('input'));
+    setOutputImage(previewUrl||dataUrl);
+    updateChecklist();
+  }
   bindImageInput($('imageFile'));
   function bindMotionFile(input, type){
     input.onchange=function(){
@@ -1290,16 +1337,26 @@
   var _prefillVoice='';
   function applyAssetPrefill(){
     try{
-      if(new URLSearchParams(location.search).get('prefill')!=='asset') return;
+      var prefillType=new URLSearchParams(location.search).get('prefill');
+      if(prefillType!=='asset' && prefillType!=='image') return;
       var d=JSON.parse(localStorage.getItem('hq_video_prefill')||'null');
       localStorage.removeItem('hq_video_prefill');
       if(!d) return;
-      if(d.prompt && $('scriptText')) $('scriptText').value=d.prompt;
+      if(d.prompt && $('scriptText')){$('scriptText').value=d.prompt;$('scriptText').dispatchEvent(new Event('input'));}
       if(d.resolution) clickDataButton('resolution',d.resolution);
       if(d.ratio) clickDataButton('ratio',d.ratio);
       if(d.motion) clickDataButton('motion',d.motion);
       _prefillVoice=d.voice||'';
-      if(typeof toast==='function') toast('已按所选作品预填参数');
+      if(d.image_url){
+        setVideoStatus('正在带入人物形象图片...');
+        fetchImagePrefill(d.image_url).then(function(img){
+          setImageFromPrefill(img.dataUrl,img.previewUrl);
+          setVideoStatus('人物形象图片已带入，可继续选择音色生成视频');
+          if(typeof toast==='function') toast(prefillType==='image'?'已带入作图结果':'已按所选作品预填参数');
+        }).catch(function(e){setVideoStatus('图片带入失败，请手动上传'); if(typeof toast==='function') toast(e.message||'图片带入失败');});
+      }else if(typeof toast==='function'){
+        toast('已按所选作品预填参数');
+      }
     }catch(e){}
   }
   function _applyPrefillVoice(){ if(_prefillVoice){ applyTemplateVoice(_prefillVoice); _prefillVoice=''; } }
