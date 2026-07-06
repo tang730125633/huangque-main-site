@@ -306,10 +306,15 @@ def _save_data_file(data_url, prefix, allowed_ext):
     _out_path(fn).write_bytes(data)
     return fn
 
+def _heygen_relay_token():
+    return os.environ.get("HEYGEN_RELAY_TOKEN", "").strip()
+
 def _heygen_request_json(method, path, body=None, headers=None, timeout=180):
     if not HEYGEN_API_KEY:
         raise ValueError("视频生成服务未配置")
     h = {"x-api-key": HEYGEN_API_KEY}
+    if _heygen_relay_token():
+        h["X-Relay-Token"] = _heygen_relay_token()
     if headers:
         h.update(headers)
     req = urllib.request.Request(HEYGEN_API_BASE + path, data=body, headers=h, method=method)
@@ -372,6 +377,33 @@ def _ensure_heygen_audio_mp3(audio_path):
         raise ValueError("音频格式转换超时，请重新上传更短的 mp3 音频")
     if not out.exists() or out.stat().st_size <= 0:
         raise ValueError("音频格式转换失败，请重新上传 mp3 音频")
+    return out
+
+HEYGEN_IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
+
+def _ensure_heygen_image_jpg(image_path):
+    # HeyGen 素材接口只收 jpg/png；webp 等格式原样上传必然 400（invalid_parameter）
+    path = pathlib.Path(image_path)
+    if path.suffix.lower() in HEYGEN_IMAGE_EXTS:
+        return path
+    out = path.parent / ("heygen_img_%d.jpg" % int(time.time() * 1000))
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(path),
+        "-frames:v", "1", "-q:v", "2",
+        str(out),
+    ]
+    try:
+        subprocess.run(cmd, check=True, timeout=120, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        raise ValueError("服务器未安装 ffmpeg，无法转换图片格式")
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or b"").decode("utf-8", "replace")[:220]
+        raise ValueError("图片格式转换失败，请上传 jpg/png 格式的人物形象图" + (": " + detail if detail else ""))
+    except subprocess.TimeoutExpired:
+        raise ValueError("图片格式转换超时，请上传 jpg/png 格式的人物形象图")
+    if not out.exists() or out.stat().st_size <= 0:
+        raise ValueError("图片格式转换失败，请上传 jpg/png 格式的人物形象图")
     return out
 
 def _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion):
@@ -520,7 +552,19 @@ def _heygen_poll_video(video_id):
     raise TimeoutError("HeyGen视频生成超时")
 
 def _download_video_file(url, prefix="vid"):
-    req = urllib.request.Request(url, headers={"User-Agent": "huangque-content/1.0"})
+    headers = {"User-Agent": "huangque-content/1.0"}
+    relay = os.environ.get("HEYGEN_RELAY_BASE", "").strip().rstrip("/")
+    if relay:
+        # 出境中转：HeyGen 成片/素材 CDN 域名改走法兰克福反代，绕开代理链路
+        parts = urllib.parse.urlsplit(url)
+        host = (parts.hostname or "").lower()
+        if host.endswith(".heygen.ai") or host.endswith(".heygen.com"):
+            url = "%s/cdn/%s/%s" % (relay, host, parts.path.lstrip("/"))
+            if parts.query:
+                url += "?" + parts.query
+            if _heygen_relay_token():
+                headers["X-Relay-Token"] = _heygen_relay_token()
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=360) as r:
         data = r.read()
     if not data:
@@ -534,6 +578,7 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
     audio_fp = _resolve_out_file(audio_file)
     if not image_fp or not audio_fp:
         raise ValueError("视频素材文件不存在")
+    image_fp = _ensure_heygen_image_jpg(image_fp)
     audio_fp = _ensure_heygen_audio_mp3(audio_fp)
     image_asset_id = _heygen_upload_asset(image_fp)
     audio_asset_id = _heygen_upload_asset(audio_fp)
@@ -556,6 +601,7 @@ def generate_heygen_motion_video(image_file, reference_video_file, resolution, r
     reference_fp = _resolve_out_file(reference_video_file)
     if not image_fp or not reference_fp:
         raise ValueError("动作模仿素材文件不存在")
+    image_fp = _ensure_heygen_image_jpg(image_fp)
     image_asset_id = None
     avatar_item_id = ""
     avatar_group_id = ""
