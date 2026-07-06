@@ -20,6 +20,13 @@
 - 日志不包含 cookie、密钥、用户数据；有合理轮转。
 - CPU/内存或连续失败超过阈值会告警；现有 leadgen 服务不受影响。
 
+## 只读取证结论（2026-07-06）
+
+- 进程实际属于 `xiaotan.service`，PID 1016 位于 `/system.slice/xiaotan.service`，不是裸进程；`StandardOutput=journal`，7 月 5 日仍有请求日志。
+- PID 1016 是 Uvicorn reload 父进程，长期 42.4% CPU；真正监听 8501 的子进程 PID 1995 仅约 0.1% CPU，接口 `/docs` 返回 200。
+- 上游 `start.py` 强制 `reload=True`，服务器未安装 `watchfiles`，Uvicorn 使用 StatReload。工作目录 6,609 个文件中 `.venv` 占 6,443 个，父进程持续轮询导致空转。
+- 修复采用 Git 管理的 systemd unit 直接运行 `python -m uvicorn app.main:app`，生产关闭 reload；不修改或 vendor 上游目录。
+
 ## 部署
 
 仅从已合并的 `main` 部署本工单新增文件；若需终止现有裸进程或切换服务，必须在部署步骤明确说明并验证业务无中断。
