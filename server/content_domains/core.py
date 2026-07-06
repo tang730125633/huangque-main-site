@@ -26,6 +26,10 @@ except ImportError:  # Running core.py directly during local checks.
 PORT       = int(os.environ.get("CONTENT_API_PORT", "8096"))
 AUTH_BASE  = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
 AUTH_INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
+try:
+    VERIFY_CACHE_TTL = max(0.0, float(os.environ.get("VERIFY_CACHE_TTL", "8") or 8)); VERIFY_CACHE_MAX = max(1, int(os.environ.get("VERIFY_CACHE_MAX", "2048") or 2048))
+except Exception:
+    VERIFY_CACHE_TTL = 8; VERIFY_CACHE_MAX = 2048
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 BASE       = pathlib.Path(__file__).resolve().parents[1]
 JOB_DB     = str(BASE / "content_jobs.db")
@@ -464,15 +468,34 @@ def delete_user_asset(username, kind, asset_id):
 
 
 # ============ 鉴权（向 auth 服务核验 token） ============
+_verify_cache = {}; _verify_cache_lock = threading.Lock()
+
 def verify(token):
     if not token: return None
+    now = time.time()
+    if VERIFY_CACHE_TTL:
+        with _verify_cache_lock:
+            item = _verify_cache.get(token)
+            if item and item[0] > now: return dict(item[1])
+            if item: _verify_cache.pop(token, None)
     try:
         req = urllib.request.Request(AUTH_BASE + "/api/auth/me",
                                      headers={"Authorization": "Bearer " + token})
         with urllib.request.urlopen(req, timeout=6) as r:
-            return json.loads(r.read()).get("user")
+            user = json.loads(r.read()).get("user")
     except Exception:
+        if VERIFY_CACHE_TTL:
+            with _verify_cache_lock: _verify_cache.pop(token, None)
         return None
+    if not isinstance(user, dict): return None
+    if VERIFY_CACHE_TTL:
+        with _verify_cache_lock:
+            if len(_verify_cache) >= VERIFY_CACHE_MAX:
+                for k, v in list(_verify_cache.items()):
+                    if v[0] <= now: _verify_cache.pop(k, None)
+                if len(_verify_cache) >= VERIFY_CACHE_MAX: _verify_cache.pop(next(iter(_verify_cache)), None)
+            _verify_cache[token] = (now + VERIFY_CACHE_TTL, dict(user))
+    return dict(user)
 
 def _domains():
     from . import audio, points, video

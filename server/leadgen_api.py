@@ -190,11 +190,24 @@ def gen_leads(payload):
     for platform in platforms:
         if platform == "channels" or not keyword:
             continue
-        try:
-            sr = tikhub.search(platform, keyword)
-        except tikhub.TikHubError:
-            continue
-        for v in sr["items"][:nvid]:
+        # 按采集量翻页收集视频：原来只取搜索第1页(抖音每页约10个)再 [:nvid] 切片，
+        # 采集量≥10时不同数量切到的都是同一页那~10个视频→结果完全相同(#227)。
+        # 现按 nvid 翻页(search 已支持 page 且按页缓存)，最多5页(~50)覆盖 nvid≤30。
+        # 搜索端点偶发400，每页重试1次(dy_search 本身无重试)。
+        vids = []
+        for _pg in range(1, 6):
+            sr = None
+            for _try in range(2):
+                try:
+                    sr = tikhub.search(platform, keyword, page=_pg); break
+                except tikhub.TikHubError:
+                    if _try == 0: time.sleep(1.0)
+            if sr is None:
+                break
+            vids += (sr.get("items") or [])
+            if len(vids) >= nvid or not sr.get("has_more"):
+                break
+        for v in vids[:nvid]:
             pull(platform, v["id"], v.get("title"), v.get("url"))
 
     if "channels" in platforms:
