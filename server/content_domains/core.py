@@ -105,10 +105,12 @@ def public_url_from_remote(remote_url, rel_key, content_type=None):
         return remote_url
 
 def _collect_cos_play_url(platform, vid_id, play_url):
-    """采集视频 play_url → COS 永久直链。图集/无 play_url(视频号加密流 play_url=None)跳过、保持原样。
-    对象键 collect/<platform>/<id>.mp4。转存失败/未配置回退原 play_url。"""
-    if not play_url:
-        return play_url  # 图集 / 视频号加密流：保持原样
+    """采集视频 play_url → COS 永久直链。图集/无 play_url 跳过、保持原样。
+    视频号(channels)加密流也跳过 COS 转存——它是 encfilekey 加密流(需 decode_key 解密)，
+    转存 COS 会存成加密数据且丢失 decode_key，前端拿到不可播放。保持原 wxapp.tc.qq.com 直链 +
+    decode_key，由前端下载代理 /api/gen/dl?dk= 解密。"""
+    if not play_url or platform == "channels":
+        return play_url
     ident = re.sub(r"[^A-Za-z0-9_.-]", "", str(vid_id or "")) or "v"
     key = "collect/%s/%s.mp4" % ((platform or "x"), ident)
     return public_url_from_remote(play_url, key, "video/mp4")
