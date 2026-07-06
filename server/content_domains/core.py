@@ -163,6 +163,16 @@ def _user_owns_output_file(username, rel):
     if not username or not rel:
         return False
     with closing(adb()) as c:
+        # 配音资产(audio_assets)：生成的配音 / 克隆试听样音归属其用户。
+        # 缺这一张表会让 voice_preview_*/aud_* 等敏感音频过不了归属校验→404(试听/下载"需要授权")。
+        try:
+            row = c.execute("""SELECT 1 FROM audio_assets
+                WHERE username=? AND COALESCE(deleted,0)=0 AND file=? LIMIT 1""",
+                (username, rel)).fetchone()
+            if row:
+                return True
+        except Exception:
+            pass
         row = c.execute("""SELECT 1 FROM video_assets
             WHERE username=? AND status!='deleted'
               AND ? IN (image_file,audio_file,reference_video_file,video_file)
