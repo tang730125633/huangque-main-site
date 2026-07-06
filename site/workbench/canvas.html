@@ -24,6 +24,8 @@
   .nc-add,.nc-ghost{ display:inline-flex; align-items:center; gap:6px; min-height:34px; padding:8px 12px; font-size:12.5px; font-weight:650; color:#e7b24c; background:rgba(231,178,76,.09); border:1px solid rgba(231,178,76,.28); border-radius:10px; cursor:pointer; font-family:inherit; transition:.16s; }
   .nc-add:hover,.nc-ghost:hover{ background:rgba(231,178,76,.15); transform:translateY(-1px); }
   .nc-ghost{ color:#94a4bb; background:rgba(148,164,187,.05); border-color:rgba(148,164,187,.14); }
+  .nc-select{ min-height:34px; max-width:150px; padding:7px 9px; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:10px; outline:none; font:inherit; font-size:12.5px; }
+  .nc-name{ min-height:34px; width:116px; box-sizing:border-box; padding:7px 9px; color:#eaf1fa; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:10px; outline:none; font:inherit; font-size:12.5px; }
   .nc-run{ margin-left:auto; min-height:36px; padding:8px 16px; font-size:13px; font-weight:800; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:10px; cursor:pointer; font-family:inherit; box-shadow:0 12px 28px -16px rgba(231,178,76,.8); }
   .nc-run:disabled{ opacity:.65; cursor:wait; }
   .nc-zoom{ min-width:50px; justify-content:center; color:#eaf1fa; font-family:var(--mono,ui-monospace,monospace); }
@@ -34,6 +36,8 @@
     height:100%; background:radial-gradient(rgba(148,164,187,.08) 1px, transparent 1px) 0 0/22px 22px, linear-gradient(165deg, rgba(12,18,30,.6), rgba(8,12,20,.66)); }
   .nc-canvas.panning{ cursor:grabbing; user-select:none; }
   .nc-canvas.connecting{ cursor:crosshair; }
+  .nc-canvas.connecting,.nc-canvas.connecting *{ user-select:none; -webkit-user-select:none; }
+  .nc-canvas.connecting input,.nc-canvas.connecting textarea{ user-select:text; -webkit-user-select:text; }
   .nc-inner{ position:relative; width:2400px; height:1500px; transform-origin:0 0; }
   .nc-edges{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:1; }
   .nc-edge-hit{ pointer-events:stroke; cursor:pointer; }
@@ -43,8 +47,15 @@
   .nc-node[data-state="running"]{ border-color:rgba(45,212,191,.55); }
   .nc-node[data-state="done"]{ border-color:rgba(43,213,118,.45); }
   .nc-node[data-state="error"]{ border-color:rgba(244,112,138,.55); }
+  .nc-node.collapsed{ width:220px; }
+  .nc-node.collapsed .nc-body{ display:none; }
+  .nc-node.collapsed .nc-port{ top:50%!important; transform:translateY(-50%); }
   .nc-head{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding:9px 11px; border-bottom:1px solid rgba(148,164,187,.1); cursor:move; border-radius:13px 13px 0 0; font-weight:700; }
+  .nc-node.collapsed .nc-head{ border-bottom:0; border-radius:13px; }
   .nc-head .dot{ width:8px; height:8px; border-radius:50%; flex:none; }
+  .nc-actions{ display:flex; align-items:center; gap:7px; flex:none; }
+  .nc-fold{ cursor:pointer; color:#94a4bb; font-size:14px; line-height:1; }
+  .nc-fold:hover{ color:#e7b24c; }
   .nc-x{ cursor:pointer; color:#5c6b82; font-size:15px; line-height:1; }
   .nc-x:hover{ color:#f4708a; }
   .nc-body{ padding:10px 11px; display:flex; flex-direction:column; gap:9px; }
@@ -66,6 +77,15 @@
   .nc-legend span{ display:inline-flex; align-items:center; gap:5px; white-space:nowrap; }
   .nc-legend i{ width:9px; height:9px; border-radius:50%; border:2px solid #94a4bb; }
   .nc-legend .img i{ border-color:#46b4ff; }
+  .nc-map{ position:absolute; z-index:6; right:16px; top:16px; width:164px; height:104px; border:1px solid rgba(148,164,187,.16); border-radius:10px; background:rgba(9,14,24,.82); backdrop-filter:blur(10px); overflow:hidden; cursor:pointer; box-shadow:0 16px 38px -24px rgba(0,0,0,.9); }
+  .nc-map svg{ width:100%; height:100%; display:block; }
+  .nc-map-node{ fill:rgba(231,178,76,.72); stroke:rgba(255,255,255,.24); stroke-width:.7; }
+  .nc-map-node.img{ fill:rgba(70,180,255,.72); }
+  .nc-map-view{ fill:rgba(45,212,191,.08); stroke:#2dd4bf; stroke-width:1.4; }
+  .nc-menu{ position:fixed; z-index:30; display:none; min-width:138px; padding:6px; border:1px solid rgba(148,164,187,.16); border-radius:11px; background:rgba(9,14,24,.96); box-shadow:0 18px 42px -20px rgba(0,0,0,.9); backdrop-filter:blur(12px); }
+  .nc-menu.on{ display:block; }
+  .nc-menu button{ display:block; width:100%; padding:8px 9px; border:0; border-radius:8px; background:transparent; color:#94a4bb; text-align:left; cursor:pointer; font:inherit; font-size:12px; }
+  .nc-menu button:hover{ color:#eaf1fa; background:rgba(148,164,187,.09); }
   .nc-empty{ position:absolute; inset:0; display:none; align-items:center; justify-content:center; pointer-events:none; z-index:4; }
   .nc-empty.on{ display:flex; }
   .nc-empty-card{ width:min(420px, calc(100% - 32px)); padding:22px; border:1px dashed rgba(148,164,187,.22); border-radius:16px; background:rgba(9,14,24,.72); text-align:center; color:#94a4bb; pointer-events:auto; }
@@ -90,6 +110,7 @@
     .nc-canvas-shell{ height:68vh; min-height:520px; max-height:620px; overflow:hidden; display:flex; flex-direction:column; gap:8px; }
     .nc-canvas{ flex:1; height:auto; min-height:0; }
     .nc-float,.nc-legend{ position:static; margin-top:8px; flex-wrap:wrap; }
+    .nc-map{ width:132px; height:84px; right:12px; top:12px; }
   }
 </style>
 </head>
@@ -121,6 +142,7 @@
       </div>
       <div class="nc-group" aria-label="画布操作">
         <button id="ncUndo" class="nc-ghost" disabled>撤销</button>
+        <button id="ncRedo" class="nc-ghost" disabled>重做</button>
         <button id="ncCopy" class="nc-ghost">复制</button>
         <button id="ncPaste" class="nc-ghost">粘贴</button>
         <button id="ncLayout" class="nc-ghost">自动整理</button>
@@ -128,6 +150,11 @@
         <span id="ncZoomLabel" class="nc-ghost nc-zoom">100%</span>
         <button id="ncZoomIn" class="nc-ghost" title="放大">+</button>
         <button id="ncZoomFit" class="nc-ghost">适应</button>
+        <select id="ncTemplateSelect" class="nc-select" title="模板"></select>
+        <input id="ncTemplateName" class="nc-name" placeholder="模板名">
+        <button id="ncTplSave" class="nc-ghost">保存模板</button>
+        <button id="ncTplLoad" class="nc-ghost">载入</button>
+        <button id="ncTplDelete" class="nc-ghost">删除模板</button>
         <button id="ncResetDemo" class="nc-ghost">重置示例</button>
         <button id="ncClear" class="nc-ghost">清空画布</button>
         <a class="nc-ghost" href="banana.html">打开作图页</a>
@@ -149,6 +176,10 @@
           </div>
         </div>
       </div>
+      <div id="ncMap" class="nc-map" title="点击快速移动视图">
+        <svg id="ncMapSvg" viewBox="0 0 164 104" aria-hidden="true"></svg>
+      </div>
+      <div id="ncMenu" class="nc-menu" role="menu"></div>
       <div class="nc-float">
         <span class="nc-mini">拖动节点</span>
         <span class="nc-mini">点击端口连线</span>
@@ -169,9 +200,11 @@
 (function(){
   var inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty');
   var nodeCountEl=document.getElementById('ncNodeCount'), edgeCountEl=document.getElementById('ncEdgeCount'), runStateEl=document.getElementById('ncRunState');
-  var undoBtn=document.getElementById('ncUndo'), zoomLabel=document.getElementById('ncZoomLabel');
-  var nodes={}, edges=[], nid=0, pendingPort=null, runLabel='就绪', undoStack=[], restoring=false, dragPort=null, suppressPortClick=false;
+  var undoBtn=document.getElementById('ncUndo'), redoBtn=document.getElementById('ncRedo'), zoomLabel=document.getElementById('ncZoomLabel'), map=document.getElementById('ncMap'), mapSvg=document.getElementById('ncMapSvg');
+  var tplSelect=document.getElementById('ncTemplateSelect'), tplName=document.getElementById('ncTemplateName'), menu=document.getElementById('ncMenu');
+  var nodes={}, edges=[], nid=0, pendingPort=null, runLabel='就绪', undoStack=[], redoStack=[], restoring=false, loading=false, dragPort=null, suppressPortClick=false, mapDirty=false, saveTimer=null;
   var selectedNode=null, selectedEdge=-1, clipNode=null, zoom=1;
+  var DRAFT_KEY='hq_canvas_draft_v2', TPL_KEY='hq_canvas_templates_v2';
   function tok(){ try{ return localStorage.getItem('hq_token')||''; }catch(e){ return ''; } }
   var TYPE={
     text:  {name:'文本 · 提示词', color:'#e7b24c', outs:['prompt']},
@@ -187,7 +220,9 @@
     if(runStateEl) runStateEl.textContent=runLabel;
     if(empty) empty.classList.toggle('on', count===0);
     if(undoBtn) undoBtn.disabled=!undoStack.length;
+    if(redoBtn) redoBtn.disabled=!redoStack.length;
     if(zoomLabel) zoomLabel.textContent=Math.round(zoom*100)+'%';
+    scheduleSave();
   }
   function setNodeState(node,state,msg,color){
     if(!node) return;
@@ -199,17 +234,76 @@
     return {
       nid:nid,
       runLabel:runLabel,
+      zoom:zoom,
+      scroll:{left:canvas?canvas.scrollLeft:0,top:canvas?canvas.scrollTop:0},
       edges:cloneData(edges),
       nodes:Object.keys(nodes).map(function(k){
         var n=nodes[k];
-        return {id:n.id,type:n.type,x:n.x,y:n.y,params:cloneData(n.params||{}),outputs:cloneData(n.outputs||{}),image:n.image||null,state:n.el?n.el.getAttribute('data-state')||'':n.state||'',note:n.el?(n.el.querySelector('[data-f="note"]')||{}).textContent||'':n.note||''};
+        return {id:n.id,type:n.type,x:n.x,y:n.y,collapsed:n.el?n.el.classList.contains('collapsed'):!!n.collapsed,params:cloneData(n.params||{}),outputs:cloneData(n.outputs||{}),image:n.image||null,state:n.el?n.el.getAttribute('data-state')||'':n.state||'',note:n.el?(n.el.querySelector('[data-f="note"]')||{}).textContent||'':n.note||''};
       })
     };
+  }
+  function templateSnapshot(){
+    var snap=snapshot();
+    snap.nodes=(snap.nodes||[]).map(function(n){
+      var x=cloneData(n);
+      x.image=null;
+      if(x.outputs&&x.outputs.image) delete x.outputs.image;
+      if(x.type==='image'&&x.outputs) delete x.outputs.image;
+      return x;
+    });
+    snap.scroll={left:0,top:0};
+    snap.zoom=1;
+    snap.runLabel='模板';
+    return snap;
+  }
+  function scheduleSave(){
+    if(loading) return;
+    clearTimeout(saveTimer);
+    saveTimer=setTimeout(saveDraft,220);
+  }
+  function saveDraft(){
+    if(loading) return;
+    try{ localStorage.setItem(DRAFT_KEY, JSON.stringify(snapshot())); }catch(e){}
+  }
+  function loadDraft(){
+    try{
+      var raw=localStorage.getItem(DRAFT_KEY);
+      if(!raw) return null;
+      var snap=JSON.parse(raw);
+      return snap&&snap.nodes?snap:null;
+    }catch(e){ return null; }
+  }
+  function getTemplates(){
+    try{ return JSON.parse(localStorage.getItem(TPL_KEY)||'[]')||[]; }catch(e){ return []; }
+  }
+  function setTemplates(list){
+    try{
+      localStorage.setItem(TPL_KEY, JSON.stringify(list));
+      return true;
+    }catch(e){
+      updateState('模板保存失败：空间不足');
+      return false;
+    }
+  }
+  function saveTemplates(list){
+    if(!setTemplates(list)) return false;
+    renderTemplates();
+    return true;
+  }
+  function renderTemplates(){
+    if(!tplSelect) return;
+    var list=getTemplates();
+    tplSelect.innerHTML='<option value="">模板</option>'+list.map(function(t,i){ return '<option value="'+i+'">'+escapeHtml(t.name||('模板 '+(i+1)))+'</option>'; }).join('');
+  }
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g,function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; });
   }
   function pushUndo(snap){
     if(restoring) return;
     undoStack.push(snap||snapshot());
     if(undoStack.length>60) undoStack.shift();
+    redoStack=[];
     updateState();
   }
   function restoreSnapshot(snap){
@@ -218,14 +312,27 @@
     Object.keys(nodes).forEach(function(id){ if(nodes[id]&&nodes[id].el) nodes[id].el.remove(); });
     nodes={}; edges=cloneData(snap.edges||[]); nid=snap.nid||0; pendingPort=null; dragPort=null; selectedNode=null; selectedEdge=-1; runLabel=snap.runLabel||'就绪';
     (snap.nodes||[]).forEach(function(n){ addNode(n.type,n.x,n.y,n); });
+    if(snap.zoom){ zoom=Math.max(.5,Math.min(1.6,snap.zoom)); inner.style.transform='scale('+zoom+')'; }
+    if(snap.scroll){ canvas.scrollLeft=snap.scroll.left||0; canvas.scrollTop=snap.scroll.top||0; }
     redraw();
     updateState('已撤销');
     restoring=false;
   }
   function undo(){
     var snap=undoStack.pop();
+    if(!snap) return;
+    redoStack.push(snapshot());
+    if(redoStack.length>60) redoStack.shift();
     restoreSnapshot(snap);
     updateState('已撤销');
+  }
+  function redo(){
+    var snap=redoStack.pop();
+    if(!snap) return;
+    undoStack.push(snapshot());
+    if(undoStack.length>60) undoStack.shift();
+    restoreSnapshot(snap);
+    updateState('已重做');
   }
 
   // ---------- 连线绘制 ----------
@@ -251,24 +358,49 @@
       s+='<path d="'+edgePath(dragPort.start,{x:dragPort.x,y:dragPort.y})+'" fill="none" stroke="rgba(45,212,191,.72)" stroke-width="2.5" stroke-dasharray="6 6"/>';
     }
     svg.innerHTML=s;
+    scheduleMap();
     updateState();
+  }
+  function scheduleMap(){
+    if(mapDirty) return;
+    mapDirty=true;
+    requestAnimationFrame(function(){ mapDirty=false; drawMap(); });
+  }
+  function drawMap(){
+    if(!mapSvg||!canvas) return;
+    var w=164, h=104, iw=inner.offsetWidth||2400, ih=inner.offsetHeight||1500;
+    var sx=w/iw, sy=h/ih, s='';
+    Object.keys(nodes).forEach(function(id){
+      var n=nodes[id], nw=Math.max(3,(n.el.offsetWidth||250)*sx), nh=Math.max(3,(n.el.offsetHeight||150)*sy);
+      s+='<rect class="nc-map-node'+(n.type==='image'?' img':'')+'" x="'+(n.x*sx).toFixed(1)+'" y="'+(n.y*sy).toFixed(1)+'" width="'+nw.toFixed(1)+'" height="'+nh.toFixed(1)+'" rx="1.6"/>';
+    });
+    var vx=canvas.scrollLeft/zoom*sx, vy=canvas.scrollTop/zoom*sy, vw=canvas.clientWidth/zoom*sx, vh=canvas.clientHeight/zoom*sy;
+    s+='<rect class="nc-map-view" x="'+Math.max(0,vx).toFixed(1)+'" y="'+Math.max(0,vy).toFixed(1)+'" width="'+Math.min(w,vw).toFixed(1)+'" height="'+Math.min(h,vh).toFixed(1)+'" rx="2"/>';
+    mapSvg.innerHTML=s;
+  }
+  function moveViewFromMap(e){
+    if(!map) return;
+    var r=map.getBoundingClientRect(), x=(e.clientX-r.left)/r.width, y=(e.clientY-r.top)/r.height;
+    canvas.scrollLeft=Math.max(0,x*inner.offsetWidth*zoom-canvas.clientWidth/2);
+    canvas.scrollTop=Math.max(0,y*inner.offsetHeight*zoom-canvas.clientHeight/2);
+    scheduleMap();
   }
 
   // ---------- 建节点 ----------
   function addNode(type, x, y, data){
     var t=TYPE[type], id='n'+(++nid);
     if(data&&data.id){ id=data.id; var m=String(id).match(/\d+/); if(m) nid=Math.max(nid,parseInt(m[0],10)); }
-    var node={ id:id, type:type, x:(x==null?60+((nid*30)%400):x), y:(y==null?50+((nid*40)%300):y), params:Object.assign({engine:'nb2',ratio:'9:16',quality:'hd'},(data&&data.params)||{}), outputs:cloneData((data&&data.outputs)||{}), image:(data&&data.image)||null };
+    var node={ id:id, type:type, x:(x==null?60+((nid*30)%400):x), y:(y==null?50+((nid*40)%300):y), collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',ratio:'9:16',quality:'hd'},(data&&data.params)||{}), outputs:cloneData((data&&data.outputs)||{}), image:(data&&data.image)||null };
     var el=document.createElement('div'); el.className='nc-node'; el.style.left=node.x+'px'; el.style.top=node.y+'px';
     var body='';
     if(type==='text') body='<textarea class="nc-in" data-f="text" rows="3" placeholder="输入提示词，作为下游作图的词…"></textarea>';
     if(type==='image') body='<div class="nc-lab">上传 / 粘贴一张图</div><label class="nc-drop" data-f="drop"><input type="file" accept="image/*" data-f="file" style="display:none">点此上传<br>或 Ctrl/⌘V 粘贴</label>';
     if(type==='reverse') body='<div class="nc-lab">输入：图片 → 输出：提示词</div><button class="nc-go" data-f="run">反推提示词（2点）</button><textarea class="nc-in" data-f="out" rows="3" placeholder="反推结果会出现在这里" style="margin-top:8px;"></textarea>';
-    if(type==='gen') body='<div class="nc-lab">引擎</div><div class="nc-seg" data-f="engine"><span class="nc-chip on" data-v="nb2">Nano2</span><span class="nc-chip" data-v="pro">Pro</span><span class="nc-chip" data-v="gpt">gpt</span></div>'
+    if(type==='gen') body='<div class="nc-lab">引擎</div><div class="nc-seg" data-f="engine"><span class="nc-chip on" data-v="nb2">Nano2</span><span class="nc-chip" data-v="pro">Pro</span><span class="nc-chip" data-v="gpt">gpt</span><span class="nc-chip" data-v="zelong">泽龙AI</span></div>'
       +'<div class="nc-seg" data-f="ratio"><span class="nc-chip on" data-v="9:16">9:16</span><span class="nc-chip" data-v="1:1">1:1</span><span class="nc-chip" data-v="16:9">16:9</span><span class="nc-chip" data-v="3:4">3:4</span></div>'
       +'<textarea class="nc-in" data-f="text" rows="2" placeholder="提示词（也可由上游文本/反推节点连入）"></textarea>'
       +'<button class="nc-go" data-f="run">生成图片</button><div class="nc-drop" data-f="result" style="display:none;"></div>';
-    el.innerHTML='<div class="nc-head" data-f="head"><span style="display:flex;align-items:center;gap:7px;"><span class="dot" style="background:'+t.color+'"></span>'+t.name+'</span><span class="nc-x" data-f="del">×</span></div>'
+    el.innerHTML='<div class="nc-head" data-f="head"><span style="display:flex;align-items:center;gap:7px;min-width:0;"><span class="dot" style="background:'+t.color+'"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+t.name+'</span></span><span class="nc-actions"><span class="nc-fold" data-f="fold" title="折叠/展开">−</span><span class="nc-x" data-f="del">×</span></span></div>'
       +'<div class="nc-body">'+body+'<div class="nc-note" data-f="note"></div></div>';
     inner.appendChild(el); node.el=el;
     // ports
@@ -277,8 +409,22 @@
     nodes[id]=node; applyNodeUI(node); wireNode(node);
     if(data&&data.state) node.el.setAttribute('data-state',data.state);
     if(data&&data.note) noteOf(node,data.note);
+    setCollapsed(node,node.collapsed,true);
     redraw(); updateState();
     return node;
+  }
+  function setCollapsed(node, collapsed, silent){
+    if(!node||!node.el) return;
+    node.collapsed=!!collapsed;
+    node.el.classList.toggle('collapsed', node.collapsed);
+    var f=node.el.querySelector('[data-f="fold"]');
+    if(f) f.textContent=node.collapsed?'+':'−';
+    if(!silent){ redraw(); updateState(node.collapsed?'节点已折叠':'节点已展开'); }
+  }
+  function toggleCollapsed(node){
+    if(!node) return;
+    pushUndo();
+    setCollapsed(node,!node.collapsed);
   }
   function applyNodeUI(node){
     var el=node.el;
@@ -331,6 +477,7 @@
     inner.style.transform='scale('+zoom+')';
     canvas.scrollLeft=wx*zoom-cx;
     canvas.scrollTop=wy*zoom-cy;
+    scheduleMap();
     updateState();
   }
   function selectEdge(i){
@@ -364,6 +511,12 @@
     var node=addNode(data.type,Math.max(0,x),Math.max(0,y),data);
     selectNode(node);
     updateState('已粘贴节点');
+  }
+  function duplicateNode(id){
+    if(!nodes[id]) return;
+    selectNode(nodes[id]);
+    copyNode();
+    pasteNode();
   }
   function autoLayout(){
     var ids=Object.keys(nodes);
@@ -405,6 +558,86 @@
     canvas.scrollTop=Math.max(0,(minY-pad)*zoom);
     updateState('已适应视图');
   }
+  function hideMenu(){ if(menu) menu.classList.remove('on'); }
+  function showMenu(items,x,y){
+    if(!menu) return;
+    menu.innerHTML='';
+    items.forEach(function(it){
+      var b=document.createElement('button');
+      b.type='button'; b.textContent=it.label;
+      b.onclick=function(){ hideMenu(); it.run(); };
+      menu.appendChild(b);
+    });
+    menu.style.left=Math.max(8,Math.min(x,window.innerWidth-160))+'px';
+    menu.style.top=Math.max(8,Math.min(y,window.innerHeight-items.length*38-16))+'px';
+    menu.classList.add('on');
+  }
+  function canvasPointFromClient(e){
+    var r=inner.getBoundingClientRect();
+    return {x:Math.max(0,(e.clientX-r.left)/zoom),y:Math.max(0,(e.clientY-r.top)/zoom)};
+  }
+  function addAt(type,pt){
+    pushUndo();
+    var node=addNode(type,pt.x,pt.y);
+    selectNode(node);
+    updateState('已添加');
+  }
+  function menuForNode(e,node){
+    e.preventDefault(); selectNode(node);
+    showMenu([
+      {label:node.collapsed?'展开节点':'折叠节点',run:function(){ toggleCollapsed(node); }},
+      {label:'复制节点',run:function(){ copyNode(); }},
+      {label:'复制一份',run:function(){ duplicateNode(node.id); }},
+      {label:'删除节点',run:function(){ delNode(node.id); }}
+    ],e.clientX,e.clientY);
+  }
+  function menuForCanvas(e){
+    e.preventDefault();
+    var pt=canvasPointFromClient(e);
+    showMenu([
+      {label:'添加文本节点',run:function(){ addAt('text',pt); }},
+      {label:'添加图片节点',run:function(){ addAt('image',pt); }},
+      {label:'添加反推节点',run:function(){ addAt('reverse',pt); }},
+      {label:'添加作图节点',run:function(){ addAt('gen',pt); }},
+      {label:'粘贴节点',run:function(){ pasteNode(); }},
+      {label:'适应视图',run:function(){ fitView(); }}
+    ],e.clientX,e.clientY);
+  }
+  function menuForEdge(e,i){
+    e.preventDefault();
+    selectedEdge=i; redraw();
+    showMenu([
+      {label:'删除连线',run:function(){ delSelectedEdge(); }}
+    ],e.clientX,e.clientY);
+  }
+  function saveTemplate(){
+    var name=(tplName&&tplName.value.trim())||('模板 '+new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}));
+    var list=getTemplates();
+    list.push({name:name,createdAt:Date.now(),data:templateSnapshot()});
+    if(!saveTemplates(list)) return;
+    if(tplSelect) tplSelect.value=String(list.length-1);
+    if(tplName) tplName.value='';
+    updateState('模板已保存');
+  }
+  function selectedTemplate(){
+    if(!tplSelect||tplSelect.value==='') return null;
+    var idx=parseInt(tplSelect.value,10), list=getTemplates();
+    return {idx:idx,list:list,item:list[idx]};
+  }
+  function loadTemplate(){
+    var t=selectedTemplate();
+    if(!t||!t.item) return;
+    pushUndo();
+    restoreSnapshot(t.item.data);
+    updateState('模板已载入');
+  }
+  function deleteTemplate(){
+    var t=selectedTemplate();
+    if(!t||!t.item) return;
+    t.list.splice(t.idx,1);
+    if(!saveTemplates(t.list)) return;
+    updateState('模板已删除');
+  }
 
   // ---------- 节点交互 ----------
   function wireNode(node){
@@ -412,6 +645,7 @@
     el.setAttribute('data-node-id',node.id);
     head.addEventListener('pointerdown', function(e){
       if(e.target&&e.target.getAttribute('data-f')==='del') return;
+      if(e.target&&e.target.getAttribute('data-f')==='fold') return;
       selectNode(node); e.preventDefault();
       var sx=e.clientX, sy=e.clientY, ox=node.x, oy=node.y, moved=false, before=snapshot();
       function mv(ev){
@@ -423,6 +657,9 @@
       window.addEventListener('pointermove',mv); window.addEventListener('pointerup',up);
     });
     el.querySelector('[data-f="del"]').onclick=function(){ delNode(node.id); };
+    el.querySelector('[data-f="fold"]').onclick=function(e){ e.stopPropagation(); toggleCollapsed(node); };
+    el.addEventListener('dblclick',function(e){ if(e.target&&e.target.closest&&e.target.closest('[data-f="head"]')) toggleCollapsed(node); });
+    el.addEventListener('contextmenu',function(e){ menuForNode(e,node); });
     el.addEventListener('mousedown', function(){ selectNode(node); });
     // ports: 点输出口→点输入口 连线
     el.querySelectorAll('.nc-port').forEach(function(p){
@@ -430,7 +667,9 @@
         if(ev.button!==0) return;
         var kind=p.getAttribute('data-kind'), port=p.getAttribute('data-port');
         if(kind!=='out') return;
+        ev.preventDefault();
         ev.stopPropagation();
+        if(p.setPointerCapture){ try{ p.setPointerCapture(ev.pointerId); }catch(e){} }
         var pt=innerPoint(ev);
         dragPort={from:{node:node.id,port:port}, start:portCenter(node.id,'out',port), x:pt.x, y:pt.y, active:false, sx:ev.clientX, sy:ev.clientY};
         p.classList.add('dragging');
@@ -441,10 +680,12 @@
           if(!dragPort.active && Math.abs(moveEv.clientX-dragPort.sx)+Math.abs(moveEv.clientY-dragPort.sy)>4){
             dragPort.active=true; suppressPortClick=true; canvas.classList.add('connecting'); setConnectHints(port);
           }
+          if(dragPort.active&&window.getSelection){ try{ window.getSelection().removeAllRanges(); }catch(e){} }
           if(dragPort.active) redraw();
         }
         function up(upEv){
           window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up);
+          if(p.releasePointerCapture){ try{ p.releasePointerCapture(ev.pointerId); }catch(e){} }
           var wasActive=dragPort&&dragPort.active;
           if(wasActive){
             var target=inputPortAt(upEv,port);
@@ -470,15 +711,15 @@
     var txt=el.querySelector('[data-f="text"]'); if(txt){
       txt.addEventListener('focus',function(){ node._editSnap=snapshot(); node._editValue=txt.value; });
       txt.addEventListener('blur',function(){ if(node._editSnap&&txt.value!==node._editValue) pushUndo(node._editSnap); node._editSnap=null; });
-      txt.oninput=function(){ node.params.text=txt.value; if(node.type==='text') node.outputs.prompt=txt.value; };
+      txt.oninput=function(){ node.params.text=txt.value; if(node.type==='text') node.outputs.prompt=txt.value; scheduleSave(); };
     }
     var out=el.querySelector('[data-f="out"]'); if(out){
       out.addEventListener('focus',function(){ node._editSnap=snapshot(); node._editValue=out.value; });
       out.addEventListener('blur',function(){ if(node._editSnap&&out.value!==node._editValue) pushUndo(node._editSnap); node._editSnap=null; });
-      out.oninput=function(){ node.outputs.prompt=out.value; };
+      out.oninput=function(){ node.outputs.prompt=out.value; scheduleSave(); };
     }
     el.querySelectorAll('.nc-seg').forEach(function(seg){ var f=seg.getAttribute('data-f');
-      seg.querySelectorAll('.nc-chip').forEach(function(c){ c.onclick=function(){ if(node.params[f]!==c.getAttribute('data-v')) pushUndo(); seg.querySelectorAll('.nc-chip').forEach(function(x){x.classList.remove('on');}); c.classList.add('on'); node.params[f]=c.getAttribute('data-v'); }; }); });
+      seg.querySelectorAll('.nc-chip').forEach(function(c){ c.onclick=function(){ if(node.params[f]!==c.getAttribute('data-v')) pushUndo(); seg.querySelectorAll('.nc-chip').forEach(function(x){x.classList.remove('on');}); c.classList.add('on'); node.params[f]=c.getAttribute('data-v'); scheduleSave(); }; }); });
     // 图片节点上传/粘贴
     var file=el.querySelector('[data-f="file"]'), drop=el.querySelector('[data-f="drop"]');
     if(file){ file.onchange=function(){ imgToNode(node, file.files&&file.files[0]); }; }
@@ -521,17 +762,28 @@
     e.stopPropagation();
     selectEdge(parseInt(hit.getAttribute('data-edge'),10));
   });
+  svg.addEventListener('contextmenu', function(e){
+    var hit=e.target&&e.target.closest?e.target.closest('.nc-edge-hit'):null;
+    if(!hit) return;
+    menuForEdge(e,parseInt(hit.getAttribute('data-edge'),10));
+  });
   canvas.addEventListener('click', function(e){ if(e.target===canvas||e.target===inner){ pendingPort=null; selectedEdge=-1; selectNode(null); redraw(); } });
+  canvas.addEventListener('contextmenu', function(e){
+    var t=e.target;
+    if(t&&t.closest&&t.closest('.nc-node,.nc-port,.nc-edge-hit,.nc-empty-card,.nc-menu')) return;
+    menuForCanvas(e);
+  });
   canvas.addEventListener('pointerdown', function(e){
     if(e.button!==0) return;
     var t=e.target;
-    if(t&&t.closest&&t.closest('.nc-node,.nc-port,.nc-edge-hit,button,a,input,textarea,.nc-empty-card')) return;
+    hideMenu();
+    if(t&&t.closest&&t.closest('.nc-node,.nc-port,.nc-edge-hit,button,a,input,textarea,.nc-empty-card,.nc-menu')) return;
     e.preventDefault();
     pendingPort=null; clearConnectHints(); selectNode(null);
     var sx=e.clientX, sy=e.clientY, sl=canvas.scrollLeft, st=canvas.scrollTop;
     canvas.classList.add('panning');
-    function mv(ev){ canvas.scrollLeft=sl-(ev.clientX-sx); canvas.scrollTop=st-(ev.clientY-sy); }
-    function up(){ canvas.classList.remove('panning'); window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up); }
+    function mv(ev){ canvas.scrollLeft=sl-(ev.clientX-sx); canvas.scrollTop=st-(ev.clientY-sy); scheduleMap(); }
+    function up(){ scheduleMap(); canvas.classList.remove('panning'); window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up); }
     window.addEventListener('pointermove',mv); window.addEventListener('pointerup',up);
   });
   canvas.addEventListener('wheel',function(e){
@@ -540,6 +792,22 @@
     var r=canvas.getBoundingClientRect();
     setZoom(zoom*(e.deltaY>0?.9:1.1),e.clientX-r.left,e.clientY-r.top);
   },{passive:false});
+  canvas.addEventListener('selectstart',function(e){ if(canvas.classList.contains('connecting')||dragPort){ e.preventDefault(); } });
+  canvas.addEventListener('dragstart',function(e){ if(canvas.classList.contains('connecting')||dragPort){ e.preventDefault(); } });
+  canvas.addEventListener('scroll',function(){ scheduleMap(); },{passive:true});
+  window.addEventListener('resize',function(){ scheduleMap(); });
+  document.addEventListener('click',function(e){ if(!menu||!menu.classList.contains('on')) return; if(e.target&&e.target.closest&&e.target.closest('.nc-menu')) return; hideMenu(); });
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape') hideMenu(); });
+  if(map){
+    map.addEventListener('pointerdown',function(e){
+      e.preventDefault();
+      moveViewFromMap(e);
+      function mv(ev){ moveViewFromMap(ev); }
+      function up(){ window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up); }
+      window.addEventListener('pointermove',mv);
+      window.addEventListener('pointerup',up);
+    });
+  }
 
   // ---------- 取上游输入 ----------
   function inputVal(nodeId, port){
@@ -571,7 +839,12 @@
       var bp={prompt:prompt.trim(), ratio:node.params.ratio||'9:16', quality:node.params.quality||'hd', count:1};
       if(refImg) bp.image=refImg.indexOf(',')>=0?refImg.split(',')[1]:refImg;
       var endpoint, gbtn=node.el.querySelector('[data-f="run"]');
-      if(eng==='gpt'){ endpoint='/api/gen/image'; } else { endpoint='/api/gen/banana'; bp.model=eng; }
+      if(eng==='gpt'||eng==='zelong'){
+        endpoint='/api/gen/image';
+        if(eng==='zelong') bp.provider='zelong';
+      } else {
+        endpoint='/api/gen/banana'; bp.model=eng;
+      }
       gbtn.disabled=true; setNodeState(node,'running','提交中…','#2dd4bf'); updateState('运行中');
       return fetch(endpoint,{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(bp)})
         .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
@@ -641,12 +914,19 @@
   document.getElementById('ncZoomOut').onclick=function(){ setZoom(zoom-.1); };
   document.getElementById('ncZoomIn').onclick=function(){ setZoom(zoom+.1); };
   document.getElementById('ncZoomFit').onclick=function(){ fitView(); };
+  document.getElementById('ncTplSave').onclick=function(){ saveTemplate(); };
+  document.getElementById('ncTplLoad').onclick=function(){ loadTemplate(); };
+  document.getElementById('ncTplDelete').onclick=function(){ deleteTemplate(); };
   if(undoBtn) undoBtn.onclick=function(){ undo(); };
+  if(redoBtn) redoBtn.onclick=function(){ redo(); };
   document.addEventListener('keydown',function(e){
     var tag=(e.target&&e.target.tagName||'').toLowerCase();
     var editing=tag==='input'||tag==='textarea';
     if((e.ctrlKey||e.metaKey)&&String(e.key).toLowerCase()==='z' && tag!=='input' && tag!=='textarea'){
-      e.preventDefault(); undo();
+      e.preventDefault(); if(e.shiftKey) redo(); else undo();
+    }
+    if((e.ctrlKey||e.metaKey)&&String(e.key).toLowerCase()==='y' && !editing){
+      e.preventDefault(); redo();
     }
     if((e.ctrlKey||e.metaKey)&&String(e.key).toLowerCase()==='c' && !editing){
       e.preventDefault(); copyNode();
@@ -660,8 +940,16 @@
     }
   });
 
-  // 初始示例：文本 → 作图，图片 → 反推可按需接入。
-  resetDemo();
+  renderTemplates();
+  var draft=loadDraft();
+  if(draft&&Array.isArray(draft.nodes)){
+    loading=true;
+    restoreSnapshot(draft);
+    loading=false;
+    updateState('已恢复草稿');
+  }else{
+    resetDemo();
+  }
 })();
 </script>
 </body>
