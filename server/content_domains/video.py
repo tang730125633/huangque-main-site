@@ -147,8 +147,9 @@ def record_video_asset(job_id, username, result):
         c.execute("""INSERT INTO video_assets
             (job_id, username, mode, image_file, audio_file, reference_video_file, video_file, video_url, text, voice_key,
              resolution, ratio, motion, phase, image_asset_id, audio_asset_id, reference_asset_id, provider_video_id,
-             provider_avatar_id, provider_avatar_group_id, source_video_url, status, error, created_at, updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             provider_avatar_id, provider_avatar_group_id, source_video_url, background_file, tryon_mode, model,
+             status, error, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(job_id) DO UPDATE SET
                 mode=COALESCE(excluded.mode, video_assets.mode),
                 image_file=COALESCE(excluded.image_file, video_assets.image_file),
@@ -169,6 +170,9 @@ def record_video_asset(job_id, username, result):
                 provider_avatar_id=COALESCE(excluded.provider_avatar_id, video_assets.provider_avatar_id),
                 provider_avatar_group_id=COALESCE(excluded.provider_avatar_group_id, video_assets.provider_avatar_group_id),
                 source_video_url=COALESCE(excluded.source_video_url, video_assets.source_video_url),
+                background_file=COALESCE(excluded.background_file, video_assets.background_file),
+                tryon_mode=COALESCE(excluded.tryon_mode, video_assets.tryon_mode),
+                model=COALESCE(excluded.model, video_assets.model),
                 status=COALESCE(excluded.status, video_assets.status),
                 error=excluded.error,
                 updated_at=excluded.updated_at""",
@@ -178,6 +182,7 @@ def record_video_asset(job_id, username, result):
              result.get("image_asset_id"), result.get("audio_asset_id"), result.get("reference_asset_id"),
              result.get("provider_video_id") or result.get("video_id"), result.get("provider_avatar_id") or result.get("avatar_item_id"),
              result.get("provider_avatar_group_id") or result.get("avatar_group_id"), result.get("source_video_url"),
+             result.get("background_file"), result.get("tryon_mode"), result.get("model"),
              result.get("status") or "pending", result.get("error"), now, now))
         c.commit()
 
@@ -189,7 +194,8 @@ def update_video_asset_phase(job_id, phase, **fields):
         "mode", "image_file", "audio_file", "reference_video_file", "video_file", "video_url",
         "text", "voice_key", "resolution", "ratio", "motion", "image_asset_id",
         "audio_asset_id", "reference_asset_id", "provider_video_id", "provider_avatar_id",
-        "provider_avatar_group_id", "source_video_url", "status", "error"
+        "provider_avatar_group_id", "source_video_url", "background_file", "tryon_mode",
+        "model", "status", "error"
     }
     if "voice" in fields and "voice_key" not in fields:
         fields["voice_key"] = fields.pop("voice")
@@ -224,6 +230,9 @@ def record_video_pending_asset(job_id, username, payload):
         "resolution": payload.get("resolution") or "1080p",
         "ratio": payload.get("ratio") or "9:16",
         "motion": payload.get("motion") or "medium",
+        "reference_video_file": payload.get("person_video_file") or None,
+        "background_file": payload.get("background_file") or None,
+        "model": payload.get("model") or None,
         "phase": "queued",
         "status": "running",
     })
@@ -234,6 +243,7 @@ def list_video_assets(username, limit=120):
         rows = c.execute("""SELECT id, job_id, username, mode, image_file, audio_file, reference_video_file, video_file, video_url,
                    text, voice_key, resolution, ratio, motion, phase, image_asset_id, audio_asset_id, reference_asset_id,
                    provider_video_id, provider_avatar_id, provider_avatar_group_id, source_video_url,
+                   background_file, tryon_mode, model,
                    status, error, created_at, updated_at
             FROM video_assets
             WHERE username=? AND status!='deleted'
@@ -1278,7 +1288,8 @@ def gen_tryon(payload):
     seconds = max(1, min(15, seconds))
     text = (payload.get("text") or "").strip() or "换装换背景"
     update_video_asset_phase(job_id, "queued", mode="tryon", text=text,
-                             reference_video_file=person_video_file, image_file=clothes_file)
+                             reference_video_file=person_video_file, image_file=clothes_file,
+                             background_file=background_file, tryon_mode=tryon_mode)
     video_result = generate_tryon_video(person_video_file, clothes_file, background_file, seconds,
                                         job_id=job_id, username=username)
     return {

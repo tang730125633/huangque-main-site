@@ -533,6 +533,24 @@
       });
     });
   }
+  function fetchFilePrefill(src, label){
+    src=String(src||'');
+    if(!src) return Promise.reject(new Error('缺少'+(label||'素材')));
+    if(src.indexOf('data:')===0) return Promise.resolve({dataUrl:src,previewUrl:src});
+    var headers=isProtectedLocal(src)?{Authorization:'Bearer '+token}:undefined;
+    return fetch(fresh(src),{cache:'no-store',headers:headers}).then(function(r){
+      if(r.status===401){location.href='../login.html?redirect=workbench/video';throw new Error('登录已过期');}
+      if(!r.ok) throw new Error((label||'素材')+'读取失败');
+      return r.blob();
+    }).then(function(blob){
+      return new Promise(function(resolve,reject){
+        var reader=new FileReader();
+        reader.onload=function(){resolve({dataUrl:reader.result,previewUrl:URL.createObjectURL(blob)});};
+        reader.onerror=function(){reject(new Error((label||'素材')+'读取失败'));};
+        reader.readAsDataURL(blob);
+      });
+    });
+  }
   function setAssetImage(img,u){if(img&&u) assetUrl(u).then(function(src){img.src=src;}).catch(function(){});}
   function downloadAsset(u,name){return assetUrl(u).then(function(src){var a=document.createElement('a');a.href=src;a.download=name||'huangque-video.mp4';document.body.appendChild(a);a.click();a.remove();});}
   function openVideoPlayer(videoUrl,title){
@@ -1508,6 +1526,59 @@
   updateFunction('talking');
   // F7 联动：资产页视频「重生成」跳转过来时，读 localStorage 预填(一次性)
   var _prefillVoice='';
+  function prefillMode(d){
+    var m=String((d&&d.mode)||'text').toLowerCase();
+    if(m==='digital_human'||m==='talking'||m==='talking_head') return 'text';
+    if(m==='txt2video') return 'grok';
+    if(m==='img2video') return 'grok';
+    return m||'text';
+  }
+  function setMotionImagePrefill(dataUrl, previewUrl){
+    motionImageData=dataUrl;
+    selectMotionAvatar(null);
+    var box=$('motionImageDrop');
+    if(box){
+      box.classList.add('has-media');
+      box.innerHTML='<input id="motionImageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+esc(previewUrl||dataUrl)+'" alt="人物形象预览">';
+      bindMotionFile(box.querySelector('input'),'image');
+    }
+    setOutputImage(previewUrl||dataUrl);
+  }
+  function setMotionReferencePrefill(dataUrl, previewUrl){
+    motionReferenceVideoData=dataUrl;
+    selectedMotionPreset='';
+    renderMotionPresets();
+    showMotionVideoPreview(previewUrl||dataUrl);
+    setMotionSourceText('已带入原参考片段（可点播放预览）');
+  }
+  function setTryonPrefill(kind, dataUrl, previewUrl){
+    var box=kind==='video'?$('tryonVideoDrop'):(kind==='clothes'?$('tryonClothesDrop'):$('tryonBgDrop'));
+    if(!box||!dataUrl) return;
+    if(kind==='video') tryonVideoData=dataUrl;
+    else if(kind==='clothes') tryonClothesData=dataUrl;
+    else tryonBackgroundData=dataUrl;
+    box.classList.add('has-media');
+    if(kind==='video'){
+      box.innerHTML='<input id="tryonVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden><video src="'+esc(previewUrl||dataUrl)+'" muted playsinline></video>';
+      bindTryonFile(box.querySelector('input'),'video');
+    }else if(kind==='clothes'){
+      box.innerHTML='<input id="tryonClothesFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+esc(previewUrl||dataUrl)+'" alt="衣服图预览">';
+      bindTryonFile(box.querySelector('input'),'clothes');
+    }else{
+      box.innerHTML='<input id="tryonBgFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+esc(previewUrl||dataUrl)+'" alt="背景图预览">';
+      bindTryonFile(box.querySelector('input'),'bg');
+    }
+    updateTryonHint();
+  }
+  function setAudioPrefill(dataUrl){
+    audioData=dataUrl||'';
+    selectedAssetAudio=null;
+    document.querySelectorAll('.source-card').forEach(function(x){x.classList.toggle('on',x.dataset.source==='file');});
+    if($('audioFileBox')) $('audioFileBox').classList.remove('hidden');
+    if($('assetAudioBox')) $('assetAudioBox').classList.add('hidden');
+    if($('audioFileName')) $('audioFileName').textContent='已带入原口播音频';
+    updateChecklist();
+  }
   function applyAssetPrefill(){
     try{
       var prefillType=new URLSearchParams(location.search).get('prefill');
@@ -1515,21 +1586,58 @@
       var d=JSON.parse(localStorage.getItem('hq_video_prefill')||'null');
       localStorage.removeItem('hq_video_prefill');
       if(!d) return;
-      if(d.prompt && $('scriptText')){$('scriptText').value=d.prompt;$('scriptText').dispatchEvent(new Event('input'));}
+      var m=prefillMode(d);
       if(d.resolution) clickDataButton('resolution',d.resolution);
       if(d.ratio) clickDataButton('ratio',d.ratio);
       if(d.motion) clickDataButton('motion',d.motion);
       _prefillVoice=d.voice||'';
+      if(m==='grok'||m==='micro'){
+        updateFunction(m);
+        var ta=m==='grok'?$('grokPrompt'):$('microPrompt');
+        if(ta){ta.value=d.prompt||d.text||'';ta.focus();}
+        if(typeof toast==='function') toast('已切到原视频模式并带入提示词');
+        return;
+      }
+      if(m==='tryon'){
+        updateFunction('tryon');
+        setVideoStatus('正在带入换装换背景素材...');
+        var jobs=[];
+        if(d.reference_video_url) jobs.push(fetchFilePrefill(d.reference_video_url,'原视频').then(function(v){setTryonPrefill('video',v.dataUrl,v.previewUrl);}));
+        if(d.image_url) jobs.push(fetchImagePrefill(d.image_url).then(function(img){setTryonPrefill('clothes',img.dataUrl,img.previewUrl);}));
+        if(d.background_url) jobs.push(fetchImagePrefill(d.background_url).then(function(img){setTryonPrefill('bg',img.dataUrl,img.previewUrl);}));
+        Promise.allSettled(jobs).then(function(){
+          setVideoStatus('已按原换装模式预填，可检查素材后重新生成');
+          if(typeof toast==='function') toast('已切到换装换背景并带入可用素材');
+        });
+        return;
+      }
+      if(m==='motion'){
+        updateFunction('motion');
+        setVideoStatus('正在带入影视级模仿素材...');
+        var motionJobs=[];
+        if(d.image_url) motionJobs.push(fetchImagePrefill(d.image_url).then(function(img){setMotionImagePrefill(img.dataUrl,img.previewUrl);}));
+        if(d.reference_video_url) motionJobs.push(fetchFilePrefill(d.reference_video_url,'参考片段').then(function(v){setMotionReferencePrefill(v.dataUrl,v.previewUrl);}));
+        Promise.allSettled(motionJobs).then(function(){
+          setVideoStatus('已按影视级模仿预填，可检查素材后重新生成');
+          if(typeof toast==='function') toast('已切到影视级模仿并带入可用素材');
+        });
+        return;
+      }
+      updateFunction('talking');
+      updateMode(m==='audio'?'audio':'text');
+      if((d.prompt||d.text) && $('scriptText')){$('scriptText').value=d.prompt||d.text;$('scriptText').dispatchEvent(new Event('input'));}
+      var talkJobs=[];
       if(d.image_url){
         setVideoStatus('正在带入人物形象图片...');
-        fetchImagePrefill(d.image_url).then(function(img){
-          setImageFromPrefill(img.dataUrl,img.previewUrl);
-          setVideoStatus('人物形象图片已带入，可继续选择音色生成视频');
-          if(typeof toast==='function') toast(prefillType==='image'?'已带入作图结果':'已按所选作品预填参数');
-        }).catch(function(e){setVideoStatus('图片带入失败，请手动上传'); if(typeof toast==='function') toast(e.message||'图片带入失败');});
-      }else if(typeof toast==='function'){
-        toast('已按所选作品预填参数');
+        talkJobs.push(fetchImagePrefill(d.image_url).then(function(img){setImageFromPrefill(img.dataUrl,img.previewUrl);}));
       }
+      if(m==='audio' && d.audio_url){
+        talkJobs.push(fetchFilePrefill(d.audio_url,'口播音频').then(function(a){setAudioPrefill(a.dataUrl);}));
+      }
+      Promise.allSettled(talkJobs).then(function(){
+        setVideoStatus(m==='audio'?'已按现成音频模式预填，可重新生成':'已按文案配音模式预填，可重新生成');
+        if(typeof toast==='function') toast(prefillType==='image'?'已带入作图结果':'已按原视频模式预填参数');
+      });
     }catch(e){}
   }
   function _applyPrefillVoice(){ if(_prefillVoice){ applyTemplateVoice(_prefillVoice); _prefillVoice=''; } }

@@ -327,6 +327,9 @@ def init_audio_db():
             provider_avatar_id TEXT,
             provider_avatar_group_id TEXT,
             source_video_url TEXT,
+            background_file TEXT,
+            tryon_mode TEXT,
+            model TEXT,
             status TEXT NOT NULL DEFAULT 'pending',
             error TEXT,
             created_at INTEGER NOT NULL,
@@ -375,6 +378,9 @@ def init_audio_db():
         _ensure_column(c, "video_assets", "provider_avatar_id", "TEXT")
         _ensure_column(c, "video_assets", "provider_avatar_group_id", "TEXT")
         _ensure_column(c, "video_assets", "source_video_url", "TEXT")
+        _ensure_column(c, "video_assets", "background_file", "TEXT")
+        _ensure_column(c, "video_assets", "tryon_mode", "TEXT")
+        _ensure_column(c, "video_assets", "model", "TEXT")
         _ensure_column(c, "avatars", "provider_avatar_group_id", "TEXT")
         _ensure_column(c, "avatars", "status", "TEXT NOT NULL DEFAULT 'ready'")
         public = [

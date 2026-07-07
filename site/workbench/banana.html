@@ -273,14 +273,15 @@
         box.querySelectorAll('img').forEach(function(x){x.style.borderColor='transparent';}); im.style.borderColor='#e7b24c'; };
       box.appendChild(im); });
   }
+  var JOB_POLL_TIMEOUT_SEC=900;
   function poll(id, t0, label){
     var iv=setInterval(function(){
       fetch('/api/gen/job/'+id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
         if(!d.status){ clearInterval(iv); busy(false); localStorage.removeItem('hq_active_job'); return; }
         var sec=Math.round((Date.now()-t0)/1000);
         if(d.status==='done'){ clearInterval(iv); showResult(d.result); busy(false); setNote('✅ 出图完成（'+sec+'s）· 点数已更新','#2bd576'); localStorage.removeItem('hq_active_job'); if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints(); loadHistory(); }
-        else if(d.status==='error'){ clearInterval(iv); busy(false); setNote(errMsg(d.error||''),'#f4708a'); localStorage.removeItem('hq_active_job'); }
-        else if(sec>400){ clearInterval(iv); busy(false); setNote('生成超时（'+sec+'s）· 已自动退点，请重试','#f4708a'); localStorage.removeItem('hq_active_job'); }
+        else if(d.status==='error'||d.status==='failed'){ clearInterval(iv); busy(false); setNote(errMsg(d.error||d.detail||d.status||''),'#f4708a'); localStorage.removeItem('hq_active_job'); }
+        else if(sec>JOB_POLL_TIMEOUT_SEC){ clearInterval(iv); busy(false); setNote('生成仍在处理中，请稍后到资产库查看（'+sec+'s）','#2dd4bf'); localStorage.removeItem('hq_active_job'); loadHistory(); }
         else setNote((label||'生成中')+'（'+sec+'s）· 可切去别的页，回来自动接上','#2dd4bf');
       }).catch(function(){});
     },4000);
