@@ -1,9 +1,45 @@
 # -*- coding: utf-8 -*-
+import os
+import threading
+
 from .core import (
     OPENAI_BASE, OPENAI_KEY, OUT_DIR, SIZES, ZELONG2_BASE, ZELONG2_KEY,
     ZELONG_BASE, ZELONG_KEY, _NOPROXY, _multipart, _post,
     base64, json, public_url, urllib, uuid,
 )
+
+_ZELONG2_POOL_LOCK = threading.Lock()
+_ZELONG2_POOL_NEXT = 0
+
+def _split_env_list(value):
+    return [v.strip() for v in str(value or "").replace("\n", ",").replace(";", ",").split(",") if v.strip()]
+
+def _zelong2_accounts():
+    keys = _split_env_list(os.environ.get("ZELONG2_KEYS", ""))
+    if ZELONG2_KEY and ZELONG2_KEY not in keys:
+        keys.insert(0, ZELONG2_KEY)
+    bases = _split_env_list(os.environ.get("ZELONG2_BASES", ""))
+    return [{"key": key, "base": bases[i] if i < len(bases) else ZELONG2_BASE} for i, key in enumerate(keys)]
+
+def _zelong2_attempts():
+    global _ZELONG2_POOL_NEXT
+    accounts = _zelong2_accounts()
+    if not accounts:
+        return []
+    with _ZELONG2_POOL_LOCK:
+        start = _ZELONG2_POOL_NEXT % len(accounts)
+        _ZELONG2_POOL_NEXT += 1
+    return accounts[start:] + accounts[:start]
+
+def _post_zelong2(path, data, ctype):
+    errors = []
+    for idx, account in enumerate(_zelong2_attempts(), 1):
+        try:
+            return _post(path, data, ctype, base=account["base"], key=account["key"], proxy=False)
+        except Exception as e:
+            errors.append("#%d %s: %s" % (idx, account["base"], str(e)[:160]))
+            print("[zelong2-pool] attempt failed %s" % errors[-1], flush=True)
+    raise ValueError("泽龙2号池全部失败: " + " | ".join(errors))
 
 def gen_image(payload):
     prompt = (payload.get("prompt") or "").strip()
@@ -18,10 +54,12 @@ def gen_image(payload):
     if provider in {"zelong", "zelong2"}:
         if provider == "zelong2":
             base, key, provider_label = ZELONG2_BASE, ZELONG2_KEY, "泽龙2(chatgpt2api)"   # 专供生图号池
+            if not _zelong2_accounts():
+                raise ValueError(provider_label + "未配置 key")
         else:
             base, key, provider_label = ZELONG_BASE, ZELONG_KEY, "泽龙Ai(中转站)"
         proxy = False   # 国内中转/本方上游直连，不走代理
-        if not key:
+        if provider != "zelong2" and not key:
             raise ValueError(provider_label + "未配置 key")
         size = "1024x1024"   # 泽龙系图片渠道只支持 1024x1024；其它尺寸(9:16/16:9/auto)会 400 INVALID_IMAGE_SIZE，强制正方形保稳定出图
     else:
@@ -33,11 +71,11 @@ def gen_image(payload):
         if mask:
             files.append(("mask", "mask.png", base64.b64decode(mask)))
         body, ct = _multipart({"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": quality, "n": str(count)}, files)
-        d = _post("/v1/images/edits", body, ct, base=base, key=key, proxy=proxy)
+        d = _post_zelong2("/v1/images/edits", body, ct) if provider == "zelong2" else _post("/v1/images/edits", body, ct, base=base, key=key, proxy=proxy)
         mode = "inpaint" if mask else "img2img"
     else:
         body = json.dumps({"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": quality, "n": count}).encode()
-        d = _post("/v1/images/generations", body, "application/json", base=base, key=key, proxy=proxy)
+        d = _post_zelong2("/v1/images/generations", body, "application/json") if provider == "zelong2" else _post("/v1/images/generations", body, "application/json", base=base, key=key, proxy=proxy)
         mode = "text2img"
     files_out, urls = [], []
     for i, item in enumerate(d.get("data") or []):

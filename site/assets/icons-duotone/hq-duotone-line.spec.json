@@ -1,0 +1,25 @@
+{
+  "name": "hq-duotone-line",
+  "label": "黄雀 Duotone 线性 / HQ Duotone Line",
+  "medium": "vector SVG (hand-authored in this design system — NOT image-generated; keep vector for crispness)",
+  "preamble": "Minimal duotone line icons on a dark backdrop: uniform stroke, rounded caps and joins, drawn in near-white, with exactly one semantic part accented in warm gold plus a small graded halftone dot cluster as the set motif. Refined, geometric, operational.",
+  "palette": ["#eaf1fa", "#e7b24c", "rgba(231,178,76,.14)"],
+  "background_context": "#070b13 dark app background; default mounted on a rounded tile rgba(231,178,76,.08) with border rgba(231,178,76,.18), radius 14",
+  "cutout": null,
+  "thresh": null,
+  "construction": {
+    "grid": "24-unit keyline; live area ~80% (glyphs span ~2.6..21.4); optical sizing so circles read equal to squares",
+    "stroke": "uniform 1.7 units, rounded caps and joins (matches the product's UI stroke icons in cloud-shell.js)",
+    "corner_radius": "small consistent radii (rects rx 2-3)",
+    "angles": "geometry on 45° increments; diagonals only for pens/planes/trends",
+    "detail_budget": "one core idea, <=3-4 elements, generous negative space",
+    "fill_rule": "outline only; gold fill allowed ONLY on the single accent part (dot, spark, play triangle) or a 14-16% gold wash inside one accent shape",
+    "color_rule": "duotone: near-white #eaf1fa defining stroke + warm gold #e7b24c on exactly ONE semantic key part; accent stays smaller than the white linework",
+    "shared_parts": "one canonical person (circle head r~3.6-3.8 + shoulder arc), one canonical magnifier, one canonical coin (circle + offset arc), one canonical 4-point spark",
+    "perspective": "flat front-facing",
+    "shadow": "none",
+    "motif": "graded halftone dot cluster — 5 gold dots r0.85 at opacities .85/.6/.55/.4/.35, tucked in one empty corner of every icon (translation of oil-slides screentone into 黄雀金)"
+  },
+  "fits": "Capability/marketing spot icons, empty states, feature grids, slide decks. NOT for 16-24px dense nav — use the mono line set in ui_kits/workbench/hq-icons.js there.",
+  "notes": "Existing set: assets/icons-duotone/hq_*.svg (16 icons). When adding icons, copy an existing file as skeleton, reuse shared_parts, keep exactly one gold accent + one dot cluster."
+}
