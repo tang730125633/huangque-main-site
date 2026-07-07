@@ -224,7 +224,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=0c477529"></script>
+<script src="cloud-shell.js?v=87f9cda0"></script>
 <script>
 /* 节点生产画布：文本→反推→作图 节点图，拖动/连线/调参/并行运行。复用 /api/gen/reverse|banana|image + 轮询。 */
 (function(){
@@ -236,7 +236,7 @@
   var localFullscreen=false;
   var selectedNode=null, selectedEdge=-1, clipNode=null, zoom=1;
   var DRAFT_KEY='hq_canvas_draft_v2', TPL_KEY='hq_canvas_templates_v2';
-  function tok(){ try{ return localStorage.getItem('hq_token')||''; }catch(e){ return ''; } }
+  function tok(){ try{ return localStorage.getItem('hq_token')||'__cookie__'; }catch(e){ return '__cookie__'; } }
   var TYPE={
     text:  {name:'文本 · 提示词', color:'#e7b24c', outs:['prompt']},
     image: {name:'图片 · 素材',   color:'#46b4ff', outs:['image']},
@@ -1097,7 +1097,6 @@
   function runNode(id){
     var node=nodes[id]; if(!node) return Promise.resolve();
     if(!validateNodeInputs(node,true)){ updateState('缺少输入'); return Promise.reject('缺少输入'); }
-    if(!tok()){ if(window.HQ&&HQ.login) HQ.login(); updateState('需登录'); return Promise.reject('未登录'); }
     if(node.type==='reverse'){
       var img=inputVal(id,'image')||node.image;
       if(!img){ setNodeState(node,'error','请把一个图片节点连到输入口','#f4708a'); updateState('缺少图片'); return Promise.reject('无图'); }

@@ -201,7 +201,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=0c477529"></script>
+<script src="cloud-shell.js?v=87f9cda0"></script>
 <script>
 /* 编导页接 /api/gen/copy（format=script）→ 结构化分镜脚本 */
 (function(){
@@ -209,7 +209,7 @@
   var topic=document.getElementById('scTopic'), sell=document.getElementById('scSell'),
       scenes=document.getElementById('scScenes'), meta=document.getElementById('scMeta');
   var orig=gen.innerHTML, lastScenes=[];
-  function tok(){ return localStorage.getItem('hq_token')||''; }
+  function tok(){ return localStorage.getItem('hq_token')||'__cookie__'; }
   function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
   // 选项单选切换
   function seg(id,sel){ var box=document.getElementById(id); if(!box) return; box.querySelectorAll(sel).forEach(function(o){ o.onclick=function(){ box.querySelectorAll(sel).forEach(function(x){x.classList.remove('on');}); o.classList.add('on'); }; }); }
@@ -241,7 +241,6 @@
   gen.onclick=function(){
     var t=(topic.value||'').trim(), s=(sell.value||'').trim();
     if(!t){ scenes.innerHTML='<div style="padding:22px;text-align:center;color:#f4708a;font-size:13px;">请先填「选题」</div>'; return; }
-    if(!tok()){ HQ.login(); return; }
     var style=pick('segStyle','.sc-opt','口播'), dur=pick('segDur','.sc-opt','30s'), plat=pick('platRow','.sc-chip','抖音');
     setBtn('生成中…',true);
     scenes.innerHTML='<div style="padding:34px; text-align:center; color:#2dd4bf; font-size:13px;">编导生成中…（约 10-20 秒）</div>';

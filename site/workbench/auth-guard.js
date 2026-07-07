@@ -1,11 +1,17 @@
-/* 黄雀工作台 · 登录守卫
- * 工作台页加载前同步执行：本地无登录 token → 跳转登录页（带回跳目标）。
- * 放在 <head> 里同步加载，避免未登录闪屏。 */
+/* Workbench auth guard: legacy bearer-token fallback plus httpOnly cookie session. */
 (function () {
+  function redirect() {
+    var here = (location.pathname.split("/").pop() || "dashboard").replace(/\.html$/i, "");
+    location.replace("../login?redirect=" + encodeURIComponent(here));
+  }
+
   try {
-    if (!localStorage.getItem("hq_token")) {
-      var here = (location.pathname.split("/").pop() || "dashboard");
-      location.replace("../login?redirect=" + encodeURIComponent(here));
-    }
-  } catch (e) { /* localStorage 不可用时不拦截，避免误锁 */ }
+    if (localStorage.getItem("hq_token")) return;
+  } catch (e) {}
+
+  fetch("/api/auth/me", { credentials: "same-origin", cache: "no-store" })
+    .then(function (res) {
+      if (!res.ok) redirect();
+    })
+    .catch(redirect);
 })();

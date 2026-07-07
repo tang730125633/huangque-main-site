@@ -8,6 +8,7 @@ All /api/admin/* routes require a platform token whose user role is admin.
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from contextlib import closing
+from http import cookies
 import json
 import os
 import pathlib
@@ -22,6 +23,22 @@ try:
     from content_domains import feature_flags
 except ImportError:
     feature_flags = None
+
+AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
+
+def request_token(headers):
+    auth = headers.get("Authorization") or ""
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+        if token and token != "__cookie__":
+            return token
+    try:
+        jar = cookies.SimpleCookie()
+        jar.load(headers.get("Cookie") or "")
+        morsel = jar.get(AUTH_COOKIE_NAME)
+        return morsel.value.strip() if morsel and morsel.value else ""
+    except Exception:
+        return ""
 
 
 BASE = pathlib.Path(__file__).resolve().parent
@@ -549,8 +566,7 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _token(self):
-        auth = self.headers.get("Authorization") or ""
-        return auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        return request_token(self.headers)
 
     def _body(self):
         try:

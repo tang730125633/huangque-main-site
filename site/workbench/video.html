@@ -413,10 +413,10 @@
 <div id="toast" class="toast"></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=0c477529"></script>
+<script src="cloud-shell.js?v=87f9cda0"></script>
 <script>
 (function(){
-  var token=localStorage.getItem('hq_token')||'';
+  var token=localStorage.getItem('hq_token')||'__cookie__';
   var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='dapeng', activePreview=null, activePreviewBtn=null;
   var imageData='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
   var selectedSubtitle='off', selectedSubtitleStyle='white';  // F4 字幕：默认关闭，不勾选时行为与原来一致
@@ -696,7 +696,6 @@
     setVideoStatus(info.label+(info.eta?' · '+info.eta:''));
   }
   function loadVideoHistory(){
-    if(!token) return;
     fetch(fresh('/api/gen/video/assets?limit=30'),{cache:'no-store',headers:{Authorization:'Bearer '+token,'Cache-Control':'no-cache'}})
       .then(function(r){return r.ok?r.json():Promise.reject();})
       .then(function(d){renderVideoHistory(d.items||[]);})
@@ -763,7 +762,6 @@
     });
   }
   function loadMotionAvatars(force){
-    if(!token) return;
     if(avatarsLoaded && !force){renderMotionAvatars();return;}
     avatarsLoaded=true;
     var grid=$('motionAvatarGrid');
@@ -979,7 +977,6 @@
     });
   }
   function loadVoices(){
-    if(!token){renderVoices();return;}
     fetch(fresh('/api/gen/audio/voices'),{cache:'no-store',headers:{Authorization:'Bearer '+token,'Cache-Control':'no-cache'}})
       .then(function(r){return r.ok?r.json():Promise.reject();})
       .then(function(d){
@@ -1191,7 +1188,6 @@
       });
   }
   function submitMotionVideo(){
-    if(!token){ location.href='../login.html?redirect=workbench/video'; return; }
     var pickedAvatar=selectedMotionAvatarId?motionAvatars.find(function(a){return String(a.id)===String(selectedMotionAvatarId);}):null;
     if(useNewMotionImage && !motionImageData){ toast('请先上传人物形象图片'); return; }
     if(!useNewMotionImage && !pickedAvatar){ toast('请选择一个我的形象'); return; }
@@ -1241,7 +1237,6 @@
       });
   }
   function submitTryon(){
-    if(!token){ location.href='../login.html?redirect=workbench/video'; return; }
     if(!tryonVideoData){ toast('请先上传换装视频'); return; }
     if(!tryonClothesData && !tryonBackgroundData){ toast('请至少上传衣服图或背景图'); return; }
     setBusy(true);
@@ -1279,7 +1274,6 @@
       });
   }
   function submitVideo(){
-    if(!token){ location.href='../login.html?redirect=workbench/video'; return; }
     if(!imageData){ toast('请先上传人物形象图片'); return; }
     var text=$('scriptText').value.trim();
     if(mode==='text' && !text){ toast('请先输入口播文案'); return; }

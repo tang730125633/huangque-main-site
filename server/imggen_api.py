@@ -16,12 +16,29 @@ content_out/ 鍑哄浘鐩綍(鏂囦欢鐢?content_api 鐨?/api/gen/file 鏈�
 """
 import os, json, time, base64, threading, sqlite3, pathlib, urllib.request, urllib.error, io
 from contextlib import closing
+from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
     from content_domains import feature_flags
 except ImportError:
     feature_flags = None
+
+AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
+
+def _request_token(headers):
+    auth = headers.get("Authorization") or ""
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+        if token and token != "__cookie__":
+            return token
+    try:
+        jar = cookies.SimpleCookie()
+        jar.load(headers.get("Cookie") or "")
+        morsel = jar.get(AUTH_COOKIE_NAME)
+        return morsel.value.strip() if morsel and morsel.value else ""
+    except Exception:
+        return ""
 
 try:
     from PIL import Image
@@ -341,8 +358,7 @@ class H(BaseHTTPRequestHandler):
         self.send_response(code); self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def _token(self):
-        a = self.headers.get("Authorization") or ""
-        return a[7:].strip() if a.startswith("Bearer ") else ""
+        return _request_token(self.headers)
     def _json_body(self):
         try:
             n = int(self.headers.get("Content-Length") or 0)

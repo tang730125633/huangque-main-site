@@ -234,7 +234,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=0c477529"></script>
+<script src="cloud-shell.js?v=87f9cda0"></script>
 <script>
 (function () {
   'use strict';
@@ -250,7 +250,7 @@
   var pollIv = null;
   var transcriptBusy = false;
 
-  function tok() { return localStorage.getItem('hq_token') || ''; }
+  function tok() { return localStorage.getItem('hq_token') || '__cookie__'; }
 
   /* ---- note helper ---- */
   function setNote(html, color) {
@@ -361,7 +361,6 @@
   function doSearch() {
     var kw = kwInput ? kwInput.value.trim() : '';
     if (!kw) return;
-    if (!tok()) { HQ.login(); return; }
     kwSearch.textContent = '搜索中…';
     kwSearch.style.opacity = '.7';
     kwSearch.style.pointerEvents = 'none';
@@ -465,7 +464,6 @@
   /* ---- submit collect ---- */
   function submitCollect(url, dlOnly) {
     if (!url) { setNote('请粘贴视频链接或选择视频', '#f4708a'); return; }
-    if (!tok()) { HQ.login(); return; }
     downloadOnly = !!dlOnly;   // 视频下载模式：跳过评论/文案，产出只留视频+下载
     currentUrl = url;  // ponytail: save for on-demand transcript extraction
     busy(true);
@@ -710,7 +708,6 @@
   /* ---- transcript extraction (on-demand) ---- */
   function submitTranscript() {
     if (!currentUrl) return;
-    if (!tok()) { HQ.login(); return; }
     var btn  = document.getElementById('transcriptExtractBtn');
     var note = document.getElementById('transcriptExtractNote');
     if (btn) { btn.disabled = true; btn.style.opacity = '.7'; btn.style.pointerEvents = 'none'; btn.textContent = '提取中…'; }
@@ -915,7 +912,6 @@
       return;
     }
 
-    if (!tok()) { HQ.login(); return; }
     var restore = setActionLoading(actCopy, '提取并复制中…');
     var note = document.getElementById('transcriptExtractNote');
     if (note) { note.textContent = '正在提取口播文案，完成后自动复制…'; note.style.color = '#2dd4bf'; }

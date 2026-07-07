@@ -153,10 +153,10 @@
 </div></div>
 <div id="toast" class="toast"></div>
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=0c477529"></script>
+<script src="cloud-shell.js?v=87f9cda0"></script>
 <script>
 (function(){
-  var token=localStorage.getItem('hq_token')||'';
+  var token=localStorage.getItem('hq_token')||'__cookie__';
   var $=function(id){return document.getElementById(id);};
   function login(){location.href='../login.html?redirect=workbench/settings';}
   function toast(msg){var t=$('toast'); if(!t) return; t.textContent=msg; t.classList.add('show'); setTimeout(function(){t.classList.remove('show');},1800);}

@@ -212,9 +212,17 @@
   }
 
   // 拉真实点数填到侧边+顶栏（生成后页面调 window.HQ.refreshPoints() 刷新）
+  function authHeaders(extra){
+    var h=extra||{};
+    try{
+      var tok=localStorage.getItem('hq_token');
+      if(tok) h.Authorization='Bearer '+tok;
+    }catch(e){}
+    return h;
+  }
   function refreshPoints(){
-    var tok=localStorage.getItem('hq_token'); if(!tok) return;
-    fetch('/api/auth/me',{headers:{'Authorization':'Bearer '+tok}}).then(function(r){return r.json();}).then(function(d){
+    fetch('/api/auth/me',{credentials:'same-origin',cache:'no-store',headers:authHeaders()}).then(function(r){ if(!r.ok) return null; return r.json(); }).then(function(d){
+      if(d&&d.user){ try{ localStorage.removeItem('hq_token'); localStorage.setItem('hq_user',JSON.stringify(d.user)); }catch(e){} renderUser(); }
       var p=d&&d.user&&d.user.points; if(p==null) return;
       var a=document.getElementById('hqPointsSide'), b=document.getElementById('hqPointsTop');
       if(a) a.textContent=p; if(b) b.textContent=p;
@@ -313,7 +321,7 @@
   function openRegister(){ openLogin('register'); }
   function closeLogin(){ var ov=document.getElementById('hqLoginOv'); if(ov) ov.classList.remove('on'); }
   function authSuccess(res,msg){
-    try{ localStorage.removeItem('hq_role'); localStorage.setItem('hq_token',res.d.token); if(res.d.user) localStorage.setItem('hq_user',JSON.stringify(res.d.user)); }catch(e){}
+    try{ localStorage.removeItem('hq_role'); localStorage.removeItem('hq_token'); if(res.d.user) localStorage.setItem('hq_user',JSON.stringify(res.d.user)); }catch(e){}
     hqMsg(msg||'操作成功','ok');
     setTimeout(function(){ closeLogin(); refreshPoints(); renderUser(); },450);
   }
@@ -322,11 +330,11 @@
     var secret=_hqPhone?(document.getElementById('hqC').value||''):(document.getElementById('hqP').value||'');
     if(!username||!secret){ hqMsg(_hqPhone?'请填写账号和验证码':'请填写账号和密码','err'); return; }
     var b=document.getElementById('hqSub'); b.disabled=true; b.style.opacity='.7'; hqMsg('登录中…');
-    fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,password:secret})})
+    fetch('/api/auth/login',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,password:secret})})
     .then(function(r){ if(r.status===404) throw new Error('__nobackend__'); return r.json().then(function(d){return {ok:r.ok,d:d};}); })
     .then(function(res){
       b.disabled=false; b.style.opacity='1';
-      if(res.ok&&res.d&&res.d.token){
+      if(res.ok&&res.d&&res.d.user){
         authSuccess(res,'登录成功');
       } else { hqMsg((res.d&&res.d.detail)||'账号或密码错误','err'); }
     })
@@ -344,7 +352,7 @@
     var payload={username:username,password:password};
     if(displayName) payload.display_name=displayName;
     var b=document.getElementById('hqSub'); b.disabled=true; b.style.opacity='.7'; hqMsg('注册中…');
-    fetch('/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    fetch('/api/auth/register',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
     .then(function(r){ if(r.status===404) throw new Error('__nobackend__'); return r.json().then(function(d){return {ok:r.ok,status:r.status,d:d};}); })
     .then(function(res){
       b.disabled=false; b.style.opacity='1';
@@ -360,9 +368,14 @@
 
   // ===== 用户登录态显示（左下侧栏卡 + 右上注册/登录）=====
   function currentUser(){ try{ return JSON.parse(localStorage.getItem('hq_user')||'null'); }catch(e){ return null; } }
-  function _logout(){ try{ localStorage.removeItem('hq_token'); localStorage.removeItem('hq_user'); localStorage.removeItem('hq_role'); }catch(e){} location.reload(); }
+  function _logout(){
+    var h=authHeaders();
+    try{ localStorage.removeItem('hq_token'); localStorage.removeItem('hq_user'); localStorage.removeItem('hq_role'); }catch(e){}
+    fetch('/api/auth/logout',{method:'POST',credentials:'same-origin',headers:h}).finally(function(){ location.reload(); });
+  }
   function renderUser(){
-    var u=currentUser(), inn=!!localStorage.getItem('hq_token');
+    var u=currentUser(), inn=!!u;
+    try{ inn=inn||!!localStorage.getItem('hq_token'); }catch(e){}
     var card=document.getElementById('hqUserCard'), auth=document.getElementById('hqAuthArea'), biz=document.getElementById('hqBizSwitch');
     var av='radial-gradient(circle at 32% 26%, #f6d488, #e7b24c 46%, #a8721f 100%)';
     if(inn){

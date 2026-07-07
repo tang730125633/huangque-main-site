@@ -129,11 +129,10 @@
 </div></div>
 <div id="toast" class="toast"></div>
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=0c477529"></script>
+<script src="cloud-shell.js?v=87f9cda0"></script>
 <script>
 (function(){
-  var tok=localStorage.getItem('hq_token')||'';
-  if(!tok){ location.href='../login.html?redirect=workbench/audio'; return; }
+  var tok=localStorage.getItem('hq_token')||'__cookie__';
   var publicFallback=[
     {scope:'public',voice_key:'S_d21F8OR62',display_name:'温柔女声',provider_voice:'S_d21F8OR62',sub:'情感种草 · 柔和自然'},
     {scope:'public',voice_key:'S_l8wE8OR62',display_name:'活力女声',provider_voice:'S_l8wE8OR62',sub:'广告推荐 · 明亮有记忆点'},

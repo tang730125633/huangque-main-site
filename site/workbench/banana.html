@@ -121,7 +121,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=0c477529"></script>
+<script src="cloud-shell.js?v=87f9cda0"></script>
 <script>
 /* 作图页接后端能力中心 /api/gen/image + /api/gen/banana，点数后端统一扣。 */
 (function(){
@@ -139,7 +139,7 @@
       x.textContent=engineCost(x.getAttribute('data-engine-cost'))+'点';
     });
   };
-  function tok(){ return localStorage.getItem('hq_token')||''; }
+  function tok(){ return localStorage.getItem('hq_token')||'__cookie__'; }
   function genLabel(){ return '立即生成（'+costFor()+' 点）'; }
   function updateCost(){
     updateEngineCosts();
@@ -288,7 +288,6 @@
   function submit(payload, label, endpoint){
     endpoint=endpoint||'/api/gen/image'; lastEndpoint=endpoint;
     if(!payload.prompt){ setNote('请先输入提示词','#f4708a'); return; }
-    if(!tok()){ HQ.login(); return; }
     lastPayload=payload; busy(true);
     var hint=endpoint==='/api/gen/banana'?'Nano Banana 约30-90秒':'gpt-image-2 高清约 1-2 分钟';
     setNote(label+' · '+hint,'#2dd4bf');
@@ -363,7 +362,6 @@
   });
   if(revBtn) revBtn.onclick=function(){
     if(!revImgData){ revMsg('请先上传或粘贴一张图片','#f4708a'); return; }
-    if(!tok()){ HQ.login(); return; }
     revBtn.disabled=true; revBtn.textContent='反推中…'; revMsg('AI 正在看图反推提示词…','#2dd4bf');
     fetch('/api/gen/reverse',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({image:revImgData})})
       .then(function(r){ return r.json().then(function(d){ return {s:r.status,d:d}; }); })

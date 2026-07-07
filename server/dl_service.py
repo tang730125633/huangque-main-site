@@ -9,10 +9,12 @@
 前端对视频号下载会带 &dk=<decode_key>，代理识别后走解密路径。
 """
 import os, re, json, tempfile, urllib.request, urllib.parse, subprocess
+from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 8097
 AUTH_BASE = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
+AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # 直连，绕过环境代理
 ALLOW = (
@@ -50,6 +52,21 @@ def verify_token(token):
             return bool(json.loads(r.read()).get("user"))
     except Exception:
         return False
+
+def request_token(headers):
+    auth = headers.get("Authorization") or ""
+    if auth.lower().startswith("bearer "):
+        parts = auth.split(None, 1)
+        token = parts[1].strip() if len(parts) == 2 else ""
+        if token and token != "__cookie__":
+            return token
+    try:
+        jar = cookies.SimpleCookie()
+        jar.load(headers.get("Cookie") or "")
+        morsel = jar.get(AUTH_COOKIE_NAME)
+        return morsel.value.strip() if morsel and morsel.value else ""
+    except Exception:
+        return ""
 
 
 class H(BaseHTTPRequestHandler):
@@ -107,8 +124,7 @@ class H(BaseHTTPRequestHandler):
         pr = urllib.parse.urlparse(self.path)
         if pr.path != "/api/gen/dl":
             return self._err(404, "not found")
-        auth = (self.headers.get("Authorization") or "").strip()
-        token = auth.split(None, 1)[1].strip() if auth.lower().startswith("bearer ") else ""
+        token = request_token(self.headers)
         if not verify_token(token):
             return self._err(401, "未登录")
         q = urllib.parse.parse_qs(pr.query)

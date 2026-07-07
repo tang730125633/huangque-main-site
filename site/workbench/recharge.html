@@ -188,10 +188,10 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=0c477529"></script>
+<script src="cloud-shell.js?v=87f9cda0"></script>
 <script>
 (function(){
-  var token=localStorage.getItem('hq_token')||'';
+  var token=localStorage.getItem('hq_token')||'__cookie__';
   var $=function(id){return document.getElementById(id)};
   function setTip(msg,color){var el=$('rechargeTip'); if(el){el.textContent=msg; el.style.color=color||'#94a4bb'}}
   function api(path,opt){
@@ -211,7 +211,6 @@
     return '<span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(231,178,76,.12); color:#e7b24c;">待确认</span>';
   }
   function loadMe(){
-    if(!token){$('pointsBalance').textContent='--';return}
     api('/api/auth/me').then(function(d){
       var p=d&&d.user&&d.user.points;
       $('pointsBalance').textContent=Number(p||0).toLocaleString();
@@ -236,7 +235,6 @@
         }).join('');
   }
   function loadOrders(){
-    if(!token){renderOrders([]);return}
     api('/api/auth/recharge/orders?limit=50').then(function(d){renderOrders(d.items||[])}).catch(function(e){setTip(e.message,'#f4708a')});
   }
   function submitOrder(btn){

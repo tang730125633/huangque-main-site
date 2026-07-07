@@ -14,17 +14,33 @@
 """
 import os, re, sqlite3, json, time, threading, urllib.request, urllib.parse, urllib.error
 from contextlib import closing
+from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub
 
 PORT      = int(os.environ.get("LEADGEN_API_PORT", "8100"))
 AUTH_BASE = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
+AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
 AUTH_DB   = os.environ.get("AUTH_DB", "/home/ubuntu/auth-service/users.db")
 JOB_DB    = os.environ.get("CONTENT_JOB_DB", "/home/ubuntu/content-api/content_jobs.db")  # 共用 content_api 的任务库
 COS_COLLECT = os.environ.get("COS_COLLECT", "1").strip().lower() not in ("0", "false", "no")  # 采集视频转存 COS 开关
 
 
 # ============ 采集视频转存 COS（永久直链；未配置/失败/关闭时回退原 CDN 链接） ============
+def _request_token(headers):
+    auth = headers.get("Authorization") or ""
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+        if token and token != "__cookie__":
+            return token
+    try:
+        jar = cookies.SimpleCookie()
+        jar.load(headers.get("Cookie") or "")
+        morsel = jar.get(AUTH_COOKIE_NAME)
+        return morsel.value.strip() if morsel and morsel.value else ""
+    except Exception:
+        return ""
+
 def public_url_from_remote(remote_url, rel_key, content_type=None):
     """远程 URL(如抖音 CDN 直链)字节 → COS 永久直链。
     COS 已启用且 remote_url 非空 → urllib 拉字节(带 UA/超时) → cos put → 返回直链；
@@ -346,8 +362,7 @@ class H(BaseHTTPRequestHandler):
         self.send_response(code); self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def _token(self):
-        a = self.headers.get("Authorization") or ""
-        return a[7:].strip() if a.startswith("Bearer ") else ""
+        return _request_token(self.headers)
     def _json_body(self):
         try:
             n = int(self.headers.get("Content-Length") or 0)

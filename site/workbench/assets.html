@@ -134,11 +134,11 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=0c477529"></script>
+<script src="cloud-shell.js?v=87f9cda0"></script>
 <script>
 /* 资产库读真实生成历史（生成即自动入库）+ 按模式分类筛选 */
 (function(){
-  var tok=localStorage.getItem('hq_token')||''; if(!tok) return;
+  var tok=localStorage.getItem('hq_token')||'__cookie__';
   var grid=document.getElementById('assetGrid'), empty=document.getElementById('assetEmpty'),
       skelH=document.getElementById('skelHdr'), skelG=document.getElementById('skelGrid'), cnt=document.getElementById('cntWorks');
   var MODE={text2img:'文生图', img2img:'图生图', inpaint:'局部修改'};

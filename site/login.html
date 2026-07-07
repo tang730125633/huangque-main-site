@@ -222,7 +222,7 @@
     location.href="workbench/"+dest+".html";
   }
   function saveToken(token,user){
-    try{ localStorage.setItem("hq_token",token); }catch(e){}
+    try{ localStorage.removeItem("hq_token"); }catch(e){}
     enterWorkbench(user);
   }
   function setRegisterMode(on){
@@ -249,7 +249,7 @@
     if(password!==confirmPassword){ setMsg("两次输入的密码不一致","err"); return; }
     btn.disabled=true; btn.style.opacity=".7"; setMsg("注册中…");
     fetch("/api/auth/register",{
-      method:"POST", headers:{"Content-Type":"application/json"},
+      method:"POST", credentials:"same-origin", headers:{"Content-Type":"application/json"},
       body:JSON.stringify({username:username,password:password,display_name:displayName})
     }).then(function(r){
       if(r.status===404){ throw new Error("__nobackend__"); }
@@ -275,7 +275,7 @@
     if(!username||!secret){ setMsg(phone?"请填写账号和验证码":"请填写账号和密码","err"); return; }
     btn.disabled=true; btn.style.opacity=".7"; setMsg("登录中…");
     fetch("/api/auth/login",{
-      method:"POST", headers:{"Content-Type":"application/json"},
+      method:"POST", credentials:"same-origin", headers:{"Content-Type":"application/json"},
       body:JSON.stringify({username:username,password:secret})
     }).then(function(r){
       if(r.status===404){ throw new Error("__nobackend__"); }

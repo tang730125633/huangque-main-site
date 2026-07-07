@@ -2,12 +2,15 @@
 # 黄雀 AI · 独立认证服务（零依赖，标准库）
 # 端口 127.0.0.1:8095，nginx 把 /api/auth/ 路由过来。与 leadgen(8090) 完全隔离。
 import sqlite3, hashlib, secrets, json, os, sys, time, urllib.parse
+from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
 PORT = 8095
 ITER = 200000
 TOKEN_TTL = int(os.environ.get("HQ_AUTH_TOKEN_TTL", str(30 * 24 * 3600)))
+AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
+AUTH_COOKIE_SECURE = os.environ.get("HQ_AUTH_COOKIE_SECURE", "1").strip().lower() not in ("0", "false", "no")
 INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
 LOGIN_FAIL_WINDOW = int(os.environ.get("HQ_AUTH_FAIL_WINDOW", "300"))
 LOGIN_FAIL_MAX = int(os.environ.get("HQ_AUTH_FAIL_MAX", "5"))
@@ -392,12 +395,41 @@ def bearer_token(auth):
         return ""
     return parts[1].strip()
 
+def cookie_token(header):
+    try:
+        jar = cookies.SimpleCookie()
+        jar.load(header or "")
+        morsel = jar.get(AUTH_COOKIE_NAME)
+        return morsel.value.strip() if morsel and morsel.value else ""
+    except Exception:
+        return ""
+
+def request_token(headers):
+    token = bearer_token(headers.get("Authorization"))
+    if token and token != "__cookie__":
+        return token
+    return cookie_token(headers.get("Cookie"))
+
+def auth_cookie_header(token):
+    parts = [f"{AUTH_COOKIE_NAME}={token}", "Path=/", f"Max-Age={TOKEN_TTL}", "HttpOnly", "SameSite=Lax"]
+    if AUTH_COOKIE_SECURE:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+def clear_auth_cookie_header():
+    parts = [f"{AUTH_COOKIE_NAME}=", "Path=/", "Max-Age=0", "HttpOnly", "SameSite=Lax"]
+    if AUTH_COOKIE_SECURE:
+        parts.append("Secure")
+    return "; ".join(parts)
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
-    def _send(self, code, obj):
+    def _send(self, code, obj, extra_headers=None):
         body = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, value)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -448,7 +480,7 @@ class H(BaseHTTPRequestHandler):
         REGISTER_HITS[key] = [t for t in REGISTER_HITS.get(key, []) if now - t < REGISTER_WINDOW]
         REGISTER_HITS[key].append(now)
     def _user(self):
-        tok = bearer_token(self.headers.get("Authorization"))
+        tok = request_token(self.headers)
         if not tok:
             return None
         c = db()
@@ -619,7 +651,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(500, {"detail": "注册失败"})
             finally:
                 c.close()
-            return self._send(200, {"token": tok, "user": public_user(u, name)})
+            return self._send(200, {"token": tok, "user": public_user(u, name)}, {"Set-Cookie": auth_cookie_header(tok)})
         if p == "/api/auth/login":
             d = self._body()
             if self._bad_json():
@@ -636,20 +668,25 @@ class H(BaseHTTPRequestHandler):
             tok = issue_token(u)
             return self._send(200, {"token": tok, "user": {
                 "username": u, "name": row["display_name"], "points": row["points"],
-                "role": row["role"], "must_change": bool(row["must_change"])}})
+                "role": row["role"], "must_change": bool(row["must_change"])}}, {"Set-Cookie": auth_cookie_header(tok)})
         if p == "/api/auth/logout":
-            tok = bearer_token(self.headers.get("Authorization"))
+            clear_cookie = {"Set-Cookie": clear_auth_cookie_header()}
+            tok = request_token(self.headers)
+            if not tok:
+                return self._send(200, {"ok": True}, clear_cookie)
             if not tok:
                 return self._send(401, {"detail": "未登录"})
             if tok in REVOKED_TOKENS:
-                return self._send(200, {"ok": True})
+                return self._send(200, {"ok": True}, clear_cookie)
             c = db()
             cur = c.execute("DELETE FROM tokens WHERE token=?", (tok,))
             c.commit(); c.close()
             if cur.rowcount < 1:
+                return self._send(200, {"ok": True}, clear_cookie)
+            if cur.rowcount < 1:
                 return self._send(401, {"detail": "未登录"})
             REVOKED_TOKENS.add(tok)
-            return self._send(200, {"ok": True})
+            return self._send(200, {"ok": True}, clear_cookie)
         if p == "/api/auth/change_password":
             row = self._user()
             if not row: return self._send(401, {"detail": "未登录"})

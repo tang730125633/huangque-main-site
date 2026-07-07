@@ -14,6 +14,7 @@ P1：图片(gpt-image-2)。P2 文案 / P3 视频按同样的 register_capability
 """
 import os, re, sqlite3, json, time, threading, queue, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess, uuid
 from contextlib import closing
+from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
 import mimetypes  # 文件服务按扩展名识别 mime（png / mp3 …）
@@ -530,6 +531,24 @@ def delete_user_asset(username, kind, asset_id):
 
 # ============ 鉴权（向 auth 服务核验 token） ============
 _verify_cache = {}; _verify_cache_lock = threading.Lock()
+AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
+
+def _cookie_token(header):
+    try:
+        jar = cookies.SimpleCookie()
+        jar.load(header or "")
+        morsel = jar.get(AUTH_COOKIE_NAME)
+        return morsel.value.strip() if morsel and morsel.value else ""
+    except Exception:
+        return ""
+
+def _request_token(headers):
+    auth = headers.get("Authorization") or ""
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+        if token and token != "__cookie__":
+            return token
+    return _cookie_token(headers.get("Cookie"))
 
 def verify(token):
     if not token: return None
@@ -797,8 +816,7 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def _token(self):
-        a = self.headers.get("Authorization") or ""
-        return a[7:].strip() if a.startswith("Bearer ") else ""
+        return _request_token(self.headers)
     def _json_body(self):
         try:
             n = int(self.headers.get("Content-Length") or 0)
