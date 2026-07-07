@@ -10,6 +10,10 @@
 <style>
   body{ overflow:hidden; }
   .nc-wrap{ height:calc(100vh - 104px); min-height:520px; display:flex; flex-direction:column; gap:12px; }
+  body.nc-local-fullscreen{ overflow:hidden; }
+  body.nc-local-fullscreen .nc-wrap{ position:fixed; inset:0; z-index:70; height:100vh; min-height:0; box-sizing:border-box; padding:12px; background:#070b13; }
+  .nc-wrap:fullscreen{ width:100vw; height:100vh; min-height:0; box-sizing:border-box; padding:12px; background:#070b13; }
+  .nc-wrap:-webkit-full-screen{ width:100vw; height:100vh; min-height:0; box-sizing:border-box; padding:12px; background:#070b13; }
   .nc-hero{ flex:none; display:flex; align-items:flex-start; justify-content:space-between; gap:18px; padding:12px 16px; border:1px solid rgba(148,164,187,.1); border-radius:16px; background:linear-gradient(150deg, rgba(16,24,39,.7), rgba(9,14,24,.44)); }
   .nc-title{ display:flex; align-items:center; gap:10px; min-width:0; }
   .nc-title strong{ display:block; font-size:17px; line-height:1.2; }
@@ -26,12 +30,22 @@
   .nc-ghost{ color:#94a4bb; background:rgba(148,164,187,.05); border-color:rgba(148,164,187,.14); }
   .nc-select{ min-height:34px; max-width:150px; padding:7px 9px; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:10px; outline:none; font:inherit; font-size:12.5px; }
   .nc-name{ min-height:34px; width:116px; box-sizing:border-box; padding:7px 9px; color:#eaf1fa; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:10px; outline:none; font:inherit; font-size:12.5px; }
+  .nc-file{ display:none; }
   .nc-run{ margin-left:auto; min-height:36px; padding:8px 16px; font-size:13px; font-weight:800; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:10px; cursor:pointer; font-family:inherit; box-shadow:0 12px 28px -16px rgba(231,178,76,.8); }
   .nc-run:disabled{ opacity:.65; cursor:wait; }
   .nc-zoom{ min-width:50px; justify-content:center; color:#eaf1fa; font-family:var(--mono,ui-monospace,monospace); }
   .nc-help{ display:flex; align-items:center; gap:8px; min-width:180px; font-size:11.5px; color:#5c6b82; }
   .nc-help i{ width:6px; height:6px; border-radius:50%; background:#2dd4bf; box-shadow:0 0 8px rgba(45,212,191,.8); flex:none; }
   .nc-canvas-shell{ position:relative; flex:1; min-height:0; }
+  body.nc-local-fullscreen .nc-canvas-shell{ min-height:0; }
+  .nc-wrap:fullscreen .nc-canvas-shell,
+  .nc-wrap:-webkit-full-screen .nc-canvas-shell{ min-height:0; }
+  body.nc-local-fullscreen .nc-hero,
+  body.nc-local-fullscreen .nc-bar,
+  .nc-wrap:fullscreen .nc-hero,
+  .nc-wrap:-webkit-full-screen .nc-hero,
+  .nc-wrap:fullscreen .nc-bar,
+  .nc-wrap:-webkit-full-screen .nc-bar{ background:rgba(7,11,19,.82); }
   .nc-canvas{ position:relative; flex:1; min-height:0; border:1px solid rgba(148,164,187,.12); border-radius:16px; overflow:auto; cursor:grab;
     height:100%; background:radial-gradient(rgba(148,164,187,.08) 1px, transparent 1px) 0 0/22px 22px, linear-gradient(165deg, rgba(12,18,30,.6), rgba(8,12,20,.66)); }
   .nc-canvas.panning{ cursor:grabbing; user-select:none; }
@@ -60,6 +74,9 @@
   .nc-x:hover{ color:#f4708a; }
   .nc-body{ padding:10px 11px; display:flex; flex-direction:column; gap:9px; }
   .nc-lab{ font-size:10.5px; color:#5c6b82; }
+  .nc-node-title{ font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .nc-remark-mark{ display:none; flex:0 0 auto; align-items:center; justify-content:center; height:17px; min-width:17px; padding:0 4px; border-radius:4px; background:#fff1c2; color:#8a5d00; font-size:11px; font-weight:700; }
+  .nc-node.has-remark .nc-remark-mark{ display:inline-flex; }
   .nc-in{ width:100%; box-sizing:border-box; padding:7px 9px; font-size:12px; color:#eaf1fa; background:rgba(7,11,19,.55); border:1px solid rgba(148,164,187,.16); border-radius:8px; outline:none; font-family:inherit; resize:none; }
   .nc-in:focus{ border-color:rgba(231,178,76,.4); }
   .nc-seg{ display:flex; gap:5px; flex-wrap:wrap; }
@@ -86,6 +103,15 @@
   .nc-menu.on{ display:block; }
   .nc-menu button{ display:block; width:100%; padding:8px 9px; border:0; border-radius:8px; background:transparent; color:#94a4bb; text-align:left; cursor:pointer; font:inherit; font-size:12px; }
   .nc-menu button:hover{ color:#eaf1fa; background:rgba(148,164,187,.09); }
+  .nc-dialog-mask{ position:fixed; inset:0; z-index:80; display:flex; align-items:center; justify-content:center; padding:18px; background:rgba(4,8,15,.48); }
+  .nc-dialog{ width:min(420px,100%); padding:16px; border:1px solid rgba(148,164,187,.2); border-radius:8px; background:#111827; box-shadow:0 24px 60px rgba(0,0,0,.42); color:#eaf1fa; }
+  .nc-dialog h3{ margin:0 0 12px; font-size:15px; }
+  .nc-dialog input,.nc-dialog textarea{ width:100%; box-sizing:border-box; border:1px solid rgba(148,164,187,.24); border-radius:7px; background:#0b1220; color:#eaf1fa; padding:9px 10px; outline:none; font:inherit; resize:vertical; }
+  .nc-dialog textarea{ min-height:110px; }
+  .nc-dialog p{ margin:0; white-space:pre-wrap; line-height:1.55; color:#cbd6e4; }
+  .nc-dialog-actions{ display:flex; justify-content:flex-end; gap:8px; margin-top:14px; }
+  .nc-dialog-actions button{ border:1px solid rgba(148,164,187,.25); background:#172033; color:#dbe7f5; border-radius:7px; padding:7px 13px; cursor:pointer; }
+  .nc-dialog-actions button.primary{ border-color:#1677ff; background:#1677ff; color:#fff; }
   .nc-empty{ position:absolute; inset:0; display:none; align-items:center; justify-content:center; pointer-events:none; z-index:4; }
   .nc-empty.on{ display:flex; }
   .nc-empty-card{ width:min(420px, calc(100% - 32px)); padding:22px; border:1px dashed rgba(148,164,187,.22); border-radius:16px; background:rgba(9,14,24,.72); text-align:center; color:#94a4bb; pointer-events:auto; }
@@ -150,11 +176,15 @@
         <span id="ncZoomLabel" class="nc-ghost nc-zoom">100%</span>
         <button id="ncZoomIn" class="nc-ghost" title="放大">+</button>
         <button id="ncZoomFit" class="nc-ghost">适应</button>
+        <button id="ncFullscreen" class="nc-ghost">全屏</button>
         <select id="ncTemplateSelect" class="nc-select" title="模板"></select>
         <input id="ncTemplateName" class="nc-name" placeholder="模板名">
         <button id="ncTplSave" class="nc-ghost">保存模板</button>
         <button id="ncTplLoad" class="nc-ghost">载入</button>
         <button id="ncTplDelete" class="nc-ghost">删除模板</button>
+        <button id="ncTplExport" class="nc-ghost">导出模板</button>
+        <button id="ncTplImport" class="nc-ghost">导入模板</button>
+        <input id="ncTplImportFile" class="nc-file" type="file" accept="application/json,.json">
         <button id="ncResetDemo" class="nc-ghost">重置示例</button>
         <button id="ncClear" class="nc-ghost">清空画布</button>
         <a class="nc-ghost" href="banana.html">打开作图页</a>
@@ -198,11 +228,12 @@
 <script>
 /* 节点生产画布：文本→反推→作图 节点图，拖动/连线/调参/并行运行。复用 /api/gen/reverse|banana|image + 轮询。 */
 (function(){
-  var inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty');
+  var wrap=document.querySelector('.nc-wrap'), inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty');
   var nodeCountEl=document.getElementById('ncNodeCount'), edgeCountEl=document.getElementById('ncEdgeCount'), runStateEl=document.getElementById('ncRunState');
-  var undoBtn=document.getElementById('ncUndo'), redoBtn=document.getElementById('ncRedo'), zoomLabel=document.getElementById('ncZoomLabel'), map=document.getElementById('ncMap'), mapSvg=document.getElementById('ncMapSvg');
-  var tplSelect=document.getElementById('ncTemplateSelect'), tplName=document.getElementById('ncTemplateName'), menu=document.getElementById('ncMenu');
+  var undoBtn=document.getElementById('ncUndo'), redoBtn=document.getElementById('ncRedo'), fullscreenBtn=document.getElementById('ncFullscreen'), zoomLabel=document.getElementById('ncZoomLabel'), map=document.getElementById('ncMap'), mapSvg=document.getElementById('ncMapSvg');
+  var tplSelect=document.getElementById('ncTemplateSelect'), tplName=document.getElementById('ncTemplateName'), tplImportFile=document.getElementById('ncTplImportFile'), menu=document.getElementById('ncMenu');
   var nodes={}, edges=[], nid=0, pendingPort=null, runLabel='就绪', undoStack=[], redoStack=[], restoring=false, loading=false, dragPort=null, suppressPortClick=false, mapDirty=false, saveTimer=null;
+  var localFullscreen=false;
   var selectedNode=null, selectedEdge=-1, clipNode=null, zoom=1;
   var DRAFT_KEY='hq_canvas_draft_v2', TPL_KEY='hq_canvas_templates_v2';
   function tok(){ try{ return localStorage.getItem('hq_token')||''; }catch(e){ return ''; } }
@@ -390,7 +421,7 @@
   function addNode(type, x, y, data){
     var t=TYPE[type], id='n'+(++nid);
     if(data&&data.id){ id=data.id; var m=String(id).match(/\d+/); if(m) nid=Math.max(nid,parseInt(m[0],10)); }
-    var node={ id:id, type:type, x:(x==null?60+((nid*30)%400):x), y:(y==null?50+((nid*40)%300):y), collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',ratio:'9:16',quality:'hd'},(data&&data.params)||{}), outputs:cloneData((data&&data.outputs)||{}), image:(data&&data.image)||null };
+    var node={ id:id, type:type, x:(x==null?60+((nid*30)%400):x), y:(y==null?50+((nid*40)%300):y), collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',ratio:'9:16',quality:'hd',title:'',remark:''},(data&&data.params)||{}), outputs:cloneData((data&&data.outputs)||{}), image:(data&&data.image)||null };
     var el=document.createElement('div'); el.className='nc-node'; el.style.left=node.x+'px'; el.style.top=node.y+'px';
     var body='';
     if(type==='text') body='<textarea class="nc-in" data-f="text" rows="3" placeholder="输入提示词，作为下游作图的词…"></textarea>';
@@ -400,7 +431,7 @@
       +'<div class="nc-seg" data-f="ratio"><span class="nc-chip on" data-v="9:16">9:16</span><span class="nc-chip" data-v="1:1">1:1</span><span class="nc-chip" data-v="16:9">16:9</span><span class="nc-chip" data-v="3:4">3:4</span></div>'
       +'<textarea class="nc-in" data-f="text" rows="2" placeholder="提示词（也可由上游文本/反推节点连入）"></textarea>'
       +'<button class="nc-go" data-f="run">生成图片</button><div class="nc-drop" data-f="result" style="display:none;"></div>';
-    el.innerHTML='<div class="nc-head" data-f="head"><span style="display:flex;align-items:center;gap:7px;min-width:0;"><span class="dot" style="background:'+t.color+'"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+t.name+'</span></span><span class="nc-actions"><span class="nc-fold" data-f="fold" title="折叠/展开">−</span><span class="nc-x" data-f="del">×</span></span></div>'
+    el.innerHTML='<div class="nc-head" data-f="head"><span style="display:flex;align-items:center;gap:7px;min-width:0;"><span class="dot" style="background:'+t.color+'"></span><span class="nc-node-title" data-f="headTitle">'+escapeHtml(node.params.title||t.name)+'</span><span class="nc-remark-mark" data-f="remarkMark" title="有备注">注</span></span><span class="nc-actions"><span class="nc-fold" data-f="fold" title="折叠/展开">−</span><span class="nc-x" data-f="del">×</span></span></div>'
       +'<div class="nc-body">'+body+'<div class="nc-note" data-f="note"></div></div>';
     inner.appendChild(el); node.el=el;
     // ports
@@ -428,6 +459,7 @@
   }
   function applyNodeUI(node){
     var el=node.el;
+    refreshNodeMeta(node);
     var txt=el.querySelector('[data-f="text"]');
     if(txt) txt.value=node.params.text||node.outputs.prompt||'';
     var out=el.querySelector('[data-f="out"]');
@@ -440,6 +472,17 @@
     if(drop&&node.image){ drop.style.backgroundImage='url('+node.image+')'; drop.innerHTML=''; }
     var result=el.querySelector('[data-f="result"]');
     if(result&&node.outputs.image){ result.style.display='block'; result.style.backgroundImage='url("'+node.outputs.image+'")'; result.innerHTML=''; }
+  }
+  function refreshNodeMeta(node){
+    if(!node||!node.el) return;
+    var title=(node.params.title||'').trim();
+    var remark=(node.params.remark||'').trim();
+    var h=node.el.querySelector('[data-f="headTitle"]');
+    if(h) h.textContent=title||TYPE[node.type].name;
+    node.el.classList.toggle('has-remark', !!remark);
+    var mark=node.el.querySelector('[data-f="remarkMark"]');
+    if(mark) mark.title=remark?('备注：'+remark):'有备注';
+    node.el.title=remark?('备注：'+remark):'';
   }
   function noteOf(node,msg,color){ var n=node.el.querySelector('[data-f="note"]'); if(n){ n.textContent=msg||''; n.style.color=color||'#5c6b82'; } }
   function setConnectHints(port){
@@ -558,6 +601,42 @@
     canvas.scrollTop=Math.max(0,(minY-pad)*zoom);
     updateState('已适应视图');
   }
+  function fullscreenElement(){
+    return document.fullscreenElement||document.webkitFullscreenElement||null;
+  }
+  function canFullscreen(el){
+    return !!(el&&(el.requestFullscreen||el.webkitRequestFullscreen));
+  }
+  function updateFullscreenUI(){
+    var on=fullscreenElement()===wrap||localFullscreen;
+    if(fullscreenBtn) fullscreenBtn.textContent=on?'退出全屏':'全屏';
+    scheduleMap();
+  }
+  function setLocalFullscreen(on){
+    localFullscreen=!!on;
+    document.body.classList.toggle('nc-local-fullscreen', localFullscreen);
+    updateFullscreenUI();
+    setTimeout(function(){ scheduleMap(); },80);
+  }
+  function toggleFullscreen(){
+    if(!wrap) return;
+    if(localFullscreen){ setLocalFullscreen(false); return; }
+    if(fullscreenElement()){
+      var exit=document.exitFullscreen||document.webkitExitFullscreen;
+      if(exit) exit.call(document);
+      return;
+    }
+    if(!canFullscreen(wrap)){ setLocalFullscreen(true); updateState('已进入全屏'); return; }
+    var req=wrap.requestFullscreen||wrap.webkitRequestFullscreen;
+    var p=req.call(wrap);
+    if(p&&p.catch) p.catch(function(){ setLocalFullscreen(true); updateState('已进入全屏'); });
+  }
+  function focusNode(node){
+    if(!node) return;
+    canvas.scrollLeft=Math.max(0,(node.x-80)*zoom);
+    canvas.scrollTop=Math.max(0,(node.y-80)*zoom);
+    scheduleMap();
+  }
   function hideMenu(){ if(menu) menu.classList.remove('on'); }
   function showMenu(items,x,y){
     if(!menu) return;
@@ -572,6 +651,60 @@
     menu.style.top=Math.max(8,Math.min(y,window.innerHeight-items.length*38-16))+'px';
     menu.classList.add('on');
   }
+  function closeDialog(){
+    var old=document.querySelector('.nc-dialog-mask');
+    if(old) old.remove();
+  }
+  function openTextDialog(opts){
+    closeDialog();
+    var mask=document.createElement('div');
+    mask.className='nc-dialog-mask';
+    var field=opts.multiline?'textarea':'input';
+    mask.innerHTML='<div class="nc-dialog" role="dialog" aria-modal="true">'
+      +'<h3>'+escapeHtml(opts.title||'编辑')+'</h3>'
+      +'<'+field+' data-f="dialogInput" '+(opts.multiline?'rows="5"':'type="text"')+' maxlength="'+(opts.max||300)+'" placeholder="'+escapeHtml(opts.placeholder||'')+'"></'+field+'>'
+      +'<div class="nc-dialog-actions"><button type="button" data-f="cancel">取消</button><button type="button" class="primary" data-f="ok">保存</button></div>'
+      +'</div>';
+    document.body.appendChild(mask);
+    var input=mask.querySelector('[data-f="dialogInput"]');
+    input.value=opts.value||'';
+    function done(){
+      var value=input.value;
+      closeDialog();
+      if(opts.onSave) opts.onSave(value);
+    }
+    mask.querySelector('[data-f="cancel"]').onclick=closeDialog;
+    mask.querySelector('[data-f="ok"]').onclick=done;
+    mask.addEventListener('mousedown',function(e){ if(e.target===mask) closeDialog(); });
+    mask.addEventListener('keydown',function(e){
+      if(e.key==='Escape'){ e.preventDefault(); closeDialog(); }
+      if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){ e.preventDefault(); done(); }
+    });
+    setTimeout(function(){ input.focus(); input.select(); },0);
+  }
+  function openMessageDialog(title,text){
+    closeDialog();
+    var mask=document.createElement('div');
+    mask.className='nc-dialog-mask';
+    mask.innerHTML='<div class="nc-dialog" role="dialog" aria-modal="true">'
+      +'<h3>'+escapeHtml(title||'提示')+'</h3><p>'+escapeHtml(text||'')+'</p>'
+      +'<div class="nc-dialog-actions"><button type="button" class="primary" data-f="ok">知道了</button></div></div>';
+    document.body.appendChild(mask);
+    mask.querySelector('[data-f="ok"]').onclick=closeDialog;
+    mask.addEventListener('mousedown',function(e){ if(e.target===mask) closeDialog(); });
+  }
+  function openConfirmDialog(title,text,onOk){
+    closeDialog();
+    var mask=document.createElement('div');
+    mask.className='nc-dialog-mask';
+    mask.innerHTML='<div class="nc-dialog" role="dialog" aria-modal="true">'
+      +'<h3>'+escapeHtml(title||'确认')+'</h3><p>'+escapeHtml(text||'')+'</p>'
+      +'<div class="nc-dialog-actions"><button type="button" data-f="cancel">取消</button><button type="button" class="primary" data-f="ok">确认</button></div></div>';
+    document.body.appendChild(mask);
+    mask.querySelector('[data-f="cancel"]').onclick=closeDialog;
+    mask.querySelector('[data-f="ok"]').onclick=function(){ closeDialog(); if(onOk) onOk(); };
+    mask.addEventListener('mousedown',function(e){ if(e.target===mask) closeDialog(); });
+  }
   function canvasPointFromClient(e){
     var r=inner.getBoundingClientRect();
     return {x:Math.max(0,(e.clientX-r.left)/zoom),y:Math.max(0,(e.clientY-r.top)/zoom)};
@@ -582,14 +715,84 @@
     selectNode(node);
     updateState('已添加');
   }
+  function renameNode(node){
+    if(!node) return;
+    var oldName=node.params.title||'';
+    openTextDialog({title:'修改节点名',value:oldName,placeholder:'清空则恢复默认名称',max:40,onSave:function(next){
+      next=next.trim().slice(0,40);
+      if(next===oldName) return;
+      pushUndo();
+      node.params.title=next;
+      refreshNodeMeta(node);
+      updateState(next?'节点名已修改':'节点名已恢复默认');
+    }});
+  }
+  function editNodeRemark(node){
+    if(!node) return;
+    var oldRemark=node.params.remark||'';
+    openTextDialog({title:'节点备注',value:oldRemark,placeholder:'写给自己或同事看的说明',multiline:true,max:300,onSave:function(next){
+      next=next.trim().slice(0,300);
+      if(next===oldRemark) return;
+      pushUndo();
+      node.params.remark=next;
+      refreshNodeMeta(node);
+      updateState(next?'备注已保存':'备注已清空');
+    }});
+  }
+  function viewNodeRemark(node){
+    var remark=node&&node.params?(node.params.remark||'').trim():'';
+    if(!remark){ updateState('暂无备注'); return; }
+    openMessageDialog('节点备注',remark);
+  }
+  function deleteNodeRemark(node){
+    if(!node||!(node.params.remark||'').trim()) return;
+    openConfirmDialog('删除备注','删除这个节点的备注？',function(){
+      pushUndo();
+      node.params.remark='';
+      refreshNodeMeta(node);
+      updateState('备注已删除');
+    });
+  }
+  function chooseNodeImage(node,label){
+    if(!node||node.type!=='image') return;
+    var input=document.createElement('input');
+    input.type='file';
+    input.accept='image/*';
+    input.style.position='fixed';
+    input.style.left='-20px';
+    input.style.top='-20px';
+    input.style.width='1px';
+    input.style.height='1px';
+    input.style.opacity='0.01';
+    input.onchange=function(){
+      var f=input.files&&input.files[0];
+      input.remove();
+      if(f) imgToNode(node,f,label||'图片已上传');
+    };
+    input.oncancel=function(){ input.remove(); };
+    document.body.appendChild(input);
+    input.click();
+  }
   function menuForNode(e,node){
     e.preventDefault(); selectNode(node);
-    showMenu([
+    var items=[
+      {label:'修改节点名',run:function(){ renameNode(node); }},
+      {label:(node.params.remark||'').trim()?'编辑备注':'添加备注',run:function(){ editNodeRemark(node); }}
+    ];
+    if(node.type==='image'){
+      items.push({label:'更换图片',run:function(){ chooseNodeImage(node,'图片已更换'); }});
+    }
+    if((node.params.remark||'').trim()){
+      items.push({label:'查看备注',run:function(){ viewNodeRemark(node); }});
+      items.push({label:'删除备注',run:function(){ deleteNodeRemark(node); }});
+    }
+    items=items.concat([
       {label:node.collapsed?'展开节点':'折叠节点',run:function(){ toggleCollapsed(node); }},
       {label:'复制节点',run:function(){ copyNode(); }},
       {label:'复制一份',run:function(){ duplicateNode(node.id); }},
       {label:'删除节点',run:function(){ delNode(node.id); }}
-    ],e.clientX,e.clientY);
+    ]);
+    showMenu(items,e.clientX,e.clientY);
   }
   function menuForCanvas(e){
     e.preventDefault();
@@ -637,6 +840,41 @@
     t.list.splice(t.idx,1);
     if(!saveTemplates(t.list)) return;
     updateState('模板已删除');
+  }
+  function exportTemplate(){
+    var name=(tplName&&tplName.value.trim())||(selectedTemplate()&&selectedTemplate().item&&selectedTemplate().item.name)||'画布模板';
+    var data={version:1,name:name,createdAt:Date.now(),data:templateSnapshot()};
+    var blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+    var a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=(name||'canvas-template').replace(/[\\/:*?"<>|]+/g,'-')+'.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(a.href); },1000);
+    updateState('模板已导出');
+  }
+  function importTemplateFile(file){
+    if(!file) return;
+    var reader=new FileReader();
+    reader.onload=function(){
+      try{
+        var parsed=JSON.parse(reader.result);
+        var snap=parsed.data&&parsed.data.nodes?parsed.data:(parsed.nodes?parsed:null);
+        if(!snap||!Array.isArray(snap.nodes)) throw new Error('模板格式不正确');
+        var name=(parsed.name||file.name.replace(/\.json$/i,'')||'导入模板').slice(0,40);
+        var list=getTemplates();
+        list.push({name:name,createdAt:Date.now(),data:snap});
+        if(!saveTemplates(list)) return;
+        if(tplSelect) tplSelect.value=String(list.length-1);
+        pushUndo();
+        restoreSnapshot(snap);
+        updateState('模板已导入');
+      }catch(e){
+        updateState('导入失败：JSON格式错误');
+      }finally{
+        if(tplImportFile) tplImportFile.value='';
+      }
+    };
+    reader.readAsText(file);
   }
 
   // ---------- 节点交互 ----------
@@ -722,16 +960,17 @@
       seg.querySelectorAll('.nc-chip').forEach(function(c){ c.onclick=function(){ if(node.params[f]!==c.getAttribute('data-v')) pushUndo(); seg.querySelectorAll('.nc-chip').forEach(function(x){x.classList.remove('on');}); c.classList.add('on'); node.params[f]=c.getAttribute('data-v'); scheduleSave(); }; }); });
     // 图片节点上传/粘贴
     var file=el.querySelector('[data-f="file"]'), drop=el.querySelector('[data-f="drop"]');
-    if(file){ file.onchange=function(){ imgToNode(node, file.files&&file.files[0]); }; }
+    if(file){ file.onchange=function(){ var label=node._imageActionLabel||'图片已上传'; node._imageActionLabel=''; imgToNode(node, file.files&&file.files[0], label); }; }
     if(drop){ drop.setAttribute('tabindex','0'); drop.addEventListener('paste', function(e){ var it=(e.clipboardData&&e.clipboardData.items)||[]; for(var i=0;i<it.length;i++){ if(it[i].kind==='file'&&it[i].type&&it[i].type.indexOf('image/')===0){ var f=it[i].getAsFile(); if(f){ e.preventDefault(); imgToNode(node,f); return; } } } }); }
     var run=el.querySelector('[data-f="run"]'); if(run) run.onclick=function(){ runNode(node.id); };
   }
-  function imgToNode(node, f){ if(!f) return; var before=snapshot(), url=URL.createObjectURL(f), im=new Image();
+  function imgToNode(node, f, label){ if(!f) return; var before=snapshot(), url=URL.createObjectURL(f), im=new Image();
     im.onload=function(){ var mx=1024,s=Math.min(1,mx/Math.max(im.width,im.height)),cv=document.createElement('canvas');
       cv.width=Math.round(im.width*s); cv.height=Math.round(im.height*s); cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
       pushUndo(before);
       var durl=cv.toDataURL('image/png'); node.image=durl; node.outputs.image=durl;
       var d=node.el.querySelector('[data-f="drop"]'); if(d){ d.style.backgroundImage='url('+durl+')'; d.innerHTML=''; }
+      updateState(label||'图片已上传');
       try{URL.revokeObjectURL(url);}catch(e){} };
     im.src=url;
   }
@@ -797,7 +1036,7 @@
   canvas.addEventListener('scroll',function(){ scheduleMap(); },{passive:true});
   window.addEventListener('resize',function(){ scheduleMap(); });
   document.addEventListener('click',function(e){ if(!menu||!menu.classList.contains('on')) return; if(e.target&&e.target.closest&&e.target.closest('.nc-menu')) return; hideMenu(); });
-  document.addEventListener('keydown',function(e){ if(e.key==='Escape') hideMenu(); });
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ hideMenu(); if(localFullscreen) setLocalFullscreen(false); } });
   if(map){
     map.addEventListener('pointerdown',function(e){
       e.preventDefault();
@@ -815,10 +1054,49 @@
     if(!e) return null; var up=nodes[e.from.node]; if(!up) return null;
     return up.outputs[e.from.port];
   }
+  function inputEdge(nodeId, port){
+    return edges.find(function(x){ return x.to.node===nodeId && x.to.port===port; });
+  }
+  function missingInput(node, port){
+    var e=inputEdge(node.id,port);
+    if(port==='image' && node.image) return '';
+    if(port==='prompt' && (node.params.text||'').trim()) return '';
+    if(!e) return port==='prompt'?'缺少提示词输入':'缺少图片输入';
+    var up=nodes[e.from.node];
+    if(!up) return '上游节点不存在';
+    if(!up.outputs[e.from.port]) return '上游未完成：'+((TYPE[up.type]&&TYPE[up.type].name)||up.type);
+    return '';
+  }
+  function validateNodeInputs(node, mark){
+    if(!node) return true;
+    var msg='';
+    if(node.type==='reverse') msg=missingInput(node,'image');
+    if(node.type==='gen') msg=missingInput(node,'prompt');
+    if(msg){
+      if(mark) setNodeState(node,'error',msg,'#f4708a');
+      return false;
+    }
+    return true;
+  }
+  function validateCanvasInputs(){
+    var bad=[];
+    Object.keys(nodes).forEach(function(id){
+      var n=nodes[id];
+      if((n.type==='reverse'||n.type==='gen')&&!validateNodeInputs(n,true)) bad.push(n);
+    });
+    if(bad.length){
+      selectNode(bad[0]);
+      focusNode(bad[0]);
+      updateState('有节点缺少输入');
+      return false;
+    }
+    return true;
+  }
 
   // ---------- 运行单个节点（返回 Promise，供并行/串行）----------
   function runNode(id){
     var node=nodes[id]; if(!node) return Promise.resolve();
+    if(!validateNodeInputs(node,true)){ updateState('缺少输入'); return Promise.reject('缺少输入'); }
     if(!tok()){ if(window.HQ&&HQ.login) HQ.login(); updateState('需登录'); return Promise.reject('未登录'); }
     if(node.type==='reverse'){
       var img=inputVal(id,'image')||node.image;
@@ -874,6 +1152,7 @@
 
   // ---------- 运行全部：按依赖分波并行 ----------
   document.getElementById('ncRunAll').onclick=function(){
+    if(!validateCanvasInputs()) return;
     var done={}, running={};
     updateState('排队中');
     function ready(node){ // 所有输入口都有上游输出
@@ -914,9 +1193,15 @@
   document.getElementById('ncZoomOut').onclick=function(){ setZoom(zoom-.1); };
   document.getElementById('ncZoomIn').onclick=function(){ setZoom(zoom+.1); };
   document.getElementById('ncZoomFit').onclick=function(){ fitView(); };
+  if(fullscreenBtn) fullscreenBtn.onclick=function(){ toggleFullscreen(); };
+  document.addEventListener('fullscreenchange',updateFullscreenUI);
+  document.addEventListener('webkitfullscreenchange',updateFullscreenUI);
   document.getElementById('ncTplSave').onclick=function(){ saveTemplate(); };
   document.getElementById('ncTplLoad').onclick=function(){ loadTemplate(); };
   document.getElementById('ncTplDelete').onclick=function(){ deleteTemplate(); };
+  document.getElementById('ncTplExport').onclick=function(){ exportTemplate(); };
+  document.getElementById('ncTplImport').onclick=function(){ if(tplImportFile) tplImportFile.click(); };
+  if(tplImportFile) tplImportFile.onchange=function(){ importTemplateFile(tplImportFile.files&&tplImportFile.files[0]); };
   if(undoBtn) undoBtn.onclick=function(){ undo(); };
   if(redoBtn) redoBtn.onclick=function(){ redo(); };
   document.addEventListener('keydown',function(e){
