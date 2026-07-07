@@ -73,8 +73,6 @@ def _warn_cos_disabled_once():
     if not _cos_disabled_warned:
         _cos_disabled_warned = True
         print("[cos] 未启用：COS_SECRET_ID/KEY/REGION/BUCKET 有缺失，本进程所有产出回退本地 /api/gen/file（音频/图片/视频不会走 COS）。检查 content.env 并重启 content。", flush=True)
-
-
 def public_url(rel, content_type=None, private=False):
     """产出文件的对外链接：COS 已配置且文件存在 → 上传 COS 返回直链；未配置/失败 → 回退本地 /api/gen/file/。
     只在"产出入库"这类一次性点调用；别放进资产列表端点（否则每次刷新都会重复上传）。"""
@@ -98,9 +96,7 @@ def public_url(rel, content_type=None, private=False):
     except Exception as e:
         print("[cos] 上传失败，回退本地: %s -> %s" % (rel, e), flush=True)
     return local
-
 COS_COLLECT = os.environ.get("COS_COLLECT", "1").strip().lower() not in ("0", "false", "no")
-
 def public_url_from_remote(remote_url, rel_key, content_type=None):
     """把一个远程 URL(如抖音 CDN 直链)的字节转存到 COS，返回 COS 永久直链。
     COS 已启用且 remote_url 非空 → urllib 拉字节(带 UA/超时) → cos put → 返回直链；
@@ -119,7 +115,6 @@ def public_url_from_remote(remote_url, rel_key, content_type=None):
     except Exception as e:
         print("[cos] 采集转存失败，回退原链接: %s -> %s" % (rel_key, e), flush=True)
         return remote_url
-
 def _collect_cos_play_url(platform, vid_id, play_url):
     """采集视频 play_url → COS 永久直链。图集/无 play_url 跳过、保持原样。
     视频号(channels)加密流也跳过 COS 转存——它是 encfilekey 加密流(需 decode_key 解密)，
@@ -130,7 +125,6 @@ def _collect_cos_play_url(platform, vid_id, play_url):
     ident = re.sub(r"[^A-Za-z0-9_.-]", "", str(vid_id or "")) or "v"
     key = "collect/%s/%s.mp4" % ((platform or "x"), ident)
     return public_url_from_remote(play_url, key, "video/mp4")
-
 def _resolve_out_file(rel):
     rel = urllib.parse.unquote(str(rel or "")).replace("\\", "/").lstrip("/")
     if not rel or ".." in rel.split("/"):
@@ -147,7 +141,6 @@ def _resolve_out_file(rel):
         if fp.exists() and fp.is_file():
             return fp
     return None
-
 def _sensitive_output_file(rel):
     rel = str(rel or "").replace("\\", "/").lstrip("/")
     name = os.path.basename(rel)
@@ -532,10 +525,6 @@ def delete_user_asset(username, kind, asset_id):
         raise LookupError("资产不存在或不属于当前账号")
     _delete_asset_mark(username, "video", str(asset_id))
     return {"kind": kind, "id": asset_id, "deleted": True}
-
-
-
-
 # ============ 鉴权（向 auth 服务核验 token） ============
 _verify_cache = {}; _verify_cache_lock = threading.Lock()
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
@@ -612,119 +601,6 @@ def _job_public_dict(row, phase=None):
         d["phase"] = phase
     return d
 
-def _job_payload(raw):
-    try:
-        data = json.loads(raw or "{}")
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
-
-def _points_func_name(kind, payload):
-    kind = kind or "unknown"
-    if kind == "image":
-        model = str(payload.get("model") or "").strip().lower()
-        provider = str(payload.get("provider") or "").strip().lower()
-        if model == "nb2":
-            return "作图 · Nano Banana 2"
-        if model == "pro":
-            return "作图 · Nano Banana Pro"
-        if provider == "openai":
-            return "作图 · GPT Image"
-        if provider.startswith("zelong"):
-            return "作图 · 泽龙"
-        return "作图"
-    if kind == "video":
-        mode = str(payload.get("mode") or "").strip().lower()
-        if mode == "text":
-            return "视频 · 文案口播"
-        if mode == "audio":
-            return "视频 · 音频口播"
-        if mode == "motion":
-            return "视频 · 动作模仿"
-        return "视频生成"
-    if kind == "collect":
-        if str(payload.get("keyword") or "").strip():
-            return "内容采集 · 关键词搜索"
-        if str(payload.get("url") or "").strip():
-            return "内容采集 · 贴链接"
-        return "内容采集"
-    names = {
-        "tryon": "换装换背景",
-        "xiaole_video": "果肉/微衣视频",
-        "audio": "配音生成",
-        "leads": "获客分析",
-        "leadgen": "获客分析",
-        "copy": "文案生成",
-        "dl": "无水印下载",
-    }
-    return names.get(kind, kind)
-
-def _points_status_label(status, refunded):
-    status = str(status or "").lower()
-    if refunded:
-        return "已退点"
-    if status == "done":
-        return "已完成"
-    if status in {"error", "failed"}:
-        return "失败"
-    if status == "running":
-        return "生成中"
-    if status == "pending":
-        return "排队中"
-    return status or "未知"
-
-def _points_history(username, days=30, kind="", page=1, page_size=20):
-    days = max(1, min(int(days or 30), 365))
-    page = max(1, int(page or 1))
-    page_size = max(5, min(int(page_size or 20), 50))
-    kind = str(kind or "").strip()
-    since = int(time.time()) - days * 86400
-    where = ["username=?", "created_at>=?"]
-    params = [username, since]
-    if kind:
-        where.append("kind=?")
-        params.append(kind)
-    where_sql = " AND ".join(where)
-    with closing(jdb()) as c:
-        _ensure_column(c, "jobs", "refunded", "INTEGER DEFAULT 0")
-        total = c.execute("SELECT COUNT(*) AS n FROM jobs WHERE " + where_sql, params).fetchone()["n"]
-        rows = c.execute("""SELECT id, kind, cost, status, payload, error, created_at, updated_at, refunded
-                         FROM jobs WHERE %s
-                         ORDER BY created_at DESC, id DESC
-                         LIMIT ? OFFSET ?""" % where_sql,
-                         params + [page_size, (page - 1) * page_size]).fetchall()
-        kinds = c.execute("""SELECT kind, COUNT(*) AS n FROM jobs
-                          WHERE username=? AND created_at>=?
-                          GROUP BY kind ORDER BY n DESC""", (username, since)).fetchall()
-    items = []
-    for row in rows:
-        payload = _job_payload(row["payload"])
-        refunded = bool(row["refunded"])
-        cost = int(row["cost"] or 0)
-        items.append({
-            "task_id": row["id"],
-            "kind": row["kind"] or "unknown",
-            "func": _points_func_name(row["kind"], payload),
-            "cost": cost,
-            "amount": -cost,
-            "status": row["status"] or "unknown",
-            "status_label": _points_status_label(row["status"], refunded),
-            "refunded": refunded,
-            "created_at": int(row["created_at"] or 0),
-            "updated_at": int(row["updated_at"] or 0),
-            "error": (row["error"] or "")[:160],
-        })
-    return {
-        "days": days,
-        "kind": kind,
-        "page": page,
-        "page_size": page_size,
-        "total": int(total or 0),
-        "total_pages": max(1, (int(total or 0) + page_size - 1) // page_size),
-        "kinds": [{"kind": r["kind"], "label": _points_func_name(r["kind"], {}), "count": r["n"]} for r in kinds],
-        "items": items,
-    }
-
 # ============ 图片能力：gpt-image-2 ============
 # 三种模式同一入口：无图=文生图(generations)；有图无蒙版=图生图(edits)；有图有蒙版=局部修改(edits+mask)
 SIZES = {"1:1": "1024x1024", "9:16": "1024x1536", "16:9": "1536x1024", "3:4": "1024x1536"}
@@ -755,10 +631,6 @@ def _post_bytes(path, data, ctype):  # 返回原始字节(TTS 拿 mp3 二进制)
                                  headers={"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": ctype}, method="POST")
     with urllib.request.urlopen(req, timeout=300) as r:
         return r.read()
-
-
-
-
 # ============ 后台 worker（有界队列 + 固定 worker，失败退点） ============
 _job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)
 _queued_job_ids = set()
@@ -1125,7 +997,7 @@ class H(BaseHTTPRequestHandler):
             if not user: return self._send(401, {"detail": "未登录"})
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             try:
-                data = _points_history(
+                data = points_domain.history(
                     user["username"],
                     (q.get("days") or ["30"])[0],
                     (q.get("kind") or [""])[0],
