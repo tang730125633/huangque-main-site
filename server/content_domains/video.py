@@ -1392,9 +1392,9 @@ def _download_xiaole_video(url, prefix="xiaole"):
     _out_path(fn).write_bytes(data)
     return fn
 
-def generate_xiaole_video(model, prompt, reference_images=None, job_id=None, prefix="xiaole"):
+def generate_xiaole_video(model, prompt, reference_images=None, ratio="9:16", job_id=None, prefix="xiaole"):
     """统一 generations API：创建 → 轮询 → 下载。Grok(果肉)/Seedance(豆姐) 共用。"""
-    input_d = {"prompt": (prompt or "").strip()}
+    input_d = {"prompt": (prompt or "").strip(), "aspect_ratio": ratio}
     refs = _xiaole_build_refs(reference_images)
     if refs:
         input_d["mode"] = "image_to_video"   # 有参考图 → 图生视频
@@ -1453,6 +1453,9 @@ def gen_xiaole_video(payload):
     prompt = (payload.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("请输入视频提示词")
+    ratio = (payload.get("ratio") or "9:16").strip()
+    if ratio not in VALID_VIDEO_RATIOS:
+        raise ValueError("ratio 仅支持 9:16、16:9、1:1、4:5、5:4")
     ref_images = None
     if channel in XIAOLE_IMAGE_CHANNELS:
         raw_refs = payload.get("reference_images") or None
@@ -1461,9 +1464,10 @@ def gen_xiaole_video(payload):
     label = {"grok": "果肉视频", "micro": "豆姐视频"}.get(channel, model)
     if job_id:
         update_video_asset_phase(job_id, "queued", mode=channel, text=prompt, model=model)
-    result = generate_xiaole_video(model, prompt, reference_images=ref_images, job_id=job_id, prefix=channel)
+    result = generate_xiaole_video(model, prompt, reference_images=ref_images, ratio=ratio, job_id=job_id, prefix=channel)
     return {
         "type": "video", "status": "done", "mode": channel, "model": model, "text": prompt,
+        "ratio": ratio,
         "video_file": result.get("video_file"), "video_url": result.get("video_url"),
         "source_video_url": result.get("source_video_url"),
         "phase": "done", "message": "%s生成完成" % label,
