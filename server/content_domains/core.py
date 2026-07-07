@@ -192,8 +192,10 @@ def _env_positive_int(name, default):
     return max(1, value)
 
 VIDEO_COST = _env_positive_int("VIDEO_COST", 20)
-JOB_WORKERS = _env_positive_int("CONTENT_JOB_WORKERS", 3)
+JOB_WORKERS = _env_positive_int("CONTENT_JOB_WORKERS", 3)          # 慢队列(视频/换装)worker数
+FAST_JOB_WORKERS = _env_positive_int("CONTENT_FAST_JOB_WORKERS", 3)  # 快队列(图片/音频/文案等)worker数，跟慢队列分开防被视频堵死
 JOB_QUEUE_MAX = _env_positive_int("CONTENT_JOB_QUEUE_MAX", 32)
+SLOW_JOB_KINDS = {"video", "tryon", "xiaole_video"}  # 上游动辄几分钟到几十分钟，单独一条队列，别堵住快任务
 MAX_USER_ACTIVE_JOBS = _env_positive_int("MAX_USER_ACTIVE_JOBS", 5)
 COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40}  # collect/leads/tryon 走 cost_of() 动态算
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
@@ -632,7 +634,10 @@ def _post_bytes(path, data, ctype):  # 返回原始字节(TTS 拿 mp3 二进制)
     with urllib.request.urlopen(req, timeout=300) as r:
         return r.read()
 # ============ 后台 worker（有界队列 + 固定 worker，失败退点） ============
-_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)
+# 慢队列(video/tryon/xiaole_video)与快队列(image/audio/copy等)分开，
+# 防止几个耗时几分钟到几十分钟的视频任务把 worker 全占满，堵死本该几十秒出结果的作图/配音任务。
+_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)       # 慢队列
+_fast_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)  # 快队列
 _queued_job_ids = set()
 _job_queue_lock = threading.Lock()
 _workers_started = False
@@ -667,16 +672,21 @@ def _refund_once(job_id, username, cost):
             return  # 已退过 / 非 error 终态，跳过
     _domains()[1].safe_refund_points(username, cost)
 
-def enqueue_job(job_id):
+def enqueue_job(job_id, kind=None):
     try:
         job_id = int(job_id)
     except Exception:
         return False
+    if kind is None:
+        with closing(jdb()) as c:
+            row = c.execute("SELECT kind FROM jobs WHERE id=?", (job_id,)).fetchone()
+        kind = row["kind"] if row else None
+    q = _job_queue if kind in SLOW_JOB_KINDS else _fast_job_queue
     with _job_queue_lock:
         if job_id in _queued_job_ids:
             return True
         try:
-            _job_queue.put_nowait(job_id)
+            q.put_nowait(job_id)
         except queue.Full:
             return False
         _queued_job_ids.add(job_id)
@@ -704,25 +714,25 @@ def _reject_pending_job(job_id, username, cost, reason):
         _refund_once(job_id, username, cost)
     return claimed
 
-def _job_worker_loop():
+def _job_worker_loop(q):
     while True:
-        job_id = _job_queue.get()
+        job_id = q.get()
         try:
             run_job(job_id)
         finally:
             with _job_queue_lock:
                 _queued_job_ids.discard(job_id)
-            _job_queue.task_done()
+            q.task_done()
 
 def _recover_pending_jobs(limit=None):
     limit = int(limit or JOB_QUEUE_MAX)
     with closing(jdb()) as c:
-        rows = c.execute("""SELECT id FROM jobs
+        rows = c.execute("""SELECT id, kind FROM jobs
                             WHERE status='pending'
                             ORDER BY id ASC LIMIT ?""", (limit,)).fetchall()
     recovered = 0
     for row in rows:
-        if not enqueue_job(row["id"]):
+        if not enqueue_job(row["id"], row["kind"]):
             break
         recovered += 1
     return recovered
@@ -742,7 +752,9 @@ def start_job_workers():
             return
         _workers_started = True
     for i in range(JOB_WORKERS):
-        threading.Thread(target=_job_worker_loop, name="content-job-worker-%d" % (i + 1), daemon=True).start()
+        threading.Thread(target=_job_worker_loop, args=(_job_queue,), name="content-job-worker-%d" % (i + 1), daemon=True).start()
+    for i in range(FAST_JOB_WORKERS):
+        threading.Thread(target=_job_worker_loop, args=(_fast_job_queue,), name="content-fast-worker-%d" % (i + 1), daemon=True).start()
     threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start()
     _recover_pending_jobs(JOB_QUEUE_MAX)
 
@@ -957,7 +969,7 @@ class H(BaseHTTPRequestHandler):
                 c.commit(); jid = cur.lastrowid
             if kind in {"video", "tryon", "xiaole_video"}:
                 video_domain.record_video_pending_asset(jid, user["username"], body)
-            if not enqueue_job(jid):
+            if not enqueue_job(jid, kind):
                 _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
                 if kind in {"video", "tryon", "xiaole_video"}:
                     video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
@@ -1169,7 +1181,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": items, "cost": 1, "points_left": points_left})
         if p == "/api/gen/health":
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS),
-                                    "job_workers": JOB_WORKERS, "max_user_active_jobs": MAX_USER_ACTIVE_JOBS,
+                                    "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS,
+                                    "max_user_active_jobs": MAX_USER_ACTIVE_JOBS,
                                     "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
 
