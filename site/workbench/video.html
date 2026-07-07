@@ -343,6 +343,10 @@
           </div>
           <div id="motionPresetGrid" class="motion-preset-grid"></div>
         </div>
+        <div class="motion-preset-panel">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
+          <div class="seg" style="grid-template-columns:repeat(5,1fr);"><button class="on" data-motion-ratio="9:16">9:16</button><button data-motion-ratio="16:9">16:9</button><button data-motion-ratio="1:1">1:1</button><button data-motion-ratio="4:5">4:5</button><button data-motion-ratio="5:4">5:4</button></div>
+        </div>
         <button id="motionGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:20px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
           生成影视级模仿视频
         </button>
@@ -473,7 +477,7 @@
   var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='dapeng', activePreview=null, activePreviewBtn=null;
   var imageData='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
   var selectedSubtitle='off', selectedSubtitleStyle='white';  // F4 字幕：默认关闭，不勾选时行为与原来一致
-  var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='';
+  var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16';
   var tryonVideoData='', tryonClothesData='', tryonBackgroundData='';
   var motionAvatars=[], selectedMotionAvatarId=null, useNewMotionImage=true, avatarsLoaded=false;
   var currentVideoDraft=null;
@@ -602,6 +606,11 @@
   }
   function clickDataButton(name,value){
     var btn=dataButton(name,value);
+    if(btn){ btn.click(); return true; }
+    return false;
+  }
+  function clickMotionRatio(value){
+    var btn=document.querySelector('[data-motion-ratio="'+String(value||'').replace(/"/g,'\\"')+'"]');
     if(btn){ btn.click(); return true; }
     return false;
   }
@@ -1153,6 +1162,10 @@
     b.parentElement.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b);});
     if(b.dataset.resolution) selectedResolution=b.dataset.resolution;
     if(b.dataset.ratio) selectedRatio=b.dataset.ratio;
+    if(b.dataset.motionRatio){
+      selectedMotionRatio=b.dataset.motionRatio;
+      if(videoFunction==='motion' && $('outputRatio')) $('outputRatio').textContent=selectedMotionRatio;
+    }
     if(b.dataset.motion) selectedMotion=b.dataset.motion;
     if(b.dataset.subtitle){selectedSubtitle=b.dataset.subtitle;var sr=$('subtitleStyleRow');if(sr)sr.style.display=(selectedSubtitle==='on'?'':'none');}
     if(b.dataset.substyle) selectedSubtitleStyle=b.dataset.substyle;
@@ -1306,11 +1319,11 @@
     setOutputImage(motionPreviewImage);
     if($('outputText')) $('outputText').textContent='影视级模仿视频生成记录';
     if($('outputMotion')) $('outputMotion').textContent='影视级模仿';
-    if($('outputRatio')) $('outputRatio').textContent='9:16';
+    if($('outputRatio')) $('outputRatio').textContent=selectedMotionRatio;
     if($('outputDuration')) $('outputDuration').textContent='生成中';
     if($('outputCreated')) $('outputCreated').textContent='创建于：'+nowText();
     if($('outputPreviewText')) $('outputPreviewText').innerHTML='影视级模仿视频正在生成中<br>完成后会自动预览';
-    currentVideoDraft={mode:'motion',image_url:motionPreviewImage,text:'影视级模仿视频',ratio:'9:16',motion:'medium',status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
+    currentVideoDraft={mode:'motion',image_url:motionPreviewImage,text:'影视级模仿视频',ratio:selectedMotionRatio,motion:'medium',status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
     renderVideoHistory([currentVideoDraft]);
     setVideoStatus('正在提交影视级模仿任务...');
     var body={
@@ -1318,7 +1331,7 @@
       reference_video_data:motionReferenceVideoData,
       text:'影视级模仿视频',
       resolution:'720p',
-      ratio:'9:16',
+      ratio:selectedMotionRatio,
       duration:10,
       motion:'medium'
     };
@@ -1613,6 +1626,7 @@
       }
       if(m==='motion'){
         updateFunction('motion');
+        if(d.ratio) clickMotionRatio(d.ratio);
         setVideoStatus('正在带入影视级模仿素材...');
         var motionJobs=[];
         if(d.image_url) motionJobs.push(fetchImagePrefill(d.image_url).then(function(img){setMotionImagePrefill(img.dataUrl,img.previewUrl);}));
