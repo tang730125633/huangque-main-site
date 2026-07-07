@@ -612,6 +612,119 @@ def _job_public_dict(row, phase=None):
         d["phase"] = phase
     return d
 
+def _job_payload(raw):
+    try:
+        data = json.loads(raw or "{}")
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+def _points_func_name(kind, payload):
+    kind = kind or "unknown"
+    if kind == "image":
+        model = str(payload.get("model") or "").strip().lower()
+        provider = str(payload.get("provider") or "").strip().lower()
+        if model == "nb2":
+            return "作图 · Nano Banana 2"
+        if model == "pro":
+            return "作图 · Nano Banana Pro"
+        if provider == "openai":
+            return "作图 · GPT Image"
+        if provider.startswith("zelong"):
+            return "作图 · 泽龙"
+        return "作图"
+    if kind == "video":
+        mode = str(payload.get("mode") or "").strip().lower()
+        if mode == "text":
+            return "视频 · 文案口播"
+        if mode == "audio":
+            return "视频 · 音频口播"
+        if mode == "motion":
+            return "视频 · 动作模仿"
+        return "视频生成"
+    if kind == "collect":
+        if str(payload.get("keyword") or "").strip():
+            return "内容采集 · 关键词搜索"
+        if str(payload.get("url") or "").strip():
+            return "内容采集 · 贴链接"
+        return "内容采集"
+    names = {
+        "tryon": "换装换背景",
+        "xiaole_video": "果肉/微衣视频",
+        "audio": "配音生成",
+        "leads": "获客分析",
+        "leadgen": "获客分析",
+        "copy": "文案生成",
+        "dl": "无水印下载",
+    }
+    return names.get(kind, kind)
+
+def _points_status_label(status, refunded):
+    status = str(status or "").lower()
+    if refunded:
+        return "已退点"
+    if status == "done":
+        return "已完成"
+    if status in {"error", "failed"}:
+        return "失败"
+    if status == "running":
+        return "生成中"
+    if status == "pending":
+        return "排队中"
+    return status or "未知"
+
+def _points_history(username, days=30, kind="", page=1, page_size=20):
+    days = max(1, min(int(days or 30), 365))
+    page = max(1, int(page or 1))
+    page_size = max(5, min(int(page_size or 20), 50))
+    kind = str(kind or "").strip()
+    since = int(time.time()) - days * 86400
+    where = ["username=?", "created_at>=?"]
+    params = [username, since]
+    if kind:
+        where.append("kind=?")
+        params.append(kind)
+    where_sql = " AND ".join(where)
+    with closing(jdb()) as c:
+        _ensure_column(c, "jobs", "refunded", "INTEGER DEFAULT 0")
+        total = c.execute("SELECT COUNT(*) AS n FROM jobs WHERE " + where_sql, params).fetchone()["n"]
+        rows = c.execute("""SELECT id, kind, cost, status, payload, error, created_at, updated_at, refunded
+                         FROM jobs WHERE %s
+                         ORDER BY created_at DESC, id DESC
+                         LIMIT ? OFFSET ?""" % where_sql,
+                         params + [page_size, (page - 1) * page_size]).fetchall()
+        kinds = c.execute("""SELECT kind, COUNT(*) AS n FROM jobs
+                          WHERE username=? AND created_at>=?
+                          GROUP BY kind ORDER BY n DESC""", (username, since)).fetchall()
+    items = []
+    for row in rows:
+        payload = _job_payload(row["payload"])
+        refunded = bool(row["refunded"])
+        cost = int(row["cost"] or 0)
+        items.append({
+            "task_id": row["id"],
+            "kind": row["kind"] or "unknown",
+            "func": _points_func_name(row["kind"], payload),
+            "cost": cost,
+            "amount": -cost,
+            "status": row["status"] or "unknown",
+            "status_label": _points_status_label(row["status"], refunded),
+            "refunded": refunded,
+            "created_at": int(row["created_at"] or 0),
+            "updated_at": int(row["updated_at"] or 0),
+            "error": (row["error"] or "")[:160],
+        })
+    return {
+        "days": days,
+        "kind": kind,
+        "page": page,
+        "page_size": page_size,
+        "total": int(total or 0),
+        "total_pages": max(1, (int(total or 0) + page_size - 1) // page_size),
+        "kinds": [{"kind": r["kind"], "label": _points_func_name(r["kind"], {}), "count": r["n"]} for r in kinds],
+        "items": items,
+    }
+
 # ============ 图片能力：gpt-image-2 ============
 # 三种模式同一入口：无图=文生图(generations)；有图无蒙版=图生图(edits)；有图有蒙版=局部修改(edits+mask)
 SIZES = {"1:1": "1024x1024", "9:16": "1024x1536", "16:9": "1536x1024", "3:4": "1024x1536"}
@@ -1007,6 +1120,22 @@ class H(BaseHTTPRequestHandler):
             phase = video_domain.get_video_job_phase(jid) if r["kind"] in {"video", "tryon", "xiaole_video"} else None
             d = _job_public_dict(r, phase)
             return self._send(200, d)
+        if p == "/api/gen/points/history":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                data = _points_history(
+                    user["username"],
+                    (q.get("days") or ["30"])[0],
+                    (q.get("kind") or [""])[0],
+                    (q.get("page") or ["1"])[0],
+                    (q.get("page_size") or ["20"])[0],
+                )
+                data["points"] = points_domain.get_points(user["username"])
+                return self._send(200, data)
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/dl":   # 无水印视频下载代理：直连拉 CDN → 附件流回(强制下载)
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})

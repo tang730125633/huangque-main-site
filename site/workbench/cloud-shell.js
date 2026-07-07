@@ -158,7 +158,7 @@
           '<div style="position:absolute; right:-14px; top:-10px; width:62px; height:62px; color:rgba(231,178,76,.22);">'+icon('coins','62px')+'</div>'+
           '<div style="font-size:12px; color:#94a4bb;">剩余点数</div>'+
           '<div id="hqPointsSide" class="mono" style="font-size:30px; font-weight:700; color:#e7b24c; line-height:1.1; margin:3px 0 9px;">—</div>'+
-          '<a href="recharge.html" style="display:inline-flex; align-items:center; gap:5px; font-size:12.5px; color:#e7b24c; cursor:pointer; font-weight:600;">去充值 <span style="display:flex; width:13px;">'+icon('arrowMini')+'</span></a></div>'+
+          '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;"><a href="recharge.html" style="display:inline-flex; align-items:center; gap:5px; font-size:12.5px; color:#e7b24c; cursor:pointer; font-weight:600;">去充值 <span style="display:flex; width:13px;">'+icon('arrowMini')+'</span></a><button type="button" data-points-detail="1" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font:700 12.5px inherit;padding:0;">明细</button></div></div>'+
         '<a href="bots.html" style="display:flex; align-items:center; gap:8px; padding:10px 14px; border:1px solid rgba(45,212,191,.2); border-radius:12px; background:rgba(45,212,191,.05);">'+
           '<span style="width:7px; height:7px; border-radius:50%; background:#2dd4bf; box-shadow:0 0 8px #2dd4bf; animation:hq-pulse 2s infinite;"></span>'+
           '<span style="font-size:13px; color:#94a4bb; flex:1;"><span class="mono" style="color:#2dd4bf; font-weight:600;">34</span> 个 Bot 在线</span>'+
@@ -181,6 +181,7 @@
         '<a href="recharge.html" style="display:flex; align-items:center; gap:8px; padding:8px 14px; border:1px solid rgba(231,178,76,.26); border-radius:11px; background:rgba(231,178,76,.07); cursor:pointer;">'+
           '<span style="width:16px; height:16px; border-radius:50%; background:radial-gradient(circle at 35% 30%, #f6d488, #c8902f); flex:none;"></span>'+
           '<span id="hqPointsTop" class="mono" style="font-size:14px; font-weight:700; color:#e7b24c;">—</span></a>'+
+        '<button type="button" data-points-detail="1" style="height:36px;padding:0 12px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:12.5px;font-weight:700;color:#94a4bb;background:rgba(148,164,187,.06);border:1px solid rgba(148,164,187,.14);">明细</button>'+
         '<div style="position:relative; width:38px; height:38px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; color:#94a4bb;">'+icon('bell','17px')+'<span style="position:absolute; top:9px; right:10px; width:7px; height:7px; border-radius:50%; background:#f4708a; border:1.5px solid #070b13;"></span></div>'+
         '<div id="hqAuthArea" style="display:flex; align-items:center; gap:8px;"></div></div>';
 
@@ -228,6 +229,108 @@
       if(a) a.textContent=p; if(b) b.textContent=p;
     }).catch(function(){});
   }
+
+  // ===== 点数消费明细（全站共享入口）=====
+  var _pointsState={days:30,kind:'',page:1,totalPages:1,loading:false};
+  function ensurePointsModal(){
+    if(document.getElementById('hqPointsOv')) return;
+    var st=document.createElement('style');
+    st.textContent=
+      '.hqpo{position:fixed;inset:0;z-index:9100;display:none;align-items:center;justify-content:center;padding:22px;background:rgba(3,7,13,.72);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}'+
+      '.hqpo.on{display:flex}'+
+      '.hqpm{width:min(920px,96vw);max-height:min(760px,92vh);display:flex;flex-direction:column;border:1px solid rgba(231,178,76,.18);border-radius:16px;background:linear-gradient(180deg,rgba(16,24,39,.98),rgba(9,13,22,.98));box-shadow:0 32px 90px rgba(0,0,0,.54);overflow:hidden}'+
+      '.hqph{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 20px;border-bottom:1px solid rgba(148,164,187,.1)}'+
+      '.hqpf{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:14px 20px;border-bottom:1px solid rgba(148,164,187,.08);background:rgba(148,164,187,.025)}'+
+      '.hqpf select{height:36px;border:1px solid rgba(148,164,187,.16);border-radius:9px;background:rgba(7,11,19,.58);color:#eaf1fa;font:13px inherit;padding:0 10px;outline:0}'+
+      '.hqpt{min-height:220px;overflow:auto;padding:0 20px 14px}'+
+      '.hqpr{display:grid;grid-template-columns:132px minmax(150px,1fr) 88px 84px 82px;gap:12px;align-items:center;min-height:46px;border-bottom:1px solid rgba(148,164,187,.08);font-size:12.5px;color:#cbd5e1}'+
+      '.hqpr.head{position:sticky;top:0;z-index:1;background:#111827;color:#94a4bb;font-weight:800}'+
+      '.hqpg{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 20px;border-top:1px solid rgba(148,164,187,.08)}'+
+      '.hqpb{height:34px;padding:0 12px;border:1px solid rgba(148,164,187,.14);border-radius:9px;background:rgba(148,164,187,.05);color:#eaf1fa;font:700 12.5px inherit;cursor:pointer}'+
+      '.hqpb:disabled{opacity:.45;cursor:not-allowed}'+
+      '.hqpx{width:34px;height:34px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-size:20px;line-height:1}'+
+      '@media(max-width:760px){.hqpm{width:96vw}.hqpr{grid-template-columns:1fr 62px;gap:6px;padding:10px 0}.hqpr.head{display:none}.hqpr>span:nth-child(1),.hqpr>span:nth-child(2),.hqpr>span:nth-child(4){grid-column:1/2}.hqpr>span:nth-child(3),.hqpr>span:nth-child(5){grid-column:2/3;text-align:right}.hqpt{padding:0 14px 12px}.hqph,.hqpf,.hqpg{padding-left:14px;padding-right:14px}}';
+    document.head.appendChild(st);
+    var ov=document.createElement('div');
+    ov.className='hqpo'; ov.id='hqPointsOv';
+    ov.innerHTML='<div class="hqpm" role="dialog" aria-modal="true" aria-label="点数明细">'+
+      '<div class="hqph"><div><div style="font-size:18px;font-weight:800;color:#eaf1fa;">点数明细</div><div id="hqPointsSub" style="margin-top:5px;font-size:12px;color:#94a4bb;">查看最近消费记录</div></div><button type="button" class="hqpx" id="hqPointsClose" aria-label="关闭">&times;</button></div>'+
+      '<div class="hqpf"><label style="font-size:12px;color:#94a4bb;">时间</label><select id="hqPointsDays"><option value="7">最近7天</option><option value="30" selected>最近30天</option><option value="90">最近90天</option><option value="365">最近一年</option></select><label style="font-size:12px;color:#94a4bb;">功能</label><select id="hqPointsKind"><option value="">全部功能</option></select><button type="button" class="hqpb" id="hqPointsReload">刷新</button></div>'+
+      '<div class="hqpt" id="hqPointsRows"></div>'+
+      '<div class="hqpg"><div id="hqPointsPage" style="font-size:12px;color:#94a4bb;">第 1 页</div><div style="display:flex;gap:8px;"><button type="button" class="hqpb" id="hqPointsPrev">上一页</button><button type="button" class="hqpb" id="hqPointsNext">下一页</button></div></div>'+
+      '</div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('click',function(e){ if(e.target===ov) closePointsModal(); });
+    document.getElementById('hqPointsClose').onclick=closePointsModal;
+    document.getElementById('hqPointsReload').onclick=function(){ _pointsState.page=1; loadPointsHistory(); };
+    document.getElementById('hqPointsDays').onchange=function(){ _pointsState.days=this.value; _pointsState.page=1; loadPointsHistory(); };
+    document.getElementById('hqPointsKind').onchange=function(){ _pointsState.kind=this.value; _pointsState.page=1; loadPointsHistory(); };
+    document.getElementById('hqPointsPrev').onclick=function(){ if(_pointsState.page>1){ _pointsState.page--; loadPointsHistory(); } };
+    document.getElementById('hqPointsNext').onclick=function(){ if(_pointsState.page<_pointsState.totalPages){ _pointsState.page++; loadPointsHistory(); } };
+  }
+  function fmtPointTime(sec){
+    if(!sec) return '—';
+    var d=new Date(Number(sec)*1000);
+    if(isNaN(d.getTime())) return '—';
+    return String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+  }
+  function renderKindOptions(kinds){
+    var sel=document.getElementById('hqPointsKind'); if(!sel) return;
+    var cur=_pointsState.kind||'';
+    sel.innerHTML='<option value="">全部功能</option>'+(kinds||[]).map(function(k){
+      return '<option value="'+escapeAttr(k.kind||'')+'">'+escapeHtml(k.label||k.kind||'未知')+'（'+escapeHtml(k.count||0)+'）</option>';
+    }).join('');
+    sel.value=cur;
+  }
+  function renderPointsRows(data){
+    var box=document.getElementById('hqPointsRows'); if(!box) return;
+    _pointsState.totalPages=data.total_pages||1;
+    var sub=document.getElementById('hqPointsSub');
+    if(sub) sub.textContent='当前余额 '+(data.points==null?'—':data.points)+' 点 · 最近 '+data.days+' 天共 '+(data.total||0)+' 条';
+    renderKindOptions(data.kinds||[]);
+    if(!data.items || !data.items.length){
+      box.innerHTML='<div style="padding:34px 10px;text-align:center;color:#5c6b82;font-size:13px;">暂无消费记录</div>';
+    }else{
+      box.innerHTML='<div class="hqpr head"><span>时间</span><span>功能</span><span>消耗</span><span>状态</span><span>任务ID</span></div>'+
+        data.items.map(function(x){
+          var cost='-'+(x.cost||0);
+          var status=x.status_label||x.status||'未知';
+          var color=x.refunded?'#2bd576':((x.status==='error'||x.status==='failed')?'#f4708a':'#cbd5e1');
+          return '<div class="hqpr"><span class="mono">'+escapeHtml(fmtPointTime(x.created_at))+'</span><span>'+escapeHtml(x.func||x.kind||'未知')+'</span><span class="mono" style="color:#e7b24c;font-weight:800;">'+escapeHtml(cost)+'</span><span style="color:'+color+';">'+escapeHtml(status)+'</span><span class="mono">#'+escapeHtml(x.task_id||'')+'</span></div>';
+        }).join('');
+    }
+    var page=document.getElementById('hqPointsPage');
+    if(page) page.textContent='第 '+_pointsState.page+' / '+_pointsState.totalPages+' 页';
+    var prev=document.getElementById('hqPointsPrev'), next=document.getElementById('hqPointsNext');
+    if(prev) prev.disabled=_pointsState.page<=1;
+    if(next) next.disabled=_pointsState.page>=_pointsState.totalPages;
+  }
+  function loadPointsHistory(){
+    ensurePointsModal();
+    if(_pointsState.loading) return;
+    _pointsState.loading=true;
+    var box=document.getElementById('hqPointsRows');
+    if(box) box.innerHTML='<div style="padding:34px 10px;text-align:center;color:#94a4bb;font-size:13px;">正在读取点数明细...</div>';
+    var q='?days='+encodeURIComponent(_pointsState.days||30)+'&kind='+encodeURIComponent(_pointsState.kind||'')+'&page='+encodeURIComponent(_pointsState.page||1)+'&page_size=20';
+    fetch('/api/gen/points/history'+q,{credentials:'same-origin',cache:'no-store',headers:authHeaders()})
+      .then(function(r){ if(r.status===401){ openLogin(); throw new Error('请先登录'); } return r.json().then(function(d){return {ok:r.ok,d:d};}); })
+      .then(function(res){ if(!res.ok) throw new Error((res.d&&res.d.detail)||'读取失败'); renderPointsRows(res.d||{}); refreshPoints(); })
+      .catch(function(e){ if(box) box.innerHTML='<div style="padding:34px 10px;text-align:center;color:#f4708a;font-size:13px;">'+escapeHtml(e.message||'读取失败')+'</div>'; })
+      .finally(function(){ _pointsState.loading=false; });
+  }
+  function openPointsModal(){
+    ensurePointsModal();
+    var ov=document.getElementById('hqPointsOv');
+    if(ov) ov.classList.add('on');
+    loadPointsHistory();
+  }
+  function closePointsModal(){ var ov=document.getElementById('hqPointsOv'); if(ov) ov.classList.remove('on'); }
+  document.addEventListener('click',function(e){
+    var t=e.target.closest?e.target.closest('[data-points-detail]'):null;
+    if(!t) return;
+    e.preventDefault();
+    openPointsModal();
+  });
 
   // ===== 登录弹窗（全站共用，替代跳 /login 页）=====
   var _hqPhone=true, _hqMode='login';
