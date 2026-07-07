@@ -132,6 +132,41 @@ def _faststart_video_file(rel):
             pass
     return rel
 
+
+def _extract_first_frame_cover(video_rel, ss=1):
+    """Extract first frame (-ss ss to skip black) as jpg cover. Returns rel path under video/ or None.
+    Graceful if no ffmpeg (for 运维 install step).
+    """
+    raw = str(video_rel or "").strip()
+    if not raw.lower().endswith((".mp4", ".mov", ".webm")):
+        return None
+    src = _out_path(raw)
+    if not src.is_file():
+        return None
+    stem = src.stem
+    cover = src.with_name(f"{stem}_cover.jpg")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-ss", str(ss), "-i", str(src),
+             "-vframes", "1", "-q:v", "3", str(cover)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            timeout=120,
+        )
+        if cover.is_file() and cover.stat().st_size > 0:
+            # return rel consistent with video_file convention (e.g. "video/xxx_cover.jpg" or just name)
+            if "/" in raw:
+                d = raw.rsplit("/", 1)[0]
+                return f"{d}/{cover.name}"
+            return cover.name
+    except FileNotFoundError:
+        print("[video] ffmpeg missing, skip first frame cover for %s (运维: apt install ffmpeg)" % raw, flush=True)
+    except Exception as e:
+        print("[video] first frame cover skipped for %s: %s" % (raw, str(e)[:160]), flush=True)
+    return None
+
+
 def validate_video_payload(payload):
     if not isinstance(payload, dict):
         raise ValueError("请求体不是合法 JSON")
@@ -699,7 +734,8 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
     video_id = _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion)
     info = _heygen_poll_video(video_id)
     video_file = _download_video_file(info["video_url"], "heygen")
-    return {
+    cover = _extract_first_frame_cover(video_file)
+    ret = {
         "video_id": video_id,
         "image_asset_id": image_asset_id,
         "audio_asset_id": audio_asset_id,
@@ -709,6 +745,9 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
         "thumbnail_url": info.get("thumbnail_url"),
         "duration": info.get("duration"),
     }
+    if cover:
+        ret["image_file"] = cover
+    return ret
 
 def generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration, job_id=None, avatar=None):
     image_fp = _resolve_out_file(image_file)
@@ -790,7 +829,8 @@ def generate_heygen_motion_video(image_file, reference_video_file, resolution, r
     update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
                              source_video_url=info.get("video_url"))
     video_file = _download_video_file(info["video_url"], "cinematic")
-    return {
+    cover = _extract_first_frame_cover(video_file)
+    ret = {
         "video_id": video_id,
         "image_asset_id": image_asset_id,
         "reference_asset_id": reference_asset_id,
@@ -802,6 +842,9 @@ def generate_heygen_motion_video(image_file, reference_video_file, resolution, r
         "thumbnail_url": info.get("thumbnail_url"),
         "duration": info.get("duration") or duration,
     }
+    if cover:
+        ret["image_file"] = cover
+    return ret
 
 # ============ F4 · 口播视频自动字幕（whisper 时间轴 + libass 烧录） ============
 # 仅 text/audio 口播模式生效；motion 动作模仿不做字幕（多无语音，价值低）。
@@ -1126,7 +1169,7 @@ def gen_video(payload):
             subtitle_error = str(e)[:200]
     return {
         "type": "video", "status": "done", "mode": mode,
-        "image_file": image_file, "image_url": _file_url(image_file),
+        "image_file": video_result.get("image_file") or image_file, "image_url": _file_url(video_result.get("image_file") or image_file),
         "audio_file": audio_file, "audio_url": audio_url,
         "reference_video_file": reference_video_file,
         "reference_video_url": _file_url(reference_video_file) if reference_video_file else None,
@@ -1297,11 +1340,15 @@ def generate_tryon_video(person_video_file, clothes_file, background_file, secon
     except Exception as _cos_ex:
         print("[tryon] COS 上传失败，回退本地链接: %s" % _cos_ex, flush=True)
         video_url = _file_url(video_file)
-    return {
+    cover = _extract_first_frame_cover(video_file)
+    ret = {
         "video_file": video_file,
         "video_url": video_url,
         "duration": seconds,
     }
+    if cover:
+        ret["image_file"] = cover
+    return ret
 
 def gen_tryon(payload):
     job_id = payload.get("_job_id")
@@ -1339,8 +1386,8 @@ def gen_tryon(payload):
         "reference_video_url": _file_url(person_video_file),
         "clothes_file": clothes_file,
         "background_file": background_file,
-        "image_file": cover_file,
-        "image_url": _file_url(cover_file) if cover_file else None,
+        "image_file": video_result.get("image_file") or cover_file,
+        "image_url": _file_url(video_result.get("image_file")) if video_result.get("image_file") else (_file_url(cover_file) if cover_file else None),
         "text": text,
         "video_file": video_result.get("video_file"), "video_url": video_result.get("video_url"),
         "source_video_url": video_result.get("video_url"),
@@ -1476,8 +1523,12 @@ def generate_xiaole_video(model, prompt, reference_images=None, size="720x1280",
             if job_id:
                 update_video_asset_phase(job_id, "downloading", source_video_url=vurl)
             video_file = _download_xiaole_video(vurl, prefix)
-            return {"video_file": video_file, "video_url": _file_url(video_file),
+            cover = _extract_first_frame_cover(video_file)
+            ret = {"video_file": video_file, "video_url": _file_url(video_file),
                     "source_video_url": vurl, "model": model, "request_id": rid}
+            if cover:
+                ret["image_file"] = cover
+            return ret
         if status in ("failed", "error", "cancelled", "canceled"):
             err = sdata.get("error") or {}
             msg = (err.get("message") if isinstance(err, dict) else None) or str(err) or status
@@ -1512,6 +1563,7 @@ def gen_xiaole_video(payload):
         "ratio": ratio,
         "video_file": result.get("video_file"), "video_url": result.get("video_url"),
         "source_video_url": result.get("source_video_url"),
+        "image_file": result.get("image_file"),
         "phase": "done", "message": "%s生成完成" % label,
     }
 
