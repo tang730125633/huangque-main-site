@@ -361,16 +361,18 @@
     wrap.onclick=function(e){ if(e.target===wrap) wrap.remove(); };
     document.body.appendChild(wrap);
   }
-  function openAssetVideoModal(videoUrl,title){
+  function openAssetVideoModal(videoUrl,title,posterUrl){
     videoUrl=String(videoUrl||'').trim();
     if(!videoUrl){ toast('视频还未生成',false); return; }
     var old=document.getElementById('assetVideoModal'); if(old && old._close) old._close();
     var wrap=document.createElement('div'); wrap.id='assetVideoModal'; wrap.className='asset-video-modal';
     var box=document.createElement('div'); box.className='asset-video-box'; box.setAttribute('role','dialog'); box.setAttribute('aria-modal','true'); box.setAttribute('aria-label',title||'视频预览');
     var close=document.createElement('button'); close.type='button'; close.className='asset-video-close'; close.setAttribute('aria-label','关闭'); close.textContent='×';
-    var loading=document.createElement('div'); loading.className='asset-video-loading'; loading.textContent='视频加载中...';
-    var video=document.createElement('video'); video.controls=true; video.playsInline=true; video.autoplay=true; video.preload='auto';
+    var loading=document.createElement('div'); loading.className='asset-video-loading'; loading.textContent='正在读取视频信息...';
+    var video=document.createElement('video'); video.controls=true; video.playsInline=true; video.autoplay=true; video.preload='metadata';
+    if(posterUrl) video.poster=thumbUrl(posterUrl,720);
     var objectUrl='';
+    var hideLoading=function(){ loading.style.display='none'; };
     var closeModal=function(){
       document.removeEventListener('keydown',onKey);
       try{ video.pause(); }catch(e){}
@@ -386,12 +388,15 @@
     box.appendChild(close); box.appendChild(loading); box.appendChild(video); wrap.appendChild(box);
     document.addEventListener('keydown',onKey);
     document.body.appendChild(wrap);
+    video.addEventListener('loadedmetadata',function(){ loading.textContent='视频已就绪，正在起播...'; });
+    video.addEventListener('loadeddata',hideLoading);
+    video.addEventListener('canplay',hideLoading);
+    video.addEventListener('playing',hideLoading);
     playableUrl(videoUrl).then(function(src){
       objectUrl=src;
       video.src=src;
-      loading.style.display='none';
       var p=video.play();
-      if(p && p.catch) p.catch(function(){});
+      if(p && p.catch) p.catch(function(){ if(video.readyState>=1) hideLoading(); });
     }).catch(function(e){
       loading.textContent=(e&&e.message)||'视频加载失败';
       toast((e&&e.message)||'视频加载失败',false);
@@ -649,11 +654,11 @@
       v.controls=false; v.preload='metadata'; v.dataset.src=videoUrl; v.muted=true; v.playsInline=true;
       if(imageUrl) v.poster=thumbUrl(imageUrl,420);
       v.style.cssText='width:100%;height:100%;object-fit:contain;display:block;background:#050812;';
-      media.onclick=function(){ openAssetVideoModal(videoUrl,title); };
+      media.onclick=function(){ openAssetVideoModal(videoUrl,title,imageUrl); };
       media.appendChild(v);
       var openBtn=document.createElement('button');
       openBtn.type='button'; openBtn.className='asset-video-open'; openBtn.textContent='放大预览';
-      openBtn.onclick=function(e){ e.preventDefault(); e.stopPropagation(); openAssetVideoModal(videoUrl,title); };
+      openBtn.onclick=function(e){ e.preventDefault(); e.stopPropagation(); openAssetVideoModal(videoUrl,title,imageUrl); };
       media.appendChild(openBtn);
     }else if(imageUrl){
       var im=document.createElement('img');
