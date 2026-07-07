@@ -119,6 +119,7 @@
   .nc-save-state.saved{ color:#2bd576; }
   .nc-save-state.error{ color:#f4708a; }
   .nc-save-state.conflict{ color:#f4cd72; }
+  .nc-save-state.warning{ color:#f4cd72; }
   body.nc-local-fullscreen .nc-float,
   body.nc-local-fullscreen .nc-legend,
   .nc-wrap:fullscreen .nc-float,
@@ -557,9 +558,32 @@
     boardLastSeenUpdatedAt=list[idx].updatedAt||0;
     return true;
   }
+  function storageUsageBytes(){
+    var total=0;
+    try{
+      for(var i=0;i<localStorage.length;i++){
+        var k=localStorage.key(i)||'', v=localStorage.getItem(k)||'';
+        total+=(k.length+v.length)*2;
+      }
+    }catch(e){}
+    return total;
+  }
+  function formatBytes(bytes){
+    if(bytes>=1024*1024) return (bytes/1024/1024).toFixed(1)+'MB';
+    if(bytes>=1024) return Math.round(bytes/1024)+'KB';
+    return bytes+'B';
+  }
   function setSaveState(state){
     if(!saveStateEl) return;
-    saveStateEl.classList.remove('saving','saved','error','conflict');
+    saveStateEl.classList.remove('saving','saved','error','conflict','warning');
+    var used=storageUsageBytes();
+    if(state==='saved' && used>4*1024*1024){
+      saveStateEl.textContent='空间将满 · '+formatBytes(used);
+      saveStateEl.classList.add('warning');
+      return;
+    }
+    if(state==='saved'){ saveStateEl.textContent='已保存 · '+formatBytes(used); saveStateEl.classList.add('saved'); return; }
+    if(state==='error'){ saveStateEl.textContent='空间不足 · '+formatBytes(used); saveStateEl.classList.add('error'); return; }
     if(state==='conflict'){ saveStateEl.textContent='有冲突'; saveStateEl.classList.add('conflict'); return; }
     if(state==='saving'){ saveStateEl.textContent='保存中'; saveStateEl.classList.add('saving'); return; }
     if(state==='error'){ saveStateEl.textContent='本地空间不足'; saveStateEl.classList.add('error'); return; }
@@ -1615,10 +1639,14 @@
       im.onload=function(){ var mx=1024,s=Math.min(1,mx/Math.max(im.width,im.height)),cv=document.createElement('canvas');
         cv.width=Math.round(im.width*s); cv.height=Math.round(im.height*s); cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
         pushUndo(before);
-        var durl=cv.toDataURL('image/png'); node.image=durl; node.outputs.image=durl;
+        var durl='';
+        try{ durl=cv.toDataURL('image/webp',0.85); }catch(e){}
+        if(!/^data:image\/webp/i.test(durl)) durl=cv.toDataURL('image/jpeg',0.85);
+        node.image=durl; node.outputs.image=durl;
         var d=node.el.querySelector('[data-f="drop"]'); if(d){ d.style.backgroundImage='url('+durl+')'; d.innerHTML=''; }
         refreshAllGenRefs();
         updateState(label||'图片已上传');
+        if(storageUsageBytes()>4*1024*1024) updateState('本地空间将满，请删除旧画布/图片或导出');
         try{URL.revokeObjectURL(url);}catch(e){} };
       im.onerror=function(){ try{URL.revokeObjectURL(url);}catch(e){} rejectImageFile(node,'图片无法读取，请更换 PNG/JPG/WebP 图片'); };
       im.src=url;
