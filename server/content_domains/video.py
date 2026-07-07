@@ -76,10 +76,23 @@ def _is_valid_data_url(value, allowed_mimes):
     if mime not in allowed_mimes:
         return False
     try:
-        base64.b64decode(encoded, validate=True)
-        return True
+        decoded = base64.b64decode(encoded, validate=True)
     except Exception:
         return False
+    if allowed_mimes == VALID_IMAGE_MIMES:
+        return _image_bytes_look_valid(decoded)
+    return True
+
+def _image_bytes_look_valid(raw):
+    if not raw:
+        return False
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return True
+    if raw.startswith(b"\xff\xd8\xff"):
+        return True
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return True
+    return False
 
 def validate_video_payload(payload):
     if not isinstance(payload, dict):
