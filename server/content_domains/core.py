@@ -761,7 +761,7 @@ def run_job(job_id):
     if not r: return
     kind = r["kind"]; payload = json.loads(r["payload"] or "{}")
     username = r["username"]; cost = r["cost"]
-    if kind in {"audio", "video", "tryon"}:
+    if kind in {"audio", "video", "tryon", "xiaole_video"}:
         payload["_username"] = username
         payload["_job_id"] = job_id
     try:
@@ -776,14 +776,14 @@ def run_job(job_id):
             audio_domain, _, video_domain = _domains()
             if kind == "audio":
                 audio_domain.record_audio_asset(job_id, username, result)
-            if kind in {"video", "tryon"}:
+            if kind in {"video", "tryon", "xiaole_video"}:
                 video_domain.record_video_asset(job_id, username, result)
         except Exception:
             pass
     except Exception as e:
         # 生成失败：CAS 抢 error 终态；抢到才记失败资产。退点走幂等(reaper 若已退则跳过)
         claimed = _set_terminal(job_id, "error", error=str(e))
-        if claimed and kind in {"video", "tryon"}:
+        if claimed and kind in {"video", "tryon", "xiaole_video"}:
             try:
                 failed = dict(payload)
                 failed.update({"phase": "failed", "status": "failed", "error": str(e)[:300]})
@@ -964,11 +964,11 @@ class H(BaseHTTPRequestHandler):
                 cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)",
                                 (kind, user["username"], cost, json.dumps(body, ensure_ascii=False), now, now))
                 c.commit(); jid = cur.lastrowid
-            if kind in {"video", "tryon"}:
+            if kind in {"video", "tryon", "xiaole_video"}:
                 video_domain.record_video_pending_asset(jid, user["username"], body)
             if not enqueue_job(jid):
                 _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
-                if kind in {"video", "tryon"}:
+                if kind in {"video", "tryon", "xiaole_video"}:
                     video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
                 return self._send(429, {"detail": "任务队列已满，请稍后再试", "need": cost})
             return self._send(200, {"job_id": jid, "cost": cost, "points_left": points_left})
@@ -998,7 +998,7 @@ class H(BaseHTTPRequestHandler):
             if not r: return self._send(404, {"detail": "任务不存在"})
             if r["username"] != user.get("username"):
                 return self._send(404, {"detail": "任务不存在"})
-            phase = video_domain.get_video_job_phase(jid) if r["kind"] in {"video", "tryon"} else None
+            phase = video_domain.get_video_job_phase(jid) if r["kind"] in {"video", "tryon", "xiaole_video"} else None
             d = _job_public_dict(r, phase)
             return self._send(200, d)
         if p == "/api/gen/dl":   # 无水印视频下载代理：直连拉 CDN → 附件流回(强制下载)
