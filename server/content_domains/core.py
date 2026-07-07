@@ -201,6 +201,7 @@ def _env_positive_int(name, default):
 VIDEO_COST = _env_positive_int("VIDEO_COST", 20)
 JOB_WORKERS = _env_positive_int("CONTENT_JOB_WORKERS", 3)
 JOB_QUEUE_MAX = _env_positive_int("CONTENT_JOB_QUEUE_MAX", 32)
+MAX_USER_ACTIVE_JOBS = _env_positive_int("MAX_USER_ACTIVE_JOBS", 5)
 COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40}  # collect/leads/tryon 走 cost_of() 动态算
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
 ZELONG_KEY  = os.environ.get("ZELONG_KEY", "")                              # 泽龙Ai 中转站(OpenAI 兼容)
@@ -690,6 +691,16 @@ def enqueue_job(job_id):
         _queued_job_ids.add(job_id)
         return True
 
+def _user_active_job_count(username):
+    if not username:
+        return 0
+    with closing(jdb()) as c:
+        row = c.execute("""SELECT COUNT(*) AS n FROM jobs
+                           WHERE username=? AND status IN ('pending','running')
+                             AND COALESCE(deleted,0)=0""",
+                        (username,)).fetchone()
+    return int(row["n"] if row else 0)
+
 def _reject_pending_job(job_id, username, cost, reason):
     now = int(time.time())
     with closing(jdb()) as c:
@@ -933,6 +944,14 @@ class H(BaseHTTPRequestHandler):
             except ValueError as e:
                 return self._send(400, {"detail": str(e)[:220]})
             cost = points_domain.cost_of(kind, body)
+            active_jobs = _user_active_job_count(user["username"])
+            if active_jobs >= MAX_USER_ACTIVE_JOBS:
+                return self._send(429, {
+                    "detail": "您有 %d 个任务正在排队/生成，完成后再提交" % active_jobs,
+                    "active_jobs": active_jobs,
+                    "max_active_jobs": MAX_USER_ACTIVE_JOBS,
+                    "need": cost
+                })
             try:
                 points_left = points_domain.deduct_points(user["username"], cost)  # 原子预扣
             except points_domain.AuthPointsError as e:
@@ -1141,6 +1160,7 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": items, "cost": 1, "points_left": points_left})
         if p == "/api/gen/health":
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS),
+                                    "job_workers": JOB_WORKERS, "max_user_active_jobs": MAX_USER_ACTIVE_JOBS,
                                     "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
 
