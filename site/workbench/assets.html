@@ -18,6 +18,13 @@
   .asset-action.gold{border-color:rgba(231,178,76,.28);background:rgba(231,178,76,.08);color:#e7b24c}
   .asset-action.danger{border-color:rgba(244,112,138,.24);background:rgba(244,112,138,.07);color:#f4708a}
   .asset-action.danger:hover{border-color:rgba(244,112,138,.42);color:#ff9bae}
+  .asset-prompt-modal{position:fixed;inset:0;z-index:45;display:flex;align-items:center;justify-content:center;padding:18px;background:rgba(3,7,13,.68);backdrop-filter:blur(12px)}
+  .asset-prompt-box{width:min(640px,92vw);max-height:min(560px,86vh);display:flex;flex-direction:column;border:1px solid rgba(231,178,76,.26);border-radius:14px;background:linear-gradient(165deg,rgba(16,24,39,.96),rgba(9,14,24,.96));box-shadow:0 24px 70px rgba(0,0,0,.44);overflow:hidden}
+  .asset-prompt-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid rgba(148,164,187,.12)}
+  .asset-prompt-title{font-size:14px;font-weight:700;color:#eaf1fa}
+  .asset-prompt-close{width:30px;height:30px;border:1px solid rgba(148,164,187,.16);border-radius:8px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-size:18px;line-height:1}
+  .asset-prompt-text{margin:0;padding:16px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.72;color:#d8e2ef}
+  .asset-prompt-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid rgba(148,164,187,.12)}
   .asset-select{position:absolute;top:10px;right:10px;z-index:4;width:30px;height:30px;display:none;align-items:center;justify-content:center;border:1px solid rgba(231,178,76,.34);border-radius:9px;background:rgba(7,11,19,.72);backdrop-filter:blur(8px)}
   .asset-select input{width:16px;height:16px;accent-color:#e7b24c;cursor:pointer}
   .multi-on .asset-select{display:flex}
@@ -299,6 +306,45 @@
     n.style.cssText='position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:40;padding:10px 14px;border-radius:10px;background:'+(ok?'rgba(45,212,191,.16)':'rgba(244,112,138,.16)')+';border:1px solid '+(ok?'rgba(45,212,191,.28)':'rgba(244,112,138,.28)')+';color:#eaf1fa;font-size:12.5px;font-weight:700;box-shadow:0 12px 32px rgba(0,0,0,.28);';
     document.body.appendChild(n); setTimeout(function(){ n.remove(); }, 2200);
   }
+  function copyText(text){
+    text=String(text||'');
+    if(!text.trim()){ toast('没有可复制的提示词',false); return; }
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){ toast('已复制提示词',true); }).catch(function(){ fallbackCopyText(text); });
+      return;
+    }
+    fallbackCopyText(text);
+  }
+  function fallbackCopyText(text){
+    var ta=document.createElement('textarea');
+    ta.value=text;
+    ta.setAttribute('readonly','');
+    ta.style.cssText='position:fixed;left:-9999px;top:0;opacity:0;';
+    document.body.appendChild(ta);
+    ta.select();
+    try{ document.execCommand('copy'); toast('已复制提示词',true); }
+    catch(e){ toast('复制失败，请手动复制',false); }
+    ta.remove();
+  }
+  function openPromptModal(text){
+    text=String(text||'').trim();
+    if(!text){ toast('该图片暂无提示词',false); return; }
+    var old=document.getElementById('assetPromptModal'); if(old) old.remove();
+    var wrap=document.createElement('div'); wrap.id='assetPromptModal'; wrap.className='asset-prompt-modal';
+    var box=document.createElement('div'); box.className='asset-prompt-box';
+    var head=document.createElement('div'); head.className='asset-prompt-head';
+    var title=document.createElement('div'); title.className='asset-prompt-title'; title.textContent='完整生成提示词';
+    var close=document.createElement('button'); close.type='button'; close.className='asset-prompt-close'; close.setAttribute('aria-label','关闭'); close.textContent='×';
+    var body=document.createElement('pre'); body.className='asset-prompt-text'; body.textContent=text;
+    var foot=document.createElement('div'); foot.className='asset-prompt-foot';
+    var copy=actionBtn('复制提示词',function(){ copyText(text); }); copy.className+=' gold';
+    var done=actionBtn('关闭',function(){ wrap.remove(); });
+    head.appendChild(title); head.appendChild(close); foot.appendChild(copy); foot.appendChild(done);
+    box.appendChild(head); box.appendChild(body); box.appendChild(foot); wrap.appendChild(box);
+    close.onclick=function(){ wrap.remove(); };
+    wrap.onclick=function(e){ if(e.target===wrap) wrap.remove(); };
+    document.body.appendChild(wrap);
+  }
   function regenPayload(x,kind){
     if(kind==='audio') return {url:'/api/gen/audio', body:{text:x.text||x.prompt||'', voice:x.voice||x.voice_key||'', speed:x.speed||1, pitch:x.pitch||0, volume:x.volume||1}};
     if(kind==='video'){
@@ -368,18 +414,27 @@
     btn.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor" style="width:17px;height:17px;"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>';
   }
   function card(x){
-    var label=MODE[normCat(x.mode)]||'作图', p=(x.prompt||'').slice(0,22)||'—';
+    var label=MODE[normCat(x.mode)]||'作图', promptText=String(x.prompt||'').trim(), p=promptText.slice(0,22)||'无提示词';
     var w=document.createElement('div'); w.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;';
     var tag=document.createElement('span'); tag.textContent=label; tag.style.cssText='position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.62); color:#e7b24c;';
     var im=document.createElement('img'); im.src=thumbUrl(x.url,420); im.loading='lazy'; im.style.cssText='display:block; width:100%; aspect-ratio:4/3; object-fit:cover; cursor:pointer;'; im.onclick=function(){ window.open(x.url,'_blank'); };
-    var foot=document.createElement('div'); foot.style.cssText='padding:11px 13px; display:flex; align-items:center; justify-content:space-between; gap:8px;';
-    var pt=document.createElement('div'); pt.textContent=p; pt.style.cssText='font-size:12px; color:#94a4bb; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
-    var actions=document.createElement('div'); actions.style.cssText='display:flex;align-items:center;gap:6px;flex:none;';
+    var foot=document.createElement('div'); foot.style.cssText='padding:11px 13px; display:flex; flex-direction:column; gap:9px;';
+    var promptRow=document.createElement('div'); promptRow.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;';
+    var pt=document.createElement('button'); pt.type='button'; pt.textContent=p; pt.title=promptText||'该图片暂无提示词'; pt.disabled=!promptText; pt.style.cssText='min-width:0;flex:1;border:0;background:transparent;padding:0;text-align:left;font:inherit;font-size:12px;color:'+(promptText?'#94a4bb':'#5c6b82')+';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:'+(promptText?'pointer':'default')+';';
+    pt.onclick=function(){ openPromptModal(promptText); };
+    var promptActions=document.createElement('div'); promptActions.style.cssText='display:flex;align-items:center;gap:6px;flex:none;';
+    if(promptText){
+      var viewPrompt=actionBtn('查看',function(){ openPromptModal(promptText); });
+      var copyPrompt=actionBtn('复制',function(){ copyText(promptText); }); copyPrompt.className+=' gold';
+      promptActions.appendChild(viewPrompt); promptActions.appendChild(copyPrompt);
+    }
+    promptRow.appendChild(pt); promptRow.appendChild(promptActions);
+    var actions=document.createElement('div'); actions.style.cssText='display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
     var regen=actionBtn('重生成',function(){ regenerate(x,'image',regen); });
     var del=actionBtn('删除',function(){ deleteAsset(x,'image',del); }); del.className+=' danger';
     var dl=document.createElement('a'); dl.textContent='下载'; dl.href=x.url; dl.setAttribute('download','huangque.png'); dl.className='asset-action gold';
     actions.appendChild(regen); actions.appendChild(del); actions.appendChild(dl);
-    foot.appendChild(pt); foot.appendChild(actions); w.appendChild(tag); w.appendChild(im); w.appendChild(foot); addMarkTools(w,x,'image'); return addSelectBox(w,x,'image');
+    foot.appendChild(promptRow); foot.appendChild(actions); w.appendChild(tag); w.appendChild(im); w.appendChild(foot); addMarkTools(w,x,'image'); return addSelectBox(w,x,'image');
   }
   function audioCard(x){
     var text=x.text||x.prompt||'配音资产';
