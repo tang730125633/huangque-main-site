@@ -62,7 +62,7 @@ def _xiaole_ref_to_url(data_url):
         url = public_url(fn, mimetypes.guess_type(fn)[0])
         return url if url.startswith("http") else s
     except Exception as e:
-        print("[xiaolevideo] 参考图转存COS失败，回退原始数据: %s" % e, flush=True)
+        print("[video] 参考图转存COS失败，回退原始数据: %s" % e, flush=True)
         return s
 
 def _is_valid_data_url(value, allowed_mimes):
@@ -1319,7 +1319,7 @@ def _xiaole_request(method, path, body=None, timeout=90):
             detail = e.read().decode("utf-8", "replace")[:400]
             if e.code == 429 and attempt < _xiaole_429_retries:
                 wait = min(45, 8 * (attempt + 1))
-                print("[xiaolevideo] 429 并发限流，%ds 后重试(%d/%d)" % (wait, attempt + 1, _xiaole_429_retries), flush=True)
+                print("[video] 429 并发限流，%ds 后重试(%d/%d)" % (wait, attempt + 1, _xiaole_429_retries), flush=True)
                 time.sleep(wait)
                 continue
             raise RuntimeError("视频接口失败: HTTP %s %s" % (e.code, detail))
@@ -1327,7 +1327,7 @@ def _xiaole_request(method, path, body=None, timeout=90):
             # 瞬时网络抖动(SSL握手超时等)自动重试
             if attempt < _xiaole_429_retries:
                 wait = min(30, 5 * (attempt + 1))
-                print("[xiaolevideo] 网络异常，%ds 后重试(%d/%d): %s" % (wait, attempt + 1, _xiaole_429_retries, str(e)[:80]), flush=True)
+                print("[video] 网络异常，%ds 后重试(%d/%d): %s" % (wait, attempt + 1, _xiaole_429_retries, str(e)[:80]), flush=True)
                 time.sleep(wait)
                 continue
             raise RuntimeError("视频接口网络异常: %s" % str(e)[:120])
@@ -1370,7 +1370,7 @@ def _download_xiaole_video(url, prefix="xiaole"):
             last_err = RuntimeError("下载为空")
         except Exception as e:
             last_err = e
-            print("[xiaolevideo] 下载失败重试(%d/%d): %s" % (attempt + 1, _xiaole_dl_retries, str(e)[:100]), flush=True)
+            print("[video] 下载失败重试(%d/%d): %s" % (attempt + 1, _xiaole_dl_retries, str(e)[:100]), flush=True)
             time.sleep(3 * (attempt + 1))
     if data is None:
         raise RuntimeError("视频下载失败: %s" % (str(last_err)[:120] if last_err else "未知"))
@@ -1414,7 +1414,7 @@ def generate_xiaole_video(model, prompt, reference_images=None, job_id=None, pre
         sdata = st.get("data") or {}
         status = str(sdata.get("status") or "").lower()
         if status != last:
-            print("[xiaolevideo] %s model=%s status=%s" % (rid, model, status), flush=True)
+            print("[video] %s model=%s status=%s" % (rid, model, status), flush=True)
             if job_id:
                 update_video_asset_phase(job_id, "xiaole_" + (status or "running"))
             last = status
