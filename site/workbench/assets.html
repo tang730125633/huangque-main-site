@@ -391,7 +391,23 @@
   function regenPayload(x,kind){
     if(kind==='audio') return {url:'/api/gen/audio', body:{text:x.text||x.prompt||'', voice:x.voice||x.voice_key||'', speed:x.speed||1, pitch:x.pitch||0, volume:x.volume||1}};
     if(kind==='video'){
-      localStorage.setItem('hq_video_prefill', JSON.stringify({prompt:x.prompt||x.text||'', voice:x.voice||x.voice_key||'', ratio:x.ratio||'9:16', resolution:x.resolution||'', motion:x.motion||''}));
+      var mode=String(x.mode||'text').toLowerCase();
+      var prefill={
+        mode:mode,
+        prompt:x.prompt||x.text||'',
+        text:x.text||x.prompt||'',
+        voice:x.voice||x.voice_key||'',
+        ratio:x.ratio||'9:16',
+        resolution:x.resolution||'',
+        motion:x.motion||'',
+        image_url:x.image_url||(x.image_file?('/api/gen/file/'+x.image_file):''),
+        audio_url:x.audio_url||(x.audio_file?('/api/gen/file/'+x.audio_file):''),
+        reference_video_url:x.reference_video_url||(x.reference_video_file?('/api/gen/file/'+x.reference_video_file):''),
+        background_url:x.background_url||(x.background_file?('/api/gen/file/'+x.background_file):''),
+        tryon_mode:x.tryon_mode||'',
+        model:x.model||''
+      };
+      localStorage.setItem('hq_video_prefill', JSON.stringify(prefill));
       location.href='video.html?prefill=asset';
       return null;
     }
