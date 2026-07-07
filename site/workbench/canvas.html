@@ -10,6 +10,29 @@
 <style>
   body{ overflow:hidden; }
   .nc-wrap{ height:calc(100vh - 104px); min-height:520px; display:flex; flex-direction:column; gap:12px; }
+  .nc-board-home{ flex:1; min-height:0; padding:2px; display:flex; flex-direction:column; gap:20px; }
+  .nc-wrap.editing .nc-board-home{ display:none; }
+  .nc-editor-view{ display:none; flex:1; min-height:0; flex-direction:column; gap:12px; }
+  .nc-wrap.editing .nc-editor-view{ display:flex; }
+  .nc-board-head{ flex:none; display:flex; align-items:center; justify-content:space-between; gap:16px; }
+  .nc-tabs{ display:inline-flex; align-items:center; gap:4px; padding:4px; border-radius:22px; background:rgba(148,164,187,.08); }
+  .nc-tab{ min-height:34px; padding:7px 16px; border:0; border-radius:18px; background:transparent; color:#94a4bb; font:inherit; font-size:13px; font-weight:800; cursor:pointer; }
+  .nc-tab.on{ color:#fff; background:rgba(255,255,255,.1); }
+  .nc-board-tools{ display:flex; align-items:center; gap:8px; margin-left:auto; }
+  .nc-board-search{ width:270px; }
+  .nc-board-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,240px)); align-content:start; gap:12px; overflow:auto; padding-bottom:24px; scrollbar-width:none; }
+  .nc-board-grid::-webkit-scrollbar{ display:none; width:0; height:0; }
+  .nc-board-card{ height:204px; overflow:hidden; border:1px solid rgba(148,164,187,.1); border-radius:8px; background:rgba(20,24,31,.92); cursor:pointer; color:#eaf1fa; text-align:left; font:inherit; transition:.16s; }
+  .nc-board-card:hover{ transform:translateY(-2px); border-color:rgba(231,178,76,.36); box-shadow:0 18px 42px -28px rgba(0,0,0,.9); }
+  .nc-board-new{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; border-style:dashed; }
+  .nc-board-plus{ width:42px; height:42px; display:grid; place-items:center; border-radius:50%; color:#fff; background:#ef4444; font-size:24px; line-height:1; }
+  .nc-board-new strong{ font-size:13px; }
+  .nc-board-thumb{ height:137px; background:linear-gradient(145deg,rgba(148,164,187,.22),rgba(47,55,69,.56)); background-size:cover; background-position:center; }
+  .nc-board-thumb.placeholder{ display:grid; place-items:center; color:rgba(234,241,250,.1); font-size:30px; font-weight:900; }
+  .nc-board-info{ padding:10px 8px; }
+  .nc-board-title{ display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; font-weight:800; color:#fff; }
+  .nc-board-time{ display:block; margin-top:8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; color:#5c6b82; }
+  .nc-board-empty{ grid-column:1/-1; padding:40px 16px; color:#5c6b82; font-size:13px; text-align:center; }
   body.nc-local-fullscreen{ overflow:hidden; }
   body.nc-local-fullscreen .nc-wrap{ position:fixed; inset:0; z-index:70; height:100vh; min-height:0; box-sizing:border-box; padding:12px; background:#070b13; }
   .nc-wrap:fullscreen{ width:100vw; height:100vh; min-height:0; box-sizing:border-box; padding:12px; background:#070b13; }
@@ -25,6 +48,7 @@
   .nc-stat span{ display:block; margin-top:3px; font-size:10.5px; color:#5c6b82; }
   .nc-bar{ flex:none; display:flex; align-items:center; gap:9px; flex-wrap:wrap; padding:8px; border:1px solid rgba(148,164,187,.1); border-radius:14px; background:rgba(7,11,19,.34); }
   .nc-group{ display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+  .nc-group-label{ display:none; flex:0 0 100%; font-size:10px; font-weight:800; color:#5c6b82; letter-spacing:0; }
   .nc-add,.nc-ghost{ display:inline-flex; align-items:center; gap:6px; min-height:34px; padding:8px 12px; font-size:12.5px; font-weight:650; color:#e7b24c; background:rgba(231,178,76,.09); border:1px solid rgba(231,178,76,.28); border-radius:10px; cursor:pointer; font-family:inherit; transition:.16s; }
   .nc-add:hover,.nc-ghost:hover{ background:rgba(231,178,76,.15); transform:translateY(-1px); }
   .nc-ghost{ color:#94a4bb; background:rgba(148,164,187,.05); border-color:rgba(148,164,187,.14); }
@@ -41,18 +65,60 @@
   .nc-wrap:fullscreen .nc-canvas-shell,
   .nc-wrap:-webkit-full-screen .nc-canvas-shell{ min-height:0; }
   body.nc-local-fullscreen .nc-hero,
-  body.nc-local-fullscreen .nc-bar,
   .nc-wrap:fullscreen .nc-hero,
-  .nc-wrap:-webkit-full-screen .nc-hero,
+  .nc-wrap:-webkit-full-screen .nc-hero{ display:none; }
+  body.nc-local-fullscreen .nc-canvas-shell,
+  .nc-wrap:fullscreen .nc-canvas-shell,
+  .nc-wrap:-webkit-full-screen .nc-canvas-shell{ order:1; }
+  body.nc-local-fullscreen .nc-bar,
   .nc-wrap:fullscreen .nc-bar,
-  .nc-wrap:-webkit-full-screen .nc-bar{ background:rgba(7,11,19,.82); }
-  .nc-canvas{ position:relative; flex:1; min-height:0; border:1px solid rgba(148,164,187,.12); border-radius:16px; overflow:auto; cursor:grab;
+  .nc-wrap:-webkit-full-screen .nc-bar{ display:none; }
+  body.nc-local-fullscreen .nc-group,
+  .nc-wrap:fullscreen .nc-group,
+  .nc-wrap:-webkit-full-screen .nc-group{ align-content:flex-start; gap:6px; padding:8px; border:1px solid rgba(148,164,187,.12); border-radius:10px; background:rgba(148,164,187,.04); }
+  body.nc-local-fullscreen .nc-group-label,
+  .nc-wrap:fullscreen .nc-group-label,
+  .nc-wrap:-webkit-full-screen .nc-group-label{ display:block; }
+  body.nc-local-fullscreen .nc-add,
+  body.nc-local-fullscreen .nc-ghost,
+  body.nc-local-fullscreen .nc-run,
+  .nc-wrap:fullscreen .nc-add,
+  .nc-wrap:fullscreen .nc-ghost,
+  .nc-wrap:fullscreen .nc-run,
+  .nc-wrap:-webkit-full-screen .nc-add,
+  .nc-wrap:-webkit-full-screen .nc-ghost,
+  .nc-wrap:-webkit-full-screen .nc-run{ min-height:30px; padding:6px 10px; font-size:12px; border-radius:8px; }
+  body.nc-local-fullscreen .nc-run,
+  .nc-wrap:fullscreen .nc-run,
+  .nc-wrap:-webkit-full-screen .nc-run{ margin-left:0; align-self:flex-end; }
+  body.nc-local-fullscreen .nc-help,
+  .nc-wrap:fullscreen .nc-help,
+  .nc-wrap:-webkit-full-screen .nc-help{ display:none; }
+  .nc-fs-dock{ display:none; position:absolute; left:50%; bottom:16px; z-index:12; transform:translateX(-50%); max-width:calc(100% - 32px); padding:8px; border:1px solid rgba(148,164,187,.16); border-radius:14px; background:rgba(9,14,24,.9); box-shadow:0 18px 48px -24px rgba(0,0,0,.9); backdrop-filter:blur(14px); }
+  body.nc-local-fullscreen .nc-fs-dock,
+  .nc-wrap:fullscreen .nc-fs-dock,
+  .nc-wrap:-webkit-full-screen .nc-fs-dock{ display:flex; }
+  .nc-fs-row{ display:flex; align-items:center; justify-content:center; gap:7px; flex-wrap:wrap; }
+  .nc-fs-dock,.nc-fs-dock *{ pointer-events:auto; }
+  .nc-fs-btn{ min-height:32px; padding:7px 11px; border:1px solid rgba(148,164,187,.16); border-radius:9px; background:rgba(148,164,187,.07); color:#dbe7f5; font:inherit; font-size:12px; font-weight:700; cursor:pointer; }
+  .nc-fs-btn:hover{ background:rgba(148,164,187,.14); color:#fff; }
+  .nc-fs-btn.primary{ border-color:rgba(231,178,76,.42); background:linear-gradient(135deg,#f4cd72,#e7b24c); color:#1a1206; }
+  .nc-fs-btn:disabled{ opacity:.5; cursor:not-allowed; }
+  .nc-fs-zoom{ min-width:50px; justify-content:center; color:#eaf1fa; font-family:var(--mono,ui-monospace,monospace); cursor:default; }
+  body.nc-local-fullscreen .nc-float,
+  body.nc-local-fullscreen .nc-legend,
+  .nc-wrap:fullscreen .nc-float,
+  .nc-wrap:fullscreen .nc-legend,
+  .nc-wrap:-webkit-full-screen .nc-float,
+  .nc-wrap:-webkit-full-screen .nc-legend{ display:none; }
+  .nc-canvas{ position:relative; flex:1; min-height:0; border:1px solid rgba(148,164,187,.12); border-radius:16px; overflow:hidden; scrollbar-width:none; cursor:grab;
     height:100%; background:radial-gradient(rgba(148,164,187,.08) 1px, transparent 1px) 0 0/22px 22px, linear-gradient(165deg, rgba(12,18,30,.6), rgba(8,12,20,.66)); }
+  .nc-canvas::-webkit-scrollbar{ display:none; width:0; height:0; }
   .nc-canvas.panning{ cursor:grabbing; user-select:none; }
   .nc-canvas.connecting{ cursor:crosshair; }
   .nc-canvas.connecting,.nc-canvas.connecting *{ user-select:none; -webkit-user-select:none; }
   .nc-canvas.connecting input,.nc-canvas.connecting textarea{ user-select:text; -webkit-user-select:text; }
-  .nc-inner{ position:relative; width:2400px; height:1500px; transform-origin:0 0; }
+  .nc-inner{ position:relative; width:8000px; height:5000px; transform-origin:0 0; }
   .nc-edges{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:1; }
   .nc-edge-hit{ pointer-events:stroke; cursor:pointer; }
   .nc-edge-sel{ stroke:#2dd4bf; stroke-width:3; filter:drop-shadow(0 0 6px rgba(45,212,191,.45)); }
@@ -129,6 +195,11 @@
   @media (max-width:900px){
     body{ overflow:auto; }
     .nc-wrap{ height:auto; min-height:0; }
+    .nc-board-head{ align-items:stretch; flex-direction:column; }
+    .nc-board-tools{ width:100%; margin-left:0; }
+    .nc-board-search{ width:100%; }
+    .nc-board-grid{ grid-template-columns:1fr; }
+    .nc-board-card{ width:100%; }
     .nc-hero{ flex-direction:column; }
     .nc-stats{ width:100%; min-width:0; }
     .nc-run{ margin-left:0; width:100%; justify-content:center; }
@@ -145,6 +216,23 @@
 
 <div class="hq-app"><div class="hq-content" data-active="canvas">
   <div class="nc-wrap">
+    <div id="ncBoardHome" class="nc-board-home">
+      <div class="nc-board-head">
+        <div class="nc-tabs" aria-label="画布分类">
+          <button class="nc-tab on" type="button" data-board-tab="mine">我的画布</button>
+          <button class="nc-tab" type="button" data-board-tab="collab">协作画布</button>
+        </div>
+        <div class="nc-board-tools">
+          <select id="ncBoardSort" class="nc-select" title="排序">
+            <option value="updated_desc">按更新时间</option>
+            <option value="name_asc">按名称</option>
+          </select>
+          <input id="ncBoardSearch" class="nc-name nc-board-search" placeholder="请输入画布名称">
+        </div>
+      </div>
+      <div id="ncBoardGrid" class="nc-board-grid" aria-label="画布列表"></div>
+    </div>
+    <div id="ncEditorView" class="nc-editor-view">
     <div class="nc-hero">
       <div class="nc-title">
         <span style="display:flex; width:22px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 2l9 5-9 5-9-5z"/><path d="M3 12l9 5 9-5M3 17l9 5 9-5"/></svg></span>
@@ -161,22 +249,31 @@
     </div>
     <div class="nc-bar">
       <div class="nc-group" aria-label="添加节点">
+        <span class="nc-group-label">添加节点</span>
         <button class="nc-add" data-add="text">+ 文本</button>
         <button class="nc-add" data-add="image">+ 图片</button>
         <button class="nc-add" data-add="reverse">+ 提示词反推</button>
         <button class="nc-add" data-add="gen">+ 作图</button>
       </div>
-      <div class="nc-group" aria-label="画布操作">
+      <div class="nc-group" aria-label="编辑操作">
+        <span class="nc-group-label">编辑操作</span>
+        <button id="ncBackHome" class="nc-ghost">返回列表</button>
         <button id="ncUndo" class="nc-ghost" disabled>撤销</button>
         <button id="ncRedo" class="nc-ghost" disabled>重做</button>
         <button id="ncCopy" class="nc-ghost">复制</button>
         <button id="ncPaste" class="nc-ghost">粘贴</button>
         <button id="ncLayout" class="nc-ghost">自动整理</button>
+      </div>
+      <div class="nc-group" aria-label="视图操作">
+        <span class="nc-group-label">视图操作</span>
         <button id="ncZoomOut" class="nc-ghost" title="缩小">-</button>
         <span id="ncZoomLabel" class="nc-ghost nc-zoom">100%</span>
         <button id="ncZoomIn" class="nc-ghost" title="放大">+</button>
         <button id="ncZoomFit" class="nc-ghost">适应</button>
         <button id="ncFullscreen" class="nc-ghost">全屏</button>
+      </div>
+      <div class="nc-group" aria-label="模板操作">
+        <span class="nc-group-label">模板操作</span>
         <select id="ncTemplateSelect" class="nc-select" title="模板"></select>
         <input id="ncTemplateName" class="nc-name" placeholder="模板名">
         <button id="ncTplSave" class="nc-ghost">保存模板</button>
@@ -185,12 +282,15 @@
         <button id="ncTplExport" class="nc-ghost">导出模板</button>
         <button id="ncTplImport" class="nc-ghost">导入模板</button>
         <input id="ncTplImportFile" class="nc-file" type="file" accept="application/json,.json">
+      </div>
+      <div class="nc-group" aria-label="画布操作">
+        <span class="nc-group-label">画布操作</span>
         <button id="ncResetDemo" class="nc-ghost">重置示例</button>
         <button id="ncClear" class="nc-ghost">清空画布</button>
         <a class="nc-ghost" href="banana.html">打开作图页</a>
+        <button id="ncRunAll" class="nc-run">▶ 运行全部（并行）</button>
       </div>
       <span class="nc-help"><i></i>先点右侧输出口，再点左侧输入口即可连线。</span>
-      <button id="ncRunAll" class="nc-run">▶ 运行全部（并行）</button>
     </div>
     <div class="nc-canvas-shell">
       <div id="ncCanvas" class="nc-canvas">
@@ -210,6 +310,21 @@
         <svg id="ncMapSvg" viewBox="0 0 164 104" aria-hidden="true"></svg>
       </div>
       <div id="ncMenu" class="nc-menu" role="menu"></div>
+      <div id="ncFsDock" class="nc-fs-dock" aria-label="全屏画布工具栏">
+        <div class="nc-fs-row">
+          <button id="ncFsAdd" class="nc-fs-btn" type="button">+ 添加节点</button>
+          <button id="ncFsBack" class="nc-fs-btn" type="button">返回列表</button>
+          <button id="ncFsUndo" class="nc-fs-btn" type="button">撤销</button>
+          <button id="ncFsRedo" class="nc-fs-btn" type="button">重做</button>
+          <button id="ncFsZoomOut" class="nc-fs-btn" type="button" title="缩小">-</button>
+          <span id="ncFsZoomLabel" class="nc-fs-btn nc-fs-zoom">100%</span>
+          <button id="ncFsZoomIn" class="nc-fs-btn" type="button" title="放大">+</button>
+          <button id="ncFsFit" class="nc-fs-btn" type="button">适应</button>
+          <button id="ncFsMore" class="nc-fs-btn" type="button">更多</button>
+          <button id="ncFsRun" class="nc-fs-btn primary" type="button">运行全部</button>
+          <button id="ncFsExit" class="nc-fs-btn" type="button">退出全屏</button>
+        </div>
+      </div>
       <div class="nc-float">
         <span class="nc-mini">拖动节点</span>
         <span class="nc-mini">点击端口连线</span>
@@ -221,22 +336,27 @@
       </div>
     </div>
   </div>
+  </div>
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=87f9cda0"></script>
+<script src="cloud-shell.js?v=0c477529"></script>
 <script>
 /* 节点生产画布：文本→反推→作图 节点图，拖动/连线/调参/并行运行。复用 /api/gen/reverse|banana|image + 轮询。 */
 (function(){
   var wrap=document.querySelector('.nc-wrap'), inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty');
+  var boardHome=document.getElementById('ncBoardHome'), editorView=document.getElementById('ncEditorView'), boardGrid=document.getElementById('ncBoardGrid'), boardSearch=document.getElementById('ncBoardSearch'), boardSort=document.getElementById('ncBoardSort'), backHomeBtn=document.getElementById('ncBackHome');
   var nodeCountEl=document.getElementById('ncNodeCount'), edgeCountEl=document.getElementById('ncEdgeCount'), runStateEl=document.getElementById('ncRunState');
   var undoBtn=document.getElementById('ncUndo'), redoBtn=document.getElementById('ncRedo'), fullscreenBtn=document.getElementById('ncFullscreen'), zoomLabel=document.getElementById('ncZoomLabel'), map=document.getElementById('ncMap'), mapSvg=document.getElementById('ncMapSvg');
+  var fsAdd=document.getElementById('ncFsAdd'), fsBack=document.getElementById('ncFsBack'), fsUndo=document.getElementById('ncFsUndo'), fsRedo=document.getElementById('ncFsRedo'), fsZoomOut=document.getElementById('ncFsZoomOut'), fsZoomIn=document.getElementById('ncFsZoomIn'), fsZoomLabel=document.getElementById('ncFsZoomLabel'), fsFit=document.getElementById('ncFsFit'), fsMore=document.getElementById('ncFsMore'), fsRun=document.getElementById('ncFsRun'), fsExit=document.getElementById('ncFsExit');
   var tplSelect=document.getElementById('ncTemplateSelect'), tplName=document.getElementById('ncTemplateName'), tplImportFile=document.getElementById('ncTplImportFile'), menu=document.getElementById('ncMenu');
   var nodes={}, edges=[], nid=0, pendingPort=null, runLabel='就绪', undoStack=[], redoStack=[], restoring=false, loading=false, dragPort=null, suppressPortClick=false, mapDirty=false, saveTimer=null;
   var localFullscreen=false;
   var selectedNode=null, selectedEdge=-1, clipNode=null, zoom=1;
-  var DRAFT_KEY='hq_canvas_draft_v2', TPL_KEY='hq_canvas_templates_v2';
+  var DRAFT_KEY='hq_canvas_draft_v2', TPL_KEY='hq_canvas_templates_v2', BOARD_KEY='hq_canvas_boards_v1', ACTIVE_BOARD_KEY='hq_canvas_active_id';
+  var currentBoardId=null, boardMode='mine';
   function tok(){ try{ return localStorage.getItem('hq_token')||'__cookie__'; }catch(e){ return '__cookie__'; } }
+  var CANVAS_BASE_W=8000, CANVAS_BASE_H=5000, CANVAS_GROW_PAD=1200;
   var TYPE={
     text:  {name:'文本 · 提示词', color:'#e7b24c', outs:['prompt']},
     image: {name:'图片 · 素材',   color:'#46b4ff', outs:['image']},
@@ -253,6 +373,9 @@
     if(undoBtn) undoBtn.disabled=!undoStack.length;
     if(redoBtn) redoBtn.disabled=!redoStack.length;
     if(zoomLabel) zoomLabel.textContent=Math.round(zoom*100)+'%';
+    if(fsUndo) fsUndo.disabled=!undoStack.length;
+    if(fsRedo) fsRedo.disabled=!redoStack.length;
+    if(fsZoomLabel) fsZoomLabel.textContent=Math.round(zoom*100)+'%';
     scheduleSave();
   }
   function setNodeState(node,state,msg,color){
@@ -295,7 +418,9 @@
   }
   function saveDraft(){
     if(loading) return;
-    try{ localStorage.setItem(DRAFT_KEY, JSON.stringify(snapshot())); }catch(e){}
+    var snap=snapshot();
+    try{ localStorage.setItem(DRAFT_KEY, JSON.stringify(snap)); }catch(e){}
+    saveCurrentBoard(snap);
   }
   function loadDraft(){
     try{
@@ -304,6 +429,116 @@
       var snap=JSON.parse(raw);
       return snap&&snap.nodes?snap:null;
     }catch(e){ return null; }
+  }
+  function getBoards(){
+    try{ return JSON.parse(localStorage.getItem(BOARD_KEY)||'[]')||[]; }catch(e){ return []; }
+  }
+  function setBoards(list){
+    try{ localStorage.setItem(BOARD_KEY, JSON.stringify(list)); return true; }catch(e){ return false; }
+  }
+  function makeBoardId(){
+    return 'b'+Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+  }
+  function emptySnapshot(){
+    return {nid:0,runLabel:'就绪',zoom:1,scroll:{left:0,top:0},edges:[],nodes:[]};
+  }
+  function formatBoardTime(ts){
+    if(!ts) return '更新时间：--';
+    try{ return '更新时间：'+new Date(ts).toLocaleString('zh-CN',{hour12:false}); }catch(e){ return '更新时间：--'; }
+  }
+  function boardPreview(board){
+    var snap=board&&board.data, list=(snap&&snap.nodes)||[];
+    for(var i=0;i<list.length;i++){
+      var n=list[i]||{};
+      var img=n.image||(n.outputs&&n.outputs.image);
+      if(img) return img;
+    }
+    return '';
+  }
+  function saveCurrentBoard(snap){
+    if(loading||!currentBoardId) return;
+    var list=getBoards(), idx=list.findIndex(function(b){ return b.id===currentBoardId; });
+    if(idx<0) return;
+    list[idx].data=snap||snapshot();
+    list[idx].updatedAt=Date.now();
+    setBoards(list);
+  }
+  function migrateDraftToBoards(){
+    if(getBoards().length) return;
+    var draft=loadDraft();
+    if(!draft||!Array.isArray(draft.nodes)||!draft.nodes.length) return;
+    setBoards([{id:makeBoardId(),name:'未命名画布',updatedAt:Date.now(),data:draft}]);
+  }
+  function renderBoardHome(){
+    if(!boardGrid) return;
+    var query=(boardSearch&&boardSearch.value||'').trim().toLowerCase();
+    var list=getBoards();
+    if(query) list=list.filter(function(b){ return String(b.name||'未命名画布').toLowerCase().indexOf(query)>=0; });
+    if(boardSort&&boardSort.value==='name_asc'){
+      list.sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||''),'zh-CN'); });
+    }else{
+      list.sort(function(a,b){ return (b.updatedAt||0)-(a.updatedAt||0); });
+    }
+    boardGrid.innerHTML='';
+    var newCard=document.createElement('button');
+    newCard.id='ncBoardNew';
+    newCard.type='button';
+    newCard.className='nc-board-card nc-board-new';
+    newCard.innerHTML='<span class="nc-board-plus">+</span><strong>新建画布</strong>';
+    newCard.onclick=function(){ createBoard(); };
+    boardGrid.appendChild(newCard);
+    if(boardMode==='collab'){
+      var collab=document.createElement('div');
+      collab.className='nc-board-empty';
+      collab.textContent='暂无协作画布';
+      boardGrid.appendChild(collab);
+      return;
+    }
+    list.forEach(function(board){
+      var card=document.createElement('button'), img=boardPreview(board);
+      card.type='button';
+      card.className='nc-board-card';
+      card.setAttribute('data-board-id',board.id);
+      card.innerHTML='<div class="nc-board-thumb'+(img?'':' placeholder')+'" '+(img?'style="background-image:url('+String(img).replace(/"/g,'%22')+')"':'')+'>'+(img?'':'Shotlab')+'</div><div class="nc-board-info"><span class="nc-board-title">'+escapeHtml(board.name||'未命名画布')+'</span><span class="nc-board-time">'+escapeHtml(formatBoardTime(board.updatedAt))+'</span></div>';
+      card.onclick=function(){ openBoard(board.id); };
+      boardGrid.appendChild(card);
+    });
+  }
+  function showEditor(){
+    if(wrap) wrap.classList.add('editing');
+    if(editorView) editorView.style.display='';
+    if(boardHome) boardHome.style.display='';
+    setTimeout(function(){ fitView(); scheduleMap(); },40);
+  }
+  function showBoardHome(){
+    saveCurrentBoard();
+    currentBoardId=null;
+    try{ localStorage.removeItem(ACTIVE_BOARD_KEY); }catch(e){}
+    if(localFullscreen) setLocalFullscreen(false);
+    if(document.fullscreenElement&&document.exitFullscreen){ document.exitFullscreen().catch(function(){}); }
+    if(wrap) wrap.classList.remove('editing');
+    renderBoardHome();
+  }
+  function createBoard(){
+    saveCurrentBoard();
+    var board={id:makeBoardId(),name:'未命名画布',updatedAt:Date.now(),data:emptySnapshot()};
+    var list=getBoards();
+    list.unshift(board);
+    setBoards(list);
+    openBoard(board.id,true);
+  }
+  function openBoard(id, isNew){
+    var list=getBoards(), board=list.find(function(b){ return b.id===id; });
+    if(!board) return;
+    currentBoardId=id;
+    try{ localStorage.setItem(ACTIVE_BOARD_KEY,id); }catch(e){}
+    loading=true;
+    restoreSnapshot(board.data||emptySnapshot());
+    loading=false;
+    undoStack=[]; redoStack=[];
+    updateState(isNew?'已新建画布':'已打开画布');
+    showEditor();
+    setLocalFullscreen(true);
   }
   function getTemplates(){
     try{ return JSON.parse(localStorage.getItem(TPL_KEY)||'[]')||[]; }catch(e){ return []; }
@@ -399,7 +634,7 @@
   }
   function drawMap(){
     if(!mapSvg||!canvas) return;
-    var w=164, h=104, iw=inner.offsetWidth||2400, ih=inner.offsetHeight||1500;
+    var w=164, h=104, iw=innerWidth(), ih=innerHeight();
     var sx=w/iw, sy=h/ih, s='';
     Object.keys(nodes).forEach(function(id){
       var n=nodes[id], nw=Math.max(3,(n.el.offsetWidth||250)*sx), nh=Math.max(3,(n.el.offsetHeight||150)*sy);
@@ -412,8 +647,8 @@
   function moveViewFromMap(e){
     if(!map) return;
     var r=map.getBoundingClientRect(), x=(e.clientX-r.left)/r.width, y=(e.clientY-r.top)/r.height;
-    canvas.scrollLeft=Math.max(0,x*inner.offsetWidth*zoom-canvas.clientWidth/2);
-    canvas.scrollTop=Math.max(0,y*inner.offsetHeight*zoom-canvas.clientHeight/2);
+    canvas.scrollLeft=Math.max(0,x*innerWidth()*zoom-canvas.clientWidth/2);
+    canvas.scrollTop=Math.max(0,y*innerHeight()*zoom-canvas.clientHeight/2);
     scheduleMap();
   }
 
@@ -441,6 +676,7 @@
     if(data&&data.state) node.el.setAttribute('data-state',data.state);
     if(data&&data.note) noteOf(node,data.note);
     setCollapsed(node,node.collapsed,true);
+    ensureNodeVisibleBounds(node);
     redraw(); updateState();
     return node;
   }
@@ -485,6 +721,20 @@
     node.el.title=remark?('备注：'+remark):'';
   }
   function noteOf(node,msg,color){ var n=node.el.querySelector('[data-f="note"]'); if(n){ n.textContent=msg||''; n.style.color=color||'#5c6b82'; } }
+  function innerWidth(){ return inner.offsetWidth||CANVAS_BASE_W; }
+  function innerHeight(){ return inner.offsetHeight||CANVAS_BASE_H; }
+  function ensureCanvasBounds(x,y){
+    var nextW=Math.max(innerWidth(),Math.ceil(x+CANVAS_GROW_PAD));
+    var nextH=Math.max(innerHeight(),Math.ceil(y+CANVAS_GROW_PAD));
+    var changed=false;
+    if(nextW>innerWidth()){ inner.style.width=nextW+'px'; changed=true; }
+    if(nextH>innerHeight()){ inner.style.height=nextH+'px'; changed=true; }
+    if(changed) scheduleMap();
+  }
+  function ensureNodeVisibleBounds(node){
+    if(!node||!node.el) return;
+    ensureCanvasBounds(node.x+(node.el.offsetWidth||260),node.y+(node.el.offsetHeight||180));
+  }
   function setConnectHints(port){
     document.querySelectorAll('.nc-port.can-connect,.nc-port.dragging').forEach(function(p){ p.classList.remove('can-connect','dragging'); });
     if(!port) return;
@@ -650,6 +900,28 @@
     menu.style.left=Math.max(8,Math.min(x,window.innerWidth-160))+'px';
     menu.style.top=Math.max(8,Math.min(y,window.innerHeight-items.length*38-16))+'px';
     menu.classList.add('on');
+  }
+  function showMenuFromButton(btn,items){
+    if(!btn) return;
+    var r=btn.getBoundingClientRect();
+    showMenu(items,r.left,r.top-8);
+  }
+  function stopUiEvent(e){
+    if(!e) return;
+    e.stopPropagation();
+  }
+  function bindButton(btn,fn){
+    if(!btn) return;
+    btn.addEventListener('pointerdown',stopUiEvent);
+    btn.addEventListener('mousedown',stopUiEvent);
+    btn.addEventListener('click',function(e){
+      e.preventDefault();
+      e.stopPropagation();
+      fn(e);
+    });
+  }
+  function viewportCenterPoint(){
+    return {x:Math.max(0,(canvas.scrollLeft+canvas.clientWidth/2)/zoom),y:Math.max(0,(canvas.scrollTop+canvas.clientHeight/2)/zoom)};
   }
   function closeDialog(){
     var old=document.querySelector('.nc-dialog-mask');
@@ -889,7 +1161,7 @@
       function mv(ev){
         var nx=Math.max(0,ox+(ev.clientX-sx)/zoom), ny=Math.max(0,oy+(ev.clientY-sy)/zoom);
         if(Math.abs(nx-ox)+Math.abs(ny-oy)>2) moved=true;
-        node.x=nx; node.y=ny; el.style.left=node.x+'px'; el.style.top=node.y+'px'; redraw();
+        node.x=nx; node.y=ny; el.style.left=node.x+'px'; el.style.top=node.y+'px'; ensureNodeVisibleBounds(node); redraw();
       }
       function up(){ if(moved) pushUndo(before); window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up); }
       window.addEventListener('pointermove',mv); window.addEventListener('pointerup',up);
@@ -1026,10 +1298,17 @@
     window.addEventListener('pointermove',mv); window.addEventListener('pointerup',up);
   });
   canvas.addEventListener('wheel',function(e){
-    if(!e.ctrlKey&&!e.metaKey) return;
     e.preventDefault();
-    var r=canvas.getBoundingClientRect();
-    setZoom(zoom*(e.deltaY>0?.9:1.1),e.clientX-r.left,e.clientY-r.top);
+    if(e.ctrlKey||e.metaKey){
+      var r=canvas.getBoundingClientRect();
+      setZoom(zoom*(e.deltaY>0?.9:1.1),e.clientX-r.left,e.clientY-r.top);
+      return;
+    }
+    var dx=e.deltaX||0, dy=e.deltaY||0;
+    if(e.shiftKey&&!dx){ dx=dy; dy=0; }
+    canvas.scrollLeft+=dx;
+    canvas.scrollTop+=dy;
+    scheduleMap();
   },{passive:false});
   canvas.addEventListener('selectstart',function(e){ if(canvas.classList.contains('connecting')||dragPort){ e.preventDefault(); } });
   canvas.addEventListener('dragstart',function(e){ if(canvas.classList.contains('connecting')||dragPort){ e.preventDefault(); } });
@@ -1193,8 +1472,56 @@
   document.getElementById('ncZoomIn').onclick=function(){ setZoom(zoom+.1); };
   document.getElementById('ncZoomFit').onclick=function(){ fitView(); };
   if(fullscreenBtn) fullscreenBtn.onclick=function(){ toggleFullscreen(); };
+  if(backHomeBtn) backHomeBtn.onclick=function(){ showBoardHome(); };
+  if(boardSearch) boardSearch.oninput=function(){ renderBoardHome(); };
+  if(boardSort) boardSort.onchange=function(){ renderBoardHome(); };
+  document.querySelectorAll('[data-board-tab]').forEach(function(tab){
+    tab.onclick=function(){
+      boardMode=tab.getAttribute('data-board-tab')||'mine';
+      document.querySelectorAll('[data-board-tab]').forEach(function(t){ t.classList.toggle('on',t===tab); });
+      renderBoardHome();
+    };
+  });
+  bindButton(fsAdd,function(){
+    showMenuFromButton(fsAdd,[
+      {label:'添加文本节点',run:function(){ addAt('text',viewportCenterPoint()); }},
+      {label:'添加图片节点',run:function(){ addAt('image',viewportCenterPoint()); }},
+      {label:'添加提示词反推',run:function(){ addAt('reverse',viewportCenterPoint()); }},
+      {label:'添加作图节点',run:function(){ addAt('gen',viewportCenterPoint()); }}
+    ]);
+  });
+  bindButton(fsUndo,function(){ undo(); });
+  bindButton(fsRedo,function(){ redo(); });
+  bindButton(fsZoomOut,function(){ setZoom(zoom-.1); });
+  bindButton(fsZoomIn,function(){ setZoom(zoom+.1); });
+  bindButton(fsFit,function(){ fitView(); });
+  bindButton(fsRun,function(){ document.getElementById('ncRunAll').click(); });
+  bindButton(fsBack,function(){ showBoardHome(); });
+  bindButton(fsExit,function(){ if(localFullscreen) setLocalFullscreen(false); else toggleFullscreen(); });
+  bindButton(fsMore,function(){
+    showMenuFromButton(fsMore,[
+      {label:'复制节点',run:function(){ copyNode(); }},
+      {label:'粘贴节点',run:function(){ pasteNode(); }},
+      {label:'自动整理',run:function(){ autoLayout(); }},
+      {label:'保存模板',run:function(){ saveTemplate(); }},
+      {label:'载入模板',run:function(){ loadTemplate(); }},
+      {label:'删除模板',run:function(){ deleteTemplate(); }},
+      {label:'导出模板',run:function(){ exportTemplate(); }},
+      {label:'导入模板',run:function(){ if(tplImportFile) tplImportFile.click(); }},
+      {label:'重置示例',run:function(){ pushUndo(); resetDemo(); }},
+      {label:'清空画布',run:function(){ if(Object.keys(nodes).length){ pushUndo(); clearCanvas(); } }},
+      {label:'打开作图页',run:function(){ window.location.href='banana.html'; }}
+    ]);
+  });
   document.addEventListener('fullscreenchange',updateFullscreenUI);
   document.addEventListener('webkitfullscreenchange',updateFullscreenUI);
+  var fsDock=document.getElementById('ncFsDock');
+  if(fsDock){
+    fsDock.addEventListener('pointerdown',stopUiEvent);
+    fsDock.addEventListener('mousedown',stopUiEvent);
+    fsDock.addEventListener('click',stopUiEvent);
+    fsDock.addEventListener('contextmenu',function(e){ e.preventDefault(); e.stopPropagation(); });
+  }
   document.getElementById('ncTplSave').onclick=function(){ saveTemplate(); };
   document.getElementById('ncTplLoad').onclick=function(){ loadTemplate(); };
   document.getElementById('ncTplDelete').onclick=function(){ deleteTemplate(); };
@@ -1225,6 +1552,10 @@
   });
 
   renderTemplates();
+  migrateDraftToBoards();
+  renderBoardHome();
+  updateState('请选择或新建画布');
+  return;
   var draft=loadDraft();
   if(draft&&Array.isArray(draft.nodes)){
     loading=true;

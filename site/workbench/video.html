@@ -192,6 +192,8 @@
         <button class="function-tab on" type="button" data-function="talking">数字人口播</button>
         <button class="function-tab" type="button" data-function="motion">影视级模仿</button>
         <button class="function-tab" type="button" data-function="tryon">换装换背景</button>
+        <button class="function-tab" type="button" data-function="grok">果肉视频生成</button>
+        <button class="function-tab" type="button" data-function="micro">微衣视频生成</button>
       </div>
 
       <div id="talkingPanel" class="function-panel">
@@ -371,6 +373,42 @@
           生成换装换背景视频
         </button>
         <div id="tryonStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">生成完成后会自动保存到视频资产</div>
+      </div>
+
+      <div id="grokPanel" class="function-panel motion-panel hidden">
+        <div class="row">
+          <div>
+            <div class="label">果肉视频生成</div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">Grok Video 模型 · 输入提示词直接生成视频</div>
+          </div>
+          <span class="faint" style="font-size:11.5px;">文生视频</span>
+        </div>
+        <div class="panel" style="margin-top:14px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">视频提示词</div>
+          <textarea id="grokPrompt" rows="4" placeholder="例如：一只橘猫在阳光洒落的窗台上慢慢转头，电影级光影，柔和景深，平滑运镜" style="width:100%;min-height:110px;resize:vertical;background:rgba(7,11,19,.5);border:1px solid rgba(148,164,187,.16);border-radius:12px;color:#eaf1fa;padding:12px 14px;font:inherit;font-size:14px;"></textarea>
+        </div>
+        <button id="grokGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:18px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
+          生成果肉视频
+        </button>
+        <div id="grokStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">Grok Video · 生成后自动保存到视频资产</div>
+      </div>
+
+      <div id="microPanel" class="function-panel motion-panel hidden">
+        <div class="row">
+          <div>
+            <div class="label">微衣视频生成</div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">Seedance 2.0 模型 · 输入提示词直接生成视频</div>
+          </div>
+          <span class="faint" style="font-size:11.5px;">文生视频</span>
+        </div>
+        <div class="panel" style="margin-top:14px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">视频提示词</div>
+          <textarea id="microPrompt" rows="4" placeholder="例如：夏日海边，模特穿着白色连衣裙迎风走来，逆光唯美，慢镜头" style="width:100%;min-height:110px;resize:vertical;background:rgba(7,11,19,.5);border:1px solid rgba(148,164,187,.16);border-radius:12px;color:#eaf1fa;padding:12px 14px;font:inherit;font-size:14px;"></textarea>
+        </div>
+        <button id="microGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:18px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
+          生成微衣视频
+        </button>
+        <div id="microStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">Seedance 2.0 · 生成后自动保存到视频资产</div>
       </div>
     </section>
 
@@ -789,7 +827,7 @@
   }
   function stopVidTick(){ if(_vidTick){ clearInterval(_vidTick); _vidTick=null; } }
   function setBusy(on){
-    ['generateBtn','motionGenerateBtn','tryonGenerateBtn'].forEach(function(id){
+    ['generateBtn','motionGenerateBtn','tryonGenerateBtn','grokGenerateBtn','microGenerateBtn'].forEach(function(id){
       var btn=$(id); if(!btn) return;
       btn.disabled=on;
       btn.style.opacity=on?'.72':'1';
@@ -918,6 +956,8 @@
     $('talkingPanel').classList.toggle('hidden',videoFunction!=='talking');
     $('motionPanel').classList.toggle('hidden',videoFunction!=='motion');
     if($('tryonPanel')) $('tryonPanel').classList.toggle('hidden',videoFunction!=='tryon');
+    if($('grokPanel')) $('grokPanel').classList.toggle('hidden',videoFunction!=='grok');
+    if($('microPanel')) $('microPanel').classList.toggle('hidden',videoFunction!=='micro');
     if(videoFunction==='motion'){
       $('modeSummary').textContent='上传人物形象和参考片段，把自己「演」成同款大片';
       if($('modeName')) $('modeName').textContent='影视级模仿';
@@ -926,6 +966,12 @@
       $('modeSummary').textContent='上传换装视频，选填衣服图或背景图，一键换装换背景';
       if($('modeName')) $('modeName').textContent='换装换背景';
       updateTryonHint();
+    }else if(videoFunction==='grok'){
+      $('modeSummary').textContent='果肉视频（Grok Video）：输入提示词直接生成视频';
+      if($('modeName')) $('modeName').textContent='果肉视频';
+    }else if(videoFunction==='micro'){
+      $('modeSummary').textContent='微衣视频（Seedance 2.0）：输入提示词直接生成视频';
+      if($('modeName')) $('modeName').textContent='微衣视频';
     }else{
       updateMode(mode);
     }
@@ -1321,9 +1367,43 @@
       });
     }).catch(function(e){setBusy(false);if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}toast(e.message||'配音资产读取失败');});
   };
+  // 果肉(Grok)/微衣(Seedance) 统一视频生成 → /api/gen/xiaole_video
+  function submitXiaole(channel){
+    if(!token){ location.href='../login.html?redirect=workbench/video'; return; }
+    var promptEl=channel==='grok'?$('grokPrompt'):$('microPrompt');
+    var statusEl=channel==='grok'?$('grokStatus'):$('microStatus');
+    var label=channel==='grok'?'果肉视频':'微衣视频';
+    var prompt=((promptEl||{}).value||'').trim();
+    if(!prompt){ toast('请输入视频提示词'); if(promptEl) promptEl.focus(); return; }
+    setBusy(true);
+    if(statusEl) statusEl.textContent='正在提交'+label+'任务...';
+    if($('outputPreviewText')) $('outputPreviewText').innerHTML='视频正在生成中<br>完成后会自动预览';
+    currentVideoDraft={text:prompt,ratio:'—',motion:label,status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
+    renderVideoHistory([currentVideoDraft]);
+    fetch('/api/gen/xiaole_video',{
+      method:'POST',
+      headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+      body:JSON.stringify({channel:channel,prompt:prompt})
+    }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+      .then(function(res){
+        if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
+        if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
+        if(statusEl) statusEl.textContent=label+'任务已提交，生成中...';
+        setTimeout(loadVideoHistory,700);
+        pollJob(res.data.job_id,0);
+      })
+      .catch(function(e){
+        setBusy(false);
+        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}
+        if(statusEl) statusEl.textContent=e.message||'提交失败';
+        toast(e.message||'提交失败');
+      });
+  }
   $('generateBtn').onclick=submitVideo;
   $('motionGenerateBtn').onclick=submitMotionVideo;
   $('tryonGenerateBtn').onclick=submitTryon;
+  if($('grokGenerateBtn')) $('grokGenerateBtn').onclick=function(){submitXiaole('grok');};
+  if($('microGenerateBtn')) $('microGenerateBtn').onclick=function(){submitXiaole('micro');};
   if($('refreshAvatarBtn')) $('refreshAvatarBtn').onclick=function(){loadMotionAvatars(true);};
   $('scriptText').dispatchEvent(new Event('input'));
   updateFunction('talking');

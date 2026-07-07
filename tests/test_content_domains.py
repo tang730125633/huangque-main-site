@@ -19,13 +19,13 @@ class ContentDomainTests(unittest.TestCase):
         content_api = importlib.import_module("content_api")
         self.assertEqual(
             sorted(content_api.HANDLERS),
-            ["audio", "collect", "copy", "image", "leads", "tryon", "video"],
+            ["audio", "collect", "copy", "image", "leads", "tryon", "video", "xiaole_video"],
         )
         self.assertIs(content_api.HANDLERS, content_api.registry.HANDLERS)
 
     def test_domains_export_expected_handlers(self):
         registry = importlib.import_module("content_domains.registry")
-        for name in ("image", "copy", "collect", "leads", "audio", "video"):
+        for name in ("image", "copy", "collect", "leads", "audio", "video", "xiaole_video"):
             self.assertIn(name, registry.HANDLERS)
             self.assertTrue(callable(registry.HANDLERS[name]))
 

@@ -16,6 +16,20 @@ VALID_IMAGE_MIMES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
 VALID_AUDIO_MIMES = {"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/mp4", "audio/m4a", "audio/x-m4a"}
 VALID_REFERENCE_VIDEO_MIMES = {"video/mp4", "video/quicktime", "video/webm"}
 
+# 统一视频生成 API（xiaolevideo.cn）：果肉=Grok Video、微衣=Seedance 2.0
+XIAOLEVIDEO_API_KEY = os.environ.get("XIAOLEVIDEO_API_KEY", "")
+XIAOLEVIDEO_API_BASE = os.environ.get("XIAOLEVIDEO_API_BASE", "https://api.xiaolevideo.cn").rstrip("/")
+XIAOLE_MAX_WAIT = int(os.environ.get("XIAOLEVIDEO_TIMEOUT", "600"))
+XIAOLE_POLL_INTERVAL = int(os.environ.get("XIAOLEVIDEO_POLL_INTERVAL", "5"))
+_xiaole_429_retries = int(os.environ.get("XIAOLEVIDEO_429_RETRIES", "5"))   # 并发限流(429)退避重试次数
+_xiaole_dl_retries = int(os.environ.get("XIAOLEVIDEO_DL_RETRIES", "3"))     # 下载中断重试次数
+# 页面渠道 → 模型 id（前端传 channel，后端定 model，避免任意模型注入）
+XIAOLE_CHANNEL_MODELS = {
+    "grok": "Grok Image Video",   # 果肉视频（Grok Video 1.0：文生/图生视频）
+    "micro": "seedance-2.0-fast", # 微衣视频（Seedance 2.0 Fast：文生视频；高配seedance-2.0账户额度不足）
+}
+XIAOLE_IMAGE_CHANNELS = {"grok"}  # 支持参考图（图生视频）的渠道
+
 def _is_valid_data_url(value, allowed_mimes):
     raw = (value or "").strip()
     if not raw.startswith("data:") or "," not in raw:
@@ -1238,4 +1252,154 @@ def gen_tryon(payload):
         "message": "换装换背景视频生成完成"
     }
 
-HANDLERS = {"video": gen_video, "tryon": gen_tryon}
+def _xiaole_request(method, path, body=None, timeout=90):
+    if not XIAOLEVIDEO_API_KEY:
+        raise ValueError("视频生成服务未配置（XIAOLEVIDEO_API_KEY）")
+    url = path if path.startswith("http") else (XIAOLEVIDEO_API_BASE + path)
+    headers = {"Authorization": "Bearer " + XIAOLEVIDEO_API_KEY, "User-Agent": "huangque-content/1.0"}
+    data = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    # 429（API Key 媒体任务过多）自动退避重试，扛并发限流
+    for attempt in range(_xiaole_429_retries + 1):
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:400]
+            if e.code == 429 and attempt < _xiaole_429_retries:
+                wait = min(45, 8 * (attempt + 1))
+                print("[xiaolevideo] 429 并发限流，%ds 后重试(%d/%d)" % (wait, attempt + 1, _xiaole_429_retries), flush=True)
+                time.sleep(wait)
+                continue
+            raise RuntimeError("视频接口失败: HTTP %s %s" % (e.code, detail))
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            # 瞬时网络抖动(SSL握手超时等)自动重试
+            if attempt < _xiaole_429_retries:
+                wait = min(30, 5 * (attempt + 1))
+                print("[xiaolevideo] 网络异常，%ds 后重试(%d/%d): %s" % (wait, attempt + 1, _xiaole_429_retries, str(e)[:80]), flush=True)
+                time.sleep(wait)
+                continue
+            raise RuntimeError("视频接口网络异常: %s" % str(e)[:120])
+
+def _xiaole_pick_video_url(output):
+    for v in ((output or {}).get("videos") or []):
+        if isinstance(v, dict):
+            u = v.get("url") or v.get("video_url") or v.get("src") or v.get("download_url")
+            if u:
+                return u
+        elif isinstance(v, str) and v:
+            return v
+    return None
+
+def _download_xiaole_video(url, prefix="xiaole"):
+    # 视频 CDN 多在海外(如 vidgen.x.ai)，国内服务器直连不通 → 复用法兰克福中转 /cdn/
+    headers = {"User-Agent": "huangque-content/1.0"}
+    relay = os.environ.get("HEYGEN_RELAY_BASE", "").strip().rstrip("/")
+    parts = urllib.parse.urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if relay and host and not host.endswith(".cn"):
+        fetch = "%s/cdn/%s/%s" % (relay, host, parts.path.lstrip("/"))
+        if parts.query:
+            fetch += "?" + parts.query
+        token = os.environ.get("HEYGEN_RELAY_TOKEN", "").strip()
+        if token:
+            headers["X-Relay-Token"] = token
+        url = fetch
+    # 下载中断(IncompleteRead/网络抖动)自动重试
+    data = None
+    last_err = None
+    for attempt in range(_xiaole_dl_retries):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=300) as r:
+                buf = r.read()
+            if buf:
+                data = buf
+                break
+            last_err = RuntimeError("下载为空")
+        except Exception as e:
+            last_err = e
+            print("[xiaolevideo] 下载失败重试(%d/%d): %s" % (attempt + 1, _xiaole_dl_retries, str(e)[:100]), flush=True)
+            time.sleep(3 * (attempt + 1))
+    if data is None:
+        raise RuntimeError("视频下载失败: %s" % (str(last_err)[:120] if last_err else "未知"))
+    if not data:
+        raise RuntimeError("视频下载失败")
+    fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键：防枚举
+    _out_path(fn).write_bytes(data)
+    return fn
+
+def generate_xiaole_video(model, prompt, reference_images=None, job_id=None, prefix="xiaole"):
+    """统一 generations API：创建 → 轮询 → 下载。Grok(果肉)/Seedance(微衣) 共用。"""
+    input_d = {"prompt": (prompt or "").strip()}
+    if reference_images:
+        input_d["reference_images"] = reference_images
+    try:
+        create = _xiaole_request("POST", "/api/v1/generations", {"model": model, "input": input_d})
+    except RuntimeError as e:
+        m = str(e)
+        if ("无可用渠道" in m) or ("insufficient_user_quota" in m) or ("额度" in m) or ("媒体任务过多" in m):
+            raise RuntimeError("该视频渠道暂时繁忙或维护中，请稍后再试")
+        raise
+    if create.get("code") not in (200, 0, None):
+        msg = str(create.get("message") or create)[:200]
+        if ("无可用渠道" in msg) or ("额度" in msg) or ("任务过多" in msg):
+            raise RuntimeError("该视频渠道暂时繁忙或维护中，请稍后再试")
+        raise RuntimeError("视频创建失败: %s" % msg)
+    data = create.get("data") or {}
+    rid = data.get("request_id") or data.get("task_id")
+    status_url = data.get("status_url") or (("/api/v1/generations/" + str(rid)) if rid else "")
+    if not status_url:
+        raise RuntimeError("视频服务未返回任务ID: %s" % str(create)[:300])
+    deadline = time.time() + XIAOLE_MAX_WAIT
+    last = ""
+    while time.time() < deadline:
+        st = _xiaole_request("GET", status_url, timeout=30)
+        sdata = st.get("data") or {}
+        status = str(sdata.get("status") or "").lower()
+        if status != last:
+            print("[xiaolevideo] %s model=%s status=%s" % (rid, model, status), flush=True)
+            if job_id:
+                update_video_asset_phase(job_id, "xiaole_" + (status or "running"))
+            last = status
+        vurl = _xiaole_pick_video_url(sdata.get("output"))
+        if vurl:
+            if job_id:
+                update_video_asset_phase(job_id, "downloading", source_video_url=vurl)
+            video_file = _download_xiaole_video(vurl, prefix)
+            return {"video_file": video_file, "video_url": _file_url(video_file),
+                    "source_video_url": vurl, "model": model, "request_id": rid}
+        if status in ("failed", "error", "cancelled", "canceled"):
+            err = sdata.get("error") or {}
+            msg = (err.get("message") if isinstance(err, dict) else None) or str(err) or status
+            raise RuntimeError("视频生成失败: %s" % msg)
+        time.sleep(XIAOLE_POLL_INTERVAL)
+    raise TimeoutError("视频生成超时")
+
+def gen_xiaole_video(payload):
+    job_id = payload.get("_job_id")
+    channel = (payload.get("channel") or "grok").strip()
+    model = XIAOLE_CHANNEL_MODELS.get(channel)
+    if not model:
+        raise ValueError("未知视频渠道：%s" % channel)
+    prompt = (payload.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("请输入视频提示词")
+    ref_images = None
+    if channel in XIAOLE_IMAGE_CHANNELS:
+        ref_images = payload.get("reference_images") or None
+    label = {"grok": "果肉视频", "micro": "微衣视频"}.get(channel, model)
+    if job_id:
+        update_video_asset_phase(job_id, "queued", mode=channel, text=prompt, model=model)
+    result = generate_xiaole_video(model, prompt, reference_images=ref_images, job_id=job_id, prefix=channel)
+    return {
+        "type": "video", "status": "done", "mode": channel, "model": model, "text": prompt,
+        "video_file": result.get("video_file"), "video_url": result.get("video_url"),
+        "source_video_url": result.get("source_video_url"),
+        "phase": "done", "message": "%s生成完成" % label,
+    }
+
+HANDLERS = {"video": gen_video, "tryon": gen_tryon, "xiaole_video": gen_xiaole_video}
