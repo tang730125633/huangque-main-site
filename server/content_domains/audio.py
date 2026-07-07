@@ -806,7 +806,18 @@ def gen_audio(payload):
         speech_rate = int(round((speed - 1.0) * 100))
         preview = generate_doubao_preview(voice, text, speech_rate=speech_rate, loudness_rate=volume, pitch_rate=pitch)
         fn = preview.get("file")
-        return {"type": "audio", "file": fn, "url": preview.get("url"), "voice": voice_key,
+        # 正式配音不能复用 voice_preview 本地URL(敏感文件需归属鉴权且不走COS)。
+        # 转存为独立 aud_*.mp3(非敏感)再 public_url→COS公开直链,可直接试听/下载。
+        if fn:
+            formal_fn = "audio/aud_%d.mp3" % int(time.time() * 1000)
+            _out_path(formal_fn).write_bytes(_out_path(fn).read_bytes())
+            try:
+                _out_path(fn).unlink()
+            except Exception:
+                pass
+            fn = formal_fn
+        url = public_url(fn, "audio/mpeg") if fn else preview.get("url")
+        return {"type": "audio", "file": fn, "url": url, "voice": voice_key,
                 "speed": speed, "pitch": pitch, "volume": volume, "text": text, "prompt": text}
     instructions = "中文短视频口播配音，语气自然，吐字清晰，节奏适合美业/本地生活转化。"
     body = json.dumps({
