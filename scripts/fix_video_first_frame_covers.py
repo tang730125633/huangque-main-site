@@ -97,6 +97,13 @@ def extract_and_backfill(job_id, video_rel, dry=False):
                     cover = cover_p.name if not "/" in video_rel else video_rel.rsplit("/",1)[0] + "/" + cover_p.name
             except Exception as e:
                 print("  ffmpeg failed for", video_rel, e)
+
+    if cover and HAVE_APP:
+        try:
+            pub = public_url(cover, "image/jpeg")
+            print(f"    uploaded to COS public: {pub}")
+        except Exception as e:
+            print("    public_url(COS) failed (cover may stay local):", e)
     if not cover:
         return False
 

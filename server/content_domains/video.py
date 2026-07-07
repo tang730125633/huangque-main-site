@@ -747,6 +747,7 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
     }
     if cover:
         ret["image_file"] = cover
+        ret["image_url"] = public_url(cover, "image/jpeg")
     return ret
 
 def generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration, job_id=None, avatar=None):
@@ -844,6 +845,7 @@ def generate_heygen_motion_video(image_file, reference_video_file, resolution, r
     }
     if cover:
         ret["image_file"] = cover
+        ret["image_url"] = public_url(cover, "image/jpeg")
     return ret
 
 # ============ F4 · 口播视频自动字幕（whisper 时间轴 + libass 烧录） ============
@@ -1169,7 +1171,8 @@ def gen_video(payload):
             subtitle_error = str(e)[:200]
     return {
         "type": "video", "status": "done", "mode": mode,
-        "image_file": video_result.get("image_file") or image_file, "image_url": _file_url(video_result.get("image_file") or image_file),
+        "image_file": video_result.get("image_file") or image_file,
+        "image_url": video_result.get("image_url") or _file_url(video_result.get("image_file") or image_file),
         "audio_file": audio_file, "audio_url": audio_url,
         "reference_video_file": reference_video_file,
         "reference_video_url": _file_url(reference_video_file) if reference_video_file else None,
@@ -1348,6 +1351,7 @@ def generate_tryon_video(person_video_file, clothes_file, background_file, secon
     }
     if cover:
         ret["image_file"] = cover
+        ret["image_url"] = public_url(cover, "image/jpeg")
     return ret
 
 def gen_tryon(payload):
@@ -1387,7 +1391,7 @@ def gen_tryon(payload):
         "clothes_file": clothes_file,
         "background_file": background_file,
         "image_file": video_result.get("image_file") or cover_file,
-        "image_url": _file_url(video_result.get("image_file")) if video_result.get("image_file") else (_file_url(cover_file) if cover_file else None),
+        "image_url": video_result.get("image_url") or (_file_url(video_result.get("image_file")) if video_result.get("image_file") else (_file_url(cover_file) if cover_file else None)),
         "text": text,
         "video_file": video_result.get("video_file"), "video_url": video_result.get("video_url"),
         "source_video_url": video_result.get("video_url"),
@@ -1528,6 +1532,7 @@ def generate_xiaole_video(model, prompt, reference_images=None, size="720x1280",
                     "source_video_url": vurl, "model": model, "request_id": rid}
             if cover:
                 ret["image_file"] = cover
+                ret["image_url"] = public_url(cover, "image/jpeg")
             return ret
         if status in ("failed", "error", "cancelled", "canceled"):
             err = sdata.get("error") or {}
@@ -1564,6 +1569,7 @@ def gen_xiaole_video(payload):
         "video_file": result.get("video_file"), "video_url": result.get("video_url"),
         "source_video_url": result.get("source_video_url"),
         "image_file": result.get("image_file"),
+        "image_url": result.get("image_url") or (public_url(result.get("image_file"), "image/jpeg") if result.get("image_file") else None),
         "phase": "done", "message": "%s生成完成" % label,
     }
 
