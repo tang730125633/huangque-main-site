@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 import os
 import threading
+import time
 
 from .core import (
     OPENAI_BASE, OPENAI_KEY, OUT_DIR, SIZES, ZELONG2_BASE, ZELONG2_KEY,
     ZELONG_BASE, ZELONG_KEY, _NOPROXY, _multipart, _post,
     base64, json, public_url, urllib, uuid,
 )
+from .video import XIAOLEVIDEO_API_KEY, _xiaole_request
 
 _ZELONG2_POOL_LOCK = threading.Lock()
 _ZELONG2_POOL_NEXT = 0
@@ -41,16 +43,71 @@ def _post_zelong2(path, data, ctype):
             print("[zelong2-pool] attempt failed %s" % errors[-1], flush=True)
     raise ValueError("泽龙2号池全部失败: " + " | ".join(errors))
 
+def _gen_image_xiaole(prompt, ratio, quality, count, img):
+    """果肉生图渠道(xiaolevideo.cn，与果肉/微衣视频同账号)：gpt-image-2 文生图/图生图。
+    统一 generations API：创建 → 轮询 → 落盘，与 video.py 的 generate_xiaole_video 同一套模式。"""
+    if not XIAOLEVIDEO_API_KEY:
+        raise ValueError("果肉生图未配置（XIAOLEVIDEO_API_KEY）")
+    resolution = "2k" if quality == "high" else "1k"
+    input_d = {"prompt": prompt, "mode": ("image_to_image" if img else "text_to_image"),
+               "resolution": resolution, "aspect_ratio": ratio, "quality": quality, "n": count}
+    if img:
+        input_d["reference_images"] = [{"type": "base64", "value": img}]
+    create = _xiaole_request("POST", "/api/v1/generations", {"model": "gpt-image-2", "input": input_d})
+    if create.get("code") not in (200, 0, None):
+        raise ValueError("出图创建失败: %s" % str(create.get("message"))[:200])
+    data = create.get("data") or {}
+    rid = data.get("request_id") or data.get("task_id")
+    status_url = data.get("status_url") or (("/api/v1/generations/" + str(rid)) if rid else "")
+    if not status_url:
+        raise ValueError("渠道未返回任务ID")
+    deadline = time.time() + 180
+    images = None
+    while time.time() < deadline:
+        st = _xiaole_request("GET", status_url, timeout=30)
+        sdata = st.get("data") or {}
+        status = str(sdata.get("status") or "").lower()
+        if status == "succeeded":
+            images = (sdata.get("output") or {}).get("images") or []
+            break
+        if status in ("failed", "error", "cancelled", "canceled"):
+            err = sdata.get("error") or {}
+            raise ValueError("出图失败: %s" % ((err.get("message") if isinstance(err, dict) else None) or str(err) or status))
+        time.sleep(3)
+    else:
+        raise ValueError("出图超时")
+    files_out, urls = [], []
+    for item in (images or []):
+        b64 = item.get("b64_json") if isinstance(item, dict) else None
+        url = item.get("url") if isinstance(item, dict) else None
+        fn = "img_%s.png" % uuid.uuid4().hex  # 不可猜键(#185)
+        if b64:
+            (OUT_DIR / fn).write_bytes(base64.b64decode(b64))
+        elif url:
+            with urllib.request.urlopen(url, timeout=120) as rr:
+                (OUT_DIR / fn).write_bytes(rr.read())
+        else:
+            continue
+        files_out.append(fn); urls.append(public_url(fn, "image/png"))
+    if not files_out:
+        raise ValueError("出图返回为空")
+    return {"type": "image", "mode": ("img2img" if img else "text2img"), "provider": "xiaole",
+            "count": len(files_out), "file": files_out[0], "url": urls[0],
+            "files": files_out, "urls": urls, "ratio": ratio, "prompt": prompt}
+
 def gen_image(payload):
     prompt = (payload.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("提示词不能为空")
     ratio = payload.get("ratio") or "1:1"
-    size  = SIZES.get(ratio, "1024x1024")
     img   = payload.get("image")   # base64(无 data: 前缀) — 上传参考图 → 图生图 / 局部修改
     mask  = payload.get("mask")    # base64 — 蒙版(透明处=要重绘的区域) → 局部修改
     quality = "high" if (payload.get("quality") or "hd") == "hd" else "medium"  # 标准=medium/高清=high
     provider = (payload.get("provider") or "openai").strip().lower()
+    if provider == "xiaole":
+        count = 1 if mask else max(1, min(2, int(payload.get("count") or 1)))
+        return _gen_image_xiaole(prompt, ratio, quality, count, img)
+    size  = SIZES.get(ratio, "1024x1024")
     if provider in {"zelong", "zelong2"}:
         if provider == "zelong2":
             base, key, provider_label = ZELONG2_BASE, ZELONG2_KEY, "泽龙2(chatgpt2api)"   # 专供生图号池
