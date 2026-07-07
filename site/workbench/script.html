@@ -201,7 +201,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=f3c3ca94"></script>
+<script src="cloud-shell.js?v=6fb3d9f2"></script>
 <script>
 /* 编导页接 /api/gen/copy（format=script）→ 结构化分镜脚本 */
 (function(){
@@ -209,7 +209,7 @@
   var topic=document.getElementById('scTopic'), sell=document.getElementById('scSell'),
       scenes=document.getElementById('scScenes'), meta=document.getElementById('scMeta');
   var orig=gen.innerHTML, lastScenes=[];
-  function tok(){ return localStorage.getItem('hq_token')||'__cookie__'; }
+  function tok(){ return '__cookie__'; }
   function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
   // 选项单选切换
   function seg(id,sel){ var box=document.getElementById(id); if(!box) return; box.querySelectorAll(sel).forEach(function(o){ o.onclick=function(){ box.querySelectorAll(sel).forEach(function(x){x.classList.remove('on');}); o.classList.add('on'); }; }); }

@@ -102,6 +102,32 @@ class AuthPointsTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=3)
 
+    def test_login_sets_http_only_cookie_without_plaintext_token_body(self):
+        self.auth.create_user("cookie_user", "secret123", 5)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = "http://127.0.0.1:%d" % server.server_address[1]
+        try:
+            req = urllib.request.Request(
+                base + "/api/auth/login",
+                data=json.dumps({"username": "cookie_user", "password": "secret123"}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=3) as r:
+                data = json.loads(r.read())
+                cookie = r.headers.get("Set-Cookie") or ""
+
+            self.assertNotIn("token", data)
+            self.assertEqual(data["user"]["username"], "cookie_user")
+            self.assertIn("HttpOnly", cookie)
+            self.assertIn(self.auth.AUTH_COOKIE_NAME + "=", cookie)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
 
 if __name__ == "__main__":
     unittest.main()

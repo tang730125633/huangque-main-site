@@ -1,13 +1,9 @@
-/* Workbench auth guard: legacy bearer-token fallback plus httpOnly cookie session. */
+/* Workbench auth guard: httpOnly cookie session check. */
 (function () {
   function redirect() {
     var here = (location.pathname.split("/").pop() || "dashboard").replace(/\.html$/i, "");
     location.replace("../login?redirect=" + encodeURIComponent(here));
   }
-
-  try {
-    if (localStorage.getItem("hq_token")) return;
-  } catch (e) {}
 
   fetch("/api/auth/me", { credentials: "same-origin", cache: "no-store" })
     .then(function (res) {

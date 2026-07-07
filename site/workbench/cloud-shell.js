@@ -215,10 +215,6 @@
   // 拉真实点数填到侧边+顶栏（生成后页面调 window.HQ.refreshPoints() 刷新）
   function authHeaders(extra){
     var h=extra||{};
-    try{
-      var tok=localStorage.getItem('hq_token');
-      if(tok) h.Authorization='Bearer '+tok;
-    }catch(e){}
     return h;
   }
   function refreshPoints(){
@@ -459,7 +455,7 @@
     .then(function(r){ if(r.status===404) throw new Error('__nobackend__'); return r.json().then(function(d){return {ok:r.ok,status:r.status,d:d};}); })
     .then(function(res){
       b.disabled=false; b.style.opacity='1';
-      if(res.ok&&res.d&&res.d.token){ authSuccess(res,'注册成功'); return; }
+      if(res.ok&&res.d&&res.d.user){ authSuccess(res,'注册成功'); return; }
       var detail=(res.d&&res.d.detail)||'注册失败，请重试';
       if(res.status===409) detail='账号已存在，请换一个账号';
       if(res.status===429) detail='注册太频繁，请稍后再试';
@@ -478,7 +474,6 @@
   }
   function renderUser(){
     var u=currentUser(), inn=!!u;
-    try{ inn=inn||!!localStorage.getItem('hq_token'); }catch(e){}
     var card=document.getElementById('hqUserCard'), auth=document.getElementById('hqAuthArea'), biz=document.getElementById('hqBizSwitch');
     var av='radial-gradient(circle at 32% 26%, #f6d488, #e7b24c 46%, #a8721f 100%)';
     if(inn){

@@ -651,7 +651,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(500, {"detail": "注册失败"})
             finally:
                 c.close()
-            return self._send(200, {"token": tok, "user": public_user(u, name)}, {"Set-Cookie": auth_cookie_header(tok)})
+            return self._send(200, {"user": public_user(u, name)}, {"Set-Cookie": auth_cookie_header(tok)})
         if p == "/api/auth/login":
             d = self._body()
             if self._bad_json():
@@ -666,7 +666,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(401, {"detail": "账号或密码错误"})
             self._clear_login_failures(u)
             tok = issue_token(u)
-            return self._send(200, {"token": tok, "user": {
+            return self._send(200, {"user": {
                 "username": u, "name": row["display_name"], "points": row["points"],
                 "role": row["role"], "must_change": bool(row["must_change"])}}, {"Set-Cookie": auth_cookie_header(tok)})
         if p == "/api/auth/logout":

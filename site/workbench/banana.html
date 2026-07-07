@@ -134,7 +134,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=f3c3ca94"></script>
+<script src="cloud-shell.js?v=6fb3d9f2"></script>
 <script>
 /* 作图页接后端能力中心 /api/gen/image + /api/gen/banana，点数后端统一扣。 */
 (function(){
@@ -152,7 +152,7 @@
       x.textContent=engineCost(x.getAttribute('data-engine-cost'))+'点';
     });
   };
-  function tok(){ return localStorage.getItem('hq_token')||'__cookie__'; }
+  function tok(){ return '__cookie__'; }
   function genLabel(){ return '立即生成（'+costFor()+' 点）'; }
   function updateCost(){
     updateEngineCosts();

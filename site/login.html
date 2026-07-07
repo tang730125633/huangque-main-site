@@ -255,9 +255,9 @@
       if(r.status===404){ throw new Error("__nobackend__"); }
       return r.json().then(function(d){ return {ok:r.ok,d:d}; });
     }).then(function(res){
-      if(res.ok && res.d && res.d.token){
+      if(res.ok && res.d && res.d.user){
         setMsg("注册成功，正在进入…","ok");
-        saveToken(res.d.token,res.d.user);
+        saveToken(null,res.d.user);
       }else{
         btn.disabled=false; btn.style.opacity="1"; setMsg((res.d&&res.d.detail)||"注册失败，请重试","err");
       }
@@ -281,9 +281,9 @@
       if(r.status===404){ throw new Error("__nobackend__"); }
       return r.json().then(function(d){ return {ok:r.ok,d:d}; });
     }).then(function(res){
-      if(res.ok && res.d && res.d.token){
+      if(res.ok && res.d && res.d.user){
         setMsg("登录成功，正在进入…","ok");
-        saveToken(res.d.token,res.d.user);
+        saveToken(null,res.d.user);
       }else{
         btn.disabled=false; btn.style.opacity="1"; setMsg((res.d&&res.d.detail)||"账号或密码错误","err");
       }

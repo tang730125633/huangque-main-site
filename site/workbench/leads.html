@@ -124,7 +124,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=f3c3ca94"></script>
+<script src="cloud-shell.js?v=6fb3d9f2"></script>
 <script>
 (function(){
   "use strict";
@@ -135,7 +135,7 @@
   var poll=null, running=false, lastLeads=[];
   var GRAD=['150deg,#9a6a3a,#5a3d22','150deg,#b04a60,#6a2d3d','150deg,#2c8478,#15534a','150deg,#7a5aa8,#3d2d5a','150deg,#3a6a9a,#22405a'];
 
-  function tok(){ return localStorage.getItem('hq_token')||'__cookie__'; }
+  function tok(){ return '__cookie__'; }
   function getPlatforms(){ return Array.from(document.querySelectorAll('.plChk:checked')).map(function(el){return el.value;}); }
   function getChannelsTargets(){
     var el=document.getElementById('chTargets'); if(!el||!el.value.trim()) return [];
