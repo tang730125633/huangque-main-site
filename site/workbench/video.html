@@ -125,6 +125,13 @@
   .history-list::-webkit-scrollbar-thumb{background:rgba(148,164,187,.24);border-radius:99px}
   .history-list::-webkit-scrollbar-track{background:rgba(7,11,19,.28);border-radius:99px}
   .history-item{width:100%;box-sizing:border-box;border:1px solid rgba(148,164,187,.12);border-radius:14px;background:rgba(7,11,19,.3);padding:14px;display:flex;flex-direction:column;gap:13px;color:#94a4bb}
+
+  /* 9:16 居中视频播放弹窗样式 */
+  .vidOv { position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 9999; display: flex; align-items: center; justify-content: center; }
+  .vidBox { position: relative; width: 100%; max-width: 420px; aspect-ratio: 9 / 16; background: #000; border-radius: 16px; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+  .vidClose { position: absolute; top: 12px; right: 12px; width: 36px; height: 36px; border: none; border-radius: 50%; background: rgba(255,255,255,.15); color: #fff; font-size: 20px; line-height: 1; cursor: pointer; z-index: 2; }
+  .vidClose:hover { background: rgba(255,255,255,.25); }
+  .vidBox video { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
   .history-head{display:flex;align-items:center;gap:9px}
   .history-thumb{width:40px;height:52px;border-radius:9px;border:1px solid rgba(148,164,187,.18);background:rgba(148,164,187,.08);object-fit:cover;overflow:hidden}
   .history-audio{width:40px;height:52px;border:1px solid rgba(148,164,187,.16);border-radius:9px;background:rgba(148,164,187,.08);color:#cbd5e1;display:flex;align-items:center;justify-content:center;cursor:pointer}
@@ -163,7 +170,6 @@
   .output-preview{height:312px;aspect-ratio:9/16;width:100%;position:relative;display:flex;align-items:center;justify-content:center;text-align:center;overflow:hidden;background:linear-gradient(145deg,rgba(11,15,22,.95),rgba(21,24,31,.94))}
   .output-preview img,.output-preview video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
   .output-preview .blur-bg{position:absolute;inset:0;filter:blur(8px);transform:scale(1.08);opacity:.28}
-  .video-poster{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:.9}
   .output-overlay{position:relative;z-index:2;padding:18px;color:#f6d78a;font-size:13px;line-height:1.45;font-weight:700;text-shadow:0 1px 12px rgba(0,0,0,.52)}
   .output-info{display:flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:#f6b729;color:#1b1205;font-weight:900;margin:0 auto 10px}
   .output-created{font-size:12px;color:#5c6b82}
@@ -171,12 +177,6 @@
   .mini-action{display:flex;flex-direction:column;align-items:center;gap:6px;padding:11px 4px;border:1px solid rgba(148,164,187,.1);border-radius:11px;background:rgba(148,164,187,.03);color:#94a4bb;text-decoration:none;cursor:pointer;transition:.16s}
   .mini-action:hover{color:#e7b24c;border-color:rgba(231,178,76,.24)}
   .mini-action span{font-size:11px}
-  .vidOv{position:fixed;inset:0;z-index:9999;background:rgba(2,5,10,.82);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:22px}
-  .vidBox{position:relative;width:min(90vw,calc(90vh * 9 / 16));aspect-ratio:9/16;max-height:90vh;border:1px solid rgba(231,178,76,.24);border-radius:14px;background:#05070c;box-shadow:0 28px 80px rgba(0,0,0,.58);overflow:hidden}
-  .vidBox video{width:100%;height:100%;object-fit:contain;background:#05070c;display:block}
-  .vidClose{position:absolute;right:10px;top:10px;z-index:3;width:34px;height:34px;border:1px solid rgba(255,255,255,.16);border-radius:50%;background:rgba(7,11,19,.78);color:#eaf1fa;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:18px;line-height:1}
-  .vidClose:hover{color:#e7b24c;border-color:rgba(231,178,76,.38)}
-  .vidLoading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#e7b24c;font-size:13px;font-weight:800;letter-spacing:0;background:linear-gradient(145deg,rgba(7,11,19,.96),rgba(16,20,28,.94))}
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;transition:.2s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:12px;padding:11px 16px;color:#eaf1fa;font-size:13px;z-index:80}
   .toast.show{opacity:1;transform:translateX(-50%)}
   @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source,.avatar-grid,.motion-preset-grid{grid-template-columns:1fr}.output-text{white-space:normal}.output-stage{width:min(202px,100%)}}
@@ -200,7 +200,7 @@
         <button class="function-tab" type="button" data-function="motion">影视级模仿</button>
         <button class="function-tab" type="button" data-function="tryon">换装换背景</button>
         <button class="function-tab" type="button" data-function="grok">果肉视频生成</button>
-        <button class="function-tab" type="button" data-function="micro">豆姐视频生成</button>
+        <button class="function-tab" type="button" data-function="micro">微衣视频生成</button>
       </div>
 
       <div id="talkingPanel" class="function-panel">
@@ -343,10 +343,6 @@
           </div>
           <div id="motionPresetGrid" class="motion-preset-grid"></div>
         </div>
-        <div class="motion-preset-panel">
-          <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
-          <div class="seg" style="grid-template-columns:repeat(5,1fr);"><button class="on" data-motion-ratio="9:16">9:16</button><button data-motion-ratio="16:9">16:9</button><button data-motion-ratio="1:1">1:1</button><button data-motion-ratio="4:5">4:5</button><button data-motion-ratio="5:4">5:4</button></div>
-        </div>
         <button id="motionGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:20px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
           生成影视级模仿视频
         </button>
@@ -390,21 +386,13 @@
         <div class="row">
           <div>
             <div class="label">果肉视频生成</div>
-            <div class="muted" style="font-size:12px;margin-top:6px;">Grok Video · 输入提示词生成，或上传 1 张参考图做图生视频</div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">Grok Video 模型 · 输入提示词直接生成视频</div>
           </div>
-          <span class="faint" style="font-size:11.5px;">文生 / 图生视频</span>
+          <span class="faint" style="font-size:11.5px;">文生视频</span>
         </div>
         <div class="panel" style="margin-top:14px;">
-          <div class="faint" style="font-size:12px;margin-bottom:8px;">视频提示词 <span style="color:#5c6b82;">· 点下方示例快速填入，或直接粘贴自己的</span></div>
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">视频提示词</div>
           <textarea id="grokPrompt" rows="4" placeholder="例如：一只橘猫在阳光洒落的窗台上慢慢转头，电影级光影，柔和景深，平滑运镜" style="width:100%;min-height:110px;resize:vertical;background:rgba(7,11,19,.5);border:1px solid rgba(148,164,187,.16);border-radius:12px;color:#eaf1fa;padding:12px 14px;font:inherit;font-size:14px;"></textarea>
-          <div id="grokExamples" style="display:flex;flex-wrap:wrap;gap:7px;margin-top:10px;"></div>
-        </div>
-        <div class="panel" style="margin-top:12px;">
-          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，图生视频，最多 1 张</span></div>
-          <label id="grokRefDrop" style="position:relative;display:flex;align-items:center;justify-content:center;min-height:74px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;background:rgba(7,11,19,.4);cursor:pointer;overflow:hidden;">
-            <input id="grokRefFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-            <span id="grokRefText" style="font-size:12.5px;color:#94a4bb;">点击上传参考图，或在提示词框粘贴图片，让 Grok 基于它生成视频（png/jpg/webp）</span>
-          </label>
         </div>
         <button id="grokGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:18px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
           生成果肉视频
@@ -415,7 +403,7 @@
       <div id="microPanel" class="function-panel motion-panel hidden">
         <div class="row">
           <div>
-            <div class="label">豆姐视频生成</div>
+            <div class="label">微衣视频生成</div>
             <div class="muted" style="font-size:12px;margin-top:6px;">Seedance 2.0 模型 · 输入提示词直接生成视频</div>
           </div>
           <span class="faint" style="font-size:11.5px;">文生视频</span>
@@ -425,7 +413,7 @@
           <textarea id="microPrompt" rows="4" placeholder="例如：夏日海边，模特穿着白色连衣裙迎风走来，逆光唯美，慢镜头" style="width:100%;min-height:110px;resize:vertical;background:rgba(7,11,19,.5);border:1px solid rgba(148,164,187,.16);border-radius:12px;color:#eaf1fa;padding:12px 14px;font:inherit;font-size:14px;"></textarea>
         </div>
         <button id="microGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:18px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
-          生成豆姐视频
+          生成微衣视频
         </button>
         <div id="microStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">Seedance 2.0 · 生成后自动保存到视频资产</div>
       </div>
@@ -470,14 +458,14 @@
 <div id="toast" class="toast"></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=6fb3d9f2"></script>
+<script src="cloud-shell.js?v=87f9cda0"></script>
 <script>
 (function(){
-  var token='__cookie__';
+  var token=localStorage.getItem('hq_token')||'__cookie__';
   var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='dapeng', activePreview=null, activePreviewBtn=null;
   var imageData='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
   var selectedSubtitle='off', selectedSubtitleStyle='white';  // F4 字幕：默认关闭，不勾选时行为与原来一致
-  var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16';
+  var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='';
   var tryonVideoData='', tryonClothesData='', tryonBackgroundData='';
   var motionAvatars=[], selectedMotionAvatarId=null, useNewMotionImage=true, avatarsLoaded=false;
   var currentVideoDraft=null;
@@ -499,6 +487,45 @@
       if(!r.ok) throw new Error('素材读取失败');
       return r.blob();
     }).then(function(blob){return URL.createObjectURL(blob);});
+  }
+
+  /* 打开 9:16 居中视频播放弹窗 */
+  function openVideoPlayer(videoUrl, title) {
+    // 移除已有弹窗
+    var old = document.querySelector('.vidOv');
+    if (old) old.remove();
+
+    var ov = document.createElement('div');
+    ov.className = 'vidOv';
+    ov.innerHTML = ''
+      + '<div class="vidBox">'
+      +   '<button class="vidClose" type="button" aria-label="关闭">×</button>'
+      +   '<video controls playsinline preload="auto"></video>'
+      + '</div>';
+
+    var box = ov.querySelector('.vidBox');
+    var vid = box.querySelector('video');
+    var closeBtn = box.querySelector('.vidClose');
+
+    // 使用 assetUrl 处理鉴权视频
+    assetUrl(videoUrl).then(function(src) {
+      vid.src = src;
+      vid.play().catch(function(){ /* autoplay may be blocked */ });
+    }).catch(function(e) {
+      toast(e.message || '视频加载失败');
+      ov.remove();
+    });
+
+    function cleanup() {
+      try { vid.pause(); vid.src = ''; } catch(e){}
+      ov.remove();
+    }
+    closeBtn.onclick = cleanup;
+    ov.onclick = function(e) {
+      if (e.target === ov) cleanup();
+    };
+
+    document.body.appendChild(ov);
   }
   function blobToDataUrl(blob){
     return new Promise(function(resolve,reject){
@@ -537,67 +564,8 @@
       });
     });
   }
-  function fetchFilePrefill(src, label){
-    src=String(src||'');
-    if(!src) return Promise.reject(new Error('缺少'+(label||'素材')));
-    if(src.indexOf('data:')===0) return Promise.resolve({dataUrl:src,previewUrl:src});
-    var headers=isProtectedLocal(src)?{Authorization:'Bearer '+token}:undefined;
-    return fetch(fresh(src),{cache:'no-store',headers:headers}).then(function(r){
-      if(r.status===401){location.href='../login.html?redirect=workbench/video';throw new Error('登录已过期');}
-      if(!r.ok) throw new Error((label||'素材')+'读取失败');
-      return r.blob();
-    }).then(function(blob){
-      return new Promise(function(resolve,reject){
-        var reader=new FileReader();
-        reader.onload=function(){resolve({dataUrl:reader.result,previewUrl:URL.createObjectURL(blob)});};
-        reader.onerror=function(){reject(new Error((label||'素材')+'读取失败'));};
-        reader.readAsDataURL(blob);
-      });
-    });
-  }
   function setAssetImage(img,u){if(img&&u) assetUrl(u).then(function(src){img.src=src;}).catch(function(){});}
   function downloadAsset(u,name){return assetUrl(u).then(function(src){var a=document.createElement('a');a.href=src;a.download=name||'huangque-video.mp4';document.body.appendChild(a);a.click();a.remove();});}
-  function openVideoPlayer(videoUrl,title){
-    if(!videoUrl) return;
-    var old=document.querySelector('.vidOv');
-    if(old && old._close) old._close();
-    var ov=document.createElement('div');
-    ov.className='vidOv';
-    ov.innerHTML='<div class="vidBox" role="dialog" aria-modal="true" aria-label="'+esc(title||'视频播放')+'">'
-      +'<button class="vidClose" type="button" aria-label="关闭">×</button>'
-      +'<div class="vidLoading">视频加载中...</div>'
-      +'<video controls playsinline autoplay preload="auto"></video>'
-      +'</div>';
-    var box=ov.querySelector('.vidBox');
-    var closeBtn=ov.querySelector('.vidClose');
-    var loading=ov.querySelector('.vidLoading');
-    var video=ov.querySelector('video');
-    var objectUrl='';
-    var close=function(){
-      document.removeEventListener('keydown',onKey);
-      try{video.pause();}catch(e){}
-      try{video.removeAttribute('src');video.load();}catch(e){}
-      if(objectUrl && objectUrl.indexOf('blob:')===0) URL.revokeObjectURL(objectUrl);
-      ov.remove();
-    };
-    var onKey=function(e){if(e.key==='Escape') close();};
-    ov._close=close;
-    closeBtn.onclick=close;
-    ov.onclick=function(e){if(e.target===ov) close();};
-    box.onclick=function(e){e.stopPropagation();};
-    document.addEventListener('keydown',onKey);
-    document.body.appendChild(ov);
-    assetUrl(videoUrl).then(function(src){
-      objectUrl=src;
-      video.src=src;
-      if(loading) loading.style.display='none';
-      var p=video.play();
-      if(p && p.catch) p.catch(function(){});
-    }).catch(function(){
-      close();
-      toast('视频读取失败');
-    });
-  }
   function toast(msg){var t=$('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},1700);}
   function dataButton(name,value){
     var nodes=document.querySelectorAll('[data-'+name+']');
@@ -606,11 +574,6 @@
   }
   function clickDataButton(name,value){
     var btn=dataButton(name,value);
-    if(btn){ btn.click(); return true; }
-    return false;
-  }
-  function clickMotionRatio(value){
-    var btn=document.querySelector('[data-motion-ratio="'+String(value||'').replace(/"/g,'\\"')+'"]');
     if(btn){ btn.click(); return true; }
     return false;
   }
@@ -650,15 +613,11 @@
     if($('outputCreated')) $('outputCreated').textContent='创建于：'+nowText();
     var box=$('outputPreview');
     if(box && result.video_url){
-      box.innerHTML='<div id="outputPreviewBg" class="blur-bg"></div>'
-        +(result.image_url?'<img class="video-poster" data-asset-src="'+esc(result.image_url)+'" alt="">':'')
-        +'<button class="history-play" type="button" title="播放视频"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>';
-      var poster=box.querySelector('[data-asset-src]');
-      if(poster) setAssetImage(poster,poster.getAttribute('data-asset-src'));
-      var bg=$('outputPreviewBg');
-      if(bg && result.image_url) assetUrl(result.image_url).then(function(u){bg.style.background='url(\"'+u+'\") center/cover';}).catch(function(){});
-      var play=box.querySelector('.history-play');
-      if(play) play.onclick=function(){openVideoPlayer(result.video_url,result.text||'生成视频');};
+      // 改为点击打开 9:16 弹窗，保留封面占位，不再内嵌小视频
+      box.innerHTML = '<div style="cursor:pointer;height:100%;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.3);border-radius:8px;">'
+        + '<div style="text-align:center;color:#eaf1fa;font-size:13px;">▶ 点击播放 9:16 视频</div>'
+        + '</div>';
+      box.onclick = function(){ openVideoPlayer(result.video_url, result.text); };
     }else if($('outputPreviewText')){
       $('outputPreviewText').innerHTML='视频任务已创建<br>完成后可在视频资产查看';
     }
@@ -746,7 +705,7 @@
         +'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px"><path d="M4 12v-2M8 16V8M12 19V5M16 16V8M20 12v-2"/></svg>'
         +'</button></div>';
       var preview=x.video_url
-        ?'<div class="blur-bg" data-bg-src="'+esc(image)+'"></div><img class="video-poster" data-asset-src="'+esc(image)+'" alt=""><button class="history-play" type="button" title="播放视频"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>'
+        ?'<div class="blur-bg" style="background:url(&quot;'+esc(image)+'&quot;) center/cover"></div><button class="history-play" type="button" title="播放视频"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>'
         :'<div class="blur-bg" style="background:url(&quot;'+esc(image)+'&quot;) center/cover"></div><div class="output-overlay"><div class="output-info">i</div><div>'+esc(statusLabel(x.status))+'</div></div>';
       var duration=x.duration?Math.round(Number(x.duration))+'秒':statusLabel(x.status);
       var progress=(!x.video_url && (x.phase || x.status==='processing' || x.status==='running'))?progressMarkup(phaseInfo(x.phase,x.status)):'';
@@ -772,15 +731,22 @@
         }
       }
       var playBtn=card.querySelector('.history-play');
-      var poster=card.querySelector('.history-preview [data-asset-src]');
-      var bg=card.querySelector('.history-preview [data-bg-src]');
-      if(poster) setAssetImage(poster,poster.getAttribute('data-asset-src'));
-      if(bg) assetUrl(bg.getAttribute('data-bg-src')).then(function(src){bg.style.background='url(\"'+src+'\") center/cover';}).catch(function(){});
-      if(playBtn){
+      if(playBtn && x.video_url){
+        // 改用弹窗播放，不再小框内播放
         playBtn.onclick=function(e){
           e.stopPropagation();
-          openVideoPlayer(x.video_url,x.text||'历史视频');
+          openVideoPlayer(x.video_url, x.text);
         };
+        // 如果有内嵌 video，移除它，改用封面
+        var videoEl=card.querySelector('.history-preview video');
+        if(videoEl){
+          videoEl.parentNode.innerHTML = '<div class="blur-bg" style="background:url(&quot;'+esc(image)+'&quot;) center/cover"></div><button class="history-play" type="button" title="播放视频"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>';
+          // re-query the new playBtn
+          playBtn = card.querySelector('.history-play');
+          if(playBtn){
+            playBtn.onclick=function(e){ e.stopPropagation(); openVideoPlayer(x.video_url, x.text); };
+          }
+        }
       }
       var downloadLink=card.querySelector('.history-link[href]');
       if(downloadLink && isProtectedLocal(x.video_url)){
@@ -1042,8 +1008,8 @@
       $('modeSummary').textContent='果肉视频（Grok Video）：输入提示词直接生成视频';
       if($('modeName')) $('modeName').textContent='果肉视频';
     }else if(videoFunction==='micro'){
-      $('modeSummary').textContent='豆姐视频（Seedance 2.0）：输入提示词直接生成视频';
-      if($('modeName')) $('modeName').textContent='豆姐视频';
+      $('modeSummary').textContent='微衣视频（Seedance 2.0）：输入提示词直接生成视频';
+      if($('modeName')) $('modeName').textContent='微衣视频';
     }else{
       updateMode(mode);
     }
@@ -1162,10 +1128,6 @@
     b.parentElement.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b);});
     if(b.dataset.resolution) selectedResolution=b.dataset.resolution;
     if(b.dataset.ratio) selectedRatio=b.dataset.ratio;
-    if(b.dataset.motionRatio){
-      selectedMotionRatio=b.dataset.motionRatio;
-      if(videoFunction==='motion' && $('outputRatio')) $('outputRatio').textContent=selectedMotionRatio;
-    }
     if(b.dataset.motion) selectedMotion=b.dataset.motion;
     if(b.dataset.subtitle){selectedSubtitle=b.dataset.subtitle;var sr=$('subtitleStyleRow');if(sr)sr.style.display=(selectedSubtitle==='on'?'':'none');}
     if(b.dataset.substyle) selectedSubtitleStyle=b.dataset.substyle;
@@ -1319,11 +1281,11 @@
     setOutputImage(motionPreviewImage);
     if($('outputText')) $('outputText').textContent='影视级模仿视频生成记录';
     if($('outputMotion')) $('outputMotion').textContent='影视级模仿';
-    if($('outputRatio')) $('outputRatio').textContent=selectedMotionRatio;
+    if($('outputRatio')) $('outputRatio').textContent='9:16';
     if($('outputDuration')) $('outputDuration').textContent='生成中';
     if($('outputCreated')) $('outputCreated').textContent='创建于：'+nowText();
     if($('outputPreviewText')) $('outputPreviewText').innerHTML='影视级模仿视频正在生成中<br>完成后会自动预览';
-    currentVideoDraft={mode:'motion',image_url:motionPreviewImage,text:'影视级模仿视频',ratio:selectedMotionRatio,motion:'medium',status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
+    currentVideoDraft={mode:'motion',image_url:motionPreviewImage,text:'影视级模仿视频',ratio:'9:16',motion:'medium',status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
     renderVideoHistory([currentVideoDraft]);
     setVideoStatus('正在提交影视级模仿任务...');
     var body={
@@ -1331,7 +1293,7 @@
       reference_video_data:motionReferenceVideoData,
       text:'影视级模仿视频',
       resolution:'720p',
-      ratio:selectedMotionRatio,
+      ratio:'9:16',
       duration:10,
       motion:'medium'
     };
@@ -1443,26 +1405,23 @@
       });
     }).catch(function(e){setBusy(false);if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}toast(e.message||'配音资产读取失败');});
   };
-  // 果肉(Grok)/豆姐(Seedance) 统一视频生成 → /api/gen/xiaole_video
+  // 果肉(Grok)/微衣(Seedance) 统一视频生成 → /api/gen/xiaole_video
   function submitXiaole(channel){
     if(!token){ location.href='../login.html?redirect=workbench/video'; return; }
     var promptEl=channel==='grok'?$('grokPrompt'):$('microPrompt');
     var statusEl=channel==='grok'?$('grokStatus'):$('microStatus');
-    var label=channel==='grok'?'果肉视频':'豆姐视频';
+    var label=channel==='grok'?'果肉视频':'微衣视频';
     var prompt=((promptEl||{}).value||'').trim();
     if(!prompt){ toast('请输入视频提示词'); if(promptEl) promptEl.focus(); return; }
     setBusy(true);
     if(statusEl) statusEl.textContent='正在提交'+label+'任务...';
     if($('outputPreviewText')) $('outputPreviewText').innerHTML='视频正在生成中<br>完成后会自动预览';
-    if($('outputRatio')) $('outputRatio').textContent='—';
     currentVideoDraft={text:prompt,ratio:'—',motion:label,status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
     renderVideoHistory([currentVideoDraft]);
-    var xlPayload={channel:channel,prompt:prompt};
-    if(channel==='grok' && grokRefData){ xlPayload.reference_images=[grokRefData]; }  // 图生视频参考图(最多1张)
     fetch('/api/gen/xiaole_video',{
       method:'POST',
       headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-      body:JSON.stringify(xlPayload)
+      body:JSON.stringify({channel:channel,prompt:prompt})
     }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
       .then(function(res){
         if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
@@ -1483,116 +1442,11 @@
   $('tryonGenerateBtn').onclick=submitTryon;
   if($('grokGenerateBtn')) $('grokGenerateBtn').onclick=function(){submitXiaole('grok');};
   if($('microGenerateBtn')) $('microGenerateBtn').onclick=function(){submitXiaole('micro');};
-  // ---- 果肉(Grok)面板：示例提示词 chips + 参考图(图生视频，最多1张) ----
-  var grokRefData='';
-  (function setupGrokPanel(){
-    var ex=$('grokExamples');
-    if(ex){
-      ['护肤精华瓶在水花中缓缓旋转，晶莹剔透，柔光微距，高级广告质感',
-       '美妆模特侧脸特写，光影流动，发丝随风轻扬，电影级慢镜头',
-       '口红从盒中缓缓推出，丝绸背景，金色光泽流转，杂志级打光',
-       '面霜质地特写，奶油般顺滑铺展，柔和晨光，唯美微距'].forEach(function(t){
-        var b=document.createElement('button'); b.type='button'; b.title=t;
-        b.textContent='示例·'+(t.length>12?(t.slice(0,12)+'…'):t);
-        b.style.cssText='padding:6px 11px;font-size:12px;color:#94a4bb;background:rgba(148,164,187,.06);border:1px solid rgba(148,164,187,.16);border-radius:8px;cursor:pointer;font-family:inherit;';
-        b.onclick=function(){ var ta=$('grokPrompt'); if(ta){ ta.value=t; ta.focus(); } };
-        ex.appendChild(b);
-      });
-    }
-    var inp=$('grokRefFile'), drop=$('grokRefDrop'), txt=$('grokRefText');
-    function resetGrokRef(){ grokRefData=''; if(txt){txt.style.display='';}
-      var pv=drop&&drop.querySelector('.grok-ref-pv'); if(pv) pv.remove();
-      var x=drop&&drop.querySelector('.grok-ref-x'); if(x) x.remove(); }
-    function setGrokRefFile(f){
-      if(!f) return;
-      if(f.size>8*1024*1024){ toast('参考图太大，请压到 8MB 内'); return; }
-      var rd=new FileReader();
-      rd.onload=function(){ grokRefData=rd.result; if(txt) txt.style.display='none';
-        var old=drop.querySelector('.grok-ref-pv'); if(old) old.remove();
-        var img=document.createElement('img'); img.className='grok-ref-pv'; img.src=rd.result;
-        img.style.cssText='position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#05070c;';
-        drop.appendChild(img);
-        if(!drop.querySelector('.grok-ref-x')){ var x=document.createElement('span'); x.className='grok-ref-x'; x.textContent='✕';
-          x.style.cssText='position:absolute;right:7px;top:7px;z-index:3;width:24px;height:24px;border-radius:50%;background:rgba(7,11,19,.82);border:1px solid rgba(148,164,187,.35);color:#eaf1fa;font-size:12px;display:flex;align-items:center;justify-content:center;cursor:pointer;';
-          x.onclick=function(e){ e.preventDefault(); e.stopPropagation(); inp.value=''; resetGrokRef(); };
-          drop.appendChild(x); }
-        toast('参考图已就绪');
-      };
-      rd.readAsDataURL(f);
-    }
-    if(inp){ inp.onchange=function(){ setGrokRefFile(inp.files&&inp.files[0]); }; }
-    // 提示词框里直接粘贴图片(截图/复制的图)当参考图，不用非得点击选文件
-    function grokPasteHandler(e){
-      var items=(e.clipboardData&&e.clipboardData.items)||[];
-      for(var i=0;i<items.length;i++){
-        if(items[i].type&&items[i].type.indexOf('image/')===0){
-          var f=items[i].getAsFile();
-          if(f){ e.preventDefault(); setGrokRefFile(f); }
-          return;
-        }
-      }
-    }
-    if($('grokPrompt')) $('grokPrompt').addEventListener('paste', grokPasteHandler);
-    if(drop){ drop.addEventListener('paste', grokPasteHandler); }
-  })();
   if($('refreshAvatarBtn')) $('refreshAvatarBtn').onclick=function(){loadMotionAvatars(true);};
   $('scriptText').dispatchEvent(new Event('input'));
   updateFunction('talking');
   // F7 联动：资产页视频「重生成」跳转过来时，读 localStorage 预填(一次性)
   var _prefillVoice='';
-  function prefillMode(d){
-    var m=String((d&&d.mode)||'text').toLowerCase();
-    if(m==='digital_human'||m==='talking'||m==='talking_head') return 'text';
-    if(m==='txt2video') return 'grok';
-    if(m==='img2video') return 'grok';
-    return m||'text';
-  }
-  function setMotionImagePrefill(dataUrl, previewUrl){
-    motionImageData=dataUrl;
-    selectMotionAvatar(null);
-    var box=$('motionImageDrop');
-    if(box){
-      box.classList.add('has-media');
-      box.innerHTML='<input id="motionImageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+esc(previewUrl||dataUrl)+'" alt="人物形象预览">';
-      bindMotionFile(box.querySelector('input'),'image');
-    }
-    setOutputImage(previewUrl||dataUrl);
-  }
-  function setMotionReferencePrefill(dataUrl, previewUrl){
-    motionReferenceVideoData=dataUrl;
-    selectedMotionPreset='';
-    renderMotionPresets();
-    showMotionVideoPreview(previewUrl||dataUrl);
-    setMotionSourceText('已带入原参考片段（可点播放预览）');
-  }
-  function setTryonPrefill(kind, dataUrl, previewUrl){
-    var box=kind==='video'?$('tryonVideoDrop'):(kind==='clothes'?$('tryonClothesDrop'):$('tryonBgDrop'));
-    if(!box||!dataUrl) return;
-    if(kind==='video') tryonVideoData=dataUrl;
-    else if(kind==='clothes') tryonClothesData=dataUrl;
-    else tryonBackgroundData=dataUrl;
-    box.classList.add('has-media');
-    if(kind==='video'){
-      box.innerHTML='<input id="tryonVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden><video src="'+esc(previewUrl||dataUrl)+'" muted playsinline></video>';
-      bindTryonFile(box.querySelector('input'),'video');
-    }else if(kind==='clothes'){
-      box.innerHTML='<input id="tryonClothesFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+esc(previewUrl||dataUrl)+'" alt="衣服图预览">';
-      bindTryonFile(box.querySelector('input'),'clothes');
-    }else{
-      box.innerHTML='<input id="tryonBgFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+esc(previewUrl||dataUrl)+'" alt="背景图预览">';
-      bindTryonFile(box.querySelector('input'),'bg');
-    }
-    updateTryonHint();
-  }
-  function setAudioPrefill(dataUrl){
-    audioData=dataUrl||'';
-    selectedAssetAudio=null;
-    document.querySelectorAll('.source-card').forEach(function(x){x.classList.toggle('on',x.dataset.source==='file');});
-    if($('audioFileBox')) $('audioFileBox').classList.remove('hidden');
-    if($('assetAudioBox')) $('assetAudioBox').classList.add('hidden');
-    if($('audioFileName')) $('audioFileName').textContent='已带入原口播音频';
-    updateChecklist();
-  }
   function applyAssetPrefill(){
     try{
       var prefillType=new URLSearchParams(location.search).get('prefill');
@@ -1600,77 +1454,25 @@
       var d=JSON.parse(localStorage.getItem('hq_video_prefill')||'null');
       localStorage.removeItem('hq_video_prefill');
       if(!d) return;
-      var m=prefillMode(d);
+      if(d.prompt && $('scriptText')){$('scriptText').value=d.prompt;$('scriptText').dispatchEvent(new Event('input'));}
       if(d.resolution) clickDataButton('resolution',d.resolution);
       if(d.ratio) clickDataButton('ratio',d.ratio);
       if(d.motion) clickDataButton('motion',d.motion);
       _prefillVoice=d.voice||'';
-      if(m==='grok'||m==='micro'){
-        updateFunction(m);
-        var ta=m==='grok'?$('grokPrompt'):$('microPrompt');
-        if(ta){ta.value=d.prompt||d.text||'';ta.focus();}
-        if(typeof toast==='function') toast('已切到原视频模式并带入提示词');
-        return;
-      }
-      if(m==='tryon'){
-        updateFunction('tryon');
-        setVideoStatus('正在带入换装换背景素材...');
-        var jobs=[];
-        if(d.reference_video_url) jobs.push(fetchFilePrefill(d.reference_video_url,'原视频').then(function(v){setTryonPrefill('video',v.dataUrl,v.previewUrl);}));
-        if(d.image_url) jobs.push(fetchImagePrefill(d.image_url).then(function(img){setTryonPrefill('clothes',img.dataUrl,img.previewUrl);}));
-        if(d.background_url) jobs.push(fetchImagePrefill(d.background_url).then(function(img){setTryonPrefill('bg',img.dataUrl,img.previewUrl);}));
-        Promise.allSettled(jobs).then(function(){
-          setVideoStatus('已按原换装模式预填，可检查素材后重新生成');
-          if(typeof toast==='function') toast('已切到换装换背景并带入可用素材');
-        });
-        return;
-      }
-      if(m==='motion'){
-        updateFunction('motion');
-        if(d.ratio) clickMotionRatio(d.ratio);
-        setVideoStatus('正在带入影视级模仿素材...');
-        var motionJobs=[];
-        if(d.image_url) motionJobs.push(fetchImagePrefill(d.image_url).then(function(img){setMotionImagePrefill(img.dataUrl,img.previewUrl);}));
-        if(d.reference_video_url) motionJobs.push(fetchFilePrefill(d.reference_video_url,'参考片段').then(function(v){setMotionReferencePrefill(v.dataUrl,v.previewUrl);}));
-        Promise.allSettled(motionJobs).then(function(){
-          setVideoStatus('已按影视级模仿预填，可检查素材后重新生成');
-          if(typeof toast==='function') toast('已切到影视级模仿并带入可用素材');
-        });
-        return;
-      }
-      updateFunction('talking');
-      updateMode(m==='audio'?'audio':'text');
-      if((d.prompt||d.text) && $('scriptText')){$('scriptText').value=d.prompt||d.text;$('scriptText').dispatchEvent(new Event('input'));}
-      var talkJobs=[];
       if(d.image_url){
         setVideoStatus('正在带入人物形象图片...');
-        talkJobs.push(fetchImagePrefill(d.image_url).then(function(img){setImageFromPrefill(img.dataUrl,img.previewUrl);}));
+        fetchImagePrefill(d.image_url).then(function(img){
+          setImageFromPrefill(img.dataUrl,img.previewUrl);
+          setVideoStatus('人物形象图片已带入，可继续选择音色生成视频');
+          if(typeof toast==='function') toast(prefillType==='image'?'已带入作图结果':'已按所选作品预填参数');
+        }).catch(function(e){setVideoStatus('图片带入失败，请手动上传'); if(typeof toast==='function') toast(e.message||'图片带入失败');});
+      }else if(typeof toast==='function'){
+        toast('已按所选作品预填参数');
       }
-      if(m==='audio' && d.audio_url){
-        talkJobs.push(fetchFilePrefill(d.audio_url,'口播音频').then(function(a){setAudioPrefill(a.dataUrl);}));
-      }
-      Promise.allSettled(talkJobs).then(function(){
-        setVideoStatus(m==='audio'?'已按现成音频模式预填，可重新生成':'已按文案配音模式预填，可重新生成');
-        if(typeof toast==='function') toast(prefillType==='image'?'已带入作图结果':'已按原视频模式预填参数');
-      });
     }catch(e){}
   }
   function _applyPrefillVoice(){ if(_prefillVoice){ applyTemplateVoice(_prefillVoice); _prefillVoice=''; } }
-  // 灵感页「一键跟创（视频）」：?prompt= 预填到果肉/豆姐渠道并切到对应 tab
-  function applyInspirationPrefill(){
-    try{
-      var q=new URLSearchParams(location.search);
-      var pp=q.get('prompt'); if(!pp) return;
-      var ch=(q.get('channel')||'grok').trim();
-      if(ch!=='grok' && ch!=='micro') ch='grok';
-      updateFunction(ch);
-      var ta=(ch==='grok')?$('grokPrompt'):$('microPrompt');
-      if(ta){ ta.value=pp; ta.focus(); }
-      if(typeof toast==='function') toast('已带入灵感提示词，可直接生成');
-    }catch(e){}
-  }
   applyAssetPrefill();
-  applyInspirationPrefill();
   loadVoices();
   loadVideoHistory();
 })();
