@@ -1287,8 +1287,9 @@ def gen_tryon(payload):
         seconds = 6
     seconds = max(1, min(15, seconds))
     text = (payload.get("text") or "").strip() or "换装换背景"
+    cover_file = clothes_file or background_file
     update_video_asset_phase(job_id, "queued", mode="tryon", text=text,
-                             reference_video_file=person_video_file, image_file=clothes_file,
+                             reference_video_file=person_video_file, image_file=cover_file,
                              background_file=background_file, tryon_mode=tryon_mode)
     video_result = generate_tryon_video(person_video_file, clothes_file, background_file, seconds,
                                         job_id=job_id, username=username)
@@ -1300,8 +1301,8 @@ def gen_tryon(payload):
         "reference_video_url": _file_url(person_video_file),
         "clothes_file": clothes_file,
         "background_file": background_file,
-        "image_file": clothes_file,
-        "image_url": _file_url(clothes_file) if clothes_file else None,
+        "image_file": cover_file,
+        "image_url": _file_url(cover_file) if cover_file else None,
         "text": text,
         "video_file": video_result.get("video_file"), "video_url": video_result.get("video_url"),
         "source_video_url": video_result.get("video_url"),
