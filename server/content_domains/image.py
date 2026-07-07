@@ -61,7 +61,7 @@ def _gen_image_xiaole(prompt, ratio, quality, count, img):
     status_url = data.get("status_url") or (("/api/v1/generations/" + str(rid)) if rid else "")
     if not status_url:
         raise ValueError("渠道未返回任务ID")
-    deadline = time.time() + 180
+    deadline = time.time() + 300   # 果肉生图实测~239s近死线,放宽防误超时(前端banana轮询容忍900s #331)
     images = None
     while time.time() < deadline:
         st = _xiaole_request("GET", status_url, timeout=30)
