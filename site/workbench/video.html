@@ -480,7 +480,7 @@
 <script>
 (function(){
   var token='__cookie__';
-  var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='dapeng', activePreview=null, activePreviewBtn=null;
+  var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='S_d21F8OR62', activePreview=null, activePreviewBtn=null;
   var imageData='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
   var selectedSubtitle='off', selectedSubtitleStyle='white';  // F4 字幕：默认关闭，不勾选时行为与原来一致
   var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16';
@@ -490,9 +490,10 @@
   var currentVideoDraft=null;
   var motionPresets=[];
   var publicFallback=[
-    {scope:'public',voice_key:'dapeng',display_name:'大鹏 IVC',provider_voice:'dapeng',sub:'克隆男声 · 亲切'},
-    {scope:'public',voice_key:'zelong',display_name:'泽龙 IVC',provider_voice:'zelong',sub:'克隆男声 · 磁性'},
-    {scope:'public',voice_key:'paul',display_name:'Paul 男声',provider_voice:'paul',sub:'官方中文 · 沉稳'}
+    {scope:'public',voice_key:'S_d21F8OR62',display_name:'温柔女声',provider_voice:'S_d21F8OR62',sub:'情感种草 · 柔和自然'},
+    {scope:'public',voice_key:'S_l8wE8OR62',display_name:'活力女声',provider_voice:'S_l8wE8OR62',sub:'广告推荐 · 明亮有记忆点'},
+    {scope:'public',voice_key:'S_pa0E8OR62',display_name:'沉稳男声',provider_voice:'S_pa0E8OR62',sub:'知识口播 · 稳重清晰'},
+    {scope:'public',voice_key:'S_xaUB8OR62',display_name:'亲和女声',provider_voice:'S_xaUB8OR62',sub:'本地生活 · 真实亲切'}
   ];
   var voices=publicFallback.slice();
   var $=function(id){return document.getElementById(id);};
