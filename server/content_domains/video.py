@@ -491,6 +491,17 @@ def _heygen_upload_asset(file_path, direct=False):
     if not path.is_file():
         raise ValueError("视频素材文件不存在")
     mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    if direct:
+        # HeyGen 素材上传端点收「raw 文件字节 + 文件 mime」(同口播直连 #405 的 /v1/asset)；
+        # 发 multipart/form-data 会被 HeyGen 判 "Content type not supported application/octet-stream" 400。
+        d = _heygen_direct_req("POST", _HEYGEN_DIRECT_UPLOAD + "/v1/asset", path.read_bytes(), mime, timeout=240)
+        node = d.get("data") or {}
+        asset_id = str(node.get("asset_id") or node.get("id") or "").strip()
+        if not asset_id:
+            raise RuntimeError("HeyGen直连素材上传未返回asset_id: %s" % json.dumps(d, ensure_ascii=False)[:300])
+        return asset_id
+    # ponytail: 中转(泽龙 relay)仍走 v3 /assets multipart——已知同样被 HeyGen 判 octet-stream 400。
+    # motion 直连优先(_HEYGEN_DIRECT 默认开)，此 multipart 分支仅在直连被禁用时用；中转上传修复待换渠道或单独排查 relay 端点。
     boundary = "----huangque-heygen-%d" % int(time.time() * 1000)
     head = (
         "--%s\r\n"
@@ -1375,6 +1386,30 @@ def _store_tryon_video(local_path, prefix="tryon"):
     _out_path(fn).write_bytes(src.read_bytes())
     return _faststart_video_file(fn)
 
+TRYON_MAX_INPUT_SEC = 6   # 换装输入视频时长上限(秒)。RunningHub Wan Animate 生成耗时 ∝ 输入时长
+                          # 实测(2026-07-09,fang测试号): 19.5s→8.0min、6s→6.5min、4s→3.1min。
+                          # 截到 6s 让绝大多数换装 ≤5min;RunningHub 排队忙时仍可能略超,100%稳定需换 WaveSpeed 专用推理(均值223s)。
+
+def _cap_tryon_input(person_fp):
+    """输入视频超 TRYON_MAX_INPUT_SEC 秒则截取前段(保证 5 分钟内出片)。返回 (路径, 原时长秒 or None)。
+    -c copy 直接复制流不重编码(实测重编码会让 RunningHub 换装失败)；截取失败则退回原视频(宁慢不坏)。"""
+    try:
+        out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                              "-of", "csv=p=0", str(person_fp)], capture_output=True, text=True, timeout=30)
+        dur = float((out.stdout or "0").strip() or 0)
+    except Exception:
+        return person_fp, None
+    if dur <= 0 or dur <= TRYON_MAX_INPUT_SEC + 0.5:
+        return person_fp, dur or None
+    capped = pathlib.Path(str(person_fp).rsplit(".", 1)[0] + "_cap%ds.mp4" % TRYON_MAX_INPUT_SEC)
+    try:
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(person_fp),
+                        "-t", str(TRYON_MAX_INPUT_SEC), "-c", "copy", str(capped)], check=True, timeout=120)
+    except Exception:
+        return person_fp, dur
+    return (capped if capped.is_file() and capped.stat().st_size > 0 else person_fp), dur
+
+
 def generate_tryon_video(person_video_file, clothes_file, background_file, seconds, job_id=None, username=None):
     """RunningHub 两段式换装/换背景驱动。返回 {video_file, video_url, ...}。"""
     try:
@@ -1389,6 +1424,9 @@ def generate_tryon_video(person_video_file, clothes_file, background_file, secon
     person_fp = _resolve_out_file(person_video_file)
     if not person_fp:
         raise ValueError("换装视频文件不存在")
+    person_fp, _orig_dur = _cap_tryon_input(person_fp)  # 超 10s 截取,保证 5 分钟内出片
+    if _orig_dur and _orig_dur > TRYON_MAX_INPUT_SEC + 0.5:
+        print("[tryon] 输入视频 %.1fs 超上限,截取前 %ds 保证时效" % (_orig_dur, TRYON_MAX_INPUT_SEC), flush=True)
     clothes_fp = _resolve_out_file(clothes_file) if clothes_file else None
     background_fp = _resolve_out_file(background_file) if background_file else None
     if clothes_file and not clothes_fp:
