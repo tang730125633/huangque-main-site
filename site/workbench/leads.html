@@ -153,6 +153,18 @@
     Object.keys(patch||{}).forEach(function(k){ cur[k]=patch[k]; });
     all[id]=cur; localStorage.setItem('hq_leads_crm', JSON.stringify(all));
     lastLeads=lastLeads.map(function(L){ return L.lead_id===id ? Object.assign({}, L, cur) : L; });
+    fetch('/api/gen/leads/crm',{
+      method:'POST',
+      credentials:'include',
+      headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},
+      body:JSON.stringify(Object.assign({lead_id:id}, cur))
+    }).then(function(r){ return r.json().then(function(d){return {s:r.status,d:d};}); })
+      .then(function(x){
+        if(x.s===200 && x.d && x.d.crm){
+          var all2=crmStore(); all2[id]=Object.assign({}, all2[id]||{}, x.d.crm);
+          localStorage.setItem('hq_leads_crm', JSON.stringify(all2));
+        }
+      }).catch(function(){});
   }
   function withCrm(L){
     var saved=(crmStore()[L.lead_id]||{});
@@ -160,6 +172,22 @@
   }
   function optHTML(items, val){
     return items.map(function(x){ return '<option value="'+esc(x)+'"'+(x===val?' selected':'')+'>'+esc(x)+'</option>'; }).join('');
+  }
+  function loadRemoteCrm(leads){
+    var ids=(leads||[]).map(function(L){ return L.lead_id; }).filter(Boolean);
+    if(!ids.length) return Promise.resolve(false);
+    return fetch('/api/gen/leads/crm?ids='+encodeURIComponent(ids.join(',')),{
+      credentials:'include',
+      headers:{'Authorization':'Bearer '+tok()}
+    }).then(function(r){ return r.ok ? r.json() : null; }).then(function(d){
+      var items=(d&&d.items)||{}, keys=Object.keys(items);
+      if(!keys.length) return false;
+      var all=crmStore();
+      keys.forEach(function(id){ all[id]=Object.assign({}, all[id]||{}, items[id]); });
+      localStorage.setItem('hq_leads_crm', JSON.stringify(all));
+      lastLeads=lastLeads.map(withCrm);
+      return true;
+    }).catch(function(){ return false; });
   }
   function setStatus(t,c){ stat.innerHTML=t; dot.style.background=c||'#5c6b82'; if(c==='#2dd4bf'){dot.style.animation='hq-pulse 2s infinite';}else{dot.style.animation='none';} }
   function num(n){ return (n==null?'—':String(n)).replace(/\B(?=(\d{3})+(?!\d))/g,','); }
@@ -201,7 +229,7 @@
       actionHTML+
     '</div>';
   }
-  function renderLeads(leads){
+  function renderLeads(leads, skipRemote){
     lastLeads=(leads||[]).map(withCrm);
     var expBtn=document.getElementById('exportBtn');
     if(!leads || !leads.length){
@@ -211,6 +239,9 @@
     rows.innerHTML=lastLeads.map(rowHTML).join('');
     cntLabel.textContent='（共 '+lastLeads.length+' 条）';
     if(expBtn) expBtn.style.display='inline-flex';
+    if(!skipRemote){
+      loadRemoteCrm(lastLeads).then(function(changed){ if(changed) renderLeads(lastLeads, true); });
+    }
   }
 
   function exportCSV(){

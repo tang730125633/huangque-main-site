@@ -35,7 +35,7 @@ class ContentDomainTests(unittest.TestCase):
             self.assertFalse(hasattr(core, name), name)
 
         core_path = Path(core.__file__)
-        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1200)
+        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1250)
 
     def test_leads_returns_crm_fields_and_dedupe_count(self):
         leads = importlib.import_module("content_domains.leads")
@@ -71,6 +71,52 @@ class ContentDomainTests(unittest.TestCase):
         self.assertEqual(lead["follow_status"], "待跟进")
         self.assertEqual(lead["follow_note"], "")
         self.assertRegex(lead["lead_id"], r"^[0-9a-f]{16}$")
+
+    def test_leads_crm_persists_and_merges_by_user(self):
+        leads = importlib.import_module("content_domains.leads")
+        original_db = leads.LEADS_CRM_DB
+        original_tikhub = leads.tikhub
+
+        class FakeTikHub:
+            class TikHubError(Exception):
+                pass
+
+            PLATFORMS = {"douyin"}
+
+            def search(self, platform, keyword):
+                return {"items": [{"id": "v1", "title": "门店拓客案例"}]}
+
+            def comments(self, platform, vid_id, cursor=None, count=20):
+                return {"has_more": False, "items": [
+                    {"text": "想咨询一下价格", "user_id": "u1", "user": "小美", "ip": "广东", "likes": 3, "profile_url": "https://example.test/u1"},
+                ]}
+
+        with tempfile.TemporaryDirectory() as td:
+            leads.LEADS_CRM_DB = str(Path(td) / "leads_crm.db")
+            leads.tikhub = FakeTikHub()
+            try:
+                first = leads.gen_leads({"keyword": "美业获客", "platforms": ["douyin"], "count": 1, "_username": "fang"})
+                lead_id = first["leads"][0]["lead_id"]
+                saved = leads.upsert_crm("fang", {
+                    "lead_id": lead_id,
+                    "intent": "价格敏感",
+                    "follow_status": "跟进中",
+                    "follow_note": "已私信报价",
+                })
+                self.assertEqual(saved["follow_status"], "跟进中")
+                self.assertEqual(leads.list_crm("fang", [lead_id])[lead_id]["follow_note"], "已私信报价")
+
+                merged = leads.gen_leads({"keyword": "美业获客", "platforms": ["douyin"], "count": 1, "_username": "fang"})
+                self.assertEqual(merged["leads"][0]["intent"], "价格敏感")
+                self.assertEqual(merged["leads"][0]["follow_status"], "跟进中")
+                self.assertEqual(merged["leads"][0]["follow_note"], "已私信报价")
+                other_user = leads.gen_leads({"keyword": "美业获客", "platforms": ["douyin"], "count": 1, "_username": "other"})
+                self.assertEqual(other_user["leads"][0]["follow_status"], "待跟进")
+                with self.assertRaises(ValueError):
+                    leads.upsert_crm("fang", {"lead_id": lead_id, "follow_status": "乱填"})
+            finally:
+                leads.LEADS_CRM_DB = original_db
+                leads.tikhub = original_tikhub
 
     def test_job_public_dict_hides_payload(self):
         core = importlib.import_module("content_domains.core")

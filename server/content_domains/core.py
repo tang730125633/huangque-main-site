@@ -577,6 +577,10 @@ def _domains():
     from . import audio, points, video
     return audio, points, video
 
+def _leads_domain():
+    from . import leads
+    return leads
+
 def _must_change_password(user):
     return bool(user and user.get("must_change"))
 
@@ -755,7 +759,7 @@ def run_job(job_id):
     if not r: return
     kind = r["kind"]; payload = json.loads(r["payload"] or "{}")
     username = r["username"]; cost = r["cost"]
-    if kind in {"audio", "video", "tryon", "xiaole_video"}:
+    if kind in {"audio", "video", "tryon", "xiaole_video", "leads"}:
         payload["_username"] = username
         payload["_job_id"] = job_id
     try:
@@ -924,6 +928,14 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "avatar": video_domain.delete_video_avatar(user["username"], body.get("id"))})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
+        if p == "/api/gen/leads/crm":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            try:
+                crm = _leads_domain().upsert_crm(user["username"], self._json_body())
+                return self._send(200, {"ok": True, "crm": crm})
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
         if p.startswith("/api/gen/") and p[9:] in HANDLERS:
             kind = p[9:]
             user = verify(self._token())
@@ -980,6 +992,17 @@ class H(BaseHTTPRequestHandler):
             try:
                 marks = _list_asset_marks(user["username"], (q.get("kind") or ["image"])[0])
                 return self._send(200, {"items": marks})
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
+        if p == "/api/gen/leads/crm":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            lead_ids = []
+            for raw in q.get("lead_id") or q.get("ids") or []:
+                lead_ids.extend([x.strip() for x in str(raw).split(",") if x.strip()])
+            try:
+                return self._send(200, {"items": _leads_domain().list_crm(user["username"], lead_ids)})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
         if p.startswith("/api/gen/job/"):
