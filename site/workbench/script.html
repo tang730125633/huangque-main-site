@@ -211,6 +211,36 @@
   var orig=gen.innerHTML, lastScenes=[];
   function tok(){ return '__cookie__'; }
   function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function cleanSceneText(s){ return (s||'').replace(/^(画面|口播)：\s*/,'').replace(/[“”]/g,'').trim(); }
+  function handoffUrl(page, prompt, extra){
+    var q='?prompt='+encodeURIComponent(prompt||'');
+    if(extra) q+=extra;
+    return page+q;
+  }
+  function cardText(card, label){
+    var found='';
+    card.querySelectorAll('div').forEach(function(d){
+      var text=(d.textContent||'').trim();
+      if(!found && text.indexOf(label+'：')===0) found=cleanSceneText(text);
+    });
+    return found;
+  }
+  function readScenesFromDom(){
+    return Array.prototype.slice.call(scenes.querySelectorAll('.sc-card')).map(function(card){
+      return {scene:cardText(card,'画面'), line:cardText(card,'口播')};
+    }).filter(function(s){return s.scene||s.line;});
+  }
+  function bindSceneHandoffs(){
+    if(!scenes) return;
+    readScenesFromDom().forEach(function(s,i){
+      var card=scenes.querySelectorAll('.sc-card')[i];
+      if(!card) return;
+      card.querySelectorAll('.sc-btn').forEach(function(btn){
+        if(btn.textContent.indexOf('转作图')>=0 && !btn.hasAttribute('data-to-img')) btn.setAttribute('data-to-img',s.scene||'');
+        if(btn.textContent.indexOf('转口播')>=0 && !btn.hasAttribute('data-to-audio')) btn.setAttribute('data-to-audio',s.line||'');
+      });
+    });
+  }
   // 选项单选切换
   function seg(id,sel){ var box=document.getElementById(id); if(!box) return; box.querySelectorAll(sel).forEach(function(o){ o.onclick=function(){ box.querySelectorAll(sel).forEach(function(x){x.classList.remove('on');}); o.classList.add('on'); }; }); }
   seg('segStyle','.sc-opt'); seg('segDur','.sc-opt'); seg('platRow','.sc-chip');
@@ -219,9 +249,10 @@
 
   // 事件委托：动态分镜的「转作图」/「转口播」(data-to-img / data-to-audio 带画面/口播文案)
   if(scenes){ scenes.addEventListener('click', function(e){
-    var a=e.target.closest('[data-to-img]'); if(a){ e.preventDefault(); location.href='banana.html?prompt='+encodeURIComponent(a.getAttribute('data-to-img'))+'&engine=nb2'; return; }
-    var b=e.target.closest('[data-to-audio]'); if(b){ e.preventDefault(); location.href='audio.html?prompt='+encodeURIComponent(b.getAttribute('data-to-audio')); return; }
+    var a=e.target.closest('[data-to-img]'); if(a){ e.preventDefault(); location.href=handoffUrl('banana.html',a.getAttribute('data-to-img'),'&engine=nb2'); return; }
+    var b=e.target.closest('[data-to-audio]'); if(b){ e.preventDefault(); location.href=handoffUrl('audio.html',b.getAttribute('data-to-audio')); return; }
   }); }
+  bindSceneHandoffs();
 
   function render(res, topicTxt, style, dur){
     lastScenes=res.scenes||[];
@@ -273,10 +304,11 @@
   var allImgBtn=document.getElementById('scAllImg');
   if(allImgBtn){ allImgBtn.onclick=function(e){
     e.preventDefault();
-    if(!lastScenes.length){ location.href='banana.html'; return; }
-    var first=lastScenes[0];
-    if(window.HQ&&window.HQ.toast) HQ.toast('已带入第 1 个分镜，其余 '+Math.max(0,lastScenes.length-1)+' 条请逐条「转作图」');
-    location.href='banana.html?prompt='+encodeURIComponent(first.scene||'')+'&engine=nb2';
+    var scenesForHandoff=lastScenes.length?lastScenes:readScenesFromDom();
+    if(!scenesForHandoff.length){ location.href='banana.html'; return; }
+    var first=scenesForHandoff[0];
+    if(window.HQ&&window.HQ.toast) HQ.toast('已带入第 1 个分镜，其余 '+Math.max(0,scenesForHandoff.length-1)+' 条请逐条「转作图」');
+    location.href=handoffUrl('banana.html',first.scene||'','&engine=nb2');
   }; }
 })();
 </script>
