@@ -90,6 +90,68 @@ class RequestLogTests(unittest.TestCase):
         self.assertIn("找不到", data["message"])
 
 
+class RequestLogUserTests(unittest.TestCase):
+    """任务号反查用户/功能 + 路径→功能名。"""
+
+    LOG = "\n".join(
+        [
+            '1.1.1.1 - - [09/Jul/2026:09:00:00 +0800] "GET /api/gen/job/1226 HTTP/1.1" 200 55 "-" "Mozilla/5.0"',
+            '1.1.1.1 - - [09/Jul/2026:09:00:05 +0800] "GET /api/gen/job/9999 HTTP/1.1" 404 20 "-" "Mozilla/5.0"',
+            '2.2.2.2 - - [09/Jul/2026:09:00:10 +0800] "POST /api/auth/login HTTP/1.1" 200 30 "-" "Mozilla/5.0"',
+            '3.3.3.3 - - [09/Jul/2026:09:00:15 +0800] "GET /api/gen/banana/health HTTP/1.1" 200 10 "-" "curl/8"',
+            "",
+        ]
+    )
+
+    def setUp(self):
+        import sqlite3
+
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False)
+        tmp.write(self.LOG)
+        tmp.close()
+        self.log_path = pathlib.Path(tmp.name)
+
+        dbf = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        dbf.close()
+        self.db_path = pathlib.Path(dbf.name)
+        c = sqlite3.connect(str(self.db_path))
+        c.execute(
+            "CREATE TABLE jobs(id INTEGER PRIMARY KEY, username TEXT, kind TEXT,"
+            " cost INTEGER, status TEXT, payload TEXT, created_at INTEGER, updated_at INTEGER)"
+        )
+        c.execute(
+            "INSERT INTO jobs VALUES(1226,'tang','xiaole_video',13,'done','{}',1,2)"
+        )
+        c.commit()
+        c.close()
+
+        self.old_logs = admin_api.NGINX_ACCESS_LOGS
+        self.old_db = admin_api.JOB_DB
+        admin_api.NGINX_ACCESS_LOGS = [self.log_path]
+        admin_api.JOB_DB = self.db_path
+
+    def tearDown(self):
+        admin_api.NGINX_ACCESS_LOGS = self.old_logs
+        admin_api.JOB_DB = self.old_db
+        self.log_path.unlink(missing_ok=True)
+        self.db_path.unlink(missing_ok=True)
+
+    def test_enrichment(self):
+        items = {x["path"]: x for x in admin_api.request_logs()["items"]}
+        poll = items["/api/gen/job/1226"]
+        self.assertEqual(poll["user"], "tang")
+        self.assertEqual(poll["func"], "视频 · 小乐 · 轮询")
+        # 任务库里没有的任务号
+        self.assertEqual(items["/api/gen/job/9999"]["user"], "-")
+        self.assertEqual(items["/api/gen/job/9999"]["func"], "任务轮询")
+        # 非任务请求：有功能名、无用户
+        self.assertEqual(items["/api/auth/login"]["func"], "登录")
+        self.assertEqual(items["/api/auth/login"]["user"], "-")
+        self.assertEqual(items["/api/gen/banana/health"]["func"], "健康检查")
+        # 内部字段不外传
+        self.assertNotIn("_jid", poll)
+
+
 class KeyPingTests(unittest.TestCase):
     def test_pingable_flag_matches_registry(self):
         for item in admin_api.key_status():

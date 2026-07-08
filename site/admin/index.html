@@ -179,7 +179,7 @@
       </section>
       <section class="card span12 module-card" data-module="logs" hidden>
         <div class="section-head">
-          <div><h2>请求日志</h2><div class="hint">nginx 记录的每一次后端（/api/）请求；默认隐藏采集轮询和后台自身的噪音。</div></div>
+          <div><h2>请求日志</h2><div class="hint">nginx 记录的每一次后端（/api/）请求；任务类请求已反查出用户和功能，登录等请求网关日志不含身份、用户列显示 -。看「谁用了什么功能」最直观的是下方的用户调用日志。</div></div>
           <span class="muted" id="reqCount">-</span>
         </div>
         <div class="toolbar">
@@ -239,7 +239,7 @@
     var h=Math.floor(m/60); m=m%60;
     return h+'小时'+(m?m+'分':'');
   }
-  function kindName(k){return ({image:'图片生成',banana:'Nano Banana',audio:'配音生成',video:'视频口播',motion:'动作模仿',tryon:'换装换背景',collect:'内容采集',leads:'获客分析',leadgen:'获客分析',dl:'下载代理',copy:'文案生成'})[k]||k}
+  function kindName(k){return ({image:'图片生成',banana:'Nano Banana',audio:'配音生成',video:'视频口播',motion:'动作模仿',tryon:'换装换背景',collect:'内容采集',leads:'获客分析',leadgen:'获客分析',dl:'下载代理',copy:'文案生成',xiaole_video:'视频·小乐'})[k]||k}
   function jobStatusName(s){return ({done:'已完成',error:'失败',running:'生成中',queued:'排队中',pending:'待处理'})[s]||s}
   function jobStatusPill(s){
     var cls='neutral';
@@ -296,9 +296,10 @@
     var items=d.items||[];
     el('reqCount').textContent=items.length+' 条（最新在前）';
     if(!items.length){el('reqBox').innerHTML='<div class="empty">'+esc(d.message||'没有匹配的请求日志')+'</div>';return}
-    el('reqBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>时间</th><th>方法</th><th>路径</th><th>状态</th><th>来源 IP</th><th>UA</th></tr></thead><tbody>'+items.map(function(x){
+    el('reqBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>时间</th><th>用户</th><th>功能</th><th>方法</th><th>路径</th><th>状态</th><th>来源 IP</th><th>UA</th></tr></thead><tbody>'+items.map(function(x){
       var cls=x.status>=500?'fail':(x.status>=400?'warn':'ok');
-      return '<tr><td><code>'+esc(x.time)+'</code></td><td><code>'+esc(x.method)+'</code></td><td><div class="truncate" style="max-width:420px" title="'+esc(x.path)+'"><code>'+esc(x.path)+'</code></div></td><td><span class="pill '+cls+'">'+esc(x.status)+'</span></td><td><code>'+esc(x.ip)+'</code></td><td><div class="truncate" style="max-width:220px" title="'+esc(x.ua)+'">'+esc(x.ua)+'</div></td></tr>';
+      var user=x.user&&x.user!=='-'?'<b>'+esc(x.user)+'</b>':'<span class="muted">-</span>';
+      return '<tr><td><code>'+esc(x.time)+'</code></td><td>'+user+'</td><td>'+(x.func?esc(x.func):'<span class="muted">-</span>')+'</td><td><code>'+esc(x.method)+'</code></td><td><div class="truncate" style="max-width:340px" title="'+esc(x.path)+'"><code>'+esc(x.path)+'</code></div></td><td><span class="pill '+cls+'">'+esc(x.status)+'</span></td><td><code>'+esc(x.ip)+'</code></td><td><div class="truncate" style="max-width:160px" title="'+esc(x.ua)+'">'+esc(x.ua)+'</div></td></tr>';
     }).join('')+'</tbody></table></div>';
   }
   function loadReqLogs(){

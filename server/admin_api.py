@@ -143,6 +143,58 @@ QUERY_SECRET_RE = re.compile(
 # 噪音 = 采集 worker 每秒轮询 /api/claim + 本后台自己的请求
 NOISE_PATH_RE = re.compile(r"^/api/(claim\b|admin/)")
 
+JOB_PATH_RE = re.compile(r"^/api/gen/job/(\d+)")
+# 路径 → 功能名（前缀匹配，顺序即优先级）；job/ 路径另走任务库反查真实功能+用户
+PATH_FUNCS = [
+    ("/api/gen/file/", "取结果文件"),
+    ("/api/gen/image", "作图 · 提交"),
+    ("/api/gen/banana", "作图 · 提交"),
+    ("/api/gen/video", "视频 · 提交"),
+    ("/api/gen/audio", "配音 · 提交"),
+    ("/api/gen/tryon", "换装换背景 · 提交"),
+    ("/api/gen/copy", "文案 · 提交"),
+    ("/api/gen/collect", "内容采集 · 提交"),
+    ("/api/gen/dl", "无水印下载"),
+    ("/api/gen/history", "历史记录"),
+    ("/api/gen/leadgen", "获客分析"),
+    ("/api/auth/login", "登录"),
+    ("/api/auth/logout", "退出登录"),
+    ("/api/auth/me", "登录态校验"),
+    ("/api/auth/", "账号服务"),
+    ("/api/admin/", "运营后台"),
+    ("/api/claim", "采集 worker 轮询"),
+    ("/api/keywords", "关键词库"),
+]
+
+
+def _path_func(path):
+    if "/health" in path:
+        return "健康检查"
+    for prefix, name in PATH_FUNCS:
+        if path.startswith(prefix):
+            return name
+    return ""
+
+
+def _job_users(job_ids):
+    """批量反查任务号 → (用户, 功能名)。查不到/库不在就空着。"""
+    if not job_ids or not JOB_DB.exists():
+        return {}
+    marks = ",".join("?" * len(job_ids))
+    try:
+        with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as c:
+            c.row_factory = sqlite3.Row
+            rows = c.execute(
+                "SELECT id, username, kind, payload FROM jobs WHERE id IN (%s)" % marks,
+                list(job_ids),
+            ).fetchall()
+    except Exception:
+        return {}
+    return {
+        int(r["id"]): (r["username"] or "-", call_func_name(r["kind"], _job_payload(r["payload"])))
+        for r in rows
+    }
+
 # 出墙代理（mihomo）：OpenAI/HeyGen 要走，TikHub/RunningHub 必须直连（代理转 Cloudflare 会挂）
 PROXY_URL = (os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or "").strip()
 DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -451,22 +503,36 @@ def request_logs(limit=200, status="", q="", include_noise=False):
             if q and q not in path:
                 continue
             sort_key, disp = _parse_log_time(m.group("time"))
+            jid_match = JOB_PATH_RE.match(path)
             entries.append(
                 (
                     sort_key,
                     {
                         "time": disp,
+                        "user": "-",
+                        "func": _path_func(path),
                         "ip": m.group("ip"),
                         "method": m.group("method"),
                         "path": _sanitize_path(path),
                         "status": int(code),
                         "size": 0 if m.group("size") == "-" else int(m.group("size")),
                         "ua": m.group("ua")[:120],
+                        "_jid": int(jid_match.group(1)) if jid_match else None,
                     },
                 )
             )
     entries.sort(key=lambda x: x[0], reverse=True)
-    return {"items": [item for _, item in entries[:limit]], "limit": limit}
+    items = [item for _, item in entries[:limit]]
+    # 任务轮询请求：拿任务号反查任务库，补上用户和真实功能
+    jobs = _job_users({it["_jid"] for it in items if it["_jid"] is not None})
+    for it in items:
+        jid = it.pop("_jid")
+        if jid in jobs:
+            it["user"], func = jobs[jid]
+            it["func"] = func + " · 轮询"
+        elif jid is not None:
+            it["func"] = "任务轮询"
+    return {"items": items, "limit": limit}
 
 
 def probe_service(svc):
@@ -729,6 +795,7 @@ def call_func_name(kind, payload):
         "leadgen": "获客分析",
         "copy": "文案生成",
         "dl": "无水印下载",
+        "xiaole_video": "视频 · 小乐",
     }
     return names.get(kind, kind)
 
