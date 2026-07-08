@@ -1394,7 +1394,7 @@ def _download_xiaole_video(url, prefix="xiaole"):
 
 def generate_xiaole_video(model, prompt, reference_images=None, ratio="9:16", job_id=None, prefix="xiaole"):
     """统一 generations API：创建 → 轮询 → 下载。Grok(果肉)/Seedance(豆姐) 共用。"""
-    input_d = {"prompt": (prompt or "").strip(), "aspect_ratio": ratio}
+    input_d = {"prompt": (prompt or "").strip()}   # 果肉/Grok视频模型不支持aspect_ratio(实测422),不传(#367回归修复)
     refs = _xiaole_build_refs(reference_images)
     if refs:
         input_d["mode"] = "image_to_video"   # 有参考图 → 图生视频

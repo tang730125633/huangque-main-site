@@ -12,7 +12,8 @@ class XiaoleVideoTests(unittest.TestCase):
         from content_domains import video
         self.video = video
 
-    def test_generate_xiaole_video_sends_aspect_ratio(self):
+    def test_generate_xiaole_video_omits_aspect_ratio(self):
+        # 果肉/Grok 视频模型不支持 aspect_ratio（实测 HTTP 422），input 里绝不能带该字段(#367 回归修复)
         calls = []
 
         def fake_request(method, path, body=None, timeout=90):
@@ -26,7 +27,7 @@ class XiaoleVideoTests(unittest.TestCase):
             result = self.video.generate_xiaole_video("Grok Image Video", "demo", ratio="16:9", prefix="grok")
 
         self.assertEqual(result["video_file"], "video/grok_demo.mp4")
-        self.assertEqual(calls[0][2]["input"]["aspect_ratio"], "16:9")
+        self.assertNotIn("aspect_ratio", calls[0][2]["input"])
 
     def test_gen_xiaole_video_rejects_unknown_ratio(self):
         with self.assertRaises(ValueError) as cm:
