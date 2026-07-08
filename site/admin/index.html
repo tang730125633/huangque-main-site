@@ -270,12 +270,14 @@
     Array.prototype.forEach.call(el(boxId).querySelectorAll('['+attr+']'), function(btn){
       btn.onclick=function(){
         var key=btn.getAttribute(attr);
-        var out=el(boxId).querySelector('[data-ping-out="'+prefix+':'+key+'"]');
+        // 每次都实时查节点：拨测最长12s，期间页面可能重渲染，写闭包旧节点会丢结果
+        var out=function(){return el(boxId).querySelector('[data-ping-out="'+prefix+':'+key+'"]')};
+        var put=function(html){var n=out(); if(n) n.innerHTML=html};
         btn.disabled=true;
-        if(out) out.innerHTML='<span class="muted">测试中…</span>';
+        put('<span class="muted">测试中…</span>');
         api('/api/admin/ping?'+param+'='+encodeURIComponent(key))
-          .then(function(d){if(out) out.innerHTML=pingResultHtml(d)})
-          .catch(function(e){if(out) out.innerHTML='<span class="pill fail">'+esc(e.message)+'</span>'})
+          .then(function(d){put(pingResultHtml(d))})
+          .catch(function(e){put('<span class="pill fail">'+esc(e.message)+'</span>')})
           .finally(function(){btn.disabled=false});
       };
     });
@@ -441,7 +443,7 @@
     state.module=name;
     Array.prototype.forEach.call(document.querySelectorAll('[data-module-tab]'), function(btn){btn.classList.toggle('active', btn.getAttribute('data-module-tab')===name)});
     Array.prototype.forEach.call(document.querySelectorAll('[data-module]'), function(card){card.hidden=card.getAttribute('data-module')!==name});
-    if(name==='logs' && !state.reqLoaded){state.reqLoaded=true; loadReqLogs()}
+    if(name==='logs'){loadReqLogs()}
   }
   function render(d){
     state.data=d; setUser(d.user||{});

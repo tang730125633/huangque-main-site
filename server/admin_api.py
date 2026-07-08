@@ -116,11 +116,29 @@ CHANNELS = {
 
 SECRET_RE = re.compile(r"(key|token|secret|password|passwd|pwd|credential)", re.I)
 
-NGINX_ACCESS_LOG = pathlib.Path(os.environ.get("NGINX_ACCESS_LOG", "/var/log/nginx/access.log"))
+# 主站 vhost 单独写 huangquechuanmei.access.log；默认 access.log 只有 leadgen 等其他站
+NGINX_ACCESS_LOGS = [
+    pathlib.Path(p.strip())
+    for p in os.environ.get(
+        "NGINX_ACCESS_LOGS",
+        "/var/log/nginx/huangquechuanmei.access.log,/var/log/nginx/access.log",
+    ).split(",")
+    if p.strip()
+]
 # nginx combined 格式：ip - user [time] "METHOD path HTTP/x" status size "referer" "ua"
+# remote_user 可能带空格（basic auth），所以 ip 之后宽松匹配到第一个 [
 LOG_LINE_RE = re.compile(
-    r'^(?P<ip>\S+) \S+ \S+ \[(?P<time>[^\]]+)\] "(?P<method>[A-Z]+) (?P<path>\S+)[^"]*" '
+    r'^(?P<ip>\S+) [^\[]*\[(?P<time>[^\]]+)\] "(?P<method>[A-Z]+) (?P<path>\S+)[^"]*" '
     r'(?P<status>\d{3}) (?P<size>\d+|-) "[^"]*" "(?P<ua>[^"]*)"'
+)
+_MONTHS = {
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+    "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
+}
+# 按参数名打码：token=xxx、api_key=xxx，兼容 & ; 分隔；dk=视频号解密密钥(dl_service)
+QUERY_SECRET_RE = re.compile(
+    r"((?:^|[?&;])(?:[^&;=]*(?:key|token|secret|password|passwd|pwd|credential|sign)[^&;=]*|dk)=)[^&;]*",
+    re.I,
 )
 # 噪音 = 采集 worker 每秒轮询 /api/claim + 本后台自己的请求
 NOISE_PATH_RE = re.compile(r"^/api/(claim\b|admin/)")
@@ -367,75 +385,88 @@ KEY_PINGS = {
 
 
 def _sanitize_path(raw):
-    """请求路径里 token/key 类查询参数打码，不让密钥出现在后台页面。"""
-    if "?" not in raw:
-        return raw
-    path, qs = raw.split("?", 1)
-    pairs = urllib.parse.parse_qsl(qs, keep_blank_values=True)
-    if not pairs:
-        return raw
-    parts = []
-    for k, v in pairs:
-        value = "***" if SECRET_RE.search(k) else urllib.parse.quote_plus(v)
-        parts.append(urllib.parse.quote_plus(k) + "=" + value)
-    return path + "?" + "&".join(parts)
+    """请求路径里 token/key 类查询参数打码，不让密钥出现在后台页面。
+
+    直接对原始串做正则替换（兼容 & 和 ; 分隔）；值里嵌套了带密钥的
+    URL 编码串（如 url=https%3A%2F%2Fx%3Ftoken%3Dabc）时整值打码。
+    """
+    masked = QUERY_SECRET_RE.sub(r"\1***", raw)
+    if "%" in masked and "?" in masked:
+        for m in re.finditer(r"([?&;][^&;=]+=)([^&;]+)", masked):
+            if QUERY_SECRET_RE.search("?" + urllib.parse.unquote(m.group(2))):
+                masked = masked.replace(m.group(0), m.group(1) + "***")
+    return masked
 
 
-def _fmt_log_time(raw):
+def _parse_log_time(raw):
+    """'09/Jul/2026:08:41:19 +0800' → (排序元组, '07-09 08:41:19')。不依赖 locale。"""
     try:
-        t = time.strptime(raw.split(" ", 1)[0], "%d/%b/%Y:%H:%M:%S")
-        return time.strftime("%m-%d %H:%M:%S", t)
+        day = int(raw[0:2])
+        mon = _MONTHS[raw[3:6]]
+        year = int(raw[7:11])
+        hh, mm, ss = int(raw[12:14]), int(raw[15:17]), int(raw[18:20])
+        return (year, mon, day, hh, mm, ss), "%02d-%02d %02d:%02d:%02d" % (mon, day, hh, mm, ss)
     except Exception:
-        return raw
+        return (0, 0, 0, 0, 0, 0), raw
+
+
+def _tail_lines(path, max_bytes=2 * 1024 * 1024):
+    with open(path, "rb") as f:
+        f.seek(0, 2)
+        size = f.tell()
+        f.seek(max(0, size - max_bytes))
+        chunk = f.read().decode("utf-8", "ignore")
+    lines = chunk.splitlines()
+    if size > max_bytes and lines:
+        lines = lines[1:]  # 掐掉可能被截断的首行
+    return lines
 
 
 def request_logs(limit=200, status="", q="", include_noise=False):
-    """从 nginx access.log 尾部聚合后端 /api/ 请求日志（最新在前）。"""
+    """聚合各 nginx access log 尾部的后端 /api/ 请求日志（最新在前）。"""
     limit = max(1, min(int(limit or 200), 500))
     status = str(status or "").strip()
     q = str(q or "").strip()
-    if not NGINX_ACCESS_LOG.exists():
-        return {"items": [], "message": "找不到 %s（服务器上才有）" % NGINX_ACCESS_LOG}
-    try:
-        with open(NGINX_ACCESS_LOG, "rb") as f:
-            f.seek(0, 2)
-            size = f.tell()
-            f.seek(max(0, size - 2 * 1024 * 1024))
-            chunk = f.read().decode("utf-8", "ignore")
-    except Exception as e:
-        return {"items": [], "message": "读取日志失败: %s" % str(e)[:120]}
-    lines = chunk.splitlines()
-    if size > 2 * 1024 * 1024 and lines:
-        lines = lines[1:]  # 掐掉可能被截断的首行
-    items = []
-    for line in reversed(lines):
-        m = LOG_LINE_RE.match(line)
-        if not m:
-            continue
-        path = m.group("path")
-        if not path.startswith("/api/"):
-            continue
-        if not include_noise and NOISE_PATH_RE.match(path):
-            continue
-        code = m.group("status")
-        if status and (code[:1] != status if len(status) == 1 else code != status):
-            continue
-        if q and q not in path:
-            continue
-        items.append(
-            {
-                "time": _fmt_log_time(m.group("time")),
-                "ip": m.group("ip"),
-                "method": m.group("method"),
-                "path": _sanitize_path(path),
-                "status": int(code),
-                "size": 0 if m.group("size") == "-" else int(m.group("size")),
-                "ua": m.group("ua")[:120],
-            }
-        )
-        if len(items) >= limit:
-            break
-    return {"items": items, "limit": limit}
+    existing = [p for p in NGINX_ACCESS_LOGS if p.exists()]
+    if not existing:
+        return {"items": [], "message": "找不到 %s（服务器上才有）" % ", ".join(str(p) for p in NGINX_ACCESS_LOGS)}
+    entries = []
+    for log_path in existing:
+        try:
+            lines = _tail_lines(log_path)
+        except Exception as e:
+            return {"items": [], "message": "读取 %s 失败: %s" % (log_path, str(e)[:120])}
+        for line in lines:
+            m = LOG_LINE_RE.match(line)
+            if not m:
+                continue
+            path = m.group("path")
+            if not path.startswith("/api/"):
+                continue
+            if not include_noise and NOISE_PATH_RE.match(path):
+                continue
+            code = m.group("status")
+            if status and (code[:1] != status if len(status) == 1 else code != status):
+                continue
+            if q and q not in path:
+                continue
+            sort_key, disp = _parse_log_time(m.group("time"))
+            entries.append(
+                (
+                    sort_key,
+                    {
+                        "time": disp,
+                        "ip": m.group("ip"),
+                        "method": m.group("method"),
+                        "path": _sanitize_path(path),
+                        "status": int(code),
+                        "size": 0 if m.group("size") == "-" else int(m.group("size")),
+                        "ua": m.group("ua")[:120],
+                    },
+                )
+            )
+    entries.sort(key=lambda x: x[0], reverse=True)
+    return {"items": [item for _, item in entries[:limit]], "limit": limit}
 
 
 def probe_service(svc):
