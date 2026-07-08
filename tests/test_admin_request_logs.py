@@ -187,6 +187,18 @@ class RequestLogUserTests(unittest.TestCase):
         self.assertTrue(any(x["status_text"] == "404" for x in fails))
 
 
+class JobPayloadTests(unittest.TestCase):
+    def test_truncated_payload_still_names_func(self):
+        # 模拟 substr 截断的 payload：JSON 不完整,但 mode 字段在前缀里
+        truncated = '{"mode": "text", "prompt": "' + "x" * 5000
+        data = admin_api._job_payload(truncated)
+        self.assertEqual(data.get("mode"), "text")
+        self.assertEqual(admin_api.call_func_name("video", data), "视频 · 文案口播")
+        # 完整 JSON 走正常解析
+        self.assertEqual(admin_api._job_payload('{"model": "nb2"}'), {"model": "nb2"})
+        self.assertEqual(admin_api._job_payload(None), {})
+
+
 class KeyPingTests(unittest.TestCase):
     def test_pingable_flag_matches_registry(self):
         for item in admin_api.key_status():

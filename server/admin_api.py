@@ -185,7 +185,7 @@ def _job_users(job_ids):
         with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as c:
             c.row_factory = sqlite3.Row
             rows = c.execute(
-                "SELECT id, username, kind, payload FROM jobs WHERE id IN (%s)" % marks,
+                "SELECT id, username, kind, substr(payload, 1, 4096) AS payload FROM jobs WHERE id IN (%s)" % marks,
                 list(job_ids),
             ).fetchall()
     except Exception:
@@ -845,12 +845,17 @@ def job_stats(days=7):
     }
 
 
+_PAYLOAD_FIELD_RE = re.compile(r'"(model|provider|mode|keyword|url)"\s*:\s*"([^"]*)"')
+
+
 def _job_payload(raw):
+    """payload 只取了前 4KB（整条可达几百 KB，含 base64 图）。截断导致
+    JSON 解析失败时，用正则从前缀里捞出功能命名需要的几个小字段。"""
     try:
         data = json.loads(raw or "{}")
+        return data if isinstance(data, dict) else {}
     except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
+        return dict(_PAYLOAD_FIELD_RE.findall(raw or ""))
 
 
 def call_func_name(kind, payload):
@@ -902,8 +907,11 @@ def call_logs(days=7, limit=200):
     since = int(time.time()) - days * 86400
     with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as c:
         c.row_factory = sqlite3.Row
+        # substr: payload 整条可达几百 KB(含 base64 图),只取识别功能名所需的前缀。
+        # 依赖 jobs(created_at) 索引(idx_jobs_created,2026-07-09 已建),否则 310MB 全表扫要 2 秒
         rows = c.execute(
-            """SELECT id, username, kind, cost, status, payload, created_at, updated_at
+            """SELECT id, username, kind, cost, status,
+                      substr(payload, 1, 4096) AS payload, created_at, updated_at
                FROM jobs
                WHERE created_at >= ?
                ORDER BY created_at DESC, id DESC
