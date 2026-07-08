@@ -1313,7 +1313,7 @@
           if(result.subtitle_error){toast('字幕生成失败，已保留无字幕视频');}
           return;
         }
-        if(d.status==='error') throw new Error(d.error||'生成失败');
+        if(d.status==='error'||d.status==='failed') throw new Error(d.error||'生成失败');
         updateJobProgress(d);
         if(tries<600){setTimeout(function(){pollJob(id,tries+1);},3000);}
         else{setBusy(false);loadVideoHistory();setVideoStatus('任务仍在后台生成，请稍后到视频资产查看');}

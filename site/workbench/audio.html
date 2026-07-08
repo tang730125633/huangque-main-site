@@ -240,7 +240,7 @@
     el('statusText').textContent='正在生成配音...';
     fetch('/api/gen/job/'+id,{headers:{Authorization:'Bearer '+tok}}).then(function(r){return r.json();}).then(function(d){
       if(d.status==='done' && d.result){setBusy(false);setResult(d.result.url,d.result.text||'配音结果',true);el('statusText').textContent='生成完成，已自动入库为配音资产';loadRecent();return;}
-      if(d.status==='error'){throw new Error(d.error||'生成失败');}
+      if(d.status==='error'||d.status==='failed'){throw new Error(d.error||'生成失败');}
       if(n<90)setTimeout(function(){pollJob(id,n+1);},2000);else throw new Error('生成超时，请稍后到资产页查看');
     }).catch(function(e){setBusy(false);el('statusText').textContent=e.message||'生成失败';toast(el('statusText').textContent);});
   }
