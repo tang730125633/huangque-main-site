@@ -16,6 +16,7 @@ LOGIN_FAIL_WINDOW = int(os.environ.get("HQ_AUTH_FAIL_WINDOW", "300"))
 LOGIN_FAIL_MAX = int(os.environ.get("HQ_AUTH_FAIL_MAX", "5"))
 REGISTER_WINDOW = int(os.environ.get("HQ_AUTH_REGISTER_WINDOW", "300"))
 REGISTER_MAX = int(os.environ.get("HQ_AUTH_REGISTER_MAX", "5"))
+NEW_USER_TRIAL_POINTS = int(os.environ.get("HQ_AUTH_TRIAL_POINTS", "16"))  # 新注册赠送试用点数(约2次标准清晰度作图)
 LOGIN_FAILS = {}
 REGISTER_HITS = {}
 REVOKED_TOKENS = set()
@@ -639,7 +640,7 @@ class H(BaseHTTPRequestHandler):
             try:
                 c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change)
                              VALUES(?,?,?,?,?,?,0)""",
-                          (u, hash_pw(pw, salt), salt, name, 0, "member"))
+                          (u, hash_pw(pw, salt), salt, name, NEW_USER_TRIAL_POINTS, "member"))
                 tok = issue_token(u, c)
                 c.commit()
                 self._record_register_hit()
@@ -651,7 +652,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(500, {"detail": "注册失败"})
             finally:
                 c.close()
-            return self._send(200, {"user": public_user(u, name)}, {"Set-Cookie": auth_cookie_header(tok)})
+            return self._send(200, {"user": public_user(u, name, NEW_USER_TRIAL_POINTS)}, {"Set-Cookie": auth_cookie_header(tok)})
         if p == "/api/auth/login":
             d = self._body()
             if self._bad_json():
@@ -712,7 +713,7 @@ class H(BaseHTTPRequestHandler):
             try:
                 c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change)
                              VALUES(?,?,?,?,?,?,0)""",
-                          (u, hash_pw(pw, salt), salt, name, 0, "member"))
+                          (u, hash_pw(pw, salt), salt, name, NEW_USER_TRIAL_POINTS, "member"))
                 tok = issue_token(u, c)
                 c.commit()
                 self._record_register_hit()
@@ -724,7 +725,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(500, {"detail": "注册失败"})
             finally:
                 c.close()
-            return self._send(200, {"token": tok, "user": public_user(u, name)})
+            return self._send(200, {"token": tok, "user": public_user(u, name, NEW_USER_TRIAL_POINTS)})
         if p == "/api/auth/logout":
             clear_cookie = {"Set-Cookie": clear_auth_cookie_header()}
             tok = request_token(self.headers)
