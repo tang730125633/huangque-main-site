@@ -77,7 +77,7 @@
   <div id="paneCase">
     <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px; padding:13px 16px; border:1px solid rgba(231,178,76,.18); background:linear-gradient(165deg, rgba(231,178,76,.06), rgba(7,11,19,.4)); border-radius:13px; flex-wrap:wrap;">
       <span style="display:flex; width:17px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg></span>
-      <div style="flex:1; min-width:200px; font-size:13px; color:#94a4bb;">已收录 <strong style="color:#e7b24c;">58</strong> 张原创样片（黄雀作图生成）· 美业6类 + 美女 / 帅哥 / 风景 · 点任意图看创作详情、一键跟创。</div>
+      <div style="flex:1; min-width:200px; font-size:13px; color:#94a4bb;">已收录 <strong id="caseTotal" style="color:#e7b24c;">0</strong> 张原创样片（黄雀作图生成）· 美业垂类 / 人像 / 风景 · 点任意图看创作详情、一键跟创。</div>
       <a href="banana.html" class="btn-gold" style="padding:8px 16px; font-size:12.5px; font-weight:600; border-radius:9px; white-space:nowrap;">去创作</a>
     </div>
     <div class="masonry" id="caseGrid"></div>
@@ -183,7 +183,9 @@
   // 分类 → 金调3D图标（render3d 香槟金，与首页能力卡同一套）
   var CAT_ICON = {
     '护肤精华':'cat_serum','医美焕肤':'cat_medical','防晒':'cat_sun','面膜护肤':'cat_mask',
-    '门店拓客':'cat_store','美妆产品':'cat_makeup','美女':'cat_woman','帅哥':'cat_man','风景':'cat_scenery'
+    '门店拓客':'cat_store','美妆产品':'cat_makeup','美女':'cat_woman','帅哥':'cat_man','风景':'cat_scenery',
+    '皮肤管理封面':'cat_serum','医美科普配图':'cat_medical','门店活动海报':'cat_store','新客体验卡':'cat_store',
+    '招商加盟图':'cat_store','朋友圈日签':'cat_makeup','团购套餐图':'cat_makeup','数字人首帧':'cat_woman','客户案例展示':'cat_medical'
   };
   function syncChips(){
     var cats = {}; DATA.forEach(function(x){ if(x.category) cats[x.category] = (cats[x.category]||0) + 1; });
@@ -311,7 +313,10 @@
   function shuffle(a){ for(var i=a.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=a[i]; a[i]=a[j]; a[j]=t; } return a; }
   fetch('inspirations.json',{cache:'no-cache'}).then(function(r){return r.json();}).then(function(d){
     // 「全部」及各分类载入时随机洗牌一次，每次进页顺序都新鲜；点卡片弹详情
-    DATA=shuffle(d||[]); syncChips(); renderCards();
+    DATA=shuffle(d||[]);
+    var totalEl=document.getElementById('caseTotal');
+    if(totalEl) totalEl.textContent=String(DATA.length);
+    syncChips(); renderCards();
   }).catch(function(){ /* fallback */ });
 
   // 分类筛选由 syncChips 动态绑定
