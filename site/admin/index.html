@@ -79,6 +79,10 @@
     .feature-card .meta{display:flex;gap:8px;flex-wrap:wrap}
     .right{text-align:right}
     .toast{position:fixed;right:22px;bottom:22px;background:#111613;border:1px solid var(--line);border-radius:8px;padding:12px 14px;box-shadow:0 18px 44px rgba(0,0,0,.3);display:none}
+    details.eplist{margin-top:8px}
+    details.eplist summary{cursor:pointer;font-size:12px;color:var(--info);user-select:none}
+    details.eplist .ep{padding:6px 0 6px 12px;border-left:2px solid var(--line);margin-top:6px}
+    details.eplist .ep code{font-size:11px;word-break:break-all}
     @media (max-width:960px){.shell{padding:20px 14px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid{grid-template-columns:1fr}header{flex-direction:column}.user{width:100%}}
   </style>
 </head>
@@ -256,7 +260,8 @@
     var reach=d.mode==='reach';
     if(d.online===true || d.ok===true){
       var code=d.http_status||200;
-      return '<span class="pill ok">'+esc(code)+(reach?' 可达':' 正常')+' · '+esc(d.latency_ms)+'ms</span>'
+      var bal=d.balance!=null?' <span class="pill" style="color:var(--gold)">余额 '+esc(Number(d.balance).toLocaleString())+'</span>':'';
+      return '<span class="pill ok">'+esc(code)+(reach?' 可达':' 正常')+' · '+esc(d.latency_ms)+'ms</span>'+bal
         +(reach?' <span class="muted">仅测连通，不验密钥</span>':'');
     }
     var text=d.error||(d.http_status?('HTTP '+d.http_status):'失败');
@@ -284,7 +289,13 @@
       var act=k.pingable
         ? '<div style="margin-top:8px"><button class="mini" data-ping-key="'+esc(k.key)+'">测试密钥</button> <span data-ping-out="key:'+esc(k.key)+'"></span></div>'
         : '<div class="hint" style="margin-top:8px">该渠道需签名请求，不支持在线测试</div>';
-      return '<div style="padding:10px 0;border-bottom:1px solid var(--line)"><div class="row"><b>'+esc(k.name)+'</b>'+statusPill(k.configured,k.configured?'已配置':'缺失')+'</div><div style="margin-top:6px">'+src+'</div>'+act+'</div>';
+      var eps=k.endpoints||[];
+      var eplist=eps.length
+        ? '<details class="eplist"><summary>接口清单（'+eps.length+'）</summary>'+eps.map(function(e){
+            return '<div class="ep"><code>'+esc(e.m)+' '+esc(e.p)+'</code><div class="muted">'+esc(e.d)+(e.fee?' <span class="pill warn" style="height:18px;font-size:11px">计费</span>':' <span class="pill neutral" style="height:18px;font-size:11px">免费</span>')+'</div></div>';
+          }).join('')+'</details>'
+        : '';
+      return '<div style="padding:10px 0;border-bottom:1px solid var(--line)"><div class="row"><b>'+esc(k.name)+'</b>'+statusPill(k.configured,k.configured?'已配置':'缺失')+'</div><div style="margin-top:6px">'+src+'</div>'+act+eplist+'</div>';
     }).join('');
     bindPing('keyBox','data-ping-key','key','key');
   }

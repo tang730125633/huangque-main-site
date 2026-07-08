@@ -199,6 +199,27 @@ class JobPayloadTests(unittest.TestCase):
         self.assertEqual(admin_api._job_payload(None), {})
 
 
+class CatalogAndBalanceTests(unittest.TestCase):
+    def test_catalog_keys_match_key_groups(self):
+        group_keys = {g["key"] for g in admin_api.KEY_GROUPS}
+        for k, eps in admin_api.ENDPOINT_CATALOG.items():
+            self.assertIn(k, group_keys)
+            for e in eps:
+                self.assertTrue(e["m"] and e["p"] and e["d"])
+                self.assertIn("fee", e)
+        # key_status 把清单带给前端
+        with_eps = [i for i in admin_api.key_status() if i["endpoints"]]
+        self.assertGreaterEqual(len(with_eps), 8)
+
+    def test_find_balance(self):
+        f = admin_api._find_balance
+        self.assertEqual(f({"data": {"remaining_quota": 120}}), 120)
+        self.assertEqual(f({"code": 0, "data": {"remainCoins": "58.5"}}), 58.5)
+        self.assertEqual(f({"user_data": {"balance": 42, "email": "x"}}), 42)
+        self.assertIsNone(f({"data": {"name": "x"}}))
+        self.assertIsNone(f({"quota_ok": True}))  # bool 不算余额
+
+
 class KeyPingTests(unittest.TestCase):
     def test_every_key_group_is_pingable(self):
         for item in admin_api.key_status():

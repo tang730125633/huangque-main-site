@@ -118,6 +118,338 @@ KEY_GROUPS = [
     {"key": "cos", "name": "腾讯云 COS 存储", "env": ["COS_SECRET_ID", "COS_SECRET_KEY", "COS_REGION", "COS_BUCKET"]},
 ]
 
+# 各渠道实际在用的业务接口清单(2026-07-09 全代码扫描产出,展示用;fee=调用计费)
+ENDPOINT_CATALOG = json.loads(r"""
+{
+ "tikhub": [
+  {
+   "m": "POST",
+   "p": "/api/v1/douyin/search/fetch_general_search_v1",
+   "d": "抖音关键词综合搜索视频",
+   "fee": true
+  },
+  {
+   "m": "GET",
+   "p": "/api/v1/douyin/web/fetch_one_video?aweme_id={aweme_id}",
+   "d": "抖音视频详情",
+   "fee": true
+  },
+  {
+   "m": "GET",
+   "p": "/api/v1/douyin/web/fetch_video_comments?aweme_id={aweme_id}&cursor={cu",
+   "d": "抖音视频评论区抓取",
+   "fee": true
+  },
+  {
+   "m": "GET",
+   "p": "/api/v1/xiaohongshu/app_v2/search_notes?keyword={keyword}&page={page}&",
+   "d": "小红书关键词搜索笔记",
+   "fee": true
+  },
+  {
+   "m": "GET",
+   "p": "/api/v1/xiaohongshu/app_v2/get_image_note_detail?note_id={note_id}",
+   "d": "小红书图文笔记详情",
+   "fee": true
+  },
+  {
+   "m": "GET",
+   "p": "/api/v1/xiaohongshu/app_v2/get_video_note_detail?note_id={note_id}",
+   "d": "小红书视频笔记详情",
+   "fee": true
+  },
+  {
+   "m": "GET",
+   "p": "/api/v1/xiaohongshu/app_v2/get_note_comments?note_id={note_id}",
+   "d": "小红书笔记评论区抓取",
+   "fee": true
+  },
+  {
+   "m": "POST",
+   "p": "/api/v1/wechat_channels/v2/fetch_channel_id_to_username",
+   "d": "视频号sph短号→finder username",
+   "fee": true
+  },
+  {
+   "m": "POST",
+   "p": "/api/v1/wechat_channels/v2/fetch_user_videos",
+   "d": "视频号指定账号的视频列表",
+   "fee": true
+  },
+  {
+   "m": "POST",
+   "p": "/api/v1/wechat_channels/v2/fetch_video_detail",
+   "d": "视频号视频详情",
+   "fee": true
+  },
+  {
+   "m": "GET",
+   "p": "/api/v1/douyin/app/v3/fetch_share_info_by_share_code?share_code={share",
+   "d": "抖音口令式分享解析aweme_id",
+   "fee": true
+  },
+  {
+   "m": "GET",
+   "p": "/api/v1/douyin/web/get_aweme_id?url={url}",
+   "d": "抖音短链/分享链解析出aweme_id",
+   "fee": true
+  },
+  {
+   "m": "GET",
+   "p": "/api/v1/xiaohongshu/app/extract_share_info?share_link={share_link}",
+   "d": "小红书分享链/短链解析出note_id",
+   "fee": true
+  },
+  {
+   "m": "GET",
+   "p": "/api/v1/tikhub/user/get_user_info",
+   "d": "TikHub账户信息/余额查询",
+   "fee": false
+  }
+ ],
+ "openai": [
+  {
+   "m": "POST",
+   "p": "/v1/audio/transcriptions",
+   "d": "口播音频转写ASR",
+   "fee": true
+  },
+  {
+   "m": "POST",
+   "p": "/v1/images/generations",
+   "d": "gpt-image-2 文生图",
+   "fee": true
+  },
+  {
+   "m": "POST",
+   "p": "/v1/images/edits",
+   "d": "gpt-image-2 图生图/局部修改",
+   "fee": true
+  },
+  {
+   "m": "POST",
+   "p": "/v1/audio/speech",
+   "d": "OpenAI TTS 配音",
+   "fee": true
+  },
+  {
+   "m": "POST",
+   "p": "/v1/chat/completions",
+   "d": "营销文案/分镜脚本生成",
+   "fee": true
+  }
+ ],
+ "xiaolevideo": [
+  {
+   "m": "POST",
+   "p": "/api/v1/generations",
+   "d": "gpt-image-2 文生图/图生图 创建生成任务",
+   "fee": true
+  },
+  {
+   "m": "GET",
+   "p": "/api/v1/generations/{request_id}",
+   "d": "轮询果肉生图任务状态",
+   "fee": false
+  },
+  {
+   "m": "GET",
+   "p": "{渠道返回的图片url}",
+   "d": "下载果肉渠道返回的生成图片",
+   "fee": false
+  },
+  {
+   "m": "GET",
+   "p": "{xiaole成片CDN URL}；非 .cn 域(如 vidgen.x.ai)改写为 {HEYGEN_RELAY_BASE}/cdn/{h",
+   "d": "下载果肉/豆姐成片 mp4 落盘",
+   "fee": false
+  }
+ ],
+ "zelong": [
+  {
+   "m": "POST",
+   "p": "/v1/images/generations",
+   "d": "gpt-image-2 文生图",
+   "fee": true
+  },
+  {
+   "m": "POST",
+   "p": "/v1/images/edits",
+   "d": "gpt-image-2 图生图/局部修改",
+   "fee": true
+  }
+ ],
+ "zelong2": [
+  {
+   "m": "POST",
+   "p": "/image-pool/v1/images/generations",
+   "d": "gpt-image-2 文生图",
+   "fee": true
+  },
+  {
+   "m": "POST",
+   "p": "/image-pool/v1/images/edits",
+   "d": "gpt-image-2 图生图/局部修改",
+   "fee": true
+  }
+ ],
+ "gemini": [
+  {
+   "m": "POST",
+   "p": "/v1beta/models/gemini-3.1-flash-image:generateContent",
+   "d": "Nano Banana 2 作图",
+   "fee": true
+  }
+ ],
+ "cos": [
+  {
+   "m": "PUT",
+   "p": "/{COS_PREFIX}/{filename}",
+   "d": "banana 出图上传 COS 返回直链",
+   "fee": true
+  },
+  {
+   "m": "PUT",
+   "p": "{bucket}.cos.ap-guangzhou.myqcloud.com/collect/{platform}/{id}.mp4",
+   "d": "采集视频转存 COS 永久直链",
+   "fee": true
+  },
+  {
+   "m": "PUT",
+   "p": "/{object_key}",
+   "d": "产出文件上传 COS 返回公开或签名直链",
+   "fee": true
+  }
+ ],
+ "heygen": [
+  {
+   "m": "POST",
+   "p": "/assets",
+   "d": "上传素材换取 asset_id，multipart 上传",
+   "fee": false
+  },
+  {
+   "m": "POST",
+   "p": "/videos",
+   "d": "数字人口播视频生成，泽龙中转路径",
+   "fee": true
+  },
+  {
+   "m": "POST",
+   "p": "/avatars",
+   "d": "用图片 asset 创建 Photo Avatar",
+   "fee": false
+  },
+  {
+   "m": "GET",
+   "p": "/avatars/{avatar_group_id}",
+   "d": "轮询单个 Photo Avatar 组处理状态",
+   "fee": false
+  },
+  {
+   "m": "GET",
+   "p": "/avatars",
+   "d": "轮询 avatar 列表判断 Photo Avatar 是否就绪",
+   "fee": false
+  },
+  {
+   "m": "GET",
+   "p": "/videos/{video_id}",
+   "d": "轮询视频生成状态",
+   "fee": false
+  },
+  {
+   "m": "GET",
+   "p": "{heygen成片CDN URL}；命中 *.heygen.ai/*.heygen.com 时改写为 {HEYGEN_RELAY_BASE}",
+   "d": "下载 HeyGen 成片 mp4 落盘",
+   "fee": false
+  },
+  {
+   "m": "POST",
+   "p": "/v1/talking_photo",
+   "d": "口播直连：上传人物形象图创建 talking_photo",
+   "fee": false
+  },
+  {
+   "m": "POST",
+   "p": "/v1/asset",
+   "d": "口播直连：上传豆包合成的 mp3 音频换 asset_id",
+   "fee": false
+  },
+  {
+   "m": "POST",
+   "p": "/v2/video/generate",
+   "d": "口播直连：talking_photo + 音频 asset 生成数字人口播视",
+   "fee": true
+  },
+  {
+   "m": "GET",
+   "p": "/v1/video_status.get?video_id={video_id}",
+   "d": "口播直连：轮询生成状态",
+   "fee": false
+  }
+ ],
+ "runninghub": [
+  {
+   "m": "POST",
+   "p": "https://www.runninghub.cn (SDK RunningHubClient.upload_file)",
+   "d": "换装/换背景：上传人物视频、衣服图、背景图素材",
+   "fee": false
+  },
+  {
+   "m": "POST",
+   "p": "https://www.runninghub.cn (SDK run_ai_app, webappId=196960511618784461",
+   "d": "换装 AI App：人物视频+衣服图→换装视频",
+   "fee": true
+  },
+  {
+   "m": "POST",
+   "p": "https://www.runninghub.cn (SDK run_ai_app, webappId=198635352148852326",
+   "d": "换背景 AI App：视频+背景图→换背景视频",
+   "fee": true
+  },
+  {
+   "m": "POST",
+   "p": "https://www.runninghub.cn (SDK get_status/{task_id})",
+   "d": "轮询换装/换背景任务状态",
+   "fee": false
+  },
+  {
+   "m": "POST",
+   "p": "https://www.runninghub.cn (SDK get_outputs/{task_id})",
+   "d": "获取任务产出文件列表",
+   "fee": false
+  },
+  {
+   "m": "GET",
+   "p": "{RunningHub outputs 文件URL} (SDK download_outputs)",
+   "d": "下载换装/换背景成片到本地工作目录",
+   "fee": false
+  }
+ ],
+ "doubao": [
+  {
+   "m": "POST",
+   "p": "/api/v3/tts/unidirectional/sse",
+   "d": "豆包大模型 TTS 单向流式语音合成",
+   "fee": true
+  },
+  {
+   "m": "POST",
+   "p": "/api/v1/mega_tts/audio/upload",
+   "d": "豆包 VIP 声音克隆——上传样音启动音色复刻训练",
+   "fee": true
+  },
+  {
+   "m": "POST",
+   "p": "/api/v1/mega_tts/status",
+   "d": "查询豆包声音克隆训练状态",
+   "fee": false
+  }
+ ]
+}
+""")
+
 CHANNELS = {
     item["key"]: {
         "key": item["key"],
@@ -347,6 +679,7 @@ def key_status():
                 "required_env": item["env"],
                 "sources": found,
                 "pingable": item["key"] in KEY_PINGS,
+                "endpoints": ENDPOINT_CATALOG.get(item["key"], []),
             }
         )
     return items
@@ -361,6 +694,27 @@ def _env_value(names):
             if value:
                 return value
     return ""
+
+
+_BALANCE_KEY_RE = re.compile(r"balance|remain|coin|quota|credit", re.I)
+
+
+def _find_balance(detail, depth=0):
+    """从拨测响应里递归找余额类数值字段（remaining_quota/remainCoins/balance…）。"""
+    if depth > 3 or not isinstance(detail, dict):
+        return None
+    for k, v in detail.items():
+        if _BALANCE_KEY_RE.search(str(k)):
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                return v
+            if isinstance(v, str) and v.replace(".", "", 1).isdigit():
+                return float(v) if "." in v else int(v)
+    for v in detail.values():
+        if isinstance(v, dict):
+            found = _find_balance(v, depth + 1)
+            if found is not None:
+                return found
+    return None
 
 
 def _ping_upstream(method, url, headers=None, body=None, proxied=False, timeout=12):
@@ -382,10 +736,14 @@ def _ping_upstream(method, url, headers=None, body=None, proxied=False, timeout=
         # RunningHub/TikHub 这类 HTTP 永远 200、业务错误放 body.code 的，跟进一层
         try:
             detail = json.loads(raw.decode("utf-8"))
-            code = detail.get("code") if isinstance(detail, dict) else None
-            if code is not None and str(code) not in ("0", "200"):
-                out["ok"] = False
-                out["error"] = "业务码 %s: %s" % (code, str(detail.get("msg") or detail.get("message") or "")[:120])
+            if isinstance(detail, dict):
+                code = detail.get("code")
+                if code is not None and str(code) not in ("0", "200"):
+                    out["ok"] = False
+                    out["error"] = "业务码 %s: %s" % (code, str(detail.get("msg") or detail.get("message") or "")[:120])
+                balance = _find_balance(detail)
+                if balance is not None:
+                    out["balance"] = balance
         except Exception:
             pass
     except urllib.error.HTTPError as e:
