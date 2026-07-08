@@ -73,8 +73,6 @@ def _warn_cos_disabled_once():
     if not _cos_disabled_warned:
         _cos_disabled_warned = True
         print("[cos] 未启用：COS_SECRET_ID/KEY/REGION/BUCKET 有缺失，本进程所有产出回退本地 /api/gen/file（音频/图片/视频不会走 COS）。检查 content.env 并重启 content。", flush=True)
-
-
 def public_url(rel, content_type=None, private=False):
     """产出文件的对外链接：COS 已配置且文件存在 → 上传 COS 返回直链；未配置/失败 → 回退本地 /api/gen/file/。
     只在"产出入库"这类一次性点调用；别放进资产列表端点（否则每次刷新都会重复上传）。"""
@@ -98,9 +96,7 @@ def public_url(rel, content_type=None, private=False):
     except Exception as e:
         print("[cos] 上传失败，回退本地: %s -> %s" % (rel, e), flush=True)
     return local
-
 COS_COLLECT = os.environ.get("COS_COLLECT", "1").strip().lower() not in ("0", "false", "no")
-
 def public_url_from_remote(remote_url, rel_key, content_type=None):
     """把一个远程 URL(如抖音 CDN 直链)的字节转存到 COS，返回 COS 永久直链。
     COS 已启用且 remote_url 非空 → urllib 拉字节(带 UA/超时) → cos put → 返回直链；
@@ -119,7 +115,6 @@ def public_url_from_remote(remote_url, rel_key, content_type=None):
     except Exception as e:
         print("[cos] 采集转存失败，回退原链接: %s -> %s" % (rel_key, e), flush=True)
         return remote_url
-
 def _collect_cos_play_url(platform, vid_id, play_url):
     """采集视频 play_url → COS 永久直链。图集/无 play_url 跳过、保持原样。
     视频号(channels)加密流也跳过 COS 转存——它是 encfilekey 加密流(需 decode_key 解密)，
@@ -130,7 +125,6 @@ def _collect_cos_play_url(platform, vid_id, play_url):
     ident = re.sub(r"[^A-Za-z0-9_.-]", "", str(vid_id or "")) or "v"
     key = "collect/%s/%s.mp4" % ((platform or "x"), ident)
     return public_url_from_remote(play_url, key, "video/mp4")
-
 def _resolve_out_file(rel):
     rel = urllib.parse.unquote(str(rel or "")).replace("\\", "/").lstrip("/")
     if not rel or ".." in rel.split("/"):
@@ -147,7 +141,6 @@ def _resolve_out_file(rel):
         if fp.exists() and fp.is_file():
             return fp
     return None
-
 def _sensitive_output_file(rel):
     rel = str(rel or "").replace("\\", "/").lstrip("/")
     name = os.path.basename(rel)
@@ -199,7 +192,7 @@ def _env_positive_int(name, default):
     return max(1, value)
 
 VIDEO_COST = _env_positive_int("VIDEO_COST", 20)
-JOB_WORKERS = _env_positive_int("CONTENT_JOB_WORKERS", 3)
+JOB_WORKERS, FAST_JOB_WORKERS = _env_positive_int("CONTENT_JOB_WORKERS", 3), _env_positive_int("CONTENT_FAST_JOB_WORKERS", 3)  # 慢队列(视频/换装)/快队列(图片/音频等)各自worker数，分开防视频堵死快任务
 JOB_QUEUE_MAX = _env_positive_int("CONTENT_JOB_QUEUE_MAX", 32)
 MAX_USER_ACTIVE_JOBS = _env_positive_int("MAX_USER_ACTIVE_JOBS", 5)
 COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40}  # collect/leads/tryon 走 cost_of() 动态算
@@ -327,6 +320,9 @@ def init_audio_db():
             provider_avatar_id TEXT,
             provider_avatar_group_id TEXT,
             source_video_url TEXT,
+            background_file TEXT,
+            tryon_mode TEXT,
+            model TEXT,
             status TEXT NOT NULL DEFAULT 'pending',
             error TEXT,
             created_at INTEGER NOT NULL,
@@ -375,6 +371,9 @@ def init_audio_db():
         _ensure_column(c, "video_assets", "provider_avatar_id", "TEXT")
         _ensure_column(c, "video_assets", "provider_avatar_group_id", "TEXT")
         _ensure_column(c, "video_assets", "source_video_url", "TEXT")
+        _ensure_column(c, "video_assets", "background_file", "TEXT")
+        _ensure_column(c, "video_assets", "tryon_mode", "TEXT")
+        _ensure_column(c, "video_assets", "model", "TEXT")
         _ensure_column(c, "avatars", "provider_avatar_group_id", "TEXT")
         _ensure_column(c, "avatars", "status", "TEXT NOT NULL DEFAULT 'ready'")
         public = [
@@ -526,10 +525,6 @@ def delete_user_asset(username, kind, asset_id):
         raise LookupError("资产不存在或不属于当前账号")
     _delete_asset_mark(username, "video", str(asset_id))
     return {"kind": kind, "id": asset_id, "deleted": True}
-
-
-
-
 # ============ 鉴权（向 auth 服务核验 token） ============
 _verify_cache = {}; _verify_cache_lock = threading.Lock()
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
@@ -581,6 +576,10 @@ def verify(token):
 def _domains():
     from . import audio, points, video
     return audio, points, video
+
+def _leads_domain():
+    from . import leads
+    return leads
 
 def _must_change_password(user):
     return bool(user and user.get("must_change"))
@@ -636,12 +635,9 @@ def _post_bytes(path, data, ctype):  # 返回原始字节(TTS 拿 mp3 二进制)
                                  headers={"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": ctype}, method="POST")
     with urllib.request.urlopen(req, timeout=300) as r:
         return r.read()
-
-
-
-
-# ============ 后台 worker（有界队列 + 固定 worker，失败退点） ============
-_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)
+# ============ 后台 worker（有界队列 + 固定 worker，失败退点；慢/快队列分开防视频堵死作图） ============
+_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)       # 慢队列(video/tryon/xiaole_video)
+_fast_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)  # 快队列(image/audio/copy等)
 _queued_job_ids = set()
 _job_queue_lock = threading.Lock()
 _workers_started = False
@@ -676,16 +672,17 @@ def _refund_once(job_id, username, cost):
             return  # 已退过 / 非 error 终态，跳过
     _domains()[1].safe_refund_points(username, cost)
 
-def enqueue_job(job_id):
+def enqueue_job(job_id, kind=None):
     try:
         job_id = int(job_id)
     except Exception:
         return False
+    q = _fast_job_queue if kind is not None and kind not in {"video", "tryon", "xiaole_video"} else _job_queue  # kind缺省(旧调用/测试)保守走慢队列
     with _job_queue_lock:
         if job_id in _queued_job_ids:
             return True
         try:
-            _job_queue.put_nowait(job_id)
+            q.put_nowait(job_id)
         except queue.Full:
             return False
         _queued_job_ids.add(job_id)
@@ -713,25 +710,25 @@ def _reject_pending_job(job_id, username, cost, reason):
         _refund_once(job_id, username, cost)
     return claimed
 
-def _job_worker_loop():
+def _job_worker_loop(q):
     while True:
-        job_id = _job_queue.get()
+        job_id = q.get()
         try:
             run_job(job_id)
         finally:
             with _job_queue_lock:
                 _queued_job_ids.discard(job_id)
-            _job_queue.task_done()
+            q.task_done()
 
 def _recover_pending_jobs(limit=None):
     limit = int(limit or JOB_QUEUE_MAX)
     with closing(jdb()) as c:
-        rows = c.execute("""SELECT id FROM jobs
+        rows = c.execute("""SELECT id, kind FROM jobs
                             WHERE status='pending'
                             ORDER BY id ASC LIMIT ?""", (limit,)).fetchall()
     recovered = 0
     for row in rows:
-        if not enqueue_job(row["id"]):
+        if not enqueue_job(row["id"], row["kind"]):
             break
         recovered += 1
     return recovered
@@ -750,8 +747,9 @@ def start_job_workers():
         if _workers_started:
             return
         _workers_started = True
-    for i in range(JOB_WORKERS):
-        threading.Thread(target=_job_worker_loop, name="content-job-worker-%d" % (i + 1), daemon=True).start()
+    for count, q, prefix in ((JOB_WORKERS, _job_queue, "content-job-worker"), (FAST_JOB_WORKERS, _fast_job_queue, "content-fast-worker")):
+        for i in range(count):
+            threading.Thread(target=_job_worker_loop, args=(q,), name="%s-%d" % (prefix, i + 1), daemon=True).start()
     threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start()
     _recover_pending_jobs(JOB_QUEUE_MAX)
 
@@ -761,7 +759,7 @@ def run_job(job_id):
     if not r: return
     kind = r["kind"]; payload = json.loads(r["payload"] or "{}")
     username = r["username"]; cost = r["cost"]
-    if kind in {"audio", "video", "tryon", "xiaole_video"}:
+    if kind in {"audio", "video", "tryon", "xiaole_video", "leads"}:
         payload["_username"] = username
         payload["_job_id"] = job_id
     try:
@@ -806,7 +804,7 @@ def reaper():
                 if r["kind"] == "video" and r["updated_at"] >= now - 1800:
                     continue
                 if r["kind"] == "xiaole_video" and r["updated_at"] >= now - 1200:
-                    continue  # 果肉/微衣内部轮询上限600s+下载转存，6分钟内测实测会误杀成功任务
+                    continue  # 果肉/豆姐内部轮询上限600s+下载转存，6分钟内测实测会误杀成功任务
                 if r["kind"] == "image" and r["updated_at"] >= now - 900:
                     continue  # 多图/中转出图慢，给 image 15 分钟余量
                 # CAS 抢 error 终态；抢到(说明 worker 尚未写 done)才退点，退点本身再幂等一层
@@ -930,6 +928,14 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "avatar": video_domain.delete_video_avatar(user["username"], body.get("id"))})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
+        if p == "/api/gen/leads/crm":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            try:
+                crm = _leads_domain().upsert_crm(user["username"], self._json_body())
+                return self._send(200, {"ok": True, "crm": crm})
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
         if p.startswith("/api/gen/") and p[9:] in HANDLERS:
             kind = p[9:]
             user = verify(self._token())
@@ -966,7 +972,7 @@ class H(BaseHTTPRequestHandler):
                 c.commit(); jid = cur.lastrowid
             if kind in {"video", "tryon", "xiaole_video"}:
                 video_domain.record_video_pending_asset(jid, user["username"], body)
-            if not enqueue_job(jid):
+            if not enqueue_job(jid, kind):
                 _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
                 if kind in {"video", "tryon", "xiaole_video"}:
                     video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
@@ -988,6 +994,17 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"items": marks})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
+        if p == "/api/gen/leads/crm":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            lead_ids = []
+            for raw in q.get("lead_id") or q.get("ids") or []:
+                lead_ids.extend([x.strip() for x in str(raw).split(",") if x.strip()])
+            try:
+                return self._send(200, {"items": _leads_domain().list_crm(user["username"], lead_ids)})
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
         if p.startswith("/api/gen/job/"):
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
@@ -1001,6 +1018,22 @@ class H(BaseHTTPRequestHandler):
             phase = video_domain.get_video_job_phase(jid) if r["kind"] in {"video", "tryon", "xiaole_video"} else None
             d = _job_public_dict(r, phase)
             return self._send(200, d)
+        if p == "/api/gen/points/history":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                data = points_domain.history(
+                    user["username"],
+                    (q.get("days") or ["30"])[0],
+                    (q.get("kind") or [""])[0],
+                    (q.get("page") or ["1"])[0],
+                    (q.get("page_size") or ["20"])[0],
+                )
+                data["points"] = points_domain.get_points(user["username"])
+                return self._send(200, data)
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/dl":   # 无水印视频下载代理：直连拉 CDN → 附件流回(强制下载)
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
@@ -1162,7 +1195,7 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": items, "cost": 1, "points_left": points_left})
         if p == "/api/gen/health":
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS),
-                                    "job_workers": JOB_WORKERS, "max_user_active_jobs": MAX_USER_ACTIVE_JOBS,
+                                    "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS, "max_user_active_jobs": MAX_USER_ACTIVE_JOBS,
                                     "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
 

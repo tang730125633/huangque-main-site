@@ -190,7 +190,7 @@
 <div class="toast" id="toast"></div>
 <script>
 (function(){
-  var token = localStorage.getItem('hq_token') || '__cookie__';
+  var token = '__cookie__';
   var state = {days:7, data:null, userTimer:null, module:'ops'};
   var el = function(id){return document.getElementById(id)};
   function toast(msg){var t=el('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(t._tm); t._tm=setTimeout(function(){t.style.display='none'},2600)}

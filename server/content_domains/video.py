@@ -15,8 +15,15 @@ VALID_VIDEO_MOTIONS = {"low", "medium", "high"}
 VALID_IMAGE_MIMES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
 VALID_AUDIO_MIMES = {"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/mp4", "audio/m4a", "audio/x-m4a"}
 VALID_REFERENCE_VIDEO_MIMES = {"video/mp4", "video/quicktime", "video/webm"}
+XIAOLE_RATIO_SIZES = {
+    "9:16": "720x1280",
+    "16:9": "1280x720",
+    "1:1": "1024x1024",
+    "4:5": "1024x1280",
+    "5:4": "1280x1024",
+}
 
-# 统一视频生成 API（xiaolevideo.cn）：果肉=Grok Video、微衣=Seedance 2.0
+# 统一视频生成 API（xiaolevideo.cn）：果肉=Grok Video、豆姐=Seedance 2.0
 XIAOLEVIDEO_API_KEY = os.environ.get("XIAOLEVIDEO_API_KEY", "")
 XIAOLEVIDEO_API_BASE = os.environ.get("XIAOLEVIDEO_API_BASE", "https://api.xiaolevideo.cn").rstrip("/")
 XIAOLE_MAX_WAIT = int(os.environ.get("XIAOLEVIDEO_TIMEOUT", "600"))
@@ -26,7 +33,7 @@ _xiaole_dl_retries = int(os.environ.get("XIAOLEVIDEO_DL_RETRIES", "3"))     # �
 # 页面渠道 → 模型 id（前端传 channel，后端定 model，避免任意模型注入）
 XIAOLE_CHANNEL_MODELS = {
     "grok": "Grok Image Video",   # 果肉视频（Grok Video 1.0：文生/图生视频）
-    "micro": "seedance-2.0-fast", # 微衣视频（Seedance 2.0 Fast：文生视频；高配seedance-2.0账户额度不足）
+    "micro": "seedance-2.0-fast", # 豆姐视频（Seedance 2.0 Fast：文生视频；高配seedance-2.0账户额度不足）
 }
 XIAOLE_IMAGE_CHANNELS = {"grok"}  # 支持参考图（图生视频）的渠道
 XIAOLE_MAX_REF = int(os.environ.get("XIAOLEVIDEO_MAX_REF", "1"))  # Grok 图生视频最多参考图数
@@ -62,7 +69,7 @@ def _xiaole_ref_to_url(data_url):
         url = public_url(fn, mimetypes.guess_type(fn)[0])
         return url if url.startswith("http") else s
     except Exception as e:
-        print("[xiaolevideo] 参考图转存COS失败，回退原始数据: %s" % e, flush=True)
+        print("[video] 参考图转存COS失败，回退原始数据: %s" % e, flush=True)
         return s
 
 def _is_valid_data_url(value, allowed_mimes):
@@ -76,10 +83,89 @@ def _is_valid_data_url(value, allowed_mimes):
     if mime not in allowed_mimes:
         return False
     try:
-        base64.b64decode(encoded, validate=True)
-        return True
+        decoded = base64.b64decode(encoded, validate=True)
     except Exception:
         return False
+    if allowed_mimes == VALID_IMAGE_MIMES:
+        return _image_bytes_look_valid(decoded)
+    return True
+
+def _image_bytes_look_valid(raw):
+    if not raw:
+        return False
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return True
+    if raw.startswith(b"\xff\xd8\xff"):
+        return True
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return True
+    return False
+
+def _faststart_video_file(rel):
+    raw = str(rel or "").strip()
+    if not raw.lower().endswith(".mp4"):
+        return rel
+    src = _out_path(raw)
+    if not src.is_file():
+        return rel
+    tmp = src.with_name(src.stem + ".faststart.tmp.mp4")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(src),
+             "-map", "0", "-c", "copy", "-movflags", "+faststart", str(tmp)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            timeout=600,
+        )
+        if tmp.is_file() and tmp.stat().st_size > 0:
+            tmp.replace(src)
+    except FileNotFoundError:
+        print("[video] ffmpeg missing, skip faststart for %s" % raw, flush=True)
+    except Exception as e:
+        print("[video] faststart skipped for %s: %s" % (raw, str(e)[:160]), flush=True)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+    return rel
+
+
+def _extract_first_frame_cover(video_rel, ss=1):
+    """Extract first frame (-ss ss to skip black) as jpg cover. Returns rel path under video/ or None.
+    Graceful if no ffmpeg (for 运维 install step).
+    """
+    raw = str(video_rel or "").strip()
+    if not raw.lower().endswith((".mp4", ".mov", ".webm")):
+        return None
+    src = _out_path(raw)
+    if not src.is_file():
+        return None
+    stem = src.stem
+    cover = src.with_name(f"{stem}_cover.jpg")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-ss", str(ss), "-i", str(src),
+             "-vframes", "1", "-q:v", "3", str(cover)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            timeout=120,
+        )
+        if cover.is_file() and cover.stat().st_size > 0:
+            # return rel consistent with video_file convention (e.g. "video/xxx_cover.jpg" or just name)
+            if "/" in raw:
+                d = raw.rsplit("/", 1)[0]
+                return f"{d}/{cover.name}"
+            return cover.name
+    except FileNotFoundError:
+        print("[video] ffmpeg missing, skip first frame cover for %s (运维: apt install ffmpeg)" % raw, flush=True)
+    except Exception as e:
+        print("[video] first frame cover skipped for %s: %s" % (raw, str(e)[:160]), flush=True)
+    return None
+
 
 def validate_video_payload(payload):
     if not isinstance(payload, dict):
@@ -134,8 +220,9 @@ def record_video_asset(job_id, username, result):
         c.execute("""INSERT INTO video_assets
             (job_id, username, mode, image_file, audio_file, reference_video_file, video_file, video_url, text, voice_key,
              resolution, ratio, motion, phase, image_asset_id, audio_asset_id, reference_asset_id, provider_video_id,
-             provider_avatar_id, provider_avatar_group_id, source_video_url, status, error, created_at, updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             provider_avatar_id, provider_avatar_group_id, source_video_url, background_file, tryon_mode, model,
+             status, error, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(job_id) DO UPDATE SET
                 mode=COALESCE(excluded.mode, video_assets.mode),
                 image_file=COALESCE(excluded.image_file, video_assets.image_file),
@@ -156,6 +243,9 @@ def record_video_asset(job_id, username, result):
                 provider_avatar_id=COALESCE(excluded.provider_avatar_id, video_assets.provider_avatar_id),
                 provider_avatar_group_id=COALESCE(excluded.provider_avatar_group_id, video_assets.provider_avatar_group_id),
                 source_video_url=COALESCE(excluded.source_video_url, video_assets.source_video_url),
+                background_file=COALESCE(excluded.background_file, video_assets.background_file),
+                tryon_mode=COALESCE(excluded.tryon_mode, video_assets.tryon_mode),
+                model=COALESCE(excluded.model, video_assets.model),
                 status=COALESCE(excluded.status, video_assets.status),
                 error=excluded.error,
                 updated_at=excluded.updated_at""",
@@ -165,6 +255,7 @@ def record_video_asset(job_id, username, result):
              result.get("image_asset_id"), result.get("audio_asset_id"), result.get("reference_asset_id"),
              result.get("provider_video_id") or result.get("video_id"), result.get("provider_avatar_id") or result.get("avatar_item_id"),
              result.get("provider_avatar_group_id") or result.get("avatar_group_id"), result.get("source_video_url"),
+             result.get("background_file"), result.get("tryon_mode"), result.get("model"),
              result.get("status") or "pending", result.get("error"), now, now))
         c.commit()
 
@@ -176,7 +267,8 @@ def update_video_asset_phase(job_id, phase, **fields):
         "mode", "image_file", "audio_file", "reference_video_file", "video_file", "video_url",
         "text", "voice_key", "resolution", "ratio", "motion", "image_asset_id",
         "audio_asset_id", "reference_asset_id", "provider_video_id", "provider_avatar_id",
-        "provider_avatar_group_id", "source_video_url", "status", "error"
+        "provider_avatar_group_id", "source_video_url", "background_file", "tryon_mode",
+        "model", "status", "error"
     }
     if "voice" in fields and "voice_key" not in fields:
         fields["voice_key"] = fields.pop("voice")
@@ -211,6 +303,9 @@ def record_video_pending_asset(job_id, username, payload):
         "resolution": payload.get("resolution") or "1080p",
         "ratio": payload.get("ratio") or "9:16",
         "motion": payload.get("motion") or "medium",
+        "reference_video_file": payload.get("person_video_file") or None,
+        "background_file": payload.get("background_file") or None,
+        "model": payload.get("model") or None,
         "phase": "queued",
         "status": "running",
     })
@@ -221,6 +316,7 @@ def list_video_assets(username, limit=120):
         rows = c.execute("""SELECT id, job_id, username, mode, image_file, audio_file, reference_video_file, video_file, video_url,
                    text, voice_key, resolution, ratio, motion, phase, image_asset_id, audio_asset_id, reference_asset_id,
                    provider_video_id, provider_avatar_id, provider_avatar_group_id, source_video_url,
+                   background_file, tryon_mode, model,
                    status, error, created_at, updated_at
             FROM video_assets
             WHERE username=? AND status!='deleted'
@@ -624,7 +720,7 @@ def _download_video_file(url, prefix="vid"):
         raise RuntimeError("视频下载失败")
     fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键(#185)：真人视频防猜测枚举
     _out_path(fn).write_bytes(data)
-    return fn
+    return _faststart_video_file(fn)
 
 def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
     image_fp = _resolve_out_file(image_file)
@@ -638,7 +734,8 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
     video_id = _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion)
     info = _heygen_poll_video(video_id)
     video_file = _download_video_file(info["video_url"], "heygen")
-    return {
+    cover = _extract_first_frame_cover(video_file)
+    ret = {
         "video_id": video_id,
         "image_asset_id": image_asset_id,
         "audio_asset_id": audio_asset_id,
@@ -648,6 +745,10 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
         "thumbnail_url": info.get("thumbnail_url"),
         "duration": info.get("duration"),
     }
+    if cover:
+        ret["image_file"] = cover
+        ret["image_url"] = public_url(cover, "image/jpeg")
+    return ret
 
 def generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration, job_id=None, avatar=None):
     image_fp = _resolve_out_file(image_file)
@@ -729,7 +830,8 @@ def generate_heygen_motion_video(image_file, reference_video_file, resolution, r
     update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
                              source_video_url=info.get("video_url"))
     video_file = _download_video_file(info["video_url"], "cinematic")
-    return {
+    cover = _extract_first_frame_cover(video_file)
+    ret = {
         "video_id": video_id,
         "image_asset_id": image_asset_id,
         "reference_asset_id": reference_asset_id,
@@ -741,6 +843,10 @@ def generate_heygen_motion_video(image_file, reference_video_file, resolution, r
         "thumbnail_url": info.get("thumbnail_url"),
         "duration": info.get("duration") or duration,
     }
+    if cover:
+        ret["image_file"] = cover
+        ret["image_url"] = public_url(cover, "image/jpeg")
+    return ret
 
 # ============ F4 · 口播视频自动字幕（whisper 时间轴 + libass 烧录） ============
 # 仅 text/audio 口播模式生效；motion 动作模仿不做字幕（多无语音，价值低）。
@@ -960,7 +1066,7 @@ def burn_subtitle(video_file, known_text=None, style_key="white", job_id=None):
                     timeout=600, cwd=str(VIDEO_OUT_DIR))
         if not out_fp.exists() or out_fp.stat().st_size <= 0:
             raise ValueError("字幕烧录输出为空")
-        return out_rel
+        return _faststart_video_file(out_rel)
     finally:
         for tmp in (wav, ass):
             try:
@@ -1065,7 +1171,8 @@ def gen_video(payload):
             subtitle_error = str(e)[:200]
     return {
         "type": "video", "status": "done", "mode": mode,
-        "image_file": image_file, "image_url": _file_url(image_file),
+        "image_file": video_result.get("image_file") or image_file,
+        "image_url": video_result.get("image_url") or _file_url(video_result.get("image_file") or image_file),
         "audio_file": audio_file, "audio_url": audio_url,
         "reference_video_file": reference_video_file,
         "reference_video_url": _file_url(reference_video_file) if reference_video_file else None,
@@ -1142,7 +1249,7 @@ def _store_tryon_video(local_path, prefix="tryon"):
         ext = ".mp4"
     fn = "video/%s_%d%s" % (prefix, int(time.time() * 1000), ext)
     _out_path(fn).write_bytes(src.read_bytes())
-    return fn
+    return _faststart_video_file(fn)
 
 def generate_tryon_video(person_video_file, clothes_file, background_file, seconds, job_id=None, username=None):
     """RunningHub 两段式换装/换背景驱动。返回 {video_file, video_url, ...}。"""
@@ -1236,11 +1343,16 @@ def generate_tryon_video(person_video_file, clothes_file, background_file, secon
     except Exception as _cos_ex:
         print("[tryon] COS 上传失败，回退本地链接: %s" % _cos_ex, flush=True)
         video_url = _file_url(video_file)
-    return {
+    cover = _extract_first_frame_cover(video_file)
+    ret = {
         "video_file": video_file,
         "video_url": video_url,
         "duration": seconds,
     }
+    if cover:
+        ret["image_file"] = cover
+        ret["image_url"] = public_url(cover, "image/jpeg")
+    return ret
 
 def gen_tryon(payload):
     job_id = payload.get("_job_id")
@@ -1264,8 +1376,10 @@ def gen_tryon(payload):
         seconds = 6
     seconds = max(1, min(15, seconds))
     text = (payload.get("text") or "").strip() or "换装换背景"
+    cover_file = clothes_file or background_file
     update_video_asset_phase(job_id, "queued", mode="tryon", text=text,
-                             reference_video_file=person_video_file, image_file=clothes_file)
+                             reference_video_file=person_video_file, image_file=cover_file,
+                             background_file=background_file, tryon_mode=tryon_mode)
     video_result = generate_tryon_video(person_video_file, clothes_file, background_file, seconds,
                                         job_id=job_id, username=username)
     return {
@@ -1276,8 +1390,8 @@ def gen_tryon(payload):
         "reference_video_url": _file_url(person_video_file),
         "clothes_file": clothes_file,
         "background_file": background_file,
-        "image_file": clothes_file,
-        "image_url": _file_url(clothes_file) if clothes_file else None,
+        "image_file": video_result.get("image_file") or cover_file,
+        "image_url": video_result.get("image_url") or (_file_url(video_result.get("image_file")) if video_result.get("image_file") else (_file_url(cover_file) if cover_file else None)),
         "text": text,
         "video_file": video_result.get("video_file"), "video_url": video_result.get("video_url"),
         "source_video_url": video_result.get("video_url"),
@@ -1306,7 +1420,7 @@ def _xiaole_request(method, path, body=None, timeout=90):
             detail = e.read().decode("utf-8", "replace")[:400]
             if e.code == 429 and attempt < _xiaole_429_retries:
                 wait = min(45, 8 * (attempt + 1))
-                print("[xiaolevideo] 429 并发限流，%ds 后重试(%d/%d)" % (wait, attempt + 1, _xiaole_429_retries), flush=True)
+                print("[video] 429 并发限流，%ds 后重试(%d/%d)" % (wait, attempt + 1, _xiaole_429_retries), flush=True)
                 time.sleep(wait)
                 continue
             raise RuntimeError("视频接口失败: HTTP %s %s" % (e.code, detail))
@@ -1314,7 +1428,7 @@ def _xiaole_request(method, path, body=None, timeout=90):
             # 瞬时网络抖动(SSL握手超时等)自动重试
             if attempt < _xiaole_429_retries:
                 wait = min(30, 5 * (attempt + 1))
-                print("[xiaolevideo] 网络异常，%ds 后重试(%d/%d): %s" % (wait, attempt + 1, _xiaole_429_retries, str(e)[:80]), flush=True)
+                print("[video] 网络异常，%ds 后重试(%d/%d): %s" % (wait, attempt + 1, _xiaole_429_retries, str(e)[:80]), flush=True)
                 time.sleep(wait)
                 continue
             raise RuntimeError("视频接口网络异常: %s" % str(e)[:120])
@@ -1357,7 +1471,7 @@ def _download_xiaole_video(url, prefix="xiaole"):
             last_err = RuntimeError("下载为空")
         except Exception as e:
             last_err = e
-            print("[xiaolevideo] 下载失败重试(%d/%d): %s" % (attempt + 1, _xiaole_dl_retries, str(e)[:100]), flush=True)
+            print("[video] 下载失败重试(%d/%d): %s" % (attempt + 1, _xiaole_dl_retries, str(e)[:100]), flush=True)
             time.sleep(3 * (attempt + 1))
     if data is None:
         raise RuntimeError("视频下载失败: %s" % (str(last_err)[:120] if last_err else "未知"))
@@ -1365,11 +1479,14 @@ def _download_xiaole_video(url, prefix="xiaole"):
         raise RuntimeError("视频下载失败")
     fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键：防枚举
     _out_path(fn).write_bytes(data)
-    return fn
+    return _faststart_video_file(fn)
 
-def generate_xiaole_video(model, prompt, reference_images=None, job_id=None, prefix="xiaole"):
-    """统一 generations API：创建 → 轮询 → 下载。Grok(果肉)/Seedance(微衣) 共用。"""
-    input_d = {"prompt": (prompt or "").strip()}
+def _xiaole_size_for_ratio(ratio):
+    return XIAOLE_RATIO_SIZES.get(str(ratio or "").strip(), XIAOLE_RATIO_SIZES["9:16"])
+
+def generate_xiaole_video(model, prompt, reference_images=None, size="720x1280", job_id=None, prefix="xiaole"):
+    """统一 generations API：创建 → 轮询 → 下载。Grok(果肉)/Seedance(豆姐) 共用。"""
+    input_d = {"prompt": (prompt or "").strip(), "size": size or XIAOLE_RATIO_SIZES["9:16"]}   # 果肉/Grok 视频收 size，不收 aspect_ratio(#367)
     refs = _xiaole_build_refs(reference_images)
     if refs:
         input_d["mode"] = "image_to_video"   # 有参考图 → 图生视频
@@ -1401,7 +1518,7 @@ def generate_xiaole_video(model, prompt, reference_images=None, job_id=None, pre
         sdata = st.get("data") or {}
         status = str(sdata.get("status") or "").lower()
         if status != last:
-            print("[xiaolevideo] %s model=%s status=%s" % (rid, model, status), flush=True)
+            print("[video] %s model=%s status=%s" % (rid, model, status), flush=True)
             if job_id:
                 update_video_asset_phase(job_id, "xiaole_" + (status or "running"))
             last = status
@@ -1410,8 +1527,13 @@ def generate_xiaole_video(model, prompt, reference_images=None, job_id=None, pre
             if job_id:
                 update_video_asset_phase(job_id, "downloading", source_video_url=vurl)
             video_file = _download_xiaole_video(vurl, prefix)
-            return {"video_file": video_file, "video_url": _file_url(video_file),
+            cover = _extract_first_frame_cover(video_file)
+            ret = {"video_file": video_file, "video_url": _file_url(video_file),
                     "source_video_url": vurl, "model": model, "request_id": rid}
+            if cover:
+                ret["image_file"] = cover
+                ret["image_url"] = public_url(cover, "image/jpeg")
+            return ret
         if status in ("failed", "error", "cancelled", "canceled"):
             err = sdata.get("error") or {}
             msg = (err.get("message") if isinstance(err, dict) else None) or str(err) or status
@@ -1428,19 +1550,26 @@ def gen_xiaole_video(payload):
     prompt = (payload.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("请输入视频提示词")
+    ratio = (payload.get("ratio") or "9:16").strip()
+    if ratio not in XIAOLE_RATIO_SIZES:
+        ratio = "9:16"
+    size = _xiaole_size_for_ratio(ratio)
     ref_images = None
     if channel in XIAOLE_IMAGE_CHANNELS:
         raw_refs = payload.get("reference_images") or None
         if raw_refs:
             ref_images = [_xiaole_ref_to_url(r) for r in raw_refs]
-    label = {"grok": "果肉视频", "micro": "微衣视频"}.get(channel, model)
+    label = {"grok": "果肉视频", "micro": "豆姐视频"}.get(channel, model)
     if job_id:
         update_video_asset_phase(job_id, "queued", mode=channel, text=prompt, model=model)
-    result = generate_xiaole_video(model, prompt, reference_images=ref_images, job_id=job_id, prefix=channel)
+    result = generate_xiaole_video(model, prompt, reference_images=ref_images, size=size, job_id=job_id, prefix=channel)
     return {
         "type": "video", "status": "done", "mode": channel, "model": model, "text": prompt,
+        "ratio": ratio,
         "video_file": result.get("video_file"), "video_url": result.get("video_url"),
         "source_video_url": result.get("source_video_url"),
+        "image_file": result.get("image_file"),
+        "image_url": result.get("image_url") or (public_url(result.get("image_file"), "image/jpeg") if result.get("image_file") else None),
         "phase": "done", "message": "%s生成完成" % label,
     }
 

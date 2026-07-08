@@ -463,7 +463,7 @@
   var selectedNode=null, selectedNodes={}, selectedEdge=-1, clipNode=null, zoom=1;
   var activeSidePanel='', accountAssetsLoaded=false, accountAssets=[];
   var DRAFT_KEY='hq_canvas_draft_v2', TPL_KEY='hq_canvas_templates_v2', BOARD_KEY='hq_canvas_boards_v1', ACTIVE_BOARD_KEY='hq_canvas_active_id';
-  var currentBoardId=null, boardMode='mine';
+  var currentBoardId=null, boardMode='mine', boardLastSeenUpdatedAt=0, boardConflict=false;
   function tok(){ try{ return localStorage.getItem('hq_token')||'__cookie__'; }catch(e){ return '__cookie__'; } }
   function playableAssetUrl(u){
     u=String(u||'');
@@ -546,6 +546,7 @@
   }
   function scheduleSave(){
     if(loading) return;
+    if(boardConflict){ setSaveState('conflict'); return; }
     if(currentBoardId) setSaveState('saving');
     clearTimeout(saveTimer);
     saveTimer=setTimeout(saveDraft,220);
@@ -560,7 +561,8 @@
       try{ localStorage.setItem(DRAFT_KEY, JSON.stringify(snap)); }catch(e){ ok=false; }
     }
     if(!saveCurrentBoard(snap)) ok=false;
-    setSaveState(ok?'saved':'error');
+    if(boardConflict) setSaveState('conflict');
+    else setSaveState(ok?'saved':'error');
   }
   function loadDraft(){
     try{
@@ -733,18 +735,29 @@
     if(!currentBoardId) return true;
     var list=getBoards(), idx=list.findIndex(function(b){ return b.id===currentBoardId; });
     if(idx<0) return false;
+    if(boardConflict) return false;
+    var latestAt=list[idx].updatedAt||0;
+    if(boardLastSeenUpdatedAt && latestAt && latestAt!==boardLastSeenUpdatedAt){
+      boardConflict=true;
+      setSaveState('conflict');
+      updateState('另一个标签页已更新，请刷新后继续编辑');
+      return false;
+    }
     list[idx].data=snap||snapshot();
     list[idx].updatedAt=Date.now();
     if(isUntitledBoardName(list[idx].name)){
       var nextName=inferBoardName(list[idx].data);
       if(nextName) list[idx].name=nextName;
     }
-    return setBoards(list);
+    if(!setBoards(list)) return false;
+    boardLastSeenUpdatedAt=list[idx].updatedAt||0;
+    return true;
   }
   function setSaveState(state){
     if(!saveStateEl) return;
-    saveStateEl.classList.remove('saving','saved','error');
+    saveStateEl.classList.remove('saving','saved','error','conflict','warning');
     if(state==='saving'){ saveStateEl.textContent='保存中'; saveStateEl.classList.add('saving'); return; }
+    if(state==='conflict'){ saveStateEl.textContent='有冲突'; saveStateEl.classList.add('error','conflict'); return; }
     if(state==='error'){ saveStateEl.textContent='本地空间不足'; saveStateEl.classList.add('error'); return; }
     saveStateEl.textContent='已保存';
     saveStateEl.classList.add('saved');
@@ -905,6 +918,8 @@
   function showBoardHome(){
     saveCurrentBoard();
     currentBoardId=null;
+    boardLastSeenUpdatedAt=0;
+    boardConflict=false;
     try{ localStorage.removeItem(ACTIVE_BOARD_KEY); }catch(e){}
     clearBoardParam();
     if(localFullscreen) setLocalFullscreen(false);
@@ -934,6 +949,8 @@
     list.unshift(board);
     if(!setBoards(list)){ updateState('模板载入失败：本地空间不足'); return false; }
     currentBoardId=board.id;
+    boardLastSeenUpdatedAt=board.updatedAt||0;
+    boardConflict=false;
     setBoardParam(board.id);
     try{ localStorage.setItem(ACTIVE_BOARD_KEY,board.id); }catch(e){}
     loading=true;
@@ -959,6 +976,8 @@
     var list=getBoards(), board=list.find(function(b){ return b.id===id; });
     if(!board) return false;
     currentBoardId=id;
+    boardLastSeenUpdatedAt=board.updatedAt||0;
+    boardConflict=false;
     try{ localStorage.setItem(ACTIVE_BOARD_KEY,id); }catch(e){}
     loading=true;
     restoreSnapshot(board.data||emptySnapshot());
@@ -2752,6 +2771,16 @@
   if(tplImportFile) tplImportFile.onchange=function(){ importTemplateFile(tplImportFile.files&&tplImportFile.files[0]); };
   if(undoBtn) undoBtn.onclick=function(){ undo(); };
   if(redoBtn) redoBtn.onclick=function(){ redo(); };
+  window.addEventListener('storage',function(e){
+    if(e.key!==BOARD_KEY||!currentBoardId) return;
+    var list=getBoards(), board=list.find(function(b){ return b.id===currentBoardId; });
+    var latestAt=board&&board.updatedAt||0;
+    if(latestAt && boardLastSeenUpdatedAt && latestAt!==boardLastSeenUpdatedAt){
+      boardConflict=true;
+      setSaveState('conflict');
+      updateState('另一个标签页已更新，请刷新后继续编辑');
+    }
+  });
   document.addEventListener('keydown',function(e){
     var tag=(e.target&&e.target.tagName||'').toLowerCase();
     var editing=tag==='input'||tag==='textarea';

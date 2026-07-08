@@ -1,5 +1,87 @@
 # -*- coding: utf-8 -*-
-from .core import _collect_cos_play_url, re, tikhub
+import hashlib
+import sqlite3
+import time
+from contextlib import closing
+
+from .core import BASE, _collect_cos_play_url, re, tikhub
+
+LEADS_CRM_DB = str(BASE / "leads_crm.db")
+CRM_STATUSES = {"待跟进", "跟进中", "已加微", "已成交", "无效"}
+CRM_INTENTS = {"高意向", "咨询", "价格敏感", "围观"}
+
+def crm_db():
+    c = sqlite3.connect(LEADS_CRM_DB, timeout=10)
+    c.row_factory = sqlite3.Row
+    c.execute("""CREATE TABLE IF NOT EXISTS lead_crm(
+        username TEXT NOT NULL,
+        lead_id TEXT NOT NULL,
+        intent TEXT NOT NULL DEFAULT '高意向',
+        follow_status TEXT NOT NULL DEFAULT '待跟进',
+        follow_note TEXT NOT NULL DEFAULT '',
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(username, lead_id)
+    )""")
+    return c
+
+def _clean_lead_id(lead_id):
+    s = str(lead_id or "").strip()
+    if not re.fullmatch(r"[0-9a-f]{16,40}", s):
+        raise ValueError("线索ID无效")
+    return s
+
+def _row_dict(row):
+    if not row:
+        return None
+    return {"lead_id": row["lead_id"], "intent": row["intent"], "follow_status": row["follow_status"],
+            "follow_note": row["follow_note"], "updated_at": row["updated_at"]}
+
+def list_crm(username, lead_ids=None):
+    ids = []
+    for lead_id in (lead_ids or []):
+        try:
+            ids.append(_clean_lead_id(lead_id))
+        except ValueError:
+            continue
+    with closing(crm_db()) as c:
+        if ids:
+            qs = ",".join("?" for _ in ids)
+            rows = c.execute("SELECT * FROM lead_crm WHERE username=? AND lead_id IN (%s)" % qs, [username] + ids).fetchall()
+        else:
+            rows = c.execute("SELECT * FROM lead_crm WHERE username=? ORDER BY updated_at DESC LIMIT 500", (username,)).fetchall()
+    return {r["lead_id"]: _row_dict(r) for r in rows}
+
+def upsert_crm(username, payload):
+    lead_id = _clean_lead_id((payload or {}).get("lead_id"))
+    with closing(crm_db()) as c:
+        current = c.execute("SELECT * FROM lead_crm WHERE username=? AND lead_id=?", (username, lead_id)).fetchone()
+        intent = (payload or {}).get("intent") or (current["intent"] if current else "高意向")
+        follow_status = (payload or {}).get("follow_status") or (current["follow_status"] if current else "待跟进")
+        follow_note = (payload or {}).get("follow_note")
+        if follow_note is None:
+            follow_note = current["follow_note"] if current else ""
+        follow_note = str(follow_note or "")[:300]
+        if intent not in CRM_INTENTS:
+            raise ValueError("意向标签无效")
+        if follow_status not in CRM_STATUSES:
+            raise ValueError("跟进状态无效")
+        now = int(time.time())
+        c.execute("""INSERT OR REPLACE INTO lead_crm(username, lead_id, intent, follow_status, follow_note, updated_at)
+                     VALUES(?,?,?,?,?,?)""", (username, lead_id, intent, follow_status, follow_note, now))
+        c.commit()
+        return {"lead_id": lead_id, "intent": intent, "follow_status": follow_status,
+                "follow_note": follow_note, "updated_at": now}
+
+def _merge_saved_crm(username, leads):
+    if not username or not leads:
+        return leads
+    saved = list_crm(username, [x.get("lead_id") for x in leads])
+    out = []
+    for lead in leads:
+        item = dict(lead)
+        item.update(saved.get(item.get("lead_id")) or {})
+        out.append(item)
+    return out
 
 def gen_collect(payload):
     platform = (payload.get("platform") or "douyin").strip()
@@ -66,7 +148,29 @@ _HIGH = ["怎么拓客", "怎么收费", "怎么弄", "怎么做", "怎么操作
 def _is_spam(t): return any(k in t for k in _SPAM)
 def _is_high(t): return any(k in t for k in _HIGH)
 
+def _lead_text_key(text):
+    return re.sub(r"\s+", "", re.sub(r"\[[^\]]+\]", "", text or "")).strip().lower()
+
+def _lead_identity(comment):
+    platform = comment.get("platform") or ""
+    user_id = comment.get("user_id") or comment.get("nickname") or ""
+    content_key = _lead_text_key(comment.get("content"))
+    return "%s:%s:%s" % (platform, user_id, content_key)
+
+def _lead_id(comment):
+    raw = _lead_identity(comment)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+def _intent_label(text):
+    t = text or ""
+    if any(k in t for k in ("怎么联系", "怎么预约", "约一个", "想咨询", "求地址", "在哪做")):
+        return "咨询"
+    if any(k in t for k in ("多少钱", "价格", "贵吗", "多少钱一次", "价位")):
+        return "价格敏感"
+    return "高意向"
+
 def gen_leads(payload):
+    username  = (payload.get("_username") or "").strip()
     keyword   = (payload.get("keyword") or "").strip()
     platforms = payload.get("platforms") or ["douyin"]
     nvid      = max(1, min(30, int(payload.get("count") or 12)))
@@ -110,7 +214,7 @@ def gen_leads(payload):
             except tikhub.TikHubError:
                 continue
 
-    leads, spam, chat, seen = [], 0, 0, set()
+    leads, spam, chat, deduped, seen = [], 0, 0, 0, set()
     for c in raw:
         t = (c.get("content") or "").strip()
         if not t:
@@ -120,19 +224,22 @@ def gen_leads(payload):
         if len(re.sub(r"\[[^\]]+\]", "", t).strip()) < 2:
             chat += 1; continue
         if _is_high(t):
-            k = (c.get("user_id"), t)
+            k = _lead_identity(c)
             if k in seen:
+                deduped += 1
                 continue
             seen.add(k); leads.append(c)
         else:
             chat += 1
     leads.sort(key=lambda c: (len(c.get("content", "")), c.get("like_count", 0)), reverse=True)
-    out_leads = [{"nickname": c.get("nickname"), "user_unique_id": c.get("user_id"),
+    out_leads = [{"lead_id": _lead_id(c), "nickname": c.get("nickname"), "user_unique_id": c.get("user_id"),
                   "ip_location": c.get("ip_location"), "content": c.get("content"),
                   "title": c.get("source"), "platform": c.get("platform"),
-                  "profile_url": c.get("profile_url")} for c in leads]
+                  "profile_url": c.get("profile_url"), "intent": _intent_label(c.get("content")),
+                  "follow_status": "待跟进", "follow_note": ""} for c in leads]
+    out_leads = _merge_saved_crm(username, out_leads)
     return {"type": "leads", "keyword": keyword, "platforms": platforms,
-            "leads_count": len(out_leads), "spam": spam, "chat": chat, "total": len(raw),
+            "leads_count": len(out_leads), "spam": spam, "chat": chat, "deduped": deduped, "total": len(raw),
             "leads": out_leads, "url": None, "prompt": keyword}
 
 HANDLERS = {"collect": gen_collect, "leads": gen_leads}
