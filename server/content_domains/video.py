@@ -802,7 +802,7 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio):
     video_id = (d.get("data") or {}).get("video_id")
     if not video_id:
         raise RuntimeError("HeyGen直连未返回video_id: %s" % json.dumps(d, ensure_ascii=False)[:200])
-    deadline = time.time() + 280
+    deadline = time.time() + 450  # 口播直连轮询死线(280→450):50并发压测实测慢的成功案例达315s+,放宽避免误杀;需与reaper口播540s配套
     info = None
     while time.time() < deadline:
         time.sleep(HEYGEN_POLL_INTERVAL)
