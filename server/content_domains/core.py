@@ -802,9 +802,9 @@ def reaper():
                 if r["kind"] == "tryon" and r["updated_at"] >= now - 2400:
                     continue  # 换装+换背景两段式慢，心跳会刷新 updated_at，给 40 分钟余量
                 if r["kind"] == "video":
-                    # 口播(text/audio)已直连HeyGen约1分钟出片→5分钟超时；影视级模仿(motion)仍走泽龙→保持30分钟
+                    # 口播(text/audio)直连约1分钟出片→5分钟超时；影视级模仿(motion)直连后→8分钟超时
                     is_motion = '"mode":"motion"' in (r["payload"] or "").replace(" ", "")
-                    if r["updated_at"] >= now - (1800 if is_motion else 300):
+                    if r["updated_at"] >= now - (480 if is_motion else 300):
                         continue
                 if r["kind"] == "xiaole_video" and r["updated_at"] >= now - 1200:
                     continue  # 果肉/豆姐内部轮询上限600s+下载转存，6分钟内测实测会误杀成功任务
