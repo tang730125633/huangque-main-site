@@ -13,13 +13,14 @@
     var cv = document.querySelector('.hq-bg canvas');
     if(!cv || !cv.getContext) return;
     var ctx = cv.getContext('2d');
-    var w,h,dpr=Math.min(window.devicePixelRatio||1,2),ps=[],mouse={x:-9999,y:-9999};
+    var w,h,dpr=Math.min(window.devicePixelRatio||1,2),ps=[],mouse={x:-9999,y:-9999},raf=0,running=false,lastFrame=0,lastMouseAt=0;
+    var frameMs=33;
     function rs(){
       w=innerWidth; h=innerHeight; cv.width=w*dpr; cv.height=h*dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
-      var n=Math.min(76,Math.round(w*h/17000)); ps=[];
+      var n=Math.min(64,Math.round(w*h/17000)); ps=[];
       for(var i=0;i<Math.max(16,n);i++)ps.push({x:Math.random()*w,y:Math.random()*h,vx:(Math.random()-.5)*.28,vy:(Math.random()-.5)*.28,r:Math.random()*1.4+.5});
     }
-    function frame(){
+    function draw(){
       ctx.clearRect(0,0,w,h); ctx.globalAlpha=.55;
       var i,a,b;
       for(i=0;i<ps.length;i++){
@@ -38,10 +39,31 @@
         var A=ps[a],B=ps[b],qx=A.x-B.x,qy=A.y-B.y,dd=Math.sqrt(qx*qx+qy*qy);
         if(dd<128){ctx.globalAlpha=(1-dd/128)*.28;ctx.strokeStyle='rgba(231,178,76,1)';ctx.lineWidth=.6;ctx.beginPath();ctx.moveTo(A.x,A.y);ctx.lineTo(B.x,B.y);ctx.stroke();}
       }
-      if(!reduced) requestAnimationFrame(frame);
     }
-    rs(); frame(); addEventListener('resize',rs);
-    if(!reduced) addEventListener('mousemove',function(e){mouse.x=e.clientX;mouse.y=e.clientY;});
+    function frame(ts){
+      if(document.hidden){running=false;raf=0;return;}
+      if(lastFrame && ts-lastFrame<frameMs){raf=requestAnimationFrame(frame);return;}
+      lastFrame=ts||0; draw();
+      if(running) raf=requestAnimationFrame(frame);
+    }
+    function start(){
+      if(reduced||running||document.hidden) return;
+      running=true; raf=requestAnimationFrame(frame);
+    }
+    function stop(){
+      running=false; lastFrame=0;
+      if(raf){cancelAnimationFrame(raf);raf=0;}
+    }
+    rs(); draw(); addEventListener('resize',function(){rs();draw();});
+    if(!reduced){
+      addEventListener('mousemove',function(e){
+        var now=(typeof performance!=='undefined'&&performance.now)?performance.now():Date.now();
+        if(now-lastMouseAt<50) return;
+        lastMouseAt=now; mouse.x=e.clientX;mouse.y=e.clientY;
+      },{passive:true});
+      document.addEventListener('visibilitychange',function(){document.hidden?stop():start();});
+      start();
+    }
   }
 
   /* ---- 2. 滚动入场 ---- */
