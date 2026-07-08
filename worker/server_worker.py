@@ -33,6 +33,11 @@ TOKEN = os.environ.get("LEADGEN_WORKER_TOKEN", "worker-secret-2026")
 STATIC_PROXY = os.environ.get("STATIC_PROXY", "")   # 长效静态代理 user:pass@host:port；设了则搜索优先用(长命→爬得深)
 CMT_LIMIT = os.environ.get("CMT_LIMIT", "100")       # 每视频评论上限
 POLL = 8
+PREP_LOGIN_TTL = int(os.environ.get("PREP_LOGIN_TTL", "900"))
+SEARCH_STATIC_TIMEOUT = int(os.environ.get("SEARCH_STATIC_TIMEOUT", "180"))
+SEARCH_PROXY_TIMEOUT = int(os.environ.get("SEARCH_PROXY_TIMEOUT", "120"))
+VIDEO_CRAWL_TIMEOUT = int(os.environ.get("VIDEO_CRAWL_TIMEOUT", "180"))
+PREP_LOGIN_MARK = f"{WORK_DIR}/.prep_login_ok.json"
 
 # 共享的提取结果目录（按 aweme_id 命名，多 worker 共享不撞）
 FILES_DIR = "/home/ubuntu/leadgen-server/files"
@@ -94,11 +99,36 @@ def _proxy_arg(proxy_server):
     return {"server": f"http://{proxy_server}"}
 
 
+def _prep_login_cache_valid():
+    if PREP_LOGIN_TTL <= 0:
+        return False
+    if not (os.path.isdir(UD) and os.path.exists(PREP_LOGIN_MARK) and os.path.exists(COOKIES_JSON)):
+        return False
+    try:
+        mark = json.load(open(PREP_LOGIN_MARK, encoding="utf-8"))
+        cookie_mtime = os.path.getmtime(COOKIES_JSON)
+        return (
+            abs(float(mark.get("cookie_mtime", -1)) - cookie_mtime) < 0.001
+            and time.time() - float(mark.get("ok_at", 0)) < PREP_LOGIN_TTL
+        )
+    except Exception:
+        return False
+
+
+def _mark_prep_login_ok():
+    os.makedirs(os.path.dirname(PREP_LOGIN_MARK), exist_ok=True)
+    with open(PREP_LOGIN_MARK, "w", encoding="utf-8") as f:
+        json.dump({"ok_at": time.time(), "cookie_mtime": os.path.getmtime(COOKIES_JSON)}, f)
+
+
 def prep_login(proxy_server=None):
     """全新档案：注入本 worker 的号 cookie + localStorage HasUserLogin=1，使 pong 跳过登录。
     proxy_server=None 时直连（机房IP，深采接口放行）。"""
     import asyncio
     from playwright.async_api import async_playwright
+    if _prep_login_cache_valid():
+        log("复用热登录态缓存，跳过 Chromium 登录预热")
+        return True
     cookies = json.load(open(COOKIES_JSON, encoding="utf-8"))
     for c in cookies:
         if c.get("sameSite") not in ("Strict", "Lax", "None"):
@@ -123,13 +153,37 @@ def prep_login(proxy_server=None):
             ok = bool(re.search(r"抖音号[:：]", body))
             await ctx.close()
             return ok
-    return asyncio.run(_run())
+    ok = asyncio.run(_run())
+    if ok:
+        _mark_prep_login_ok()
+    return ok
 
 
 def clear_jsonl():
     os.makedirs(JSONL_DIR, exist_ok=True)
     for f in glob.glob(os.path.join(JSONL_DIR, "*.jsonl")):
         os.remove(f)
+
+
+def run_mediacrawler(cmd, timeout):
+    p = subprocess.Popen(cmd, cwd=WORK_DIR,
+                         env={**os.environ, "NO_PROXY": "localhost,127.0.0.1"},
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    try:
+        rc = p.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+        except Exception:
+            p.kill()
+        try:
+            p.wait(timeout=15)
+        except Exception:
+            pass
+        raise
+    if rc != 0:
+        raise subprocess.CalledProcessError(rc, cmd)
 
 
 def run_crawl(keyword, count, proxy_server):
@@ -144,27 +198,8 @@ def run_crawl(keyword, count, proxy_server):
            "--headless", "yes",
            "--enable_ip_proxy", "yes", "--ip_proxy_provider_name", "static",
            "--static_proxy_url", f"http://{proxy_server}"]
-    # 超时 210s：青果短效IP只活~2分钟，正常爬1-2分钟出结果；IP中途死了卡住，
-    # 最多3.5分钟就放手(抛 TimeoutExpired → handle_search 换IP重试)，不再傻等15分钟。
-    # 用独立进程组(start_new_session) + 超时整组杀，避免 chromium 孙进程变孤儿残留占内存。
-    p = subprocess.Popen(cmd, cwd=WORK_DIR,
-                         env={**os.environ, "NO_PROXY": "localhost,127.0.0.1"},
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True)
-    try:
-        rc = p.wait(timeout=(480 if (STATIC_PROXY and proxy_server == STATIC_PROXY) else 210))
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-        except Exception:
-            p.kill()
-        try:
-            p.wait(timeout=15)
-        except Exception:
-            pass
-        raise
-    if rc != 0:
-        raise subprocess.CalledProcessError(rc, cmd)
+    timeout = SEARCH_STATIC_TIMEOUT if (STATIC_PROXY and proxy_server == STATIC_PROXY) else SEARCH_PROXY_TIMEOUT
+    run_mediacrawler(cmd, timeout)
     return JSONL_DIR
 
 
@@ -294,9 +329,7 @@ def run_video_crawl(link, comment_limit, proxy_server=None):
                 "--static_proxy_url", f"http://{proxy_server}"]
     else:
         cmd += ["--enable_ip_proxy", "no"]
-    subprocess.run(cmd, cwd=WORK_DIR, timeout=420, check=True,
-                   env={**os.environ, "NO_PROXY": "localhost,127.0.0.1"},
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    run_mediacrawler(cmd, VIDEO_CRAWL_TIMEOUT)
     return JSONL_DIR
 
 
@@ -342,7 +375,7 @@ def handle_video(job):
             crawl_ok = True
             try:
                 run_video_crawl(link, limit, server)
-            except subprocess.CalledProcessError:
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
                 crawl_ok = False
             res = build_video_result(JSONL_DIR, link)
             got = res.get("total", 0) > 0 or len(res.get("videos") or []) > 0
@@ -378,7 +411,7 @@ def handle_search(job):
             crawl_ok = True
             try:
                 run_crawl(kw, cnt, server)
-            except subprocess.CalledProcessError:
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
                 crawl_ok = False  # 中途失败，看有没有抓到部分数据
             res = build_result(JSONL_DIR)
             got = res["leads_count"] > 0 or len(res["videos"]) > 0
