@@ -15,6 +15,13 @@ VALID_VIDEO_MOTIONS = {"low", "medium", "high"}
 VALID_IMAGE_MIMES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
 VALID_AUDIO_MIMES = {"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/mp4", "audio/m4a", "audio/x-m4a"}
 VALID_REFERENCE_VIDEO_MIMES = {"video/mp4", "video/quicktime", "video/webm"}
+XIAOLE_RATIO_SIZES = {
+    "9:16": "720x1280",
+    "16:9": "1280x720",
+    "1:1": "1024x1024",
+    "4:5": "1024x1280",
+    "5:4": "1280x1024",
+}
 
 # 统一视频生成 API（xiaolevideo.cn）：果肉=Grok Video、豆姐=Seedance 2.0
 XIAOLEVIDEO_API_KEY = os.environ.get("XIAOLEVIDEO_API_KEY", "")
@@ -1423,9 +1430,12 @@ def _download_xiaole_video(url, prefix="xiaole"):
     _out_path(fn).write_bytes(data)
     return _faststart_video_file(fn)
 
-def generate_xiaole_video(model, prompt, reference_images=None, ratio="9:16", job_id=None, prefix="xiaole"):
+def _xiaole_size_for_ratio(ratio):
+    return XIAOLE_RATIO_SIZES.get(str(ratio or "").strip(), XIAOLE_RATIO_SIZES["9:16"])
+
+def generate_xiaole_video(model, prompt, reference_images=None, size="720x1280", job_id=None, prefix="xiaole"):
     """统一 generations API：创建 → 轮询 → 下载。Grok(果肉)/Seedance(豆姐) 共用。"""
-    input_d = {"prompt": (prompt or "").strip()}   # 果肉/Grok视频模型不支持aspect_ratio(实测422),不传(#367回归修复)
+    input_d = {"prompt": (prompt or "").strip(), "size": size or XIAOLE_RATIO_SIZES["9:16"]}   # 果肉/Grok 视频收 size，不收 aspect_ratio(#367)
     refs = _xiaole_build_refs(reference_images)
     if refs:
         input_d["mode"] = "image_to_video"   # 有参考图 → 图生视频
@@ -1485,8 +1495,9 @@ def gen_xiaole_video(payload):
     if not prompt:
         raise ValueError("请输入视频提示词")
     ratio = (payload.get("ratio") or "9:16").strip()
-    if ratio not in VALID_VIDEO_RATIOS:
-        raise ValueError("ratio 仅支持 9:16、16:9、1:1、4:5、5:4")
+    if ratio not in XIAOLE_RATIO_SIZES:
+        ratio = "9:16"
+    size = _xiaole_size_for_ratio(ratio)
     ref_images = None
     if channel in XIAOLE_IMAGE_CHANNELS:
         raw_refs = payload.get("reference_images") or None
@@ -1495,7 +1506,7 @@ def gen_xiaole_video(payload):
     label = {"grok": "果肉视频", "micro": "豆姐视频"}.get(channel, model)
     if job_id:
         update_video_asset_phase(job_id, "queued", mode=channel, text=prompt, model=model)
-    result = generate_xiaole_video(model, prompt, reference_images=ref_images, ratio=ratio, job_id=job_id, prefix=channel)
+    result = generate_xiaole_video(model, prompt, reference_images=ref_images, size=size, job_id=job_id, prefix=channel)
     return {
         "type": "video", "status": "done", "mode": channel, "model": model, "text": prompt,
         "ratio": ratio,

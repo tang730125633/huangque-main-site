@@ -406,6 +406,10 @@
             <span id="grokRefText" style="font-size:12.5px;color:#94a4bb;">点击上传参考图，或在提示词框粘贴图片，让 Grok 基于它生成视频（png/jpg/webp）</span>
           </label>
         </div>
+        <div class="panel" style="margin-top:12px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
+          <div class="seg" style="grid-template-columns:repeat(5,1fr);"><button class="on" data-grok-ratio="9:16">9:16</button><button data-grok-ratio="16:9">16:9</button><button data-grok-ratio="1:1">1:1</button><button data-grok-ratio="4:5">4:5</button><button data-grok-ratio="5:4">5:4</button></div>
+        </div>
         <button id="grokGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:18px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
           生成果肉视频
         </button>
@@ -478,6 +482,7 @@
   var imageData='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
   var selectedSubtitle='off', selectedSubtitleStyle='white';  // F4 字幕：默认关闭，不勾选时行为与原来一致
   var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16';
+  var selectedGrokRatio='9:16';
   var tryonVideoData='', tryonClothesData='', tryonBackgroundData='';
   var motionAvatars=[], selectedMotionAvatarId=null, useNewMotionImage=true, avatarsLoaded=false;
   var currentVideoDraft=null;
@@ -611,6 +616,11 @@
   }
   function clickMotionRatio(value){
     var btn=document.querySelector('[data-motion-ratio="'+String(value||'').replace(/"/g,'\\"')+'"]');
+    if(btn){ btn.click(); return true; }
+    return false;
+  }
+  function clickGrokRatio(value){
+    var btn=document.querySelector('[data-grok-ratio="'+String(value||'').replace(/"/g,'\\"')+'"]');
     if(btn){ btn.click(); return true; }
     return false;
   }
@@ -1041,6 +1051,7 @@
     }else if(videoFunction==='grok'){
       $('modeSummary').textContent='果肉视频（Grok Video）：输入提示词直接生成视频';
       if($('modeName')) $('modeName').textContent='果肉视频';
+      if($('outputRatio')) $('outputRatio').textContent=selectedGrokRatio;
     }else if(videoFunction==='micro'){
       $('modeSummary').textContent='豆姐视频（Seedance 2.0）：输入提示词直接生成视频';
       if($('modeName')) $('modeName').textContent='豆姐视频';
@@ -1165,6 +1176,10 @@
     if(b.dataset.motionRatio){
       selectedMotionRatio=b.dataset.motionRatio;
       if(videoFunction==='motion' && $('outputRatio')) $('outputRatio').textContent=selectedMotionRatio;
+    }
+    if(b.dataset.grokRatio){
+      selectedGrokRatio=b.dataset.grokRatio;
+      if(videoFunction==='grok' && $('outputRatio')) $('outputRatio').textContent=selectedGrokRatio;
     }
     if(b.dataset.motion) selectedMotion=b.dataset.motion;
     if(b.dataset.subtitle){selectedSubtitle=b.dataset.subtitle;var sr=$('subtitleStyleRow');if(sr)sr.style.display=(selectedSubtitle==='on'?'':'none');}
@@ -1454,10 +1469,12 @@
     setBusy(true);
     if(statusEl) statusEl.textContent='正在提交'+label+'任务...';
     if($('outputPreviewText')) $('outputPreviewText').innerHTML='视频正在生成中<br>完成后会自动预览';
-    if($('outputRatio')) $('outputRatio').textContent='—';
-    currentVideoDraft={text:prompt,ratio:'—',motion:label,status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
+    var ratio=channel==='grok'?selectedGrokRatio:'—';
+    if($('outputRatio')) $('outputRatio').textContent=ratio;
+    currentVideoDraft={text:prompt,ratio:ratio,motion:label,status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
     renderVideoHistory([currentVideoDraft]);
     var xlPayload={channel:channel,prompt:prompt};
+    if(channel==='grok') xlPayload.ratio=selectedGrokRatio;
     if(channel==='grok' && grokRefData){ xlPayload.reference_images=[grokRefData]; }  // 图生视频参考图(最多1张)
     fetch('/api/gen/xiaole_video',{
       method:'POST',
@@ -1607,6 +1624,7 @@
       _prefillVoice=d.voice||'';
       if(m==='grok'||m==='micro'){
         updateFunction(m);
+        if(m==='grok' && d.ratio) clickGrokRatio(d.ratio);
         var ta=m==='grok'?$('grokPrompt'):$('microPrompt');
         if(ta){ta.value=d.prompt||d.text||'';ta.focus();}
         if(typeof toast==='function') toast('已切到原视频模式并带入提示词');
