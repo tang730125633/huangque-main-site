@@ -474,20 +474,17 @@ def _tail_lines(path, max_bytes=2 * 1024 * 1024):
     return lines
 
 
-def request_logs(limit=200, status="", q="", include_noise=False):
-    """聚合各 nginx access log 尾部的后端 /api/ 请求日志（最新在前）。"""
-    limit = max(1, min(int(limit or 200), 500))
-    status = str(status or "").strip()
-    q = str(q or "").strip()
+def _collect_request_entries(limit, status="", q="", include_noise=False):
+    """采集 nginx /api/ 请求 → (按时间倒序的 [(排序键, item)], 错误提示)。已做用户/功能反查。"""
+    entries, message = [], None
     existing = [p for p in NGINX_ACCESS_LOGS if p.exists()]
     if not existing:
-        return {"items": [], "message": "找不到 %s（服务器上才有）" % ", ".join(str(p) for p in NGINX_ACCESS_LOGS)}
-    entries = []
+        return [], "找不到 %s（服务器上才有）" % ", ".join(str(p) for p in NGINX_ACCESS_LOGS)
     for log_path in existing:
         try:
             lines = _tail_lines(log_path)
         except Exception as e:
-            return {"items": [], "message": "读取 %s 失败: %s" % (log_path, str(e)[:120])}
+            return [], "读取 %s 失败: %s" % (log_path, str(e)[:120])
         for line in lines:
             m = LOG_LINE_RE.match(line)
             if not m:
@@ -498,8 +495,16 @@ def request_logs(limit=200, status="", q="", include_noise=False):
             if not include_noise and NOISE_PATH_RE.match(path):
                 continue
             code = m.group("status")
-            if status and (code[:1] != status if len(status) == 1 else code != status):
-                continue
+            if status:
+                # ok/fail = 统一语义(给合并时间线用)；单数字=状态码前缀；三位=精确
+                if status == "ok":
+                    if int(code) >= 400:
+                        continue
+                elif status == "fail":
+                    if int(code) < 400:
+                        continue
+                elif code[:1] != status if len(status) == 1 else code != status:
+                    continue
             if q and q not in path:
                 continue
             sort_key, disp = _parse_log_time(m.group("time"))
@@ -522,17 +527,106 @@ def request_logs(limit=200, status="", q="", include_noise=False):
                 )
             )
     entries.sort(key=lambda x: x[0], reverse=True)
-    items = [item for _, item in entries[:limit]]
+    entries = entries[:limit]
     # 任务轮询请求：拿任务号反查任务库，补上用户和真实功能
-    jobs = _job_users({it["_jid"] for it in items if it["_jid"] is not None})
-    for it in items:
+    jobs = _job_users({it["_jid"] for _, it in entries if it["_jid"] is not None})
+    for _, it in entries:
         jid = it.pop("_jid")
         if jid in jobs:
             it["user"], func = jobs[jid]
             it["func"] = func + " · 轮询"
         elif jid is not None:
             it["func"] = "任务轮询"
-    return {"items": items, "limit": limit}
+    return entries, message
+
+
+def request_logs(limit=200, status="", q="", include_noise=False):
+    """聚合各 nginx access log 尾部的后端 /api/ 请求日志（最新在前）。"""
+    limit = max(1, min(int(limit or 200), 500))
+    entries, message = _collect_request_entries(limit, str(status or "").strip(), str(q or "").strip(), include_noise)
+    out = {"items": [item for _, item in entries], "limit": limit}
+    if message:
+        out["message"] = message
+    return out
+
+
+def activity_logs(days=7, limit=200, category="", q="", source="", include_noise=False):
+    """任务记录(jobs 库) + HTTP 请求(nginx) 合并成一条时间线，最新在前。
+
+    category: '' | ok | fail | running（统一语义：任务 done/error/排队中 ↔ HTTP <400/>=400）
+    source:   '' | job | http
+    """
+    limit = max(1, min(int(limit or 200), 500))
+    q = str(q or "").strip()
+    category = str(category or "").strip()
+    source = str(source or "").strip()
+    merged, message = [], None
+
+    if source in ("", "http") and category != "running":
+        # 成功/失败下推到采集层，避免"失败行被截断挤掉"
+        entries, message = _collect_request_entries(
+            limit, status=category if category in ("ok", "fail") else "", include_noise=include_noise
+        )
+        for key, it in entries:
+            cat = "ok" if it["status"] < 400 else "fail"
+            merged.append(
+                (
+                    key,
+                    {
+                        "source": "http",
+                        "time": it["time"],
+                        "user": it["user"],
+                        "func": it["func"],
+                        "cat": cat,
+                        "status_text": str(it["status"]),
+                        "duration_sec": None,
+                        "cost": None,
+                        "path": it["path"],
+                        "method": it["method"],
+                        "ip": it["ip"],
+                        "ua": it["ua"],
+                    },
+                )
+            )
+
+    if source in ("", "job"):
+        for j in call_logs(days, limit)["items"]:
+            t = time.localtime(j["created_at"]) if j["created_at"] else None
+            key = (t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec) if t else (0, 0, 0, 0, 0, 0)
+            cat = "ok" if j["status"] == "done" else ("fail" if j["status"] == "error" else "running")
+            merged.append(
+                (
+                    key,
+                    {
+                        "source": "job",
+                        "time": "%02d-%02d %02d:%02d:%02d" % key[1:] if t else "-",
+                        "user": j["username"],
+                        "func": j["func"],
+                        "cat": cat,
+                        "status_text": j["status"],
+                        "duration_sec": j["duration_sec"],
+                        "cost": j["cost"],
+                        "path": "",
+                        "method": "",
+                        "ip": "",
+                        "ua": "",
+                    },
+                )
+            )
+
+    items = []
+    for key, it in sorted(merged, key=lambda x: x[0], reverse=True):
+        if category and it["cat"] != category:
+            continue
+        if q and q not in it["path"] and q not in (it["user"] or "") and q not in (it["func"] or ""):
+            continue
+        items.append(it)
+        if len(items) >= limit:
+            break
+    out = {"items": items, "limit": limit, "days": days}
+    if message and source != "job":
+        out["message"] = message
+    return out
 
 
 def probe_service(svc):
@@ -940,6 +1034,22 @@ class H(BaseHTTPRequestHandler):
                 )
             except Exception as e:
                 return self._send(500, {"detail": str(e)[:160]})
+        if path == "/api/admin/activity":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                return self._send(
+                    200,
+                    activity_logs(
+                        (q.get("days") or ["7"])[0],
+                        (q.get("limit") or ["200"])[0],
+                        (q.get("status") or [""])[0],
+                        (q.get("q") or [""])[0],
+                        (q.get("source") or [""])[0],
+                        (q.get("noise") or ["0"])[0] in ("1", "true"),
+                    ),
+                )
+            except Exception as e:
+                return self._send(500, {"detail": str(e)[:160]})
         if path == "/api/admin/stats":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(200, job_stats((q.get("days") or ["7"])[0]))
@@ -966,7 +1076,6 @@ class H(BaseHTTPRequestHandler):
                     "channels": load_channels(),
                     "features": load_features(services),
                     "stats": job_stats(days),
-                    "call_logs": call_logs(days, 200),
                 },
             )
         return self._send(404, {"detail": "not found"})

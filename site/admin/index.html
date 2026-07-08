@@ -179,30 +179,30 @@
       </section>
       <section class="card span12 module-card" data-module="logs" hidden>
         <div class="section-head">
-          <div><h2>请求日志</h2><div class="hint">nginx 记录的每一次后端（/api/）请求；任务类请求已反查出用户和功能，登录等请求网关日志不含身份、用户列显示 -。看「谁用了什么功能」最直观的是下方的用户调用日志。</div></div>
+          <div><h2>调用与请求日志</h2><div class="hint">任务记录（用户/功能/耗时/点数）与 nginx 后端请求按时间混排成一条时间线。HTTP 行的用户来自任务号反查，登录等请求网关日志不含身份、显示 -。</div></div>
           <span class="muted" id="reqCount">-</span>
         </div>
         <div class="toolbar">
+          <select id="reqSource">
+            <option value="">任务 + HTTP 请求</option>
+            <option value="job">只看任务</option>
+            <option value="http">只看 HTTP 请求</option>
+          </select>
           <select id="reqStatus">
             <option value="">全部状态</option>
-            <option value="2">2xx 成功</option>
-            <option value="3">3xx 跳转</option>
-            <option value="4">4xx 客户端错误</option>
-            <option value="5">5xx 服务端错误</option>
+            <option value="ok">成功</option>
+            <option value="fail">失败</option>
+            <option value="running">进行中</option>
           </select>
-          <input class="field" id="reqSearch" autocomplete="off" placeholder="按路径筛选，如 /api/gen/">
+          <input class="field" id="reqSearch" autocomplete="off" placeholder="搜索路径 / 用户 / 功能">
           <label class="switch"><input type="checkbox" id="reqNoise"> 显示轮询噪音</label>
           <button id="reqRefresh">刷新日志</button>
         </div>
         <div id="reqBox"></div>
       </section>
-      <section class="card span6 module-card" data-module="logs" hidden>
+      <section class="card span12 module-card" data-module="logs" hidden>
         <div class="section-head"><div><h2>调用统计</h2><div class="hint">按能力统计成功率和失败率。</div></div></div>
         <div id="statsBox"></div>
-      </section>
-      <section class="card span6 module-card" data-module="logs" hidden>
-        <div class="section-head"><div><h2>用户调用日志</h2><div class="hint">每次调用的时间、功能、耗时、状态与点数消耗。</div></div></div>
-        <div id="trendBox"></div>
       </section>
     </div>
   </section>
@@ -223,12 +223,6 @@
   function statusPill(ok, text){return '<span class="pill '+(ok?'ok':'fail')+'">'+text+'</span>'}
   function statusIcon(cls, text){return '<span><i class="dot '+cls+'"></i>'+esc(text)+'</span>'}
   function fmtTime(ts){return ts ? new Date(Number(ts)*1000).toLocaleString() : '-'}
-  function fmtMinute(ts){
-    if(!ts) return '-';
-    var d=new Date(Number(ts)*1000);
-    var pad=function(n){return String(n).padStart(2,'0')};
-    return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes());
-  }
   function fmtDuration(sec){
     sec=Number(sec);
     if(!isFinite(sec) || sec<0) return '-';
@@ -292,20 +286,30 @@
     }).join('');
     bindPing('keyBox','data-ping-key','key','key');
   }
-  function renderReqLogs(d){
+  function renderActivity(d){
     var items=d.items||[];
     el('reqCount').textContent=items.length+' 条（最新在前）';
-    if(!items.length){el('reqBox').innerHTML='<div class="empty">'+esc(d.message||'没有匹配的请求日志')+'</div>';return}
-    el('reqBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>时间</th><th>用户</th><th>功能</th><th>方法</th><th>路径</th><th>状态</th><th>来源 IP</th><th>UA</th></tr></thead><tbody>'+items.map(function(x){
-      var cls=x.status>=500?'fail':(x.status>=400?'warn':'ok');
+    if(!items.length){el('reqBox').innerHTML='<div class="empty">'+esc(d.message||'没有匹配的日志')+'</div>';return}
+    el('reqBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>时间</th><th>类型</th><th>用户</th><th>功能</th><th>状态</th><th>耗时</th><th>点数</th><th>路径</th><th>来源 IP</th></tr></thead><tbody>'+items.map(function(x){
+      var isJob=x.source==='job';
+      var type=isJob?'<span class="pill">任务</span>':'<span class="pill neutral">请求</span>';
       var user=x.user&&x.user!=='-'?'<b>'+esc(x.user)+'</b>':'<span class="muted">-</span>';
-      return '<tr><td><code>'+esc(x.time)+'</code></td><td>'+user+'</td><td>'+(x.func?esc(x.func):'<span class="muted">-</span>')+'</td><td><code>'+esc(x.method)+'</code></td><td><div class="truncate" style="max-width:340px" title="'+esc(x.path)+'"><code>'+esc(x.path)+'</code></div></td><td><span class="pill '+cls+'">'+esc(x.status)+'</span></td><td><code>'+esc(x.ip)+'</code></td><td><div class="truncate" style="max-width:160px" title="'+esc(x.ua)+'">'+esc(x.ua)+'</div></td></tr>';
+      var st;
+      if(isJob){st=jobStatusPill(x.status_text)}
+      else{var cls=x.cat==='fail'?(Number(x.status_text)>=500?'fail':'warn'):'ok'; st='<span class="pill '+cls+'">'+esc(x.status_text)+'</span>'}
+      var pathCell=x.path?'<div class="truncate" style="max-width:300px" title="'+esc(x.path)+'"><code>'+esc(x.path)+'</code></div>':'<span class="muted">-</span>';
+      var ipCell=x.ip?'<code title="'+esc(x.ua||'')+'">'+esc(x.ip)+'</code>':'<span class="muted">-</span>';
+      return '<tr><td><code>'+esc(x.time)+'</code></td><td>'+type+'</td><td>'+user+'</td><td>'+(x.func?esc(x.func):'<span class="muted">-</span>')+'</td><td>'+st+'</td><td><code>'+(isJob?esc(fmtDuration(x.duration_sec)):'-')+'</code></td><td class="right"><code>'+(x.cost!=null?Number(x.cost).toLocaleString():'-')+'</code></td><td>'+pathCell+'</td><td>'+ipCell+'</td></tr>';
     }).join('')+'</tbody></table></div>';
   }
   function loadReqLogs(){
-    var q='?limit=200&status='+encodeURIComponent(el('reqStatus').value||'')+'&q='+encodeURIComponent(el('reqSearch').value||'')+(el('reqNoise').checked?'&noise=1':'');
+    var q='?limit=200&days='+encodeURIComponent(state.days)
+      +'&source='+encodeURIComponent(el('reqSource').value||'')
+      +'&status='+encodeURIComponent(el('reqStatus').value||'')
+      +'&q='+encodeURIComponent(el('reqSearch').value||'')
+      +(el('reqNoise').checked?'&noise=1':'');
     el('reqBox').innerHTML='<div class="empty">加载中…</div>';
-    api('/api/admin/request-logs'+q).then(renderReqLogs).catch(function(e){el('reqBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
+    api('/api/admin/activity'+q).then(renderActivity).catch(function(e){el('reqBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
   }
   function renderChannels(items){
     el('channelBox').innerHTML=items.map(function(c){
@@ -432,14 +436,6 @@
     }).join('');
     el('statsBox').innerHTML=rows?'<div class="table-wrap"><table><thead><tr><th>类型</th><th>总量</th><th>成功</th><th>失败</th><th>成功率</th><th>失败率</th></tr></thead><tbody>'+rows+'</tbody></table></div>':'<div class="empty">'+esc(st.message||'暂无调用数据')+'</div>';
   }
-  function renderCallLogs(logs){
-    logs=logs||{};
-    var items=logs.items||[];
-    if(!items.length){el('trendBox').innerHTML='<div class="empty">'+esc(logs.message||'暂无用户调用日志')+'</div>';return}
-    el('trendBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>调用时间</th><th>用户</th><th>调用功能</th><th>响应时间</th><th>完成状态</th><th class="right">点数消耗</th></tr></thead><tbody>'+items.map(function(x){
-      return '<tr><td><code>'+fmtMinute(x.created_at)+'</code></td><td><b>'+esc(x.username||'-')+'</b></td><td><b>'+esc(x.func||kindName(x.kind))+'</b><div class="muted">'+esc(x.kind||'')+'</div></td><td><code>'+esc(fmtDuration(x.duration_sec))+'</code></td><td>'+jobStatusPill(x.status)+'</td><td class="right"><code>'+Number(x.cost||0).toLocaleString()+'</code></td></tr>';
-    }).join('')+'</tbody></table></div>';
-  }
   function switchModule(name){
     state.module=name;
     Array.prototype.forEach.call(document.querySelectorAll('[data-module-tab]'), function(btn){btn.classList.toggle('active', btn.getAttribute('data-module-tab')===name)});
@@ -456,7 +452,7 @@
     el('jobTotal').textContent=(d.stats&&d.stats.total)||0; el('statDays').textContent='近 '+((d.stats&&d.stats.days)||state.days)+' 天';
     el('failKinds').textContent=((d.stats&&d.stats.high_failure)||[]).length;
     el('updatedAt').textContent='更新于 '+new Date().toLocaleTimeString();
-    renderServices(d.services||[]); renderKeys(d.keys||[]); renderChannels(d.channels||[]); renderFeatures(d.features||[]); renderStats(d.stats||{}); renderCallLogs(d.call_logs||{});
+    renderServices(d.services||[]); renderKeys(d.keys||[]); renderChannels(d.channels||[]); renderFeatures(d.features||[]); renderStats(d.stats||{});
     switchModule(state.module);
     loadUsers(); loadRecharge();
   }
@@ -476,6 +472,7 @@
   el('userDir').onchange=loadUsers;
   el('userSearch').oninput=function(){clearTimeout(state.userTimer);state.userTimer=setTimeout(loadUsers,260)};
   el('reqRefresh').onclick=loadReqLogs;
+  el('reqSource').onchange=loadReqLogs;
   el('reqStatus').onchange=loadReqLogs;
   el('reqNoise').onchange=loadReqLogs;
   el('reqSearch').oninput=function(){clearTimeout(state.reqTimer);state.reqTimer=setTimeout(loadReqLogs,300)};

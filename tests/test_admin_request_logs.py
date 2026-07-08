@@ -119,8 +119,12 @@ class RequestLogUserTests(unittest.TestCase):
             "CREATE TABLE jobs(id INTEGER PRIMARY KEY, username TEXT, kind TEXT,"
             " cost INTEGER, status TEXT, payload TEXT, created_at INTEGER, updated_at INTEGER)"
         )
+        import time as _time
+
+        now = int(_time.time())
         c.execute(
-            "INSERT INTO jobs VALUES(1226,'tang','xiaole_video',13,'done','{}',1,2)"
+            "INSERT INTO jobs VALUES(1226,'tang','xiaole_video',13,'done','{}',?,?)",
+            (now - 100, now - 40),
         )
         c.commit()
         c.close()
@@ -150,6 +154,37 @@ class RequestLogUserTests(unittest.TestCase):
         self.assertEqual(items["/api/gen/banana/health"]["func"], "健康检查")
         # 内部字段不外传
         self.assertNotIn("_jid", poll)
+
+    def test_activity_merges_jobs_and_http(self):
+        data = admin_api.activity_logs()
+        items = data["items"]
+        sources = {x["source"] for x in items}
+        self.assertEqual(sources, {"job", "http"})
+        # 任务行：带用户/功能/点数；时间线按时间倒序
+        job_rows = [x for x in items if x["source"] == "job"]
+        self.assertEqual(job_rows[0]["user"], "tang")
+        self.assertEqual(job_rows[0]["cost"], 13)
+        self.assertEqual(job_rows[0]["cat"], "ok")
+        times = [x["time"] for x in items]
+        self.assertEqual(times, sorted(times, reverse=True))
+
+    def test_activity_filters(self):
+        # source 过滤
+        only_jobs = admin_api.activity_logs(source="job")["items"]
+        self.assertTrue(only_jobs and all(x["source"] == "job" for x in only_jobs))
+        only_http = admin_api.activity_logs(source="http")["items"]
+        self.assertTrue(only_http and all(x["source"] == "http" for x in only_http))
+        # 统一状态：fail = HTTP >=400（本样本 404）
+        fails = admin_api.activity_logs(category="fail")["items"]
+        self.assertTrue(fails and all(x["cat"] == "fail" for x in fails))
+        # 关键词搜用户名 → 命中任务行
+        hit = admin_api.activity_logs(q="tang")["items"]
+        self.assertTrue(hit and all("tang" in (x["user"] or "") or "tang" in x["path"] for x in hit))
+
+    def test_activity_fail_filter_not_crowded_out(self):
+        # 404 行不在最新 2 条里；fail 条件下推到采集层后依然能查到
+        fails = admin_api.activity_logs(category="fail", limit=2, source="http")["items"]
+        self.assertTrue(any(x["status_text"] == "404" for x in fails))
 
 
 class KeyPingTests(unittest.TestCase):
