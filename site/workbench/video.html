@@ -626,9 +626,16 @@
   }
   function applyTemplateVoice(key){
     if(!key) return true;
-    var match=voices.find(function(v){return v.voice_key===key;});
+    key=String(key||'').trim();
+    if(!key) return true;
+    var low=key.toLowerCase();
+    var match=voices.find(function(v){
+      return String(v.voice_key||'')===key
+        || String(v.provider_voice||'')===key
+        || String(v.display_name||'').toLowerCase()===low;
+    });
     if(!match) return false;
-    selectedVoice=key;
+    selectedVoice=match.voice_key||key;
     voiceTab=match.scope||voiceTab;
     document.querySelectorAll('[data-voice-tab]').forEach(function(b){b.classList.toggle('on',b.dataset.voiceTab===voiceTab);});
     renderVoices();
@@ -1559,7 +1566,8 @@
   var _prefillVoice='';
   function prefillMode(d){
     var m=String((d&&d.mode)||'text').toLowerCase();
-    if(m==='digital_human'||m==='talking'||m==='talking_head') return 'text';
+    if(m==='digital_human'||m==='talking'||m==='talking_head'||m==='talking_text'||m==='text2video') return 'text';
+    if(m==='talking_audio'||m==='audio2video') return 'audio';
     if(m==='txt2video') return 'grok';
     if(m==='img2video') return 'grok';
     return m||'text';
@@ -1621,7 +1629,7 @@
       if(d.resolution) clickDataButton('resolution',d.resolution);
       if(d.ratio) clickDataButton('ratio',d.ratio);
       if(d.motion) clickDataButton('motion',d.motion);
-      _prefillVoice=d.voice||'';
+      _prefillVoice=d.voice_key||d.voice||d.provider_voice||d.voice_name||'';
       if(m==='grok'||m==='micro'){
         updateFunction(m);
         if(m==='grok' && d.ratio) clickGrokRatio(d.ratio);
@@ -1673,7 +1681,9 @@
       });
     }catch(e){}
   }
-  function _applyPrefillVoice(){ if(_prefillVoice){ applyTemplateVoice(_prefillVoice); _prefillVoice=''; } }
+  function _applyPrefillVoice(){
+    if(_prefillVoice && applyTemplateVoice(_prefillVoice)) _prefillVoice='';
+  }
   // 灵感页「一键跟创（视频）」：?prompt= 预填到果肉/豆姐渠道并切到对应 tab
   function applyInspirationPrefill(){
     try{

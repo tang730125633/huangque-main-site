@@ -449,15 +449,20 @@
     if(kind==='audio') return {url:'/api/gen/audio', body:{text:x.text||x.prompt||'', voice:x.voice||x.voice_key||'', speed:x.speed||1, pitch:x.pitch||0, volume:x.volume||1}};
     if(kind==='video'){
       var mode=String(x.mode||'text').toLowerCase();
+      if(['digital_human','talking','talking_head','talking_text','text2video'].indexOf(mode)>=0) mode='text';
+      if(['talking_audio','audio2video'].indexOf(mode)>=0) mode='audio';
+      if(!mode || mode==='video') mode=(x.audio_file||x.audio_url)&&!(x.text||x.prompt)?'audio':'text';
       var prefill={
         mode:mode,
         prompt:x.prompt||x.text||'',
         text:x.text||x.prompt||'',
-        voice:x.voice||x.voice_key||'',
+        voice:x.voice||x.voice_key||x.provider_voice||x.voice_name||'',
+        voice_key:x.voice_key||x.voice||'',
+        voice_name:x.voice_name||'',
         ratio:x.ratio||'9:16',
         resolution:x.resolution||'',
         motion:x.motion||'',
-        image_url:x.image_url||(x.image_file?('/api/gen/file/'+x.image_file):''),
+        image_url:x.source_image_url||x.person_image_url||x.image_url||(x.image_file?('/api/gen/file/'+x.image_file):''),
         audio_url:x.audio_url||(x.audio_file?('/api/gen/file/'+x.audio_file):''),
         reference_video_url:x.reference_video_url||(x.reference_video_file?('/api/gen/file/'+x.reference_video_file):''),
         background_url:x.background_url||(x.background_file?('/api/gen/file/'+x.background_file):''),
