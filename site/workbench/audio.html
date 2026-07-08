@@ -259,6 +259,10 @@
   el('resultAudio').ontimeupdate=function(){var a=el('resultAudio'), pct=a.duration?Math.min(100,a.currentTime/a.duration*100):0;el('progressBar').style.width=pct+'%';el('timeText').textContent=fmt(a.currentTime)+' / '+fmt(a.duration);};
   el('resultAudio').onplay=function(){el('mainPlay').textContent='Ⅱ';};
   el('resultAudio').onpause=function(){el('mainPlay').textContent='▶';};
+  try{
+    var q=new URLSearchParams(location.search), pp=q.get('prompt');
+    if(pp){el('ttsText').value=pp.slice(0,1200);toast('已带入编导口播文案');}
+  }catch(e){}
   bars(); updateParams(); el('ttsText').dispatchEvent(new Event('input')); loadVoices(); loadRecent();
 })();
 </script>
