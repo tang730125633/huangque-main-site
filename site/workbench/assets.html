@@ -97,6 +97,7 @@
   <div id="bulkBar" style="display:none; position:fixed; left:50%; bottom:22px; transform:translateX(-50%); z-index:20; align-items:center; gap:12px; padding:10px 12px; border:1px solid rgba(231,178,76,.28); border-radius:14px; background:rgba(7,11,19,.86); box-shadow:0 12px 34px rgba(0,0,0,.32); backdrop-filter:blur(14px);">
     <span id="bulkCount" style="min-width:74px; font-size:12.5px; color:#eaf1fa; font-weight:700;">已选 0 个</span>
     <button id="bulkDownload" class="asset-action gold" type="button" style="height:32px;">批量下载</button>
+    <button id="bulkDelete" class="asset-action danger" type="button" style="height:32px;">批量删除</button>
     <button id="bulkCancel" class="asset-action" type="button" style="height:32px;">取消</button>
   </div>
 
@@ -176,7 +177,7 @@
   var personalVoiceLoadSeq=0, activePreviewAudio=null, activePreviewButton=null;
   var searchInput=document.querySelector('input[name="hq_asset_search"]');
   var bulkToggle=document.getElementById('bulkToggle'), bulkAll=document.getElementById('bulkAll'), bulkBar=document.getElementById('bulkBar'),
-      bulkCount=document.getElementById('bulkCount'), bulkDownload=document.getElementById('bulkDownload'), bulkCancel=document.getElementById('bulkCancel');
+      bulkCount=document.getElementById('bulkCount'), bulkDownload=document.getElementById('bulkDownload'), bulkDelete=document.getElementById('bulkDelete'), bulkCancel=document.getElementById('bulkCancel');
   var favOnly=document.getElementById('favOnly'), tagFilter=document.getElementById('tagFilter');
   var searchTerm='', multi=false, selected={}, visibleItems=[], MARKS={}, onlyFav=false, activeTag='';
   function freshUrl(url){
@@ -198,6 +199,7 @@
     return url+'?imageMogr2/thumbnail/!'+px+'x'+px+'r/format/webp/quality/82';
   }
   function assetUrl(x){ return x.url||x.video_url||x.audio_url||x.image_url||x.preview_url||''; }
+  function assetId(x,kind){ return kind==='image' ? (x.id||x.job_id) : x.id; }
   function assetKey(x,kind){ return [kind||cat, x.id||x.job_id||x.asset_id||'', assetUrl(x), x.prompt||x.text||''].join('|'); }
   function markKey(x,kind){ return String(x.job_id||x.id||x.asset_id||assetUrl(x)||x.voice_key||x.provider_avatar_id||''); }
   function markOf(x,kind){ return MARKS[markKey(x,kind)]||{favorite:false,tags:[]}; }
@@ -218,11 +220,18 @@
     });
   }
   function setVisible(list,kind){
-    visibleItems=list.map(function(x){ return {key:assetKey(x,kind), url:assetUrl(x)}; }).filter(function(x){ return !!x.url; });
+    visibleItems=list.map(function(x){ return {key:assetKey(x,kind), kind:kind, id:assetId(x,kind), url:assetUrl(x)}; }).filter(function(x){ return !!x.id; });
     updateBulk();
     return list;
   }
   function selectedCount(){ return Object.keys(selected).filter(function(k){ return selected[k]; }).length; }
+  function selectedAssets(){
+    return Object.keys(selected).map(function(k){ return selected[k]; }).filter(function(x){ return x && x.kind && x.id; })
+      .map(function(x){ return {kind:x.kind,id:x.id}; });
+  }
+  function currentAssetKind(){
+    return cat==='audio'?'audio':(cat==='video'?'video':(cat==='avatar'?'avatar':'image'));
+  }
   function updateBulk(){
     var n=selectedCount();
     if(grid) grid.classList.toggle('multi-on', !!multi);
@@ -234,6 +243,8 @@
     if(bulkBar) bulkBar.style.display=(multi&&n)?'flex':'none';
     if(bulkCount) bulkCount.textContent='已选 '+n+' 个';
     if(bulkDownload) bulkDownload.disabled=!n;
+    if(bulkDelete) bulkDelete.disabled=!n;
+    if(bulkAll && multi) bulkAll.textContent=visibleItems.some(function(v){return !selected[v.key];})?'全选':'取消全选';
   }
   function refreshMarkFilters(){
     if(favOnly){
@@ -296,25 +307,60 @@
     return cardEl;
   }
   function addSelectBox(cardEl,x,kind){
-    var key=assetKey(x,kind), box=document.createElement('label'), ck=document.createElement('input');
+    var key=assetKey(x,kind), meta={key:key,kind:kind,id:assetId(x,kind),url:assetUrl(x)}, box=document.createElement('label'), ck=document.createElement('input');
     box.className='asset-select'; ck.type='checkbox'; ck.checked=!!selected[key];
-    ck.onchange=function(){ selected[key]=ck.checked; if(!ck.checked) delete selected[key]; updateBulk(); };
+    ck.disabled=!meta.id;
+    ck.onchange=function(){ if(ck.checked) selected[key]=meta; else delete selected[key]; updateBulk(); };
     box.onclick=function(e){ e.stopPropagation(); };
     box.appendChild(ck); cardEl.appendChild(box); return cardEl;
   }
   function selectVisible(on){
-    visibleItems.forEach(function(v){ if(on) selected[v.key]=true; else delete selected[v.key]; });
+    visibleItems.forEach(function(v){ if(on) selected[v.key]=v; else delete selected[v.key]; });
     [].slice.call(grid.querySelectorAll('.asset-select input')).forEach(function(ck){ ck.checked=!!on; });
     updateBulk();
   }
-  function triggerDownload(url,idx){
+  function triggerDownload(url,idx,name){
     if(!url) return;
-    var a=document.createElement('a'); a.href=url; a.download='huangque-asset-'+(idx+1); a.style.display='none';
+    var a=document.createElement('a'); a.href=url; a.download=name||('huangque-asset-'+(idx+1)); a.style.display='none';
     document.body.appendChild(a); a.click(); setTimeout(function(){ a.remove(); }, 60);
   }
   function downloadSelected(){
-    var urls=visibleItems.filter(function(v){ return selected[v.key]; }).map(function(v){ return v.url; });
-    urls.forEach(function(url,idx){ setTimeout(function(){ triggerDownload(url,idx); }, idx*320); });
+    var assets=selectedAssets();
+    if(!assets.length){ toast('请选择要下载的资产',false); return; }
+    bulkDownload.disabled=true; bulkDownload.textContent='打包中';
+    fetch('/api/gen/asset/batch-download',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({assets:assets})})
+      .then(function(r){
+        if(r.status===401){ HQ.login(); return null; }
+        if(!r.ok){ return r.json().then(function(d){ throw new Error((d&&d.detail)||'批量下载失败'); }); }
+        return r.blob();
+      })
+      .then(function(blob){
+        if(!blob) return;
+        var url=URL.createObjectURL(blob);
+        triggerDownload(url,0,'huangque-assets.zip');
+        setTimeout(function(){ URL.revokeObjectURL(url); }, 4000);
+        toast('已生成 ZIP 下载包',true);
+      })
+      .catch(function(e){ toast(e.message||'批量下载失败',false); })
+      .finally(function(){ bulkDownload.disabled=false; bulkDownload.textContent='批量下载'; updateBulk(); });
+  }
+  function deleteSelected(){
+    var assets=selectedAssets();
+    if(!assets.length){ toast('请选择要删除的资产',false); return; }
+    if(!confirm('确定删除选中的 '+assets.length+' 个资产？删除后将从资产库移除')) return;
+    bulkDelete.disabled=true; bulkDelete.textContent='删除中';
+    fetch('/api/gen/asset/batch-delete',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({assets:assets})})
+      .then(function(r){ if(r.status===401){ HQ.login(); return null; } return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
+      .then(function(res){
+        if(!res) return;
+        if(!res.ok) throw new Error((res.data&&res.data.detail)||'批量删除失败');
+        var deleted=(res.data.deleted||[]).length, failed=(res.data.failed||[]).length;
+        selected={};
+        toast(failed?('已删除 '+deleted+' 个，'+failed+' 个跳过'):('已删除 '+deleted+' 个'), failed===0);
+        load(currentAssetKind());
+      })
+      .catch(function(e){ toast(e.message||'批量删除失败',false); })
+      .finally(function(){ bulkDelete.disabled=false; bulkDelete.textContent='批量删除'; updateBulk(); });
   }
   function toast(msg,ok){
     var n=document.createElement('div');
@@ -1459,6 +1505,7 @@
   if(bulkAll){ bulkAll.onclick=function(){ selectVisible(visibleItems.some(function(v){return !selected[v.key];})); }; }
   if(bulkCancel){ bulkCancel.onclick=function(){ multi=false; selected={}; render(); }; }
   if(bulkDownload){ bulkDownload.onclick=downloadSelected; }
+  if(bulkDelete){ bulkDelete.onclick=deleteSelected; }
   if(favOnly){ favOnly.onclick=function(){ onlyFav=!onlyFav; selected={}; refreshMarkFilters(); render(); }; }
   if(tagFilter){ tagFilter.onchange=function(){ activeTag=tagFilter.value||''; selected={}; render(); }; }
   load(cat==='audio'?'audio':(cat==='video'?'video':(cat==='avatar'?'avatar':'image')));
