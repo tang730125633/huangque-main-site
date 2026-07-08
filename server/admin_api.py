@@ -93,15 +93,29 @@ SERVICES = [
         "service_file": "deploy/systemd/huangque-dl.service",
         "health_url": "http://127.0.0.1:8097/api/gen/dl/health",
     },
+    {
+        "key": "xiaotan",
+        "name": "小探深采服务(抖音下载/ASR)",
+        "port": 8501,
+        "service_file": "服务器 systemd: xiaotan(docker)",
+        # 只监听 docker 网桥 172.17.0.1,探 127.0.0.1 会误报离线(hq-monitor 的老坑)
+        "health_url": "http://172.17.0.1:8501/docs",
+    },
 ]
 
+# 服务器实际在用的全部外部 API（来源:content.env/runninghub.env 变量盘点 2026-07-09）
 KEY_GROUPS = [
-    {"key": "heygen", "name": "HeyGen", "env": ["HEYGEN_API_KEY"]},
-    {"key": "runninghub", "name": "RunningHub", "env": ["RUNNINGHUB_API_KEY", "RUNNINGHUB_KEY"]},
-    {"key": "openai", "name": "OpenAI", "env": ["OPENAI_API_KEY"]},
-    {"key": "tikhub", "name": "TikHub", "env": ["TIKHUB_KEY", "TIKHUB_API_KEY"]},
-    {"key": "cos", "name": "腾讯云 COS", "env": ["COS_SECRET_ID", "COS_SECRET_KEY", "COS_REGION", "COS_BUCKET"]},
-    {"key": "doubao", "name": "豆包语音", "env": ["DOUBAO_APP_ID", "DOUBAO_ACCESS_TOKEN", "DOUBAO_APPID", "DOUBAO_TOKEN"]},
+    {"key": "openai", "name": "OpenAI 生图 gpt-image(经泽龙中转)", "env": ["OPENAI_API_KEY"]},
+    {"key": "gemini", "name": "Gemini 生图 nano banana", "env": ["GEMINI_API_KEY"]},
+    {"key": "zelong", "name": "泽龙生图渠道1(小乐AI)", "env": ["ZELONG_KEY"]},
+    {"key": "zelong2", "name": "泽龙生图渠道2(zelong.vip)", "env": ["ZELONG2_KEY"]},
+    {"key": "heygen", "name": "HeyGen 数字人视频(直连)", "env": ["HEYGEN_API_KEY"]},
+    {"key": "heygen_relay", "name": "HeyGen 中转(泽龙 relay)", "env": ["HEYGEN_RELAY_TOKEN"]},
+    {"key": "xiaolevideo", "name": "小乐视频生成", "env": ["XIAOLEVIDEO_API_KEY"]},
+    {"key": "runninghub", "name": "RunningHub 换装/动作模仿", "env": ["RUNNINGHUB_API_KEY", "RUNNINGHUB_KEY"]},
+    {"key": "doubao", "name": "豆包语音 TTS/声音克隆", "env": ["DOUBAO_APP_ID", "DOUBAO_ACCESS_TOKEN", "DOUBAO_APPID", "DOUBAO_TOKEN"]},
+    {"key": "tikhub", "name": "TikHub 抖音数据", "env": ["TIKHUB_KEY", "TIKHUB_API_KEY"]},
+    {"key": "cos", "name": "腾讯云 COS 存储", "env": ["COS_SECRET_ID", "COS_SECRET_KEY", "COS_REGION", "COS_BUCKET"]},
 ]
 
 CHANNELS = {
@@ -323,7 +337,7 @@ def key_status():
                     found.append({"env": env_name, "source": src["name"]})
                     break
         configured = len(found) == len(item["env"])
-        if item["key"] in {"runninghub", "tikhub", "doubao"}:
+        if item["key"] in {"runninghub", "tikhub", "doubao", "heygen_relay"}:
             configured = bool(found)
         items.append(
             {
@@ -378,6 +392,17 @@ def _ping_upstream(method, url, headers=None, body=None, proxied=False, timeout=
         out.update({"http_status": e.code, "latency_ms": int((time.time() - start) * 1000), "error": "HTTP %s" % e.code})
     except Exception as e:
         out.update({"latency_ms": int((time.time() - start) * 1000), "error": str(e)[:180]})
+    out.setdefault("mode", "auth")
+    return out
+
+
+def _reach_ping(url, proxied=False):
+    """连通性拨测：只验证能不能通、延迟多少。任何 HTTP 响应（含 403/404）都算可达。"""
+    out = _ping_upstream("GET", url, proxied=proxied)
+    if not out["ok"] and out.get("http_status"):
+        out["ok"] = True
+        out.pop("error", None)
+    out["mode"] = "reach"
     return out
 
 
@@ -427,12 +452,74 @@ def _key_ping_runninghub():
     )
 
 
-# cos/doubao 请求要签名，没有廉价拨测端点，只做配置检查
+def _key_ping_gemini():
+    key = _env_value(["GEMINI_API_KEY"])
+    if not key:
+        return {"ok": False, "error": "密钥未配置", "mode": "auth"}
+    base = (_env_value(["GEMINI_BASE"]) or "https://generativelanguage.googleapis.com").rstrip("/")
+    # 官方域名被墙走代理；heygen.zelong.vip 中转直连。密钥走 header 不进 URL
+    return _ping_upstream(
+        "GET", base + "/v1beta/models", headers={"x-goog-api-key": key}, proxied="googleapis.com" in base
+    )
+
+
+def _openai_compat_ping(key_names, base_names, default_base):
+    key = _env_value(key_names)
+    if not key:
+        return {"ok": False, "error": "密钥未配置", "mode": "auth"}
+    base = (_env_value(base_names) or default_base).rstrip("/")
+    return _ping_upstream("GET", base + "/v1/models", headers={"Authorization": "Bearer " + key}, proxied=False)
+
+
+def _key_ping_zelong():
+    return _openai_compat_ping(["ZELONG_KEY"], ["ZELONG_BASE"], "https://api.xiaoleai.team")
+
+
+def _key_ping_zelong2():
+    return _openai_compat_ping(["ZELONG2_KEY"], ["ZELONG2_BASE"], "https://api.zelong.vip")
+
+
+def _key_ping_heygen_relay():
+    base = _env_value(["HEYGEN_RELAY_BASE"])
+    if not base:
+        return {"ok": False, "error": "中转地址未配置", "mode": "reach"}
+    return _reach_ping(base)
+
+
+def _key_ping_xiaolevideo():
+    base = (_env_value(["XIAOLEVIDEO_API_BASE"]) or "https://api.xiaolevideo.cn").rstrip("/")
+    return _reach_ping(base)
+
+
+def _key_ping_doubao():
+    return _reach_ping("https://openspeech.bytedance.com")
+
+
+def _key_ping_cos():
+    domain = _env_value(["COS_DOMAIN"])
+    if not domain:
+        bucket, region = _env_value(["COS_BUCKET"]), _env_value(["COS_REGION"])
+        if not (bucket and region):
+            return {"ok": False, "error": "COS 配置不全", "mode": "reach"}
+        domain = "%s.cos.%s.myqcloud.com" % (bucket, region)
+    if not domain.startswith("http"):
+        domain = "https://" + domain
+    return _reach_ping(domain)
+
+
+# auth=真调上游验证密钥有效; reach=签名类/未知协议渠道,只测连通与延迟
 KEY_PINGS = {
     "openai": _key_ping_openai,
+    "gemini": _key_ping_gemini,
+    "zelong": _key_ping_zelong,
+    "zelong2": _key_ping_zelong2,
     "heygen": _key_ping_heygen,
-    "tikhub": _key_ping_tikhub,
+    "heygen_relay": _key_ping_heygen_relay,
+    "xiaolevideo": _key_ping_xiaolevideo,
     "runninghub": _key_ping_runninghub,
+    "doubao": _key_ping_doubao,
+    "tikhub": _key_ping_tikhub,
+    "cos": _key_ping_cos,
 }
 
 

@@ -200,22 +200,30 @@ class JobPayloadTests(unittest.TestCase):
 
 
 class KeyPingTests(unittest.TestCase):
-    def test_pingable_flag_matches_registry(self):
+    def test_every_key_group_is_pingable(self):
         for item in admin_api.key_status():
-            self.assertEqual(item["pingable"], item["key"] in admin_api.KEY_PINGS)
+            self.assertTrue(item["pingable"], item["key"])
+            self.assertIn(item["key"], admin_api.KEY_PINGS)
         self.assertEqual(
-            set(admin_api.KEY_PINGS), {"openai", "heygen", "tikhub", "runninghub"}
+            set(admin_api.KEY_PINGS),
+            {
+                "openai", "gemini", "zelong", "zelong2", "heygen", "heygen_relay",
+                "xiaolevideo", "runninghub", "doubao", "tikhub", "cos",
+            },
         )
 
     def test_ping_without_key_configured_fails_fast(self):
-        # 不联网：未配置密钥时应直接返回错误而不发请求
+        # 不联网：未配置密钥/地址时应直接返回错误而不发请求
         import unittest.mock as mock
 
-        with mock.patch.object(admin_api, "_env_value", return_value=""):
-            for fn in admin_api.KEY_PINGS.values():
-                out = fn()
-                self.assertFalse(out["ok"])
-                self.assertEqual(out["error"], "密钥未配置")
+        with mock.patch.object(admin_api, "_env_value", return_value=""), mock.patch.object(
+            admin_api, "_ping_upstream", side_effect=AssertionError("不该发起网络请求")
+        ):
+            # doubao/xiaolevideo 是纯连通性拨测(有默认地址),无密钥也会真发请求,不在此列
+            for key in ["openai", "gemini", "zelong", "zelong2", "heygen", "heygen_relay", "tikhub", "runninghub", "cos"]:
+                out = admin_api.KEY_PINGS[key]()
+                self.assertFalse(out["ok"], key)
+                self.assertTrue(out.get("error"), key)
 
 
 if __name__ == "__main__":

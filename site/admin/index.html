@@ -123,7 +123,7 @@
         <div id="serviceBox"></div>
       </section>
       <section class="card span4 module-card" data-module="ops">
-        <div class="section-head"><div><h2>密钥状态</h2><div class="hint">只显示是否配置，不展示密钥真值。点「测试」真实调一次上游接口验证密钥有效性。</div></div></div>
+        <div class="section-head"><div><h2>外部 API 密钥</h2><div class="hint">服务器在用的全部上游渠道。点「测试」真实调一次：带密钥的验证密钥有效性；签名类（COS/豆包等）测连通与延迟。不展示密钥真值。</div></div></div>
         <div id="keyBox"></div>
       </section>
       <section class="card span12 module-card" data-module="ops">
@@ -253,9 +253,11 @@
     bindPing('serviceBox','data-ping-svc','service','svc');
   }
   function pingResultHtml(d){
+    var reach=d.mode==='reach';
     if(d.online===true || d.ok===true){
       var code=d.http_status||200;
-      return '<span class="pill ok">'+esc(code)+' 正常 · '+esc(d.latency_ms)+'ms</span>';
+      return '<span class="pill ok">'+esc(code)+(reach?' 可达':' 正常')+' · '+esc(d.latency_ms)+'ms</span>'
+        +(reach?' <span class="muted">仅测连通，不验密钥</span>':'');
     }
     var text=d.error||(d.http_status?('HTTP '+d.http_status):'失败');
     return '<span class="pill fail" title="'+esc(text)+'">'+esc(String(text).slice(0,40))+'</span>';
