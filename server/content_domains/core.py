@@ -797,18 +797,21 @@ def reaper():
         try:
             now = int(time.time()); cutoff = now - 360
             with closing(jdb()) as c:
-                stuck = c.execute("SELECT id, username, cost, kind, updated_at FROM jobs WHERE status='running' AND updated_at < ?", (cutoff,)).fetchall()
+                stuck = c.execute("SELECT id, username, cost, kind, payload, updated_at FROM jobs WHERE status='running' AND updated_at < ?", (cutoff,)).fetchall()
             for r in stuck:
                 if r["kind"] == "tryon" and r["updated_at"] >= now - 2400:
                     continue  # 换装+换背景两段式慢，心跳会刷新 updated_at，给 40 分钟余量
-                if r["kind"] == "video" and r["updated_at"] >= now - 1800:
-                    continue
+                if r["kind"] == "video":
+                    # 口播(text/audio)已直连HeyGen约1分钟出片→5分钟超时；影视级模仿(motion)仍走泽龙→保持30分钟
+                    is_motion = '"mode":"motion"' in (r["payload"] or "").replace(" ", "")
+                    if r["updated_at"] >= now - (1800 if is_motion else 300):
+                        continue
                 if r["kind"] == "xiaole_video" and r["updated_at"] >= now - 1200:
                     continue  # 果肉/豆姐内部轮询上限600s+下载转存，6分钟内测实测会误杀成功任务
                 if r["kind"] == "image" and r["updated_at"] >= now - 900:
                     continue  # 多图/中转出图慢，给 image 15 分钟余量
                 # CAS 抢 error 终态；抢到(说明 worker 尚未写 done)才退点，退点本身再幂等一层
-                if _set_terminal(r["id"], "error", error="生成超时自动结束(>6分钟)，已退点"):
+                if _set_terminal(r["id"], "error", error="生成超时自动结束，已退点"):
                     _refund_once(r["id"], r["username"], r["cost"])
         except Exception:
             pass
