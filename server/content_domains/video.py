@@ -94,6 +94,37 @@ def _image_bytes_look_valid(raw):
         return True
     return False
 
+def _faststart_video_file(rel):
+    raw = str(rel or "").strip()
+    if not raw.lower().endswith(".mp4"):
+        return rel
+    src = _out_path(raw)
+    if not src.is_file():
+        return rel
+    tmp = src.with_name(src.stem + ".faststart.tmp.mp4")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(src),
+             "-map", "0", "-c", "copy", "-movflags", "+faststart", str(tmp)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            timeout=600,
+        )
+        if tmp.is_file() and tmp.stat().st_size > 0:
+            tmp.replace(src)
+    except FileNotFoundError:
+        print("[video] ffmpeg missing, skip faststart for %s" % raw, flush=True)
+    except Exception as e:
+        print("[video] faststart skipped for %s: %s" % (raw, str(e)[:160]), flush=True)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+    return rel
+
 def validate_video_payload(payload):
     if not isinstance(payload, dict):
         raise ValueError("请求体不是合法 JSON")
@@ -647,7 +678,7 @@ def _download_video_file(url, prefix="vid"):
         raise RuntimeError("视频下载失败")
     fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键(#185)：真人视频防猜测枚举
     _out_path(fn).write_bytes(data)
-    return fn
+    return _faststart_video_file(fn)
 
 def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
     image_fp = _resolve_out_file(image_file)
@@ -983,7 +1014,7 @@ def burn_subtitle(video_file, known_text=None, style_key="white", job_id=None):
                     timeout=600, cwd=str(VIDEO_OUT_DIR))
         if not out_fp.exists() or out_fp.stat().st_size <= 0:
             raise ValueError("字幕烧录输出为空")
-        return out_rel
+        return _faststart_video_file(out_rel)
     finally:
         for tmp in (wav, ass):
             try:
@@ -1165,7 +1196,7 @@ def _store_tryon_video(local_path, prefix="tryon"):
         ext = ".mp4"
     fn = "video/%s_%d%s" % (prefix, int(time.time() * 1000), ext)
     _out_path(fn).write_bytes(src.read_bytes())
-    return fn
+    return _faststart_video_file(fn)
 
 def generate_tryon_video(person_video_file, clothes_file, background_file, seconds, job_id=None, username=None):
     """RunningHub 两段式换装/换背景驱动。返回 {video_file, video_url, ...}。"""
@@ -1390,7 +1421,7 @@ def _download_xiaole_video(url, prefix="xiaole"):
         raise RuntimeError("视频下载失败")
     fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键：防枚举
     _out_path(fn).write_bytes(data)
-    return fn
+    return _faststart_video_file(fn)
 
 def generate_xiaole_video(model, prompt, reference_images=None, ratio="9:16", job_id=None, prefix="xiaole"):
     """统一 generations API：创建 → 轮询 → 下载。Grok(果肉)/Seedance(豆姐) 共用。"""
