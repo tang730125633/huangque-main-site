@@ -298,7 +298,7 @@
           if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
           var r=d.result||{}; setKPIs(r); renderLeads(r.leads||[]);
           setStatus('完成 · '+(r.leads_count||0)+' 个精准客户 · 去重 '+(r.deduped||0)+' 条（'+sec+'s）','#2bd576');
-        }else if(d.status==='error'){
+        }else if(d.status==='error'||d.status==='failed'){
           clearInterval(poll); busy(false); localStorage.removeItem('hq_active_leads_job');
           setStatus('失败：'+(d.error||'未知错误'),'#f4708a');
           rows.innerHTML='<div style="padding:54px 20px; text-align:center; color:#f4708a; font-size:13px;">'+esc(d.error||'任务失败')+'</div>';

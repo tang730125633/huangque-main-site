@@ -1861,7 +1861,7 @@
               fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
                 var sec=Math.round((Date.now()-t0)/1000);
                 if(d.status==='done'){ clearInterval(iv); var rr=typeof d.result==='string'?JSON.parse(d.result):d.result; res(rr); }
-                else if(d.status==='error'){ clearInterval(iv); rej(new Error(d.error||'生成失败')); }
+                else if(d.status==='error'||d.status==='failed'){ clearInterval(iv); rej(new Error(d.error||'生成失败')); }
                 else if(sec>420){ clearInterval(iv); rej(new Error('超时')); }
                 else setNodeState(node,'running','生成中… 已用 '+sec+'s','#2dd4bf');
               }).catch(function(){});

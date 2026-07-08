@@ -254,7 +254,7 @@
         var iv=setInterval(function(){
           fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
             if(d.status==='done'){ clearInterval(iv); setBtn(orig,false); render(d.result, t, style, dur); if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints(); }
-            else if(d.status==='error'){ clearInterval(iv); setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">失败：'+(d.error||'')+' · 已退点</div>'; }
+            else if(d.status==='error'||d.status==='failed'){ clearInterval(iv); setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">失败：'+(d.error||'')+' · 已退点</div>'; }
           }).catch(function(){});
         },3000);
       }).catch(function(){ setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络错误，请重试</div>'; });
