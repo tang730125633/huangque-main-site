@@ -128,6 +128,60 @@ class AuthPointsTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=3)
 
+    def test_miniprogram_login_returns_token_usable_as_bearer(self):
+        self.auth.create_user("mp_user", "secret123", 5)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = "http://127.0.0.1:%d" % server.server_address[1]
+        try:
+            req = urllib.request.Request(
+                base + "/api/auth/miniprogram-login",
+                data=json.dumps({"username": "mp_user", "password": "secret123"}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=3) as r:
+                data = json.loads(r.read())
+
+            self.assertIn("token", data)
+            self.assertEqual(data["user"]["username"], "mp_user")
+
+            req2 = urllib.request.Request(
+                base + "/api/auth/me",
+                headers={"Authorization": "Bearer " + data["token"]},
+            )
+            with urllib.request.urlopen(req2, timeout=3) as r:
+                me_data = json.loads(r.read())
+            self.assertEqual(me_data["user"]["username"], "mp_user")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+    def test_miniprogram_register_returns_token_and_creates_user(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = "http://127.0.0.1:%d" % server.server_address[1]
+        try:
+            req = urllib.request.Request(
+                base + "/api/auth/miniprogram-register",
+                data=json.dumps({"username": "mp_new", "password": "secret123"}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=3) as r:
+                data = json.loads(r.read())
+
+            self.assertIn("token", data)
+            self.assertEqual(data["user"]["username"], "mp_new")
+            self.assertEqual(data["user"]["points"], self.auth.NEW_USER_TRIAL_POINTS)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
 
 if __name__ == "__main__":
     unittest.main()

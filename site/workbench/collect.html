@@ -177,7 +177,7 @@
         <!-- Extract transcript button (on-demand) -->
         <div id="transcriptExtractWrap" style="display:none; margin-bottom:12px;">
           <button id="transcriptExtractBtn" class="hv-lift" style="width:100%; padding:14px; font-size:14px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; font-family:inherit; transition:.2s;">提取文案 <span style="font-size:12px; font-weight:400; opacity:.75;">约 6 点</span></button>
-          <div id="transcriptExtractNote" style="text-align:center; font-size:12px; color:#5c6b82; margin-top:8px;">口播提取约 20-40 秒 · 按需点击</div>
+          <div id="transcriptExtractNote" style="text-align:center; font-size:12px; color:#5c6b82; margin-top:8px;">口播提取约 20 秒到数分钟 · 按需点击</div>
         </div>
 
         <!-- Transcript block (hidden until extracted) -->
@@ -701,7 +701,7 @@
       extractBtn.innerHTML = '提取文案 <span style="font-size:12px;font-weight:400;opacity:.75;">约 6 点</span>';
       if (!hasImages) extractBtn.onclick = submitTranscript;
     }
-    if (extractNote) extractNote.textContent = hasImages ? '图文内容无口播文案' : '口播提取约 20-40 秒 · 按需点击';
+    if (extractNote) extractNote.textContent = hasImages ? '图文内容无口播文案' : '口播提取约 20 秒到数分钟 · 按需点击';
     if (extractNote) extractNote.style.color = '#5c6b82';
   }
 
@@ -711,7 +711,7 @@
     var btn  = document.getElementById('transcriptExtractBtn');
     var note = document.getElementById('transcriptExtractNote');
     if (btn) { btn.disabled = true; btn.style.opacity = '.7'; btn.style.pointerEvents = 'none'; btn.textContent = '提取中…'; }
-    if (note) { note.textContent = '口播提取约 20-40 秒，请稍候…'; note.style.color = '#2dd4bf'; }
+    if (note) { note.textContent = '口播提取排队/识别中，通常约 20 秒到数分钟…'; note.style.color = '#2dd4bf'; }
     requestTranscript()
       .then(function (text) {
         showTranscript(text);
@@ -763,7 +763,7 @@
       btn.onclick = submitTranscript;
     }
     if (note) {
-      note.innerHTML = msg || '口播提取约 20-40 秒 · 按需点击';
+      note.innerHTML = msg || '口播提取约 20 秒到数分钟 · 按需点击';
       note.style.color = isErr ? '#f4708a' : '#5c6b82';
     }
   }

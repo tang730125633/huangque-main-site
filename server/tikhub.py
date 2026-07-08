@@ -25,8 +25,9 @@ OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
 # 口播转写模型：默认 gpt-4o-mini-transcribe（中文口播更准、更便宜），可 env 回退 whisper-1
 TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
 # 采集口播转写并发限制：多任务同时挤 OpenAI ASR 通道 + 抢下载带宽会互相拖垮(单次11s→并发几分钟甚至超时)。
-# 限同时转写数(默认2)，排队一个个来，不再无限并发。env TRANSCRIBE_MAX_CONCURRENCY 可调。
-_TRANSCRIBE_SEM = threading.BoundedSemaphore(max(1, int(os.environ.get("TRANSCRIBE_MAX_CONCURRENCY", "2") or "2")))
+# 限同时转写数(默认1)，排队一个个来，不再让并发请求互相拖到分钟级。env TRANSCRIBE_MAX_CONCURRENCY 可调。
+_TRANSCRIBE_SEM = threading.BoundedSemaphore(max(1, int(os.environ.get("TRANSCRIBE_MAX_CONCURRENCY", "1") or "1")))
+TRANSCRIBE_TIMEOUT = max(20, int(os.environ.get("OPENAI_TRANSCRIBE_TIMEOUT", "75") or "75"))
 
 PLATFORMS = ("douyin", "xhs", "channels")
 
@@ -549,6 +550,11 @@ def _http_get(url, max_bytes=26_000_000, timeout=60):
     with _OPENER.open(req, timeout=timeout) as r:  # CDN 直连，绕过环境代理
         return r.read(max_bytes)
 
+def _log_asr_step(step, start, **extra):
+    fields = ["%s=%s" % (k, v) for k, v in sorted(extra.items()) if v is not None]
+    suffix = (" " + " ".join(fields)) if fields else ""
+    print("[asr] %s %.2fs%s" % (step, time.time() - start, suffix), flush=True)
+
 def _srt_to_text(srt):
     out = []
     for line in srt.splitlines():
@@ -578,10 +584,14 @@ def _whisper(mp4_bytes, filename="v.mp4"):
     if not OPENAI_KEY:
         raise TikHubError("OPENAI_API_KEY 未配置，无法 ASR")
     with _TRANSCRIBE_SEM:                     # 限并发转写：多任务同挤 OpenAI ASR 会互相拖垮，排队一个个来
+        t0 = time.time()
         try:                                  # 优先抽音轨转 mp3（小、快、不撞 25MB）
+            t_extract = time.time()
             audio, aname, ctype = _extract_audio(mp4_bytes), "a.mp3", "audio/mpeg"
-        except Exception:                     # ffmpeg 出问题兜底：直接传原 mp4（老行为，赌 <25MB）
+            _log_asr_step("extract_audio", t_extract, input_bytes=len(mp4_bytes), audio_bytes=len(audio))
+        except Exception as e:                # ffmpeg 出问题兜底：直接传原 mp4（老行为，赌 <25MB）
             audio, aname, ctype = mp4_bytes, filename, "video/mp4"
+            _log_asr_step("extract_audio_fallback", t_extract, input_bytes=len(mp4_bytes), reason=str(e)[:80])
         b = "----hqtikhub7e3f"
         parts = [("--%s\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n%s\r\n" % (b, TRANSCRIBE_MODEL)).encode(),
                  ("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\nContent-Type: %s\r\n\r\n" % (b, aname, ctype)).encode(),
@@ -590,8 +600,19 @@ def _whisper(mp4_bytes, filename="v.mp4"):
         req = urllib.request.Request(OPENAI_BASE + "/v1/audio/transcriptions", data=body,
                                      headers={"Authorization": "Bearer " + OPENAI_KEY,
                                               "Content-Type": "multipart/form-data; boundary=" + b}, method="POST")
-        with urllib.request.urlopen(req, timeout=300) as r:
-            return json.loads(r.read()).get("text", "").strip()
+        try:
+            t_openai = time.time()
+            with urllib.request.urlopen(req, timeout=TRANSCRIBE_TIMEOUT) as r:
+                text = json.loads(r.read()).get("text", "").strip()
+            _log_asr_step("openai_transcribe", t_openai, model=TRANSCRIBE_MODEL, upload_bytes=len(body), text_chars=len(text))
+            _log_asr_step("total", t0)
+            return text
+        except TimeoutError:
+            raise TikHubError("OpenAI ASR 超时(%ss)，请稍后重试" % TRANSCRIBE_TIMEOUT)
+        except urllib.error.URLError as e:
+            if isinstance(getattr(e, "reason", None), TimeoutError):
+                raise TikHubError("OpenAI ASR 超时(%ss)，请稍后重试" % TRANSCRIBE_TIMEOUT)
+            raise
 
 def transcript(det):
     """det = detail() 的返回。返回 {text, source} 或 None。"""
@@ -604,7 +625,10 @@ def transcript(det):
             pass
     if det.get("play_url"):  # 抖音：下载无水印 mp4 → whisper（短视频普遍 <25MB）
         try:
-            return {"text": _whisper(_http_get(det["play_url"])), "source": "asr"}
+            t_download = time.time()
+            mp4 = _http_get(det["play_url"])
+            _log_asr_step("download_video", t_download, bytes=len(mp4))
+            return {"text": _whisper(mp4), "source": "asr"}
         except Exception as e:
             raise TikHubError("ASR 失败：" + str(e)[:120])
     return None
