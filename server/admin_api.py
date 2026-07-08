@@ -51,6 +51,7 @@ ADMIN_DB = pathlib.Path(os.environ.get("ADMIN_DB", str(BASE / "admin_config.db")
 ENV_FILES = [
     pathlib.Path("/home/ubuntu/content-api/content.env"),
     pathlib.Path("/home/ubuntu/content-api/runninghub.env"),
+    pathlib.Path("/etc/huangque/runninghub.env"),
     pathlib.Path("/home/ubuntu/content-api/whisper.env"),
     pathlib.Path("/home/ubuntu/auth-service/auth.env"),
     pathlib.Path("/etc/leadgen-secrets.env"),
@@ -282,7 +283,10 @@ def _ping_upstream(method, url, headers=None, body=None, proxied=False, timeout=
     """真实调一次上游 API。只返回状态码/耗时/错误摘要，绝不含密钥。"""
     opener = PROXY_OPENER if proxied else DIRECT_OPENER
     data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+    headers = dict(headers or {})
+    # Python-urllib 默认 UA 会被 TikHub 等家的 Cloudflare 拦成 403
+    headers.setdefault("User-Agent", "Mozilla/5.0 (huangque-admin healthcheck)")
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
     start = time.time()
     out = {"ok": False, "http_status": None, "latency_ms": None}
     try:
@@ -311,8 +315,14 @@ def _key_ping_openai():
     key = _env_value(["OPENAI_API_KEY"])
     if not key:
         return {"ok": False, "error": "密钥未配置"}
-    base = (os.environ.get("OPENAI_BASE") or "https://api.openai.com").rstrip("/")
-    return _ping_upstream("GET", base + "/v1/models", headers={"Authorization": "Bearer " + key}, proxied=True)
+    base = (_env_value(["OPENAI_BASE"]) or "https://api.openai.com").rstrip("/")
+    # 官方域名被墙走 mihomo；泽龙等国内中转必须直连
+    return _ping_upstream(
+        "GET",
+        base + "/v1/models",
+        headers={"Authorization": "Bearer " + key},
+        proxied="api.openai.com" in base,
+    )
 
 
 def _key_ping_heygen():
@@ -328,7 +338,7 @@ def _key_ping_tikhub():
     key = _env_value(["TIKHUB_KEY", "TIKHUB_API_KEY"])
     if not key:
         return {"ok": False, "error": "密钥未配置"}
-    base = (os.environ.get("TIKHUB_BASE") or "https://api.tikhub.io").rstrip("/")
+    base = (_env_value(["TIKHUB_BASE"]) or "https://api.tikhub.io").rstrip("/")
     return _ping_upstream(
         "GET", base + "/api/v1/tikhub/user/get_user_info", headers={"Authorization": "Bearer " + key}, proxied=False
     )
