@@ -458,17 +458,20 @@ def _save_data_file(data_url, prefix, allowed_ext):
 def _heygen_relay_token():
     return os.environ.get("HEYGEN_RELAY_TOKEN", "").strip()
 
-def _heygen_request_json(method, path, body=None, headers=None, timeout=180):
+def _heygen_request_json(method, path, body=None, headers=None, timeout=180, direct=False):
+    # direct=True 时同一套 v3 API 打 HeyGen 真身（泽龙即 v3 转发，路径同构），走 mihomo 代理出境
     if not HEYGEN_API_KEY:
         raise ValueError("视频生成服务未配置")
     h = {"x-api-key": HEYGEN_API_KEY}
-    if _heygen_relay_token():
+    if not direct and _heygen_relay_token():
         h["X-Relay-Token"] = _heygen_relay_token()
     if headers:
         h.update(headers)
-    req = urllib.request.Request(HEYGEN_API_BASE + path, data=body, headers=h, method=method)
+    base = (_HEYGEN_DIRECT_API + "/v3") if direct else HEYGEN_API_BASE
+    req = urllib.request.Request(base + path, data=body, headers=h, method=method)
+    open_fn = _heygen_direct_opener().open if direct else urllib.request.urlopen
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with open_fn(req, timeout=timeout) as r:
             raw = r.read()
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace").replace("\n", " ")[:600]
@@ -483,7 +486,7 @@ def _heygen_request_json(method, path, body=None, headers=None, timeout=180):
     except Exception:
         raise RuntimeError("HeyGen返回解析失败: %s" % raw[:300].decode("utf-8", "replace"))
 
-def _heygen_upload_asset(file_path):
+def _heygen_upload_asset(file_path, direct=False):
     path = pathlib.Path(file_path)
     if not path.is_file():
         raise ValueError("视频素材文件不存在")
@@ -498,7 +501,7 @@ def _heygen_upload_asset(file_path):
     data = _heygen_request_json("POST", "/assets", body, {
         "Content-Type": "multipart/form-data; boundary=%s" % boundary,
         "Content-Length": str(len(body)),
-    }, timeout=240)
+    }, timeout=240, direct=direct)
     asset_id = ((data.get("data") or {}).get("asset_id") or "").strip()
     if not asset_id:
         raise RuntimeError("HeyGen素材上传未返回asset_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
@@ -591,7 +594,7 @@ def _find_nested_dict(obj, pred):
                 return got
     return None
 
-def _heygen_create_photo_avatar(image_asset_id):
+def _heygen_create_photo_avatar(image_asset_id, direct=False):
     body = json.dumps({
         "type": "photo",
         "name": "huangque_photo_avatar_%d" % int(time.time()),
@@ -599,7 +602,7 @@ def _heygen_create_photo_avatar(image_asset_id):
     }, ensure_ascii=False).encode()
     data = _heygen_request_json("POST", "/avatars", body, {
         "Content-Type": "application/json",
-    }, timeout=90)
+    }, timeout=90, direct=direct)
     root = data.get("data") or {}
     avatar_item_id = (((root.get("avatar_item") or {}).get("id")) or "").strip()
     avatar_group_id = (((root.get("avatar_group") or {}).get("id")) or "").strip()
@@ -622,7 +625,7 @@ def _avatar_ready_from_payload(data, avatar_item_id, avatar_group_id=""):
     status = str(item.get("status") or item.get("state") or "").lower()
     return bool(item.get("preview_image_url") or status in {"completed", "ready", "success"})
 
-def _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id=""):
+def _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id="", direct=False):
     deadline = time.time() + min(HEYGEN_TIMEOUT, 900)
     last_status = ""
     while time.time() < deadline:
@@ -630,12 +633,12 @@ def _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id=""):
         errors = []
         if avatar_group_id:
             try:
-                payloads.append(_heygen_request_json("GET", "/avatars/" + urllib.parse.quote(avatar_group_id), timeout=20))
+                payloads.append(_heygen_request_json("GET", "/avatars/" + urllib.parse.quote(avatar_group_id), timeout=20, direct=direct))
             except Exception as e:
                 errors.append(e)
                 last_status = str(e)[:120]
         try:
-            payloads.append(_heygen_request_json("GET", "/avatars", timeout=20))
+            payloads.append(_heygen_request_json("GET", "/avatars", timeout=20, direct=direct))
         except Exception as e:
             errors.append(e)
             last_status = str(e)[:120]
@@ -653,7 +656,7 @@ def _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id=""):
         time.sleep(HEYGEN_POLL_INTERVAL)
     raise TimeoutError("HeyGen Photo Avatar处理超时")
 
-def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration):
+def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration, direct=False):
     prompt = (
         "Create a realistic cinematic vertical video of the same person from the avatar photo. "
         "Follow the uploaded reference video closely for body movement, pose, timing, gestures, "
@@ -673,17 +676,17 @@ def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, re
     }, ensure_ascii=False).encode()
     data = _heygen_request_json("POST", "/videos", body, {
         "Content-Type": "application/json",
-    }, timeout=90)
+    }, timeout=90, direct=direct)
     video_id = ((data.get("data") or {}).get("video_id") or "").strip()
     if not video_id:
         raise RuntimeError("HeyGen未返回video_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
     return video_id
 
-def _heygen_poll_video(video_id):
-    deadline = time.time() + HEYGEN_TIMEOUT
+def _heygen_poll_video(video_id, direct=False, deadline_s=None):
+    deadline = time.time() + (deadline_s or HEYGEN_TIMEOUT)
     last_status = ""
     while time.time() < deadline:
-        data = _heygen_request_json("GET", "/videos/" + urllib.parse.quote(video_id), timeout=90)
+        data = _heygen_request_json("GET", "/videos/" + urllib.parse.quote(video_id), timeout=90, direct=direct)
         info = data.get("data") or {}
         status = str(info.get("status") or "").lower()
         if status != last_status:
@@ -722,7 +725,106 @@ def _download_video_file(url, prefix="vid"):
     _out_path(fn).write_bytes(data)
     return _faststart_video_file(fn)
 
+# ==================== HeyGen 直连(数字人口播,绕开泽龙中转,走 mihomo 代理) ====================
+# 泽龙共享账号排队让口播动辄超 6 分钟；直连 HeyGen 真身实测约 1 分钟(kongli决策)。直连失败自动回退泽龙。
+_HEYGEN_DIRECT = os.environ.get("HEYGEN_DIRECT", "1").strip().lower() not in ("0", "false", "no")
+_HEYGEN_DIRECT_PROXY = (os.environ.get("HEYGEN_DIRECT_PROXY") or os.environ.get("HTTPS_PROXY") or "http://127.0.0.1:7897").strip()
+_HEYGEN_DIRECT_API = "https://api.heygen.com"
+_HEYGEN_DIRECT_UPLOAD = "https://upload.heygen.com"
+_HEYGEN_DIRECT_DIMS = {"9:16": (720, 1280), "16:9": (1280, 720), "1:1": (1080, 1080), "4:5": (1024, 1280), "5:4": (1280, 1024)}
+
+def _heygen_direct_opener():
+    if _HEYGEN_DIRECT_PROXY:
+        return urllib.request.build_opener(urllib.request.ProxyHandler({"http": _HEYGEN_DIRECT_PROXY, "https": _HEYGEN_DIRECT_PROXY}))
+    return urllib.request.build_opener()
+
+def _heygen_direct_req(method, url, body=None, ctype="application/json", timeout=120):
+    if not HEYGEN_API_KEY:
+        raise ValueError("视频生成服务未配置")
+    h = {"X-Api-Key": HEYGEN_API_KEY}
+    if ctype:
+        h["Content-Type"] = ctype
+    data = body if isinstance(body, (bytes, bytearray)) else (json.dumps(body).encode() if body is not None else None)
+    req = urllib.request.Request(url, data=data, headers=h, method=method)
+    try:
+        with _heygen_direct_opener().open(req, timeout=timeout) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace").replace("\n", " ")[:400]
+        raise RuntimeError("HeyGen直连失败: HTTP %s %s" % (e.code, detail)) from e
+
+def _heygen_direct_dim(ratio):
+    w, h = _HEYGEN_DIRECT_DIMS.get(ratio or "9:16", (720, 1280))
+    return {"width": w, "height": h}
+
+def _download_video_file_direct(url, prefix="vid"):
+    if not url:
+        raise RuntimeError("直连未返回视频地址")
+    req = urllib.request.Request(url, headers={"User-Agent": "huangque-content/1.0"})
+    with _heygen_direct_opener().open(req, timeout=360) as r:
+        data = r.read()
+    if not data:
+        raise RuntimeError("视频下载失败")
+    fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键(#185)
+    _out_path(fn).write_bytes(data)
+    return _faststart_video_file(fn)
+
+def generate_heygen_video_direct(image_file, audio_file, resolution, ratio):
+    """数字人口播直连 HeyGen v2：图→talking_photo + 豆包音频→asset + generate + poll + 下载。"""
+    image_fp = _resolve_out_file(image_file)
+    audio_fp = _resolve_out_file(audio_file)
+    if not image_fp or not audio_fp:
+        raise ValueError("视频素材文件不存在")
+    image_fp = _ensure_heygen_image_jpg(image_fp)
+    audio_fp = _ensure_heygen_audio_mp3(audio_fp)
+    d = _heygen_direct_req("POST", _HEYGEN_DIRECT_UPLOAD + "/v1/talking_photo", pathlib.Path(image_fp).read_bytes(), "image/jpeg", timeout=180)
+    tp_id = (d.get("data") or {}).get("talking_photo_id")
+    if not tp_id:
+        raise RuntimeError("HeyGen直连talking_photo未返回id: %s" % json.dumps(d, ensure_ascii=False)[:200])
+    d = _heygen_direct_req("POST", _HEYGEN_DIRECT_UPLOAD + "/v1/asset", pathlib.Path(audio_fp).read_bytes(), "audio/mpeg", timeout=180)
+    aud_id = (d.get("data") or {}).get("id") or (d.get("data") or {}).get("asset_id")
+    if not aud_id:
+        raise RuntimeError("HeyGen直连音频未返回id: %s" % json.dumps(d, ensure_ascii=False)[:200])
+    d = _heygen_direct_req("POST", _HEYGEN_DIRECT_API + "/v2/video/generate", {
+        "video_inputs": [{"character": {"type": "talking_photo", "talking_photo_id": tp_id},
+                          "voice": {"type": "audio", "audio_asset_id": aud_id}}],
+        "dimension": _heygen_direct_dim(ratio),
+    }, timeout=90)
+    video_id = (d.get("data") or {}).get("video_id")
+    if not video_id:
+        raise RuntimeError("HeyGen直连未返回video_id: %s" % json.dumps(d, ensure_ascii=False)[:200])
+    deadline = time.time() + 280
+    info = None
+    while time.time() < deadline:
+        time.sleep(HEYGEN_POLL_INTERVAL)
+        d = _heygen_direct_req("GET", _HEYGEN_DIRECT_API + "/v1/video_status.get?video_id=" + urllib.parse.quote(video_id), None, None, timeout=40)
+        sd = d.get("data") or {}
+        status = str(sd.get("status") or "").lower()
+        if status == "completed":
+            info = sd
+            break
+        if status in ("failed", "error"):
+            raise RuntimeError("HeyGen直连生成失败: %s" % json.dumps(sd.get("error"), ensure_ascii=False)[:200])
+    if not info:
+        raise TimeoutError("HeyGen直连轮询超时")
+    video_file = _download_video_file_direct(info.get("video_url"), "heygen")
+    cover = _extract_first_frame_cover(video_file)
+    ret = {
+        "video_id": video_id, "video_file": video_file, "video_url": _file_url(video_file),
+        "source_video_url": info.get("video_url"), "thumbnail_url": info.get("thumbnail_url"),
+        "duration": info.get("duration"), "provider": "heygen_direct",
+    }
+    if cover:
+        ret["image_file"] = cover
+        ret["image_url"] = public_url(cover, "image/jpeg")
+    return ret
+
 def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
+    if _HEYGEN_DIRECT and HEYGEN_API_KEY:
+        try:
+            return generate_heygen_video_direct(image_file, audio_file, resolution, ratio)
+        except Exception as e:
+            print("[heygen] 直连失败,回退泽龙中转: %s" % str(e)[:200], flush=True)
     image_fp = _resolve_out_file(image_file)
     audio_fp = _resolve_out_file(audio_file)
     if not image_fp or not audio_fp:
@@ -751,6 +853,17 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
     return ret
 
 def generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration, job_id=None, avatar=None):
+    # 直连优先（同 #405 口播）：泽龙转发同一账号，直连省掉排队；失败自动回退泽龙
+    if _HEYGEN_DIRECT and HEYGEN_API_KEY:
+        try:
+            return _generate_heygen_motion_video_impl(image_file, reference_video_file, resolution, ratio,
+                                                      duration, job_id, avatar, direct=True)
+        except Exception as e:
+            print("[heygen] motion直连失败,回退泽龙中转: %s" % str(e)[:200], flush=True)
+    return _generate_heygen_motion_video_impl(image_file, reference_video_file, resolution, ratio,
+                                              duration, job_id, avatar, direct=False)
+
+def _generate_heygen_motion_video_impl(image_file, reference_video_file, resolution, ratio, duration, job_id=None, avatar=None, direct=False):
     image_fp = _resolve_out_file(image_file)
     reference_fp = _resolve_out_file(reference_video_file)
     if not image_fp or not reference_fp:
@@ -768,19 +881,19 @@ def generate_heygen_motion_video(image_file, reference_video_file, resolution, r
                                  provider_avatar_group_id=avatar_group_id)
     else:
         update_video_asset_phase(job_id, "uploading_image_asset")
-        image_asset_id = _heygen_upload_asset(image_fp)
+        image_asset_id = _heygen_upload_asset(image_fp, direct=direct)
     update_video_asset_phase(job_id, "uploading_reference_asset", image_asset_id=image_asset_id,
                              provider_avatar_id=avatar_item_id or None,
                              provider_avatar_group_id=avatar_group_id or None)
-    reference_asset_id = _heygen_upload_asset(reference_fp)
+    reference_asset_id = _heygen_upload_asset(reference_fp, direct=direct)
     if not avatar_item_id:
         update_video_asset_phase(job_id, "creating_photo_avatar", image_asset_id=image_asset_id,
                                  reference_asset_id=reference_asset_id)
-        avatar_item_id, avatar_group_id = _heygen_create_photo_avatar(image_asset_id)
+        avatar_item_id, avatar_group_id = _heygen_create_photo_avatar(image_asset_id, direct=direct)
         update_video_asset_phase(job_id, "waiting_photo_avatar", image_asset_id=image_asset_id,
                                  reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
                                  provider_avatar_group_id=avatar_group_id)
-        _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id)
+        _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id, direct=direct)
     update_video_asset_phase(job_id, "creating_cinematic_video", image_asset_id=image_asset_id,
                              reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
                              provider_avatar_group_id=avatar_group_id)
@@ -789,7 +902,7 @@ def generate_heygen_motion_video(image_file, reference_video_file, resolution, r
     rebuilt_avatar = False
     for attempt in range(1, 7):
         try:
-            video_id = _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration)
+            video_id = _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration, direct=direct)
             break
         except RuntimeError as e:
             last_create_error = str(e)
@@ -803,14 +916,14 @@ def generate_heygen_motion_video(image_file, reference_video_file, resolution, r
                                          provider_avatar_group_id=avatar_group_id,
                                          error=last_create_error[:180])
                 if not image_asset_id:
-                    image_asset_id = _heygen_upload_asset(image_fp)
-                avatar_item_id, avatar_group_id = _heygen_create_photo_avatar(image_asset_id)
+                    image_asset_id = _heygen_upload_asset(image_fp, direct=direct)
+                avatar_item_id, avatar_group_id = _heygen_create_photo_avatar(image_asset_id, direct=direct)
                 if avatar.get("username"):
                     record_video_avatar(avatar.get("username"), image_file, avatar_item_id, avatar_group_id, avatar.get("name"))
                 update_video_asset_phase(job_id, "waiting_rebuilt_photo_avatar", image_asset_id=image_asset_id,
                                          reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
                                          provider_avatar_group_id=avatar_group_id)
-                _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id)
+                _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id, direct=direct)
                 rebuilt_avatar = True
                 continue
             retryable = "not ready" in lowered or "status: pending" in lowered
@@ -826,13 +939,15 @@ def generate_heygen_motion_video(image_file, reference_video_file, resolution, r
     update_video_asset_phase(job_id, "polling_video", image_asset_id=image_asset_id,
                              reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
                              provider_avatar_group_id=avatar_group_id, provider_video_id=video_id)
-    info = _heygen_poll_video(video_id)
+    # 直连时轮询死线收在 reaper motion 超时(480s)以内，留出上传/建avatar/下载余量
+    info = _heygen_poll_video(video_id, direct=direct, deadline_s=390 if direct else None)
     update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
                              source_video_url=info.get("video_url"))
-    video_file = _download_video_file(info["video_url"], "cinematic")
+    video_file = (_download_video_file_direct if direct else _download_video_file)(info["video_url"], "cinematic")
     cover = _extract_first_frame_cover(video_file)
     ret = {
         "video_id": video_id,
+        "provider": "heygen_direct" if direct else "heygen_zelong",
         "image_asset_id": image_asset_id,
         "reference_asset_id": reference_asset_id,
         "avatar_item_id": avatar_item_id,

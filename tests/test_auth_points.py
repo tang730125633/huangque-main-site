@@ -176,6 +176,7 @@ class AuthPointsTests(unittest.TestCase):
 
             self.assertIn("token", data)
             self.assertEqual(data["user"]["username"], "mp_new")
+            self.assertEqual(data["user"]["points"], self.auth.NEW_USER_TRIAL_POINTS)
         finally:
             server.shutdown()
             server.server_close()
