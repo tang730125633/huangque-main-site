@@ -939,8 +939,8 @@ def _generate_heygen_motion_video_impl(image_file, reference_video_file, resolut
     update_video_asset_phase(job_id, "polling_video", image_asset_id=image_asset_id,
                              reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
                              provider_avatar_group_id=avatar_group_id, provider_video_id=video_id)
-    # 直连时轮询死线收在 reaper motion 超时(480s)以内，留出上传/建avatar/下载余量
-    info = _heygen_poll_video(video_id, direct=direct, deadline_s=390 if direct else None)
+    # 直连时轮询死线收在 reaper motion 超时(600s)以内，留出上传/建avatar/下载余量
+    info = _heygen_poll_video(video_id, direct=direct, deadline_s=510 if direct else None)
     update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
                              source_video_url=info.get("video_url"))
     video_file = (_download_video_file_direct if direct else _download_video_file)(info["video_url"], "cinematic")
