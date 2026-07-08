@@ -21,7 +21,7 @@ git log --oneline -5
 ## 修改范围
 
 - 只改本次任务需要的文件，不做无关重构。
-- 公共文件要特别谨慎：`server/content_api.py`、`site/workbench/assets.html`、`site/workbench/audio.html`、`site/workbench/cloud-shell.js`、`docs/api-admin/index.html`、`site/api-docs/openapi.json`、数据库 schema。
+- 公共文件要特别谨慎：`server/content_api.py`、`site/workbench/assets.html`、`site/workbench/audio.html`、`site/workbench/cloud-shell.js`、`site/api-admin/index.html`、`site/api-docs/openapi.json`、数据库 schema。
 - 前端工作台唯一正本目录是 `site/workbench/`。
 - 后端服务按文件和端口拆分，具体归属见 `docs/团队Git协作规矩.md`。
 

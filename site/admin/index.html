@@ -87,7 +87,7 @@
   <header>
     <div>
       <h1>运营后台</h1>
-      <div class="sub">接口状态、密钥配置、渠道开关与调用统计</div>
+      <div class="sub">接口调试、日志监控、渠道开关与用户运营</div>
     </div>
     <div class="user" id="userBox"><div class="avatar">?</div><div><b>未登录</b><div class="muted">等待校验</div></div></div>
   </header>
@@ -111,18 +111,19 @@
       <div class="card metric span3"><div><span>高失败项</span><b id="failKinds">-</b></div><span>失败率 >= 50%</span></div>
 
       <div class="module-tabs span12" id="moduleTabs">
-        <button class="tab active" data-module-tab="ops">接口管理</button>
+        <button class="tab active" data-module-tab="ops">接口调试</button>
+        <button class="tab" data-module-tab="logs">日志监控</button>
         <button class="tab" data-module-tab="features">功能开关</button>
         <button class="tab" data-module-tab="users">用户管理</button>
         <button class="tab" data-module-tab="recharge">充值审批</button>
       </div>
 
       <section class="card span8 module-card" data-module="ops">
-        <div class="section-head"><div><h2>服务健康</h2><div class="hint">探测各服务 health，离线服务优先排查。</div></div></div>
+        <div class="section-head"><div><h2>服务健康</h2><div class="hint">探测各服务 health；点「测试」单独 ping 一次，返回 200 即正常。</div></div></div>
         <div id="serviceBox"></div>
       </section>
       <section class="card span4 module-card" data-module="ops">
-        <div class="section-head"><div><h2>密钥状态</h2><div class="hint">只显示是否配置，不展示密钥真值。</div></div></div>
+        <div class="section-head"><div><h2>密钥状态</h2><div class="hint">只显示是否配置，不展示密钥真值。点「测试」真实调一次上游接口验证密钥有效性。</div></div></div>
         <div id="keyBox"></div>
       </section>
       <section class="card span12 module-card" data-module="ops">
@@ -176,11 +177,30 @@
         </div>
         <div id="rechargeBox"></div>
       </section>
-      <section class="card span6 module-card" data-module="ops">
+      <section class="card span12 module-card" data-module="logs" hidden>
+        <div class="section-head">
+          <div><h2>请求日志</h2><div class="hint">nginx 记录的每一次后端（/api/）请求；默认隐藏采集轮询和后台自身的噪音。</div></div>
+          <span class="muted" id="reqCount">-</span>
+        </div>
+        <div class="toolbar">
+          <select id="reqStatus">
+            <option value="">全部状态</option>
+            <option value="2">2xx 成功</option>
+            <option value="3">3xx 跳转</option>
+            <option value="4">4xx 客户端错误</option>
+            <option value="5">5xx 服务端错误</option>
+          </select>
+          <input class="field" id="reqSearch" autocomplete="off" placeholder="按路径筛选，如 /api/gen/">
+          <label class="switch"><input type="checkbox" id="reqNoise"> 显示轮询噪音</label>
+          <button id="reqRefresh">刷新日志</button>
+        </div>
+        <div id="reqBox"></div>
+      </section>
+      <section class="card span6 module-card" data-module="logs" hidden>
         <div class="section-head"><div><h2>调用统计</h2><div class="hint">按能力统计成功率和失败率。</div></div></div>
         <div id="statsBox"></div>
       </section>
-      <section class="card span6 module-card" data-module="ops">
+      <section class="card span6 module-card" data-module="logs" hidden>
         <div class="section-head"><div><h2>用户调用日志</h2><div class="hint">每次调用的时间、功能、耗时、状态与点数消耗。</div></div></div>
         <div id="trendBox"></div>
       </section>
@@ -233,15 +253,56 @@
   function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
   function renderServices(items){
     if(!items.length){el('serviceBox').innerHTML='<div class="empty">暂无服务数据</div>';return}
-    el('serviceBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>服务</th><th>状态</th><th>端口</th><th>耗时</th><th>文件</th></tr></thead><tbody>'+items.map(function(s){
-      return '<tr><td><b>'+esc(s.name)+'</b><div class="muted truncate" title="'+esc(s.error||'')+'">'+esc(s.error||'')+'</div></td><td>'+statusIcon(s.online?'ok':'fail',s.online?'在线':'离线')+'</td><td><code>'+esc(s.port)+'</code></td><td>'+esc(s.latency_ms)+' ms</td><td><code class="truncate" title="'+esc(s.service_file)+'">'+esc(s.service_file)+'</code></td></tr>';
+    el('serviceBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>服务</th><th>状态</th><th>端口</th><th>耗时</th><th>文件</th><th>接口调试</th></tr></thead><tbody>'+items.map(function(s){
+      return '<tr><td><b>'+esc(s.name)+'</b><div class="muted truncate" title="'+esc(s.error||'')+'">'+esc(s.error||'')+'</div></td><td>'+statusIcon(s.online?'ok':'fail',s.online?'在线':'离线')+'</td><td><code>'+esc(s.port)+'</code></td><td>'+esc(s.latency_ms)+' ms</td><td><code class="truncate" title="'+esc(s.service_file)+'">'+esc(s.service_file)+'</code></td><td><button class="mini" data-ping-svc="'+esc(s.key)+'">测试</button> <span data-ping-out="svc:'+esc(s.key)+'"></span></td></tr>';
     }).join('')+'</tbody></table></div>';
+    bindPing('serviceBox','data-ping-svc','service','svc');
+  }
+  function pingResultHtml(d){
+    if(d.online===true || d.ok===true){
+      var code=d.http_status||200;
+      return '<span class="pill ok">'+esc(code)+' 正常 · '+esc(d.latency_ms)+'ms</span>';
+    }
+    var text=d.error||(d.http_status?('HTTP '+d.http_status):'失败');
+    return '<span class="pill fail" title="'+esc(text)+'">'+esc(String(text).slice(0,40))+'</span>';
+  }
+  function bindPing(boxId, attr, param, prefix){
+    Array.prototype.forEach.call(el(boxId).querySelectorAll('['+attr+']'), function(btn){
+      btn.onclick=function(){
+        var key=btn.getAttribute(attr);
+        var out=el(boxId).querySelector('[data-ping-out="'+prefix+':'+key+'"]');
+        btn.disabled=true;
+        if(out) out.innerHTML='<span class="muted">测试中…</span>';
+        api('/api/admin/ping?'+param+'='+encodeURIComponent(key))
+          .then(function(d){if(out) out.innerHTML=pingResultHtml(d)})
+          .catch(function(e){if(out) out.innerHTML='<span class="pill fail">'+esc(e.message)+'</span>'})
+          .finally(function(){btn.disabled=false});
+      };
+    });
   }
   function renderKeys(items){
     el('keyBox').innerHTML=items.map(function(k){
       var src=(k.sources||[]).map(function(s){return '<div><code>'+esc(s.env)+'</code><span class="muted"> · '+esc(s.source)+'</span></div>'}).join('') || '<div class="muted">未检测到</div>';
-      return '<div style="padding:10px 0;border-bottom:1px solid var(--line)"><div class="row"><b>'+esc(k.name)+'</b>'+statusPill(k.configured,k.configured?'已配置':'缺失')+'</div><div style="margin-top:6px">'+src+'</div></div>';
+      var act=k.pingable
+        ? '<div style="margin-top:8px"><button class="mini" data-ping-key="'+esc(k.key)+'">测试密钥</button> <span data-ping-out="key:'+esc(k.key)+'"></span></div>'
+        : '<div class="hint" style="margin-top:8px">该渠道需签名请求，不支持在线测试</div>';
+      return '<div style="padding:10px 0;border-bottom:1px solid var(--line)"><div class="row"><b>'+esc(k.name)+'</b>'+statusPill(k.configured,k.configured?'已配置':'缺失')+'</div><div style="margin-top:6px">'+src+'</div>'+act+'</div>';
     }).join('');
+    bindPing('keyBox','data-ping-key','key','key');
+  }
+  function renderReqLogs(d){
+    var items=d.items||[];
+    el('reqCount').textContent=items.length+' 条（最新在前）';
+    if(!items.length){el('reqBox').innerHTML='<div class="empty">'+esc(d.message||'没有匹配的请求日志')+'</div>';return}
+    el('reqBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>时间</th><th>方法</th><th>路径</th><th>状态</th><th>来源 IP</th><th>UA</th></tr></thead><tbody>'+items.map(function(x){
+      var cls=x.status>=500?'fail':(x.status>=400?'warn':'ok');
+      return '<tr><td><code>'+esc(x.time)+'</code></td><td><code>'+esc(x.method)+'</code></td><td><div class="truncate" style="max-width:420px" title="'+esc(x.path)+'"><code>'+esc(x.path)+'</code></div></td><td><span class="pill '+cls+'">'+esc(x.status)+'</span></td><td><code>'+esc(x.ip)+'</code></td><td><div class="truncate" style="max-width:220px" title="'+esc(x.ua)+'">'+esc(x.ua)+'</div></td></tr>';
+    }).join('')+'</tbody></table></div>';
+  }
+  function loadReqLogs(){
+    var q='?limit=200&status='+encodeURIComponent(el('reqStatus').value||'')+'&q='+encodeURIComponent(el('reqSearch').value||'')+(el('reqNoise').checked?'&noise=1':'');
+    el('reqBox').innerHTML='<div class="empty">加载中…</div>';
+    api('/api/admin/request-logs'+q).then(renderReqLogs).catch(function(e){el('reqBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
   }
   function renderChannels(items){
     el('channelBox').innerHTML=items.map(function(c){
@@ -380,6 +441,7 @@
     state.module=name;
     Array.prototype.forEach.call(document.querySelectorAll('[data-module-tab]'), function(btn){btn.classList.toggle('active', btn.getAttribute('data-module-tab')===name)});
     Array.prototype.forEach.call(document.querySelectorAll('[data-module]'), function(card){card.hidden=card.getAttribute('data-module')!==name});
+    if(name==='logs' && !state.reqLoaded){state.reqLoaded=true; loadReqLogs()}
   }
   function render(d){
     state.data=d; setUser(d.user||{});
@@ -410,6 +472,10 @@
   el('userSort').onchange=loadUsers;
   el('userDir').onchange=loadUsers;
   el('userSearch').oninput=function(){clearTimeout(state.userTimer);state.userTimer=setTimeout(loadUsers,260)};
+  el('reqRefresh').onclick=loadReqLogs;
+  el('reqStatus').onchange=loadReqLogs;
+  el('reqNoise').onchange=loadReqLogs;
+  el('reqSearch').oninput=function(){clearTimeout(state.reqTimer);state.reqTimer=setTimeout(loadReqLogs,300)};
   el('rechargeRefresh').onclick=loadRecharge;
   el('rechargeStatus').onchange=loadRecharge;
   el('rechargeUser').oninput=function(){clearTimeout(state.rechargeTimer);state.rechargeTimer=setTimeout(loadRecharge,260)};
