@@ -656,6 +656,15 @@ def _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id="", direct=False):
         time.sleep(HEYGEN_POLL_INTERVAL)
     raise TimeoutError("HeyGen Photo Avatar处理超时")
 
+# HeyGen cinematic_avatar 只接受 16:9/9:16/1:1，其它比例(如前端曾放的 4:5/5:4)必报 invalid_parameter 400。
+# 兜底映射到最近的合法朝向(竖版→9:16、横版→16:9)，未知比例默认 9:16(motion 主打竖屏出片)。
+_HEYGEN_CINEMATIC_RATIOS = {"16:9", "9:16", "1:1"}
+def _heygen_cinematic_ratio(ratio):
+    r = (ratio or "").strip()
+    if r in _HEYGEN_CINEMATIC_RATIOS:
+        return r
+    return {"4:5": "9:16", "5:4": "16:9"}.get(r, "9:16")
+
 def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration, direct=False):
     prompt = (
         "Create a realistic cinematic vertical video of the same person from the avatar photo. "
@@ -669,7 +678,7 @@ def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, re
         "prompt": prompt,
         "avatar_id": [avatar_item_id],
         "references": [{"type": "asset_id", "asset_id": reference_asset_id}],
-        "aspect_ratio": ratio,
+        "aspect_ratio": _heygen_cinematic_ratio(ratio),
         "resolution": resolution,
         "duration": duration,
         "enhance_prompt": False,

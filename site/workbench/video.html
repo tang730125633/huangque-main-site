@@ -345,7 +345,7 @@
         </div>
         <div class="motion-preset-panel">
           <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
-          <div class="seg" style="grid-template-columns:repeat(5,1fr);"><button class="on" data-motion-ratio="9:16">9:16</button><button data-motion-ratio="16:9">16:9</button><button data-motion-ratio="1:1">1:1</button><button data-motion-ratio="4:5">4:5</button><button data-motion-ratio="5:4">5:4</button></div>
+          <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button class="on" data-motion-ratio="9:16">9:16</button><button data-motion-ratio="16:9">16:9</button><button data-motion-ratio="1:1">1:1</button></div>
         </div>
         <button id="motionGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:20px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
           生成影视级模仿视频
@@ -617,7 +617,9 @@
     return false;
   }
   function clickMotionRatio(value){
-    var btn=document.querySelector('[data-motion-ratio="'+String(value||'').replace(/"/g,'\\"')+'"]');
+    var v=String(value||'').trim();
+    if(v==='4:5') v='9:16'; else if(v==='5:4') v='16:9';  // HeyGen motion 不支持4:5/5:4,老任务回填映射到合法朝向
+    var btn=document.querySelector('[data-motion-ratio="'+v.replace(/"/g,'\\"')+'"]');
     if(btn){ btn.click(); return true; }
     return false;
   }
