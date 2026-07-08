@@ -14,7 +14,7 @@
   .hqRow:hover{ background:rgba(231,178,76,.05); }
   /* ponytail: row layout/border in CSS, not per-row inline */
   .hqRow.lrowg{ padding:0 20px; min-height:44px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); }
-  .lrowg{ display:grid; grid-template-columns:40px minmax(190px,1.5fr) 120px 88px minmax(220px,2fr) 156px 80px; gap:12px; min-width:1000px; }
+  .lrowg{ display:grid; grid-template-columns:40px minmax(170px,1.3fr) 112px 80px minmax(220px,2fr) 92px 180px 148px 80px; gap:12px; min-width:1280px; }
   /* kwchip base state — JS overrides inline on click */
   .kwchip{ padding:6px 12px; font-size:13px; border-radius:8px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; }
   @media (max-width:1100px){ .gAcq{ grid-template-columns:repeat(2,1fr);} }
@@ -110,7 +110,7 @@
         </div>
       </div>
       <div class="lrowg" style="position:sticky; top:0; z-index:2; padding:10px 20px; font-size:12px; color:#5c6b82; background:rgba(13,20,34,.96); border-bottom:1px solid rgba(148,164,187,.07);">
-        <div>#</div><div>昵称</div><div>平台账号</div><div>IP属地</div><div>需求原话</div><div>来源视频</div><div>操作</div>
+        <div>#</div><div>昵称</div><div>平台账号</div><div>IP属地</div><div>需求原话</div><div>意向</div><div>跟进</div><div>来源视频</div><div>操作</div>
       </div>
       <div id="rows">
         <div style="padding:64px 20px; text-align:center; color:#5c6b82;">
@@ -134,6 +134,8 @@
   var kLeads=document.getElementById('kLeads'),kSpam=document.getElementById('kSpam'),kChat=document.getElementById('kChat'),kTotal=document.getElementById('kTotal');
   var poll=null, running=false, lastLeads=[];
   var GRAD=['150deg,#9a6a3a,#5a3d22','150deg,#b04a60,#6a2d3d','150deg,#2c8478,#15534a','150deg,#7a5aa8,#3d2d5a','150deg,#3a6a9a,#22405a'];
+  var CRM_STATUSES=['待跟进','跟进中','已加微','已成交','无效'];
+  var CRM_INTENTS=['高意向','咨询','价格敏感','围观'];
 
   function tok(){ return '__cookie__'; }
   function getPlatforms(){ return Array.from(document.querySelectorAll('.plChk:checked')).map(function(el){return el.value;}); }
@@ -142,6 +144,23 @@
     return el.value.split(',').map(function(s){return s.trim();}).filter(Boolean);
   }
   function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+  function crmStore(){
+    try{ return JSON.parse(localStorage.getItem('hq_leads_crm')||'{}')||{}; }catch(e){ return {}; }
+  }
+  function saveCrm(id, patch){
+    if(!id) return;
+    var all=crmStore(), cur=all[id]||{};
+    Object.keys(patch||{}).forEach(function(k){ cur[k]=patch[k]; });
+    all[id]=cur; localStorage.setItem('hq_leads_crm', JSON.stringify(all));
+    lastLeads=lastLeads.map(function(L){ return L.lead_id===id ? Object.assign({}, L, cur) : L; });
+  }
+  function withCrm(L){
+    var saved=(crmStore()[L.lead_id]||{});
+    return Object.assign({}, L, {intent:L.intent||'高意向', follow_status:L.follow_status||'待跟进', follow_note:L.follow_note||''}, saved);
+  }
+  function optHTML(items, val){
+    return items.map(function(x){ return '<option value="'+esc(x)+'"'+(x===val?' selected':'')+'>'+esc(x)+'</option>'; }).join('');
+  }
   function setStatus(t,c){ stat.innerHTML=t; dot.style.background=c||'#5c6b82'; if(c==='#2dd4bf'){dot.style.animation='hq-pulse 2s infinite';}else{dot.style.animation='none';} }
   function num(n){ return (n==null?'—':String(n)).replace(/\B(?=(\d{3})+(?!\d))/g,','); }
   function setKPIs(r){ kLeads.textContent=num(r.leads_count); kSpam.textContent=num(r.spam); kChat.textContent=num(r.chat); kTotal.textContent=num(r.total); }
@@ -153,10 +172,12 @@
   }
 
   function rowHTML(L,i){
+    L=withCrm(L);
     var n=L.nickname||'匿名', g=GRAD[i%GRAD.length], first=(n.trim()[0]||'客');
     var uid=((L.platform==='xhs'?(L.red_id||L.user_unique_id):L.user_unique_id))||'—';
     var src=L.title||'—';
     var url=L.profile_url||'';
+    var leadId=esc(L.lead_id||'');
     var nameInner=url
       ?'<a href="'+esc(url)+'" target="_blank" rel="noopener" style="font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#eaf1fa; text-decoration:none;" class="hv-gold">'+esc(n)+'</a>'
       :'<div style="font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+esc(n)+'</div>';
@@ -172,6 +193,8 @@
       '<div style="min-width:0;"><div class="mono" style="font-size:12px; color:#94a4bb; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+esc(uid)+'</div>'+platformBadge(L.platform)+'</div>'+
       '<div class="mono" style="font-size:12px; color:#94a4bb;">'+esc(L.ip_location||'—')+'</div>'+
       '<div style="font-size:12px; color:#cdd7e6; line-height:1.55;">"'+esc(L.content||'')+'"</div>'+
+      '<div><select class="crm-intent" data-id="'+leadId+'" style="width:100%; height:30px; padding:0 7px; background:rgba(231,178,76,.08); color:#e7b24c; border:1px solid rgba(231,178,76,.2); border-radius:8px; font-size:12px; font-family:inherit;">'+optHTML(CRM_INTENTS,L.intent)+'</select></div>'+
+      '<div style="display:grid; gap:6px;"><select class="crm-status" data-id="'+leadId+'" style="width:100%; height:30px; padding:0 7px; background:rgba(7,11,19,.45); color:#eaf1fa; border:1px solid rgba(148,164,187,.18); border-radius:8px; font-size:12px; font-family:inherit;">'+optHTML(CRM_STATUSES,L.follow_status)+'</select><input class="crm-note" data-id="'+leadId+'" value="'+esc(L.follow_note||'')+'" placeholder="跟进备注" style="width:100%; height:28px; box-sizing:border-box; padding:0 8px; background:rgba(7,11,19,.32); color:#cdd7e6; border:1px solid rgba(148,164,187,.12); border-radius:8px; font-size:12px; font-family:inherit; outline:none;"></div>'+
       (L.video_url
         ? '<a href="'+esc(L.video_url)+'" target="_blank" rel="noopener" class="hv-gold" style="display:block; font-size:12px; color:#e7b24c; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-decoration:none;">'+esc(src)+'</a>'
         : '<div style="font-size:12px; color:#94a4bb; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+esc(src)+'</div>')+
@@ -179,23 +202,24 @@
     '</div>';
   }
   function renderLeads(leads){
-    lastLeads=leads||[];
+    lastLeads=(leads||[]).map(withCrm);
     var expBtn=document.getElementById('exportBtn');
     if(!leads || !leads.length){
       rows.innerHTML='<div style="padding:54px 20px; text-align:center; color:#94a4bb; font-size:13px;">本次没从评论里过滤到精准客户，换个关键词或加大采集量再试。</div>';
       cntLabel.textContent=''; if(expBtn) expBtn.style.display='none'; return;
     }
-    rows.innerHTML=leads.map(rowHTML).join('');
-    cntLabel.textContent='（共 '+leads.length+' 条）';
+    rows.innerHTML=lastLeads.map(rowHTML).join('');
+    cntLabel.textContent='（共 '+lastLeads.length+' 条）';
     if(expBtn) expBtn.style.display='inline-flex';
   }
 
   function exportCSV(){
     if(!lastLeads.length) return;
-    var header='平台,昵称,平台号,IP属地,需求原话,来源视频,视频链接,主页链接\n';
+    var header='平台,昵称,平台号,IP属地,意向,跟进状态,跟进备注,需求原话,来源视频,视频链接,主页链接\n';
     var body=lastLeads.map(function(L){
       function q(s){ s=String(s==null?'':s); return '"'+s.replace(/"/g,'""')+'"'; }
-      return [q(L.platform),q(L.nickname),q(L.user_unique_id),q(L.ip_location),q(L.content),q(L.title),q(L.video_url),q(L.profile_url)].join(',');
+      L=withCrm(L);
+      return [q(L.platform),q(L.nickname),q(L.user_unique_id),q(L.ip_location),q(L.intent),q(L.follow_status),q(L.follow_note),q(L.content),q(L.title),q(L.video_url),q(L.profile_url)].join(',');
     }).join('\n');
     var blob=new Blob(['﻿'+header+body],{type:'text/csv;charset=utf-8'});
     var a=document.createElement('a'); a.href=URL.createObjectURL(blob);
@@ -242,7 +266,7 @@
           clearInterval(poll); busy(false); localStorage.removeItem('hq_active_leads_job');
           if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
           var r=d.result||{}; setKPIs(r); renderLeads(r.leads||[]);
-          setStatus('完成 · '+(r.leads_count||0)+' 个精准客户（'+sec+'s）','#2bd576');
+          setStatus('完成 · '+(r.leads_count||0)+' 个精准客户 · 去重 '+(r.deduped||0)+' 条（'+sec+'s）','#2bd576');
         }else if(d.status==='error'){
           clearInterval(poll); busy(false); localStorage.removeItem('hq_active_leads_job');
           setStatus('失败：'+(d.error||'未知错误'),'#f4708a');
@@ -260,6 +284,15 @@
 
   var expBtn2=document.getElementById('exportBtn');
   if(expBtn2) expBtn2.onclick=exportCSV;
+  rows.addEventListener('change',function(e){
+    var t=e.target, id=t&&t.getAttribute('data-id');
+    if(t.classList.contains('crm-status')) saveCrm(id,{follow_status:t.value});
+    if(t.classList.contains('crm-intent')) saveCrm(id,{intent:t.value});
+  });
+  rows.addEventListener('input',function(e){
+    var t=e.target, id=t&&t.getAttribute('data-id');
+    if(t.classList.contains('crm-note')) saveCrm(id,{follow_note:t.value});
+  });
   goBtn.onclick=start;
   input.addEventListener('keydown',function(e){ if(e.key==='Enter') start(); });
   document.querySelectorAll('.kwchip').forEach(function(c){ c.onclick=function(){

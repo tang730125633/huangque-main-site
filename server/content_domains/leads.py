@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import hashlib
+
 from .core import _collect_cos_play_url, re, tikhub
 
 def gen_collect(payload):
@@ -66,6 +68,27 @@ _HIGH = ["怎么拓客", "怎么收费", "怎么弄", "怎么做", "怎么操作
 def _is_spam(t): return any(k in t for k in _SPAM)
 def _is_high(t): return any(k in t for k in _HIGH)
 
+def _lead_text_key(text):
+    return re.sub(r"\s+", "", re.sub(r"\[[^\]]+\]", "", text or "")).strip().lower()
+
+def _lead_identity(comment):
+    platform = comment.get("platform") or ""
+    user_id = comment.get("user_id") or comment.get("nickname") or ""
+    content_key = _lead_text_key(comment.get("content"))
+    return "%s:%s:%s" % (platform, user_id, content_key)
+
+def _lead_id(comment):
+    raw = _lead_identity(comment)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+def _intent_label(text):
+    t = text or ""
+    if any(k in t for k in ("怎么联系", "怎么预约", "约一个", "想咨询", "求地址", "在哪做")):
+        return "咨询"
+    if any(k in t for k in ("多少钱", "价格", "贵吗", "多少钱一次", "价位")):
+        return "价格敏感"
+    return "高意向"
+
 def gen_leads(payload):
     keyword   = (payload.get("keyword") or "").strip()
     platforms = payload.get("platforms") or ["douyin"]
@@ -110,7 +133,7 @@ def gen_leads(payload):
             except tikhub.TikHubError:
                 continue
 
-    leads, spam, chat, seen = [], 0, 0, set()
+    leads, spam, chat, deduped, seen = [], 0, 0, 0, set()
     for c in raw:
         t = (c.get("content") or "").strip()
         if not t:
@@ -120,19 +143,21 @@ def gen_leads(payload):
         if len(re.sub(r"\[[^\]]+\]", "", t).strip()) < 2:
             chat += 1; continue
         if _is_high(t):
-            k = (c.get("user_id"), t)
+            k = _lead_identity(c)
             if k in seen:
+                deduped += 1
                 continue
             seen.add(k); leads.append(c)
         else:
             chat += 1
     leads.sort(key=lambda c: (len(c.get("content", "")), c.get("like_count", 0)), reverse=True)
-    out_leads = [{"nickname": c.get("nickname"), "user_unique_id": c.get("user_id"),
+    out_leads = [{"lead_id": _lead_id(c), "nickname": c.get("nickname"), "user_unique_id": c.get("user_id"),
                   "ip_location": c.get("ip_location"), "content": c.get("content"),
                   "title": c.get("source"), "platform": c.get("platform"),
-                  "profile_url": c.get("profile_url")} for c in leads]
+                  "profile_url": c.get("profile_url"), "intent": _intent_label(c.get("content")),
+                  "follow_status": "待跟进", "follow_note": ""} for c in leads]
     return {"type": "leads", "keyword": keyword, "platforms": platforms,
-            "leads_count": len(out_leads), "spam": spam, "chat": chat, "total": len(raw),
+            "leads_count": len(out_leads), "spam": spam, "chat": chat, "deduped": deduped, "total": len(raw),
             "leads": out_leads, "url": None, "prompt": keyword}
 
 HANDLERS = {"collect": gen_collect, "leads": gen_leads}
