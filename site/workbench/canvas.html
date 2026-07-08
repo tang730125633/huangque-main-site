@@ -445,7 +445,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=87f9cda0"></script>
+<script src="cloud-shell.js?v=6fb3d9f2"></script>
 <script>
 /* 节点生产画布：文本→反推→作图 节点图，拖动/连线/调参/并行运行。复用 /api/gen/reverse|banana|image + 轮询。 */
 (function(){
@@ -464,7 +464,7 @@
   var activeSidePanel='', accountAssetsLoaded=false, accountAssets=[];
   var DRAFT_KEY='hq_canvas_draft_v2', TPL_KEY='hq_canvas_templates_v2', BOARD_KEY='hq_canvas_boards_v1', ACTIVE_BOARD_KEY='hq_canvas_active_id';
   var currentBoardId=null, boardMode='mine', boardLastSeenUpdatedAt=0, boardConflict=false;
-  function tok(){ try{ return localStorage.getItem('hq_token')||'__cookie__'; }catch(e){ return '__cookie__'; } }
+  function tok(){ return '__cookie__'; }
   function playableAssetUrl(u){
     u=String(u||'');
     if(!u||u.indexOf('/api/gen/file/')!==0) return Promise.resolve(u);
@@ -2265,20 +2265,46 @@
     var file=el.querySelector('[data-f="file"]'), drop=el.querySelector('[data-f="drop"]');
     if(file){ file.onchange=function(){ var label=node._imageActionLabel||'图片已上传'; node._imageActionLabel=''; imgToNode(node, file.files&&file.files[0], label); }; }
     if(drop){ drop.setAttribute('tabindex','0'); drop.addEventListener('paste', function(e){ var it=(e.clipboardData&&e.clipboardData.items)||[]; for(var i=0;i<it.length;i++){ if(it[i].kind==='file'&&it[i].type&&it[i].type.indexOf('image/')===0){ var f=it[i].getAsFile(); if(f){ e.preventDefault(); imgToNode(node,f); return; } } } }); }
+    if(drop){ drop.addEventListener('paste', function(e){ var it=(e.clipboardData&&e.clipboardData.items)||[], sawFile=false, sawImage=false; for(var i=0;i<it.length;i++){ if(it[i].kind==='file'){ sawFile=true; if(it[i].type&&it[i].type.indexOf('image/')===0) sawImage=true; } } if(sawFile&&!sawImage){ e.preventDefault(); rejectImageFile(node,'请粘贴 PNG/JPG/WebP 图片'); } }); }
     var run=el.querySelector('[data-f="run"]'); if(run) run.onclick=function(){ runNode(node.id); };
   }
-  function imgToNode(node, f, label){ if(!f) return; var before=snapshot(), url=URL.createObjectURL(f), im=new Image();
-    im.onload=function(){ var mx=IMAGE_SAVE_MAX,s=Math.min(1,mx/Math.max(im.width,im.height)),cv=document.createElement('canvas');
-      cv.width=Math.max(1,Math.round(im.width*s)); cv.height=Math.max(1,Math.round(im.height*s));
-      var ctx=cv.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,cv.width,cv.height); ctx.drawImage(im,0,0,cv.width,cv.height);
-      pushUndo(before);
-      var durl=cv.toDataURL('image/jpeg',IMAGE_SAVE_QUALITY); node.image=durl; node.outputs.image=durl;
-      var d=node.el.querySelector('[data-f="drop"]'); if(d){ d.style.backgroundImage='url('+durl+')'; d.innerHTML=''; }
-      refreshAllGenRefs();
-      updateState(label||'图片已上传');
-      try{URL.revokeObjectURL(url);}catch(e){} };
-    im.onerror=function(){ updateState('图片读取失败'); try{URL.revokeObjectURL(url);}catch(e){}; };
-    im.src=url;
+  function rejectImageFile(node,msg){
+    if(!node) return;
+    delete node.image;
+    if(node.outputs) delete node.outputs.image;
+    var d=node.el&&node.el.querySelector('[data-f="drop"]');
+    if(d){ d.style.backgroundImage=''; d.innerHTML='点此上传<br>或 Ctrl/⌘V 粘贴'; }
+    refreshAllGenRefs();
+    setNodeState(node,'error',msg||'请上传 PNG/JPG/WebP 图片','#f4708a');
+    updateState('图片格式不支持');
+  }
+  function validateImageFile(f){
+    if(!f) return Promise.reject(new Error('请选择图片文件'));
+    var allowType=/^image\/(png|jpe?g|webp)$/i.test(f.type||'');
+    return f.slice(0,12).arrayBuffer().then(function(buf){
+      var b=new Uint8Array(buf), type='';
+      if(b[0]===0x89&&b[1]===0x50&&b[2]===0x4e&&b[3]===0x47) type='png';
+      else if(b[0]===0xff&&b[1]===0xd8&&b[2]===0xff) type='jpg';
+      else if(b[0]===0x52&&b[1]===0x49&&b[2]===0x46&&b[3]===0x46&&b[8]===0x57&&b[9]===0x45&&b[10]===0x42&&b[11]===0x50) type='webp';
+      if(!allowType||!type) throw new Error('请上传 PNG/JPG/WebP 图片');
+      return f;
+    });
+  }
+  function imgToNode(node, f, label){ if(!f) return; var before=snapshot();
+    validateImageFile(f).then(function(file){
+      var url=URL.createObjectURL(file), im=new Image();
+      im.onload=function(){ var mx=IMAGE_SAVE_MAX,s=Math.min(1,mx/Math.max(im.width,im.height)),cv=document.createElement('canvas');
+        cv.width=Math.max(1,Math.round(im.width*s)); cv.height=Math.max(1,Math.round(im.height*s));
+        var ctx=cv.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,cv.width,cv.height); ctx.drawImage(im,0,0,cv.width,cv.height);
+        pushUndo(before);
+        var durl=cv.toDataURL('image/jpeg',IMAGE_SAVE_QUALITY); node.image=durl; node.outputs.image=durl;
+        var d=node.el.querySelector('[data-f="drop"]'); if(d){ d.style.backgroundImage='url('+durl+')'; d.innerHTML=''; }
+        refreshAllGenRefs();
+        updateState(label||'图片已上传');
+        try{URL.revokeObjectURL(url);}catch(e){} };
+      im.onerror=function(){ try{URL.revokeObjectURL(url);}catch(e){} rejectImageFile(node,'图片无法读取，请更换 PNG/JPG/WebP 图片'); };
+      im.src=url;
+    }).catch(function(e){ rejectImageFile(node,(e&&e.message)||'请上传 PNG/JPG/WebP 图片'); });
   }
   function selectNode(node){
     Object.keys(nodes).forEach(function(k){ nodes[k].el.classList.remove('sel'); });
@@ -2591,7 +2617,7 @@
               fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
                 var sec=Math.round((Date.now()-t0)/1000);
                 if(d.status==='done'){ clearInterval(iv); var rr=typeof d.result==='string'?JSON.parse(d.result):d.result; res(rr); }
-                else if(d.status==='error'){ clearInterval(iv); rej(new Error(d.error||'生成失败')); }
+                else if(d.status==='error'||d.status==='failed'){ clearInterval(iv); rej(new Error(d.error||'生成失败')); }
                 else if(sec>420){ clearInterval(iv); rej(new Error('超时')); }
                 else setNodeState(node,'running','生成中… 已用 '+sec+'s','#2dd4bf');
               }).catch(function(){});
@@ -2622,7 +2648,7 @@
               fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
                 var sec=Math.round((Date.now()-t0)/1000);
                 if(d.status==='done'){ clearInterval(iv); var rr=typeof d.result==='string'?JSON.parse(d.result):d.result; res(rr); }
-                else if(d.status==='error'){ clearInterval(iv); rej(new Error(d.error||'生成失败')); }
+                else if(d.status==='error'||d.status==='failed'){ clearInterval(iv); rej(new Error(d.error||'生成失败')); }
                 else if(sec>900){ clearInterval(iv); rej(new Error('超时')); }
                 else setNodeState(node,'running','生成中，已用 '+sec+'s','#2dd4bf');
               }).catch(function(){});
@@ -2641,9 +2667,45 @@
     return Promise.resolve();
   }
 
+  // ---------- 循环依赖检测 ----------
+  function detectCycle(){
+    var visiting={}, visited={}, stack=[], cycle=[];
+    function dfs(id){
+      if(cycle.length) return true;
+      if(visiting[id]){
+        var at=stack.indexOf(id);
+        cycle=stack.slice(at>=0?at:0).concat(id);
+        return true;
+      }
+      if(visited[id]) return false;
+      visiting[id]=true;
+      stack.push(id);
+      edges.filter(function(e){ return e.from.node===id; }).some(function(e){ return dfs(e.to.node); });
+      stack.pop();
+      visiting[id]=false;
+      visited[id]=true;
+      return !!cycle.length;
+    }
+    Object.keys(nodes).some(function(id){ return dfs(id); });
+    return cycle.filter(function(id,i,a){ return a.indexOf(id)===i; });
+  }
+  function markCycle(ids){
+    if(!ids||!ids.length) return;
+    ids.forEach(function(id){
+      var n=nodes[id];
+      if(n) setNodeState(n,'error','检测到循环依赖，请删除其中一条连线','#f4708a');
+    });
+    if(nodes[ids[0]]){
+      selectNode(nodes[ids[0]]);
+      focusNode(nodes[ids[0]]);
+    }
+    updateState('检测到循环依赖');
+  }
   // ---------- 运行全部：按依赖分波并行 ----------
   document.getElementById('ncRunAll').onclick=function(){
     if(!validateCanvasInputs()) return;
+    var cycle=detectCycle();
+    if(cycle.length){ markCycle(cycle); return; }
     var done={}, running={};
     updateState('排队中');
     function ready(node){ // 所有输入口都有上游输出
