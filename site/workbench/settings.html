@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>设置 · 黄雀 AI 工作台</title>
+<title>设置 - 黄雀 AI 工作台</title>
 <link rel="icon" href="../assets/cloud/logo-bird.png">
 <link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
 <link rel="stylesheet" href="../assets/cloud.css?v=8">
@@ -11,44 +11,64 @@
   body{overflow:hidden;}
   .settings-page{max-width:1180px;margin:0 auto;}
   .settings-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:22px;flex-wrap:wrap}
-  .settings-title{margin:0;font-size:27px;font-weight:800;letter-spacing:0}
+  .settings-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .settings-title{margin:0;font-size:27px;font-weight:800;letter-spacing:0;display:flex;align-items:center;gap:10px}
+  .settings-title img{width:28px;height:28px;object-fit:contain;flex:none}
   .settings-sub{margin:8px 0 0;color:#94a4bb;font-size:13.5px;line-height:1.7}
-  .settings-grid{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(320px,.72fr);gap:18px;align-items:start}
-  .settings-card{border:1px solid rgba(148,164,187,.1);border-radius:18px;background:linear-gradient(165deg,rgba(16,24,39,.62),rgba(12,18,32,.46));box-shadow:0 16px 42px rgba(0,0,0,.12);overflow:hidden}
+  .settings-grid{display:grid;grid-template-columns:minmax(0,1.04fr) minmax(320px,.76fr);gap:18px;align-items:start}
+  .settings-card{border:1px solid rgba(148,164,187,.12);border-radius:12px;background:linear-gradient(165deg,rgba(16,24,39,.66),rgba(12,18,32,.48));box-shadow:0 16px 42px rgba(0,0,0,.13);overflow:hidden}
   .settings-card-body{padding:20px}
-  .settings-card-head{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:16px}
+  .settings-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:16px}
   .settings-card-title{font-size:16px;font-weight:800;color:#eaf1fa}
-  .settings-card-note{font-size:12px;color:#5c6b82;line-height:1.6}
+  .settings-card-note{font-size:12px;color:#6f7f96;line-height:1.6}
   .profile-top{display:flex;align-items:center;gap:16px;margin-bottom:18px}
-  .profile-avatar{width:54px;height:54px;border-radius:16px;background:linear-gradient(150deg,#9a6a3a,#5a3d22);display:flex;align-items:center;justify-content:center;color:#fff;font-size:22px;font-weight:800;flex:none}
+  .profile-avatar{width:54px;height:54px;border-radius:12px;background:linear-gradient(150deg,#9a6a3a,#5a3d22);display:flex;align-items:center;justify-content:center;color:#fff;font-size:22px;font-weight:800;flex:none}
   .profile-name{font-size:20px;font-weight:800;color:#eaf1fa;line-height:1.25}
   .profile-user{margin-top:5px;color:#94a4bb;font-size:13px}
   .info-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
-  .info-cell{padding:14px;border:1px solid rgba(148,164,187,.09);border-radius:13px;background:rgba(7,11,19,.32)}
-  .info-label{font-size:11.5px;color:#5c6b82;margin-bottom:7px}
-  .info-value{font-size:15px;font-weight:800;color:#eaf1fa;line-height:1.35}
+  .info-cell{padding:14px;border:1px solid rgba(148,164,187,.1);border-radius:10px;background:rgba(7,11,19,.34);min-width:0}
+  .info-label{font-size:11.5px;color:#6f7f96;margin-bottom:7px}
+  .info-value{font-size:15px;font-weight:800;color:#eaf1fa;line-height:1.35;word-break:break-word}
   .info-value.mono{font-family:'JetBrains Mono',monospace;font-variant-numeric:tabular-nums;color:#e7b24c}
   .settings-form{display:flex;flex-direction:column;gap:13px}
   .field{display:flex;flex-direction:column;gap:8px}
   .field span{font-size:12.5px;font-weight:700;color:#eaf1fa}
-  .field input{height:42px;border:1px solid rgba(148,164,187,.16);border-radius:11px;background:rgba(7,11,19,.48);color:#eaf1fa;padding:0 12px;font:13px inherit;outline:none}
+  .field input{height:42px;border:1px solid rgba(148,164,187,.16);border-radius:9px;background:rgba(7,11,19,.5);color:#eaf1fa;padding:0 12px;font:13px inherit;outline:none}
   .field input:focus{border-color:rgba(231,178,76,.42);box-shadow:0 0 0 3px rgba(231,178,76,.08)}
   .action-row{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:4px;flex-wrap:wrap}
-  .btn{height:40px;padding:0 16px;border-radius:11px;border:1px solid rgba(148,164,187,.14);background:rgba(148,164,187,.05);color:#94a4bb;font:800 13px inherit;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:8px}
-  .btn:hover{border-color:rgba(231,178,76,.28);color:#e7b24c}
+  .btn{height:40px;padding:0 16px;border-radius:9px;border:1px solid rgba(148,164,187,.15);background:rgba(148,164,187,.06);color:#94a4bb;font:800 13px inherit;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap}
+  .btn:hover{border-color:rgba(231,178,76,.3);color:#e7b24c}
+  .btn:disabled{opacity:.7;cursor:wait}
   .btn.primary{border-color:transparent;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206}
-  .btn.danger{border-color:rgba(244,112,138,.24);background:rgba(244,112,138,.07);color:#f4708a}
+  .btn.danger{border-color:rgba(244,112,138,.24);background:rgba(244,112,138,.08);color:#f4708a}
   .member-list{display:flex;flex-direction:column;gap:10px}
-  .member-row{display:flex;align-items:center;gap:12px;padding:12px;border:1px solid rgba(148,164,187,.08);border-radius:13px;background:rgba(7,11,19,.3)}
-  .member-avatar{width:34px;height:34px;border-radius:10px;background:rgba(148,164,187,.1);display:flex;align-items:center;justify-content:center;color:#eaf1fa;font-weight:800;flex:none}
+  .member-row{display:flex;align-items:center;gap:12px;padding:12px;border:1px solid rgba(148,164,187,.09);border-radius:10px;background:rgba(7,11,19,.32)}
+  .member-avatar{width:34px;height:34px;border-radius:9px;background:rgba(148,164,187,.11);display:flex;align-items:center;justify-content:center;color:#eaf1fa;font-weight:800;flex:none}
   .member-main{min-width:0;flex:1}
   .member-name{font-size:13.5px;font-weight:800;color:#eaf1fa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .member-sub{margin-top:3px;font-size:12px;color:#5c6b82}
-  .badge{height:24px;padding:0 9px;border-radius:7px;font-size:11.5px;font-weight:800;display:inline-flex;align-items:center;background:rgba(231,178,76,.12);color:#e7b24c}
-  .billing-card{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:15px;border:1px solid rgba(231,178,76,.18);border-radius:14px;background:linear-gradient(120deg,rgba(231,178,76,.09),rgba(7,11,19,.24));margin-top:14px}
-  .toast{position:fixed;left:50%;bottom:24px;z-index:80;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;transition:.18s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:12px;padding:11px 16px;color:#eaf1fa;font-size:13px}
+  .member-sub{margin-top:3px;font-size:12px;color:#6f7f96}
+  .badge{height:24px;padding:0 9px;border-radius:7px;font-size:11.5px;font-weight:800;display:inline-flex;align-items:center;flex:none;background:rgba(231,178,76,.12);color:#e7b24c}
+  .badge.muted{background:rgba(148,164,187,.1);color:#94a4bb}
+  .billing-card{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:15px;border:1px solid rgba(231,178,76,.18);border-radius:10px;background:linear-gradient(120deg,rgba(231,178,76,.09),rgba(7,11,19,.24));margin-top:14px}
+  .billing-title{font-size:13.5px;font-weight:800;color:#eaf1fa}
+  .billing-sub{margin-top:5px;font-size:12px;color:#94a4bb;line-height:1.55}
+  .toast{position:fixed;left:50%;bottom:24px;z-index:80;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;transition:.18s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:10px;padding:11px 16px;color:#eaf1fa;font-size:13px}
   .toast.show{opacity:1;transform:translateX(-50%)}
-  @media (max-width:980px){.settings-grid{grid-template-columns:1fr}.info-grid{grid-template-columns:1fr}}
+  .modal-mask{position:fixed;inset:0;z-index:70;display:none;align-items:center;justify-content:center;padding:22px;background:rgba(2,6,14,.68);backdrop-filter:blur(10px)}
+  .modal-mask.show{display:flex}
+  .settings-modal{width:min(460px,100%);border:1px solid rgba(148,164,187,.14);border-radius:12px;background:linear-gradient(165deg,rgba(18,24,35,.96),rgba(12,15,23,.96));box-shadow:0 24px 80px rgba(0,0,0,.42)}
+  .settings-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;padding:18px 18px 0}
+  .settings-modal-body{padding:16px 18px 18px}
+  .icon-btn{width:34px;height:34px;border-radius:9px;border:1px solid rgba(148,164,187,.12);background:rgba(148,164,187,.06);color:#94a4bb;font-size:20px;line-height:1;cursor:pointer}
+  .icon-btn:hover{border-color:rgba(231,178,76,.3);color:#e7b24c}
+  @media (max-width:980px){
+    body{overflow:auto}
+    .settings-grid{grid-template-columns:1fr}
+    .info-grid{grid-template-columns:1fr}
+    .billing-card{align-items:flex-start;flex-direction:column}
+    .settings-actions{width:100%}
+    .settings-actions .btn{flex:1}
+  }
 </style>
 </head>
 <body>
@@ -57,17 +77,20 @@
   <main class="settings-page">
     <div class="settings-head">
       <div>
-        <h1 class="settings-title" style="display:flex; align-items:center; gap:10px;"><img src="../assets/icons/ic_settings.png" alt="" style="width:28px;height:28px;object-fit:contain;flex:none;">设置</h1>
-        <p class="settings-sub">管理账号资料、密码、点数与团队状态。</p>
+        <h1 class="settings-title"><img src="../assets/icons/ic_settings.png" alt="">设置</h1>
+        <p class="settings-sub">管理账号资料、点数、安全与团队状态。</p>
       </div>
-      <a class="btn" href="recharge.html">去充值</a>
+      <div class="settings-actions">
+        <a class="btn" href="recharge.html">充值点数</a>
+        <button id="openPasswordModal" class="btn" type="button">修改密码</button>
+      </div>
     </div>
 
     <div class="settings-grid">
       <section class="settings-card">
         <div class="settings-card-body">
           <div class="settings-card-head">
-            <div class="settings-card-title">账号资料</div>
+            <div class="settings-card-title">账号概览</div>
             <span id="accountStatus" class="badge">读取中</span>
           </div>
           <div class="profile-top">
@@ -85,8 +108,8 @@
           </div>
           <div class="billing-card">
             <div>
-              <div style="font-size:13.5px;font-weight:800;color:#eaf1fa;">计费与充值</div>
-              <div style="margin-top:5px;font-size:12px;color:#94a4bb;">生成任务会消耗点数，点数不足时需要先充值。</div>
+              <div class="billing-title">计费与充值</div>
+              <div class="billing-sub">生成任务会消耗点数，点数不足时需要先充值。</div>
             </div>
             <a class="btn primary" href="recharge.html">充值点数</a>
           </div>
@@ -97,28 +120,10 @@
         <div class="settings-card-body">
           <div class="settings-card-head">
             <div>
-              <div class="settings-card-title">修改密码</div>
-              <div class="settings-card-note">需要先验证当前密码；保存成功后需重新登录。</div>
+              <div class="settings-card-title">团队状态</div>
+              <div class="settings-card-note">成员管理接口尚未开放，当前仅展示账号占位状态。</div>
             </div>
-          </div>
-          <form id="passwordForm" class="settings-form">
-            <label class="field"><span>当前密码</span><input id="oldPassword" type="password" autocomplete="current-password" minlength="6" placeholder="输入当前登录密码"></label>
-            <label class="field"><span>新密码</span><input id="newPassword" type="password" autocomplete="new-password" minlength="6" placeholder="输入 6 位以上新密码"></label>
-            <label class="field"><span>确认新密码</span><input id="confirmPassword" type="password" autocomplete="new-password" minlength="6" placeholder="再次输入新密码"></label>
-            <div id="passwordNote" class="settings-card-note">改密成功会退出当前登录态，请用新密码重新登录。</div>
-            <div class="action-row"><button id="passwordSubmit" class="btn primary" type="submit">保存新密码</button></div>
-          </form>
-        </div>
-      </section>
-
-      <section class="settings-card">
-        <div class="settings-card-body">
-          <div class="settings-card-head">
-            <div>
-              <div class="settings-card-title">团队成员</div>
-              <div class="settings-card-note">成员管理接口尚未开放，当前只展示占位状态。</div>
-            </div>
-            <span class="badge" style="background:rgba(148,164,187,.1);color:#94a4bb;">只读</span>
+            <span class="badge muted">只读</span>
           </div>
           <div class="member-list">
             <div class="member-row">
@@ -128,8 +133,8 @@
             </div>
             <div class="member-row">
               <div class="member-avatar">+</div>
-              <div class="member-main"><div class="member-name">邀请成员</div><div class="member-sub">团队协作能力即将开放</div></div>
-              <span class="badge" style="background:rgba(148,164,187,.1);color:#94a4bb;">待开放</span>
+              <div class="member-main"><div class="member-name">邀请成员</div><div class="member-sub">团队协作能力尚未开放</div></div>
+              <span class="badge muted">待开放</span>
             </div>
           </div>
         </div>
@@ -140,7 +145,7 @@
           <div class="settings-card-head">
             <div>
               <div class="settings-card-title">登录与安全</div>
-              <div class="settings-card-note">退出后会清除本地登录态，并返回登录页。</div>
+              <div class="settings-card-note">退出后会清除本地登录状态，并返回登录页。</div>
             </div>
           </div>
           <div class="action-row" style="justify-content:flex-start;margin-top:0;">
@@ -151,26 +156,60 @@
     </div>
   </main>
 </div></div>
-<div id="toast" class="toast"></div>
+<div id="toast" class="toast" aria-live="polite"></div>
+<div id="passwordModal" class="modal-mask" aria-hidden="true">
+  <section class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="passwordModalTitle">
+    <div class="settings-modal-head">
+      <div>
+        <div id="passwordModalTitle" class="settings-card-title">修改密码</div>
+        <div class="settings-card-note">需要先验证当前密码；保存成功后需要重新登录。</div>
+      </div>
+      <button id="closePasswordModal" class="icon-btn" type="button" aria-label="关闭修改密码弹窗">×</button>
+    </div>
+    <div class="settings-modal-body">
+      <form id="passwordForm" class="settings-form">
+        <label class="field"><span>当前密码</span><input id="oldPassword" type="password" autocomplete="current-password" minlength="6" placeholder="输入当前登录密码"></label>
+        <label class="field"><span>新密码</span><input id="newPassword" type="password" autocomplete="new-password" minlength="6" placeholder="输入 6 位以上新密码"></label>
+        <label class="field"><span>确认新密码</span><input id="confirmPassword" type="password" autocomplete="new-password" minlength="6" placeholder="再次输入新密码"></label>
+        <div id="passwordNote" class="settings-card-note" aria-live="polite">改密成功会退出当前登录状态，请用新密码重新登录。</div>
+        <div class="action-row"><button id="passwordSubmit" class="btn primary" type="submit">保存新密码</button></div>
+      </form>
+    </div>
+  </section>
+</div>
 <script src="../assets/cloud.js?v=8"></script>
 <script src="cloud-shell.js?v=43c67c59"></script>
 <script>
 (function(){
-  var token='__cookie__';
-  var $=function(id){return document.getElementById(id);};
-  function login(){location.href='../login.html?redirect=workbench/settings';}
-  function toast(msg){var t=$('toast'); if(!t) return; t.textContent=msg; t.classList.add('show'); setTimeout(function(){t.classList.remove('show');},1800);}
-  function escText(v){return String(v==null?'':v);}
-  function initial(name){var s=escText(name).trim(); return (s?s[0]:'?').toUpperCase();}
-  function roleText(role){return role==='admin'?'管理员':(role==='member'?'成员':(role||'成员'));}
-  function authFetch(url,opt){
-    opt=opt||{};
-    opt.headers=Object.assign({'Authorization':'Bearer '+token}, opt.headers||{});
-    return fetch(url,opt).then(function(r){
-      if(r.status===401){login(); return null;}
-      return r.json().then(function(d){return {status:r.status,data:d};});
-    });
+  var $ = function(id){return document.getElementById(id);};
+
+  function openLogin(){
+    if(window.HQ && typeof window.HQ.login === 'function'){
+      window.HQ.login();
+      return;
+    }
+    location.href = '../login.html?redirect=workbench/settings';
   }
+
+  function toast(msg){
+    var t = $('toast');
+    if(!t) return;
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(function(){t.classList.remove('show');}, 1800);
+  }
+
+  function initial(name){
+    var s = String(name || '').trim();
+    return (s ? s.charAt(0) : '?').toUpperCase();
+  }
+
+  function roleText(role){
+    if(role === 'admin') return '管理员';
+    if(role === 'member') return '成员';
+    return role || '成员';
+  }
+
   function clearLocalAuth(){
     try{
       localStorage.removeItem('hq_token');
@@ -178,79 +217,147 @@
       localStorage.removeItem('hq_role');
     }catch(e){}
   }
-  function setBusy(btn,on,text){
+
+  function setBusy(btn, on, text){
     if(!btn) return;
-    if(text!=null) btn.textContent=text;
-    btn.disabled=on;
-    btn.style.opacity=on?'.72':'1';
-    btn.style.cursor=on?'wait':'pointer';
+    if(text != null) btn.textContent = text;
+    btn.disabled = on;
   }
-  function renderUser(user){
-    user=user||{};
-    var name=user.name||user.display_name||user.username||'未命名账号';
-    $('displayName').textContent=name;
-    $('username').textContent='@'+(user.username||'--');
-    $('profileAvatar').textContent=initial(name);
-    $('role').textContent=roleText(user.role);
-    $('points').textContent=Number(user.points||0).toLocaleString();
-    $('mustChange').textContent=user.must_change?'建议尽快修改':'已设置';
-    $('accountStatus').textContent='已连接';
-    $('selfMemberAvatar').textContent=initial(name);
-    $('selfMemberName').textContent=name;
-    $('selfMemberRole').textContent=roleText(user.role);
-    try{localStorage.setItem('hq_user',JSON.stringify(user));}catch(e){}
-  }
-  function loadMe(){
-    if(!token){login(); return;}
-    authFetch('/api/auth/me').then(function(res){
-      if(!res) return;
-      if(!res.data || !res.data.user) throw new Error(res.data&&res.data.detail || '账号读取失败');
-      renderUser(res.data.user);
-    }).catch(function(e){
-      if($('accountStatus')) $('accountStatus').textContent='读取失败';
-      toast(e.message||'账号读取失败');
+
+  function apiFetch(url, opt){
+    opt = opt || {};
+    opt.credentials = 'same-origin';
+    opt.cache = 'no-store';
+    opt.headers = Object.assign({}, opt.headers || {});
+    return fetch(url, opt).then(function(r){
+      return r.json().catch(function(){return {};}).then(function(data){
+        if(r.status === 401){
+          clearLocalAuth();
+          openLogin();
+          return null;
+        }
+        return {ok:r.ok, status:r.status, data:data || {}};
+      });
     });
   }
-  $('passwordForm').addEventListener('submit',function(e){
+
+  function renderUser(user){
+    user = user || {};
+    var name = user.name || user.display_name || user.username || '未命名账号';
+    $('displayName').textContent = name;
+    $('username').textContent = '@' + (user.username || '--');
+    $('profileAvatar').textContent = initial(name);
+    $('role').textContent = roleText(user.role);
+    $('points').textContent = Number(user.points || 0).toLocaleString();
+    $('mustChange').textContent = user.must_change ? '建议尽快修改' : '已设置';
+    $('loginState').textContent = '已连接';
+    $('accountStatus').textContent = '已连接';
+    $('selfMemberAvatar').textContent = initial(name);
+    $('selfMemberName').textContent = name;
+    $('selfMemberRole').textContent = roleText(user.role);
+    try{localStorage.setItem('hq_user', JSON.stringify(user));}catch(e){}
+  }
+
+  function loadMe(){
+    apiFetch('/api/auth/me').then(function(res){
+      if(!res) return;
+      if(!res.ok || !res.data || !res.data.user){
+        throw new Error(res.data && res.data.detail || '账号读取失败');
+      }
+      renderUser(res.data.user);
+      if(window.HQ && typeof window.HQ.refreshPoints === 'function') window.HQ.refreshPoints();
+    }).catch(function(e){
+      $('accountStatus').textContent = '读取失败';
+      $('loginState').textContent = '未连接';
+      toast(e.message || '账号读取失败');
+    });
+  }
+
+  function openPasswordModal(){
+    var modal = $('passwordModal');
+    if(!modal) return;
+    modal.classList.add('show');
+    modal.setAttribute('aria-hidden', 'false');
+    setTimeout(function(){
+      if($('oldPassword')) $('oldPassword').focus();
+    }, 0);
+  }
+
+  function closePasswordModal(){
+    var modal = $('passwordModal');
+    if(!modal) return;
+    modal.classList.remove('show');
+    modal.setAttribute('aria-hidden', 'true');
+  }
+
+  $('openPasswordModal').addEventListener('click', openPasswordModal);
+  $('closePasswordModal').addEventListener('click', closePasswordModal);
+  $('passwordModal').addEventListener('click', function(e){
+    if(e.target === $('passwordModal')) closePasswordModal();
+  });
+  document.addEventListener('keydown', function(e){
+    if(e.key === 'Escape') closePasswordModal();
+  });
+
+  $('passwordForm').addEventListener('submit', function(e){
     e.preventDefault();
-    var old=$('oldPassword').value;
-    var p=$('newPassword').value;
-    var c=$('confirmPassword').value;
-    var note=$('passwordNote');
-    if(old.length<6){note.style.color='#f4708a';note.textContent='请填写当前密码';return;}
-    if(p.length<6){note.style.color='#f4708a';note.textContent='新密码至少 6 位';return;}
-    if(p!==c){note.style.color='#f4708a';note.textContent='两次输入的新密码不一致';return;}
-    var btn=$('passwordSubmit');
-    setBusy(btn,true,'保存中');
-    note.style.color='#e7b24c'; note.textContent='正在保存新密码...';
-    authFetch('/api/auth/change_password',{
+    var oldPassword = $('oldPassword').value;
+    var newPassword = $('newPassword').value;
+    var confirmPassword = $('confirmPassword').value;
+    var note = $('passwordNote');
+    var btn = $('passwordSubmit');
+
+    if(oldPassword.length < 6){
+      note.style.color = '#f4708a';
+      note.textContent = '请填写当前密码。';
+      return;
+    }
+    if(newPassword.length < 6){
+      note.style.color = '#f4708a';
+      note.textContent = '新密码至少 6 位。';
+      return;
+    }
+    if(newPassword !== confirmPassword){
+      note.style.color = '#f4708a';
+      note.textContent = '两次输入的新密码不一致。';
+      return;
+    }
+
+    setBusy(btn, true, '保存中');
+    note.style.color = '#e7b24c';
+    note.textContent = '正在保存新密码...';
+    apiFetch('/api/auth/change_password', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({old_password:old,new_password:p})
+      body:JSON.stringify({old_password:oldPassword, new_password:newPassword})
     }).then(function(res){
       if(!res) return;
-      if(res.status>=400 || !res.data.ok) throw new Error(res.data.detail||'修改失败');
-      $('oldPassword').value='';
-      $('newPassword').value='';
-      $('confirmPassword').value='';
-      note.style.color='#2bd576';
-      note.textContent='密码已更新，请用新密码重新登录。';
+      if(!res.ok || !res.data.ok) throw new Error(res.data.detail || '修改失败');
+      $('oldPassword').value = '';
+      $('newPassword').value = '';
+      $('confirmPassword').value = '';
+      note.style.color = '#2bd576';
+      note.textContent = '密码已更新，请用新密码重新登录。';
       toast('密码已更新，请重新登录');
       clearLocalAuth();
-      setTimeout(function(){location.href='../login.html?redirect=workbench/settings';},900);
+      setTimeout(function(){openLogin();}, 900);
     }).catch(function(err){
-      note.style.color='#f4708a';
-      note.textContent=err.message||'修改失败';
-    }).finally(function(){setBusy(btn,false,'保存新密码');});
-  });
-  $('logoutBtn').addEventListener('click',function(){
-    var btn=$('logoutBtn');
-    setBusy(btn,true,'退出中');
-    authFetch('/api/auth/logout',{method:'POST'}).finally(function(){
-      clearLocalAuth();
-      location.href='../login.html';
+      note.style.color = '#f4708a';
+      note.textContent = err.message || '修改失败';
+    }).finally(function(){
+      setBusy(btn, false, '保存新密码');
     });
   });
+
+  $('logoutBtn').addEventListener('click', function(){
+    var btn = $('logoutBtn');
+    setBusy(btn, true, '退出中');
+    apiFetch('/api/auth/logout', {method:'POST'}).finally(function(){
+      clearLocalAuth();
+      location.href = '../login.html';
+    });
+  });
+
   loadMe();
 })();
 </script>
