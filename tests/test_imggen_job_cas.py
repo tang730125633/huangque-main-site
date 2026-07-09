@@ -12,6 +12,12 @@ import importlib, os, sys, tempfile, time, unittest
 from contextlib import closing
 from pathlib import Path
 
+# imggen_api.py 在【模块导入时】就 OUT_DIR.mkdir()，而它的默认值硬编码成
+# /home/ubuntu/content-api/content_out。CI runner 上建不了 → PermissionError: '/home/ubuntu'。
+# 本地 Windows 反而"成功"（当成相对路径在当前盘建目录），所以本地全绿、CI 全红。
+# 必须在 import imggen_api 之前把 CONTENT_OUT 指走。
+os.environ.setdefault("CONTENT_OUT", tempfile.mkdtemp(prefix="hq-imggen-out-"))
+
 
 class ImggenJobCasTests(unittest.TestCase):
     def setUp(self):
