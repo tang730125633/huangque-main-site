@@ -1332,6 +1332,43 @@
   bindTryonFile($('tryonVideoFile'),'video');
   bindTryonFile($('tryonClothesFile'),'clothes');
   bindTryonFile($('tryonBgFile'),'bg');
+  // ===== 上传槽支持粘贴图片：鼠标悬停在框上 Ctrl/⌘V 直接粘贴 =====
+  // 复用各框现有 onchange：把剪贴板图片合成 File 塞进对应 <input> 再触发 change，
+  // data/预览/重绑全走原路径，无需重写。换装人物框只在线路二(收图)时可粘(线路一收视频)。
+  var PASTE_SLOTS = [
+    {box:'imageDrop', input:'imageFile'},
+    {box:'motionImageDrop', input:'motionImageFile'},
+    {box:'tryonVideoDrop', input:'tryonVideoFile', line2Only:true},
+    {box:'tryonClothesDrop', input:'tryonClothesFile'},
+    {box:'tryonBgDrop', input:'tryonBgFile'}
+  ];
+  var pasteHover=null;
+  PASTE_SLOTS.forEach(function(m){
+    var el=$(m.box); if(!el) return;
+    el.title='点击上传，或把鼠标停在这里 Ctrl/⌘V 粘贴图片';
+    el.addEventListener('mouseenter',function(){pasteHover=m;});
+    el.addEventListener('mouseleave',function(){if(pasteHover===m)pasteHover=null;});
+  });
+  document.addEventListener('paste',function(e){
+    if(!pasteHover) return;                                       // 只在悬停某上传框时接管
+    if(pasteHover.line2Only && selectedTryonLine!=='2') return;   // 换装人物框:线路一收视频,不接图片粘贴
+    var items=(e.clipboardData&&e.clipboardData.items)||[];
+    for(var i=0;i<items.length;i++){
+      if(items[i].type&&items[i].type.indexOf('image')===0){
+        var blob=items[i].getAsFile(); if(!blob) continue;
+        e.preventDefault();
+        var input=$(pasteHover.input); if(!input) return;
+        try{
+          var dt=new DataTransfer();
+          dt.items.add(new File([blob],'pasted.png',{type:blob.type||'image/png'}));
+          input.files=dt.files;
+          input.dispatchEvent(new Event('change',{bubbles:true}));
+          toast('已粘贴剪贴板图片');
+        }catch(err){ toast('粘贴失败，请改用点击上传'); }
+        return;
+      }
+    }
+  });
   $('audioFile').onchange=function(){
     var f=this.files&&this.files[0];
     if(f){
