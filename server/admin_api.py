@@ -428,6 +428,32 @@ ENDPOINT_CATALOG = json.loads(r"""
    "fee": false
   }
  ],
+ "wavespeed": [
+  {
+   "m": "POST",
+   "p": "/api/v3/wavespeed-ai/wan-2.2/animate",
+   "d": "动作模仿(线路二)：人物图+参考视频→动作模仿视频",
+   "fee": true
+  },
+  {
+   "m": "POST",
+   "p": "/api/v3/wavespeed-ai/ai-virtual-outfit-tryon",
+   "d": "换装(线路二)：人物图+衣服图→模特展示视频",
+   "fee": true
+  },
+  {
+   "m": "GET",
+   "p": "/api/v3/predictions/{id}/result",
+   "d": "轮询 WaveSpeed 任务状态、取成片URL",
+   "fee": false
+  },
+  {
+   "m": "GET",
+   "p": "/api/v3/balance",
+   "d": "查询 WaveSpeed 账户余额(拨测/接口调试用)",
+   "fee": false
+  }
+ ],
  "doubao": [
   {
    "m": "POST",
