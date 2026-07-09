@@ -14,7 +14,7 @@
   .hqRow:hover{ background:rgba(231,178,76,.05); }
   /* ponytail: row layout/border in CSS, not per-row inline */
   .hqRow.lrowg{ padding:0 20px; min-height:44px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); }
-  .lrowg{ display:grid; grid-template-columns:40px minmax(170px,1.3fr) 112px 80px minmax(220px,2fr) 92px 180px 148px 80px; gap:12px; min-width:1280px; }
+  .lrowg{ display:grid; grid-template-columns:40px minmax(170px,1.3fr) 112px 80px minmax(220px,2fr) 116px 180px 148px 80px; gap:12px; min-width:1320px; }
   /* kwchip base state — JS overrides inline on click */
   .kwchip{ padding:6px 12px; font-size:13px; border-radius:8px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; }
   @media (max-width:1100px){ .gAcq{ grid-template-columns:repeat(2,1fr);} }
@@ -168,7 +168,7 @@
   }
   function withCrm(L){
     var saved=(crmStore()[L.lead_id]||{});
-    return Object.assign({}, L, {intent:L.intent||'高意向', follow_status:L.follow_status||'待跟进', follow_note:L.follow_note||''}, saved);
+    return Object.assign({}, L, {intent:L.intent||'高意向', intent_score:L.intent_score||0, intent_reason:L.intent_reason||'', follow_status:L.follow_status||'待跟进', follow_note:L.follow_note||''}, saved);
   }
   function optHTML(items, val){
     return items.map(function(x){ return '<option value="'+esc(x)+'"'+(x===val?' selected':'')+'>'+esc(x)+'</option>'; }).join('');
@@ -206,6 +206,9 @@
     var src=L.title||'—';
     var url=L.profile_url||'';
     var leadId=esc(L.lead_id||'');
+    var intentScore=Number(L.intent_score||0);
+    var intentReason=L.intent_reason||'规则分级';
+    var scoreColor=intentScore>=80?'#2dd4bf':(intentScore>=60?'#e7b24c':'#94a4bb');
     var nameInner=url
       ?'<a href="'+esc(url)+'" target="_blank" rel="noopener" style="font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#eaf1fa; text-decoration:none;" class="hv-gold">'+esc(n)+'</a>'
       :'<div style="font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+esc(n)+'</div>';
@@ -221,7 +224,7 @@
       '<div style="min-width:0;"><div class="mono" style="font-size:12px; color:#94a4bb; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+esc(uid)+'</div>'+platformBadge(L.platform)+'</div>'+
       '<div class="mono" style="font-size:12px; color:#94a4bb;">'+esc(L.ip_location||'—')+'</div>'+
       '<div style="font-size:12px; color:#cdd7e6; line-height:1.55;">"'+esc(L.content||'')+'"</div>'+
-      '<div><select class="crm-intent" data-id="'+leadId+'" style="width:100%; height:30px; padding:0 7px; background:rgba(231,178,76,.08); color:#e7b24c; border:1px solid rgba(231,178,76,.2); border-radius:8px; font-size:12px; font-family:inherit;">'+optHTML(CRM_INTENTS,L.intent)+'</select></div>'+
+      '<div style="display:grid;gap:5px;"><select class="crm-intent" data-id="'+leadId+'" style="width:100%; height:30px; padding:0 7px; background:rgba(231,178,76,.08); color:#e7b24c; border:1px solid rgba(231,178,76,.2); border-radius:8px; font-size:12px; font-family:inherit;">'+optHTML(CRM_INTENTS,L.intent)+'</select><div title="'+esc(intentReason)+'" style="font-size:10.5px;line-height:1.2;color:'+scoreColor+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">智能 '+(intentScore||'—')+' · '+esc(intentReason)+'</div></div>'+
       '<div style="display:grid; gap:6px;"><select class="crm-status" data-id="'+leadId+'" style="width:100%; height:30px; padding:0 7px; background:rgba(7,11,19,.45); color:#eaf1fa; border:1px solid rgba(148,164,187,.18); border-radius:8px; font-size:12px; font-family:inherit;">'+optHTML(CRM_STATUSES,L.follow_status)+'</select><input class="crm-note" data-id="'+leadId+'" value="'+esc(L.follow_note||'')+'" placeholder="跟进备注" style="width:100%; height:28px; box-sizing:border-box; padding:0 8px; background:rgba(7,11,19,.32); color:#cdd7e6; border:1px solid rgba(148,164,187,.12); border-radius:8px; font-size:12px; font-family:inherit; outline:none;"></div>'+
       (L.video_url
         ? '<a href="'+esc(L.video_url)+'" target="_blank" rel="noopener" class="hv-gold" style="display:block; font-size:12px; color:#e7b24c; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-decoration:none;">'+esc(src)+'</a>'
@@ -246,11 +249,11 @@
 
   function exportCSV(){
     if(!lastLeads.length) return;
-    var header='平台,昵称,平台号,IP属地,意向,跟进状态,跟进备注,需求原话,来源视频,视频链接,主页链接\n';
+    var header='平台,昵称,平台号,IP属地,意向,智能分,分级依据,跟进状态,跟进备注,需求原话,来源视频,视频链接,主页链接\n';
     var body=lastLeads.map(function(L){
       function q(s){ s=String(s==null?'':s); return '"'+s.replace(/"/g,'""')+'"'; }
       L=withCrm(L);
-      return [q(L.platform),q(L.nickname),q(L.user_unique_id),q(L.ip_location),q(L.intent),q(L.follow_status),q(L.follow_note),q(L.content),q(L.title),q(L.video_url),q(L.profile_url)].join(',');
+      return [q(L.platform),q(L.nickname),q(L.user_unique_id),q(L.ip_location),q(L.intent),q(L.intent_score),q(L.intent_reason),q(L.follow_status),q(L.follow_note),q(L.content),q(L.title),q(L.video_url),q(L.profile_url)].join(',');
     }).join('\n');
     var blob=new Blob(['﻿'+header+body],{type:'text/csv;charset=utf-8'});
     var a=document.createElement('a'); a.href=URL.createObjectURL(blob);

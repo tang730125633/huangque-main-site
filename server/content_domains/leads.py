@@ -9,6 +9,12 @@ from .core import BASE, _collect_cos_play_url, re, tikhub
 LEADS_CRM_DB = str(BASE / "leads_crm.db")
 CRM_STATUSES = {"待跟进", "跟进中", "已加微", "已成交", "无效"}
 CRM_INTENTS = {"高意向", "咨询", "价格敏感", "围观"}
+INTENT_RULES = [
+    ("咨询", 92, ("怎么联系", "怎么预约", "约一个", "想咨询", "求地址", "在哪做", "能加", "私信")),
+    ("价格敏感", 82, ("多少钱", "价格", "贵吗", "多少钱一次", "价位", "预算", "收费")),
+    ("高意向", 76, ("想做", "我也想", "有效果吗", "效果怎么样", "可以瘦吗", "有用吗", "哪家好", "安全吗", "维持多久")),
+    ("高意向", 68, ("怎么弄", "怎么做", "怎么操作", "怎么整", "求带", "教一下", "求推荐", "想学")),
+]
 
 def crm_db():
     c = sqlite3.connect(LEADS_CRM_DB, timeout=10)
@@ -161,13 +167,19 @@ def _lead_id(comment):
     raw = _lead_identity(comment)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
-def _intent_label(text):
+def _intent_profile(text):
     t = text or ""
-    if any(k in t for k in ("怎么联系", "怎么预约", "约一个", "想咨询", "求地址", "在哪做")):
-        return "咨询"
-    if any(k in t for k in ("多少钱", "价格", "贵吗", "多少钱一次", "价位")):
-        return "价格敏感"
-    return "高意向"
+    for label, score, keys in INTENT_RULES:
+        hit = next((k for k in keys if k in t), "")
+        if hit:
+            return {"intent": label, "intent_score": score, "intent_reason": "命中“%s”" % hit}
+    clean = _lead_text_key(t)
+    if len(clean) >= 18:
+        return {"intent": "高意向", "intent_score": 62, "intent_reason": "长句咨询，需人工复核"}
+    return {"intent": "围观", "intent_score": 35, "intent_reason": "未命中明确需求词"}
+
+def _intent_label(text):
+    return _intent_profile(text)["intent"]
 
 def gen_leads(payload):
     username  = (payload.get("_username") or "").strip()
@@ -232,11 +244,15 @@ def gen_leads(payload):
         else:
             chat += 1
     leads.sort(key=lambda c: (len(c.get("content", "")), c.get("like_count", 0)), reverse=True)
-    out_leads = [{"lead_id": _lead_id(c), "nickname": c.get("nickname"), "user_unique_id": c.get("user_id"),
-                  "ip_location": c.get("ip_location"), "content": c.get("content"),
-                  "title": c.get("source"), "platform": c.get("platform"),
-                  "profile_url": c.get("profile_url"), "intent": _intent_label(c.get("content")),
-                  "follow_status": "待跟进", "follow_note": ""} for c in leads]
+    out_leads = []
+    for c in leads:
+        profile = _intent_profile(c.get("content"))
+        out_leads.append({"lead_id": _lead_id(c), "nickname": c.get("nickname"), "user_unique_id": c.get("user_id"),
+                          "ip_location": c.get("ip_location"), "content": c.get("content"),
+                          "title": c.get("source"), "platform": c.get("platform"),
+                          "profile_url": c.get("profile_url"), "intent": profile["intent"],
+                          "intent_score": profile["intent_score"], "intent_reason": profile["intent_reason"],
+                          "follow_status": "待跟进", "follow_note": ""})
     out_leads = _merge_saved_crm(username, out_leads)
     return {"type": "leads", "keyword": keyword, "platforms": platforms,
             "leads_count": len(out_leads), "spam": spam, "chat": chat, "deduped": deduped, "total": len(raw),
