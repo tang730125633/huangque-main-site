@@ -1675,8 +1675,10 @@ def _xiaole_pick_video_url(output):
     return None
 
 def _download_xiaole_video(url, prefix="xiaole"):
-    # 视频 CDN 多在海外(如 vidgen.x.ai)，国内服务器直连不通 → 复用法兰克福中转 /cdn/
-    headers = {"User-Agent": "huangque-content/1.0"}
+    # 视频 CDN 多在海外(如 vidgen.x.ai)，国内服务器直连不通 → 复用法兰克福中转 /cdn/。
+    # 但部分 CDN(如 seedance 的 update.asiot.top)国内直连可通、中转反而 404 → 中转失败后兜底直连原始 URL。
+    plain_headers = {"User-Agent": "huangque-content/1.0"}
+    candidates = [(url, plain_headers)]
     relay = os.environ.get("HEYGEN_RELAY_BASE", "").strip().rstrip("/")
     parts = urllib.parse.urlsplit(url)
     host = (parts.hostname or "").lower()
@@ -1684,26 +1686,30 @@ def _download_xiaole_video(url, prefix="xiaole"):
         fetch = "%s/cdn/%s/%s" % (relay, host, parts.path.lstrip("/"))
         if parts.query:
             fetch += "?" + parts.query
+        headers = dict(plain_headers)
         token = os.environ.get("HEYGEN_RELAY_TOKEN", "").strip()
         if token:
             headers["X-Relay-Token"] = token
-        url = fetch
-    # 下载中断(IncompleteRead/网络抖动)自动重试
+        candidates.insert(0, (fetch, headers))
+    # 下载中断(IncompleteRead/网络抖动)自动重试；中转候选耗尽后换直连候选
     data = None
     last_err = None
-    for attempt in range(_xiaole_dl_retries):
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=300) as r:
-                buf = r.read()
-            if buf:
-                data = buf
-                break
-            last_err = RuntimeError("下载为空")
-        except Exception as e:
-            last_err = e
-            print("[video] 下载失败重试(%d/%d): %s" % (attempt + 1, _xiaole_dl_retries, str(e)[:100]), flush=True)
-            time.sleep(3 * (attempt + 1))
+    for fetch_url, headers in candidates:
+        if data is not None:
+            break
+        for attempt in range(_xiaole_dl_retries):
+            try:
+                req = urllib.request.Request(fetch_url, headers=headers)
+                with urllib.request.urlopen(req, timeout=300) as r:
+                    buf = r.read()
+                if buf:
+                    data = buf
+                    break
+                last_err = RuntimeError("下载为空")
+            except Exception as e:
+                last_err = e
+                print("[video] 下载失败重试(%d/%d): %s" % (attempt + 1, _xiaole_dl_retries, str(e)[:100]), flush=True)
+                time.sleep(3 * (attempt + 1))
     if data is None:
         raise RuntimeError("视频下载失败: %s" % (str(last_err)[:120] if last_err else "未知"))
     if not data:
