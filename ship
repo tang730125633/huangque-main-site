@@ -8,12 +8,51 @@
 #
 # 全程在 git 里：自动备份 + 完整历史 + 一条命令回滚。绝不在服务器上直接改。
 
-SSH_KEY="$HOME/.ssh/dapeng_server_ed25519"
-SSHC="ssh -i $SSH_KEY -o IdentitiesOnly=yes"
-REMOTE="dapeng-server"
+# 密钥与主机可用环境变量覆盖：原来写死了某台开发机的路径和 ssh 别名，
+# 换一台机器（如 Windows/Git Bash）就跑不起来，只能手工 scp —— 那正是 ship 要杜绝的。
+SSH_KEY="${HQ_SSH_KEY:-$HOME/.ssh/dapeng_server_ed25519}"
+REMOTE="${HQ_REMOTE:-dapeng-server}"
+SSH_OPTS="-o IdentitiesOnly=yes"
+[ -f "$SSH_KEY" ] && SSH_OPTS="-i $SSH_KEY $SSH_OPTS"
+SSHC="ssh $SSH_OPTS"
 WWW="/var/www/huangquechuanmei"
 
 [ $# -lt 2 ] && { echo "用法: ./ship \"提交说明\" 文件1 [文件2 ...]"; exit 1; }
+
+$SSHC -o BatchMode=yes -o ConnectTimeout=8 "$REMOTE" true 2>/dev/null || {
+  echo "❌ 连不上 $REMOTE。设 HQ_REMOTE=user@host（和 HQ_SSH_KEY=私钥路径）再试。"; exit 1; }
+
+# 传文件：有 rsync 就用 rsync；没有（Windows/Git Bash 自带 ssh 但没 rsync）就
+# scp 到 /tmp 再 sudo 安装到位。必须保留原属主 —— 直接 sudo install 会把
+# /var/www 下的文件从 www-data 变成 root。
+push_file(){
+  local src="$1" dir="$2" base dst
+  base=$(basename "$src"); dst="${dir%/}/$base"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -az --rsync-path="sudo rsync" -e "$SSHC" "$src" "$REMOTE:$dir"
+  else
+    local tmp="/tmp/.ship.$$.$base"
+    scp -q $SSH_OPTS "$src" "$REMOTE:$tmp" || return 1
+    $SSHC "$REMOTE" "own=\$(stat -c '%U:%G' '$dst' 2>/dev/null || true); \
+      sudo mkdir -p '$dir' && sudo install -m 644 '$tmp' '$dst' && \
+      { [ -n \"\$own\" ] && sudo chown \"\$own\" '$dst' || true; }; rm -f '$tmp'"
+  fi
+}
+
+# 传目录（带 --delete，清掉线上多余文件）。没有本地 rsync 时借服务器上的 rsync：
+# scp 整个目录到 /tmp，再在服务器侧 rsync --delete 到位，语义完全一致。
+push_dir(){
+  local src="$1" dir="$2"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -az --delete --exclude='__pycache__' --exclude='*.db' --rsync-path="sudo rsync" -e "$SSHC" "$src" "$REMOTE:$dir"
+  else
+    local tmp="/tmp/.shipdir.$$"
+    $SSHC "$REMOTE" "rm -rf '$tmp' && mkdir -p '$tmp'" || return 1
+    scp -qr $SSH_OPTS "${src%/}/." "$REMOTE:$tmp/" || return 1
+    $SSHC "$REMOTE" "sudo mkdir -p '$dir' && \
+      sudo rsync -a --delete --exclude='__pycache__' --exclude='*.db' '$tmp/' '$dir' && rm -rf '$tmp'"
+  fi
+}
 MSG="$1"; shift
 
 # 1. 先拉最新（治"覆盖别人的活"）
@@ -71,12 +110,12 @@ for f in "$@"; do
   if [ "$f" = "scripts/drift_sentinel.py" ]; then
     $SSHC "$REMOTE" "mkdir -p /home/ubuntu/hq-drift" || { echo "  ❌ hq-drift 目录创建失败"; exit 1; }
   fi
-  rsync -az --rsync-path="sudo rsync" -e "$SSHC" "$f" "$REMOTE:$dest" \
+  push_file "$f" "$dest" \
     && echo "  ✓ $f → $dest" || { echo "  ❌ $f 部署失败"; exit 1; }
   DEPLOYED="$DEPLOYED $f"
   if [ "$f" = "server/content_api.py" ] && [ -d server/content_domains ]; then
     $SSHC "$REMOTE" "sudo mkdir -p /home/ubuntu/content-api/content_domains" || { echo "  ❌ content_domains 目录创建失败"; exit 1; }
-    rsync -az --delete --exclude='__pycache__' --exclude='*.db' --rsync-path="sudo rsync" -e "$SSHC" server/content_domains/ "$REMOTE:/home/ubuntu/content-api/content_domains/" \
+    push_dir server/content_domains/ /home/ubuntu/content-api/content_domains/ \
       && echo "  ✓ server/content_domains/ → /home/ubuntu/content-api/content_domains/" || { echo "  ❌ content_domains 部署失败"; exit 1; }
   fi
   add_svc "$svc"
