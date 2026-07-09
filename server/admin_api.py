@@ -112,7 +112,8 @@ KEY_GROUPS = [
     {"key": "heygen", "name": "HeyGen 数字人视频(直连)", "env": ["HEYGEN_API_KEY"]},
     {"key": "heygen_relay", "name": "HeyGen 中转(泽龙 relay)", "env": ["HEYGEN_RELAY_TOKEN"]},
     {"key": "xiaolevideo", "name": "小乐视频生成", "env": ["XIAOLEVIDEO_API_KEY"]},
-    {"key": "runninghub", "name": "RunningHub 换装/动作模仿", "env": ["RUNNINGHUB_API_KEY", "RUNNINGHUB_KEY"]},
+    {"key": "runninghub", "name": "RunningHub 换装/动作模仿(线路一)", "env": ["RUNNINGHUB_API_KEY", "RUNNINGHUB_KEY"]},
+    {"key": "wavespeed", "name": "WaveSpeed 换装/动作模仿(线路二)", "env": ["WAVESPEED_API_KEY"]},
     {"key": "doubao", "name": "豆包语音 TTS/声音克隆", "env": ["DOUBAO_APP_ID", "DOUBAO_ACCESS_TOKEN", "DOUBAO_APPID", "DOUBAO_TOKEN"]},
     {"key": "tikhub", "name": "TikHub 抖音数据", "env": ["TIKHUB_KEY", "TIKHUB_API_KEY"]},
     {"key": "cos", "name": "腾讯云 COS 存储", "env": ["COS_SECRET_ID", "COS_SECRET_KEY", "COS_REGION", "COS_BUCKET"]},
@@ -849,6 +850,17 @@ def _key_ping_xiaolevideo():
     return _reach_ping(base)
 
 
+def _key_ping_wavespeed():
+    key = _env_value(["WAVESPEED_API_KEY"])
+    if not key:
+        return {"ok": False, "error": "密钥未配置", "mode": "auth"}
+    # 直连 balance 端点真调验密钥；200 即密钥有效。data.balance 为剩余额度。
+    return _ping_upstream(
+        "GET", "https://api.wavespeed.ai/api/v3/balance",
+        headers={"Authorization": "Bearer " + key}, proxied=False,
+    )
+
+
 def _key_ping_doubao():
     return _reach_ping("https://openspeech.bytedance.com")
 
@@ -875,6 +887,7 @@ KEY_PINGS = {
     "heygen_relay": _key_ping_heygen_relay,
     "xiaolevideo": _key_ping_xiaolevideo,
     "runninghub": _key_ping_runninghub,
+    "wavespeed": _key_ping_wavespeed,
     "doubao": _key_ping_doubao,
     "tikhub": _key_ping_tikhub,
     "cos": _key_ping_cos,
@@ -1290,7 +1303,7 @@ def job_stats(days=7):
     }
 
 
-_PAYLOAD_FIELD_RE = re.compile(r'"(model|provider|mode|keyword|url)"\s*:\s*"([^"]*)"')
+_PAYLOAD_FIELD_RE = re.compile(r'"(model|provider|mode|keyword|url|line)"\s*:\s*"([^"]*)"')
 
 
 def _job_payload(raw):
@@ -1301,6 +1314,12 @@ def _job_payload(raw):
         return data if isinstance(data, dict) else {}
     except Exception:
         return dict(_PAYLOAD_FIELD_RE.findall(raw or ""))
+
+
+def _line_label(payload, l1, l2):
+    """按 payload.line 区分线路一/线路二（默认线路一）。line 字段在 payload 最前、
+    base64 之前，json 截断走正则兜底也能捞到（_PAYLOAD_FIELD_RE 已含 line）。"""
+    return l2 if str(payload.get("line") or "1").strip() == "2" else l1
 
 
 def call_func_name(kind, payload):
@@ -1324,7 +1343,7 @@ def call_func_name(kind, payload):
         if mode == "audio":
             return "视频 · 音频口播"
         if mode == "motion":
-            return "视频 · 动作模仿"
+            return "视频 · 动作模仿 · " + _line_label(payload, "线路一(HeyGen)", "线路二(WaveSpeed)")
         return "视频生成"
     if kind == "collect":
         if str(payload.get("keyword") or "").strip():
@@ -1332,6 +1351,8 @@ def call_func_name(kind, payload):
         if str(payload.get("url") or "").strip():
             return "内容采集 · 贴链接"
         return "内容采集"
+    if kind == "tryon":
+        return "换装换背景 · " + _line_label(payload, "线路一(RunningHub)", "线路二(WaveSpeed)")
     names = {
         "tryon": "换装换背景",
         "audio": "配音生成",
