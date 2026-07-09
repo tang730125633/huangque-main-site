@@ -180,6 +180,14 @@
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;transition:.2s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:12px;padding:11px 16px;color:#eaf1fa;font-size:13px;z-index:80}
   .toast.show{opacity:1;transform:translateX(-50%)}
   @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source,.avatar-grid,.motion-preset-grid{grid-template-columns:1fr}.output-text{white-space:normal}.output-stage{width:min(202px,100%)}}
+  .line-switch{margin:12px 0;padding:12px;background:rgba(255,255,255,.03);border:1px solid rgba(148,164,187,.14);border-radius:12px}
+  .line-switch>.label{margin-bottom:8px}
+  .line-tabs{display:flex;gap:8px}
+  .line-tab{flex:1;padding:10px 12px;border:1px solid rgba(148,164,187,.18);border-radius:10px;background:transparent;color:#cdd6e3;cursor:pointer;text-align:left;font-family:inherit;display:flex;flex-direction:column;gap:3px}
+  .line-tab>b{font-size:13px;font-weight:800}
+  .line-tab>span{font-size:11px;color:#8b97a8}
+  .line-tab.active{border-color:#4fd1c5;background:rgba(79,209,197,.12);color:#fff}
+  .line-tab.active>span{color:#a8d8d2}
 </style>
 </head>
 <body>
@@ -314,6 +322,13 @@
             <div class="muted" style="font-size:12px;margin-top:6px;">上传人物形象和参考片段，把自己「演」成同款大片</div>
           </div>
           <span class="faint" style="font-size:11.5px;">照参考片重演，不是逐帧换脸</span>
+        </div>
+        <div class="line-switch">
+          <div class="label">生成线路（效果不同，按需选）</div>
+          <div class="line-tabs" id="motionLineTabs">
+            <button type="button" class="line-tab active" data-line="2"><b>线路二 · 极速</b><span>约 2 分钟 · 保留本人样子和穿着</span></button>
+            <button type="button" class="line-tab" data-line="1"><b>线路一 · 经典</b><span>约 6 分钟 · 脸贴到参考视频的身材/服装上</span></button>
+          </div>
         </div>
         <div class="avatar-panel">
           <div class="row">
@@ -483,7 +498,7 @@
   var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='S_d21F8OR62', activePreview=null, activePreviewBtn=null;
   var imageData='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
   var selectedSubtitle='off', selectedSubtitleStyle='white';  // F4 字幕：默认关闭，不勾选时行为与原来一致
-  var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16';
+  var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16', selectedMotionLine='2';
   var selectedGrokRatio='16:9';  // 默认16:9(上游9:16/1:1/4:5/5:4暂时大概率生成失败,止血用#GROK-RATIO-SIZE-INCIDENT)
   var tryonVideoData='', tryonClothesData='', tryonBackgroundData='';
   var motionAvatars=[], selectedMotionAvatarId=null, useNewMotionImage=true, avatarsLoaded=false;
@@ -1178,6 +1193,7 @@
       });
   }
   document.querySelectorAll('[data-function]').forEach(function(b){b.onclick=function(){updateFunction(b.dataset.function);};});
+  document.querySelectorAll('#motionLineTabs .line-tab').forEach(function(b){b.onclick=function(){selectedMotionLine=b.dataset.line;document.querySelectorAll('#motionLineTabs .line-tab').forEach(function(x){x.classList.toggle('active',x===b);});};});
   document.querySelectorAll('.mode-tab').forEach(function(b){b.onclick=function(){updateMode(b.dataset.mode);};});
   document.querySelectorAll('[data-voice-tab]').forEach(function(b){b.onclick=function(){voiceTab=b.dataset.voiceTab;document.querySelectorAll('[data-voice-tab]').forEach(function(x){x.classList.toggle('on',x===b);});stopPreview();renderVoices();};});
   document.querySelectorAll('.source-card').forEach(function(b){b.onclick=function(){document.querySelectorAll('.source-card').forEach(function(x){x.classList.toggle('on',x===b);});var asset=b.dataset.source==='asset';$('audioFileBox').classList.toggle('hidden',asset);$('assetAudioBox').classList.toggle('hidden',!asset);if(asset) loadAssetAudios();updateChecklist();};});
@@ -1355,6 +1371,7 @@
     setVideoStatus('正在提交影视级模仿任务...');
     var body={
       mode:'motion',
+      line:selectedMotionLine,
       reference_video_data:motionReferenceVideoData,
       text:'影视级模仿视频',
       resolution:'720p',

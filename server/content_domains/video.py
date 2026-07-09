@@ -1253,10 +1253,17 @@ def gen_video(payload):
             resolution = "720p"
         update_video_asset_phase(job_id, "motion_parameters_ready", resolution=resolution,
                                  ratio=ratio, motion=motion)
-        video_result = generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration, job_id, avatar=avatar)
-        if not avatar:
-            created_avatar = record_video_avatar((payload.get("_username") or "").strip(), image_file,
-                                                 video_result.get("avatar_item_id"), video_result.get("avatar_group_id"))
+        if str(payload.get("line") or "1").strip() == "2":
+            # 线路二 WaveSpeed：人物图 + 驱动视频 → animate，直接出片，不走 HeyGen 的建 avatar 流程
+            from . import wavespeed
+            if not wavespeed.available():
+                raise ValueError("线路二(WaveSpeed)未配置，请用线路一或联系管理员")
+            video_result = wavespeed.generate_motion(image_file, reference_video_file, resolution, job_id=job_id)
+        else:
+            video_result = generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration, job_id, avatar=avatar)
+            if not avatar:
+                created_avatar = record_video_avatar((payload.get("_username") or "").strip(), image_file,
+                                                     video_result.get("avatar_item_id"), video_result.get("avatar_group_id"))
     else:
         video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
     # F4：口播模式（text/audio）可选自动字幕；失败不影响已生成的视频（保留原片 + 记录错误）
