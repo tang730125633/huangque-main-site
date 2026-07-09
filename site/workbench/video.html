@@ -42,7 +42,7 @@
   .motion-drop.has-media:after{content:"更换素材";position:absolute;left:10px;right:10px;bottom:10px;height:30px;display:flex;align-items:center;justify-content:center;border-radius:9px;background:rgba(7,11,19,.72);color:#eaf1fa;font-size:12px}
   .motion-drop.has-video::after{content:none}
   .motion-preset-panel{margin-top:16px;border:1px solid rgba(148,164,187,.12);border-radius:14px;background:rgba(148,164,187,.03);padding:14px}
-  .motion-preset-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:10px;margin-top:12px}
+  .motion-preset-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:10px;margin-top:12px}
   .motion-preset-card{position:relative;min-height:auto;border:1px solid rgba(148,164,187,.14);border-radius:13px;background:rgba(7,11,19,.34);overflow:hidden;cursor:pointer;text-align:left;font-family:inherit;color:#eaf1fa;transition:.16s}
   .motion-preset-card:hover{border-color:rgba(231,178,76,.32);transform:translateY(-1px)}
   .motion-preset-card.on{border-color:rgba(231,178,76,.5);box-shadow:0 0 0 1px rgba(231,178,76,.12) inset}
@@ -179,15 +179,7 @@
   .vidLoading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#e7b24c;font-size:13px;font-weight:800;letter-spacing:0;background:linear-gradient(145deg,rgba(7,11,19,.96),rgba(16,20,28,.94))}
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;transition:.2s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:12px;padding:11px 16px;color:#eaf1fa;font-size:13px;z-index:80}
   .toast.show{opacity:1;transform:translateX(-50%)}
-  @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source,.avatar-grid{grid-template-columns:1fr}.output-text{white-space:normal}.output-stage{width:min(202px,100%)}}
-  .line-switch{margin:12px 0;padding:12px;background:rgba(255,255,255,.03);border:1px solid rgba(148,164,187,.14);border-radius:12px}
-  .line-switch>.label{margin-bottom:8px}
-  .line-tabs{display:flex;gap:8px}
-  .line-tab{flex:1;padding:10px 12px;border:1px solid rgba(148,164,187,.18);border-radius:10px;background:transparent;color:#cdd6e3;cursor:pointer;text-align:left;font-family:inherit;display:flex;flex-direction:column;gap:3px}
-  .line-tab>b{font-size:13px;font-weight:800}
-  .line-tab>span{font-size:11px;color:#8b97a8}
-  .line-tab.active{border-color:#4fd1c5;background:rgba(79,209,197,.12);color:#fff}
-  .line-tab.active>span{color:#a8d8d2}
+  @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source,.avatar-grid,.motion-preset-grid{grid-template-columns:1fr}.output-text{white-space:normal}.output-stage{width:min(202px,100%)}}
 </style>
 </head>
 <body>
@@ -323,13 +315,6 @@
           </div>
           <span class="faint" style="font-size:11.5px;">照参考片重演，不是逐帧换脸</span>
         </div>
-        <div class="line-switch">
-          <div class="label">生成线路（效果不同，按需选）</div>
-          <div class="line-tabs" id="motionLineTabs">
-            <button type="button" class="line-tab active" data-line="2"><b>线路二 · 极速</b><span>约 2 分钟 · 保留本人样子和穿着</span></button>
-            <button type="button" class="line-tab" data-line="1"><b>线路一 · 经典</b><span>约 6 分钟 · 脸贴到参考视频的身材/服装上</span></button>
-          </div>
-        </div>
         <div class="avatar-panel">
           <div class="row">
             <span class="label">我的形象</span>
@@ -360,7 +345,7 @@
         </div>
         <div class="motion-preset-panel">
           <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
-          <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button class="on" data-motion-ratio="9:16">9:16</button><button data-motion-ratio="16:9">16:9</button><button data-motion-ratio="1:1">1:1</button></div>
+          <div class="seg" style="grid-template-columns:repeat(5,1fr);"><button class="on" data-motion-ratio="9:16">9:16</button><button data-motion-ratio="16:9">16:9</button><button data-motion-ratio="1:1">1:1</button><button data-motion-ratio="4:5">4:5</button><button data-motion-ratio="5:4">5:4</button></div>
         </div>
         <button id="motionGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:20px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
           生成影视级模仿视频
@@ -375,13 +360,6 @@
             <div class="muted" style="font-size:12px;margin-top:6px;">给真人视频换衣服和/或换背景</div>
           </div>
           <span class="faint" style="font-size:11.5px;">保持原人脸/动作/镜头，只换衣服和背景</span>
-        </div>
-        <div class="line-switch">
-          <div class="label">生成线路（输入和效果不同，按需选）</div>
-          <div class="line-tabs" id="tryonLineTabs">
-            <button type="button" class="line-tab active" data-line="2"><b>线路二 · 极速</b><span>约 1 分钟 · 传人物照片+衣服图 → 模特展示视频</span></button>
-            <button type="button" class="line-tab" data-line="1"><b>线路一 · 经典</b><span>约 8 分钟 · 传人物视频+衣服图 → 给原视频换装、保留动作</span></button>
-          </div>
         </div>
         <div id="tryonGrid" class="motion-grid" style="grid-template-columns:1fr 1fr 1fr;">
           <label id="tryonVideoDrop" class="motion-drop">
@@ -412,7 +390,7 @@
         <div class="row">
           <div>
             <div class="label">果肉视频生成</div>
-            <div class="muted" style="font-size:12px;margin-top:6px;">Grok Video · 输入提示词生成，或上传参考图做图生视频(最多7张)</div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">Grok Video · 输入提示词生成，或上传 1 张参考图做图生视频</div>
           </div>
           <span class="faint" style="font-size:11.5px;">文生 / 图生视频</span>
         </div>
@@ -422,17 +400,15 @@
           <div id="grokExamples" style="display:flex;flex-wrap:wrap;gap:7px;margin-top:10px;"></div>
         </div>
         <div class="panel" style="margin-top:12px;">
-          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，图生视频，最多 7 张（上游供应商实测偶发不稳定，张数越多不代表越容易失败，也不保证一定成功）</span></div>
-          <div id="grokRefGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;">
-            <label id="grokRefAdd" style="position:relative;display:flex;align-items:center;justify-content:center;min-height:74px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;background:rgba(7,11,19,.4);cursor:pointer;">
-              <input id="grokRefFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-              <span id="grokRefAddText" style="font-size:20px;color:#94a4bb;">＋</span>
-            </label>
-          </div>
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，图生视频，最多 1 张</span></div>
+          <label id="grokRefDrop" style="position:relative;display:flex;align-items:center;justify-content:center;min-height:74px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;background:rgba(7,11,19,.4);cursor:pointer;overflow:hidden;">
+            <input id="grokRefFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+            <span id="grokRefText" style="font-size:12.5px;color:#94a4bb;">点击上传参考图，或在提示词框粘贴图片，让 Grok 基于它生成视频（png/jpg/webp）</span>
+          </label>
         </div>
         <div class="panel" style="margin-top:12px;">
-          <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例 <span style="color:#e7b24c;">· 上游供应商目前仅16:9(横屏)出图稳定，其余比例暂时大概率生成失败，问题解决前建议优先选16:9</span></div>
-          <div class="seg" style="grid-template-columns:repeat(5,1fr);"><button data-grok-ratio="9:16">9:16</button><button class="on" data-grok-ratio="16:9">16:9</button><button data-grok-ratio="1:1">1:1</button><button data-grok-ratio="4:5">4:5</button><button data-grok-ratio="5:4">5:4</button></div>
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
+          <div class="seg" style="grid-template-columns:repeat(5,1fr);"><button class="on" data-grok-ratio="9:16">9:16</button><button data-grok-ratio="16:9">16:9</button><button data-grok-ratio="1:1">1:1</button><button data-grok-ratio="4:5">4:5</button><button data-grok-ratio="5:4">5:4</button></div>
         </div>
         <button id="grokGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:18px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
           生成果肉视频
@@ -502,20 +478,19 @@
 <script>
 (function(){
   var token='__cookie__';
-  var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='S_d21F8OR62', activePreview=null, activePreviewBtn=null;
+  var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='dapeng', activePreview=null, activePreviewBtn=null;
   var imageData='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
   var selectedSubtitle='off', selectedSubtitleStyle='white';  // F4 字幕：默认关闭，不勾选时行为与原来一致
-  var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16', selectedMotionLine='2';
-  var selectedGrokRatio='16:9';  // 默认16:9(上游9:16/1:1/4:5/5:4暂时大概率生成失败,止血用#GROK-RATIO-SIZE-INCIDENT)
-  var tryonVideoData='', tryonClothesData='', tryonBackgroundData='', selectedTryonLine='2';
+  var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16';
+  var selectedGrokRatio='9:16';
+  var tryonVideoData='', tryonClothesData='', tryonBackgroundData='';
   var motionAvatars=[], selectedMotionAvatarId=null, useNewMotionImage=true, avatarsLoaded=false;
   var currentVideoDraft=null;
   var motionPresets=[];
   var publicFallback=[
-    {scope:'public',voice_key:'S_d21F8OR62',display_name:'温柔女声',provider_voice:'S_d21F8OR62',sub:'情感种草 · 柔和自然'},
-    {scope:'public',voice_key:'S_l8wE8OR62',display_name:'活力女声',provider_voice:'S_l8wE8OR62',sub:'广告推荐 · 明亮有记忆点'},
-    {scope:'public',voice_key:'S_pa0E8OR62',display_name:'沉稳男声',provider_voice:'S_pa0E8OR62',sub:'知识口播 · 稳重清晰'},
-    {scope:'public',voice_key:'S_xaUB8OR62',display_name:'亲和女声',provider_voice:'S_xaUB8OR62',sub:'本地生活 · 真实亲切'}
+    {scope:'public',voice_key:'dapeng',display_name:'大鹏 IVC',provider_voice:'dapeng',sub:'克隆男声 · 亲切'},
+    {scope:'public',voice_key:'zelong',display_name:'泽龙 IVC',provider_voice:'zelong',sub:'克隆男声 · 磁性'},
+    {scope:'public',voice_key:'paul',display_name:'Paul 男声',provider_voice:'paul',sub:'官方中文 · 沉稳'}
   ];
   var voices=publicFallback.slice();
   var $=function(id){return document.getElementById(id);};
@@ -640,9 +615,7 @@
     return false;
   }
   function clickMotionRatio(value){
-    var v=String(value||'').trim();
-    if(v==='4:5') v='9:16'; else if(v==='5:4') v='16:9';  // HeyGen motion 不支持4:5/5:4,老任务回填映射到合法朝向
-    var btn=document.querySelector('[data-motion-ratio="'+v.replace(/"/g,'\\"')+'"]');
+    var btn=document.querySelector('[data-motion-ratio="'+String(value||'').replace(/"/g,'\\"')+'"]');
     if(btn){ btn.click(); return true; }
     return false;
   }
@@ -653,16 +626,9 @@
   }
   function applyTemplateVoice(key){
     if(!key) return true;
-    key=String(key||'').trim();
-    if(!key) return true;
-    var low=key.toLowerCase();
-    var match=voices.find(function(v){
-      return String(v.voice_key||'')===key
-        || String(v.provider_voice||'')===key
-        || String(v.display_name||'').toLowerCase()===low;
-    });
+    var match=voices.find(function(v){return v.voice_key===key;});
     if(!match) return false;
-    selectedVoice=match.voice_key||key;
+    selectedVoice=key;
     voiceTab=match.scope||voiceTab;
     document.querySelectorAll('[data-voice-tab]').forEach(function(b){b.classList.toggle('on',b.dataset.voiceTab===voiceTab);});
     renderVoices();
@@ -1200,10 +1166,6 @@
       });
   }
   document.querySelectorAll('[data-function]').forEach(function(b){b.onclick=function(){updateFunction(b.dataset.function);};});
-  document.querySelectorAll('#motionLineTabs .line-tab').forEach(function(b){b.onclick=function(){selectedMotionLine=b.dataset.line;document.querySelectorAll('#motionLineTabs .line-tab').forEach(function(x){x.classList.toggle('active',x===b);});};});
-  function applyTryonLine(){var isL2=selectedTryonLine==='2';var vf=$('tryonVideoFile'),vd=$('tryonVideoDrop'),bg=$('tryonBgDrop');if(vf)vf.accept=isL2?'image/png,image/jpeg,image/webp':'video/mp4,video/quicktime,video/webm';if(vd){var s=vd.querySelector('strong'),p=vd.querySelector('span');if(s)s.textContent=isL2?'人物照片（必选）':'换装视频（必选）';if(p)p.textContent=isL2?'上传要换装的人物照片（全身/半身效果更好）':'上传需要换装/换背景的真人视频';}if(bg)bg.style.display=isL2?'none':'';var h=$('tryonModeHint');if(h)h.textContent=isL2?'线路二：传人物照片+衣服图 → 生成模特展示视频':'请至少上传衣服图或背景图';}
-  document.querySelectorAll('#tryonLineTabs .line-tab').forEach(function(b){b.onclick=function(){selectedTryonLine=b.dataset.line;document.querySelectorAll('#tryonLineTabs .line-tab').forEach(function(x){x.classList.toggle('active',x===b);});applyTryonLine();};});
-  applyTryonLine();
   document.querySelectorAll('.mode-tab').forEach(function(b){b.onclick=function(){updateMode(b.dataset.mode);};});
   document.querySelectorAll('[data-voice-tab]').forEach(function(b){b.onclick=function(){voiceTab=b.dataset.voiceTab;document.querySelectorAll('[data-voice-tab]').forEach(function(x){x.classList.toggle('on',x===b);});stopPreview();renderVoices();};});
   document.querySelectorAll('.source-card').forEach(function(b){b.onclick=function(){document.querySelectorAll('.source-card').forEach(function(x){x.classList.toggle('on',x===b);});var asset=b.dataset.source==='asset';$('audioFileBox').classList.toggle('hidden',asset);$('assetAudioBox').classList.toggle('hidden',!asset);if(asset) loadAssetAudios();updateChecklist();};});
@@ -1381,7 +1343,6 @@
     setVideoStatus('正在提交影视级模仿任务...');
     var body={
       mode:'motion',
-      line:selectedMotionLine,
       reference_video_data:motionReferenceVideoData,
       text:'影视级模仿视频',
       resolution:'720p',
@@ -1413,13 +1374,8 @@
       });
   }
   function submitTryon(){
-    if(selectedTryonLine==='2'){
-      if(!tryonVideoData){ toast('线路二请先上传人物照片'); return; }
-      if(!tryonClothesData){ toast('请上传衣服图'); return; }
-    }else{
-      if(!tryonVideoData){ toast('请先上传换装视频'); return; }
-      if(!tryonClothesData && !tryonBackgroundData){ toast('请至少上传衣服图或背景图'); return; }
-    }
+    if(!tryonVideoData){ toast('请先上传换装视频'); return; }
+    if(!tryonClothesData && !tryonBackgroundData){ toast('请至少上传衣服图或背景图'); return; }
     setBusy(true);
     if($('outputText')) $('outputText').textContent='换装换背景视频生成记录';
     if($('outputMotion')) $('outputMotion').textContent='换装换背景';
@@ -1433,14 +1389,7 @@
     fetch('/api/gen/tryon',{
       method:'POST',
       headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-      body:JSON.stringify(selectedTryonLine==='2'?{
-        line:'2',
-        person_image_data:tryonVideoData,
-        clothes_data:tryonClothesData||'',
-        seconds:6,
-        text:'换装'
-      }:{
-        line:'1',
+      body:JSON.stringify({
         person_video_data:tryonVideoData,
         clothes_data:tryonClothesData||'',
         background_data:tryonBackgroundData||'',
@@ -1526,7 +1475,7 @@
     renderVideoHistory([currentVideoDraft]);
     var xlPayload={channel:channel,prompt:prompt};
     if(channel==='grok') xlPayload.ratio=selectedGrokRatio;
-    if(channel==='grok' && grokRefData.length){ xlPayload.reference_images=grokRefData; }  // 图生视频参考图(最多7张，对齐上游硬上限)
+    if(channel==='grok' && grokRefData){ xlPayload.reference_images=[grokRefData]; }  // 图生视频参考图(最多1张)
     fetch('/api/gen/xiaole_video',{
       method:'POST',
       headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
@@ -1551,9 +1500,8 @@
   $('tryonGenerateBtn').onclick=submitTryon;
   if($('grokGenerateBtn')) $('grokGenerateBtn').onclick=function(){submitXiaole('grok');};
   if($('microGenerateBtn')) $('microGenerateBtn').onclick=function(){submitXiaole('micro');};
-  // ---- 果肉(Grok)面板：示例提示词 chips + 参考图(图生视频，最多7张，对齐上游实测硬上限) ----
-  var GROK_REF_MAX=7;
-  var grokRefData=[];
+  // ---- 果肉(Grok)面板：示例提示词 chips + 参考图(图生视频，最多1张) ----
+  var grokRefData='';
   (function setupGrokPanel(){
     var ex=$('grokExamples');
     if(ex){
@@ -1568,44 +1516,41 @@
         ex.appendChild(b);
       });
     }
-    var grid=$('grokRefGrid'), addTile=$('grokRefAdd'), inp=$('grokRefFile');
-    function renderGrokRefs(){
-      grid.querySelectorAll('.grok-ref-thumb').forEach(function(el){ el.remove(); });
-      grokRefData.forEach(function(dataUrl, i){
-        var box=document.createElement('div'); box.className='grok-ref-thumb';
-        box.style.cssText='position:relative;min-height:74px;border-radius:12px;overflow:hidden;background:#05070c;';
-        var img=document.createElement('img'); img.src=dataUrl;
-        img.style.cssText='position:absolute;inset:0;width:100%;height:100%;object-fit:contain;';
-        var x=document.createElement('span'); x.textContent='✕';
-        x.style.cssText='position:absolute;right:5px;top:5px;z-index:3;width:22px;height:22px;border-radius:50%;background:rgba(7,11,19,.82);border:1px solid rgba(148,164,187,.35);color:#eaf1fa;font-size:11px;display:flex;align-items:center;justify-content:center;cursor:pointer;';
-        x.onclick=function(){ grokRefData.splice(i,1); renderGrokRefs(); };
-        box.appendChild(img); box.appendChild(x);
-        grid.insertBefore(box, addTile);
-      });
-      addTile.style.display = grokRefData.length>=GROK_REF_MAX ? 'none' : '';
-    }
-    function addGrokRefFile(f){
+    var inp=$('grokRefFile'), drop=$('grokRefDrop'), txt=$('grokRefText');
+    function resetGrokRef(){ grokRefData=''; if(txt){txt.style.display='';}
+      var pv=drop&&drop.querySelector('.grok-ref-pv'); if(pv) pv.remove();
+      var x=drop&&drop.querySelector('.grok-ref-x'); if(x) x.remove(); }
+    function setGrokRefFile(f){
       if(!f) return;
-      if(grokRefData.length>=GROK_REF_MAX){ toast('最多上传'+GROK_REF_MAX+'张参考图'); return; }
       if(f.size>8*1024*1024){ toast('参考图太大，请压到 8MB 内'); return; }
       var rd=new FileReader();
-      rd.onload=function(){ grokRefData.push(rd.result); renderGrokRefs(); toast('参考图已添加('+grokRefData.length+'/'+GROK_REF_MAX+')'); };
+      rd.onload=function(){ grokRefData=rd.result; if(txt) txt.style.display='none';
+        var old=drop.querySelector('.grok-ref-pv'); if(old) old.remove();
+        var img=document.createElement('img'); img.className='grok-ref-pv'; img.src=rd.result;
+        img.style.cssText='position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#05070c;';
+        drop.appendChild(img);
+        if(!drop.querySelector('.grok-ref-x')){ var x=document.createElement('span'); x.className='grok-ref-x'; x.textContent='✕';
+          x.style.cssText='position:absolute;right:7px;top:7px;z-index:3;width:24px;height:24px;border-radius:50%;background:rgba(7,11,19,.82);border:1px solid rgba(148,164,187,.35);color:#eaf1fa;font-size:12px;display:flex;align-items:center;justify-content:center;cursor:pointer;';
+          x.onclick=function(e){ e.preventDefault(); e.stopPropagation(); inp.value=''; resetGrokRef(); };
+          drop.appendChild(x); }
+        toast('参考图已就绪');
+      };
       rd.readAsDataURL(f);
     }
-    if(inp){ inp.onchange=function(){ addGrokRefFile(inp.files&&inp.files[0]); inp.value=''; }; }
-    // 提示词框/上传区直接粘贴图片(截图/复制的图)当参考图，不用非得点击选文件
+    if(inp){ inp.onchange=function(){ setGrokRefFile(inp.files&&inp.files[0]); }; }
+    // 提示词框里直接粘贴图片(截图/复制的图)当参考图，不用非得点击选文件
     function grokPasteHandler(e){
       var items=(e.clipboardData&&e.clipboardData.items)||[];
       for(var i=0;i<items.length;i++){
         if(items[i].type&&items[i].type.indexOf('image/')===0){
           var f=items[i].getAsFile();
-          if(f){ e.preventDefault(); addGrokRefFile(f); }
+          if(f){ e.preventDefault(); setGrokRefFile(f); }
           return;
         }
       }
     }
     if($('grokPrompt')) $('grokPrompt').addEventListener('paste', grokPasteHandler);
-    if(grid) grid.addEventListener('paste', grokPasteHandler);
+    if(drop){ drop.addEventListener('paste', grokPasteHandler); }
   })();
   if($('refreshAvatarBtn')) $('refreshAvatarBtn').onclick=function(){loadMotionAvatars(true);};
   $('scriptText').dispatchEvent(new Event('input'));
@@ -1614,8 +1559,7 @@
   var _prefillVoice='';
   function prefillMode(d){
     var m=String((d&&d.mode)||'text').toLowerCase();
-    if(m==='digital_human'||m==='talking'||m==='talking_head'||m==='talking_text'||m==='text2video') return 'text';
-    if(m==='talking_audio'||m==='audio2video') return 'audio';
+    if(m==='digital_human'||m==='talking'||m==='talking_head') return 'text';
     if(m==='txt2video') return 'grok';
     if(m==='img2video') return 'grok';
     return m||'text';
@@ -1677,7 +1621,7 @@
       if(d.resolution) clickDataButton('resolution',d.resolution);
       if(d.ratio) clickDataButton('ratio',d.ratio);
       if(d.motion) clickDataButton('motion',d.motion);
-      _prefillVoice=d.voice_key||d.voice||d.provider_voice||d.voice_name||'';
+      _prefillVoice=d.voice||'';
       if(m==='grok'||m==='micro'){
         updateFunction(m);
         if(m==='grok' && d.ratio) clickGrokRatio(d.ratio);
@@ -1729,9 +1673,7 @@
       });
     }catch(e){}
   }
-  function _applyPrefillVoice(){
-    if(_prefillVoice && applyTemplateVoice(_prefillVoice)) _prefillVoice='';
-  }
+  function _applyPrefillVoice(){ if(_prefillVoice){ applyTemplateVoice(_prefillVoice); _prefillVoice=''; } }
   // 灵感页「一键跟创（视频）」：?prompt= 预填到果肉/豆姐渠道并切到对应 tab
   function applyInspirationPrefill(){
     try{

@@ -177,7 +177,7 @@
         <!-- Extract transcript button (on-demand) -->
         <div id="transcriptExtractWrap" style="display:none; margin-bottom:12px;">
           <button id="transcriptExtractBtn" class="hv-lift" style="width:100%; padding:14px; font-size:14px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; font-family:inherit; transition:.2s;">提取文案 <span style="font-size:12px; font-weight:400; opacity:.75;">约 6 点</span></button>
-          <div id="transcriptExtractNote" style="text-align:center; font-size:12px; color:#5c6b82; margin-top:8px;">口播提取约 20 秒到数分钟 · 按需点击</div>
+          <div id="transcriptExtractNote" style="text-align:center; font-size:12px; color:#5c6b82; margin-top:8px;">口播提取约 20-40 秒 · 按需点击</div>
         </div>
 
         <!-- Transcript block (hidden until extracted) -->
@@ -246,10 +246,6 @@
   var selectedUrl = '';    // set when user picks from search grid
   var currentUrl  = '';    // ponytail: saved at submit time, reused for transcript extraction
   var currentResult = null;
-  // 前端停止等待的秒数。必须 < core.py::reaper 给 collect 的 1200s 窗口：
-  // 前端放弃时任务仍在后台跑，不能声称"已退点"（真超时退点由 reaper 负责）。
-  // 原来爬取 400s / 提取文案 120s 两个死线不一致，而线上转写成功平均就要 88s，稍慢即误报超时。
-  var POLL_GIVEUP_SEC = 600;
   var copyFields = {};     // field key → text, used by copy buttons
   var pollIv = null;
   var transcriptBusy = false;
@@ -447,15 +443,15 @@
             setNote(downloadOnly ? '✅ 视频已解析，可下载（' + sec + 's）' : '✅ 爬取完成（' + sec + 's）· 点数已更新', '#2bd576');
             if (window.HQ && window.HQ.refreshPoints) window.HQ.refreshPoints();
             loadHistory();
-          } else if (d.status === 'error') {
+          } else if (d.status === 'error' || d.status === 'failed') {
             clearInterval(pollIv);
             busy(false); showState('emptyState');
             setNote('爬取失败：' + escHtml(d.error || '') + ' · 已退点', '#f4708a');
             localStorage.removeItem('hq_active_collect_job');
-          } else if (sec > POLL_GIVEUP_SEC) {
+          } else if (sec > 600) {
             clearInterval(pollIv);
             busy(false); showState('emptyState');
-            setNote('等待超过 ' + sec + 's，任务仍在后台执行 · 完成后刷新页面可在历史记录查看', '#f4b740');
+            setNote('爬取超时（' + sec + 's）· 已自动退点，请重试', '#f4708a');
             localStorage.removeItem('hq_active_collect_job');
           } else {
             var stage = sec < 6 ? '解析链接' : (sec < 18 ? '拉取详情' : '提取评论/文案');
@@ -705,7 +701,7 @@
       extractBtn.innerHTML = '提取文案 <span style="font-size:12px;font-weight:400;opacity:.75;">约 6 点</span>';
       if (!hasImages) extractBtn.onclick = submitTranscript;
     }
-    if (extractNote) extractNote.textContent = hasImages ? '图文内容无口播文案' : '口播提取约 20 秒到数分钟 · 按需点击';
+    if (extractNote) extractNote.textContent = hasImages ? '图文内容无口播文案' : '口播提取约 20-40 秒 · 按需点击';
     if (extractNote) extractNote.style.color = '#5c6b82';
   }
 
@@ -715,7 +711,7 @@
     var btn  = document.getElementById('transcriptExtractBtn');
     var note = document.getElementById('transcriptExtractNote');
     if (btn) { btn.disabled = true; btn.style.opacity = '.7'; btn.style.pointerEvents = 'none'; btn.textContent = '提取中…'; }
-    if (note) { note.textContent = '口播提取排队/识别中，通常约 20 秒到数分钟…'; note.style.color = '#2dd4bf'; }
+    if (note) { note.textContent = '口播提取约 20-40 秒，请稍候…'; note.style.color = '#2dd4bf'; }
     requestTranscript()
       .then(function (text) {
         showTranscript(text);
@@ -767,7 +763,7 @@
       btn.onclick = submitTranscript;
     }
     if (note) {
-      note.innerHTML = msg || '口播提取约 20 秒到数分钟 · 按需点击';
+      note.innerHTML = msg || '口播提取约 20-40 秒 · 按需点击';
       note.style.color = isErr ? '#f4708a' : '#5c6b82';
     }
   }
@@ -785,12 +781,12 @@
               var tr = d.result && d.result.transcript;
               if (tr && tr.text) resolve(tr.text);
               else reject(new Error('该内容无口播文案'));
-            } else if (d.status === 'error') {
+            } else if (d.status === 'error' || d.status === 'failed') {
               clearInterval(iv);
               reject(new Error('提取失败：' + (d.error || '')));
-            } else if (sec > POLL_GIVEUP_SEC) {
+            } else if (sec > 120) {
               clearInterval(iv);
-              reject(new Error('等待超过 ' + sec + 's，转写仍在后台执行，完成后可在历史记录查看'));
+              reject(new Error('提取超时，请重试'));
             }
             // else: pending, keep polling
           }).catch(function () {
