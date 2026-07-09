@@ -1270,7 +1270,8 @@ def gen_video(payload):
             resolution = "720p"
         update_video_asset_phase(job_id, "motion_parameters_ready", resolution=resolution,
                                  ratio=ratio, motion=motion)
-        if str(payload.get("line") or "1").strip() == "2":
+        if str(payload.get("line") or "2").strip() != "1":
+            # 默认线路二(WaveSpeed)：动作模仿两线路输入相同(人物图+驱动视频)，线路二成功率远高于线路一(HeyGen)，只有显式 line=1 才走 HeyGen
             # 线路二 WaveSpeed：人物图 + 驱动视频 → animate，直接出片，不走 HeyGen 的建 avatar 流程
             from . import wavespeed
             if not wavespeed.available():
@@ -1519,7 +1520,11 @@ def generate_tryon_video(person_video_file, clothes_file, background_file, secon
 def gen_tryon(payload):
     job_id = payload.get("_job_id")
     username = (payload.get("_username") or "").strip()
-    if str(payload.get("line") or "1").strip() == "2":
+    # 无显式 line 时智能默认：有人物图(且无人物视频)→线路二(WaveSpeed,更稳)；有人物视频→线路一(RunningHub,给视频换装保动作)
+    _tline = str(payload.get("line") or "").strip()
+    if not _tline:
+        _tline = "2" if ((payload.get("person_image_data") or payload.get("image_data")) and not payload.get("person_video_data")) else "1"
+    if _tline == "2":
         # 线路二 WaveSpeed：人物图 + 衣服图 → 换装展示视频（区别于线路一"给人物视频换装保留原动作"）
         from . import wavespeed
         if not wavespeed.available():
