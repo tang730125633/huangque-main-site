@@ -209,6 +209,7 @@
         <button class="function-tab" type="button" data-function="tryon">换装换背景</button>
         <button class="function-tab" type="button" data-function="grok">果肉视频生成</button>
         <button class="function-tab" type="button" data-function="micro">豆姐视频生成</button>
+        <button class="function-tab" type="button" data-function="omni">欧米视频生成</button>
       </div>
 
       <div id="talkingPanel" class="function-panel">
@@ -448,18 +449,54 @@
         <div class="row">
           <div>
             <div class="label">豆姐视频生成</div>
-            <div class="muted" style="font-size:12px;margin-top:6px;">Seedance 2.0 模型 · 输入提示词直接生成视频</div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">Seedance 2.0 Fast · 输入提示词生成，或上传参考图做图生视频</div>
           </div>
-          <span class="faint" style="font-size:11.5px;">文生视频</span>
+          <span class="faint" style="font-size:11.5px;">文生 / 图生视频</span>
         </div>
         <div class="panel" style="margin-top:14px;">
           <div class="faint" style="font-size:12px;margin-bottom:8px;">视频提示词</div>
           <textarea id="microPrompt" rows="4" placeholder="例如：夏日海边，模特穿着白色连衣裙迎风走来，逆光唯美，慢镜头" style="width:100%;min-height:110px;resize:vertical;background:rgba(7,11,19,.5);border:1px solid rgba(148,164,187,.16);border-radius:12px;color:#eaf1fa;padding:12px 14px;font:inherit;font-size:14px;"></textarea>
         </div>
+        <div class="panel" style="margin-top:12px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，传人物照片做图生视频（真人照片→动起来，最多 4 张；也可直接在提示词框 Ctrl/⌘V 粘贴）</span></div>
+          <div id="microRefGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;">
+            <label id="microRefAdd" style="position:relative;display:flex;align-items:center;justify-content:center;min-height:74px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;background:rgba(7,11,19,.4);cursor:pointer;">
+              <input id="microRefFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+              <span style="font-size:20px;color:#94a4bb;">＋</span>
+            </label>
+          </div>
+        </div>
         <button id="microGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:18px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
           生成豆姐视频
         </button>
-        <div id="microStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">Seedance 2.0 · 生成后自动保存到视频资产</div>
+        <div id="microStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">Seedance 2.0 Fast · 生成后自动保存到视频资产</div>
+      </div>
+
+      <div id="omniPanel" class="function-panel motion-panel hidden">
+        <div class="row">
+          <div>
+            <div class="label">欧米视频生成</div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">Omni Fast · 约 100 秒快出片，输入提示词生成，或上传参考图做图生视频</div>
+          </div>
+          <span class="faint" style="font-size:11.5px;">文生 / 图生视频</span>
+        </div>
+        <div class="panel" style="margin-top:14px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">视频提示词 <span style="color:#e7b24c;">· 文字直接要「真人写实」会被上游内容审核拦；要做真人请走下方「参考图」图生视频</span></div>
+          <textarea id="omniPrompt" rows="4" placeholder="例如：护肤精华瓶在水花中缓缓旋转，晶莹剔透，柔光微距，高级广告质感" style="width:100%;min-height:110px;resize:vertical;background:rgba(7,11,19,.5);border:1px solid rgba(148,164,187,.16);border-radius:12px;color:#eaf1fa;padding:12px 14px;font:inherit;font-size:14px;"></textarea>
+        </div>
+        <div class="panel" style="margin-top:12px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，传人物照片做图生视频（真人图生不被拦，最多 5 张；也可直接在提示词框 Ctrl/⌘V 粘贴）</span></div>
+          <div id="omniRefGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;">
+            <label id="omniRefAdd" style="position:relative;display:flex;align-items:center;justify-content:center;min-height:74px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;background:rgba(7,11,19,.4);cursor:pointer;">
+              <input id="omniRefFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+              <span style="font-size:20px;color:#94a4bb;">＋</span>
+            </label>
+          </div>
+        </div>
+        <button id="omniGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:18px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
+          生成欧米视频
+        </button>
+        <div id="omniStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">Omni Fast · 生成后自动保存到视频资产</div>
       </div>
     </section>
 
@@ -1078,6 +1115,7 @@
     if($('tryonPanel')) $('tryonPanel').classList.toggle('hidden',videoFunction!=='tryon');
     if($('grokPanel')) $('grokPanel').classList.toggle('hidden',videoFunction!=='grok');
     if($('microPanel')) $('microPanel').classList.toggle('hidden',videoFunction!=='micro');
+    if($('omniPanel')) $('omniPanel').classList.toggle('hidden',videoFunction!=='omni');
     if(videoFunction==='motion'){
       $('modeSummary').textContent='上传人物形象和参考片段，把自己「演」成同款大片';
       if($('modeName')) $('modeName').textContent='影视级模仿';
@@ -1091,8 +1129,11 @@
       if($('modeName')) $('modeName').textContent='果肉视频';
       if($('outputRatio')) $('outputRatio').textContent=selectedGrokRatio;
     }else if(videoFunction==='micro'){
-      $('modeSummary').textContent='豆姐视频（Seedance 2.0）：输入提示词直接生成视频';
+      $('modeSummary').textContent='豆姐视频（Seedance 2.0 Fast）：输入提示词，或上传参考图做图生视频';
       if($('modeName')) $('modeName').textContent='豆姐视频';
+    }else if(videoFunction==='omni'){
+      $('modeSummary').textContent='欧米视频（Omni Fast）：约100秒快出片，输入提示词或上传参考图生成';
+      if($('modeName')) $('modeName').textContent='欧米视频';
     }else{
       updateMode(mode);
     }
@@ -1555,9 +1596,9 @@
   // 果肉(Grok)/豆姐(Seedance) 统一视频生成 → /api/gen/xiaole_video
   function submitXiaole(channel){
     if(!token){ location.href='../login.html?redirect=workbench/video'; return; }
-    var promptEl=channel==='grok'?$('grokPrompt'):$('microPrompt');
-    var statusEl=channel==='grok'?$('grokStatus'):$('microStatus');
-    var label=channel==='grok'?'果肉视频':'豆姐视频';
+    var promptEl=$(channel+'Prompt');
+    var statusEl=$(channel+'Status');
+    var label=({grok:'果肉视频',micro:'豆姐视频',omni:'欧米视频'})[channel]||channel;
     var prompt=((promptEl||{}).value||'').trim();
     if(!prompt){ toast('请输入视频提示词'); if(promptEl) promptEl.focus(); return; }
     setBusy(true);
@@ -1569,7 +1610,8 @@
     renderVideoHistory([currentVideoDraft]);
     var xlPayload={channel:channel,prompt:prompt};
     if(channel==='grok') xlPayload.ratio=selectedGrokRatio;
-    if(channel==='grok' && grokRefData.length){ xlPayload.reference_images=grokRefData; }  // 图生视频参考图(最多7张，对齐上游硬上限)
+    var _refArr=channel==='grok'?grokRefData:(channel==='micro'?microRefData:(channel==='omni'?omniRefData:null));
+    if(_refArr && _refArr.length){ xlPayload.reference_images=_refArr; }  // 图生视频参考图
     fetch('/api/gen/xiaole_video',{
       method:'POST',
       headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
@@ -1594,9 +1636,11 @@
   $('tryonGenerateBtn').onclick=submitTryon;
   if($('grokGenerateBtn')) $('grokGenerateBtn').onclick=function(){submitXiaole('grok');};
   if($('microGenerateBtn')) $('microGenerateBtn').onclick=function(){submitXiaole('micro');};
+  if($('omniGenerateBtn')) $('omniGenerateBtn').onclick=function(){submitXiaole('omni');};
   // ---- 果肉(Grok)面板：示例提示词 chips + 参考图(图生视频，最多7张，对齐上游实测硬上限) ----
   var GROK_REF_MAX=7;
   var grokRefData=[];
+  var microRefData=[], omniRefData=[];
   (function setupGrokPanel(){
     var ex=$('grokExamples');
     if(ex){
@@ -1650,6 +1694,35 @@
     if($('grokPrompt')) $('grokPrompt').addEventListener('paste', grokPasteHandler);
     if(grid) grid.addEventListener('paste', grokPasteHandler);
   })();
+  // 豆姐/欧米 参考图面板(图生视频)：一套逻辑复用，各存各的 refData；支持点击上传/粘贴
+  function setupXiaoleRefPanel(ch, refArr, maxN){
+    var grid=$(ch+'RefGrid'), addTile=$(ch+'RefAdd'), inp=$(ch+'RefFile'), promptEl=$(ch+'Prompt');
+    if(!grid||!addTile) return;
+    function render(){
+      grid.querySelectorAll('.xl-ref-thumb').forEach(function(el){ el.remove(); });
+      refArr.forEach(function(dataUrl,i){
+        var box=document.createElement('div'); box.className='xl-ref-thumb';
+        box.style.cssText='position:relative;min-height:74px;border-radius:12px;overflow:hidden;background:#05070c;';
+        var img=document.createElement('img'); img.src=dataUrl; img.style.cssText='position:absolute;inset:0;width:100%;height:100%;object-fit:contain;';
+        var x=document.createElement('span'); x.textContent='✕'; x.style.cssText='position:absolute;right:5px;top:5px;z-index:3;width:22px;height:22px;border-radius:50%;background:rgba(7,11,19,.82);border:1px solid rgba(148,164,187,.35);color:#eaf1fa;font-size:11px;display:flex;align-items:center;justify-content:center;cursor:pointer;';
+        x.onclick=function(){ refArr.splice(i,1); render(); };
+        box.appendChild(img); box.appendChild(x); grid.insertBefore(box, addTile);
+      });
+      addTile.style.display = refArr.length>=maxN ? 'none' : '';
+    }
+    function addFile(f){
+      if(!f) return;
+      if(refArr.length>=maxN){ toast('最多上传'+maxN+'张参考图'); return; }
+      if(f.size>8*1024*1024){ toast('参考图太大，请压到 8MB 内'); return; }
+      var rd=new FileReader(); rd.onload=function(){ refArr.push(rd.result); render(); toast('参考图已添加('+refArr.length+'/'+maxN+')'); }; rd.readAsDataURL(f);
+    }
+    if(inp){ inp.onchange=function(){ addFile(inp.files&&inp.files[0]); inp.value=''; }; }
+    function paste(e){ var items=(e.clipboardData&&e.clipboardData.items)||[]; for(var i=0;i<items.length;i++){ if(items[i].type&&items[i].type.indexOf('image/')===0){ var f=items[i].getAsFile(); if(f){ e.preventDefault(); addFile(f); } return; } } }
+    if(promptEl) promptEl.addEventListener('paste', paste);
+    grid.addEventListener('paste', paste);
+  }
+  setupXiaoleRefPanel('micro', microRefData, 4);  // seedance-2.0-fast 参考图上限4
+  setupXiaoleRefPanel('omni', omniRefData, 5);    // omni-fast 参考图上限5
   if($('refreshAvatarBtn')) $('refreshAvatarBtn').onclick=function(){loadMotionAvatars(true);};
   $('scriptText').dispatchEvent(new Event('input'));
   updateFunction('talking');
