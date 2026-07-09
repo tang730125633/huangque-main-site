@@ -115,6 +115,31 @@ class JobRefundCasTests(unittest.TestCase):
         self.core._refund_once(jid, "u", 20)   # 误调
         self.assertEqual(len(self.refunds), 0)
 
+    def _insert_status(self, status, cost=20):
+        now = int(time.time())
+        with closing(self.core.jdb()) as c:
+            cur = c.execute(
+                "INSERT INTO jobs(kind,username,cost,status,created_at,updated_at) VALUES('tryon','u',?,?,?,?)",
+                (cost, status, now, now))
+            c.commit(); return cur.lastrowid
+
+    # --- 启动回收孤儿：只回收 running(重启遗留)，pending/done 不动，退且仅退一次、幂等 ---
+    def test_reclaim_orphaned_running(self):
+        run1 = self._insert(20)                    # running 孤儿
+        run2 = self._insert_status("running", 30)  # running 孤儿
+        pend = self._insert_status("pending", 20)  # 排队中→不该动(交给 pending 恢复机制)
+        done = self._insert_status("done", 20)     # 已完成→不该动
+        n = self.core.reclaim_orphaned_running()
+        self.assertEqual(n, 2)
+        self.assertEqual(self._row(run1)["status"], "error")
+        self.assertEqual(self._row(run2)["status"], "error")
+        self.assertEqual(self._row(pend)["status"], "pending")
+        self.assertEqual(self._row(done)["status"], "done")
+        self.assertEqual(len(self.refunds), 2)     # 两个孤儿各退一次
+        # 幂等：再调一次不重复退(running 已清空)
+        self.assertEqual(self.core.reclaim_orphaned_running(), 0)
+        self.assertEqual(len(self.refunds), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

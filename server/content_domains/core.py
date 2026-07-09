@@ -855,6 +855,28 @@ def reaper():
             pass
         time.sleep(60)
 
+def reclaim_orphaned_running():
+    """启动时回收上一进程遗留的 running 孤儿任务。
+
+    本进程刚起、worker 尚未启动(此函数在 start_job_workers 之前调用)，此刻 DB 里
+    任何 status='running' 都是上次 systemctl restart 时 worker 猝死留下的孤儿——没人
+    再刷 updated_at，用户会看着"生成中"干等 reaper 兜底(换装 grace 达 2400 秒=40 分钟)
+    才判失败退点。启动即当场判失败+退点，把"卡 40 分钟"变"秒退"。
+    CAS 抢终态 + 幂等退点复用 reaper 那套(_set_terminal/_refund_once)，与并发无竞态。"""
+    try:
+        with closing(jdb()) as c:
+            rows = c.execute("SELECT id, username, cost FROM jobs WHERE status='running'").fetchall()
+    except Exception:
+        return 0
+    n = 0
+    for r in rows:
+        if _set_terminal(r["id"], "error", error="服务重启中断，已退点，请重新提交"):
+            _refund_once(r["id"], r["username"], r["cost"])
+            n += 1
+    if n:
+        print("[startup] 回收重启遗留孤儿任务 %d 个(→失败退点)" % n, flush=True)
+    return n
+
 # ============ HTTP ============
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -1290,6 +1312,7 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     init_db()
+    reclaim_orphaned_running()  # 回收上次重启遗留的 running 孤儿→秒退点，不让用户干等 reaper
     start_job_workers()
     threading.Thread(target=reaper, daemon=True).start()  # 僵尸任务清道夫
     print("huangque-content-api on 127.0.0.1:%d  caps=%s" % (PORT, list(HANDLERS)))
