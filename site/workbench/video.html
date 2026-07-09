@@ -306,6 +306,10 @@
             <div class="faint" style="font-size:12px;margin-bottom:8px;">字幕样式</div>
             <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button class="on" data-substyle="white">白字黑边</button><button data-substyle="variety">综艺大字</button><button data-substyle="bar">底部半透条</button></div>
           </div>
+          <div id="subtitlePositionRow" style="display:none;margin-top:12px;">
+            <div class="faint" style="font-size:12px;margin-bottom:8px;">字幕位置</div>
+            <div class="seg" style="grid-template-columns:repeat(5,1fr);"><button data-subpos="top">顶部</button><button data-subpos="upper">偏上</button><button data-subpos="center">中央</button><button data-subpos="lower">偏下</button><button class="on" data-subpos="bottom">底部</button></div>
+          </div>
         </div>
       </div>
 
@@ -504,7 +508,7 @@
   var token='__cookie__';
   var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='S_d21F8OR62', activePreview=null, activePreviewBtn=null;
   var imageData='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
-  var selectedSubtitle='off', selectedSubtitleStyle='white';  // F4 字幕：默认关闭，不勾选时行为与原来一致
+  var selectedSubtitle='off', selectedSubtitleStyle='white', selectedSubtitlePosition='bottom';  // F4 字幕：默认关闭+底部，不勾选时行为与原来一致
   var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16', selectedMotionLine='2';
   var selectedGrokRatio='16:9';  // 默认16:9(上游9:16/1:1/4:5/5:4暂时大概率生成失败,止血用#GROK-RATIO-SIZE-INCIDENT)
   var tryonVideoData='', tryonClothesData='', tryonBackgroundData='', selectedTryonLine='2';
@@ -1220,8 +1224,9 @@
       if(videoFunction==='grok' && $('outputRatio')) $('outputRatio').textContent=selectedGrokRatio;
     }
     if(b.dataset.motion) selectedMotion=b.dataset.motion;
-    if(b.dataset.subtitle){selectedSubtitle=b.dataset.subtitle;var sr=$('subtitleStyleRow');if(sr)sr.style.display=(selectedSubtitle==='on'?'':'none');}
+    if(b.dataset.subtitle){selectedSubtitle=b.dataset.subtitle;var on=selectedSubtitle==='on';var sr=$('subtitleStyleRow');if(sr)sr.style.display=(on?'':'none');var pr=$('subtitlePositionRow');if(pr)pr.style.display=(on?'':'none');}
     if(b.dataset.substyle) selectedSubtitleStyle=b.dataset.substyle;
+    if(b.dataset.subpos) selectedSubtitlePosition=b.dataset.subpos;
     updateChecklist();
   };});
   $('scriptText').addEventListener('input',function(){$('charCount').textContent=$('scriptText').value.length+' / 1200';updateChecklist();});
@@ -1492,7 +1497,8 @@
         ratio:selectedRatio,
         motion:selectedMotion,
         subtitle:selectedSubtitle==='on',
-        subtitle_style:selectedSubtitleStyle
+        subtitle_style:selectedSubtitleStyle,
+        subtitle_position:selectedSubtitlePosition
       })
     }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
       .then(function(res){

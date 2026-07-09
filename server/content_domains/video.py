@@ -969,6 +969,15 @@ _SUB_STYLES = {
     "variety": {"fs": 0.066, "primary": "&H0000E5FF", "outline": "&H00202020", "back": "&H00000000", "border": 1, "ow": 4.0, "shadow": 1, "mv": 0.072},
     "bar":     {"fs": 0.050, "primary": "&H00FFFFFF", "outline": "&H00000000", "back": "&H80101010", "border": 3, "ow": 8.0, "shadow": 0, "mv": 0.050},
 }
+# 字幕位置5档 → (ASS Alignment, MarginV系数)。底部/偏下用底锚(Align2,离底);顶部/偏上用顶锚(Align8,离顶);
+# 中央垂直居中(Align5)。bottom 的 mv=None 沿用样式自带值,保持旧默认行为(向后兼容)。
+_SUB_POSITIONS = {
+    "bottom": (2, None),   # 底部(默认)
+    "lower":  (2, 0.20),   # 偏下
+    "center": (5, 0.00),   # 中央
+    "upper":  (8, 0.20),   # 偏上
+    "top":    (8, 0.06),   # 顶部
+}
 
 def _sub_ffmpeg(cmd, timeout, cwd=None):
     try:
@@ -1109,10 +1118,11 @@ def _redistribute_known_text(known_text, segs):
         out.append((st, en, chunk or rec))
     return out
 
-def _build_ass(segs, style_key, w, h):
+def _build_ass(segs, style_key, w, h, position="bottom"):
     st = _SUB_STYLES.get(style_key) or _SUB_STYLES["white"]
+    align, mvf = _SUB_POSITIONS.get(position) or _SUB_POSITIONS["bottom"]
     fs = max(18, int(h * st["fs"]))
-    mv = max(10, int(h * st["mv"]))
+    mv = max(10, int(h * (st["mv"] if mvf is None else mvf)))  # bottom 沿用样式 mv，其余用档位系数
     mlr = max(10, int(w * 0.06))
     max_chars = max(8, int(w / (fs * 0.62)))
     head = [
@@ -1120,8 +1130,8 @@ def _build_ass(segs, style_key, w, h):
         "WrapStyle: 0", "ScaledBorderAndShadow: yes", "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        "Style: Default,%s,%d,%s,&H000000FF,%s,%s,-1,0,0,0,100,100,0,0,%d,%.1f,%d,2,%d,%d,%d,1" % (
-            SUBTITLE_FONT, fs, st["primary"], st["outline"], st["back"], st["border"], st["ow"], st["shadow"], mlr, mlr, mv),
+        "Style: Default,%s,%d,%s,&H000000FF,%s,%s,-1,0,0,0,100,100,0,0,%d,%.1f,%d,%d,%d,%d,%d,1" % (
+            SUBTITLE_FONT, fs, st["primary"], st["outline"], st["back"], st["border"], st["ow"], st["shadow"], align, mlr, mlr, mv),
         "", "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, Effect, Text",
     ]
@@ -1138,7 +1148,7 @@ def _build_ass(segs, style_key, w, h):
             body.append("Dialogue: 0,%s,%s,Default,,0,0,,%s" % (_ass_time(start), _ass_time(end), line))
     return "\n".join(head + body) + "\n"
 
-def burn_subtitle(video_file, known_text=None, style_key="white", job_id=None):
+def burn_subtitle(video_file, known_text=None, style_key="white", job_id=None, position="bottom"):
     """把 video_file 抽音频→whisper 转写→生成 .ass→ffmpeg 烧录，返回带字幕视频的相对路径。"""
     src = _resolve_out_file(video_file)
     if not src:
@@ -1164,7 +1174,7 @@ def burn_subtitle(video_file, known_text=None, style_key="white", job_id=None):
             except Exception:
                 pass
         w, h = _probe_video_size(src)
-        ass.write_text(_build_ass(segs, (style_key or "white"), w, h), encoding="utf-8")
+        ass.write_text(_build_ass(segs, (style_key or "white"), w, h, position or "bottom"), encoding="utf-8")
         update_video_asset_phase(job_id, "burning_subtitle")  # 心跳：开始烧录
         # cwd=视频目录 + ass 用文件名，避免 filtergraph 路径转义问题
         _sub_ffmpeg(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(src),
@@ -1272,11 +1282,14 @@ def gen_video(payload):
     subtitle_style = (payload.get("subtitle_style") or "white").strip()
     if subtitle_style not in _SUB_STYLES:
         subtitle_style = "white"
+    subtitle_position = (payload.get("subtitle_position") or "bottom").strip()
+    if subtitle_position not in _SUB_POSITIONS:
+        subtitle_position = "bottom"
     if payload.get("subtitle") and mode in {"text", "audio"} and video_result.get("video_file"):
         try:
             update_video_asset_phase(job_id, "burning_subtitle")
             known = text if mode == "text" else None
-            subtitled = burn_subtitle(video_result["video_file"], known_text=known, style_key=subtitle_style, job_id=job_id)
+            subtitled = burn_subtitle(video_result["video_file"], known_text=known, style_key=subtitle_style, job_id=job_id, position=subtitle_position)
             video_result["plain_video_file"] = video_result.get("video_file")
             video_result["video_file"] = subtitled
             video_result["video_url"] = _file_url(subtitled)
@@ -1305,6 +1318,7 @@ def gen_video(payload):
         "phase": "done",
         "subtitle": subtitle_on,
         "subtitle_style": subtitle_style if subtitle_on else None,
+        "subtitle_position": subtitle_position if subtitle_on else None,
         "subtitle_error": subtitle_error,
         "plain_video_file": video_result.get("plain_video_file"),
         "message": "视频生成完成"
