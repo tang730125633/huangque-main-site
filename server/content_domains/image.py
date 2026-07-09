@@ -10,6 +10,9 @@ from .core import (
 )
 from .video import XIAOLEVIDEO_API_KEY, _xiaole_request
 
+# gpt 引擎出境优先级：VPS 隧道 → mihomo → heygen（见 egress.py）。官方 OpenAI 直连地址：
+OPENAI_OFFICIAL_BASE = os.environ.get("OPENAI_OFFICIAL_BASE", "https://api.openai.com").rstrip("/")
+
 _ZELONG2_POOL_LOCK = threading.Lock()
 _ZELONG2_POOL_NEXT = 0
 
@@ -95,6 +98,20 @@ def _gen_image_xiaole(prompt, ratio, quality, count, img):
             "count": len(files_out), "file": files_out[0], "url": urls[0],
             "files": files_out, "urls": urls, "ratio": ratio, "prompt": prompt}
 
+def _dispatch_gpt(provider, path, body, ct, base, key, proxy):
+    """gpt 家族出图分发。openai(官方) 走出境优先级链 VPS→mihomo→heygen；泽龙系维持原样。"""
+    if provider == "zelong2":
+        return _post_zelong2(path, body, ct)
+    if provider == "zelong":
+        return _post(path, body, ct, base=base, key=key, proxy=proxy)
+    # provider == "openai"：优先自建出境直连官方，超时/报错降级，最终兜底 heygen(=OPENAI_BASE)。
+    # 未配 EGRESS_* 时 egress 链里只剩 heygen 一档，等于改动前的老行为。
+    from content_domains import egress
+    return egress.post_json(OPENAI_OFFICIAL_BASE, OPENAI_BASE, path, body,
+                            {"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": ct},
+                            log=lambda m: print(m, flush=True))
+
+
 def gen_image(payload):
     prompt = (payload.get("prompt") or "").strip()
     if not prompt:
@@ -128,11 +145,11 @@ def gen_image(payload):
         if mask:
             files.append(("mask", "mask.png", base64.b64decode(mask)))
         body, ct = _multipart({"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": quality, "n": str(count)}, files)
-        d = _post_zelong2("/v1/images/edits", body, ct) if provider == "zelong2" else _post("/v1/images/edits", body, ct, base=base, key=key, proxy=proxy)
+        d = _dispatch_gpt(provider, "/v1/images/edits", body, ct, base, key, proxy)
         mode = "inpaint" if mask else "img2img"
     else:
         body = json.dumps({"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": quality, "n": count}).encode()
-        d = _post_zelong2("/v1/images/generations", body, "application/json") if provider == "zelong2" else _post("/v1/images/generations", body, "application/json", base=base, key=key, proxy=proxy)
+        d = _dispatch_gpt(provider, "/v1/images/generations", body, "application/json", base, key, proxy)
         mode = "text2img"
     files_out, urls = [], []
     for i, item in enumerate(d.get("data") or []):

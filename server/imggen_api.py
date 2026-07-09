@@ -52,7 +52,9 @@ JOB_DB      = os.environ.get("CONTENT_JOB_DB", "/home/ubuntu/content-api/content
 OUT_DIR     = pathlib.Path(os.environ.get("CONTENT_OUT", "/home/ubuntu/content-api/content_out"))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 GEMINI_KEY  = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_BASE = os.environ.get("GEMINI_BASE", "https://generativelanguage.googleapis.com").rstrip("/")
+GEMINI_BASE = os.environ.get("GEMINI_BASE", "https://generativelanguage.googleapis.com").rstrip("/")   # 兜底档：线上=heygen 中转
+# 出境优先级链见 content_domains/egress.py。官方 Gemini 直连地址，走 VPS隧道/mihomo 代理时用。
+GEMINI_OFFICIAL_BASE = os.environ.get("GEMINI_OFFICIAL_BASE", "https://generativelanguage.googleapis.com").rstrip("/")
 # ---- 提示词反推（图→文，多模态文本模型）----
 REVERSE_MODEL = os.environ.get("REVERSE_MODEL", "gemini-2.5-flash")   # 反推用的多模态文本模型，可 env 覆盖
 REVERSE_COST  = int(os.environ.get("REVERSE_COST", "2"))              # 反推点数
@@ -253,14 +255,14 @@ def _build_banana_body(prompt, ratio, image=None, image_size=None):
 
 def _banana_one(model, body, idx, ratio=None):
     """Generate one image, save it, and return filename plus dimensions."""
-    req = urllib.request.Request(
-        GEMINI_BASE + "/v1beta/models/" + model + ":generateContent",
-        data=body, headers={"Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY}, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=180) as r:
-            d = json.loads(r.read())
-    except urllib.error.HTTPError as e:
-        raise ValueError("Gemini %s: %s" % (e.code, e.read()[:160].decode("u8", "ignore")))
+    # 出境优先级：VPS 隧道 → mihomo → heygen（见 egress.py）。前档超时/报错自动降级；
+    # 未配 EGRESS_* 时只走 heygen，行为与改动前一致。
+    from content_domains import egress
+    d = egress.post_json(
+        GEMINI_OFFICIAL_BASE, GEMINI_BASE,
+        "/v1beta/models/" + model + ":generateContent", body,
+        {"Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY},
+        log=lambda m: print(m, flush=True))
     parts = (d.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
     img = next((p.get("inlineData") for p in parts if p.get("inlineData")), None)
     if not img:

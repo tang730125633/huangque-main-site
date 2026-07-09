@@ -1,0 +1,20 @@
+# 作图出境隧道：xray VLESS/Reality 客户端，连自建 VPS 节点，本地开 http 代理口给 content-api/imggen 用。
+# 首选出境（EGRESS_PROXY），mihomo(法兰克福) 为备选、heygen 为兜底 —— 见 content_domains/egress.py。
+# 部署见 deploy/egress/README.md。二进制与含节点凭据的真实配置不进 git，只提交 .example。
+[Unit]
+Description=Huangque egress tunnel (xray Reality client, image egress to official OpenAI/Gemini)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+# 真实配置(含 VPS 节点 UUID/公钥) 放在 600 权限文件，不进仓库；示例见 deploy/egress/xray-client.example.json
+ExecStart=/usr/local/bin/xray-egress run -c /home/ubuntu/egress/xray-client.json
+Restart=always
+RestartSec=3
+# 隧道挂了不该拖垮出图 —— 代码里 egress 会自动降级到 mihomo/heygen，所以本服务只需尽力常驻。
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target
