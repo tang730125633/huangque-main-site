@@ -1037,13 +1037,15 @@ def _wrap_cn(text, max_chars):
     if max_chars <= 0 or len(text) <= max_chars:
         return text
     lines, cur = [], text
-    while len(cur) > max_chars and len(lines) < 2:
+    # 多行折行，最多 4 行；每行都 ≤max_chars，不把剩余整段塞进最后一行(防超长尾行横向溢出)。
+    while len(cur) > max_chars and len(lines) < 4:
         cut = cur.rfind(" ", 0, max_chars + 1)   # 停顿已转空格，优先在空格处断
         if cut < max_chars * 0.5:
             cut = max_chars
         lines.append(cur[:cut].strip())
         cur = cur[cut:].strip()
-    lines.append(cur)
+    if cur:
+        lines.append(cur[:max_chars] if len(cur) > max_chars else cur)  # 兜底截断,宁可少字也不溢出
     return "\\N".join(l for l in lines if l)
 
 
@@ -1124,7 +1126,9 @@ def _build_ass(segs, style_key, w, h, position="bottom"):
     fs = max(18, int(h * st["fs"]))
     mv = max(10, int(h * (st["mv"] if mvf is None else mvf)))  # bottom 沿用样式 mv，其余用档位系数
     mlr = max(10, int(w * 0.06))
-    max_chars = max(8, int(w / (fs * 0.62)))
+    # 单行最大字数按「可用宽度(减左右边距) ÷ 单字宽」算。中文全角字宽≈字号(1em)，取 1.05 留安全余量，
+    # 防长句超出画面边界。原来用全宽 w + 0.62 系数会算出约 1.6 倍字数→溢出。
+    max_chars = max(6, int((w - 2 * mlr) / (fs * 1.05)))
     head = [
         "[Script Info]", "ScriptType: v4.00+", "PlayResX: %d" % w, "PlayResY: %d" % h,
         "WrapStyle: 0", "ScaledBorderAndShadow: yes", "",
