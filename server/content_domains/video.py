@@ -1498,6 +1498,32 @@ def generate_tryon_video(person_video_file, clothes_file, background_file, secon
 def gen_tryon(payload):
     job_id = payload.get("_job_id")
     username = (payload.get("_username") or "").strip()
+    if str(payload.get("line") or "1").strip() == "2":
+        # 线路二 WaveSpeed：人物图 + 衣服图 → 换装展示视频（区别于线路一"给人物视频换装保留原动作"）
+        from . import wavespeed
+        if not wavespeed.available():
+            raise ValueError("线路二(WaveSpeed)未配置，请用线路一或联系管理员")
+        person_image_file = _save_data_file(payload.get("person_image_data") or payload.get("image_data"),
+                                            "tryon_person_img", [".jpg", ".jpeg", ".png", ".webp"])
+        if not person_image_file:
+            raise ValueError("线路二换装请上传人物照片")
+        clothes2 = _save_data_file(payload.get("clothes_data"), "tryon_cloth", [".jpg", ".jpeg", ".png", ".webp"])
+        if not clothes2:
+            raise ValueError("请上传衣服图")
+        try:
+            seconds2 = max(5, min(15, int(payload.get("seconds") or 6)))
+        except Exception:
+            seconds2 = 6
+        update_video_asset_phase(job_id, "queued", mode="tryon", text="换装",
+                                 image_file=person_image_file, tryon_mode="clothes_only")
+        wres = wavespeed.generate_tryon(person_image_file, clothes2, seconds2, job_id=job_id)
+        return {
+            "type": "video", "status": "done", "mode": "tryon", "tryon_mode": "clothes_only",
+            "person_image_file": person_image_file, "clothes_file": clothes2,
+            "image_file": person_image_file, "image_url": _file_url(person_image_file),
+            "video_file": wres.get("video_file"), "video_url": wres.get("video_url"),
+            "provider": "wavespeed", "text": "换装", "message": "换装完成",
+        }
     person_video_file = _save_data_file(payload.get("person_video_data"), "tryon_person", [".mp4", ".mov", ".webm"])
     if not person_video_file:
         raise ValueError("请上传换装视频")

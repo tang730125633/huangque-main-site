@@ -376,6 +376,13 @@
           </div>
           <span class="faint" style="font-size:11.5px;">保持原人脸/动作/镜头，只换衣服和背景</span>
         </div>
+        <div class="line-switch">
+          <div class="label">生成线路（输入和效果不同，按需选）</div>
+          <div class="line-tabs" id="tryonLineTabs">
+            <button type="button" class="line-tab active" data-line="2"><b>线路二 · 极速</b><span>约 1 分钟 · 传人物照片+衣服图 → 模特展示视频</span></button>
+            <button type="button" class="line-tab" data-line="1"><b>线路一 · 经典</b><span>约 8 分钟 · 传人物视频+衣服图 → 给原视频换装、保留动作</span></button>
+          </div>
+        </div>
         <div id="tryonGrid" class="motion-grid" style="grid-template-columns:1fr 1fr 1fr;">
           <label id="tryonVideoDrop" class="motion-drop">
             <input id="tryonVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden>
@@ -500,7 +507,7 @@
   var selectedSubtitle='off', selectedSubtitleStyle='white';  // F4 字幕：默认关闭，不勾选时行为与原来一致
   var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16', selectedMotionLine='2';
   var selectedGrokRatio='16:9';  // 默认16:9(上游9:16/1:1/4:5/5:4暂时大概率生成失败,止血用#GROK-RATIO-SIZE-INCIDENT)
-  var tryonVideoData='', tryonClothesData='', tryonBackgroundData='';
+  var tryonVideoData='', tryonClothesData='', tryonBackgroundData='', selectedTryonLine='2';
   var motionAvatars=[], selectedMotionAvatarId=null, useNewMotionImage=true, avatarsLoaded=false;
   var currentVideoDraft=null;
   var motionPresets=[];
@@ -1194,6 +1201,9 @@
   }
   document.querySelectorAll('[data-function]').forEach(function(b){b.onclick=function(){updateFunction(b.dataset.function);};});
   document.querySelectorAll('#motionLineTabs .line-tab').forEach(function(b){b.onclick=function(){selectedMotionLine=b.dataset.line;document.querySelectorAll('#motionLineTabs .line-tab').forEach(function(x){x.classList.toggle('active',x===b);});};});
+  function applyTryonLine(){var isL2=selectedTryonLine==='2';var vf=$('tryonVideoFile'),vd=$('tryonVideoDrop'),bg=$('tryonBgDrop');if(vf)vf.accept=isL2?'image/png,image/jpeg,image/webp':'video/mp4,video/quicktime,video/webm';if(vd){var s=vd.querySelector('strong'),p=vd.querySelector('span');if(s)s.textContent=isL2?'人物照片（必选）':'换装视频（必选）';if(p)p.textContent=isL2?'上传要换装的人物照片（全身/半身效果更好）':'上传需要换装/换背景的真人视频';}if(bg)bg.style.display=isL2?'none':'';var h=$('tryonModeHint');if(h)h.textContent=isL2?'线路二：传人物照片+衣服图 → 生成模特展示视频':'请至少上传衣服图或背景图';}
+  document.querySelectorAll('#tryonLineTabs .line-tab').forEach(function(b){b.onclick=function(){selectedTryonLine=b.dataset.line;document.querySelectorAll('#tryonLineTabs .line-tab').forEach(function(x){x.classList.toggle('active',x===b);});applyTryonLine();};});
+  applyTryonLine();
   document.querySelectorAll('.mode-tab').forEach(function(b){b.onclick=function(){updateMode(b.dataset.mode);};});
   document.querySelectorAll('[data-voice-tab]').forEach(function(b){b.onclick=function(){voiceTab=b.dataset.voiceTab;document.querySelectorAll('[data-voice-tab]').forEach(function(x){x.classList.toggle('on',x===b);});stopPreview();renderVoices();};});
   document.querySelectorAll('.source-card').forEach(function(b){b.onclick=function(){document.querySelectorAll('.source-card').forEach(function(x){x.classList.toggle('on',x===b);});var asset=b.dataset.source==='asset';$('audioFileBox').classList.toggle('hidden',asset);$('assetAudioBox').classList.toggle('hidden',!asset);if(asset) loadAssetAudios();updateChecklist();};});
@@ -1403,8 +1413,13 @@
       });
   }
   function submitTryon(){
-    if(!tryonVideoData){ toast('请先上传换装视频'); return; }
-    if(!tryonClothesData && !tryonBackgroundData){ toast('请至少上传衣服图或背景图'); return; }
+    if(selectedTryonLine==='2'){
+      if(!tryonVideoData){ toast('线路二请先上传人物照片'); return; }
+      if(!tryonClothesData){ toast('请上传衣服图'); return; }
+    }else{
+      if(!tryonVideoData){ toast('请先上传换装视频'); return; }
+      if(!tryonClothesData && !tryonBackgroundData){ toast('请至少上传衣服图或背景图'); return; }
+    }
     setBusy(true);
     if($('outputText')) $('outputText').textContent='换装换背景视频生成记录';
     if($('outputMotion')) $('outputMotion').textContent='换装换背景';
@@ -1418,7 +1433,14 @@
     fetch('/api/gen/tryon',{
       method:'POST',
       headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-      body:JSON.stringify({
+      body:JSON.stringify(selectedTryonLine==='2'?{
+        line:'2',
+        person_image_data:tryonVideoData,
+        clothes_data:tryonClothesData||'',
+        seconds:6,
+        text:'换装'
+      }:{
+        line:'1',
         person_video_data:tryonVideoData,
         clothes_data:tryonClothesData||'',
         background_data:tryonBackgroundData||'',
