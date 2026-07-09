@@ -18,6 +18,7 @@ from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
 import mimetypes  # 文件服务按扩展名识别 mime（png / mp3 …）
+from . import assets_store  # 统一 assets 表（image/copy/collect/leads）；无反向依赖，可直接顶层 import
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -809,6 +810,8 @@ def run_job(job_id):
                 audio_domain.record_audio_asset(job_id, username, result)
             if kind in {"video", "tryon", "xiaole_video"}:
                 video_domain.record_video_asset(job_id, username, result)
+            if kind in assets_store.KINDS:      # image / copy：统一 assets 表
+                assets_store.record_asset(job_id, username, kind, result)
         except Exception:
             pass
     except Exception as e:

@@ -378,6 +378,13 @@ def run_job(job_id):
         if not _set_terminal(job_id, "done", result=result):
             # reaper 已把它判超时并退点：不覆写终态。宁可用户重试，也不能既退点又出结果。
             print("[leadgen] job %s 完成时已非 running（reaper 判超时在先），丢弃结果" % job_id, flush=True)
+            return
+        # 拿到 done 终态后才入资产库；入库是次要副作用，失败不改状态、不退点
+        try:
+            from content_domains import assets_store
+            assets_store.record_asset(job_id, r["username"], kind, result)
+        except Exception as e:
+            print("[leadgen] 资产入库失败 job=%s: %s" % (job_id, e), flush=True)
     except Exception as e:
         if _set_terminal(job_id, "error", error=str(e)):
             _refund_once(job_id, r["username"], r["cost"])
