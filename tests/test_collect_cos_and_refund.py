@@ -12,7 +12,7 @@
    审计里完全隐形。改为调 auth 的 refund 接口；auth 不可用时回退直写 —— 宁可少一条审计，
    也不能把用户的点吞了。
 """
-import importlib, io, sys, time, unittest
+import importlib, io, os, shutil, sys, tempfile, time, unittest
 from pathlib import Path
 
 
@@ -38,16 +38,22 @@ class _FakeResponse(io.BytesIO):
 
 
 class CosBudgetTests(unittest.TestCase):
+    """下载受总预算约束，且【流式落盘】——内存恒定，不再把整段视频攒在内存里。"""
+
     def setUp(self):
         server_dir = str(Path(__file__).resolve().parents[1] / "server")
         if server_dir not in sys.path:
             sys.path.insert(0, server_dir)
-        self.lg = importlib.import_module("leadgen_api")
         self.tikhub = importlib.import_module("tikhub")
         self._orig_opener = self.tikhub._OPENER
+        self.tmp = tempfile.mkdtemp(prefix="hqdl-")
 
     def tearDown(self):
         self.tikhub._OPENER = self._orig_opener
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _dest(self):
+        return os.path.join(self.tmp, "v.mp4")
 
     def _stub_opener(self, response):
         class _O:
@@ -55,66 +61,62 @@ class CosBudgetTests(unittest.TestCase):
                 return response
         self.tikhub._OPENER = _O()
 
-    def test_fetch_success(self):
+    def test_download_writes_to_file(self):
         self._stub_opener(_FakeResponse(b"x" * 1000))
-        data = self.lg._fetch_within_budget("http://cdn/v.mp4", time.time() + 30)
-        self.assertEqual(len(data), 1000)
+        n = self.tikhub.download_to_file("http://cdn/v.mp4", time.time() + 30, self._dest())
+        self.assertEqual(n, 1000)
+        self.assertEqual(os.path.getsize(self._dest()), 1000)
 
     def test_rejects_oversize_by_content_length(self):
         """Content-Length 预检：下载前就否掉，省掉整段无用等待。"""
-        big = str(self.lg.COS_FETCH_MAX_BYTES + 1)
-        self._stub_opener(_FakeResponse(b"", {"Content-Length": big}))
+        self._stub_opener(_FakeResponse(b"", {"Content-Length": "999999999"}))
         with self.assertRaises(ValueError) as ctx:
-            self.lg._fetch_within_budget("http://cdn/v.mp4", time.time() + 30)
+            self.tikhub.download_to_file("http://cdn/v.mp4", time.time() + 30, self._dest(), max_bytes=1024)
         self.assertIn("超过上限", str(ctx.exception))
 
     def test_rejects_oversize_while_streaming(self):
         """CDN 不给 Content-Length 时，边下边数，超限即停。"""
-        self.lg.COS_FETCH_MAX_BYTES, orig = 4096, self.lg.COS_FETCH_MAX_BYTES
-        try:
-            self._stub_opener(_FakeResponse(b"x" * 100000))
-            with self.assertRaises(ValueError):
-                self.lg._fetch_within_budget("http://cdn/v.mp4", time.time() + 30)
-        finally:
-            self.lg.COS_FETCH_MAX_BYTES = orig
+        self._stub_opener(_FakeResponse(b"x" * 100000))
+        with self.assertRaises(ValueError):
+            self.tikhub.download_to_file("http://cdn/v.mp4", time.time() + 30, self._dest(), max_bytes=4096)
 
     def test_deadline_already_expired(self):
         self._stub_opener(_FakeResponse(b"x"))
         with self.assertRaises(TimeoutError):
-            self.lg._fetch_within_budget("http://cdn/v.mp4", time.time() - 1)
+            self.tikhub.download_to_file("http://cdn/v.mp4", time.time() - 1, self._dest())
 
     def test_deadline_exceeded_midstream(self):
         """核心回归：慢 CDN 每块都拖时间，到点必须放弃，而不是无限续命。"""
         self._stub_opener(_FakeResponse(b"x" * 1000000, chunk_delay=0.05))
         t0 = time.time()
         with self.assertRaises(TimeoutError) as ctx:
-            self.lg._fetch_within_budget("http://cdn/v.mp4", time.time() + 0.2)
+            self.tikhub.download_to_file("http://cdn/v.mp4", time.time() + 0.2, self._dest())
         self.assertLess(time.time() - t0, 2.0, "超预算后仍在继续下载")
         self.assertIn("预算", str(ctx.exception))
 
     def test_fallback_returns_original_url_and_does_not_raise(self):
         """转存失败必须回退原链接，绝不中断采集。"""
+        lg = importlib.import_module("leadgen_api")
+
         class _Boom:
             def open(self, req, timeout=None):
                 raise OSError("The read operation timed out")
+
         self.tikhub._OPENER = _Boom()
-        orig_cos = sys.modules.get("content_domains.cos")
         import content_domains.cos as cos
         enabled, cos.enabled = cos.enabled, lambda: True
         try:
-            out = self.lg.public_url_from_remote("http://cdn/v.mp4", "collect/douyin/1.mp4", "video/mp4")
+            out = lg.public_url_from_remote("http://cdn/v.mp4", "collect/douyin/1.mp4", "video/mp4")
             self.assertEqual(out, "http://cdn/v.mp4")
         finally:
             cos.enabled = enabled
-            if orig_cos is not None:
-                sys.modules["content_domains.cos"] = orig_cos
 
 
 class DownloadOnceTests(unittest.TestCase):
     """采集流程原来把同一个 play_url 下两次：一次转存 COS、一次 ASR。
 
     线上 job 1354：5.1MB 的文件，第一次(转存)耗时 130s 且读超时失败，第二次(ASR)只花 20.5s。
-    170s 总耗时里 130s 是纯浪费。现在下载一次、字节复用。
+    现在下载一次落盘、路径复用给 ASR，且临时文件必须被删干净。
     """
 
     def setUp(self):
@@ -122,58 +124,89 @@ class DownloadOnceTests(unittest.TestCase):
         if server_dir not in sys.path:
             sys.path.insert(0, server_dir)
         self.lg = importlib.import_module("leadgen_api")
-        self.tikhub = importlib.import_module("tikhub")
         self.downloads = []
         self._orig_dl = self.lg._download_with_retry
-        self._orig_store = self.lg.store_video_bytes
+        self._orig_store = self.lg.store_video_file
         self._orig_cos = self.lg._cos_enabled
-        self.lg._download_with_retry = lambda url, key: (self.downloads.append(url), b"MP4DATA")[1]
-        self.lg.store_video_bytes = lambda data, key, ct=None: "https://cos/%s" % key
+
+        def _fake_dl(url, key, dest):
+            self.downloads.append(url)
+            with open(dest, "wb") as f:
+                f.write(b"MP4DATA")
+            return 7
+
+        self.lg._download_with_retry = _fake_dl
+        self.lg.store_video_file = lambda path, key, ct=None: "https://cos/%s" % key
         self.lg._cos_enabled = lambda: True
 
     def tearDown(self):
         self.lg._download_with_retry = self._orig_dl
-        self.lg.store_video_bytes = self._orig_store
+        self.lg.store_video_file = self._orig_store
         self.lg._cos_enabled = self._orig_cos
 
-    def test_keep_bytes_returns_data_and_downloads_once(self):
-        url, data = self.lg.fetch_and_store("http://cdn/v.mp4", "collect/douyin/1.mp4", "video/mp4", keep_bytes=True)
-        self.assertEqual(url, "https://cos/collect/douyin/1.mp4")
-        self.assertEqual(data, b"MP4DATA")
-        self.assertEqual(len(self.downloads), 1, "同一个 URL 只该下载一次")
+    def test_keep_file_returns_path_and_downloads_once(self):
+        url, path = self.lg.fetch_and_store("http://cdn/v.mp4", "collect/douyin/1.mp4", "video/mp4", keep_file=True)
+        try:
+            self.assertEqual(url, "https://cos/collect/douyin/1.mp4")
+            self.assertTrue(os.path.isfile(path), "keep_file=True 时文件必须留给调用方")
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"MP4DATA")
+            self.assertEqual(len(self.downloads), 1, "同一个 URL 只该下载一次")
+        finally:
+            os.unlink(path)
 
-    def test_without_keep_bytes_data_is_dropped(self):
-        url, data = self.lg.fetch_and_store("http://cdn/v.mp4", "k", "video/mp4", keep_bytes=False)
+    def test_without_keep_file_temp_is_removed(self):
+        url, path = self.lg.fetch_and_store("http://cdn/v.mp4", "k", "video/mp4", keep_file=False)
         self.assertEqual(url, "https://cos/k")
-        self.assertIsNone(data, "不需要字节时不该把整段视频留在内存里")
+        self.assertIsNone(path, "不需要文件时不该把路径漏给调用方")
 
-    def test_no_cos_no_bytes_means_no_download(self):
+    def test_no_cos_no_file_means_no_download(self):
         """既不转存也不做 ASR，就别白下一遍视频。"""
         self.lg._cos_enabled = lambda: False
-        url, data = self.lg.fetch_and_store("http://cdn/v.mp4", "k", "video/mp4", keep_bytes=False)
+        url, path = self.lg.fetch_and_store("http://cdn/v.mp4", "k", "video/mp4", keep_file=False)
         self.assertEqual(url, "http://cdn/v.mp4")
-        self.assertIsNone(data)
+        self.assertIsNone(path)
         self.assertEqual(self.downloads, [], "不该发起下载")
 
     def test_cos_disabled_but_asr_needed_still_downloads(self):
         self.lg._cos_enabled = lambda: False
-        url, data = self.lg.fetch_and_store("http://cdn/v.mp4", "k", "video/mp4", keep_bytes=True)
-        self.assertEqual(url, "http://cdn/v.mp4", "没转存就回退原链接")
-        self.assertEqual(data, b"MP4DATA", "ASR 仍需要字节")
-        self.assertEqual(len(self.downloads), 1)
+        url, path = self.lg.fetch_and_store("http://cdn/v.mp4", "k", "video/mp4", keep_file=True)
+        try:
+            self.assertEqual(url, "http://cdn/v.mp4", "没转存就回退原链接")
+            self.assertTrue(os.path.isfile(path), "ASR 仍需要文件")
+            self.assertEqual(len(self.downloads), 1)
+        finally:
+            os.unlink(path)
 
-    def test_download_failure_falls_back_and_returns_no_bytes(self):
-        self.lg._download_with_retry = lambda url, key: None
-        url, data = self.lg.fetch_and_store("http://cdn/v.mp4", "k", "video/mp4", keep_bytes=True)
+    def test_download_failure_falls_back_and_cleans_up(self):
+        self.lg._download_with_retry = lambda url, key, dest: 0
+        url, path = self.lg.fetch_and_store("http://cdn/v.mp4", "k", "video/mp4", keep_file=True)
         self.assertEqual(url, "http://cdn/v.mp4")
-        self.assertIsNone(data, "拿不到字节时 ASR 会自己再下一次，不能给它假数据")
+        self.assertIsNone(path, "拿不到文件时 ASR 会自己再下一次，不能给它半截文件")
 
-    def test_cos_upload_failure_falls_back_but_keeps_bytes(self):
-        """转存失败不该连累 ASR —— 字节已经在手里了。"""
-        self.lg.store_video_bytes = lambda data, key, ct=None: None
-        url, data = self.lg.fetch_and_store("http://cdn/v.mp4", "k", "video/mp4", keep_bytes=True)
-        self.assertEqual(url, "http://cdn/v.mp4")
-        self.assertEqual(data, b"MP4DATA")
+    def test_cos_upload_failure_falls_back_but_keeps_file(self):
+        """转存失败不该连累 ASR —— 文件已经在磁盘上了。"""
+        self.lg.store_video_file = lambda path, key, ct=None: None
+        url, path = self.lg.fetch_and_store("http://cdn/v.mp4", "k", "video/mp4", keep_file=True)
+        try:
+            self.assertEqual(url, "http://cdn/v.mp4")
+            self.assertTrue(os.path.isfile(path))
+        finally:
+            os.unlink(path)
+
+    def test_temp_file_removed_when_not_kept(self):
+        """keep_file=False 的路径必须删临时文件，否则 /tmp 会被 100MB 的视频塞爆。"""
+        seen = {}
+
+        def _spy_dl(url, key, dest):
+            seen["path"] = dest
+            with open(dest, "wb") as f:
+                f.write(b"X")
+            return 1
+
+        self.lg._download_with_retry = _spy_dl
+        self.lg.fetch_and_store("http://cdn/v.mp4", "k", "video/mp4", keep_file=False)
+        self.assertFalse(os.path.exists(seen["path"]), "临时文件没删")
 
     def test_public_url_from_remote_keeps_old_signature(self):
         self.assertEqual(self.lg.public_url_from_remote("http://cdn/v.mp4", "k", "video/mp4"), "https://cos/k")
@@ -186,35 +219,77 @@ class TranscriptReuseTests(unittest.TestCase):
             sys.path.insert(0, server_dir)
         self.tikhub = importlib.import_module("tikhub")
         self.downloads = []
-        self._orig_budget = self.tikhub.http_get_budgeted
+        self.tmp = tempfile.mkdtemp(prefix="hqasr-")
+        self._orig_dl = self.tikhub.download_to_file
         self._orig_whisper = self.tikhub._whisper
         self._orig_http_get = self.tikhub._http_get
-        self.tikhub.http_get_budgeted = lambda url, dl, **kw: (self.downloads.append(url), b"DOWNLOADED")[1]
-        self.tikhub._whisper = lambda data: "文案:" + data.decode()
+
+        def _fake_dl(url, deadline, dest, **kw):
+            self.downloads.append(url)
+            with open(dest, "wb") as f:
+                f.write(b"DOWNLOADED")
+            return 10
+
+        def _fake_whisper(path, filename="v.mp4"):
+            with open(path, "rb") as f:
+                return "文案:" + f.read().decode()
+
+        self.tikhub.download_to_file = _fake_dl
+        self.tikhub._whisper = _fake_whisper
 
     def tearDown(self):
-        self.tikhub.http_get_budgeted = self._orig_budget
+        self.tikhub.download_to_file = self._orig_dl
         self.tikhub._whisper = self._orig_whisper
         self.tikhub._http_get = self._orig_http_get
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_reuses_given_bytes_without_downloading(self):
-        r = self.tikhub.transcript({"platform": "douyin", "play_url": "http://cdn/v.mp4"}, video_bytes=b"REUSED")
+    def _existing_file(self, content=b"REUSED"):
+        path = os.path.join(self.tmp, "reuse.mp4")
+        with open(path, "wb") as f:
+            f.write(content)
+        return path
+
+    def test_reuses_given_file_without_downloading(self):
+        r = self.tikhub.transcript({"platform": "douyin", "play_url": "http://cdn/v.mp4"},
+                                   video_path=self._existing_file())
         self.assertEqual(r, {"text": "文案:REUSED", "source": "asr"})
-        self.assertEqual(self.downloads, [], "给了字节还去下载，等于没修")
+        self.assertEqual(self.downloads, [], "给了文件还去下载，等于没修")
 
-    def test_downloads_when_no_bytes_given(self):
+    def test_given_file_is_not_deleted_by_transcript(self):
+        """文件归调用方(gen_collect 的 finally)删，transcript 不许动它。"""
+        path = self._existing_file()
+        self.tikhub.transcript({"platform": "douyin", "play_url": "x"}, video_path=path)
+        self.assertTrue(os.path.isfile(path))
+
+    def test_downloads_when_no_file_given(self):
         r = self.tikhub.transcript({"platform": "douyin", "play_url": "http://cdn/v.mp4"})
         self.assertEqual(r["text"], "文案:DOWNLOADED")
         self.assertEqual(self.downloads, ["http://cdn/v.mp4"])
 
-    def test_channels_still_skipped_even_with_bytes(self):
-        self.assertIsNone(self.tikhub.transcript({"platform": "channels", "play_url": "x"}, video_bytes=b"X"))
+    def test_self_downloaded_temp_is_cleaned_up(self):
+        """transcript 自己下的文件，自己删。"""
+        seen = {}
 
-    def test_subtitle_wins_over_bytes(self):
+        def _spy(url, deadline, dest, **kw):
+            seen["path"] = dest
+            with open(dest, "wb") as f:
+                f.write(b"X")
+            return 1
+
+        self.tikhub.download_to_file = _spy
+        self.tikhub.transcript({"platform": "douyin", "play_url": "http://cdn/v.mp4"})
+        self.assertFalse(os.path.exists(seen["path"]), "自己下的临时文件没删")
+
+    def test_channels_still_skipped_even_with_file(self):
+        self.assertIsNone(self.tikhub.transcript({"platform": "channels", "play_url": "x"},
+                                                 video_path=self._existing_file()))
+
+    def test_subtitle_wins_over_file(self):
         """小红书有官方字幕就别跑 ASR —— 字幕是白送的、更准。"""
         srt = "1\n00:00:01,000 --> 00:00:02,000\n你好\n".encode("utf-8")
         self.tikhub._http_get = lambda url, **kw: srt
-        r = self.tikhub.transcript({"platform": "xhs", "subtitle_url": "http://x/s.srt"}, video_bytes=b"X")
+        r = self.tikhub.transcript({"platform": "xhs", "subtitle_url": "http://x/s.srt"},
+                                   video_path=self._existing_file())
         self.assertEqual(r["source"], "subtitle")
         self.assertEqual(self.downloads, [], "有字幕就不该下视频")
 
