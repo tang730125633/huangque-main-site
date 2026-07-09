@@ -12,7 +12,7 @@
 - 清道夫 reaper：由 content_api 跑(同一个库)，这里不重复。
 依赖 同目录 tikhub.py（抖音/小红书/视频号客户端，自带限流/重试）。systemd 加载同一份 content.env。
 """
-import os, re, sqlite3, json, time, threading, urllib.request, urllib.parse, urllib.error
+import os, re, sqlite3, json, time, threading, tempfile, urllib.request, urllib.parse, urllib.error
 from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -50,76 +50,77 @@ def _request_token(headers):
     except Exception:
         return ""
 
-def _fetch_within_budget(url, deadline_ts):
-    """流式拉取远程视频，受总预算约束。实现在 tikhub.http_get_budgeted（同一份，别再复制）。
+def _download_with_retry(remote_url, rel_key, dest_path):
+    """流式下载远程视频到 dest_path，受总预算约束。返回字节数；失败返回 0。
 
-    并发闸：do_POST 每个请求直接起一个不受限的线程（本文件 :threading.Thread(target=run_job)），
-    而整段视频要缓存在内存里再上传 COS，b"".join 时刻还翻倍。不限并发的话
-    10 个并发采集就能把这个小进程推到 1GB+ RSS 直接 OOM。
+    绝不抛异常 —— 采集流程不能因为转存失败而中断。
+    并发闸：do_POST 每个请求直接起一个不受限的线程（本文件 threading.Thread(target=run_job)），
+    落盘后内存虽已恒定，但带宽和磁盘仍需限流。
     """
-    with _COS_FETCH_GATE:
-        return tikhub.http_get_budgeted(url, deadline_ts,
-                                        max_bytes=COS_FETCH_MAX_BYTES,
-                                        read_timeout=COS_FETCH_READ_TIMEO)
-
-
-def _download_with_retry(remote_url, rel_key):
-    """流式下载远程视频，受总预算约束。失败返回 None（绝不抛，采集流程不能因此中断）。"""
     deadline = time.time() + COS_FETCH_DEADLINE
     for attempt in (1, 2):
         try:
-            data = _fetch_within_budget(remote_url, deadline)
-            if data:
-                return data
+            with _COS_FETCH_GATE:
+                n = tikhub.download_to_file(remote_url, deadline, dest_path,
+                                            max_bytes=COS_FETCH_MAX_BYTES,
+                                            read_timeout=COS_FETCH_READ_TIMEO)
+            if n:
+                return n
             raise ValueError("拉取到 0 字节")
         except Exception as e:
             # 预算耗尽就别再重试了——多等一轮只会把整个 collect 任务顶过 reaper 判死线
             if attempt == 2 or time.time() >= deadline:
                 print("[cos] 视频下载失败(%d次尝试): %s -> %s: %s"
                       % (attempt, rel_key, type(e).__name__, e), flush=True)
-                return None
+                return 0
             print("[cos] 视频下载第%d次失败，剩余预算 %.0fs，重试: %s"
                   % (attempt, deadline - time.time(), e), flush=True)
-    return None
+    return 0
 
 
-def store_video_bytes(data, rel_key, content_type=None):
-    """已下好的字节 → COS 永久直链。未配置 / 上传失败 → 返回 None，由调用方回退原链接。"""
-    if not data:
-        return None
+def store_video_file(path, rel_key, content_type=None):
+    """已落盘的视频 → COS 永久直链。未配置 / 上传失败 → 返回 None，由调用方回退原链接。"""
     try:
         from content_domains import cos
         if not cos.enabled():
             return None
-        return cos.put_bytes(data, str(rel_key), content_type)
+        return cos.put_file(path, str(rel_key), content_type)
     except Exception as e:
         print("[cos] 上传失败: %s -> %s" % (rel_key, e), flush=True)
         return None
 
 
-def fetch_and_store(remote_url, rel_key, content_type=None, keep_bytes=False):
-    """下载一次，字节既用于 COS 转存、也可交给调用方复用（ASR）。
+def fetch_and_store(remote_url, rel_key, content_type=None, keep_file=False):
+    """下载一次到临时文件，同一份既用于 COS 转存、也可交给调用方复用（ASR）。
 
-    返回 (可用的 url, 视频字节 或 None)。转存失败时 url 回退成会过期的第三方 CDN 直链——
-    这是静默降级，资产库据此把链接标为「非永久」。
+    返回 (可用的 url, 视频文件路径 或 None)。keep_file=True 时【文件归调用方删】。
+    转存失败时 url 回退成会过期的第三方 CDN 直链 —— 静默降级，资产库据此标为「非永久」。
 
-    为什么要 keep_bytes：采集流程原来下两次同一个 play_url（一次转存、一次 ASR）。
-    线上 job 1354 实测 5.1MB 的文件，第一次下载耗时 130s 且超时失败，第二次只花 20.5s，
-    170s 的总耗时里 130s 是纯浪费。
+    为什么要落盘而不是留在内存：视频最大 100MB，原来 b"".join 拼接瞬间双份，
+    而 leadgen 每个请求起一个不限流的线程，并发一高就 OOM。落盘后 ffmpeg 直接读文件、
+    COS 也从文件流式上传，内存恒定，反而少一次写。
     """
     remote_url = (remote_url or "").strip()
     if not remote_url:
         return remote_url, None
     want_cos = COS_COLLECT and _cos_enabled()
-    if not (want_cos or keep_bytes):
-        return remote_url, None          # 既不转存也不需要字节，别白下
-    data = _download_with_retry(remote_url, rel_key)
-    if not data:
-        return remote_url, None          # 下载失败：回退原链接，ASR 会自己再试一次
-    url = store_video_bytes(data, rel_key, content_type) if want_cos else None
-    if want_cos and not url:
-        print("[cos] 转存失败，回退会过期的原链接: %s" % rel_key, flush=True)
-    return (url or remote_url), (data if keep_bytes else None)
+    if not (want_cos or keep_file):
+        return remote_url, None          # 既不转存也不需要文件，别白下
+    fd, path = tempfile.mkstemp(suffix=".mp4", prefix="hqcollect-")
+    os.close(fd)
+    keep = False
+    try:
+        if not _download_with_retry(remote_url, rel_key, path):
+            return remote_url, None      # 下载失败：回退原链接，ASR 会自己再试一次
+        url = store_video_file(path, rel_key, content_type) if want_cos else None
+        if want_cos and not url:
+            print("[cos] 转存失败，回退会过期的原链接: %s" % rel_key, flush=True)
+        keep = bool(keep_file)
+        return (url or remote_url), (path if keep_file else None)
+    finally:
+        if not keep:
+            try: os.unlink(path)
+            except OSError: pass
 
 
 def _cos_enabled():
@@ -131,22 +132,22 @@ def _cos_enabled():
 
 
 def public_url_from_remote(remote_url, rel_key, content_type=None):
-    """兼容旧签名：只要 URL，不要字节。"""
-    return fetch_and_store(remote_url, rel_key, content_type, keep_bytes=False)[0]
+    """兼容旧签名：只要 URL，临时文件用完即删。"""
+    return fetch_and_store(remote_url, rel_key, content_type, keep_file=False)[0]
 
-def _collect_cos_play_url(platform, vid_id, play_url, keep_bytes=False):
+def _collect_cos_play_url(platform, vid_id, play_url, keep_file=False):
     """采集视频 play_url → COS 永久直链。图集/无 play_url 跳过、保持原样。
     对象键 collect/<platform>/<id>.mp4。转存失败/未配置回退原 play_url。
     注意：视频号(channels)是加密流，不能走这里直存——用 _collect_channels_play_url 先解密。
 
-    keep_bytes=True 时一并返回下好的字节，供 ASR 复用，避免同一个 URL 下两次。
-    返回 (url, bytes 或 None)。
+    keep_file=True 时一并返回下好的临时文件路径，供 ASR 复用，避免同一个 URL 下两次。
+    返回 (url, path 或 None)。path 归调用方删。
     """
     if not play_url:
         return play_url, None
     ident = re.sub(r"[^A-Za-z0-9_.-]", "", str(vid_id or "")) or "v"
     key = "collect/%s/%s.mp4" % ((platform or "x"), ident)
-    return fetch_and_store(play_url, key, "video/mp4", keep_bytes=keep_bytes)
+    return fetch_and_store(play_url, key, "video/mp4", keep_file=keep_file)
 
 
 DECRYPT_API = os.environ.get("WXCH_DECRYPT_API", "http://127.0.0.1:3001/api/decrypt")  # 视频号 Isaac64 解密服务(与 dl_service 同一个)
@@ -329,38 +330,43 @@ def gen_collect(payload):
     if not (det.get("title") or det.get("desc") or det.get("images")):
         raise ValueError("内容获取失败（可能是上游限流或内容私密/已删），请重试")
     au = det.get("author") or {}
-    video_bytes = None
+    video_path = None
     if platform == "channels":   # 视频号是加密流：先解密再存 COS，否则存下来是打不开的乱码
         play_url = _collect_channels_play_url(det.get("id") or ident, det.get("play_url"), det.get("decode_key"))
     else:
-        # 只有真要跑 ASR 时才留字节：视频号不走 ASR，小红书有官方字幕(subtitle_url)就不用下视频。
-        need_bytes = ("transcript" in want
-                      and platform != "channels"
-                      and not det.get("subtitle_url"))
-        play_url, video_bytes = _collect_cos_play_url(
-            platform, det.get("id") or ident, det.get("play_url"), keep_bytes=need_bytes)
-    out = {
-        "type": "collect", "platform": platform, "source": det.get("url") or ident,
-        "video": {"title": det.get("title"), "author": au.get("name"), "authorAvatar": None,
-                  "profile_url": au.get("profile_url"),
-                  "cover": det.get("cover"), "play_url": play_url, "url": det.get("url"),
-                  "duration": det.get("duration"), "publish_time": det.get("publish_time"),
-                  "stats": det.get("stats")},
-        "copy": {"title": det.get("title"), "desc": det.get("desc"), "tags": det.get("tags")},
-        "images": det.get("images") or [],
-        "transcript": None, "comments": [], "comments_more": False,
-        "url": det.get("cover"), "prompt": det.get("title"),   # 给通用 history 用
-    }
-    if "comments" in want:
-        cm = tikhub.comments(platform, det.get("id") or ident, count=int(payload.get("comment_count") or 20))
-        out["comments"] = cm["items"]; out["comments_more"] = bool(cm.get("has_more"))
-    if "transcript" in want:
-        try:
-            # video_bytes 是上面转存时下好的同一个 play_url；非 None 时 ASR 不再重复下载
-            out["transcript"] = tikhub.transcript(det, video_bytes=video_bytes)
-        except tikhub.TikHubError as e:
-            out["transcript"] = {"text": None, "error": str(e)[:120]}
-    return out
+        # 只有真要跑 ASR 时才留文件：视频号不走 ASR，小红书有官方字幕(subtitle_url)就不用下视频。
+        need_file = ("transcript" in want
+                     and platform != "channels"
+                     and not det.get("subtitle_url"))
+        play_url, video_path = _collect_cos_play_url(
+            platform, det.get("id") or ident, det.get("play_url"), keep_file=need_file)
+    try:
+        out = {
+            "type": "collect", "platform": platform, "source": det.get("url") or ident,
+            "video": {"title": det.get("title"), "author": au.get("name"), "authorAvatar": None,
+                      "profile_url": au.get("profile_url"),
+                      "cover": det.get("cover"), "play_url": play_url, "url": det.get("url"),
+                      "duration": det.get("duration"), "publish_time": det.get("publish_time"),
+                      "stats": det.get("stats")},
+            "copy": {"title": det.get("title"), "desc": det.get("desc"), "tags": det.get("tags")},
+            "images": det.get("images") or [],
+            "transcript": None, "comments": [], "comments_more": False,
+            "url": det.get("cover"), "prompt": det.get("title"),   # 给通用 history 用
+        }
+        if "comments" in want:
+            cm = tikhub.comments(platform, det.get("id") or ident, count=int(payload.get("comment_count") or 20))
+            out["comments"] = cm["items"]; out["comments_more"] = bool(cm.get("has_more"))
+        if "transcript" in want:
+            try:
+                # video_path 是上面转存时下好的同一个 play_url；非 None 时 ASR 不再重复下载
+                out["transcript"] = tikhub.transcript(det, video_path=video_path)
+            except tikhub.TikHubError as e:
+                out["transcript"] = {"text": None, "error": str(e)[:120]}
+        return out
+    finally:
+        if video_path:   # 临时文件归本函数删，无论成败
+            try: os.unlink(video_path)
+            except OSError: pass
 
 
 # ============ 获客能力：关键词→搜视频→扒评论→意图过滤→客户名单 ============

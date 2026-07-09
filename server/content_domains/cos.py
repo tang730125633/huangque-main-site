@@ -103,3 +103,22 @@ def put_bytes(data, rel_key, content_type=None, private=False):
         kwargs["ACL"] = "private"
     _client().put_object(**kwargs)
     return _url(full_key, private=private)
+
+
+def put_file(path, rel_key, content_type=None, private=False):
+    """从磁盘文件上传到 COS，返回可访问 URL。
+
+    采集视频最大 100MB，用 put_bytes 得先把整段读进内存。put_object 接受文件对象，
+    SDK 会分块读，内存恒定。未启用或失败会抛异常，由调用方回退原链接。
+    """
+    if not enabled():
+        raise RuntimeError("COS 未配置")
+    full_key = _object_key(rel_key)
+    with open(path, "rb") as f:
+        kwargs = {"Bucket": _BUCKET, "Key": full_key, "Body": f}
+        if content_type:
+            kwargs["ContentType"] = content_type
+        if private:
+            kwargs["ACL"] = "private"
+        _client().put_object(**kwargs)
+    return _url(full_key, private=private)
