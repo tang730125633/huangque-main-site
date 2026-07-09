@@ -34,7 +34,7 @@ class LeadgenJobCasTests(unittest.TestCase):
         # 必须返回 True：_refund_once 现在按返回值判断退点是否成功，失败会回滚 refunded 标记。
         self.refunds = []
         self._orig_add_points = self.lg.add_points
-        self.lg.add_points = lambda username, delta: (self.refunds.append((username, delta)), True)[1]
+        self.lg.add_points = lambda username, delta, reason="": (self.refunds.append((username, delta, reason)), True)[1]
 
     def tearDown(self):
         self.lg.JOB_DB = self._orig_jobdb
@@ -69,6 +69,8 @@ class LeadgenJobCasTests(unittest.TestCase):
         self.assertEqual(row["status"], "error")   # 线上 id=1170 就是这里被覆写成 done 的
         self.assertIsNone(row["result"])           # 结果不入库
         self.assertEqual(len(self.refunds), 1)
+        # 退点要带 job 上下文，否则 points_audit 里这笔退款无法与任务配对（#18）
+        self.assertEqual(self.refunds[0][2], "job#%d" % jid)
 
     # --- reaper 退点后 worker 又异常 → 仍只退一次（原 add_points 无幂等，会退两次）---
     def test_reaper_and_worker_both_error_refund_once(self):
@@ -128,11 +130,11 @@ class LeadgenJobCasTests(unittest.TestCase):
     def test_refund_failure_rolls_back_refunded_flag(self):
         jid = self._insert(6)
         self.assertTrue(self.lg._set_terminal(jid, "error", error="boom"))
-        self.lg.add_points = lambda u, d: False          # auth 挂了 + 直写也失败
+        self.lg.add_points = lambda u, d, reason="": False          # auth 挂了 + 直写也失败
         self.lg._refund_once(jid, "u", 6)
         self.assertEqual(self._row(jid)["refunded"], 0, "退点失败却留下 refunded=1，点数永久丢失")
         # 恢复后重试应能成功退一次
-        self.lg.add_points = lambda u, d: (self.refunds.append((u, d)), True)[1]
+        self.lg.add_points = lambda u, d, reason="": (self.refunds.append((u, d, reason)), True)[1]
         self.lg._refund_once(jid, "u", 6)
         self.assertEqual(len(self.refunds), 1)
         self.assertEqual(self._row(jid)["refunded"], 1)

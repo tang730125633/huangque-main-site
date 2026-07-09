@@ -161,7 +161,13 @@
           <button id="userRefresh">刷新用户</button>
         </div>
         <div id="usersBox"></div>
-        <h2 style="margin-top:18px">点数流水</h2>
+        <h2 style="margin-top:18px">点数流水
+          <select id="auditActor" style="margin-left:10px;font-size:13px;vertical-align:middle">
+            <option value="admin">人工加减点</option>
+            <option value="system">任务扣退点</option>
+            <option value="">全部</option>
+          </select>
+        </h2>
         <div id="auditBox"></div>
       </section>
       <section class="card span12 module-card" data-module="recharge" hidden>
@@ -394,7 +400,10 @@
     loadAudit();
   }
   function loadAudit(username){
-    var q='?limit=80'+(username?'&username='+encodeURIComponent(username):'');
+    // 默认只看人工加减点：任务扣退点条数是它的几百倍，混在一起第一页就看不到管理员操作了。
+    var actor=(el('auditActor')||{}).value;
+    if(actor===undefined) actor='admin';
+    var q='?limit=80&actor='+encodeURIComponent(actor)+(username?'&username='+encodeURIComponent(username):'');
     api('/api/admin/points/audit'+q).then(function(d){renderAudit(d, username)}).catch(function(e){el('auditBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
   }
   function adjustPoints(username, sign){
@@ -481,6 +490,7 @@
   el('days7').onclick=function(){state.days=7;load()};
   el('days30').onclick=function(){state.days=30;load()};
   el('userRefresh').onclick=loadUsers;
+  el('auditActor').onchange=function(){loadAudit()};
   el('userSort').onchange=loadUsers;
   el('userDir').onchange=loadUsers;
   el('userSearch').oninput=function(){clearTimeout(state.userTimer);state.userTimer=setTimeout(loadUsers,260)};

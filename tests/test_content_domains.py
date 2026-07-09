@@ -181,8 +181,8 @@ class ContentDomainTests(unittest.TestCase):
             def __init__(self):
                 self.refunds = []
 
-            def safe_refund_points(self, username, cost):
-                self.refunds.append((username, cost))
+            def safe_refund_points(self, username, cost, reason=""):
+                self.refunds.append((username, cost, reason))
                 return 0
 
         fake_points = FakePoints()
@@ -202,9 +202,9 @@ class ContentDomainTests(unittest.TestCase):
                     c.commit()
 
                 self.assertTrue(core._reject_pending_job(1, "fang", 12, "full"))
-                self.assertEqual(fake_points.refunds, [("fang", 12)])
+                self.assertEqual(fake_points.refunds, [("fang", 12, "job#1")])
                 self.assertFalse(core._reject_pending_job(1, "fang", 12, "full again"))
-                self.assertEqual(fake_points.refunds, [("fang", 12)])
+                self.assertEqual(fake_points.refunds, [("fang", 12, "job#1")])
                 with closing(core.jdb()) as c:
                     row = c.execute("SELECT status,error,refunded FROM jobs WHERE id=1").fetchone()
                 self.assertEqual(row["status"], "error")

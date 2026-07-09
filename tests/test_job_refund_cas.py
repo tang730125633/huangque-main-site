@@ -28,8 +28,8 @@ class JobRefundCasTests(unittest.TestCase):
         outer = self
         class _FakePoints:
             @staticmethod
-            def safe_refund_points(username, amount):
-                outer.refunds.append((username, amount))
+            def safe_refund_points(username, amount, reason=""):
+                outer.refunds.append((username, amount, reason))
         self._orig_domains = self.core._domains
         self.core._domains = lambda: (None, _FakePoints, None)
 

@@ -197,10 +197,10 @@ def _normalize_image_ratio(raw, ratio):
 def jdb():
     c = sqlite3.connect(JOB_DB, timeout=10); c.row_factory = sqlite3.Row; return c
 
-def _auth_points(path, username, amount):
+def _auth_points(path, username, amount, reason=""):
     if not INTERNAL_TOKEN:
         return 500, {"detail": "HQ_INTERNAL_TOKEN 未配置"}
-    body = json.dumps({"username": username, "amount": int(amount)}, ensure_ascii=False).encode()
+    body = json.dumps({"username": username, "amount": int(amount), "reason": reason}, ensure_ascii=False).encode()
     req = urllib.request.Request(
         AUTH_BASE + path,
         data=body,
@@ -219,11 +219,11 @@ def _auth_points(path, username, amount):
     except Exception:
         return 500, {"detail": "points update failed"}
 
-def deduct_points(username, amount):
-    return _auth_points("/api/auth/points/deduct", username, amount)
+def deduct_points(username, amount, reason=""):
+    return _auth_points("/api/auth/points/deduct", username, amount, reason)
 
-def refund_points(username, amount):
-    return _auth_points("/api/auth/points/refund", username, amount)
+def refund_points(username, amount, reason=""):
+    return _auth_points("/api/auth/points/refund", username, amount, reason)
 
 def verify(token):
     if not token: return None
@@ -306,9 +306,9 @@ def _set_terminal(job_id, status, result=None, error=None, from_states=("running
     from content_domains import jobs_store
     return jobs_store.set_terminal(jdb, job_id, status, result, error, from_states)
 
-def _refund_via_auth(username, cost):
+def _refund_via_auth(username, cost, reason=""):
     """本服务没有直写 users.db 的兜底：auth 不可用就退不了点，返回 False 让 jobs_store 回滚 refunded。"""
-    status, data = refund_points(username, cost)
+    status, data = refund_points(username, cost, reason)
     if status == 200:
         return True
     print("imggen refund failed user=%s status=%s detail=%s（refunded 标记将回滚，留待重试）" % (
@@ -317,7 +317,8 @@ def _refund_via_auth(username, cost):
 
 def _refund_once(job_id, username, cost):
     from content_domains import jobs_store
-    return jobs_store.refund_once(jdb, job_id, username, cost, _refund_via_auth)
+    return jobs_store.refund_once(jdb, job_id, username, cost,
+                                  lambda u, c: _refund_via_auth(u, c, "job#%d" % job_id))
 
 def run_job(job_id):
     with closing(jdb()) as c:
@@ -410,7 +411,7 @@ class H(BaseHTTPRequestHandler):
             cq = body["quality"]
             cn = body["count"]
             cost = BASE_COST[mk][cq] * cn  # 璐ㄩ噺鍩轰环 脳 鏁伴噺
-            deduct_status, deduct_data = deduct_points(user["username"], cost)
+            deduct_status, deduct_data = deduct_points(user["username"], cost, "job:image")
             if deduct_status == 402:
                 return self._send(402, {"detail": "点数不足", "need": cost})
             if deduct_status != 200:
@@ -423,7 +424,7 @@ class H(BaseHTTPRequestHandler):
                                     (user["username"], cost, json.dumps(body, ensure_ascii=False), now, now))
                     c.commit(); jid = cur.lastrowid
             except Exception:
-                refund_status, refund_data = refund_points(user["username"], cost)
+                refund_status, refund_data = refund_points(user["username"], cost, "job:image:insert_failed")
                 if refund_status != 200:
                     print("imggen refund failed after job insert error user=%s status=%s detail=%s" % (
                         user["username"], refund_status, (refund_data or {}).get("detail")
@@ -445,7 +446,7 @@ class H(BaseHTTPRequestHandler):
             if len(image) > 8 * 1024 * 1024:     # base64 ~8MB ≈ 原图 6MB
                 return self._send(400, {"detail": "图片太大，请压缩后再试"})
             cost = REVERSE_COST
-            deduct_status, deduct_data = deduct_points(user["username"], cost)
+            deduct_status, deduct_data = deduct_points(user["username"], cost, "reverse")
             if deduct_status == 402:
                 return self._send(402, {"detail": "点数不足", "need": cost})
             if deduct_status != 200:
@@ -455,7 +456,7 @@ class H(BaseHTTPRequestHandler):
                 with _reverse_sem:                       # 限并发，防同步调用打爆上游/线程池
                     prompt = gen_reverse(image)
             except Exception as e:
-                refund_points(user["username"], cost)   # 失败退点
+                refund_points(user["username"], cost, "reverse:refund")   # 失败退点
                 return self._send(502, {"detail": "反推失败：" + str(e)[:160]})
             return self._send(200, {"prompt": prompt, "cost": cost, "points_left": points_left})
         self._send(404, {"detail": "not found"})

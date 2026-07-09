@@ -37,7 +37,7 @@ class ImggenJobCasTests(unittest.TestCase):
         # 打桩 refund_points（不打 auth 服务），统计真正退点次数
         self.refunds = []
         self._orig_refund = self.m.refund_points
-        self.m.refund_points = lambda username, amount: (self.refunds.append((username, amount)), (200, {}))[1]
+        self.m.refund_points = lambda username, amount, reason="": (self.refunds.append((username, amount, reason)), (200, {}))[1]
 
     def tearDown(self):
         self.m.JOB_DB = self._orig_jobdb
@@ -69,6 +69,8 @@ class ImggenJobCasTests(unittest.TestCase):
         self.assertEqual(row["status"], "error")
         self.assertIsNone(row["result"])
         self.assertEqual(len(self.refunds), 1)
+        # 退点要带 job 上下文，否则 points_audit 里这笔退款无法与任务配对（#18）
+        self.assertEqual(self.refunds[0][2], "job#%d" % jid)
 
     def test_reaper_and_worker_both_error_refund_once(self):
         jid = self._insert(14)
@@ -115,10 +117,10 @@ class ImggenJobCasTests(unittest.TestCase):
     def test_refund_failure_rolls_back_refunded_flag(self):
         jid = self._insert(14)
         self.assertTrue(self.m._set_terminal(jid, "error", error="boom"))
-        self.m.refund_points = lambda u, a: (503, {"detail": "auth 重启中"})
+        self.m.refund_points = lambda u, a, reason="": (503, {"detail": "auth 重启中"})
         self.m._refund_once(jid, "u", 14)
         self.assertEqual(self._row(jid)["refunded"], 0, "退点失败却留下 refunded=1，点数永久丢失")
-        self.m.refund_points = lambda u, a: (self.refunds.append((u, a)), (200, {}))[1]
+        self.m.refund_points = lambda u, a, reason="": (self.refunds.append((u, a, reason)), (200, {}))[1]
         self.m._refund_once(jid, "u", 14)
         self.assertEqual(len(self.refunds), 1)
 

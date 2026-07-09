@@ -658,7 +658,7 @@ def _set_terminal(job_id, status, result=None, error=None, from_states=("running
 def _refund_once(job_id, username, cost):
     # safe_refund_points 吞掉异常并返回当前点数，不让退点接口故障影响主流程 → 视为永远成功。
     return jobs_store.refund_once(jdb, job_id, username, cost,
-                                  lambda u, c: (_domains()[1].safe_refund_points(u, c), True)[1])
+                                  lambda u, c: (_domains()[1].safe_refund_points(u, c, "job#%d" % job_id), True)[1])
 
 def _pick_job_queue(kind, mode=None):
     # kind缺省(旧调用/测试)保守走慢队列；生图(慢90~450s)走生图池；秒级快任务(音频/文案/采集/名单)走快队列；
@@ -1053,7 +1053,7 @@ class H(BaseHTTPRequestHandler):
                     "need": cost
                 })
             try:
-                points_left = points_domain.deduct_points(user["username"], cost)  # 原子预扣
+                points_left = points_domain.deduct_points(user["username"], cost, "job:" + kind)  # 原子预扣
             except points_domain.AuthPointsError as e:
                 code = 402 if e.status == 402 else 502
                 return self._send(code, {"detail": e.detail, "need": cost})
@@ -1274,14 +1274,14 @@ class H(BaseHTTPRequestHandler):
             except Exception: page = 1
             if not keyword: return self._send(400, {"detail": "缺少关键词"})
             try:
-                points_left = points_domain.deduct_points(user["username"], 1)
+                points_left = points_domain.deduct_points(user["username"], 1, "search:" + platform)
             except points_domain.AuthPointsError as e:
                 code = 402 if e.status == 402 else 502
                 return self._send(code, {"detail": e.detail, "need": 1})
             try:
                 r = tikhub.search(platform, keyword, page=page, video_only=False)  # 含图文
             except tikhub.TikHubError as e:
-                points_domain.safe_refund_points(user["username"], 1)
+                points_domain.safe_refund_points(user["username"], 1, "search:" + platform + ":refund")
                 return self._send(502, {"detail": str(e)[:160]})
             items = [{"id": it.get("id"), "platform": it.get("platform"), "title": it.get("title"),
                       "cover": it.get("cover"), "author": it.get("author"), "url": it.get("url"),
