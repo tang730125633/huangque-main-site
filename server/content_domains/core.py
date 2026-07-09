@@ -196,7 +196,8 @@ JOB_WORKERS, FAST_JOB_WORKERS = _env_positive_int("CONTENT_JOB_WORKERS", 3), _en
 TALKING_JOB_WORKERS = _env_positive_int("CONTENT_TALKING_JOB_WORKERS", 10)  # 口播(video mode=text/audio)专用池：HeyGen口播能扛高并发(50并发实测无429)
 MOTION_JOB_WORKERS = _env_positive_int("CONTENT_MOTION_JOB_WORKERS", 3)     # 动作模仿(video mode=motion)专用池：HeyGen motion并发>3易撞代理/速率/生成墙(10并发实测仅1/10)
 JOB_QUEUE_MAX = _env_positive_int("CONTENT_JOB_QUEUE_MAX", 32)
-MAX_USER_ACTIVE_JOBS = _env_positive_int("MAX_USER_ACTIVE_JOBS", 5)
+MAX_USER_ACTIVE_JOBS = _env_positive_int("MAX_USER_ACTIVE_JOBS", 5)          # 单用户可同时提交(pending+running)的任务上限，超了提交即 429
+MAX_USER_RUNNING_TALKING = _env_positive_int("MAX_USER_RUNNING_TALKING", 2)  # 单用户口播「运行中」并发上限：最多同时生成2条，多提交的留 pending 排队
 COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40}  # collect/leads/tryon 走 cost_of() 动态算
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
 ZELONG_KEY  = os.environ.get("ZELONG_KEY", "")                              # 泽龙Ai 中转站(OpenAI 兼容)
@@ -640,6 +641,7 @@ _talking_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)  # 口播队列(video mo
 _motion_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)   # 动作模仿队列(video mode=motion)
 _queued_job_ids = set()
 _job_queue_lock = threading.Lock()
+_run_gate_lock = threading.Lock()  # 单用户口播运行闸：count+抢running 在此锁内原子，防多worker同时超发
 _workers_started = False
 
 def _set_terminal(job_id, status, result=None, error=None):
@@ -709,6 +711,15 @@ def _user_active_job_count(username):
                         (username,)).fetchone()
     return int(row["n"] if row else 0)
 
+def _user_running_talking_count(username):
+    """该用户「运行中」的口播条数(kind=video 且 mode!=motion)。mode 在 payload JSON 里，SQL 取回在 py 判，用户 running 数很少(<=5)开销可忽略。"""
+    if not username:
+        return 0
+    with closing(jdb()) as c:
+        rows = c.execute("SELECT payload FROM jobs WHERE username=? AND status='running' AND kind='video'",
+                         (username,)).fetchall()
+    return sum(1 for r in rows if '"mode":"motion"' not in (r["payload"] or "").replace(" ", ""))
+
 def _reject_pending_job(job_id, username, cost, reason):
     now = int(time.time())
     with closing(jdb()) as c:
@@ -775,12 +786,18 @@ def run_job(job_id):
     if not r: return
     kind = r["kind"]; payload = json.loads(r["payload"] or "{}")
     username = r["username"]; cost = r["cost"]
+    mode = str(payload.get("mode") or "").lower()
+    is_talking = (kind == "video" and mode != "motion")   # 口播=video 且非 motion(text/audio)
+    # 单用户口播「运行中」并发闸 + 原子抢 running：同进程锁内 count+claim，防多 worker 同时超发。
+    with _run_gate_lock:
+        if is_talking and _user_running_talking_count(username) >= MAX_USER_RUNNING_TALKING:
+            return  # 超运行闸→不启动，任务留 pending(worker finally 会移出 _queued_job_ids)，等口播完成事件/30s 扫描重排
+        with closing(jdb()) as c:
+            c.execute("UPDATE jobs SET status='running', updated_at=? WHERE id=?", (int(time.time()), job_id)); c.commit()
     if kind in {"audio", "video", "tryon", "xiaole_video", "leads"}:
         payload["_username"] = username
         payload["_job_id"] = job_id
     try:
-        with closing(jdb()) as c:
-            c.execute("UPDATE jobs SET status='running', updated_at=? WHERE id=?", (int(time.time()), job_id)); c.commit()
         result = HANDLERS[kind](payload)
         # 先 CAS 抢 done 终态：仅当仍是 running 才写 done，防 reaper 已判 error 又被无条件覆盖(既出片又退点)
         if not _set_terminal(job_id, "done", result=result):
@@ -806,6 +823,12 @@ def run_job(job_id):
             except Exception:
                 pass
         _refund_once(job_id, username, cost)  # 幂等：最多退一次
+    finally:
+        if is_talking:
+            try:
+                _recover_pending_jobs()  # 口播跑完→腾出该用户运行槽，立刻重排排队中的口播(+30s 扫描兜底)
+            except Exception:
+                pass
 
 # ============ 超时清道夫：running 超 6 分钟的僵尸任务自动判失败 + 退点 ============
 def reaper():
@@ -1243,7 +1266,8 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/gen/health":
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS),
                                     "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS,
-                                    "talking_job_workers": TALKING_JOB_WORKERS, "motion_job_workers": MOTION_JOB_WORKERS, "max_user_active_jobs": MAX_USER_ACTIVE_JOBS,
+                                    "talking_job_workers": TALKING_JOB_WORKERS, "motion_job_workers": MOTION_JOB_WORKERS,
+                                    "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_running_talking": MAX_USER_RUNNING_TALKING,
                                     "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
 

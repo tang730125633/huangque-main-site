@@ -202,6 +202,37 @@ class ContentDomainTests(unittest.TestCase):
                 core.JOB_DB = original_job_db
                 core._domains = original_domains
 
+    def test_talking_running_gate_defers_over_limit(self):
+        core = importlib.import_module("content_domains.core")
+        original_job_db = core.JOB_DB
+        original_handlers = core.HANDLERS
+        with tempfile.TemporaryDirectory() as td:
+            core.JOB_DB = str(Path(td) / "jobs.db")
+            called = []
+            core.HANDLERS = {"video": lambda p: called.append(p) or {"ok": 1}}
+            try:
+                with closing(core.jdb()) as c:
+                    c.execute("""CREATE TABLE jobs(
+                        id INTEGER PRIMARY KEY, kind TEXT, username TEXT, cost INTEGER,
+                        status TEXT, payload TEXT, result TEXT, error TEXT,
+                        created_at INTEGER, updated_at INTEGER, refunded INTEGER DEFAULT 0)""")
+                    # fang: 2 条口播 running + 1 条 motion running(不该计入口播)
+                    c.execute("INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at) VALUES(1,'video','fang',20,'running','{\"mode\":\"text\"}',1,1)")
+                    c.execute("INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at) VALUES(2,'video','fang',20,'running','{\"mode\":\"audio\"}',1,1)")
+                    c.execute("INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at) VALUES(3,'video','fang',20,'running','{\"mode\":\"motion\"}',1,1)")
+                    # 第4条 pending 口播 —— 应被运行闸 defer，留 pending、不调 handler
+                    c.execute("INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at) VALUES(4,'video','fang',20,'pending','{\"mode\":\"text\"}',1,1)")
+                    c.commit()
+                # count 只算口播(排除 motion)=2
+                self.assertEqual(core._user_running_talking_count("fang"), 2)
+                core.run_job(4)
+                self.assertEqual(called, [])  # 超运行闸→handler 不该被调
+                with closing(core.jdb()) as c:
+                    self.assertEqual(c.execute("SELECT status FROM jobs WHERE id=4").fetchone()["status"], "pending")
+            finally:
+                core.JOB_DB = original_job_db
+                core.HANDLERS = original_handlers
+
     def test_clone_vip_validation_rejects_before_mutation(self):
         audio = importlib.import_module("content_domains.audio")
         original_adb = audio.adb
