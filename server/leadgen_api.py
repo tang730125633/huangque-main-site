@@ -53,7 +53,7 @@ def public_url_from_remote(remote_url, rel_key, content_type=None):
         if not cos.enabled():
             return remote_url
         # 采集视频可能较大，增加超时和大小限制；加简单重试避免偶发网络抖动导致回退过期链接
-        # 注意：总时长需 < reaper 的 360s（collect 只有默认 6 分钟宽限），建议 ≤240s
+        # 注意：总时长需 < reaper 给 collect 的 1200s 窗口（core.py::reaper），留足余量
         for attempt in range(2):
             try:
                 data = tikhub._http_get(remote_url, timeout=120, max_bytes=100 * 1024 * 1024)
