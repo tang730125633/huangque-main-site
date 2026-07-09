@@ -37,6 +37,8 @@ XIAOLE_CHANNEL_MODELS = {
     "omni": "omni-fast",          # 欧米视频（Omni Fast：文生/图生视频，~100s快；文生真人会被上游内容审核拦，图生真人不拦）
 }
 XIAOLE_IMAGE_CHANNELS = {"grok", "micro", "omni"}  # 支持参考图（图生视频）的渠道
+# 文生视频固定时长的渠道（None=用平台默认）。omni-fast 只支持 10 秒(duration_options=[10])，不传会 400。
+XIAOLE_CHANNEL_DURATION = {"omni": 10}
 XIAOLE_MAX_REF = int(os.environ.get("XIAOLEVIDEO_MAX_REF", "7"))  # Grok 图生视频最多参考图数(实测上游pydantic硬上限7张,超过422)
 
 def _xiaole_build_refs(reference_images):
@@ -1670,8 +1672,8 @@ def _download_xiaole_video(url, prefix="xiaole"):
 def _xiaole_size_for_ratio(ratio):
     return XIAOLE_RATIO_SIZES.get(str(ratio or "").strip(), XIAOLE_RATIO_SIZES["9:16"])
 
-def generate_xiaole_video(model, prompt, reference_images=None, size="720x1280", job_id=None, prefix="xiaole"):
-    """统一 generations API：创建 → 轮询 → 下载。Grok(果肉)/Seedance(豆姐) 共用。"""
+def generate_xiaole_video(model, prompt, reference_images=None, size="720x1280", job_id=None, prefix="xiaole", duration=None):
+    """统一 generations API：创建 → 轮询 → 下载。Grok(果肉)/Seedance(豆姐)/Omni(欧米) 共用。"""
     input_d = {"prompt": (prompt or "").strip(), "size": size or XIAOLE_RATIO_SIZES["9:16"]}   # 果肉/Grok 视频收 size，不收 aspect_ratio(#367)
     refs = _xiaole_build_refs(reference_images)
     if refs:
@@ -1680,6 +1682,10 @@ def generate_xiaole_video(model, prompt, reference_images=None, size="720x1280",
         # 官方文档：图生视频建议 duration_seconds ≤10，否则超部分上游上限(疑之前 502 主因)。
         # 不传时 API 默认 15s（探针实测），Grok 图生示例即用 10s。
         input_d["duration_seconds"] = 10
+    elif duration:
+        # 文生视频固定时长渠道(如 omni-fast 只支持10s)：不传会 400"不支持该时长"。
+        input_d["mode"] = "text_to_video"
+        input_d["duration_seconds"] = duration
     try:
         create = _xiaole_request("POST", "/api/v1/generations", {"model": model, "input": input_d})
     except RuntimeError as e:
@@ -1748,7 +1754,8 @@ def gen_xiaole_video(payload):
     label = {"grok": "果肉视频", "micro": "豆姐视频", "omni": "欧米视频"}.get(channel, model)
     if job_id:
         update_video_asset_phase(job_id, "queued", mode=channel, text=prompt, model=model)
-    result = generate_xiaole_video(model, prompt, reference_images=ref_images, size=size, job_id=job_id, prefix=channel)
+    result = generate_xiaole_video(model, prompt, reference_images=ref_images, size=size, job_id=job_id, prefix=channel,
+                                   duration=XIAOLE_CHANNEL_DURATION.get(channel))
     return {
         "type": "video", "status": "done", "mode": channel, "model": model, "text": prompt,
         "ratio": ratio,
