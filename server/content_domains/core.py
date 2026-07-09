@@ -192,7 +192,9 @@ def _env_positive_int(name, default):
     return max(1, value)
 
 VIDEO_COST = _env_positive_int("VIDEO_COST", 20)
-JOB_WORKERS, FAST_JOB_WORKERS = _env_positive_int("CONTENT_JOB_WORKERS", 3), _env_positive_int("CONTENT_FAST_JOB_WORKERS", 3)  # 慢队列(视频/换装)/快队列(图片/音频等)各自worker数，分开防视频堵死快任务
+JOB_WORKERS, FAST_JOB_WORKERS = _env_positive_int("CONTENT_JOB_WORKERS", 3), _env_positive_int("CONTENT_FAST_JOB_WORKERS", 3)  # 慢队列(换装/果肉video)/快队列(图片/音频等)各自worker数，分开防视频堵死快任务
+TALKING_JOB_WORKERS = _env_positive_int("CONTENT_TALKING_JOB_WORKERS", 10)  # 口播(video mode=text/audio)专用池：HeyGen口播能扛高并发(50并发实测无429)
+MOTION_JOB_WORKERS = _env_positive_int("CONTENT_MOTION_JOB_WORKERS", 3)     # 动作模仿(video mode=motion)专用池：HeyGen motion并发>3易撞代理/速率/生成墙(10并发实测仅1/10)
 JOB_QUEUE_MAX = _env_positive_int("CONTENT_JOB_QUEUE_MAX", 32)
 MAX_USER_ACTIVE_JOBS = _env_positive_int("MAX_USER_ACTIVE_JOBS", 5)
 COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40}  # collect/leads/tryon 走 cost_of() 动态算
@@ -632,8 +634,10 @@ def _post_bytes(path, data, ctype):  # 返回原始字节(TTS 拿 mp3 二进制)
     with urllib.request.urlopen(req, timeout=300) as r:
         return r.read()
 # ============ 后台 worker（有界队列 + 固定 worker，失败退点；慢/快队列分开防视频堵死作图） ============
-_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)       # 慢队列(video/tryon/xiaole_video)
-_fast_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)  # 快队列(image/audio/copy等)
+_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)          # 慢队列(tryon/xiaole_video + video兜底)
+_fast_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)     # 快队列(image/audio/copy等)
+_talking_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)  # 口播队列(video mode=text/audio)
+_motion_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)   # 动作模仿队列(video mode=motion)
 _queued_job_ids = set()
 _job_queue_lock = threading.Lock()
 _workers_started = False
@@ -668,12 +672,23 @@ def _refund_once(job_id, username, cost):
             return  # 已退过 / 非 error 终态，跳过
     _domains()[1].safe_refund_points(username, cost)
 
-def enqueue_job(job_id, kind=None):
+def _pick_job_queue(kind, mode=None):
+    # kind缺省(旧调用/测试)保守走慢队列；快任务(图片/音频/文案)走快队列；
+    # video 再按 mode 三分：motion→motion池、text/audio(口播/兜底)→口播池；tryon/xiaole_video 走慢池。
+    if kind is None:
+        return _job_queue
+    if kind not in {"video", "tryon", "xiaole_video"}:
+        return _fast_job_queue
+    if kind == "video":
+        return _motion_job_queue if str(mode or "").lower() == "motion" else _talking_job_queue
+    return _job_queue
+
+def enqueue_job(job_id, kind=None, mode=None):
     try:
         job_id = int(job_id)
     except Exception:
         return False
-    q = _fast_job_queue if kind is not None and kind not in {"video", "tryon", "xiaole_video"} else _job_queue  # kind缺省(旧调用/测试)保守走慢队列
+    q = _pick_job_queue(kind, mode)
     with _job_queue_lock:
         if job_id in _queued_job_ids:
             return True
@@ -719,12 +734,16 @@ def _job_worker_loop(q):
 def _recover_pending_jobs(limit=None):
     limit = int(limit or JOB_QUEUE_MAX)
     with closing(jdb()) as c:
-        rows = c.execute("""SELECT id, kind FROM jobs
+        rows = c.execute("""SELECT id, kind, payload FROM jobs
                             WHERE status='pending'
                             ORDER BY id ASC LIMIT ?""", (limit,)).fetchall()
     recovered = 0
     for row in rows:
-        if not enqueue_job(row["id"], row["kind"]):
+        try:
+            mode = (json.loads(row["payload"] or "{}") or {}).get("mode", "")
+        except Exception:
+            mode = ""
+        if not enqueue_job(row["id"], row["kind"], mode):
             break
         recovered += 1
     return recovered
@@ -743,7 +762,8 @@ def start_job_workers():
         if _workers_started:
             return
         _workers_started = True
-    for count, q, prefix in ((JOB_WORKERS, _job_queue, "content-job-worker"), (FAST_JOB_WORKERS, _fast_job_queue, "content-fast-worker")):
+    for count, q, prefix in ((JOB_WORKERS, _job_queue, "content-job-worker"), (FAST_JOB_WORKERS, _fast_job_queue, "content-fast-worker"),
+                             (TALKING_JOB_WORKERS, _talking_job_queue, "content-talking-worker"), (MOTION_JOB_WORKERS, _motion_job_queue, "content-motion-worker")):
         for i in range(count):
             threading.Thread(target=_job_worker_loop, args=(q,), name="%s-%d" % (prefix, i + 1), daemon=True).start()
     threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start()
@@ -999,7 +1019,7 @@ class H(BaseHTTPRequestHandler):
                 c.commit(); jid = cur.lastrowid
             if kind in {"video", "tryon", "xiaole_video"}:
                 video_domain.record_video_pending_asset(jid, user["username"], body)
-            if not enqueue_job(jid, kind):
+            if not enqueue_job(jid, kind, body.get("mode")):
                 _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
                 if kind in {"video", "tryon", "xiaole_video"}:
                     video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
@@ -1222,7 +1242,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": items, "cost": 1, "points_left": points_left})
         if p == "/api/gen/health":
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS),
-                                    "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS, "max_user_active_jobs": MAX_USER_ACTIVE_JOBS,
+                                    "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS,
+                                    "talking_job_workers": TALKING_JOB_WORKERS, "motion_job_workers": MOTION_JOB_WORKERS, "max_user_active_jobs": MAX_USER_ACTIVE_JOBS,
                                     "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
 
