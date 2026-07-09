@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from html.parser import HTMLParser
@@ -55,6 +56,38 @@ def check_redlines(files: list[PurePosixPath]) -> list[str]:
             errors.append(f"安全红线：禁止跟踪敏感后缀文件 {path}")
         elif name.startswith(FORBIDDEN_PREFIXES):
             errors.append(f"安全红线：禁止跟踪密钥文件 {path}")
+    errors.extend(check_systemd_secrets(files))
+    return errors
+
+
+# systemd 单元里的 Environment= 是明文的，且 /etc/systemd/system 默认 644（谁都能读）。
+# 线上 huangque-content.service.d/doubao.conf 就这么放着 DOUBAO_TOKEN（已收紧为 600）。
+# 密钥应当走 EnvironmentFile 指向 600 的 env 文件，那种文件本来就不进 git。
+_SECRET_KEY_HINTS = ("TOKEN", "SECRET", "PASSWORD", "PASSWD", "APIKEY", "API_KEY", "_KEY", "COOKIE")
+_ENV_LINE = re.compile(r'^\s*Environment\s*=\s*"?([A-Za-z0-9_]+)=(.*?)"?\s*$')
+
+
+def check_systemd_secrets(files: list[PurePosixPath]) -> list[str]:
+    errors: list[str] = []
+    for path in files:
+        if not str(path).startswith("deploy/systemd/") or path.suffix == ".example":
+            continue
+        try:
+            text = (ROOT / path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            m = _ENV_LINE.match(line)
+            if not m:
+                continue
+            key, value = m.group(1).upper(), m.group(2).strip()
+            if not value or value.startswith("<"):
+                continue                      # 占位符，例如 <从 content.env 取>
+            if any(h in key for h in _SECRET_KEY_HINTS):
+                errors.append(
+                    f"安全红线：systemd 单元里有明文密钥 {path}:{lineno} 的 {m.group(1)}"
+                    f"（改用 EnvironmentFile 指向 600 的 env 文件；只提交 .example）"
+                )
     return errors
 
 

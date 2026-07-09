@@ -182,7 +182,7 @@
           '<span style="width:16px; height:16px; border-radius:50%; background:radial-gradient(circle at 35% 30%, #f6d488, #c8902f); flex:none;"></span>'+
           '<span id="hqPointsTop" class="mono" style="font-size:14px; font-weight:700; color:#e7b24c;">—</span></a>'+
         '<button type="button" data-points-detail="1" style="height:36px;padding:0 12px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:12.5px;font-weight:700;color:#94a4bb;background:rgba(148,164,187,.06);border:1px solid rgba(148,164,187,.14);">明细</button>'+
-        '<div style="position:relative; width:38px; height:38px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; color:#94a4bb;">'+icon('bell','17px')+'<span style="position:absolute; top:9px; right:10px; width:7px; height:7px; border-radius:50%; background:#f4708a; border:1.5px solid #070b13;"></span></div>'+
+        '<button type="button" class="hq-notify-btn" aria-label="查看获客通知" title="查看获客通知" style="position:relative; width:38px; height:38px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; color:#94a4bb; background:transparent; font:inherit; padding:0;">'+icon('bell','17px')+'</button>'+
         '<div id="hqAuthArea" style="display:flex; align-items:center; gap:8px;"></div></div>';
 
     // 重组 DOM：aside | main(topbar + scroll(content))
@@ -207,6 +207,8 @@
     }
     var open=false;
     burger.onclick=function(){ open=!open; aside.style.transform=open?'translateX(0)':'translateX(-100%)'; };
+    var notifyBtn=header.querySelector('.hq-notify-btn');
+    if(notifyBtn) notifyBtn.onclick=function(){ location.href=safeUrl('leads.html'); };
     window.addEventListener('resize',applyResp); applyResp();
     aside.querySelectorAll('a').forEach(function(a){ a.addEventListener('click',function(){ if(window.innerWidth<900){ open=false; aside.style.transform='translateX(-100%)'; } }); });
     refreshPoints(); renderUser();
