@@ -335,6 +335,37 @@ HANDLERS = {"collect": gen_collect, "leads": gen_leads}
 
 
 # ============ worker（失败退点；清道夫由 content_api 统一跑） ============
+# 与 content_domains/core.py 的 _set_terminal/_refund_once 同语义：本服务与 content_api 共写
+# 同一张 jobs 表，reaper 只在 content_api 里跑。不做 CAS 就会出现「reaper 判超时退了点，
+# worker 随后把 error 覆写回 done」——用户既拿到结果又拿回点数(线上 id=1170 实例)。
+def _set_terminal(job_id, status, result=None, error=None):
+    """CAS 抢终态：仅当仍是 running 才迁移，返回是否抢到(rowcount>=1)。败者不写状态、不做副作用。"""
+    now = int(time.time())
+    with closing(jdb()) as c:
+        if status == "done":
+            cur = c.execute("UPDATE jobs SET status='done', result=?, updated_at=? WHERE id=? AND status='running'",
+                            (json.dumps(result, ensure_ascii=False), now, job_id))
+        else:
+            cur = c.execute("UPDATE jobs SET status='error', error=?, updated_at=? WHERE id=? AND status='running'",
+                            (str(error or "")[:300], now, job_id))
+        c.commit()
+        return cur.rowcount >= 1
+
+def _refund_once(job_id, username, cost):
+    """退点 job 级幂等：refunded 列 CAS，仅第一次真正加回点数。防与 reaper 双重退点。"""
+    try:
+        cost = int(cost or 0)
+    except Exception:
+        cost = 0
+    if cost <= 0:
+        return
+    with closing(jdb()) as c:
+        cur = c.execute("UPDATE jobs SET refunded=1 WHERE id=? AND refunded=0 AND status='error'", (job_id,))
+        c.commit()
+        if cur.rowcount < 1:
+            return  # 已退过 / 非 error 终态，跳过
+    add_points(username, cost)
+
 def run_job(job_id):
     with closing(jdb()) as c:
         r = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -344,14 +375,12 @@ def run_job(job_id):
         with closing(jdb()) as c:
             c.execute("UPDATE jobs SET status='running', updated_at=? WHERE id=?", (int(time.time()), job_id)); c.commit()
         result = HANDLERS[kind](payload)
-        with closing(jdb()) as c:
-            c.execute("UPDATE jobs SET status='done', result=?, updated_at=? WHERE id=?",
-                      (json.dumps(result, ensure_ascii=False), int(time.time()), job_id)); c.commit()
+        if not _set_terminal(job_id, "done", result=result):
+            # reaper 已把它判超时并退点：不覆写终态。宁可用户重试，也不能既退点又出结果。
+            print("[leadgen] job %s 完成时已非 running（reaper 判超时在先），丢弃结果" % job_id, flush=True)
     except Exception as e:
-        add_points(r["username"], r["cost"])
-        with closing(jdb()) as c:
-            c.execute("UPDATE jobs SET status='error', error=?, updated_at=? WHERE id=?",
-                      (str(e)[:300], int(time.time()), job_id)); c.commit()
+        if _set_terminal(job_id, "error", error=str(e)):
+            _refund_once(job_id, r["username"], r["cost"])
 
 
 # ============ HTTP ============
