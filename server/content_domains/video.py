@@ -569,7 +569,7 @@ def _ensure_heygen_image_jpg(image_path):
         raise ValueError("图片格式转换失败，请上传 jpg/png 格式的人物形象图")
     return out
 
-def _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion):
+def _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion, direct=False):
     title = "huangque video %d" % int(time.time())
     body = json.dumps({
         "title": title,
@@ -584,7 +584,7 @@ def _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, moti
     }, ensure_ascii=False).encode()
     data = _heygen_request_json("POST", "/videos", body, {
         "Content-Type": "application/json",
-    }, timeout=90)
+    }, timeout=90, direct=direct)
     video_id = ((data.get("data") or {}).get("video_id") or "").strip()
     if not video_id:
         raise RuntimeError("HeyGen未返回video_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
@@ -751,7 +751,6 @@ _HEYGEN_DIRECT = os.environ.get("HEYGEN_DIRECT", "1").strip().lower() not in ("0
 _HEYGEN_DIRECT_PROXY = (os.environ.get("HEYGEN_DIRECT_PROXY") or os.environ.get("HTTPS_PROXY") or "http://127.0.0.1:7897").strip()
 _HEYGEN_DIRECT_API = "https://api.heygen.com"
 _HEYGEN_DIRECT_UPLOAD = "https://upload.heygen.com"
-_HEYGEN_DIRECT_DIMS = {"9:16": (720, 1280), "16:9": (1280, 720), "1:1": (1080, 1080), "4:5": (1024, 1280), "5:4": (1280, 1024)}
 
 def _heygen_direct_opener():
     if _HEYGEN_DIRECT_PROXY:
@@ -773,17 +772,6 @@ def _heygen_direct_req(method, url, body=None, ctype="application/json", timeout
         detail = e.read().decode("utf-8", "replace").replace("\n", " ")[:400]
         raise RuntimeError("HeyGen直连失败: HTTP %s %s" % (e.code, detail)) from e
 
-def _heygen_direct_dim(ratio, resolution=None):
-    # 直连口播用 dimension 控制清晰度。基准表是 720p；请求 1080p 时按短边等比放大到 1080，
-    # 否则 1080p 请求会被硬编码成 720p 出片(质量回归#405直连忽略resolution)。宽高取偶数。
-    w, h = _HEYGEN_DIRECT_DIMS.get(ratio or "9:16", (720, 1280))
-    if str(resolution or "").lower().startswith("1080"):
-        short = min(w, h)
-        if short and short < 1080:
-            f = 1080.0 / short
-            w, h = int(round(w * f / 2)) * 2, int(round(h * f / 2)) * 2
-    return {"width": w, "height": h}
-
 def _download_video_file_direct(url, prefix="vid"):
     if not url:
         raise RuntimeError("直连未返回视频地址")
@@ -796,48 +784,25 @@ def _download_video_file_direct(url, prefix="vid"):
     _out_path(fn).write_bytes(data)
     return _faststart_video_file(fn)
 
-def generate_heygen_video_direct(image_file, audio_file, resolution, ratio):
-    """数字人口播直连 HeyGen v2：图→talking_photo + 豆包音频→asset + generate + poll + 下载。"""
+def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion):
+    """数字人口播直连 HeyGen v3(type=image + expressiveness)：与泽龙中转同一套 API/参数(honor resolution+expressiveness)，
+    只是 direct=True 走 api.heygen.com 出境。原 v2 talking_photo 直连丢了 expressiveness 且忽略 resolution
+    →出片效果不同+被硬编码720p(用户反馈"效果不一样")；改回 v3 image 后实测 1080×1920 104s。"""
     image_fp = _resolve_out_file(image_file)
     audio_fp = _resolve_out_file(audio_file)
     if not image_fp or not audio_fp:
         raise ValueError("视频素材文件不存在")
     image_fp = _ensure_heygen_image_jpg(image_fp)
     audio_fp = _ensure_heygen_audio_mp3(audio_fp)
-    d = _heygen_direct_req("POST", _HEYGEN_DIRECT_UPLOAD + "/v1/talking_photo", pathlib.Path(image_fp).read_bytes(), "image/jpeg", timeout=180)
-    tp_id = (d.get("data") or {}).get("talking_photo_id")
-    if not tp_id:
-        raise RuntimeError("HeyGen直连talking_photo未返回id: %s" % json.dumps(d, ensure_ascii=False)[:200])
-    d = _heygen_direct_req("POST", _HEYGEN_DIRECT_UPLOAD + "/v1/asset", pathlib.Path(audio_fp).read_bytes(), "audio/mpeg", timeout=180)
-    aud_id = (d.get("data") or {}).get("id") or (d.get("data") or {}).get("asset_id")
-    if not aud_id:
-        raise RuntimeError("HeyGen直连音频未返回id: %s" % json.dumps(d, ensure_ascii=False)[:200])
-    d = _heygen_direct_req("POST", _HEYGEN_DIRECT_API + "/v2/video/generate", {
-        "video_inputs": [{"character": {"type": "talking_photo", "talking_photo_id": tp_id},
-                          "voice": {"type": "audio", "audio_asset_id": aud_id}}],
-        "dimension": _heygen_direct_dim(ratio, resolution),
-    }, timeout=90)
-    video_id = (d.get("data") or {}).get("video_id")
-    if not video_id:
-        raise RuntimeError("HeyGen直连未返回video_id: %s" % json.dumps(d, ensure_ascii=False)[:200])
-    deadline = time.time() + 450  # 口播直连轮询死线(280→450):50并发压测实测慢的成功案例达315s+,放宽避免误杀;需与reaper口播540s配套
-    info = None
-    while time.time() < deadline:
-        time.sleep(HEYGEN_POLL_INTERVAL)
-        d = _heygen_direct_req("GET", _HEYGEN_DIRECT_API + "/v1/video_status.get?video_id=" + urllib.parse.quote(video_id), None, None, timeout=40)
-        sd = d.get("data") or {}
-        status = str(sd.get("status") or "").lower()
-        if status == "completed":
-            info = sd
-            break
-        if status in ("failed", "error"):
-            raise RuntimeError("HeyGen直连生成失败: %s" % json.dumps(sd.get("error"), ensure_ascii=False)[:200])
-    if not info:
-        raise TimeoutError("HeyGen直连轮询超时")
-    video_file = _download_video_file_direct(info.get("video_url"), "heygen")
+    image_asset_id = _heygen_upload_asset(image_fp, direct=True)
+    audio_asset_id = _heygen_upload_asset(audio_fp, direct=True)
+    video_id = _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion, direct=True)
+    info = _heygen_poll_video(video_id, direct=True, deadline_s=450)  # 直连轮询死线450s，配套 reaper 口播 540s
+    video_file = _download_video_file_direct(info["video_url"], "heygen")
     cover = _extract_first_frame_cover(video_file)
     ret = {
         "video_id": video_id, "video_file": video_file, "video_url": _file_url(video_file),
+        "image_asset_id": image_asset_id, "audio_asset_id": audio_asset_id,
         "source_video_url": info.get("video_url"), "thumbnail_url": info.get("thumbnail_url"),
         "duration": info.get("duration"), "provider": "heygen_direct",
     }
@@ -849,7 +814,7 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio):
 def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
     if _HEYGEN_DIRECT and HEYGEN_API_KEY:
         try:
-            return generate_heygen_video_direct(image_file, audio_file, resolution, ratio)
+            return generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion)
         except Exception as e:
             print("[heygen] 直连失败,回退泽龙中转: %s" % str(e)[:200], flush=True)
     image_fp = _resolve_out_file(image_file)
