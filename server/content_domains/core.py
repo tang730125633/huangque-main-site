@@ -17,8 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes  # 文件服务按扩展名识别 mime（png / mp3 …）
-from . import assets_store  # 统一 assets 表（image/copy/collect/leads）；无反向依赖，可直接顶层 import
+import mimetypes; from . import assets_store  # mime 识别；统一 assets 表(image/copy/collect/leads)，无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -399,7 +398,7 @@ def _ensure_column(c, table, column, spec):
     if column not in cols:
         c.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, spec))
 
-ASSET_MARK_KINDS = {"image", "audio", "video", "avatar"}
+ASSET_MARK_KINDS = {"image", "audio", "video", "avatar"} | assets_store.KINDS  # 新三类的 asset_key 同样用 str(job_id)
 
 def _clean_asset_kind(kind):
     kind = str(kind or "").strip().lower()
@@ -810,8 +809,7 @@ def run_job(job_id):
                 audio_domain.record_audio_asset(job_id, username, result)
             if kind in {"video", "tryon", "xiaole_video"}:
                 video_domain.record_video_asset(job_id, username, result)
-            if kind in assets_store.KINDS:      # image / copy：统一 assets 表
-                assets_store.record_asset(job_id, username, kind, result)
+            assets_store.record_asset(job_id, username, kind, result)  # image/copy 入统一 assets 表；其余 kind 内部忽略
         except Exception:
             pass
     except Exception as e:
@@ -1067,6 +1065,10 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"items": marks})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
+        if p == "/api/gen/assets":   # 统一资产表：image/copy/collect/leads，按 kind / stage 过滤
+            if not (user := verify(self._token())): return self._send(401, {"detail": "未登录"})
+            return self._send(*assets_store.list_assets_response(
+                user["username"], urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)))
         if p == "/api/gen/leads/crm":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})

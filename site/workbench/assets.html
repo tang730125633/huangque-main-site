@@ -90,6 +90,9 @@
     <span class="chip" data-cat="audio" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">音频资产</span>
     <span class="chip" data-cat="video" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">视频资产</span>
     <span class="chip" data-cat="avatar" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">数字人形象</span>
+    <span class="chip" data-cat="copy" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">文案脚本</span>
+    <span class="chip" data-cat="collect" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">采集素材</span>
+    <span class="chip" data-cat="leads" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">客户名单</span>
   </div>
 
   <!-- 真实资产网格（生成历史，JS 填充；有作品时显示、空态隐藏） -->
@@ -1386,6 +1389,7 @@
     updateBulk();
     if(cat==='audio'){ renderAudioAssets(); return; }
     if(cat==='avatar'){ renderAvatarAssets(); return; }
+    if(DOC_KINDS.indexOf(cat)>=0){ renderDocAssets(cat); return; }
     if(cat==='video'){
       grid.innerHTML='';
       if(!ALL.length){
@@ -1454,8 +1458,96 @@
     if(!list.length){ var e=document.createElement('div'); e.style.cssText='grid-column:1/-1; padding:30px; text-align:center; font-size:13px; color:#5c6b82;'; e.textContent=searchTerm?'没有匹配的图片资产':'该分类下暂无作品'; grid.appendChild(e); return; }
     list.forEach(function(x,i){ grid.appendChild(card(x,list,i)); });
   }
+  // 统一 assets 表的三类（文案/采集素材/客户名单）。它们没有缩略图，用文本卡片渲染。
+  // 后端 stage：material 素材 / work 作品 / delivery 交付（DESIGN.md「素材、作品、交付分开」）
+  var DOC_KINDS=['copy','collect','leads'];
+  var STAGE_LABEL={material:'素材', work:'作品', delivery:'交付'};
+  // 分类 chip → 拉取用的 kind。未知分类回退 image（原来是三层嵌套三元，加一类就要改两处）
+  function loadKindOf(c){
+    return ['audio','video','avatar'].concat(DOC_KINDS).indexOf(c)>=0 ? c : 'image';
+  }
+  var DOC_EMPTY={
+    copy:   {text:'暂无文案脚本，去编导模块生成后会自动入库。', href:'script.html', cta:'去写文案'},
+    collect:{text:'暂无采集素材，去内容爬取采集后会自动入库。', href:'collect.html', cta:'去采集'},
+    leads:  {text:'暂无客户名单，去获客模块跑一次后会自动入库。', href:'leads.html', cta:'去获客'}
+  };
+  function docSummary(x){
+    var m=x.meta||{}, bits=[];
+    if(x.kind==='copy'){ if(m.ctype) bits.push(m.ctype); if(m.mode==='script') bits.push('分镜脚本'); if(m.platform) bits.push(m.platform); }
+    if(x.kind==='collect'){ if(m.platform) bits.push(m.platform); if(m.author) bits.push('@'+m.author);
+      if(m.has_transcript) bits.push('有口播文案'); if(m.comments_count) bits.push(m.comments_count+' 条评论'); }
+    if(x.kind==='leads'){ if(m.leads_count!=null) bits.push(m.leads_count+' 个客户');
+      if(m.total!=null) bits.push('扫 '+m.total+' 条'); if(m.spam) bits.push('滤广告 '+m.spam); }
+    return bits.join(' · ')||'—';
+  }
+  function docBody(x){
+    if(x.kind==='copy') return String((x.meta||{}).text||'').trim();
+    if(x.kind==='collect') return String((x.meta||{}).desc||'').trim();
+    return '';
+  }
+  function docCard(x){
+    var kind=x.kind, m=markOf(x,kind);
+    var w=document.createElement('div');
+    w.style.cssText='display:flex; flex-direction:column; gap:9px; padding:14px 15px; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:rgba(16,24,39,.4);';
+    var head=document.createElement('div'); head.style.cssText='display:flex; align-items:center; gap:8px;';
+    var badge=document.createElement('span'); badge.textContent=STAGE_LABEL[x.stage]||x.stage||'';
+    badge.style.cssText='padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(231,178,76,.1); color:#e7b24c; flex:none;';
+    var t=document.createElement('div'); t.textContent=x.title||'（无标题）'; t.title=x.title||'';
+    t.style.cssText='flex:1; min-width:0; font-size:13.5px; font-weight:600; color:#eaf1fa; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+    var fav=document.createElement('button'); fav.type='button'; fav.textContent=m.favorite?'★':'☆'; fav.title=m.favorite?'取消收藏':'收藏';
+    fav.style.cssText='flex:none; border:0; background:transparent; cursor:pointer; font-size:16px; line-height:1; color:'+(m.favorite?'#e7b24c':'#5c6b82')+';';
+    fav.onclick=function(){ saveFavorite(x,kind,!m.favorite,fav); };
+    head.appendChild(badge); head.appendChild(t); head.appendChild(fav);
+    var sub=document.createElement('div'); sub.textContent=docSummary(x);
+    sub.style.cssText='font-size:12px; color:#94a4bb; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+    w.appendChild(head); w.appendChild(sub);
+    var body=docBody(x);
+    if(body){
+      var pre=document.createElement('div'); pre.textContent=body.slice(0,180)+(body.length>180?'…':'');
+      pre.style.cssText='font-size:12px; color:#5c6b82; line-height:1.65; max-height:66px; overflow:hidden;';
+      if(kind==='copy'){ pre.style.cursor='pointer'; pre.title='点击查看全文'; pre.onclick=function(){ openPromptModal(body); }; }
+      w.appendChild(pre);
+    }
+    var foot=document.createElement('div'); foot.style.cssText='display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:11.5px; color:#5c6b82;';
+    var when=document.createElement('span');
+    when.textContent=x.created_at?new Date(Number(x.created_at)*1000).toLocaleString('zh-CN',{hour12:false}):'';
+    foot.appendChild(when);
+    if(x.url){
+      var a=document.createElement('a'); a.href=x.url; a.target='_blank'; a.rel='noopener';
+      a.textContent=kind==='collect'?'打开视频':'打开';
+      a.style.cssText='color:#e7b24c; text-decoration:none; font-weight:600;';
+      foot.appendChild(a);
+    }
+    w.appendChild(foot);
+    return w;
+  }
+  function renderDocAssets(kind){
+    grid.innerHTML='';
+    if(skelH) skelH.style.display='none';
+    if(skelG) skelG.style.display='none';
+    var cfg=DOC_EMPTY[kind]||{};
+    if(!ALL.length){
+      grid.style.display='none';
+      if(empty){ empty.style.display='flex';
+        var ep=empty.querySelector('p'), ea=empty.querySelector('a');
+        if(ep) ep.textContent=cfg.text||'暂无资产';
+        if(ea){ ea.href=cfg.href||'#'; if(ea.lastChild) ea.lastChild.textContent=cfg.cta||'去生成'; } }
+      return;
+    }
+    if(empty) empty.style.display='none';
+    grid.style.display='grid';
+    // 这三类没有文件，批量下载/删除不适用，故不进 visibleItems（批量条保持 0）
+    var list=filterAssets(ALL,kind);
+    if(!list.length){
+      var ne=document.createElement('div');
+      ne.style.cssText='grid-column:1/-1; padding:30px; text-align:center; font-size:13px; color:#5c6b82;';
+      ne.textContent='没有匹配的资产';
+      grid.appendChild(ne); return;
+    }
+    list.forEach(function(x){ grid.appendChild(docCard(x)); });
+  }
   function loadMarks(kind){
-    if(['image','audio','video','avatar'].indexOf(kind)<0){ MARKS={}; refreshMarkFilters(); return Promise.resolve(); }
+    if(['image','audio','video','avatar'].concat(DOC_KINDS).indexOf(kind)<0){ MARKS={}; refreshMarkFilters(); return Promise.resolve(); }
     return fetch(freshUrl('/api/gen/asset/marks?kind='+encodeURIComponent(kind)),{cache:'no-store',headers:{'Authorization':'Bearer '+tok,'Cache-Control':'no-cache'}})
       .then(function(r){ if(r.status===401){ HQ.login(); return null; } return r.json(); })
       .then(function(d){ MARKS=(d&&d.items)||{}; refreshMarkFilters(); })
@@ -1463,7 +1555,8 @@
   }
   function load(kind){
     currentLoadKind=kind;
-    var url=kind==='audio'?'/api/gen/audio/assets?limit=120':(kind==='video'?'/api/gen/video/assets?limit=120':(kind==='avatar'?'/api/gen/video/avatars?limit=120':'/api/gen/history?limit=120'));
+    var url=kind==='audio'?'/api/gen/audio/assets?limit=120':(kind==='video'?'/api/gen/video/assets?limit=120':(kind==='avatar'?'/api/gen/video/avatars?limit=120':
+      (DOC_KINDS.indexOf(kind)>=0?'/api/gen/assets?limit=120&kind='+encodeURIComponent(kind):'/api/gen/history?limit=120')));
     var fetchUrl=kind==='avatar'?freshUrl(url):url;
     var headers={'Authorization':'Bearer '+tok};
     if(kind==='avatar') headers['Cache-Control']='no-cache';
@@ -1481,7 +1574,7 @@
   document.querySelectorAll('#catRow .chip').forEach(function(ch){ ch.onclick=function(){
     setCat(ch.getAttribute('data-cat'));
     selected={}; updateBulk();
-    load(cat==='audio'?'audio':(cat==='video'?'video':(cat==='avatar'?'avatar':'image')));
+    load(loadKindOf(cat));
   };});
   function setCat(next){
     cat=next||'all';
@@ -1508,7 +1601,7 @@
   if(bulkDelete){ bulkDelete.onclick=deleteSelected; }
   if(favOnly){ favOnly.onclick=function(){ onlyFav=!onlyFav; selected={}; refreshMarkFilters(); render(); }; }
   if(tagFilter){ tagFilter.onchange=function(){ activeTag=tagFilter.value||''; selected={}; render(); }; }
-  load(cat==='audio'?'audio':(cat==='video'?'video':(cat==='avatar'?'avatar':'image')));
+  load(loadKindOf(cat));
 })();
 </script>
 </body>

@@ -133,6 +133,61 @@ class AssetsStoreTests(unittest.TestCase):
         self.store.record_asset(80, "u", "copy", {"prompt": "x"}, stage="不存在的阶段")
         self.assertEqual(self.store.list_assets("u")[0]["stage"], "work")
 
+    # --- HTTP 层用的 (code, body) 封装：校验留在 domain，core.py 只做路由 ---
+    def test_response_ok(self):
+        self.store.record_asset(90, "u", "copy", {"prompt": "x"})
+        code, body = self.store.list_assets_response("u", {})
+        self.assertEqual(code, 200)
+        self.assertEqual(len(body["items"]), 1)
+
+    def test_response_rejects_bad_kind(self):
+        code, body = self.store.list_assets_response("u", {"kind": ["video"]})
+        self.assertEqual(code, 400)
+        self.assertIn("kind 仅支持", body["detail"])
+
+    def test_response_rejects_bad_stage(self):
+        code, _ = self.store.list_assets_response("u", {"stage": ["随便写的"]})
+        self.assertEqual(code, 400)
+
+    def test_response_rejects_non_integer_limit(self):
+        code, body = self.store.list_assets_response("u", {"limit": ["abc"]})
+        self.assertEqual(code, 400)
+        self.assertIn("整数", body["detail"])
+
+    def test_response_empty_kind_means_all(self):
+        self.store.record_asset(91, "u", "copy", {"prompt": "a"})
+        self.store.record_asset(92, "u", "collect", {"video": {"title": "b"}})
+        code, body = self.store.list_assets_response("u", {"kind": [""]})
+        self.assertEqual(code, 200)
+        self.assertEqual(len(body["items"]), 2)
+
+
+class AssetMarkKindsTests(unittest.TestCase):
+    """收藏/打标签必须覆盖统一 assets 表的三类，否则资产库里它们的星标是坏的。"""
+
+    def setUp(self):
+        server_dir = str(Path(__file__).resolve().parents[1] / "server")
+        if server_dir not in sys.path:
+            sys.path.insert(0, server_dir)
+        self.core = importlib.import_module("content_domains.core")
+        self.store = importlib.import_module("content_domains.assets_store")
+
+    def test_mark_kinds_cover_assets_store_kinds(self):
+        self.assertTrue(self.store.KINDS <= self.core.ASSET_MARK_KINDS,
+                        "assets 表的 kind 必须都能收藏/打标：%s" % (self.store.KINDS - self.core.ASSET_MARK_KINDS))
+
+    def test_legacy_kinds_still_supported(self):
+        for k in ("image", "audio", "video", "avatar"):
+            self.assertIn(k, self.core.ASSET_MARK_KINDS)
+
+    def test_clean_asset_kind_accepts_new_kinds(self):
+        for k in ("copy", "collect", "leads"):
+            self.assertEqual(self.core._clean_asset_kind(k), k)
+
+    def test_clean_asset_kind_rejects_unknown(self):
+        with self.assertRaises(ValueError):
+            self.core._clean_asset_kind("tryon")
+
 
 if __name__ == "__main__":
     unittest.main()

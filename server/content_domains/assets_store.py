@@ -170,6 +170,29 @@ def list_assets(username, kind=None, stage=None, limit=60, offset=0):
     return out
 
 
+def list_assets_response(username, query):
+    """给 HTTP 层用：解析 query dict → (status_code, body)。
+
+    校验和取值留在 domain 里，core.py 只负责鉴权 + 路由 —— tests/test_content_domains.py
+    有条护栏断言 core.py 不超过 1300 行，逻辑不该往那儿堆。
+    """
+    kind = (query.get("kind") or [""])[0].strip() or None
+    stage = (query.get("stage") or [""])[0].strip() or None
+    if kind and kind not in KINDS:
+        return 400, {"detail": "kind 仅支持: " + ", ".join(sorted(KINDS))}
+    if stage and stage not in STAGES:
+        return 400, {"detail": "stage 仅支持: " + ", ".join(sorted(STAGES))}
+    try:
+        limit = int((query.get("limit") or ["60"])[0])
+        offset = int((query.get("offset") or ["0"])[0])
+    except (TypeError, ValueError):
+        return 400, {"detail": "limit / offset 必须是整数"}
+    try:
+        return 200, {"items": list_assets(username, kind=kind, stage=stage, limit=limit, offset=offset)}
+    except Exception as e:
+        return 400, {"detail": str(e)[:160]}
+
+
 def soft_delete(username, asset_id):
     """软删除，与 audio_assets/video_assets 的 deleted 语义一致。"""
     _ensure()
