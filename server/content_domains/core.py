@@ -491,6 +491,7 @@ def _delete_asset_mark(username, kind, key):
         c.commit()
 def delete_user_asset(username, kind, asset_id):
     kind = str(kind or "").strip().lower()
+    if kind in assets_store.KINDS - {"image"}: return assets_store.soft_delete(username, int(asset_id))  # copy/collect/leads 在统一 assets 表
     if kind not in {"image", "audio", "video"}:
         raise ValueError("不支持的资产类型")
     try:
@@ -1064,8 +1065,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/assets":   # 统一资产表：image/copy/collect/leads，按 kind / stage 过滤
             if not (user := verify(self._token())): return self._send(401, {"detail": "未登录"})
-            return self._send(*assets_store.list_assets_response(
-                user["username"], urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)))
+            return self._send(*assets_store.list_assets_response(user["username"], urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)))
         if p == "/api/gen/leads/crm":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})

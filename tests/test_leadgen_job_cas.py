@@ -30,10 +30,11 @@ class LeadgenJobCasTests(unittest.TestCase):
                 status TEXT DEFAULT 'pending', payload TEXT, result TEXT, error TEXT,
                 created_at INTEGER, updated_at INTEGER, deleted INTEGER DEFAULT 0, refunded INTEGER DEFAULT 0)""")
             c.commit()
-        # 打桩 add_points，统计真正退点次数（不碰 users.db）
+        # 打桩 add_points，统计真正退点次数（不碰 users.db）。
+        # 必须返回 True：_refund_once 现在按返回值判断退点是否成功，失败会回滚 refunded 标记。
         self.refunds = []
         self._orig_add_points = self.lg.add_points
-        self.lg.add_points = lambda username, delta: self.refunds.append((username, delta))
+        self.lg.add_points = lambda username, delta: (self.refunds.append((username, delta)), True)[1]
 
     def tearDown(self):
         self.lg.JOB_DB = self._orig_jobdb
@@ -107,6 +108,34 @@ class LeadgenJobCasTests(unittest.TestCase):
         self.assertTrue(self.lg._set_terminal(jid, "error", error="boom"))
         self.lg._refund_once(jid, "u", 0)
         self.assertEqual(len(self.refunds), 0)
+
+    # --- 回归：异常发生在任务转成 running 之前，仍必须退点，不能把 job 永久留在 pending ---
+    def test_exception_before_running_still_refunds(self):
+        jid = self._insert(6, status="pending")
+        # 任务还在 pending 时就报错（模拟认领那句 UPDATE 自己抛异常）
+        claimed = self.lg._set_terminal(jid, "error", error="db locked", from_states=("pending", "running"))
+        self.assertTrue(claimed, "pending 态必须能被抢成 error，否则 reaper 也扫不到它")
+        self.lg._refund_once(jid, "u", 6)
+        self.assertEqual(self._row(jid)["status"], "error")
+        self.assertEqual(len(self.refunds), 1, "预扣的点必须退回")
+
+    def test_set_terminal_default_still_requires_running(self):
+        """默认 from_states 只认 running —— reaper 与 worker 竞争的语义不能被放宽。"""
+        jid = self._insert(6, status="pending")
+        self.assertFalse(self.lg._set_terminal(jid, "done", result={"x": 1}))
+
+    # --- 回归：退点失败必须回滚 refunded 标记，否则用户的点永久拿不回来 ---
+    def test_refund_failure_rolls_back_refunded_flag(self):
+        jid = self._insert(6)
+        self.assertTrue(self.lg._set_terminal(jid, "error", error="boom"))
+        self.lg.add_points = lambda u, d: False          # auth 挂了 + 直写也失败
+        self.lg._refund_once(jid, "u", 6)
+        self.assertEqual(self._row(jid)["refunded"], 0, "退点失败却留下 refunded=1，点数永久丢失")
+        # 恢复后重试应能成功退一次
+        self.lg.add_points = lambda u, d: (self.refunds.append((u, d)), True)[1]
+        self.lg._refund_once(jid, "u", 6)
+        self.assertEqual(len(self.refunds), 1)
+        self.assertEqual(self._row(jid)["refunded"], 1)
 
     # --- 端到端复现线上 id=1170：worker 跑到一半 reaper 判超时，worker 随后完成 ---
     def test_run_job_slow_success_after_reaper_timeout(self):

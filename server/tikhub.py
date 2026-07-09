@@ -546,9 +546,42 @@ def comments(platform, id_or_url, cursor=None, count=20, fresh=False):
 # 口播文案：小红书优先白嫖 .srt 字幕；抖音下载 mp4 跑 whisper；视频号 v1 跳过
 # ====================================================================
 def _http_get(url, max_bytes=26_000_000, timeout=60):
+    """⚠ timeout 只管单次 socket 读：慢 CDN 每次都在 timeout 内吐一点数据就能无限续命，
+    总耗时不受控。要硬上限请用 http_get_budgeted()。此函数保留给小文件(字幕等)。"""
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     with _OPENER.open(req, timeout=timeout) as r:  # CDN 直连，绕过环境代理
         return r.read(max_bytes)
+
+# ASR 下载预算：下载顶过 reaper 判死线会导致「判死退点 → worker 又写回 done」的双发事故
+ASR_DL_DEADLINE = int(os.environ.get("ASR_DOWNLOAD_DEADLINE", "120"))
+
+def http_get_budgeted(url, deadline_ts, max_bytes=26_000_000, read_timeout=30):
+    """流式拉取，总耗时受 deadline_ts 约束（绝对时间戳）。
+
+    分块读 + 每块检查预算，把总耗时钉死；Content-Length 预检可在下载前否掉超大文件。
+    超预算/超限抛异常，绝不静默截断——旧的 r.read(max_bytes) 会把超大文件截断成
+    残缺数据却当成功返回。
+    """
+    remain = deadline_ts - time.time()
+    if remain <= 0:
+        raise TimeoutError("下载预算已耗尽")
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with _OPENER.open(req, timeout=min(read_timeout, remain)) as r:  # CDN 直连，绕过环境代理
+        declared = r.headers.get("Content-Length")
+        if declared and int(declared) > max_bytes:
+            raise ValueError("文件 %.1fMB 超过上限 %.0fMB" % (int(declared) / 1048576.0, max_bytes / 1048576.0))
+        chunks, got = [], 0
+        while True:
+            if time.time() >= deadline_ts:
+                raise TimeoutError("下载超过预算（已下载 %.1fMB）" % (got / 1048576.0))
+            block = r.read(262144)
+            if not block:
+                break
+            got += len(block)
+            if got > max_bytes:
+                raise ValueError("文件超过上限 %.0fMB" % (max_bytes / 1048576.0))
+            chunks.append(block)
+    return b"".join(chunks)
 
 def _log_asr_step(step, start, **extra):
     fields = ["%s=%s" % (k, v) for k, v in sorted(extra.items()) if v is not None]
@@ -626,7 +659,9 @@ def transcript(det):
     if det.get("play_url"):  # 抖音：下载无水印 mp4 → whisper（短视频普遍 <25MB）
         try:
             t_download = time.time()
-            mp4 = _http_get(det["play_url"])
+            # 带总预算：慢 CDN 下 _http_get 的 timeout 会被反复续命，把 collect 任务顶过
+            # reaper 判死线，导致「判死退点 → worker 又写回 done」(线上 job 1118)
+            mp4 = http_get_budgeted(det["play_url"], time.time() + ASR_DL_DEADLINE)
             _log_asr_step("download_video", t_download, bytes=len(mp4))
             return {"text": _whisper(mp4), "source": "asr"}
         except Exception as e:

@@ -98,6 +98,30 @@ class ImggenJobCasTests(unittest.TestCase):
         self.m._refund_once(jid, "u", 14)
         self.assertEqual(len(self.refunds), 0)
 
+    # --- 回归：异常发生在转成 running 之前，仍必须退点（否则 job 永久卡 pending，reaper 也扫不到）---
+    def test_exception_before_running_still_refunds(self):
+        jid = self._insert(14, status="pending")
+        self.assertTrue(self.m._set_terminal(jid, "error", error="db locked",
+                                             from_states=("pending", "running")))
+        self.m._refund_once(jid, "u", 14)
+        self.assertEqual(self._row(jid)["status"], "error")
+        self.assertEqual(len(self.refunds), 1)
+
+    def test_set_terminal_default_still_requires_running(self):
+        jid = self._insert(14, status="pending")
+        self.assertFalse(self.m._set_terminal(jid, "done", result={"x": 1}))
+
+    # --- 回归：退点失败必须回滚 refunded，否则点数永久丢失（imggen 没有直写兜底）---
+    def test_refund_failure_rolls_back_refunded_flag(self):
+        jid = self._insert(14)
+        self.assertTrue(self.m._set_terminal(jid, "error", error="boom"))
+        self.m.refund_points = lambda u, a: (503, {"detail": "auth 重启中"})
+        self.m._refund_once(jid, "u", 14)
+        self.assertEqual(self._row(jid)["refunded"], 0, "退点失败却留下 refunded=1，点数永久丢失")
+        self.m.refund_points = lambda u, a: (self.refunds.append((u, a)), (200, {}))[1]
+        self.m._refund_once(jid, "u", 14)
+        self.assertEqual(len(self.refunds), 1)
+
     # --- 端到端：gen_banana 跑到一半 reaper 判超时，随后完成 → 不覆写、不二次退点 ---
     def test_run_job_slow_success_after_reaper_timeout(self):
         import threading

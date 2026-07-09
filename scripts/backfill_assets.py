@@ -35,6 +35,15 @@ def main():
     ap.add_argument("--job-db", default=JOB_DB)
     args = ap.parse_args()
 
+    # sqlite3.connect 对不存在的文件是静默创建空库而非报错：路径写错时脚本会顺利跑完、
+    # 打印「扫描 0 行」看起来像成功，实际一行生产数据都没碰到。ship 的部署映射表里也没有
+    # scripts/，这个脚本不会被自动同步到 /home/ubuntu/content-api/，路径尤其容易搞错。
+    if not Path(args.job_db).is_file():
+        sys.exit("任务库不存在：%s\n请用 --job-db 指定，或设 CONTENT_JOB_DB 环境变量。" % args.job_db)
+    if not args.dry and not Path(assets_store.ASSET_DB).parent.is_dir():
+        sys.exit("资产库目录不存在：%s\n请设 CONTENT_ASSET_DB 环境变量。" % assets_store.ASSET_DB)
+    print("任务库: %s\n资产库: %s\n" % (args.job_db, assets_store.ASSET_DB))
+
     kinds = [args.kind] if args.kind else sorted(assets_store.KINDS)
     if not args.dry:
         assets_store.init_assets()

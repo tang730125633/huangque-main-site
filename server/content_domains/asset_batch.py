@@ -53,9 +53,17 @@ def _zip_name(text, default_name):
     return (text or default_name)[:80]
 
 
+BATCH_KINDS = {"image", "audio", "video", "avatar"}   # 有文件、能打包/删除的资产类型
+
+
 def _asset_download_record(core, username, kind, asset_id):
     kind = core._clean_asset_kind(kind)
     asset_id = _clean_asset_id(asset_id)
+    # _clean_asset_kind 放行的类型比这里能处理的多(copy/collect/leads 随统一 assets 表接入了收藏打标)。
+    # 不显式挡住的话，它们会一路落到函数末尾的 avatars 分支：id 空间不同，多数报「资产不存在」，
+    # 但只要用户恰好有同 id 的数字人形象，就会把那个头像当成采集素材打包/删除 —— 静默的数据错配。
+    if kind not in BATCH_KINDS:
+        raise LookupError("「%s」类资产没有文件，不支持批量下载/删除" % kind)
     if kind == "image":
         with closing(core.jdb()) as c:
             core._ensure_column(c, "jobs", "deleted", "INTEGER DEFAULT 0")

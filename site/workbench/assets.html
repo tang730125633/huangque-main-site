@@ -206,11 +206,24 @@
   function assetKey(x,kind){ return [kind||cat, x.id||x.job_id||x.asset_id||'', assetUrl(x), x.prompt||x.text||''].join('|'); }
   function markKey(x,kind){ return String(x.job_id||x.id||x.asset_id||assetUrl(x)||x.voice_key||x.provider_avatar_id||''); }
   function markOf(x,kind){ return MARKS[markKey(x,kind)]||{favorite:false,tags:[]}; }
+  // 统一 assets 表返回的行把有信息量的内容都放在 meta 里（copy 的正文、collect 的作者/平台/描述、
+  // leads 的平台列表），title 只是提示词裁到 120 字。不摊平 meta 的话这三类搜索基本是坏的。
+  function metaText(x){
+    var m=x&&x.meta; if(!m||typeof m!=='object') return '';
+    var out=[];
+    Object.keys(m).forEach(function(k){
+      var v=m[k];
+      if(v==null||typeof v==='boolean') return;
+      if(Array.isArray(v)) out.push(v.filter(function(i){return typeof i!=='object';}).join(' '));
+      else if(typeof v!=='object') out.push(v);
+    });
+    return out.join(' ');
+  }
   function searchableText(x,kind){
     var m=markOf(x,kind);
     return [
       kind||cat, x.prompt, x.text, x.mode, x.ratio, x.quality, x.model, x.voice, x.voice_key,
-      x.voice_name, x.status, x.title, x.display_name, x.sub, x.created_at, (m.tags||[]).join(' ')
+      x.voice_name, x.status, x.title, x.display_name, x.sub, x.created_at, metaText(x), (m.tags||[]).join(' ')
     ].filter(Boolean).join(' ').toLowerCase();
   }
   function filterAssets(list,kind){
@@ -1486,18 +1499,15 @@
     return '';
   }
   function docCard(x){
-    var kind=x.kind, m=markOf(x,kind);
+    var kind=x.kind;
     var w=document.createElement('div');
-    w.style.cssText='display:flex; flex-direction:column; gap:9px; padding:14px 15px; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:rgba(16,24,39,.4);';
+    w.style.cssText='display:flex; flex-direction:column; gap:9px; padding:14px 15px 0; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:rgba(16,24,39,.4);';
     var head=document.createElement('div'); head.style.cssText='display:flex; align-items:center; gap:8px;';
     var badge=document.createElement('span'); badge.textContent=STAGE_LABEL[x.stage]||x.stage||'';
     badge.style.cssText='padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(231,178,76,.1); color:#e7b24c; flex:none;';
     var t=document.createElement('div'); t.textContent=x.title||'（无标题）'; t.title=x.title||'';
     t.style.cssText='flex:1; min-width:0; font-size:13.5px; font-weight:600; color:#eaf1fa; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
-    var fav=document.createElement('button'); fav.type='button'; fav.textContent=m.favorite?'★':'☆'; fav.title=m.favorite?'取消收藏':'收藏';
-    fav.style.cssText='flex:none; border:0; background:transparent; cursor:pointer; font-size:16px; line-height:1; color:'+(m.favorite?'#e7b24c':'#5c6b82')+';';
-    fav.onclick=function(){ saveFavorite(x,kind,!m.favorite,fav); };
-    head.appendChild(badge); head.appendChild(t); head.appendChild(fav);
+    head.appendChild(badge); head.appendChild(t);
     var sub=document.createElement('div'); sub.textContent=docSummary(x);
     sub.style.cssText='font-size:12px; color:#94a4bb; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
     w.appendChild(head); w.appendChild(sub);
@@ -1513,13 +1523,21 @@
     when.textContent=x.created_at?new Date(Number(x.created_at)*1000).toLocaleString('zh-CN',{hour12:false}):'';
     foot.appendChild(when);
     if(x.url){
+      var right=document.createElement('span'); right.style.cssText='display:flex; align-items:center; gap:8px;';
+      // COS 转存失败时后端回退了第三方 CDN 直链，那种链接带时效、几天后就是死链
+      if(kind==='collect' && (x.meta||{}).permanent===false){
+        var warn=document.createElement('span'); warn.textContent='链接会过期'; warn.title='未能转存到永久存储，建议尽快下载';
+        warn.style.cssText='color:#f4b740;'; right.appendChild(warn);
+      }
       var a=document.createElement('a'); a.href=x.url; a.target='_blank'; a.rel='noopener';
       a.textContent=kind==='collect'?'打开视频':'打开';
       a.style.cssText='color:#e7b24c; text-decoration:none; font-weight:600;';
-      foot.appendChild(a);
+      right.appendChild(a); foot.appendChild(right);
     }
     w.appendChild(foot);
-    return w;
+    // 收藏 + 标签统一走 addMarkTools（和 card/audioCard/videoCard/avatarCard 一致）。
+    // 之前这里手搓了个收藏按钮，漏掉了「标签」按钮和标签 chip，后端接口其实早就支持。
+    return addMarkTools(w, x, kind);
   }
   function renderDocAssets(kind){
     grid.innerHTML='';

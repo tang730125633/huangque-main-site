@@ -3,6 +3,9 @@ Description=Huangque 采集获客后端 (独立于 content_api)
 After=network.target
 [Service]
 EnvironmentFile=/home/ubuntu/content-api/content.env
+# HQ_INTERNAL_TOKEN 在 auth.env 里，退点要调 auth 的 /api/auth/points/refund 才能进 points_audit。
+# content / imggen / admin 三个单元早就加载了它，唯独本单元没有 —— 补上（'-' 表示文件缺失不致启动失败）。
+EnvironmentFile=-/home/ubuntu/auth-service/auth.env
 WorkingDirectory=/home/ubuntu/content-api
 ExecStart=/usr/bin/python3 /home/ubuntu/content-api/leadgen_api.py
 Restart=always

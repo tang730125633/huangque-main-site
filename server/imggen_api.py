@@ -301,21 +301,31 @@ def gen_banana(payload):
 # 与 content_domains/core.py 的 _set_terminal/_refund_once 同语义：本服务与 content_api 共写
 # 同一张 jobs 表，reaper 只在 content_api 里跑。不做 CAS 就会「reaper 判超时退了点，
 # worker 随后把 error 覆写回 done」——用户既拿到图又拿回点数(线上 image 有 10 条这种记录)。
-def _set_terminal(job_id, status, result=None, error=None):
-    """CAS 抢终态：仅当仍是 running 才迁移，返回是否抢到(rowcount>=1)。"""
+def _set_terminal(job_id, status, result=None, error=None, from_states=("running",)):
+    """CAS 抢终态：仅当当前状态在 from_states 内才迁移，返回是否抢到(rowcount>=1)。
+
+    run_job 的 except 分支要传 ("pending","running")：若异常发生在把任务改成 running 之前，
+    任务还停在 pending，只认 running 会让 CAS 失败 → 不退点 → 预扣的点永久丢失，
+    而 reaper 只扫 running、从不回收 pending。
+    """
     now = int(time.time())
+    holes = ",".join("?" * len(from_states))
     with closing(jdb()) as c:
         if status == "done":
-            cur = c.execute("UPDATE jobs SET status='done', result=?, updated_at=? WHERE id=? AND status='running'",
-                            (json.dumps(result, ensure_ascii=False), now, job_id))
+            cur = c.execute("UPDATE jobs SET status='done', result=?, updated_at=? WHERE id=? AND status IN (%s)" % holes,
+                            (json.dumps(result, ensure_ascii=False), now, job_id) + tuple(from_states))
         else:
-            cur = c.execute("UPDATE jobs SET status='error', error=?, updated_at=? WHERE id=? AND status='running'",
-                            (str(error or "")[:300], now, job_id))
+            cur = c.execute("UPDATE jobs SET status='error', error=?, updated_at=? WHERE id=? AND status IN (%s)" % holes,
+                            (str(error or "")[:300], now, job_id) + tuple(from_states))
         c.commit()
         return cur.rowcount >= 1
 
 def _refund_once(job_id, username, cost):
-    """退点 job 级幂等：refunded 列 CAS，仅第一次真正退。防与 reaper 双重退点。"""
+    """退点 job 级幂等：refunded 列 CAS，仅第一次真正退。防与 reaper 双重退点。
+
+    先置位再退点，保证「最多退一次」；退点若失败（auth 挂掉/超时，本服务没有直写兜底），
+    必须把 refunded 放回 0，否则这条 job 被永久标记「已退过」，用户的点再也拿不回来。
+    """
     try:
         cost = int(cost or 0)
     except Exception:
@@ -329,7 +339,9 @@ def _refund_once(job_id, username, cost):
             return  # 已退过 / 非 error 终态，跳过
     refund_status, refund_data = refund_points(username, cost)
     if refund_status != 200:
-        print("imggen refund failed job=%s user=%s status=%s detail=%s" % (
+        with closing(jdb()) as c:   # 退点没成功，把幂等锁放回去，留给下次重试
+            c.execute("UPDATE jobs SET refunded=0 WHERE id=? AND refunded=1", (job_id,)); c.commit()
+        print("imggen refund failed job=%s user=%s status=%s detail=%s（已回滚 refunded 标记）" % (
             job_id, username, refund_status, (refund_data or {}).get("detail")), flush=True)
 
 def run_job(job_id):
@@ -339,8 +351,11 @@ def run_job(job_id):
         return
     payload = json.loads(r["payload"] or "{}")
     try:
-        with closing(jdb()) as c:
-            c.execute("UPDATE jobs SET status='running', updated_at=? WHERE id=?", (int(time.time()), job_id)); c.commit()
+        with closing(jdb()) as c:   # CAS 认领：只有 pending 才能被本次执行接管，防同一 job 被跑两遍
+            claimed = c.execute("UPDATE jobs SET status='running', updated_at=? WHERE id=? AND status='pending'",
+                                (int(time.time()), job_id)); c.commit()
+        if claimed.rowcount < 1:
+            return  # 已被别的线程接管或已是终态
         result = gen_banana(payload)
         if not _set_terminal(job_id, "done", result=result):
             # reaper 已把它判超时并退点：不覆写终态。宁可用户重试，也不能既退点又出图。
@@ -353,7 +368,9 @@ def run_job(job_id):
         except Exception as e:
             print("[imggen] 资产入库失败 job=%s: %s" % (job_id, e), flush=True)
     except Exception as e:
-        if _set_terminal(job_id, "error", error=str(e)):
+        # from_states 含 pending：认领那句 UPDATE 自己抛异常时任务还停在 pending，
+        # 只认 running 会导致不退点且 reaper 永远扫不到它
+        if _set_terminal(job_id, "error", error=str(e), from_states=("pending", "running")):
             _refund_once(job_id, r["username"], r["cost"])
 
 
