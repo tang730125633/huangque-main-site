@@ -542,6 +542,12 @@
     var comments = r.comments || [];
     var imgs     = r.images   || [];
 
+    // 「提取文案」按钮依赖 currentUrl；submitTranscript 见到空值会静默 return，表现为「点了没反应」。
+    // 提交采集、刷新恢复两条路径各自设过它，唯独从历史记录载入那条漏了。统一在这里从结果里取，
+    // 这样以后再多一条渲染路径也不会漏。result.source 是后端规范化后的链接，比短链更适合再解析。
+    var src = r.source || v.url || '';
+    if (src) currentUrl = src;
+
     /* video card */
     var vcCover  = document.getElementById('vcCover');
     var vcTitle  = document.getElementById('vcTitle');
@@ -711,9 +717,12 @@
 
   /* ---- transcript extraction (on-demand) ---- */
   function submitTranscript() {
-    if (!currentUrl) return;
     var btn  = document.getElementById('transcriptExtractBtn');
     var note = document.getElementById('transcriptExtractNote');
+    if (!currentUrl) {   // 原来这里是静默 return —— 用户只看到按钮点不动，没有任何反馈
+      if (note) { note.textContent = '没拿到原视频链接，请重新贴一次链接采集'; note.style.color = '#f4708a'; }
+      return;
+    }
     if (btn) { btn.disabled = true; btn.style.opacity = '.7'; btn.style.pointerEvents = 'none'; btn.textContent = '提取中…'; }
     if (note) { note.textContent = '口播提取排队/识别中，通常约 20 秒到数分钟…'; note.style.color = '#2dd4bf'; }
     requestTranscript()
