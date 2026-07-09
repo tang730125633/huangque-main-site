@@ -361,12 +361,8 @@ def run_job(job_id):
             # reaper 已把它判超时并退点：不覆写终态。宁可用户重试，也不能既退点又出图。
             print("[imggen] job %s 完成时已非 running（reaper 判超时在先），丢弃结果" % job_id, flush=True)
             return
-        # 拿到 done 终态后才入资产库；入库是次要副作用，失败不改状态、不退点
-        try:
-            from content_domains import assets_store
-            assets_store.record_asset(job_id, r["username"], "image", result)
-        except Exception as e:
-            print("[imggen] 资产入库失败 job=%s: %s" % (job_id, e), flush=True)
+        # 出图产物不入统一 assets 表：图片走 jobs.result → /api/gen/history，
+        # 那才是 assets.html 图片分类读的数据源。见 assets_store.KIND_STAGE 的注释。
     except Exception as e:
         # from_states 含 pending：认领那句 UPDATE 自己抛异常时任务还停在 pending，
         # 只认 running 会导致不退点且 reaper 永远扫不到它

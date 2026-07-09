@@ -493,7 +493,7 @@ def _delete_asset_mark(username, kind, key):
         c.commit()
 def delete_user_asset(username, kind, asset_id):
     kind = str(kind or "").strip().lower()
-    if kind in assets_store.KINDS - {"image"}: return assets_store.soft_delete(username, int(asset_id))  # copy/collect/leads 在统一 assets 表
+    if kind in assets_store.KINDS: return assets_store.soft_delete(username, int(asset_id))  # copy/collect/leads 在统一 assets 表
     if kind not in {"image", "audio", "video"}:
         raise ValueError("不支持的资产类型")
     try:
@@ -831,7 +831,7 @@ def run_job(job_id):
                 audio_domain.record_audio_asset(job_id, username, result)
             if kind in {"video", "tryon", "xiaole_video"}:
                 video_domain.record_video_asset(job_id, username, result)
-            assets_store.record_asset(job_id, username, kind, result)  # image/copy 入统一 assets 表；其余 kind 内部忽略
+            assets_store.record_asset(job_id, username, kind, result)  # 只有 copy 会入统一 assets 表；其余 kind 内部忽略
         except Exception:
             pass
     except Exception as e:
