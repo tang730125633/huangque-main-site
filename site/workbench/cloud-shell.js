@@ -147,6 +147,7 @@
 
     var aside=document.createElement('aside');
     aside.className='hq-aside';
+    aside.id='hqSideNav';
     aside.style.cssText='width:228px; flex:none; display:flex; flex-direction:column; border-right:1px solid rgba(148,164,187,.08); background:linear-gradient(180deg, rgba(12,18,32,.95), rgba(8,12,20,.95)); backdrop-filter:blur(12px); z-index:40;';
     aside.innerHTML=
       '<a href="../index.html" style="display:flex; align-items:center; gap:10px; padding:20px 22px 18px; cursor:pointer;">'+
@@ -170,7 +171,7 @@
     header.className='hq-topbar';
     header.style.cssText='flex:none; display:flex; align-items:center; gap:14px; padding:14px 26px; border-bottom:1px solid rgba(148,164,187,.08); background:rgba(7,11,19,.4); backdrop-filter:blur(12px);';
     header.innerHTML=
-      '<button class="hq-burger" style="display:none; width:38px; height:38px; align-items:center; justify-content:center; flex:none; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer;">'+icon('menu','18px')+'</button>'+
+      '<button type="button" class="hq-burger" aria-label="打开导航" aria-controls="hqSideNav" aria-expanded="false" style="display:none; width:38px; height:38px; align-items:center; justify-content:center; flex:none; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer;">'+icon('menu','18px')+'</button>'+
       '<div id="hqBizSwitch" style="display:none; align-items:center; gap:9px; padding:7px 14px 7px 9px; border:1px solid rgba(148,164,187,.14); border-radius:11px; background:rgba(148,164,187,.04); cursor:pointer;">'+
         '<div style="width:24px; height:24px; border-radius:7px; background:radial-gradient(circle at 32% 26%, #f6d488, #e7b24c 46%, #a8721f 100%); box-shadow:inset 0 1px 0 rgba(255,255,255,.45), inset 0 -2px 4px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.35); display:flex; align-items:center; justify-content:center; color:#1a1206; font-size:11px; font-weight:600;">仙</div>'+
         '<span style="font-size:13.5px; font-weight:500;">仙颜美容 · 示例</span><span style="display:flex; width:13px; color:#94a4bb;">'+icon('chevronDown')+'</span></div>'+
@@ -203,14 +204,23 @@
       header.querySelector('.hq-burger').style.display=narrow?'flex':'none';
       header.querySelector('.hq-botpill').style.display=narrow?'none':'flex';
       if(narrow){ aside.style.position='fixed'; aside.style.top=0; aside.style.bottom=0; aside.style.left=0; aside.style.transform='translateX(-100%)'; aside.style.boxShadow='0 0 60px rgba(0,0,0,.6)'; }
-      else { aside.style.position='static'; aside.style.transform='none'; aside.style.boxShadow='none'; }
+      else {
+        open=false;
+        if(burger) burger.setAttribute('aria-expanded','false');
+        aside.style.position='static'; aside.style.transform='none'; aside.style.boxShadow='none';
+      }
     }
     var open=false;
-    burger.onclick=function(){ open=!open; aside.style.transform=open?'translateX(0)':'translateX(-100%)'; };
+    function setNavOpen(next){
+      open=!!next;
+      aside.style.transform=open?'translateX(0)':'translateX(-100%)';
+      if(burger) burger.setAttribute('aria-expanded',open?'true':'false');
+    }
+    burger.onclick=function(){ setNavOpen(!open); };
     var notifyBtn=header.querySelector('.hq-notify-btn');
     if(notifyBtn) notifyBtn.onclick=openNotificationPanel;
     window.addEventListener('resize',applyResp); applyResp();
-    aside.querySelectorAll('a').forEach(function(a){ a.addEventListener('click',function(){ if(window.innerWidth<900){ open=false; aside.style.transform='translateX(-100%)'; } }); });
+    aside.querySelectorAll('a').forEach(function(a){ a.addEventListener('click',function(){ if(window.innerWidth<900) setNavOpen(false); }); });
     refreshPoints(); renderUser(); refreshNotificationBadge();
   }
 
@@ -485,8 +495,8 @@
       '.hqlx{position:absolute;top:15px;right:15px;width:30px;height:30px;border:0;border-radius:9px;cursor:pointer;color:#9a9ba2;background:rgba(255,255,255,.05);display:flex;align-items:center;justify-content:center;transition:.16s}'+
       '.hqlx:hover{color:#f4f5f7;background:rgba(255,255,255,.1)}'+
       '.hqlt{display:flex;gap:24px;margin-top:24px;border-bottom:1px solid rgba(255,255,255,.07)}'+
-      '.hqlt>div{padding:10px 1px;font-size:14px;font-weight:500;cursor:pointer;color:#9a9ba2;border-bottom:2px solid transparent;margin-bottom:-1px;transition:.2s}'+
-      '.hqlt>div.on{color:#f4f5f7;border-bottom-color:#e7b24c}'+
+      '.hqlt>button{padding:10px 1px;font-size:14px;font-weight:500;cursor:pointer;color:#9a9ba2;border:0;border-bottom:2px solid transparent;background:transparent;margin-bottom:-1px;transition:.2s;font-family:inherit}'+
+      '.hqlt>button.on{color:#f4f5f7;border-bottom-color:#e7b24c}'+
       '.hqlf{display:flex;align-items:center;gap:11px;height:48px;padding:0 15px;border:1px solid rgba(255,255,255,.07);background:rgba(0,0,0,.28);border-radius:13px;transition:.2s}'+
       '.hqlf:focus-within{border-color:rgba(231,178,76,.5);box-shadow:0 0 0 3px rgba(231,178,76,.12)}'+
       '.hqlf input{flex:1;background:transparent;border:0;outline:0;color:#f4f5f7;font-size:14px;font-family:inherit}'+
@@ -502,7 +512,7 @@
       '<div style="display:flex;align-items:center;gap:9px;margin-bottom:16px;"><span style="width:8px;height:8px;border-radius:50%;background:#e7b24c;box-shadow:0 0 10px #e7b24c;"></span><span style="font-size:14px;font-weight:600;">黄雀 AI</span></div>'+
       '<div id="hqTitle" style="font-size:20px;font-weight:600;">欢迎回来</div>'+
       '<div id="hqSubtitle" style="font-size:13px;color:#9a9ba2;margin-top:8px;">登录后开启智能获客与内容创作</div>'+
-      '<div class="hqlt" id="hqTabs"><div class="on" id="hqTP">手机号登录</div><div id="hqTW">密码登录</div></div>'+
+      '<div class="hqlt" id="hqTabs" role="tablist" aria-label="登录方式"><button type="button" role="tab" aria-selected="true" class="on" id="hqTP">手机号登录</button><button type="button" role="tab" aria-selected="false" id="hqTW">密码登录</button></div>'+
       '<div style="margin-top:20px;display:flex;flex-direction:column;gap:12px;">'+
         '<div class="hqlf"><span style="'+SI+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span><input id="hqU" placeholder="请输入手机号 / 账号"></div>'+
         '<div id="hqRP" style="display:flex;gap:10px;"><div class="hqlf" style="flex:1;"><span style="'+SI+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 11v1a10 10 0 1 1-5.9-9.1"/><path d="M22 4L12 14l-3-3"/></svg></span><input id="hqC" placeholder="请输入验证码"></div><button type="button" id="hqGc" style="height:48px;padding:0 14px;white-space:nowrap;font-size:13px;color:#e7b24c;background:rgba(231,178,76,.08);border:1px solid rgba(231,178,76,.26);border-radius:13px;cursor:pointer;font-family:inherit;">获取验证码</button></div>'+
@@ -514,7 +524,7 @@
       '</div>'+
       '<button type="button" class="hqlb" id="hqSub">登 录</button>'+
       '<div id="hqMsg" style="text-align:center;font-size:12.5px;margin-top:11px;min-height:15px;color:#f4708a;"></div>'+
-      '<div id="hqTeam" style="text-align:center;font-size:13.5px;color:#e7b24c;cursor:pointer;font-weight:500;margin-top:6px;">团队口令登录 →</div>'+
+      '<button type="button" id="hqTeam" style="display:block;width:100%;text-align:center;font-size:13.5px;color:#e7b24c;cursor:pointer;font-weight:500;margin-top:6px;border:0;background:transparent;font-family:inherit;padding:0;">团队口令登录 →</button>'+
       '<div style="text-align:center;font-size:11px;color:#65666c;margin-top:16px;">登录即代表您同意《用户协议》与《隐私政策》</div>'+
       '</div>';
     document.body.appendChild(ov);
@@ -553,7 +563,11 @@
     if(reg) reg.style.display='none';
     if(btn) btn.textContent='登 录';
     if(team) team.textContent='团队口令登录 →';
-    if(tP&&tW){ tP.classList.toggle('on',_hqPhone); tW.classList.toggle('on',!_hqPhone); }
+    if(tP&&tW){
+      tP.classList.toggle('on',_hqPhone); tW.classList.toggle('on',!_hqPhone);
+      tP.setAttribute('aria-selected',_hqPhone?'true':'false');
+      tW.setAttribute('aria-selected',!_hqPhone?'true':'false');
+    }
     if(rP) rP.style.display=_hqPhone?'flex':'none';
     if(rW) rW.style.display=_hqPhone?'none':'flex';
     if(u) u.placeholder=_hqPhone?'请输入手机号 / 账号':'请输入账号';
@@ -627,16 +641,16 @@
       if(card) card.innerHTML='<div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-radius:10px;">'+
         '<div style="width:34px;height:34px;border-radius:50%;flex:none;background:'+av+';box-shadow:inset 0 1px 0 rgba(255,255,255,.45), inset 0 -2px 4px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;color:#1a1206;font-size:13px;font-weight:600;">'+safeCh+'</div>'+
         '<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+safeName+'</div><div style="font-size:11px;color:#e7b24c;">'+role+'</div></div>'+
-        '<span data-logout="1" title="退出登录" style="display:flex;width:16px;color:#5c6b82;cursor:pointer;">'+icon('logout')+'</span></div>';
+        '<button type="button" data-logout="1" aria-label="退出登录" title="退出登录" style="display:flex;width:24px;height:24px;align-items:center;justify-content:center;color:#5c6b82;cursor:pointer;border:0;background:transparent;padding:0;">'+icon('logout','16px')+'</button></div>';
       if(auth) auth.innerHTML='<div style="width:38px;height:38px;border-radius:11px;background:'+av+';box-shadow:inset 0 1px 0 rgba(255,255,255,.45), inset 0 -2px 4px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;color:#1a1206;font-size:14px;font-weight:600;">'+safeCh+'</div>';
       if(biz) biz.style.display='flex';
     } else {
-      if(card) card.innerHTML='<div data-login="1" style="display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:11px;cursor:pointer;border:1px solid rgba(148,164,187,.16);background:rgba(148,164,187,.04);">'+
+      if(card) card.innerHTML='<button type="button" data-login="1" style="width:100%;display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:11px;cursor:pointer;border:1px solid rgba(148,164,187,.16);background:rgba(148,164,187,.04);font-family:inherit;text-align:left;">'+
         '<div style="width:32px;height:32px;border-radius:50%;flex:none;background:rgba(148,164,187,.12);display:flex;align-items:center;justify-content:center;color:#94a4bb;"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/></svg></div>'+
         '<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:500;color:#eaf1fa;">未登录</div><div style="font-size:11px;color:#94a4bb;">登录后开启全部功能</div></div>'+
-        '<span style="font-size:12px;color:#e7b24c;font-weight:600;white-space:nowrap;">登录</span></div>';
-      if(auth) auth.innerHTML='<button data-register="1" style="height:36px;padding:0 14px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:13px;color:#94a4bb;background:rgba(148,164,187,.06);border:1px solid rgba(148,164,187,.16);">注册</button>'+
-        '<button data-login="1" style="height:36px;padding:0 16px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:600;color:#1c1402;background:linear-gradient(135deg,#f6d488,#e7b24c);border:0;">登录</button>';
+        '<span style="font-size:12px;color:#e7b24c;font-weight:600;white-space:nowrap;">登录</span></button>';
+      if(auth) auth.innerHTML='<button type="button" data-register="1" style="height:36px;padding:0 14px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:13px;color:#94a4bb;background:rgba(148,164,187,.06);border:1px solid rgba(148,164,187,.16);">注册</button>'+
+        '<button type="button" data-login="1" style="height:36px;padding:0 16px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:600;color:#1c1402;background:linear-gradient(135deg,#f6d488,#e7b24c);border:0;">登录</button>';
       if(biz) biz.style.display='none';
     }
     [card,auth].forEach(function(el){ if(!el) return; el.onclick=function(e){
