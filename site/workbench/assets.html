@@ -507,13 +507,17 @@
     document.body.appendChild(wrap);
     show(idx);
   }
+  function isMotionAsset(x){
+    x=x||{};
+    return !!(x.reference_video_url||x.reference_video_file||x.reference_video_data||x.reference_video);
+  }
   function regenPayload(x,kind){
     if(kind==='audio') return {url:'/api/gen/audio', body:{text:x.text||x.prompt||'', voice:x.voice||x.voice_key||'', speed:x.speed||1, pitch:x.pitch||0, volume:x.volume||1}};
     if(kind==='video'){
-      var mode=String(x.mode||'text').toLowerCase();
+      var mode=String(x.mode||'').toLowerCase();
       if(['digital_human','talking','talking_head','talking_text','text2video'].indexOf(mode)>=0) mode='text';
       if(['talking_audio','audio2video'].indexOf(mode)>=0) mode='audio';
-      if(!mode || mode==='video') mode=(x.audio_file||x.audio_url)&&!(x.text||x.prompt)?'audio':'text';
+      if(!mode || mode==='video') mode=isMotionAsset(x)?'motion':((x.audio_file||x.audio_url)&&!(x.text||x.prompt)?'audio':'text');
       var prefill={
         mode:mode,
         prompt:x.prompt||x.text||'',
