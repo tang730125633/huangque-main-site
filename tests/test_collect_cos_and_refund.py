@@ -319,8 +319,8 @@ class RefundAuditTests(unittest.TestCase):
         self.lg._add_points_direct = self._orig_direct
 
     def _auth(self, status, data=None):
-        def _f(path, u, a):
-            self.auth_calls.append((path, u, a))
+        def _f(path, u, a, reason=""):
+            self.auth_calls.append((path, u, a, reason))
             return status, (data or {})
         self.lg._auth_points = _f
 
@@ -328,13 +328,13 @@ class RefundAuditTests(unittest.TestCase):
     def test_refund_uses_refund_endpoint(self):
         self._auth(200, {"points": 9})
         self.assertTrue(self.lg.add_points("u", 6))
-        self.assertEqual(self.auth_calls, [("/api/auth/points/refund", "u", 6)])
+        self.assertEqual(self.auth_calls, [("/api/auth/points/refund", "u", 6, "")])
         self.assertEqual(self.direct_calls, [], "auth 成功时不该直写 users.db")
 
     def test_deduct_uses_deduct_endpoint_with_positive_amount(self):
         self._auth(200, {"points": 3})
         self.assertTrue(self.lg.add_points("u", -6))
-        self.assertEqual(self.auth_calls, [("/api/auth/points/deduct", "u", 6)],
+        self.assertEqual(self.auth_calls, [("/api/auth/points/deduct", "u", 6, "")],
                          "扣点必须走 /deduct 且传绝对值；传负数会被 auth 以 400 拒绝")
         self.assertEqual(self.direct_calls, [])
 

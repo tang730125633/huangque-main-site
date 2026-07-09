@@ -55,6 +55,9 @@ def init_db():
         reason TEXT,
         created_at INTEGER NOT NULL
     )""")
+    # 任务扣点/退点接入审计后，这张表按任务量增长（原来只有人工加减点，几乎不涨）。
+    # 按用户查流水是后台最常用的路径，没索引会随表全扫。
+    c.execute("CREATE INDEX IF NOT EXISTS idx_points_audit_user ON points_audit(username, id DESC)")
     c.execute("""CREATE TABLE IF NOT EXISTS recharge_orders(
         order_id TEXT PRIMARY KEY,
         username TEXT NOT NULL,
@@ -111,28 +114,49 @@ def get_points_row(username, c=None):
     if own: c.close()
     return row
 
-def deduct_points(username, amount):
+SYSTEM_ACTOR = "system"   # points_audit.who_admin：非管理员操作（任务扣点/退点）用它，与人工加减点区分
+
+
+def _write_audit(c, who_admin, username, delta, before, after, reason):
+    """在【同一个事务里】写审计流水。分开写会出现「扣了点但审计没记」或反过来。"""
+    c.execute(
+        "INSERT INTO points_audit(who_admin, username, delta, before_points, after_points, reason, created_at) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (who_admin, username, delta, before, after, (reason or "")[:120], int(time.time())))
+
+
+def deduct_points(username, amount, reason=""):
+    """任务提交时预扣点。reason 形如 'job:collect#1354'，由调用方传入。
+
+    在补上审计之前，points_audit 只记录管理员加减点和充值审批 —— 任务扣点/退点完全隐形，
+    对账时无法追溯「这个用户的点数为什么少了」。那 21 条「既退点又出结果」的僵尸记录
+    (280 点)也因此没法核。
+    """
     amount = int(amount or 0)
     if amount < 0:
         raise ValueError("amount must be >= 0")
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
+        before_row = get_points_row(username, c)
+        if not before_row:
+            c.rollback()
+            return None, "not_found"
+        before = int(before_row["points"] or 0)
         if amount:
             cur = c.execute(
                 "UPDATE users SET points = points - ? WHERE username=? AND points >= ?",
                 (amount, username, amount),
             )
             if cur.rowcount != 1:
-                row = get_points_row(username, c)
                 c.rollback()
-                if row:
-                    return None, "insufficient"
-                return None, "not_found"
+                return None, "insufficient"
         row = get_points_row(username, c)
         if not row:
             c.rollback()
             return None, "not_found"
+        if amount:
+            _write_audit(c, SYSTEM_ACTOR, username, -amount, before, int(row["points"] or 0), reason)
         c.commit()
         return public_points(row), None
     except Exception:
@@ -141,13 +165,19 @@ def deduct_points(username, amount):
     finally:
         c.close()
 
-def refund_points(username, amount):
+def refund_points(username, amount, reason=""):
+    """任务失败/超时后退点。reason 同 deduct_points。"""
     amount = int(amount or 0)
     if amount < 0:
         raise ValueError("amount must be >= 0")
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
+        before_row = get_points_row(username, c)
+        if not before_row:
+            c.rollback()
+            return None, "not_found"
+        before = int(before_row["points"] or 0)
         if amount:
             cur = c.execute("UPDATE users SET points = points + ? WHERE username=?", (amount, username))
             if cur.rowcount != 1:
@@ -157,6 +187,8 @@ def refund_points(username, amount):
         if not row:
             c.rollback()
             return None, "not_found"
+        if amount:
+            _write_audit(c, SYSTEM_ACTOR, username, amount, before, int(row["points"] or 0), reason)
         c.commit()
         return public_points(row), None
     except Exception:
@@ -241,15 +273,27 @@ def adjust_points_admin(who_admin, username, delta, reason=""):
     finally:
         c.close()
 
-def list_points_audit(username="", limit=100):
+def list_points_audit(username="", limit=100, actor=""):
+    """actor='admin' 只看人工加减点/充值审批，'system' 只看任务扣退点，''(默认) 全看。
+
+    任务流水接入后，条数远多于人工操作，不过滤的话后台第一页会被任务刷屏。
+    """
     limit = max(1, min(300, int(limit or 100)))
     username = (username or "").strip()
     sql = """SELECT id, who_admin, username, delta, before_points, after_points, reason, created_at
              FROM points_audit"""
-    args = []
+    where, args = [], []
     if username:
-        sql += " WHERE username=?"
+        where.append("username=?")
         args.append(username)
+    if actor == "admin":
+        where.append("who_admin<>?")
+        args.append(SYSTEM_ACTOR)
+    elif actor == "system":
+        where.append("who_admin=?")
+        args.append(SYSTEM_ACTOR)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY id DESC LIMIT ?"
     args.append(limit)
     c = db()
@@ -604,13 +648,14 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": "missing username"})
             if amount < 0:
                 return self._send(400, {"detail": "amount must be >= 0"})
+            reason = str(d.get("reason") or "")   # 形如 job:collect#1354；老调用方不传就留空
             try:
                 if p.endswith("/deduct"):
-                    points, err = deduct_points(username, amount)
+                    points, err = deduct_points(username, amount, reason)
                     if err == "insufficient":
                         return self._send(402, {"detail": "点数不足", "need": amount})
                 else:
-                    points, err = refund_points(username, amount)
+                    points, err = refund_points(username, amount, reason)
                 if err == "not_found":
                     return self._send(404, {"detail": "user not found"})
                 return self._send(200, {"ok": True, "points": points["points"], "user": points})
@@ -802,6 +847,7 @@ class H(BaseHTTPRequestHandler):
                 data = list_points_audit(
                     username=(q.get("username") or [""])[0],
                     limit=(q.get("limit") or ["100"])[0],
+                    actor=(q.get("actor") or [""])[0],
                 )
                 return self._send(200, {"ok": True, **data})
             except Exception:

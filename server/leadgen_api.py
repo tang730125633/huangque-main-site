@@ -216,11 +216,14 @@ def get_points(username):
     except Exception:
         return 0
 
-def _auth_points(path, username, amount):
-    """调 auth 服务的点数接口（BEGIN IMMEDIATE 事务 + points_audit 流水），与 imggen_api 同一范式。"""
+def _auth_points(path, username, amount, reason=""):
+    """调 auth 服务的点数接口（BEGIN IMMEDIATE 事务 + points_audit 流水），与 imggen_api 同一范式。
+
+    reason 形如 job:collect#1354，会作为审计行的 reason 落库，用于对账。
+    """
     if not INTERNAL_TOKEN:
         return 500, {"detail": "HQ_INTERNAL_TOKEN 未配置"}
-    body = json.dumps({"username": username, "amount": int(amount)}, ensure_ascii=False).encode()
+    body = json.dumps({"username": username, "amount": int(amount), "reason": reason}, ensure_ascii=False).encode()
     req = urllib.request.Request(AUTH_BASE + path, data=body, method="POST",
                                  headers={"Content-Type": "application/json",
                                           "X-HQ-Internal-Token": INTERNAL_TOKEN})
@@ -235,11 +238,11 @@ def _auth_points(path, username, amount):
     except Exception:
         return 500, {"detail": "points update failed"}
 
-def deduct_points(username, amount):
-    return _auth_points("/api/auth/points/deduct", username, amount)   # 带 BEGIN IMMEDIATE + points>=amount 原子校验
+def deduct_points(username, amount, reason=""):
+    return _auth_points("/api/auth/points/deduct", username, amount, reason)   # 带 BEGIN IMMEDIATE + points>=amount 原子校验
 
-def refund_points(username, amount):
-    return _auth_points("/api/auth/points/refund", username, amount)
+def refund_points(username, amount, reason=""):
+    return _auth_points("/api/auth/points/refund", username, amount, reason)
 
 def _add_points_direct(username, delta):
     """兜底：直接写 users.db。无事务保护、不进 points_audit —— 只在 auth 不可用时用。
@@ -260,7 +263,7 @@ def _add_points_direct(username, delta):
         print("[leadgen] 直写 users.db 失败 user=%s delta=%s: %s" % (username, delta, e), flush=True)
         return False
 
-def add_points(username, delta):
+def add_points(username, delta, reason=""):
     """加/减点数。delta>0 退点走 auth 的 /refund，delta<0 扣点走 /deduct。
 
     ⚠ 这个函数同时被扣点(do_POST 里 -cost / -1)和退点(_refund_once 里 +cost)调用。
@@ -275,9 +278,9 @@ def add_points(username, delta):
     if delta == 0:
         return True
     if delta > 0:
-        status, data = refund_points(username, delta)
+        status, data = refund_points(username, delta, reason)
     else:
-        status, data = deduct_points(username, -delta)
+        status, data = deduct_points(username, -delta, reason)
         if status == 402:
             return False   # 点数不足：auth 的原子校验已经拒绝，不要再直写
     if status == 200:
@@ -491,7 +494,7 @@ def _set_terminal(job_id, status, result=None, error=None, from_states=("running
 def _refund_once(job_id, username, cost):
     from content_domains import jobs_store
     # add_points：auth 的 /refund 优先，失败回退直写 users.db；返回 False 时 jobs_store 会回滚 refunded 标记
-    return jobs_store.refund_once(jdb, job_id, username, cost, lambda u, c: add_points(u, c))
+    return jobs_store.refund_once(jdb, job_id, username, cost, lambda u, c: add_points(u, c, "job#%d" % job_id))
 
 def run_job(job_id):
     with closing(jdb()) as c:
@@ -549,7 +552,7 @@ class H(BaseHTTPRequestHandler):
             # 原来是「先 get_points 查余额，再 add_points 扣」——两步之间有并发超扣窗口。
             # 现在扣点直接走 auth 的 /deduct（BEGIN IMMEDIATE + points>=amount 原子校验），
             # 扣不动就说明余额不足，不建任务。
-            if not add_points(user["username"], -cost):
+            if not add_points(user["username"], -cost, "job:" + kind):
                 return self._send(402, {"detail": "点数不足", "need": cost})
             now = int(time.time())
             with closing(jdb()) as c:
@@ -576,7 +579,7 @@ class H(BaseHTTPRequestHandler):
                 r = tikhub.search(platform, keyword, page=page, video_only=False)
             except tikhub.TikHubError as e:
                 return self._send(502, {"detail": str(e)[:160]})
-            if not add_points(user["username"], -1):   # 并发下余额可能已被别的请求扣光
+            if not add_points(user["username"], -1, "search:" + platform):   # 并发下余额可能已被别的请求扣光
                 return self._send(402, {"detail": "点数不足", "need": 1})
             items = [{"id": it.get("id"), "platform": it.get("platform"), "title": it.get("title"),
                       "cover": it.get("cover"), "author": it.get("author"), "url": it.get("url"),

@@ -71,32 +71,41 @@ def get_points(username):
     except Exception:
         return 0
 
-def deduct_points(username, amount):
+def deduct_points(username, amount, reason=""):
+    """预扣点。reason 落 points_audit，供对账。
+
+    注意：三个服务都是「先扣点、后 INSERT jobs 行」，所以扣点这一刻还没有 job_id，
+    reason 只能到 'job:<kind>' 这一层。退点时 job 行已存在，reason 会带上 '#<id>'。
+    要让扣点也带 id，得把 INSERT 挪到扣点前面 —— 那样两步之间崩溃会留下一个没付钱的
+    pending 任务被 worker 捡走白跑，代价大于收益，故不改。
+    """
     amount = int(amount or 0)
     if amount <= 0:
         return get_points(username)
-    res = _auth_points_request("/api/auth/points/deduct", {"username": username, "amount": amount})
+    res = _auth_points_request("/api/auth/points/deduct",
+                               {"username": username, "amount": amount, "reason": reason})
     return int(res.get("points") or 0)
 
-def refund_points(username, amount):
+def refund_points(username, amount, reason=""):
     amount = int(amount or 0)
     if amount <= 0:
         return get_points(username)
-    res = _auth_points_request("/api/auth/points/refund", {"username": username, "amount": amount})
+    res = _auth_points_request("/api/auth/points/refund",
+                               {"username": username, "amount": amount, "reason": reason})
     return int(res.get("points") or 0)
 
-def safe_refund_points(username, amount):
+def safe_refund_points(username, amount, reason=""):
     try:
-        return refund_points(username, amount)
+        return refund_points(username, amount, reason)
     except Exception:
         return get_points(username)
 
-def add_points(username, delta):
+def add_points(username, delta, reason=""):
     try:
         delta = int(delta or 0)
         if delta >= 0:
-            return refund_points(username, delta)
-        return deduct_points(username, -delta)
+            return refund_points(username, delta, reason)
+        return deduct_points(username, -delta, reason)
     except Exception:
         return get_points(username)
 
