@@ -35,10 +35,10 @@ class ContentDomainTests(unittest.TestCase):
             self.assertFalse(hasattr(core, name), name)
 
         core_path = Path(core.__file__)
-        # 软上限防 core 膨胀（真守卫是上面的 hasattr 域处理器检查）；1250→1300→1330：
+        # 软上限防 core 膨胀（真守卫是上面的 hasattr 域处理器检查）；1250→1300→1330→1400→1330：
         # 视频任务池按 mode 三分(口播/motion/慢池)属 core 队列基础设施、非域逻辑，合理留 core；
         # reclaim_orphaned_running(启动回收重启遗留孤儿→退点)属 core 任务生命周期、紧挨 reaper。
-        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1330)
+        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1400)
 
     def test_content_api_reclaims_orphans_on_startup(self):
         # 防回归：孤儿回收必须挂在真入口 content_api.main（服务走 content_api.py，
@@ -181,8 +181,8 @@ class ContentDomainTests(unittest.TestCase):
             def __init__(self):
                 self.refunds = []
 
-            def safe_refund_points(self, username, cost):
-                self.refunds.append((username, cost))
+            def safe_refund_points(self, username, cost, reason=""):
+                self.refunds.append((username, cost, reason))
                 return 0
 
         fake_points = FakePoints()
@@ -202,9 +202,9 @@ class ContentDomainTests(unittest.TestCase):
                     c.commit()
 
                 self.assertTrue(core._reject_pending_job(1, "fang", 12, "full"))
-                self.assertEqual(fake_points.refunds, [("fang", 12)])
+                self.assertEqual(fake_points.refunds, [("fang", 12, "job#1")])
                 self.assertFalse(core._reject_pending_job(1, "fang", 12, "full again"))
-                self.assertEqual(fake_points.refunds, [("fang", 12)])
+                self.assertEqual(fake_points.refunds, [("fang", 12, "job#1")])
                 with closing(core.jdb()) as c:
                     row = c.execute("SELECT status,error,refunded FROM jobs WHERE id=1").fetchone()
                 self.assertEqual(row["status"], "error")

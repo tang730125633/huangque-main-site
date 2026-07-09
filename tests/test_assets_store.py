@@ -2,7 +2,7 @@
 """统一 assets 表：写入幂等、stage 归类、meta 投影、读取过滤。
 
 要点：
-- record_asset 只对 image/copy/collect/leads 生效（audio/video 仍走各自的旧表）
+- record_asset 只对 copy/collect/leads 生效（image 走 jobs.result→/api/gen/history；audio/video 走各自旧表）
 - UNIQUE(kind, job_id) + INSERT OR IGNORE → 重复写不产生重复行（回填脚本可反复跑）
 - meta 不复制大块数据：collect 的 comments、leads 的名单留在 jobs.result 里
 """
@@ -33,23 +33,17 @@ class AssetsStoreTests(unittest.TestCase):
     # --- stage 默认归类，落地 DESIGN.md 的素材/作品/交付 ---
     def test_default_stage_per_kind(self):
         self.assertEqual(self.store.KIND_STAGE["collect"], self.store.MATERIAL)
-        self.assertEqual(self.store.KIND_STAGE["image"], self.store.WORK)
         self.assertEqual(self.store.KIND_STAGE["copy"], self.store.WORK)
         self.assertEqual(self.store.KIND_STAGE["leads"], self.store.DELIVERY)
+        self.assertNotIn("image", self.store.KIND_STAGE, "image 走 jobs.result，不进 assets 表")
 
-    def test_record_image_projects_fields(self):
-        result = {"type": "image", "mode": "text2img", "provider": "xiaole", "count": 2,
-                  "file": "img_a.png", "url": "https://cos/img_a.png", "ratio": "9:16",
-                  "files": ["img_a.png", "img_b.png"], "urls": ["u1", "u2"],
-                  "prompt": "科技焕肤 高级感美业海报"}
-        self.assertTrue(self.store.record_asset(11, "u", "image", result))
-        a = self.store.list_assets("u", kind="image")[0]
-        self.assertEqual(a["stage"], "work")
-        self.assertEqual(a["file"], "img_a.png")
-        self.assertEqual(a["url"], "https://cos/img_a.png")
-        self.assertEqual(a["title"], "科技焕肤 高级感美业海报")
-        self.assertEqual(a["meta"]["provider"], "xiaole")
-        self.assertEqual(a["meta"]["files"], ["img_a.png", "img_b.png"])
+    def test_image_is_not_recorded(self):
+        """作图产物早有自己的展示链路(jobs.result → /api/gen/history)。
+        曾经这里也写 image，写进来的行没有任何读路径 —— 纯粹的死写。"""
+        result = {"type": "image", "mode": "text2img", "file": "img_a.png",
+                  "url": "https://cos/img_a.png", "prompt": "科技焕肤"}
+        self.assertFalse(self.store.record_asset(11, "u", "image", result))
+        self.assertEqual(self._count(), 0)
 
     def test_record_collect_prefers_play_url_and_drops_comments(self):
         result = {"type": "collect", "platform": "douyin", "source": "https://v.douyin.com/x",
@@ -98,13 +92,14 @@ class AssetsStoreTests(unittest.TestCase):
     # --- 同一个 job_id 不同 kind 互不冲突（UNIQUE 是复合键）---
     def test_same_job_id_different_kind(self):
         self.assertTrue(self.store.record_asset(30, "u", "copy", {"prompt": "a"}))
-        self.assertTrue(self.store.record_asset(30, "u", "image", {"prompt": "b"}))
+        self.assertTrue(self.store.record_asset(30, "u", "collect", {"video": {"title": "b"}}))
         self.assertEqual(self._count(), 2)
 
     # --- audio/video 不进这张表（仍走 audio_assets / video_assets）---
-    def test_audio_video_not_recorded(self):
+    def test_audio_video_image_not_recorded(self):
         self.assertFalse(self.store.record_asset(40, "u", "audio", {"file": "a.mp3"}))
         self.assertFalse(self.store.record_asset(41, "u", "video", {"file": "v.mp4"}))
+        self.assertFalse(self.store.record_asset(42, "u", "image", {"file": "i.png"}))
         self.assertEqual(self._count(), 0)
 
     def test_no_username_not_recorded(self):

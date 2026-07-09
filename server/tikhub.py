@@ -555,6 +555,35 @@ def _http_get(url, max_bytes=26_000_000, timeout=60):
 # ASR 下载预算：下载顶过 reaper 判死线会导致「判死退点 → worker 又写回 done」的双发事故
 ASR_DL_DEADLINE = int(os.environ.get("ASR_DOWNLOAD_DEADLINE", "120"))
 
+def download_to_file(url, deadline_ts, dest_path, max_bytes=26_000_000, read_timeout=30):
+    """流式下载到文件，内存恒定（一次只驻留 256KB）。返回落盘字节数。
+
+    采集视频最大 100MB，原来先在内存里攒成 bytes 再 b"".join（拼接瞬间双份），
+    而 leadgen 的 do_POST 每个请求直接起一个不限流的线程 —— 并发一高就是 OOM。
+    落盘之后 ffmpeg 直接读这个文件、COS 也从文件上传，反而少一次写。
+    """
+    remain = deadline_ts - time.time()
+    if remain <= 0:
+        raise TimeoutError("下载预算已耗尽")
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    got = 0
+    with _OPENER.open(req, timeout=min(read_timeout, remain)) as r, open(dest_path, "wb") as f:
+        declared = r.headers.get("Content-Length")
+        if declared and int(declared) > max_bytes:
+            raise ValueError("文件 %.1fMB 超过上限 %.0fMB" % (int(declared) / 1048576.0, max_bytes / 1048576.0))
+        while True:
+            if time.time() >= deadline_ts:
+                raise TimeoutError("下载超过预算（已下载 %.1fMB）" % (got / 1048576.0))
+            block = r.read(262144)
+            if not block:
+                break
+            got += len(block)
+            if got > max_bytes:
+                raise ValueError("文件超过上限 %.0fMB" % (max_bytes / 1048576.0))
+            f.write(block)
+    return got
+
+
 def http_get_budgeted(url, deadline_ts, max_bytes=26_000_000, read_timeout=30):
     """流式拉取，总耗时受 deadline_ts 约束（绝对时间戳）。
 
@@ -597,34 +626,35 @@ def _srt_to_text(srt):
         out.append(line)
     return " ".join(out)
 
-def _extract_audio(mp4_bytes):
+def _extract_audio(mp4_path):
     """ffmpeg 抽音轨 → 低码率 mp3（16kHz 单声道 64k）。音频体积仅 mp4 的 1/10~1/20，
-    规避 OpenAI 转写端点 25MB 上限（长/高清视频也能转）、上传更快。失败抛异常由上层兜底。"""
-    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
-        f.write(mp4_bytes); path = f.name
-    try:
-        p = subprocess.run(
-            ["ffmpeg", "-y", "-i", path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k", "-f", "mp3", "pipe:1"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
-        if p.returncode != 0 or not p.stdout:
-            raise TikHubError("ffmpeg 抽音轨失败：" + (p.stderr[-160:].decode("u8", "ignore") if p.stderr else "无输出"))
-        return p.stdout
-    finally:
-        try: os.unlink(path)
-        except Exception: pass
+    规避 OpenAI 转写端点 25MB 上限（长/高清视频也能转）、上传更快。失败抛异常由上层兜底。
 
-def _whisper(mp4_bytes, filename="v.mp4"):
+    入参是【文件路径】：视频本来就是流式落盘的，ffmpeg 直接读它，不必先读回内存。
+    """
+    p = subprocess.run(
+        ["ffmpeg", "-y", "-i", mp4_path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k", "-f", "mp3", "pipe:1"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    if p.returncode != 0 or not p.stdout:
+        raise TikHubError("ffmpeg 抽音轨失败：" + (p.stderr[-160:].decode("u8", "ignore") if p.stderr else "无输出"))
+    return p.stdout
+
+def _whisper(mp4_path, filename="v.mp4"):
+    """入参是落盘的 mp4 路径。抽出来的音轨只有原视频的 1/10~1/20，才需要读进内存上传。"""
     if not OPENAI_KEY:
         raise TikHubError("OPENAI_API_KEY 未配置，无法 ASR")
     with _TRANSCRIBE_SEM:                     # 限并发转写：多任务同挤 OpenAI ASR 会互相拖垮，排队一个个来
         t0 = time.time()
+        video_bytes = os.path.getsize(mp4_path)
         try:                                  # 优先抽音轨转 mp3（小、快、不撞 25MB）
             t_extract = time.time()
-            audio, aname, ctype = _extract_audio(mp4_bytes), "a.mp3", "audio/mpeg"
-            _log_asr_step("extract_audio", t_extract, input_bytes=len(mp4_bytes), audio_bytes=len(audio))
+            audio, aname, ctype = _extract_audio(mp4_path), "a.mp3", "audio/mpeg"
+            _log_asr_step("extract_audio", t_extract, input_bytes=video_bytes, audio_bytes=len(audio))
         except Exception as e:                # ffmpeg 出问题兜底：直接传原 mp4（老行为，赌 <25MB）
-            audio, aname, ctype = mp4_bytes, filename, "video/mp4"
-            _log_asr_step("extract_audio_fallback", t_extract, input_bytes=len(mp4_bytes), reason=str(e)[:80])
+            with open(mp4_path, "rb") as f:   # 只有这条罕见兜底路径才把整个视频读进内存
+                audio = f.read()
+            aname, ctype = filename, "video/mp4"
+            _log_asr_step("extract_audio_fallback", t_extract, input_bytes=video_bytes, reason=str(e)[:80])
         b = "----hqtikhub7e3f"
         parts = [("--%s\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n%s\r\n" % (b, TRANSCRIBE_MODEL)).encode(),
                  ("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\nContent-Type: %s\r\n\r\n" % (b, aname, ctype)).encode(),
@@ -647,10 +677,10 @@ def _whisper(mp4_bytes, filename="v.mp4"):
                 raise TikHubError("OpenAI ASR 超时(%ss)，请稍后重试" % TRANSCRIBE_TIMEOUT)
             raise
 
-def transcript(det, video_bytes=None):
+def transcript(det, video_path=None):
     """det = detail() 的返回。返回 {text, source} 或 None。
 
-    video_bytes：调用方已经下好的 mp4 字节，传进来就不用再下一遍。
+    video_path：调用方已经下好的 mp4 文件路径，传进来就不用再下一遍（文件归调用方删）。
     采集流程里 COS 转存刚下过同一个 play_url —— 线上 job 1354 实测同一个 5.1MB 文件
     被下了两次，第一次(转存)耗时 130s 且超时失败，第二次(ASR)只花 20.5s。
     """
@@ -661,22 +691,27 @@ def transcript(det, video_bytes=None):
             return {"text": _srt_to_text(_http_get(det["subtitle_url"]).decode("u8", "ignore")), "source": "subtitle"}
         except Exception:
             pass
-    if video_bytes:   # 复用调用方下好的字节，省掉一次完整下载
+    if video_path:   # 复用调用方下好的文件，省掉一次完整下载
         try:
-            _log_asr_step("reuse_video", time.time(), bytes=len(video_bytes))
-            return {"text": _whisper(video_bytes), "source": "asr"}
+            _log_asr_step("reuse_video", time.time(), bytes=os.path.getsize(video_path))
+            return {"text": _whisper(video_path), "source": "asr"}
         except Exception as e:
             raise TikHubError("ASR 失败：" + str(e)[:120])
     if det.get("play_url"):  # 抖音：下载无水印 mp4 → whisper（短视频普遍 <25MB）
+        fd, path = tempfile.mkstemp(suffix=".mp4", prefix="hqasr-")
+        os.close(fd)
         try:
             t_download = time.time()
             # 带总预算：慢 CDN 下 _http_get 的 timeout 会被反复续命，把 collect 任务顶过
             # reaper 判死线，导致「判死退点 → worker 又写回 done」(线上 job 1118)
-            mp4 = http_get_budgeted(det["play_url"], time.time() + ASR_DL_DEADLINE)
-            _log_asr_step("download_video", t_download, bytes=len(mp4))
-            return {"text": _whisper(mp4), "source": "asr"}
+            n = download_to_file(det["play_url"], time.time() + ASR_DL_DEADLINE, path)
+            _log_asr_step("download_video", t_download, bytes=n)
+            return {"text": _whisper(path), "source": "asr"}
         except Exception as e:
             raise TikHubError("ASR 失败：" + str(e)[:120])
+        finally:
+            try: os.unlink(path)
+            except OSError: pass
     return None
 
 

@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store  # mime 识别；统一 assets 表(image/copy/collect/leads)，无反向依赖
+import mimetypes; from . import assets_store, jobs_store  # mime 识别；assets 表(copy/collect/leads)；jobs 状态机 CAS。均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -195,9 +195,11 @@ VIDEO_COST = _env_positive_int("VIDEO_COST", 20)
 JOB_WORKERS, FAST_JOB_WORKERS = _env_positive_int("CONTENT_JOB_WORKERS", 3), _env_positive_int("CONTENT_FAST_JOB_WORKERS", 3)  # 慢队列(换装/果肉video)/快队列(图片/音频等)各自worker数，分开防视频堵死快任务
 TALKING_JOB_WORKERS = _env_positive_int("CONTENT_TALKING_JOB_WORKERS", 10)  # 口播(video mode=text/audio)专用池：HeyGen口播能扛高并发(50并发实测无429)
 MOTION_JOB_WORKERS = _env_positive_int("CONTENT_MOTION_JOB_WORKERS", 3)     # 动作模仿(video mode=motion)专用池：HeyGen motion并发>3易撞代理/速率/生成墙(10并发实测仅1/10)
+IMAGE_JOB_WORKERS = _env_positive_int("CONTENT_IMAGE_JOB_WORKERS", 4)        # 生图专用池：生图慢(果肉/gpt/banana 实测90~450s)，从快池拆出，别拖死秒级的音频/文案快任务
 JOB_QUEUE_MAX = _env_positive_int("CONTENT_JOB_QUEUE_MAX", 32)
 MAX_USER_ACTIVE_JOBS = _env_positive_int("MAX_USER_ACTIVE_JOBS", 5)          # 单用户可同时提交(pending+running)的任务上限，超了提交即 429
 MAX_USER_RUNNING_TALKING = _env_positive_int("MAX_USER_RUNNING_TALKING", 2)  # 单用户口播「运行中」并发上限：最多同时生成2条，多提交的留 pending 排队
+MAX_USER_RUNNING_IMAGE = _env_positive_int("MAX_USER_RUNNING_IMAGE", 3)      # 单用户生图「运行中」并发上限：防单用户刷爆生图池+把上游打到429
 # reaper 各 kind 的超时宽限(秒)，默认 360。tryon 两段式+心跳刷新；xiaole_video 内部轮询600s+转存；
 # image 多图/中转慢；collect 下载+ffmpeg抽音轨+ASR 且转写全站串行(实测成功平均88s)。video 按 mode 另算。
 KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "image": 900, "collect": 1200}
@@ -491,7 +493,7 @@ def _delete_asset_mark(username, kind, key):
         c.commit()
 def delete_user_asset(username, kind, asset_id):
     kind = str(kind or "").strip().lower()
-    if kind in assets_store.KINDS - {"image"}: return assets_store.soft_delete(username, int(asset_id))  # copy/collect/leads 在统一 assets 表
+    if kind in assets_store.KINDS: return assets_store.soft_delete(username, int(asset_id))  # copy/collect/leads 在统一 assets 表
     if kind not in {"image", "audio", "video"}:
         raise ValueError("不支持的资产类型")
     try:
@@ -640,49 +642,31 @@ def _post_bytes(path, data, ctype):  # 返回原始字节(TTS 拿 mp3 二进制)
         return r.read()
 # ============ 后台 worker（有界队列 + 固定 worker，失败退点；慢/快队列分开防视频堵死作图） ============
 _job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)          # 慢队列(tryon/xiaole_video + video兜底)
-_fast_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)     # 快队列(image/audio/copy等)
+_fast_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)     # 快队列(audio/copy/collect/leads等秒级任务)
 _talking_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)  # 口播队列(video mode=text/audio)
 _motion_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)   # 动作模仿队列(video mode=motion)
+_image_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)    # 生图队列(kind=image，从快池拆出防拖死快任务)
 _queued_job_ids = set()
 _job_queue_lock = threading.Lock()
 _run_gate_lock = threading.Lock()  # 单用户口播运行闸：count+抢running 在此锁内原子，防多worker同时超发
 _workers_started = False
 
-def _set_terminal(job_id, status, result=None, error=None):
-    """CAS 抢终态：仅当仍是 running 才迁移，返回是否抢到迁移权(rowcount>=1)。
-    防 reaper 与 worker 竞态——谁先抢到 running→done/error 谁定终态，败者放弃写状态与副作用(#187)。"""
-    now = int(time.time())
-    with closing(jdb()) as c:
-        if status == "done":
-            cur = c.execute("UPDATE jobs SET status='done', result=?, updated_at=? WHERE id=? AND status='running'",
-                            (json.dumps(result, ensure_ascii=False), now, job_id))
-        else:
-            cur = c.execute("UPDATE jobs SET status='error', error=?, updated_at=? WHERE id=? AND status='running'",
-                            (str(error or "")[:300], now, job_id))
-        c.commit()
-        return cur.rowcount >= 1
+# CAS 抢终态 / 退点幂等：实现在 content_domains/jobs_store.py，三个共写 jobs 表的服务共用一份。
+def _set_terminal(job_id, status, result=None, error=None, from_states=("running",)):
+    return jobs_store.set_terminal(jdb, job_id, status, result, error, from_states)
 
 def _refund_once(job_id, username, cost):
-    """退点 job 级幂等：refunded 列 CAS，仅第一次真正加回点数，之后跳过(#187)。"""
-    try:
-        cost = int(cost or 0)
-    except Exception:
-        cost = 0
-    if cost <= 0:
-        return
-    with closing(jdb()) as c:
-        # 双重保险：仅当终态确为 error 且尚未退过，才置位并退点
-        cur = c.execute("UPDATE jobs SET refunded=1 WHERE id=? AND refunded=0 AND status='error'", (job_id,))
-        c.commit()
-        if cur.rowcount < 1:
-            return  # 已退过 / 非 error 终态，跳过
-    _domains()[1].safe_refund_points(username, cost)
+    # safe_refund_points 吞掉异常并返回当前点数，不让退点接口故障影响主流程 → 视为永远成功。
+    return jobs_store.refund_once(jdb, job_id, username, cost,
+                                  lambda u, c: (_domains()[1].safe_refund_points(u, c, "job#%d" % job_id), True)[1])
 
 def _pick_job_queue(kind, mode=None):
-    # kind缺省(旧调用/测试)保守走慢队列；快任务(图片/音频/文案)走快队列；
+    # kind缺省(旧调用/测试)保守走慢队列；生图(慢90~450s)走生图池；秒级快任务(音频/文案/采集/名单)走快队列；
     # video 再按 mode 三分：motion→motion池、text/audio(口播/兜底)→口播池；tryon/xiaole_video 走慢池。
     if kind is None:
         return _job_queue
+    if kind == "image":
+        return _image_job_queue
     if kind not in {"video", "tryon", "xiaole_video"}:
         return _fast_job_queue
     if kind == "video":
@@ -723,6 +707,15 @@ def _user_running_talking_count(username):
         rows = c.execute("SELECT payload FROM jobs WHERE username=? AND status='running' AND kind='video'",
                          (username,)).fetchall()
     return sum(1 for r in rows if '"mode":"motion"' not in (r["payload"] or "").replace(" ", ""))
+
+def _user_running_image_count(username):
+    """该用户「运行中」的生图条数(kind=image)。"""
+    if not username:
+        return 0
+    with closing(jdb()) as c:
+        row = c.execute("SELECT COUNT(*) AS n FROM jobs WHERE username=? AND status='running' AND kind='image'",
+                        (username,)).fetchone()
+    return int(row["n"] if row else 0)
 
 def _reject_pending_job(job_id, username, cost, reason):
     now = int(time.time())
@@ -778,7 +771,8 @@ def start_job_workers():
             return
         _workers_started = True
     for count, q, prefix in ((JOB_WORKERS, _job_queue, "content-job-worker"), (FAST_JOB_WORKERS, _fast_job_queue, "content-fast-worker"),
-                             (TALKING_JOB_WORKERS, _talking_job_queue, "content-talking-worker"), (MOTION_JOB_WORKERS, _motion_job_queue, "content-motion-worker")):
+                             (TALKING_JOB_WORKERS, _talking_job_queue, "content-talking-worker"), (MOTION_JOB_WORKERS, _motion_job_queue, "content-motion-worker"),
+                             (IMAGE_JOB_WORKERS, _image_job_queue, "content-image-worker")):
         for i in range(count):
             threading.Thread(target=_job_worker_loop, args=(q,), name="%s-%d" % (prefix, i + 1), daemon=True).start()
     threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start()
@@ -792,16 +786,22 @@ def run_job(job_id):
     username = r["username"]; cost = r["cost"]
     mode = str(payload.get("mode") or "").lower()
     is_talking = (kind == "video" and mode != "motion")   # 口播=video 且非 motion(text/audio)
-    # 单用户口播「运行中」并发闸 + 原子抢 running：同进程锁内 count+claim，防多 worker 同时超发。
-    with _run_gate_lock:
-        if is_talking and _user_running_talking_count(username) >= MAX_USER_RUNNING_TALKING:
-            return  # 超运行闸→不启动，任务留 pending(worker finally 会移出 _queued_job_ids)，等口播完成事件/30s 扫描重排
-        with closing(jdb()) as c:
-            c.execute("UPDATE jobs SET status='running', updated_at=? WHERE id=?", (int(time.time()), job_id)); c.commit()
-    if kind in {"audio", "video", "tryon", "xiaole_video", "leads"}:
-        payload["_username"] = username
-        payload["_job_id"] = job_id
+    is_image = (kind == "image")
     try:
+        # 单用户口播/生图「运行中」并发闸 + 原子抢 running：同进程锁内 count+claim，防多 worker 同时超发。
+        # 整段放进 try：抢 running 那句 UPDATE 自己抛异常(SQLite 锁冲突/磁盘满)时，任务还停在 pending，
+        # 下面的 except 用 from_states 含 pending 把它判死退点 —— 否则预扣的点永久丢失，
+        # 因为 reaper 只扫 running、从不回收 pending。
+        with _run_gate_lock:
+            if is_talking and _user_running_talking_count(username) >= MAX_USER_RUNNING_TALKING:
+                return  # 超运行闸→不启动，任务留 pending(worker finally 会移出 _queued_job_ids)，等口播完成事件/30s 扫描重排
+            if is_image and _user_running_image_count(username) >= MAX_USER_RUNNING_IMAGE:
+                return  # 单用户生图运行闸：多的留 pending 排队
+            if not jobs_store.claim_running(jdb, job_id):
+                return  # CAS 认领失败：已被别的 worker 接管或已是终态
+        if kind in {"audio", "video", "tryon", "xiaole_video", "leads"}:
+            payload["_username"] = username
+            payload["_job_id"] = job_id
         result = HANDLERS[kind](payload)
         # 先 CAS 抢 done 终态：仅当仍是 running 才写 done，防 reaper 已判 error 又被无条件覆盖(既出片又退点)
         if not _set_terminal(job_id, "done", result=result):
@@ -813,12 +813,13 @@ def run_job(job_id):
                 audio_domain.record_audio_asset(job_id, username, result)
             if kind in {"video", "tryon", "xiaole_video"}:
                 video_domain.record_video_asset(job_id, username, result)
-            assets_store.record_asset(job_id, username, kind, result)  # image/copy 入统一 assets 表；其余 kind 内部忽略
+            assets_store.record_asset(job_id, username, kind, result)  # 只有 copy 会入统一 assets 表；其余 kind 内部忽略
         except Exception:
             pass
     except Exception as e:
         # 生成失败：CAS 抢 error 终态；抢到才记失败资产。退点走幂等(reaper 若已退则跳过)
-        claimed = _set_terminal(job_id, "error", error=str(e))
+        # from_states 含 pending：抢 running 那句自己抛异常时任务还停在 pending，只认 running 会不退点
+        claimed = _set_terminal(job_id, "error", error=str(e), from_states=("pending", "running"))
         if claimed and kind in {"video", "tryon", "xiaole_video"}:
             try:
                 failed = dict(payload)
@@ -829,9 +830,9 @@ def run_job(job_id):
                 pass
         _refund_once(job_id, username, cost)  # 幂等：最多退一次
     finally:
-        if is_talking:
+        if is_talking or is_image:
             try:
-                _recover_pending_jobs()  # 口播跑完→腾出该用户运行槽，立刻重排排队中的口播(+30s 扫描兜底)
+                _recover_pending_jobs()  # 口播/生图跑完→腾出该用户运行槽，立刻重排排队中的同类(+30s 扫描兜底)
             except Exception:
                 pass
 
@@ -1052,7 +1053,7 @@ class H(BaseHTTPRequestHandler):
                     "need": cost
                 })
             try:
-                points_left = points_domain.deduct_points(user["username"], cost)  # 原子预扣
+                points_left = points_domain.deduct_points(user["username"], cost, "job:" + kind)  # 原子预扣
             except points_domain.AuthPointsError as e:
                 code = 402 if e.status == 402 else 502
                 return self._send(code, {"detail": e.detail, "need": cost})
@@ -1273,14 +1274,14 @@ class H(BaseHTTPRequestHandler):
             except Exception: page = 1
             if not keyword: return self._send(400, {"detail": "缺少关键词"})
             try:
-                points_left = points_domain.deduct_points(user["username"], 1)
+                points_left = points_domain.deduct_points(user["username"], 1, "search:" + platform)
             except points_domain.AuthPointsError as e:
                 code = 402 if e.status == 402 else 502
                 return self._send(code, {"detail": e.detail, "need": 1})
             try:
                 r = tikhub.search(platform, keyword, page=page, video_only=False)  # 含图文
             except tikhub.TikHubError as e:
-                points_domain.safe_refund_points(user["username"], 1)
+                points_domain.safe_refund_points(user["username"], 1, "search:" + platform + ":refund")
                 return self._send(502, {"detail": str(e)[:160]})
             items = [{"id": it.get("id"), "platform": it.get("platform"), "title": it.get("title"),
                       "cover": it.get("cover"), "author": it.get("author"), "url": it.get("url"),
@@ -1290,8 +1291,8 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/gen/health":
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS),
                                     "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS,
-                                    "talking_job_workers": TALKING_JOB_WORKERS, "motion_job_workers": MOTION_JOB_WORKERS,
-                                    "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_running_talking": MAX_USER_RUNNING_TALKING,
+                                    "talking_job_workers": TALKING_JOB_WORKERS, "motion_job_workers": MOTION_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS,
+                                    "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE,
                                     "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
 

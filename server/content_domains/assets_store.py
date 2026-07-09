@@ -32,7 +32,13 @@ MATERIAL, WORK, DELIVERY = "material", "work", "delivery"
 STAGES = {MATERIAL, WORK, DELIVERY}
 
 # 每个 kind 的默认 stage。收藏/标签仍复用 asset_marks，asset_key 用 str(job_id)。
-KIND_STAGE = {"image": WORK, "copy": WORK, "collect": MATERIAL, "leads": DELIVERY}
+#
+# 为什么没有 image：作图产物早就有自己的展示链路（jobs.result → /api/gen/history），
+# assets.html 的图片分类读的是那条。曾经这里也写 image，但写进来的行没有任何读路径 ——
+# 纯粹的死写：每次出图多一次 SQLite 写入，soft_delete 对它生效却影响不到 UI 看到的数据。
+# 要把 image 也收进来，得先让前端图片分类改读 /api/gen/assets 并把 meta 摊平，
+# 那是一次独立的迁移，不该顺手夹带。
+KIND_STAGE = {"copy": WORK, "collect": MATERIAL, "leads": DELIVERY}
 KINDS = set(KIND_STAGE)
 
 _initialized = False
@@ -114,13 +120,6 @@ def _project(kind, result):
     往这儿复制一份只会让资产库跟着 jobs 表一起膨胀（jobs_gc 清的是 payload，不清 result）。
     """
     r = result or {}
-    if kind == "image":
-        return (_clip(r.get("prompt")), r.get("file"), r.get("url"), {
-            "mode": r.get("mode"), "provider": r.get("provider"), "model": r.get("model"),
-            "count": r.get("count"), "ratio": r.get("ratio"), "quality": r.get("quality"),
-            "image_size": r.get("image_size"), "width": r.get("width"), "height": r.get("height"),
-            "files": r.get("files"), "urls": r.get("urls"),
-        })
     if kind == "copy":
         return (_clip(r.get("prompt")), None, None, {
             "ctype": r.get("ctype"), "mode": r.get("mode"), "platform": r.get("platform"),
