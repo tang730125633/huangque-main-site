@@ -70,6 +70,8 @@ class ContentDomainTests(unittest.TestCase):
         self.assertEqual(result["chat"], 1)
         lead = result["leads"][0]
         self.assertEqual(lead["intent"], "咨询")
+        self.assertGreaterEqual(lead["intent_score"], 80)
+        self.assertIn("命中", lead["intent_reason"])
         self.assertEqual(lead["follow_status"], "待跟进")
         self.assertEqual(lead["follow_note"], "")
         self.assertRegex(lead["lead_id"], r"^[0-9a-f]{16}$")
