@@ -773,8 +773,15 @@ def _heygen_direct_req(method, url, body=None, ctype="application/json", timeout
         detail = e.read().decode("utf-8", "replace").replace("\n", " ")[:400]
         raise RuntimeError("HeyGen直连失败: HTTP %s %s" % (e.code, detail)) from e
 
-def _heygen_direct_dim(ratio):
+def _heygen_direct_dim(ratio, resolution=None):
+    # 直连口播用 dimension 控制清晰度。基准表是 720p；请求 1080p 时按短边等比放大到 1080，
+    # 否则 1080p 请求会被硬编码成 720p 出片(质量回归#405直连忽略resolution)。宽高取偶数。
     w, h = _HEYGEN_DIRECT_DIMS.get(ratio or "9:16", (720, 1280))
+    if str(resolution or "").lower().startswith("1080"):
+        short = min(w, h)
+        if short and short < 1080:
+            f = 1080.0 / short
+            w, h = int(round(w * f / 2)) * 2, int(round(h * f / 2)) * 2
     return {"width": w, "height": h}
 
 def _download_video_file_direct(url, prefix="vid"):
@@ -808,7 +815,7 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio):
     d = _heygen_direct_req("POST", _HEYGEN_DIRECT_API + "/v2/video/generate", {
         "video_inputs": [{"character": {"type": "talking_photo", "talking_photo_id": tp_id},
                           "voice": {"type": "audio", "audio_asset_id": aud_id}}],
-        "dimension": _heygen_direct_dim(ratio),
+        "dimension": _heygen_direct_dim(ratio, resolution),
     }, timeout=90)
     video_id = (d.get("data") or {}).get("video_id")
     if not video_id:
