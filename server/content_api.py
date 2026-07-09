@@ -26,6 +26,7 @@ core.HANDLERS = HANDLERS
 
 def main():
     core.init_db()
+    core.reclaim_orphaned_running()  # 回收上次重启遗留的 running 孤儿→秒退点(worker 未启动前，running 必是孤儿)
     core.start_job_workers()
     threading.Thread(target=core.reaper, daemon=True).start()
     print("huangque-content-api on 127.0.0.1:%d  caps=%s" % (PORT, list(HANDLERS)))

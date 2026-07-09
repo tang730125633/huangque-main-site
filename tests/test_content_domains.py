@@ -35,9 +35,19 @@ class ContentDomainTests(unittest.TestCase):
             self.assertFalse(hasattr(core, name), name)
 
         core_path = Path(core.__file__)
-        # 软上限防 core 膨胀（真守卫是上面的 hasattr 域处理器检查）；1250→1300：
-        # 视频任务池按 mode 三分(口播/motion/慢池)属 core 队列基础设施、非域逻辑，合理留 core。
-        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1300)
+        # 软上限防 core 膨胀（真守卫是上面的 hasattr 域处理器检查）；1250→1300→1330→1400→1330：
+        # 视频任务池按 mode 三分(口播/motion/慢池)属 core 队列基础设施、非域逻辑，合理留 core；
+        # reclaim_orphaned_running(启动回收重启遗留孤儿→退点)属 core 任务生命周期、紧挨 reaper。
+        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1400)
+
+    def test_content_api_reclaims_orphans_on_startup(self):
+        # 防回归：孤儿回收必须挂在真入口 content_api.main（服务走 content_api.py，
+        # 不是 core.__main__），且排在 start_job_workers 之前——此刻 worker 未启动，
+        # DB 里任何 running 必是上次重启遗留的孤儿。
+        content_api = importlib.import_module("content_api")
+        src = Path(content_api.__file__).read_text(encoding="utf-8")
+        self.assertIn("reclaim_orphaned_running", src)
+        self.assertLess(src.index("reclaim_orphaned_running"), src.index("start_job_workers"))
 
     def test_leads_returns_crm_fields_and_dedupe_count(self):
         leads = importlib.import_module("content_domains.leads")

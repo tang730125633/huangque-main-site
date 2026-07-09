@@ -195,9 +195,11 @@ VIDEO_COST = _env_positive_int("VIDEO_COST", 20)
 JOB_WORKERS, FAST_JOB_WORKERS = _env_positive_int("CONTENT_JOB_WORKERS", 3), _env_positive_int("CONTENT_FAST_JOB_WORKERS", 3)  # 慢队列(换装/果肉video)/快队列(图片/音频等)各自worker数，分开防视频堵死快任务
 TALKING_JOB_WORKERS = _env_positive_int("CONTENT_TALKING_JOB_WORKERS", 10)  # 口播(video mode=text/audio)专用池：HeyGen口播能扛高并发(50并发实测无429)
 MOTION_JOB_WORKERS = _env_positive_int("CONTENT_MOTION_JOB_WORKERS", 3)     # 动作模仿(video mode=motion)专用池：HeyGen motion并发>3易撞代理/速率/生成墙(10并发实测仅1/10)
+IMAGE_JOB_WORKERS = _env_positive_int("CONTENT_IMAGE_JOB_WORKERS", 4)        # 生图专用池：生图慢(果肉/gpt/banana 实测90~450s)，从快池拆出，别拖死秒级的音频/文案快任务
 JOB_QUEUE_MAX = _env_positive_int("CONTENT_JOB_QUEUE_MAX", 32)
 MAX_USER_ACTIVE_JOBS = _env_positive_int("MAX_USER_ACTIVE_JOBS", 5)          # 单用户可同时提交(pending+running)的任务上限，超了提交即 429
 MAX_USER_RUNNING_TALKING = _env_positive_int("MAX_USER_RUNNING_TALKING", 2)  # 单用户口播「运行中」并发上限：最多同时生成2条，多提交的留 pending 排队
+MAX_USER_RUNNING_IMAGE = _env_positive_int("MAX_USER_RUNNING_IMAGE", 3)      # 单用户生图「运行中」并发上限：防单用户刷爆生图池+把上游打到429
 # reaper 各 kind 的超时宽限(秒)，默认 360。tryon 两段式+心跳刷新；xiaole_video 内部轮询600s+转存；
 # image 多图/中转慢；collect 下载+ffmpeg抽音轨+ASR 且转写全站串行(实测成功平均88s)。video 按 mode 另算。
 KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "image": 900, "collect": 1200}
@@ -640,9 +642,10 @@ def _post_bytes(path, data, ctype):  # 返回原始字节(TTS 拿 mp3 二进制)
         return r.read()
 # ============ 后台 worker（有界队列 + 固定 worker，失败退点；慢/快队列分开防视频堵死作图） ============
 _job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)          # 慢队列(tryon/xiaole_video + video兜底)
-_fast_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)     # 快队列(image/audio/copy等)
+_fast_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)     # 快队列(audio/copy/collect/leads等秒级任务)
 _talking_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)  # 口播队列(video mode=text/audio)
 _motion_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)   # 动作模仿队列(video mode=motion)
+_image_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)    # 生图队列(kind=image，从快池拆出防拖死快任务)
 _queued_job_ids = set()
 _job_queue_lock = threading.Lock()
 _run_gate_lock = threading.Lock()  # 单用户口播运行闸：count+抢running 在此锁内原子，防多worker同时超发
@@ -679,10 +682,12 @@ def _refund_once(job_id, username, cost):
     _domains()[1].safe_refund_points(username, cost)
 
 def _pick_job_queue(kind, mode=None):
-    # kind缺省(旧调用/测试)保守走慢队列；快任务(图片/音频/文案)走快队列；
+    # kind缺省(旧调用/测试)保守走慢队列；生图(慢90~450s)走生图池；秒级快任务(音频/文案/采集/名单)走快队列；
     # video 再按 mode 三分：motion→motion池、text/audio(口播/兜底)→口播池；tryon/xiaole_video 走慢池。
     if kind is None:
         return _job_queue
+    if kind == "image":
+        return _image_job_queue
     if kind not in {"video", "tryon", "xiaole_video"}:
         return _fast_job_queue
     if kind == "video":
@@ -723,6 +728,15 @@ def _user_running_talking_count(username):
         rows = c.execute("SELECT payload FROM jobs WHERE username=? AND status='running' AND kind='video'",
                          (username,)).fetchall()
     return sum(1 for r in rows if '"mode":"motion"' not in (r["payload"] or "").replace(" ", ""))
+
+def _user_running_image_count(username):
+    """该用户「运行中」的生图条数(kind=image)。"""
+    if not username:
+        return 0
+    with closing(jdb()) as c:
+        row = c.execute("SELECT COUNT(*) AS n FROM jobs WHERE username=? AND status='running' AND kind='image'",
+                        (username,)).fetchone()
+    return int(row["n"] if row else 0)
 
 def _reject_pending_job(job_id, username, cost, reason):
     now = int(time.time())
@@ -778,7 +792,8 @@ def start_job_workers():
             return
         _workers_started = True
     for count, q, prefix in ((JOB_WORKERS, _job_queue, "content-job-worker"), (FAST_JOB_WORKERS, _fast_job_queue, "content-fast-worker"),
-                             (TALKING_JOB_WORKERS, _talking_job_queue, "content-talking-worker"), (MOTION_JOB_WORKERS, _motion_job_queue, "content-motion-worker")):
+                             (TALKING_JOB_WORKERS, _talking_job_queue, "content-talking-worker"), (MOTION_JOB_WORKERS, _motion_job_queue, "content-motion-worker"),
+                             (IMAGE_JOB_WORKERS, _image_job_queue, "content-image-worker")):
         for i in range(count):
             threading.Thread(target=_job_worker_loop, args=(q,), name="%s-%d" % (prefix, i + 1), daemon=True).start()
     threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start()
@@ -792,10 +807,13 @@ def run_job(job_id):
     username = r["username"]; cost = r["cost"]
     mode = str(payload.get("mode") or "").lower()
     is_talking = (kind == "video" and mode != "motion")   # 口播=video 且非 motion(text/audio)
-    # 单用户口播「运行中」并发闸 + 原子抢 running：同进程锁内 count+claim，防多 worker 同时超发。
+    is_image = (kind == "image")
+    # 单用户口播/生图「运行中」并发闸 + 原子抢 running：同进程锁内 count+claim，防多 worker 同时超发。
     with _run_gate_lock:
         if is_talking and _user_running_talking_count(username) >= MAX_USER_RUNNING_TALKING:
             return  # 超运行闸→不启动，任务留 pending(worker finally 会移出 _queued_job_ids)，等口播完成事件/30s 扫描重排
+        if is_image and _user_running_image_count(username) >= MAX_USER_RUNNING_IMAGE:
+            return  # 单用户生图运行闸：多的留 pending 排队
         with closing(jdb()) as c:
             c.execute("UPDATE jobs SET status='running', updated_at=? WHERE id=?", (int(time.time()), job_id)); c.commit()
     if kind in {"audio", "video", "tryon", "xiaole_video", "leads"}:
@@ -829,9 +847,9 @@ def run_job(job_id):
                 pass
         _refund_once(job_id, username, cost)  # 幂等：最多退一次
     finally:
-        if is_talking:
+        if is_talking or is_image:
             try:
-                _recover_pending_jobs()  # 口播跑完→腾出该用户运行槽，立刻重排排队中的口播(+30s 扫描兜底)
+                _recover_pending_jobs()  # 口播/生图跑完→腾出该用户运行槽，立刻重排排队中的同类(+30s 扫描兜底)
             except Exception:
                 pass
 
@@ -854,6 +872,28 @@ def reaper():
         except Exception:
             pass
         time.sleep(60)
+
+def reclaim_orphaned_running():
+    """启动时回收上一进程遗留的 running 孤儿任务。
+
+    本进程刚起、worker 尚未启动(此函数在 start_job_workers 之前调用)，此刻 DB 里
+    任何 status='running' 都是上次 systemctl restart 时 worker 猝死留下的孤儿——没人
+    再刷 updated_at，用户会看着"生成中"干等 reaper 兜底(换装 grace 达 2400 秒=40 分钟)
+    才判失败退点。启动即当场判失败+退点，把"卡 40 分钟"变"秒退"。
+    CAS 抢终态 + 幂等退点复用 reaper 那套(_set_terminal/_refund_once)，与并发无竞态。"""
+    try:
+        with closing(jdb()) as c:
+            rows = c.execute("SELECT id, username, cost FROM jobs WHERE status='running'").fetchall()
+    except Exception:
+        return 0
+    n = 0
+    for r in rows:
+        if _set_terminal(r["id"], "error", error="服务重启中断，已退点，请重新提交"):
+            _refund_once(r["id"], r["username"], r["cost"])
+            n += 1
+    if n:
+        print("[startup] 回收重启遗留孤儿任务 %d 个(→失败退点)" % n, flush=True)
+    return n
 
 # ============ HTTP ============
 class H(BaseHTTPRequestHandler):
@@ -1268,8 +1308,8 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/gen/health":
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS),
                                     "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS,
-                                    "talking_job_workers": TALKING_JOB_WORKERS, "motion_job_workers": MOTION_JOB_WORKERS,
-                                    "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_running_talking": MAX_USER_RUNNING_TALKING,
+                                    "talking_job_workers": TALKING_JOB_WORKERS, "motion_job_workers": MOTION_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS,
+                                    "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE,
                                     "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
 
@@ -1290,6 +1330,7 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     init_db()
+    reclaim_orphaned_running()  # 回收上次重启遗留的 running 孤儿→秒退点，不让用户干等 reaper
     start_job_workers()
     threading.Thread(target=reaper, daemon=True).start()  # 僵尸任务清道夫
     print("huangque-content-api on 127.0.0.1:%d  caps=%s" % (PORT, list(HANDLERS)))

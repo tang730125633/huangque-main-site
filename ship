@@ -34,6 +34,7 @@ git push || { echo "❌ push 失败（先 pull？）"; exit 1; }
 echo "==> 3/5 部署到服务器"
 RESTART=""
 DEPLOYED=""
+NEED_RELOAD=0   # 部署过 systemd 单元/drop-in 时置 1，重启前必须 daemon-reload，否则改动不生效
 add_svc(){ for s in $1; do case " $RESTART " in *" $s "*) ;; *) RESTART="$RESTART $s";; esac; done; }
 for f in "$@"; do
   case "$f" in
@@ -46,12 +47,26 @@ for f in "$@"; do
     server/dl_service.py)  dest=/home/ubuntu/dl-service/;   svc=huangque-dl ;;
     server/tikhub.py)      dest=/home/ubuntu/content-api/;  svc="huangque-leadgen-api huangque-content huangque-imggen-api" ;;
     scripts/drift_sentinel.py) dest=/home/ubuntu/hq-drift/; svc="" ;;
+    # systemd 单元与 drop-in。原来不在映射表里，只能手工 scp + daemon-reload —— 漏一步就出事：
+    # leadgen 曾因单元没加载 auth.env 而拿不到 HQ_INTERNAL_TOKEN，退点全部静默回退直写。
+    deploy/systemd/*.service.d/*.conf)
+             unit="${f#deploy/systemd/}"; unit="${unit%%/*}"          # huangque-xxx.service
+             dest="/etc/systemd/system/${unit}.d/"
+             svc="${unit%.service}"; NEED_RELOAD=1 ;;
+    deploy/systemd/*.service)
+             unit="$(basename "$f")"
+             dest=/etc/systemd/system/
+             svc="${unit%.service}"; NEED_RELOAD=1 ;;
+    deploy/systemd/*.example) echo "  ⏭ $f 只是示例，不部署"; continue ;;
     site/admin/*)          dest="$WWW/admin/"; svc="" ;;
     site/workbench/*)      dest="$WWW/workbench/"; svc="" ;;
     site/*)  rel="${f#site/}"
              case "$rel" in */*) dest="$WWW/${rel%/*}/" ;; *) dest="$WWW/" ;; esac
              svc="" ;;
     *) echo "  ⚠ 不认识 $f —— 不知道部署到哪，跳过（需要的话告诉我加进映射）"; continue ;;
+  esac
+  case "$dest" in /etc/systemd/system/*)
+    $SSHC "$REMOTE" "sudo mkdir -p $dest" || { echo "  ❌ $dest 创建失败"; exit 1; } ;;
   esac
   if [ "$f" = "scripts/drift_sentinel.py" ]; then
     $SSHC "$REMOTE" "mkdir -p /home/ubuntu/hq-drift" || { echo "  ❌ hq-drift 目录创建失败"; exit 1; }
@@ -68,6 +83,10 @@ for f in "$@"; do
 done
 
 # 4. 重启受影响的后端服务（纯前端则跳过）
+if [ "$NEED_RELOAD" = "1" ]; then
+  echo "==> 4/5 systemd 单元有改动，先 daemon-reload"
+  $SSHC "$REMOTE" "sudo systemctl daemon-reload" || { echo "  ❌ daemon-reload 失败"; exit 1; }
+fi
 if [ -n "$RESTART" ]; then
   echo "==> 4/5 重启服务:$RESTART"
   $SSHC "$REMOTE" "sudo systemctl restart $RESTART" || { echo "  ❌ 重启失败"; exit 1; }

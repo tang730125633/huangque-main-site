@@ -647,8 +647,13 @@ def _whisper(mp4_bytes, filename="v.mp4"):
                 raise TikHubError("OpenAI ASR 超时(%ss)，请稍后重试" % TRANSCRIBE_TIMEOUT)
             raise
 
-def transcript(det):
-    """det = detail() 的返回。返回 {text, source} 或 None。"""
+def transcript(det, video_bytes=None):
+    """det = detail() 的返回。返回 {text, source} 或 None。
+
+    video_bytes：调用方已经下好的 mp4 字节，传进来就不用再下一遍。
+    采集流程里 COS 转存刚下过同一个 play_url —— 线上 job 1354 实测同一个 5.1MB 文件
+    被下了两次，第一次(转存)耗时 130s 且超时失败，第二次(ASR)只花 20.5s。
+    """
     if det.get("platform") == "channels":
         return None  # 视频号流加密(Isaac64)，whisper 解不了；play_url 有值也别走 ASR，否则下载加密流必报 expected string
     if det.get("subtitle_url"):  # 小红书视频笔记白送逐字稿
@@ -656,6 +661,12 @@ def transcript(det):
             return {"text": _srt_to_text(_http_get(det["subtitle_url"]).decode("u8", "ignore")), "source": "subtitle"}
         except Exception:
             pass
+    if video_bytes:   # 复用调用方下好的字节，省掉一次完整下载
+        try:
+            _log_asr_step("reuse_video", time.time(), bytes=len(video_bytes))
+            return {"text": _whisper(video_bytes), "source": "asr"}
+        except Exception as e:
+            raise TikHubError("ASR 失败：" + str(e)[:120])
     if det.get("play_url"):  # 抖音：下载无水印 mp4 → whisper（短视频普遍 <25MB）
         try:
             t_download = time.time()

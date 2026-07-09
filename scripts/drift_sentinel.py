@@ -58,6 +58,7 @@ BACKEND_RUNTIME = {
 }
 
 CONTENT_DOMAINS_RUNTIME = os.environ.get('HQ_CONTENT_DOMAINS_RUNTIME', '/home/ubuntu/content-api/content_domains')
+SYSTEMD_DIR = os.environ.get('HQ_SYSTEMD_DIR', '/etc/systemd/system')
 
 
 def log(msg):
@@ -125,6 +126,13 @@ def git_path_to_runtime(git_path):
         return BACKEND_RUNTIME[git_path]
     if git_path.startswith('server/content_domains/') and git_path.endswith('.py'):
         return os.path.join(CONTENT_DOMAINS_RUNTIME, os.path.basename(git_path))
+    if git_path.startswith('deploy/systemd/'):
+        # ship 现在会部署 systemd 单元与 drop-in。没有这段映射，--verify-deploy 会把它们静默跳过，
+        # 然后报「N 个文件校验通过」—— 一个虚假的确认，比不校验更糟。
+        rel = git_path[len('deploy/systemd/'):]
+        if rel.endswith('.example'):
+            return None          # 示例文件不落地（doubao.conf 含明文密钥，真值只在服务器上）
+        return os.path.join(SYSTEMD_DIR, rel)
     return None
 
 
@@ -142,6 +150,9 @@ def runtime_to_git_path(path):
     domain_dir = os.path.normpath(CONTENT_DOMAINS_RUNTIME)
     if path.startswith(domain_dir + os.sep) and path.endswith('.py') and '__pycache__' not in path:
         return 'server/content_domains/' + os.path.basename(path)
+    systemd_dir = os.path.normpath(SYSTEMD_DIR)
+    if path.startswith(systemd_dir + os.sep):
+        return 'deploy/systemd/' + os.path.relpath(path, systemd_dir).replace(os.sep, '/')
     return None
 
 

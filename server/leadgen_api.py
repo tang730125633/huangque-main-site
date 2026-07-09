@@ -63,49 +63,90 @@ def _fetch_within_budget(url, deadline_ts):
                                         read_timeout=COS_FETCH_READ_TIMEO)
 
 
-def public_url_from_remote(remote_url, rel_key, content_type=None):
-    """远程 URL(如抖音 CDN 直链)字节 → COS 永久直链。
-    COS 已启用且 remote_url 非空 → 流式拉字节(受总预算约束) → cos put → 返回直链；
-    未配置 / COS_COLLECT=0 / 拉取失败 / 上传失败 → 返回原 remote_url（回退，绝不因转存失败中断采集）。
+def _download_with_retry(remote_url, rel_key):
+    """流式下载远程视频，受总预算约束。失败返回 None（绝不抛，采集流程不能因此中断）。"""
+    deadline = time.time() + COS_FETCH_DEADLINE
+    for attempt in (1, 2):
+        try:
+            data = _fetch_within_budget(remote_url, deadline)
+            if data:
+                return data
+            raise ValueError("拉取到 0 字节")
+        except Exception as e:
+            # 预算耗尽就别再重试了——多等一轮只会把整个 collect 任务顶过 reaper 判死线
+            if attempt == 2 or time.time() >= deadline:
+                print("[cos] 视频下载失败(%d次尝试): %s -> %s: %s"
+                      % (attempt, rel_key, type(e).__name__, e), flush=True)
+                return None
+            print("[cos] 视频下载第%d次失败，剩余预算 %.0fs，重试: %s"
+                  % (attempt, deadline - time.time(), e), flush=True)
+    return None
 
-    回退是静默降级：调用方拿到的是会过期的第三方 CDN 链接。资产库据此把链接标为「非永久」。
-    """
-    remote_url = (remote_url or "").strip()
-    if not remote_url or not COS_COLLECT:
-        return remote_url
+
+def store_video_bytes(data, rel_key, content_type=None):
+    """已下好的字节 → COS 永久直链。未配置 / 上传失败 → 返回 None，由调用方回退原链接。"""
+    if not data:
+        return None
     try:
         from content_domains import cos
         if not cos.enabled():
-            return remote_url
-        deadline = time.time() + COS_FETCH_DEADLINE
-        for attempt in (1, 2):
-            try:
-                data = _fetch_within_budget(remote_url, deadline)
-                if data:
-                    return cos.put_bytes(data, str(rel_key), content_type)
-                raise ValueError("拉取到 0 字节")
-            except Exception as e:
-                # 预算耗尽就别再重试了——多等一轮只会把整个 collect 任务顶过 reaper 判死线
-                if attempt == 2 or time.time() >= deadline:
-                    print("[cos] 采集转存失败(%d次尝试)，回退会过期的原链接: %s -> %s: %s"
-                          % (attempt, rel_key, type(e).__name__, e), flush=True)
-                    break
-                print("[cos] 采集转存第%d次失败，剩余预算 %.0fs，重试: %s"
-                      % (attempt, deadline - time.time(), e), flush=True)
-        return remote_url
+            return None
+        return cos.put_bytes(data, str(rel_key), content_type)
     except Exception as e:
-        print("[cos] 采集转存失败，回退原链接: %s -> %s" % (rel_key, e), flush=True)
-        return remote_url
+        print("[cos] 上传失败: %s -> %s" % (rel_key, e), flush=True)
+        return None
 
-def _collect_cos_play_url(platform, vid_id, play_url):
+
+def fetch_and_store(remote_url, rel_key, content_type=None, keep_bytes=False):
+    """下载一次，字节既用于 COS 转存、也可交给调用方复用（ASR）。
+
+    返回 (可用的 url, 视频字节 或 None)。转存失败时 url 回退成会过期的第三方 CDN 直链——
+    这是静默降级，资产库据此把链接标为「非永久」。
+
+    为什么要 keep_bytes：采集流程原来下两次同一个 play_url（一次转存、一次 ASR）。
+    线上 job 1354 实测 5.1MB 的文件，第一次下载耗时 130s 且超时失败，第二次只花 20.5s，
+    170s 的总耗时里 130s 是纯浪费。
+    """
+    remote_url = (remote_url or "").strip()
+    if not remote_url:
+        return remote_url, None
+    want_cos = COS_COLLECT and _cos_enabled()
+    if not (want_cos or keep_bytes):
+        return remote_url, None          # 既不转存也不需要字节，别白下
+    data = _download_with_retry(remote_url, rel_key)
+    if not data:
+        return remote_url, None          # 下载失败：回退原链接，ASR 会自己再试一次
+    url = store_video_bytes(data, rel_key, content_type) if want_cos else None
+    if want_cos and not url:
+        print("[cos] 转存失败，回退会过期的原链接: %s" % rel_key, flush=True)
+    return (url or remote_url), (data if keep_bytes else None)
+
+
+def _cos_enabled():
+    try:
+        from content_domains import cos
+        return cos.enabled()
+    except Exception:
+        return False
+
+
+def public_url_from_remote(remote_url, rel_key, content_type=None):
+    """兼容旧签名：只要 URL，不要字节。"""
+    return fetch_and_store(remote_url, rel_key, content_type, keep_bytes=False)[0]
+
+def _collect_cos_play_url(platform, vid_id, play_url, keep_bytes=False):
     """采集视频 play_url → COS 永久直链。图集/无 play_url 跳过、保持原样。
     对象键 collect/<platform>/<id>.mp4。转存失败/未配置回退原 play_url。
-    注意：视频号(channels)是加密流，不能走这里直存——用 _collect_channels_play_url 先解密。"""
+    注意：视频号(channels)是加密流，不能走这里直存——用 _collect_channels_play_url 先解密。
+
+    keep_bytes=True 时一并返回下好的字节，供 ASR 复用，避免同一个 URL 下两次。
+    返回 (url, bytes 或 None)。
+    """
     if not play_url:
-        return play_url
+        return play_url, None
     ident = re.sub(r"[^A-Za-z0-9_.-]", "", str(vid_id or "")) or "v"
     key = "collect/%s/%s.mp4" % ((platform or "x"), ident)
-    return public_url_from_remote(play_url, key, "video/mp4")
+    return fetch_and_store(play_url, key, "video/mp4", keep_bytes=keep_bytes)
 
 
 DECRYPT_API = os.environ.get("WXCH_DECRYPT_API", "http://127.0.0.1:3001/api/decrypt")  # 视频号 Isaac64 解密服务(与 dl_service 同一个)
@@ -288,10 +329,16 @@ def gen_collect(payload):
     if not (det.get("title") or det.get("desc") or det.get("images")):
         raise ValueError("内容获取失败（可能是上游限流或内容私密/已删），请重试")
     au = det.get("author") or {}
+    video_bytes = None
     if platform == "channels":   # 视频号是加密流：先解密再存 COS，否则存下来是打不开的乱码
         play_url = _collect_channels_play_url(det.get("id") or ident, det.get("play_url"), det.get("decode_key"))
     else:
-        play_url = _collect_cos_play_url(platform, det.get("id") or ident, det.get("play_url"))
+        # 只有真要跑 ASR 时才留字节：视频号不走 ASR，小红书有官方字幕(subtitle_url)就不用下视频。
+        need_bytes = ("transcript" in want
+                      and platform != "channels"
+                      and not det.get("subtitle_url"))
+        play_url, video_bytes = _collect_cos_play_url(
+            platform, det.get("id") or ident, det.get("play_url"), keep_bytes=need_bytes)
     out = {
         "type": "collect", "platform": platform, "source": det.get("url") or ident,
         "video": {"title": det.get("title"), "author": au.get("name"), "authorAvatar": None,
@@ -309,7 +356,8 @@ def gen_collect(payload):
         out["comments"] = cm["items"]; out["comments_more"] = bool(cm.get("has_more"))
     if "transcript" in want:
         try:
-            out["transcript"] = tikhub.transcript(det)
+            # video_bytes 是上面转存时下好的同一个 play_url；非 None 时 ASR 不再重复下载
+            out["transcript"] = tikhub.transcript(det, video_bytes=video_bytes)
         except tikhub.TikHubError as e:
             out["transcript"] = {"text": None, "error": str(e)[:120]}
     return out

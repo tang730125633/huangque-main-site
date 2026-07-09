@@ -110,6 +110,115 @@ class CosBudgetTests(unittest.TestCase):
                 sys.modules["content_domains.cos"] = orig_cos
 
 
+class DownloadOnceTests(unittest.TestCase):
+    """采集流程原来把同一个 play_url 下两次：一次转存 COS、一次 ASR。
+
+    线上 job 1354：5.1MB 的文件，第一次(转存)耗时 130s 且读超时失败，第二次(ASR)只花 20.5s。
+    170s 总耗时里 130s 是纯浪费。现在下载一次、字节复用。
+    """
+
+    def setUp(self):
+        server_dir = str(Path(__file__).resolve().parents[1] / "server")
+        if server_dir not in sys.path:
+            sys.path.insert(0, server_dir)
+        self.lg = importlib.import_module("leadgen_api")
+        self.tikhub = importlib.import_module("tikhub")
+        self.downloads = []
+        self._orig_dl = self.lg._download_with_retry
+        self._orig_store = self.lg.store_video_bytes
+        self._orig_cos = self.lg._cos_enabled
+        self.lg._download_with_retry = lambda url, key: (self.downloads.append(url), b"MP4DATA")[1]
+        self.lg.store_video_bytes = lambda data, key, ct=None: "https://cos/%s" % key
+        self.lg._cos_enabled = lambda: True
+
+    def tearDown(self):
+        self.lg._download_with_retry = self._orig_dl
+        self.lg.store_video_bytes = self._orig_store
+        self.lg._cos_enabled = self._orig_cos
+
+    def test_keep_bytes_returns_data_and_downloads_once(self):
+        url, data = self.lg.fetch_and_store("http://cdn/v.mp4", "collect/douyin/1.mp4", "video/mp4", keep_bytes=True)
+        self.assertEqual(url, "https://cos/collect/douyin/1.mp4")
+        self.assertEqual(data, b"MP4DATA")
+        self.assertEqual(len(self.downloads), 1, "同一个 URL 只该下载一次")
+
+    def test_without_keep_bytes_data_is_dropped(self):
+        url, data = self.lg.fetch_and_store("http://cdn/v.mp4", "k", "video/mp4", keep_bytes=False)
+        self.assertEqual(url, "https://cos/k")
+        self.assertIsNone(data, "不需要字节时不该把整段视频留在内存里")
+
+    def test_no_cos_no_bytes_means_no_download(self):
+        """既不转存也不做 ASR，就别白下一遍视频。"""
+        self.lg._cos_enabled = lambda: False
+        url, data = self.lg.fetch_and_store("http://cdn/v.mp4", "k", "video/mp4", keep_bytes=False)
+        self.assertEqual(url, "http://cdn/v.mp4")
+        self.assertIsNone(data)
+        self.assertEqual(self.downloads, [], "不该发起下载")
+
+    def test_cos_disabled_but_asr_needed_still_downloads(self):
+        self.lg._cos_enabled = lambda: False
+        url, data = self.lg.fetch_and_store("http://cdn/v.mp4", "k", "video/mp4", keep_bytes=True)
+        self.assertEqual(url, "http://cdn/v.mp4", "没转存就回退原链接")
+        self.assertEqual(data, b"MP4DATA", "ASR 仍需要字节")
+        self.assertEqual(len(self.downloads), 1)
+
+    def test_download_failure_falls_back_and_returns_no_bytes(self):
+        self.lg._download_with_retry = lambda url, key: None
+        url, data = self.lg.fetch_and_store("http://cdn/v.mp4", "k", "video/mp4", keep_bytes=True)
+        self.assertEqual(url, "http://cdn/v.mp4")
+        self.assertIsNone(data, "拿不到字节时 ASR 会自己再下一次，不能给它假数据")
+
+    def test_cos_upload_failure_falls_back_but_keeps_bytes(self):
+        """转存失败不该连累 ASR —— 字节已经在手里了。"""
+        self.lg.store_video_bytes = lambda data, key, ct=None: None
+        url, data = self.lg.fetch_and_store("http://cdn/v.mp4", "k", "video/mp4", keep_bytes=True)
+        self.assertEqual(url, "http://cdn/v.mp4")
+        self.assertEqual(data, b"MP4DATA")
+
+    def test_public_url_from_remote_keeps_old_signature(self):
+        self.assertEqual(self.lg.public_url_from_remote("http://cdn/v.mp4", "k", "video/mp4"), "https://cos/k")
+
+
+class TranscriptReuseTests(unittest.TestCase):
+    def setUp(self):
+        server_dir = str(Path(__file__).resolve().parents[1] / "server")
+        if server_dir not in sys.path:
+            sys.path.insert(0, server_dir)
+        self.tikhub = importlib.import_module("tikhub")
+        self.downloads = []
+        self._orig_budget = self.tikhub.http_get_budgeted
+        self._orig_whisper = self.tikhub._whisper
+        self._orig_http_get = self.tikhub._http_get
+        self.tikhub.http_get_budgeted = lambda url, dl, **kw: (self.downloads.append(url), b"DOWNLOADED")[1]
+        self.tikhub._whisper = lambda data: "文案:" + data.decode()
+
+    def tearDown(self):
+        self.tikhub.http_get_budgeted = self._orig_budget
+        self.tikhub._whisper = self._orig_whisper
+        self.tikhub._http_get = self._orig_http_get
+
+    def test_reuses_given_bytes_without_downloading(self):
+        r = self.tikhub.transcript({"platform": "douyin", "play_url": "http://cdn/v.mp4"}, video_bytes=b"REUSED")
+        self.assertEqual(r, {"text": "文案:REUSED", "source": "asr"})
+        self.assertEqual(self.downloads, [], "给了字节还去下载，等于没修")
+
+    def test_downloads_when_no_bytes_given(self):
+        r = self.tikhub.transcript({"platform": "douyin", "play_url": "http://cdn/v.mp4"})
+        self.assertEqual(r["text"], "文案:DOWNLOADED")
+        self.assertEqual(self.downloads, ["http://cdn/v.mp4"])
+
+    def test_channels_still_skipped_even_with_bytes(self):
+        self.assertIsNone(self.tikhub.transcript({"platform": "channels", "play_url": "x"}, video_bytes=b"X"))
+
+    def test_subtitle_wins_over_bytes(self):
+        """小红书有官方字幕就别跑 ASR —— 字幕是白送的、更准。"""
+        srt = "1\n00:00:01,000 --> 00:00:02,000\n你好\n".encode("utf-8")
+        self.tikhub._http_get = lambda url, **kw: srt
+        r = self.tikhub.transcript({"platform": "xhs", "subtitle_url": "http://x/s.srt"}, video_bytes=b"X")
+        self.assertEqual(r["source"], "subtitle")
+        self.assertEqual(self.downloads, [], "有字幕就不该下视频")
+
+
 class RefundAuditTests(unittest.TestCase):
     """add_points 同时被扣点(负 delta)和退点(正 delta)调用。
 
