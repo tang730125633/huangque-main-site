@@ -29,6 +29,9 @@ exit 0
             "ssh",
             """#!/bin/sh
 case "$*" in
+  *"import content_api"*)
+    if [ "$FAKE_IMPORT_FAIL" = "1" ]; then exit 1; fi
+    ;;
   *"systemctl is-active"*)
     if [ "$FAKE_SERVICE_INACTIVE" = "1" ]; then exit 1; fi
     ;;
@@ -43,7 +46,13 @@ if [ "$FAKE_CURL_FAIL" = "1" ]; then printf 000; exit 7; fi
 printf %s "${FAKE_CURL_CODE:-200}"
 """,
         )
-        self._write_executable("rsync", "#!/bin/sh\nexit 0\n")
+        self._write_executable(
+            "rsync",
+            """#!/bin/sh
+if [ -n "$FAKE_RSYNC_LOG" ]; then printf '%s\n' "$*" >> "$FAKE_RSYNC_LOG"; fi
+exit 0
+""",
+        )
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -98,6 +107,28 @@ printf %s "${FAKE_CURL_CODE:-200}"
         )
         self.assertNotEqual(0, result.returncode, result.stdout)
         self.assertIn("未进入 active", result.stdout)
+        self.assertNotIn("上线完成", result.stdout)
+
+    def test_content_domain_change_syncs_directory_and_imports_before_restart(self):
+        rsync_log = Path(self.tmp.name) / "rsync.log"
+        result = self._run_ship(
+            target="server/content_domains/core.py",
+            FAKE_CURL_CODE="200",
+            FAKE_RSYNC_LOG=str(rsync_log),
+        )
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertIn("整目录同步", result.stdout)
+        self.assertIn("content_api import 通过", result.stdout)
+        self.assertIn("server/content_domains/", rsync_log.read_text(encoding="utf-8"))
+
+    def test_content_import_failure_stops_before_restart(self):
+        result = self._run_ship(
+            target="server/content_domains/core.py",
+            FAKE_IMPORT_FAIL="1",
+            FAKE_CURL_CODE="200",
+        )
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("content_api import 失败", result.stdout)
         self.assertNotIn("上线完成", result.stdout)
 
 

@@ -18,6 +18,7 @@ SSHC="ssh $SSH_OPTS"
 WWW="/var/www/huangquechuanmei"
 HEALTH_URL="${HQ_HEALTH_URL:-https://huangquechuanmei.com/api/gen/health}"
 SERVICE_WAIT_SECONDS="${HQ_SERVICE_WAIT_SECONDS:-30}"
+CONTENT_PYTHON="${HQ_CONTENT_PYTHON:-/usr/bin/python3}"
 
 case "$SERVICE_WAIT_SECONDS" in
   ''|*[!0-9]*) echo "❌ HQ_SERVICE_WAIT_SECONDS 必须是正整数"; exit 1 ;;
@@ -81,6 +82,7 @@ echo "==> 3/5 部署到服务器"
 RESTART=""
 DEPLOYED=""
 NEED_RELOAD=0   # 部署过 systemd 单元/drop-in 时置 1，重启前必须 daemon-reload，否则改动不生效
+CONTENT_DOMAINS_SYNCED=0
 add_svc(){ for s in $1; do case " $RESTART " in *" $s "*) ;; *) RESTART="$RESTART $s";; esac; done; }
 
 show_service_diagnostics(){
@@ -143,13 +145,30 @@ for f in "$@"; do
   push_file "$f" "$dest" \
     && echo "  ✓ $f → $dest" || { echo "  ❌ $f 部署失败"; exit 1; }
   DEPLOYED="$DEPLOYED $f"
-  if [ "$f" = "server/content_api.py" ] && [ -d server/content_domains ]; then
-    $SSHC "$REMOTE" "sudo mkdir -p /home/ubuntu/content-api/content_domains" || { echo "  ❌ content_domains 目录创建失败"; exit 1; }
-    push_dir server/content_domains/ /home/ubuntu/content-api/content_domains/ \
-      && echo "  ✓ server/content_domains/ → /home/ubuntu/content-api/content_domains/" || { echo "  ❌ content_domains 部署失败"; exit 1; }
-  fi
+  case "$f" in
+    server/content_api.py|server/content_domains/*)
+      if [ "$CONTENT_DOMAINS_SYNCED" = "0" ] && [ -d server/content_domains ]; then
+        $SSHC "$REMOTE" "sudo mkdir -p /home/ubuntu/content-api/content_domains" || { echo "  ❌ content_domains 目录创建失败"; exit 1; }
+        push_dir server/content_domains/ /home/ubuntu/content-api/content_domains/ \
+          && echo "  ✓ server/content_domains/ → /home/ubuntu/content-api/content_domains/（整目录同步）" \
+          || { echo "  ❌ content_domains 整目录部署失败"; exit 1; }
+        CONTENT_DOMAINS_SYNCED=1
+      fi
+      ;;
+  esac
   add_svc "$svc"
 done
+
+# content 代码已同步但旧进程仍在运行。先用生产 venv 做纯 import 冒烟，
+# 把缺模块/坏引用挡在 restart 前，避免把可用服务重启成崩溃循环。
+case " $RESTART " in
+  *" huangque-content "*)
+    echo "==> 3.5/5 content import 冒烟"
+    $SSHC "$REMOTE" "cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 '$CONTENT_PYTHON' -c 'import content_api'" \
+      && echo "  ✓ content_api import 通过" \
+      || { echo "  ❌ content_api import 失败，停止重启"; show_service_diagnostics "huangque-content"; exit 1; }
+    ;;
+esac
 
 # 4. 重启受影响的后端服务（纯前端则跳过）
 if [ "$NEED_RELOAD" = "1" ]; then
