@@ -107,6 +107,56 @@ wait_for_services(){
     fi
   done
 }
+
+# 重启前冒烟：入口模块从 systemd ExecStart 反查，不再和本脚本的映射表二次漂移。
+# 缺文件/坏引用在这里暴露 → 「不重启、直接失败」，而不是重启后 ImportError 崩溃循环。
+smoke_import(){
+  $SSHC "$REMOTE" bash -s -- "$1" "$CONTENT_PYTHON" <<'RS'
+set -u
+svc="$1"; py_bin="$2"
+py=$(systemctl show -p ExecStart --value "$svc" 2>/dev/null | grep -oE '/[^ ;]+\.py' | head -1)
+[ -n "$py" ] || { echo "    ⏭ $svc 定位不到入口脚本，跳过冒烟"; exit 0; }
+wd=$(systemctl show -p WorkingDirectory --value "$svc" 2>/dev/null); [ -n "$wd" ] || wd=$(dirname "$py")
+mod=$(basename "$py" .py)
+if out=$(cd "$wd" && PYTHONDONTWRITEBYTECODE=1 "$py_bin" -c "import $mod" 2>&1); then
+  echo "    ✓ $svc: import $mod 通过"
+else
+  echo "    ❌ $svc: import $mod 失败 —— 中止，不重启（避免崩溃循环）"
+  printf '%s\n' "$out" | tail -8 | sed 's/^/       /'
+  exit 1
+fi
+RS
+}
+
+# 重启后置条件，两条一起断言：
+#   1. 服务启动时间晚于本次 ship 开始重启的时刻 → 证明 restart 真的发生了（不是静默没动）
+#   2. 没有任何 EnvironmentFile 比启动时间新   → 证明进程加载的是最新配置
+# 第 2 条抓的正是这个坑：配置写在重启之后，值进了文件却没进进程，「看起来上线了、实际没生效」。
+check_restart_effective(){
+  $SSHC "$REMOTE" bash -s -- "$1" "$2" <<'RS'
+set -u
+svc="$1"; t0="$2"
+ts=$(systemctl show -p ActiveEnterTimestamp --value "$svc" 2>/dev/null)
+[ -n "$ts" ] || { echo "    ⏭ $svc 取不到启动时间，跳过校验"; exit 0; }
+started=$(date -d "$ts" +%s 2>/dev/null) || { echo "    ⏭ $svc 启动时间无法解析，跳过校验"; exit 0; }
+
+if [ "$started" -lt "$t0" ]; then
+  echo "    ❌ $svc: 启动时间早于本次部署 —— restart 没有真的发生"
+  exit 1
+fi
+
+stale=""
+for f in $(systemctl show -p EnvironmentFiles --value "$svc" 2>/dev/null | tr ' ' '\n' | grep '^/'); do
+  m=$(sudo stat -c %Y "$f" 2>/dev/null) || continue
+  [ "$m" -gt "$started" ] && stale="$stale $f"
+done
+if [ -n "$stale" ]; then
+  echo "    ❌ $svc: 以下 env 文件比进程启动时间还新，新配置没被加载：$stale"
+  exit 1
+fi
+echo "    ✓ $svc 重启生效、配置已加载"
+RS
+}
 for f in "$@"; do
   case "$f" in
     server/auth_server.py) dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
@@ -159,16 +209,13 @@ for f in "$@"; do
   add_svc "$svc"
 done
 
-# content 代码已同步但旧进程仍在运行。先用生产 venv 做纯 import 冒烟，
+# 代码已同步但旧进程仍在运行。先对每个待重启服务做纯 import 冒烟，
 # 把缺模块/坏引用挡在 restart 前，避免把可用服务重启成崩溃循环。
-case " $RESTART " in
-  *" huangque-content "*)
-    echo "==> 3.5/5 content import 冒烟"
-    $SSHC "$REMOTE" "cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 '$CONTENT_PYTHON' -c 'import content_api'" \
-      && echo "  ✓ content_api import 通过" \
-      || { echo "  ❌ content_api import 失败，停止重启"; show_service_diagnostics "huangque-content"; exit 1; }
-    ;;
-esac
+# 入口从 systemd ExecStart 反查（见 smoke_import），覆盖全部服务而非只有 content。
+if [ -n "$RESTART" ]; then
+  echo "==> 3.5/5 import 冒烟（每个待重启服务）"
+  for s in $RESTART; do smoke_import "$s" || exit 1; done
+fi
 
 # 4. 重启受影响的后端服务（纯前端则跳过）
 if [ "$NEED_RELOAD" = "1" ]; then
@@ -177,8 +224,12 @@ if [ "$NEED_RELOAD" = "1" ]; then
 fi
 if [ -n "$RESTART" ]; then
   echo "==> 4/5 重启服务:$RESTART"
+  # 取「服务器」时间做基准（ActiveEnterTimestamp 是服务器时钟，用本地时间会因时差误判）
+  T0=$($SSHC "$REMOTE" "date +%s") || { echo "  ❌ 取服务器时间失败"; exit 1; }
   $SSHC "$REMOTE" "sudo systemctl restart $RESTART" || { echo "  ❌ 重启失败"; exit 1; }
   wait_for_services || exit 1
+  echo "  校验重启真的生效、配置已加载"
+  for s in $RESTART; do check_restart_effective "$s" "$T0" || exit 1; done
 else
   echo "==> 4/5 纯前端，无需重启"
 fi

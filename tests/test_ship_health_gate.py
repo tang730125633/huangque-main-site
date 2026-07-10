@@ -28,9 +28,30 @@ exit 0
         self._write_executable(
             "ssh",
             """#!/bin/sh
+# smoke_import / check_restart_effective 把脚本从 stdin 喂给远端 bash -s，
+# 参数里只有服务名等，所以按「第二个位置参数」区分二者：
+#   smoke_import         → bash -s -- <svc> <python 路径>
+#   check_restart_effective → bash -s -- <svc> <时间戳>
 case "$*" in
-  *"import content_api"*)
-    if [ "$FAKE_IMPORT_FAIL" = "1" ]; then exit 1; fi
+  *"bash -s"*)
+    cat >/dev/null 2>&1   # 吞掉 stdin 里的远端脚本
+    case "$*" in
+      *python3*)
+        if [ "$FAKE_IMPORT_FAIL" = "1" ]; then echo "    ❌ import 失败 —— 中止，不重启"; exit 1; fi
+        echo "    ✓ import 通过"
+        exit 0
+        ;;
+      *)
+        if [ "$FAKE_RESTART_INEFFECTIVE" = "1" ]; then echo "    ❌ restart 没有真的发生"; exit 1; fi
+        if [ "$FAKE_ENV_NEWER" = "1" ]; then echo "    ❌ 新配置没被加载"; exit 1; fi
+        echo "    ✓ 重启生效、配置已加载"
+        exit 0
+        ;;
+    esac
+    ;;
+  *"date +%s"*)
+    echo 1700000000
+    exit 0
     ;;
   *"systemctl is-active"*)
     if [ "$FAKE_SERVICE_INACTIVE" = "1" ]; then exit 1; fi
@@ -118,7 +139,7 @@ exit 0
         )
         self.assertEqual(0, result.returncode, result.stdout)
         self.assertIn("整目录同步", result.stdout)
-        self.assertIn("content_api import 通过", result.stdout)
+        self.assertIn("import 通过", result.stdout)
         self.assertIn("server/content_domains/", rsync_log.read_text(encoding="utf-8"))
 
     def test_content_import_failure_stops_before_restart(self):
@@ -128,7 +149,29 @@ exit 0
             FAKE_CURL_CODE="200",
         )
         self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn("content_api import 失败", result.stdout)
+        self.assertIn("import 失败", result.stdout)
+        self.assertNotIn("上线完成", result.stdout)
+
+    def test_silent_restart_blocks_deployment_success(self):
+        """restart 没真的发生（启动时间早于 T0）→ 阻断，不打印上线完成。"""
+        result = self._run_ship(
+            target="server/content_domains/core.py",
+            FAKE_RESTART_INEFFECTIVE="1",
+            FAKE_CURL_CODE="200",
+        )
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("restart 没有真的发生", result.stdout)
+        self.assertNotIn("上线完成", result.stdout)
+
+    def test_stale_env_not_loaded_blocks_deployment_success(self):
+        """env 文件比进程启动还新（配置进了文件没进进程）→ 阻断。"""
+        result = self._run_ship(
+            target="server/content_domains/core.py",
+            FAKE_ENV_NEWER="1",
+            FAKE_CURL_CODE="200",
+        )
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("新配置没被加载", result.stdout)
         self.assertNotIn("上线完成", result.stdout)
 
 
