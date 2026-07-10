@@ -2,6 +2,7 @@
 import os
 import threading
 import time
+import urllib.error
 
 from .core import (
     OPENAI_BASE, OPENAI_KEY, OUT_DIR, SIZES, ZELONG2_BASE, ZELONG2_KEY,
@@ -15,6 +16,39 @@ OPENAI_OFFICIAL_BASE = os.environ.get("OPENAI_OFFICIAL_BASE", "https://api.opena
 
 _ZELONG2_POOL_LOCK = threading.Lock()
 _ZELONG2_POOL_NEXT = 0
+
+def _clean_b64(value):
+    """归一化前端传来的图片 base64：剥离 data: 前缀、去空白/换行、补齐 padding。
+    个别前端路径(剪贴板/反推回填)会带换行或缺 padding，裸 base64.b64decode 抛
+    「Incorrect padding」→ 图生图整单失败退点(#6)。空值返回 None。"""
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("data:") and "," in raw:
+        raw = raw.split(",", 1)[1]
+    raw = "".join(raw.split())
+    return raw + "=" * (-len(raw) % 4)
+
+_RETRYABLE_HTTP = {429, 500, 502, 503, 504}
+
+def _is_transient(e):
+    """连接层/限流/网关类错误 → 可重试；4xx(内容审核/参数)不重试。"""
+    if isinstance(e, urllib.error.HTTPError):
+        return e.code in _RETRYABLE_HTTP
+    return isinstance(e, (urllib.error.URLError, TimeoutError, ConnectionError))
+
+def _retry(fn, tries=2, base_delay=1.5):
+    """瞬时失败退避重试(#6)：中转出图原来无重试，上游断连/503/504/read timeout 直接
+    算失败退点。只重试 _is_transient；单发 _post 最多 2 次(300s×2 仍在 reaper image
+    900s 宽限内)。泽龙2 号池抛 ValueError(非瞬时)，不会被这里二次放大。"""
+    for i in range(tries):
+        try:
+            return fn()
+        except Exception as e:
+            if i == tries - 1 or not _is_transient(e):
+                raise
+            print("[img-retry] 第%d次瞬时失败，退避重试: %s" % (i + 1, str(e)[:120]), flush=True)
+            time.sleep(base_delay * (i + 1))
 
 def _split_env_list(value):
     return [v.strip() for v in str(value or "").replace("\n", ",").replace(";", ",").split(",") if v.strip()]
@@ -40,7 +74,7 @@ def _post_zelong2(path, data, ctype):
     errors = []
     for idx, account in enumerate(_zelong2_attempts(), 1):
         try:
-            return _post(path, data, ctype, base=account["base"], key=account["key"], proxy=False)
+            return _retry(lambda: _post(path, data, ctype, base=account["base"], key=account["key"], proxy=False))
         except Exception as e:
             errors.append("#%d %s: %s" % (idx, account["base"], str(e)[:160]))
             print("[zelong2-pool] attempt failed %s" % errors[-1], flush=True)
@@ -103,7 +137,7 @@ def _dispatch_gpt(provider, path, body, ct, base, key, proxy):
     if provider == "zelong2":
         return _post_zelong2(path, body, ct)
     if provider == "zelong":
-        return _post(path, body, ct, base=base, key=key, proxy=proxy)
+        return _retry(lambda: _post(path, body, ct, base=base, key=key, proxy=proxy))
     # provider == "openai"：优先自建出境直连官方，超时/报错降级，最终兜底 heygen(=OPENAI_BASE)。
     # 未配 EGRESS_* 时 egress 链里只剩 heygen 一档，等于改动前的老行为。
     from content_domains import egress
@@ -117,8 +151,8 @@ def gen_image(payload):
     if not prompt:
         raise ValueError("提示词不能为空")
     ratio = payload.get("ratio") or "1:1"
-    img   = payload.get("image")   # base64(无 data: 前缀) — 上传参考图 → 图生图 / 局部修改
-    mask  = payload.get("mask")    # base64 — 蒙版(透明处=要重绘的区域) → 局部修改
+    img   = _clean_b64(payload.get("image"))  # 参考图 → 图生图 / 局部修改；清洗防 padding 错(#6)
+    mask  = _clean_b64(payload.get("mask"))   # 蒙版(透明处=要重绘的区域) → 局部修改
     quality = "high" if (payload.get("quality") or "hd") == "hd" else "medium"  # 标准=medium/高清=high
     provider = (payload.get("provider") or "openai").strip().lower()
     if provider == "xiaole":
