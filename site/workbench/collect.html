@@ -7,6 +7,7 @@
 <link rel="icon" href="../assets/cloud/logo-bird.png">
 <link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
 <link rel="stylesheet" href="../assets/cloud.css?v=8">
+<script src="theme-init.js?v=11eb385e"></script>
 <style>
   body { overflow: hidden; }
   .gCollect { grid-template-columns: 1.1fr 1fr; }
@@ -37,6 +38,7 @@
   #resultState.dl-only #copyBlock, #resultState.dl-only #cmtBlock, #resultState.dl-only #galleryBlock,
   #resultState.dl-only #transcriptExtractWrap, #resultState.dl-only #transcriptBlock { display:none !important; }
 </style>
+<link rel="stylesheet" href="theme.css?v=d5f19744">
 </head>
 <body>
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
@@ -102,7 +104,7 @@
     </div>
 
     <!-- ===== RIGHT: Results + History ===== -->
-    <div style="border:1px solid rgba(231,178,76,.16); border-radius:14px; background:linear-gradient(165deg, rgba(20,17,10,.6), rgba(12,16,26,.5)); padding:20px;">
+    <div class="collect-result-panel" style="border:1px solid rgba(231,178,76,.16); border-radius:14px; background:linear-gradient(165deg, rgba(20,17,10,.6), rgba(12,16,26,.5)); padding:20px;">
       <div style="font-size:16px; font-weight:600; margin-bottom:16px;">采集结果</div>
 
       <!-- Empty state -->
@@ -234,7 +236,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=11996340"></script>
+<script src="cloud-shell.js?v=56f797df"></script>
 <script>
 (function () {
   'use strict';

@@ -7,6 +7,7 @@
 <link rel="icon" href="../assets/cloud/logo-bird.png">
 <link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
 <link rel="stylesheet" href="../assets/cloud.css?v=8">
+<script src="theme-init.js?v=11eb385e"></script>
 <style>
   body{ overflow:hidden; }
   .gScript{ display:grid; grid-template-columns:0.92fr 1.12fr; gap:18px; align-items:start; }
@@ -44,6 +45,7 @@
   .sc-history-time{margin-top:10px;color:#5c6b82;font-size:11px}
   @media (max-width:760px){.sc-history-grid{grid-template-columns:1fr}}
 </style>
+<link rel="stylesheet" href="theme.css?v=d5f19744">
 </head>
 <body>
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
@@ -116,7 +118,7 @@
     </div>
 
     <!-- 右：脚本 / 分镜预览 -->
-    <div class="sc-panel" style="border-color:rgba(231,178,76,.16); background:linear-gradient(165deg, rgba(20,17,10,.55), rgba(12,16,26,.5));">
+    <div class="sc-panel script-preview-panel" style="border-color:rgba(231,178,76,.16); background:linear-gradient(165deg, rgba(20,17,10,.55), rgba(12,16,26,.5));">
       <div style="display:flex; align-items:center; justify-content:space-between;">
         <div style="display:flex; align-items:center; gap:9px;">
           <span class="sc-ico" style="width:18px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4"/></svg></span>
@@ -216,7 +218,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=11996340"></script>
+<script src="cloud-shell.js?v=56f797df"></script>
 <script>
 /* 编导页接 /api/gen/copy（format=script）→ 结构化分镜脚本 */
 (function(){

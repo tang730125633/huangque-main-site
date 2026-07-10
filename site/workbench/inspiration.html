@@ -7,6 +7,7 @@
 <link rel="icon" href="../assets/cloud/logo-bird.png">
 <link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
 <link rel="stylesheet" href="../assets/cloud.css?v=8">
+<script src="theme-init.js?v=11eb385e"></script>
 <style>
   body{ overflow:hidden; }
   .capRow{ grid-template-columns:repeat(5,1fr); }
@@ -20,10 +21,13 @@
   @media (max-width:760px){ .capRow{ grid-template-columns:1fr 1fr;} .masonry{ column-count:1;} .tutGrid{ grid-template-columns:1fr;} }
   .chip{ cursor:pointer; transition:.15s; padding:1px 2px; }
   .chip:hover{ color:#e7b24c !important; }
+  .inspiration-tab{color:#94a4bb;transition:.15s}
+  .inspiration-tab.on{color:#eaf1fa;background:linear-gradient(180deg,#16223a,#111a2b);box-shadow:inset 0 0 0 1px rgba(231,178,76,.25)}
   .ph{ position:relative; border:1px dashed rgba(231,178,76,.22); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.5), rgba(12,18,32,.4)); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; color:#5c6b82; overflow:hidden; }
   .ph::after{ content:""; position:absolute; inset:0; background:linear-gradient(100deg, transparent 30%, rgba(231,178,76,.05) 50%, transparent 70%); background-size:200% 100%; animation:hq-shimmer 3.4s ease-in-out infinite; }
   .phtag{ position:absolute; top:11px; left:11px; padding:3px 9px; font-size:10.5px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.6); z-index:1; }
 </style>
+<link rel="stylesheet" href="theme.css?v=d5f19744">
 </head>
 <body>
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
@@ -57,8 +61,8 @@
   <!-- tabs + 搜索 -->
   <div style="display:flex; align-items:center; gap:18px; margin-bottom:18px; flex-wrap:wrap;">
     <div style="display:flex; gap:8px; background:rgba(7,11,19,.5); border:1px solid rgba(148,164,187,.1); border-radius:12px; padding:5px;">
-      <div id="tabCase" style="padding:8px 18px; border-radius:9px; font-size:14px; font-weight:600; cursor:pointer; background:linear-gradient(180deg,#16223a,#111a2b); color:#eaf1fa; box-shadow:inset 0 0 0 1px rgba(231,178,76,.25); transition:.15s;">灵感案例</div>
-      <div id="tabTut" style="padding:8px 18px; border-radius:9px; font-size:14px; font-weight:600; cursor:pointer; color:#94a4bb; transition:.15s;">教程视频</div>
+      <div id="tabCase" class="inspiration-tab on" style="padding:8px 18px; border-radius:9px; font-size:14px; font-weight:600; cursor:pointer;">灵感案例</div>
+      <div id="tabTut" class="inspiration-tab" style="padding:8px 18px; border-radius:9px; font-size:14px; font-weight:600; cursor:pointer;">教程视频</div>
     </div>
     <div style="flex:1; min-width:200px; max-width:420px; display:flex; align-items:center; gap:10px; padding:0 14px; height:42px; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:11px;">
       <span style="display:flex; width:16px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span>
@@ -140,18 +144,15 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=11996340"></script>
+<script src="cloud-shell.js?v=56f797df"></script>
 <script>
 (function(){
   var tabCase=document.getElementById('tabCase'), tabTut=document.getElementById('tabTut');
   var paneCase=document.getElementById('paneCase'), paneTut=document.getElementById('paneTut');
   function sel(caseOn){
     paneCase.style.display=caseOn?'block':'none'; paneTut.style.display=caseOn?'none':'block';
-    var on1=caseOn, on2=!caseOn;
-    tabCase.style.background=on1?'linear-gradient(180deg,#16223a,#111a2b)':'transparent';
-    tabCase.style.color=on1?'#eaf1fa':'#94a4bb'; tabCase.style.boxShadow=on1?'inset 0 0 0 1px rgba(231,178,76,.25)':'none';
-    tabTut.style.background=on2?'linear-gradient(180deg,#16223a,#111a2b)':'transparent';
-    tabTut.style.color=on2?'#eaf1fa':'#94a4bb'; tabTut.style.boxShadow=on2?'inset 0 0 0 1px rgba(231,178,76,.25)':'none';
+    tabCase.classList.toggle('on',caseOn);
+    tabTut.classList.toggle('on',!caseOn);
   }
   tabCase.onclick=function(){sel(true);}; tabTut.onclick=function(){sel(false);};
 
