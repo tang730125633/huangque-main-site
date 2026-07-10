@@ -18,6 +18,11 @@ from . import cos
 from .core import _out_path, _resolve_out_file, public_url
 
 WAVESPEED_KEY = os.environ.get("WAVESPEED_API_KEY", "")
+# 出境通道：原来是裸 urlopen，继承进程级 HTTPS_PROXY（mihomo）。改为 VPS 隧道优先、mihomo 备选。
+# 显式 WAVESPEED_PROXY 可覆盖。素材上传走 COS（国内直连，不经代理），走代理的只有
+# api.wavespeed.ai 的小 JSON 和 _download_to_lib 拉成片 —— 后者是重活。
+# ⚠ 隧道实测被整形在 ~1.3 MB/s，成片下载会撞这个天花板；待 VPS 升级带宽后消失。
+WAVESPEED_PROXY = (os.environ.get("WAVESPEED_PROXY") or "").strip()
 WS_API = "https://api.wavespeed.ai/api/v3"
 WS_MOTION = "/wavespeed-ai/wan-2.2/animate"
 WS_TRYON = "/wavespeed-ai/ai-virtual-outfit-tryon"
@@ -40,6 +45,20 @@ def _phase(job_id, phase):
         pass
 
 
+def _opener():
+    """通道在发请求前选定。WaveSpeed 的提交(POST)是非幂等的——一旦发出就不换通道重发，
+    否则会生成两条片、计两次费。备选只在「发之前探到隧道不可达」时生效。"""
+    if WAVESPEED_PROXY:
+        proxy = WAVESPEED_PROXY
+    else:
+        from . import egress
+        proxy = egress.preferred_proxy()
+    if proxy:
+        return urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    # 隧道与备选都没配 → build_opener() 自带的 ProxyHandler 仍读进程级 HTTP(S)_PROXY，即改动前的老行为
+    return urllib.request.build_opener()
+
+
 def _ws_req(method, url, body=None, timeout=60):
     headers = {"Authorization": "Bearer " + WAVESPEED_KEY}
     data = None
@@ -48,7 +67,7 @@ def _ws_req(method, url, body=None, timeout=60):
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _opener().open(req, timeout=timeout) as r:
             return json.loads(r.read() or b"{}")
     except urllib.error.HTTPError as e:
         detail = (e.read() or b"").decode("utf-8", "replace")[:300]
@@ -95,7 +114,7 @@ def _run_and_wait(model_path, body, job_id=None):
 
 def _download_to_lib(url, prefix):
     req = urllib.request.Request(url, headers={"User-Agent": "huangque-content/1.0"})
-    with urllib.request.urlopen(req, timeout=360) as r:
+    with _opener().open(req, timeout=360) as r:   # 拉成片：整个流程里最重的一腿
         data = r.read()
     if not data:
         raise RuntimeError("WaveSpeed成片下载为空")
