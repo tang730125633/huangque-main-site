@@ -463,7 +463,7 @@
             var stage = sec < 6 ? '解析链接' : (sec < 18 ? '拉取详情' : '提取评论/文案');
             setLoadNote(stage + '中（' + sec + 's）');
           }
-        }).catch(function () {});
+        }).catch(function () { clearInterval(pollIv); busy(false); showState('emptyState'); setNote('网络异常，检查失败 · 请刷新重试', '#f4708a'); });
     }, 4000);
   }
 
@@ -993,7 +993,7 @@
               .then(function (r) { return r.json(); })
               .then(function (d) {
                 if (d.result) { downloadOnly = false; currentResult = d.result; renderResult(d.result); applyDownloadView(); setNote('已载入历史采集', '#2dd4bf'); }
-              }).catch(function () {});
+              }).catch(function () { setNote('历史采集载入失败 · 请重试', '#f4708a'); });
           };
         });
       }).catch(function () {});
