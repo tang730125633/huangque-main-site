@@ -543,7 +543,7 @@
 <div id="toast" class="toast"></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=56f797df"></script>
+<script src="cloud-shell.js?v=ff117426"></script>
 <script>
 (function(){
   var token='__cookie__';
@@ -612,6 +612,53 @@
   var voices=publicFallback.slice();
   var $=function(id){return document.getElementById(id);};
   function esc(s){return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+  var resumedVideoTaskId='';
+  function withHQTasks(callback){
+    if(window.HQTasks){ callback(window.HQTasks); return; }
+    window.addEventListener('hq:tasks-ready',function(){ if(window.HQTasks) callback(window.HQTasks); },{once:true});
+  }
+  function trackVideoJob(id,patch){
+    if(id==null||id==='') return;
+    withHQTasks(function(tasks){
+      var job={id:String(id),kind:'video',status:'queued',label:'视频生成'};
+      Object.keys(patch||{}).forEach(function(key){job[key]=patch[key];});
+      tasks.upsert(job);
+    });
+  }
+  function resumeTrackedVideoTask(explicitId){
+    withHQTasks(function(tasks){
+      var id=explicitId==null?'':String(explicitId);
+      if(!id){
+        try{ id=(new URLSearchParams(location.search).get('task')||'').trim(); }catch(e){}
+      }
+      if(id && !/^\d+$/.test(id)) return;
+      var task=id?tasks.get(id,'video'):tasks.latestActive('video');
+      if(!task && id){
+        task={id:id,kind:'video',status:'pending',label:'视频任务'};
+        tasks.upsert(task);
+      }
+      if(!task || String(task.kind||'')!=='video') return;
+      id=String(task.id);
+      if(resumedVideoTaskId===id) return;
+      resumedVideoTaskId=id;
+      setBusy(true);
+      currentVideoDraft={
+        text:task.label||'视频任务',
+        ratio:task.ratio||'—',
+        motion:task.modeLabel||'视频生成',
+        status:'processing',
+        phase:task.phase||'queued',
+        created_at:Math.floor((task.createdAt||Date.now())/1000)
+      };
+      renderVideoHistory([currentVideoDraft]);
+      setVideoStatus('正在恢复视频任务 #'+id+'...');
+      pollJob(id,0);
+    });
+  }
+  window.addEventListener('hq:resume-task',function(e){
+    var detail=e&&e.detail;
+    if(detail&&detail.kind==='video') resumeTrackedVideoTask(detail.id);
+  });
   function fresh(u){u=String(u||'');return /^(blob:|data:)/.test(u)||/[?&]q-sign-/.test(u)?u:u+(u.indexOf('?')>=0?'&':'?')+'_='+Date.now();}
   function isProtectedLocal(u){return String(u||'').indexOf('/api/gen/file/')===0;}
   function assetUrl(u){
@@ -1484,12 +1531,22 @@
     updateChecklist();
   };
   function pollJob(id, tries){
+    if(tries===0) resumedVideoTaskId=String(id);
     fetch('/api/gen/job/'+id,{headers:{Authorization:'Bearer '+token}})
-      .then(function(r){return r.json();})
+      .then(function(r){
+        return r.json().catch(function(){return {};}).then(function(d){
+          if(r.ok) return d;
+          var httpError=new Error(d.detail||('任务查询失败（HTTP '+r.status+'）'));
+          httpError.jobTerminal=r.status===404;
+          throw httpError;
+        });
+      })
       .then(function(d){
         if(d.status==='done' && d.result){
           var result=typeof d.result==='string'?JSON.parse(d.result):d.result;
           result.phase='done';
+          trackVideoJob(id,{status:'done',phase:'done'});
+          resumedVideoTaskId='';
           setBusy(false);
           currentVideoDraft=null;
           renderVideoHistory([Object.assign({created_at:Math.floor(Date.now()/1000)}, result)]);
@@ -1499,15 +1556,29 @@
           if(result.subtitle_error){toast('字幕生成失败，已保留无字幕视频');}
           return;
         }
-        if(d.status==='error'||d.status==='failed') throw new Error(d.error||'生成失败');
+        if(d.status==='error'||d.status==='failed'){
+          var terminalError=new Error(d.error||'生成失败');
+          terminalError.jobTerminal=true;
+          throw terminalError;
+        }
+        trackVideoJob(id,{status:d.status||'running',phase:d.phase||'',progress:d.progress||null});
         updateJobProgress(d);
         if(tries<600){setTimeout(function(){pollJob(id,tries+1);},3000);}
-        else{setBusy(false);loadVideoHistory();setVideoStatus('任务仍在后台生成，请稍后到视频资产查看');}
+        else{
+          trackVideoJob(id,{status:'pending',lastError:'前台轮询已超时'});
+          resumedVideoTaskId='';
+          setBusy(false);loadVideoHistory();setVideoStatus('任务仍在后台生成，请稍后到视频资产查看');
+        }
       })
       .catch(function(e){
+        trackVideoJob(id,e&&e.jobTerminal
+          ?{status:'failed',lastError:e.message||'生成失败'}
+          :{status:'pending',lastError:e&&e.message||'连接中断'});
+        resumedVideoTaskId='';
         setBusy(false);
-        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}
-        setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');
+        if(currentVideoDraft){currentVideoDraft.status=e&&e.jobTerminal?'error':'processing';renderVideoHistory([currentVideoDraft]);}
+        setVideoStatus(e&&e.jobTerminal?(e.message||'生成失败'):'连接中断，任务仍在后台生成，可点侧栏任务继续');
+        toast(e&&e.jobTerminal?(e.message||'生成失败'):'连接中断，任务仍在后台生成');
       });
   }
   function submitMotionVideo(){
@@ -1552,6 +1623,7 @@
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
         setVideoStatus('影视级模仿任务已提交...');
         setTimeout(loadVideoHistory,700);
+        trackVideoJob(res.data.job_id,{status:'queued',label:'影视级模仿',mode:'motion',modeLabel:'影视级模仿',ratio:selectedMotionRatio});
         pollJob(res.data.job_id,0);
       })
       .catch(function(e){
@@ -1601,6 +1673,7 @@
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
         setVideoStatus('换装换背景任务已提交...');
         setTimeout(loadVideoHistory,700);
+        trackVideoJob(res.data.job_id,{status:'queued',label:'换装换背景视频',mode:'tryon',modeLabel:'换装换背景',ratio:'9:16'});
         pollJob(res.data.job_id,0);
       })
       .catch(function(e){
@@ -1649,6 +1722,7 @@
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
         setVideoStatus('视频任务已提交...');
         setTimeout(loadVideoHistory,700);
+        trackVideoJob(res.data.job_id,{status:'queued',label:mode==='audio'?'数字人口播（音频）':'数字人口播（文案）',mode:mode,modeLabel:'数字人口播',ratio:selectedRatio});
         pollJob(res.data.job_id,0);
       })
       .catch(function(e){
@@ -1687,6 +1761,7 @@
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
         if(statusEl) statusEl.textContent=label+'任务已提交，生成中...';
         setTimeout(loadVideoHistory,700);
+        trackVideoJob(res.data.job_id,{status:'queued',label:label,mode:channel,modeLabel:label,ratio:ratio});
         pollJob(res.data.job_id,0);
       })
       .catch(function(e){
@@ -1953,6 +2028,7 @@
   applyInspirationPrefill();
   loadVoices();
   loadVideoHistory();
+  resumeTrackedVideoTask();
 })();
 </script>
 </body>

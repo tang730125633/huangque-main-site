@@ -691,7 +691,24 @@
     };});
   }
 
+  // 全局任务追踪器独立成 tasks.js，由共享外壳统一加载，避免每个页面各自维护 script 标签。
+  // 复用 cloud-shell 的内容戳作为依赖版本：本文件改动时 stamp_assets 会刷新所有页面引用，
+  // tasks.js 也随同换 URL，已访问过旧版追踪器的浏览器不会继续命中陈旧缓存。
+  function loadTaskTracker(){
+    if(window.HQTasks){ try{ window.HQTasks.renderBadge(); }catch(e){} return; }
+    if(document.querySelector('script[data-hq-tasks]')) return;
+    var version='';
+    try{
+      var shellScript=document.querySelector('script[src*="cloud-shell.js"]');
+      if(shellScript) version=new URL(shellScript.src,location.href).searchParams.get('v')||'';
+    }catch(e){}
+    var script=document.createElement('script');
+    script.setAttribute('data-hq-tasks','1');
+    script.src='tasks.js'+(version?('?v='+encodeURIComponent(version)):'');
+    document.head.appendChild(script);
+  }
+
   window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, login:openLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser };
-  function _hqInit(){ build(); buildLoginModal(); }
+  function _hqInit(){ build(); buildLoginModal(); loadTaskTracker(); }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_hqInit); else _hqInit();
 })();
