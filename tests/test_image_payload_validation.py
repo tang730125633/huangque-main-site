@@ -87,6 +87,46 @@ class RealGarbageStillRejectedTests(unittest.TestCase):
         self.assertIn("MB", str(cm.exception))
 
 
+class MagicByteTests(unittest.TestCase):
+    """魔数校验放在扣点前 —— 所有引擎受益，且坏图不扣点。
+
+    背景：base64 能解码但不是图片时，Ark 回 HTTP 500「service encountered an unexpected
+    internal error」，用户以为是我们的故障；而那时点已经扣了，只能等失败退点。
+    """
+
+    def test_decodable_but_not_an_image_rejected(self):
+        junk = _b64(b"ABC" * 100)
+        with self.assertRaises(ValueError) as cm:
+            image.validate_image_payload({"prompt": "p", "image": junk})
+        self.assertIn("PNG", str(cm.exception))
+
+    def test_png_accepted(self):
+        image.validate_image_payload({"prompt": "p", "image": _b64(PNG)})
+
+    def test_jpeg_accepted(self):
+        image.validate_image_payload({"prompt": "p", "image": _b64(b"\xff\xd8\xff" + b"x" * 64)})
+
+    def test_webp_accepted(self):
+        webp = b"RIFF" + b"\x00\x00\x00\x00" + b"WEBP" + b"x" * 32
+        image.validate_image_payload({"prompt": "p", "image": _b64(webp)})
+
+    def test_bad_mask_rejected_too(self):
+        with self.assertRaises(ValueError) as cm:
+            image.validate_image_payload({"prompt": "p", "mask": _b64(b"not a png at all")})
+        self.assertIn("蒙版", str(cm.exception))
+
+    def test_real_png_mask_passes_validation(self):
+        """格式校验不该替引擎回答「支不支持蒙版」—— 那由引擎自己拒。"""
+        image.validate_image_payload({"prompt": "p", "mask": _b64(PNG)})
+
+    def test_oversize_reported_as_size_not_format(self):
+        """超大图要报「太大」，而不是被魔数先判成格式不对 —— 错误信息得指向真正的问题。"""
+        big = _b64(b"\x00" * (image.IMAGE_REF_MAX_BYTES + 1024))
+        with self.assertRaises(ValueError) as cm:
+            image.validate_image_payload({"prompt": "p", "image": big})
+        self.assertIn("MB", str(cm.exception))
+
+
 class PromptAndCountTests(unittest.TestCase):
     def test_empty_prompt_rejected(self):
         with self.assertRaises(ValueError):

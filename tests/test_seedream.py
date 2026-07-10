@@ -16,6 +16,7 @@
   * response_format=b64_json 可用（省掉一次去 TOS 的下载）
   * 内容审核失败 → 400 OutputImageSensitiveContentDetected（官方不计费 → 应退点）
 """
+import base64
 import importlib
 import json
 import sys
@@ -32,41 +33,71 @@ points = importlib.import_module("content_domains.points")
 RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
 
 
+def _px(size):
+    w, h = (int(x) for x in size.split("x"))
+    return w, h, w * h
+
+
 class SizeTests(unittest.TestCase):
-    def test_all_ratios_meet_hard_minimum(self):
-        """任何比例任何档位都必须 ≥ 3686400 px，否则 Ark 直接 400。"""
-        for r in RATIOS:
-            for q in ("std", "hd"):
-                w, h = (int(x) for x in image._seedream_size(r, q).split("x"))
-                self.assertGreaterEqual(w * h, image.SEEDREAM_MIN_PIXELS, "%s/%s = %dx%d" % (r, q, w, h))
+    def test_every_ratio_variant_quality_lands_inside_window(self):
+        """像素总数必须落在 [下限, 按型号的上限] 内，否则 Ark 400。
+        Pro 上限 4624220 远低于标准版 —— 线上 3 单 Pro 高清正是拿了 9.4M 像素而挂掉。"""
+        for variant, cap in image.SEEDREAM_MAX_PIXELS.items():
+            for r in RATIOS:
+                for q in ("std", "hd"):
+                    w, h, px = _px(image._seedream_size(r, q, variant))
+                    self.assertGreaterEqual(px, image.SEEDREAM_MIN_PIXELS, "%s/%s/%s" % (variant, r, q))
+                    self.assertLessEqual(px, cap, "%s/%s/%s = %dx%d" % (variant, r, q, w, h))
 
     def test_dimensions_are_multiples_of_16(self):
-        for r in RATIOS:
-            for q in ("std", "hd"):
-                w, h = (int(x) for x in image._seedream_size(r, q).split("x"))
-                self.assertEqual((w % 16, h % 16), (0, 0), "%s/%s" % (r, q))
+        for variant in image.SEEDREAM_MAX_PIXELS:
+            for r in RATIOS:
+                for q in ("std", "hd"):
+                    w, h, _ = _px(image._seedream_size(r, q, variant))
+                    self.assertEqual((w % 16, h % 16), (0, 0), "%s/%s/%s" % (variant, r, q))
 
     def test_known_good_sizes_match_live_probes(self):
-        """这两个尺寸线上实测返回 200 且回显同样尺寸。"""
+        """这些尺寸线上实测返回 200 且回显同样尺寸。"""
         self.assertEqual(image._seedream_size("9:16", "std"), "1440x2560")
         self.assertEqual(image._seedream_size("1:1", "std"), "1920x1920")
+        self.assertEqual(image._seedream_size("9:16", "hd", "pro"), "1600x2848")   # 4556800 px → 200
+        self.assertEqual(image._seedream_size("21:9", "hd", "pro"), "3280x1408")   # 4618240 px → 200（最贴边）
 
-    def test_hd_is_larger_than_std(self):
+    def test_pro_hd_never_exceeds_its_own_cap(self):
+        """回归守卫：1712x2704 = 4629248 px 线上实测被 400 拒。"""
+        cap = image.SEEDREAM_MAX_PIXELS["pro"]
         for r in RATIOS:
-            sw, sh = (int(x) for x in image._seedream_size(r, "std").split("x"))
-            hw, hh = (int(x) for x in image._seedream_size(r, "hd").split("x"))
-            self.assertGreater(hw * hh, sw * sh, r)
+            _, _, px = _px(image._seedream_size(r, "hd", "pro"))
+            self.assertLessEqual(px, cap, r)
+
+    def test_unknown_variant_uses_most_conservative_cap(self):
+        """未知型号宁可出图小一点，也不要 400。"""
+        strict = min(image.SEEDREAM_MAX_PIXELS.values())
+        for r in RATIOS:
+            _, _, px = _px(image._seedream_size(r, "hd", "future-model"))
+            self.assertLessEqual(px, strict, r)
+
+    def test_hd_is_larger_than_std_within_each_variant(self):
+        for variant in image.SEEDREAM_MAX_PIXELS:
+            for r in RATIOS:
+                _, _, spx = _px(image._seedream_size(r, "std", variant))
+                _, _, hpx = _px(image._seedream_size(r, "hd", variant))
+                self.assertGreater(hpx, spx, "%s/%s" % (variant, r))
 
     def test_ratio_is_approximately_preserved(self):
-        for r in RATIOS:
-            rw, rh = (int(x) for x in r.split(":"))
-            w, h = (int(x) for x in image._seedream_size(r, "std").split("x"))
-            self.assertAlmostEqual(w / h, rw / rh, delta=0.02, msg=r)
+        for variant in image.SEEDREAM_MAX_PIXELS:
+            for r in RATIOS:
+                rw, rh = (int(x) for x in r.split(":"))
+                for q in ("std", "hd"):
+                    w, h, _ = _px(image._seedream_size(r, q, variant))
+                    self.assertAlmostEqual(w / h, rw / rh, delta=0.03, msg="%s/%s/%s" % (variant, r, q))
 
     def test_garbage_ratio_falls_back_not_crash(self):
         for bad in ("", None, "abc", "0:0", "1:", "-3:4"):
-            w, h = (int(x) for x in image._seedream_size(bad, "std").split("x"))
-            self.assertGreaterEqual(w * h, image.SEEDREAM_MIN_PIXELS)
+            for variant in ("std", "pro"):
+                _, _, px = _px(image._seedream_size(bad, "hd", variant))
+                self.assertGreaterEqual(px, image.SEEDREAM_MIN_PIXELS)
+                self.assertLessEqual(px, image.SEEDREAM_MAX_PIXELS[variant])
 
 
 class _Capture:
@@ -230,8 +261,10 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(self._run(variant="lite")["model"], image.SEEDREAM_MODELS["std"])
 
     def test_mask_rejected_seedream_has_no_inpaint(self):
+        """用**真 PNG** 蒙版：格式无可挑剔，也照样被拒 —— 拒的是「引擎没有 inpaint」。
+        （传假字节的话，会先被扣点前的魔数校验拦下，就测不到这个不变量了。）"""
         with self.assertRaises(ValueError) as ctx:
-            self._run(mask="QUJD")
+            self._run(mask=base64.b64encode(PNG1).decode())
         self.assertIn("局部修改", str(ctx.exception))
 
     def test_count_capped_to_max_n(self):
@@ -246,9 +279,94 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(self.cap.calls, [])
 
     def test_img2img_mode_and_reference_passed(self):
-        out = self._run(image="QUJD")
+        ref = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\0" * 32).decode()   # 需过 _seedream_check_ref 魔数校验
+        out = self._run(image=ref)
         self.assertEqual(out["mode"], "img2img")
-        self.assertEqual(self.cap.calls[0]["body"]["image"], "data:image/png;base64,QUJD")
+        self.assertEqual(self.cap.calls[0]["body"]["image"], "data:image/png;base64," + ref)
+
+    def test_pro_hd_size_stays_within_pro_cap(self):
+        """线上挂掉的正是这条路径：gen_image 没把 variant 传给 _seedream_size，
+        Pro 高清拿到 9.4M 像素 → 400 image area must be at most 4624220 pixels。"""
+        cap = image.SEEDREAM_MAX_PIXELS["pro"]
+        for r in ("1:1", "9:16", "16:9", "21:9", "4:5"):
+            self.cap.calls[:] = []
+            self._run(variant="pro", quality="hd", ratio=r)
+            w, h, px = _px(self.cap.calls[0]["body"]["size"])
+            self.assertLessEqual(px, cap, "%s → %dx%d" % (r, w, h))
+            self.assertGreaterEqual(px, image.SEEDREAM_MIN_PIXELS, r)
+
+    def test_std_hd_still_gets_full_resolution(self):
+        """修 Pro 不能把标准版也一起压小。"""
+        self._run(variant="std", quality="hd", ratio="9:16")
+        _, _, px = _px(self.cap.calls[0]["body"]["size"])
+        self.assertGreater(px, image.SEEDREAM_MAX_PIXELS["pro"])
+
+
+PNG1 = b"\x89PNG\r\n\x1a\n" + b"\0" * 32
+JPG1 = b"\xff\xd8\xff\xe0" + b"\0" * 32
+WEBP1 = b"RIFF" + b"\0\0\0\0" + b"WEBP" + b"\0" * 24
+
+
+class RefImageGuardTests(unittest.TestCase):
+    """坏参考图送到 Ark 会回 HTTP 500『internal error』（实测），看起来像我们的故障。
+    本地先验：给人话错误、且不白花一次上游往返。"""
+
+    def test_accepts_png_jpeg_webp(self):
+        for raw in (PNG1, JPG1, WEBP1):
+            image._seedream_check_ref(base64.b64encode(raw).decode())   # 不抛即通过
+
+    def test_none_or_empty_is_noop(self):
+        image._seedream_check_ref(None)
+        image._seedream_check_ref("")
+
+    def test_rejects_non_image_bytes(self):
+        with self.assertRaises(ValueError) as ctx:
+            image._seedream_check_ref(base64.b64encode(b"not an image at all").decode())
+        self.assertIn("格式不支持", str(ctx.exception))
+
+    def test_rejects_oversized_reference(self):
+        big = base64.b64encode(PNG1 + b"\0" * (image.SEEDREAM_MAX_REF_BYTES + 1)).decode()
+        with self.assertRaises(ValueError) as ctx:
+            image._seedream_check_ref(big)
+        self.assertIn("太大", str(ctx.exception))
+
+    def test_guard_runs_before_any_upstream_call(self):
+        cap = _Capture()
+        with patch.object(image, "_post", cap), patch.object(image, "ARK_API_KEY", "k"):
+            with self.assertRaises(ValueError):
+                image.gen_image({"prompt": "p", "provider": "seedream",
+                                 "image": base64.b64encode(b"garbage").decode()})
+        self.assertEqual(cap.calls, [])   # 一次上游调用都没发出
+
+
+class FrontendParamSpaceTests(unittest.TestCase):
+    """banana.html 在 Seedream 下能发出的全部参数组合，都不该产生参数类失败。
+    比例只有 4 个（9:16 / 1:1 / 16:9 / 3:4），清晰度 2 档，数量 1~2。
+    下列尺寸已用『坏图探针』在线上逐一验证 size 被 Ark 接受（0 成本，未生成图片）。"""
+
+    FRONTEND_RATIOS = ["9:16", "1:1", "16:9", "3:4"]
+
+    def test_all_frontend_combos_inside_window(self):
+        for variant, cap in image.SEEDREAM_MAX_PIXELS.items():
+            for r in self.FRONTEND_RATIOS:
+                for q in ("std", "hd"):
+                    w, h, px = _px(image._seedream_size(r, q, variant))
+                    self.assertGreaterEqual(px, image.SEEDREAM_MIN_PIXELS, "%s/%s/%s" % (variant, r, q))
+                    self.assertLessEqual(px, cap, "%s/%s/%s" % (variant, r, q))
+
+    def test_count_never_exceeds_generator_cap(self):
+        for n in (0, 1, 2, 3, 99, None):
+            body = {"provider": "seedream", "quality": "hd", "count": n}
+            self.assertLessEqual(points.cost_of("image", body) // 12, image.SEEDREAM_MAX_N)
+
+    def test_mask_cannot_reach_seedream(self):
+        """前端只对 gpt 显示局部修改；后端也硬拒，双保险。
+        蒙版用真 PNG，确保拒绝理由是「引擎没有 inpaint」而非格式不合法。"""
+        with patch.object(image, "ARK_API_KEY", "k"):
+            with self.assertRaises(ValueError) as ctx:
+                image.gen_image({"prompt": "p", "provider": "seedream",
+                                 "mask": base64.b64encode(PNG1).decode()})
+        self.assertIn("局部修改", str(ctx.exception))
 
 
 class CostConsistencyTests(unittest.TestCase):
