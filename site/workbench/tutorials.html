@@ -149,13 +149,39 @@
     ovEl.querySelector('#tutClose').onclick=closePlayer;
     document.addEventListener('keydown',function(e){ if(e.key==='Escape') closePlayer(); });
   }
+  function renderUnavailable(x, title, detail){
+    var s=document.createElement('div');
+    s.className='tutSoon';
+    s.innerHTML=
+      '<div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:26px;height:26px"><path d="M7 4v16l13-8z"/></svg></div>'+
+      '<div class="st">'+esc(title||'视频即将上线')+'</div>'+
+      '<div class="sd">'+esc(detail||x.desc||'')+'</div>'+
+      (safeUrl(x.link)?'<a href="'+esc(safeUrl(x.link))+'" class="btn-gold" style="display:inline-flex;align-items:center;gap:7px;padding:10px 20px;font-size:13.5px;font-weight:600;border-radius:11px;">先去体验功能 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>':'');
+    stageEl.appendChild(s);
+  }
   function openPlayer(x){
     ensureModal();
     document.getElementById('tutTitle').textContent=x.title||'';
     stageEl.innerHTML='';
     if(x.source==='mp4' && safeUrl(x.url)){
-      var v=document.createElement('video');
-      v.src=safeUrl(x.url); v.controls=true; v.autoplay=true; v.playsInline=true;
+      var v=document.createElement('video'), settled=false;
+      var failTimer=setTimeout(function(){
+        if(settled || !stageEl || !v || !stageEl.contains(v)) return;
+        if(v.readyState>=2 || (!v.error && v.networkState!==3)) return;
+        settled=true; stageEl.innerHTML='';
+        renderUnavailable(x,'视频暂时打不开','当前教学视频文件异常，正在修复中。你可以先体验对应功能，稍后再回来观看教学。');
+      },2200);
+      function markReady(){ if(settled) return; settled=true; clearTimeout(failTimer); }
+      function markBroken(){
+        if(settled || !stageEl || !v || !stageEl.contains(v)) return;
+        settled=true; clearTimeout(failTimer); stageEl.innerHTML='';
+        renderUnavailable(x,'视频暂时打不开','当前教学视频文件异常，正在修复中。你可以先体验对应功能，稍后再回来观看教学。');
+      }
+      v.src=safeUrl(x.url); v.controls=true; v.autoplay=true; v.playsInline=true; v.preload='metadata';
+      v.addEventListener('loadeddata', markReady, {once:true});
+      v.addEventListener('playing', markReady, {once:true});
+      v.addEventListener('error', markBroken, {once:true});
+      v.addEventListener('stalled', markBroken, {once:true});
       stageEl.appendChild(v);
     } else if((x.source==='bili'||x.source==='youtube') && safeUrl(x.url)){
       var f=document.createElement('iframe');
@@ -163,14 +189,7 @@
       f.allowFullscreen=true;
       stageEl.appendChild(f);
     } else {
-      var s=document.createElement('div');
-      s.className='tutSoon';
-      s.innerHTML=
-        '<div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:26px;height:26px"><path d="M7 4v16l13-8z"/></svg></div>'+
-        '<div class="st">视频即将上线</div>'+
-        '<div class="sd">'+esc(x.desc||'')+'</div>'+
-        (safeUrl(x.link)?'<a href="'+esc(safeUrl(x.link))+'" class="btn-gold" style="display:inline-flex;align-items:center;gap:7px;padding:10px 20px;font-size:13.5px;font-weight:600;border-radius:11px;">先去体验功能 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>':'');
-      stageEl.appendChild(s);
+      renderUnavailable(x,'视频即将上线',x.desc||'');
     }
     ovEl.classList.add('on');
     document.body.style.overflow='hidden';
