@@ -867,15 +867,20 @@
           "视频"
         ],
         "summary": "HeyGen 数字人视频(图+音→视频) · 默认20点",
-        "description": "异步。提交前校验参数,校验失败直接 400,不创建任务。mode=text: image_data + text + voice 必填; mode=audio: image_data + audio_data 必填。image_data/audio_data 必须是合法 data URL。",
+        "description": "异步。提交前校验参数,校验失败直接 400,不创建任务。mode=text: 人物形象 + text + voice 必填; mode=audio: 人物形象 + audio_data 必填。人物形象用 image_data 或本人 avatar_id 二选一。",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": [
-                  "image_data"
+                "anyOf": [
+                  {
+                    "required": ["image_data"]
+                  },
+                  {
+                    "required": ["avatar_id"]
+                  }
                 ],
                 "properties": {
                   "mode": {
@@ -889,6 +894,10 @@
                   "image_data": {
                     "type": "string",
                     "description": "data:image/png;base64,... 人物形象图"
+                  },
+                  "avatar_id": {
+                    "type": "integer",
+                    "description": "本人已保存的形象 ID，与 image_data 二选一"
                   },
                   "text": {
                     "type": "string",
@@ -998,6 +1007,59 @@
               }
             }
           }
+        }
+      }
+    },
+    "/api/gen/video/batch": {
+      "post": {
+        "tags": [
+          "视频"
+        ],
+        "summary": "一份文案 × 2-5 个形象批量生成口播视频",
+        "description": "批量原子受理。每个形象创建独立 video 任务，独立排队、跟踪和失败退点。avatars 每项使用 image_data 或本人 avatar_id 二选一；整批受单用户 active job 上限约束。",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["text", "voice", "avatars"],
+                "properties": {
+                  "mode": {"type": "string", "enum": ["text"], "default": "text"},
+                  "text": {"type": "string", "description": "所有形象共用的口播文案"},
+                  "voice": {"type": "string", "description": "所有形象共用的音色"},
+                  "avatars": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 5,
+                    "items": {
+                      "type": "object",
+                      "anyOf": [{"required": ["image_data"]}, {"required": ["avatar_id"]}],
+                      "properties": {
+                        "image_data": {"type": "string", "description": "data:image/... 新上传形象"},
+                        "avatar_id": {"type": "integer", "description": "本人已保存的形象 ID"},
+                        "label": {"type": "string", "maxLength": 60}
+                      }
+                    }
+                  },
+                  "resolution": {"type": "string", "enum": ["720p", "1080p"], "default": "1080p"},
+                  "ratio": {"type": "string", "enum": ["9:16", "16:9", "1:1", "4:5", "5:4"], "default": "9:16"},
+                  "motion": {"type": "string", "enum": ["low", "medium", "high"], "default": "medium"},
+                  "subtitle": {"type": "boolean", "default": false},
+                  "subtitle_style": {"type": "string", "enum": ["white", "variety", "bar"], "default": "white"},
+                  "subtitle_position": {"type": "string", "enum": ["top", "upper", "center", "lower", "bottom"], "default": "bottom"}
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {"description": "整批受理，返回 batch_id/job_ids/jobs/count/cost/cost_per_job/points_left"},
+          "400": {"description": "形象数量、归属、素材或公共参数不合法"},
+          "401": {"description": "未登录或 token 无效"},
+          "402": {"description": "点数不足"},
+          "429": {"description": "剩余任务位或队列容量不足，整批不受理"},
+          "503": {"description": "视频功能已停用"}
         }
       }
     },

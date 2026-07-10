@@ -107,9 +107,17 @@
     "/api/gen/video": {
       "post": {
         "tags": ["视频"], "summary": "HeyGen 数字人视频(图+音→视频)",
-        "description": "异步。mode=text:文案+音色生配音;mode=audio:直接导入音频。image_data 必填(data URL)。",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["image_data"], "properties": { "mode": { "type": "string", "enum": ["text", "audio"], "default": "text" }, "image_data": { "type": "string", "description": "data:image/png;base64,... 人物形象图" }, "text": { "type": "string", "description": "mode=text 必填" }, "voice": { "type": "string", "description": "mode=text 必填" }, "audio_data": { "type": "string", "description": "mode=audio 必填,data:audio/mp3;base64,..." }, "speed": { "type": "number", "default": 1.0 }, "pitch": { "type": "number", "default": 0 }, "volume": { "type": "number", "default": 0 }, "resolution": { "type": "string", "enum": ["720p", "1080p"], "default": "1080p" }, "ratio": { "type": "string", "enum": ["9:16", "16:9", "1:1", "4:5", "5:4"], "default": "9:16" }, "motion": { "type": "string", "enum": ["low", "medium", "high"], "default": "medium" } } } } } },
+        "description": "异步。mode=text:文案+音色生配音;mode=audio:直接导入音频。image_data 与本人 avatar_id 二选一。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "anyOf": [{ "required": ["image_data"] }, { "required": ["avatar_id"] }], "properties": { "mode": { "type": "string", "enum": ["text", "audio"], "default": "text" }, "image_data": { "type": "string", "description": "data:image/png;base64,... 人物形象图" }, "avatar_id": { "type": "integer", "description": "本人已保存的形象 ID" }, "text": { "type": "string", "description": "mode=text 必填" }, "voice": { "type": "string", "description": "mode=text 必填" }, "audio_data": { "type": "string", "description": "mode=audio 必填,data:audio/mp3;base64,..." }, "speed": { "type": "number", "default": 1.0 }, "pitch": { "type": "number", "default": 0 }, "volume": { "type": "number", "default": 0 }, "resolution": { "type": "string", "enum": ["720p", "1080p"], "default": "1080p" }, "ratio": { "type": "string", "enum": ["9:16", "16:9", "1:1", "4:5", "5:4"], "default": "9:16" }, "motion": { "type": "string", "enum": ["low", "medium", "high"], "default": "medium" } } } } } },
         "responses": { "200": { "description": "受理", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } } }
+      }
+    },
+    "/api/gen/video/batch": {
+      "post": {
+        "tags": ["视频"], "summary": "一份文案 × 2-5 个形象批量生成口播视频",
+        "description": "批量原子受理。每个形象创建独立 video 任务并独立失败退点；avatars 每项用 image_data 或本人 avatar_id 二选一。受单用户 active job 上限约束。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["text", "voice", "avatars"], "properties": { "mode": { "type": "string", "enum": ["text"], "default": "text" }, "text": { "type": "string" }, "voice": { "type": "string" }, "avatars": { "type": "array", "minItems": 2, "maxItems": 5, "items": { "type": "object", "properties": { "image_data": { "type": "string" }, "avatar_id": { "type": "integer" }, "label": { "type": "string" } } } }, "resolution": { "type": "string", "enum": ["720p", "1080p"], "default": "1080p" }, "ratio": { "type": "string", "enum": ["9:16", "16:9", "1:1", "4:5", "5:4"], "default": "9:16" }, "motion": { "type": "string", "enum": ["low", "medium", "high"], "default": "medium" }, "subtitle": { "type": "boolean", "default": false } } } } } },
+        "responses": { "200": { "description": "整批受理，返回 batch_id/job_ids/count/cost/points_left" }, "400": { "description": "形象数量、素材或公共参数不合法" }, "402": { "description": "点数不足" }, "429": { "description": "剩余任务位或队列容量不足，整批不受理" } }
       }
     },
     "/api/gen/video/assets": {

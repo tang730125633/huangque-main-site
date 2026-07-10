@@ -15,6 +15,7 @@ VALID_VIDEO_MOTIONS = {"low", "medium", "high"}
 VALID_IMAGE_MIMES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
 VALID_AUDIO_MIMES = {"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/mp4", "audio/m4a", "audio/x-m4a"}
 VALID_REFERENCE_VIDEO_MIMES = {"video/mp4", "video/quicktime", "video/webm"}
+VIDEO_BATCH_MAX = 5
 TRYON_MAX_INPUT_SEC = 6   # RunningHub 耗时随输入时长增长，线路一只处理前 6 秒。
 XIAOLE_RATIO_SIZES = {
     "9:16": "720x1280",
@@ -171,22 +172,25 @@ def _extract_first_frame_cover(video_rel, ss=1):
     return None
 
 
-def validate_video_payload(payload):
+def validate_video_payload(payload, username=None):
     if not isinstance(payload, dict):
         raise ValueError("请求体不是合法 JSON")
-    mode = (payload.get("mode") or "text").strip().lower()
+    mode = str(payload.get("mode") or "text").strip().lower()
     if mode not in VALID_VIDEO_MODES:
         raise ValueError("mode 仅支持 text/audio/motion")
 
-    image_data = (payload.get("image_data") or "").strip()
+    image_data = str(payload.get("image_data") or "").strip()
     avatar_id = str(payload.get("avatar_id") or "").strip()
-    if not image_data and not (mode == "motion" and avatar_id):
+    if not image_data and not avatar_id:
         raise ValueError("image_data 不能为空")
+    if image_data and avatar_id:
+        raise ValueError("image_data 与 avatar_id 只能选一个")
     if image_data and not _is_valid_data_url(image_data, VALID_IMAGE_MIMES):
         raise ValueError("image_data 不是有效的人物形象图片")
-
     line = None
     if mode == "text":
+        if not str(payload.get("text") or "").strip():
+            raise ValueError("mode=text 时 text 必填")
         if not (payload.get("voice") or "").strip():
             raise ValueError("mode=text 时 voice 必填")
     elif mode == "audio":
@@ -204,6 +208,8 @@ def validate_video_payload(payload):
             raise ValueError("reference_video_data 不能为空")
         if not _is_valid_data_url(reference_video_data, VALID_REFERENCE_VIDEO_MIMES):
             raise ValueError("reference_video_data 不是有效的参考动作视频")
+    if avatar_id and username:
+        get_video_avatar(username, avatar_id)
 
     ratio = (payload.get("ratio") or "9:16").strip()
     if ratio not in VALID_VIDEO_RATIOS:
@@ -227,6 +233,45 @@ def validate_video_payload(payload):
     if mode == "motion":
         cleaned["line"] = line
     return cleaned
+
+
+def validate_video_batch_payload(payload, username=None, max_items=VIDEO_BATCH_MAX):
+    if not isinstance(payload, dict):
+        raise ValueError("请求体不是合法 JSON")
+    if str(payload.get("mode") or "text").strip().lower() != "text":
+        raise ValueError("批量出片仅支持文案配音模式")
+    items = payload.get("avatars")
+    if not isinstance(items, list) or len(items) < 2:
+        raise ValueError("批量出片请至少选择 2 个形象")
+    limit = max(1, min(VIDEO_BATCH_MAX, int(max_items or VIDEO_BATCH_MAX)))
+    if len(items) > limit:
+        raise ValueError("批量出片一次最多选择 %d 个形象" % limit)
+
+    common = dict(payload)
+    common.pop("avatars", None)
+    common.pop("image_data", None)
+    common.pop("avatar_id", None)
+    common["mode"] = "text"
+    cleaned_items, seen = [], set()
+    for index, item in enumerate(items, 1):
+        if not isinstance(item, dict):
+            raise ValueError("第 %d 个形象参数不正确" % index)
+        image_data = str(item.get("image_data") or "").strip()
+        avatar_id = str(item.get("avatar_id") or "").strip()
+        if bool(image_data) == bool(avatar_id):
+            raise ValueError("第 %d 个形象必须且只能提供 image_data 或 avatar_id" % index)
+        identity = "avatar:" + avatar_id if avatar_id else "image:" + image_data
+        if identity in seen:
+            raise ValueError("批量形象不能重复")
+        seen.add(identity)
+        one = dict(common)
+        one["image_data"] = image_data
+        one["avatar_id"] = avatar_id
+        one["batch_label"] = str(item.get("label") or ("形象 %d" % index)).strip()[:60] or ("形象 %d" % index)
+        one = validate_video_payload(one, username=username)
+        one["batch_index"], one["batch_size"] = index, len(items)
+        cleaned_items.append(one)
+    return cleaned_items
 
 
 def _tryon_line(payload):
@@ -445,6 +490,9 @@ def list_video_assets(username, limit=120):
                     item["duration"] = duration
                 if str(payload.get("line") or "") in {"1", "2"}:
                     item["line"] = str(payload["line"])
+                for key in ("batch_id", "batch_label", "batch_index", "batch_size"):
+                    if payload.get(key) is not None:
+                        item[key] = payload[key]
         except Exception:
             pass
     try:
@@ -1384,7 +1432,7 @@ def gen_video(payload):
         raise ValueError("视频生成服务未配置")
     avatar = None
     avatar_id = payload.get("avatar_id")
-    if mode == "motion" and avatar_id:
+    if avatar_id:
         avatar = get_video_avatar((payload.get("_username") or "").strip(), avatar_id)
         image_file = avatar.get("image_file")
     else:
@@ -1505,6 +1553,8 @@ def gen_video(payload):
         "subtitle_position": subtitle_position if subtitle_on else None,
         "subtitle_error": subtitle_error,
         "plain_video_file": video_result.get("plain_video_file"),
+        "batch_id": payload.get("batch_id"), "batch_label": payload.get("batch_label"),
+        "batch_index": payload.get("batch_index"), "batch_size": payload.get("batch_size"),
         "message": "视频生成完成"
     }
 

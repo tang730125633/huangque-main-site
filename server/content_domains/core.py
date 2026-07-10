@@ -655,6 +655,7 @@ _image_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)    # 生图队列(kind=ima
 _queued_job_ids = set()
 _job_queue_lock = threading.Lock()
 _run_gate_lock = threading.Lock()  # 单用户口播运行闸：count+抢running 在此锁内原子，防多worker同时超发
+_submission_lock = threading.Lock()  # 活跃数检查+扣点+入队串行，批量与单条不能一起冲破单用户上限
 _workers_started = False
 
 # CAS 抢终态 / 退点幂等：实现在 content_domains/jobs_store.py，三个共写 jobs 表的服务共用一份。
@@ -679,21 +680,23 @@ def _pick_job_queue(kind, mode=None):
         return _motion_job_queue if str(mode or "").lower() == "motion" else _talking_job_queue
     return _job_queue
 
-def enqueue_job(job_id, kind=None, mode=None):
+def enqueue_jobs(job_ids, kind=None, mode=None):
     try:
-        job_id = int(job_id)
+        ids = [int(job_id) for job_id in job_ids]
     except Exception:
         return False
     q = _pick_job_queue(kind, mode)
     with _job_queue_lock:
-        if job_id in _queued_job_ids:
-            return True
-        try:
-            q.put_nowait(job_id)
-        except queue.Full:
+        fresh = [job_id for job_id in ids if job_id not in _queued_job_ids]
+        if q.maxsize > 0 and q.qsize() + len(fresh) > q.maxsize:
             return False
-        _queued_job_ids.add(job_id)
+        for job_id in fresh:
+            q.put_nowait(job_id)
+            _queued_job_ids.add(job_id)
         return True
+
+def enqueue_job(job_id, kind=None, mode=None):
+    return enqueue_jobs([job_id], kind, mode)
 
 def _user_active_job_count(username):
     if not username:
@@ -1034,6 +1037,59 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "crm": crm})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
+        if p == "/api/gen/video/batch":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            try:
+                feature_flags.require_enabled("video")
+                payloads = video_domain.validate_video_batch_payload(
+                    self._json_body_strict(), user["username"], min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS))
+            except feature_flags.FeatureDisabled as e:
+                return self._send(503, {"detail": str(e)})
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)[:220]})
+            costs = [points_domain.cost_of("video", body) for body in payloads]
+            total = sum(costs)
+            with _submission_lock:
+                active_jobs = _user_active_job_count(user["username"])
+                if active_jobs + len(payloads) > MAX_USER_ACTIVE_JOBS:
+                    return self._send(429, {"detail": "当前仅剩 %d 个任务位，无法提交 %d 条批量视频" %
+                        (max(0, MAX_USER_ACTIVE_JOBS - active_jobs), len(payloads)), "active_jobs": active_jobs,
+                        "available_slots": max(0, MAX_USER_ACTIVE_JOBS - active_jobs), "requested": len(payloads)})
+                try:
+                    points_left = points_domain.deduct_points(user["username"], total, "job:video_batch")
+                except points_domain.AuthPointsError as e:
+                    return self._send(402 if e.status == 402 else 502, {"detail": e.detail, "need": total})
+                now, batch_id, job_ids, committed = int(time.time()), uuid.uuid4().hex, [], False
+                try:
+                    with closing(jdb()) as c:
+                        for body, cost in zip(payloads, costs):
+                            body["batch_id"] = batch_id
+                            cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                                ("video", user["username"], cost, json.dumps(body, ensure_ascii=False), now, now))
+                            job_ids.append(cur.lastrowid)
+                        c.commit()
+                        committed = True
+                    for jid, body in zip(job_ids, payloads):
+                        video_domain.record_video_pending_asset(jid, user["username"], body)
+                except Exception:
+                    if committed:
+                        for jid, cost in zip(job_ids, costs):
+                            _reject_pending_job(jid, user["username"], cost, "批量任务创建失败")
+                            video_domain.update_video_asset_phase(jid, "failed", status="failed", error="批量任务创建失败")
+                    else:
+                        points_domain.safe_refund_points(user["username"], total, "job:video_batch_insert_failed")
+                    return self._send(500, {"detail": "批量任务创建失败，点数已退回"})
+                if not enqueue_jobs(job_ids, "video", "text"):
+                    for jid, cost in zip(job_ids, costs):
+                        _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
+                        video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
+                    return self._send(429, {"detail": "任务队列已满，批量任务未受理，点数已退回", "need": total})
+            jobs = [{"job_id": jid, "label": body.get("batch_label"), "index": body.get("batch_index")}
+                    for jid, body in zip(job_ids, payloads)]
+            return self._send(200, {"batch_id": batch_id, "job_ids": job_ids, "jobs": jobs,
+                                    "count": len(job_ids), "cost": total, "cost_per_job": costs[0], "points_left": points_left})
         if p.startswith("/api/gen/") and p[9:] in HANDLERS:
             kind = p[9:]
             user = verify(self._token())
@@ -1046,7 +1102,7 @@ class H(BaseHTTPRequestHandler):
             try:
                 body = self._json_body_strict() if kind in {"video", "tryon"} else self._json_body()
                 if kind == "video":
-                    body = video_domain.validate_video_payload(body)
+                    body = video_domain.validate_video_payload(body, user["username"])
                 elif kind == "tryon":
                     body = video_domain.validate_tryon_payload(body)
                 elif kind == "image":
@@ -1055,31 +1111,27 @@ class H(BaseHTTPRequestHandler):
             except ValueError as e:
                 return self._send(400, {"detail": str(e)[:220]})
             cost = points_domain.cost_of(kind, body)
-            active_jobs = _user_active_job_count(user["username"])
-            if active_jobs >= MAX_USER_ACTIVE_JOBS:
-                return self._send(429, {
-                    "detail": "您有 %d 个任务正在排队/生成，完成后再提交" % active_jobs,
-                    "active_jobs": active_jobs,
-                    "max_active_jobs": MAX_USER_ACTIVE_JOBS,
-                    "need": cost
-                })
-            try:
-                points_left = points_domain.deduct_points(user["username"], cost, "job:" + kind)  # 原子预扣
-            except points_domain.AuthPointsError as e:
-                code = 402 if e.status == 402 else 502
-                return self._send(code, {"detail": e.detail, "need": cost})
-            now = int(time.time())
-            with closing(jdb()) as c:
-                cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)",
-                                (kind, user["username"], cost, json.dumps(body, ensure_ascii=False), now, now))
-                c.commit(); jid = cur.lastrowid
-            if kind in {"video", "tryon", "xiaole_video"}:
-                video_domain.record_video_pending_asset(jid, user["username"], body)
-            if not enqueue_job(jid, kind, body.get("mode")):
-                _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
+            with _submission_lock:
+                active_jobs = _user_active_job_count(user["username"])
+                if active_jobs >= MAX_USER_ACTIVE_JOBS:
+                    return self._send(429, {"detail": "您有 %d 个任务正在排队/生成，完成后再提交" % active_jobs,
+                        "active_jobs": active_jobs, "max_active_jobs": MAX_USER_ACTIVE_JOBS, "need": cost})
+                try:
+                    points_left = points_domain.deduct_points(user["username"], cost, "job:" + kind)  # 原子预扣
+                except points_domain.AuthPointsError as e:
+                    return self._send(402 if e.status == 402 else 502, {"detail": e.detail, "need": cost})
+                now = int(time.time())
+                with closing(jdb()) as c:
+                    cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                                    (kind, user["username"], cost, json.dumps(body, ensure_ascii=False), now, now))
+                    c.commit(); jid = cur.lastrowid
                 if kind in {"video", "tryon", "xiaole_video"}:
-                    video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
-                return self._send(429, {"detail": "任务队列已满，请稍后再试", "need": cost})
+                    video_domain.record_video_pending_asset(jid, user["username"], body)
+                if not enqueue_job(jid, kind, body.get("mode")):
+                    _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
+                    if kind in {"video", "tryon", "xiaole_video"}:
+                        video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
+                    return self._send(429, {"detail": "任务队列已满，请稍后再试", "need": cost})
             return self._send(200, {"job_id": jid, "cost": cost, "points_left": points_left})
         self._send(404, {"detail": "not found"})
 
@@ -1304,6 +1356,7 @@ class H(BaseHTTPRequestHandler):
                                     "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS,
                                     "talking_job_workers": TALKING_JOB_WORKERS, "motion_job_workers": MOTION_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS,
                                     "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE,
+                                    "video_cost": VIDEO_COST, "video_batch_max": min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS),
                                     "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
 

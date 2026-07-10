@@ -168,6 +168,12 @@ class ContentDomainTests(unittest.TestCase):
             self.assertTrue(core.enqueue_job(101))
             self.assertFalse(core.enqueue_job(102))
             self.assertEqual(core._job_queue.qsize(), 1)
+
+            core._job_queue = queue.Queue(maxsize=2)
+            core._queued_job_ids = set()
+            self.assertTrue(core.enqueue_jobs([201, 202]))
+            self.assertFalse(core.enqueue_jobs([203, 204]))
+            self.assertEqual([201, 202], list(core._job_queue.queue))
         finally:
             core._job_queue = original_queue
             core._queued_job_ids = original_ids
