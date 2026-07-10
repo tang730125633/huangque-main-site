@@ -182,7 +182,7 @@
           '<span style="width:16px; height:16px; border-radius:50%; background:radial-gradient(circle at 35% 30%, #f6d488, #c8902f); flex:none;"></span>'+
           '<span id="hqPointsTop" class="mono" style="font-size:14px; font-weight:700; color:#e7b24c;">—</span></a>'+
         '<button type="button" data-points-detail="1" style="height:36px;padding:0 12px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:12.5px;font-weight:700;color:#94a4bb;background:rgba(148,164,187,.06);border:1px solid rgba(148,164,187,.14);">明细</button>'+
-        '<button type="button" class="hq-notify-btn" aria-label="查看获客通知" title="查看获客通知" style="position:relative; width:38px; height:38px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; color:#94a4bb; background:transparent; font:inherit; padding:0;">'+icon('bell','17px')+'</button>'+
+        '<button type="button" class="hq-notify-btn" aria-label="打开通知中心" title="通知中心" aria-expanded="false" style="position:relative; width:38px; height:38px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; color:#94a4bb; background:transparent; font:inherit; padding:0;">'+icon('bell','17px')+'<span class="hq-notify-badge" aria-label="0 条未读通知"></span></button>'+
         '<div id="hqAuthArea" style="display:flex; align-items:center; gap:8px;"></div></div>';
 
     // 重组 DOM：aside | main(topbar + scroll(content))
@@ -208,10 +208,10 @@
     var open=false;
     burger.onclick=function(){ open=!open; aside.style.transform=open?'translateX(0)':'translateX(-100%)'; };
     var notifyBtn=header.querySelector('.hq-notify-btn');
-    if(notifyBtn) notifyBtn.onclick=function(){ location.href=safeUrl('leads.html'); };
+    if(notifyBtn) notifyBtn.onclick=openNotificationPanel;
     window.addEventListener('resize',applyResp); applyResp();
     aside.querySelectorAll('a').forEach(function(a){ a.addEventListener('click',function(){ if(window.innerWidth<900){ open=false; aside.style.transform='translateX(-100%)'; } }); });
-    refreshPoints(); renderUser();
+    refreshPoints(); renderUser(); refreshNotificationBadge();
   }
 
   // 拉真实点数填到侧边+顶栏（生成后页面调 window.HQ.refreshPoints() 刷新）
@@ -329,6 +329,148 @@
     e.preventDefault();
     openPointsModal();
   });
+
+  // ===== 通知中心：任务结果、点数变化、系统公告 =====
+  var _noticeState={kind:'all',items:[],loading:false};
+  var _systemNotices=[{
+    id:'system-notification-center-v1',kind:'system',title:'通知中心已启用',
+    detail:'生成结果、点数变化和重要系统公告会集中显示在这里。',time:Date.parse('2026-07-10T09:00:00+08:00')
+  }];
+  function noticeStoreKey(){
+    var u=currentUser();
+    return 'hq_notification_read_v1:'+(u&&u.username?u.username:'guest');
+  }
+  function readNoticeIds(){
+    try{ var x=JSON.parse(localStorage.getItem(noticeStoreKey())||'[]'); return Array.isArray(x)?x:[]; }catch(e){ return []; }
+  }
+  function saveNoticeIds(ids){
+    try{ localStorage.setItem(noticeStoreKey(),JSON.stringify((ids||[]).slice(-300))); }catch(e){}
+  }
+  function noticePage(kind){
+    var pages={image:'banana.html',video:'video.html',tryon:'video.html',xiaole_video:'video.html',audio:'audio.html',leads:'leads.html',leadgen:'leads.html',copy:'script.html',collect:'collect.html'};
+    return pages[kind]||'assets.html';
+  }
+  function buildNotices(data){
+    var read=readNoticeIds(), items=[];
+    (data&&data.items||[]).forEach(function(x){
+      var status=String(x.status||'').toLowerCase();
+      var taskTitle=status==='done'?'生成任务已完成':((status==='error'||status==='failed')?'生成任务失败':(status==='running'?'任务生成中':'任务正在排队'));
+      items.push({id:'task-'+x.task_id+'-'+status+'-'+(x.updated_at||x.created_at||0),kind:'task',title:taskTitle,
+        detail:(x.func||x.kind||'生成任务')+' · 任务 #'+(x.task_id||''),time:Number(x.updated_at||x.created_at||0)*1000,
+        href:noticePage(x.kind),action:'查看任务',tone:(status==='error'||status==='failed')?'error':(status==='done'?'success':'info')});
+      if(Number(x.cost||0)>0){
+        items.push({id:'points-'+x.task_id+'-'+(x.refunded?'refund':'cost'),kind:'points',title:x.refunded?'任务点数已退回':'点数已扣除',
+          detail:(x.func||x.kind||'生成任务')+' · '+(x.refunded?'退回 ':'消耗 ')+Number(x.cost||0)+' 点',time:Number(x.updated_at||x.created_at||0)*1000,
+          action:'查看明细',points:true,tone:x.refunded?'success':'points'});
+      }
+    });
+    _systemNotices.forEach(function(x){ items.push(x); });
+    items.forEach(function(x){ x.read=read.indexOf(x.id)>=0; });
+    return items.sort(function(a,b){ return Number(b.time||0)-Number(a.time||0); });
+  }
+  function formatNoticeTime(ms){
+    var d=new Date(Number(ms||0)); if(isNaN(d.getTime())) return '刚刚';
+    var now=new Date(), same=now.toDateString()===d.toDateString();
+    if(same) return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+    return String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+  }
+  function noticeIcon(x){
+    if(x.kind==='points') return iconDuo('coins','18px',x.tone==='success'?'#2bd576':'#e7b24c');
+    if(x.kind==='system') return iconDuo('message','18px','#60a5fa');
+    if(x.tone==='error') return iconDuo('alert','18px','#f4708a');
+    return iconDuo(x.tone==='success'?'checkCircle':'clock','18px',x.tone==='success'?'#2bd576':'#60a5fa');
+  }
+  function ensureNotificationPanel(){
+    if(document.getElementById('hqNoticeOv')) return;
+    var st=document.createElement('style');
+    st.textContent=
+      '.hq-notify-badge{display:none;position:absolute;top:3px;right:2px;min-width:16px;height:16px;padding:0 4px;align-items:center;justify-content:center;border:2px solid #080d16;border-radius:999px;background:#f4708a;color:#fff;font:800 9px/1 inherit;box-sizing:border-box}'+
+      '.hq-notify-badge.on{display:flex}'+
+      '.hqno{position:fixed;inset:0;z-index:9200;display:none;background:rgba(3,7,13,.46);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px)}'+
+      '.hqno.on{display:block}'+
+      '.hqnd{position:absolute;top:0;right:0;width:min(430px,100vw);height:100%;display:flex;flex-direction:column;border-left:1px solid rgba(148,164,187,.14);background:linear-gradient(180deg,#101827,#080d16);box-shadow:-28px 0 80px rgba(0,0,0,.46);animation:hq-notice-in .2s cubic-bezier(.16,1,.3,1)}'+
+      '@keyframes hq-notice-in{from{transform:translateX(22px);opacity:.4}to{transform:none;opacity:1}}'+
+      '.hqnh{display:flex;align-items:center;gap:12px;padding:20px;border-bottom:1px solid rgba(148,164,187,.1)}'+
+      '.hqnt{display:flex;gap:6px;padding:10px 16px;border-bottom:1px solid rgba(148,164,187,.08);overflow:auto}'+
+      '.hqnt button{height:32px;padding:0 12px;border:1px solid transparent;border-radius:8px;background:transparent;color:#94a4bb;font:700 12px inherit;white-space:nowrap;cursor:pointer}'+
+      '.hqnt button.on{border-color:rgba(231,178,76,.22);background:rgba(231,178,76,.08);color:#e7b24c}'+
+      '.hqnl{flex:1;overflow:auto;padding:4px 0}'+
+      '.hqni{position:relative;display:grid;grid-template-columns:38px minmax(0,1fr);gap:11px;padding:15px 20px;border-bottom:1px solid rgba(148,164,187,.07);cursor:pointer;transition:background .16s}'+
+      '.hqni:hover{background:rgba(148,164,187,.045)}'+
+      '.hqni.unread{background:rgba(231,178,76,.035)}'+
+      '.hqni.unread:before{content:"";position:absolute;left:8px;top:22px;width:6px;height:6px;border-radius:50%;background:#e7b24c}'+
+      '.hqnic{width:36px;height:36px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(148,164,187,.12);border-radius:8px;background:rgba(148,164,187,.045)}'+
+      '.hqna{border:0;background:transparent;color:#e7b24c;font:700 12px inherit;cursor:pointer;padding:0}'+
+      '.hqnx{width:34px;height:34px;border:1px solid rgba(148,164,187,.16);border-radius:8px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-size:20px;line-height:1}'+
+      '.hqne{padding:54px 24px;text-align:center;color:#5c6b82;font-size:13px}'+
+      '@media(max-width:520px){.hqnh{padding:16px}.hqni{padding:14px 16px}.hqni.unread:before{left:5px}.hqnt{padding-left:12px;padding-right:12px}}';
+    document.head.appendChild(st);
+    var ov=document.createElement('div'); ov.className='hqno'; ov.id='hqNoticeOv';
+    ov.innerHTML='<section class="hqnd" role="dialog" aria-modal="true" aria-labelledby="hqNoticeTitle">'+
+      '<div class="hqnh"><div style="flex:1;min-width:0;"><div id="hqNoticeTitle" style="font-size:18px;font-weight:800;color:#eaf1fa;">通知中心</div><div style="margin-top:4px;font-size:12px;color:#94a4bb;">任务、点数与系统消息</div></div><button type="button" class="hqna" id="hqNoticeReadAll">全部已读</button><button type="button" class="hqnx" id="hqNoticeClose" aria-label="关闭通知中心">&times;</button></div>'+
+      '<div class="hqnt" role="tablist"><button data-notice-kind="all" class="on">全部</button><button data-notice-kind="task">任务</button><button data-notice-kind="points">点数</button><button data-notice-kind="system">系统</button></div>'+
+      '<div class="hqnl" id="hqNoticeList"><div class="hqne">正在读取通知...</div></div></section>';
+    document.body.appendChild(ov);
+    ov.addEventListener('click',function(e){ if(e.target===ov) closeNotificationPanel(); });
+    document.getElementById('hqNoticeClose').onclick=closeNotificationPanel;
+    document.getElementById('hqNoticeReadAll').onclick=markAllNoticesRead;
+    ov.querySelectorAll('[data-notice-kind]').forEach(function(btn){ btn.onclick=function(){ _noticeState.kind=this.getAttribute('data-notice-kind')||'all'; renderNotices(); }; });
+    document.getElementById('hqNoticeList').onclick=function(e){
+      var row=e.target.closest?e.target.closest('[data-notice-id]'):null; if(!row) return;
+      var x=_noticeState.items.find(function(it){ return it.id===row.getAttribute('data-notice-id'); }); if(!x) return;
+      markNoticeRead(x.id);
+      if(x.points){ closeNotificationPanel(); openPointsModal(); }
+      else if(x.href) location.href=safeUrl(x.href);
+    };
+  }
+  function renderNotices(){
+    ensureNotificationPanel();
+    document.querySelectorAll('[data-notice-kind]').forEach(function(btn){ btn.classList.toggle('on',btn.getAttribute('data-notice-kind')===_noticeState.kind); });
+    var list=document.getElementById('hqNoticeList'); if(!list) return;
+    var items=_noticeState.items.filter(function(x){ return _noticeState.kind==='all'||x.kind===_noticeState.kind; });
+    if(!items.length){ list.innerHTML='<div class="hqne">这里暂时没有通知</div>'; updateNotificationBadge(); return; }
+    list.innerHTML=items.map(function(x){
+      return '<div class="hqni '+(x.read?'':'unread')+'" data-notice-id="'+escapeAttr(x.id)+'" tabindex="0">'+
+        '<div class="hqnic">'+noticeIcon(x)+'</div><div style="min-width:0;"><div style="display:flex;align-items:center;gap:10px;"><div style="flex:1;font-size:13.5px;font-weight:750;color:#eaf1fa;">'+escapeHtml(x.title)+'</div><time class="mono" style="font-size:10.5px;color:#5c6b82;white-space:nowrap;">'+escapeHtml(formatNoticeTime(x.time))+'</time></div>'+
+        '<div style="margin-top:5px;font-size:12px;line-height:1.55;color:#94a4bb;">'+escapeHtml(x.detail||'')+'</div>'+(x.action?'<div style="margin-top:8px;font-size:11.5px;font-weight:700;color:#e7b24c;">'+escapeHtml(x.action)+' →</div>':'')+'</div></div>';
+    }).join('');
+    list.querySelectorAll('[data-notice-id]').forEach(function(row){ row.addEventListener('keydown',function(e){ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); row.click(); } }); });
+    updateNotificationBadge();
+  }
+  function loadNotices(){
+    ensureNotificationPanel(); if(_noticeState.loading) return;
+    _noticeState.loading=true;
+    fetch('/api/gen/points/history?days=30&page=1&page_size=20',{credentials:'same-origin',cache:'no-store',headers:authHeaders()})
+      .then(function(r){ if(r.status===401) return {items:[]}; return r.ok?r.json():Promise.reject(new Error('读取通知失败')); })
+      .then(function(d){ _noticeState.items=buildNotices(d||{}); renderNotices(); })
+      .catch(function(){ _noticeState.items=buildNotices({items:[]}); renderNotices(); })
+      .finally(function(){ _noticeState.loading=false; });
+  }
+  function markNoticeRead(id){
+    var ids=readNoticeIds(); if(ids.indexOf(id)<0){ ids.push(id); saveNoticeIds(ids); }
+    _noticeState.items.forEach(function(x){ if(x.id===id) x.read=true; }); updateNotificationBadge(); renderNotices();
+  }
+  function markAllNoticesRead(){
+    var ids=readNoticeIds(); _noticeState.items.forEach(function(x){ if(ids.indexOf(x.id)<0) ids.push(x.id); x.read=true; });
+    saveNoticeIds(ids); updateNotificationBadge(); renderNotices();
+  }
+  function updateNotificationBadge(){
+    var n=_noticeState.items.filter(function(x){ return !x.read; }).length;
+    var badge=document.querySelector('.hq-notify-badge'), btn=document.querySelector('.hq-notify-btn');
+    if(badge){ badge.textContent=n>99?'99+':String(n||''); badge.classList.toggle('on',n>0); badge.setAttribute('aria-label',n+' 条未读通知'); }
+    if(btn) btn.setAttribute('aria-label',n?'打开通知中心，'+n+' 条未读':'打开通知中心');
+  }
+  function refreshNotificationBadge(){ loadNotices(); }
+  function openNotificationPanel(){
+    ensureNotificationPanel(); var ov=document.getElementById('hqNoticeOv'); if(ov) ov.classList.add('on');
+    var btn=document.querySelector('.hq-notify-btn'); if(btn) btn.setAttribute('aria-expanded','true');
+    loadNotices();
+  }
+  function closeNotificationPanel(){
+    var ov=document.getElementById('hqNoticeOv'); if(ov) ov.classList.remove('on');
+    var btn=document.querySelector('.hq-notify-btn'); if(btn){ btn.setAttribute('aria-expanded','false'); try{btn.focus();}catch(e){} }
+  }
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape') closeNotificationPanel(); });
 
   // ===== 登录弹窗（全站共用，替代跳 /login 页）=====
   var _hqPhone=true, _hqMode='login';
@@ -505,7 +647,7 @@
     };});
   }
 
-  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, refreshPoints:refreshPoints, login:openLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser };
+  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, login:openLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser };
   function _hqInit(){ build(); buildLoginModal(); }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_hqInit); else _hqInit();
 })();
