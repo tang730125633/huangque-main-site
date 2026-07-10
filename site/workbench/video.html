@@ -386,7 +386,7 @@
         <div class="line-switch">
           <div class="label">生成线路（输入和效果不同，按需选）</div>
           <div class="line-tabs" id="tryonLineTabs">
-            <button type="button" class="line-tab active" data-line="2"><b>线路二 · 极速</b><span>约 1 分钟 · 人物照片+衣服图 → 模特展示视频（不做换背景）</span></button>
+            <button type="button" class="line-tab active" data-line="2"><b>线路二 · 极速</b><span>约 1-3 分钟 · 人物照片+衣服图 → 模特展示视频（不做换背景）</span></button>
             <button type="button" class="line-tab" data-line="1"><b>线路一 · 经典</b><span>约 8 分钟 · 人物视频+衣服图/背景图 → 换装/换背景、保留原动作</span></button>
           </div>
         </div>
@@ -1248,7 +1248,7 @@
   }
   document.querySelectorAll('[data-function]').forEach(function(b){b.onclick=function(){updateFunction(b.dataset.function);};});
   document.querySelectorAll('#motionLineTabs .line-tab').forEach(function(b){b.onclick=function(){selectedMotionLine=b.dataset.line;document.querySelectorAll('#motionLineTabs .line-tab').forEach(function(x){x.classList.toggle('active',x===b);});};});
-  function applyTryonLine(){var isL2=selectedTryonLine==='2';var vf=$('tryonVideoFile'),vd=$('tryonVideoDrop'),bg=$('tryonBgDrop');if(vf)vf.accept=isL2?'image/png,image/jpeg,image/webp':'video/mp4,video/quicktime,video/webm';if(vd){var s=vd.querySelector('strong'),p=vd.querySelector('span');if(s)s.textContent=isL2?'人物照片（必选）':'换装视频（必选）';if(p)p.textContent=isL2?'上传要换装的人物照片（全身/半身效果更好）':'上传需要换装/换背景的真人视频';}if(bg)bg.style.display=isL2?'none':'';var h=$('tryonModeHint');if(h)h.textContent=isL2?'线路二：人物照片+衣服图 → 模特展示视频（要换背景请切线路一）':'请至少上传衣服图或背景图（传背景图即换背景）';}
+  function applyTryonLine(){var isL2=selectedTryonLine==='2';tryonVideoData='';tryonClothesData='';tryonBackgroundData='';var vf=$('tryonVideoFile'),vd=$('tryonVideoDrop'),bg=$('tryonBgDrop'),cd=$('tryonClothesDrop');if(vf)vf.accept=isL2?'image/png,image/jpeg,image/webp':'video/mp4,video/quicktime,video/webm';var vs=isL2?'<input id=\"tryonVideoFile\" type=\"file\" accept=\"image/png,image/jpeg,image/webp\" hidden><strong>人物照片（必选）</strong><span>上传要换装的人物照片（全身/半身效果更好）</span>':'<input id=\"tryonVideoFile\" type=\"file\" accept=\"video/mp4,video/quicktime,video/webm\" hidden><strong>换装视频（必选）</strong><span>上传需要换装/换背景的真人视频</span>';if(vd){vd.innerHTML=vs;vd.classList.remove('has-media');bindTryonFile(vd.querySelector('input'),'video');}if(cd){cd.innerHTML='<input id=\"tryonClothesFile\" type=\"file\" accept=\"image/png,image/jpeg,image/webp\" hidden><strong>衣服图</strong><span>上传服装图继续换装或跳过直接换背景</span>';cd.classList.remove('has-media');bindTryonFile(cd.querySelector('input'),'clothes');}if(bg){bg.style.display=isL2?'none':'';if(!isL2){bg.innerHTML='<input id=\"tryonBgFile\" type=\"file\" accept=\"image/png,image/jpeg,image/webp\" hidden><strong>背景图</strong><span>上传背景图替换原视频背景</span>';bg.classList.remove('has-media');bindTryonFile(bg.querySelector('input'),'bg');}}var h=$('tryonModeHint');if(h)h.textContent=isL2?'线路二：人物照片+衣服图 → 模特展示视频（要换背景请切线路一）':'请至少上传衣服图或背景图（传背景图即换背景）';if(typeof toast==='function')toast(isL2?'已切到线路二·极速（约1-3分钟）':'已切到线路一·经典（约5-10分钟）',true);}
   document.querySelectorAll('#tryonLineTabs .line-tab').forEach(function(b){b.onclick=function(){selectedTryonLine=b.dataset.line;document.querySelectorAll('#tryonLineTabs .line-tab').forEach(function(x){x.classList.toggle('active',x===b);});applyTryonLine();};});
   applyTryonLine();
   document.querySelectorAll('.mode-tab').forEach(function(b){b.onclick=function(){updateMode(b.dataset.mode);};});
