@@ -44,6 +44,40 @@ class HeyGenErrorTest(unittest.TestCase):
                 video._heygen_poll_video("video-id")
             self.assertIn("[heygen] FAIL GET /videos/video-id", output.getvalue())
 
+    def test_motion_duration_comes_from_reference_video(self):
+        generated = {
+            "video_file": "video/result.mp4",
+            "video_id": "video-id",
+            "avatar_item_id": "avatar-id",
+            "avatar_group_id": "group-id",
+        }
+        with patch.object(video, "HEYGEN_API_KEY", "test-key"), \
+                patch.object(video, "_save_data_file", side_effect=["image/input.jpg", "video/reference.mp4"]), \
+                patch.object(video, "_motion_reference_duration", return_value=17.2), \
+                patch.object(video, "update_video_asset_phase"), \
+                patch.object(video, "record_video_avatar", return_value={"id": 7}), \
+                patch.object(video, "public_url", return_value="https://example.test/result.mp4"), \
+                patch.object(video, "generate_heygen_motion_video", return_value=generated) as create:
+            result = video.gen_video({
+                "mode": "motion",
+                "image_data": "data:image/jpeg;base64,AA==",
+                "reference_video_data": "data:video/mp4;base64,AA==",
+                "duration": 10,
+                "line": "1",
+                "_username": "tester",
+            })
+
+        self.assertEqual(create.call_args.args[4], 18)
+        self.assertEqual(result["duration"], 17.2)
+
+    def test_motion_duration_rejects_provider_overflow(self):
+        with patch.object(video, "_probe_video_duration", return_value=30.1):
+            with self.assertRaisesRegex(ValueError, "线路一 HeyGen最长 30 秒"):
+                video._motion_reference_duration("video/reference.mp4", "1")
+        with patch.object(video, "_probe_video_duration", return_value=120.1):
+            with self.assertRaisesRegex(ValueError, "线路二 WaveSpeed最长 120 秒"):
+                video._motion_reference_duration("video/reference.mp4", "2")
+
 
 if __name__ == "__main__":
     unittest.main()

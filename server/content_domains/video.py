@@ -1027,6 +1027,36 @@ def _probe_video_size(fp):
     except Exception:
         return 1080, 1920  # 兜底按 9:16 竖屏
 
+def _probe_video_duration(video_file):
+    fp = _resolve_out_file(video_file)
+    if not fp:
+        raise ValueError("参考动作视频文件不存在")
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(fp)],
+            check=True, timeout=30, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        ).stdout.decode("utf-8", "replace").strip()
+        duration = float(out)
+        if duration <= 0:
+            raise ValueError
+        return duration
+    except Exception as e:
+        raise ValueError("无法读取参考视频时长，请重新导出为 MP4 后上传") from e
+
+def _motion_reference_duration(reference_video_file, line):
+    duration = _probe_video_duration(reference_video_file)
+    line = "2" if str(line or "1").strip() == "2" else "1"
+    max_duration = 120 if line == "2" else 30
+    if duration > max_duration + 0.05:
+        provider = "线路二 WaveSpeed" if line == "2" else "线路一 HeyGen"
+        raise ValueError("参考视频 %.1f 秒，超过%s最长 %d 秒，请先裁剪后重试" % (
+            duration, provider, max_duration,
+        ))
+    if line == "1" and duration < 5:
+        raise ValueError("参考视频 %.1f 秒，线路一 HeyGen 最短支持 5 秒" % duration)
+    return duration
+
 def _ass_time(sec):
     cs = max(0, int(round(float(sec) * 100)))
     h, cs = divmod(cs, 360000)
@@ -1269,11 +1299,15 @@ def gen_video(payload):
     duration = max(5, min(30, duration))
     created_avatar = None
     if mode == "motion":
+        line = "1" if str(payload.get("line") or "2").strip() == "1" else "2"  # 默认线路二(WaveSpeed),仅显式line=1走线路一
+        reference_duration = _motion_reference_duration(reference_video_file, line)
+        # HeyGen 只收整数秒，向上取整避免截掉参考片段末尾；WaveSpeed 直接跟随驱动视频，不收 duration。
+        duration = max(5, min(30, int(reference_duration + 0.999999)))
         if resolution not in {"720p", "1080p"}:
             resolution = "720p"
         update_video_asset_phase(job_id, "motion_parameters_ready", resolution=resolution,
                                  ratio=ratio, motion=motion)
-        if str(payload.get("line") or "2").strip() != "1":
+        if line == "2":
             # 默认线路二(WaveSpeed)：动作模仿两线路输入相同(人物图+驱动视频)，线路二成功率远高于线路一(HeyGen)，只有显式 line=1 才走 HeyGen
             # 线路二 WaveSpeed：人物图 + 驱动视频 → animate，直接出片，不走 HeyGen 的建 avatar 流程
             from . import wavespeed
@@ -1284,7 +1318,8 @@ def gen_video(payload):
             video_result = generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration, job_id, avatar=avatar)
             if not avatar:
                 created_avatar = record_video_avatar((payload.get("_username") or "").strip(), image_file,
-                                                     video_result.get("avatar_item_id"), video_result.get("avatar_group_id"))
+                                                      video_result.get("avatar_item_id"), video_result.get("avatar_group_id"))
+        video_result.setdefault("duration", round(reference_duration, 2))
     else:
         video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
     # F4：口播模式（text/audio）可选自动字幕；失败不影响已生成的视频（保留原片 + 记录错误）
