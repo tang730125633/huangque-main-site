@@ -360,6 +360,21 @@
     var pages={image:'banana.html',video:'video.html',tryon:'video.html',xiaole_video:'video.html',audio:'audio.html',leads:'leads.html',leadgen:'leads.html',copy:'script.html',collect:'collect.html'};
     return pages[kind]||'assets.html';
   }
+  // 任务 kind → 资产库分类(catRow 的 data-cat)。已完成的任务，产物都在资产库里。
+  function noticeAssetCat(kind){
+    var cats={image:'image',video:'video',tryon:'video',xiaole_video:'video',audio:'audio',copy:'copy',leads:'leads',leadgen:'leads',collect:'collect'};
+    return cats[kind]||'';
+  }
+  // 已完成 → 直接跳资产库并定位到这条产物（assets.html 读 ?task= 高亮）；
+  // 失败/进行中 → 跳回对应生成页，方便重试或看进度。task_id 必须编码，否则含 & ? # 会串参。
+  function noticeHref(x, status){
+    var tid=String(x.task_id==null?'':x.task_id);
+    var cat=noticeAssetCat(x.kind);
+    if(status==='done' && tid && cat){
+      return 'assets.html?cat='+encodeURIComponent(cat)+'&task='+encodeURIComponent(tid);
+    }
+    return noticePage(x.kind);
+  }
   function buildNotices(data){
     var read=readNoticeIds(), items=[];
     (data&&data.items||[]).forEach(function(x){
@@ -367,7 +382,7 @@
       var taskTitle=status==='done'?'生成任务已完成':((status==='error'||status==='failed')?'生成任务失败':(status==='running'?'任务生成中':'任务正在排队'));
       items.push({id:'task-'+x.task_id+'-'+status+'-'+(x.updated_at||x.created_at||0),kind:'task',title:taskTitle,
         detail:(x.func||x.kind||'生成任务')+' · 任务 #'+(x.task_id||''),time:Number(x.updated_at||x.created_at||0)*1000,
-        href:noticePage(x.kind),action:'查看任务',tone:(status==='error'||status==='failed')?'error':(status==='done'?'success':'info')});
+        href:noticeHref(x,status),action:status==='done'?'查看产物':'查看任务',tone:(status==='error'||status==='failed')?'error':(status==='done'?'success':'info')});
       if(Number(x.cost||0)>0){
         items.push({id:'points-'+x.task_id+'-'+(x.refunded?'refund':'cost'),kind:'points',title:x.refunded?'任务点数已退回':'点数已扣除',
           detail:(x.func||x.kind||'生成任务')+' · '+(x.refunded?'退回 ':'消耗 ')+Number(x.cost||0)+' 点',time:Number(x.updated_at||x.created_at||0)*1000,

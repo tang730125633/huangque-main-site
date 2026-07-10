@@ -10,6 +10,14 @@
 <style>
   body{ overflow:hidden; }
   .gAsset{ grid-template-columns:repeat(4,1fr); }
+  /* 通知中心带 ?task= 跳进来时，短暂高亮那条产物（金调，与 DESIGN.md 一致） */
+  .asset-focus{animation:asset-focus-pulse 2.6s ease-out 1;border-color:rgba(231,178,76,.62) !important}
+  @keyframes asset-focus-pulse{
+    0%{box-shadow:0 0 0 0 rgba(231,178,76,.42)}
+    18%{box-shadow:0 0 0 5px rgba(231,178,76,.28)}
+    100%{box-shadow:0 0 0 0 rgba(231,178,76,0)}
+  }
+  @media (prefers-reduced-motion:reduce){ .asset-focus{animation:none} }
   .asset-page-scroll{scrollbar-width:auto;scrollbar-color:rgba(231,178,76,.62) rgba(148,164,187,.07)}
   .asset-page-scroll::-webkit-scrollbar{width:12px}
   .asset-page-scroll::-webkit-scrollbar-track{background:rgba(148,164,187,.07);border-radius:99px}
@@ -178,7 +186,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=f90e1160"></script>
+<script src="cloud-shell.js?v=11996340"></script>
 <script>
 /* 资产库读真实生成历史（生成即自动入库）+ 按模式分类筛选 */
 (function(){
@@ -201,6 +209,9 @@
   else if(cat==='text2img'||cat==='img2img'||cat==='inpaint'){ imgSub=cat; cat='image'; }
   var AUDIO_TAB=params.get('audioTab')||(cat==='audio'?'audio':'public');
   var currentLoadKind='';
+  // 通知中心「生成任务已完成」点进来时带 ?task=<job_id>：定位并高亮那条产物。
+  // 只用一次，滚动过去后清掉，避免用户之后切分类还被反复拉回去。
+  var focusTask=String(params.get('task')||'');
   var personalVoiceLoadSeq=0, activePreviewAudio=null, activePreviewButton=null;
   var searchInput=document.querySelector('input[name="hq_asset_search"]');
   var bulkToggle=document.getElementById('bulkToggle'), bulkAll=document.getElementById('bulkAll'), bulkBar=document.getElementById('bulkBar'),
@@ -1448,9 +1459,31 @@
     }
     var list=setVisible(filterAssets(ALL,'audio'),'audio');
     if(!list.length){ var ae=document.createElement('div'); ae.style.cssText='grid-column:1/-1; padding:24px; text-align:center; font-size:13px; color:#5c6b82; border:1px dashed rgba(148,164,187,.16); border-radius:16px; background:rgba(148,164,187,.02);'; ae.textContent=searchTerm?'没有匹配的配音资产':'暂无生成配音，去音频模块生成后会自动入库'; grid.appendChild(ae); return; }
-    list.forEach(function(x){ grid.appendChild(audioCard(x)); });
+    list.forEach(function(x){ grid.appendChild(withJob(audioCard(x),x)); });
   }
+  // 把任务号挂到卡片上，供通知中心的 ?task= 定位。job_id 是 jobs 表主键，
+  // 与通知里的 task_id 同源；部分半入库资产只有 id，退而求其次。
+  function withJob(el,x){
+    if(!el||!x) return el;
+    var jid=x.job_id!=null?x.job_id:x.id;
+    if(jid!=null&&jid!=='') el.setAttribute('data-job',String(jid));
+    return el;
+  }
+  function focusJobCard(){
+    if(!focusTask) return;
+    var el=grid&&grid.querySelector('[data-job="'+(window.CSS&&CSS.escape?CSS.escape(focusTask):focusTask)+'"]');
+    if(!el) return;                       // 不在当前分类/已被筛掉，就别打扰用户
+    focusTask='';                         // 一次性：滚过去就消费掉
+    try{ el.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){ el.scrollIntoView(); }
+    el.classList.add('asset-focus');
+    setTimeout(function(){ el.classList.remove('asset-focus'); },2600);
+  }
+  // render 有多个 early-return 分支，包一层统一在渲染完成后做 ?task= 定位。
   function render(){
+    _renderBody();
+    focusJobCard();
+  }
+  function _renderBody(){
     visibleItems=[];
     updateBulk();
     if(cat==='audio'){ renderAudioAssets(); return; }
@@ -1473,7 +1506,7 @@
       grid.style.display='grid';
       var videos=setVisible(filterAssets(ALL,'video'),'video');
       if(!videos.length){ var ve=document.createElement('div'); ve.style.cssText='grid-column:1/-1; padding:30px; text-align:center; font-size:13px; color:#5c6b82;'; ve.textContent=searchTerm?'没有匹配的视频资产':'暂无视频资产'; grid.appendChild(ve); return; }
-      videos.forEach(function(x){ grid.appendChild(videoCard(x)); });
+      videos.forEach(function(x){ grid.appendChild(withJob(videoCard(x),x)); });
       return;
     }
     renderImageAssets();
@@ -1493,7 +1526,7 @@
     }
     var avatars=setVisible(filterAssets(ALL,'avatar'),'avatar');
     if(!avatars.length){ var ne=document.createElement('div'); ne.style.cssText='grid-column:1/-1; padding:30px; text-align:center; font-size:13px; color:#5c6b82;'; ne.textContent='没有匹配的数字人形象'; grid.appendChild(ne); return; }
-    avatars.forEach(function(x){ grid.appendChild(avatarCard(x)); });
+    avatars.forEach(function(x){ grid.appendChild(withJob(avatarCard(x),x)); });
   }
   // 图片资产：顶层一类，内部子筛选(样式仿音频资产子tab) 全部/文生图/图生图/局部修改
   function renderImageAssets(){
@@ -1522,7 +1555,7 @@
     var list = imgSub==='all' ? ALL : ALL.filter(function(x){ return normCat(x.mode)===imgSub; });
     list=setVisible(filterAssets(list,'image'),'image');
     if(!list.length){ var e=document.createElement('div'); e.style.cssText='grid-column:1/-1; padding:30px; text-align:center; font-size:13px; color:#5c6b82;'; e.textContent=searchTerm?'没有匹配的图片资产':'该分类下暂无作品'; grid.appendChild(e); return; }
-    list.forEach(function(x,i){ grid.appendChild(card(x,list,i)); });
+    list.forEach(function(x,i){ grid.appendChild(withJob(card(x,list,i),x)); });
   }
   // 统一 assets 表的三类（文案/采集素材/客户名单）。它们没有缩略图，用文本卡片渲染。
   // 后端 stage：material 素材 / work 作品 / delivery 交付（DESIGN.md「素材、作品、交付分开」）
@@ -1757,7 +1790,7 @@
       ne.textContent='没有匹配的资产';
       grid.appendChild(ne); return;
     }
-    list.forEach(function(x){ grid.appendChild(docCard(x)); });
+    list.forEach(function(x){ grid.appendChild(withJob(docCard(x),x)); });
   }
   function loadMarks(kind){
     if(['image','audio','video','avatar'].concat(DOC_KINDS).indexOf(kind)<0){ MARKS={}; refreshMarkFilters(); return Promise.resolve(); }
