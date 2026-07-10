@@ -16,11 +16,12 @@
     "category": "overview",
     "title": "从获客到成交：一条龙流程",
     "desc": "关键词搜评论 → 精准客户名单 → AI 产出图文/视频 → 飞书群回传跟进。",
-    "duration": "05:10",
+    "duration": "04:34",
     "level": "入门",
     "accent": "cyan",
     "source": "coming",
-    "link": "inspiration.html"
+    "link": "inspiration.html",
+    "cover": "../assets/tutorials/huangque-ai-overview-flow.webp"
   },
   {
     "id": "overview-3",
