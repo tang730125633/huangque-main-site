@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>编导 · 文案脚本 · 黄雀 AI 工作台</title>
+<link rel="icon" href="../assets/cloud/logo-bird.png">
+<link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
+<link rel="stylesheet" href="../assets/cloud.css?v=8">
+<style>
+  body{ overflow:hidden; }
+  .gScript{ display:grid; grid-template-columns:0.92fr 1.12fr; gap:18px; align-items:start; }
+  @media (max-width:1100px){ .gScript{ grid-template-columns:1fr; } }
+
+  .sc-panel{ border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.58), rgba(12,18,32,.46)); padding:22px; }
+  .sc-lab{ font-size:13.5px; font-weight:600; margin:22px 0 10px; }
+  .sc-hint{ font-size:11.5px; color:#5c6b82; }
+
+  .sc-seg{ display:grid; gap:10px; }
+  .sc-opt{ padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; }
+  .sc-opt:hover{ border-color:rgba(231,178,76,.4); }
+  .sc-opt.on{ color:#e7b24c; background:rgba(231,178,76,.1); border-color:rgba(231,178,76,.32); }
+
+  .sc-chip{ display:inline-flex; align-items:center; gap:7px; padding:8px 14px; font-size:13px; border-radius:10px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; }
+  .sc-chip:hover{ border-color:rgba(231,178,76,.4); }
+  .sc-chip.on{ color:#e7b24c; background:rgba(231,178,76,.1); border-color:rgba(231,178,76,.32); }
+
+  .sc-tag{ padding:5px 12px; font-size:12px; border-radius:8px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; }
+  .sc-tag:hover{ border-color:rgba(231,178,76,.4); }
+  .sc-tag.on{ color:#e7b24c; background:rgba(231,178,76,.1); border-color:rgba(231,178,76,.32); }
+
+  .sc-card{ border:1px solid rgba(148,164,187,.1); border-radius:14px; background:rgba(7,11,19,.4); padding:14px; display:flex; gap:14px; transition:.18s; }
+  .sc-card:hover{ border-color:rgba(231,178,76,.26); }
+  .sc-shot{ width:96px; flex:none; aspect-ratio:3/4; border:1px dashed rgba(148,164,187,.26); border-radius:11px; background:rgba(148,164,187,.03); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:7px; color:#5c6b82; text-align:center; padding:8px; }
+
+  .sc-btn{ display:inline-flex; align-items:center; gap:6px; padding:7px 13px; font-size:12.5px; border-radius:9px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; }
+  .sc-btn:hover{ border-color:rgba(231,178,76,.4); color:#eaf1fa; }
+  .sc-ico{ display:flex; align-items:center; flex:none; }
+</style>
+</head>
+<body>
+<div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
+
+<div class="hq-app"><div class="hq-content" data-active="script">
+
+  <!-- 模块面包屑 -->
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <span style="display:flex; width:22px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></span>
+      <span style="font-size:15px; color:#5c6b82;">编导</span>
+      <span style="color:#5c6b82;">·</span>
+      <span style="font-size:15px; font-weight:600;">文案脚本</span>
+    </div>
+    <div style="display:flex; align-items:center; gap:9px;">
+      <button class="sc-btn"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>历史脚本</button>
+    </div>
+  </div>
+
+  <div class="gScript">
+
+    <!-- 左：创作面板 -->
+    <div class="sc-panel">
+      <div style="display:flex; align-items:flex-start; justify-content:space-between;">
+        <div><h1 style="margin:0; font-size:21px; font-weight:700; display:flex; align-items:center; gap:10px;"><img src="../assets/icons/ic_script.png" alt="" style="width:30px;height:30px;object-fit:contain;flex:none;">文案编导</h1><p style="margin:7px 0 0; font-size:13px; color:#94a4bb;">填好选题与卖点，一键生成可拍的分镜脚本</p></div>
+      </div>
+
+      <div class="sc-lab" style="margin-top:22px;">选题 · 主题</div>
+      <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:13px 14px;">
+        <textarea id="scTopic" rows="2" placeholder="例：仙颜美容 · 夏日护肤焕新活动" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;">仙颜美容 · 夏日护肤焕新活动</textarea>
+      </div>
+
+      <div class="sc-lab">核心卖点</div>
+      <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:13px 14px;">
+        <textarea id="scSell" rows="2" placeholder="一句话说清产品/活动的核心利益点" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;">夏日焕新精华 · 清爽不黏腻 · 三秒吸收 · 到店体验立减 100</textarea>
+        <div style="display:flex; flex-wrap:wrap; gap:7px; margin-top:11px;">
+          <span class="sc-tag on">清爽控油</span>
+          <span class="sc-tag">补水保湿</span>
+          <span class="sc-tag">抗老紧致</span>
+          <span class="sc-tag">提亮肤色</span>
+        </div>
+      </div>
+
+      <div class="sc-lab">风格</div>
+      <div id="segStyle" class="sc-seg" style="grid-template-columns:repeat(3,1fr);">
+        <div class="sc-opt on">口播</div>
+        <div class="sc-opt">剧情</div>
+        <div class="sc-opt">种草</div>
+      </div>
+
+      <div class="sc-lab">时长</div>
+      <div id="segDur" class="sc-seg" style="grid-template-columns:repeat(3,1fr);">
+        <div class="sc-opt"><span class="mono">15s</span></div>
+        <div class="sc-opt on"><span class="mono">30s</span></div>
+        <div class="sc-opt"><span class="mono">60s</span></div>
+      </div>
+
+      <div class="sc-lab">平台</div>
+      <div id="platRow" style="display:flex; flex-wrap:wrap; gap:10px;">
+        <span class="sc-chip on"><span class="sc-ico" style="width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></span>抖音</span>
+        <span class="sc-chip"><span class="sc-ico" style="width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 8v8M8 12h2.5a2 2 0 0 0 0-4H8M14 16V8l3 5V8"/></svg></span>小红书</span>
+        <span class="sc-chip"><span class="sc-ico" style="width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span>视频号</span>
+      </div>
+
+      <button id="scGen" class="hv-lift" style="width:100%; height:54px; margin-top:24px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit; display:flex; align-items:center; justify-content:center; gap:9px;">
+        <span class="sc-ico" style="width:19px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 14l.7 1.9L22 17l-2.3.6L19 20l-.7-2.4L16 17l2.3-.5z"/></svg></span>
+        生成脚本（3 点）
+      </button>
+      <div style="text-align:center; margin-top:11px;"><span class="sc-hint">每次生成 1 套 3 分镜脚本 · 失败自动退点</span></div>
+    </div>
+
+    <!-- 右：脚本 / 分镜预览 -->
+    <div class="sc-panel" style="border-color:rgba(231,178,76,.16); background:linear-gradient(165deg, rgba(20,17,10,.55), rgba(12,16,26,.5));">
+      <div style="display:flex; align-items:center; justify-content:space-between;">
+        <div style="display:flex; align-items:center; gap:9px;">
+          <span class="sc-ico" style="width:18px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4"/></svg></span>
+          <span style="font-size:16px; font-weight:600;">脚本 · 分镜预览</span>
+        </div>
+        <button class="sc-btn"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span>复制全部</button>
+      </div>
+      <div id="scMeta" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:12px 0 16px; font-size:12.5px; color:#94a4bb;">
+        <span>仙颜美容 · 夏日护肤焕新活动</span><span style="color:#5c6b82;">·</span>
+        <span style="color:#e7b24c;">口播</span><span style="color:#5c6b82;">·</span>
+        <span class="mono">30s</span><span style="color:#5c6b82;">·</span>
+        <span>共 <span class="mono">3</span> 个分镜</span>
+      </div>
+
+      <div id="scScenes" style="display:flex; flex-direction:column; gap:12px;">
+
+        <!-- 分镜 01 -->
+        <div class="sc-card">
+          <div class="sc-shot">
+            <span style="display:flex; width:22px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span>
+            <span style="font-size:10.5px; line-height:1.4;">生成后<br>在此预览</span>
+          </div>
+          <div style="flex:1; min-width:0;">
+            <div style="display:flex; align-items:center; gap:9px; margin-bottom:9px;">
+              <span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">镜号 01</span>
+              <span style="display:inline-flex; align-items:center; gap:4px; padding:3px 9px; font-size:11px; border-radius:7px; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.12);"><span class="sc-ico" style="width:11px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span class="mono">3s</span></span>
+            </div>
+            <div style="font-size:12px; color:#94a4bb; margin-bottom:7px;"><span style="color:#5c6b82;">画面：</span>开场特写，博主手持新品，柔光打在金色瓶身上，背景虚化门店环境。</div>
+            <div style="font-size:13px; color:#eaf1fa; line-height:1.7; margin-bottom:12px;"><span style="color:#5c6b82; font-size:12px;">口播：</span>“姐妹们，最近脸又干又暗沉？这瓶夏日焕新精华，我用两周就回购了。”</div>
+            <div style="display:flex; gap:9px;">
+              <a href="banana.html" class="sc-btn"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span>转作图</a>
+              <a href="audio.html" class="sc-btn"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg></span>转口播</a>
+            </div>
+          </div>
+        </div>
+
+        <!-- 分镜 02 -->
+        <div class="sc-card">
+          <div class="sc-shot">
+            <span style="display:flex; width:22px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span>
+            <span style="font-size:10.5px; line-height:1.4;">生成后<br>在此预览</span>
+          </div>
+          <div style="flex:1; min-width:0;">
+            <div style="display:flex; align-items:center; gap:9px; margin-bottom:9px;">
+              <span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">镜号 02</span>
+              <span style="display:inline-flex; align-items:center; gap:4px; padding:3px 9px; font-size:11px; border-radius:7px; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.12);"><span class="sc-ico" style="width:11px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span class="mono">8s</span></span>
+            </div>
+            <div style="font-size:12px; color:#94a4bb; margin-bottom:7px;"><span style="color:#5c6b82;">画面：</span>半身镜头，博主上脸演示，镜头推近至吸收瞬间，肤色透亮。</div>
+            <div style="font-size:13px; color:#eaf1fa; line-height:1.7; margin-bottom:12px;"><span style="color:#5c6b82; font-size:12px;">口播：</span>“质地清爽不黏腻，上脸三秒吸收，油皮干皮都能闭眼入。”</div>
+            <div style="display:flex; gap:9px;">
+              <a href="banana.html" class="sc-btn"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span>转作图</a>
+              <a href="audio.html" class="sc-btn"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg></span>转口播</a>
+            </div>
+          </div>
+        </div>
+
+        <!-- 分镜 03 -->
+        <div class="sc-card">
+          <div class="sc-shot">
+            <span style="display:flex; width:22px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span>
+            <span style="font-size:10.5px; line-height:1.4;">生成后<br>在此预览</span>
+          </div>
+          <div style="flex:1; min-width:0;">
+            <div style="display:flex; align-items:center; gap:9px; margin-bottom:9px;">
+              <span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">镜号 03</span>
+              <span style="display:inline-flex; align-items:center; gap:4px; padding:3px 9px; font-size:11px; border-radius:7px; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.12);"><span class="sc-ico" style="width:11px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span class="mono">6s</span></span>
+            </div>
+            <div style="font-size:12px; color:#94a4bb; margin-bottom:7px;"><span style="color:#5c6b82;">画面：</span>产品与活动海报同框，价格标签弹出，二维码与门店地址露出。</div>
+            <div style="font-size:13px; color:#eaf1fa; line-height:1.7; margin-bottom:12px;"><span style="color:#5c6b82; font-size:12px;">口播：</span>“本周到店体验立减 100，名额有限，点下方链接预约。”</div>
+            <div style="display:flex; gap:9px;">
+              <a href="banana.html" class="sc-btn"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span>转作图</a>
+              <a href="audio.html" class="sc-btn"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg></span>转口播</a>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:16px; padding-top:16px; border-top:1px solid rgba(148,164,187,.1);">
+        <span class="sc-hint">分镜可逐条转作图 / 转口播，或整体导出脚本</span>
+        <div style="display:flex; gap:9px;">
+          <a href="banana.html" id="scAllImg" class="sc-btn"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span>全部转作图</a>
+          <button class="sc-btn" style="color:#e7b24c; background:rgba(231,178,76,.08); border-color:rgba(231,178,76,.24);"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></span>导出脚本</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div></div>
+
+<script src="../assets/cloud.js?v=8"></script>
+<script src="cloud-shell.js?v=207ff35b"></script>
+<script>
+/* 编导页接 /api/gen/copy（format=script）→ 结构化分镜脚本 */
+(function(){
+  var gen=document.getElementById('scGen'); if(!gen) return;
+  var topic=document.getElementById('scTopic'), sell=document.getElementById('scSell'),
+      scenes=document.getElementById('scScenes'), meta=document.getElementById('scMeta');
+  var orig=gen.innerHTML, lastScenes=[];
+  function tok(){ return '__cookie__'; }
+  function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function cleanSceneText(s){ return (s||'').replace(/^(画面|口播)：\s*/,'').replace(/[“”]/g,'').trim(); }
+  function handoffUrl(page, prompt, extra){
+    var q='?prompt='+encodeURIComponent(prompt||'');
+    if(extra) q+=extra;
+    return page+q;
+  }
+  function cardText(card, label){
+    var found='';
+    card.querySelectorAll('div').forEach(function(d){
+      var text=(d.textContent||'').trim();
+      if(!found && text.indexOf(label+'：')===0) found=cleanSceneText(text);
+    });
+    return found;
+  }
+  function readScenesFromDom(){
+    return Array.prototype.slice.call(scenes.querySelectorAll('.sc-card')).map(function(card){
+      return {scene:cardText(card,'画面'), line:cardText(card,'口播')};
+    }).filter(function(s){return s.scene||s.line;});
+  }
+  function bindSceneHandoffs(){
+    if(!scenes) return;
+    readScenesFromDom().forEach(function(s,i){
+      var card=scenes.querySelectorAll('.sc-card')[i];
+      if(!card) return;
+      card.querySelectorAll('.sc-btn').forEach(function(btn){
+        if(btn.textContent.indexOf('转作图')>=0 && !btn.hasAttribute('data-to-img')) btn.setAttribute('data-to-img',s.scene||'');
+        if(btn.textContent.indexOf('转口播')>=0 && !btn.hasAttribute('data-to-audio')) btn.setAttribute('data-to-audio',s.line||'');
+      });
+    });
+  }
+  // 选项单选切换
+  function seg(id,sel){ var box=document.getElementById(id); if(!box) return; box.querySelectorAll(sel).forEach(function(o){ o.onclick=function(){ box.querySelectorAll(sel).forEach(function(x){x.classList.remove('on');}); o.classList.add('on'); }; }); }
+  seg('segStyle','.sc-opt'); seg('segDur','.sc-opt'); seg('platRow','.sc-chip');
+  function pick(id,s,def){ var on=document.querySelector('#'+id+' '+s+'.on'); return on?on.textContent.trim():def; }
+  function setBtn(t,busy){ gen.innerHTML=busy?t:orig; gen.style.pointerEvents=busy?'none':'auto'; gen.style.opacity=busy?'.7':'1'; }
+
+  // 事件委托：动态分镜的「转作图」/「转口播」(data-to-img / data-to-audio 带画面/口播文案)
+  if(scenes){ scenes.addEventListener('click', function(e){
+    var a=e.target.closest('[data-to-img]'); if(a){ e.preventDefault(); location.href=handoffUrl('banana.html',a.getAttribute('data-to-img'),'&engine=nb2'); return; }
+    var b=e.target.closest('[data-to-audio]'); if(b){ e.preventDefault(); location.href=handoffUrl('audio.html',b.getAttribute('data-to-audio')); return; }
+  }); }
+  bindSceneHandoffs();
+
+  function render(res, topicTxt, style, dur){
+    lastScenes=res.scenes||[];
+    if(meta) meta.innerHTML='<span>'+esc(topicTxt)+'</span><span style="color:#5c6b82;">·</span><span style="color:#e7b24c;">'+esc(style)+'</span><span style="color:#5c6b82;">·</span><span class="mono">'+esc(dur)+'</span><span style="color:#5c6b82;">·</span><span>共 <span class="mono">'+lastScenes.length+'</span> 个分镜</span>';
+    scenes.innerHTML=lastScenes.map(function(s,i){
+      var no=('0'+(i+1)).slice(-2);
+      return '<div class="sc-card"><div class="sc-shot"><span style="display:flex; width:20px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4"/></svg></span><span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">'+no+'</span></div>'
+        +'<div style="flex:1; min-width:0;">'
+        +'<div style="display:flex; align-items:center; gap:9px; margin-bottom:9px;"><span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">镜号 '+no+'</span><span style="display:inline-flex; align-items:center; gap:4px; padding:3px 9px; font-size:11px; border-radius:7px; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.12);"><span class="mono">'+esc(s.dur||'')+'</span></span></div>'
+        +'<div style="font-size:12px; color:#94a4bb; margin-bottom:7px;"><span style="color:#5c6b82;">画面：</span>'+esc(s.scene||'')+'</div>'
+        +'<div style="font-size:13px; color:#eaf1fa; line-height:1.7; margin-bottom:12px;"><span style="color:#5c6b82; font-size:12px;">口播：</span>'+esc(s.line||'')+'</div>'
+        +'<div style="display:flex; gap:9px;"><a data-to-img="'+esc(s.scene||'')+'" class="sc-btn">转作图</a><a data-to-audio="'+esc(s.line||'')+'" class="sc-btn">转口播</a></div>'
+        +'</div></div>';
+    }).join('');
+  }
+
+  gen.onclick=function(){
+    var t=(topic.value||'').trim(), s=(sell.value||'').trim();
+    if(!t){ scenes.innerHTML='<div style="padding:22px;text-align:center;color:#f4708a;font-size:13px;">请先填「选题」</div>'; return; }
+    var style=pick('segStyle','.sc-opt','口播'), dur=pick('segDur','.sc-opt','30s'), plat=pick('platRow','.sc-chip','抖音');
+    setBtn('生成中…',true);
+    scenes.innerHTML='<div style="padding:34px; text-align:center; color:#2dd4bf; font-size:13px;">编导生成中…（约 10-20 秒）</div>';
+    var payload={prompt:t+(s?('\n卖点：'+s):''), format:'script', style:style, dur:dur, platform:plat, ctype:'分镜脚本'};
+    fetch('/api/gen/copy',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
+      .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
+      .then(function(x){
+        if(x.s===401){ HQ.login(); return; }
+        if(x.s===402){ setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
+        if(!x.d.job_id){ setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+((x.d&&x.d.detail)||'未知')+'</div>'; return; }
+        var iv=setInterval(function(){
+          fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+            if(d.status==='done'){ clearInterval(iv); setBtn(orig,false); render(d.result, t, style, dur); if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints(); }
+            else if(d.status==='error'||d.status==='failed'){ clearInterval(iv); setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">失败：'+(d.error||'')+' · 已退点</div>'; }
+          }).catch(function(){});
+        },3000);
+      }).catch(function(){ setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络错误，请重试</div>'; });
+  };
+
+  // 复制全部
+  var copyBtn=null; document.querySelectorAll('.sc-btn').forEach(function(b){ if(b.textContent.indexOf('复制全部')>=0) copyBtn=b; });
+  if(copyBtn){ var co=copyBtn.innerHTML; copyBtn.onclick=function(){
+    if(!lastScenes.length) return;
+    var txt=lastScenes.map(function(s,i){ return '镜号'+('0'+(i+1)).slice(-2)+'（'+(s.dur||'')+'）\n画面：'+(s.scene||'')+'\n口播：'+(s.line||''); }).join('\n\n');
+    if(navigator.clipboard) navigator.clipboard.writeText(txt);
+    copyBtn.textContent='已复制 ✓'; setTimeout(function(){ copyBtn.innerHTML=co; },1500);
+  }; }
+
+  // 全部转作图：带入第一个分镜画面描述（banana.html 一次只收单个 prompt，其余分镜提示用户逐条转）
+  var allImgBtn=document.getElementById('scAllImg');
+  if(allImgBtn){ allImgBtn.onclick=function(e){
+    e.preventDefault();
+    var scenesForHandoff=lastScenes.length?lastScenes:readScenesFromDom();
+    if(!scenesForHandoff.length){ location.href='banana.html'; return; }
+    var first=scenesForHandoff[0];
+    if(window.HQ&&window.HQ.toast) HQ.toast('已带入第 1 个分镜，其余 '+Math.max(0,scenesForHandoff.length-1)+' 条请逐条「转作图」');
+    location.href=handoffUrl('banana.html',first.scene||'','&engine=nb2');
+  }; }
+})();
+</script>
+</body>
+</html>

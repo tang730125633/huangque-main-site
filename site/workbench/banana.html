@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>作图 · 黄雀 AI 工作台</title>
+<link rel="icon" href="../assets/cloud/logo-bird.png">
+<link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
+<link rel="stylesheet" href="../assets/cloud.css?v=8">
+<style>
+  body{ overflow:hidden; }
+  .gImg{ grid-template-columns:1.45fr 1fr; }
+  @media (max-width:1100px){ .gImg{ grid-template-columns:1fr; } }
+  .recent-modal{position:fixed;inset:0;z-index:46;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(3,7,13,.74);backdrop-filter:blur(12px)}
+  .recent-box{position:relative;width:min(92vw,860px);height:min(86vh,640px);border:1px solid rgba(231,178,76,.24);border-radius:14px;background:#050812;box-shadow:0 28px 80px rgba(0,0,0,.5);overflow:hidden;display:flex;align-items:center;justify-content:center}
+  .recent-box img{max-width:100%;max-height:100%;object-fit:contain;display:block}
+  .recent-close{position:absolute;right:10px;top:10px;z-index:3;width:34px;height:34px;border:1px solid rgba(255,255,255,.16);border-radius:50%;background:rgba(7,11,19,.78);color:#eaf1fa;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:18px;line-height:1}
+  .recent-close:hover{color:#e7b24c;border-color:rgba(231,178,76,.38)}
+  .recent-nav{position:absolute;top:50%;transform:translateY(-50%);z-index:3;width:40px;height:40px;border:1px solid rgba(255,255,255,.16);border-radius:50%;background:rgba(7,11,19,.72);color:#eaf1fa;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:20px;line-height:1}
+  .recent-nav:hover{color:#e7b24c;border-color:rgba(231,178,76,.38)}
+  .recent-nav.prev{left:10px}
+  .recent-nav.next{right:10px}
+  .recent-nav:disabled{opacity:.3;cursor:not-allowed}
+  .recent-foot{position:absolute;left:0;right:0;bottom:0;z-index:3;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;background:linear-gradient(0deg,rgba(3,7,13,.82),transparent)}
+  .recent-count{font-size:12px;color:#dbe7f5;}
+  .recent-use{padding:7px 13px;border:1px solid rgba(231,178,76,.32);border-radius:8px;background:rgba(231,178,76,.1);color:#e7b24c;font:inherit;font-size:12.5px;font-weight:700;cursor:pointer;}
+  .tpl-box{margin-top:22px;padding:14px;border:1px solid rgba(231,178,76,.18);border-radius:14px;background:rgba(231,178,76,.05)}
+  .tpl-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:11px}
+  .tpl-title{font-size:13.5px;font-weight:800;color:#eaf1fa}
+  .tpl-sub{font-size:11.5px;color:#5c6b82}
+  .tpl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px}
+  .tpl-card{min-height:48px;padding:9px 10px;border:1px solid rgba(148,164,187,.14);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;text-align:left;font:inherit;font-size:12px;font-weight:800;cursor:pointer;transition:.16s}
+  .tpl-card:hover{border-color:rgba(231,178,76,.34);color:#e7b24c}
+  .tpl-card.on{color:#e7b24c;background:rgba(231,178,76,.1);border-color:rgba(231,178,76,.36)}
+  .tpl-fields{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}
+  .tpl-input{box-sizing:border-box;width:100%;height:38px;padding:0 10px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(7,11,19,.42);color:#eaf1fa;outline:none;font:inherit;font-size:12.5px}
+  .tpl-apply{width:100%;height:38px;margin-top:10px;border:1px solid rgba(231,178,76,.32);border-radius:10px;background:rgba(231,178,76,.1);color:#e7b24c;font:inherit;font-size:12.5px;font-weight:800;cursor:pointer}
+  .tpl-apply:hover{background:rgba(231,178,76,.16)}
+  @media (max-width:760px){.tpl-fields{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
+
+<div class="hq-app"><div class="hq-content" data-active="banana">
+  <div class="gImg" style="display:grid; gap:18px; align-items:start;">
+    <div style="border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.58), rgba(12,18,32,.46)); padding:22px;">
+      <div style="display:flex; align-items:flex-start; justify-content:space-between;">
+        <div><h1 style="margin:0; font-size:21px; font-weight:700; display:flex; align-items:center; gap:10px;"><img src="../assets/icons/ic_banana.png" alt="" style="width:30px;height:30px;object-fit:contain;flex:none;">AI 作图</h1><p style="margin:7px 0 0; font-size:13px; color:#94a4bb;">用 AI 激发灵感，快速生成高质量图片</p></div>
+        <button class="hv-gold" style="width:34px; height:34px; display:flex; align-items:center; justify-content:center; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:9px; cursor:pointer; transition:.16s;"><span style="display:flex; width:17px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg></span></button>
+      </div>
+
+      <div class="tpl-box">
+        <div class="tpl-head">
+          <div><div class="tpl-title">模板即出图</div><div id="tplDesc" class="tpl-sub">选模板，填字段，一键生成可改提示词</div></div>
+          <span class="tpl-sub mono" id="tplRatio">9:16</span>
+        </div>
+        <div id="tplGrid" class="tpl-grid" aria-label="美业模板"></div>
+        <div class="tpl-fields">
+          <input id="tplBrand" class="tpl-input" maxlength="24" placeholder="品牌/门店" value="仙颜美容">
+          <input id="tplColor" class="tpl-input" maxlength="18" placeholder="主色" value="暖金">
+          <input id="tplSelling" class="tpl-input" maxlength="40" placeholder="卖点" value="科技焕肤 · 毛孔细腻透亮">
+          <input id="tplPrice" class="tpl-input" maxlength="24" placeholder="价格/权益" value="到店立减100">
+        </div>
+        <button id="tplApply" class="tpl-apply" type="button">套用模板到提示词</button>
+      </div>
+
+      <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 9px;">
+        <span style="font-size:13.5px; font-weight:600;">提示词</span>
+        <button id="luckyBtn" title="不知道写什么？帮你装一条" style="display:flex; align-items:center; gap:5px; padding:5px 11px; font-size:12px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.24); border-radius:8px; cursor:pointer; font-family:inherit;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 14l.7 1.9L22 17l-2.3.6L19 20l-.7-2.4L16 17l2.3-.5z"/></svg></span>手气不错</button>
+      </div>
+      <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:14px 15px;">
+        <textarea id="bPrompt" rows="3" maxlength="2000" placeholder="科技焕肤 · 逆龄新生，高级感美业海报，金色光效，9:16…" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;">科技焕肤 · 逆龄新生，高级感美业海报，金色光效，9:16 竖版，留白标题区，柔光质感，主体居中，氛围高级，适合朋友圈与门店屏幕投放</textarea>
+        <div style="display:flex; align-items:center; justify-content:flex-end; gap:12px; font-size:11.5px; color:#5c6b82; margin-top:6px;"><span id="bCount" style="font-family:'JetBrains Mono',monospace;">0 / 2000</span><span id="bClear" style="cursor:pointer;">清空</span></div>
+      </div>
+
+      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">引擎</div>
+      <div id="engineRow" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(132px,1fr)); gap:10px;">
+        <div data-engine="nb2" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; line-height:1.5;"><div style="font-weight:600;">Nano Banana 2</div><div style="font-size:11px; margin-top:3px; color:#e7b24c;">快·中文好 · <span data-engine-cost="nb2">10点</span> ✦推荐</div></div>
+        <div data-engine="pro" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">Nano Banana Pro</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">精品·最强中文/4K · <span data-engine-cost="pro">18点</span></div></div>
+        <div data-engine="gpt" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">gpt-image-2</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">OpenAI·写实/局部改 · <span data-engine-cost="gpt">12点</span></div></div>
+        <div data-engine="xiaole" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">果肉生图</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">写实·稳定 · <span data-engine-cost="xiaole">8点</span></div></div>
+        <div data-engine="zelong2" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">泽龙2生图</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">稳定·专供号池 · <span data-engine-cost="zelong2">8点</span></div></div>
+      </div>
+
+      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">比例</div>
+      <div id="ratioRow" style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px;">
+        <div style="display:flex; align-items:center; justify-content:center; gap:6px; padding:11px 6px; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; font-family:'JetBrains Mono',monospace;"><span style="width:9px; height:13px; border:1.4px solid #e7b24c; border-radius:2px;"></span>9:16</div>
+        <div style="display:flex; align-items:center; justify-content:center; gap:6px; padding:11px 6px; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; font-family:'JetBrains Mono',monospace;"><span style="width:11px; height:11px; border:1.4px solid #94a4bb; border-radius:2px;"></span>1:1</div>
+        <div style="display:flex; align-items:center; justify-content:center; gap:6px; padding:11px 6px; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; font-family:'JetBrains Mono',monospace;"><span style="width:13px; height:9px; border:1.4px solid #94a4bb; border-radius:2px;"></span>16:9</div>
+        <div style="display:flex; align-items:center; justify-content:center; gap:6px; padding:11px 6px; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; font-family:'JetBrains Mono',monospace;"><span style="width:10px; height:13px; border:1.4px solid #94a4bb; border-radius:2px;"></span>3:4</div>
+      </div>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:22px; margin-top:22px;">
+        <div>
+          <div style="font-size:13.5px; font-weight:600; margin-bottom:10px;">清晰度</div>
+          <div id="qualityRow" style="display:grid; grid-template-columns:repeat(2,1fr); gap:10px;">
+            <div data-q="std" style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">标准</div>
+            <div data-q="hd" style="padding:11px 6px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">高清</div>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:13.5px; font-weight:600; margin-bottom:10px;">生成数量</div>
+          <div id="countRow" style="display:grid; grid-template-columns:44px 1fr 44px; gap:10px; align-items:center;">
+            <button id="countMinus" type="button" aria-label="减少生成数量" style="height:42px; border-radius:11px; border:1px solid rgba(148,164,187,.14); background:rgba(148,164,187,.05); color:#94a4bb; font-size:22px; line-height:1; cursor:pointer; transition:.16s; font-family:inherit;">-</button>
+            <input id="countInput" type="text" inputmode="numeric" pattern="[0-9]*" value="1" aria-label="生成数量" autocomplete="off" style="height:42px; box-sizing:border-box; border-radius:11px; border:1px solid rgba(231,178,76,.32); background:rgba(231,178,76,.1); color:#e7b24c; text-align:center; font-size:15px; font-weight:700; outline:none; font-family:'JetBrains Mono',monospace;">
+            <button id="countPlus" type="button" aria-label="增加生成数量" style="height:42px; border-radius:11px; border:1px solid rgba(148,164,187,.14); background:rgba(148,164,187,.05); color:#94a4bb; font-size:22px; line-height:1; cursor:pointer; transition:.16s; font-family:inherit;">+</button>
+          </div>
+        </div>
+      </div>
+
+      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">🔍 提示词反推 <span style="font-size:12px; color:#5c6b82; font-weight:400;">(上传/粘贴一张喜欢的图，AI 反推出提示词)</span></div>
+      <div style="display:flex; gap:10px; align-items:flex-start;">
+        <label id="revUpBox" tabindex="0" class="hv-gold" style="position:relative; width:66px; height:66px; flex:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; border:1px dashed rgba(148,164,187,.26); background:rgba(148,164,187,.04); border-radius:11px; color:#94a4bb; cursor:pointer; overflow:hidden; background-size:cover; background-position:center;"><input id="revFile" type="file" accept="image/*" style="display:none"><span id="revIcon" style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg></span><span id="revText" style="font-size:10px;">上传/粘贴</span></label>
+        <div style="flex:1;">
+          <button id="revBtn" type="button" style="width:100%; padding:11px; font-size:13px; font-weight:600; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); border-radius:11px; cursor:pointer; font-family:inherit;">反推提示词（2 点）</button>
+          <div id="revNote" style="font-size:11px; color:#5c6b82; margin-top:6px;">上传或粘贴图片后点这里，AI 生成可编辑的提示词</div>
+        </div>
+      </div>
+      <div id="revResult" style="display:none; margin-top:12px;">
+        <textarea id="revPrompt" rows="3" maxlength="600" style="width:100%; box-sizing:border-box; resize:none; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.16); border-radius:10px; color:#eaf1fa; font-size:13px; line-height:1.7; padding:11px; font-family:inherit; outline:none;"></textarea>
+        <div style="display:flex; gap:8px; margin-top:8px;">
+          <button id="revFill" type="button" style="flex:1; padding:9px; font-size:12.5px; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); border-radius:9px; cursor:pointer; font-family:inherit;">填入提示词框</button>
+          <button id="revFillImg" type="button" style="flex:1; padding:9px; font-size:12.5px; color:#2bd576; background:rgba(43,213,118,.08); border:1px solid rgba(43,213,118,.28); border-radius:9px; cursor:pointer; font-family:inherit;">连图一起用（图生图）</button>
+        </div>
+      </div>
+
+      <div id="refSection">
+      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">参考图 <span id="upHint" style="font-size:12px; color:#5c6b82; font-weight:400;">(可选 · 上传或在提示词框 Ctrl/⌘V 粘贴图片，变「图生图」)</span></div>
+      <div style="display:flex; gap:10px;">
+        <label id="upBox" class="hv-gold" style="position:relative; width:66px; height:66px; flex:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; border:1px dashed rgba(148,164,187,.26); background:rgba(148,164,187,.04); border-radius:11px; color:#94a4bb; cursor:pointer; transition:.16s; overflow:hidden; background-size:cover; background-position:center;"><input id="upFile" type="file" accept="image/*" style="display:none"><span id="upIcon" style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg></span><span id="upText" style="font-size:10px;">上传</span></label>
+      </div>
+      </div>
+
+      <button id="bGen" class="hv-lift" style="width:100%; height:54px; margin-top:22px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit;">立即生成（10 点）</button>
+      <div id="bNote" style="text-align:center; font-size:11.5px; color:#5c6b82; margin-top:11px;">本次预计消耗 <span style="color:#e7b24c; font-family:'JetBrains Mono',monospace;">10</span> 点 · 失败自动退点</div>
+    </div>
+
+    <div style="position:sticky; top:0; border:1px solid rgba(231,178,76,.16); border-radius:18px; background:linear-gradient(165deg, rgba(20,17,10,.6), rgba(12,16,26,.5)); padding:20px;">
+      <div style="font-size:16px; font-weight:600; margin-bottom:14px;">生成结果</div>
+      <div style="position:relative; border-radius:14px; overflow:hidden; border:1px solid rgba(231,178,76,.18);">
+        <img id="bResult" src="../assets/meiye_poster.webp" alt="生成结果 · 美业海报" style="display:block; width:100%; aspect-ratio:9/13; object-fit:cover;">
+        <div style="position:absolute; top:12px; right:12px; padding:5px 10px; background:rgba(7,11,19,.55); backdrop-filter:blur(6px); border-radius:8px; font-family:'JetBrains Mono',monospace; font-size:11.5px; color:#e7b24c;">9:16</div>
+      </div>
+      <div id="actRow" style="display:grid; grid-template-columns:repeat(6,1fr); gap:7px; margin-top:14px;">
+        <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.8-3.4L23 10M1 14l4.7 4.4A9 9 0 0 0 20.5 15"/></svg></span><span style="font-size:11px; color:#94a4bb;">再生成</span></div>
+        <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></span><span style="font-size:11px; color:#94a4bb;">继续改</span></div>
+        <a href="video.html" class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s; text-decoration:none;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span><span style="font-size:11px; color:#94a4bb;">转视频</span></a>
+        <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span><span style="font-size:11px; color:#94a4bb;">发飞书</span></div>
+        <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></span><span style="font-size:11px; color:#94a4bb;">下载</span></div>
+        <a href="assets.html" class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s; text-decoration:none;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v6M9 14h6"/></svg></span><span style="font-size:11px; color:#94a4bb;">入库</span></a>
+      </div>
+      <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 12px;">
+        <span style="font-size:15px; font-weight:600;">最近作品</span>
+        <a href="assets.html" style="display:flex; align-items:center; gap:4px; font-size:12.5px; color:#94a4bb; cursor:pointer; text-decoration:none;">全部作品 <span style="display:flex; width:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 18l6-6-6-6"/></svg></span></a>
+      </div>
+      <div id="recentGrid" style="display:grid; grid-template-columns:repeat(3,1fr); gap:9px;">
+        <div style="grid-column:1/-1; padding:18px 0; text-align:center; font-size:12.5px; color:#5c6b82;">还没有作品，生成第一张吧</div>
+      </div>
+    </div>
+  </div>
+</div></div>
+
+<script src="../assets/cloud.js?v=8"></script>
+<script src="cloud-shell.js?v=207ff35b"></script>
+<script>
+/* 作图页接后端能力中心 /api/gen/image + /api/gen/banana，点数后端统一扣。 */
+(function(){
+  var pr=document.getElementById('bPrompt'), gen=document.getElementById('bGen'),
+      res=document.getElementById('bResult'), note=document.getElementById('bNote');
+  if(!gen) return;
+  var ratio='9:16', engine='nb2', quality='hd', count=1;
+  // 质量基价(最终=基价×数量)；nb/pro/gpt/xiaole/zelong2 各档
+  var COSTBASE={nb2:{std:10,hd:14}, pro:{std:18,hd:26}, gpt:{std:8,hd:12}, xiaole:{std:8,hd:12}, zelong2:{std:8,hd:12}};
+  var ENGINE_MAXN={nb2:2, pro:2, gpt:4, xiaole:2, zelong2:2};  // 数量上限(中转/循环慢→低)
+  var TEMPLATES=[
+    {id:'poster',name:'活动海报',ratio:'9:16',desc:'竖版促销海报，适合朋友圈和门店屏',tpl:'{brand} {selling} 活动海报，{color}主色，高级美业广告质感，主体居中，顶部留白放中文标题，底部价格权益：{price}，柔光皮肤质感，干净排版，9:16竖版，无水印'},
+    {id:'deal',name:'团购套餐',ratio:'3:4',desc:'团购封面，突出套餐与价格权益',tpl:'{brand} 团购套餐封面，核心卖点：{selling}，价格权益：{price}，{color}主色，产品与服务场景同框，醒目价格牌，真实美业门店质感，3:4构图，无水印'},
+    {id:'screen',name:'门店竖屏',ratio:'9:16',desc:'店内屏幕投放，标题醒目、信息少',tpl:'{brand} 门店竖屏广告，{selling}，{color}主色，大标题留白，人物肌肤通透，背景为高级美容院空间，信息简洁，底部突出{price}，9:16竖版，高清商业海报'},
+    {id:'grid',name:'朋友圈九宫格',ratio:'1:1',desc:'九宫格单张素材，可连续出多张',tpl:'{brand} 朋友圈九宫格单张视觉，{selling}，{color}主色，方图构图，中心主体明确，边缘留白可拼接，生活方式美业质感，权益点：{price}，1:1，无水印'},
+    {id:'avatar',name:'数字人首帧',ratio:'9:16',desc:'口播视频首帧，适合转视频',tpl:'{brand} 数字人口播视频首帧，真人主播半身出镜，手持项目卡片，主题：{selling}，{color}主色背景，底部字幕条显示{price}，镜头正面，商业短视频封面质感，9:16竖版'}
+  ];
+  var activeTemplate=TEMPLATES[0];
+  function engineCost(eng){ var t=COSTBASE[eng]||COSTBASE.nb2; return (t[quality]||t.hd)*count; }
+  function costFor(){ return engineCost(engine); }
+  function updateEngineCosts(){
+    document.querySelectorAll('[data-engine-cost]').forEach(function(x){
+      x.textContent=engineCost(x.getAttribute('data-engine-cost'))+'点';
+    });
+  };
+  function tok(){ return '__cookie__'; }
+  function genLabel(){ return '立即生成（'+costFor()+' 点）'; }
+  function updateCost(){
+    updateEngineCosts();
+    gen.textContent=genLabel();
+    note.innerHTML='本次预计消耗 <span style="color:#e7b24c; font-family:\'JetBrains Mono\',monospace;">'+costFor()+'</span> 点 · 失败自动退点';
+    note.style.color='#5c6b82';
+  }
+  function setNote(t,c){ note.innerHTML=t; note.style.color=c||'#5c6b82'; }
+  function busy(on){ gen.style.pointerEvents=on?'none':'auto'; gen.style.opacity=on?'.7':'1'; gen.textContent=on?'生成中…':genLabel(); res.style.filter=on?'blur(3px) brightness(.6)':'none'; }
+
+  // 引擎选择
+  function selectEngine(e){
+    document.querySelectorAll('#engineRow > div').forEach(function(x){
+      x.style.color='#94a4bb'; x.style.background='rgba(148,164,187,.05)'; x.style.borderColor='rgba(148,164,187,.14)';
+      var sub=x.querySelector('div:last-child'); if(sub) sub.style.color='#94a4bb';
+    });
+    var c=document.querySelector('#engineRow [data-engine="'+e+'"]');
+    if(c){ c.style.color='#e7b24c'; c.style.background='rgba(231,178,76,.1)'; c.style.borderColor='rgba(231,178,76,.32)'; var sub=c.querySelector('div:last-child'); if(sub) sub.style.color='#e7b24c'; }
+    engine=e; adaptCount();
+    if(refImg) showInp(engine==='gpt');  // 局部修改按钮仅 gpt-image
+  }
+  document.querySelectorAll('#engineRow > div').forEach(function(c){ c.onclick=function(){ selectEngine(c.getAttribute('data-engine')); }; });
+
+  // 清晰度 / 数量 选择(仿 ratioRow 高亮)
+  function pickIn(rowId, el){
+    document.querySelectorAll('#'+rowId+' > div').forEach(function(x){ x.style.color='#94a4bb'; x.style.background='rgba(148,164,187,.05)'; x.style.borderColor='rgba(148,164,187,.14)'; });
+    if(el){ el.style.color='#e7b24c'; el.style.background='rgba(231,178,76,.1)'; el.style.borderColor='rgba(231,178,76,.32)'; }
+  }
+  document.querySelectorAll('#qualityRow > div').forEach(function(c){ c.onclick=function(){ pickIn('qualityRow',c); quality=c.getAttribute('data-q'); updateCost(); }; });
+  var countMinus=document.getElementById('countMinus'), countInput=document.getElementById('countInput'), countPlus=document.getElementById('countPlus');
+  function countMax(){ return ENGINE_MAXN[engine]||1; }
+  function clampCount(n){
+    n=parseInt(n,10);
+    if(!isFinite(n) || n<1) n=1;
+    return Math.min(countMax(), n);
+  }
+  function styleCountButton(btn, disabled){
+    if(!btn) return;
+    btn.disabled=!!disabled;
+    btn.style.opacity=disabled?'.45':'1';
+    btn.style.cursor=disabled?'not-allowed':'pointer';
+    btn.style.color=disabled?'#5c6b82':'#94a4bb';
+  }
+  function syncCount(){
+    count=clampCount(count);
+    if(countInput) countInput.value=String(count);
+    styleCountButton(countMinus, count<=1);
+    styleCountButton(countPlus, count>=countMax());
+    updateCost();
+  }
+  function setCount(n){ count=clampCount(n); syncCount(); }
+  if(countMinus) countMinus.onclick=function(){ setCount(count-1); };
+  if(countPlus) countPlus.onclick=function(){ setCount(count+1); };
+  if(countInput){
+    countInput.oninput=function(){
+      var clean=countInput.value.replace(/[^\d]/g,'');
+      if(clean!==countInput.value) countInput.value=clean;
+      if(clean) setCount(clean);
+    };
+    countInput.onblur=function(){ setCount(countInput.value); };
+  }
+  function adaptCount(){ syncCount(); }
+
+  adaptCount(); // init: nb2 默认 + 数量上限
+  // 灵感页「做同款」：从 ?prompt= / ?engine= 预填提示词 + 切引擎
+  try{ var ip=new URLSearchParams(location.search);
+    var pp=ip.get('prompt'); if(pp){ pr.value=pp; }
+    var pe=ip.get('engine'); if(pe && document.querySelector('#engineRow [data-engine="'+pe+'"]')) selectEngine(pe);
+  }catch(e){}
+
+  // 手气不错：不知道写啥 → 从灵感提示词库随机装一条进输入框（复用 inspirations.json，随灵感页自动更新）
+  var luckyBtn=document.getElementById('luckyBtn'), luckyPool=[], luckyLast=-1;
+  var LUCKY_FALLBACK=[
+    '科技焕肤 · 逆龄新生，高级感美业海报，金色光效，9:16 竖版，留白标题区，柔光质感，主体居中，适合朋友圈与门店屏投放',
+    '高端护肤精华玻璃瓶特写，暖金光效，大理石台面，满天星与丝绸点缀，顶部留白放标题，杂志级广告质感，无水印，9:16 竖版',
+    '医美水光焕肤项目竖版海报，东方女性水润通透侧脸，清透冷调，左侧留白放标题与功效，高级感，杂志级打光，9:16',
+    '美妆口红产品海报，哑光唇膏立于米色大理石，暖金柔光，干花瓣点缀，顶部留白放中文标题，高级广告质感，9:16 竖版'
+  ];
+  function fillLucky(){
+    var pool=luckyPool.length?luckyPool:LUCKY_FALLBACK;
+    if(!pool.length) return;
+    var i=0; do{ i=Math.floor(Math.random()*pool.length); }while(pool.length>1 && i===luckyLast);
+    luckyLast=i; pr.value=pool[i]; if(typeof updCount==='function') updCount(); try{ pr.focus(); }catch(e){}
+    setNote('✨ 已装入一条示例提示词，可直接生成，也可以改改','#2bd576');
+  }
+  if(luckyBtn){
+    fetch('inspirations.json',{cache:'no-cache'}).then(function(r){return r.json();}).then(function(d){
+      luckyPool=(d||[]).map(function(x){return x&&x.prompt;}).filter(function(p){return p && p.length>8;});
+    }).catch(function(){});
+    luckyBtn.onclick=fillLucky;
+  }
+
+  // 提示词实时字数 + 真·清空（原来「62 / 500」和「清空」都是死的：不随输入变、点了也没反应）
+  // PROMPT_MAX 必须与 imggen_api.py::validate_banana_payload 的 2000 上限一致，否则 nb2/pro 会被后端拒。
+  var PROMPT_MAX=2000;
+  var bCount=document.getElementById('bCount'), bClear=document.getElementById('bClear');
+  function updCount(){ if(bCount) bCount.textContent=(pr.value||'').length+' / '+PROMPT_MAX; }
+  if(pr){ pr.addEventListener('input', updCount); }
+  if(bClear){ bClear.onclick=function(){ pr.value=''; updCount(); try{ pr.focus(); }catch(e){} }; }
+  updCount();  // 初始化：按当前内容(默认示例/做同款预填)刷新字数
+
+  function selectRatio(next){
+    document.querySelectorAll('#ratioRow > div').forEach(function(x){ x.style.color='#94a4bb'; x.style.background='rgba(148,164,187,.05)'; x.style.borderColor='rgba(148,164,187,.14)'; });
+    document.querySelectorAll('#ratioRow > div').forEach(function(x){
+      var m=x.textContent.match(/\d+:\d+/);
+      if(m && m[0]===next){ x.style.color='#e7b24c'; x.style.background='rgba(231,178,76,.1)'; x.style.borderColor='rgba(231,178,76,.32)'; ratio=next; }
+    });
+  }
+  document.querySelectorAll('#ratioRow > div').forEach(function(c){ c.onclick=function(){
+    var m=c.textContent.match(/\d+:\d+/); if(m) selectRatio(m[0]);
+  };});
+
+  function renderTemplates(){
+    var grid=document.getElementById('tplGrid'); if(!grid) return;
+    grid.innerHTML=TEMPLATES.map(function(t){return '<button type="button" class="tpl-card'+(t===activeTemplate?' on':'')+'" data-tpl="'+t.id+'">'+t.name+'<div class="tpl-sub mono" style="margin-top:3px;">'+t.ratio+'</div></button>';}).join('');
+    grid.querySelectorAll('[data-tpl]').forEach(function(btn){ btn.onclick=function(){
+      activeTemplate=TEMPLATES.filter(function(t){return t.id===btn.getAttribute('data-tpl');})[0]||TEMPLATES[0];
+      renderTemplates();
+    };});
+    var desc=document.getElementById('tplDesc'), ratioLabel=document.getElementById('tplRatio');
+    if(desc) desc.textContent=activeTemplate.desc;
+    if(ratioLabel) ratioLabel.textContent=activeTemplate.ratio;
+  }
+  function tplVal(id,fallback){
+    var el=document.getElementById(id);
+    return ((el&&el.value)||fallback||'').trim();
+  }
+  function applyTemplate(){
+    var data={
+      brand:tplVal('tplBrand','仙颜美容'),
+      color:tplVal('tplColor','暖金'),
+      selling:tplVal('tplSelling','科技焕肤 · 毛孔细腻透亮'),
+      price:tplVal('tplPrice','到店立减100')
+    };
+    var text=activeTemplate.tpl.replace(/\{(\w+)\}/g,function(_,key){return data[key]||'';});
+    pr.value=text.slice(0,PROMPT_MAX);
+    selectRatio(activeTemplate.ratio);
+    selectEngine('nb2');
+    updCount();
+    setNote('✅ 已套用「'+activeTemplate.name+'」模板，可继续微调后生成','#2bd576');
+    try{ pr.focus(); }catch(e){}
+  }
+  renderTemplates();
+  var tplApply=document.getElementById('tplApply'); if(tplApply) tplApply.onclick=applyTemplate;
+
+  // 共享：提交 → 轮询 → 显示。任务存 localStorage，切走再回来自动续传（后端不中断）
+  var lastPayload=null, lastResultUrl=null, lastEndpoint='/api/gen/image';
+  // gpt-image 内容审核拒绝会返回 HTTP 400，原文对用户无意义 → 给可操作提示
+  function errMsg(e){
+    var s=String(e||'');
+    if(lastEndpoint==='/api/gen/image' && /400|bad request/i.test(s))
+      return '该提示词可能被 OpenAI 内容审核拒绝，换个说法，或改用 Nano Banana 引擎（对人物/中文更宽松）· 已退点';
+    return '失败：'+s+' · 已退点';
+  }
+  // 结果展示：单图走 #bResult；多图(数量>1)在下方渲染缩略图条，点选驱动当前图
+  function showResult(result){
+    var us=(result&&result.urls&&result.urls.length)?result.urls:[result.url];
+    res.src=us[0]+'?t='+Date.now(); lastResultUrl=us[0]; localStorage.setItem('hq_last_result',us[0]);
+    renderThumbs(us);
+  }
+  function renderThumbs(us){
+    var box=document.getElementById('bThumbs');
+    if(!box){ box=document.createElement('div'); box.id='bThumbs';
+      box.style.cssText='display:none; grid-template-columns:repeat(auto-fill,minmax(58px,1fr)); gap:8px; margin-top:10px;';
+      res.parentElement.parentElement.insertBefore(box, res.parentElement.nextSibling); }
+    if(!us || us.length<=1){ box.style.display='none'; box.innerHTML=''; return; }
+    box.style.display='grid'; box.innerHTML='';
+    us.forEach(function(u,i){ var im=document.createElement('img'); im.src=u+'?t='+Date.now();
+      im.style.cssText='width:100%; aspect-ratio:1; object-fit:cover; border-radius:8px; cursor:pointer; border:2px solid '+(i===0?'#e7b24c':'transparent')+';';
+      im.onclick=function(){ res.src=u+'?t='+Date.now(); lastResultUrl=u; localStorage.setItem('hq_last_result',u);
+        box.querySelectorAll('img').forEach(function(x){x.style.borderColor='transparent';}); im.style.borderColor='#e7b24c'; };
+      box.appendChild(im); });
+  }
+  var JOB_POLL_TIMEOUT_SEC=900;
+  function poll(id, t0, label){
+    var iv=setInterval(function(){
+      fetch('/api/gen/job/'+id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+        if(!d.status){ clearInterval(iv); busy(false); localStorage.removeItem('hq_active_job'); return; }
+        var sec=Math.round((Date.now()-t0)/1000);
+        if(d.status==='done'){ clearInterval(iv); showResult(d.result); busy(false); setNote('✅ 出图完成（'+sec+'s）· 点数已更新','#2bd576'); localStorage.removeItem('hq_active_job'); if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints(); loadHistory(); }
+        else if(d.status==='error'||d.status==='failed'){ clearInterval(iv); busy(false); setNote(errMsg(d.error||d.detail||d.status||''),'#f4708a'); localStorage.removeItem('hq_active_job'); }
+        else if(sec>JOB_POLL_TIMEOUT_SEC){ clearInterval(iv); busy(false); setNote('生成仍在处理中，请稍后到资产库查看（'+sec+'s）','#2dd4bf'); localStorage.removeItem('hq_active_job'); loadHistory(); }
+        else setNote((label||'生成中')+'（'+sec+'s）· 可切去别的页，回来自动接上','#2dd4bf');
+      }).catch(function(){});
+    },4000);
+  }
+  function submit(payload, label, endpoint){
+    endpoint=endpoint||'/api/gen/image'; lastEndpoint=endpoint;
+    if(!payload.prompt){ setNote('请先输入提示词','#f4708a'); return; }
+    lastPayload=payload; busy(true);
+    var hint=endpoint==='/api/gen/banana'?'Nano Banana 约30-90秒':'gpt-image-2 高清约 1-2 分钟';
+    setNote(label+' · '+hint,'#2dd4bf');
+    var t0=Date.now();
+    fetch(endpoint,{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
+      .then(function(r){ return r.json().then(function(d){ return {s:r.status,d:d}; }); })
+      .then(function(x){
+        if(x.s===401){ HQ.login(); return; }
+        if(x.s===402){ busy(false); setNote('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>','#f4708a'); return; }
+        if(!x.d.job_id){ busy(false); setNote('提交失败：'+((x.d&&x.d.detail)||'未知'),'#f4708a'); return; }
+        localStorage.setItem('hq_active_job', JSON.stringify({id:x.d.job_id, t0:t0, label:(label||'生成中').replace(/（.*$/,'')}));
+        poll(x.d.job_id, t0, label);
+      }).catch(function(){ busy(false); setNote('网络错误，请重试','#f4708a'); });
+  }
+
+  // ===== 参考图上传 → 图生图 / 局部修改（inpaint，gpt-image 专属）=====
+  var refImg=null, refW=0, refH=0, inpBtn=null;
+  var upBox=document.getElementById('upBox'), upFile=document.getElementById('upFile'),
+      upIcon=document.getElementById('upIcon'), upText=document.getElementById('upText'), upHint=document.getElementById('upHint');
+  function showInp(on){ if(inpBtn) inpBtn.style.display=on?'inline-flex':'none'; }
+  // 把一张图片文件/Blob（上传或粘贴）缩到 ≤1024 设为参考图（上传与粘贴共用）
+  function refFromFile(f){
+    if(!f) return;
+    var url=URL.createObjectURL(f), im=new Image();
+    im.onload=function(){
+      var mx=1024, s=Math.min(1,mx/Math.max(im.width,im.height)), cv=document.createElement('canvas');
+      cv.width=Math.round(im.width*s); cv.height=Math.round(im.height*s);
+      cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
+      setRef(cv.toDataURL('image/png'), cv.width, cv.height);
+      try{ URL.revokeObjectURL(url); }catch(e){}
+    };
+    im.onerror=function(){ setNote('这张图读取失败，换一张试试','#f4708a'); };
+    im.src=url;
+  }
+  if(upFile){ upFile.onchange=function(){ refFromFile(upFile.files&&upFile.files[0]); }; }
+  // 直接在提示词框 Ctrl/⌘+V 粘贴剪贴板图片 → 设为参考图（图生图），不把图当乱码塞进文本
+  if(pr){ pr.addEventListener('paste', function(e){
+    var items=(e.clipboardData&&e.clipboardData.items)||[];
+    for(var i=0;i<items.length;i++){
+      if(items[i].kind==='file' && items[i].type && items[i].type.indexOf('image/')===0){
+        var f=items[i].getAsFile();
+        if(f){ e.preventDefault(); refFromFile(f);
+          setNote('✅ 已把剪贴板图片设为参考图 · 改下提示词，点生成即走「图生图」','#2bd576'); return; }
+      }
+    }
+  }); }
+
+  // ===== 提示词反推：上传/粘贴图 → Gemini 反推提示词 → 填入提示词框 / 连图做图生图 =====
+  var revImgData=null, revImgUrl=null, revW=0, revH=0;
+  var revUpBox=document.getElementById('revUpBox'), revFile=document.getElementById('revFile'),
+      revIcon=document.getElementById('revIcon'), revText=document.getElementById('revText'),
+      revBtn=document.getElementById('revBtn'), revNote=document.getElementById('revNote'),
+      revResult=document.getElementById('revResult'), revPrompt=document.getElementById('revPrompt'),
+      revFill=document.getElementById('revFill'), revFillImg=document.getElementById('revFillImg');
+  function revMsg(t,c){ if(revNote){ revNote.textContent=t; revNote.style.color=c||'#5c6b82'; } }
+  function revSet(dataUrl,w,h){
+    revImgUrl=dataUrl; revImgData=dataUrl.split(',')[1]; revW=w; revH=h;
+    if(revUpBox){ revUpBox.style.backgroundImage='url('+dataUrl+')'; revUpBox.style.borderStyle='solid'; revUpBox.style.borderColor='rgba(231,178,76,.5)'; }
+    if(revIcon) revIcon.style.display='none'; if(revText) revText.textContent='已选图';
+    revMsg('已就绪，点「反推提示词」','#5c6b82');
+  }
+  function revLoad(f){ if(!f) return; var url=URL.createObjectURL(f), im=new Image();
+    im.onload=function(){ var mx=1024,s=Math.min(1,mx/Math.max(im.width,im.height)),cv=document.createElement('canvas');
+      cv.width=Math.round(im.width*s); cv.height=Math.round(im.height*s); cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
+      revSet(cv.toDataURL('image/png'), cv.width, cv.height); try{URL.revokeObjectURL(url);}catch(e){} };
+    im.onerror=function(){ revMsg('这张图读取失败，换一张','#f4708a'); }; im.src=url;
+  }
+  if(revFile) revFile.onchange=function(){ revLoad(revFile.files&&revFile.files[0]); };
+  if(revUpBox) revUpBox.addEventListener('paste', function(e){
+    var items=(e.clipboardData&&e.clipboardData.items)||[];
+    for(var i=0;i<items.length;i++){ if(items[i].kind==='file'&&items[i].type&&items[i].type.indexOf('image/')===0){ var f=items[i].getAsFile(); if(f){ e.preventDefault(); revLoad(f); return; } } }
+  });
+  if(revBtn) revBtn.onclick=function(){
+    if(!revImgData){ revMsg('请先上传或粘贴一张图片','#f4708a'); return; }
+    revBtn.disabled=true; revBtn.textContent='反推中…'; revMsg('AI 正在看图反推提示词…','#2dd4bf');
+    fetch('/api/gen/reverse',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({image:revImgData})})
+      .then(function(r){ return r.json().then(function(d){ return {s:r.status,d:d}; }); })
+      .then(function(x){
+        revBtn.disabled=false; revBtn.textContent='反推提示词（2 点）';
+        if(x.s===401){ HQ.login(); return; }
+        if(x.s===402){ revMsg('点数不足 · 去充值','#f4708a'); return; }
+        if(!x.d.prompt){ revMsg('反推失败：'+((x.d&&x.d.detail)||'未知'),'#f4708a'); return; }
+        revPrompt.value=x.d.prompt; revResult.style.display='block';
+        revMsg('✅ 反推完成，可编辑后填入','#2bd576');
+        if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
+      }).catch(function(){ revBtn.disabled=false; revBtn.textContent='反推提示词（2 点）'; revMsg('网络错误，请重试','#f4708a'); });
+  };
+  if(revFill) revFill.onclick=function(){ pr.value=revPrompt.value||''; if(typeof updCount==='function') updCount(); try{pr.focus();}catch(e){} setNote('✅ 反推提示词已填入','#2bd576'); };
+  if(revFillImg) revFillImg.onclick=function(){ pr.value=revPrompt.value||''; if(typeof updCount==='function') updCount();
+    if(revImgUrl && typeof setRef==='function') setRef(revImgUrl, revW, revH);
+    setNote('✅ 提示词+参考图都已带上，点生成即走「图生图」','#2bd576'); };
+
+  if(upText){ upText.addEventListener('click',function(e){ if(refImg){ e.preventDefault(); e.stopPropagation();
+    refImg=null; refW=refH=0; upFile.value=''; upBox.style.backgroundImage='none'; upBox.style.borderStyle='dashed'; upBox.style.borderColor='rgba(148,164,187,.26)';
+    if(upIcon) upIcon.style.display='flex'; upText.textContent='上传'; upText.style.background='none'; upText.style.padding='0';
+    if(upHint) upHint.textContent='(可选 · 上传或在提示词框 Ctrl/⌘V 粘贴图片，变「图生图」)'; showInp(false);
+  } }); }
+  if(upBox){
+    inpBtn=document.createElement('button');
+    inpBtn.id='inpBtn'; inpBtn.textContent='✏️ 局部修改'; inpBtn.style.cssText='display:none; align-items:center; gap:5px; margin-top:10px; padding:7px 13px; font-size:12.5px; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); border-radius:9px; cursor:pointer; font-family:inherit;';
+    upBox.parentElement.parentElement.insertBefore(inpBtn, upBox.parentElement.nextSibling);
+    inpBtn.onclick=openInp;
+  }
+  function nearestRatio(){ var ar=refW/refH, opt={'9:16':0.5625,'3:4':0.75,'1:1':1,'16:9':1.7778}, best='1:1', bd=9; for(var k in opt){ var dd=Math.abs(ar-opt[k]); if(dd<bd){bd=dd;best=k;} } return best; }
+  var inpModal=null;
+  function openInp(){
+    if(!refImg) return;
+    if(!inpModal){
+      inpModal=document.createElement('div');
+      inpModal.style.cssText='position:fixed; inset:0; z-index:9999; background:rgba(5,8,13,.86); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; padding:24px;';
+      inpModal.innerHTML='<div style="background:#0d1119; border:1px solid rgba(231,178,76,.22); border-radius:18px; padding:22px; max-width:560px; width:100%; max-height:92vh; overflow:auto;">'
+        +'<div style="font-size:16px; font-weight:700; margin-bottom:4px;">局部修改 · 涂抹要改的区域</div>'
+        +'<div style="font-size:12px; color:#94a4bb; margin-bottom:14px;">用画笔涂掉要替换的部分，在下方写「这块换成什么」，点生成。</div>'
+        +'<div id="inpWrap" style="position:relative; line-height:0; border-radius:12px; overflow:hidden; border:1px solid rgba(148,164,187,.18); touch-action:none; cursor:crosshair;"></div>'
+        +'<div style="display:flex; align-items:center; gap:12px; margin:14px 0;"><span style="font-size:12px; color:#94a4bb;">画笔</span><input id="inpBrush" type="range" min="10" max="90" value="42" style="flex:1;"><button id="inpClear" style="font-size:12px; color:#94a4bb; background:rgba(148,164,187,.08); border:1px solid rgba(148,164,187,.16); border-radius:8px; padding:5px 11px; cursor:pointer; font-family:inherit;">清除涂抹</button></div>'
+        +'<textarea id="inpPrompt" rows="2" placeholder="例如：把涂掉的背景换成节日红金氛围" style="width:100%; resize:none; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.16); border-radius:10px; color:#eaf1fa; font-size:13px; padding:10px; font-family:inherit; outline:none; box-sizing:border-box;"></textarea>'
+        +'<div style="display:flex; gap:10px; margin-top:14px;"><button id="inpCancel" style="flex:1; padding:11px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.16); border-radius:11px; cursor:pointer; font-family:inherit;">取消</button><button id="inpGo" style="flex:2; padding:11px; font-size:14px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:11px; cursor:pointer; font-family:inherit;">生成（涂抹处重绘）</button></div>'
+        +'</div>';
+      document.body.appendChild(inpModal);
+    }
+    var wrap=inpModal.querySelector('#inpWrap'); wrap.innerHTML='';
+    var bg=new Image(); bg.src='data:image/png;base64,'+refImg; bg.style.cssText='display:block; width:100%;'; wrap.appendChild(bg);
+    var cv=document.createElement('canvas'); cv.width=refW; cv.height=refH; cv.style.cssText='position:absolute; inset:0; width:100%; height:100%;'; wrap.appendChild(cv);
+    var ctx=cv.getContext('2d'); ctx.strokeStyle='rgba(231,178,76,.55)'; ctx.lineCap='round'; ctx.lineJoin='round';
+    var brush=inpModal.querySelector('#inpBrush'), drawing=false, last=null;
+    function pt(e){ var r=cv.getBoundingClientRect(), cx=(e.touches?e.touches[0].clientX:e.clientX), cy=(e.touches?e.touches[0].clientY:e.clientY); return {x:(cx-r.left)*(cv.width/r.width), y:(cy-r.top)*(cv.height/r.height), bw:(+brush.value)*(cv.width/r.width)}; }
+    function down(e){ e.preventDefault(); drawing=true; last=pt(e); ctx.lineWidth=last.bw; ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(last.x+0.1,last.y+0.1); ctx.stroke(); }
+    function move(e){ if(!drawing) return; e.preventDefault(); var p=pt(e); ctx.lineWidth=p.bw; ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(p.x,p.y); ctx.stroke(); last=p; }
+    function up(){ drawing=false; }
+    cv.onmousedown=down; cv.onmousemove=move; window.addEventListener('mouseup',up);
+    cv.ontouchstart=down; cv.ontouchmove=move; cv.ontouchend=up;
+    inpModal.querySelector('#inpClear').onclick=function(){ ctx.clearRect(0,0,cv.width,cv.height); };
+    inpModal.querySelector('#inpCancel').onclick=function(){ inpModal.style.display='none'; };
+    inpModal.querySelector('#inpPrompt').value=(pr.value||'');
+    inpModal.querySelector('#inpGo').onclick=function(){
+      var src=ctx.getImageData(0,0,cv.width,cv.height).data, painted=0;
+      var mc=document.createElement('canvas'); mc.width=cv.width; mc.height=cv.height; var m2=mc.getContext('2d');
+      m2.fillStyle='#ffffff'; m2.fillRect(0,0,mc.width,mc.height);
+      var od=m2.getImageData(0,0,mc.width,mc.height);
+      for(var i=0;i<src.length;i+=4){ if(src[i+3]>10){ od.data[i+3]=0; painted++; } }
+      if(painted<50){ alert('请先用画笔涂抹要修改的区域'); return; }
+      m2.putImageData(od,0,0);
+      var mask=mc.toDataURL('image/png').split(',')[1];
+      var ip=(inpModal.querySelector('#inpPrompt').value||'').trim();
+      inpModal.style.display='none';
+      submit({prompt:ip, ratio:nearestRatio(), image:refImg, mask:mask, quality:quality}, '局部修改中（涂抹处重绘）', '/api/gen/image');
+    };
+    inpModal.style.display='flex';
+  }
+  // setRef：把一张 PNG dataURL 设为参考图（上传 + 继续改共用）
+  function setRef(dataUrl, w, h){
+    refImg=dataUrl.split(',')[1]; refW=w; refH=h;
+    upBox.style.backgroundImage='url('+dataUrl+')'; upBox.style.borderStyle='solid'; upBox.style.borderColor='rgba(231,178,76,.5)';
+    if(upIcon) upIcon.style.display='none';
+    if(upText){ upText.textContent='✕ 清除'; upText.style.background='rgba(7,11,19,.65)'; upText.style.padding='1px 5px'; upText.style.borderRadius='4px'; }
+    if(upHint) upHint.textContent='(已就绪 ·「图生图」改全图'+(engine==='gpt'?'，或「局部修改」只改涂抹处':'')+')';
+    showInp(engine==='gpt');  // 局部修改(像素蒙版)仅 gpt-image-2
+  }
+
+  // 灵感页详情弹窗「跟创」带来的粘贴参考图（经 sessionStorage 传递）→ 载入即设为参考图（图生图）
+  try{ var _fcref=sessionStorage.getItem('hq_followcreate_ref');
+    if(_fcref){ sessionStorage.removeItem('hq_followcreate_ref');  // 一次性消费，防下次误带
+      var _fim=new Image();
+      _fim.onload=function(){ setRef(_fcref, _fim.width, _fim.height);
+        setNote('✅ 已带入你在灵感页粘贴的参考图 · 改下提示词，点生成即走「图生图」','#2bd576'); };
+      _fim.src=_fcref;
+    }
+  }catch(e){}
+
+  // 采集页「转作图」带来的封面图（经 localStorage 传递）→ 载入设为参考图（图生图）。#233:原来 collect 存了 hq_collect_to_banana 但 banana 侧从没读取，图传不过来。
+  try{ var _cb=localStorage.getItem('hq_collect_to_banana');
+    if(_cb){ localStorage.removeItem('hq_collect_to_banana');  // 一次性消费，防下次误带
+      var _cbd=JSON.parse(_cb);
+      if(_cbd && _cbd.cover){
+        var _cim=new Image(); _cim.crossOrigin='anonymous';
+        _cim.onload=function(){
+          var mx=1024, s=Math.min(1,mx/Math.max(_cim.width,_cim.height)), cv=document.createElement('canvas');
+          cv.width=Math.round(_cim.width*s); cv.height=Math.round(_cim.height*s);
+          cv.getContext('2d').drawImage(_cim,0,0,cv.width,cv.height);
+          try{ setRef(cv.toDataURL('image/png'), cv.width, cv.height);
+            if(_cbd.title && pr && !(pr.value||'').trim()) pr.value=_cbd.title;
+            setNote('✅ 已带入采集封面作参考图 · 改下提示词，点生成即走「图生图」','#2bd576');
+          }catch(err){ setNote('采集图跨域无法载入，请改用上传','#f4708a'); }
+        };
+        _cim.onerror=function(){ setNote('采集封面读取失败，请手动上传参考图','#f4708a'); };
+        _cim.src=_cbd.cover+(_cbd.cover.indexOf('?')>=0?'&':'?')+'t='+Date.now();
+      }
+    }
+  }catch(e){}
+
+  // 文生图 / 图生图（有参考图）/ nano banana
+  gen.onclick=function(){
+    var bp={prompt:(pr.value||'').trim(), ratio:ratio, quality:quality, count:count};
+    if(refImg) bp.image=refImg;  // 有参考图 → 图生图(整图编辑)
+    if(engine==='gpt' || engine==='xiaole' || engine==='zelong2'){
+      if(engine==='xiaole' || engine==='zelong2') bp.provider=engine;  // 果肉生图/泽龙2 gpt-image-2
+      submit(bp, (engine==='xiaole'?'果肉生图 ':(engine==='zelong2'?'泽龙2生图 ':''))+(refImg?'图生图中（在参考图上改）':(engine==='gpt'?'文生图中':'生成中')), '/api/gen/image');
+    } else {
+      bp.model=engine;
+      submit(bp, (engine==='pro'?'Nano Banana Pro ':'Nano Banana 2 ')+(refImg?'图生图中（在参考图上改）':'生成中'), '/api/gen/banana');
+    }
+  };
+  // 最近作品：读真实历史（生成即自动入库）
+  function useAsResult(u){ res.src=u+'?t='+Date.now(); lastResultUrl=u; localStorage.setItem('hq_last_result',u); }
+  function openRecentLightbox(urls,idx){
+    if(!urls||!urls.length) return;
+    idx=Math.max(0,Math.min(idx||0,urls.length-1));
+    var old=document.getElementById('recentModal'); if(old&&old._close) old._close();
+    var wrap=document.createElement('div'); wrap.id='recentModal'; wrap.className='recent-modal';
+    var box=document.createElement('div'); box.className='recent-box'; box.setAttribute('role','dialog'); box.setAttribute('aria-modal','true'); box.setAttribute('aria-label','作品预览');
+    var close=document.createElement('button'); close.type='button'; close.className='recent-close'; close.setAttribute('aria-label','关闭'); close.textContent='×';
+    var img=document.createElement('img'); img.alt='';
+    var prev=document.createElement('button'); prev.type='button'; prev.className='recent-nav prev'; prev.setAttribute('aria-label','上一张'); prev.textContent='‹';
+    var next=document.createElement('button'); next.type='button'; next.className='recent-nav next'; next.setAttribute('aria-label','下一张'); next.textContent='›';
+    var foot=document.createElement('div'); foot.className='recent-foot';
+    var count=document.createElement('span'); count.className='recent-count';
+    var use=document.createElement('button'); use.type='button'; use.className='recent-use'; use.textContent='用作参考继续编辑';
+    foot.appendChild(count); foot.appendChild(use);
+    var closeModal=function(){ document.removeEventListener('keydown',onKey); wrap.remove(); };
+    var onKey=function(e){
+      if(e.key==='Escape') closeModal();
+      else if(e.key==='ArrowLeft') show(idx-1);
+      else if(e.key==='ArrowRight') show(idx+1);
+    };
+    function show(i){
+      if(i<0||i>=urls.length) return;
+      idx=i;
+      img.src=urls[idx];
+      count.textContent=(idx+1)+' / '+urls.length;
+      prev.disabled=idx<=0;
+      next.disabled=idx>=urls.length-1;
+    }
+    wrap._close=closeModal;
+    close.onclick=closeModal;
+    wrap.onclick=function(e){ if(e.target===wrap) closeModal(); };
+    box.onclick=function(e){ e.stopPropagation(); };
+    prev.onclick=function(){ show(idx-1); };
+    next.onclick=function(){ show(idx+1); };
+    use.onclick=function(){ useAsResult(urls[idx]); closeModal(); };
+    box.appendChild(close); box.appendChild(prev); box.appendChild(img); box.appendChild(next); box.appendChild(foot);
+    wrap.appendChild(box);
+    document.addEventListener('keydown',onKey);
+    document.body.appendChild(wrap);
+    show(idx);
+  }
+  function loadHistory(){
+    var grid=document.getElementById('recentGrid'); if(!grid||!tok()) return;
+    fetch('/api/gen/history?limit=12',{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+      if(!d.items||!d.items.length) return;
+      var urls=d.items.map(function(it){ return it.url; });
+      grid.innerHTML=d.items.map(function(it){ return '<img src="'+it.url+'" class="hv-lift" data-url="'+it.url+'" style="display:block; width:100%; aspect-ratio:3/4; border-radius:11px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">'; }).join('');
+      grid.querySelectorAll('img').forEach(function(im,i){ im.onclick=function(){ openRecentLightbox(urls,i); }; });
+    }).catch(function(){});
+  }
+  loadHistory();
+  // 刷新还原：把上次的结果图放回结果区，刷新后也能直接再生成
+  try{ var lr0=localStorage.getItem('hq_last_result'); if(lr0){ res.src=lr0+'?t='+Date.now(); lastResultUrl=lr0; } }catch(e){}
+  // 续传：切回页面时接上进行中的任务（后端没中断）
+  try{ var aj=JSON.parse(localStorage.getItem('hq_active_job')||'null'); if(aj&&aj.id){ busy(true); poll(aj.id, aj.t0||Date.now(), aj.label); } }catch(e){}
+
+  // 结果区按钮
+  function actBtn(label){ var n=null; document.querySelectorAll('#actRow > *').forEach(function(el){ if(el.textContent.indexOf(label)>=0) n=el; }); return n; }
+  var bRegen=actBtn('再生成'), bEdit=actBtn('继续改'), bVideo=actBtn('转视频'), bFeishu=actBtn('发飞书'), bDl=actBtn('下载'), bStore=actBtn('入库');
+  if(bRegen) bRegen.onclick=function(){ if(!lastPayload){ setNote('先生成一张，再「再生成」','#f4708a'); return; } submit(lastPayload,'重新生成中',lastEndpoint); };
+  if(bEdit) bEdit.onclick=function(){ if(!lastResultUrl){ setNote('先生成一张，再「继续改」','#f4708a'); return; }
+    selectEngine('gpt'); // 继续改是 gpt-image 专属，自动切换引擎并显示参考图区
+    setNote('正在把当前图载入为参考…','#2dd4bf');
+    var im=new Image(); im.onload=function(){ var mx=1024,s=Math.min(1,mx/Math.max(im.width,im.height)),cv=document.createElement('canvas'); cv.width=Math.round(im.width*s); cv.height=Math.round(im.height*s); cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
+      try{ setRef(cv.toDataURL('image/png'),cv.width,cv.height); pr.scrollIntoView({block:'center'}); setNote('已把当前图设为参考，改下提示词再点生成（图生图）','#2bd576'); }catch(err){ setNote('继续改失败（图片跨域，换上传方式）：'+err,'#f4708a'); } };
+    im.crossOrigin='anonymous'; im.onerror=function(){ setNote('继续改：图片读取失败','#f4708a'); }; im.src=lastResultUrl+'?t='+Date.now();
+  };
+  if(bVideo) bVideo.onclick=function(e){
+    if(!lastResultUrl) return;
+    if(e&&e.preventDefault) e.preventDefault();
+    try{
+      localStorage.setItem('hq_video_prefill', JSON.stringify({image_url:lastResultUrl, from:'banana', ts:Date.now()}));
+    }catch(err){}
+    location.href='video.html?prefill=image';
+  };
+  if(bDl) bDl.onclick=function(){ if(!lastResultUrl){ setNote('先生成一张再下载','#f4708a'); return; } var a=document.createElement('a'); a.href=lastResultUrl; a.download='huangque_'+Date.now()+'.png'; document.body.appendChild(a); a.click(); a.remove(); };
+  if(bStore) bStore.onclick=function(e){ if(e&&e.preventDefault) e.preventDefault(); if(!lastResultUrl){ setNote('先生成一张','#f4708a'); return; } setNote('✅ 生成即自动入库 · <a href="assets.html" style="color:#e7b24c">去「资产」查看</a>','#2bd576'); };
+  if(bFeishu) bFeishu.onclick=function(){ setNote('飞书推送即将上线（bot 接入阶段）','#f4cd72'); };
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,1036 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>内容爬取 · 黄雀 AI 工作台</title>
+<link rel="icon" href="../assets/cloud/logo-bird.png">
+<link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
+<link rel="stylesheet" href="../assets/cloud.css?v=8">
+<style>
+  body { overflow: hidden; }
+  .gCollect { grid-template-columns: 1.1fr 1fr; }
+  @media (max-width: 1100px) { .gCollect { grid-template-columns: 1fr; } }
+  @keyframes hq-spin { to { transform: rotate(360deg); } }
+  @keyframes hq-prog-flow { from { background-position:220% 0; } to { background-position:-120% 0; } }
+  .col-prog { position:relative; height:9px; margin:16px auto 0; max-width:280px; border-radius:999px; background:rgba(148,164,187,.12); overflow:hidden; }
+  .col-prog::after { content:""; position:absolute; inset:0; border-radius:inherit; background:linear-gradient(100deg,transparent 15%,rgba(45,212,191,.85) 50%,transparent 85%); background-size:200% 100%; animation:hq-prog-flow 1.15s linear infinite; }
+  /* inner card level: 12px */
+  .sr-card { border: 1px solid rgba(148,164,187,.14); border-radius: 12px; overflow: hidden; cursor: pointer; transition: .16s; background: rgba(148,164,187,.03); }
+  .sr-card:hover { border-color: rgba(231,178,76,.3); background: rgba(231,178,76,.05); }
+  .sr-card.selected { border-color: rgba(231,178,76,.5); background: rgba(231,178,76,.08); }
+  /* comment row: tighter gap on 4px grid */
+  .cmt-item { display: flex; gap: 8px; padding: 8px 0; border-bottom: 1px solid rgba(148,164,187,.08); }
+  .cmt-item:last-child { border-bottom: none; }
+  /* copy/action chip: 8px, font 12px */
+  .copy-btn { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; font-size: 12px; color: #94a4bb; background: rgba(148,164,187,.06); border: 1px solid rgba(148,164,187,.14); border-radius: 8px; cursor: pointer; transition: .16s; font-family: inherit; }
+  .copy-btn:hover { color: #e7b24c; border-color: rgba(231,178,76,.3); background: rgba(231,178,76,.08); }
+  /* tabular-nums for all JetBrains Mono data values */
+  [style*="JetBrains Mono"] { font-variant-numeric: tabular-nums; }
+  /* JS-rendered history card corrections (border-radius + font) */
+  #collectHistory > div { border-radius: 12px !important; }
+  #collectHistory > div > div:last-child { font-size: 12px !important; padding: 8px !important; }
+  /* JS-rendered SR card text corrections */
+  .sr-card > div:last-child { padding: 8px !important; }
+  .sr-card > div:last-child > div:last-child { font-size: 12px !important; }
+  /* 视频下载模式：只留视频卡+下载，隐藏评论/文案/图集/转写 */
+  #resultState.dl-only #copyBlock, #resultState.dl-only #cmtBlock, #resultState.dl-only #galleryBlock,
+  #resultState.dl-only #transcriptExtractWrap, #resultState.dl-only #transcriptBlock { display:none !important; }
+</style>
+</head>
+<body>
+<div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
+
+<div class="hq-app"><div class="hq-content" data-active="collect">
+  <div class="gCollect" style="display:grid; gap:16px; align-items:start;">
+
+    <!-- ===== LEFT: Controls ===== -->
+    <div style="border:1px solid rgba(148,164,187,.1); border-radius:14px; background:linear-gradient(165deg, rgba(16,24,39,.58), rgba(12,18,32,.46)); padding:20px;">
+      <div>
+        <h1 style="margin:0; font-size:20px; font-weight:700; display:flex; align-items:center; gap:10px;"><img src="../assets/icons/ic_collect.png" alt="" style="width:30px;height:30px;object-fit:contain;flex:none;">内容爬取</h1>
+        <p style="margin:8px 0 0; font-size:13px; color:#94a4bb;">支持爬取抖音、小红书的图文及视频</p>
+      </div>
+
+      <!-- Mode toggle -->
+      <div style="display:flex; gap:0; margin:20px 0 16px; border:1px solid rgba(148,164,187,.14); border-radius:12px; padding:3px; background:rgba(7,11,19,.3);">
+        <button id="tabLink" style="flex:1; padding:9px; font-size:13px; font-weight:500; border:none; border-radius:8px; cursor:pointer; font-family:inherit; transition:.16s; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c);">贴链接</button>
+        <button id="tabKw" style="flex:1; padding:9px; font-size:13px; font-weight:500; border:none; border-radius:8px; cursor:pointer; font-family:inherit; transition:.16s; color:#94a4bb; background:transparent;">关键词搜</button>
+        <button id="tabDl" style="flex:1; padding:9px; font-size:13px; font-weight:500; border:none; border-radius:8px; cursor:pointer; font-family:inherit; transition:.16s; color:#94a4bb; background:transparent;">视频下载</button>
+      </div>
+
+      <!-- Link mode — hero -->
+      <div id="linkMode">
+        <div style="position:relative; border:1px solid rgba(231,178,76,.22); background:rgba(7,11,19,.5); border-radius:12px; padding:16px;">
+          <textarea id="urlInput" rows="4" placeholder="粘贴抖音 / 小红书 分享链接，支持 App 复制的带文字短链…" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; line-height:1.75; font-family:inherit;"></textarea>
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-top:4px;">
+            <span style="font-size:12px; color:#3d4f62;">支持抖音、小红书完整链接或短链</span>
+            <span id="urlClear" class="hv-gold" style="font-size:12px; color:#5c6b82; cursor:pointer; transition:.16s;">清空</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Keyword mode — includes platform selector -->
+      <div id="kwMode" style="display:none;">
+        <!-- Platform selector only needed for keyword search -->
+        <div style="font-size:14px; font-weight:600; margin-bottom:8px;">平台</div>
+        <div id="kwPlatformRow" style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:16px;">
+          <div class="hv-gold" data-plat="douyin" style="padding:11px 10px; text-align:center; font-size:14px; border-radius:12px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">抖音</div>
+          <div class="hv-gold" data-plat="xhs" style="padding:11px 10px; text-align:center; font-size:14px; border-radius:12px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">小红书</div>
+        </div>
+
+        <div style="font-size:14px; font-weight:600; margin-bottom:8px;">关键词</div>
+        <div style="display:flex; gap:8px;">
+          <input id="kwInput" autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" placeholder="输入关键词，如：美甲 最新款" style="flex:1; background:rgba(7,11,19,.5); border:1px solid rgba(148,164,187,.16); border-radius:12px; padding:12px 16px; color:#eaf1fa; font-size:14px; outline:none; font-family:inherit; transition:.16s;">
+          <button id="kwSearch" class="hv-lift" style="padding:12px 18px; font-size:13px; font-weight:600; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:8px; cursor:pointer; font-family:inherit; white-space:nowrap;">搜索</button>
+        </div>
+        <div style="font-size:12px; color:#5c6b82; margin-top:8px;">搜索消耗 <span style="color:#e7b24c; font-family:'JetBrains Mono',monospace;">1</span> 点</div>
+        <div id="searchResults" style="display:none; margin-top:16px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
+            <span style="font-size:13px; font-weight:500; color:#94a4bb;">搜索结果</span>
+            <span id="srCount" style="font-size:12px; color:#e7b24c; font-family:'JetBrains Mono',monospace;"></span>
+          </div>
+          <div id="srGrid" style="display:grid; grid-template-columns:repeat(2,1fr); gap:8px; max-height:400px; overflow-y:auto; padding-right:2px;"></div>
+        </div>
+        <div id="kwSelected" style="display:none; margin-top:12px; padding:12px 16px; border:1px solid rgba(231,178,76,.28); border-radius:12px; background:rgba(231,178,76,.06);">
+          <div style="font-size:12px; color:#94a4bb; margin-bottom:4px;">已选视频</div>
+          <div id="kwSelectedTitle" style="font-size:13px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#eaf1fa;"></div>
+        </div>
+      </div>
+
+      <button id="colBtn" class="hv-lift" style="width:100%; height:54px; margin-top:20px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit;">爬取</button>
+      <div id="colNote" style="text-align:center; font-size:12px; color:#5c6b82; margin-top:12px;">文案 + 评论默认提取 · 失败自动退点</div>
+    </div>
+
+    <!-- ===== RIGHT: Results + History ===== -->
+    <div style="border:1px solid rgba(231,178,76,.16); border-radius:14px; background:linear-gradient(165deg, rgba(20,17,10,.6), rgba(12,16,26,.5)); padding:20px;">
+      <div style="font-size:16px; font-weight:600; margin-bottom:16px;">采集结果</div>
+
+      <!-- Empty state -->
+      <div id="emptyState" style="border:1px solid rgba(148,164,187,.1); border-radius:12px; background:rgba(7,11,19,.3);">
+        <div style="padding:48px 20px; text-align:center;">
+          <div style="display:flex; justify-content:center; margin-bottom:14px; color:rgba(148,164,187,.25);">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" style="width:48px; height:48px;"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>
+          </div>
+          <div style="font-size:14px; color:#5c6b82; font-weight:500;">粘贴视频链接开始爬取</div>
+          <div style="font-size:12px; color:#3d4f62; margin-top:6px;">或切换「关键词搜」找到目标视频后点爬取</div>
+        </div>
+      </div>
+
+      <!-- Loading state -->
+      <div id="loadingState" style="display:none; border:1px solid rgba(45,212,191,.2); border-radius:12px; background:rgba(7,11,19,.3);">
+        <div style="padding:48px 20px; text-align:center;">
+          <div style="display:flex; justify-content:center; margin-bottom:16px; color:#2dd4bf; animation:hq-spin 1.2s linear infinite;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:36px; height:36px;"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+          </div>
+          <div id="loadingNote" style="font-size:14px; color:#2dd4bf; font-weight:500;"></div>
+          <div class="col-prog"></div>
+          <div style="font-size:12px; color:#5c6b82; margin-top:8px;">可切到其他页，回来自动接上</div>
+        </div>
+      </div>
+
+      <!-- Result state -->
+      <div id="resultState" style="display:none;">
+        <!-- Video card -->
+        <div id="videoCard" style="border:1px solid rgba(148,164,187,.1); border-radius:12px; overflow:hidden; margin-bottom:12px; background:rgba(7,11,19,.4);">
+          <div style="display:flex;">
+            <img id="vcCover" src="" alt="封面" style="width:90px; flex:none; object-fit:cover; aspect-ratio:9/16; border-right:1px solid rgba(148,164,187,.1); background:rgba(148,164,187,.06);">
+            <div style="padding:14px 16px; flex:1; min-width:0;">
+              <div id="vcTitle" style="font-size:14px; font-weight:600; line-height:1.5; margin-bottom:8px; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;"></div>
+              <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+                <img id="vcAvatar" src="" alt="" style="width:20px; height:20px; border-radius:50%; object-fit:cover; background:rgba(148,164,187,.2);">
+                <a id="vcAuthor" style="font-size:12px; color:#94a4bb; text-decoration:none;" target="_blank" rel="noopener"></a>
+              </div>
+              <div id="vcStats" style="display:flex; gap:12px; flex-wrap:wrap;"></div>
+              <div id="vcMeta" style="font-size:12px; color:#5c6b82; margin-top:8px; font-family:'JetBrains Mono',monospace;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Image gallery (图文笔记) -->
+        <div id="galleryBlock" style="display:none; border:1px solid rgba(148,164,187,.1); border-radius:12px; padding:16px; margin-bottom:12px; background:rgba(7,11,19,.3);">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+            <span style="font-size:14px; font-weight:600;">图文 <span id="galCount" style="font-size:12px; color:#5c6b82; font-weight:400;"></span></span>
+            <button id="galDownloadBtn" class="copy-btn" style="display:none;">下载全部图</button>
+          </div>
+          <div id="galleryGrid" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(108px,1fr)); gap:8px;"></div>
+        </div>
+
+        <!-- Copy block -->
+        <div id="copyBlock" style="border:1px solid rgba(148,164,187,.1); border-radius:12px; padding:16px; margin-bottom:12px; background:rgba(7,11,19,.3);">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+            <span style="font-size:14px; font-weight:600;">文案</span>
+            <button class="copy-btn" id="copyAllBtn">复制全部</button>
+          </div>
+          <div id="copyContent"></div>
+        </div>
+
+        <!-- Comments block -->
+        <div id="cmtBlock" style="border:1px solid rgba(148,164,187,.1); border-radius:12px; padding:16px; margin-bottom:12px; background:rgba(7,11,19,.3);">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+            <span style="font-size:14px; font-weight:600;">评论区 <span id="cmtCount" style="font-size:12px; color:#5c6b82; font-weight:400;"></span></span>
+            <button class="copy-btn" id="exportCmtBtn">导出评论</button>
+          </div>
+          <div id="cmtList"></div>
+          <div id="cmtMore" style="display:none; font-size:12px; color:#5c6b82; text-align:center; padding:8px 0; margin-top:8px; border-top:1px solid rgba(148,164,187,.08);">仅展示部分评论，导出可获取更多</div>
+        </div>
+
+        <!-- Extract transcript button (on-demand) -->
+        <div id="transcriptExtractWrap" style="display:none; margin-bottom:12px;">
+          <button id="transcriptExtractBtn" class="hv-lift" style="width:100%; padding:14px; font-size:14px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; font-family:inherit; transition:.2s;">提取文案 <span style="font-size:12px; font-weight:400; opacity:.75;">约 6 点</span></button>
+          <div id="transcriptExtractNote" style="text-align:center; font-size:12px; color:#5c6b82; margin-top:8px;">口播提取约 20 秒到数分钟 · 按需点击</div>
+        </div>
+
+        <!-- Transcript block (hidden until extracted) -->
+        <div id="transcriptBlock" style="display:none; border:1px solid rgba(148,164,187,.1); border-radius:12px; padding:16px; margin-bottom:12px; background:rgba(7,11,19,.3);">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+            <span style="font-size:14px; font-weight:600;">口播文案</span>
+            <button class="copy-btn" id="copyTranscriptBtn" style="display:none;">复制</button>
+          </div>
+          <textarea id="transcriptText" rows="6" placeholder="点上方「提取文案」后，口播文案会显示在这里 · 可直接选中 / 编辑 / 复制" style="width:100%; box-sizing:border-box; resize:vertical; min-height:120px; background:rgba(7,11,19,.5); border:1px solid rgba(148,164,187,.16); border-radius:10px; padding:12px 13px; font-size:13px; line-height:1.8; color:#eaf1fa; font-family:inherit; outline:none;"></textarea>
+        </div>
+      </div>
+
+      <!-- Action buttons row -->
+      <div id="actRow" style="display:grid; grid-template-columns:repeat(6,1fr); gap:8px; margin-top:16px;">
+        <div id="actCopy" class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:12px 4px; border:1px solid rgba(148,164,187,.1); border-radius:8px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;">
+          <span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></span>
+          <span style="font-size:12px; color:#94a4bb;">复制文案</span>
+        </div>
+        <div id="actExport" class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:12px 4px; border:1px solid rgba(148,164,187,.1); border-radius:8px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;">
+          <span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></span>
+          <span style="font-size:12px; color:#94a4bb;">导出评论</span>
+        </div>
+        <div id="actBanana" class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:12px 4px; border:1px solid rgba(148,164,187,.1); border-radius:8px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;">
+          <span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span>
+          <span style="font-size:12px; color:#94a4bb;">转作图</span>
+        </div>
+        <div id="actFeishu" aria-disabled="true" title="飞书推送即将上线" style="display:flex; flex-direction:column; align-items:center; gap:5px; padding:10px 4px; border:1px solid rgba(148,164,187,.08); border-radius:8px; background:rgba(148,164,187,.025); cursor:not-allowed; opacity:.48;">
+          <span style="display:flex; width:17px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/></svg></span>
+          <span style="font-size:12px; color:#7b8ca3;">发飞书</span>
+          <span style="font-size:10px; color:#e7b24c; line-height:1;">即将上线</span>
+        </div>
+        <a id="actStore" class="hv-gold" href="assets.html" style="display:flex; flex-direction:column; align-items:center; gap:5px; padding:10px 4px; border:1px solid rgba(45,212,191,.16); border-radius:8px; background:rgba(45,212,191,.05); cursor:pointer; transition:.16s; text-decoration:none;">
+          <span style="display:flex; width:17px; color:#2dd4bf;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M20 6 9 17l-5-5"/><path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span>
+          <span style="font-size:12px; color:#bff7ee;">已自动入库</span>
+          <span style="font-size:10px; color:#5c6b82; line-height:1;">去资产查看</span>
+        </a>
+        <div id="actRetry" class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:12px 4px; border:1px solid rgba(148,164,187,.1); border-radius:8px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;">
+          <span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.8-3.4L23 10M1 14l4.7 4.4A9 9 0 0 0 20.5 15"/></svg></span>
+          <span style="font-size:12px; color:#94a4bb;">再爬取</span>
+        </div>
+      </div>
+
+      <!-- History -->
+      <div style="display:flex; align-items:center; justify-content:space-between; margin:20px 0 12px;">
+        <span style="font-size:16px; font-weight:600;">最近采集</span>
+        <a href="assets.html" style="display:flex; align-items:center; gap:4px; font-size:12px; color:#94a4bb; cursor:pointer; text-decoration:none;">全部 <span style="display:flex; width:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 18l6-6-6-6"/></svg></span></a>
+      </div>
+      <div id="collectHistory" style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px;">
+        <div style="grid-column:1/-1; padding:18px 0; text-align:center; font-size:12px; color:#5c6b82;">还没有采集记录</div>
+      </div>
+    </div>
+
+  </div>
+</div></div>
+
+<script src="../assets/cloud.js?v=8"></script>
+<script src="cloud-shell.js?v=207ff35b"></script>
+<script>
+(function () {
+  'use strict';
+
+  /* ---- state ---- */
+  var platform = 'douyin';
+  var mode = 'link';       // 'link' | 'keyword' | 'download'
+  var downloadOnly = false; // 视频下载模式：只解析下载视频本身，不拉评论/文案
+  var selectedUrl = '';    // set when user picks from search grid
+  var currentUrl  = '';    // ponytail: saved at submit time, reused for transcript extraction
+  var currentResult = null;
+  // 前端停止等待的秒数。必须 < core.py::reaper 给 collect 的 1200s 窗口：
+  // 前端放弃时任务仍在后台跑，不能声称"已退点"（真超时退点由 reaper 负责）。
+  // 原来爬取 400s / 提取文案 120s 两个死线不一致，而线上转写成功平均就要 88s，稍慢即误报超时。
+  var POLL_GIVEUP_SEC = 600;
+  var copyFields = {};     // field key → text, used by copy buttons
+  var pollIv = null;
+  var transcriptBusy = false;
+
+  function tok() { return '__cookie__'; }
+
+  /* ---- note helper ---- */
+  function setNote(html, color) {
+    var n = document.getElementById('colNote');
+    if (!n) return;
+    n.innerHTML = html;
+    n.style.color = color || '#5c6b82';
+  }
+
+  function downloadProxy(href) {
+    return fetch(href, { headers: { 'Authorization': 'Bearer ' + tok() } })
+      .then(function (r) {
+        if (r.status === 401) { HQ.login(); throw new Error('登录已过期'); }
+        if (!r.ok) return r.json().then(function (d) { throw new Error(d.detail || '下载失败'); });
+        return r.blob();
+      })
+      .then(function (blob) {
+        var q = new URL(href, location.origin).searchParams;
+        var ext = ({'image/jpeg':'.jpg','image/png':'.png','image/webp':'.webp','video/mp4':'.mp4'})[blob.type] || '';
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(blob); a.download = (q.get('name') || 'download') + ext;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+      });
+  }
+
+  /* ---- busy state ---- */
+  var colBtn = document.getElementById('colBtn');
+  var origBtnText = colBtn ? colBtn.textContent : '爬取';
+  function busy(on) {
+    if (!colBtn) return;
+    colBtn.style.pointerEvents = on ? 'none' : 'auto';
+    colBtn.style.opacity = on ? '.7' : '1';
+    colBtn.textContent = on ? '爬取中…' : origBtnText;
+  }
+
+  /* ---- panel switcher ---- */
+  function showState(which) {
+    ['emptyState', 'loadingState', 'resultState'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.style.display = id === which ? '' : 'none';
+    });
+  }
+  function setLoadNote(t) {
+    var el = document.getElementById('loadingNote');
+    if (el) el.textContent = t;
+  }
+
+  /* ---- platform tabs (keyword mode only) ---- */
+  document.querySelectorAll('#kwPlatformRow > div').forEach(function (c) {
+    c.onclick = function () {
+      document.querySelectorAll('#kwPlatformRow > div').forEach(function (x) {
+        x.style.color = '#94a4bb';
+        x.style.background = 'rgba(148,164,187,.05)';
+        x.style.borderColor = 'rgba(148,164,187,.14)';
+      });
+      c.style.color = '#e7b24c';
+      c.style.background = 'rgba(231,178,76,.1)';
+      c.style.borderColor = 'rgba(231,178,76,.32)';
+      platform = c.getAttribute('data-plat');
+    };
+  });
+
+  /* ---- mode toggle ---- */
+  var tabLink = document.getElementById('tabLink');
+  var tabKw   = document.getElementById('tabKw');
+  var tabDl   = document.getElementById('tabDl');
+  var linkModeEl = document.getElementById('linkMode');
+  var kwModeEl   = document.getElementById('kwMode');
+
+  function setMode(m) {
+    mode = m;
+    var ON = 'linear-gradient(135deg,#f4cd72,#e7b24c)';
+    tabLink.style.color      = m === 'link' ? '#1a1206' : '#94a4bb';
+    tabLink.style.background = m === 'link' ? ON : 'transparent';
+    tabKw.style.color        = m === 'keyword' ? '#1a1206' : '#94a4bb';
+    tabKw.style.background   = m === 'keyword' ? ON : 'transparent';
+    if (tabDl) { tabDl.style.color = m === 'download' ? '#1a1206' : '#94a4bb'; tabDl.style.background = m === 'download' ? ON : 'transparent'; }
+    // 下载模式复用「贴链接」的输入框
+    linkModeEl.style.display = (m === 'link' || m === 'download') ? '' : 'none';
+    kwModeEl.style.display   = m === 'keyword' ? '' : 'none';
+    if (colBtn) colBtn.textContent = m === 'download' ? '⬇ 解析并下载视频' : '爬取';
+    var cn = document.getElementById('colNote');
+    if (cn) cn.textContent = m === 'download' ? '仅解析并下载视频本身 · 不提取评论/文案' : '文案 + 评论默认提取 · 失败自动退点';
+    selectedUrl = '';
+  }
+  tabLink.onclick = function () { setMode('link'); };
+  tabKw.onclick   = function () { setMode('keyword'); };
+  if (tabDl) tabDl.onclick = function () { setMode('download'); };
+
+  /* ---- URL clear ---- */
+  var urlInput = document.getElementById('urlInput');
+  var urlClear = document.getElementById('urlClear');
+  if (urlClear) urlClear.onclick = function () { if (urlInput) urlInput.value = ''; };
+
+  /* ---- keyword search ---- */
+  var kwSearch  = document.getElementById('kwSearch');
+  var kwInput   = document.getElementById('kwInput');
+  var srResults = document.getElementById('searchResults');
+  var srGrid    = document.getElementById('srGrid');
+  var srCount   = document.getElementById('srCount');
+  var kwSelected      = document.getElementById('kwSelected');
+  var kwSelectedTitle = document.getElementById('kwSelectedTitle');
+
+  if (kwSearch) kwSearch.onclick = doSearch;
+  if (kwInput)  kwInput.onkeydown = function (e) { if (e.key === 'Enter') doSearch(); };
+
+  function doSearch() {
+    var kw = kwInput ? kwInput.value.trim() : '';
+    if (!kw) return;
+    kwSearch.textContent = '搜索中…';
+    kwSearch.style.opacity = '.7';
+    kwSearch.style.pointerEvents = 'none';
+    fetch('/api/gen/collect/search?platform=' + platform + '&keyword=' + encodeURIComponent(kw) + '&page=1', {
+      headers: { 'Authorization': 'Bearer ' + tok() }
+    })
+    .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
+    .then(function (x) {
+      kwSearch.textContent = '搜索';
+      kwSearch.style.opacity = '1';
+      kwSearch.style.pointerEvents = 'auto';
+      if (x.s === 401) { HQ.login(); return; }
+      if (x.s === 402) { setNote('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>', '#f4708a'); return; }
+      renderSearchResults((x.d && x.d.items) || []);
+      if (x.d && x.d.points_left != null && window.HQ) window.HQ.refreshPoints();
+    })
+    .catch(function () {
+      kwSearch.textContent = '搜索';
+      kwSearch.style.opacity = '1';
+      kwSearch.style.pointerEvents = 'auto';
+      setNote('搜索失败，请重试', '#f4708a');
+    });
+  }
+
+  function renderSearchResults(items) {
+    if (!srGrid) return;
+    srResults.style.display = '';
+    if (!items.length) {
+      srCount.textContent = '无结果';
+      srGrid.innerHTML = '<div style="grid-column:1/-1; padding:18px; text-align:center; font-size:12.5px; color:#5c6b82;">未找到相关视频</div>';
+      return;
+    }
+    srCount.textContent = items.length + ' 条';
+    srGrid.innerHTML = items.map(function (it, i) {
+      var likes = it.stats && it.stats.like != null ? fmtNum(it.stats.like) : '';
+      return '<div class="sr-card" data-idx="' + i + '">' +
+        '<div style="position:relative; aspect-ratio:9/16; overflow:hidden; background:rgba(7,11,19,.5);">' +
+          '<img src="' + escAttr(safeUrl(it.cover || '')) + '" alt="" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display=\'none\'">' +
+          (likes ? '<div style="position:absolute; bottom:5px; left:5px; padding:2px 7px; background:rgba(7,11,19,.65); border-radius:5px; font-size:10.5px; color:#eaf1fa; font-family:\'JetBrains Mono\',monospace;">♥ ' + likes + '</div>' : '') +
+        '</div>' +
+        '<div style="padding:7px 9px 9px;">' +
+          '<div style="font-size:12px; font-weight:500; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; line-height:1.5; margin-bottom:4px;">' + escHtml(it.title || '无标题') + '</div>' +
+          '<div style="font-size:11px; color:#5c6b82; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">@' + escHtml(it.author || '') + '</div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+
+    srGrid.querySelectorAll('.sr-card').forEach(function (card) {
+      var idx = parseInt(card.getAttribute('data-idx'), 10);
+      var it  = items[idx] || {};
+      card.onclick = function () {
+        srGrid.querySelectorAll('.sr-card').forEach(function (x) { x.classList.remove('selected'); });
+        card.classList.add('selected');
+        selectedUrl = it.url || '';
+        if (kwSelected) kwSelected.style.display = '';
+        if (kwSelectedTitle) kwSelectedTitle.textContent = it.title || selectedUrl;
+      };
+    });
+  }
+
+  /* ---- poll (main collect job) ---- */
+  function poll(id, t0) {
+    if (pollIv) clearInterval(pollIv);
+    pollIv = setInterval(function () {
+      fetch('/api/gen/job/' + id, { headers: { 'Authorization': 'Bearer ' + tok() } })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          var sec = Math.round((Date.now() - t0) / 1000);
+          if (!d.status) {
+            clearInterval(pollIv);
+            busy(false); showState('emptyState');
+            localStorage.removeItem('hq_active_collect_job');
+            return;
+          }
+          if (d.status === 'done') {
+            clearInterval(pollIv);
+            busy(false);
+            localStorage.removeItem('hq_active_collect_job');
+            if (d.result) { currentResult = d.result; renderResult(d.result); applyDownloadView(); }
+            setNote(downloadOnly ? '✅ 视频已解析，可下载（' + sec + 's）' : '✅ 爬取完成（' + sec + 's）· 点数已更新', '#2bd576');
+            if (window.HQ && window.HQ.refreshPoints) window.HQ.refreshPoints();
+            loadHistory();
+          } else if (d.status === 'error') {
+            clearInterval(pollIv);
+            busy(false); showState('emptyState');
+            setNote('爬取失败：' + escHtml(d.error || '') + ' · 已退点', '#f4708a');
+            localStorage.removeItem('hq_active_collect_job');
+          } else if (sec > POLL_GIVEUP_SEC) {
+            clearInterval(pollIv);
+            busy(false); showState('emptyState');
+            setNote('等待超过 ' + sec + 's，任务仍在后台执行 · 完成后刷新页面可在历史记录查看', '#f4b740');
+            localStorage.removeItem('hq_active_collect_job');
+          } else {
+            var stage = sec < 6 ? '解析链接' : (sec < 18 ? '拉取详情' : '提取评论/文案');
+            setLoadNote(stage + '中（' + sec + 's）');
+          }
+        }).catch(function () {});
+    }, 4000);
+  }
+
+  /* ---- submit collect ---- */
+  function submitCollect(url, dlOnly) {
+    if (!url) { setNote('请粘贴视频链接或选择视频', '#f4708a'); return; }
+    downloadOnly = !!dlOnly;   // 视频下载模式：跳过评论/文案，产出只留视频+下载
+    currentUrl = url;  // ponytail: save for on-demand transcript extraction
+    busy(true);
+    showState('loadingState');
+    setLoadNote(downloadOnly ? '解析视频链接…' : '提交爬取任务…');
+    var t0 = Date.now();
+    // ponytail: no platform in body — backend auto-detects from URL
+    fetch('/api/gen/collect', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + tok(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: url, want: downloadOnly ? ['video'] : ['comments'] })
+    })
+    .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
+    .then(function (x) {
+      if (x.s === 401) { HQ.login(); return; }
+      if (x.s === 402) {
+        busy(false); showState('emptyState');
+        setNote('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>', '#f4708a');
+        return;
+      }
+      if (!x.d || !x.d.job_id) {
+        busy(false); showState('emptyState');
+        setNote('提交失败：' + escHtml((x.d && x.d.detail) || '未知'), '#f4708a');
+        return;
+      }
+      localStorage.setItem('hq_active_collect_job', JSON.stringify({ id: x.d.job_id, t0: t0, url: url }));
+      setLoadNote('爬取任务已提交，正在处理…');
+      poll(x.d.job_id, t0);
+    })
+    .catch(function () {
+      busy(false); showState('emptyState');
+      setNote('网络错误，请重试', '#f4708a');
+    });
+  }
+
+  /* ---- collect button ---- */
+  if (colBtn) colBtn.onclick = function () {
+    var url = '';
+    if (mode === 'link' || mode === 'download') {
+      url = urlInput ? urlInput.value.trim() : '';
+      var m = url.match(/https?:\/\/\S+/);
+      if (m) url = m[0];
+    } else {
+      url = selectedUrl;
+    }
+    submitCollect(url, mode === 'download');
+  };
+
+  /* ---- 视频下载模式：只留视频卡 + 大号下载按钮，隐藏评论/文案 ---- */
+  function applyDownloadView() {
+    var rs = document.getElementById('resultState');
+    if (rs) rs.classList.toggle('dl-only', downloadOnly);
+    var old = document.getElementById('dlBigBtn'); if (old) old.remove();
+    if (!downloadOnly) return;
+    var v = (currentResult && currentResult.video) || {};
+    var card = document.getElementById('videoCard');
+    if (!card || !v.play_url) { setNote('未解析到可下载的视频直链，请换条链接重试', '#f4708a'); return; }
+    var href = '/api/gen/dl?url=' + encodeURIComponent(v.play_url) + (v.decode_key ? '&dk=' + encodeURIComponent(v.decode_key) : '') + '&name=' + encodeURIComponent((v.title || 'video').slice(0, 30));
+    var btn = document.createElement('button');
+    btn.id = 'dlBigBtn'; btn.className = 'hv-lift';
+    btn.style.cssText = 'width:100%;height:50px;margin-bottom:12px;font-size:15px;font-weight:700;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:12px;cursor:pointer;font-family:inherit;';
+    btn.textContent = '⬇ 下载视频';
+    btn.onclick = function () { downloadProxy(href).catch(function (err) { setNote(escHtml(err.message), '#f4708a'); }); };
+    card.parentNode.insertBefore(btn, card.nextSibling);
+  }
+
+  /* ---- render result ---- */
+  function renderResult(r) {
+    showState('resultState');
+    var v        = r.video    || {};
+    var copy     = r.copy     || {};
+    var comments = r.comments || [];
+    var imgs     = r.images   || [];
+
+    // 「提取文案」按钮依赖 currentUrl；submitTranscript 见到空值会静默 return，表现为「点了没反应」。
+    // 提交采集、刷新恢复两条路径各自设过它，唯独从历史记录载入那条漏了。统一在这里从结果里取，
+    // 这样以后再多一条渲染路径也不会漏。result.source 是后端规范化后的链接，比短链更适合再解析。
+    var src = r.source || v.url || '';
+    if (src) currentUrl = src;
+
+    /* video card */
+    var vcCover  = document.getElementById('vcCover');
+    var vcTitle  = document.getElementById('vcTitle');
+    var vcAvatar = document.getElementById('vcAvatar');
+    var vcAuthor = document.getElementById('vcAuthor');
+    var vcStats  = document.getElementById('vcStats');
+    var vcMeta   = document.getElementById('vcMeta');
+
+    if (vcCover)  { vcCover.src = v.cover || ''; }
+    if (vcTitle)  vcTitle.textContent = v.title || '无标题';
+    if (vcAvatar) { vcAvatar.src = v.authorAvatar || ''; vcAvatar.style.display = v.authorAvatar ? '' : 'none'; }
+    if (vcAuthor) {
+      vcAuthor.textContent = '@' + (v.author || '');
+      if (v.profile_url) { vcAuthor.href = v.profile_url; vcAuthor.style.cursor = 'pointer'; }
+      else { vcAuthor.removeAttribute('href'); vcAuthor.style.cursor = 'default'; }
+    }
+    if (vcStats && v.stats) {
+      var s = v.stats;
+      vcStats.innerHTML = [
+        s.like    != null ? statChip('♥', fmtNum(s.like),    '点赞') : '',
+        s.comment != null ? statChip('💬', fmtNum(s.comment), '评论') : '',
+        s.share   != null ? statChip('↗', fmtNum(s.share),   '分享') : '',
+        s.collect != null ? statChip('★', fmtNum(s.collect), '收藏') : ''
+      ].filter(Boolean).join('');
+    }
+    if (vcMeta) {
+      var parts = [];
+      if (v.duration)     parts.push(v.duration + 's');
+      if (v.publish_time) parts.push(v.publish_time);
+      var metaHtml = escHtml(parts.join(' · '));
+      if (v.url) metaHtml += (metaHtml ? ' · ' : '') + '<a href="' + escAttr(safeUrl(v.url)) + '" target="_blank" rel="noopener" style="color:#e7b24c;text-decoration:none;">看原视频 ↗</a>';
+      if (v.play_url) metaHtml += (metaHtml ? ' · ' : '') + '<a data-proxy-download href="/api/gen/dl?url=' + encodeURIComponent(v.play_url) + (v.decode_key ? '&dk=' + encodeURIComponent(v.decode_key) : '') + '&name=' + encodeURIComponent((v.title || 'video').slice(0, 30)) + '" style="color:#2dd4bf;text-decoration:none;font-weight:600;">⬇ 下载无水印视频</a>';
+      vcMeta.innerHTML = metaHtml;
+      var proxyDownload = vcMeta.querySelector('[data-proxy-download]');
+      if (proxyDownload) proxyDownload.onclick = function (e) { e.preventDefault(); downloadProxy(proxyDownload.href).catch(function (err) { setNote(escHtml(err.message), '#f4708a'); }); };
+    }
+
+    /* image gallery (图文笔记) */
+    var galBlock = document.getElementById('galleryBlock');
+    if (galBlock) {
+      if (imgs.length) {
+        document.getElementById('galCount').textContent = '共 ' + imgs.length + ' 张';
+        document.getElementById('galleryGrid').innerHTML = imgs.map(function (u) {
+          var imgUrl = safeUrl(u);
+          return '<a href="' + escAttr(imgUrl) + '" target="_blank" rel="noopener" style="display:block; aspect-ratio:3/4; border-radius:8px; overflow:hidden; background:rgba(148,164,187,.06);">' +
+            '<img src="' + escAttr(imgUrl) + '" alt="" loading="lazy" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.style.opacity=.25"></a>';
+        }).join('');
+        galBlock.style.display = '';
+        var galDlBtn = document.getElementById('galDownloadBtn');
+        if (galDlBtn) {
+          galDlBtn.style.display = '';
+          galDlBtn.onclick = function () {
+            imgs.forEach(function (u, i) {
+              setTimeout(function () {
+                downloadProxy('/api/gen/dl?url=' + encodeURIComponent(u) + '&name=' + encodeURIComponent('img_' + (i + 1)))
+                  .catch(function (err) { setNote(escHtml(err.message), '#f4708a'); });
+              }, i * 260);
+            });
+          };
+        }
+      } else {
+        galBlock.style.display = 'none';
+        var galDlBtn2 = document.getElementById('galDownloadBtn');
+        if (galDlBtn2) galDlBtn2.style.display = 'none';
+      }
+    }
+
+    /* copy block */
+    copyFields = {};
+    if (copy.title) copyFields.title = copy.title;
+    if (copy.desc)  copyFields.desc  = copy.desc;
+    if (copy.tags && copy.tags.length) copyFields.tags = copy.tags.map(function (t) { return '#' + t; }).join(' ');
+
+    var copyContent = document.getElementById('copyContent');
+    if (copyContent) {
+      var html = '';
+      if (copy.title) html += copyFieldHtml('标题', copy.title, 'title');
+      if (copy.desc)  html += copyFieldHtml('正文', copy.desc,  'desc');
+      if (copy.tags && copy.tags.length) {
+        html += '<div style="margin-bottom:0;">' +
+          '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">' +
+            '<span style="font-size:12px; color:#5c6b82;">话题标签</span>' +
+            '<button class="copy-btn copy-field-btn" data-field="tags">复制标签</button>' +
+          '</div>' +
+          '<div style="display:flex; flex-wrap:wrap; gap:6px;">' +
+            copy.tags.map(function (t) {
+              return '<span style="padding:4px 10px; background:rgba(45,212,191,.1); border:1px solid rgba(45,212,191,.2); border-radius:6px; font-size:12px; color:#2dd4bf;">#' + escHtml(t) + '</span>';
+            }).join('') +
+          '</div></div>';
+      }
+      if (!html) html = '<span style="font-size:13px; color:#5c6b82;">无文案数据</span>';
+      copyContent.innerHTML = html;
+
+      copyContent.querySelectorAll('.copy-field-btn').forEach(function (btn) {
+        btn.onclick = function () {
+          var text = copyFields[btn.getAttribute('data-field')] || '';
+          copyText(text, btn);
+        };
+      });
+    }
+
+    var copyAllBtn = document.getElementById('copyAllBtn');
+    if (copyAllBtn) copyAllBtn.onclick = function () {
+      var all = [copy.title, copy.desc, copyFields.tags].filter(Boolean).join('\n\n');
+      copyText(all, copyAllBtn);
+    };
+
+    /* comments */
+    var cmtList  = document.getElementById('cmtList');
+    var cmtCount = document.getElementById('cmtCount');
+    var cmtMore  = document.getElementById('cmtMore');
+    if (cmtCount) cmtCount.textContent = '（' + comments.length + ' 条）';
+    if (cmtList) {
+      if (!comments.length) {
+        cmtList.innerHTML = '<div style="padding:16px 0; text-align:center; font-size:12.5px; color:#5c6b82;">暂无评论数据</div>';
+      } else {
+        cmtList.innerHTML = comments.slice(0, 20).map(function (c) {
+          var prof = c.profile_url ? escAttr(safeUrl(c.profile_url)) : '';
+          var avatarInner = c.avatar
+            ? '<img src="' + escAttr(safeUrl(c.avatar)) + '" alt="" style="width:28px;height:28px;border-radius:50%;object-fit:cover;flex:none;margin-top:1px;background:rgba(148,164,187,.2);" onerror="this.style.display=\'none\'">'
+            : '<div style="width:28px;height:28px;border-radius:50%;flex:none;background:rgba(148,164,187,.15);display:flex;align-items:center;justify-content:center;font-size:11px;color:#5c6b82;">' + escHtml((c.user || '?').charAt(0)) + '</div>';
+          var avatar = prof ? '<a href="' + prof + '" target="_blank" rel="noopener" style="display:contents;">' + avatarInner + '</a>' : avatarInner;
+          var userEl = prof
+            ? '<a href="' + prof + '" target="_blank" rel="noopener" style="font-weight:500;color:#94a4bb;text-decoration:none;">' + escHtml(c.user || '匿名') + '</a>'
+            : '<span style="font-weight:500;">' + escHtml(c.user || '匿名') + '</span>';
+          return '<div class="cmt-item">' + avatar +
+            '<div style="flex:1;min-width:0;">' +
+              '<div style="font-size:12px;color:#94a4bb;margin-bottom:3px;display:flex;align-items:center;gap:8px;">' +
+                userEl +
+                (c.likes ? '<span style="font-size:11px;color:#5c6b82;font-family:\'JetBrains Mono\',monospace;">♥ ' + fmtNum(c.likes) + '</span>' : '') +
+                (c.time  ? '<span style="font-size:11px;color:#3d4f62;">' + escHtml(c.time) + '</span>' : '') +
+              '</div>' +
+              '<div style="font-size:13px;line-height:1.6;color:#eaf1fa;">' + escHtml(c.text || '') + '</div>' +
+            '</div></div>';
+        }).join('');
+      }
+    }
+    if (cmtMore) cmtMore.style.display = (r.comments_more || comments.length >= 20) ? '' : 'none';
+
+    var exportCmtBtn = document.getElementById('exportCmtBtn');
+    if (exportCmtBtn) exportCmtBtn.onclick = function () { exportComments(comments, v.title); };
+
+    /* reset transcript area + configure extract button */
+    var trBlock  = document.getElementById('transcriptBlock');
+    var trText   = document.getElementById('transcriptText');
+    var trCopyBtn = document.getElementById('copyTranscriptBtn');
+    if (trBlock)   trBlock.style.display = (imgs.length > 0) ? 'none' : '';  // 视频类采集后就常驻显示文案文本框(空+提示)，图文无口播则藏
+    if (trText)    trText.value = '';
+    if (trCopyBtn) trCopyBtn.style.display = 'none';
+
+    var extractWrap = document.getElementById('transcriptExtractWrap');
+    var extractBtn  = document.getElementById('transcriptExtractBtn');
+    var extractNote = document.getElementById('transcriptExtractNote');
+    var hasImages = imgs.length > 0;
+    if (extractWrap) extractWrap.style.display = '';
+    if (extractBtn) {
+      extractBtn.disabled = hasImages;
+      extractBtn.style.opacity       = hasImages ? '.4' : '1';
+      extractBtn.style.cursor        = hasImages ? 'not-allowed' : 'pointer';
+      extractBtn.style.pointerEvents = hasImages ? 'none' : 'auto';
+      extractBtn.innerHTML = '提取文案 <span style="font-size:12px;font-weight:400;opacity:.75;">约 6 点</span>';
+      if (!hasImages) extractBtn.onclick = submitTranscript;
+    }
+    if (extractNote) extractNote.textContent = hasImages ? '图文内容无口播文案' : '口播提取约 20 秒到数分钟 · 按需点击';
+    if (extractNote) extractNote.style.color = '#5c6b82';
+  }
+
+  /* ---- transcript extraction (on-demand) ---- */
+  function submitTranscript() {
+    var btn  = document.getElementById('transcriptExtractBtn');
+    var note = document.getElementById('transcriptExtractNote');
+    if (!currentUrl) {   // 原来这里是静默 return —— 用户只看到按钮点不动，没有任何反馈
+      if (note) { note.textContent = '没拿到原视频链接，请重新贴一次链接采集'; note.style.color = '#f4708a'; }
+      return;
+    }
+    if (btn) { btn.disabled = true; btn.style.opacity = '.7'; btn.style.pointerEvents = 'none'; btn.textContent = '提取中…'; }
+    if (note) { note.textContent = '口播提取排队/识别中，通常约 20 秒到数分钟…'; note.style.color = '#2dd4bf'; }
+    requestTranscript()
+      .then(function (text) {
+        showTranscript(text);
+        if (window.HQ && window.HQ.refreshPoints) window.HQ.refreshPoints();
+      })
+      .catch(function (err) {
+        if (err && err.login) { HQ.login(); return; }
+        resetTranscriptBtn(escHtml((err && err.message) || '提取失败'), true);
+      });
+  }
+
+  function requestTranscript() {
+    if (transcriptBusy) return Promise.reject(new Error('正在提取中，请稍候'));
+    if (!currentUrl) return Promise.reject(new Error('当前内容无可提取链接'));
+    transcriptBusy = true;
+    var t0 = Date.now();
+    return fetch('/api/gen/collect', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + tok(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: currentUrl, want: ['transcript'] })
+    })
+      .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
+      .then(function (x) {
+        if (x.s === 401) {
+          var loginErr = new Error('请先登录');
+          loginErr.login = true;
+          throw loginErr;
+        }
+        if (x.s === 402) throw new Error('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>');
+        if (!x.d || !x.d.job_id) throw new Error('提交失败：' + ((x.d && x.d.detail) || ''));
+        return pollTranscript(x.d.job_id, t0);
+      })
+      .catch(function (err) {
+        if (err && err.login) throw err;
+        if (err && err.name !== 'TypeError' && err.message) throw err;
+        throw new Error('网络错误，请重试');
+      })
+      .finally(function () {
+        transcriptBusy = false;
+      });
+  }
+
+  function resetTranscriptBtn(msg, isErr) {
+    var btn  = document.getElementById('transcriptExtractBtn');
+    var note = document.getElementById('transcriptExtractNote');
+    if (btn) {
+      btn.disabled = false; btn.style.opacity = '1'; btn.style.pointerEvents = 'auto';
+      btn.innerHTML = '提取文案 <span style="font-size:12px;font-weight:400;opacity:.75;">约 6 点</span>';
+      btn.onclick = submitTranscript;
+    }
+    if (note) {
+      note.innerHTML = msg || '口播提取约 20 秒到数分钟 · 按需点击';
+      note.style.color = isErr ? '#f4708a' : '#5c6b82';
+    }
+  }
+
+  function pollTranscript(id, t0) {
+    return new Promise(function (resolve, reject) {
+      var iv = setInterval(function () {
+        fetch('/api/gen/job/' + id, { headers: { 'Authorization': 'Bearer ' + tok() } })
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            var sec = Math.round((Date.now() - t0) / 1000);
+            if (!d.status) { clearInterval(iv); reject(new Error('提取失败')); return; }
+            if (d.status === 'done') {
+              clearInterval(iv);
+              var tr = d.result && d.result.transcript;
+              if (tr && tr.text) resolve(tr.text);
+              else reject(new Error('该内容无口播文案'));
+            } else if (d.status === 'error') {
+              clearInterval(iv);
+              reject(new Error('提取失败：' + (d.error || '')));
+            } else if (sec > POLL_GIVEUP_SEC) {
+              clearInterval(iv);
+              reject(new Error('等待超过 ' + sec + 's，转写仍在后台执行，完成后可在历史记录查看'));
+            }
+            // else: pending, keep polling
+          }).catch(function () {
+            clearInterval(iv);
+            reject(new Error('网络错误，请重试'));
+          });
+      }, 4000);
+    });
+  }
+
+  function showTranscript(text) {
+    var block   = document.getElementById('transcriptBlock');
+    var textEl  = document.getElementById('transcriptText');
+    var copyBtn = document.getElementById('copyTranscriptBtn');
+    if (block)  block.style.display = '';
+    if (textEl) textEl.value = text;
+    if (copyBtn) {
+      copyBtn.style.display = '';
+      copyBtn.onclick = function () { copyText(text, copyBtn); };
+    }
+    resetTranscriptBtn();  // restore button (allow re-extract)
+  }
+
+  /* ---- helpers ---- */
+  function copyFieldHtml(label, text, field) {
+    return '<div style="margin-bottom:10px;">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px;">' +
+        '<span style="font-size:12px;color:#5c6b82;">' + label + '</span>' +
+        '<button class="copy-btn copy-field-btn" data-field="' + field + '">复制</button>' +
+      '</div>' +
+      '<div style="font-size:13px;line-height:1.7;color:#eaf1fa;white-space:pre-wrap;">' + escHtml(text) + '</div>' +
+    '</div>';
+  }
+
+  function statChip(icon, val, label) {
+    return '<div style="display:flex;align-items:center;gap:4px;font-size:12px;color:#94a4bb;">' +
+      '<span>' + icon + '</span>' +
+      '<span style="color:#eaf1fa;font-family:\'JetBrains Mono\',monospace;">' + val + '</span>' +
+      '<span style="color:#5c6b82;">' + label + '</span>' +
+    '</div>';
+  }
+
+  function copyText(text, btn) {
+    var origText = btn ? btn.textContent : '';
+    function done() { if (btn) { btn.textContent = '已复制'; setTimeout(function () { btn.textContent = origText; }, 1500); } }
+    try {
+      navigator.clipboard.writeText(text).then(done).catch(fallback);
+    } catch (e) { fallback(); }
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text; ta.style.cssText = 'position:fixed;opacity:0;';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); } catch (e2) {}
+      document.body.removeChild(ta);
+      done();
+    }
+  }
+
+  function getTranscriptText() {
+    var el = document.getElementById('transcriptText');
+    return (el && el.value ? el.value : '').trim();
+  }
+
+  function copyLegacyText() {
+    var c = currentResult.copy || {};
+    return [c.title, c.desc, copyFields.tags].filter(Boolean).join('\n\n');
+  }
+
+  function setActionLoading(el, text) {
+    if (!el) return function () {};
+    var oldHtml = el.innerHTML;
+    var oldPointer = el.style.pointerEvents;
+    var oldOpacity = el.style.opacity;
+    el.style.pointerEvents = 'none';
+    el.style.opacity = '.72';
+    el.innerHTML = '<div style="font-size:12px;font-weight:700;color:#e7b24c;">' + escHtml(text) + '</div>';
+    return function () {
+      el.innerHTML = oldHtml;
+      el.style.pointerEvents = oldPointer || 'auto';
+      el.style.opacity = oldOpacity || '1';
+    };
+  }
+
+  function exportComments(comments, videoTitle) {
+    if (!comments || !comments.length) { setNote('没有评论数据可导出', '#f4708a'); return; }
+    var rows = ['序号,用户,点赞,时间,内容'];
+    comments.forEach(function (c, i) {
+      rows.push([i + 1, c.user || '', c.likes || 0, c.time || '', '"' + (c.text || '').replace(/"/g, '""') + '"'].join(','));
+    });
+    var head = '﻿'; // BOM for Excel
+    var blob = new Blob([head + rows.join('\n')], { type: 'text/csv;charset=utf-8' });
+    var url  = URL.createObjectURL(blob);
+    var a    = document.createElement('a');
+    a.href = url; a.download = 'comments_' + Date.now() + '.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    setNote('✅ 评论已导出 .csv', '#2bd576');
+  }
+
+  /* ---- action buttons ---- */
+  var actCopy   = document.getElementById('actCopy');
+  var actExport = document.getElementById('actExport');
+  var actBanana = document.getElementById('actBanana');
+  var actFeishu = document.getElementById('actFeishu');
+  var actStore  = document.getElementById('actStore');
+  var actRetry  = document.getElementById('actRetry');
+
+  if (actCopy) actCopy.onclick = function () {
+    if (!currentResult) { setNote('先爬取一条视频', '#f4708a'); return; }
+    var existed = getTranscriptText();
+    if (existed) {
+      copyText(existed, null);
+      setNote('✅ 口播文案已复制到剪贴板', '#2bd576');
+      return;
+    }
+
+    var hasImages = currentResult.images && currentResult.images.length;
+    if (hasImages || !currentUrl) {
+      var legacy = copyLegacyText();
+      if (!legacy) { setNote('该内容无口播可提取', '#f4708a'); return; }
+      copyText(legacy, null);
+      setNote('✅ 文案已复制到剪贴板', '#2bd576');
+      return;
+    }
+
+    var restore = setActionLoading(actCopy, '提取并复制中…');
+    var note = document.getElementById('transcriptExtractNote');
+    if (note) { note.textContent = '正在提取口播文案，完成后自动复制…'; note.style.color = '#2dd4bf'; }
+    requestTranscript()
+      .then(function (text) {
+        showTranscript(text);
+        copyText(text, null);
+        setNote('✅ 文案已提取并复制', '#2bd576');
+        if (window.HQ && window.HQ.refreshPoints) window.HQ.refreshPoints();
+      })
+      .catch(function (err) {
+        if (err && err.login) { HQ.login(); return; }
+        resetTranscriptBtn(escHtml((err && err.message) || '提取失败'), true);
+        setNote(escHtml((err && err.message) || '提取失败'), '#f4708a');
+      })
+      .finally(restore);
+  };
+  if (actExport) actExport.onclick = function () {
+    if (!currentResult) { setNote('先爬取一条视频', '#f4708a'); return; }
+    exportComments(currentResult.comments, currentResult.video && currentResult.video.title);
+  };
+  if (actBanana) actBanana.onclick = function () {
+    if (!currentResult || !currentResult.video) { setNote('先爬取一条视频', '#f4708a'); return; }
+    // ponytail: localStorage handoff — banana.html 侧加 hq_collect_to_banana 读取逻辑即可
+    try {
+      localStorage.setItem('hq_collect_to_banana', JSON.stringify({
+        cover: currentResult.video.cover,
+        title: (currentResult.copy && currentResult.copy.title) || currentResult.video.title
+      }));
+    } catch (e) {}
+    location.href = 'banana.html';
+  };
+  if (actFeishu) actFeishu.onclick = function () {
+    setNote('飞书推送即将上线，当前不可用', '#94a4bb');
+  };
+  if (actRetry) actRetry.onclick = function () {
+    var url = (mode === 'link' || mode === 'download')
+      ? (urlInput ? urlInput.value.trim() : '')
+      : selectedUrl;
+    var m = url.match(/https?:\/\/\S+/);
+    if (m) url = m[0];
+    submitCollect(url, mode === 'download');
+  };
+
+  /* ---- history ---- */
+  function loadHistory() {
+    var grid = document.getElementById('collectHistory');
+    if (!grid || !tok()) return;
+    fetch('/api/gen/history?kind=collect', { headers: { 'Authorization': 'Bearer ' + tok() } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.items || !d.items.length) return;
+        grid.innerHTML = d.items.slice(0, 6).map(function (it) {
+          return '<div class="hv-lift" data-jid="' + escAttr(it.job_id || '') + '" style="cursor:pointer; border:1px solid rgba(148,164,187,.12); border-radius:11px; overflow:hidden; background:rgba(7,11,19,.4); transition:.16s;">' +
+            '<img src="' + escAttr(safeUrl(it.url || '')) + '" alt="" style="display:block; width:100%; aspect-ratio:9/16; object-fit:cover;" onerror="this.parentElement.style.background=\'rgba(148,164,187,.06)\'">' +
+            '<div style="padding:6px 8px; font-size:11.5px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:#94a4bb;">' + escHtml(it.prompt || '') + '</div>' +
+          '</div>';
+        }).join('');
+        grid.querySelectorAll('[data-jid]').forEach(function (card) {
+          card.onclick = function () {
+            var jid = card.getAttribute('data-jid');
+            if (!jid) return;
+            fetch('/api/gen/job/' + jid, { headers: { 'Authorization': 'Bearer ' + tok() } })
+              .then(function (r) { return r.json(); })
+              .then(function (d) {
+                if (d.result) { downloadOnly = false; currentResult = d.result; renderResult(d.result); applyDownloadView(); setNote('已载入历史采集', '#2dd4bf'); }
+              }).catch(function () {});
+          };
+        });
+      }).catch(function () {});
+  }
+
+  /* ---- utils ---- */
+  function fmtNum(n) {
+    if (n == null || isNaN(n)) return '';
+    n = Number(n);
+    return n >= 10000 ? (n / 10000).toFixed(1) + 'w' : String(n);
+  }
+  function escHtml(s) {
+    if (window.HQ && HQ.escapeHtml) return HQ.escapeHtml(s);
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/\//g, '&#x2F;');
+  }
+  function escAttr(s) { return window.HQ && HQ.escapeAttr ? HQ.escapeAttr(s) : escHtml(s); }
+  function safeUrl(s) {
+    if (window.HQ && HQ.safeUrl) return HQ.safeUrl(s);
+    s = String(s == null ? '' : s).trim();
+    return /^(https?:|mailto:|tel:|\/(?!\/)|\.{0,2}\/)/i.test(s) ? s : '#';
+  }
+
+  /* ---- init ---- */
+  loadHistory();
+
+  // resume pending job
+  try {
+    var aj = JSON.parse(localStorage.getItem('hq_active_collect_job') || 'null');
+    if (aj && aj.id) {
+      busy(true);
+      showState('loadingState');
+      setLoadNote('接上进行中的爬取任务…');
+      if (aj.url && urlInput) urlInput.value = aj.url;
+      if (aj.url) currentUrl = aj.url;
+      poll(aj.id, aj.t0 || Date.now());
+    }
+  } catch (e) {}
+
+})();
+</script>
+</body>
+</html>
