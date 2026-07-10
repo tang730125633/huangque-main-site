@@ -12,18 +12,6 @@
     "cover": "../assets/tutorials/huangque-ai-getting-started.webp"
   },
   {
-    "id": "overview-1",
-    "category": "overview",
-    "title": "黄雀 AI 是什么",
-    "desc": "3 分钟了解全平台能力：从评论区获客到 AI 作图/视频/配音一条龙。",
-    "duration": "03:20",
-    "level": "入门",
-    "accent": "gold",
-    "source": "mp4",
-    "url": "../assets/meiye_video.mp4",
-    "cover": "../assets/meiye_poster.webp"
-  },
-  {
     "id": "overview-2",
     "category": "overview",
     "title": "从获客到成交：一条龙流程",
