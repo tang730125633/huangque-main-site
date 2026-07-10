@@ -181,7 +181,6 @@
       v.addEventListener('loadeddata', markReady, {once:true});
       v.addEventListener('playing', markReady, {once:true});
       v.addEventListener('error', markBroken, {once:true});
-      v.addEventListener('stalled', markBroken, {once:true});
       stageEl.appendChild(v);
     } else if((x.source==='bili'||x.source==='youtube') && safeUrl(x.url)){
       var f=document.createElement('iframe');
