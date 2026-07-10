@@ -274,9 +274,25 @@
   function adaptCount(){ syncCount(); }
 
   adaptCount(); // init: nb2 默认 + 数量上限
-  // 灵感页「做同款」：从 ?prompt= / ?engine= 预填提示词 + 切引擎
+  function detectPromptRatio(text){
+    var src=String(text||'').replace(/[：]/g,':').replace(/[×X]/g,'x').toLowerCase();
+    var exact=src.match(/(?:^|[^\d])(9\s*[:x]\s*16|16\s*[:x]\s*9|1\s*[:x]\s*1|3\s*[:x]\s*4|4\s*[:x]\s*5|5\s*[:x]\s*4)(?:[^\d]|$)/);
+    if(exact) return exact[1].replace(/\s*/g,'').replace('x',':');
+    if(/方图|方版|1比1|四宫格|九宫格/.test(src)) return '1:1';
+    if(/横版|横构图|横幅/.test(src)) return '16:9';
+    if(/竖版|竖构图|竖幅/.test(src)) return '9:16';
+    return '';
+  }
+  // 灵感页「做同款」：从 ?prompt= / ?engine= 预填提示词 + 切引擎，并尽量从提示词里还原比例
   try{ var ip=new URLSearchParams(location.search);
-    var pp=ip.get('prompt'); if(pp){ pr.value=pp; }
+    var pp=ip.get('prompt');
+    if(pp){
+      pr.value=pp;
+      var inferredRatio=detectPromptRatio(pp);
+      // 传 false：不联动模板。用户是从灵感页「做同款」进来的，并没有在用模板，
+      // 让 syncTemplateForRatio 高亮一个他没选的模板卡片（还带出模板说明）会误导。
+      if(inferredRatio) selectRatio(inferredRatio, false);
+    }
     var pe=ip.get('engine'); if(pe && document.querySelector('#engineRow [data-engine="'+pe+'"]')) selectEngine(pe);
   }catch(e){}
 
