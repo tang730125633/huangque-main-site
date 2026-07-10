@@ -19,9 +19,9 @@
     "duration": "04:34",
     "level": "入门",
     "accent": "cyan",
-    "source": "coming",
-    "link": "inspiration.html",
-    "cover": "../assets/tutorials/huangque-ai-overview-flow.webp"
+    "source": "mp4",
+    "cover": "../assets/tutorials/huangque-ai-overview-flow.webp",
+    "url": "https://video.huangquechuanmei.com/huangque/tutorials/huangque-ai-overview-flow.mp4"
   },
   {
     "id": "overview-3",
