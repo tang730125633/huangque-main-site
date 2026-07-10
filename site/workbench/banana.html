@@ -414,10 +414,15 @@
     setNote(label+' · '+hint,'#2dd4bf');
     var t0=Date.now();
     fetch(endpoint,{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
-      .then(function(r){ return r.json().then(function(d){ return {s:r.status,d:d}; }); })
+      .then(function(r){ return r.text().then(function(t){
+        var d={};
+        try{ d=t?JSON.parse(t):{}; }catch(e){ d={detail:(r.status===413?'图片太大，请压缩后重试':(t||'').replace(/<[^>]+>/g,' ').trim().slice(0,120))}; }
+        return {s:r.status,d:d};
+      }); })
       .then(function(x){
         if(x.s===401){ HQ.login(); return; }
         if(x.s===402){ busy(false); setNote('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>','#f4708a'); return; }
+        if(x.s===413){ busy(false); setNote('图片太大，请压缩后重试','#f4708a'); return; }
         if(!x.d.job_id){ busy(false); setNote('提交失败：'+((x.d&&x.d.detail)||'未知'),'#f4708a'); return; }
         localStorage.setItem('hq_active_job', JSON.stringify({id:x.d.job_id, t0:t0, label:(label||'生成中').replace(/（.*$/,'')}));
         poll(x.d.job_id, t0, label);
@@ -429,15 +434,41 @@
   var upBox=document.getElementById('upBox'), upFile=document.getElementById('upFile'),
       upIcon=document.getElementById('upIcon'), upText=document.getElementById('upText'), upHint=document.getElementById('upHint');
   function showInp(on){ if(inpBtn) inpBtn.style.display=on?'inline-flex':'none'; }
-  // 把一张图片文件/Blob（上传或粘贴）缩到 ≤1024 设为参考图（上传与粘贴共用）
+  var REF_MAX_SIDE=1280, REF_MAX_BYTES=9*1024*1024;
+  function dataUrlBytes(dataUrl){
+    var s=(dataUrl||'').split(',')[1]||'';
+    return Math.floor(s.length*3/4);
+  }
+  // 参考图必须保持 PNG：gpt 的「图生图」和「局部修改」都走 /v1/images/edits，
+  // 后端 _multipart 硬编码 Content-Type: image/png，OpenAI edits 也要求真 PNG。
+  // 压成 JPEG 就成了「JPEG 字节贴 PNG 标签」——Ark 按内容嗅探能吃，OpenAI 不保证。
+  // 体积改由尺寸收敛：每轮 0.85 缩放，直到进 REF_MAX_BYTES。
+  // ⚠️ 缩放后的尺寸必须跟 dataUrl 一起回传：setRef 存的 refW/refH 会被 inpaint 画布
+  //    (cv.width=refW) 复用，尺寸对不上就会让 mask 与 image 错位。
+  function shrinkToBudget(cv){
+    var out=cv.toDataURL('image/png');
+    for(var n=0;n<6 && dataUrlBytes(out)>REF_MAX_BYTES;n++){
+      var small=document.createElement('canvas');
+      small.width=Math.max(1,Math.round(cv.width*.85));
+      small.height=Math.max(1,Math.round(cv.height*.85));
+      small.getContext('2d').drawImage(cv,0,0,small.width,small.height);
+      cv=small; out=cv.toDataURL('image/png');
+    }
+    return {dataUrl:out, width:cv.width, height:cv.height};
+  }
+  function imageToRefDataUrl(im, maxSide){
+    var mx=maxSide||REF_MAX_SIDE, s=Math.min(1,mx/Math.max(im.width,im.height)), cv=document.createElement('canvas');
+    cv.width=Math.max(1,Math.round(im.width*s)); cv.height=Math.max(1,Math.round(im.height*s));
+    cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
+    return shrinkToBudget(cv);
+  }
+  // 把一张图片文件/Blob（上传或粘贴）压缩后设为参考图（上传与粘贴共用）
   function refFromFile(f){
     if(!f) return;
     var url=URL.createObjectURL(f), im=new Image();
     im.onload=function(){
-      var mx=1024, s=Math.min(1,mx/Math.max(im.width,im.height)), cv=document.createElement('canvas');
-      cv.width=Math.round(im.width*s); cv.height=Math.round(im.height*s);
-      cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
-      setRef(cv.toDataURL('image/png'), cv.width, cv.height);
+      var ref=imageToRefDataUrl(im);
+      setRef(ref.dataUrl, ref.width, ref.height);
       try{ URL.revokeObjectURL(url); }catch(e){}
     };
     im.onerror=function(){ setNote('这张图读取失败，换一张试试','#f4708a'); };
@@ -471,9 +502,8 @@
     revMsg('已就绪，点「反推提示词」','#5c6b82');
   }
   function revLoad(f){ if(!f) return; var url=URL.createObjectURL(f), im=new Image();
-    im.onload=function(){ var mx=1024,s=Math.min(1,mx/Math.max(im.width,im.height)),cv=document.createElement('canvas');
-      cv.width=Math.round(im.width*s); cv.height=Math.round(im.height*s); cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
-      revSet(cv.toDataURL('image/png'), cv.width, cv.height); try{URL.revokeObjectURL(url);}catch(e){} };
+    im.onload=function(){ var ref=imageToRefDataUrl(im,1024);
+      revSet(ref.dataUrl, ref.width, ref.height); try{URL.revokeObjectURL(url);}catch(e){} };
     im.onerror=function(){ revMsg('这张图读取失败，换一张','#f4708a'); }; im.src=url;
   }
   if(revFile) revFile.onchange=function(){ revLoad(revFile.files&&revFile.files[0]); };
@@ -585,10 +615,8 @@
       if(_cbd && _cbd.cover){
         var _cim=new Image(); _cim.crossOrigin='anonymous';
         _cim.onload=function(){
-          var mx=1024, s=Math.min(1,mx/Math.max(_cim.width,_cim.height)), cv=document.createElement('canvas');
-          cv.width=Math.round(_cim.width*s); cv.height=Math.round(_cim.height*s);
-          cv.getContext('2d').drawImage(_cim,0,0,cv.width,cv.height);
-          try{ setRef(cv.toDataURL('image/png'), cv.width, cv.height);
+          var ref=imageToRefDataUrl(_cim);
+          try{ setRef(ref.dataUrl, ref.width, ref.height);
             if(_cbd.title && pr && !(pr.value||'').trim()) pr.value=_cbd.title;
             setNote('✅ 已带入采集封面作参考图 · 改下提示词，点生成即走「图生图」','#2bd576');
           }catch(err){ setNote('采集图跨域无法载入，请改用上传','#f4708a'); }
@@ -680,8 +708,8 @@
   if(bEdit) bEdit.onclick=function(){ if(!lastResultUrl){ setNote('先生成一张，再「继续改」','#f4708a'); return; }
     selectEngine('gpt'); // 继续改是 gpt-image 专属，自动切换引擎并显示参考图区
     setNote('正在把当前图载入为参考…','#2dd4bf');
-    var im=new Image(); im.onload=function(){ var mx=1024,s=Math.min(1,mx/Math.max(im.width,im.height)),cv=document.createElement('canvas'); cv.width=Math.round(im.width*s); cv.height=Math.round(im.height*s); cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
-      try{ setRef(cv.toDataURL('image/png'),cv.width,cv.height); pr.scrollIntoView({block:'center'}); setNote('已把当前图设为参考，改下提示词再点生成（图生图）','#2bd576'); }catch(err){ setNote('继续改失败（图片跨域，换上传方式）：'+err,'#f4708a'); } };
+    var im=new Image(); im.onload=function(){ var ref=imageToRefDataUrl(im);
+      try{ setRef(ref.dataUrl,ref.width,ref.height); pr.scrollIntoView({block:'center'}); setNote('已把当前图设为参考，改下提示词再点生成（图生图）','#2bd576'); }catch(err){ setNote('继续改失败（图片跨域，换上传方式）：'+err,'#f4708a'); } };
     im.crossOrigin='anonymous'; im.onerror=function(){ setNote('继续改：图片读取失败','#f4708a'); }; im.src=lastResultUrl+'?t='+Date.now();
   };
   if(bVideo) bVideo.onclick=function(e){

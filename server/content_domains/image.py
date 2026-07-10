@@ -14,6 +14,11 @@ from .video import XIAOLEVIDEO_API_KEY, _xiaole_request
 
 # gpt 引擎出境优先级：VPS 隧道 → mihomo → heygen（见 egress.py）。官方 OpenAI 直连地址：
 OPENAI_OFFICIAL_BASE = os.environ.get("OPENAI_OFFICIAL_BASE", "https://api.openai.com").rstrip("/")
+IMAGE_REF_MAX_BYTES = max(1, int(os.environ.get("IMAGE_REF_MAX_BYTES", str(10 * 1024 * 1024)) or (10 * 1024 * 1024)))
+# 提示词上限：Ark 实测吃得下 2 万字，2000 是没必要的收紧；8000 对长场景描述够用。
+IMAGE_PROMPT_MAX_CHARS = max(1, int(os.environ.get("IMAGE_PROMPT_MAX_CHARS", "8000") or 8000))
+# count 上限取各引擎里最大的 MAX_N（gpt 4；seedream 2 由引擎自己再 cap）。
+IMAGE_MAX_COUNT = max(1, int(os.environ.get("IMAGE_MAX_COUNT", "4") or 4))
 
 # ===== Seedream（火山方舟 Ark）=====
 # 火山在国内，服务器直连即可：不走 VPS 隧道、不走 mihomo、不走 heygen 中转。
@@ -122,6 +127,48 @@ def _post_zelong2(path, data, ctype):
             errors.append("#%d %s: %s" % (idx, account["base"], str(e)[:160]))
             print("[zelong2-pool] attempt failed %s" % errors[-1], flush=True)
     raise ValueError("泽龙2号池全部失败: " + " | ".join(errors))
+
+def _decode_image_b64(value, field):
+    """\u5148\u6309 #505 \u7684\u89c4\u5219\u6e05\u6d17\uff0c\u518d\u4e25\u683c\u6821\u9a8c\u3002
+
+    \u4e0d\u80fd\u76f4\u63a5 b64decode(validate=True)\uff1a\u526a\u8d34\u677f\u7c98\u8d34(#483 \u7684 Ctrl/\u2318V)\u4f1a\u5e26\u4e2d\u95f4\u6362\u884c\u3001
+    \u53cd\u63a8\u56de\u586b/\u7075\u611f\u8ddf\u521b\u4f1a\u7f3a\u5c3e\u90e8 padding \u2014\u2014 \u8fd9\u4e9b\u90fd\u662f\u5408\u6cd5\u7684\u524d\u7aef\u4ea7\u7269\uff0c#505 \u4e13\u95e8\u7528
+    _clean_b64 \u4fee\u8fc7\u3002\u6e05\u6d17\u4e4b\u540e\u518d validate=True\uff0c\u65e2\u6321\u5f97\u4f4f\u771f\u5783\u573e\uff0c\u53c8\u4e0d\u8bef\u4f24\u5b83\u4eec\u3002
+    """
+    value = _clean_b64(value)          # \u5265 data: \u524d\u7f00 + \u53bb\u6240\u6709\u7a7a\u767d/\u6362\u884c + \u8865 padding
+    if not value:
+        return "", b""
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except Exception:
+        raise ValueError("%s \u5fc5\u987b\u662f\u5408\u6cd5 base64" % field)
+    if len(raw) > IMAGE_REF_MAX_BYTES:
+        mb = IMAGE_REF_MAX_BYTES // 1024 // 1024
+        raise ValueError("%s \u8d85\u8fc7 %dMB\uff0c\u8bf7\u5148\u538b\u7f29\u56fe\u7247\u518d\u4e0a\u4f20" % (field, mb))
+    return value, raw
+
+def validate_image_payload(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("\u8bf7\u6c42\u4f53\u5fc5\u987b\u662f JSON \u5bf9\u8c61")
+    body = dict(payload)
+    prompt = (body.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("\u63d0\u793a\u8bcd\u4e0d\u80fd\u4e3a\u7a7a")
+    if len(prompt) > IMAGE_PROMPT_MAX_CHARS:
+        raise ValueError("\u63d0\u793a\u8bcd\u4e0d\u80fd\u8d85\u8fc7 %d \u5b57" % IMAGE_PROMPT_MAX_CHARS)
+    body["prompt"] = prompt
+    if body.get("image"):
+        body["image"], _ = _decode_image_b64(body.get("image"), "image")
+    if body.get("mask"):
+        body["mask"], _ = _decode_image_b64(body.get("mask"), "mask")
+    # count \u5fc5\u987b\u5939\u4f4f\u4e0a\u9650\uff1acost_of \u6309 count \u6263\u70b9\uff0ccount=100 \u5c31\u4f1a\u6263\u7206\u70b9\u3002
+    # \u5404\u5f15\u64ce\u81ea\u5df1\u8fd8\u6709 MAX_N\uff08seedream 2 / gpt 4\uff09\uff0c\u8fd9\u91cc\u53ea\u6321\u79bb\u8c31\u503c\u3002
+    try:
+        count = int(body.get("count") or 1)
+    except Exception:
+        raise ValueError("count \u5fc5\u987b\u662f\u6b63\u6574\u6570")
+    body["count"] = max(1, min(IMAGE_MAX_COUNT, count))
+    return body
 
 def _gen_image_xiaole(prompt, ratio, quality, count, img):
     """果肉生图渠道(xiaolevideo.cn，与果肉/豆姐视频同账号)：gpt-image-2 文生图/图生图。
@@ -301,6 +348,7 @@ def _gen_image_seedream(prompt, ratio, quality, count, img, variant):
 
 
 def gen_image(payload):
+    payload = validate_image_payload(payload)
     prompt = (payload.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("提示词不能为空")

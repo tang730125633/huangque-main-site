@@ -1042,6 +1042,9 @@ class H(BaseHTTPRequestHandler):
                 body = self._json_body_strict() if kind == "video" else self._json_body()
                 if kind == "video":
                     body = video_domain.validate_video_payload(body)
+                elif kind == "image":
+                    from . import image as image_domain
+                    body = image_domain.validate_image_payload(body)
             except ValueError as e:
                 return self._send(400, {"detail": str(e)[:220]})
             cost = points_domain.cost_of(kind, body)
