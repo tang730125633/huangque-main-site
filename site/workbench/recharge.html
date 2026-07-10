@@ -7,6 +7,7 @@
 <link rel="icon" href="../assets/cloud/logo-bird.png">
 <link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
 <link rel="stylesheet" href="../assets/cloud.css?v=8">
+<script src="theme-init.js?v=11eb385e"></script>
 <style>
   body{ overflow:hidden; }
   .gPkg{ grid-template-columns:repeat(4,1fr); }
@@ -18,6 +19,7 @@
   @media (max-width:1100px){ .gPkg{ grid-template-columns:repeat(2,1fr);} }
   @media (max-width:620px){ .gPkg{ grid-template-columns:1fr;} .gPay{ grid-template-columns:1fr;} }
 </style>
+<link rel="stylesheet" href="theme.css?v=d5f19744">
 </head>
 <body>
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
@@ -27,7 +29,7 @@
     <h1 style="margin:0 0 20px; font-size:27px; font-weight:700; display:flex; align-items:center; gap:11px;"><img src="../assets/icons/ic_recharge.png" alt="" style="width:34px;height:34px;object-fit:contain;flex:none;">点数充值</h1>
 
     <!-- 余额卡 -->
-    <div style="position:relative; display:flex; align-items:center; gap:30px; padding:24px 28px; border:1px solid rgba(231,178,76,.22); border-radius:18px; background:linear-gradient(120deg, rgba(231,178,76,.1), rgba(20,17,10,.4)); overflow:hidden; margin-bottom:26px; flex-wrap:wrap;">
+    <div class="recharge-summary" style="position:relative; display:flex; align-items:center; gap:30px; padding:24px 28px; border:1px solid rgba(231,178,76,.22); border-radius:18px; background:linear-gradient(120deg, rgba(231,178,76,.1), rgba(20,17,10,.4)); overflow:hidden; margin-bottom:26px; flex-wrap:wrap;">
       <div style="position:absolute; right:-30px; top:-30px; width:200px; height:200px; background:radial-gradient(circle, rgba(231,178,76,.16), transparent 70%);"></div>
       <div style="display:flex; align-items:center; gap:18px; padding-right:30px; border-right:1px solid rgba(231,178,76,.18);">
         <div style="width:52px; height:52px; border-radius:50%; background:radial-gradient(circle at 35% 30%, #f6d488, #c8902f); flex:none; box-shadow:0 8px 22px -6px rgba(231,178,76,.6);"></div>
@@ -42,21 +44,21 @@
     <div style="font-size:17px; font-weight:600; margin-bottom:14px;">点数套餐</div>
     <div class="gPkg" style="display:grid; gap:16px; margin-bottom:28px;">
       <!-- 100 点 -->
-      <div class="hv-lift" style="position:relative; padding:26px 22px; border:1px solid rgba(148,164,187,.14); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); cursor:pointer; text-align:center; transition:.18s;">
+      <div class="hv-lift recharge-package" style="position:relative; padding:26px 22px; border:1px solid rgba(148,164,187,.14); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); cursor:pointer; text-align:center; transition:.18s;">
         <div style="font-family:'JetBrains Mono',monospace; font-size:34px; font-weight:700; margin-top:6px;">100 <span style="font-size:16px; color:#94a4bb; font-family:inherit;">点</span></div>
         <div style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#eaf1fa; margin:18px 0 14px;">¥39</div>
         <div style="font-size:13px; color:#94a4bb; margin-bottom:20px;">适合首次体验</div>
         <button data-recharge data-points="100" data-amount="39" style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#eaf1fa; background:rgba(148,164,187,.07); border:1px solid rgba(148,164,187,.16); border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">提交充值申请</button>
       </div>
       <!-- 500 点 -->
-      <div class="hv-lift" style="position:relative; padding:26px 22px; border:1px solid rgba(148,164,187,.14); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); cursor:pointer; text-align:center; transition:.18s;">
+      <div class="hv-lift recharge-package" style="position:relative; padding:26px 22px; border:1px solid rgba(148,164,187,.14); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); cursor:pointer; text-align:center; transition:.18s;">
         <div style="font-family:'JetBrains Mono',monospace; font-size:34px; font-weight:700; margin-top:6px;">500 <span style="font-size:16px; color:#94a4bb; font-family:inherit;">点</span></div>
         <div style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#eaf1fa; margin:18px 0 14px;">¥168</div>
         <div style="font-size:13px; color:#2bd576; margin-bottom:20px;">送 50 点</div>
         <button data-recharge data-points="550" data-amount="168" style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#eaf1fa; background:rgba(148,164,187,.07); border:1px solid rgba(148,164,187,.16); border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">提交充值申请</button>
       </div>
       <!-- 2000 点 · 推荐 -->
-      <div class="hv-lift" style="position:relative; padding:26px 22px; border:1px solid rgba(231,178,76,.5); border-radius:16px; background:linear-gradient(165deg, rgba(231,178,76,.08), rgba(20,17,10,.4)); cursor:pointer; text-align:center; transition:.18s;">
+      <div class="hv-lift recharge-package recommended" style="position:relative; padding:26px 22px; border:1px solid rgba(231,178,76,.5); border-radius:16px; background:linear-gradient(165deg, rgba(231,178,76,.08), rgba(20,17,10,.4)); cursor:pointer; text-align:center; transition:.18s;">
         <div style="position:absolute; top:0; right:0; padding:5px 13px; font-size:11px; font-weight:600; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border-radius:0 16px 0 12px;">推荐</div>
         <div style="font-family:'JetBrains Mono',monospace; font-size:34px; font-weight:700; margin-top:6px;">2000 <span style="font-size:16px; color:#94a4bb; font-family:inherit;">点</span></div>
         <div style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#e7b24c; margin:18px 0 14px;">¥598</div>
@@ -64,7 +66,7 @@
         <button data-recharge data-points="2400" data-amount="598" style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:1px solid transparent; border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">提交充值申请</button>
       </div>
       <!-- 企业版 -->
-      <div class="hv-lift" style="position:relative; padding:26px 22px; border:1px solid rgba(45,212,191,.2); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); cursor:pointer; text-align:center; transition:.18s;">
+      <div class="hv-lift recharge-package enterprise" style="position:relative; padding:26px 22px; border:1px solid rgba(45,212,191,.2); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); cursor:pointer; text-align:center; transition:.18s;">
         <div style="font-size:26px; font-weight:700; margin-top:6px;">企业版</div>
         <div style="font-size:20px; font-weight:600; color:#eaf1fa; margin:20px 0 18px;">定制方案</div>
         <div style="font-size:12.5px; color:#94a4bb; margin-bottom:22px;">联系销售获取专属优惠</div>
@@ -92,7 +94,7 @@
     </div>
 
     <!-- 充值申请记录 -->
-    <div style="border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(180deg, rgba(16,24,39,.5), rgba(12,18,32,.4)); overflow:hidden;">
+    <div class="recharge-history" style="border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(180deg, rgba(16,24,39,.5), rgba(12,18,32,.4)); overflow:hidden;">
       <div style="display:flex; align-items:center; justify-content:space-between; padding:18px 22px; border-bottom:1px solid rgba(148,164,187,.08);">
         <div style="font-size:15.5px; font-weight:600;">充值申请记录</div>
         <div id="orderRefresh" class="lk" style="display:flex; align-items:center; gap:4px; font-size:12.5px; color:#94a4bb; cursor:pointer;">刷新 <span style="display:flex; width:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 18l6-6-6-6"/></svg></span></div>
@@ -188,7 +190,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=11996340"></script>
+<script src="cloud-shell.js?v=56f797df"></script>
 <script>
 (function(){
   var token='__cookie__';

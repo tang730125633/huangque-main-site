@@ -7,6 +7,7 @@
 <link rel="icon" href="../assets/cloud/logo-bird.png">
 <link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
 <link rel="stylesheet" href="../assets/cloud.css?v=8">
+<script src="theme-init.js?v=11eb385e"></script>
 <style>
   body{ overflow:hidden; }
   .gAsset{ grid-template-columns:repeat(4,1fr); }
@@ -77,6 +78,7 @@
   @media (max-width:760px){ .gAsset{ grid-template-columns:repeat(2,1fr);} }
   @media (max-width:480px){ .gAsset{ grid-template-columns:1fr;} }
 </style>
+<link rel="stylesheet" href="theme.css?v=d5f19744">
 </head>
 <body>
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
@@ -186,7 +188,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=11996340"></script>
+<script src="cloud-shell.js?v=56f797df"></script>
 <script>
 /* 资产库读真实生成历史（生成即自动入库）+ 按模式分类筛选 */
 (function(){
@@ -662,7 +664,7 @@
   }
   function card(x,list,idx){
     var label=MODE[normCat(x.mode)]||'作图', promptText=String(x.prompt||'').trim(), p=promptText.slice(0,22)||'无提示词';
-    var w=document.createElement('div'); w.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;';
+    var w=document.createElement('div'); w.className='asset-library-card'; w.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;';
     var tag=document.createElement('span'); tag.textContent=label; tag.style.cssText='position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.62); color:#e7b24c;';
     var im=document.createElement('img'); im.src=thumbUrl(x.url,420); im.loading='lazy'; im.style.cssText='display:block; width:100%; aspect-ratio:4/3; object-fit:cover; cursor:pointer;'; im.onclick=function(){ openAssetImageModal(list||[x],idx||0); };
     var foot=document.createElement('div'); foot.style.cssText='padding:11px 13px; display:flex; flex-direction:column; gap:9px;';
@@ -689,7 +691,7 @@
     var voice=x.voice_name||x.voice_key||x.voice||'未命名音色';
     var created=x.created_at?new Date(Number(x.created_at)*1000):null;
     var dateText=created&&!isNaN(created.getTime())?(String(created.getMonth()+1).padStart(2,'0')+'-'+String(created.getDate()).padStart(2,'0')+' '+String(created.getHours()).padStart(2,'0')+':'+String(created.getMinutes()).padStart(2,'0')):'最近生成';
-    var w=document.createElement('div');
+    var w=document.createElement('div'); w.className='asset-library-card';
     w.style.cssText='position:relative; min-height:188px; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.56), rgba(9,14,24,.44)); overflow:hidden; padding:16px; display:flex; flex-direction:column; gap:12px; box-shadow:0 16px 42px rgba(0,0,0,.12);';
     var top=document.createElement('div');
     top.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:10px;';
@@ -776,7 +778,7 @@
     var created=x.created_at?new Date(Number(x.created_at)*1000):null;
     var dateText=created&&!isNaN(created.getTime())?(String(created.getMonth()+1).padStart(2,'0')+'-'+String(created.getDate()).padStart(2,'0')+' '+String(created.getHours()).padStart(2,'0')+':'+String(created.getMinutes()).padStart(2,'0')):'最近创建';
     var title=x.prompt||x.text||'视频资产';
-    var w=document.createElement('div');
+    var w=document.createElement('div'); w.className='asset-library-card';
     w.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.56), rgba(9,14,24,.44)); overflow:hidden; display:flex; flex-direction:column; min-height:260px;';
     var media=document.createElement('div');
     media.style.cssText='position:relative; aspect-ratio:4/3; background:rgba(7,11,19,.38); display:flex; align-items:center; justify-content:center; color:#5c6b82; overflow:hidden;'+(videoUrl?' cursor:pointer;':'');
@@ -854,7 +856,7 @@
   function avatarCard(x){
     var image=x.image_url||'../assets/cloud/logo-bird.png';
     var name=x.name||'未命名形象';
-    var w=document.createElement('div');
+    var w=document.createElement('div'); w.className='asset-library-card';
     w.style.cssText='position:relative; min-height:252px; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.56), rgba(9,14,24,.44)); overflow:hidden; display:flex; flex-direction:column; box-shadow:0 16px 42px rgba(0,0,0,.12);';
     var media=document.createElement('div');
     media.style.cssText='position:relative; aspect-ratio:4/3; background:rgba(7,11,19,.38); overflow:hidden;';
@@ -1011,7 +1013,7 @@
     var completed=used && !training && !failed;
     var recloneCount=Math.max(0, Math.min(10, parseInt(slot.reclone_count||0,10)||0));
     var recloneRemain=Math.max(0, 10-recloneCount);
-    var w=document.createElement('div');
+    var w=document.createElement('div'); w.className='asset-library-card';
     if(slot.slot_id) w.setAttribute('data-slot-id', slot.slot_id);
     if(!readonly && !completed){ w.tabIndex=0; w.setAttribute('role','button'); }
     w.style.cssText='position:relative; min-height:154px; box-sizing:border-box; padding:16px; border:1px solid '+(used?'rgba(45,212,191,.42)':(training?'rgba(231,178,76,.28)':'rgba(148,164,187,.14)'))+'; border-radius:16px; background:'+(used?'linear-gradient(165deg, rgba(45,212,191,.1), rgba(16,24,39,.58))':'rgba(16,24,39,.4)')+'; display:flex; flex-direction:column; justify-content:space-between; gap:13px; cursor:'+((readonly||completed)?'default':'pointer')+'; box-shadow:'+(used?'0 18px 42px rgba(45,212,191,.1)':'none')+';';
@@ -1371,7 +1373,7 @@
     grid.innerHTML='';
     if(empty) empty.style.display='none'; if(skelH) skelH.style.display='none'; if(skelG) skelG.style.display='none';
     grid.style.display='grid';
-    var tabs=document.createElement('div');
+    var tabs=document.createElement('div'); tabs.className='asset-library-tabs';
     tabs.style.cssText='grid-column:1/-1; display:flex; gap:8px; margin-bottom:2px; padding:4px; border:1px solid rgba(148,164,187,.12); border-radius:12px; background:rgba(7,11,19,.35);';
     [
       ['public','公共音色'],
@@ -1537,7 +1539,7 @@
       return; }
     if(empty) empty.style.display='none'; if(skelH) skelH.style.display='none'; if(skelG) skelG.style.display='none';
     grid.style.display='grid';
-    var tabs=document.createElement('div');
+    var tabs=document.createElement('div'); tabs.className='asset-library-tabs';
     tabs.style.cssText='grid-column:1/-1; display:flex; gap:8px; margin-bottom:2px; padding:4px; border:1px solid rgba(148,164,187,.12); border-radius:12px; background:rgba(7,11,19,.35);';
     [['all','全部'],['text2img','文生图'],['img2img','图生图'],['inpaint','局部修改']].forEach(function(t){
       var on=t[0]===imgSub;
@@ -1711,7 +1713,7 @@
   }
   function docCard(x){
     var kind=x.kind;
-    var w=document.createElement('div');
+    var w=document.createElement('div'); w.className='asset-library-card';
     w.style.cssText='display:flex; flex-direction:column; gap:9px; padding:14px 15px 0; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:rgba(16,24,39,.4);';
     var head=document.createElement('div'); head.style.cssText='display:flex; align-items:center; gap:8px;';
     var badge=document.createElement('span'); badge.textContent=STAGE_LABEL[x.stage]||x.stage||'';

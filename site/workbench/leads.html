@@ -7,6 +7,7 @@
 <link rel="icon" href="../assets/cloud/logo-bird.png">
 <link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
 <link rel="stylesheet" href="../assets/cloud.css?v=8">
+<script src="theme-init.js?v=11eb385e"></script>
 <style>
   body{ overflow:hidden; }
   .gAcq{ grid-template-columns:repeat(4,1fr); }
@@ -20,6 +21,7 @@
   @media (max-width:1100px){ .gAcq{ grid-template-columns:repeat(2,1fr);} }
   @media (max-width:560px){ .gAcq{ grid-template-columns:1fr;} }
 </style>
+<link rel="stylesheet" href="theme.css?v=d5f19744">
 </head>
 <body>
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
@@ -33,19 +35,19 @@
 
     <!-- KPI 概览条 -->
     <div class="gAcq" style="display:grid; gap:16px; margin-bottom:20px;">
-      <div class="hv-lift" style="padding:16px; border:1px solid rgba(231,178,76,.22); border-radius:14px; background:linear-gradient(165deg, rgba(231,178,76,.07), rgba(12,18,32,.5));">
+      <div class="hv-lift lead-kpi-card" style="padding:16px; border:1px solid rgba(231,178,76,.22); border-radius:14px; background:linear-gradient(165deg, rgba(231,178,76,.07), rgba(12,18,32,.5));">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;"><div style="width:32px; height:32px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:8px; background:rgba(231,178,76,.12); color:#e7b24c;"><span style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg></span></div><span style="font-size:13px; font-weight:600;">精准客户</span></div>
         <div style="display:flex; align-items:baseline; gap:8px;"><span id="kLeads" class="mono" style="font-size:32px; font-weight:700; letter-spacing:-1px; color:#e7b24c;">—</span><span style="font-size:12px; color:#94a4bb;">真实需求客户</span></div>
       </div>
-      <div class="hv-lift" style="padding:16px; border:1px solid rgba(148,164,187,.1); border-radius:14px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5));">
+      <div class="hv-lift lead-kpi-card" style="padding:16px; border:1px solid rgba(148,164,187,.1); border-radius:14px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5));">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;"><div style="width:32px; height:32px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:8px; background:rgba(244,112,138,.12); color:#f4708a;"><span style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6M14 11v6"/></svg></span></div><span style="font-size:13px; font-weight:600;">中介噪音</span></div>
         <div style="display:flex; align-items:baseline; gap:8px;"><span id="kSpam" class="mono" style="font-size:32px; font-weight:700; letter-spacing:-1px; color:#f4708a;">—</span><span style="font-size:12px; color:#94a4bb;">已自动过滤</span></div>
       </div>
-      <div class="hv-lift" style="padding:16px; border:1px solid rgba(148,164,187,.1); border-radius:14px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5));">
+      <div class="hv-lift lead-kpi-card" style="padding:16px; border:1px solid rgba(148,164,187,.1); border-radius:14px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5));">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;"><div style="width:32px; height:32px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:8px; background:rgba(45,212,191,.12); color:#2dd4bf;"><span style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 11.5a8.4 8.4 0 0 1-9 8 9 9 0 0 1-4-1l-5 1 1-4a8.4 8.4 0 0 1-1-4 8.4 8.4 0 0 1 9-8 8.4 8.4 0 0 1 9 8z"/></svg></span></div><span style="font-size:13px; font-weight:600;">闲聊评论</span></div>
         <div style="display:flex; align-items:baseline; gap:8px;"><span id="kChat" class="mono" style="font-size:32px; font-weight:700; letter-spacing:-1px; color:#2dd4bf;">—</span><span style="font-size:12px; color:#94a4bb;">无明确意向</span></div>
       </div>
-      <div class="hv-lift" style="padding:16px; border:1px solid rgba(148,164,187,.1); border-radius:14px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5));">
+      <div class="hv-lift lead-kpi-card" style="padding:16px; border:1px solid rgba(148,164,187,.1); border-radius:14px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5));">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;"><div style="width:32px; height:32px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:8px; background:rgba(148,164,187,.1); color:#94a4bb;"><span style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span></div><span style="font-size:13px; font-weight:600;">评论总数</span></div>
         <div style="display:flex; align-items:baseline; gap:8px;"><span id="kTotal" class="mono" style="font-size:32px; font-weight:700; letter-spacing:-1px; color:#eaf1fa;">—</span><span style="font-size:12px; color:#94a4bb;">本次采集总量</span></div>
       </div>
@@ -101,7 +103,7 @@
     </div>
 
     <!-- 精准客户名单表 -->
-    <div style="border:1px solid rgba(148,164,187,.1); border-radius:14px; background:linear-gradient(180deg, rgba(16,24,39,.5), rgba(12,18,32,.4)); overflow-x:auto;">
+    <div class="leads-table" style="border:1px solid rgba(148,164,187,.1); border-radius:14px; background:linear-gradient(180deg, rgba(16,24,39,.5), rgba(12,18,32,.4)); overflow-x:auto;">
       <div style="display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid rgba(148,164,187,.08);">
         <div style="font-size:16px; font-weight:600;">精准客户名单 <span id="cntLabel" style="font-size:13px; color:#5c6b82; font-weight:400;"></span></div>
         <div style="display:flex; align-items:center; gap:12px;">
@@ -124,7 +126,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=11996340"></script>
+<script src="cloud-shell.js?v=56f797df"></script>
 <script>
 (function(){
   "use strict";

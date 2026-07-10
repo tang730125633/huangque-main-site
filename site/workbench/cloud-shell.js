@@ -10,7 +10,7 @@
   /* 黄雀 duotone-mini 图标集 — 功能位用（16-24px）：白线 1.7 + 单一强调色（__ACC__ 占位，渲染时注入），无网点。
      骨架与 assets/icons-duotone/hq_*.svg 同源，是其小尺寸简化变体。 */
   (function () {
-    var L = 'stroke="#eaf1fa" stroke-width="1.7"';
+    var L = 'stroke="currentColor" stroke-width="1.7"';
     var A = 'stroke="__ACC__" stroke-width="1.7"';
     var D = {
       home: '<path d="M3 11l9-8 9 8M5 10v10h14V10" ' + L + '/><path d="M10 20v-6h4v6" ' + A + '/>',
@@ -172,9 +172,6 @@
     header.style.cssText='flex:none; display:flex; align-items:center; gap:14px; padding:14px 26px; border-bottom:1px solid rgba(148,164,187,.08); background:rgba(7,11,19,.4); backdrop-filter:blur(12px);';
     header.innerHTML=
       '<button type="button" class="hq-burger" aria-label="打开导航" aria-controls="hqSideNav" aria-expanded="false" style="display:none; width:38px; height:38px; align-items:center; justify-content:center; flex:none; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer;">'+icon('menu','18px')+'</button>'+
-      '<div id="hqBizSwitch" style="display:none; align-items:center; gap:9px; padding:7px 14px 7px 9px; border:1px solid rgba(148,164,187,.14); border-radius:11px; background:rgba(148,164,187,.04); cursor:pointer;">'+
-        '<div style="width:24px; height:24px; border-radius:7px; background:radial-gradient(circle at 32% 26%, #f6d488, #e7b24c 46%, #a8721f 100%); box-shadow:inset 0 1px 0 rgba(255,255,255,.45), inset 0 -2px 4px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.35); display:flex; align-items:center; justify-content:center; color:#1a1206; font-size:11px; font-weight:600;">仙</div>'+
-        '<span style="font-size:13.5px; font-weight:500;">仙颜美容 · 示例</span><span style="display:flex; width:13px; color:#94a4bb;">'+icon('chevronDown')+'</span></div>'+
       '<div class="hq-botpill" style="display:flex; align-items:center; gap:8px; padding:8px 13px; border:1px solid rgba(45,212,191,.2); border-radius:11px; background:rgba(45,212,191,.05);">'+
         '<span style="width:7px; height:7px; border-radius:50%; background:#2dd4bf; box-shadow:0 0 8px #2dd4bf; animation:hq-pulse 2s infinite;"></span>'+
         '<span style="font-size:13px; color:#94a4bb;"><span class="mono" style="color:#2dd4bf; font-weight:600;">34</span> 个 Bot 在线</span></div>'+
@@ -377,19 +374,25 @@
   }
   function buildNotices(data){
     var read=readNoticeIds(), items=[];
+    var stored=readAccountJson('hq_preferences_v1',currentUser()), prefs=stored.notifications||{};
+    function enabled(name, fallback){ return typeof prefs[name]==='boolean'?prefs[name]:fallback; }
     (data&&data.items||[]).forEach(function(x){
       var status=String(x.status||'').toLowerCase();
+      var failed=status==='error'||status==='failed', done=status==='done';
       var taskTitle=status==='done'?'生成任务已完成':((status==='error'||status==='failed')?'生成任务失败':(status==='running'?'任务生成中':'任务正在排队'));
-      items.push({id:'task-'+x.task_id+'-'+status+'-'+(x.updated_at||x.created_at||0),kind:'task',title:taskTitle,
-        detail:(x.func||x.kind||'生成任务')+' · 任务 #'+(x.task_id||''),time:Number(x.updated_at||x.created_at||0)*1000,
-        href:noticeHref(x,status),action:status==='done'?'查看产物':'查看任务',tone:(status==='error'||status==='failed')?'error':(status==='done'?'success':'info')});
-      if(Number(x.cost||0)>0){
+      var showTask=(done&&enabled('taskSuccess',true))||(failed&&enabled('taskFailure',true))||(!done&&!failed&&enabled('taskProgress',false));
+      if(showTask){
+        items.push({id:'task-'+x.task_id+'-'+status+'-'+(x.updated_at||x.created_at||0),kind:'task',title:taskTitle,
+          detail:(x.func||x.kind||'生成任务')+' · 任务 #'+(x.task_id||''),time:Number(x.updated_at||x.created_at||0)*1000,
+          href:noticeHref(x,status),action:done?'查看产物':'查看任务',tone:failed?'error':(done?'success':'info')});
+      }
+      if(Number(x.cost||0)>0 && enabled('pointsChanges',true)){
         items.push({id:'points-'+x.task_id+'-'+(x.refunded?'refund':'cost'),kind:'points',title:x.refunded?'任务点数已退回':'点数已扣除',
           detail:(x.func||x.kind||'生成任务')+' · '+(x.refunded?'退回 ':'消耗 ')+Number(x.cost||0)+' 点',time:Number(x.updated_at||x.created_at||0)*1000,
           action:'查看明细',points:true,tone:x.refunded?'success':'points'});
       }
     });
-    _systemNotices.forEach(function(x){ items.push(x); });
+    if(enabled('systemNotices',true)) _systemNotices.forEach(function(x){ items.push(x); });
     items.forEach(function(x){ x.read=read.indexOf(x.id)>=0; });
     return items.sort(function(a,b){ return Number(b.time||0)-Number(a.time||0); });
   }
@@ -409,7 +412,7 @@
     if(document.getElementById('hqNoticeOv')) return;
     var st=document.createElement('style');
     st.textContent=
-      '.hq-notify-badge{display:none;position:absolute;top:3px;right:2px;min-width:16px;height:16px;padding:0 4px;align-items:center;justify-content:center;border:2px solid #080d16;border-radius:999px;background:#f4708a;color:#fff;font:800 9px/1 inherit;box-sizing:border-box}'+
+      '.hq-notify-badge{display:none;position:absolute;top:-5px;right:-5px;min-width:14px;height:14px;padding:0 3px;align-items:center;justify-content:center;border:1.5px solid #080d16;border-radius:999px;background:#f4708a;color:#fff;font:800 8px/1 inherit;box-sizing:border-box;pointer-events:none}'+
       '.hq-notify-badge.on{display:flex}'+
       '.hqno{position:fixed;inset:0;z-index:9200;display:none;background:rgba(3,7,13,.46);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px)}'+
       '.hqno.on{display:block}'+
@@ -640,6 +643,19 @@
 
   // ===== 用户登录态显示（左下侧栏卡 + 右上注册/登录）=====
   function currentUser(){ try{ return JSON.parse(localStorage.getItem('hq_user')||'null'); }catch(e){ return null; } }
+  function accountStorageKey(prefix,user){ return prefix+':'+(user&&user.username?user.username:'guest'); }
+  function readAccountJson(prefix,user){
+    try{ var value=JSON.parse(localStorage.getItem(accountStorageKey(prefix,user))||'{}'); return value&&typeof value==='object'?value:{}; }catch(e){ return {}; }
+  }
+  function avatarBackground(tone){
+    var tones={
+      gold:'linear-gradient(145deg,#b87935,#6b451f)',
+      teal:'linear-gradient(145deg,#35b8aa,#176b68)',
+      blue:'linear-gradient(145deg,#5b91dc,#294d8e)',
+      rose:'linear-gradient(145deg,#d8708b,#7f3850)'
+    };
+    return tones[tone]||tones.gold;
+  }
   function _logout(){
     var h=authHeaders();
     try{ localStorage.removeItem('hq_token'); localStorage.removeItem('hq_user'); localStorage.removeItem('hq_role'); }catch(e){}
@@ -647,10 +663,11 @@
   }
   function renderUser(){
     var u=currentUser(), inn=!!u;
-    var card=document.getElementById('hqUserCard'), auth=document.getElementById('hqAuthArea'), biz=document.getElementById('hqBizSwitch');
-    var av='radial-gradient(circle at 32% 26%, #f6d488, #e7b24c 46%, #a8721f 100%)';
+    var card=document.getElementById('hqUserCard'), auth=document.getElementById('hqAuthArea');
+    var profile=readAccountJson('hq_profile_v1',u);
+    var av=avatarBackground(profile.avatarTone);
     if(inn){
-      var name=(u&&(u.nickname||u.username))||'我的账号', ch=(String(name).trim()[0]||'我').toUpperCase();
+      var name=profile.nickname||(u&&(u.nickname||u.username))||'我的账号', ch=(String(name).trim()[0]||'我').toUpperCase();
       var safeName=escapeHtml(name), safeCh=escapeHtml(ch);
       var role=(u&&u.role==='admin')?'管理员':'会员';
       if(card) card.innerHTML='<div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-radius:10px;">'+
@@ -658,7 +675,6 @@
         '<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+safeName+'</div><div style="font-size:11px;color:#e7b24c;">'+role+'</div></div>'+
         '<button type="button" data-logout="1" aria-label="退出登录" title="退出登录" style="display:flex;width:24px;height:24px;align-items:center;justify-content:center;color:#5c6b82;cursor:pointer;border:0;background:transparent;padding:0;">'+icon('logout','16px')+'</button></div>';
       if(auth) auth.innerHTML='<div style="width:38px;height:38px;border-radius:11px;background:'+av+';box-shadow:inset 0 1px 0 rgba(255,255,255,.45), inset 0 -2px 4px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;color:#1a1206;font-size:14px;font-weight:600;">'+safeCh+'</div>';
-      if(biz) biz.style.display='flex';
     } else {
       if(card) card.innerHTML='<button type="button" data-login="1" style="width:100%;display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:11px;cursor:pointer;border:1px solid rgba(148,164,187,.16);background:rgba(148,164,187,.04);font-family:inherit;text-align:left;">'+
         '<div style="width:32px;height:32px;border-radius:50%;flex:none;background:rgba(148,164,187,.12);display:flex;align-items:center;justify-content:center;color:#94a4bb;"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/></svg></div>'+
@@ -666,7 +682,6 @@
         '<span style="font-size:12px;color:#e7b24c;font-weight:600;white-space:nowrap;">登录</span></button>';
       if(auth) auth.innerHTML='<button type="button" data-register="1" style="height:36px;padding:0 14px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:13px;color:#94a4bb;background:rgba(148,164,187,.06);border:1px solid rgba(148,164,187,.16);">注册</button>'+
         '<button type="button" data-login="1" style="height:36px;padding:0 16px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:600;color:#1c1402;background:linear-gradient(135deg,#f6d488,#e7b24c);border:0;">登录</button>';
-      if(biz) biz.style.display='none';
     }
     [card,auth].forEach(function(el){ if(!el) return; el.onclick=function(e){
       var t=e.target.closest?e.target.closest('[data-login],[data-register],[data-logout]'):null; if(!t) return;

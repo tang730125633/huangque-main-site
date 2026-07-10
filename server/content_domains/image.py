@@ -10,7 +10,7 @@ from .core import (
     ZELONG_BASE, ZELONG_KEY, _NOPROXY, _multipart, _post,
     base64, json, public_url, urllib, uuid,
 )
-from .video import XIAOLEVIDEO_API_KEY, _xiaole_request
+from .video import XIAOLEVIDEO_API_KEY, _image_bytes_look_valid, _xiaole_request
 
 # gpt 引擎出境优先级：VPS 隧道 → mihomo → heygen（见 egress.py）。官方 OpenAI 直连地址：
 OPENAI_OFFICIAL_BASE = os.environ.get("OPENAI_OFFICIAL_BASE", "https://api.openai.com").rstrip("/")
@@ -31,8 +31,14 @@ SEEDREAM_MODELS = {
     "pro": os.environ.get("ARK_SEEDREAM_PRO_MODEL", "doubao-seedream-5-0-pro-260628"),
 }
 SEEDREAM_MIN_PIXELS = 3686400   # 实测硬下限：低于此 Ark 返回 400「image size must be at least 3686400 pixels」
-SEEDREAM_HD_PIXELS = 9400000    # 高清档目标像素（实测 4688x2000 / 4096x4096 均可，未触上限）
+SEEDREAM_HD_PIXELS = 9400000    # 高清档目标像素（标准版实测 4688x2000 / 4096x4096 均可）
+# 像素上限按型号不同 —— Pro 的窗口窄得多。线上实测：
+#   pro: 4556800 px(1600x2848) → 200 ；4629248 px(1712x2704) → 400「image area must be at most 4624220 pixels」
+#   std: 9400320 px(2304x4080) → 200 ；16777216 px(4096x4096) → 200
+# 高清档若不按型号夹逼，Pro 会拿到 9.4M 像素而必然 400 —— 线上 3 单 Pro 高清就是这么挂的（已退点）。
+SEEDREAM_MAX_PIXELS = {"std": 16777216, "pro": 4624220}
 SEEDREAM_MAX_N = 2              # 数量上限，须与 points.cost_of 的 cap 一致，否则按 N 扣点却只出 2 张
+SEEDREAM_MAX_REF_BYTES = 10 * 1024 * 1024   # 参考图上限，与 imggen_api 的 MAX_IMAGE_BYTES 对齐
 
 _ZELONG2_POOL_LOCK = threading.Lock()
 _ZELONG2_POOL_NEXT = 0
@@ -157,10 +163,17 @@ def validate_image_payload(payload):
     if len(prompt) > IMAGE_PROMPT_MAX_CHARS:
         raise ValueError("\u63d0\u793a\u8bcd\u4e0d\u80fd\u8d85\u8fc7 %d \u5b57" % IMAGE_PROMPT_MAX_CHARS)
     body["prompt"] = prompt
+    # 魔数校验放在扣点前：base64 能解码但不是图片时，Ark 回的是 HTTP 500
+    # 「service encountered an unexpected internal error」，用户会以为是我们的故障，
+    # 而且那时点已经扣了（要等失败退点）。在这里拦住，所有引擎都受益且不扣点。
     if body.get("image"):
-        body["image"], _ = _decode_image_b64(body.get("image"), "image")
+        body["image"], raw = _decode_image_b64(body.get("image"), "image")
+        if raw and not _image_bytes_look_valid(raw):
+            raise ValueError("参考图格式不支持，请使用 PNG / JPG / WebP")
     if body.get("mask"):
-        body["mask"], _ = _decode_image_b64(body.get("mask"), "mask")
+        body["mask"], raw = _decode_image_b64(body.get("mask"), "mask")
+        if raw and not _image_bytes_look_valid(raw):
+            raise ValueError("蒙版格式不支持，请使用 PNG")
     # count \u5fc5\u987b\u5939\u4f4f\u4e0a\u9650\uff1acost_of \u6309 count \u6263\u70b9\uff0ccount=100 \u5c31\u4f1a\u6263\u7206\u70b9\u3002
     # \u5404\u5f15\u64ce\u81ea\u5df1\u8fd8\u6709 MAX_N\uff08seedream 2 / gpt 4\uff09\uff0c\u8fd9\u91cc\u53ea\u6321\u79bb\u8c31\u503c\u3002
     try:
@@ -238,23 +251,53 @@ def _dispatch_gpt(provider, path, body, ct, base, key, proxy):
                             log=lambda m: print(m, flush=True))
 
 
-def _seedream_size(ratio, quality):
-    """比例 → 显式「宽x高」。Ark 不吃 1:1 这种比例串，只吃像素尺寸，且有 3686400 像素硬下限
-    （实测 1024x1024、1152x2048 都被 400 拒），所以按目标像素反解并对齐到 16 的倍数。"""
+def _seedream_size(ratio, quality, variant="std"):
+    """比例 → 显式「宽x高」。Ark 不吃 1:1 这种比例串，只吃像素尺寸，且像素总数必须落在
+    [SEEDREAM_MIN_PIXELS, 按型号的上限] 这个窗口里（实测 1024x1024、1152x2048 因太小被 400 拒；
+    Pro 的上限只有 4624220，比标准版窄得多）。按目标像素反解并对齐到 16 的倍数，再夹逼进窗口。"""
     try:
         rw, rh = (int(x) for x in str(ratio).split(":", 1))
         if rw <= 0 or rh <= 0:
             raise ValueError
     except Exception:
         rw, rh = 9, 16
+    # 未知型号取最保守（最小）的上限，宁可出图小一点也不要 400
+    cap = SEEDREAM_MAX_PIXELS.get(variant) or min(SEEDREAM_MAX_PIXELS.values())
     target = SEEDREAM_HD_PIXELS if quality == "hd" else SEEDREAM_MIN_PIXELS
+    target = max(SEEDREAM_MIN_PIXELS, min(target, cap))
+
     scale = (target / float(rw * rh)) ** 0.5
     w = max(16, int(round(rw * scale / 16.0)) * 16)
     h = max(16, int(round(rh * scale / 16.0)) * 16)
-    while w * h < SEEDREAM_MIN_PIXELS:   # 向下取整可能压到线下，往上顶一格
-        w += 16
-        h += 16
+    for _ in range(64):                  # 取整误差 ~1.5%，窗口宽 ≥25%，几步内必收敛
+        if w * h > cap and w > 32 and h > 32:
+            w -= 16
+            h -= 16
+        elif w * h < SEEDREAM_MIN_PIXELS:
+            w += 16
+            h += 16
+        else:
+            break
     return "%dx%d" % (w, h)
+
+def _seedream_check_ref(img):
+    """本地先验参考图，把坏图挡在上游调用之前。
+
+    实测：base64 能解码但不是图片时，Ark 返回的是 HTTP 500「The service encountered an
+    unexpected internal error」而不是 400 —— 用户会看到「服务内部错误」，像是我们的故障。
+    先在本地判魔数(PNG/JPEG/WebP)，给出人话错误，也省一次网络往返。
+    Ark 本身对参考图很宽容：实测 5.4MB base64、3000x200 极端比例、JPEG 字节贴 png 标签都能过，
+    所以这里只拦「确实是坏数据」和「大到离谱」。"""
+    if not img:
+        return
+    try:
+        raw = base64.b64decode(img)
+    except Exception:
+        raise ValueError("参考图不是合法的 base64")
+    if len(raw) > SEEDREAM_MAX_REF_BYTES:
+        raise ValueError("参考图太大，请压缩到 10MB 以内后重试")
+    if not _image_bytes_look_valid(raw):
+        raise ValueError("参考图格式不支持，请使用 PNG / JPG / WebP")
 
 def _seedream_error(e):
     """Ark 的 HTTPError → 人话。内容审核类是业务失败（会走失败退点），不是系统故障。"""
@@ -330,8 +373,9 @@ def _gen_image_seedream(prompt, ratio, quality, count, img, variant):
     单图 2~7MB。SEEDREAM_MAX_N=2 时 Pro 最坏约 170s，在 reaper image 900s 宽限内。"""
     if not ARK_API_KEY:
         raise ValueError("Seedream 未配置（ARK_API_KEY）")
+    _seedream_check_ref(img)     # 坏参考图会让 Ark 回 500，先在本地拦掉并说人话
     model = SEEDREAM_MODELS.get(variant) or SEEDREAM_MODELS["std"]
-    size = _seedream_size(ratio, quality)
+    size = _seedream_size(ratio, quality, variant)   # Pro 的像素上限低得多，必须按型号夹逼
     files_out, urls = [], []
     for _ in range(count):
         raw = _seedream_one(model, prompt, size, img)

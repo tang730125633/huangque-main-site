@@ -3,6 +3,11 @@
 
 The drift sentinel compares git with production, so generated stamps must be
 committed to git instead of being rewritten during deployment.
+
+Every asset listed in ``ASSETS`` gets its own content hash. Adding a new shared
+asset (a stylesheet, an init script) means adding it here — otherwise it ships
+with a hand-written ``?v=1`` that never changes, and browsers keep serving the
+cached copy long after the file was updated.
 """
 
 from __future__ import annotations
@@ -16,82 +21,111 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKBENCH_DIR = ROOT / "site" / "workbench"
-SHELL_FILE = WORKBENCH_DIR / "cloud-shell.js"
-STAMP_RE = re.compile(rb"(cloud-shell\.js\?v=)([^\"'<>\s]+)")
 
 
-def shell_hash() -> str:
-    content = SHELL_FILE.read_bytes().replace(b"\r\n", b"\n")
-    return hashlib.md5(content).hexdigest()[:8]
+class Asset:
+    """A shared workbench asset whose ``?v=`` stamp tracks its content hash.
+
+    required: every workbench page must reference it, so a missing stamp is an
+              error. Page-scoped assets stay optional — pages that don't use them
+              simply carry no reference.
+
+    Deliberately a plain class, not a dataclass: dataclass resolves annotations via
+    ``sys.modules[cls.__module__]``, which blows up when this file is loaded through
+    ``spec_from_file_location`` (as the tests do).
+    """
+
+    def __init__(self, name: str, required: bool) -> None:
+        self.name = name
+        self.required = required
+
+    def __repr__(self) -> str:
+        return f"Asset({self.name!r}, required={self.required})"
+
+    @property
+    def path(self) -> Path:
+        return WORKBENCH_DIR / self.name
+
+    @property
+    def pattern(self) -> "re.Pattern[bytes]":
+        return re.compile(re.escape(self.name.encode()) + rb"(\?v=)([^\"'<>\s]+)")
+
+    def stamp(self) -> str:
+        content = self.path.read_bytes().replace(b"\r\n", b"\n")
+        return hashlib.md5(content).hexdigest()[:8]
+
+    def rewrite(self, content: bytes, stamp: str) -> tuple[bytes, int]:
+        replacement = self.name.encode() + rb"\g<1>" + stamp.encode("ascii")
+        return self.pattern.subn(replacement, content)
+
+
+ASSETS = (
+    Asset("cloud-shell.js", required=True),
+    Asset("theme.css", required=False),
+    Asset("theme-init.js", required=False),
+)
 
 
 def html_files() -> list[Path]:
     return sorted(WORKBENCH_DIR.glob("*.html"))
 
 
-def rewrite(content: bytes, stamp: str) -> tuple[bytes, int]:
-    return STAMP_RE.subn(rb"\g<1>" + stamp.encode("ascii"), content)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Update or verify cloud-shell.js cache stamps in workbench HTML."
+        description="Update or verify shared workbench asset cache stamps in HTML.",
     )
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="verify stamps without writing files",
-    )
+    parser.add_argument("--check", action="store_true", help="verify stamps without writing files")
     args = parser.parse_args()
 
-    if not SHELL_FILE.exists():
-        print(f"missing shell asset: {SHELL_FILE.relative_to(ROOT)}", file=sys.stderr)
-        return 2
+    for asset in ASSETS:
+        if not asset.path.exists():
+            print(f"missing asset: {asset.path.relative_to(ROOT)}", file=sys.stderr)
+            return 2
 
-    stamp = shell_hash()
-    stale: list[str] = []
+    stamps = {asset.name: asset.stamp() for asset in ASSETS}
     missing: list[str] = []
-    changed: list[str] = []
+    stale: list[str] = []
+    changed: set[str] = set()
 
     for path in html_files():
         content = path.read_bytes()
-        updated, count = rewrite(content, stamp)
+        updated = content
         rel = path.relative_to(ROOT).as_posix()
-        if count == 0:
-            missing.append(rel)
-            continue
+
+        for asset in ASSETS:
+            updated, count = asset.rewrite(updated, stamps[asset.name])
+            if count == 0 and asset.required:
+                missing.append(f"{rel} ({asset.name})")
+
         if updated != content:
             stale.append(rel)
             if not args.check:
                 path.write_bytes(updated)
-                changed.append(rel)
+                changed.add(rel)
 
-    if args.check:
-        if missing or stale:
-            if missing:
-                print("missing cloud-shell.js stamp:")
-                for item in missing:
-                    print(f"  {item}")
-            if stale:
-                print(f"stale cloud-shell.js stamp, expected v={stamp}:")
-                for item in stale:
-                    print(f"  {item}")
-            return 1
-        print(f"cloud-shell.js cache stamp OK: {stamp}")
-        return 0
+    summary = ", ".join(f"{name}={stamp}" for name, stamp in stamps.items())
 
     if missing:
-        print("missing cloud-shell.js stamp:")
+        print("missing required stamp:")
         for item in missing:
             print(f"  {item}")
         return 1
 
+    if args.check:
+        if stale:
+            print(f"stale stamp, expected {summary}:")
+            for item in stale:
+                print(f"  {item}")
+            return 1
+        print(f"cache stamps OK: {summary}")
+        return 0
+
     if changed:
-        print(f"updated cloud-shell.js cache stamp to {stamp}:")
-        for item in changed:
+        print(f"updated cache stamps to {summary}:")
+        for item in sorted(changed):
             print(f"  {item}")
     else:
-        print(f"cloud-shell.js cache stamp already current: {stamp}")
+        print(f"cache stamps already current: {summary}")
     return 0
 
 
