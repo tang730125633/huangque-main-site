@@ -754,13 +754,24 @@ def _download_video_file(url, prefix="vid"):
 # ==================== HeyGen 直连(数字人口播,绕开泽龙中转,走 mihomo 代理) ====================
 # 泽龙共享账号排队让口播动辄超 6 分钟；直连 HeyGen 真身实测约 1 分钟(kongli决策)。直连失败自动回退泽龙。
 _HEYGEN_DIRECT = os.environ.get("HEYGEN_DIRECT", "1").strip().lower() not in ("0", "false", "no")
-_HEYGEN_DIRECT_PROXY = (os.environ.get("HEYGEN_DIRECT_PROXY") or os.environ.get("HTTPS_PROXY") or "http://127.0.0.1:7897").strip()
+# 出境通道：显式 HEYGEN_DIRECT_PROXY 覆盖一切；否则 VPS 隧道优先、mihomo 备选（见 egress.preferred_proxy）。
+# 通道在发请求前选定：create-video 是非幂等的，换通道重发会让 HeyGen 出两条片、计两次费。
+_HEYGEN_DIRECT_PROXY = (os.environ.get("HEYGEN_DIRECT_PROXY") or "").strip()
+_HEYGEN_PROXY_FALLBACK = (os.environ.get("EGRESS_PROXY_FALLBACK") or os.environ.get("HTTPS_PROXY") or "http://127.0.0.1:7897").strip()
+
+
+def _heygen_proxy():
+    if _HEYGEN_DIRECT_PROXY:
+        return _HEYGEN_DIRECT_PROXY
+    from . import egress
+    return egress.preferred_proxy(_HEYGEN_PROXY_FALLBACK)
 _HEYGEN_DIRECT_API = "https://api.heygen.com"
 _HEYGEN_DIRECT_UPLOAD = "https://upload.heygen.com"
 
 def _heygen_direct_opener():
-    if _HEYGEN_DIRECT_PROXY:
-        return urllib.request.build_opener(urllib.request.ProxyHandler({"http": _HEYGEN_DIRECT_PROXY, "https": _HEYGEN_DIRECT_PROXY}))
+    p = _heygen_proxy()
+    if p:
+        return urllib.request.build_opener(urllib.request.ProxyHandler({"http": p, "https": p}))
     return urllib.request.build_opener()
 
 def _heygen_direct_req(method, url, body=None, ctype="application/json", timeout=120):

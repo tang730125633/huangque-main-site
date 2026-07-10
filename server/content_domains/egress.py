@@ -19,6 +19,10 @@ gpt 失败率 40%。改为优先走自建出境直连官方 API，前一档超�
 """
 import json
 import os
+import socket
+import threading
+import time
+import urllib.parse
 import urllib.request
 
 EGRESS_PRIMARY = os.environ.get("EGRESS_PROXY", "").strip()
@@ -41,6 +45,53 @@ def _opener(proxy):
     if not proxy:
         return _DIRECT
     return urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+
+
+# ===== 视频侧（口播 / 动作模仿）的通道选择 =====
+# 与作图的 post_json 链不同：视频的 create 请求是**非幂等**的（发出去就可能已生成一条片并计费），
+# 所以绝不能「失败了换条通道重发」。这里只在**发请求之前**用一次本地 TCP 探活选定通道：
+# 隧道进程可达就走隧道，不可达就走备选（mihomo）。HeyGen 直连整体失败时，仍由 video.py
+# 既有的「回退泽龙中转」兜底 —— 那一层是业务级降级，不是同一请求的重发。
+#
+# ⚠ 隧道带宽实测被上游整形在 ~1.3 MB/s（10 Mbps）：4 并发流总吞吐不变、每流均分为 1/4。
+# 走隧道会给视频下载套上这个天花板（mihomo 4 并发可到 ~11 MB/s）。这是已知取舍，等 VPS 升级套餐。
+EGRESS_PROBE_TTL = int(os.environ.get("EGRESS_PROBE_TTL", "30") or 30)
+_probe = {"at": 0.0, "ok": False}
+_probe_lock = threading.Lock()
+
+
+def _proxy_reachable(proxy, timeout=0.5):
+    """本地 TCP 连一下代理端口。隧道客户端是本机 xray，连不上说明它没在跑。"""
+    try:
+        parts = urllib.parse.urlsplit(proxy)
+        if not parts.hostname or not parts.port:
+            return False
+        with socket.create_connection((parts.hostname, parts.port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def tunnel_alive(now=None):
+    """隧道是否可用。带 TTL 缓存，避免每个请求都探一次。"""
+    if not EGRESS_PRIMARY:
+        return False
+    now = time.time() if now is None else now
+    with _probe_lock:
+        if now - _probe["at"] > EGRESS_PROBE_TTL:
+            ok = _proxy_reachable(EGRESS_PRIMARY)
+            if ok != _probe["ok"]:
+                print("[egress] 隧道 %s %s" % (EGRESS_PRIMARY, "恢复可用" if ok else "不可达，改走备选"), flush=True)
+            _probe["ok"] = ok
+            _probe["at"] = now
+        return _probe["ok"]
+
+
+def preferred_proxy(fallback=""):
+    """隧道优先、探活失败退回备选。返回代理 URL；都没有则返回 ''（即直连/进程级代理）。"""
+    if tunnel_alive():
+        return EGRESS_PRIMARY
+    return (fallback or EGRESS_FALLBACK or "").strip()
 
 
 def channels(official_base, heygen_base):
