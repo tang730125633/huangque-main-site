@@ -12,8 +12,11 @@ def cost_of(kind, body):
         p = max(1, min(3, int(body.get("pages") or 1)))
         return 6 + (n * p) // 4
     if kind == "image":
-        base = 12 if (body.get("quality") or "hd") == "hd" else 8  # 高清12/标准8(gpt-image2)
-        cap = 2 if (body.get("provider") or "").strip().lower() == "zelong" else 4
+        base = 12 if (body.get("quality") or "hd") == "hd" else 8  # 高清12/标准8(gpt-image2/seedream 同档)
+        # cap 必须与 image.gen_image 里的数量上限逐字一致，否则按 N 扣点却只出 cap 张 = 超收。
+        # zelong2 原来漏在这里（gen_image 封 2、这里放 4），count=4 时多扣一半，属线上既有超收，本次一并修。
+        provider = (body.get("provider") or "").strip().lower()
+        cap = 2 if provider in {"zelong", "zelong2", "xiaole", "seedream"} else 4
         cnt = 1 if body.get("mask") else max(1, min(cap, int(body.get("count") or 1)))
         return base * cnt  # 质量基价 × 数量
     if kind == "tryon":
@@ -127,6 +130,10 @@ def _history_func_name(kind, payload):
             return "作图 · Nano Banana Pro"
         if provider == "openai":
             return "作图 · GPT Image"
+        if provider == "seedream":
+            return "作图 · Seedream" + (" Pro" if str(payload.get("variant") or "").lower() == "pro" else "")
+        if provider == "xiaole":
+            return "作图 · 果肉生图"
         if provider.startswith("zelong"):
             return "作图 · 泽龙"
         return "作图"

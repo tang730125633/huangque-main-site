@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import http.client
 import os
 import threading
 import time
@@ -13,6 +14,20 @@ from .video import XIAOLEVIDEO_API_KEY, _xiaole_request
 
 # gpt 引擎出境优先级：VPS 隧道 → mihomo → heygen（见 egress.py）。官方 OpenAI 直连地址：
 OPENAI_OFFICIAL_BASE = os.environ.get("OPENAI_OFFICIAL_BASE", "https://api.openai.com").rstrip("/")
+
+# ===== Seedream（火山方舟 Ark）=====
+# 火山在国内，服务器直连即可：不走 VPS 隧道、不走 mihomo、不走 heygen 中转。
+# ⚠ 进程级 HTTPS_PROXY 指向 mihomo(法兰克福)，所以调用必须 proxy=False 显式绕过，否则请求绕地球一圈。
+# 下面这些默认值全部由线上实测确认（见 tests/test_seedream.py 头注）：model id 取自本账号 /models。
+ARK_BASE = os.environ.get("ARK_BASE", "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
+ARK_API_KEY = os.environ.get("ARK_API_KEY", "")
+SEEDREAM_MODELS = {
+    "std": os.environ.get("ARK_SEEDREAM_MODEL", "doubao-seedream-5-0-260128"),
+    "pro": os.environ.get("ARK_SEEDREAM_PRO_MODEL", "doubao-seedream-5-0-pro-260628"),
+}
+SEEDREAM_MIN_PIXELS = 3686400   # 实测硬下限：低于此 Ark 返回 400「image size must be at least 3686400 pixels」
+SEEDREAM_HD_PIXELS = 9400000    # 高清档目标像素（实测 4688x2000 / 4096x4096 均可，未触上限）
+SEEDREAM_MAX_N = 2              # 数量上限，须与 points.cost_of 的 cap 一致，否则按 N 扣点却只出 2 张
 
 _ZELONG2_POOL_LOCK = threading.Lock()
 _ZELONG2_POOL_NEXT = 0
@@ -146,6 +161,115 @@ def _dispatch_gpt(provider, path, body, ct, base, key, proxy):
                             log=lambda m: print(m, flush=True))
 
 
+def _seedream_size(ratio, quality):
+    """比例 → 显式「宽x高」。Ark 不吃 1:1 这种比例串，只吃像素尺寸，且有 3686400 像素硬下限
+    （实测 1024x1024、1152x2048 都被 400 拒），所以按目标像素反解并对齐到 16 的倍数。"""
+    try:
+        rw, rh = (int(x) for x in str(ratio).split(":", 1))
+        if rw <= 0 or rh <= 0:
+            raise ValueError
+    except Exception:
+        rw, rh = 9, 16
+    target = SEEDREAM_HD_PIXELS if quality == "hd" else SEEDREAM_MIN_PIXELS
+    scale = (target / float(rw * rh)) ** 0.5
+    w = max(16, int(round(rw * scale / 16.0)) * 16)
+    h = max(16, int(round(rh * scale / 16.0)) * 16)
+    while w * h < SEEDREAM_MIN_PIXELS:   # 向下取整可能压到线下，往上顶一格
+        w += 16
+        h += 16
+    return "%dx%d" % (w, h)
+
+def _seedream_error(e):
+    """Ark 的 HTTPError → 人话。内容审核类是业务失败（会走失败退点），不是系统故障。"""
+    code = msg = ""
+    try:
+        err = (json.loads(e.read() or b"{}").get("error") or {})
+        code = str(err.get("code") or "")
+        msg = str(err.get("message") or "")[:180]
+    except Exception:
+        pass
+    if "SensitiveContent" in code:      # Output/InputImageSensitiveContentDetected；官方对此不计费
+        return ValueError("内容审核未通过，换个提示词或参考图再试")
+    return ValueError("Seedream %s: %s" % (e.code, msg or code or "调用失败"))
+
+def _seedream_fetch(url, tries=3):
+    """直连下载出图结果。单独重试：下载失败不会重新生成图片，也就不会重复计费。
+    IncompleteRead 不属于 _is_transient，这里单列 —— 大响应体断流实测会撞到它。"""
+    last = None
+    for i in range(tries):
+        try:
+            with _NOPROXY.open(url, timeout=120) as r:   # TOS 在国内，必须直连，不走 mihomo
+                return r.read()
+        except (urllib.error.URLError, http.client.IncompleteRead,
+                TimeoutError, ConnectionError) as e:
+            last = e
+            if i < tries - 1:
+                time.sleep(1.5 * (i + 1))
+    raise ValueError("Seedream 出图下载失败: %s" % str(last)[:120])
+
+def _seedream_post(fn, tries=2, base_delay=2.0):
+    """生成请求的重试闸：**只重试 429**。
+
+    通用 _retry 会重试 5xx/超时/URLError，但出图 POST 是非幂等的：那几种情况下
+    Ark 很可能已经出图并计费，重发 = 再出一张 = 重复计费。只有 429(限流) 能确定
+    请求被拒、未出图，重试才安全。其余一律直接抛出，走失败退点由用户决定重试。
+    下载(GET)是幂等的，重试见 _seedream_fetch。"""
+    for i in range(tries):
+        try:
+            return fn()
+        except urllib.error.HTTPError as e:
+            if e.code != 429 or i == tries - 1:
+                raise
+            print("[seedream] 429 限流，退避重试(%d)" % (i + 1), flush=True)
+            time.sleep(base_delay * (i + 1))
+
+def _seedream_one(model, prompt, size, img):
+    """出一张图，返回 PNG 字节。
+
+    response_format 用 url 而非 b64_json：PNG 的 b64 响应体有 4~5MB，实测会 IncompleteRead，
+    而 POST 是非幂等的（重试 = 重新出图 = 重复计费），不能靠重试硬扛。换成 url 后响应体很小，
+    失败只需重试下载。output_format 必须显式写 png —— 不指定时 Ark 默认吐 JPEG，
+    会和 .png 文件名 / image/png 的 Content-Type 对不上。"""
+    body = {"model": model, "prompt": prompt, "size": size,
+            "output_format": "png", "response_format": "url", "watermark": False}
+    if img:
+        # 实测：image 必须是 data URI；裸 base64 会被判成 URL 并报 400 invalid url specified。
+        body["image"] = "data:image/png;base64," + img
+    data = json.dumps(body, ensure_ascii=False).encode()
+    try:
+        d = _seedream_post(lambda: _post("/images/generations", data, "application/json",
+                                        base=ARK_BASE, key=ARK_API_KEY, proxy=False))
+    except urllib.error.HTTPError as e:
+        raise _seedream_error(e)
+    items = d.get("data") or []
+    url = (items[0] or {}).get("url") if items else None
+    if not url:
+        raise ValueError("Seedream 返回为空")
+    return _seedream_fetch(url)
+
+def _gen_image_seedream(prompt, ratio, quality, count, img, variant):
+    """Seedream 5.0 / 5.0 Pro：文生图 + 图生图（同一端点，带 image 即图生图）。
+    实测耗时(PNG 输出)：标准约 30~40s，Pro 约 85s —— Pro 慢一倍多，前端提示要分开写。
+    单图 2~7MB。SEEDREAM_MAX_N=2 时 Pro 最坏约 170s，在 reaper image 900s 宽限内。"""
+    if not ARK_API_KEY:
+        raise ValueError("Seedream 未配置（ARK_API_KEY）")
+    model = SEEDREAM_MODELS.get(variant) or SEEDREAM_MODELS["std"]
+    size = _seedream_size(ratio, quality)
+    files_out, urls = [], []
+    for _ in range(count):
+        raw = _seedream_one(model, prompt, size, img)
+        fn = "img_%s.png" % uuid.uuid4().hex   # 不可猜键(#185)
+        (OUT_DIR / fn).write_bytes(raw)
+        files_out.append(fn)
+        urls.append(public_url(fn, "image/png"))
+    if not files_out:
+        raise ValueError("出图返回为空")
+    return {"type": "image", "mode": ("img2img" if img else "text2img"), "provider": "seedream",
+            "variant": variant, "model": model, "size": size, "count": len(files_out),
+            "file": files_out[0], "url": urls[0], "files": files_out, "urls": urls,
+            "ratio": ratio, "prompt": prompt}
+
+
 def gen_image(payload):
     prompt = (payload.get("prompt") or "").strip()
     if not prompt:
@@ -158,6 +282,13 @@ def gen_image(payload):
     if provider == "xiaole":
         count = 1 if mask else max(1, min(2, int(payload.get("count") or 1)))
         return _gen_image_xiaole(prompt, ratio, quality, count, img)
+    if provider == "seedream":
+        if mask:
+            raise ValueError("Seedream 暂不支持局部修改（蒙版），请改用 gpt-image-2")
+        variant = "pro" if str(payload.get("variant") or "").strip().lower() == "pro" else "std"
+        q = "hd" if (payload.get("quality") or "hd") == "hd" else "std"   # Seedream 按像素分档，不用 high/medium
+        count = max(1, min(SEEDREAM_MAX_N, int(payload.get("count") or 1)))
+        return _gen_image_seedream(prompt, ratio, q, count, img, variant)
     size  = SIZES.get(ratio, "1024x1024")
     if provider in {"zelong", "zelong2"}:
         if provider == "zelong2":
