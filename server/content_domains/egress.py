@@ -17,11 +17,14 @@ gpt 失败率 40%。改为优先走自建出境直连官方 API，前一档超�
 只有「通道级失败」(连不上/超时/HTTP 错误码) 触发降级；HTTP 200 直接返回，业务结果
 （如内容审核没出图）由调用方判断——那是官方 API 的决定，换通道也一样，不该白降级。
 """
+import errno
 import json
 import os
 import socket
+import ssl
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -94,6 +97,52 @@ def preferred_proxy(fallback=""):
     return (fallback or EGRESS_FALLBACK or "").strip()
 
 
+def _channel_usable(proxy):
+    """发请求前先看这档的代理端口通不通。通不通都判不出来时（如没写端口）就当可用，
+    交给真实请求去判——宁可多发一次，也不要因为探测能力不足而白白跳过一整档。"""
+    if not proxy:
+        return True                      # 直连档，无需探测
+    parts = urllib.parse.urlsplit(proxy)
+    if not parts.hostname or not parts.port:
+        return True
+    return _proxy_reachable(proxy)
+
+
+_PRE_DELIVERY_ERRNOS = {errno.ECONNREFUSED, errno.EHOSTUNREACH, errno.ENETUNREACH}
+
+
+def _pre_delivery_failure(e):
+    """这个异常能否证明「请求还没送到上游」？只有能证明时，换通道重发才是安全的。
+
+    出图 POST 是**非幂等**的：请求一旦抵达 OpenAI/Google，就可能已经出图并计费。
+    此时换通道重发 = 再出一张 + 再计一次费，用户还只拿到一张。
+
+    - HTTPError        → 上游已应答，肯定送达了。不换。
+    - 超时(任何形态)    → **歧义**：可能连不上，也可能正在出图。宁可失败退点，让用户自己决定重试。
+    - ConnectionReset  → 歧义（可能握手期被 RST，也可能请求发出后被切）。不换。
+    - DNS 解析失败 / 连接被拒 / 主机不可达 / TLS 握手失败 → 应用层数据从未发出。可以换。
+    """
+    if isinstance(e, urllib.error.HTTPError):
+        return False
+    if isinstance(e, (TimeoutError, socket.timeout)):
+        return False
+    if isinstance(e, urllib.error.URLError):
+        reason = e.reason
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            return False
+        if isinstance(reason, ConnectionResetError):
+            return False
+        if isinstance(reason, socket.gaierror):
+            return True
+        if isinstance(reason, ConnectionRefusedError):
+            return True
+        if isinstance(reason, ssl.SSLError):
+            return True              # 握手阶段失败，应用层字节未发送
+        if isinstance(reason, OSError) and reason.errno in _PRE_DELIVERY_ERRNOS:
+            return True
+    return False
+
+
 def channels(official_base, heygen_base):
     """返回 [(标签, base, proxy或None, 超时), ...] 优先级链。未配代理时只剩 heygen，即老行为。"""
     ch = []
@@ -106,19 +155,39 @@ def channels(official_base, heygen_base):
 
 
 def post_json(official_base, heygen_base, path, data, headers, log=None):
-    """按优先级链发 POST，返回解析后的 JSON dict。前一档超时/报错降到下一档；全部失败抛最后一个异常。
+    """按优先级链发 POST，返回解析后的 JSON dict。
+
+    ⚠ 出图 POST 是**非幂等**的：请求一旦抵达上游就可能已经出图并计费。所以降级不是
+    「失败就换下一档重发」，而是分两步：
+
+      1. 发请求**之前**探这档代理通不通；不通就跳过（一个字节都没发出，绝对安全）
+      2. 请求发出后再失败，只有能证明「未送达」（DNS/连接被拒/主机不可达/TLS 握手失败）
+         才换下一档。超时、连接被重置、HTTPError 一律**直接抛出**——它们都可能意味着
+         上游已经收到并出了图，换通道重发会再计一次费。
+
+    原实现对任何异常都降级，超时时会把同一张图付两遍甚至三遍钱。
 
     official_base 走代理档，heygen_base 走直连兜底档。data 为已编码字节，headers 含鉴权。
-    log 为可选的一元函数（如 lambda m: print(m, flush=True)），用于记降级过程。
+    log 为可选的一元函数（如 lambda m: print(m, flush=True)）。
     """
     last = None
     for label, base, proxy, timeout in channels(official_base, heygen_base):
+        if not _channel_usable(proxy):
+            last = last or urllib.error.URLError(ConnectionRefusedError("代理 %s 不可达" % proxy))
+            if log:
+                log("[egress] %s 代理不可达，跳过该档（未发出任何请求）" % label)
+            continue
         req = urllib.request.Request(base + path, data=data, headers=headers, method="POST")
         try:
             with _opener(proxy).open(req, timeout=timeout) as r:
                 return json.loads(r.read())
-        except Exception as e:  # 连接错误/超时/HTTPError 都降级到下一档
+        except Exception as e:
             last = e
+            if not _pre_delivery_failure(e):
+                if log:
+                    log("[egress] %s via %s 失败，且请求可能已送达上游（换通道会重复计费），"
+                        "直接失败退点: %s" % (path, label, str(e)[:120]))
+                raise
             if label != "heygen" and log:
-                log("[egress] %s via %s 失败，降级下一档: %s" % (path, label, str(e)[:120]))
+                log("[egress] %s via %s 连接阶段失败(未送达)，降级下一档: %s" % (path, label, str(e)[:120]))
     raise last if last is not None else RuntimeError("egress: 无可用通道")

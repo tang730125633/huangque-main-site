@@ -9,8 +9,10 @@
 5. 官方档走各自代理、heygen 档直连（不同 base + 不同 opener）
 """
 import os
+import socket
 import sys
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "server"))
@@ -129,29 +131,104 @@ class FailoverTests(unittest.TestCase):
         self.assertEqual(calls[0][0], "http://p1")            # 走的是 VPS 代理
         self.assertTrue(calls[0][1].startswith("https://official"))
 
-    def test_fallback_to_mihomo_then_success(self):
-        out, calls, err = self._run([TimeoutError("vps 超时"), b'{"ok":2}'])
+    @staticmethod
+    def _refused(msg="连接被拒"):
+        return urllib.error.URLError(ConnectionRefusedError(msg))
+
+    def test_fallback_to_mihomo_on_pre_delivery_failure(self):
+        """连接被拒 = 一个字节都没发出去 → 换通道是安全的。"""
+        out, calls, err = self._run([self._refused("vps"), b'{"ok":2}'])
         self.assertEqual(out, {"ok": 2})
         self.assertEqual([c[0] for c in calls], ["http://p1", "http://p2"])  # VPS→mihomo
 
-    def test_all_proxies_fail_then_heygen(self):
-        out, calls, err = self._run([OSError("vps 断"), OSError("mihomo 断"), b'{"ok":3}'])
+    def test_all_proxies_refused_then_heygen(self):
+        out, calls, err = self._run([self._refused("vps"), self._refused("mihomo"), b'{"ok":3}'])
         self.assertEqual(out, {"ok": 3})
         self.assertEqual([c[0] for c in calls], ["http://p1", "http://p2", "direct"])
         self.assertTrue(calls[2][1].startswith("https://heygen"))            # 兜底打 heygen 且直连
 
     def test_all_channels_fail_raises_last(self):
         boom = ValueError("heygen 也挂")
-        out, calls, err = self._run([OSError("a"), OSError("b"), boom])
+        out, calls, err = self._run([self._refused("a"), self._refused("b"), boom])
         self.assertIsNone(out)
         self.assertIs(err, boom)                              # 抛最后一个异常，不静默
         self.assertEqual(len(calls), 3)
+
+    # ===== 非幂等保护：请求可能已送达上游时，绝不换通道重发（会重复出图 + 重复计费） =====
+
+    def test_timeout_does_not_fail_over(self):
+        """超时是歧义的：可能连不上，也可能上游正在出图。重发 = 再出一张 + 再计一次费。"""
+        out, calls, err = self._run([TimeoutError("vps 超时"), b'{"ok":2}'])
+        self.assertIsNone(out)
+        self.assertIsInstance(err, TimeoutError)
+        self.assertEqual(len(calls), 1)                        # 只发了一次，没有降级
+
+    def test_url_error_wrapping_timeout_does_not_fail_over(self):
+        out, calls, err = self._run([urllib.error.URLError(TimeoutError("read timeout")), b'{"ok":2}'])
+        self.assertIsNone(out)
+        self.assertEqual(len(calls), 1)
+
+    def test_connection_reset_does_not_fail_over(self):
+        """RST 可能发生在请求发出之后，无法证明未送达。"""
+        out, calls, err = self._run([urllib.error.URLError(ConnectionResetError("RST")), b'{"ok":2}'])
+        self.assertIsNone(out)
+        self.assertEqual(len(calls), 1)
+
+    def test_http_error_does_not_fail_over(self):
+        """上游已经应答，肯定送达了。"""
+        import io
+        e = urllib.error.HTTPError("u", 500, "boom", {}, io.BytesIO(b"{}"))
+        out, calls, err = self._run([e, b'{"ok":2}'])
+        self.assertIsNone(out)
+        self.assertEqual(len(calls), 1)
+
+    def test_dns_failure_fails_over(self):
+        out, calls, err = self._run([urllib.error.URLError(socket.gaierror("no dns")), b'{"ok":2}'])
+        self.assertEqual(out, {"ok": 2})
+        self.assertEqual(len(calls), 2)
+
+    def test_tls_handshake_failure_fails_over(self):
+        import ssl as _ssl
+        out, calls, err = self._run([urllib.error.URLError(_ssl.SSLError("handshake")), b'{"ok":2}'])
+        self.assertEqual(out, {"ok": 2})
+        self.assertEqual(len(calls), 2)
 
     def test_http_200_no_business_data_still_returns(self):
         """HTTP 200 但业务没出图 → 直接返回，不降级（换通道也没用，由调用方判断）。"""
         out, calls, err = self._run([b'{"data":[]}'])
         self.assertEqual(out, {"data": []})
         self.assertEqual(len(calls), 1)
+
+
+class ChannelPreflightTests(unittest.TestCase):
+    """代理不可达时，整档跳过且一个字节都不发——最安全的降级。"""
+
+    def test_unreachable_primary_is_skipped_without_sending(self):
+        eg = _reload_egress(primary="http://127.0.0.1:10809", fallback="http://127.0.0.1:7897")
+        calls = []
+
+        class _Op:
+            def __init__(self, tag): self.tag = tag
+            def open(self, req, timeout=None):
+                calls.append(self.tag)
+                return _FakeResp(b'{"ok":1}')
+
+        with patch.object(eg, "_proxy_reachable", side_effect=lambda p, **kw: "7897" in p), \
+             patch.object(eg, "_opener", side_effect=lambda p: _Op(p or "direct")):
+            out = eg.post_json("https://official", "https://heygen", "/g", b"{}", {})
+        self.assertEqual(out, {"ok": 1})
+        self.assertEqual(calls, ["http://127.0.0.1:7897"])     # 隧道档整档跳过，未发请求
+
+    def test_direct_channel_never_probed(self):
+        eg = _reload_egress(primary="", fallback="")
+        with patch.object(eg, "_proxy_reachable", side_effect=AssertionError("直连档不该探测")):
+            self.assertTrue(eg._channel_usable(None))
+
+    def test_proxy_without_port_is_assumed_usable(self):
+        """探测不出来就别跳过整档，交给真实请求判。"""
+        eg = _reload_egress()
+        with patch.object(eg, "_proxy_reachable", side_effect=AssertionError("不该探测")):
+            self.assertTrue(eg._channel_usable("http://p1"))
 
 
 if __name__ == "__main__":
