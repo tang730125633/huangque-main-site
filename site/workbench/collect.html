@@ -447,7 +447,7 @@
             setNote(downloadOnly ? '✅ 视频已解析，可下载（' + sec + 's）' : '✅ 爬取完成（' + sec + 's）· 点数已更新', '#2bd576');
             if (window.HQ && window.HQ.refreshPoints) window.HQ.refreshPoints();
             loadHistory();
-          } else if (d.status === 'error') {
+          } else if (d.status === 'error' || d.status === 'failed') {
             clearInterval(pollIv);
             busy(false); showState('emptyState');
             setNote('爬取失败：' + escHtml(d.error || '') + ' · 已退点', '#f4708a');
@@ -794,7 +794,7 @@
               var tr = d.result && d.result.transcript;
               if (tr && tr.text) resolve(tr.text);
               else reject(new Error('该内容无口播文案'));
-            } else if (d.status === 'error') {
+            } else if (d.status === 'error' || d.status === 'failed') {
               clearInterval(iv);
               reject(new Error('提取失败：' + (d.error || '')));
             } else if (sec > POLL_GIVEUP_SEC) {
