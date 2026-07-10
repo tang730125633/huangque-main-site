@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>教学视频 · 黄雀 AI 工作台</title>
+<link rel="icon" href="../assets/cloud/logo-bird.png">
+<link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
+<link rel="stylesheet" href="../assets/cloud.css?v=8">
+<style>
+  body{ overflow:hidden; }
+  .tutGrid{ display:grid; grid-template-columns:repeat(3,1fr); gap:18px; }
+  @media (max-width:1200px){ .tutGrid{ grid-template-columns:repeat(2,1fr); } }
+  @media (max-width:760px){ .tutGrid{ grid-template-columns:1fr; } }
+
+  .tutCard{ position:relative; border:1px solid rgba(148,164,187,.1); border-radius:16px; overflow:hidden; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); cursor:pointer; display:flex; flex-direction:column; }
+  .tutCard .thumb{ position:relative; aspect-ratio:16/9; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+  .tutCard .thumb img{ width:100%; height:100%; object-fit:cover; display:block; }
+  .tutCard .playBtn{ width:52px; height:52px; border-radius:50%; background:rgba(7,11,19,.55); backdrop-filter:blur(4px); border:1px solid var(--ac,rgba(231,178,76,.4)); display:flex; align-items:center; justify-content:center; color:var(--ac,#e7b24c); position:absolute; transition:.18s; }
+  .tutCard:hover .playBtn{ transform:scale(1.08); background:rgba(7,11,19,.7); }
+  .tutCard .dur{ position:absolute; right:10px; bottom:10px; padding:2px 8px; font-size:11px; border-radius:6px; background:rgba(7,11,19,.7); color:#eaf1fa; }
+  .tutCard .lv{ position:absolute; left:10px; top:10px; padding:3px 9px; font-size:10.5px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.62); color:var(--ac,#e7b24c); border:1px solid var(--ac-bd,rgba(231,178,76,.25)); }
+  .tutCard .body{ padding:14px 15px; flex:1; }
+  .tutCard .ttl{ font-size:14.5px; font-weight:600; color:#eaf1fa; }
+  .tutCard .dsc{ font-size:12px; color:#94a4bb; margin-top:7px; line-height:1.5; }
+  .tutCard .soon{ position:absolute; right:12px; top:12px; font-size:9.5px; font-weight:600; padding:2px 7px; border-radius:5px; background:rgba(224,169,60,.16); color:#e0a93c; border:1px solid rgba(224,169,60,.3); }
+
+  .secHead{ display:flex; align-items:center; gap:10px; margin:8px 0 18px; }
+  .secHead .bar{ width:3px; height:16px; border-radius:2px; background:#e7b24c; }
+  .secHead .h{ font-size:16px; font-weight:700; }
+  .secHead .s{ font-size:12.5px; color:#94a4bb; margin-left:4px; }
+  .secHead .cnt{ margin-left:auto; font-size:11.5px; color:#5c6b82; }
+
+  /* 播放弹窗 */
+  .tutOv{ position:fixed; inset:0; z-index:9000; display:none; align-items:center; justify-content:center; padding:24px; background:rgba(4,5,9,.66); backdrop-filter:blur(6px); opacity:0; transition:opacity .22s; }
+  .tutOv.on{ display:flex; opacity:1; }
+  .tutBox{ position:relative; width:100%; max-width:900px; background:#0c1220; border:1px solid rgba(148,164,187,.16); border-radius:18px; overflow:hidden; box-shadow:0 40px 90px -30px rgba(0,0,0,.9); transform:translateY(8px) scale(.99); transition:transform .24s cubic-bezier(.2,.7,.2,1); }
+  .tutOv.on .tutBox{ transform:none; }
+  .tutBar{ display:flex; align-items:center; gap:10px; padding:14px 18px; border-bottom:1px solid rgba(148,164,187,.1); }
+  .tutBar .tt{ flex:1; font-size:14.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tutBar .x{ width:30px; height:30px; border:0; border-radius:9px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.06); display:flex; align-items:center; justify-content:center; transition:.16s; }
+  .tutBar .x:hover{ color:#eaf1fa; background:rgba(148,164,187,.14); }
+  .tutStage{ position:relative; width:100%; aspect-ratio:16/9; background:#000; }
+  .tutStage video, .tutStage iframe{ width:100%; height:100%; border:0; display:block; background:#000; }
+  .tutSoon{ position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; text-align:center; padding:30px; color:#94a4bb; background:linear-gradient(165deg, rgba(16,24,39,.9), rgba(12,18,32,.9)); }
+  .tutSoon .si{ width:54px; height:54px; border-radius:14px; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.25); display:flex; align-items:center; justify-content:center; color:#e7b24c; }
+  .tutSoon .st{ font-size:16px; font-weight:600; color:#eaf1fa; }
+  .tutSoon .sd{ font-size:13px; max-width:420px; line-height:1.6; }
+</style>
+</head>
+<body>
+<div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
+
+<div class="hq-app"><div class="hq-content" data-active="tutorials">
+
+  <div style="display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:26px; gap:18px; flex-wrap:wrap;">
+    <div>
+      <h1 style="margin:0; font-size:27px; font-weight:700;">教学视频</h1>
+      <p style="margin:9px 0 0; font-size:14px; color:#94a4bb;">从认识黄雀到玩转工作台，跟着视频一步步上手</p>
+    </div>
+    <div style="display:flex; align-items:center; gap:8px; padding:8px 14px; border:1px solid rgba(231,178,76,.2); border-radius:11px; background:rgba(231,178,76,.06);">
+      <span style="display:flex; width:16px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+      <span style="font-size:13px; color:#94a4bb;">更多视频持续上线中</span>
+    </div>
+  </div>
+
+  <div class="secHead"><span class="bar"></span><span class="h">项目总览介绍</span><span class="s">认识黄雀 AI 的能力与流程</span><span class="cnt" id="cntOverview"></span></div>
+  <div class="tutGrid" id="gridOverview" style="margin-bottom:34px;"></div>
+
+  <div class="secHead"><span class="bar"></span><span class="h">工作台使用教程</span><span class="s">每个功能怎么用，照着做就行</span><span class="cnt" id="cntTutorial"></span></div>
+  <div class="tutGrid" id="gridTutorial"></div>
+
+</div></div>
+
+<script src="../assets/cloud.js?v=8"></script>
+<script src="cloud-shell.js?v=f90e1160"></script>
+<script>
+(function(){
+  "use strict";
+  var ACCENT={
+    gold:{c:'#e7b24c', bd:'rgba(231,178,76,.25)', bg:'rgba(231,178,76,.14)'},
+    cyan:{c:'#2dd4bf', bd:'rgba(45,212,191,.25)', bg:'rgba(45,212,191,.14)'},
+    pink:{c:'#f4708a', bd:'rgba(244,112,138,.25)', bg:'rgba(244,112,138,.14)'},
+    blue:{c:'#46b4ff', bd:'rgba(70,180,255,.25)', bg:'rgba(70,180,255,.14)'},
+    purple:{c:'#8a5cf6', bd:'rgba(138,92,246,.25)', bg:'rgba(138,92,246,.14)'}
+  };
+  var PLAY_SVG='<svg viewBox="0 0 24 24" fill="currentColor" stroke="none" style="width:22px;height:22px"><path d="M7 4v16l13-8z"/></svg>';
+
+  // tutorials.json 的字段一律转义后再进 innerHTML；url 只放行 https/相对路径，挡 javascript: 伪协议。
+  var _ESC={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
+  function esc(v){ return String(v==null?'':v).replace(/[&<>"']/g,function(c){return _ESC[c];}); }
+  function safeUrl(u){ u=String(u||'').trim(); return /^(https:\/\/|\.\.?\/|[a-z0-9_-]+\.html)/i.test(u) ? u : ''; }
+
+  function card(x){
+    var a=ACCENT[x.accent]||ACCENT.gold;
+    var el=document.createElement('div');
+    el.className='tutCard hv-lift';
+    el.style.setProperty('--ac',a.c);
+    el.style.setProperty('--ac-bd',a.bd);
+    var cover = x.cover ? '<img src="'+esc(safeUrl(x.cover))+'" loading="lazy" alt="">' : '';
+    if(!x.cover){
+      el.style.background='linear-gradient(135deg, '+a.bg+', rgba(12,18,32,.6))';
+    }
+    var soon = (x.source==='coming') ? '<div class="soon">即将上线</div>' : '';
+    el.innerHTML=
+      '<div class="thumb">'+cover+
+        '<div class="playBtn">'+PLAY_SVG+'</div>'+
+        '<div class="lv">'+esc(x.level||'')+'</div>'+
+        (x.duration?'<div class="dur">'+esc(x.duration)+'</div>':'')+
+        soon+
+      '</div>'+
+      '<div class="body"><div class="ttl">'+esc(x.title||'')+'</div><div class="dsc">'+esc(x.desc||'')+'</div></div>';
+    el.onclick=function(){ openPlayer(x); };
+    return el;
+  }
+
+  function render(list){
+    var ov=document.getElementById('gridOverview'), tu=document.getElementById('gridTutorial');
+    if(!ov||!tu) return;
+    ov.innerHTML=''; tu.innerHTML='';
+    var no=0, nt=0;
+    list.forEach(function(x){
+      var c=card(x);
+      if(x.category==='tutorial'){ tu.appendChild(c); nt++; }
+      else { ov.appendChild(c); no++; }
+    });
+    var co=document.getElementById('cntOverview'), ct=document.getElementById('cntTutorial');
+    if(co) co.textContent=no+' 个视频';
+    if(ct) ct.textContent=nt+' 个视频';
+    if(!ov.children.length){ ov.innerHTML='<div style="grid-column:1/-1;padding:30px;text-align:center;color:#5c6b82;font-size:13px;">暂无视频</div>'; }
+    if(!tu.children.length){ tu.innerHTML='<div style="grid-column:1/-1;padding:30px;text-align:center;color:#5c6b82;font-size:13px;">暂无视频</div>'; }
+  }
+
+  /* ===== 播放弹窗 ===== */
+  var ovEl, boxEl, stageEl;
+  function ensureModal(){
+    if(ovEl) return;
+    ovEl=document.createElement('div');
+    ovEl.className='tutOv';
+    ovEl.innerHTML=
+      '<div class="tutBox">'+
+        '<div class="tutBar"><div class="tt" id="tutTitle"></div><button class="x" id="tutClose" aria-label="关闭"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>'+
+        '<div class="tutStage" id="tutStage"></div>'+
+      '</div>';
+    document.body.appendChild(ovEl);
+    boxEl=ovEl.querySelector('.tutBox');
+    stageEl=ovEl.querySelector('#tutStage');
+    ovEl.addEventListener('click',function(e){ if(e.target===ovEl) closePlayer(); });
+    ovEl.querySelector('#tutClose').onclick=closePlayer;
+    document.addEventListener('keydown',function(e){ if(e.key==='Escape') closePlayer(); });
+  }
+  function openPlayer(x){
+    ensureModal();
+    document.getElementById('tutTitle').textContent=x.title||'';
+    stageEl.innerHTML='';
+    if(x.source==='mp4' && safeUrl(x.url)){
+      var v=document.createElement('video');
+      v.src=safeUrl(x.url); v.controls=true; v.autoplay=true; v.playsInline=true;
+      stageEl.appendChild(v);
+    } else if((x.source==='bili'||x.source==='youtube') && safeUrl(x.url)){
+      var f=document.createElement('iframe');
+      f.src=safeUrl(x.url); f.allow='accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture';
+      f.allowFullscreen=true;
+      stageEl.appendChild(f);
+    } else {
+      var s=document.createElement('div');
+      s.className='tutSoon';
+      s.innerHTML=
+        '<div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:26px;height:26px"><path d="M7 4v16l13-8z"/></svg></div>'+
+        '<div class="st">视频即将上线</div>'+
+        '<div class="sd">'+esc(x.desc||'')+'</div>'+
+        (safeUrl(x.link)?'<a href="'+esc(safeUrl(x.link))+'" class="btn-gold" style="display:inline-flex;align-items:center;gap:7px;padding:10px 20px;font-size:13.5px;font-weight:600;border-radius:11px;">先去体验功能 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>':'');
+      stageEl.appendChild(s);
+    }
+    ovEl.classList.add('on');
+    document.body.style.overflow='hidden';
+  }
+  function closePlayer(){
+    if(!ovEl) return;
+    ovEl.classList.remove('on');
+    if(stageEl) stageEl.innerHTML='';
+    document.body.style.overflow='';
+  }
+
+  fetch('tutorials.json',{cache:'no-cache'}).then(function(r){return r.json();}).then(function(d){ render(d||[]); }).catch(function(){
+    var ov=document.getElementById('gridOverview');
+    if(ov) ov.innerHTML='<div style="grid-column:1/-1;padding:30px;text-align:center;color:#5c6b82;font-size:13px;">视频加载失败，请稍后刷新重试</div>';
+  });
+})();
+</script>
+</body>
+</html>
