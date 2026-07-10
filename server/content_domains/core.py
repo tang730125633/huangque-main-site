@@ -612,7 +612,12 @@ def _job_public_dict(row, phase=None):
 
 # ============ 图片能力：gpt-image-2 ============
 # 三种模式同一入口：无图=文生图(generations)；有图无蒙版=图生图(edits)；有图有蒙版=局部修改(edits+mask)
-SIZES = {"1:1": "1024x1024", "9:16": "1024x1536", "16:9": "1536x1024", "3:4": "1024x1536"}
+# 老表把 9:16 和 3:4 都映射成 1024x1536 —— 那是 2:3，两个按钮出的是同一张图，谁都没拿到自己选的比例。
+# 实测(2026-07-10)：gpt-image-2 并不只支持三个预设，唯一约束是「宽高都必须是 16 的倍数」
+#   （传 123x456 报 "Width and height must both be divisible by 16"）。
+# 下列尺寸已真实出图并读 PNG 头核对，generations 与 edits 两个端点都接受、都精确回显该尺寸。
+# 成本几乎不变（image output token 不与像素成正比）：9:16 $0.0412→$0.0424(+3%)，3:4 →$0.0508(+23%)。
+SIZES = {"1:1": "1024x1024", "9:16": "1152x2048", "16:9": "2048x1152", "3:4": "1200x1600"}
 
 def _multipart(fields, files):
     """手搓 multipart/form-data；files=[(name, filename, bytes)]"""

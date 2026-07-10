@@ -1,0 +1,148 @@
+# -*- coding: utf-8 -*-
+"""作图的尺寸表与按引擎分档定价。
+
+一、SIZES（gpt-image-2 的比例 → 像素）
+   老表把 9:16 和 3:4 都映射成 1024x1536 —— 那是 2:3，两个按钮出的是同一张图。
+   实测(2026-07-10)：gpt-image-2 唯一约束是「宽高都必须是 16 的倍数」
+   （传 123x456 → "Width and height must both be divisible by 16"）。
+   新尺寸已真实出图、读 PNG 头核对，/v1/images/generations 与 /v1/images/edits 都精确回显。
+
+二、IMAGE_BASE_COST（1 点 = 0.1 元）
+   gpt-image-2 按官方 $30.00/M image output token 实测（读 API 返回的 usage）：
+       medium 1024x1024 = 1756 tok = $0.0527 ≈ ¥0.37
+       medium 1152x2048 = 1413 tok = $0.0424 ≈ ¥0.30
+       medium 1200x1600 = 1694 tok = $0.0508 ≈ ¥0.36
+       high 恒为 medium 的 4.00 倍 → ¥1.20 ~ ¥1.50
+   取最贵档定价避免倒挂：标准 4 点、高清 15 点（原来高清只收 12 点，1:1 与 3:4 是亏的）。
+"""
+import importlib
+import re
+import sys
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "server"))
+
+core = importlib.import_module("content_domains.core")
+points = importlib.import_module("content_domains.points")
+BANANA = (ROOT / "site" / "workbench" / "banana.html").read_text(encoding="utf-8")
+
+FRONTEND_RATIOS = ["1:1", "9:16", "16:9", "3:4"]
+
+
+def _wh(size):
+    w, h = (int(x) for x in size.split("x"))
+    return w, h
+
+
+class SizeTableTests(unittest.TestCase):
+    def test_every_ratio_has_a_size(self):
+        for r in FRONTEND_RATIOS:
+            self.assertIn(r, core.SIZES)
+
+    def test_dimensions_divisible_by_16(self):
+        """gpt-image-2 的硬约束，实测报错原文如此。"""
+        for r, s in core.SIZES.items():
+            w, h = _wh(s)
+            self.assertEqual((w % 16, h % 16), (0, 0), "%s → %s" % (r, s))
+
+    def test_size_actually_matches_its_ratio(self):
+        """老 bug：9:16 拿到的是 1024x1536（2:3）。"""
+        for r, s in core.SIZES.items():
+            rw, rh = (int(x) for x in r.split(":"))
+            w, h = _wh(s)
+            self.assertAlmostEqual(w / h, rw / rh, delta=0.01, msg="%s → %s" % (r, s))
+
+    def test_portrait_ratios_are_no_longer_identical(self):
+        """回归守卫：9:16 与 3:4 曾映射到同一个尺寸。"""
+        self.assertNotEqual(core.SIZES["9:16"], core.SIZES["3:4"])
+
+    def test_exact_sizes_verified_against_live_api(self):
+        """这四个尺寸都真实出过图，PNG 头回显一致；edits 端点同样接受。"""
+        self.assertEqual(core.SIZES["1:1"], "1024x1024")
+        self.assertEqual(core.SIZES["9:16"], "1152x2048")
+        self.assertEqual(core.SIZES["16:9"], "2048x1152")
+        self.assertEqual(core.SIZES["3:4"], "1200x1600")
+
+
+class GptPricingTests(unittest.TestCase):
+    """按官方 token 单价折算，1 点 = 0.1 元。"""
+
+    USD_PER_IMAGE_OUT_TOKEN = 30.0 / 1e6      # 官方定价页确认
+    RATE = 7.1                                 # USD → CNY
+
+    def _points(self, tokens):
+        return tokens * self.USD_PER_IMAGE_OUT_TOKEN * self.RATE / 0.1
+
+    def test_standard_tier_covers_every_ratio(self):
+        """标准 4 点必须 ≥ 各比例的实测成本（最贵的是 1:1 的 1756 tok）。"""
+        for tok in (1756, 1413, 1694):
+            self.assertLessEqual(self._points(tok), points.IMAGE_BASE_COST["openai"]["std"] + 0.01)
+
+    def test_hd_tier_covers_every_ratio(self):
+        """高清 15 点必须 ≥ 各比例实测成本（high = medium × 4）。原来收 12 点，1:1 与 3:4 倒挂。"""
+        for tok in (1756 * 4, 1413 * 4, 1694 * 4):
+            self.assertLessEqual(self._points(tok), points.IMAGE_BASE_COST["openai"]["hd"] + 0.05)
+
+    def test_old_hd_price_was_underwater(self):
+        """守住修复的理由：12 点覆盖不了 1:1 高清（7024 tok ≈ 14.96 点）。"""
+        self.assertGreater(self._points(7024), 12)
+
+
+class CostOfTests(unittest.TestCase):
+    def test_gpt_uses_new_tiers(self):
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "std", "count": 1}), 4)
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 1}), 15)
+
+    def test_missing_provider_defaults_to_openai(self):
+        """gen_image 的 provider 缺省就是 openai，扣点必须跟着走同一档。"""
+        self.assertEqual(points.cost_of("image", {"quality": "hd", "count": 1}), 15)
+
+    def test_other_engines_unchanged(self):
+        for p in ("seedream", "xiaole", "zelong", "zelong2"):
+            self.assertEqual(points.cost_of("image", {"provider": p, "quality": "std", "count": 1}), 8, p)
+            self.assertEqual(points.cost_of("image", {"provider": p, "quality": "hd", "count": 1}), 12, p)
+
+    def test_unknown_provider_falls_back_to_default(self):
+        self.assertEqual(points.cost_of("image", {"provider": "brand-new", "quality": "hd", "count": 1}), 12)
+
+    def test_count_multiplies_and_caps_match_generator(self):
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 4}), 15 * 4)
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 9}), 15 * 4)
+        for p in ("seedream", "xiaole", "zelong", "zelong2"):
+            self.assertEqual(points.cost_of("image", {"provider": p, "quality": "hd", "count": 9}), 12 * 2, p)
+
+    def test_mask_forces_single_image(self):
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 4, "mask": "x"}), 15)
+
+
+class FrontendBackendSyncTests(unittest.TestCase):
+    """前端 COSTBASE 与后端 IMAGE_BASE_COST 必须逐字一致，否则按钮显示的点数与实际扣点不符。"""
+
+    def _frontend_costbase(self):
+        raw = re.search(r"var COSTBASE=\{(.+?)\};", BANANA).group(1)
+        out = {}
+        for eng, std, hd in re.findall(r"(\w+):\{std:(\d+),\s*hd:(\d+)\}", raw):
+            out[eng] = {"std": int(std), "hd": int(hd)}
+        return out
+
+    # 前端引擎卡叫 gpt，后端 provider 叫 openai —— 同一个引擎两个名字，映射写死在这里
+    BACKEND_TO_FRONTEND = {"openai": "gpt", "seedream": "seedream", "xiaole": "xiaole", "zelong2": "zelong2"}
+
+    def test_shared_engines_agree(self):
+        fe = self._frontend_costbase()
+        for eng, be in points.IMAGE_BASE_COST.items():
+            if eng == "zelong":
+                continue          # 泽龙1 不在作图页引擎卡上
+            key = self.BACKEND_TO_FRONTEND[eng]
+            self.assertIn(key, fe, key)
+            self.assertEqual(fe[key], be, "%s(前端 %s)" % (eng, key))
+
+    def test_gpt_price_updated_on_both_sides(self):
+        self.assertEqual(self._frontend_costbase()["gpt"], {"std": 4, "hd": 15})
+        self.assertEqual(points.IMAGE_BASE_COST["openai"], {"std": 4, "hd": 15})
+
+
+if __name__ == "__main__":
+    unittest.main()

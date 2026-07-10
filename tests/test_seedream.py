@@ -383,9 +383,13 @@ class CostConsistencyTests(unittest.TestCase):
             self.assertEqual(points.cost_of("image", body), 12 * 2, provider)
 
     def test_gpt_still_allows_four(self):
-        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 4}), 12 * 4)
+        """守的是「gpt 数量上限仍为 4」，不是它的单价（单价见 test_image_pricing.py）。
+        原来写死 12*4，gpt 高清改价成 15 后这条会误报，本质上是把价格耦合进了数量测试。"""
+        gpt_hd = points.IMAGE_BASE_COST["openai"]["hd"]
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 4}), gpt_hd * 4)
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 9}), gpt_hd * 4)
 
-    def test_quality_tiers_match_gpt(self):
+    def test_seedream_quality_tiers(self):
         self.assertEqual(points.cost_of("image", {"provider": "seedream", "quality": "std", "count": 1}), 8)
         self.assertEqual(points.cost_of("image", {"provider": "seedream", "quality": "hd", "count": 1}), 12)
 
