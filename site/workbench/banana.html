@@ -449,16 +449,30 @@
       box.appendChild(im); });
   }
   var JOB_POLL_TIMEOUT_SEC=900;
+  var JOB_POLL_SOFT_RETRY_LIMIT=3;
+  var JOB_POLL_HARD_RETRY_LIMIT=15;
   function poll(id, t0, label){
+    var failures=0;
     var iv=setInterval(function(){
       fetch('/api/gen/job/'+id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+        failures=0;
         if(!d.status){ clearInterval(iv); busy(false); localStorage.removeItem('hq_active_job'); return; }
         var sec=Math.round((Date.now()-t0)/1000);
         if(d.status==='done'){ clearInterval(iv); showResult(d.result); busy(false); setNote('✅ 出图完成（'+sec+'s）· 点数已更新','#2bd576'); localStorage.removeItem('hq_active_job'); if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints(); loadHistory(); }
         else if(d.status==='error'||d.status==='failed'){ clearInterval(iv); busy(false); setNote(errMsg(d.error||d.detail||d.status||''),'#f4708a'); localStorage.removeItem('hq_active_job'); }
         else if(sec>JOB_POLL_TIMEOUT_SEC){ clearInterval(iv); busy(false); setNote('生成仍在处理中，请稍后到资产库查看（'+sec+'s）','#2dd4bf'); localStorage.removeItem('hq_active_job'); loadHistory(); }
         else setNote((label||'生成中')+'（'+sec+'s）· 可切去别的页，回来自动接上','#2dd4bf');
-      }).catch(function(){});
+      }).catch(function(){
+        failures++;
+        if(failures===JOB_POLL_SOFT_RETRY_LIMIT){
+          setNote('网络波动，正在重试；如长时间无恢复，可刷新页面继续接上任务','#f4708a');
+          return;
+        }
+        if(failures>=JOB_POLL_HARD_RETRY_LIMIT){
+          clearInterval(iv); busy(false);
+          setNote('网络异常，任务可能仍在后台生成，请刷新页面继续接上，或稍后到资产库查看','#f4708a');
+        }
+      });
     },4000);
   }
   function submit(payload, label, endpoint){
