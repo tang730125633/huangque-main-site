@@ -113,18 +113,53 @@ def _is_permanent_url(url):
     return not any(k in q for k in ("q-sign-algorithm", "signature", "expires", "sign="))
 
 
+def _copy_body(result):
+    text = str((result or {}).get("text") or "").strip()
+    if text:
+        return text
+    blocks = []
+    for index, scene in enumerate((result or {}).get("scenes") or [], 1):
+        if not isinstance(scene, dict):
+            continue
+        duration = str(scene.get("dur") or "").strip()
+        visual = str(scene.get("scene") or "").strip()
+        line = str(scene.get("line") or "").strip()
+        if not (duration or visual or line):
+            continue
+        blocks.append("镜号%02d（%s）\n画面：%s\n口播：%s" %
+                      (index, duration, visual, line))
+    return "\n\n".join(blocks)
+
+
+_LEAD_META_FIELDS = (
+    "lead_id", "nickname", "user_unique_id", "ip_location", "content",
+    "title", "platform", "profile_url", "video_url", "red_id", "intent",
+    "intent_score", "intent_reason", "follow_status", "follow_note",
+)
+
+
+def _lead_details(items):
+    out = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        out.append({key: item.get(key) for key in _LEAD_META_FIELDS
+                    if item.get(key) not in (None, "")})
+    return out
+
+
 def _project(kind, result):
     """把各 kind 形状各异的 result 投影成 (title, file, url, meta)。
 
-    meta 刻意不收大块数据：collect 的 comments、leads 的 leads 名单都在 jobs.result 里，
-    往这儿复制一份只会让资产库跟着 jobs 表一起膨胀（jobs_gc 清的是 payload，不清 result）。
+    collect 评论仍只留计数；copy 正文和 leads 查看字段需要在资产库直接展示，
+    因此保留经过投影的内容。历史记录由前端按 job_id 回源 jobs.result。
     """
     r = result or {}
     if kind == "copy":
         return (_clip(r.get("prompt")), None, None, {
             "ctype": r.get("ctype"), "mode": r.get("mode"), "platform": r.get("platform"),
             "style": r.get("style"), "dur": r.get("dur"),
-            "text": r.get("text"), "scenes": r.get("scenes"),
+            "text": r.get("text"), "scenes": r.get("scenes"), "body": _copy_body(r),
         })
     if kind == "collect":
         video = r.get("video") or {}
@@ -152,6 +187,7 @@ def _project(kind, result):
             "keyword": r.get("keyword"), "platforms": r.get("platforms"),
             "leads_count": r.get("leads_count"), "spam": r.get("spam"),
             "chat": r.get("chat"), "total": r.get("total"),
+            "leads": _lead_details(r.get("leads")),
         })
     return (None, None, None, {})
 

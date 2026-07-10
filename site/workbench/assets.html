@@ -30,6 +30,18 @@
   .asset-prompt-close{width:30px;height:30px;border:1px solid rgba(148,164,187,.16);border-radius:8px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-size:18px;line-height:1}
   .asset-prompt-text{margin:0;padding:16px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.72;color:#d8e2ef}
   .asset-prompt-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid rgba(148,164,187,.12)}
+  .asset-leads-box{width:min(880px,94vw);max-height:min(680px,88vh)}
+  .asset-leads-summary{padding:11px 16px;border-bottom:1px solid rgba(148,164,187,.1);font-size:12px;color:#94a4bb}
+  .asset-leads-list{padding:14px;overflow:auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .asset-lead-card{min-width:0;padding:12px;border:1px solid rgba(148,164,187,.13);border-radius:8px;background:rgba(7,11,19,.38);display:flex;flex-direction:column;gap:8px}
+  .asset-lead-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .asset-lead-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:700;color:#eaf1fa}
+  .asset-lead-meta{font-size:11px;color:#94a4bb;white-space:nowrap}
+  .asset-lead-content{font-size:12.5px;line-height:1.65;color:#d8e2ef;white-space:pre-wrap;word-break:break-word}
+  .asset-lead-source{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11.5px;color:#5c6b82}
+  .asset-lead-links{display:flex;align-items:center;gap:8px;flex:none}
+  .asset-lead-links a{color:#e7b24c;text-decoration:none;font-weight:600}
+  @media (max-width:720px){.asset-leads-list{grid-template-columns:1fr}.asset-lead-source{align-items:flex-start;flex-direction:column}.asset-lead-links{width:100%}}
   .asset-video-modal{position:fixed;inset:0;z-index:46;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(3,7,13,.74);backdrop-filter:blur(12px)}
   .asset-video-box{position:relative;width:min(92vw,960px);height:min(86vh,540px);border:1px solid rgba(231,178,76,.24);border-radius:14px;background:#050812;box-shadow:0 28px 80px rgba(0,0,0,.5);overflow:hidden}
   .asset-video-box video{width:100%;height:100%;object-fit:contain;background:#050812;display:block}
@@ -408,44 +420,53 @@
     n.style.cssText='position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:40;padding:10px 14px;border-radius:10px;background:'+(ok?'rgba(45,212,191,.16)':'rgba(244,112,138,.16)')+';border:1px solid '+(ok?'rgba(45,212,191,.28)':'rgba(244,112,138,.28)')+';color:#eaf1fa;font-size:12.5px;font-weight:700;box-shadow:0 12px 32px rgba(0,0,0,.28);';
     document.body.appendChild(n); setTimeout(function(){ n.remove(); }, 2200);
   }
-  function copyText(text){
+  function copyText(text,label){
     text=String(text||'');
-    if(!text.trim()){ toast('没有可复制的提示词',false); return; }
+    label=label||'提示词';
+    if(!text.trim()){ toast('没有可复制的'+label,false); return; }
     if(navigator.clipboard && navigator.clipboard.writeText){
-      navigator.clipboard.writeText(text).then(function(){ toast('已复制提示词',true); }).catch(function(){ fallbackCopyText(text); });
+      navigator.clipboard.writeText(text).then(function(){ toast('已复制'+label,true); }).catch(function(){ fallbackCopyText(text,label); });
       return;
     }
-    fallbackCopyText(text);
+    fallbackCopyText(text,label);
   }
-  function fallbackCopyText(text){
+  function fallbackCopyText(text,label){
     var ta=document.createElement('textarea');
     ta.value=text;
     ta.setAttribute('readonly','');
     ta.style.cssText='position:fixed;left:-9999px;top:0;opacity:0;';
     document.body.appendChild(ta);
     ta.select();
-    try{ document.execCommand('copy'); toast('已复制提示词',true); }
+    try{ document.execCommand('copy'); toast('已复制'+(label||'提示词'),true); }
     catch(e){ toast('复制失败，请手动复制',false); }
     ta.remove();
   }
-  function openPromptModal(text){
+  function openTextModal(text,options){
     text=String(text||'').trim();
-    if(!text){ toast('该图片暂无提示词',false); return; }
-    var old=document.getElementById('assetPromptModal'); if(old) old.remove();
+    options=options||{};
+    if(!text){ toast(options.emptyMessage||'暂无可查看内容',false); return; }
+    var old=document.getElementById('assetPromptModal'); if(old && old._close) old._close(); else if(old) old.remove();
     var wrap=document.createElement('div'); wrap.id='assetPromptModal'; wrap.className='asset-prompt-modal';
-    var box=document.createElement('div'); box.className='asset-prompt-box';
+    var box=document.createElement('div'); box.className='asset-prompt-box'; box.setAttribute('role','dialog'); box.setAttribute('aria-modal','true'); box.setAttribute('aria-label',options.title||'完整内容');
     var head=document.createElement('div'); head.className='asset-prompt-head';
-    var title=document.createElement('div'); title.className='asset-prompt-title'; title.textContent='完整生成提示词';
+    var title=document.createElement('div'); title.className='asset-prompt-title'; title.textContent=options.title||'完整内容';
     var close=document.createElement('button'); close.type='button'; close.className='asset-prompt-close'; close.setAttribute('aria-label','关闭'); close.textContent='×';
     var body=document.createElement('pre'); body.className='asset-prompt-text'; body.textContent=text;
     var foot=document.createElement('div'); foot.className='asset-prompt-foot';
-    var copy=actionBtn('复制提示词',function(){ copyText(text); }); copy.className+=' gold';
-    var done=actionBtn('关闭',function(){ wrap.remove(); });
+    var copyLabel=options.copyLabel||'提示词';
+    var copy=actionBtn('复制'+copyLabel,function(){ copyText(text,copyLabel); }); copy.className+=' gold';
+    var closeModal=function(){ document.removeEventListener('keydown',onKey); wrap.remove(); };
+    var onKey=function(e){ if(e.key==='Escape') closeModal(); };
+    var done=actionBtn('关闭',closeModal);
     head.appendChild(title); head.appendChild(close); foot.appendChild(copy); foot.appendChild(done);
     box.appendChild(head); box.appendChild(body); box.appendChild(foot); wrap.appendChild(box);
-    close.onclick=function(){ wrap.remove(); };
-    wrap.onclick=function(e){ if(e.target===wrap) wrap.remove(); };
+    wrap._close=closeModal; close.onclick=closeModal;
+    wrap.onclick=function(e){ if(e.target===wrap) closeModal(); };
+    document.addEventListener('keydown',onKey);
     document.body.appendChild(wrap);
+  }
+  function openPromptModal(text){
+    openTextModal(text,{title:'完整生成提示词',copyLabel:'提示词',emptyMessage:'该图片暂无提示词'});
   }
   function openAssetVideoModal(videoUrl,title,posterUrl,options){
     videoUrl=String(videoUrl||'').trim();
@@ -1516,6 +1537,127 @@
     collect:{text:'暂无采集素材，去内容爬取采集后会自动入库。', href:'collect.html', cta:'去采集'},
     leads:  {text:'暂无客户名单，去获客模块跑一次后会自动入库。', href:'leads.html', cta:'去获客'}
   };
+  function copyBody(data){
+    data=data||{};
+    var body=String(data.body||data.text||'').trim();
+    if(body) return body;
+    return (Array.isArray(data.scenes)?data.scenes:[]).map(function(s,i){
+      if(!s || typeof s!=='object') return '';
+      var dur=String(s.dur||'').trim(), scene=String(s.scene||'').trim(), line=String(s.line||'').trim();
+      if(!dur && !scene && !line) return '';
+      return '镜号'+('0'+(i+1)).slice(-2)+'（'+dur+'）\n画面：'+scene+'\n口播：'+line;
+    }).filter(Boolean).join('\n\n');
+  }
+  function safeDocUrl(value){
+    try{
+      var u=new URL(String(value||''),location.origin);
+      return u.protocol==='http:'||u.protocol==='https:'?u.href:'';
+    }catch(e){ return ''; }
+  }
+  function mergeDocPayload(x,payload){
+    payload=payload||{};
+    var meta=x.meta||{};
+    if(x.kind==='copy'){
+      meta.body=copyBody(payload)||copyBody(meta);
+      if(payload.text) meta.text=payload.text;
+      if(Array.isArray(payload.scenes)) meta.scenes=payload.scenes;
+    }
+    if(x.kind==='leads'){
+      if(Array.isArray(payload.leads)) meta.leads=payload.leads;
+      ['keyword','platforms','leads_count','spam','chat','total'].forEach(function(key){
+        if(payload[key]!=null) meta[key]=payload[key];
+      });
+    }
+    x.meta=meta;
+    return meta;
+  }
+  function loadDocPayload(x){
+    var meta=x.meta||{};
+    if(x.kind==='copy' && copyBody(meta)) return Promise.resolve(meta);
+    if(x.kind==='leads' && Array.isArray(meta.leads)) return Promise.resolve(meta);
+    if(!x.job_id) return Promise.reject(new Error('该资产缺少来源任务，无法读取详情'));
+    return fetch('/api/gen/job/'+encodeURIComponent(x.job_id),{
+      cache:'no-store',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok,'Cache-Control':'no-cache'}
+    }).then(function(r){
+      if(r.status===401){ HQ.login(); throw new Error('请先登录后查看'); }
+      return r.json().catch(function(){return {};}).then(function(d){
+        if(!r.ok) throw new Error(d.detail||'详情读取失败');
+        return mergeDocPayload(x,d.result||{});
+      });
+    });
+  }
+  function runDocAction(button,loadingLabel,work){
+    var original=button&&button.textContent;
+    if(button){ button.disabled=true; button.textContent=loadingLabel; }
+    return work().catch(function(e){ toast(e.message||'详情读取失败',false); }).finally(function(){
+      if(button){ button.disabled=false; button.textContent=original; }
+    });
+  }
+  function openCopyAsset(x,button){
+    return runDocAction(button,'读取中',function(){
+      return loadDocPayload(x).then(function(payload){
+        var body=copyBody(payload);
+        if(!body) throw new Error('该文案资产没有可查看内容');
+        openTextModal(body,{title:'完整文案脚本',copyLabel:'文案',emptyMessage:'该文案资产没有可查看内容'});
+      });
+    });
+  }
+  function leadsText(leads){
+    return (leads||[]).map(function(item,i){
+      return (i+1)+'. '+(item.nickname||'匿名用户')+' · '+(item.ip_location||'未知属地')+
+        '\n需求：'+(item.content||'—')+'\n来源：'+(item.title||item.platform||'—');
+    }).join('\n\n');
+  }
+  function openLeadsModal(payload,x){
+    var leads=Array.isArray(payload.leads)?payload.leads:[];
+    var old=document.getElementById('assetLeadsModal'); if(old && old._close) old._close();
+    var wrap=document.createElement('div'); wrap.id='assetLeadsModal'; wrap.className='asset-prompt-modal';
+    var box=document.createElement('div'); box.className='asset-prompt-box asset-leads-box'; box.setAttribute('role','dialog'); box.setAttribute('aria-modal','true'); box.setAttribute('aria-label','客户名单详情');
+    var head=document.createElement('div'); head.className='asset-prompt-head';
+    var title=document.createElement('div'); title.className='asset-prompt-title'; title.textContent='客户名单 · '+(payload.keyword||x.title||'获客结果');
+    var close=document.createElement('button'); close.type='button'; close.className='asset-prompt-close'; close.setAttribute('aria-label','关闭'); close.textContent='×';
+    var summary=document.createElement('div'); summary.className='asset-leads-summary';
+    var stats=[leads.length+' 个客户'];
+    if(payload.total!=null) stats.push('扫描 '+payload.total+' 条评论');
+    if(payload.spam) stats.push('过滤广告 '+payload.spam+' 条');
+    summary.textContent=stats.join(' · ');
+    var list=document.createElement('div'); list.className='asset-leads-list';
+    if(!leads.length){
+      var emptyLead=document.createElement('div'); emptyLead.className='asset-lead-card'; emptyLead.textContent='该名单没有可显示的客户详情'; list.appendChild(emptyLead);
+    }
+    leads.forEach(function(item){
+      item=item||{};
+      var card=document.createElement('div'); card.className='asset-lead-card';
+      var leadHead=document.createElement('div'); leadHead.className='asset-lead-head';
+      var name=document.createElement('div'); name.className='asset-lead-name'; name.textContent=item.nickname||'匿名用户';
+      var meta=document.createElement('div'); meta.className='asset-lead-meta';
+      meta.textContent=[item.ip_location||'未知属地',item.intent||item.platform||''].filter(Boolean).join(' · ');
+      leadHead.appendChild(name); leadHead.appendChild(meta);
+      var content=document.createElement('div'); content.className='asset-lead-content'; content.textContent=item.content||'（无需求原文）';
+      var source=document.createElement('div'); source.className='asset-lead-source';
+      var sourceText=document.createElement('span'); sourceText.textContent='来源：'+(item.title||item.platform||'未知内容');
+      var links=document.createElement('span'); links.className='asset-lead-links';
+      [['查看主页',item.profile_url],['来源视频',item.video_url]].forEach(function(pair){
+        var href=safeDocUrl(pair[1]); if(!href) return;
+        var a=document.createElement('a'); a.href=href; a.target='_blank'; a.rel='noopener'; a.textContent=pair[0]; links.appendChild(a);
+      });
+      source.appendChild(sourceText); if(links.childNodes.length) source.appendChild(links);
+      card.appendChild(leadHead); card.appendChild(content); card.appendChild(source); list.appendChild(card);
+    });
+    var foot=document.createElement('div'); foot.className='asset-prompt-foot';
+    if(leads.length){ var copy=actionBtn('复制名单',function(){ copyText(leadsText(leads),'客户名单'); }); copy.className+=' gold'; foot.appendChild(copy); }
+    var closeModal=function(){ document.removeEventListener('keydown',onKey); wrap.remove(); };
+    var onKey=function(e){ if(e.key==='Escape') closeModal(); };
+    var done=actionBtn('关闭',closeModal); foot.appendChild(done);
+    head.appendChild(title); head.appendChild(close); box.appendChild(head); box.appendChild(summary); box.appendChild(list); box.appendChild(foot); wrap.appendChild(box);
+    wrap._close=closeModal; close.onclick=closeModal; wrap.onclick=function(e){ if(e.target===wrap) closeModal(); }; box.onclick=function(e){ e.stopPropagation(); };
+    document.addEventListener('keydown',onKey); document.body.appendChild(wrap);
+  }
+  function openLeadsAsset(x,button){
+    return runDocAction(button,'读取中',function(){
+      return loadDocPayload(x).then(function(payload){ openLeadsModal(payload,x); });
+    });
+  }
   function docSummary(x){
     var m=x.meta||{}, bits=[];
     if(x.kind==='copy'){ if(m.ctype) bits.push(m.ctype); if(m.mode==='script') bits.push('分镜脚本'); if(m.platform) bits.push(m.platform); }
@@ -1526,8 +1668,12 @@
     return bits.join(' · ')||'—';
   }
   function docBody(x){
-    if(x.kind==='copy') return String((x.meta||{}).text||'').trim();
+    if(x.kind==='copy') return copyBody(x.meta||{});
     if(x.kind==='collect') return String((x.meta||{}).desc||'').trim();
+    if(x.kind==='leads'){
+      var first=(Array.isArray((x.meta||{}).leads)?x.meta.leads:[])[0];
+      if(first) return (first.nickname||'匿名用户')+'：'+(first.content||'无需求原文');
+    }
     return '';
   }
   function docCard(x){
@@ -1547,15 +1693,23 @@
     if(body){
       var pre=document.createElement('div'); pre.textContent=body.slice(0,180)+(body.length>180?'…':'');
       pre.style.cssText='font-size:12px; color:#5c6b82; line-height:1.65; max-height:66px; overflow:hidden;';
-      if(kind==='copy'){ pre.style.cursor='pointer'; pre.title='点击查看全文'; pre.onclick=function(){ openPromptModal(body); }; }
+      if(kind==='copy'){ pre.style.cursor='pointer'; pre.title='点击查看全文'; pre.onclick=function(){ openCopyAsset(x); }; }
       w.appendChild(pre);
     }
     var foot=document.createElement('div'); foot.style.cssText='display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:11.5px; color:#5c6b82;';
     var when=document.createElement('span');
     when.textContent=x.created_at?new Date(Number(x.created_at)*1000).toLocaleString('zh-CN',{hour12:false}):'';
     foot.appendChild(when);
+    var right=document.createElement('span'); right.style.cssText='display:flex; align-items:center; gap:8px;';
+    if(kind==='copy'){
+      var viewCopy=document.createElement('button'); viewCopy.type='button'; viewCopy.className='asset-action gold'; viewCopy.textContent='查看全文';
+      viewCopy.onclick=function(){ openCopyAsset(x,viewCopy); }; right.appendChild(viewCopy);
+    }
+    if(kind==='leads'){
+      var viewLeads=document.createElement('button'); viewLeads.type='button'; viewLeads.className='asset-action gold'; viewLeads.textContent='查看名单';
+      viewLeads.onclick=function(){ openLeadsAsset(x,viewLeads); }; right.appendChild(viewLeads);
+    }
     if(x.url){
-      var right=document.createElement('span'); right.style.cssText='display:flex; align-items:center; gap:8px;';
       // COS 转存失败时后端回退了第三方 CDN 直链，那种链接带时效、几天后就是死链
       if(kind==='collect' && (x.meta||{}).permanent===false){
         var warn=document.createElement('span'); warn.textContent='链接会过期'; warn.title='未能转存到永久存储，建议尽快下载';
@@ -1573,8 +1727,8 @@
         a.style.cssText='color:#e7b24c; text-decoration:none; font-weight:600;';
         right.appendChild(a);
       }
-      foot.appendChild(right);
     }
+    if(right.childNodes.length) foot.appendChild(right);
     w.appendChild(foot);
     // 收藏 + 标签统一走 addMarkTools（和 card/audioCard/videoCard/avatarCard 一致）。
     // 之前这里手搓了个收藏按钮，漏掉了「标签」按钮和标签 chip，后端接口其实早就支持。

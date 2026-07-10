@@ -4,7 +4,7 @@
 要点：
 - record_asset 只对 copy/collect/leads 生效（image 走 jobs.result→/api/gen/history；audio/video 走各自旧表）
 - UNIQUE(kind, job_id) + INSERT OR IGNORE → 重复写不产生重复行（回填脚本可反复跑）
-- meta 不复制大块数据：collect 的 comments、leads 的名单留在 jobs.result 里
+- collect 评论不复制；copy 正文和 leads 查看字段投影到 meta
 """
 import importlib, os, sys, tempfile, unittest
 from contextlib import closing
@@ -62,16 +62,23 @@ class AssetsStoreTests(unittest.TestCase):
         self.assertEqual(a["meta"]["comments_count"], 500)
         self.assertNotIn("comments", a["meta"])             # 名单/评论不复制一份
 
-    def test_record_leads_drops_lead_list(self):
+    def test_record_leads_keeps_details_needed_by_asset_viewer(self):
         result = {"type": "leads", "keyword": "美业获客", "platforms": ["douyin"],
                   "leads_count": 3, "spam": 7, "chat": 2, "total": 12,
-                  "leads": [{"nickname": "a"}] * 3}
+                  "leads": [{"nickname": "小美", "ip_location": "广东",
+                             "content": "怎么预约", "title": "水光项目讲解",
+                             "video_url": "https://example.com/video/1",
+                             "unused": "不应进入投影"}]}
         self.assertTrue(self.store.record_asset(13, "u", "leads", result))
         a = self.store.list_assets("u", kind="leads")[0]
         self.assertEqual(a["stage"], "delivery")
         self.assertEqual(a["title"], "美业获客")
         self.assertEqual(a["meta"]["leads_count"], 3)
-        self.assertNotIn("leads", a["meta"])
+        self.assertEqual(a["meta"]["leads"][0]["nickname"], "小美")
+        self.assertEqual(a["meta"]["leads"][0]["ip_location"], "广东")
+        self.assertEqual(a["meta"]["leads"][0]["content"], "怎么预约")
+        self.assertEqual(a["meta"]["leads"][0]["title"], "水光项目讲解")
+        self.assertNotIn("unused", a["meta"]["leads"][0])
 
     def test_record_copy_keeps_text(self):
         result = {"type": "copy", "ctype": "朋友圈", "text": "文案正文", "prompt": "夏季促销"}
@@ -79,7 +86,18 @@ class AssetsStoreTests(unittest.TestCase):
         a = self.store.list_assets("u", kind="copy")[0]
         self.assertEqual(a["title"], "夏季促销")
         self.assertEqual(a["meta"]["text"], "文案正文")
+        self.assertEqual(a["meta"]["body"], "文案正文")
         self.assertIsNone(a["file"])
+
+    def test_record_script_formats_scenes_as_viewable_body(self):
+        result = {"type": "copy", "mode": "script", "prompt": "水光项目",
+                  "scenes": [{"dur": "3s", "scene": "门店外景", "line": "今天带你体验"},
+                             {"dur": "5s", "scene": "护理特写", "line": "皮肤透亮"}]}
+        self.assertTrue(self.store.record_asset(15, "u", "copy", result))
+        body = self.store.list_assets("u", kind="copy")[0]["meta"]["body"]
+        self.assertIn("镜号01（3s）", body)
+        self.assertIn("画面：门店外景", body)
+        self.assertIn("口播：皮肤透亮", body)
 
     # --- 幂等：回填脚本会反复跑 ---
     def test_record_is_idempotent(self):
