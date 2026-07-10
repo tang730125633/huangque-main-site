@@ -290,12 +290,21 @@
   if(bClear){ bClear.onclick=function(){ pr.value=''; updCount(); try{ pr.focus(); }catch(e){} }; }
   updCount();  // 初始化：按当前内容(默认示例/做同款预填)刷新字数
 
-  function selectRatio(next){
+  function syncTemplateForRatio(next){
+    var match=activeTemplate&&activeTemplate.ratio===next?activeTemplate:
+      (TEMPLATES.filter(function(t){return t.ratio===next;})[0]||null);
+    if(!match || match===activeTemplate) return;
+    activeTemplate=match;
+    renderTemplates();
+  }
+  function selectRatio(next,syncTemplate){
+    var matched=false;
     document.querySelectorAll('#ratioRow > div').forEach(function(x){ x.style.color='#94a4bb'; x.style.background='rgba(148,164,187,.05)'; x.style.borderColor='rgba(148,164,187,.14)'; });
     document.querySelectorAll('#ratioRow > div').forEach(function(x){
       var m=x.textContent.match(/\d+:\d+/);
-      if(m && m[0]===next){ x.style.color='#e7b24c'; x.style.background='rgba(231,178,76,.1)'; x.style.borderColor='rgba(231,178,76,.32)'; ratio=next; }
+      if(m && m[0]===next){ x.style.color='#e7b24c'; x.style.background='rgba(231,178,76,.1)'; x.style.borderColor='rgba(231,178,76,.32)'; ratio=next; matched=true; }
     });
+    if(matched && syncTemplate!==false) syncTemplateForRatio(next);
   }
   document.querySelectorAll('#ratioRow > div').forEach(function(c){ c.onclick=function(){
     var m=c.textContent.match(/\d+:\d+/); if(m) selectRatio(m[0]);
@@ -306,6 +315,7 @@
     grid.innerHTML=TEMPLATES.map(function(t){return '<button type="button" class="tpl-card'+(t===activeTemplate?' on':'')+'" data-tpl="'+t.id+'">'+t.name+'<div class="tpl-sub mono" style="margin-top:3px;">'+t.ratio+'</div></button>';}).join('');
     grid.querySelectorAll('[data-tpl]').forEach(function(btn){ btn.onclick=function(){
       activeTemplate=TEMPLATES.filter(function(t){return t.id===btn.getAttribute('data-tpl');})[0]||TEMPLATES[0];
+      selectRatio(activeTemplate.ratio,false);
       renderTemplates();
     };});
     var desc=document.getElementById('tplDesc'), ratioLabel=document.getElementById('tplRatio');
