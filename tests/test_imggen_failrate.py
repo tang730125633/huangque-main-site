@@ -141,7 +141,8 @@ class DispatchRetryTests(unittest.TestCase):
     def test_zelong2_pool_retries_within_account(self):
         calls = {"n": 0}
 
-        def fake_post(path, data, ctype, base=None, key=None, proxy=True):
+        def fake_post(path, data, ctype, base=None, key=None, proxy=True, timeout=300):
+            # timeout：泽龙2 号池现在按剩余预算收紧（总死线见 tests/test_image_deadlines.py）
             calls["n"] += 1
             if calls["n"] == 1:
                 raise urllib.error.URLError("connection reset")

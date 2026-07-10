@@ -32,6 +32,14 @@ SEEDREAM_MAX_N = 2              # 数量上限，须与 points.cost_of 的 cap �
 _ZELONG2_POOL_LOCK = threading.Lock()
 _ZELONG2_POOL_NEXT = 0
 
+# 出图死线。必须留在 reaper KIND_GRACE["image"]=900s 之内（否则任务被判超时退点），
+# 前端 banana 轮询也容忍 900s（#331）。600s 给两档慢引擎足够余量、又不越界。
+#   xiaole : 轮询循环的总死线，天然受控
+#   zelong2: 号池的**总**死线（不是单次 timeout），见 _post_zelong2
+XIAOLE_IMG_DEADLINE = int(os.environ.get("XIAOLE_IMG_DEADLINE", "600") or 600)
+ZELONG2_DEADLINE = int(os.environ.get("ZELONG2_DEADLINE", "600") or 600)
+_MIN_ATTEMPT_SECONDS = 5        # 剩余预算不足这么多秒就别再发请求了
+
 def _clean_b64(value):
     """归一化前端传来的图片 base64：剥离 data: 前缀、去空白/换行、补齐 padding。
     个别前端路径(剪贴板/反推回填)会带换行或缺 padding，裸 base64.b64decode 抛
@@ -86,10 +94,30 @@ def _zelong2_attempts():
     return accounts[start:] + accounts[:start]
 
 def _post_zelong2(path, data, ctype):
+    """泽龙2 号池：逐个账号尝试，**整体压在 ZELONG2_DEADLINE 内**。
+
+    不能简单把单次 timeout 放宽——号池要遍历 N 个账号、每个账号还被 _retry 重试 2 次，
+    最坏耗时是 N×2×timeout，会冲破 reaper image 的 900s 宽限（任务被判超时退点）。
+    改为总死线：每次实际发请求时按「剩余预算」当 timeout，预算耗尽就不再试下一个号。
+    """
     errors = []
+    deadline = time.time() + ZELONG2_DEADLINE
     for idx, account in enumerate(_zelong2_attempts(), 1):
+        if deadline - time.time() <= _MIN_ATTEMPT_SECONDS:
+            errors.append("#%d 总死线 %ds 已耗尽，不再尝试后续号" % (idx, ZELONG2_DEADLINE))
+            print("[zelong2-pool] %s" % errors[-1], flush=True)
+            break
+
+        def _attempt(acc=account):
+            # 每次（含 _retry 的重试）都重算剩余预算，保证总耗时不超过 deadline
+            remain = deadline - time.time()
+            if remain <= _MIN_ATTEMPT_SECONDS:
+                raise ValueError("泽龙2 总死线 %ds 已耗尽" % ZELONG2_DEADLINE)
+            return _post(path, data, ctype, base=acc["base"], key=acc["key"],
+                         proxy=False, timeout=int(remain))
+
         try:
-            return _retry(lambda: _post(path, data, ctype, base=account["base"], key=account["key"], proxy=False))
+            return _retry(_attempt)
         except Exception as e:
             errors.append("#%d %s: %s" % (idx, account["base"], str(e)[:160]))
             print("[zelong2-pool] attempt failed %s" % errors[-1], flush=True)
@@ -113,7 +141,9 @@ def _gen_image_xiaole(prompt, ratio, quality, count, img):
     status_url = data.get("status_url") or (("/api/v1/generations/" + str(rid)) if rid else "")
     if not status_url:
         raise ValueError("渠道未返回任务ID")
-    deadline = time.time() + 300   # 果肉生图实测~239s近死线,放宽防误超时(前端banana轮询容忍900s #331)
+    # 300s 太紧：hd 图生图(2k+参考图)实测稳定 ~300s，全站近7天成功任务中位193s、最大446s，
+    # 失败任务中位315s —— 死线正好卡在实际耗时上。放宽到 600s（仍 < reaper 900s / 前端 900s）。
+    deadline = time.time() + XIAOLE_IMG_DEADLINE
     images = None
     while time.time() < deadline:
         st = _xiaole_request("GET", status_url, timeout=30)

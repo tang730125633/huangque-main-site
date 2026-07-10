@@ -626,13 +626,14 @@ def _multipart(fields, files):
     out.append(("--%s--\r\n" % b).encode())
     return b"".join(out), "multipart/form-data; boundary=" + b
 
-def _post(path, data, ctype, base=None, key=None, proxy=True):
+def _post(path, data, ctype, base=None, key=None, proxy=True, timeout=300):
+    """timeout 可由调用方按剩余预算收紧/放宽（如泽龙2号池要压在总死线内）。默认 300 保持原行为。"""
     req = urllib.request.Request((base or OPENAI_BASE) + path, data=data,
                                  headers={"Authorization": "Bearer " + (key or OPENAI_KEY), "Content-Type": ctype}, method="POST")
     if proxy:
-        with urllib.request.urlopen(req, timeout=300) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
-    with _NOPROXY.open(req, timeout=300) as r:  # 国内中转直连，不走 mihomo
+    with _NOPROXY.open(req, timeout=timeout) as r:  # 国内中转直连，不走 mihomo
         return json.loads(r.read())
 
 def _post_bytes(path, data, ctype):  # 返回原始字节(TTS 拿 mp3 二进制)
