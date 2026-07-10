@@ -624,49 +624,59 @@ def _heygen_create_photo_avatar(image_asset_id, direct=False):
         raise RuntimeError("HeyGen未返回avatar_item_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
     return avatar_item_id, avatar_group_id
 
-def _avatar_ready_from_payload(data, avatar_item_id, avatar_group_id=""):
-    def is_avatar(d):
-        current_id = str(d.get("id") or "")
-        preview_url = str(d.get("preview_image_url") or "")
-        return (
-            current_id == avatar_item_id
-            or bool(avatar_group_id and current_id == avatar_group_id)
-            or bool(avatar_item_id and avatar_item_id in preview_url)
-        )
-    item = _find_nested_dict(data, is_avatar)
+_HEYGEN_AVATAR_READY = {"completed", "ready", "success"}
+_HEYGEN_AVATAR_FAILED = {"failed", "error", "rejected"}
+# 中转（泽龙）只转发 v3，拿不到 look 级状态。盲等这么久后放行，交给 create 的 400 重试兜底。
+HEYGEN_AVATAR_UNKNOWN_GRACE = int(os.environ.get("HEYGEN_AVATAR_UNKNOWN_GRACE", "60") or 60)
+
+def _heygen_look_status(avatar_item_id, avatar_group_id="", direct=False):
+    """取 photo avatar **look** 的真实状态，返回 (status, moderation_msg)。
+
+    ⚠ 这里踩过一个大坑：`/v3/avatars` 与 `/v3/avatars/{group}` 返回的是 **avatar 组**，
+    而组的 `preview_image_url` 在 look 仍是 `pending` 时就已经有值，且那个 URL 恰好长这样：
+        https://files2.heygen.ai/talking_photo/<look_id>/xxx.WEBP
+    ——里面正好含 look_id。老代码据此模糊匹配、又把「有 preview_image_url」当作就绪，
+    于是 wait 立刻返回，随后提交生成就被 HeyGen 400：
+        "Avatar look <id> is not ready (status: pending)"
+    更要命的是：靠重试等到不再 400 也没用 —— avatar 没训练完，生成任务照样静默 failed
+    且 `error: null`。线上 HeyGen 动作模仿约 26% 的成功率，就是这个竞态的产物。
+
+    look 级状态只在 v2：`GET /v2/photo_avatar/{look_id}` → `status`（pending / completed / failed）。
+    """
+    if direct:
+        d = _heygen_direct_req("GET", _HEYGEN_DIRECT_API + "/v2/photo_avatar/" + urllib.parse.quote(avatar_item_id),
+                               body=None, ctype=None, timeout=20)
+        node = d.get("data") or {}
+        return str(node.get("status") or "").lower(), str(node.get("moderation_msg") or "")
+    # 中转（泽龙）只转发 v3，拿不到 look 级状态；退而查组，但**仍然要发请求** ——
+    # 否则鉴权失败之类的错误会被「继续轮询」掩盖成超时（见 test_avatar_poll_does_not_hide_request_error）。
+    path = ("/avatars/" + urllib.parse.quote(avatar_group_id)) if avatar_group_id else "/avatars"
+    data = _heygen_request_json("GET", path, timeout=20, direct=False)
+    wanted = {i for i in (avatar_item_id, avatar_group_id) if i}
+    item = _find_nested_dict(data, lambda d: str(d.get("id") or "") in wanted)
     if not item:
-        return False
-    status = str(item.get("status") or item.get("state") or "").lower()
-    return bool(item.get("preview_image_url") or status in {"completed", "ready", "success"})
+        return "", ""
+    return str(item.get("status") or item.get("state") or "").lower(), ""
 
 def _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id="", direct=False):
+    """等到 look 真正 completed 才返回。绝不把「有预览图」当就绪。"""
     deadline = time.time() + min(HEYGEN_TIMEOUT, 900)
+    started = time.time()
     last_status = ""
     while time.time() < deadline:
-        payloads = []
-        errors = []
-        if avatar_group_id:
-            try:
-                payloads.append(_heygen_request_json("GET", "/avatars/" + urllib.parse.quote(avatar_group_id), timeout=20, direct=direct))
-            except Exception as e:
-                errors.append(e)
-                last_status = str(e)[:120]
-        try:
-            payloads.append(_heygen_request_json("GET", "/avatars", timeout=20, direct=direct))
-        except Exception as e:
-            errors.append(e)
-            last_status = str(e)[:120]
-        if not payloads and errors:
-            raise errors[-1]
-        for data in payloads:
-            if _avatar_ready_from_payload(data, avatar_item_id, avatar_group_id):
-                return True
-            item = _find_nested_dict(data, lambda d: str(d.get("id") or "") in {avatar_item_id, avatar_group_id})
-            if item:
-                status = str(item.get("status") or item.get("state") or "processing")
-                if status != last_status:
-                    print("[heygen] avatar_id=%s status=%s" % (avatar_item_id, status), flush=True)
-                    last_status = status
+        # 查询异常直接上抛，不掩盖：401/配额之类的错误若被「继续轮询」吃掉，会伪装成超时。
+        status, moderation = _heygen_look_status(avatar_item_id, avatar_group_id, direct=direct)
+        if status and status != last_status:
+            print("[heygen] avatar look=%s status=%s" % (avatar_item_id, status), flush=True)
+            last_status = status
+        if status in _HEYGEN_AVATAR_READY:
+            return True
+        if status in _HEYGEN_AVATAR_FAILED:
+            raise RuntimeError("HeyGen Photo Avatar 处理失败: %s" % (moderation or status))
+        if not status and not direct and (time.time() - started) > HEYGEN_AVATAR_UNKNOWN_GRACE:
+            # 中转拿不到 look 状态，只能盲等一段再放行；create 侧仍有 400 "not ready" 重试兜底
+            print("[heygen] 中转无法获取 look 状态，盲等 %ds 后放行" % HEYGEN_AVATAR_UNKNOWN_GRACE, flush=True)
+            return True
         time.sleep(HEYGEN_POLL_INTERVAL)
     raise TimeoutError("HeyGen Photo Avatar处理超时")
 
