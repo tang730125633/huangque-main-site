@@ -682,9 +682,12 @@ def _heygen_cinematic_ratio(ratio):
 def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration, direct=False):
     prompt = (
         "Create a realistic cinematic vertical video of the same person from the avatar photo. "
-        "Follow the uploaded reference video closely for body movement, pose, timing, gestures, "
-        "facial expression, framing and camera motion. Keep the person's identity, face, hairstyle, "
-        "body proportions and outfit consistent. Smooth realistic motion, no text, no logo, no extra people."
+        "Follow the uploaded reference video ONLY for body movement, pose, timing, gestures, "
+        "facial expression rhythm, framing and camera motion. CRITICAL: Keep the avatar person's "
+        "exact identity, face, hairstyle, body shape, skin tone and clothing. Do NOT copy the "
+        "reference video person's appearance, body proportions or outfit. The output must look "
+        "like the avatar person performing the reference motion, not the reference person. "
+        "Smooth realistic motion, no text, no logo, no extra people."
     )
     body = json.dumps({
         "type": "cinematic_avatar",
