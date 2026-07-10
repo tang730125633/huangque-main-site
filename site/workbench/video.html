@@ -115,12 +115,12 @@
   .seg{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
   .seg button{height:40px;border:1px solid rgba(148,164,187,.14);border-radius:11px;background:rgba(148,164,187,.05);color:#94a4bb;font:700 13px inherit;cursor:pointer}
   .seg button.on{color:#e7b24c;background:rgba(231,178,76,.1);border-color:rgba(231,178,76,.32)}
-  .preview-frame{height:420px;aspect-ratio:9/16;max-width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:15px;text-align:center;padding:24px;border:1px dashed rgba(231,178,76,.28);border-radius:14px;background:rgba(7,11,19,.4);overflow:hidden}
-  .preview-frame img{width:100%;height:100%;object-fit:cover;border-radius:10px;opacity:.85}
+  .seg button:disabled{cursor:not-allowed;opacity:.38;color:#5c6b82;background:rgba(148,164,187,.025);border-color:rgba(148,164,187,.08)}
+  .video-parameter-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+  .parameter-readonly{min-height:40px;display:flex;align-items:center;padding:0 12px;border:1px solid rgba(148,164,187,.1);border-radius:8px;background:rgba(148,164,187,.035);color:#cbd5e1;font-size:12px;font-weight:700}
   .output-card{height:100%;width:100%;display:flex;flex-direction:column;gap:14px;align-items:flex-start;min-height:0}
   .output-scroll{width:100%;height:100%;min-height:0;display:flex;flex-direction:column;gap:14px}
   .history-title{font-size:13px;color:#94a4bb;font-weight:800;margin:2px 0 0}
-  .output-scroll > .output-head,.output-scroll > .output-text,.output-scroll > .output-tags,.output-scroll > .output-stage,.output-scroll > .output-created,.output-scroll > .action-grid,.output-scroll > .history-title{display:none}
   .history-list{width:100%;min-height:0;overflow-y:auto;overflow-x:hidden;padding-right:4px;display:flex;flex-direction:column;gap:12px;flex:1}
   .history-list::-webkit-scrollbar{width:7px}
   .history-list::-webkit-scrollbar-thumb{background:rgba(148,164,187,.24);border-radius:99px}
@@ -154,24 +154,9 @@
   .history-actions{display:grid;grid-template-columns:1fr;gap:8px;width:100%}
   .history-link{min-height:38px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(148,164,187,.1);border-radius:11px;background:rgba(148,164,187,.03);color:#94a4bb;text-decoration:none;font-size:11.5px;font-weight:800}
   .history-link:hover{color:#e7b24c;border-color:rgba(231,178,76,.24)}
-  .output-head{display:flex;align-items:center;gap:9px}
-  .output-thumb{width:40px;height:52px;border-radius:9px;border:1px solid rgba(148,164,187,.18);background:rgba(148,164,187,.08);object-fit:cover;overflow:hidden}
-  .output-audio{width:40px;height:52px;border:1px solid rgba(148,164,187,.16);border-radius:9px;background:rgba(148,164,187,.08);color:#cbd5e1;display:flex;align-items:center;justify-content:center}
-  .output-text{margin:0;max-width:620px;color:#eaf1fa;font-size:13.5px;font-weight:700;line-height:1.6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .output-tags{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-  .output-tag{height:32px;padding:0 13px;border-radius:8px;border:1px solid rgba(148,164,187,.1);background:rgba(148,164,187,.08);color:#f4f7fb;font-size:12px;font-weight:800;display:inline-flex;align-items:center;gap:6px}
-  .output-stage{width:202px;border:1px solid rgba(148,164,187,.13);border-radius:9px;background:#15181f;overflow:hidden}
-  .output-preview{height:312px;aspect-ratio:9/16;width:100%;position:relative;display:flex;align-items:center;justify-content:center;text-align:center;overflow:hidden;background:linear-gradient(145deg,rgba(11,15,22,.95),rgba(21,24,31,.94))}
-  .output-preview img,.output-preview video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
-  .output-preview .blur-bg{position:absolute;inset:0;filter:blur(8px);transform:scale(1.08);opacity:.28}
   .video-poster{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:.9}
   .output-overlay{position:relative;z-index:2;padding:18px;color:#f6d78a;font-size:13px;line-height:1.45;font-weight:700;text-shadow:0 1px 12px rgba(0,0,0,.52)}
   .output-info{display:flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:#f6b729;color:#1b1205;font-weight:900;margin:0 auto 10px}
-  .output-created{font-size:12px;color:#5c6b82}
-  .action-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin-top:16px}
-  .mini-action{display:flex;flex-direction:column;align-items:center;gap:6px;padding:11px 4px;border:1px solid rgba(148,164,187,.1);border-radius:11px;background:rgba(148,164,187,.03);color:#94a4bb;text-decoration:none;cursor:pointer;transition:.16s}
-  .mini-action:hover{color:#e7b24c;border-color:rgba(231,178,76,.24)}
-  .mini-action span{font-size:11px}
   .vidOv{position:fixed;inset:0;z-index:9999;background:rgba(2,5,10,.82);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:22px}
   .vidBox{position:relative;width:min(90vw,calc(90vh * 9 / 16));aspect-ratio:9/16;max-height:90vh;border:1px solid rgba(231,178,76,.24);border-radius:14px;background:#05070c;box-shadow:0 28px 80px rgba(0,0,0,.58);overflow:hidden}
   .vidBox video{width:100%;height:100%;object-fit:contain;background:#05070c;display:block}
@@ -180,7 +165,7 @@
   .vidLoading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#e7b24c;font-size:13px;font-weight:800;letter-spacing:0;background:linear-gradient(145deg,rgba(7,11,19,.96),rgba(16,20,28,.94))}
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;transition:.2s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:12px;padding:11px 16px;color:#eaf1fa;font-size:13px;z-index:80}
   .toast.show{opacity:1;transform:translateX(-50%)}
-  @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source,.avatar-grid{grid-template-columns:1fr}.output-text{white-space:normal}.output-stage{width:min(202px,100%)}}
+  @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid,.video-parameter-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source,.avatar-grid{grid-template-columns:1fr}}
   .line-switch{margin:12px 0;padding:12px;background:rgba(255,255,255,.03);border:1px solid rgba(148,164,187,.14);border-radius:12px}
   .line-switch>.label{margin-bottom:8px}
   .line-tabs{display:flex;gap:8px}
@@ -291,7 +276,7 @@
         <div style="display:grid;grid-template-columns:1fr;gap:18px;margin-top:13px;">
           <div>
             <div class="faint" style="font-size:12px;margin-bottom:8px;">分辨率</div>
-            <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-resolution="720p">720p</button><button class="on" data-resolution="1080p">1080p</button><button data-resolution="4k">4K</button></div>
+            <div class="seg"><button data-resolution="720p">720p</button><button class="on" data-resolution="1080p">1080p</button></div>
           </div>
           <div>
             <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
@@ -366,8 +351,20 @@
           <div id="motionPresetGrid" class="motion-preset-grid"></div>
         </div>
         <div class="motion-preset-panel">
-          <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
-          <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button class="on" data-motion-ratio="9:16">9:16</button><button data-motion-ratio="16:9">16:9</button><button data-motion-ratio="1:1">1:1</button></div>
+          <div class="video-parameter-grid">
+            <div>
+              <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
+              <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button class="on" data-motion-ratio="9:16">9:16</button><button data-motion-ratio="16:9">16:9</button><button data-motion-ratio="1:1">1:1</button></div>
+            </div>
+            <div>
+              <div class="faint" style="font-size:12px;margin-bottom:8px;">分辨率</div>
+              <div id="motionResolutionSeg" class="seg"><button class="on" data-motion-resolution="720p">720p</button><button data-motion-resolution="1080p" disabled title="线路二仅支持 720p">1080p</button></div>
+            </div>
+            <div style="grid-column:1/-1;">
+              <div class="faint" style="font-size:12px;margin-bottom:8px;">成片时长</div>
+              <div id="motionDurationValue" class="parameter-readonly">跟随参考片段 · 最长 120 秒</div>
+            </div>
+          </div>
         </div>
         <button id="motionGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:20px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
           生成影视级模仿视频
@@ -410,7 +407,20 @@
           </label>
         </div>
         <div id="tryonModeHint" class="faint" style="font-size:12px;margin-top:14px;">请至少上传衣服图或背景图</div>
-        <div class="faint" style="font-size:11.5px;margin-top:8px;">两段式生成较慢，建议视频 ≤10 秒；生成失败自动退点，消耗积分见提交返回。</div>
+        <div class="motion-preset-panel">
+          <div class="row">
+            <span class="faint" style="font-size:12px;">成片时长</span>
+            <span id="tryonDurationHint" class="faint" style="font-size:11.5px;">常用时长 5/6/10/15 秒</span>
+          </div>
+          <div id="tryonDurationSeg" class="seg" style="grid-template-columns:repeat(4,1fr);margin-top:8px;">
+            <button class="hidden" data-tryon-seconds="3">3 秒</button>
+            <button data-tryon-seconds="5">5 秒</button>
+            <button class="on" data-tryon-seconds="6">6 秒</button>
+            <button data-tryon-seconds="10">10 秒</button>
+            <button data-tryon-seconds="15">15 秒</button>
+          </div>
+        </div>
+        <div id="tryonDurationNote" class="faint" style="font-size:11.5px;margin-top:8px;">生成失败自动退点，消耗积分见提交返回。</div>
         <button id="tryonGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:20px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
           生成换装换背景视频
         </button>
@@ -506,34 +516,9 @@
 
     <aside class="vid-card vid-side">
       <div class="output-card"><div class="output-scroll">
-        <div class="output-head">
-          <img id="outputThumb" class="output-thumb" alt="人物形象" src="../assets/cloud/logo-bird.png">
-          <button id="outputAudioBtn" class="output-audio" type="button" title="播放口播音频">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px"><path d="M4 12v-2M8 16V8M12 19V5M16 16V8M20 12v-2"/></svg>
-          </button>
-        </div>
-        <p id="outputText" class="output-text">上传人物图并输入文案后，这里会显示本次生成的视频内容</p>
-        <div class="output-tags">
-          <span id="outputMotion" class="output-tag">低</span>
-          <span id="outputRatio" class="output-tag">9:16</span>
-          <span id="outputDuration" class="output-tag">生成中</span>
-        </div>
-        <div class="output-stage">
-          <div id="outputPreview" class="output-preview">
-            <div id="outputPreviewBg" class="blur-bg"></div>
-            <div id="outputOverlay" class="output-overlay">
-              <div class="output-info">i</div>
-              <div id="outputPreviewText">视频生成完成后<br>会在这里预览</div>
-            </div>
-          </div>
-        </div>
-        <div id="outputCreated" class="output-created">创建于：--</div>
-        <div class="action-grid" style="width:100%;">
-          <a id="outputDownload" href="#" class="mini-action" style="pointer-events:none;opacity:.45;"><span>下载</span></a>
-        </div>
-        <div class="history-title">历史生成记录</div>
+        <div class="history-title">生成记录</div>
         <div id="outputHistory" class="history-list">
-          <div style="padding:18px 10px;border:1px dashed rgba(148,164,187,.16);border-radius:12px;color:#5c6b82;font-size:12px;text-align:center;">暂无历史记录</div>
+          <div style="padding:18px 10px;border:1px dashed rgba(148,164,187,.16);border-radius:8px;color:#5c6b82;font-size:12px;text-align:center;">正在读取生成记录...</div>
         </div>
       </div>
       </div>
@@ -550,11 +535,11 @@
   var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='S_d21F8OR62', activePreview=null, activePreviewBtn=null;
   var imageData='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
   var selectedSubtitle='off', selectedSubtitleStyle='white', selectedSubtitlePosition='bottom';  // F4 字幕：默认关闭+底部，不勾选时行为与原来一致
-  var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16', selectedMotionLine='2';
+  var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16', selectedMotionLine='2', selectedMotionResolution='720p';
   var selectedGrokRatio='16:9';  // 默认16:9(上游9:16/1:1/4:5/5:4暂时大概率生成失败,止血用#GROK-RATIO-SIZE-INCIDENT)
   // 换装的第一个上传框在两条线路收的东西不同：线路一收换装视频，线路二收人物照片。
   // 必须各存各的变量 —— 共用一个的话，线路一传了视频再切到线路二，视频会被当人物照发出去（#537）。
-  var tryonVideoData='', tryonPersonImageData='', tryonClothesData='', tryonBackgroundData='', selectedTryonLine='2';
+  var tryonVideoData='', tryonPersonImageData='', tryonClothesData='', tryonBackgroundData='', selectedTryonLine='2', selectedTryonSeconds=6;
   var TRYON_IMG_ACCEPT='image/png,image/jpeg,image/webp', TRYON_VID_ACCEPT='video/mp4,video/quicktime,video/webm';
   function tryonIsLine2(){ return selectedTryonLine==='2'; }
   function tryonPrimaryData(){ return tryonIsLine2()?tryonPersonImageData:tryonVideoData; }
@@ -785,6 +770,17 @@
     if(btn){ btn.click(); return true; }
     return false;
   }
+  function clickMotionResolution(value){
+    var v=String(value||'').trim().toLowerCase();
+    if(v==='4k') v='1080p';
+    if(v==='1080p' && selectedMotionLine==='2'){
+      var line1=document.querySelector('#motionLineTabs [data-line="1"]');
+      if(line1) line1.click();
+    }
+    var btn=document.querySelector('[data-motion-resolution="'+v.replace(/"/g,'\\"')+'"]');
+    if(btn && !btn.disabled){ btn.click(); return true; }
+    return false;
+  }
   function clickGrokRatio(value){
     var btn=document.querySelector('[data-grok-ratio="'+String(value||'').replace(/"/g,'\\"')+'"]');
     if(btn){ btn.click(); return true; }
@@ -813,50 +809,6 @@
     if($('tryonStatus')) $('tryonStatus').textContent=msg;
   }
   function motionLabel(v){return v==='high'?'高':(v==='medium'?'中等':'低');}
-  function nowText(){var d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
-  function setOutputImage(src){
-    if(!src) return;
-    setAssetImage($('outputThumb'),src);
-    assetUrl(src).then(function(u){if($('outputPreviewBg')) $('outputPreviewBg').style.background='url(\"'+u+'\") center/cover';}).catch(function(){});
-  }
-  function updateOutputMeta(){
-    var text=$('scriptText')?$('scriptText').value.trim():'';
-    if($('outputText')) $('outputText').textContent=text||'上传人物图并输入文案后，这里会显示本次生成的视频内容';
-    if($('outputMotion')) $('outputMotion').textContent=motionLabel(selectedMotion);
-    if($('outputRatio')) $('outputRatio').textContent=selectedRatio;
-  }
-  function renderOutputVideo(result){
-    result=result||{};
-    updateOutputMeta();
-    if(result.image_url) setOutputImage(result.image_url);
-    if($('outputDuration')) $('outputDuration').textContent=result.duration?Math.round(Number(result.duration))+'秒':statusLabel(result.status);
-    if($('outputCreated')) $('outputCreated').textContent='创建于：'+nowText();
-    var box=$('outputPreview');
-    if(box && result.video_url){
-      box.innerHTML='<div id="outputPreviewBg" class="blur-bg"></div>'
-        +(result.image_url?'<img class="video-poster" data-asset-src="'+esc(result.image_url)+'" alt="">':'')
-        +'<button class="history-play" type="button" title="播放视频"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>';
-      var poster=box.querySelector('[data-asset-src]');
-      if(poster) setAssetImage(poster,poster.getAttribute('data-asset-src'));
-      var bg=$('outputPreviewBg');
-      if(bg && result.image_url) assetUrl(result.image_url).then(function(u){bg.style.background='url(\"'+u+'\") center/cover';}).catch(function(){});
-      var play=box.querySelector('.history-play');
-      if(play) play.onclick=function(){openVideoPlayer(result.video_url,result.text||'生成视频');};
-    }else if($('outputPreviewText')){
-      $('outputPreviewText').innerHTML='视频任务已创建<br>完成后可在视频资产查看';
-    }
-    var dl=$('outputDownload');
-    if(dl && result.video_url){
-      dl.href=result.video_url;
-      dl.setAttribute('download','huangque-video.mp4');
-      dl.onclick=isProtectedLocal(result.video_url)?function(e){e.preventDefault();downloadAsset(result.video_url,'huangque-video.mp4').catch(function(){toast('下载失败');});}:null;
-      dl.style.pointerEvents='auto';
-      dl.style.opacity='1';
-    }
-    if($('outputAudioBtn') && result.audio_url){
-      $('outputAudioBtn').onclick=function(){playPreview(result.audio_url,$('outputAudioBtn'));};
-    }
-  }
   function normalizeVideoAsset(x){
     x=x||{};
     if(x.image_file && !x.image_url) x.image_url='/api/gen/file/'+x.image_file;
@@ -869,6 +821,25 @@
     if(s==='failed' || s==='error') return '失败';
     if(s==='running' || s==='processing') return '生成中';
     return '待生成';
+  }
+  function videoModeTag(x){
+    var m=String((x&&x.mode)||(x&&x.channel)||'').toLowerCase();
+    if(m==='motion') return '影视级模仿';
+    if(m==='tryon') return '换装换背景';
+    if(m==='grok') return '果肉视频';
+    if(m==='micro') return '豆姐视频';
+    if(m==='omni') return '欧米视频';
+    return motionLabel((x&&x.motion)||'medium');
+  }
+  function videoDurationTag(x){
+    var n=Number(x&&x.duration);
+    if(isFinite(n) && n>0) return Math.round(n)+'秒';
+    var m=String((x&&x.mode)||(x&&x.channel)||'').toLowerCase();
+    if(m==='motion') return '跟随参考';
+    if(m==='tryon') return '按提交时长';
+    if(m==='omni') return '10秒';
+    if(m==='grok'||m==='micro') return '平台默认';
+    return statusLabel(x&&x.status);
   }
   function phaseInfo(phase,status){
     var st=String(status||'').toLowerCase();
@@ -915,7 +886,7 @@
     var box=$('outputHistory'); if(!box) return;
     box.innerHTML='';
     if(!items || !items.length){
-      box.innerHTML='<div style="padding:18px 10px;border:1px dashed rgba(148,164,187,.16);border-radius:12px;color:#5c6b82;font-size:12px;text-align:center;">暂无历史记录</div>';
+      box.innerHTML='<div style="padding:18px 10px;border:1px dashed rgba(148,164,187,.16);border-radius:8px;color:#5c6b82;font-size:12px;text-align:center;">暂无历史记录</div>';
       return;
     }
     items.forEach(function(raw,idx){
@@ -923,19 +894,20 @@
       var card=document.createElement('div');
       card.className='history-item';
       var image=x.image_url||'../assets/cloud/logo-bird.png';
-      var isMotion=x.mode==='motion';
-      var head=isMotion?'':'<div class="history-head"><img class="history-thumb" data-asset-src="'+esc(image)+'" alt="">'
+      var assetMode=String(x.mode||'').toLowerCase();
+      var isTalking=!assetMode||assetMode==='text'||assetMode==='audio';
+      var head=isTalking?'<div class="history-head"><img class="history-thumb" data-asset-src="'+esc(image)+'" alt="">'
         +'<button class="history-audio" type="button" title="播放口播音频">'
         +'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px"><path d="M4 12v-2M8 16V8M12 19V5M16 16V8M20 12v-2"/></svg>'
-        +'</button></div>';
+        +'</button></div>':'';
       var preview=x.video_url
         ?'<div class="blur-bg" data-bg-src="'+esc(image)+'"></div><img class="video-poster" data-asset-src="'+esc(image)+'" alt=""><button class="history-play" type="button" title="播放视频"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>'
         :'<div class="blur-bg" style="background:url(&quot;'+esc(image)+'&quot;) center/cover"></div><div class="output-overlay"><div class="output-info">i</div><div>'+esc(statusLabel(x.status))+'</div></div>';
-      var duration=x.duration?Math.round(Number(x.duration))+'秒':statusLabel(x.status);
+      var duration=videoDurationTag(x);
       var progress=(!x.video_url && (x.phase || x.status==='processing' || x.status==='running'))?progressMarkup(phaseInfo(x.phase,x.status)):'';
       card.innerHTML=head
         +'<p class="history-text">'+esc(x.text||'视频生成记录')+'</p>'
-        +'<div class="history-tags"><span class="history-tag">'+esc(motionLabel(x.motion||'low'))+'</span><span class="history-tag">'+esc(x.ratio||'9:16')+'</span><span class="history-tag">'+esc(duration)+'</span></div>'
+        +'<div class="history-tags"><span class="history-tag">'+esc(videoModeTag(x))+'</span><span class="history-tag">'+esc(x.ratio||'9:16')+'</span><span class="history-tag">'+esc(duration)+'</span></div>'
         +progress
         +'<div class="history-stage"><div class="history-preview">'+preview+'</div></div>'
         +'<div class="history-created">创建于：'+esc(formatTime(x.created_at)||'最近创建')+'</div>'
@@ -982,24 +954,35 @@
       currentVideoDraft.status=job.status||currentVideoDraft.status||'processing';
       renderVideoHistory([currentVideoDraft]);
     }
-    if($('outputDuration')) $('outputDuration').textContent=info.label;
-    if($('outputPreviewText')){
-      $('outputPreviewText').innerHTML=esc(info.label)+(info.eta?'<br>'+esc(info.eta):'');
-    }
     setVideoStatus(info.label+(info.eta?' · '+info.eta:''));
   }
+  function renderVideoHistoryState(message,retry){
+    var box=$('outputHistory'); if(!box) return;
+    box.innerHTML='';
+    var state=document.createElement('div');
+    state.style.cssText='padding:18px 10px;border:1px dashed rgba(148,164,187,.16);border-radius:8px;color:#5c6b82;font-size:12px;text-align:center;';
+    state.textContent=message;
+    if(retry){
+      var btn=document.createElement('button');
+      btn.type='button'; btn.textContent='重试';
+      btn.style.cssText='display:block;margin:10px auto 0;border:0;background:transparent;color:#e7b24c;font:700 12px inherit;cursor:pointer;';
+      btn.onclick=loadVideoHistory;
+      state.appendChild(btn);
+    }
+    box.appendChild(state);
+  }
   function loadVideoHistory(){
+    renderVideoHistoryState('正在读取生成记录...',false);
     fetch(fresh('/api/gen/video/assets?limit=30'),{cache:'no-store',headers:{Authorization:'Bearer '+token,'Cache-Control':'no-cache'}})
       .then(function(r){return r.ok?r.json():Promise.reject();})
       .then(function(d){renderVideoHistory(d.items||[]);})
-      .catch(function(){});
+      .catch(function(){renderVideoHistoryState('生成记录加载失败',true);});
   }
   function selectMotionAvatar(id){
     selectedMotionAvatarId=id||null;
     useNewMotionImage=!id;
     if($('motionGrid')) $('motionGrid').classList.toggle('use-avatar',!!id);
     var picked=motionAvatars.find(function(a){return String(a.id)===String(id);});
-    if(picked && picked.image_url) setOutputImage(picked.image_url);
     renderMotionAvatars();
   }
   function renderMotionAvatars(){
@@ -1225,7 +1208,6 @@
     }else if(videoFunction==='grok'){
       $('modeSummary').textContent='果肉视频（Grok Video）：输入提示词直接生成视频';
       if($('modeName')) $('modeName').textContent='果肉视频';
-      if($('outputRatio')) $('outputRatio').textContent=selectedGrokRatio;
     }else if(videoFunction==='micro'){
       $('modeSummary').textContent='豆姐视频（Seedance 2.0 Fast）：输入提示词，或上传参考图做图生视频';
       if($('modeName')) $('modeName').textContent='豆姐视频';
@@ -1248,7 +1230,6 @@
       [mode==='text'?'音色':'视频设置',mode==='text'?'可选择公共或个人音色':'可选择比例和清晰度']
     ];
     if($('sideChecklist')) $('sideChecklist').innerHTML=items.map(function(x){return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 11px;border:1px solid rgba(148,164,187,.1);border-radius:12px;background:rgba(148,164,187,.03);"><span style="font-size:12.5px;color:#cbd5e1;">'+esc(x[0])+'</span><span style="font-size:11.5px;color:#e7b24c;">'+esc(x[1])+'</span></div>';}).join('');
-    updateOutputMeta();
   }
   function stopPreview(){
     if(activePreview){try{activePreview.pause();activePreview.currentTime=0;}catch(e){}}
@@ -1343,8 +1324,54 @@
       });
   }
   document.querySelectorAll('[data-function]').forEach(function(b){b.onclick=function(){updateFunction(b.dataset.function);};});
-  document.querySelectorAll('#motionLineTabs .line-tab').forEach(function(b){b.onclick=function(){selectedMotionLine=b.dataset.line;document.querySelectorAll('#motionLineTabs .line-tab').forEach(function(x){x.classList.toggle('active',x===b);});};});
-  function applyTryonLine(){var isL2=selectedTryonLine==='2';var vf=$('tryonVideoFile'),vd=$('tryonVideoDrop'),bg=$('tryonBgDrop');if(vf)vf.accept=isL2?TRYON_IMG_ACCEPT:TRYON_VID_ACCEPT;if(vd){var s=vd.querySelector('strong'),p=vd.querySelector('span');if(s)s.textContent=isL2?'人物照片（必选）':'换装视频（必选）';if(p)p.textContent=isL2?'上传要换装的人物照片（全身/半身效果更好）':'上传需要换装/换背景的真人视频';}if(bg)bg.style.display=isL2?'none':'';var h=$('tryonModeHint');if(h)h.textContent=isL2?'线路二：人物照片+衣服图 → 模特展示视频（要换背景请切线路一）':'请至少上传衣服图或背景图（传背景图即换背景）';}
+  function applyMotionLine(){
+    var line2=selectedMotionLine==='2';
+    var high=$('motionResolutionSeg')&&$('motionResolutionSeg').querySelector('[data-motion-resolution="1080p"]');
+    if(line2) selectedMotionResolution='720p';
+    if(high){
+      high.disabled=line2;
+      high.title=line2?'线路二仅支持 720p':'线路一支持 1080p';
+    }
+    document.querySelectorAll('[data-motion-resolution]').forEach(function(x){
+      x.classList.toggle('on',x.dataset.motionResolution===selectedMotionResolution);
+    });
+    if($('motionDurationValue')) $('motionDurationValue').textContent=line2?'跟随参考片段 · 最长 120 秒':'跟随参考片段 · 最长 30 秒';
+  }
+  document.querySelectorAll('#motionLineTabs .line-tab').forEach(function(b){b.onclick=function(){
+    selectedMotionLine=b.dataset.line;
+    document.querySelectorAll('#motionLineTabs .line-tab').forEach(function(x){x.classList.toggle('active',x===b);});
+    applyMotionLine();
+  };});
+  applyMotionLine();
+  function applyTryonDurationOptions(){
+    var allowed=tryonIsLine2()?[5,6,10,15]:[3,5,6];
+    if(allowed.indexOf(selectedTryonSeconds)<0) selectedTryonSeconds=6;
+    document.querySelectorAll('[data-tryon-seconds]').forEach(function(x){
+      var seconds=Number(x.dataset.tryonSeconds), visible=allowed.indexOf(seconds)>=0;
+      x.classList.toggle('hidden',!visible);
+      x.classList.toggle('on',visible&&seconds===selectedTryonSeconds);
+    });
+    var seg=$('tryonDurationSeg');
+    if(seg) seg.style.gridTemplateColumns='repeat('+allowed.length+',1fr)';
+    if($('tryonDurationHint')) $('tryonDurationHint').textContent=tryonIsLine2()?'常用时长 5/6/10/15 秒':'常用时长 3/5/6 秒';
+    if($('tryonDurationNote')) $('tryonDurationNote').textContent=tryonIsLine2()
+      ?'生成失败自动退点，消耗积分见提交返回。'
+      :'线路一仅处理视频前 6 秒；生成失败自动退点。';
+  }
+  function applyTryonLine(){
+    var isL2=selectedTryonLine==='2';
+    var vf=$('tryonVideoFile'),vd=$('tryonVideoDrop'),bg=$('tryonBgDrop');
+    if(vf) vf.accept=isL2?TRYON_IMG_ACCEPT:TRYON_VID_ACCEPT;
+    if(vd){
+      var s=vd.querySelector('strong'),p=vd.querySelector('span');
+      if(s) s.textContent=isL2?'人物照片（必选）':'换装视频（必选）';
+      if(p) p.textContent=isL2?'上传要换装的人物照片（全身/半身效果更好）':'上传需要换装/换背景的真人视频';
+    }
+    if(bg) bg.style.display=isL2?'none':'';
+    var h=$('tryonModeHint');
+    if(h) h.textContent=isL2?'线路二：人物照片+衣服图 → 模特展示视频（要换背景请切线路一）':'请至少上传衣服图或背景图（传背景图即换背景）';
+    applyTryonDurationOptions();
+  }
   // 清理放在这里而不是 applyTryonLine 里：初始化与「重新生成」回填也会调 applyTryonLine，
   // 那两种场景不能清数据。只有用户**真的换了**线路才清。
   document.querySelectorAll('#tryonLineTabs .line-tab').forEach(function(b){b.onclick=function(){
@@ -1360,17 +1387,14 @@
   document.querySelectorAll('[data-voice-tab]').forEach(function(b){b.onclick=function(){voiceTab=b.dataset.voiceTab;document.querySelectorAll('[data-voice-tab]').forEach(function(x){x.classList.toggle('on',x===b);});stopPreview();renderVoices();};});
   document.querySelectorAll('.source-card').forEach(function(b){b.onclick=function(){document.querySelectorAll('.source-card').forEach(function(x){x.classList.toggle('on',x===b);});var asset=b.dataset.source==='asset';$('audioFileBox').classList.toggle('hidden',asset);$('assetAudioBox').classList.toggle('hidden',!asset);if(asset) loadAssetAudios();updateChecklist();};});
   document.querySelectorAll('.seg button').forEach(function(b){b.onclick=function(){
+    if(b.disabled || b.classList.contains('hidden')) return;
     b.parentElement.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b);});
     if(b.dataset.resolution) selectedResolution=b.dataset.resolution;
     if(b.dataset.ratio) selectedRatio=b.dataset.ratio;
-    if(b.dataset.motionRatio){
-      selectedMotionRatio=b.dataset.motionRatio;
-      if(videoFunction==='motion' && $('outputRatio')) $('outputRatio').textContent=selectedMotionRatio;
-    }
-    if(b.dataset.grokRatio){
-      selectedGrokRatio=b.dataset.grokRatio;
-      if(videoFunction==='grok' && $('outputRatio')) $('outputRatio').textContent=selectedGrokRatio;
-    }
+    if(b.dataset.motionRatio) selectedMotionRatio=b.dataset.motionRatio;
+    if(b.dataset.motionResolution) selectedMotionResolution=b.dataset.motionResolution;
+    if(b.dataset.tryonSeconds) selectedTryonSeconds=Number(b.dataset.tryonSeconds);
+    if(b.dataset.grokRatio) selectedGrokRatio=b.dataset.grokRatio;
     if(b.dataset.motion) selectedMotion=b.dataset.motion;
     if(b.dataset.subtitle){selectedSubtitle=b.dataset.subtitle;var on=selectedSubtitle==='on';var sr=$('subtitleStyleRow');if(sr)sr.style.display=(on?'':'none');var pr=$('subtitlePositionRow');if(pr)pr.style.display=(on?'':'none');}
     if(b.dataset.substyle) selectedSubtitleStyle=b.dataset.substyle;
@@ -1386,7 +1410,6 @@
     readFileData(f).then(function(data){ imageData=data; updateChecklist(); }).catch(function(e){ toast(e.message); });
     box.classList.add('has-img');
     box.innerHTML='<input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+url+'" alt="人物形象预览">';
-    setOutputImage(url);
     bindImageInput(box.querySelector('input'));
     updateChecklist();
   };
@@ -1398,7 +1421,6 @@
     box.classList.add('has-img');
     box.innerHTML='<input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+esc(previewUrl||dataUrl)+'" alt="人物形象预览">';
     bindImageInput(box.querySelector('input'));
-    setOutputImage(previewUrl||dataUrl);
     updateChecklist();
   }
   bindImageInput($('imageFile'));
@@ -1411,7 +1433,6 @@
         if(type==='image'){
           motionImageData=data;
           selectMotionAvatar(null);
-          setOutputImage(url);
         }else{
           motionReferenceVideoData=data;
           selectedMotionPreset='';
@@ -1588,14 +1609,7 @@
     if(!motionReferenceVideoData){ toast('请先选择或上传参考片段'); return; }
     setBusy(true);
     var motionPreviewImage=useNewMotionImage?motionImageData:(pickedAvatar&&pickedAvatar.image_url);
-    setOutputImage(motionPreviewImage);
-    if($('outputText')) $('outputText').textContent='影视级模仿视频生成记录';
-    if($('outputMotion')) $('outputMotion').textContent='影视级模仿';
-    if($('outputRatio')) $('outputRatio').textContent=selectedMotionRatio;
-    if($('outputDuration')) $('outputDuration').textContent='生成中';
-    if($('outputCreated')) $('outputCreated').textContent='创建于：'+nowText();
-    if($('outputPreviewText')) $('outputPreviewText').innerHTML='影视级模仿视频正在生成中<br>完成后会自动预览';
-    currentVideoDraft={mode:'motion',image_url:motionPreviewImage,text:'影视级模仿视频',ratio:selectedMotionRatio,motion:'medium',status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
+    currentVideoDraft={mode:'motion',image_url:motionPreviewImage,text:'影视级模仿视频',resolution:selectedMotionResolution,ratio:selectedMotionRatio,motion:'medium',status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
     renderVideoHistory([currentVideoDraft]);
     setVideoStatus('正在提交影视级模仿任务...');
     var body={
@@ -1603,9 +1617,8 @@
       line:selectedMotionLine,
       reference_video_data:motionReferenceVideoData,
       text:'影视级模仿视频',
-      resolution:'720p',
+      resolution:selectedMotionResolution,
       ratio:selectedMotionRatio,
-      duration:10,
       motion:'medium'
     };
     if(useNewMotionImage){
@@ -1641,13 +1654,7 @@
       if(!tryonClothesData && !tryonBackgroundData){ toast('请至少上传衣服图或背景图'); return; }
     }
     setBusy(true);
-    if($('outputText')) $('outputText').textContent='换装换背景视频生成记录';
-    if($('outputMotion')) $('outputMotion').textContent='换装换背景';
-    if($('outputRatio')) $('outputRatio').textContent='9:16';
-    if($('outputDuration')) $('outputDuration').textContent='生成中';
-    if($('outputCreated')) $('outputCreated').textContent='创建于：'+nowText();
-    if($('outputPreviewText')) $('outputPreviewText').innerHTML='换装换背景视频正在生成中<br>完成后会自动预览';
-    currentVideoDraft={mode:'tryon',text:'换装换背景视频',ratio:'9:16',motion:'medium',status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
+    currentVideoDraft={mode:'tryon',text:'换装换背景视频',ratio:'9:16',motion:'medium',duration:selectedTryonSeconds,status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
     renderVideoHistory([currentVideoDraft]);
     setVideoStatus('正在提交换装换背景任务...');
     fetch('/api/gen/tryon',{
@@ -1657,14 +1664,14 @@
         line:'2',
         person_image_data:tryonPersonImageData,   // 线路二发人物照片，绝不能发成 tryonVideoData（#537）
         clothes_data:tryonClothesData||'',
-        seconds:6,
+        seconds:selectedTryonSeconds,
         text:'换装'
       }:{
         line:'1',
         person_video_data:tryonVideoData,
         clothes_data:tryonClothesData||'',
         background_data:tryonBackgroundData||'',
-        seconds:6,
+        seconds:selectedTryonSeconds,
         text:'换装换背景视频'
       })
     }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
@@ -1692,12 +1699,7 @@
     setBusy(true);
     var audioReadyPromise=assetSelected?fetchAssetAudioData(selectedAssetAudio):Promise.resolve(audioData);
     audioReadyPromise.then(function(){
-    updateOutputMeta();
-    if($('outputDuration')) $('outputDuration').textContent='生成中';
-    if($('outputCreated')) $('outputCreated').textContent='创建于：'+nowText();
-    if($('outputPreviewText')) $('outputPreviewText').innerHTML='视频正在生成中<br>完成后会自动预览';
-    if($('outputDownload')){$('outputDownload').href='#';$('outputDownload').style.pointerEvents='none';$('outputDownload').style.opacity='.45';}
-    currentVideoDraft={image_url:imageData,text:text||'视频生成记录',ratio:selectedRatio,motion:selectedMotion,status:'processing',created_at:Math.floor(Date.now()/1000)};
+    currentVideoDraft={mode:mode,image_url:imageData,text:text||'视频生成记录',resolution:selectedResolution,ratio:selectedRatio,motion:selectedMotion,status:'processing',created_at:Math.floor(Date.now()/1000)};
     renderVideoHistory([currentVideoDraft]);
     setVideoStatus('正在提交视频任务...');
     fetch('/api/gen/video',{
@@ -1742,14 +1744,13 @@
     if(!prompt){ toast('请输入视频提示词'); if(promptEl) promptEl.focus(); return; }
     setBusy(true);
     if(statusEl) statusEl.textContent='正在提交'+label+'任务...';
-    if($('outputPreviewText')) $('outputPreviewText').innerHTML='视频正在生成中<br>完成后会自动预览';
-    var ratio=channel==='grok'?selectedGrokRatio:'—';
-    if($('outputRatio')) $('outputRatio').textContent=ratio;
-    currentVideoDraft={text:prompt,ratio:ratio,motion:label,status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
+    var ratio=channel==='grok'?selectedGrokRatio:'9:16';
+    var _refArr=channel==='grok'?grokRefData:(channel==='micro'?microRefData:(channel==='omni'?omniRefData:null));
+    var fixedDuration=(channel==='omni'||(_refArr&&_refArr.length))?10:null;
+    currentVideoDraft={mode:channel,text:prompt,ratio:ratio,motion:label,duration:fixedDuration,status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
     renderVideoHistory([currentVideoDraft]);
     var xlPayload={channel:channel,prompt:prompt};
     if(channel==='grok') xlPayload.ratio=selectedGrokRatio;
-    var _refArr=channel==='grok'?grokRefData:(channel==='micro'?microRefData:(channel==='omni'?omniRefData:null));
     if(_refArr && _refArr.length){ xlPayload.reference_images=_refArr; }  // 图生视频参考图
     fetch('/api/gen/xiaole_video',{
       method:'POST',
@@ -1885,7 +1886,6 @@
       box.innerHTML='<input id="motionImageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+esc(previewUrl||dataUrl)+'" alt="人物形象预览">';
       bindMotionFile(box.querySelector('input'),'image');
     }
-    setOutputImage(previewUrl||dataUrl);
   }
   function setMotionReferencePrefill(dataUrl, previewUrl){
     motionReferenceVideoData=dataUrl;
@@ -1949,7 +1949,6 @@
       localStorage.removeItem('hq_video_prefill');
       if(!d) return;
       var m=prefillMode(d);
-      if(d.resolution) clickDataButton('resolution',d.resolution);
       if(d.ratio) clickDataButton('ratio',d.ratio);
       if(d.motion) clickDataButton('motion',d.motion);
       _prefillVoice=d.voice_key||d.voice||d.provider_voice||d.voice_name||'';
@@ -1981,6 +1980,7 @@
       if(m==='motion'){
         updateFunction('motion');
         if(d.ratio) clickMotionRatio(d.ratio);
+        if(d.resolution) clickMotionResolution(d.resolution);
         setVideoStatus('正在带入影视级模仿素材...');
         var motionJobs=[];
         if(d.image_url) motionJobs.push(prefillJob('人物形象图', fetchImagePrefill(d.image_url).then(function(img){setMotionImagePrefill(img.dataUrl,img.previewUrl);})));
@@ -1993,6 +1993,7 @@
       }
       updateFunction('talking');
       updateMode(m==='audio'?'audio':'text');
+      if(d.resolution) clickDataButton('resolution',String(d.resolution).toLowerCase()==='4k'?'1080p':d.resolution);
       if((d.prompt||d.text) && $('scriptText')){$('scriptText').value=d.prompt||d.text;$('scriptText').dispatchEvent(new Event('input'));}
       var talkJobs=[];
       if(d.image_url){

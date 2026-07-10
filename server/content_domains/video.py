@@ -10,11 +10,12 @@ from .audio import gen_audio
 
 VALID_VIDEO_MODES = {"text", "audio", "motion"}
 VALID_VIDEO_RATIOS = {"9:16", "16:9", "1:1", "4:5", "5:4"}
-VALID_VIDEO_RESOLUTIONS = {"720p", "1080p", "4k"}
+VALID_VIDEO_RESOLUTIONS = {"720p", "1080p"}
 VALID_VIDEO_MOTIONS = {"low", "medium", "high"}
 VALID_IMAGE_MIMES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
 VALID_AUDIO_MIMES = {"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/mp4", "audio/m4a", "audio/x-m4a"}
 VALID_REFERENCE_VIDEO_MIMES = {"video/mp4", "video/quicktime", "video/webm"}
+TRYON_MAX_INPUT_SEC = 6   # RunningHub 耗时随输入时长增长，线路一只处理前 6 秒。
 XIAOLE_RATIO_SIZES = {
     "9:16": "720x1280",
     "16:9": "1280x720",
@@ -184,6 +185,7 @@ def validate_video_payload(payload):
     if image_data and not _is_valid_data_url(image_data, VALID_IMAGE_MIMES):
         raise ValueError("image_data 不是有效的人物形象图片")
 
+    line = None
     if mode == "text":
         if not (payload.get("voice") or "").strip():
             raise ValueError("mode=text 时 voice 必填")
@@ -194,6 +196,9 @@ def validate_video_payload(payload):
         if not _is_valid_data_url(audio_data, VALID_AUDIO_MIMES):
             raise ValueError("audio_data 不是有效的音频文件")
     elif mode == "motion":
+        line = str(payload.get("line") or "2").strip()
+        if line not in {"1", "2"}:
+            raise ValueError("line 仅支持 1、2")
         reference_video_data = (payload.get("reference_video_data") or "").strip()
         if not reference_video_data:
             raise ValueError("reference_video_data 不能为空")
@@ -203,9 +208,12 @@ def validate_video_payload(payload):
     ratio = (payload.get("ratio") or "9:16").strip()
     if ratio not in VALID_VIDEO_RATIOS:
         raise ValueError("ratio 仅支持 9:16、16:9、1:1、4:5、5:4")
-    resolution = (payload.get("resolution") or "1080p").strip().lower()
+    default_resolution = "720p" if mode == "motion" and line == "2" else "1080p"
+    resolution = (payload.get("resolution") or default_resolution).strip().lower()
     if resolution not in VALID_VIDEO_RESOLUTIONS:
-        raise ValueError("resolution 仅支持 720p、1080p、4k")
+        raise ValueError("resolution 仅支持 720p、1080p")
+    if mode == "motion" and line == "2" and resolution != "720p":
+        raise ValueError("影视级模仿线路二固定为 720p，请改用线路一生成 1080p")
     motion = (payload.get("motion") or "medium").strip().lower()
     if motion not in VALID_VIDEO_MOTIONS:
         raise ValueError("motion 仅支持 low、medium、high")
@@ -215,6 +223,77 @@ def validate_video_payload(payload):
     cleaned["ratio"] = ratio
     cleaned["resolution"] = resolution
     cleaned["motion"] = motion
+    cleaned.pop("duration", None)
+    if mode == "motion":
+        cleaned["line"] = line
+    return cleaned
+
+
+def _tryon_line(payload):
+    line = str(payload.get("line") or "").strip()
+    if not line:
+        line = "2" if ((payload.get("person_image_data") or payload.get("image_data"))
+                       and not payload.get("person_video_data")) else "1"
+    if line not in {"1", "2"}:
+        raise ValueError("line 仅支持 1、2")
+    return line
+
+
+def _tryon_seconds(payload, line):
+    raw = payload.get("seconds")
+    if raw is None or raw == "":
+        raw = 6
+    if isinstance(raw, bool):
+        raise ValueError("seconds 必须是整数")
+    try:
+        seconds = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError("seconds 必须是整数")
+    if str(raw).strip() != str(seconds):
+        raise ValueError("seconds 必须是整数")
+    if line == "2" and not 5 <= seconds <= 15:
+        raise ValueError("换装线路二时长仅支持 5-15 秒")
+    if line == "1" and not 1 <= seconds <= TRYON_MAX_INPUT_SEC:
+        raise ValueError("换装线路一时长仅支持 1-%d 秒" % TRYON_MAX_INPUT_SEC)
+    return seconds
+
+
+def validate_tryon_payload(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("请求体不是合法 JSON")
+    line = _tryon_line(payload)
+    seconds = _tryon_seconds(payload, line)
+    clothes_data = str(payload.get("clothes_data") or "").strip()
+    background_data = str(payload.get("background_data") or "").strip()
+
+    if line == "2":
+        person_image_data = str(payload.get("person_image_data") or payload.get("image_data") or "").strip()
+        if not person_image_data:
+            raise ValueError("线路二换装请上传人物照片")
+        if not _is_valid_data_url(person_image_data, VALID_IMAGE_MIMES):
+            raise ValueError("person_image_data 不是有效的人物照片")
+        if not clothes_data:
+            raise ValueError("请上传衣服图")
+        if not _is_valid_data_url(clothes_data, VALID_IMAGE_MIMES):
+            raise ValueError("clothes_data 不是有效的衣服图片")
+        if background_data:
+            raise ValueError("线路二不支持换背景，请改用线路一")
+    else:
+        person_video_data = str(payload.get("person_video_data") or "").strip()
+        if not person_video_data:
+            raise ValueError("请上传换装视频")
+        if not _is_valid_data_url(person_video_data, VALID_REFERENCE_VIDEO_MIMES):
+            raise ValueError("person_video_data 不是有效的换装视频")
+        if not clothes_data and not background_data:
+            raise ValueError("请至少上传衣服图或背景图")
+        if clothes_data and not _is_valid_data_url(clothes_data, VALID_IMAGE_MIMES):
+            raise ValueError("clothes_data 不是有效的衣服图片")
+        if background_data and not _is_valid_data_url(background_data, VALID_IMAGE_MIMES):
+            raise ValueError("background_data 不是有效的背景图片")
+
+    cleaned = dict(payload)
+    cleaned["line"] = line
+    cleaned["seconds"] = seconds
     return cleaned
 
 def record_video_asset(job_id, username, result):
@@ -298,14 +377,20 @@ def update_video_asset_phase(job_id, phase, **fields):
 
 def record_video_pending_asset(job_id, username, payload):
     # 换装/换背景(tryon)与常规视频共用 video_assets 表；tryon 没有 mode/voice 等字段，兜底为空即可
-    is_tryon = bool(payload.get("person_video_data") or payload.get("clothes_data") or payload.get("background_data"))
+    is_tryon = bool(payload.get("person_video_data") or payload.get("person_image_data")
+                    or payload.get("clothes_data") or payload.get("background_data"))
+    mode = "tryon" if is_tryon else (payload.get("mode") or payload.get("channel") or "text")
+    is_talking = mode in {"text", "audio"}
+    resolution = payload.get("resolution")
+    if not resolution and is_talking:
+        resolution = "1080p"
     record_video_asset(job_id, username, {
-        "mode": ("tryon" if is_tryon else (payload.get("mode") or "text")),
-        "text": payload.get("text") or "",
+        "mode": mode,
+        "text": payload.get("text") or payload.get("prompt") or "",
         "voice": payload.get("voice") or "",
-        "resolution": payload.get("resolution") or "1080p",
+        "resolution": resolution,
         "ratio": payload.get("ratio") or "9:16",
-        "motion": payload.get("motion") or "medium",
+        "motion": (payload.get("motion") or "medium") if is_talking else payload.get("motion"),
         "reference_video_file": payload.get("person_video_file") or None,
         "background_file": payload.get("background_file") or None,
         "model": payload.get("model") or None,
@@ -325,6 +410,43 @@ def list_video_assets(username, limit=120):
             WHERE username=? AND status!='deleted'
             ORDER BY id DESC LIMIT ?""", (username, limit)).fetchall()
     items = [dict(r) for r in rows]
+    job_ids = [item.get("job_id") for item in items if item.get("job_id")]
+    if job_ids:
+        try:
+            placeholders = ",".join("?" for _ in job_ids)
+            with closing(jdb()) as c:
+                jobs = c.execute("SELECT id,payload,result FROM jobs WHERE id IN (%s)" % placeholders,
+                                 job_ids).fetchall()
+            job_meta = {row["id"]: row for row in jobs}
+            for item in items:
+                row = job_meta.get(item.get("job_id"))
+                if not row:
+                    continue
+                try:
+                    payload = json.loads(row["payload"] or "{}")
+                except Exception:
+                    payload = {}
+                if not isinstance(payload, dict):
+                    payload = {}
+                try:
+                    result = json.loads(row["result"] or "{}")
+                except Exception:
+                    result = {}
+                if not isinstance(result, dict):
+                    result = {}
+                duration = result.get("duration") or result.get("seconds")
+                if duration is None and item.get("mode") == "tryon":
+                    duration = payload.get("seconds")
+                try:
+                    duration = float(duration)
+                except (TypeError, ValueError):
+                    duration = None
+                if duration and duration > 0:
+                    item["duration"] = duration
+                if str(payload.get("line") or "") in {"1", "2"}:
+                    item["line"] = str(payload["line"])
+        except Exception:
+            pass
     try:
         from . import cos
         if cos.enabled():
@@ -1307,25 +1429,20 @@ def gen_video(payload):
     resolution = (payload.get("resolution") or "1080p").strip()
     ratio = (payload.get("ratio") or "9:16").strip()
     motion = (payload.get("motion") or "medium").strip()
-    if resolution not in {"720p", "1080p", "4k"}:
+    if resolution not in {"720p", "1080p"}:
         resolution = "1080p"
     if ratio not in {"9:16", "16:9", "1:1", "4:5", "5:4"}:
         ratio = "9:16"
     if motion not in {"low", "medium", "high"}:
         motion = "medium"
-    try:
-        duration = int(payload.get("duration") or 10)
-    except Exception:
-        duration = 10
-    duration = max(5, min(30, duration))
     created_avatar = None
     if mode == "motion":
         line = "1" if str(payload.get("line") or "2").strip() == "1" else "2"  # 默认线路二(WaveSpeed),仅显式line=1走线路一
         reference_duration = _motion_reference_duration(reference_video_file, line)
         # HeyGen 只收整数秒，向上取整避免截掉参考片段末尾；WaveSpeed 直接跟随驱动视频，不收 duration。
         duration = max(5, min(30, int(reference_duration + 0.999999)))
-        if resolution not in {"720p", "1080p"}:
-            resolution = "720p"
+        if line == "2" and resolution != "720p":
+            raise ValueError("影视级模仿线路二固定为 720p，请改用线路一生成 1080p")
         update_video_asset_phase(job_id, "motion_parameters_ready", resolution=resolution,
                                  ratio=ratio, motion=motion)
         if line == "2":
@@ -1445,10 +1562,6 @@ def _store_tryon_video(local_path, prefix="tryon"):
     fn = "video/%s_%d%s" % (prefix, int(time.time() * 1000), ext)
     _out_path(fn).write_bytes(src.read_bytes())
     return _faststart_video_file(fn)
-
-TRYON_MAX_INPUT_SEC = 6   # 换装输入视频时长上限(秒)。RunningHub Wan Animate 生成耗时 ∝ 输入时长
-                          # 实测(2026-07-09,fang测试号): 19.5s→8.0min、6s→6.5min、4s→3.1min。
-                          # 截到 6s 让绝大多数换装 ≤5min;RunningHub 排队忙时仍可能略超,100%稳定需换 WaveSpeed 专用推理(均值223s)。
 
 def _cap_tryon_input(person_fp):
     """输入视频超 TRYON_MAX_INPUT_SEC 秒则截取前段(保证 5 分钟内出片)。返回 (路径, 原时长秒 or None)。
@@ -1580,9 +1693,8 @@ def gen_tryon(payload):
     job_id = payload.get("_job_id")
     username = (payload.get("_username") or "").strip()
     # 无显式 line 时智能默认：有人物图(且无人物视频)→线路二(WaveSpeed,更稳)；有人物视频→线路一(RunningHub,给视频换装保动作)
-    _tline = str(payload.get("line") or "").strip()
-    if not _tline:
-        _tline = "2" if ((payload.get("person_image_data") or payload.get("image_data")) and not payload.get("person_video_data")) else "1"
+    _tline = _tryon_line(payload)
+    seconds = _tryon_seconds(payload, _tline)
     if _tline == "2":
         # 线路二 WaveSpeed：人物图 + 衣服图 → 换装展示视频（区别于线路一"给人物视频换装保留原动作"）
         from . import wavespeed
@@ -1595,19 +1707,16 @@ def gen_tryon(payload):
         clothes2 = _save_data_file(payload.get("clothes_data"), "tryon_cloth", [".jpg", ".jpeg", ".png", ".webp"])
         if not clothes2:
             raise ValueError("请上传衣服图")
-        try:
-            seconds2 = max(5, min(15, int(payload.get("seconds") or 6)))
-        except Exception:
-            seconds2 = 6
         update_video_asset_phase(job_id, "queued", mode="tryon", text="换装",
                                  image_file=person_image_file, tryon_mode="clothes_only")
-        wres = wavespeed.generate_tryon(person_image_file, clothes2, seconds2, job_id=job_id)
+        wres = wavespeed.generate_tryon(person_image_file, clothes2, seconds, job_id=job_id)
         return {
             "type": "video", "status": "done", "mode": "tryon", "tryon_mode": "clothes_only",
             "person_image_file": person_image_file, "clothes_file": clothes2,
             "image_file": person_image_file, "image_url": _file_url(person_image_file),
             "video_file": wres.get("video_file"), "video_url": wres.get("video_url"),
-            "provider": "wavespeed", "text": "换装", "message": "换装完成",
+            "provider": "wavespeed", "text": "换装", "duration": seconds, "seconds": seconds,
+            "message": "换装完成",
         }
     person_video_file = _save_data_file(payload.get("person_video_data"), "tryon_person", [".mp4", ".mov", ".webm"])
     if not person_video_file:
@@ -1622,11 +1731,6 @@ def gen_tryon(payload):
         tryon_mode = "clothes_only"  # 只换装
     else:
         tryon_mode = "bg_only"       # 只换背景
-    try:
-        seconds = int(payload.get("seconds") or 6)
-    except Exception:
-        seconds = 6
-    seconds = max(1, min(15, seconds))
     text = (payload.get("text") or "").strip() or "换装换背景"
     cover_file = clothes_file or background_file
     update_video_asset_phase(job_id, "queued", mode="tryon", text=text,

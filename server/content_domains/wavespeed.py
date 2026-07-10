@@ -125,14 +125,15 @@ def _download_to_lib(url, prefix):
 
 def generate_motion(image_file, reference_video_file, resolution, job_id=None):
     """线路二·动作模仿：人物图 + 驱动视频 → animate。返回 {video_file, video_url, provider}。"""
+    if str(resolution or "").strip().lower() != "720p":
+        raise ValueError("线路二动作模仿仅支持 720p")
     _phase(job_id, "ws_uploading")
     img_url = _material_url(image_file)
     vid_url = _material_url(reference_video_file)
-    res = "720p" if str(resolution) in ("720p", "1080p", "4k") else "720p"  # 最低720p，480p抽帧明显
     _phase(job_id, "ws_running")
     out_url = _run_and_wait(
         WS_MOTION,
-        {"image": img_url, "video": vid_url, "mode": "animate", "resolution": res},
+        {"image": img_url, "video": vid_url, "mode": "animate", "resolution": "720p"},
         job_id=job_id,
     )
     _phase(job_id, "downloading")

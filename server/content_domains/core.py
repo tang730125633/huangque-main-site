@@ -1044,9 +1044,11 @@ class H(BaseHTTPRequestHandler):
             except feature_flags.FeatureDisabled as e:
                 return self._send(503, {"detail": str(e)})
             try:
-                body = self._json_body_strict() if kind == "video" else self._json_body()
+                body = self._json_body_strict() if kind in {"video", "tryon"} else self._json_body()
                 if kind == "video":
                     body = video_domain.validate_video_payload(body)
+                elif kind == "tryon":
+                    body = video_domain.validate_tryon_payload(body)
                 elif kind == "image":
                     from . import image as image_domain
                     body = image_domain.validate_image_payload(body)
