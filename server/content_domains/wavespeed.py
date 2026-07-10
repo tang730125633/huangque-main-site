@@ -109,7 +109,7 @@ def generate_motion(image_file, reference_video_file, resolution, job_id=None):
     _phase(job_id, "ws_uploading")
     img_url = _material_url(image_file)
     vid_url = _material_url(reference_video_file)
-    res = "720p" if str(resolution) in ("720p", "1080p", "4k") else "480p"
+    res = "720p" if str(resolution) in ("720p", "1080p", "4k") else "720p"  # 最低720p，480p抽帧明显
     _phase(job_id, "ws_running")
     out_url = _run_and_wait(
         WS_MOTION,

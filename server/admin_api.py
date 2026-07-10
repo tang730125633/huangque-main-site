@@ -720,6 +720,12 @@ def _env_value(names):
             value = (src["values"].get(env_name) or "").strip()
             if value:
                 return value
+    # 兜底：文件里没有(如 RunningHub 密钥文件 /etc/huangque/runninghub.env 是 600 root，admin 以 ubuntu 跑读不到)，
+    # 但本进程环境里有的(systemd drop-in 注入)也算，避免误报"密钥未配置"。
+    for env_name in names:
+        value = (os.environ.get(env_name) or "").strip()
+        if value:
+            return value
     return ""
 
 
