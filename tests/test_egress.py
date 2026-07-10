@@ -16,10 +16,15 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "server"))
 
 
-def _reload_egress(primary="", fallback="", timeout="210"):
+def _reload_egress(primary="", fallback="", timeout="210", primary_timeout=None):
     import importlib
-    with patch.dict(os.environ, {"EGRESS_PROXY": primary, "EGRESS_PROXY_FALLBACK": fallback,
-                                 "EGRESS_TIMEOUT": timeout}, clear=False):
+    env = {"EGRESS_PROXY": primary, "EGRESS_PROXY_FALLBACK": fallback, "EGRESS_TIMEOUT": timeout}
+    # 未显式给 primary_timeout 时删掉该键，验证「回落到 EGRESS_TIMEOUT」的默认语义
+    if primary_timeout is None:
+        os.environ.pop("EGRESS_PRIMARY_TIMEOUT", None)
+    else:
+        env["EGRESS_PRIMARY_TIMEOUT"] = primary_timeout
+    with patch.dict(os.environ, env, clear=False):
         import content_domains.egress as egress
         return importlib.reload(egress)
 
@@ -48,6 +53,33 @@ class ChannelOrderTests(unittest.TestCase):
         eg = _reload_egress(primary="http://127.0.0.1:10809", fallback="")
         ch = eg.channels("https://official", "https://heygen")
         self.assertEqual([c[0] for c in ch], ["vps", "heygen"])
+
+
+class TimeoutTests(unittest.TestCase):
+    """每档超时。通道元组为 (标签, base, proxy, 超时)，索引 3 是超时秒数。"""
+
+    def test_primary_timeout_defaults_to_egress_timeout(self):
+        """未设 EGRESS_PRIMARY_TIMEOUT → 首选沿用 EGRESS_TIMEOUT（老行为，不变）。"""
+        eg = _reload_egress(primary="http://p1", fallback="http://p2", timeout="210")
+        ch = eg.channels("https://official", "https://heygen")
+        by = {c[0]: c[3] for c in ch}
+        self.assertEqual(by["vps"], 210)
+        self.assertEqual(by["mihomo"], 210)
+
+    def test_primary_timeout_override_only_affects_vps(self):
+        """设 EGRESS_PRIMARY_TIMEOUT=300 → 只放宽首选，mihomo/heygen 不受影响。"""
+        eg = _reload_egress(primary="http://p1", fallback="http://p2", timeout="210", primary_timeout="300")
+        ch = eg.channels("https://official", "https://heygen")
+        by = {c[0]: c[3] for c in ch}
+        self.assertEqual(by["vps"], 300)      # 首选放宽
+        self.assertEqual(by["mihomo"], 210)   # 备选不动
+        self.assertEqual(by["heygen"], 300)   # 兜底不动（EGRESS_HEYGEN_TIMEOUT 默认）
+
+    def test_chain_total_stays_within_reaper_grace(self):
+        """三档超时之和必须 < reaper image 900s 宽限，否则会边降级边被误判超时退点。"""
+        eg = _reload_egress(primary="http://p1", fallback="http://p2", timeout="210", primary_timeout="300")
+        ch = eg.channels("https://official", "https://heygen")
+        self.assertLess(sum(c[3] for c in ch), 900)
 
 
 class _FakeResp:

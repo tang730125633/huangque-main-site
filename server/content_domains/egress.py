@@ -26,6 +26,10 @@ EGRESS_FALLBACK = os.environ.get("EGRESS_PROXY_FALLBACK", "").strip()
 # 每个代理档的超时秒数。默认 210 覆盖 gpt-image-2 实测 ~174s；连接被 RST 会秒级抛错快速降级，
 # 这个超时只在「请求正常推进但慢」时才生效，不影响掉线快速回落。
 EGRESS_TIMEOUT = int(os.environ.get("EGRESS_TIMEOUT", "210") or 210)
+# 首选(VPS隧道)可单独放宽超时：gpt-image-2 正常出图就要 ~174s，210s 稍有抖动就误判超时、
+# 白白降级到 mihomo。给首选更长余量（默认回落到 EGRESS_TIMEOUT，不设即老行为）。三档总和
+# 需压在 reaper image 900s 宽限内：如首选 300 + mihomo 210 + heygen 300 = 810s，安全。
+EGRESS_PRIMARY_TIMEOUT = int(os.environ.get("EGRESS_PRIMARY_TIMEOUT", str(EGRESS_TIMEOUT)) or EGRESS_TIMEOUT)
 HEYGEN_TIMEOUT = int(os.environ.get("EGRESS_HEYGEN_TIMEOUT", "300") or 300)
 
 # 直连 opener：ProxyHandler({}) 显式清空，绕过 content.env 里进程级的 HTTP(S)_PROXY，
@@ -43,7 +47,7 @@ def channels(official_base, heygen_base):
     """返回 [(标签, base, proxy或None, 超时), ...] 优先级链。未配代理时只剩 heygen，即老行为。"""
     ch = []
     if EGRESS_PRIMARY:
-        ch.append(("vps", official_base, EGRESS_PRIMARY, EGRESS_TIMEOUT))
+        ch.append(("vps", official_base, EGRESS_PRIMARY, EGRESS_PRIMARY_TIMEOUT))
     if EGRESS_FALLBACK:
         ch.append(("mihomo", official_base, EGRESS_FALLBACK, EGRESS_TIMEOUT))
     ch.append(("heygen", heygen_base, None, HEYGEN_TIMEOUT))

@@ -42,7 +42,11 @@ curl -s -o /dev/null -m 20 -x http://127.0.0.1:10809 -w '%{http_code}\n' https:/
 EGRESS_PROXY=http://127.0.0.1:10809          # 首选：本机 VPS 隧道
 EGRESS_PROXY_FALLBACK=http://127.0.0.1:7897  # 备选：现有 mihomo(法兰克福)
 # EGRESS_TIMEOUT=210                          # 可选，每个代理档超时秒数（默认 210，覆盖 gpt-image-2 ~174s）
+# EGRESS_PRIMARY_TIMEOUT=300                  # 可选，单独放宽首选(VPS)档超时（默认回落到 EGRESS_TIMEOUT）
 ```
+
+> 超时须满足「首选 + 备选 + 兜底 < 900s」（reaper `image` 宽限），否则会边降级边被误判超时退点。
+> 例：首选 300 + 备选 210(`EGRESS_TIMEOUT`) + 兜底 300(`EGRESS_HEYGEN_TIMEOUT` 默认) = 810s，安全。
 
 > `GEMINI_BASE` / `OPENAI_BASE`（heygen）**保持不变**，它们是最后兜底档。
 
