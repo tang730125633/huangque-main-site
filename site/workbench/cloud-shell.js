@@ -281,7 +281,16 @@
             '</a>';
           }).join('');
         Array.prototype.slice.call(notifyPop.querySelectorAll('[data-task-id]')).forEach(function(link){
-          link.addEventListener('click', function(){ markBellRead(this.getAttribute('data-task-id')); notifyOpen=false; notifyPop.style.display='none'; notifyBtn.style.background='transparent'; });
+          link.addEventListener('click', function(ev){
+            var taskId=this.getAttribute('data-task-id');
+            markBellRead(taskId);
+            notifyOpen=false; notifyPop.style.display='none'; notifyBtn.style.background='transparent';
+            var onLeads=/\/leads\.html$/i.test((location.pathname||'').replace(/\\/g,'/')) || /(?:^|\/)leads\.html$/i.test((location.href||'').split(/[?#]/)[0]||'');
+            if(onLeads && window.HQLeads && typeof window.HQLeads.openTask==='function'){
+              ev.preventDefault();
+              window.HQLeads.openTask(taskId);
+            }
+          });
         });
       }
       function closeBell(){

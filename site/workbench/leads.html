@@ -170,6 +170,46 @@
   }
   function taskTitleOf(meta){ return (meta&&(meta.title||meta.keyword||meta.kw))||'获客任务'; }
   function taskKeywordOf(meta){ return (meta&&(meta.keyword||meta.kw||meta.title))||''; }
+  function taskSnapshotFromState(keyword){
+    return {
+      keyword: typeof keyword==='string' ? keyword : ((input&&input.value)||'').trim(),
+      count: parseInt(cntSel&&cntSel.value,10)||50,
+      platforms: getPlatforms(),
+      channels_targets: getChannelsTargets()
+    };
+  }
+  function normalizeTaskSnapshot(meta){
+    var currentPlatforms=getPlatforms();
+    return {
+      keyword: taskKeywordOf(meta)||((input&&input.value)||'').trim(),
+      count: parseInt(meta&&meta.count,10)||parseInt(cntSel&&cntSel.value,10)||50,
+      platforms: Array.isArray(meta&&meta.platforms)&&meta.platforms.length ? meta.platforms.slice() : (currentPlatforms.length ? currentPlatforms : ['douyin','xhs']),
+      channels_targets: Array.isArray(meta&&meta.channels_targets) ? meta.channels_targets.slice() : getChannelsTargets()
+    };
+  }
+  function syncPlatformChips(){
+    document.querySelectorAll('.plChk').forEach(function(cb){
+      var lbl=cb.parentElement;
+      if(!lbl) return;
+      if(cb.checked){ lbl.style.color='#e7b24c'; lbl.style.background='rgba(231,178,76,.1)'; lbl.style.borderColor='rgba(231,178,76,.3)'; }
+      else { lbl.style.color='#94a4bb'; lbl.style.background='rgba(148,164,187,.05)'; lbl.style.borderColor='rgba(148,164,187,.14)'; }
+    });
+    var chRow=document.getElementById('chTargetsRow');
+    var chCb=document.querySelector('.plChk[value="channels"]');
+    if(chRow && chCb) chRow.style.display=chCb.checked?'flex':'none';
+  }
+  function applyTaskSnapshot(meta){
+    var snap=normalizeTaskSnapshot(meta);
+    if(input) input.value=snap.keyword||'';
+    if(cntSel) cntSel.value=String(snap.count||50);
+    var selected={};
+    (snap.platforms||[]).forEach(function(name){ selected[name]=true; });
+    document.querySelectorAll('.plChk').forEach(function(cb){ cb.checked=!!selected[cb.value]; });
+    var chInput=document.getElementById('chTargets');
+    if(chInput) chInput.value=(snap.channels_targets||[]).join(', ');
+    syncPlatformChips();
+    return snap;
+  }
   function renderOpeningTask(meta){
     busy(true);
     setStatus('正在打开任务…','#2dd4bf');
@@ -179,14 +219,15 @@
     if(!id) return;
     openingTaskId=String(id);
     var api=tasksApi(), meta=api&&api.get(id)||{};
-    if(taskKeywordOf(meta) && input) input.value=taskKeywordOf(meta);
+    var snap=applyTaskSnapshot(meta);
     if(api&&api.markRead) api.markRead(id);
     renderOpeningTask(meta);
-    syncTaskMeta({id:id, title:taskTitleOf(meta), keyword:taskKeywordOf(meta), t0:(meta&&meta.t0)||Date.now(), unread:false});
+    syncTaskMeta({id:id, title:taskTitleOf(meta), keyword:snap.keyword, count:snap.count, platforms:snap.platforms, channels_targets:snap.channels_targets, t0:(meta&&meta.t0)||Date.now(), unread:false});
     fetch('/api/gen/job/'+id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){ return r.json().then(function(d){ return {s:r.status,d:d}; }); }).then(function(x){
       if(String(id)!==openingTaskId) return;
       if(x.s===401){ busy(false); HQ.login(); return; }
       var d=x.d||{}, meta2=(tasksApi()&&tasksApi().get(id))||meta||{};
+      var snap2=normalizeTaskSnapshot(meta2);
       var t0=(meta2&&meta2.t0)||Date.now();
       if(d.status==='done'){
         busy(false); localStorage.removeItem('hq_active_leads_job');
@@ -194,17 +235,18 @@
         var r=d.result||{};
         setKPIs(r); renderLeads(r.leads||[]);
         setStatus('完成 · '+(r.leads_count||0)+' 个精准客户 · 去重 '+(r.deduped||0)+' 条','#2bd576');
-        syncTaskMeta({id:id, title:taskTitleOf(meta2), keyword:taskKeywordOf(meta2), status:'done', t0:t0, leads_count:r.leads_count||0, deduped:r.deduped||0, error:'', unread:false});
+        syncTaskMeta({id:id, title:taskTitleOf(meta2), keyword:snap2.keyword, count:snap2.count, platforms:snap2.platforms, channels_targets:snap2.channels_targets, status:'done', t0:t0, leads_count:r.leads_count||0, deduped:r.deduped||0, error:'', unread:false});
         focusTaskResult();
       }else if(d.status==='error'||d.status==='failed'){
         busy(false); localStorage.removeItem('hq_active_leads_job');
         setStatus('失败：'+(d.error||'未知错误'),'#f4708a');
         rows.innerHTML='<div style="padding:54px 20px; text-align:center; color:#f4708a; font-size:13px;">'+esc(d.error||'任务失败')+'</div>';
-        syncTaskMeta({id:id, title:taskTitleOf(meta2), keyword:taskKeywordOf(meta2), status:d.status||'failed', t0:t0, error:d.error||'任务失败', unread:false});
+        syncTaskMeta({id:id, title:taskTitleOf(meta2), keyword:snap2.keyword, count:snap2.count, platforms:snap2.platforms, channels_targets:snap2.channels_targets, status:d.status||'failed', t0:t0, error:d.error||'任务失败', unread:false});
         focusTaskResult();
       }else{
-        localStorage.setItem('hq_active_leads_job', JSON.stringify({id:id, t0:t0, kw:taskKeywordOf(meta2)}));
-        watch(id, t0, meta2);
+        var pendingSnap=normalizeTaskSnapshot(meta2);
+        localStorage.setItem('hq_active_leads_job', JSON.stringify({id:id, t0:t0, kw:pendingSnap.keyword, count:pendingSnap.count, platforms:pendingSnap.platforms, channels_targets:pendingSnap.channels_targets}));
+        watch(id, t0, Object.assign({}, meta2, pendingSnap));
       }
     }).catch(function(){
       if(String(id)!==openingTaskId) return;
@@ -345,6 +387,7 @@
     busy(true); setStatus('提交任务中…','#2dd4bf');
     rows.innerHTML='<div style="padding:64px 20px; text-align:center; color:#94a4bb;"><div style="width:34px;height:34px;margin:0 auto 16px;border:3px solid rgba(148,164,187,.18);border-top-color:#e7b24c;border-radius:50%;animation:hq-spin .8s linear infinite;"></div><div style="font-size:14px;">正在跑多平台 · 搜视频 → 扒评论 → 意图过滤</div><div style="font-size:12px;margin-top:8px;color:#5c6b82;">约 1-3 分钟，请勿关闭页面</div></div>';
     var body={keyword:kw, platforms:platforms, count:parseInt(cntSel.value)||50, pages:1, channels_targets:chTargets};
+    var snap=taskSnapshotFromState(kw);
     var t0=Date.now();
     fetch('/api/gen/leads',{method:'POST',headers:{'Authorization':'Bearer '+t,'Content-Type':'application/json'},body:JSON.stringify(body)})
       .then(function(r){ return r.json().then(function(d){return {s:r.status,d:d};}); })
@@ -353,17 +396,18 @@
         if(x.s===402){ busy(false); setStatus('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>','#f4708a'); rows.innerHTML=''; return; }
         if(!x.d.job_id){ busy(false); setStatus('提交失败：'+((x.d&&x.d.detail)||'未知错误'),'#f4708a'); rows.innerHTML=''; return; }
         if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
-        localStorage.setItem('hq_active_leads_job', JSON.stringify({id:x.d.job_id, t0:t0, kw:kw}));
-        syncTaskMeta({id:x.d.job_id, title:kw||'获客任务', keyword:kw, status:'queued', t0:t0, unread:false});
-        watch(x.d.job_id, t0, {title:kw||'获客任务', keyword:kw, t0:t0});
+        localStorage.setItem('hq_active_leads_job', JSON.stringify({id:x.d.job_id, t0:t0, kw:snap.keyword, count:snap.count, platforms:snap.platforms, channels_targets:snap.channels_targets}));
+        syncTaskMeta({id:x.d.job_id, title:kw||'获客任务', keyword:snap.keyword, count:snap.count, platforms:snap.platforms, channels_targets:snap.channels_targets, status:'queued', t0:t0, unread:false});
+        watch(x.d.job_id, t0, {title:kw||'获客任务', keyword:snap.keyword, count:snap.count, platforms:snap.platforms, channels_targets:snap.channels_targets, t0:t0});
       }).catch(function(){ busy(false); setStatus('网络错误，请重试','#f4708a'); rows.innerHTML=''; });
   }
 
   function watch(id, t0, meta){
     if(poll) clearInterval(poll);
     openingTaskId=String(id);
+    var snap=normalizeTaskSnapshot(meta);
     setStatus('搜索中…多平台抓取+评论过滤','#2dd4bf');
-    syncTaskMeta({id:id, title:taskTitleOf(meta), keyword:taskKeywordOf(meta), status:'running', t0:t0, unread:false});
+    syncTaskMeta({id:id, title:taskTitleOf(meta), keyword:snap.keyword, count:snap.count, platforms:snap.platforms, channels_targets:snap.channels_targets, status:'running', t0:t0, unread:false});
     var t=tok();
     poll=setInterval(function(){
       fetch('/api/gen/job/'+id,{headers:{'Authorization':'Bearer '+t}}).then(function(r){return r.json();}).then(function(d){
@@ -373,22 +417,22 @@
           if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
           var r=d.result||{}; setKPIs(r); renderLeads(r.leads||[]);
           setStatus('完成 · '+(r.leads_count||0)+' 个精准客户 · 去重 '+(r.deduped||0)+' 条（'+sec+'s）','#2bd576');
-          syncTaskMeta({id:id, title:taskTitleOf(meta), keyword:taskKeywordOf(meta), status:'done', t0:t0, leads_count:r.leads_count||0, deduped:r.deduped||0, error:'', unread:false});
+          syncTaskMeta({id:id, title:taskTitleOf(meta), keyword:snap.keyword, count:snap.count, platforms:snap.platforms, channels_targets:snap.channels_targets, status:'done', t0:t0, leads_count:r.leads_count||0, deduped:r.deduped||0, error:'', unread:false});
           if(taskIdFromLocation() && String(taskIdFromLocation())===String(id)) focusTaskResult();
         }else if(d.status==='error'||d.status==='failed'){
           clearInterval(poll); busy(false); localStorage.removeItem('hq_active_leads_job');
           setStatus('失败：'+(d.error||'未知错误'),'#f4708a');
           rows.innerHTML='<div style="padding:54px 20px; text-align:center; color:#f4708a; font-size:13px;">'+esc(d.error||'任务失败')+'</div>';
-          syncTaskMeta({id:id, title:taskTitleOf(meta), keyword:taskKeywordOf(meta), status:d.status||'failed', t0:t0, error:d.error||'任务失败', unread:false});
+          syncTaskMeta({id:id, title:taskTitleOf(meta), keyword:snap.keyword, count:snap.count, platforms:snap.platforms, channels_targets:snap.channels_targets, status:d.status||'failed', t0:t0, error:d.error||'任务失败', unread:false});
           if(taskIdFromLocation() && String(taskIdFromLocation())===String(id)) focusTaskResult();
         }else if(sec>400){
           clearInterval(poll); busy(false); localStorage.removeItem('hq_active_leads_job');
           setStatus('获客超时（'+sec+'s）· 请重试','#f4708a');
           rows.innerHTML='<div style="padding:54px 20px; text-align:center; color:#94a4bb; font-size:13px;">超时，请换关键词或缩小采集量重试</div>';
-          syncTaskMeta({id:id, title:taskTitleOf(meta), keyword:taskKeywordOf(meta), status:'failed', t0:t0, error:'获客超时，请重试', unread:false});
+          syncTaskMeta({id:id, title:taskTitleOf(meta), keyword:snap.keyword, count:snap.count, platforms:snap.platforms, channels_targets:snap.channels_targets, status:'failed', t0:t0, error:'获客超时，请重试', unread:false});
         }else{
           setStatus('搜索中…（'+sec+'s · '+(d.status||'running')+'）','#2dd4bf');
-          syncTaskMeta({id:id, title:taskTitleOf(meta), keyword:taskKeywordOf(meta), status:d.status||'running', t0:t0, unread:false});
+          syncTaskMeta({id:id, title:taskTitleOf(meta), keyword:snap.keyword, count:snap.count, platforms:snap.platforms, channels_targets:snap.channels_targets, status:d.status||'running', t0:t0, unread:false});
         }
       }).catch(function(){});
     },4000);
@@ -415,16 +459,20 @@
   // Platform chip toggle + channels-targets visibility
   document.querySelectorAll('.plChk').forEach(function(cb){
     var lbl=cb.parentElement;
-    function sync(){
-      if(cb.checked){ lbl.style.color='#e7b24c'; lbl.style.background='rgba(231,178,76,.1)'; lbl.style.borderColor='rgba(231,178,76,.3)'; }
-      else { lbl.style.color='#94a4bb'; lbl.style.background='rgba(148,164,187,.05)'; lbl.style.borderColor='rgba(148,164,187,.14)'; }
-      var chRow=document.getElementById('chTargetsRow');
-      var chCb=document.querySelector('.plChk[value="channels"]');
-      if(chRow && chCb) chRow.style.display=chCb.checked?'flex':'none';
-    }
-    lbl.onclick=function(){ cb.checked=!cb.checked; sync(); };
-    sync();
+    lbl.onclick=function(){ cb.checked=!cb.checked; syncPlatformChips(); };
   });
+  syncPlatformChips();
+
+  function openTaskFromBell(id){
+    id=String(id||'').trim();
+    if(!id) return;
+    if(String(taskIdFromLocation()||'')===id){
+      hydrateTask(id);
+      focusTaskResult();
+      return;
+    }
+    location.hash='task='+encodeURIComponent(id);
+  }
 
   function bootTaskState(){
     try{
@@ -436,11 +484,13 @@
       var aj=JSON.parse(localStorage.getItem('hq_active_leads_job')||'null');
       if(aj && aj.id){
         busy(true);
-        if(aj.kw && input) input.value=aj.kw;
+        var resumeMeta={title:aj.kw||'获客任务', keyword:aj.kw||'', count:aj.count, platforms:aj.platforms, channels_targets:aj.channels_targets, t0:aj.t0||Date.now()};
+        applyTaskSnapshot(resumeMeta);
         setStatus('接上刚才的获客任务…','#2dd4bf');
         rows.innerHTML='<div style="padding:64px 20px; text-align:center; color:#94a4bb;"><div style="width:34px;height:34px;margin:0 auto 16px;border:3px solid rgba(148,164,187,.18);border-top-color:#e7b24c;border-radius:50%;animation:hq-spin .8s linear infinite;"></div><div style="font-size:14px;">接上刚才的获客任务…（在服务器一直在跑）</div></div>';
-        syncTaskMeta({id:aj.id, title:aj.kw||'获客任务', keyword:aj.kw||'', status:'running', t0:aj.t0||Date.now(), unread:false});
-        watch(aj.id, aj.t0||Date.now(), {title:aj.kw||'获客任务', keyword:aj.kw||'', t0:aj.t0||Date.now()});
+        var resumeSnap=normalizeTaskSnapshot(resumeMeta);
+        syncTaskMeta({id:aj.id, title:aj.kw||'获客任务', keyword:resumeSnap.keyword, count:resumeSnap.count, platforms:resumeSnap.platforms, channels_targets:resumeSnap.channels_targets, status:'running', t0:aj.t0||Date.now(), unread:false});
+        watch(aj.id, aj.t0||Date.now(), Object.assign({}, resumeMeta, resumeSnap));
       }
     }catch(e){}
   }
@@ -448,6 +498,7 @@
     var id=taskIdFromLocation();
     if(id) hydrateTask(id);
   });
+  window.HQLeads={ openTask: openTaskFromBell };
   bootTaskState();
 })();
 </script>
