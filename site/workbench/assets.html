@@ -10,6 +10,11 @@
 <style>
   body{ overflow:hidden; }
   .gAsset{ grid-template-columns:repeat(4,1fr); }
+  .asset-page-scroll{scrollbar-width:auto;scrollbar-color:rgba(231,178,76,.62) rgba(148,164,187,.07)}
+  .asset-page-scroll::-webkit-scrollbar{width:12px}
+  .asset-page-scroll::-webkit-scrollbar-track{background:rgba(148,164,187,.07);border-radius:99px}
+  .asset-page-scroll::-webkit-scrollbar-thumb{background:rgba(231,178,76,.58);border:2px solid rgba(7,11,19,.74);border-radius:99px;background-clip:padding-box}
+  .asset-page-scroll::-webkit-scrollbar-thumb:hover{background:rgba(244,205,114,.78);border:2px solid rgba(7,11,19,.74);background-clip:padding-box}
   .skel-shimmer{ background:linear-gradient(100deg, rgba(148,164,187,.04) 30%, rgba(45,212,191,.08) 50%, rgba(148,164,187,.04) 70%); background-size:200% 100%; animation:hq-shimmer 2.6s linear infinite; }
   .chip{ transition:.16s; }
   .chip:hover{ border-color:rgba(231,178,76,.4)!important; color:#eaf1fa!important; }
@@ -168,6 +173,13 @@
   var tok='__cookie__';
   var grid=document.getElementById('assetGrid'), empty=document.getElementById('assetEmpty'),
       skelH=document.getElementById('skelHdr'), skelG=document.getElementById('skelGrid'), cnt=document.getElementById('cntWorks');
+  function markAssetPageScroll(){
+    var assetContent=document.querySelector('.hq-content');
+    var assetPageScroll=assetContent&&assetContent.parentElement;
+    if(assetPageScroll) assetPageScroll.classList.add('asset-page-scroll');
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',markAssetPageScroll);
+  else markAssetPageScroll();
   var MODE={text2img:'文生图', img2img:'图生图', inpaint:'局部修改'};
   function normCat(m){ m=m||''; if(m.indexOf('inpaint')>=0) return 'inpaint'; if(m.indexOf('img2img')>=0) return 'img2img'; return 'text2img'; }  // 各引擎mode→标准类(含 nanobanana_*)
   var params=new URLSearchParams(location.search);
@@ -187,7 +199,19 @@
     url=String(url||'');
     return /[?&]q-sign-/.test(url)?url:url+(url.indexOf('?')>=0?'&':'?')+'_='+(Date.now());
   }
-  function playableUrl(url){
+  function playableUrl(url,options){
+    options=options||{};
+    if(options.proxy){
+      var proxy='/api/gen/dl?url='+encodeURIComponent(url)+'&name='+encodeURIComponent(options.name||'collect-video');
+      return fetch(proxy,{cache:'no-store',credentials:'same-origin',headers:{Authorization:'Bearer '+tok}})
+        .then(function(r){
+          if(r.status===401){HQ.login();throw new Error('登录已过期');}
+          if(r.status===502) throw new Error('视频链接已过期，请重新采集后再试');
+          if(!r.ok) throw new Error('视频暂时无法读取，请稍后重试');
+          return r.blob();
+        })
+        .then(function(blob){return URL.createObjectURL(blob);});
+    }
     if(String(url||'').indexOf('/api/gen/file/')!==0) return Promise.resolve(freshUrl(url));
     return fetch(freshUrl(url),{cache:'no-store',headers:{Authorization:'Bearer '+tok}})
       .then(function(r){if(r.status===401){HQ.login();throw new Error('登录已过期');}if(!r.ok)throw new Error('素材读取失败');return r.blob();})
@@ -423,7 +447,7 @@
     wrap.onclick=function(e){ if(e.target===wrap) wrap.remove(); };
     document.body.appendChild(wrap);
   }
-  function openAssetVideoModal(videoUrl,title,posterUrl){
+  function openAssetVideoModal(videoUrl,title,posterUrl,options){
     videoUrl=String(videoUrl||'').trim();
     if(!videoUrl){ toast('视频还未生成',false); return; }
     var old=document.getElementById('assetVideoModal'); if(old && old._close) old._close();
@@ -454,7 +478,11 @@
     video.addEventListener('loadeddata',hideLoading);
     video.addEventListener('canplay',hideLoading);
     video.addEventListener('playing',hideLoading);
-    playableUrl(videoUrl).then(function(src){
+    video.addEventListener('error',function(){
+      loading.style.display='flex';
+      loading.textContent='视频无法播放，素材可能已失效';
+    });
+    playableUrl(videoUrl,options).then(function(src){
       objectUrl=src;
       video.src=src;
       var p=video.play();
@@ -1533,10 +1561,19 @@
         var warn=document.createElement('span'); warn.textContent='链接会过期'; warn.title='未能转存到永久存储，建议尽快下载';
         warn.style.cssText='color:#f4b740;'; right.appendChild(warn);
       }
-      var a=document.createElement('a'); a.href=x.url; a.target='_blank'; a.rel='noopener';
-      a.textContent=kind==='collect'?'打开视频':'打开';
-      a.style.cssText='color:#e7b24c; text-decoration:none; font-weight:600;';
-      right.appendChild(a); foot.appendChild(right);
+      if(kind==='collect'){
+        var preview=document.createElement('button'); preview.type='button'; preview.className='asset-action gold'; preview.textContent='预览视频';
+        preview.onclick=function(){
+          var meta=x.meta||{};
+          openAssetVideoModal(x.url,x.title,meta.cover,{proxy:meta.permanent===false,name:x.title||'collect-video'});
+        };
+        right.appendChild(preview);
+      }else{
+        var a=document.createElement('a'); a.href=x.url; a.target='_blank'; a.rel='noopener'; a.textContent='打开';
+        a.style.cssText='color:#e7b24c; text-decoration:none; font-weight:600;';
+        right.appendChild(a);
+      }
+      foot.appendChild(right);
     }
     w.appendChild(foot);
     // 收藏 + 标签统一走 addMarkTools（和 card/audioCard/videoCard/avatarCard 一致）。

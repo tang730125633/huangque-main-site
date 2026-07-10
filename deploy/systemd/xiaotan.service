@@ -9,8 +9,8 @@ StartLimitBurst=5
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/douyin-scraper
-ExecStart=/home/ubuntu/douyin-scraper/.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8501 --log-level info
-Restart=on-failure
+ExecStart=/home/ubuntu/douyin-scraper/.venv/bin/python start.py
+Restart=always
 RestartSec=5
 Environment=TZ=Asia/Shanghai
 Environment=PYTHONUNBUFFERED=1

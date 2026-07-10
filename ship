@@ -16,6 +16,14 @@ SSH_OPTS="-o IdentitiesOnly=yes"
 [ -f "$SSH_KEY" ] && SSH_OPTS="-i $SSH_KEY $SSH_OPTS"
 SSHC="ssh $SSH_OPTS"
 WWW="/var/www/huangquechuanmei"
+HEALTH_URL="${HQ_HEALTH_URL:-https://huangquechuanmei.com/api/gen/health}"
+SERVICE_WAIT_SECONDS="${HQ_SERVICE_WAIT_SECONDS:-30}"
+CONTENT_PYTHON="${HQ_CONTENT_PYTHON:-/usr/bin/python3}"
+
+case "$SERVICE_WAIT_SECONDS" in
+  ''|*[!0-9]*) echo "❌ HQ_SERVICE_WAIT_SECONDS 必须是正整数"; exit 1 ;;
+  0) echo "❌ HQ_SERVICE_WAIT_SECONDS 必须大于 0"; exit 1 ;;
+esac
 
 [ $# -lt 2 ] && { echo "用法: ./ship \"提交说明\" 文件1 [文件2 ...]"; exit 1; }
 
@@ -74,7 +82,31 @@ echo "==> 3/5 部署到服务器"
 RESTART=""
 DEPLOYED=""
 NEED_RELOAD=0   # 部署过 systemd 单元/drop-in 时置 1，重启前必须 daemon-reload，否则改动不生效
+CONTENT_DOMAINS_SYNCED=0
 add_svc(){ for s in $1; do case " $RESTART " in *" $s "*) ;; *) RESTART="$RESTART $s";; esac; done; }
+
+show_service_diagnostics(){
+  local services="${1:-${RESTART:-huangque-content}}" s
+  for s in $services; do
+    echo "  ── $s status / recent logs ──"
+    $SSHC "$REMOTE" "sudo systemctl status '$s' --no-pager -l || true; sudo journalctl -u '$s' -n 60 --no-pager || true" || true
+  done
+}
+
+wait_for_services(){
+  local s
+  [ -z "$RESTART" ] && return 0
+  for s in $RESTART; do
+    echo "  等待 $s 进入 active（最多 ${SERVICE_WAIT_SECONDS}s）"
+    if $SSHC "$REMOTE" "i=0; while [ \$i -lt $SERVICE_WAIT_SECONDS ]; do systemctl is-active --quiet '$s' && exit 0; i=\$((i + 1)); sleep 1; done; exit 1"; then
+      echo "  ✓ $s active"
+    else
+      echo "  ❌ $s 在 ${SERVICE_WAIT_SECONDS}s 内未进入 active"
+      show_service_diagnostics "$s"
+      return 1
+    fi
+  done
+}
 for f in "$@"; do
   case "$f" in
     server/auth_server.py) dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
@@ -113,13 +145,30 @@ for f in "$@"; do
   push_file "$f" "$dest" \
     && echo "  ✓ $f → $dest" || { echo "  ❌ $f 部署失败"; exit 1; }
   DEPLOYED="$DEPLOYED $f"
-  if [ "$f" = "server/content_api.py" ] && [ -d server/content_domains ]; then
-    $SSHC "$REMOTE" "sudo mkdir -p /home/ubuntu/content-api/content_domains" || { echo "  ❌ content_domains 目录创建失败"; exit 1; }
-    push_dir server/content_domains/ /home/ubuntu/content-api/content_domains/ \
-      && echo "  ✓ server/content_domains/ → /home/ubuntu/content-api/content_domains/" || { echo "  ❌ content_domains 部署失败"; exit 1; }
-  fi
+  case "$f" in
+    server/content_api.py|server/content_domains/*)
+      if [ "$CONTENT_DOMAINS_SYNCED" = "0" ] && [ -d server/content_domains ]; then
+        $SSHC "$REMOTE" "sudo mkdir -p /home/ubuntu/content-api/content_domains" || { echo "  ❌ content_domains 目录创建失败"; exit 1; }
+        push_dir server/content_domains/ /home/ubuntu/content-api/content_domains/ \
+          && echo "  ✓ server/content_domains/ → /home/ubuntu/content-api/content_domains/（整目录同步）" \
+          || { echo "  ❌ content_domains 整目录部署失败"; exit 1; }
+        CONTENT_DOMAINS_SYNCED=1
+      fi
+      ;;
+  esac
   add_svc "$svc"
 done
+
+# content 代码已同步但旧进程仍在运行。先用生产 venv 做纯 import 冒烟，
+# 把缺模块/坏引用挡在 restart 前，避免把可用服务重启成崩溃循环。
+case " $RESTART " in
+  *" huangque-content "*)
+    echo "==> 3.5/5 content import 冒烟"
+    $SSHC "$REMOTE" "cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 '$CONTENT_PYTHON' -c 'import content_api'" \
+      && echo "  ✓ content_api import 通过" \
+      || { echo "  ❌ content_api import 失败，停止重启"; show_service_diagnostics "huangque-content"; exit 1; }
+    ;;
+esac
 
 # 4. 重启受影响的后端服务（纯前端则跳过）
 if [ "$NEED_RELOAD" = "1" ]; then
@@ -129,6 +178,7 @@ fi
 if [ -n "$RESTART" ]; then
   echo "==> 4/5 重启服务:$RESTART"
   $SSHC "$REMOTE" "sudo systemctl restart $RESTART" || { echo "  ❌ 重启失败"; exit 1; }
+  wait_for_services || exit 1
 else
   echo "==> 4/5 纯前端，无需重启"
 fi
@@ -156,7 +206,19 @@ fi' >/dev/null 2>&1 && echo "  ✓ 服务器 checkout 提交保护已安装" || 
 
 # 5. 验证 + 给回滚命令
 echo "==> 5/5 验证"
-curl -s -o /dev/null -w "  健康检查: HTTP %{http_code}\n" https://huangquechuanmei.com/api/gen/health --max-time 10
+if ! HEALTH_CODE=$(curl -sS -o /dev/null -w "%{http_code}" "$HEALTH_URL" --max-time 10); then
+  echo "  ❌ 健康检查请求失败: ${HEALTH_URL} (HTTP ${HEALTH_CODE:-000})"
+  show_service_diagnostics
+  exit 1
+fi
+case "$HEALTH_CODE" in
+  2??) echo "  ✓ 健康检查: HTTP $HEALTH_CODE" ;;
+  *)
+    echo "  ❌ 健康检查未通过: HTTP $HEALTH_CODE ($HEALTH_URL)"
+    show_service_diagnostics
+    exit 1
+    ;;
+esac
 SHA=$(git rev-parse --short HEAD)
 echo "✅ 上线完成 | 本次提交 $SHA"
 echo "   ↩ 要回滚这次：  git revert $SHA --no-edit && ./ship \"回滚 $SHA\" $*"
