@@ -391,10 +391,11 @@
           </div>
         </div>
         <div id="tryonGrid" class="motion-grid" style="grid-template-columns:1fr 1fr 1fr;">
+          <!-- accept 与文案由 applyTryonLine() 按线路设置；这里给默认线路二(人物照片)的初值，避免首屏闪一下「换装视频」 -->
           <label id="tryonVideoDrop" class="motion-drop">
-            <input id="tryonVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden>
-            <strong>换装视频（必选）</strong>
-            <span>上传需要换装/换背景的真人视频</span>
+            <input id="tryonVideoFile" type="file" hidden>
+            <strong>人物照片（必选）</strong>
+            <span>上传要换装的人物照片（全身/半身效果更好）</span>
           </label>
           <label id="tryonClothesDrop" class="motion-drop">
             <input id="tryonClothesFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
@@ -550,7 +551,32 @@
   var selectedSubtitle='off', selectedSubtitleStyle='white', selectedSubtitlePosition='bottom';  // F4 字幕：默认关闭+底部，不勾选时行为与原来一致
   var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16', selectedMotionLine='2';
   var selectedGrokRatio='16:9';  // 默认16:9(上游9:16/1:1/4:5/5:4暂时大概率生成失败,止血用#GROK-RATIO-SIZE-INCIDENT)
-  var tryonVideoData='', tryonClothesData='', tryonBackgroundData='', selectedTryonLine='2';
+  // 换装的第一个上传框在两条线路收的东西不同：线路一收换装视频，线路二收人物照片。
+  // 必须各存各的变量 —— 共用一个的话，线路一传了视频再切到线路二，视频会被当人物照发出去（#537）。
+  var tryonVideoData='', tryonPersonImageData='', tryonClothesData='', tryonBackgroundData='', selectedTryonLine='2';
+  var TRYON_IMG_ACCEPT='image/png,image/jpeg,image/webp', TRYON_VID_ACCEPT='video/mp4,video/quicktime,video/webm';
+  function tryonIsLine2(){ return selectedTryonLine==='2'; }
+  function tryonPrimaryData(){ return tryonIsLine2()?tryonPersonImageData:tryonVideoData; }
+  function setTryonPrimaryData(v){ if(tryonIsLine2()) tryonPersonImageData=v; else tryonVideoData=v; }
+  // 第一个框的预览：线路二是图片得用 <img>，线路一是视频才用 <video>；accept 也跟着线路走，
+  // 否则重建 input 时会把 applyTryonLine() 设好的 accept 覆盖回去。
+  function tryonPrimaryMarkup(src){
+    var input='<input id="tryonVideoFile" type="file" accept="'+(tryonIsLine2()?TRYON_IMG_ACCEPT:TRYON_VID_ACCEPT)+'" hidden>';
+    return input+(tryonIsLine2()
+      ? '<img src="'+esc(src)+'" alt="人物照片预览">'
+      : '<video src="'+esc(src)+'" muted playsinline></video>');
+  }
+  // 切线路时清掉第一个框：两条线路收的类型不同，留着旧数据必然发错。
+  // 预览/文件名/input.value 一并复位，否则用户会看到「框里明明有图」但数据已清空。
+  function resetTryonPrimary(){
+    tryonVideoData=''; tryonPersonImageData='';
+    var box=$('tryonVideoDrop');
+    if(!box) return;
+    box.classList.remove('has-media','has-video');
+    box.innerHTML='<input id="tryonVideoFile" type="file" hidden><strong></strong><span></span>';
+    var input=box.querySelector('input');
+    if(input){ input.value=''; bindTryonFile(input,'video'); }   // accept 与文案交给 applyTryonLine 填
+  }
   var motionAvatars=[], selectedMotionAvatarId=null, useNewMotionImage=true, avatarsLoaded=false;
   var currentVideoDraft=null;
   var motionPresets=[];
@@ -1248,8 +1274,17 @@
   }
   document.querySelectorAll('[data-function]').forEach(function(b){b.onclick=function(){updateFunction(b.dataset.function);};});
   document.querySelectorAll('#motionLineTabs .line-tab').forEach(function(b){b.onclick=function(){selectedMotionLine=b.dataset.line;document.querySelectorAll('#motionLineTabs .line-tab').forEach(function(x){x.classList.toggle('active',x===b);});};});
-  function applyTryonLine(){var isL2=selectedTryonLine==='2';var vf=$('tryonVideoFile'),vd=$('tryonVideoDrop'),bg=$('tryonBgDrop');if(vf)vf.accept=isL2?'image/png,image/jpeg,image/webp':'video/mp4,video/quicktime,video/webm';if(vd){var s=vd.querySelector('strong'),p=vd.querySelector('span');if(s)s.textContent=isL2?'人物照片（必选）':'换装视频（必选）';if(p)p.textContent=isL2?'上传要换装的人物照片（全身/半身效果更好）':'上传需要换装/换背景的真人视频';}if(bg)bg.style.display=isL2?'none':'';var h=$('tryonModeHint');if(h)h.textContent=isL2?'线路二：人物照片+衣服图 → 模特展示视频（要换背景请切线路一）':'请至少上传衣服图或背景图（传背景图即换背景）';}
-  document.querySelectorAll('#tryonLineTabs .line-tab').forEach(function(b){b.onclick=function(){selectedTryonLine=b.dataset.line;document.querySelectorAll('#tryonLineTabs .line-tab').forEach(function(x){x.classList.toggle('active',x===b);});applyTryonLine();};});
+  function applyTryonLine(){var isL2=selectedTryonLine==='2';var vf=$('tryonVideoFile'),vd=$('tryonVideoDrop'),bg=$('tryonBgDrop');if(vf)vf.accept=isL2?TRYON_IMG_ACCEPT:TRYON_VID_ACCEPT;if(vd){var s=vd.querySelector('strong'),p=vd.querySelector('span');if(s)s.textContent=isL2?'人物照片（必选）':'换装视频（必选）';if(p)p.textContent=isL2?'上传要换装的人物照片（全身/半身效果更好）':'上传需要换装/换背景的真人视频';}if(bg)bg.style.display=isL2?'none':'';var h=$('tryonModeHint');if(h)h.textContent=isL2?'线路二：人物照片+衣服图 → 模特展示视频（要换背景请切线路一）':'请至少上传衣服图或背景图（传背景图即换背景）';}
+  // 清理放在这里而不是 applyTryonLine 里：初始化与「重新生成」回填也会调 applyTryonLine，
+  // 那两种场景不能清数据。只有用户**真的换了**线路才清。
+  document.querySelectorAll('#tryonLineTabs .line-tab').forEach(function(b){b.onclick=function(){
+    if(selectedTryonLine===b.dataset.line) return;      // 点的是当前线路，别白清用户的图
+    selectedTryonLine=b.dataset.line;
+    document.querySelectorAll('#tryonLineTabs .line-tab').forEach(function(x){x.classList.toggle('active',x===b);});
+    resetTryonPrimary();                                 // 两条线路第一个框收的类型不同，必须清（#537）
+    applyTryonLine();
+    updateTryonHint();
+  };});
   applyTryonLine();
   document.querySelectorAll('.mode-tab').forEach(function(b){b.onclick=function(){updateMode(b.dataset.mode);};});
   document.querySelectorAll('[data-voice-tab]').forEach(function(b){b.onclick=function(){voiceTab=b.dataset.voiceTab;document.querySelectorAll('[data-voice-tab]').forEach(function(x){x.classList.toggle('on',x===b);});stopPreview();renderVoices();};});
@@ -1328,9 +1363,14 @@
   loadMotionPresets();
   function updateTryonHint(){
     var hint=$('tryonModeHint'), btn=$('tryonGenerateBtn');
-    var hasClothes=!!tryonClothesData, hasBg=!!tryonBackgroundData, hasVideo=!!tryonVideoData;
+    var hasClothes=!!tryonClothesData, hasBg=!!tryonBackgroundData, hasPrimary=!!tryonPrimaryData();
     var text, enable=true;
-    if(!hasVideo){
+    if(tryonIsLine2()){
+      // 线路二只吃「人物照片 + 衣服图」，没有换背景；提示别再说「换装视频」
+      if(!hasPrimary){ text='请先上传人物照片'; enable=false; }
+      else if(!hasClothes){ text='请上传衣服图'; enable=false; }
+      else { text='将执行：人物换装（线路二）'; }
+    }else if(!hasPrimary){
       text='请先上传换装视频'; enable=false;
     }else if(hasClothes && hasBg){
       text='将执行：换装+换背景';
@@ -1354,14 +1394,14 @@
       var url=URL.createObjectURL(f);
       var box=kind==='video'?$('tryonVideoDrop'):(kind==='clothes'?$('tryonClothesDrop'):$('tryonBgDrop'));
       readFileData(f).then(function(data){
-        if(kind==='video') tryonVideoData=data;
+        if(kind==='video') setTryonPrimaryData(data);   // 线路二存人物照片，线路一存换装视频
         else if(kind==='clothes') tryonClothesData=data;
         else tryonBackgroundData=data;
         updateTryonHint();
       }).catch(function(e){toast(e.message||'文件读取失败');});
       box.classList.add('has-media');
       if(kind==='video'){
-        box.innerHTML='<input id="tryonVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden><video src="'+url+'" muted playsinline></video>';
+        box.innerHTML=tryonPrimaryMarkup(url);
         bindTryonFile(box.querySelector('input'),'video');
       }else if(kind==='clothes'){
         box.innerHTML='<input id="tryonClothesFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+url+'" alt="衣服图预览">';
@@ -1498,8 +1538,8 @@
       });
   }
   function submitTryon(){
-    if(selectedTryonLine==='2'){
-      if(!tryonVideoData){ toast('线路二请先上传人物照片'); return; }
+    if(tryonIsLine2()){
+      if(!tryonPersonImageData){ toast('线路二请先上传人物照片'); return; }
       if(!tryonClothesData){ toast('请上传衣服图'); return; }
     }else{
       if(!tryonVideoData){ toast('请先上传换装视频'); return; }
@@ -1518,9 +1558,9 @@
     fetch('/api/gen/tryon',{
       method:'POST',
       headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-      body:JSON.stringify(selectedTryonLine==='2'?{
+      body:JSON.stringify(tryonIsLine2()?{
         line:'2',
-        person_image_data:tryonVideoData,
+        person_image_data:tryonPersonImageData,   // 线路二发人物照片，绝不能发成 tryonVideoData（#537）
         clothes_data:tryonClothesData||'',
         seconds:6,
         text:'换装'
@@ -1759,12 +1799,12 @@
   function setTryonPrefill(kind, dataUrl, previewUrl){
     var box=kind==='video'?$('tryonVideoDrop'):(kind==='clothes'?$('tryonClothesDrop'):$('tryonBgDrop'));
     if(!box||!dataUrl) return;
-    if(kind==='video') tryonVideoData=dataUrl;
+    if(kind==='video') setTryonPrimaryData(dataUrl);   // 回填也按当前线路存
     else if(kind==='clothes') tryonClothesData=dataUrl;
     else tryonBackgroundData=dataUrl;
     box.classList.add('has-media');
     if(kind==='video'){
-      box.innerHTML='<input id="tryonVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden><video src="'+esc(previewUrl||dataUrl)+'" muted playsinline></video>';
+      box.innerHTML=tryonPrimaryMarkup(previewUrl||dataUrl);
       bindTryonFile(box.querySelector('input'),'video');
     }else if(kind==='clothes'){
       box.innerHTML='<input id="tryonClothesFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+esc(previewUrl||dataUrl)+'" alt="衣服图预览">';
