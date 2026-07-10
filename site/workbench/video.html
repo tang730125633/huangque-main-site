@@ -386,8 +386,9 @@
         <div class="line-switch">
           <div class="label">生成线路（输入和效果不同，按需选）</div>
           <div class="line-tabs" id="tryonLineTabs">
-            <button type="button" class="line-tab active" data-line="2"><b>线路二 · 极速</b><span>约 1 分钟 · 人物照片+衣服图 → 模特展示视频（不做换背景）</span></button>
-            <button type="button" class="line-tab" data-line="1"><b>线路一 · 经典</b><span>约 8 分钟 · 人物视频+衣服图/背景图 → 换装/换背景、保留原动作</span></button>
+            <!-- 时长按线上 tryon 任务实测中位/p90 写（线路二 n=7 中位316s p90582s；线路一 n=40 中位909s p90 1612s），别再给「约1分钟」这种预期落差 -->
+            <button type="button" class="line-tab active" data-line="2"><b>线路二 · 极速</b><span>约 5-10 分钟 · 人物照片+衣服图 → 模特展示视频（不做换背景）</span></button>
+            <button type="button" class="line-tab" data-line="1"><b>线路一 · 经典</b><span>约 15-25 分钟 · 人物视频+衣服图/背景图 → 换装/换背景、保留原动作</span></button>
           </div>
         </div>
         <div id="tryonGrid" class="motion-grid" style="grid-template-columns:1fr 1fr 1fr;">
@@ -565,6 +566,28 @@
     return input+(tryonIsLine2()
       ? '<img src="'+esc(src)+'" alt="人物照片预览">'
       : '<video src="'+esc(src)+'" muted playsinline></video>');
+  }
+  // 「重新生成」回填时，job 详情里没有 line 字段，只有素材 URL。但素材本身能证明线路：
+  // 线路一存的是换装视频(.mp4/.mov/.webm)，线路二存的是人物照片(.jpg/.png/.webp)。
+  // 不据此恢复线路的话，回填会按页面**当前**线路（默认二）存进错的变量、还用错标签预览。
+  function tryonLineFromAsset(dataUrl, url){
+    var s=String(dataUrl||'');
+    if(/^data:video\//i.test(s)) return '1';
+    if(/^data:image\//i.test(s)) return '2';
+    var u=String(url||'').toLowerCase().split('?')[0];          // blob.type 缺失时退回看扩展名
+    if(/\.(mp4|mov|webm|m4v)$/.test(u)) return '1';
+    if(/\.(jpe?g|png|webp|gif)$/.test(u)) return '2';
+    return '';
+  }
+  // 程序化切线路：同步 tab 高亮与 accept/文案，但**不清数据**（清理只在用户点 tab 时做）。
+  function switchTryonLine(line){
+    if(line!=='1' && line!=='2') return;
+    if(selectedTryonLine===line) return;
+    selectedTryonLine=line;
+    document.querySelectorAll('#tryonLineTabs .line-tab').forEach(function(x){
+      x.classList.toggle('active', x.getAttribute('data-line')===line);
+    });
+    applyTryonLine();
   }
   // 切线路时清掉第一个框：两条线路收的类型不同，留着旧数据必然发错。
   // 预览/文件名/input.value 一并复位，否则用户会看到「框里明明有图」但数据已清空。
@@ -1867,7 +1890,11 @@
         updateFunction('tryon');
         setVideoStatus('正在带入换装换背景素材...');
         var jobs=[];
-        if(d.reference_video_url) jobs.push(prefillJob('原视频', fetchFilePrefill(d.reference_video_url,'原视频').then(function(v){setTryonPrefill('video',v.dataUrl,v.previewUrl);})));
+        // 先按素材真实类型恢复线路，再填充：setTryonPrefill 会按当前线路选变量和预览标签。
+        if(d.reference_video_url) jobs.push(prefillJob('原素材', fetchFilePrefill(d.reference_video_url,'原素材').then(function(v){
+          switchTryonLine(tryonLineFromAsset(v.dataUrl, d.reference_video_url));
+          setTryonPrefill('video',v.dataUrl,v.previewUrl);
+        })));
         if(d.image_url) jobs.push(prefillJob('衣服图', fetchImagePrefill(d.image_url).then(function(img){setTryonPrefill('clothes',img.dataUrl,img.previewUrl);})));
         if(d.background_url) jobs.push(prefillJob('背景图', fetchImagePrefill(d.background_url).then(function(img){setTryonPrefill('bg',img.dataUrl,img.previewUrl);})));
         Promise.allSettled(jobs).then(function(results){
