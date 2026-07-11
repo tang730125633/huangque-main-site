@@ -647,15 +647,6 @@
   function readAccountJson(prefix,user){
     try{ var value=JSON.parse(localStorage.getItem(accountStorageKey(prefix,user))||'{}'); return value&&typeof value==='object'?value:{}; }catch(e){ return {}; }
   }
-  function avatarBackground(tone){
-    var tones={
-      gold:'linear-gradient(145deg,#b87935,#6b451f)',
-      teal:'linear-gradient(145deg,#35b8aa,#176b68)',
-      blue:'linear-gradient(145deg,#5b91dc,#294d8e)',
-      rose:'linear-gradient(145deg,#d8708b,#7f3850)'
-    };
-    return tones[tone]||tones.gold;
-  }
   function _logout(){
     var h=authHeaders();
     try{ localStorage.removeItem('hq_token'); localStorage.removeItem('hq_user'); localStorage.removeItem('hq_role'); }catch(e){}
@@ -664,10 +655,9 @@
   function renderUser(){
     var u=currentUser(), inn=!!u;
     var card=document.getElementById('hqUserCard'), auth=document.getElementById('hqAuthArea');
-    var profile=readAccountJson('hq_profile_v1',u);
-    var av=avatarBackground(profile.avatarTone);
+    var av='radial-gradient(circle at 32% 26%, #f6d488, #e7b24c 46%, #a8721f 100%)';
     if(inn){
-      var name=profile.nickname||(u&&(u.nickname||u.username))||'我的账号', ch=(String(name).trim()[0]||'我').toUpperCase();
+      var name=(u&&(u.nickname||u.username))||'我的账号', ch=(String(name).trim()[0]||'我').toUpperCase();
       var safeName=escapeHtml(name), safeCh=escapeHtml(ch);
       var role=(u&&u.role==='admin')?'管理员':'会员';
       if(card) card.innerHTML='<div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-radius:10px;">'+

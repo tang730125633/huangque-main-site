@@ -1280,8 +1280,10 @@ class H(BaseHTTPRequestHandler):
                 ".xhscdn.com", ".rednotecdn.com", ".xiaohongshu.com",
                 ".bytedance.net", ".lf-douyin.com", ".365yg.com",
                 ".cos.ap-guangzhou.myqcloud.com",  # 采集视频转存 COS 后的直链下载(COS-COLLECT #113)
+                "video.huangquechuanmei.com",  # 自有 COS 加速域名：生成图片、音视频资产下载
             )  # 抖音(TikHub play_addr)/小红书 等直链 CDN；防 SSRF。覆盖 collect 解析视频下载。
-            if not (url.startswith("http") and any(host.endswith(h) for h in ALLOW)):
+            allowed_host = any(host == h or (h.startswith(".") and host.endswith(h)) for h in ALLOW)
+            if not (url.startswith("http") and allowed_host):
                 return self._send(400, {"detail": "不支持的下载地址"})
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": tikhub.UA})

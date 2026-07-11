@@ -134,7 +134,8 @@ class H(BaseHTTPRequestHandler):
         dk = (q.get("dk", [""])[0]).strip()
         ascii_name = re.sub(r"[^a-zA-Z0-9_\-]+", "_", raw).strip("_") or "video"
         host = (urllib.parse.urlparse(url).hostname or "").lower()
-        if not (url.startswith("http") and any(host.endswith(h) for h in ALLOW)):
+        allowed_host = any(host == h or (h.startswith(".") and host.endswith(h)) for h in ALLOW)
+        if not (url.startswith("http") and allowed_host):
             return self._err(400, "不支持的下载地址")
         # 视频号加密流：必须走解密路径(有 dk 才能解)
         if host == "wxapp.tc.qq.com":
