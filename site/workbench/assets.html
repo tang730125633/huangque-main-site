@@ -610,7 +610,16 @@
     return !!(x.reference_video_url||x.reference_video_file||x.reference_video_data||x.reference_video);
   }
   function regenPayload(x,kind){
-    if(kind==='audio') return {url:'/api/gen/audio', body:{text:x.text||x.prompt||'', voice:x.voice||x.voice_key||'', speed:x.speed||1, pitch:x.pitch||0, volume:x.volume||1}};
+    if(kind==='audio'){
+      var audioParams=new URLSearchParams();
+      audioParams.set('prompt',x.text||x.prompt||'');
+      audioParams.set('voice',x.voice||x.voice_key||'');
+      audioParams.set('speed',x.speed==null?1:x.speed);
+      audioParams.set('pitch',x.pitch==null?0:x.pitch);
+      audioParams.set('volume',x.volume==null?0:x.volume);
+      audioParams.set('prefill','asset');
+      return {href:'audio.html?'+audioParams.toString()};
+    }
     if(kind==='video'){
       var mode=String(x.mode||'').toLowerCase();
       if(['digital_human','talking','talking_head','talking_text','text2video'].indexOf(mode)>=0) mode='text';
@@ -637,13 +646,23 @@
       location.href='video.html?prefill=asset';
       return null;
     }
-    var mode=(x.mode||'').toLowerCase(), body={prompt:x.prompt||'', ratio:x.ratio||'1:1', quality:x.quality||'std', count:1};
-    if(mode.indexOf('nanobanana')>=0){ return {url:'/api/gen/banana', body:Object.assign(body,{model:x.model||'nb2'})}; }
-    if(mode.indexOf('zelong')>=0){ return {url:'/api/gen/image', body:Object.assign(body,{provider:'zelong'})}; }
-    return {url:'/api/gen/image', body:body};
+    var mode=String(x.mode||'').toLowerCase();
+    var provider=String(x.provider||'').toLowerCase();
+    var model=String(x.model||'').toLowerCase();
+    var engine='gpt';
+    if(mode.indexOf('nanobanana')>=0 || provider==='banana' || model==='nb2' || model==='pro') engine=model==='pro'?'pro':'nb2';
+    else if(mode.indexOf('seedream')>=0 || provider==='seedream') engine='seedream';
+    else if(mode.indexOf('xiaole')>=0 || provider==='xiaole') engine='xiaole';
+    else if(mode.indexOf('zelong')>=0 || provider.indexOf('zelong')===0) engine='zelong2';
+    var imageParams=new URLSearchParams();
+    imageParams.set('prompt',x.prompt||'');
+    imageParams.set('engine',engine);
+    imageParams.set('prefill','asset');
+    return {href:'banana.html?'+imageParams.toString()};
   }
   function regenerate(x,kind,btn){
     var cfg=regenPayload(x,kind); if(!cfg) return;
+    if(cfg.href){ location.href=cfg.href; return; }
     btn.disabled=true; btn.textContent='提交中';
     fetch(cfg.url,{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify(cfg.body)})
       .then(function(r){ if(r.status===401){ HQ.login(); return null; } return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
