@@ -217,15 +217,50 @@
   function genLabel(){ return '立即生成（'+costFor()+' 点）'; }
   function updateCost(){
     updateEngineCosts();
-    gen.textContent=genLabel();
+    syncGen();                    // 按钮文字交给 syncGen：有任务在跑时要显示「进行中 N」，不能被覆写成静态标签
+    if(activeCount()) return;     // 同理，进度提示优先于「预计消耗」
     note.innerHTML='本次预计消耗 <span style="color:#e7b24c; font-family:\'JetBrains Mono\',monospace;">'+costFor()+'</span> 点 · 失败自动退点';
     note.style.color='#5c6b82';
   }
   function setNote(t,c){ note.innerHTML=t; note.style.color=c||'#5c6b82'; }
-  function busy(on){
-    gen.disabled=!!on; gen.style.pointerEvents=on?'none':'auto'; gen.style.opacity=on?'.7':'1';
-    gen.textContent=on?'生成中…':genLabel(); res.style.filter=on?'blur(3px) brightness(.6)':'none';
-    ['tplApply','tplGenerate'].forEach(function(id){var btn=document.getElementById(id);if(btn)btn.disabled=!!on;});
+
+  // ===== 并行生图：每人最多同时跑 MAX_PARALLEL 个（与后端 MAX_USER_RUNNING_IMAGE 同值）=====
+  // 改动前这里只存一个 hq_active_job，提交即把按钮 pointerEvents 关掉：用户点完「立即生成」
+  // 就再也点不了第二次。后端本来允许每人并行 3 个，是前端把它锁成了 1。
+  var MAX_PARALLEL=3, ACTIVE_KEY='hq_active_jobs';
+  var active={};        // job_id -> {t0, label, iv}
+  var stickyUntil=0;    // 成功/失败提示的保护期，别被 4s 一次的进度刷新盖掉
+  var submitting=false; // POST 往返期间锁住按钮：此时 active 还没登记，连点会多提交、多扣点
+
+  function activeCount(){ return Object.keys(active).length; }
+  function flash(t,c){ stickyUntil=Date.now()+8000; setNote(t,c); }
+  function saveActive(){
+    var out=[];
+    for(var id in active) out.push({id:id, t0:active[id].t0, label:active[id].label});
+    if(out.length) localStorage.setItem(ACTIVE_KEY, JSON.stringify(out));
+    else localStorage.removeItem(ACTIVE_KEY);
+  }
+  function syncGen(){
+    var n=activeCount(), lock=(n>=MAX_PARALLEL)||submitting, full=n>=MAX_PARALLEL;
+    gen.disabled=lock; gen.style.pointerEvents=lock?'none':'auto'; gen.style.opacity=lock?'.55':'1';
+    gen.textContent = full ? ('生成中 '+n+'/'+MAX_PARALLEL+' · 等一个完成')
+                    : submitting ? '提交中…'
+                    : n ? (genLabel()+' · 进行中 '+n)
+                        : genLabel();
+    // 只在「一张都还没出过」时给结果区打码：第 2、3 个任务在跑时不该把已出的图糊掉
+    res.style.filter=(n && !lastResultUrl) ? 'blur(3px) brightness(.6)' : 'none';
+    ['tplApply','tplGenerate'].forEach(function(id){var b=document.getElementById(id); if(b) b.disabled=lock;});
+  }
+  function tickNote(){
+    if(!activeCount() || Date.now()<stickyUntil) return;
+    var parts=[];
+    for(var id in active){ var j=active[id];
+      parts.push((j.label||'生成中')+'（'+Math.round((Date.now()-j.t0)/1000)+'s）'); }
+    setNote(parts.join('　·　')+' · 可切去别的页，回来自动接上','#2dd4bf');
+  }
+  function endJob(id){
+    var j=active[id]; if(j&&j.iv) clearInterval(j.iv);
+    delete active[id]; saveActive(); syncGen();
   }
 
   // 引擎选择
@@ -472,34 +507,43 @@
     var iv=setInterval(function(){
       fetch('/api/gen/job/'+id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
         failures=0;
-        if(!d.status){ clearInterval(iv); busy(false); localStorage.removeItem('hq_active_job'); return; }
+        if(!d.status){ endJob(id); return; }
         var sec=Math.round((Date.now()-t0)/1000);
-        if(d.status==='done'){ clearInterval(iv); showResult(d.result); busy(false); setNote('✅ 出图完成（'+sec+'s）· 点数已更新','#2bd576'); localStorage.removeItem('hq_active_job'); if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints(); loadHistory(); }
-        else if(d.status==='error'||d.status==='failed'){ clearInterval(iv); busy(false); setNote(errMsg(d.error||d.detail||d.status||''),'#f4708a'); localStorage.removeItem('hq_active_job'); }
-        else if(sec>JOB_POLL_TIMEOUT_SEC){ clearInterval(iv); busy(false); setNote('生成仍在处理中，请稍后到资产库查看（'+sec+'s）','#2dd4bf'); localStorage.removeItem('hq_active_job'); loadHistory(); }
-        else setNote((label||'生成中')+'（'+sec+'s）· 可切去别的页，回来自动接上','#2dd4bf');
+        if(d.status==='done'){
+          endJob(id); showResult(d.result);
+          flash('✅ 出图完成（'+sec+'s）· 点数已更新'+(activeCount()?'，还有 '+activeCount()+' 个在跑':''),'#2bd576');
+          if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
+          loadHistory();
+        }
+        else if(d.status==='error'||d.status==='failed'){ endJob(id); flash(errMsg(d.error||d.detail||d.status||''),'#f4708a'); }
+        else if(sec>JOB_POLL_TIMEOUT_SEC){ endJob(id); flash('生成仍在处理中，请稍后到资产库查看（'+sec+'s）','#2dd4bf'); loadHistory(); }
+        else tickNote();
       }).catch(function(){
         failures++;
         if(failures===JOB_POLL_SOFT_RETRY_LIMIT){
-          setNote('网络波动，正在重试；如长时间无恢复，可刷新页面继续接上任务','#f4708a');
+          flash('网络波动，正在重试；如长时间无恢复，可刷新页面继续接上任务','#f4708a');
           return;
         }
         if(failures>=JOB_POLL_HARD_RETRY_LIMIT){
-          clearInterval(iv); busy(false);
-          setNote('网络异常，任务可能仍在后台生成，请刷新页面继续接上，或稍后到资产库查看','#f4708a');
+          endJob(id);
+          flash('网络异常，任务可能仍在后台生成，请刷新页面继续接上，或稍后到资产库查看','#f4708a');
         }
       });
     },4000);
+    active[id]={t0:t0, label:(label||'生成中').replace(/（.*$/,''), iv:iv};
+    saveActive(); syncGen();
   }
   function submit(payload, label, endpoint){
     endpoint=endpoint||'/api/gen/image'; lastEndpoint=endpoint;
-    if(!payload.prompt){ setNote('请先输入提示词','#f4708a'); return; }
-    lastPayload=payload; busy(true);
+    if(!payload.prompt){ flash('请先输入提示词','#f4708a'); return; }
+    if(submitting) return;
+    if(activeCount()>=MAX_PARALLEL){ flash('最多同时生成 '+MAX_PARALLEL+' 张，等一个完成再提交','#f4708a'); return; }
+    lastPayload=payload; submitting=true; syncGen();
     var hint = endpoint==='/api/gen/banana'
                  ? (bananaVariant==='pro' ? 'Nano Banana Pro 约 1-2 分钟' : 'Nano Banana 2 约 30-90 秒')
              : engine==='seedream' ? (seedreamVariant==='pro' ? 'Seedream Pro 约 1.5 分钟' : 'Seedream 约 30-40 秒')
              : 'gpt-image-2 高清约 1-2 分钟';
-    setNote(label+' · '+hint,'#2dd4bf');
+    flash(label+' · '+hint,'#2dd4bf');
     var t0=Date.now();
     fetch(endpoint,{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
       .then(function(r){ return r.text().then(function(t){
@@ -508,13 +552,15 @@
         return {s:r.status,d:d};
       }); })
       .then(function(x){
-        if(x.s===401){ HQ.login(); return; }
-        if(x.s===402){ busy(false); setNote('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>','#f4708a'); return; }
-        if(x.s===413){ busy(false); setNote('图片太大，请压缩后重试','#f4708a'); return; }
-        if(!x.d.job_id){ busy(false); setNote('提交失败：'+((x.d&&x.d.detail)||'未知'),'#f4708a'); return; }
-        localStorage.setItem('hq_active_job', JSON.stringify({id:x.d.job_id, t0:t0, label:(label||'生成中').replace(/（.*$/,'')}));
-        poll(x.d.job_id, t0, label);
-      }).catch(function(){ busy(false); setNote('网络错误，请重试','#f4708a'); });
+        submitting=false;              // 必须在所有分支之前解锁：漏一条路径按钮就永久锁死
+        if(x.s===401){ syncGen(); HQ.login(); return; }
+        if(x.s===402){ syncGen(); flash('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>','#f4708a'); return; }
+        if(x.s===413){ syncGen(); flash('图片太大，请压缩后重试','#f4708a'); return; }
+        // 429：后端的提交闸/队列满，点数已退回，直接重试即可
+        if(x.s===429){ syncGen(); flash(((x.d&&x.d.detail)||'任务太多，请稍后再试')+' · 点数未扣','#f4708a'); return; }
+        if(!x.d.job_id){ syncGen(); flash('提交失败：'+((x.d&&x.d.detail)||'未知'),'#f4708a'); return; }
+        poll(x.d.job_id, t0, label);   // poll 内部登记 active、存盘、并刷新按钮
+      }).catch(function(){ submitting=false; syncGen(); flash('网络错误，请重试','#f4708a'); });
   }
 
   // ===== 参考图上传 → 图生图 / 局部修改（inpaint，gpt-image 专属）=====
@@ -786,8 +832,14 @@
   loadHistory();
   // 刷新还原：把上次的结果图放回结果区，刷新后也能直接再生成
   try{ var lr0=localStorage.getItem('hq_last_result'); if(lr0){ res.src=lr0+'?t='+Date.now(); lastResultUrl=lr0; } }catch(e){}
-  // 续传：切回页面时接上进行中的任务（后端没中断）
-  try{ var aj=JSON.parse(localStorage.getItem('hq_active_job')||'null'); if(aj&&aj.id){ busy(true); poll(aj.id, aj.t0||Date.now(), aj.label); } }catch(e){}
+  // 续传：切回页面时接上所有进行中的任务（后端没中断）。
+  // 兼容旧版的单任务 key：老用户浏览器里可能还存着 hq_active_job，读完即迁移。
+  try{
+    var saved=JSON.parse(localStorage.getItem(ACTIVE_KEY)||'[]');
+    var legacy=JSON.parse(localStorage.getItem('hq_active_job')||'null');
+    if(legacy&&legacy.id){ saved.push(legacy); localStorage.removeItem('hq_active_job'); }
+    saved.slice(0,MAX_PARALLEL).forEach(function(j){ if(j&&j.id) poll(j.id, j.t0||Date.now(), j.label); });
+  }catch(e){}
 
   // 结果区按钮
   function actBtn(label){ var n=null; document.querySelectorAll('#actRow > *').forEach(function(el){ if(el.textContent.indexOf(label)>=0) n=el; }); return n; }

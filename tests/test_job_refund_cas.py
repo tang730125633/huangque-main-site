@@ -21,7 +21,8 @@ class JobRefundCasTests(unittest.TestCase):
             c.execute("""CREATE TABLE jobs(
                 id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, username TEXT, cost INTEGER,
                 status TEXT DEFAULT 'pending', payload TEXT, result TEXT, error TEXT,
-                created_at INTEGER, updated_at INTEGER, deleted INTEGER DEFAULT 0, refunded INTEGER DEFAULT 0)""")
+                created_at INTEGER, updated_at INTEGER, deleted INTEGER DEFAULT 0, refunded INTEGER DEFAULT 0,
+                owner TEXT)""")   # owner：任务归属服务(#511)。本夹具手搓 schema，得跟着 init_db 走
             c.commit()
         # 统计真正退点次数（打桩 points 域）
         self.refunds = []

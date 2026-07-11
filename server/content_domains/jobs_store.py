@@ -22,6 +22,21 @@ import time
 from contextlib import closing
 
 
+def ensure_owner_column(jdb):
+    """保证 jobs.owner 存在（#511）。三个服务启动时各调一次，谁先起谁建，与部署顺序无关。
+
+    没有这列时，content 的 pending 重排/孤儿回收会把 imggen、leadgen 的任务当成自己的：
+    重排会用 content 的处理器去跑别家的 payload，重启回收会把别家正在飞的任务判失败退点。
+    历史行 owner 为 NULL —— 那时只有 content 会留 pending/被回收，故 content 侧用
+    COALESCE(owner,'content') 把它们仍归自己，语义与建列前完全一致。
+    """
+    with closing(jdb()) as c:
+        cols = {r[1] for r in c.execute("PRAGMA table_info(jobs)").fetchall()}
+        if "owner" not in cols:
+            c.execute("ALTER TABLE jobs ADD COLUMN owner TEXT")
+            c.commit()
+
+
 def set_terminal(jdb, job_id, status, result=None, error=None, from_states=("running",)):
     """CAS 抢终态：仅当当前状态在 from_states 内才迁移，返回是否抢到(rowcount>=1)。
 

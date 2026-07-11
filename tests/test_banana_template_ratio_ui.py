@@ -51,10 +51,13 @@ class BananaTemplateRatioUiTests(unittest.TestCase):
         self.assertIn("gen.click();", generate_block)
 
     def test_template_actions_share_generation_busy_state(self):
-        busy_block = self.html.split("function busy(on){", 1)[1].split("\n  }", 1)[0]
-        self.assertIn("gen.disabled=!!on", busy_block)
-        self.assertIn("['tplApply','tplGenerate']", busy_block)
-        self.assertIn("btn.disabled=!!on", busy_block)
+        # 生成按钮与模板按钮必须共享同一个「能不能点」的状态。原来这个状态是 busy(on)，
+        # 支持每人并行 3 个生图后改成 syncGen()：lock = 已占满 3 个 或 正在提交。
+        block = self.html.split("function syncGen(){", 1)[1].split("\n  }", 1)[0]
+        self.assertIn("lock=(n>=MAX_PARALLEL)||submitting", block)
+        self.assertIn("gen.disabled=lock", block)
+        self.assertIn("['tplApply','tplGenerate']", block)
+        self.assertIn("b.disabled=lock", block)
 
 
 if __name__ == "__main__":

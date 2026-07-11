@@ -195,11 +195,12 @@ VIDEO_COST = _env_positive_int("VIDEO_COST", 20)
 JOB_WORKERS, FAST_JOB_WORKERS = _env_positive_int("CONTENT_JOB_WORKERS", 3), _env_positive_int("CONTENT_FAST_JOB_WORKERS", 3)  # 慢队列(换装/果肉video)/快队列(图片/音频等)各自worker数，分开防视频堵死快任务
 TALKING_JOB_WORKERS = _env_positive_int("CONTENT_TALKING_JOB_WORKERS", 10)  # 口播(video mode=text/audio)专用池：HeyGen口播能扛高并发(50并发实测无429)
 MOTION_JOB_WORKERS = _env_positive_int("CONTENT_MOTION_JOB_WORKERS", 3)     # 动作模仿(video mode=motion)专用池：HeyGen motion并发>3易撞代理/速率/生成墙(10并发实测仅1/10)
-IMAGE_JOB_WORKERS = _env_positive_int("CONTENT_IMAGE_JOB_WORKERS", 4)        # 生图专用池：生图慢(果肉/gpt/banana 实测90~450s)，从快池拆出，别拖死秒级的音频/文案快任务
+IMAGE_JOB_WORKERS = _env_positive_int("CONTENT_IMAGE_JOB_WORKERS", 10)       # 生图专用池(生图慢90~450s，从快池拆出别拖死秒级任务)。10=500用户高峰约150张/时所需6.3个+60%余量；1worker≈24张/时(实测中位149s)
 JOB_QUEUE_MAX = _env_positive_int("CONTENT_JOB_QUEUE_MAX", 32)
 MAX_USER_ACTIVE_JOBS = _env_positive_int("MAX_USER_ACTIVE_JOBS", 5)          # 单用户可同时提交(pending+running)的任务上限，超了提交即 429
 MAX_USER_RUNNING_TALKING = _env_positive_int("MAX_USER_RUNNING_TALKING", 2)  # 单用户口播「运行中」并发上限：最多同时生成2条，多提交的留 pending 排队
-MAX_USER_RUNNING_IMAGE = _env_positive_int("MAX_USER_RUNNING_IMAGE", 3)      # 单用户生图「运行中」并发上限：防单用户刷爆生图池+把上游打到429
+MAX_USER_RUNNING_IMAGE = _env_positive_int("MAX_USER_RUNNING_IMAGE", 3)      # 单用户生图「运行中」并发上限=每人可并行3个。闸数全表 kind='image'，imggen也写这表→两服务合计3个，不是各3个
+SERVICE_OWNER = "content"   # 本服务在 jobs.owner 的署名；两处全表扫描必须按它过滤，缘由见 jobs_store.ensure_owner_column
 # reaper 各 kind 的超时宽限(秒)，默认 360。tryon 两段式+心跳刷新；xiaole_video 内部轮询600s+转存；
 # image 多图/中转慢；collect 下载+ffmpeg抽音轨+ASR 且转写全站串行(实测成功平均88s)。video 按 mode 另算。
 KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "image": 900, "collect": 1200}
@@ -243,6 +244,7 @@ def init_db():
             created_at INTEGER, updated_at INTEGER)""")
         _ensure_column(c, "jobs", "deleted", "INTEGER DEFAULT 0")
         _ensure_column(c, "jobs", "refunded", "INTEGER DEFAULT 0")  # 退点幂等键(#187)
+        _ensure_column(c, "jobs", "owner", "TEXT")                  # 归属服务(#511)，见 SERVICE_OWNER
         c.commit()
     feature_flags.init_db()
     init_audio_db()
@@ -751,9 +753,8 @@ def _job_worker_loop(q):
 def _recover_pending_jobs(limit=None):
     limit = int(limit or JOB_QUEUE_MAX)
     with closing(jdb()) as c:
-        rows = c.execute("""SELECT id, kind, payload FROM jobs
-                            WHERE status='pending'
-                            ORDER BY id ASC LIMIT ?""", (limit,)).fetchall()
+        rows = c.execute("SELECT id, kind, payload FROM jobs WHERE status='pending' AND COALESCE(owner,?)=? ORDER BY id ASC LIMIT ?",
+                         (SERVICE_OWNER, SERVICE_OWNER, limit)).fetchall()
     recovered = 0
     for row in rows:
         try:
@@ -869,13 +870,15 @@ def reclaim_orphaned_running():
     """启动时回收上一进程遗留的 running 孤儿任务。
 
     本进程刚起、worker 尚未启动(此函数在 start_job_workers 之前调用)，此刻 DB 里
-    任何 status='running' 都是上次 systemctl restart 时 worker 猝死留下的孤儿——没人
+    本服务名下任何 status='running' 都是上次 systemctl restart 时 worker 猝死留下的孤儿——没人
     再刷 updated_at，用户会看着"生成中"干等 reaper 兜底(换装 grace 达 2400 秒=40 分钟)
     才判失败退点。启动即当场判失败+退点，把"卡 40 分钟"变"秒退"。
     CAS 抢终态 + 幂等退点复用 reaper 那套(_set_terminal/_refund_once)，与并发无竞态。"""
     try:
         with closing(jdb()) as c:
-            rows = c.execute("SELECT id, username, cost FROM jobs WHERE status='running'").fetchall()
+            # 按 owner 过滤(#511)：imggen/leadgen 是独立进程，content 重启与它们无关；不过滤就会把它们正在飞的任务判失败退点，而对面 worker 还在跑 → 用户既没图又白等
+            rows = c.execute("SELECT id, username, cost FROM jobs WHERE status='running' AND COALESCE(owner,?)=?",
+                             (SERVICE_OWNER, SERVICE_OWNER)).fetchall()
     except Exception:
         return 0
     n = 0
@@ -1075,8 +1078,8 @@ class H(BaseHTTPRequestHandler):
                     with closing(jdb()) as c:
                         for body, cost in zip(payloads, costs):
                             body["batch_id"] = batch_id
-                            cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)",
-                                ("video", user["username"], cost, json.dumps(body, ensure_ascii=False), now, now))
+                            cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) VALUES(?,?,?,?,?,?,?)",
+                                ("video", user["username"], cost, json.dumps(body, ensure_ascii=False), now, now, SERVICE_OWNER))
                             job_ids.append(cur.lastrowid)
                         c.commit()
                         committed = True
@@ -1132,8 +1135,8 @@ class H(BaseHTTPRequestHandler):
                     return self._send(402 if e.status == 402 else 502, {"detail": e.detail, "need": cost})
                 now = int(time.time())
                 with closing(jdb()) as c:
-                    cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)",
-                                    (kind, user["username"], cost, json.dumps(body, ensure_ascii=False), now, now))
+                    cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) VALUES(?,?,?,?,?,?,?)",
+                                    (kind, user["username"], cost, json.dumps(body, ensure_ascii=False), now, now, SERVICE_OWNER))
                     c.commit(); jid = cur.lastrowid
                 if kind in {"video", "tryon", "xiaole_video"}:
                     video_domain.record_video_pending_asset(jid, user["username"], body)

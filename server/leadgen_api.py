@@ -24,6 +24,7 @@ AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
 AUTH_DB   = os.environ.get("AUTH_DB", "/home/ubuntu/auth-service/users.db")
 INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")   # 调 auth 内部点数接口用；来自 auth.env
 JOB_DB    = os.environ.get("CONTENT_JOB_DB", "/home/ubuntu/content-api/content_jobs.db")  # 共用 content_api 的任务库
+SERVICE_OWNER = "leadgen"   # 写进 jobs.owner，让 content 的 pending 重排/孤儿回收扫描认出这不是它的活(#511)
 COS_COLLECT = os.environ.get("COS_COLLECT", "1").strip().lower() not in ("0", "false", "no")  # 采集视频转存 COS 开关
 # 转存预算：线上 23 次转存失败全部是 "The read operation timed out"。原实现 timeout=120 且盲目重试 2 次，
 # 最坏在转存上耗 240s+，把整个 collect 任务顶过 reaper 判死线(当时 360s)→ 判死退点、worker 又写回 done
@@ -562,8 +563,9 @@ class H(BaseHTTPRequestHandler):
                 return self._send(402, {"detail": "点数不足", "need": cost})
             now = int(time.time())
             with closing(jdb()) as c:
-                cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)",
-                                (kind, user["username"], cost, json.dumps(body, ensure_ascii=False), now, now))
+                # owner 署名(#511)：jobs 表三服务共用，不署名 content 重启会把本服务在飞的任务判失败退点
+                cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) VALUES(?,?,?,?,?,?,?)",
+                                (kind, user["username"], cost, json.dumps(body, ensure_ascii=False), now, now, SERVICE_OWNER))
                 c.commit(); jid = cur.lastrowid
             threading.Thread(target=run_job, args=(jid,), daemon=True).start()
             return self._send(200, {"job_id": jid, "cost": cost, "points_left": get_points(user["username"])})
@@ -598,5 +600,7 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    from content_domains import jobs_store
+    jobs_store.ensure_owner_column(jdb)   # 谁先起谁建；不建列则 INSERT 带 owner 会直接 500
     print("huangque-leadgen-api on 127.0.0.1:%d  caps=%s" % (PORT, list(HANDLERS)))
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
