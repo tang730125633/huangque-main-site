@@ -412,7 +412,7 @@
     var text=activeTemplate.tpl.replace(/\{(\w+)\}/g,function(_,key){return data[key]||'';});
     pr.value=text.slice(0,PROMPT_MAX);
     selectRatio(activeTemplate.ratio);
-    selectEngine('nb2');
+    selectEngineByKey('nb2');
     updCount();
     setNote('✅ 已套用「'+activeTemplate.name+'」模板，可继续微调后生成','#2bd576');
     try{ pr.focus(); }catch(e){}
