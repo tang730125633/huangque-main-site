@@ -216,6 +216,14 @@
         <button class="function-tab" type="button" data-function="omni">欧米视频生成</button>
       </div>
 
+      <div id="bgmPanel" class="panel" style="margin-top:14px;">
+        <div class="row"><span class="label">背景音乐 <span class="faint">· 可选，自动循环到成片结束</span></span><button id="bgmClear" type="button" class="hidden" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font-family:inherit;">移除</button></div>
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,.55fr);gap:12px;margin-top:10px;align-items:center;">
+          <label class="file-row"><input id="bgmFile" type="file" accept="audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/mp4,audio/m4a,audio/x-m4a" hidden><span id="bgmFileName" style="font-size:12.5px;font-weight:700;">选择 BGM 音频</span></label>
+          <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-bgm-volume="0.12">轻</button><button class="on" data-bgm-volume="0.18">中</button><button data-bgm-volume="0.28">强</button></div>
+        </div>
+      </div>
+
       <div id="talkingPanel" class="function-panel">
       <div class="mode-tabs">
         <button class="mode-tab on" data-mode="text">
@@ -564,6 +572,7 @@
   var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='S_d21F8OR62', activePreview=null, activePreviewBtn=null;
   var imageData='', imagePreview='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
   var talkingBatch=false, talkingBatchItems=[], videoCost=20, videoBatchMax=5, talkingBatchSeq=0;
+  var bgmData='', selectedBgmVolume=0.18;
   var selectedSubtitle='off', selectedSubtitleStyle='white', selectedSubtitlePosition='bottom';  // F4 字幕：默认关闭+底部，不勾选时行为与原来一致
   var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16', selectedMotionLine='2', selectedMotionResolution='720p';
   var selectedGrokRatio='16:9';  // 默认16:9(上游9:16/1:1/4:5/5:4暂时大概率生成失败,止血用#GROK-RATIO-SIZE-INCIDENT)
@@ -1317,6 +1326,7 @@
   }
   function updateFunction(next){
     videoFunction=next||'talking';
+    if($('bgmPanel')) $('bgmPanel').classList.toggle('hidden',videoFunction!=='talking'&&videoFunction!=='motion');
     document.querySelectorAll('[data-function]').forEach(function(b){b.classList.toggle('on',b.dataset.function===videoFunction);});
     $('talkingPanel').classList.toggle('hidden',videoFunction!=='talking');
     $('motionPanel').classList.toggle('hidden',videoFunction!=='motion');
@@ -1529,11 +1539,14 @@
     if(b.dataset.tryonSeconds) selectedTryonSeconds=Number(b.dataset.tryonSeconds);
     if(b.dataset.grokRatio) selectedGrokRatio=b.dataset.grokRatio;
     if(b.dataset.motion) selectedMotion=b.dataset.motion;
+    if(b.dataset.bgmVolume) selectedBgmVolume=Number(b.dataset.bgmVolume);
     if(b.dataset.subtitle){selectedSubtitle=b.dataset.subtitle;var on=selectedSubtitle==='on';var sr=$('subtitleStyleRow');if(sr)sr.style.display=(on?'':'none');var pr=$('subtitlePositionRow');if(pr)pr.style.display=(on?'':'none');}
     if(b.dataset.substyle) selectedSubtitleStyle=b.dataset.substyle;
     if(b.dataset.subpos) selectedSubtitlePosition=b.dataset.subpos;
     updateChecklist();
   };});
+  $('bgmFile').onchange=function(){var f=this.files&&this.files[0];if(!f)return;if(f.size>35*1024*1024){toast('BGM 不能超过 35MB');this.value='';return;}readFileData(f).then(function(data){bgmData=data;$('bgmFileName').textContent=f.name;$('bgmClear').classList.remove('hidden');}).catch(function(){toast('BGM 读取失败');});};
+  $('bgmClear').onclick=function(){bgmData='';$('bgmFile').value='';$('bgmFileName').textContent='选择 BGM 音频';$('bgmClear').classList.add('hidden');};
   document.querySelectorAll('[data-talking-shape]').forEach(function(b){b.onclick=function(){setTalkingBatchMode(b.dataset.talkingShape==='batch');};});
   $('scriptText').addEventListener('input',function(){$('charCount').textContent=$('scriptText').value.length+' / 1200';updateChecklist();});
   $('clearScript').onclick=function(){$('scriptText').value='';$('scriptText').dispatchEvent(new Event('input'));};
@@ -1768,6 +1781,7 @@
       ratio:selectedMotionRatio,
       motion:'medium'
     };
+    body.bgm_data=bgmData; body.bgm_volume=selectedBgmVolume;
     if(useNewMotionImage){
       body.image_data=motionImageData;
     }else{
@@ -1842,7 +1856,8 @@
       mode:mode,image_data:item.image_data||'',avatar_id:item.avatar_id||'',
       audio_data:mode==='audio'?audioData:'',text:mode==='text'?$('scriptText').value.trim():'',voice:mode==='text'?selectedVoice:'',
       resolution:selectedResolution,ratio:selectedRatio,motion:selectedMotion,subtitle:selectedSubtitle==='on',
-      subtitle_style:selectedSubtitleStyle,subtitle_position:selectedSubtitlePosition
+      subtitle_style:selectedSubtitleStyle,subtitle_position:selectedSubtitlePosition,
+      bgm_data:bgmData,bgm_volume:selectedBgmVolume
     };
   }
   function submitVideoBatch(text){

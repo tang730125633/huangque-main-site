@@ -172,6 +172,38 @@ def _extract_first_frame_cover(video_rel, ss=1):
     return None
 
 
+def mix_video_bgm(video_file, bgm_file, volume=0.18):
+    """Loop BGM to the video duration. Keep the source video untouched on failure."""
+    video_fp = _resolve_out_file(video_file)
+    bgm_fp = _resolve_out_file(bgm_file)
+    if not video_fp or not bgm_fp:
+        raise ValueError("BGM 素材文件不存在")
+    volume = max(0.05, min(0.8, float(volume)))
+    out_rel = "video/bgm_%s.mp4" % uuid.uuid4().hex
+    out_fp = _out_path(out_rel)
+    common = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(video_fp),
+              "-stream_loop", "-1", "-i", str(bgm_fp)]
+    attempts = [
+        common + ["-filter_complex", "[0:a]volume=1[voice];[1:a]volume=%s[music];[voice][music]amix=inputs=2:duration=first:dropout_transition=2[a]" % volume,
+                  "-map", "0:v:0", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(out_fp)],
+        common + ["-filter_complex", "[1:a]volume=%s[a]" % volume, "-map", "0:v:0", "-map", "[a]",
+                  "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(out_fp)],
+    ]
+    last_error = None
+    for cmd in attempts:
+        try:
+            subprocess.run(cmd, check=True, timeout=600, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if out_fp.is_file() and out_fp.stat().st_size > 0:
+                return out_rel
+        except Exception as exc:
+            last_error = exc
+        try:
+            if out_fp.exists(): out_fp.unlink()
+        except Exception:
+            pass
+    raise RuntimeError("BGM 混音失败: %s" % str(last_error)[:160])
+
+
 def validate_video_payload(payload, username=None):
     if not isinstance(payload, dict):
         raise ValueError("请求体不是合法 JSON")
@@ -223,12 +255,23 @@ def validate_video_payload(payload, username=None):
     motion = (payload.get("motion") or "medium").strip().lower()
     if motion not in VALID_VIDEO_MOTIONS:
         raise ValueError("motion 仅支持 low、medium、high")
+    bgm_data = str(payload.get("bgm_data") or "").strip()
+    if bgm_data and not _is_valid_data_url(bgm_data, VALID_AUDIO_MIMES):
+        raise ValueError("bgm_data 不是有效的音频文件")
+    try:
+        bgm_volume = float(payload.get("bgm_volume", 0.18))
+    except (TypeError, ValueError):
+        raise ValueError("bgm_volume 必须是 0.05-0.8 的数字")
+    if not 0.05 <= bgm_volume <= 0.8:
+        raise ValueError("bgm_volume 必须是 0.05-0.8 的数字")
 
     cleaned = dict(payload)
     cleaned["mode"] = mode
     cleaned["ratio"] = ratio
     cleaned["resolution"] = resolution
     cleaned["motion"] = motion
+    cleaned["bgm_data"] = bgm_data
+    cleaned["bgm_volume"] = bgm_volume
     cleaned.pop("duration", None)
     if mode == "motion":
         cleaned["line"] = line
@@ -1444,6 +1487,7 @@ def gen_video(payload):
     audio_file = None
     audio_url = None
     reference_video_file = None
+    bgm_file = _save_data_file(payload.get("bgm_data"), "video_bgm", [".mp3", ".wav", ".m4a"])
     if mode == "motion":
         reference_video_file = _save_data_file(payload.get("reference_video_data"), "motion_ref", [".mp4", ".mov", ".webm"])
         if not reference_video_file:
@@ -1508,6 +1552,16 @@ def gen_video(payload):
         video_result.setdefault("duration", round(reference_duration, 2))
     else:
         video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
+    bgm_error = None
+    if bgm_file and video_result.get("video_file"):
+        try:
+            update_video_asset_phase(job_id, "mixing_bgm")
+            video_result["plain_video_file"] = video_result.get("video_file")
+            mixed = mix_video_bgm(video_result["video_file"], bgm_file, payload.get("bgm_volume", 0.18))
+            video_result["video_file"] = mixed
+            video_result["video_url"] = _file_url(mixed)
+        except Exception as e:
+            bgm_error = str(e)[:200]
     # F4：口播模式（text/audio）可选自动字幕；失败不影响已生成的视频（保留原片 + 记录错误）
     subtitle_on = False
     subtitle_error = None
@@ -1552,6 +1606,9 @@ def gen_video(payload):
         "subtitle_style": subtitle_style if subtitle_on else None,
         "subtitle_position": subtitle_position if subtitle_on else None,
         "subtitle_error": subtitle_error,
+        "bgm_file": bgm_file,
+        "bgm_volume": payload.get("bgm_volume", 0.18) if bgm_file else None,
+        "bgm_error": bgm_error,
         "plain_video_file": video_result.get("plain_video_file"),
         "batch_id": payload.get("batch_id"), "batch_label": payload.get("batch_label"),
         "batch_index": payload.get("batch_index"), "batch_size": payload.get("batch_size"),
