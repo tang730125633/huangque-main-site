@@ -7,6 +7,7 @@ from .core import (
     threading, time, urllib, uuid,
 )
 from .points import _auth_points_request
+from . import cosyvoice, cos
 
 def get_user_id(username):
     try:
@@ -270,6 +271,26 @@ def check_clone_status(username, slot_id):
             WHERE username=? AND slot_id=? ORDER BY id DESC LIMIT 1""", (username, slot_id)).fetchone()
     if not slot:
         raise ValueError("\u97f3\u8272\u69fd\u4f4d\u4e0d\u5b58\u5728\u6216\u4e0d\u5c5e\u4e8e\u5f53\u524d\u8d26\u53f7")
+    # CosyVoice\uff1aprovider_voice \u662f CosyVoice voice_id \u5c31\u67e5\u5b83\u7684 list_voice \u72b6\u6001\uff0c\u4e0d\u78b0\u8c46\u5305\u3002
+    if cosyvoice.enabled():
+        with closing(adb()) as c:
+            pv = c.execute("""SELECT provider_voice FROM audio_voices WHERE username=? AND slot_id=?
+                ORDER BY id DESC LIMIT 1""", (username, slot_id)).fetchone()
+        provider_voice = (pv["provider_voice"] if pv else "") or ""
+        if provider_voice.startswith(cosyvoice.CLONE_MODEL):
+            if slot["status"] == "failed":
+                return {"status": "failed", "clone_error": slot["clone_error"] or "\u590d\u523b\u5931\u8d25"}
+            try:
+                cv_status, _ = cosyvoice.voice_status(provider_voice)
+            except Exception:
+                return {"status": slot["status"] or "training"}
+            new_status = "ready" if cv_status == "OK" else ("failed" if cv_status not in ("", "OK") and "ing" not in cv_status.lower() else "training")
+            if new_status != slot["status"]:
+                with closing(adb()) as c:
+                    c.execute("UPDATE audio_voice_slots SET status=?, updated_at=? WHERE username=? AND slot_id=?",
+                              (new_status, int(time.time()), username, slot_id))
+                    c.commit()
+            return {"status": new_status, "cosy_status": cv_status}
     if slot["status"] == "failed":
         return {"status": "failed", "clone_error": slot["clone_error"] or "\u8c46\u5305\u590d\u523b\u5931\u8d25", "doubao_status": None}
     if slot["status"] == "ready" and voice and voice["preview_url"] and not slot["clone_started_at"]:
@@ -482,6 +503,47 @@ def prepare_clone_audio(audio_b64, audio_format):
         raise ValueError("\u6837\u97f3\u6587\u4ef6\u8fc7\u5927\uff0c\u8bf7\u4e0a\u4f20\u66f4\u77ed\u6216\u66f4\u4f4e\u7801\u7387\u7684\u97f3\u9891")
     return base64.b64encode(data).decode(), "mp3"
 
+def _clone_via_cosyvoice(username, slot_id, name, audio_b64):
+    """CosyVoice 复刻：60s 参考音频(已由 prepare_clone_audio 标准化) → COS 预签名 URL
+    → create_voice 拿 voice_id → 落库。voice_id 直接作为 provider_voice，合成时按它选复刻模型。
+    坑位免费，所以不再走豆包那套付费 slot 校验；create_voice 同步返回，可用即 ready。"""
+    if not cos.enabled():
+        raise ValueError("声音复刻需要 COS 存参考音频，当前未启用 COS")
+    raw = base64.b64decode(audio_b64)
+    key = "voice-clone-input/%s_%d.mp3" % (uuid.uuid4().hex, int(time.time()))
+    tmp = _out_path("audio/_cvref_%d.mp3" % int(time.time() * 1000))
+    tmp.write_bytes(raw)
+    try:
+        cos.upload(str(tmp), key)
+        ref_url = cos.object_url(key, private=True)   # 短时效预签名，阿里同步拉取即可
+    finally:
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
+    voice_id = cosyvoice.create_voice(ref_url)
+    status, _ = cosyvoice.voice_status(voice_id)
+    slot_status = "ready" if status == "OK" else "training"
+    now = int(time.time())
+    voice_key = "vip_" + re.sub(r"[^a-zA-Z0-9_\-]", "_", slot_id)
+    with closing(adb()) as c:
+        c.execute("""INSERT OR IGNORE INTO audio_voices
+            (username, scope, voice_key, display_name, provider_voice, slot_id, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?,?)""",
+            (username, "personal", voice_key, name, voice_id, slot_id, now, now))
+        c.execute("""UPDATE audio_voices SET display_name=?, provider_voice=?, preview_file=NULL,
+            preview_url=NULL, slot_id=?, updated_at=? WHERE username=? AND scope='personal' AND voice_key=?""",
+            (name, voice_id, slot_id, now, username, voice_key))
+        r = c.execute("SELECT id FROM audio_voices WHERE username=? AND scope='personal' AND voice_key=?",
+                      (username, voice_key)).fetchone()
+        vid_row = r["id"] if r else None
+        c.execute("""UPDATE audio_voice_slots SET voice_id=?, status=?, clone_started_at=?, clone_upload_at=?,
+            clone_error=NULL, clone_upload_speaker_id=?, updated_at=? WHERE username=? AND slot_id=?""",
+            (vid_row, slot_status, now, now, voice_id, now, username, slot_id))
+        c.commit()
+    return {"voice_id": vid_row, "voice_key": voice_key, "display_name": name,
+            "provider_voice": voice_id, "status": slot_status}
+
 def clone_vip_voice(username, payload):
     username = (username or "").strip()
     slot_id = (payload.get("slot_id") or "").strip()
@@ -494,7 +556,7 @@ def clone_vip_voice(username, payload):
         raise ValueError("\u7f3a\u5c11\u97f3\u8272\u69fd\u4f4d")
     if not audio_b64:
         raise ValueError("\u8bf7\u5148\u4e0a\u4f20\u6837\u97f3")
-    if not DOUBAO_APPID or not DOUBAO_TOKEN:
+    if not cosyvoice.enabled() and (not DOUBAO_APPID or not DOUBAO_TOKEN):
         raise ValueError("\u8c46\u5305\u58f0\u97f3\u590d\u523b\u914d\u7f6e\u672a\u5b8c\u6210")
     with closing(adb()) as c:
         slot = c.execute("""SELECT id, slot_id, voice_id FROM audio_voice_slots
@@ -502,6 +564,8 @@ def clone_vip_voice(username, payload):
     if not slot:
         raise ValueError("\u97f3\u8272\u69fd\u4f4d\u4e0d\u5b58\u5728\u6216\u4e0d\u5c5e\u4e8e\u5f53\u524d\u8d26\u53f7")
     audio_b64, audio_format = prepare_clone_audio(audio_b64, audio_format)
+    if cosyvoice.enabled():
+        return _clone_via_cosyvoice(username, slot_id, name, audio_b64)
     baseline_version = baseline_icl = baseline_demo = ""
     try:
         baseline = query_doubao_clone_status(slot_id)
@@ -780,6 +844,21 @@ VOICE_MAP = {
 }
 SPEED_MAP = {"slow": 0.88, "normal": 1.0, "fast": 1.12, "偏慢": 0.88, "正常": 1.0, "偏快": 1.12}
 
+def _cosy_voice_for(provider_voice):
+    """把库里的 provider_voice 翻成 CosyVoice 能用的 voice：
+      * 4 个公共音色的豆包码(S_xxx) → 对应预置(longwan...)
+      * 已是 CosyVoice 复刻 id → 原样
+      * 其它(旧豆包个人音色/openai) → 尚未迁移，明确报错让用户重新复刻
+    """
+    v = str(provider_voice or "").strip()
+    if v in cosyvoice.PUBLIC_VOICE_PRESETS:
+        return cosyvoice.PUBLIC_VOICE_PRESETS[v]
+    if v.startswith(cosyvoice.CLONE_MODEL):          # CosyVoice 复刻音色 id
+        return v
+    if v.startswith("S_") or v.startswith("vip_"):   # 旧豆包音色，还没迁到 CosyVoice
+        raise ValueError("该音色尚未迁移到新引擎，请重新复刻一次")
+    return v      # 兜底：当作预置名直接用
+
 def gen_audio(payload):
     text = (payload.get("text") or payload.get("prompt") or "").strip()
     if not text:
@@ -802,6 +881,19 @@ def gen_audio(payload):
             return default
     pitch = knob("pitch", -12, 12, 0)
     volume = knob("volume", -50, 100, 0)
+
+    # CosyVoice 全量通道：配了 DASHSCOPE_API_KEY 就走这里，否则回落豆包/OpenAI(合并零风险)。
+    if cosyvoice.enabled():
+        cv_voice = _cosy_voice_for(voice)
+        # knob 的 pitch/-12~12、volume/-50~100 是豆包量纲；CosyVoice 用 pitch 0.5~2、volume 0~100。
+        cv_audio = cosyvoice.synth(cv_voice, text, rate=speed,
+                                   pitch=max(0.5, min(2.0, 1.0 + pitch / 24.0)),
+                                   volume=max(0, min(100, 50 + volume // 2)))
+        fn = "audio/aud_%d.mp3" % int(time.time() * 1000)   # 非敏感命名 → 可走 COS 公开直链
+        _out_path(fn).write_bytes(cv_audio)
+        return {"type": "audio", "file": fn, "url": public_url(fn, "audio/mpeg"), "voice": voice_key,
+                "speed": speed, "pitch": pitch, "volume": volume, "text": text, "prompt": text}
+
     if str(voice).startswith("S_"):
         speech_rate = int(round((speed - 1.0) * 100))
         preview = generate_doubao_preview(voice, text, speech_rate=speech_rate, loudness_rate=volume, pitch_rate=pitch)
