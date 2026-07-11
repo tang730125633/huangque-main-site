@@ -974,15 +974,24 @@ class H(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
+        if p == "/api/gen/audio/buy-slot":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
+            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            try:
+                feature_flags.require_enabled("audio")
+                slot = audio_domain.purchase_audio_voice_slot(user["username"])
+                return self._send(200, {"ok": True, "slot": slot, "cost": slot["cost"], "points_left": slot["points_left"]})
+            except feature_flags.FeatureDisabled as e: return self._send(503, {"detail": str(e)})
+            except audio_domain.VoiceSlotError as e: return self._send(e.status, {"detail": str(e)})
+            except points_domain.AuthPointsError as e:
+                return self._send(402 if e.status == 402 else 502, {"detail": e.detail, "need": audio_domain.VOICE_SLOT_COST})
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/audio/redeem-slot":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
-            body = self._json_body()
-            try:
-                slot = audio_domain.redeem_audio_voice_slot(user["username"], body.get("code"))
-                return self._send(200, {"ok": True, "slot": slot})
-            except Exception as e:
-                return self._send(400, {"detail": str(e)[:160]})
+            return self._send(410, {"detail": "音色槽位已改为点数购买，请使用购买入口"})
         if p == "/api/gen/audio/voice-name":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
@@ -1291,7 +1300,11 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/gen/audio/slots":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
-            return self._send(200, {"items": audio_domain.list_user_audio_voice_slots(user["username"])})
+            items = audio_domain.list_user_audio_voice_slots(user["username"])
+            return self._send(200, {"items": items,
+                "slot_count": sum(1 for item in items if item.get("status") in audio_domain.VALID_VOICE_SLOT_STATUSES),
+                "slot_max": audio_domain.VOICE_SLOT_MAX_PER_USER, "slot_cost": audio_domain.VOICE_SLOT_COST,
+                "points": user.get("points")})
         if p == "/api/gen/audio/clone-status":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})

@@ -8,6 +8,86 @@ from .core import (
 )
 from .points import _auth_points_request
 from . import cosyvoice, cos
+from . import points as points_domain
+
+VOICE_SLOT_COST = 50
+VOICE_SLOT_MAX_PER_USER = 5
+VALID_VOICE_SLOT_STATUSES = ("active", "training", "ready", "failed")
+_voice_slot_purchase_lock = threading.Lock()
+
+
+class VoiceSlotError(Exception):
+    status = 500
+
+
+class VoiceSlotLimitError(VoiceSlotError):
+    status = 409
+
+
+class VoiceSlotPurchaseError(VoiceSlotError):
+    pass
+
+
+def _valid_voice_slot_count(conn, username):
+    placeholders = ",".join("?" for _ in VALID_VOICE_SLOT_STATUSES)
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM audio_voice_slots "
+        "WHERE username=? AND status IN (%s)" % placeholders,
+        (username,) + VALID_VOICE_SLOT_STATUSES,
+    ).fetchone()
+    return int(row["n"] if row else 0)
+
+
+def count_user_audio_voice_slots(username):
+    username = (username or "").strip()
+    if not username:
+        return 0
+    with closing(adb()) as conn:
+        return _valid_voice_slot_count(conn, username)
+
+
+def purchase_audio_voice_slot(username):
+    username = (username or "").strip()
+    if not username:
+        raise ValueError("missing username")
+
+    with _voice_slot_purchase_lock:
+        if count_user_audio_voice_slots(username) >= VOICE_SLOT_MAX_PER_USER:
+            raise VoiceSlotLimitError("最多 %d 个音色槽位" % VOICE_SLOT_MAX_PER_USER)
+
+        user_id = get_user_id(username)
+        points_left = points_domain.deduct_points(username, VOICE_SLOT_COST, "voice_slot")
+        slot_id = "slot_" + uuid.uuid4().hex
+        now = int(time.time())
+        try:
+            with closing(adb()) as conn:
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    # Defensive recheck for an unexpected second writer process.
+                    if _valid_voice_slot_count(conn, username) >= VOICE_SLOT_MAX_PER_USER:
+                        raise VoiceSlotLimitError("最多 %d 个音色槽位" % VOICE_SLOT_MAX_PER_USER)
+                    conn.execute("""INSERT INTO audio_voice_slots
+                        (username, user_id, slot_id, status, created_at, updated_at)
+                        VALUES(?,?,?,?,?,?)""",
+                        (username, user_id, slot_id, "active", now, now))
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+        except Exception as exc:
+            points_domain.safe_refund_points(
+                username, VOICE_SLOT_COST, "voice_slot:insert_failed")
+            if isinstance(exc, VoiceSlotLimitError):
+                raise
+            raise VoiceSlotPurchaseError(
+                "购买音色槽位失败，%d 点已退回" % VOICE_SLOT_COST) from exc
+
+        return {
+            "slot_id": slot_id,
+            "status": "active",
+            "cost": VOICE_SLOT_COST,
+            "points_left": points_left,
+        }
 
 def get_user_id(username):
     try:

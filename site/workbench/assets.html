@@ -1111,47 +1111,84 @@
       readonly:!voice.slot_id
     });
   }
-  function buySlotCard(){
-    return voiceAssetCard('\u8d2d\u4e70\u97f3\u8272\u69fd\u4f4d','\u8d2d\u4e70\u540e\u81ea\u52a8\u5206\u914d\u4e00\u4e2a\u4e13\u5c5e\u97f3\u8272\u69fd\u4f4d','\u8d2d\u4e70',true,null,function(){
-      openSlotCodeModal();
+  function buySlotCard(meta){
+    var count=Math.max(0,Number(meta.count)||0), max=Math.max(1,Number(meta.max)||5), cost=Math.max(1,Number(meta.cost)||50);
+    var full=count>=max;
+    return voiceAssetCard(full?'音色槽位已满':'购买音色槽位',full?('当前 '+count+'/'+max+'，已达到单账号上限'):('消耗 '+cost+' 点，购买后立即获得个人音色槽位'),full?'已达上限':(cost+' 点'),true,null,function(){
+      openSlotPurchaseModal(meta);
     });
   }
-  function openSlotCodeModal(){
-    var old=document.getElementById('slotCodeModal'); if(old) old.remove();
-    var wrap=document.createElement('div'); wrap.id='slotCodeModal';
+  function openSlotPurchaseModal(meta){
+    var old=document.getElementById('slotPurchaseModal'); if(old) old.remove();
+    var count=Math.max(0,Number(meta.count)||0), max=Math.max(1,Number(meta.max)||5), cost=Math.max(1,Number(meta.cost)||50);
+    var parsedPoints=Number(meta.points), points=meta.points==null||!isFinite(parsedPoints)?null:parsedPoints;
+    var full=count>=max, previousFocus=document.activeElement, submitting=false;
+    var wrap=document.createElement('div'); wrap.id='slotPurchaseModal';
     wrap.style.cssText='position:fixed; inset:0; z-index:10000; display:flex; align-items:center; justify-content:center; padding:22px; background:rgba(3,7,15,.72); backdrop-filter:blur(10px);';
     var modal=document.createElement('div');
+    modal.setAttribute('role','dialog'); modal.setAttribute('aria-modal','true'); modal.setAttribute('aria-labelledby','slotPurchaseTitle');
     modal.style.cssText='width:min(420px,100%); border:1px solid rgba(148,164,187,.16); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.98), rgba(8,13,24,.98)); box-shadow:0 28px 80px rgba(0,0,0,.48); overflow:hidden;';
     modal.innerHTML='<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 20px;border-bottom:1px solid rgba(148,164,187,.12);">'
-      +'<div><div style="font-size:17px;font-weight:700;color:#eaf1fa;">\u5151\u6362\u97f3\u8272\u69fd\u4f4d</div><div style="margin-top:5px;font-size:12.5px;color:#94a4bb;">\u8f93\u5165\u5151\u6362\u7801\u540e\u5206\u914d\u4e13\u5c5e\u97f3\u8272\u69fd\u4f4d</div></div>'
-      +'<button type="button" data-close-slot style="width:34px;height:34px;border:none;border-radius:9px;background:rgba(148,164,187,.08);color:#94a4bb;cursor:pointer;font-size:20px;line-height:1;">×</button></div>'
+      +'<div><div id="slotPurchaseTitle" style="font-size:17px;font-weight:700;color:#eaf1fa;">购买音色槽位</div><div style="margin-top:5px;font-size:12.5px;color:#94a4bb;">购买后立即获得一个个人音色槽位</div></div>'
+      +'<button type="button" data-close-slot aria-label="关闭" title="关闭" style="width:34px;height:34px;border:none;border-radius:9px;background:rgba(148,164,187,.08);color:#94a4bb;cursor:pointer;font-size:20px;line-height:1;">×</button></div>'
       +'<div style="padding:20px;display:flex;flex-direction:column;gap:14px;">'
-      +'<label style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:12.5px;font-weight:600;color:#eaf1fa;">\u5151\u6362\u7801</span><input id="slotCodeInput" maxlength="64" placeholder="\u8bf7\u8f93\u5165\u5151\u6362\u7801" style="height:42px;border:1px solid rgba(148,164,187,.16);border-radius:11px;background:rgba(7,11,19,.5);color:#eaf1fa;outline:none;padding:0 12px;font-family:inherit;font-size:13px;"></label>'
-      +'<div id="slotCodeNote" style="font-size:12px;color:#5c6b82;line-height:1.6;">\u5151\u6362\u6210\u529f\u540e\uff0c\u7cfb\u7edf\u4f1a\u81ea\u52a8\u5206\u914d\u4e00\u4e2a\u672a\u4f7f\u7528\u7684\u4e2a\u4eba\u97f3\u8272\u69fd\u4f4d\u3002</div>'
-      +'</div>'
-      +'<div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid rgba(148,164,187,.12);"><button type="button" data-close-slot style="height:38px;padding:0 15px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-family:inherit;">\u53d6\u6d88</button><button type="button" id="slotCodeSubmit" style="height:38px;padding:0 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;font-weight:700;cursor:pointer;font-family:inherit;">\u786e\u8ba4\u5151\u6362</button></div>';
+      +'<div style="display:grid;grid-template-columns:1fr auto;gap:10px 16px;align-items:center;font-size:13px;line-height:1.5;">'
+      +'<span style="color:#94a4bb;">本次消耗</span><strong id="slotPurchaseCost" style="color:#e7b24c;font-variant-numeric:tabular-nums;"></strong>'
+      +'<span style="color:#94a4bb;">当前余额</span><strong id="slotPurchasePoints" style="color:#eaf1fa;font-variant-numeric:tabular-nums;"></strong>'
+      +'<span style="color:#94a4bb;">已有槽位</span><strong id="slotPurchaseCount" style="color:#eaf1fa;font-variant-numeric:tabular-nums;"></strong></div>'
+      +'<div id="slotPurchaseNote" style="font-size:12px;color:#5c6b82;line-height:1.6;"></div></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid rgba(148,164,187,.12);"><button type="button" data-close-slot style="height:38px;padding:0 15px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-family:inherit;">取消</button><button type="button" id="slotPurchaseSubmit" style="height:38px;padding:0 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;font-weight:700;cursor:pointer;font-family:inherit;"></button></div>';
     wrap.appendChild(modal); document.body.appendChild(wrap);
-    function close(){ wrap.remove(); }
-    wrap.querySelectorAll('[data-close-slot]').forEach(function(b){ b.onclick=close; });
+    var note=wrap.querySelector('#slotPurchaseNote'), submit=wrap.querySelector('#slotPurchaseSubmit');
+    wrap.querySelector('#slotPurchaseCost').textContent=cost+' 点';
+    wrap.querySelector('#slotPurchasePoints').textContent=points==null?'读取中...':(points+' 点');
+    wrap.querySelector('#slotPurchaseCount').textContent=count+'/'+max;
+    function setNote(message,color,recharge){
+      note.style.color=color||'#5c6b82'; note.textContent=message||'';
+      if(recharge){
+        note.appendChild(document.createTextNode(' · '));
+        var link=document.createElement('a'); link.href='recharge.html'; link.textContent='去充值'; link.style.color='#e7b24c'; note.appendChild(link);
+      }
+    }
+    function setBusy(busy){
+      submitting=busy; submit.disabled=busy||full; submit.style.opacity=submit.disabled?'.58':'1';
+      submit.textContent=full?'已达上限':(busy?'购买中...':('确认购买（'+cost+' 点）'));
+    }
+    function close(force){
+      if(submitting&&force!==true) return;
+      document.removeEventListener('keydown',onKeydown); wrap.remove();
+      if(previousFocus&&previousFocus.focus) previousFocus.focus();
+    }
+    function onKeydown(e){ if(e.key==='Escape') close(); }
+    document.addEventListener('keydown',onKeydown);
+    wrap.querySelectorAll('[data-close-slot]').forEach(function(b){ b.onclick=function(){close();}; });
     wrap.addEventListener('click',function(e){ if(e.target===wrap) close(); });
-    var input=wrap.querySelector('#slotCodeInput'), note=wrap.querySelector('#slotCodeNote');
-    setTimeout(function(){ input.focus(); },0);
-    var submit=wrap.querySelector('#slotCodeSubmit');
+    setBusy(false);
+    if(full) setNote('最多 '+max+' 个音色槽位，当前账号已达上限。','#f4708a');
+    else setNote('购买成功后可立即上传样音进行 CosyVoice 复刻。');
+    fetch('/api/auth/me',{credentials:'same-origin',cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).then(function(d){
+      if(!d||!d.user||d.user.points==null) return;
+      points=Number(d.user.points); wrap.querySelector('#slotPurchasePoints').textContent=points+' 点';
+    }).catch(function(){ if(points==null) wrap.querySelector('#slotPurchasePoints').textContent='暂时无法读取'; });
     submit.onclick=function(){
-      var code=input.value.trim();
-      if(!code){ note.style.color='#f4708a'; note.textContent='\u8bf7\u5148\u8f93\u5165\u5151\u6362\u7801'; return; }
-      submit.disabled=true; submit.style.opacity='.72'; note.style.color='#e7b24c'; note.textContent='\u6b63\u5728\u5151\u6362...';
-      fetch('/api/gen/audio/redeem-slot',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({code:code})})
+      if(submitting||full) return;
+      setBusy(true); setNote('正在购买音色槽位...','#e7b24c');
+      fetch('/api/gen/audio/buy-slot',{method:'POST',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:'{}'})
         .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
         .then(function(res){
-          if(res.status===401){ HQ.login(); return; }
-          if(!res.data.ok){ throw new Error(res.data.detail||'\u5151\u6362\u5931\u8d25'); }
-          note.style.color='#2bd576'; note.textContent='\u5151\u6362\u6210\u529f\uff0c\u5df2\u5206\u914d\u4e2a\u4eba\u97f3\u8272\u69fd\u4f4d';
-          setTimeout(function(){ close(); renderAudioTab('personal'); },700);
+          if(res.status===401){ setBusy(false); HQ.login(); return; }
+          if(res.status===402){ setBusy(false); setNote('点数不足','#f4708a',true); return; }
+          if(!res.data.ok){ throw new Error(res.data.detail||'购买失败'); }
+          var left=res.data.points_left!=null?res.data.points_left:(res.data.slot&&res.data.slot.points_left);
+          if(left!=null) wrap.querySelector('#slotPurchasePoints').textContent=left+' 点';
+          setNote('购买成功，已获得个人音色槽位。','#2bd576');
+          if(window.HQ&&HQ.refreshPoints) HQ.refreshPoints();
+          setTimeout(function(){ close(true); renderAudioTab('personal'); },600);
         }).catch(function(e){
-          submit.disabled=false; submit.style.opacity='1'; note.style.color='#f4708a'; note.textContent=e.message||'\u5151\u6362\u5931\u8d25';
+          setBusy(false); setNote(e.message||'购买失败','#f4708a');
         });
     };
+    setTimeout(function(){ (full?wrap.querySelector('[data-close-slot]'):submit).focus(); },0);
   }
   function loadPersonalVoiceSlots(){
     var seq=++personalVoiceLoadSeq;
@@ -1168,7 +1205,8 @@
       loading.remove();
       var slots=res.data.items||[];
       var slotIds={};
-      grid.appendChild(buySlotCard());
+      var validCount=res.data.slot_count==null?slots.filter(function(slot){return ['active','training','ready','failed'].indexOf(slot.status)>=0;}).length:Number(res.data.slot_count);
+      grid.appendChild(buySlotCard({count:validCount,max:res.data.slot_max,cost:res.data.slot_cost,points:res.data.points}));
       slots.forEach(function(slot){
         if(slot.slot_id) slotIds[slot.slot_id]=true;
         grid.appendChild(slotAssetCard(slot));
@@ -1350,7 +1388,7 @@
     }
     vipBtn.onclick=function(){
       if(cloneSubmitting) return;
-      if(!slot||!slot.slot_id){ note.style.color='#f4708a'; note.textContent='\u8bf7\u5148\u5151\u6362\u97f3\u8272\u69fd\u4f4d'; return; }
+      if(!slot||!slot.slot_id){ note.style.color='#f4708a'; note.textContent='请先购买音色槽位'; return; }
       var f=picker.files&&picker.files[0];
       if(!f){ note.style.color='#f4708a'; note.textContent='\u8bf7\u5148\u9009\u62e9\u6837\u97f3\u6587\u4ef6'; return; }
       setCloneBusy(true);
