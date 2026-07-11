@@ -674,7 +674,7 @@
     var detail=e&&e.detail;
     if(detail&&detail.kind==='video') resumeTrackedVideoTask(detail.id);
   });
-  function fresh(u){u=String(u||'');return /^(blob:|data:)/.test(u)||/[?&]q-sign-/.test(u)?u:u+(u.indexOf('?')>=0?'&':'?')+'_='+Date.now();}
+  function fresh(u){u=String(u||'');return /^(blob:|data:)/.test(u)||/[?&]q-sign-/.test(u)||/voice_preview_/.test(u)?u:u+(u.indexOf('?')>=0?'&':'?')+'_='+Date.now();}  // voice_preview_ 内容哈希命名、不可变，加 ?_= 反而每次击穿浏览器缓存致试听重下载
   function isProtectedLocal(u){return String(u||'').indexOf('/api/gen/file/')===0;}
   function assetUrl(u){
     if(!isProtectedLocal(u)) return Promise.resolve(fresh(u));

@@ -222,7 +222,7 @@
   var searchTerm='', multi=false, selected={}, visibleItems=[], MARKS={}, onlyFav=false, activeTag='';
   function freshUrl(url){
     url=String(url||'');
-    return /[?&]q-sign-/.test(url)?url:url+(url.indexOf('?')>=0?'&':'?')+'_='+(Date.now());
+    return /[?&]q-sign-/.test(url)||/voice_preview_/.test(url)?url:url+(url.indexOf('?')>=0?'&':'?')+'_='+(Date.now());  // voice_preview_ 内容哈希不可变，别击穿浏览器缓存
   }
   function playableUrl(url,options){
     options=options||{};
