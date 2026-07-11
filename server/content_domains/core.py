@@ -359,6 +359,7 @@ def init_audio_db():
             UNIQUE(username, asset_kind, asset_key)
         )""")
         _ensure_column(c, "audio_voices", "slot_id", "TEXT")
+        _ensure_column(c, "audio_voices", "last_used_at", "INTEGER DEFAULT 0")  # CosyVoice 空闲回收:合成/复刻时刷新
         _ensure_column(c, "audio_assets", "deleted", "INTEGER DEFAULT 0")
         _ensure_column(c, "audio_voice_slots", "reclone_count", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(c, "audio_voice_slots", "clone_started_at", "INTEGER")
@@ -861,6 +862,12 @@ def reaper():
                 # CAS 抢 error 终态；抢到(说明 worker 尚未写 done)才退点，退点本身再幂等一层
                 if _set_terminal(r["id"], "error", error="生成超时自动结束，已退点"):
                     _refund_once(r["id"], r["username"], r["cost"])
+        except Exception:
+            pass
+        try:
+            # CosyVoice 空闲音色回收：函数内每日一次守卫，reaper 高频调用不重复扫库。晚 import 避免层耦合。
+            from content_domains import audio as _audio_domain
+            _audio_domain.maybe_release_idle_voices()
         except Exception:
             pass
         time.sleep(60)

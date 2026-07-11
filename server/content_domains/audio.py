@@ -503,6 +503,72 @@ def prepare_clone_audio(audio_b64, audio_format):
         raise ValueError("\u6837\u97f3\u6587\u4ef6\u8fc7\u5927\uff0c\u8bf7\u4e0a\u4f20\u66f4\u77ed\u6216\u66f4\u4f4e\u7801\u7387\u7684\u97f3\u9891")
     return base64.b64encode(data).decode(), "mp3"
 
+COSY_IDLE_RELEASE_DAYS = int(os.environ.get("COSY_IDLE_RELEASE_DAYS", "30") or 30)
+_last_idle_sweep = [0]   # 进程内每日一次守卫的时间戳
+
+def _touch_voice_used(username, voice_key):
+    """刷新个人音色的 last_used_at（配音/复刻都算使用）。公共预置不落个人行，天然不受影响。"""
+    if not voice_key:
+        return
+    try:
+        with closing(adb()) as c:
+            c.execute("UPDATE audio_voices SET last_used_at=? WHERE username=? AND scope='personal' AND voice_key=?",
+                      (int(time.time()), username, voice_key))
+            c.commit()
+    except Exception:
+        pass
+
+def release_idle_cosy_voices(days=None):
+    """一个月(默认)内既没配音也没复刻的 CosyVoice 个人音色 → 从阿里删除释放配额 + 清本地行 + 腾空槽位。
+    只碰 CosyVoice 复刻音色(provider_voice 以复刻模型名打头)；公共预置、豆包音色一律不动。
+    幂等、best-effort：阿里删除失败(可能已被自动清理)不阻断本地清理。返回释放数量。"""
+    if not cosyvoice.enabled():
+        return 0
+    days = COSY_IDLE_RELEASE_DAYS if days is None else int(days)
+    cutoff = int(time.time()) - days * 86400
+    with closing(adb()) as c:
+        # 有效"最后使用"取 last_used_at，缺失(老数据/迁移)回落 updated_at，避免因无时间戳误删
+        rows = c.execute("""SELECT id, username, voice_key, provider_voice, slot_id
+            FROM audio_voices
+            WHERE scope='personal' AND provider_voice LIKE ?
+              AND COALESCE(NULLIF(last_used_at,0), updated_at, created_at, 0) < ?""",
+            (cosyvoice.CLONE_MODEL + "%", cutoff)).fetchall()
+    released = 0
+    for r in rows:
+        try:
+            cosyvoice.delete_voice(r["provider_voice"])
+        except Exception as e:
+            print("[cosy-idle] 阿里删除音色失败(继续清本地) voice=%s err=%s" %
+                  (r["provider_voice"], str(e)[:120]), flush=True)
+        try:
+            with closing(adb()) as c:
+                c.execute("DELETE FROM audio_voices WHERE id=?", (r["id"],))
+                if r["slot_id"]:   # 腾空该用户的槽位，可再复刻
+                    c.execute("""UPDATE audio_voice_slots SET status='active', voice_id=NULL,
+                        clone_started_at=NULL, clone_upload_at=NULL, updated_at=?
+                        WHERE username=? AND slot_id=?""", (int(time.time()), r["username"], r["slot_id"]))
+                c.commit()
+            released += 1
+            print("[cosy-idle] 释放空闲音色 user=%s voice_key=%s" % (r["username"], r["voice_key"]), flush=True)
+        except Exception as e:
+            print("[cosy-idle] 清本地失败 id=%s err=%s" % (r["id"], str(e)[:120]), flush=True)
+    return released
+
+def maybe_release_idle_voices():
+    """每日一次的守卫，供 reaper 循环高频调用而不重复扫库。"""
+    if not cosyvoice.enabled():
+        return
+    now = int(time.time())
+    if now - _last_idle_sweep[0] < 86400:
+        return
+    _last_idle_sweep[0] = now
+    try:
+        n = release_idle_cosy_voices()
+        if n:
+            print("[cosy-idle] 本轮释放 %d 个空闲音色" % n, flush=True)
+    except Exception as e:
+        print("[cosy-idle] 扫描失败: %s" % str(e)[:160], flush=True)
+
 def _clone_via_cosyvoice(username, slot_id, name, audio_b64):
     """CosyVoice 复刻：60s 参考音频(已由 prepare_clone_audio 标准化) → COS 预签名 URL
     → create_voice 拿 voice_id → 落库。voice_id 直接作为 provider_voice，合成时按它选复刻模型。
@@ -537,12 +603,12 @@ def _clone_via_cosyvoice(username, slot_id, name, audio_b64):
     voice_key = "vip_" + re.sub(r"[^a-zA-Z0-9_\-]", "_", slot_id)
     with closing(adb()) as c:
         c.execute("""INSERT OR IGNORE INTO audio_voices
-            (username, scope, voice_key, display_name, provider_voice, slot_id, created_at, updated_at)
-            VALUES(?,?,?,?,?,?,?,?)""",
-            (username, "personal", voice_key, name, voice_id, slot_id, now, now))
+            (username, scope, voice_key, display_name, provider_voice, slot_id, created_at, updated_at, last_used_at)
+            VALUES(?,?,?,?,?,?,?,?,?)""",
+            (username, "personal", voice_key, name, voice_id, slot_id, now, now, now))
         c.execute("""UPDATE audio_voices SET display_name=?, provider_voice=?, preview_file=NULL,
-            preview_url=NULL, slot_id=?, updated_at=? WHERE username=? AND scope='personal' AND voice_key=?""",
-            (name, voice_id, slot_id, now, username, voice_key))
+            preview_url=NULL, slot_id=?, updated_at=?, last_used_at=? WHERE username=? AND scope='personal' AND voice_key=?""",
+            (name, voice_id, slot_id, now, now, username, voice_key))
         r = c.execute("SELECT id FROM audio_voices WHERE username=? AND scope='personal' AND voice_key=?",
                       (username, voice_key)).fetchone()
         vid_row = r["id"] if r else None
@@ -900,6 +966,7 @@ def gen_audio(payload):
                                    volume=max(0, min(100, 50 + volume // 2)))
         fn = "audio/aud_%d.mp3" % int(time.time() * 1000)   # 非敏感命名 → 可走 COS 公开直链
         _out_path(fn).write_bytes(cv_audio)
+        _touch_voice_used(username, voice_key)   # 配音算一次使用 → 刷新空闲回收计时
         return {"type": "audio", "file": fn, "url": public_url(fn, "audio/mpeg"), "voice": voice_key,
                 "speed": speed, "pitch": pitch, "volume": volume, "text": text, "prompt": text}
 
