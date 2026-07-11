@@ -521,7 +521,16 @@ def _clone_via_cosyvoice(username, slot_id, name, audio_b64):
             tmp.unlink()
         except Exception:
             pass
-    voice_id = cosyvoice.create_voice(ref_url)
+    # 该 slot 已有 CosyVoice 音色 → update_voice 原地重训(保 id、不泄漏坑位)；首次 → create_voice。
+    with closing(adb()) as c:
+        prev = c.execute("""SELECT provider_voice FROM audio_voices WHERE username=? AND slot_id=?
+            ORDER BY id DESC LIMIT 1""", (username, slot_id)).fetchone()
+    existing = (prev["provider_voice"] if prev else "") or ""
+    if existing.startswith(cosyvoice.CLONE_MODEL):
+        cosyvoice.update_voice(existing, ref_url)
+        voice_id = existing
+    else:
+        voice_id = cosyvoice.create_voice(ref_url)
     status, _ = cosyvoice.voice_status(voice_id)
     slot_status = "ready" if status == "OK" else "training"
     now = int(time.time())

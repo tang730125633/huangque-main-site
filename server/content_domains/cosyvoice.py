@@ -80,6 +80,13 @@ def create_voice(audio_url, prefix=None):
     return vid
 
 
+def update_voice(voice_id, audio_url):
+    """用新参考音频原地重训同一个 voice_id（对齐豆包「同 slot 重复复刻」语义）。
+    实测存在此动作且能覆盖成功。重克隆走这里而非 create_voice，避免泄漏音色坑位、保持 id 不变。"""
+    d = _http("update_voice", {"voice_id": voice_id, "url": audio_url})
+    return d
+
+
 def voice_status(voice_id):
     """返回 (status, 原始条目)。status 为 OK / 训练中 / 不存在('')。"""
     d = _http("list_voice")

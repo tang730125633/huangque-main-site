@@ -79,6 +79,17 @@ class HttpShapeTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 cosyvoice.create_voice("https://cos/ref.mp3")
 
+    def test_update_voice_targets_existing_id(self):
+        """重克隆用 update_voice 保住同一 voice_id（实测该动作存在且能覆盖）。"""
+        cap = []
+        with patch.object(cosyvoice, "_http", self._fake_http(cap, {"output": {}})):
+            cosyvoice.update_voice("cosyvoice-v3.5-plus-bailian-abc", "https://cos/new.mp3")
+        action, extra = cap[0]
+        self.assertEqual(action, "update_voice")
+        self.assertEqual(extra["voice_id"], "cosyvoice-v3.5-plus-bailian-abc")
+        self.assertEqual(extra["url"], "https://cos/new.mp3")
+        self.assertNotIn("prefix", extra)   # 覆盖，不是新建
+
     def test_voice_status_finds_entry(self):
         resp = {"output": {"voice_list": [
             {"voice_id": "v1", "status": "OK"}, {"voice_id": "v2", "status": "pending"}]}}
