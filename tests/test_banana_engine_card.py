@@ -91,11 +91,12 @@ class SubmitTests(unittest.TestCase):
 
 
 class DeepLinkCompatTests(unittest.TestCase):
-    """script.html 至今硬编码 &engine=nb2；灵感页传 inspirations.json 里的 model。
-    合卡之后这些值不再对应任何 data-engine，必须映射，否则深链静默失效。"""
+    """script.html 的「转视频」按钮将画面描述传入 video.html（通过 ?prompt=）。
+    banana.html 仍映射 legacy engine 值（nb2/pro）到合卡后的 selectEngineByKey。"""
 
-    def test_script_page_still_emits_legacy_engine_value(self):
-        self.assertIn("&engine=nb2", SCRIPT)
+    def test_script_page_handoff_points_to_video(self):
+        self.assertIn("video.html", SCRIPT)
+        self.assertIn("data-to-video", SCRIPT)
 
     def test_banana_maps_legacy_engine_values(self):
         fn = BANANA[BANANA.index("function selectEngineByKey"):]
