@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import http.client
 import os
+import random
 import threading
 import time
 import urllib.error
@@ -327,21 +328,43 @@ def _seedream_fetch(url, tries=3):
                 time.sleep(1.5 * (i + 1))
     raise ValueError("Seedream 出图下载失败: %s" % str(last)[:120])
 
-def _seedream_post(fn, tries=2, base_delay=2.0):
+SEEDREAM_429_TRIES = int(os.environ.get("SEEDREAM_429_TRIES", "8") or 8)
+SEEDREAM_429_MAX_WAIT = int(os.environ.get("SEEDREAM_429_MAX_WAIT", "700") or 700)  # 总退避预算，压在 reaper image 900s 内
+
+def _seedream_post(fn, tries=None, max_wait=None):
     """生成请求的重试闸：**只重试 429**。
 
     通用 _retry 会重试 5xx/超时/URLError，但出图 POST 是非幂等的：那几种情况下
     Ark 很可能已经出图并计费，重发 = 再出一张 = 重复计费。只有 429(限流) 能确定
-    请求被拒、未出图，重试才安全。其余一律直接抛出，走失败退点由用户决定重试。
-    下载(GET)是幂等的，重试见 _seedream_fetch。"""
+    请求被拒、未出图、未计费，重试才安全。其余一律直接抛出，走失败退点。
+    下载(GET)是幂等的，重试见 _seedream_fetch。
+
+    Ark 账号并发上限实测约 4~5：作图 worker 池更大时，10 路突发有 6 路会 429。
+    退避到足够长以让前面的任务腾出并发槽，总退避压在 SEEDREAM_429_MAX_WAIT(<reaper 900s)。
+    指数退避 3→6→12…上限 60s，并加 ±30% 抖动，避免 N 个 worker 同刻重试形成新洪峰。"""
+    tries = SEEDREAM_429_TRIES if tries is None else tries
+    max_wait = SEEDREAM_429_MAX_WAIT if max_wait is None else max_wait
+    waited = 0.0
     for i in range(tries):
         try:
             return fn()
         except urllib.error.HTTPError as e:
-            if e.code != 429 or i == tries - 1:
+            if e.code != 429:
                 raise
-            print("[seedream] 429 限流，退避重试(%d)" % (i + 1), flush=True)
-            time.sleep(base_delay * (i + 1))
+            body = (e.read() or b"").decode("utf-8", "replace")
+            # 两种 429 要分开：SetLimitExceeded=账号用量上限/安全体验模式，模型已被**暂停**——
+            # 重试再久也没用，只会白占 worker(实测 246s×10 全失败)，立刻失败退点并给人话。
+            if "SetLimitExceeded" in body or "Safe Experience" in body or "has been paused" in body:
+                raise ValueError("Seedream 已达账号用量上限、模型暂停，请在火山方舟控制台调整/关闭安全体验模式或开通正式付费")
+            # 其余 429 = 瞬时并发/速率限制，请求被拒未出图未计费 → 安全重试。
+            if i == tries - 1:
+                raise ValueError("Seedream 并发繁忙，请稍后重试")
+            delay = min(60.0, 3.0 * (2 ** i)) * (0.7 + random.random() * 0.6)   # 指数退避 + 抖动
+            if waited + delay > max_wait:      # 退避预算耗尽 → 别再等，直接抛(走失败退点)
+                raise ValueError("Seedream 并发繁忙，请稍后重试")
+            waited += delay
+            print("[seedream] 429 并发限流，退避重试(%d/%d) 等%.1fs" % (i + 1, tries, delay), flush=True)
+            time.sleep(delay)
 
 def _seedream_one(model, prompt, size, img):
     """出一张图，返回 PNG 字节。

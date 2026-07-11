@@ -422,8 +422,9 @@ class PostRetryTests(unittest.TestCase):
                 return None, len(calls), err
 
     @staticmethod
-    def _http(code):
-        return urllib.error.HTTPError("u", code, "err", {}, None)
+    def _http(code, body=b'{"error":{"code":"TooManyRequests","message":"rate"}}'):
+        import io
+        return urllib.error.HTTPError("u", code, "err", {}, io.BytesIO(body))
 
     def test_5xx_is_not_retried_no_double_charge(self):
         """500 时上游可能已出图并计费 → 绝不重发。"""
@@ -447,13 +448,39 @@ class PostRetryTests(unittest.TestCase):
         ok = {"data": [{"url": "https://example.com/a.png"}]}
         out, n, err = self._run([self._http(429), ok])
         self.assertIsNone(err)
-        self.assertEqual(2, n, "429 应退避重试一次")
+        self.assertEqual(2, n, "429 应退避重试")
+        self.assertEqual(b"PNGBYTES", out)
+
+    def test_429_burst_absorbed_by_more_tries(self):
+        """Ark 并发上限约 4~5，10 路突发时后几路连续 429；加大 tries 应能等到槽位吸收掉。"""
+        ok = {"data": [{"url": "https://example.com/a.png"}]}
+        effects = [self._http(429)] * 6 + [ok]   # 连 6 次 429 后成功
+        with patch.object(image, "SEEDREAM_429_TRIES", 8):
+            out, n, err = self._run(effects)
+        self.assertIsNone(err)
+        self.assertEqual(7, n)               # 6 次退避后第 7 次成功
         self.assertEqual(b"PNGBYTES", out)
 
     def test_429_exhausted_raises_not_loops(self):
-        _out, n, err = self._run([self._http(429), self._http(429)])
-        self.assertEqual(2, n)
+        with patch.object(image, "SEEDREAM_429_TRIES", 3):
+            _out, n, err = self._run([self._http(429), self._http(429), self._http(429)])
+        self.assertEqual(3, n)               # 到 tries 上限即抛，不无限循环
         self.assertIsNotNone(err)
+
+    def test_429_only_retried_never_other_codes(self):
+        """确认非幂等安全：只有 429 重试，5xx/超时绝不重发(否则重复计费)。"""
+        for eff in (self._http(500), self._http(503), TimeoutError("t")):
+            _out, n, err = self._run([eff])
+            self.assertEqual(1, n)
+            self.assertIsNotNone(err)
+
+    def test_set_limit_exceeded_fails_fast_no_retry(self):
+        """SetLimitExceeded=账号用量上限/安全体验模式，模型已暂停 → 重试无用，立刻失败(实测 246s×10 全败)。"""
+        paused = self._http(429, b'{"error":{"code":"SetLimitExceeded","message":"...paused...Safe Experience Mode..."}}')
+        _out, n, err = self._run([paused])
+        self.assertEqual(1, n, "已暂停的 429 不能重试，白占 worker")
+        self.assertIsInstance(err, ValueError)
+        self.assertIn("用量上限", str(err))
 
 
 if __name__ == "__main__":
