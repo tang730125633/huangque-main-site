@@ -378,6 +378,47 @@ def _ch_play_url(media):
     base = media.get("nonWatermarkUrl") or media.get("url") or media.get("fullUrl") or ""
     return (base + (media.get("urlToken") or "")) if base else None
 
+def _ch_cover_url(media):
+    """视频号封面直链 = coverUrl + coverUrlToken 拼接。封面本身不加密(普通 JPEG)，
+    但 coverUrl 缺 token 单用报 400（同 play_url 的 url/urlToken 两段式）；带 token 后可直连加载。
+    token 有时效（~1h），采集侧再转存 COS 保永久。"""
+    base = media.get("coverUrl") or media.get("fullCoverUrl") or ""
+    return (base + (media.get("coverUrlToken") or media.get("fullCoverUrlToken") or "")) if base else None
+
+_CH_DECRYPT_API = os.environ.get("CH_DECRYPT_API", "http://127.0.0.1:3001/api/decrypt")  # Isaac64 WASM 解密服务(同下载代理 dl_service)
+_CH_REFERER = "https://channels.weixin.qq.com/"
+
+def _ch_download_decrypt(play_url, decode_key, dest_path, deadline_ts, max_bytes=100_000_000):
+    """视频号：下载 encfilekey 加密流(带微信 Referer) → 调 :3001 Isaac64 解密 → 落盘可播 mp4。
+    play_url = url+urlToken；decode_key = media.decodeKey。成功返回 dest_path。"""
+    fd, enc = tempfile.mkstemp(suffix=".enc", prefix="hqch-"); os.close(fd)
+    try:
+        remain = deadline_ts - time.time()
+        if remain <= 0:
+            raise TimeoutError("下载预算已耗尽")
+        req = urllib.request.Request(play_url, headers={"User-Agent": UA, "Referer": _CH_REFERER})
+        got = 0
+        with _OPENER.open(req, timeout=min(30, remain)) as r, open(enc, "wb") as f:
+            while True:
+                if time.time() >= deadline_ts:
+                    raise TimeoutError("视频号下载超预算（已下 %.1fMB）" % (got / 1048576.0))
+                block = r.read(262144)
+                if not block:
+                    break
+                got += len(block)
+                if got > max_bytes:
+                    raise ValueError("视频号文件超上限 %.0fMB" % (max_bytes / 1048576.0))
+                f.write(block)
+        p = subprocess.run(["curl", "-sS", "-X", "POST", _CH_DECRYPT_API,
+                            "-F", "decode_key=" + str(decode_key), "-F", "video=@" + enc, "-o", dest_path],
+                           capture_output=True, timeout=180)
+        if p.returncode != 0 or not os.path.exists(dest_path) or not os.path.getsize(dest_path):
+            raise TikHubError("视频号解密失败：" + (p.stderr[-120:].decode("u8", "ignore") if p.stderr else "空输出"))
+        return dest_path
+    finally:
+        try: os.unlink(enc)
+        except OSError: pass
+
 def ch_detail(object_id):
     s = str(object_id)
     loc = {"share_url": s} if ("://" in s or "weixin" in s) else {"object_id": s}
@@ -400,7 +441,7 @@ def ch_detail(object_id):
                    "fans": None, "ip": None, "signature": None},
         "stats": {"like": d.get("likeCount"), "comment": d.get("commentCount"),
                   "share": d.get("forwardCount"), "collect": d.get("favCount")},
-        "cover": _url0(media.get("coverUrl") or media.get("fullCoverUrl")),
+        "cover": _ch_cover_url(media),
         "play_url": play,  # 视频号下载直链(有时效，详情 1h 内安全)；None 时前端不显示下载按钮
         "subtitle_url": None, "decode_key": media.get("decodeKey"),
         "duration": media.get("videoPlayLen") or media.get("duration"),
@@ -685,7 +726,19 @@ def transcript(det, video_path=None):
     被下了两次，第一次(转存)耗时 130s 且超时失败，第二次(ASR)只花 20.5s。
     """
     if det.get("platform") == "channels":
-        return None  # 视频号流加密(Isaac64)，whisper 解不了；play_url 有值也别走 ASR，否则下载加密流必报 expected string
+        # 视频号是 Isaac64 加密流，whisper 直接解不了；先下载→:3001 解密成可播 mp4→再 ASR。
+        pu, dk = det.get("play_url"), str(det.get("decode_key") or "")
+        if not pu or not dk:
+            return None  # 不完整 media（缺播放地址/解密密钥）→ 放弃 ASR，不报错
+        fd, dec = tempfile.mkstemp(suffix=".mp4", prefix="hqchdec-"); os.close(fd)
+        try:
+            _ch_download_decrypt(pu, dk, dec, time.time() + ASR_DL_DEADLINE)
+            return {"text": _whisper(dec), "source": "asr"}
+        except Exception as e:
+            raise TikHubError("视频号 ASR 失败：" + str(e)[:120])
+        finally:
+            try: os.unlink(dec)
+            except OSError: pass
     if det.get("subtitle_url"):  # 小红书视频笔记白送逐字稿
         try:
             return {"text": _srt_to_text(_http_get(det["subtitle_url"]).decode("u8", "ignore")), "source": "subtitle"}

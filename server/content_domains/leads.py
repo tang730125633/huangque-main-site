@@ -4,7 +4,7 @@ import sqlite3
 import time
 from contextlib import closing
 
-from .core import BASE, _collect_cos_play_url, re, tikhub
+from .core import BASE, _collect_cos_play_url, public_url_from_remote, re, tikhub
 
 LEADS_CRM_DB = str(BASE / "leads_crm.db")
 CRM_STATUSES = {"待跟进", "跟进中", "已加微", "已成交", "无效"}
@@ -116,18 +116,23 @@ def gen_collect(payload):
     au = det.get("author") or {}
     # 视频号(channels)加密流不转存 COS——转存会存成加密数据且丢 decode_key；保持原 wxapp.tc.qq.com 直链由前端下载代理解密。
     play_url = det.get("play_url") if platform == "channels" else _collect_cos_play_url(platform, det.get("id") or ident, det.get("play_url"))
+    cover = det.get("cover")
+    # 视频号封面是 wxapp 带时效 token 的 JPEG（普通图片、不加密），转存 COS 保永久避免 ~1h 后 token 失效导致封面裂图。
+    if platform == "channels" and cover:
+        cid = re.sub(r"[^A-Za-z0-9_.-]", "", str(det.get("id") or ident)) or "c"
+        cover = public_url_from_remote(cover, "collect/channels/cover_%s.jpg" % cid, "image/jpeg")
     out = {
         "type": "collect", "platform": platform, "source": det.get("url") or ident,
         "video": {"title": det.get("title"), "author": au.get("name"), "authorAvatar": None,
                   "profile_url": au.get("profile_url"),
-                  "cover": det.get("cover"), "play_url": play_url, "url": det.get("url"),
+                  "cover": cover, "play_url": play_url, "url": det.get("url"),
                   "duration": det.get("duration"), "publish_time": det.get("publish_time"),
                   "stats": det.get("stats"),
                   "decode_key": det.get("decode_key")},  # 视频号加密流解密密钥；前端下载代理 /api/gen/dl?dk= 需它解密
         "copy": {"title": det.get("title"), "desc": det.get("desc"), "tags": det.get("tags")},
         "images": det.get("images") or [],   # 图文笔记的全部图片
         "transcript": None, "comments": [], "comments_more": False,
-        "url": det.get("cover"), "prompt": det.get("title"),  # 给通用 history 用（封面+标题）
+        "url": cover, "prompt": det.get("title"),  # 给通用 history 用（封面+标题）
     }
     if "comments" in want:
         cm = tikhub.comments(platform, det.get("id") or ident, count=int(payload.get("comment_count") or 20))
