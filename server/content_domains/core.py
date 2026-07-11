@@ -1115,7 +1115,8 @@ class H(BaseHTTPRequestHandler):
                 active_jobs = _user_active_job_count(user["username"])
                 if active_jobs >= MAX_USER_ACTIVE_JOBS:
                     return self._send(429, {"detail": "您有 %d 个任务正在排队/生成，完成后再提交" % active_jobs,
-                        "active_jobs": active_jobs, "max_active_jobs": MAX_USER_ACTIVE_JOBS, "need": cost})
+                        "code": "active_job_cap", "active_jobs": active_jobs, "max_active_jobs": MAX_USER_ACTIVE_JOBS,
+                        "retry_after_ms": 4000, "need": cost})
                 try:
                     points_left = points_domain.deduct_points(user["username"], cost, "job:" + kind)  # 原子预扣
                 except points_domain.AuthPointsError as e:
@@ -1131,7 +1132,7 @@ class H(BaseHTTPRequestHandler):
                     _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
                     if kind in {"video", "tryon", "xiaole_video"}:
                         video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
-                    return self._send(429, {"detail": "任务队列已满，请稍后再试", "need": cost})
+                    return self._send(429, {"detail": "任务队列已满，请稍后再试", "code": "queue_full", "retry_after_ms": 4000, "need": cost})
             return self._send(200, {"job_id": jid, "cost": cost, "points_left": points_left})
         self._send(404, {"detail": "not found"})
 
