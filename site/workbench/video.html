@@ -143,6 +143,12 @@
   .history-list::-webkit-scrollbar-thumb{background:rgba(148,164,187,.24);border-radius:99px}
   .history-list::-webkit-scrollbar-track{background:rgba(7,11,19,.28);border-radius:99px}
   .history-item{width:100%;box-sizing:border-box;border:1px solid rgba(148,164,187,.12);border-radius:14px;background:rgba(7,11,19,.3);padding:14px;display:flex;flex-direction:column;gap:13px;color:#94a4bb}
+  .history-focus{animation:history-focus-pulse 2.6s ease-out 1;border-color:rgba(231,178,76,.62) !important;box-shadow:0 0 0 1px rgba(231,178,76,.16),0 18px 40px rgba(231,178,76,.16)}
+  @keyframes history-focus-pulse{
+    0%{box-shadow:0 0 0 0 rgba(231,178,76,.32),0 0 0 1px rgba(231,178,76,.22)}
+    55%{box-shadow:0 0 0 10px rgba(231,178,76,0),0 0 0 1px rgba(231,178,76,.22)}
+    100%{box-shadow:0 0 0 0 rgba(231,178,76,0),0 0 0 1px rgba(231,178,76,.16)}
+  }
   .history-head{display:flex;align-items:center;gap:9px}
   .history-thumb{width:40px;height:52px;border-radius:9px;border:1px solid rgba(148,164,187,.18);background:rgba(148,164,187,.08);object-fit:cover;overflow:hidden}
   .history-audio{width:40px;height:52px;border:1px solid rgba(148,164,187,.16);border-radius:9px;background:rgba(148,164,187,.08);color:#cbd5e1;display:flex;align-items:center;justify-content:center;cursor:pointer}
@@ -183,6 +189,7 @@
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;transition:.2s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:12px;padding:11px 16px;color:#eaf1fa;font-size:13px;z-index:80}
   .toast.show{opacity:1;transform:translateX(-50%)}
   @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid,.video-parameter-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source,.avatar-grid{grid-template-columns:1fr}.batch-avatar-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media (prefers-reduced-motion:reduce){.history-focus{animation:none}}
   .line-switch{margin:12px 0;padding:12px;background:rgba(255,255,255,.03);border:1px solid rgba(148,164,187,.14);border-radius:12px}
   .line-switch>.label{margin-bottom:8px}
   .line-tabs{display:flex;gap:8px}
@@ -657,6 +664,30 @@
   var $=function(id){return document.getElementById(id);};
   function esc(s){return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
   var resumedVideoTaskId='';
+  var focusVideoTaskId='';
+  function setPendingVideoFocus(id){
+    focusVideoTaskId=id==null?'':String(id).trim();
+  }
+  function videoJobSelector(id){
+    var value=String(id||'');
+    if(window.CSS&&CSS.escape) value=CSS.escape(value);
+    return '[data-job="'+value+'"]';
+  }
+  function focusVideoJobCard(explicitId){
+    if(explicitId!=null&&explicitId!=='') setPendingVideoFocus(explicitId);
+    if(!focusVideoTaskId) return false;
+    var box=$('outputHistory');
+    if(!box) return false;
+    var el=box.querySelector(videoJobSelector(focusVideoTaskId));
+    if(!el) return false;
+    focusVideoTaskId='';
+    try{ el.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){ el.scrollIntoView(); }
+    el.classList.remove('history-focus');
+    void el.offsetWidth;
+    el.classList.add('history-focus');
+    setTimeout(function(){ el.classList.remove('history-focus'); },2600);
+    return true;
+  }
   function withHQTasks(callback){
     if(window.HQTasks){ callback(window.HQTasks); return; }
     window.addEventListener('hq:tasks-ready',function(){ if(window.HQTasks) callback(window.HQTasks); },{once:true});
@@ -676,6 +707,7 @@
         try{ id=(new URLSearchParams(location.search).get('task')||'').trim(); }catch(e){}
       }
       if(id && !/^\d+$/.test(id)) return;
+      if(id) setPendingVideoFocus(id);
       var task=id?tasks.get(id,'video'):tasks.latestActive('video');
       if(!task && id){
         task={id:id,kind:'video',status:'pending',label:'视频任务'};
@@ -683,10 +715,19 @@
       }
       if(!task || String(task.kind||'')!=='video') return;
       id=String(task.id);
-      if(resumedVideoTaskId===id) return;
+      setPendingVideoFocus(id);
+      if(resumedVideoTaskId===id){
+        if(currentVideoDraft){
+          currentVideoDraft.job_id=id;
+          renderVideoHistory([currentVideoDraft]);
+        }
+        focusVideoJobCard(id);
+        return;
+      }
       resumedVideoTaskId=id;
       setBusy(true);
       currentVideoDraft={
+        job_id:id,
         text:task.label||'视频任务',
         ratio:task.ratio||'—',
         motion:task.modeLabel||'视频生成',
@@ -695,6 +736,7 @@
         created_at:Math.floor((task.createdAt||Date.now())/1000)
       };
       renderVideoHistory([currentVideoDraft]);
+      focusVideoJobCard(id);
       setVideoStatus('正在恢复视频任务 #'+id+'...');
       pollJob(id,0);
     });
@@ -952,6 +994,8 @@
       var x=normalizeVideoAsset(raw);
       var card=document.createElement('div');
       card.className='history-item';
+      var jid=x.job_id!=null?x.job_id:x.id;
+      if(jid!=null&&jid!=='') card.setAttribute('data-job',String(jid));
       var image=x.image_url||'../assets/cloud/logo-bird.png';
       var assetMode=String(x.mode||'').toLowerCase();
       var isTalking=!assetMode||assetMode==='text'||assetMode==='audio';
@@ -1007,10 +1051,12 @@
       };
       box.appendChild(card);
     });
+    focusVideoJobCard();
   }
   function updateJobProgress(job){
     var info=phaseInfo(job&&job.phase,job&&job.status);
     if(currentVideoDraft){
+      currentVideoDraft.job_id=(job&&job.id!=null)?String(job.id):(currentVideoDraft.job_id||resumedVideoTaskId||'');
       currentVideoDraft.phase=job.phase||currentVideoDraft.phase;
       currentVideoDraft.status=job.status||currentVideoDraft.status||'processing';
       renderVideoHistory([currentVideoDraft]);
@@ -1747,7 +1793,11 @@
     },80);
   }
   function pollJob(id, tries){
-    if(tries===0) resumedVideoTaskId=String(id);
+    if(tries===0){
+      resumedVideoTaskId=String(id);
+      setPendingVideoFocus(id);
+      if(currentVideoDraft) currentVideoDraft.job_id=String(id);
+    }
     fetch('/api/gen/job/'+id,{headers:{Authorization:'Bearer '+token}})
       .then(function(r){
         return r.json().catch(function(){return {};}).then(function(d){
@@ -1765,7 +1815,7 @@
           resumedVideoTaskId='';
           setBusy(false);
           currentVideoDraft=null;
-          renderVideoHistory([Object.assign({created_at:Math.floor(Date.now()/1000)}, result)]);
+          renderVideoHistory([Object.assign({created_at:Math.floor(Date.now()/1000),job_id:String(id)}, result)]);
           setTimeout(loadVideoHistory,800);
           if(result.mode==='motion') setTimeout(function(){loadMotionAvatars(true);},900);
           setVideoStatus('任务已创建，已保存到视频资产');
@@ -1793,7 +1843,11 @@
           :{status:'pending',lastError:e&&e.message||'连接中断'});
         resumedVideoTaskId='';
         setBusy(false);
-        if(currentVideoDraft){currentVideoDraft.status=e&&e.jobTerminal?'error':'processing';renderVideoHistory([currentVideoDraft]);}
+        if(currentVideoDraft){
+          currentVideoDraft.job_id=String(id);
+          currentVideoDraft.status=e&&e.jobTerminal?'error':'processing';
+          renderVideoHistory([currentVideoDraft]);
+        }
         setVideoStatus(e&&e.jobTerminal?(e.message||'生成失败'):'连接中断，任务仍在后台生成，可点侧栏任务继续');
         toast(e&&e.jobTerminal?(e.message||'生成失败'):'连接中断，任务仍在后台生成');
         if(e&&e.jobTerminal) resumeNextTrackedVideoTask();
