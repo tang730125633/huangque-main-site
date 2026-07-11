@@ -343,18 +343,24 @@ def gen_collect(payload):
                      and not det.get("subtitle_url"))
         play_url, video_path = _collect_cos_play_url(
             platform, det.get("id") or ident, det.get("play_url"), keep_file=need_file)
+    cover = det.get("cover")
+    # 视频号封面是 wxapp 带时效 token(~1h) 的 JPEG(普通图片、不加密)，转存 COS 保永久，
+    # 否则资源库里放超过 token 时效再看就裂图。tikhub.ch_detail 已给 coverUrl+coverUrlToken。
+    if platform == "channels" and cover:
+        cid = re.sub(r"[^A-Za-z0-9_.-]", "", str(det.get("id") or ident)) or "c"
+        cover = public_url_from_remote(cover, "collect/channels/cover_%s.jpg" % cid, "image/jpeg")
     try:
         out = {
             "type": "collect", "platform": platform, "source": det.get("url") or ident,
             "video": {"title": det.get("title"), "author": au.get("name"), "authorAvatar": None,
                       "profile_url": au.get("profile_url"),
-                      "cover": det.get("cover"), "play_url": play_url, "url": det.get("url"),
+                      "cover": cover, "play_url": play_url, "url": det.get("url"),
                       "duration": det.get("duration"), "publish_time": det.get("publish_time"),
                       "stats": det.get("stats")},
             "copy": {"title": det.get("title"), "desc": det.get("desc"), "tags": det.get("tags")},
             "images": det.get("images") or [],
             "transcript": None, "comments": [], "comments_more": False,
-            "url": det.get("cover"), "prompt": det.get("title"),   # 给通用 history 用
+            "url": cover, "prompt": det.get("title"),   # 给通用 history 用
         }
         if "comments" in want:
             cm = tikhub.comments(platform, det.get("id") or ident, count=int(payload.get("comment_count") or 20))
