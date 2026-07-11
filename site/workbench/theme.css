@@ -366,6 +366,53 @@ html[data-theme="light"] .job-progress {
 
 html[data-theme="light"] .history-created { color: var(--hq-faint); }
 
+/* Tutorials page: keep video media dark while adapting the surrounding UI. */
+html[data-theme="light"] .hq-content[data-active="tutorials"] .tutCard {
+  color: var(--hq-text);
+  border-color: var(--hq-border);
+  background: rgba(255,255,255,.94);
+  box-shadow: 0 12px 30px rgba(24,36,56,.07);
+}
+
+html[data-theme="light"] .hq-content[data-active="tutorials"] .tutCard .ttl,
+html[data-theme="light"] .hq-content[data-active="tutorials"] .secHead .h,
+html[data-theme="light"] .tutBar .tt,
+html[data-theme="light"] .tutSoon .st {
+  color: var(--hq-text);
+}
+
+html[data-theme="light"] .hq-content[data-active="tutorials"] .tutCard .dsc,
+html[data-theme="light"] .hq-content[data-active="tutorials"] .secHead .s,
+html[data-theme="light"] .tutSoon {
+  color: var(--hq-muted);
+}
+
+html[data-theme="light"] .hq-content[data-active="tutorials"] .secHead .cnt {
+  color: var(--hq-faint);
+}
+
+html[data-theme="light"] .tutOv { background: rgba(24,36,56,.3); }
+
+html[data-theme="light"] .tutBox {
+  color: var(--hq-text);
+  border-color: var(--hq-border);
+  background: var(--hq-surface-strong);
+  box-shadow: 0 30px 72px rgba(24,36,56,.22);
+}
+
+html[data-theme="light"] .tutBar { border-color: var(--hq-border); }
+
+html[data-theme="light"] .tutBar .x {
+  color: var(--hq-muted);
+  background: var(--hq-surface-soft);
+}
+
+html[data-theme="light"] .tutBar .x:hover { color: var(--hq-text); }
+
+html[data-theme="light"] .tutSoon {
+  background: linear-gradient(165deg, rgba(248,250,252,.98), rgba(238,242,247,.96));
+}
+
 /* Canvas keeps its spatial contrast while matching the selected shell theme. */
 html[data-theme="light"] body.nc-local-fullscreen .nc-wrap,
 html[data-theme="light"] .nc-wrap:fullscreen,

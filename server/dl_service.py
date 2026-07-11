@@ -23,6 +23,7 @@ ALLOW = (
     ".xhscdn.com", ".rednotecdn.com", ".xiaohongshu.com",
     ".bytedance.net", ".lf-douyin.com", ".365yg.com",
     ".cos.ap-guangzhou.myqcloud.com",  # 采集视频转存 COS 后的直链下载(COS-COLLECT #113)
+    "video.huangquechuanmei.com",  # 自有 COS 加速域名：生成图片、音视频资产下载
     "wxapp.tc.qq.com",
 )  # 抖音(TikHub play_addr)/小红书/视频号 等直链 CDN 域名；防 SSRF。覆盖 collect 解析 + 生成产出下载。
 DECRYPT_API = "http://127.0.0.1:3001/api/decrypt"  # Isaac64 WASM 解密服务(Evil0ctal)
@@ -133,7 +134,8 @@ class H(BaseHTTPRequestHandler):
         dk = (q.get("dk", [""])[0]).strip()
         ascii_name = re.sub(r"[^a-zA-Z0-9_\-]+", "_", raw).strip("_") or "video"
         host = (urllib.parse.urlparse(url).hostname or "").lower()
-        if not (url.startswith("http") and any(host.endswith(h) for h in ALLOW)):
+        allowed_host = any(host == h or (h.startswith(".") and host.endswith(h)) for h in ALLOW)
+        if not (url.startswith("http") and allowed_host):
             return self._err(400, "不支持的下载地址")
         # 视频号加密流：必须走解密路径(有 dk 才能解)
         if host == "wxapp.tc.qq.com":
