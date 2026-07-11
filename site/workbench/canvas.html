@@ -460,7 +460,7 @@
   var tplSelect=document.getElementById('ncTemplateSelect'), tplName=document.getElementById('ncTemplateName'), tplImportFile=document.getElementById('ncTplImportFile'), menu=document.getElementById('ncMenu'), cleanupStorageBtn=document.getElementById('ncCleanupStorage');
   var sidePanel=document.getElementById('ncSidePanel'), sideTitle=document.getElementById('ncSideTitle'), sideBody=document.getElementById('ncSideBody'), sideClose=document.getElementById('ncSideClose');
   var sideTplMenu=document.getElementById('ncSideTplMenu'), sideMore=document.getElementById('ncSideMore');
-  var nodes={}, edges=[], nid=0, pendingPort=null, runLabel='就绪', undoStack=[], redoStack=[], restoring=false, loading=false, dragPort=null, suppressPortClick=false, suppressCanvasClick=false, mapDirty=false, saveTimer=null;
+  var nodes={}, edges=[], nid=0, pendingPort=null, runLabel='就绪', undoStack=[], redoStack=[], restoring=false, loading=false, dragPort=null, suppressPortClick=false, suppressCanvasClick=false, mapDirty=false, saveTimer=null, canvasRunning=false;
   var localFullscreen=false;
   var selectedNode=null, selectedNodes={}, selectedEdge=-1, clipNode=null, zoom=1;
   var activeSidePanel='', accountAssetsLoaded=false, accountAssets=[];
@@ -2704,12 +2704,22 @@
     updateState('检测到循环依赖');
   }
   // ---------- 运行全部：按依赖分波并行 ----------
-  document.getElementById('ncRunAll').onclick=function(){
+  var ncRunAllBtn=document.getElementById('ncRunAll');
+  ncRunAllBtn.onclick=function(){
+    if(canvasRunning) return;            // 防重入：上一轮还在跑
     if(!validateCanvasInputs()) return;
     var cycle=detectCycle();
     if(cycle.length){ markCycle(cycle); return; }
+    canvasRunning=true;
+    ncRunAllBtn.disabled=true;
+    if(fsRun) fsRun.disabled=true;
     var done={}, running={};
     updateState('排队中');
+    function finish(){
+      canvasRunning=false;
+      ncRunAllBtn.disabled=false;
+      if(fsRun) fsRun.disabled=false;
+    }
     function ready(node){ // 所有输入口都有上游输出
       var t=TYPE[node.type]; if(!t.ins) return true;
       return t.ins.every(function(p){
@@ -2729,7 +2739,7 @@
       var active=Object.keys(running).some(function(k){return running[k];});
       var pending=Object.keys(nodes).map(function(k){return nodes[k];}).filter(function(n){ return (n.type==='reverse'||n.type==='gen'||n.type==='video') && !done[n.id]; });
       if(!runnable.length){
-        if(!active) updateState(pending.length?'等待输入':'已完成');
+        if(!active){ updateState(pending.length?'等待输入':'已完成'); finish(); }
         return;
       }
       runnable.forEach(function(n){ running[n.id]=true;
