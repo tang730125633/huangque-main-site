@@ -1793,8 +1793,8 @@
     },80);
   }
   function pollJob(id, tries){
+    if(tries===0) resumedVideoTaskId=String(id);
     if(tries===0){
-      resumedVideoTaskId=String(id);
       setPendingVideoFocus(id);
       if(currentVideoDraft) currentVideoDraft.job_id=String(id);
     }
