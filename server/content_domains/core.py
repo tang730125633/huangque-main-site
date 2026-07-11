@@ -1171,6 +1171,8 @@ class H(BaseHTTPRequestHandler):
                     body = video_domain.validate_video_payload(body, user["username"])
                 elif kind == "tryon":
                     body = video_domain.validate_tryon_payload(body)
+                elif kind == "xiaole_video":
+                    body = video_domain.validate_xiaole_video_payload(body)
                 elif kind == "image":
                     from . import image as image_domain
                     body = image_domain.validate_image_payload(body)

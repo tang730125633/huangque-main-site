@@ -245,8 +245,10 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
             "max_xiaole": core.MAX_USER_ACTIVE_XIAOLE_VIDEO,
             "max_motion": core.MAX_USER_ACTIVE_MOTION,
             "max_tryon": core.MAX_USER_ACTIVE_TRYON,
+            "handlers": core.HANDLERS,
             "validate_video": video.validate_video_payload,
             "validate_tryon": video.validate_tryon_payload,
+            "validate_xiaole": video.validate_xiaole_video_payload,
         }
         fake = FakePoints()
         server = None
@@ -259,8 +261,10 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
             core.MAX_USER_ACTIVE_XIAOLE_VIDEO = 3
             core.MAX_USER_ACTIVE_MOTION = 2
             core.MAX_USER_ACTIVE_TRYON = 1
+            core.HANDLERS = {"video": lambda body: body, "tryon": lambda body: body, "xiaole_video": lambda body: body}
             video.validate_video_payload = lambda body, username: body
             video.validate_tryon_payload = lambda body: body
+            video.validate_xiaole_video_payload = lambda body: body
             try:
                 with closing(sqlite3.connect(core.JOB_DB)) as db:
                     db.execute("""CREATE TABLE jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,username TEXT,cost INTEGER,
@@ -345,8 +349,10 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                 core.MAX_USER_ACTIVE_XIAOLE_VIDEO = originals["max_xiaole"]
                 core.MAX_USER_ACTIVE_MOTION = originals["max_motion"]
                 core.MAX_USER_ACTIVE_TRYON = originals["max_tryon"]
+                core.HANDLERS = originals["handlers"]
                 video.validate_video_payload = originals["validate_video"]
                 video.validate_tryon_payload = originals["validate_tryon"]
+                video.validate_xiaole_video_payload = originals["validate_xiaole"]
 
 
 if __name__ == "__main__":

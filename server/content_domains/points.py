@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import math
+import os
 import time
 
 from .core import AUTH_BASE, AUTH_INTERNAL_TOKEN, COST, closing, jdb, json, urllib, _ensure_column
@@ -45,8 +47,23 @@ def cost_of(kind, body):
         return 40 if (has_clothes and has_bg) else 25  # 两段(换装+换背景)40/单段25
         # TODO: 上线前与 kongli 确认点数
     if kind == "xiaole_video":
-        # 果肉(Grok)/豆姐(Seedance) 视频。Grok 上游约 15 积分/条，含毛利暂定 30 点。
-        # TODO: 上线前与业务确认点数
+        if (body.get("channel") or "grok") == "grok" and os.environ.get("GROK_VIDEO_PROVIDER", "xai").lower() != "xiaole":
+            model = body.get("model") or "grok-imagine-video"
+            resolution = (body.get("resolution") or "720p").lower()
+            duration = max(1, min(15, int(body.get("duration") or 10)))
+            per_second = {
+                "grok-imagine-video": {"480p": 0.05, "720p": 0.07},
+                "grok-imagine-video-1.5": {"480p": 0.08, "720p": 0.14, "1080p": 0.25},
+            }.get(model, {}).get(resolution)
+            if per_second is None:
+                raise ValueError("果肉官方模型与分辨率不匹配")
+            image_input = 0.01 if (model == "grok-imagine-video-1.5" and body.get("reference_images")) \
+                else (0.002 if body.get("reference_images") else 0.0)
+            usd_cny = float(os.environ.get("XAI_USD_CNY", "7.3") or 7.3)
+            buffer = float(os.environ.get("XAI_PRICE_BUFFER", "1.2") or 1.2)
+            # 1点=0.1元；默认按保守汇率+20%波动/运营缓冲向上取整，可用env调整。
+            return max(1, int(math.ceil((duration * per_second + image_input) * usd_cny * buffer * 10)))
+        # 豆姐/欧米及果肉小乐回滚线保留原定价。
         return 30
     return COST.get(kind, 0)
 

@@ -42,6 +42,10 @@ XIAOLE_IMAGE_CHANNELS = {"grok", "micro", "omni"}  # 支持参考图（图生视
 # 文生视频固定时长的渠道（None=用平台默认）。omni-fast 只支持 10 秒(duration_options=[10])，不传会 400。
 XIAOLE_CHANNEL_DURATION = {"omni": 10}
 XIAOLE_MAX_REF = int(os.environ.get("XIAOLEVIDEO_MAX_REF", "7"))  # Grok 图生视频最多参考图数(实测上游pydantic硬上限7张,超过422)
+GROK_VIDEO_PROVIDER = os.environ.get("GROK_VIDEO_PROVIDER", "xai").strip().lower()
+XAI_GROK_MODELS = {"grok-imagine-video", "grok-imagine-video-1.5"}
+XAI_GROK_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
+XAI_GROK_RESOLUTIONS = {"480p", "720p"}
 
 def _xiaole_build_refs(reference_images):
     # 前端传 dataURL/URL → API 要的 [{type, value}]，最多 XIAOLE_MAX_REF 张。
@@ -76,6 +80,52 @@ def _xiaole_ref_to_url(data_url):
     except Exception as e:
         print("[video] 参考图转存COS失败，回退原始数据: %s" % e, flush=True)
         return s
+
+def validate_xiaole_video_payload(payload):
+    """校验果肉/豆姐/欧米的公共入口；果肉官方线另按 xAI 参数收紧。"""
+    if not isinstance(payload, dict):
+        raise ValueError("请求体不是合法 JSON")
+    cleaned = dict(payload)
+    channel = str(cleaned.get("channel") or "grok").strip().lower()
+    if channel not in XIAOLE_CHANNEL_MODELS:
+        raise ValueError("未知视频渠道：%s" % channel)
+    prompt = str(cleaned.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("请输入视频提示词")
+    cleaned["channel"] = channel
+    cleaned["prompt"] = prompt
+    if channel != "grok" or GROK_VIDEO_PROVIDER == "xiaole":
+        return cleaned
+
+    model = str(cleaned.get("model") or "grok-imagine-video").strip()
+    if model not in XAI_GROK_MODELS:
+        raise ValueError("果肉官方模型不支持：%s" % model)
+    refs = cleaned.get("reference_images") or []
+    if not isinstance(refs, list):
+        raise ValueError("reference_images 必须是数组")
+    refs = [str(x or "").strip() for x in refs if str(x or "").strip()]
+    if len(refs) > 1:
+        raise ValueError("xAI官方图生视频当前最多支持1张参考图")
+    if model == "grok-imagine-video-1.5" and not refs:
+        raise ValueError("Grok Video 1.5 仅支持图生视频，请先上传参考图")
+    ratio = str(cleaned.get("ratio") or "16:9").strip()
+    if ratio not in XAI_GROK_RATIOS:
+        raise ValueError("果肉官方比例仅支持 " + "、".join(sorted(XAI_GROK_RATIOS)))
+    try:
+        duration = int(cleaned.get("duration") or 10)
+    except (TypeError, ValueError):
+        raise ValueError("果肉视频时长必须是1-15秒整数")
+    if duration < 1 or duration > 15:
+        raise ValueError("果肉视频时长必须是1-15秒整数")
+    resolution = str(cleaned.get("resolution") or "720p").strip().lower()
+    allowed_resolutions = XAI_GROK_RESOLUTIONS | ({"1080p"} if model == "grok-imagine-video-1.5" else set())
+    if resolution not in allowed_resolutions:
+        raise ValueError("%s 不支持分辨率 %s" % (model, resolution))
+    cleaned.update({
+        "model": model, "ratio": ratio, "duration": duration,
+        "resolution": resolution, "reference_images": refs,
+    })
+    return cleaned
 
 def _is_valid_data_url(value, allowed_mimes):
     raw = (value or "").strip()
@@ -2066,16 +2116,17 @@ def generate_xiaole_video(model, prompt, reference_images=None, size="720x1280",
 def gen_xiaole_video(payload):
     job_id = payload.get("_job_id")
     channel = (payload.get("channel") or "grok").strip()
-    model = XIAOLE_CHANNEL_MODELS.get(channel)
+    use_xai = channel == "grok" and GROK_VIDEO_PROVIDER != "xiaole"
+    model = (payload.get("model") or "grok-imagine-video") if use_xai else XIAOLE_CHANNEL_MODELS.get(channel)
     if not model:
         raise ValueError("未知视频渠道：%s" % channel)
     prompt = (payload.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("请输入视频提示词")
-    ratio = (payload.get("ratio") or "9:16").strip()
-    if ratio not in XIAOLE_RATIO_SIZES:
+    ratio = (payload.get("ratio") or ("16:9" if use_xai else "9:16")).strip()
+    if not use_xai and ratio not in XIAOLE_RATIO_SIZES:
         ratio = "9:16"
-    size = _xiaole_size_for_ratio(ratio)
+    size = _xiaole_size_for_ratio(ratio) if not use_xai else None
     ref_images = None
     if channel in XIAOLE_IMAGE_CHANNELS:
         raw_refs = payload.get("reference_images") or None
@@ -2084,11 +2135,38 @@ def gen_xiaole_video(payload):
     label = {"grok": "果肉视频", "micro": "豆姐视频", "omni": "欧米视频"}.get(channel, model)
     if job_id:
         update_video_asset_phase(job_id, "queued", mode=channel, text=prompt, model=model)
-    result = generate_xiaole_video(model, prompt, reference_images=ref_images, size=size, job_id=job_id, prefix=channel,
-                                   duration=XIAOLE_CHANNEL_DURATION.get(channel))
+    if use_xai:
+        from . import video_xai
+        image_url = ref_images[0] if ref_images else None
+        if image_url and not str(image_url).startswith(("http://", "https://")):
+            raise RuntimeError("xAI官方图生视频需要可公网访问的参考图，COS转存失败")
+        xres = video_xai.generate(
+            model=model, prompt=prompt, image_url=image_url,
+            duration=payload.get("duration") or 10,
+            aspect_ratio=ratio, resolution=payload.get("resolution") or "720p",
+            job_id=job_id, heartbeat=update_video_asset_phase,
+        )
+        source_url = xres["source_video_url"]
+        if job_id:
+            update_video_asset_phase(job_id, "downloading", source_video_url=source_url,
+                                     provider_video_id=xres.get("request_id"), model=xres.get("model") or model)
+        video_file = _download_xiaole_video(source_url, "grok_xai")
+        cover = _extract_first_frame_cover(video_file)
+        result = {
+            "video_file": video_file, "video_url": _file_url(video_file),
+            "source_video_url": source_url, "model": xres.get("model") or model,
+            "request_id": xres.get("request_id"), "duration": xres.get("duration"),
+            "image_file": cover,
+            "image_url": public_url(cover, "image/jpeg") if cover else None,
+        }
+    else:
+        result = generate_xiaole_video(model, prompt, reference_images=ref_images, size=size, job_id=job_id, prefix=channel,
+                                       duration=XIAOLE_CHANNEL_DURATION.get(channel))
     return {
-        "type": "video", "status": "done", "mode": channel, "model": model, "text": prompt,
-        "ratio": ratio,
+        "type": "video", "status": "done", "mode": channel, "model": result.get("model") or model, "text": prompt,
+        "ratio": ratio, "resolution": payload.get("resolution") if use_xai else None,
+        "duration": result.get("duration") or (payload.get("duration") if use_xai else None),
+        "provider_video_id": result.get("request_id"),
         "video_file": result.get("video_file"), "video_url": result.get("video_url"),
         "source_video_url": result.get("source_video_url"),
         "image_file": result.get("image_file"),
