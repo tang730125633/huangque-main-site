@@ -48,6 +48,12 @@ def cost_of(kind, body):
         # TODO: 上线前与 kongli 确认点数
     if kind == "xiaole_video":
         if (body.get("channel") or "grok") == "grok" and os.environ.get("GROK_VIDEO_PROVIDER", "xai").lower() != "xiaole":
+            if body.get("operation") == "edit":
+                duration = max(0.1, min(8.7, float(body.get("source_duration") or 0.1)))
+                usd_cny = float(os.environ.get("XAI_USD_CNY", "7.3") or 7.3)
+                buffer = float(os.environ.get("XAI_PRICE_BUFFER", "1.2") or 1.2)
+                # 官方输入视频 $0.01/秒，编辑输出继承输入且最高 720p，按 $0.07/秒计。
+                return max(1, int(math.ceil(duration * (0.01 + 0.07) * usd_cny * buffer * 10)))
             model = body.get("model") or "grok-imagine-video"
             resolution = (body.get("resolution") or "720p").lower()
             duration = max(1, min(15, int(body.get("duration") or 10)))

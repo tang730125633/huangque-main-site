@@ -473,11 +473,22 @@
           <span class="faint" style="font-size:11.5px;">文生 / 图生视频</span>
         </div>
         <div class="panel" style="margin-top:14px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">操作方式</div>
+          <div class="seg" style="grid-template-columns:repeat(2,1fr);"><button class="on" data-grok-operation="generate">生成新视频</button><button data-grok-operation="edit">编辑已有视频</button></div>
+        </div>
+        <div class="panel grok-edit-only hidden" style="margin-top:12px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考视频 <span style="color:#5c6b82;">· MP4，最长 8.7 秒；输出继承原时长和比例，最高 720p</span></div>
+          <label style="display:block;padding:14px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;cursor:pointer;text-align:center;">
+            <input id="grokEditFile" type="file" accept="video/mp4" hidden><span id="grokEditFileName">点击上传 MP4 参考视频</span>
+          </label>
+          <video id="grokEditPreview" class="hidden" controls muted playsinline style="width:100%;max-height:260px;margin-top:10px;border-radius:12px;"></video>
+        </div>
+        <div class="panel" style="margin-top:14px;">
           <div class="faint" style="font-size:12px;margin-bottom:8px;">视频提示词 <span style="color:#5c6b82;">· 点下方示例快速填入，或直接粘贴自己的</span></div>
           <textarea id="grokPrompt" rows="4" placeholder="例如：一只橘猫在阳光洒落的窗台上慢慢转头，电影级光影，柔和景深，平滑运镜" style="width:100%;min-height:110px;resize:vertical;background:rgba(7,11,19,.5);border:1px solid rgba(148,164,187,.16);border-radius:12px;color:#eaf1fa;padding:12px 14px;font:inherit;font-size:14px;"></textarea>
           <div id="grokExamples" style="display:flex;flex-wrap:wrap;gap:7px;margin-top:10px;"></div>
         </div>
-        <div class="panel" style="margin-top:12px;">
+        <div class="panel grok-generate-only" style="margin-top:12px;">
           <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，官方图生视频当前最多 1 张</span></div>
           <div id="grokRefGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;">
             <label id="grokRefAdd" style="position:relative;display:flex;align-items:center;justify-content:center;min-height:74px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;background:rgba(7,11,19,.4);cursor:pointer;">
@@ -486,15 +497,15 @@
             </label>
           </div>
         </div>
-        <div class="panel" style="margin-top:12px;">
+        <div class="panel grok-generate-only" style="margin-top:12px;">
           <div class="faint" style="font-size:12px;margin-bottom:8px;">官方模型</div>
           <div class="seg" style="grid-template-columns:repeat(2,1fr);"><button class="on" data-grok-model="grok-imagine-video">通用版 · 文生/图生</button><button data-grok-model="grok-imagine-video-1.5">1.5 · 高质量图生</button></div>
         </div>
-        <div class="panel" style="margin-top:12px;">
+        <div class="panel grok-generate-only" style="margin-top:12px;">
           <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例 <span style="color:#5c6b82;">· xAI 官方支持</span></div>
           <div class="seg" style="grid-template-columns:repeat(4,1fr);"><button data-grok-ratio="9:16">9:16</button><button class="on" data-grok-ratio="16:9">16:9</button><button data-grok-ratio="1:1">1:1</button><button data-grok-ratio="4:3">4:3</button><button data-grok-ratio="3:4">3:4</button><button data-grok-ratio="3:2">3:2</button><button data-grok-ratio="2:3">2:3</button></div>
         </div>
-        <div class="panel" style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="panel grok-generate-only" style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
           <div><div class="faint" style="font-size:12px;margin-bottom:8px;">生成时长</div><div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-grok-duration="5">5秒</button><button class="on" data-grok-duration="10">10秒</button><button data-grok-duration="15">15秒</button></div></div>
           <div><div class="faint" style="font-size:12px;margin-bottom:8px;">分辨率</div><div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-grok-resolution="480p">480p</button><button class="on" data-grok-resolution="720p">720p</button><button id="grok1080Btn" class="hidden" data-grok-resolution="1080p">1080p</button></div></div>
         </div>
@@ -584,6 +595,7 @@
   var selectedSubtitle='off', selectedSubtitleStyle='white', selectedSubtitlePosition='bottom';  // F4 字幕：默认关闭+底部，不勾选时行为与原来一致
   var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16', selectedMotionLine='2', selectedMotionResolution='720p';
   var selectedGrokRatio='16:9', selectedGrokDuration=10, selectedGrokResolution='720p', selectedGrokModel='grok-imagine-video';
+  var grokOperation='generate', grokEditVideoData='', grokEditDuration=0;
   // 换装的第一个上传框在两条线路收的东西不同：线路一收换装视频，线路二收人物照片。
   // 必须各存各的变量 —— 共用一个的话，线路一传了视频再切到线路二，视频会被当人物照发出去（#537）。
   var tryonVideoData='', tryonPersonImageData='', tryonClothesData='', tryonBackgroundData='', selectedTryonLine='2', selectedTryonSeconds=6;
@@ -1548,6 +1560,13 @@
     if(b.dataset.grokRatio) selectedGrokRatio=b.dataset.grokRatio;
     if(b.dataset.grokDuration) selectedGrokDuration=Number(b.dataset.grokDuration);
     if(b.dataset.grokResolution) selectedGrokResolution=b.dataset.grokResolution;
+    if(b.dataset.grokOperation){
+      grokOperation=b.dataset.grokOperation;
+      document.querySelectorAll('.grok-generate-only').forEach(function(x){x.classList.toggle('hidden',grokOperation==='edit');});
+      document.querySelectorAll('.grok-edit-only').forEach(function(x){x.classList.toggle('hidden',grokOperation!=='edit');});
+      if($('grokGenerateBtn')) $('grokGenerateBtn').textContent=grokOperation==='edit'?'编辑参考视频':'生成果肉视频';
+      if($('grokStatus')) $('grokStatus').textContent=grokOperation==='edit'?'官方视频编辑 · 输出继承参考视频时长和比例':'Grok Video · 生成后自动保存到视频资产';
+    }
     if(b.dataset.grokModel){
       selectedGrokModel=b.dataset.grokModel;
       var hi=$('grok1080Btn'), is15=selectedGrokModel==='grok-imagine-video-1.5';
@@ -1950,22 +1969,26 @@
     if(!prompt){ toast('请输入视频提示词'); if(promptEl) promptEl.focus(); return; }
     setBusy(true);
     if(statusEl) statusEl.textContent='正在提交'+label+'任务...';
-    var ratio=channel==='grok'?selectedGrokRatio:'9:16';
+    var editing=channel==='grok' && grokOperation==='edit';
+    if(editing && !grokEditVideoData){setBusy(false);toast('请先上传不超过 8.7 秒的 MP4 参考视频');return;}
+    var ratio=channel==='grok'?(editing?null:selectedGrokRatio):'9:16';
     var _refArr=channel==='grok'?grokRefData:(channel==='micro'?microRefData:(channel==='omni'?omniRefData:null));
-    if(channel==='grok' && selectedGrokModel==='grok-imagine-video-1.5' && !(_refArr&&_refArr.length)){
+    if(channel==='grok' && !editing && selectedGrokModel==='grok-imagine-video-1.5' && !(_refArr&&_refArr.length)){
       setBusy(false); toast('Grok Video 1.5 仅支持图生视频，请先上传参考图'); return;
     }
-    var fixedDuration=channel==='grok'?selectedGrokDuration:((channel==='omni'||(_refArr&&_refArr.length))?10:null);
+    var fixedDuration=channel==='grok'?(editing?grokEditDuration:selectedGrokDuration):((channel==='omni'||(_refArr&&_refArr.length))?10:null);
     currentVideoDraft={mode:channel,text:prompt,ratio:ratio,motion:label,duration:fixedDuration,
       resolution:channel==='grok'?selectedGrokResolution:null,model:channel==='grok'?selectedGrokModel:null,
       status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
     renderVideoHistory([currentVideoDraft]);
     var xlPayload={channel:channel,prompt:prompt};
     if(channel==='grok'){
-      xlPayload.ratio=selectedGrokRatio; xlPayload.duration=selectedGrokDuration;
-      xlPayload.resolution=selectedGrokResolution; xlPayload.model=selectedGrokModel;
+      xlPayload.operation=grokOperation;
+      if(editing){xlPayload.reference_video_data=grokEditVideoData;xlPayload.source_duration=grokEditDuration;xlPayload.model='grok-imagine-video';}
+      else {xlPayload.ratio=selectedGrokRatio; xlPayload.duration=selectedGrokDuration;
+        xlPayload.resolution=selectedGrokResolution; xlPayload.model=selectedGrokModel;}
     }
-    if(_refArr && _refArr.length){ xlPayload.reference_images=_refArr; }  // 图生视频参考图
+    if(!editing && _refArr && _refArr.length){ xlPayload.reference_images=_refArr; }  // 图生视频参考图
     fetch('/api/gen/xiaole_video',{
       method:'POST',
       headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
@@ -1997,6 +2020,20 @@
   var grokRefData=[];
   var microRefData=[], omniRefData=[];
   (function setupGrokPanel(){
+    var editInput=$('grokEditFile');
+    if(editInput) editInput.onchange=function(){
+      var f=editInput.files&&editInput.files[0]; if(!f)return;
+      if(f.type!=='video/mp4'){toast('只支持 MP4 参考视频');editInput.value='';return;}
+      var objectUrl=URL.createObjectURL(f), probe=document.createElement('video');
+      probe.preload='metadata'; probe.onloadedmetadata=function(){
+        var duration=Number(probe.duration||0); URL.revokeObjectURL(objectUrl);
+        if(!duration || duration>8.7){toast('参考视频最长 8.7 秒');editInput.value='';return;}
+        readFileData(f).then(function(data){grokEditVideoData=data;grokEditDuration=duration;
+          $('grokEditFileName').textContent=f.name+' · '+duration.toFixed(1)+' 秒';
+          var preview=$('grokEditPreview');preview.src=data;preview.classList.remove('hidden');toast('参考视频已载入');
+        });
+      }; probe.onerror=function(){URL.revokeObjectURL(objectUrl);toast('无法读取这个 MP4 视频');}; probe.src=objectUrl;
+    };
     var ex=$('grokExamples');
     if(ex){
       ['护肤精华瓶在水花中缓缓旋转，晶莹剔透，柔光微距，高级广告质感',

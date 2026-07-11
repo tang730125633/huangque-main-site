@@ -26,6 +26,20 @@ class _Response:
 
 
 class XaiVideoTests(unittest.TestCase):
+    def test_edit_payload_uses_official_edits_endpoint(self):
+        opener = Mock()
+        opener.open.side_effect = [_Response({"request_id": "edit-1"}), _Response({
+            "status": "done", "video": {"url": "https://vidgen.x.ai/edit.mp4", "duration": 7.5}})]
+        clock = iter([0, 0, 1])
+        with patch.object(video_xai, "XAI_API_KEY", "test-key"), patch.object(video_xai, "_opener", return_value=opener):
+            result = video_xai.edit("grok-imagine-video", "replace clothes", "https://cos.example/source.mp4", 7.5,
+                                    now=lambda: next(clock), sleep=lambda _: None)
+        req = opener.open.call_args_list[0].args[0]
+        self.assertEqual(req.full_url, "https://api.x.ai/v1/videos/edits")
+        self.assertEqual(json.loads(req.data), {"model": "grok-imagine-video", "prompt": "replace clothes",
+                                                "video": {"url": "https://cos.example/source.mp4"}})
+        self.assertEqual(result["duration"], 7.5)
+
     def test_create_payload_and_poll_result(self):
         opener = Mock()
         opener.open.side_effect = [

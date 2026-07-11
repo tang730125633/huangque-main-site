@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import tempfile
+
 from .core import (
     AUDIO_OUT_DIR, HEYGEN_API_BASE, HEYGEN_API_KEY, HEYGEN_POLL_INTERVAL,
     HEYGEN_TIMEOUT, VIDEO_OUT_DIR, _file_url, _out_path, _resolve_out_file,
@@ -97,6 +99,21 @@ def validate_xiaole_video_payload(payload):
     if channel != "grok" or GROK_VIDEO_PROVIDER == "xiaole":
         return cleaned
 
+    operation = str(cleaned.get("operation") or "generate").strip().lower()
+    if operation not in {"generate", "edit"}:
+        raise ValueError("果肉视频操作类型不支持：%s" % operation)
+    cleaned["operation"] = operation
+    if operation == "edit":
+        source = str(cleaned.get("reference_video_data") or "").strip()
+        if not _is_valid_data_url(source, {"video/mp4"}):
+            raise ValueError("请上传有效的 MP4 参考视频")
+        duration = _probe_data_video_duration(source)
+        if duration <= 0 or duration > 8.7:
+            raise ValueError("xAI 官方视频编辑仅支持不超过 8.7 秒的参考视频")
+        cleaned.update({"model": "grok-imagine-video", "reference_video_data": source,
+                        "source_duration": duration, "reference_images": []})
+        return cleaned
+
     model = str(cleaned.get("model") or "grok-imagine-video").strip()
     if model not in XAI_GROK_MODELS:
         raise ValueError("果肉官方模型不支持：%s" % model)
@@ -143,8 +160,33 @@ def _is_valid_data_url(value, allowed_mimes):
         return False
     if allowed_mimes == VALID_IMAGE_MIMES:
         return _image_bytes_look_valid(decoded)
-    return True
+    return bool(decoded)
 
+
+def _probe_data_video_duration(data_url):
+    """用服务端 ffprobe 校验真实媒体时长，不信任浏览器提交的 duration。"""
+    encoded = str(data_url).split(",", 1)[1]
+    raw = base64.b64decode(encoded, validate=True)
+    path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as fh:
+            fh.write(raw)
+            path = fh.name
+        proc = subprocess.run([
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", path,
+        ], capture_output=True, text=True, timeout=20)
+        if proc.returncode != 0:
+            raise ValueError("参考视频无法解析，请确认是有效的 MP4 文件")
+        return float((proc.stdout or "0").strip())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        raise ValueError("参考视频无法解析，请确认是有效的 MP4 文件")
+    finally:
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 def _image_bytes_look_valid(raw):
     if not raw:
         return False
@@ -2137,15 +2179,29 @@ def gen_xiaole_video(payload):
         update_video_asset_phase(job_id, "queued", mode=channel, text=prompt, model=model)
     if use_xai:
         from . import video_xai
-        image_url = ref_images[0] if ref_images else None
-        if image_url and not str(image_url).startswith(("http://", "https://")):
-            raise RuntimeError("xAI官方图生视频需要可公网访问的参考图，COS转存失败")
-        xres = video_xai.generate(
-            model=model, prompt=prompt, image_url=image_url,
-            duration=payload.get("duration") or 10,
-            aspect_ratio=ratio, resolution=payload.get("resolution") or "720p",
-            job_id=job_id, heartbeat=update_video_asset_phase,
-        )
+        operation = payload.get("operation") or "generate"
+        reference_video_file = reference_video_url = None
+        if operation == "edit":
+            reference_video_file = _save_data_file(payload.get("reference_video_data"), "grok_edit_source", [".mp4"])
+            if not reference_video_file:
+                raise RuntimeError("参考视频保存失败")
+            source_public_url = public_url(reference_video_file, "video/mp4")
+            if not str(source_public_url).startswith(("http://", "https://")):
+                raise RuntimeError("xAI官方视频编辑需要可公网访问的参考视频，COS转存失败")
+            reference_video_url = _file_url(reference_video_file)
+            xres = video_xai.edit(model="grok-imagine-video", prompt=prompt, video_url=source_public_url,
+                                  duration=payload.get("source_duration"), job_id=job_id,
+                                  heartbeat=update_video_asset_phase)
+        else:
+            image_url = ref_images[0] if ref_images else None
+            if image_url and not str(image_url).startswith(("http://", "https://")):
+                raise RuntimeError("xAI官方图生视频需要可公网访问的参考图，COS转存失败")
+            xres = video_xai.generate(
+                model=model, prompt=prompt, image_url=image_url,
+                duration=payload.get("duration") or 10,
+                aspect_ratio=ratio, resolution=payload.get("resolution") or "720p",
+                job_id=job_id, heartbeat=update_video_asset_phase,
+            )
         source_url = xres["source_video_url"]
         if job_id:
             update_video_asset_phase(job_id, "downloading", source_video_url=source_url,
@@ -2158,17 +2214,22 @@ def gen_xiaole_video(payload):
             "request_id": xres.get("request_id"), "duration": xres.get("duration"),
             "image_file": cover,
             "image_url": public_url(cover, "image/jpeg") if cover else None,
+            "reference_video_file": reference_video_file,
+            "reference_video_url": reference_video_url,
         }
     else:
         result = generate_xiaole_video(model, prompt, reference_images=ref_images, size=size, job_id=job_id, prefix=channel,
                                        duration=XIAOLE_CHANNEL_DURATION.get(channel))
     return {
         "type": "video", "status": "done", "mode": channel, "model": result.get("model") or model, "text": prompt,
-        "ratio": ratio, "resolution": payload.get("resolution") if use_xai else None,
+        "operation": payload.get("operation") or "generate",
+        "ratio": ratio, "resolution": payload.get("resolution") if use_xai and payload.get("operation") != "edit" else None,
         "duration": result.get("duration") or (payload.get("duration") if use_xai else None),
         "provider_video_id": result.get("request_id"),
         "video_file": result.get("video_file"), "video_url": result.get("video_url"),
         "source_video_url": result.get("source_video_url"),
+        "reference_video_file": result.get("reference_video_file"),
+        "reference_video_url": result.get("reference_video_url"),
         "image_file": result.get("image_file"),
         "image_url": result.get("image_url") or (public_url(result.get("image_file"), "image/jpeg") if result.get("image_file") else None),
         "phase": "done", "message": "%s生成完成" % label,

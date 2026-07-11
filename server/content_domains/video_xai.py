@@ -73,9 +73,49 @@ def _request_json(opener, method, path, body=None, timeout=90):
         raise RuntimeError("xAI视频网络异常: %s" % str(exc)[:300])
 
 
+def _poll(opener, request_id, model, duration, job_id=None, heartbeat=None, now=None, sleep=None):
+    """轮询已创建的任务；这里只重试 GET，绝不重新提交付费任务。"""
+    now = now or time.time
+    sleep = sleep or time.sleep
+    deadline = now() + XAI_VIDEO_TIMEOUT
+    last_status = ""
+    last_network_error = None
+    while now() < deadline:
+        try:
+            result = _request_json(opener, "GET", "/videos/" + urllib.parse.quote(request_id), timeout=60)
+            last_network_error = None
+        except RuntimeError as exc:
+            if "网络异常" not in str(exc):
+                raise
+            last_network_error = exc
+            sleep(XAI_VIDEO_POLL_INTERVAL)
+            continue
+        status = str(result.get("status") or "").strip().lower()
+        if status != last_status:
+            print("[xai-video] request_id=%s model=%s status=%s" % (request_id, model, status), flush=True)
+            last_status = status
+        if heartbeat:
+            heartbeat(job_id, "xai_" + (status or "pending"), provider_video_id=request_id, model=model)
+        if status == "done":
+            video = result.get("video") or {}
+            url = str(video.get("url") or "").strip() if isinstance(video, dict) else ""
+            if not url:
+                raise RuntimeError("xAI视频已完成但未返回成片URL")
+            return {"request_id": request_id, "model": str(result.get("model") or model),
+                    "source_video_url": url, "duration": video.get("duration") or duration,
+                    "respect_moderation": video.get("respect_moderation")}
+        if status in {"failed", "expired"}:
+            detail = result.get("error") or result.get("message") or status
+            raise RuntimeError("xAI视频生成%s: %s" % ("过期" if status == "expired" else "失败", str(detail)[:500]))
+        sleep(XAI_VIDEO_POLL_INTERVAL)
+    if last_network_error:
+        raise TimeoutError("xAI视频查询超时: %s" % str(last_network_error)[:200])
+    raise TimeoutError("xAI视频生成超时")
+
+
 def generate(model, prompt, duration, aspect_ratio, resolution, image_url=None,
              job_id=None, heartbeat=None, now=None, sleep=None):
-    """创建一次 xAI 任务并轮询到终态，返回统一的远程成片信息。"""
+    """创建一次 xAI 生成任务并轮询到终态。"""
     opener = _opener()
     payload = {
         "model": model,
@@ -93,47 +133,15 @@ def generate(model, prompt, duration, aspect_ratio, resolution, image_url=None,
     if not request_id:
         raise RuntimeError("xAI视频服务未返回 request_id")
 
-    now = now or time.time
-    sleep = sleep or time.sleep
-    deadline = now() + XAI_VIDEO_TIMEOUT
-    last_status = ""
-    last_network_error = None
-    while now() < deadline:
-        try:
-            result = _request_json(
-                opener, "GET", "/videos/" + urllib.parse.quote(request_id), timeout=60
-            )
-            last_network_error = None
-        except RuntimeError as exc:
-            # 只重试查询，绝不重发上面的创建请求。
-            if "网络异常" not in str(exc):
-                raise
-            last_network_error = exc
-            sleep(XAI_VIDEO_POLL_INTERVAL)
-            continue
-        status = str(result.get("status") or "").strip().lower()
-        if status != last_status:
-            print("[xai-video] request_id=%s model=%s status=%s" % (request_id, model, status), flush=True)
-            last_status = status
-        if heartbeat:
-            heartbeat(job_id, "xai_" + (status or "pending"),
-                      provider_video_id=request_id, model=model)
-        if status == "done":
-            video = result.get("video") or {}
-            url = str(video.get("url") or "").strip() if isinstance(video, dict) else ""
-            if not url:
-                raise RuntimeError("xAI视频已完成但未返回成片URL")
-            return {
-                "request_id": request_id,
-                "model": str(result.get("model") or model),
-                "source_video_url": url,
-                "duration": video.get("duration") or duration,
-                "respect_moderation": video.get("respect_moderation"),
-            }
-        if status in {"failed", "expired"}:
-            detail = result.get("error") or result.get("message") or status
-            raise RuntimeError("xAI视频生成%s: %s" % ("过期" if status == "expired" else "失败", str(detail)[:500]))
-        sleep(XAI_VIDEO_POLL_INTERVAL)
-    if last_network_error:
-        raise TimeoutError("xAI视频查询超时: %s" % str(last_network_error)[:200])
-    raise TimeoutError("xAI视频生成超时")
+    return _poll(opener, request_id, model, duration, job_id, heartbeat, now, sleep)
+
+
+def edit(model, prompt, video_url, duration, job_id=None, heartbeat=None, now=None, sleep=None):
+    """创建一次 xAI 视频编辑任务；输出时长和比例由输入视频继承。"""
+    opener = _opener()
+    payload = {"model": model, "prompt": str(prompt or "").strip(), "video": {"url": video_url}}
+    created = _request_json(opener, "POST", "/videos/edits", payload, timeout=120)
+    request_id = str(created.get("request_id") or "").strip()
+    if not request_id:
+        raise RuntimeError("xAI视频服务未返回 request_id")
+    return _poll(opener, request_id, model, duration, job_id, heartbeat, now, sleep)

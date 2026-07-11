@@ -75,6 +75,22 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertEqual(body["ratio"], "2:3")
         self.assertEqual(body["duration"], 15)
 
+    def test_validate_official_edit_verifies_server_side_duration(self):
+        source = "data:video/mp4;base64,AAAA"
+        with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"), \
+             patch.object(self.video, "_probe_data_video_duration", return_value=8.6):
+            body = self.video.validate_xiaole_video_payload({"channel": "grok", "operation": "edit",
+                                                              "prompt": "change person", "reference_video_data": source})
+        self.assertEqual(body["source_duration"], 8.6)
+        self.assertEqual(body["model"], "grok-imagine-video")
+
+    def test_validate_official_edit_rejects_over_8_7_seconds(self):
+        with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"), \
+             patch.object(self.video, "_probe_data_video_duration", return_value=8.71):
+            with self.assertRaisesRegex(ValueError, "8.7"):
+                self.video.validate_xiaole_video_payload({"channel": "grok", "operation": "edit", "prompt": "demo",
+                                                          "reference_video_data": "data:video/mp4;base64,AAAA"})
+
     def test_validate_official_grok_rejects_multiple_references(self):
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"):
             with self.assertRaisesRegex(ValueError, "最多支持1张"):
@@ -110,6 +126,23 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertEqual(result["model"], "grok-imagine-video")
         self.assertEqual(result["duration"], 10)
         generate.assert_called_once()
+
+    def test_gen_grok_official_edit_uploads_source_and_preserves_contract(self):
+        fake = {"request_id": "edit-1", "model": "grok-imagine-video",
+                "source_video_url": "https://vidgen.x.ai/edit.mp4", "duration": 6.2}
+        with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"), \
+             patch.object(self.video, "_save_data_file", return_value="video/source.mp4"), \
+             patch.object(self.video, "public_url", side_effect=["https://cos.example/source.mp4", "https://cos.example/cover.jpg"]), \
+             patch.object(self.video, "_file_url", return_value="/api/files/video/source.mp4"), \
+             patch("content_domains.video_xai.edit", return_value=fake) as edit, \
+             patch.object(self.video, "_download_xiaole_video", return_value="video/edit.mp4"), \
+             patch.object(self.video, "_extract_first_frame_cover", return_value="video/edit_cover.jpg"):
+            result = self.video.gen_xiaole_video({"channel": "grok", "operation": "edit", "prompt": "change person",
+                                                  "reference_video_data": "data:video/mp4;base64,AAAA", "source_duration": 6.2})
+        self.assertEqual(result["operation"], "edit")
+        self.assertEqual(result["reference_video_file"], "video/source.mp4")
+        self.assertIsNone(result["resolution"])
+        edit.assert_called_once()
 
 
 if __name__ == "__main__":

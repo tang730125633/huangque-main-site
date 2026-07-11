@@ -19,6 +19,12 @@ class GrokOfficialUiTests(unittest.TestCase):
         self.assertIn("xlPayload.model=selectedGrokModel", self.html)
         self.assertIn("var GROK_REF_MAX=1", self.html)
 
+    def test_edit_mode_accepts_mp4_and_sends_edit_payload(self):
+        self.assertIn('data-grok-operation="edit"', self.html)
+        self.assertIn('accept="video/mp4"', self.html)
+        self.assertIn("duration>8.7", self.html)
+        self.assertIn("xlPayload.reference_video_data=grokEditVideoData", self.html)
+
 
 if __name__ == "__main__":
     unittest.main()

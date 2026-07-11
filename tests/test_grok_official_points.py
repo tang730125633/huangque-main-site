@@ -10,6 +10,10 @@ from content_domains import points, video
 
 
 class GrokOfficialPointsTests(unittest.TestCase):
+    def test_edit_price_includes_video_input_and_720p_output(self):
+        with patch.dict(os.environ, {"GROK_VIDEO_PROVIDER": "xai", "XAI_USD_CNY": "7.3", "XAI_PRICE_BUFFER": "1.2"}):
+            self.assertEqual(points.cost_of("xiaole_video", {"channel": "grok", "operation": "edit", "source_duration": 8.7}), 61)
+
     def test_standard_price_scales_with_duration_and_resolution(self):
         env = {"GROK_VIDEO_PROVIDER": "xai", "XAI_USD_CNY": "7.3", "XAI_PRICE_BUFFER": "1.2"}
         with patch.dict(os.environ, env, clear=False):
