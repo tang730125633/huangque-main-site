@@ -682,6 +682,19 @@
     err.retryAfterMs=meta.retryAfterMs||0;
     return err;
   }
+  function refreshVideoNodeHint(node){
+    if(!node || node.type!=='video' || !node.el) return;
+    var warn=node.el.querySelector('[data-f="videoWarn"]');
+    if(warn) warn.style.display=((node.params.channel||'grok')==='grok')?'block':'none';
+  }
+  function normalizeVideoNodeError(node, err){
+    var msg=String((err&&err.message)||err||'生成失败');
+    var channel=node&&node.params&&node.params.channel||'grok';
+    if(channel==='grok' && /(HTTP\s*404|当前模型暂无|暂无支持该视频参数的可用渠道|渠道不支持当前视频尺寸)/i.test(msg)){
+      return '果肉视频当前仅 16:9（横屏）生成更稳定，请切到 16:9 后重试';
+    }
+    return msg;
+  }
   function cleanupLocalSpace(){
     if(loading) return;
     var before=snapshot(), jobs=[];
@@ -1440,7 +1453,7 @@
   function addNode(type, x, y, data){
     var t=TYPE[type], id='n'+(++nid);
     if(data&&data.id){ id=data.id; var m=String(id).match(/\d+/); if(m) nid=Math.max(nid,parseInt(m[0],10)); }
-    var node={ id:id, type:type, x:(x==null?60+((nid*30)%400):x), y:(y==null?50+((nid*40)%300):y), collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',channel:'grok',ratio:'9:16',duration:'5',quality:'hd',title:'',remark:''},(data&&data.params)||{}), outputs:cloneData((data&&data.outputs)||{}), image:(data&&data.image)||null };
+    var node={ id:id, type:type, x:(x==null?60+((nid*30)%400):x), y:(y==null?50+((nid*40)%300):y), collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',channel:'grok',ratio:'16:9',duration:'5',quality:'hd',title:'',remark:''},(data&&data.params)||{}), outputs:cloneData((data&&data.outputs)||{}), image:(data&&data.image)||null };
     var el=document.createElement('div'); el.className='nc-node'; el.style.left=node.x+'px'; el.style.top=node.y+'px';
     var body='';
     if(type==='text') body='<textarea class="nc-in" data-f="text" rows="3" placeholder="输入提示词，作为下游作图的词…"></textarea>';
@@ -1451,8 +1464,9 @@
       +'<div class="nc-refbar" data-f="refs"><span>参考图 0 张</span><div class="nc-refthumbs"></div></div>'
       +'<textarea class="nc-in" data-f="text" rows="2" placeholder="提示词（也可由上游文本/反推节点连入）"></textarea>'
       +'<button class="nc-go" data-f="run">生成图片</button><div class="nc-drop" data-f="result" style="display:none;"></div>';
-    if(type==='video') body='<div class="nc-lab">模型</div><div class="nc-seg" data-f="channel"><span class="nc-chip on" data-v="grok">果肉视频</span><span class="nc-chip" data-v="micro">微衣视频</span></div>'
-      +'<div class="nc-seg" data-f="ratio"><span class="nc-chip on" data-v="9:16">9:16</span><span class="nc-chip" data-v="16:9">16:9</span><span class="nc-chip" data-v="1:1">1:1</span></div>'
+    if(type==='video') body='<div class="nc-lab">模型</div><div class="nc-seg" data-f="channel"><span class="nc-chip on" data-v="grok">果肉视频</span><span class="nc-chip" data-v="micro">豆姐视频</span></div>'
+      +'<div class="nc-seg" data-f="ratio"><span class="nc-chip" data-v="9:16">9:16</span><span class="nc-chip on" data-v="16:9">16:9</span><span class="nc-chip" data-v="1:1">1:1</span></div>'
+      +'<div data-f="videoWarn" style="margin-top:8px; font-size:12px; line-height:1.55; color:#b5892f;">果肉视频当前优先建议 16:9（横屏），其余比例暂时大概率失败</div>'
       +'<div class="nc-seg" data-f="duration"><span class="nc-chip on" data-v="5">5s</span><span class="nc-chip" data-v="10">10s</span></div>'
       +'<div class="nc-refbar" data-f="refs"><span>参考图 0 张</span><div class="nc-refthumbs"></div></div>'
       +'<textarea class="nc-in" data-f="text" rows="2" placeholder="视频提示词（也可由上游文本/反推节点连入）"></textarea>'
@@ -1502,6 +1516,7 @@
     var videoResult=el.querySelector('[data-f="videoResult"]');
     if(videoResult&&node.outputs.video) renderVideoResult(node,node.outputs.video);
     refreshGenRefs(node);
+    refreshVideoNodeHint(node);
   }
   function inputVals(nodeId, port){
     return edges.filter(function(e){ return e.to.node===nodeId && e.to.port===port; }).map(function(e){
@@ -2305,7 +2320,7 @@
       out.oninput=function(){ node.outputs.prompt=out.value; scheduleSave(); };
     }
     el.querySelectorAll('.nc-seg').forEach(function(seg){ var f=seg.getAttribute('data-f');
-      seg.querySelectorAll('.nc-chip').forEach(function(c){ c.onclick=function(){ if(node.params[f]!==c.getAttribute('data-v')) pushUndo(); seg.querySelectorAll('.nc-chip').forEach(function(x){x.classList.remove('on');}); c.classList.add('on'); node.params[f]=c.getAttribute('data-v'); scheduleSave(); }; }); });
+      seg.querySelectorAll('.nc-chip').forEach(function(c){ c.onclick=function(){ if(node.params[f]!==c.getAttribute('data-v')) pushUndo(); seg.querySelectorAll('.nc-chip').forEach(function(x){x.classList.remove('on');}); c.classList.add('on'); node.params[f]=c.getAttribute('data-v'); refreshVideoNodeHint(node); scheduleSave(); }; }); });
     // 图片节点上传/粘贴
     var file=el.querySelector('[data-f="file"]'), drop=el.querySelector('[data-f="drop"]');
     if(file){ file.onchange=function(){ var label=node._imageActionLabel||'图片已上传'; node._imageActionLabel=''; imgToNode(node, file.files&&file.files[0], label); }; }
@@ -2695,7 +2710,9 @@
       var videoPrompt=inputVal(id,'prompt')||node.params.text||'';
       if(!videoPrompt.trim()){ setNodeState(node,'error','需要视频提示词（自己填或从上游连入）','#f4708a'); updateState('缺少提示词'); return Promise.reject('无词'); }
       var videoRefs=refImagesForNode(node).slice(0,4);
-      var payload={channel:node.params.channel||'grok',prompt:videoPrompt.trim(),ratio:node.params.ratio||'9:16',duration:node.params.duration||'5'};
+      var videoChannel=node.params.channel||'grok';
+      var payload={channel:videoChannel,prompt:videoPrompt.trim()};
+      if(videoChannel==='grok') payload.ratio=node.params.ratio||'16:9';
       if(videoRefs.length) payload.reference_images=videoRefs.map(function(img){ return img.indexOf(',')>=0?img.split(',')[1]:img; });
       var vbtn=node.el.querySelector('[data-f="run"]');
       vbtn.disabled=true; setNodeState(node,'running','提交中...','#2dd4bf'); updateState('运行中');
@@ -2736,7 +2753,7 @@
             updateState('等待队列空位');
             throw e;
           }
-          setNodeState(node,'error','失败：'+(e.message||e),'#f4708a'); updateState('有错误'); throw e;
+          setNodeState(node,'error','失败：'+normalizeVideoNodeError(node,e),'#f4708a'); updateState('有错误'); throw e;
         });
     }
     return Promise.resolve();

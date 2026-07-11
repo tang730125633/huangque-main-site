@@ -50,6 +50,20 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertNotIn("aspect_ratio", calls[0][2]["input"])
         self.assertNotIn("aspect_ratio", calls[2][2]["input"])
 
+    def test_xiaole_ratio_channel_error_matches_supplier_size_message(self):
+        self.assertTrue(self.video._is_xiaole_ratio_channel_error(
+            '视频接口失败: HTTP 404 {"code":404,"message":"当前模型暂无支持该视频参数的可用渠道：渠道不支持当前视频尺寸"}'
+        ))
+
+    def test_generate_xiaole_video_normalizes_supplier_size_error(self):
+        with patch.object(
+            self.video,
+            "_xiaole_request",
+            side_effect=RuntimeError('视频接口失败: HTTP 404 {"code":404,"message":"当前模型暂无支持该视频参数的可用渠道：渠道不支持当前视频尺寸"}')
+        ):
+            with self.assertRaisesRegex(RuntimeError, "当前仅部分比例可用，请优先尝试 16:9（横屏）"):
+                self.video.generate_xiaole_video("Grok Image Video", "demo", size="720x1280", prefix="grok")
+
 
 if __name__ == "__main__":
     unittest.main()

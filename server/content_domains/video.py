@@ -1896,6 +1896,11 @@ def _download_xiaole_video(url, prefix="xiaole"):
 def _xiaole_size_for_ratio(ratio):
     return XIAOLE_RATIO_SIZES.get(str(ratio or "").strip(), XIAOLE_RATIO_SIZES["9:16"])
 
+def _is_xiaole_ratio_channel_error(msg):
+    s = str(msg or "")
+    return (("无可用渠道" in s) or ("当前模型暂无" in s) or ("暂无支持该视频参数的可用渠道" in s)
+            or ("渠道不支持当前视频尺寸" in s))
+
 def generate_xiaole_video(model, prompt, reference_images=None, size="720x1280", job_id=None, prefix="xiaole", duration=None):
     """统一 generations API：创建 → 轮询 → 下载。Grok(果肉)/Seedance(豆姐)/Omni(欧米) 共用。"""
     input_d = {"prompt": (prompt or "").strip(), "size": size or XIAOLE_RATIO_SIZES["9:16"]}   # 果肉/Grok 视频收 size，不收 aspect_ratio(#367)
@@ -1914,12 +1919,16 @@ def generate_xiaole_video(model, prompt, reference_images=None, size="720x1280",
         create = _xiaole_request("POST", "/api/v1/generations", {"model": model, "input": input_d})
     except RuntimeError as e:
         m = str(e)
-        if ("无可用渠道" in m) or ("insufficient_user_quota" in m) or ("额度" in m) or ("媒体任务过多" in m):
+        if _is_xiaole_ratio_channel_error(m):
+            raise RuntimeError("该视频渠道当前仅部分比例可用，请优先尝试 16:9（横屏）")
+        if ("insufficient_user_quota" in m) or ("额度" in m) or ("媒体任务过多" in m):
             raise RuntimeError("该视频渠道暂时繁忙或维护中，请稍后再试")
         raise
     if create.get("code") not in (200, 0, None):
         msg = str(create.get("message") or create)[:200]
-        if ("无可用渠道" in msg) or ("额度" in msg) or ("任务过多" in msg):
+        if _is_xiaole_ratio_channel_error(msg):
+            raise RuntimeError("该视频渠道当前仅部分比例可用，请优先尝试 16:9（横屏）")
+        if ("额度" in msg) or ("任务过多" in msg):
             raise RuntimeError("该视频渠道暂时繁忙或维护中，请稍后再试")
         raise RuntimeError("视频创建失败: %s" % msg)
     data = create.get("data") or {}
