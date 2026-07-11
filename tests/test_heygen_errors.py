@@ -71,12 +71,16 @@ class HeyGenErrorTest(unittest.TestCase):
         self.assertNotIn(10, create.call_args.args, "客户端传的 duration 不该流到供应商")
 
     def test_motion_duration_rejects_provider_overflow(self):
-        with patch.object(video, "_probe_video_duration", return_value=30.1):
-            with self.assertRaisesRegex(ValueError, "线路一 HeyGen最长 30 秒"):
-                video._motion_reference_duration("video/reference.mp4", "1")
+        """超长的参考视频要【在本地】明确拒绝，别丢给上游去报一句天书错误。
+
+        去线路化后只剩 WaveSpeed 一档（120 秒）；原线路一 HeyGen 的 30 秒上限随那条路径
+        一起删了 —— 需要 HeyGen 的能力请用「AI 剧情视频」，它有自己的 4~15 秒校验。
+        """
         with patch.object(video, "_probe_video_duration", return_value=120.1):
-            with self.assertRaisesRegex(ValueError, "线路二 WaveSpeed最长 120 秒"):
-                video._motion_reference_duration("video/reference.mp4", "2")
+            with self.assertRaisesRegex(ValueError, "超过最长 120 秒"):
+                video._motion_reference_duration("video/reference.mp4")
+        with patch.object(video, "_probe_video_duration", return_value=119.0):
+            self.assertEqual(video._motion_reference_duration("video/reference.mp4"), 119.0)
 
 
 if __name__ == "__main__":

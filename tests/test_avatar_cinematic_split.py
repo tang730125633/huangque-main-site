@@ -71,9 +71,36 @@ class PipelineWiringTests(unittest.TestCase):
         self.assertIsNot(core._pick_job_queue("cinematic"), core._fast_job_queue)
         self.assertIsNot(core._pick_job_queue("avatar"), core._fast_job_queue)
 
-    def test_avatar_pool_is_serial_and_cinematic_pool_is_ten(self):
+    def test_avatar_pool_is_serial(self):
         self.assertEqual(core.AVATAR_JOB_WORKERS, 1, "建形象要求串行")
-        self.assertEqual(core.CINEMATIC_JOB_WORKERS, 10, "10 是 HeyGen 10 路并发实测过的")
+
+    def test_heygen_concurrency_is_capped_at_the_account_level(self):
+        """HeyGen 的并发上限是【账号级】的，不是每个功能各一份。
+
+        官方文档（Usage Limits）：Pay-As-You-Go 的 Max Concurrent Video Jobs = 10，
+        且「Concurrent jobs include any asynchronous generation in progress」——
+        口播、剧情视频、翻译全都算在这 10 个里。
+
+        我们有三个池打同一个账号。各自为政的话最坏能凑出 20+ 个并发请求 → 必然 429，
+        而 429 会让任务判失败退点、用户白等几分钟。所以必须在本地共用一个信号量。
+        """
+        self.assertEqual(video.HEYGEN_MAX_CONCURRENCY, 10)
+        self.assertEqual(video._heygen_gen_sem._initial_value, 10)
+
+    def test_the_slow_feature_cannot_starve_the_fast_one(self):
+        """剧情视频每条占槽 ~500s，口播只占 ~104s。
+
+        不给慢的那个设份额上限，10 条剧情视频就能占满全部 10 个槽，把口播饿死 8 分钟。
+        所以 cinematic 的 worker 数就是它的份额上限：最多占 5 个槽，永远给口播留 5 个。
+        """
+        self.assertLessEqual(core.CINEMATIC_JOB_WORKERS, video.HEYGEN_MAX_CONCURRENCY // 2,
+                             "剧情视频的份额不能超过一半，否则会饿死口播")
+
+    def test_every_heygen_generation_path_takes_a_slot(self):
+        """漏掉任何一条路径，那条就绕过了闸 —— 包括中转（泽龙转发的是同一个账号）。"""
+        src = Path(video.__file__).read_text(encoding="utf-8")
+        for label in ("口播直连", "口播中转", "剧情视频"):
+            self.assertIn('heygen_slot("%s")' % label, src)
 
     def test_handlers_receive_username_and_job_id(self):
         """gen_avatar 要 _username 才能记形象归属；gen_cinematic 要它才能查到用户的形象。

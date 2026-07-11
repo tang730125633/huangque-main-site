@@ -1118,6 +1118,42 @@ def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, re
         raise RuntimeError("HeyGen未返回video_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
     return video_id
 
+# ============ HeyGen 账号级并发闸 ============
+# 官方文档（Usage Limits）：Pay-As-You-Go 的 "Max Concurrent Video Jobs" = 10，而且这个 10 是
+# 【跨所有任务类型的账号级上限】——「Concurrent jobs include any asynchronous generation in
+# progress: Video Agent sessions, avatar video renders, and video translations」。
+# 不是每个功能各 10 个。超了 HeyGen 直接返回 429。
+#
+# 我们有三个池打同一个 HeyGen 账号：口播(10 worker) + AI剧情视频 + 建形象。各自为政的话，
+# 最坏能凑出 20+ 个并发请求 → 必然 429。而 429 会让任务判失败退点、用户白等几分钟。
+# 所以在【本地】共用一个信号量：超了在本地排队，把 429 挡在门外。
+#
+# 槽只在【生成期间】持有（建视频 → 轮询出片）—— 这正是 HeyGen 说的 "generation in progress"。
+# 上传素材、查 look 状态这些同步调用不占槽（它们不产生 async job）。
+# 中转(泽龙)转发的是同一个账号，所以中转路径同样要占槽。
+HEYGEN_MAX_CONCURRENCY = int(os.environ.get("HEYGEN_MAX_CONCURRENCY", "10") or 10)
+_heygen_gen_sem = threading.BoundedSemaphore(HEYGEN_MAX_CONCURRENCY)
+
+
+class heygen_slot(object):
+    """占一个 HeyGen 账号级并发槽。用法： with heygen_slot("口播"): create... poll..."""
+
+    def __init__(self, label=""):
+        self.label = label
+
+    def __enter__(self):
+        t0 = time.time()
+        _heygen_gen_sem.acquire()
+        waited = time.time() - t0
+        if waited > 1:
+            print("[heygen] %s 等并发槽 %.0fs（账号级上限 %d）" % (self.label, waited, HEYGEN_MAX_CONCURRENCY), flush=True)
+        return self
+
+    def __exit__(self, *exc):
+        _heygen_gen_sem.release()
+        return False
+
+
 class HeyGenBilledError(RuntimeError):
     """视频已在 HeyGen 提交成功（= 已计费）之后才失败。绝不能回退中转重发。
 
@@ -1245,15 +1281,16 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, moti
     audio_fp = _ensure_heygen_audio_mp3(audio_fp)
     image_asset_id = _heygen_upload_asset(image_fp, direct=True)
     audio_asset_id = _heygen_upload_asset(audio_fp, direct=True)
-    video_id = _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion, direct=True)
-    # ↓ 此刻已计费。之后任何失败都不能回退中转重发（同一账号，会再付一次），见 HeyGenBilledError
-    try:
-        info = _heygen_poll_video(video_id, direct=True, deadline_s=450)  # 直连轮询死线450s，配套 reaper 口播 540s
-        video_file = _download_video_file_direct(info["video_url"], "heygen")
-        cover = _extract_first_frame_cover(video_file)
-    except Exception as e:
-        raise HeyGenBilledError("口播已提交 HeyGen(video_id=%s，已计费)，后续失败: %s"
-                                % (video_id, str(e)[:180])) from e
+    with heygen_slot("口播直连"):   # 账号级并发上限 10，三个池共用；超了在本地排队，不让 HeyGen 甩 429
+        video_id = _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion, direct=True)
+        # ↓ 此刻已计费。之后任何失败都不能回退中转重发（同一账号，会再付一次），见 HeyGenBilledError
+        try:
+            info = _heygen_poll_video(video_id, direct=True, deadline_s=450)  # 直连轮询死线450s，配套 reaper 口播 540s
+            video_file = _download_video_file_direct(info["video_url"], "heygen")
+            cover = _extract_first_frame_cover(video_file)
+        except Exception as e:
+            raise HeyGenBilledError("口播已提交 HeyGen(video_id=%s，已计费)，后续失败: %s"
+                                    % (video_id, str(e)[:180])) from e
     ret = {
         "video_id": video_id, "video_file": video_file, "video_url": _file_url(video_file),
         "image_asset_id": image_asset_id, "audio_asset_id": audio_asset_id,
@@ -1281,10 +1318,12 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
     audio_fp = _ensure_heygen_audio_mp3(audio_fp)
     image_asset_id = _heygen_upload_asset(image_fp)
     audio_asset_id = _heygen_upload_asset(audio_fp)
-    video_id = _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion)
-    info = _heygen_poll_video(video_id)
-    video_file = _download_video_file(info["video_url"], "heygen")
-    cover = _extract_first_frame_cover(video_file)
+    # 中转(泽龙)转发的是同一个 HeyGen 账号，一样占账号的并发额度 —— 不占槽就等于绕过了闸
+    with heygen_slot("口播中转"):
+        video_id = _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion)
+        info = _heygen_poll_video(video_id)
+        video_file = _download_video_file(info["video_url"], "heygen")
+        cover = _extract_first_frame_cover(video_file)
     ret = {
         "video_id": video_id,
         "image_asset_id": image_asset_id,
@@ -1294,128 +1333,6 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
         "source_video_url": info.get("video_url"),
         "thumbnail_url": info.get("thumbnail_url"),
         "duration": info.get("duration"),
-    }
-    if cover:
-        ret["image_file"] = cover
-        ret["image_url"] = public_url(cover, "image/jpeg")
-    return ret
-
-def generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration, job_id=None, avatar=None):
-    # 直连优先（同 #405 口播）：泽龙转发同一账号，直连省掉排队；「提交前」失败才回退泽龙。
-    # 提交后失败绝不回退：cinematic 提交即扣 $7，泽龙是同一账号，重发 = 同一条视频付两次。
-    if _HEYGEN_DIRECT and HEYGEN_API_KEY:
-        try:
-            return _generate_heygen_motion_video_impl(image_file, reference_video_file, resolution, ratio,
-                                                      duration, job_id, avatar, direct=True)
-        except HeyGenBilledError:
-            raise
-        except Exception as e:
-            print("[heygen] motion直连失败(提交前),回退泽龙中转: %s" % str(e)[:200], flush=True)
-    return _generate_heygen_motion_video_impl(image_file, reference_video_file, resolution, ratio,
-                                              duration, job_id, avatar, direct=False)
-
-def _generate_heygen_motion_video_impl(image_file, reference_video_file, resolution, ratio, duration, job_id=None, avatar=None, direct=False):
-    image_fp = _resolve_out_file(image_file)
-    reference_fp = _resolve_out_file(reference_video_file)
-    if not image_fp or not reference_fp:
-        raise ValueError("动作模仿素材文件不存在")
-    image_fp = _ensure_heygen_image_jpg(image_fp)
-    image_asset_id = None
-    avatar_item_id = ""
-    avatar_group_id = ""
-    if avatar:
-        avatar_item_id = (avatar.get("provider_avatar_id") or "").strip()
-        avatar_group_id = (avatar.get("provider_avatar_group_id") or "").strip()
-        if not avatar_item_id:
-            raise ValueError("avatar provider id missing")
-        update_video_asset_phase(job_id, "reusing_photo_avatar", provider_avatar_id=avatar_item_id,
-                                 provider_avatar_group_id=avatar_group_id)
-    else:
-        update_video_asset_phase(job_id, "uploading_image_asset")
-        image_asset_id = _heygen_upload_asset(image_fp, direct=direct)
-    update_video_asset_phase(job_id, "uploading_reference_asset", image_asset_id=image_asset_id,
-                             provider_avatar_id=avatar_item_id or None,
-                             provider_avatar_group_id=avatar_group_id or None)
-    # 参考视频已在落盘时压过（gen_video 的 motion 分支，线路分发之前）——这里不要再压一遍。
-    reference_asset_id = _heygen_upload_asset(reference_fp, direct=direct)
-    if not avatar_item_id:
-        update_video_asset_phase(job_id, "creating_photo_avatar", image_asset_id=image_asset_id,
-                                 reference_asset_id=reference_asset_id)
-        avatar_item_id, avatar_group_id = _heygen_create_photo_avatar(image_asset_id, direct=direct)
-        update_video_asset_phase(job_id, "waiting_photo_avatar", image_asset_id=image_asset_id,
-                                 reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
-                                 provider_avatar_group_id=avatar_group_id)
-        _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id, direct=direct)
-    update_video_asset_phase(job_id, "creating_cinematic_video", image_asset_id=image_asset_id,
-                             reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
-                             provider_avatar_group_id=avatar_group_id)
-    video_id = None
-    last_create_error = None
-    rebuilt_avatar = False
-    for attempt in range(1, 7):
-        try:
-            video_id = _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration, direct=direct)
-            break
-        except RuntimeError as e:
-            last_create_error = str(e)
-            lowered = last_create_error.lower()
-            invalid_avatar = avatar and (not rebuilt_avatar) and "avatar" in lowered and (
-                "not found" in lowered or "does not exist" in lowered or "invalid" in lowered
-            )
-            if invalid_avatar:
-                update_video_asset_phase(job_id, "rebuilding_photo_avatar", image_asset_id=image_asset_id,
-                                         reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
-                                         provider_avatar_group_id=avatar_group_id,
-                                         error=last_create_error[:180])
-                if not image_asset_id:
-                    image_asset_id = _heygen_upload_asset(image_fp, direct=direct)
-                avatar_item_id, avatar_group_id = _heygen_create_photo_avatar(image_asset_id, direct=direct)
-                if avatar.get("username"):
-                    record_video_avatar(avatar.get("username"), image_file, avatar_item_id, avatar_group_id, avatar.get("name"))
-                update_video_asset_phase(job_id, "waiting_rebuilt_photo_avatar", image_asset_id=image_asset_id,
-                                         reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
-                                         provider_avatar_group_id=avatar_group_id)
-                _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id, direct=direct)
-                rebuilt_avatar = True
-                continue
-            retryable = "not ready" in lowered or "status: pending" in lowered
-            if not retryable or attempt >= 6:
-                raise
-            update_video_asset_phase(job_id, "waiting_avatar_look", image_asset_id=image_asset_id,
-                                     reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
-                                     provider_avatar_group_id=avatar_group_id,
-                                     error=("avatar look pending, retry %d/6" % attempt))
-            time.sleep(20)
-    if not video_id:
-        raise RuntimeError(last_create_error or "HeyGen未返回video_id")
-    update_video_asset_phase(job_id, "polling_video", image_asset_id=image_asset_id,
-                             reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
-                             provider_avatar_group_id=avatar_group_id, provider_video_id=video_id)
-    # ↓ 此刻已计费($7)。之后任何失败都不能回退中转重发（同一账号），见 HeyGenBilledError。
-    # 死线 1500s：实测 HeyGen 生成 392~511s（10 路并发下），原值 510 擦线甚至越线；
-    # 上传(≤240s)+生成(≤1500s)+下载 仍在 reaper 的 motion 宽限 2400s 内，不会被误判超时。
-    try:
-        info = _heygen_poll_video(video_id, direct=direct,
-                                  deadline_s=HEYGEN_MOTION_DEADLINE if direct else None)
-        update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
-                                 source_video_url=info.get("video_url"))
-        video_file = (_download_video_file_direct if direct else _download_video_file)(info["video_url"], "cinematic")
-        cover = _extract_first_frame_cover(video_file)
-    except Exception as e:
-        raise HeyGenBilledError("动作模仿已提交 HeyGen(video_id=%s，已扣费)，后续失败: %s"
-                                % (video_id, str(e)[:180])) from e
-    ret = {
-        "video_id": video_id,
-        "provider": "heygen_direct" if direct else "heygen_zelong",
-        "image_asset_id": image_asset_id,
-        "reference_asset_id": reference_asset_id,
-        "avatar_item_id": avatar_item_id,
-        "avatar_group_id": avatar_group_id,
-        "video_file": video_file,
-        "video_url": _file_url(video_file),
-        "source_video_url": info.get("video_url"),
-        "thumbnail_url": info.get("thumbnail_url"),
-        "duration": info.get("duration") or duration,
     }
     if cover:
         ret["image_file"] = cover
@@ -1505,17 +1422,14 @@ def _probe_video_duration(video_file):
     except Exception as e:
         raise ValueError("无法读取参考视频时长，请重新导出为 MP4 后上传") from e
 
-def _motion_reference_duration(reference_video_file, line):
+MOTION_REF_MAX_SECONDS = 120   # WaveSpeed 的上限。去线路化后只剩这一档（原线路一 HeyGen 是 30 秒）
+
+
+def _motion_reference_duration(reference_video_file):
+    """超长的参考视频要【在本地】明确拒绝，别丢给上游去报一句天书错误。"""
     duration = _probe_video_duration(reference_video_file)
-    line = "2" if str(line or "1").strip() == "2" else "1"
-    max_duration = 120 if line == "2" else 30
-    if duration > max_duration + 0.05:
-        provider = "线路二 WaveSpeed" if line == "2" else "线路一 HeyGen"
-        raise ValueError("参考视频 %.1f 秒，超过%s最长 %d 秒，请先裁剪后重试" % (
-            duration, provider, max_duration,
-        ))
-    if line == "1" and duration < 5:
-        raise ValueError("参考视频 %.1f 秒，线路一 HeyGen 最短支持 5 秒" % duration)
+    if duration > MOTION_REF_MAX_SECONDS + 0.05:
+        raise ValueError("参考视频 %.1f 秒，超过最长 %d 秒，请先裁剪后重试" % (duration, MOTION_REF_MAX_SECONDS))
     return duration
 
 def _ass_time(sec):
@@ -1767,7 +1681,7 @@ def gen_video(payload):
         # 原来的「线路一(HeyGen)」已经拆成独立的「AI 剧情视频」功能（gen_cinematic）——那边能选
         # 1~3 个事先建好的形象、写自己的提示词、选 720p/1080p，是 WaveSpeed 做不到的。
         # 而动作模仿只做它最擅长的一件事：人物图 + 驱动视频 → 照着跳。固定 720p（WaveSpeed 只支持这个）。
-        reference_duration = _motion_reference_duration(reference_video_file, "2")
+        reference_duration = _motion_reference_duration(reference_video_file)
         update_video_asset_phase(job_id, "motion_parameters_ready", resolution=resolution,
                                  ratio=ratio, motion=motion)
         from . import wavespeed
@@ -2455,20 +2369,23 @@ def gen_cinematic(payload):
         reference_asset_id = _heygen_upload_asset(_resolve_out_file(reference_video_file), direct=True)
 
     update_video_asset_phase(job_id, "creating_cinematic_video", reference_asset_id=reference_asset_id)
-    video_id = _heygen_create_cinematic_video(
-        look_ids, reference_asset_id, payload["ratio"], payload["resolution"], payload["duration"],
-        prompt=payload["prompt"] + CINEMATIC_IDENTITY_GUARD, direct=True)
+    # 账号级并发闸：和口播共用 10 个槽（HeyGen 的上限是账号级的，不是每个功能各 10 个）。
+    # 素材上传在闸外——它不产生 async job，不占 HeyGen 的并发额度。
+    with heygen_slot("剧情视频"):
+        video_id = _heygen_create_cinematic_video(
+            look_ids, reference_asset_id, payload["ratio"], payload["resolution"], payload["duration"],
+            prompt=payload["prompt"] + CINEMATIC_IDENTITY_GUARD, direct=True)
 
-    # ↓ 此刻已计费。之后任何失败都不能重发（见 HeyGenBilledError）——HeyGen 提交即扣费。
-    update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id)
-    try:
-        info = _heygen_poll_video(video_id, direct=True, deadline_s=HEYGEN_MOTION_DEADLINE)
-        update_video_asset_phase(job_id, "downloading_video", source_video_url=info.get("video_url"))
-        video_file = _download_video_file_direct(info["video_url"], "cinematic")
-        cover = _extract_first_frame_cover(video_file)
-    except Exception as e:
-        raise HeyGenBilledError("剧情视频已提交 HeyGen(video_id=%s，已扣费)，后续失败: %s"
-                                % (video_id, str(e)[:180])) from e
+        # ↓ 此刻已计费。之后任何失败都不能重发（见 HeyGenBilledError）——HeyGen 提交即扣费。
+        update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id)
+        try:
+            info = _heygen_poll_video(video_id, direct=True, deadline_s=HEYGEN_MOTION_DEADLINE)
+            update_video_asset_phase(job_id, "downloading_video", source_video_url=info.get("video_url"))
+            video_file = _download_video_file_direct(info["video_url"], "cinematic")
+            cover = _extract_first_frame_cover(video_file)
+        except Exception as e:
+            raise HeyGenBilledError("剧情视频已提交 HeyGen(video_id=%s，已扣费)，后续失败: %s"
+                                    % (video_id, str(e)[:180])) from e
 
     ret = {
         "video_id": video_id, "video_file": video_file, "video_url": _file_url(video_file),
