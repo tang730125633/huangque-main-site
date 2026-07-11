@@ -1487,7 +1487,8 @@ def gen_video(payload):
     audio_file = None
     audio_url = None
     reference_video_file = None
-    bgm_file = _save_data_file(payload.get("bgm_data"), "video_bgm", [".mp3", ".wav", ".m4a"])
+    bgm_file = (_save_data_file(payload.get("bgm_data"), "video_bgm", [".mp3", ".wav", ".m4a"])
+                if payload.get("bgm_data") else None)
     if mode == "motion":
         reference_video_file = _save_data_file(payload.get("reference_video_data"), "motion_ref", [".mp4", ".mov", ".webm"])
         if not reference_video_file:

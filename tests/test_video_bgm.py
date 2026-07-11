@@ -29,6 +29,16 @@ class VideoBgmTests(unittest.TestCase):
         self.assertIn("amix=inputs=2", " ".join(run.call_args_list[0].args[0]))
         self.assertNotIn("amix=inputs=2", " ".join(run.call_args_list[1].args[0]))
 
+    def test_no_bgm_does_not_consume_an_extra_file_save(self):
+        with patch.object(video, "HEYGEN_API_KEY", "configured"), \
+             patch.object(video, "_save_data_file", side_effect=["image.png", "reference.mp4"]) as save, \
+             patch.object(video, "_motion_reference_duration", return_value=6), \
+             patch.object(video, "generate_heygen_motion_video", return_value={"video_file": "video/out.mp4"}), \
+             patch.object(video, "public_url", return_value="/video/out.mp4"), \
+             patch.object(video, "update_video_asset_phase"):
+            video.gen_video({"mode": "motion", "line": "1", "image_data": "image", "reference_video_data": "video"})
+        self.assertEqual(2, save.call_count)
+
     def test_frontend_sends_bgm_on_talking_batch_and_motion(self):
         html = (ROOT / "site/workbench/video.html").read_text(encoding="utf-8")
         self.assertIn('id="bgmPanel"', html)
