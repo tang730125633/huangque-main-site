@@ -931,6 +931,28 @@ def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, re
         raise RuntimeError("HeyGen未返回video_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
     return video_id
 
+class HeyGenBilledError(RuntimeError):
+    """视频已在 HeyGen 提交成功（= 已计费）之后才失败。绝不能回退中转重发。
+
+    HeyGen 在「提交」那一刻就扣费，不是出片时（2026-07-11 用生成前后读钱包实测：
+    cinematic 提交即扣 $7，钱包 15.15→8.15）。而泽龙中转转发的是同一个 HeyGen 账号
+    （见 generate_heygen_motion_video 的注释），所以「回退泽龙」不是换供应商，
+    是拿同一份素材再提交一次 —— 同一条视频付两次钱。
+
+    原来两处 fallback 都是 `except Exception` 一把抓，不区分失败发生在提交前还是提交后：
+    轮询超时/下载失败/网络抖动，全都会触发重发。这与 egress.post_json 里早已立下的
+    非幂等纪律（_pre_delivery_failure：只有「投递前」的失败才可以换通道重试）是同一条，
+    这里漏了。
+
+    提交前失败（上传、建 avatar、建视频本身）不属于本异常，仍可安全回退。
+    """
+
+
+# 直连轮询死线。motion 实测生成 392~511s(10 路并发下)，原值 510 是照着早已废弃的
+# reaper 600s 算的（reaper 的 motion 宽限现在是 2400s），擦线甚至越线 → 触发回退重发。
+HEYGEN_MOTION_DEADLINE = int(os.environ.get("HEYGEN_MOTION_DEADLINE", "1500") or 1500)
+
+
 def _heygen_poll_video(video_id, direct=False, deadline_s=None):
     deadline = time.time() + (deadline_s or HEYGEN_TIMEOUT)
     last_status = ""
@@ -1037,9 +1059,14 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, moti
     image_asset_id = _heygen_upload_asset(image_fp, direct=True)
     audio_asset_id = _heygen_upload_asset(audio_fp, direct=True)
     video_id = _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion, direct=True)
-    info = _heygen_poll_video(video_id, direct=True, deadline_s=450)  # 直连轮询死线450s，配套 reaper 口播 540s
-    video_file = _download_video_file_direct(info["video_url"], "heygen")
-    cover = _extract_first_frame_cover(video_file)
+    # ↓ 此刻已计费。之后任何失败都不能回退中转重发（同一账号，会再付一次），见 HeyGenBilledError
+    try:
+        info = _heygen_poll_video(video_id, direct=True, deadline_s=450)  # 直连轮询死线450s，配套 reaper 口播 540s
+        video_file = _download_video_file_direct(info["video_url"], "heygen")
+        cover = _extract_first_frame_cover(video_file)
+    except Exception as e:
+        raise HeyGenBilledError("口播已提交 HeyGen(video_id=%s，已计费)，后续失败: %s"
+                                % (video_id, str(e)[:180])) from e
     ret = {
         "video_id": video_id, "video_file": video_file, "video_url": _file_url(video_file),
         "image_asset_id": image_asset_id, "audio_asset_id": audio_asset_id,
@@ -1055,8 +1082,10 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
     if _HEYGEN_DIRECT and HEYGEN_API_KEY:
         try:
             return generate_heygen_video_direct(image_file, audio_file, resolution, ratio, motion)
+        except HeyGenBilledError:
+            raise   # 已提交=已计费，重发就是再付一次钱（泽龙转发同一账号）
         except Exception as e:
-            print("[heygen] 直连失败,回退泽龙中转: %s" % str(e)[:200], flush=True)
+            print("[heygen] 直连失败(提交前),回退泽龙中转: %s" % str(e)[:200], flush=True)
     image_fp = _resolve_out_file(image_file)
     audio_fp = _resolve_out_file(audio_file)
     if not image_fp or not audio_fp:
@@ -1085,13 +1114,16 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
     return ret
 
 def generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration, job_id=None, avatar=None):
-    # 直连优先（同 #405 口播）：泽龙转发同一账号，直连省掉排队；失败自动回退泽龙
+    # 直连优先（同 #405 口播）：泽龙转发同一账号，直连省掉排队；「提交前」失败才回退泽龙。
+    # 提交后失败绝不回退：cinematic 提交即扣 $7，泽龙是同一账号，重发 = 同一条视频付两次。
     if _HEYGEN_DIRECT and HEYGEN_API_KEY:
         try:
             return _generate_heygen_motion_video_impl(image_file, reference_video_file, resolution, ratio,
                                                       duration, job_id, avatar, direct=True)
+        except HeyGenBilledError:
+            raise
         except Exception as e:
-            print("[heygen] motion直连失败,回退泽龙中转: %s" % str(e)[:200], flush=True)
+            print("[heygen] motion直连失败(提交前),回退泽龙中转: %s" % str(e)[:200], flush=True)
     return _generate_heygen_motion_video_impl(image_file, reference_video_file, resolution, ratio,
                                               duration, job_id, avatar, direct=False)
 
@@ -1171,12 +1203,19 @@ def _generate_heygen_motion_video_impl(image_file, reference_video_file, resolut
     update_video_asset_phase(job_id, "polling_video", image_asset_id=image_asset_id,
                              reference_asset_id=reference_asset_id, provider_avatar_id=avatar_item_id,
                              provider_avatar_group_id=avatar_group_id, provider_video_id=video_id)
-    # 直连时轮询死线收在 reaper motion 超时(600s)以内，留出上传/建avatar/下载余量
-    info = _heygen_poll_video(video_id, direct=direct, deadline_s=510 if direct else None)
-    update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
-                             source_video_url=info.get("video_url"))
-    video_file = (_download_video_file_direct if direct else _download_video_file)(info["video_url"], "cinematic")
-    cover = _extract_first_frame_cover(video_file)
+    # ↓ 此刻已计费($7)。之后任何失败都不能回退中转重发（同一账号），见 HeyGenBilledError。
+    # 死线 1500s：实测 HeyGen 生成 392~511s（10 路并发下），原值 510 擦线甚至越线；
+    # 上传(≤240s)+生成(≤1500s)+下载 仍在 reaper 的 motion 宽限 2400s 内，不会被误判超时。
+    try:
+        info = _heygen_poll_video(video_id, direct=direct,
+                                  deadline_s=HEYGEN_MOTION_DEADLINE if direct else None)
+        update_video_asset_phase(job_id, "downloading_video", provider_video_id=video_id,
+                                 source_video_url=info.get("video_url"))
+        video_file = (_download_video_file_direct if direct else _download_video_file)(info["video_url"], "cinematic")
+        cover = _extract_first_frame_cover(video_file)
+    except Exception as e:
+        raise HeyGenBilledError("动作模仿已提交 HeyGen(video_id=%s，已扣费)，后续失败: %s"
+                                % (video_id, str(e)[:180])) from e
     ret = {
         "video_id": video_id,
         "provider": "heygen_direct" if direct else "heygen_zelong",
