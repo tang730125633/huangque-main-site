@@ -197,10 +197,13 @@ TALKING_JOB_WORKERS = _env_positive_int("CONTENT_TALKING_JOB_WORKERS", 10)  # �
 MOTION_JOB_WORKERS = _env_positive_int("CONTENT_MOTION_JOB_WORKERS", 3)     # 动作模仿(video mode=motion)专用池：HeyGen motion并发>3易撞代理/速率/生成墙(10并发实测仅1/10)
 IMAGE_JOB_WORKERS = _env_positive_int("CONTENT_IMAGE_JOB_WORKERS", 10)       # 生图专用池(生图慢90~450s，从快池拆出别拖死秒级任务)。10=500用户高峰约150张/时所需6.3个+60%余量；1worker≈24张/时(实测中位149s)
 JOB_QUEUE_MAX = _env_positive_int("CONTENT_JOB_QUEUE_MAX", 32)
-MAX_USER_ACTIVE_JOBS = _env_positive_int("MAX_USER_ACTIVE_JOBS", 5)          # 单用户可同时提交(pending+running)的任务上限，超了提交即 429
-MAX_USER_RUNNING_TALKING = _env_positive_int("MAX_USER_RUNNING_TALKING", 2)  # 单用户口播「运行中」并发上限：最多同时生成2条，多提交的留 pending 排队
-MAX_USER_RUNNING_IMAGE = _env_positive_int("MAX_USER_RUNNING_IMAGE", 3)      # 单用户生图「运行中」并发上限=每人可并行3个。闸数全表 kind='image'，imggen也写这表→两服务合计3个，不是各3个
-SERVICE_OWNER = "content"   # 本服务在 jobs.owner 的署名；两处全表扫描必须按它过滤，缘由见 jobs_store.ensure_owner_column
+MAX_USER_ACTIVE_JOBS = _env_positive_int("MAX_USER_ACTIVE_JOBS", 5)                  # 单用户可同时提交(pending+running)的任务上限，超了提交即 429
+MAX_USER_ACTIVE_XIAOLE_VIDEO = _env_positive_int("MAX_USER_ACTIVE_XIAOLE_VIDEO", 3)  # 单用户果肉/豆姐/欧米视频 active 上限：别让单一渠道吃满全部任务位
+MAX_USER_ACTIVE_MOTION = _env_positive_int("MAX_USER_ACTIVE_MOTION", 2)              # 单用户影视级模仿 active 上限：重任务，避免把其它视频功能全部卡死
+MAX_USER_ACTIVE_TRYON = _env_positive_int("MAX_USER_ACTIVE_TRYON", 1)                # 单用户换装视频 active 上限：最重链路，默认一次只放 1 条
+MAX_USER_RUNNING_TALKING = _env_positive_int("MAX_USER_RUNNING_TALKING", 2)          # 单用户口播「运行中」并发上限：最多同时生成2条，多提交的留 pending 排队
+MAX_USER_RUNNING_IMAGE = _env_positive_int("MAX_USER_RUNNING_IMAGE", 3)              # 单用户生图「运行中」并发上限=每人可并行3个。闸数全表 kind='image'，imggen也写这表→两服务合计3个，不是各3个
+SERVICE_OWNER = "content"   # 本服务在 jobs.owner 的署名(#579)；两处全表扫描必须按它过滤，缘由见 jobs_store.ensure_owner_column
 # reaper 各 kind 的超时宽限(秒)，默认 360。tryon 两段式+心跳刷新；xiaole_video 内部轮询600s+转存；
 # image 多图/中转慢；collect 下载+ffmpeg抽音轨+ASR 且转写全站串行(实测成功平均88s)。video 按 mode 另算。
 KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "image": 900, "collect": 1200}
@@ -710,6 +713,57 @@ def _user_active_job_count(username):
                         (username,)).fetchone()
     return int(row["n"] if row else 0)
 
+def _user_active_kind_count(username, kind):
+    if not username or not kind:
+        return 0
+    with closing(jdb()) as c:
+        row = c.execute("""SELECT COUNT(*) AS n FROM jobs
+                           WHERE username=? AND kind=? AND status IN ('pending','running')
+                             AND COALESCE(deleted,0)=0""",
+                        (username, kind)).fetchone()
+    return int(row["n"] if row else 0)
+
+def _user_active_video_mode_count(username, mode):
+    if not username or not mode:
+        return 0
+    mode = str(mode or "").lower()
+    with closing(jdb()) as c:
+        rows = c.execute("""SELECT payload FROM jobs
+                            WHERE username=? AND kind='video' AND status IN ('pending','running')
+                              AND COALESCE(deleted,0)=0""",
+                         (username,)).fetchall()
+    total = 0
+    for r in rows:
+        try:
+            payload = json.loads(r["payload"] or "{}") or {}
+        except Exception:
+            payload = {}
+        if str(payload.get("mode") or "").lower() == mode:
+            total += 1
+    return total
+
+def _user_video_submit_limit(kind, body, username, cost):
+    mode = str((body or {}).get("mode") or "").lower()
+    if kind == "xiaole_video":
+        active = _user_active_kind_count(username, "xiaole_video")
+        if active >= MAX_USER_ACTIVE_XIAOLE_VIDEO:
+            return {"detail": "当前果肉/豆姐/欧米视频最多同时排队或生成 %d 个任务，请等待部分完成后再继续" % MAX_USER_ACTIVE_XIAOLE_VIDEO,
+                    "code": "xiaole_active_cap", "active_jobs": active, "max_active_jobs": MAX_USER_ACTIVE_XIAOLE_VIDEO,
+                    "retry_after_ms": 4000, "need": cost}
+    elif kind == "tryon":
+        active = _user_active_kind_count(username, "tryon")
+        if active >= MAX_USER_ACTIVE_TRYON:
+            return {"detail": "当前换装视频最多同时排队或生成 %d 个任务，请等待任务完成后再继续" % MAX_USER_ACTIVE_TRYON,
+                    "code": "tryon_active_cap", "active_jobs": active, "max_active_jobs": MAX_USER_ACTIVE_TRYON,
+                    "retry_after_ms": 4000, "need": cost}
+    elif kind == "video" and mode == "motion":
+        active = _user_active_video_mode_count(username, "motion")
+        if active >= MAX_USER_ACTIVE_MOTION:
+            return {"detail": "当前影视级模仿最多同时排队或生成 %d 个任务，请等待部分完成后再继续" % MAX_USER_ACTIVE_MOTION,
+                    "code": "motion_active_cap", "active_jobs": active, "max_active_jobs": MAX_USER_ACTIVE_MOTION,
+                    "retry_after_ms": 4000, "need": cost}
+    return None
+
 def _user_running_talking_count(username):
     """该用户「运行中」的口播条数(kind=video 且 mode!=motion)。mode 在 payload JSON 里，SQL 取回在 py 判，用户 running 数很少(<=5)开销可忽略。"""
     if not username:
@@ -1124,6 +1178,9 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": str(e)[:220]})
             cost = points_domain.cost_of(kind, body)
             with _submission_lock:
+                limit_hit = _user_video_submit_limit(kind, body, user["username"], cost)
+                if limit_hit:
+                    return self._send(429, limit_hit)
                 active_jobs = _user_active_job_count(user["username"])
                 if active_jobs >= MAX_USER_ACTIVE_JOBS:
                     return self._send(429, {"detail": "您有 %d 个任务正在排队/生成，完成后再提交" % active_jobs,
@@ -1372,7 +1429,9 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS),
                                     "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS,
                                     "talking_job_workers": TALKING_JOB_WORKERS, "motion_job_workers": MOTION_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS,
-                                    "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE,
+                                    "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_active_xiaole_video": MAX_USER_ACTIVE_XIAOLE_VIDEO,
+                                    "max_user_active_motion": MAX_USER_ACTIVE_MOTION, "max_user_active_tryon": MAX_USER_ACTIVE_TRYON,
+                                    "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE,
                                     "video_cost": VIDEO_COST, "video_batch_max": min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS),
                                     "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})

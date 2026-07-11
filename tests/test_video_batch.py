@@ -211,5 +211,143 @@ class VideoBatchIntegrationGuardTests(unittest.TestCase):
                 core.MAX_USER_ACTIVE_JOBS = originals["max_active"]
 
 
+class VideoSingleRouteSubLimitTests(unittest.TestCase):
+    def test_single_video_routes_use_kind_specific_caps_before_deduct(self):
+        from content_domains import core
+
+        class FakePointsError(Exception):
+            def __init__(self, status, detail):
+                self.status, self.detail = status, detail
+
+        class FakePoints:
+            AuthPointsError = FakePointsError
+
+            def __init__(self):
+                self.deductions = []
+
+            def cost_of(self, kind, body):
+                return 20
+
+            def deduct_points(self, username, cost, reason):
+                self.deductions.append((username, cost, reason))
+                return 100 - cost
+
+            def safe_refund_points(self, username, cost, reason):
+                return 100
+
+        originals = {
+            "JOB_DB": core.JOB_DB,
+            "AUDIO_DB": core.AUDIO_DB,
+            "_domains": core._domains,
+            "verify": core.verify,
+            "require_enabled": core.feature_flags.require_enabled,
+            "max_active": core.MAX_USER_ACTIVE_JOBS,
+            "max_xiaole": core.MAX_USER_ACTIVE_XIAOLE_VIDEO,
+            "max_motion": core.MAX_USER_ACTIVE_MOTION,
+            "max_tryon": core.MAX_USER_ACTIVE_TRYON,
+            "validate_video": video.validate_video_payload,
+            "validate_tryon": video.validate_tryon_payload,
+        }
+        fake = FakePoints()
+        server = None
+        with tempfile.TemporaryDirectory() as td:
+            core.JOB_DB = str(pathlib.Path(td) / "jobs.db")
+            core.AUDIO_DB = str(pathlib.Path(td) / "assets.db")
+            core.verify = lambda token: {"username": "fang", "must_change": False}
+            core.feature_flags.require_enabled = lambda kind: None
+            core.MAX_USER_ACTIVE_JOBS = 5
+            core.MAX_USER_ACTIVE_XIAOLE_VIDEO = 3
+            core.MAX_USER_ACTIVE_MOTION = 2
+            core.MAX_USER_ACTIVE_TRYON = 1
+            video.validate_video_payload = lambda body, username: body
+            video.validate_tryon_payload = lambda body: body
+            try:
+                with closing(sqlite3.connect(core.JOB_DB)) as db:
+                    db.execute("""CREATE TABLE jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,username TEXT,cost INTEGER,
+                        status TEXT DEFAULT 'pending',payload TEXT,result TEXT,error TEXT,created_at INTEGER,updated_at INTEGER,
+                        deleted INTEGER DEFAULT 0, refunded INTEGER DEFAULT 0)""")
+                    db.commit()
+                core.init_audio_db()
+                core._domains = lambda: (None, fake, video)
+                server = ThreadingHTTPServer(("127.0.0.1", 0), core.H)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                base = "http://127.0.0.1:%d" % server.server_address[1]
+
+                cases = [
+                    {
+                        "seed": [
+                            ("xiaole_video", "pending", '{"channel":"omni"}'),
+                            ("xiaole_video", "running", '{"channel":"grok"}'),
+                            ("xiaole_video", "pending", '{"channel":"micro"}'),
+                        ],
+                        "path": "/api/gen/xiaole_video",
+                        "body": {"channel": "omni", "prompt": "商品展示"},
+                        "detail": "当前果肉/豆姐/欧米视频最多同时排队或生成 3 个任务，请等待部分完成后再继续",
+                        "code": "xiaole_active_cap",
+                    },
+                    {
+                        "seed": [
+                            ("video", "pending", '{"mode":"motion"}'),
+                            ("video", "running", '{"mode":"motion"}'),
+                        ],
+                        "path": "/api/gen/video",
+                        "body": {"mode": "motion", "text": "影视级模仿"},
+                        "detail": "当前影视级模仿最多同时排队或生成 2 个任务，请等待部分完成后再继续",
+                        "code": "motion_active_cap",
+                    },
+                    {
+                        "seed": [
+                            ("tryon", "running", '{"line":"2"}'),
+                        ],
+                        "path": "/api/gen/tryon",
+                        "body": {"line": "2", "text": "换装"},
+                        "detail": "当前换装视频最多同时排队或生成 1 个任务，请等待任务完成后再继续",
+                        "code": "tryon_active_cap",
+                    },
+                ]
+
+                for case in cases:
+                    with self.subTest(path=case["path"]):
+                        with closing(core.jdb()) as db:
+                            db.execute("DELETE FROM jobs")
+                            for idx, (kind, status, payload) in enumerate(case["seed"], start=1):
+                                db.execute("INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at,deleted,refunded) VALUES(?,?,?,?,?,?,?,?,0,0)",
+                                           (idx, kind, "fang", 20, status, payload, 1, 1))
+                            db.commit()
+                        before = list(fake.deductions)
+                        req = urllib.request.Request(base + case["path"], data=json.dumps(case["body"]).encode("utf-8"), method="POST", headers={
+                            "Authorization": "Bearer test", "Content-Type": "application/json",
+                        })
+                        with self.assertRaises(urllib.error.HTTPError) as rejected:
+                            urllib.request.urlopen(req, timeout=5)
+                        self.assertEqual(429, rejected.exception.code)
+                        payload = json.loads(rejected.exception.read().decode("utf-8"))
+                        self.assertEqual(case["detail"], payload["detail"])
+                        self.assertEqual(case["code"], payload["code"])
+                        self.assertEqual(before, fake.deductions)
+
+                with urllib.request.urlopen(base + "/api/gen/health", timeout=5) as response:
+                    health = json.loads(response.read())
+                self.assertEqual(3, health["max_user_active_xiaole_video"])
+                self.assertEqual(2, health["max_user_active_motion"])
+                self.assertEqual(1, health["max_user_active_tryon"])
+            finally:
+                if server:
+                    server.shutdown()
+                    server.server_close()
+                core.JOB_DB = originals["JOB_DB"]
+                core.AUDIO_DB = originals["AUDIO_DB"]
+                core._domains = originals["_domains"]
+                core.verify = originals["verify"]
+                core.feature_flags.require_enabled = originals["require_enabled"]
+                core.MAX_USER_ACTIVE_JOBS = originals["max_active"]
+                core.MAX_USER_ACTIVE_XIAOLE_VIDEO = originals["max_xiaole"]
+                core.MAX_USER_ACTIVE_MOTION = originals["max_motion"]
+                core.MAX_USER_ACTIVE_TRYON = originals["max_tryon"]
+                video.validate_video_payload = originals["validate_video"]
+                video.validate_tryon_payload = originals["validate_tryon"]
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -35,12 +35,12 @@ class ContentDomainTests(unittest.TestCase):
             self.assertFalse(hasattr(core, name), name)
 
         core_path = Path(core.__file__)
-        # 软上限防 core 膨胀（真守卫是上面的 hasattr 域处理器检查）；1250→1300→1330→1400→1330→1410：
+        # 软上限防 core 膨胀（真守卫是上面的 hasattr 域处理器检查）；1250→1300→1330→1400→1410→1500：
         # 视频任务池按 mode 三分(口播/motion/慢池)属 core 队列基础设施、非域逻辑，合理留 core；
         # reclaim_orphaned_running(启动回收重启遗留孤儿→退点)属 core 任务生命周期、紧挨 reaper。
-        # +3 行 jobs.owner 归属(#511)：三服务共写 jobs 表，两处全表扫描必须按 owner 过滤，
-        # 否则 content 会捞走/杀掉 imggen、leadgen 的任务。同属任务生命周期，非域逻辑。
-        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1410)
+        # jobs.owner 归属(#579/#511)：三服务共写 jobs 表，两处全表扫描按 owner 过滤，否则 content 会捞走/杀掉 imggen、leadgen 的任务。
+        # 视频功能分项限流(#577)：果肉/motion/tryon 各自 active 上限，扣点前 429。同属任务生命周期，非域逻辑。
+        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1500)
 
     def test_content_api_reclaims_orphans_on_startup(self):
         # 防回归：孤儿回收必须挂在真入口 content_api.main（服务走 content_api.py，
