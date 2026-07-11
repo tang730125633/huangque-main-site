@@ -216,7 +216,8 @@
 
       <div class="function-tabs" aria-label="视频功能分页">
         <button class="function-tab on" type="button" data-function="talking">数字人口播</button>
-        <button class="function-tab" type="button" data-function="motion">影视级模仿</button>
+        <button class="function-tab" type="button" data-function="motion">动作模仿</button>
+        <button class="function-tab" type="button" data-function="cinematic">AI 剧情视频</button>
         <button class="function-tab" type="button" data-function="tryon">换装换背景</button>
         <button class="function-tab" type="button" data-function="grok">果肉视频生成</button>
         <button class="function-tab" type="button" data-function="micro">豆姐视频生成</button>
@@ -359,13 +360,6 @@
           </div>
           <span class="faint" style="font-size:11.5px;">照参考片重演，不是逐帧换脸</span>
         </div>
-        <div class="line-switch">
-          <div class="label">生成线路（效果不同，按需选）</div>
-          <div class="line-tabs" id="motionLineTabs">
-            <button type="button" class="line-tab active" data-line="2"><b>线路二 · 极速</b><span>约 2 分钟 · 保留本人样子和穿着</span></button>
-            <button type="button" class="line-tab" data-line="1"><b>线路一 · 经典</b><span>约 6 分钟 · 脸贴到参考视频的身材/服装上</span></button>
-          </div>
-        </div>
         <div class="avatar-panel">
           <div class="row">
             <span class="label">我的形象</span>
@@ -402,7 +396,7 @@
             </div>
             <div>
               <div class="faint" style="font-size:12px;margin-bottom:8px;">分辨率</div>
-              <div id="motionResolutionSeg" class="seg"><button class="on" data-motion-resolution="720p">720p</button><button data-motion-resolution="1080p" disabled title="线路二仅支持 720p">1080p</button></div>
+              <div id="motionResolutionSeg" class="seg"><button class="on" data-motion-resolution="720p">720p</button><button data-motion-resolution="1080p" disabled title="动作模仿固定 720p，需要 1080p 请用「AI 剧情视频」">1080p</button></div>
             </div>
             <div style="grid-column:1/-1;">
               <div class="faint" style="font-size:12px;margin-bottom:8px;">成片时长</div>
@@ -411,9 +405,83 @@
           </div>
         </div>
         <button id="motionGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:20px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
-          生成影视级模仿视频
+          生成动作模仿视频
         </button>
         <div id="motionStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">生成完成后会自动保存到视频资产</div>
+      </div>
+
+      <div id="cinematicPanel" class="function-panel motion-panel hidden">
+        <div class="row">
+          <div>
+            <div class="label">AI 剧情视频</div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">选自己的数字人形象，写一句画面描述，直接出片</div>
+          </div>
+          <span class="faint" style="font-size:11.5px;">最多 3 个形象同框</span>
+        </div>
+
+        <div class="avatar-panel">
+          <div class="row">
+            <span class="label">选择形象（可多选，最多 3 个）</span>
+            <span>
+              <span id="cineAvatarCount" class="mono faint" style="font-size:11.5px;margin-right:10px;">0 / 3</span>
+              <button id="cineRefreshBtn" type="button" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font-family:inherit;font-size:12px;">刷新</button>
+            </span>
+          </div>
+          <div id="cineAvatarGrid" class="avatar-grid">
+            <div class="avatar-empty">正在读取我的形象...</div>
+          </div>
+          <label id="cineNewAvatarDrop" class="motion-drop" style="margin-top:12px;">
+            <input id="cineNewAvatarFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+            <strong>+ 创建新形象（5 点）</strong>
+            <span>上传一张正脸清晰的照片，约 25 秒建好，之后可反复使用</span>
+          </label>
+          <div id="cineAvatarStatus" class="faint" style="font-size:11.5px;margin-top:8px;"></div>
+        </div>
+
+        <div class="motion-preset-panel">
+          <div class="row">
+            <span class="label">画面描述</span>
+            <span id="cinePromptCount" class="mono faint" style="font-size:11.5px;">0 / 2000</span>
+          </div>
+          <div id="cinePromptTemplates" class="motion-preset-grid" style="margin-bottom:10px;"></div>
+          <textarea id="cinePrompt" rows="4" placeholder="描述你想要的画面，例如：在海边散步，夕阳背光，镜头缓慢推近，电影质感"
+            style="width:100%;box-sizing:border-box;padding:12px 14px;border-radius:12px;border:1px solid #263041;background:#0e1420;color:#e8eefb;font:inherit;font-size:13px;resize:vertical;"></textarea>
+          <div class="faint" style="font-size:11.5px;margin-top:8px;">只写你想要的画面。系统会自动保证成片里的人还是你选的形象本人。</div>
+        </div>
+
+        <div class="motion-preset-panel">
+          <div class="row">
+            <span class="label">参考视频（选填）</span>
+            <span class="faint" style="font-size:11.5px;">给了就照着它的动作和运镜演；不给就只按描述生成</span>
+          </div>
+          <div id="cineVideoDrop" class="motion-drop" style="margin-top:10px;">
+            <input id="cineVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden>
+            <strong>参考片段</strong>
+            <span>点击上传（建议 ≤15 秒）</span>
+          </div>
+        </div>
+
+        <div class="motion-preset-panel">
+          <div class="video-parameter-grid">
+            <div>
+              <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
+              <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button class="on" data-cine-ratio="9:16">9:16</button><button data-cine-ratio="16:9">16:9</button><button data-cine-ratio="1:1">1:1</button></div>
+            </div>
+            <div>
+              <div class="faint" style="font-size:12px;margin-bottom:8px;">分辨率</div>
+              <div class="seg"><button class="on" data-cine-resolution="720p">720p</button><button data-cine-resolution="1080p">1080p</button></div>
+            </div>
+            <div style="grid-column:1/-1;">
+              <div class="faint" style="font-size:12px;margin-bottom:8px;">成片时长</div>
+              <div class="seg" style="grid-template-columns:repeat(4,1fr);"><button data-cine-duration="5">5 秒</button><button class="on" data-cine-duration="10">10 秒</button><button data-cine-duration="12">12 秒</button><button data-cine-duration="15">15 秒</button></div>
+            </div>
+          </div>
+        </div>
+
+        <button id="cineGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:20px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
+          生成剧情视频
+        </button>
+        <div id="cineStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">约 6~9 分钟出片，完成后自动保存到视频资产</div>
       </div>
 
       <div id="tryonPanel" class="function-panel motion-panel hidden">
@@ -600,7 +668,20 @@
   var talkingBatch=false, talkingBatchItems=[], videoCost=20, videoBatchMax=5, talkingBatchSeq=0;
   var bgmData='', selectedBgmVolume=0.18;
   var selectedSubtitle='off', selectedSubtitleStyle='white', selectedSubtitlePosition='bottom';  // F4 字幕：默认关闭+底部，不勾选时行为与原来一致
-  var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16', selectedMotionLine='2', selectedMotionResolution='720p';
+  var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16', selectedMotionResolution='720p';
+  // AI 剧情视频（HeyGen cinematic）：选 1~3 个已建好的形象 + 提示词 + 720p/1080p
+  var cineSelectedAvatarIds=[], cineReferenceVideoData='', selectedCineRatio='9:16', selectedCineResolution='720p', selectedCineDuration=10;
+  var CINE_MAX_AVATARS=3;
+  // 提示词模板：用户只写创意，身份约束（保持形象本人的脸/发型/衣着、不要抄参考视频里的人）
+  // 由后端无条件拼上 —— 那条不能交给用户把关，丢了成片里的人就不是自己了。
+  var CINE_TEMPLATES=[
+    {name:'口播出镜',   text:'站在明亮的现代办公空间里，面向镜头自信讲解，手势自然，浅景深，专业商务质感'},
+    {name:'门店实拍',   text:'在高级美容院内走动介绍，暖色灯光，镜头缓慢跟随，生活方式短片质感'},
+    {name:'海边氛围',   text:'在海边缓步行走，夕阳背光，海风吹动头发，镜头缓慢推近，电影感调色'},
+    {name:'街头时尚',   text:'走在城市街头，霓虹灯背景，回头看向镜头微笑，时尚大片质感'},
+    {name:'产品展示',   text:'手持产品面向镜头介绍，纯色背景，柔和布光，特写与中景切换，广告片质感'},
+    {name:'多人同框',   text:'两人并肩站立面向镜头交谈，互动自然，室内暖光，纪录片质感'}
+  ];
   var selectedGrokRatio='16:9', selectedGrokDuration=10, selectedGrokResolution='720p', selectedGrokModel='grok-imagine-video';
   var grokOperation='generate', grokEditVideoData='', grokEditDuration=0;
   // 换装的第一个上传框在两条线路收的东西不同：线路一收换装视频，线路二收人物照片。
@@ -872,12 +953,10 @@
     return false;
   }
   function clickMotionResolution(value){
+    // 动作模仿固定 720p（走 WaveSpeed，它只有这一档）。1080p 的按钮是 disabled 的，
+    // 回填历史参数时点不动它 —— 这正是想要的：宁可回填不上，也不能悄悄降分辨率。
     var v=String(value||'').trim().toLowerCase();
     if(v==='4k') v='1080p';
-    if(v==='1080p' && selectedMotionLine==='2'){
-      var line1=document.querySelector('#motionLineTabs [data-line="1"]');
-      if(line1) line1.click();
-    }
     var btn=document.querySelector('[data-motion-resolution="'+v.replace(/"/g,'\\"')+'"]');
     if(btn && !btn.disabled){ btn.click(); return true; }
     return false;
@@ -1160,8 +1239,142 @@
         }
         renderMotionAvatars();
         renderTalkingBatchImages();
+        renderCineAvatars();
       })
       .catch(function(e){if(grid) grid.innerHTML='<div class="avatar-empty" style="color:#f4708a;">'+esc(e.message||'形象列表读取失败')+'</div>';renderTalkingBatchImages();});
+  }
+
+  // ===== AI 剧情视频：形象多选（最多 3 个，HeyGen 会把他们放进同一个镜头）=====
+  function renderCineAvatars(){
+    var grid=$('cineAvatarGrid');
+    if(!grid) return;
+    // 形象没了（被删）就从选中里剔除，别把不存在的 id 提交上去
+    cineSelectedAvatarIds=cineSelectedAvatarIds.filter(function(id){
+      return motionAvatars.some(function(a){return String(a.id)===String(id);});
+    });
+    grid.innerHTML='';
+    if(!motionAvatars.length){
+      grid.innerHTML='<div class="avatar-empty">还没有形象，先在下面上传一张照片创建</div>';
+      updateCineCount();
+      return;
+    }
+    motionAvatars.forEach(function(a){
+      var on=cineSelectedAvatarIds.some(function(id){return String(id)===String(a.id);});
+      var card=document.createElement('button');
+      card.type='button';
+      card.className='avatar-card'+(on?' on':'');
+      card.style.position='relative';
+      card.innerHTML='<img src="'+esc(a.image_url||'')+'" alt="">'
+                    +'<span class="avatar-name">'+esc(a.name||'形象')+'</span>'
+                    +(on?'<span style="position:absolute;top:6px;right:6px;width:20px;height:20px;border-radius:50%;background:#e7b24c;color:#1a1206;font:800 12px/20px inherit;text-align:center;">'+(cineSelectedAvatarIds.indexOf(String(a.id))+1||cineSelectedAvatarIds.findIndex(function(id){return String(id)===String(a.id);})+1)+'</span>':'');
+      card.onclick=function(){ toggleCineAvatar(a.id); };
+      grid.appendChild(card);
+    });
+    updateCineCount();
+  }
+  function toggleCineAvatar(id){
+    var key=String(id);
+    var i=cineSelectedAvatarIds.findIndex(function(x){return String(x)===key;});
+    if(i>=0){ cineSelectedAvatarIds.splice(i,1); }
+    else if(cineSelectedAvatarIds.length>=CINE_MAX_AVATARS){ toast('最多同时选择 '+CINE_MAX_AVATARS+' 个形象'); return; }
+    else { cineSelectedAvatarIds.push(key); }
+    renderCineAvatars();
+  }
+  function updateCineCount(){
+    if($('cineAvatarCount')) $('cineAvatarCount').textContent=cineSelectedAvatarIds.length+' / '+CINE_MAX_AVATARS;
+  }
+
+  // ===== 创建形象：独立一步（5 点）。人脸检测不到会当场报错，不再让用户白扣 20 点跑一半 =====
+  function submitCreateAvatar(dataUrl){
+    var box=$('cineAvatarStatus');
+    if(box){ box.style.color='#2dd4bf'; box.textContent='正在创建形象（约 25 秒）...'; }
+    fetch('/api/gen/avatar',{
+      method:'POST',
+      headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+      body:JSON.stringify({image_data:dataUrl})
+    }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+      .then(function(res){
+        if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
+        if(!res.data.job_id) throw new Error(res.data.detail||'创建失败');
+        pollCreateAvatar(res.data.job_id,0);
+      })
+      .catch(function(e){ if(box){ box.style.color='#f4708a'; box.textContent=e.message||'创建失败'; } toast(e.message||'创建失败'); });
+  }
+  function pollCreateAvatar(id,tries){
+    var box=$('cineAvatarStatus');
+    if(tries>90){ if(box){box.style.color='#f4708a';box.textContent='创建超时，请稍后在「刷新」里查看';} return; }
+    fetch(fresh('/api/gen/job/'+id),{cache:'no-store',headers:{Authorization:'Bearer '+token}})
+      .then(function(r){return r.json();})
+      .then(function(d){
+        if(d.status==='done'){
+          if(box){ box.style.color='#2bd576'; box.textContent='✅ 形象创建完成，可以选它生成视频了'; }
+          if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
+          loadMotionAvatars(true);
+          return;
+        }
+        if(d.status==='error'||d.status==='failed'){
+          if(box){ box.style.color='#f4708a'; box.textContent=d.error||d.detail||'创建失败'; }
+          if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();  // 失败会退点
+          return;
+        }
+        setTimeout(function(){pollCreateAvatar(id,tries+1);},3000);
+      })
+      .catch(function(){ setTimeout(function(){pollCreateAvatar(id,tries+1);},3000); });
+  }
+
+  function renderCineTemplates(){
+    var box=$('cinePromptTemplates');
+    if(!box) return;
+    box.innerHTML='';
+    CINE_TEMPLATES.forEach(function(t){
+      var b=document.createElement('button');
+      b.type='button';
+      b.className='motion-preset-card';
+      b.innerHTML='<b>'+esc(t.name)+'</b><span>'+esc(t.text.slice(0,18))+'…</span>';
+      b.onclick=function(){
+        var ta=$('cinePrompt');
+        if(ta){ ta.value=t.text; ta.dispatchEvent(new Event('input')); ta.focus(); }
+      };
+      box.appendChild(b);
+    });
+  }
+
+  function submitCinematic(){
+    var prompt=($('cinePrompt')&&$('cinePrompt').value||'').trim();
+    if(!cineSelectedAvatarIds.length){ toast('请至少选择一个形象'); return; }
+    if(!prompt){ toast('请填写画面描述，或点一个模板'); return; }
+    setBusy(true);
+    var first=motionAvatars.find(function(a){return String(a.id)===String(cineSelectedAvatarIds[0]);});
+    currentVideoDraft={mode:'cinematic',image_url:first&&first.image_url,text:prompt,resolution:selectedCineResolution,
+                       ratio:selectedCineRatio,status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
+    renderVideoHistory([currentVideoDraft]);
+    setVideoStatus('正在提交剧情视频任务...');
+    var body={
+      avatar_ids:cineSelectedAvatarIds.map(function(x){return parseInt(x,10);}),
+      prompt:prompt,
+      resolution:selectedCineResolution,
+      ratio:selectedCineRatio,
+      duration:selectedCineDuration
+    };
+    if(cineReferenceVideoData) body.reference_video_data=cineReferenceVideoData;  // 选填：不给就只按描述生成
+    fetch('/api/gen/cinematic',{
+      method:'POST',
+      headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+      body:JSON.stringify(body)
+    }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+      .then(function(res){
+        if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
+        if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
+        setVideoStatus('剧情视频任务已提交，约 6~9 分钟出片...');
+        setTimeout(loadVideoHistory,700);
+        trackVideoJob(res.data.job_id,{status:'queued',label:'AI 剧情视频',mode:'cinematic',modeLabel:'AI 剧情视频',ratio:selectedCineRatio});
+        pollJob(res.data.job_id,0);
+      })
+      .catch(function(e){
+        setBusy(false);
+        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}
+        setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');
+      });
   }
   var _vidTick=null, _vidStart=0;
   function _fmtUsed(s){ s=Math.max(0,Math.round(s)); return s<60?('已用 '+s+' 秒'):('已用 '+Math.floor(s/60)+' 分 '+(s%60)+' 秒'); }
@@ -1396,13 +1609,18 @@
     document.querySelectorAll('[data-function]').forEach(function(b){b.classList.toggle('on',b.dataset.function===videoFunction);});
     $('talkingPanel').classList.toggle('hidden',videoFunction!=='talking');
     $('motionPanel').classList.toggle('hidden',videoFunction!=='motion');
+    if($('cinematicPanel')) $('cinematicPanel').classList.toggle('hidden',videoFunction!=='cinematic');
     if($('tryonPanel')) $('tryonPanel').classList.toggle('hidden',videoFunction!=='tryon');
     if($('grokPanel')) $('grokPanel').classList.toggle('hidden',videoFunction!=='grok');
     if($('microPanel')) $('microPanel').classList.toggle('hidden',videoFunction!=='micro');
     if($('omniPanel')) $('omniPanel').classList.toggle('hidden',videoFunction!=='omni');
     if(videoFunction==='motion'){
       $('modeSummary').textContent='上传人物形象和参考片段，把自己「演」成同款大片';
-      if($('modeName')) $('modeName').textContent='影视级模仿';
+      if($('modeName')) $('modeName').textContent='动作模仿';
+      loadMotionAvatars();
+    }else if(videoFunction==='cinematic'){
+      $('modeSummary').textContent='选自己的数字人形象，写一句画面描述，直接出片（最多 3 个形象同框）';
+      if($('modeName')) $('modeName').textContent='AI 剧情视频';
       loadMotionAvatars();
     }else if(videoFunction==='tryon'){
       $('modeSummary').textContent='上传换装视频，选填衣服图或背景图，一键换装换背景';
@@ -1533,24 +1751,15 @@
       });
   }
   document.querySelectorAll('[data-function]').forEach(function(b){b.onclick=function(){updateFunction(b.dataset.function);};});
+  // 动作模仿已去线路化：只走 WaveSpeed，固定 720p。1080p 的按钮永久 disabled，
+  // title 里告诉用户去「AI 剧情视频」——那边才有 1080p（走 HeyGen）。
   function applyMotionLine(){
-    var line2=selectedMotionLine==='2';
-    var high=$('motionResolutionSeg')&&$('motionResolutionSeg').querySelector('[data-motion-resolution="1080p"]');
-    if(line2) selectedMotionResolution='720p';
-    if(high){
-      high.disabled=line2;
-      high.title=line2?'线路二仅支持 720p':'线路一支持 1080p';
-    }
+    selectedMotionResolution='720p';
     document.querySelectorAll('[data-motion-resolution]').forEach(function(x){
-      x.classList.toggle('on',x.dataset.motionResolution===selectedMotionResolution);
+      x.classList.toggle('on',x.dataset.motionResolution==='720p');
     });
-    if($('motionDurationValue')) $('motionDurationValue').textContent=line2?'跟随参考片段 · 最长 120 秒':'跟随参考片段 · 最长 30 秒';
+    if($('motionDurationValue')) $('motionDurationValue').textContent='跟随参考片段 · 最长 120 秒';
   }
-  document.querySelectorAll('#motionLineTabs .line-tab').forEach(function(b){b.onclick=function(){
-    selectedMotionLine=b.dataset.line;
-    document.querySelectorAll('#motionLineTabs .line-tab').forEach(function(x){x.classList.toggle('active',x===b);});
-    applyMotionLine();
-  };});
   applyMotionLine();
   function applyTryonDurationOptions(){
     var allowed=tryonIsLine2()?[5,6,10,15]:[3,5,6];
@@ -1686,6 +1895,46 @@
   bindMotionFile($('motionImageFile'),'image');
   resetMotionVideoDrop();
   loadMotionPresets();
+
+  // ===== AI 剧情视频：控件绑定 =====
+  renderCineTemplates();
+  (function bindCine(){
+    var ta=$('cinePrompt');
+    if(ta) ta.addEventListener('input',function(){
+      if(this.value.length>2000) this.value=this.value.slice(0,2000);
+      if($('cinePromptCount')) $('cinePromptCount').textContent=this.value.length+' / 2000';
+    });
+    // 上传照片 → 直接提交建形象（5 点）。不做本地预览：建好后会出现在上面的形象网格里。
+    var nf=$('cineNewAvatarFile');
+    if(nf) nf.onchange=function(){
+      var f=this.files&&this.files[0]; if(!f) return;
+      readFileData(f).then(submitCreateAvatar).catch(function(e){toast(e.message||'文件读取失败');});
+      this.value='';   // 允许连续上传同一张（重试用）
+    };
+    var vf=$('cineVideoFile'), vdrop=$('cineVideoDrop');
+    if(vdrop) vdrop.onclick=function(){ if(vf) vf.click(); };
+    if(vf) vf.onchange=function(){
+      var f=this.files&&this.files[0]; if(!f) return;
+      readFileData(f).then(function(d){
+        cineReferenceVideoData=d;
+        if(vdrop) vdrop.innerHTML='<strong>参考片段已选择</strong><span>'+esc(f.name).slice(0,40)+' · 点此更换</span>';
+      }).catch(function(e){toast(e.message||'文件读取失败');});
+    };
+    document.querySelectorAll('[data-cine-ratio]').forEach(function(b){b.onclick=function(){
+      selectedCineRatio=b.dataset.cineRatio;
+      document.querySelectorAll('[data-cine-ratio]').forEach(function(x){x.classList.toggle('on',x===b);});
+    };});
+    document.querySelectorAll('[data-cine-resolution]').forEach(function(b){b.onclick=function(){
+      selectedCineResolution=b.dataset.cineResolution;
+      document.querySelectorAll('[data-cine-resolution]').forEach(function(x){x.classList.toggle('on',x===b);});
+    };});
+    document.querySelectorAll('[data-cine-duration]').forEach(function(b){b.onclick=function(){
+      selectedCineDuration=parseInt(b.dataset.cineDuration,10);
+      document.querySelectorAll('[data-cine-duration]').forEach(function(x){x.classList.toggle('on',x===b);});
+    };});
+    if($('cineRefreshBtn')) $('cineRefreshBtn').onclick=function(){ loadMotionAvatars(true); };
+    if($('cineGenerateBtn')) $('cineGenerateBtn').onclick=submitCinematic;
+  })();
   function updateTryonHint(){
     var hint=$('tryonModeHint'), btn=$('tryonGenerateBtn');
     var hasClothes=!!tryonClothesData, hasBg=!!tryonBackgroundData, hasPrimary=!!tryonPrimaryData();
@@ -1860,14 +2109,14 @@
     if(!motionReferenceVideoData){ toast('请先选择或上传参考片段'); return; }
     setBusy(true);
     var motionPreviewImage=useNewMotionImage?motionImageData:(pickedAvatar&&pickedAvatar.image_url);
-    currentVideoDraft={mode:'motion',image_url:motionPreviewImage,text:'影视级模仿视频',resolution:selectedMotionResolution,ratio:selectedMotionRatio,motion:'medium',status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
+    currentVideoDraft={mode:'motion',image_url:motionPreviewImage,text:'动作模仿视频',resolution:selectedMotionResolution,ratio:selectedMotionRatio,motion:'medium',status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
     renderVideoHistory([currentVideoDraft]);
-    setVideoStatus('正在提交影视级模仿任务...');
+    setVideoStatus('正在提交动作模仿任务...');
+    // 不再有 line：动作模仿已全量走 WaveSpeed，原线路一(HeyGen)的能力拆成了「AI 剧情视频」
     var body={
       mode:'motion',
-      line:selectedMotionLine,
       reference_video_data:motionReferenceVideoData,
-      text:'影视级模仿视频',
+      text:'动作模仿视频',
       resolution:selectedMotionResolution,
       ratio:selectedMotionRatio,
       motion:'medium'

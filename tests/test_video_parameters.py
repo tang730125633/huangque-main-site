@@ -136,11 +136,18 @@ class VideoParameterUiTests(unittest.TestCase):
         self.assertIn('data-resolution="1080p"', VIDEO_HTML)
         self.assertNotIn('data-resolution="4k"', VIDEO_HTML)
 
-    def test_motion_resolution_is_line_aware_and_submitted(self):
+    def test_motion_resolution_is_locked_to_720p_and_submitted(self):
+        """动作模仿已去线路化：只走 WaveSpeed，固定 720p。
+
+        原来这条守的是「按线路切换分辨率」，但线路一(HeyGen)的能力已经拆成了独立的
+        「AI 剧情视频」。核心意图不变——绝不悄悄降分辨率：1080p 的按钮是 disabled 的，
+        点不动，而且 title 里告诉用户 1080p 去哪儿找。
+        """
         self.assertIn('data-motion-resolution="720p"', VIDEO_HTML)
         self.assertIn('data-motion-resolution="1080p" disabled', VIDEO_HTML)
         self.assertIn("resolution:selectedMotionResolution", VIDEO_HTML)
-        self.assertIn("if(line2) selectedMotionResolution='720p';", VIDEO_HTML)
+        self.assertIn("selectedMotionResolution='720p';", VIDEO_HTML)
+        self.assertNotIn("selectedMotionLine", VIDEO_HTML)
         self.assertNotIn("duration:10", VIDEO_HTML)
 
     def test_tryon_duration_is_selected_not_hardcoded(self):
