@@ -17,9 +17,11 @@ class ContentDomainTests(unittest.TestCase):
 
     def test_entrypoint_uses_domain_registry(self):
         content_api = importlib.import_module("content_api")
+        # 这份清单是白名单：路由 /api/gen/<kind> 由它派生，多一个少一个都是大事
+        # （avatar/cinematic 是把动作模仿拆成「建形象 / 生成剧情视频」两步时加的）
         self.assertEqual(
             sorted(content_api.HANDLERS),
-            ["audio", "collect", "copy", "image", "leads", "tryon", "video", "xiaole_video"],
+            ["audio", "avatar", "cinematic", "collect", "copy", "image", "leads", "tryon", "video", "xiaole_video"],
         )
         self.assertIs(content_api.HANDLERS, content_api.registry.HANDLERS)
 

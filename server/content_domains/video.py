@@ -324,9 +324,8 @@ def validate_video_payload(payload, username=None):
         if not _is_valid_data_url(audio_data, VALID_AUDIO_MIMES):
             raise ValueError("audio_data 不是有效的音频文件")
     elif mode == "motion":
-        line = str(payload.get("line") or "2").strip()
-        if line not in {"1", "2"}:
-            raise ValueError("line 仅支持 1、2")
+        # 动作模仿不再有线路之分（原线路一 HeyGen 已拆成独立的「AI 剧情视频」功能）。
+        # 老前端可能仍在 payload 里带 line，忽略即可，不报错——避免旧页面缓存直接 400。
         reference_video_data = (payload.get("reference_video_data") or "").strip()
         if not reference_video_data:
             raise ValueError("reference_video_data 不能为空")
@@ -338,12 +337,13 @@ def validate_video_payload(payload, username=None):
     ratio = (payload.get("ratio") or "9:16").strip()
     if ratio not in VALID_VIDEO_RATIOS:
         raise ValueError("ratio 仅支持 9:16、16:9、1:1、4:5、5:4")
-    default_resolution = "720p" if mode == "motion" and line == "2" else "1080p"
+    # 动作模仿走 WaveSpeed，它只支持 720p；口播默认 1080p。
+    default_resolution = "720p" if mode == "motion" else "1080p"
     resolution = (payload.get("resolution") or default_resolution).strip().lower()
     if resolution not in VALID_VIDEO_RESOLUTIONS:
         raise ValueError("resolution 仅支持 720p、1080p")
-    if mode == "motion" and line == "2" and resolution != "720p":
-        raise ValueError("影视级模仿线路二固定为 720p，请改用线路一生成 1080p")
+    if mode == "motion" and resolution != "720p":
+        raise ValueError("动作模仿固定 720p；需要 1080p 请用「AI 剧情视频」")
     motion = (payload.get("motion") or "medium").strip().lower()
     if motion not in VALID_VIDEO_MOTIONS:
         raise ValueError("motion 仅支持 low、medium、high")
@@ -365,8 +365,7 @@ def validate_video_payload(payload, username=None):
     cleaned["bgm_data"] = bgm_data
     cleaned["bgm_volume"] = bgm_volume
     cleaned.pop("duration", None)
-    if mode == "motion":
-        cleaned["line"] = line
+    cleaned.pop("line", None)   # 动作模仿不再有线路，别把老前端传来的 line 写进 payload 混淆历史记录
     return cleaned
 
 
@@ -1073,27 +1072,44 @@ def _heygen_cinematic_ratio(ratio):
         return r
     return {"4:5": "9:16", "5:4": "16:9"}.get(r, "9:16")
 
-def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration, direct=False):
-    prompt = (
-        "Create a realistic cinematic vertical video of the same person from the avatar photo. "
-        "Follow the uploaded reference video ONLY for body movement, pose, timing, gestures, "
-        "facial expression rhythm, framing and camera motion. CRITICAL: Keep the avatar person's "
-        "exact identity, face, hairstyle, body shape, skin tone and clothing. Do NOT copy the "
-        "reference video person's appearance, body proportions or outfit. The output must look "
-        "like the avatar person performing the reference motion, not the reference person. "
-        "Smooth realistic motion, no text, no logo, no extra people."
-    )
-    body = json.dumps({
+# 身份约束。无论用户的创意提示词写什么，都要拼上这段 —— 否则 HeyGen 会把参考视频里那个人
+# 的长相抄进成片，用户拿到的就不是"自己"了。用户只负责写创意，身份不由用户把关。
+CINEMATIC_IDENTITY_GUARD = (
+    " CRITICAL: Keep each avatar person's exact identity, face, hairstyle, body shape, skin tone "
+    "and clothing exactly as in their avatar photo. Do NOT copy any person's appearance, body "
+    "proportions or outfit from the reference video. Smooth realistic motion, no text, no logo, "
+    "no extra people beyond the given avatars."
+)
+
+# 动作模仿的默认提示词（用户不填时的兜底，也是原来写死的那段）
+MOTION_PROMPT = (
+    "Create a realistic cinematic vertical video of the same person from the avatar photo. "
+    "Follow the uploaded reference video ONLY for body movement, pose, timing, gestures, "
+    "facial expression rhythm, framing and camera motion. The output must look like the avatar "
+    "person performing the reference motion, not the reference person." + CINEMATIC_IDENTITY_GUARD
+)
+
+
+def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration,
+                                   prompt=None, direct=False):
+    # avatar_id 是 1~3 个 look 的数组 —— 多个 look 会让 HeyGen 在【同一个镜头】里同时出现多个人，
+    # 不是生成多条视频。所以 3 个形象仍然只扣 1 条视频的钱。
+    ids = [i for i in (avatar_item_id if isinstance(avatar_item_id, (list, tuple)) else [avatar_item_id]) if i]
+    payload = {
         "type": "cinematic_avatar",
         "title": "follow_reference_motion",
-        "prompt": prompt,
-        "avatar_id": [avatar_item_id],
-        "references": [{"type": "asset_id", "asset_id": reference_asset_id}],
+        "prompt": prompt or MOTION_PROMPT,
+        "avatar_id": ids,
         "aspect_ratio": _heygen_cinematic_ratio(ratio),
         "resolution": resolution,
         "duration": duration,
         "enhance_prompt": False,
-    }, ensure_ascii=False).encode()
+    }
+    # 参考视频是可选的：只给提示词，HeyGen 也能生成（文档：references 用来 steer 风格/动作/构图，非必填）。
+    # 动作模仿必然有参考视频；剧情视频可以只靠提示词。
+    if reference_asset_id:
+        payload["references"] = [{"type": "asset_id", "asset_id": reference_asset_id}]
+    body = json.dumps(payload, ensure_ascii=False).encode()
     data = _heygen_request_json("POST", "/videos", body, {
         "Content-Type": "application/json",
     }, timeout=90, direct=direct)
@@ -1682,7 +1698,10 @@ def gen_video(payload):
     mode = (payload.get("mode") or "text").strip()
     if mode not in {"text", "audio", "motion"}:
         raise ValueError("生成方式不正确")
-    if not HEYGEN_API_KEY:
+    # 只有口播(text/audio)走 HeyGen；动作模仿已全量切到 WaveSpeed，不该被 HeyGen 的密钥绑架
+    # ——否则 HeyGen 一断供，连根本不用它的动作模仿也跟着挂。motion 的可用性由
+    # wavespeed.available() 在下面单独把关。
+    if mode != "motion" and not HEYGEN_API_KEY:
         raise ValueError("视频生成服务未配置")
     avatar = None
     avatar_id = payload.get("avatar_id")
@@ -1744,26 +1763,17 @@ def gen_video(payload):
         motion = "medium"
     created_avatar = None
     if mode == "motion":
-        line = "1" if str(payload.get("line") or "2").strip() == "1" else "2"  # 默认线路二(WaveSpeed),仅显式line=1走线路一
-        reference_duration = _motion_reference_duration(reference_video_file, line)
-        # HeyGen 只收整数秒，向上取整避免截掉参考片段末尾；WaveSpeed 直接跟随驱动视频，不收 duration。
-        duration = max(5, min(30, int(reference_duration + 0.999999)))
-        if line == "2" and resolution != "720p":
-            raise ValueError("影视级模仿线路二固定为 720p，请改用线路一生成 1080p")
+        # 动作模仿 = WaveSpeed，不再有线路之分。
+        # 原来的「线路一(HeyGen)」已经拆成独立的「AI 剧情视频」功能（gen_cinematic）——那边能选
+        # 1~3 个事先建好的形象、写自己的提示词、选 720p/1080p，是 WaveSpeed 做不到的。
+        # 而动作模仿只做它最擅长的一件事：人物图 + 驱动视频 → 照着跳。固定 720p（WaveSpeed 只支持这个）。
+        reference_duration = _motion_reference_duration(reference_video_file, "2")
         update_video_asset_phase(job_id, "motion_parameters_ready", resolution=resolution,
                                  ratio=ratio, motion=motion)
-        if line == "2":
-            # 默认线路二(WaveSpeed)：动作模仿两线路输入相同(人物图+驱动视频)，线路二成功率远高于线路一(HeyGen)，只有显式 line=1 才走 HeyGen
-            # 线路二 WaveSpeed：人物图 + 驱动视频 → animate，直接出片，不走 HeyGen 的建 avatar 流程
-            from . import wavespeed
-            if not wavespeed.available():
-                raise ValueError("线路二(WaveSpeed)未配置，请用线路一或联系管理员")
-            video_result = wavespeed.generate_motion(image_file, reference_video_file, resolution, job_id=job_id)
-        else:
-            video_result = generate_heygen_motion_video(image_file, reference_video_file, resolution, ratio, duration, job_id, avatar=avatar)
-            if not avatar:
-                created_avatar = record_video_avatar((payload.get("_username") or "").strip(), image_file,
-                                                      video_result.get("avatar_item_id"), video_result.get("avatar_group_id"))
+        from . import wavespeed
+        if not wavespeed.available():
+            raise ValueError("动作模仿服务未配置，请联系管理员")
+        video_result = wavespeed.generate_motion(image_file, reference_video_file, resolution, job_id=job_id)
         video_result.setdefault("duration", round(reference_duration, 2))
     else:
         video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
@@ -2318,4 +2328,163 @@ def gen_xiaole_video(payload):
         "phase": "done", "message": "%s生成完成" % label,
     }
 
-HANDLERS = {"video": gen_video, "tryon": gen_tryon, "xiaole_video": gen_xiaole_video}
+# ============ 数字人形象：从动作模仿里拆出来的独立一步 ============
+# 原来建 avatar 混在动作模仿任务里：用户传的照片如果检测不到人脸，HeyGen 报
+# 「No face detected in the image」，整个任务失败 —— 而那 20 点已经扣了（虽然会退，
+# 但用户白等了几分钟）。拆出来之后，这类失败在第一步就当场暴露，只花 5 点、25 秒。
+# 形象建好可反复使用，是长期资产。
+
+def validate_avatar_payload(body):
+    if not isinstance(body, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+    image_data = (body.get("image_data") or "").strip()
+    if not image_data:
+        raise ValueError("请先上传人物照片")
+    if not _is_valid_data_url(image_data, VALID_IMAGE_MIMES):
+        raise ValueError("image_data 不是有效的图片（支持 jpg/png/webp）")
+    return {"image_data": image_data, "name": (body.get("name") or "").strip()[:40]}
+
+
+def gen_avatar(payload):
+    """照片 → HeyGen photo avatar → 记进 avatars 表。实测 25 秒（传图 12s + 建 2s + 等就绪 12s）。"""
+    username = (payload.get("_username") or "").strip()
+    image_file = _save_data_file(payload.get("image_data"), "avatar_src", [".jpg", ".png", ".webp"])
+    if not image_file:
+        raise ValueError("请先上传人物照片")
+    fp = _ensure_heygen_image_jpg(_resolve_out_file(image_file))
+    try:
+        asset_id = _heygen_upload_asset(fp, direct=True)
+        item_id, group_id = _heygen_create_photo_avatar(asset_id, direct=True)
+        _heygen_wait_photo_avatar(item_id, group_id, direct=True)
+    except Exception as e:
+        # 线上最常见的失败就是这个。原样把 HeyGen 的英文报文抛给用户毫无意义，翻译成人话。
+        if "No face detected" in str(e):
+            raise ValueError("照片里没有检测到人脸，请换一张正脸清晰、光线充足的照片")
+        raise
+    row = record_video_avatar(username, image_file, item_id, group_id, payload.get("name")) or {}
+    return {
+        "avatar_id": row.get("id"), "name": row.get("name"), "status": "ready",
+        "image_file": image_file, "image_url": public_url(image_file, "image/jpeg"),
+        "provider_avatar_id": item_id, "provider_avatar_group_id": group_id,
+        "phase": "done", "message": "形象创建完成，可在剧情视频里反复使用",
+    }
+
+
+# ============ AI 剧情视频：HeyGen cinematic_avatar ============
+CINEMATIC_MAX_AVATARS = 3        # HeyGen 硬上限：avatar_id 是 1~3 个 look 的数组
+CINEMATIC_RESOLUTIONS = {"720p", "1080p"}
+CINEMATIC_PROMPT_MAX = 2000
+CINEMATIC_DURATION_RANGE = (4, 15)   # HeyGen: 4~15 秒，扁平计价，与时长无关
+
+
+def validate_cinematic_payload(body, username=None):
+    if not isinstance(body, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+    raw_ids = body.get("avatar_ids") or ([body["avatar_id"]] if body.get("avatar_id") else [])
+    if not isinstance(raw_ids, (list, tuple)) or not raw_ids:
+        raise ValueError("请至少选择一个数字人形象")
+    if len(raw_ids) > CINEMATIC_MAX_AVATARS:
+        raise ValueError("最多同时选择 %d 个形象" % CINEMATIC_MAX_AVATARS)
+    ids = []
+    for a in raw_ids:
+        try:
+            v = int(a)
+        except Exception:
+            raise ValueError("形象不存在")
+        if v not in ids:
+            ids.append(v)
+        # 归属校验：get_video_avatar 只认本人的形象，别人的 id 直接 ValueError
+        if username:
+            get_video_avatar(username, v)
+
+    prompt = (body.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("请填写画面描述（或选一个模板）")
+    if len(prompt) > CINEMATIC_PROMPT_MAX:
+        raise ValueError("画面描述不能超过 %d 字" % CINEMATIC_PROMPT_MAX)
+
+    resolution = (body.get("resolution") or "720p").strip().lower()
+    if resolution not in CINEMATIC_RESOLUTIONS:
+        raise ValueError("分辨率仅支持 720p、1080p")
+    ratio = (body.get("ratio") or "9:16").strip()
+    if ratio not in _HEYGEN_CINEMATIC_RATIOS:
+        raise ValueError("画面比例仅支持 9:16、16:9、1:1")
+
+    lo, hi = CINEMATIC_DURATION_RANGE
+    try:
+        duration = int(body.get("duration") or 10)
+    except Exception:
+        raise ValueError("时长必须是 %d~%d 之间的整数" % (lo, hi))
+    if not lo <= duration <= hi:
+        raise ValueError("时长仅支持 %d~%d 秒" % (lo, hi))
+
+    ref = (body.get("reference_video_data") or "").strip()
+    if ref and not _is_valid_data_url(ref, VALID_REFERENCE_VIDEO_MIMES):
+        raise ValueError("参考视频格式不支持（mp4/mov/webm）")
+
+    cleaned = dict(body)
+    cleaned.update({"avatar_ids": ids, "prompt": prompt, "resolution": resolution,
+                    "ratio": ratio, "duration": duration})
+    cleaned.pop("avatar_id", None)
+    return cleaned
+
+
+def gen_cinematic(payload):
+    """选 1~3 个自己的形象 + 提示词（+ 可选参考视频）→ HeyGen cinematic_avatar。
+
+    与动作模仿的区别：形象是【事先建好的】，这里只做「生成」——不再传人物图、不再建 avatar、
+    不再等 avatar 就绪。实测这条精简路径 10 路并发无 429、生成不降速。
+    """
+    username = (payload.get("_username") or "").strip()
+    job_id = payload.get("_job_id")
+    avatars = [get_video_avatar(username, a) for a in payload["avatar_ids"]]
+    look_ids = [a["provider_avatar_id"] for a in avatars]
+    if not all(look_ids):
+        raise ValueError("所选形象尚未就绪，请重新创建")
+
+    reference_video_file = None
+    reference_asset_id = None
+    if payload.get("reference_video_data"):
+        reference_video_file = _shrink_motion_reference(
+            _save_data_file(payload["reference_video_data"], "motion_ref", [".mp4", ".mov", ".webm"]))
+
+    update_video_asset_phase(job_id, "queued", mode="cinematic", text=payload["prompt"],
+                             resolution=payload["resolution"], ratio=payload["ratio"])
+    if reference_video_file:
+        update_video_asset_phase(job_id, "uploading_reference_asset")
+        reference_asset_id = _heygen_upload_asset(_resolve_out_file(reference_video_file), direct=True)
+
+    update_video_asset_phase(job_id, "creating_cinematic_video", reference_asset_id=reference_asset_id)
+    video_id = _heygen_create_cinematic_video(
+        look_ids, reference_asset_id, payload["ratio"], payload["resolution"], payload["duration"],
+        prompt=payload["prompt"] + CINEMATIC_IDENTITY_GUARD, direct=True)
+
+    # ↓ 此刻已计费。之后任何失败都不能重发（见 HeyGenBilledError）——HeyGen 提交即扣费。
+    update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id)
+    try:
+        info = _heygen_poll_video(video_id, direct=True, deadline_s=HEYGEN_MOTION_DEADLINE)
+        update_video_asset_phase(job_id, "downloading_video", source_video_url=info.get("video_url"))
+        video_file = _download_video_file_direct(info["video_url"], "cinematic")
+        cover = _extract_first_frame_cover(video_file)
+    except Exception as e:
+        raise HeyGenBilledError("剧情视频已提交 HeyGen(video_id=%s，已扣费)，后续失败: %s"
+                                % (video_id, str(e)[:180])) from e
+
+    ret = {
+        "video_id": video_id, "video_file": video_file, "video_url": _file_url(video_file),
+        "reference_video_file": reference_video_file,
+        "avatar_ids": payload["avatar_ids"],
+        "avatar_names": [a.get("name") for a in avatars],
+        "prompt": payload["prompt"], "resolution": payload["resolution"], "ratio": payload["ratio"],
+        "duration": info.get("duration") or payload["duration"],
+        "source_video_url": info.get("video_url"), "thumbnail_url": info.get("thumbnail_url"),
+        "provider": "heygen_direct", "phase": "done", "message": "剧情视频生成完成",
+    }
+    if cover:
+        ret["image_file"] = cover
+        ret["image_url"] = public_url(cover, "image/jpeg")
+    return ret
+
+
+HANDLERS = {"video": gen_video, "tryon": gen_tryon, "xiaole_video": gen_xiaole_video,
+            "avatar": gen_avatar, "cinematic": gen_cinematic}

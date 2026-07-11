@@ -32,23 +32,34 @@ class MotionParameterValidationTests(unittest.TestCase):
         payload.update(extra)
         return payload
 
-    def test_line2_defaults_to_real_720p_and_drops_client_duration(self):
+    def test_motion_defaults_to_real_720p_and_drops_client_duration(self):
         result = video.validate_video_payload(self._payload(duration=10))
-        self.assertEqual("2", result["line"])
         self.assertEqual("720p", result["resolution"])
         self.assertNotIn("duration", result)
 
-    def test_line1_accepts_1080p(self):
-        result = video.validate_video_payload(self._payload(line="1", resolution="1080p"))
-        self.assertEqual("1080p", result["resolution"])
+    def test_motion_no_longer_carries_a_line(self):
+        # 动作模仿已去线路化（原线路一 HeyGen 拆成了独立的「AI 剧情视频」）。
+        # 老前端可能仍带 line，忽略但不能写进 payload —— 否则会混淆历史记录的分桶。
+        result = video.validate_video_payload(self._payload(line="1"))
+        self.assertNotIn("line", result)
 
-    def test_line2_rejects_fake_1080p(self):
-        with self.assertRaisesRegex(ValueError, "线路二固定为 720p"):
-            video.validate_video_payload(self._payload(line="2", resolution="1080p"))
+    def test_motion_rejects_fake_1080p_and_says_where_to_get_it(self):
+        """绝不悄悄降分辨率（本文件的核心意图，防的是历史上的「假 1080p」bug）。
+
+        动作模仿走 WaveSpeed，它只有 720p。用户要 1080p 就必须去「AI 剧情视频」——
+        报错要把去处说清楚，而不是默默给一个 720p 的片子。
+        """
+        with self.assertRaisesRegex(ValueError, "剧情视频"):
+            video.validate_video_payload(self._payload(resolution="1080p"))
+
+    def test_cinematic_is_where_1080p_lives_now(self):
+        out = video.validate_cinematic_payload({
+            "avatar_ids": [1], "prompt": "海边跳舞", "resolution": "1080p", "ratio": "9:16"})
+        self.assertEqual("1080p", out["resolution"])
 
     def test_unverified_4k_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "720p、1080p"):
-            video.validate_video_payload(self._payload(line="1", resolution="4k"))
+            video.validate_video_payload(self._payload(resolution="4k"))
 
     def test_wavespeed_never_silently_downscales(self):
         with self.assertRaisesRegex(ValueError, "仅支持 720p"):
