@@ -877,6 +877,62 @@ def _ensure_heygen_image_jpg(image_path):
         raise ValueError("图片格式转换失败，请上传 jpg/png 格式的人物形象图")
     return out
 
+
+# 参考视频上传前压到 720p/2Mbps。用户传的是手机原片（实测 1920×1080 / 15.4 Mbps / 24MB），
+# 而 HeyGen 的成片只有 720p / 5~7MB —— 我们推上去的码率是拿回来的 3.5 倍。
+#
+# 参考视频只用来提取动作：HeyGen 的提示词里写死了「Follow the reference video ONLY for body
+# movement, pose, timing, gestures, camera motion… Do NOT copy the reference video person's
+# appearance」，人物样貌全部来自 avatar 图。720p/2Mbps 传递姿态绰绰有余（成片本来就只有 720p）。
+# 2026-07-11 用同一 avatar、同一段素材做过原片/压缩片对比生成：姿态、身份、画质无差异，
+# 压缩片成片无伪影无变形（差异只在表情/构图，那是 cinematic 生成本身的随机性）。
+#
+# 为什么非压不可 —— 瓶颈是出境隧道，不是 HeyGen（10 路并发实测无 429、生成不降速）：
+#   隧道上行 ~1.1 MB/s，上传硬超时 240s
+#   23MB × N 路 → 约 21N 秒：10 路要 210s，实测挂了 1/10（撞 240s 超时）
+#   3MB  × N 路 → 约  3N 秒：10 路只要 30s
+# 不压，motion 的 worker 就被带宽死死卡在 3~4；压完，带宽不再是约束。
+MOTION_REF_MAX_LONG_SIDE = int(os.environ.get("MOTION_REF_MAX_LONG_SIDE", "1280") or 1280)
+MOTION_REF_BITRATE_K = int(os.environ.get("MOTION_REF_BITRATE_K", "2000") or 2000)
+MOTION_REF_SHRINK_MIN_BYTES = int(os.environ.get("MOTION_REF_SHRINK_MIN_BYTES", "6291456") or 6291456)
+
+
+def _shrink_reference_video(ref_path):
+    """参考视频上传前压到 720p/2Mbps。已经够小的原样返回。
+
+    压缩是优化而非正确性前提：ffmpeg 缺失、转码失败、产物为空——一律回退原片上传，
+    绝不能因为压不动就让整个任务失败（那是把一个省钱的优化变成新的故障源）。
+    """
+    path = pathlib.Path(ref_path)
+    try:
+        if path.stat().st_size <= MOTION_REF_SHRINK_MIN_BYTES:
+            return path
+    except OSError:
+        return path
+    out = path.parent / ("motion_ref_small_%d.mp4" % int(time.time() * 1000))
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(path),
+        # 长边收到 1280：竖屏 1080×1920 → 720×1280，横屏 1920×1080 → 1280×720
+        "-vf", "scale=w=%d:h=%d:force_original_aspect_ratio=decrease" % (
+            MOTION_REF_MAX_LONG_SIDE, MOTION_REF_MAX_LONG_SIDE),
+        "-c:v", "libx264", "-preset", "veryfast",
+        "-b:v", "%dk" % MOTION_REF_BITRATE_K,
+        "-maxrate", "%dk" % int(MOTION_REF_BITRATE_K * 1.2),
+        "-bufsize", "%dk" % (MOTION_REF_BITRATE_K * 2),
+        "-an",                                    # 动作参考用不到音轨
+        str(out),
+    ]
+    try:
+        subprocess.run(cmd, check=True, timeout=180, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if not out.exists() or out.stat().st_size <= 0:
+            raise RuntimeError("产物为空")
+    except Exception as e:
+        print("[heygen] 参考视频压缩失败，改用原片上传: %s" % str(e)[:120], flush=True)
+        return path
+    print("[heygen] 参考视频 %.1fMB → %.1fMB" % (
+        path.stat().st_size / 1048576.0, out.stat().st_size / 1048576.0), flush=True)
+    return out
+
 def _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion, direct=False):
     title = "huangque video %d" % int(time.time())
     body = json.dumps({
@@ -1241,7 +1297,9 @@ def _generate_heygen_motion_video_impl(image_file, reference_video_file, resolut
     update_video_asset_phase(job_id, "uploading_reference_asset", image_asset_id=image_asset_id,
                              provider_avatar_id=avatar_item_id or None,
                              provider_avatar_group_id=avatar_group_id or None)
-    reference_asset_id = _heygen_upload_asset(reference_fp, direct=direct)
+    # 压到 720p/2Mbps 再上传：手机原片 24MB 过 1.1MB/s 的隧道要 210s(10路并发)，撞 240s 硬超时；
+    # 压完 3MB 只要 30s。参考视频只提供动作，样貌来自 avatar，画质无损（见 _shrink_reference_video）。
+    reference_asset_id = _heygen_upload_asset(_shrink_reference_video(reference_fp), direct=direct)
     if not avatar_item_id:
         update_video_asset_phase(job_id, "creating_photo_avatar", image_asset_id=image_asset_id,
                                  reference_asset_id=reference_asset_id)
