@@ -31,9 +31,14 @@ core = importlib.import_module("content_domains.core")
 
 
 class WorkerCountTests(unittest.TestCase):
-    def test_motion_workers_raised_to_ten(self):
-        # 10 是实测验证过的上限（HeyGen 10 路无 429）；带宽约束已由压缩解除
-        self.assertEqual(core.MOTION_JOB_WORKERS, 10)
+    def test_motion_workers_stay_conservative_until_wavespeed_is_measured(self):
+        """动作模仿的 worker 数不能拿 HeyGen 的实测当依据。
+
+        我一度把它提到 10，理由是「HeyGen 10 路无 429、生成不降速」——但动作模仿的实际
+        供应商是 WaveSpeed，而 WaveSpeed 的并发能力从没测过。HeyGen 的那个 10 应该留给
+        走 HeyGen 的功能，不该外溢到这里。在 WaveSpeed 压测出来之前，保守留 3。
+        """
+        self.assertEqual(core.MOTION_JOB_WORKERS, 3)
 
 
 class ShrinkTests(unittest.TestCase):
@@ -96,11 +101,31 @@ class ShrinkTests(unittest.TestCase):
         self.assertNotEqual(out, p)             # 压缩成功 → 返回新文件
 
 
-class UploadPathTests(unittest.TestCase):
-    def test_reference_is_shrunk_before_upload(self):
-        """防回归：压缩必须真的接在上传前面，否则改了等于没改。"""
-        src = Path(video.__file__).read_text(encoding="utf-8")
-        self.assertIn("_heygen_upload_asset(_shrink_reference_video(reference_fp)", src)
+class DispatchPathTests(unittest.TestCase):
+    """压缩必须接在【线路分发之前】，否则只有一条路受益。"""
+
+    def setUp(self):
+        self.src = Path(video.__file__).read_text(encoding="utf-8")
+
+    def test_shrink_happens_right_after_the_reference_lands_on_disk(self):
+        # 防回归：改了等于没改的经典形态——函数写了，但没人调
+        self.assertIn("reference_video_file = _shrink_motion_reference(reference_video_file)", self.src)
+
+    def test_shrink_is_before_both_providers(self):
+        """必须早于两个供应商的调用点，两条路才都吃到压缩后的文件。
+
+        我第一版把它接在 HeyGen 的上传处——而动作模仿走的是 WaveSpeed，
+        等于压缩完全没作用在正路上。
+        （锚点不能用 `if line == "2":`——换装那边也有一处同样的字样，会先匹配到。）
+        """
+        shrink_at = self.src.index("_shrink_motion_reference(reference_video_file)")
+        for callee in ("wavespeed.generate_motion(", "generate_heygen_motion_video(image_file"):
+            self.assertLess(shrink_at, self.src.index(callee),
+                            "压缩晚于 %s → 这条路拿到的还是原片" % callee)
+
+    def test_heygen_path_does_not_shrink_twice(self):
+        # 分发前已经压过，HeyGen 上传处不该再压一遍（白烧一次 ffmpeg）
+        self.assertNotIn("_heygen_upload_asset(_shrink_reference_video(", self.src)
 
 
 if __name__ == "__main__":

@@ -929,9 +929,32 @@ def _shrink_reference_video(ref_path):
     except Exception as e:
         print("[heygen] 参考视频压缩失败，改用原片上传: %s" % str(e)[:120], flush=True)
         return path
-    print("[heygen] 参考视频 %.1fMB → %.1fMB" % (
+    print("[motion] 参考视频 %.1fMB → %.1fMB" % (
         path.stat().st_size / 1048576.0, out.stat().st_size / 1048576.0), flush=True)
     return out
+
+
+def _shrink_motion_reference(reference_video_file):
+    """落盘后立刻压缩参考视频，返回新的相对路径（压不动就原样返回原路径）。
+
+    放在【线路分发之前】，两条路都受益：
+      * HeyGen    ——原始字节要推过隧道(上行仅 ~1.1 MB/s，硬超时 240s)，压缩是解开并发天花板的关键
+      * WaveSpeed ——素材先传 COS 再把 URL 给对方自己拉，不占隧道；压缩省的是 COS 上传与流量
+
+    压完删原片：这个文件刚从 payload 写出来，此刻还没有任何东西引用它（video_assets 记的是
+    本函数的返回值），删掉是安全的，省下 8 倍磁盘。删失败不算错——留给每日 GC 收拾。
+    """
+    fp = _resolve_out_file(reference_video_file)
+    if not fp:
+        return reference_video_file
+    small = _shrink_reference_video(fp)
+    if small == fp:
+        return reference_video_file      # 本来就够小，或压缩失败已回退原片
+    try:
+        fp.unlink()
+    except OSError:
+        pass
+    return "video/" + small.name
 
 def _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion, direct=False):
     title = "huangque video %d" % int(time.time())
@@ -1297,9 +1320,8 @@ def _generate_heygen_motion_video_impl(image_file, reference_video_file, resolut
     update_video_asset_phase(job_id, "uploading_reference_asset", image_asset_id=image_asset_id,
                              provider_avatar_id=avatar_item_id or None,
                              provider_avatar_group_id=avatar_group_id or None)
-    # 压到 720p/2Mbps 再上传：手机原片 24MB 过 1.1MB/s 的隧道要 210s(10路并发)，撞 240s 硬超时；
-    # 压完 3MB 只要 30s。参考视频只提供动作，样貌来自 avatar，画质无损（见 _shrink_reference_video）。
-    reference_asset_id = _heygen_upload_asset(_shrink_reference_video(reference_fp), direct=direct)
+    # 参考视频已在落盘时压过（gen_video 的 motion 分支，线路分发之前）——这里不要再压一遍。
+    reference_asset_id = _heygen_upload_asset(reference_fp, direct=direct)
     if not avatar_item_id:
         update_video_asset_phase(job_id, "creating_photo_avatar", image_asset_id=image_asset_id,
                                  reference_asset_id=reference_asset_id)
@@ -1682,6 +1704,9 @@ def gen_video(payload):
         reference_video_file = _save_data_file(payload.get("reference_video_data"), "motion_ref", [".mp4", ".mov", ".webm"])
         if not reference_video_file:
             raise ValueError("请先上传参考动作视频")
+        # 落盘即压：此刻这个文件刚从 payload 写出来，还没有任何东西引用它，是压缩最干净的时机。
+        # 放在线路分发【之前】，HeyGen(推字节过隧道) 和 WaveSpeed(传 COS 再发 URL) 都受益。
+        reference_video_file = _shrink_motion_reference(reference_video_file)
         text = text or "动作模仿"
         update_video_asset_phase(job_id, "files_saved", mode=mode, image_file=image_file,
                                  reference_video_file=reference_video_file, text=text,

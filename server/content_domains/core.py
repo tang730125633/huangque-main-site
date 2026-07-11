@@ -194,7 +194,7 @@ def _env_positive_int(name, default):
 VIDEO_COST = _env_positive_int("VIDEO_COST", 20)
 JOB_WORKERS, FAST_JOB_WORKERS = _env_positive_int("CONTENT_JOB_WORKERS", 3), _env_positive_int("CONTENT_FAST_JOB_WORKERS", 3)  # 慢队列(换装/果肉video)/快队列(图片/音频等)各自worker数，分开防视频堵死快任务
 TALKING_JOB_WORKERS = _env_positive_int("CONTENT_TALKING_JOB_WORKERS", 10)  # 口播(video mode=text/audio)专用池：HeyGen口播能扛高并发(50并发实测无429)
-MOTION_JOB_WORKERS = _env_positive_int("CONTENT_MOTION_JOB_WORKERS", 10)    # 动作模仿专用池。旧值3的理由「HeyGen并发>3撞墙」已被证伪：10路实测无429、生成不降速(404~511s)，唯一挂的那条是我们自己的上传撞240s超时——瓶颈是隧道上行(1.1MB/s×23MB)，不是HeyGen。参考视频已压到3MB(见 video._shrink_reference_video)，10路上传仅30s
+MOTION_JOB_WORKERS = _env_positive_int("CONTENT_MOTION_JOB_WORKERS", 3)     # 动作模仿池，暂留 3：WaveSpeed(动作模仿的实际供应商)的并发能力没实测过。旧注释「HeyGen并发>3撞墙」已被证伪(10路无429、不降速，挂的那条是我们自己上传撞240s硬超时)，但那是 HeyGen 的数——不能拿来给 WaveSpeed 定 worker
 IMAGE_JOB_WORKERS = _env_positive_int("CONTENT_IMAGE_JOB_WORKERS", 10)       # 生图专用池(生图慢90~450s，从快池拆出别拖死秒级任务)。10=500用户高峰约150张/时所需6.3个+60%余量；1worker≈24张/时(实测中位149s)
 JOB_QUEUE_MAX = _env_positive_int("CONTENT_JOB_QUEUE_MAX", 32)
 MAX_USER_ACTIVE_JOBS = _env_positive_int("MAX_USER_ACTIVE_JOBS", 5)                  # 单用户可同时提交(pending+running)的任务上限，超了提交即 429
