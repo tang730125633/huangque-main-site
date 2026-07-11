@@ -263,7 +263,13 @@
   el('resultAudio').onpause=function(){el('mainPlay').textContent='▶';};
   try{
     var q=new URLSearchParams(location.search), pp=q.get('prompt');
-    if(pp){el('ttsText').value=pp.slice(0,1200);toast('已带入编导口播文案');}
+    if(pp){el('ttsText').value=pp.slice(0,1200);toast(q.get('prefill')==='asset'?'已带入原配音参数，请确认后生成':'已带入编导口播文案');}
+    var pv=q.get('voice'); if(pv) selectedVoice=pv;
+    var qs=q.get('speed'), qt=q.get('pitch'), qvol=q.get('volume');
+    var ps=Number(qs), pt=Number(qt), pvol=Number(qvol);
+    if(qs!==null && Number.isFinite(ps)) params.speed=Math.max(.5,Math.min(2,Math.round(ps*10)/10));
+    if(qt!==null && Number.isFinite(pt)) params.pitch=Math.max(-12,Math.min(12,Math.round(pt)));
+    if(qvol!==null && Number.isFinite(pvol)) params.volume=Math.max(-50,Math.min(100,Math.round(pvol)));
   }catch(e){}
   bars(); updateParams(); el('ttsText').dispatchEvent(new Event('input')); loadVoices(); loadRecent();
 })();
