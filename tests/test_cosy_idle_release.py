@@ -123,6 +123,21 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(audio.release_idle_cosy_voices(), 0)
         self.assertEqual(len(self._voices()), 1)
 
+    def test_default_release_period_is_90_days(self):
+        self.assertEqual(audio.COSY_IDLE_RELEASE_DAYS, 90)
+
+    def test_warn_before_release_sends_notification(self):
+        """回收前 warn_days 天推提醒（同一音色只推一次），且不删音色。"""
+        self.db.add_voice(last_used_at=NOW - 85 * DAY)   # 90-7=83 天阈值，85>83 → 该提醒但未到 90 天回收
+        pushed = []
+        import content_domains.notifications as _notif
+        with patch.object(_notif, "push", lambda *a, **k: pushed.append(k.get("dedup_key")) or True):
+            n_warn = audio.warn_idle_cosy_voices(days=90, warn_days=7)
+            n_rel = audio.release_idle_cosy_voices(days=90)
+        self.assertEqual(n_warn, 1)                 # 提醒了
+        self.assertEqual(n_rel, 0)                  # 还没到 90 天，不删
+        self.assertEqual(len(self._voices()), 1)    # 音色还在
+
     def test_daily_guard_runs_once_per_day(self):
         audio._last_idle_sweep[0] = 0
         calls = []

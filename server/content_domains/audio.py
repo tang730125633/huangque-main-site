@@ -503,11 +503,16 @@ def prepare_clone_audio(audio_b64, audio_format):
         raise ValueError("\u6837\u97f3\u6587\u4ef6\u8fc7\u5927\uff0c\u8bf7\u4e0a\u4f20\u66f4\u77ed\u6216\u66f4\u4f4e\u7801\u7387\u7684\u97f3\u9891")
     return base64.b64encode(data).decode(), "mp3"
 
-COSY_IDLE_RELEASE_DAYS = int(os.environ.get("COSY_IDLE_RELEASE_DAYS", "30") or 30)
+COSY_IDLE_RELEASE_DAYS = int(os.environ.get("COSY_IDLE_RELEASE_DAYS", "90") or 90)
+COSY_IDLE_WARN_DAYS = int(os.environ.get("COSY_IDLE_WARN_DAYS", "7") or 7)   # 回收前多少天提醒
 _last_idle_sweep = [0]   # 进程内每日一次守卫的时间戳
 
+def _idle_notif_key(voice_key):
+    return "cosy-idle-%s" % voice_key
+
 def _touch_voice_used(username, voice_key):
-    """刷新个人音色的 last_used_at（配音/复刻都算使用）。公共预置不落个人行，天然不受影响。"""
+    """刷新个人音色的 last_used_at（配音/复刻都算使用）。公共预置不落个人行，天然不受影响。
+    用户重新用了音色 → 撤掉之前的回收提醒，下次真空闲时能再提醒。"""
     if not voice_key:
         return
     try:
@@ -515,24 +520,51 @@ def _touch_voice_used(username, voice_key):
             c.execute("UPDATE audio_voices SET last_used_at=? WHERE username=? AND scope='personal' AND voice_key=?",
                       (int(time.time()), username, voice_key))
             c.commit()
+        from . import notifications as _notif
+        _notif.clear_dedup(username, _idle_notif_key(voice_key))
     except Exception:
         pass
 
-def release_idle_cosy_voices(days=None):
-    """一个月(默认)内既没配音也没复刻的 CosyVoice 个人音色 → 从阿里删除释放配额 + 清本地行 + 腾空槽位。
-    只碰 CosyVoice 复刻音色(provider_voice 以复刻模型名打头)；公共预置、豆包音色一律不动。
-    幂等、best-effort：阿里删除失败(可能已被自动清理)不阻断本地清理。返回释放数量。"""
-    if not cosyvoice.enabled():
-        return 0
-    days = COSY_IDLE_RELEASE_DAYS if days is None else int(days)
-    cutoff = int(time.time()) - days * 86400
+def _idle_voices_before(cutoff):
+    """返回"有效最后使用"早于 cutoff 的 CosyVoice 个人音色。
+    有效使用取 last_used_at，缺失(老数据/迁移)回落 updated_at/created_at，避免因无时间戳误删。"""
     with closing(adb()) as c:
-        # 有效"最后使用"取 last_used_at，缺失(老数据/迁移)回落 updated_at，避免因无时间戳误删
-        rows = c.execute("""SELECT id, username, voice_key, provider_voice, slot_id
+        return c.execute("""SELECT id, username, voice_key, display_name, provider_voice, slot_id,
+            COALESCE(NULLIF(last_used_at,0), updated_at, created_at, 0) AS eff_used
             FROM audio_voices
             WHERE scope='personal' AND provider_voice LIKE ?
               AND COALESCE(NULLIF(last_used_at,0), updated_at, created_at, 0) < ?""",
             (cosyvoice.CLONE_MODEL + "%", cutoff)).fetchall()
+
+def warn_idle_cosy_voices(days=None, warn_days=None):
+    """回收前 warn_days 天，给用户在通知中心推一条提醒（同一音色只推一次，用户用一次即撤销）。返回推送数。"""
+    if not cosyvoice.enabled():
+        return 0
+    days = COSY_IDLE_RELEASE_DAYS if days is None else int(days)
+    warn_days = COSY_IDLE_WARN_DAYS if warn_days is None else int(warn_days)
+    warn_cutoff = int(time.time()) - max(0, days - warn_days) * 86400
+    from . import notifications as _notif
+    pushed = 0
+    for r in _idle_voices_before(warn_cutoff):
+        left = max(1, (r["eff_used"] + days * 86400 - int(time.time())) // 86400)
+        ok = _notif.push(
+            r["username"],
+            title="音色即将被回收",
+            detail="您的复刻音色「%s」已长期未使用，将在约 %d 天后自动释放。用它配一次音即可保留。" %
+                   (r["display_name"] or "复刻音色", left),
+            kind="voice", action="去配音", href="audio.html",
+            dedup_key=_idle_notif_key(r["voice_key"]))
+        pushed += 1 if ok else 0
+    return pushed
+
+def release_idle_cosy_voices(days=None):
+    """回收：超过 days(默认 90) 天既没配音也没复刻的 CosyVoice 个人音色 → 删阿里释放配额 + 清本地 + 腾空槽位。
+    只碰 CosyVoice 复刻音色；公共预置、豆包音色一律不动。幂等、best-effort。返回释放数量。"""
+    if not cosyvoice.enabled():
+        return 0
+    days = COSY_IDLE_RELEASE_DAYS if days is None else int(days)
+    cutoff = int(time.time()) - days * 86400
+    rows = _idle_voices_before(cutoff)
     released = 0
     for r in rows:
         try:
@@ -548,6 +580,11 @@ def release_idle_cosy_voices(days=None):
                         clone_started_at=NULL, clone_upload_at=NULL, updated_at=?
                         WHERE username=? AND slot_id=?""", (int(time.time()), r["username"], r["slot_id"]))
                 c.commit()
+            try:
+                from . import notifications as _notif
+                _notif.clear_dedup(r["username"], _idle_notif_key(r["voice_key"]))   # 撤旧提醒，将来重刻可再提醒
+            except Exception:
+                pass
             released += 1
             print("[cosy-idle] 释放空闲音色 user=%s voice_key=%s" % (r["username"], r["voice_key"]), flush=True)
         except Exception as e:
@@ -563,9 +600,10 @@ def maybe_release_idle_voices():
         return
     _last_idle_sweep[0] = now
     try:
-        n = release_idle_cosy_voices()
-        if n:
-            print("[cosy-idle] 本轮释放 %d 个空闲音色" % n, flush=True)
+        w = warn_idle_cosy_voices()          # 先提醒(回收前 N 天)
+        n = release_idle_cosy_voices()       # 再回收(到期)
+        if w or n:
+            print("[cosy-idle] 本轮提醒 %d、释放 %d" % (w, n), flush=True)
     except Exception as e:
         print("[cosy-idle] 扫描失败: %s" % str(e)[:160], flush=True)
 

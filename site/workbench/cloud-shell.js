@@ -372,8 +372,14 @@
     }
     return noticePage(x.kind);
   }
-  function buildNotices(data){
+  function buildNotices(data, pushed){
     var read=readNoticeIds(), items=[];
+    // 服务端主动推送的通知（音色回收提醒等）：后端已给成通知形态，time 是秒→毫秒
+    (pushed||[]).forEach(function(x){
+      items.push({id:x.id,kind:x.kind||'system',title:x.title,detail:x.detail||'',
+        time:Number(x.time||0)*1000,action:x.action||'',href:x.href||'',
+        tone:(x.kind==='voice'?'info':(x.tone||'info'))});
+    });
     var stored=readAccountJson('hq_preferences_v1',currentUser()), prefs=stored.notifications||{};
     function enabled(name, fallback){ return typeof prefs[name]==='boolean'?prefs[name]:fallback; }
     (data&&data.items||[]).forEach(function(x){
@@ -468,11 +474,15 @@
   function loadNotices(){
     ensureNotificationPanel(); if(_noticeState.loading) return;
     _noticeState.loading=true;
-    fetch('/api/gen/points/history?days=30&page=1&page_size=20',{credentials:'same-origin',cache:'no-store',headers:authHeaders()})
-      .then(function(r){ if(r.status===401) return {items:[]}; return r.ok?r.json():Promise.reject(new Error('读取通知失败')); })
-      .then(function(d){ _noticeState.items=buildNotices(d||{}); renderNotices(); })
-      .catch(function(){ _noticeState.items=buildNotices({items:[]}); renderNotices(); })
-      .finally(function(){ _noticeState.loading=false; });
+    // 两路合并：①本人任务/点数历史(拼成任务通知) ②服务端主动推送(音色回收提醒/系统消息)
+    var hist=fetch('/api/gen/points/history?days=30&page=1&page_size=20',{credentials:'same-origin',cache:'no-store',headers:authHeaders()})
+      .then(function(r){ return (r.status===401)?{items:[]}:(r.ok?r.json():{items:[]}); }).catch(function(){ return {items:[]}; });
+    var push=fetch('/api/gen/notifications?days=90',{credentials:'same-origin',cache:'no-store',headers:authHeaders()})
+      .then(function(r){ return (r.status===401)?{items:[]}:(r.ok?r.json():{items:[]}); }).catch(function(){ return {items:[]}; });
+    Promise.all([hist,push]).then(function(res){
+      _noticeState.items=buildNotices(res[0]||{}, (res[1]&&res[1].items)||[]);
+      renderNotices();
+    }).finally(function(){ _noticeState.loading=false; });
   }
   function markNoticeRead(id){
     var ids=readNoticeIds(); if(ids.indexOf(id)<0){ ids.push(id); saveNoticeIds(ids); }

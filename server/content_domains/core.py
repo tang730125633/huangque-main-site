@@ -243,6 +243,15 @@ def init_db():
             created_at INTEGER, updated_at INTEGER)""")
         _ensure_column(c, "jobs", "deleted", "INTEGER DEFAULT 0")
         _ensure_column(c, "jobs", "refunded", "INTEGER DEFAULT 0")  # 退点幂等键(#187)
+        # 服务端主动推送给用户的通知（音色回收提醒、余额告警、系统公告…）。已读态仍由前端
+        # localStorage 管（与现有通知中心一致），后端只存内容。dedup_key 防重复推送。
+        c.execute("""CREATE TABLE IF NOT EXISTS user_notifications(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL, kind TEXT, title TEXT, detail TEXT,
+            action TEXT, href TEXT, dedup_key TEXT, created_at INTEGER)""")
+        c.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_user_notif_dedup
+            ON user_notifications(username, dedup_key) WHERE dedup_key IS NOT NULL""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_user_notif_user ON user_notifications(username, created_at)")
         c.commit()
     feature_flags.init_db()
     init_audio_db()
@@ -1197,6 +1206,15 @@ class H(BaseHTTPRequestHandler):
                 )
                 data["points"] = points_domain.get_points(user["username"])
                 return self._send(200, data)
+            except Exception as e:
+                return self._send(400, {"detail": str(e)[:160]})
+        if p == "/api/gen/notifications":   # 服务端主动推送给本人的通知（音色回收提醒等）
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录"})
+            from . import notifications as notif_domain
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                return self._send(200, notif_domain.list_for(user["username"], (q.get("days") or ["90"])[0]))
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/dl":   # 无水印视频下载代理：直连拉 CDN → 附件流回(强制下载)
