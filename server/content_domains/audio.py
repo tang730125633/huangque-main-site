@@ -583,6 +583,21 @@ def prepare_clone_audio(audio_b64, audio_format):
         raise ValueError("\u6837\u97f3\u6587\u4ef6\u8fc7\u5927\uff0c\u8bf7\u4e0a\u4f20\u66f4\u77ed\u6216\u66f4\u4f4e\u7801\u7387\u7684\u97f3\u9891")
     return base64.b64encode(data).decode(), "mp3"
 
+CLONE_PREVIEW_TEXT = "你好，这是我的专属复刻音色试听。声音清晰自然，适合用于短视频口播和文案配音。"
+
+def _cosy_clone_preview(voice_id):
+    """给刚复刻好的 CosyVoice 音色合成一句试听样音 → COS 直链。
+    失败返回 (None, None)，不阻断复刻(音色本身仍可用，只是暂无试听)。"""
+    try:
+        data = cosyvoice.synth(voice_id, CLONE_PREVIEW_TEXT)
+        if not data or len(data) < 1000:
+            return None, None
+        pf = "audio/voice_preview_%s.mp3" % uuid.uuid4().hex   # 不可猜键(#185)
+        _out_path(pf).write_bytes(data)
+        return pf, public_url(pf, "audio/mpeg")
+    except Exception:
+        return None, None
+
 def _clone_via_cosyvoice(username, slot_id, name, audio_b64):
     """CosyVoice 复刻：60s 参考音频(已由 prepare_clone_audio 标准化) → COS 预签名 URL
     → create_voice 拿 voice_id → 落库。voice_id 直接作为 provider_voice，合成时按它选复刻模型。
@@ -606,14 +621,17 @@ def _clone_via_cosyvoice(username, slot_id, name, audio_b64):
     slot_status = "ready" if status == "OK" else "training"
     now = int(time.time())
     voice_key = "vip_" + re.sub(r"[^a-zA-Z0-9_\-]", "_", slot_id)
+    # CosyVoice 的 create_voice 不返样音，复刻后自己合成一句试听存 COS——否则前端没 preview_url
+    # 就不显示试听按钮(音频页/视频页同源)。生成失败不阻断复刻，音色本身仍可用。
+    preview_file, preview_url = _cosy_clone_preview(voice_id) if slot_status == "ready" else (None, None)
     with closing(adb()) as c:
         c.execute("""INSERT OR IGNORE INTO audio_voices
             (username, scope, voice_key, display_name, provider_voice, slot_id, created_at, updated_at)
             VALUES(?,?,?,?,?,?,?,?)""",
             (username, "personal", voice_key, name, voice_id, slot_id, now, now))
-        c.execute("""UPDATE audio_voices SET display_name=?, provider_voice=?, preview_file=NULL,
-            preview_url=NULL, slot_id=?, updated_at=? WHERE username=? AND scope='personal' AND voice_key=?""",
-            (name, voice_id, slot_id, now, username, voice_key))
+        c.execute("""UPDATE audio_voices SET display_name=?, provider_voice=?, preview_file=?,
+            preview_url=?, slot_id=?, updated_at=? WHERE username=? AND scope='personal' AND voice_key=?""",
+            (name, voice_id, preview_file, preview_url, slot_id, now, username, voice_key))
         r = c.execute("SELECT id FROM audio_voices WHERE username=? AND scope='personal' AND voice_key=?",
                       (username, voice_key)).fetchone()
         vid_row = r["id"] if r else None
