@@ -170,7 +170,7 @@ class VideoBatchIntegrationGuardTests(unittest.TestCase):
                 with closing(sqlite3.connect(core.JOB_DB)) as db:
                     db.execute("""CREATE TABLE jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,username TEXT,cost INTEGER,
                         status TEXT DEFAULT 'pending',payload TEXT,result TEXT,error TEXT,created_at INTEGER,updated_at INTEGER,
-                        deleted INTEGER DEFAULT 0,refunded INTEGER DEFAULT 0)""")
+                        deleted INTEGER DEFAULT 0,refunded INTEGER DEFAULT 0,owner TEXT)""")
                     db.commit()
                 core.init_audio_db()
                 core._domains = lambda: (None, fake, video)
