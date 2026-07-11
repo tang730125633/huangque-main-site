@@ -23,8 +23,14 @@
   .settings-card-note{font-size:12px;color:#6f7f96;line-height:1.6}
   .profile-top{display:flex;align-items:center;gap:16px;margin-bottom:18px}
   .profile-avatar{width:54px;height:54px;border-radius:12px;background:linear-gradient(150deg,#9a6a3a,#5a3d22);display:flex;align-items:center;justify-content:center;color:#fff;font-size:22px;font-weight:800;flex:none}
+  .profile-main{min-width:0;flex:1}
   .profile-name{font-size:20px;font-weight:800;color:#eaf1fa;line-height:1.25}
   .profile-user{margin-top:5px;color:#94a4bb;font-size:13px}
+  .profile-edit-btn{height:34px;padding:0 12px;flex:none}
+  .profile-editor{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end;margin:-4px 0 18px;padding:14px;border:1px solid rgba(231,178,76,.18);border-radius:10px;background:rgba(231,178,76,.05)}
+  .profile-editor[hidden]{display:none}
+  .profile-editor .field{min-width:0}
+  .profile-editor-actions{display:flex;gap:8px}
   .info-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
   .info-cell{padding:14px;border:1px solid rgba(148,164,187,.1);border-radius:10px;background:rgba(7,11,19,.34);min-width:0}
   .info-label{font-size:11.5px;color:#6f7f96;margin-bottom:7px}
@@ -108,6 +114,7 @@
     .billing-card{align-items:flex-start;flex-direction:column}
   }
   @media (max-width:620px){.theme-options{grid-template-columns:1fr}}
+  @media (max-width:520px){.profile-top{align-items:flex-start;flex-wrap:wrap}.profile-edit-btn{margin-left:70px}.profile-editor{grid-template-columns:1fr}.profile-editor-actions{justify-content:flex-end}}
 </style>
 <link rel="stylesheet" href="theme.css?v=5873a2f4">
 </head>
@@ -132,11 +139,16 @@
           </div>
           <div class="profile-top">
             <div id="profileAvatar" class="profile-avatar">--</div>
-            <div>
+            <div class="profile-main">
               <div id="displayName" class="profile-name">正在读取账号</div>
               <div id="username" class="profile-user">--</div>
             </div>
+            <button id="editNicknameBtn" class="btn profile-edit-btn" type="button">编辑昵称</button>
           </div>
+          <form id="nicknameForm" class="profile-editor" hidden>
+            <label class="field"><span>昵称</span><input id="nicknameInput" type="text" maxlength="32" autocomplete="nickname" placeholder="输入 1–32 个字符"></label>
+            <div class="profile-editor-actions"><button id="cancelNicknameBtn" class="btn" type="button">取消</button><button id="saveNicknameBtn" class="btn primary" type="submit" disabled>保存</button></div>
+          </form>
           <div class="info-grid">
             <div class="info-cell"><div class="info-label">角色</div><div id="role" class="info-value">--</div></div>
             <div class="info-cell"><div class="info-label">剩余点数</div><div id="points" class="info-value mono">--</div></div>
@@ -236,7 +248,7 @@
   </section>
 </div>
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=fb3824f6"></script>
+<script src="cloud-shell.js?v=b82c30d3"></script>
 <script>
 (function(){
   var $ = function(id){return document.getElementById(id);};
@@ -344,7 +356,8 @@
   function renderUser(user){
     user = user || {};
     activeUser = user;
-    var name = user.name || user.display_name || user.username || '未命名账号';
+    var localProfile=readJson(accountKey('hq_profile_v1'));
+    var name = localProfile.nickname || user.name || user.display_name || user.username || '未命名账号';
     $('displayName').textContent = name;
     $('username').textContent = '@' + (user.username || '--');
     $('profileAvatar').textContent = initial(name);
@@ -354,9 +367,68 @@
     $('loginState').textContent = '已连接';
     $('accountStatus').textContent = '已连接';
     $('sessionAccount').textContent='@'+(user.username||'--')+' · 当前浏览器会话';
+    if(!$('nicknameForm').hidden) $('nicknameInput').value = name;
     try{localStorage.setItem('hq_user', JSON.stringify(user));}catch(e){}
     loadPreferences();
   }
+
+  function setNicknameEditor(open){
+    var form=$('nicknameForm'), input=$('nicknameInput');
+    form.hidden=!open;
+    $('editNicknameBtn').hidden=open;
+    if(open){
+      input.value=currentNickname();
+      $('saveNicknameBtn').disabled=true;
+      setTimeout(function(){input.focus();input.select();},0);
+    }
+  }
+
+  function currentNickname(){
+    var profile=readJson(accountKey('hq_profile_v1'));
+    return profile.nickname||(activeUser&&(activeUser.name||activeUser.display_name||activeUser.username))||'';
+  }
+
+  function refreshNicknameSaveState(){
+    var name=$('nicknameInput').value.trim();
+    var current=currentNickname();
+    $('saveNicknameBtn').disabled=!name||name.length>32||name===current;
+  }
+
+  function applyNickname(user,name,localOnly){
+    var profile=readJson(accountKey('hq_profile_v1'));
+    if(localOnly) profile.nickname=name;
+    else delete profile.nickname;
+    writeJson(accountKey('hq_profile_v1'),profile);
+    user=Object.assign({},user||activeUser||{},{name:name});
+    renderUser(user);
+    setNicknameEditor(false);
+    if(window.HQ&&typeof window.HQ.renderUser==='function') window.HQ.renderUser();
+  }
+
+  $('editNicknameBtn').addEventListener('click',function(){setNicknameEditor(true);});
+  $('cancelNicknameBtn').addEventListener('click',function(){setNicknameEditor(false);});
+  $('nicknameInput').addEventListener('input',refreshNicknameSaveState);
+  $('nicknameForm').addEventListener('submit',function(e){
+    e.preventDefault();
+    var name=$('nicknameInput').value.trim(), btn=$('saveNicknameBtn');
+    if(!name){toast('昵称不能为空');return;}
+    if(name.length>32){toast('昵称最多 32 个字符');return;}
+    setBusy(btn,true,'保存中');
+    apiFetch('/api/auth/profile',{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({display_name:name})
+    }).then(function(res){
+      if(!res) return;
+      if(res.status===404){
+        applyNickname(activeUser,name,true);
+        toast('昵称已保存在当前浏览器');
+        return;
+      }
+      if(!res.ok||!res.data.user) throw new Error(res.data.detail||'保存昵称失败');
+      applyNickname(res.data.user,name,false);
+      toast('昵称已保存');
+    }).catch(function(err){toast(err.message||'保存昵称失败');})
+      .finally(function(){setBusy(btn,false,'保存');refreshNicknameSaveState();});
+  });
 
   function loadPreferences(){
     var preferences=mergePreferences(readJson(accountKey('hq_preferences_v1')));

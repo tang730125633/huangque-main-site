@@ -815,6 +815,36 @@ class H(BaseHTTPRequestHandler):
             finally:
                 c.close()
             return self._send(200, {"ok": True, "reauth": True})
+        if p == "/api/auth/profile":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            name = d.get("display_name")
+            if not isinstance(name, str):
+                return self._send(400, {"detail": "请填写昵称"})
+            name = name.strip()
+            if not name:
+                return self._send(400, {"detail": "昵称不能为空"})
+            if len(name) > 32:
+                return self._send(400, {"detail": "昵称最多 32 个字符"})
+            if any(ord(ch) < 32 for ch in name):
+                return self._send(400, {"detail": "昵称不能包含控制字符"})
+            c = db()
+            try:
+                c.execute("UPDATE users SET display_name=? WHERE username=?", (name, row["username"]))
+                fresh = c.execute("SELECT * FROM users WHERE username=?", (row["username"],)).fetchone()
+                c.commit()
+            except Exception:
+                c.rollback()
+                return self._send(500, {"detail": "保存昵称失败"})
+            finally:
+                c.close()
+            return self._send(200, {"ok": True, "user": public_user(
+                fresh["username"], fresh["display_name"], fresh["points"], fresh["role"], fresh["must_change"]
+            )})
         self._send(404, {"detail": "not found"})
 
     def do_GET(self):

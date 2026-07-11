@@ -654,10 +654,11 @@
   }
   function renderUser(){
     var u=currentUser(), inn=!!u;
+    var profile=readAccountJson('hq_profile_v1',u);
     var card=document.getElementById('hqUserCard'), auth=document.getElementById('hqAuthArea');
     var av='radial-gradient(circle at 32% 26%, #f6d488, #e7b24c 46%, #a8721f 100%)';
     if(inn){
-      var name=(u&&(u.nickname||u.username))||'我的账号', ch=(String(name).trim()[0]||'我').toUpperCase();
+      var name=profile.nickname||(u&&(u.name||u.nickname||u.username))||'我的账号', ch=(String(name).trim()[0]||'我').toUpperCase();
       var safeName=escapeHtml(name), safeCh=escapeHtml(ch);
       var role=(u&&u.role==='admin')?'管理员':'会员';
       if(card) card.innerHTML='<div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-radius:10px;">'+
