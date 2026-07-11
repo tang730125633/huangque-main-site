@@ -35,9 +35,13 @@
   .tpl-card.on{color:#e7b24c;background:rgba(231,178,76,.1);border-color:rgba(231,178,76,.36)}
   .tpl-fields{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}
   .tpl-input{box-sizing:border-box;width:100%;height:38px;padding:0 10px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(7,11,19,.42);color:#eaf1fa;outline:none;font:inherit;font-size:12.5px}
-  .tpl-apply{width:100%;height:38px;margin-top:10px;border:1px solid rgba(231,178,76,.32);border-radius:10px;background:rgba(231,178,76,.1);color:#e7b24c;font:inherit;font-size:12.5px;font-weight:800;cursor:pointer}
+  .tpl-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+  .tpl-apply{height:38px;border:1px solid rgba(231,178,76,.32);border-radius:8px;background:rgba(231,178,76,.1);color:#e7b24c;font:inherit;font-size:12.5px;font-weight:800;cursor:pointer}
   .tpl-apply:hover{background:rgba(231,178,76,.16)}
-  @media (max-width:760px){.tpl-fields{grid-template-columns:1fr 1fr}}
+  .tpl-generate{height:38px;border:1px solid #e7b24c;border-radius:8px;background:#e7b24c;color:#1a1206;font:inherit;font-size:12.5px;font-weight:800;cursor:pointer}
+  .tpl-generate:hover{background:#f4cd72}
+  .tpl-apply:disabled,.tpl-generate:disabled{opacity:.55;cursor:wait}
+  @media (max-width:760px){.tpl-fields{grid-template-columns:1fr 1fr}.tpl-actions{grid-template-columns:1fr}}
 </style>
 <link rel="stylesheet" href="theme.css?v=d5f19744">
 </head>
@@ -64,7 +68,10 @@
           <input id="tplSelling" class="tpl-input" maxlength="40" placeholder="卖点" value="科技焕肤 · 毛孔细腻透亮">
           <input id="tplPrice" class="tpl-input" maxlength="24" placeholder="价格/权益" value="到店立减100">
         </div>
-        <button id="tplApply" class="tpl-apply" type="button">套用模板到提示词</button>
+        <div class="tpl-actions">
+          <button id="tplApply" class="tpl-apply" type="button">套用后编辑</button>
+          <button id="tplGenerate" class="tpl-generate" type="button">按当前数量立即生成</button>
+        </div>
       </div>
 
       <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 9px;">
@@ -215,7 +222,11 @@
     note.style.color='#5c6b82';
   }
   function setNote(t,c){ note.innerHTML=t; note.style.color=c||'#5c6b82'; }
-  function busy(on){ gen.style.pointerEvents=on?'none':'auto'; gen.style.opacity=on?'.7':'1'; gen.textContent=on?'生成中…':genLabel(); res.style.filter=on?'blur(3px) brightness(.6)':'none'; }
+  function busy(on){
+    gen.disabled=!!on; gen.style.pointerEvents=on?'none':'auto'; gen.style.opacity=on?'.7':'1';
+    gen.textContent=on?'生成中…':genLabel(); res.style.filter=on?'blur(3px) brightness(.6)':'none';
+    ['tplApply','tplGenerate'].forEach(function(id){var btn=document.getElementById(id);if(btn)btn.disabled=!!on;});
+  }
 
   // 引擎选择
   function selectEngine(e){
@@ -419,6 +430,11 @@
   }
   renderTemplates();
   var tplApply=document.getElementById('tplApply'); if(tplApply) tplApply.onclick=applyTemplate;
+  var tplGenerate=document.getElementById('tplGenerate'); if(tplGenerate) tplGenerate.onclick=function(){
+    if(gen.disabled) return;
+    applyTemplate();
+    gen.click();
+  };
 
   // 共享：提交 → 轮询 → 显示。任务存 localStorage，切走再回来自动续传（后端不中断）
   var lastPayload=null, lastResultUrl=null, lastEndpoint='/api/gen/image';

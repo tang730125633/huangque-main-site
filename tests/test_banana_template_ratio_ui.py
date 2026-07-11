@@ -40,6 +40,22 @@ class BananaTemplateRatioUiTests(unittest.TestCase):
             ratio_block,
         )
 
+    def test_template_can_apply_or_generate_through_existing_submit_path(self):
+        self.assertIn('id="tplApply"', self.html)
+        self.assertIn('id="tplGenerate"', self.html)
+        generate_block = self.html.split(
+            "var tplGenerate=document.getElementById('tplGenerate');", 1
+        )[1].split("};", 1)[0]
+        self.assertIn("if(gen.disabled) return;", generate_block)
+        self.assertIn("applyTemplate();", generate_block)
+        self.assertIn("gen.click();", generate_block)
+
+    def test_template_actions_share_generation_busy_state(self):
+        busy_block = self.html.split("function busy(on){", 1)[1].split("\n  }", 1)[0]
+        self.assertIn("gen.disabled=!!on", busy_block)
+        self.assertIn("['tplApply','tplGenerate']", busy_block)
+        self.assertIn("btn.disabled=!!on", busy_block)
+
 
 if __name__ == "__main__":
     unittest.main()
