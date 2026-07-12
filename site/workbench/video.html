@@ -1173,7 +1173,7 @@
   }
   function stopVidTick(){ if(_vidTick){ clearInterval(_vidTick); _vidTick=null; } }
   function setBusy(on){
-    ['generateBtn','motionGenerateBtn','tryonGenerateBtn','grokGenerateBtn','microGenerateBtn'].forEach(function(id){
+    ['generateBtn','motionGenerateBtn','tryonGenerateBtn','grokGenerateBtn','microGenerateBtn','omniGenerateBtn'].forEach(function(id){
       var btn=$(id); if(!btn) return;
       btn.disabled=on;
       btn.style.opacity=on?'.72':'1';
