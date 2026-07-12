@@ -194,14 +194,12 @@ def _env_positive_int(name, default):
 VIDEO_COST = _env_positive_int("VIDEO_COST", 20)
 JOB_WORKERS, FAST_JOB_WORKERS = _env_positive_int("CONTENT_JOB_WORKERS", 3), _env_positive_int("CONTENT_FAST_JOB_WORKERS", 3)  # 慢队列(换装/果肉video)/快队列(图片/音频等)各自worker数，分开防视频堵死快任务
 TALKING_JOB_WORKERS = _env_positive_int("CONTENT_TALKING_JOB_WORKERS", 10)  # 口播(video mode=text/audio)专用池：HeyGen口播能扛高并发(50并发实测无429)
-MOTION_JOB_WORKERS = _env_positive_int("CONTENT_MOTION_JOB_WORKERS", 3)     # 动作模仿池(走WaveSpeed)。留3因WaveSpeed并发没实测过——旧注释「HeyGen并发>3撞墙」已被证伪(10路无429、不降速，挂的那条是我们自己上传撞240s硬超时)，但那是HeyGen的数，不能拿来给WaveSpeed定worker
 CINEMATIC_JOB_WORKERS = _env_positive_int("CONTENT_CINEMATIC_JOB_WORKERS", 10)  # AI剧情视频池(HeyGen)。20路并发实测(10口播+10剧情同时生成)：20/20全成、零降速(口播114s vs 单条基线104s)——HeyGen 的渲染容量远大于20，文档说的「Max Concurrent Video Jobs=10」不是硬限制。唯一的真限制是【提交突发】，由 _heygen_retry_429 兜住
 AVATAR_JOB_WORKERS = _env_positive_int("CONTENT_AVATAR_JOB_WORKERS", 5)        # 建形象池。5 路是实测的干净档位(2026-07-12)：5并发 5/5成功、0×429、零降速(就绪中位19.7s vs 单条基线19.8s)；10并发 HeyGen 侧照样零429不降速，但【我们的出境隧道】开始丢包(1条TLS握手超时、1条提交花了57s)。所以瓶颈是隧道不是HeyGen，隧道扩容后可再往上调。串行(1)的吞吐只有144个/小时——500人集中建形象要排3.5小时，而建形象是电影化身的【入口】，堵在这里等于整个功能没法用；5路→约900个/小时，排队压到35分钟
 IMAGE_JOB_WORKERS = _env_positive_int("CONTENT_IMAGE_JOB_WORKERS", 10)       # 生图专用池(生图慢90~450s，从快池拆出别拖死秒级任务)。10=500用户高峰约150张/时所需6.3个+60%余量；1worker≈24张/时(实测中位149s)
 JOB_QUEUE_MAX = _env_positive_int("CONTENT_JOB_QUEUE_MAX", 32)
 MAX_USER_ACTIVE_JOBS = _env_positive_int("MAX_USER_ACTIVE_JOBS", 5)                  # 单用户可同时提交(pending+running)的任务上限，超了提交即 429
 MAX_USER_ACTIVE_XIAOLE_VIDEO = _env_positive_int("MAX_USER_ACTIVE_XIAOLE_VIDEO", 3)  # 单用户果肉/豆姐/欧米视频 active 上限：别让单一渠道吃满全部任务位
-MAX_USER_ACTIVE_MOTION = _env_positive_int("MAX_USER_ACTIVE_MOTION", 2)              # 单用户影视级模仿 active 上限：重任务，避免把其它视频功能全部卡死
 MAX_USER_ACTIVE_TRYON = _env_positive_int("MAX_USER_ACTIVE_TRYON", 1)                # 单用户换装视频 active 上限：最重链路，默认一次只放 1 条
 MAX_USER_ACTIVE_CINEMATIC = _env_positive_int("MAX_USER_ACTIVE_CINEMATIC", 2)        # 单用户剧情视频 active 上限：重任务(约8分钟)，别让一个人占满 10 个 worker
 MAX_USER_ACTIVE_AVATAR = _env_positive_int("MAX_USER_ACTIVE_AVATAR", 2)              # 单用户建形象 active 上限。池已不再串行(5路)，但仍留 2：池只有 5 个槽，一个人占满就把别人挡在门外——而建形象是电影化身的入口
@@ -661,7 +659,6 @@ def _post_bytes(path, data, ctype):  # 返回原始字节(TTS 拿 mp3 二进制)
 _job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)          # 慢队列(tryon/xiaole_video + video兜底)
 _fast_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)     # 快队列(audio/copy/collect/leads等秒级任务)
 _talking_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)  # 口播队列(video mode=text/audio)
-_motion_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)   # 动作模仿队列(video mode=motion)
 _image_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)    # 生图队列(kind=image，从快池拆出防拖死快任务)
 _cinematic_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)  # AI剧情视频队列(kind=cinematic，HeyGen，约8分钟/条)
 _avatar_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)     # 建形象队列(kind=avatar，串行池)
@@ -682,7 +679,7 @@ def _refund_once(job_id, username, cost):
 
 def _pick_job_queue(kind, mode=None):
     # kind缺省(旧调用/测试)保守走慢队列；生图(慢90~450s)走生图池；秒级快任务(音频/文案/采集/名单)走快队列；
-    # video 再按 mode 三分：motion→motion池、text/audio(口播/兜底)→口播池；tryon/xiaole_video 走慢池。
+    # video(口播 text/audio)走口播池；tryon/xiaole_video 走慢池。
     if kind is None:
         return _job_queue
     if kind == "image":
@@ -694,7 +691,7 @@ def _pick_job_queue(kind, mode=None):
     if kind not in {"video", "tryon", "xiaole_video"}:
         return _fast_job_queue
     if kind == "video":
-        return _motion_job_queue if str(mode or "").lower() == "motion" else _talking_job_queue
+        return _talking_job_queue
     return _job_queue
 
 def enqueue_jobs(job_ids, kind=None, mode=None):
@@ -735,27 +732,7 @@ def _user_active_kind_count(username, kind):
                         (username, kind)).fetchone()
     return int(row["n"] if row else 0)
 
-def _user_active_video_mode_count(username, mode):
-    if not username or not mode:
-        return 0
-    mode = str(mode or "").lower()
-    with closing(jdb()) as c:
-        rows = c.execute("""SELECT payload FROM jobs
-                            WHERE username=? AND kind='video' AND status IN ('pending','running')
-                              AND COALESCE(deleted,0)=0""",
-                         (username,)).fetchall()
-    total = 0
-    for r in rows:
-        try:
-            payload = json.loads(r["payload"] or "{}") or {}
-        except Exception:
-            payload = {}
-        if str(payload.get("mode") or "").lower() == mode:
-            total += 1
-    return total
-
 def _user_video_submit_limit(kind, body, username, cost):
-    mode = str((body or {}).get("mode") or "").lower()
     if kind == "xiaole_video":
         active = _user_active_kind_count(username, "xiaole_video")
         if active >= MAX_USER_ACTIVE_XIAOLE_VIDEO:
@@ -767,12 +744,6 @@ def _user_video_submit_limit(kind, body, username, cost):
         if active >= MAX_USER_ACTIVE_TRYON:
             return {"detail": "当前换装视频最多同时排队或生成 %d 个任务，请等待任务完成后再继续" % MAX_USER_ACTIVE_TRYON,
                     "code": "tryon_active_cap", "active_jobs": active, "max_active_jobs": MAX_USER_ACTIVE_TRYON,
-                    "retry_after_ms": 4000, "need": cost}
-    elif kind == "video" and mode == "motion":
-        active = _user_active_video_mode_count(username, "motion")
-        if active >= MAX_USER_ACTIVE_MOTION:
-            return {"detail": "当前动作模仿最多同时排队或生成 %d 个任务，请等待部分完成后再继续" % MAX_USER_ACTIVE_MOTION,
-                    "code": "motion_active_cap", "active_jobs": active, "max_active_jobs": MAX_USER_ACTIVE_MOTION,
                     "retry_after_ms": 4000, "need": cost}
     elif kind == "cinematic":
         active = _user_active_kind_count(username, "cinematic")
@@ -789,13 +760,13 @@ def _user_video_submit_limit(kind, body, username, cost):
     return None
 
 def _user_running_talking_count(username):
-    """该用户「运行中」的口播条数(kind=video 且 mode!=motion)。mode 在 payload JSON 里，SQL 取回在 py 判，用户 running 数很少(<=5)开销可忽略。"""
+    """该用户「运行中」的口播条数(kind=video，即 text/audio 口播)。"""
     if not username:
         return 0
     with closing(jdb()) as c:
-        rows = c.execute("SELECT payload FROM jobs WHERE username=? AND status='running' AND kind='video'",
-                         (username,)).fetchall()
-    return sum(1 for r in rows if '"mode":"motion"' not in (r["payload"] or "").replace(" ", ""))
+        row = c.execute("SELECT COUNT(*) AS n FROM jobs WHERE username=? AND status='running' AND kind='video'",
+                        (username,)).fetchone()
+    return row["n"] if row else 0
 
 def _user_running_image_count(username):
     """该用户「运行中」的生图条数(kind=image)。"""
@@ -859,7 +830,7 @@ def start_job_workers():
             return
         _workers_started = True
     for count, q, prefix in ((JOB_WORKERS, _job_queue, "content-job-worker"), (FAST_JOB_WORKERS, _fast_job_queue, "content-fast-worker"),
-                             (TALKING_JOB_WORKERS, _talking_job_queue, "content-talking-worker"), (MOTION_JOB_WORKERS, _motion_job_queue, "content-motion-worker"),
+                             (TALKING_JOB_WORKERS, _talking_job_queue, "content-talking-worker"),
                              (IMAGE_JOB_WORKERS, _image_job_queue, "content-image-worker"),
                              (CINEMATIC_JOB_WORKERS, _cinematic_job_queue, "content-cinematic-worker"),
                              (AVATAR_JOB_WORKERS, _avatar_job_queue, "content-avatar-worker")):
@@ -885,7 +856,7 @@ def run_job(job_id):
     kind = r["kind"]; payload = json.loads(r["payload"] or "{}")
     username = r["username"]; cost = r["cost"]
     mode = str(payload.get("mode") or "").lower()
-    is_talking = (kind == "video" and mode != "motion")   # 口播=video 且非 motion(text/audio)
+    is_talking = (kind == "video")   # 口播=video(text/audio)
     is_image = (kind == "image")
     try:
         # 单用户口播/生图「运行中」并发闸 + 原子抢 running：同进程锁内 count+claim，防多 worker 同时超发。
@@ -1499,8 +1470,8 @@ class H(BaseHTTPRequestHandler):
                       "stats": {"like": it.get("like"), "comment": it.get("comment")}} for it in (r.get("items") or [])]
             return self._send(200, {"items": items, "cost": 1, "points_left": points_left})
         if p == "/api/gen/health":
-            return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS), "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS, "talking_job_workers": TALKING_JOB_WORKERS, "motion_job_workers": MOTION_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS,
-                                    "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_active_xiaole_video": MAX_USER_ACTIVE_XIAOLE_VIDEO, "max_user_active_motion": MAX_USER_ACTIVE_MOTION, "max_user_active_tryon": MAX_USER_ACTIVE_TRYON, "max_user_active_cinematic": MAX_USER_ACTIVE_CINEMATIC,
+            return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS), "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS, "talking_job_workers": TALKING_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS,
+                                    "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_active_xiaole_video": MAX_USER_ACTIVE_XIAOLE_VIDEO, "max_user_active_tryon": MAX_USER_ACTIVE_TRYON, "max_user_active_cinematic": MAX_USER_ACTIVE_CINEMATIC,
                                     "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE, "video_cost": VIDEO_COST, "video_batch_max": min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS), "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
 

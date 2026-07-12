@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""线路二 · WaveSpeed 渠道（动作模仿 wan-2.2/animate + 换装 ai-virtual-outfit-tryon）。
+"""线路二 · WaveSpeed 渠道（换装 ai-virtual-outfit-tryon）。
 
-与线路一（HeyGen 动作模仿 / RunningHub 换装）并列，由 gen_video/gen_tryon 按 line 参数分流。
+换装的线路一（RunningHub）并列，由 gen_tryon 按 line 参数分流。
 WaveSpeed 只收公网 URL 素材，故先把本地素材转存 COS 拿直链再喂给它。
-返回结构与线路一的 generate_heygen_motion_video / generate_tryon_video 对齐，供上层无差别使用。
+返回结构与线路一的 generate_tryon_video 对齐，供上层无差别使用。
 """
 
 import json
@@ -24,7 +24,6 @@ WAVESPEED_KEY = os.environ.get("WAVESPEED_API_KEY", "")
 # ⚠ 隧道实测被整形在 ~1.3 MB/s，成片下载会撞这个天花板；待 VPS 升级带宽后消失。
 WAVESPEED_PROXY = (os.environ.get("WAVESPEED_PROXY") or "").strip()
 WS_API = "https://api.wavespeed.ai/api/v3"
-WS_MOTION = "/wavespeed-ai/wan-2.2/animate"
 WS_TRYON = "/wavespeed-ai/ai-virtual-outfit-tryon"
 WS_POLL_INTERVAL = int(os.environ.get("WAVESPEED_POLL_INTERVAL", "5"))
 # 单任务最长等待(秒)。跟 content 的 VIDEO_GEN_DEADLINE 走 —— 全站视频生成统一 15 分钟死线。
@@ -123,24 +122,6 @@ def _download_to_lib(url, prefix):
     fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键
     _out_path(fn).write_bytes(data)
     return fn
-
-
-def generate_motion(image_file, reference_video_file, resolution, job_id=None):
-    """线路二·动作模仿：人物图 + 驱动视频 → animate。返回 {video_file, video_url, provider}。"""
-    if str(resolution or "").strip().lower() != "720p":
-        raise ValueError("线路二动作模仿仅支持 720p")
-    _phase(job_id, "ws_uploading")
-    img_url = _material_url(image_file)
-    vid_url = _material_url(reference_video_file)
-    _phase(job_id, "ws_running")
-    out_url = _run_and_wait(
-        WS_MOTION,
-        {"image": img_url, "video": vid_url, "mode": "animate", "resolution": "720p"},
-        job_id=job_id,
-    )
-    _phase(job_id, "downloading")
-    vf = _download_to_lib(out_url, "ws_motion")
-    return {"video_file": vf, "video_url": public_url(vf, "video/mp4", private=True), "provider": "wavespeed"}
 
 
 def generate_tryon(person_image_file, clothes_file, duration, job_id=None):
