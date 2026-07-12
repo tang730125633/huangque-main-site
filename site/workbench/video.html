@@ -52,14 +52,26 @@
   .motion-preset-card.on:after{content:"已选择";position:absolute;right:8px;top:8px;padding:3px 7px;border-radius:7px;background:rgba(231,178,76,.92);color:#1b1205;font-size:10.5px;font-weight:900}
   .avatar-panel{margin-top:16px;border:1px solid rgba(148,164,187,.12);border-radius:14px;background:rgba(7,11,19,.22);padding:14px}
   .avatar-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
-  .avatar-card{position:relative;min-height:126px;border:1px solid rgba(148,164,187,.14);border-radius:13px;background:rgba(148,164,187,.04);color:#94a4bb;cursor:pointer;overflow:hidden;text-align:left;font-family:inherit;transition:.16s}
+  /* 卡片固定大小、内容自适应。原来是 min-height，卡片会被内容撑开——用户上传的照片
+     宽高比五花八门（竖版自拍、横版截图），一行三张就参差不齐。
+     改成固定 height + flex 列：缩略图 flex:1 吃掉剩余空间，文字区 flex:none 只占自己那点。
+     让内容去适应盒子，而不是反过来。 */
+  .avatar-card{position:relative;height:158px;box-sizing:border-box;display:flex;flex-direction:column;border:1px solid rgba(148,164,187,.14);border-radius:13px;background:rgba(148,164,187,.04);color:#94a4bb;cursor:pointer;overflow:hidden;text-align:left;font-family:inherit;transition:.16s}
   .avatar-card:hover{border-color:rgba(231,178,76,.34);transform:translateY(-1px)}
+  /* 兜底：万一有人把裸 <img> 直接塞进卡片（剧情视频那版我就干了这事），也要被约束住 */
+  .avatar-card > img{width:100%;flex:1;min-height:0;object-fit:cover;display:block}
   .avatar-card.on{border-color:rgba(231,178,76,.42);background:rgba(231,178,76,.08);box-shadow:0 0 0 1px rgba(231,178,76,.08) inset}
   .avatar-new{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;padding:14px;text-align:center}
   .avatar-new b{font-size:13px;color:#eaf1fa}.avatar-new span{font-size:11px;color:#5c6b82;line-height:1.45}
-  .avatar-thumb{height:82px;background:rgba(148,164,187,.07);border-bottom:1px solid rgba(148,164,187,.1);overflow:hidden}
+  /* flex:1 + min-height:0 —— 缩略图吃掉卡片剩下的空间，图片再高也不会把卡片顶开 */
+  .avatar-thumb{flex:1;min-height:0;background:rgba(148,164,187,.07);border-bottom:1px solid rgba(148,164,187,.1);overflow:hidden}
   .avatar-thumb img{width:100%;height:100%;object-fit:cover;display:block}
-  .avatar-meta{padding:10px 10px 38px}
+  /* 底部的改名/删除是绝对定位的，文字区要给它留 38px，否则按钮压住文字 */
+  .avatar-meta{flex:none;padding:8px 10px 38px}
+  /* 剧情视频的形象卡没有改名/删除按钮，不用留那 38px —— 留了就是一块空白 */
+  .avatar-card.no-actions .avatar-meta{padding-bottom:8px}
+  /* 多选序号 */
+  .avatar-pick{position:absolute;top:7px;right:7px;width:21px;height:21px;border-radius:50%;background:#e7b24c;color:#1a1206;font:800 12px/21px inherit;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.3)}
   .avatar-name{font-size:12.5px;font-weight:800;color:#eaf1fa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .avatar-sub{font-size:10.5px;color:#5c6b82;margin-top:4px}
   .avatar-actions{position:absolute;left:9px;right:9px;bottom:8px;display:flex;gap:7px}
@@ -1259,14 +1271,21 @@
       return;
     }
     motionAvatars.forEach(function(a){
-      var on=cineSelectedAvatarIds.some(function(id){return String(id)===String(a.id);});
+      var idx=cineSelectedAvatarIds.findIndex(function(id){return String(id)===String(a.id);});
+      var on=idx>=0;
       var card=document.createElement('button');
       card.type='button';
-      card.className='avatar-card'+(on?' on':'');
-      card.style.position='relative';
-      card.innerHTML='<img src="'+esc(a.image_url||'')+'" alt="">'
-                    +'<span class="avatar-name">'+esc(a.name||'形象')+'</span>'
-                    +(on?'<span style="position:absolute;top:6px;right:6px;width:20px;height:20px;border-radius:50%;background:#e7b24c;color:#1a1206;font:800 12px/20px inherit;text-align:center;">'+(cineSelectedAvatarIds.indexOf(String(a.id))+1||cineSelectedAvatarIds.findIndex(function(id){return String(id)===String(a.id);})+1)+'</span>':'');
+      // no-actions：这张卡没有改名/删除按钮，文字区不用给它们留 38px 空位
+      card.className='avatar-card no-actions'+(on?' on':'');
+      // 结构必须和「我的形象」一致：.avatar-thumb 包住图（object-fit:cover 裁切填充）。
+      // 我第一版把裸 <img> 直接塞进了卡片 —— 图片按原始宽高比撑开，用户的照片有竖版有横版，
+      // 一行三张就参差不齐。图片走 data-asset-src（懒加载 + 带鉴权取私有资源），和现有卡片一致。
+      card.innerHTML='<div class="avatar-thumb"><img data-asset-src="'+esc(a.image_url||'../assets/cloud/logo-bird.png')+'" alt=""></div>'
+                    +'<div class="avatar-meta"><div class="avatar-name">'+esc(a.name||'未命名形象')+'</div></div>'
+                    +(on?'<span class="avatar-pick">'+(idx+1)+'</span>':'');
+      // data-asset-src 只是个占位，必须显式喂给 setAssetImage 才会真正加载
+      // （它带鉴权取私有资源）。漏了这句，图片压根不显示。
+      setAssetImage(card.querySelector('[data-asset-src]'), a.image_url||'../assets/cloud/logo-bird.png');
       card.onclick=function(){ toggleCineAvatar(a.id); };
       grid.appendChild(card);
     });
