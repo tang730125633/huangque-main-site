@@ -1109,15 +1109,13 @@ MOTION_PROMPT_BASE = (
 )
 MOTION_PROMPT = MOTION_PROMPT_BASE + CINEMATIC_IDENTITY_GUARD
 
-# 双人动作模仿的固定提示词。
-# TODO(kongli 会给正式文案)：这是占位版。换的时候只改这个常量，其它代码不用动。
+# 双人动作模仿的固定提示词（kongli 给的正式文案，2026-07-12）。用户看不到、也改不了。
+# ⚠️ 逐字照放，别顺手「改通顺」——这段是调出来的，动一个词成片就可能变样。
 DUO_MOTION_PROMPT_BASE = (
-    "Create a realistic cinematic video of the two people from the avatar photos performing "
-    "together in the same shot. Follow the uploaded reference video ONLY for body movement, pose, "
-    "timing, gestures, facial expression rhythm, framing and camera motion. Map each avatar person "
-    "onto one of the people in the reference video, keeping their relative positions and their "
-    "interaction. The output must look like the two avatar people performing the reference motion, "
-    "not the reference people."
+    "Use these two avatars to replace the two people in the reference video and imitate their "
+    "movements. Keep the actions, choreography, timing, scene, camera angle, framing, and "
+    "composition consistent with the reference video. Only replace the people and do not change "
+    "anything else."
 )
 DUO_MOTION_PROMPT = DUO_MOTION_PROMPT_BASE + CINEMATIC_IDENTITY_GUARD
 

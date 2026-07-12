@@ -116,9 +116,16 @@ class FixedPromptTests(_Base):
         self.assertEqual(video.CINEMATIC_FIXED_PROMPTS["motion"], video.MOTION_PROMPT_BASE)
         self.assertIn("not the reference person", video.MOTION_PROMPT_BASE)
 
-    def test_the_duo_prompt_maps_each_avatar_onto_one_reference_person(self):
-        self.assertIn("two people", video.DUO_MOTION_PROMPT_BASE)
-        self.assertIn("same shot", video.DUO_MOTION_PROMPT_BASE)
+    def test_the_duo_prompt_is_the_exact_text_kongli_gave(self):
+        """整段逐字比对。这段提示词是调出来的 —— 谁顺手「改通顺」一个词，成片就可能变样，
+        而那种变化在代码 review 里根本看不出来。"""
+        self.assertEqual(
+            video.DUO_MOTION_PROMPT_BASE,
+            "Use these two avatars to replace the two people in the reference video and imitate "
+            "their movements. Keep the actions, choreography, timing, scene, camera angle, framing, "
+            "and composition consistent with the reference video. Only replace the people and do "
+            "not change anything else."
+        )
 
     def test_open_mode_still_requires_the_user_to_write_one(self):
         with self.assertRaises(ValueError):
