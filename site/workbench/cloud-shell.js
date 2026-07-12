@@ -180,6 +180,7 @@
           '<span style="width:16px; height:16px; border-radius:50%; background:radial-gradient(circle at 35% 30%, #f6d488, #c8902f); flex:none;"></span>'+
           '<span id="hqPointsTop" class="mono" style="font-size:14px; font-weight:700; color:#e7b24c;">—</span></a>'+
         '<button type="button" data-points-detail="1" style="height:36px;padding:0 12px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:12.5px;font-weight:700;color:#94a4bb;background:rgba(148,164,187,.06);border:1px solid rgba(148,164,187,.14);">明细</button>'+
+        '<button type="button" class="hq-friends-btn" aria-label="打开好友" title="好友" aria-expanded="false" style="position:relative; width:38px; height:38px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; color:#94a4bb; background:transparent; font:inherit; padding:0;">'+iconDuo('users','18px','#e7b24c')+'<span class="hq-friends-badge" aria-label="0 条好友申请"></span></button>'+
         '<button type="button" class="hq-notify-btn" aria-label="打开通知中心" title="通知中心" aria-expanded="false" style="position:relative; width:38px; height:38px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; color:#94a4bb; background:transparent; font:inherit; padding:0;">'+icon('bell','17px')+'<span class="hq-notify-badge" aria-label="0 条未读通知"></span></button>'+
         '<div id="hqAuthArea" style="display:flex; align-items:center; gap:8px;"></div></div>';
 
@@ -214,6 +215,8 @@
       if(burger) burger.setAttribute('aria-expanded',open?'true':'false');
     }
     burger.onclick=function(){ setNavOpen(!open); };
+    var friendsBtn=header.querySelector('.hq-friends-btn');
+    if(friendsBtn) friendsBtn.onclick=openFriendsPanel;
     var notifyBtn=header.querySelector('.hq-notify-btn');
     if(notifyBtn) notifyBtn.onclick=openNotificationPanel;
     window.addEventListener('resize',applyResp); applyResp();
@@ -339,6 +342,35 @@
 
   // ===== 通知中心：任务结果、点数变化、系统公告 =====
   var _noticeState={kind:'all',items:[],loading:false};
+  var _friendsPanelHandler=null;
+  function registerFriendsPanel(handler){
+    _friendsPanelHandler=typeof handler==='function'?handler:null;
+  }
+  function setFriendsPanelExpanded(on){
+    var btn=document.querySelector('.hq-friends-btn');
+    if(btn) btn.setAttribute('aria-expanded',on?'true':'false');
+  }
+  function updateFriendsBadge(count){
+    var n=Math.max(0,Number(count||0));
+    var badge=document.querySelector('.hq-friends-badge'), btn=document.querySelector('.hq-friends-btn');
+    if(badge){
+      badge.textContent=n>99?'99+':String(n||'');
+      badge.classList.toggle('on',n>0);
+      badge.setAttribute('aria-label',n+' 条好友申请');
+    }
+    if(btn) btn.setAttribute('aria-label',n?'打开好友，'+n+' 条待处理申请':'打开好友');
+  }
+  function openFriendsPanel(){
+    if(_friendsPanelHandler){
+      _friendsPanelHandler();
+      return;
+    }
+    if(/settings\.html$/.test(location.pathname)){
+      window.dispatchEvent(new CustomEvent('hq:open-friends'));
+      return;
+    }
+    location.href='settings.html#friends';
+  }
   var _systemNotices=[{
     id:'system-notification-center-v1',kind:'system',title:'通知中心已启用',
     detail:'生成结果、点数变化和重要系统公告会集中显示在这里。',time:Date.parse('2026-07-10T09:00:00+08:00')
@@ -412,8 +444,8 @@
     if(document.getElementById('hqNoticeOv')) return;
     var st=document.createElement('style');
     st.textContent=
-      '.hq-notify-badge{display:none;position:absolute;top:-5px;right:-5px;min-width:14px;height:14px;padding:0 3px;align-items:center;justify-content:center;border:1.5px solid #080d16;border-radius:999px;background:#f4708a;color:#fff;font:800 8px/1 inherit;box-sizing:border-box;pointer-events:none}'+
-      '.hq-notify-badge.on{display:flex}'+
+      '.hq-notify-badge,.hq-friends-badge{display:none;position:absolute;top:-5px;right:-5px;min-width:14px;height:14px;padding:0 3px;align-items:center;justify-content:center;border:1.5px solid #080d16;border-radius:999px;background:#f4708a;color:#fff;font:800 8px/1 inherit;box-sizing:border-box;pointer-events:none}'+
+      '.hq-notify-badge.on,.hq-friends-badge.on{display:flex}'+
       '.hqno{position:fixed;inset:0;z-index:9200;display:none;background:rgba(3,7,13,.46);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px)}'+
       '.hqno.on{display:block}'+
       '.hqnd{position:absolute;top:0;right:0;width:min(430px,100vw);height:100%;display:flex;flex-direction:column;border-left:1px solid rgba(148,164,187,.14);background:linear-gradient(180deg,#101827,#080d16);box-shadow:-28px 0 80px rgba(0,0,0,.46);animation:hq-notice-in .2s cubic-bezier(.16,1,.3,1)}'+
@@ -699,7 +731,7 @@
     document.head.appendChild(script);
   }
 
-  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, login:openLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser };
+  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, setFriendsBadge:updateFriendsBadge, registerFriendsPanel:registerFriendsPanel, setFriendsPanelExpanded:setFriendsPanelExpanded, openFriendsPanel:openFriendsPanel, login:openLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser };
   function _hqInit(){ build(); buildLoginModal(); loadTaskTracker(); }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_hqInit); else _hqInit();
 })();
