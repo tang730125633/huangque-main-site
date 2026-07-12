@@ -2358,6 +2358,32 @@ CINEMATIC_MAX_AVATARS = 3        # HeyGen 硬上限：avatar_id 是 1~3 个 look
 CINEMATIC_RESOLUTIONS = {"720p", "1080p"}
 CINEMATIC_PROMPT_MAX = 2000
 CINEMATIC_DURATION_RANGE = (4, 15)   # HeyGen: 4~15 秒，扁平计价，与时长无关
+CINEMATIC_AUTO_DURATION = 10         # 选了「自适应」但没传参考视频时的回落值
+
+
+def _cinematic_duration(raw, reference_video_file=None):
+    """把 duration 解析成 HeyGen 要的整数秒。
+
+    「自适应」= 跟随参考视频的实际长度。这才是用户的本意：既然给了参考片段，
+    成片就该和它一样长，而不是被截断或者硬拖到某个固定秒数。
+
+    没给参考视频时无从跟随（只有提示词，没有时间基准），回落到默认 10 秒。
+    探测失败（ffprobe 挂了 / 文件坏了）也回落 —— 时长是个优化项，不该让整个任务失败。
+
+    结果一律夹进 HeyGen 的 4~15 秒；超出范围它会直接 400。
+    """
+    lo, hi = CINEMATIC_DURATION_RANGE
+    if str(raw or "").strip().lower() not in ("", "auto"):
+        return max(lo, min(hi, int(raw)))
+    if not reference_video_file:
+        return CINEMATIC_AUTO_DURATION
+    try:
+        secs = _probe_video_duration(reference_video_file)
+    except Exception as e:
+        print("[cinematic] 参考视频时长探测失败，回落 %ds: %s" % (CINEMATIC_AUTO_DURATION, str(e)[:80]), flush=True)
+        return CINEMATIC_AUTO_DURATION
+    # 向上取整：宁可多一帧，也别把参考片段的末尾截掉
+    return max(lo, min(hi, int(secs + 0.999999)))
 
 
 def validate_cinematic_payload(body, username=None):
@@ -2394,12 +2420,19 @@ def validate_cinematic_payload(body, username=None):
         raise ValueError("画面比例仅支持 9:16、16:9、1:1")
 
     lo, hi = CINEMATIC_DURATION_RANGE
-    try:
-        duration = int(body.get("duration") or 10)
-    except Exception:
-        raise ValueError("时长必须是 %d~%d 之间的整数" % (lo, hi))
-    if not lo <= duration <= hi:
-        raise ValueError("时长仅支持 %d~%d 秒" % (lo, hi))
+    raw = str(body.get("duration") or "").strip().lower()
+    if raw in ("", "auto"):
+        # 自适应：跟随参考视频的实际长度（在 gen_cinematic 里探测并夹到 4~15 秒）。
+        # 没传参考视频时无从跟随，回落到默认值 —— 这一步在这里不做，留给 gen_cinematic，
+        # 因为参考视频要先落盘才能探测时长。
+        duration = "auto"
+    else:
+        try:
+            duration = int(raw)
+        except Exception:
+            raise ValueError("时长必须是 %d~%d 之间的整数，或填 auto 跟随参考视频" % (lo, hi))
+        if not lo <= duration <= hi:
+            raise ValueError("时长仅支持 %d~%d 秒" % (lo, hi))
 
     ref = (body.get("reference_video_data") or "").strip()
     if ref and not _is_valid_data_url(ref, VALID_REFERENCE_VIDEO_MIMES):
@@ -2431,6 +2464,8 @@ def gen_cinematic(payload):
         reference_video_file = _shrink_motion_reference(
             _save_data_file(payload["reference_video_data"], "motion_ref", [".mp4", ".mov", ".webm"]))
 
+    duration = _cinematic_duration(payload.get("duration"), reference_video_file)
+
     update_video_asset_phase(job_id, "queued", mode="cinematic", text=payload["prompt"],
                              resolution=payload["resolution"], ratio=payload["ratio"])
     if reference_video_file:
@@ -2442,7 +2477,7 @@ def gen_cinematic(payload):
     # 素材上传在闸外——它不产生 async job，不占 HeyGen 的并发额度。
     with heygen_slot("剧情视频"):
         video_id = _heygen_retry_429(lambda: _heygen_create_cinematic_video(
-            look_ids, reference_asset_id, payload["ratio"], payload["resolution"], payload["duration"],
+            look_ids, reference_asset_id, payload["ratio"], payload["resolution"], duration,
             prompt=payload["prompt"] + CINEMATIC_IDENTITY_GUARD, direct=True), "剧情视频")
 
         # ↓ 此刻已计费。之后任何失败都不能重发（见 HeyGenBilledError）——HeyGen 提交即扣费。
@@ -2462,7 +2497,7 @@ def gen_cinematic(payload):
         "avatar_ids": payload["avatar_ids"],
         "avatar_names": [a.get("name") for a in avatars],
         "prompt": payload["prompt"], "resolution": payload["resolution"], "ratio": payload["ratio"],
-        "duration": info.get("duration") or payload["duration"],
+        "duration": info.get("duration") or duration,
         "source_video_url": info.get("video_url"), "thumbnail_url": info.get("thumbnail_url"),
         "provider": "heygen_direct", "phase": "done", "message": "剧情视频生成完成",
     }

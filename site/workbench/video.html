@@ -473,7 +473,8 @@
             </div>
             <div style="grid-column:1/-1;">
               <div class="faint" style="font-size:12px;margin-bottom:8px;">成片时长</div>
-              <div class="seg" style="grid-template-columns:repeat(4,1fr);"><button data-cine-duration="5">5 秒</button><button class="on" data-cine-duration="10">10 秒</button><button data-cine-duration="12">12 秒</button><button data-cine-duration="15">15 秒</button></div>
+              <div class="seg" style="grid-template-columns:repeat(5,1fr);"><button class="on" data-cine-duration="auto">自适应</button><button data-cine-duration="5">5 秒</button><button data-cine-duration="10">10 秒</button><button data-cine-duration="12">12 秒</button><button data-cine-duration="15">15 秒</button></div>
+              <div id="cineDurationHint" class="faint" style="font-size:11.5px;margin-top:8px;"></div>
             </div>
           </div>
         </div>
@@ -670,7 +671,9 @@
   var selectedSubtitle='off', selectedSubtitleStyle='white', selectedSubtitlePosition='bottom';  // F4 字幕：默认关闭+底部，不勾选时行为与原来一致
   var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16', selectedMotionResolution='720p';
   // AI 剧情视频（HeyGen cinematic）：选 1~3 个已建好的形象 + 提示词 + 720p/1080p
-  var cineSelectedAvatarIds=[], cineReferenceVideoData='', selectedCineRatio='9:16', selectedCineResolution='720p', selectedCineDuration=10;
+  // 时长默认「自适应」：跟随参考视频的长度。既然给了参考片段，成片就该和它一样长，
+  // 而不是被截断或硬拖到某个固定秒数。没传参考视频时后端回落到 10 秒。
+  var cineSelectedAvatarIds=[], cineReferenceVideoData='', selectedCineRatio='9:16', selectedCineResolution='720p', selectedCineDuration='auto';
   var CINE_MAX_AVATARS=3;
   // 提示词模板：用户只写创意，身份约束（保持形象本人的脸/发型/衣着、不要抄参考视频里的人）
   // 由后端无条件拼上 —— 那条不能交给用户把关，丢了成片里的人就不是自己了。
@@ -1282,6 +1285,24 @@
   }
   function updateCineCount(){
     if($('cineAvatarCount')) $('cineAvatarCount').textContent=cineSelectedAvatarIds.length+' / '+CINE_MAX_AVATARS;
+  }
+  // 「自适应」在没传参考视频时无从跟随（只有提示词，没有时间基准）——要把这一点讲清楚，
+  // 否则用户选了自适应、没传参考片段，拿到一个 10 秒的片子会以为是 bug。
+  function updateCineDurationHint(){
+    var box=$('cineDurationHint');
+    if(!box) return;
+    if(selectedCineDuration!=='auto'){
+      box.textContent='固定 '+selectedCineDuration+' 秒';
+      box.style.color='#5c6b82';
+      return;
+    }
+    if(cineReferenceVideoData){
+      box.textContent='自适应：成片长度跟随你上传的参考视频（4~15 秒，超出会截到 15 秒）';
+      box.style.color='#2dd4bf';
+    }else{
+      box.textContent='自适应：未上传参考视频，将按 10 秒生成（想跟随长度请先传参考视频）';
+      box.style.color='#5c6b82';
+    }
   }
 
   // ===== 创建形象：独立一步（5 点）。人脸检测不到会当场报错，不再让用户白扣 20 点跑一半 =====
@@ -1898,6 +1919,7 @@
 
   // ===== AI 剧情视频：控件绑定 =====
   renderCineTemplates();
+  updateCineDurationHint();   // 页面初始就要有提示，否则默认选中「自适应」却什么也不说
   (function bindCine(){
     var ta=$('cinePrompt');
     if(ta) ta.addEventListener('input',function(){
@@ -1918,6 +1940,7 @@
       readFileData(f).then(function(d){
         cineReferenceVideoData=d;
         if(vdrop) vdrop.innerHTML='<strong>参考片段已选择</strong><span>'+esc(f.name).slice(0,40)+' · 点此更换</span>';
+        updateCineDurationHint();   // 传了参考视频，「自适应」才真的有东西可跟随
       }).catch(function(e){toast(e.message||'文件读取失败');});
     };
     document.querySelectorAll('[data-cine-ratio]').forEach(function(b){b.onclick=function(){
@@ -1929,8 +1952,10 @@
       document.querySelectorAll('[data-cine-resolution]').forEach(function(x){x.classList.toggle('on',x===b);});
     };});
     document.querySelectorAll('[data-cine-duration]').forEach(function(b){b.onclick=function(){
-      selectedCineDuration=parseInt(b.dataset.cineDuration,10);
+      var v=b.dataset.cineDuration;
+      selectedCineDuration = v==='auto' ? 'auto' : parseInt(v,10);   // 'auto' 不能被 parseInt 变成 NaN
       document.querySelectorAll('[data-cine-duration]').forEach(function(x){x.classList.toggle('on',x===b);});
+      updateCineDurationHint();
     };});
     if($('cineRefreshBtn')) $('cineRefreshBtn').onclick=function(){ loadMotionAvatars(true); };
     if($('cineGenerateBtn')) $('cineGenerateBtn').onclick=submitCinematic;
