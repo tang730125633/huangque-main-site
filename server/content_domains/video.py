@@ -1105,7 +1105,7 @@ MOTION_PROMPT = (
 
 
 def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration,
-                                   prompt=None, direct=False):
+                                   prompt=None, direct=False, enhance_prompt=False):
     # avatar_id 是 1~3 个 look 的数组 —— 多个 look 会让 HeyGen 在【同一个镜头】里同时出现多个人，
     # 不是生成多条视频。所以 3 个形象仍然只扣 1 条视频的钱。
     ids = [i for i in (avatar_item_id if isinstance(avatar_item_id, (list, tuple)) else [avatar_item_id]) if i]
@@ -1117,12 +1117,16 @@ def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, re
         "aspect_ratio": _heygen_cinematic_ratio(ratio),
         "resolution": resolution,
         "duration": duration,
-        "enhance_prompt": False,
+        # 自动润色：HeyGen 把简短提示词扩写成更丰富的描述。默认关——它可能把用户的意图改跑偏。
+        "enhance_prompt": bool(enhance_prompt),
     }
-    # 参考视频是可选的：只给提示词，HeyGen 也能生成（文档：references 用来 steer 风格/动作/构图，非必填）。
-    # 动作模仿必然有参考视频；剧情视频可以只靠提示词。
-    if reference_asset_id:
-        payload["references"] = [{"type": "asset_id", "asset_id": reference_asset_id}]
+    # references 可选、可多个（文档：用来 steer 风格/动作/构图，非必填）。
+    # 单个 asset_id 也收，兼容老调用（动作模仿那条路径传的就是单个）。
+    refs = reference_asset_id if isinstance(reference_asset_id, (list, tuple)) else (
+        [reference_asset_id] if reference_asset_id else [])
+    refs = [{"type": "asset_id", "asset_id": a} for a in refs if a]
+    if refs:
+        payload["references"] = refs
     body = json.dumps(payload, ensure_ascii=False).encode()
     data = _heygen_request_json("POST", "/videos", body, {
         "Content-Type": "application/json",
@@ -2360,6 +2364,23 @@ CINEMATIC_PROMPT_MAX = 2000
 CINEMATIC_DURATION_RANGE = (4, 15)   # HeyGen: 4~15 秒，扁平计价，与时长无关
 CINEMATIC_AUTO_DURATION = 10         # 选了「自适应」但没传参考视频时的回落值
 
+# 媒体预算。官方文档原文：
+#   「Avatar looks and references share a combined media budget:
+#     at most 3 videos and 9 images total across avatar_id and references.」
+# avatar 和参考素材【共用】这份额度，不是各算各的。
+#
+# ⚠️ 文档没明说「每个 avatar look 算不算一张图」。这里按【算】处理（保守）：
+# 选了 3 个 avatar 就只剩 6 张图片额度。宁可少放，也别让 HeyGen 400 ——
+# 那时视频已经提交、钱已经扣了（提交即计费），报错对用户就是白扣一次。
+CINEMATIC_MAX_MEDIA_VIDEOS = 3
+CINEMATIC_MAX_MEDIA_IMAGES = 9
+
+
+def cinematic_ref_budget(avatar_count):
+    """选了 N 个形象之后，还能再放几个参考素材。返回 (可放视频数, 可放图片数)。"""
+    n = max(0, int(avatar_count or 0))
+    return CINEMATIC_MAX_MEDIA_VIDEOS, max(0, CINEMATIC_MAX_MEDIA_IMAGES - n)
+
 
 def _cinematic_duration(raw, reference_video_file=None):
     """把 duration 解析成 HeyGen 要的整数秒。
@@ -2434,14 +2455,37 @@ def validate_cinematic_payload(body, username=None):
         if not lo <= duration <= hi:
             raise ValueError("时长仅支持 %d~%d 秒" % (lo, hi))
 
-    ref = (body.get("reference_video_data") or "").strip()
-    if ref and not _is_valid_data_url(ref, VALID_REFERENCE_VIDEO_MIMES):
-        raise ValueError("参考视频格式不支持（mp4/mov/webm）")
+    # 参考素材。reference_video_data（单个）是老字段，合进 reference_videos 里，别让老前端 400。
+    max_videos, max_images = cinematic_ref_budget(len(ids))
+
+    videos = [v for v in (body.get("reference_videos") or []) if str(v or "").strip()]
+    legacy = (body.get("reference_video_data") or "").strip()
+    if legacy and legacy not in videos:
+        videos.insert(0, legacy)
+    for v in videos:
+        if not _is_valid_data_url(v, VALID_REFERENCE_VIDEO_MIMES):
+            raise ValueError("参考视频格式不支持（mp4/mov/webm）")
+    if len(videos) > max_videos:
+        raise ValueError("参考视频最多 %d 个" % max_videos)
+
+    images = [i for i in (body.get("reference_images") or []) if str(i or "").strip()]
+    for i in images:
+        if not _is_valid_data_url(i, VALID_IMAGE_MIMES):
+            raise ValueError("参考图片格式不支持（jpg/png/webp）")
+    if len(images) > max_images:
+        # 说清楚为什么只剩这么多 —— 否则用户会以为是 bug（明明文档说 9 张）
+        raise ValueError("参考图片最多 %d 张（形象和参考素材共用 %d 张图的额度，你已选 %d 个形象）"
+                         % (max_images, CINEMATIC_MAX_MEDIA_IMAGES, len(ids)))
 
     cleaned = dict(body)
     cleaned.update({"avatar_ids": ids, "prompt": prompt, "resolution": resolution,
-                    "ratio": ratio, "duration": duration})
+                    "ratio": ratio, "duration": duration,
+                    "reference_videos": videos, "reference_images": images,
+                    # 自动润色：HeyGen 把简短提示词扩写成更丰富的描述。默认关 ——
+                    # 它可能把用户的意图改跑偏，要不要开由用户决定。
+                    "enhance_prompt": bool(body.get("enhance_prompt"))})
     cleaned.pop("avatar_id", None)
+    cleaned.pop("reference_video_data", None)   # 已合进 reference_videos，别留两份
     return cleaned
 
 
@@ -2458,27 +2502,36 @@ def gen_cinematic(payload):
     if not all(look_ids):
         raise ValueError("所选形象尚未就绪，请重新创建")
 
-    reference_video_file = None
-    reference_asset_id = None
-    if payload.get("reference_video_data"):
-        reference_video_file = _shrink_motion_reference(
-            _save_data_file(payload["reference_video_data"], "motion_ref", [".mp4", ".mov", ".webm"]))
+    # 参考素材：视频压缩后再传（推字节过隧道，不压的话 10 路并发会撞 240s 上传超时）；
+    # 图片按原样传（本来就小）。老字段 reference_video_data 已在校验阶段合进 reference_videos。
+    video_files = [_shrink_motion_reference(
+        _save_data_file(v, "motion_ref", [".mp4", ".mov", ".webm"])) for v in (payload.get("reference_videos") or [])]
+    image_files = [_save_data_file(i, "cine_ref", [".jpg", ".png", ".webp"])
+                   for i in (payload.get("reference_images") or [])]
+    reference_video_file = video_files[0] if video_files else None   # 资产表只存第一个（列是单值）
 
+    # 「自适应」跟随第一个参考视频的长度
     duration = _cinematic_duration(payload.get("duration"), reference_video_file)
 
     update_video_asset_phase(job_id, "queued", mode="cinematic", text=payload["prompt"],
                              resolution=payload["resolution"], ratio=payload["ratio"])
-    if reference_video_file:
+
+    reference_asset_ids = []
+    if video_files or image_files:
         update_video_asset_phase(job_id, "uploading_reference_asset")
-        reference_asset_id = _heygen_upload_asset(_resolve_out_file(reference_video_file), direct=True)
+        for f in video_files + image_files:
+            if f:
+                reference_asset_ids.append(_heygen_upload_asset(_resolve_out_file(f), direct=True))
+    reference_asset_id = reference_asset_ids[0] if reference_asset_ids else None   # 资产表用
 
     update_video_asset_phase(job_id, "creating_cinematic_video", reference_asset_id=reference_asset_id)
     # 账号级并发闸：和口播共用 10 个槽（HeyGen 的上限是账号级的，不是每个功能各 10 个）。
     # 素材上传在闸外——它不产生 async job，不占 HeyGen 的并发额度。
     with heygen_slot("剧情视频"):
         video_id = _heygen_retry_429(lambda: _heygen_create_cinematic_video(
-            look_ids, reference_asset_id, payload["ratio"], payload["resolution"], duration,
-            prompt=payload["prompt"] + CINEMATIC_IDENTITY_GUARD, direct=True), "剧情视频")
+            look_ids, reference_asset_ids, payload["ratio"], payload["resolution"], duration,
+            prompt=payload["prompt"] + CINEMATIC_IDENTITY_GUARD, direct=True,
+            enhance_prompt=payload.get("enhance_prompt")), "剧情视频")
 
         # ↓ 此刻已计费。之后任何失败都不能重发（见 HeyGenBilledError）——HeyGen 提交即扣费。
         update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id)

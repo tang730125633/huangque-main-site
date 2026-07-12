@@ -96,10 +96,12 @@ class UiTests(unittest.TestCase):
     def test_the_hint_explains_what_auto_does_without_a_reference(self):
         """用户选了自适应、没传参考片段，拿到 10 秒的片子会以为是 bug —— 必须提前说清楚。"""
         self.assertIn("未上传参考视频，将按 10 秒生成", HTML)
-        self.assertIn("成片长度跟随你上传的参考视频", HTML)
+        # 参考视频现在可以传多个，跟随的是【第一个】
+        self.assertIn("成片长度跟随第一个参考视频", HTML)
 
     def test_the_hint_updates_when_a_reference_is_uploaded(self):
-        block = HTML.split("if(vf) vf.onchange")[1].split("document.querySelectorAll('[data-cine-ratio]')")[0]
+        # 参考素材的上传统一走 bindCineRefs（视频和图片共用一套逻辑）
+        block = HTML.split("function bindCineRefs")[1].split("function renderCineRefs")[0]
         self.assertIn("updateCineDurationHint()", block)
 
 

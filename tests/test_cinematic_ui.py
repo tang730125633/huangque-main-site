@@ -66,12 +66,14 @@ class CinematicPanelTests(unittest.TestCase):
         # 与后端 CINEMATIC_PROMPT_MAX 对齐，否则用户写超了才在提交时被拒
         self.assertIn("this.value.slice(0,2000)", HTML)
 
-    def test_reference_video_is_optional_and_says_so(self):
+    def test_reference_material_is_optional_and_says_so(self):
+        """参考素材（视频 + 图片）全部选填，而且要把「不给会怎样」说清楚。"""
         panel = HTML.split('id="cinematicPanel"')[1].split('id="tryonPanel"')[0]
-        self.assertIn("参考视频（选填）", panel)
-        self.assertIn("不给就只按描述生成", panel)
-        # 只有真选了才发字段
-        self.assertIn("if(cineReferenceVideoData) body.reference_video_data=cineReferenceVideoData", HTML)
+        self.assertIn("参考素材（选填）", panel)
+        self.assertIn("都不给就只按描述生成", panel)
+        # 只有真传了才发字段 —— 空数组也不该发
+        self.assertIn("if(cineRefVideos.length) body.reference_videos=", HTML)
+        self.assertIn("if(cineRefImages.length) body.reference_images=", HTML)
 
     def test_submits_to_the_cinematic_endpoint_with_an_avatar_id_array(self):
         self.assertIn("fetch('/api/gen/cinematic'", HTML)

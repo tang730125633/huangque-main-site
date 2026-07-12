@@ -459,18 +459,32 @@
           <textarea id="cinePrompt" rows="4" placeholder="描述你想要的画面，例如：在海边散步，夕阳背光，镜头缓慢推近，电影质感"
             style="width:100%;box-sizing:border-box;padding:12px 14px;border-radius:12px;border:1px solid #263041;background:#0e1420;color:#e8eefb;font:inherit;font-size:13px;resize:vertical;"></textarea>
           <div class="faint" style="font-size:11.5px;margin-top:8px;">只写你想要的画面。系统会自动保证成片里的人还是你选的形象本人。</div>
+          <label style="display:flex;align-items:center;gap:9px;margin-top:12px;cursor:pointer;">
+            <input id="cineEnhance" type="checkbox" style="width:15px;height:15px;accent-color:#e7b24c;cursor:pointer;">
+            <span style="font-size:12.5px;color:#eaf1fa;font-weight:700;">自动润色提示词</span>
+            <span class="faint" style="font-size:11.5px;">让 AI 把你的描述扩写得更丰富。画面更有细节，但可能偏离你的原意</span>
+          </label>
         </div>
 
         <div class="motion-preset-panel">
           <div class="row">
-            <span class="label">参考视频（选填）</span>
-            <span class="faint" style="font-size:11.5px;">给了就照着它的动作和运镜演；不给就只按描述生成</span>
+            <span class="label">参考素材（选填）</span>
+            <span id="cineRefBudget" class="mono faint" style="font-size:11.5px;"></span>
           </div>
-          <div id="cineVideoDrop" class="motion-drop" style="margin-top:10px;">
-            <input id="cineVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden>
-            <strong>参考片段</strong>
-            <span>点击上传（建议 ≤15 秒）</span>
+          <div class="faint" style="font-size:11.5px;margin-top:6px;">视频：照着它的动作和运镜演。图片：参考它的风格、构图、场景。都不给就只按描述生成。</div>
+          <div class="motion-grid" style="margin-top:10px;">
+            <label id="cineVideoDrop" class="motion-drop">
+              <input id="cineVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" multiple hidden>
+              <strong>+ 参考视频</strong>
+              <span>动作 / 运镜（建议 ≤15 秒）</span>
+            </label>
+            <label id="cineImageDrop" class="motion-drop">
+              <input id="cineImageFile" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
+              <strong>+ 参考图片</strong>
+              <span>风格 / 构图 / 场景</span>
+            </label>
           </div>
+          <div id="cineRefList" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;"></div>
         </div>
 
         <div class="motion-preset-panel">
@@ -685,7 +699,14 @@
   // AI 剧情视频（HeyGen cinematic）：选 1~3 个已建好的形象 + 提示词 + 720p/1080p
   // 时长默认「自适应」：跟随参考视频的长度。既然给了参考片段，成片就该和它一样长，
   // 而不是被截断或硬拖到某个固定秒数。没传参考视频时后端回落到 10 秒。
-  var cineSelectedAvatarIds=[], cineReferenceVideoData='', selectedCineRatio='9:16', selectedCineResolution='720p', selectedCineDuration='auto';
+  var cineSelectedAvatarIds=[], selectedCineRatio='9:16', selectedCineResolution='720p', selectedCineDuration='auto';
+  // 参考素材：视频和图片各存一份 base64。
+  // 媒体预算是【和形象共用的】——官方文档：「Avatar looks and references share a combined
+  // media budget: at most 3 videos and 9 images total across avatar_id and references」。
+  // 所以选了 3 个形象，参考图就只剩 6 张额度。这一点必须显示给用户，否则他会以为是 bug。
+  var cineRefVideos=[], cineRefImages=[];
+  var CINE_MAX_REF_VIDEOS=3, CINE_MAX_MEDIA_IMAGES=9;
+  function cineMaxRefImages(){ return Math.max(0, CINE_MAX_MEDIA_IMAGES-cineSelectedAvatarIds.length); }
   var CINE_MAX_AVATARS=3;
   // 提示词模板：用户只写创意，身份约束（保持形象本人的脸/发型/衣着、不要抄参考视频里的人）
   // 由后端无条件拼上 —— 那条不能交给用户把关，丢了成片里的人就不是自己了。
@@ -1304,6 +1325,48 @@
   }
   function updateCineCount(){
     if($('cineAvatarCount')) $('cineAvatarCount').textContent=cineSelectedAvatarIds.length+' / '+CINE_MAX_AVATARS;
+    renderCineRefs();   // 形象数一变，参考图的额度就变（两者共用 9 张图的预算）
+  }
+
+  // ===== 参考素材：视频 + 图片，多选，和形象共用媒体预算 =====
+  function bindCineRefs(input, store, maxFn, label){
+    if(!input) return;
+    input.onchange=function(){
+      var files=Array.prototype.slice.call(this.files||[]);
+      var room=maxFn()-store.length;
+      if(room<=0){ toast(label+'已达上限（'+maxFn()+'）'); this.value=''; return; }
+      if(files.length>room){ toast(label+'最多再加 '+room+' 个，多余的已忽略'); files=files.slice(0,room); }
+      Promise.all(files.map(readFileData))
+        .then(function(datas){
+          datas.forEach(function(d,i){ store.push({data:d, name:files[i].name}); });
+          renderCineRefs();
+          updateCineDurationHint();   // 传了参考视频，「自适应」才真的有东西可跟随
+        })
+        .catch(function(e){ toast(e.message||'文件读取失败'); });
+      this.value='';   // 允许再次选同一个文件
+    };
+  }
+  function renderCineRefs(){
+    var box=$('cineRefList'), budget=$('cineRefBudget');
+    if(budget){
+      budget.textContent='视频 '+cineRefVideos.length+'/'+CINE_MAX_REF_VIDEOS
+                        +' · 图片 '+cineRefImages.length+'/'+cineMaxRefImages();
+    }
+    if(!box) return;
+    box.innerHTML='';
+    function chip(item, store, icon){
+      var el=document.createElement('span');
+      el.style.cssText='display:inline-flex;align-items:center;gap:6px;max-width:180px;padding:5px 8px;border:1px solid rgba(148,164,187,.16);border-radius:9px;background:rgba(148,164,187,.05);font-size:11.5px;color:#94a4bb;';
+      el.innerHTML=icon+'<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(item.name||'素材')+'</span>';
+      var x=document.createElement('button');
+      x.type='button'; x.textContent='×';
+      x.style.cssText='border:0;background:transparent;color:#5c6b82;cursor:pointer;font:800 14px inherit;line-height:1;padding:0;';
+      x.onclick=function(){ store.splice(store.indexOf(item),1); renderCineRefs(); updateCineDurationHint(); };
+      el.appendChild(x);
+      box.appendChild(el);
+    }
+    cineRefVideos.forEach(function(v){ chip(v, cineRefVideos, '🎬'); });
+    cineRefImages.forEach(function(i){ chip(i, cineRefImages, '🖼'); });
   }
   // 「自适应」在没传参考视频时无从跟随（只有提示词，没有时间基准）——要把这一点讲清楚，
   // 否则用户选了自适应、没传参考片段，拿到一个 10 秒的片子会以为是 bug。
@@ -1315,8 +1378,8 @@
       box.style.color='#5c6b82';
       return;
     }
-    if(cineReferenceVideoData){
-      box.textContent='自适应：成片长度跟随你上传的参考视频（4~15 秒，超出会截到 15 秒）';
+    if(cineRefVideos.length){
+      box.textContent='自适应：成片长度跟随第一个参考视频（4~15 秒，超出会截到 15 秒）';
       box.style.color='#2dd4bf';
     }else{
       box.textContent='自适应：未上传参考视频，将按 10 秒生成（想跟随长度请先传参考视频）';
@@ -1394,9 +1457,13 @@
       prompt:prompt,
       resolution:selectedCineResolution,
       ratio:selectedCineRatio,
-      duration:selectedCineDuration
+      duration:selectedCineDuration,
+      enhance_prompt:!!($('cineEnhance')&&$('cineEnhance').checked)
     };
-    if(cineReferenceVideoData) body.reference_video_data=cineReferenceVideoData;  // 选填：不给就只按描述生成
+    // 参考素材全部选填：都不给就只按描述生成。
+    // store 里存的是 {data, name}（name 只用于界面显示），发给后端的只能是 base64 本身。
+    if(cineRefVideos.length) body.reference_videos=cineRefVideos.map(function(x){return x.data;});
+    if(cineRefImages.length) body.reference_images=cineRefImages.map(function(x){return x.data;});
     fetch('/api/gen/cinematic',{
       method:'POST',
       headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
@@ -1939,6 +2006,7 @@
   // ===== AI 剧情视频：控件绑定 =====
   renderCineTemplates();
   updateCineDurationHint();   // 页面初始就要有提示，否则默认选中「自适应」却什么也不说
+  renderCineRefs();           // 初始渲染预算显示（视频 0/3 · 图片 0/9）
   (function bindCine(){
     var ta=$('cinePrompt');
     if(ta) ta.addEventListener('input',function(){
@@ -1952,16 +2020,9 @@
       readFileData(f).then(submitCreateAvatar).catch(function(e){toast(e.message||'文件读取失败');});
       this.value='';   // 允许连续上传同一张（重试用）
     };
-    var vf=$('cineVideoFile'), vdrop=$('cineVideoDrop');
-    if(vdrop) vdrop.onclick=function(){ if(vf) vf.click(); };
-    if(vf) vf.onchange=function(){
-      var f=this.files&&this.files[0]; if(!f) return;
-      readFileData(f).then(function(d){
-        cineReferenceVideoData=d;
-        if(vdrop) vdrop.innerHTML='<strong>参考片段已选择</strong><span>'+esc(f.name).slice(0,40)+' · 点此更换</span>';
-        updateCineDurationHint();   // 传了参考视频，「自适应」才真的有东西可跟随
-      }).catch(function(e){toast(e.message||'文件读取失败');});
-    };
+    // 参考素材：视频和图片都可多选。label 包着 input，点击是原生行为，不用手动 click()。
+    bindCineRefs($('cineVideoFile'), cineRefVideos, function(){return CINE_MAX_REF_VIDEOS;}, '参考视频');
+    bindCineRefs($('cineImageFile'), cineRefImages, cineMaxRefImages, '参考图片');
     document.querySelectorAll('[data-cine-ratio]').forEach(function(b){b.onclick=function(){
       selectedCineRatio=b.dataset.cineRatio;
       document.querySelectorAll('[data-cine-ratio]').forEach(function(x){x.classList.toggle('on',x===b);});
