@@ -12,12 +12,12 @@
 
 P1：图片(gpt-image-2)。P2 文案 / P3 视频按同样的 register_capability 往里加。
 """
-import os, re, sqlite3, json, time, threading, queue, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess, uuid, sys, hashlib
+import os, re, sqlite3, json, time, threading, queue, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess, uuid, sys
 from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store  # mime 识别；assets 表(copy/collect/leads)；jobs 状态机 CAS。均无反向依赖
+import mimetypes; from . import assets_store, jobs_store, submission_idempotency  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -259,10 +259,7 @@ def init_db():
         _ensure_column(c, "jobs", "deleted", "INTEGER DEFAULT 0")
         _ensure_column(c, "jobs", "refunded", "INTEGER DEFAULT 0")  # 退点幂等键(#187)
         _ensure_column(c, "jobs", "owner", "TEXT")                  # 归属服务(#511)，见 SERVICE_OWNER
-        c.execute("""CREATE TABLE IF NOT EXISTS submission_idempotency(
-            username TEXT NOT NULL, endpoint TEXT NOT NULL, idem_key TEXT NOT NULL,
-            request_hash TEXT NOT NULL, response_json TEXT, created_at INTEGER, updated_at INTEGER,
-            PRIMARY KEY(username, endpoint, idem_key))""")
+        submission_idempotency.ensure_table(c)
         c.commit()
     feature_flags.init_db()
     init_audio_db()
@@ -609,87 +606,10 @@ def _leads_domain():
 def _must_change_password(user):
     return bool(user and user.get("must_change"))
 
-def _job_public_dict(row, phase=None):
-    d = {
-        "id": row["id"],
-        "kind": row["kind"],
-        "username": row["username"],
-        "cost": row["cost"],
-        "status": row["status"],
-        "result": row["result"],
-        "error": row["error"],
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-        "refunded": bool(row["refunded"]) if "refunded" in row.keys() else False,
-    }
-    if d.get("result"):
-        try:
-            d["result"] = json.loads(d["result"])
-        except Exception:
-            pass
-    terminal_phase = {"done": "done", "error": "failed", "failed": "failed"}.get(d["status"])
-    if terminal_phase is not None or phase is not None:
-        d["phase"] = terminal_phase or phase
-    return d
-
-
-_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
-
-
-def _idempotency_key(raw):
-    key = str(raw or "").strip()
-    if not key:
-        return ""
-    if not _IDEMPOTENCY_KEY_RE.fullmatch(key):
-        raise ValueError("Idempotency-Key 需为 8-128 位字母、数字或 . _ : -")
-    return key
-
-
-def _request_hash(body):
-    canonical = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def _idempotency_begin(username, endpoint, key, body):
-    if not key:
-        return "disabled", None
-    digest, now = _request_hash(body), int(time.time())
-    with closing(jdb()) as c:
-        c.execute("""CREATE TABLE IF NOT EXISTS submission_idempotency(
-            username TEXT NOT NULL, endpoint TEXT NOT NULL, idem_key TEXT NOT NULL,
-            request_hash TEXT NOT NULL, response_json TEXT, created_at INTEGER, updated_at INTEGER,
-            PRIMARY KEY(username, endpoint, idem_key))""")
-        row = c.execute("SELECT request_hash,response_json FROM submission_idempotency WHERE username=? AND endpoint=? AND idem_key=?",
-                        (username, endpoint, key)).fetchone()
-        if row:
-            if row["request_hash"] != digest:
-                return "conflict", None
-            if row["response_json"]:
-                return "replay", json.loads(row["response_json"])
-            return "processing", None
-        c.execute("INSERT INTO submission_idempotency(username,endpoint,idem_key,request_hash,created_at,updated_at) VALUES(?,?,?,?,?,?)",
-                  (username, endpoint, key, digest, now, now))
-        c.commit()
-    return "new", None
-
-
-def _idempotency_complete(username, endpoint, key, response):
-    if not key:
-        return
-    with closing(jdb()) as c:
-        c.execute("UPDATE submission_idempotency SET response_json=?,updated_at=? WHERE username=? AND endpoint=? AND idem_key=?",
-                  (json.dumps(response, ensure_ascii=False), int(time.time()), username, endpoint, key))
-        c.commit()
-
-
-def _idempotency_abort(username, endpoint, key):
-    if not key:
-        return
-    with closing(jdb()) as c:
-        c.execute("DELETE FROM submission_idempotency WHERE username=? AND endpoint=? AND idem_key=? AND response_json IS NULL",
-                  (username, endpoint, key))
-        c.commit()
-
+_job_public_dict, _idempotency_key = jobs_store.public_dict, submission_idempotency.clean_key
+def _idempotency_begin(username, endpoint, key, body): return submission_idempotency.begin(jdb, username, endpoint, key, body)
+def _idempotency_complete(username, endpoint, key, response): submission_idempotency.complete(jdb, username, endpoint, key, response)
+def _idempotency_abort(username, endpoint, key): submission_idempotency.abort(jdb, username, endpoint, key)
 # ============ 图片能力：gpt-image-2 ============
 # 三种模式同一入口：无图=文生图(generations)；有图无蒙版=图生图(edits)；有图有蒙版=局部修改(edits+mask)
 # 老表把 9:16 和 3:4 都映射成 1024x1536 —— 那是 2:3，两个按钮出的是同一张图，谁都没拿到自己选的比例。
@@ -1570,24 +1490,15 @@ class H(BaseHTTPRequestHandler):
         self._send(404, {"detail": "not found"})
 
     def do_PUT(self):
-        if self.path.split("?")[0] == "/api/gen/audio/clone-vip":
-            return self._method_not_allowed()
+        if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
-
     def do_PATCH(self):
-        if self.path.split("?")[0] == "/api/gen/audio/clone-vip":
-            return self._method_not_allowed()
+        if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
-
     def do_DELETE(self):
-        if self.path.split("?")[0] == "/api/gen/audio/clone-vip":
-            return self._method_not_allowed()
+        if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
-
 if __name__ == "__main__":
-    init_db()
-    reclaim_orphaned_running()  # 回收上次重启遗留的 running 孤儿→秒退点，不让用户干等 reaper
-    start_job_workers()
-    threading.Thread(target=reaper, daemon=True).start()  # 僵尸任务清道夫
-    print("huangque-content-api on 127.0.0.1:%d  caps=%s" % (PORT, list(HANDLERS)))
-    ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
+    init_db(); reclaim_orphaned_running()  # 回收上次重启遗留的 running 孤儿→秒退点
+    start_job_workers(); threading.Thread(target=reaper, daemon=True).start()
+    print("huangque-content-api on 127.0.0.1:%d  caps=%s" % (PORT, list(HANDLERS))); ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
