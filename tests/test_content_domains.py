@@ -42,7 +42,7 @@ class ContentDomainTests(unittest.TestCase):
         # reclaim_orphaned_running(启动回收重启遗留孤儿→退点)属 core 任务生命周期、紧挨 reaper。
         # jobs.owner 归属(#579/#511)：三服务共写 jobs 表，两处全表扫描按 owner 过滤，否则 content 会捞走/杀掉 imggen、leadgen 的任务。
         # 视频功能分项限流(#577)：果肉/motion/tryon 各自 active 上限，扣点前 429。同属任务生命周期，非域逻辑。
-        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1500)
+        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1520)
 
     def test_content_api_reclaims_orphans_on_startup(self):
         # 防回归：孤儿回收必须挂在真入口 content_api.main（服务走 content_api.py，

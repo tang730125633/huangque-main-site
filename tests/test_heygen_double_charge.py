@@ -28,18 +28,28 @@ SERVER = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER not in sys.path:
     sys.path.insert(0, SERVER)
 
+core = importlib.import_module("content_domains.core")
 video = importlib.import_module("content_domains.video")
 
 
 class DeadlineTests(unittest.TestCase):
-    def test_motion_deadline_covers_measured_generation_time(self):
-        # 实测 10 路并发下生成最长 511s；死线必须明显高于它，否则擦线就回退重发。
-        self.assertGreaterEqual(video.HEYGEN_MOTION_DEADLINE, 1000)
+    def test_deadline_comfortably_covers_measured_generation_time(self):
+        # 实测 10~20 路并发下生成最长 511s。死线必须明显高于它，否则一次抖动就误判失败。
+        self.assertEqual(video.HEYGEN_MOTION_DEADLINE, core.VIDEO_GEN_DEADLINE, "跟全站的 15 分钟走")
+        self.assertGreater(video.HEYGEN_MOTION_DEADLINE, 511 * 1.5)
 
-    def test_motion_deadline_stays_within_reaper_grace(self):
-        # 上传(≤240s) + 生成(≤死线) + 下载 必须仍在 reaper 的 motion 宽限 2400s 内，
-        # 否则 reaper 会在直连还没轮询完时就把任务判超时退点（既扣了 $7 又退了点）。
-        self.assertLess(240 + video.HEYGEN_MOTION_DEADLINE + 60, 2400)
+    def test_the_reaper_cannot_fire_before_the_engine_gives_up(self):
+        """reaper 先杀 = 既扣了 $7 又退了点：任务被判失败退点，worker 却还在轮询，
+        HeyGen 照样出片照样收钱（提交即计费）。
+
+        reaper 比的是 jobs.updated_at，而 update_video_asset_phase 每换一个阶段就刷一次它
+        （UPDATE jobs SET updated_at=... WHERE id=? AND status='running'）。所以宽限量的是
+        【最长静默时段】，不是任务总时长。上传、下载各自前面都有一次阶段更新，唯一的长静默段
+        是 HeyGen 的轮询循环本身 —— 它不发心跳（WaveSpeed 的循环发）。所以：
+
+            reaper 宽限  >  轮询死线
+        """
+        self.assertGreater(core.VIDEO_REAPER_GRACE, video.HEYGEN_MOTION_DEADLINE)
 
 
 class _Billed(Exception):

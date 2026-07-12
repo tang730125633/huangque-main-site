@@ -61,9 +61,11 @@ class PipelineWiringTests(unittest.TestCase):
             self.assertGreater(points.cost_of(kind, {}), 0, "%s 免费了 —— COST 里漏登记" % kind)
 
     def test_reaper_grace_is_long_enough(self):
-        # cinematic 实测生成 339~511s，加上传下载；avatar 实测 25s
-        self.assertGreaterEqual(core.KIND_GRACE["cinematic"], 1800)
-        self.assertGreaterEqual(core.KIND_GRACE["avatar"], 120)
+        # cinematic 现在跟全站的 15 分钟死线走（见 test_video_gen_deadline）：
+        # reaper 的宽限必须【后】于引擎自己的死线触发，否则白扣一次上游的钱。
+        self.assertEqual(core.KIND_GRACE["cinematic"], core.VIDEO_REAPER_GRACE)
+        self.assertGreater(core.VIDEO_REAPER_GRACE, core.VIDEO_GEN_DEADLINE)
+        self.assertGreaterEqual(core.KIND_GRACE["avatar"], 120)   # avatar 实测 25s
 
     def test_each_kind_lands_in_its_own_pool(self):
         self.assertIs(core._pick_job_queue("cinematic"), core._cinematic_job_queue)

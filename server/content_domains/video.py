@@ -3,7 +3,7 @@ import tempfile
 
 from .core import (
     AUDIO_OUT_DIR, HEYGEN_API_BASE, HEYGEN_API_KEY, HEYGEN_POLL_INTERVAL,
-    HEYGEN_TIMEOUT, VIDEO_OUT_DIR, _env_positive_int, _file_url, _out_path, _resolve_out_file,
+    HEYGEN_TIMEOUT, VIDEO_GEN_DEADLINE, VIDEO_OUT_DIR, _env_positive_int, _file_url, _out_path, _resolve_out_file,
     adb, base64, closing, jdb, json, mimetypes, os, pathlib, public_url,
     re, subprocess, threading, time, urllib, uuid,
 )
@@ -1300,9 +1300,9 @@ class HeyGenBilledError(RuntimeError):
     """
 
 
-# 直连轮询死线。motion 实测生成 392~511s(10 路并发下)，原值 510 是照着早已废弃的
-# reaper 600s 算的（reaper 的 motion 宽限现在是 2400s），擦线甚至越线 → 触发回退重发。
-HEYGEN_MOTION_DEADLINE = int(os.environ.get("HEYGEN_MOTION_DEADLINE", "1500") or 1500)
+# 电影化身/动作模仿走 HeyGen 时的轮询死线 —— 统一到 VIDEO_GEN_DEADLINE(15 分钟)。
+# 实测：cinematic 生成 149~511s，20 路并发不降速。15 分钟是它的 2~6 倍，够宽。
+HEYGEN_MOTION_DEADLINE = int(os.environ.get("HEYGEN_MOTION_DEADLINE", "") or VIDEO_GEN_DEADLINE)
 
 
 def _heygen_poll_video(video_id, direct=False, deadline_s=None):
@@ -1424,7 +1424,7 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, moti
             "口播直连")
         # ↓ 此刻已计费。之后任何失败都不能回退中转重发（同一账号，会再付一次），见 HeyGenBilledError
         try:
-            info = _heygen_poll_video(video_id, direct=True, deadline_s=450)  # 直连轮询死线450s，配套 reaper 口播 540s
+            info = _heygen_poll_video(video_id, direct=True, deadline_s=VIDEO_GEN_DEADLINE)
             video_file = _download_video_file_direct(info["video_url"], "heygen")
             cover = _extract_first_frame_cover(video_file)
         except Exception as e:
@@ -1461,7 +1461,9 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
     with heygen_slot("口播中转"):
         video_id = _heygen_retry_429(
             lambda: _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion), "口播中转")
-        info = _heygen_poll_video(video_id)
+        # 中转也用同一个死线。原来它回落到 HEYGEN_TIMEOUT(1200s)，比 reaper 对口播的宽限
+        # (540s)还长 —— reaper 先把任务判死并退点，worker 却还在轮询，上游照样出片照样收钱。
+        info = _heygen_poll_video(video_id, deadline_s=VIDEO_GEN_DEADLINE)
         video_file = _download_video_file(info["video_url"], "heygen")
         cover = _extract_first_frame_cover(video_file)
     ret = {

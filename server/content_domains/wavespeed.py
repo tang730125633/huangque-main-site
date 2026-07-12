@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 
 from . import cos
-from .core import _out_path, _resolve_out_file, public_url
+from .core import VIDEO_GEN_DEADLINE, _out_path, _resolve_out_file, public_url
 
 WAVESPEED_KEY = os.environ.get("WAVESPEED_API_KEY", "")
 # 出境通道：原来是裸 urlopen，继承进程级 HTTPS_PROXY（mihomo）。改为 VPS 隧道优先、mihomo 备选。
@@ -27,7 +27,9 @@ WS_API = "https://api.wavespeed.ai/api/v3"
 WS_MOTION = "/wavespeed-ai/wan-2.2/animate"
 WS_TRYON = "/wavespeed-ai/ai-virtual-outfit-tryon"
 WS_POLL_INTERVAL = int(os.environ.get("WAVESPEED_POLL_INTERVAL", "5"))
-WS_DEADLINE = int(os.environ.get("WAVESPEED_DEADLINE", "600"))  # 单任务最长等待(秒)
+# 单任务最长等待(秒)。跟 content 的 VIDEO_GEN_DEADLINE 走 —— 全站视频生成统一 15 分钟死线。
+# 动作模仿实测生成 392~511s，原来的 600s 贴得太近，撞上一次抖动就误判失败。
+WS_DEADLINE = int(os.environ.get("WAVESPEED_DEADLINE", "") or VIDEO_GEN_DEADLINE)
 
 
 def available():
