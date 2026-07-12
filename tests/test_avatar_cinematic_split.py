@@ -43,6 +43,8 @@ points = importlib.import_module("content_domains.points")
 registry = importlib.import_module("content_domains.registry")
 feature_flags = importlib.import_module("content_domains.feature_flags")
 
+SRC = (Path(__file__).resolve().parents[1] / "server/content_domains/video.py").read_text(encoding="utf-8")
+
 
 class PipelineWiringTests(unittest.TestCase):
     """新 kind 的管线是「一环都不能少」的：少接一环就是静默故障。"""
@@ -74,8 +76,10 @@ class PipelineWiringTests(unittest.TestCase):
         self.assertIsNot(core._pick_job_queue("cinematic"), core._fast_job_queue)
         self.assertIsNot(core._pick_job_queue("avatar"), core._fast_job_queue)
 
-    def test_avatar_pool_is_serial(self):
-        self.assertEqual(core.AVATAR_JOB_WORKERS, 1, "建形象要求串行")
+    def test_avatar_pool_is_no_longer_serial(self):
+        """2026-07-12 实测：5 路并发 5/5 成功、0×429、零降速。详见 test_avatar_concurrency。
+        串行只有 144 个/小时 —— 500 人集中建形象要排 3.5 小时，而它是电影化身的【入口】。"""
+        self.assertGreaterEqual(core.AVATAR_JOB_WORKERS, 5)
 
     def test_the_gate_does_not_throttle_the_workers_it_is_supposed_to_serve(self):
         """并发闸必须【容得下】所有 worker，否则 worker 数就白设了。
@@ -87,11 +91,22 @@ class PipelineWiringTests(unittest.TestCase):
         所以闸只需要 ≥ 所有打 HeyGen 的 worker 之和；配小了，worker 会卡在信号量上排队，
         「口播 10 + 剧情 10」就变成了实际只有 10 个在跑。
         """
-        heygen_workers = core.TALKING_JOB_WORKERS + core.CINEMATIC_JOB_WORKERS + core.AVATAR_JOB_WORKERS
-        self.assertGreaterEqual(video.HEYGEN_MAX_CONCURRENCY, heygen_workers,
-                                "闸(%d) 小于打 HeyGen 的 worker 总数(%d) —— worker 数白设了"
-                                % (video.HEYGEN_MAX_CONCURRENCY, heygen_workers))
+        # 只算【真的占闸】的池。建形象不占（见下一条）—— 把它算进来，它就得跟视频 worker 抢槽。
+        gated = core.TALKING_JOB_WORKERS + core.CINEMATIC_JOB_WORKERS
+        self.assertGreaterEqual(video.HEYGEN_MAX_CONCURRENCY, gated,
+                                "闸(%d) 小于占闸的 worker 总数(%d) —— worker 数白设了"
+                                % (video.HEYGEN_MAX_CONCURRENCY, gated))
         self.assertEqual(video._heygen_gen_sem._initial_value, video.HEYGEN_MAX_CONCURRENCY)
+
+    def test_building_an_avatar_does_not_take_a_video_slot(self):
+        """闸是给【视频提交】削峰的。建形象不是 video job —— 它不吃 HeyGen 的视频并发额度，
+        让它去抢那 21 个槽，只会把视频 worker 饿着。
+
+        而且它本来也不需要：10 路并发建形象实测 0×429（瓶颈是我们自己的出境隧道，不是 HeyGen）。
+        真撞上突发限流，_heygen_retry_429 已经包在建形象的提交上了。
+        """
+        block = SRC.split("def gen_avatar")[1].split("\ndef ")[0]
+        self.assertNotIn("heygen_slot", block)
 
     def test_cinematic_gets_a_real_pool_now_that_20_way_is_proven(self):
         # 20 路并发实测通过 → 剧情视频不再需要「份额上限」，给满 10 个
