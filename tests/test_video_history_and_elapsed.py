@@ -21,6 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HTML = (ROOT / "site/workbench/video.html").read_text(encoding="utf-8")
 CORE = (ROOT / "server/content_domains/core.py").read_text(encoding="utf-8")
+JOBS_STORE = (ROOT / "server/content_domains/jobs_store.py").read_text(encoding="utf-8")  # #608 把 public_dict 挪到这
 
 
 class HistoryIsNotClobberedByTheDraftTests(unittest.TestCase):
@@ -82,9 +83,10 @@ class ElapsedTimeSurvivesARefreshTests(unittest.TestCase):
                       block)
 
     def test_the_backend_actually_returns_created_at(self):
-        """前端要读的这个字段，后端得真的给。"""
-        block = CORE.split("def _job_public_dict")[1].split("\ndef ")[0]
-        self.assertIn('"created_at": row["created_at"]', block)
+        """前端要读的这个字段，后端得真的给。#608 把 _job_public_dict 挪成 jobs_store.public_dict
+        并改成 dict 推导投影一组列 —— created_at 必须在那组列里。"""
+        block = JOBS_STORE.split("def public_dict")[1].split("\ndef ")[0]
+        self.assertIn('"created_at"', block)
 
 
 class AvatarGridScrollsAfterTwoRowsTests(unittest.TestCase):

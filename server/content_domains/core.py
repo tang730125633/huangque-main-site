@@ -210,15 +210,14 @@ MAX_USER_RUNNING_IMAGE = _env_positive_int("MAX_USER_RUNNING_IMAGE", 3)         
 SERVICE_OWNER = "content"   # 本服务在 jobs.owner 的署名(#579)；两处全表扫描必须按它过滤，缘由见 jobs_store.ensure_owner_column
 # reaper 各 kind 的超时宽限(秒)，默认 360。tryon 两段式+心跳刷新；xiaole_video 内部轮询600s+转存；
 # image 多图/中转慢；collect 下载+ffmpeg抽音轨+ASR 且转写全站串行(实测成功平均88s)。video 按 mode 另算。
-# 单条视频的【生成死线】：15 分钟。不含排队 —— 从 worker 真正开始干活算起。
-# 各引擎的轮询死线都用它（口播/动作模仿/电影化身），到点抛一个明确的「生成超时」并退点。
+# 【生成死线】从 worker 真正开始干活算起(不含排队)：口播/动作模仿/电影化身统一 15 分钟。
+# 各引擎轮询死线都用它，到点抛明确的「生成超时」并退点。cinematic 若要单独加裕量，改
+# HEYGEN_MOTION_DEADLINE env 即可(它只作用于 cinematic，但别超过下面 reaper 宽限)。
 VIDEO_GEN_DEADLINE = _env_positive_int("VIDEO_GEN_DEADLINE", 900)
-# reaper 的宽限必须【大于】生成死线。引擎自己的死线到点，会抛一个说得清楚的错并退点；
-# reaper 只是兜底 —— worker 整个卡死、连 updated_at 都不刷了的时候才轮到它。
-# 反过来要是 reaper 先杀，用户拿到的是一句没头没脑的「生成超时自动结束」，而 worker 还在跑，
-# 上游照样出片、照样收钱。（口播原来就是这样：中转轮询死线 1200s，reaper 宽限却只有 540s。）
-# 多出来的 300s 留给轮询之外的活：素材上传、成片下载、烧字幕、混 BGM —— 那些阶段 HeyGen
-# 的轮询循环不刷 updated_at。
+# reaper 宽限必须【大于】引擎死线：引擎到点抛明确的「生成超时」并退点，reaper 只兜底(worker 整个
+# 卡死、连 updated_at 都不刷时才轮到它)。反过来 reaper 先杀 = 用户拿到没头没脑的超时、而 worker
+# 还在跑上游照样收钱(口播原来就这样：中转死线 1200s、reaper 宽限却 540s)。多的 300s 给轮询之外的
+# 上传/下载/烧字幕/混 BGM —— 那些阶段不刷 updated_at。
 VIDEO_REAPER_GRACE = VIDEO_GEN_DEADLINE + 300
 KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "image": 900, "collect": 1200,
               "cinematic": VIDEO_REAPER_GRACE, "avatar": 300}
@@ -937,10 +936,9 @@ def reaper():
             for r in stuck:
                 grace = KIND_GRACE.get(r["kind"], 0)
                 if r["kind"] == "video":
-                    # 口播和动作模仿现在都统一到 VIDEO_GEN_DEADLINE(15 分钟) + 300s 兜底余量。
-                    # 原来是「motion 40 分钟 / 口播 9 分钟」两套数：motion 那个 40 分钟是当年
-                    # 必回退泽龙中转(实测 20~37 分钟)时定的，去线路化后 motion 走 WaveSpeed，
-                    # 早就不需要了；口播那个 9 分钟又比中转自己的轮询死线(1200s)还短，会先杀。
+                    # 口播/动作模仿统一到 VIDEO_REAPER_GRACE。原「motion 40 分钟/口播 9 分钟」两套数：
+                    # motion 40 分钟是当年必回退泽龙(20~37 分钟)时定的，去线路化走 WaveSpeed 后已不需要；
+                    # 口播 9 分钟又比中转轮询死线(1200s)还短、会先杀。
                     grace = VIDEO_REAPER_GRACE
                 if grace and r["updated_at"] >= now - grace:
                     continue

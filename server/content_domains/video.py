@@ -1300,8 +1300,9 @@ class HeyGenBilledError(RuntimeError):
     """
 
 
-# 电影化身/动作模仿走 HeyGen 时的轮询死线 —— 统一到 VIDEO_GEN_DEADLINE(15 分钟)。
-# 实测：cinematic 生成 149~511s，20 路并发不降速。15 分钟是它的 2~6 倍，够宽。
+# 电影化身走 HeyGen 时的轮询死线 —— 默认统一到 VIDEO_GEN_DEADLINE(15 分钟)。
+# 实测：cinematic 生成 149~511s，20 路并发不降速，15 分钟是它的 2~6 倍。它是唯一「提交即扣 $7」
+# 的引擎，若线上偶发慢，单独调这个 env 给它加裕量即可(别超过 reaper 对 cinematic 的宽限 1200s)。
 HEYGEN_MOTION_DEADLINE = int(os.environ.get("HEYGEN_MOTION_DEADLINE", "") or VIDEO_GEN_DEADLINE)
 
 
