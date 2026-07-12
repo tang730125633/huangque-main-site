@@ -36,6 +36,9 @@
   .info-label{font-size:11.5px;color:#6f7f96;margin-bottom:7px}
   .info-value{font-size:15px;font-weight:800;color:#eaf1fa;line-height:1.35;word-break:break-word}
   .info-value.mono{font-family:'JetBrains Mono',monospace;font-variant-numeric:tabular-nums;color:#e7b24c}
+  .info-value-row{display:flex;align-items:center;gap:8px;min-width:0}
+  .info-value-row .info-value{min-width:0;flex:1}
+  .info-copy-btn{height:28px;padding:0 9px;border-radius:7px;font-size:11.5px;flex:none}
   .settings-form{display:flex;flex-direction:column;gap:13px}
   .field{display:flex;flex-direction:column;gap:8px}
   .field span{font-size:12.5px;font-weight:700;color:#eaf1fa}
@@ -47,12 +50,16 @@
   .btn:disabled{opacity:.7;cursor:wait}
   .btn.primary{border-color:transparent;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206}
   .btn.danger{border-color:rgba(244,112,138,.24);background:rgba(244,112,138,.08);color:#f4708a}
+  .friend-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin-bottom:14px}
+  .friend-form input{height:40px;border:1px solid rgba(148,164,187,.16);border-radius:9px;background:rgba(7,11,19,.5);color:#eaf1fa;padding:0 12px;font:800 13px 'JetBrains Mono',monospace;letter-spacing:0;text-transform:uppercase;outline:none}
+  .friend-form input:focus{border-color:rgba(231,178,76,.42);box-shadow:0 0 0 3px rgba(231,178,76,.08)}
   .member-list{display:flex;flex-direction:column;gap:10px}
   .member-row{display:flex;align-items:center;gap:12px;padding:12px;border:1px solid rgba(148,164,187,.09);border-radius:10px;background:rgba(7,11,19,.32)}
   .member-avatar{width:34px;height:34px;border-radius:9px;background:rgba(148,164,187,.11);display:flex;align-items:center;justify-content:center;color:#eaf1fa;font-weight:800;flex:none}
   .member-main{min-width:0;flex:1}
   .member-name{font-size:13.5px;font-weight:800;color:#eaf1fa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .member-sub{margin-top:3px;font-size:12px;color:#6f7f96}
+  .member-empty{padding:14px;border:1px dashed rgba(148,164,187,.16);border-radius:10px;color:#6f7f96;font-size:12.5px;line-height:1.6}
   .badge{height:24px;padding:0 9px;border-radius:7px;font-size:11.5px;font-weight:800;display:inline-flex;align-items:center;flex:none;background:rgba(231,178,76,.12);color:#e7b24c}
   .badge.muted{background:rgba(148,164,187,.1);color:#94a4bb}
   .billing-card{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:15px;border:1px solid rgba(231,178,76,.18);border-radius:10px;background:linear-gradient(120deg,rgba(231,178,76,.09),rgba(7,11,19,.24));margin-top:14px}
@@ -114,7 +121,7 @@
     .billing-card{align-items:flex-start;flex-direction:column}
   }
   @media (max-width:620px){.theme-options{grid-template-columns:1fr}}
-  @media (max-width:520px){.profile-top{align-items:flex-start;flex-wrap:wrap}.profile-edit-btn{margin-left:70px}.profile-editor{grid-template-columns:1fr}.profile-editor-actions{justify-content:flex-end}}
+  @media (max-width:520px){.profile-top{align-items:flex-start;flex-wrap:wrap}.profile-edit-btn{margin-left:70px}.profile-editor{grid-template-columns:1fr}.profile-editor-actions{justify-content:flex-end}.friend-form{grid-template-columns:1fr}}
 </style>
 <link rel="stylesheet" href="theme.css?v=5873a2f4">
 </head>
@@ -152,8 +159,27 @@
           <div class="info-grid">
             <div class="info-cell"><div class="info-label">角色</div><div id="role" class="info-value">--</div></div>
             <div class="info-cell"><div class="info-label">剩余点数</div><div id="points" class="info-value mono">--</div></div>
+            <div class="info-cell"><div class="info-label">账号 ID</div><div class="info-value-row"><div id="accountId" class="info-value mono">--</div><button id="copyAccountIdBtn" class="btn info-copy-btn" type="button" disabled>复制</button></div></div>
             <div class="info-cell"><div class="info-label">密码状态</div><div id="mustChange" class="info-value">--</div></div>
-            <div class="info-cell"><div class="info-label">登录状态</div><div id="loginState" class="info-value">已连接</div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-card">
+        <div class="settings-card-body">
+          <div class="settings-card-head">
+            <div>
+              <div class="settings-card-title">好友</div>
+              <div class="settings-card-note">用账号 ID 添加团队成员，便于后续协作。</div>
+            </div>
+            <span id="friendsCount" class="badge muted">0 人</span>
+          </div>
+          <form id="friendForm" class="friend-form">
+            <input id="friendAccountIdInput" type="text" maxlength="8" autocomplete="off" placeholder="输入账号 ID">
+            <button id="addFriendBtn" class="btn primary" type="submit">添加好友</button>
+          </form>
+          <div id="friendsList" class="member-list" aria-live="polite">
+            <div class="member-empty">还没有好友，输入对方账号 ID 后添加。</div>
           </div>
         </div>
       </section>
@@ -316,10 +342,35 @@
     return (s ? s.charAt(0) : '?').toUpperCase();
   }
 
+  function esc(value){
+    return String(value == null ? '' : value).replace(/[&<>"']/g,function(ch){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];
+    });
+  }
+
   function roleText(role){
     if(role === 'admin') return '管理员';
     if(role === 'member') return '成员';
     return role || '成员';
+  }
+
+  function fallbackAccountId(username){
+    var source=String(username||'guest'), hash=2166136261;
+    for(var i=0;i<source.length;i++){
+      hash^=source.charCodeAt(i);
+      hash+=(hash<<1)+(hash<<4)+(hash<<7)+(hash<<8)+(hash<<24);
+    }
+    var alphabet='23456789ABCDEFGHJKLMNPQRSTUVWXYZ', out='HQ', n=hash>>>0;
+    for(var j=0;j<6;j++){
+      n=(n*1664525+1013904223)>>>0;
+      out+=alphabet[n%alphabet.length];
+    }
+    return out;
+  }
+
+  function accountIdForUser(user){
+    if(user&&user.account_id) return String(user.account_id);
+    return fallbackAccountId(user&&user.username);
   }
 
   function clearLocalAuth(){
@@ -363,8 +414,11 @@
     $('profileAvatar').textContent = initial(name);
     $('role').textContent = roleText(user.role);
     $('points').textContent = Number(user.points || 0).toLocaleString();
+    var accountId=accountIdForUser(user);
+    user.account_id=accountId;
+    $('accountId').textContent = accountId;
+    $('copyAccountIdBtn').disabled = !accountId;
     $('mustChange').textContent = user.must_change ? '建议尽快修改' : '已设置';
-    $('loginState').textContent = '已连接';
     $('accountStatus').textContent = '已连接';
     $('sessionAccount').textContent='@'+(user.username||'--')+' · 当前浏览器会话';
     if(!$('nicknameForm').hidden) $('nicknameInput').value = name;
@@ -454,6 +508,134 @@
 
   document.querySelectorAll('[data-notice-pref]').forEach(function(input){ input.addEventListener('change',function(){ savePreferences('notifications','notificationSaveState'); }); });
 
+  function copyText(text){
+    if(navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);
+    var input=document.createElement('input');
+    input.value=text;
+    input.setAttribute('readonly','');
+    input.style.position='fixed';
+    input.style.left='-9999px';
+    document.body.appendChild(input);
+    input.select();
+    try{ document.execCommand('copy'); }
+    finally{ input.remove(); }
+    return Promise.resolve();
+  }
+
+  $('copyAccountIdBtn').addEventListener('click',function(){
+    var id=(activeUser && activeUser.account_id) || $('accountId').textContent.trim();
+    if(!id || id==='--'){ toast('账号 ID 暂未生成'); return; }
+    copyText(id).then(function(){ toast('账号 ID 已复制'); })
+      .catch(function(){ toast('复制失败，请手动选择账号 ID'); });
+  });
+
+  function friendStorageKey(){ return accountKey('hq_friends_v1'); }
+
+  function friendName(friend){
+    return friend.name || friend.display_name || friend.username || '未命名好友';
+  }
+
+  function renderFriends(items){
+    items = Array.isArray(items) ? items : [];
+    $('friendsCount').textContent = items.length + ' 人';
+    if(!items.length){
+      $('friendsList').innerHTML = '<div class="member-empty">还没有好友，输入对方账号 ID 后添加。</div>';
+      return;
+    }
+    $('friendsList').innerHTML = items.map(function(friend){
+      var name = friendName(friend);
+      var username = friend.username ? '@' + friend.username : '@--';
+      var accountId = friend.account_id || '--';
+      return '<div class="member-row">' +
+        '<div class="member-avatar">' + esc(initial(name)) + '</div>' +
+        '<div class="member-main"><div class="member-name">' + esc(name) + '</div>' +
+        '<div class="member-sub">' + esc(username) + ' · ' + esc(accountId) + '</div></div>' +
+        '<span class="badge muted">好友</span>' +
+      '</div>';
+    }).join('');
+  }
+
+  function localFriends(){
+    var data = readJson(friendStorageKey());
+    return Array.isArray(data.items) ? data.items : [];
+  }
+
+  function saveLocalFriends(items){
+    writeJson(friendStorageKey(), {items:items || []});
+  }
+
+  function addLocalFriend(accountId){
+    var items=localFriends();
+    if(items.some(function(item){ return item.account_id === accountId; })) return false;
+    items.unshift({name:'好友',username:'',account_id:accountId});
+    saveLocalFriends(items);
+    renderFriends(items);
+    return true;
+  }
+
+  function loadFriends(){
+    apiFetch('/api/auth/friends').then(function(res){
+      if(res && res.ok && res.data && Array.isArray(res.data.friends)){
+        saveLocalFriends(res.data.friends);
+        renderFriends(res.data.friends);
+        return;
+      }
+      renderFriends(localFriends());
+    }).catch(function(){
+      renderFriends(localFriends());
+    });
+  }
+
+  $('friendAccountIdInput').addEventListener('input',function(){
+    this.value = this.value.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,8);
+  });
+
+  $('friendForm').addEventListener('submit',function(e){
+    e.preventDefault();
+    var input=$('friendAccountIdInput'), btn=$('addFriendBtn');
+    var accountId=(input.value||'').trim().toUpperCase();
+    if(!accountId){ toast('请填写账号 ID'); input.focus(); return; }
+    if(activeUser && accountId === activeUser.account_id){ toast('不能添加自己'); return; }
+    setBusy(btn,true,'添加中');
+    apiFetch('/api/auth/friends/add',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({account_id:accountId})
+    }).then(function(res){
+      if(res && res.ok && res.data && Array.isArray(res.data.friends)){
+        input.value='';
+        saveLocalFriends(res.data.friends);
+        renderFriends(res.data.friends);
+        toast('好友已添加');
+        return;
+      }
+      if(res && res.status === 409){
+        toast(res.data.detail || '已经是好友');
+        return;
+      }
+      if(res && res.status === 404 && res.data && res.data.detail === 'not found'){
+        if(addLocalFriend(accountId)){
+          input.value='';
+          toast('好友已添加到本地预览');
+        }else{
+          toast('已经是好友');
+        }
+        return;
+      }
+      if(res && !res.ok) throw new Error(res.data.detail || '添加好友失败');
+      if(addLocalFriend(accountId)){
+        input.value='';
+        toast('好友已添加到本地预览');
+      }else{
+        toast('已经是好友');
+      }
+    }).catch(function(err){
+      toast(err.message || '添加好友失败');
+    }).finally(function(){
+      setBusy(btn,false,'添加好友');
+    });
+  });
+
   function loadMe(){
     apiFetch('/api/auth/me').then(function(res){
       if(!res) return;
@@ -461,10 +643,10 @@
         throw new Error(res.data && res.data.detail || '账号读取失败');
       }
       renderUser(res.data.user);
+      loadFriends();
       if(window.HQ && typeof window.HQ.refreshPoints === 'function') window.HQ.refreshPoints();
     }).catch(function(e){
       $('accountStatus').textContent = '读取失败';
-      $('loginState').textContent = '未连接';
       toast(e.message || '账号读取失败');
     });
   }

@@ -20,6 +20,9 @@ NEW_USER_TRIAL_POINTS = int(os.environ.get("HQ_AUTH_TRIAL_POINTS", "16"))  # 新
 LOGIN_FAILS = {}
 REGISTER_HITS = {}
 REVOKED_TOKENS = set()
+ACCOUNT_ID_LENGTH = 8
+ACCOUNT_ID_PREFIX = "HQ"
+ACCOUNT_ID_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 
 def db():
     c = sqlite3.connect(DB, timeout=10)
@@ -39,6 +42,11 @@ def init_db():
         must_change INTEGER DEFAULT 1,
         created_at TEXT DEFAULT (datetime('now'))
     )""")
+    user_cols = {r["name"] for r in c.execute("PRAGMA table_info(users)").fetchall()}
+    if "account_id" not in user_cols:
+        c.execute("ALTER TABLE users ADD COLUMN account_id TEXT")
+    _ensure_all_account_ids(c)
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_account_id ON users(account_id)")
     c.execute("""CREATE TABLE IF NOT EXISTS tokens(
         token TEXT PRIMARY KEY,
         username TEXT NOT NULL,
@@ -58,6 +66,14 @@ def init_db():
     # 任务扣点/退点接入审计后，这张表按任务量增长（原来只有人工加减点，几乎不涨）。
     # 按用户查流水是后台最常用的路径，没索引会随表全扫。
     c.execute("CREATE INDEX IF NOT EXISTS idx_points_audit_user ON points_audit(username, id DESC)")
+    c.execute("""CREATE TABLE IF NOT EXISTS friendships(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL,
+        friend_username TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        UNIQUE(username, friend_username)
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_friendships_user ON friendships(username, id DESC)")
     c.execute("""CREATE TABLE IF NOT EXISTS recharge_orders(
         order_id TEXT PRIMARY KEY,
         username TEXT NOT NULL,
@@ -75,6 +91,40 @@ def init_db():
         c.execute("ALTER TABLE tokens ADD COLUMN expires_at INTEGER")
     c.commit(); c.close()
 
+def generate_account_id():
+    n = ACCOUNT_ID_LENGTH - len(ACCOUNT_ID_PREFIX)
+    return ACCOUNT_ID_PREFIX + "".join(secrets.choice(ACCOUNT_ID_ALPHABET) for _ in range(n))
+
+def _new_unique_account_id(c):
+    for _ in range(64):
+        account_id = generate_account_id()
+        row = c.execute("SELECT 1 FROM users WHERE account_id=?", (account_id,)).fetchone()
+        if not row:
+            return account_id
+    raise RuntimeError("account_id exhausted")
+
+def _ensure_all_account_ids(c):
+    rows = c.execute("SELECT username FROM users WHERE account_id IS NULL OR account_id=''").fetchall()
+    for row in rows:
+        c.execute("UPDATE users SET account_id=? WHERE username=?", (_new_unique_account_id(c), row["username"]))
+
+def ensure_account_id(username, c=None):
+    own = c is None
+    if own: c = db()
+    try:
+        row = c.execute("SELECT account_id FROM users WHERE username=?", (username,)).fetchone()
+        if not row:
+            return None
+        account_id = row["account_id"]
+        if account_id:
+            return account_id
+        account_id = _new_unique_account_id(c)
+        c.execute("UPDATE users SET account_id=? WHERE username=?", (account_id, username))
+        if own: c.commit()
+        return account_id
+    finally:
+        if own: c.close()
+
 def hash_pw(password, salt):
     return hashlib.pbkdf2_hmac('sha256', password.encode(), bytes.fromhex(salt), ITER).hex()
 
@@ -82,22 +132,24 @@ def create_user(username, password, points=0, role='member'):
     init_db()
     salt = secrets.token_hex(16)
     c = db()
-    c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change)
-                 VALUES(?,?,?,?,?,?,1)
+    c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change,account_id)
+                 VALUES(?,?,?,?,?,?,1,?)
                  ON CONFLICT(username) DO UPDATE SET
                    pw_hash=excluded.pw_hash, pw_salt=excluded.pw_salt,
                    points=excluded.points, role=excluded.role, must_change=1""",
-              (username, hash_pw(password, salt), salt, username, points, role))
+              (username, hash_pw(password, salt), salt, username, points, role, _new_unique_account_id(c)))
+    ensure_account_id(username, c)
     c.commit(); c.close()
     print("OK user:", username)
 
-def public_user(username, display_name=None, points=0, role='member', must_change=False):
+def public_user(username, display_name=None, points=0, role='member', must_change=False, account_id=None):
     return {
         "username": username,
         "name": display_name or username,
         "points": points,
         "role": role,
-        "must_change": bool(must_change)
+        "must_change": bool(must_change),
+        "account_id": account_id or ""
     }
 
 def public_points(row):
@@ -106,6 +158,58 @@ def public_points(row):
         "user_id": row["id"],
         "points": row["points"],
     }
+
+def public_friend(row):
+    return {
+        "username": row["username"],
+        "name": row["display_name"] or row["username"],
+        "account_id": row["account_id"] or "",
+        "role": row["role"],
+        "created_at": row["friend_created_at"],
+    }
+
+def list_friends(username):
+    c = db()
+    try:
+        rows = c.execute("""SELECT u.username, u.display_name, u.account_id, u.role, f.created_at AS friend_created_at
+                            FROM friendships f
+                            JOIN users u ON u.username=f.friend_username
+                            WHERE f.username=?
+                            ORDER BY f.id DESC""", (username,)).fetchall()
+        return [public_friend(r) for r in rows]
+    finally:
+        c.close()
+
+def add_friend_by_account_id(username, account_id):
+    account_id = (account_id or "").strip().upper()
+    if not account_id:
+        return None, "missing"
+    c = db()
+    try:
+        me = c.execute("SELECT username, account_id FROM users WHERE username=?", (username,)).fetchone()
+        if not me:
+            return None, "not_found"
+        friend = c.execute("""SELECT username, display_name, account_id, role
+                              FROM users WHERE account_id=?""", (account_id,)).fetchone()
+        if not friend:
+            return None, "not_found"
+        if friend["username"] == username:
+            return None, "self"
+        try:
+            c.execute("""INSERT INTO friendships(username, friend_username, created_at)
+                         VALUES(?,?,?)""", (username, friend["username"], int(time.time())))
+            c.commit()
+        except sqlite3.IntegrityError:
+            return public_friend({
+                "username": friend["username"],
+                "display_name": friend["display_name"],
+                "account_id": friend["account_id"],
+                "role": friend["role"],
+                "friend_created_at": int(time.time()),
+            }), "exists"
+        return list_friends(username), None
+    finally:
+        c.close()
 
 def get_points_row(username, c=None):
     own = c is None
@@ -683,9 +787,10 @@ class H(BaseHTTPRequestHandler):
             salt = secrets.token_hex(16)
             c = db()
             try:
-                c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change)
-                             VALUES(?,?,?,?,?,?,0)""",
-                          (u, hash_pw(pw, salt), salt, name, NEW_USER_TRIAL_POINTS, "member"))
+                account_id = _new_unique_account_id(c)
+                c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change,account_id)
+                             VALUES(?,?,?,?,?,?,0,?)""",
+                          (u, hash_pw(pw, salt), salt, name, NEW_USER_TRIAL_POINTS, "member", account_id))
                 tok = issue_token(u, c)
                 c.commit()
                 self._record_register_hit()
@@ -697,7 +802,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(500, {"detail": "注册失败"})
             finally:
                 c.close()
-            return self._send(200, {"user": public_user(u, name, NEW_USER_TRIAL_POINTS)}, {"Set-Cookie": auth_cookie_header(tok)})
+            return self._send(200, {"user": public_user(u, name, NEW_USER_TRIAL_POINTS, account_id=account_id)}, {"Set-Cookie": auth_cookie_header(tok)})
         if p == "/api/auth/login":
             d = self._body()
             if self._bad_json():
@@ -711,10 +816,12 @@ class H(BaseHTTPRequestHandler):
                 self._record_login_failure(u)
                 return self._send(401, {"detail": "账号或密码错误"})
             self._clear_login_failures(u)
+            account_id = row["account_id"] or ensure_account_id(u)
             tok = issue_token(u)
             return self._send(200, {"user": {
                 "username": u, "name": row["display_name"], "points": row["points"],
-                "role": row["role"], "must_change": bool(row["must_change"])}}, {"Set-Cookie": auth_cookie_header(tok)})
+                "role": row["role"], "must_change": bool(row["must_change"]),
+                "account_id": account_id}}, {"Set-Cookie": auth_cookie_header(tok)})
         if p == "/api/auth/miniprogram-login":
             # 小程序 wx.request 不像浏览器那样自动带 httpOnly cookie，专供小程序客户端：
             # token 放响应体让小程序自己存起来，后续走 Authorization: Bearer 请求头（网站登录/注册不受影响，仍只走 cookie）。
@@ -730,10 +837,12 @@ class H(BaseHTTPRequestHandler):
                 self._record_login_failure(u)
                 return self._send(401, {"detail": "账号或密码错误"})
             self._clear_login_failures(u)
+            account_id = row["account_id"] or ensure_account_id(u)
             tok = issue_token(u)
             return self._send(200, {"token": tok, "user": {
                 "username": u, "name": row["display_name"], "points": row["points"],
-                "role": row["role"], "must_change": bool(row["must_change"])}})
+                "role": row["role"], "must_change": bool(row["must_change"]),
+                "account_id": account_id}})
         if p == "/api/auth/miniprogram-register":
             d = self._body()
             if self._bad_json():
@@ -756,9 +865,10 @@ class H(BaseHTTPRequestHandler):
             salt = secrets.token_hex(16)
             c = db()
             try:
-                c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change)
-                             VALUES(?,?,?,?,?,?,0)""",
-                          (u, hash_pw(pw, salt), salt, name, NEW_USER_TRIAL_POINTS, "member"))
+                account_id = _new_unique_account_id(c)
+                c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change,account_id)
+                             VALUES(?,?,?,?,?,?,0,?)""",
+                          (u, hash_pw(pw, salt), salt, name, NEW_USER_TRIAL_POINTS, "member", account_id))
                 tok = issue_token(u, c)
                 c.commit()
                 self._record_register_hit()
@@ -770,7 +880,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(500, {"detail": "注册失败"})
             finally:
                 c.close()
-            return self._send(200, {"token": tok, "user": public_user(u, name, NEW_USER_TRIAL_POINTS)})
+            return self._send(200, {"token": tok, "user": public_user(u, name, NEW_USER_TRIAL_POINTS, account_id=account_id)})
         if p == "/api/auth/logout":
             clear_cookie = {"Set-Cookie": clear_auth_cookie_header()}
             tok = request_token(self.headers)
@@ -843,8 +953,26 @@ class H(BaseHTTPRequestHandler):
             finally:
                 c.close()
             return self._send(200, {"ok": True, "user": public_user(
-                fresh["username"], fresh["display_name"], fresh["points"], fresh["role"], fresh["must_change"]
+                fresh["username"], fresh["display_name"], fresh["points"], fresh["role"], fresh["must_change"],
+                fresh["account_id"] or ensure_account_id(fresh["username"])
             )})
+        if p == "/api/auth/friends/add":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            friends, err = add_friend_by_account_id(row["username"], d.get("account_id"))
+            if err == "missing":
+                return self._send(400, {"detail": "请填写账号 ID"})
+            if err == "not_found":
+                return self._send(404, {"detail": "账号 ID 不存在"})
+            if err == "self":
+                return self._send(400, {"detail": "不能添加自己"})
+            if err == "exists":
+                return self._send(409, {"detail": "已经是好友", "friend": friends})
+            return self._send(200, {"ok": True, "friends": friends})
         self._send(404, {"detail": "not found"})
 
     def do_GET(self):
@@ -926,9 +1054,15 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/auth/me":
             row = self._user()
             if not row: return self._send(401, {"detail": "未登录"})
+            account_id = row["account_id"] or ensure_account_id(row["username"])
             return self._send(200, {"user": {
                 "username": row["username"], "name": row["display_name"], "points": row["points"],
-                "role": row["role"], "must_change": bool(row["must_change"])}})
+                "role": row["role"], "must_change": bool(row["must_change"]),
+                "account_id": account_id}})
+        if p == "/api/auth/friends":
+            row = self._user()
+            if not row: return self._send(401, {"detail": "未登录"})
+            return self._send(200, {"ok": True, "friends": list_friends(row["username"])})
         if p == "/api/auth/health":
             return self._send(200, {"ok": True, "service": "huangque-auth"})
         self._send(404, {"detail": "not found"})

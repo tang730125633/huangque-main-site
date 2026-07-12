@@ -882,7 +882,38 @@
     }catch(err){}
     location.href='video.html?prefill=image';
   };
-  if(bDl) bDl.onclick=function(){ if(!lastResultUrl){ setNote('先生成一张再下载','#f4708a'); return; } var a=document.createElement('a'); a.href=lastResultUrl; a.download='huangque_'+Date.now()+'.png'; document.body.appendChild(a); a.click(); a.remove(); };
+  function guessImageExt(type,url){
+    var t=String(type||'').toLowerCase();
+    if(t.indexOf('jpeg')>=0 || t.indexOf('jpg')>=0) return 'jpg';
+    if(t.indexOf('webp')>=0) return 'webp';
+    if(t.indexOf('gif')>=0) return 'gif';
+    var clean=String(url||'').split('?')[0].split('#')[0];
+    var m=clean.match(/\.([a-z0-9]{2,5})$/i);
+    return m ? m[1].toLowerCase() : 'png';
+  }
+  async function downloadResultImage(){
+    if(!lastResultUrl){ setNote('先生成一张再下载','#f4708a'); return; }
+    setNote('正在准备下载…','#2dd4bf');
+    try{
+      var r=await fetch(lastResultUrl,{mode:'cors',credentials:'omit',cache:'no-store'});
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      var blob=await r.blob();
+      if(!blob || !blob.size) throw new Error('empty image');
+      var obj=URL.createObjectURL(blob);
+      var a=document.createElement('a');
+      a.href=obj;
+      a.download='huangque_'+Date.now()+'.'+guessImageExt(blob.type,lastResultUrl);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function(){ URL.revokeObjectURL(obj); },30000);
+      setNote('✅ 已开始下载','#2bd576');
+    }catch(err){
+      setNote('正在切换后端下载…','#f4cd72');
+      location.href='/api/gen/dl?url='+encodeURIComponent(lastResultUrl)+'&name='+encodeURIComponent('huangque_'+Date.now());
+    }
+  }
+  if(bDl) bDl.onclick=function(e){ if(e&&e.preventDefault) e.preventDefault(); downloadResultImage(); };
   if(bStore) bStore.onclick=function(e){ if(e&&e.preventDefault) e.preventDefault(); if(!lastResultUrl){ setNote('先生成一张','#f4708a'); return; } setNote('✅ 生成即自动入库 · <a href="assets.html" style="color:#e7b24c">去「资产」查看</a>','#2bd576'); };
   if(bFeishu) bFeishu.onclick=function(){ setNote('飞书推送即将上线（bot 接入阶段）','#f4cd72'); };
 })();
