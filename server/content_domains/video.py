@@ -1189,6 +1189,35 @@ class HeyGenNetworkError(RuntimeError):
 HEYGEN_NET_RETRIES = int(os.environ.get("HEYGEN_NET_RETRIES", "4") or 4)
 
 
+def _heygen_retry_net(fn, what=""):
+    """对【建形象】的提交重试瞬时网络错误。⚠️ 只能用在建形象上，别往视频提交上抄。
+
+    视频的提交 POST 绝不重发（见 HeyGenBilledError）：HeyGen 提交即计费，重发 = 同一条片子
+    付两次 $7。建形象不一样 —— **实测免费**（2026-07-12：连建 6 个形象，plan_credit 和 api
+    两个池都是 0 扣减）。所以「万一上一次其实已经送达」的代价只是在 HeyGen 上多留一个孤儿
+    形象（我们的库里只记返回的那个 id，用户看不到多出来的），不是钱。
+
+    这就是为什么这里可以不去纠结 egress._pre_delivery_failure 那套「投递前/投递后」的判据：
+    那套判据是为非幂等的**计费** POST 定的，宁可失败也不重复扣钱。建形象没有那个代价。
+
+    背景：10 路并发实测，出境隧道扛不住 10 个并发 TLS 握手，1/10 挂在 handshake timeout。
+    握手超时意味着请求根本没发出去，用户却看到「建形象失败」并被退了 5 点 —— 什么都没发生。
+    """
+    last = None
+    for i in range(HEYGEN_NET_RETRIES):
+        try:
+            return fn()
+        except HeyGenNetworkError as e:
+            last = e
+            if i == HEYGEN_NET_RETRIES - 1:
+                break
+            delay = min(20.0, 2.0 * (2 ** i)) * (0.7 + random.random() * 0.6)   # 必须抖动
+            print("[heygen] %s 网络抖动，重试(%d/%d) %.1fs 后: %s"
+                  % (what, i + 1, HEYGEN_NET_RETRIES, delay, str(e)[:120]), flush=True)
+            time.sleep(delay)
+    raise last
+
+
 def _heygen_read_retry(open_fn, what):
     """打开并读取一个【幂等 GET】(下载成片)，对传输层瞬时网络错误退避重试，返回字节。
 
@@ -2410,9 +2439,13 @@ def gen_avatar(payload):
         raise ValueError("请先上传人物照片")
     fp = _ensure_heygen_image_jpg(_resolve_out_file(image_file))
     try:
-        asset_id = _heygen_upload_asset(fp, direct=True)
-        item_id, group_id = _heygen_retry_429(
-            lambda: _heygen_create_photo_avatar(asset_id, direct=True), "建形象")
+        # 传图和建 look 都对瞬时网络错误重试 —— 建形象免费，重发不会重复计费（见 _heygen_retry_net）。
+        # 隧道扛不住 5 路以上的并发 TLS 握手，不重试的话用户会莫名其妙地建形象失败。
+        asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(fp, direct=True), "建形象传图")
+        item_id, group_id = _heygen_retry_net(
+            lambda: _heygen_retry_429(
+                lambda: _heygen_create_photo_avatar(asset_id, direct=True), "建形象"),
+            "建形象提交")
         _heygen_wait_photo_avatar(item_id, group_id, direct=True)
     except Exception as e:
         # 线上最常见的失败就是这个。原样把 HeyGen 的英文报文抛给用户毫无意义，翻译成人话。
