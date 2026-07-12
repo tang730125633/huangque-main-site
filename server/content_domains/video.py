@@ -2457,10 +2457,16 @@ def gen_cinematic(payload):
                                     % (video_id, str(e)[:180])) from e
 
     ret = {
+        # ⚠️ status/mode/type 一个都不能少 —— record_video_asset 从 result 里取它们写进
+        # video_assets，而前端读的是那张表。漏了 status，它会写成 "pending"，
+        # UPSERT 的 COALESCE 又挡不住非 NULL 值，资产行就永远停在 running，
+        # 用户看到的就是「一直显示生成中」——哪怕 jobs 表早就 done 了。
+        "type": "video", "status": "done", "mode": "cinematic",
         "video_id": video_id, "video_file": video_file, "video_url": _file_url(video_file),
         "reference_video_file": reference_video_file,
         "avatar_ids": payload["avatar_ids"],
         "avatar_names": [a.get("name") for a in avatars],
+        "text": payload["prompt"],   # video_assets 的文案列叫 text，前端卡片也读它
         "prompt": payload["prompt"], "resolution": payload["resolution"], "ratio": payload["ratio"],
         "duration": info.get("duration") or payload["duration"],
         "source_video_url": info.get("video_url"), "thumbnail_url": info.get("thumbnail_url"),
