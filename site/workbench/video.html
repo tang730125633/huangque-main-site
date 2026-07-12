@@ -774,6 +774,10 @@
   var motionAvatars=[], selectedMotionAvatarId=null, useNewMotionImage=true, avatarsLoaded=false;
   var currentVideoDraft=null;
   var motionPresets=[];
+  var videoBusyCount=0;
+  var maxActiveXiaoleVideo=3, maxActiveMotion=2, maxActiveTryon=1;
+  var videoSubmitLocks={talking:false,motion:false,cinematic:false,tryon:false,xiaole:false};
+  var videoTaskSyncBound=false;
   var publicFallback=[
     {scope:'public',voice_key:'S_d21F8OR62',display_name:'温柔女声',provider_voice:'S_d21F8OR62',sub:'情感种草 · 柔和自然'},
     {scope:'public',voice_key:'S_l8wE8OR62',display_name:'活力女声',provider_voice:'S_l8wE8OR62',sub:'广告推荐 · 明亮有记忆点'},
@@ -811,6 +815,39 @@
   function withHQTasks(callback){
     if(window.HQTasks){ callback(window.HQTasks); return; }
     window.addEventListener('hq:tasks-ready',function(){ if(window.HQTasks) callback(window.HQTasks); },{once:true});
+  }
+  function bindVideoTaskSync(){
+    if(videoTaskSyncBound) return;
+    withHQTasks(function(tasks){
+      if(videoTaskSyncBound || !tasks || !tasks.onChange) return;
+      tasks.onChange(syncVideoGenerateButtons);
+      videoTaskSyncBound=true;
+      syncVideoGenerateButtons();
+    });
+  }
+  function isActiveVideoTask(job){
+    var st=String(job&&job.status||'').toLowerCase();
+    return st==='queued' || st==='running' || st==='pending' || st==='processing';
+  }
+  function activeVideoTaskCounts(){
+    var counts={talking:0,motion:0,cinematic:0,tryon:0,xiaole:0};
+    var tasks=window.HQTasks;
+    if(!tasks || !tasks.list) return counts;
+    (tasks.list()||[]).forEach(function(job){
+      if(!job || String(job.kind||'')!=='video' || !isActiveVideoTask(job)) return;
+      var m=String(job.mode||'').toLowerCase();
+      if(m==='motion') counts.motion++;
+      else if(m==='cinematic') counts.cinematic++;
+      else if(m==='tryon') counts.tryon++;
+      else if(m==='grok' || m==='micro' || m==='omni') counts.xiaole++;
+      else counts.talking++;
+    });
+    return counts;
+  }
+  function setSubmitLock(kind,on){
+    if(!Object.prototype.hasOwnProperty.call(videoSubmitLocks,kind)) return;
+    videoSubmitLocks[kind]=!!on;
+    syncVideoGenerateButtons();
   }
   function trackVideoJob(id,patch){
     if(id==null||id==='') return;
@@ -1472,6 +1509,7 @@
     var prompt=($('cinePrompt')&&$('cinePrompt').value||'').trim();
     if(!cineSelectedAvatarIds.length){ toast('请至少选择一个形象'); return; }
     if(!prompt){ toast('请填写画面描述，或点一个模板'); return; }
+    setSubmitLock('cinematic',true);
     setBusy(true);
     var first=motionAvatars.find(function(a){return String(a.id)===String(cineSelectedAvatarIds[0]);});
     currentVideoDraft={mode:'cinematic',image_url:first&&first.image_url,text:prompt,resolution:selectedCineResolution,
@@ -1496,14 +1534,16 @@
       body:JSON.stringify(body)
     }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
       .then(function(res){
-        if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
+        if(res.status===401){setSubmitLock('cinematic',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
         setVideoStatus('剧情视频任务已提交，约 6~9 分钟出片...');
         setTimeout(loadVideoHistory,700);
         trackVideoJob(res.data.job_id,{status:'queued',label:'AI 剧情视频',mode:'cinematic',modeLabel:'AI 剧情视频',ratio:selectedCineRatio});
+        setSubmitLock('cinematic',false);
         pollJob(res.data.job_id,0);
       })
       .catch(function(e){
+        setSubmitLock('cinematic',false);
         setBusy(false);
         if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}
         setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');
@@ -1519,13 +1559,52 @@
   }
   function stopVidTick(){ if(_vidTick){ clearInterval(_vidTick); _vidTick=null; } }
   function setBusy(on){
-    ['generateBtn','motionGenerateBtn','tryonGenerateBtn','grokGenerateBtn','microGenerateBtn','omniGenerateBtn'].forEach(function(id){
-      var btn=$(id); if(!btn) return;
-      btn.disabled=on;
-      btn.style.opacity=on?'.72':'1';
-      btn.style.cursor=on?'wait':'pointer';
-    });
-    if(on) startVidTick(); else stopVidTick();
+    videoBusyCount=Math.max(0, videoBusyCount+(on?1:-1));
+    if(videoBusyCount>0) startVidTick(); else stopVidTick();
+  }
+  function applyButtonState(id, enable, title){
+    var btn=$(id); if(!btn) return;
+    btn.disabled=!enable;
+    btn.style.opacity=enable?'1':'.72';
+    btn.style.cursor=enable?'pointer':'not-allowed';
+    btn.title=title||'';
+  }
+  function getTryonHintState(){
+    var hasClothes=!!tryonClothesData, hasBg=!!tryonBackgroundData, hasPrimary=!!tryonPrimaryData();
+    var text, enable=true;
+    if(tryonIsLine2()){
+      // 线路二只吃「人物照片 + 衣服图」，没有换背景；提示别再说「换装视频」
+      if(!hasPrimary){ text='请先上传人物照片'; enable=false; }
+      else if(!hasClothes){ text=hasBg?'线路二不支持背景图，请切到线路一':'请上传衣服图'; enable=false; }
+      else { text='将执行：人物换装（线路二）'; }
+    }else if(!hasPrimary){
+      text='请先上传换装视频'; enable=false;
+    }else if(hasClothes && hasBg){
+      text='将执行：换装+换背景';
+    }else if(hasClothes){
+      text='将执行：只换装';
+    }else if(hasBg){
+      text='将执行：只换背景';
+    }else{
+      text='请至少上传衣服图或背景图'; enable=false;
+    }
+    return {text:text, enable:enable};
+  }
+  function syncVideoGenerateButtons(){
+    var counts=activeVideoTaskCounts();
+    var tryonState=getTryonHintState();
+    var xiaoleCapReached=counts.xiaole>=maxActiveXiaoleVideo;
+    var motionCapReached=counts.motion>=maxActiveMotion;
+    var tryonCapReached=counts.tryon>=maxActiveTryon;
+    applyButtonState('generateBtn', !videoSubmitLocks.talking, videoSubmitLocks.talking?'口播视频提交中，请稍候':'');
+    applyButtonState('motionGenerateBtn', !videoSubmitLocks.motion && !motionCapReached, motionCapReached?('当前动作模仿最多同时排队或生成 '+maxActiveMotion+' 个任务，请等待部分完成后再继续'):(videoSubmitLocks.motion?'动作模仿提交中，请稍候':''));
+    applyButtonState('cineGenerateBtn', !videoSubmitLocks.cinematic, videoSubmitLocks.cinematic?'剧情视频提交中，请稍候':'');
+    applyButtonState('tryonGenerateBtn', !!tryonState.enable && !videoSubmitLocks.tryon && !tryonCapReached, !tryonState.enable?tryonState.text:(tryonCapReached?('当前换装视频最多同时排队或生成 '+maxActiveTryon+' 个任务，请等待任务完成后再继续'):(videoSubmitLocks.tryon?'换装任务提交中，请稍候':'')));
+    var xiaoleEnabled=!videoSubmitLocks.xiaole && !xiaoleCapReached;
+    var xiaoleTitle=xiaoleCapReached?('当前果肉/豆姐/欧米视频最多同时排队或生成 '+maxActiveXiaoleVideo+' 个任务，请等待部分完成后再继续'):(videoSubmitLocks.xiaole?'视频任务提交中，请稍候':'');
+    applyButtonState('grokGenerateBtn', xiaoleEnabled, xiaoleTitle);
+    applyButtonState('microGenerateBtn', xiaoleEnabled, xiaoleTitle);
+    applyButtonState('omniGenerateBtn', xiaoleEnabled, xiaoleTitle);
   }
   function readFileData(file){
     return new Promise(function(resolve,reject){
@@ -1716,11 +1795,16 @@
   function loadTalkingLimits(){
     fetch(fresh('/api/gen/health'),{cache:'no-store'}).then(function(r){return r.ok?r.json():Promise.reject();}).then(function(d){
       var cost=Number(d.video_cost),limit=Number(d.video_batch_max);
+      var xiaoleCap=Number(d.max_user_active_xiaole_video), motionCap=Number(d.max_user_active_motion), tryonCap=Number(d.max_user_active_tryon);
       if(isFinite(cost)&&cost>0) videoCost=Math.round(cost);
       if(isFinite(limit)&&limit>0) videoBatchMax=Math.min(5,Math.round(limit));
+      if(isFinite(xiaoleCap)&&xiaoleCap>0) maxActiveXiaoleVideo=Math.round(xiaoleCap);
+      if(isFinite(motionCap)&&motionCap>0) maxActiveMotion=Math.round(motionCap);
+      if(isFinite(tryonCap)&&tryonCap>0) maxActiveTryon=Math.round(tryonCap);
       var batchBtn=document.querySelector('[data-talking-shape="batch"]');
       if(batchBtn){batchBtn.disabled=videoBatchMax<2;batchBtn.title=videoBatchMax<2?'当前任务上限不支持批量出片':'';}
       renderTalkingBatchImages();
+      syncVideoGenerateButtons();
     }).catch(function(){updateChecklist();});
   }
   function updateMode(next){
@@ -1771,6 +1855,7 @@
     }else{
       updateMode(mode);
     }
+    syncVideoGenerateButtons();
   }
   function updateChecklist(){
     var imageCount=talkingBatch?talkingBatchItems.length:(imageData?1:0);
@@ -1790,6 +1875,7 @@
       ?(imageCount?(videoCost+' 点/条 × '+imageCount+' = 预计 '+(videoCost*imageCount)+' 点'):(videoCost+' 点/条 · 选择形象后显示总计'))
       :('预计消耗 '+videoCost+' 点');
     if(mode==='text' && videoFunction==='talking') $('modeSummary').textContent=talkingBatch?'同一份口播文案将分别生成多条形象视频':'上传人物图，输入文案并选择音色生成口播视频';
+    syncVideoGenerateButtons();
   }
   function stopPreview(){
     if(activePreview){try{activePreview.pause();activePreview.currentTime=0;}catch(e){}}
@@ -2067,31 +2153,11 @@
     if($('cineGenerateBtn')) $('cineGenerateBtn').onclick=submitCinematic;
   })();
   function updateTryonHint(){
-    var hint=$('tryonModeHint'), btn=$('tryonGenerateBtn');
-    var hasClothes=!!tryonClothesData, hasBg=!!tryonBackgroundData, hasPrimary=!!tryonPrimaryData();
-    var text, enable=true;
-    if(tryonIsLine2()){
-      // 线路二只吃「人物照片 + 衣服图」，没有换背景；提示别再说「换装视频」
-      if(!hasPrimary){ text='请先上传人物照片'; enable=false; }
-      else if(!hasClothes){ text='请上传衣服图'; enable=false; }
-      else { text='将执行：人物换装（线路二）'; }
-    }else if(!hasPrimary){
-      text='请先上传换装视频'; enable=false;
-    }else if(hasClothes && hasBg){
-      text='将执行：换装+换背景';
-    }else if(hasClothes){
-      text='将执行：只换装';
-    }else if(hasBg){
-      text='将执行：只换背景';
-    }else{
-      text='请至少上传衣服图或背景图'; enable=false;
-    }
-    if(hint) hint.textContent=text;
-    if(btn){
-      btn.disabled=!enable;
-      btn.style.opacity=enable?'1':'.55';
-      btn.style.cursor=enable?'pointer':'not-allowed';
-    }
+    var hint=$('tryonModeHint');
+    var state=getTryonHintState();
+    if(hint) hint.textContent=state.text;
+    syncVideoGenerateButtons();
+    return state;
   }
   function bindTryonFile(input, kind){
     input.onchange=function(){
@@ -2238,6 +2304,7 @@
     if(useNewMotionImage && !motionImageData){ toast('请先上传人物形象图片'); return; }
     if(!useNewMotionImage && !pickedAvatar){ toast('请选择一个我的形象'); return; }
     if(!motionReferenceVideoData){ toast('请先选择或上传参考片段'); return; }
+    setSubmitLock('motion',true);
     setBusy(true);
     var motionPreviewImage=useNewMotionImage?motionImageData:(pickedAvatar&&pickedAvatar.image_url);
     currentVideoDraft={mode:'motion',image_url:motionPreviewImage,text:'动作模仿视频',resolution:selectedMotionResolution,ratio:selectedMotionRatio,motion:'medium',status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
@@ -2264,14 +2331,16 @@
       body:JSON.stringify(body)
     }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
       .then(function(res){
-        if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
+        if(res.status===401){setSubmitLock('motion',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
         setVideoStatus('影视级模仿任务已提交...');
         setTimeout(loadVideoHistory,700);
         trackVideoJob(res.data.job_id,{status:'queued',label:'影视级模仿',mode:'motion',modeLabel:'影视级模仿',ratio:selectedMotionRatio});
+        setSubmitLock('motion',false);
         pollJob(res.data.job_id,0);
       })
       .catch(function(e){
+        setSubmitLock('motion',false);
         setBusy(false);
         if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}
         setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');
@@ -2285,6 +2354,7 @@
       if(!tryonVideoData){ toast('请先上传换装视频'); return; }
       if(!tryonClothesData && !tryonBackgroundData){ toast('请至少上传衣服图或背景图'); return; }
     }
+    setSubmitLock('tryon',true);
     setBusy(true);
     currentVideoDraft={mode:'tryon',text:'换装换背景视频',ratio:'9:16',motion:'medium',duration:selectedTryonSeconds,status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
     renderVideoHistory([currentVideoDraft]);
@@ -2308,14 +2378,16 @@
       })
     }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
       .then(function(res){
-        if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
+        if(res.status===401){setSubmitLock('tryon',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
         setVideoStatus('换装换背景任务已提交...');
         setTimeout(loadVideoHistory,700);
         trackVideoJob(res.data.job_id,{status:'queued',label:'换装换背景视频',mode:'tryon',modeLabel:'换装换背景',ratio:'9:16'});
+        setSubmitLock('tryon',false);
         pollJob(res.data.job_id,0);
       })
       .catch(function(e){
+        setSubmitLock('tryon',false);
         setBusy(false);
         if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}
         setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');
@@ -2332,6 +2404,7 @@
     };
   }
   function submitVideoBatch(text){
+    setSubmitLock('talking',true);
     setBusy(true); currentVideoDraft=null;
     var drafts=talkingBatchItems.map(function(item){return {mode:'text',image_url:item.preview||'',text:text,resolution:selectedResolution,ratio:selectedRatio,motion:selectedMotion,status:'processing',phase:'queued',batch_label:item.label,created_at:Math.floor(Date.now()/1000)};});
     renderVideoHistory(drafts);
@@ -2342,19 +2415,20 @@
     fetch('/api/gen/video/batch',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body)})
       .then(function(r){return r.json().catch(function(){return {};}).then(function(d){return {status:r.status,data:d};});})
       .then(function(res){
-        if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
+        if(res.status===401){setSubmitLock('talking',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
         if(res.status<200||res.status>=300||!Array.isArray(res.data.job_ids)||!res.data.job_ids.length) throw new Error(res.data.detail||'批量任务提交失败');
         var jobs=Array.isArray(res.data.jobs)&&res.data.jobs.length?res.data.jobs:res.data.job_ids.map(function(id,i){return {job_id:id,label:talkingBatchItems[i]&&talkingBatchItems[i].label,index:i+1};});
         jobs.forEach(function(job){
           trackVideoJob(job.job_id,{status:'queued',label:'批量口播 · '+(job.label||('形象 '+job.index)),mode:'text',modeLabel:'数字人口播',ratio:selectedRatio,batchId:res.data.batch_id,batchSize:jobs.length,batchIndex:job.index});
         });
+        setSubmitLock('talking',false);
         setBusy(false);
         setVideoStatus('已提交 '+jobs.length+' 条视频任务，共消耗 '+res.data.cost+' 点');
         toast('批量任务已受理');
         setTimeout(loadVideoHistory,500);
         resumeTrackedVideoTask(jobs[0].job_id);
       })
-      .catch(function(e){setBusy(false);loadVideoHistory();setVideoStatus(e.message||'批量任务提交失败');toast(e.message||'批量任务提交失败');});
+      .catch(function(e){setSubmitLock('talking',false);setBusy(false);loadVideoHistory();setVideoStatus(e.message||'批量任务提交失败');toast(e.message||'批量任务提交失败');});
   }
   function submitVideo(){
     if(talkingBatch){
@@ -2367,6 +2441,7 @@
     if(mode==='audio' && assetSelected && !selectedAssetAudio){ toast('请选择一条配音资产'); return; }
     if(mode==='audio' && !assetSelected && !audioData){ toast('请先上传口播音频'); return; }
     if(talkingBatch){submitVideoBatch(text);return;}
+    setSubmitLock('talking',true);
     setBusy(true);
     var audioReadyPromise=assetSelected?fetchAssetAudioData(selectedAssetAudio):Promise.resolve(audioData);
     audioReadyPromise.then(function(){
@@ -2379,19 +2454,21 @@
       body:JSON.stringify(talkingPayload({image_data:imageData}))
     }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
       .then(function(res){
-        if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
+        if(res.status===401){setSubmitLock('talking',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
         setVideoStatus('视频任务已提交...');
         setTimeout(loadVideoHistory,700);
         trackVideoJob(res.data.job_id,{status:'queued',label:mode==='audio'?'数字人口播（音频）':'数字人口播（文案）',mode:mode,modeLabel:'数字人口播',ratio:selectedRatio});
+        setSubmitLock('talking',false);
         pollJob(res.data.job_id,0);
       })
       .catch(function(e){
+        setSubmitLock('talking',false);
         setBusy(false);
         if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}
         setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');
       });
-    }).catch(function(e){setBusy(false);if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}toast(e.message||'配音资产读取失败');});
+    }).catch(function(e){setSubmitLock('talking',false);setBusy(false);if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}toast(e.message||'配音资产读取失败');});
   };
   // 果肉(Grok)/豆姐(Seedance) 统一视频生成 → /api/gen/xiaole_video
   function submitXiaole(channel){
@@ -2401,15 +2478,16 @@
     var label=({grok:'果肉视频',micro:'豆姐视频',omni:'欧米视频'})[channel]||channel;
     var prompt=((promptEl||{}).value||'').trim();
     if(!prompt){ toast('请输入视频提示词'); if(promptEl) promptEl.focus(); return; }
-    setBusy(true);
-    if(statusEl) statusEl.textContent='正在提交'+label+'任务...';
     var editing=channel==='grok' && grokOperation==='edit';
-    if(editing && !grokEditVideoData){setBusy(false);toast('请先上传不超过 8.7 秒的 MP4 参考视频');return;}
+    if(editing && !grokEditVideoData){toast('请先上传不超过 8.7 秒的 MP4 参考视频');return;}
     var ratio=channel==='grok'?(editing?null:selectedGrokRatio):'9:16';
     var _refArr=channel==='grok'?grokRefData:(channel==='micro'?microRefData:(channel==='omni'?omniRefData:null));
     if(channel==='grok' && !editing && selectedGrokModel==='grok-imagine-video-1.5' && !(_refArr&&_refArr.length)){
-      setBusy(false); toast('Grok Video 1.5 仅支持图生视频，请先上传参考图'); return;
+      toast('Grok Video 1.5 仅支持图生视频，请先上传参考图'); return;
     }
+    setSubmitLock('xiaole',true);
+    setBusy(true);
+    if(statusEl) statusEl.textContent='正在提交'+label+'任务...';
     var fixedDuration=channel==='grok'?(editing?grokEditDuration:selectedGrokDuration):((channel==='omni'||(_refArr&&_refArr.length))?10:null);
     currentVideoDraft={mode:channel,text:prompt,ratio:ratio,motion:label,duration:fixedDuration,
       resolution:channel==='grok'?selectedGrokResolution:null,model:channel==='grok'?selectedGrokModel:null,
@@ -2429,14 +2507,16 @@
       body:JSON.stringify(xlPayload)
     }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
       .then(function(res){
-        if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
+        if(res.status===401){setSubmitLock('xiaole',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
         if(statusEl) statusEl.textContent=label+'任务已提交'+(res.data.cost!=null?' · '+res.data.cost+'点':'')+'，生成中...';
         setTimeout(loadVideoHistory,700);
         trackVideoJob(res.data.job_id,{status:'queued',label:label,mode:channel,modeLabel:label,ratio:ratio});
+        setSubmitLock('xiaole',false);
         pollJob(res.data.job_id,0);
       })
       .catch(function(e){
+        setSubmitLock('xiaole',false);
         setBusy(false);
         if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}
         if(statusEl) statusEl.textContent=e.message||'提交失败';
@@ -2550,9 +2630,11 @@
   setupXiaoleRefPanel('micro', microRefData, 4);  // seedance-2.0-fast 参考图上限4
   setupXiaoleRefPanel('omni', omniRefData, 5);    // omni-fast 参考图上限5
   if($('refreshAvatarBtn')) $('refreshAvatarBtn').onclick=function(){loadMotionAvatars(true);};
+  bindVideoTaskSync();
   $('scriptText').dispatchEvent(new Event('input'));
   loadTalkingLimits();
   updateFunction('talking');
+  syncVideoGenerateButtons();
   // F7 联动：资产页视频「重生成」跳转过来时，读 localStorage 预填(一次性)
   var _prefillVoice='';
   function prefillMode(d){
