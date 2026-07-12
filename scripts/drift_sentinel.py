@@ -52,6 +52,8 @@ BACKEND_RUNTIME = {
     'server/imggen_api.py': '/home/ubuntu/content-api/imggen_api.py',
     'server/leadgen_api.py': '/home/ubuntu/content-api/leadgen_api.py',
     'server/tikhub.py': '/home/ubuntu/content-api/tikhub.py',
+    # func_names：content 和 admin 【两个服务】都 import 它。漏部署 = 两个服务一起起不来。
+    'server/func_names.py': '/home/ubuntu/content-api/func_names.py',
     'server/dl_service.py': '/home/ubuntu/dl-service/dl_service.py',
     'server/admin_api.py': '/home/ubuntu/content-api/admin_api.py',
     'scripts/drift_sentinel.py': '/home/ubuntu/hq-drift/drift_sentinel.py',

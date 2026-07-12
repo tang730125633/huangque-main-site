@@ -168,49 +168,14 @@ def _job_payload(raw):
         return {}
     return data if isinstance(data, dict) else {}
 
-def _history_func_name(kind, payload):
-    kind = kind or "unknown"
-    if kind == "image":
-        model = str(payload.get("model") or "").strip().lower()
-        provider = str(payload.get("provider") or "").strip().lower()
-        if model == "nb2":
-            return "作图 · Nano Banana 2"
-        if model == "pro":
-            return "作图 · Nano Banana Pro"
-        if provider == "openai":
-            return "作图 · GPT Image"
-        if provider == "seedream":
-            return "作图 · Seedream" + (" Pro" if str(payload.get("variant") or "").lower() == "pro" else "")
-        if provider == "xiaole":
-            return "作图 · 果肉生图"
-        if provider.startswith("zelong"):
-            return "作图 · 泽龙"
-        return "作图"
-    if kind == "video":
-        mode = str(payload.get("mode") or "").strip().lower()
-        if mode == "text":
-            return "视频 · 文案口播"
-        if mode == "audio":
-            return "视频 · 音频口播"
-        if mode == "motion":
-            return "视频 · 动作模仿"
-        return "视频生成"
-    if kind == "collect":
-        if str(payload.get("keyword") or "").strip():
-            return "内容采集 · 关键词搜索"
-        if str(payload.get("url") or "").strip():
-            return "内容采集 · 贴链接"
-        return "内容采集"
-    names = {
-        "tryon": "换装换背景",
-        "xiaole_video": "果肉/微艺视频",
-        "audio": "配音生成",
-        "leads": "获客分析",
-        "leadgen": "获客分析",
-        "copy": "文案生成",
-        "dl": "无水印下载",
-    }
-    return names.get(kind, kind)
+# 功能名映射抽到了 server/func_names.py（唯一事实来源，和运营后台的日志/统计共用一份）。
+# 原来这里和 admin_api.call_func_name 是两份拷贝，已经各自漂移 —— 见 func_names 的模块注释。
+try:
+    import func_names as _func_names     # 生产：content_api.py 直接跑，server/ 就是 sys.path[0]
+except ModuleNotFoundError:              # 测试：以包的形式 import server.content_domains.points
+    from .. import func_names as _func_names
+
+_history_func_name = _func_names.func_name
 
 def _history_status_label(status, refunded):
     status = str(status or "").lower()

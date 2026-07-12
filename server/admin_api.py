@@ -13,6 +13,11 @@ import json
 import os
 import pathlib
 import re
+
+try:
+    import func_names                    # 生产：admin_api.py 直接跑，同目录下就是 func_names.py
+except ModuleNotFoundError:              # 测试：以包的形式 import server.admin_api，server/ 不在 sys.path 上
+    from . import func_names
 import sqlite3
 import time
 import urllib.error
@@ -517,36 +522,9 @@ QUERY_SECRET_RE = re.compile(
 NOISE_PATH_RE = re.compile(r"^/api/(claim\b|admin/)")
 
 JOB_PATH_RE = re.compile(r"^/api/gen/job/(\d+)")
-# 路径 → 功能名（前缀匹配，顺序即优先级）；job/ 路径另走任务库反查真实功能+用户
-PATH_FUNCS = [
-    ("/api/gen/file/", "取结果文件"),
-    ("/api/gen/image", "作图 · 提交"),
-    ("/api/gen/banana", "作图 · 提交"),
-    ("/api/gen/video", "视频 · 提交"),
-    ("/api/gen/audio", "配音 · 提交"),
-    ("/api/gen/tryon", "换装换背景 · 提交"),
-    ("/api/gen/copy", "文案 · 提交"),
-    ("/api/gen/collect", "内容采集 · 提交"),
-    ("/api/gen/dl", "无水印下载"),
-    ("/api/gen/history", "历史记录"),
-    ("/api/gen/leadgen", "获客分析"),
-    ("/api/auth/login", "登录"),
-    ("/api/auth/logout", "退出登录"),
-    ("/api/auth/me", "登录态校验"),
-    ("/api/auth/", "账号服务"),
-    ("/api/admin/", "运营后台"),
-    ("/api/claim", "采集 worker 轮询"),
-    ("/api/keywords", "关键词库"),
-]
-
-
-def _path_func(path):
-    if "/health" in path:
-        return "健康检查"
-    for prefix, name in PATH_FUNCS:
-        if path.startswith(prefix):
-            return name
-    return ""
+# 路径 → 功能名、任务 → 功能名：都在 func_names 里（唯一事实来源，运营后台和用户消费明细共用）。
+# job/ 路径另走任务库反查真实功能+用户。
+_path_func = func_names.path_func
 
 
 def _job_users(job_ids):
@@ -1348,53 +1326,10 @@ def _job_payload(raw):
         return dict(_PAYLOAD_FIELD_RE.findall(raw or ""))
 
 
-def _line_label(payload, l1, l2):
-    """按 payload.line 区分线路一/线路二（默认线路一）。line 字段在 payload 最前、
-    base64 之前，json 截断走正则兜底也能捞到（_PAYLOAD_FIELD_RE 已含 line）。"""
-    return l2 if str(payload.get("line") or "1").strip() == "2" else l1
-
-
-def call_func_name(kind, payload):
-    kind = kind or "unknown"
-    if kind == "image":
-        model = str(payload.get("model") or "").strip().lower()
-        provider = str(payload.get("provider") or "").strip().lower()
-        if model == "nb2":
-            return "作图 · Nano Banana 2"
-        if model == "pro":
-            return "作图 · Nano Banana Pro"
-        if provider == "openai":
-            return "作图 · GPT Image"
-        if provider.startswith("zelong"):
-            return "作图 · 泽龙"
-        return "作图"
-    if kind == "video":
-        mode = str(payload.get("mode") or "").strip().lower()
-        if mode == "text":
-            return "视频 · 文案口播"
-        if mode == "audio":
-            return "视频 · 音频口播"
-        if mode == "motion":
-            return "视频 · 动作模仿 · " + _line_label(payload, "线路一(HeyGen)", "线路二(WaveSpeed)")
-        return "视频生成"
-    if kind == "collect":
-        if str(payload.get("keyword") or "").strip():
-            return "内容采集 · 关键词搜索"
-        if str(payload.get("url") or "").strip():
-            return "内容采集 · 贴链接"
-        return "内容采集"
-    if kind == "tryon":
-        return "换装换背景 · " + _line_label(payload, "线路一(RunningHub)", "线路二(WaveSpeed)")
-    names = {
-        "tryon": "换装换背景",
-        "audio": "配音生成",
-        "leads": "获客分析",
-        "leadgen": "获客分析",
-        "copy": "文案生成",
-        "dl": "无水印下载",
-        "xiaole_video": "视频 · 小乐",
-    }
-    return names.get(kind, kind)
+# 功能名映射已抽到 func_names —— 原来这里有一份拷贝，和 points._history_func_name 各自漂移了：
+# 动作模仿被贴上早已删除的「线路一(HeyGen)」（它现在只走 WaveSpeed），Seedream/果肉生图分不出
+# 引擎，果肉/豆姐/欧米三个渠道混成一个「视频 · 小乐」，cinematic/avatar 直接原样吐英文 kind。
+call_func_name = func_names.func_name
 
 
 def call_logs(days=7, limit=200):
