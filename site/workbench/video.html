@@ -51,7 +51,14 @@
   .motion-preset-card span{display:block;padding:9px 10px;font-size:12.5px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .motion-preset-card.on:after{content:"已选择";position:absolute;right:8px;top:8px;padding:3px 7px;border-radius:7px;background:rgba(231,178,76,.92);color:#1b1205;font-size:10.5px;font-weight:900}
   .avatar-panel{margin-top:16px;border:1px solid rgba(148,164,187,.12);border-radius:14px;background:rgba(7,11,19,.22);padding:14px}
-  .avatar-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
+  /* 形象越建越多，选择框就越拉越长 —— 限制成最多两排，多的滚动。
+     max-height 由 JS 量出来（见 limitAvatarGridRows）：卡片高度 = 展示框 + 文字区，
+     而展示框的宽度随网格列宽走，所以行高会随窗口宽度变，写死 px 一缩放就切在半张卡上。
+     padding-right 给滚动条留位，否则它会压在最右一列的卡片上。 */
+  .avatar-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px;overflow-y:auto;padding-right:4px}
+  .avatar-grid::-webkit-scrollbar{width:7px}
+  .avatar-grid::-webkit-scrollbar-thumb{background:rgba(148,164,187,.18);border-radius:99px}
+  .avatar-grid::-webkit-scrollbar-track{background:rgba(7,11,19,.18);border-radius:99px}
   /* 卡片不写死像素高：展示框自己是 16:9（见 .avatar-thumb），宽度随网格列宽变，高度跟着算出来。
      卡片高度 = 16:9 的展示框 + 文字区，同一行的卡片列宽相同 → 高度天然一致，
      再由 grid 默认的 align-items:stretch 把「创建新形象」那张空卡拉到同高。
@@ -917,7 +924,7 @@
       if(resumedVideoTaskId===id){
         if(currentVideoDraft){
           currentVideoDraft.job_id=id;
-          renderVideoHistory([currentVideoDraft]);
+          renderVideoDrafts([currentVideoDraft]);
         }
         focusVideoJobCard(id);
         return;
@@ -933,7 +940,7 @@
         phase:task.phase||'queued',
         created_at:Math.floor((task.createdAt||Date.now())/1000)
       };
-      renderVideoHistory([currentVideoDraft]);
+      renderVideoDrafts([currentVideoDraft]);
       focusVideoJobCard(id);
       setVideoStatus('正在恢复视频任务 #'+id+'...');
       pollJob(id,0);
@@ -1188,6 +1195,29 @@
     if(isNaN(d.getTime())) return '';
     return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
   }
+  // 生成记录 = 【服务端的历史】+【本地的在飞草稿】。两层分开存，渲染时才合并。
+  //
+  // 原来每条提交路径都是 renderVideoDrafts([currentVideoDraft]) —— 把整个列表直接换成
+  // 一条草稿。所以一开始生成，历史记录就全没了，用户看到的只剩在生成的那条。
+  // 草稿是本地的、还没落库的东西，它没资格覆盖服务端的历史。
+  var videoHistoryItems=[];   // 服务端 /video/assets 拉回来的历史
+  var videoDrafts=[];         // 本地在飞草稿（批量出片时有多条）
+
+  function renderVideoOutput(){
+    // 草稿一拿到 job_id，服务端历史里也会出现同一条 —— 去重，以草稿为准（它带着实时进度）
+    var drafted={};
+    videoDrafts.forEach(function(d){ if(d && d.job_id!=null && d.job_id!=='') drafted[String(d.job_id)]=1; });
+    var rest=videoHistoryItems.filter(function(x){
+      var jid=(x && x.job_id!=null) ? x.job_id : (x && x.id);
+      return !(jid!=null && drafted[String(jid)]);
+    });
+    renderVideoHistory(videoDrafts.concat(rest));
+  }
+  function renderVideoDrafts(list){
+    videoDrafts=(list||[]).filter(Boolean);
+    renderVideoOutput();
+  }
+
   function renderVideoHistory(items){
     var box=$('outputHistory'); if(!box) return;
     box.innerHTML='';
@@ -1264,7 +1294,10 @@
       currentVideoDraft.job_id=(job&&job.id!=null)?String(job.id):(currentVideoDraft.job_id||resumedVideoTaskId||'');
       currentVideoDraft.phase=job.phase||currentVideoDraft.phase;
       currentVideoDraft.status=job.status||currentVideoDraft.status||'processing';
-      renderVideoHistory([currentVideoDraft]);
+      // 服务端的 created_at 是计时的权威锚点：刷新后恢复任务时，本地 tracker 里的时间可能
+      // 早就丢了（甚至是恢复时 Date.now() 现编的），拿它计时就会从头再数一遍。
+      if(job && Number(job.created_at)>0) currentVideoDraft.created_at=Number(job.created_at);
+      renderVideoDrafts([currentVideoDraft]);
     }
     setVideoStatus(info.label+(info.eta?' · '+info.eta:''));
   }
@@ -1284,11 +1317,15 @@
     box.appendChild(state);
   }
   function loadVideoHistory(){
-    renderVideoHistoryState('正在读取生成记录...',false);
+    // 有在飞草稿时不要把「正在读取…」糊上去 —— 那会让用户眼睁睁看着自己刚提交的卡片消失一下
+    if(!videoDrafts.length) renderVideoHistoryState('正在读取生成记录...',false);
     fetch(fresh('/api/gen/video/assets?limit=30'),{cache:'no-store',headers:{Authorization:'Bearer '+token,'Cache-Control':'no-cache'}})
       .then(function(r){return r.ok?r.json():Promise.reject();})
-      .then(function(d){renderVideoHistory(d.items||[]);})
-      .catch(function(){renderVideoHistoryState('生成记录加载失败',true);});
+      .then(function(d){ videoHistoryItems=d.items||[]; renderVideoOutput(); })
+      .catch(function(){
+        if(videoDrafts.length) renderVideoOutput();   // 历史拉不动，至少别把在飞的那条也弄没了
+        else renderVideoHistoryState('生成记录加载失败',true);
+      });
   }
   function selectMotionAvatar(id){
     selectedMotionAvatarId=id||null;
@@ -1297,6 +1334,29 @@
     var picked=motionAvatars.find(function(a){return String(a.id)===String(id);});
     renderMotionAvatars();
   }
+  // 最多显示两排形象，再多就滚动。行高必须【量】出来，不能写死：
+  // 卡片高度 = 展示框（宽度随网格列宽变）+ 文字区，窗口一缩放它就变了。
+  var AVATAR_GRID_ROWS=2;
+  function limitAvatarGridRows(grid){
+    if(!grid) return;
+    var card=grid.querySelector('.avatar-card');
+    if(!card){ grid.style.maxHeight=''; return; }   // 空态（「还没有形象」）不该被截断
+    var h=card.getBoundingClientRect().height;
+    if(!h) return;                                   // 面板还是 hidden 的，量不到；等它显示了再量
+    var gap=parseFloat(getComputedStyle(grid).rowGap||'')||10;
+    // +2px：子像素取整有时会把第二排切掉一线，看起来像「有第三排但只露一条边」
+    grid.style.maxHeight=(h*AVATAR_GRID_ROWS + gap*(AVATAR_GRID_ROWS-1) + 2)+'px';
+  }
+  function limitAllAvatarGrids(){
+    ['motionAvatarGrid','cineAvatarGrid'].forEach(function(id){ limitAvatarGridRows($(id)); });
+  }
+  // 窗口宽度一变，列宽变 → 卡片高度变 → 两排的高度也得重算
+  var _avatarGridResize=null;
+  window.addEventListener('resize',function(){
+    clearTimeout(_avatarGridResize);
+    _avatarGridResize=setTimeout(limitAllAvatarGrids,120);
+  });
+
   function renderMotionAvatars(){
     var grid=$('motionAvatarGrid'); if(!grid) return;
     grid.innerHTML='';
@@ -1348,6 +1408,7 @@
       };
       grid.appendChild(card);
     });
+    limitAvatarGridRows(grid);   // 最多两排，多的滚动
   }
   function loadMotionAvatars(force){
     if(avatarsLoaded && !force){renderMotionAvatars();renderTalkingBatchImages();return;}
@@ -1398,7 +1459,8 @@
       card.onclick=function(){ toggleCineAvatar(a.id); };
       grid.appendChild(card);
     });
-    syncCineSelection();   // 选中态单独刷，不重建 DOM
+    syncCineSelection();         // 选中态单独刷，不重建 DOM
+    limitAvatarGridRows(grid);   // 最多两排，多的滚动
   }
 
   // 选中态只改 class 和序号徽标 —— 【绝不重建 DOM】。
@@ -1645,8 +1707,8 @@
     var draftText=cfg.fixed ? cfg.label : prompt;
     currentVideoDraft={mode:'cinematic',image_url:first&&first.image_url,text:draftText,resolution:selectedCineResolution,
                        ratio:selectedCineRatio,status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
-    renderVideoHistory([currentVideoDraft]);
-    setVideoStatus('正在提交'+cfg.label+'任务...');
+    renderVideoDrafts([currentVideoDraft]);       // #609：在飞草稿分层，别被服务端历史顶掉
+    setVideoStatus('正在提交'+cfg.label+'任务...'); // #601：按玩法显示标签（动作模仿/双人/开放式）
     var body={
       cine_mode:cineMode,
       avatar_ids:cineSelectedAvatarIds.map(function(x){return parseInt(x,10);}),
@@ -1679,16 +1741,26 @@
       .catch(function(e){
         setSubmitLock('cinematic',false);
         setBusy(false);
-        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}
+        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoDrafts([currentVideoDraft]);}
         setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');
       });
   }
   var _vidTick=null, _vidStart=0;
   function _fmtUsed(s){ s=Math.max(0,Math.round(s)); return s<60?('已用 '+s+' 秒'):('已用 '+Math.floor(s/60)+' 分 '+(s%60)+' 秒'); }
-  function startVidTick(){ _vidStart=Date.now(); if(_vidTick) return;
+  // 计时锚点 = 任务的【创建时间】，不是「本次开始轮询的时刻」。
+  // 原来是 _vidStart=Date.now()，刷新一次页面就从 0 重新数 —— 一条已经跑了 6 分钟的任务，
+  // 刷新后显示「已用 3 秒」。created_at 由服务端给（/api/gen/job/<id> 一直在返回，只是没人读），
+  // 它跨刷新、跨设备都是同一个值。
+  function _vidAnchor(){
+    var d=videoDrafts[0], t=d && Number(d.created_at);
+    return (isFinite(t) && t>0) ? t*1000 : _vidStart;
+  }
+  function startVidTick(){
+    _vidStart=Date.now();   // 兜底：草稿上还没有 created_at 时（提交请求还没回来）用它
+    if(_vidTick) return;
     _vidTick=setInterval(function(){
       var eta=document.querySelector('#outputHistory .job-progress-eta');
-      if(eta) eta.textContent=_fmtUsed((Date.now()-_vidStart)/1000);  // 真实已用时间，取代写死的假 ETA
+      if(eta) eta.textContent=_fmtUsed((Date.now()-_vidAnchor())/1000);  // 真实已用时间，取代写死的假 ETA
     },1000);
   }
   function stopVidTick(){ if(_vidTick){ clearInterval(_vidTick); _vidTick=null; } }
@@ -1972,6 +2044,9 @@
     if($('grokPanel')) $('grokPanel').classList.toggle('hidden',videoFunction!=='grok');
     if($('microPanel')) $('microPanel').classList.toggle('hidden',videoFunction!=='micro');
     if($('omniPanel')) $('omniPanel').classList.toggle('hidden',videoFunction!=='omni');
+    // 面板 hidden 的时候量不到卡片高度（getBoundingClientRect 全是 0），刚显示出来要重量一次，
+    // 否则那个面板里的形象网格是不受限的 —— 形象一多就又拉长了
+    limitAllAvatarGrids();
     if(videoFunction==='motion'){
       $('modeSummary').textContent='上传人物形象和参考片段，把自己「演」成同款大片';
       if($('modeName')) $('modeName').textContent='动作模仿';
@@ -2405,7 +2480,11 @@
           resumedVideoTaskId='';
           setBusy(false);
           currentVideoDraft=null;
-          renderVideoHistory([Object.assign({created_at:Math.floor(Date.now()/1000),job_id:String(id)}, result)]);
+          // 成品先插到历史最前面（别等 800ms 后那次拉取，中间会闪一下），草稿同时收掉。
+          // 800ms 后的 loadVideoHistory 会用服务端的版本覆盖它 —— 那才是权威的。
+          videoHistoryItems.unshift(Object.assign(
+            {created_at:Math.floor(Date.now()/1000), job_id:String(id)}, result));
+          renderVideoDrafts([]);
           setTimeout(loadVideoHistory,800);
           if(result.mode==='motion') setTimeout(function(){loadMotionAvatars(true);},900);
           setVideoStatus('任务已创建，已保存到视频资产');
@@ -2436,7 +2515,7 @@
         if(currentVideoDraft){
           currentVideoDraft.job_id=String(id);
           currentVideoDraft.status=e&&e.jobTerminal?'error':'processing';
-          renderVideoHistory([currentVideoDraft]);
+          renderVideoDrafts([currentVideoDraft]);
         }
         setVideoStatus(e&&e.jobTerminal?(e.message||'生成失败'):'连接中断，任务仍在后台生成，可点侧栏任务继续');
         toast(e&&e.jobTerminal?(e.message||'生成失败'):'连接中断，任务仍在后台生成');
@@ -2452,7 +2531,7 @@
     setBusy(true);
     var motionPreviewImage=useNewMotionImage?motionImageData:(pickedAvatar&&pickedAvatar.image_url);
     currentVideoDraft={mode:'motion',image_url:motionPreviewImage,text:'动作模仿视频',resolution:selectedMotionResolution,ratio:selectedMotionRatio,motion:'medium',status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
-    renderVideoHistory([currentVideoDraft]);
+    renderVideoDrafts([currentVideoDraft]);
     setVideoStatus('正在提交动作模仿任务...');
     // 不再有 line：动作模仿已全量走 WaveSpeed，原线路一(HeyGen)的能力搬进了「电影化身」
     var body={
@@ -2486,7 +2565,7 @@
       .catch(function(e){
         setSubmitLock('motion',false);
         setBusy(false);
-        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}
+        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoDrafts([currentVideoDraft]);}
         setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');
       });
   }
@@ -2501,7 +2580,7 @@
     setSubmitLock('tryon',true);
     setBusy(true);
     currentVideoDraft={mode:'tryon',text:'换装换背景视频',ratio:'9:16',motion:'medium',duration:selectedTryonSeconds,status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
-    renderVideoHistory([currentVideoDraft]);
+    renderVideoDrafts([currentVideoDraft]);
     setVideoStatus('正在提交换装换背景任务...');
     fetch('/api/gen/tryon',{
       method:'POST',
@@ -2533,7 +2612,7 @@
       .catch(function(e){
         setSubmitLock('tryon',false);
         setBusy(false);
-        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}
+        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoDrafts([currentVideoDraft]);}
         setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');
       });
   }
@@ -2551,7 +2630,7 @@
     setSubmitLock('talking',true);
     setBusy(true); currentVideoDraft=null;
     var drafts=talkingBatchItems.map(function(item){return {mode:'text',image_url:item.preview||'',text:text,resolution:selectedResolution,ratio:selectedRatio,motion:selectedMotion,status:'processing',phase:'queued',batch_label:item.label,created_at:Math.floor(Date.now()/1000)};});
-    renderVideoHistory(drafts);
+    renderVideoDrafts(drafts);
     setVideoStatus('正在提交 '+talkingBatchItems.length+' 条批量视频任务...');
     var body=talkingPayload({});
     delete body.image_data; delete body.avatar_id;
@@ -2590,7 +2669,7 @@
     var audioReadyPromise=assetSelected?fetchAssetAudioData(selectedAssetAudio):Promise.resolve(audioData);
     audioReadyPromise.then(function(){
     currentVideoDraft={mode:mode,image_url:imageData,text:text||'视频生成记录',resolution:selectedResolution,ratio:selectedRatio,motion:selectedMotion,status:'processing',created_at:Math.floor(Date.now()/1000)};
-    renderVideoHistory([currentVideoDraft]);
+    renderVideoDrafts([currentVideoDraft]);
     setVideoStatus('正在提交视频任务...');
     fetch('/api/gen/video',{
       method:'POST',
@@ -2609,10 +2688,10 @@
       .catch(function(e){
         setSubmitLock('talking',false);
         setBusy(false);
-        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}
+        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoDrafts([currentVideoDraft]);}
         setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');
       });
-    }).catch(function(e){setSubmitLock('talking',false);setBusy(false);if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}toast(e.message||'配音资产读取失败');});
+    }).catch(function(e){setSubmitLock('talking',false);setBusy(false);if(currentVideoDraft){currentVideoDraft.status='error';renderVideoDrafts([currentVideoDraft]);}toast(e.message||'配音资产读取失败');});
   };
   // 果肉(Grok)/豆姐(Seedance) 统一视频生成 → /api/gen/xiaole_video
   function submitXiaole(channel){
@@ -2636,7 +2715,7 @@
     currentVideoDraft={mode:channel,text:prompt,ratio:ratio,motion:label,duration:fixedDuration,
       resolution:channel==='grok'?selectedGrokResolution:null,model:channel==='grok'?selectedGrokModel:null,
       status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
-    renderVideoHistory([currentVideoDraft]);
+    renderVideoDrafts([currentVideoDraft]);
     var xlPayload={channel:channel,prompt:prompt};
     if(channel==='grok'){
       xlPayload.operation=grokOperation;
@@ -2662,7 +2741,7 @@
       .catch(function(e){
         setSubmitLock('xiaole',false);
         setBusy(false);
-        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}
+        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoDrafts([currentVideoDraft]);}
         if(statusEl) statusEl.textContent=e.message||'提交失败';
         toast(e.message||'提交失败');
       });
