@@ -119,9 +119,12 @@ class DispatchPathTests(unittest.TestCase):
         （锚点不能用 `if line == "2":`——换装那边也有一处同样的字样，会先匹配到。）
         """
         shrink_at = self.src.index("_shrink_motion_reference(reference_video_file)")
-        for callee in ("wavespeed.generate_motion(", "generate_heygen_motion_video(image_file"):
-            self.assertLess(shrink_at, self.src.index(callee),
-                            "压缩晚于 %s → 这条路拿到的还是原片" % callee)
+        self.assertLess(shrink_at, self.src.index("wavespeed.generate_motion("),
+                        "压缩晚于 WaveSpeed 的调用 → 动作模仿拿到的还是原片")
+
+    def test_cinematic_also_shrinks_before_uploading_to_heygen(self):
+        """剧情视频走 HeyGen，必须把字节推过隧道 —— 它才是最需要压缩的那条路。"""
+        self.assertIn("_shrink_motion_reference(", self.src.split("def gen_cinematic")[1])
 
     def test_heygen_path_does_not_shrink_twice(self):
         # 分发前已经压过，HeyGen 上传处不该再压一遍（白烧一次 ffmpeg）

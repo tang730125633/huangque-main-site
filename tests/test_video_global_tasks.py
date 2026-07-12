@@ -84,8 +84,10 @@ class GlobalTaskStoreTests(unittest.TestCase):
 
 class VideoTaskIntegrationTests(unittest.TestCase):
     def test_all_video_submit_paths_register_the_returned_job(self):
-        self.assertEqual(VIDEO_HTML.count("trackVideoJob(res.data.job_id"), 4)
-        for label in ("影视级模仿", "换装换背景视频", "数字人口播", "label:label"):
+        """每一条提交路径都必须把返回的 job 登记进全局任务追踪，漏一条那条就成了「黑任务」：
+        用户看不到进度、刷新后接不回来。第 5 条是新增的「AI 剧情视频」。"""
+        self.assertEqual(VIDEO_HTML.count("trackVideoJob(res.data.job_id"), 5)
+        for label in ("动作模仿", "AI 剧情视频", "换装换背景视频", "数字人口播", "label:label"):
             self.assertIn(label, VIDEO_HTML)
 
     def test_polling_persists_progress_and_terminal_states(self):

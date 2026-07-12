@@ -296,8 +296,10 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                             ("video", "running", '{"mode":"motion"}'),
                         ],
                         "path": "/api/gen/video",
-                        "body": {"mode": "motion", "text": "影视级模仿"},
-                        "detail": "当前影视级模仿最多同时排队或生成 2 个任务，请等待部分完成后再继续",
+                        # 「影视级模仿」已更名为「动作模仿」（去线路化：原线路一 HeyGen 的能力
+                        # 拆成了独立的「AI 剧情视频」，这边只留 WaveSpeed）
+                        "body": {"mode": "motion", "text": "动作模仿"},
+                        "detail": "当前动作模仿最多同时排队或生成 2 个任务，请等待部分完成后再继续",
                         "code": "motion_active_cap",
                     },
                     {

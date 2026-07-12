@@ -194,20 +194,28 @@ def _env_positive_int(name, default):
 VIDEO_COST = _env_positive_int("VIDEO_COST", 20)
 JOB_WORKERS, FAST_JOB_WORKERS = _env_positive_int("CONTENT_JOB_WORKERS", 3), _env_positive_int("CONTENT_FAST_JOB_WORKERS", 3)  # 慢队列(换装/果肉video)/快队列(图片/音频等)各自worker数，分开防视频堵死快任务
 TALKING_JOB_WORKERS = _env_positive_int("CONTENT_TALKING_JOB_WORKERS", 10)  # 口播(video mode=text/audio)专用池：HeyGen口播能扛高并发(50并发实测无429)
-MOTION_JOB_WORKERS = _env_positive_int("CONTENT_MOTION_JOB_WORKERS", 3)     # 动作模仿池，暂留 3：WaveSpeed(动作模仿的实际供应商)的并发能力没实测过。旧注释「HeyGen并发>3撞墙」已被证伪(10路无429、不降速，挂的那条是我们自己上传撞240s硬超时)，但那是 HeyGen 的数——不能拿来给 WaveSpeed 定 worker
+MOTION_JOB_WORKERS = _env_positive_int("CONTENT_MOTION_JOB_WORKERS", 3)     # 动作模仿池(走WaveSpeed)。留3因WaveSpeed并发没实测过——旧注释「HeyGen并发>3撞墙」已被证伪(10路无429、不降速，挂的那条是我们自己上传撞240s硬超时)，但那是HeyGen的数，不能拿来给WaveSpeed定worker
+CINEMATIC_JOB_WORKERS = _env_positive_int("CONTENT_CINEMATIC_JOB_WORKERS", 10)  # AI剧情视频池(HeyGen)。20路并发实测(10口播+10剧情同时生成)：20/20全成、零降速(口播114s vs 单条基线104s)——HeyGen 的渲染容量远大于20，文档说的「Max Concurrent Video Jobs=10」不是硬限制。唯一的真限制是【提交突发】，由 _heygen_retry_429 兜住
+AVATAR_JOB_WORKERS = _env_positive_int("CONTENT_AVATAR_JOB_WORKERS", 1)        # 建形象池：串行(按需求)。实测25s/个→144个/小时，且建形象是低频动作(建好反复用)，1个足够
 IMAGE_JOB_WORKERS = _env_positive_int("CONTENT_IMAGE_JOB_WORKERS", 10)       # 生图专用池(生图慢90~450s，从快池拆出别拖死秒级任务)。10=500用户高峰约150张/时所需6.3个+60%余量；1worker≈24张/时(实测中位149s)
 JOB_QUEUE_MAX = _env_positive_int("CONTENT_JOB_QUEUE_MAX", 32)
 MAX_USER_ACTIVE_JOBS = _env_positive_int("MAX_USER_ACTIVE_JOBS", 5)                  # 单用户可同时提交(pending+running)的任务上限，超了提交即 429
 MAX_USER_ACTIVE_XIAOLE_VIDEO = _env_positive_int("MAX_USER_ACTIVE_XIAOLE_VIDEO", 3)  # 单用户果肉/豆姐/欧米视频 active 上限：别让单一渠道吃满全部任务位
 MAX_USER_ACTIVE_MOTION = _env_positive_int("MAX_USER_ACTIVE_MOTION", 2)              # 单用户影视级模仿 active 上限：重任务，避免把其它视频功能全部卡死
 MAX_USER_ACTIVE_TRYON = _env_positive_int("MAX_USER_ACTIVE_TRYON", 1)                # 单用户换装视频 active 上限：最重链路，默认一次只放 1 条
+MAX_USER_ACTIVE_CINEMATIC = _env_positive_int("MAX_USER_ACTIVE_CINEMATIC", 2)        # 单用户剧情视频 active 上限：重任务(约8分钟)，别让一个人占满 10 个 worker
+MAX_USER_ACTIVE_AVATAR = _env_positive_int("MAX_USER_ACTIVE_AVATAR", 2)              # 单用户建形象 active 上限：池是串行的，排太多只会让别人干等
 MAX_USER_RUNNING_TALKING = _env_positive_int("MAX_USER_RUNNING_TALKING", 2)          # 单用户口播「运行中」并发上限：最多同时生成2条，多提交的留 pending 排队
 MAX_USER_RUNNING_IMAGE = _env_positive_int("MAX_USER_RUNNING_IMAGE", 3)              # 单用户生图「运行中」并发上限=每人可并行3个。闸数全表 kind='image'，imggen也写这表→两服务合计3个，不是各3个
 SERVICE_OWNER = "content"   # 本服务在 jobs.owner 的署名(#579)；两处全表扫描必须按它过滤，缘由见 jobs_store.ensure_owner_column
 # reaper 各 kind 的超时宽限(秒)，默认 360。tryon 两段式+心跳刷新；xiaole_video 内部轮询600s+转存；
 # image 多图/中转慢；collect 下载+ffmpeg抽音轨+ASR 且转写全站串行(实测成功平均88s)。video 按 mode 另算。
-KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "image": 900, "collect": 1200}
-COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40}  # collect/leads/tryon 走 cost_of() 动态算
+KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "image": 900, "collect": 1200,
+              "cinematic": 2400, "avatar": 300}   # cinematic 实测生成 339~511s+上传下载；avatar 实测 25s，给 300s 富余
+AVATAR_COST = _env_positive_int("AVATAR_COST", 5)   # 建形象：象征性收费防刷，失败自动退点
+# ⚠️ cost_of() 回落到 COST.get(kind, 0) —— 新增 kind 忘了在这里登记，就是【免费】。
+COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40,
+        "cinematic": VIDEO_COST, "avatar": AVATAR_COST}  # collect/leads 走 cost_of() 动态算
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
 ZELONG_KEY  = os.environ.get("ZELONG_KEY", "")                              # 泽龙Ai 中转站(OpenAI 兼容)
 ZELONG_BASE = os.environ.get("ZELONG_BASE", "https://api.xiaoleai.team")
@@ -657,6 +665,8 @@ _fast_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)     # 快队列(audio/copy/
 _talking_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)  # 口播队列(video mode=text/audio)
 _motion_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)   # 动作模仿队列(video mode=motion)
 _image_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)    # 生图队列(kind=image，从快池拆出防拖死快任务)
+_cinematic_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)  # AI剧情视频队列(kind=cinematic，HeyGen，约8分钟/条)
+_avatar_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAX)     # 建形象队列(kind=avatar，串行池)
 _queued_job_ids = set()
 _job_queue_lock = threading.Lock()
 _run_gate_lock = threading.Lock()  # 单用户口播运行闸：count+抢running 在此锁内原子，防多worker同时超发
@@ -679,6 +689,10 @@ def _pick_job_queue(kind, mode=None):
         return _job_queue
     if kind == "image":
         return _image_job_queue
+    if kind == "cinematic":
+        return _cinematic_job_queue     # HeyGen 剧情视频，约 8 分钟/条，10 个 worker
+    if kind == "avatar":
+        return _avatar_job_queue        # 建形象，串行 1 个 worker
     if kind not in {"video", "tryon", "xiaole_video"}:
         return _fast_job_queue
     if kind == "video":
@@ -759,8 +773,20 @@ def _user_video_submit_limit(kind, body, username, cost):
     elif kind == "video" and mode == "motion":
         active = _user_active_video_mode_count(username, "motion")
         if active >= MAX_USER_ACTIVE_MOTION:
-            return {"detail": "当前影视级模仿最多同时排队或生成 %d 个任务，请等待部分完成后再继续" % MAX_USER_ACTIVE_MOTION,
+            return {"detail": "当前动作模仿最多同时排队或生成 %d 个任务，请等待部分完成后再继续" % MAX_USER_ACTIVE_MOTION,
                     "code": "motion_active_cap", "active_jobs": active, "max_active_jobs": MAX_USER_ACTIVE_MOTION,
+                    "retry_after_ms": 4000, "need": cost}
+    elif kind == "cinematic":
+        active = _user_active_kind_count(username, "cinematic")
+        if active >= MAX_USER_ACTIVE_CINEMATIC:
+            return {"detail": "当前剧情视频最多同时排队或生成 %d 个任务，请等待部分完成后再继续" % MAX_USER_ACTIVE_CINEMATIC,
+                    "code": "cinematic_active_cap", "active_jobs": active, "max_active_jobs": MAX_USER_ACTIVE_CINEMATIC,
+                    "retry_after_ms": 4000, "need": cost}
+    elif kind == "avatar":
+        active = _user_active_kind_count(username, "avatar")
+        if active >= MAX_USER_ACTIVE_AVATAR:
+            return {"detail": "当前最多同时创建 %d 个形象，请等待完成后再继续" % MAX_USER_ACTIVE_AVATAR,
+                    "code": "avatar_active_cap", "active_jobs": active, "max_active_jobs": MAX_USER_ACTIVE_AVATAR,
                     "retry_after_ms": 4000, "need": cost}
     return None
 
@@ -836,7 +862,9 @@ def start_job_workers():
         _workers_started = True
     for count, q, prefix in ((JOB_WORKERS, _job_queue, "content-job-worker"), (FAST_JOB_WORKERS, _fast_job_queue, "content-fast-worker"),
                              (TALKING_JOB_WORKERS, _talking_job_queue, "content-talking-worker"), (MOTION_JOB_WORKERS, _motion_job_queue, "content-motion-worker"),
-                             (IMAGE_JOB_WORKERS, _image_job_queue, "content-image-worker")):
+                             (IMAGE_JOB_WORKERS, _image_job_queue, "content-image-worker"),
+                             (CINEMATIC_JOB_WORKERS, _cinematic_job_queue, "content-cinematic-worker"),
+                             (AVATAR_JOB_WORKERS, _avatar_job_queue, "content-avatar-worker")):
         for i in range(count):
             threading.Thread(target=_job_worker_loop, args=(q,), name="%s-%d" % (prefix, i + 1), daemon=True).start()
     threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start()
@@ -863,9 +891,9 @@ def run_job(job_id):
                 return  # 单用户生图运行闸：多的留 pending 排队
             if not jobs_store.claim_running(jdb, job_id):
                 return  # CAS 认领失败：已被别的 worker 接管或已是终态
-        if kind in {"audio", "video", "tryon", "xiaole_video", "leads"}:
-            payload["_username"] = username
-            payload["_job_id"] = job_id
+        if kind in {"audio", "video", "tryon", "xiaole_video", "leads", "cinematic", "avatar"}:
+            payload["_username"] = username   # 少一个 kind，handler 就拿不到用户名/job_id：
+            payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
         result = HANDLERS[kind](payload)
         # 先 CAS 抢 done 终态：仅当仍是 running 才写 done，防 reaper 已判 error 又被无条件覆盖(既出片又退点)
         if not _set_terminal(job_id, "done", result=result):
@@ -875,7 +903,7 @@ def run_job(job_id):
             audio_domain, _, video_domain = _domains()
             if kind == "audio":
                 audio_domain.record_audio_asset(job_id, username, result)
-            if kind in {"video", "tryon", "xiaole_video"}:
+            if kind in {"video", "tryon", "xiaole_video", "cinematic"}:
                 video_domain.record_video_asset(job_id, username, result)
             assets_store.record_asset(job_id, username, kind, result)  # 只有 copy 会入统一 assets 表；其余 kind 内部忽略
         except Exception:
@@ -884,7 +912,7 @@ def run_job(job_id):
         # 生成失败：CAS 抢 error 终态；抢到才记失败资产。退点走幂等(reaper 若已退则跳过)
         # from_states 含 pending：抢 running 那句自己抛异常时任务还停在 pending，只认 running 会不退点
         claimed = _set_terminal(job_id, "error", error=str(e), from_states=("pending", "running"))
-        if claimed and kind in {"video", "tryon", "xiaole_video"}:
+        if claimed and kind in {"video", "tryon", "xiaole_video", "cinematic"}:
             try:
                 failed = dict(payload)
                 failed.update({"phase": "failed", "status": "failed", "error": str(e)[:300]})
@@ -1166,11 +1194,15 @@ class H(BaseHTTPRequestHandler):
             except feature_flags.FeatureDisabled as e:
                 return self._send(503, {"detail": str(e)})
             try:
-                body = self._json_body_strict() if kind in {"video", "tryon"} else self._json_body()
+                body = self._json_body_strict() if kind in {"video", "tryon", "cinematic", "avatar"} else self._json_body()
                 if kind == "video":
                     body = video_domain.validate_video_payload(body, user["username"])
                 elif kind == "tryon":
                     body = video_domain.validate_tryon_payload(body)
+                elif kind == "cinematic":
+                    body = video_domain.validate_cinematic_payload(body, user["username"])
+                elif kind == "avatar":
+                    body = video_domain.validate_avatar_payload(body)
                 elif kind == "xiaole_video":
                     body = video_domain.validate_xiaole_video_payload(body)
                 elif kind == "image":
@@ -1197,11 +1229,11 @@ class H(BaseHTTPRequestHandler):
                     cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) VALUES(?,?,?,?,?,?,?)",
                                     (kind, user["username"], cost, json.dumps(body, ensure_ascii=False), now, now, SERVICE_OWNER))
                     c.commit(); jid = cur.lastrowid
-                if kind in {"video", "tryon", "xiaole_video"}:
+                if kind in {"video", "tryon", "xiaole_video", "cinematic"}:
                     video_domain.record_video_pending_asset(jid, user["username"], body)
                 if not enqueue_job(jid, kind, body.get("mode")):
                     _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
-                    if kind in {"video", "tryon", "xiaole_video"}:
+                    if kind in {"video", "tryon", "xiaole_video", "cinematic"}:
                         video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
                     return self._send(429, {"detail": "任务队列已满，请稍后再试", "code": "queue_full", "retry_after_ms": 4000, "need": cost})
             return self._send(200, {"job_id": jid, "cost": cost, "points_left": points_left})
@@ -1245,7 +1277,7 @@ class H(BaseHTTPRequestHandler):
             if not r: return self._send(404, {"detail": "任务不存在"})
             if r["username"] != user.get("username"):
                 return self._send(404, {"detail": "任务不存在"})
-            phase = video_domain.get_video_job_phase(jid) if r["kind"] in {"video", "tryon", "xiaole_video"} else None
+            phase = video_domain.get_video_job_phase(jid) if r["kind"] in {"video", "tryon", "xiaole_video", "cinematic"} else None
             d = _job_public_dict(r, phase)
             return self._send(200, d)
         if p == "/api/gen/points/history":
