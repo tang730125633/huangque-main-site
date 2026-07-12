@@ -30,6 +30,33 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertEqual(calls[0][2]["input"]["size"], "1280x720")
         self.assertNotIn("aspect_ratio", calls[0][2]["input"])
 
+    def test_xiaole_download_candidates_prefers_tunnel_over_relay(self):
+        import os as _os
+        url = "https://vidgen.x.ai/abc/video.mp4"
+        with patch.dict(_os.environ, {"HEYGEN_RELAY_BASE": "https://heygen.zelong.vip"}, clear=False):
+            cands = self.video._xiaole_download_candidates(url, "http://127.0.0.1:10809")
+        # ① 快隧道优先：原始 URL + 隧道代理
+        self.assertEqual(cands[0][0], url)
+        self.assertEqual(cands[0][2], "http://127.0.0.1:10809")
+        # ② heygen 中转兜底：走 relay /cdn/，不强制代理(None)
+        self.assertIn("heygen.zelong.vip/cdn/vidgen.x.ai/", cands[1][0])
+        self.assertIsNone(cands[1][2])
+        # ③ 最后直连原始 URL
+        self.assertEqual(cands[-1][0], url)
+        self.assertIsNone(cands[-1][2])
+
+    def test_xiaole_download_candidates_no_tunnel_is_legacy_order(self):
+        import os as _os
+        url = "https://vidgen.x.ai/abc/video.mp4"
+        with patch.dict(_os.environ, {"HEYGEN_RELAY_BASE": "https://heygen.zelong.vip"}, clear=False):
+            cands = self.video._xiaole_download_candidates(url, "")
+        # 无隧道 → 退化为老行为：heygen 中转在前、直连兜底，无隧道档
+        self.assertNotIn("10809", str(cands))
+        self.assertIn("heygen.zelong.vip/cdn/", cands[0][0])
+        self.assertIsNone(cands[0][2])
+        self.assertEqual(cands[-1][0], url)
+        self.assertIsNone(cands[-1][2])
+
     def test_gen_xiaole_video_maps_ratio_to_size_and_defaults_unknown_ratio(self):
         calls = []
 

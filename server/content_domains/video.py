@@ -2245,14 +2245,20 @@ def _xiaole_pick_video_url(output):
             return v
     return None
 
-def _download_xiaole_video(url, prefix="xiaole"):
-    # 视频 CDN 多在海外(如 vidgen.x.ai)，国内服务器直连不通 → 复用法兰克福中转 /cdn/。
-    # 但部分 CDN(如 seedance 的 update.asiot.top)国内直连可通、中转反而 404 → 中转失败后兜底直连原始 URL。
+def _xiaole_download_candidates(url, tunnel_proxy):
+    """成片下载候选链(GET 幂等，可自由多档尝试，不像出图 POST 有重复计费顾虑)。顺序：
+      ① 原始 URL 走 egress 快隧道(Reality VPS/mihomo)—— tunnel_proxy 非空才加，避开拥塞的 heygen 中转
+      ② heygen 法兰克福 /cdn/ 中转 —— 兜底(拥塞时慢到分钟级)，走进程默认(NO_PROXY 含 zelong.vip → 直连中转)
+      ③ 原始 URL 走进程默认 —— 国内可直连的 CDN(如 seedance update.asiot.top，中转反而 404)兜底
+    返回 [(fetch_url, headers, proxy_or_None), ...]；proxy 非空则该档强制走此代理，None 则用进程默认 urlopen。
+    未配隧道(tunnel_proxy 为空)时链退化为 [heygen, 直连]，等于改动前老行为。"""
     plain_headers = {"User-Agent": "huangque-content/1.0"}
-    candidates = [(url, plain_headers)]
-    relay = os.environ.get("HEYGEN_RELAY_BASE", "").strip().rstrip("/")
     parts = urllib.parse.urlsplit(url)
     host = (parts.hostname or "").lower()
+    candidates = []
+    if tunnel_proxy:
+        candidates.append((url, dict(plain_headers), tunnel_proxy))
+    relay = os.environ.get("HEYGEN_RELAY_BASE", "").strip().rstrip("/")
     if relay and host and not host.endswith(".cn"):
         fetch = "%s/cdn/%s/%s" % (relay, host, parts.path.lstrip("/"))
         if parts.query:
@@ -2261,17 +2267,28 @@ def _download_xiaole_video(url, prefix="xiaole"):
         token = os.environ.get("HEYGEN_RELAY_TOKEN", "").strip()
         if token:
             headers["X-Relay-Token"] = token
-        candidates.insert(0, (fetch, headers))
-    # 下载中断(IncompleteRead/网络抖动)自动重试；中转候选耗尽后换直连候选
+        candidates.append((fetch, headers, None))
+    candidates.append((url, dict(plain_headers), None))
+    return candidates
+
+
+def _download_xiaole_video(url, prefix="xiaole"):
+    # 视频 CDN 多在海外(如 vidgen.x.ai)，国内直连不通。成片下载是 GET(幂等)，故可多档尝试：
+    # 优先走 egress 快隧道，避开拥塞到分钟级的 heygen 法兰克福老中转(实测 xAI 2 分钟出片、
+    # 走老中转下载却要 11~19 分钟，甚至卡死被 reaper 判超时退点)。中转仅作兜底。
+    from . import egress
+    candidates = _xiaole_download_candidates(url, egress.preferred_proxy())
+    # 下载中断(IncompleteRead/网络抖动)自动重试；前一档耗尽后换下一档
     data = None
     last_err = None
-    for fetch_url, headers in candidates:
+    for fetch_url, headers, proxy in candidates:
         if data is not None:
             break
+        opener_open = egress._opener(proxy).open if proxy else urllib.request.urlopen
         for attempt in range(_xiaole_dl_retries):
             try:
                 req = urllib.request.Request(fetch_url, headers=headers)
-                with urllib.request.urlopen(req, timeout=300) as r:
+                with opener_open(req, timeout=300) as r:
                     buf = r.read()
                 if buf:
                     data = buf
