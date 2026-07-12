@@ -41,6 +41,12 @@ def cost_of(kind, body):
         cap = 2 if provider in _IMAGE_CAP_2 else 4
         cnt = 1 if body.get("mask") else max(1, min(cap, int(body.get("count") or 1)))
         return base * cnt  # 质量基价 × 数量
+    if kind == "cinematic":
+        # 电影化身：按成片秒数计费（单人动作模仿/开放式 3 点/秒，双人动作模仿 5 点/秒）。
+        # 秒数在 validate_cinematic_payload 里已经落定成整数（「自适应」在那里就探测过参考视频），
+        # 所以这里不存在「还不知道多长」的情况 —— 一次扣准，不需要预扣退差。
+        from . import video as video_domain
+        return video_domain.cinematic_cost(body)
     if kind == "tryon":
         has_clothes = bool(body.get("clothes_data"))
         has_bg = bool(body.get("background_data"))

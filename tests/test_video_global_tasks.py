@@ -85,10 +85,12 @@ class GlobalTaskStoreTests(unittest.TestCase):
 class VideoTaskIntegrationTests(unittest.TestCase):
     def test_all_video_submit_paths_register_the_returned_job(self):
         """每一条提交路径都必须把返回的 job 登记进全局任务追踪，漏一条那条就成了「黑任务」：
-        用户看不到进度、刷新后接不回来。第 5 条是新增的「AI 剧情视频」。"""
+        用户看不到进度、刷新后接不回来。第 5 条是「电影化身」（它的 label 随玩法变，见 CINE_MODES）。"""
         self.assertEqual(VIDEO_HTML.count("trackVideoJob(res.data.job_id"), 5)
-        for label in ("动作模仿", "AI 剧情视频", "换装换背景视频", "数字人口播", "label:label"):
+        for label in ("动作模仿", "电影化身", "换装换背景视频", "数字人口播", "label:label"):
             self.assertIn(label, VIDEO_HTML)
+        # 电影化身那条的 label 不是写死的字符串，是当前玩法的名字
+        self.assertIn("trackVideoJob(res.data.job_id,{status:'queued',label:cfg.label", VIDEO_HTML)
 
     def test_polling_persists_progress_and_terminal_states(self):
         self.assertIn("if(tries===0) resumedVideoTaskId=String(id);", VIDEO_HTML)
@@ -106,6 +108,33 @@ class VideoTaskIntegrationTests(unittest.TestCase):
         self.assertIn("tasks.latestActive('video')", VIDEO_HTML)
         self.assertIn("window.addEventListener('hq:resume-task'", VIDEO_HTML)
         self.assertIn("resumeTrackedVideoTask();", VIDEO_HTML)
+
+    def test_button_sync_uses_task_store_and_health_caps(self):
+        """按钮同步函数从 HQTasks 获取活跃任务数，从 health 获取上限，分家族判断是否超限。"""
+        self.assertIn("function syncVideoGenerateButtons(){", VIDEO_HTML)
+        self.assertIn("var counts=activeVideoTaskCounts();", VIDEO_HTML)
+        self.assertIn("counts.xiaole>=maxActiveXiaoleVideo", VIDEO_HTML)
+        self.assertIn("counts.motion>=maxActiveMotion", VIDEO_HTML)
+        self.assertIn("counts.tryon>=maxActiveTryon", VIDEO_HTML)
+        self.assertIn("max_user_active_xiaole_video", VIDEO_HTML)
+        self.assertIn("max_user_active_motion", VIDEO_HTML)
+        self.assertIn("max_user_active_tryon", VIDEO_HTML)
+
+    def test_button_sync_bound_on_page_init(self):
+        """页面初始化时绑定任务变更监听，当任务状态变化时自动同步按钮可用状态。"""
+        self.assertIn("function bindVideoTaskSync(){", VIDEO_HTML)
+        self.assertIn("tasks.onChange(syncVideoGenerateButtons)", VIDEO_HTML)
+        self.assertIn("bindVideoTaskSync();", VIDEO_HTML)
+
+    def test_submit_locks_prevent_duplicate_submission(self):
+        """每个功能提交时设锁、成功/失败后解锁，防止用户在网络往返期间重复点击。"""
+        self.assertIn("function setSubmitLock(kind,on){", VIDEO_HTML)
+        self.assertIn("videoSubmitLocks", VIDEO_HTML)
+        self.assertIn("setSubmitLock('tryon',true)", VIDEO_HTML)
+        self.assertIn("setSubmitLock('xiaole',true)", VIDEO_HTML)
+        self.assertIn("setSubmitLock('motion',true)", VIDEO_HTML)
+        self.assertIn("setSubmitLock('talking',true)", VIDEO_HTML)
+        self.assertIn("setSubmitLock('cinematic',true)", VIDEO_HTML)
 
 
 if __name__ == "__main__":

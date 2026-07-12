@@ -34,6 +34,9 @@ server/jobs.db
 *.sqlite
 models/
 transcribe_out/
+# 生成产物落盘目录（图片/视频/音频/参考素材）。跑一次本地校验就会往里写文件，
+# 之前 22 个 cine_ref_*.png / motion_ref_*.mp4 就是这么被 git add -A 扫进 PR 的。
+server/content_out/
 .gstack/
 
 # ===== 临时/派生：截图预览、原始大图、本地工具缓存（不进 git，可重生成）=====

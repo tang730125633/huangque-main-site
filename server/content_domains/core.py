@@ -215,7 +215,10 @@ KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "image": 900, "collect": 1200
 AVATAR_COST = _env_positive_int("AVATAR_COST", 5)   # 建形象：象征性收费防刷，失败自动退点
 # ⚠️ cost_of() 回落到 COST.get(kind, 0) —— 新增 kind 忘了在这里登记，就是【免费】。
 COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40,
-        "cinematic": VIDEO_COST, "avatar": AVATAR_COST}  # collect/leads 走 cost_of() 动态算
+        "cinematic": VIDEO_COST, "avatar": AVATAR_COST}  # collect/leads/cinematic 走 cost_of() 动态算
+# cinematic 的这条已经不生效了 —— 电影化身按成片秒数计费（video.cinematic_cost），
+# cost_of() 里有它自己的分支、必定先 return。留在这里只当保险：万一哪天分支被绕过，
+# 也是按 VIDEO_COST 收费，而不是回落到 0（=免费送 $7 一条的视频）。
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
 ZELONG_KEY  = os.environ.get("ZELONG_KEY", "")                              # 泽龙Ai 中转站(OpenAI 兼容)
 ZELONG_BASE = os.environ.get("ZELONG_BASE", "https://api.xiaoleai.team")
@@ -1466,6 +1469,7 @@ class H(BaseHTTPRequestHandler):
                                     "talking_job_workers": TALKING_JOB_WORKERS, "motion_job_workers": MOTION_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS,
                                     "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_active_xiaole_video": MAX_USER_ACTIVE_XIAOLE_VIDEO,
                                     "max_user_active_motion": MAX_USER_ACTIVE_MOTION, "max_user_active_tryon": MAX_USER_ACTIVE_TRYON,
+                                    "max_user_active_cinematic": MAX_USER_ACTIVE_CINEMATIC,
                                     "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE,
                                     "video_cost": VIDEO_COST, "video_batch_max": min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS),
                                     "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})

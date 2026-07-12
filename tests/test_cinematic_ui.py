@@ -28,7 +28,7 @@ class MotionDeLineTests(unittest.TestCase):
         seg = HTML.split('id="motionResolutionSeg"')[1].split("</div>")[0]
         self.assertIn('data-motion-resolution="1080p"', seg)
         self.assertIn("disabled", seg)
-        self.assertIn("剧情视频", seg, "要指路，不能只是灰掉")
+        self.assertIn("电影化身", seg, "要指路，不能只是灰掉")
 
 
 class CinematicPanelTests(unittest.TestCase):
@@ -38,10 +38,11 @@ class CinematicPanelTests(unittest.TestCase):
         self.assertIn("$('cinematicPanel').classList.toggle('hidden',videoFunction!=='cinematic')",
                       HTML.replace('if($(\'cinematicPanel\')) ', ''))
 
-    def test_avatar_multiselect_is_capped_at_three(self):
-        # HeyGen 硬上限：avatar_id 数组最多 3 个 look
+    def test_avatar_cap_is_per_mode_and_never_exceeds_three(self):
+        # HeyGen 硬上限：avatar_id 数组最多 3 个 look。三个玩法各自的数量在 CINE_MODES 里。
         self.assertIn("var CINE_MAX_AVATARS=3", HTML)
-        self.assertIn("最多同时选择 '+CINE_MAX_AVATARS+' 个形象", HTML)
+        self.assertIn("cap=cineCfg().avatars", HTML)
+        self.assertIn("toast(cineCfg().label+'最多选 '+cap+' 个形象')", HTML)
 
     def test_both_resolutions_are_selectable(self):
         self.assertIn('data-cine-resolution="720p"', HTML)
@@ -66,18 +67,19 @@ class CinematicPanelTests(unittest.TestCase):
         # 与后端 CINEMATIC_PROMPT_MAX 对齐，否则用户写超了才在提交时被拒
         self.assertIn("this.value.slice(0,2000)", HTML)
 
-    def test_reference_material_is_optional_and_says_so(self):
-        """参考素材（视频 + 图片）全部选填，而且要把「不给会怎样」说清楚。"""
-        panel = HTML.split('id="cinematicPanel"')[1].split('id="tryonPanel"')[0]
-        self.assertIn("参考素材（选填）", panel)
-        self.assertIn("都不给就只按描述生成", panel)
-        # 只有真传了才发字段 —— 空数组也不该发
+    def test_reference_material_requirement_follows_the_mode(self):
+        """动作模仿：必传、且正好一个视频，不收参考图。开放式：视频+图片都选填。"""
+        self.assertIn("cfg.needRef ? '参考视频（必传）' : '参考素材（选填）'", HTML)
+        self.assertIn("都不给就只按描述生成", HTML)
+        self.assertIn("if(cfg.needRef && cineRefVideos.length!==1){ toast('请上传一个参考视频'); return; }", HTML)
+        # 只有真传了才发字段 —— 空数组也不该发；参考图只在开放式发
         self.assertIn("if(cineRefVideos.length) body.reference_videos=", HTML)
-        self.assertIn("if(cineRefImages.length) body.reference_images=", HTML)
+        self.assertIn("if(!cfg.fixed && cineRefImages.length) body.reference_images=", HTML)
 
     def test_submits_to_the_cinematic_endpoint_with_an_avatar_id_array(self):
         self.assertIn("fetch('/api/gen/cinematic'", HTML)
         self.assertIn("avatar_ids:cineSelectedAvatarIds.map(", HTML)
+        self.assertIn("cine_mode:cineMode", HTML)
 
 
 class CreateAvatarTests(unittest.TestCase):

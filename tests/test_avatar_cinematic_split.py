@@ -55,7 +55,8 @@ class PipelineWiringTests(unittest.TestCase):
     def test_costs_are_registered(self):
         """⚠️ cost_of() 回落到 COST.get(kind, 0) —— 新 kind 忘了登记就是【免费】。"""
         self.assertEqual(points.cost_of("avatar", {}), 5)
-        self.assertEqual(points.cost_of("cinematic", {}), core.VIDEO_COST)
+        # cinematic 改成按成片秒数计费了（见 test_cinematic_billing），这里只守住底线：
+        # 无论 payload 多空、玩法认不认得出来，都不能算出 0 点 —— 那是白送一条 $7 的视频。
         for kind in ("avatar", "cinematic"):
             self.assertGreater(points.cost_of(kind, {}), 0, "%s 免费了 —— COST 里漏登记" % kind)
 
