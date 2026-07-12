@@ -118,13 +118,22 @@ class XiaoleVideoTests(unittest.TestCase):
                 self.video.validate_xiaole_video_payload({"channel": "grok", "operation": "edit", "prompt": "demo",
                                                           "reference_video_data": "data:video/mp4;base64,AAAA"})
 
-    def test_validate_official_grok_rejects_multiple_references(self):
+    def test_validate_official_grok_rejects_over_max_references(self):
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"):
-            with self.assertRaisesRegex(ValueError, "最多支持1张"):
+            n = self.video.XIAOLE_MAX_REF + 1
+            with self.assertRaisesRegex(ValueError, "最多支持%d张" % self.video.XIAOLE_MAX_REF):
                 self.video.validate_xiaole_video_payload({
                     "channel": "grok", "prompt": "cinematic demo",
-                    "reference_images": ["https://a/1.jpg", "https://a/2.jpg"],
+                    "reference_images": ["https://a/%d.jpg" % i for i in range(n)],
                 })
+
+    def test_validate_official_grok_accepts_multiple_references(self):
+        with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"):
+            cleaned = self.video.validate_xiaole_video_payload({
+                "channel": "grok", "prompt": "cinematic demo",
+                "reference_images": ["https://a/1.jpg", "https://a/2.jpg", "https://a/3.jpg"],
+            })
+            self.assertEqual(len(cleaned["reference_images"]), 3)
 
     def test_validate_video_15_requires_reference(self):
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"):

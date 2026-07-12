@@ -554,7 +554,7 @@
           <div id="grokExamples" style="display:flex;flex-wrap:wrap;gap:7px;margin-top:10px;"></div>
         </div>
         <div class="panel grok-generate-only" style="margin-top:12px;">
-          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，官方图生视频当前最多 1 张</span></div>
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，官方图生视频最多 7 张</span></div>
           <div id="grokRefGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;">
             <label id="grokRefAdd" style="position:relative;display:flex;align-items:center;justify-content:center;min-height:74px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;background:rgba(7,11,19,.4);cursor:pointer;">
               <input id="grokRefFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
@@ -2480,7 +2480,7 @@
   if($('microGenerateBtn')) $('microGenerateBtn').onclick=function(){submitXiaole('micro');};
   if($('omniGenerateBtn')) $('omniGenerateBtn').onclick=function(){submitXiaole('omni');};
   // ---- 果肉(Grok)官方面板：基础图生视频接口单图输入 ----
-  var GROK_REF_MAX=1;
+  var GROK_REF_MAX=7;
   var grokRefData=[];
   var microRefData=[], omniRefData=[];
   (function setupGrokPanel(){

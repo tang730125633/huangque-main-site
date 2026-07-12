@@ -123,8 +123,8 @@ def validate_xiaole_video_payload(payload):
     if not isinstance(refs, list):
         raise ValueError("reference_images 必须是数组")
     refs = [str(x or "").strip() for x in refs if str(x or "").strip()]
-    if len(refs) > 1:
-        raise ValueError("xAI官方图生视频当前最多支持1张参考图")
+    if len(refs) > XIAOLE_MAX_REF:
+        raise ValueError("xAI官方图生视频最多支持%d张参考图" % XIAOLE_MAX_REF)
     if model == "grok-imagine-video-1.5" and not refs:
         raise ValueError("Grok Video 1.5 仅支持图生视频，请先上传参考图")
     ratio = str(cleaned.get("ratio") or "16:9").strip()

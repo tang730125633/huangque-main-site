@@ -17,7 +17,7 @@ class GrokOfficialUiTests(unittest.TestCase):
         self.assertIn("xlPayload.duration=selectedGrokDuration", self.html)
         self.assertIn("xlPayload.resolution=selectedGrokResolution", self.html)
         self.assertIn("xlPayload.model=selectedGrokModel", self.html)
-        self.assertIn("var GROK_REF_MAX=1", self.html)
+        self.assertIn("var GROK_REF_MAX=7", self.html)
 
     def test_edit_mode_accepts_mp4_and_sends_edit_payload(self):
         self.assertIn('data-grok-operation="edit"', self.html)
