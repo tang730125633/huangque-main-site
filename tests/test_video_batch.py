@@ -184,6 +184,7 @@ class VideoBatchIntegrationGuardTests(unittest.TestCase):
                 }).encode("utf-8")
                 request = urllib.request.Request(url, data=data, method="POST", headers={
                     "Authorization": "Bearer test", "Content-Type": "application/json",
+                    "Idempotency-Key": "batch-submit-001",
                 })
                 with urllib.request.urlopen(request, timeout=5) as response:
                     accepted = json.loads(response.read())
@@ -196,10 +197,21 @@ class VideoBatchIntegrationGuardTests(unittest.TestCase):
                 self.assertEqual([20, 20], [row["cost"] for row in rows])
                 self.assertEqual(2, core._talking_job_queue.qsize())
 
-                with self.assertRaises(urllib.error.HTTPError) as rejected:
-                    urllib.request.urlopen(request, timeout=5)
-                self.assertEqual(429, rejected.exception.code)
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    replayed = json.loads(response.read())
+                self.assertEqual(accepted, replayed)
                 self.assertEqual([("fang", 40, "job:video_batch")], fake.deductions)
+                with closing(core.jdb()) as db:
+                    self.assertEqual(2, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+
+                changed = urllib.request.Request(url, data=data.replace(b'"batch"', b'"changed"'), method="POST", headers={
+                    "Authorization": "Bearer test", "Content-Type": "application/json",
+                    "Idempotency-Key": "batch-submit-001",
+                })
+                with self.assertRaises(urllib.error.HTTPError) as conflict:
+                    urllib.request.urlopen(changed, timeout=5)
+                self.assertEqual(409, conflict.exception.code)
+                self.assertEqual("idempotency_conflict", json.loads(conflict.exception.read())["code"])
             finally:
                 if server:
                     server.shutdown()
