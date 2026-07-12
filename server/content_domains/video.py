@@ -788,7 +788,15 @@ def _heygen_request_json(method, path, body=None, headers=None, timeout=180, dir
         if e.code == 429:
             # 429 单独成一类：请求被【瞬间拒绝、未被处理、未计费】，可以安全重发。
             # 其余错误(超时/RST/5xx)不行——HeyGen 提交即扣 credit，那些可能已经计费了。
-            raise HeyGenRateLimited("HeyGen 限流(429): %s" % detail) from e
+            # Retry-After 是 HeyGen 明确告诉我们该等多久（官方文档：「Check the Retry-After
+            # response header for the number of seconds to wait before retrying」）——
+            # 听它的，比我们瞎猜指数退避准。
+            err = HeyGenRateLimited("HeyGen 限流(429): %s" % detail)
+            try:
+                err.retry_after = float((e.headers or {}).get("Retry-After") or 0)
+            except (TypeError, ValueError):
+                err.retry_after = 0.0
+            raise err from e
         raise RuntimeError("HeyGen接口失败: HTTP %s %s" % (e.code, detail)) from e
     except urllib.error.URLError as e:
         detail = str(e.reason)[:300]
@@ -1127,6 +1135,8 @@ def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, re
 class HeyGenRateLimited(RuntimeError):
     """HeyGen 429。请求被【瞬间拒绝、未被处理、未计费】—— 这是唯一可以安全重发的失败。
 
+    .retry_after: HeyGen 在响应头里明确告诉我们该等多久（秒）。没有就是 0。
+
     2026-07-12 实测（20 路同时提交：10 口播 + 10 剧情视频）：
         7 个 429，全部在 1.1 秒内瞬间返回；错误码是 `rate_limit_exceeded`，
         原文「please reduce the RATE to call this api」—— 这是【速率】墙，不是并发墙。
@@ -1150,15 +1160,21 @@ def _heygen_retry_429(fn, what=""):
     for i in range(HEYGEN_429_TRIES):
         try:
             return fn()
-        except HeyGenRateLimited:
+        except HeyGenRateLimited as e:
             if i == HEYGEN_429_TRIES - 1:
                 raise
-            # 抖动避免同一批 worker 退避后又撞在一起（那正是 429 的成因）
-            delay = min(20.0, 2.0 * (2 ** i)) * (0.7 + random.random() * 0.6)
+            # 优先听 HeyGen 的 Retry-After（官方文档明说要读它）；它没给才自己指数退避。
+            hinted = getattr(e, "retry_after", 0) or 0
+            base = hinted if hinted > 0 else min(20.0, 2.0 * (2 ** i))
+            # 抖动：不加的话，同一批被拒的 worker 会在同一刻一起重发——那正是 429 的成因，
+            # 等于把突发原样搬到了退避之后。哪怕 Retry-After 给了确切秒数也要抖。
+            delay = base * (0.7 + random.random() * 0.6)
             if waited + delay > HEYGEN_429_MAX_WAIT:
                 raise
             waited += delay
-            print("[heygen] %s 撞 429，退避重试(%d/%d) 等 %.1fs" % (what, i + 1, HEYGEN_429_TRIES, delay), flush=True)
+            print("[heygen] %s 撞 429，退避重试(%d/%d) 等 %.1fs%s"
+                  % (what, i + 1, HEYGEN_429_TRIES, delay,
+                     "（Retry-After=%.0fs）" % hinted if hinted > 0 else ""), flush=True)
             time.sleep(delay)
 
 

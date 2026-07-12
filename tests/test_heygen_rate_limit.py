@@ -113,6 +113,48 @@ class RetryDisciplineTests(unittest.TestCase):
             with self.assertRaises(video.HeyGenRateLimited):
                 video._heygen_retry_429(always429, "测试")
 
+    def test_retry_after_header_is_honoured(self):
+        """HeyGen 在响应头里明确告诉我们该等多久 —— 听它的，比瞎猜指数退避准。
+
+        官方文档：「Check the `Retry-After` response header for the number of seconds
+        to wait before retrying.」
+        """
+        err = video.HeyGenRateLimited("429")
+        err.retry_after = 30.0
+        delays = []
+
+        def always429():
+            raise err
+
+        with patch.object(video.time, "sleep", side_effect=delays.append):
+            with self.assertRaises(video.HeyGenRateLimited):
+                video._heygen_retry_429(always429, "测试")
+
+        # 30s ± 抖动(0.7~1.3)，绝不能还是那个 2/4/8 的指数序列
+        self.assertTrue(all(21 <= d <= 39 for d in delays), delays)
+
+    def test_retry_after_is_still_jittered(self):
+        """哪怕 Retry-After 给了确切秒数也要抖 —— 否则同一批被拒的 worker 会在同一刻
+        一起重发，等于把突发原样搬到了退避之后，再撞一次 429。"""
+        err = video.HeyGenRateLimited("429")
+        err.retry_after = 30.0
+        delays = []
+        with patch.object(video.time, "sleep", side_effect=delays.append):
+            try:
+                video._heygen_retry_429(lambda: (_ for _ in ()).throw(err), "测试")
+            except video.HeyGenRateLimited:
+                pass
+        self.assertGreater(len(set(delays)), 1, "Retry-After 被原样照抄，没有抖动")
+
+    def test_header_is_parsed_from_the_response(self):
+        err = _http_error(429, b'{"error":{"code":"rate_limit_exceeded"}}')
+        err.headers = {"Retry-After": "12"}
+        with patch.object(video, "HEYGEN_API_KEY", "k"), \
+             patch.object(video.urllib.request, "urlopen", side_effect=err):
+            with self.assertRaises(video.HeyGenRateLimited) as ctx:
+                video._heygen_request_json("POST", "/videos")
+        self.assertEqual(ctx.exception.retry_after, 12.0)
+
     def test_backoff_is_jittered(self):
         """不加抖动，同一批 worker 退避后又会撞在一起 —— 那正是 429 的成因。"""
         delays = []
