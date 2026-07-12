@@ -798,10 +798,14 @@ def _heygen_request_json(method, path, body=None, headers=None, timeout=180, dir
                 err.retry_after = 0.0
             raise err from e
         raise RuntimeError("HeyGen接口失败: HTTP %s %s" % (e.code, detail)) from e
-    except urllib.error.URLError as e:
-        detail = str(e.reason)[:300]
+    except OSError as e:
+        # URLError / socket.timeout(TimeoutError) / ssl.SSLError / ConnectionError —— 传输层瞬时错误。
+        # 归为 HeyGenNetworkError：幂等 GET(轮询/下载)可安全重试；提交 POST 照旧穿透不重发。
+        # 注意「read timeout」发生在 r.read() 阶段，是 TimeoutError 而非 URLError，
+        # 原来的 `except URLError` 漏了它，会裸抛「The read operation timed out」——正是丢片主因(#605)。
+        detail = str(getattr(e, "reason", e))[:300]
         print("[heygen] FAIL %s %s -> network %s" % (method, path, detail), flush=True)
-        raise RuntimeError("HeyGen接口网络失败: %s" % detail) from e
+        raise HeyGenNetworkError("HeyGen接口网络失败: %s" % detail) from e
     try:
         return json.loads(raw.decode("utf-8"))
     except Exception:
@@ -1152,6 +1156,52 @@ class HeyGenRateLimited(RuntimeError):
     """
 
 
+class HeyGenNetworkError(RuntimeError):
+    """HeyGen 传输层【瞬时】网络错误：连接被拒 / 超时(read timeout) / SSL EOF / RST。
+
+    与 429、与「提交后失败」都不同 —— 这类错误只说明这一次 HTTP 传输没走通，
+    【幂等 GET】(轮询查状态、下载成片)可以安全重试：GET 不产生计费、不改状态。
+
+    ⚠️ 但它仍是 RuntimeError 的子类，所以【提交 POST】路径行为不变 —— `_heygen_retry_429`
+    只认 HeyGenRateLimited，HeyGenNetworkError 会照旧穿透 → HeyGenBilledError（不重发）。
+    提交遇网络错等于「可能已计费」，绝不能因为它长得像瞬时错误就重发。
+    只有轮询/下载的调用方会显式 catch 它来重试。
+
+    背景(#605)：egress 隧道一天 flap 5 次，每次抖动撞上一个正在轮询的任务，就把
+    「已提交、成片已在 HeyGen 生成好」的任务判死、白烧一次提交费（cinematic 每条约 $7）。
+    今日单日 5 条因此丢片（已手动 re-poll 全部挽回）。根因就是轮询/下载对网络错零重试。
+    """
+
+
+# 轮询/下载成片的网络韧性：幂等 GET，瞬时抖动退避重试。不计费、可安全重试，和提交(POST)本质不同。
+HEYGEN_NET_RETRIES = int(os.environ.get("HEYGEN_NET_RETRIES", "4") or 4)
+
+
+def _heygen_read_retry(open_fn, what):
+    """打开并读取一个【幂等 GET】(下载成片)，对传输层瞬时网络错误退避重试，返回字节。
+
+    open_fn: 无参、每次调用返回一个新的 response 上下文管理器（每次重试都重新 open，
+             不复用可能已半死的连接）。
+    只 catch OSError（URLError / socket.timeout(TimeoutError) / ssl.SSLError / ConnectionError
+    都是它的子类）—— HTTP 状态错误不在此列（那是上游明确响应，不该盲重）。
+    """
+    last = None
+    for i in range(HEYGEN_NET_RETRIES):
+        try:
+            with open_fn() as r:
+                data = r.read()
+            if data:
+                return data
+            last = RuntimeError("下载内容为空")
+        except OSError as e:
+            last = e
+            print("[heygen] %s 网络抖动，重试(%d/%d): %s"
+                  % (what, i + 1, HEYGEN_NET_RETRIES, str(getattr(e, "reason", e))[:120]), flush=True)
+        if i < HEYGEN_NET_RETRIES - 1:
+            time.sleep(2.0 * (i + 1))
+    raise HeyGenNetworkError("%s 多次网络失败: %s" % (what, str(getattr(last, "reason", last))[:150]))
+
+
 # 429 退避重试。不重试的话，一次突发就把用户的任务判死退点、白等几分钟——
 # 而实测 20 路里有 13 路是过的，被拒的那 7 个退避几秒重发几乎必成。
 HEYGEN_429_TRIES = int(os.environ.get("HEYGEN_429_TRIES", "6") or 6)
@@ -1246,8 +1296,18 @@ HEYGEN_MOTION_DEADLINE = int(os.environ.get("HEYGEN_MOTION_DEADLINE", "1500") or
 def _heygen_poll_video(video_id, direct=False, deadline_s=None):
     deadline = time.time() + (deadline_s or HEYGEN_TIMEOUT)
     last_status = ""
+    net_fails = 0
     while time.time() < deadline:
-        data = _heygen_request_json("GET", "/videos/" + urllib.parse.quote(video_id), timeout=90, direct=direct)
+        try:
+            data = _heygen_request_json("GET", "/videos/" + urllib.parse.quote(video_id), timeout=90, direct=direct)
+        except HeyGenNetworkError as e:
+            # 轮询是幂等 GET、不计费——隧道瞬时抖动不该判死任务、白烧提交费(#605)。
+            # 等下一轮重试；deadline 仍是总上限，不会无限转。provider 明确 failed 才判失败(见下)。
+            net_fails += 1
+            print("[heygen] poll video_id=%s 网络抖动(%d)，%ds 后重试: %s"
+                  % (video_id, net_fails, HEYGEN_POLL_INTERVAL, str(e)[:120]), flush=True)
+            time.sleep(HEYGEN_POLL_INTERVAL)
+            continue
         info = data.get("data") or {}
         status = str(info.get("status") or "").lower()
         if status != last_status:
@@ -1278,10 +1338,8 @@ def _download_video_file(url, prefix="vid"):
             if _heygen_relay_token():
                 headers["X-Relay-Token"] = _heygen_relay_token()
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=360) as r:
-        data = r.read()
-    if not data:
-        raise RuntimeError("视频下载失败")
+    # 幂等 GET 下载成片：瞬时网络错误退避重试（不计费、可安全重试，#605）
+    data = _heygen_read_retry(lambda: urllib.request.urlopen(req, timeout=360), "成片下载")
     fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键(#185)：真人视频防猜测枚举
     _out_path(fn).write_bytes(data)
     return _faststart_video_file(fn)
@@ -1328,10 +1386,8 @@ def _download_video_file_direct(url, prefix="vid"):
     if not url:
         raise RuntimeError("直连未返回视频地址")
     req = urllib.request.Request(url, headers={"User-Agent": "huangque-content/1.0"})
-    with _heygen_direct_opener().open(req, timeout=360) as r:
-        data = r.read()
-    if not data:
-        raise RuntimeError("视频下载失败")
+    # 幂等 GET 下载成片：瞬时网络错误退避重试（不计费、可安全重试，#605）
+    data = _heygen_read_retry(lambda: _heygen_direct_opener().open(req, timeout=360), "成片直连下载")
     fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键(#185)
     _out_path(fn).write_bytes(data)
     return _faststart_video_file(fn)
