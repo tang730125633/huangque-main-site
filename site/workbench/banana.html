@@ -187,6 +187,7 @@
 (function(){
   var pr=document.getElementById('bPrompt'), gen=document.getElementById('bGen'),
       res=document.getElementById('bResult'), note=document.getElementById('bNote');
+  var collectHandoff=null;
   if(!gen) return;
   var ratio='9:16', engine='banana', quality='hd', count=1, bananaVariant='nb2', seedreamVariant='std';
   // 质量基价(最终=基价×数量)。nb2/pro 是 Nano Banana 卡下的两个型号，**点数不同**，
@@ -747,6 +748,7 @@
     if(_cb){ localStorage.removeItem('hq_collect_to_banana');  // 一次性消费，防下次误带
       var _cbd=JSON.parse(_cb);
       if(_cbd && _cbd.cover){
+        collectHandoff=_cbd;
         var _cim=new Image(); _cim.crossOrigin='anonymous';
         _cim.onload=function(){
           var ref=imageToRefDataUrl(_cim);
@@ -760,6 +762,26 @@
       }
     }
   }catch(e){}
+
+  // 只有从采集页进入时显示返回入口；把原链接带回，形成可续的双向工作流。
+  function showCollectReturn(){
+    if(!collectHandoff || document.getElementById('returnCollectBtn')) return;
+    var row=document.getElementById('actRow');
+    if(!row || !row.parentNode) return;
+    var btn=document.createElement('button');
+    btn.id='returnCollectBtn'; btn.type='button'; btn.className='hv-gold';
+    btn.textContent='← 返回采集素材';
+    btn.style.cssText='width:100%;margin-top:10px;padding:10px 12px;border:1px solid rgba(231,178,76,.28);border-radius:8px;background:rgba(231,178,76,.08);color:#e7b24c;font:600 13px inherit;cursor:pointer;';
+    btn.onclick=function(){
+      try{ localStorage.setItem('hq_banana_to_collect',JSON.stringify({
+        sourceUrl:collectHandoff.sourceUrl||'', title:collectHandoff.title||'',
+        imageUrl:lastResultUrl||'', ts:Date.now()
+      })); }catch(err){}
+      location.href='collect.html?handoff=banana';
+    };
+    row.parentNode.insertBefore(btn,row);
+  }
+  showCollectReturn();
 
   // 文生图 / 图生图（有参考图）/ nano banana
   gen.onclick=function(){

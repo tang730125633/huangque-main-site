@@ -954,7 +954,9 @@
     try {
       localStorage.setItem('hq_collect_to_banana', JSON.stringify({
         cover: currentResult.video.cover,
-        title: (currentResult.copy && currentResult.copy.title) || currentResult.video.title
+        title: (currentResult.copy && currentResult.copy.title) || currentResult.video.title,
+        sourceUrl: currentUrl,
+        ts: Date.now()
       }));
     } catch (e) {}
     location.href = 'banana.html';
@@ -970,6 +972,23 @@
     if (m) url = m[0];
     submitCollect(url, mode === 'download');
   };
+
+  // 从作图页返回时恢复采集入口上下文，避免跨页后还要重新找原链接。
+  try {
+    var bananaReturn = JSON.parse(localStorage.getItem('hq_banana_to_collect') || 'null');
+    if (bananaReturn) {
+      localStorage.removeItem('hq_banana_to_collect');
+      if (bananaReturn.sourceUrl && urlInput) {
+        urlInput.value = bananaReturn.sourceUrl;
+        currentUrl = bananaReturn.sourceUrl;
+      }
+      setNote(bananaReturn.imageUrl
+        ? '✅ 已从作图页返回，原采集链接已恢复；生成图已自动入库'
+        : '✅ 已从作图页返回，原采集链接已恢复', '#2bd576');
+    }
+  } catch (e) {
+    localStorage.removeItem('hq_banana_to_collect');
+  }
 
   /* ---- history ---- */
   function loadHistory() {
