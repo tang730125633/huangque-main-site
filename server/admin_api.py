@@ -1253,6 +1253,20 @@ def _empty_stats(message=None):
 
 
 def job_stats(days=7):
+    """调用统计。**按【功能】分组，不是按 kind。**
+
+    原来是 `GROUP BY kind`，于是：
+      * 果肉/豆姐/欧米（394 条）kind 都是 xiaole_video → 统计里是【一坨】，还显示成英文
+      * 数字人口播 和 动作模仿  kind 都是 video        → 也混在一起
+      * 五个作图引擎           kind 都是 image        → 也混在一起
+      * cinematic / avatar    根本没人认识            → 直接显示英文
+
+    功能是写在 payload 里的（channel / mode / provider / cine_mode），所以必须把 payload 读出来
+    才能分得开。payload 整条有几百 KB 的 base64 —— 只取前 4KB 的前缀（和日志那条路一样），
+    截断了就靠 _PAYLOAD_FIELD_RE 从前缀里捞。
+
+    分组键是 func_names.func_name() 的结果 —— 和「请求日志」「用户消费明细」用的是同一份映射。
+    """
     days = max(1, min(int(days or 7), 90))
     if not JOB_DB.exists():
         data = _empty_stats("content_jobs.db not found")
@@ -1262,58 +1276,67 @@ def job_stats(days=7):
     with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as c:
         c.row_factory = sqlite3.Row
         rows = c.execute(
-            """SELECT kind, status, COUNT(*) AS n
-               FROM jobs WHERE created_at >= ?
-               GROUP BY kind, status ORDER BY kind, status""",
+            """SELECT kind, status, date(created_at, 'unixepoch') AS day,
+                      substr(payload, 1, 4096) AS payload
+               FROM jobs WHERE created_at >= ?""",
             (since,),
         ).fetchall()
-        trend_rows = c.execute(
-            """SELECT date(created_at, 'unixepoch') AS day, kind, status, COUNT(*) AS n
-               FROM jobs WHERE created_at >= ?
-               GROUP BY day, kind, status ORDER BY day, kind""",
-            (since,),
-        ).fetchall()
-    by_kind = {}
+
+    by_func = {}
+    trend_counter = {}
     total = 0
     for row in rows:
         kind = row["kind"] or "unknown"
         status = row["status"] or "unknown"
-        count = int(row["n"] or 0)
-        total += count
-        bucket = by_kind.setdefault(kind, {"kind": kind, "total": 0, "done": 0, "error": 0, "running": 0, "other": 0})
-        bucket["total"] += count
+        func = call_func_name(kind, _job_payload(row["payload"]))
+        total += 1
+
+        bucket = by_func.setdefault(func, {
+            "func": func, "kind": kind,          # kind 保留：排查时要能看到底层是哪个队列
+            "total": 0, "done": 0, "error": 0, "running": 0, "other": 0,
+        })
+        bucket["total"] += 1
         if status == "done":
-            bucket["done"] += count
+            bucket["done"] += 1
         elif status == "error":
-            bucket["error"] += count
+            bucket["error"] += 1
         elif status in {"queued", "running"}:
-            bucket["running"] += count
+            bucket["running"] += 1
         else:
-            bucket["other"] += count
+            bucket["other"] += 1
+
+        key = (row["day"], func, status)
+        trend_counter[key] = trend_counter.get(key, 0) + 1
+
     items = []
     high_failure = []
-    for item in by_kind.values():
-        success_rate = item["done"] / item["total"] if item["total"] else 0
-        failure_rate = item["error"] / item["total"] if item["total"] else 0
-        item["success_rate"] = round(success_rate, 4)
-        item["failure_rate"] = round(failure_rate, 4)
+    for item in by_func.values():
+        item["success_rate"] = round(item["done"] / item["total"], 4) if item["total"] else 0
+        item["failure_rate"] = round(item["error"] / item["total"], 4) if item["total"] else 0
         items.append(item)
-        if item["total"] >= 3 and failure_rate >= 0.5:
+        if item["total"] >= 3 and item["failure_rate"] >= 0.5:
             high_failure.append(item)
+
     trend = [
-        {"day": row["day"], "kind": row["kind"], "status": row["status"], "count": int(row["n"] or 0)}
-        for row in trend_rows
+        {"day": day, "func": func, "kind": by_func[func]["kind"], "status": status, "count": n}
+        for (day, func, status), n in sorted(trend_counter.items())
     ]
     return {
         "days": days,
         "total": total,
+        # by_kind 这个键名不改：后台页面还在读它。里面的每条现在带 func（功能名）和 kind（底层队列）。
         "by_kind": sorted(items, key=lambda x: x["total"], reverse=True),
         "trend": trend,
         "high_failure": sorted(high_failure, key=lambda x: x["failure_rate"], reverse=True),
     }
 
 
-_PAYLOAD_FIELD_RE = re.compile(r'"(model|provider|mode|keyword|url|line)"\s*:\s*"([^"]*)"')
+# 功能命名需要的小字段。全都要在【payload 前缀】里 —— 整条 payload 有几百 KB 的 base64，
+# 只取前 4KB，JSON 会被截断，这时靠这个正则从前缀里捞。
+# channel(果肉/豆姐/欧米)、cine_mode(电影化身的三个玩法)、variant(Seedream Pro) 原来漏了 ——
+# 漏一个，那个维度在统计和日志里就永远分不出来。
+_PAYLOAD_FIELD_RE = re.compile(
+    r'"(model|provider|mode|keyword|url|line|channel|cine_mode|variant)"\s*:\s*"([^"]*)"')
 
 
 def _job_payload(raw):

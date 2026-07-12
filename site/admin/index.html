@@ -243,7 +243,9 @@
     var h=Math.floor(m/60); m=m%60;
     return h+'小时'+(m?m+'分':'');
   }
-  function kindName(k){return ({image:'图片生成',banana:'Nano Banana',audio:'配音生成',video:'视频口播',motion:'动作模仿',tryon:'换装换背景',collect:'内容采集',leads:'获客分析',leadgen:'获客分析',dl:'下载代理',copy:'文案生成',xiaole_video:'视频·小乐'})[k]||k}
+  // 功能名【由后端给】(x.func)。前端原来自己维护了一份 kind→名字表 —— 那是第三份拷贝，
+  // 而且最旧：video 一律叫「视频口播」(动作模仿也被算进去)、xiaole_video 叫「视频·小乐」
+  // (果肉/豆姐/欧米三个渠道一坨)、cinematic/avatar 根本不认识。删掉，别再各猜各的。
   function jobStatusName(s){return ({done:'已完成',error:'失败',running:'生成中',queued:'排队中',pending:'待处理'})[s]||s}
   function jobStatusPill(s){
     var cls='neutral';
@@ -309,7 +311,7 @@
     var items=d.items||[];
     el('reqCount').textContent=items.length+' 条（最新在前）';
     if(!items.length){el('reqBox').innerHTML='<div class="empty">'+esc(d.message||'没有匹配的日志')+'</div>';return}
-    el('reqBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>时间</th><th>类型</th><th>用户</th><th>功能</th><th>状态</th><th>耗时</th><th>点数</th><th>路径</th><th>来源 IP</th></tr></thead><tbody>'+items.map(function(x){
+    el('reqBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>时间</th><th>功能</th><th>用户</th><th>功能</th><th>状态</th><th>耗时</th><th>点数</th><th>路径</th><th>来源 IP</th></tr></thead><tbody>'+items.map(function(x){
       var isJob=x.source==='job';
       var type=isJob?'<span class="pill">任务</span>':'<span class="pill neutral">请求</span>';
       var user=x.user&&x.user!=='-'?'<b>'+esc(x.user)+'</b>':'<span class="muted">-</span>';
@@ -353,7 +355,7 @@
     el('featureBox').innerHTML=items.map(function(f){
       var online=f.online===null||f.online===undefined ? '未知' : (f.online?'在线':'离线');
       var onlineCls=f.online===null||f.online===undefined ? 'warn' : (f.online?'ok':'fail');
-      return '<div class="feature-card '+(f.enabled?'':'off')+'" data-feature="'+esc(f.key)+'"><div class="row"><div><b>'+esc(f.name||kindName(f.key))+'</b><div class="muted">'+esc(f.desc||'')+'</div></div><label class="switch"><input type="checkbox" '+(f.enabled?'checked':'')+'> 启用</label></div><div class="meta"><span class="pill '+(f.enabled?'ok':'fail')+'">'+(f.enabled?'已启用':'已禁用')+'</span><span class="pill '+onlineCls+'">'+online+'</span><span class="pill">'+esc(f.service_name||f.service||'')+'</span></div><div class="hint">最近更新：'+esc(fmtTime(f.updated_at))+(f.updated_by?' · '+esc(f.updated_by):'')+'</div><input class="reason" placeholder="启停原因，建议填写"><button class="mini">保存开关</button></div>';
+      return '<div class="feature-card '+(f.enabled?'':'off')+'" data-feature="'+esc(f.key)+'"><div class="row"><div><b>'+esc(f.name||f.key)+'</b><div class="muted">'+esc(f.desc||'')+'</div></div><label class="switch"><input type="checkbox" '+(f.enabled?'checked':'')+'> 启用</label></div><div class="meta"><span class="pill '+(f.enabled?'ok':'fail')+'">'+(f.enabled?'已启用':'已禁用')+'</span><span class="pill '+onlineCls+'">'+online+'</span><span class="pill">'+esc(f.service_name||f.service||'')+'</span></div><div class="hint">最近更新：'+esc(fmtTime(f.updated_at))+(f.updated_by?' · '+esc(f.updated_by):'')+'</div><input class="reason" placeholder="启停原因，建议填写"><button class="mini">保存开关</button></div>';
     }).join('');
     Array.prototype.forEach.call(document.querySelectorAll('.feature-card button'), function(btn){
       btn.onclick=function(){
@@ -454,7 +456,8 @@
   }
   function renderStats(st){
     var rows=(st.by_kind||[]).map(function(x){
-      return '<tr><td><b>'+esc(kindName(x.kind))+'</b><div class="muted">'+esc(x.kind)+'</div></td><td>'+Number(x.total||0).toLocaleString()+'</td><td>'+Number(x.done||0).toLocaleString()+'</td><td>'+Number(x.error||0).toLocaleString()+'</td><td>'+pct(x.success_rate)+'</td><td><div class="bar"><i style="width:'+pct(x.failure_rate)+'"></i></div><span class="muted">'+pct(x.failure_rate)+'</span></td></tr>';
+      // func = 功能名(后端给)；kind = 底层队列，排查时要能看到走的是哪个 worker 池
+      return '<tr><td><b>'+esc(x.func||x.kind)+'</b><div class="muted">'+esc(x.kind)+'</div></td><td>'+Number(x.total||0).toLocaleString()+'</td><td>'+Number(x.done||0).toLocaleString()+'</td><td>'+Number(x.error||0).toLocaleString()+'</td><td>'+pct(x.success_rate)+'</td><td><div class="bar"><i style="width:'+pct(x.failure_rate)+'"></i></div><span class="muted">'+pct(x.failure_rate)+'</span></td></tr>';
     }).join('');
     el('statsBox').innerHTML=rows?'<div class="table-wrap"><table><thead><tr><th>类型</th><th>总量</th><th>成功</th><th>失败</th><th>成功率</th><th>失败率</th></tr></thead><tbody>'+rows+'</tbody></table></div>':'<div class="empty">'+esc(st.message||'暂无调用数据')+'</div>';
   }
