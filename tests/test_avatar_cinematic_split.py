@@ -74,27 +74,25 @@ class PipelineWiringTests(unittest.TestCase):
     def test_avatar_pool_is_serial(self):
         self.assertEqual(core.AVATAR_JOB_WORKERS, 1, "建形象要求串行")
 
-    def test_heygen_concurrency_is_capped_at_the_account_level(self):
-        """HeyGen 的并发上限是【账号级】的，不是每个功能各一份。
+    def test_the_gate_does_not_throttle_the_workers_it_is_supposed_to_serve(self):
+        """并发闸必须【容得下】所有 worker，否则 worker 数就白设了。
 
-        官方文档（Usage Limits）：Pay-As-You-Go 的 Max Concurrent Video Jobs = 10，
-        且「Concurrent jobs include any asynchronous generation in progress」——
-        口播、剧情视频、翻译全都算在这 10 个里。
+        闸是【削峰】用的，不是挡并发的。20 路并发实测（10 口播 + 10 剧情视频同时生成）：
+        20/20 全部成功、零降速（口播 114s vs 单条基线 104s）—— HeyGen 的渲染容量远大于 20，
+        官方文档说的「Max Concurrent Video Jobs = 10」不是硬限制。
 
-        我们有三个池打同一个账号。各自为政的话最坏能凑出 20+ 个并发请求 → 必然 429，
-        而 429 会让任务判失败退点、用户白等几分钟。所以必须在本地共用一个信号量。
+        所以闸只需要 ≥ 所有打 HeyGen 的 worker 之和；配小了，worker 会卡在信号量上排队，
+        「口播 10 + 剧情 10」就变成了实际只有 10 个在跑。
         """
-        self.assertEqual(video.HEYGEN_MAX_CONCURRENCY, 10)
-        self.assertEqual(video._heygen_gen_sem._initial_value, 10)
+        heygen_workers = core.TALKING_JOB_WORKERS + core.CINEMATIC_JOB_WORKERS + core.AVATAR_JOB_WORKERS
+        self.assertGreaterEqual(video.HEYGEN_MAX_CONCURRENCY, heygen_workers,
+                                "闸(%d) 小于打 HeyGen 的 worker 总数(%d) —— worker 数白设了"
+                                % (video.HEYGEN_MAX_CONCURRENCY, heygen_workers))
+        self.assertEqual(video._heygen_gen_sem._initial_value, video.HEYGEN_MAX_CONCURRENCY)
 
-    def test_the_slow_feature_cannot_starve_the_fast_one(self):
-        """剧情视频每条占槽 ~500s，口播只占 ~104s。
-
-        不给慢的那个设份额上限，10 条剧情视频就能占满全部 10 个槽，把口播饿死 8 分钟。
-        所以 cinematic 的 worker 数就是它的份额上限：最多占 5 个槽，永远给口播留 5 个。
-        """
-        self.assertLessEqual(core.CINEMATIC_JOB_WORKERS, video.HEYGEN_MAX_CONCURRENCY // 2,
-                             "剧情视频的份额不能超过一半，否则会饿死口播")
+    def test_cinematic_gets_a_real_pool_now_that_20_way_is_proven(self):
+        # 20 路并发实测通过 → 剧情视频不再需要「份额上限」，给满 10 个
+        self.assertEqual(core.CINEMATIC_JOB_WORKERS, 10)
 
     def test_every_heygen_generation_path_takes_a_slot(self):
         """漏掉任何一条路径，那条就绕过了闸 —— 包括中转（泽龙转发的是同一个账号）。"""

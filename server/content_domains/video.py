@@ -1178,20 +1178,23 @@ def _heygen_retry_429(fn, what=""):
             time.sleep(delay)
 
 
-# ============ HeyGen 账号级并发闸 ============
-# 官方文档（Usage Limits）：Pay-As-You-Go 的 "Max Concurrent Video Jobs" = 10，而且这个 10 是
-# 【跨所有任务类型的账号级上限】——「Concurrent jobs include any asynchronous generation in
-# progress: Video Agent sessions, avatar video renders, and video translations」。
-# 不是每个功能各 10 个。超了 HeyGen 直接返回 429。
+# ============ HeyGen 账号级并发闸（削峰用，不是挡并发） ============
+# 官方文档（Usage Limits）说 Pay-As-You-Go 的 "Max Concurrent Video Jobs" = 10。
+# 【实测证明这不是硬限制】——2026-07-12 跑 20 路并发（10 口播 + 10 剧情视频同时生成）：
+#     20/20 全部成功出片，零降速（口播平均 114s，而单条基线是 104s）
+#     10 并发 133s / 13 并发 169s / 20 并发 114s —— 前两轮的「降速」是噪声，不是并发导致的
+# 所以 HeyGen 的渲染容量远大于 20，那个 10 拦不住我们。
 #
-# 我们有三个池打同一个 HeyGen 账号：口播(10 worker) + AI剧情视频 + 建形象。各自为政的话，
-# 最坏能凑出 20+ 个并发请求 → 必然 429。而 429 会让任务判失败退点、用户白等几分钟。
-# 所以在【本地】共用一个信号量：超了在本地排队，把 429 挡在门外。
+# 真正的限制是【提交突发】：20 个 POST 同一瞬间打出去 → 8 个 429（rate_limit_exceeded，
+# 「please reduce the RATE to call this api」）。而退避 1.7~2.5 秒重发，一次就全过。
+# 兜住它的是 _heygen_retry_429，不是这个信号量。
 #
-# 槽只在【生成期间】持有（建视频 → 轮询出片）—— 这正是 HeyGen 说的 "generation in progress"。
-# 上传素材、查 look 状态这些同步调用不占槽（它们不产生 async job）。
-# 中转(泽龙)转发的是同一个账号，所以中转路径同样要占槽。
-HEYGEN_MAX_CONCURRENCY = int(os.environ.get("HEYGEN_MAX_CONCURRENCY", "10") or 10)
+# 那这个信号量还留着干嘛？—— 削峰。它把同时在飞的请求数摊平（21 = 口播10 + 剧情10 + 建形象1），
+# 顺带降低撞 429 的概率，是重试之外的一层保险。真要放开，改 env 即可，不用动代码。
+#
+# 槽只在【生成期间】持有（建视频 → 轮询出片）。上传素材、查 look 状态不占槽。
+# 中转(泽龙)转发的是同一个账号，所以中转路径同样要占槽 —— 不占就等于绕过了闸。
+HEYGEN_MAX_CONCURRENCY = int(os.environ.get("HEYGEN_MAX_CONCURRENCY", "21") or 21)
 _heygen_gen_sem = threading.BoundedSemaphore(HEYGEN_MAX_CONCURRENCY)
 
 
