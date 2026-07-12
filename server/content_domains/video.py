@@ -8,6 +8,8 @@ from .core import (
     re, subprocess, threading, time, urllib, uuid,
 )
 
+import random   # 429 退避重试的抖动：不加抖动，同一批 worker 退避后又会撞在一起
+
 from .audio import gen_audio
 
 VALID_VIDEO_MODES = {"text", "audio", "motion"}
@@ -783,6 +785,10 @@ def _heygen_request_json(method, path, body=None, headers=None, timeout=180, dir
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace").replace("\n", " ")[:600]
         print("[heygen] FAIL %s %s -> HTTP %s %s" % (method, path, e.code, detail), flush=True)
+        if e.code == 429:
+            # 429 单独成一类：请求被【瞬间拒绝、未被处理、未计费】，可以安全重发。
+            # 其余错误(超时/RST/5xx)不行——HeyGen 提交即扣 credit，那些可能已经计费了。
+            raise HeyGenRateLimited("HeyGen 限流(429): %s" % detail) from e
         raise RuntimeError("HeyGen接口失败: HTTP %s %s" % (e.code, detail)) from e
     except urllib.error.URLError as e:
         detail = str(e.reason)[:300]
@@ -1118,6 +1124,44 @@ def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, re
         raise RuntimeError("HeyGen未返回video_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
     return video_id
 
+class HeyGenRateLimited(RuntimeError):
+    """HeyGen 429。请求被【瞬间拒绝、未被处理、未计费】—— 这是唯一可以安全重发的失败。
+
+    2026-07-12 实测（20 路同时提交：10 口播 + 10 剧情视频）：
+        7 个 429，全部在 1.1 秒内瞬间返回；错误码是 `rate_limit_exceeded`，
+        原文「please reduce the RATE to call this api」—— 这是【速率】墙，不是并发墙。
+        而被接受的 13 条【全部成功出片】，说明并发本身没到顶（文档说的 10 并没有拦我们）。
+
+    与之相对：超时 / RST / 5xx 【绝不能】重发 —— HeyGen 提交即扣 credit，
+    那些失败发生在请求已经送达之后，视频可能已经在生成、钱已经花了。
+    （同一条纪律见 HeyGenBilledError，以及 egress.post_json 的 _pre_delivery_failure。）
+    """
+
+
+# 429 退避重试。不重试的话，一次突发就把用户的任务判死退点、白等几分钟——
+# 而实测 20 路里有 13 路是过的，被拒的那 7 个退避几秒重发几乎必成。
+HEYGEN_429_TRIES = int(os.environ.get("HEYGEN_429_TRIES", "6") or 6)
+HEYGEN_429_MAX_WAIT = int(os.environ.get("HEYGEN_429_MAX_WAIT", "120") or 120)
+
+
+def _heygen_retry_429(fn, what=""):
+    """只对 429 退避重试；其它异常原样抛出（可能已计费，绝不能重发）。"""
+    waited = 0.0
+    for i in range(HEYGEN_429_TRIES):
+        try:
+            return fn()
+        except HeyGenRateLimited:
+            if i == HEYGEN_429_TRIES - 1:
+                raise
+            # 抖动避免同一批 worker 退避后又撞在一起（那正是 429 的成因）
+            delay = min(20.0, 2.0 * (2 ** i)) * (0.7 + random.random() * 0.6)
+            if waited + delay > HEYGEN_429_MAX_WAIT:
+                raise
+            waited += delay
+            print("[heygen] %s 撞 429，退避重试(%d/%d) 等 %.1fs" % (what, i + 1, HEYGEN_429_TRIES, delay), flush=True)
+            time.sleep(delay)
+
+
 # ============ HeyGen 账号级并发闸 ============
 # 官方文档（Usage Limits）：Pay-As-You-Go 的 "Max Concurrent Video Jobs" = 10，而且这个 10 是
 # 【跨所有任务类型的账号级上限】——「Concurrent jobs include any asynchronous generation in
@@ -1282,7 +1326,11 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, moti
     image_asset_id = _heygen_upload_asset(image_fp, direct=True)
     audio_asset_id = _heygen_upload_asset(audio_fp, direct=True)
     with heygen_slot("口播直连"):   # 账号级并发上限 10，三个池共用；超了在本地排队，不让 HeyGen 甩 429
-        video_id = _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion, direct=True)
+        # 429 退避重试：请求被瞬间拒绝、未计费，是唯一可以安全重发的失败。
+        # 不重试的话，一次突发就把用户的任务判死退点、白等几分钟。
+        video_id = _heygen_retry_429(
+            lambda: _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion, direct=True),
+            "口播直连")
         # ↓ 此刻已计费。之后任何失败都不能回退中转重发（同一账号，会再付一次），见 HeyGenBilledError
         try:
             info = _heygen_poll_video(video_id, direct=True, deadline_s=450)  # 直连轮询死线450s，配套 reaper 口播 540s
@@ -1320,7 +1368,8 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
     audio_asset_id = _heygen_upload_asset(audio_fp)
     # 中转(泽龙)转发的是同一个 HeyGen 账号，一样占账号的并发额度 —— 不占槽就等于绕过了闸
     with heygen_slot("口播中转"):
-        video_id = _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion)
+        video_id = _heygen_retry_429(
+            lambda: _heygen_create_video(image_asset_id, audio_asset_id, resolution, ratio, motion), "口播中转")
         info = _heygen_poll_video(video_id)
         video_file = _download_video_file(info["video_url"], "heygen")
         cover = _extract_first_frame_cover(video_file)
@@ -2268,7 +2317,8 @@ def gen_avatar(payload):
     fp = _ensure_heygen_image_jpg(_resolve_out_file(image_file))
     try:
         asset_id = _heygen_upload_asset(fp, direct=True)
-        item_id, group_id = _heygen_create_photo_avatar(asset_id, direct=True)
+        item_id, group_id = _heygen_retry_429(
+            lambda: _heygen_create_photo_avatar(asset_id, direct=True), "建形象")
         _heygen_wait_photo_avatar(item_id, group_id, direct=True)
     except Exception as e:
         # 线上最常见的失败就是这个。原样把 HeyGen 的英文报文抛给用户毫无意义，翻译成人话。
@@ -2372,9 +2422,9 @@ def gen_cinematic(payload):
     # 账号级并发闸：和口播共用 10 个槽（HeyGen 的上限是账号级的，不是每个功能各 10 个）。
     # 素材上传在闸外——它不产生 async job，不占 HeyGen 的并发额度。
     with heygen_slot("剧情视频"):
-        video_id = _heygen_create_cinematic_video(
+        video_id = _heygen_retry_429(lambda: _heygen_create_cinematic_video(
             look_ids, reference_asset_id, payload["ratio"], payload["resolution"], payload["duration"],
-            prompt=payload["prompt"] + CINEMATIC_IDENTITY_GUARD, direct=True)
+            prompt=payload["prompt"] + CINEMATIC_IDENTITY_GUARD, direct=True), "剧情视频")
 
         # ↓ 此刻已计费。之后任何失败都不能重发（见 HeyGenBilledError）——HeyGen 提交即扣费。
         update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id)
