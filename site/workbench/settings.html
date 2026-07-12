@@ -60,6 +60,10 @@
   .member-name{font-size:13.5px;font-weight:800;color:#eaf1fa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .member-sub{margin-top:3px;font-size:12px;color:#6f7f96}
   .member-empty{padding:14px;border:1px dashed rgba(148,164,187,.16);border-radius:10px;color:#6f7f96;font-size:12.5px;line-height:1.6}
+  .friend-section{margin-top:14px}
+  .friend-section-title{font-size:12.5px;font-weight:800;color:#eaf1fa;margin-bottom:8px}
+  .friend-actions{display:flex;gap:8px;flex:none}
+  .friend-actions .btn{height:30px;padding:0 10px;font-size:12px}
   .badge{height:24px;padding:0 9px;border-radius:7px;font-size:11.5px;font-weight:800;display:inline-flex;align-items:center;flex:none;background:rgba(231,178,76,.12);color:#e7b24c}
   .badge.muted{background:rgba(148,164,187,.1);color:#94a4bb}
   .billing-card{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:15px;border:1px solid rgba(231,178,76,.18);border-radius:10px;background:linear-gradient(120deg,rgba(231,178,76,.09),rgba(7,11,19,.24));margin-top:14px}
@@ -170,16 +174,31 @@
           <div class="settings-card-head">
             <div>
               <div class="settings-card-title">好友</div>
-              <div class="settings-card-note">用账号 ID 添加团队成员，便于后续协作。</div>
+              <div class="settings-card-note">用账号 ID 发送好友申请，对方同意后才会成为好友。</div>
             </div>
             <span id="friendsCount" class="badge muted">0 人</span>
           </div>
           <form id="friendForm" class="friend-form">
             <input id="friendAccountIdInput" type="text" maxlength="8" autocomplete="off" placeholder="输入账号 ID">
-            <button id="addFriendBtn" class="btn primary" type="submit">添加好友</button>
+            <button id="addFriendBtn" class="btn primary" type="submit">发送申请</button>
           </form>
-          <div id="friendsList" class="member-list" aria-live="polite">
-            <div class="member-empty">还没有好友，输入对方账号 ID 后添加。</div>
+          <div class="friend-section">
+            <div class="friend-section-title">收到的申请</div>
+            <div id="incomingRequestsList" class="member-list" aria-live="polite">
+              <div class="member-empty">暂无收到的好友申请。</div>
+            </div>
+          </div>
+          <div class="friend-section">
+            <div class="friend-section-title">发出的申请</div>
+            <div id="outgoingRequestsList" class="member-list" aria-live="polite">
+              <div class="member-empty">暂无等待对方同意的申请。</div>
+            </div>
+          </div>
+          <div class="friend-section">
+            <div class="friend-section-title">好友列表</div>
+            <div id="friendsList" class="member-list" aria-live="polite">
+              <div class="member-empty">还没有好友。</div>
+            </div>
           </div>
         </div>
       </section>
@@ -529,17 +548,21 @@
       .catch(function(){ toast('复制失败，请手动选择账号 ID'); });
   });
 
-  function friendStorageKey(){ return accountKey('hq_friends_v1'); }
+  function friendStateKey(){ return accountKey('hq_friend_state_v1'); }
 
   function friendName(friend){
     return friend.name || friend.display_name || friend.username || '未命名好友';
+  }
+
+  function requestUser(req, side){
+    return side === 'from' ? (req.from_user || {}) : (req.to_user || {});
   }
 
   function renderFriends(items){
     items = Array.isArray(items) ? items : [];
     $('friendsCount').textContent = items.length + ' 人';
     if(!items.length){
-      $('friendsList').innerHTML = '<div class="member-empty">还没有好友，输入对方账号 ID 后添加。</div>';
+      $('friendsList').innerHTML = '<div class="member-empty">还没有好友。</div>';
       return;
     }
     $('friendsList').innerHTML = items.map(function(friend){
@@ -555,34 +578,92 @@
     }).join('');
   }
 
-  function localFriends(){
-    var data = readJson(friendStorageKey());
-    return Array.isArray(data.items) ? data.items : [];
+  function renderRequests(targetId, items, side, emptyText){
+    items = Array.isArray(items) ? items : [];
+    if(!items.length){
+      $(targetId).innerHTML = '<div class="member-empty">' + esc(emptyText) + '</div>';
+      return;
+    }
+    $(targetId).innerHTML = items.map(function(req){
+      var user = requestUser(req, side);
+      var name = friendName(user);
+      var username = user.username ? '@' + user.username : '@--';
+      var accountId = user.account_id || '--';
+      var actions = side === 'from'
+        ? '<div class="friend-actions">' +
+            '<button class="btn primary" type="button" data-action="accept" data-request-id="' + esc(req.id) + '">同意</button>' +
+            '<button class="btn danger" type="button" data-action="reject" data-request-id="' + esc(req.id) + '">拒绝</button>' +
+          '</div>'
+        : '<span class="badge muted">等待同意</span>';
+      return '<div class="member-row">' +
+        '<div class="member-avatar">' + esc(initial(name)) + '</div>' +
+        '<div class="member-main"><div class="member-name">' + esc(name) + '</div>' +
+        '<div class="member-sub">' + esc(username) + ' · ' + esc(accountId) + '</div></div>' +
+        actions +
+      '</div>';
+    }).join('');
   }
 
-  function saveLocalFriends(items){
-    writeJson(friendStorageKey(), {items:items || []});
+  function localFriendState(){
+    var data = readJson(friendStateKey());
+    return {
+      friends: Array.isArray(data.friends) ? data.friends : [],
+      incoming: Array.isArray(data.incoming) ? data.incoming : [],
+      outgoing: Array.isArray(data.outgoing) ? data.outgoing : []
+    };
   }
 
-  function addLocalFriend(accountId){
-    var items=localFriends();
-    if(items.some(function(item){ return item.account_id === accountId; })) return false;
-    items.unshift({name:'好友',username:'',account_id:accountId});
-    saveLocalFriends(items);
-    renderFriends(items);
+  function saveLocalFriendState(state){
+    writeJson(friendStateKey(), {
+      friends: state.friends || [],
+      incoming: state.incoming || [],
+      outgoing: state.outgoing || []
+    });
+  }
+
+  function renderFriendState(state){
+    state = state || localFriendState();
+    renderRequests('incomingRequestsList', state.incoming, 'from', '暂无收到的好友申请。');
+    renderRequests('outgoingRequestsList', state.outgoing, 'to', '暂无等待对方同意的申请。');
+    renderFriends(state.friends);
+  }
+
+  function addLocalOutgoingRequest(accountId){
+    var state=localFriendState();
+    var exists = state.outgoing.some(function(item){
+      return item && item.to_user && item.to_user.account_id === accountId;
+    });
+    if(exists) return false;
+    state.outgoing.unshift({
+      id:'local-' + Date.now(),
+      status:'pending',
+      created_at:Date.now(),
+      to_user:{name:'待验证账号',username:'',account_id:accountId}
+    });
+    saveLocalFriendState(state);
+    renderFriendState(state);
     return true;
   }
 
-  function loadFriends(){
-    apiFetch('/api/auth/friends').then(function(res){
-      if(res && res.ok && res.data && Array.isArray(res.data.friends)){
-        saveLocalFriends(res.data.friends);
-        renderFriends(res.data.friends);
+  function loadFriendState(){
+    Promise.all([
+      apiFetch('/api/auth/friends'),
+      apiFetch('/api/auth/friend-requests')
+    ]).then(function(results){
+      var friendsRes = results[0], requestsRes = results[1];
+      if(friendsRes && friendsRes.ok && requestsRes && requestsRes.ok){
+        var state = {
+          friends: Array.isArray(friendsRes.data.friends) ? friendsRes.data.friends : [],
+          incoming: Array.isArray(requestsRes.data.incoming) ? requestsRes.data.incoming : [],
+          outgoing: Array.isArray(requestsRes.data.outgoing) ? requestsRes.data.outgoing : []
+        };
+        saveLocalFriendState(state);
+        renderFriendState(state);
         return;
       }
-      renderFriends(localFriends());
+      renderFriendState(localFriendState());
     }).catch(function(){
-      renderFriends(localFriends());
+      renderFriendState(localFriendState());
     });
   }
 
@@ -596,17 +677,20 @@
     var accountId=(input.value||'').trim().toUpperCase();
     if(!accountId){ toast('请填写账号 ID'); input.focus(); return; }
     if(activeUser && accountId === activeUser.account_id){ toast('不能添加自己'); return; }
-    setBusy(btn,true,'添加中');
-    apiFetch('/api/auth/friends/add',{
+    setBusy(btn,true,'发送中');
+    apiFetch('/api/auth/friends/request',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({account_id:accountId})
     }).then(function(res){
-      if(res && res.ok && res.data && Array.isArray(res.data.friends)){
+      if(res && res.ok && res.data && res.data.requests){
         input.value='';
-        saveLocalFriends(res.data.friends);
-        renderFriends(res.data.friends);
-        toast('好友已添加');
+        var state = localFriendState();
+        state.incoming = Array.isArray(res.data.requests.incoming) ? res.data.requests.incoming : [];
+        state.outgoing = Array.isArray(res.data.requests.outgoing) ? res.data.requests.outgoing : [];
+        saveLocalFriendState(state);
+        renderFriendState(state);
+        toast('好友申请已发送');
         return;
       }
       if(res && res.status === 409){
@@ -614,25 +698,52 @@
         return;
       }
       if(res && res.status === 404 && res.data && res.data.detail === 'not found'){
-        if(addLocalFriend(accountId)){
+        if(addLocalOutgoingRequest(accountId)){
           input.value='';
-          toast('好友已添加到本地预览');
+          toast('好友申请已发送到本地预览');
         }else{
-          toast('已经是好友');
+          toast('好友申请已发送');
         }
         return;
       }
-      if(res && !res.ok) throw new Error(res.data.detail || '添加好友失败');
-      if(addLocalFriend(accountId)){
+      if(res && !res.ok) throw new Error(res.data.detail || '发送好友申请失败');
+      if(addLocalOutgoingRequest(accountId)){
         input.value='';
-        toast('好友已添加到本地预览');
+        toast('好友申请已发送到本地预览');
       }else{
-        toast('已经是好友');
+        toast('好友申请已发送');
       }
     }).catch(function(err){
-      toast(err.message || '添加好友失败');
+      toast(err.message || '发送好友申请失败');
     }).finally(function(){
-      setBusy(btn,false,'添加好友');
+      setBusy(btn,false,'发送申请');
+    });
+  });
+
+  $('incomingRequestsList').addEventListener('click',function(e){
+    var btn=e.target.closest('button[data-action][data-request-id]');
+    if(!btn) return;
+    var action=btn.getAttribute('data-action');
+    var requestId=btn.getAttribute('data-request-id');
+    setBusy(btn,true,action === 'accept' ? '同意中' : '拒绝中');
+    apiFetch('/api/auth/friend-requests/respond',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({request_id:requestId,action:action})
+    }).then(function(res){
+      if(!res || !res.ok) throw new Error(res && res.data && res.data.detail || '处理好友申请失败');
+      var state = {
+        friends: Array.isArray(res.data.friends) ? res.data.friends : localFriendState().friends,
+        incoming: res.data.requests && Array.isArray(res.data.requests.incoming) ? res.data.requests.incoming : [],
+        outgoing: res.data.requests && Array.isArray(res.data.requests.outgoing) ? res.data.requests.outgoing : []
+      };
+      saveLocalFriendState(state);
+      renderFriendState(state);
+      toast(action === 'accept' ? '已添加好友' : '已拒绝申请');
+    }).catch(function(err){
+      toast(err.message || '处理好友申请失败');
+    }).finally(function(){
+      setBusy(btn,false,action === 'accept' ? '同意' : '拒绝');
     });
   });
 
@@ -643,7 +754,7 @@
         throw new Error(res.data && res.data.detail || '账号读取失败');
       }
       renderUser(res.data.user);
-      loadFriends();
+      loadFriendState();
       if(window.HQ && typeof window.HQ.refreshPoints === 'function') window.HQ.refreshPoints();
     }).catch(function(e){
       $('accountStatus').textContent = '读取失败';

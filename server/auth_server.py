@@ -74,6 +74,17 @@ def init_db():
         UNIQUE(username, friend_username)
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_friendships_user ON friendships(username, id DESC)")
+    c.execute("""CREATE TABLE IF NOT EXISTS friend_requests(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_username TEXT NOT NULL,
+        to_username TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at INTEGER NOT NULL,
+        reviewed_at INTEGER,
+        UNIQUE(from_username, to_username, status)
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_friend_requests_to ON friend_requests(to_username, status, id DESC)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_friend_requests_from ON friend_requests(from_username, status, id DESC)")
     c.execute("""CREATE TABLE IF NOT EXISTS recharge_orders(
         order_id TEXT PRIMARY KEY,
         username TEXT NOT NULL,
@@ -208,6 +219,113 @@ def add_friend_by_account_id(username, account_id):
                 "friend_created_at": int(time.time()),
             }), "exists"
         return list_friends(username), None
+    finally:
+        c.close()
+
+def public_friend_request(row):
+    return {
+        "id": row["id"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "reviewed_at": row["reviewed_at"],
+        "from_user": {
+            "username": row["from_username"],
+            "name": row["from_display_name"] or row["from_username"],
+            "account_id": row["from_account_id"] or "",
+        },
+        "to_user": {
+            "username": row["to_username"],
+            "name": row["to_display_name"] or row["to_username"],
+            "account_id": row["to_account_id"] or "",
+        },
+    }
+
+def list_friend_requests(username):
+    c = db()
+    try:
+        rows = c.execute("""SELECT r.id, r.from_username, r.to_username, r.status, r.created_at, r.reviewed_at,
+                                   fu.display_name AS from_display_name, fu.account_id AS from_account_id,
+                                   tu.display_name AS to_display_name, tu.account_id AS to_account_id
+                            FROM friend_requests r
+                            JOIN users fu ON fu.username=r.from_username
+                            JOIN users tu ON tu.username=r.to_username
+                            WHERE (r.from_username=? OR r.to_username=?) AND r.status='pending'
+                            ORDER BY r.id DESC""", (username, username)).fetchall()
+        incoming, outgoing = [], []
+        for row in rows:
+            item = public_friend_request(row)
+            if row["to_username"] == username:
+                incoming.append(item)
+            else:
+                outgoing.append(item)
+        return {"incoming": incoming, "outgoing": outgoing}
+    finally:
+        c.close()
+
+def are_friends(c, username, friend_username):
+    row = c.execute("""SELECT 1 FROM friendships
+                       WHERE username=? AND friend_username=?""", (username, friend_username)).fetchone()
+    return bool(row)
+
+def create_friend_request(username, account_id):
+    account_id = (account_id or "").strip().upper()
+    if not account_id:
+        return None, "missing"
+    c = db()
+    try:
+        me = c.execute("SELECT username, account_id FROM users WHERE username=?", (username,)).fetchone()
+        if not me:
+            return None, "not_found"
+        friend = c.execute("""SELECT username, display_name, account_id, role
+                              FROM users WHERE account_id=?""", (account_id,)).fetchone()
+        if not friend:
+            return None, "not_found"
+        if friend["username"] == username:
+            return None, "self"
+        if are_friends(c, username, friend["username"]):
+            return None, "already_friends"
+        reverse = c.execute("""SELECT id FROM friend_requests
+                               WHERE from_username=? AND to_username=? AND status='pending'""",
+                            (friend["username"], username)).fetchone()
+        if reverse:
+            return None, "incoming_pending"
+        try:
+            c.execute("""INSERT INTO friend_requests(from_username, to_username, status, created_at)
+                         VALUES(?,?,?,?)""", (username, friend["username"], "pending", int(time.time())))
+            c.commit()
+        except sqlite3.IntegrityError:
+            return None, "pending"
+        return list_friend_requests(username), None
+    finally:
+        c.close()
+
+def respond_friend_request(username, request_id, action):
+    action = (action or "").strip().lower()
+    if action not in ("accept", "reject"):
+        return None, "bad_action"
+    try:
+        request_id = int(request_id)
+    except Exception:
+        return None, "missing"
+    c = db()
+    try:
+        row = c.execute("""SELECT * FROM friend_requests
+                           WHERE id=? AND to_username=? AND status='pending'""",
+                        (request_id, username)).fetchone()
+        if not row:
+            return None, "not_found"
+        now = int(time.time())
+        status = "accepted" if action == "accept" else "rejected"
+        c.execute("""UPDATE friend_requests SET status=?, reviewed_at=?
+                     WHERE id=? AND to_username=? AND status='pending'""",
+                  (status, now, request_id, username))
+        if action == "accept":
+            c.execute("""INSERT OR IGNORE INTO friendships(username, friend_username, created_at)
+                         VALUES(?,?,?)""", (row["from_username"], row["to_username"], now))
+            c.execute("""INSERT OR IGNORE INTO friendships(username, friend_username, created_at)
+                         VALUES(?,?,?)""", (row["to_username"], row["from_username"], now))
+        c.commit()
+        return {"friends": list_friends(username), "requests": list_friend_requests(username)}, None
     finally:
         c.close()
 
@@ -956,23 +1074,42 @@ class H(BaseHTTPRequestHandler):
                 fresh["username"], fresh["display_name"], fresh["points"], fresh["role"], fresh["must_change"],
                 fresh["account_id"] or ensure_account_id(fresh["username"])
             )})
-        if p == "/api/auth/friends/add":
+        if p in {"/api/auth/friends/request", "/api/auth/friends/add"}:
             row = self._user()
             if not row:
                 return self._send(401, {"detail": "未登录"})
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
-            friends, err = add_friend_by_account_id(row["username"], d.get("account_id"))
+            requests, err = create_friend_request(row["username"], d.get("account_id"))
             if err == "missing":
                 return self._send(400, {"detail": "请填写账号 ID"})
             if err == "not_found":
                 return self._send(404, {"detail": "账号 ID 不存在"})
             if err == "self":
                 return self._send(400, {"detail": "不能添加自己"})
-            if err == "exists":
-                return self._send(409, {"detail": "已经是好友", "friend": friends})
-            return self._send(200, {"ok": True, "friends": friends})
+            if err == "already_friends":
+                return self._send(409, {"detail": "已经是好友"})
+            if err == "pending":
+                return self._send(409, {"detail": "好友申请已发送"})
+            if err == "incoming_pending":
+                return self._send(409, {"detail": "对方已发来好友申请，请先处理"})
+            return self._send(200, {"ok": True, "requests": requests})
+        if p == "/api/auth/friend-requests/respond":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            data, err = respond_friend_request(row["username"], d.get("request_id"), d.get("action"))
+            if err == "missing":
+                return self._send(400, {"detail": "缺少申请 ID"})
+            if err == "bad_action":
+                return self._send(400, {"detail": "操作必须是 accept 或 reject"})
+            if err == "not_found":
+                return self._send(404, {"detail": "好友申请不存在"})
+            return self._send(200, {"ok": True, **data})
         self._send(404, {"detail": "not found"})
 
     def do_GET(self):
@@ -1063,6 +1200,10 @@ class H(BaseHTTPRequestHandler):
             row = self._user()
             if not row: return self._send(401, {"detail": "未登录"})
             return self._send(200, {"ok": True, "friends": list_friends(row["username"])})
+        if p == "/api/auth/friend-requests":
+            row = self._user()
+            if not row: return self._send(401, {"detail": "未登录"})
+            return self._send(200, {"ok": True, **list_friend_requests(row["username"])})
         if p == "/api/auth/health":
             return self._send(200, {"ok": True, "service": "huangque-auth"})
         self._send(404, {"detail": "not found"})

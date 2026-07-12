@@ -57,6 +57,12 @@ class AuthProfileTests(unittest.TestCase):
         with (client or self.client).open(self.base + path, timeout=3) as response:
             return json.loads(response.read())
 
+    def _login_client(self, username):
+        jar = http.cookiejar.CookieJar()
+        client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        self._post("/api/auth/login", {"username": username, "password": "secret123"}, client)
+        return client
+
     def test_profile_updates_display_name_only(self):
         data = self._post("/api/auth/profile", {
             "display_name": "  新昵称  ", "role": "admin", "points": 999999,
@@ -102,7 +108,7 @@ class AuthProfileTests(unittest.TestCase):
         data = self._get("/api/auth/me")
         self.assertEqual(len(data["user"]["account_id"]), self.auth.ACCOUNT_ID_LENGTH)
 
-    def test_add_friend_by_account_id(self):
+    def test_friend_request_requires_acceptance(self):
         c = sqlite3.connect(self.auth.DB)
         try:
             account_id = c.execute(
@@ -110,16 +116,31 @@ class AuthProfileTests(unittest.TestCase):
             ).fetchone()[0]
         finally:
             c.close()
-        data = self._post("/api/auth/friends/add", {"account_id": account_id.lower()})
+        data = self._post("/api/auth/friends/request", {"account_id": account_id.lower()})
         self.assertTrue(data["ok"])
-        self.assertEqual(data["friends"][0]["username"], "friend_user")
+        self.assertEqual(data["requests"]["outgoing"][0]["to_user"]["username"], "friend_user")
+        listed = self._get("/api/auth/friends")
+        self.assertEqual(listed["friends"], [])
+
+        friend_client = self._login_client("friend_user")
+        incoming = self._get("/api/auth/friend-requests", friend_client)
+        self.assertEqual(incoming["incoming"][0]["from_user"]["username"], "profile_user")
+        request_id = incoming["incoming"][0]["id"]
+        accepted = self._post(
+            "/api/auth/friend-requests/respond",
+            {"request_id": request_id, "action": "accept"},
+            friend_client,
+        )
+        self.assertTrue(accepted["ok"])
+        self.assertEqual(accepted["friends"][0]["username"], "profile_user")
+
         listed = self._get("/api/auth/friends")
         self.assertEqual(listed["friends"][0]["account_id"], account_id)
 
-    def test_add_friend_rejects_self_and_duplicate(self):
+    def test_friend_request_rejects_self_duplicate_and_existing_friend(self):
         me = self._get("/api/auth/me")["user"]["account_id"]
         with self.assertRaises(urllib.error.HTTPError) as self_ctx:
-            self._post("/api/auth/friends/add", {"account_id": me})
+            self._post("/api/auth/friends/request", {"account_id": me})
         self.assertEqual(self_ctx.exception.code, 400)
         c = sqlite3.connect(self.auth.DB)
         try:
@@ -128,10 +149,21 @@ class AuthProfileTests(unittest.TestCase):
             ).fetchone()[0]
         finally:
             c.close()
-        self._post("/api/auth/friends/add", {"account_id": account_id})
+        self._post("/api/auth/friends/request", {"account_id": account_id})
         with self.assertRaises(urllib.error.HTTPError) as dup_ctx:
-            self._post("/api/auth/friends/add", {"account_id": account_id})
+            self._post("/api/auth/friends/request", {"account_id": account_id})
         self.assertEqual(dup_ctx.exception.code, 409)
+
+        friend_client = self._login_client("friend_user")
+        request_id = self._get("/api/auth/friend-requests", friend_client)["incoming"][0]["id"]
+        self._post(
+            "/api/auth/friend-requests/respond",
+            {"request_id": request_id, "action": "accept"},
+            friend_client,
+        )
+        with self.assertRaises(urllib.error.HTTPError) as existing_ctx:
+            self._post("/api/auth/friends/request", {"account_id": account_id})
+        self.assertEqual(existing_ctx.exception.code, 409)
 
     def test_profile_rejects_empty_and_long_names(self):
         for name in ("   ", "a" * 33):
