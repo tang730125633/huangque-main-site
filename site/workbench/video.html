@@ -52,20 +52,23 @@
   .motion-preset-card.on:after{content:"已选择";position:absolute;right:8px;top:8px;padding:3px 7px;border-radius:7px;background:rgba(231,178,76,.92);color:#1b1205;font-size:10.5px;font-weight:900}
   .avatar-panel{margin-top:16px;border:1px solid rgba(148,164,187,.12);border-radius:14px;background:rgba(7,11,19,.22);padding:14px}
   .avatar-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
-  /* 卡片固定大小、内容自适应。原来是 min-height，卡片会被内容撑开——用户上传的照片
-     宽高比五花八门（竖版自拍、横版截图），一行三张就参差不齐。
-     改成固定 height + flex 列：缩略图 flex:1 吃掉剩余空间，文字区 flex:none 只占自己那点。
-     让内容去适应盒子，而不是反过来。 */
-  .avatar-card{position:relative;height:158px;box-sizing:border-box;display:flex;flex-direction:column;border:1px solid rgba(148,164,187,.14);border-radius:13px;background:rgba(148,164,187,.04);color:#94a4bb;cursor:pointer;overflow:hidden;text-align:left;font-family:inherit;transition:.16s}
+  /* 卡片不写死像素高：展示框自己是 16:9（见 .avatar-thumb），宽度随网格列宽变，高度跟着算出来。
+     卡片高度 = 16:9 的展示框 + 文字区，同一行的卡片列宽相同 → 高度天然一致，
+     再由 grid 默认的 align-items:stretch 把「创建新形象」那张空卡拉到同高。
+     这样既是「固定比例的盒子」，又能随页面宽度缩放 —— 不需要任何写死的 px。 */
+  .avatar-card{position:relative;box-sizing:border-box;display:flex;flex-direction:column;border:1px solid rgba(148,164,187,.14);border-radius:13px;background:rgba(148,164,187,.04);color:#94a4bb;cursor:pointer;overflow:hidden;text-align:left;font-family:inherit;transition:.16s}
   .avatar-card:hover{border-color:rgba(231,178,76,.34);transform:translateY(-1px)}
   /* 兜底：万一有人把裸 <img> 直接塞进卡片（剧情视频那版我就干了这事），也要被约束住 */
-  .avatar-card > img{width:100%;flex:1;min-height:0;object-fit:cover;display:block}
+  .avatar-card > img{width:100%;aspect-ratio:16/9;object-fit:contain;display:block}
   .avatar-card.on{border-color:rgba(231,178,76,.42);background:rgba(231,178,76,.08);box-shadow:0 0 0 1px rgba(231,178,76,.08) inset}
   .avatar-new{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;padding:14px;text-align:center}
   .avatar-new b{font-size:13px;color:#eaf1fa}.avatar-new span{font-size:11px;color:#5c6b82;line-height:1.45}
-  /* flex:1 + min-height:0 —— 缩略图吃掉卡片剩下的空间，图片再高也不会把卡片顶开 */
-  .avatar-thumb{flex:1;min-height:0;background:rgba(148,164,187,.07);border-bottom:1px solid rgba(148,164,187,.1);overflow:hidden}
-  .avatar-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+  /* 展示框锁死 16:9：宽度跟着网格走（随页面缩放），高度由 aspect-ratio 算出来 —— 所以「实际宽高按页面比例」。
+     flex:none 是必须的：给了 flex:1 就会被拉伸，16:9 白锁。
+     object-fit:contain —— 图片【完整】装进这个框，留边而不裁切、不变形。
+     （cover 会把竖版自拍的上下裁掉一大半，只剩中间一条 —— 用户看不到自己的脸。） */
+  .avatar-thumb{flex:none;width:100%;aspect-ratio:16/9;background:rgba(7,11,19,.55);border-bottom:1px solid rgba(148,164,187,.1);overflow:hidden}
+  .avatar-thumb img{width:100%;height:100%;object-fit:contain;display:block}
   /* 底部的改名/删除是绝对定位的，文字区要给它留 38px，否则按钮压住文字 */
   .avatar-meta{flex:none;padding:8px 10px 38px}
   /* 剧情视频的形象卡没有改名/删除按钮，不用留那 38px —— 留了就是一块空白 */
@@ -843,13 +846,22 @@
   });
   function fresh(u){u=String(u||'');return /^(blob:|data:)/.test(u)||/[?&]q-sign-/.test(u)||/voice_preview_/.test(u)?u:u+(u.indexOf('?')>=0?'&':'?')+'_='+Date.now();}  // voice_preview_ 内容哈希命名、不可变，加 ?_= 反而每次击穿浏览器缓存致试听重下载
   function isProtectedLocal(u){return String(u||'').indexOf('/api/gen/file/')===0;}
+  // 受保护素材（/api/gen/file/…）要带鉴权 fetch 成 blob 再转 URL —— 这一步很贵。
+  // 原来每次调用都：加时间戳击穿缓存 + cache:'no-store' + 新建一个 blob URL（旧的从不释放）。
+  // 于是每次重渲染都把所有图重新下载一遍，还漏内存。形象图的路径带 uuid、不可变，
+  // 按路径缓存是安全的。缓存 Promise 而不是 URL —— 同一张图的并发请求也会被去重。
+  var _assetCache={};
   function assetUrl(u){
     if(!isProtectedLocal(u)) return Promise.resolve(fresh(u));
-    return fetch(fresh(u),{cache:'no-store',headers:{Authorization:'Bearer '+token}}).then(function(r){
+    if(_assetCache[u]) return _assetCache[u];
+    var p=fetch(u,{headers:{Authorization:'Bearer '+token}}).then(function(r){
       if(r.status===401){location.href='../login.html?redirect=workbench/video';throw new Error('登录已过期');}
       if(!r.ok) throw new Error('素材读取失败');
       return r.blob();
-    }).then(function(blob){return URL.createObjectURL(blob);});
+    }).then(function(blob){return URL.createObjectURL(blob);})
+      .catch(function(e){ delete _assetCache[u]; throw e; });   // 失败不缓存，下次还能重试
+    _assetCache[u]=p;
+    return p;
   }
   function blobToDataUrl(blob){
     return new Promise(function(resolve,reject){
@@ -1274,23 +1286,37 @@
       return;
     }
     motionAvatars.forEach(function(a){
-      var idx=cineSelectedAvatarIds.findIndex(function(id){return String(id)===String(a.id);});
-      var on=idx>=0;
       var card=document.createElement('button');
       card.type='button';
+      card.dataset.avatarId=a.id;
       // no-actions：这张卡没有改名/删除按钮，文字区不用给它们留 38px 空位
-      card.className='avatar-card no-actions'+(on?' on':'');
-      // 结构必须和「我的形象」一致：.avatar-thumb 包住图（object-fit:cover 裁切填充）。
-      // 我第一版把裸 <img> 直接塞进了卡片 —— 图片按原始宽高比撑开，用户的照片有竖版有横版，
-      // 一行三张就参差不齐。图片走 data-asset-src（懒加载 + 带鉴权取私有资源），和现有卡片一致。
-      card.innerHTML='<div class="avatar-thumb"><img data-asset-src="'+esc(a.image_url||'../assets/cloud/logo-bird.png')+'" alt=""></div>'
-                    +'<div class="avatar-meta"><div class="avatar-name">'+esc(a.name||'未命名形象')+'</div></div>'
-                    +(on?'<span class="avatar-pick">'+(idx+1)+'</span>':'');
-      // data-asset-src 只是个占位，必须显式喂给 setAssetImage 才会真正加载
-      // （它带鉴权取私有资源）。漏了这句，图片压根不显示。
-      setAssetImage(card.querySelector('[data-asset-src]'), a.image_url||'../assets/cloud/logo-bird.png');
+      card.className='avatar-card no-actions';
+      // .avatar-thumb 包住图（16:9 的框 + object-fit:contain 完整缩放，不裁切不变形）
+      card.innerHTML='<div class="avatar-thumb"><img alt=""></div>'
+                    +'<div class="avatar-meta"><div class="avatar-name">'+esc(a.name||'未命名形象')+'</div></div>';
+      // 图片是受保护素材，要带鉴权取。assetUrl 内部按路径缓存，重复调用不会重复下载。
+      setAssetImage(card.querySelector('img'), a.image_url||'../assets/cloud/logo-bird.png');
       card.onclick=function(){ toggleCineAvatar(a.id); };
       grid.appendChild(card);
+    });
+    syncCineSelection();   // 选中态单独刷，不重建 DOM
+  }
+
+  // 选中态只改 class 和序号徽标 —— 【绝不重建 DOM】。
+  // 原来 toggleCineAvatar 直接调 renderCineAvatars()，那会 innerHTML='' 全量重建：
+  // 每点一次，所有形象图的 <img> 都是新的，全部重新走一遍鉴权 fetch + blob 转换。
+  // 用户看到的就是「一点击图片就刷新一次，还很慢」。
+  function syncCineSelection(){
+    var grid=$('cineAvatarGrid');
+    if(!grid) return;
+    grid.querySelectorAll('.avatar-card[data-avatar-id]').forEach(function(card){
+      var idx=cineSelectedAvatarIds.findIndex(function(id){return String(id)===String(card.dataset.avatarId);});
+      card.classList.toggle('on', idx>=0);
+      var pick=card.querySelector('.avatar-pick');
+      if(idx>=0){
+        if(!pick){ pick=document.createElement('span'); pick.className='avatar-pick'; card.appendChild(pick); }
+        pick.textContent=idx+1;
+      }else if(pick){ pick.remove(); }
     });
     updateCineCount();
   }
@@ -1300,7 +1326,7 @@
     if(i>=0){ cineSelectedAvatarIds.splice(i,1); }
     else if(cineSelectedAvatarIds.length>=CINE_MAX_AVATARS){ toast('最多同时选择 '+CINE_MAX_AVATARS+' 个形象'); return; }
     else { cineSelectedAvatarIds.push(key); }
-    renderCineAvatars();
+    syncCineSelection();   // 只改选中态，不重建 DOM —— 重建会让所有形象图重新下载一遍
   }
   function updateCineCount(){
     if($('cineAvatarCount')) $('cineAvatarCount').textContent=cineSelectedAvatarIds.length+' / '+CINE_MAX_AVATARS;
