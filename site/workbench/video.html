@@ -232,7 +232,7 @@
       <div class="function-tabs" aria-label="视频功能分页">
         <button class="function-tab on" type="button" data-function="talking">数字人口播</button>
         <button class="function-tab" type="button" data-function="motion">动作模仿</button>
-        <button class="function-tab" type="button" data-function="cinematic">AI 剧情视频</button>
+        <button class="function-tab" type="button" data-function="cinematic">电影化身</button>
         <button class="function-tab" type="button" data-function="tryon">换装换背景</button>
         <button class="function-tab" type="button" data-function="grok">果肉视频生成</button>
         <button class="function-tab" type="button" data-function="micro">豆姐视频生成</button>
@@ -411,7 +411,7 @@
             </div>
             <div>
               <div class="faint" style="font-size:12px;margin-bottom:8px;">分辨率</div>
-              <div id="motionResolutionSeg" class="seg"><button class="on" data-motion-resolution="720p">720p</button><button data-motion-resolution="1080p" disabled title="动作模仿固定 720p，需要 1080p 请用「AI 剧情视频」">1080p</button></div>
+              <div id="motionResolutionSeg" class="seg"><button class="on" data-motion-resolution="720p">720p</button><button data-motion-resolution="1080p" disabled title="动作模仿固定 720p，需要 1080p 请用「电影化身」">1080p</button></div>
             </div>
             <div style="grid-column:1/-1;">
               <div class="faint" style="font-size:12px;margin-bottom:8px;">成片时长</div>
@@ -428,17 +428,26 @@
       <div id="cinematicPanel" class="function-panel motion-panel hidden">
         <div class="row">
           <div>
-            <div class="label">AI 剧情视频</div>
-            <div class="muted" style="font-size:12px;margin-top:6px;">选自己的数字人形象，写一句画面描述，直接出片</div>
+            <div class="label">电影化身</div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">让你的数字人形象出演：照着参考视频演，或者按你写的画面演</div>
           </div>
-          <span class="faint" style="font-size:11.5px;">最多 3 个形象同框</span>
+          <span class="faint" style="font-size:11.5px;">按成片时长计费</span>
+        </div>
+
+        <div class="line-switch">
+          <div class="label">玩法</div>
+          <div class="line-tabs" id="cineModeTabs">
+            <button type="button" class="line-tab active" data-cine-mode="motion"><b>动作模仿</b><span>1 个形象 + 1 段参考视频 → 照着它的动作演 · 3 点/秒</span></button>
+            <button type="button" class="line-tab" data-cine-mode="duo"><b>双人动作模仿</b><span>2 个形象 + 1 段参考视频 → 两人同框照着演 · 5 点/秒</span></button>
+            <button type="button" class="line-tab" data-cine-mode="open"><b>开放式生成</b><span>最多 3 个形象 + 自己写画面描述 · 5 点/秒</span></button>
+          </div>
         </div>
 
         <div class="avatar-panel">
           <div class="row">
-            <span class="label">选择形象（可多选，最多 3 个）</span>
+            <span id="cineAvatarLabel" class="label">选择形象</span>
             <span>
-              <span id="cineAvatarCount" class="mono faint" style="font-size:11.5px;margin-right:10px;">0 / 3</span>
+              <span id="cineAvatarCount" class="mono faint" style="font-size:11.5px;margin-right:10px;">0 / 1</span>
               <button id="cineRefreshBtn" type="button" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font-family:inherit;font-size:12px;">刷新</button>
             </span>
           </div>
@@ -453,7 +462,8 @@
           <div id="cineAvatarStatus" class="faint" style="font-size:11.5px;margin-top:8px;"></div>
         </div>
 
-        <div class="motion-preset-panel">
+        <!-- 动作模仿的提示词是写死的，用户不用写、也改不了 —— 整块藏起来 -->
+        <div id="cinePromptPanel" class="motion-preset-panel hidden">
           <div class="row">
             <span class="label">画面描述</span>
             <span id="cinePromptCount" class="mono faint" style="font-size:11.5px;">0 / 2000</span>
@@ -471,16 +481,17 @@
 
         <div class="motion-preset-panel">
           <div class="row">
-            <span class="label">参考素材（选填）</span>
+            <span id="cineRefLabel" class="label">参考素材（选填）</span>
             <span id="cineRefBudget" class="mono faint" style="font-size:11.5px;"></span>
           </div>
-          <div class="faint" style="font-size:11.5px;margin-top:6px;">视频：照着它的动作和运镜演。图片：参考它的风格、构图、场景。都不给就只按描述生成。</div>
+          <div id="cineRefHint" class="faint" style="font-size:11.5px;margin-top:6px;">视频：照着它的动作和运镜演。图片：参考它的风格、构图、场景。都不给就只按描述生成。</div>
           <div class="motion-grid" style="margin-top:10px;">
             <label id="cineVideoDrop" class="motion-drop">
               <input id="cineVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" multiple hidden>
               <strong>+ 参考视频</strong>
               <span>动作 / 运镜（建议 ≤15 秒）</span>
             </label>
+            <!-- 动作模仿不收参考图：提示词写死的是「照着参考视频演」，再塞几张图，HeyGen 只会乱抄 -->
             <label id="cineImageDrop" class="motion-drop">
               <input id="cineImageFile" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
               <strong>+ 参考图片</strong>
@@ -492,7 +503,8 @@
 
         <div class="motion-preset-panel">
           <div class="video-parameter-grid">
-            <div>
+            <!-- 动作模仿不给比例选项：成片比例跟着参考视频走（选错了会把人挤变形） -->
+            <div id="cineRatioBox" class="hidden">
               <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
               <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button class="on" data-cine-ratio="9:16">9:16</button><button data-cine-ratio="16:9">16:9</button><button data-cine-ratio="1:1">1:1</button></div>
             </div>
@@ -502,14 +514,14 @@
             </div>
             <div style="grid-column:1/-1;">
               <div class="faint" style="font-size:12px;margin-bottom:8px;">成片时长</div>
-              <div class="seg" style="grid-template-columns:repeat(5,1fr);"><button class="on" data-cine-duration="auto">自适应</button><button data-cine-duration="5">5 秒</button><button data-cine-duration="10">10 秒</button><button data-cine-duration="12">12 秒</button><button data-cine-duration="15">15 秒</button></div>
+              <div id="cineDurationSeg" class="seg" style="grid-template-columns:repeat(5,1fr);"><button class="on" data-cine-duration="auto">自适应</button><button data-cine-duration="5">5 秒</button><button data-cine-duration="10">10 秒</button><button data-cine-duration="12">12 秒</button><button data-cine-duration="15">15 秒</button></div>
               <div id="cineDurationHint" class="faint" style="font-size:11.5px;margin-top:8px;"></div>
             </div>
           </div>
         </div>
 
         <button id="cineGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:20px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
-          生成剧情视频
+          生成视频
         </button>
         <div id="cineStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">约 6~9 分钟出片，完成后自动保存到视频资产</div>
       </div>
@@ -699,7 +711,7 @@
   var bgmData='', selectedBgmVolume=0.18;
   var selectedSubtitle='off', selectedSubtitleStyle='white', selectedSubtitlePosition='bottom';  // F4 字幕：默认关闭+底部，不勾选时行为与原来一致
   var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16', selectedMotionResolution='720p';
-  // AI 剧情视频（HeyGen cinematic）：选 1~3 个已建好的形象 + 提示词 + 720p/1080p
+  // 电影化身（HeyGen cinematic）：三个玩法共用一套控件，见 CINE_MODES
   // 时长默认「自适应」：跟随参考视频的长度。既然给了参考片段，成片就该和它一样长，
   // 而不是被截断或硬拖到某个固定秒数。没传参考视频时后端回落到 10 秒。
   var cineSelectedAvatarIds=[], selectedCineRatio='9:16', selectedCineResolution='720p', selectedCineDuration='auto';
@@ -709,8 +721,37 @@
   // 所以选了 3 个形象，参考图就只剩 6 张额度。这一点必须显示给用户，否则他会以为是 bug。
   var cineRefVideos=[], cineRefImages=[];
   var CINE_MAX_REF_VIDEOS=3, CINE_MAX_MEDIA_IMAGES=9;
-  function cineMaxRefImages(){ return Math.max(0, CINE_MAX_MEDIA_IMAGES-cineSelectedAvatarIds.length); }
+  // 动作模仿只吃【一个】参考视频、不吃参考图：它的提示词是写死的「照着参考视频演」，
+  // 再塞第二个视频或几张图，HeyGen 只会在它们之间乱抄 —— 用户既控制不了、也无从预期。
+  // 多参考素材是给开放式生成的，那边用户自己写提示词，能说清楚每个素材干嘛用。
+  function cineMaxRefVideos(){ return cineCfg().fixed ? 1 : CINE_MAX_REF_VIDEOS; }
+  function cineMaxRefImages(){
+    if(cineCfg().fixed) return 0;
+    return Math.max(0, CINE_MAX_MEDIA_IMAGES-cineSelectedAvatarIds.length);
+  }
   var CINE_MAX_AVATARS=3;
+  // 电影化身的三个玩法。这张表是前端的唯一事实来源 —— 每条都在后端
+  // validate_cinematic_payload 里有一模一样的一份（前端只管好用，后端才管好安全）。
+  //   avatars    正好要几个形象（open 是上限，motion/duo 是等于）
+  //   fixed      提示词写死：整个输入区都不显示，也不往后端发 prompt
+  //   needRef    参考视频必填
+  //   durations  可选时长；rate 每秒点数
+  var CINE_MODES={
+    motion:{label:'动作模仿',    avatars:1, exact:true,  fixed:true,  needRef:true,  durations:['auto',10,15],       rate:3},
+    duo:   {label:'双人动作模仿', avatars:2, exact:true,  fixed:true,  needRef:true,  durations:['auto',10,15],       rate:5},
+    open:  {label:'开放式生成',  avatars:3, exact:false, fixed:false, needRef:false, durations:['auto',5,10,12,15],  rate:5}
+  };
+  var cineMode='motion';
+  var cineRefSeconds=0;   // 参考视频的实际秒数（本地读的），用来预估点数
+  function cineCfg(){ return CINE_MODES[cineMode]||CINE_MODES.open; }
+  // 成片秒数。规则必须和后端 _cinematic_duration 一致：向上取整，夹进 4~15，
+  // 没有参考视频时回落 10 秒 —— 不一致就会出现「界面说 27 点，实际扣 45 点」。
+  function cineSeconds(){
+    if(selectedCineDuration!=='auto') return selectedCineDuration;
+    if(!cineRefSeconds) return 10;
+    return Math.max(4, Math.min(15, Math.ceil(cineRefSeconds)));
+  }
+  function cineCost(){ return cineSeconds()*cineCfg().rate; }
   // 提示词模板：用户只写创意，身份约束（保持形象本人的脸/发型/衣着、不要抄参考视频里的人）
   // 由后端无条件拼上 —— 那条不能交给用户把关，丢了成片里的人就不是自己了。
   var CINE_TEMPLATES=[
@@ -775,7 +816,7 @@
   var currentVideoDraft=null;
   var motionPresets=[];
   var videoBusyCount=0;
-  var maxActiveXiaoleVideo=3, maxActiveMotion=2, maxActiveTryon=1;
+  var maxActiveXiaoleVideo=3, maxActiveMotion=2, maxActiveTryon=1, maxActiveCinematic=2;
   var videoSubmitLocks={talking:false,motion:false,cinematic:false,tryon:false,xiaole:false};
   var videoTaskSyncBound=false;
   var publicFallback=[
@@ -1329,7 +1370,7 @@
       .catch(function(e){if(grid) grid.innerHTML='<div class="avatar-empty" style="color:#f4708a;">'+esc(e.message||'形象列表读取失败')+'</div>';renderTalkingBatchImages();});
   }
 
-  // ===== AI 剧情视频：形象多选（最多 3 个，HeyGen 会把他们放进同一个镜头）=====
+  // ===== 电影化身：形象多选（HeyGen 会把多个形象放进同一个镜头）=====
   function renderCineAvatars(){
     var grid=$('cineAvatarGrid');
     if(!grid) return;
@@ -1379,16 +1420,18 @@
     updateCineCount();
   }
   function toggleCineAvatar(id){
-    var key=String(id);
+    var key=String(id), cap=cineCfg().avatars;
     var i=cineSelectedAvatarIds.findIndex(function(x){return String(x)===key;});
     if(i>=0){ cineSelectedAvatarIds.splice(i,1); }
-    else if(cineSelectedAvatarIds.length>=CINE_MAX_AVATARS){ toast('最多同时选择 '+CINE_MAX_AVATARS+' 个形象'); return; }
+    else if(cap===1){ cineSelectedAvatarIds=[key]; }   // 只能选一个：点新的就是换一个，不用先取消
+    else if(cineSelectedAvatarIds.length>=cap){ toast(cineCfg().label+'最多选 '+cap+' 个形象'); return; }
     else { cineSelectedAvatarIds.push(key); }
     syncCineSelection();   // 只改选中态，不重建 DOM —— 重建会让所有形象图重新下载一遍
   }
   function updateCineCount(){
-    if($('cineAvatarCount')) $('cineAvatarCount').textContent=cineSelectedAvatarIds.length+' / '+CINE_MAX_AVATARS;
-    renderCineRefs();   // 形象数一变，参考图的额度就变（两者共用 9 张图的预算）
+    if($('cineAvatarCount')) $('cineAvatarCount').textContent=cineSelectedAvatarIds.length+' / '+cineCfg().avatars;
+    renderCineRefs();          // 形象数一变，参考图的额度就变（两者共用 9 张图的预算）
+    updateCineDurationHint();  // 点数按秒算，形象数变了单价可能也变（双人 5 点/秒）
   }
 
   // ===== 参考素材：视频 + 图片，多选，和形象共用媒体预算 =====
@@ -1401,19 +1444,26 @@
       if(files.length>room){ toast(label+'最多再加 '+room+' 个，多余的已忽略'); files=files.slice(0,room); }
       Promise.all(files.map(readFileData))
         .then(function(datas){
-          datas.forEach(function(d,i){ store.push({data:d, name:files[i].name}); });
+          datas.forEach(function(d,i){ store.push({data:d, name:files[i].name, file:files[i]}); });
           renderCineRefs();
-          updateCineDurationHint();   // 传了参考视频，「自适应」才真的有东西可跟随
+          syncCineRefProbe();   // 传了参考视频，「自适应」才真的有东西可跟随（还要按它的秒数算点数）
         })
         .catch(function(e){ toast(e.message||'文件读取失败'); });
       this.value='';   // 允许再次选同一个文件
     };
   }
+  // 第一个参考视频决定成片长度（也就决定点数）。它变了就重新探一次；一个都没有就归零。
+  function syncCineRefProbe(){
+    if(cineRefVideos.length && cineRefVideos[0].file) probeCineReference(cineRefVideos[0].file);
+    else { cineRefSeconds=0; updateCineDurationHint(); }
+  }
   function renderCineRefs(){
-    var box=$('cineRefList'), budget=$('cineRefBudget');
+    var box=$('cineRefList'), budget=$('cineRefBudget'), cfg=cineCfg();
     if(budget){
-      budget.textContent='视频 '+cineRefVideos.length+'/'+CINE_MAX_REF_VIDEOS
-                        +' · 图片 '+cineRefImages.length+'/'+cineMaxRefImages();
+      budget.textContent = cfg.fixed
+        ? ('视频 '+cineRefVideos.length+'/1')   // 动作模仿：正好一个，也不收参考图
+        : ('视频 '+cineRefVideos.length+'/'+CINE_MAX_REF_VIDEOS
+           +' · 图片 '+cineRefImages.length+'/'+cineMaxRefImages());
     }
     if(!box) return;
     box.innerHTML='';
@@ -1424,30 +1474,102 @@
       var x=document.createElement('button');
       x.type='button'; x.textContent='×';
       x.style.cssText='border:0;background:transparent;color:#5c6b82;cursor:pointer;font:800 14px inherit;line-height:1;padding:0;';
-      x.onclick=function(){ store.splice(store.indexOf(item),1); renderCineRefs(); updateCineDurationHint(); };
+      x.onclick=function(){ store.splice(store.indexOf(item),1); renderCineRefs(); syncCineRefProbe(); };
       el.appendChild(x);
       box.appendChild(el);
     }
     cineRefVideos.forEach(function(v){ chip(v, cineRefVideos, '🎬'); });
     cineRefImages.forEach(function(i){ chip(i, cineRefImages, '🖼'); });
   }
-  // 「自适应」在没传参考视频时无从跟随（只有提示词，没有时间基准）——要把这一点讲清楚，
-  // 否则用户选了自适应、没传参考片段，拿到一个 10 秒的片子会以为是 bug。
+  // 时长 + 点数提示。点数必须在生成前就说清楚 —— 按秒计费，用户点下去才发现扣了 45 点是不行的。
   function updateCineDurationHint(){
     var box=$('cineDurationHint');
     if(!box) return;
+    var cfg=cineCfg(), price='，预计 '+cineCost()+' 点（'+cfg.rate+' 点/秒）';
     if(selectedCineDuration!=='auto'){
-      box.textContent='固定 '+selectedCineDuration+' 秒';
+      box.textContent='固定 '+selectedCineDuration+' 秒'+price;
       box.style.color='#5c6b82';
-      return;
-    }
-    if(cineRefVideos.length){
-      box.textContent='自适应：成片长度跟随第一个参考视频（4~15 秒，超出会截到 15 秒）';
+    }else if(cineRefSeconds){
+      box.textContent='自适应：跟随第一个参考视频，成片约 '+cineSeconds()+' 秒'+price;
       box.style.color='#2dd4bf';
+    }else if(cfg.needRef){
+      box.textContent='自适应：成片长度跟随你上传的参考视频（4~15 秒，超出会截到 15 秒），按实际秒数计费 '+cfg.rate+' 点/秒';
+      box.style.color='#5c6b82';
     }else{
-      box.textContent='自适应：未上传参考视频，将按 10 秒生成（想跟随长度请先传参考视频）';
+      box.textContent='自适应：未上传参考视频，将按 10 秒生成'+price;
       box.style.color='#5c6b82';
     }
+  }
+  // 本地读参考视频的时长和画面比例（<video> 的 metadata，不用把文件发出去）。
+  //   时长 → 「自适应」时提前算准点数（按秒计费，必须在用户点生成之前就显示对）
+  //   比例 → 动作模仿不给用户选比例，成片跟着参考视频走；让用户选只会把人挤变形
+  // 读失败不阻塞：秒数回落 10（和后端一致），比例回落 9:16。
+  function probeCineReference(file){
+    cineRefSeconds=0;
+    var v=document.createElement('video'), url=URL.createObjectURL(file);
+    v.preload='metadata';
+    v.onloadedmetadata=function(){
+      cineRefSeconds=v.duration||0;
+      var w=v.videoWidth||0, h=v.videoHeight||0;
+      if(w&&h&&cineCfg().fixed){
+        var r=w/h;
+        selectedCineRatio = r>1.15 ? '16:9' : (r<0.87 ? '9:16' : '1:1');
+      }
+      URL.revokeObjectURL(url);
+      updateCineDurationHint();
+    };
+    v.onerror=function(){ URL.revokeObjectURL(url); updateCineDurationHint(); };
+    v.src=url;
+  }
+
+  // 切玩法：形象数量上限、提示词区、参考视频是否必填、可选时长 —— 全都跟着变。
+  function applyCineMode(mode){
+    if(!CINE_MODES[mode]) mode='open';
+    cineMode=mode;
+    var cfg=cineCfg();
+    document.querySelectorAll('[data-cine-mode]').forEach(function(b){
+      b.classList.toggle('active', b.dataset.cineMode===mode);
+    });
+    // 换玩法时超出上限的选择要裁掉，否则「双人→单人」会带着 2 个形象提交，后端直接拒
+    if(cineSelectedAvatarIds.length>cfg.avatars) cineSelectedAvatarIds=cineSelectedAvatarIds.slice(0,cfg.avatars);
+    var lab=$('cineAvatarLabel');
+    if(lab) lab.textContent = cfg.exact ? ('选择形象（正好 '+cfg.avatars+' 个）')
+                                        : ('选择形象（可多选，最多 '+cfg.avatars+' 个）');
+    // 提示词写死的玩法：整块藏起来。藏了还发 prompt 也没用——后端不看客户端传的提示词。
+    if($('cinePromptPanel')) $('cinePromptPanel').classList.toggle('hidden', cfg.fixed);
+    // 比例只在开放式给选：动作模仿的成片比例跟着参考视频走，让用户选反而会把人挤变形
+    if($('cineRatioBox')) $('cineRatioBox').classList.toggle('hidden', cfg.fixed);
+    // 自动润色藏在提示词区里 —— 提示词都写死了（含身份约束），再让 HeyGen 去改写它，
+    // 等于让它改写「不许抄参考视频里那个人的脸」这句话。后端对这两个玩法也一律强制关。
+    if($('cineRefLabel')) $('cineRefLabel').textContent = cfg.needRef ? '参考视频（必传）' : '参考素材（选填）';
+    if($('cineRefHint')) $('cineRefHint').textContent = cfg.needRef
+      ? '成片会照着它的动作、节奏和运镜演。只收一个视频，不看参考图。'
+      : '视频：照着它的动作和运镜演。图片：参考它的风格、构图、场景。都不给就只按描述生成。';
+    // 动作模仿不收参考图：整个上传框藏掉，已经选上的也要清掉（否则会随提交发出去）
+    if($('cineImageDrop')) $('cineImageDrop').classList.toggle('hidden', cfg.fixed);
+    if(cfg.fixed && cineRefImages.length) cineRefImages.length=0;
+    // 动作模仿只收 1 个参考视频：多的裁掉，别让「开放式选了 3 个 → 切过来」偷偷带过去
+    if(cineRefVideos.length>cineMaxRefVideos()) cineRefVideos.length=cineMaxRefVideos();
+    renderCineRefs();
+    syncCineRefProbe();
+    // 时长档位：动作模仿只有 自适应/10/15
+    document.querySelectorAll('[data-cine-duration]').forEach(function(b){
+      var v=b.dataset.cineDuration;
+      var ok=cfg.durations.some(function(d){return String(d)===v;});
+      b.classList.toggle('hidden', !ok);
+      if(!ok && b.classList.contains('on')) b.classList.remove('on');
+    });
+    var seg=$('cineDurationSeg');
+    if(seg) seg.style.gridTemplateColumns='repeat('+cfg.durations.length+',1fr)';
+    // 当前选的时长在新玩法里没有了（例如 12 秒 → 动作模仿）：回到自适应
+    if(!cfg.durations.some(function(d){return String(d)===String(selectedCineDuration);})){
+      selectedCineDuration='auto';
+      document.querySelectorAll('[data-cine-duration]').forEach(function(b){
+        b.classList.toggle('on', b.dataset.cineDuration==='auto');
+      });
+    }
+    syncCineSelection();
+    updateCineCount();
   }
 
   // ===== 创建形象：独立一步（5 点）。人脸检测不到会当场报错，不再让用户白扣 20 点跑一半 =====
@@ -1506,28 +1628,38 @@
   }
 
   function submitCinematic(){
+    var cfg=cineCfg();
     var prompt=($('cinePrompt')&&$('cinePrompt').value||'').trim();
-    if(!cineSelectedAvatarIds.length){ toast('请至少选择一个形象'); return; }
-    if(!prompt){ toast('请填写画面描述，或点一个模板'); return; }
+    var n=cineSelectedAvatarIds.length;
+    // 门槛：形象数量必须【正好】对（动作模仿的提示词会去参考视频里找人，数量不对就串脸），
+    // 参考视频必传。两条都在后端再校验一遍 —— 这里只是别让用户白跑一趟。
+    // ⚠️ 全部 return 完了才能上提交锁（#603）：先上锁再 return，锁就永远解不掉了。
+    if(cfg.exact ? n!==cfg.avatars : !n){
+      toast(cfg.exact ? (cfg.label+'需要正好选 '+cfg.avatars+' 个形象') : '请至少选择一个形象'); return;
+    }
+    if(cfg.needRef && cineRefVideos.length!==1){ toast('请上传一个参考视频'); return; }
+    if(!cfg.fixed && !prompt){ toast('请填写画面描述，或点一个模板'); return; }
     setSubmitLock('cinematic',true);
     setBusy(true);
     var first=motionAvatars.find(function(a){return String(a.id)===String(cineSelectedAvatarIds[0]);});
-    currentVideoDraft={mode:'cinematic',image_url:first&&first.image_url,text:prompt,resolution:selectedCineResolution,
+    var draftText=cfg.fixed ? cfg.label : prompt;
+    currentVideoDraft={mode:'cinematic',image_url:first&&first.image_url,text:draftText,resolution:selectedCineResolution,
                        ratio:selectedCineRatio,status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
     renderVideoHistory([currentVideoDraft]);
-    setVideoStatus('正在提交剧情视频任务...');
+    setVideoStatus('正在提交'+cfg.label+'任务...');
     var body={
+      cine_mode:cineMode,
       avatar_ids:cineSelectedAvatarIds.map(function(x){return parseInt(x,10);}),
-      prompt:prompt,
       resolution:selectedCineResolution,
       ratio:selectedCineRatio,
       duration:selectedCineDuration,
       enhance_prompt:!!($('cineEnhance')&&$('cineEnhance').checked)
     };
-    // 参考素材全部选填：都不给就只按描述生成。
-    // store 里存的是 {data, name}（name 只用于界面显示），发给后端的只能是 base64 本身。
+    // 提示词写死的玩法不发 prompt —— 发了后端也不看，别给人「我写的没生效」的错觉
+    if(!cfg.fixed) body.prompt=prompt;
+    // store 里存的是 {data, name, file}（name/file 只给界面和本地探测用），发给后端的只能是 base64 本身
     if(cineRefVideos.length) body.reference_videos=cineRefVideos.map(function(x){return x.data;});
-    if(cineRefImages.length) body.reference_images=cineRefImages.map(function(x){return x.data;});
+    if(!cfg.fixed && cineRefImages.length) body.reference_images=cineRefImages.map(function(x){return x.data;});
     fetch('/api/gen/cinematic',{
       method:'POST',
       headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
@@ -1536,9 +1668,11 @@
       .then(function(res){
         if(res.status===401){setSubmitLock('cinematic',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
-        setVideoStatus('剧情视频任务已提交，约 6~9 分钟出片...');
+        setVideoStatus(cfg.label+'任务已提交（扣 '+res.data.cost+' 点），约 6~9 分钟出片...');
+        HQ.refreshPoints();
         setTimeout(loadVideoHistory,700);
-        trackVideoJob(res.data.job_id,{status:'queued',label:'AI 剧情视频',mode:'cinematic',modeLabel:'AI 剧情视频',ratio:selectedCineRatio});
+        // label 跟着玩法走（动作模仿 / 双人动作模仿 / 开放式生成），不再是写死的「AI 剧情视频」
+        trackVideoJob(res.data.job_id,{status:'queued',label:cfg.label,mode:'cinematic',modeLabel:cfg.label,ratio:selectedCineRatio});
         setSubmitLock('cinematic',false);
         pollJob(res.data.job_id,0);
       })
@@ -1595,10 +1729,15 @@
     var tryonState=getTryonHintState();
     var xiaoleCapReached=counts.xiaole>=maxActiveXiaoleVideo;
     var motionCapReached=counts.motion>=maxActiveMotion;
+    // 电影化身也有槽位上限（后端 MAX_USER_ACTIVE_CINEMATIC=2）。#603 统计了 counts.cinematic
+    // 却没人用 —— 排到第 3 条时按钮还亮着，点下去只会吃一个 429。
+    var cineCapReached=counts.cinematic>=maxActiveCinematic;
     var tryonCapReached=counts.tryon>=maxActiveTryon;
     applyButtonState('generateBtn', !videoSubmitLocks.talking, videoSubmitLocks.talking?'口播视频提交中，请稍候':'');
     applyButtonState('motionGenerateBtn', !videoSubmitLocks.motion && !motionCapReached, motionCapReached?('当前动作模仿最多同时排队或生成 '+maxActiveMotion+' 个任务，请等待部分完成后再继续'):(videoSubmitLocks.motion?'动作模仿提交中，请稍候':''));
-    applyButtonState('cineGenerateBtn', !videoSubmitLocks.cinematic, videoSubmitLocks.cinematic?'剧情视频提交中，请稍候':'');
+    applyButtonState('cineGenerateBtn', !videoSubmitLocks.cinematic && !cineCapReached,
+      cineCapReached?('当前电影化身最多同时排队或生成 '+maxActiveCinematic+' 个任务，请等待部分完成后再继续')
+                    :(videoSubmitLocks.cinematic?'电影化身提交中，请稍候':''));
     applyButtonState('tryonGenerateBtn', !!tryonState.enable && !videoSubmitLocks.tryon && !tryonCapReached, !tryonState.enable?tryonState.text:(tryonCapReached?('当前换装视频最多同时排队或生成 '+maxActiveTryon+' 个任务，请等待任务完成后再继续'):(videoSubmitLocks.tryon?'换装任务提交中，请稍候':'')));
     var xiaoleEnabled=!videoSubmitLocks.xiaole && !xiaoleCapReached;
     var xiaoleTitle=xiaoleCapReached?('当前果肉/豆姐/欧米视频最多同时排队或生成 '+maxActiveXiaoleVideo+' 个任务，请等待部分完成后再继续'):(videoSubmitLocks.xiaole?'视频任务提交中，请稍候':'');
@@ -1796,11 +1935,13 @@
     fetch(fresh('/api/gen/health'),{cache:'no-store'}).then(function(r){return r.ok?r.json():Promise.reject();}).then(function(d){
       var cost=Number(d.video_cost),limit=Number(d.video_batch_max);
       var xiaoleCap=Number(d.max_user_active_xiaole_video), motionCap=Number(d.max_user_active_motion), tryonCap=Number(d.max_user_active_tryon);
+      var cineCap=Number(d.max_user_active_cinematic);
       if(isFinite(cost)&&cost>0) videoCost=Math.round(cost);
       if(isFinite(limit)&&limit>0) videoBatchMax=Math.min(5,Math.round(limit));
       if(isFinite(xiaoleCap)&&xiaoleCap>0) maxActiveXiaoleVideo=Math.round(xiaoleCap);
       if(isFinite(motionCap)&&motionCap>0) maxActiveMotion=Math.round(motionCap);
       if(isFinite(tryonCap)&&tryonCap>0) maxActiveTryon=Math.round(tryonCap);
+      if(isFinite(cineCap)&&cineCap>0) maxActiveCinematic=Math.round(cineCap);
       var batchBtn=document.querySelector('[data-talking-shape="batch"]');
       if(batchBtn){batchBtn.disabled=videoBatchMax<2;batchBtn.title=videoBatchMax<2?'当前任务上限不支持批量出片':'';}
       renderTalkingBatchImages();
@@ -1837,7 +1978,7 @@
       loadMotionAvatars();
     }else if(videoFunction==='cinematic'){
       $('modeSummary').textContent='选自己的数字人形象，写一句画面描述，直接出片（最多 3 个形象同框）';
-      if($('modeName')) $('modeName').textContent='AI 剧情视频';
+      if($('modeName')) $('modeName').textContent='电影化身';
       loadMotionAvatars();
     }else if(videoFunction==='tryon'){
       $('modeSummary').textContent='上传换装视频，选填衣服图或背景图，一键换装换背景';
@@ -1971,7 +2112,7 @@
   }
   document.querySelectorAll('[data-function]').forEach(function(b){b.onclick=function(){updateFunction(b.dataset.function);};});
   // 动作模仿已去线路化：只走 WaveSpeed，固定 720p。1080p 的按钮永久 disabled，
-  // title 里告诉用户去「AI 剧情视频」——那边才有 1080p（走 HeyGen）。
+  // title 里告诉用户去「电影化身」——那边才有 1080p（走 HeyGen）。
   function applyMotionLine(){
     selectedMotionResolution='720p';
     document.querySelectorAll('[data-motion-resolution]').forEach(function(x){
@@ -2115,10 +2256,8 @@
   resetMotionVideoDrop();
   loadMotionPresets();
 
-  // ===== AI 剧情视频：控件绑定 =====
+  // ===== 电影化身：控件绑定 =====
   renderCineTemplates();
-  updateCineDurationHint();   // 页面初始就要有提示，否则默认选中「自适应」却什么也不说
-  renderCineRefs();           // 初始渲染预算显示（视频 0/3 · 图片 0/9）
   (function bindCine(){
     var ta=$('cinePrompt');
     if(ta) ta.addEventListener('input',function(){
@@ -2132,8 +2271,12 @@
       readFileData(f).then(submitCreateAvatar).catch(function(e){toast(e.message||'文件读取失败');});
       this.value='';   // 允许连续上传同一张（重试用）
     };
+    document.querySelectorAll('[data-cine-mode]').forEach(function(b){b.onclick=function(){
+      applyCineMode(b.dataset.cineMode);
+    };});
     // 参考素材：视频和图片都可多选。label 包着 input，点击是原生行为，不用手动 click()。
-    bindCineRefs($('cineVideoFile'), cineRefVideos, function(){return CINE_MAX_REF_VIDEOS;}, '参考视频');
+    // 动作模仿只收 1 个视频（cineMaxRefVideos 跟着玩法走），也不收参考图。
+    bindCineRefs($('cineVideoFile'), cineRefVideos, cineMaxRefVideos, '参考视频');
     bindCineRefs($('cineImageFile'), cineRefImages, cineMaxRefImages, '参考图片');
     document.querySelectorAll('[data-cine-ratio]').forEach(function(b){b.onclick=function(){
       selectedCineRatio=b.dataset.cineRatio;
@@ -2151,6 +2294,7 @@
     };});
     if($('cineRefreshBtn')) $('cineRefreshBtn').onclick=function(){ loadMotionAvatars(true); };
     if($('cineGenerateBtn')) $('cineGenerateBtn').onclick=submitCinematic;
+    applyCineMode('motion');   // 默认落在第一个玩法。它同时把时长档位、提示词区、点数提示都摆正
   })();
   function updateTryonHint(){
     var hint=$('tryonModeHint');
@@ -2310,7 +2454,7 @@
     currentVideoDraft={mode:'motion',image_url:motionPreviewImage,text:'动作模仿视频',resolution:selectedMotionResolution,ratio:selectedMotionRatio,motion:'medium',status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
     renderVideoHistory([currentVideoDraft]);
     setVideoStatus('正在提交动作模仿任务...');
-    // 不再有 line：动作模仿已全量走 WaveSpeed，原线路一(HeyGen)的能力拆成了「AI 剧情视频」
+    // 不再有 line：动作模仿已全量走 WaveSpeed，原线路一(HeyGen)的能力搬进了「电影化身」
     var body={
       mode:'motion',
       reference_video_data:motionReferenceVideoData,

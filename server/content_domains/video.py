@@ -3,7 +3,7 @@ import tempfile
 
 from .core import (
     AUDIO_OUT_DIR, HEYGEN_API_BASE, HEYGEN_API_KEY, HEYGEN_POLL_INTERVAL,
-    HEYGEN_TIMEOUT, VIDEO_OUT_DIR, _file_url, _out_path, _resolve_out_file,
+    HEYGEN_TIMEOUT, VIDEO_OUT_DIR, _env_positive_int, _file_url, _out_path, _resolve_out_file,
     adb, base64, closing, jdb, json, mimetypes, os, pathlib, public_url,
     re, subprocess, threading, time, urllib, uuid,
 )
@@ -1099,13 +1099,27 @@ CINEMATIC_IDENTITY_GUARD = (
     "no extra people beyond the given avatars."
 )
 
-# 动作模仿的默认提示词（用户不填时的兜底，也是原来写死的那段）
-MOTION_PROMPT = (
+# 单人动作模仿的固定提示词（用户看不到、也改不了）。原线路一写死的就是这段。
+# _BASE 不含身份约束 —— 约束由 gen_cinematic 统一拼，写在这里会拼两遍。
+MOTION_PROMPT_BASE = (
     "Create a realistic cinematic vertical video of the same person from the avatar photo. "
     "Follow the uploaded reference video ONLY for body movement, pose, timing, gestures, "
     "facial expression rhythm, framing and camera motion. The output must look like the avatar "
-    "person performing the reference motion, not the reference person." + CINEMATIC_IDENTITY_GUARD
+    "person performing the reference motion, not the reference person."
 )
+MOTION_PROMPT = MOTION_PROMPT_BASE + CINEMATIC_IDENTITY_GUARD
+
+# 双人动作模仿的固定提示词。
+# TODO(kongli 会给正式文案)：这是占位版。换的时候只改这个常量，其它代码不用动。
+DUO_MOTION_PROMPT_BASE = (
+    "Create a realistic cinematic video of the two people from the avatar photos performing "
+    "together in the same shot. Follow the uploaded reference video ONLY for body movement, pose, "
+    "timing, gestures, facial expression rhythm, framing and camera motion. Map each avatar person "
+    "onto one of the people in the reference video, keeping their relative positions and their "
+    "interaction. The output must look like the two avatar people performing the reference motion, "
+    "not the reference people."
+)
+DUO_MOTION_PROMPT = DUO_MOTION_PROMPT_BASE + CINEMATIC_IDENTITY_GUARD
 
 
 def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration,
@@ -2413,12 +2427,51 @@ def gen_avatar(payload):
     }
 
 
-# ============ AI 剧情视频：HeyGen cinematic_avatar ============
+# ============ 电影化身：HeyGen cinematic_avatar ============
+# 三个玩法共用同一个上游接口（type=cinematic_avatar），差别只在【谁来写提示词】和【几个形象】：
+#   motion 单人动作模仿：1 个形象 + 必传参考视频，提示词写死，用户只调分辨率和时长
+#   duo   双人动作模仿：2 个形象 + 必传参考视频，提示词写死（另一段）
+#   open  开放式生成  ：1~3 个形象，自己写提示词，参考视频选填
 CINEMATIC_MAX_AVATARS = 3        # HeyGen 硬上限：avatar_id 是 1~3 个 look 的数组
 CINEMATIC_RESOLUTIONS = {"720p", "1080p"}
 CINEMATIC_PROMPT_MAX = 2000
-CINEMATIC_DURATION_RANGE = (4, 15)   # HeyGen: 4~15 秒，扁平计价，与时长无关
+CINEMATIC_DURATION_RANGE = (4, 15)   # HeyGen: 4~15 秒
 CINEMATIC_AUTO_DURATION = 10         # 选了「自适应」但没传参考视频时的回落值
+CINEMATIC_MODES = ("motion", "duo", "open")
+# 动作模仿只给三档：自适应 / 10 秒 / 15 秒（开放式仍可在 4~15 内任选）
+CINEMATIC_MOTION_DURATIONS = (10, 15)
+
+# 每秒点数，按玩法分档。HeyGen 那边是扁平价（$7/条，与时长无关），我们按时长卖 —— 这是产品定价，不是成本。
+# ⚠️ 改这里等于改价：cost_of() 直接乘这个数。
+CINEMATIC_RATE_PER_SEC = {
+    "motion": _env_positive_int("CINEMATIC_RATE_MOTION", 3),   # 单人动作模仿
+    "duo":    _env_positive_int("CINEMATIC_RATE_DUO", 5),      # 双人动作模仿
+    "open":   _env_positive_int("CINEMATIC_RATE_OPEN", 5),     # 开放式生成
+}
+CINEMATIC_RATE_FALLBACK = 5   # 玩法认不出来时按最贵的收，绝不按最便宜的（更不能按 0）
+
+
+def cinematic_rate(cine_mode):
+    return CINEMATIC_RATE_PER_SEC.get(cine_mode, CINEMATIC_RATE_FALLBACK)
+
+
+def cinematic_cost(body):
+    """点数 = 成片秒数 × 单价。
+
+    能这么算的前提是：validate_cinematic_payload 已经把「自适应」解析成了确定的整数秒
+    （参考视频落盘 + ffprobe），所以扣点时不存在「还不知道多长」的情况，不需要预扣退差。
+    """
+    refs = body.get("reference_video_files") or []
+    duration = _cinematic_duration(body.get("duration"), refs[0] if refs else None)
+    return max(1, int(duration) * cinematic_rate(body.get("cine_mode")))
+
+
+# 动作模仿的提示词是【写死的】，用户不填、也改不了 —— 前端连输入框都不显示，
+# 后端也不信任客户端传上来的 prompt（见 validate_cinematic_payload）。
+CINEMATIC_FIXED_PROMPTS = {"motion": MOTION_PROMPT_BASE, "duo": DUO_MOTION_PROMPT_BASE}
+# 动作模仿需要几个形象：数量必须【正好】等于这个数，多一个少一个都不行 ——
+# 双人提示词会去参考视频里找两个人，只给一个形象，HeyGen 会把参考视频里的另一个人抄进来。
+CINEMATIC_MODE_AVATARS = {"motion": 1, "duo": 2}
 
 # 媒体预算。官方文档原文：
 #   「Avatar looks and references share a combined media budget:
@@ -2464,13 +2517,23 @@ def _cinematic_duration(raw, reference_video_file=None):
 
 
 def validate_cinematic_payload(body, username=None):
+    """校验并【落定】payload —— 尤其是时长。
+
+    时长必须在这里就变成一个确定的整数秒，不能留 "auto" 带下去：调用链是
+        validate_cinematic_payload → cost_of → 扣点 → 入队 → gen_cinematic
+    点数 = 秒数 × 单价，扣点发生在 gen_cinematic 之前。留个 "auto" 给 worker 去解析，
+    扣点这一刻就不知道该扣多少 —— 只能预扣上限再退差。所以参考视频在这里就落盘 + 探测。
+    """
     if not isinstance(body, dict):
         raise ValueError("请求体必须是 JSON 对象")
+
+    cine_mode = (body.get("cine_mode") or "open").strip().lower()
+    if cine_mode not in CINEMATIC_MODES:
+        raise ValueError("玩法仅支持 motion（单人动作模仿）、duo（双人动作模仿）、open（开放式生成）")
+
     raw_ids = body.get("avatar_ids") or ([body["avatar_id"]] if body.get("avatar_id") else [])
     if not isinstance(raw_ids, (list, tuple)) or not raw_ids:
         raise ValueError("请至少选择一个数字人形象")
-    if len(raw_ids) > CINEMATIC_MAX_AVATARS:
-        raise ValueError("最多同时选择 %d 个形象" % CINEMATIC_MAX_AVATARS)
     ids = []
     for a in raw_ids:
         try:
@@ -2482,12 +2545,27 @@ def validate_cinematic_payload(body, username=None):
         # 归属校验：get_video_avatar 只认本人的形象，别人的 id 直接 ValueError
         if username:
             get_video_avatar(username, v)
+    need = CINEMATIC_MODE_AVATARS.get(cine_mode)
+    if need and len(ids) != need:
+        # 「正好 N 个」，不是「最多 N 个」：双人提示词会去参考视频里找两个人，
+        # 只给一个形象，HeyGen 就会把参考视频里的另一个人原样抄进成片。
+        raise ValueError("%s需要正好 %d 个形象，当前选了 %d 个"
+                         % ("双人动作模仿" if cine_mode == "duo" else "动作模仿", need, len(ids)))
+    if len(ids) > CINEMATIC_MAX_AVATARS:
+        raise ValueError("最多同时选择 %d 个形象" % CINEMATIC_MAX_AVATARS)
 
-    prompt = (body.get("prompt") or "").strip()
-    if not prompt:
-        raise ValueError("请填写画面描述（或选一个模板）")
-    if len(prompt) > CINEMATIC_PROMPT_MAX:
-        raise ValueError("画面描述不能超过 %d 字" % CINEMATIC_PROMPT_MAX)
+    # 参考素材的校验统一放在下面（reference_videos/reference_images，老的单字段会先合进去）。
+    # 别在这里按老字段 reference_video_data 再判一次「动作模仿必须传参考视频」——
+    # 新前端发的是 reference_videos[]，那样判会把每一条动作模仿都拒掉。
+    if cine_mode in CINEMATIC_FIXED_PROMPTS:
+        # 提示词写死。客户端传什么都不看 —— 它是计费和成片效果的一部分，不能由前端说了算。
+        prompt = CINEMATIC_FIXED_PROMPTS[cine_mode]
+    else:
+        prompt = (body.get("prompt") or "").strip()
+        if not prompt:
+            raise ValueError("请填写画面描述（或选一个模板）")
+        if len(prompt) > CINEMATIC_PROMPT_MAX:
+            raise ValueError("画面描述不能超过 %d 字" % CINEMATIC_PROMPT_MAX)
 
     resolution = (body.get("resolution") or "720p").strip().lower()
     if resolution not in CINEMATIC_RESOLUTIONS:
@@ -2499,9 +2577,6 @@ def validate_cinematic_payload(body, username=None):
     lo, hi = CINEMATIC_DURATION_RANGE
     raw = str(body.get("duration") or "").strip().lower()
     if raw in ("", "auto"):
-        # 自适应：跟随参考视频的实际长度（在 gen_cinematic 里探测并夹到 4~15 秒）。
-        # 没传参考视频时无从跟随，回落到默认值 —— 这一步在这里不做，留给 gen_cinematic，
-        # 因为参考视频要先落盘才能探测时长。
         duration = "auto"
     else:
         try:
@@ -2510,6 +2585,9 @@ def validate_cinematic_payload(body, username=None):
             raise ValueError("时长必须是 %d~%d 之间的整数，或填 auto 跟随参考视频" % (lo, hi))
         if not lo <= duration <= hi:
             raise ValueError("时长仅支持 %d~%d 秒" % (lo, hi))
+        if cine_mode in CINEMATIC_FIXED_PROMPTS and duration not in CINEMATIC_MOTION_DURATIONS:
+            raise ValueError("动作模仿的时长仅支持自适应、%s"
+                             % "、".join("%d 秒" % d for d in CINEMATIC_MOTION_DURATIONS))
 
     # 参考素材。reference_video_data（单个）是老字段，合进 reference_videos 里，别让老前端 400。
     max_videos, max_images = cinematic_ref_budget(len(ids))
@@ -2533,15 +2611,41 @@ def validate_cinematic_payload(body, username=None):
         raise ValueError("参考图片最多 %d 张（形象和参考素材共用 %d 张图的额度，你已选 %d 个形象）"
                          % (max_images, CINEMATIC_MAX_MEDIA_IMAGES, len(ids)))
 
+    if cine_mode in CINEMATIC_FIXED_PROMPTS:
+        # 动作模仿：正好一个参考视频，不收参考图。
+        # 多参考素材（#599）是给开放式生成的 —— 那边用户自己写提示词，可以说清楚每个素材干嘛用。
+        # 动作模仿的提示词是写死的「照着参考视频演」，再塞第二个视频或几张图，HeyGen 只会
+        # 在它们之间乱抄，用户既控制不了、也无从预期。
+        if len(videos) != 1:
+            raise ValueError("动作模仿需要正好上传 1 个参考视频")
+        if images:
+            raise ValueError("动作模仿不支持参考图片，只看参考视频的动作")
+
     cleaned = dict(body)
-    cleaned.update({"avatar_ids": ids, "prompt": prompt, "resolution": resolution,
-                    "ratio": ratio, "duration": duration,
-                    "reference_videos": videos, "reference_images": images,
+    # 参考素材在这里就落盘（原来是留到 worker 里）。两个原因：
+    #   1. 【必须】按成片秒数计费，而扣点发生在 worker 之前 —— 「自适应」要在这里探测出秒数，
+    #      否则扣点这一刻不知道该扣多少，只能预扣上限再退差。
+    #   2. 顺带：payload 里存路径而不是几十 MB 的 base64，jobs.payload 不再被撑爆。
+    video_files = [f for f in (_save_data_file(v, "motion_ref", [".mp4", ".mov", ".webm"]) for v in videos) if f]
+    image_files = [f for f in (_save_data_file(i, "cine_ref", [".jpg", ".png", ".webp"]) for i in images) if f]
+    if video_files:
+        _motion_reference_duration(video_files[0])   # 超长（>120s）在这里就明确拒绝
+    # 「自适应」跟随第一个参考视频的长度
+    duration = _cinematic_duration(duration, video_files[0] if video_files else None)
+
+    cleaned.update({"cine_mode": cine_mode, "avatar_ids": ids, "prompt": prompt,
+                    "resolution": resolution, "ratio": ratio, "duration": duration,
+                    "reference_video_files": video_files, "reference_image_files": image_files,
                     # 自动润色：HeyGen 把简短提示词扩写成更丰富的描述。默认关 ——
                     # 它可能把用户的意图改跑偏，要不要开由用户决定。
-                    "enhance_prompt": bool(body.get("enhance_prompt"))})
+                    # 动作模仿【一律关】：提示词是写死的（含身份约束），让 HeyGen 去改写它，
+                    # 等于让它改写「不许抄参考视频里那个人的脸」这句话。
+                    "enhance_prompt": False if cine_mode in CINEMATIC_FIXED_PROMPTS
+                                      else bool(body.get("enhance_prompt"))})
     cleaned.pop("avatar_id", None)
-    cleaned.pop("reference_video_data", None)   # 已合进 reference_videos，别留两份
+    # base64 已经落盘成文件了，别在 payload 里再留一份
+    for k in ("reference_video_data", "reference_videos", "reference_images"):
+        cleaned.pop(k, None)
     return cleaned
 
 
@@ -2558,15 +2662,24 @@ def gen_cinematic(payload):
     if not all(look_ids):
         raise ValueError("所选形象尚未就绪，请重新创建")
 
-    # 参考素材：视频压缩后再传（推字节过隧道，不压的话 10 路并发会撞 240s 上传超时）；
-    # 图片按原样传（本来就小）。老字段 reference_video_data 已在校验阶段合进 reference_videos。
-    video_files = [_shrink_motion_reference(
-        _save_data_file(v, "motion_ref", [".mp4", ".mov", ".webm"])) for v in (payload.get("reference_videos") or [])]
-    image_files = [_save_data_file(i, "cine_ref", [".jpg", ".png", ".webp"])
-                   for i in (payload.get("reference_images") or [])]
+    # 参考素材已经在 validate 阶段落盘了（按秒计费，扣点前就得探测出时长）。这里只做压缩：
+    # 视频要推字节过隧道，不压的话 10 路并发会撞 240s 上传超时；图片本来就小，原样传。
+    #
+    # reference_videos/reference_images（base64）是老 payload 的兼容路径 —— 重启恢复在飞任务时，
+    # 队列里可能还躺着改版前入队的 job，它们的素材还没落盘。
+    video_files = list(payload.get("reference_video_files") or [])
+    image_files = list(payload.get("reference_image_files") or [])
+    if not video_files and payload.get("reference_videos"):
+        video_files = [_save_data_file(v, "motion_ref", [".mp4", ".mov", ".webm"])
+                       for v in payload["reference_videos"]]
+    if not image_files and payload.get("reference_images"):
+        image_files = [_save_data_file(i, "cine_ref", [".jpg", ".png", ".webp"])
+                       for i in payload["reference_images"]]
+    video_files = [_shrink_motion_reference(f) for f in video_files if f]
+    image_files = [f for f in image_files if f]
     reference_video_file = video_files[0] if video_files else None   # 资产表只存第一个（列是单值）
 
-    # 「自适应」跟随第一个参考视频的长度
+    # 时长在 validate 里就落定成整数了（= 已经按这个秒数扣过点）。这里再算一次只为兜住老 payload。
     duration = _cinematic_duration(payload.get("duration"), reference_video_file)
 
     update_video_asset_phase(job_id, "queued", mode="cinematic", text=payload["prompt"],

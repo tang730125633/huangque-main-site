@@ -51,21 +51,42 @@ class MediaBudgetTests(unittest.TestCase):
 
 
 class ValidationTests(unittest.TestCase):
+    """⚠️ 参考素材现在在【校验阶段】就落盘（按成片秒数计费，扣点前必须探测出时长），
+    所以 cleaned payload 里是文件路径（reference_video_files / reference_image_files），
+    不再是 base64 数组。base64 只在请求体里出现一次，落盘后就从 payload 里删掉。
+    """
+
+    def setUp(self):
+        self._n = [0]
+
+        def fake_save(data, prefix, exts):
+            self._n[0] += 1
+            return "video/%s_%d%s" % (prefix, self._n[0], exts[0])
+
+        for x in (patch.object(video, "_save_data_file", fake_save),
+                  patch.object(video, "_probe_video_duration", lambda f: 8.0)):
+            x.start()
+            self.addCleanup(x.stop)
+
     def _body(self, **kw):
-        b = {"avatar_ids": [1], "prompt": "海边跳舞", "resolution": "720p", "ratio": "9:16"}
+        b = {"cine_mode": "open", "avatar_ids": [1], "prompt": "海边跳舞",
+             "resolution": "720p", "ratio": "9:16"}
         b.update(kw)
         return b
 
     def test_multiple_reference_videos_and_images(self):
         out = video.validate_cinematic_payload(self._body(
             reference_videos=[MP4, MP4], reference_images=[PNG, PNG, PNG]))
-        self.assertEqual(len(out["reference_videos"]), 2)
-        self.assertEqual(len(out["reference_images"]), 3)
+        self.assertEqual(len(out["reference_video_files"]), 2)
+        self.assertEqual(len(out["reference_image_files"]), 3)
+        # base64 落盘后就从 payload 里删掉 —— 留着 jobs.payload 会被几十 MB 撑爆
+        for k in ("reference_videos", "reference_images"):
+            self.assertNotIn(k, out)
 
     def test_the_old_single_field_still_works(self):
-        """老前端发的 reference_video_data 不能 400 —— 合进 reference_videos。"""
+        """老前端发的 reference_video_data 不能 400 —— 合进 reference_videos 再落盘。"""
         out = video.validate_cinematic_payload(self._body(reference_video_data=MP4))
-        self.assertEqual(out["reference_videos"], [MP4])
+        self.assertEqual(len(out["reference_video_files"]), 1)
         self.assertNotIn("reference_video_data", out, "别留两份，下游会重复上传")
 
     def test_video_cap_is_enforced(self):
@@ -85,7 +106,7 @@ class ValidationTests(unittest.TestCase):
 
     def test_one_avatar_leaves_eight_images(self):
         out = video.validate_cinematic_payload(self._body(reference_images=[PNG] * 8))
-        self.assertEqual(len(out["reference_images"]), 8)
+        self.assertEqual(len(out["reference_image_files"]), 8)
 
     def test_wrong_media_types_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "参考视频格式"):

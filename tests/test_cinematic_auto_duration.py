@@ -60,17 +60,36 @@ class AutoDurationTests(unittest.TestCase):
 
 class ValidationTests(unittest.TestCase):
     def _body(self, **kw):
-        b = {"avatar_ids": [1], "prompt": "海边跳舞", "resolution": "720p", "ratio": "9:16"}
+        b = {"cine_mode": "open", "avatar_ids": [1], "prompt": "海边跳舞",
+             "resolution": "720p", "ratio": "9:16"}
         b.update(kw)
         return b
 
-    def test_auto_is_accepted_and_deferred(self):
-        # 校验阶段还没有参考视频文件（要先落盘才能探测），所以 auto 原样带下去
+    def test_auto_is_resolved_here_not_deferred_to_the_worker(self):
+        """时长必须在校验阶段就变成确定的秒数 —— 因为扣点紧接着就发生。
+
+        调用链是 validate → cost_of → 扣点 → 入队 → gen_cinematic，而点数 = 秒数 × 单价。
+        留个 "auto" 给 worker 去解析，扣点这一刻就不知道该扣多少。
+        """
         out = video.validate_cinematic_payload(self._body(duration="auto"))
-        self.assertEqual(out["duration"], "auto")
+        self.assertEqual(out["duration"], video.CINEMATIC_AUTO_DURATION, "没有参考视频 → 回落 10 秒")
+        self.assertNotEqual(out["duration"], "auto")
 
     def test_missing_duration_means_auto(self):
-        self.assertEqual(video.validate_cinematic_payload(self._body())["duration"], "auto")
+        self.assertEqual(video.validate_cinematic_payload(self._body())["duration"],
+                         video.CINEMATIC_AUTO_DURATION)
+
+    def test_a_reference_video_is_probed_at_submit_time(self):
+        """有参考视频时，「自适应」在这里就落盘 + 探测 —— 扣点前就知道成片几秒。"""
+        with patch.object(video, "_is_valid_data_url", lambda *a: True), \
+             patch.object(video, "_save_data_file", lambda *a, **k: "video/ref.mp4"), \
+             patch.object(video, "_probe_video_duration", lambda f: 8.2):
+            out = video.validate_cinematic_payload(
+                self._body(duration="auto", reference_video_data="data:video/mp4;base64,AA"))
+        self.assertEqual(out["duration"], 9, "8.2 秒 → 向上取整 9 秒")
+        # 落盘后 payload 里存路径，不再存几十 MB 的 base64（jobs.payload 会被撑爆）
+        self.assertEqual(out["reference_video_files"], ["video/ref.mp4"])
+        self.assertNotIn("reference_video_data", out)
 
     def test_explicit_values_are_still_validated(self):
         self.assertEqual(video.validate_cinematic_payload(self._body(duration=12))["duration"], 12)
@@ -96,8 +115,8 @@ class UiTests(unittest.TestCase):
     def test_the_hint_explains_what_auto_does_without_a_reference(self):
         """用户选了自适应、没传参考片段，拿到 10 秒的片子会以为是 bug —— 必须提前说清楚。"""
         self.assertIn("未上传参考视频，将按 10 秒生成", HTML)
-        # 参考视频现在可以传多个，跟随的是【第一个】
-        self.assertIn("成片长度跟随第一个参考视频", HTML)
+        # 参考视频现在可以传多个（开放式），跟随的是【第一个】
+        self.assertIn("自适应：跟随第一个参考视频，成片约 '+cineSeconds()+' 秒", HTML)
 
     def test_the_hint_updates_when_a_reference_is_uploaded(self):
         # 参考素材的上传统一走 bindCineRefs（视频和图片共用一套逻辑）
