@@ -297,7 +297,6 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
             "require_enabled": core.feature_flags.require_enabled,
             "max_active": core.MAX_USER_ACTIVE_JOBS,
             "max_xiaole": core.MAX_USER_ACTIVE_XIAOLE_VIDEO,
-            "max_motion": core.MAX_USER_ACTIVE_MOTION,
             "max_tryon": core.MAX_USER_ACTIVE_TRYON,
             "handlers": core.HANDLERS,
             "validate_video": video.validate_video_payload,
@@ -313,7 +312,6 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
             core.feature_flags.require_enabled = lambda kind: None
             core.MAX_USER_ACTIVE_JOBS = 5
             core.MAX_USER_ACTIVE_XIAOLE_VIDEO = 3
-            core.MAX_USER_ACTIVE_MOTION = 2
             core.MAX_USER_ACTIVE_TRYON = 1
             core.HANDLERS = {"video": lambda body: body, "tryon": lambda body: body, "xiaole_video": lambda body: body}
             video.validate_video_payload = lambda body, username: body
@@ -343,18 +341,6 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                         "body": {"channel": "omni", "prompt": "商品展示"},
                         "detail": "当前果肉/豆姐/欧米视频最多同时排队或生成 3 个任务，请等待部分完成后再继续",
                         "code": "xiaole_active_cap",
-                    },
-                    {
-                        "seed": [
-                            ("video", "pending", '{"mode":"motion"}'),
-                            ("video", "running", '{"mode":"motion"}'),
-                        ],
-                        "path": "/api/gen/video",
-                        # 「影视级模仿」已更名为「动作模仿」（去线路化：原线路一 HeyGen 的能力
-                        # 拆成了独立的「AI 剧情视频」，这边只留 WaveSpeed）
-                        "body": {"mode": "motion", "text": "动作模仿"},
-                        "detail": "当前动作模仿最多同时排队或生成 2 个任务，请等待部分完成后再继续",
-                        "code": "motion_active_cap",
                     },
                     {
                         "seed": [
@@ -390,7 +376,6 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                 with urllib.request.urlopen(base + "/api/gen/health", timeout=5) as response:
                     health = json.loads(response.read())
                 self.assertEqual(3, health["max_user_active_xiaole_video"])
-                self.assertEqual(2, health["max_user_active_motion"])
                 self.assertEqual(1, health["max_user_active_tryon"])
             finally:
                 if server:
@@ -403,7 +388,6 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                 core.feature_flags.require_enabled = originals["require_enabled"]
                 core.MAX_USER_ACTIVE_JOBS = originals["max_active"]
                 core.MAX_USER_ACTIVE_XIAOLE_VIDEO = originals["max_xiaole"]
-                core.MAX_USER_ACTIVE_MOTION = originals["max_motion"]
                 core.MAX_USER_ACTIVE_TRYON = originals["max_tryon"]
                 core.HANDLERS = originals["handlers"]
                 video.validate_video_payload = originals["validate_video"]

@@ -267,67 +267,23 @@ class CinematicRequestBodyTests(unittest.TestCase):
         self.assertIn("在海边跳舞", body["prompt"])
 
 
-class MotionIsWavespeedOnlyTests(unittest.TestCase):
-    """动作模仿不再有线路之分。"""
-
-    def test_line_is_stripped_from_payload(self):
-        body = video.validate_video_payload({
-            "mode": "motion", "image_data": "data:image/png;base64,iVBORw0KGgo=",
-            "reference_video_data": "data:video/mp4;base64,AAAA", "line": "1",
-        })
-        self.assertNotIn("line", body, "老前端传来的 line 不能写进 payload，会混淆历史记录")
-
-    def test_motion_is_locked_to_720p(self):
-        with self.assertRaises(ValueError) as ctx:
-            video.validate_video_payload({
-                "mode": "motion", "image_data": "data:image/png;base64,iVBORw0KGgo=",
-                "reference_video_data": "data:video/mp4;base64,AAAA", "resolution": "1080p",
-            })
-        self.assertIn("剧情视频", str(ctx.exception), "要告诉用户 1080p 去哪儿找")
-
-    def test_motion_defaults_to_720p(self):
-        body = video.validate_video_payload({
-            "mode": "motion", "image_data": "data:image/png;base64,iVBORw0KGgo=",
-            "reference_video_data": "data:video/mp4;base64,AAAA",
-        })
-        self.assertEqual(body["resolution"], "720p")
-
-    def test_motion_is_not_hostage_to_the_heygen_key(self):
-        """HeyGen 断供时，动作模仿必须照常能跑 —— 它根本不用 HeyGen。
-
-        gen_video 开头原本有个无条件的 `if not HEYGEN_API_KEY: raise`。动作模仿全量切到
-        WaveSpeed 之后，这条就变成了：HeyGen 密钥一缺，连不用它的功能也跟着挂。
-        """
-        from content_domains import wavespeed
-        with patch.object(video, "HEYGEN_API_KEY", ""), \
-             patch.object(video, "_save_data_file", side_effect=["image.png", "reference.mp4"]), \
-             patch.object(video, "_shrink_motion_reference", side_effect=lambda p: p), \
-             patch.object(video, "_motion_reference_duration", return_value=6), \
-             patch.object(video, "update_video_asset_phase"), \
-             patch.object(video, "public_url", return_value="/video/out.mp4"), \
-             patch.object(wavespeed, "available", return_value=True), \
-             patch.object(wavespeed, "generate_motion", return_value={"video_file": "video/out.mp4"}):
-            out = video.gen_video({"mode": "motion", "image_data": "i", "reference_video_data": "v"})
-        self.assertEqual(out["video_file"], "video/out.mp4")
+class VideoModeTests(unittest.TestCase):
+    """口播只剩 text/audio，都走 HeyGen。"""
 
     def test_talking_still_requires_the_heygen_key(self):
-        # 但口播确实走 HeyGen，密钥缺失就该明确报错，而不是跑到一半才炸
+        # 口播走 HeyGen，密钥缺失就该明确报错，而不是跑到一半才炸
         with patch.object(video, "HEYGEN_API_KEY", ""):
             with self.assertRaisesRegex(ValueError, "未配置"):
                 video.gen_video({"mode": "text", "image_data": "i", "text": "hi"})
 
-    def test_motion_no_longer_calls_heygen(self):
-        """gen_video 的 motion 分发块里只能有 WaveSpeed。
-
-        （锚点不能用 `if mode == "motion":` —— 校验器里也有一处同样的字样，会先匹配到。
-        这个坑我今天已经踩过一次，用 `_motion_reference_duration` 这个只出现在分发块里的调用做锚。）
-        """
-        src = Path(video.__file__).read_text(encoding="utf-8")
-        start = src.index("reference_duration = _motion_reference_duration(")
-        block = src[start:src.index("video_result.setdefault(", start)]
-        self.assertIn("wavespeed.generate_motion", block)
-        self.assertNotIn("generate_heygen_motion_video", block,
-                         "动作模仿不该再走 HeyGen —— 那条能力已经拆成 AI 剧情视频")
+    def test_motion_mode_is_retired(self):
+        # 老版动作模仿已下线：mode=motion 不再是合法提交
+        self.assertNotIn("motion", video.VALID_VIDEO_MODES)
+        with self.assertRaises(ValueError):
+            video.validate_video_payload({
+                "mode": "motion", "image_data": "data:image/png;base64,iVBORw0KGgo=",
+                "reference_video_data": "data:video/mp4;base64,AAAA",
+            })
 
 
 if __name__ == "__main__":

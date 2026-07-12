@@ -29,24 +29,10 @@ class VideoBgmTests(unittest.TestCase):
         self.assertIn("amix=inputs=2", " ".join(run.call_args_list[0].args[0]))
         self.assertNotIn("amix=inputs=2", " ".join(run.call_args_list[1].args[0]))
 
-    def test_no_bgm_does_not_consume_an_extra_file_save(self):
-        # 动作模仿已去线路化，只走 WaveSpeed（原线路一 HeyGen 拆成了独立的「AI 剧情视频」）
-        from content_domains import wavespeed
-        with patch.object(video, "_save_data_file", side_effect=["image.png", "reference.mp4"]) as save, \
-             patch.object(video, "_shrink_motion_reference", side_effect=lambda p: p), \
-             patch.object(video, "_motion_reference_duration", return_value=6), \
-             patch.object(wavespeed, "available", return_value=True), \
-             patch.object(wavespeed, "generate_motion", return_value={"video_file": "video/out.mp4"}), \
-             patch.object(video, "public_url", return_value="/video/out.mp4"), \
-             patch.object(video, "update_video_asset_phase"):
-            video.gen_video({"mode": "motion", "image_data": "image", "reference_video_data": "video"})
-        self.assertEqual(2, save.call_count)
-
-    def test_frontend_sends_bgm_on_talking_batch_and_motion(self):
+    def test_frontend_sends_bgm_on_talking(self):
         html = (ROOT / "site/workbench/video.html").read_text(encoding="utf-8")
         self.assertIn('id="bgmPanel"', html)
         self.assertIn("bgm_data:bgmData,bgm_volume:selectedBgmVolume", html)
-        self.assertIn("body.bgm_data=bgmData; body.bgm_volume=selectedBgmVolume;", html)
         self.assertIn("var body=talkingPayload({});", html)
 
 

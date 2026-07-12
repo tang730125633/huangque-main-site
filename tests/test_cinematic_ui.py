@@ -12,23 +12,13 @@ ROOT = Path(__file__).resolve().parents[1]
 HTML = (ROOT / "site/workbench/video.html").read_text(encoding="utf-8")
 
 
-class MotionDeLineTests(unittest.TestCase):
-    """动作模仿去线路化：原线路一(HeyGen)的能力搬去了「AI 剧情视频」。"""
+class LegacyMotionRetiredTests(unittest.TestCase):
+    """老版动作模仿(mode=motion)已下线，视频功能收敛到电影化身。"""
 
-    def test_line_selector_is_gone(self):
-        self.assertNotIn('id="motionLineTabs"', HTML)
+    def test_motion_tab_and_panel_are_gone(self):
+        self.assertNotIn('data-function="motion"', HTML)
+        self.assertNotIn('id="motionPanel"', HTML)
         self.assertNotIn("selectedMotionLine", HTML)
-
-    def test_line_is_not_sent_to_the_backend(self):
-        # 后端已经不认 line 了（validate_video_payload 会把它丢掉），前端也不该再发
-        self.assertNotIn("line:selectedMotionLine", HTML)
-
-    def test_1080p_is_disabled_and_points_to_cinematic(self):
-        """绝不悄悄降分辨率：1080p 点不了，而且要告诉用户去哪儿找。"""
-        seg = HTML.split('id="motionResolutionSeg"')[1].split("</div>")[0]
-        self.assertIn('data-motion-resolution="1080p"', seg)
-        self.assertIn("disabled", seg)
-        self.assertIn("电影化身", seg, "要指路，不能只是灰掉")
 
 
 class CinematicPanelTests(unittest.TestCase):
