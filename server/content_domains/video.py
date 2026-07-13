@@ -227,10 +227,13 @@ def validate_video_payload(payload, username=None):
             raise ValueError("mode=text 时 voice 必填")
     elif mode == "audio":
         audio_data = (payload.get("audio_data") or "").strip()
-        if not audio_data:
-            raise ValueError("audio_data 不能为空")
-        if not _is_valid_data_url(audio_data, VALID_AUDIO_MIMES):
+        audio_file = (payload.get("audio_file") or "").strip()
+        if not audio_data and not audio_file:
+            raise ValueError("audio_data 或 audio_file 不能为空")
+        if audio_data and not _is_valid_data_url(audio_data, VALID_AUDIO_MIMES):
             raise ValueError("audio_data 不是有效的音频文件")
+        if audio_file and not _resolve_out_file(audio_file):
+            raise ValueError("音频文件不存在：%s" % audio_file)
     elif mode == "motion":
         line = str(payload.get("line") or "2").strip()
         if line not in {"1", "2"}:
@@ -1554,10 +1557,17 @@ def gen_video(payload):
         if not audio_file:
             raise ValueError("口播音频生成失败")
     else:
-        audio_file = _save_data_file(payload.get("audio_data"), "vid_aud", [".mp3", ".wav", ".m4a"])
-        if not audio_file:
-            raise ValueError("请先选择口播音频")
-        audio_url = _file_url(audio_file)
+        if payload.get("audio_file"):
+            fp = _resolve_out_file(payload.get("audio_file"))
+            if not fp:
+                raise ValueError("音频文件不存在：%s" % payload.get("audio_file"))
+            audio_file = str(fp)
+            audio_url = _file_url(audio_file)
+        else:
+            audio_file = _save_data_file(payload.get("audio_data"), "vid_aud", [".mp3", ".wav", ".m4a"])
+            if not audio_file:
+                raise ValueError("请先选择口播音频")
+            audio_url = _file_url(audio_file)
     resolution = (payload.get("resolution") or "1080p").strip()
     ratio = (payload.get("ratio") or "9:16").strip()
     motion = (payload.get("motion") or "medium").strip()
