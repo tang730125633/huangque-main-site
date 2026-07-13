@@ -117,24 +117,41 @@ class FixedPromptTests(_Base):
             self.assertEqual(body["prompt"], video.CINEMATIC_FIXED_PROMPTS[mode])
             self.assertNotIn("忽略我", body["prompt"])
 
-    def test_the_identity_guard_is_untouched(self):
-        """#2173 发出去的是「那句中文 + 这段英文约束」，它带着 "from the reference video"
-        也照样过了 —— 所以约束【不是】触发点，别顺手把它一起重写了（我一度想改，那是错的：
-        会把唯一一个已知能过的配置也改掉）。"""
-        self.assertIn("from the reference video", video.CINEMATIC_IDENTITY_GUARD)
-        self.assertIn("CRITICAL", video.CINEMATIC_IDENTITY_GUARD)
+    def test_the_fixed_prompt_modes_do_NOT_get_the_identity_guard(self):
+        """⚠️ 这是照抄第一版最关键的一半。
 
-    def test_the_identity_guard_is_not_appended_twice(self):
-        """gen_cinematic 会统一拼身份约束。固定提示词里再带一份就是拼两遍。"""
-        for text in video.CINEMATIC_FIXED_PROMPTS.values():
-            self.assertNotIn(video.CINEMATIC_IDENTITY_GUARD, text)
+        第一版的提示词是【一整段】，自带身份约束（"Keep the person's identity, face,
+        hairstyle, body proportions and outfit consistent"、"no extra people"），当时并没有
+        另外拼 CINEMATIC_IDENTITY_GUARD。
 
-    def test_the_single_person_prompt_is_the_one_that_actually_passed_moderation(self):
-        """照抄 #2173 —— 目前唯一一个已知能过 HeyGen 审核的配置（成片 383s）。
-
-        写死的英文版被审核拦了 5/6：它里面的 "not the reference person" 是换脸措辞。
+        而那段 guard 里有一句 "Do NOT copy any person's appearance ... from the reference
+        video" —— 同样是换脸措辞。只换提示词却照旧拼 guard，等于又把它加回去了。
         """
-        self.assertEqual(video.CINEMATIC_FIXED_PROMPTS["motion"], "用这个人物形象模仿视频里面的动作")
+        block = VIDEO_SRC.split("def gen_cinematic")[1].split(chr(10) + "def ")[0]
+        self.assertIn('payload["prompt"] if payload.get("cine_mode") in CINEMATIC_FIXED_PROMPTS',
+                      block, "写死提示词的玩法必须【不拼】guard")
+        # 动作模仿发出去的就是提示词本身，一个字不多
+        self.assertEqual(video.MOTION_PROMPT, video.MOTION_PROMPT_BASE)
+        self.assertNotIn("from the reference video", video.MOTION_PROMPT)
+
+    def test_open_mode_still_gets_the_guard(self):
+        """开放式必须拼：用户只写创意，身份不由用户把关 —— 丢了它，成片里的人就不是自己了。"""
+        block = VIDEO_SRC.split("def gen_cinematic")[1].split(chr(10) + "def ")[0]
+        self.assertIn('payload["prompt"] + CINEMATIC_IDENTITY_GUARD', block)
+
+    def test_the_single_person_prompt_is_the_original_first_version(self):
+        """回到【第一版】（452cc1b，2026-07-03）—— 逐字。
+
+        第一版全篇【没提过「参考视频里那个人」】，只用正面表述说「保持这个人的身份/脸/
+        发型/身材/衣着一致」。后来改成 "...not the reference person" 才踩了审核线（5/6 被拦）。
+        """
+        self.assertEqual(
+            video.CINEMATIC_FIXED_PROMPTS["motion"],
+            "Create a realistic cinematic vertical video of the same person from the avatar photo. "
+            "Follow the uploaded reference video closely for body movement, pose, timing, gestures, "
+            "facial expression, framing and camera motion. Keep the person's identity, face, hairstyle, "
+            "body proportions and outfit consistent. Smooth realistic motion, no text, no logo, "
+            "no extra people.")
 
     def test_no_face_swap_wording_survives_anywhere(self):
         """回归：这些英文措辞被 HeyGen 的审核模型读得懂，是它拦我们的直接原因。"""
@@ -143,10 +160,10 @@ class FixedPromptTests(_Base):
             for bad in ("replace the", "not the reference person", "swap"):
                 self.assertNotIn(bad, low, "提示词里还留着换脸措辞：%s" % bad)
 
-    def test_the_duo_prompt_follows_the_same_chinese_pattern(self):
-        """双人的英文版被审核拦了 2/2（"replace the two people in the reference video" —— 
-        字面就是换脸）。改成和单人同一路子的中文。⚠️ 尚未实测。"""
-        self.assertEqual(video.DUO_MOTION_PROMPT_BASE, "用这两个人物形象模仿视频里面的动作")
+    def test_the_duo_prompt_is_the_first_version_pluralised(self):
+        """第一版没有双人。这是把它改成复数。⚠️ 尚未实测（前端已经把双人下掉了）。"""
+        self.assertIn("the same people from the avatar photos", video.DUO_MOTION_PROMPT_BASE)
+        self.assertNotIn("replace", video.DUO_MOTION_PROMPT_BASE.lower())
 
     def test_open_mode_still_requires_the_user_to_write_one(self):
         with self.assertRaises(ValueError):

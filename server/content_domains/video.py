@@ -1119,44 +1119,58 @@ CINEMATIC_IDENTITY_GUARD = (
     "no extra people beyond the given avatars."
 )
 
-# ============ 动作模仿的固定提示词：照抄线上跑通的那一条 ============
+# ============ 动作模仿的固定提示词：回到【第一版】（452cc1b，2026-07-03）============
 #
-# 2026-07-13：HeyGen 的内容审核在拦我们的动作模仿。它的网页上写
+# 2026-07-13：动作模仿被 HeyGen 的内容审核大面积拦下。它的网页上写
 #     "Your content was flagged by our moderation system. Please try different images or
 #      prompts. No credits charged."
-# 而【API 一个字都不给】（v1/video_status.get 的 error 是 null，v3/videos 只有 4 个字段）。
-#
-# 把「真的被 HeyGen 判失败」和「我们自己的隧道上传超时」分开统计之后，数据很干净：
+# 而 API 一个字都不给（error 是 null）。把「HeyGen 判失败」和「我们自己的隧道上传超时」
+# 分开统计之后：
 #
 #     玩法             提示词        HeyGen 判失败   成片
-#     单人动作模仿      写死的英文          5          1
-#     双人动作模仿      写死的英文          2          0
+#     单人动作模仿      后来那版英文        5          1
+#     双人动作模仿      后来那版英文        2          0
 #     开放式生成        用户写的中文        0          5
-#     旧版(开放式)      用户写的中文        1         10
 #
-# 被判失败的【几乎全是写死英文提示词的动作模仿】；用户自己写中文的开放式一条都没被判过失败
-# （它们的失败全是参考视频上传撞 240s 硬超时，压根没提交到 HeyGen）。
+# ## 第一版是干净的，是后来的改动把换脸措辞写了进去
 #
-# 英文那两段里的
-#     "The output must look like the avatar person ... not the reference person"
-#     "Use these two avatars to replace the two people in the reference video"
-# 是换脸/深度伪造的教科书措辞。审核模型是英文的 —— 中文对它半透明，英文它读得懂。
+# 第一版（452cc1b）的提示词【全篇没提过「参考视频里那个人」】—— 它只用正面表述说
+# 「保持这个人的身份/脸/发型/身材/衣着一致」。后来拆分电影化身时改成了
 #
-# 所以这里【原样照抄】线上跑通的 #2173：
-#     提示词  「用这个人物形象模仿视频里面的动作」（用户写的，成片 383s）
-#     分辨率  1080p        比例 9:16（跟随参考视频）    时长 11s（自适应，参考视频 10.9s）
-#     润色    关           参考视频 576x1024 竖版
+#     "The output must look like the avatar person performing the reference motion,
+#      not the reference person."                          ← 承认了"另一个人"的存在
+#     "Use these two avatars to replace the two people in the reference video"  ← 字面换脸
 #
-# ⚠️ 身份约束（CINEMATIC_IDENTITY_GUARD）【不要改】：#2173 发出去的是「这句中文 + 那段英文
-# 约束」，它带着 "from the reference video" 也照样过了。所以约束不是触发点，正文才是。
-# 我一度想连约束一起重写，那是错的 —— 会把唯一一个已知能过的配置也改掉。
+# 还额外拼上了 CINEMATIC_IDENTITY_GUARD，里面又有一句
+#
+#     "Do NOT copy any person's appearance ... from the reference video"        ← 同样承认
+#
+# 这些都是换脸/深度伪造的教科书措辞，而审核模型是英文的。
+#
+# ## ⚠️ 第一版是【一整段】，它自带身份约束，当时并没有另外拼 guard
+#
+# 所以照抄第一版，就必须连「不拼 guard」这件事也一起照抄 —— 否则等于又把那句
+# "from the reference video" 加回去了。见 gen_cinematic：写死提示词的玩法【不拼】guard。
+# 开放式照旧要拼（用户只写创意，身份不由用户把关）。
 
-MOTION_PROMPT_BASE = "用这个人物形象模仿视频里面的动作"
-MOTION_PROMPT = MOTION_PROMPT_BASE + CINEMATIC_IDENTITY_GUARD
+MOTION_PROMPT_BASE = (
+    "Create a realistic cinematic vertical video of the same person from the avatar photo. "
+    "Follow the uploaded reference video closely for body movement, pose, timing, gestures, "
+    "facial expression, framing and camera motion. Keep the person's identity, face, hairstyle, "
+    "body proportions and outfit consistent. Smooth realistic motion, no text, no logo, "
+    "no extra people."
+)
+MOTION_PROMPT = MOTION_PROMPT_BASE   # 【不拼】guard —— 它自带身份约束（第一版就是这样）
 
-# 双人：同一路子的中文。⚠️ 尚未实测（双人的英文版是 0 成 2 败）。
-DUO_MOTION_PROMPT_BASE = "用这两个人物形象模仿视频里面的动作"
-DUO_MOTION_PROMPT = DUO_MOTION_PROMPT_BASE + CINEMATIC_IDENTITY_GUARD
+# 双人：第一版没有双人。这是把它改成复数，⚠️ 尚未实测（前端已经把双人下掉了）。
+DUO_MOTION_PROMPT_BASE = (
+    "Create a realistic cinematic video of the same people from the avatar photos. "
+    "Follow the uploaded reference video closely for body movement, pose, timing, gestures, "
+    "facial expression, framing and camera motion. Keep each person's identity, face, hairstyle, "
+    "body proportions and outfit consistent. Smooth realistic motion, no text, no logo, "
+    "no extra people."
+)
+DUO_MOTION_PROMPT = DUO_MOTION_PROMPT_BASE
 
 
 def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration,
@@ -2807,7 +2821,11 @@ def gen_cinematic(payload):
     with heygen_slot("剧情视频"):
         video_id = _heygen_retry_429(lambda: _heygen_create_cinematic_video(
             look_ids, reference_asset_ids, payload["ratio"], payload["resolution"], duration,
-            prompt=payload["prompt"] + CINEMATIC_IDENTITY_GUARD, direct=True,
+            # 写死提示词的玩法（动作模仿）【不拼】身份约束 —— 它的提示词自带（第一版就是一整段），
+            # 再拼一次等于把 "Do NOT copy any person's appearance ... from the reference video"
+            # 这句换脸措辞加回去。开放式必须拼：用户只写创意，身份不由用户把关。
+            prompt=(payload["prompt"] if payload.get("cine_mode") in CINEMATIC_FIXED_PROMPTS
+                    else payload["prompt"] + CINEMATIC_IDENTITY_GUARD), direct=True,
             enhance_prompt=payload.get("enhance_prompt")), "剧情视频")
 
         # ↓ 此刻已计费。之后任何失败都不能重发（见 HeyGenBilledError）——HeyGen 提交即扣费。
