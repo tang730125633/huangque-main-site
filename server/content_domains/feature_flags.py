@@ -27,6 +27,7 @@ CATALOG = [
     {"key": "cinematic", "name": "AI 剧情视频", "desc": "选 1~3 个形象 + 提示词生成剧情视频", "service": "content"},
     {"key": "tryon", "name": "换装换背景", "desc": "视频换装与背景生成", "service": "content"},
     {"key": "collect", "name": "内容采集", "desc": "内容抓取与素材采集", "service": "content"},
+    {"key": "breakdown", "name": "爆款拆解", "desc": "竞品视频分镜拆解", "service": "content"},
     {"key": "leads", "name": "获客分析", "desc": "线索抓取与评论分析", "service": "content"},
     {"key": "dl", "name": "下载代理", "desc": "无水印视频下载代理", "service": "dl"},
     {"key": "copy", "name": "文案生成", "desc": "营销文案生成", "service": "content"},

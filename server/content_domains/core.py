@@ -205,6 +205,7 @@ MAX_USER_ACTIVE_CINEMATIC = _env_positive_int("MAX_USER_ACTIVE_CINEMATIC", 2)   
 MAX_USER_ACTIVE_AVATAR = _env_positive_int("MAX_USER_ACTIVE_AVATAR", 2)              # 单用户建形象 active 上限。池已不再串行(5路)，但仍留 2：池只有 5 个槽，一个人占满就把别人挡在门外——而建形象是电影化身的入口
 MAX_USER_RUNNING_TALKING = _env_positive_int("MAX_USER_RUNNING_TALKING", 2)          # 单用户口播「运行中」并发上限：最多同时生成2条，多提交的留 pending 排队
 MAX_USER_RUNNING_IMAGE = _env_positive_int("MAX_USER_RUNNING_IMAGE", 3)              # 单用户生图「运行中」并发上限=每人可并行3个。闸数全表 kind='image'，imggen也写这表→两服务合计3个，不是各3个
+MAX_GLOBAL_RUNNING_BREAKDOWN = _env_positive_int("MAX_GLOBAL_RUNNING_BREAKDOWN", 2)  # 爆款拆解会跑下载+ffmpeg+ASR+多模态，全局限 2 条防慢任务挤爆机器
 SERVICE_OWNER = "content"   # 本服务在 jobs.owner 的署名(#579)；两处全表扫描必须按它过滤，缘由见 jobs_store.ensure_owner_column
 # reaper 各 kind 的超时宽限(秒)，默认 360。tryon 两段式+心跳刷新；xiaole_video 内部轮询600s+转存；
 # image 多图/中转慢；collect 下载+ffmpeg抽音轨+ASR 且转写全站串行(实测成功平均88s)。video 按 mode 另算。
@@ -220,13 +221,13 @@ VIDEO_REAPER_GRACE = VIDEO_GEN_DEADLINE + 300
 # 没登记的 kind 用它 —— 绝不能是 0（见 reaper 里的注释：0 的语义是「立刻杀」）。
 KIND_GRACE_DEFAULT = _env_positive_int("KIND_GRACE_DEFAULT", 900)
 KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "image": 900, "collect": 1200,
-              "cinematic": VIDEO_REAPER_GRACE, "avatar": 300}
+              "cinematic": VIDEO_REAPER_GRACE, "avatar": 300, "breakdown": 600}
 # ⚠️ tryon 【不】跟着 15 分钟走：线上实测线路一中位 909s、**p90 1612s(27 分钟)**。
 #    砍到 15 分钟会把超过一成的换装任务判成失败。要改它得先把那条链路本身提速。
 AVATAR_COST = _env_positive_int("AVATAR_COST", 5)   # 建形象：象征性收费防刷，失败自动退点
 # ⚠️ cost_of() 回落到 COST.get(kind, 0) —— 新增 kind 忘了在这里登记，就是【免费】。
 COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40,
-        "cinematic": VIDEO_COST, "avatar": AVATAR_COST}  # collect/leads/cinematic 走 cost_of() 动态算
+        "cinematic": VIDEO_COST, "avatar": AVATAR_COST, "breakdown": 8}  # collect/leads/cinematic 走 cost_of() 动态算
 # cinematic 的这条已经不生效了 —— 电影化身按成片秒数计费（video.cinematic_cost），
 # cost_of() 里有它自己的分支、必定先 return。留在这里只当保险：万一哪天分支被绕过，
 # 也是按 VIDEO_COST 收费，而不是回落到 0（=免费送 $7 一条的视频）。
@@ -711,6 +712,8 @@ def _pick_job_queue(kind, mode=None):
         return _job_queue
     if kind == "image":
         return _image_job_queue
+    if kind == "breakdown":
+        return _job_queue               # 下载+ffmpeg+ASR+多模态，走慢池别堵快任务
     if kind == "cinematic":
         return _cinematic_job_queue     # HeyGen 剧情视频，约 8 分钟/条，10 个 worker
     if kind == "avatar":
@@ -802,6 +805,14 @@ def _user_running_image_count(username):
     with closing(jdb()) as c:
         row = c.execute("SELECT COUNT(*) AS n FROM jobs WHERE username=? AND status='running' AND kind='image'",
                         (username,)).fetchone()
+    return int(row["n"] if row else 0)
+
+
+def _global_running_breakdown_count():
+    """全局「运行中」的爆款拆解数（按 owner 过滤，仅统计本服务）。"""
+    with closing(jdb()) as c:
+        row = c.execute("SELECT COUNT(*) AS n FROM jobs WHERE status='running' AND kind='breakdown' AND COALESCE(owner,?)=?",
+                        (SERVICE_OWNER, SERVICE_OWNER)).fetchone()
     return int(row["n"] if row else 0)
 
 def _reject_pending_job(job_id, username, cost, reason):
@@ -979,6 +990,7 @@ def run_job(job_id):
     is_talking = (kind == "video")   # 口播=video(text/audio)
     is_image = (kind == "image")
     stop_heartbeat = None
+    is_breakdown = (kind == "breakdown")
     try:
         # 单用户口播/生图「运行中」并发闸 + 原子抢 running：同进程锁内 count+claim，防多 worker 同时超发。
         # 整段放进 try：抢 running 那句 UPDATE 自己抛异常(SQLite 锁冲突/磁盘满)时，任务还停在 pending，
@@ -989,12 +1001,14 @@ def run_job(job_id):
                 return  # 超运行闸→不启动，任务留 pending(worker finally 会移出 _queued_job_ids)，等口播完成事件/30s 扫描重排
             if is_image and _user_running_image_count(username) >= MAX_USER_RUNNING_IMAGE:
                 return  # 单用户生图运行闸：多的留 pending 排队
+            if is_breakdown and _global_running_breakdown_count() >= MAX_GLOBAL_RUNNING_BREAKDOWN:
+                return  # 爆款拆解全局运行闸：多的留 pending 排队
             if not jobs_store.claim_running(jdb, job_id):
                 return  # CAS 认领失败：已被别的 worker 接管或已是终态
         # 抢到 running 才开心跳（前面几个 return 都还没认领，不该有心跳）。
         # 有了它，reaper 的「没心跳」才真的等于「worker 死了」—— 而不是「正在轮询/烧字幕」。
         stop_heartbeat = _start_job_heartbeat(job_id)
-        if kind in {"audio", "video", "tryon", "xiaole_video", "leads", "cinematic", "avatar"}:
+        if kind in {"audio", "video", "tryon", "xiaole_video", "leads", "cinematic", "avatar", "breakdown"}:
             payload["_username"] = username   # 少一个 kind，handler 就拿不到用户名/job_id：
             payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
         result = HANDLERS[kind](payload)
@@ -1021,9 +1035,9 @@ def run_job(job_id):
     finally:
         if stop_heartbeat:
             stop_heartbeat()   # ⚠️ 必须停 —— 否则每跑一个任务泄漏一个线程，而且它会一直把已终态的任务刷成「活着」
-        if is_talking or is_image:
+        if is_talking or is_image or is_breakdown:
             try:
-                _recover_pending_jobs()  # 口播/生图跑完→腾出该用户运行槽，立刻重排排队中的同类(+30s 扫描兜底)
+                _recover_pending_jobs()  # 口播/生图/拆解跑完→腾出运行槽，立刻重排排队中的同类(+30s 扫描兜底)
             except Exception:
                 pass
 
@@ -1434,6 +1448,11 @@ class H(BaseHTTPRequestHandler):
             if r["username"] != user.get("username"):
                 return self._send(404, {"detail": "任务不存在"})
             phase = video_domain.get_video_job_phase(jid) if r["kind"] in {"video", "tryon", "xiaole_video", "cinematic"} else None
+            if phase is None and r["kind"] == "breakdown":
+                try:
+                    phase = (json.loads(r["payload"] or "{}") or {}).get("phase")
+                except Exception:
+                    pass
             d = _job_public_dict(r, phase)
             return self._send(200, d)
         if p == "/api/gen/points/history":
