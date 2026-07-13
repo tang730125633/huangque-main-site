@@ -88,33 +88,6 @@
   .friend-profile-avatar{width:46px;height:46px;border-radius:12px;background:rgba(231,178,76,.13);display:flex;align-items:center;justify-content:center;color:#e7b24c;font-size:18px;font-weight:900;flex:none}
   .friend-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
   .friend-detail-cell{padding:12px;border:1px solid rgba(148,164,187,.1);border-radius:9px;background:rgba(7,11,19,.28);min-width:0}
-  .friend-message-modal{position:fixed;inset:0;z-index:9450;display:none;align-items:center;justify-content:center;padding:22px;background:rgba(2,6,14,.66);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
-  .friend-message-modal.show{display:flex}
-  .friend-chat-dialog{width:min(820px,calc(100vw - 28px));height:min(560px,calc(100vh - 52px));display:grid;grid-template-columns:230px minmax(0,1fr);border:1px solid rgba(148,164,187,.16);border-radius:14px;background:linear-gradient(165deg,rgba(18,24,35,.98),rgba(12,15,23,.98));box-shadow:0 30px 90px rgba(0,0,0,.48);overflow:hidden}
-  .friend-chat-side{min-width:0;padding:18px;border-right:1px solid rgba(148,164,187,.12);background:linear-gradient(180deg,rgba(231,178,76,.08),rgba(7,11,19,.16));display:flex;flex-direction:column;gap:14px}
-  .friend-chat-card{display:flex;align-items:center;gap:12px;min-width:0}
-  .friend-chat-avatar{width:46px;height:46px;border-radius:13px;background:rgba(231,178,76,.16);color:#e7b24c;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:900;flex:none}
-  .friend-chat-name{font-size:16px;font-weight:900;color:#eaf1fa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .friend-chat-sub{margin-top:4px;font-size:12px;color:#94a4bb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .friend-chat-meta{display:flex;flex-direction:column;gap:10px}
-  .friend-chat-meta-row{padding:10px;border:1px solid rgba(148,164,187,.12);border-radius:10px;background:rgba(7,11,19,.3);min-width:0}
-  .friend-chat-meta-row span{display:block;font-size:11px;font-weight:800;color:#6f7f96;margin-bottom:5px}
-  .friend-chat-meta-row strong{display:block;font-size:13px;font-weight:900;color:#eaf1fa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .friend-chat-main{min-width:0;min-height:0;display:flex;flex-direction:column}
-  .friend-chat-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:15px 16px;border-bottom:1px solid rgba(148,164,187,.12)}
-  .friend-chat-title{font-size:15px;font-weight:900;color:#eaf1fa}
-  .friend-chat-id{margin-top:3px;font-size:12px;color:#6f7f96}
-  .friend-chat-log{flex:1;min-height:0;overflow:auto;padding:15px;display:flex;flex-direction:column;gap:10px;background:rgba(3,7,13,.28)}
-  .friend-chat-empty{margin:auto;color:#6f7f96;font-size:13px}
-  .friend-chat-bubble{align-self:flex-end;max-width:min(78%,420px);padding:10px 12px;border-radius:12px 12px 4px 12px;background:rgba(231,178,76,.18);border:1px solid rgba(231,178,76,.22);color:#eaf1fa}
-  .friend-chat-text{font-size:13px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
-  .friend-chat-time{margin-top:5px;font-size:11px;color:#94a4bb;text-align:right}
-  .friend-chat-compose{padding:12px;border-top:1px solid rgba(148,164,187,.12);background:rgba(7,11,19,.18)}
-  .friend-chat-input{width:100%;min-height:74px;resize:vertical;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(7,11,19,.5);color:#eaf1fa;padding:10px 12px;font:13px inherit;outline:none;box-sizing:border-box}
-  .friend-chat-input:focus{border-color:rgba(231,178,76,.42);box-shadow:0 0 0 3px rgba(231,178,76,.08)}
-  .friend-chat-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px}
-  .friend-chat-status{min-height:18px;font-size:12px;color:#6f7f96;line-height:1.5}
-  .friend-chat-status.warn{color:#e7b24c}
   @keyframes friend-panel-in{from{transform:translateY(-8px);opacity:.35}to{transform:none;opacity:1}}
   .badge{height:24px;padding:0 9px;border-radius:7px;font-size:11.5px;font-weight:800;display:inline-flex;align-items:center;flex:none;background:rgba(231,178,76,.12);color:#e7b24c}
   .badge.muted{background:rgba(148,164,187,.1);color:#94a4bb}
@@ -176,9 +149,8 @@
     .info-grid{grid-template-columns:1fr}
     .billing-card{align-items:flex-start;flex-direction:column}
   }
-  @media (max-width:760px){.friend-chat-dialog{grid-template-columns:1fr;height:min(620px,calc(100vh - 28px))}.friend-chat-side{border-right:0;border-bottom:1px solid rgba(148,164,187,.12)}.friend-chat-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.friend-chat-log{min-height:220px}}
   @media (max-width:620px){.theme-options{grid-template-columns:1fr}}
-  @media (max-width:520px){.profile-top{align-items:flex-start;flex-wrap:wrap}.profile-edit-btn{margin-left:70px}.profile-editor{grid-template-columns:1fr}.profile-editor-actions{justify-content:flex-end}.friend-form{grid-template-columns:1fr}.friend-detail-grid{grid-template-columns:1fr}#friendsPanelCard{top:64px;left:12px;right:12px;width:auto;max-height:calc(100vh - 82px)}.friend-chat-meta{grid-template-columns:1fr}.friend-chat-dialog{height:calc(100vh - 24px)}}
+  @media (max-width:520px){.profile-top{align-items:flex-start;flex-wrap:wrap}.profile-edit-btn{margin-left:70px}.profile-editor{grid-template-columns:1fr}.profile-editor-actions{justify-content:flex-end}.friend-form{grid-template-columns:1fr}.friend-detail-grid{grid-template-columns:1fr}#friendsPanelCard{top:64px;left:12px;right:12px;width:auto;max-height:calc(100vh - 82px)}}
 </style>
 <link rel="stylesheet" href="theme.css?v=5873a2f4">
 </head>
@@ -276,7 +248,7 @@
             <div class="friend-add-head">
               <div>
                 <div class="friend-add-title">好友个人信息</div>
-                <div class="friend-add-note">查看账号资料、备注和私信入口。</div>
+                <div class="friend-add-note">查看账号资料并维护备注。</div>
               </div>
               <button id="backFromFriendDetailBtn" class="btn" type="button">返回</button>
             </div>
@@ -295,49 +267,11 @@
             </div>
             <form id="friendRemarkForm" class="settings-form">
               <label class="field"><span>修改备注</span><input id="friendRemarkInput" type="text" maxlength="24" autocomplete="off" placeholder="输入备注名"></label>
-              <div class="action-row"><button id="saveFriendRemarkBtn" class="btn primary" type="submit">保存备注</button><button id="openPrivateMessageBtn" class="btn" type="button">发私信</button></div>
+              <div class="action-row"><button id="saveFriendRemarkBtn" class="btn primary" type="submit">保存备注</button></div>
             </form>
           </div>
         </div>
       </section>
-
-      <div id="friendMessageModal" class="friend-message-modal" aria-hidden="true">
-        <section class="friend-chat-dialog" role="dialog" aria-modal="true" aria-labelledby="friendMessageTitle">
-          <aside class="friend-chat-side">
-            <div class="friend-chat-card">
-              <div id="friendMessageAvatar" class="friend-chat-avatar">--</div>
-              <div class="member-main">
-                <div id="friendMessageName" class="friend-chat-name">--</div>
-                <div id="friendMessageUsername" class="friend-chat-sub">--</div>
-              </div>
-            </div>
-            <div class="friend-chat-meta">
-              <div class="friend-chat-meta-row"><span>备注</span><strong id="friendMessageRemark">--</strong></div>
-              <div class="friend-chat-meta-row"><span>昵称</span><strong id="friendMessageNickname">--</strong></div>
-              <div class="friend-chat-meta-row"><span>账号 ID</span><strong id="friendMessageAccountId" class="mono">--</strong></div>
-            </div>
-          </aside>
-          <div class="friend-chat-main">
-            <div class="friend-chat-head">
-              <div>
-                <div id="friendMessageTitle" class="friend-chat-title">私信</div>
-                <div id="friendMessagePeerName" class="friend-chat-id">--</div>
-              </div>
-              <button id="closeFriendMessageBtn" class="icon-btn" type="button" aria-label="关闭私信">&times;</button>
-            </div>
-            <div id="friendMessageLog" class="friend-chat-log" aria-live="polite">
-              <div class="friend-chat-empty">暂无消息。</div>
-            </div>
-            <div class="friend-chat-compose">
-              <textarea id="friendMessageInput" class="friend-chat-input" maxlength="300" placeholder="输入私信内容"></textarea>
-              <div class="friend-chat-foot">
-                <div id="friendMessageStatus" class="friend-chat-status" aria-live="polite"></div>
-                <button id="sendPrivateMessageBtn" class="btn primary" type="button">发送</button>
-              </div>
-            </div>
-          </div>
-        </section>
-      </div>
 
       <section class="settings-card">
         <div class="settings-card-body">
@@ -774,11 +708,7 @@
     if((panel.contains && panel.contains(e.target)) || (e.target.closest && e.target.closest('.hq-friends-btn'))) return;
     closeFriendPanel();
   });
-  document.addEventListener('keydown',function(e){
-    if(e.key !== 'Escape') return;
-    if(isFriendMessageOpen()) closePrivateMessageDialog();
-    else closeFriendPanel();
-  });
+  document.addEventListener('keydown',function(e){ if(e.key === 'Escape') closeFriendPanel(); });
 
   $('openAddFriendViewBtn').addEventListener('click',openAddFriendView);
   $('backFriendsListBtn').addEventListener('click',openFriendListView);
@@ -813,22 +743,8 @@
     renderFriends(localFriendState().friends);
     toast('备注已保存');
   });
-  $('openPrivateMessageBtn').addEventListener('click',openPrivateMessageDialog);
-  $('closeFriendMessageBtn').addEventListener('click',closePrivateMessageDialog);
-  $('friendMessageModal').addEventListener('click',function(e){
-    if(e.target === $('friendMessageModal')) closePrivateMessageDialog();
-  });
-  $('sendPrivateMessageBtn').addEventListener('click',sendPrivateMessage);
-  $('friendMessageInput').addEventListener('keydown',function(e){
-    if((e.ctrlKey || e.metaKey) && e.key === 'Enter'){
-      e.preventDefault();
-      sendPrivateMessage();
-    }
-  });
-
   function friendStateKey(){ return accountKey('hq_friend_state_v1'); }
   function friendRemarksKey(){ return accountKey('hq_friend_remarks_v1'); }
-  function friendMessagesKey(){ return accountKey('hq_friend_messages_v1'); }
 
   function friendKey(friend){
     return String((friend && (friend.account_id || friend.username)) || '');
@@ -843,21 +759,6 @@
     if(remark) data[key]=remark;
     else delete data[key];
     writeJson(friendRemarksKey(), data);
-  }
-
-  function localFriendMessages(){
-    return readJson(friendMessagesKey());
-  }
-
-  function messagesForFriend(key){
-    var data=localFriendMessages();
-    return Array.isArray(data[key]) ? data[key] : [];
-  }
-
-  function saveMessagesForFriend(key, items){
-    var data=localFriendMessages();
-    data[key]=Array.isArray(items) ? items.slice(-80) : [];
-    writeJson(friendMessagesKey(), data);
   }
 
   function friendRemark(friend){
@@ -953,13 +854,6 @@
     catch(e){ return '--'; }
   }
 
-  function formatChatTime(value){
-    var n=Number(value || Date.now());
-    if(n < 1000000000000) n = n * 1000;
-    try{ return new Date(n).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}); }
-    catch(e){ return ''; }
-  }
-
   function findFriendByKey(key){
     var state=localFriendState();
     return (state.friends || []).find(function(friend){ return friendKey(friend) === key; }) || null;
@@ -977,79 +871,6 @@
     $('friendDetailCreatedAt').textContent=formatFriendTime(friend.created_at);
     $('friendDetailRemark').textContent=remark || '未设置';
     $('friendRemarkInput').value=remark;
-  }
-
-  function isFriendMessageOpen(){
-    var modal=$('friendMessageModal');
-    return !!(modal && modal.classList.contains('show'));
-  }
-
-  function renderPrivateMessageDialog(friend){
-    if(!friend) return;
-    var key=friendKey(friend), name=friendName(friend), originalName=friendOriginalName(friend), remark=friendRemark(friend);
-    $('friendMessageAvatar').textContent=initial(name);
-    $('friendMessageName').textContent=name;
-    $('friendMessageUsername').textContent='@' + (friend.username || '--');
-    $('friendMessageRemark').textContent=remark || '未设置';
-    $('friendMessageNickname').textContent=originalName;
-    $('friendMessageAccountId').textContent=friend.account_id || '--';
-    $('friendMessageTitle').textContent='私信';
-    $('friendMessagePeerName').textContent=name + ' · ' + (friend.account_id || '--');
-    renderPrivateMessages(key);
-  }
-
-  function renderPrivateMessages(key){
-    var log=$('friendMessageLog'), items=messagesForFriend(key);
-    if(!log) return;
-    if(!items.length){
-      log.innerHTML='<div class="friend-chat-empty">暂无消息。</div>';
-      return;
-    }
-    log.innerHTML=items.map(function(item){
-      return '<div class="friend-chat-bubble">' +
-        '<div class="friend-chat-text">' + esc(item.text || '') + '</div>' +
-        '<div class="friend-chat-time">' + esc(formatChatTime(item.created_at)) + '</div>' +
-      '</div>';
-    }).join('');
-    log.scrollTop=log.scrollHeight;
-  }
-
-  function openPrivateMessageDialog(){
-    var friend=findFriendByKey(activeFriendKey);
-    if(!friend) return;
-    renderPrivateMessageDialog(friend);
-    $('friendMessageInput').value='';
-    $('friendMessageStatus').className='friend-chat-status';
-    $('friendMessageStatus').textContent='';
-    $('friendMessageModal').classList.add('show');
-    $('friendMessageModal').setAttribute('aria-hidden','false');
-    setTimeout(function(){ $('friendMessageInput').focus(); },60);
-  }
-
-  function closePrivateMessageDialog(){
-    var modal=$('friendMessageModal');
-    if(!modal) return;
-    modal.classList.remove('show');
-    modal.setAttribute('aria-hidden','true');
-  }
-
-  function sendPrivateMessage(){
-    var friend=findFriendByKey(activeFriendKey), input=$('friendMessageInput'), status=$('friendMessageStatus');
-    if(!friend || !input || !status) return;
-    var text=(input.value || '').trim();
-    status.className='friend-chat-status';
-    if(!text){
-      status.className='friend-chat-status warn';
-      status.textContent='请填写私信内容';
-      return;
-    }
-    var key=friendKey(friend), items=messagesForFriend(key);
-    items.push({text:text,created_at:Date.now(),direction:'out'});
-    saveMessagesForFriend(key, items);
-    renderPrivateMessages(key);
-    input.value='';
-    status.textContent='已加入本地会话，等待消息服务接入';
-    toast('已加入本地会话，等待消息服务接入');
   }
 
   function openFriendDetail(key){
