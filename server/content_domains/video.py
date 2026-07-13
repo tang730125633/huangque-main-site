@@ -2507,6 +2507,16 @@ CINEMATIC_PROMPT_MAX = 2000
 CINEMATIC_DURATION_RANGE = (4, 15)   # HeyGen: 4~15 秒
 CINEMATIC_AUTO_DURATION = 10         # 选了「自适应」但没传参考视频时的回落值
 CINEMATIC_MODES = ("motion", "duo", "open")
+# 双人暂不开放：线上 0 成 2 败 —— 被 HeyGen 的内容审核拦的（网页原话 "Your content was
+# flagged by our moderation system. Please try different images or prompts. No credits
+# charged."，而 API 一个字都不给：v1/video_status.get 的 error 是 null）。
+# 嫌疑是它的英文提示词 "Use these two avatars to replace the two people in the reference
+# video" 字面就是换脸措辞，而审核模型是英文的。中文版换过，但【一次都没实测】。
+# 与其让用户白等十几分钟再看到「生成失败」，先下掉。
+# ⚠️ 玩法本身【保留】（CINEMATIC_MODES / CINEMATIC_MODE_AVATARS / 提示词都还在）——
+# 实测通过后把 CINEMATIC_DUO_ENABLED=1 打开、前端把页签加回来即可，不用重写任何逻辑。
+CINEMATIC_DUO_ENABLED = os.environ.get("CINEMATIC_DUO_ENABLED", "").strip().lower() in ("1", "true", "yes")
+CINEMATIC_COMING_SOON = {} if CINEMATIC_DUO_ENABLED else {"duo": "双人动作模仿暂未开放"}
 # 动作模仿只给三档：自适应 / 10 秒 / 15 秒（开放式仍可在 4~15 内任选）
 # 动作模仿锁死的参数（照抄 #2173 —— 目前唯一已知能过 HeyGen 审核的配置）。
 # 用户只能换形象和参考视频；分辨率/时长/润色都不给选，也不认客户端传的值。
@@ -2599,6 +2609,10 @@ def validate_cinematic_payload(body, username=None):
         raise ValueError("请求体必须是 JSON 对象")
 
     cine_mode = (body.get("cine_mode") or "open").strip().lower()
+    if cine_mode in CINEMATIC_COMING_SOON:
+        # 前端已经把页签删了，但前端【不是】安全边界 —— 直接 POST 一个 cine_mode=duo
+        # 进来也得挡住，否则用户照样白等十几分钟再看到失败。
+        raise ValueError(CINEMATIC_COMING_SOON[cine_mode])
     if cine_mode not in CINEMATIC_MODES:
         raise ValueError("玩法仅支持 motion（单人动作模仿）、duo（双人动作模仿）、open（开放式生成）")
 

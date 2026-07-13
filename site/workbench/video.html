@@ -387,7 +387,12 @@
           <div class="label">玩法</div>
           <div class="line-tabs" id="cineModeTabs">
             <button type="button" class="line-tab active" data-cine-mode="motion"><b>动作模仿</b><span>1 个形象 + 1 段参考视频 → 照着它的动作演 · 3 点/秒</span></button>
-            <button type="button" class="line-tab" data-cine-mode="duo"><b>双人动作模仿</b><span>2 个形象 + 1 段参考视频 → 两人同框照着演 · 5 点/秒</span></button>
+            <!-- 双人动作模仿：页签已下掉。它在线上是 0 成 2 败 —— 被 HeyGen 的内容审核拦的
+                 （网页原话 "Your content was flagged by our moderation system"，而 API 一个字
+                 都不给）。中文提示词换过，但【一次都没实测】。与其让用户白等十几分钟再看到
+                 「生成失败」，先下掉。
+                 CINE_MODES 里的 duo 【保留】—— 后端仍然认这个玩法（只是拒绝提交），
+                 实测通过后把 CINEMATIC_DUO_ENABLED=1 打开、把这个页签加回来即可，不用重写。 -->
             <button type="button" class="line-tab" data-cine-mode="open"><b>开放式生成</b><span>最多 3 个形象 + 自己写画面描述 · 5 点/秒</span></button>
           </div>
         </div>
@@ -1516,7 +1521,9 @@
   }
 
   // 切玩法：形象数量上限、提示词区、参考视频是否必填、可选时长 —— 全都跟着变。
+  var CINE_COMING_SOON={duo:'双人动作模仿暂未开放'};   // 和后端 CINEMATIC_COMING_SOON 对齐
   function applyCineMode(mode){
+    if(CINE_COMING_SOON[mode]){ toast(CINE_COMING_SOON[mode]); return; }
     if(!CINE_MODES[mode]) mode='open';
     cineMode=mode;
     var cfg=cineCfg();

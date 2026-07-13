@@ -41,7 +41,14 @@ def _avatar(_username, i):
 
 
 class _Base(unittest.TestCase):
+    """临时把 duo 打开 —— 这些用例测的是 duo 的【校验逻辑】（形象数量、固定提示词、参考素材、
+    计费…），不是它开不开放。「双人已下掉」这件事由 test_duo_disabled.py 单独守。
+    """
+
     def setUp(self):
+        x = patch.object(video, "CINEMATIC_COMING_SOON", {})
+        x.start()
+        self.addCleanup(x.stop)
         # 形象归属、data-url 校验、落盘、ffprobe —— 都不是这个测试要验的东西
         self.p = [
             patch.object(video, "get_video_avatar", _avatar),
@@ -241,9 +248,11 @@ class UiTests(unittest.TestCase):
                    if "AI 剧情视频" in ln and not ln.lstrip().startswith(("//", "/*", "*", "<!--"))]
         self.assertEqual(visible, [], "界面上还留着旧名字：%s" % visible)
 
-    def test_three_mode_tabs_exist(self):
-        for mode in ("motion", "duo", "open"):
+    def test_the_visible_tabs_are_motion_and_open(self):
+        """双人的页签已下掉（见 test_duo_disabled.py）。"""
+        for mode in ("motion", "open"):
             self.assertIn('data-cine-mode="%s"' % mode, HTML)
+        self.assertNotIn('data-cine-mode="duo"', HTML)
         self.assertIn("applyCineMode('motion')", HTML, "默认落在第一个玩法")
 
     def test_the_prompt_box_is_hidden_for_the_fixed_prompt_modes(self):
