@@ -1,31 +1,76 @@
-# CLAUDE.md — 这个是黄雀传媒的主站建设
+# CLAUDE.md — 黄雀 AI 主站
 
-> 🧭 **开工先读方案卡**：动手改获客系统前，先读 `~/AI-Memory/systems/douyin-leadgen.md`（端到端拓扑/脚本路径/踩坑/验收基准）+ `~/AI-Memory/SYSTEM.md`。命中即复用、禁止重写；造完回写方案卡。详见 `~/AI-Memory/systems/operating-loop.md`。
+黄雀 AI：社交媒资内容工作台 + 抖音评论区获客引擎。
 
-## 这是什么
-关键词 → 抖音搜视频 → 扒评论区 → 意图过滤 → 精准客户名单。为大鹏老板公司 AI 板块获客场景而建。
+> 🧭 **获客系统**：先读 `~/AI-Memory/systems/douyin-leadgen.md` + `~/AI-Memory/SYSTEM.md`。
+> **UI/视觉**：先读 `DESIGN.md`，不得偏离。
 
-## 架构（双层）
-- **发现层** MediaCrawler（关键词搜索+评论采集）— 本地 Mac `~/code/MediaCrawler`，服务器无头化进行中
-- **深采层** 小探/Douyin_TikTok_Download_API（账号深采+下载+口播ASR）— 服务器 `129.204.166.13:8501`（systemd `xiaotan`）
-- **过滤层** 本仓库 `scripts/leads_filter.py`
+## 架构
 
-## 红线（务必遵守）
-- `browser_data/`（抖音 cookie）、`data/`（真实名单含 PII）**永不进 git**，已 gitignore。
-- 仓库保持 **private**。
+| 服务 | 端口 | 主要文件 |
+|------|------|----------|
+| content_api | 8096 | `server/content_domains/core.py` |
+| imggen_api | 8101 | `server/imggen_api.py`（Nano Banana 独立服务）|
+| auth_server | 8095 | `server/auth_server.py` |
+| leadgen_api | 8090 | `server/leadgen_api.py` |
+| Mac Worker | 远程 | MediaCrawler + TikHub 爬虫 |
 
-## 上游工具（不在本仓库分发）
-- MediaCrawler: https://github.com/NanmiCoder/MediaCrawler （标准模式 `ENABLE_CDP_MODE=False`）
-- 小探: https://github.com/Evil0ctal/Douyin_TikTok_Download_API
+**前端**：`site/workbench/`（原生 JS + HTML，唯一正本目录）
 
-## 下一步
-封装飞书 Bot：团队发关键词 → 服务器引擎跑 → 回传名单（团队内部用）。详见 README 路线图。
+## 组锁纪律（最重要规则）
 
-## 相关记忆
-本机 AI-Memory：`reference-mediacrawler-keyword-leads`、`reference-douyin-tiktok-download-api`、`project-dapeng-ai-division`。
+一个 PR **只能动一个组**，跨组必被打回。
 
-## Design System
-Always read `DESIGN.md` before making any visual or UI decisions for the AI 内容工作台 / 网页化 bot product.
-All font choices, colors, spacing, layout density, and aesthetic direction are defined there.
-Do not deviate without explicit approval.
-When reviewing UI work, flag any code that does not match `DESIGN.md`.
+| 组 | 文件 |
+|----|------|
+| Shell | `cloud-shell.js`（排他）|
+| A | `core.py` `points.py` `leads.py` `cos.py` `egress.py` `wavespeed.py` |
+| B | `video.html` `video.py` `banana.html` `canvas.html` |
+| C | `audio.html` `script.html` |
+| E | `collect.html` `inspiration.html` `assets.html` |
+
+## PR 流程
+
+1. `git checkout main && git pull` → 开分支
+2. 只改一个组的文件 + 关联测试
+3. 改前端必跑 `python scripts/stamp_assets.py`
+4. commit → push → 开 PR → 等 kong74007-ui 审核
+5. CI 门禁绿了才能合并
+
+详见 `.claude/commands/pr.md`。
+
+## 红线
+
+- ❌ 禁止直接 push main
+- ❌ 禁止跨组 PR
+- ❌ 禁止提交密钥 `.env` `.db` `content_out/` `browser_data/` `data/`
+- ❌ 禁止改服务器代码
+- ❌ **改源码必须同步更新相关测试文件**，不能只让测试追源码
+
+## QA 协作（yuelei-dev）
+
+- QA 提问题 → AI 分析根因 → 等确认 → 动手
+- AI 不擅自 commit/push/创建 Issue-PR、不碰服务器
+- 网络问题走代理 `127.0.0.1:7897`
+
+## 改代码前检查清单
+
+1. `grep` 搜所有引用（包括 `tests/` 目录）
+2. 列出需同步的测试文件
+3. 确认单组内
+4. 确认没回退 upstream 代码
+5. 跑 `stamp_assets.py`
+
+## 已知坑
+
+- **poll catch 为空**：banana/audio/script 轮询网络错误静默忽略
+- **reaper 误杀**：talking 视频内部轮询不刷 `updated_at`，>9min 可能被杀
+- **canvas 无服务端存储**：全量 localStorage，换浏览器即丢
+- **点数分两套**：banana 自算点数（`imggen_api.py`），其余走 `points.py`
+- **`MAX_USER_ACTIVE_JOBS=5`**：画布并行节点多时会被 429 拦截
+
+## 获客架构
+
+- 发现层：MediaCrawler（Mac 本地 `~/code/MediaCrawler`）
+- 深采层：Douyin_TikTok_Download_API（服务器 `:8501`）
+- 过滤层：`scripts/leads_filter.py`
