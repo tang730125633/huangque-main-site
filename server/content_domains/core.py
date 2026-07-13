@@ -1206,6 +1206,17 @@ class H(BaseHTTPRequestHandler):
                 idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"video", "tryon", "xiaole_video", "cinematic"} else ""
             except ValueError as e:
                 return self._send(400, {"detail": str(e)[:220]})
+            # 上游没额度就当场拒 —— ⚠️ 必须在【扣点之前】。
+            # 余额哨兵每 10 分钟告警一次，但告警只叫醒我们、拦不住用户：从「余额见底」到
+            # 「有人充上钱」这段时间里，用户照样点生成、照样被扣点、照样等几分钟，然后看到
+            # 一句天书（"积分余额不足，请先充值" / "Insufficient credits"）。近 14 天 48 条
+            # 任务是这么死的。这里把它们挡在门外：不扣点、不排队、不让用户等。
+            # fail-open：熔断器自己出问题一律放行（见 upstream_guard）。
+            from . import upstream_guard
+            blocked = upstream_guard.exhausted_reason(kind, body)
+            if blocked:
+                return self._send(503, {"detail": blocked, "code": "upstream_exhausted",
+                                        "retry_after_ms": 60000})
             cost = points_domain.cost_of(kind, body)
             with _submission_lock:
                 idem_state, idem_response = _idempotency_begin(user["username"], p, idem_key, request_body)
