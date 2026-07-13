@@ -1,8 +1,8 @@
 """Capability registry assembled from domain modules."""
 
-from . import audio, image, leads, text, video
+from . import audio, breakdown, image, leads, text, video
 
 
 HANDLERS = {}
-for domain in (image, text, leads, audio, video):
+for domain in (image, text, leads, audio, video, breakdown):
     HANDLERS.update(domain.HANDLERS)
