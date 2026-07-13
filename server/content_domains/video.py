@@ -12,7 +12,7 @@ import random   # 429 退避重试的抖动：不加抖动，同一批 worker �
 
 from .audio import gen_audio
 
-VALID_VIDEO_MODES = {"text", "audio", "motion"}
+VALID_VIDEO_MODES = {"text", "audio"}
 VALID_VIDEO_RATIOS = {"9:16", "16:9", "1:1", "4:5", "5:4"}
 VALID_VIDEO_RESOLUTIONS = {"720p", "1080p"}
 VALID_VIDEO_MOTIONS = {"low", "medium", "high"}
@@ -123,8 +123,8 @@ def validate_xiaole_video_payload(payload):
     if not isinstance(refs, list):
         raise ValueError("reference_images 必须是数组")
     refs = [str(x or "").strip() for x in refs if str(x or "").strip()]
-    if len(refs) > 1:
-        raise ValueError("xAI官方图生视频当前最多支持1张参考图")
+    if len(refs) > XIAOLE_MAX_REF:
+        raise ValueError("xAI官方图生视频最多支持%d张参考图" % XIAOLE_MAX_REF)
     if model == "grok-imagine-video-1.5" and not refs:
         raise ValueError("Grok Video 1.5 仅支持图生视频，请先上传参考图")
     ratio = str(cleaned.get("ratio") or "16:9").strip()
@@ -322,7 +322,7 @@ def validate_video_payload(payload, username=None):
         raise ValueError("请求体不是合法 JSON")
     mode = str(payload.get("mode") or "text").strip().lower()
     if mode not in VALID_VIDEO_MODES:
-        raise ValueError("mode 仅支持 text/audio/motion")
+        raise ValueError("mode 仅支持 text/audio")
 
     image_data = str(payload.get("image_data") or "").strip()
     avatar_id = str(payload.get("avatar_id") or "").strip()
@@ -347,27 +347,15 @@ def validate_video_payload(payload, username=None):
             raise ValueError("audio_data 不是有效的音频文件")
         if audio_file:
             audio_file = _normalize_audio_file_ref(audio_file, username=username)
-    elif mode == "motion":
-        # 动作模仿不再有线路之分（原线路一 HeyGen 已拆成独立的「AI 剧情视频」功能）。
-        # 老前端可能仍在 payload 里带 line，忽略即可，不报错——避免旧页面缓存直接 400。
-        reference_video_data = (payload.get("reference_video_data") or "").strip()
-        if not reference_video_data:
-            raise ValueError("reference_video_data 不能为空")
-        if not _is_valid_data_url(reference_video_data, VALID_REFERENCE_VIDEO_MIMES):
-            raise ValueError("reference_video_data 不是有效的参考动作视频")
     if avatar_id and username:
         get_video_avatar(username, avatar_id)
 
     ratio = (payload.get("ratio") or "9:16").strip()
     if ratio not in VALID_VIDEO_RATIOS:
         raise ValueError("ratio 仅支持 9:16、16:9、1:1、4:5、5:4")
-    # 动作模仿走 WaveSpeed，它只支持 720p；口播默认 1080p。
-    default_resolution = "720p" if mode == "motion" else "1080p"
-    resolution = (payload.get("resolution") or default_resolution).strip().lower()
+    resolution = (payload.get("resolution") or "1080p").strip().lower()
     if resolution not in VALID_VIDEO_RESOLUTIONS:
         raise ValueError("resolution 仅支持 720p、1080p")
-    if mode == "motion" and resolution != "720p":
-        raise ValueError("动作模仿固定 720p；需要 1080p 请用「AI 剧情视频」")
     motion = (payload.get("motion") or "medium").strip().lower()
     if motion not in VALID_VIDEO_MOTIONS:
         raise ValueError("motion 仅支持 low、medium、high")
@@ -1090,8 +1078,15 @@ def _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id="", direct=False):
     started = time.time()
     last_status = ""
     while time.time() < deadline:
-        # 查询异常直接上抛，不掩盖：401/配额之类的错误若被「继续轮询」吃掉，会伪装成超时。
-        status, moderation = _heygen_look_status(avatar_item_id, avatar_group_id, direct=direct)
+        # 401/配额之类的 HTTP 错误直接上抛，不掩盖(被「继续轮询」吃掉会伪装成超时)。但【瞬时网络
+        # 抖动】(隧道 read timeout/SSL)要重试——轮询是幂等 GET、建形象免费，一次抖动不该判死建形象
+        # (yuanzhi 的 read timeout 就死在这，#611 只包了上传/创建、漏了这步 poll)。同 #607 的 poll。
+        try:
+            status, moderation = _heygen_look_status(avatar_item_id, avatar_group_id, direct=direct)
+        except HeyGenNetworkError as e:
+            print("[heygen] avatar look 轮询网络抖动，%ds 后重试: %s" % (HEYGEN_POLL_INTERVAL, str(e)[:100]), flush=True)
+            time.sleep(HEYGEN_POLL_INTERVAL)
+            continue
         if status and status != last_status:
             print("[heygen] avatar look=%s status=%s" % (avatar_item_id, status), flush=True)
             last_status = status
@@ -1124,24 +1119,43 @@ CINEMATIC_IDENTITY_GUARD = (
     "no extra people beyond the given avatars."
 )
 
-# 单人动作模仿的固定提示词（用户看不到、也改不了）。原线路一写死的就是这段。
-# _BASE 不含身份约束 —— 约束由 gen_cinematic 统一拼，写在这里会拼两遍。
-MOTION_PROMPT_BASE = (
-    "Create a realistic cinematic vertical video of the same person from the avatar photo. "
-    "Follow the uploaded reference video ONLY for body movement, pose, timing, gestures, "
-    "facial expression rhythm, framing and camera motion. The output must look like the avatar "
-    "person performing the reference motion, not the reference person."
-)
+# ============ 动作模仿的固定提示词：照抄线上跑通的那一条 ============
+#
+# 2026-07-13：HeyGen 的内容审核在拦我们的动作模仿。它的网页上写
+#     "Your content was flagged by our moderation system. Please try different images or
+#      prompts. No credits charged."
+# 而【API 一个字都不给】（v1/video_status.get 的 error 是 null，v3/videos 只有 4 个字段）。
+#
+# 把「真的被 HeyGen 判失败」和「我们自己的隧道上传超时」分开统计之后，数据很干净：
+#
+#     玩法             提示词        HeyGen 判失败   成片
+#     单人动作模仿      写死的英文          5          1
+#     双人动作模仿      写死的英文          2          0
+#     开放式生成        用户写的中文        0          5
+#     旧版(开放式)      用户写的中文        1         10
+#
+# 被判失败的【几乎全是写死英文提示词的动作模仿】；用户自己写中文的开放式一条都没被判过失败
+# （它们的失败全是参考视频上传撞 240s 硬超时，压根没提交到 HeyGen）。
+#
+# 英文那两段里的
+#     "The output must look like the avatar person ... not the reference person"
+#     "Use these two avatars to replace the two people in the reference video"
+# 是换脸/深度伪造的教科书措辞。审核模型是英文的 —— 中文对它半透明，英文它读得懂。
+#
+# 所以这里【原样照抄】线上跑通的 #2173：
+#     提示词  「用这个人物形象模仿视频里面的动作」（用户写的，成片 383s）
+#     分辨率  1080p        比例 9:16（跟随参考视频）    时长 11s（自适应，参考视频 10.9s）
+#     润色    关           参考视频 576x1024 竖版
+#
+# ⚠️ 身份约束（CINEMATIC_IDENTITY_GUARD）【不要改】：#2173 发出去的是「这句中文 + 那段英文
+# 约束」，它带着 "from the reference video" 也照样过了。所以约束不是触发点，正文才是。
+# 我一度想连约束一起重写，那是错的 —— 会把唯一一个已知能过的配置也改掉。
+
+MOTION_PROMPT_BASE = "用这个人物形象模仿视频里面的动作"
 MOTION_PROMPT = MOTION_PROMPT_BASE + CINEMATIC_IDENTITY_GUARD
 
-# 双人动作模仿的固定提示词（kongli 给的正式文案，2026-07-12）。用户看不到、也改不了。
-# ⚠️ 逐字照放，别顺手「改通顺」——这段是调出来的，动一个词成片就可能变样。
-DUO_MOTION_PROMPT_BASE = (
-    "Use these two avatars to replace the two people in the reference video and imitate their "
-    "movements. Keep the actions, choreography, timing, scene, camera angle, framing, and "
-    "composition consistent with the reference video. Only replace the people and do not change "
-    "anything else."
-)
+# 双人：同一路子的中文。⚠️ 尚未实测（双人的英文版是 0 成 2 败）。
+DUO_MOTION_PROMPT_BASE = "用这两个人物形象模仿视频里面的动作"
 DUO_MOTION_PROMPT = DUO_MOTION_PROMPT_BASE + CINEMATIC_IDENTITY_GUARD
 
 
@@ -1469,8 +1483,10 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, moti
         raise ValueError("视频素材文件不存在")
     image_fp = _ensure_heygen_image_jpg(image_fp)
     audio_fp = _ensure_heygen_audio_mp3(audio_fp)
-    image_asset_id = _heygen_upload_asset(image_fp, direct=True)
-    audio_asset_id = _heygen_upload_asset(audio_fp, direct=True)
+    # 素材上传对瞬时网络错误重试：上传不计费(计费在 create-video)，重试安全。隧道抖动一下不该
+    # 让整条口播失败(fang 的 cinematic/口播上传 240s 超时同源)。见 _heygen_retry_net。
+    image_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(image_fp, direct=True), "口播传图")
+    audio_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(audio_fp, direct=True), "口播传音")
     with heygen_slot("口播直连"):   # 账号级并发上限 10，三个池共用；超了在本地排队，不让 HeyGen 甩 429
         # 429 退避重试：请求被瞬间拒绝、未计费，是唯一可以安全重发的失败。
         # 不重试的话，一次突发就把用户的任务判死退点、白等几分钟。
@@ -1510,8 +1526,9 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
         raise ValueError("视频素材文件不存在")
     image_fp = _ensure_heygen_image_jpg(image_fp)
     audio_fp = _ensure_heygen_audio_mp3(audio_fp)
-    image_asset_id = _heygen_upload_asset(image_fp)
-    audio_asset_id = _heygen_upload_asset(audio_fp)
+    # 素材上传对瞬时网络错误重试(不计费、安全，同直连)
+    image_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(image_fp), "口播中转传图")
+    audio_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(audio_fp), "口播中转传音")
     # 中转(泽龙)转发的是同一个 HeyGen 账号，一样占账号的并发额度 —— 不占槽就等于绕过了闸
     with heygen_slot("口播中转"):
         video_id = _heygen_retry_429(
@@ -1807,12 +1824,10 @@ def burn_subtitle(video_file, known_text=None, style_key="white", job_id=None, p
 def gen_video(payload):
     job_id = payload.get("_job_id")
     mode = (payload.get("mode") or "text").strip()
-    if mode not in {"text", "audio", "motion"}:
+    if mode not in {"text", "audio"}:
         raise ValueError("生成方式不正确")
-    # 只有口播(text/audio)走 HeyGen；动作模仿已全量切到 WaveSpeed，不该被 HeyGen 的密钥绑架
-    # ——否则 HeyGen 一断供，连根本不用它的动作模仿也跟着挂。motion 的可用性由
-    # wavespeed.available() 在下面单独把关。
-    if mode != "motion" and not HEYGEN_API_KEY:
+    # 口播(text/audio)走 HeyGen。
+    if not HEYGEN_API_KEY:
         raise ValueError("视频生成服务未配置")
     avatar = None
     avatar_id = payload.get("avatar_id")
@@ -1830,18 +1845,7 @@ def gen_video(payload):
     reference_video_file = None
     bgm_file = (_save_data_file(payload.get("bgm_data"), "video_bgm", [".mp3", ".wav", ".m4a"])
                 if payload.get("bgm_data") else None)
-    if mode == "motion":
-        reference_video_file = _save_data_file(payload.get("reference_video_data"), "motion_ref", [".mp4", ".mov", ".webm"])
-        if not reference_video_file:
-            raise ValueError("请先上传参考动作视频")
-        # 落盘即压：此刻这个文件刚从 payload 写出来，还没有任何东西引用它，是压缩最干净的时机。
-        # 放在线路分发【之前】，HeyGen(推字节过隧道) 和 WaveSpeed(传 COS 再发 URL) 都受益。
-        reference_video_file = _shrink_motion_reference(reference_video_file)
-        text = text or "动作模仿"
-        update_video_asset_phase(job_id, "files_saved", mode=mode, image_file=image_file,
-                                 reference_video_file=reference_video_file, text=text,
-                                 voice=voice)
-    elif mode == "text":
+    if mode == "text":
         if not text:
             raise ValueError("请先输入口播文案")
         if not voice:
@@ -1876,21 +1880,7 @@ def gen_video(payload):
     if motion not in {"low", "medium", "high"}:
         motion = "medium"
     created_avatar = None
-    if mode == "motion":
-        # 动作模仿 = WaveSpeed，不再有线路之分。
-        # 原来的「线路一(HeyGen)」已经拆成独立的「AI 剧情视频」功能（gen_cinematic）——那边能选
-        # 1~3 个事先建好的形象、写自己的提示词、选 720p/1080p，是 WaveSpeed 做不到的。
-        # 而动作模仿只做它最擅长的一件事：人物图 + 驱动视频 → 照着跳。固定 720p（WaveSpeed 只支持这个）。
-        reference_duration = _motion_reference_duration(reference_video_file)
-        update_video_asset_phase(job_id, "motion_parameters_ready", resolution=resolution,
-                                 ratio=ratio, motion=motion)
-        from . import wavespeed
-        if not wavespeed.available():
-            raise ValueError("动作模仿服务未配置，请联系管理员")
-        video_result = wavespeed.generate_motion(image_file, reference_video_file, resolution, job_id=job_id)
-        video_result.setdefault("duration", round(reference_duration, 2))
-    else:
-        video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
+    video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
     bgm_error = None
     if bgm_file and video_result.get("video_file"):
         try:
@@ -2517,8 +2507,20 @@ CINEMATIC_PROMPT_MAX = 2000
 CINEMATIC_DURATION_RANGE = (4, 15)   # HeyGen: 4~15 秒
 CINEMATIC_AUTO_DURATION = 10         # 选了「自适应」但没传参考视频时的回落值
 CINEMATIC_MODES = ("motion", "duo", "open")
+# 双人暂不开放：线上 0 成 2 败 —— 被 HeyGen 的内容审核拦的（网页原话 "Your content was
+# flagged by our moderation system. Please try different images or prompts. No credits
+# charged."，而 API 一个字都不给：v1/video_status.get 的 error 是 null）。
+# 嫌疑是它的英文提示词 "Use these two avatars to replace the two people in the reference
+# video" 字面就是换脸措辞，而审核模型是英文的。中文版换过，但【一次都没实测】。
+# 与其让用户白等十几分钟再看到「生成失败」，先下掉。
+# ⚠️ 玩法本身【保留】（CINEMATIC_MODES / CINEMATIC_MODE_AVATARS / 提示词都还在）——
+# 实测通过后把 CINEMATIC_DUO_ENABLED=1 打开、前端把页签加回来即可，不用重写任何逻辑。
+CINEMATIC_DUO_ENABLED = os.environ.get("CINEMATIC_DUO_ENABLED", "").strip().lower() in ("1", "true", "yes")
+CINEMATIC_COMING_SOON = {} if CINEMATIC_DUO_ENABLED else {"duo": "双人动作模仿暂未开放"}
 # 动作模仿只给三档：自适应 / 10 秒 / 15 秒（开放式仍可在 4~15 内任选）
-CINEMATIC_MOTION_DURATIONS = (10, 15)
+# 动作模仿锁死的参数（照抄 #2173 —— 目前唯一已知能过 HeyGen 审核的配置）。
+# 用户只能换形象和参考视频；分辨率/时长/润色都不给选，也不认客户端传的值。
+CINEMATIC_MOTION_RESOLUTION = "1080p"
 
 # 每秒点数，按玩法分档。HeyGen 那边是扁平价（$7/条，与时长无关），我们按时长卖 —— 这是产品定价，不是成本。
 # ⚠️ 改这里等于改价：cost_of() 直接乘这个数。
@@ -2607,6 +2609,10 @@ def validate_cinematic_payload(body, username=None):
         raise ValueError("请求体必须是 JSON 对象")
 
     cine_mode = (body.get("cine_mode") or "open").strip().lower()
+    if cine_mode in CINEMATIC_COMING_SOON:
+        # 前端已经把页签删了，但前端【不是】安全边界 —— 直接 POST 一个 cine_mode=duo
+        # 进来也得挡住，否则用户照样白等十几分钟再看到失败。
+        raise ValueError(CINEMATIC_COMING_SOON[cine_mode])
     if cine_mode not in CINEMATIC_MODES:
         raise ValueError("玩法仅支持 motion（单人动作模仿）、duo（双人动作模仿）、open（开放式生成）")
 
@@ -2646,27 +2652,36 @@ def validate_cinematic_payload(body, username=None):
         if len(prompt) > CINEMATIC_PROMPT_MAX:
             raise ValueError("画面描述不能超过 %d 字" % CINEMATIC_PROMPT_MAX)
 
-    resolution = (body.get("resolution") or "720p").strip().lower()
-    if resolution not in CINEMATIC_RESOLUTIONS:
-        raise ValueError("分辨率仅支持 720p、1080p")
+    if cine_mode in CINEMATIC_FIXED_PROMPTS:
+        # 动作模仿【锁死】成 #2173 那一条的形状 —— 它是目前唯一一个已知能过 HeyGen 审核的配置。
+        # 用户只能换两样东西：形象、参考视频。分辨率/时长/润色一律不接受客户端的值。
+        #     分辨率 1080p         （#2173 就是 1080p；不再给 720p 的选项）
+        #     时长   自适应        （跟随参考视频：#2173 的参考片段 10.9s → 成片 11s）
+        #     润色   关            （下面统一置 False）
+        #     比例   跟随参考视频   （#2173 的参考是 576x1024 竖版 → 9:16；前端按宽高算好传上来。
+        #                           这里仍然校验它是合法值，但不给用户在界面上选）
+        resolution = CINEMATIC_MOTION_RESOLUTION
+        duration = "auto"
+    else:
+        resolution = (body.get("resolution") or "720p").strip().lower()
+        if resolution not in CINEMATIC_RESOLUTIONS:
+            raise ValueError("分辨率仅支持 720p、1080p")
+
+        lo, hi = CINEMATIC_DURATION_RANGE
+        raw = str(body.get("duration") or "").strip().lower()
+        if raw in ("", "auto"):
+            duration = "auto"
+        else:
+            try:
+                duration = int(raw)
+            except Exception:
+                raise ValueError("时长必须是 %d~%d 之间的整数，或填 auto 跟随参考视频" % (lo, hi))
+            if not lo <= duration <= hi:
+                raise ValueError("时长仅支持 %d~%d 秒" % (lo, hi))
+
     ratio = (body.get("ratio") or "9:16").strip()
     if ratio not in _HEYGEN_CINEMATIC_RATIOS:
         raise ValueError("画面比例仅支持 9:16、16:9、1:1")
-
-    lo, hi = CINEMATIC_DURATION_RANGE
-    raw = str(body.get("duration") or "").strip().lower()
-    if raw in ("", "auto"):
-        duration = "auto"
-    else:
-        try:
-            duration = int(raw)
-        except Exception:
-            raise ValueError("时长必须是 %d~%d 之间的整数，或填 auto 跟随参考视频" % (lo, hi))
-        if not lo <= duration <= hi:
-            raise ValueError("时长仅支持 %d~%d 秒" % (lo, hi))
-        if cine_mode in CINEMATIC_FIXED_PROMPTS and duration not in CINEMATIC_MOTION_DURATIONS:
-            raise ValueError("动作模仿的时长仅支持自适应、%s"
-                             % "、".join("%d 秒" % d for d in CINEMATIC_MOTION_DURATIONS))
 
     # 参考素材。reference_video_data（单个）是老字段，合进 reference_videos 里，别让老前端 400。
     max_videos, max_images = cinematic_ref_budget(len(ids))
@@ -2769,7 +2784,10 @@ def gen_cinematic(payload):
         update_video_asset_phase(job_id, "uploading_reference_asset")
         for f in video_files + image_files:
             if f:
-                reference_asset_ids.append(_heygen_upload_asset(_resolve_out_file(f), direct=True))
+                # 参考素材上传对瞬时网络错误重试：上传不计费，重试安全。fang 的电影化身就死在这——
+                # 参考视频上传撞隧道 240s read timeout、压根没提交 HeyGen 就判死(#630 也点名)。
+                reference_asset_ids.append(
+                    _heygen_retry_net(lambda fp=f: _heygen_upload_asset(_resolve_out_file(fp), direct=True), "剧情视频传素材"))
     reference_asset_id = reference_asset_ids[0] if reference_asset_ids else None   # 资产表用
 
     update_video_asset_phase(job_id, "creating_cinematic_video", reference_asset_id=reference_asset_id)

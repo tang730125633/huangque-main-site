@@ -279,6 +279,8 @@
   // 选项单选切换
   function seg(id,sel){ var box=document.getElementById(id); if(!box) return; box.querySelectorAll(sel).forEach(function(o){ o.onclick=function(){ box.querySelectorAll(sel).forEach(function(x){x.classList.remove('on');}); o.classList.add('on'); }; }); }
   seg('segStyle','.sc-opt'); seg('segDur','.sc-opt'); seg('platRow','.sc-chip');
+  // 卖点标签：多选切换
+  document.querySelectorAll('.sc-tag').forEach(function(tag){ tag.onclick=function(){ this.classList.toggle('on'); }; });
   function pick(id,s,def){ var on=document.querySelector('#'+id+' '+s+'.on'); return on?on.textContent.trim():def; }
   function setBtn(t,busy){ gen.innerHTML=busy?t:orig; gen.style.pointerEvents=busy?'none':'auto'; gen.style.opacity=busy?'.7':'1'; }
 
@@ -311,6 +313,8 @@
     setBtn('生成中…',true);
     scenes.innerHTML='<div style="padding:34px; text-align:center; color:#2dd4bf; font-size:13px;">编导生成中…（约 10-20 秒）</div>';
     var payload={prompt:t+(s?('\n卖点：'+s):''), format:'script', style:style, dur:dur, platform:plat, ctype:'分镜脚本'};
+    var tags=[]; document.querySelectorAll('.sc-tag.on').forEach(function(tag){ tags.push(tag.textContent.trim()); });
+    if(tags.length) payload.prompt+='\n标签：'+tags.join('、');
     fetch('/api/gen/copy',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
       .then(function(x){

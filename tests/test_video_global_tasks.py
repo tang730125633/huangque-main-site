@@ -85,9 +85,10 @@ class GlobalTaskStoreTests(unittest.TestCase):
 class VideoTaskIntegrationTests(unittest.TestCase):
     def test_all_video_submit_paths_register_the_returned_job(self):
         """每一条提交路径都必须把返回的 job 登记进全局任务追踪，漏一条那条就成了「黑任务」：
-        用户看不到进度、刷新后接不回来。第 5 条是「电影化身」（它的 label 随玩法变，见 CINE_MODES）。"""
-        self.assertEqual(VIDEO_HTML.count("trackVideoJob(res.data.job_id"), 5)
-        for label in ("动作模仿", "电影化身", "换装换背景视频", "数字人口播", "label:label"):
+        用户看不到进度、刷新后接不回来。老版动作模仿下线后剩 4 条：口播/电影化身/换装/小乐视频。
+        「电影化身」的 label 随玩法变，见 CINE_MODES。"""
+        self.assertEqual(VIDEO_HTML.count("trackVideoJob(res.data.job_id"), 4)
+        for label in ("电影化身", "换装换背景视频", "数字人口播", "label:label"):
             self.assertIn(label, VIDEO_HTML)
         # 电影化身那条的 label 不是写死的字符串，是当前玩法的名字
         self.assertIn("trackVideoJob(res.data.job_id,{status:'queued',label:cfg.label", VIDEO_HTML)
@@ -114,10 +115,8 @@ class VideoTaskIntegrationTests(unittest.TestCase):
         self.assertIn("function syncVideoGenerateButtons(){", VIDEO_HTML)
         self.assertIn("var counts=activeVideoTaskCounts();", VIDEO_HTML)
         self.assertIn("counts.xiaole>=maxActiveXiaoleVideo", VIDEO_HTML)
-        self.assertIn("counts.motion>=maxActiveMotion", VIDEO_HTML)
         self.assertIn("counts.tryon>=maxActiveTryon", VIDEO_HTML)
         self.assertIn("max_user_active_xiaole_video", VIDEO_HTML)
-        self.assertIn("max_user_active_motion", VIDEO_HTML)
         self.assertIn("max_user_active_tryon", VIDEO_HTML)
 
     def test_button_sync_bound_on_page_init(self):
@@ -132,7 +131,6 @@ class VideoTaskIntegrationTests(unittest.TestCase):
         self.assertIn("videoSubmitLocks", VIDEO_HTML)
         self.assertIn("setSubmitLock('tryon',true)", VIDEO_HTML)
         self.assertIn("setSubmitLock('xiaole',true)", VIDEO_HTML)
-        self.assertIn("setSubmitLock('motion',true)", VIDEO_HTML)
         self.assertIn("setSubmitLock('talking',true)", VIDEO_HTML)
         self.assertIn("setSubmitLock('cinematic',true)", VIDEO_HTML)
 

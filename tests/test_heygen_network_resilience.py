@@ -192,3 +192,54 @@ class DownloadRetriesTransientNetworkTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AvatarWaitAndUploadResilienceTests(unittest.TestCase):
+    """建形象的「等就绪」轮询 + 各处素材上传，也要对瞬时网络错误重试(#611 只包了上传/创建，
+    漏了 wait poll → yuanzhi 的 read timeout 死在这；cinematic/口播素材上传也没包 → fang 死在这)。"""
+
+    def test_wait_photo_avatar_retries_transient_network(self):
+        """look 状态轮询遇网络抖动要重试，恢复后正常返回；不能一次 read timeout 就判死建形象。"""
+        clock = [1000.0]
+        seq = [video.HeyGenNetworkError("read timeout"),
+               ("processing", None),
+               ("completed", None)]
+
+        def look(*a, **k):
+            r = seq.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        with patch.object(video, "_heygen_look_status", side_effect=look), \
+             patch.object(video.time, "time", lambda: clock[0]), \
+             patch.object(video.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s)):
+            self.assertTrue(video._heygen_wait_photo_avatar("look1", direct=True))
+        self.assertEqual(seq, [], "网络抖动那次应被重试掉，最终拿到 completed")
+
+    def test_wait_photo_avatar_still_raises_non_network_errors(self):
+        """401/配额等 HTTP 错误仍要直接上抛，不能被「继续轮询」掩盖成超时。"""
+        def look(*a, **k):
+            raise RuntimeError("HeyGen接口失败: HTTP 401")
+
+        clock = [1000.0]
+        with patch.object(video, "_heygen_look_status", side_effect=look), \
+             patch.object(video.time, "time", lambda: clock[0]), \
+             patch.object(video.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s)):
+            with self.assertRaises(RuntimeError):
+                video._heygen_wait_photo_avatar("look1", direct=True)
+
+    def test_all_uploads_are_retry_wrapped(self):
+        """所有 _heygen_upload_asset 调用点都要包 _heygen_retry_net(上传不计费、重试安全)。
+        漏一个，隧道抖动打在那次上传上就白失败一条。"""
+        import pathlib
+        src = pathlib.Path(video.__file__).read_text(encoding="utf-8")
+        # 去掉函数定义那行后，每个 _heygen_upload_asset( 调用都应处于 _heygen_retry_net 的 lambda 里
+        import re
+        for m in re.finditer(r"_heygen_upload_asset\(", src):
+            line_start = src.rfind("\n", 0, m.start()) + 1
+            line = src[line_start:src.find("\n", m.start())]
+            if line.strip().startswith("def "):
+                continue
+            self.assertIn("_heygen_retry_net", line,
+                          "未包重试的上传调用: %s" % line.strip()[:80])

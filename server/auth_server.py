@@ -23,6 +23,9 @@ REVOKED_TOKENS = set()
 ACCOUNT_ID_LENGTH = 8
 ACCOUNT_ID_PREFIX = "HQ"
 ACCOUNT_ID_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+CANVAS_NAME_MAX = 48
+CANVAS_DATA_MAX_BYTES = int(os.environ.get("HQ_CANVAS_DATA_MAX_BYTES", str(6 * 1024 * 1024)))
+CANVAS_ROLES = {"viewer", "editor"}
 
 def db():
     c = sqlite3.connect(DB, timeout=10)
@@ -85,6 +88,25 @@ def init_db():
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_friend_requests_to ON friend_requests(to_username, status, id DESC)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_friend_requests_from ON friend_requests(from_username, status, id DESC)")
+    c.execute("""CREATE TABLE IF NOT EXISTS canvas_boards(
+        id TEXT PRIMARY KEY,
+        owner_username TEXT NOT NULL,
+        name TEXT NOT NULL,
+        data_json TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_canvas_boards_owner ON canvas_boards(owner_username, updated_at DESC)")
+    c.execute("""CREATE TABLE IF NOT EXISTS canvas_members(
+        board_id TEXT NOT NULL,
+        username TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'viewer',
+        invited_by TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(board_id, username)
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_canvas_members_user ON canvas_members(username, board_id)")
     c.execute("""CREATE TABLE IF NOT EXISTS recharge_orders(
         order_id TEXT PRIMARY KEY,
         username TEXT NOT NULL,
@@ -326,6 +348,286 @@ def respond_friend_request(username, request_id, action):
                          VALUES(?,?,?)""", (row["to_username"], row["from_username"], now))
         c.commit()
         return {"friends": list_friends(username), "requests": list_friend_requests(username)}, None
+    finally:
+        c.close()
+
+def normalize_canvas_name(name):
+    name = " ".join(str(name or "").strip().split())
+    if not name:
+        return "未命名协作画布", None
+    if any(ord(ch) < 32 for ch in name):
+        return None, "bad_name"
+    return name[:CANVAS_NAME_MAX], None
+
+def normalize_canvas_role(role):
+    role = str(role or "viewer").strip().lower()
+    if role not in CANVAS_ROLES:
+        return None
+    return role
+
+def pack_canvas_data(data):
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        return None, "bad_data"
+    try:
+        raw = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        return None, "bad_data"
+    if len(raw.encode("utf-8")) > CANVAS_DATA_MAX_BYTES:
+        return None, "too_large"
+    return raw, None
+
+def make_canvas_id(c):
+    for _ in range(64):
+        board_id = "cb_" + secrets.token_urlsafe(12).replace("-", "_")
+        row = c.execute("SELECT 1 FROM canvas_boards WHERE id=?", (board_id,)).fetchone()
+        if not row:
+            return board_id
+    raise RuntimeError("canvas id exhausted")
+
+def row_get(row, key, default=None):
+    try:
+        return row[key]
+    except Exception:
+        return default
+
+def public_canvas_member(row):
+    return {
+        "username": row["username"],
+        "name": row["display_name"] or row["username"],
+        "account_id": row["account_id"] or "",
+        "role": row["member_role"],
+        "created_at": row["member_created_at"],
+    }
+
+def list_canvas_members(c, board_id):
+    rows = c.execute("""SELECT m.username, m.role AS member_role, m.created_at AS member_created_at,
+                               u.display_name, u.account_id
+                        FROM canvas_members m
+                        JOIN users u ON u.username=m.username
+                        WHERE m.board_id=?
+                        ORDER BY m.created_at DESC, m.username ASC""", (board_id,)).fetchall()
+    return [public_canvas_member(row) for row in rows]
+
+def canvas_member_count(c, board_id):
+    row = c.execute("SELECT COUNT(*) AS n FROM canvas_members WHERE board_id=?", (board_id,)).fetchone()
+    return int(row["n"] or 0) if row else 0
+
+def public_canvas_board(row, role, include_data=False, members_count=None):
+    board = {
+        "id": row["id"],
+        "name": row["name"],
+        "owner_username": row["owner_username"],
+        "role": role,
+        "version": int(row["version"] or 1),
+        "created_at": int(row["created_at"] or 0),
+        "updated_at": int(row["updated_at"] or 0),
+        "members_count": int(members_count if members_count is not None else row_get(row, "members_count", 0) or 0),
+    }
+    if include_data:
+        try:
+            board["data"] = json.loads(row["data_json"] or "{}")
+        except Exception:
+            board["data"] = {}
+    return board
+
+def canvas_role_and_board(c, username, board_id):
+    row = c.execute("SELECT * FROM canvas_boards WHERE id=?", (board_id,)).fetchone()
+    if not row:
+        return None, None
+    if row["owner_username"] == username:
+        return "owner", row
+    member = c.execute("SELECT role FROM canvas_members WHERE board_id=? AND username=?",
+                       (board_id, username)).fetchone()
+    if not member:
+        return None, row
+    return member["role"], row
+
+def list_canvas_boards(username):
+    c = db()
+    try:
+        items = []
+        owned = c.execute("""SELECT b.*, (SELECT COUNT(*) FROM canvas_members m WHERE m.board_id=b.id) AS members_count
+                             FROM canvas_boards b
+                             WHERE b.owner_username=?""", (username,)).fetchall()
+        shared = c.execute("""SELECT b.*, m.role AS access_role,
+                                     (SELECT COUNT(*) FROM canvas_members cm WHERE cm.board_id=b.id) AS members_count
+                              FROM canvas_members m
+                              JOIN canvas_boards b ON b.id=m.board_id
+                              WHERE m.username=? AND b.owner_username<>?""", (username, username)).fetchall()
+        for row in owned:
+            items.append(public_canvas_board(row, "owner", members_count=row["members_count"]))
+        for row in shared:
+            items.append(public_canvas_board(row, row["access_role"], members_count=row["members_count"]))
+        items.sort(key=lambda item: item["updated_at"], reverse=True)
+        return items, None
+    finally:
+        c.close()
+
+def create_canvas_board(username, payload):
+    name, err = normalize_canvas_name((payload or {}).get("name"))
+    if err:
+        return None, err
+    data_json, err = pack_canvas_data((payload or {}).get("data") or {})
+    if err:
+        return None, err
+    c = db()
+    try:
+        now = int(time.time())
+        board_id = make_canvas_id(c)
+        c.execute("""INSERT INTO canvas_boards(id, owner_username, name, data_json, version, created_at, updated_at)
+                     VALUES(?,?,?,?,?,?,?)""", (board_id, username, name, data_json, 1, now, now))
+        row = c.execute("SELECT * FROM canvas_boards WHERE id=?", (board_id,)).fetchone()
+        c.commit()
+        return public_canvas_board(row, "owner", include_data=True), None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+def get_canvas_board(username, board_id):
+    c = db()
+    try:
+        role, row = canvas_role_and_board(c, username, board_id)
+        if not role:
+            return None, "not_found"
+        board = public_canvas_board(row, role, include_data=True, members_count=canvas_member_count(c, board_id))
+        board["members"] = list_canvas_members(c, board_id)
+        return board, None
+    finally:
+        c.close()
+
+def save_canvas_board(username, board_id, payload):
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        role, row = canvas_role_and_board(c, username, board_id)
+        if not role:
+            c.rollback()
+            return None, "not_found"
+        if role not in ("owner", "editor"):
+            c.rollback()
+            return None, "forbidden"
+        try:
+            expected_version = int((payload or {}).get("version"))
+        except Exception:
+            c.rollback()
+            return None, "bad_version"
+        current_version = int(row["version"] or 1)
+        if expected_version != current_version:
+            board = public_canvas_board(row, role, include_data=True, members_count=canvas_member_count(c, board_id))
+            board["members"] = list_canvas_members(c, board_id)
+            c.rollback()
+            return board, "conflict"
+        data_json, err = pack_canvas_data((payload or {}).get("data") or {})
+        if err:
+            c.rollback()
+            return None, err
+        name = row["name"]
+        if "name" in (payload or {}):
+            name, err = normalize_canvas_name(payload.get("name"))
+            if err:
+                c.rollback()
+                return None, err
+        now = int(time.time())
+        c.execute("""UPDATE canvas_boards
+                     SET name=?, data_json=?, version=version+1, updated_at=?
+                     WHERE id=?""", (name, data_json, now, board_id))
+        fresh = c.execute("SELECT * FROM canvas_boards WHERE id=?", (board_id,)).fetchone()
+        board = public_canvas_board(fresh, role, include_data=True, members_count=canvas_member_count(c, board_id))
+        board["members"] = list_canvas_members(c, board_id)
+        c.commit()
+        return board, None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+def add_canvas_member(username, board_id, payload):
+    account_id = str((payload or {}).get("account_id") or "").strip().upper()
+    role = normalize_canvas_role((payload or {}).get("role") or "viewer")
+    if not account_id:
+        return None, "missing"
+    if not role:
+        return None, "bad_role"
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        access, board = canvas_role_and_board(c, username, board_id)
+        if not access:
+            c.rollback()
+            return None, "not_found"
+        if access != "owner":
+            c.rollback()
+            return None, "forbidden"
+        target = c.execute("SELECT username FROM users WHERE account_id=?", (account_id,)).fetchone()
+        if not target:
+            c.rollback()
+            return None, "user_not_found"
+        target_username = target["username"]
+        if target_username == username:
+            c.rollback()
+            return None, "self"
+        if not are_friends(c, username, target_username):
+            c.rollback()
+            return None, "not_friend"
+        now = int(time.time())
+        c.execute("""INSERT INTO canvas_members(board_id, username, role, invited_by, created_at)
+                     VALUES(?,?,?,?,?)
+                     ON CONFLICT(board_id, username) DO UPDATE SET
+                       role=excluded.role, invited_by=excluded.invited_by""",
+                  (board_id, target_username, role, username, now))
+        members = list_canvas_members(c, board_id)
+        c.commit()
+        return members, None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+def remove_canvas_member(username, board_id, member_username):
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        access, board = canvas_role_and_board(c, username, board_id)
+        if not access:
+            c.rollback()
+            return None, "not_found"
+        if access != "owner":
+            c.rollback()
+            return None, "forbidden"
+        c.execute("DELETE FROM canvas_members WHERE board_id=? AND username=?", (board_id, member_username))
+        members = list_canvas_members(c, board_id)
+        c.commit()
+        return members, None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+def delete_canvas_board(username, board_id):
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        access, board = canvas_role_and_board(c, username, board_id)
+        if not access:
+            c.rollback()
+            return False, "not_found"
+        if access != "owner":
+            c.rollback()
+            return False, "forbidden"
+        c.execute("DELETE FROM canvas_members WHERE board_id=?", (board_id,))
+        c.execute("DELETE FROM canvas_boards WHERE id=?", (board_id,))
+        c.commit()
+        return True, None
+    except Exception:
+        c.rollback()
+        raise
     finally:
         c.close()
 
@@ -1074,6 +1376,85 @@ class H(BaseHTTPRequestHandler):
                 fresh["username"], fresh["display_name"], fresh["points"], fresh["role"], fresh["must_change"],
                 fresh["account_id"] or ensure_account_id(fresh["username"])
             )})
+        if p == "/api/auth/canvas/boards":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "request body must be valid JSON"})
+            try:
+                board, err = create_canvas_board(row["username"], d)
+                if err == "bad_name":
+                    return self._send(400, {"detail": "画布名称不可包含控制字符"})
+                if err == "bad_data":
+                    return self._send(400, {"detail": "画布数据格式不正确"})
+                if err == "too_large":
+                    return self._send(413, {"detail": "画布数据过大"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, "board": board})
+            except Exception:
+                return self._send(500, {"detail": "canvas create failed"})
+        canvas_prefix = "/api/auth/canvas/boards/"
+        if p.startswith(canvas_prefix) and p.endswith("/save"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            board_id = urllib.parse.unquote(p[len(canvas_prefix):-len("/save")])
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "request body must be valid JSON"})
+            try:
+                board, err = save_canvas_board(row["username"], board_id, d)
+                if err == "not_found":
+                    return self._send(404, {"detail": "协作画布不存在"})
+                if err == "forbidden":
+                    return self._send(403, {"detail": "没有编辑权限"})
+                if err == "bad_version":
+                    return self._send(400, {"detail": "缺少画布版本号"})
+                if err == "conflict":
+                    return self._send(409, {"detail": "画布已被其他成员更新", "board": board})
+                if err == "bad_name":
+                    return self._send(400, {"detail": "画布名称不可包含控制字符"})
+                if err == "bad_data":
+                    return self._send(400, {"detail": "画布数据格式不正确"})
+                if err == "too_large":
+                    return self._send(413, {"detail": "画布数据过大"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, "board": board})
+            except Exception:
+                return self._send(500, {"detail": "canvas save failed"})
+        if p.startswith(canvas_prefix) and p.endswith("/members"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            board_id = urllib.parse.unquote(p[len(canvas_prefix):-len("/members")])
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "request body must be valid JSON"})
+            try:
+                members, err = add_canvas_member(row["username"], board_id, d)
+                if err == "missing":
+                    return self._send(400, {"detail": "请填写账号 ID"})
+                if err == "bad_role":
+                    return self._send(400, {"detail": "协作权限不正确"})
+                if err == "not_found":
+                    return self._send(404, {"detail": "协作画布不存在"})
+                if err == "forbidden":
+                    return self._send(403, {"detail": "只有画布创建者可以邀请成员"})
+                if err == "user_not_found":
+                    return self._send(404, {"detail": "账号 ID 不存在"})
+                if err == "self":
+                    return self._send(400, {"detail": "不能邀请自己"})
+                if err == "not_friend":
+                    return self._send(403, {"detail": "只能邀请已添加的好友"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, "members": members})
+            except Exception:
+                return self._send(500, {"detail": "canvas member update failed"})
         if p in {"/api/auth/friends/request", "/api/auth/friends/add"}:
             row = self._user()
             if not row:
@@ -1110,6 +1491,43 @@ class H(BaseHTTPRequestHandler):
             if err == "not_found":
                 return self._send(404, {"detail": "好友申请不存在"})
             return self._send(200, {"ok": True, **data})
+        self._send(404, {"detail": "not found"})
+
+    def do_DELETE(self):
+        p = self.path.split("?")[0]
+        canvas_prefix = "/api/auth/canvas/boards/"
+        row = self._user()
+        if not row:
+            return self._send(401, {"detail": "未登录"})
+        if p.startswith(canvas_prefix) and "/members/" in p[len(canvas_prefix):]:
+            rest = p[len(canvas_prefix):]
+            board_id, member_username = rest.split("/members/", 1)
+            board_id = urllib.parse.unquote(board_id)
+            member_username = urllib.parse.unquote(member_username)
+            try:
+                members, err = remove_canvas_member(row["username"], board_id, member_username)
+                if err == "not_found":
+                    return self._send(404, {"detail": "协作画布不存在"})
+                if err == "forbidden":
+                    return self._send(403, {"detail": "只有画布创建者可以移除成员"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, "members": members})
+            except Exception:
+                return self._send(500, {"detail": "canvas member delete failed"})
+        if p.startswith(canvas_prefix):
+            board_id = urllib.parse.unquote(p[len(canvas_prefix):])
+            try:
+                ok, err = delete_canvas_board(row["username"], board_id)
+                if err == "not_found":
+                    return self._send(404, {"detail": "协作画布不存在"})
+                if err == "forbidden":
+                    return self._send(403, {"detail": "只有画布创建者可以删除"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": bool(ok)})
+            except Exception:
+                return self._send(500, {"detail": "canvas delete failed"})
         self._send(404, {"detail": "not found"})
 
     def do_GET(self):
@@ -1204,6 +1622,30 @@ class H(BaseHTTPRequestHandler):
             row = self._user()
             if not row: return self._send(401, {"detail": "未登录"})
             return self._send(200, {"ok": True, **list_friend_requests(row["username"])})
+        if p == "/api/auth/canvas/boards":
+            row = self._user()
+            if not row: return self._send(401, {"detail": "未登录"})
+            try:
+                boards, err = list_canvas_boards(row["username"])
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, "boards": boards})
+            except Exception:
+                return self._send(500, {"detail": "canvas list failed"})
+        canvas_prefix = "/api/auth/canvas/boards/"
+        if p.startswith(canvas_prefix):
+            row = self._user()
+            if not row: return self._send(401, {"detail": "未登录"})
+            board_id = urllib.parse.unquote(p[len(canvas_prefix):])
+            try:
+                board, err = get_canvas_board(row["username"], board_id)
+                if err == "not_found":
+                    return self._send(404, {"detail": "协作画布不存在"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, "board": board})
+            except Exception:
+                return self._send(500, {"detail": "canvas read failed"})
         if p == "/api/auth/health":
             return self._send(200, {"ok": True, "service": "huangque-auth"})
         self._send(404, {"detail": "not found"})

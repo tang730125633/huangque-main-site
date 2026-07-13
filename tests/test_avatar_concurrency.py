@@ -22,6 +22,7 @@
    一个孤儿形象，不是钱。视频的提交绝不能这么干（提交即计费，$7/条）。
 """
 import importlib
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -88,12 +89,22 @@ class SubmitRetryTests(unittest.TestCase):
         self.assertIn("_heygen_create_photo_avatar", block)
 
     def test_video_submits_are_NOT_given_this_retry(self):
-        """⚠️ 最要紧的一条。视频提交即计费（$7/条），重发 = 同一条片子付两次。
-        _heygen_retry_net 只能出现在建形象里 —— 建形象免费，重发不花钱。"""
-        for fn in ("generate_heygen_video_direct", "gen_cinematic", "generate_heygen_video"):
-            block = VIDEO_SRC.split("def %s" % fn)[1].split("\ndef ")[0]
-            self.assertNotIn("_heygen_retry_net", block,
-                             "%s 用了 _heygen_retry_net —— 会把同一条视频付两次钱" % fn)
+        """⚠️ 最要紧的一条。视频【提交】(create-video)即计费($7/条)，重发 = 同一条片子付两次。
+        _heygen_retry_net 只用在【不计费】的调用：建形象、以及【素材上传】(计费在 create-video、
+        上传本身不花钱、幂等)。视频【提交】只能走 _heygen_retry_429(唯有 429=未计费才安全重发)。
+
+        所以这里精确检查：每个 create-video / create-cinematic-video 【提交】调用，最近的重试包裹
+        必须是 _heygen_retry_429，绝不能是 _heygen_retry_net。（上传用 net 是允许的，不看它。）"""
+        for call in ("_heygen_create_video(", "_heygen_create_cinematic_video("):
+            for m in re.finditer(re.escape(call), VIDEO_SRC):
+                head = VIDEO_SRC[:m.start()]
+                if head.rsplit("\n", 1)[-1].lstrip().startswith("def "):
+                    continue  # 跳过 def 定义那行
+                ctx = VIDEO_SRC[max(0, m.start() - 160):m.start()]
+                net = ctx.rfind("_heygen_retry_net")
+                r429 = ctx.rfind("_heygen_retry_429")
+                self.assertFalse(net > r429,
+                                 "%s 提交被 _heygen_retry_net 包了 —— 会把同一条视频付两次钱" % call)
 
     def test_the_reason_it_is_safe_is_written_down(self):
         """下一个人一定会问「凭什么这里能重发」。答案得在代码里，不能只在 PR 描述里。"""

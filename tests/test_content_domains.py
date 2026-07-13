@@ -238,14 +238,13 @@ class ContentDomainTests(unittest.TestCase):
                         id INTEGER PRIMARY KEY, kind TEXT, username TEXT, cost INTEGER,
                         status TEXT, payload TEXT, result TEXT, error TEXT,
                         created_at INTEGER, updated_at INTEGER, refunded INTEGER DEFAULT 0)""")
-                    # fang: 2 条口播 running + 1 条 motion running(不该计入口播)
+                    # fang: 2 条口播 running(kind=video 现在只有口播 text/audio)
                     c.execute("INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at) VALUES(1,'video','fang',20,'running','{\"mode\":\"text\"}',1,1)")
                     c.execute("INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at) VALUES(2,'video','fang',20,'running','{\"mode\":\"audio\"}',1,1)")
-                    c.execute("INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at) VALUES(3,'video','fang',20,'running','{\"mode\":\"motion\"}',1,1)")
                     # 第4条 pending 口播 —— 应被运行闸 defer，留 pending、不调 handler
                     c.execute("INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at) VALUES(4,'video','fang',20,'pending','{\"mode\":\"text\"}',1,1)")
                     c.commit()
-                # count 只算口播(排除 motion)=2
+                # count = 全部 kind=video running = 2
                 self.assertEqual(core._user_running_talking_count("fang"), 2)
                 core.run_job(4)
                 self.assertEqual(called, [])  # 超运行闸→handler 不该被调
