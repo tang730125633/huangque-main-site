@@ -244,6 +244,14 @@ class ReferenceMaterialTests(_Base):
 
 
 class DurationTests(_Base):
+    def test_motion_ignores_whatever_ratio_the_client_sends(self):
+        """竖屏锁死 —— 客户端硬传 16:9 也不认。"""
+        for sent in ("16:9", "1:1", None):
+            self.assertEqual(self.v(ratio=sent)["ratio"], "9:16")
+
+    def test_open_mode_can_still_choose_the_ratio(self):
+        self.assertEqual(self.v(cine_mode="open", prompt="x", ratio="16:9")["ratio"], "16:9")
+
     def test_motion_ignores_whatever_duration_the_client_sends(self):
         """动作模仿的时长【锁死】成自适应（跟随参考视频）—— 界面上没有这个选项了，
         客户端硬传一个值也不认。参考片段 8.2s → 成片 9s。"""
@@ -281,17 +289,23 @@ class UiTests(unittest.TestCase):
                       "提示词写死的玩法不该发 prompt —— 发了后端也不看")
 
     def test_all_params_are_locked_for_the_fixed_prompt_modes(self):
-        """动作模仿【整个参数区】都藏起来：分辨率/时长/比例一样都不给选，
-        只留一行说明。锁死的形状照抄 #2173 —— 唯一已知能过 HeyGen 审核的配置。"""
+        """动作模仿【整个参数区】都藏起来：分辨率/时长/比例一样都不给选，只留一行说明。"""
         self.assertIn("$('cineParamGrid').classList.toggle('hidden', cfg.fixed)", HTML)
         self.assertIn("$('cineFixedParams').classList.toggle('hidden', !cfg.fixed)", HTML)
-        self.assertIn("selectedCineResolution='1080p'", HTML)   # 和后端 CINEMATIC_MOTION_RESOLUTION 对齐
+        self.assertIn("selectedCineResolution='1080p'", HTML)
         self.assertIn("selectedCineDuration='auto'", HTML)
-        # 比例仍然由参考视频的宽高算出来（#2173 的参考是 576x1024 竖版 → 9:16）
-        self.assertIn("selectedCineRatio = r>1.15 ? '16:9' : (r<0.87 ? '9:16' : '1:1')", HTML)
+        self.assertIn("selectedCineRatio='9:16'", HTML)
 
-    def test_the_locked_resolution_matches_the_backend(self):
+    def test_the_locked_params_match_the_backend(self):
         self.assertEqual(video.CINEMATIC_MOTION_RESOLUTION, "1080p")
+        self.assertEqual(video.CINEMATIC_MOTION_RATIO, "9:16")
+
+    def test_the_ratio_is_no_longer_derived_from_the_reference(self):
+        """动作模仿锁死竖屏，因为它的提示词（第一版，逐字照抄）里写死了 "vertical video"。
+        比例要是跟着参考视频走，用户传一段横版进来就变成「提示词说竖版、参数说 16:9」，
+        自相矛盾。"""
+        self.assertIn("vertical video", video.MOTION_PROMPT)
+        self.assertNotIn("selectedCineRatio = r>1.15", HTML)
 
     def test_switching_modes_trims_an_oversized_selection(self):
         """双人选了 2 个形象 → 切回单人，不裁掉就会带着 2 个提交，后端直接拒。"""

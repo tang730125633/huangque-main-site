@@ -2538,9 +2538,13 @@ CINEMATIC_MODES = ("motion", "duo", "open")
 CINEMATIC_DUO_ENABLED = os.environ.get("CINEMATIC_DUO_ENABLED", "").strip().lower() in ("1", "true", "yes")
 CINEMATIC_COMING_SOON = {} if CINEMATIC_DUO_ENABLED else {"duo": "双人动作模仿即将上线，敬请期待"}
 # 动作模仿只给三档：自适应 / 10 秒 / 15 秒（开放式仍可在 4~15 内任选）
-# 动作模仿锁死的参数（照抄 #2173 —— 目前唯一已知能过 HeyGen 审核的配置）。
-# 用户只能换形象和参考视频；分辨率/时长/润色都不给选，也不认客户端传的值。
+# 动作模仿锁死的参数。用户只能换形象和参考视频；分辨率/比例/时长/润色都不给选，
+# 也不认客户端传的值。
 CINEMATIC_MOTION_RESOLUTION = "1080p"
+# 比例锁死竖屏 —— 第一版的提示词里写死了 "vertical video"（见 MOTION_PROMPT_BASE）。
+# 比例要是跟着参考视频走，用户传一段横版进来，就变成「提示词说竖版、参数说 16:9」，
+# 自相矛盾。既然提示词是逐字照抄第一版的、不动，那比例就得跟着它走。
+CINEMATIC_MOTION_RATIO = "9:16"
 
 # 每秒点数，按玩法分档。HeyGen 那边是扁平价（$7/条，与时长无关），我们按时长卖 —— 这是产品定价，不是成本。
 # ⚠️ 改这里等于改价：cost_of() 直接乘这个数。
@@ -2678,9 +2682,9 @@ def validate_cinematic_payload(body, username=None):
         #     分辨率 1080p         （#2173 就是 1080p；不再给 720p 的选项）
         #     时长   自适应        （跟随参考视频：#2173 的参考片段 10.9s → 成片 11s）
         #     润色   关            （下面统一置 False）
-        #     比例   跟随参考视频   （#2173 的参考是 576x1024 竖版 → 9:16；前端按宽高算好传上来。
-        #                           这里仍然校验它是合法值，但不给用户在界面上选）
+        #     比例   9:16 竖屏     （提示词第一版写死了 "vertical video"，比例必须跟它一致）
         resolution = CINEMATIC_MOTION_RESOLUTION
+        ratio = CINEMATIC_MOTION_RATIO
         duration = "auto"
     else:
         resolution = (body.get("resolution") or "720p").strip().lower()
@@ -2699,9 +2703,9 @@ def validate_cinematic_payload(body, username=None):
             if not lo <= duration <= hi:
                 raise ValueError("时长仅支持 %d~%d 秒" % (lo, hi))
 
-    ratio = (body.get("ratio") or "9:16").strip()
-    if ratio not in _HEYGEN_CINEMATIC_RATIOS:
-        raise ValueError("画面比例仅支持 9:16、16:9、1:1")
+        ratio = (body.get("ratio") or "9:16").strip()
+        if ratio not in _HEYGEN_CINEMATIC_RATIOS:
+            raise ValueError("画面比例仅支持 9:16、16:9、1:1")
 
     # 参考素材。reference_video_data（单个）是老字段，合进 reference_videos 里，别让老前端 400。
     max_videos, max_images = cinematic_ref_budget(len(ids))

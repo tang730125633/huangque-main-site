@@ -459,7 +459,7 @@
           <div id="cineFixedParams" class="hidden" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
             <span class="pill-fixed">分辨率 1080p</span>
             <span class="pill-fixed">时长跟随参考视频</span>
-            <span class="pill-fixed">比例跟随参考视频</span>
+            <span class="pill-fixed">竖屏 9:16</span>
             <span class="faint" style="font-size:11.5px;">这些参数已固定，以保证出片成功率</span>
           </div>
           <div id="cineParamGrid" class="video-parameter-grid">
@@ -1506,11 +1506,9 @@
     v.preload='metadata';
     v.onloadedmetadata=function(){
       cineRefSeconds=v.duration||0;
-      var w=v.videoWidth||0, h=v.videoHeight||0;
-      if(w&&h&&cineCfg().fixed){
-        var r=w/h;
-        selectedCineRatio = r>1.15 ? '16:9' : (r<0.87 ? '9:16' : '1:1');
-      }
+      // 不再按参考视频推算比例：动作模仿【锁死竖屏 9:16】，因为它的提示词（第一版，逐字照抄）
+      // 里写死了 "vertical video"。比例跟着参考视频走的话，用户传一段横版进来就变成
+      // 「提示词说竖版、参数说 16:9」，自相矛盾。
       URL.revokeObjectURL(url);
       updateCineDurationHint();
     };
@@ -1542,7 +1540,8 @@
     if($('cineFixedParams')) $('cineFixedParams').classList.toggle('hidden', !cfg.fixed);
     if(cfg.fixed){
       selectedCineResolution='1080p';   // 和后端 CINEMATIC_MOTION_RESOLUTION 对齐
-      selectedCineDuration='auto';      // 跟随参考视频（#2173：参考 10.9s → 成片 11s）
+      selectedCineDuration='auto';      // 时长跟随参考视频（#2173：参考 10.9s → 成片 11s）
+      selectedCineRatio='9:16';         // 和后端 CINEMATIC_MOTION_RATIO 对齐 —— 竖屏锁死
     }
     if($('cineRefLabel')) $('cineRefLabel').textContent = cfg.needRef ? '参考视频（必传）' : '参考素材（选填）';
     if($('cineRefHint')) $('cineRefHint').textContent = cfg.needRef
