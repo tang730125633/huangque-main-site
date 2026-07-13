@@ -1132,7 +1132,10 @@
         var board=data.board||{};
         rememberCollabBoard(board);
         collabLoaded=true;
-        openCollabBoardInNewTab(board.id);
+        // 原地打开新建的板：openCollabBoardInNewTab 在 fetch 的异步 .then 里开新标签会被浏览器
+        // 当弹窗拦截(非直接用户手势)→ 创建后「没有显示」。改成同页载入(openCollabBoard)不受拦。
+        // 卡片点击打开走的是直接手势，仍用 openCollabBoardInNewTab、不受影响。
+        openCollabBoard(board.id);
       }).catch(function(err){
         var msg=(err&&err.message)||'协作画布创建失败';
         collabError=msg;
