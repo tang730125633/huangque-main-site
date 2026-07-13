@@ -115,6 +115,27 @@
         生成脚本（3 点）
       </button>
       <div style="text-align:center; margin-top:11px;"><span class="sc-hint">每次生成 1 套 3 分镜脚本 · 失败自动退点</span></div>
+
+      <!-- 一键出片 -->
+      <div class="sc-lab" style="margin-top:22px;">👤 默认形象（可选，出片用）</div>
+      <label id="scAvatarBox" style="display:flex; align-items:center; gap:10px; padding:10px 14px; border:1px dashed rgba(148,164,187,.26); border-radius:11px; background:rgba(148,164,187,.04); cursor:pointer;">
+        <input id="scAvatarFile" type="file" accept="image/*" style="display:none">
+        <span id="scAvatarIcon" style="display:flex; width:18px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg></span>
+        <span id="scAvatarText" style="font-size:12px; color:#94a4bb;">上传人物形象图</span>
+      </label>
+
+      <div class="sc-lab">🎤 默认音色</div>
+      <select id="scVoice" style="width:100%; min-height:36px; padding:7px 10px; color:#eaf1fa; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:10px; outline:none; font:inherit; font-size:12.5px;">
+        <option value="S_d21F8OR62">温柔女声</option>
+        <option value="S_l8wE8OR62">活力女声</option>
+        <option value="S_pa0E8OR62">沉稳男声</option>
+        <option value="S_xaUB8OR62">亲和女声</option>
+      </select>
+
+      <button id="scBatch" class="hv-lift" style="width:100%; height:48px; margin-top:14px; font-size:15px; font-weight:700; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); border-radius:14px; cursor:pointer; font-family:inherit; display:none;">
+        ⚡ 一键出片（30 点/条）
+      </button>
+      <div id="scBatchProgress" style="display:none; margin-top:10px; font-size:12px; color:#94a4bb; line-height:1.8;"></div>
     </div>
 
     <!-- 右：脚本 / 分镜预览 -->
@@ -389,6 +410,143 @@
     if(window.HQ&&window.HQ.toast) HQ.toast('已带入第 1 个分镜，其余 '+Math.max(0,scenesForHandoff.length-1)+' 条请逐条「转作图」');
     location.href=handoffUrl('banana.html',first.scene||'','&engine=nb2');
   }; }
+
+  // ====== 一键出片 ======
+  var scBatch=document.getElementById('scBatch'), scBatchProgress=document.getElementById('scBatchProgress');
+  var scAvatarFile=document.getElementById('scAvatarFile'), scAvatarBox=document.getElementById('scAvatarBox');
+  var scAvatarIcon=document.getElementById('scAvatarIcon'), scAvatarText=document.getElementById('scAvatarText');
+  var scVoice=document.getElementById('scVoice');
+  var batchState={running:false,scenes:[],avatarImage:null,selectedVoice:'S_d21F8OR62',
+      currentAudioIdx:0,results:[],pollIntervals:[]};
+
+  // 形象上传
+  if(scAvatarFile && scAvatarBox){
+    scAvatarBox.onclick=function(){ scAvatarFile.click(); };
+    scAvatarFile.onchange=function(){
+      var f=scAvatarFile.files&&scAvatarFile.files[0];
+      if(!f) return;
+      var reader=new FileReader();
+      reader.onload=function(){
+        batchState.avatarImage=reader.result;
+        scAvatarBox.style.borderStyle='solid'; scAvatarBox.style.borderColor='rgba(231,178,76,.5)';
+        scAvatarIcon.style.display='none'; scAvatarText.textContent='已上传形象图';
+      };
+      reader.readAsDataURL(f);
+    };
+  }
+
+  // 生成脚本后显示一键出片按钮
+  var origRender=render;
+  render=function(res,topicTxt,style,dur){
+    origRender(res,topicTxt,style,dur);
+    if(scBatch) scBatch.style.display=lastScenes.length?'block':'none';
+  };
+
+  // 一键出片流水线
+  if(scBatch){
+    scBatch.onclick=function(){
+      if(batchState.running) return;
+      if(!batchState.avatarImage){ toast('请先上传人物形象图'); return; }
+      batchState.running=true;
+      batchState.scenes=lastScenes.slice();
+      batchState.selectedVoice=scVoice?scVoice.value:'S_d21F8OR62';
+      batchState.currentAudioIdx=0;
+      batchState.results=new Array(lastScenes.length);
+      batchState.pollIntervals=[];
+      scBatch.disabled=true; scBatch.textContent='⏳ 出片中…';
+      scBatchProgress.style.display='block';
+      scBatchProgress.innerHTML=lastScenes.map(function(_,i){ return '<div id="bp'+i+'">镜号'+('0'+(i+1)).slice(-2)+'：⏳ 等待中…</div>'; }).join('');
+      saveBatchState();
+      submitNextAudio();
+    };
+  }
+
+  function submitNextAudio(){
+    var idx=batchState.currentAudioIdx;
+    if(idx>=batchState.scenes.length) return;
+    var scene=batchState.scenes[idx];
+    updateBatchProgress(idx,'🎤 配音中…');
+    fetch('/api/gen/audio',{method:'POST',
+      headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},
+      body:JSON.stringify({text:scene.line,voice:batchState.selectedVoice})})
+    .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
+    .then(function(x){
+      if(!x.d.job_id) throw new Error(x.d.detail||'提交失败');
+      pollBatchJob(x.d.job_id,function(result){
+        batchState.results[idx]={audio_file:result.file,audio_url:result.url};
+        updateBatchProgress(idx,'✅ 配音完成 → 🎬 视频中…');
+        submitVideo(idx);
+        batchState.currentAudioIdx++;
+        submitNextAudio();
+      },function(err){ updateBatchProgress(idx,'❌ 配音失败'); batchState.currentAudioIdx++; submitNextAudio(); });
+    }).catch(function(e){ updateBatchProgress(idx,'❌ '+e.message); batchState.currentAudioIdx++; submitNextAudio(); });
+  }
+
+  function submitVideo(idx){
+    var scene=batchState.scenes[idx];
+    var audioFile=batchState.results[idx].audio_file;
+    fetch('/api/gen/video',{method:'POST',
+      headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},
+      body:JSON.stringify({mode:'audio',audio_file:audioFile,image_data:batchState.avatarImage,
+        text:scene.scene,ratio:'9:16',resolution:'1080p',motion:'medium'})})
+    .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
+    .then(function(x){
+      if(!x.d.job_id) throw new Error(x.d.detail||'提交失败');
+      pollBatchJob(x.d.job_id,function(result){
+        batchState.results[idx].video_url=result.video_url;
+        updateBatchProgress(idx,'✅ 完成');
+      },function(err){ updateBatchProgress(idx,'❌ 视频失败'); });
+    }).catch(function(e){ updateBatchProgress(idx,'❌ '+e.message); });
+  }
+
+  function pollBatchJob(jobId,onDone,onFail){
+    var iv=setInterval(function(){
+      fetch('/api/gen/job/'+jobId,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+        if(d.status==='done'){ clearInterval(iv); var r=typeof d.result==='string'?JSON.parse(d.result):d.result; onDone(r); }
+        else if(d.status==='error'||d.status==='failed'){ clearInterval(iv); onFail(d.error||'失败'); }
+      }).catch(function(){});
+    },3000);
+    batchState.pollIntervals.push(iv);
+  }
+
+  function updateBatchProgress(idx,msg){
+    var el=document.getElementById('bp'+idx);
+    if(el) el.textContent='镜号'+('0'+(idx+1)).slice(-2)+'：'+msg;
+    var allDone=batchState.results.every(function(r){return r&&r.video_url;});
+    if(allDone){ scBatch.disabled=false; scBatch.textContent='⚡ 一键出片（30 点/条）'; }
+  }
+
+  function saveBatchState(){
+    try{ localStorage.setItem('hq_batch_state',JSON.stringify({
+      running:batchState.running,scenes:batchState.scenes,selectedVoice:batchState.selectedVoice,
+      currentAudioIdx:batchState.currentAudioIdx,results:batchState.results
+    })); }catch(e){}
+  }
+
+  function recoverBatch(){
+    try{
+      var s=JSON.parse(localStorage.getItem('hq_batch_state')||'null');
+      if(!s||!s.running||!s.scenes.length) return;
+      batchState=s;
+      scBatch.disabled=true; scBatch.textContent='⏳ 恢复中…';
+      scBatchProgress.style.display='block';
+      scBatchProgress.innerHTML=s.scenes.map(function(_,i){
+        var r=s.results[i]||{};
+        return '<div id="bp'+i+'">镜号'+('0'+(i+1)).slice(-2)+'：'+(r.video_url?'✅ 完成':r.audio_url?'🎬 视频中…':'⏳ 恢复中…')+'</div>';
+      }).join('');
+      for(var i=s.currentAudioIdx;i<s.scenes.length;i++){
+        if(!s.results[i]||!s.results[i].audio_url){ submitNextAudio(); break; }
+        if(!s.results[i].video_url){ submitVideo(i); }
+      }
+    }catch(e){}
+  }
+
+  window.addEventListener('beforeunload',function(){
+    if(batchState.running) saveBatchState();
+    batchState.pollIntervals.forEach(function(iv){ clearInterval(iv); });
+  });
+
+  recoverBatch();
   loadHistory();
 })();
 </script>
