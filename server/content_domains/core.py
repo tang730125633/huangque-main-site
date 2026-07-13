@@ -12,7 +12,7 @@
 
 P1：图片(gpt-image-2)。P2 文案 / P3 视频按同样的 register_capability 往里加。
 """
-import os, re, sqlite3, json, time, threading, queue, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess, uuid, sys
+import os, re, sqlite3, json, time, threading, queue, base64, pathlib, urllib.request, urllib.error, urllib.parse, subprocess, uuid, sys, tempfile, shutil
 from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -206,8 +206,8 @@ MAX_USER_RUNNING_IMAGE = _env_positive_int("MAX_USER_RUNNING_IMAGE", 3)         
 SERVICE_OWNER = "content"   # 本服务在 jobs.owner 的署名(#579)；两处全表扫描必须按它过滤，缘由见 jobs_store.ensure_owner_column
 # reaper 各 kind 的超时宽限(秒)，默认 360。tryon 两段式+心跳刷新；xiaole_video 内部轮询600s+转存；
 # image 多图/中转慢；collect 下载+ffmpeg抽音轨+ASR 且转写全站串行(实测成功平均88s)。video 按 mode 另算。
-KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "image": 900, "collect": 1200}
-COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40}  # collect/leads/tryon 走 cost_of() 动态算
+KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "image": 900, "collect": 1200, "breakdown": 600}
+COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40, "breakdown": 8}  # collect/leads/tryon 走 cost_of() 动态算
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com")
 ZELONG_KEY  = os.environ.get("ZELONG_KEY", "")                              # 泽龙Ai 中转站(OpenAI 兼容)
 ZELONG_BASE = os.environ.get("ZELONG_BASE", "https://api.xiaoleai.team")
@@ -944,6 +944,208 @@ def reclaim_orphaned_running():
         print("[startup] 回收重启遗留孤儿任务 %d 个(→失败退点)" % n, flush=True)
     return n
 
+# ============ 爆款拆解后台线程 ============
+_breakdown_sem = threading.BoundedSemaphore(2)
+
+def _breakdown_background(job_id, username, url):
+    """下载视频 → 抽帧 → ASR → GPT-4o 多模态分析 → 写结果。线程自管理完整生命周期。"""
+    acquired = _breakdown_sem.acquire(timeout=30)
+    if not acquired:
+        jobs_store.set_terminal(jdb, job_id, "error",
+                                error="拆解队列已满，请稍后重试",
+                                from_states=("pending", "running"))
+        jobs_store.refund_once(jdb, job_id, username, 8,
+                               lambda u, c: _domains()[1].safe_refund_points(u, c, "job#%d" % job_id))
+        return
+    try:
+        if not jobs_store.claim_running(jdb, job_id):
+            return
+
+        def heartbeat():
+            try:
+                now = int(time.time())
+                with closing(jdb()) as c:
+                    c.execute("UPDATE jobs SET updated_at=? WHERE id=? AND status='running'",
+                              (now, job_id))
+                    c.commit()
+            except Exception:
+                pass
+
+        def set_phase(phase):
+            try:
+                now = int(time.time())
+                with closing(jdb()) as c:
+                    row = c.execute("SELECT payload FROM jobs WHERE id=?", (job_id,)).fetchone()
+                    if row:
+                        p = json.loads(row["payload"] or "{}")
+                        p["phase"] = phase
+                        c.execute("UPDATE jobs SET payload=?, updated_at=? WHERE id=?",
+                                  (json.dumps(p, ensure_ascii=False), now, job_id))
+                        c.commit()
+            except Exception:
+                pass
+
+        def done(result):
+            jobs_store.set_terminal(jdb, job_id, "done", result=result)
+
+        def fail(error_msg):
+            if jobs_store.set_terminal(jdb, job_id, "error", error=str(error_msg)[:300],
+                                       from_states=("pending", "running")):
+                jobs_store.refund_once(jdb, job_id, username, 8,
+                                       lambda u, c: _domains()[1].safe_refund_points(u, c, "job#%d" % job_id))
+
+        tmp_video = None
+        frame_dir = None
+        try:
+            set_phase("resolving")
+            info = tikhub.parse_link(url)
+            det = tikhub.detail(info["platform"], info["id"], info.get("note_type"))
+            play_url = det.get("play_url")
+            if not play_url:
+                if det.get("images"):
+                    raise ValueError("该链接是图文笔记，不是视频，暂不支持拆解")
+                raise ValueError("未找到视频下载地址，可能是私密或已删除")
+            duration = det.get("duration") or 30
+            title = det.get("title") or det.get("desc") or ""
+
+            set_phase("downloading")
+            heartbeat()
+            tmp_video = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+            dl_deadline = time.time() + 180
+            tikhub.download_to_file(play_url, dl_deadline, tmp_video.name)
+            heartbeat()
+
+            set_phase("extracting_frames")
+            frame_count = max(4, min(10, int(duration / 5)))
+            frame_dir, frames = _breakdown_extract_frames(tmp_video.name, frame_count)
+
+            script_text = ""
+            try:
+                set_phase("transcribing")
+                segs = tikhub.transcript(det, video_path=tmp_video.name)
+                script_text = _breakdown_format_transcript(segs)
+            except Exception:
+                pass
+
+            set_phase("analyzing")
+            heartbeat()
+            raw = _breakdown_chat_multimodal(
+                "你是黄雀传媒资深短视频编导。分析以下视频的关键帧和口播文案，"
+                "拆解出完整分镜脚本。只输出 JSON，不要解释。",
+                ("视频标题：%s\n时长：%ss\n平台：%s\n\n"
+                 "口播文案（带时间轴）：\n%s\n\n"
+                 "请输出 JSON：{\"rhythm\":[{\"phase\":\"\",\"time\":\"\",\"strategy\":\"\"}],"
+                 "\"scenes\":[{\"dur\":\"\",\"scale\":\"\",\"camera\":\"\",\"scene\":\"\",\"line\":\"\"}],"
+                 "\"viral_logic\":\"\",\"template\":\"\"}"
+                 % (title, duration, info.get("platform", ""), script_text)),
+                frames
+            )
+            heartbeat()
+
+            s, e = raw.find("{"), raw.rfind("}")
+            if s < 0 or e <= s:
+                raise ValueError("拆解结果解析失败，请重试")
+            result = json.loads(raw[s:e+1])
+
+            done({
+                "type": "breakdown",
+                "source_url": url,
+                "source_title": title,
+                "source_platform": info.get("platform"),
+                "duration": duration,
+                "rhythm": result.get("rhythm", []),
+                "scenes": result.get("scenes", []),
+                "viral_logic": result.get("viral_logic", ""),
+                "template": result.get("template", ""),
+                "phase": "done",
+            })
+        except Exception as e:
+            fail(str(e))
+        finally:
+            if tmp_video:
+                try: os.unlink(tmp_video.name)
+                except: pass
+            if frame_dir:
+                try: shutil.rmtree(frame_dir)
+                except: pass
+    finally:
+        _breakdown_sem.release()
+
+
+def _breakdown_format_transcript(segs):
+    if not segs:
+        return ""
+    if isinstance(segs, str):
+        return segs
+    if isinstance(segs, list) and segs:
+        if isinstance(segs[0], dict):
+            lines = []
+            for s in segs:
+                start = s.get("start") or s.get("seek") or 0
+                end = s.get("end") or 0
+                text = s.get("text") or s.get("transcript") or ""
+                if str(text).strip():
+                    lines.append("[%ss-%ss] %s" % (start, end, str(text).strip()))
+            return "\n".join(lines)
+    return str(segs)
+
+
+def _breakdown_extract_frames(video_path, count=6):
+    outdir = tempfile.mkdtemp()
+    subprocess.run(
+        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+         "-i", video_path,
+         "-vf", "select='gt(scene,0.15)',scale=512:-1",
+         "-vsync", "vfr", "-vframes", str(count),
+         "%s/frame_%%d.jpg" % outdir],
+        check=True, timeout=60,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    frames = sorted([os.path.join(outdir, f) for f in os.listdir(outdir)
+                     if f.endswith(".jpg")])
+    if len(frames) < max(3, count // 2):
+        shutil.rmtree(outdir)
+        outdir = tempfile.mkdtemp()
+        interval = max(1, 60 // count) if count else 1
+        subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+             "-i", video_path,
+             "-vf", "fps=1/%d,scale=512:-1" % interval,
+             "-vframes", str(count),
+             "%s/frame_%%d.jpg" % outdir],
+            check=True, timeout=60,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        frames = sorted([os.path.join(outdir, f) for f in os.listdir(outdir)
+                         if f.endswith(".jpg")])
+    return outdir, frames
+
+
+def _breakdown_chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7):
+    from .image import OPENAI_OFFICIAL_BASE
+    from . import egress
+    content = [{"type": "text", "text": usermsg}]
+    for path in image_paths:
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": "data:image/jpeg;base64," + b64, "detail": "low"}
+        })
+    body = {
+        "model": os.environ.get("BREAKDOWN_MODEL", "gpt-4o"),
+        "messages": [
+            {"role": "system", "content": sysmsg},
+            {"role": "user", "content": content}
+        ],
+        "temperature": temp,
+    }
+    d = egress.post_json(
+        OPENAI_OFFICIAL_BASE, OPENAI_BASE,
+        "/v1/chat/completions", json.dumps(body, ensure_ascii=False).encode(),
+        {"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": "application/json"},
+        log=lambda m: print("[breakdown] %s" % m, flush=True)
+    )
+    return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+
 # ============ HTTP ============
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -1156,6 +1358,39 @@ class H(BaseHTTPRequestHandler):
                     for jid, body in zip(job_ids, payloads)]
             return self._send(200, {"batch_id": batch_id, "job_ids": job_ids, "jobs": jobs,
                                     "count": len(job_ids), "cost": total, "cost_per_job": costs[0], "points_left": points_left})
+        if p == "/api/gen/breakdown":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            try:
+                feature_flags.require_enabled("copy")
+            except feature_flags.FeatureDisabled as e:
+                return self._send(503, {"detail": str(e)})
+            body = self._json_body()
+            url = (body.get("url") or "").strip()
+            if not url:
+                return self._send(400, {"detail": "请粘贴抖音/小红书/视频号链接"})
+            cost = COST.get("breakdown", 8)
+            try:
+                points_left = points_domain.deduct_points(user["username"], cost, "job:breakdown")
+            except points_domain.AuthPointsError as e:
+                return self._send(402 if e.status == 402 else 502, {"detail": e.detail, "need": cost})
+            now = int(time.time())
+            with closing(jdb()) as c:
+                cur = c.execute(
+                    "INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                    ("breakdown", user["username"], cost,
+                     json.dumps({"url": url, "phase": "queued"}, ensure_ascii=False),
+                     now, now))
+                c.commit()
+                job_id = cur.lastrowid
+            threading.Thread(
+                target=_breakdown_background,
+                args=(job_id, user["username"], url),
+                name="breakdown-%d" % job_id,
+                daemon=True
+            ).start()
+            return self._send(200, {"job_id": job_id, "cost": cost, "points_left": points_left})
         if p.startswith("/api/gen/") and p[9:] in HANDLERS:
             kind = p[9:]
             user = verify(self._token())
@@ -1244,6 +1479,12 @@ class H(BaseHTTPRequestHandler):
             if r["username"] != user.get("username"):
                 return self._send(404, {"detail": "任务不存在"})
             phase = video_domain.get_video_job_phase(jid) if r["kind"] in {"video", "tryon", "xiaole_video"} else None
+            if phase is None and r["kind"] == "breakdown":
+                try:
+                    p = json.loads(r["payload"] or "{}")
+                    phase = p.get("phase")
+                except Exception:
+                    pass
             d = _job_public_dict(r, phase)
             return self._send(200, d)
         if p == "/api/gen/points/history":
