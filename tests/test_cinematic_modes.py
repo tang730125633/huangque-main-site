@@ -31,6 +31,7 @@ if SERVER not in sys.path:
 video = importlib.import_module("content_domains.video")
 points = importlib.import_module("content_domains.points")
 HTML = (ROOT / "site/workbench/video.html").read_text(encoding="utf-8")
+VIDEO_SRC = (ROOT / "server/content_domains/video.py").read_text(encoding="utf-8")
 CORE = (ROOT / "server/content_domains/core.py").read_text(encoding="utf-8")
 
 REF = "data:video/mp4;base64,AA"
@@ -41,7 +42,16 @@ def _avatar(_username, i):
 
 
 class _Base(unittest.TestCase):
+    """默认把 duo 临时打开 —— 这些用例测的是 duo 的【校验逻辑】（形象数量、固定提示词、
+    参考素材…），不是它开不开放。「双人暂不开放」这件事由 DuoIsComingSoonTests 单独守。
+    """
+    duo_open = True
+
     def setUp(self):
+        if self.duo_open:
+            x = patch.object(video, "CINEMATIC_COMING_SOON", {})
+            x.start()
+            self.addCleanup(x.stop)
         # 形象归属、data-url 校验、落盘、ffprobe —— 都不是这个测试要验的东西
         self.p = [
             patch.object(video, "get_video_avatar", _avatar),
@@ -298,6 +308,41 @@ class SubmitButtonTests(unittest.TestCase):
 
     def test_the_task_label_follows_the_mode(self):
         self.assertIn("trackVideoJob(res.data.job_id,{status:'queued',label:cfg.label", HTML)
+
+
+class DuoIsComingSoonTests(_Base):
+    duo_open = False   # 这一组就是要测它【关着】
+    """双人暂不开放：它的中文提示词是照着单人那句推的，【一次都没实测过】——
+    而它的英文版在线上是 0 成 2 败（被 HeyGen 的内容审核拦下）。
+
+    与其让用户白等 15 分钟再看到「生成失败」，先标成「即将上线」。
+    实测通过后把 CINEMATIC_DUO_ENABLED 这个 env 打开即可，不用改代码。
+    """
+
+    def test_the_backend_rejects_duo(self):
+        """前端把它灰掉了，但前端【不是】安全边界 —— 直接 POST 一个 cine_mode=duo
+        进来也得挡住，否则用户照样白等 15 分钟。"""
+        self.assertIn("duo", video.CINEMATIC_COMING_SOON)
+        with self.assertRaises(ValueError) as e:
+            self.v(cine_mode="duo", avatar_ids=[1, 2])
+        self.assertIn("即将上线", str(e.exception))
+
+    def test_it_can_be_turned_on_without_a_code_change(self):
+        self.assertIn('os.environ.get("CINEMATIC_DUO_ENABLED"', VIDEO_SRC)
+
+    def test_motion_and_open_are_untouched(self):
+        self.assertNotIn("motion", video.CINEMATIC_COMING_SOON)
+        self.assertNotIn("open", video.CINEMATIC_COMING_SOON)
+        self.assertEqual(self.v()["cine_mode"], "motion")
+
+    def test_the_tab_is_disabled_and_labelled(self):
+        self.assertIn('data-cine-mode="duo" disabled', HTML)
+        self.assertIn("即将上线", HTML)
+
+    def test_the_frontend_gate_matches_the_backend(self):
+        """前端也拦一道，别让用户点了才发现被拒（disabled 之外的路径也可能调 applyCineMode）。"""
+        self.assertIn("var CINE_COMING_SOON={duo:", HTML)
+        self.assertIn("if(CINE_COMING_SOON[mode]){ toast(CINE_COMING_SOON[mode]); return; }", HTML)
 
 
 if __name__ == "__main__":
