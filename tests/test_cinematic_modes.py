@@ -18,6 +18,7 @@
    安全边界：直接 POST 一个自定义 prompt 进来，也必须被丢掉。
 """
 import importlib
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -251,8 +252,9 @@ class UiTests(unittest.TestCase):
                    if "AI 剧情视频" in ln and not ln.lstrip().startswith(("//", "/*", "*", "<!--"))]
         self.assertEqual(visible, [], "界面上还留着旧名字：%s" % visible)
 
-    def test_three_mode_tabs_exist(self):
-        for mode in ("motion", "duo", "open"):
+    def test_the_visible_tabs_are_motion_and_open(self):
+        """双人的页签已从界面移除（见 DuoIsComingSoonTests）。"""
+        for mode in ("motion", "open"):
             self.assertIn('data-cine-mode="%s"' % mode, HTML)
         self.assertIn("applyCineMode('motion')", HTML, "默认落在第一个玩法")
 
@@ -335,9 +337,18 @@ class DuoIsComingSoonTests(_Base):
         self.assertNotIn("open", video.CINEMATIC_COMING_SOON)
         self.assertEqual(self.v()["cine_mode"], "motion")
 
-    def test_the_tab_is_disabled_and_labelled(self):
-        self.assertIn('data-cine-mode="duo" disabled', HTML)
-        self.assertIn("即将上线", HTML)
+    def test_the_tab_is_gone_from_the_ui(self):
+        """页签整个从界面移除 —— 不是灰掉，是没有。"""
+        self.assertNotIn('data-cine-mode="duo"', HTML)
+        tabs = re.findall(r'data-cine-mode="(\w+)"', HTML)
+        self.assertEqual(sorted(set(tabs)), ["motion", "open"])
+
+    def test_the_mode_itself_is_kept_so_it_can_be_turned_back_on(self):
+        """CINE_MODES 里的 duo 保留：后端仍然认这个玩法（只是拒绝提交）。
+        实测通过后把 CINEMATIC_DUO_ENABLED=1 打开、把页签加回来就行，不用重写。"""
+        self.assertIn("duo:   {label:'双人动作模仿'", HTML)
+        self.assertIn("duo", video.CINEMATIC_MODES)
+        self.assertIn("duo", video.CINEMATIC_MODE_AVATARS)
 
     def test_the_frontend_gate_matches_the_backend(self):
         """前端也拦一道，别让用户点了才发现被拒（disabled 之外的路径也可能调 applyCineMode）。"""

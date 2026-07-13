@@ -55,9 +55,6 @@
      max-height 由 JS 量出来（见 limitAvatarGridRows）：卡片高度 = 展示框 + 文字区，
      而展示框的宽度随网格列宽走，所以行高会随窗口宽度变，写死 px 一缩放就切在半张卡上。
      padding-right 给滚动条留位，否则它会压在最右一列的卡片上。 */
-  .line-tab.soon{opacity:.5;cursor:not-allowed}
-  .line-tab.soon:hover{border-color:inherit;transform:none}
-  .soon-tag{display:inline-block;margin-left:6px;padding:2px 6px;border-radius:6px;background:rgba(148,164,187,.16);color:#94a4bb;font-size:10px;font-weight:800;vertical-align:middle}
   .pill-fixed{display:inline-block;padding:5px 10px;border-radius:8px;background:rgba(231,178,76,.1);border:1px solid rgba(231,178,76,.28);color:#e7b24c;font-size:11.5px;font-weight:700}
   .avatar-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px;overflow-y:auto;padding-right:4px}
   .avatar-grid::-webkit-scrollbar{width:7px}
@@ -390,9 +387,10 @@
           <div class="label">玩法</div>
           <div class="line-tabs" id="cineModeTabs">
             <button type="button" class="line-tab active" data-cine-mode="motion"><b>动作模仿</b><span>1 个形象 + 1 段参考视频 → 照着它的动作演 · 3 点/秒</span></button>
-            <!-- 双人：中文提示词还没实测过（英文版在线上是 0 成 2 败，被 HeyGen 审核拦的）。
-                 与其让用户白等 15 分钟再看到「生成失败」，先标成即将上线。后端也拦着（前端不是安全边界）。 -->
-            <button type="button" class="line-tab soon" data-cine-mode="duo" disabled title="双人动作模仿即将上线，敬请期待"><b>双人动作模仿 <span class="soon-tag">即将上线</span></b><span>2 个形象 + 1 段参考视频 → 两人同框照着演 · 5 点/秒</span></button>
+            <!-- 双人动作模仿：页签已从界面移除。它的中文提示词还没实测过（英文版在线上是
+                 0 成 2 败，被 HeyGen 的内容审核拦的）。CINE_MODES 里的 duo 【保留】—— 后端
+                 仍然认这个玩法（只是拒绝提交），实测通过后把 CINEMATIC_DUO_ENABLED=1 打开、
+                 把这个页签加回来就行，不用重写。 -->
             <button type="button" class="line-tab" data-cine-mode="open"><b>开放式生成</b><span>最多 3 个形象 + 自己写画面描述 · 5 点/秒</span></button>
           </div>
         </div>
