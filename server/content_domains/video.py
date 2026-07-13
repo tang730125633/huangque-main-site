@@ -1078,8 +1078,15 @@ def _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id="", direct=False):
     started = time.time()
     last_status = ""
     while time.time() < deadline:
-        # 查询异常直接上抛，不掩盖：401/配额之类的错误若被「继续轮询」吃掉，会伪装成超时。
-        status, moderation = _heygen_look_status(avatar_item_id, avatar_group_id, direct=direct)
+        # 401/配额之类的 HTTP 错误直接上抛，不掩盖(被「继续轮询」吃掉会伪装成超时)。但【瞬时网络
+        # 抖动】(隧道 read timeout/SSL)要重试——轮询是幂等 GET、建形象免费，一次抖动不该判死建形象
+        # (yuanzhi 的 read timeout 就死在这，#611 只包了上传/创建、漏了这步 poll)。同 #607 的 poll。
+        try:
+            status, moderation = _heygen_look_status(avatar_item_id, avatar_group_id, direct=direct)
+        except HeyGenNetworkError as e:
+            print("[heygen] avatar look 轮询网络抖动，%ds 后重试: %s" % (HEYGEN_POLL_INTERVAL, str(e)[:100]), flush=True)
+            time.sleep(HEYGEN_POLL_INTERVAL)
+            continue
         if status and status != last_status:
             print("[heygen] avatar look=%s status=%s" % (avatar_item_id, status), flush=True)
             last_status = status
@@ -1476,8 +1483,10 @@ def generate_heygen_video_direct(image_file, audio_file, resolution, ratio, moti
         raise ValueError("视频素材文件不存在")
     image_fp = _ensure_heygen_image_jpg(image_fp)
     audio_fp = _ensure_heygen_audio_mp3(audio_fp)
-    image_asset_id = _heygen_upload_asset(image_fp, direct=True)
-    audio_asset_id = _heygen_upload_asset(audio_fp, direct=True)
+    # 素材上传对瞬时网络错误重试：上传不计费(计费在 create-video)，重试安全。隧道抖动一下不该
+    # 让整条口播失败(fang 的 cinematic/口播上传 240s 超时同源)。见 _heygen_retry_net。
+    image_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(image_fp, direct=True), "口播传图")
+    audio_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(audio_fp, direct=True), "口播传音")
     with heygen_slot("口播直连"):   # 账号级并发上限 10，三个池共用；超了在本地排队，不让 HeyGen 甩 429
         # 429 退避重试：请求被瞬间拒绝、未计费，是唯一可以安全重发的失败。
         # 不重试的话，一次突发就把用户的任务判死退点、白等几分钟。
@@ -1517,8 +1526,9 @@ def generate_heygen_video(image_file, audio_file, resolution, ratio, motion):
         raise ValueError("视频素材文件不存在")
     image_fp = _ensure_heygen_image_jpg(image_fp)
     audio_fp = _ensure_heygen_audio_mp3(audio_fp)
-    image_asset_id = _heygen_upload_asset(image_fp)
-    audio_asset_id = _heygen_upload_asset(audio_fp)
+    # 素材上传对瞬时网络错误重试(不计费、安全，同直连)
+    image_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(image_fp), "口播中转传图")
+    audio_asset_id = _heygen_retry_net(lambda: _heygen_upload_asset(audio_fp), "口播中转传音")
     # 中转(泽龙)转发的是同一个 HeyGen 账号，一样占账号的并发额度 —— 不占槽就等于绕过了闸
     with heygen_slot("口播中转"):
         video_id = _heygen_retry_429(
@@ -2760,7 +2770,10 @@ def gen_cinematic(payload):
         update_video_asset_phase(job_id, "uploading_reference_asset")
         for f in video_files + image_files:
             if f:
-                reference_asset_ids.append(_heygen_upload_asset(_resolve_out_file(f), direct=True))
+                # 参考素材上传对瞬时网络错误重试：上传不计费，重试安全。fang 的电影化身就死在这——
+                # 参考视频上传撞隧道 240s read timeout、压根没提交 HeyGen 就判死(#630 也点名)。
+                reference_asset_ids.append(
+                    _heygen_retry_net(lambda fp=f: _heygen_upload_asset(_resolve_out_file(fp), direct=True), "剧情视频传素材"))
     reference_asset_id = reference_asset_ids[0] if reference_asset_ids else None   # 资产表用
 
     update_video_asset_phase(job_id, "creating_cinematic_video", reference_asset_id=reference_asset_id)
