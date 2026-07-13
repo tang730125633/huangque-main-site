@@ -10,8 +10,29 @@
 <script src="theme-init.js?v=11eb385e"></script>
 <style>
   body{ overflow:hidden; }
-  .gImg{ grid-template-columns:1.45fr 1fr; }
-  @media (max-width:1100px){ .gImg{ grid-template-columns:1fr; } }
+  .banana-workspace{height:calc(100vh - 132px);min-height:640px;display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--hq-border);border-radius:8px;background:var(--hq-surface);box-shadow:0 18px 48px var(--hq-shadow)}
+  .banana-workspace-head{height:62px;flex:none;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:0 20px;border-bottom:1px solid var(--hq-border)}
+  .banana-workspace-body{--left-pane:50%;min-height:0;flex:1;display:grid;grid-template-columns:minmax(0,var(--left-pane)) 8px minmax(0,1fr)}
+  .banana-settings-pane,.banana-results-pane{min-width:0;overflow-y:auto;padding:20px}
+  .banana-results-pane{border:0!important;border-radius:0!important;background:transparent!important;position:static!important}
+  .workspace-divider{position:relative;width:8px;cursor:col-resize;background:var(--hq-surface-soft);border-left:1px solid var(--hq-border);border-right:1px solid var(--hq-border);outline:0;touch-action:none}
+  .workspace-divider:before{content:"";position:absolute;left:2px;top:50%;width:2px;height:42px;transform:translateY(-50%);border-radius:2px;background:rgba(148,164,187,.36);transition:.16s}
+  .workspace-divider:hover:before,.workspace-divider:focus-visible:before{background:#e7b24c;box-shadow:0 0 0 3px rgba(231,178,76,.1)}
+  .result-tabs{display:flex;align-items:center;gap:4px;margin-bottom:14px;border-bottom:1px solid var(--hq-border)}
+  .result-tab{height:38px;padding:0 12px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--hq-muted);font:inherit;font-size:13px;font-weight:700;cursor:pointer}
+  .result-tab:hover{color:var(--hq-text)}
+  .result-tab.on{color:#e7b24c;border-bottom-color:#e7b24c}
+  .result-tabs-all{margin-left:auto;color:var(--hq-muted);text-decoration:none;font-size:12px}
+  .result-tabs-all:hover{color:#e7b24c}
+  .result-view[hidden]{display:none!important}
+  .result-preview{position:relative;display:flex;align-items:center;justify-content:center;min-height:320px;max-height:calc(100vh - 300px);overflow:hidden;border:1px solid rgba(231,178,76,.18);border-radius:8px;background:var(--hq-surface-soft)}
+  #bResult{display:block!important;width:100%!important;height:100%!important;max-height:calc(100vh - 300px);aspect-ratio:auto!important;object-fit:contain!important}
+  .recent-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}
+  html[data-theme="light"] .hq-content[data-active="banana"] .banana-results-pane{
+    border-color:transparent!important;
+    background:transparent!important;
+    box-shadow:none!important;
+  }
   .recent-modal{position:fixed;inset:0;z-index:46;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(3,7,13,.74);backdrop-filter:blur(12px)}
   .recent-box{position:relative;width:min(92vw,860px);height:min(86vh,640px);border:1px solid rgba(231,178,76,.24);border-radius:14px;background:#050812;box-shadow:0 28px 80px rgba(0,0,0,.5);overflow:hidden;display:flex;align-items:center;justify-content:center}
   .recent-box img{max-width:100%;max-height:100%;object-fit:contain;display:block}
@@ -41,7 +62,14 @@
   .tpl-generate{height:38px;border:1px solid #e7b24c;border-radius:8px;background:#e7b24c;color:#1a1206;font:inherit;font-size:12.5px;font-weight:800;cursor:pointer}
   .tpl-generate:hover{background:#f4cd72}
   .tpl-apply:disabled,.tpl-generate:disabled{opacity:.55;cursor:wait}
-  @media (max-width:760px){.tpl-fields{grid-template-columns:1fr 1fr}.tpl-actions{grid-template-columns:1fr}}
+  @media (max-width:1100px){
+    body{overflow:auto}
+    .banana-workspace{height:auto;min-height:0;overflow:visible}
+    .banana-workspace-body{display:grid;grid-template-columns:minmax(0,1fr)}
+    .banana-settings-pane,.banana-results-pane{overflow:visible}
+    .workspace-divider{display:none}
+  }
+  @media (max-width:760px){.tpl-fields{grid-template-columns:1fr 1fr}.tpl-actions{grid-template-columns:1fr}.banana-workspace-head,.banana-settings-pane,.banana-results-pane{padding-left:14px;padding-right:14px}.recent-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 <link rel="stylesheet" href="theme.css?v=5873a2f4">
 </head>
@@ -49,10 +77,14 @@
 <div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
 
 <div class="hq-app"><div class="hq-content" data-active="banana">
-  <div class="gImg" style="display:grid; gap:18px; align-items:start;">
-    <div style="border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.58), rgba(12,18,32,.46)); padding:22px;">
-      <div style="display:flex; align-items:flex-start; justify-content:space-between;">
-        <div><h1 style="margin:0; font-size:21px; font-weight:700; display:flex; align-items:center; gap:10px;"><img src="../assets/icons/ic_banana.png" alt="" style="width:30px;height:30px;object-fit:contain;flex:none;">AI 作图</h1><p style="margin:7px 0 0; font-size:13px; color:#94a4bb;">用 AI 激发灵感，快速生成高质量图片</p></div>
+  <div class="banana-workspace">
+    <header class="banana-workspace-head">
+      <div><h1 style="margin:0; font-size:20px; font-weight:700; display:flex; align-items:center; gap:9px;"><img src="../assets/icons/ic_banana.png" alt="" style="width:28px;height:28px;object-fit:contain;flex:none;">图片生成</h1><p style="margin:4px 0 0; font-size:12.5px; color:#94a4bb;">设置参数并查看最新生成结果</p></div>
+      <div style="font-size:12px;color:#94a4bb;white-space:nowrap;">默认 50 / 50 · 可拖动调整</div>
+    </header>
+    <div class="banana-workspace-body" style="--left-pane:50%;">
+    <section class="banana-settings-pane">
+      <div style="display:flex; align-items:flex-start; justify-content:flex-end;">
         <button class="hv-gold" style="width:34px; height:34px; display:flex; align-items:center; justify-content:center; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:9px; cursor:pointer; transition:.16s;"><span style="display:flex; width:17px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg></span></button>
       </div>
 
@@ -153,11 +185,18 @@
 
       <button id="bGen" class="hv-lift" style="width:100%; height:54px; margin-top:22px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit;">立即生成（10 点）</button>
       <div id="bNote" style="text-align:center; font-size:11.5px; color:#5c6b82; margin-top:11px;">本次预计消耗 <span style="color:#e7b24c; font-family:'JetBrains Mono',monospace;">10</span> 点 · 失败自动退点</div>
-    </div>
+    </section>
 
-    <div class="image-result-panel" style="position:sticky; top:0; border:1px solid rgba(231,178,76,.16); border-radius:18px; background:linear-gradient(165deg, rgba(20,17,10,.6), rgba(12,16,26,.5)); padding:20px;">
-      <div style="font-size:16px; font-weight:600; margin-bottom:14px;">生成结果</div>
-      <div style="position:relative; border-radius:14px; overflow:hidden; border:1px solid rgba(231,178,76,.18);">
+    <div id="workspaceDivider" class="workspace-divider" role="separator" tabindex="0" aria-label="调整设置区和结果区宽度" aria-orientation="vertical" aria-valuemin="35" aria-valuemax="65" aria-valuenow="50"></div>
+
+    <section class="banana-results-pane image-result-panel">
+      <div class="result-tabs" role="tablist" aria-label="作品视图">
+        <button id="recentGeneratedTab" class="result-tab on" type="button" role="tab" aria-selected="true" aria-controls="recentGeneratedView">最近生成</button>
+        <button id="recentWorksTab" class="result-tab" type="button" role="tab" aria-selected="false" aria-controls="recentWorksView">最近作品</button>
+        <a class="result-tabs-all" href="assets.html">全部作品</a>
+      </div>
+      <div id="recentGeneratedView" class="result-view" role="tabpanel" aria-labelledby="recentGeneratedTab">
+      <div class="result-preview">
         <img id="bResult" src="../assets/meiye_poster.webp" alt="生成结果 · 美业海报" style="display:block; width:100%; aspect-ratio:9/13; object-fit:cover;">
         <div style="position:absolute; top:12px; right:12px; padding:5px 10px; background:rgba(7,11,19,.55); backdrop-filter:blur(6px); border-radius:8px; font-family:'JetBrains Mono',monospace; font-size:11.5px; color:#e7b24c;">9:16</div>
       </div>
@@ -169,13 +208,13 @@
         <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></span><span style="font-size:11px; color:#94a4bb;">下载</span></div>
         <a href="assets.html" class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s; text-decoration:none;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v6M9 14h6"/></svg></span><span style="font-size:11px; color:#94a4bb;">入库</span></a>
       </div>
-      <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 12px;">
-        <span style="font-size:15px; font-weight:600;">最近作品</span>
-        <a href="assets.html" style="display:flex; align-items:center; gap:4px; font-size:12.5px; color:#94a4bb; cursor:pointer; text-decoration:none;">全部作品 <span style="display:flex; width:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 18l6-6-6-6"/></svg></span></a>
       </div>
-      <div id="recentGrid" style="display:grid; grid-template-columns:repeat(3,1fr); gap:9px;">
+      <div id="recentWorksView" class="result-view" role="tabpanel" aria-labelledby="recentWorksTab" hidden>
+      <div id="recentGrid" class="recent-grid">
         <div style="grid-column:1/-1; padding:18px 0; text-align:center; font-size:12.5px; color:#5c6b82;">还没有作品，生成第一张吧</div>
       </div>
+      </div>
+    </section>
     </div>
   </div>
 </div></div>
@@ -190,6 +229,68 @@
   var collectHandoff=null;
   if(!gen) return;
   var ratio='9:16', engine='banana', quality='hd', count=1, bananaVariant='nb2', seedreamVariant='std';
+  function splitPercent(clientX,left,width){
+    return Math.max(35,Math.min(65,Math.round(((clientX-left)/width)*100)));
+  }
+  function setResultView(name){
+    var generated=name!=='works';
+    var generatedTab=document.getElementById('recentGeneratedTab');
+    var worksTab=document.getElementById('recentWorksTab');
+    var generatedView=document.getElementById('recentGeneratedView');
+    var worksView=document.getElementById('recentWorksView');
+    if(!generatedTab||!worksTab||!generatedView||!worksView) return;
+    generatedTab.classList.toggle('on',generated);
+    worksTab.classList.toggle('on',!generated);
+    generatedTab.setAttribute('aria-selected',generated?'true':'false');
+    worksTab.setAttribute('aria-selected',generated?'false':'true');
+    generatedView.hidden=!generated;
+    worksView.hidden=generated;
+    if(!generated) loadHistory();
+  }
+  function setWorkspaceSplit(value){
+    var body=document.querySelector('.banana-workspace-body');
+    var divider=document.getElementById('workspaceDivider');
+    if(!body||!divider) return;
+    var percent=Math.max(35,Math.min(65,Math.round(value)));
+    body.style.setProperty('--left-pane',percent+'%');
+    divider.setAttribute('aria-valuenow',String(percent));
+  }
+  function initWorkspaceDivider(){
+    var body=document.querySelector('.banana-workspace-body');
+    var divider=document.getElementById('workspaceDivider');
+    if(!body||!divider) return;
+    var dragging=false;
+    function updateFromPointer(e){
+      var rect=body.getBoundingClientRect();
+      if(rect.width) setWorkspaceSplit(splitPercent(e.clientX,rect.left,rect.width));
+    }
+    divider.addEventListener('pointerdown',function(e){
+      dragging=true;
+      try{ divider.setPointerCapture(e.pointerId); }catch(err){}
+      updateFromPointer(e);
+      e.preventDefault();
+    });
+    divider.addEventListener('pointermove',function(e){ if(dragging) updateFromPointer(e); });
+    divider.addEventListener('pointerup',function(e){
+      dragging=false;
+      try{ divider.releasePointerCapture(e.pointerId); }catch(err){}
+    });
+    divider.addEventListener('pointercancel',function(){ dragging=false; });
+    divider.addEventListener('keydown',function(e){
+      var current=parseInt(divider.getAttribute('aria-valuenow')||'50',10);
+      if(e.key==='ArrowLeft') current-=2;
+      else if(e.key==='ArrowRight') current+=2;
+      else if(e.key==='Home') current=50;
+      else return;
+      e.preventDefault();
+      setWorkspaceSplit(current);
+    });
+  }
+  var recentGeneratedTab=document.getElementById('recentGeneratedTab');
+  var recentWorksTab=document.getElementById('recentWorksTab');
+  if(recentGeneratedTab) recentGeneratedTab.onclick=function(){ setResultView('generated'); };
+  if(recentWorksTab) recentWorksTab.onclick=function(){ setResultView('works'); };
+  initWorkspaceDivider();
   // 质量基价(最终=基价×数量)。nb2/pro 是 Nano Banana 卡下的两个型号，**点数不同**，
   // 所以切换型号必须 updateCost()（Seedream 两档同价，没这个坑）。
   // ⚠ 必须与后端 points.IMAGE_BASE_COST 逐字一致（有回归测试守着），否则前端显示和实际扣点对不上。
@@ -486,6 +587,7 @@
     var us=(result&&result.urls&&result.urls.length)?result.urls:[result.url];
     res.src=us[0]+'?t='+Date.now(); lastResultUrl=us[0]; localStorage.setItem('hq_last_result',us[0]);
     renderThumbs(us);
+    setResultView('generated');
   }
   function renderThumbs(us){
     var box=document.getElementById('bThumbs');
@@ -844,10 +946,11 @@
   }
   function loadHistory(){
     var grid=document.getElementById('recentGrid'); if(!grid||!tok()) return;
-    fetch('/api/gen/history?limit=12',{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+    fetch('/api/gen/history?limit=9',{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
       if(!d.items||!d.items.length) return;
-      var urls=d.items.map(function(it){ return it.url; });
-      grid.innerHTML=d.items.map(function(it){ return '<img src="'+it.url+'" class="hv-lift" data-url="'+it.url+'" style="display:block; width:100%; aspect-ratio:3/4; border-radius:11px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">'; }).join('');
+      var items=d.items.slice(0,9);
+      var urls=items.map(function(it){ return it.url; });
+      grid.innerHTML=items.map(function(it){ return '<img src="'+it.url+'" class="hv-lift" data-url="'+it.url+'" style="display:block; width:100%; aspect-ratio:3/4; border-radius:8px; object-fit:cover; cursor:pointer; border:1px solid rgba(148,164,187,.12);">'; }).join('');
       grid.querySelectorAll('img').forEach(function(im,i){ im.onclick=function(){ openRecentLightbox(urls,i); }; });
     }).catch(function(){});
   }
