@@ -68,10 +68,10 @@ class BillingTests(_Base):
         self.assertEqual(video.cinematic_rate("open"), 5)
 
     def test_cost_is_seconds_times_rate(self):
-        self.assertEqual(points.cost_of("cinematic", self.v(duration=10)), 30)
-        self.assertEqual(points.cost_of("cinematic", self.v(duration=15)), 45)
-        self.assertEqual(points.cost_of("cinematic", self.v(cine_mode="duo", avatar_ids=[1, 2],
-                                                            duration=15)), 75)
+        # 动作模仿：时长锁死自适应 —— 参考片段 8.2s → 成片 9s
+        self.assertEqual(points.cost_of("cinematic", self.v()), 27)                       # 9 × 3
+        self.assertEqual(points.cost_of("cinematic",
+                                        self.v(cine_mode="duo", avatar_ids=[1, 2])), 45)  # 9 × 5
         self.assertEqual(points.cost_of("cinematic", self.v(cine_mode="open", avatar_ids=[1],
                                                             prompt="海边跳舞", duration=12)), 60)
 
@@ -89,7 +89,7 @@ class BillingTests(_Base):
     def test_the_frontend_estimate_matches_the_backend(self):
         """前端预估的点数和后端扣的必须一致，否则就是「界面说 27 点、实际扣 45 点」。"""
         self.assertIn("motion:{label:'动作模仿',    avatars:1, exact:true,  fixed:true,  "
-                      "needRef:true,  durations:['auto',10,15],       rate:3}", HTML)
+                      "needRef:true,  durations:['auto'],            rate:3}", HTML)
         self.assertIn("rate:5}", HTML)
         self.assertIn("function cineCost(){ return cineSeconds()*cineCfg().rate; }", HTML)
         # 秒数的算法也要一致：向上取整、夹进 4~15、无参考视频回落 10
@@ -106,26 +106,36 @@ class FixedPromptTests(_Base):
             self.assertEqual(body["prompt"], video.CINEMATIC_FIXED_PROMPTS[mode])
             self.assertNotIn("忽略我", body["prompt"])
 
+    def test_the_identity_guard_is_untouched(self):
+        """#2173 发出去的是「那句中文 + 这段英文约束」，它带着 "from the reference video"
+        也照样过了 —— 所以约束【不是】触发点，别顺手把它一起重写了（我一度想改，那是错的：
+        会把唯一一个已知能过的配置也改掉）。"""
+        self.assertIn("from the reference video", video.CINEMATIC_IDENTITY_GUARD)
+        self.assertIn("CRITICAL", video.CINEMATIC_IDENTITY_GUARD)
+
     def test_the_identity_guard_is_not_appended_twice(self):
         """gen_cinematic 会统一拼身份约束。固定提示词里再带一份就是拼两遍。"""
         for text in video.CINEMATIC_FIXED_PROMPTS.values():
             self.assertNotIn(video.CINEMATIC_IDENTITY_GUARD, text)
 
-    def test_the_single_person_prompt_is_the_one_from_the_old_line_one(self):
-        # 单人动作模仿要和拆分前的效果一致 —— 用的就是原线路一那段写死的提示词
-        self.assertEqual(video.CINEMATIC_FIXED_PROMPTS["motion"], video.MOTION_PROMPT_BASE)
-        self.assertIn("not the reference person", video.MOTION_PROMPT_BASE)
+    def test_the_single_person_prompt_is_the_one_that_actually_passed_moderation(self):
+        """照抄 #2173 —— 目前唯一一个已知能过 HeyGen 审核的配置（成片 383s）。
 
-    def test_the_duo_prompt_is_the_exact_text_kongli_gave(self):
-        """整段逐字比对。这段提示词是调出来的 —— 谁顺手「改通顺」一个词，成片就可能变样，
-        而那种变化在代码 review 里根本看不出来。"""
-        self.assertEqual(
-            video.DUO_MOTION_PROMPT_BASE,
-            "Use these two avatars to replace the two people in the reference video and imitate "
-            "their movements. Keep the actions, choreography, timing, scene, camera angle, framing, "
-            "and composition consistent with the reference video. Only replace the people and do "
-            "not change anything else."
-        )
+        写死的英文版被审核拦了 5/6：它里面的 "not the reference person" 是换脸措辞。
+        """
+        self.assertEqual(video.CINEMATIC_FIXED_PROMPTS["motion"], "用这个人物形象模仿视频里面的动作")
+
+    def test_no_face_swap_wording_survives_anywhere(self):
+        """回归：这些英文措辞被 HeyGen 的审核模型读得懂，是它拦我们的直接原因。"""
+        for text in list(video.CINEMATIC_FIXED_PROMPTS.values()):
+            low = text.lower()
+            for bad in ("replace the", "not the reference person", "swap"):
+                self.assertNotIn(bad, low, "提示词里还留着换脸措辞：%s" % bad)
+
+    def test_the_duo_prompt_follows_the_same_chinese_pattern(self):
+        """双人的英文版被审核拦了 2/2（"replace the two people in the reference video" —— 
+        字面就是换脸）。改成和单人同一路子的中文。⚠️ 尚未实测。"""
+        self.assertEqual(video.DUO_MOTION_PROMPT_BASE, "用这两个人物形象模仿视频里面的动作")
 
     def test_open_mode_still_requires_the_user_to_write_one(self):
         with self.assertRaises(ValueError):
@@ -206,22 +216,21 @@ class ReferenceMaterialTests(_Base):
 
 
 class DurationTests(_Base):
-    def test_motion_modes_only_offer_auto_10_and_15(self):
-        for d in (10, 15):
-            self.assertEqual(self.v(duration=d)["duration"], d)
-        for bad in (5, 12, 4):
-            with self.assertRaises(ValueError):
-                self.v(duration=bad)
+    def test_motion_ignores_whatever_duration_the_client_sends(self):
+        """动作模仿的时长【锁死】成自适应（跟随参考视频）—— 界面上没有这个选项了，
+        客户端硬传一个值也不认。参考片段 8.2s → 成片 9s。"""
+        for sent in (10, 15, 5, "auto", None):
+            self.assertEqual(self.v(duration=sent)["duration"], 9)
 
     def test_open_mode_keeps_the_full_range(self):
         for d in (4, 5, 12, 15):
             self.assertEqual(self.v(cine_mode="open", prompt="跳舞", duration=d)["duration"], d)
 
-    def test_out_of_heygens_range_is_rejected_everywhere(self):
-        for mode in ("motion", "open"):
-            for bad in (3, 16):
-                with self.assertRaises(ValueError):
-                    self.v(cine_mode=mode, prompt="跳舞", duration=bad)
+    def test_open_mode_still_rejects_out_of_range(self):
+        """开放式仍然给用户选时长，超出 HeyGen 的 4~15 秒要拒（它会直接 400）。"""
+        for bad in (3, 16):
+            with self.assertRaises(ValueError):
+                self.v(cine_mode="open", prompt="跳舞", duration=bad)
 
 
 class UiTests(unittest.TestCase):
@@ -242,10 +251,18 @@ class UiTests(unittest.TestCase):
         self.assertIn("if(!cfg.fixed) body.prompt=prompt", HTML,
                       "提示词写死的玩法不该发 prompt —— 发了后端也不看")
 
-    def test_the_ratio_selector_is_hidden_for_the_fixed_prompt_modes(self):
-        """动作模仿不给选比例：成片比例跟着参考视频走，让用户选只会把人挤变形。"""
-        self.assertIn("$('cineRatioBox').classList.toggle('hidden', cfg.fixed)", HTML)
+    def test_all_params_are_locked_for_the_fixed_prompt_modes(self):
+        """动作模仿【整个参数区】都藏起来：分辨率/时长/比例一样都不给选，
+        只留一行说明。锁死的形状照抄 #2173 —— 唯一已知能过 HeyGen 审核的配置。"""
+        self.assertIn("$('cineParamGrid').classList.toggle('hidden', cfg.fixed)", HTML)
+        self.assertIn("$('cineFixedParams').classList.toggle('hidden', !cfg.fixed)", HTML)
+        self.assertIn("selectedCineResolution='1080p'", HTML)   # 和后端 CINEMATIC_MOTION_RESOLUTION 对齐
+        self.assertIn("selectedCineDuration='auto'", HTML)
+        # 比例仍然由参考视频的宽高算出来（#2173 的参考是 576x1024 竖版 → 9:16）
         self.assertIn("selectedCineRatio = r>1.15 ? '16:9' : (r<0.87 ? '9:16' : '1:1')", HTML)
+
+    def test_the_locked_resolution_matches_the_backend(self):
+        self.assertEqual(video.CINEMATIC_MOTION_RESOLUTION, "1080p")
 
     def test_switching_modes_trims_an_oversized_selection(self):
         """双人选了 2 个形象 → 切回单人，不裁掉就会带着 2 个提交，后端直接拒。"""

@@ -55,6 +55,7 @@
      max-height 由 JS 量出来（见 limitAvatarGridRows）：卡片高度 = 展示框 + 文字区，
      而展示框的宽度随网格列宽走，所以行高会随窗口宽度变，写死 px 一缩放就切在半张卡上。
      padding-right 给滚动条留位，否则它会压在最右一列的卡片上。 */
+  .pill-fixed{display:inline-block;padding:5px 10px;border-radius:8px;background:rgba(231,178,76,.1);border:1px solid rgba(231,178,76,.28);color:#e7b24c;font-size:11.5px;font-weight:700}
   .avatar-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px;overflow-y:auto;padding-right:4px}
   .avatar-grid::-webkit-scrollbar{width:7px}
   .avatar-grid::-webkit-scrollbar-thumb{background:rgba(148,164,187,.18);border-radius:99px}
@@ -450,9 +451,16 @@
         </div>
 
         <div class="motion-preset-panel">
-          <div class="video-parameter-grid">
-            <!-- 动作模仿不给比例选项：成片比例跟着参考视频走（选错了会把人挤变形） -->
-            <div id="cineRatioBox" class="hidden">
+          <!-- 动作模仿：参数全部锁死成 #2173 那一条的形状（目前唯一已知能过 HeyGen 审核的配置）。
+               用户只能换形象和参考视频 —— 分辨率、时长、比例都不给选。 -->
+          <div id="cineFixedParams" class="hidden" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+            <span class="pill-fixed">分辨率 1080p</span>
+            <span class="pill-fixed">时长跟随参考视频</span>
+            <span class="pill-fixed">比例跟随参考视频</span>
+            <span class="faint" style="font-size:11.5px;">这些参数已固定，以保证出片成功率</span>
+          </div>
+          <div id="cineParamGrid" class="video-parameter-grid">
+            <div id="cineRatioBox">
               <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
               <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button class="on" data-cine-ratio="9:16">9:16</button><button data-cine-ratio="16:9">16:9</button><button data-cine-ratio="1:1">1:1</button></div>
             </div>
@@ -463,9 +471,9 @@
             <div style="grid-column:1/-1;">
               <div class="faint" style="font-size:12px;margin-bottom:8px;">成片时长</div>
               <div id="cineDurationSeg" class="seg" style="grid-template-columns:repeat(5,1fr);"><button class="on" data-cine-duration="auto">自适应</button><button data-cine-duration="5">5 秒</button><button data-cine-duration="10">10 秒</button><button data-cine-duration="12">12 秒</button><button data-cine-duration="15">15 秒</button></div>
-              <div id="cineDurationHint" class="faint" style="font-size:11.5px;margin-top:8px;"></div>
             </div>
           </div>
+          <div id="cineDurationHint" class="faint" style="font-size:11.5px;margin-top:8px;"></div>
         </div>
 
         <button id="cineGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:20px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
@@ -680,12 +688,14 @@
   // 电影化身的三个玩法。这张表是前端的唯一事实来源 —— 每条都在后端
   // validate_cinematic_payload 里有一模一样的一份（前端只管好用，后端才管好安全）。
   //   avatars    正好要几个形象（open 是上限，motion/duo 是等于）
-  //   fixed      提示词写死：整个输入区都不显示，也不往后端发 prompt
+  //   fixed      提示词写死 + 参数锁死（分辨率 1080p、时长/比例跟随参考视频）——
+  //              整个参数区都不显示，也不往后端发 prompt/resolution/duration。
+  //              锁死的形状照抄 #2173，那是目前唯一已知能过 HeyGen 审核的配置。
   //   needRef    参考视频必填
-  //   durations  可选时长；rate 每秒点数
+  //   durations  可选时长（只有开放式还用得上）；rate 每秒点数
   var CINE_MODES={
-    motion:{label:'动作模仿',    avatars:1, exact:true,  fixed:true,  needRef:true,  durations:['auto',10,15],       rate:3},
-    duo:   {label:'双人动作模仿', avatars:2, exact:true,  fixed:true,  needRef:true,  durations:['auto',10,15],       rate:5},
+    motion:{label:'动作模仿',    avatars:1, exact:true,  fixed:true,  needRef:true,  durations:['auto'],            rate:3},
+    duo:   {label:'双人动作模仿', avatars:2, exact:true,  fixed:true,  needRef:true,  durations:['auto'],            rate:5},
     open:  {label:'开放式生成',  avatars:3, exact:false, fixed:false, needRef:false, durations:['auto',5,10,12,15],  rate:5}
   };
   var cineMode='motion';
@@ -1520,10 +1530,15 @@
                                         : ('选择形象（可多选，最多 '+cfg.avatars+' 个）');
     // 提示词写死的玩法：整块藏起来。藏了还发 prompt 也没用——后端不看客户端传的提示词。
     if($('cinePromptPanel')) $('cinePromptPanel').classList.toggle('hidden', cfg.fixed);
-    // 比例只在开放式给选：动作模仿的成片比例跟着参考视频走，让用户选反而会把人挤变形
-    if($('cineRatioBox')) $('cineRatioBox').classList.toggle('hidden', cfg.fixed);
-    // 自动润色藏在提示词区里 —— 提示词都写死了（含身份约束），再让 HeyGen 去改写它，
-    // 等于让它改写「不许抄参考视频里那个人的脸」这句话。后端对这两个玩法也一律强制关。
+    // 动作模仿：参数【全部锁死】成 #2173 那一条的形状（目前唯一已知能过 HeyGen 审核的配置）。
+    // 分辨率 1080p、时长跟随参考视频、比例跟随参考视频 —— 三样都不给选，只留一行说明。
+    // 后端也不认客户端传的值（validate_cinematic_payload），前端藏起来只是别让用户白填。
+    if($('cineParamGrid')) $('cineParamGrid').classList.toggle('hidden', cfg.fixed);
+    if($('cineFixedParams')) $('cineFixedParams').classList.toggle('hidden', !cfg.fixed);
+    if(cfg.fixed){
+      selectedCineResolution='1080p';   // 和后端 CINEMATIC_MOTION_RESOLUTION 对齐
+      selectedCineDuration='auto';      // 跟随参考视频（#2173：参考 10.9s → 成片 11s）
+    }
     if($('cineRefLabel')) $('cineRefLabel').textContent = cfg.needRef ? '参考视频（必传）' : '参考素材（选填）';
     if($('cineRefHint')) $('cineRefHint').textContent = cfg.needRef
       ? '成片会照着它的动作、节奏和运镜演。只收一个视频，不看参考图。'
@@ -1535,20 +1550,13 @@
     if(cineRefVideos.length>cineMaxRefVideos()) cineRefVideos.length=cineMaxRefVideos();
     renderCineRefs();
     syncCineRefProbe();
-    // 时长档位：动作模仿只有 自适应/10/15
-    document.querySelectorAll('[data-cine-duration]').forEach(function(b){
-      var v=b.dataset.cineDuration;
-      var ok=cfg.durations.some(function(d){return String(d)===v;});
-      b.classList.toggle('hidden', !ok);
-      if(!ok && b.classList.contains('on')) b.classList.remove('on');
-    });
-    var seg=$('cineDurationSeg');
-    if(seg) seg.style.gridTemplateColumns='repeat('+cfg.durations.length+',1fr)';
-    // 当前选的时长在新玩法里没有了（例如 12 秒 → 动作模仿）：回到自适应
-    if(!cfg.durations.some(function(d){return String(d)===String(selectedCineDuration);})){
-      selectedCineDuration='auto';
+    // 开放式的时长档位（动作模仿整块都藏了，不用管）
+    if(!cfg.fixed){
       document.querySelectorAll('[data-cine-duration]').forEach(function(b){
-        b.classList.toggle('on', b.dataset.cineDuration==='auto');
+        b.classList.toggle('on', String(b.dataset.cineDuration)===String(selectedCineDuration));
+      });
+      document.querySelectorAll('[data-cine-resolution]').forEach(function(b){
+        b.classList.toggle('on', b.dataset.cineResolution===selectedCineResolution);
       });
     }
     syncCineSelection();

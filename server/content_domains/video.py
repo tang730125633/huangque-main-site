@@ -1112,24 +1112,43 @@ CINEMATIC_IDENTITY_GUARD = (
     "no extra people beyond the given avatars."
 )
 
-# 单人动作模仿的固定提示词（用户看不到、也改不了）。原线路一写死的就是这段。
-# _BASE 不含身份约束 —— 约束由 gen_cinematic 统一拼，写在这里会拼两遍。
-MOTION_PROMPT_BASE = (
-    "Create a realistic cinematic vertical video of the same person from the avatar photo. "
-    "Follow the uploaded reference video ONLY for body movement, pose, timing, gestures, "
-    "facial expression rhythm, framing and camera motion. The output must look like the avatar "
-    "person performing the reference motion, not the reference person."
-)
+# ============ 动作模仿的固定提示词：照抄线上跑通的那一条 ============
+#
+# 2026-07-13：HeyGen 的内容审核在拦我们的动作模仿。它的网页上写
+#     "Your content was flagged by our moderation system. Please try different images or
+#      prompts. No credits charged."
+# 而【API 一个字都不给】（v1/video_status.get 的 error 是 null，v3/videos 只有 4 个字段）。
+#
+# 把「真的被 HeyGen 判失败」和「我们自己的隧道上传超时」分开统计之后，数据很干净：
+#
+#     玩法             提示词        HeyGen 判失败   成片
+#     单人动作模仿      写死的英文          5          1
+#     双人动作模仿      写死的英文          2          0
+#     开放式生成        用户写的中文        0          5
+#     旧版(开放式)      用户写的中文        1         10
+#
+# 被判失败的【几乎全是写死英文提示词的动作模仿】；用户自己写中文的开放式一条都没被判过失败
+# （它们的失败全是参考视频上传撞 240s 硬超时，压根没提交到 HeyGen）。
+#
+# 英文那两段里的
+#     "The output must look like the avatar person ... not the reference person"
+#     "Use these two avatars to replace the two people in the reference video"
+# 是换脸/深度伪造的教科书措辞。审核模型是英文的 —— 中文对它半透明，英文它读得懂。
+#
+# 所以这里【原样照抄】线上跑通的 #2173：
+#     提示词  「用这个人物形象模仿视频里面的动作」（用户写的，成片 383s）
+#     分辨率  1080p        比例 9:16（跟随参考视频）    时长 11s（自适应，参考视频 10.9s）
+#     润色    关           参考视频 576x1024 竖版
+#
+# ⚠️ 身份约束（CINEMATIC_IDENTITY_GUARD）【不要改】：#2173 发出去的是「这句中文 + 那段英文
+# 约束」，它带着 "from the reference video" 也照样过了。所以约束不是触发点，正文才是。
+# 我一度想连约束一起重写，那是错的 —— 会把唯一一个已知能过的配置也改掉。
+
+MOTION_PROMPT_BASE = "用这个人物形象模仿视频里面的动作"
 MOTION_PROMPT = MOTION_PROMPT_BASE + CINEMATIC_IDENTITY_GUARD
 
-# 双人动作模仿的固定提示词（kongli 给的正式文案，2026-07-12）。用户看不到、也改不了。
-# ⚠️ 逐字照放，别顺手「改通顺」——这段是调出来的，动一个词成片就可能变样。
-DUO_MOTION_PROMPT_BASE = (
-    "Use these two avatars to replace the two people in the reference video and imitate their "
-    "movements. Keep the actions, choreography, timing, scene, camera angle, framing, and "
-    "composition consistent with the reference video. Only replace the people and do not change "
-    "anything else."
-)
+# 双人：同一路子的中文。⚠️ 尚未实测（双人的英文版是 0 成 2 败）。
+DUO_MOTION_PROMPT_BASE = "用这两个人物形象模仿视频里面的动作"
 DUO_MOTION_PROMPT = DUO_MOTION_PROMPT_BASE + CINEMATIC_IDENTITY_GUARD
 
 
@@ -2479,7 +2498,9 @@ CINEMATIC_DURATION_RANGE = (4, 15)   # HeyGen: 4~15 秒
 CINEMATIC_AUTO_DURATION = 10         # 选了「自适应」但没传参考视频时的回落值
 CINEMATIC_MODES = ("motion", "duo", "open")
 # 动作模仿只给三档：自适应 / 10 秒 / 15 秒（开放式仍可在 4~15 内任选）
-CINEMATIC_MOTION_DURATIONS = (10, 15)
+# 动作模仿锁死的参数（照抄 #2173 —— 目前唯一已知能过 HeyGen 审核的配置）。
+# 用户只能换形象和参考视频；分辨率/时长/润色都不给选，也不认客户端传的值。
+CINEMATIC_MOTION_RESOLUTION = "1080p"
 
 # 每秒点数，按玩法分档。HeyGen 那边是扁平价（$7/条，与时长无关），我们按时长卖 —— 这是产品定价，不是成本。
 # ⚠️ 改这里等于改价：cost_of() 直接乘这个数。
@@ -2607,27 +2628,36 @@ def validate_cinematic_payload(body, username=None):
         if len(prompt) > CINEMATIC_PROMPT_MAX:
             raise ValueError("画面描述不能超过 %d 字" % CINEMATIC_PROMPT_MAX)
 
-    resolution = (body.get("resolution") or "720p").strip().lower()
-    if resolution not in CINEMATIC_RESOLUTIONS:
-        raise ValueError("分辨率仅支持 720p、1080p")
+    if cine_mode in CINEMATIC_FIXED_PROMPTS:
+        # 动作模仿【锁死】成 #2173 那一条的形状 —— 它是目前唯一一个已知能过 HeyGen 审核的配置。
+        # 用户只能换两样东西：形象、参考视频。分辨率/时长/润色一律不接受客户端的值。
+        #     分辨率 1080p         （#2173 就是 1080p；不再给 720p 的选项）
+        #     时长   自适应        （跟随参考视频：#2173 的参考片段 10.9s → 成片 11s）
+        #     润色   关            （下面统一置 False）
+        #     比例   跟随参考视频   （#2173 的参考是 576x1024 竖版 → 9:16；前端按宽高算好传上来。
+        #                           这里仍然校验它是合法值，但不给用户在界面上选）
+        resolution = CINEMATIC_MOTION_RESOLUTION
+        duration = "auto"
+    else:
+        resolution = (body.get("resolution") or "720p").strip().lower()
+        if resolution not in CINEMATIC_RESOLUTIONS:
+            raise ValueError("分辨率仅支持 720p、1080p")
+
+        lo, hi = CINEMATIC_DURATION_RANGE
+        raw = str(body.get("duration") or "").strip().lower()
+        if raw in ("", "auto"):
+            duration = "auto"
+        else:
+            try:
+                duration = int(raw)
+            except Exception:
+                raise ValueError("时长必须是 %d~%d 之间的整数，或填 auto 跟随参考视频" % (lo, hi))
+            if not lo <= duration <= hi:
+                raise ValueError("时长仅支持 %d~%d 秒" % (lo, hi))
+
     ratio = (body.get("ratio") or "9:16").strip()
     if ratio not in _HEYGEN_CINEMATIC_RATIOS:
         raise ValueError("画面比例仅支持 9:16、16:9、1:1")
-
-    lo, hi = CINEMATIC_DURATION_RANGE
-    raw = str(body.get("duration") or "").strip().lower()
-    if raw in ("", "auto"):
-        duration = "auto"
-    else:
-        try:
-            duration = int(raw)
-        except Exception:
-            raise ValueError("时长必须是 %d~%d 之间的整数，或填 auto 跟随参考视频" % (lo, hi))
-        if not lo <= duration <= hi:
-            raise ValueError("时长仅支持 %d~%d 秒" % (lo, hi))
-        if cine_mode in CINEMATIC_FIXED_PROMPTS and duration not in CINEMATIC_MOTION_DURATIONS:
-            raise ValueError("动作模仿的时长仅支持自适应、%s"
-                             % "、".join("%d 秒" % d for d in CINEMATIC_MOTION_DURATIONS))
 
     # 参考素材。reference_video_data（单个）是老字段，合进 reference_videos 里，别让老前端 400。
     max_videos, max_images = cinematic_ref_budget(len(ids))
