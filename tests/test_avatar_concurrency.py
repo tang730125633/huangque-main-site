@@ -89,11 +89,31 @@ class SubmitRetryTests(unittest.TestCase):
 
     def test_video_submits_are_NOT_given_this_retry(self):
         """⚠️ 最要紧的一条。视频提交即计费（$7/条），重发 = 同一条片子付两次。
-        _heygen_retry_net 只能出现在建形象里 —— 建形象免费，重发不花钱。"""
+
+        判定必须【按行】，不能按整个函数：gen_cinematic 里的【素材上传】是可以重试的
+        （不计费，最坏在 HeyGen 上多留一个孤儿 asset），只有【提交】那一句不许。
+        原来这条断言禁的是整个函数，把合法的上传重试也一起禁了 —— 粒度太粗。
+        """
         for fn in ("generate_heygen_video_direct", "gen_cinematic", "generate_heygen_video"):
             block = VIDEO_SRC.split("def %s" % fn)[1].split("\ndef ")[0]
-            self.assertNotIn("_heygen_retry_net", block,
-                             "%s 用了 _heygen_retry_net —— 会把同一条视频付两次钱" % fn)
+            for line in block.splitlines():
+                if "_heygen_create_cinematic_video" in line or "_heygen_create_video" in line:
+                    self.assertNotIn("_heygen_retry_net", line,
+                                     "%s 的【提交】被包进了网络重试 —— 同一条视频会付两次钱" % fn)
+
+    def test_only_uncharged_calls_may_be_wrapped_in_the_network_retry(self):
+        """能被 _heygen_retry_net 包住的，只有这几种【不计费】的调用。
+        新增一种就得在这里登记 —— 逼自己先回答一句「它计费吗」。"""
+        allowed = ("_heygen_upload_asset",         # 素材上传：免费
+                   "_heygen_create_photo_avatar")  # 建形象：实测免费（2026-07-12，连建 6 个，两个池 0 扣减）
+        for line in VIDEO_SRC.splitlines():
+            t = line.strip()
+            if "_heygen_retry_net(" not in t or t.startswith(("#", "def ", '"""')):
+                continue
+            if t.endswith("_heygen_retry_net("):   # 调用被换行拆开了，下一行才是被包的东西
+                continue
+            self.assertTrue(any(a in t for a in allowed),
+                            "这行给一个【未登记】的调用加了网络重试，先确认它不计费：%s" % t)
 
     def test_the_reason_it_is_safe_is_written_down(self):
         """下一个人一定会问「凭什么这里能重发」。答案得在代码里，不能只在 PR 描述里。"""

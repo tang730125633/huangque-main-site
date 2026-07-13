@@ -824,6 +824,13 @@ def _heygen_request_json(method, path, body=None, headers=None, timeout=180, dir
     except Exception:
         raise RuntimeError("HeyGen返回解析失败: %s" % raw[:300].decode("utf-8", "replace"))
 
+# 素材上传的超时。原来写死 240s —— 线上 7 条电影化身死在这里（占失败的一半），报错清一色
+# "The read operation timed out"，耗时 241~248s，也就是【正好撞上这个 240s】。
+# 出境隧道被整形在 ~1.1 MB/s，一个 4MB 的参考视频加上握手和抖动就能擦到 240s。
+# 素材上传【不计费】（和建形象一样），所以放宽超时不会烧钱，只会多等。
+HEYGEN_UPLOAD_TIMEOUT = int(os.environ.get("HEYGEN_UPLOAD_TIMEOUT", "600") or 600)
+
+
 def _heygen_upload_asset(file_path, direct=False):
     path = pathlib.Path(file_path)
     if not path.is_file():
@@ -832,7 +839,7 @@ def _heygen_upload_asset(file_path, direct=False):
     if direct:
         # HeyGen 素材上传端点收「raw 文件字节 + 文件 mime」(同口播直连 #405 的 /v1/asset)；
         # 发 multipart/form-data 会被 HeyGen 判 "Content type not supported application/octet-stream" 400。
-        d = _heygen_direct_req("POST", _HEYGEN_DIRECT_UPLOAD + "/v1/asset", path.read_bytes(), mime, timeout=240)
+        d = _heygen_direct_req("POST", _HEYGEN_DIRECT_UPLOAD + "/v1/asset", path.read_bytes(), mime, timeout=HEYGEN_UPLOAD_TIMEOUT)
         node = d.get("data") or {}
         asset_id = str(node.get("asset_id") or node.get("id") or "").strip()
         if not asset_id:
@@ -850,7 +857,7 @@ def _heygen_upload_asset(file_path, direct=False):
     data = _heygen_request_json("POST", "/assets", body, {
         "Content-Type": "multipart/form-data; boundary=%s" % boundary,
         "Content-Length": str(len(body)),
-    }, timeout=240, direct=direct)
+    }, timeout=HEYGEN_UPLOAD_TIMEOUT, direct=direct)
     asset_id = ((data.get("data") or {}).get("asset_id") or "").strip()
     if not asset_id:
         raise RuntimeError("HeyGen素材上传未返回asset_id: %s" % json.dumps(data, ensure_ascii=False)[:500])
@@ -1222,7 +1229,8 @@ HEYGEN_NET_RETRIES = int(os.environ.get("HEYGEN_NET_RETRIES", "4") or 4)
 
 
 def _heygen_retry_net(fn, what=""):
-    """对【建形象】的提交重试瞬时网络错误。⚠️ 只能用在建形象上，别往视频提交上抄。
+    """对【不计费】的调用重试瞬时网络错误：建形象、素材上传。
+    ⚠️ 绝不能往【视频提交】上抄。
 
     视频的提交 POST 绝不重发（见 HeyGenBilledError）：HeyGen 提交即计费，重发 = 同一条片子
     付两次 $7。建形象不一样 —— **实测免费**（2026-07-12：连建 6 个形象，plan_credit 和 api
@@ -1455,6 +1463,18 @@ def _heygen_direct_req(method, url, body=None, ctype="application/json", timeout
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace").replace("\n", " ")[:400]
         raise RuntimeError("HeyGen直连失败: HTTP %s %s" % (e.code, detail)) from e
+    except OSError as e:
+        # URLError / TimeoutError(读超时) / ssl.SSLError / ConnectionError —— 传输层瞬时错误。
+        # 原来这里【没有】这个分支，网络错误裸抛成 socket.timeout，于是 _heygen_retry_net
+        # （只认 HeyGenNetworkError）根本接不住 —— 重试形同虚设。线上那 7 条参考视频上传失败
+        # 报的就是裸的 "The read operation timed out"，一次都没重试过。
+        #
+        # 归成 HeyGenNetworkError 之后，行为和 #607 给 _heygen_request_json 做的一致：
+        # 【不计费】的调用（素材上传、建形象、轮询、下载）由调用方显式重试；
+        # 【计费】的视频提交仍然穿透 → HeyGenBilledError，绝不重发。
+        detail = str(getattr(e, "reason", e))[:300]
+        print("[heygen] FAIL %s %s -> network %s" % (method, url, detail), flush=True)
+        raise HeyGenNetworkError("HeyGen直连网络失败: %s" % detail) from e
 
 def _download_video_file_direct(url, prefix="vid"):
     if not url:
@@ -2760,7 +2780,15 @@ def gen_cinematic(payload):
         update_video_asset_phase(job_id, "uploading_reference_asset")
         for f in video_files + image_files:
             if f:
-                reference_asset_ids.append(_heygen_upload_asset(_resolve_out_file(f), direct=True))
+                # 素材上传【不计费】，所以重发是安全的 —— 最坏是在 HeyGen 上多留一个孤儿 asset，
+                # 不是钱。这和视频【提交】完全不同：提交即扣 $7，重发 = 同一条片子付两次
+                # （见 HeyGenBilledError）。所以重试只包这一句，绝不能把下面的提交也裹进来。
+                #
+                # 线上 7 条电影化身死在这里（占失败的一半）：出境隧道一抖，上传就撞死线，
+                # 任务在提交到 HeyGen 之前就挂了 —— 用户看到的却是「生成失败」。
+                reference_asset_ids.append(_heygen_retry_net(
+                    lambda f=f: _heygen_upload_asset(_resolve_out_file(f), direct=True),
+                    "参考素材上传"))
     reference_asset_id = reference_asset_ids[0] if reference_asset_ids else None   # 资产表用
 
     update_video_asset_phase(job_id, "creating_cinematic_video", reference_asset_id=reference_asset_id)
