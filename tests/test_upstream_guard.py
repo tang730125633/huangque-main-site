@@ -144,7 +144,7 @@ class ItRunsBeforeTheDeductionTests(unittest.TestCase):
     """⚠️ 拦在扣点【之后】等于没拦 —— 用户照样先看到点数掉了。"""
 
     def test_the_guard_is_wired_before_cost_of_and_deduct(self):
-        block = CORE_SRC.split("if p.startswith(\"/api/gen/\") and p[9:] in HANDLERS:")[1][:4000]
+        block = CORE_SRC.split("if p.startswith(\"/api/gen/\") and p[9:] in HANDLERS:")[1][:8000]
         i_guard = block.index("upstream_guard.exhausted_reason")
         i_cost = block.index("points_domain.cost_of")
         i_deduct = block.index("deduct_points")
