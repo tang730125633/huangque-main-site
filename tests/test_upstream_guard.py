@@ -48,6 +48,9 @@ WAVESPEED_NO_MONEY = ('WaveSpeed接口失败: HTTP 400 {"code":400,"message":"In
                       'Please top up your account to continue."}')
 RUNNINGHUB_NO_MONEY = "[812] 企业版余额不足，请充值"
 NOT_MONEY = "HeyGen视频生成超时"
+# 上游是聚合中转，渠道动态上下线 —— 这是它「当前没有支持这个比例的渠道」的说法
+NO_CHANNEL = "该视频渠道当前仅部分比例可用，请优先尝试 16:9（横屏）"
+NO_CHANNEL2 = '视频接口失败: HTTP 404 {"code":404,"message":"当前模型暂无支持该视频参数的可用渠道"}'
 
 
 def _seed(jobs):
@@ -152,6 +155,63 @@ class ItRunsBeforeTheDeductionTests(unittest.TestCase):
         """503 = 暂时不可用（等会儿再来），不是 500（我们的代码炸了）。
         前端会把 detail 原样显示给用户，所以那句话必须是人话。"""
         self.assertIn('self._send(503, {"detail": blocked, "code": "upstream_exhausted"', CORE_SRC)
+
+
+class RatioUnavailableTests(unittest.TestCase):
+    """「这个比例当前没有可用渠道」—— 113 条失败。
+
+    ⚠️ 这【不是】一个静态的支持矩阵。别去前端写死「果肉只支持 16:9」——
+    线上证据：grok + 9:16 + 720p 有 5 成 0 败，而另一批 grok 9:16 却 27 条全挂。
+    同一个比例，不同时间，结果不同。写死矩阵会把本来能用的组合也禁掉。
+    """
+
+    def test_a_dead_ratio_is_blocked(self):
+        _seed([("xiaole_video", '{"channel":"grok","ratio":"9:16"}', "error", NO_CHANNEL, 300)] * 2)
+        r = guard.exhausted_reason("xiaole_video", {"channel": "grok", "ratio": "9:16"})
+        self.assertIsNotNone(r)
+        self.assertIn("9:16", r)
+        self.assertIn("未扣点", r)
+
+    def test_the_other_ratios_of_the_same_channel_still_work(self):
+        """果肉的 9:16 没渠道，不代表 16:9 也没有 —— 别把用户唯一能用的比例也禁了。"""
+        _seed([("xiaole_video", '{"channel":"grok","ratio":"9:16"}', "error", NO_CHANNEL, 300)] * 2)
+        self.assertIsNone(guard.exhausted_reason("xiaole_video", {"channel": "grok", "ratio": "16:9"}))
+
+    def test_a_success_on_the_same_ratio_lifts_it(self):
+        _seed([
+            ("xiaole_video", '{"channel":"grok","ratio":"9:16"}', "done", None, 60),
+            ("xiaole_video", '{"channel":"grok","ratio":"9:16"}', "error", NO_CHANNEL, 300),
+            ("xiaole_video", '{"channel":"grok","ratio":"9:16"}', "error", NO_CHANNEL2, 400),
+        ])
+        self.assertIsNone(guard.exhausted_reason("xiaole_video", {"channel": "grok", "ratio": "9:16"}))
+
+    def test_a_success_on_a_DIFFERENT_ratio_does_NOT_lift_it(self):
+        """⚠️ 16:9 成功了，完全不代表 9:16 也有渠道了 —— 两件事。"""
+        _seed([
+            ("xiaole_video", '{"channel":"grok","ratio":"16:9"}', "done", None, 60),
+            ("xiaole_video", '{"channel":"grok","ratio":"9:16"}', "error", NO_CHANNEL, 300),
+            ("xiaole_video", '{"channel":"grok","ratio":"9:16"}', "error", NO_CHANNEL2, 400),
+        ])
+        self.assertIsNotNone(guard.exhausted_reason("xiaole_video", {"channel": "grok", "ratio": "9:16"}))
+
+
+class TheTwoBreakersClearDifferentlyTests(unittest.TestCase):
+    """⚠️ 两个熔断的【解除条件不一样】—— 混为一谈就会漏放或误拦。
+
+    余额：任意一条成功就证明账户有钱了（不管它是什么比例）
+    比例：只有【同比例】的成功才证明这个比例的渠道活了
+    """
+
+    def test_any_success_clears_the_money_breaker_even_on_another_ratio(self):
+        _seed([
+            ("xiaole_video", '{"channel":"grok","ratio":"16:9"}', "done", None, 60),   # 别的比例成功了
+            ("xiaole_video", '{"channel":"grok","ratio":"9:16"}', "error", XIAOLE_NO_MONEY, 300),
+            ("xiaole_video", '{"channel":"grok","ratio":"9:16"}', "error", XIAOLE_NO_MONEY, 400),
+        ])
+        # 账户显然有钱（16:9 刚跑成功）→ 不该再报「余额已用尽」
+        r = guard.exhausted_reason("xiaole_video", {"channel": "grok", "ratio": "9:16"})
+        if r is not None:
+            self.assertNotIn("额度已用尽", r, "别的比例刚成功，说明账户有钱 —— 余额熔断必须解除")
 
 
 if __name__ == "__main__":

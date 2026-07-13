@@ -43,12 +43,30 @@ try:
 except ModuleNotFoundError:                   # 测试：以包的形式 import server.content_domains.*
     from .. import func_names as _func_names
 
-# 各家「没钱了」的说法五花八门 —— 这是从线上真实报错里抄出来的。
-# 新接一家渠道，第一次撞到余额不足时，把它的措辞加进来。
+# ============ 两类「提交前就该拦住」的失败 ============
+#
+# 共同点：它们都是【上游当前不接活】，重试没用、等下去也没用，而用户已经被扣了点、
+# 已经等了几分钟。与其让他等到最后看一句天书，不如提交这一刻就拒掉。
+
+# 一、上游账户没钱。各家措辞完全不同 —— 从线上真实报错里抄的。
+#     新接一家渠道，第一次撞到余额不足时，把它的措辞加进来。
 BALANCE_EXHAUSTED_RE = re.compile(
     r"余额不足|积分.{0,4}不足|额度.{0,4}不足|请先充值|请充值"
     r"|insufficient\s+(credits?|balance|funds)|top\s*up\s+your\s+account",
     re.I,
+)
+
+# 二、这个【比例/尺寸】当前没有可用渠道。
+#
+# ⚠️ 这【不是】一个静态的支持矩阵 —— 别去前端写死「果肉只支持 16:9」。
+# 上游是个聚合中转，报的是「【当前】暂无支持该视频参数的【可用渠道】」，渠道是动态上下线的。
+# 线上证据：grok + 9:16 + 720p 有 5 成 0 败，而另一批 grok 9:16 却 27 条全挂。
+# 同一个比例，不同时间，结果不同。写死矩阵会把本来能用的组合也禁掉。
+#
+# 所以按「最近有没有连续挂」来判断，和余额熔断同一套机制 —— 只是键里多了个比例。
+RATIO_UNAVAILABLE_RE = re.compile(
+    r"无可用渠道|当前模型暂无|暂无支持该视频参数|渠道不支持当前视频尺寸"
+    r"|仅部分比例可用|不支持参数.{0,3}aspect_ratio",
 )
 
 WINDOW_SECONDS = int(30 * 60)   # 只看最近 30 分钟 —— 再久就把「已经充过钱」的旧事故也算进来了
@@ -77,13 +95,24 @@ def _job_payload(raw):
         return {}
 
 
+def _ratio(payload):
+    return str((payload or {}).get("ratio") or (payload or {}).get("aspect_ratio") or "").strip()
+
+
 def exhausted_reason(kind, payload):
-    """这个功能的上游是不是没额度了？是 → 返回给用户看的话；不是 → None。
+    """这个功能（或这个功能的这个比例）现在能不能提交？
+
+    不能 → 返回给用户看的话；能 → None。
+
+    两类熔断共用一次扫描：
+      * 余额熔断   键 = 功能名           （果肉没钱，不影响欧米）
+      * 比例熔断   键 = 功能名 + 比例     （果肉的 9:16 不可用，不影响果肉的 16:9）
 
     ⚠️ fail-open：任何异常都返回 None（放行）。
     """
     try:
         key = _func_key(kind, payload)
+        ratio = _ratio(payload)
         since = int(time.time()) - WINDOW_SECONDS
         with closing(jdb()) as c:
             rows = c.execute(
@@ -96,22 +125,43 @@ def exhausted_reason(kind, payload):
                 (kind, since, SCAN_LIMIT * 4),
             ).fetchall()
 
-        hits = 0
+        # 两个熔断的【解除条件不一样】，必须分开跟踪：
+        #   余额：任意一条成功就证明账户有钱了 —— 不管它是什么比例
+        #   比例：只有【同比例】的成功才证明这个比例的渠道活了
+        #         （果肉的 16:9 成功了，完全不代表果肉的 9:16 也有渠道）
+        money_hits, money_cleared = 0, False
+        ratio_hits, ratio_cleared = 0, not ratio   # payload 里没有比例 → 这个维度不适用
         seen = 0
+
         for r in rows:
+            if money_cleared and ratio_cleared:
+                break
+            pl = _job_payload(r["payload"])
             # 同一个 kind 下可能有多个渠道（xiaole_video 有果肉/豆姐/欧米）—— 只看同一个功能的
-            if _func_key(kind, _job_payload(r["payload"])) != key:
+            if _func_key(kind, pl) != key:
                 continue
             seen += 1
             if seen > SCAN_LIMIT:
                 break
+
+            same_ratio = bool(ratio) and _ratio(pl) == ratio
             if r["status"] == "done":
-                return None          # 期间有成功的 → 充上钱了，熔断解除
-            if BALANCE_EXHAUSTED_RE.search(r["error"] or ""):
-                hits += 1
-                if hits >= MIN_HITS:
+                money_cleared = True
+                if same_ratio:
+                    ratio_cleared = True
+                continue
+
+            err = r["error"] or ""
+            if not money_cleared and BALANCE_EXHAUSTED_RE.search(err):
+                money_hits += 1
+                if money_hits >= MIN_HITS:
                     return ("「%s」的上游额度已用尽，我们正在处理。"
                             "请稍后再试，或先换一个引擎。（未扣点）" % key)
+            elif not ratio_cleared and same_ratio and RATIO_UNAVAILABLE_RE.search(err):
+                ratio_hits += 1
+                if ratio_hits >= MIN_HITS:
+                    return ("「%s」当前没有支持 %s 的可用渠道（上游渠道是动态上下线的）。"
+                            "请换一个画面比例，或稍后再试。（未扣点）" % (key, ratio))
         return None
     except Exception as e:
         # 熔断器自己挂了，绝不能把整站生成堵死
