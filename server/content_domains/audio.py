@@ -585,18 +585,49 @@ def prepare_clone_audio(audio_b64, audio_format):
 
 CLONE_PREVIEW_TEXT = "你好，这是我的专属复刻音色试听。声音清晰自然，适合用于短视频口播和文案配音。"
 
+CLONE_PREVIEW_TRIES = int(os.environ.get("CLONE_PREVIEW_TRIES", "5") or 5)
+
 def _cosy_clone_preview(voice_id):
     """给刚复刻好的 CosyVoice 音色合成一句试听样音 → COS 直链。
+
+    ⚠️ 复刻【当刻】音色模型常常还没就绪(#602)：create_voice / voice_status 返回 OK 之后，
+    紧接着 synth 仍可能失败——音色还没进 list、或模型没即时加载。所以这里对 synth 做短重试
+    轮询：**synth 本身能出声，才是「就绪」的权威信号**(比 voice_status 的 OK 更准)。
     失败返回 (None, None)，不阻断复刻(音色本身仍可用，只是暂无试听)。"""
-    try:
-        data = cosyvoice.synth(voice_id, CLONE_PREVIEW_TEXT)
-        if not data or len(data) < 1000:
-            return None, None
-        pf = "audio/voice_preview_%s.mp3" % uuid.uuid4().hex   # 不可猜键(#185)
-        _out_path(pf).write_bytes(data)
-        return pf, public_url(pf, "audio/mpeg")
-    except Exception:
-        return None, None
+    last = None
+    for i in range(CLONE_PREVIEW_TRIES):
+        try:
+            data = cosyvoice.synth(voice_id, CLONE_PREVIEW_TEXT)
+            if data and len(data) >= 1000:
+                pf = "audio/voice_preview_%s.mp3" % uuid.uuid4().hex   # 不可猜键(#185)
+                _out_path(pf).write_bytes(data)
+                return pf, public_url(pf, "audio/mpeg")
+            last = "音频过短(%d 字节)" % (len(data) if data else 0)
+        except Exception as e:
+            last = str(e)[:120]
+        if i < CLONE_PREVIEW_TRIES - 1:
+            time.sleep(2.0 + i)   # 2s,3s,4s,5s —— 给音色就绪留窗口
+    print("[cosyvoice] 试听生成失败(%d 次) voice_id=%s: %s" % (CLONE_PREVIEW_TRIES, str(voice_id)[:22], last), flush=True)
+    return None, None
+
+
+def _cosy_backfill_preview_async(voice_id, username, voice_key):
+    """复刻返回后【异步】生成试听并回填，不拖慢音色「就绪」。synth 对就绪窗口重试(#602)，
+    成功就 UPDATE 该音色行的 preview(仅当其仍为空，避免覆盖已回填/后续重刻)。"""
+    def _run():
+        pf, url = _cosy_clone_preview(voice_id)
+        if not url:
+            return
+        try:
+            with closing(adb()) as c:
+                c.execute("""UPDATE audio_voices SET preview_file=?, preview_url=?, updated_at=?
+                    WHERE username=? AND scope='personal' AND voice_key=?
+                      AND (preview_url IS NULL OR preview_url='')""",
+                    (pf, url, int(time.time()), username, voice_key))
+                c.commit()
+        except Exception as e:
+            print("[cosyvoice] 试听回填落库失败: %s" % str(e)[:120], flush=True)
+    threading.Thread(target=_run, name="cosy-preview-backfill", daemon=True).start()
 
 def _clone_via_cosyvoice(username, slot_id, name, audio_b64):
     """CosyVoice 复刻：60s 参考音频(已由 prepare_clone_audio 标准化) → COS 预签名 URL
@@ -621,17 +652,14 @@ def _clone_via_cosyvoice(username, slot_id, name, audio_b64):
     slot_status = "ready" if status == "OK" else "training"
     now = int(time.time())
     voice_key = "vip_" + re.sub(r"[^a-zA-Z0-9_\-]", "_", slot_id)
-    # CosyVoice 的 create_voice 不返样音，复刻后自己合成一句试听存 COS——否则前端没 preview_url
-    # 就不显示试听按钮(音频页/视频页同源)。生成失败不阻断复刻，音色本身仍可用。
-    preview_file, preview_url = _cosy_clone_preview(voice_id) if slot_status == "ready" else (None, None)
     with closing(adb()) as c:
         c.execute("""INSERT OR IGNORE INTO audio_voices
             (username, scope, voice_key, display_name, provider_voice, slot_id, created_at, updated_at)
             VALUES(?,?,?,?,?,?,?,?)""",
             (username, "personal", voice_key, name, voice_id, slot_id, now, now))
-        c.execute("""UPDATE audio_voices SET display_name=?, provider_voice=?, preview_file=?,
-            preview_url=?, slot_id=?, updated_at=? WHERE username=? AND scope='personal' AND voice_key=?""",
-            (name, voice_id, preview_file, preview_url, slot_id, now, username, voice_key))
+        c.execute("""UPDATE audio_voices SET display_name=?, provider_voice=?, slot_id=?, updated_at=?
+            WHERE username=? AND scope='personal' AND voice_key=?""",
+            (name, voice_id, slot_id, now, username, voice_key))
         r = c.execute("SELECT id FROM audio_voices WHERE username=? AND scope='personal' AND voice_key=?",
                       (username, voice_key)).fetchone()
         vid_row = r["id"] if r else None
@@ -639,6 +667,10 @@ def _clone_via_cosyvoice(username, slot_id, name, audio_b64):
             clone_error=NULL, clone_upload_speaker_id=?, updated_at=? WHERE username=? AND slot_id=?""",
             (vid_row, slot_status, now, now, voice_id, now, username, slot_id))
         c.commit()
+    # CosyVoice 的 create_voice 不返样音，复刻后自己合成一句试听存 COS——否则前端没 preview_url
+    # 就不显示试听按钮。⚠️试听【异步】生成:音色/坑位已先落 ready(用户立即可用)，试听在后台线程
+    # 对就绪窗口重试后回填(#602)——不再用 slot_status 门控、也不拖慢「就绪」。
+    _cosy_backfill_preview_async(voice_id, username, voice_key)
     return {"voice_id": vid_row, "voice_key": voice_key, "display_name": name,
             "provider_voice": voice_id, "status": slot_status}
 
@@ -770,13 +802,11 @@ def ensure_audio_voice(username, voice_key):
         r = c.execute("SELECT id FROM audio_voices WHERE scope='personal' AND username=? AND voice_key=?",
                       (username, voice_key)).fetchone()
         if r: return r["id"]
-        display = "\u6211\u7684\u590d\u523b\u97f3\u8272" if voice_key == "personal" else voice_key
-        cur = c.execute("""INSERT INTO audio_voices
-            (scope, username, voice_key, display_name, provider_voice, created_at, updated_at)
-            VALUES('personal',?,?,?,?,?,?)""",
-            (username, voice_key, display, VOICE_MAP.get(voice_key, VOICE_MAP.get("personal", "alloy")), now, now))
-        c.commit()
-        return cur.lastrowid
+    # #604: \u5230\u8fd9\u8bf4\u660e\u8fd9\u4e2a voice_key \u6ca1\u6709\u5bf9\u5e94\u7684\u771f\u5b9e\u97f3\u8272\u884c\u3002**\u4e0d\u518d\u4e3a alloy \u5360\u4f4d\u81ea\u52a8\u5efa personal \u884c**
+    # \u2014\u2014\u90a3\u6b63\u662f\u300c\u5220\u4e86\u53c8\u56de\u6765\u300d\u7684\u6839\u56e0:\u9057\u7559 key(dapeng/zelong/personal)\u914d\u4e00\u6b21\u97f3\uff0crecord_audio_asset
+    # \u5c31\u51ed\u7a7a\u5efa\u4e00\u6761 alloy \u5360\u4f4d\u3002\u771f\u590d\u523b\u7531 _clone_via_cosyvoice \u76f4\u63a5\u5efa\u884c(\u4e0a\u9762 SELECT \u4f1a\u547d\u4e2d)\uff0c\u8d70\u4e0d\u5230\u8fd9\u3002
+    # \u5408\u6210\u4e0d\u9700\u8981 audio_voices \u884c(resolve \u56de\u843d alloy \u5373\u53ef)\uff0c\u6240\u4ee5\u8fd4\u56de None\uff0c\u8ba9 voice_id \u7559\u7a7a\u3002
+    return None
 
 def resolve_audio_provider_voice(username, voice_key):
     username = (username or "").strip()
@@ -809,7 +839,7 @@ def record_audio_asset(job_id, username, result):
     now = int(time.time())
     raw_voice_key = (result.get("voice") or "S_d21F8OR62").strip()
     voice_key = raw_voice_key.lower() if raw_voice_key.lower() in set() else raw_voice_key
-    voice_id = ensure_audio_voice(username, voice_key)
+    voice_id = ensure_audio_voice(username, voice_key)  # #604: 遗留/占位 key 现在返 None，voice_id 存 NULL、不再凭空建占位行
     with closing(adb()) as c:
         c.execute("""INSERT OR REPLACE INTO audio_assets
             (job_id, username, voice_id, voice_key, file, url, text, speed, pitch, volume, created_at)
@@ -819,7 +849,22 @@ def record_audio_asset(job_id, username, result):
              result.get("volume"), now))
         c.commit()
 
+def _cleanup_alloy_placeholder_voices():
+    """#604: 清掉个人 alloy 占位音色(幂等)。这些是遗留 key(dapeng/zelong/personal 等)被
+    record_audio_asset→ensure_audio_voice 自动建出的空壳(provider_voice='alloy')——正是
+    「删了又回来」的存量:每次启动 backfill_audio_assets 重放历史 audio job 就把它们重建回来。
+    改了 ensure_audio_voice 不再自动建之后，这里把存量一次性删掉。真复刻(cosyvoice-*/豆包 S_)不动。"""
+    try:
+        with closing(adb()) as c:
+            n = c.execute("DELETE FROM audio_voices WHERE scope='personal' AND provider_voice='alloy'").rowcount
+            c.commit()
+        if n:
+            print("[audio] 清理 alloy 占位音色 %d 条(#604)" % n, flush=True)
+    except Exception as e:
+        print("[audio] alloy 占位清理失败: %s" % str(e)[:120], flush=True)
+
 def backfill_audio_assets():
+    _cleanup_alloy_placeholder_voices()   # #604: 先清存量占位，再重放(ensure 已不再重建)
     try:
         with closing(jdb()) as c:
             rows = c.execute("""SELECT id, username, result FROM jobs
