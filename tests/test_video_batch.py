@@ -85,6 +85,48 @@ class VideoBatchValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "形象不存在"):
                 video.validate_video_payload(payload, username="fang")
 
+    def test_audio_mode_accepts_owned_audio_file_and_normalizes_relative_path(self):
+        payload = {"mode": "audio", "image_data": _data_url("hero"), "audio_file": "voice.mp3"}
+        audio_fp = video.OUT_DIR / "audio" / "voice.mp3"
+        with patch.object(video, "_resolve_out_file", return_value=audio_fp), \
+                patch.object(video, "_user_owns_output_file", return_value=True):
+            cleaned = video.validate_video_payload(payload, username="fang")
+        self.assertEqual("audio/voice.mp3", cleaned["audio_file"])
+
+    def test_audio_mode_rejects_unowned_or_unsupported_audio_file(self):
+        payload = {"mode": "audio", "image_data": _data_url("hero"), "audio_file": "audio/voice.mp3"}
+        audio_fp = video.OUT_DIR / "audio" / "voice.mp3"
+        with patch.object(video, "_resolve_out_file", return_value=audio_fp), \
+                patch.object(video, "_user_owns_output_file", return_value=False):
+            with self.assertRaisesRegex(ValueError, "不属于当前账号"):
+                video.validate_video_payload(payload, username="fang")
+        bad_fp = video.OUT_DIR / "video" / "voice.txt"
+        with patch.object(video, "_resolve_out_file", return_value=bad_fp):
+            with self.assertRaisesRegex(ValueError, "仅支持 mp3、wav、m4a"):
+                video.validate_video_payload(payload, username=None)
+
+    def test_audio_job_can_reuse_owned_audio_file_without_resaving(self):
+        payload = {"_username": "fang", "_job_id": 8, "mode": "audio", "image_data": _data_url("hero"),
+                   "audio_file": "audio/voice.mp3", "resolution": "1080p", "ratio": "9:16", "motion": "medium"}
+        save_calls = []
+        def fake_save(data_url, prefix, allowed_ext):
+            save_calls.append(prefix)
+            if prefix == "vid_img":
+                return "image/avatar.jpg"
+            raise AssertionError("audio_file 已复用时不应再次落盘音频")
+        with patch.object(video, "HEYGEN_API_KEY", "configured"), \
+                patch.object(video, "_save_data_file", side_effect=fake_save), \
+                patch.object(video, "_resolve_out_file", return_value=video.OUT_DIR / "audio" / "voice.mp3"), \
+                patch.object(video, "_user_owns_output_file", return_value=True), \
+                patch.object(video, "generate_heygen_video", return_value={"video_file": "video/out.mp4", "duration": 12}) as generate, \
+                patch.object(video, "public_url", return_value="https://cdn.example/out.mp4"), \
+                patch.object(video, "_file_url", side_effect=lambda value: "/api/gen/file/" + str(value or "")):
+            result = video.gen_video(payload)
+        self.assertEqual(["vid_img"], save_calls)
+        generate.assert_called_once_with("image/avatar.jpg", "audio/voice.mp3", "1080p", "9:16", "medium")
+        self.assertEqual("audio/voice.mp3", result["audio_file"])
+        self.assertEqual("/api/gen/file/audio/voice.mp3", result["audio_url"])
+
     def test_talking_job_can_reuse_owned_avatar_image(self):
         payload = {"_username": "fang", "_job_id": 8, "mode": "text", "avatar_id": "9",
                    "text": "hello", "voice": "v", "resolution": "1080p", "ratio": "9:16", "motion": "medium"}

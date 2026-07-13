@@ -3,8 +3,8 @@ import tempfile
 
 from .core import (
     AUDIO_OUT_DIR, HEYGEN_API_BASE, HEYGEN_API_KEY, HEYGEN_POLL_INTERVAL,
-    HEYGEN_TIMEOUT, VIDEO_GEN_DEADLINE, VIDEO_OUT_DIR, _env_positive_int, _file_url, _out_path, _resolve_out_file,
-    adb, base64, closing, jdb, json, mimetypes, os, pathlib, public_url,
+    HEYGEN_TIMEOUT, OUT_DIR, VIDEO_GEN_DEADLINE, VIDEO_OUT_DIR, _env_positive_int, _file_url, _out_path, _resolve_out_file,
+    _user_owns_output_file, adb, base64, closing, jdb, json, mimetypes, os, pathlib, public_url,
     re, subprocess, threading, time, urllib, uuid,
 )
 
@@ -165,6 +165,25 @@ def _is_valid_data_url(value, allowed_mimes):
     return bool(decoded)
 
 
+def _normalize_audio_file_ref(audio_file, username=None):
+    raw = str(audio_file or "").strip().replace("\\", "/")
+    if not raw:
+        raise ValueError("audio_file 不能为空")
+    fp = _resolve_out_file(raw)
+    if not fp:
+        raise ValueError("音频文件不存在：%s" % audio_file)
+    ext = fp.suffix.lower()
+    if ext not in {".mp3", ".wav", ".m4a"}:
+        raise ValueError("audio_file 仅支持 mp3、wav、m4a")
+    try:
+        rel = fp.resolve().relative_to(OUT_DIR.resolve()).as_posix()
+    except Exception:
+        raise ValueError("audio_file 必须位于 content_out 目录内")
+    if username and not _user_owns_output_file(username, rel):
+        raise ValueError("音频文件不存在或不属于当前账号")
+    return rel
+
+
 def _probe_data_video_duration(data_url):
     """用服务端 ffprobe 校验真实媒体时长，不信任浏览器提交的 duration。"""
     encoded = str(data_url).split(",", 1)[1]
@@ -321,10 +340,13 @@ def validate_video_payload(payload, username=None):
             raise ValueError("mode=text 时 voice 必填")
     elif mode == "audio":
         audio_data = (payload.get("audio_data") or "").strip()
-        if not audio_data:
-            raise ValueError("audio_data 不能为空")
-        if not _is_valid_data_url(audio_data, VALID_AUDIO_MIMES):
+        audio_file = (payload.get("audio_file") or "").strip()
+        if not audio_data and not audio_file:
+            raise ValueError("audio_data 或 audio_file 不能为空")
+        if audio_data and not _is_valid_data_url(audio_data, VALID_AUDIO_MIMES):
             raise ValueError("audio_data 不是有效的音频文件")
+        if audio_file:
+            audio_file = _normalize_audio_file_ref(audio_file, username=username)
     elif mode == "motion":
         # 动作模仿不再有线路之分（原线路一 HeyGen 已拆成独立的「AI 剧情视频」功能）。
         # 老前端可能仍在 payload 里带 line，忽略即可，不报错——避免旧页面缓存直接 400。
@@ -364,6 +386,9 @@ def validate_video_payload(payload, username=None):
     cleaned["ratio"] = ratio
     cleaned["resolution"] = resolution
     cleaned["motion"] = motion
+    if mode == "audio":
+        cleaned["audio_file"] = audio_file
+        cleaned["audio_data"] = audio_data
     cleaned["bgm_data"] = bgm_data
     cleaned["bgm_volume"] = bgm_volume
     cleaned.pop("duration", None)
@@ -1834,7 +1859,10 @@ def gen_video(payload):
         if not audio_file:
             raise ValueError("口播音频生成失败")
     else:
-        audio_file = _save_data_file(payload.get("audio_data"), "vid_aud", [".mp3", ".wav", ".m4a"])
+        if payload.get("audio_file"):
+            audio_file = _normalize_audio_file_ref(payload.get("audio_file"), username=(payload.get("_username") or "").strip() or None)
+        else:
+            audio_file = _save_data_file(payload.get("audio_data"), "vid_aud", [".mp3", ".wav", ".m4a"])
         if not audio_file:
             raise ValueError("请先选择口播音频")
         audio_url = _file_url(audio_file)
