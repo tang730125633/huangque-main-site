@@ -22,48 +22,16 @@ VIDEO_HTML = (ROOT / "site/workbench/video.html").read_text(encoding="utf-8")
 CORE_SRC = (ROOT / "server/content_domains/core.py").read_text(encoding="utf-8")
 
 
-class MotionParameterValidationTests(unittest.TestCase):
-    def _payload(self, **extra):
-        payload = {
-            "mode": "motion",
-            "image_data": PNG,
-            "reference_video_data": MP4,
-        }
-        payload.update(extra)
-        return payload
-
-    def test_motion_defaults_to_real_720p_and_drops_client_duration(self):
-        result = video.validate_video_payload(self._payload(duration=10))
-        self.assertEqual("720p", result["resolution"])
-        self.assertNotIn("duration", result)
-
-    def test_motion_no_longer_carries_a_line(self):
-        # 动作模仿已去线路化（原线路一 HeyGen 拆成了独立的「AI 剧情视频」）。
-        # 老前端可能仍带 line，忽略但不能写进 payload —— 否则会混淆历史记录的分桶。
-        result = video.validate_video_payload(self._payload(line="1"))
-        self.assertNotIn("line", result)
-
-    def test_motion_rejects_fake_1080p_and_says_where_to_get_it(self):
-        """绝不悄悄降分辨率（本文件的核心意图，防的是历史上的「假 1080p」bug）。
-
-        动作模仿走 WaveSpeed，它只有 720p。用户要 1080p 就必须去「AI 剧情视频」——
-        报错要把去处说清楚，而不是默默给一个 720p 的片子。
-        """
-        with self.assertRaisesRegex(ValueError, "剧情视频"):
-            video.validate_video_payload(self._payload(resolution="1080p"))
+class VideoResolutionValidationTests(unittest.TestCase):
+    def test_talking_rejects_unverified_4k(self):
+        with self.assertRaisesRegex(ValueError, "720p、1080p"):
+            video.validate_video_payload({"mode": "text", "image_data": PNG, "text": "hi",
+                                          "voice": "v", "resolution": "4k"})
 
     def test_cinematic_is_where_1080p_lives_now(self):
         out = video.validate_cinematic_payload({
             "avatar_ids": [1], "prompt": "海边跳舞", "resolution": "1080p", "ratio": "9:16"})
         self.assertEqual("1080p", out["resolution"])
-
-    def test_unverified_4k_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "720p、1080p"):
-            video.validate_video_payload(self._payload(resolution="4k"))
-
-    def test_wavespeed_never_silently_downscales(self):
-        with self.assertRaisesRegex(ValueError, "仅支持 720p"):
-            wavespeed.generate_motion("image.jpg", "reference.mp4", "1080p")
 
 
 class TryonParameterValidationTests(unittest.TestCase):
@@ -136,19 +104,11 @@ class VideoParameterUiTests(unittest.TestCase):
         self.assertIn('data-resolution="1080p"', VIDEO_HTML)
         self.assertNotIn('data-resolution="4k"', VIDEO_HTML)
 
-    def test_motion_resolution_is_locked_to_720p_and_submitted(self):
-        """动作模仿已去线路化：只走 WaveSpeed，固定 720p。
-
-        原来这条守的是「按线路切换分辨率」，但线路一(HeyGen)的能力已经拆成了独立的
-        「AI 剧情视频」。核心意图不变——绝不悄悄降分辨率：1080p 的按钮是 disabled 的，
-        点不动，而且 title 里告诉用户 1080p 去哪儿找。
-        """
-        self.assertIn('data-motion-resolution="720p"', VIDEO_HTML)
-        self.assertIn('data-motion-resolution="1080p" disabled', VIDEO_HTML)
-        self.assertIn("resolution:selectedMotionResolution", VIDEO_HTML)
-        self.assertIn("selectedMotionResolution='720p';", VIDEO_HTML)
-        self.assertNotIn("selectedMotionLine", VIDEO_HTML)
-        self.assertNotIn("duration:10", VIDEO_HTML)
+    def test_legacy_motion_ui_is_gone(self):
+        # 老版动作模仿已下线：tab、面板、提交入口都不该再出现
+        self.assertNotIn('data-function="motion"', VIDEO_HTML)
+        self.assertNotIn('id="motionPanel"', VIDEO_HTML)
+        self.assertNotIn("submitMotionVideo", VIDEO_HTML)
 
     def test_tryon_duration_is_selected_not_hardcoded(self):
         for seconds in (3, 5, 6, 10, 15):

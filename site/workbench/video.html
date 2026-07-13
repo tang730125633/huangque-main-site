@@ -238,7 +238,6 @@
 
       <div class="function-tabs" aria-label="视频功能分页">
         <button class="function-tab on" type="button" data-function="talking">数字人口播</button>
-        <button class="function-tab" type="button" data-function="motion">动作模仿</button>
         <button class="function-tab" type="button" data-function="cinematic">电影化身</button>
         <button class="function-tab" type="button" data-function="tryon">换装换背景</button>
         <button class="function-tab" type="button" data-function="grok">果肉视频生成</button>
@@ -372,64 +371,6 @@
         生成口播视频
       </button>
       <div id="statusText" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">生成完成后会自动保存到视频资产</div>
-      </div>
-
-      <div id="motionPanel" class="function-panel motion-panel hidden">
-        <div class="row">
-          <div>
-            <div class="label">影视级模仿</div>
-            <div class="muted" style="font-size:12px;margin-top:6px;">上传人物形象和参考片段，把自己「演」成同款大片</div>
-          </div>
-          <span class="faint" style="font-size:11.5px;">照参考片重演，不是逐帧换脸</span>
-        </div>
-        <div class="avatar-panel">
-          <div class="row">
-            <span class="label">我的形象</span>
-            <button id="refreshAvatarBtn" type="button" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font-family:inherit;font-size:12px;">刷新</button>
-          </div>
-          <div id="motionAvatarGrid" class="avatar-grid">
-            <div class="avatar-empty">正在读取我的形象...</div>
-          </div>
-        </div>
-        <div id="motionGrid" class="motion-grid">
-          <label id="motionImageDrop" class="motion-drop">
-            <input id="motionImageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-            <strong>人物形象图片</strong>
-            <span>上传需要生成动作视频的人物形象</span>
-          </label>
-          <div id="motionVideoDrop" class="motion-drop">
-            <input id="motionVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden>
-            <strong>参考片段</strong>
-            <span>点击上传要模仿的片段（建议 ≤15 秒）</span>
-          </div>
-        </div>
-        <div class="motion-preset-panel">
-          <div class="row">
-            <span class="label">预设片段</span>
-            <span id="motionSourceText" class="faint" style="font-size:11.5px;">可选预设片段，或上传自有片段（建议 ≤15 秒）</span>
-          </div>
-          <div id="motionPresetGrid" class="motion-preset-grid"></div>
-        </div>
-        <div class="motion-preset-panel">
-          <div class="video-parameter-grid">
-            <div>
-              <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
-              <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button class="on" data-motion-ratio="9:16">9:16</button><button data-motion-ratio="16:9">16:9</button><button data-motion-ratio="1:1">1:1</button></div>
-            </div>
-            <div>
-              <div class="faint" style="font-size:12px;margin-bottom:8px;">分辨率</div>
-              <div id="motionResolutionSeg" class="seg"><button class="on" data-motion-resolution="720p">720p</button><button data-motion-resolution="1080p" disabled title="动作模仿固定 720p，需要 1080p 请用「电影化身」">1080p</button></div>
-            </div>
-            <div style="grid-column:1/-1;">
-              <div class="faint" style="font-size:12px;margin-bottom:8px;">成片时长</div>
-              <div id="motionDurationValue" class="parameter-readonly">跟随参考片段 · 最长 120 秒</div>
-            </div>
-          </div>
-        </div>
-        <button id="motionGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:20px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
-          生成动作模仿视频
-        </button>
-        <div id="motionStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">生成完成后会自动保存到视频资产</div>
       </div>
 
       <div id="cinematicPanel" class="function-panel motion-panel hidden">
@@ -717,7 +658,6 @@
   var talkingBatch=false, talkingBatchItems=[], videoCost=20, videoBatchMax=5, talkingBatchSeq=0;
   var bgmData='', selectedBgmVolume=0.18;
   var selectedSubtitle='off', selectedSubtitleStyle='white', selectedSubtitlePosition='bottom';  // F4 字幕：默认关闭+底部，不勾选时行为与原来一致
-  var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16', selectedMotionResolution='720p';
   // 电影化身（HeyGen cinematic）：三个玩法共用一套控件，见 CINE_MODES
   // 时长默认「自适应」：跟随参考视频的长度。既然给了参考片段，成片就该和它一样长，
   // 而不是被截断或硬拖到某个固定秒数。没传参考视频时后端回落到 10 秒。
@@ -821,10 +761,9 @@
   }
   var motionAvatars=[], selectedMotionAvatarId=null, useNewMotionImage=true, avatarsLoaded=false;
   var currentVideoDraft=null;
-  var motionPresets=[];
   var videoBusyCount=0;
-  var maxActiveXiaoleVideo=3, maxActiveMotion=2, maxActiveTryon=1, maxActiveCinematic=2;
-  var videoSubmitLocks={talking:false,motion:false,cinematic:false,tryon:false,xiaole:false};
+  var maxActiveXiaoleVideo=3, maxActiveTryon=1, maxActiveCinematic=2;
+  var videoSubmitLocks={talking:false,cinematic:false,tryon:false,xiaole:false};
   var videoTaskSyncBound=false;
   var publicFallback=[
     {scope:'public',voice_key:'S_d21F8OR62',display_name:'温柔女声',provider_voice:'S_d21F8OR62',sub:'情感种草 · 柔和自然'},
@@ -878,14 +817,13 @@
     return st==='queued' || st==='running' || st==='pending' || st==='processing';
   }
   function activeVideoTaskCounts(){
-    var counts={talking:0,motion:0,cinematic:0,tryon:0,xiaole:0};
+    var counts={talking:0,cinematic:0,tryon:0,xiaole:0};
     var tasks=window.HQTasks;
     if(!tasks || !tasks.list) return counts;
     (tasks.list()||[]).forEach(function(job){
       if(!job || String(job.kind||'')!=='video' || !isActiveVideoTask(job)) return;
       var m=String(job.mode||'').toLowerCase();
-      if(m==='motion') counts.motion++;
-      else if(m==='cinematic') counts.cinematic++;
+      if(m==='cinematic') counts.cinematic++;
       else if(m==='tryon') counts.tryon++;
       else if(m==='grok' || m==='micro' || m==='omni') counts.xiaole++;
       else counts.talking++;
@@ -1078,22 +1016,6 @@
     if(btn){ btn.click(); return true; }
     return false;
   }
-  function clickMotionRatio(value){
-    var v=String(value||'').trim();
-    if(v==='4:5') v='9:16'; else if(v==='5:4') v='16:9';  // HeyGen motion 不支持4:5/5:4,老任务回填映射到合法朝向
-    var btn=document.querySelector('[data-motion-ratio="'+v.replace(/"/g,'\\"')+'"]');
-    if(btn){ btn.click(); return true; }
-    return false;
-  }
-  function clickMotionResolution(value){
-    // 动作模仿固定 720p（走 WaveSpeed，它只有这一档）。1080p 的按钮是 disabled 的，
-    // 回填历史参数时点不动它 —— 这正是想要的：宁可回填不上，也不能悄悄降分辨率。
-    var v=String(value||'').trim().toLowerCase();
-    if(v==='4k') v='1080p';
-    var btn=document.querySelector('[data-motion-resolution="'+v.replace(/"/g,'\\"')+'"]');
-    if(btn && !btn.disabled){ btn.click(); return true; }
-    return false;
-  }
   function clickGrokRatio(value){
     var btn=document.querySelector('[data-grok-ratio="'+String(value||'').replace(/"/g,'\\"')+'"]');
     if(btn){ btn.click(); return true; }
@@ -1118,7 +1040,6 @@
   }
   function setVideoStatus(msg){
     if($('statusText')) $('statusText').textContent=msg;
-    if($('motionStatus')) $('motionStatus').textContent=msg;
     if($('tryonStatus')) $('tryonStatus').textContent=msg;
   }
   function motionLabel(v){return v==='high'?'高':(v==='medium'?'中等':'低');}
@@ -1800,13 +1721,11 @@
     var counts=activeVideoTaskCounts();
     var tryonState=getTryonHintState();
     var xiaoleCapReached=counts.xiaole>=maxActiveXiaoleVideo;
-    var motionCapReached=counts.motion>=maxActiveMotion;
     // 电影化身也有槽位上限（后端 MAX_USER_ACTIVE_CINEMATIC=2）。#603 统计了 counts.cinematic
     // 却没人用 —— 排到第 3 条时按钮还亮着，点下去只会吃一个 429。
     var cineCapReached=counts.cinematic>=maxActiveCinematic;
     var tryonCapReached=counts.tryon>=maxActiveTryon;
     applyButtonState('generateBtn', !videoSubmitLocks.talking, videoSubmitLocks.talking?'口播视频提交中，请稍候':'');
-    applyButtonState('motionGenerateBtn', !videoSubmitLocks.motion && !motionCapReached, motionCapReached?('当前动作模仿最多同时排队或生成 '+maxActiveMotion+' 个任务，请等待部分完成后再继续'):(videoSubmitLocks.motion?'动作模仿提交中，请稍候':''));
     applyButtonState('cineGenerateBtn', !videoSubmitLocks.cinematic && !cineCapReached,
       cineCapReached?('当前电影化身最多同时排队或生成 '+maxActiveCinematic+' 个任务，请等待部分完成后再继续')
                     :(videoSubmitLocks.cinematic?'电影化身提交中，请稍候':''));
@@ -1824,102 +1743,6 @@
       reader.onerror=function(){reject(new Error('文件读取失败'));};
       reader.readAsDataURL(file);
     });
-  }
-  function setMotionSourceText(text){
-    if($('motionSourceText')) $('motionSourceText').textContent=text||'可选预设片段，或上传自有片段（建议 ≤15 秒）';
-  }
-  function renderMotionPresets(){
-    var grid=$('motionPresetGrid'); if(!grid) return;
-    grid.innerHTML='';
-    if(!motionPresets.length){
-      grid.innerHTML='<div class="avatar-empty" style="grid-column:1/-1;">暂无预设片段，可上传自有片段</div>';
-      return;
-    }
-    motionPresets.forEach(function(p){
-      var btn=document.createElement('button');
-      btn.type='button';
-      btn.className='motion-preset-card'+(selectedMotionPreset===p.id?' on':'');
-      btn.innerHTML='<img src="'+esc(p.thumb)+'" alt=""><span>'+esc(p.name)+'</span>';
-      btn.onclick=function(){selectMotionPreset(p);};
-      grid.appendChild(btn);
-    });
-  }
-  // 清除已选参考片段（预设或上传）→ 回到空态可重选
-  function clearMotionRef(){
-    motionReferenceVideoData='';
-    selectedMotionPreset='';
-    resetMotionVideoDrop();
-    renderMotionPresets();
-    setMotionSourceText('');
-  }
-  // 预览态：带原生 controls 的播放器 + 右上角取消按钮（drop 已是 div，点击不再误触上传）
-  function showMotionVideoPreview(url){
-    var box=$('motionVideoDrop'); if(!box) return;
-    box.classList.add('has-media','has-video');
-    box.onclick=null;
-    box.innerHTML='<input id="motionVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden>'
-      +'<video src="'+url+'" controls playsinline preload="metadata" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#05070c;"></video>'
-      +'<button type="button" class="motion-clear" title="取消所选片段" style="position:absolute;right:8px;top:8px;z-index:3;width:26px;height:26px;border-radius:50%;border:1px solid rgba(148,164,187,.35);background:rgba(7,11,19,.82);color:#eaf1fa;font-size:12px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;">✕</button>';
-    bindMotionFile(box.querySelector('input'),'video');
-    var clr=box.querySelector('.motion-clear');
-    if(clr) clr.onclick=function(e){e.stopPropagation();clearMotionRef();toast('已取消所选片段');};
-  }
-  // 空态：div（非 label），显式点击才开选择器，杜绝与播放器 controls 抢点击
-  function resetMotionVideoDrop(){
-    var box=$('motionVideoDrop'); if(!box) return;
-    box.classList.remove('has-media','has-video');
-    box.innerHTML='<input id="motionVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden><strong>参考片段</strong><span>点击上传要模仿的片段（建议 ≤15 秒）</span>';
-    var inp=box.querySelector('input');
-    bindMotionFile(inp,'video');
-    box.onclick=function(){ inp.click(); };
-  }
-  function selectMotionPreset(p){
-    if(!p) return;
-    if(selectedMotionPreset===p.id){ clearMotionRef(); toast('已取消所选片段'); return; }   // 再点已选=取消
-    selectedMotionPreset=p.id;
-    setMotionSourceText('正在读取预设片段…');
-    renderMotionPresets();
-    fetch(p.video,{cache:'force-cache'})
-      .then(function(r){return r.ok?r.blob():Promise.reject(new Error('预设片段读取失败'));})
-      .then(function(blob){
-        var burl=URL.createObjectURL(blob);
-        return readFileData(blob).then(function(data){
-          motionReferenceVideoData=data;
-          showMotionVideoPreview(burl);
-          setMotionSourceText('已选择预设片段：'+p.name+'（可点播放预览）');
-          toast('已选择，可点播放预览');
-        });
-      })
-      .catch(function(e){
-        selectedMotionPreset='';
-        motionReferenceVideoData='';
-        setMotionSourceText(e.message||'预设片段读取失败');
-        renderMotionPresets();
-        toast(e.message||'预设片段读取失败');
-      });
-  }
-  function loadMotionPresets(){
-    fetch(fresh('assets/motions/index.json'),{cache:'no-store'})
-      .then(function(r){return r.ok?r.json():[];})
-      .then(function(items){
-        motionPresets=(Array.isArray(items)?items:[]).map(function(item,idx){
-          var file=String(item.file||'').trim();
-          var thumb=String(item.thumb||'').trim();
-          if(!file) return null;
-          return {
-            id:file,
-            name:String(item.name||('预设片段 '+(idx+1))).trim(),
-            video:'assets/motions/'+file,
-            thumb:thumb?('assets/motions/'+thumb):'../assets/cloud/logo-bird.png'
-          };
-        }).filter(Boolean);
-        renderMotionPresets();
-      })
-      .catch(function(){
-        motionPresets=[];
-        setMotionSourceText('预设片段暂不可用，可上传自有片段');
-        renderMotionPresets();
-      });
   }
   function talkingBatchIndex(key){
     for(var i=0;i<talkingBatchItems.length;i++) if(talkingBatchItems[i].key===key) return i;
@@ -2006,12 +1829,11 @@
   function loadTalkingLimits(){
     fetch(fresh('/api/gen/health'),{cache:'no-store'}).then(function(r){return r.ok?r.json():Promise.reject();}).then(function(d){
       var cost=Number(d.video_cost),limit=Number(d.video_batch_max);
-      var xiaoleCap=Number(d.max_user_active_xiaole_video), motionCap=Number(d.max_user_active_motion), tryonCap=Number(d.max_user_active_tryon);
+      var xiaoleCap=Number(d.max_user_active_xiaole_video), tryonCap=Number(d.max_user_active_tryon);
       var cineCap=Number(d.max_user_active_cinematic);
       if(isFinite(cost)&&cost>0) videoCost=Math.round(cost);
       if(isFinite(limit)&&limit>0) videoBatchMax=Math.min(5,Math.round(limit));
       if(isFinite(xiaoleCap)&&xiaoleCap>0) maxActiveXiaoleVideo=Math.round(xiaoleCap);
-      if(isFinite(motionCap)&&motionCap>0) maxActiveMotion=Math.round(motionCap);
       if(isFinite(tryonCap)&&tryonCap>0) maxActiveTryon=Math.round(tryonCap);
       if(isFinite(cineCap)&&cineCap>0) maxActiveCinematic=Math.round(cineCap);
       var batchBtn=document.querySelector('[data-talking-shape="batch"]');
@@ -2035,10 +1857,9 @@
   }
   function updateFunction(next){
     videoFunction=next||'talking';
-    if($('bgmPanel')) $('bgmPanel').classList.toggle('hidden',videoFunction!=='talking'&&videoFunction!=='motion');
+    if($('bgmPanel')) $('bgmPanel').classList.toggle('hidden',videoFunction!=='talking');
     document.querySelectorAll('[data-function]').forEach(function(b){b.classList.toggle('on',b.dataset.function===videoFunction);});
     $('talkingPanel').classList.toggle('hidden',videoFunction!=='talking');
-    $('motionPanel').classList.toggle('hidden',videoFunction!=='motion');
     if($('cinematicPanel')) $('cinematicPanel').classList.toggle('hidden',videoFunction!=='cinematic');
     if($('tryonPanel')) $('tryonPanel').classList.toggle('hidden',videoFunction!=='tryon');
     if($('grokPanel')) $('grokPanel').classList.toggle('hidden',videoFunction!=='grok');
@@ -2047,11 +1868,7 @@
     // 面板 hidden 的时候量不到卡片高度（getBoundingClientRect 全是 0），刚显示出来要重量一次，
     // 否则那个面板里的形象网格是不受限的 —— 形象一多就又拉长了
     limitAllAvatarGrids();
-    if(videoFunction==='motion'){
-      $('modeSummary').textContent='上传人物形象和参考片段，把自己「演」成同款大片';
-      if($('modeName')) $('modeName').textContent='动作模仿';
-      loadMotionAvatars();
-    }else if(videoFunction==='cinematic'){
+    if(videoFunction==='cinematic'){
       $('modeSummary').textContent='选自己的数字人形象，写一句画面描述，直接出片（最多 3 个形象同框）';
       if($('modeName')) $('modeName').textContent='电影化身';
       loadMotionAvatars();
@@ -2186,16 +2003,6 @@
       });
   }
   document.querySelectorAll('[data-function]').forEach(function(b){b.onclick=function(){updateFunction(b.dataset.function);};});
-  // 动作模仿已去线路化：只走 WaveSpeed，固定 720p。1080p 的按钮永久 disabled，
-  // title 里告诉用户去「电影化身」——那边才有 1080p（走 HeyGen）。
-  function applyMotionLine(){
-    selectedMotionResolution='720p';
-    document.querySelectorAll('[data-motion-resolution]').forEach(function(x){
-      x.classList.toggle('on',x.dataset.motionResolution==='720p');
-    });
-    if($('motionDurationValue')) $('motionDurationValue').textContent='跟随参考片段 · 最长 120 秒';
-  }
-  applyMotionLine();
   function applyTryonDurationOptions(){
     var allowed=tryonIsLine2()?[5,6,10,15]:[3,5,6];
     if(allowed.indexOf(selectedTryonSeconds)<0) selectedTryonSeconds=6;
@@ -2244,8 +2051,6 @@
     b.parentElement.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b);});
     if(b.dataset.resolution) selectedResolution=b.dataset.resolution;
     if(b.dataset.ratio) selectedRatio=b.dataset.ratio;
-    if(b.dataset.motionRatio) selectedMotionRatio=b.dataset.motionRatio;
-    if(b.dataset.motionResolution) selectedMotionResolution=b.dataset.motionResolution;
     if(b.dataset.tryonSeconds) selectedTryonSeconds=Number(b.dataset.tryonSeconds);
     if(b.dataset.grokRatio) selectedGrokRatio=b.dataset.grokRatio;
     if(b.dataset.grokDuration) selectedGrokDuration=Number(b.dataset.grokDuration);
@@ -2302,34 +2107,6 @@
   }
   bindImageInput($('imageFile'));
   $('batchImageFile').onchange=function(){addTalkingBatchFiles(this.files);this.value='';};
-  function bindMotionFile(input, type){
-    input.onchange=function(){
-      var f=this.files&&this.files[0]; if(!f) return;
-      var url=URL.createObjectURL(f);
-      var box=type==='image' ? $('motionImageDrop') : $('motionVideoDrop');
-      readFileData(f).then(function(data){
-        if(type==='image'){
-          motionImageData=data;
-          selectMotionAvatar(null);
-        }else{
-          motionReferenceVideoData=data;
-          selectedMotionPreset='';
-          renderMotionPresets();
-          setMotionSourceText('已选择上传的自有片段（可点播放预览）');
-        }
-      }).catch(function(e){toast(e.message||'文件读取失败');});
-      box.classList.add('has-media');
-      if(type==='image'){
-        box.innerHTML='<input id="motionImageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+url+'" alt="人物形象预览">';
-        bindMotionFile(box.querySelector('input'),'image');
-      }else{
-        showMotionVideoPreview(url);
-      }
-    };
-  }
-  bindMotionFile($('motionImageFile'),'image');
-  resetMotionVideoDrop();
-  loadMotionPresets();
 
   // ===== 电影化身：控件绑定 =====
   renderCineTemplates();
@@ -2411,7 +2188,6 @@
   var PASTE_SLOTS = [
     {box:'imageDrop', input:'imageFile'},
     {box:'batchTalkingImages', input:'batchImageFile', batchOnly:true},
-    {box:'motionImageDrop', input:'motionImageFile'},
     {box:'tryonVideoDrop', input:'tryonVideoFile', line2Only:true},
     {box:'tryonClothesDrop', input:'tryonClothesFile'},
     {box:'tryonBgDrop', input:'tryonBgFile'}
@@ -2486,7 +2262,6 @@
             {created_at:Math.floor(Date.now()/1000), job_id:String(id)}, result));
           renderVideoDrafts([]);
           setTimeout(loadVideoHistory,800);
-          if(result.mode==='motion') setTimeout(function(){loadMotionAvatars(true);},900);
           setVideoStatus('任务已创建，已保存到视频资产');
           if(result.subtitle_error){toast('字幕生成失败，已保留无字幕视频');}
           resumeNextTrackedVideoTask();
@@ -2520,53 +2295,6 @@
         setVideoStatus(e&&e.jobTerminal?(e.message||'生成失败'):'连接中断，任务仍在后台生成，可点侧栏任务继续');
         toast(e&&e.jobTerminal?(e.message||'生成失败'):'连接中断，任务仍在后台生成');
         if(e&&e.jobTerminal) resumeNextTrackedVideoTask();
-      });
-  }
-  function submitMotionVideo(){
-    var pickedAvatar=selectedMotionAvatarId?motionAvatars.find(function(a){return String(a.id)===String(selectedMotionAvatarId);}):null;
-    if(useNewMotionImage && !motionImageData){ toast('请先上传人物形象图片'); return; }
-    if(!useNewMotionImage && !pickedAvatar){ toast('请选择一个我的形象'); return; }
-    if(!motionReferenceVideoData){ toast('请先选择或上传参考片段'); return; }
-    setSubmitLock('motion',true);
-    setBusy(true);
-    var motionPreviewImage=useNewMotionImage?motionImageData:(pickedAvatar&&pickedAvatar.image_url);
-    currentVideoDraft={mode:'motion',image_url:motionPreviewImage,text:'动作模仿视频',resolution:selectedMotionResolution,ratio:selectedMotionRatio,motion:'medium',status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
-    renderVideoDrafts([currentVideoDraft]);
-    setVideoStatus('正在提交动作模仿任务...');
-    // 不再有 line：动作模仿已全量走 WaveSpeed，原线路一(HeyGen)的能力搬进了「电影化身」
-    var body={
-      mode:'motion',
-      reference_video_data:motionReferenceVideoData,
-      text:'动作模仿视频',
-      resolution:selectedMotionResolution,
-      ratio:selectedMotionRatio,
-      motion:'medium'
-    };
-    body.bgm_data=bgmData; body.bgm_volume=selectedBgmVolume;
-    if(useNewMotionImage){
-      body.image_data=motionImageData;
-    }else{
-      body.avatar_id=selectedMotionAvatarId;
-    }
-    fetch('/api/gen/video',{
-      method:'POST',
-      headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-      body:JSON.stringify(body)
-    }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
-      .then(function(res){
-        if(res.status===401){setSubmitLock('motion',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
-        if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
-        setVideoStatus('影视级模仿任务已提交...');
-        setTimeout(loadVideoHistory,700);
-        trackVideoJob(res.data.job_id,{status:'queued',label:'影视级模仿',mode:'motion',modeLabel:'影视级模仿',ratio:selectedMotionRatio});
-        setSubmitLock('motion',false);
-        pollJob(res.data.job_id,0);
-      })
-      .catch(function(e){
-        setSubmitLock('motion',false);
-        setBusy(false);
-        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoDrafts([currentVideoDraft]);}
-        setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');
       });
   }
   function submitTryon(){
@@ -2747,7 +2475,6 @@
       });
   }
   $('generateBtn').onclick=submitVideo;
-  $('motionGenerateBtn').onclick=submitMotionVideo;
   $('tryonGenerateBtn').onclick=submitTryon;
   if($('grokGenerateBtn')) $('grokGenerateBtn').onclick=function(){submitXiaole('grok');};
   if($('microGenerateBtn')) $('microGenerateBtn').onclick=function(){submitXiaole('micro');};
@@ -2868,23 +2595,6 @@
     if(m==='img2video') return 'grok';
     return m||'text';
   }
-  function setMotionImagePrefill(dataUrl, previewUrl){
-    motionImageData=dataUrl;
-    selectMotionAvatar(null);
-    var box=$('motionImageDrop');
-    if(box){
-      box.classList.add('has-media');
-      box.innerHTML='<input id="motionImageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+esc(previewUrl||dataUrl)+'" alt="人物形象预览">';
-      bindMotionFile(box.querySelector('input'),'image');
-    }
-  }
-  function setMotionReferencePrefill(dataUrl, previewUrl){
-    motionReferenceVideoData=dataUrl;
-    selectedMotionPreset='';
-    renderMotionPresets();
-    showMotionVideoPreview(previewUrl||dataUrl);
-    setMotionSourceText('已带入原参考片段（可点播放预览）');
-  }
   function setTryonPrefill(kind, dataUrl, previewUrl){
     var box=kind==='video'?$('tryonVideoDrop'):(kind==='clothes'?$('tryonClothesDrop'):$('tryonBgDrop'));
     if(!box||!dataUrl) return;
@@ -2970,20 +2680,6 @@
         Promise.allSettled(jobs).then(function(results){
           setVideoStatus('已按原换装模式预填，可检查素材后重新生成');
           reportPrefillFailures(results,'已切到换装换背景并带入可用素材','换装素材带入失败');
-        });
-        return;
-      }
-      if(m==='motion'){
-        updateFunction('motion');
-        if(d.ratio) clickMotionRatio(d.ratio);
-        if(d.resolution) clickMotionResolution(d.resolution);
-        setVideoStatus('正在带入影视级模仿素材...');
-        var motionJobs=[];
-        if(d.image_url) motionJobs.push(prefillJob('人物形象图', fetchImagePrefill(d.image_url).then(function(img){setMotionImagePrefill(img.dataUrl,img.previewUrl);})));
-        if(d.reference_video_url) motionJobs.push(prefillJob('参考片段', fetchFilePrefill(d.reference_video_url,'参考片段').then(function(v){setMotionReferencePrefill(v.dataUrl,v.previewUrl);})));
-        Promise.allSettled(motionJobs).then(function(results){
-          setVideoStatus('已按影视级模仿预填，可检查素材后重新生成');
-          reportPrefillFailures(results,'已切到影视级模仿并带入可用素材','影视级模仿素材带入失败');
         });
         return;
       }

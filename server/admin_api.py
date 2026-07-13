@@ -118,7 +118,7 @@ KEY_GROUPS = [
     {"key": "heygen_relay", "name": "HeyGen 中转(泽龙 relay)", "env": ["HEYGEN_RELAY_TOKEN"]},
     {"key": "xiaolevideo", "name": "小乐视频生成", "env": ["XIAOLEVIDEO_API_KEY"]},
     {"key": "runninghub", "name": "RunningHub 换装/动作模仿(线路一)", "env": ["RUNNINGHUB_API_KEY", "RUNNINGHUB_KEY"]},
-    {"key": "wavespeed", "name": "WaveSpeed 换装/动作模仿(线路二)", "env": ["WAVESPEED_API_KEY"]},
+    {"key": "wavespeed", "name": "WaveSpeed 换装(线路二)", "env": ["WAVESPEED_API_KEY"]},
     {"key": "doubao", "name": "豆包语音 TTS/声音克隆", "env": ["DOUBAO_APP_ID", "DOUBAO_ACCESS_TOKEN", "DOUBAO_APPID", "DOUBAO_TOKEN"]},
     {"key": "tikhub", "name": "TikHub 抖音数据", "env": ["TIKHUB_KEY", "TIKHUB_API_KEY"]},
     {"key": "cos", "name": "腾讯云 COS 存储", "env": ["COS_SECRET_ID", "COS_SECRET_KEY", "COS_REGION", "COS_BUCKET"]},

@@ -12,7 +12,7 @@ import random   # 429 退避重试的抖动：不加抖动，同一批 worker �
 
 from .audio import gen_audio
 
-VALID_VIDEO_MODES = {"text", "audio", "motion"}
+VALID_VIDEO_MODES = {"text", "audio"}
 VALID_VIDEO_RATIOS = {"9:16", "16:9", "1:1", "4:5", "5:4"}
 VALID_VIDEO_RESOLUTIONS = {"720p", "1080p"}
 VALID_VIDEO_MOTIONS = {"low", "medium", "high"}
@@ -322,7 +322,7 @@ def validate_video_payload(payload, username=None):
         raise ValueError("请求体不是合法 JSON")
     mode = str(payload.get("mode") or "text").strip().lower()
     if mode not in VALID_VIDEO_MODES:
-        raise ValueError("mode 仅支持 text/audio/motion")
+        raise ValueError("mode 仅支持 text/audio")
 
     image_data = str(payload.get("image_data") or "").strip()
     avatar_id = str(payload.get("avatar_id") or "").strip()
@@ -347,27 +347,15 @@ def validate_video_payload(payload, username=None):
             raise ValueError("audio_data 不是有效的音频文件")
         if audio_file:
             audio_file = _normalize_audio_file_ref(audio_file, username=username)
-    elif mode == "motion":
-        # 动作模仿不再有线路之分（原线路一 HeyGen 已拆成独立的「AI 剧情视频」功能）。
-        # 老前端可能仍在 payload 里带 line，忽略即可，不报错——避免旧页面缓存直接 400。
-        reference_video_data = (payload.get("reference_video_data") or "").strip()
-        if not reference_video_data:
-            raise ValueError("reference_video_data 不能为空")
-        if not _is_valid_data_url(reference_video_data, VALID_REFERENCE_VIDEO_MIMES):
-            raise ValueError("reference_video_data 不是有效的参考动作视频")
     if avatar_id and username:
         get_video_avatar(username, avatar_id)
 
     ratio = (payload.get("ratio") or "9:16").strip()
     if ratio not in VALID_VIDEO_RATIOS:
         raise ValueError("ratio 仅支持 9:16、16:9、1:1、4:5、5:4")
-    # 动作模仿走 WaveSpeed，它只支持 720p；口播默认 1080p。
-    default_resolution = "720p" if mode == "motion" else "1080p"
-    resolution = (payload.get("resolution") or default_resolution).strip().lower()
+    resolution = (payload.get("resolution") or "1080p").strip().lower()
     if resolution not in VALID_VIDEO_RESOLUTIONS:
         raise ValueError("resolution 仅支持 720p、1080p")
-    if mode == "motion" and resolution != "720p":
-        raise ValueError("动作模仿固定 720p；需要 1080p 请用「AI 剧情视频」")
     motion = (payload.get("motion") or "medium").strip().lower()
     if motion not in VALID_VIDEO_MOTIONS:
         raise ValueError("motion 仅支持 low、medium、high")
@@ -1807,12 +1795,10 @@ def burn_subtitle(video_file, known_text=None, style_key="white", job_id=None, p
 def gen_video(payload):
     job_id = payload.get("_job_id")
     mode = (payload.get("mode") or "text").strip()
-    if mode not in {"text", "audio", "motion"}:
+    if mode not in {"text", "audio"}:
         raise ValueError("生成方式不正确")
-    # 只有口播(text/audio)走 HeyGen；动作模仿已全量切到 WaveSpeed，不该被 HeyGen 的密钥绑架
-    # ——否则 HeyGen 一断供，连根本不用它的动作模仿也跟着挂。motion 的可用性由
-    # wavespeed.available() 在下面单独把关。
-    if mode != "motion" and not HEYGEN_API_KEY:
+    # 口播(text/audio)走 HeyGen。
+    if not HEYGEN_API_KEY:
         raise ValueError("视频生成服务未配置")
     avatar = None
     avatar_id = payload.get("avatar_id")
@@ -1830,18 +1816,7 @@ def gen_video(payload):
     reference_video_file = None
     bgm_file = (_save_data_file(payload.get("bgm_data"), "video_bgm", [".mp3", ".wav", ".m4a"])
                 if payload.get("bgm_data") else None)
-    if mode == "motion":
-        reference_video_file = _save_data_file(payload.get("reference_video_data"), "motion_ref", [".mp4", ".mov", ".webm"])
-        if not reference_video_file:
-            raise ValueError("请先上传参考动作视频")
-        # 落盘即压：此刻这个文件刚从 payload 写出来，还没有任何东西引用它，是压缩最干净的时机。
-        # 放在线路分发【之前】，HeyGen(推字节过隧道) 和 WaveSpeed(传 COS 再发 URL) 都受益。
-        reference_video_file = _shrink_motion_reference(reference_video_file)
-        text = text or "动作模仿"
-        update_video_asset_phase(job_id, "files_saved", mode=mode, image_file=image_file,
-                                 reference_video_file=reference_video_file, text=text,
-                                 voice=voice)
-    elif mode == "text":
+    if mode == "text":
         if not text:
             raise ValueError("请先输入口播文案")
         if not voice:
@@ -1876,21 +1851,7 @@ def gen_video(payload):
     if motion not in {"low", "medium", "high"}:
         motion = "medium"
     created_avatar = None
-    if mode == "motion":
-        # 动作模仿 = WaveSpeed，不再有线路之分。
-        # 原来的「线路一(HeyGen)」已经拆成独立的「AI 剧情视频」功能（gen_cinematic）——那边能选
-        # 1~3 个事先建好的形象、写自己的提示词、选 720p/1080p，是 WaveSpeed 做不到的。
-        # 而动作模仿只做它最擅长的一件事：人物图 + 驱动视频 → 照着跳。固定 720p（WaveSpeed 只支持这个）。
-        reference_duration = _motion_reference_duration(reference_video_file)
-        update_video_asset_phase(job_id, "motion_parameters_ready", resolution=resolution,
-                                 ratio=ratio, motion=motion)
-        from . import wavespeed
-        if not wavespeed.available():
-            raise ValueError("动作模仿服务未配置，请联系管理员")
-        video_result = wavespeed.generate_motion(image_file, reference_video_file, resolution, job_id=job_id)
-        video_result.setdefault("duration", round(reference_duration, 2))
-    else:
-        video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
+    video_result = generate_heygen_video(image_file, audio_file, resolution, ratio, motion)
     bgm_error = None
     if bgm_file and video_result.get("video_file"):
         try:

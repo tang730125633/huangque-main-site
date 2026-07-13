@@ -133,7 +133,7 @@ class WavespeedProxyTests(unittest.TestCase):
     def test_result_download_goes_through_the_opener(self):
         """拉成片是最重的一腿，必须走选定通道，而不是裸 urlopen 继承环境变量。"""
         src = Path(importlib.import_module("content_domains.wavespeed").__file__).read_text(encoding="utf-8")
-        body = src[src.index("def _download_to_lib"):src.index("def generate_motion")]
+        body = src[src.index("def _download_to_lib"):src.index("def generate_tryon")]
         self.assertIn("_opener().open", body)
         self.assertNotIn("urllib.request.urlopen", body)
 
