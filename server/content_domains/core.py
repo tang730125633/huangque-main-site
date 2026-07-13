@@ -203,6 +203,7 @@ MAX_USER_ACTIVE_MOTION = _env_positive_int("MAX_USER_ACTIVE_MOTION", 2)         
 MAX_USER_ACTIVE_TRYON = _env_positive_int("MAX_USER_ACTIVE_TRYON", 1)                # 单用户换装视频 active 上限：最重链路，默认一次只放 1 条
 MAX_USER_RUNNING_TALKING = _env_positive_int("MAX_USER_RUNNING_TALKING", 2)          # 单用户口播「运行中」并发上限：最多同时生成2条，多提交的留 pending 排队
 MAX_USER_RUNNING_IMAGE = _env_positive_int("MAX_USER_RUNNING_IMAGE", 3)              # 单用户生图「运行中」并发上限=每人可并行3个。闸数全表 kind='image'，imggen也写这表→两服务合计3个，不是各3个
+MAX_GLOBAL_RUNNING_BREAKDOWN = _env_positive_int("MAX_GLOBAL_RUNNING_BREAKDOWN", 2)    # 爆款拆解全局并发上限（ffmpeg+whisper+GPT-4o 都很重，不限用户、限全局）
 SERVICE_OWNER = "content"   # 本服务在 jobs.owner 的署名(#579)；两处全表扫描必须按它过滤，缘由见 jobs_store.ensure_owner_column
 # reaper 各 kind 的超时宽限(秒)，默认 360。tryon 两段式+心跳刷新；xiaole_video 内部轮询600s+转存；
 # image 多图/中转慢；collect 下载+ffmpeg抽音轨+ASR 且转写全站串行(实测成功平均88s)。video 按 mode 另算。
@@ -675,10 +676,13 @@ def _refund_once(job_id, username, cost):
 def _pick_job_queue(kind, mode=None):
     # kind缺省(旧调用/测试)保守走慢队列；生图(慢90~450s)走生图池；秒级快任务(音频/文案/采集/名单)走快队列；
     # video 再按 mode 三分：motion→motion池、text/audio(口播/兜底)→口播池；tryon/xiaole_video 走慢池。
+    # breakdown 走慢池（下载+ffmpeg+whisper+GPT-4o，2-3分钟，不能堵快队列）
     if kind is None:
         return _job_queue
     if kind == "image":
         return _image_job_queue
+    if kind == "breakdown":
+        return _job_queue
     if kind not in {"video", "tryon", "xiaole_video"}:
         return _fast_job_queue
     if kind == "video":
@@ -782,6 +786,12 @@ def _user_running_image_count(username):
                         (username,)).fetchone()
     return int(row["n"] if row else 0)
 
+def _global_running_breakdown_count():
+    """全局「运行中」的爆款拆解数（不限用户，ffmpeg+whisper+GPT-4o 全局限流）。"""
+    with closing(jdb()) as c:
+        row = c.execute("SELECT COUNT(*) AS n FROM jobs WHERE status='running' AND kind='breakdown'").fetchone()
+    return int(row["n"] if row else 0)
+
 def _reject_pending_job(job_id, username, cost, reason):
     now = int(time.time())
     with closing(jdb()) as c:
@@ -861,9 +871,11 @@ def run_job(job_id):
                 return  # 超运行闸→不启动，任务留 pending(worker finally 会移出 _queued_job_ids)，等口播完成事件/30s 扫描重排
             if is_image and _user_running_image_count(username) >= MAX_USER_RUNNING_IMAGE:
                 return  # 单用户生图运行闸：多的留 pending 排队
+            if kind == "breakdown" and _global_running_breakdown_count() >= MAX_GLOBAL_RUNNING_BREAKDOWN:
+                return  # 爆款拆解全局限流：留 pending，scanner 30s 后重排
             if not jobs_store.claim_running(jdb, job_id):
                 return  # CAS 认领失败：已被别的 worker 接管或已是终态
-        if kind in {"audio", "video", "tryon", "xiaole_video", "leads"}:
+        if kind in {"audio", "video", "tryon", "xiaole_video", "leads", "breakdown"}:
             payload["_username"] = username
             payload["_job_id"] = job_id
         result = HANDLERS[kind](payload)
@@ -894,9 +906,9 @@ def run_job(job_id):
                 pass
         _refund_once(job_id, username, cost)  # 幂等：最多退一次
     finally:
-        if is_talking or is_image:
+        if is_talking or is_image or kind == "breakdown":
             try:
-                _recover_pending_jobs()  # 口播/生图跑完→腾出该用户运行槽，立刻重排排队中的同类(+30s 扫描兜底)
+                _recover_pending_jobs()  # 口播/生图/拆解跑完→腾出运行槽，立刻重排(+30s 扫描兜底)
             except Exception:
                 pass
 

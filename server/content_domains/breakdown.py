@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """爆款拆解：竞品视频链接 → 下载 → 抽帧 → ASR → GPT-4o 多模态 → 分镜脚本"""
-import os, json, time, base64, tempfile, subprocess, shutil, uuid
+import os, json, time, base64, tempfile, subprocess, shutil
 from contextlib import closing
 
-from .core import (
-    OPENAI_BASE, OPENAI_KEY, OUT_DIR, VIDEO_OUT_DIR,
-    jdb, _out_path, _file_url,
-)
+from .core import OPENAI_BASE, OPENAI_KEY, jdb
 from . import egress
+
+# 不支持的平台（视频号加密流需要 Isaac64 解密，暂不支持）
+_UNSUPPORTED_PLATFORMS = {"channels", "weixin", "wechat"}
 
 
 def gen_breakdown(payload):
@@ -21,6 +21,16 @@ def gen_breakdown(payload):
 
     # ① 解析链接
     info = tikhub.parse_link(url)
+    platform = (info.get("platform") or "").lower()
+    if platform in _UNSUPPORTED_PLATFORMS:
+        raise ValueError("视频号暂不支持拆解，请粘贴抖音/小红书链接")
+    
+    return _do_breakdown(payload, info, url)
+
+
+def _do_breakdown(payload, info, url):
+    import tikhub
+
     det = tikhub.detail(info["platform"], info["id"], info.get("note_type"))
     play_url = det.get("play_url")
     if not play_url:
@@ -30,20 +40,19 @@ def gen_breakdown(payload):
     duration = det.get("duration") or 30
     title = det.get("title") or det.get("desc") or ""
 
-    # ② 下载视频
     job_id = payload.get("_job_id")
     _heartbeat(job_id, "downloading")
+    tmp_video = None
+    frame_dir = None
     tmp_video = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     try:
         dl_deadline = time.time() + 180
         tikhub.download_to_file(play_url, dl_deadline, tmp_video.name)
 
-        # ③ 抽关键帧
         _heartbeat(job_id, "extracting_frames")
         frame_count = max(4, min(10, int(duration / 5)))
         frame_dir, frames = _extract_frames(tmp_video.name, frame_count)
 
-        # ④ ASR 转写（失败也继续）
         script_text = ""
         try:
             _heartbeat(job_id, "transcribing")
@@ -52,22 +61,23 @@ def gen_breakdown(payload):
         except Exception:
             pass
 
-        # ⑤ GPT-4o 多模态分析
         _heartbeat(job_id, "analyzing")
         platform = info.get("platform", "")
+        usermsg = (
+            "视频标题：" + str(title) + "\n"
+            "时长：" + str(duration) + "s\n"
+            "平台：" + str(platform) + "\n\n"
+            "口播文案（带时间轴）：\n" + str(script_text) + "\n\n"
+            '请输出 JSON：{"rhythm":[{"phase":"","time":"","strategy":""}],'
+            '"scenes":[{"dur":"","scale":"","camera":"","scene":"","line":""}],'
+            '"viral_logic":"","template":""}'
+        )
         raw = _chat_multimodal(
             "你是黄雀传媒资深短视频编导。分析以下视频的关键帧和口播文案，"
             "拆解出完整分镜脚本。只输出 JSON，不要解释。",
-            ("视频标题：%s\n时长：%ss\n平台：%s\n\n"
-             "口播文案（带时间轴）：\n%s\n\n"
-             "请输出 JSON：{\"rhythm\":[{\"phase\":\"\",\"time\":\"\",\"strategy\":\"\"}],"
-             "\"scenes\":[{\"dur\":\"\",\"scale\":\"\",\"camera\":\"\",\"scene\":\"\",\"line\":\"\"}],"
-             "\"viral_logic\":\"\",\"template\":\"\"}"
-             % (title, duration, platform, script_text)),
-            frames
+            usermsg, frames
         )
 
-        # ⑥ 解析结果
         s, e = raw.find("{"), raw.rfind("}")
         if s < 0 or e <= s:
             raise ValueError("拆解结果解析失败，请重试")
