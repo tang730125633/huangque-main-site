@@ -36,6 +36,9 @@
   .info-label{font-size:11.5px;color:#6f7f96;margin-bottom:7px}
   .info-value{font-size:15px;font-weight:800;color:#eaf1fa;line-height:1.35;word-break:break-word}
   .info-value.mono{font-family:'JetBrains Mono',monospace;font-variant-numeric:tabular-nums;color:#e7b24c}
+  .info-value-row{display:flex;align-items:center;gap:8px;min-width:0}
+  .info-value-row .info-value{min-width:0;flex:1}
+  .info-copy-btn{height:28px;padding:0 9px;border-radius:7px;font-size:11.5px;flex:none}
   .settings-form{display:flex;flex-direction:column;gap:13px}
   .field{display:flex;flex-direction:column;gap:8px}
   .field span{font-size:12.5px;font-weight:700;color:#eaf1fa}
@@ -47,12 +50,45 @@
   .btn:disabled{opacity:.7;cursor:wait}
   .btn.primary{border-color:transparent;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206}
   .btn.danger{border-color:rgba(244,112,138,.24);background:rgba(244,112,138,.08);color:#f4708a}
+  .friend-form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin-bottom:14px}
+  .friend-form input{height:40px;border:1px solid rgba(148,164,187,.16);border-radius:9px;background:rgba(7,11,19,.5);color:#eaf1fa;padding:0 12px;font:800 13px 'JetBrains Mono',monospace;letter-spacing:0;text-transform:uppercase;outline:none}
+  .friend-form input:focus{border-color:rgba(231,178,76,.42);box-shadow:0 0 0 3px rgba(231,178,76,.08)}
   .member-list{display:flex;flex-direction:column;gap:10px}
   .member-row{display:flex;align-items:center;gap:12px;padding:12px;border:1px solid rgba(148,164,187,.09);border-radius:10px;background:rgba(7,11,19,.32)}
   .member-avatar{width:34px;height:34px;border-radius:9px;background:rgba(148,164,187,.11);display:flex;align-items:center;justify-content:center;color:#eaf1fa;font-weight:800;flex:none}
   .member-main{min-width:0;flex:1}
   .member-name{font-size:13.5px;font-weight:800;color:#eaf1fa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .member-sub{margin-top:3px;font-size:12px;color:#6f7f96}
+  .member-empty{padding:14px;border:1px dashed rgba(148,164,187,.16);border-radius:10px;color:#6f7f96;font-size:12.5px;line-height:1.6}
+  .friend-section{margin-top:14px}
+  .friend-section-title{font-size:12.5px;font-weight:800;color:#eaf1fa;margin-bottom:8px}
+  .friend-actions{display:flex;gap:8px;flex:none}
+  .friend-actions .btn{height:30px;padding:0 10px;font-size:12px}
+  #friendsPanelCard{display:none;position:fixed;top:74px;right:26px;z-index:9300;width:min(420px,calc(100vw - 24px));max-height:calc(100vh - 98px);overflow:auto;box-shadow:0 26px 80px rgba(0,0,0,.38);animation:friend-panel-in .18s cubic-bezier(.16,1,.3,1)}
+  #friendsPanelCard.show{display:block}
+  #friendsPanelCard .settings-card-body{padding:18px}
+  .friend-panel-close{width:32px;height:32px;border-radius:8px;border:1px solid rgba(148,164,187,.14);background:rgba(148,164,187,.05);color:#94a4bb;font-size:20px;line-height:1;cursor:pointer;flex:none}
+  .friend-panel-close:hover{border-color:rgba(231,178,76,.3);color:#e7b24c}
+  .friend-view[hidden],.friend-request-panel[hidden]{display:none}
+  .friend-list-toolbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+  .friend-list-toolbar .btn{height:34px;padding:0 12px}
+  .friend-list-toolbar .btn.primary{margin-left:0}
+  .friend-search{height:34px;min-width:150px;flex:1;border:1px solid rgba(148,164,187,.16);border-radius:9px;background:rgba(7,11,19,.38);color:#eaf1fa;padding:0 11px;font:700 12.5px inherit;outline:none}
+  .friend-search:focus{border-color:rgba(231,178,76,.42);box-shadow:0 0 0 3px rgba(231,178,76,.08)}
+  .friend-request-count{height:18px;min-width:18px;padding:0 5px;border-radius:999px;background:rgba(244,112,138,.13);color:#f4708a;display:inline-flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:900}
+  .friend-add-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+  .friend-add-title{font-size:13.5px;font-weight:800;color:#eaf1fa}
+  .friend-add-note{font-size:11.5px;line-height:1.55;color:#6f7f96}
+  .friend-status{min-height:18px;margin:-4px 0 12px;color:#6f7f96;font-size:12px;line-height:1.5}
+  .friend-status.ok{color:#2dd4bf}
+  .friend-status.warn{color:#e7b24c}
+  .member-row.friend-clickable{cursor:pointer;transition:border-color .16s,background .16s,transform .16s}
+  .member-row.friend-clickable:hover,.member-row.friend-clickable:focus{border-color:rgba(231,178,76,.3);background:rgba(231,178,76,.06);outline:none}
+  .friend-profile-card{display:flex;align-items:center;gap:13px;padding:13px;border:1px solid rgba(148,164,187,.1);border-radius:10px;background:rgba(7,11,19,.32);margin-bottom:12px}
+  .friend-profile-avatar{width:46px;height:46px;border-radius:12px;background:rgba(231,178,76,.13);display:flex;align-items:center;justify-content:center;color:#e7b24c;font-size:18px;font-weight:900;flex:none}
+  .friend-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+  .friend-detail-cell{padding:12px;border:1px solid rgba(148,164,187,.1);border-radius:9px;background:rgba(7,11,19,.28);min-width:0}
+  @keyframes friend-panel-in{from{transform:translateY(-8px);opacity:.35}to{transform:none;opacity:1}}
   .badge{height:24px;padding:0 9px;border-radius:7px;font-size:11.5px;font-weight:800;display:inline-flex;align-items:center;flex:none;background:rgba(231,178,76,.12);color:#e7b24c}
   .badge.muted{background:rgba(148,164,187,.1);color:#94a4bb}
   .billing-card{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:15px;border:1px solid rgba(231,178,76,.18);border-radius:10px;background:linear-gradient(120deg,rgba(231,178,76,.09),rgba(7,11,19,.24));margin-top:14px}
@@ -114,7 +150,7 @@
     .billing-card{align-items:flex-start;flex-direction:column}
   }
   @media (max-width:620px){.theme-options{grid-template-columns:1fr}}
-  @media (max-width:520px){.profile-top{align-items:flex-start;flex-wrap:wrap}.profile-edit-btn{margin-left:70px}.profile-editor{grid-template-columns:1fr}.profile-editor-actions{justify-content:flex-end}}
+  @media (max-width:520px){.profile-top{align-items:flex-start;flex-wrap:wrap}.profile-edit-btn{margin-left:70px}.profile-editor{grid-template-columns:1fr}.profile-editor-actions{justify-content:flex-end}.friend-form{grid-template-columns:1fr}.friend-detail-grid{grid-template-columns:1fr}#friendsPanelCard{top:64px;left:12px;right:12px;width:auto;max-height:calc(100vh - 82px)}}
 </style>
 <link rel="stylesheet" href="theme.css?v=5873a2f4">
 </head>
@@ -152,8 +188,87 @@
           <div class="info-grid">
             <div class="info-cell"><div class="info-label">角色</div><div id="role" class="info-value">--</div></div>
             <div class="info-cell"><div class="info-label">剩余点数</div><div id="points" class="info-value mono">--</div></div>
+            <div class="info-cell"><div class="info-label">账号 ID</div><div class="info-value-row"><div id="accountId" class="info-value mono">--</div><button id="copyAccountIdBtn" class="btn info-copy-btn" type="button" disabled>复制</button></div></div>
             <div class="info-cell"><div class="info-label">密码状态</div><div id="mustChange" class="info-value">--</div></div>
-            <div class="info-cell"><div class="info-label">登录状态</div><div id="loginState" class="info-value">已连接</div></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="friendsPanelCard" class="settings-card" aria-hidden="true">
+        <div class="settings-card-body">
+          <div class="settings-card-head">
+            <div>
+              <div class="settings-card-title">好友</div>
+              <div class="settings-card-note">默认查看已添加好友，需要添加时再搜索账号 ID。</div>
+            </div>
+            <span id="friendsCount" class="badge muted">0 人</span>
+          </div>
+          <div id="friendListView" class="friend-view">
+            <div class="friend-list-toolbar">
+              <button id="toggleIncomingRequestsBtn" class="btn" type="button" aria-expanded="false" aria-controls="incomingRequestsPanel">收到的申请 <span id="incomingRequestsCount" class="friend-request-count">0</span></button>
+              <input id="friendSearchInput" class="friend-search" type="search" autocomplete="off" placeholder="搜索昵称 / 账号 ID" aria-label="搜索已有好友">
+              <button id="openAddFriendViewBtn" class="btn primary" type="button">添加好友</button>
+            </div>
+            <div class="friend-section">
+              <div class="friend-section-title">好友列表</div>
+              <div id="friendsList" class="member-list" aria-live="polite">
+                <div class="member-empty">还没有好友。</div>
+              </div>
+            </div>
+            <div id="incomingRequestsPanel" class="friend-request-panel" hidden>
+              <div class="friend-section">
+                <div class="friend-section-title">收到的申请</div>
+                <div id="incomingRequestsList" class="member-list" aria-live="polite">
+                  <div class="member-empty">暂无收到的好友申请。</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div id="friendAddView" class="friend-view" hidden>
+            <div class="friend-add-head">
+              <div>
+                <div class="friend-add-title">添加好友</div>
+                <div class="friend-add-note">输入对方账号 ID，发送申请后需对方同意。</div>
+              </div>
+              <button id="backFriendsListBtn" class="btn" type="button">返回</button>
+            </div>
+            <form id="friendForm" class="friend-form">
+              <input id="friendAccountIdInput" type="text" maxlength="8" autocomplete="off" placeholder="输入账号 ID">
+              <button id="addFriendBtn" class="btn primary" type="submit">发送申请</button>
+            </form>
+            <div id="friendAddStatus" class="friend-status" aria-live="polite"></div>
+            <div class="friend-section">
+              <div class="friend-section-title">发出的申请</div>
+              <div id="outgoingRequestsList" class="member-list" aria-live="polite">
+                <div class="member-empty">暂无等待对方同意的申请。</div>
+              </div>
+            </div>
+          </div>
+          <div id="friendDetailView" class="friend-view" hidden>
+            <div class="friend-add-head">
+              <div>
+                <div class="friend-add-title">好友个人信息</div>
+                <div class="friend-add-note">查看账号资料并维护备注。</div>
+              </div>
+              <button id="backFromFriendDetailBtn" class="btn" type="button">返回</button>
+            </div>
+            <div class="friend-profile-card">
+              <div id="friendDetailAvatar" class="friend-profile-avatar">--</div>
+              <div class="member-main">
+                <div id="friendDetailName" class="member-name">--</div>
+                <div id="friendDetailUsername" class="member-sub">--</div>
+              </div>
+            </div>
+            <div class="friend-detail-grid">
+              <div class="friend-detail-cell"><div class="info-label">账号 ID</div><div id="friendDetailAccountId" class="info-value mono">--</div></div>
+              <div class="friend-detail-cell"><div class="info-label">昵称</div><div id="friendDetailNickname" class="info-value">--</div></div>
+              <div class="friend-detail-cell"><div class="info-label">添加时间</div><div id="friendDetailCreatedAt" class="info-value">--</div></div>
+              <div class="friend-detail-cell"><div class="info-label">备注</div><div id="friendDetailRemark" class="info-value">--</div></div>
+            </div>
+            <form id="friendRemarkForm" class="settings-form">
+              <label class="field"><span>修改备注</span><input id="friendRemarkInput" type="text" maxlength="24" autocomplete="off" placeholder="输入备注名"></label>
+              <div class="action-row"><button id="saveFriendRemarkBtn" class="btn primary" type="submit">保存备注</button></div>
+            </form>
           </div>
         </div>
       </section>
@@ -248,11 +363,12 @@
   </section>
 </div>
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=b82c30d3"></script>
+<script src="cloud-shell.js?v=33a1b671"></script>
 <script>
 (function(){
   var $ = function(id){return document.getElementById(id);};
   var activeUser = null;
+  var activeFriendKey = '';
   var DEFAULT_PREFERENCES = {
     notifications:{taskSuccess:true,taskFailure:true,taskProgress:false,pointsChanges:true,systemNotices:true}
   };
@@ -316,10 +432,35 @@
     return (s ? s.charAt(0) : '?').toUpperCase();
   }
 
+  function esc(value){
+    return String(value == null ? '' : value).replace(/[&<>"']/g,function(ch){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];
+    });
+  }
+
   function roleText(role){
     if(role === 'admin') return '管理员';
     if(role === 'member') return '成员';
     return role || '成员';
+  }
+
+  function fallbackAccountId(username){
+    var source=String(username||'guest'), hash=2166136261;
+    for(var i=0;i<source.length;i++){
+      hash^=source.charCodeAt(i);
+      hash+=(hash<<1)+(hash<<4)+(hash<<7)+(hash<<8)+(hash<<24);
+    }
+    var alphabet='23456789ABCDEFGHJKLMNPQRSTUVWXYZ', out='HQ', n=hash>>>0;
+    for(var j=0;j<6;j++){
+      n=(n*1664525+1013904223)>>>0;
+      out+=alphabet[n%alphabet.length];
+    }
+    return out;
+  }
+
+  function accountIdForUser(user){
+    if(user&&user.account_id) return String(user.account_id);
+    return fallbackAccountId(user&&user.username);
   }
 
   function clearLocalAuth(){
@@ -363,8 +504,11 @@
     $('profileAvatar').textContent = initial(name);
     $('role').textContent = roleText(user.role);
     $('points').textContent = Number(user.points || 0).toLocaleString();
+    var accountId=accountIdForUser(user);
+    user.account_id=accountId;
+    $('accountId').textContent = accountId;
+    $('copyAccountIdBtn').disabled = !accountId;
     $('mustChange').textContent = user.must_change ? '建议尽快修改' : '已设置';
-    $('loginState').textContent = '已连接';
     $('accountStatus').textContent = '已连接';
     $('sessionAccount').textContent='@'+(user.username||'--')+' · 当前浏览器会话';
     if(!$('nicknameForm').hidden) $('nicknameInput').value = name;
@@ -454,6 +598,444 @@
 
   document.querySelectorAll('[data-notice-pref]').forEach(function(input){ input.addEventListener('change',function(){ savePreferences('notifications','notificationSaveState'); }); });
 
+  function copyText(text){
+    if(navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);
+    var input=document.createElement('input');
+    input.value=text;
+    input.setAttribute('readonly','');
+    input.style.position='fixed';
+    input.style.left='-9999px';
+    document.body.appendChild(input);
+    input.select();
+    try{ document.execCommand('copy'); }
+    finally{ input.remove(); }
+    return Promise.resolve();
+  }
+
+  $('copyAccountIdBtn').addEventListener('click',function(){
+    var id=(activeUser && activeUser.account_id) || $('accountId').textContent.trim();
+    if(!id || id==='--'){ toast('账号 ID 暂未生成'); return; }
+    copyText(id).then(function(){ toast('账号 ID 已复制'); })
+      .catch(function(){ toast('复制失败，请手动选择账号 ID'); });
+  });
+
+  function friendPanel(){
+    return $('friendsPanelCard');
+  }
+
+  function updateShellFriendsBadge(state){
+    var incoming = state && Array.isArray(state.incoming) ? state.incoming.length : 0;
+    if(window.HQ && typeof window.HQ.setFriendsBadge === 'function') window.HQ.setFriendsBadge(incoming);
+  }
+
+  function setFriendView(view){
+    var isAdd = view === 'add';
+    var isDetail = view === 'detail';
+    if($('friendListView')) $('friendListView').hidden = isAdd || isDetail;
+    if($('friendAddView')) $('friendAddView').hidden = !isAdd;
+    if($('friendDetailView')) $('friendDetailView').hidden = !isDetail;
+    if(isAdd){
+      setFriendStatus('', '');
+      setTimeout(function(){ var input=$('friendAccountIdInput'); if(input) input.focus(); },60);
+    }
+  }
+
+  function openAddFriendView(){ setFriendView('add'); }
+  function openFriendListView(){ setFriendView('list'); }
+
+  function setIncomingRequestsOpen(open){
+    var panel=$('incomingRequestsPanel'), btn=$('toggleIncomingRequestsBtn');
+    if(!panel || !btn) return;
+    panel.hidden=!open;
+    btn.setAttribute('aria-expanded',open?'true':'false');
+  }
+
+  function setFriendStatus(text,tone){
+    var el=$('friendAddStatus');
+    if(!el) return;
+    el.className='friend-status' + (tone ? ' ' + tone : '');
+    el.textContent=text || '';
+  }
+
+  function setFriendPanelOpen(open){
+    var panel=friendPanel();
+    if(!panel) return;
+    panel.classList.toggle('show',!!open);
+    panel.setAttribute('aria-hidden',open?'false':'true');
+    if(window.HQ && typeof window.HQ.setFriendsPanelExpanded === 'function') window.HQ.setFriendsPanelExpanded(!!open);
+    if(open){
+      setFriendView('list');
+      setIncomingRequestsOpen(false);
+      loadFriendState();
+    }
+  }
+
+  function openFriendPanel(){ setFriendPanelOpen(true); }
+  function closeFriendPanel(){ setFriendPanelOpen(false); }
+
+  function ensureFriendPanelChrome(){
+    var panel=friendPanel();
+    if(!panel || panel.querySelector('.friend-panel-close')) return;
+    panel.setAttribute('role','dialog');
+    panel.setAttribute('aria-modal','false');
+    panel.setAttribute('aria-label','好友');
+    var head=panel.querySelector('.settings-card-head');
+    if(!head) return;
+    var btn=document.createElement('button');
+    btn.id='closeFriendsPanel';
+    btn.className='friend-panel-close';
+    btn.type='button';
+    btn.setAttribute('aria-label','关闭好友');
+    btn.innerHTML='&times;';
+    btn.addEventListener('click',closeFriendPanel);
+    head.appendChild(btn);
+  }
+
+  function registerFriendPanel(){
+    ensureFriendPanelChrome();
+    window.addEventListener('hq:open-friends',openFriendPanel);
+    if(window.HQ && typeof window.HQ.registerFriendsPanel === 'function') window.HQ.registerFriendsPanel(openFriendPanel);
+    updateShellFriendsBadge(localFriendState());
+    if(location.hash === '#friends') setTimeout(openFriendPanel,0);
+  }
+
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded',registerFriendPanel);
+  else registerFriendPanel();
+
+  document.addEventListener('click',function(e){
+    var panel=friendPanel();
+    if(!panel || !panel.classList.contains('show')) return;
+    if((panel.contains && panel.contains(e.target)) || (e.target.closest && e.target.closest('.hq-friends-btn'))) return;
+    closeFriendPanel();
+  });
+  document.addEventListener('keydown',function(e){ if(e.key === 'Escape') closeFriendPanel(); });
+
+  $('openAddFriendViewBtn').addEventListener('click',openAddFriendView);
+  $('backFriendsListBtn').addEventListener('click',openFriendListView);
+  $('toggleIncomingRequestsBtn').addEventListener('click',function(){
+    var panel=$('incomingRequestsPanel');
+    if(!panel) return;
+    setIncomingRequestsOpen(panel.hidden);
+  });
+  $('friendSearchInput').addEventListener('input',function(){
+    renderFriends(localFriendState().friends);
+  });
+  $('friendsList').addEventListener('click',function(e){
+    var row=e.target.closest ? e.target.closest('[data-friend-key]') : null;
+    if(!row) return;
+    openFriendDetail(row.getAttribute('data-friend-key'));
+  });
+  $('friendsList').addEventListener('keydown',function(e){
+    if(e.key !== 'Enter' && e.key !== ' ') return;
+    var row=e.target.closest ? e.target.closest('[data-friend-key]') : null;
+    if(!row) return;
+    e.preventDefault();
+    openFriendDetail(row.getAttribute('data-friend-key'));
+  });
+  $('backFromFriendDetailBtn').addEventListener('click',openFriendListView);
+  $('friendRemarkForm').addEventListener('submit',function(e){
+    e.preventDefault();
+    if(!activeFriendKey) return;
+    var remark=($('friendRemarkInput').value || '').trim();
+    saveFriendRemark(activeFriendKey, remark);
+    var friend=findFriendByKey(activeFriendKey);
+    if(friend) renderFriendDetail(friend);
+    renderFriends(localFriendState().friends);
+    toast('备注已保存');
+  });
+  function friendStateKey(){ return accountKey('hq_friend_state_v1'); }
+  function friendRemarksKey(){ return accountKey('hq_friend_remarks_v1'); }
+
+  function friendKey(friend){
+    return String((friend && (friend.account_id || friend.username)) || '');
+  }
+
+  function localFriendRemarks(){
+    return readJson(friendRemarksKey());
+  }
+
+  function saveFriendRemark(key, remark){
+    var data=localFriendRemarks();
+    if(remark) data[key]=remark;
+    else delete data[key];
+    writeJson(friendRemarksKey(), data);
+  }
+
+  function friendRemark(friend){
+    var key=friendKey(friend);
+    var data=localFriendRemarks();
+    return key && data[key] ? String(data[key]) : '';
+  }
+
+  function friendOriginalName(friend){
+    return friend.name || friend.display_name || friend.username || '未命名好友';
+  }
+
+  function friendName(friend){
+    return friendRemark(friend) || friendOriginalName(friend);
+  }
+
+  function requestUser(req, side){
+    return side === 'from' ? (req.from_user || {}) : (req.to_user || {});
+  }
+
+  function friendSearchBlob(friend){
+    return [
+      friendRemark(friend),
+      friend.name,
+      friend.display_name,
+      friend.username,
+      friend.account_id
+    ].map(function(value){ return String(value || '').toLowerCase(); }).join(' ');
+  }
+
+  function renderFriends(items){
+    items = Array.isArray(items) ? items.slice() : [];
+    items.sort(function(a,b){ return Number(b.created_at || 0) - Number(a.created_at || 0); });
+    var query = (($('friendSearchInput') && $('friendSearchInput').value) || '').trim().toLowerCase();
+    var visible = query ? items.filter(function(friend){ return friendSearchBlob(friend).indexOf(query) >= 0; }) : items.slice(0,5);
+    $('friendsCount').textContent = items.length + ' 人';
+    if(!items.length){
+      $('friendsList').innerHTML = '<div class="member-empty">还没有好友。</div>';
+      return;
+    }
+    if(query && !visible.length){
+      $('friendsList').innerHTML = '<div class="member-empty">没有找到匹配好友。</div>';
+      return;
+    }
+    $('friendsList').innerHTML = visible.map(function(friend){
+      var name = friendName(friend);
+      var originalName = friendOriginalName(friend);
+      var remark = friendRemark(friend);
+      var username = friend.username ? '@' + friend.username : '@--';
+      var accountId = friend.account_id || '--';
+      var sub = remark ? (originalName + ' · ' + username + ' · ' + accountId) : (username + ' · ' + accountId);
+      var key = friendKey(friend);
+      return '<div class="member-row friend-clickable" role="button" tabindex="0" data-friend-key="' + esc(key) + '" aria-label="查看好友 ' + esc(name) + '">' +
+        '<div class="member-avatar">' + esc(initial(name)) + '</div>' +
+        '<div class="member-main"><div class="member-name">' + esc(name) + '</div>' +
+        '<div class="member-sub">' + esc(sub) + '</div></div>' +
+        '<span class="badge muted">好友</span>' +
+      '</div>';
+    }).join('');
+  }
+
+  function renderRequests(targetId, items, side, emptyText){
+    items = Array.isArray(items) ? items : [];
+    if(!items.length){
+      $(targetId).innerHTML = '<div class="member-empty">' + esc(emptyText) + '</div>';
+      return;
+    }
+    $(targetId).innerHTML = items.map(function(req){
+      var user = requestUser(req, side);
+      var name = friendName(user);
+      var username = user.username ? '@' + user.username : '@--';
+      var accountId = user.account_id || '--';
+      var actions = side === 'from'
+        ? '<div class="friend-actions">' +
+            '<button class="btn primary" type="button" data-action="accept" data-request-id="' + esc(req.id) + '">同意</button>' +
+            '<button class="btn danger" type="button" data-action="reject" data-request-id="' + esc(req.id) + '">拒绝</button>' +
+          '</div>'
+        : '<span class="badge muted">等待同意</span>';
+      return '<div class="member-row">' +
+        '<div class="member-avatar">' + esc(initial(name)) + '</div>' +
+        '<div class="member-main"><div class="member-name">' + esc(name) + '</div>' +
+        '<div class="member-sub">' + esc(username) + ' · ' + esc(accountId) + '</div></div>' +
+        actions +
+      '</div>';
+    }).join('');
+  }
+
+  function formatFriendTime(value){
+    var n=Number(value || 0);
+    if(!n) return '--';
+    if(n < 1000000000000) n = n * 1000;
+    try{ return new Date(n).toLocaleString('zh-CN',{hour12:false}); }
+    catch(e){ return '--'; }
+  }
+
+  function findFriendByKey(key){
+    var state=localFriendState();
+    return (state.friends || []).find(function(friend){ return friendKey(friend) === key; }) || null;
+  }
+
+  function renderFriendDetail(friend){
+    if(!friend) return;
+    activeFriendKey=friendKey(friend);
+    var name=friendName(friend), originalName=friendOriginalName(friend), remark=friendRemark(friend);
+    $('friendDetailAvatar').textContent=initial(name);
+    $('friendDetailName').textContent=name;
+    $('friendDetailUsername').textContent='@' + (friend.username || '--');
+    $('friendDetailAccountId').textContent=friend.account_id || '--';
+    $('friendDetailNickname').textContent=originalName;
+    $('friendDetailCreatedAt').textContent=formatFriendTime(friend.created_at);
+    $('friendDetailRemark').textContent=remark || '未设置';
+    $('friendRemarkInput').value=remark;
+  }
+
+  function openFriendDetail(key){
+    var friend=findFriendByKey(key);
+    if(!friend) return;
+    renderFriendDetail(friend);
+    setFriendView('detail');
+  }
+
+  function localFriendState(){
+    var data = readJson(friendStateKey());
+    return {
+      friends: Array.isArray(data.friends) ? data.friends : [],
+      incoming: Array.isArray(data.incoming) ? data.incoming : [],
+      outgoing: Array.isArray(data.outgoing) ? data.outgoing : []
+    };
+  }
+
+  function saveLocalFriendState(state){
+    writeJson(friendStateKey(), {
+      friends: state.friends || [],
+      incoming: state.incoming || [],
+      outgoing: state.outgoing || []
+    });
+  }
+
+  function renderFriendState(state){
+    state = state || localFriendState();
+    var incomingCount = Array.isArray(state.incoming) ? state.incoming.length : 0;
+    if($('incomingRequestsCount')) $('incomingRequestsCount').textContent = String(incomingCount);
+    renderRequests('incomingRequestsList', state.incoming, 'from', '暂无收到的好友申请。');
+    renderRequests('outgoingRequestsList', state.outgoing, 'to', '暂无等待对方同意的申请。');
+    renderFriends(state.friends);
+    updateShellFriendsBadge(state);
+  }
+
+  function addLocalOutgoingRequest(accountId){
+    var state=localFriendState();
+    var exists = state.outgoing.some(function(item){
+      return item && item.to_user && item.to_user.account_id === accountId;
+    });
+    if(exists) return false;
+    state.outgoing.unshift({
+      id:'local-' + Date.now(),
+      status:'pending',
+      created_at:Date.now(),
+      to_user:{name:'待验证账号',username:'',account_id:accountId}
+    });
+    saveLocalFriendState(state);
+    renderFriendState(state);
+    return true;
+  }
+
+  function loadFriendState(){
+    Promise.all([
+      apiFetch('/api/auth/friends'),
+      apiFetch('/api/auth/friend-requests')
+    ]).then(function(results){
+      var friendsRes = results[0], requestsRes = results[1];
+      if(friendsRes && friendsRes.ok && requestsRes && requestsRes.ok){
+        var state = {
+          friends: Array.isArray(friendsRes.data.friends) ? friendsRes.data.friends : [],
+          incoming: Array.isArray(requestsRes.data.incoming) ? requestsRes.data.incoming : [],
+          outgoing: Array.isArray(requestsRes.data.outgoing) ? requestsRes.data.outgoing : []
+        };
+        saveLocalFriendState(state);
+        renderFriendState(state);
+        return;
+      }
+      renderFriendState(localFriendState());
+    }).catch(function(){
+      renderFriendState(localFriendState());
+    });
+  }
+
+  $('friendAccountIdInput').addEventListener('input',function(){
+    this.value = this.value.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,8);
+  });
+
+  $('friendForm').addEventListener('submit',function(e){
+    e.preventDefault();
+    var input=$('friendAccountIdInput'), btn=$('addFriendBtn');
+    var accountId=(input.value||'').trim().toUpperCase();
+    if(!accountId){ toast('请填写账号 ID'); input.focus(); return; }
+    if(activeUser && accountId === activeUser.account_id){ toast('不能添加自己'); return; }
+    setBusy(btn,true,'发送中');
+    apiFetch('/api/auth/friends/request',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({account_id:accountId})
+    }).then(function(res){
+      if(res && res.ok && res.data && res.data.requests){
+        var state = localFriendState();
+        state.incoming = Array.isArray(res.data.requests.incoming) ? res.data.requests.incoming : [];
+        state.outgoing = Array.isArray(res.data.requests.outgoing) ? res.data.requests.outgoing : [];
+        saveLocalFriendState(state);
+        renderFriendState(state);
+        setFriendStatus('好友申请已发送','ok');
+        toast('好友申请已发送');
+        return;
+      }
+      if(res && res.status === 409){
+        var detail = res.data && res.data.detail || '';
+        if(detail.indexOf('已经是好友') >= 0){
+          setFriendStatus('已经是好友','warn');
+          toast('已经是好友');
+        }else{
+          setFriendStatus('请勿重复申请','warn');
+          toast('请勿重复申请');
+        }
+        return;
+      }
+      if(res && res.status === 404 && res.data && res.data.detail === 'not found'){
+        if(addLocalOutgoingRequest(accountId)){
+          setFriendStatus('好友申请已发送','ok');
+          toast('好友申请已发送到本地预览');
+        }else{
+          setFriendStatus('请勿重复申请','warn');
+          toast('请勿重复申请');
+        }
+        return;
+      }
+      if(res && !res.ok) throw new Error(res.data.detail || '发送好友申请失败');
+      if(addLocalOutgoingRequest(accountId)){
+        setFriendStatus('好友申请已发送','ok');
+        toast('好友申请已发送到本地预览');
+      }else{
+        setFriendStatus('请勿重复申请','warn');
+        toast('请勿重复申请');
+      }
+    }).catch(function(err){
+      setFriendStatus(err.message || '发送好友申请失败','warn');
+      toast(err.message || '发送好友申请失败');
+    }).finally(function(){
+      setBusy(btn,false,'发送申请');
+    });
+  });
+
+  $('incomingRequestsList').addEventListener('click',function(e){
+    var btn=e.target.closest('button[data-action][data-request-id]');
+    if(!btn) return;
+    var action=btn.getAttribute('data-action');
+    var requestId=btn.getAttribute('data-request-id');
+    setBusy(btn,true,action === 'accept' ? '同意中' : '拒绝中');
+    apiFetch('/api/auth/friend-requests/respond',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({request_id:requestId,action:action})
+    }).then(function(res){
+      if(!res || !res.ok) throw new Error(res && res.data && res.data.detail || '处理好友申请失败');
+      var state = {
+        friends: Array.isArray(res.data.friends) ? res.data.friends : localFriendState().friends,
+        incoming: res.data.requests && Array.isArray(res.data.requests.incoming) ? res.data.requests.incoming : [],
+        outgoing: res.data.requests && Array.isArray(res.data.requests.outgoing) ? res.data.requests.outgoing : []
+      };
+      saveLocalFriendState(state);
+      renderFriendState(state);
+      toast(action === 'accept' ? '已添加好友' : '已拒绝申请');
+    }).catch(function(err){
+      toast(err.message || '处理好友申请失败');
+    }).finally(function(){
+      setBusy(btn,false,action === 'accept' ? '同意' : '拒绝');
+    });
+  });
+
   function loadMe(){
     apiFetch('/api/auth/me').then(function(res){
       if(!res) return;
@@ -461,10 +1043,10 @@
         throw new Error(res.data && res.data.detail || '账号读取失败');
       }
       renderUser(res.data.user);
+      loadFriendState();
       if(window.HQ && typeof window.HQ.refreshPoints === 'function') window.HQ.refreshPoints();
     }).catch(function(e){
       $('accountStatus').textContent = '读取失败';
-      $('loginState').textContent = '未连接';
       toast(e.message || '账号读取失败');
     });
   }

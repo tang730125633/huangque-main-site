@@ -20,6 +20,12 @@ NEW_USER_TRIAL_POINTS = int(os.environ.get("HQ_AUTH_TRIAL_POINTS", "16"))  # 新
 LOGIN_FAILS = {}
 REGISTER_HITS = {}
 REVOKED_TOKENS = set()
+ACCOUNT_ID_LENGTH = 8
+ACCOUNT_ID_PREFIX = "HQ"
+ACCOUNT_ID_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+CANVAS_NAME_MAX = 48
+CANVAS_DATA_MAX_BYTES = int(os.environ.get("HQ_CANVAS_DATA_MAX_BYTES", str(6 * 1024 * 1024)))
+CANVAS_ROLES = {"viewer", "editor"}
 
 def db():
     c = sqlite3.connect(DB, timeout=10)
@@ -39,6 +45,11 @@ def init_db():
         must_change INTEGER DEFAULT 1,
         created_at TEXT DEFAULT (datetime('now'))
     )""")
+    user_cols = {r["name"] for r in c.execute("PRAGMA table_info(users)").fetchall()}
+    if "account_id" not in user_cols:
+        c.execute("ALTER TABLE users ADD COLUMN account_id TEXT")
+    _ensure_all_account_ids(c)
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_account_id ON users(account_id)")
     c.execute("""CREATE TABLE IF NOT EXISTS tokens(
         token TEXT PRIMARY KEY,
         username TEXT NOT NULL,
@@ -58,6 +69,44 @@ def init_db():
     # 任务扣点/退点接入审计后，这张表按任务量增长（原来只有人工加减点，几乎不涨）。
     # 按用户查流水是后台最常用的路径，没索引会随表全扫。
     c.execute("CREATE INDEX IF NOT EXISTS idx_points_audit_user ON points_audit(username, id DESC)")
+    c.execute("""CREATE TABLE IF NOT EXISTS friendships(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL,
+        friend_username TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        UNIQUE(username, friend_username)
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_friendships_user ON friendships(username, id DESC)")
+    c.execute("""CREATE TABLE IF NOT EXISTS friend_requests(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_username TEXT NOT NULL,
+        to_username TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at INTEGER NOT NULL,
+        reviewed_at INTEGER,
+        UNIQUE(from_username, to_username, status)
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_friend_requests_to ON friend_requests(to_username, status, id DESC)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_friend_requests_from ON friend_requests(from_username, status, id DESC)")
+    c.execute("""CREATE TABLE IF NOT EXISTS canvas_boards(
+        id TEXT PRIMARY KEY,
+        owner_username TEXT NOT NULL,
+        name TEXT NOT NULL,
+        data_json TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_canvas_boards_owner ON canvas_boards(owner_username, updated_at DESC)")
+    c.execute("""CREATE TABLE IF NOT EXISTS canvas_members(
+        board_id TEXT NOT NULL,
+        username TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'viewer',
+        invited_by TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(board_id, username)
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_canvas_members_user ON canvas_members(username, board_id)")
     c.execute("""CREATE TABLE IF NOT EXISTS recharge_orders(
         order_id TEXT PRIMARY KEY,
         username TEXT NOT NULL,
@@ -75,6 +124,40 @@ def init_db():
         c.execute("ALTER TABLE tokens ADD COLUMN expires_at INTEGER")
     c.commit(); c.close()
 
+def generate_account_id():
+    n = ACCOUNT_ID_LENGTH - len(ACCOUNT_ID_PREFIX)
+    return ACCOUNT_ID_PREFIX + "".join(secrets.choice(ACCOUNT_ID_ALPHABET) for _ in range(n))
+
+def _new_unique_account_id(c):
+    for _ in range(64):
+        account_id = generate_account_id()
+        row = c.execute("SELECT 1 FROM users WHERE account_id=?", (account_id,)).fetchone()
+        if not row:
+            return account_id
+    raise RuntimeError("account_id exhausted")
+
+def _ensure_all_account_ids(c):
+    rows = c.execute("SELECT username FROM users WHERE account_id IS NULL OR account_id=''").fetchall()
+    for row in rows:
+        c.execute("UPDATE users SET account_id=? WHERE username=?", (_new_unique_account_id(c), row["username"]))
+
+def ensure_account_id(username, c=None):
+    own = c is None
+    if own: c = db()
+    try:
+        row = c.execute("SELECT account_id FROM users WHERE username=?", (username,)).fetchone()
+        if not row:
+            return None
+        account_id = row["account_id"]
+        if account_id:
+            return account_id
+        account_id = _new_unique_account_id(c)
+        c.execute("UPDATE users SET account_id=? WHERE username=?", (account_id, username))
+        if own: c.commit()
+        return account_id
+    finally:
+        if own: c.close()
+
 def hash_pw(password, salt):
     return hashlib.pbkdf2_hmac('sha256', password.encode(), bytes.fromhex(salt), ITER).hex()
 
@@ -82,22 +165,24 @@ def create_user(username, password, points=0, role='member'):
     init_db()
     salt = secrets.token_hex(16)
     c = db()
-    c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change)
-                 VALUES(?,?,?,?,?,?,1)
+    c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change,account_id)
+                 VALUES(?,?,?,?,?,?,1,?)
                  ON CONFLICT(username) DO UPDATE SET
                    pw_hash=excluded.pw_hash, pw_salt=excluded.pw_salt,
                    points=excluded.points, role=excluded.role, must_change=1""",
-              (username, hash_pw(password, salt), salt, username, points, role))
+              (username, hash_pw(password, salt), salt, username, points, role, _new_unique_account_id(c)))
+    ensure_account_id(username, c)
     c.commit(); c.close()
     print("OK user:", username)
 
-def public_user(username, display_name=None, points=0, role='member', must_change=False):
+def public_user(username, display_name=None, points=0, role='member', must_change=False, account_id=None):
     return {
         "username": username,
         "name": display_name or username,
         "points": points,
         "role": role,
-        "must_change": bool(must_change)
+        "must_change": bool(must_change),
+        "account_id": account_id or ""
     }
 
 def public_points(row):
@@ -106,6 +191,445 @@ def public_points(row):
         "user_id": row["id"],
         "points": row["points"],
     }
+
+def public_friend(row):
+    return {
+        "username": row["username"],
+        "name": row["display_name"] or row["username"],
+        "account_id": row["account_id"] or "",
+        "role": row["role"],
+        "created_at": row["friend_created_at"],
+    }
+
+def list_friends(username):
+    c = db()
+    try:
+        rows = c.execute("""SELECT u.username, u.display_name, u.account_id, u.role, f.created_at AS friend_created_at
+                            FROM friendships f
+                            JOIN users u ON u.username=f.friend_username
+                            WHERE f.username=?
+                            ORDER BY f.id DESC""", (username,)).fetchall()
+        return [public_friend(r) for r in rows]
+    finally:
+        c.close()
+
+def add_friend_by_account_id(username, account_id):
+    account_id = (account_id or "").strip().upper()
+    if not account_id:
+        return None, "missing"
+    c = db()
+    try:
+        me = c.execute("SELECT username, account_id FROM users WHERE username=?", (username,)).fetchone()
+        if not me:
+            return None, "not_found"
+        friend = c.execute("""SELECT username, display_name, account_id, role
+                              FROM users WHERE account_id=?""", (account_id,)).fetchone()
+        if not friend:
+            return None, "not_found"
+        if friend["username"] == username:
+            return None, "self"
+        try:
+            c.execute("""INSERT INTO friendships(username, friend_username, created_at)
+                         VALUES(?,?,?)""", (username, friend["username"], int(time.time())))
+            c.commit()
+        except sqlite3.IntegrityError:
+            return public_friend({
+                "username": friend["username"],
+                "display_name": friend["display_name"],
+                "account_id": friend["account_id"],
+                "role": friend["role"],
+                "friend_created_at": int(time.time()),
+            }), "exists"
+        return list_friends(username), None
+    finally:
+        c.close()
+
+def public_friend_request(row):
+    return {
+        "id": row["id"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "reviewed_at": row["reviewed_at"],
+        "from_user": {
+            "username": row["from_username"],
+            "name": row["from_display_name"] or row["from_username"],
+            "account_id": row["from_account_id"] or "",
+        },
+        "to_user": {
+            "username": row["to_username"],
+            "name": row["to_display_name"] or row["to_username"],
+            "account_id": row["to_account_id"] or "",
+        },
+    }
+
+def list_friend_requests(username):
+    c = db()
+    try:
+        rows = c.execute("""SELECT r.id, r.from_username, r.to_username, r.status, r.created_at, r.reviewed_at,
+                                   fu.display_name AS from_display_name, fu.account_id AS from_account_id,
+                                   tu.display_name AS to_display_name, tu.account_id AS to_account_id
+                            FROM friend_requests r
+                            JOIN users fu ON fu.username=r.from_username
+                            JOIN users tu ON tu.username=r.to_username
+                            WHERE (r.from_username=? OR r.to_username=?) AND r.status='pending'
+                            ORDER BY r.id DESC""", (username, username)).fetchall()
+        incoming, outgoing = [], []
+        for row in rows:
+            item = public_friend_request(row)
+            if row["to_username"] == username:
+                incoming.append(item)
+            else:
+                outgoing.append(item)
+        return {"incoming": incoming, "outgoing": outgoing}
+    finally:
+        c.close()
+
+def are_friends(c, username, friend_username):
+    row = c.execute("""SELECT 1 FROM friendships
+                       WHERE username=? AND friend_username=?""", (username, friend_username)).fetchone()
+    return bool(row)
+
+def create_friend_request(username, account_id):
+    account_id = (account_id or "").strip().upper()
+    if not account_id:
+        return None, "missing"
+    c = db()
+    try:
+        me = c.execute("SELECT username, account_id FROM users WHERE username=?", (username,)).fetchone()
+        if not me:
+            return None, "not_found"
+        friend = c.execute("""SELECT username, display_name, account_id, role
+                              FROM users WHERE account_id=?""", (account_id,)).fetchone()
+        if not friend:
+            return None, "not_found"
+        if friend["username"] == username:
+            return None, "self"
+        if are_friends(c, username, friend["username"]):
+            return None, "already_friends"
+        reverse = c.execute("""SELECT id FROM friend_requests
+                               WHERE from_username=? AND to_username=? AND status='pending'""",
+                            (friend["username"], username)).fetchone()
+        if reverse:
+            return None, "incoming_pending"
+        try:
+            c.execute("""INSERT INTO friend_requests(from_username, to_username, status, created_at)
+                         VALUES(?,?,?,?)""", (username, friend["username"], "pending", int(time.time())))
+            c.commit()
+        except sqlite3.IntegrityError:
+            return None, "pending"
+        return list_friend_requests(username), None
+    finally:
+        c.close()
+
+def respond_friend_request(username, request_id, action):
+    action = (action or "").strip().lower()
+    if action not in ("accept", "reject"):
+        return None, "bad_action"
+    try:
+        request_id = int(request_id)
+    except Exception:
+        return None, "missing"
+    c = db()
+    try:
+        row = c.execute("""SELECT * FROM friend_requests
+                           WHERE id=? AND to_username=? AND status='pending'""",
+                        (request_id, username)).fetchone()
+        if not row:
+            return None, "not_found"
+        now = int(time.time())
+        status = "accepted" if action == "accept" else "rejected"
+        c.execute("""UPDATE friend_requests SET status=?, reviewed_at=?
+                     WHERE id=? AND to_username=? AND status='pending'""",
+                  (status, now, request_id, username))
+        if action == "accept":
+            c.execute("""INSERT OR IGNORE INTO friendships(username, friend_username, created_at)
+                         VALUES(?,?,?)""", (row["from_username"], row["to_username"], now))
+            c.execute("""INSERT OR IGNORE INTO friendships(username, friend_username, created_at)
+                         VALUES(?,?,?)""", (row["to_username"], row["from_username"], now))
+        c.commit()
+        return {"friends": list_friends(username), "requests": list_friend_requests(username)}, None
+    finally:
+        c.close()
+
+def normalize_canvas_name(name):
+    name = " ".join(str(name or "").strip().split())
+    if not name:
+        return "未命名协作画布", None
+    if any(ord(ch) < 32 for ch in name):
+        return None, "bad_name"
+    return name[:CANVAS_NAME_MAX], None
+
+def normalize_canvas_role(role):
+    role = str(role or "viewer").strip().lower()
+    if role not in CANVAS_ROLES:
+        return None
+    return role
+
+def pack_canvas_data(data):
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        return None, "bad_data"
+    try:
+        raw = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        return None, "bad_data"
+    if len(raw.encode("utf-8")) > CANVAS_DATA_MAX_BYTES:
+        return None, "too_large"
+    return raw, None
+
+def make_canvas_id(c):
+    for _ in range(64):
+        board_id = "cb_" + secrets.token_urlsafe(12).replace("-", "_")
+        row = c.execute("SELECT 1 FROM canvas_boards WHERE id=?", (board_id,)).fetchone()
+        if not row:
+            return board_id
+    raise RuntimeError("canvas id exhausted")
+
+def row_get(row, key, default=None):
+    try:
+        return row[key]
+    except Exception:
+        return default
+
+def public_canvas_member(row):
+    return {
+        "username": row["username"],
+        "name": row["display_name"] or row["username"],
+        "account_id": row["account_id"] or "",
+        "role": row["member_role"],
+        "created_at": row["member_created_at"],
+    }
+
+def list_canvas_members(c, board_id):
+    rows = c.execute("""SELECT m.username, m.role AS member_role, m.created_at AS member_created_at,
+                               u.display_name, u.account_id
+                        FROM canvas_members m
+                        JOIN users u ON u.username=m.username
+                        WHERE m.board_id=?
+                        ORDER BY m.created_at DESC, m.username ASC""", (board_id,)).fetchall()
+    return [public_canvas_member(row) for row in rows]
+
+def canvas_member_count(c, board_id):
+    row = c.execute("SELECT COUNT(*) AS n FROM canvas_members WHERE board_id=?", (board_id,)).fetchone()
+    return int(row["n"] or 0) if row else 0
+
+def public_canvas_board(row, role, include_data=False, members_count=None):
+    board = {
+        "id": row["id"],
+        "name": row["name"],
+        "owner_username": row["owner_username"],
+        "role": role,
+        "version": int(row["version"] or 1),
+        "created_at": int(row["created_at"] or 0),
+        "updated_at": int(row["updated_at"] or 0),
+        "members_count": int(members_count if members_count is not None else row_get(row, "members_count", 0) or 0),
+    }
+    if include_data:
+        try:
+            board["data"] = json.loads(row["data_json"] or "{}")
+        except Exception:
+            board["data"] = {}
+    return board
+
+def canvas_role_and_board(c, username, board_id):
+    row = c.execute("SELECT * FROM canvas_boards WHERE id=?", (board_id,)).fetchone()
+    if not row:
+        return None, None
+    if row["owner_username"] == username:
+        return "owner", row
+    member = c.execute("SELECT role FROM canvas_members WHERE board_id=? AND username=?",
+                       (board_id, username)).fetchone()
+    if not member:
+        return None, row
+    return member["role"], row
+
+def list_canvas_boards(username):
+    c = db()
+    try:
+        items = []
+        owned = c.execute("""SELECT b.*, (SELECT COUNT(*) FROM canvas_members m WHERE m.board_id=b.id) AS members_count
+                             FROM canvas_boards b
+                             WHERE b.owner_username=?""", (username,)).fetchall()
+        shared = c.execute("""SELECT b.*, m.role AS access_role,
+                                     (SELECT COUNT(*) FROM canvas_members cm WHERE cm.board_id=b.id) AS members_count
+                              FROM canvas_members m
+                              JOIN canvas_boards b ON b.id=m.board_id
+                              WHERE m.username=? AND b.owner_username<>?""", (username, username)).fetchall()
+        for row in owned:
+            items.append(public_canvas_board(row, "owner", members_count=row["members_count"]))
+        for row in shared:
+            items.append(public_canvas_board(row, row["access_role"], members_count=row["members_count"]))
+        items.sort(key=lambda item: item["updated_at"], reverse=True)
+        return items, None
+    finally:
+        c.close()
+
+def create_canvas_board(username, payload):
+    name, err = normalize_canvas_name((payload or {}).get("name"))
+    if err:
+        return None, err
+    data_json, err = pack_canvas_data((payload or {}).get("data") or {})
+    if err:
+        return None, err
+    c = db()
+    try:
+        now = int(time.time())
+        board_id = make_canvas_id(c)
+        c.execute("""INSERT INTO canvas_boards(id, owner_username, name, data_json, version, created_at, updated_at)
+                     VALUES(?,?,?,?,?,?,?)""", (board_id, username, name, data_json, 1, now, now))
+        row = c.execute("SELECT * FROM canvas_boards WHERE id=?", (board_id,)).fetchone()
+        c.commit()
+        return public_canvas_board(row, "owner", include_data=True), None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+def get_canvas_board(username, board_id):
+    c = db()
+    try:
+        role, row = canvas_role_and_board(c, username, board_id)
+        if not role:
+            return None, "not_found"
+        board = public_canvas_board(row, role, include_data=True, members_count=canvas_member_count(c, board_id))
+        board["members"] = list_canvas_members(c, board_id)
+        return board, None
+    finally:
+        c.close()
+
+def save_canvas_board(username, board_id, payload):
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        role, row = canvas_role_and_board(c, username, board_id)
+        if not role:
+            c.rollback()
+            return None, "not_found"
+        if role not in ("owner", "editor"):
+            c.rollback()
+            return None, "forbidden"
+        try:
+            expected_version = int((payload or {}).get("version"))
+        except Exception:
+            c.rollback()
+            return None, "bad_version"
+        current_version = int(row["version"] or 1)
+        if expected_version != current_version:
+            board = public_canvas_board(row, role, include_data=True, members_count=canvas_member_count(c, board_id))
+            board["members"] = list_canvas_members(c, board_id)
+            c.rollback()
+            return board, "conflict"
+        data_json, err = pack_canvas_data((payload or {}).get("data") or {})
+        if err:
+            c.rollback()
+            return None, err
+        name = row["name"]
+        if "name" in (payload or {}):
+            name, err = normalize_canvas_name(payload.get("name"))
+            if err:
+                c.rollback()
+                return None, err
+        now = int(time.time())
+        c.execute("""UPDATE canvas_boards
+                     SET name=?, data_json=?, version=version+1, updated_at=?
+                     WHERE id=?""", (name, data_json, now, board_id))
+        fresh = c.execute("SELECT * FROM canvas_boards WHERE id=?", (board_id,)).fetchone()
+        board = public_canvas_board(fresh, role, include_data=True, members_count=canvas_member_count(c, board_id))
+        board["members"] = list_canvas_members(c, board_id)
+        c.commit()
+        return board, None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+def add_canvas_member(username, board_id, payload):
+    account_id = str((payload or {}).get("account_id") or "").strip().upper()
+    role = normalize_canvas_role((payload or {}).get("role") or "viewer")
+    if not account_id:
+        return None, "missing"
+    if not role:
+        return None, "bad_role"
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        access, board = canvas_role_and_board(c, username, board_id)
+        if not access:
+            c.rollback()
+            return None, "not_found"
+        if access != "owner":
+            c.rollback()
+            return None, "forbidden"
+        target = c.execute("SELECT username FROM users WHERE account_id=?", (account_id,)).fetchone()
+        if not target:
+            c.rollback()
+            return None, "user_not_found"
+        target_username = target["username"]
+        if target_username == username:
+            c.rollback()
+            return None, "self"
+        if not are_friends(c, username, target_username):
+            c.rollback()
+            return None, "not_friend"
+        now = int(time.time())
+        c.execute("""INSERT INTO canvas_members(board_id, username, role, invited_by, created_at)
+                     VALUES(?,?,?,?,?)
+                     ON CONFLICT(board_id, username) DO UPDATE SET
+                       role=excluded.role, invited_by=excluded.invited_by""",
+                  (board_id, target_username, role, username, now))
+        members = list_canvas_members(c, board_id)
+        c.commit()
+        return members, None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+def remove_canvas_member(username, board_id, member_username):
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        access, board = canvas_role_and_board(c, username, board_id)
+        if not access:
+            c.rollback()
+            return None, "not_found"
+        if access != "owner":
+            c.rollback()
+            return None, "forbidden"
+        c.execute("DELETE FROM canvas_members WHERE board_id=? AND username=?", (board_id, member_username))
+        members = list_canvas_members(c, board_id)
+        c.commit()
+        return members, None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+def delete_canvas_board(username, board_id):
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        access, board = canvas_role_and_board(c, username, board_id)
+        if not access:
+            c.rollback()
+            return False, "not_found"
+        if access != "owner":
+            c.rollback()
+            return False, "forbidden"
+        c.execute("DELETE FROM canvas_members WHERE board_id=?", (board_id,))
+        c.execute("DELETE FROM canvas_boards WHERE id=?", (board_id,))
+        c.commit()
+        return True, None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
 
 def get_points_row(username, c=None):
     own = c is None
@@ -683,9 +1207,10 @@ class H(BaseHTTPRequestHandler):
             salt = secrets.token_hex(16)
             c = db()
             try:
-                c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change)
-                             VALUES(?,?,?,?,?,?,0)""",
-                          (u, hash_pw(pw, salt), salt, name, NEW_USER_TRIAL_POINTS, "member"))
+                account_id = _new_unique_account_id(c)
+                c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change,account_id)
+                             VALUES(?,?,?,?,?,?,0,?)""",
+                          (u, hash_pw(pw, salt), salt, name, NEW_USER_TRIAL_POINTS, "member", account_id))
                 tok = issue_token(u, c)
                 c.commit()
                 self._record_register_hit()
@@ -697,7 +1222,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(500, {"detail": "注册失败"})
             finally:
                 c.close()
-            return self._send(200, {"user": public_user(u, name, NEW_USER_TRIAL_POINTS)}, {"Set-Cookie": auth_cookie_header(tok)})
+            return self._send(200, {"user": public_user(u, name, NEW_USER_TRIAL_POINTS, account_id=account_id)}, {"Set-Cookie": auth_cookie_header(tok)})
         if p == "/api/auth/login":
             d = self._body()
             if self._bad_json():
@@ -711,10 +1236,12 @@ class H(BaseHTTPRequestHandler):
                 self._record_login_failure(u)
                 return self._send(401, {"detail": "账号或密码错误"})
             self._clear_login_failures(u)
+            account_id = row["account_id"] or ensure_account_id(u)
             tok = issue_token(u)
             return self._send(200, {"user": {
                 "username": u, "name": row["display_name"], "points": row["points"],
-                "role": row["role"], "must_change": bool(row["must_change"])}}, {"Set-Cookie": auth_cookie_header(tok)})
+                "role": row["role"], "must_change": bool(row["must_change"]),
+                "account_id": account_id}}, {"Set-Cookie": auth_cookie_header(tok)})
         if p == "/api/auth/miniprogram-login":
             # 小程序 wx.request 不像浏览器那样自动带 httpOnly cookie，专供小程序客户端：
             # token 放响应体让小程序自己存起来，后续走 Authorization: Bearer 请求头（网站登录/注册不受影响，仍只走 cookie）。
@@ -730,10 +1257,12 @@ class H(BaseHTTPRequestHandler):
                 self._record_login_failure(u)
                 return self._send(401, {"detail": "账号或密码错误"})
             self._clear_login_failures(u)
+            account_id = row["account_id"] or ensure_account_id(u)
             tok = issue_token(u)
             return self._send(200, {"token": tok, "user": {
                 "username": u, "name": row["display_name"], "points": row["points"],
-                "role": row["role"], "must_change": bool(row["must_change"])}})
+                "role": row["role"], "must_change": bool(row["must_change"]),
+                "account_id": account_id}})
         if p == "/api/auth/miniprogram-register":
             d = self._body()
             if self._bad_json():
@@ -756,9 +1285,10 @@ class H(BaseHTTPRequestHandler):
             salt = secrets.token_hex(16)
             c = db()
             try:
-                c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change)
-                             VALUES(?,?,?,?,?,?,0)""",
-                          (u, hash_pw(pw, salt), salt, name, NEW_USER_TRIAL_POINTS, "member"))
+                account_id = _new_unique_account_id(c)
+                c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change,account_id)
+                             VALUES(?,?,?,?,?,?,0,?)""",
+                          (u, hash_pw(pw, salt), salt, name, NEW_USER_TRIAL_POINTS, "member", account_id))
                 tok = issue_token(u, c)
                 c.commit()
                 self._record_register_hit()
@@ -770,7 +1300,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(500, {"detail": "注册失败"})
             finally:
                 c.close()
-            return self._send(200, {"token": tok, "user": public_user(u, name, NEW_USER_TRIAL_POINTS)})
+            return self._send(200, {"token": tok, "user": public_user(u, name, NEW_USER_TRIAL_POINTS, account_id=account_id)})
         if p == "/api/auth/logout":
             clear_cookie = {"Set-Cookie": clear_auth_cookie_header()}
             tok = request_token(self.headers)
@@ -843,8 +1373,161 @@ class H(BaseHTTPRequestHandler):
             finally:
                 c.close()
             return self._send(200, {"ok": True, "user": public_user(
-                fresh["username"], fresh["display_name"], fresh["points"], fresh["role"], fresh["must_change"]
+                fresh["username"], fresh["display_name"], fresh["points"], fresh["role"], fresh["must_change"],
+                fresh["account_id"] or ensure_account_id(fresh["username"])
             )})
+        if p == "/api/auth/canvas/boards":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "request body must be valid JSON"})
+            try:
+                board, err = create_canvas_board(row["username"], d)
+                if err == "bad_name":
+                    return self._send(400, {"detail": "画布名称不可包含控制字符"})
+                if err == "bad_data":
+                    return self._send(400, {"detail": "画布数据格式不正确"})
+                if err == "too_large":
+                    return self._send(413, {"detail": "画布数据过大"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, "board": board})
+            except Exception:
+                return self._send(500, {"detail": "canvas create failed"})
+        canvas_prefix = "/api/auth/canvas/boards/"
+        if p.startswith(canvas_prefix) and p.endswith("/save"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            board_id = urllib.parse.unquote(p[len(canvas_prefix):-len("/save")])
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "request body must be valid JSON"})
+            try:
+                board, err = save_canvas_board(row["username"], board_id, d)
+                if err == "not_found":
+                    return self._send(404, {"detail": "协作画布不存在"})
+                if err == "forbidden":
+                    return self._send(403, {"detail": "没有编辑权限"})
+                if err == "bad_version":
+                    return self._send(400, {"detail": "缺少画布版本号"})
+                if err == "conflict":
+                    return self._send(409, {"detail": "画布已被其他成员更新", "board": board})
+                if err == "bad_name":
+                    return self._send(400, {"detail": "画布名称不可包含控制字符"})
+                if err == "bad_data":
+                    return self._send(400, {"detail": "画布数据格式不正确"})
+                if err == "too_large":
+                    return self._send(413, {"detail": "画布数据过大"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, "board": board})
+            except Exception:
+                return self._send(500, {"detail": "canvas save failed"})
+        if p.startswith(canvas_prefix) and p.endswith("/members"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            board_id = urllib.parse.unquote(p[len(canvas_prefix):-len("/members")])
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "request body must be valid JSON"})
+            try:
+                members, err = add_canvas_member(row["username"], board_id, d)
+                if err == "missing":
+                    return self._send(400, {"detail": "请填写账号 ID"})
+                if err == "bad_role":
+                    return self._send(400, {"detail": "协作权限不正确"})
+                if err == "not_found":
+                    return self._send(404, {"detail": "协作画布不存在"})
+                if err == "forbidden":
+                    return self._send(403, {"detail": "只有画布创建者可以邀请成员"})
+                if err == "user_not_found":
+                    return self._send(404, {"detail": "账号 ID 不存在"})
+                if err == "self":
+                    return self._send(400, {"detail": "不能邀请自己"})
+                if err == "not_friend":
+                    return self._send(403, {"detail": "只能邀请已添加的好友"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, "members": members})
+            except Exception:
+                return self._send(500, {"detail": "canvas member update failed"})
+        if p in {"/api/auth/friends/request", "/api/auth/friends/add"}:
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            requests, err = create_friend_request(row["username"], d.get("account_id"))
+            if err == "missing":
+                return self._send(400, {"detail": "请填写账号 ID"})
+            if err == "not_found":
+                return self._send(404, {"detail": "账号 ID 不存在"})
+            if err == "self":
+                return self._send(400, {"detail": "不能添加自己"})
+            if err == "already_friends":
+                return self._send(409, {"detail": "已经是好友"})
+            if err == "pending":
+                return self._send(409, {"detail": "好友申请已发送"})
+            if err == "incoming_pending":
+                return self._send(409, {"detail": "对方已发来好友申请，请先处理"})
+            return self._send(200, {"ok": True, "requests": requests})
+        if p == "/api/auth/friend-requests/respond":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            data, err = respond_friend_request(row["username"], d.get("request_id"), d.get("action"))
+            if err == "missing":
+                return self._send(400, {"detail": "缺少申请 ID"})
+            if err == "bad_action":
+                return self._send(400, {"detail": "操作必须是 accept 或 reject"})
+            if err == "not_found":
+                return self._send(404, {"detail": "好友申请不存在"})
+            return self._send(200, {"ok": True, **data})
+        self._send(404, {"detail": "not found"})
+
+    def do_DELETE(self):
+        p = self.path.split("?")[0]
+        canvas_prefix = "/api/auth/canvas/boards/"
+        row = self._user()
+        if not row:
+            return self._send(401, {"detail": "未登录"})
+        if p.startswith(canvas_prefix) and "/members/" in p[len(canvas_prefix):]:
+            rest = p[len(canvas_prefix):]
+            board_id, member_username = rest.split("/members/", 1)
+            board_id = urllib.parse.unquote(board_id)
+            member_username = urllib.parse.unquote(member_username)
+            try:
+                members, err = remove_canvas_member(row["username"], board_id, member_username)
+                if err == "not_found":
+                    return self._send(404, {"detail": "协作画布不存在"})
+                if err == "forbidden":
+                    return self._send(403, {"detail": "只有画布创建者可以移除成员"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, "members": members})
+            except Exception:
+                return self._send(500, {"detail": "canvas member delete failed"})
+        if p.startswith(canvas_prefix):
+            board_id = urllib.parse.unquote(p[len(canvas_prefix):])
+            try:
+                ok, err = delete_canvas_board(row["username"], board_id)
+                if err == "not_found":
+                    return self._send(404, {"detail": "协作画布不存在"})
+                if err == "forbidden":
+                    return self._send(403, {"detail": "只有画布创建者可以删除"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": bool(ok)})
+            except Exception:
+                return self._send(500, {"detail": "canvas delete failed"})
         self._send(404, {"detail": "not found"})
 
     def do_GET(self):
@@ -926,9 +1609,43 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/auth/me":
             row = self._user()
             if not row: return self._send(401, {"detail": "未登录"})
+            account_id = row["account_id"] or ensure_account_id(row["username"])
             return self._send(200, {"user": {
                 "username": row["username"], "name": row["display_name"], "points": row["points"],
-                "role": row["role"], "must_change": bool(row["must_change"])}})
+                "role": row["role"], "must_change": bool(row["must_change"]),
+                "account_id": account_id}})
+        if p == "/api/auth/friends":
+            row = self._user()
+            if not row: return self._send(401, {"detail": "未登录"})
+            return self._send(200, {"ok": True, "friends": list_friends(row["username"])})
+        if p == "/api/auth/friend-requests":
+            row = self._user()
+            if not row: return self._send(401, {"detail": "未登录"})
+            return self._send(200, {"ok": True, **list_friend_requests(row["username"])})
+        if p == "/api/auth/canvas/boards":
+            row = self._user()
+            if not row: return self._send(401, {"detail": "未登录"})
+            try:
+                boards, err = list_canvas_boards(row["username"])
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, "boards": boards})
+            except Exception:
+                return self._send(500, {"detail": "canvas list failed"})
+        canvas_prefix = "/api/auth/canvas/boards/"
+        if p.startswith(canvas_prefix):
+            row = self._user()
+            if not row: return self._send(401, {"detail": "未登录"})
+            board_id = urllib.parse.unquote(p[len(canvas_prefix):])
+            try:
+                board, err = get_canvas_board(row["username"], board_id)
+                if err == "not_found":
+                    return self._send(404, {"detail": "协作画布不存在"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, "board": board})
+            except Exception:
+                return self._send(500, {"detail": "canvas read failed"})
         if p == "/api/auth/health":
             return self._send(200, {"ok": True, "service": "huangque-auth"})
         self._send(404, {"detail": "not found"})

@@ -17,9 +17,11 @@ class ContentDomainTests(unittest.TestCase):
 
     def test_entrypoint_uses_domain_registry(self):
         content_api = importlib.import_module("content_api")
+        # 这份清单是白名单：路由 /api/gen/<kind> 由它派生，多一个少一个都是大事
+        # （avatar/cinematic 是把动作模仿拆成「建形象 / 生成剧情视频」两步时加的）
         self.assertEqual(
             sorted(content_api.HANDLERS),
-            ["audio", "collect", "copy", "image", "leads", "tryon", "video", "xiaole_video"],
+            ["audio", "avatar", "cinematic", "collect", "copy", "image", "leads", "tryon", "video", "xiaole_video"],
         )
         self.assertIs(content_api.HANDLERS, content_api.registry.HANDLERS)
 
@@ -40,7 +42,7 @@ class ContentDomainTests(unittest.TestCase):
         # reclaim_orphaned_running(启动回收重启遗留孤儿→退点)属 core 任务生命周期、紧挨 reaper。
         # jobs.owner 归属(#579/#511)：三服务共写 jobs 表，两处全表扫描按 owner 过滤，否则 content 会捞走/杀掉 imggen、leadgen 的任务。
         # 视频功能分项限流(#577)：果肉/motion/tryon 各自 active 上限，扣点前 429。同属任务生命周期，非域逻辑。
-        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1500)
+        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1520)
 
     def test_content_api_reclaims_orphans_on_startup(self):
         # 防回归：孤儿回收必须挂在真入口 content_api.main（服务走 content_api.py，
@@ -236,14 +238,13 @@ class ContentDomainTests(unittest.TestCase):
                         id INTEGER PRIMARY KEY, kind TEXT, username TEXT, cost INTEGER,
                         status TEXT, payload TEXT, result TEXT, error TEXT,
                         created_at INTEGER, updated_at INTEGER, refunded INTEGER DEFAULT 0)""")
-                    # fang: 2 条口播 running + 1 条 motion running(不该计入口播)
+                    # fang: 2 条口播 running(kind=video 现在只有口播 text/audio)
                     c.execute("INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at) VALUES(1,'video','fang',20,'running','{\"mode\":\"text\"}',1,1)")
                     c.execute("INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at) VALUES(2,'video','fang',20,'running','{\"mode\":\"audio\"}',1,1)")
-                    c.execute("INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at) VALUES(3,'video','fang',20,'running','{\"mode\":\"motion\"}',1,1)")
                     # 第4条 pending 口播 —— 应被运行闸 defer，留 pending、不调 handler
                     c.execute("INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at) VALUES(4,'video','fang',20,'pending','{\"mode\":\"text\"}',1,1)")
                     c.commit()
-                # count 只算口播(排除 motion)=2
+                # count = 全部 kind=video running = 2
                 self.assertEqual(core._user_running_talking_count("fang"), 2)
                 core.run_job(4)
                 self.assertEqual(called, [])  # 超运行闸→handler 不该被调

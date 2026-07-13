@@ -28,66 +28,52 @@ SERVER = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER not in sys.path:
     sys.path.insert(0, SERVER)
 
+core = importlib.import_module("content_domains.core")
 video = importlib.import_module("content_domains.video")
 
 
 class DeadlineTests(unittest.TestCase):
-    def test_motion_deadline_covers_measured_generation_time(self):
-        # 实测 10 路并发下生成最长 511s；死线必须明显高于它，否则擦线就回退重发。
-        self.assertGreaterEqual(video.HEYGEN_MOTION_DEADLINE, 1000)
+    def test_deadline_comfortably_covers_measured_generation_time(self):
+        # 实测 10~20 路并发下生成最长 511s。死线必须明显高于它，否则一次抖动就误判失败。
+        self.assertEqual(video.HEYGEN_MOTION_DEADLINE, core.VIDEO_GEN_DEADLINE, "跟全站的 15 分钟走")
+        self.assertGreater(video.HEYGEN_MOTION_DEADLINE, 511 * 1.5)
 
-    def test_motion_deadline_stays_within_reaper_grace(self):
-        # 上传(≤240s) + 生成(≤死线) + 下载 必须仍在 reaper 的 motion 宽限 2400s 内，
-        # 否则 reaper 会在直连还没轮询完时就把任务判超时退点（既扣了 $7 又退了点）。
-        self.assertLess(240 + video.HEYGEN_MOTION_DEADLINE + 60, 2400)
+    def test_the_reaper_cannot_fire_before_the_engine_gives_up(self):
+        """reaper 先杀 = 既扣了 $7 又退了点：任务被判失败退点，worker 却还在轮询，
+        HeyGen 照样出片照样收钱（提交即计费）。
+
+        reaper 比的是 jobs.updated_at，而 update_video_asset_phase 每换一个阶段就刷一次它
+        （UPDATE jobs SET updated_at=... WHERE id=? AND status='running'）。所以宽限量的是
+        【最长静默时段】，不是任务总时长。上传、下载各自前面都有一次阶段更新，唯一的长静默段
+        是 HeyGen 的轮询循环本身 —— 它不发心跳（WaveSpeed 的循环发）。所以：
+
+            reaper 宽限  >  轮询死线
+        """
+        self.assertGreater(core.VIDEO_REAPER_GRACE, video.HEYGEN_MOTION_DEADLINE)
 
 
 class _Billed(Exception):
     """测试替身：模拟「提交成功之后」发生的失败（轮询超时/下载失败）。"""
 
 
-class MotionFallbackTests(unittest.TestCase):
-    """提交后失败 → 必须原样抛出，绝不能再走一次 impl（那就是再扣 $7）。"""
+class CinematicBilledTests(unittest.TestCase):
+    """剧情视频：提交后失败必须原样抛出 HeyGenBilledError，绝不能重发。
 
-    def _run(self, impl_side_effect):
-        calls = []
+    动作模仿原来的 HeyGen 路径（generate_heygen_motion_video）已随「去线路化」删除，
+    但那条纪律搬到了这里 —— 剧情视频是现在唯一走 HeyGen cinematic 的功能，
+    而 cinematic 正是 $7/条、提交即扣费的那个接口。
+    """
 
-        def fake_impl(*a, **kw):
-            calls.append(kw.get("direct"))
-            return impl_side_effect(kw.get("direct"))
-
-        with patch.object(video, "_generate_heygen_motion_video_impl", fake_impl), \
-             patch.object(video, "_HEYGEN_DIRECT", True), \
-             patch.object(video, "HEYGEN_API_KEY", "k"):
-            try:
-                out = video.generate_heygen_motion_video("i.jpg", "r.mp4", "720p", "9:16", 13)
-                return calls, out, None
-            except Exception as e:
-                return calls, None, e
-
-    def test_billed_failure_is_not_retried_on_relay(self):
-        def impl(direct):
-            if direct:
-                raise video.HeyGenBilledError("已提交(已扣费)，轮询超时")
-            raise AssertionError("提交后失败竟然回退了中转 —— 同一条视频会再付一次 $7")
-
-        calls, out, err = self._run(impl)
-
-        self.assertEqual(calls, [True], "直连提交后失败，绝不能再调一次 impl")
-        self.assertIsInstance(err, video.HeyGenBilledError)
-
-    def test_pre_submit_failure_still_falls_back(self):
-        # 提交前失败（上传挂了、建 avatar 挂了）没有计费，回退中转是安全且必要的。
-        def impl(direct):
-            if direct:
-                raise RuntimeError("上传素材失败：连接被拒")
-            return {"video_file": "video/ok.mp4", "provider": "heygen_zelong"}
-
-        calls, out, err = self._run(impl)
-
-        self.assertIsNone(err)
-        self.assertEqual(calls, [True, False], "提交前失败应当回退中转")
-        self.assertEqual(out["provider"], "heygen_zelong")
+    def test_poll_failure_after_submit_is_billed_and_never_resent(self):
+        with patch.object(video, "get_video_avatar", return_value={"provider_avatar_id": "look1", "name": "我"}), \
+             patch.object(video, "update_video_asset_phase"), \
+             patch.object(video, "_heygen_create_cinematic_video", return_value="vid1") as create, \
+             patch.object(video, "_heygen_poll_video", side_effect=TimeoutError("轮询超时")):
+            with self.assertRaises(video.HeyGenBilledError) as ctx:
+                video.gen_cinematic({"_username": "kongli", "avatar_ids": [1], "prompt": "海边跳舞",
+                                     "resolution": "720p", "ratio": "9:16", "duration": 10})
+        self.assertEqual(create.call_count, 1, "提交后失败绝不能再提交一次 —— 那就是再扣一次费")
+        self.assertIn("已扣费", str(ctx.exception))
 
 
 class TalkingFallbackTests(unittest.TestCase):

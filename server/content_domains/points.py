@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import math
+import os
 import time
 
 from .core import AUTH_BASE, AUTH_INTERNAL_TOKEN, COST, closing, jdb, json, urllib, _ensure_column
@@ -39,14 +41,41 @@ def cost_of(kind, body):
         cap = 2 if provider in _IMAGE_CAP_2 else 4
         cnt = 1 if body.get("mask") else max(1, min(cap, int(body.get("count") or 1)))
         return base * cnt  # 质量基价 × 数量
+    if kind == "cinematic":
+        # 电影化身：按成片秒数计费（单人动作模仿/开放式 3 点/秒，双人动作模仿 5 点/秒）。
+        # 秒数在 validate_cinematic_payload 里已经落定成整数（「自适应」在那里就探测过参考视频），
+        # 所以这里不存在「还不知道多长」的情况 —— 一次扣准，不需要预扣退差。
+        from . import video as video_domain
+        return video_domain.cinematic_cost(body)
     if kind == "tryon":
         has_clothes = bool(body.get("clothes_data"))
         has_bg = bool(body.get("background_data"))
         return 40 if (has_clothes and has_bg) else 25  # 两段(换装+换背景)40/单段25
         # TODO: 上线前与 kongli 确认点数
     if kind == "xiaole_video":
-        # 果肉(Grok)/豆姐(Seedance) 视频。Grok 上游约 15 积分/条，含毛利暂定 30 点。
-        # TODO: 上线前与业务确认点数
+        if (body.get("channel") or "grok") == "grok" and os.environ.get("GROK_VIDEO_PROVIDER", "xai").lower() != "xiaole":
+            if body.get("operation") == "edit":
+                duration = max(0.1, min(8.7, float(body.get("source_duration") or 0.1)))
+                usd_cny = float(os.environ.get("XAI_USD_CNY", "7.3") or 7.3)
+                buffer = float(os.environ.get("XAI_PRICE_BUFFER", "1.2") or 1.2)
+                # 官方输入视频 $0.01/秒，编辑输出继承输入且最高 720p，按 $0.07/秒计。
+                return max(1, int(math.ceil(duration * (0.01 + 0.07) * usd_cny * buffer * 10)))
+            model = body.get("model") or "grok-imagine-video"
+            resolution = (body.get("resolution") or "720p").lower()
+            duration = max(1, min(15, int(body.get("duration") or 10)))
+            per_second = {
+                "grok-imagine-video": {"480p": 0.05, "720p": 0.07},
+                "grok-imagine-video-1.5": {"480p": 0.08, "720p": 0.14, "1080p": 0.25},
+            }.get(model, {}).get(resolution)
+            if per_second is None:
+                raise ValueError("果肉官方模型与分辨率不匹配")
+            image_input = 0.01 if (model == "grok-imagine-video-1.5" and body.get("reference_images")) \
+                else (0.002 if body.get("reference_images") else 0.0)
+            usd_cny = float(os.environ.get("XAI_USD_CNY", "7.3") or 7.3)
+            buffer = float(os.environ.get("XAI_PRICE_BUFFER", "1.2") or 1.2)
+            # 1点=0.1元；默认按保守汇率+20%波动/运营缓冲向上取整，可用env调整。
+            return max(1, int(math.ceil((duration * per_second + image_input) * usd_cny * buffer * 10)))
+        # 豆姐/欧米及果肉小乐回滚线保留原定价。
         return 30
     return COST.get(kind, 0)
 
@@ -139,49 +168,14 @@ def _job_payload(raw):
         return {}
     return data if isinstance(data, dict) else {}
 
-def _history_func_name(kind, payload):
-    kind = kind or "unknown"
-    if kind == "image":
-        model = str(payload.get("model") or "").strip().lower()
-        provider = str(payload.get("provider") or "").strip().lower()
-        if model == "nb2":
-            return "作图 · Nano Banana 2"
-        if model == "pro":
-            return "作图 · Nano Banana Pro"
-        if provider == "openai":
-            return "作图 · GPT Image"
-        if provider == "seedream":
-            return "作图 · Seedream" + (" Pro" if str(payload.get("variant") or "").lower() == "pro" else "")
-        if provider == "xiaole":
-            return "作图 · 果肉生图"
-        if provider.startswith("zelong"):
-            return "作图 · 泽龙"
-        return "作图"
-    if kind == "video":
-        mode = str(payload.get("mode") or "").strip().lower()
-        if mode == "text":
-            return "视频 · 文案口播"
-        if mode == "audio":
-            return "视频 · 音频口播"
-        if mode == "motion":
-            return "视频 · 动作模仿"
-        return "视频生成"
-    if kind == "collect":
-        if str(payload.get("keyword") or "").strip():
-            return "内容采集 · 关键词搜索"
-        if str(payload.get("url") or "").strip():
-            return "内容采集 · 贴链接"
-        return "内容采集"
-    names = {
-        "tryon": "换装换背景",
-        "xiaole_video": "果肉/微艺视频",
-        "audio": "配音生成",
-        "leads": "获客分析",
-        "leadgen": "获客分析",
-        "copy": "文案生成",
-        "dl": "无水印下载",
-    }
-    return names.get(kind, kind)
+# 功能名映射抽到了 server/func_names.py（唯一事实来源，和运营后台的日志/统计共用一份）。
+# 原来这里和 admin_api.call_func_name 是两份拷贝，已经各自漂移 —— 见 func_names 的模块注释。
+try:
+    import func_names as _func_names     # 生产：content_api.py 直接跑，server/ 就是 sys.path[0]
+except ModuleNotFoundError:              # 测试：以包的形式 import server.content_domains.points
+    from .. import func_names as _func_names
+
+_history_func_name = _func_names.func_name
 
 def _history_status_label(status, refunded):
     status = str(status or "").lower()

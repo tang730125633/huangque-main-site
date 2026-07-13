@@ -22,37 +22,16 @@ VIDEO_HTML = (ROOT / "site/workbench/video.html").read_text(encoding="utf-8")
 CORE_SRC = (ROOT / "server/content_domains/core.py").read_text(encoding="utf-8")
 
 
-class MotionParameterValidationTests(unittest.TestCase):
-    def _payload(self, **extra):
-        payload = {
-            "mode": "motion",
-            "image_data": PNG,
-            "reference_video_data": MP4,
-        }
-        payload.update(extra)
-        return payload
-
-    def test_line2_defaults_to_real_720p_and_drops_client_duration(self):
-        result = video.validate_video_payload(self._payload(duration=10))
-        self.assertEqual("2", result["line"])
-        self.assertEqual("720p", result["resolution"])
-        self.assertNotIn("duration", result)
-
-    def test_line1_accepts_1080p(self):
-        result = video.validate_video_payload(self._payload(line="1", resolution="1080p"))
-        self.assertEqual("1080p", result["resolution"])
-
-    def test_line2_rejects_fake_1080p(self):
-        with self.assertRaisesRegex(ValueError, "线路二固定为 720p"):
-            video.validate_video_payload(self._payload(line="2", resolution="1080p"))
-
-    def test_unverified_4k_is_rejected(self):
+class VideoResolutionValidationTests(unittest.TestCase):
+    def test_talking_rejects_unverified_4k(self):
         with self.assertRaisesRegex(ValueError, "720p、1080p"):
-            video.validate_video_payload(self._payload(line="1", resolution="4k"))
+            video.validate_video_payload({"mode": "text", "image_data": PNG, "text": "hi",
+                                          "voice": "v", "resolution": "4k"})
 
-    def test_wavespeed_never_silently_downscales(self):
-        with self.assertRaisesRegex(ValueError, "仅支持 720p"):
-            wavespeed.generate_motion("image.jpg", "reference.mp4", "1080p")
+    def test_cinematic_is_where_1080p_lives_now(self):
+        out = video.validate_cinematic_payload({
+            "avatar_ids": [1], "prompt": "海边跳舞", "resolution": "1080p", "ratio": "9:16"})
+        self.assertEqual("1080p", out["resolution"])
 
 
 class TryonParameterValidationTests(unittest.TestCase):
@@ -125,12 +104,11 @@ class VideoParameterUiTests(unittest.TestCase):
         self.assertIn('data-resolution="1080p"', VIDEO_HTML)
         self.assertNotIn('data-resolution="4k"', VIDEO_HTML)
 
-    def test_motion_resolution_is_line_aware_and_submitted(self):
-        self.assertIn('data-motion-resolution="720p"', VIDEO_HTML)
-        self.assertIn('data-motion-resolution="1080p" disabled', VIDEO_HTML)
-        self.assertIn("resolution:selectedMotionResolution", VIDEO_HTML)
-        self.assertIn("if(line2) selectedMotionResolution='720p';", VIDEO_HTML)
-        self.assertNotIn("duration:10", VIDEO_HTML)
+    def test_legacy_motion_ui_is_gone(self):
+        # 老版动作模仿已下线：tab、面板、提交入口都不该再出现
+        self.assertNotIn('data-function="motion"', VIDEO_HTML)
+        self.assertNotIn('id="motionPanel"', VIDEO_HTML)
+        self.assertNotIn("submitMotionVideo", VIDEO_HTML)
 
     def test_tryon_duration_is_selected_not_hardcoded(self):
         for seconds in (3, 5, 6, 10, 15):

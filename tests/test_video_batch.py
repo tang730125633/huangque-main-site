@@ -85,6 +85,48 @@ class VideoBatchValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "形象不存在"):
                 video.validate_video_payload(payload, username="fang")
 
+    def test_audio_mode_accepts_owned_audio_file_and_normalizes_relative_path(self):
+        payload = {"mode": "audio", "image_data": _data_url("hero"), "audio_file": "voice.mp3"}
+        audio_fp = video.OUT_DIR / "audio" / "voice.mp3"
+        with patch.object(video, "_resolve_out_file", return_value=audio_fp), \
+                patch.object(video, "_user_owns_output_file", return_value=True):
+            cleaned = video.validate_video_payload(payload, username="fang")
+        self.assertEqual("audio/voice.mp3", cleaned["audio_file"])
+
+    def test_audio_mode_rejects_unowned_or_unsupported_audio_file(self):
+        payload = {"mode": "audio", "image_data": _data_url("hero"), "audio_file": "audio/voice.mp3"}
+        audio_fp = video.OUT_DIR / "audio" / "voice.mp3"
+        with patch.object(video, "_resolve_out_file", return_value=audio_fp), \
+                patch.object(video, "_user_owns_output_file", return_value=False):
+            with self.assertRaisesRegex(ValueError, "不属于当前账号"):
+                video.validate_video_payload(payload, username="fang")
+        bad_fp = video.OUT_DIR / "video" / "voice.txt"
+        with patch.object(video, "_resolve_out_file", return_value=bad_fp):
+            with self.assertRaisesRegex(ValueError, "仅支持 mp3、wav、m4a"):
+                video.validate_video_payload(payload, username=None)
+
+    def test_audio_job_can_reuse_owned_audio_file_without_resaving(self):
+        payload = {"_username": "fang", "_job_id": 8, "mode": "audio", "image_data": _data_url("hero"),
+                   "audio_file": "audio/voice.mp3", "resolution": "1080p", "ratio": "9:16", "motion": "medium"}
+        save_calls = []
+        def fake_save(data_url, prefix, allowed_ext):
+            save_calls.append(prefix)
+            if prefix == "vid_img":
+                return "image/avatar.jpg"
+            raise AssertionError("audio_file 已复用时不应再次落盘音频")
+        with patch.object(video, "HEYGEN_API_KEY", "configured"), \
+                patch.object(video, "_save_data_file", side_effect=fake_save), \
+                patch.object(video, "_resolve_out_file", return_value=video.OUT_DIR / "audio" / "voice.mp3"), \
+                patch.object(video, "_user_owns_output_file", return_value=True), \
+                patch.object(video, "generate_heygen_video", return_value={"video_file": "video/out.mp4", "duration": 12}) as generate, \
+                patch.object(video, "public_url", return_value="https://cdn.example/out.mp4"), \
+                patch.object(video, "_file_url", side_effect=lambda value: "/api/gen/file/" + str(value or "")):
+            result = video.gen_video(payload)
+        self.assertEqual(["vid_img"], save_calls)
+        generate.assert_called_once_with("image/avatar.jpg", "audio/voice.mp3", "1080p", "9:16", "medium")
+        self.assertEqual("audio/voice.mp3", result["audio_file"])
+        self.assertEqual("/api/gen/file/audio/voice.mp3", result["audio_url"])
+
     def test_talking_job_can_reuse_owned_avatar_image(self):
         payload = {"_username": "fang", "_job_id": 8, "mode": "text", "avatar_id": "9",
                    "text": "hello", "voice": "v", "resolution": "1080p", "ratio": "9:16", "motion": "medium"}
@@ -184,6 +226,7 @@ class VideoBatchIntegrationGuardTests(unittest.TestCase):
                 }).encode("utf-8")
                 request = urllib.request.Request(url, data=data, method="POST", headers={
                     "Authorization": "Bearer test", "Content-Type": "application/json",
+                    "Idempotency-Key": "batch-submit-001",
                 })
                 with urllib.request.urlopen(request, timeout=5) as response:
                     accepted = json.loads(response.read())
@@ -196,10 +239,21 @@ class VideoBatchIntegrationGuardTests(unittest.TestCase):
                 self.assertEqual([20, 20], [row["cost"] for row in rows])
                 self.assertEqual(2, core._talking_job_queue.qsize())
 
-                with self.assertRaises(urllib.error.HTTPError) as rejected:
-                    urllib.request.urlopen(request, timeout=5)
-                self.assertEqual(429, rejected.exception.code)
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    replayed = json.loads(response.read())
+                self.assertEqual(accepted, replayed)
                 self.assertEqual([("fang", 40, "job:video_batch")], fake.deductions)
+                with closing(core.jdb()) as db:
+                    self.assertEqual(2, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+
+                changed = urllib.request.Request(url, data=data.replace(b'"batch"', b'"changed"'), method="POST", headers={
+                    "Authorization": "Bearer test", "Content-Type": "application/json",
+                    "Idempotency-Key": "batch-submit-001",
+                })
+                with self.assertRaises(urllib.error.HTTPError) as conflict:
+                    urllib.request.urlopen(changed, timeout=5)
+                self.assertEqual(409, conflict.exception.code)
+                self.assertEqual("idempotency_conflict", json.loads(conflict.exception.read())["code"])
             finally:
                 if server:
                     server.shutdown()
@@ -243,10 +297,11 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
             "require_enabled": core.feature_flags.require_enabled,
             "max_active": core.MAX_USER_ACTIVE_JOBS,
             "max_xiaole": core.MAX_USER_ACTIVE_XIAOLE_VIDEO,
-            "max_motion": core.MAX_USER_ACTIVE_MOTION,
             "max_tryon": core.MAX_USER_ACTIVE_TRYON,
+            "handlers": core.HANDLERS,
             "validate_video": video.validate_video_payload,
             "validate_tryon": video.validate_tryon_payload,
+            "validate_xiaole": video.validate_xiaole_video_payload,
         }
         fake = FakePoints()
         server = None
@@ -257,10 +312,11 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
             core.feature_flags.require_enabled = lambda kind: None
             core.MAX_USER_ACTIVE_JOBS = 5
             core.MAX_USER_ACTIVE_XIAOLE_VIDEO = 3
-            core.MAX_USER_ACTIVE_MOTION = 2
             core.MAX_USER_ACTIVE_TRYON = 1
+            core.HANDLERS = {"video": lambda body: body, "tryon": lambda body: body, "xiaole_video": lambda body: body}
             video.validate_video_payload = lambda body, username: body
             video.validate_tryon_payload = lambda body: body
+            video.validate_xiaole_video_payload = lambda body: body
             try:
                 with closing(sqlite3.connect(core.JOB_DB)) as db:
                     db.execute("""CREATE TABLE jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,username TEXT,cost INTEGER,
@@ -285,16 +341,6 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                         "body": {"channel": "omni", "prompt": "商品展示"},
                         "detail": "当前果肉/豆姐/欧米视频最多同时排队或生成 3 个任务，请等待部分完成后再继续",
                         "code": "xiaole_active_cap",
-                    },
-                    {
-                        "seed": [
-                            ("video", "pending", '{"mode":"motion"}'),
-                            ("video", "running", '{"mode":"motion"}'),
-                        ],
-                        "path": "/api/gen/video",
-                        "body": {"mode": "motion", "text": "影视级模仿"},
-                        "detail": "当前影视级模仿最多同时排队或生成 2 个任务，请等待部分完成后再继续",
-                        "code": "motion_active_cap",
                     },
                     {
                         "seed": [
@@ -330,7 +376,6 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                 with urllib.request.urlopen(base + "/api/gen/health", timeout=5) as response:
                     health = json.loads(response.read())
                 self.assertEqual(3, health["max_user_active_xiaole_video"])
-                self.assertEqual(2, health["max_user_active_motion"])
                 self.assertEqual(1, health["max_user_active_tryon"])
             finally:
                 if server:
@@ -343,10 +388,11 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                 core.feature_flags.require_enabled = originals["require_enabled"]
                 core.MAX_USER_ACTIVE_JOBS = originals["max_active"]
                 core.MAX_USER_ACTIVE_XIAOLE_VIDEO = originals["max_xiaole"]
-                core.MAX_USER_ACTIVE_MOTION = originals["max_motion"]
                 core.MAX_USER_ACTIVE_TRYON = originals["max_tryon"]
+                core.HANDLERS = originals["handlers"]
                 video.validate_video_payload = originals["validate_video"]
                 video.validate_tryon_payload = originals["validate_tryon"]
+                video.validate_xiaole_video_payload = originals["validate_xiaole"]
 
 
 if __name__ == "__main__":
