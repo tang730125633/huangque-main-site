@@ -868,6 +868,16 @@ def start_job_workers():
     threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start()
     _recover_pending_jobs(JOB_QUEUE_MAX)
 
+def _mark_video_asset_failed(job_id, kind, error):
+    """判失败时同步 video_asset 到失败终态(否则前端历史卡片读 video_assets 一直「生成中」)。⚠️用 update_video_asset_phase(UPDATE)非 record_video_asset(INSERT):mode 有 NOT NULL，cinematic/xiaole 失败路径无 mode→IntegrityError 被吞→卡 running。"""
+    if kind not in {"video", "tryon", "xiaole_video", "cinematic"}:
+        return
+    try:
+        _, _, video_domain = _domains()
+        video_domain.update_video_asset_phase(job_id, "failed", status="failed", error=str(error)[:300])
+    except Exception:
+        pass
+
 def run_job(job_id):
     with closing(jdb()) as c:
         r = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -910,14 +920,8 @@ def run_job(job_id):
         # 生成失败：CAS 抢 error 终态；抢到才记失败资产。退点走幂等(reaper 若已退则跳过)
         # from_states 含 pending：抢 running 那句自己抛异常时任务还停在 pending，只认 running 会不退点
         claimed = _set_terminal(job_id, "error", error=str(e), from_states=("pending", "running"))
-        if claimed and kind in {"video", "tryon", "xiaole_video", "cinematic"}:
-            try:
-                failed = dict(payload)
-                failed.update({"phase": "failed", "status": "failed", "error": str(e)[:300]})
-                _, _, video_domain = _domains()
-                video_domain.record_video_asset(job_id, username, failed)
-            except Exception:
-                pass
+        if claimed:
+            _mark_video_asset_failed(job_id, kind, e)
         _refund_once(job_id, username, cost)  # 幂等：最多退一次
     finally:
         if is_talking or is_image:
@@ -945,6 +949,7 @@ def reaper():
                 # CAS 抢 error 终态；抢到(说明 worker 尚未写 done)才退点，退点本身再幂等一层
                 if _set_terminal(r["id"], "error", error="生成超时自动结束，已退点"):
                     _refund_once(r["id"], r["username"], r["cost"])
+                    _mark_video_asset_failed(r["id"], r["kind"], "生成超时自动结束，已退点")
         except Exception:
             pass
         time.sleep(60)
@@ -960,7 +965,7 @@ def reclaim_orphaned_running():
     try:
         with closing(jdb()) as c:
             # 按 owner 过滤(#511)：imggen/leadgen 是独立进程，content 重启与它们无关；不过滤就会把它们正在飞的任务判失败退点，而对面 worker 还在跑 → 用户既没图又白等
-            rows = c.execute("SELECT id, username, cost FROM jobs WHERE status='running' AND COALESCE(owner,?)=?",
+            rows = c.execute("SELECT id, username, cost, kind FROM jobs WHERE status='running' AND COALESCE(owner,?)=?",
                              (SERVICE_OWNER, SERVICE_OWNER)).fetchall()
     except Exception:
         return 0
@@ -968,6 +973,7 @@ def reclaim_orphaned_running():
     for r in rows:
         if _set_terminal(r["id"], "error", error="服务重启中断，已退点，请重新提交"):
             _refund_once(r["id"], r["username"], r["cost"])
+            _mark_video_asset_failed(r["id"], r["kind"], "服务重启中断，已退点，请重新提交")
             n += 1
     if n:
         print("[startup] 回收重启遗留孤儿任务 %d 个(→失败退点)" % n, flush=True)
