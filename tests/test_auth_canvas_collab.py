@@ -290,6 +290,50 @@ class AuthCanvasCollabTests(unittest.TestCase):
         self.assertEqual(synced["batches"][0]["op_id"], "same-batch")
         self.assertEqual(synced["batches"][1]["op_id"], "next-batch")
 
+    def test_ops_return_current_board_for_stale_and_duplicate_batches(self):
+        board = self._create_board()
+        self._invite(board, "editor", "editor")
+        editor_client = self._login_client("editor")
+
+        self._ops(
+            board["id"],
+            "owner-v2",
+            [{"type": "node.patch", "id": "n1", "fields": {"owner_title": "owner"}}],
+        )
+        editor_result = self._ops(
+            board["id"],
+            "editor-stale-v1",
+            [{"type": "node.patch", "id": "n1", "fields": {"editor_x": 42}}],
+            client_id="editor-tab",
+            client=editor_client,
+            base_version=1,
+        )
+
+        self.assertEqual(editor_result["version"], 3)
+        self.assertEqual(editor_result["board"]["version"], 3)
+        node = editor_result["board"]["data"]["nodes"][0]
+        self.assertEqual(node["owner_title"], "owner")
+        self.assertEqual(node["editor_x"], 42)
+
+        self._ops(
+            board["id"],
+            "owner-v4",
+            [{"type": "node.create", "node": {"id": "n2"}}],
+            base_version=3,
+        )
+        duplicate = self._ops(
+            board["id"],
+            "editor-stale-v1",
+            [{"type": "node.patch", "id": "n1", "fields": {"editor_x": 42}}],
+            client_id="editor-tab",
+            client=editor_client,
+            base_version=1,
+        )
+        self.assertEqual(duplicate["version"], 4)
+        self.assertEqual(duplicate["batch"]["version"], 3)
+        self.assertEqual(duplicate["board"]["version"], 4)
+        self.assertEqual([item["id"] for item in duplicate["board"]["data"]["nodes"]], ["n1", "n2"])
+
     def test_sync_resets_after_legacy_save_creates_a_version_gap(self):
         board = self._create_board()
         self._post(

@@ -737,7 +737,13 @@ def apply_canvas_ops(username, board_id, payload):
         existing = c.execute("SELECT * FROM canvas_ops WHERE board_id=? AND op_id=?",
                              (board_id, normalized["op_id"])).fetchone()
         if existing:
-            result = {"version": int(existing["version"]), "batch": public_canvas_batch(existing)}
+            board = public_canvas_board(row, role, include_data=True, members_count=canvas_member_count(c, board_id))
+            board["members"] = list_canvas_members(c, board_id)
+            result = {
+                "version": int(row["version"]),
+                "batch": public_canvas_batch(existing),
+                "board": board,
+            }
             c.rollback()
             return result, None
         try:
@@ -768,8 +774,11 @@ def apply_canvas_ops(username, board_id, payload):
             "username": username,
             "ops": normalized["ops"],
         }
+        fresh = c.execute("SELECT * FROM canvas_boards WHERE id=?", (board_id,)).fetchone()
+        board = public_canvas_board(fresh, role, include_data=True, members_count=canvas_member_count(c, board_id))
+        board["members"] = list_canvas_members(c, board_id)
         c.commit()
-        return {"version": version, "batch": batch}, None
+        return {"version": version, "batch": batch, "board": board}, None
     except Exception:
         c.rollback()
         raise
