@@ -40,6 +40,9 @@
   .motion-drop:hover{border-color:rgba(231,178,76,.38);color:#e7b24c}
   .motion-drop strong{color:#eaf1fa;font-size:13.5px}
   .motion-drop span{font-size:11.5px;line-height:1.6;color:#5c6b82}
+  .cine-notice{margin-top:12px;padding:10px 12px;border-radius:10px;border:1px solid rgba(231,178,76,.22);background:rgba(231,178,76,.06);display:flex;flex-direction:column;gap:4px}
+  .cine-notice b{color:#e7b24c;font-size:12px;font-weight:600;margin-bottom:2px}
+  .cine-notice span{font-size:11.5px;line-height:1.6;color:#94a4bb}
   .motion-drop img,.motion-drop video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
   .motion-drop.has-media:after{content:"更换素材";position:absolute;left:10px;right:10px;bottom:10px;height:30px;display:flex;align-items:center;justify-content:center;border-radius:9px;background:rgba(7,11,19,.72);color:#eaf1fa;font-size:12px}
   .motion-drop.has-video::after{content:none}
@@ -396,6 +399,18 @@
                  实测通过后把 CINEMATIC_DUO_ENABLED=1 打开、把这个页签加回来即可，不用重写。 -->
             <button type="button" class="line-tab" data-cine-mode="open"><b>开放式生成</b><span>最多 3 个形象 + 自己写画面描述 · 10 点/秒</span></button>
           </div>
+        </div>
+
+        <!-- 内容规范。两个玩法【共用】—— 它在玩法页签之下、选形象之前，切玩法不隐藏。
+             位置是刻意的：用户还没上传、还没花点数，就先读到这三条。
+             前两条不是我们的规矩，是 HeyGen 的内容审核：命中就判失败（网页原话
+             "Your content was flagged by our moderation system"），而 API 【不给任何理由】——
+             用户只会看到一句干巴巴的「生成失败」。所以必须在这里说清楚，否则他只会反复重试。 -->
+        <div class="cine-notice">
+          <b>内容规范</b>
+          <span>· 禁止上传公众人物的形象或视频</span>
+          <span>· 禁止上传低俗人物的形象或视频</span>
+          <span>· 生成失败请重新选择人物形象或参考视频</span>
         </div>
 
         <div class="avatar-panel">
