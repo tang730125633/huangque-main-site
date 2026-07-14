@@ -12,15 +12,15 @@
   body{ overflow:hidden; }
   .hq-content[data-active="banana"]{height:100%;min-height:0}
   .banana-workspace{--left-pane:50%;height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden;border:0;border-radius:0;background:var(--hq-surface);box-shadow:none}
-  .banana-workspace-head{height:62px;flex:none;display:grid;grid-template-columns:minmax(0,var(--left-pane)) 8px minmax(0,1fr);padding:0;border-bottom:0}
+  .banana-workspace-head{height:62px;flex:none;display:grid;grid-template-columns:minmax(0,var(--left-pane)) 1px minmax(0,1fr);padding:0;border-bottom:0}
   .workspace-head-left{min-width:0;padding:0 20px;display:flex;align-items:center}
-  .workspace-head-divider{width:8px;background:var(--hq-surface-soft);border-left:1px solid var(--hq-border);border-right:1px solid var(--hq-border)}
+  .workspace-head-divider{width:1px;background:var(--hq-border)}
   .workspace-head-right{min-width:0;padding:0 20px}
-  .banana-workspace-body{min-height:0;flex:1;display:grid;grid-template-columns:minmax(0,var(--left-pane)) 8px minmax(0,1fr)}
+  .banana-workspace-body{min-height:0;flex:1;display:grid;grid-template-columns:minmax(0,var(--left-pane)) 1px minmax(0,1fr)}
   .banana-settings-pane,.banana-results-pane{min-width:0;overflow-y:auto;padding:20px}
   .banana-results-pane{border:0!important;border-radius:0!important;background:transparent!important;position:static!important}
-  .workspace-divider{position:relative;width:8px;cursor:col-resize;background:var(--hq-surface-soft);border-left:1px solid var(--hq-border);border-right:1px solid var(--hq-border);outline:0;touch-action:none}
-  .workspace-divider:before{content:"";position:absolute;left:2px;top:50%;width:2px;height:42px;transform:translateY(-50%);border-radius:2px;background:rgba(148,164,187,.36);transition:.16s}
+  .workspace-divider{position:relative;z-index:2;width:9px;margin-left:-4px;margin-right:-4px;cursor:col-resize;background:transparent;border:0;outline:0;touch-action:none}
+  .workspace-divider:before{content:"";position:absolute;left:4px;top:0;width:1px;height:100%;background:var(--hq-border);transition:.16s}
   .workspace-divider:hover:before,.workspace-divider:focus-visible:before{background:#e7b24c;box-shadow:0 0 0 3px rgba(231,178,76,.1)}
   .result-tabs{height:100%;display:flex;align-items:center;gap:4px;margin-bottom:0;border-bottom:0}
   .result-tab{height:38px;padding:0 12px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--hq-muted);font:inherit;font-size:13px;font-weight:700;cursor:pointer}

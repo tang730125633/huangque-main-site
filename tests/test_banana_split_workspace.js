@@ -47,8 +47,8 @@ test('workspace header aligns its divider and result tabs with both panes', () =
   assert.ok(headerStart >= 0 && headerEnd > headerStart, 'workspace header must exist');
   assert.ok(tabsStart > headerStart && tabsStart < headerEnd, 'result tabs must live in the workspace header');
   assert.match(html, /class="workspace-head-divider"/);
-  assert.match(html, /\.banana-workspace-head\{[^}]*grid-template-columns:minmax\(0,var\(--left-pane\)\) 8px minmax\(0,1fr\)/);
-  assert.match(html, /\.workspace-head-divider\{[^}]*border-left:1px solid var\(--hq-border\)[^}]*border-right:1px solid var\(--hq-border\)/);
+  assert.match(html, /\.banana-workspace-head\{[^}]*grid-template-columns:minmax\(0,var\(--left-pane\)\) 1px minmax\(0,1fr\)/);
+  assert.match(html, /\.workspace-head-divider\{width:1px;background:var\(--hq-border\)\}/);
   assert.match(html, /document\.querySelector\('\.banana-workspace'\)/);
 });
 
@@ -64,6 +64,9 @@ test('desktop divider is an accessible separator', () => {
   assert.match(html, /aria-orientation="vertical"/);
   assert.match(html, /aria-valuemin="35"/);
   assert.match(html, /aria-valuemax="65"/);
+  assert.match(html, /\.banana-workspace-body\{[^}]*grid-template-columns:minmax\(0,var\(--left-pane\)\) 1px minmax\(0,1fr\)/);
+  assert.match(html, /\.workspace-divider\{[^}]*width:9px[^}]*margin-left:-4px[^}]*margin-right:-4px[^}]*background:transparent[^}]*border:0/);
+  assert.match(html, /\.workspace-divider:before\{[^}]*left:4px[^}]*top:0[^}]*width:1px[^}]*height:100%/);
 });
 
 test('workspace header omits the split instruction copy', () => {
