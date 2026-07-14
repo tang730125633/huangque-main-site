@@ -26,6 +26,9 @@ ACCOUNT_ID_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 CANVAS_NAME_MAX = 48
 CANVAS_DATA_MAX_BYTES = int(os.environ.get("HQ_CANVAS_DATA_MAX_BYTES", str(6 * 1024 * 1024)))
 CANVAS_ROLES = {"viewer", "editor"}
+CANVAS_OPS_MAX_PER_BATCH = 200
+CANVAS_OPS_RETAINED_BATCHES = 1000
+CANVAS_PRESENCE_WINDOW_SECONDS = 30
 
 def db():
     c = sqlite3.connect(DB, timeout=10)
@@ -107,6 +110,26 @@ def init_db():
         PRIMARY KEY(board_id, username)
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_canvas_members_user ON canvas_members(username, board_id)")
+    c.execute("""CREATE TABLE IF NOT EXISTS canvas_ops(
+        board_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        op_id TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        username TEXT NOT NULL,
+        ops_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(board_id, version),
+        UNIQUE(board_id, op_id)
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_canvas_ops_board_version ON canvas_ops(board_id, version)")
+    c.execute("""CREATE TABLE IF NOT EXISTS canvas_presence(
+        board_id TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        username TEXT NOT NULL,
+        last_seen INTEGER NOT NULL,
+        PRIMARY KEY(board_id, client_id)
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_canvas_presence_board_seen ON canvas_presence(board_id, last_seen)")
     c.execute("""CREATE TABLE IF NOT EXISTS recharge_orders(
         order_id TEXT PRIMARY KEY,
         username TEXT NOT NULL,
@@ -546,6 +569,280 @@ def save_canvas_board(username, board_id, payload):
     finally:
         c.close()
 
+def canvas_edge_key(edge):
+    if not isinstance(edge, dict):
+        return None
+    start = edge.get("from")
+    end = edge.get("to")
+    if not isinstance(start, dict) or not isinstance(end, dict):
+        return None
+    values = (start.get("node"), start.get("port"), end.get("node"), end.get("port"))
+    if any(not isinstance(value, str) or not value for value in values):
+        return None
+    return "%s:%s->%s:%s" % values
+
+def normalize_canvas_ops_payload(payload):
+    payload = payload or {}
+    if not isinstance(payload, dict):
+        return None, "bad_ops"
+    op_id = payload.get("op_id")
+    client_id = payload.get("client_id")
+    ops = payload.get("ops")
+    if not isinstance(op_id, str) or not op_id.strip() or len(op_id) > 128:
+        return None, "bad_op_id"
+    if not isinstance(client_id, str) or not client_id.strip() or len(client_id) > 128:
+        return None, "bad_client_id"
+    try:
+        base_version = int(payload.get("base_version"))
+    except Exception:
+        return None, "bad_base_version"
+    if base_version < 1:
+        return None, "bad_base_version"
+    if not isinstance(ops, list) or not ops:
+        return None, "bad_ops"
+    if len(ops) > CANVAS_OPS_MAX_PER_BATCH:
+        return None, "too_many_ops"
+    normalized = []
+    for op in ops:
+        if not isinstance(op, dict):
+            return None, "bad_op"
+        kind = op.get("type")
+        if kind == "node.create":
+            node = op.get("node")
+            if not isinstance(node, dict) or not isinstance(node.get("id"), str) or not node["id"]:
+                return None, "bad_op"
+            normalized.append({"type": kind, "node": node})
+        elif kind == "node.patch":
+            fields = op.get("fields")
+            if (not isinstance(op.get("id"), str) or not op["id"] or not isinstance(fields, dict)
+                    or not fields or "id" in fields):
+                return None, "bad_op"
+            normalized.append({"type": kind, "id": op["id"], "fields": fields})
+        elif kind == "node.delete":
+            if not isinstance(op.get("id"), str) or not op["id"]:
+                return None, "bad_op"
+            normalized.append({"type": kind, "id": op["id"]})
+        elif kind == "edge.create":
+            edge = op.get("edge")
+            if canvas_edge_key(edge) is None:
+                return None, "bad_op"
+            normalized.append({"type": kind, "edge": edge})
+        elif kind == "edge.patch":
+            fields = op.get("fields")
+            if (not isinstance(op.get("id"), str) or not op["id"] or not isinstance(fields, dict)
+                    or not fields or "from" in fields or "to" in fields):
+                return None, "bad_op"
+            normalized.append({"type": kind, "id": op["id"], "fields": fields})
+        elif kind == "edge.delete":
+            if not isinstance(op.get("id"), str) or not op["id"]:
+                return None, "bad_op"
+            normalized.append({"type": kind, "id": op["id"]})
+        elif kind == "board.rename":
+            name, err = normalize_canvas_name(op.get("name"))
+            if err:
+                return None, err
+            normalized.append({"type": kind, "name": name})
+        else:
+            return None, "bad_op"
+    return {"op_id": op_id.strip(), "client_id": client_id.strip(), "base_version": base_version, "ops": normalized}, None
+
+def apply_canvas_ops_to_snapshot(data, name, ops):
+    snapshot = dict(data) if isinstance(data, dict) else {}
+    nodes = [dict(item) for item in snapshot.get("nodes", []) if isinstance(item, dict)]
+    edges = [dict(item) for item in snapshot.get("edges", []) if isinstance(item, dict)]
+    node_index = {item.get("id"): item for item in nodes if isinstance(item.get("id"), str) and item["id"]}
+    edge_index = {canvas_edge_key(item): item for item in edges if canvas_edge_key(item) is not None}
+    for op in ops:
+        kind = op["type"]
+        if kind == "node.create":
+            node = op["node"]
+            if node["id"] not in node_index:
+                created = dict(node)
+                nodes.append(created)
+                node_index[node["id"]] = created
+        elif kind == "node.patch":
+            node = node_index.get(op["id"])
+            if node is not None:
+                node.update(op["fields"])
+        elif kind == "node.delete":
+            deleted_id = op["id"]
+            node_index.pop(deleted_id, None)
+            nodes = [item for item in nodes if item.get("id") != deleted_id]
+            edges = [item for item in edges if not (
+                isinstance(item.get("from"), dict) and item["from"].get("node") == deleted_id
+            ) and not (
+                isinstance(item.get("to"), dict) and item["to"].get("node") == deleted_id
+            )]
+            edge_index = {canvas_edge_key(item): item for item in edges if canvas_edge_key(item) is not None}
+        elif kind == "edge.create":
+            edge = op["edge"]
+            edge_key = canvas_edge_key(edge)
+            if edge_key not in edge_index:
+                created = dict(edge)
+                edges.append(created)
+                edge_index[edge_key] = created
+        elif kind == "edge.patch":
+            edge = edge_index.get(op["id"])
+            if edge is not None:
+                edge.update(op["fields"])
+        elif kind == "edge.delete":
+            deleted_key = op["id"]
+            edge_index.pop(deleted_key, None)
+            edges = [item for item in edges if canvas_edge_key(item) != deleted_key]
+        elif kind == "board.rename":
+            name = op["name"]
+    snapshot["nodes"] = nodes
+    snapshot["edges"] = edges
+    return snapshot, name
+
+def public_canvas_batch(row):
+    try:
+        ops = json.loads(row["ops_json"])
+    except Exception:
+        ops = []
+    return {
+        "version": int(row["version"]),
+        "op_id": row["op_id"],
+        "client_id": row["client_id"],
+        "username": row["username"],
+        "ops": ops,
+    }
+
+def canvas_online_count(c, board_id, now=None):
+    now = int(time.time()) if now is None else int(now)
+    cutoff = now - CANVAS_PRESENCE_WINDOW_SECONDS
+    c.execute("DELETE FROM canvas_presence WHERE board_id=? AND last_seen<?", (board_id, cutoff))
+    row = c.execute("""SELECT COUNT(*) AS n
+                       FROM canvas_presence p
+                       JOIN canvas_boards b ON b.id=p.board_id
+                       LEFT JOIN canvas_members m ON m.board_id=p.board_id AND m.username=p.username
+                       WHERE p.board_id=? AND p.last_seen>=?
+                         AND (p.username=b.owner_username OR m.role='editor')""", (board_id, cutoff)).fetchone()
+    return int(row["n"] or 0) if row else 0
+
+def apply_canvas_ops(username, board_id, payload):
+    normalized, err = normalize_canvas_ops_payload(payload)
+    if err:
+        return None, err
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        role, row = canvas_role_and_board(c, username, board_id)
+        if not role:
+            c.rollback()
+            return None, "not_found"
+        if role not in ("owner", "editor"):
+            c.rollback()
+            return None, "forbidden"
+        existing = c.execute("SELECT * FROM canvas_ops WHERE board_id=? AND op_id=?",
+                             (board_id, normalized["op_id"])).fetchone()
+        if existing:
+            result = {"version": int(existing["version"]), "batch": public_canvas_batch(existing)}
+            c.rollback()
+            return result, None
+        try:
+            data = json.loads(row["data_json"] or "{}")
+        except Exception:
+            data = {}
+        data, name = apply_canvas_ops_to_snapshot(data, row["name"], normalized["ops"])
+        data_json, err = pack_canvas_data(data)
+        if err:
+            c.rollback()
+            return None, err
+        version = int(row["version"] or 1) + 1
+        now = int(time.time())
+        ops_json = json.dumps(normalized["ops"], ensure_ascii=False, separators=(",", ":"))
+        c.execute("""UPDATE canvas_boards SET name=?, data_json=?, version=?, updated_at=? WHERE id=?""",
+                  (name, data_json, version, now, board_id))
+        c.execute("""INSERT INTO canvas_ops(board_id, version, op_id, client_id, username, ops_json, created_at)
+                     VALUES(?,?,?,?,?,?,?)""",
+                  (board_id, version, normalized["op_id"], normalized["client_id"], username, ops_json, now))
+        c.execute("""DELETE FROM canvas_ops WHERE rowid IN (
+                     SELECT rowid FROM canvas_ops WHERE board_id=?
+                     ORDER BY version DESC LIMIT -1 OFFSET ?
+                   )""", (board_id, CANVAS_OPS_RETAINED_BATCHES))
+        batch = {
+            "version": version,
+            "op_id": normalized["op_id"],
+            "client_id": normalized["client_id"],
+            "username": username,
+            "ops": normalized["ops"],
+        }
+        c.commit()
+        return {"version": version, "batch": batch}, None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+def sync_canvas_ops(username, board_id, since_version):
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        role, row = canvas_role_and_board(c, username, board_id)
+        if not role:
+            c.rollback()
+            return None, "not_found"
+        current_version = int(row["version"] or 1)
+        oldest = c.execute("SELECT MIN(version) AS version FROM canvas_ops WHERE board_id=?", (board_id,)).fetchone()
+        oldest_version = int(oldest["version"]) if oldest and oldest["version"] is not None else None
+        reset = since_version > current_version or (
+            oldest_version is not None and since_version < oldest_version - 1
+        )
+        online_count = canvas_online_count(c, board_id)
+        batches = []
+        if not reset:
+            rows = c.execute("SELECT * FROM canvas_ops WHERE board_id=? AND version>? ORDER BY version ASC",
+                             (board_id, since_version)).fetchall()
+            expected_version = since_version + 1
+            for item in rows:
+                if int(item["version"]) != expected_version:
+                    reset = True
+                    break
+                batches.append(public_canvas_batch(item))
+                expected_version += 1
+            if expected_version != current_version + 1:
+                reset = True
+                batches = []
+        result = {"version": current_version, "batches": batches, "reset": reset, "online_count": online_count}
+        if reset:
+            board = public_canvas_board(row, role, include_data=True, members_count=canvas_member_count(c, board_id))
+            board["members"] = list_canvas_members(c, board_id)
+            result["board"] = board
+        c.commit()
+        return result, None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+def record_canvas_presence(username, board_id, payload):
+    client_id = (payload or {}).get("client_id") if isinstance(payload, dict) else None
+    if not isinstance(client_id, str) or not client_id.strip() or len(client_id) > 128:
+        return None, "bad_client_id"
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        role, row = canvas_role_and_board(c, username, board_id)
+        if not role:
+            c.rollback()
+            return None, "not_found"
+        now = int(time.time())
+        c.execute("""INSERT INTO canvas_presence(board_id, client_id, username, last_seen)
+                     VALUES(?,?,?,?) ON CONFLICT(board_id, client_id) DO UPDATE SET
+                       username=excluded.username, last_seen=excluded.last_seen""",
+                  (board_id, client_id.strip(), username, now))
+        result = {"online_count": canvas_online_count(c, board_id, now)}
+        c.commit()
+        return result, None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
 def add_canvas_member(username, board_id, payload):
     account_id = str((payload or {}).get("account_id") or "").strip().upper()
     role = normalize_canvas_role((payload or {}).get("role") or "viewer")
@@ -622,6 +919,8 @@ def delete_canvas_board(username, board_id):
             c.rollback()
             return False, "forbidden"
         c.execute("DELETE FROM canvas_members WHERE board_id=?", (board_id,))
+        c.execute("DELETE FROM canvas_ops WHERE board_id=?", (board_id,))
+        c.execute("DELETE FROM canvas_presence WHERE board_id=?", (board_id,))
         c.execute("DELETE FROM canvas_boards WHERE id=?", (board_id,))
         c.commit()
         return True, None
@@ -1426,6 +1725,44 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "board": board})
             except Exception:
                 return self._send(500, {"detail": "canvas save failed"})
+        if p.startswith(canvas_prefix) and p.endswith("/ops"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            board_id = urllib.parse.unquote(p[len(canvas_prefix):-len("/ops")])
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "request body must be valid JSON"})
+            try:
+                result, err = apply_canvas_ops(row["username"], board_id, d)
+                if err == "not_found":
+                    return self._send(404, {"detail": "协作画布不存在"})
+                if err == "forbidden":
+                    return self._send(403, {"detail": "没有编辑权限"})
+                if err in {"too_many_ops", "too_large"}:
+                    return self._send(413, {"detail": "画布操作数据过大"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, **result})
+            except Exception:
+                return self._send(500, {"detail": "canvas ops failed"})
+        if p.startswith(canvas_prefix) and p.endswith("/presence"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            board_id = urllib.parse.unquote(p[len(canvas_prefix):-len("/presence")])
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "request body must be valid JSON"})
+            try:
+                result, err = record_canvas_presence(row["username"], board_id, d)
+                if err == "not_found":
+                    return self._send(404, {"detail": "协作画布不存在"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, **result})
+            except Exception:
+                return self._send(500, {"detail": "canvas presence failed"})
         if p.startswith(canvas_prefix) and p.endswith("/members"):
             row = self._user()
             if not row:
@@ -1633,6 +1970,27 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 return self._send(500, {"detail": "canvas list failed"})
         canvas_prefix = "/api/auth/canvas/boards/"
+        if p.startswith(canvas_prefix) and p.endswith("/sync"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            board_id = urllib.parse.unquote(p[len(canvas_prefix):-len("/sync")])
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                since_version = int((query.get("since") or [""])[0])
+            except Exception:
+                return self._send(400, {"detail": "bad_since"})
+            if since_version < 1:
+                return self._send(400, {"detail": "bad_since"})
+            try:
+                result, err = sync_canvas_ops(row["username"], board_id, since_version)
+                if err == "not_found":
+                    return self._send(404, {"detail": "协作画布不存在"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, **result})
+            except Exception:
+                return self._send(500, {"detail": "canvas sync failed"})
         if p.startswith(canvas_prefix):
             row = self._user()
             if not row: return self._send(401, {"detail": "未登录"})
