@@ -27,6 +27,7 @@ CANVAS_NAME_MAX = 48
 CANVAS_DATA_MAX_BYTES = int(os.environ.get("HQ_CANVAS_DATA_MAX_BYTES", str(6 * 1024 * 1024)))
 CANVAS_ROLES = {"viewer", "editor"}
 CANVAS_OPS_MAX_PER_BATCH = 200
+CANVAS_OPS_MAX_BYTES = int(os.environ.get("HQ_CANVAS_OPS_MAX_BYTES", str(1024 * 1024)))
 CANVAS_OPS_RETAINED_BATCHES = 1000
 CANVAS_PRESENCE_WINDOW_SECONDS = 30
 
@@ -646,6 +647,19 @@ def normalize_canvas_ops_payload(payload):
             return None, "bad_op"
     return {"op_id": op_id.strip(), "client_id": client_id.strip(), "base_version": base_version, "ops": normalized}, None
 
+def apply_json_merge_patch(target, patch):
+    if not isinstance(patch, dict):
+        return json.loads(json.dumps(patch, ensure_ascii=False))
+    result = json.loads(json.dumps(target, ensure_ascii=False)) if isinstance(target, dict) else {}
+    for key, value in patch.items():
+        if value is None:
+            result.pop(key, None)
+        elif isinstance(value, dict):
+            result[key] = apply_json_merge_patch(result.get(key), value)
+        else:
+            result[key] = json.loads(json.dumps(value, ensure_ascii=False))
+    return result
+
 def apply_canvas_ops_to_snapshot(data, name, ops):
     snapshot = dict(data) if isinstance(data, dict) else {}
     nodes = [dict(item) for item in snapshot.get("nodes", []) if isinstance(item, dict)]
@@ -663,7 +677,9 @@ def apply_canvas_ops_to_snapshot(data, name, ops):
         elif kind == "node.patch":
             node = node_index.get(op["id"])
             if node is not None:
-                node.update(op["fields"])
+                patched = apply_json_merge_patch(node, op["fields"])
+                node.clear()
+                node.update(patched)
         elif kind == "node.delete":
             deleted_id = op["id"]
             node_index.pop(deleted_id, None)
@@ -684,7 +700,9 @@ def apply_canvas_ops_to_snapshot(data, name, ops):
         elif kind == "edge.patch":
             edge = edge_index.get(op["id"])
             if edge is not None:
-                edge.update(op["fields"])
+                patched = apply_json_merge_patch(edge, op["fields"])
+                edge.clear()
+                edge.update(patched)
         elif kind == "edge.delete":
             deleted_key = op["id"]
             edge_index.pop(deleted_key, None)
@@ -724,6 +742,12 @@ def apply_canvas_ops(username, board_id, payload):
     normalized, err = normalize_canvas_ops_payload(payload)
     if err:
         return None, err
+    try:
+        ops_json = json.dumps(normalized["ops"], ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        return None, "bad_ops"
+    if len(ops_json.encode("utf-8")) > CANVAS_OPS_MAX_BYTES:
+        return None, "too_large"
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
@@ -757,7 +781,6 @@ def apply_canvas_ops(username, board_id, payload):
             return None, err
         version = int(row["version"] or 1) + 1
         now = int(time.time())
-        ops_json = json.dumps(normalized["ops"], ensure_ascii=False, separators=(",", ":"))
         c.execute("""UPDATE canvas_boards SET name=?, data_json=?, version=?, updated_at=? WHERE id=?""",
                   (name, data_json, version, now, board_id))
         c.execute("""INSERT INTO canvas_ops(board_id, version, op_id, client_id, username, ops_json, created_at)
@@ -1318,6 +1341,11 @@ class H(BaseHTTPRequestHandler):
         except Exception:
             self._json_error = True
             return {}
+    def _content_length_exceeds(self, limit):
+        try:
+            return int(self.headers.get("Content-Length") or 0) > int(limit)
+        except Exception:
+            return False
     def _bad_json(self):
         return getattr(self, "_json_error", False)
     def _client_ip(self):
@@ -1739,6 +1767,8 @@ class H(BaseHTTPRequestHandler):
             if not row:
                 return self._send(401, {"detail": "未登录"})
             board_id = urllib.parse.unquote(p[len(canvas_prefix):-len("/ops")])
+            if self._content_length_exceeds(CANVAS_OPS_MAX_BYTES):
+                return self._send(413, {"detail": "画布操作数据过大"})
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "request body must be valid JSON"})

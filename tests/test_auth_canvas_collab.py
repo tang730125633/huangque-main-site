@@ -261,6 +261,71 @@ class AuthCanvasCollabTests(unittest.TestCase):
         self.assertNotIn("id", current["data"]["edges"][0])
         self.assertEqual(current["data"]["edges"][0]["label"], "approved")
 
+    def test_nested_merge_patch_preserves_siblings_and_null_deletes(self):
+        board = self._create_board()
+        edge_key = "n1:out->n2:in"
+        self._ops(
+            board["id"],
+            "seed-nested",
+            [
+                {
+                    "type": "node.patch",
+                    "id": "n1",
+                    "fields": {
+                        "params": {"title": "Draft", "text": "Prompt"},
+                        "outputs": {"image": "old.png", "video": "old.mp4"},
+                    },
+                },
+                {"type": "node.create", "node": {"id": "n2"}},
+                {
+                    "type": "edge.create",
+                    "edge": {
+                        "from": {"node": "n1", "port": "out"},
+                        "to": {"node": "n2", "port": "in"},
+                        "style": {"color": "red", "width": 1},
+                    },
+                },
+            ],
+        )
+        self._ops(
+            board["id"],
+            "patch-title-color",
+            [
+                {
+                    "type": "node.patch",
+                    "id": "n1",
+                    "fields": {"params": {"title": "Final"}, "outputs": {"image": "new.png"}},
+                },
+                {"type": "edge.patch", "id": edge_key, "fields": {"style": {"color": "blue"}}},
+            ],
+            base_version=2,
+        )
+        self._ops(
+            board["id"],
+            "patch-text-width",
+            [
+                {
+                    "type": "node.patch",
+                    "id": "n1",
+                    "fields": {"params": {"text": "Revised"}, "outputs": {"video": "new.mp4"}},
+                },
+                {"type": "edge.patch", "id": edge_key, "fields": {"style": {"width": 2}}},
+            ],
+            base_version=2,
+        )
+        self._ops(
+            board["id"],
+            "delete-output-field",
+            [{"type": "node.patch", "id": "n1", "fields": {"outputs": {"image": None}}}],
+            base_version=2,
+        )
+
+        current = self._get("/api/auth/canvas/boards/%s" % board["id"])["board"]["data"]
+        node = next(item for item in current["nodes"] if item["id"] == "n1")
+        self.assertEqual(node["params"], {"title": "Final", "text": "Revised"})
+        self.assertEqual(node["outputs"], {"video": "new.mp4"})
+        self.assertEqual(current["edges"][0]["style"], {"color": "blue", "width": 2})
+
     def test_ops_are_idempotent_and_sync_ordered_batches(self):
         board = self._create_board()
         first = self._ops(
@@ -438,6 +503,42 @@ class AuthCanvasCollabTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as stranger_sync:
             self._get("/api/auth/canvas/boards/%s/sync?since=1" % board["id"], stranger_client)
         self.assertEqual(stranger_sync.exception.code, 404)
+
+    def test_ops_reject_oversized_serialized_log_without_committing(self):
+        board = self._create_board()
+        payload = {
+            "op_id": "oversized-log",
+            "client_id": "owner-tab",
+            "base_version": 1,
+            "ops": [
+                {"type": "node.patch", "id": "n1", "fields": {"params": {"text": "x" * (1024 * 1024)}}}
+            ],
+        }
+
+        with self.assertRaises(urllib.error.HTTPError) as oversized:
+            self._post("/api/auth/canvas/boards/%s/ops" % board["id"], payload)
+        self.assertEqual(oversized.exception.code, 413)
+
+        current = self._get("/api/auth/canvas/boards/%s" % board["id"])["board"]
+        self.assertEqual(current["version"], 1)
+        self.assertNotIn("params", current["data"]["nodes"][0])
+
+    def test_ops_reject_content_length_before_reading_body(self):
+        class UnreadableBody:
+            def read(self, _size=-1):
+                raise AssertionError("oversized /ops body must not be read")
+
+        sent = []
+        handler = object.__new__(self.auth.H)
+        handler.path = "/api/auth/canvas/boards/board-id/ops"
+        handler.headers = {"Content-Length": str(self.auth.CANVAS_OPS_MAX_BYTES + 1)}
+        handler.rfile = UnreadableBody()
+        handler._user = lambda: {"username": "owner"}
+        handler._send = lambda code, payload: sent.append((code, payload))
+
+        self.auth.H.do_POST(handler)
+
+        self.assertEqual(sent[0][0], 413)
 
     def test_presence_counts_recent_editors_and_expires_old_heartbeats(self):
         board = self._create_board()
