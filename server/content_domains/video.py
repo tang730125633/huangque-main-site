@@ -1150,6 +1150,10 @@ _HEYGEN_AVATAR_READY = {"completed", "ready", "success"}
 _HEYGEN_AVATAR_FAILED = {"failed", "error", "rejected"}
 # 中转（泽龙）只转发 v3，拿不到 look 级状态。盲等这么久后放行，交给 create 的 400 重试兜底。
 HEYGEN_AVATAR_UNKNOWN_GRACE = int(os.environ.get("HEYGEN_AVATAR_UNKNOWN_GRACE", "60") or 60)
+# 建形象轮询上限。线上跑通的 photo avatar 都在 12~42s 内就绪，卡住的才会拖满旧的 900s 上限
+# —— 那些永远不会成，只是白占 worker、把退点拖到 15 分钟后。收到 120s：成功的有 3 倍余量，
+# 真卡住的 2 分钟快速失败并退点。可用 HEYGEN_PHOTO_AVATAR_DEADLINE 覆盖。
+HEYGEN_PHOTO_AVATAR_DEADLINE = _env_positive_int("HEYGEN_PHOTO_AVATAR_DEADLINE", 120)
 
 def _heygen_look_status(avatar_item_id, avatar_group_id="", direct=False):
     """取 photo avatar **look** 的真实状态，返回 (status, moderation_msg)。
@@ -1182,7 +1186,7 @@ def _heygen_look_status(avatar_item_id, avatar_group_id="", direct=False):
 
 def _heygen_wait_photo_avatar(avatar_item_id, avatar_group_id="", direct=False):
     """等到 look 真正 completed 才返回。绝不把「有预览图」当就绪。"""
-    deadline = time.time() + min(HEYGEN_TIMEOUT, 900)
+    deadline = time.time() + min(HEYGEN_TIMEOUT, HEYGEN_PHOTO_AVATAR_DEADLINE)
     started = time.time()
     last_status = ""
     while time.time() < deadline:
