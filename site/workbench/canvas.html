@@ -923,9 +923,9 @@
     if(state==='syncing'){ saveStateEl.textContent='正在同步'; saveStateEl.classList.add('saving'); return; }
     if(state==='reconnecting'){ saveStateEl.textContent='离线重连'; saveStateEl.classList.add('error'); return; }
     if(state==='conflict'){ saveStateEl.textContent='有冲突'; saveStateEl.classList.add('error','conflict'); return; }
-    if(state==='error'){ saveStateEl.textContent='保存失败'; saveStateEl.classList.add('error'); return; }
+    if(state==='error'){ saveStateEl.textContent=currentBoardScope==='collab'?'同步失败':'保存失败'; saveStateEl.classList.add('error'); return; }
     if(state==='readonly'){ saveStateEl.textContent='只读'; saveStateEl.classList.add('warning'); return; }
-    saveStateEl.textContent='已保存';
+    saveStateEl.textContent=currentBoardScope==='collab'?'已同步':'已保存';
     saveStateEl.classList.add('saved');
   }
   function collabCanEdit(){

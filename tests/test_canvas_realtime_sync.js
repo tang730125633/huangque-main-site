@@ -112,6 +112,8 @@ function edge(from, to) {
   assert.match(canvasHtml, /\/presence'/);
   assert.match(canvasHtml, /makeNodeId\(collabClientId/);
   assert.match(canvasHtml, /id="ncOnlineState"/);
+  assert.match(canvasHtml, /currentBoardScope==='collab'\?'已同步':'已保存'/);
+  assert.match(canvasHtml, /currentBoardScope==='collab'\?'同步失败':'保存失败'/);
   const inlineScripts = [...canvasHtml.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)]
     .map((match) => match[1])
     .filter((source) => source.trim());
