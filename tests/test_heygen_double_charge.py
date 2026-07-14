@@ -35,7 +35,9 @@ video = importlib.import_module("content_domains.video")
 class DeadlineTests(unittest.TestCase):
     def test_deadline_comfortably_covers_measured_generation_time(self):
         # 实测 10~20 路并发下生成最长 511s。死线必须明显高于它，否则一次抖动就误判失败。
-        self.assertEqual(video.HEYGEN_MOTION_DEADLINE, core.VIDEO_GEN_DEADLINE, "跟全站的 15 分钟走")
+        # 20 分钟（kongli 2026-07-14，原来跟全站 15 分钟走）—— 它是唯一「提交即扣 $7」的引擎，
+        # 掐早了钱已经花了。
+        self.assertEqual(video.HEYGEN_MOTION_DEADLINE, core.CINEMATIC_GEN_DEADLINE)
         self.assertGreater(video.HEYGEN_MOTION_DEADLINE, 511 * 1.5)
 
     def test_the_reaper_cannot_fire_before_the_engine_gives_up(self):
@@ -48,8 +50,12 @@ class DeadlineTests(unittest.TestCase):
         是 HeyGen 的轮询循环本身 —— 它不发心跳（WaveSpeed 的循环发）。所以：
 
             reaper 宽限  >  轮询死线
+
+        ⚠️ 比的必须是【cinematic 自己的】宽限（KIND_GRACE["cinematic"]），不是口播那条
+        VIDEO_REAPER_GRACE。电影化身的死线抬到 20 分钟之后，这两个数已经不是同一个了 ——
+        拿错常量比，就会在 1200 == 1200 的时候以为「还安全」。
         """
-        self.assertGreater(core.VIDEO_REAPER_GRACE, video.HEYGEN_MOTION_DEADLINE)
+        self.assertGreater(core.KIND_GRACE["cinematic"], video.HEYGEN_MOTION_DEADLINE)
 
 
 class _Billed(Exception):
