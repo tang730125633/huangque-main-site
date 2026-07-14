@@ -10,8 +10,9 @@
 <script src="theme-init.js?v=11eb385e"></script>
 <style>
   body{overflow:hidden}
-  .gVid{display:grid;grid-template-columns:1.45fr 1fr;gap:18px;align-items:stretch;height:calc(100vh - 150px);min-height:0;overflow:hidden}
-  .vid-card{min-height:0;border:1px solid rgba(148,164,187,.1);border-radius:18px;background:linear-gradient(165deg,rgba(16,24,39,.58),rgba(12,18,32,.46));padding:22px}
+  .hq-content[data-active="video"]{height:100%;min-height:0}
+  .gVid{display:grid;grid-template-columns:1.45fr 1fr;gap:18px;align-items:stretch;height:100%;min-height:0;overflow:hidden}
+  .vid-card{min-height:0;border:1px solid rgba(148,164,187,.1);border-radius:0;background:linear-gradient(165deg,rgba(16,24,39,.58),rgba(12,18,32,.46));padding:22px}
   .vid-main{height:100%;overflow-y:auto;overflow-x:hidden;padding-right:4px}
   .vid-main::-webkit-scrollbar{width:7px}
   .vid-main::-webkit-scrollbar-thumb{background:rgba(148,164,187,.18);border-radius:99px}
@@ -39,6 +40,9 @@
   .motion-drop:hover{border-color:rgba(231,178,76,.38);color:#e7b24c}
   .motion-drop strong{color:#eaf1fa;font-size:13.5px}
   .motion-drop span{font-size:11.5px;line-height:1.6;color:#5c6b82}
+  .cine-notice{margin-top:12px;padding:10px 12px;border-radius:10px;border:1px solid rgba(231,178,76,.22);background:rgba(231,178,76,.06);display:flex;flex-direction:column;gap:4px}
+  .cine-notice b{color:#e7b24c;font-size:12px;font-weight:600;margin-bottom:2px}
+  .cine-notice span{font-size:11.5px;line-height:1.6;color:#94a4bb}
   .motion-drop img,.motion-drop video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
   .motion-drop.has-media:after{content:"更换素材";position:absolute;left:10px;right:10px;bottom:10px;height:30px;display:flex;align-items:center;justify-content:center;border-radius:9px;background:rgba(7,11,19,.72);color:#eaf1fa;font-size:12px}
   .motion-drop.has-video::after{content:none}
@@ -51,15 +55,38 @@
   .motion-preset-card span{display:block;padding:9px 10px;font-size:12.5px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .motion-preset-card.on:after{content:"已选择";position:absolute;right:8px;top:8px;padding:3px 7px;border-radius:7px;background:rgba(231,178,76,.92);color:#1b1205;font-size:10.5px;font-weight:900}
   .avatar-panel{margin-top:16px;border:1px solid rgba(148,164,187,.12);border-radius:14px;background:rgba(7,11,19,.22);padding:14px}
-  .avatar-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
-  .avatar-card{position:relative;min-height:126px;border:1px solid rgba(148,164,187,.14);border-radius:13px;background:rgba(148,164,187,.04);color:#94a4bb;cursor:pointer;overflow:hidden;text-align:left;font-family:inherit;transition:.16s}
+  /* 形象越建越多，选择框就越拉越长 —— 限制成最多两排，多的滚动。
+     max-height 由 JS 量出来（见 limitAvatarGridRows）：卡片高度 = 展示框 + 文字区，
+     而展示框的宽度随网格列宽走，所以行高会随窗口宽度变，写死 px 一缩放就切在半张卡上。
+     padding-right 给滚动条留位，否则它会压在最右一列的卡片上。 */
+  .pill-fixed{display:inline-block;padding:5px 10px;border-radius:8px;background:rgba(231,178,76,.1);border:1px solid rgba(231,178,76,.28);color:#e7b24c;font-size:11.5px;font-weight:700}
+  .avatar-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px;overflow-y:auto;padding-right:4px}
+  .avatar-grid::-webkit-scrollbar{width:7px}
+  .avatar-grid::-webkit-scrollbar-thumb{background:rgba(148,164,187,.18);border-radius:99px}
+  .avatar-grid::-webkit-scrollbar-track{background:rgba(7,11,19,.18);border-radius:99px}
+  /* 卡片不写死像素高：展示框自己是 16:9（见 .avatar-thumb），宽度随网格列宽变，高度跟着算出来。
+     卡片高度 = 16:9 的展示框 + 文字区，同一行的卡片列宽相同 → 高度天然一致，
+     再由 grid 默认的 align-items:stretch 把「创建新形象」那张空卡拉到同高。
+     这样既是「固定比例的盒子」，又能随页面宽度缩放 —— 不需要任何写死的 px。 */
+  .avatar-card{position:relative;box-sizing:border-box;display:flex;flex-direction:column;border:1px solid rgba(148,164,187,.14);border-radius:13px;background:rgba(148,164,187,.04);color:#94a4bb;cursor:pointer;overflow:hidden;text-align:left;font-family:inherit;transition:.16s}
   .avatar-card:hover{border-color:rgba(231,178,76,.34);transform:translateY(-1px)}
+  /* 兜底：万一有人把裸 <img> 直接塞进卡片（剧情视频那版我就干了这事），也要被约束住 */
+  .avatar-card > img{width:100%;aspect-ratio:16/9;object-fit:contain;display:block}
   .avatar-card.on{border-color:rgba(231,178,76,.42);background:rgba(231,178,76,.08);box-shadow:0 0 0 1px rgba(231,178,76,.08) inset}
   .avatar-new{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;padding:14px;text-align:center}
   .avatar-new b{font-size:13px;color:#eaf1fa}.avatar-new span{font-size:11px;color:#5c6b82;line-height:1.45}
-  .avatar-thumb{height:82px;background:rgba(148,164,187,.07);border-bottom:1px solid rgba(148,164,187,.1);overflow:hidden}
-  .avatar-thumb img{width:100%;height:100%;object-fit:cover;display:block}
-  .avatar-meta{padding:10px 10px 38px}
+  /* 展示框锁死 16:9：宽度跟着网格走（随页面缩放），高度由 aspect-ratio 算出来 —— 所以「实际宽高按页面比例」。
+     flex:none 是必须的：给了 flex:1 就会被拉伸，16:9 白锁。
+     object-fit:contain —— 图片【完整】装进这个框，留边而不裁切、不变形。
+     （cover 会把竖版自拍的上下裁掉一大半，只剩中间一条 —— 用户看不到自己的脸。） */
+  .avatar-thumb{flex:none;width:100%;aspect-ratio:16/9;background:rgba(7,11,19,.55);border-bottom:1px solid rgba(148,164,187,.1);overflow:hidden}
+  .avatar-thumb img{width:100%;height:100%;object-fit:contain;display:block}
+  /* 底部的改名/删除是绝对定位的，文字区要给它留 38px，否则按钮压住文字 */
+  .avatar-meta{flex:none;padding:8px 10px 38px}
+  /* 剧情视频的形象卡没有改名/删除按钮，不用留那 38px —— 留了就是一块空白 */
+  .avatar-card.no-actions .avatar-meta{padding-bottom:8px}
+  /* 多选序号 */
+  .avatar-pick{position:absolute;top:7px;right:7px;width:21px;height:21px;border-radius:50%;background:#e7b24c;color:#1a1206;font:800 12px/21px inherit;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.3)}
   .avatar-name{font-size:12.5px;font-weight:800;color:#eaf1fa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .avatar-sub{font-size:10.5px;color:#5c6b82;margin-top:4px}
   .avatar-actions{position:absolute;left:9px;right:9px;bottom:8px;display:flex;gap:7px}
@@ -143,6 +170,12 @@
   .history-list::-webkit-scrollbar-thumb{background:rgba(148,164,187,.24);border-radius:99px}
   .history-list::-webkit-scrollbar-track{background:rgba(7,11,19,.28);border-radius:99px}
   .history-item{width:100%;box-sizing:border-box;border:1px solid rgba(148,164,187,.12);border-radius:14px;background:rgba(7,11,19,.3);padding:14px;display:flex;flex-direction:column;gap:13px;color:#94a4bb}
+  .history-focus{animation:history-focus-pulse 2.6s ease-out 1;border-color:rgba(231,178,76,.62) !important;box-shadow:0 0 0 1px rgba(231,178,76,.16),0 18px 40px rgba(231,178,76,.16)}
+  @keyframes history-focus-pulse{
+    0%{box-shadow:0 0 0 0 rgba(231,178,76,.32),0 0 0 1px rgba(231,178,76,.22)}
+    55%{box-shadow:0 0 0 10px rgba(231,178,76,0),0 0 0 1px rgba(231,178,76,.22)}
+    100%{box-shadow:0 0 0 0 rgba(231,178,76,0),0 0 0 1px rgba(231,178,76,.16)}
+  }
   .history-head{display:flex;align-items:center;gap:9px}
   .history-thumb{width:40px;height:52px;border-radius:9px;border:1px solid rgba(148,164,187,.18);background:rgba(148,164,187,.08);object-fit:cover;overflow:hidden}
   .history-audio{width:40px;height:52px;border:1px solid rgba(148,164,187,.16);border-radius:9px;background:rgba(148,164,187,.08);color:#cbd5e1;display:flex;align-items:center;justify-content:center;cursor:pointer}
@@ -183,6 +216,7 @@
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;transition:.2s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:12px;padding:11px 16px;color:#eaf1fa;font-size:13px;z-index:80}
   .toast.show{opacity:1;transform:translateX(-50%)}
   @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid,.video-parameter-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source,.avatar-grid{grid-template-columns:1fr}.batch-avatar-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media (prefers-reduced-motion:reduce){.history-focus{animation:none}}
   .line-switch{margin:12px 0;padding:12px;background:rgba(255,255,255,.03);border:1px solid rgba(148,164,187,.14);border-radius:12px}
   .line-switch>.label{margin-bottom:8px}
   .line-tabs{display:flex;gap:8px}
@@ -209,7 +243,7 @@
 
       <div class="function-tabs" aria-label="视频功能分页">
         <button class="function-tab on" type="button" data-function="talking">数字人口播</button>
-        <button class="function-tab" type="button" data-function="motion">影视级模仿</button>
+        <button class="function-tab" type="button" data-function="cinematic">电影化身</button>
         <button class="function-tab" type="button" data-function="tryon">换装换背景</button>
         <button class="function-tab" type="button" data-function="grok">果肉视频生成</button>
         <button class="function-tab" type="button" data-function="micro">豆姐视频生成</button>
@@ -344,69 +378,132 @@
       <div id="statusText" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">生成完成后会自动保存到视频资产</div>
       </div>
 
-      <div id="motionPanel" class="function-panel motion-panel hidden">
+      <div id="cinematicPanel" class="function-panel motion-panel hidden">
         <div class="row">
           <div>
-            <div class="label">影视级模仿</div>
-            <div class="muted" style="font-size:12px;margin-top:6px;">上传人物形象和参考片段，把自己「演」成同款大片</div>
+            <div class="label">电影化身</div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">让你的数字人形象出演：照着参考视频演，或者按你写的画面演</div>
           </div>
-          <span class="faint" style="font-size:11.5px;">照参考片重演，不是逐帧换脸</span>
+          <span class="faint" style="font-size:11.5px;">按成片时长计费</span>
         </div>
+
         <div class="line-switch">
-          <div class="label">生成线路（效果不同，按需选）</div>
-          <div class="line-tabs" id="motionLineTabs">
-            <button type="button" class="line-tab active" data-line="2"><b>线路二 · 极速</b><span>约 2 分钟 · 保留本人样子和穿着</span></button>
-            <button type="button" class="line-tab" data-line="1"><b>线路一 · 经典</b><span>约 6 分钟 · 脸贴到参考视频的身材/服装上</span></button>
+          <div class="label">玩法</div>
+          <div class="line-tabs" id="cineModeTabs">
+            <button type="button" class="line-tab active" data-cine-mode="motion"><b>动作模仿</b><span>1 个形象 + 1 段参考视频 → 照着它的动作演 · 10 点/秒</span></button>
+            <!-- 双人动作模仿：页签已下掉。它在线上是 0 成 2 败 —— 被 HeyGen 的内容审核拦的
+                 （网页原话 "Your content was flagged by our moderation system"，而 API 一个字
+                 都不给）。中文提示词换过，但【一次都没实测】。与其让用户白等十几分钟再看到
+                 「生成失败」，先下掉。
+                 CINE_MODES 里的 duo 【保留】—— 后端仍然认这个玩法（只是拒绝提交），
+                 实测通过后把 CINEMATIC_DUO_ENABLED=1 打开、把这个页签加回来即可，不用重写。 -->
+            <button type="button" class="line-tab" data-cine-mode="open"><b>开放式生成</b><span>最多 3 个形象 + 自己写画面描述 · 10 点/秒</span></button>
           </div>
         </div>
+
+        <!-- 内容规范。两个玩法【共用】—— 它在玩法页签之下、选形象之前，切玩法不隐藏。
+             位置是刻意的：用户还没上传、还没花点数，就先读到这三条。
+             前两条不是我们的规矩，是 HeyGen 的内容审核：命中就判失败（网页原话
+             "Your content was flagged by our moderation system"），而 API 【不给任何理由】——
+             用户只会看到一句干巴巴的「生成失败」。所以必须在这里说清楚，否则他只会反复重试。 -->
+        <div class="cine-notice">
+          <b>内容规范</b>
+          <span>· 禁止上传公众人物的形象或视频</span>
+          <span>· 禁止上传低俗人物的形象或视频</span>
+          <span>· 生成失败请重新选择人物形象或参考视频</span>
+        </div>
+
         <div class="avatar-panel">
           <div class="row">
-            <span class="label">我的形象</span>
-            <button id="refreshAvatarBtn" type="button" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font-family:inherit;font-size:12px;">刷新</button>
+            <span id="cineAvatarLabel" class="label">选择形象</span>
+            <span>
+              <span id="cineAvatarCount" class="mono faint" style="font-size:11.5px;margin-right:10px;">0 / 1</span>
+              <button id="cineRefreshBtn" type="button" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font-family:inherit;font-size:12px;">刷新</button>
+            </span>
           </div>
-          <div id="motionAvatarGrid" class="avatar-grid">
+          <div id="cineAvatarGrid" class="avatar-grid">
             <div class="avatar-empty">正在读取我的形象...</div>
           </div>
-        </div>
-        <div id="motionGrid" class="motion-grid">
-          <label id="motionImageDrop" class="motion-drop">
-            <input id="motionImageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-            <strong>人物形象图片</strong>
-            <span>上传需要生成动作视频的人物形象</span>
+          <label id="cineNewAvatarDrop" class="motion-drop" style="margin-top:12px;">
+            <input id="cineNewAvatarFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+            <strong>+ 创建新形象（5 点）</strong>
+            <span>上传一张正脸清晰的照片，约 25 秒建好，之后可反复使用</span>
           </label>
-          <div id="motionVideoDrop" class="motion-drop">
-            <input id="motionVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden>
-            <strong>参考片段</strong>
-            <span>点击上传要模仿的片段（建议 ≤15 秒）</span>
-          </div>
+          <div id="cineAvatarStatus" class="faint" style="font-size:11.5px;margin-top:8px;"></div>
         </div>
+
+        <!-- 动作模仿的提示词是写死的，用户不用写、也改不了 —— 整块藏起来 -->
+        <div id="cinePromptPanel" class="motion-preset-panel hidden">
+          <div class="row">
+            <span class="label">画面描述</span>
+            <span id="cinePromptCount" class="mono faint" style="font-size:11.5px;">0 / 2000</span>
+          </div>
+          <div id="cinePromptTemplates" class="motion-preset-grid" style="margin-bottom:10px;"></div>
+          <textarea id="cinePrompt" rows="4" placeholder="描述你想要的画面，例如：在海边散步，夕阳背光，镜头缓慢推近，电影质感"
+            style="width:100%;box-sizing:border-box;padding:12px 14px;border-radius:12px;border:1px solid #263041;background:#0e1420;color:#e8eefb;font:inherit;font-size:13px;resize:vertical;"></textarea>
+          <!-- 原来这里写的是「系统会自动保证成片里的人还是你选的形象本人」——
+               那句话的底气是后端拼的 CINEMATIC_IDENTITY_GUARD。现在开放式【不再拼】了
+               （kongli 2026-07-14 的决定：用户写什么就发什么），这句话就成了假话，必须改。 -->
+          <div class="faint" style="font-size:11.5px;margin-top:8px;">你写什么就发什么，系统不再额外加任何约束。<b style="color:#e7b24c;">想让成片里的人保持你的形象本人，请在描述里写清楚</b>（例如「人物必须是所选形象本人，保持脸型、发型、衣着不变」）——尤其是上传了参考视频时，不写的话可能会被参考视频里的人影响。</div>
+          <label style="display:flex;align-items:center;gap:9px;margin-top:12px;cursor:pointer;">
+            <input id="cineEnhance" type="checkbox" style="width:15px;height:15px;accent-color:#e7b24c;cursor:pointer;">
+            <span style="font-size:12.5px;color:#eaf1fa;font-weight:700;">自动润色提示词</span>
+            <span class="faint" style="font-size:11.5px;">让 AI 把你的描述扩写得更丰富。画面更有细节，但可能偏离你的原意</span>
+          </label>
+        </div>
+
         <div class="motion-preset-panel">
           <div class="row">
-            <span class="label">预设片段</span>
-            <span id="motionSourceText" class="faint" style="font-size:11.5px;">可选预设片段，或上传自有片段（建议 ≤15 秒）</span>
+            <span id="cineRefLabel" class="label">参考素材（选填）</span>
+            <span id="cineRefBudget" class="mono faint" style="font-size:11.5px;"></span>
           </div>
-          <div id="motionPresetGrid" class="motion-preset-grid"></div>
+          <div id="cineRefHint" class="faint" style="font-size:11.5px;margin-top:6px;">视频：照着它的动作和运镜演。图片：参考它的风格、构图、场景。都不给就只按描述生成。</div>
+          <div class="motion-grid" style="margin-top:10px;">
+            <label id="cineVideoDrop" class="motion-drop">
+              <input id="cineVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" multiple hidden>
+              <strong>+ 参考视频</strong>
+              <span>动作 / 运镜（建议 ≤15 秒）</span>
+            </label>
+            <!-- 动作模仿不收参考图：提示词写死的是「照着参考视频演」，再塞几张图，HeyGen 只会乱抄 -->
+            <label id="cineImageDrop" class="motion-drop">
+              <input id="cineImageFile" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
+              <strong>+ 参考图片</strong>
+              <span>风格 / 构图 / 场景</span>
+            </label>
+          </div>
+          <div id="cineRefList" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;"></div>
         </div>
+
         <div class="motion-preset-panel">
-          <div class="video-parameter-grid">
-            <div>
+          <!-- 动作模仿：参数全部锁死成 #2173 那一条的形状（目前唯一已知能过 HeyGen 审核的配置）。
+               用户只能换形象和参考视频 —— 分辨率、时长、比例都不给选。 -->
+          <div id="cineFixedParams" class="hidden" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+            <span class="pill-fixed">分辨率 1080p</span>
+            <span class="pill-fixed">时长跟随参考视频</span>
+            <span class="pill-fixed">比例跟随参考视频</span>
+            <span class="faint" style="font-size:11.5px;">这些参数已固定，以保证出片成功率</span>
+          </div>
+          <div id="cineParamGrid" class="video-parameter-grid">
+            <div id="cineRatioBox">
               <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
-              <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button class="on" data-motion-ratio="9:16">9:16</button><button data-motion-ratio="16:9">16:9</button><button data-motion-ratio="1:1">1:1</button></div>
+              <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button class="on" data-cine-ratio="9:16">9:16</button><button data-cine-ratio="16:9">16:9</button><button data-cine-ratio="1:1">1:1</button></div>
             </div>
             <div>
               <div class="faint" style="font-size:12px;margin-bottom:8px;">分辨率</div>
-              <div id="motionResolutionSeg" class="seg"><button class="on" data-motion-resolution="720p">720p</button><button data-motion-resolution="1080p" disabled title="线路二仅支持 720p">1080p</button></div>
+              <div class="seg"><button class="on" data-cine-resolution="720p">720p</button><button data-cine-resolution="1080p">1080p</button></div>
             </div>
             <div style="grid-column:1/-1;">
               <div class="faint" style="font-size:12px;margin-bottom:8px;">成片时长</div>
-              <div id="motionDurationValue" class="parameter-readonly">跟随参考片段 · 最长 120 秒</div>
+              <div id="cineDurationSeg" class="seg" style="grid-template-columns:repeat(5,1fr);"><button class="on" data-cine-duration="auto">自适应</button><button data-cine-duration="5">5 秒</button><button data-cine-duration="10">10 秒</button><button data-cine-duration="12">12 秒</button><button data-cine-duration="15">15 秒</button></div>
             </div>
           </div>
+          <div id="cineDurationHint" class="faint" style="font-size:11.5px;margin-top:8px;"></div>
         </div>
-        <button id="motionGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:20px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
-          生成影视级模仿视频
+
+        <button id="cineGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:20px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
+          生成视频
         </button>
-        <div id="motionStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">生成完成后会自动保存到视频资产</div>
+        <div id="cineStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">约 6~9 分钟出片，完成后自动保存到视频资产</div>
       </div>
 
       <div id="tryonPanel" class="function-panel motion-panel hidden">
@@ -468,17 +565,28 @@
         <div class="row">
           <div>
             <div class="label">果肉视频生成</div>
-            <div class="muted" style="font-size:12px;margin-top:6px;">Grok Video · 输入提示词生成，或上传参考图做图生视频(最多7张)</div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">xAI 官方 Grok Imagine Video · 文生视频或单图生视频</div>
           </div>
           <span class="faint" style="font-size:11.5px;">文生 / 图生视频</span>
+        </div>
+        <div class="panel" style="margin-top:14px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">操作方式</div>
+          <div class="seg" style="grid-template-columns:repeat(2,1fr);"><button class="on" data-grok-operation="generate">生成新视频</button><button data-grok-operation="edit">编辑已有视频</button></div>
+        </div>
+        <div class="panel grok-edit-only hidden" style="margin-top:12px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考视频 <span style="color:#5c6b82;">· MP4，最长 8.7 秒；输出继承原时长和比例，最高 720p</span></div>
+          <label style="display:block;padding:14px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;cursor:pointer;text-align:center;">
+            <input id="grokEditFile" type="file" accept="video/mp4" hidden><span id="grokEditFileName">点击上传 MP4 参考视频</span>
+          </label>
+          <video id="grokEditPreview" class="hidden" controls muted playsinline style="width:100%;max-height:260px;margin-top:10px;border-radius:12px;"></video>
         </div>
         <div class="panel" style="margin-top:14px;">
           <div class="faint" style="font-size:12px;margin-bottom:8px;">视频提示词 <span style="color:#5c6b82;">· 点下方示例快速填入，或直接粘贴自己的</span></div>
           <textarea id="grokPrompt" rows="4" placeholder="例如：一只橘猫在阳光洒落的窗台上慢慢转头，电影级光影，柔和景深，平滑运镜" style="width:100%;min-height:110px;resize:vertical;background:rgba(7,11,19,.5);border:1px solid rgba(148,164,187,.16);border-radius:12px;color:#eaf1fa;padding:12px 14px;font:inherit;font-size:14px;"></textarea>
           <div id="grokExamples" style="display:flex;flex-wrap:wrap;gap:7px;margin-top:10px;"></div>
         </div>
-        <div class="panel" style="margin-top:12px;">
-          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，图生视频，最多 7 张（上游供应商实测偶发不稳定，张数越多不代表越容易失败，也不保证一定成功）</span></div>
+        <div class="panel grok-generate-only" style="margin-top:12px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，官方图生视频最多 7 张</span></div>
           <div id="grokRefGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;">
             <label id="grokRefAdd" style="position:relative;display:flex;align-items:center;justify-content:center;min-height:74px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;background:rgba(7,11,19,.4);cursor:pointer;">
               <input id="grokRefFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
@@ -486,9 +594,17 @@
             </label>
           </div>
         </div>
-        <div class="panel" style="margin-top:12px;">
-          <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例 <span style="color:#e7b24c;">· 上游供应商目前仅16:9(横屏)出图稳定，其余比例暂时大概率生成失败，问题解决前建议优先选16:9</span></div>
-          <div class="seg" style="grid-template-columns:repeat(5,1fr);"><button data-grok-ratio="9:16">9:16</button><button class="on" data-grok-ratio="16:9">16:9</button><button data-grok-ratio="1:1">1:1</button><button data-grok-ratio="4:5">4:5</button><button data-grok-ratio="5:4">5:4</button></div>
+        <div class="panel grok-generate-only" style="margin-top:12px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">官方模型</div>
+          <div class="seg" style="grid-template-columns:repeat(2,1fr);"><button class="on" data-grok-model="grok-imagine-video">通用版 · 文生/图生</button><button data-grok-model="grok-imagine-video-1.5">1.5 · 高质量图生</button></div>
+        </div>
+        <div class="panel grok-generate-only" style="margin-top:12px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例 <span style="color:#5c6b82;">· xAI 官方支持</span></div>
+          <div class="seg" style="grid-template-columns:repeat(4,1fr);"><button data-grok-ratio="9:16">9:16</button><button class="on" data-grok-ratio="16:9">16:9</button><button data-grok-ratio="1:1">1:1</button><button data-grok-ratio="4:3">4:3</button><button data-grok-ratio="3:4">3:4</button><button data-grok-ratio="3:2">3:2</button><button data-grok-ratio="2:3">2:3</button></div>
+        </div>
+        <div class="panel grok-generate-only" style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          <div><div class="faint" style="font-size:12px;margin-bottom:8px;">生成时长</div><div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-grok-duration="5">5秒</button><button class="on" data-grok-duration="10">10秒</button><button data-grok-duration="15">15秒</button></div></div>
+          <div><div class="faint" style="font-size:12px;margin-bottom:8px;">分辨率</div><div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-grok-resolution="480p">480p</button><button class="on" data-grok-resolution="720p">720p</button><button id="grok1080Btn" class="hidden" data-grok-resolution="1080p">1080p</button></div></div>
         </div>
         <button id="grokGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:18px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
           生成果肉视频
@@ -565,7 +681,7 @@
 <div id="toast" class="toast"></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=b82c30d3"></script>
+<script src="cloud-shell.js?v=302ad2ce"></script>
 <script>
 (function(){
   var token='__cookie__';
@@ -574,8 +690,66 @@
   var talkingBatch=false, talkingBatchItems=[], videoCost=20, videoBatchMax=5, talkingBatchSeq=0;
   var bgmData='', selectedBgmVolume=0.18;
   var selectedSubtitle='off', selectedSubtitleStyle='white', selectedSubtitlePosition='bottom';  // F4 字幕：默认关闭+底部，不勾选时行为与原来一致
-  var motionImageData='', motionReferenceVideoData='', selectedMotionPreset='', selectedMotionRatio='9:16', selectedMotionLine='2', selectedMotionResolution='720p';
-  var selectedGrokRatio='16:9';  // 默认16:9(上游9:16/1:1/4:5/5:4暂时大概率生成失败,止血用#GROK-RATIO-SIZE-INCIDENT)
+  // 电影化身（HeyGen cinematic）：三个玩法共用一套控件，见 CINE_MODES
+  // 时长默认「自适应」：跟随参考视频的长度。既然给了参考片段，成片就该和它一样长，
+  // 而不是被截断或硬拖到某个固定秒数。没传参考视频时后端回落到 10 秒。
+  var cineSelectedAvatarIds=[], selectedCineRatio='9:16', selectedCineResolution='720p', selectedCineDuration='auto';
+  // 参考素材：视频和图片各存一份 base64。
+  // 媒体预算是【和形象共用的】——官方文档：「Avatar looks and references share a combined
+  // media budget: at most 3 videos and 9 images total across avatar_id and references」。
+  // 所以选了 3 个形象，参考图就只剩 6 张额度。这一点必须显示给用户，否则他会以为是 bug。
+  var cineRefVideos=[], cineRefImages=[];
+  var CINE_MAX_REF_VIDEOS=3, CINE_MAX_MEDIA_IMAGES=9;
+  // 动作模仿只吃【一个】参考视频、不吃参考图：它的提示词是写死的「照着参考视频演」，
+  // 再塞第二个视频或几张图，HeyGen 只会在它们之间乱抄 —— 用户既控制不了、也无从预期。
+  // 多参考素材是给开放式生成的，那边用户自己写提示词，能说清楚每个素材干嘛用。
+  function cineMaxRefVideos(){ return cineCfg().fixed ? 1 : CINE_MAX_REF_VIDEOS; }
+  function cineMaxRefImages(){
+    if(cineCfg().fixed) return 0;
+    return Math.max(0, CINE_MAX_MEDIA_IMAGES-cineSelectedAvatarIds.length);
+  }
+  var CINE_MAX_AVATARS=3;
+  // 电影化身的三个玩法。这张表是前端的唯一事实来源 —— 每条都在后端
+  // validate_cinematic_payload 里有一模一样的一份（前端只管好用，后端才管好安全）。
+  //   avatars    正好要几个形象（open 是上限，motion/duo 是等于）
+  //   fixed      提示词写死 + 参数锁死（分辨率 1080p、时长/比例跟随参考视频）——
+  //              整个参数区都不显示，也不往后端发 prompt/resolution/duration。
+  //              锁死的形状照抄 #2173，那是目前唯一已知能过 HeyGen 审核的配置。
+  //   needRef    参考视频必填
+  //   durations  可选时长（只有开放式还用得上）；rate 每秒点数
+  // ⚠️ rate 必须和后端 CINEMATIC_RATE_PER_SEC 逐字对齐 —— 对不上就是「界面说 30 点、实际扣 100 点」。
+  var CINE_MODES={
+    motion:{label:'动作模仿',    avatars:1, exact:true,  fixed:true,  needRef:true,  durations:['auto'],            rate:10},
+    duo:   {label:'双人动作模仿', avatars:2, exact:true,  fixed:true,  needRef:true,  durations:['auto'],            rate:10},
+    open:  {label:'开放式生成',  avatars:3, exact:false, fixed:false, needRef:false, durations:['auto',5,10,12,15],  rate:10}
+  };
+  var cineMode='motion';
+  var cineRefSeconds=0;   // 参考视频的实际秒数（本地读的），用来预估点数
+  function cineCfg(){ return CINE_MODES[cineMode]||CINE_MODES.open; }
+  // 成片秒数。规则必须和后端 _cinematic_duration 一致：向上取整，夹进 4~15，
+  // 没有参考视频时回落 10 秒 —— 不一致就会出现「界面说 27 点，实际扣 45 点」。
+  function cineSeconds(){
+    if(selectedCineDuration!=='auto') return selectedCineDuration;
+    if(!cineRefSeconds) return 10;
+    return Math.max(4, Math.min(15, Math.ceil(cineRefSeconds)));
+  }
+  function cineCost(){ return cineSeconds()*cineCfg().rate; }
+  // 提示词模板：用户只写创意，身份约束（保持形象本人的脸/发型/衣着、不要抄参考视频里的人）
+  // 由后端无条件拼上 —— 那条不能交给用户把关，丢了成片里的人就不是自己了。
+  // 模板里【自带】身份表述 —— 原来这句是后端拼的（CINEMATIC_IDENTITY_GUARD），
+  // 开放式现在不拼了，用户的提示词里要是没有它，成片里的人就可能不是他自己。
+  // 模板是大多数人的起点，把它写进去，等于给了一个安全的默认值。
+  var CINE_IDENTITY='人物必须是所选形象本人，保持脸型、发型、身材和衣着不变。';
+  var CINE_TEMPLATES=[
+    {name:'口播出镜',   text:CINE_IDENTITY+'站在明亮的现代办公空间里，面向镜头自信讲解，手势自然，浅景深，专业商务质感'},
+    {name:'门店实拍',   text:CINE_IDENTITY+'在高级美容院内走动介绍，暖色灯光，镜头缓慢跟随，生活方式短片质感'},
+    {name:'海边氛围',   text:CINE_IDENTITY+'在海边缓步行走，夕阳背光，海风吹动头发，镜头缓慢推近，电影感调色'},
+    {name:'街头时尚',   text:CINE_IDENTITY+'走在城市街头，霓虹灯背景，回头看向镜头微笑，时尚大片质感'},
+    {name:'产品展示',   text:CINE_IDENTITY+'手持产品面向镜头介绍，纯色背景，柔和布光，特写与中景切换，广告片质感'},
+    {name:'多人同框',   text:CINE_IDENTITY+'两人并肩站立面向镜头交谈，互动自然，室内暖光，纪录片质感'}
+  ];
+  var selectedGrokRatio='16:9', selectedGrokDuration=10, selectedGrokResolution='720p', selectedGrokModel='grok-imagine-video';
+  var grokOperation='generate', grokEditVideoData='', grokEditDuration=0;
   // 换装的第一个上传框在两条线路收的东西不同：线路一收换装视频，线路二收人物照片。
   // 必须各存各的变量 —— 共用一个的话，线路一传了视频再切到线路二，视频会被当人物照发出去（#537）。
   var tryonVideoData='', tryonPersonImageData='', tryonClothesData='', tryonBackgroundData='', selectedTryonLine='2', selectedTryonSeconds=6;
@@ -626,7 +800,10 @@
   }
   var motionAvatars=[], selectedMotionAvatarId=null, useNewMotionImage=true, avatarsLoaded=false;
   var currentVideoDraft=null;
-  var motionPresets=[];
+  var videoBusyCount=0;
+  var maxActiveXiaoleVideo=3, maxActiveTryon=1, maxActiveCinematic=2;
+  var videoSubmitLocks={talking:false,cinematic:false,tryon:false,xiaole:false};
+  var videoTaskSyncBound=false;
   var publicFallback=[
     {scope:'public',voice_key:'S_d21F8OR62',display_name:'温柔女声',provider_voice:'S_d21F8OR62',sub:'情感种草 · 柔和自然'},
     {scope:'public',voice_key:'S_l8wE8OR62',display_name:'活力女声',provider_voice:'S_l8wE8OR62',sub:'广告推荐 · 明亮有记忆点'},
@@ -637,9 +814,65 @@
   var $=function(id){return document.getElementById(id);};
   function esc(s){return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
   var resumedVideoTaskId='';
+  var focusVideoTaskId='';
+  function setPendingVideoFocus(id){
+    focusVideoTaskId=id==null?'':String(id).trim();
+  }
+  function videoJobSelector(id){
+    var value=String(id||'');
+    if(window.CSS&&CSS.escape) value=CSS.escape(value);
+    return '[data-job="'+value+'"]';
+  }
+  function focusVideoJobCard(explicitId){
+    if(explicitId!=null&&explicitId!=='') setPendingVideoFocus(explicitId);
+    if(!focusVideoTaskId) return false;
+    var box=$('outputHistory');
+    if(!box) return false;
+    var el=box.querySelector(videoJobSelector(focusVideoTaskId));
+    if(!el) return false;
+    focusVideoTaskId='';
+    try{ el.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){ el.scrollIntoView(); }
+    el.classList.remove('history-focus');
+    void el.offsetWidth;
+    el.classList.add('history-focus');
+    setTimeout(function(){ el.classList.remove('history-focus'); },2600);
+    return true;
+  }
   function withHQTasks(callback){
     if(window.HQTasks){ callback(window.HQTasks); return; }
     window.addEventListener('hq:tasks-ready',function(){ if(window.HQTasks) callback(window.HQTasks); },{once:true});
+  }
+  function bindVideoTaskSync(){
+    if(videoTaskSyncBound) return;
+    withHQTasks(function(tasks){
+      if(videoTaskSyncBound || !tasks || !tasks.onChange) return;
+      tasks.onChange(syncVideoGenerateButtons);
+      videoTaskSyncBound=true;
+      syncVideoGenerateButtons();
+    });
+  }
+  function isActiveVideoTask(job){
+    var st=String(job&&job.status||'').toLowerCase();
+    return st==='queued' || st==='running' || st==='pending' || st==='processing';
+  }
+  function activeVideoTaskCounts(){
+    var counts={talking:0,cinematic:0,tryon:0,xiaole:0};
+    var tasks=window.HQTasks;
+    if(!tasks || !tasks.list) return counts;
+    (tasks.list()||[]).forEach(function(job){
+      if(!job || String(job.kind||'')!=='video' || !isActiveVideoTask(job)) return;
+      var m=String(job.mode||'').toLowerCase();
+      if(m==='cinematic') counts.cinematic++;
+      else if(m==='tryon') counts.tryon++;
+      else if(m==='grok' || m==='micro' || m==='omni') counts.xiaole++;
+      else counts.talking++;
+    });
+    return counts;
+  }
+  function setSubmitLock(kind,on){
+    if(!Object.prototype.hasOwnProperty.call(videoSubmitLocks,kind)) return;
+    videoSubmitLocks[kind]=!!on;
+    syncVideoGenerateButtons();
   }
   function trackVideoJob(id,patch){
     if(id==null||id==='') return;
@@ -656,6 +889,7 @@
         try{ id=(new URLSearchParams(location.search).get('task')||'').trim(); }catch(e){}
       }
       if(id && !/^\d+$/.test(id)) return;
+      if(id) setPendingVideoFocus(id);
       var task=id?tasks.get(id,'video'):tasks.latestActive('video');
       if(!task && id){
         task={id:id,kind:'video',status:'pending',label:'视频任务'};
@@ -663,10 +897,19 @@
       }
       if(!task || String(task.kind||'')!=='video') return;
       id=String(task.id);
-      if(resumedVideoTaskId===id) return;
+      setPendingVideoFocus(id);
+      if(resumedVideoTaskId===id){
+        if(currentVideoDraft){
+          currentVideoDraft.job_id=id;
+          renderVideoDrafts([currentVideoDraft]);
+        }
+        focusVideoJobCard(id);
+        return;
+      }
       resumedVideoTaskId=id;
       setBusy(true);
       currentVideoDraft={
+        job_id:id,
         text:task.label||'视频任务',
         ratio:task.ratio||'—',
         motion:task.modeLabel||'视频生成',
@@ -674,7 +917,8 @@
         phase:task.phase||'queued',
         created_at:Math.floor((task.createdAt||Date.now())/1000)
       };
-      renderVideoHistory([currentVideoDraft]);
+      renderVideoDrafts([currentVideoDraft]);
+      focusVideoJobCard(id);
       setVideoStatus('正在恢复视频任务 #'+id+'...');
       pollJob(id,0);
     });
@@ -685,13 +929,22 @@
   });
   function fresh(u){u=String(u||'');return /^(blob:|data:)/.test(u)||/[?&]q-sign-/.test(u)||/voice_preview_/.test(u)?u:u+(u.indexOf('?')>=0?'&':'?')+'_='+Date.now();}  // voice_preview_ 内容哈希命名、不可变，加 ?_= 反而每次击穿浏览器缓存致试听重下载
   function isProtectedLocal(u){return String(u||'').indexOf('/api/gen/file/')===0;}
+  // 受保护素材（/api/gen/file/…）要带鉴权 fetch 成 blob 再转 URL —— 这一步很贵。
+  // 原来每次调用都：加时间戳击穿缓存 + cache:'no-store' + 新建一个 blob URL（旧的从不释放）。
+  // 于是每次重渲染都把所有图重新下载一遍，还漏内存。形象图的路径带 uuid、不可变，
+  // 按路径缓存是安全的。缓存 Promise 而不是 URL —— 同一张图的并发请求也会被去重。
+  var _assetCache={};
   function assetUrl(u){
     if(!isProtectedLocal(u)) return Promise.resolve(fresh(u));
-    return fetch(fresh(u),{cache:'no-store',headers:{Authorization:'Bearer '+token}}).then(function(r){
+    if(_assetCache[u]) return _assetCache[u];
+    var p=fetch(u,{headers:{Authorization:'Bearer '+token}}).then(function(r){
       if(r.status===401){location.href='../login.html?redirect=workbench/video';throw new Error('登录已过期');}
       if(!r.ok) throw new Error('素材读取失败');
       return r.blob();
-    }).then(function(blob){return URL.createObjectURL(blob);});
+    }).then(function(blob){return URL.createObjectURL(blob);})
+      .catch(function(e){ delete _assetCache[u]; throw e; });   // 失败不缓存，下次还能重试
+    _assetCache[u]=p;
+    return p;
   }
   function blobToDataUrl(blob){
     return new Promise(function(resolve,reject){
@@ -804,24 +1057,6 @@
     if(btn){ btn.click(); return true; }
     return false;
   }
-  function clickMotionRatio(value){
-    var v=String(value||'').trim();
-    if(v==='4:5') v='9:16'; else if(v==='5:4') v='16:9';  // HeyGen motion 不支持4:5/5:4,老任务回填映射到合法朝向
-    var btn=document.querySelector('[data-motion-ratio="'+v.replace(/"/g,'\\"')+'"]');
-    if(btn){ btn.click(); return true; }
-    return false;
-  }
-  function clickMotionResolution(value){
-    var v=String(value||'').trim().toLowerCase();
-    if(v==='4k') v='1080p';
-    if(v==='1080p' && selectedMotionLine==='2'){
-      var line1=document.querySelector('#motionLineTabs [data-line="1"]');
-      if(line1) line1.click();
-    }
-    var btn=document.querySelector('[data-motion-resolution="'+v.replace(/"/g,'\\"')+'"]');
-    if(btn && !btn.disabled){ btn.click(); return true; }
-    return false;
-  }
   function clickGrokRatio(value){
     var btn=document.querySelector('[data-grok-ratio="'+String(value||'').replace(/"/g,'\\"')+'"]');
     if(btn){ btn.click(); return true; }
@@ -846,7 +1081,6 @@
   }
   function setVideoStatus(msg){
     if($('statusText')) $('statusText').textContent=msg;
-    if($('motionStatus')) $('motionStatus').textContent=msg;
     if($('tryonStatus')) $('tryonStatus').textContent=msg;
   }
   function motionLabel(v){return v==='high'?'高':(v==='medium'?'中等':'低');}
@@ -923,6 +1157,29 @@
     if(isNaN(d.getTime())) return '';
     return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
   }
+  // 生成记录 = 【服务端的历史】+【本地的在飞草稿】。两层分开存，渲染时才合并。
+  //
+  // 原来每条提交路径都是 renderVideoDrafts([currentVideoDraft]) —— 把整个列表直接换成
+  // 一条草稿。所以一开始生成，历史记录就全没了，用户看到的只剩在生成的那条。
+  // 草稿是本地的、还没落库的东西，它没资格覆盖服务端的历史。
+  var videoHistoryItems=[];   // 服务端 /video/assets 拉回来的历史
+  var videoDrafts=[];         // 本地在飞草稿（批量出片时有多条）
+
+  function renderVideoOutput(){
+    // 草稿一拿到 job_id，服务端历史里也会出现同一条 —— 去重，以草稿为准（它带着实时进度）
+    var drafted={};
+    videoDrafts.forEach(function(d){ if(d && d.job_id!=null && d.job_id!=='') drafted[String(d.job_id)]=1; });
+    var rest=videoHistoryItems.filter(function(x){
+      var jid=(x && x.job_id!=null) ? x.job_id : (x && x.id);
+      return !(jid!=null && drafted[String(jid)]);
+    });
+    renderVideoHistory(videoDrafts.concat(rest));
+  }
+  function renderVideoDrafts(list){
+    videoDrafts=(list||[]).filter(Boolean);
+    renderVideoOutput();
+  }
+
   function renderVideoHistory(items){
     var box=$('outputHistory'); if(!box) return;
     box.innerHTML='';
@@ -934,6 +1191,8 @@
       var x=normalizeVideoAsset(raw);
       var card=document.createElement('div');
       card.className='history-item';
+      var jid=x.job_id!=null?x.job_id:x.id;
+      if(jid!=null&&jid!=='') card.setAttribute('data-job',String(jid));
       var image=x.image_url||'../assets/cloud/logo-bird.png';
       var assetMode=String(x.mode||'').toLowerCase();
       var isTalking=!assetMode||assetMode==='text'||assetMode==='audio';
@@ -989,13 +1248,18 @@
       };
       box.appendChild(card);
     });
+    focusVideoJobCard();
   }
   function updateJobProgress(job){
     var info=phaseInfo(job&&job.phase,job&&job.status);
     if(currentVideoDraft){
+      currentVideoDraft.job_id=(job&&job.id!=null)?String(job.id):(currentVideoDraft.job_id||resumedVideoTaskId||'');
       currentVideoDraft.phase=job.phase||currentVideoDraft.phase;
       currentVideoDraft.status=job.status||currentVideoDraft.status||'processing';
-      renderVideoHistory([currentVideoDraft]);
+      // 服务端的 created_at 是计时的权威锚点：刷新后恢复任务时，本地 tracker 里的时间可能
+      // 早就丢了（甚至是恢复时 Date.now() 现编的），拿它计时就会从头再数一遍。
+      if(job && Number(job.created_at)>0) currentVideoDraft.created_at=Number(job.created_at);
+      renderVideoDrafts([currentVideoDraft]);
     }
     setVideoStatus(info.label+(info.eta?' · '+info.eta:''));
   }
@@ -1015,11 +1279,15 @@
     box.appendChild(state);
   }
   function loadVideoHistory(){
-    renderVideoHistoryState('正在读取生成记录...',false);
+    // 有在飞草稿时不要把「正在读取…」糊上去 —— 那会让用户眼睁睁看着自己刚提交的卡片消失一下
+    if(!videoDrafts.length) renderVideoHistoryState('正在读取生成记录...',false);
     fetch(fresh('/api/gen/video/assets?limit=30'),{cache:'no-store',headers:{Authorization:'Bearer '+token,'Cache-Control':'no-cache'}})
       .then(function(r){return r.ok?r.json():Promise.reject();})
-      .then(function(d){renderVideoHistory(d.items||[]);})
-      .catch(function(){renderVideoHistoryState('生成记录加载失败',true);});
+      .then(function(d){ videoHistoryItems=d.items||[]; renderVideoOutput(); })
+      .catch(function(){
+        if(videoDrafts.length) renderVideoOutput();   // 历史拉不动，至少别把在飞的那条也弄没了
+        else renderVideoHistoryState('生成记录加载失败',true);
+      });
   }
   function selectMotionAvatar(id){
     selectedMotionAvatarId=id||null;
@@ -1028,6 +1296,29 @@
     var picked=motionAvatars.find(function(a){return String(a.id)===String(id);});
     renderMotionAvatars();
   }
+  // 最多显示两排形象，再多就滚动。行高必须【量】出来，不能写死：
+  // 卡片高度 = 展示框（宽度随网格列宽变）+ 文字区，窗口一缩放它就变了。
+  var AVATAR_GRID_ROWS=2;
+  function limitAvatarGridRows(grid){
+    if(!grid) return;
+    var card=grid.querySelector('.avatar-card');
+    if(!card){ grid.style.maxHeight=''; return; }   // 空态（「还没有形象」）不该被截断
+    var h=card.getBoundingClientRect().height;
+    if(!h) return;                                   // 面板还是 hidden 的，量不到；等它显示了再量
+    var gap=parseFloat(getComputedStyle(grid).rowGap||'')||10;
+    // +2px：子像素取整有时会把第二排切掉一线，看起来像「有第三排但只露一条边」
+    grid.style.maxHeight=(h*AVATAR_GRID_ROWS + gap*(AVATAR_GRID_ROWS-1) + 2)+'px';
+  }
+  function limitAllAvatarGrids(){
+    ['motionAvatarGrid','cineAvatarGrid'].forEach(function(id){ limitAvatarGridRows($(id)); });
+  }
+  // 窗口宽度一变，列宽变 → 卡片高度变 → 两排的高度也得重算
+  var _avatarGridResize=null;
+  window.addEventListener('resize',function(){
+    clearTimeout(_avatarGridResize);
+    _avatarGridResize=setTimeout(limitAllAvatarGrids,120);
+  });
+
   function renderMotionAvatars(){
     var grid=$('motionAvatarGrid'); if(!grid) return;
     grid.innerHTML='';
@@ -1079,6 +1370,7 @@
       };
       grid.appendChild(card);
     });
+    limitAvatarGridRows(grid);   // 最多两排，多的滚动
   }
   function loadMotionAvatars(force){
     if(avatarsLoaded && !force){renderMotionAvatars();renderTalkingBatchImages();return;}
@@ -1096,26 +1388,394 @@
         }
         renderMotionAvatars();
         renderTalkingBatchImages();
+        renderCineAvatars();
       })
       .catch(function(e){if(grid) grid.innerHTML='<div class="avatar-empty" style="color:#f4708a;">'+esc(e.message||'形象列表读取失败')+'</div>';renderTalkingBatchImages();});
   }
+
+  // ===== 电影化身：形象多选（HeyGen 会把多个形象放进同一个镜头）=====
+  function renderCineAvatars(){
+    var grid=$('cineAvatarGrid');
+    if(!grid) return;
+    // 形象没了（被删）就从选中里剔除，别把不存在的 id 提交上去
+    cineSelectedAvatarIds=cineSelectedAvatarIds.filter(function(id){
+      return motionAvatars.some(function(a){return String(a.id)===String(id);});
+    });
+    grid.innerHTML='';
+    if(!motionAvatars.length){
+      grid.innerHTML='<div class="avatar-empty">还没有形象，先在下面上传一张照片创建</div>';
+      updateCineCount();
+      return;
+    }
+    motionAvatars.forEach(function(a){
+      var card=document.createElement('button');
+      card.type='button';
+      card.dataset.avatarId=a.id;
+      // no-actions：这张卡没有改名/删除按钮，文字区不用给它们留 38px 空位
+      card.className='avatar-card no-actions';
+      // .avatar-thumb 包住图（16:9 的框 + object-fit:contain 完整缩放，不裁切不变形）
+      card.innerHTML='<div class="avatar-thumb"><img alt=""></div>'
+                    +'<div class="avatar-meta"><div class="avatar-name">'+esc(a.name||'未命名形象')+'</div></div>';
+      // 图片是受保护素材，要带鉴权取。assetUrl 内部按路径缓存，重复调用不会重复下载。
+      setAssetImage(card.querySelector('img'), a.image_url||'../assets/cloud/logo-bird.png');
+      card.onclick=function(){ toggleCineAvatar(a.id); };
+      grid.appendChild(card);
+    });
+    syncCineSelection();         // 选中态单独刷，不重建 DOM
+    limitAvatarGridRows(grid);   // 最多两排，多的滚动
+  }
+
+  // 选中态只改 class 和序号徽标 —— 【绝不重建 DOM】。
+  // 原来 toggleCineAvatar 直接调 renderCineAvatars()，那会 innerHTML='' 全量重建：
+  // 每点一次，所有形象图的 <img> 都是新的，全部重新走一遍鉴权 fetch + blob 转换。
+  // 用户看到的就是「一点击图片就刷新一次，还很慢」。
+  function syncCineSelection(){
+    var grid=$('cineAvatarGrid');
+    if(!grid) return;
+    grid.querySelectorAll('.avatar-card[data-avatar-id]').forEach(function(card){
+      var idx=cineSelectedAvatarIds.findIndex(function(id){return String(id)===String(card.dataset.avatarId);});
+      card.classList.toggle('on', idx>=0);
+      var pick=card.querySelector('.avatar-pick');
+      if(idx>=0){
+        if(!pick){ pick=document.createElement('span'); pick.className='avatar-pick'; card.appendChild(pick); }
+        pick.textContent=idx+1;
+      }else if(pick){ pick.remove(); }
+    });
+    updateCineCount();
+  }
+  function toggleCineAvatar(id){
+    var key=String(id), cap=cineCfg().avatars;
+    var i=cineSelectedAvatarIds.findIndex(function(x){return String(x)===key;});
+    if(i>=0){ cineSelectedAvatarIds.splice(i,1); }
+    else if(cap===1){ cineSelectedAvatarIds=[key]; }   // 只能选一个：点新的就是换一个，不用先取消
+    else if(cineSelectedAvatarIds.length>=cap){ toast(cineCfg().label+'最多选 '+cap+' 个形象'); return; }
+    else { cineSelectedAvatarIds.push(key); }
+    syncCineSelection();   // 只改选中态，不重建 DOM —— 重建会让所有形象图重新下载一遍
+  }
+  function updateCineCount(){
+    if($('cineAvatarCount')) $('cineAvatarCount').textContent=cineSelectedAvatarIds.length+' / '+cineCfg().avatars;
+    renderCineRefs();          // 形象数一变，参考图的额度就变（两者共用 9 张图的预算）
+    updateCineDurationHint();  // 点数按秒算，形象数变了单价可能也变（双人 5 点/秒）
+  }
+
+  // ===== 参考素材：视频 + 图片，多选，和形象共用媒体预算 =====
+  function bindCineRefs(input, store, maxFn, label){
+    if(!input) return;
+    input.onchange=function(){
+      var files=Array.prototype.slice.call(this.files||[]);
+      var room=maxFn()-store.length;
+      if(room<=0){ toast(label+'已达上限（'+maxFn()+'）'); this.value=''; return; }
+      if(files.length>room){ toast(label+'最多再加 '+room+' 个，多余的已忽略'); files=files.slice(0,room); }
+      Promise.all(files.map(readFileData))
+        .then(function(datas){
+          datas.forEach(function(d,i){ store.push({data:d, name:files[i].name, file:files[i]}); });
+          renderCineRefs();
+          syncCineRefProbe();   // 传了参考视频，「自适应」才真的有东西可跟随（还要按它的秒数算点数）
+        })
+        .catch(function(e){ toast(e.message||'文件读取失败'); });
+      this.value='';   // 允许再次选同一个文件
+    };
+  }
+  // 第一个参考视频决定成片长度（也就决定点数）。它变了就重新探一次；一个都没有就归零。
+  function syncCineRefProbe(){
+    if(cineRefVideos.length && cineRefVideos[0].file) probeCineReference(cineRefVideos[0].file);
+    else { cineRefSeconds=0; updateCineDurationHint(); }
+  }
+  function renderCineRefs(){
+    var box=$('cineRefList'), budget=$('cineRefBudget'), cfg=cineCfg();
+    if(budget){
+      budget.textContent = cfg.fixed
+        ? ('视频 '+cineRefVideos.length+'/1')   // 动作模仿：正好一个，也不收参考图
+        : ('视频 '+cineRefVideos.length+'/'+CINE_MAX_REF_VIDEOS
+           +' · 图片 '+cineRefImages.length+'/'+cineMaxRefImages());
+    }
+    if(!box) return;
+    box.innerHTML='';
+    function chip(item, store, icon){
+      var el=document.createElement('span');
+      el.style.cssText='display:inline-flex;align-items:center;gap:6px;max-width:180px;padding:5px 8px;border:1px solid rgba(148,164,187,.16);border-radius:9px;background:rgba(148,164,187,.05);font-size:11.5px;color:#94a4bb;';
+      el.innerHTML=icon+'<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(item.name||'素材')+'</span>';
+      var x=document.createElement('button');
+      x.type='button'; x.textContent='×';
+      x.style.cssText='border:0;background:transparent;color:#5c6b82;cursor:pointer;font:800 14px inherit;line-height:1;padding:0;';
+      x.onclick=function(){ store.splice(store.indexOf(item),1); renderCineRefs(); syncCineRefProbe(); };
+      el.appendChild(x);
+      box.appendChild(el);
+    }
+    cineRefVideos.forEach(function(v){ chip(v, cineRefVideos, '🎬'); });
+    cineRefImages.forEach(function(i){ chip(i, cineRefImages, '🖼'); });
+  }
+  // 时长 + 点数提示。点数必须在生成前就说清楚 —— 按秒计费，用户点下去才发现扣了 45 点是不行的。
+  function updateCineDurationHint(){
+    var box=$('cineDurationHint');
+    if(!box) return;
+    var cfg=cineCfg(), price='，预计 '+cineCost()+' 点（'+cfg.rate+' 点/秒）';
+    if(selectedCineDuration!=='auto'){
+      box.textContent='固定 '+selectedCineDuration+' 秒'+price;
+      box.style.color='#5c6b82';
+    }else if(cineRefSeconds){
+      box.textContent='自适应：跟随第一个参考视频，成片约 '+cineSeconds()+' 秒'+price;
+      box.style.color='#2dd4bf';
+    }else if(cfg.needRef){
+      box.textContent='自适应：成片长度跟随你上传的参考视频（4~15 秒，超出会截到 15 秒），按实际秒数计费 '+cfg.rate+' 点/秒';
+      box.style.color='#5c6b82';
+    }else{
+      box.textContent='自适应：未上传参考视频，将按 10 秒生成'+price;
+      box.style.color='#5c6b82';
+    }
+  }
+  // 本地读参考视频的时长和画面比例（<video> 的 metadata，不用把文件发出去）。
+  //   时长 → 「自适应」时提前算准点数（按秒计费，必须在用户点生成之前就显示对）
+  //   比例 → 动作模仿不给用户选比例，成片跟着参考视频走；让用户选只会把人挤变形
+  // 读失败不阻塞：秒数回落 10（和后端一致），比例回落 9:16。
+  function probeCineReference(file){
+    cineRefSeconds=0;
+    var v=document.createElement('video'), url=URL.createObjectURL(file);
+    v.preload='metadata';
+    v.onloadedmetadata=function(){
+      cineRefSeconds=v.duration||0;
+      var w=v.videoWidth||0, h=v.videoHeight||0;
+      if(w&&h&&cineCfg().fixed){
+        var r=w/h;
+        selectedCineRatio = r>1.15 ? '16:9' : (r<0.87 ? '9:16' : '1:1');
+      }
+      URL.revokeObjectURL(url);
+      updateCineDurationHint();
+    };
+    v.onerror=function(){ URL.revokeObjectURL(url); updateCineDurationHint(); };
+    v.src=url;
+  }
+
+  // 切玩法：形象数量上限、提示词区、参考视频是否必填、可选时长 —— 全都跟着变。
+  var CINE_COMING_SOON={duo:'双人动作模仿暂未开放'};   // 和后端 CINEMATIC_COMING_SOON 对齐
+  function applyCineMode(mode){
+    if(CINE_COMING_SOON[mode]){ toast(CINE_COMING_SOON[mode]); return; }
+    if(!CINE_MODES[mode]) mode='open';
+    cineMode=mode;
+    var cfg=cineCfg();
+    document.querySelectorAll('[data-cine-mode]').forEach(function(b){
+      b.classList.toggle('active', b.dataset.cineMode===mode);
+    });
+    // 换玩法时超出上限的选择要裁掉，否则「双人→单人」会带着 2 个形象提交，后端直接拒
+    if(cineSelectedAvatarIds.length>cfg.avatars) cineSelectedAvatarIds=cineSelectedAvatarIds.slice(0,cfg.avatars);
+    var lab=$('cineAvatarLabel');
+    if(lab) lab.textContent = cfg.exact ? ('选择形象（正好 '+cfg.avatars+' 个）')
+                                        : ('选择形象（可多选，最多 '+cfg.avatars+' 个）');
+    // 提示词写死的玩法：整块藏起来。藏了还发 prompt 也没用——后端不看客户端传的提示词。
+    if($('cinePromptPanel')) $('cinePromptPanel').classList.toggle('hidden', cfg.fixed);
+    // 动作模仿：参数【全部锁死】成 #2173 那一条的形状（目前唯一已知能过 HeyGen 审核的配置）。
+    // 分辨率 1080p、时长跟随参考视频、比例跟随参考视频 —— 三样都不给选，只留一行说明。
+    // 后端也不认客户端传的值（validate_cinematic_payload），前端藏起来只是别让用户白填。
+    if($('cineParamGrid')) $('cineParamGrid').classList.toggle('hidden', cfg.fixed);
+    if($('cineFixedParams')) $('cineFixedParams').classList.toggle('hidden', !cfg.fixed);
+    if(cfg.fixed){
+      selectedCineResolution='1080p';   // 和后端 CINEMATIC_MOTION_RESOLUTION 对齐
+      selectedCineDuration='auto';      // 跟随参考视频（#2173：参考 10.9s → 成片 11s）
+    }
+    if($('cineRefLabel')) $('cineRefLabel').textContent = cfg.needRef ? '参考视频（必传）' : '参考素材（选填）';
+    if($('cineRefHint')) $('cineRefHint').textContent = cfg.needRef
+      ? '成片会照着它的动作、节奏和运镜演。只收一个视频，不看参考图。'
+      : '视频：照着它的动作和运镜演。图片：参考它的风格、构图、场景。都不给就只按描述生成。';
+    // 动作模仿不收参考图：整个上传框藏掉，已经选上的也要清掉（否则会随提交发出去）
+    if($('cineImageDrop')) $('cineImageDrop').classList.toggle('hidden', cfg.fixed);
+    if(cfg.fixed && cineRefImages.length) cineRefImages.length=0;
+    // 动作模仿只收 1 个参考视频：多的裁掉，别让「开放式选了 3 个 → 切过来」偷偷带过去
+    if(cineRefVideos.length>cineMaxRefVideos()) cineRefVideos.length=cineMaxRefVideos();
+    renderCineRefs();
+    syncCineRefProbe();
+    // 开放式的时长档位（动作模仿整块都藏了，不用管）
+    if(!cfg.fixed){
+      document.querySelectorAll('[data-cine-duration]').forEach(function(b){
+        b.classList.toggle('on', String(b.dataset.cineDuration)===String(selectedCineDuration));
+      });
+      document.querySelectorAll('[data-cine-resolution]').forEach(function(b){
+        b.classList.toggle('on', b.dataset.cineResolution===selectedCineResolution);
+      });
+    }
+    syncCineSelection();
+    updateCineCount();
+  }
+
+  // ===== 创建形象：独立一步（5 点）。人脸检测不到会当场报错，不再让用户白扣 20 点跑一半 =====
+  function submitCreateAvatar(dataUrl){
+    var box=$('cineAvatarStatus');
+    if(box){ box.style.color='#2dd4bf'; box.textContent='正在创建形象（约 25 秒）...'; }
+    fetch('/api/gen/avatar',{
+      method:'POST',
+      headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+      body:JSON.stringify({image_data:dataUrl})
+    }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+      .then(function(res){
+        if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
+        if(!res.data.job_id) throw new Error(res.data.detail||'创建失败');
+        pollCreateAvatar(res.data.job_id,0);
+      })
+      .catch(function(e){ if(box){ box.style.color='#f4708a'; box.textContent=e.message||'创建失败'; } toast(e.message||'创建失败'); });
+  }
+  function pollCreateAvatar(id,tries){
+    var box=$('cineAvatarStatus');
+    if(tries>90){ if(box){box.style.color='#f4708a';box.textContent='创建超时，请稍后在「刷新」里查看';} return; }
+    fetch(fresh('/api/gen/job/'+id),{cache:'no-store',headers:{Authorization:'Bearer '+token}})
+      .then(function(r){return r.json();})
+      .then(function(d){
+        if(d.status==='done'){
+          if(box){ box.style.color='#2bd576'; box.textContent='✅ 形象创建完成，可以选它生成视频了'; }
+          if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
+          loadMotionAvatars(true);
+          return;
+        }
+        if(d.status==='error'||d.status==='failed'){
+          if(box){ box.style.color='#f4708a'; box.textContent=d.error||d.detail||'创建失败'; }
+          if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();  // 失败会退点
+          return;
+        }
+        setTimeout(function(){pollCreateAvatar(id,tries+1);},3000);
+      })
+      .catch(function(){ setTimeout(function(){pollCreateAvatar(id,tries+1);},3000); });
+  }
+
+  function renderCineTemplates(){
+    var box=$('cinePromptTemplates');
+    if(!box) return;
+    box.innerHTML='';
+    CINE_TEMPLATES.forEach(function(t){
+      var b=document.createElement('button');
+      b.type='button';
+      b.className='motion-preset-card';
+      b.innerHTML='<b>'+esc(t.name)+'</b><span>'+esc(t.text.slice(0,18))+'…</span>';
+      b.onclick=function(){
+        var ta=$('cinePrompt');
+        if(ta){ ta.value=t.text; ta.dispatchEvent(new Event('input')); ta.focus(); }
+      };
+      box.appendChild(b);
+    });
+  }
+
+  function submitCinematic(){
+    var cfg=cineCfg();
+    var prompt=($('cinePrompt')&&$('cinePrompt').value||'').trim();
+    var n=cineSelectedAvatarIds.length;
+    // 门槛：形象数量必须【正好】对（动作模仿的提示词会去参考视频里找人，数量不对就串脸），
+    // 参考视频必传。两条都在后端再校验一遍 —— 这里只是别让用户白跑一趟。
+    // ⚠️ 全部 return 完了才能上提交锁（#603）：先上锁再 return，锁就永远解不掉了。
+    if(cfg.exact ? n!==cfg.avatars : !n){
+      toast(cfg.exact ? (cfg.label+'需要正好选 '+cfg.avatars+' 个形象') : '请至少选择一个形象'); return;
+    }
+    if(cfg.needRef && cineRefVideos.length!==1){ toast('请上传一个参考视频'); return; }
+    if(!cfg.fixed && !prompt){ toast('请填写画面描述，或点一个模板'); return; }
+    setSubmitLock('cinematic',true);
+    setBusy(true);
+    var first=motionAvatars.find(function(a){return String(a.id)===String(cineSelectedAvatarIds[0]);});
+    var draftText=cfg.fixed ? cfg.label : prompt;
+    currentVideoDraft={mode:'cinematic',image_url:first&&first.image_url,text:draftText,resolution:selectedCineResolution,
+                       ratio:selectedCineRatio,status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
+    renderVideoDrafts([currentVideoDraft]);       // #609：在飞草稿分层，别被服务端历史顶掉
+    setVideoStatus('正在提交'+cfg.label+'任务...'); // #601：按玩法显示标签（动作模仿/双人/开放式）
+    var body={
+      cine_mode:cineMode,
+      avatar_ids:cineSelectedAvatarIds.map(function(x){return parseInt(x,10);}),
+      resolution:selectedCineResolution,
+      ratio:selectedCineRatio,
+      duration:selectedCineDuration,
+      enhance_prompt:!!($('cineEnhance')&&$('cineEnhance').checked)
+    };
+    // 提示词写死的玩法不发 prompt —— 发了后端也不看，别给人「我写的没生效」的错觉
+    if(!cfg.fixed) body.prompt=prompt;
+    // store 里存的是 {data, name, file}（name/file 只给界面和本地探测用），发给后端的只能是 base64 本身
+    if(cineRefVideos.length) body.reference_videos=cineRefVideos.map(function(x){return x.data;});
+    if(!cfg.fixed && cineRefImages.length) body.reference_images=cineRefImages.map(function(x){return x.data;});
+    fetch('/api/gen/cinematic',{
+      method:'POST',
+      headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+      body:JSON.stringify(body)
+    }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+      .then(function(res){
+        if(res.status===401){setSubmitLock('cinematic',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
+        if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
+        setVideoStatus(cfg.label+'任务已提交（扣 '+res.data.cost+' 点），约 6~9 分钟出片...');
+        HQ.refreshPoints();
+        setTimeout(loadVideoHistory,700);
+        // label 跟着玩法走（动作模仿 / 双人动作模仿 / 开放式生成），不再是写死的「AI 剧情视频」
+        trackVideoJob(res.data.job_id,{status:'queued',label:cfg.label,mode:'cinematic',modeLabel:cfg.label,ratio:selectedCineRatio});
+        setSubmitLock('cinematic',false);
+        pollJob(res.data.job_id,0);
+      })
+      .catch(function(e){
+        setSubmitLock('cinematic',false);
+        setBusy(false);
+        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoDrafts([currentVideoDraft]);}
+        setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');
+      });
+  }
   var _vidTick=null, _vidStart=0;
   function _fmtUsed(s){ s=Math.max(0,Math.round(s)); return s<60?('已用 '+s+' 秒'):('已用 '+Math.floor(s/60)+' 分 '+(s%60)+' 秒'); }
-  function startVidTick(){ _vidStart=Date.now(); if(_vidTick) return;
+  // 计时锚点 = 任务的【创建时间】，不是「本次开始轮询的时刻」。
+  // 原来是 _vidStart=Date.now()，刷新一次页面就从 0 重新数 —— 一条已经跑了 6 分钟的任务，
+  // 刷新后显示「已用 3 秒」。created_at 由服务端给（/api/gen/job/<id> 一直在返回，只是没人读），
+  // 它跨刷新、跨设备都是同一个值。
+  function _vidAnchor(){
+    var d=videoDrafts[0], t=d && Number(d.created_at);
+    return (isFinite(t) && t>0) ? t*1000 : _vidStart;
+  }
+  function startVidTick(){
+    _vidStart=Date.now();   // 兜底：草稿上还没有 created_at 时（提交请求还没回来）用它
+    if(_vidTick) return;
     _vidTick=setInterval(function(){
       var eta=document.querySelector('#outputHistory .job-progress-eta');
-      if(eta) eta.textContent=_fmtUsed((Date.now()-_vidStart)/1000);  // 真实已用时间，取代写死的假 ETA
+      if(eta) eta.textContent=_fmtUsed((Date.now()-_vidAnchor())/1000);  // 真实已用时间，取代写死的假 ETA
     },1000);
   }
   function stopVidTick(){ if(_vidTick){ clearInterval(_vidTick); _vidTick=null; } }
   function setBusy(on){
-    ['generateBtn','motionGenerateBtn','tryonGenerateBtn','grokGenerateBtn','microGenerateBtn'].forEach(function(id){
-      var btn=$(id); if(!btn) return;
-      btn.disabled=on;
-      btn.style.opacity=on?'.72':'1';
-      btn.style.cursor=on?'wait':'pointer';
-    });
-    if(on) startVidTick(); else stopVidTick();
+    videoBusyCount=Math.max(0, videoBusyCount+(on?1:-1));
+    if(videoBusyCount>0) startVidTick(); else stopVidTick();
+  }
+  function applyButtonState(id, enable, title){
+    var btn=$(id); if(!btn) return;
+    btn.disabled=!enable;
+    btn.style.opacity=enable?'1':'.72';
+    btn.style.cursor=enable?'pointer':'not-allowed';
+    btn.title=title||'';
+  }
+  function getTryonHintState(){
+    var hasClothes=!!tryonClothesData, hasBg=!!tryonBackgroundData, hasPrimary=!!tryonPrimaryData();
+    var text, enable=true;
+    if(tryonIsLine2()){
+      // 线路二只吃「人物照片 + 衣服图」，没有换背景；提示别再说「换装视频」
+      if(!hasPrimary){ text='请先上传人物照片'; enable=false; }
+      else if(!hasClothes){ text=hasBg?'线路二不支持背景图，请切到线路一':'请上传衣服图'; enable=false; }
+      else { text='将执行：人物换装（线路二）'; }
+    }else if(!hasPrimary){
+      text='请先上传换装视频'; enable=false;
+    }else if(hasClothes && hasBg){
+      text='将执行：换装+换背景';
+    }else if(hasClothes){
+      text='将执行：只换装';
+    }else if(hasBg){
+      text='将执行：只换背景';
+    }else{
+      text='请至少上传衣服图或背景图'; enable=false;
+    }
+    return {text:text, enable:enable};
+  }
+  function syncVideoGenerateButtons(){
+    var counts=activeVideoTaskCounts();
+    var tryonState=getTryonHintState();
+    var xiaoleCapReached=counts.xiaole>=maxActiveXiaoleVideo;
+    // 电影化身也有槽位上限（后端 MAX_USER_ACTIVE_CINEMATIC=2）。#603 统计了 counts.cinematic
+    // 却没人用 —— 排到第 3 条时按钮还亮着，点下去只会吃一个 429。
+    var cineCapReached=counts.cinematic>=maxActiveCinematic;
+    var tryonCapReached=counts.tryon>=maxActiveTryon;
+    applyButtonState('generateBtn', !videoSubmitLocks.talking, videoSubmitLocks.talking?'口播视频提交中，请稍候':'');
+    applyButtonState('cineGenerateBtn', !videoSubmitLocks.cinematic && !cineCapReached,
+      cineCapReached?('当前电影化身最多同时排队或生成 '+maxActiveCinematic+' 个任务，请等待部分完成后再继续')
+                    :(videoSubmitLocks.cinematic?'电影化身提交中，请稍候':''));
+    applyButtonState('tryonGenerateBtn', !!tryonState.enable && !videoSubmitLocks.tryon && !tryonCapReached, !tryonState.enable?tryonState.text:(tryonCapReached?('当前换装视频最多同时排队或生成 '+maxActiveTryon+' 个任务，请等待任务完成后再继续'):(videoSubmitLocks.tryon?'换装任务提交中，请稍候':'')));
+    var xiaoleEnabled=!videoSubmitLocks.xiaole && !xiaoleCapReached;
+    var xiaoleTitle=xiaoleCapReached?('当前果肉/豆姐/欧米视频最多同时排队或生成 '+maxActiveXiaoleVideo+' 个任务，请等待部分完成后再继续'):(videoSubmitLocks.xiaole?'视频任务提交中，请稍候':'');
+    applyButtonState('grokGenerateBtn', xiaoleEnabled, xiaoleTitle);
+    applyButtonState('microGenerateBtn', xiaoleEnabled, xiaoleTitle);
+    applyButtonState('omniGenerateBtn', xiaoleEnabled, xiaoleTitle);
   }
   function readFileData(file){
     return new Promise(function(resolve,reject){
@@ -1124,102 +1784,6 @@
       reader.onerror=function(){reject(new Error('文件读取失败'));};
       reader.readAsDataURL(file);
     });
-  }
-  function setMotionSourceText(text){
-    if($('motionSourceText')) $('motionSourceText').textContent=text||'可选预设片段，或上传自有片段（建议 ≤15 秒）';
-  }
-  function renderMotionPresets(){
-    var grid=$('motionPresetGrid'); if(!grid) return;
-    grid.innerHTML='';
-    if(!motionPresets.length){
-      grid.innerHTML='<div class="avatar-empty" style="grid-column:1/-1;">暂无预设片段，可上传自有片段</div>';
-      return;
-    }
-    motionPresets.forEach(function(p){
-      var btn=document.createElement('button');
-      btn.type='button';
-      btn.className='motion-preset-card'+(selectedMotionPreset===p.id?' on':'');
-      btn.innerHTML='<img src="'+esc(p.thumb)+'" alt=""><span>'+esc(p.name)+'</span>';
-      btn.onclick=function(){selectMotionPreset(p);};
-      grid.appendChild(btn);
-    });
-  }
-  // 清除已选参考片段（预设或上传）→ 回到空态可重选
-  function clearMotionRef(){
-    motionReferenceVideoData='';
-    selectedMotionPreset='';
-    resetMotionVideoDrop();
-    renderMotionPresets();
-    setMotionSourceText('');
-  }
-  // 预览态：带原生 controls 的播放器 + 右上角取消按钮（drop 已是 div，点击不再误触上传）
-  function showMotionVideoPreview(url){
-    var box=$('motionVideoDrop'); if(!box) return;
-    box.classList.add('has-media','has-video');
-    box.onclick=null;
-    box.innerHTML='<input id="motionVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden>'
-      +'<video src="'+url+'" controls playsinline preload="metadata" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#05070c;"></video>'
-      +'<button type="button" class="motion-clear" title="取消所选片段" style="position:absolute;right:8px;top:8px;z-index:3;width:26px;height:26px;border-radius:50%;border:1px solid rgba(148,164,187,.35);background:rgba(7,11,19,.82);color:#eaf1fa;font-size:12px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;">✕</button>';
-    bindMotionFile(box.querySelector('input'),'video');
-    var clr=box.querySelector('.motion-clear');
-    if(clr) clr.onclick=function(e){e.stopPropagation();clearMotionRef();toast('已取消所选片段');};
-  }
-  // 空态：div（非 label），显式点击才开选择器，杜绝与播放器 controls 抢点击
-  function resetMotionVideoDrop(){
-    var box=$('motionVideoDrop'); if(!box) return;
-    box.classList.remove('has-media','has-video');
-    box.innerHTML='<input id="motionVideoFile" type="file" accept="video/mp4,video/quicktime,video/webm" hidden><strong>参考片段</strong><span>点击上传要模仿的片段（建议 ≤15 秒）</span>';
-    var inp=box.querySelector('input');
-    bindMotionFile(inp,'video');
-    box.onclick=function(){ inp.click(); };
-  }
-  function selectMotionPreset(p){
-    if(!p) return;
-    if(selectedMotionPreset===p.id){ clearMotionRef(); toast('已取消所选片段'); return; }   // 再点已选=取消
-    selectedMotionPreset=p.id;
-    setMotionSourceText('正在读取预设片段…');
-    renderMotionPresets();
-    fetch(p.video,{cache:'force-cache'})
-      .then(function(r){return r.ok?r.blob():Promise.reject(new Error('预设片段读取失败'));})
-      .then(function(blob){
-        var burl=URL.createObjectURL(blob);
-        return readFileData(blob).then(function(data){
-          motionReferenceVideoData=data;
-          showMotionVideoPreview(burl);
-          setMotionSourceText('已选择预设片段：'+p.name+'（可点播放预览）');
-          toast('已选择，可点播放预览');
-        });
-      })
-      .catch(function(e){
-        selectedMotionPreset='';
-        motionReferenceVideoData='';
-        setMotionSourceText(e.message||'预设片段读取失败');
-        renderMotionPresets();
-        toast(e.message||'预设片段读取失败');
-      });
-  }
-  function loadMotionPresets(){
-    fetch(fresh('assets/motions/index.json'),{cache:'no-store'})
-      .then(function(r){return r.ok?r.json():[];})
-      .then(function(items){
-        motionPresets=(Array.isArray(items)?items:[]).map(function(item,idx){
-          var file=String(item.file||'').trim();
-          var thumb=String(item.thumb||'').trim();
-          if(!file) return null;
-          return {
-            id:file,
-            name:String(item.name||('预设片段 '+(idx+1))).trim(),
-            video:'assets/motions/'+file,
-            thumb:thumb?('assets/motions/'+thumb):'../assets/cloud/logo-bird.png'
-          };
-        }).filter(Boolean);
-        renderMotionPresets();
-      })
-      .catch(function(){
-        motionPresets=[];
-        setMotionSourceText('预设片段暂不可用，可上传自有片段');
-        renderMotionPresets();
-      });
   }
   function talkingBatchIndex(key){
     for(var i=0;i<talkingBatchItems.length;i++) if(talkingBatchItems[i].key===key) return i;
@@ -1306,11 +1870,17 @@
   function loadTalkingLimits(){
     fetch(fresh('/api/gen/health'),{cache:'no-store'}).then(function(r){return r.ok?r.json():Promise.reject();}).then(function(d){
       var cost=Number(d.video_cost),limit=Number(d.video_batch_max);
+      var xiaoleCap=Number(d.max_user_active_xiaole_video), tryonCap=Number(d.max_user_active_tryon);
+      var cineCap=Number(d.max_user_active_cinematic);
       if(isFinite(cost)&&cost>0) videoCost=Math.round(cost);
       if(isFinite(limit)&&limit>0) videoBatchMax=Math.min(5,Math.round(limit));
+      if(isFinite(xiaoleCap)&&xiaoleCap>0) maxActiveXiaoleVideo=Math.round(xiaoleCap);
+      if(isFinite(tryonCap)&&tryonCap>0) maxActiveTryon=Math.round(tryonCap);
+      if(isFinite(cineCap)&&cineCap>0) maxActiveCinematic=Math.round(cineCap);
       var batchBtn=document.querySelector('[data-talking-shape="batch"]');
       if(batchBtn){batchBtn.disabled=videoBatchMax<2;batchBtn.title=videoBatchMax<2?'当前任务上限不支持批量出片':'';}
       renderTalkingBatchImages();
+      syncVideoGenerateButtons();
     }).catch(function(){updateChecklist();});
   }
   function updateMode(next){
@@ -1328,17 +1898,20 @@
   }
   function updateFunction(next){
     videoFunction=next||'talking';
-    if($('bgmPanel')) $('bgmPanel').classList.toggle('hidden',videoFunction!=='talking'&&videoFunction!=='motion');
+    if($('bgmPanel')) $('bgmPanel').classList.toggle('hidden',videoFunction!=='talking');
     document.querySelectorAll('[data-function]').forEach(function(b){b.classList.toggle('on',b.dataset.function===videoFunction);});
     $('talkingPanel').classList.toggle('hidden',videoFunction!=='talking');
-    $('motionPanel').classList.toggle('hidden',videoFunction!=='motion');
+    if($('cinematicPanel')) $('cinematicPanel').classList.toggle('hidden',videoFunction!=='cinematic');
     if($('tryonPanel')) $('tryonPanel').classList.toggle('hidden',videoFunction!=='tryon');
     if($('grokPanel')) $('grokPanel').classList.toggle('hidden',videoFunction!=='grok');
     if($('microPanel')) $('microPanel').classList.toggle('hidden',videoFunction!=='micro');
     if($('omniPanel')) $('omniPanel').classList.toggle('hidden',videoFunction!=='omni');
-    if(videoFunction==='motion'){
-      $('modeSummary').textContent='上传人物形象和参考片段，把自己「演」成同款大片';
-      if($('modeName')) $('modeName').textContent='影视级模仿';
+    // 面板 hidden 的时候量不到卡片高度（getBoundingClientRect 全是 0），刚显示出来要重量一次，
+    // 否则那个面板里的形象网格是不受限的 —— 形象一多就又拉长了
+    limitAllAvatarGrids();
+    if(videoFunction==='cinematic'){
+      $('modeSummary').textContent='选自己的数字人形象，写一句画面描述，直接出片（最多 3 个形象同框）';
+      if($('modeName')) $('modeName').textContent='电影化身';
       loadMotionAvatars();
     }else if(videoFunction==='tryon'){
       $('modeSummary').textContent='上传换装视频，选填衣服图或背景图，一键换装换背景';
@@ -1356,6 +1929,7 @@
     }else{
       updateMode(mode);
     }
+    syncVideoGenerateButtons();
   }
   function updateChecklist(){
     var imageCount=talkingBatch?talkingBatchItems.length:(imageData?1:0);
@@ -1375,6 +1949,7 @@
       ?(imageCount?(videoCost+' 点/条 × '+imageCount+' = 预计 '+(videoCost*imageCount)+' 点'):(videoCost+' 点/条 · 选择形象后显示总计'))
       :('预计消耗 '+videoCost+' 点');
     if(mode==='text' && videoFunction==='talking') $('modeSummary').textContent=talkingBatch?'同一份口播文案将分别生成多条形象视频':'上传人物图，输入文案并选择音色生成口播视频';
+    syncVideoGenerateButtons();
   }
   function stopPreview(){
     if(activePreview){try{activePreview.pause();activePreview.currentTime=0;}catch(e){}}
@@ -1469,25 +2044,6 @@
       });
   }
   document.querySelectorAll('[data-function]').forEach(function(b){b.onclick=function(){updateFunction(b.dataset.function);};});
-  function applyMotionLine(){
-    var line2=selectedMotionLine==='2';
-    var high=$('motionResolutionSeg')&&$('motionResolutionSeg').querySelector('[data-motion-resolution="1080p"]');
-    if(line2) selectedMotionResolution='720p';
-    if(high){
-      high.disabled=line2;
-      high.title=line2?'线路二仅支持 720p':'线路一支持 1080p';
-    }
-    document.querySelectorAll('[data-motion-resolution]').forEach(function(x){
-      x.classList.toggle('on',x.dataset.motionResolution===selectedMotionResolution);
-    });
-    if($('motionDurationValue')) $('motionDurationValue').textContent=line2?'跟随参考片段 · 最长 120 秒':'跟随参考片段 · 最长 30 秒';
-  }
-  document.querySelectorAll('#motionLineTabs .line-tab').forEach(function(b){b.onclick=function(){
-    selectedMotionLine=b.dataset.line;
-    document.querySelectorAll('#motionLineTabs .line-tab').forEach(function(x){x.classList.toggle('active',x===b);});
-    applyMotionLine();
-  };});
-  applyMotionLine();
   function applyTryonDurationOptions(){
     var allowed=tryonIsLine2()?[5,6,10,15]:[3,5,6];
     if(allowed.indexOf(selectedTryonSeconds)<0) selectedTryonSeconds=6;
@@ -1536,10 +2092,25 @@
     b.parentElement.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b);});
     if(b.dataset.resolution) selectedResolution=b.dataset.resolution;
     if(b.dataset.ratio) selectedRatio=b.dataset.ratio;
-    if(b.dataset.motionRatio) selectedMotionRatio=b.dataset.motionRatio;
-    if(b.dataset.motionResolution) selectedMotionResolution=b.dataset.motionResolution;
     if(b.dataset.tryonSeconds) selectedTryonSeconds=Number(b.dataset.tryonSeconds);
     if(b.dataset.grokRatio) selectedGrokRatio=b.dataset.grokRatio;
+    if(b.dataset.grokDuration) selectedGrokDuration=Number(b.dataset.grokDuration);
+    if(b.dataset.grokResolution) selectedGrokResolution=b.dataset.grokResolution;
+    if(b.dataset.grokOperation){
+      grokOperation=b.dataset.grokOperation;
+      document.querySelectorAll('.grok-generate-only').forEach(function(x){x.classList.toggle('hidden',grokOperation==='edit');});
+      document.querySelectorAll('.grok-edit-only').forEach(function(x){x.classList.toggle('hidden',grokOperation!=='edit');});
+      if($('grokGenerateBtn')) $('grokGenerateBtn').textContent=grokOperation==='edit'?'编辑参考视频':'生成果肉视频';
+      if($('grokStatus')) $('grokStatus').textContent=grokOperation==='edit'?'官方视频编辑 · 输出继承参考视频时长和比例':'Grok Video · 生成后自动保存到视频资产';
+    }
+    if(b.dataset.grokModel){
+      selectedGrokModel=b.dataset.grokModel;
+      var hi=$('grok1080Btn'), is15=selectedGrokModel==='grok-imagine-video-1.5';
+      if(hi) hi.classList.toggle('hidden',!is15);
+      if(!is15 && selectedGrokResolution==='1080p'){
+        var p=document.querySelector('[data-grok-resolution="720p"]'); if(p)p.click();
+      }
+    }
     if(b.dataset.motion) selectedMotion=b.dataset.motion;
     if(b.dataset.bgmVolume) selectedBgmVolume=Number(b.dataset.bgmVolume);
     if(b.dataset.subtitle){selectedSubtitle=b.dataset.subtitle;var on=selectedSubtitle==='on';var sr=$('subtitleStyleRow');if(sr)sr.style.display=(on?'':'none');var pr=$('subtitlePositionRow');if(pr)pr.style.display=(on?'':'none');}
@@ -1577,60 +2148,53 @@
   }
   bindImageInput($('imageFile'));
   $('batchImageFile').onchange=function(){addTalkingBatchFiles(this.files);this.value='';};
-  function bindMotionFile(input, type){
-    input.onchange=function(){
+
+  // ===== 电影化身：控件绑定 =====
+  renderCineTemplates();
+  (function bindCine(){
+    var ta=$('cinePrompt');
+    if(ta) ta.addEventListener('input',function(){
+      if(this.value.length>2000) this.value=this.value.slice(0,2000);
+      if($('cinePromptCount')) $('cinePromptCount').textContent=this.value.length+' / 2000';
+    });
+    // 上传照片 → 直接提交建形象（5 点）。不做本地预览：建好后会出现在上面的形象网格里。
+    var nf=$('cineNewAvatarFile');
+    if(nf) nf.onchange=function(){
       var f=this.files&&this.files[0]; if(!f) return;
-      var url=URL.createObjectURL(f);
-      var box=type==='image' ? $('motionImageDrop') : $('motionVideoDrop');
-      readFileData(f).then(function(data){
-        if(type==='image'){
-          motionImageData=data;
-          selectMotionAvatar(null);
-        }else{
-          motionReferenceVideoData=data;
-          selectedMotionPreset='';
-          renderMotionPresets();
-          setMotionSourceText('已选择上传的自有片段（可点播放预览）');
-        }
-      }).catch(function(e){toast(e.message||'文件读取失败');});
-      box.classList.add('has-media');
-      if(type==='image'){
-        box.innerHTML='<input id="motionImageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+url+'" alt="人物形象预览">';
-        bindMotionFile(box.querySelector('input'),'image');
-      }else{
-        showMotionVideoPreview(url);
-      }
+      readFileData(f).then(submitCreateAvatar).catch(function(e){toast(e.message||'文件读取失败');});
+      this.value='';   // 允许连续上传同一张（重试用）
     };
-  }
-  bindMotionFile($('motionImageFile'),'image');
-  resetMotionVideoDrop();
-  loadMotionPresets();
+    document.querySelectorAll('[data-cine-mode]').forEach(function(b){b.onclick=function(){
+      applyCineMode(b.dataset.cineMode);
+    };});
+    // 参考素材：视频和图片都可多选。label 包着 input，点击是原生行为，不用手动 click()。
+    // 动作模仿只收 1 个视频（cineMaxRefVideos 跟着玩法走），也不收参考图。
+    bindCineRefs($('cineVideoFile'), cineRefVideos, cineMaxRefVideos, '参考视频');
+    bindCineRefs($('cineImageFile'), cineRefImages, cineMaxRefImages, '参考图片');
+    document.querySelectorAll('[data-cine-ratio]').forEach(function(b){b.onclick=function(){
+      selectedCineRatio=b.dataset.cineRatio;
+      document.querySelectorAll('[data-cine-ratio]').forEach(function(x){x.classList.toggle('on',x===b);});
+    };});
+    document.querySelectorAll('[data-cine-resolution]').forEach(function(b){b.onclick=function(){
+      selectedCineResolution=b.dataset.cineResolution;
+      document.querySelectorAll('[data-cine-resolution]').forEach(function(x){x.classList.toggle('on',x===b);});
+    };});
+    document.querySelectorAll('[data-cine-duration]').forEach(function(b){b.onclick=function(){
+      var v=b.dataset.cineDuration;
+      selectedCineDuration = v==='auto' ? 'auto' : parseInt(v,10);   // 'auto' 不能被 parseInt 变成 NaN
+      document.querySelectorAll('[data-cine-duration]').forEach(function(x){x.classList.toggle('on',x===b);});
+      updateCineDurationHint();
+    };});
+    if($('cineRefreshBtn')) $('cineRefreshBtn').onclick=function(){ loadMotionAvatars(true); };
+    if($('cineGenerateBtn')) $('cineGenerateBtn').onclick=submitCinematic;
+    applyCineMode('motion');   // 默认落在第一个玩法。它同时把时长档位、提示词区、点数提示都摆正
+  })();
   function updateTryonHint(){
-    var hint=$('tryonModeHint'), btn=$('tryonGenerateBtn');
-    var hasClothes=!!tryonClothesData, hasBg=!!tryonBackgroundData, hasPrimary=!!tryonPrimaryData();
-    var text, enable=true;
-    if(tryonIsLine2()){
-      // 线路二只吃「人物照片 + 衣服图」，没有换背景；提示别再说「换装视频」
-      if(!hasPrimary){ text='请先上传人物照片'; enable=false; }
-      else if(!hasClothes){ text='请上传衣服图'; enable=false; }
-      else { text='将执行：人物换装（线路二）'; }
-    }else if(!hasPrimary){
-      text='请先上传换装视频'; enable=false;
-    }else if(hasClothes && hasBg){
-      text='将执行：换装+换背景';
-    }else if(hasClothes){
-      text='将执行：只换装';
-    }else if(hasBg){
-      text='将执行：只换背景';
-    }else{
-      text='请至少上传衣服图或背景图'; enable=false;
-    }
-    if(hint) hint.textContent=text;
-    if(btn){
-      btn.disabled=!enable;
-      btn.style.opacity=enable?'1':'.55';
-      btn.style.cursor=enable?'pointer':'not-allowed';
-    }
+    var hint=$('tryonModeHint');
+    var state=getTryonHintState();
+    if(hint) hint.textContent=state.text;
+    syncVideoGenerateButtons();
+    return state;
   }
   function bindTryonFile(input, kind){
     input.onchange=function(){
@@ -1665,7 +2229,6 @@
   var PASTE_SLOTS = [
     {box:'imageDrop', input:'imageFile'},
     {box:'batchTalkingImages', input:'batchImageFile', batchOnly:true},
-    {box:'motionImageDrop', input:'motionImageFile'},
     {box:'tryonVideoDrop', input:'tryonVideoFile', line2Only:true},
     {box:'tryonClothesDrop', input:'tryonClothesFile'},
     {box:'tryonBgDrop', input:'tryonBgFile'}
@@ -1713,6 +2276,10 @@
   }
   function pollJob(id, tries){
     if(tries===0) resumedVideoTaskId=String(id);
+    if(tries===0){
+      setPendingVideoFocus(id);
+      if(currentVideoDraft) currentVideoDraft.job_id=String(id);
+    }
     fetch('/api/gen/job/'+id,{headers:{Authorization:'Bearer '+token}})
       .then(function(r){
         return r.json().catch(function(){return {};}).then(function(d){
@@ -1730,9 +2297,12 @@
           resumedVideoTaskId='';
           setBusy(false);
           currentVideoDraft=null;
-          renderVideoHistory([Object.assign({created_at:Math.floor(Date.now()/1000)}, result)]);
+          // 成品先插到历史最前面（别等 800ms 后那次拉取，中间会闪一下），草稿同时收掉。
+          // 800ms 后的 loadVideoHistory 会用服务端的版本覆盖它 —— 那才是权威的。
+          videoHistoryItems.unshift(Object.assign(
+            {created_at:Math.floor(Date.now()/1000), job_id:String(id)}, result));
+          renderVideoDrafts([]);
           setTimeout(loadVideoHistory,800);
-          if(result.mode==='motion') setTimeout(function(){loadMotionAvatars(true);},900);
           setVideoStatus('任务已创建，已保存到视频资产');
           if(result.subtitle_error){toast('字幕生成失败，已保留无字幕视频');}
           resumeNextTrackedVideoTask();
@@ -1758,54 +2328,14 @@
           :{status:'pending',lastError:e&&e.message||'连接中断'});
         resumedVideoTaskId='';
         setBusy(false);
-        if(currentVideoDraft){currentVideoDraft.status=e&&e.jobTerminal?'error':'processing';renderVideoHistory([currentVideoDraft]);}
+        if(currentVideoDraft){
+          currentVideoDraft.job_id=String(id);
+          currentVideoDraft.status=e&&e.jobTerminal?'error':'processing';
+          renderVideoDrafts([currentVideoDraft]);
+        }
         setVideoStatus(e&&e.jobTerminal?(e.message||'生成失败'):'连接中断，任务仍在后台生成，可点侧栏任务继续');
         toast(e&&e.jobTerminal?(e.message||'生成失败'):'连接中断，任务仍在后台生成');
         if(e&&e.jobTerminal) resumeNextTrackedVideoTask();
-      });
-  }
-  function submitMotionVideo(){
-    var pickedAvatar=selectedMotionAvatarId?motionAvatars.find(function(a){return String(a.id)===String(selectedMotionAvatarId);}):null;
-    if(useNewMotionImage && !motionImageData){ toast('请先上传人物形象图片'); return; }
-    if(!useNewMotionImage && !pickedAvatar){ toast('请选择一个我的形象'); return; }
-    if(!motionReferenceVideoData){ toast('请先选择或上传参考片段'); return; }
-    setBusy(true);
-    var motionPreviewImage=useNewMotionImage?motionImageData:(pickedAvatar&&pickedAvatar.image_url);
-    currentVideoDraft={mode:'motion',image_url:motionPreviewImage,text:'影视级模仿视频',resolution:selectedMotionResolution,ratio:selectedMotionRatio,motion:'medium',status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
-    renderVideoHistory([currentVideoDraft]);
-    setVideoStatus('正在提交影视级模仿任务...');
-    var body={
-      mode:'motion',
-      line:selectedMotionLine,
-      reference_video_data:motionReferenceVideoData,
-      text:'影视级模仿视频',
-      resolution:selectedMotionResolution,
-      ratio:selectedMotionRatio,
-      motion:'medium'
-    };
-    body.bgm_data=bgmData; body.bgm_volume=selectedBgmVolume;
-    if(useNewMotionImage){
-      body.image_data=motionImageData;
-    }else{
-      body.avatar_id=selectedMotionAvatarId;
-    }
-    fetch('/api/gen/video',{
-      method:'POST',
-      headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-      body:JSON.stringify(body)
-    }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
-      .then(function(res){
-        if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
-        if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
-        setVideoStatus('影视级模仿任务已提交...');
-        setTimeout(loadVideoHistory,700);
-        trackVideoJob(res.data.job_id,{status:'queued',label:'影视级模仿',mode:'motion',modeLabel:'影视级模仿',ratio:selectedMotionRatio});
-        pollJob(res.data.job_id,0);
-      })
-      .catch(function(e){
-        setBusy(false);
-        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}
-        setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');
       });
   }
   function submitTryon(){
@@ -1816,9 +2346,10 @@
       if(!tryonVideoData){ toast('请先上传换装视频'); return; }
       if(!tryonClothesData && !tryonBackgroundData){ toast('请至少上传衣服图或背景图'); return; }
     }
+    setSubmitLock('tryon',true);
     setBusy(true);
     currentVideoDraft={mode:'tryon',text:'换装换背景视频',ratio:'9:16',motion:'medium',duration:selectedTryonSeconds,status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
-    renderVideoHistory([currentVideoDraft]);
+    renderVideoDrafts([currentVideoDraft]);
     setVideoStatus('正在提交换装换背景任务...');
     fetch('/api/gen/tryon',{
       method:'POST',
@@ -1839,16 +2370,18 @@
       })
     }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
       .then(function(res){
-        if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
+        if(res.status===401){setSubmitLock('tryon',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
         setVideoStatus('换装换背景任务已提交...');
         setTimeout(loadVideoHistory,700);
         trackVideoJob(res.data.job_id,{status:'queued',label:'换装换背景视频',mode:'tryon',modeLabel:'换装换背景',ratio:'9:16'});
+        setSubmitLock('tryon',false);
         pollJob(res.data.job_id,0);
       })
       .catch(function(e){
+        setSubmitLock('tryon',false);
         setBusy(false);
-        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}
+        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoDrafts([currentVideoDraft]);}
         setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');
       });
   }
@@ -1863,9 +2396,10 @@
     };
   }
   function submitVideoBatch(text){
+    setSubmitLock('talking',true);
     setBusy(true); currentVideoDraft=null;
     var drafts=talkingBatchItems.map(function(item){return {mode:'text',image_url:item.preview||'',text:text,resolution:selectedResolution,ratio:selectedRatio,motion:selectedMotion,status:'processing',phase:'queued',batch_label:item.label,created_at:Math.floor(Date.now()/1000)};});
-    renderVideoHistory(drafts);
+    renderVideoDrafts(drafts);
     setVideoStatus('正在提交 '+talkingBatchItems.length+' 条批量视频任务...');
     var body=talkingPayload({});
     delete body.image_data; delete body.avatar_id;
@@ -1873,19 +2407,20 @@
     fetch('/api/gen/video/batch',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body)})
       .then(function(r){return r.json().catch(function(){return {};}).then(function(d){return {status:r.status,data:d};});})
       .then(function(res){
-        if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
+        if(res.status===401){setSubmitLock('talking',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
         if(res.status<200||res.status>=300||!Array.isArray(res.data.job_ids)||!res.data.job_ids.length) throw new Error(res.data.detail||'批量任务提交失败');
         var jobs=Array.isArray(res.data.jobs)&&res.data.jobs.length?res.data.jobs:res.data.job_ids.map(function(id,i){return {job_id:id,label:talkingBatchItems[i]&&talkingBatchItems[i].label,index:i+1};});
         jobs.forEach(function(job){
           trackVideoJob(job.job_id,{status:'queued',label:'批量口播 · '+(job.label||('形象 '+job.index)),mode:'text',modeLabel:'数字人口播',ratio:selectedRatio,batchId:res.data.batch_id,batchSize:jobs.length,batchIndex:job.index});
         });
+        setSubmitLock('talking',false);
         setBusy(false);
         setVideoStatus('已提交 '+jobs.length+' 条视频任务，共消耗 '+res.data.cost+' 点');
         toast('批量任务已受理');
         setTimeout(loadVideoHistory,500);
         resumeTrackedVideoTask(jobs[0].job_id);
       })
-      .catch(function(e){setBusy(false);loadVideoHistory();setVideoStatus(e.message||'批量任务提交失败');toast(e.message||'批量任务提交失败');});
+      .catch(function(e){setSubmitLock('talking',false);setBusy(false);loadVideoHistory();setVideoStatus(e.message||'批量任务提交失败');toast(e.message||'批量任务提交失败');});
   }
   function submitVideo(){
     if(talkingBatch){
@@ -1898,11 +2433,12 @@
     if(mode==='audio' && assetSelected && !selectedAssetAudio){ toast('请选择一条配音资产'); return; }
     if(mode==='audio' && !assetSelected && !audioData){ toast('请先上传口播音频'); return; }
     if(talkingBatch){submitVideoBatch(text);return;}
+    setSubmitLock('talking',true);
     setBusy(true);
     var audioReadyPromise=assetSelected?fetchAssetAudioData(selectedAssetAudio):Promise.resolve(audioData);
     audioReadyPromise.then(function(){
     currentVideoDraft={mode:mode,image_url:imageData,text:text||'视频生成记录',resolution:selectedResolution,ratio:selectedRatio,motion:selectedMotion,status:'processing',created_at:Math.floor(Date.now()/1000)};
-    renderVideoHistory([currentVideoDraft]);
+    renderVideoDrafts([currentVideoDraft]);
     setVideoStatus('正在提交视频任务...');
     fetch('/api/gen/video',{
       method:'POST',
@@ -1910,19 +2446,21 @@
       body:JSON.stringify(talkingPayload({image_data:imageData}))
     }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
       .then(function(res){
-        if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
+        if(res.status===401){setSubmitLock('talking',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
         setVideoStatus('视频任务已提交...');
         setTimeout(loadVideoHistory,700);
         trackVideoJob(res.data.job_id,{status:'queued',label:mode==='audio'?'数字人口播（音频）':'数字人口播（文案）',mode:mode,modeLabel:'数字人口播',ratio:selectedRatio});
+        setSubmitLock('talking',false);
         pollJob(res.data.job_id,0);
       })
       .catch(function(e){
+        setSubmitLock('talking',false);
         setBusy(false);
-        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}
+        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoDrafts([currentVideoDraft]);}
         setVideoStatus(e.message||'提交失败');toast(e.message||'提交失败');
       });
-    }).catch(function(e){setBusy(false);if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}toast(e.message||'配音资产读取失败');});
+    }).catch(function(e){setSubmitLock('talking',false);setBusy(false);if(currentVideoDraft){currentVideoDraft.status='error';renderVideoDrafts([currentVideoDraft]);}toast(e.message||'配音资产读取失败');});
   };
   // 果肉(Grok)/豆姐(Seedance) 统一视频生成 → /api/gen/xiaole_video
   function submitXiaole(channel){
@@ -1932,47 +2470,75 @@
     var label=({grok:'果肉视频',micro:'豆姐视频',omni:'欧米视频'})[channel]||channel;
     var prompt=((promptEl||{}).value||'').trim();
     if(!prompt){ toast('请输入视频提示词'); if(promptEl) promptEl.focus(); return; }
+    var editing=channel==='grok' && grokOperation==='edit';
+    if(editing && !grokEditVideoData){toast('请先上传不超过 8.7 秒的 MP4 参考视频');return;}
+    var ratio=channel==='grok'?(editing?null:selectedGrokRatio):'9:16';
+    var _refArr=channel==='grok'?grokRefData:(channel==='micro'?microRefData:(channel==='omni'?omniRefData:null));
+    if(channel==='grok' && !editing && selectedGrokModel==='grok-imagine-video-1.5' && !(_refArr&&_refArr.length)){
+      toast('Grok Video 1.5 仅支持图生视频，请先上传参考图'); return;
+    }
+    setSubmitLock('xiaole',true);
     setBusy(true);
     if(statusEl) statusEl.textContent='正在提交'+label+'任务...';
-    var ratio=channel==='grok'?selectedGrokRatio:'9:16';
-    var _refArr=channel==='grok'?grokRefData:(channel==='micro'?microRefData:(channel==='omni'?omniRefData:null));
-    var fixedDuration=(channel==='omni'||(_refArr&&_refArr.length))?10:null;
-    currentVideoDraft={mode:channel,text:prompt,ratio:ratio,motion:label,duration:fixedDuration,status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
-    renderVideoHistory([currentVideoDraft]);
+    var fixedDuration=channel==='grok'?(editing?grokEditDuration:selectedGrokDuration):((channel==='omni'||(_refArr&&_refArr.length))?10:null);
+    currentVideoDraft={mode:channel,text:prompt,ratio:ratio,motion:label,duration:fixedDuration,
+      resolution:channel==='grok'?selectedGrokResolution:null,model:channel==='grok'?selectedGrokModel:null,
+      status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
+    renderVideoDrafts([currentVideoDraft]);
     var xlPayload={channel:channel,prompt:prompt};
-    if(channel==='grok') xlPayload.ratio=selectedGrokRatio;
-    if(_refArr && _refArr.length){ xlPayload.reference_images=_refArr; }  // 图生视频参考图
+    if(channel==='grok'){
+      xlPayload.operation=grokOperation;
+      if(editing){xlPayload.reference_video_data=grokEditVideoData;xlPayload.source_duration=grokEditDuration;xlPayload.model='grok-imagine-video';}
+      else {xlPayload.ratio=selectedGrokRatio; xlPayload.duration=selectedGrokDuration;
+        xlPayload.resolution=selectedGrokResolution; xlPayload.model=selectedGrokModel;}
+    }
+    if(!editing && _refArr && _refArr.length){ xlPayload.reference_images=_refArr; }  // 图生视频参考图
     fetch('/api/gen/xiaole_video',{
       method:'POST',
       headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
       body:JSON.stringify(xlPayload)
     }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
       .then(function(res){
-        if(res.status===401){location.href='../login.html?redirect=workbench/video';return;}
+        if(res.status===401){setSubmitLock('xiaole',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
-        if(statusEl) statusEl.textContent=label+'任务已提交，生成中...';
+        if(statusEl) statusEl.textContent=label+'任务已提交'+(res.data.cost!=null?' · '+res.data.cost+'点':'')+'，生成中...';
         setTimeout(loadVideoHistory,700);
         trackVideoJob(res.data.job_id,{status:'queued',label:label,mode:channel,modeLabel:label,ratio:ratio});
+        setSubmitLock('xiaole',false);
         pollJob(res.data.job_id,0);
       })
       .catch(function(e){
+        setSubmitLock('xiaole',false);
         setBusy(false);
-        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoHistory([currentVideoDraft]);}
+        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoDrafts([currentVideoDraft]);}
         if(statusEl) statusEl.textContent=e.message||'提交失败';
         toast(e.message||'提交失败');
       });
   }
   $('generateBtn').onclick=submitVideo;
-  $('motionGenerateBtn').onclick=submitMotionVideo;
   $('tryonGenerateBtn').onclick=submitTryon;
   if($('grokGenerateBtn')) $('grokGenerateBtn').onclick=function(){submitXiaole('grok');};
   if($('microGenerateBtn')) $('microGenerateBtn').onclick=function(){submitXiaole('micro');};
   if($('omniGenerateBtn')) $('omniGenerateBtn').onclick=function(){submitXiaole('omni');};
-  // ---- 果肉(Grok)面板：示例提示词 chips + 参考图(图生视频，最多7张，对齐上游实测硬上限) ----
+  // ---- 果肉(Grok)官方面板：基础图生视频接口单图输入 ----
   var GROK_REF_MAX=7;
   var grokRefData=[];
   var microRefData=[], omniRefData=[];
   (function setupGrokPanel(){
+    var editInput=$('grokEditFile');
+    if(editInput) editInput.onchange=function(){
+      var f=editInput.files&&editInput.files[0]; if(!f)return;
+      if(f.type!=='video/mp4'){toast('只支持 MP4 参考视频');editInput.value='';return;}
+      var objectUrl=URL.createObjectURL(f), probe=document.createElement('video');
+      probe.preload='metadata'; probe.onloadedmetadata=function(){
+        var duration=Number(probe.duration||0); URL.revokeObjectURL(objectUrl);
+        if(!duration || duration>8.7){toast('参考视频最长 8.7 秒');editInput.value='';return;}
+        readFileData(f).then(function(data){grokEditVideoData=data;grokEditDuration=duration;
+          $('grokEditFileName').textContent=f.name+' · '+duration.toFixed(1)+' 秒';
+          var preview=$('grokEditPreview');preview.src=data;preview.classList.remove('hidden');toast('参考视频已载入');
+        });
+      }; probe.onerror=function(){URL.revokeObjectURL(objectUrl);toast('无法读取这个 MP4 视频');}; probe.src=objectUrl;
+    };
     var ex=$('grokExamples');
     if(ex){
       ['护肤精华瓶在水花中缓缓旋转，晶莹剔透，柔光微距，高级广告质感',
@@ -2055,9 +2621,11 @@
   setupXiaoleRefPanel('micro', microRefData, 4);  // seedance-2.0-fast 参考图上限4
   setupXiaoleRefPanel('omni', omniRefData, 5);    // omni-fast 参考图上限5
   if($('refreshAvatarBtn')) $('refreshAvatarBtn').onclick=function(){loadMotionAvatars(true);};
+  bindVideoTaskSync();
   $('scriptText').dispatchEvent(new Event('input'));
   loadTalkingLimits();
   updateFunction('talking');
+  syncVideoGenerateButtons();
   // F7 联动：资产页视频「重生成」跳转过来时，读 localStorage 预填(一次性)
   var _prefillVoice='';
   function prefillMode(d){
@@ -2067,23 +2635,6 @@
     if(m==='txt2video') return 'grok';
     if(m==='img2video') return 'grok';
     return m||'text';
-  }
-  function setMotionImagePrefill(dataUrl, previewUrl){
-    motionImageData=dataUrl;
-    selectMotionAvatar(null);
-    var box=$('motionImageDrop');
-    if(box){
-      box.classList.add('has-media');
-      box.innerHTML='<input id="motionImageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><img src="'+esc(previewUrl||dataUrl)+'" alt="人物形象预览">';
-      bindMotionFile(box.querySelector('input'),'image');
-    }
-  }
-  function setMotionReferencePrefill(dataUrl, previewUrl){
-    motionReferenceVideoData=dataUrl;
-    selectedMotionPreset='';
-    renderMotionPresets();
-    showMotionVideoPreview(previewUrl||dataUrl);
-    setMotionSourceText('已带入原参考片段（可点播放预览）');
   }
   function setTryonPrefill(kind, dataUrl, previewUrl){
     var box=kind==='video'?$('tryonVideoDrop'):(kind==='clothes'?$('tryonClothesDrop'):$('tryonBgDrop'));
@@ -2145,7 +2696,12 @@
       _prefillVoice=d.voice_key||d.voice||d.provider_voice||d.voice_name||'';
       if(m==='grok'||m==='micro'){
         updateFunction(m);
-        if(m==='grok' && d.ratio) clickGrokRatio(d.ratio);
+        if(m==='grok'){
+          if(d.ratio) clickGrokRatio(d.ratio);
+          var mb=d.model&&document.querySelector('[data-grok-model="'+String(d.model).replace(/"/g,'\\"')+'"]'); if(mb)mb.click();
+          var db=d.duration&&document.querySelector('[data-grok-duration="'+String(Math.round(Number(d.duration)))+'"]'); if(db)db.click();
+          var rb=d.resolution&&document.querySelector('[data-grok-resolution="'+String(d.resolution).replace(/"/g,'\\"')+'"]'); if(rb&&!rb.classList.contains('hidden'))rb.click();
+        }
         var ta=m==='grok'?$('grokPrompt'):$('microPrompt');
         if(ta){ta.value=d.prompt||d.text||'';ta.focus();}
         if(typeof toast==='function') toast('已切到原视频模式并带入提示词');
@@ -2165,20 +2721,6 @@
         Promise.allSettled(jobs).then(function(results){
           setVideoStatus('已按原换装模式预填，可检查素材后重新生成');
           reportPrefillFailures(results,'已切到换装换背景并带入可用素材','换装素材带入失败');
-        });
-        return;
-      }
-      if(m==='motion'){
-        updateFunction('motion');
-        if(d.ratio) clickMotionRatio(d.ratio);
-        if(d.resolution) clickMotionResolution(d.resolution);
-        setVideoStatus('正在带入影视级模仿素材...');
-        var motionJobs=[];
-        if(d.image_url) motionJobs.push(prefillJob('人物形象图', fetchImagePrefill(d.image_url).then(function(img){setMotionImagePrefill(img.dataUrl,img.previewUrl);})));
-        if(d.reference_video_url) motionJobs.push(prefillJob('参考片段', fetchFilePrefill(d.reference_video_url,'参考片段').then(function(v){setMotionReferencePrefill(v.dataUrl,v.previewUrl);})));
-        Promise.allSettled(motionJobs).then(function(results){
-          setVideoStatus('已按影视级模仿预填，可检查素材后重新生成');
-          reportPrefillFailures(results,'已切到影视级模仿并带入可用素材','影视级模仿素材带入失败');
         });
         return;
       }

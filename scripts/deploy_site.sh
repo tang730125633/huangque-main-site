@@ -19,10 +19,13 @@ rsync -az --delete \
 echo "▸ 2/3 改属主 www-data"
 $SSH "sudo chown -R www-data:www-data $WEBROOT"
 
-echo "▸ 3/3 部署内容后端 content_api.py + tikhub.py + 重启 huangque-content"
+# ⚠️ 这份是【白名单】：新增 server/ 下的模块，必须同时加进这里和 drift_sentinel 的 BACKEND_RUNTIME。
+# func_names.py 是 content 和 admin 【共用】的 —— 漏传它，两个服务一起 ImportError 起不来。
+echo "▸ 3/3 部署内容后端 content_api.py + tikhub.py + func_names.py + 重启 huangque-content / huangque-admin"
 rsync -az --rsync-path="sudo rsync" \
   -e "ssh -i $KEY -o IdentitiesOnly=yes -o BatchMode=yes" \
-  "$ROOT/server/content_api.py" "$ROOT/server/tikhub.py" "$HOST:/home/ubuntu/content-api/"
-$SSH "sudo systemctl restart huangque-content && sleep 1 && echo '  content-api:' \$(systemctl is-active huangque-content)"
+  "$ROOT/server/content_api.py" "$ROOT/server/tikhub.py" "$ROOT/server/func_names.py" \
+  "$HOST:/home/ubuntu/content-api/"
+$SSH "sudo systemctl restart huangque-content huangque-admin && sleep 1 && echo '  content:' \$(systemctl is-active huangque-content) '| admin:' \$(systemctl is-active huangque-admin)"
 
 echo "✅ 部署完成 → https://huangquechuanmei.com"

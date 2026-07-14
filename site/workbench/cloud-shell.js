@@ -108,11 +108,11 @@
 
   // 角色分化：仅 今日(运营台)+成本(统计看板) 是管理员专属；其余功能(含获客)所有用户都有；用户侧导以灵感为首页
   var NAV=[
-    {k:'dashboard',l:'今日',i:'home', admin:true}, {k:'inspiration',l:'灵感',i:'sparkles'},
-    {k:'leads',l:'获客',i:'search'}, {k:'collect',l:'内容爬取',i:'link'}, {k:'banana',l:'作图',i:'image'},
-    {k:'video',l:'视频',i:'video'}, {k:'audio',l:'音频',i:'mic'}, {k:'script',l:'编导',i:'edit'},
-    {k:'canvas',l:'画布',i:'layers'}, {k:'assets',l:'资产',i:'folder'},
-    {k:'cost',l:'成本',i:'coins', admin:true}, {k:'tutorials',l:'教程',i:'play'}, {k:'settings',l:'设置',i:'gear'}
+    {k:'dashboard',l:'今日',i:'home', admin:true}, {k:'inspiration',l:'灵感设计',i:'sparkles'},
+    {k:'leads',l:'平台获客',i:'search'}, {k:'collect',l:'内容爬取',i:'link'}, {k:'banana',l:'图片生成',i:'image'},
+    {k:'video',l:'视频生成',i:'video'}, {k:'audio',l:'音频生成',i:'mic'}, {k:'script',l:'文案编导',i:'edit'},
+    {k:'canvas',l:'无限画布',i:'layers'}, {k:'assets',l:'我的资产',i:'folder'},
+    {k:'cost',l:'成本',i:'coins', admin:true}, {k:'tutorials',l:'教程视频',i:'play'}, {k:'settings',l:'通用设置',i:'gear'}
   ];
 
   // 管理员判定：已登录则一律以真实账号角色(hq_user.role)为准，忽略测试开关；
@@ -133,15 +133,86 @@
     return NAV.filter(function(it){ return admin || !it.admin; }).map(function(it){
       var on=it.k===active;
       var ntxt=on?'#eaf1fa':'#94a4bb', nbg=on?'rgba(231,178,76,.08)':'transparent', nfg=on?'#e7b24c':'#94a4bb', nbar=on?'1':'0';
-      return '<a href="'+escapeAttr(safeUrl(it.k+'.html'))+'" class="hq-navitem" style="position:relative; display:flex; align-items:center; gap:12px; padding:10px 13px; border-radius:11px; cursor:pointer; color:'+ntxt+'; background:'+nbg+'; font-size:14px; font-weight:500; transition:.16s;">'+
-        '<span style="position:absolute; left:-12px; top:50%; transform:translateY(-50%); width:3px; height:18px; border-radius:0 3px 3px 0; background:#e7b24c; opacity:'+nbar+';"></span>'+
-        '<span style="display:flex; width:18px; opacity:'+(on?'1':'.55')+'; transition:.16s;">'+iconDuo(it.i)+'</span>'+escapeHtml(it.l)+'</a>';
+      return '<a href="'+escapeAttr(safeUrl(it.k+'.html'))+'" class="hq-navitem" aria-label="'+escapeAttr(it.l)+'" data-nav-label="'+escapeAttr(it.l)+'" style="position:relative; display:flex; align-items:center; gap:12px; padding:10px 13px; border-radius:11px; cursor:pointer; color:'+ntxt+'; background:'+nbg+'; font-size:14px; font-weight:500; transition:.16s;">'+
+        '<span class="hq-nav-active-bar" style="position:absolute; left:-12px; top:50%; transform:translateY(-50%); width:3px; height:18px; border-radius:0 3px 3px 0; background:#e7b24c; opacity:'+nbar+';"></span>'+
+        '<span class="hq-nav-icon" style="display:flex; width:18px; flex:none; opacity:'+(on?'1':'.55')+'; transition:.16s;">'+iconDuo(it.i)+'</span><span class="hq-nav-label">'+escapeHtml(it.l)+'</span></a>';
     }).join('');
+  }
+
+  function ensureNavStyles(){
+    if(document.getElementById('hqNavShellStyles')) return;
+    var st=document.createElement('style');
+    st.id='hqNavShellStyles';
+    st.textContent=
+      '.hq-aside{transition:width .16s cubic-bezier(.16,1,.3,1)}'+
+      '.hq-nav-label,.hq-brand-copy,.hq-side-bots-label,.hq-side-bots-arrow,.hq-user-copy,.hq-user-logout{transition:opacity .1s ease}'+
+      '.hq-aside-compact{width:68px!important}'+
+      '.hq-aside-compact .hq-brand{justify-content:center!important;padding:20px 0 18px!important}'+
+      '.hq-aside-compact .hq-brand-copy{display:none!important}'+
+      '.hq-aside-compact .hq-side-nav{align-items:center;padding:6px 12px!important}'+
+      '.hq-aside-compact .hq-navitem{width:44px;height:42px;justify-content:center;gap:0!important;padding:0!important;box-sizing:border-box}'+
+      '.hq-aside-compact .hq-nav-label{display:none!important}'+
+      '.hq-aside-compact .hq-nav-active-bar{left:-12px!important}'+
+      '.hq-aside-compact .hq-side-footer{align-items:center;padding:12px!important}'+
+      '.hq-aside-compact .hq-side-points{display:none!important}'+
+      '.hq-aside-compact .hq-side-bots{width:44px;height:42px;justify-content:center;padding:0!important;box-sizing:border-box}'+
+      '.hq-aside-compact .hq-side-bots-label,.hq-aside-compact .hq-side-bots-arrow{display:none!important}'+
+      '.hq-aside-compact #hqUserCard{width:44px}'+
+      '.hq-aside-compact .hq-user-row,.hq-aside-compact .hq-login-row{justify-content:center!important;padding:5px!important}'+
+      '.hq-aside-compact .hq-user-copy,.hq-aside-compact .hq-user-logout{display:none!important}'+
+      '.hq-main-scroll{flex:1;min-height:0;overflow-y:auto;padding:26px 30px 40px}'+
+      '.hq-main-scroll-flush{overflow:hidden;padding:0}'+
+      '.hq-topbar-flush{border-bottom:0!important}'+
+      '.hq-nav-tooltip{position:fixed;z-index:9500;max-width:220px;padding:7px 10px;border:1px solid rgba(148,164,187,.18);border-radius:7px;background:#141b28;color:#eaf1fa;box-shadow:0 8px 24px rgba(0,0,0,.3);font:600 12px/1.25 inherit;white-space:nowrap;pointer-events:none;opacity:0;transform:translateX(-4px);transition:opacity .1s ease,transform .1s ease}'+
+      '.hq-nav-tooltip.on{opacity:1;transform:none}'+
+      '@media(max-width:1100px){.hq-main-scroll-flush{overflow-y:auto}}'+
+      '@media(max-width:899px){.hq-aside{width:228px!important}.hq-nav-tooltip{display:none!important}}'+
+      '@media(prefers-reduced-motion:reduce){.hq-aside,.hq-nav-tooltip{transition:none!important}}';
+    document.head.appendChild(st);
+  }
+
+  function navDisplayMode(active,narrow){
+    return narrow || active==='inspiration' ? 'expanded' : 'compact';
+  }
+
+  function usesFlushWorkspace(active){
+    return active==='banana' || active==='video' || active==='audio';
+  }
+
+  function bindNavTooltips(aside){
+    var tip=document.getElementById('hqNavTooltip');
+    if(!tip){
+      tip=document.createElement('div');
+      tip.id='hqNavTooltip';
+      tip.className='hq-nav-tooltip';
+      tip.setAttribute('role','tooltip');
+      document.body.appendChild(tip);
+    }
+    function hide(){ tip.classList.remove('on'); }
+    function show(item){
+      if(!aside.classList.contains('hq-aside-compact')){ hide(); return; }
+      var label=item.getAttribute('data-nav-label')||'';
+      if(!label){ hide(); return; }
+      tip.textContent=label;
+      var rect=item.getBoundingClientRect();
+      tip.style.left=Math.round(rect.right+10)+'px';
+      tip.style.top=Math.round(rect.top+(rect.height-tip.offsetHeight)/2)+'px';
+      tip.classList.add('on');
+    }
+    aside.querySelectorAll('[data-nav-label]').forEach(function(item){
+      item.addEventListener('mouseenter',function(){ show(item); });
+      item.addEventListener('mouseleave',hide);
+      item.addEventListener('focusin',function(){ show(item); });
+      item.addEventListener('focusout',hide);
+    });
+    aside.addEventListener('scroll',hide,true);
+    window.addEventListener('resize',hide);
   }
 
   function build(){
     var content=document.querySelector('.hq-content');
     if(!content) return;
+    ensureNavStyles();
     var active=content.getAttribute('data-active')||'';
     var app=document.querySelector('.hq-app');
 
@@ -149,26 +220,29 @@
     aside.className='hq-aside';
     aside.id='hqSideNav';
     aside.style.cssText='width:228px; flex:none; display:flex; flex-direction:column; border-right:1px solid rgba(148,164,187,.08); background:linear-gradient(180deg, rgba(12,18,32,.95), rgba(8,12,20,.95)); backdrop-filter:blur(12px); z-index:40;';
+    var initialMode=navDisplayMode(active,window.innerWidth<900);
+    aside.classList.toggle('hq-aside-compact',initialMode==='compact');
+    aside.setAttribute('data-nav-mode',initialMode);
     aside.innerHTML=
-      '<a href="../index.html" style="display:flex; align-items:center; gap:10px; padding:20px 22px 18px; cursor:pointer;">'+
+      '<a href="../index.html" class="hq-brand" aria-label="黄雀 AI 首页" style="display:flex; align-items:center; gap:10px; padding:20px 22px 18px; cursor:pointer;">'+
         '<div style="height:28px; display:flex; align-items:center;"><img src="../assets/cloud/logo-bird.png" alt="黄雀" style="height:100%;width:auto;display:block;filter:drop-shadow(0 0 6px rgba(231,178,76,.4));"></div>'+
-        '<div style="font-size:17px; font-weight:700; letter-spacing:.4px;">黄雀 <span style="color:#94a4bb; font-weight:400;">AI</span></div></a>'+
-      '<nav style="flex:1; overflow-y:auto; padding:6px 12px; display:flex; flex-direction:column; gap:2px;">'+navHTML(active)+'</nav>'+
-      '<div style="padding:12px 14px; display:flex; flex-direction:column; gap:11px;">'+
-        '<div style="position:relative; padding:15px 16px; border:1px solid rgba(231,178,76,.2); border-radius:14px; background:linear-gradient(150deg, rgba(231,178,76,.1), rgba(231,178,76,.02)); overflow:hidden;">'+
+        '<div class="hq-brand-copy" style="font-size:17px; font-weight:700; letter-spacing:.4px; white-space:nowrap;">黄雀 <span style="color:#94a4bb; font-weight:400;">AI</span></div></a>'+
+      '<nav class="hq-side-nav" style="flex:1; overflow-y:auto; padding:6px 12px; display:flex; flex-direction:column; gap:2px;">'+navHTML(active)+'</nav>'+
+      '<div class="hq-side-footer" style="padding:12px 14px; display:flex; flex-direction:column; gap:11px;">'+
+        '<div class="hq-side-points" style="position:relative; padding:15px 16px; border:1px solid rgba(231,178,76,.2); border-radius:14px; background:linear-gradient(150deg, rgba(231,178,76,.1), rgba(231,178,76,.02)); overflow:hidden;">'+
           '<div style="position:absolute; right:-14px; top:-10px; width:62px; height:62px; color:rgba(231,178,76,.22);">'+icon('coins','62px')+'</div>'+
           '<div style="font-size:12px; color:#94a4bb;">剩余点数</div>'+
           '<div id="hqPointsSide" class="mono" style="font-size:30px; font-weight:700; color:#e7b24c; line-height:1.1; margin:3px 0 9px;">—</div>'+
           '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;"><a href="recharge.html" style="display:inline-flex; align-items:center; gap:5px; font-size:12.5px; color:#e7b24c; cursor:pointer; font-weight:600;">去充值 <span style="display:flex; width:13px;">'+icon('arrowMini')+'</span></a><button type="button" data-points-detail="1" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font:700 12.5px inherit;padding:0;">明细</button></div></div>'+
-        '<a href="bots.html" style="display:flex; align-items:center; gap:8px; padding:10px 14px; border:1px solid rgba(45,212,191,.2); border-radius:12px; background:rgba(45,212,191,.05);">'+
+        '<a href="bots.html" class="hq-side-bots" aria-label="Bot 在线" title="Bot 在线" style="display:flex; align-items:center; gap:8px; padding:10px 14px; border:1px solid rgba(45,212,191,.2); border-radius:12px; background:rgba(45,212,191,.05);">'+
           '<span style="width:7px; height:7px; border-radius:50%; background:#2dd4bf; box-shadow:0 0 8px #2dd4bf; animation:hq-pulse 2s infinite;"></span>'+
-          '<span style="font-size:13px; color:#94a4bb; flex:1;"><span class="mono" style="color:#2dd4bf; font-weight:600;">34</span> 个 Bot 在线</span>'+
-          '<span style="display:flex; width:13px; color:#2dd4bf;">'+icon('arrowMini')+'</span></a>'+
+          '<span class="hq-side-bots-label" style="font-size:13px; color:#94a4bb; flex:1; white-space:nowrap;"><span class="mono" style="color:#2dd4bf; font-weight:600;">34</span> 个 Bot 在线</span>'+
+          '<span class="hq-side-bots-arrow" style="display:flex; width:13px; color:#2dd4bf;">'+icon('arrowMini')+'</span></a>'+
         '<div id="hqUserCard"></div>'+
       '</div>';
 
     var header=document.createElement('header');
-    header.className='hq-topbar';
+    header.className='hq-topbar'+(usesFlushWorkspace(active)?' hq-topbar-flush':'');
     header.style.cssText='flex:none; display:flex; align-items:center; gap:14px; padding:14px 26px; border-bottom:1px solid rgba(148,164,187,.08); background:rgba(7,11,19,.4); backdrop-filter:blur(12px);';
     header.innerHTML=
       '<button type="button" class="hq-burger" aria-label="打开导航" aria-controls="hqSideNav" aria-expanded="false" style="display:none; width:38px; height:38px; align-items:center; justify-content:center; flex:none; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer;">'+icon('menu','18px')+'</button>'+
@@ -180,6 +254,7 @@
           '<span style="width:16px; height:16px; border-radius:50%; background:radial-gradient(circle at 35% 30%, #f6d488, #c8902f); flex:none;"></span>'+
           '<span id="hqPointsTop" class="mono" style="font-size:14px; font-weight:700; color:#e7b24c;">—</span></a>'+
         '<button type="button" data-points-detail="1" style="height:36px;padding:0 12px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:12.5px;font-weight:700;color:#94a4bb;background:rgba(148,164,187,.06);border:1px solid rgba(148,164,187,.14);">明细</button>'+
+        '<button type="button" class="hq-friends-btn" aria-label="打开好友" title="好友" aria-expanded="false" style="position:relative; width:38px; height:38px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; color:#94a4bb; background:transparent; font:inherit; padding:0;">'+iconDuo('users','18px','#e7b24c')+'<span class="hq-friends-badge" aria-label="0 条好友申请"></span></button>'+
         '<button type="button" class="hq-notify-btn" aria-label="打开通知中心" title="通知中心" aria-expanded="false" style="position:relative; width:38px; height:38px; display:flex; align-items:center; justify-content:center; border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; color:#94a4bb; background:transparent; font:inherit; padding:0;">'+icon('bell','17px')+'<span class="hq-notify-badge" aria-label="0 条未读通知"></span></button>'+
         '<div id="hqAuthArea" style="display:flex; align-items:center; gap:8px;"></div></div>';
 
@@ -187,17 +262,21 @@
     var main=document.createElement('main');
     main.style.cssText='flex:1; min-width:0; display:flex; flex-direction:column; height:100vh;';
     var scroll=document.createElement('div');
-    scroll.style.cssText='flex:1; overflow-y:auto; padding:26px 30px 40px;';
+    scroll.className='hq-main-scroll'+(usesFlushWorkspace(active)?' hq-main-scroll-flush':'');
     content.parentNode.removeChild(content);
     scroll.appendChild(content);
     main.appendChild(header); main.appendChild(scroll);
     app.style.cssText='height:100vh; display:flex; position:relative; z-index:1; overflow:hidden;';
     app.appendChild(aside); app.appendChild(main);
+    bindNavTooltips(aside);
 
     // 响应式：窄屏抽屉
     var burger=header.querySelector('.hq-burger');
     function applyResp(){
       var narrow=window.innerWidth<900;
+      var navMode=navDisplayMode(active,narrow);
+      aside.classList.toggle('hq-aside-compact',navMode==='compact');
+      aside.setAttribute('data-nav-mode',navMode);
       header.querySelector('.hq-burger').style.display=narrow?'flex':'none';
       header.querySelector('.hq-botpill').style.display=narrow?'none':'flex';
       if(narrow){ aside.style.position='fixed'; aside.style.top=0; aside.style.bottom=0; aside.style.left=0; aside.style.transform='translateX(-100%)'; aside.style.boxShadow='0 0 60px rgba(0,0,0,.6)'; }
@@ -214,6 +293,8 @@
       if(burger) burger.setAttribute('aria-expanded',open?'true':'false');
     }
     burger.onclick=function(){ setNavOpen(!open); };
+    var friendsBtn=header.querySelector('.hq-friends-btn');
+    if(friendsBtn) friendsBtn.onclick=openFriendsPanel;
     var notifyBtn=header.querySelector('.hq-notify-btn');
     if(notifyBtn) notifyBtn.onclick=openNotificationPanel;
     window.addEventListener('resize',applyResp); applyResp();
@@ -339,6 +420,35 @@
 
   // ===== 通知中心：任务结果、点数变化、系统公告 =====
   var _noticeState={kind:'all',items:[],loading:false};
+  var _friendsPanelHandler=null;
+  function registerFriendsPanel(handler){
+    _friendsPanelHandler=typeof handler==='function'?handler:null;
+  }
+  function setFriendsPanelExpanded(on){
+    var btn=document.querySelector('.hq-friends-btn');
+    if(btn) btn.setAttribute('aria-expanded',on?'true':'false');
+  }
+  function updateFriendsBadge(count){
+    var n=Math.max(0,Number(count||0));
+    var badge=document.querySelector('.hq-friends-badge'), btn=document.querySelector('.hq-friends-btn');
+    if(badge){
+      badge.textContent=n>99?'99+':String(n||'');
+      badge.classList.toggle('on',n>0);
+      badge.setAttribute('aria-label',n+' 条好友申请');
+    }
+    if(btn) btn.setAttribute('aria-label',n?'打开好友，'+n+' 条待处理申请':'打开好友');
+  }
+  function openFriendsPanel(){
+    if(_friendsPanelHandler){
+      _friendsPanelHandler();
+      return;
+    }
+    if(/settings\.html$/.test(location.pathname)){
+      window.dispatchEvent(new CustomEvent('hq:open-friends'));
+      return;
+    }
+    location.href='settings.html#friends';
+  }
   var _systemNotices=[{
     id:'system-notification-center-v1',kind:'system',title:'通知中心已启用',
     detail:'生成结果、点数变化和重要系统公告会集中显示在这里。',time:Date.parse('2026-07-10T09:00:00+08:00')
@@ -412,8 +522,8 @@
     if(document.getElementById('hqNoticeOv')) return;
     var st=document.createElement('style');
     st.textContent=
-      '.hq-notify-badge{display:none;position:absolute;top:-5px;right:-5px;min-width:14px;height:14px;padding:0 3px;align-items:center;justify-content:center;border:1.5px solid #080d16;border-radius:999px;background:#f4708a;color:#fff;font:800 8px/1 inherit;box-sizing:border-box;pointer-events:none}'+
-      '.hq-notify-badge.on{display:flex}'+
+      '.hq-notify-badge,.hq-friends-badge{display:none;position:absolute;top:-5px;right:-5px;min-width:14px;height:14px;padding:0 3px;align-items:center;justify-content:center;border:1.5px solid #080d16;border-radius:999px;background:#f4708a;color:#fff;font:800 8px/1 inherit;box-sizing:border-box;pointer-events:none}'+
+      '.hq-notify-badge.on,.hq-friends-badge.on{display:flex}'+
       '.hqno{position:fixed;inset:0;z-index:9200;display:none;background:rgba(3,7,13,.46);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px)}'+
       '.hqno.on{display:block}'+
       '.hqnd{position:absolute;top:0;right:0;width:min(430px,100vw);height:100%;display:flex;flex-direction:column;border-left:1px solid rgba(148,164,187,.14);background:linear-gradient(180deg,#101827,#080d16);box-shadow:-28px 0 80px rgba(0,0,0,.46);animation:hq-notice-in .2s cubic-bezier(.16,1,.3,1)}'+
@@ -661,16 +771,16 @@
       var name=profile.nickname||(u&&(u.name||u.nickname||u.username))||'我的账号', ch=(String(name).trim()[0]||'我').toUpperCase();
       var safeName=escapeHtml(name), safeCh=escapeHtml(ch);
       var role=(u&&u.role==='admin')?'管理员':'会员';
-      if(card) card.innerHTML='<div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-radius:10px;">'+
+      if(card) card.innerHTML='<div class="hq-user-row" title="'+safeName+'" style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-radius:10px;">'+
         '<div style="width:34px;height:34px;border-radius:50%;flex:none;background:'+av+';box-shadow:inset 0 1px 0 rgba(255,255,255,.45), inset 0 -2px 4px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;color:#1a1206;font-size:13px;font-weight:600;">'+safeCh+'</div>'+
-        '<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+safeName+'</div><div style="font-size:11px;color:#e7b24c;">'+role+'</div></div>'+
-        '<button type="button" data-logout="1" aria-label="退出登录" title="退出登录" style="display:flex;width:24px;height:24px;align-items:center;justify-content:center;color:#5c6b82;cursor:pointer;border:0;background:transparent;padding:0;">'+icon('logout','16px')+'</button></div>';
+        '<div class="hq-user-copy" style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+safeName+'</div><div style="font-size:11px;color:#e7b24c;">'+role+'</div></div>'+
+        '<button type="button" class="hq-user-logout" data-logout="1" aria-label="退出登录" title="退出登录" style="display:flex;width:24px;height:24px;align-items:center;justify-content:center;color:#5c6b82;cursor:pointer;border:0;background:transparent;padding:0;">'+icon('logout','16px')+'</button></div>';
       if(auth) auth.innerHTML='<div style="width:38px;height:38px;border-radius:11px;background:'+av+';box-shadow:inset 0 1px 0 rgba(255,255,255,.45), inset 0 -2px 4px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;color:#1a1206;font-size:14px;font-weight:600;">'+safeCh+'</div>';
     } else {
-      if(card) card.innerHTML='<button type="button" data-login="1" style="width:100%;display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:11px;cursor:pointer;border:1px solid rgba(148,164,187,.16);background:rgba(148,164,187,.04);font-family:inherit;text-align:left;">'+
+      if(card) card.innerHTML='<button type="button" class="hq-login-row" data-login="1" aria-label="登录" title="登录" style="width:100%;display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:11px;cursor:pointer;border:1px solid rgba(148,164,187,.16);background:rgba(148,164,187,.04);font-family:inherit;text-align:left;">'+
         '<div style="width:32px;height:32px;border-radius:50%;flex:none;background:rgba(148,164,187,.12);display:flex;align-items:center;justify-content:center;color:#94a4bb;"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/></svg></div>'+
-        '<div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:500;color:#eaf1fa;">未登录</div><div style="font-size:11px;color:#94a4bb;">登录后开启全部功能</div></div>'+
-        '<span style="font-size:12px;color:#e7b24c;font-weight:600;white-space:nowrap;">登录</span></button>';
+        '<div class="hq-user-copy" style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:500;color:#eaf1fa;">未登录</div><div style="font-size:11px;color:#94a4bb;">登录后开启全部功能</div></div>'+
+        '<span class="hq-user-logout" style="font-size:12px;color:#e7b24c;font-weight:600;white-space:nowrap;">登录</span></button>';
       if(auth) auth.innerHTML='<button type="button" data-register="1" style="height:36px;padding:0 14px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:13px;color:#94a4bb;background:rgba(148,164,187,.06);border:1px solid rgba(148,164,187,.16);">注册</button>'+
         '<button type="button" data-login="1" style="height:36px;padding:0 16px;border-radius:10px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:600;color:#1c1402;background:linear-gradient(135deg,#f6d488,#e7b24c);border:0;">登录</button>';
     }
@@ -699,7 +809,7 @@
     document.head.appendChild(script);
   }
 
-  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, login:openLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser };
+  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, setFriendsBadge:updateFriendsBadge, registerFriendsPanel:registerFriendsPanel, setFriendsPanelExpanded:setFriendsPanelExpanded, openFriendsPanel:openFriendsPanel, login:openLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser };
   function _hqInit(){ build(); buildLoginModal(); loadTaskTracker(); }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_hqInit); else _hqInit();
 })();

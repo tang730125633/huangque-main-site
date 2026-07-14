@@ -144,7 +144,9 @@ class RequestLogUserTests(unittest.TestCase):
         items = {x["path"]: x for x in admin_api.request_logs()["items"]}
         poll = items["/api/gen/job/1226"]
         self.assertEqual(poll["user"], "tang")
-        self.assertEqual(poll["func"], "视频 · 小乐 · 轮询")
+        # 「视频 · 小乐」是旧名字 —— 它把果肉/豆姐/欧米三个渠道混成了一个。
+        # 现在按 payload.channel 分开；这条 fixture 的 payload 里没有 channel，回落到总称。
+        self.assertEqual(poll["func"], "果肉/豆姐/欧米视频 · 轮询")
         # 任务库里没有的任务号
         self.assertEqual(items["/api/gen/job/9999"]["user"], "-")
         self.assertEqual(items["/api/gen/job/9999"]["func"], "任务轮询")
@@ -193,7 +195,8 @@ class JobPayloadTests(unittest.TestCase):
         truncated = '{"mode": "text", "prompt": "' + "x" * 5000
         data = admin_api._job_payload(truncated)
         self.assertEqual(data.get("mode"), "text")
-        self.assertEqual(admin_api.call_func_name("video", data), "视频 · 文案口播")
+        # 名字对齐产品里的叫法：视频页那个功能页签就叫「数字人口播」
+        self.assertEqual(admin_api.call_func_name("video", data), "数字人口播 · 文案")
         # 完整 JSON 走正常解析
         self.assertEqual(admin_api._job_payload('{"model": "nb2"}'), {"model": "nb2"})
         self.assertEqual(admin_api._job_payload(None), {})

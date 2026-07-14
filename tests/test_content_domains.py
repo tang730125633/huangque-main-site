@@ -17,21 +17,23 @@ class ContentDomainTests(unittest.TestCase):
 
     def test_entrypoint_uses_domain_registry(self):
         content_api = importlib.import_module("content_api")
+        # 这份清单是白名单：路由 /api/gen/<kind> 由它派生，多一个少一个都是大事
+        # （avatar/cinematic 是把动作模仿拆成「建形象 / 生成剧情视频」两步时加的）
         self.assertEqual(
             sorted(content_api.HANDLERS),
-            ["audio", "collect", "copy", "image", "leads", "tryon", "video", "xiaole_video"],
+            ["audio", "avatar", "breakdown", "cinematic", "collect", "copy", "image", "leads", "tryon", "video", "xiaole_video"],
         )
         self.assertIs(content_api.HANDLERS, content_api.registry.HANDLERS)
 
     def test_domains_export_expected_handlers(self):
         registry = importlib.import_module("content_domains.registry")
-        for name in ("image", "copy", "collect", "leads", "audio", "video", "xiaole_video"):
+        for name in ("image", "copy", "collect", "leads", "audio", "video", "xiaole_video", "breakdown"):
             self.assertIn(name, registry.HANDLERS)
             self.assertTrue(callable(registry.HANDLERS[name]))
 
     def test_core_does_not_own_domain_handlers(self):
         core = importlib.import_module("content_domains.core")
-        for name in ("gen_image", "gen_copy", "gen_collect", "gen_leads", "gen_audio", "gen_video"):
+        for name in ("gen_image", "gen_copy", "gen_collect", "gen_leads", "gen_audio", "gen_video", "gen_breakdown"):
             self.assertFalse(hasattr(core, name), name)
 
         core_path = Path(core.__file__)
@@ -40,7 +42,15 @@ class ContentDomainTests(unittest.TestCase):
         # reclaim_orphaned_running(启动回收重启遗留孤儿→退点)属 core 任务生命周期、紧挨 reaper。
         # jobs.owner 归属(#579/#511)：三服务共写 jobs 表，两处全表扫描按 owner 过滤，否则 content 会捞走/杀掉 imggen、leadgen 的任务。
         # 视频功能分项限流(#577)：果肉/motion/tryon 各自 active 上限，扣点前 429。同属任务生命周期，非域逻辑。
-        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1500)
+        # 优雅停机(drain_and_exit/install_signal_handlers)：SIGTERM → 停收新活 → 等在飞任务跑完 → 退出。
+        #   属【进程与任务生命周期】，和 reaper / reclaim_orphaned_running 是同一类，合理留 core。
+        #   （线上 53 条任务死于「服务重启中断」—— 部署直接 SIGKILL 掉在飞任务。）
+        # 任务心跳(_start_job_heartbeat)：跑着的时候每 30s 刷 jobs.updated_at，让 reaper 的
+        #   「没心跳」真的等于「worker 死了」。同属任务生命周期，紧挨 reaper —— 它俩是一对。
+        #   （线上 110 条任务被 reaper 误判「生成超时」，用户白等 2655 分钟。）
+        # 爆款拆解(#635)：core 只加薄接线（慢池路由/KIND_GRACE/COST/全局并发闸），
+        #   下载+ffmpeg+ASR+多模态 domain 逻辑全在 breakdown.py，故门禁上调到 1665。
+        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1665)
 
     def test_content_api_reclaims_orphans_on_startup(self):
         # 防回归：孤儿回收必须挂在真入口 content_api.main（服务走 content_api.py，
@@ -236,14 +246,13 @@ class ContentDomainTests(unittest.TestCase):
                         id INTEGER PRIMARY KEY, kind TEXT, username TEXT, cost INTEGER,
                         status TEXT, payload TEXT, result TEXT, error TEXT,
                         created_at INTEGER, updated_at INTEGER, refunded INTEGER DEFAULT 0)""")
-                    # fang: 2 条口播 running + 1 条 motion running(不该计入口播)
+                    # fang: 2 条口播 running(kind=video 现在只有口播 text/audio)
                     c.execute("INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at) VALUES(1,'video','fang',20,'running','{\"mode\":\"text\"}',1,1)")
                     c.execute("INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at) VALUES(2,'video','fang',20,'running','{\"mode\":\"audio\"}',1,1)")
-                    c.execute("INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at) VALUES(3,'video','fang',20,'running','{\"mode\":\"motion\"}',1,1)")
                     # 第4条 pending 口播 —— 应被运行闸 defer，留 pending、不调 handler
                     c.execute("INSERT INTO jobs(id,kind,username,cost,status,payload,created_at,updated_at) VALUES(4,'video','fang',20,'pending','{\"mode\":\"text\"}',1,1)")
                     c.commit()
-                # count 只算口播(排除 motion)=2
+                # count = 全部 kind=video running = 2
                 self.assertEqual(core._user_running_talking_count("fang"), 2)
                 core.run_job(4)
                 self.assertEqual(called, [])  # 超运行闸→handler 不该被调

@@ -11,7 +11,7 @@ class ScriptActionsUiTests(unittest.TestCase):
         cls.html = SCRIPT_HTML.read_text(encoding="utf-8")
 
     def test_scene_handoffs_keep_prompt_parameters(self):
-        self.assertIn("handoffUrl('banana.html',a.getAttribute('data-to-img')", self.html)
+        self.assertIn("handoffUrl('video.html',a.getAttribute('data-to-video')", self.html)
         self.assertIn("handoffUrl('audio.html',b.getAttribute('data-to-audio')", self.html)
         self.assertIn("'?prompt='+encodeURIComponent(prompt||'')", self.html)
         self.assertIn("escAttr(s.scene||'')", self.html)

@@ -26,11 +26,20 @@ core.HANDLERS = HANDLERS
 
 def main():
     core.init_db()
-    core.reclaim_orphaned_running()  # 回收上次重启遗留的 running 孤儿→秒退点(worker 未启动前，running 必是孤儿)
+    # 回收上次遗留的 running 孤儿 → 秒退点。
+    # 优雅停机（drain）之后这里应该【一条都收不到】—— 收到就说明上次是崩溃/被 SIGKILL 了，
+    # 它现在是【兜底】，不再是常态。常态下的部署不该再产生孤儿。
+    core.reclaim_orphaned_running()
     core.start_job_workers()
     threading.Thread(target=core.reaper, daemon=True).start()
-    print("huangque-content-api on 127.0.0.1:%d  caps=%s" % (PORT, list(HANDLERS)))
-    ThreadingHTTPServer(("127.0.0.1", PORT), core.H).serve_forever()
+
+    srv = ThreadingHTTPServer(("127.0.0.1", PORT), core.H)
+    core._http_server = srv          # drain 时要 shutdown 它，停止收新提交
+    core.install_signal_handlers()   # SIGTERM → 停止收活 → 等在飞的跑完 → 退出
+
+    print("huangque-content-api on 127.0.0.1:%d  caps=%s  drain=%ds"
+          % (PORT, list(HANDLERS), core.DRAIN_TIMEOUT))
+    srv.serve_forever()
 
 
 if __name__ == "__main__":

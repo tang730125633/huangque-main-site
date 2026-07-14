@@ -22,6 +22,21 @@ import time
 from contextlib import closing
 
 
+def public_dict(row, phase=None):
+    data = {key: row[key] for key in (
+        "id", "kind", "username", "cost", "status", "result", "error", "created_at", "updated_at")}
+    data["refunded"] = bool(row["refunded"]) if "refunded" in row.keys() else False
+    if data.get("result"):
+        try:
+            data["result"] = json.loads(data["result"])
+        except Exception:
+            pass
+    terminal_phase = {"done": "done", "error": "failed", "failed": "failed"}.get(data["status"])
+    if terminal_phase is not None or phase is not None:
+        data["phase"] = terminal_phase or phase
+    return data
+
+
 def ensure_owner_column(jdb):
     """保证 jobs.owner 存在（#511）。三个服务启动时各调一次，谁先起谁建，与部署顺序无关。
 

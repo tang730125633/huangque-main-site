@@ -118,6 +118,16 @@ class HintTests(unittest.TestCase):
     def test_line2_hint_does_not_say_video(self):
         self.assertIn("text='请先上传人物照片'", SRC)
 
+    def test_hint_delegates_to_sync_function(self):
+        """updateTryonHint 不再直接操作按钮 disabled，而是调用 syncVideoGenerateButtons 统一同步。"""
+        self.assertIn("function updateTryonHint(){", SRC)
+        self.assertIn("syncVideoGenerateButtons();", SRC)
+        self.assertIn("function getTryonHintState(){", SRC)
+
+    def test_line2_hint_explains_background_not_supported(self):
+        """线路二上传了背景图时，提示应该明确说线路二不支持，引导用户切到线路一。"""
+        self.assertIn("text=hasBg?'线路二不支持背景图，请切到线路一':'请上传衣服图'", SRC)
+
 
 if __name__ == "__main__":
     unittest.main()
