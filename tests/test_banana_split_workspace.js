@@ -48,6 +48,10 @@ test('desktop divider is an accessible separator', () => {
   assert.match(html, /aria-valuemax="65"/);
 });
 
+test('workspace header omits the split instruction copy', () => {
+  assert.doesNotMatch(html, /默认 50 \/ 50 · 可拖动调整/);
+});
+
 test('results pane offers accessible recent generated and recent works tabs', () => {
   assert.match(html, /id="recentGeneratedTab"[^>]*role="tab"[^>]*>最近生成<\/button>/);
   assert.match(html, /id="recentWorksTab"[^>]*role="tab"[^>]*>最近作品<\/button>/);
