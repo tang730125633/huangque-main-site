@@ -45,7 +45,10 @@ class ContentDomainTests(unittest.TestCase):
         # 优雅停机(drain_and_exit/install_signal_handlers)：SIGTERM → 停收新活 → 等在飞任务跑完 → 退出。
         #   属【进程与任务生命周期】，和 reaper / reclaim_orphaned_running 是同一类，合理留 core。
         #   （线上 53 条任务死于「服务重启中断」—— 部署直接 SIGKILL 掉在飞任务。）
-        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1600)
+        # 任务心跳(_start_job_heartbeat)：跑着的时候每 30s 刷 jobs.updated_at，让 reaper 的
+        #   「没心跳」真的等于「worker 死了」。同属任务生命周期，紧挨 reaper —— 它俩是一对。
+        #   （线上 110 条任务被 reaper 误判「生成超时」，用户白等 2655 分钟。）
+        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1650)
 
     def test_content_api_reclaims_orphans_on_startup(self):
         # 防回归：孤儿回收必须挂在真入口 content_api.main（服务走 content_api.py，

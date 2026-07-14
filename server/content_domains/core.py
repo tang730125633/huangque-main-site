@@ -217,6 +217,8 @@ VIDEO_GEN_DEADLINE = _env_positive_int("VIDEO_GEN_DEADLINE", 900)
 # 还在跑上游照样收钱(口播原来就这样：中转死线 1200s、reaper 宽限却 540s)。多的 300s 给轮询之外的
 # 上传/下载/烧字幕/混 BGM —— 那些阶段不刷 updated_at。
 VIDEO_REAPER_GRACE = VIDEO_GEN_DEADLINE + 300
+# 没登记的 kind 用它 —— 绝不能是 0（见 reaper 里的注释：0 的语义是「立刻杀」）。
+KIND_GRACE_DEFAULT = _env_positive_int("KIND_GRACE_DEFAULT", 900)
 KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "image": 900, "collect": 1200,
               "cinematic": VIDEO_REAPER_GRACE, "avatar": 300}
 # ⚠️ tryon 【不】跟着 15 分钟走：线上实测线路一中位 909s、**p90 1612s(27 分钟)**。
@@ -930,6 +932,43 @@ def _mark_video_asset_failed(job_id, kind, error):
     except Exception:
         pass
 
+# ============ 任务心跳：让 reaper 的信号是真的 ============
+#
+# reaper 判的是「多久没心跳」（jobs.updated_at）。但我们的代码在长操作期间【根本不发心跳】：
+#   * HeyGen 轮询（最长 900s，循环里一次 UPDATE 都没有）
+#   * 烧字幕（whisper 跑 CPU，几分钟）
+#   * 生图的 HTTP 调用、成片下载
+# 于是 reaper 看到「这么久没动静」，就当 worker 死了，把【还在正常干活】的任务杀掉。
+#
+# 线上近 30 天被 reaper 误判「生成超时」的：video 45、xiaole_video 25、image 17、
+# collect 7、tryon 3 —— 用户为此白等了 2655 分钟（44 小时），然后看到「生成超时，已退点」。
+#
+# 修法【不是】把 grace 调宽（那只是让误杀晚一点发生），而是让 worker 真的发心跳 ——
+# 这样「没心跳」才真的等于「worker 死了」。
+#
+# ⚠️ 心跳只证明【worker 还活着】，不证明【任务会成功】。任务的时间上限仍然由各引擎自己的
+# 死线兜住（VIDEO_GEN_DEADLINE / WS_DEADLINE / 各种 IMG_DEADLINE）—— 那些到点会抛一个
+# 说得清的错。别因为有了心跳就把死线删了，否则一个真的卡死的上游会让任务永远挂着。
+JOB_HEARTBEAT_INTERVAL = _env_positive_int("CONTENT_JOB_HEARTBEAT", 30)
+
+
+def _start_job_heartbeat(job_id):
+    """开一个后台线程，任务跑着的时候每 30 秒刷一次 jobs.updated_at。返回 stop()。"""
+    stop = threading.Event()
+
+    def beat():
+        while not stop.wait(JOB_HEARTBEAT_INTERVAL):
+            try:
+                with closing(jdb()) as c:
+                    c.execute("UPDATE jobs SET updated_at=? WHERE id=? AND status='running'",
+                              (int(time.time()), job_id))
+                    c.commit()
+            except Exception:
+                pass   # 心跳失败不该影响任务本身 —— 最坏是 reaper 把它当成死了
+    threading.Thread(target=beat, name="job-heartbeat-%s" % job_id, daemon=True).start()
+    return stop.set
+
+
 def run_job(job_id):
     with closing(jdb()) as c:
         r = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -939,6 +978,7 @@ def run_job(job_id):
     mode = str(payload.get("mode") or "").lower()
     is_talking = (kind == "video")   # 口播=video(text/audio)
     is_image = (kind == "image")
+    stop_heartbeat = None
     try:
         # 单用户口播/生图「运行中」并发闸 + 原子抢 running：同进程锁内 count+claim，防多 worker 同时超发。
         # 整段放进 try：抢 running 那句 UPDATE 自己抛异常(SQLite 锁冲突/磁盘满)时，任务还停在 pending，
@@ -951,6 +991,9 @@ def run_job(job_id):
                 return  # 单用户生图运行闸：多的留 pending 排队
             if not jobs_store.claim_running(jdb, job_id):
                 return  # CAS 认领失败：已被别的 worker 接管或已是终态
+        # 抢到 running 才开心跳（前面几个 return 都还没认领，不该有心跳）。
+        # 有了它，reaper 的「没心跳」才真的等于「worker 死了」—— 而不是「正在轮询/烧字幕」。
+        stop_heartbeat = _start_job_heartbeat(job_id)
         if kind in {"audio", "video", "tryon", "xiaole_video", "leads", "cinematic", "avatar"}:
             payload["_username"] = username   # 少一个 kind，handler 就拿不到用户名/job_id：
             payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
@@ -976,6 +1019,8 @@ def run_job(job_id):
             _mark_video_asset_failed(job_id, kind, e)
         _refund_once(job_id, username, cost)  # 幂等：最多退一次
     finally:
+        if stop_heartbeat:
+            stop_heartbeat()   # ⚠️ 必须停 —— 否则每跑一个任务泄漏一个线程，而且它会一直把已终态的任务刷成「活着」
         if is_talking or is_image:
             try:
                 _recover_pending_jobs()  # 口播/生图跑完→腾出该用户运行槽，立刻重排排队中的同类(+30s 扫描兜底)
@@ -990,7 +1035,11 @@ def reaper():
             with closing(jdb()) as c:
                 stuck = c.execute("SELECT id, username, cost, kind, payload, updated_at FROM jobs WHERE status='running' AND updated_at < ?", (cutoff,)).fetchall()
             for r in stuck:
-                grace = KIND_GRACE.get(r["kind"], 0)
+                # ⚠️ 默认值【不能是 0】—— grace=0 会走到下面的 `if grace and ...` 判假，
+                # 直接按 360s 的 cutoff 把任务杀掉。也就是说：一个新 kind 忘了在 KIND_GRACE 里
+                # 登记，它就只有 6 分钟寿命。（audio/copy/leads/dl 至今都不在表里，只是它们跑得快，
+                # 够不着 6 分钟才没出事 —— 这是个潜伏雷。）
+                grace = KIND_GRACE.get(r["kind"], KIND_GRACE_DEFAULT)
                 if r["kind"] == "video":
                     # 口播/动作模仿统一到 VIDEO_REAPER_GRACE。原「motion 40 分钟/口播 9 分钟」两套数：
                     # motion 40 分钟是当年必回退泽龙(20~37 分钟)时定的，去线路化走 WaveSpeed 后已不需要；
