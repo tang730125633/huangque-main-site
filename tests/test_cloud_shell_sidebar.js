@@ -5,6 +5,7 @@ const test = require('node:test');
 
 const root = path.resolve(__dirname, '..');
 const shell = fs.readFileSync(path.join(root, 'site/workbench/cloud-shell.js'), 'utf8');
+const workflow = fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8');
 
 function readNavDisplayMode() {
   const match = shell.match(/function navDisplayMode\(active,narrow\)\{[^}]+\}/);
@@ -49,4 +50,13 @@ test('compact labels are bound to a floating hover and focus tooltip', () => {
   assert.match(shell, /mouseenter/);
   assert.match(shell, /focusin/);
   assert.match(shell, /bindNavTooltips\(aside\)/);
+});
+
+test('compact mode keeps the logout control reachable', () => {
+  assert.match(shell, /class="hq-user-logout" data-logout="1"/);
+  assert.match(shell, /\.hq-aside-compact button\.hq-user-logout\{display:flex!important/);
+});
+
+test('CI runs the compact sidebar regression suite', () => {
+  assert.match(workflow, /node tests\/test_cloud_shell_sidebar\.js/);
 });
