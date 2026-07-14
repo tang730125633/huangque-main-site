@@ -474,7 +474,7 @@
 
 <script src="../assets/cloud.js?v=8"></script>
 <script src="cloud-shell.js?v=302ad2ce"></script>
-<script src="canvas-collab-sync.js?v=6d8f9ebb"></script>
+<script src="canvas-collab-sync.js?v=d0a1fe63"></script>
 <script>
 /* 节点生产画布：文本→反推→作图 节点图，拖动/连线/调参/并行运行。复用 /api/gen/reverse|banana|image + 轮询。 */
 (function(){
@@ -506,6 +506,7 @@
     try{ sessionStorage.setItem(key,value); }catch(e){}
     return value;
   })();
+  var collabNodeSeed='node'+(window.crypto&&window.crypto.randomUUID?window.crypto.randomUUID().replace(/-/g,''):Date.now().toString(36)+Math.random().toString(36).slice(2,14));
   function tok(){ return '__cookie__'; }
   function authJson(path, opts){
     opts=opts||{};
@@ -1069,12 +1070,27 @@
         currentCollabMembers=board.members||currentCollabMembers;
         rememberCollabBoard(board);
       },
+      onRole:function(role){
+        currentCollabRole=role||currentCollabRole;
+        setEditorReadonly(!canEditCanvas());
+        setSaveState(canEditCanvas()?'saved':'readonly');
+      },
       onSnapshot:function(next){ applySyncedSnapshot(next,'协作内容已同步'); },
       onPoll:function(data){ setCollabOnlineCount(data.online_count); },
       onError:function(err,phase){
         if(phase==='save'){
           setSaveState('reconnecting');
           updateState((err&&err.message)||'协作同步暂时中断，正在重连');
+        }else if(phase==='save-permanent'){
+          if(err&&err.status===403){
+            currentCollabRole='viewer';
+            setEditorReadonly(true);
+            setSaveState('readonly');
+            updateState('编辑权限已变更为只读');
+          }else{
+            setSaveState('error');
+            updateState((err&&err.message)||'协作内容无法保存');
+          }
         }
       }
     });
@@ -2072,7 +2088,7 @@
     list.forEach(function(n){
       var data=cloneData(n);
       var oldId=data.id;
-      data.id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabClientId,nid+1):'n'+(nid+1);
+      data.id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabNodeSeed,nid+1):'n'+(nid+1);
       data.x=target.x+((n.x||0)-minX);
       data.y=target.y+((n.y||0)-minY);
       idMap[oldId]=data.id;
@@ -2162,7 +2178,7 @@
 
   // ---------- 建节点 ----------
   function addNode(type, x, y, data){
-    var t=TYPE[type], nextNid=++nid, id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabClientId,nextNid):'n'+nextNid;
+    var t=TYPE[type], nextNid=++nid, id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabNodeSeed,nextNid):'n'+nextNid;
     if(data&&data.id){ id=data.id; var m=String(id).match(/^n(\d+)$/); if(m) nid=Math.max(nid,parseInt(m[1],10)); }
     var node={ id:id, type:type, x:(x==null?60+((nid*30)%400):x), y:(y==null?50+((nid*40)%300):y), collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',channel:'grok',ratio:'16:9',duration:'5',quality:'hd',title:'',remark:''},(data&&data.params)||{}), outputs:cloneData((data&&data.outputs)||{}), image:(data&&data.image)||null };
     var el=document.createElement('div'); el.className='nc-node'; el.style.left=node.x+'px'; el.style.top=node.y+'px';
@@ -2482,7 +2498,7 @@
       var base=selectedNode&&nodes[selectedNode]?{x:nodes[selectedNode].x+40,y:nodes[selectedNode].y+40}:{x:canvas.scrollLeft/zoom+90,y:canvas.scrollTop/zoom+90};
       copied.nodes.forEach(function(n){
         var data=cloneData(n), oldId=data.id;
-        data.id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabClientId,nid+1):'n'+(nid+1);
+        data.id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabNodeSeed,nid+1):'n'+(nid+1);
         data.x=Math.max(0,base.x+((n.x||0)-minX));
         data.y=Math.max(0,base.y+((n.y||0)-minY));
         idMap[oldId]=data.id;

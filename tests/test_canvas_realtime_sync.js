@@ -111,6 +111,11 @@ function testBasicDiff() {
   const right = sync.makeNodeId('client-b', 7);
   assert.notEqual(left, right);
   assert.match(left, /^n_clienta_7$/);
+  assert.notEqual(
+    sync.makeNodeId('node-same-time-random-a', 1),
+    sync.makeNodeId('node-same-time-random-b', 1),
+    'long per-page seeds must retain random entropy',
+  );
 }
 
 {
@@ -351,12 +356,13 @@ async function testControllerSerializesPollBeforeSave() {
   const order = [];
   const pollRequest = deferred();
   const saveRequest = deferred();
-  let current = snap([node('n1')]);
+  let current = snap([node('n1', { x: 0, y: 0 })]);
+  let sentBatch = null;
   const controller = sync.createController({
     clientId: 'client-a',
     transport: {
       sync() { order.push('sync'); return pollRequest.promise; },
-      save() { order.push('save'); return saveRequest.promise; },
+      save(boardId, batch) { order.push('save'); sentBatch = batch; return saveRequest.promise; },
     },
     getSnapshot: () => current,
     onSnapshot: (next) => { current = next; },
@@ -365,19 +371,74 @@ async function testControllerSerializesPollBeforeSave() {
 
   controller.start({ boardId: 'board-a', version: 1, role: 'editor', baseSnapshot: current });
   controller.poll();
-  current = snap([node('n1', { x: 45 })]);
+  current = snap([node('n1', { x: 0, y: 45 })]);
   controller.save(current);
   assert.deepEqual(order, ['sync']);
   assert.equal(controller.getState().pending, true);
 
-  pollRequest.resolve({ version: 1, batches: [] });
-  await flushPromises();
-  assert.deepEqual(order, ['sync', 'save']);
-  saveRequest.resolve({
+  pollRequest.resolve({
     version: 2,
-    board: { id: 'board-a', version: 2, role: 'editor', data: current },
+    role: 'editor',
+    batches: [{ client_id: 'peer', ops: [{ type: 'node.patch', id: 'n1', fields: { x: 80 } }] }],
   });
   await flushPromises();
+  assert.deepEqual(order, ['sync', 'save']);
+  assert.deepEqual(sentBatch.ops, [{ type: 'node.patch', id: 'n1', fields: { y: 45 } }], 'queued save must not write the old remote x value back');
+  saveRequest.resolve({
+    version: 3,
+    board: { id: 'board-a', version: 3, role: 'editor', data: current },
+  });
+  await flushPromises();
+}
+
+async function testControllerStopsPermanentClientErrors() {
+  const saves = [];
+  const retries = [];
+  let current = snap([node('n1')]);
+  const controller = sync.createController({
+    clientId: 'client-a',
+    transport: {
+      save(boardId, batch) { const request = deferred(); saves.push({ boardId, batch, request }); return request.promise; },
+      sync() { return Promise.resolve({ version: 1, role: 'viewer', batches: [] }); },
+    },
+    getSnapshot: () => current,
+    scheduleRetry(fn) { retries.push(fn); return fn; },
+    cancelRetry() {},
+  });
+  controller.start({ boardId: 'board-a', version: 1, role: 'editor', baseSnapshot: current });
+  current = snap([node('n1', { x: 20 })]);
+  controller.save(current);
+  const forbidden = new Error('forbidden');
+  forbidden.status = 403;
+  saves[0].request.reject(forbidden);
+  await flushPromises();
+  assert.equal(retries.length, 0);
+  assert.equal(controller.getState().saving, false);
+  assert.equal(controller.getState().pending, false);
+}
+
+async function testControllerDropsQueuedEditsAfterRoleDowngrade() {
+  const pollRequest = deferred();
+  let saveCalls = 0;
+  let current = snap([node('n1', { x: 0 })]);
+  const controller = sync.createController({
+    clientId: 'client-a',
+    transport: {
+      sync() { return pollRequest.promise; },
+      save() { saveCalls += 1; return Promise.reject(new Error('must not save')); },
+    },
+    getSnapshot: () => current,
+    onSnapshot: (next) => { current = next; },
+  });
+  controller.start({ boardId: 'board-a', version: 1, role: 'editor', baseSnapshot: current });
+  controller.poll();
+  current = snap([node('n1', { x: 25 })]);
+  controller.save(current);
+  pollRequest.resolve({ version: 1, role: 'viewer', batches: [] });
+  await flushPromises();
+  assert.equal(saveCalls, 0);
+  assert.equal(controller.getState().pending, false);
+  assert.equal(current.nodes[0].x, 0, 'viewer downgrade discards unsent local edits');
 }
 
 function testCanvasIntegration() {
@@ -404,7 +465,8 @@ function testCanvasIntegration() {
   assert.match(canvasHtml, /function finish\(\)\{\s*if\(!canEditCanvas\(\)\)/);
   assert.match(canvasHtml, /\/sync\?since=/);
   assert.match(canvasHtml, /\/presence'/);
-  assert.match(canvasHtml, /makeNodeId\(collabClientId/);
+  assert.match(canvasHtml, /collabNodeSeed='node'/);
+  assert.ok((canvasHtml.match(/makeNodeId\(collabNodeSeed/g) || []).length >= 3);
   assert.match(canvasHtml, /id="ncOnlineState"/);
   assert.match(canvasHtml, /currentBoardScope==='collab'\?'已同步':'已保存'/);
   assert.match(canvasHtml, /currentBoardScope==='collab'\?'同步失败':'保存失败'/);
@@ -420,6 +482,8 @@ Promise.resolve()
   .then(testControllerInvalidatesOldCallbacks)
   .then(testControllerResetAndViewerMerge)
   .then(testControllerSerializesPollBeforeSave)
+  .then(testControllerStopsPermanentClientErrors)
+  .then(testControllerDropsQueuedEditsAfterRoleDowngrade)
   .then(testCanvasIntegration)
   .then(() => console.log('canvas realtime sync helpers: pass'))
   .catch((error) => {

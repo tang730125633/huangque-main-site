@@ -120,7 +120,7 @@ class AuthCanvasCollabTests(unittest.TestCase):
     def _create_board(self):
         return self._post(
             "/api/auth/canvas/boards",
-            {"name": "Launch Flow", "data": {"nodes": [{"id": "n1"}], "edges": []}},
+            {"name": "Launch Flow", "data": {"nodes": [{"id": "n1", "type": "text"}], "edges": []}},
         )["board"]
 
     def test_owner_creates_lists_and_reads_canvas_board(self):
@@ -169,7 +169,7 @@ class AuthCanvasCollabTests(unittest.TestCase):
 
         saved = self._post(
             "/api/auth/canvas/boards/%s/save" % board["id"],
-            {"version": 1, "data": {"nodes": [{"id": "n2"}], "edges": []}},
+            {"version": 1, "data": {"nodes": [{"id": "n2", "type": "text"}], "edges": []}},
             editor_client,
         )
         self.assertEqual(saved["board"]["version"], 2)
@@ -198,7 +198,7 @@ class AuthCanvasCollabTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             self._post(
                 "/api/auth/canvas/boards/%s/save" % board["id"],
-                {"version": 1, "data": {"nodes": [{"id": "blocked"}]}},
+                {"version": 1, "data": {"nodes": [{"id": "blocked", "type": "text"}], "edges": []}},
                 viewer_client,
             )
 
@@ -213,7 +213,7 @@ class AuthCanvasCollabTests(unittest.TestCase):
             board["id"],
             "owner-create-edge",
             [
-                {"type": "node.create", "node": {"id": "n2", "title": "Second", "x": 2}},
+                {"type": "node.create", "node": {"id": "n2", "type": "text", "title": "Second", "x": 2}},
                 {
                     "type": "edge.create",
                     "edge": {
@@ -276,7 +276,7 @@ class AuthCanvasCollabTests(unittest.TestCase):
                         "outputs": {"image": "old.png", "video": "old.mp4"},
                     },
                 },
-                {"type": "node.create", "node": {"id": "n2"}},
+                {"type": "node.create", "node": {"id": "n2", "type": "text"}},
                 {
                     "type": "edge.create",
                     "edge": {
@@ -383,7 +383,7 @@ class AuthCanvasCollabTests(unittest.TestCase):
         self._ops(
             board["id"],
             "owner-v4",
-            [{"type": "node.create", "node": {"id": "n2"}}],
+            [{"type": "node.create", "node": {"id": "n2", "type": "text"}}],
             base_version=3,
         )
         duplicate = self._ops(
@@ -403,7 +403,7 @@ class AuthCanvasCollabTests(unittest.TestCase):
         board = self._create_board()
         self._post(
             "/api/auth/canvas/boards/%s/save" % board["id"],
-            {"version": 1, "data": {"nodes": [{"id": "saved"}], "edges": []}},
+            {"version": 1, "data": {"nodes": [{"id": "saved", "type": "text"}], "edges": []}},
         )
 
         synced = self._get("/api/auth/canvas/boards/%s/sync?since=1" % board["id"])
@@ -416,7 +416,7 @@ class AuthCanvasCollabTests(unittest.TestCase):
             board["id"],
             "create",
             [
-                {"type": "node.create", "node": {"id": "n2", "x": 1}},
+                {"type": "node.create", "node": {"id": "n2", "type": "text", "x": 1}},
                 {
                     "type": "edge.create",
                     "edge": {
@@ -486,6 +486,25 @@ class AuthCanvasCollabTests(unittest.TestCase):
             self._ops(board["id"], "bad", [{"type": "node.patch", "fields": {"x": 1}}])
         self.assertEqual(malformed.exception.code, 400)
 
+        with self.assertRaises(urllib.error.HTTPError) as invalid_type:
+            self._ops(board["id"], "bad-type", [{"type": "node.create", "node": {"id": "bad", "type": "script"}}])
+        self.assertEqual(invalid_type.exception.code, 400)
+
+        with self.assertRaises(urllib.error.HTTPError) as unsafe_id:
+            self._ops(board["id"], "unsafe-id", [{"type": "node.create", "node": {"id": "__proto__", "type": "text"}}])
+        self.assertEqual(unsafe_id.exception.code, 400)
+
+        with self.assertRaises(urllib.error.HTTPError) as patched_type:
+            self._ops(board["id"], "patch-type", [{"type": "node.patch", "id": "n1", "fields": {"type": "script"}}])
+        self.assertEqual(patched_type.exception.code, 400)
+
+        with self.assertRaises(urllib.error.HTTPError) as unsafe_full_save:
+            self._post(
+                "/api/auth/canvas/boards/%s/save" % board["id"],
+                {"version": 1, "data": {"nodes": [{"id": "__proto__", "type": "text"}], "edges": []}},
+            )
+        self.assertEqual(unsafe_full_save.exception.code, 400)
+
         with self.assertRaises(urllib.error.HTTPError) as too_many:
             self._ops(board["id"], "too-many", [{"type": "board.rename", "name": "x"}] * 201)
         self.assertEqual(too_many.exception.code, 413)
@@ -503,6 +522,48 @@ class AuthCanvasCollabTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as stranger_sync:
             self._get("/api/auth/canvas/boards/%s/sync?since=1" % board["id"], stranger_client)
         self.assertEqual(stranger_sync.exception.code, 404)
+
+    def test_sync_caps_history_and_reports_current_role(self):
+        board = self._create_board()
+        old_limit = self.auth.CANVAS_SYNC_MAX_BATCHES
+        old_byte_limit = self.auth.CANVAS_SYNC_MAX_OPS_BYTES
+        self.auth.CANVAS_SYNC_MAX_BATCHES = 2
+        try:
+            for index in range(3):
+                self._ops(
+                    board["id"],
+                    "cap-%d" % index,
+                    [{"type": "board.rename", "name": "Cap %d" % index}],
+                    base_version=index + 1,
+                )
+            synced = self._get("/api/auth/canvas/boards/%s/sync?since=1" % board["id"])
+            self.assertTrue(synced["reset"])
+            self.assertEqual(synced["batches"], [])
+            self.assertEqual(synced["role"], "owner")
+            self.assertEqual(synced["board"]["version"], 4)
+
+            self.auth.CANVAS_SYNC_MAX_BATCHES = 100
+            self.auth.CANVAS_SYNC_MAX_OPS_BYTES = 8
+            byte_capped = self._get("/api/auth/canvas/boards/%s/sync?since=3" % board["id"])
+            self.assertTrue(byte_capped["reset"])
+            self.assertEqual(byte_capped["batches"], [])
+        finally:
+            self.auth.CANVAS_SYNC_MAX_BATCHES = old_limit
+            self.auth.CANVAS_SYNC_MAX_OPS_BYTES = old_byte_limit
+
+    def test_sync_reports_member_role_downgrade_without_board_version_change(self):
+        board = self._create_board()
+        self._invite(board, "editor", "editor")
+        editor_client = self._login_client("editor")
+        before = self._get("/api/auth/canvas/boards/%s/sync?since=1" % board["id"], editor_client)
+        self.assertEqual(before["role"], "editor")
+        self._post(
+            "/api/auth/canvas/boards/%s/members" % board["id"],
+            {"account_id": self._account_id("editor"), "role": "viewer"},
+        )
+        after = self._get("/api/auth/canvas/boards/%s/sync?since=1" % board["id"], editor_client)
+        self.assertEqual(after["role"], "viewer")
+        self.assertEqual(after["version"], 1)
 
     def test_ops_reject_oversized_serialized_log_without_committing(self):
         board = self._create_board()
@@ -532,6 +593,23 @@ class AuthCanvasCollabTests(unittest.TestCase):
         handler = object.__new__(self.auth.H)
         handler.path = "/api/auth/canvas/boards/board-id/ops"
         handler.headers = {"Content-Length": str(self.auth.CANVAS_OPS_MAX_BYTES + 1)}
+        handler.rfile = UnreadableBody()
+        handler._user = lambda: {"username": "owner"}
+        handler._send = lambda code, payload: sent.append((code, payload))
+
+        self.auth.H.do_POST(handler)
+
+        self.assertEqual(sent[0][0], 413)
+
+    def test_presence_rejects_content_length_before_reading_body(self):
+        class UnreadableBody:
+            def read(self, _size=-1):
+                raise AssertionError("oversized /presence body must not be read")
+
+        sent = []
+        handler = object.__new__(self.auth.H)
+        handler.path = "/api/auth/canvas/boards/board-id/presence"
+        handler.headers = {"Content-Length": str(self.auth.CANVAS_PRESENCE_MAX_BYTES + 1)}
         handler.rfile = UnreadableBody()
         handler._user = lambda: {"username": "owner"}
         handler._send = lambda code, payload: sent.append((code, payload))

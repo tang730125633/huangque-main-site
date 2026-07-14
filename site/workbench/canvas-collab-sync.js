@@ -126,7 +126,8 @@
   }
 
   function makeNodeId(clientId,counter){
-    var safe=String(clientId||'client').toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,12)||'client';
+    var raw=String(clientId||'client').toLowerCase().replace(/[^a-z0-9]/g,'')||'client';
+    var safe=raw.slice(0,48);
     return 'n_'+safe+'_'+Math.max(1,Number(counter)||1);
   }
 
@@ -241,6 +242,16 @@
 
     function failSave(request,error){
       if(!matches(request)||activeBatch!==request) return;
+      var status=Number(error&&error.status)||0;
+      if(status>=400&&status<500&&status!==408&&status!==429){
+        clearRetry();
+        activeBatch=null;
+        pendingSave=null;
+        retryAttempt=0;
+        if(options.onError) options.onError(error,'save-permanent');
+        notifyState();
+        return;
+      }
       retryAttempt++;
       clearRetry();
       if(options.onError) options.onError(error,'save');
@@ -324,7 +335,8 @@
     function acceptPoll(request,data){
       if(!matches(request)||pollRequest!==request) return {ignored:true};
       var current=options.getSnapshot?options.getSnapshot():session.baseSnapshot;
-      var nextBase, next, changed=false;
+      var nextBase, next, changed=false, previousRole=session.role;
+      if(data&&data.role) session.role=data.role;
       if(data&&data.board&&data.board.role) session.role=data.board.role;
       if(data&&data.reset&&data.board&&data.board.data){
         nextBase=clone(data.board.data);
@@ -338,6 +350,10 @@
       else next=clone(nextBase);
       session.baseSnapshot=nextBase;
       session.version=Math.max(session.version,Number(data&&data.version)||Number(data&&data.board&&data.board.version)||0);
+      if(previousRole!==session.role&&!canEdit()) changed=true;
+      if(!canEdit()) pendingSave=null;
+      else if(pendingSave) pendingSave.snapshot=clone(next);
+      if(previousRole!==session.role&&options.onRole) options.onRole(session.role,previousRole);
       if(data&&data.board&&options.onBoard) options.onBoard(clone(data.board),data);
       if(changed&&options.onSnapshot) options.onSnapshot(clone(next),{source:'poll',reset:!!(data&&data.reset)});
       if(options.onPoll) options.onPoll(data||{},changed);

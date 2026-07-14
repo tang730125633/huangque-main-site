@@ -28,6 +28,10 @@ CANVAS_DATA_MAX_BYTES = int(os.environ.get("HQ_CANVAS_DATA_MAX_BYTES", str(6 * 1
 CANVAS_ROLES = {"viewer", "editor"}
 CANVAS_OPS_MAX_PER_BATCH = 200
 CANVAS_OPS_MAX_BYTES = int(os.environ.get("HQ_CANVAS_OPS_MAX_BYTES", str(1024 * 1024)))
+CANVAS_SYNC_MAX_BATCHES = int(os.environ.get("HQ_CANVAS_SYNC_MAX_BATCHES", "100"))
+CANVAS_SYNC_MAX_OPS_BYTES = int(os.environ.get("HQ_CANVAS_SYNC_MAX_OPS_BYTES", str(2 * 1024 * 1024)))
+CANVAS_PRESENCE_MAX_BYTES = 4096
+CANVAS_NODE_TYPES = {"text", "image", "reverse", "gen", "video"}
 CANVAS_OPS_RETAINED_BATCHES = 1000
 CANVAS_PRESENCE_WINDOW_SECONDS = 30
 
@@ -389,11 +393,34 @@ def normalize_canvas_role(role):
         return None
     return role
 
+def validate_canvas_data(data):
+    if not isinstance(data, dict):
+        return "bad_data"
+    nodes = data.get("nodes", [])
+    edges = data.get("edges", [])
+    if not isinstance(nodes, list) or not isinstance(edges, list):
+        return "bad_data"
+    node_ids = set()
+    for node in nodes:
+        if (not isinstance(node, dict) or not valid_canvas_node_id(node.get("id"))
+                or node.get("type") not in CANVAS_NODE_TYPES or node["id"] in node_ids):
+            return "bad_data"
+        node_ids.add(node["id"])
+    for edge in edges:
+        if canvas_edge_key(edge) is None:
+            return "bad_data"
+        if edge["from"]["node"] not in node_ids or edge["to"]["node"] not in node_ids:
+            return "bad_data"
+    return None
+
 def pack_canvas_data(data):
     if data is None:
         data = {}
     if not isinstance(data, dict):
         return None, "bad_data"
+    validation_error = validate_canvas_data(data)
+    if validation_error:
+        return None, validation_error
     try:
         raw = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     except Exception:
@@ -570,6 +597,11 @@ def save_canvas_board(username, board_id, payload):
     finally:
         c.close()
 
+def valid_canvas_node_id(value):
+    return (isinstance(value, str) and 1 <= len(value) <= 64
+            and value[0].isascii() and value[0].isalnum()
+            and all(char.isascii() and (char.isalnum() or char in "_-") for char in value))
+
 def canvas_edge_key(edge):
     if not isinstance(edge, dict):
         return None
@@ -578,7 +610,8 @@ def canvas_edge_key(edge):
     if not isinstance(start, dict) or not isinstance(end, dict):
         return None
     values = (start.get("node"), start.get("port"), end.get("node"), end.get("port"))
-    if any(not isinstance(value, str) or not value for value in values):
+    if (not valid_canvas_node_id(values[0]) or not valid_canvas_node_id(values[2])
+            or any(not isinstance(value, str) or not value for value in (values[1], values[3]))):
         return None
     return "%s:%s->%s:%s" % values
 
@@ -610,17 +643,18 @@ def normalize_canvas_ops_payload(payload):
         kind = op.get("type")
         if kind == "node.create":
             node = op.get("node")
-            if not isinstance(node, dict) or not isinstance(node.get("id"), str) or not node["id"]:
+            if (not isinstance(node, dict) or not valid_canvas_node_id(node.get("id"))
+                    or node.get("type") not in CANVAS_NODE_TYPES):
                 return None, "bad_op"
             normalized.append({"type": kind, "node": node})
         elif kind == "node.patch":
             fields = op.get("fields")
-            if (not isinstance(op.get("id"), str) or not op["id"] or not isinstance(fields, dict)
-                    or not fields or "id" in fields):
+            if (not valid_canvas_node_id(op.get("id")) or not isinstance(fields, dict)
+                    or not fields or "id" in fields or "type" in fields):
                 return None, "bad_op"
             normalized.append({"type": kind, "id": op["id"], "fields": fields})
         elif kind == "node.delete":
-            if not isinstance(op.get("id"), str) or not op["id"]:
+            if not valid_canvas_node_id(op.get("id")):
                 return None, "bad_op"
             normalized.append({"type": kind, "id": op["id"]})
         elif kind == "edge.create":
@@ -825,19 +859,34 @@ def sync_canvas_ops(username, board_id, since_version):
         online_count = canvas_online_count(c, board_id)
         batches = []
         if not reset:
-            rows = c.execute("SELECT * FROM canvas_ops WHERE board_id=? AND version>? ORDER BY version ASC",
-                             (board_id, since_version)).fetchall()
+            cursor = c.execute("SELECT * FROM canvas_ops WHERE board_id=? AND version>? ORDER BY version ASC LIMIT ?",
+                               (board_id, since_version, CANVAS_SYNC_MAX_BATCHES + 1))
             expected_version = since_version + 1
-            for item in rows:
+            response_bytes = 0
+            batch_count = 0
+            while True:
+                item = cursor.fetchone()
+                if item is None:
+                    break
+                batch_count += 1
+                if batch_count > CANVAS_SYNC_MAX_BATCHES:
+                    reset = True
+                    batches = []
+                    break
                 if int(item["version"]) != expected_version:
                     reset = True
+                    break
+                response_bytes += len((item["ops_json"] or "").encode("utf-8"))
+                if response_bytes > CANVAS_SYNC_MAX_OPS_BYTES:
+                    reset = True
+                    batches = []
                     break
                 batches.append(public_canvas_batch(item))
                 expected_version += 1
             if expected_version != current_version + 1:
                 reset = True
                 batches = []
-        result = {"version": current_version, "batches": batches, "reset": reset, "online_count": online_count}
+        result = {"version": current_version, "role": role, "batches": batches, "reset": reset, "online_count": online_count}
         if reset:
             board = public_canvas_board(row, role, include_data=True, members_count=canvas_member_count(c, board_id))
             board["members"] = list_canvas_members(c, board_id)
@@ -1790,6 +1839,8 @@ class H(BaseHTTPRequestHandler):
             if not row:
                 return self._send(401, {"detail": "未登录"})
             board_id = urllib.parse.unquote(p[len(canvas_prefix):-len("/presence")])
+            if self._content_length_exceeds(CANVAS_PRESENCE_MAX_BYTES):
+                return self._send(413, {"detail": "在线状态数据过大"})
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "request body must be valid JSON"})
