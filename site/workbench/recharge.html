@@ -77,12 +77,12 @@
     <!-- 提交信息 -->
     <div style="font-size:17px; font-weight:600; margin-bottom:14px;">提交信息</div>
     <div class="gPay" style="display:grid; gap:16px; max-width:660px; margin-bottom:28px;">
-      <div style="display:flex; align-items:center; gap:12px; padding:16px 20px; border:1px solid rgba(231,178,76,.3); border-radius:14px; background:rgba(231,178,76,.05); cursor:pointer; transition:.16s;">
+      <div data-method="wechat" style="display:flex; align-items:center; gap:12px; padding:16px 20px; border:1px solid rgba(231,178,76,.3); border-radius:14px; background:rgba(231,178,76,.05); cursor:pointer; transition:.16s;">
         <div style="width:26px; height:26px; border-radius:7px; flex:none; background:#07c160; display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:700;">微</div>
         <span style="flex:1; font-size:14.5px; font-weight:500;">微信支付</span>
         <span style="width:18px; height:18px; border-radius:50%; border:2px solid #e7b24c; display:flex; align-items:center; justify-content:center;"><span style="width:9px; height:9px; border-radius:50%; background:#e7b24c; transform:scale(1); transition:.14s;"></span></span>
       </div>
-      <div style="display:flex; align-items:center; gap:12px; padding:16px 20px; border:1px solid rgba(148,164,187,.14); border-radius:14px; background:rgba(148,164,187,.04); cursor:pointer; transition:.16s;">
+      <div data-method="alipay" style="display:flex; align-items:center; gap:12px; padding:16px 20px; border:1px solid rgba(148,164,187,.14); border-radius:14px; background:rgba(148,164,187,.04); cursor:pointer; transition:.16s;">
         <div style="width:26px; height:26px; border-radius:7px; flex:none; background:#1677ff; display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:700;">支</div>
         <span style="flex:1; font-size:14.5px; font-weight:500;">支付宝</span>
         <span style="width:18px; height:18px; border-radius:50%; border:2px solid rgba(148,164,187,.3); display:flex; align-items:center; justify-content:center;"><span style="width:9px; height:9px; border-radius:50%; background:#e7b24c; transform:scale(0); transition:.14s;"></span></span>
@@ -189,6 +189,16 @@
   </div>
 </div></div>
 
+<div id="wxpayModal" style="display:none; position:fixed; inset:0; z-index:60; background:rgba(6,10,18,.72); align-items:center; justify-content:center;">
+  <div style="background:#0f1727; border:1px solid rgba(148,164,187,.16); border-radius:18px; padding:30px 34px; text-align:center; max-width:340px;">
+    <div style="font-size:16px; font-weight:600; color:#eaf1fa; margin-bottom:6px;">微信扫码支付</div>
+    <div id="wxpayAmount" style="font-size:13px; color:#94a4bb; margin-bottom:18px;"></div>
+    <div id="wxpayQr" style="display:flex; justify-content:center; padding:14px; background:#fff; border-radius:12px; width:200px; height:200px; margin:0 auto;"></div>
+    <div id="wxpayStatus" style="font-size:13px; color:#e7b24c; margin-top:16px;">请用微信扫一扫完成支付</div>
+    <button id="wxpayClose" style="margin-top:18px; padding:9px 22px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.08); border:1px solid rgba(148,164,187,.16); border-radius:10px; cursor:pointer; font-family:inherit;">关闭</button>
+  </div>
+</div>
+<script src="qrcode.min.js?v=1"></script>
 <script src="../assets/cloud.js?v=8"></script>
 <script src="cloud-shell.js?v=302ad2ce"></script>
 <script>
@@ -239,12 +249,60 @@
   function loadOrders(){
     api('/api/auth/recharge/orders?limit=50').then(function(d){renderOrders(d.items||[])}).catch(function(e){setTip(e.message,'#f4708a')});
   }
+  // 支付方式选择(默认微信)。点方式行切换,并联动小圆点填充。
+  var payMethod='wechat';
+  Array.prototype.forEach.call(document.querySelectorAll('[data-method]'),function(row){
+    row.addEventListener('click',function(){
+      payMethod=row.getAttribute('data-method');
+      Array.prototype.forEach.call(document.querySelectorAll('[data-method]'),function(r){
+        var dot=r.querySelector('span span'); var on=(r===row);
+        if(dot) dot.style.transform=on?'scale(1)':'scale(0)';
+        r.querySelector('span:last-child').style.borderColor=on?'#e7b24c':'rgba(148,164,187,.3)';
+      });
+    });
+  });
+
+  var wxpayPoll=null;
+  function closeWxpay(){ if(wxpayPoll){clearInterval(wxpayPoll);wxpayPoll=null;} $('wxpayModal').style.display='none'; }
+  if($('wxpayClose')) $('wxpayClose').onclick=closeWxpay;
+  function pollPaid(orderId){
+    var tries=0;
+    wxpayPoll=setInterval(function(){
+      tries++;
+      if(tries>100){ closeWxpay(); return; }   // ~5分钟上限
+      api('/api/auth/recharge/orders?limit=20').then(function(d){
+        var o=(d.items||[]).filter(function(x){return x.order_id===orderId})[0];
+        if(o&&o.status==='approved'){
+          clearInterval(wxpayPoll); wxpayPoll=null;
+          $('wxpayStatus').textContent='支付成功，点数已到账 ✅'; $('wxpayStatus').style.color='#2bd576';
+          loadMe(); loadOrders();
+          setTimeout(closeWxpay,1600);
+        }
+      }).catch(function(){});
+    },3000);
+  }
+  function wxpayNative(points,amount){
+    setTip('正在生成支付二维码…','#94a4bb');
+    api('/api/auth/wxpay/native',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:points})})
+      .then(function(d){
+        setTip('','#94a4bb');
+        var qr=$('wxpayQr'); qr.innerHTML='';
+        new QRCode(qr,{text:d.code_url,width:180,height:180,correctLevel:QRCode.CorrectLevel.M});
+        $('wxpayAmount').textContent='¥'+Number(amount).toFixed(2)+' · '+points+' 点';
+        $('wxpayStatus').textContent='请用微信扫一扫完成支付'; $('wxpayStatus').style.color='#e7b24c';
+        $('wxpayModal').style.display='flex';
+        pollPaid(d.order.order_id);
+      })
+      .catch(function(e){setTip(e.message||'下单失败','#f4708a')});
+  }
   function submitOrder(btn){
-    if(!token){setTip('请先登录后再提交充值申请','#f4708a');return}
+    if(!token){setTip('请先登录后再充值','#f4708a');return}
     var points=parseInt(btn.getAttribute('data-points')||'0',10);
     var amount=parseFloat(btn.getAttribute('data-amount')||'0');
-    var note=($('rechargeNote')&&$('rechargeNote').value)||'';
     if(!points||!amount){setTip('套餐信息不完整','#f4708a');return}
+    if(payMethod==='wechat'){ wxpayNative(points,amount); return; }
+    // 支付宝暂无自动支付,走人工申请(填备注,管理员确认到账)
+    var note=($('rechargeNote')&&$('rechargeNote').value)||'';
     btn.disabled=true;
     api('/api/auth/recharge/order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:points,amount:amount,note:note})})
       .then(function(d){setTip('充值申请已提交，订单 '+(d.order&&d.order.order_id||''),'#2bd576'); loadOrders();})
