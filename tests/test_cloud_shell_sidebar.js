@@ -53,7 +53,12 @@ test('compact labels are bound to a floating hover and focus tooltip', () => {
 });
 
 test('compact mode hides the logout overlay but keeps expanded logout', () => {
+  const navDisplayMode = readNavDisplayMode();
   assert.match(shell, /class="hq-user-logout" data-logout="1"/);
+  assert.equal(navDisplayMode('inspiration', false), 'expanded');
+  assert.equal(navDisplayMode('canvas', true), 'expanded');
+  assert.match(shell, /\.hq-aside-compact \.hq-user-copy,\.hq-aside-compact \.hq-user-logout\{display:none!important/);
+  assert.doesNotMatch(shell, /['"]\.hq-user-logout\{display:none!important/);
   assert.doesNotMatch(shell, /\.hq-aside-compact button\.hq-user-logout\{display:flex!important/);
 });
 
