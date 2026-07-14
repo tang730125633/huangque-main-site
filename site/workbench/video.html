@@ -10,8 +10,9 @@
 <script src="theme-init.js?v=11eb385e"></script>
 <style>
   body{overflow:hidden}
-  .gVid{display:grid;grid-template-columns:1.45fr 1fr;gap:18px;align-items:stretch;height:calc(100vh - 150px);min-height:0;overflow:hidden}
-  .vid-card{min-height:0;border:1px solid rgba(148,164,187,.1);border-radius:18px;background:linear-gradient(165deg,rgba(16,24,39,.58),rgba(12,18,32,.46));padding:22px}
+  .hq-content[data-active="video"]{height:100%;min-height:0}
+  .gVid{display:grid;grid-template-columns:1.45fr 1fr;gap:18px;align-items:stretch;height:100%;min-height:0;overflow:hidden}
+  .vid-card{min-height:0;border:1px solid rgba(148,164,187,.1);border-radius:0;background:linear-gradient(165deg,rgba(16,24,39,.58),rgba(12,18,32,.46));padding:22px}
   .vid-main{height:100%;overflow-y:auto;overflow-x:hidden;padding-right:4px}
   .vid-main::-webkit-scrollbar{width:7px}
   .vid-main::-webkit-scrollbar-thumb{background:rgba(148,164,187,.18);border-radius:99px}
@@ -665,7 +666,7 @@
 <div id="toast" class="toast"></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=15c54def"></script>
+<script src="cloud-shell.js?v=eb74b375"></script>
 <script>
 (function(){
   var token='__cookie__';

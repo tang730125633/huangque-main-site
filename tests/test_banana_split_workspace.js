@@ -80,8 +80,8 @@ test('narrow layouts stack panes and hide the divider', () => {
   assert.match(html, /\.workspace-divider\{display:none\}/);
 });
 
-test('workspace and preview surfaces use shared theme tokens', () => {
-  assert.match(html, /\.banana-workspace\{[^}]*border:1px solid var\(--hq-border\)[^}]*background:var\(--hq-surface\)/);
+test('flush workspace keeps shared theme surfaces without an outer card border', () => {
+  assert.match(html, /\.banana-workspace\{[^}]*border:0[^}]*border-radius:0[^}]*background:var\(--hq-surface\)[^}]*box-shadow:none/);
   assert.match(html, /\.result-preview\{[^}]*background:var\(--hq-surface-soft\)/);
 });
 
