@@ -40,6 +40,18 @@ test('workspace is one frame with semantic left and right panes', () => {
   assert.match(html, /--left-pane:50%/);
 });
 
+test('workspace header aligns its divider and result tabs with both panes', () => {
+  const headerStart = html.indexOf('<header class="banana-workspace-head">');
+  const headerEnd = html.indexOf('</header>', headerStart);
+  const tabsStart = html.indexOf('<div class="result-tabs"', headerStart);
+  assert.ok(headerStart >= 0 && headerEnd > headerStart, 'workspace header must exist');
+  assert.ok(tabsStart > headerStart && tabsStart < headerEnd, 'result tabs must live in the workspace header');
+  assert.match(html, /class="workspace-head-divider"/);
+  assert.match(html, /\.banana-workspace-head\{[^}]*grid-template-columns:minmax\(0,var\(--left-pane\)\) 8px minmax\(0,1fr\)/);
+  assert.match(html, /\.workspace-head-divider\{[^}]*border-left:1px solid var\(--hq-border\)[^}]*border-right:1px solid var\(--hq-border\)/);
+  assert.match(html, /document\.querySelector\('\.banana-workspace'\)/);
+});
+
 test('desktop divider is an accessible separator', () => {
   assert.match(html, /id="workspaceDivider"/);
   assert.match(html, /role="separator"/);
