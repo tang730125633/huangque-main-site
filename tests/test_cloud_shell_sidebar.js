@@ -52,9 +52,9 @@ test('compact labels are bound to a floating hover and focus tooltip', () => {
   assert.match(shell, /bindNavTooltips\(aside\)/);
 });
 
-test('compact mode keeps the logout control reachable', () => {
+test('compact mode hides the logout overlay but keeps expanded logout', () => {
   assert.match(shell, /class="hq-user-logout" data-logout="1"/);
-  assert.match(shell, /\.hq-aside-compact button\.hq-user-logout\{display:flex!important/);
+  assert.doesNotMatch(shell, /\.hq-aside-compact button\.hq-user-logout\{display:flex!important/);
 });
 
 test('CI runs the compact sidebar regression suite', () => {
