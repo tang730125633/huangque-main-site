@@ -96,9 +96,21 @@ class DispatchPathTests(unittest.TestCase):
     def setUp(self):
         self.src = Path(video.__file__).read_text(encoding="utf-8")
 
-    def test_cinematic_also_shrinks_before_uploading_to_heygen(self):
-        """剧情视频走 HeyGen，必须把字节推过隧道 —— 它才是最需要压缩的那条路。"""
-        self.assertIn("_shrink_motion_reference(", self.src.split("def gen_cinematic")[1])
+    def test_cinematic_no_longer_shrinks(self):
+        """⚠️ 反过来了：电影化身【不再压缩】参考视频（kongli 2026-07-14 的决定）。
+
+        压缩是【重编码】（libx264 转 720p/2Mbps），画质有损 —— 而动作模仿的成片质量
+        直接取决于参考视频。换了新出境节点（~1.5 MB/s）、上传超时也放宽到 600s 之后，
+        压缩省的那点时间不值得拿画质去换。
+
+        改成【只剥音轨】：-c:v copy 只重封装，画面一帧不动，实测省 58% 的上传量
+        （HeyGen 的 cinematic_avatar 只看画面，根本不用参考视频的声音）。
+        详见 test_motion_audio.py。
+        """
+        gen = self.src.split("def gen_cinematic")[1].split(chr(10) + "def ")[0]
+        code = chr(10).join(ln for ln in gen.splitlines() if not ln.lstrip().startswith("#"))
+        self.assertNotIn("_shrink_motion_reference(", code, "还在压缩 —— 画质有损")
+        self.assertIn("_strip_audio(", code)
 
     def test_heygen_path_does_not_shrink_twice(self):
         # 分发前已经压过，HeyGen 上传处不该再压一遍（白烧一次 ffmpeg）

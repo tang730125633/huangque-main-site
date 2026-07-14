@@ -964,6 +964,114 @@ def _shrink_reference_video(ref_path):
     return out
 
 
+def _extract_reference_audio(ref_path):
+    """把参考视频的原声抽出来，返回音频文件的【相对路径】；没有音轨或抽失败 → None。
+
+    ⚠️ 必须在【剥音轨之前】调用 —— 剥完就没了。
+
+    抽不出来不算错：动作模仿本来就不依赖声音，静音成片仍然是可用的成片。
+    """
+    fp = _resolve_out_file(ref_path) if not pathlib.Path(str(ref_path)).is_absolute() else pathlib.Path(str(ref_path))
+    if not fp or not pathlib.Path(fp).is_file():
+        return None
+    out_rel = "audio/motion_src_%s.m4a" % uuid.uuid4().hex
+    out_fp = _out_path(out_rel)
+    out_fp.parent.mkdir(parents=True, exist_ok=True)
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(fp),
+           "-vn", "-c:a", "aac", "-b:a", "192k", str(out_fp)]
+    try:
+        subprocess.run(cmd, check=True, timeout=120, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if not out_fp.exists() or out_fp.stat().st_size <= 0:
+            raise RuntimeError("产物为空")
+    except Exception as e:
+        # 参考视频本来就没有音轨（很常见）也会走到这里 —— 不是错误
+        print("[motion] 参考视频没有可用音轨（或抽取失败），成片将无声: %s" % str(e)[:90], flush=True)
+        try:
+            out_fp.unlink()
+        except Exception:
+            pass
+        return None
+    return out_rel
+
+
+def _strip_audio(ref_path):
+    """把参考视频的音轨剥掉再上传。
+
+    HeyGen 的 cinematic_avatar 【只看画面】—— 它不会用参考视频的声音。音轨对它是纯浪费：
+    要经过我们那条 ~1.5 MB/s 的出境隧道推上去。剥掉能省 5~15% 的上传量，而且 100% 无损失。
+
+    ⚠️ 只重封装（-c copy），不重编码 —— 画质一帧不动，几十毫秒的事。
+    失败就原样返回：这是优化，不是正确性前提，绝不能因为剥不动就让任务失败。
+
+    ⚠️ 路径必须解析：video_files 里存的是【相对 OUT_DIR 的路径】（如 "video/xxx.mp4"），
+    而服务 CWD ≠ OUT_DIR。输入要 _resolve_out_file 解析到绝对路径、输出要 _out_path 落到
+    OUT_DIR，返回相对路径 —— 和 _extract_reference_audio / 旧 _shrink_motion_reference 一致。
+    （否则 ffmpeg 按 CWD 找不到输入，每次都静默回退，剥音轨形同虚设。）
+    """
+    fp = _resolve_out_file(ref_path)
+    if not fp:
+        return ref_path
+    out_rel = "video/motion_ref_mute_%s.mp4" % uuid.uuid4().hex
+    out_fp = _out_path(out_rel)
+    out_fp.parent.mkdir(parents=True, exist_ok=True)
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(fp),
+           "-an", "-c:v", "copy", "-movflags", "+faststart", str(out_fp)]
+    try:
+        subprocess.run(cmd, check=True, timeout=120, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if not out_fp.exists() or out_fp.stat().st_size <= 0:
+            raise RuntimeError("产物为空")
+    except Exception as e:
+        print("[motion] 参考视频剥音轨失败，原样上传: %s" % str(e)[:100], flush=True)
+        try:
+            out_fp.unlink()
+        except Exception:
+            pass
+        return ref_path
+    try:
+        before, after = fp.stat().st_size, out_fp.stat().st_size
+        print("[motion] 剥音轨 %.1fMB → %.1fMB（省 %.0f%%）"
+              % (before / 1048576.0, after / 1048576.0, 100.0 * (before - after) / max(before, 1)), flush=True)
+    except OSError:
+        pass
+    return out_rel
+
+
+def _mux_original_audio(video_file, audio_rel):
+    """把参考视频的原声合进成片。返回新的相对路径；失败 → 原样返回（成片仍可用，只是无声）。
+
+    HeyGen 的 cinematic 成片【本身没有声音】。用户上传的参考视频是有声的，成片配回原声，
+    观感上才是「同一条片子，只是换了个人演」。
+
+    时长对不齐是常态：成片是 4~15 秒（自适应向上取整），原声是参考视频的实际长度。
+    -shortest 以短的为准 —— 宁可音频末尾少一点，也不要视频尾巴上挂一段黑屏/静止。
+    """
+    vfp = _resolve_out_file(video_file)
+    afp = _resolve_out_file(audio_rel)
+    if not vfp or not afp:
+        return video_file
+    out_rel = "video/cine_snd_%s.mp4" % uuid.uuid4().hex
+    out_fp = _out_path(out_rel)
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+           "-i", str(vfp), "-i", str(afp),
+           "-map", "0:v:0", "-map", "1:a:0",
+           "-c:v", "copy",            # 画面一帧不动
+           "-c:a", "aac", "-b:a", "192k",
+           "-shortest", "-movflags", "+faststart", str(out_fp)]
+    try:
+        subprocess.run(cmd, check=True, timeout=180, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if not out_fp.exists() or out_fp.stat().st_size <= 0:
+            raise RuntimeError("产物为空")
+    except Exception as e:
+        print("[motion] 合入原声失败，保留无声成片: %s" % str(e)[:110], flush=True)
+        try:
+            out_fp.unlink()
+        except Exception:
+            pass
+        return video_file          # ⚠️ 回退：宁可无声，也不能因为配音失败就把成片丢了
+    print("[motion] 已合入参考视频的原声", flush=True)
+    return out_rel
+
+
 def _shrink_motion_reference(reference_video_file):
     """落盘后立刻压缩参考视频，返回新的相对路径（压不动就原样返回原路径）。
 
@@ -2789,7 +2897,23 @@ def gen_cinematic(payload):
     if not image_files and payload.get("reference_images"):
         image_files = [_save_data_file(i, "cine_ref", [".jpg", ".png", ".webp"])
                        for i in payload["reference_images"]]
-    video_files = [_shrink_motion_reference(f) for f in video_files if f]
+    # ⚠️ 顺序不能换：先【抽原声】，再【剥音轨】—— 剥完就抽不出来了。
+    #
+    # 为什么剥：HeyGen 的 cinematic_avatar 只看画面，它不会用参考视频的声音。音轨对它是纯浪费，
+    #   却要经过我们那条 ~1.5 MB/s 的出境隧道推上去。剥掉能省 5~15% 的上传量，100% 无损失。
+    # 为什么抽：HeyGen 的成片【本身没有声音】。把参考视频的原声配回成片，观感上才是
+    #   「同一条片子，只是换了个人演」。
+    #
+    # 原声只取【第一个】参考视频的 —— 它同时也是决定成片时长的那一个（_cinematic_duration）。
+    source_audio = _extract_reference_audio(video_files[0]) if video_files else None
+    #
+    # ⚠️ 【不压缩】（kongli 的决定，2026-07-14）。原来这里会把 >6MB 的参考视频转码成
+    # 720p/2Mbps —— 那是重编码，画质有损，而动作模仿的成片质量直接取决于参考视频。
+    # 出境隧道换了新节点后带宽是 ~1.5 MB/s，上传超时也放宽到 600s，压缩省的那点时间
+    # 不值得拿画质去换。
+    #
+    # 剥音轨【不是】压缩：-c:v copy 只重封装，画面一帧不动，几十毫秒的事。
+    video_files = [_strip_audio(f) for f in video_files if f]
     image_files = [f for f in image_files if f]
     reference_video_file = video_files[0] if video_files else None   # 资产表只存第一个（列是单值）
 
@@ -2837,7 +2961,11 @@ def gen_cinematic(payload):
             info = _heygen_poll_video(video_id, direct=True, deadline_s=HEYGEN_MOTION_DEADLINE)
             update_video_asset_phase(job_id, "downloading_video", source_video_url=info.get("video_url"))
             video_file = _download_video_file_direct(info["video_url"], "cinematic")
-            cover = _extract_first_frame_cover(video_file)
+            # 把参考视频的原声合回成片（HeyGen 的成片本身是无声的）。
+            # 合失败就保留无声成片 —— 宁可无声，也不能因为配音失败把片子丢了。
+            if source_audio:
+                video_file = _mux_original_audio(video_file, source_audio)
+            cover = _extract_first_frame_cover(video_file)   # 封面从【最终】成片抽
         except Exception as e:
             raise HeyGenBilledError("剧情视频已提交 HeyGen(video_id=%s，已扣费)，后续失败: %s"
                                     % (video_id, str(e)[:180])) from e
