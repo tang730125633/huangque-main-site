@@ -38,35 +38,61 @@ HTML = (ROOT / "site/workbench/video.html").read_text(encoding="utf-8")
 GEN = SRC.split("def gen_cinematic")[1].split("\ndef ")[0]
 
 
-class OpenModeSendsTheUserPromptVerbatimTests(unittest.TestCase):
-    def test_the_guard_is_only_appended_for_the_fixed_prompt_modes(self):
-        self.assertIn('payload["prompt"] + CINEMATIC_IDENTITY_GUARD', GEN)
-        self.assertIn('if payload.get("cine_mode") in CINEMATIC_FIXED_PROMPTS', GEN)
-        self.assertIn('else payload["prompt"]', GEN)
+class NothingIsAppendedAnyMoreTests(unittest.TestCase):
+    """payload 里的 prompt 就是发给 HeyGen 的 prompt，一个字不差。
 
-    def test_open_mode_gets_nothing_appended(self):
-        """一个字都不加。"""
-        def sent(payload):
-            m = payload.get("cine_mode")
-            return (payload["prompt"] + video.CINEMATIC_IDENTITY_GUARD
-                    if m in video.CINEMATIC_FIXED_PROMPTS else payload["prompt"])
-        self.assertEqual(sent({"cine_mode": "open", "prompt": "在海边跳舞"}), "在海边跳舞")
-
-
-class MotionKeepsTheGuardTests(unittest.TestCase):
-    """⚠️ 最要紧的一条。动作模仿是线上【唯一跑通 HeyGen 审核】的配置 ——
-    #2173 就是带着这段约束过的。别因为「开放式去掉了」就顺手把它也去掉。
+    好处：jobs.payload 里存的 prompt == HeyGen 真正收到的 prompt，
+    排查时不用再脑补「后端还偷偷加了什么」。
     """
 
-    def test_the_guard_still_exists(self):
-        self.assertIn("from the reference video", video.CINEMATIC_IDENTITY_GUARD)
-        self.assertIn("CRITICAL", video.CINEMATIC_IDENTITY_GUARD)
+    def test_gen_cinematic_sends_the_prompt_verbatim(self):
+        self.assertIn('prompt=payload["prompt"], direct=True', GEN)
+        # 只查【代码】—— 注释里为了讲清楚「原来拼的是什么」还会提到 guard 的名字
+        code = chr(10).join(ln for ln in GEN.splitlines() if not ln.lstrip().startswith("#"))
+        self.assertNotIn("CINEMATIC_IDENTITY_GUARD", code,
+                         "还在拼身份约束 —— 新的固定提示词是自包含的，会说两遍")
 
-    def test_motion_still_gets_it(self):
-        self.assertTrue(video.MOTION_PROMPT.endswith(video.CINEMATIC_IDENTITY_GUARD))
 
-    def test_the_fixed_prompt_modes_are_the_ones_that_keep_it(self):
-        self.assertIn("motion", video.CINEMATIC_FIXED_PROMPTS)
+class TheMotionPromptIsSelfContainedTests(unittest.TestCase):
+    """单人的固定提示词换成了 kongli 给的这段（2026-07-14），逐字。
+
+    它【自包含】—— 已经带了 CRITICAL 身份约束和 no extra people。所以不能再拼 guard，
+    否则同样的话说两遍。
+
+    ⚠️ 风险（已跟 kongli 说清楚，他确认要换）：里面的
+        "Do NOT copy the reference video person's appearance"
+        "not the reference person"
+    正是线上那版英文提示词的措辞 —— 战绩 5 败 1 成，被 HeyGen 的内容审核拦下。
+    被它换掉的中文版是照抄 #2173 的，那是唯一验证过能过审核的配置。真挂了，先看这里。
+    """
+
+    def test_it_is_exactly_what_kongli_gave(self):
+        self.assertEqual(
+            video.CINEMATIC_FIXED_PROMPTS["motion"],
+            "Create a realistic cinematic vertical video of the same person from the avatar photo. "
+            "Follow the uploaded reference video ONLY for body movement, pose, timing, gestures, "
+            "facial expression rhythm, framing and camera motion. CRITICAL: Keep the avatar person's "
+            "exact identity, face, hairstyle, body shape, skin tone and clothing. Do NOT copy the "
+            "reference video person's appearance, body proportions or outfit. The output must look like "
+            "the avatar person performing the reference motion, not the reference person. Smooth "
+            "realistic motion, no text, no logo, no extra people.")
+
+    def test_it_carries_its_own_identity_constraint(self):
+        """自包含 —— 不依赖任何外部拼接。"""
+        self.assertIn("CRITICAL", video.MOTION_PROMPT)
+        self.assertIn("Keep the avatar person's exact identity", video.MOTION_PROMPT)
+        self.assertIn("no extra people", video.MOTION_PROMPT)
+
+    def test_nothing_is_said_twice(self):
+        """拼了 guard 就会出现两遍 CRITICAL、两遍 no extra people。"""
+        self.assertEqual(video.MOTION_PROMPT, video.MOTION_PROMPT_BASE)
+        self.assertEqual(video.MOTION_PROMPT.count("CRITICAL"), 1)
+        self.assertEqual(video.MOTION_PROMPT.count("no extra people"), 1)
+
+    def test_duo_is_self_contained_too(self):
+        """双人现在下掉了，但开回来时不该再依赖外部拼接。"""
+        self.assertIn("CRITICAL", video.DUO_MOTION_PROMPT)
+        self.assertEqual(video.DUO_MOTION_PROMPT, video.DUO_MOTION_PROMPT_BASE)
 
 
 class TheUiNoLongerLiesTests(unittest.TestCase):

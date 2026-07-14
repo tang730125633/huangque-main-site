@@ -1151,12 +1151,32 @@ CINEMATIC_IDENTITY_GUARD = (
 # 约束」，它带着 "from the reference video" 也照样过了。所以约束不是触发点，正文才是。
 # 我一度想连约束一起重写，那是错的 —— 会把唯一一个已知能过的配置也改掉。
 
-MOTION_PROMPT_BASE = "用这个人物形象模仿视频里面的动作"
-MOTION_PROMPT = MOTION_PROMPT_BASE + CINEMATIC_IDENTITY_GUARD
+# 单人动作模仿的固定提示词（kongli 给的，2026-07-14）。逐字照放。
+#
+# ⚠️ 它是【自包含】的 —— 自带 "CRITICAL: Keep the avatar person's exact identity..." 和
+# "no extra people"。所以【不再拼】CINEMATIC_IDENTITY_GUARD，否则同样的话说两遍。
+#
+# ⚠️ 风险（已跟 kongli 说清楚，他确认要换）：里面的
+#     "Do NOT copy the reference video person's appearance"
+#     "not the reference person"
+# 正是线上那版英文提示词的措辞 —— 战绩【5 败 1 成】，被 HeyGen 的内容审核拦下
+# （网页原话 "Your content was flagged by our moderation system"）。
+# 被它换掉的中文版是照抄 #2173 的，那是【唯一验证过能过审核】的配置。真挂了，先看这里。
+MOTION_PROMPT_BASE = (
+    "Create a realistic cinematic vertical video of the same person from the avatar photo. "
+    "Follow the uploaded reference video ONLY for body movement, pose, timing, gestures, "
+    "facial expression rhythm, framing and camera motion. CRITICAL: Keep the avatar person's "
+    "exact identity, face, hairstyle, body shape, skin tone and clothing. Do NOT copy the "
+    "reference video person's appearance, body proportions or outfit. The output must look like "
+    "the avatar person performing the reference motion, not the reference person. Smooth "
+    "realistic motion, no text, no logo, no extra people."
+)
+MOTION_PROMPT = MOTION_PROMPT_BASE   # 【不拼】guard —— 它自带
 
 # 双人：同一路子的中文。⚠️ 尚未实测（双人的英文版是 0 成 2 败）。
-DUO_MOTION_PROMPT_BASE = "用这两个人物形象模仿视频里面的动作"
-DUO_MOTION_PROMPT = DUO_MOTION_PROMPT_BASE + CINEMATIC_IDENTITY_GUARD
+# 双人（已从前端下掉）。同样做成【自包含】—— 开回来时不该再依赖外部拼接。
+DUO_MOTION_PROMPT_BASE = "用这两个人物形象模仿视频里面的动作" + CINEMATIC_IDENTITY_GUARD
+DUO_MOTION_PROMPT = DUO_MOTION_PROMPT_BASE
 
 
 def _heygen_create_cinematic_video(avatar_item_id, reference_asset_id, ratio, resolution, duration,
@@ -2804,11 +2824,11 @@ def gen_cinematic(payload):
             # 「保持我的脸不变」这种话 —— 身份这件事本来就不该交给用户把关。
             # 真出现串脸，先看这里。
             #
-            # 动作模仿（写死提示词的玩法）【仍然要拼】：它是线上唯一跑通 HeyGen 审核的配置
-            # （#2173 就是带着这段约束过的），别顺手一起改了。
-            prompt=(payload["prompt"] + CINEMATIC_IDENTITY_GUARD
-                    if payload.get("cine_mode") in CINEMATIC_FIXED_PROMPTS
-                    else payload["prompt"]), direct=True,
+            # 动作模仿的新提示词是【自包含】的（自带 CRITICAL 身份约束），再拼一次就是
+            # 同样的话说两遍。所以这里【什么都不拼】——
+            #     payload 里的 prompt == HeyGen 真正收到的 prompt，一个字不差。
+            # 顺带一个好处：排查时不用再脑补「后端还偷偷加了什么」。
+            prompt=payload["prompt"], direct=True,
             enhance_prompt=payload.get("enhance_prompt")), "剧情视频")
 
         # ↓ 此刻已计费。之后任何失败都不能重发（见 HeyGenBilledError）——HeyGen 提交即扣费。
