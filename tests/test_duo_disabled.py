@@ -77,7 +77,9 @@ class TheModeItselfIsKeptTests(unittest.TestCase):
         self.assertIn("duo", video.CINEMATIC_MODES)
         self.assertEqual(video.CINEMATIC_MODE_AVATARS["duo"], 2)
         self.assertIn("duo", video.CINEMATIC_FIXED_PROMPTS)
-        self.assertEqual(video.cinematic_rate("duo"), 5)
+        # 单价跟着全站一起调到了 10（kongli 2026-07-14，原 5）。双人虽然下掉了，
+        # 单价也得跟上 —— 否则哪天开回来，卖的还是老价。
+        self.assertEqual(video.cinematic_rate("duo"), 10)
 
     def test_the_frontend_config_survives(self):
         self.assertIn("duo:   {label:'双人动作模仿'", HTML)
@@ -92,7 +94,7 @@ class SinglePersonParamsAreUntouchedTests(unittest.TestCase):
 
     def test_the_locked_params_are_unchanged(self):
         self.assertEqual(video.CINEMATIC_MOTION_RESOLUTION, "1080p")
-        self.assertEqual(video.cinematic_rate("motion"), 3)
+        self.assertEqual(video.cinematic_rate("motion"), 10)   # 3 → 10（kongli 2026-07-14）
 
     def test_the_prompt_is_still_fixed_and_not_user_supplied(self):
         """不管内容换成什么，它都得是【写死的】—— 客户端传的 prompt 一律不认。"""

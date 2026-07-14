@@ -2654,14 +2654,19 @@ CINEMATIC_COMING_SOON = {} if CINEMATIC_DUO_ENABLED else {"duo": "双人动作�
 # 用户只能换形象和参考视频；分辨率/时长/润色都不给选，也不认客户端传的值。
 CINEMATIC_MOTION_RESOLUTION = "1080p"
 
-# 每秒点数，按玩法分档。HeyGen 那边是扁平价（$7/条，与时长无关），我们按时长卖 —— 这是产品定价，不是成本。
+# 每秒点数。HeyGen 那边是扁平价（$7/条，与时长无关），我们按时长卖 —— 这是产品定价，不是成本。
 # ⚠️ 改这里等于改价：cost_of() 直接乘这个数。
+#
+# 三个玩法统一 10 点/秒（kongli 2026-07-14）。原来是 motion 3 / duo 5 / open 5 —— 分档没有成本依据
+# （HeyGen 对三者收一样的钱），却让最贵的成本档卖出了最低的价。保留 per-mode 的表结构和 env 覆盖，
+# 是为了以后想再分档时不用改代码。
+
 CINEMATIC_RATE_PER_SEC = {
-    "motion": _env_positive_int("CINEMATIC_RATE_MOTION", 3),   # 单人动作模仿
-    "duo":    _env_positive_int("CINEMATIC_RATE_DUO", 5),      # 双人动作模仿
-    "open":   _env_positive_int("CINEMATIC_RATE_OPEN", 5),     # 开放式生成
+    "motion": _env_positive_int("CINEMATIC_RATE_MOTION", 10),   # 单人动作模仿
+    "duo":    _env_positive_int("CINEMATIC_RATE_DUO", 10),      # 双人动作模仿
+    "open":   _env_positive_int("CINEMATIC_RATE_OPEN", 10),     # 开放式生成
 }
-CINEMATIC_RATE_FALLBACK = 5   # 玩法认不出来时按最贵的收，绝不按最便宜的（更不能按 0）
+CINEMATIC_RATE_FALLBACK = 10   # 玩法认不出来时按最贵的收，绝不按最便宜的（更不能按 0）
 
 
 def cinematic_rate(cine_mode):

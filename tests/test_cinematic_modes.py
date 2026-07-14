@@ -3,9 +3,12 @@
 
 原来的「AI 剧情视频」只有一种玩法（自己写提示词）。现在拆成三个：
 
-    motion 单人动作模仿  1 个形象 + 必传参考视频，提示词写死    3 点/秒
-    duo    双人动作模仿  2 个形象 + 必传参考视频，提示词写死    5 点/秒
-    open   开放式生成    1~3 个形象，自己写提示词，参考视频选填  5 点/秒
+    motion 单人动作模仿  1 个形象 + 必传参考视频，提示词写死    10 点/秒
+    duo    双人动作模仿  2 个形象 + 必传参考视频，提示词写死    10 点/秒
+    open   开放式生成    1~3 个形象，自己写提示词，参考视频选填  10 点/秒
+
+三档同价（kongli 2026-07-14，原为 3/5/5）。HeyGen 对三个玩法收的是同一个价（$7/条，
+与玩法、时长都无关），分档没有成本依据。
 
 两条最要紧的不变量：
 
@@ -18,6 +21,7 @@
    安全边界：直接 POST 一个自定义 prompt 进来，也必须被丢掉。
 """
 import importlib
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -71,35 +75,58 @@ class BillingTests(_Base):
     """按成片秒数计费。算错一次就是真金白银 —— 一条片子上游成本 $7。"""
 
     def test_rates(self):
-        self.assertEqual(video.cinematic_rate("motion"), 3)
-        self.assertEqual(video.cinematic_rate("duo"), 5)
-        self.assertEqual(video.cinematic_rate("open"), 5)
+        """三个玩法统一 10 点/秒（kongli 2026-07-14）。
+
+        原来是 motion 3 / duo 5 / open 5。分档没有成本依据 —— HeyGen 对三者收的是同一个价
+        （$7/条，与玩法和时长都无关），却让成本最高的档卖出了最低的价。
+        """
+        self.assertEqual(video.cinematic_rate("motion"), 10)
+        self.assertEqual(video.cinematic_rate("duo"), 10)
+        self.assertEqual(video.cinematic_rate("open"), 10)
 
     def test_cost_is_seconds_times_rate(self):
         # 动作模仿：时长锁死自适应 —— 参考片段 8.2s → 成片 9s
-        self.assertEqual(points.cost_of("cinematic", self.v()), 27)                       # 9 × 3
+        self.assertEqual(points.cost_of("cinematic", self.v()), 90)                        # 9 × 10
         self.assertEqual(points.cost_of("cinematic",
-                                        self.v(cine_mode="duo", avatar_ids=[1, 2])), 45)  # 9 × 5
+                                        self.v(cine_mode="duo", avatar_ids=[1, 2])), 90)   # 9 × 10
         self.assertEqual(points.cost_of("cinematic", self.v(cine_mode="open", avatar_ids=[1],
-                                                            prompt="海边跳舞", duration=12)), 60)
+                                                            prompt="海边跳舞", duration=12)), 120)
 
     def test_auto_is_billed_by_the_probed_length(self):
-        """8.2 秒的参考片段 → 成片 9 秒 → 单人 27 点。界面上显示的必须就是这个数。"""
+        """8.2 秒的参考片段 → 成片 9 秒 → 90 点。界面上显示的必须就是这个数。"""
         body = self.v(duration="auto")
         self.assertEqual(body["duration"], 9)
-        self.assertEqual(points.cost_of("cinematic", body), 27)
+        self.assertEqual(points.cost_of("cinematic", body), 90)
 
     def test_an_unknown_mode_is_billed_at_the_highest_rate(self):
-        """玩法认不出来时按最贵的收 —— 绝不能回落到最便宜的，更不能回落到 0。"""
-        self.assertEqual(video.cinematic_rate("随便什么"), 5)
+        """玩法认不出来时按最贵的收 —— 绝不能回落到最便宜的，更不能回落到 0。
+
+        ⚠️ 现在三档同价，「最贵」看不出来了。以后谁再把某一档调低，这条断言必须跟着
+        改成那时的最高价 —— 别顺手把 fallback 留在低档上。
+        """
+        self.assertEqual(video.cinematic_rate("随便什么"), max(video.CINEMATIC_RATE_PER_SEC.values()))
         self.assertGreater(points.cost_of("cinematic", {}), 0, "空 payload 也不能免费")
 
     def test_the_frontend_estimate_matches_the_backend(self):
-        """前端预估的点数和后端扣的必须一致，否则就是「界面说 27 点、实际扣 45 点」。"""
-        self.assertIn("motion:{label:'动作模仿',    avatars:1, exact:true,  fixed:true,  "
-                      "needRef:true,  durations:['auto'],            rate:3}", HTML)
-        self.assertIn("rate:5}", HTML)
+        """前端预估的点数和后端扣的必须一致，否则就是「界面说 27 点、实际扣 90 点」。
+
+        不再逐字比对整行 —— 那样一改缩进就红。直接把前端 CINE_MODES 里的 rate 抠出来
+        跟后端的表比。
+        """
+        block = HTML.split("var CINE_MODES={")[1].split("};")[0]
+        for mode, rate in video.CINEMATIC_RATE_PER_SEC.items():
+            m = re.search(r"\b%s:\s*\{[^}]*\brate:\s*(\d+)" % mode, block)
+            self.assertIsNotNone(m, "前端 CINE_MODES 里没有 %s" % mode)
+            self.assertEqual(int(m.group(1)), rate,
+                             "%s：前端标 %s 点/秒，后端扣 %d 点/秒" % (mode, m.group(1), rate))
         self.assertIn("function cineCost(){ return cineSeconds()*cineCfg().rate; }", HTML)
+
+    def test_the_tab_labels_show_the_real_price(self):
+        """页签上写的价钱是用户【下单前】唯一能看到的价 —— 写错就是明码标错价。"""
+        for mode, label in (("motion", "动作模仿"), ("open", "开放式生成")):
+            tab = HTML.split('data-cine-mode="%s"' % mode)[1].split("</button>")[0]
+            self.assertIn("%d 点/秒" % video.cinematic_rate(mode), tab,
+                          "%s 页签上的单价和后端对不上" % label)
         # 秒数的算法也要一致：向上取整、夹进 4~15、无参考视频回落 10
         self.assertIn("return Math.max(4, Math.min(15, Math.ceil(cineRefSeconds)));", HTML)
         self.assertIn("if(!cineRefSeconds) return 10;", HTML)

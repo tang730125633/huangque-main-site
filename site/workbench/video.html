@@ -387,14 +387,14 @@
         <div class="line-switch">
           <div class="label">玩法</div>
           <div class="line-tabs" id="cineModeTabs">
-            <button type="button" class="line-tab active" data-cine-mode="motion"><b>动作模仿</b><span>1 个形象 + 1 段参考视频 → 照着它的动作演 · 3 点/秒</span></button>
+            <button type="button" class="line-tab active" data-cine-mode="motion"><b>动作模仿</b><span>1 个形象 + 1 段参考视频 → 照着它的动作演 · 10 点/秒</span></button>
             <!-- 双人动作模仿：页签已下掉。它在线上是 0 成 2 败 —— 被 HeyGen 的内容审核拦的
                  （网页原话 "Your content was flagged by our moderation system"，而 API 一个字
                  都不给）。中文提示词换过，但【一次都没实测】。与其让用户白等十几分钟再看到
                  「生成失败」，先下掉。
                  CINE_MODES 里的 duo 【保留】—— 后端仍然认这个玩法（只是拒绝提交），
                  实测通过后把 CINEMATIC_DUO_ENABLED=1 打开、把这个页签加回来即可，不用重写。 -->
-            <button type="button" class="line-tab" data-cine-mode="open"><b>开放式生成</b><span>最多 3 个形象 + 自己写画面描述 · 5 点/秒</span></button>
+            <button type="button" class="line-tab" data-cine-mode="open"><b>开放式生成</b><span>最多 3 个形象 + 自己写画面描述 · 10 点/秒</span></button>
           </div>
         </div>
 
@@ -702,10 +702,11 @@
   //              锁死的形状照抄 #2173，那是目前唯一已知能过 HeyGen 审核的配置。
   //   needRef    参考视频必填
   //   durations  可选时长（只有开放式还用得上）；rate 每秒点数
+  // ⚠️ rate 必须和后端 CINEMATIC_RATE_PER_SEC 逐字对齐 —— 对不上就是「界面说 30 点、实际扣 100 点」。
   var CINE_MODES={
-    motion:{label:'动作模仿',    avatars:1, exact:true,  fixed:true,  needRef:true,  durations:['auto'],            rate:3},
-    duo:   {label:'双人动作模仿', avatars:2, exact:true,  fixed:true,  needRef:true,  durations:['auto'],            rate:5},
-    open:  {label:'开放式生成',  avatars:3, exact:false, fixed:false, needRef:false, durations:['auto',5,10,12,15],  rate:5}
+    motion:{label:'动作模仿',    avatars:1, exact:true,  fixed:true,  needRef:true,  durations:['auto'],            rate:10},
+    duo:   {label:'双人动作模仿', avatars:2, exact:true,  fixed:true,  needRef:true,  durations:['auto'],            rate:10},
+    open:  {label:'开放式生成',  avatars:3, exact:false, fixed:false, needRef:false, durations:['auto',5,10,12,15],  rate:10}
   };
   var cineMode='motion';
   var cineRefSeconds=0;   // 参考视频的实际秒数（本地读的），用来预估点数
