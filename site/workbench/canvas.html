@@ -474,7 +474,7 @@
 
 <script src="../assets/cloud.js?v=8"></script>
 <script src="cloud-shell.js?v=302ad2ce"></script>
-<script src="canvas-collab-sync.js?v=56b947fb"></script>
+<script src="canvas-collab-sync.js?v=6d8f9ebb"></script>
 <script>
 /* 节点生产画布：文本→反推→作图 节点图，拖动/连线/调参/并行运行。复用 /api/gen/reverse|banana|image + 轮询。 */
 (function(){
@@ -497,7 +497,8 @@
   var currentBoardId=null, boardMode='mine', boardLastSeenUpdatedAt=0, boardConflict=false;
   var currentBoardScope='local', currentCollabVersion=0, currentCollabRole='', currentCollabName='', currentCollabMembers=[];
   var collabBoards=[], collabLoaded=false, collabLoading=false, collabError='', collabCreating=false, collabSaving=false, collabQueuedSnap=null;
-  var collabSync=window.HQCanvasCollabSync||null, collabBaseSnap=null, collabPollTimer=null, collabPresenceTimer=null, collabSaveRetryTimer=null, collabPolling=false, collabRetryCount=0;
+  var collabSync=window.HQCanvasCollabSync||null, collabController=null, collabBaseSnap=null, collabPollTimer=null, collabPresenceTimer=null, collabRetryCount=0;
+  var collabSyncGeneration=0, collabPendingBatch=null;
   var collabClientId=(function(){
     var key='hq_canvas_collab_client_id', value='';
     try{ value=sessionStorage.getItem(key)||''; }catch(e){}
@@ -575,10 +576,10 @@
     if(edgeCountEl) edgeCountEl.textContent=edges.length;
     if(runStateEl) runStateEl.textContent=runLabel;
     if(empty) empty.classList.toggle('on', count===0);
-    if(undoBtn) undoBtn.disabled=!undoStack.length;
-    if(redoBtn) redoBtn.disabled=!redoStack.length;
-    if(fsUndo) fsUndo.disabled=!undoStack.length;
-    if(fsRedo) fsRedo.disabled=!redoStack.length;
+    if(undoBtn) undoBtn.disabled=!canEditCanvas()||!undoStack.length;
+    if(redoBtn) redoBtn.disabled=!canEditCanvas()||!redoStack.length;
+    if(fsUndo) fsUndo.disabled=!canEditCanvas()||!undoStack.length;
+    if(fsRedo) fsRedo.disabled=!canEditCanvas()||!redoStack.length;
     syncZoomInputs();
     if(activeSidePanel) renderSidePanel();
     scheduleSave();
@@ -620,6 +621,7 @@
   }
   function scheduleSave(){
     if(loading) return;
+    if(!canEditCanvas()){ if(currentBoardScope==='collab') setSaveState('readonly'); return; }
     if(boardConflict){ setSaveState('conflict'); return; }
     if(currentBoardId) setSaveState('saving');
     clearTimeout(saveTimer);
@@ -770,6 +772,7 @@
     return msg;
   }
   function cleanupLocalSpace(){
+    if(!canEditCanvas()) return;
     if(loading) return;
     var before=snapshot(), jobs=[];
     setSaveState('saving');
@@ -928,8 +931,11 @@
     saveStateEl.textContent=currentBoardScope==='collab'?'已同步':'已保存';
     saveStateEl.classList.add('saved');
   }
+  function canEditCanvas(){
+    return collabSync?collabSync.canEditCanvas(currentBoardScope,currentCollabRole):(currentBoardScope!=='collab'||currentCollabRole==='owner'||currentCollabRole==='editor');
+  }
   function collabCanEdit(){
-    return currentBoardScope==='collab' && (currentCollabRole==='owner'||currentCollabRole==='editor');
+    return currentBoardScope==='collab'&&canEditCanvas();
   }
   function setCollabOnlineCount(count){
     if(!onlineStateEl) return;
@@ -940,9 +946,18 @@
   function stopCollabSync(){
     clearTimeout(collabPollTimer);
     clearInterval(collabPresenceTimer);
-    clearTimeout(collabSaveRetryTimer);
-    collabPollTimer=collabPresenceTimer=collabSaveRetryTimer=null;
-    collabPolling=false;
+    collabPollTimer=collabPresenceTimer=null;
+    if(currentBoardScope==='collab'){
+      clearTimeout(saveTimer);
+      saveTimer=null;
+      loading=false;
+    }
+    if(collabController) collabController.stop();
+    else collabSyncGeneration++;
+    collabSaving=false;
+    collabQueuedSnap=null;
+    collabPendingBatch=null;
+    collabBaseSnap=null;
     collabRetryCount=0;
     if(onlineStateEl) onlineStateEl.hidden=true;
   }
@@ -951,81 +966,150 @@
     if(currentBoardScope!=='collab'||!currentBoardId) return;
     collabPollTimer=setTimeout(pollCollabOps,delay==null?(collabSync?collabSync.pollDelay(document.hidden):800):delay);
   }
+  function flushActiveCollabTitle(){
+    var active=document.activeElement;
+    if(!active||!active.closest||active.getAttribute('data-f')!=='headTitle'||active.getAttribute('contenteditable')!=='true') return false;
+    var nodeEl=active.closest('.nc-node');
+    var nodeId=nodeEl&&nodeEl.getAttribute('data-node-id'), node=nodes[nodeId];
+    if(!node) return false;
+    var defaultName=(TYPE[node.type]&&TYPE[node.type].name)||nodeTypeLabel(node.type);
+    node.params.title=collabSync?collabSync.normalizeNodeTitle(active.textContent,defaultName):String(active.textContent||'').replace(/\s+/g,' ').trim().slice(0,40);
+    return true;
+  }
+  function snapshotForCollab(){
+    flushActiveCollabTitle();
+    return snapshot();
+  }
   function captureCollabFocus(){
     var active=document.activeElement, nodeEl=active&&active.closest?active.closest('.nc-node'):null;
     if(!nodeEl||!active.getAttribute) return null;
     var nodeId=Object.keys(nodes).find(function(id){ return nodes[id]&&nodes[id].el===nodeEl; });
     var field=active.getAttribute('data-f');
     if(!nodeId||!field) return null;
-    return {nodeId:nodeId,field:field,start:typeof active.selectionStart==='number'?active.selectionStart:null,end:typeof active.selectionEnd==='number'?active.selectionEnd:null};
+    var state={nodeId:nodeId,field:field,start:typeof active.selectionStart==='number'?active.selectionStart:null,end:typeof active.selectionEnd==='number'?active.selectionEnd:null,editable:active.getAttribute('contenteditable')==='true'};
+    if(state.editable&&window.getSelection){
+      var selection=window.getSelection();
+      if(selection&&selection.rangeCount){
+        var range=selection.getRangeAt(0).cloneRange();
+        if(active.contains(range.commonAncestorContainer)){
+          var startRange=range.cloneRange();
+          startRange.selectNodeContents(active);
+          startRange.setEnd(range.startContainer,range.startOffset);
+          state.start=startRange.toString().length;
+          range.selectNodeContents(active);
+          range.setEnd(selection.getRangeAt(0).endContainer,selection.getRangeAt(0).endOffset);
+          state.end=range.toString().length;
+        }
+      }
+    }
+    return state;
   }
   function restoreCollabFocus(state){
     var node=state&&nodes[state.nodeId];
     if(!node||!node.el) return;
     var target=Array.prototype.find.call(node.el.querySelectorAll('[data-f]'),function(item){ return item.getAttribute('data-f')===state.field; });
     if(!target||!target.focus) return;
+    if(state.editable&&state.field==='headTitle'&&canEditCanvas()){
+      beginInlineRename(node,true);
+      target=node.el.querySelector('[data-f="headTitle"]');
+    }
     target.focus();
-    if(state.start!=null&&target.setSelectionRange){
+    if(state.editable&&state.start!=null&&window.getSelection&&document.createRange){
+      var textNode=target.firstChild||target.appendChild(document.createTextNode(''));
+      var textLength=(textNode.textContent||'').length, start=Math.min(state.start,textLength), end=Math.min(state.end==null?start:state.end,textLength);
+      var range=document.createRange(), selection=window.getSelection();
+      range.setStart(textNode,start);
+      range.setEnd(textNode,end);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }else if(state.start!=null&&target.setSelectionRange){
       try{ target.setSelectionRange(state.start,state.end==null?state.start:state.end); }catch(e){}
     }
   }
   function applySyncedSnapshot(next,label){
     var focusState=captureCollabFocus();
+    flushActiveCollabTitle();
     loading=true;
     try{ restoreSnapshot(next); }
     finally{ loading=false; }
+    setEditorReadonly(!canEditCanvas());
     restoreCollabFocus(focusState);
     updateState(label||'协作内容已同步');
   }
-  function pollCollabOps(){
-    if(currentBoardScope!=='collab'||!currentBoardId||!collabSync) return;
-    if(collabSaving){ scheduleCollabPoll(collabSync.pollDelay(document.hidden)); return; }
-    if(collabPolling) return;
-    collabPolling=true;
-    var boardId=currentBoardId;
-    authJson('/api/auth/canvas/boards/'+encodeURIComponent(boardId)+'/sync?since='+encodeURIComponent(currentCollabVersion),{timeout:6000})
-      .then(function(data){
-        if(currentBoardScope!=='collab'||currentBoardId!==boardId) return;
-        if(collabSaving) return;
-        var current=snapshot(), changed=false;
-        if(data.reset&&data.board&&data.board.data){
-          var pending=collabSync.diffSnapshots(collabBaseSnap||emptySnapshot(),current);
-          collabBaseSnap=collabSync.clone(data.board.data);
-          current=collabSync.applyOps(collabBaseSnap,pending);
-          changed=true;
-        }else{
-          var incoming=[];
-          (data.batches||[]).forEach(function(batch){ incoming=incoming.concat(collabSync.clone(batch.ops||[])); });
-          if(incoming.length){
-            var merged=collabSync.mergeRemote(collabBaseSnap||emptySnapshot(),current,incoming);
-            collabBaseSnap=merged.base;
-            current=merged.current;
-            changed=true;
-          }
+  function ensureCollabController(){
+    if(collabController||!collabSync||!collabSync.createController) return collabController;
+    collabController=collabSync.createController({
+      clientId:collabClientId,
+      transport:{
+        save:function(boardId,batch){
+          return authJson('/api/auth/canvas/boards/'+encodeURIComponent(boardId)+'/ops',{method:'POST',body:batch});
+        },
+        sync:function(boardId,since){
+          return authJson('/api/auth/canvas/boards/'+encodeURIComponent(boardId)+'/sync?since='+encodeURIComponent(since),{timeout:6000});
         }
-        currentCollabVersion=Math.max(currentCollabVersion,Number(data.version)||0);
-        setCollabOnlineCount(data.online_count);
-        collabRetryCount=0;
-        if(changed) applySyncedSnapshot(current,'协作内容已同步');
-        else if(!collabSaving) setSaveState(collabCanEdit()?'saved':'readonly');
-      }).catch(function(){
+      },
+      getSnapshot:snapshotForCollab,
+      onState:function(state,detail){
+        collabSyncGeneration=state.generation;
+        collabSaving=state.saving;
+        collabQueuedSnap=detail.pendingSnapshot;
+        collabPendingBatch=detail.activeBatch;
+        if(state.active){
+          currentCollabVersion=state.version;
+          collabBaseSnap=detail.baseSnapshot;
+          if(detail.retrying) setSaveState('reconnecting');
+          else if(state.saving||state.pending) setSaveState('syncing');
+          else if(!state.polling) setSaveState(collabCanEdit()?'saved':'readonly');
+        }
+      },
+      onBoard:function(board){
+        currentCollabVersion=Number(board.version)||currentCollabVersion;
+        currentCollabName=board.name||currentCollabName;
+        currentCollabRole=board.role||currentCollabRole;
+        currentCollabMembers=board.members||currentCollabMembers;
+        rememberCollabBoard(board);
+      },
+      onSnapshot:function(next){ applySyncedSnapshot(next,'协作内容已同步'); },
+      onPoll:function(data){ setCollabOnlineCount(data.online_count); },
+      onError:function(err,phase){
+        if(phase==='save'){
+          setSaveState('reconnecting');
+          updateState((err&&err.message)||'协作同步暂时中断，正在重连');
+        }
+      }
+    });
+    return collabController;
+  }
+  function pollCollabOps(){
+    if(currentBoardScope!=='collab'||!currentBoardId||!ensureCollabController()) return;
+    if(collabSaving){ scheduleCollabPoll(collabSync.pollDelay(document.hidden)); return; }
+    collabController.poll().then(function(outcome){
+      if(outcome&&outcome.ignored) return;
+      if(outcome&&outcome.failed){
         collabRetryCount++;
         setSaveState('reconnecting');
-      }).finally(function(){
-        collabPolling=false;
-        var delay=collabRetryCount&&collabSync?collabSync.retryDelay(collabRetryCount-1):collabSync.pollDelay(document.hidden);
-        scheduleCollabPoll(delay);
-      });
+      }else{
+        collabRetryCount=0;
+        if(!collabSaving) setSaveState(collabCanEdit()?'saved':'readonly');
+      }
+      var delay=collabRetryCount?collabSync.retryDelay(collabRetryCount-1):collabSync.pollDelay(document.hidden);
+      scheduleCollabPoll(delay);
+    });
   }
   function sendCollabPresence(){
     if(currentBoardScope!=='collab'||!currentBoardId) return;
-    authJson('/api/auth/canvas/boards/'+encodeURIComponent(currentBoardId)+'/presence',{method:'POST',body:{client_id:collabClientId},timeout:5000})
-      .then(function(data){ setCollabOnlineCount(data.online_count); })
-      .catch(function(){});
+    var boardId=currentBoardId, generation=collabSyncGeneration;
+    authJson('/api/auth/canvas/boards/'+encodeURIComponent(boardId)+'/presence',{method:'POST',body:{client_id:collabClientId},timeout:5000})
+      .then(function(data){
+        if(currentBoardScope==='collab'&&currentBoardId===boardId&&collabSyncGeneration===generation) setCollabOnlineCount(data.online_count);
+      }).catch(function(){});
   }
   function startCollabSync(){
+    var base=collabBaseSnap;
     stopCollabSync();
     if(currentBoardScope!=='collab'||!currentBoardId||!collabSync) return;
+    collabBaseSnap=base;
+    ensureCollabController().start({boardId:currentBoardId,version:currentCollabVersion,role:currentCollabRole,baseSnapshot:collabBaseSnap||emptySnapshot()});
     setCollabOnlineCount(1);
     sendCollabPresence();
     collabPresenceTimer=setInterval(sendCollabPresence,10000);
@@ -1047,66 +1131,27 @@
       setSaveState('readonly');
       return;
     }
-    if(!collabSync||!collabBaseSnap){ setSaveState('error'); return; }
-    if(collabSaving){
-      collabQueuedSnap=snap;
-      return;
-    }
+    if(!collabSync||!collabBaseSnap||!ensureCollabController()){ setSaveState('error'); return; }
     var ops=collabSync.diffSnapshots(collabBaseSnap,snap);
-    if(!ops.length){ setSaveState('saved'); return; }
-    collabSaving=true;
-    setSaveState('syncing');
+    var extraOps=[];
     var nextName=currentCollabName||'未命名协作画布';
     var inferred=inferBoardName(snap);
     if(inferred&&isUntitledCollabName(nextName)){
       nextName=inferred;
-      ops.push({type:'board.rename',name:nextName});
+      extraOps.push({type:'board.rename',name:nextName});
     }
-    var batch=collabSync.makeBatch(collabClientId,currentCollabVersion,ops);
-    authJson('/api/auth/canvas/boards/'+encodeURIComponent(currentBoardId)+'/ops',{
-      method:'POST',
-      body:batch
-    }).then(function(data){
-      var board=data.board||{}, latest=collabQueuedSnap||snapshot();
-      collabQueuedSnap=null;
-      if(board.data){
-        var canonicalOps=collabSync.diffSnapshots(collabBaseSnap,board.data);
-        var rebased=collabSync.mergeRemote(collabBaseSnap,latest,canonicalOps);
-        collabBaseSnap=collabSync.clone(board.data);
-        currentCollabVersion=Number(board.version)||Number(data.version)||currentCollabVersion;
-        currentCollabName=board.name||nextName;
-        currentCollabRole=board.role||currentCollabRole;
-        currentCollabMembers=board.members||currentCollabMembers;
-        rememberCollabBoard(board);
-        applySyncedSnapshot(rebased.current,'协作内容已同步');
-        latest=rebased.current;
-      }else{
-        collabBaseSnap=collabSync.applyOps(collabBaseSnap,ops);
-        currentCollabVersion=Math.max(currentCollabVersion,Number(data.version)||0);
-        currentCollabName=nextName;
-      }
-      collabRetryCount=0;
-      collabSaving=false;
-      if(collabSync.diffSnapshots(collabBaseSnap,latest).length){ saveCollabDraft(latest); return; }
-      setSaveState('saved');
-    }).catch(function(err){
-      collabSaving=false;
-      collabQueuedSnap=snap;
-      collabRetryCount++;
-      setSaveState('reconnecting');
-      clearTimeout(collabSaveRetryTimer);
-      collabSaveRetryTimer=setTimeout(function(){
-        var queued=collabQueuedSnap;
-        collabQueuedSnap=null;
-        if(queued) saveCollabDraft(queued);
-      },collabSync.retryDelay(collabRetryCount-1));
-      updateState((err&&err.message)||'协作同步暂时中断，正在重连');
-    });
+    if(!ops.length&&!extraOps.length){ setSaveState('saved'); return; }
+    collabController.save(snap,extraOps);
   }
   function setEditorReadonly(readonly){
-    document.querySelectorAll('.nc-add,#ncRunAll,#ncTplSave,#ncTplLoad,#ncTplDelete,#ncTplImport,#ncPaste,#ncLayout,#ncFsAdd,#ncFsRun,#ncFsTplMenu,#ncFsMore').forEach(function(el){
+    document.querySelectorAll('.nc-add,#ncRunAll,#ncTplSave,#ncTplLoad,#ncTplDelete,#ncTplImport,#ncPaste,#ncLayout,#ncClear,#ncResetDemo,#ncUndo,#ncRedo,#ncFsAdd,#ncFsUndo,#ncFsRedo,#ncFsRun,#ncFsTplMenu,#ncFsMore').forEach(function(el){
       if(el) el.disabled=!!readonly;
     });
+    document.querySelectorAll('.nc-node input,.nc-node textarea,.nc-node select,.nc-node button').forEach(function(el){ el.disabled=!!readonly; });
+    document.querySelectorAll('.nc-node [data-f="headTitle"]').forEach(function(el){
+      if(readonly){ el.setAttribute('contenteditable','false'); el.removeAttribute('spellcheck'); }
+    });
+    document.querySelectorAll('.nc-node,.nc-port,.nc-drop').forEach(function(el){ el.setAttribute('aria-disabled',readonly?'true':'false'); });
   }
   function migrateDraftToBoards(){
     if(getBoards().length) return;
@@ -1560,6 +1605,7 @@
   function openCollabBoard(id){
     if(!id) return false;
     stopCollabSync();
+    var openGeneration=collabSyncGeneration;
     currentBoardScope='collab';
     currentBoardId=id;
     currentCollabVersion=0;
@@ -1571,6 +1617,7 @@
     loading=true;
     updateState('正在打开协作画布');
     authJson('/api/auth/canvas/boards/'+encodeURIComponent(id)).then(function(data){
+      if(currentBoardScope!=='collab'||currentBoardId!==id||collabSyncGeneration!==openGeneration) return;
       var board=data.board||{};
       currentBoardScope='collab';
       currentBoardId=board.id||id;
@@ -1589,6 +1636,7 @@
       startCollabSync();
       updateState(collabCanEdit()?'协作画布已打开':'协作画布已打开（只读）');
     }).catch(function(err){
+      if(currentBoardScope!=='collab'||currentBoardId!==id||collabSyncGeneration!==openGeneration) return;
       stopCollabSync();
       currentBoardScope='local';
       currentBoardId=null;
@@ -1597,7 +1645,7 @@
       updateState((err&&err.message)||'协作画布打开失败');
       openMessageDialog('协作画布', (err&&err.message)||'打开失败，请返回列表重试');
     }).finally(function(){
-      loading=false;
+      if(currentBoardScope==='collab'&&currentBoardId===id) loading=false;
     });
     return true;
   }
@@ -1983,6 +2031,7 @@
     });
   }
   function pushUndo(snap){
+    if(!canEditCanvas()) return;
     if(restoring) return;
     undoStack.push(snap||snapshot());
     if(undoStack.length>60) undoStack.shift();
@@ -2002,6 +2051,7 @@
     restoring=false;
   }
   function appendTemplateToCanvas(item){
+    if(!canEditCanvas()) return;
     if(!item||!item.data){ updateState('没有可载入的模板'); return; }
     var snap=sanitizeTemplateSnap(item.data), list=snap.nodes||[];
     if(!list.length){ updateState('模板为空'); return; }
@@ -2041,6 +2091,7 @@
     updateState('模板已追加到画布');
   }
   function undo(){
+    if(!canEditCanvas()) return;
     var snap=undoStack.pop();
     if(!snap) return;
     redoStack.push(snapshot());
@@ -2049,6 +2100,7 @@
     updateState('已撤销');
   }
   function redo(){
+    if(!canEditCanvas()) return;
     var snap=redoStack.pop();
     if(!snap) return;
     undoStack.push(snapshot());
@@ -2153,6 +2205,7 @@
     if(!silent){ redraw(); updateState(node.collapsed?'节点已折叠':'节点已展开'); }
   }
   function toggleCollapsed(node){
+    if(!canEditCanvas()) return;
     if(!node) return;
     pushUndo();
     setCollapsed(node,!node.collapsed);
@@ -2245,6 +2298,7 @@
   }
   function clearConnectHints(){ setConnectHints(null); canvas.classList.remove('connecting'); }
   function connectEdge(from,to){
+    if(!canEditCanvas()) return false;
     if(!from||!to||from.port!==to.port||from.node===to.node) return false;
     var multiImage=to.port==='image' && nodes[to.node] && (nodes[to.node].type==='gen'||nodes[to.node].type==='video');
     edges=edges.filter(function(e){
@@ -2349,6 +2403,7 @@
     if(selectedEdge>=0) updateState('已选连线');
   }
   function delSelectedEdge(){
+    if(!canEditCanvas()) return;
     if(selectedEdge<0||!edges[selectedEdge]) return;
     pushUndo();
     edges.splice(selectedEdge,1);
@@ -2362,6 +2417,7 @@
     return ids;
   }
   function deleteSelectedNodes(){
+    if(!canEditCanvas()) return;
     var ids=selectedNodeIds();
     if(!ids.length) return;
     pushUndo();
@@ -2375,6 +2431,7 @@
     updateState('已删除 '+ids.length+' 个节点');
   }
   function setSelectedCollapsed(collapsed){
+    if(!canEditCanvas()) return;
     var ids=selectedNodeIds();
     if(!ids.length) return;
     pushUndo();
@@ -2414,6 +2471,7 @@
     updateState('已复制节点');
   }
   function pasteNode(){
+    if(!canEditCanvas()) return;
     if(!clipNode) return;
     pushUndo();
     if(clipNode.multi){
@@ -2447,12 +2505,14 @@
     updateState('已粘贴节点');
   }
   function duplicateNode(id){
+    if(!canEditCanvas()) return;
     if(!nodes[id]) return;
     selectNode(nodes[id]);
     copyNode();
     pasteNode();
   }
   function autoLayout(){
+    if(!canEditCanvas()) return;
     var ids=Object.keys(nodes);
     if(!ids.length) return;
     pushUndo();
@@ -2649,12 +2709,14 @@
     return {x:Math.max(0,(e.clientX-r.left)/zoom),y:Math.max(0,(e.clientY-r.top)/zoom)};
   }
   function addAt(type,pt){
+    if(!canEditCanvas()) return;
     pushUndo();
     var node=addNode(type,pt.x,pt.y);
     selectNode(node);
     updateState('已添加');
   }
-  function beginInlineRename(node){
+  function beginInlineRename(node,preserveSelection){
+    if(!canEditCanvas()) return;
     if(!node||!node.el) return;
     var title=node.el.querySelector('[data-f="headTitle"]');
     if(!title||title.getAttribute('contenteditable')==='true') return;
@@ -2664,8 +2726,15 @@
     title.textContent=oldName||defaultName;
     var cancelled=false;
     function finish(){
-      var next=cancelled?oldName:String(title.textContent||'').replace(/\s+/g,' ').trim().slice(0,40);
-      if(next===defaultName) next='';
+      if(!canEditCanvas()){
+        title.setAttribute('contenteditable','false');
+        title.removeAttribute('spellcheck');
+        title.onkeydown=null;
+        title.onblur=null;
+        title.textContent=node.params.title||defaultName;
+        return;
+      }
+      var next=cancelled?oldName:(collabSync?collabSync.normalizeNodeTitle(title.textContent,defaultName):String(title.textContent||'').replace(/\s+/g,' ').trim().slice(0,40));
       title.setAttribute('contenteditable','false');
       title.removeAttribute('spellcheck');
       title.onkeydown=null;
@@ -2686,12 +2755,14 @@
     };
     title.onblur=finish;
     title.focus();
+    if(preserveSelection) return;
     var range=document.createRange(), selection=window.getSelection();
     range.selectNodeContents(title);
     selection.removeAllRanges();
     selection.addRange(range);
   }
   function editNodeRemark(node){
+    if(!canEditCanvas()) return;
     if(!node) return;
     var oldRemark=node.params.remark||'';
     openTextDialog({title:'节点备注',value:oldRemark,placeholder:'写给自己或同事看的说明',multiline:true,max:300,onSave:function(next){
@@ -2709,6 +2780,7 @@
     openMessageDialog('节点备注',remark);
   }
   function deleteNodeRemark(node){
+    if(!canEditCanvas()) return;
     if(!node||!(node.params.remark||'').trim()) return;
     openConfirmDialog('删除备注','删除这个节点的备注？',function(){
       pushUndo();
@@ -2718,6 +2790,7 @@
     });
   }
   function chooseNodeImage(node,label){
+    if(!canEditCanvas()) return;
     if(!node||node.type!=='image') return;
     var input=document.createElement('input');
     input.type='file';
@@ -2738,6 +2811,7 @@
     input.click();
   }
   function replaceNodeImageWithAsset(node,asset){
+    if(!canEditCanvas()) return;
     if(!node||node.type!=='image'||!asset||!asset.url) return;
     if(node.image===asset.url){ updateState('当前节点已使用该图片'); return; }
     pushUndo();
@@ -2781,6 +2855,11 @@
   }
   function menuForNode(e,node){
     e.preventDefault();
+    if(!canEditCanvas()){
+      selectNode(node);
+      if((node.params.remark||'').trim()) showMenu([{label:'查看备注',run:function(){ viewNodeRemark(node); }}],e.clientX,e.clientY);
+      return;
+    }
     var groupIds=selectedNodes[node.id]?selectedNodeIds():[];
     if(groupIds.length>1){
       showMenu([
@@ -2807,6 +2886,7 @@
   }
   function menuForCanvas(e){
     e.preventDefault();
+    if(!canEditCanvas()){ showMenu([{label:'适应视图',run:function(){ fitView(); }}],e.clientX,e.clientY); return; }
     var pt=canvasPointFromClient(e);
     showMenu(addNodeMenuItems(pt).concat([
       {label:'粘贴节点',run:function(){ pasteNode(); }},
@@ -2816,6 +2896,7 @@
   function menuForEdge(e,i){
     e.preventDefault();
     selectedEdge=i; redraw();
+    if(!canEditCanvas()) return;
     showMenu([
       {label:'删除连线',run:function(){ delSelectedEdge(); }}
     ],e.clientX,e.clientY);
@@ -2848,6 +2929,7 @@
     return {idx:idx,list:list,item:list[idx]};
   }
   function loadTemplateItem(item){
+    if(!canEditCanvas()) return;
     if(!item||!item.data){ updateState('没有可载入的模板'); return; }
     if(!currentBoardId){ createBoardFromTemplate(item); return; }
     appendTemplateToCanvas(item);
@@ -2946,6 +3028,7 @@
     var el=node.el, head=el.querySelector('[data-f="head"]');
     el.setAttribute('data-node-id',node.id);
     head.addEventListener('pointerdown', function(e){
+      if(!canEditCanvas()) return;
       if(e.target&&e.target.getAttribute('data-f')==='del') return;
       if(e.target&&e.target.getAttribute('data-f')==='fold') return;
       if(e.target&&e.target.closest&&e.target.closest('[data-f="headTitle"][contenteditable="true"]')) return;
@@ -2971,9 +3054,10 @@
       function up(){ if(moved) pushUndo(before); window.removeEventListener('pointermove',mv); window.removeEventListener('pointerup',up); }
       window.addEventListener('pointermove',mv); window.addEventListener('pointerup',up);
     });
-    el.querySelector('[data-f="del"]').onclick=function(){ delNode(node.id); };
+    el.querySelector('[data-f="del"]').onclick=function(){ if(!canEditCanvas()) return; delNode(node.id); };
     el.querySelector('[data-f="fold"]').onclick=function(e){ e.stopPropagation(); toggleCollapsed(node); };
     el.addEventListener('dblclick',function(e){
+      if(!canEditCanvas()) return;
       if(!e.target||!e.target.closest) return;
       if(e.target.closest('[data-f="headTitle"]')){
         e.preventDefault();
@@ -2988,6 +3072,7 @@
     // ports: 点输出口→点输入口 连线
     el.querySelectorAll('.nc-port').forEach(function(p){
       p.addEventListener('pointerdown', function(ev){
+        if(!canEditCanvas()) return;
         if(ev.button!==0) return;
         var kind=p.getAttribute('data-kind'), port=p.getAttribute('data-port');
         if(kind!=='out') return;
@@ -3029,6 +3114,7 @@
         window.addEventListener('pointermove',mv); window.addEventListener('pointerup',up);
       });
       p.addEventListener('click', function(ev){ ev.preventDefault(); ev.stopPropagation(); clearTextSelection();
+        if(!canEditCanvas()) return;
         if(suppressPortClick) return;
         var kind=p.getAttribute('data-kind'), port=p.getAttribute('data-port');
         if(kind==='out'){ pendingPort={node:node.id, port:port}; setConnectHints(port); noteOf(node,'已选输出口「'+port+'」，点一个输入口连上','#2dd4bf'); }
@@ -3042,21 +3128,21 @@
     var txt=el.querySelector('[data-f="text"]'); if(txt){
       txt.addEventListener('focus',function(){ node._editSnap=snapshot(); node._editValue=txt.value; });
       txt.addEventListener('blur',function(){ if(node._editSnap&&txt.value!==node._editValue) pushUndo(node._editSnap); node._editSnap=null; });
-      txt.oninput=function(){ node.params.text=txt.value; if(node.type==='text') node.outputs.prompt=txt.value; scheduleSave(); };
+      txt.oninput=function(){ if(!canEditCanvas()) return; node.params.text=txt.value; if(node.type==='text') node.outputs.prompt=txt.value; scheduleSave(); };
     }
     var out=el.querySelector('[data-f="out"]'); if(out){
       out.addEventListener('focus',function(){ node._editSnap=snapshot(); node._editValue=out.value; });
       out.addEventListener('blur',function(){ if(node._editSnap&&out.value!==node._editValue) pushUndo(node._editSnap); node._editSnap=null; });
-      out.oninput=function(){ node.outputs.prompt=out.value; scheduleSave(); };
+      out.oninput=function(){ if(!canEditCanvas()) return; node.outputs.prompt=out.value; scheduleSave(); };
     }
     el.querySelectorAll('.nc-seg').forEach(function(seg){ var f=seg.getAttribute('data-f');
-      seg.querySelectorAll('.nc-chip').forEach(function(c){ c.onclick=function(){ if(node.params[f]!==c.getAttribute('data-v')) pushUndo(); seg.querySelectorAll('.nc-chip').forEach(function(x){x.classList.remove('on');}); c.classList.add('on'); node.params[f]=c.getAttribute('data-v'); refreshVideoNodeHint(node); scheduleSave(); }; }); });
+      seg.querySelectorAll('.nc-chip').forEach(function(c){ c.onclick=function(){ if(!canEditCanvas()) return; if(node.params[f]!==c.getAttribute('data-v')) pushUndo(); seg.querySelectorAll('.nc-chip').forEach(function(x){x.classList.remove('on');}); c.classList.add('on'); node.params[f]=c.getAttribute('data-v'); refreshVideoNodeHint(node); scheduleSave(); }; }); });
     // 图片节点上传/粘贴
     var file=el.querySelector('[data-f="file"]'), drop=el.querySelector('[data-f="drop"]');
-    if(file){ file.onchange=function(){ var label=node._imageActionLabel||'图片已上传'; node._imageActionLabel=''; imgToNode(node, file.files&&file.files[0], label); }; }
-    if(drop){ drop.setAttribute('tabindex','0'); drop.addEventListener('paste', function(e){ var it=(e.clipboardData&&e.clipboardData.items)||[]; for(var i=0;i<it.length;i++){ if(it[i].kind==='file'&&it[i].type&&it[i].type.indexOf('image/')===0){ var f=it[i].getAsFile(); if(f){ e.preventDefault(); imgToNode(node,f); return; } } } }); }
-    if(drop){ drop.addEventListener('paste', function(e){ var it=(e.clipboardData&&e.clipboardData.items)||[], sawFile=false, sawImage=false; for(var i=0;i<it.length;i++){ if(it[i].kind==='file'){ sawFile=true; if(it[i].type&&it[i].type.indexOf('image/')===0) sawImage=true; } } if(sawFile&&!sawImage){ e.preventDefault(); rejectImageFile(node,'请粘贴 PNG/JPG/WebP 图片'); } }); }
-    var run=el.querySelector('[data-f="run"]'); if(run) run.onclick=function(){ runNode(node.id); };
+    if(file){ file.onchange=function(){ if(!canEditCanvas()) return; var label=node._imageActionLabel||'图片已上传'; node._imageActionLabel=''; imgToNode(node, file.files&&file.files[0], label); }; }
+    if(drop){ drop.setAttribute('tabindex','0'); drop.addEventListener('paste', function(e){ if(!canEditCanvas()) return; var it=(e.clipboardData&&e.clipboardData.items)||[]; for(var i=0;i<it.length;i++){ if(it[i].kind==='file'&&it[i].type&&it[i].type.indexOf('image/')===0){ var f=it[i].getAsFile(); if(f){ e.preventDefault(); imgToNode(node,f); return; } } } }); }
+    if(drop){ drop.addEventListener('paste', function(e){ if(!canEditCanvas()) return; var it=(e.clipboardData&&e.clipboardData.items)||[], sawFile=false, sawImage=false; for(var i=0;i<it.length;i++){ if(it[i].kind==='file'){ sawFile=true; if(it[i].type&&it[i].type.indexOf('image/')===0) sawImage=true; } } if(sawFile&&!sawImage){ e.preventDefault(); rejectImageFile(node,'请粘贴 PNG/JPG/WebP 图片'); } }); }
+    var run=el.querySelector('[data-f="run"]'); if(run) run.onclick=function(){ if(!canEditCanvas()) return; runNode(node.id); };
   }
   function rejectImageFile(node,msg){
     if(!node) return;
@@ -3080,7 +3166,7 @@
       return f;
     });
   }
-  function imgToNode(node, f, label){ if(!f) return; var before=snapshot();
+  function imgToNode(node, f, label){ if(!canEditCanvas()) return; if(!f) return; var before=snapshot();
     validateImageFile(f).then(function(file){
       var url=URL.createObjectURL(file), im=new Image();
       im.onload=function(){ var mx=IMAGE_SAVE_MAX,s=Math.min(1,mx/Math.max(im.width,im.height)),cv=document.createElement('canvas');
@@ -3162,8 +3248,9 @@
     if(selectionBox) selectionBox.style.display='none';
     if(canvas) canvas.classList.remove('selecting');
   }
-  function delNode(id){ if(nodes[id]){ pushUndo(); nodes[id].el.remove(); delete nodes[id]; if(selectedNode===id) selectedNode=null; delete selectedNodes[id]; edges=edges.filter(function(e){ return e.from.node!==id && e.to.node!==id; }); redraw(); refreshAllGenRefs(); updateSelectedRegion(); updateState('已更新'); } }
+  function delNode(id){ if(!canEditCanvas()) return; if(nodes[id]){ pushUndo(); nodes[id].el.remove(); delete nodes[id]; if(selectedNode===id) selectedNode=null; delete selectedNodes[id]; edges=edges.filter(function(e){ return e.from.node!==id && e.to.node!==id; }); redraw(); refreshAllGenRefs(); updateSelectedRegion(); updateState('已更新'); } }
   function clearCanvas(){
+    if(!canEditCanvas()) return;
     Object.keys(nodes).forEach(function(id){ if(nodes[id]&&nodes[id].el) nodes[id].el.remove(); });
     nodes={}; edges=[]; pendingPort=null; selectedNode=null; selectedNodes={}; selectedEdge=-1; redraw(); updateSelectedRegion(); updateState('空画布');
   }
@@ -3194,6 +3281,7 @@
   });
   if(selectedRegion){
     selectedRegion.addEventListener('pointerdown', function(e){
+      if(!canEditCanvas()) return;
       if(e.button!==0) return;
       var ids=selectedNodeIds();
       if(ids.length<2) return;
@@ -3369,6 +3457,7 @@
 
   // ---------- 运行单个节点（返回 Promise，供并行/串行）----------
   function runNode(id){
+    if(!canEditCanvas()) return Promise.resolve();
     var node=nodes[id]; if(!node) return Promise.resolve();
     if(!validateNodeInputs(node,true)){ updateState('缺少输入'); return Promise.reject('缺少输入'); }
     if(node.type==='reverse'){
@@ -3618,10 +3707,10 @@
   if(runAllBtn) runAllBtn.onclick=startRunAllBatch;
 
   // ---------- 顶部添加 ----------
-  document.querySelectorAll('.nc-add').forEach(function(b){ b.onclick=function(){ pushUndo(); addNode(b.getAttribute('data-add')); updateState('已添加'); }; });
-  document.getElementById('ncClear').onclick=function(){ if(Object.keys(nodes).length){ pushUndo(); clearCanvas(); } };
+  document.querySelectorAll('.nc-add').forEach(function(b){ b.onclick=function(){ if(!canEditCanvas()) return; pushUndo(); addNode(b.getAttribute('data-add')); updateState('已添加'); }; });
+  document.getElementById('ncClear').onclick=function(){ if(!canEditCanvas()) return; if(Object.keys(nodes).length){ pushUndo(); clearCanvas(); } };
   if(cleanupStorageBtn) cleanupStorageBtn.onclick=function(){ cleanupLocalSpace(); };
-  document.getElementById('ncResetDemo').onclick=function(){ pushUndo(); resetDemo(); };
+  document.getElementById('ncResetDemo').onclick=function(){ if(!canEditCanvas()) return; pushUndo(); resetDemo(); };
   document.getElementById('ncCopy').onclick=function(){ copyNode(); };
   document.getElementById('ncPaste').onclick=function(){ pasteNode(); };
   document.getElementById('ncLayout').onclick=function(){ autoLayout(); };
@@ -3731,6 +3820,11 @@
   document.addEventListener('keydown',function(e){
     var tag=(e.target&&e.target.tagName||'').toLowerCase();
     var editing=tag==='input'||tag==='textarea'||tag==='select'||!!(e.target&&(e.target.isContentEditable||(e.target.closest&&e.target.closest('[contenteditable="true"]'))));
+    var key=String(e.key).toLowerCase(), command=e.ctrlKey||e.metaKey;
+    if(!canEditCanvas()&&!editing&&((command&&(key==='z'||key==='y'||key==='v'))||e.key==='Delete'||e.key==='Backspace')){
+      e.preventDefault();
+      return;
+    }
     if((e.ctrlKey||e.metaKey)&&String(e.key).toLowerCase()==='z' && !editing){
       e.preventDefault(); if(e.shiftKey) redo(); else undo();
     }
