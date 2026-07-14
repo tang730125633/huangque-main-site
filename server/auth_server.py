@@ -1218,6 +1218,37 @@ class H(BaseHTTPRequestHandler):
             except Exception as e:
                 # 下单失败:订单停留在 pending(等同一个没人审的人工申请),无害
                 return self._send(502, {"detail": "微信下单失败", "error": str(e)[:200]})
+        if p == "/api/auth/wxpay/jsapi":
+            # 小程序内充值:需登录态(定位黄雀账号) + wx.login 的 js_code(换微信 openid)
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            if wxpay is None or not wxpay.configured():
+                return self._send(503, {"detail": "微信支付未配置"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                points = int(d.get("points") or 0)
+            except Exception:
+                return self._send(400, {"detail": "points 必须是整数"})
+            js_code = (d.get("js_code") or "").strip()
+            if not js_code:
+                return self._send(400, {"detail": "缺少 js_code"})
+            amount = RECHARGE_PACKAGES.get(points)   # 金额只认服务端白名单
+            if amount is None:
+                return self._send(400, {"detail": "无效的充值套餐"})
+            try:
+                openid = wxpay.jscode2session(js_code)
+                order, err = create_recharge_order(row["username"], amount, points, "微信小程序充值")
+                if err:
+                    return self._send(400, {"detail": err})
+                prepay_id = wxpay.create_jsapi(
+                    order["order_id"], "黄雀点数充值 %d点" % points, int(round(amount * 100)), openid)
+                pay = wxpay.jsapi_pay_params(prepay_id)   # 客户端 wx.requestPayment 参数
+                return self._send(200, {"ok": True, "order": order, "pay": pay})
+            except Exception as e:
+                return self._send(502, {"detail": "微信下单失败", "error": str(e)[:200]})
         if p == "/api/auth/wxpay/notify":
             # 微信服务器回调:不带登录态/内部 token,靠 V3 签名验真。必须读原始字节验签。
             n = int(self.headers.get("Content-Length") or 0)
@@ -1244,7 +1275,7 @@ class H(BaseHTTPRequestHandler):
             try:
                 # review_recharge_order 自带幂等:重复回调因 status 已 approved 返回 already_reviewed,不重复加点
                 review_recharge_order("wxpay", order_id, "approve", "wxpay txn=%s" % txn_id)
-                set_recharge_transaction(order_id, txn_id, "wxpay_native")
+                set_recharge_transaction(order_id, txn_id, "wxpay")
                 return self._send(200, {"code": "SUCCESS"})
             except Exception:
                 return self._send(500, {"code": "FAIL", "message": "处理失败"})   # 抛错让微信重推

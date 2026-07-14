@@ -20,6 +20,7 @@ import pathlib
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -194,3 +195,40 @@ def decrypt_resource(resource):
         (resource.get("associated_data") or "").encode(),
     )
     return json.loads(plain.decode())
+
+
+# ==================== 小程序 JSAPI 专用(openid + 调起支付签名) ====================
+
+def jscode2session(js_code):
+    """wx.login 的 code 换 openid。用小程序 AppID/AppSecret(WX_MP_*),与商户凭证是两套。
+
+    返回 openid;失败抛 RuntimeError(带微信 errcode/errmsg)。
+    """
+    appid = _env("WX_MP_APPID") or _env("WX_PAY_APPID")
+    secret = _env("WX_MP_APPSECRET")
+    if not (appid and secret):
+        raise WxPayNotConfigured("缺少 WX_MP_APPID / WX_MP_APPSECRET")
+    url = ("https://api.weixin.qq.com/sns/jscode2session?appid=%s&secret=%s&js_code=%s"
+           "&grant_type=authorization_code" % (appid, secret, urllib.parse.quote(js_code)))
+    with urllib.request.urlopen(url, timeout=10) as r:
+        data = json.loads(r.read().decode() or "{}")
+    if data.get("openid"):
+        return data["openid"]
+    raise RuntimeError("jscode2session 失败: %s" % json.dumps(data, ensure_ascii=False)[:200])
+
+
+def jsapi_pay_params(prepay_id):
+    """把 prepay_id 打包成小程序 wx.requestPayment 所需的参数(含 paySign)。
+
+    paySign 是「调起支付」的二次签名:对 appId\\ntimeStamp\\nnonceStr\\npackage\\n 用商户私钥签。
+    与请求签名(_authorization)是两处不同的签名,别混。
+    """
+    c = _config()
+    appid = _env("WX_MP_APPID") or c["appid"]
+    ts = str(int(time.time()))
+    nonce = uuid.uuid4().hex
+    package = "prepay_id=%s" % prepay_id
+    message = ("%s\n%s\n%s\n%s\n" % (appid, ts, nonce, package)).encode()
+    sign = base64.b64encode(c["priv"].sign(message, padding.PKCS1v15(), hashes.SHA256())).decode()
+    return {"appId": appid, "timeStamp": ts, "nonceStr": nonce,
+            "package": package, "signType": "RSA", "paySign": sign}

@@ -69,6 +69,19 @@ def test_authorization_format():
         assert field in auth, "签名头缺字段 " + field
 
 
+def test_jsapi_pay_params():
+    c = _fake_config()
+    params = wxpay.jsapi_pay_params("wx20211111prepayid")
+    for k in ("appId", "timeStamp", "nonceStr", "package", "signType", "paySign"):
+        assert k in params, "调起支付参数缺 " + k
+    assert params["package"] == "prepay_id=wx20211111prepayid"
+    assert params["signType"] == "RSA"
+    # paySign 应能被同一对公钥验回(证明签名对的是 appId\ntimeStamp\nnonceStr\npackage\n)
+    msg = ("%s\n%s\n%s\n%s\n" % (params["appId"], params["timeStamp"],
+                                 params["nonceStr"], params["package"])).encode()
+    c["pub"].verify(base64.b64decode(params["paySign"]), msg, padding.PKCS1v15(), hashes.SHA256())
+
+
 def test_package_whitelist():
     # 与 auth_server.RECHARGE_PACKAGES 对齐:金额只认固定组合
     import auth_server
@@ -81,5 +94,6 @@ if __name__ == "__main__":
     test_verify_notify_roundtrip()
     test_decrypt_resource_roundtrip()
     test_authorization_format()
+    test_jsapi_pay_params()
     test_package_whitelist()
     print("wxpay 自检全部通过 ✅")
