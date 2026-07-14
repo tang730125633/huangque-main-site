@@ -34,12 +34,12 @@ RECHARGE_CUSTOM_MAX = 5000
 
 def recharge_points_for(amount):
     """金额(元) -> 点数。固定档用赠送价；其余按 10 点/元(限 10~5000 元整数)。非法返回 None。
-    金额只接受整数元(避免分位歧义与非整点数)。"""
+    金额只接受整数元(避免分位歧义与非整点数)；拒绝 NaN/Infinity/超大数/非数字(否则 int/float 抛错致 500)。"""
     try:
         yuan = int(amount)
-    except (TypeError, ValueError):
-        return None
-    if yuan != float(amount):        # 拒绝非整数元(如 15.5)
+        if yuan != float(amount):    # 拒绝非整数元(如 15.5);float() 对超大整数/inf 会抛 OverflowError
+            return None
+    except (TypeError, ValueError, OverflowError):
         return None
     if yuan in RECHARGE_TIERS:
         return RECHARGE_TIERS[yuan]
@@ -1585,12 +1585,13 @@ class H(BaseHTTPRequestHandler):
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
+            amount = d.get("amount")
+            points = recharge_points_for(amount)   # 点数服务端算,绝不信客户端(与 wxpay 路由一致)
+            if points is None:
+                return self._send(400, {"detail": "无效的充值金额(固定档 99/199/499，或自定义 10~5000 元整数)"})
+            amount = int(amount)
             try:
-                order, err = create_recharge_order(row["username"], d.get("amount"), d.get("points"), d.get("note") or "")
-                if err == "amount_invalid":
-                    return self._send(400, {"detail": "充值金额必须大于 0"})
-                if err == "points_invalid":
-                    return self._send(400, {"detail": "充值点数必须大于 0"})
+                order, err = create_recharge_order(row["username"], amount, points, d.get("note") or "")
                 if err:
                     return self._send(400, {"detail": err})
                 return self._send(200, {"ok": True, "order": order})

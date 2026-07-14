@@ -92,6 +92,8 @@ def test_recharge_pricing():
     assert f(9) is None and f(5001) is None, "越界必须拒绝"
     assert f(15.5) is None, "非整数元必须拒绝(避免非整点数)"
     assert f("abc") is None and f(None) is None, "非法输入拒绝"
+    assert f(float("inf")) is None and f(float("nan")) is None, "inf/nan 必须拒绝(不能抛错致500)"
+    assert f(10 ** 400) is None, "超大整数必须拒绝(float()会OverflowError)"
 
 
 if __name__ == "__main__":
