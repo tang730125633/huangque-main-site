@@ -1002,29 +1002,38 @@ def _strip_audio(ref_path):
 
     ⚠️ 只重封装（-c copy），不重编码 —— 画质一帧不动，几十毫秒的事。
     失败就原样返回：这是优化，不是正确性前提，绝不能因为剥不动就让任务失败。
+
+    ⚠️ 路径必须解析：video_files 里存的是【相对 OUT_DIR 的路径】（如 "video/xxx.mp4"），
+    而服务 CWD ≠ OUT_DIR。输入要 _resolve_out_file 解析到绝对路径、输出要 _out_path 落到
+    OUT_DIR，返回相对路径 —— 和 _extract_reference_audio / 旧 _shrink_motion_reference 一致。
+    （否则 ffmpeg 按 CWD 找不到输入，每次都静默回退，剥音轨形同虚设。）
     """
-    path = pathlib.Path(ref_path)
-    out = path.parent / ("motion_ref_mute_%s.mp4" % uuid.uuid4().hex)
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(path),
-           "-an", "-c:v", "copy", "-movflags", "+faststart", str(out)]
+    fp = _resolve_out_file(ref_path)
+    if not fp:
+        return ref_path
+    out_rel = "video/motion_ref_mute_%s.mp4" % uuid.uuid4().hex
+    out_fp = _out_path(out_rel)
+    out_fp.parent.mkdir(parents=True, exist_ok=True)
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(fp),
+           "-an", "-c:v", "copy", "-movflags", "+faststart", str(out_fp)]
     try:
         subprocess.run(cmd, check=True, timeout=120, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if not out.exists() or out.stat().st_size <= 0:
+        if not out_fp.exists() or out_fp.stat().st_size <= 0:
             raise RuntimeError("产物为空")
     except Exception as e:
         print("[motion] 参考视频剥音轨失败，原样上传: %s" % str(e)[:100], flush=True)
         try:
-            out.unlink()
+            out_fp.unlink()
         except Exception:
             pass
-        return path
+        return ref_path
     try:
-        before, after = path.stat().st_size, out.stat().st_size
+        before, after = fp.stat().st_size, out_fp.stat().st_size
         print("[motion] 剥音轨 %.1fMB → %.1fMB（省 %.0f%%）"
               % (before / 1048576.0, after / 1048576.0, 100.0 * (before - after) / max(before, 1)), flush=True)
     except OSError:
         pass
-    return out
+    return out_rel
 
 
 def _mux_original_audio(video_file, audio_rel):
