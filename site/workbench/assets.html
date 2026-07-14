@@ -528,11 +528,13 @@
     var video=document.createElement('video'); video.controls=true; video.playsInline=true; video.autoplay=true; video.preload='metadata';
     if(posterUrl) video.poster=thumbUrl(posterUrl,720);
     var objectUrl='';
+    var closed=false;
     var hideLoading=function(){ loading.style.display='none'; };
     var closeModal=function(){
+      closed=true;
       document.removeEventListener('keydown',onKey);
       try{ video.pause(); }catch(e){}
-      try{ video.removeAttribute('src'); video.load(); }catch(e){}
+      try{ video.src=''; video.load(); }catch(e){}
       if(objectUrl && objectUrl.indexOf('blob:')===0) URL.revokeObjectURL(objectUrl);
       wrap.remove();
     };
@@ -553,11 +555,13 @@
       loading.textContent='视频无法播放，素材可能已失效';
     });
     playableUrl(videoUrl,options).then(function(src){
+      if(closed){ URL.revokeObjectURL(src); return; }
       objectUrl=src;
       video.src=src;
       var p=video.play();
       if(p && p.catch) p.catch(function(){ if(video.readyState>=1) hideLoading(); });
     }).catch(function(e){
+      if(closed) return;
       loading.textContent=(e&&e.message)||'视频加载失败';
       toast((e&&e.message)||'视频加载失败',false);
     });

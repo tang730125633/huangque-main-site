@@ -766,10 +766,12 @@
     var loading=ov.querySelector('.vidLoading');
     var video=ov.querySelector('video');
     var objectUrl='';
+    var closed=false;
     var close=function(){
+      closed=true;
       document.removeEventListener('keydown',onKey);
       try{video.pause();}catch(e){}
-      try{video.removeAttribute('src');video.load();}catch(e){}
+      try{video.src='';video.load();}catch(e){}
       if(objectUrl && objectUrl.indexOf('blob:')===0) URL.revokeObjectURL(objectUrl);
       ov.remove();
     };
@@ -781,14 +783,14 @@
     document.addEventListener('keydown',onKey);
     document.body.appendChild(ov);
     assetUrl(videoUrl).then(function(src){
+      if(closed){ URL.revokeObjectURL(src); return; }
       objectUrl=src;
       video.src=src;
       if(loading) loading.style.display='none';
       var p=video.play();
       if(p && p.catch) p.catch(function(){});
     }).catch(function(){
-      close();
-      toast('视频读取失败');
+      if(!closed){ close(); toast('视频读取失败'); }
     });
   }
   function toast(msg){var t=$('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},1700);}
