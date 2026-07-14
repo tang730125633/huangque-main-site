@@ -808,8 +808,7 @@ def _user_running_image_count(username):
     return int(row["n"] if row else 0)
 
 
-def _global_running_breakdown_count():
-    """全局「运行中」的爆款拆解数（按 owner 过滤，仅统计本服务）。"""
+def _global_running_breakdown_count():   # 全局运行中的爆款拆解数（按 owner 过滤，仅本服务）
     with closing(jdb()) as c:
         row = c.execute("SELECT COUNT(*) AS n FROM jobs WHERE status='running' AND kind='breakdown' AND COALESCE(owner,?)=?",
                         (SERVICE_OWNER, SERVICE_OWNER)).fetchone()
