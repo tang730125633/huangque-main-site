@@ -162,6 +162,7 @@
       '.hq-aside-compact .hq-user-copy,.hq-aside-compact .hq-user-logout{display:none!important}'+
       '.hq-main-scroll{flex:1;min-height:0;overflow-y:auto;padding:26px 30px 40px}'+
       '.hq-main-scroll-flush{overflow:hidden;padding:0}'+
+      '.hq-topbar-flush{border-bottom:0!important}'+
       '.hq-nav-tooltip{position:fixed;z-index:9500;max-width:220px;padding:7px 10px;border:1px solid rgba(148,164,187,.18);border-radius:7px;background:#141b28;color:#eaf1fa;box-shadow:0 8px 24px rgba(0,0,0,.3);font:600 12px/1.25 inherit;white-space:nowrap;pointer-events:none;opacity:0;transform:translateX(-4px);transition:opacity .1s ease,transform .1s ease}'+
       '.hq-nav-tooltip.on{opacity:1;transform:none}'+
       '@media(max-width:1100px){.hq-main-scroll-flush{overflow-y:auto}}'+
@@ -241,7 +242,7 @@
       '</div>';
 
     var header=document.createElement('header');
-    header.className='hq-topbar';
+    header.className='hq-topbar'+(usesFlushWorkspace(active)?' hq-topbar-flush':'');
     header.style.cssText='flex:none; display:flex; align-items:center; gap:14px; padding:14px 26px; border-bottom:1px solid rgba(148,164,187,.08); background:rgba(7,11,19,.4); backdrop-filter:blur(12px);';
     header.innerHTML=
       '<button type="button" class="hq-burger" aria-label="打开导航" aria-controls="hqSideNav" aria-expanded="false" style="display:none; width:38px; height:38px; align-items:center; justify-content:center; flex:none; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer;">'+icon('menu','18px')+'</button>'+

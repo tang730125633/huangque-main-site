@@ -12,7 +12,7 @@
   body{ overflow:hidden; }
   .hq-content[data-active="banana"]{height:100%;min-height:0}
   .banana-workspace{--left-pane:50%;height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden;border:0;border-radius:0;background:var(--hq-surface);box-shadow:none}
-  .banana-workspace-head{height:62px;flex:none;display:grid;grid-template-columns:minmax(0,var(--left-pane)) 8px minmax(0,1fr);padding:0;border-bottom:1px solid var(--hq-border)}
+  .banana-workspace-head{height:62px;flex:none;display:grid;grid-template-columns:minmax(0,var(--left-pane)) 8px minmax(0,1fr);padding:0;border-bottom:0}
   .workspace-head-left{min-width:0;padding:0 20px;display:flex;align-items:center}
   .workspace-head-divider{width:8px;background:var(--hq-surface-soft);border-left:1px solid var(--hq-border);border-right:1px solid var(--hq-border)}
   .workspace-head-right{min-width:0;padding:0 20px}
@@ -230,7 +230,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=eb74b375"></script>
+<script src="cloud-shell.js?v=302ad2ce"></script>
 <script>
 /* 作图页接后端能力中心 /api/gen/image + /api/gen/banana，点数后端统一扣。 */
 (function(){

@@ -77,6 +77,8 @@ test('generation routes alone use the flush workspace shell', () => {
   for (const route of ['canvas', 'settings', 'inspiration']) assert.equal(usesFlushWorkspace(route), false, route);
   assert.match(shell, /hq-main-scroll-flush/);
   assert.match(shell, /\.hq-main-scroll-flush\{overflow:hidden;padding:0\}/);
+  assert.match(shell, /\.hq-topbar-flush\{border-bottom:0!important\}/);
+  assert.match(shell, /header\.className='hq-topbar'\+\(usesFlushWorkspace\(active\)\?' hq-topbar-flush':''\)/);
   assert.match(shell, /@media\(max-width:1100px\)\{\.hq-main-scroll-flush\{overflow-y:auto\}\}/);
 });
 

@@ -52,6 +52,12 @@ test('workspace header aligns its divider and result tabs with both panes', () =
   assert.match(html, /document\.querySelector\('\.banana-workspace'\)/);
 });
 
+test('workspace header has no horizontal frame lines', () => {
+  assert.match(html, /\.banana-workspace-head\{[^}]*border-bottom:0/);
+  assert.match(html, /\.result-tabs\{[^}]*border-bottom:0/);
+  assert.match(html, /\.result-tab\.on\{[^}]*border-bottom-color:#e7b24c/);
+});
+
 test('desktop divider is an accessible separator', () => {
   assert.match(html, /id="workspaceDivider"/);
   assert.match(html, /role="separator"/);
