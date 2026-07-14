@@ -83,23 +83,20 @@ class TheModeItselfIsKeptTests(unittest.TestCase):
         self.assertIn("duo:   {label:'双人动作模仿'", HTML)
 
 
-class SinglePersonIsUntouchedTests(unittest.TestCase):
-    """这次【只】下掉双人 —— 单人的提示词和锁死的参数保持线上现状，一个字都不许改。
+class SinglePersonParamsAreUntouchedTests(unittest.TestCase):
+    """下掉双人时，单人的【锁死参数】不许被顺手改。
 
-    我一度把它改成第一版的英文、还去掉了身份约束，被 kongli 否掉了。
-    这几条断言就是防止那种改动再溜进来。
+    （提示词本身 kongli 后来又换过一次 —— 2026-07-14 换成了他给的那段英文，
+    见 test_open_mode_no_guard。所以这里不再断言提示词内容，只守参数。）
     """
-
-    def test_the_prompt_is_unchanged(self):
-        self.assertEqual(video.CINEMATIC_FIXED_PROMPTS["motion"], "用这个人物形象模仿视频里面的动作")
-
-    def test_the_identity_guard_is_still_appended(self):
-        self.assertTrue(video.MOTION_PROMPT.endswith(video.CINEMATIC_IDENTITY_GUARD))
-        self.assertIn("from the reference video", video.CINEMATIC_IDENTITY_GUARD)
 
     def test_the_locked_params_are_unchanged(self):
         self.assertEqual(video.CINEMATIC_MOTION_RESOLUTION, "1080p")
         self.assertEqual(video.cinematic_rate("motion"), 3)
+
+    def test_the_prompt_is_still_fixed_and_not_user_supplied(self):
+        """不管内容换成什么，它都得是【写死的】—— 客户端传的 prompt 一律不认。"""
+        self.assertIn("motion", video.CINEMATIC_FIXED_PROMPTS)
 
 
 if __name__ == "__main__":

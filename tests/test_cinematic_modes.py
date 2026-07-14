@@ -31,6 +31,7 @@ if SERVER not in sys.path:
 video = importlib.import_module("content_domains.video")
 points = importlib.import_module("content_domains.points")
 HTML = (ROOT / "site/workbench/video.html").read_text(encoding="utf-8")
+VIDEO_SRC = (ROOT / "server/content_domains/video.py").read_text(encoding="utf-8")
 CORE = (ROOT / "server/content_domains/core.py").read_text(encoding="utf-8")
 
 REF = "data:video/mp4;base64,AA"
@@ -120,29 +121,36 @@ class FixedPromptTests(_Base):
         self.assertIn("from the reference video", video.CINEMATIC_IDENTITY_GUARD)
         self.assertIn("CRITICAL", video.CINEMATIC_IDENTITY_GUARD)
 
-    def test_the_identity_guard_is_not_appended_twice(self):
-        """gen_cinematic 会统一拼身份约束。固定提示词里再带一份就是拼两遍。"""
-        for text in video.CINEMATIC_FIXED_PROMPTS.values():
-            self.assertNotIn(video.CINEMATIC_IDENTITY_GUARD, text)
+    def test_the_guard_is_no_longer_appended_by_gen_cinematic(self):
+        """反过来了：现在固定提示词【自带】约束，gen_cinematic 什么都不拼。
+        payload 里的 prompt == HeyGen 收到的 prompt。"""
+        gen = VIDEO_SRC.split("def gen_cinematic")[1].split(chr(10) + "def ")[0]
+        code = chr(10).join(ln for ln in gen.splitlines() if not ln.lstrip().startswith("#"))
+        self.assertNotIn("CINEMATIC_IDENTITY_GUARD", code)
+        self.assertIn('prompt=payload["prompt"]', code)
 
-    def test_the_single_person_prompt_is_the_one_that_actually_passed_moderation(self):
-        """照抄 #2173 —— 目前唯一一个已知能过 HeyGen 审核的配置（成片 383s）。
+    def test_the_single_person_prompt_is_the_one_kongli_gave(self):
+        """kongli 2026-07-14 换的这段（详见 test_open_mode_no_guard）。
 
-        写死的英文版被审核拦了 5/6：它里面的 "not the reference person" 是换脸措辞。
+        ⚠️ 它带着 "not the reference person" / "Do NOT copy the reference video person's
+        appearance" —— 正是被 HeyGen 审核拦过的措辞（5 败 1 成）。kongli 知情并确认要换。
+        被它换掉的中文版是照抄 #2173 的，那是唯一验证过能过审核的配置。
         """
-        self.assertEqual(video.CINEMATIC_FIXED_PROMPTS["motion"], "用这个人物形象模仿视频里面的动作")
+        self.assertIn("not the reference person", video.CINEMATIC_FIXED_PROMPTS["motion"])
+        self.assertTrue(video.CINEMATIC_FIXED_PROMPTS["motion"].startswith(
+            "Create a realistic cinematic vertical video"))
 
-    def test_no_face_swap_wording_survives_anywhere(self):
-        """回归：这些英文措辞被 HeyGen 的审核模型读得懂，是它拦我们的直接原因。"""
-        for text in list(video.CINEMATIC_FIXED_PROMPTS.values()):
-            low = text.lower()
-            for bad in ("replace the", "not the reference person", "swap"):
-                self.assertNotIn(bad, low, "提示词里还留着换脸措辞：%s" % bad)
+    def test_the_fixed_prompts_are_self_contained(self):
+        """新的固定提示词自带身份约束 —— gen_cinematic 不再拼 guard，
+        拼了就是同样的话说两遍。"""
+        for mode, text in video.CINEMATIC_FIXED_PROMPTS.items():
+            self.assertIn("CRITICAL", text, "%s 的提示词没有身份约束了" % mode)
+            self.assertEqual(text.count("CRITICAL"), 1, "%s 说了两遍" % mode)
 
-    def test_the_duo_prompt_follows_the_same_chinese_pattern(self):
-        """双人的英文版被审核拦了 2/2（"replace the two people in the reference video" —— 
-        字面就是换脸）。改成和单人同一路子的中文。⚠️ 尚未实测。"""
-        self.assertEqual(video.DUO_MOTION_PROMPT_BASE, "用这两个人物形象模仿视频里面的动作")
+    def test_the_duo_prompt_is_self_contained(self):
+        """双人已从前端下掉。它的提示词也做成自包含 —— 开回来时不该再依赖外部拼接。"""
+        self.assertTrue(video.DUO_MOTION_PROMPT_BASE.startswith("用这两个人物形象模仿视频里面的动作"))
+        self.assertIn("CRITICAL", video.DUO_MOTION_PROMPT_BASE)
 
     def test_open_mode_still_requires_the_user_to_write_one(self):
         with self.assertRaises(ValueError):

@@ -57,6 +57,9 @@ jobs:
       - name: 检查 JavaScript 语法
         run: find site -type f -name '*.js' -print0 | xargs -0 -n1 node --check
 
+      - name: 测试工作台侧栏
+        run: node tests/test_cloud_shell_sidebar.js
+
       - name: 安装设计系统依赖
         working-directory: design-system
         run: npm ci
