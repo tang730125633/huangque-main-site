@@ -2796,7 +2796,19 @@ def gen_cinematic(payload):
     with heygen_slot("剧情视频"):
         video_id = _heygen_retry_429(lambda: _heygen_create_cinematic_video(
             look_ids, reference_asset_ids, payload["ratio"], payload["resolution"], duration,
-            prompt=payload["prompt"] + CINEMATIC_IDENTITY_GUARD, direct=True,
+            # 开放式生成【不再拼】身份约束（kongli 的决定，2026-07-14）——
+            # 用户写什么就发什么，一个字不加。
+            #
+            # ⚠️ 代价（已经跟 kongli 说清楚）：不拼的话，HeyGen 可能把参考视频里那个人的长相
+            # 抄进成片，用户拿到的就不是自己的脸了。用户自己写的中文提示词里通常不会写
+            # 「保持我的脸不变」这种话 —— 身份这件事本来就不该交给用户把关。
+            # 真出现串脸，先看这里。
+            #
+            # 动作模仿（写死提示词的玩法）【仍然要拼】：它是线上唯一跑通 HeyGen 审核的配置
+            # （#2173 就是带着这段约束过的），别顺手一起改了。
+            prompt=(payload["prompt"] + CINEMATIC_IDENTITY_GUARD
+                    if payload.get("cine_mode") in CINEMATIC_FIXED_PROMPTS
+                    else payload["prompt"]), direct=True,
             enhance_prompt=payload.get("enhance_prompt")), "剧情视频")
 
         # ↓ 此刻已计费。之后任何失败都不能重发（见 HeyGenBilledError）——HeyGen 提交即扣费。

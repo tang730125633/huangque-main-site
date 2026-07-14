@@ -425,7 +425,10 @@
           <div id="cinePromptTemplates" class="motion-preset-grid" style="margin-bottom:10px;"></div>
           <textarea id="cinePrompt" rows="4" placeholder="描述你想要的画面，例如：在海边散步，夕阳背光，镜头缓慢推近，电影质感"
             style="width:100%;box-sizing:border-box;padding:12px 14px;border-radius:12px;border:1px solid #263041;background:#0e1420;color:#e8eefb;font:inherit;font-size:13px;resize:vertical;"></textarea>
-          <div class="faint" style="font-size:11.5px;margin-top:8px;">只写你想要的画面。系统会自动保证成片里的人还是你选的形象本人。</div>
+          <!-- 原来这里写的是「系统会自动保证成片里的人还是你选的形象本人」——
+               那句话的底气是后端拼的 CINEMATIC_IDENTITY_GUARD。现在开放式【不再拼】了
+               （kongli 2026-07-14 的决定：用户写什么就发什么），这句话就成了假话，必须改。 -->
+          <div class="faint" style="font-size:11.5px;margin-top:8px;">你写什么就发什么，系统不再额外加任何约束。<b style="color:#e7b24c;">想让成片里的人保持你的形象本人，请在描述里写清楚</b>（例如「人物必须是所选形象本人，保持脸型、发型、衣着不变」）——尤其是上传了参考视频时，不写的话可能会被参考视频里的人影响。</div>
           <label style="display:flex;align-items:center;gap:9px;margin-top:12px;cursor:pointer;">
             <input id="cineEnhance" type="checkbox" style="width:15px;height:15px;accent-color:#e7b24c;cursor:pointer;">
             <span style="font-size:12.5px;color:#eaf1fa;font-weight:700;">自动润色提示词</span>
@@ -716,13 +719,17 @@
   function cineCost(){ return cineSeconds()*cineCfg().rate; }
   // 提示词模板：用户只写创意，身份约束（保持形象本人的脸/发型/衣着、不要抄参考视频里的人）
   // 由后端无条件拼上 —— 那条不能交给用户把关，丢了成片里的人就不是自己了。
+  // 模板里【自带】身份表述 —— 原来这句是后端拼的（CINEMATIC_IDENTITY_GUARD），
+  // 开放式现在不拼了，用户的提示词里要是没有它，成片里的人就可能不是他自己。
+  // 模板是大多数人的起点，把它写进去，等于给了一个安全的默认值。
+  var CINE_IDENTITY='人物必须是所选形象本人，保持脸型、发型、身材和衣着不变。';
   var CINE_TEMPLATES=[
-    {name:'口播出镜',   text:'站在明亮的现代办公空间里，面向镜头自信讲解，手势自然，浅景深，专业商务质感'},
-    {name:'门店实拍',   text:'在高级美容院内走动介绍，暖色灯光，镜头缓慢跟随，生活方式短片质感'},
-    {name:'海边氛围',   text:'在海边缓步行走，夕阳背光，海风吹动头发，镜头缓慢推近，电影感调色'},
-    {name:'街头时尚',   text:'走在城市街头，霓虹灯背景，回头看向镜头微笑，时尚大片质感'},
-    {name:'产品展示',   text:'手持产品面向镜头介绍，纯色背景，柔和布光，特写与中景切换，广告片质感'},
-    {name:'多人同框',   text:'两人并肩站立面向镜头交谈，互动自然，室内暖光，纪录片质感'}
+    {name:'口播出镜',   text:CINE_IDENTITY+'站在明亮的现代办公空间里，面向镜头自信讲解，手势自然，浅景深，专业商务质感'},
+    {name:'门店实拍',   text:CINE_IDENTITY+'在高级美容院内走动介绍，暖色灯光，镜头缓慢跟随，生活方式短片质感'},
+    {name:'海边氛围',   text:CINE_IDENTITY+'在海边缓步行走，夕阳背光，海风吹动头发，镜头缓慢推近，电影感调色'},
+    {name:'街头时尚',   text:CINE_IDENTITY+'走在城市街头，霓虹灯背景，回头看向镜头微笑，时尚大片质感'},
+    {name:'产品展示',   text:CINE_IDENTITY+'手持产品面向镜头介绍，纯色背景，柔和布光，特写与中景切换，广告片质感'},
+    {name:'多人同框',   text:CINE_IDENTITY+'两人并肩站立面向镜头交谈，互动自然，室内暖光，纪录片质感'}
   ];
   var selectedGrokRatio='16:9', selectedGrokDuration=10, selectedGrokResolution='720p', selectedGrokModel='grok-imagine-video';
   var grokOperation='generate', grokEditVideoData='', grokEditDuration=0;
