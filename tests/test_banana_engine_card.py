@@ -58,8 +58,10 @@ class PointsRecalculationTests(unittest.TestCase):
         self.assertIn("nb2:{std:15,hd:25}", m.replace(" ", ""))
         self.assertIn("pro:{std:25,hd:30}", m.replace(" ", ""))
 
-    def test_cost_key_resolves_banana_to_variant(self):
-        self.assertRegex(BANANA, r"function costKey\(eng\)\{ return eng==='banana' \? bananaVariant : eng; \}")
+    def test_cost_key_resolves_engine_to_variant(self):
+        # banana→bananaVariant(nb2/pro)，seedream→'seedream_'+seedreamVariant(std/pro)，其余=引擎名
+        self.assertIn("eng==='banana' ? bananaVariant", BANANA)
+        self.assertIn("eng==='seedream' ? 'seedream_'+seedreamVariant", BANANA)
 
     def test_engine_cost_uses_cost_key(self):
         self.assertRegex(BANANA, r"function engineCost\(eng\)\{ var t=COSTBASE\[costKey\(eng\)\]")

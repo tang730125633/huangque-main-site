@@ -15,12 +15,17 @@ from .core import AUTH_BASE, AUTH_INTERNAL_TOKEN, COST, closing, jdb, json, urll
 # 其余引擎沿用原 8/12，待逐个测准后再调（Seedream 实际成本仅 2~6 点，偏高）。
 IMAGE_BASE_COST = {
     "openai":   {"std": 20, "hd": 30},
-    "seedream": {"std": 8, "hd": 12},
     "xiaole":   {"std": 8, "hd": 12},
     "zelong":   {"std": 8, "hd": 12},
     "zelong2":  {"std": 8, "hd": 12},
 }
 _IMAGE_DEFAULT_COST = {"std": 8, "hd": 12}
+# Seedream 按【型号】(5.0 标准 / 5.0 pro，payload.variant) 再分【清晰度】(标准 std / 高清 hd) 定价
+# （kongli 2026-07-15）。此前两个型号同价 {std:8,hd:12}，现在 pro 型号更贵。
+SEEDREAM_VARIANT_COST = {
+    "std": {"std": 8,  "hd": 12},   # 5.0 标准
+    "pro": {"std": 15, "hd": 20},   # 5.0 Pro
+}
 # 数量上限必须与 image.gen_image 里的 cap 逐字一致，否则按 N 扣点却只出 cap 张 = 超收。
 _IMAGE_CAP_2 = {"zelong", "zelong2", "xiaole", "seedream"}
 
@@ -35,7 +40,11 @@ def cost_of(kind, body):
         # 质量基价按引擎分档（IMAGE_BASE_COST）。gen_image 里 provider 缺省是 openai，这里保持一致。
         provider = (body.get("provider") or "openai").strip().lower()
         tier = "hd" if (body.get("quality") or "hd") == "hd" else "std"
-        base = (IMAGE_BASE_COST.get(provider) or _IMAGE_DEFAULT_COST)[tier]
+        if provider == "seedream":
+            variant = (body.get("variant") or "std").strip().lower()   # 5.0 标准 / 5.0 pro
+            base = (SEEDREAM_VARIANT_COST.get(variant) or SEEDREAM_VARIANT_COST["std"])[tier]
+        else:
+            base = (IMAGE_BASE_COST.get(provider) or _IMAGE_DEFAULT_COST)[tier]
         # cap 必须与 image.gen_image 里的数量上限逐字一致，否则按 N 扣点却只出 cap 张 = 超收。
         cap = 2 if provider in _IMAGE_CAP_2 else 4
         cnt = 1 if body.get("mask") else max(1, min(cap, int(body.get("count") or 1)))
