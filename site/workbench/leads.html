@@ -101,6 +101,7 @@
       <div style="display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid rgba(148,164,187,.08);">
         <div style="font-size:16px; font-weight:600;">精准客户名单 <span id="cntLabel" style="font-size:13px; color:#5c6b82; font-weight:400;"></span></div>
         <div style="display:flex; align-items:center; gap:12px;">
+          <select id="histSel" title="历史获客记录" style="display:none; height:30px; max-width:230px; padding:0 8px; background:rgba(7,11,19,.5); color:#94a4bb; border:1px solid rgba(148,164,187,.16); border-radius:8px; font-size:12px; font-family:inherit; cursor:pointer;"></select>
           <button id="exportBtn" style="display:none; align-items:center; gap:5px; padding:5px 11px; font-size:12px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); border-radius:8px; cursor:pointer; font-family:inherit;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></span>导出名单</button>
           <div id="statusLine" style="display:flex; align-items:center; gap:7px; font-size:12px; color:#5c6b82;"><span id="statusDot" style="width:6px; height:6px; border-radius:50%; background:#5c6b82;"></span><span id="statusText">待开始 · 输入关键词点「开始获客」</span></div>
         </div>
@@ -297,6 +298,8 @@
           if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
           var r=d.result||{}; setKPIs(r); renderLeads(r.leads||[]);
           setStatus('完成 · '+(r.leads_count||0)+' 个精准客户 · 去重 '+(r.deduped||0)+' 条（'+sec+'s）','#2bd576');
+          loadHistory(false);          // 本次跑完也进历史下拉
+
         }else if(d.status==='error'||d.status==='failed'){
           clearInterval(poll); busy(false); localStorage.removeItem('hq_active_leads_job');
           setStatus('失败：'+(d.error||'未知错误'),'#f4708a');
@@ -344,7 +347,43 @@
     sync();
   });
 
-  // 恢复进行中的获客任务（离开页面去别的栏目，再回来不丢；任务在服务器一直在跑）
+  // ===== 历史获客记录（服务端 assets 表持久化，切页/刷新/跑完都能回看，不再丢）=====
+  var histSel=document.getElementById('histSel'), histItems=[];
+  function fmtHistTime(ts){
+    if(!ts) return '';
+    var d=new Date(ts*1000), p=function(n){ return (n<10?'0':'')+n; };
+    return p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());
+  }
+  function renderHistory(item){
+    if(!item) return;
+    var m=item.meta||{};
+    setKPIs(m);
+    if((m.keyword||item.title) && input && !input.value) input.value=m.keyword||item.title;
+    renderLeads(m.leads||[]);
+    setStatus('历史记录 · '+esc(m.keyword||item.title||'获客')+'（'+(m.leads_count||0)+' 客户 · '+fmtHistTime(item.created_at)+'）','#5c6b82');
+  }
+  function loadHistory(autoRender){
+    return fetch('/api/gen/assets?kind=leads&limit=30',{credentials:'include',headers:{'Authorization':'Bearer '+tok()}})
+      .then(function(r){ return r.ok?r.json():null; }).then(function(d){
+        histItems=(d&&d.items)||[];
+        if(!histSel) return;
+        if(!histItems.length){ histSel.style.display='none'; histSel.innerHTML=''; return; }
+        histSel.innerHTML='<option value="">历史记录（'+histItems.length+'）</option>'+histItems.map(function(it,i){
+          var m=it.meta||{};
+          return '<option value="'+i+'">'+esc(m.keyword||it.title||'获客')+' · '+fmtHistTime(it.created_at)+' · '+(m.leads_count||0)+'客户</option>';
+        }).join('');
+        histSel.style.display='';
+        if(autoRender && histItems[0]){ histSel.value='0'; renderHistory(histItems[0]); }
+      }).catch(function(){});
+  }
+  if(histSel) histSel.onchange=function(){
+    var i=parseInt(histSel.value,10);
+    if(isNaN(i)||!histItems[i]) return;
+    renderHistory(histItems[i]);
+  };
+
+  // 初始化：有进行中的任务 → 接上（离开页面再回来不丢，任务在服务器一直在跑）；
+  //         没有 → 自动载入最近一次历史，避免切页回来一片空白。
   try{
     var aj=JSON.parse(localStorage.getItem('hq_active_leads_job')||'null');
     if(aj && aj.id){
@@ -353,8 +392,11 @@
       setStatus('接上刚才的获客任务…','#2dd4bf');
       rows.innerHTML='<div style="padding:64px 20px; text-align:center; color:#94a4bb;"><div style="width:34px;height:34px;margin:0 auto 16px;border:3px solid rgba(148,164,187,.18);border-top-color:#e7b24c;border-radius:50%;animation:hq-spin .8s linear infinite;"></div><div style="font-size:14px;">接上刚才的获客任务…（在服务器一直在跑）</div></div>';
       watch(aj.id, aj.t0||Date.now());
+      loadHistory(false);          // 历史下拉也填上，跑完能切回看
+    }else{
+      loadHistory(true);           // 没有进行中 → 自动载入最近一次
     }
-  }catch(e){}
+  }catch(e){ loadHistory(true); }
 })();
 </script>
 </body>
