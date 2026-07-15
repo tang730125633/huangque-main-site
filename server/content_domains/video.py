@@ -2,7 +2,7 @@
 import tempfile
 
 from .core import (
-    AUDIO_OUT_DIR, HEYGEN_API_BASE, HEYGEN_API_KEY, HEYGEN_POLL_INTERVAL,
+    AUDIO_OUT_DIR, CINEMATIC_GEN_DEADLINE, HEYGEN_API_BASE, HEYGEN_API_KEY, HEYGEN_POLL_INTERVAL,
     HEYGEN_TIMEOUT, OUT_DIR, VIDEO_GEN_DEADLINE, VIDEO_OUT_DIR, _env_positive_int, _file_url, _out_path, _resolve_out_file,
     _user_owns_output_file, adb, base64, closing, jdb, json, mimetypes, os, pathlib, public_url,
     re, subprocess, threading, time, urllib, uuid,
@@ -1500,10 +1500,12 @@ class HeyGenBilledError(RuntimeError):
     """
 
 
-# 电影化身走 HeyGen 时的轮询死线 —— 默认统一到 VIDEO_GEN_DEADLINE(15 分钟)。
-# 实测：cinematic 生成 149~511s，20 路并发不降速，15 分钟是它的 2~6 倍。它是唯一「提交即扣 $7」
-# 的引擎，若线上偶发慢，单独调这个 env 给它加裕量即可(别超过 reaper 对 cinematic 的宽限 1200s)。
-HEYGEN_MOTION_DEADLINE = int(os.environ.get("HEYGEN_MOTION_DEADLINE", "") or VIDEO_GEN_DEADLINE)
+# 电影化身走 HeyGen 时的轮询死线 —— 20 分钟（kongli 2026-07-14，原来跟全站的 15 分钟走）。
+#
+# 数就定在 core.CINEMATIC_GEN_DEADLINE，这里【只是引用】—— reaper 对 cinematic 的宽限
+# (CINEMATIC_REAPER_GRACE) 是拿它 +300 算出来的。两边各写一个字面量，就会重演「引擎死线比
+# reaper 宽限还长 → reaper 先把活着的任务杀了」那个老 bug。
+HEYGEN_MOTION_DEADLINE = CINEMATIC_GEN_DEADLINE
 
 
 def _heygen_poll_video(video_id, direct=False, deadline_s=None):

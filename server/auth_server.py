@@ -5,6 +5,13 @@ import sqlite3, hashlib, secrets, json, os, sys, time, urllib.parse
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# 微信支付客户端(仅用系统已装 cryptography)。缺 wxpay.py/cryptography 时置 None,
+# 支付路由回 503,不拖垮整个认证服务。
+try:
+    import wxpay
+except Exception:
+    wxpay = None
+
 DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
 PORT = 8095
 ITER = 200000
@@ -17,6 +24,9 @@ LOGIN_FAIL_MAX = int(os.environ.get("HQ_AUTH_FAIL_MAX", "5"))
 REGISTER_WINDOW = int(os.environ.get("HQ_AUTH_REGISTER_WINDOW", "300"))
 REGISTER_MAX = int(os.environ.get("HQ_AUTH_REGISTER_MAX", "5"))
 NEW_USER_TRIAL_POINTS = int(os.environ.get("HQ_AUTH_TRIAL_POINTS", "16"))  # 新注册赠送试用点数(约2次标准清晰度作图)
+# 充值套餐白名单(点数 -> 金额元)。自动支付的下单/回调只认这里的固定组合，
+# 绝不信客户端传的金额——否则用户能花 1 元买百万点。与 recharge.html 的套餐一致。
+RECHARGE_PACKAGES = {100: 39.0, 550: 168.0, 2400: 598.0}
 LOGIN_FAILS = {}
 REGISTER_HITS = {}
 REVOKED_TOKENS = set()
@@ -150,6 +160,11 @@ def init_db():
     cols = {r["name"] for r in c.execute("PRAGMA table_info(tokens)").fetchall()}
     if "expires_at" not in cols:
         c.execute("ALTER TABLE tokens ADD COLUMN expires_at INTEGER")
+    rcols = {r["name"] for r in c.execute("PRAGMA table_info(recharge_orders)").fetchall()}
+    if "transaction_id" not in rcols:
+        c.execute("ALTER TABLE recharge_orders ADD COLUMN transaction_id TEXT")  # 微信支付流水号
+    if "pay_channel" not in rcols:
+        c.execute("ALTER TABLE recharge_orders ADD COLUMN pay_channel TEXT")     # wxpay_native / wxpay_jsapi / manual
     c.commit(); c.close()
 
 def generate_account_id():
@@ -1320,6 +1335,26 @@ def review_recharge_order(who_admin, order_id, action, reason=""):
     finally:
         c.close()
 
+def get_recharge_order(order_id):
+    order_id = (order_id or "").strip()
+    if not order_id:
+        return None
+    c = db()
+    try:
+        return c.execute("SELECT * FROM recharge_orders WHERE order_id=?", (order_id,)).fetchone()
+    finally:
+        c.close()
+
+def set_recharge_transaction(order_id, transaction_id, pay_channel):
+    """回填微信流水号/支付方式。与加点分开——重复回调也可安全补写，不影响幂等。"""
+    c = db()
+    try:
+        c.execute("UPDATE recharge_orders SET transaction_id=?, pay_channel=? WHERE order_id=?",
+                  ((transaction_id or "").strip(), (pay_channel or "").strip(), (order_id or "").strip()))
+        c.commit()
+    finally:
+        c.close()
+
 def cleanup_expired_tokens(c=None):
     own = c is None
     if own: c = db()
@@ -1542,6 +1577,93 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "order": order})
             except Exception:
                 return self._send(500, {"detail": "充值申请提交失败"})
+        if p == "/api/auth/wxpay/native":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            if wxpay is None or not wxpay.configured():
+                return self._send(503, {"detail": "微信支付未配置"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                points = int(d.get("points") or 0)
+            except Exception:
+                return self._send(400, {"detail": "points 必须是整数"})
+            amount = RECHARGE_PACKAGES.get(points)   # 金额只认服务端白名单,不信客户端
+            if amount is None:
+                return self._send(400, {"detail": "无效的充值套餐"})
+            try:
+                order, err = create_recharge_order(row["username"], amount, points, "微信扫码充值")
+                if err:
+                    return self._send(400, {"detail": err})
+                code_url = wxpay.create_native(
+                    order["order_id"], "黄雀点数充值 %d点" % points, int(round(amount * 100)))
+                return self._send(200, {"ok": True, "order": order, "code_url": code_url})
+            except Exception as e:
+                # 下单失败:订单停留在 pending(等同一个没人审的人工申请),无害
+                return self._send(502, {"detail": "微信下单失败", "error": str(e)[:200]})
+        if p == "/api/auth/wxpay/jsapi":
+            # 小程序内充值:需登录态(定位黄雀账号) + wx.login 的 js_code(换微信 openid)
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            if wxpay is None or not wxpay.configured():
+                return self._send(503, {"detail": "微信支付未配置"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                points = int(d.get("points") or 0)
+            except Exception:
+                return self._send(400, {"detail": "points 必须是整数"})
+            js_code = (d.get("js_code") or "").strip()
+            if not js_code:
+                return self._send(400, {"detail": "缺少 js_code"})
+            amount = RECHARGE_PACKAGES.get(points)   # 金额只认服务端白名单
+            if amount is None:
+                return self._send(400, {"detail": "无效的充值套餐"})
+            try:
+                openid = wxpay.jscode2session(js_code)
+                order, err = create_recharge_order(row["username"], amount, points, "微信小程序充值")
+                if err:
+                    return self._send(400, {"detail": err})
+                prepay_id = wxpay.create_jsapi(
+                    order["order_id"], "黄雀点数充值 %d点" % points, int(round(amount * 100)), openid)
+                pay = wxpay.jsapi_pay_params(prepay_id)   # 客户端 wx.requestPayment 参数
+                return self._send(200, {"ok": True, "order": order, "pay": pay})
+            except Exception as e:
+                return self._send(502, {"detail": "微信下单失败", "error": str(e)[:200]})
+        if p == "/api/auth/wxpay/notify":
+            # 微信服务器回调:不带登录态/内部 token,靠 V3 签名验真。必须读原始字节验签。
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n) if n > 0 else b""
+            if wxpay is None or not wxpay.configured():
+                return self._send(503, {"code": "FAIL", "message": "not configured"})
+            if not wxpay.verify_notify(self.headers, raw):
+                return self._send(401, {"code": "FAIL", "message": "签名验证失败"})
+            try:
+                resource = wxpay.decrypt_resource(json.loads(raw or b"{}")["resource"])
+            except Exception:
+                return self._send(400, {"code": "FAIL", "message": "解密失败"})
+            if resource.get("trade_state") != "SUCCESS":
+                return self._send(200, {"code": "SUCCESS"})   # 非成功态,确认收到即可,不加点
+            order_id = (resource.get("out_trade_no") or "").strip()
+            txn_id = (resource.get("transaction_id") or "").strip()
+            paid_total = (resource.get("amount") or {}).get("total")
+            order_row = get_recharge_order(order_id)
+            if not order_row:
+                return self._send(200, {"code": "SUCCESS"})   # 未知订单,回200止重推,不加点
+            # 金额核对(防篡改):实付分数须等于订单金额*100
+            if paid_total != int(round(float(order_row["amount"]) * 100)):
+                return self._send(200, {"code": "SUCCESS"})   # 金额不符,不加点
+            try:
+                # review_recharge_order 自带幂等:重复回调因 status 已 approved 返回 already_reviewed,不重复加点
+                review_recharge_order("wxpay", order_id, "approve", "wxpay txn=%s" % txn_id)
+                set_recharge_transaction(order_id, txn_id, "wxpay")
+                return self._send(200, {"code": "SUCCESS"})
+            except Exception:
+                return self._send(500, {"code": "FAIL", "message": "处理失败"})   # 抛错让微信重推
         if p in {"/api/auth/points/deduct", "/api/auth/points/refund"}:
             if not self._require_internal():
                 return

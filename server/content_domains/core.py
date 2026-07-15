@@ -209,19 +209,25 @@ MAX_GLOBAL_RUNNING_BREAKDOWN = _env_positive_int("MAX_GLOBAL_RUNNING_BREAKDOWN",
 SERVICE_OWNER = "content"   # 本服务在 jobs.owner 的署名(#579)；两处全表扫描必须按它过滤，缘由见 jobs_store.ensure_owner_column
 # reaper 各 kind 的超时宽限(秒)，默认 360。tryon 两段式+心跳刷新；xiaole_video 内部轮询600s+转存；
 # image 多图/中转慢；collect 下载+ffmpeg抽音轨+ASR 且转写全站串行(实测成功平均88s)。video 按 mode 另算。
-# 【生成死线】从 worker 真正开始干活算起(不含排队)：口播/动作模仿/电影化身统一 15 分钟。
-# 各引擎轮询死线都用它，到点抛明确的「生成超时」并退点。cinematic 若要单独加裕量，改
-# HEYGEN_MOTION_DEADLINE env 即可(它只作用于 cinematic，但别超过下面 reaper 宽限)。
+# 【生成死线】从 worker 真正开始干活算起(不含排队)：口播/果肉/豆姐/欧米等视频引擎统一 15 分钟。
+# 各引擎轮询死线都用它，到点抛明确的「生成超时」并退点。
 VIDEO_GEN_DEADLINE = _env_positive_int("VIDEO_GEN_DEADLINE", 900)
 # reaper 宽限必须【大于】引擎死线：引擎到点抛明确的「生成超时」并退点，reaper 只兜底(worker 整个
 # 卡死、连 updated_at 都不刷时才轮到它)。反过来 reaper 先杀 = 用户拿到没头没脑的超时、而 worker
 # 还在跑上游照样收钱(口播原来就这样：中转死线 1200s、reaper 宽限却 540s)。多的 300s 给轮询之外的
 # 上传/下载/烧字幕/混 BGM —— 那些阶段不刷 updated_at。
 VIDEO_REAPER_GRACE = VIDEO_GEN_DEADLINE + 300
+
+# 【电影化身单独一条死线】20 分钟(kongli 2026-07-14，原跟全站 15 分钟走)。它是唯一「提交即扣费」
+# 的引擎($7/条，收钱在提交那一刻)：别的引擎超时顶多白等，它超时【钱已经花了】。线上真出现过我们
+# 900s 判超时退点、HeyGen 那边其实已 completed 出片 —— 片子被扔、$7 照付。宁可多等 5 分钟。
+# ⚠️ 宽限用加法钉死，别拆成两个字面量各写各的(口播就栽过：死线 1200s、宽限却 540s，reaper 先杀)。
+CINEMATIC_GEN_DEADLINE = _env_positive_int("HEYGEN_MOTION_DEADLINE", 1200)
+CINEMATIC_REAPER_GRACE = CINEMATIC_GEN_DEADLINE + 300
 # 没登记的 kind 用它 —— 绝不能是 0（见 reaper 里的注释：0 的语义是「立刻杀」）。
 KIND_GRACE_DEFAULT = _env_positive_int("KIND_GRACE_DEFAULT", 900)
 KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "image": 900, "collect": 1200,
-              "cinematic": VIDEO_REAPER_GRACE, "avatar": 300, "breakdown": 600}
+              "cinematic": CINEMATIC_REAPER_GRACE, "avatar": 300, "breakdown": 600}
 # ⚠️ tryon 【不】跟着 15 分钟走：线上实测线路一中位 909s、**p90 1612s(27 分钟)**。
 #    砍到 15 分钟会把超过一成的换装任务判成失败。要改它得先把那条链路本身提速。
 AVATAR_COST = _env_positive_int("AVATAR_COST", 5)   # 建形象：象征性收费防刷，失败自动退点
