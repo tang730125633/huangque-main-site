@@ -28,7 +28,13 @@ _IMAGE_CAP_2 = {"zelong", "zelong2", "xiaole", "seedream"}
 def cost_of(kind, body):
     """动态点数：TikHub 按次计费，采集/获客调用数随参数变。约 5x buff 折算成点。"""
     if kind == "collect":
-        return 3 + (3 if "transcript" in (body.get("want") or []) else 0)
+        # 提取文案（want 含 transcript）保留 6 点；其余即「内容爬取」，固定 30 点
+        # （kongli 2026-07-15，原为 3 点）。前端两个动作共用这一个 collect 接口，靠 want 区分：
+        #   主爬取   want=['comments'] 或 ['video']  → 30
+        #   提取文案 want=['transcript']              → 6
+        if "transcript" in (body.get("want") or []):
+            return 6
+        return 30
     if kind == "leads":
         return 30   # 获客固定 30 点/次（采集量前端固定 20 视频）；与 leads.html 成本徽章一致，防"消耗点数对不上"
     if kind == "image":
