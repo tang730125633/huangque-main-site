@@ -54,9 +54,13 @@ class TranscriptTests(unittest.TestCase):
 
 
 class LeadsCoverCosTests(unittest.TestCase):
-    def test_channels_cover_transcoded_to_cos(self):
+    def test_cover_and_images_transcoded_to_cos(self):
+        # 封面 + 图文图片一律经 _collect_cos_image → public_url_from_remote 转存 COS 保永久（含视频号）
         self.assertIn("public_url_from_remote", LSRC)
-        self.assertIn("collect/channels/cover_", LSRC)
+        self.assertIn("def _collect_cos_image", LSRC)
+        self.assertIn('_collect_cos_image(det.get("cover")', LSRC)
+        self.assertIn('_collect_cos_image(u, platform', LSRC)      # images 逐张转存
+        self.assertIn('"collect/%s/%s_%s.jpg"', LSRC)              # 通用 key 模板（含 channels/cover）
 
 
 if __name__ == "__main__":

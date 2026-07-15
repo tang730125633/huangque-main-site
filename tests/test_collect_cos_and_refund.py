@@ -477,5 +477,47 @@ class PermanentUrlTests(unittest.TestCase):
         self.assertFalse(meta["permanent"])
 
 
+class CollectImageCosTests(unittest.TestCase):
+    """采集封面 + 图文图片转存 COS 保永久 —— 抖音 douyinpic / 小红书 xhscdn 的 sign 链带时效会过期。"""
+
+    def setUp(self):
+        server_dir = str(Path(__file__).resolve().parents[1] / "server")
+        if server_dir not in sys.path:
+            sys.path.insert(0, server_dir)
+        os.environ.setdefault("CONTENT_BASE", tempfile.mkdtemp(prefix="hqcol-"))
+        self.leads = importlib.import_module("content_domains.leads")
+        self._orig = self.leads.public_url_from_remote
+        # 假 COS：任何远端链 → 固定 COS 前缀 + key，便于断言 key 拼装
+        self.leads.public_url_from_remote = lambda url, key, ct=None: "https://cos/%s" % key
+
+    def tearDown(self):
+        self.leads.public_url_from_remote = self._orig
+
+    def test_remote_image_is_transcoded(self):
+        got = self.leads._collect_cos_image(
+            "https://p3-pc-sign.douyinpic.com/x~tplv.jpeg", "douyin", "vid123", "cover")
+        self.assertEqual(got, "https://cos/collect/douyin/cover_vid123.jpg")
+
+    def test_already_cos_is_not_reuploaded(self):
+        u = "https://huangque-media.cos.ap-guangzhou.myqcloud.com/collect/douyin/x.jpg"
+        self.assertEqual(self.leads._collect_cos_image(u, "douyin", "v", "cover"), u)
+
+    def test_empty_or_non_http_passthrough(self):
+        self.assertEqual(self.leads._collect_cos_image("", "douyin", "v", "cover"), "")
+        self.assertIsNone(self.leads._collect_cos_image(None, "douyin", "v", "cover"))
+        self.assertEqual(self.leads._collect_cos_image("data:image/png;base64,AA", "xhs", "v", "img0"),
+                         "data:image/png;base64,AA")
+
+    def test_id_is_sanitized_into_key(self):
+        got = self.leads._collect_cos_image("http://cdn/a.jpg", "xhs", "a/b c?d", "img0")
+        self.assertEqual(got, "https://cos/collect/xhs/img0_abcd.jpg")
+
+    def test_transcode_failure_falls_back_to_original(self):
+        """public_url_from_remote 自身 fail-open：转存失败/COS 未启用 → 原样返回，绝不中断采集。"""
+        self.leads.public_url_from_remote = lambda url, key, ct=None: url
+        u = "http://p3-pc-sign.douyinpic.com/x.jpg"
+        self.assertEqual(self.leads._collect_cos_image(u, "douyin", "v", "cover"), u)
+
+
 if __name__ == "__main__":
     unittest.main()

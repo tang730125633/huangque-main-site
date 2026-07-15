@@ -89,6 +89,22 @@ def _merge_saved_crm(username, leads):
         out.append(item)
     return out
 
+def _collect_cos_image(url, platform, ident, tag):
+    """采集到的远端图片转存 COS 保永久。
+
+    抖音 douyinpic / 小红书 xhscdn 的 sign 链、视频号 wxapp 的 coverUrlToken 链都是【带时效】的
+    （~小时级 token/sign 失效 → 前端裂图）。转存 COS 后是永久直链，还顺带走 CDN。
+
+    已是 COS / 空 / 非 http → 原样返回；COS 未启用或转存失败 → public_url_from_remote 自身 fail-open
+    返回原链。绝不因转存失败中断采集（图片永久化是优化，不是正确性前提）。"""
+    if not url or not isinstance(url, str) or not url.startswith("http"):
+        return url
+    if "myqcloud" in url or "huangquechuanmei.com" in url:
+        return url                       # 已是 COS，别重复上传
+    pid = re.sub(r"[^A-Za-z0-9_.-]", "", str(ident or "x"))[:40] or "x"
+    return public_url_from_remote(url, "collect/%s/%s_%s.jpg" % (platform, tag, pid), "image/jpeg")
+
+
 def gen_collect(payload):
     platform = (payload.get("platform") or "douyin").strip()
     raw = (payload.get("url") or payload.get("id") or "").strip()
@@ -116,11 +132,12 @@ def gen_collect(payload):
     au = det.get("author") or {}
     # 视频号(channels)加密流不转存 COS——转存会存成加密数据且丢 decode_key；保持原 wxapp.tc.qq.com 直链由前端下载代理解密。
     play_url = det.get("play_url") if platform == "channels" else _collect_cos_play_url(platform, det.get("id") or ident, det.get("play_url"))
-    cover = det.get("cover")
-    # 视频号封面是 wxapp 带时效 token 的 JPEG（普通图片、不加密），转存 COS 保永久避免 ~1h 后 token 失效导致封面裂图。
-    if platform == "channels" and cover:
-        cid = re.sub(r"[^A-Za-z0-9_.-]", "", str(det.get("id") or ident)) or "c"
-        cover = public_url_from_remote(cover, "collect/channels/cover_%s.jpg" % cid, "image/jpeg")
+    # 封面 + 图文图片一律转存 COS 保永久：抖音 douyinpic / 小红书 xhscdn 的 sign 链、视频号 wxapp
+    # token 链都带时效（~1h 后失效 → 裂图）。转存失败自动回退原链，不中断采集（见 _collect_cos_image）。
+    cid = det.get("id") or ident
+    cover = _collect_cos_image(det.get("cover"), platform, cid, "cover")
+    images = [_collect_cos_image(u, platform, cid, "img%d" % i)
+              for i, u in enumerate(det.get("images") or [])]
     out = {
         "type": "collect", "platform": platform, "source": det.get("url") or ident,
         "video": {"title": det.get("title"), "author": au.get("name"), "authorAvatar": None,
@@ -130,7 +147,7 @@ def gen_collect(payload):
                   "stats": det.get("stats"),
                   "decode_key": det.get("decode_key")},  # 视频号加密流解密密钥；前端下载代理 /api/gen/dl?dk= 需它解密
         "copy": {"title": det.get("title"), "desc": det.get("desc"), "tags": det.get("tags")},
-        "images": det.get("images") or [],   # 图文笔记的全部图片
+        "images": images,   # 图文笔记的全部图片（已转存 COS 保永久）
         "transcript": None, "comments": [], "comments_more": False,
         "url": cover, "prompt": det.get("title"),  # 给通用 history 用（封面+标题）
     }
