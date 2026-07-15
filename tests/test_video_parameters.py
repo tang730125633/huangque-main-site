@@ -116,6 +116,24 @@ class VideoParameterUiTests(unittest.TestCase):
         self.assertGreaterEqual(VIDEO_HTML.count("seconds:selectedTryonSeconds"), 2)
         self.assertNotIn("seconds:6", VIDEO_HTML)
 
+    def test_xiaole_and_tryon_show_cost_and_match_backend(self):
+        """果肉/豆姐/欧米(30 点/秒) 与 试衣(25/40) 都要在前端显示预估价，且与后端实扣对上。"""
+        import re
+        from content_domains import points
+        # 前端 XIAOLE_RATE 必须与后端 xiaole_video 单价一致
+        m = re.search(r"var XIAOLE_RATE=(\d+)", VIDEO_HTML)
+        self.assertTrue(m, "video.html 没有 XIAOLE_RATE")
+        self.assertEqual(int(m.group(1)), points.cost_of("xiaole_video", {"duration": 1}),
+                         "前端果肉单价与后端 30 点/秒不一致")
+        # 四个成本提示元素都在
+        for eid in ("grokCostNote", "microCostNote", "omniCostNote", "tryonCostNote"):
+            self.assertIn('id="%s"' % eid, VIDEO_HTML, eid)
+        # 试衣两档与后端一致：换背景需衣服图+背景图都有 → 40，否则 25
+        self.assertIn("换装+换背景 40 点", VIDEO_HTML)
+        self.assertIn("换装 25 点", VIDEO_HTML)
+        self.assertEqual(points.cost_of("tryon", {"clothes_data": "x", "background_data": "y"}), 40)
+        self.assertEqual(points.cost_of("tryon", {"clothes_data": "x"}), 25)
+
     def test_hidden_output_shadow_ui_is_removed(self):
         for stale_id in ("outputThumb", "outputMotion", "outputRatio", "outputDuration", "outputPreview"):
             self.assertNotIn('id="%s"' % stale_id, VIDEO_HTML)

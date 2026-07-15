@@ -548,7 +548,8 @@
             <button data-tryon-seconds="15">15 秒</button>
           </div>
         </div>
-        <div id="tryonDurationNote" class="faint" style="font-size:11.5px;margin-top:8px;">生成失败自动退点，消耗积分见提交返回。</div>
+        <div id="tryonDurationNote" class="faint" style="font-size:11.5px;margin-top:8px;">生成失败自动退点。</div>
+        <div id="tryonCostNote" class="talking-cost" style="margin-top:8px;"></div>
         <button id="tryonGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:20px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
           生成换装换背景视频
         </button>
@@ -603,7 +604,8 @@
         <button id="grokGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:18px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
           生成果肉视频
         </button>
-        <div id="grokStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">Grok Video · 生成后自动保存到视频资产</div>
+        <div id="grokCostNote" class="talking-cost" style="margin-top:9px;"></div>
+        <div id="grokStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:8px;">Grok Video · 生成后自动保存到视频资产</div>
       </div>
 
       <div id="microPanel" class="function-panel motion-panel hidden">
@@ -630,7 +632,8 @@
         <button id="microGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:18px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
           生成豆姐视频
         </button>
-        <div id="microStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">Seedance 2.0 Fast · 生成后自动保存到视频资产</div>
+        <div id="microCostNote" class="talking-cost" style="margin-top:9px;"></div>
+        <div id="microStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:8px;">Seedance 2.0 Fast · 生成后自动保存到视频资产</div>
       </div>
 
       <div id="omniPanel" class="function-panel motion-panel hidden">
@@ -657,7 +660,8 @@
         <button id="omniGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:18px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
           生成欧米视频
         </button>
-        <div id="omniStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">Omni Fast · 生成后自动保存到视频资产</div>
+        <div id="omniCostNote" class="talking-cost" style="margin-top:9px;"></div>
+        <div id="omniStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:8px;">Omni Fast · 生成后自动保存到视频资产</div>
       </div>
     </section>
 
@@ -1768,6 +1772,29 @@
     applyButtonState('grokGenerateBtn', xiaoleEnabled, xiaoleTitle);
     applyButtonState('microGenerateBtn', xiaoleEnabled, xiaoleTitle);
     applyButtonState('omniGenerateBtn', xiaoleEnabled, xiaoleTitle);
+    updateVideoCosts();
+  }
+  // 果肉/豆姐/欧米(xiaole_video) 与 试衣(tryon) 的前端预估价，必须和后端实扣对上。
+  var XIAOLE_RATE=30;   // 与后端 xiaole_video 30 点/秒一致
+  function xiaoleCostNote(channel){
+    if(channel==='grok' && grokOperation==='edit'){
+      if(!grokEditDuration || grokEditDuration<=0) return '按参考视频时长计费（'+XIAOLE_RATE+' 点/秒，上限 8.7 秒）';
+      var d=Math.max(1,Math.ceil(Math.min(8.7,grokEditDuration)));
+      return '预计 '+(d*XIAOLE_RATE)+' 点（'+XIAOLE_RATE+' 点/秒 × '+d+' 秒）';
+    }
+    // grok 生成用所选时长；豆姐/欧米固定 10 秒（后端缺省 10）
+    var secs=channel==='grok' ? selectedGrokDuration : 10;
+    return '预计 '+(secs*XIAOLE_RATE)+' 点（'+XIAOLE_RATE+' 点/秒 × '+secs+' 秒）';
+  }
+  function updateVideoCosts(){
+    var g=$('grokCostNote'); if(g) g.textContent=xiaoleCostNote('grok');
+    var mi=$('microCostNote'); if(mi) mi.textContent=xiaoleCostNote('micro');
+    var o=$('omniCostNote'); if(o) o.textContent=xiaoleCostNote('omni');
+    var t=$('tryonCostNote');
+    if(t){   // 换装+换背景需同时有衣服图和背景图(与后端 40 判定一致)，否则 25
+      var pricey=!!tryonClothesData && !!tryonBackgroundData;
+      t.textContent=(pricey?'换装+换背景 40 点':'换装 25 点')+' · 失败自动退点';
+    }
   }
   function readFileData(file){
     return new Promise(function(resolve,reject){
@@ -2054,7 +2081,7 @@
     if(seg) seg.style.gridTemplateColumns='repeat('+allowed.length+',1fr)';
     if($('tryonDurationHint')) $('tryonDurationHint').textContent=tryonIsLine2()?'常用时长 5/6/10/15 秒':'常用时长 3/5/6 秒';
     if($('tryonDurationNote')) $('tryonDurationNote').textContent=tryonIsLine2()
-      ?'生成失败自动退点，消耗积分见提交返回。'
+      ?'生成失败自动退点。'
       :'线路一仅处理视频前 6 秒；生成失败自动退点。';
   }
   function applyTryonLine(){
@@ -2530,6 +2557,7 @@
         readFileData(f).then(function(data){grokEditVideoData=data;grokEditDuration=duration;
           $('grokEditFileName').textContent=f.name+' · '+duration.toFixed(1)+' 秒';
           var preview=$('grokEditPreview');preview.src=data;preview.classList.remove('hidden');toast('参考视频已载入');
+          updateVideoCosts();   // 编辑模式按参考视频时长算价，上传后立刻刷新
         });
       }; probe.onerror=function(){URL.revokeObjectURL(objectUrl);toast('无法读取这个 MP4 视频');}; probe.src=objectUrl;
     };
