@@ -29,9 +29,7 @@ def cost_of(kind, body):
     if kind == "collect":
         return 3 + (3 if "transcript" in (body.get("want") or []) else 0)
     if kind == "leads":
-        n = max(1, min(30, int(body.get("count") or 12)))
-        p = max(1, min(3, int(body.get("pages") or 1)))
-        return 6 + (n * p) // 4
+        return 30   # 获客固定 30 点/次（采集量前端固定 20 视频）；与 leads.html 成本徽章一致，防"消耗点数对不上"
     if kind == "image":
         # 质量基价按引擎分档（IMAGE_BASE_COST）。gen_image 里 provider 缺省是 openai，这里保持一致。
         provider = (body.get("provider") or "openai").strip().lower()
