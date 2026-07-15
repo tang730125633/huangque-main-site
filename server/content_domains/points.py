@@ -9,11 +9,12 @@ from .core import AUTH_BASE, AUTH_INTERNAL_TOKEN, COST, closing, jdb, json, urll
 # gpt-image-2 按官方 $30/M image output token 实测（2026-07-10，读 API 返回的 usage）：
 #   标准(medium)  1024x1024 1756 tok=$0.0527 ¥0.37 | 1152x2048 1413 tok=$0.0424 ¥0.30 | 1200x1600 1694 tok=$0.0508 ¥0.36
 #   高清(high) 恒为 medium 的 4 倍：¥1.20 ~ ¥1.50
-# 取各比例里的最贵档定价，避免倒挂：标准 4 点、高清 15 点。
+# 实测成本：标准约 ¥0.3~0.37（≈4 点）、高清约 ¥1.2~1.5（≈15 点）。定价上浮到 标准 20 点、
+# 高清 30 点（kongli 2026-07-15 调价，含利润空间，不再贴成本走）。
 #   ⚠ 已知缺口：1:1 高清 + 图生图 还要 +1024 image input token($8/M)，实为 ¥1.554 ≈ 16 点。
 # 其余引擎沿用原 8/12，待逐个测准后再调（Seedream 实际成本仅 2~6 点，偏高）。
 IMAGE_BASE_COST = {
-    "openai":   {"std": 4, "hd": 15},
+    "openai":   {"std": 20, "hd": 30},
     "seedream": {"std": 8, "hd": 12},
     "xiaole":   {"std": 8, "hd": 12},
     "zelong":   {"std": 8, "hd": 12},

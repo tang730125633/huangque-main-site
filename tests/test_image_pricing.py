@@ -93,12 +93,12 @@ class GptPricingTests(unittest.TestCase):
 
 class CostOfTests(unittest.TestCase):
     def test_gpt_uses_new_tiers(self):
-        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "std", "count": 1}), 4)
-        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 1}), 15)
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "std", "count": 1}), 20)
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 1}), 30)
 
     def test_missing_provider_defaults_to_openai(self):
         """gen_image 的 provider 缺省就是 openai，扣点必须跟着走同一档。"""
-        self.assertEqual(points.cost_of("image", {"quality": "hd", "count": 1}), 15)
+        self.assertEqual(points.cost_of("image", {"quality": "hd", "count": 1}), 30)
 
     def test_other_engines_unchanged(self):
         for p in ("seedream", "xiaole", "zelong", "zelong2"):
@@ -109,13 +109,13 @@ class CostOfTests(unittest.TestCase):
         self.assertEqual(points.cost_of("image", {"provider": "brand-new", "quality": "hd", "count": 1}), 12)
 
     def test_count_multiplies_and_caps_match_generator(self):
-        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 4}), 15 * 4)
-        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 9}), 15 * 4)
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 4}), 30 * 4)
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 9}), 30 * 4)
         for p in ("seedream", "xiaole", "zelong", "zelong2"):
             self.assertEqual(points.cost_of("image", {"provider": p, "quality": "hd", "count": 9}), 12 * 2, p)
 
     def test_mask_forces_single_image(self):
-        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 4, "mask": "x"}), 15)
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 4, "mask": "x"}), 30)
 
 
 class FrontendBackendSyncTests(unittest.TestCase):
@@ -141,8 +141,8 @@ class FrontendBackendSyncTests(unittest.TestCase):
             self.assertEqual(fe[key], be, "%s(前端 %s)" % (eng, key))
 
     def test_gpt_price_updated_on_both_sides(self):
-        self.assertEqual(self._frontend_costbase()["gpt"], {"std": 4, "hd": 15})
-        self.assertEqual(points.IMAGE_BASE_COST["openai"], {"std": 4, "hd": 15})
+        self.assertEqual(self._frontend_costbase()["gpt"], {"std": 20, "hd": 30})
+        self.assertEqual(points.IMAGE_BASE_COST["openai"], {"std": 20, "hd": 30})
 
     def _imggen_basecost(self):
         # Nano Banana(nb2/pro) 的实扣在 imggen_api.py（独立服务），不在 points.py。
