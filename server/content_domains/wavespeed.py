@@ -16,6 +16,7 @@ import urllib.request
 
 from . import cos
 from .core import VIDEO_GEN_DEADLINE, _out_path, _resolve_out_file, public_url
+from .video import _faststart_video_file
 
 WAVESPEED_KEY = os.environ.get("WAVESPEED_API_KEY", "")
 # 出境通道：原来是裸 urlopen，继承进程级 HTTPS_PROXY（mihomo）。改为 VPS 隧道优先、mihomo 备选。
@@ -121,7 +122,7 @@ def _download_to_lib(url, prefix):
         raise RuntimeError("WaveSpeed成片下载为空")
     fn = "video/%s_%s.mp4" % (prefix, uuid.uuid4().hex)  # 不可猜键
     _out_path(fn).write_bytes(data)
-    return fn
+    return _faststart_video_file(fn)  # moov 前置，浏览器无需下载完整文件即可起播
 
 
 def generate_tryon(person_image_file, clothes_file, duration, job_id=None):

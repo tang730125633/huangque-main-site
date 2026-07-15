@@ -1508,7 +1508,7 @@ class HeyGenBilledError(RuntimeError):
 HEYGEN_MOTION_DEADLINE = CINEMATIC_GEN_DEADLINE
 
 
-def _heygen_poll_video(video_id, direct=False, deadline_s=None):
+def _heygen_poll_video(video_id, direct=False, deadline_s=None, job_id=None):
     deadline = time.time() + (deadline_s or HEYGEN_TIMEOUT)
     last_status = ""
     net_fails = 0
@@ -1521,6 +1521,10 @@ def _heygen_poll_video(video_id, direct=False, deadline_s=None):
             net_fails += 1
             print("[heygen] poll video_id=%s 网络抖动(%d)，%ds 后重试: %s"
                   % (video_id, net_fails, HEYGEN_POLL_INTERVAL, str(e)[:120]), flush=True)
+            # 心跳：网络抖动也会拉长总耗时，仍需刷新 updated_at 防 reaper 误杀
+            if job_id:
+                try: update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id)
+                except Exception: pass
             time.sleep(HEYGEN_POLL_INTERVAL)
             continue
         info = data.get("data") or {}
@@ -1536,6 +1540,10 @@ def _heygen_poll_video(video_id, direct=False, deadline_s=None):
             detail = json.dumps(info, ensure_ascii=False)[:500]
             print("[heygen] FAIL GET /videos/%s -> provider %s" % (video_id, detail), flush=True)
             raise RuntimeError("HeyGen视频生成失败: %s" % detail)
+        # 心跳：刷新 jobs.updated_at 防止 reaper 误杀（motion grace 2400s 仍可能擦线）
+        if job_id:
+            try: update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id)
+            except Exception: pass
         time.sleep(HEYGEN_POLL_INTERVAL)
     raise TimeoutError("HeyGen视频生成超时")
 
@@ -2969,7 +2977,7 @@ def gen_cinematic(payload):
         # ↓ 此刻已计费。之后任何失败都不能重发（见 HeyGenBilledError）——HeyGen 提交即扣费。
         update_video_asset_phase(job_id, "polling_video", provider_video_id=video_id)
         try:
-            info = _heygen_poll_video(video_id, direct=True, deadline_s=HEYGEN_MOTION_DEADLINE)
+            info = _heygen_poll_video(video_id, direct=True, deadline_s=HEYGEN_MOTION_DEADLINE, job_id=job_id)
             update_video_asset_phase(job_id, "downloading_video", source_video_url=info.get("video_url"))
             video_file = _download_video_file_direct(info["video_url"], "cinematic")
             # 把参考视频的原声合回成片（HeyGen 的成片本身是无声的）。
