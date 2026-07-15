@@ -1022,6 +1022,15 @@ def run_job(job_id):
         # 先 CAS 抢 done 终态：仅当仍是 running 才写 done，防 reaper 已判 error 又被无条件覆盖(既出片又退点)
         if not _set_terminal(job_id, "done", result=result):
             return  # 已被 reaper 接管为 error+退点：放弃成功副作用(不入库、不覆盖状态)
+        # 口播按成片真实时长结算：预扣(cost)是 hold，跑完多退少不补。只在抢到 done 后调 —— done CAS
+        # 互斥 + reaper/reclaim 不碰 done → 每 job 至多结算一次，不重复退。结算失败不影响出片。
+        if kind == "video":
+            try:
+                actual = _domains()[2].talking_actual_cost(result)
+                if actual and int(cost or 0) > actual:
+                    _domains()[1].safe_refund_points(username, int(cost) - actual, "job#%d 口播结算" % job_id)
+            except Exception:
+                pass
         # 已确认拿到 done 终态；入库是次要副作用，失败也不改状态、不退点
         try:
             audio_domain, _, video_domain = _domains()

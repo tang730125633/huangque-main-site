@@ -50,7 +50,9 @@ class ContentDomainTests(unittest.TestCase):
         #   （线上 110 条任务被 reaper 误判「生成超时」，用户白等 2655 分钟。）
         # 爆款拆解(#635)：core 只加薄接线（慢池路由/KIND_GRACE/COST/全局并发闸），
         #   下载+ffmpeg+ASR+多模态 domain 逻辑全在 breakdown.py，故门禁上调到 1665。
-        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1665)
+        # 口播按秒结算：run_job 抢到 done 后按成片真实时长结算多退（thin 计费生命周期胶水，
+        #   真实点数计算 talking_actual_cost 在 video.py），门禁上调到 1675。
+        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1675)
 
     def test_content_api_reclaims_orphans_on_startup(self):
         # 防回归：孤儿回收必须挂在真入口 content_api.main（服务走 content_api.py，

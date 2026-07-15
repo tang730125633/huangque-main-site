@@ -82,12 +82,18 @@ def test_jsapi_pay_params():
     c["pub"].verify(base64.b64decode(params["paySign"]), msg, padding.PKCS1v15(), hashes.SHA256())
 
 
-def test_package_whitelist():
-    # 与 auth_server.RECHARGE_PACKAGES 对齐:金额只认固定组合
+def test_recharge_pricing():
+    # 点数一律服务端按金额算:固定档含赠送,自定义严格10点/元,越界/非整数拒绝
     import auth_server
-    assert auth_server.RECHARGE_PACKAGES.get(100) == 39.0
-    assert auth_server.RECHARGE_PACKAGES.get(2400) == 598.0
-    assert auth_server.RECHARGE_PACKAGES.get(999999) is None, "非法套餐必须返回 None(拒绝下单)"
+    f = auth_server.recharge_points_for
+    assert f(99) == 1000 and f(199) == 2000 and f(499) == 5000, "固定档赠送价"
+    assert f(10) == 100 and f(5000) == 50000, "自定义边界:10点/元"
+    assert f(100) == 1000, "非固定档按10倍(100元→1000点)"
+    assert f(9) is None and f(5001) is None, "越界必须拒绝"
+    assert f(15.5) is None, "非整数元必须拒绝(避免非整点数)"
+    assert f("abc") is None and f(None) is None, "非法输入拒绝"
+    assert f(float("inf")) is None and f(float("nan")) is None, "inf/nan 必须拒绝(不能抛错致500)"
+    assert f(10 ** 400) is None, "超大整数必须拒绝(float()会OverflowError)"
 
 
 if __name__ == "__main__":
@@ -95,5 +101,5 @@ if __name__ == "__main__":
     test_decrypt_resource_roundtrip()
     test_authorization_format()
     test_jsapi_pay_params()
-    test_package_whitelist()
+    test_recharge_pricing()
     print("wxpay 自检全部通过 ✅")

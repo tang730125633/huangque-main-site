@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT / "server"))
 core = importlib.import_module("content_domains.core")
 points = importlib.import_module("content_domains.points")
 BANANA = (ROOT / "site" / "workbench" / "banana.html").read_text(encoding="utf-8")
+IMGGEN_SRC = (ROOT / "server" / "imggen_api.py").read_text(encoding="utf-8")
 
 FRONTEND_RATIOS = ["1:1", "9:16", "16:9", "3:4"]
 
@@ -92,12 +93,12 @@ class GptPricingTests(unittest.TestCase):
 
 class CostOfTests(unittest.TestCase):
     def test_gpt_uses_new_tiers(self):
-        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "std", "count": 1}), 4)
-        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 1}), 15)
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "std", "count": 1}), 20)
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 1}), 30)
 
     def test_missing_provider_defaults_to_openai(self):
         """gen_image 的 provider 缺省就是 openai，扣点必须跟着走同一档。"""
-        self.assertEqual(points.cost_of("image", {"quality": "hd", "count": 1}), 15)
+        self.assertEqual(points.cost_of("image", {"quality": "hd", "count": 1}), 30)
 
     def test_other_engines_unchanged(self):
         for p in ("seedream", "xiaole", "zelong", "zelong2"):
@@ -108,13 +109,13 @@ class CostOfTests(unittest.TestCase):
         self.assertEqual(points.cost_of("image", {"provider": "brand-new", "quality": "hd", "count": 1}), 12)
 
     def test_count_multiplies_and_caps_match_generator(self):
-        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 4}), 15 * 4)
-        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 9}), 15 * 4)
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 4}), 30 * 4)
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 9}), 30 * 4)
         for p in ("seedream", "xiaole", "zelong", "zelong2"):
             self.assertEqual(points.cost_of("image", {"provider": p, "quality": "hd", "count": 9}), 12 * 2, p)
 
     def test_mask_forces_single_image(self):
-        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 4, "mask": "x"}), 15)
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 4, "mask": "x"}), 30)
 
 
 class FrontendBackendSyncTests(unittest.TestCase):
@@ -127,8 +128,9 @@ class FrontendBackendSyncTests(unittest.TestCase):
             out[eng] = {"std": int(std), "hd": int(hd)}
         return out
 
-    # 前端引擎卡叫 gpt，后端 provider 叫 openai —— 同一个引擎两个名字，映射写死在这里
-    BACKEND_TO_FRONTEND = {"openai": "gpt", "seedream": "seedream", "xiaole": "xiaole", "zelong2": "zelong2"}
+    # 前端引擎卡叫 gpt，后端 provider 叫 openai —— 同一个引擎两个名字，映射写死在这里。
+    # seedream 不在这里：它按型号分价，见 test_seedream_variants_agree。
+    BACKEND_TO_FRONTEND = {"openai": "gpt", "xiaole": "xiaole", "zelong2": "zelong2"}
 
     def test_shared_engines_agree(self):
         fe = self._frontend_costbase()
@@ -139,9 +141,42 @@ class FrontendBackendSyncTests(unittest.TestCase):
             self.assertIn(key, fe, key)
             self.assertEqual(fe[key], be, "%s(前端 %s)" % (eng, key))
 
+    def test_seedream_variants_agree(self):
+        """Seedream 按型号分价（5.0标准/5.0pro）：前端 seedream_std/seedream_pro 必须与后端
+        points.SEEDREAM_VARIANT_COST 逐字一致，否则切型号后显示与实扣对不上。"""
+        fe = self._frontend_costbase()
+        for variant in ("std", "pro"):
+            key = "seedream_" + variant
+            self.assertIn(key, fe, key)
+            self.assertEqual(fe[key], points.SEEDREAM_VARIANT_COST[variant], key)
+        self.assertEqual(points.SEEDREAM_VARIANT_COST["std"], {"std": 8, "hd": 12})
+        self.assertEqual(points.SEEDREAM_VARIANT_COST["pro"], {"std": 15, "hd": 20})
+
     def test_gpt_price_updated_on_both_sides(self):
-        self.assertEqual(self._frontend_costbase()["gpt"], {"std": 4, "hd": 15})
-        self.assertEqual(points.IMAGE_BASE_COST["openai"], {"std": 4, "hd": 15})
+        self.assertEqual(self._frontend_costbase()["gpt"], {"std": 20, "hd": 30})
+        self.assertEqual(points.IMAGE_BASE_COST["openai"], {"std": 20, "hd": 30})
+
+    def _imggen_basecost(self):
+        # Nano Banana(nb2/pro) 的实扣在 imggen_api.py（独立服务），不在 points.py。
+        raw = re.search(r"BASE_COST\s*=\s*\{(.+?)\}\n", IMGGEN_SRC).group(1)
+        out = {}
+        for eng, std, hd in re.findall(r'"(\w+)":\s*\{"std":\s*(\d+),\s*"hd":\s*(\d+)\}', raw):
+            out[eng] = {"std": int(std), "hd": int(hd)}
+        return out
+
+    def test_banana_nb2_pro_agree_front_and_back(self):
+        """⚠ nb2/pro 的前端 COSTBASE 必须与 imggen_api.py 的 BASE_COST 逐字一致，
+        否则作图卡显示的点数与实际扣点对不上（这条链路 points.py 那侧的一致性测试盖不到）。"""
+        fe, be = self._frontend_costbase(), self._imggen_basecost()
+        for eng in ("nb2", "pro"):
+            self.assertIn(eng, be, "imggen_api.BASE_COST 缺 %s" % eng)
+            self.assertIn(eng, fe, "前端 COSTBASE 缺 %s" % eng)
+            self.assertEqual(fe[eng], be[eng], "%s 前后端点数不一致" % eng)
+
+    def test_banana_prices_are_the_new_values(self):
+        be = self._imggen_basecost()
+        self.assertEqual(be["nb2"], {"std": 15, "hd": 25})
+        self.assertEqual(be["pro"], {"std": 25, "hd": 30})
 
 
 if __name__ == "__main__":

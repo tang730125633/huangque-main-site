@@ -24,9 +24,28 @@ LOGIN_FAIL_MAX = int(os.environ.get("HQ_AUTH_FAIL_MAX", "5"))
 REGISTER_WINDOW = int(os.environ.get("HQ_AUTH_REGISTER_WINDOW", "300"))
 REGISTER_MAX = int(os.environ.get("HQ_AUTH_REGISTER_MAX", "5"))
 NEW_USER_TRIAL_POINTS = int(os.environ.get("HQ_AUTH_TRIAL_POINTS", "16"))  # 新注册赠送试用点数(约2次标准清晰度作图)
-# 充值套餐白名单(点数 -> 金额元)。自动支付的下单/回调只认这里的固定组合，
-# 绝不信客户端传的金额——否则用户能花 1 元买百万点。与 recharge.html 的套餐一致。
-RECHARGE_PACKAGES = {100: 39.0, 550: 168.0, 2400: 598.0}
+# 充值定价：客户端只传金额(元)，点数一律服务端算，绝不信客户端传的点数——
+# 否则用户能花 1 元买百万点。与 recharge.html / 小程序 recharge.js 保持一致。
+# 固定档含赠送(略高于 10 点/元)；自定义严格 10 点/元、限 10~5000 元整。
+RECHARGE_TIERS = {99: 1000, 199: 2000, 499: 5000}   # 金额(元) -> 点数(含赠送)
+RECHARGE_RATE = 10                                   # 自定义:每元 10 点
+RECHARGE_CUSTOM_MIN = 10
+RECHARGE_CUSTOM_MAX = 5000
+
+def recharge_points_for(amount):
+    """金额(元) -> 点数。固定档用赠送价；其余按 10 点/元(限 10~5000 元整数)。非法返回 None。
+    金额只接受整数元(避免分位歧义与非整点数)；拒绝 NaN/Infinity/超大数/非数字(否则 int/float 抛错致 500)。"""
+    try:
+        yuan = int(amount)
+        if yuan != float(amount):    # 拒绝非整数元(如 15.5);float() 对超大整数/inf 会抛 OverflowError
+            return None
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if yuan in RECHARGE_TIERS:
+        return RECHARGE_TIERS[yuan]
+    if RECHARGE_CUSTOM_MIN <= yuan <= RECHARGE_CUSTOM_MAX:
+        return yuan * RECHARGE_RATE
+    return None
 LOGIN_FAILS = {}
 REGISTER_HITS = {}
 REVOKED_TOKENS = set()
@@ -1588,12 +1607,13 @@ class H(BaseHTTPRequestHandler):
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
+            amount = d.get("amount")
+            points = recharge_points_for(amount)   # 点数服务端算,绝不信客户端(与 wxpay 路由一致)
+            if points is None:
+                return self._send(400, {"detail": "无效的充值金额(固定档 99/199/499，或自定义 10~5000 元整数)"})
+            amount = int(amount)
             try:
-                order, err = create_recharge_order(row["username"], d.get("amount"), d.get("points"), d.get("note") or "")
-                if err == "amount_invalid":
-                    return self._send(400, {"detail": "充值金额必须大于 0"})
-                if err == "points_invalid":
-                    return self._send(400, {"detail": "充值点数必须大于 0"})
+                order, err = create_recharge_order(row["username"], amount, points, d.get("note") or "")
                 if err:
                     return self._send(400, {"detail": err})
                 return self._send(200, {"ok": True, "order": order})
@@ -1608,19 +1628,17 @@ class H(BaseHTTPRequestHandler):
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
-            try:
-                points = int(d.get("points") or 0)
-            except Exception:
-                return self._send(400, {"detail": "points 必须是整数"})
-            amount = RECHARGE_PACKAGES.get(points)   # 金额只认服务端白名单,不信客户端
-            if amount is None:
-                return self._send(400, {"detail": "无效的充值套餐"})
+            amount = d.get("amount")                 # 客户端只传金额(元)
+            points = recharge_points_for(amount)     # 点数服务端算,不信客户端
+            if points is None:
+                return self._send(400, {"detail": "无效的充值金额(固定档 99/199/499，或自定义 10~5000 元整数)"})
+            amount = int(amount)
             try:
                 order, err = create_recharge_order(row["username"], amount, points, "微信扫码充值")
                 if err:
                     return self._send(400, {"detail": err})
                 code_url = wxpay.create_native(
-                    order["order_id"], "黄雀点数充值 %d点" % points, int(round(amount * 100)))
+                    order["order_id"], "黄雀点数充值 %d点" % points, amount * 100)
                 return self._send(200, {"ok": True, "order": order, "code_url": code_url})
             except Exception as e:
                 # 下单失败:订单停留在 pending(等同一个没人审的人工申请),无害
@@ -1635,23 +1653,21 @@ class H(BaseHTTPRequestHandler):
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
-            try:
-                points = int(d.get("points") or 0)
-            except Exception:
-                return self._send(400, {"detail": "points 必须是整数"})
             js_code = (d.get("js_code") or "").strip()
             if not js_code:
                 return self._send(400, {"detail": "缺少 js_code"})
-            amount = RECHARGE_PACKAGES.get(points)   # 金额只认服务端白名单
-            if amount is None:
-                return self._send(400, {"detail": "无效的充值套餐"})
+            amount = d.get("amount")                 # 客户端只传金额(元)
+            points = recharge_points_for(amount)     # 点数服务端算,不信客户端
+            if points is None:
+                return self._send(400, {"detail": "无效的充值金额(固定档 99/199/499，或自定义 10~5000 元整数)"})
+            amount = int(amount)
             try:
                 openid = wxpay.jscode2session(js_code)
                 order, err = create_recharge_order(row["username"], amount, points, "微信小程序充值")
                 if err:
                     return self._send(400, {"detail": err})
                 prepay_id = wxpay.create_jsapi(
-                    order["order_id"], "黄雀点数充值 %d点" % points, int(round(amount * 100)), openid)
+                    order["order_id"], "黄雀点数充值 %d点" % points, amount * 100, openid)
                 pay = wxpay.jsapi_pay_params(prepay_id)   # 客户端 wx.requestPayment 参数
                 return self._send(200, {"ok": True, "order": order, "pay": pay})
             except Exception as e:

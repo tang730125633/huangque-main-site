@@ -9,17 +9,23 @@ from .core import AUTH_BASE, AUTH_INTERNAL_TOKEN, COST, closing, jdb, json, urll
 # gpt-image-2 按官方 $30/M image output token 实测（2026-07-10，读 API 返回的 usage）：
 #   标准(medium)  1024x1024 1756 tok=$0.0527 ¥0.37 | 1152x2048 1413 tok=$0.0424 ¥0.30 | 1200x1600 1694 tok=$0.0508 ¥0.36
 #   高清(high) 恒为 medium 的 4 倍：¥1.20 ~ ¥1.50
-# 取各比例里的最贵档定价，避免倒挂：标准 4 点、高清 15 点。
+# 实测成本：标准约 ¥0.3~0.37（≈4 点）、高清约 ¥1.2~1.5（≈15 点）。定价上浮到 标准 20 点、
+# 高清 30 点（kongli 2026-07-15 调价，含利润空间，不再贴成本走）。
 #   ⚠ 已知缺口：1:1 高清 + 图生图 还要 +1024 image input token($8/M)，实为 ¥1.554 ≈ 16 点。
 # 其余引擎沿用原 8/12，待逐个测准后再调（Seedream 实际成本仅 2~6 点，偏高）。
 IMAGE_BASE_COST = {
-    "openai":   {"std": 4, "hd": 15},
-    "seedream": {"std": 8, "hd": 12},
+    "openai":   {"std": 20, "hd": 30},
     "xiaole":   {"std": 8, "hd": 12},
     "zelong":   {"std": 8, "hd": 12},
     "zelong2":  {"std": 8, "hd": 12},
 }
 _IMAGE_DEFAULT_COST = {"std": 8, "hd": 12}
+# Seedream 按【型号】(5.0 标准 / 5.0 pro，payload.variant) 再分【清晰度】(标准 std / 高清 hd) 定价
+# （kongli 2026-07-15）。此前两个型号同价 {std:8,hd:12}，现在 pro 型号更贵。
+SEEDREAM_VARIANT_COST = {
+    "std": {"std": 8,  "hd": 12},   # 5.0 标准
+    "pro": {"std": 15, "hd": 20},   # 5.0 Pro
+}
 # 数量上限必须与 image.gen_image 里的 cap 逐字一致，否则按 N 扣点却只出 cap 张 = 超收。
 _IMAGE_CAP_2 = {"zelong", "zelong2", "xiaole", "seedream"}
 
@@ -27,14 +33,24 @@ _IMAGE_CAP_2 = {"zelong", "zelong2", "xiaole", "seedream"}
 def cost_of(kind, body):
     """动态点数：TikHub 按次计费，采集/获客调用数随参数变。约 5x buff 折算成点。"""
     if kind == "collect":
-        return 3 + (3 if "transcript" in (body.get("want") or []) else 0)
+        # 提取文案（want 含 transcript）保留 6 点；其余即「内容爬取」，固定 30 点
+        # （kongli 2026-07-15，原为 3 点）。前端两个动作共用这一个 collect 接口，靠 want 区分：
+        #   主爬取   want=['comments'] 或 ['video']  → 30
+        #   提取文案 want=['transcript']              → 6
+        if "transcript" in (body.get("want") or []):
+            return 6
+        return 30
     if kind == "leads":
         return 30   # 获客固定 30 点/次（采集量前端固定 20 视频）；与 leads.html 成本徽章一致，防"消耗点数对不上"
     if kind == "image":
         # 质量基价按引擎分档（IMAGE_BASE_COST）。gen_image 里 provider 缺省是 openai，这里保持一致。
         provider = (body.get("provider") or "openai").strip().lower()
         tier = "hd" if (body.get("quality") or "hd") == "hd" else "std"
-        base = (IMAGE_BASE_COST.get(provider) or _IMAGE_DEFAULT_COST)[tier]
+        if provider == "seedream":
+            variant = (body.get("variant") or "std").strip().lower()   # 5.0 标准 / 5.0 pro
+            base = (SEEDREAM_VARIANT_COST.get(variant) or SEEDREAM_VARIANT_COST["std"])[tier]
+        else:
+            base = (IMAGE_BASE_COST.get(provider) or _IMAGE_DEFAULT_COST)[tier]
         # cap 必须与 image.gen_image 里的数量上限逐字一致，否则按 N 扣点却只出 cap 张 = 超收。
         cap = 2 if provider in _IMAGE_CAP_2 else 4
         cnt = 1 if body.get("mask") else max(1, min(cap, int(body.get("count") or 1)))
@@ -45,36 +61,24 @@ def cost_of(kind, body):
         # 所以这里不存在「还不知道多长」的情况 —— 一次扣准，不需要预扣退差。
         from . import video as video_domain
         return video_domain.cinematic_cost(body)
+    if kind == "video":
+        # 口播 10 点/秒 × 输出时长。这里算的是【预扣 hold】：audio 模式 ffprobe 拿精确时长扣准；
+        # text 模式 TTS 还没跑，按文本长度偏保守估算预扣，跑完由 run_job 按成片真实时长结算多退。
+        from . import video as video_domain
+        return video_domain.video_cost(body)
     if kind == "tryon":
         has_clothes = bool(body.get("clothes_data"))
         has_bg = bool(body.get("background_data"))
         return 40 if (has_clothes and has_bg) else 25  # 两段(换装+换背景)40/单段25
         # TODO: 上线前与 kongli 确认点数
     if kind == "xiaole_video":
-        if (body.get("channel") or "grok") == "grok" and os.environ.get("GROK_VIDEO_PROVIDER", "xai").lower() != "xiaole":
-            if body.get("operation") == "edit":
-                duration = max(0.1, min(8.7, float(body.get("source_duration") or 0.1)))
-                usd_cny = float(os.environ.get("XAI_USD_CNY", "7.3") or 7.3)
-                buffer = float(os.environ.get("XAI_PRICE_BUFFER", "1.2") or 1.2)
-                # 官方输入视频 $0.01/秒，编辑输出继承输入且最高 720p，按 $0.07/秒计。
-                return max(1, int(math.ceil(duration * (0.01 + 0.07) * usd_cny * buffer * 10)))
-            model = body.get("model") or "grok-imagine-video"
-            resolution = (body.get("resolution") or "720p").lower()
-            duration = max(1, min(15, int(body.get("duration") or 10)))
-            per_second = {
-                "grok-imagine-video": {"480p": 0.05, "720p": 0.07},
-                "grok-imagine-video-1.5": {"480p": 0.08, "720p": 0.14, "1080p": 0.25},
-            }.get(model, {}).get(resolution)
-            if per_second is None:
-                raise ValueError("果肉官方模型与分辨率不匹配")
-            image_input = 0.01 if (model == "grok-imagine-video-1.5" and body.get("reference_images")) \
-                else (0.002 if body.get("reference_images") else 0.0)
-            usd_cny = float(os.environ.get("XAI_USD_CNY", "7.3") or 7.3)
-            buffer = float(os.environ.get("XAI_PRICE_BUFFER", "1.2") or 1.2)
-            # 1点=0.1元；默认按保守汇率+20%波动/运营缓冲向上取整，可用env调整。
-            return max(1, int(math.ceil((duration * per_second + image_input) * usd_cny * buffer * 10)))
-        # 豆姐/欧米及果肉小乐回滚线保留原定价。
-        return 30
+        # 果肉视频统一 30 点/秒 × 时长（kongli 2026-07-15）。此前是按 xAI 官方成本×汇率动态算/回滚线扁平 30。
+        # 编辑走 source_duration(上限 8.7s)，生成走 duration(上限 15s)；认不出时长兜底 10s。
+        if body.get("operation") == "edit":
+            duration = min(8.7, float(body.get("source_duration") or 0.1))
+        else:
+            duration = min(15, int(body.get("duration") or 10))
+        return max(30, int(math.ceil(duration)) * 30)
     return COST.get(kind, 0)
 
 class AuthPointsError(Exception):
