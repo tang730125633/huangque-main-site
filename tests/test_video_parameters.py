@@ -99,10 +99,10 @@ class TryonParameterValidationTests(unittest.TestCase):
 
 
 class VideoParameterUiTests(unittest.TestCase):
-    def test_only_supported_talking_resolutions_are_offered(self):
-        self.assertIn('data-resolution="720p"', VIDEO_HTML)
-        self.assertIn('data-resolution="1080p"', VIDEO_HTML)
-        self.assertNotIn('data-resolution="4k"', VIDEO_HTML)
+    def test_talking_resolution_is_fixed_at_1080p(self):
+        # 口播不再给选分辨率（kongli 2026-07-15），固定 1080p：选择器移除、常量 1080p、后端缺省也 1080p。
+        self.assertNotIn('data-resolution=', VIDEO_HTML)
+        self.assertIn("selectedResolution='1080p'", VIDEO_HTML)
 
     def test_legacy_motion_ui_is_gone(self):
         # 老版动作模仿已下线：tab、面板、提交入口都不该再出现

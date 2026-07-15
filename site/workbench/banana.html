@@ -145,8 +145,8 @@
       </div>
       <!-- Seedream 型号子选择：只在选中 Seedream 引擎时出现 -->
       <div id="seedreamVariantRow" style="display:none; grid-template-columns:repeat(2,1fr); gap:10px; margin-top:10px;">
-        <div data-variant="std" style="padding:9px 10px; text-align:center; font-size:12.5px; border-radius:10px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; line-height:1.45;"><div style="font-weight:600;">5.0 标准</div><div style="font-size:11px; margin-top:2px;">约 30-40 秒</div></div>
-        <div data-variant="pro" style="padding:9px 10px; text-align:center; font-size:12.5px; border-radius:10px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.45;"><div style="font-weight:600;">5.0 Pro</div><div style="font-size:11px; margin-top:2px;">画质更强 · 约 1.5 分钟</div></div>
+        <div data-variant="std" style="padding:9px 10px; text-align:center; font-size:12.5px; border-radius:10px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; line-height:1.45;"><div style="font-weight:600;">5.0 标准</div><div style="font-size:11px; margin-top:2px;">约 30-40 秒 · 标8/高12</div></div>
+        <div data-variant="pro" style="padding:9px 10px; text-align:center; font-size:12.5px; border-radius:10px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.45;"><div style="font-weight:600;">5.0 Pro</div><div style="font-size:11px; margin-top:2px;">画质更强 · 约 1.5 分钟 · 标15/高20</div></div>
       </div>
 
       <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">比例</div>
@@ -301,15 +301,16 @@
   if(recentGeneratedTab) recentGeneratedTab.onclick=function(){ setResultView('generated'); };
   if(recentWorksTab) recentWorksTab.onclick=function(){ setResultView('works'); };
   initWorkspaceDivider();
-  // 质量基价(最终=基价×数量)。nb2/pro 是 Nano Banana 卡下的两个型号，**点数不同**，
-  // 所以切换型号必须 updateCost()（Seedream 两档同价，没这个坑）。
-  // ⚠ 必须与后端 points.IMAGE_BASE_COST 逐字一致（有回归测试守着），否则前端显示和实际扣点对不上。
+  // 质量基价(最终=基价×数量)。Nano Banana(nb2/pro) 与 Seedream(seedream_std/seedream_pro) 各自
+  // 两个型号【点数不同】，切换型号必须 updateCost()（bindVariantRow 已带）。
+  // ⚠ 必须与后端逐字一致（有回归测试守着）：nb2/pro/gpt 对 points.IMAGE_BASE_COST，
+  //    seedream_std/seedream_pro 对 points.SEEDREAM_VARIANT_COST。否则前端显示和实际扣点对不上。
   // gpt 按官方 $30/M image output token 实测折算(1点=0.1元)：标准≈¥0.30~0.37，高清=4倍≈¥1.20~1.50。
-  var COSTBASE={nb2:{std:15,hd:25}, pro:{std:25,hd:30}, gpt:{std:20,hd:30}, seedream:{std:8,hd:12}, xiaole:{std:8,hd:12}, zelong2:{std:8,hd:12}};
+  var COSTBASE={nb2:{std:15,hd:25}, pro:{std:25,hd:30}, gpt:{std:20,hd:30}, seedream_std:{std:8,hd:12}, seedream_pro:{std:15,hd:20}, xiaole:{std:8,hd:12}, zelong2:{std:8,hd:12}};
   // 数量上限(中转/循环慢→低)。必须与后端 points.cost_of 的 cap 一致，否则按 N 扣点却只出 cap 张。
   var ENGINE_MAXN={banana:2, gpt:4, seedream:2, xiaole:2, zelong2:2};
   // 引擎卡 → 计价用的 key。Nano Banana 一张卡两个型号，价格跟型号走。
-  function costKey(eng){ return eng==='banana' ? bananaVariant : eng; }
+  function costKey(eng){ return eng==='banana' ? bananaVariant : (eng==='seedream' ? 'seedream_'+seedreamVariant : eng); }
   var TEMPLATES=[
     {id:'poster',name:'活动海报',ratio:'9:16',desc:'竖版促销海报，适合朋友圈和门店屏',tpl:'{brand} {selling} 活动海报，{color}主色，高级美业广告质感，主体居中，顶部留白放中文标题，底部价格权益：{price}，柔光皮肤质感，干净排版，9:16竖版，无水印'},
     {id:'deal',name:'团购套餐',ratio:'3:4',desc:'团购封面，突出套餐与价格权益',tpl:'{brand} 团购套餐封面，核心卖点：{selling}，价格权益：{price}，{color}主色，产品与服务场景同框，醒目价格牌，真实美业门店质感，3:4构图，无水印'},

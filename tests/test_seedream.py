@@ -389,7 +389,17 @@ class CostConsistencyTests(unittest.TestCase):
         self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 4}), gpt_hd * 4)
         self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 9}), gpt_hd * 4)
 
-    def test_seedream_quality_tiers(self):
+    def test_seedream_variant_and_quality_tiers(self):
+        # 2×2：型号(5.0标准 std / 5.0pro pro) × 清晰度(标准 std / 高清 hd)（kongli 2026-07-15）
+        def c(variant, q):
+            return points.cost_of("image", {"provider": "seedream", "variant": variant, "quality": q, "count": 1})
+        self.assertEqual(c("std", "std"), 8)    # 5.0 标准 · 标准
+        self.assertEqual(c("std", "hd"), 12)    # 5.0 标准 · 高清
+        self.assertEqual(c("pro", "std"), 15)   # 5.0 Pro · 标准
+        self.assertEqual(c("pro", "hd"), 20)    # 5.0 Pro · 高清
+
+    def test_seedream_defaults_to_std_variant(self):
+        # 不传 variant → 按 5.0 标准算（和前端 seedreamVariant 缺省一致）
         self.assertEqual(points.cost_of("image", {"provider": "seedream", "quality": "std", "count": 1}), 8)
         self.assertEqual(points.cost_of("image", {"provider": "seedream", "quality": "hd", "count": 1}), 12)
 

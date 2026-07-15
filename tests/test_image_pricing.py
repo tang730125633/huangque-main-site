@@ -128,8 +128,9 @@ class FrontendBackendSyncTests(unittest.TestCase):
             out[eng] = {"std": int(std), "hd": int(hd)}
         return out
 
-    # 前端引擎卡叫 gpt，后端 provider 叫 openai —— 同一个引擎两个名字，映射写死在这里
-    BACKEND_TO_FRONTEND = {"openai": "gpt", "seedream": "seedream", "xiaole": "xiaole", "zelong2": "zelong2"}
+    # 前端引擎卡叫 gpt，后端 provider 叫 openai —— 同一个引擎两个名字，映射写死在这里。
+    # seedream 不在这里：它按型号分价，见 test_seedream_variants_agree。
+    BACKEND_TO_FRONTEND = {"openai": "gpt", "xiaole": "xiaole", "zelong2": "zelong2"}
 
     def test_shared_engines_agree(self):
         fe = self._frontend_costbase()
@@ -139,6 +140,17 @@ class FrontendBackendSyncTests(unittest.TestCase):
             key = self.BACKEND_TO_FRONTEND[eng]
             self.assertIn(key, fe, key)
             self.assertEqual(fe[key], be, "%s(前端 %s)" % (eng, key))
+
+    def test_seedream_variants_agree(self):
+        """Seedream 按型号分价（5.0标准/5.0pro）：前端 seedream_std/seedream_pro 必须与后端
+        points.SEEDREAM_VARIANT_COST 逐字一致，否则切型号后显示与实扣对不上。"""
+        fe = self._frontend_costbase()
+        for variant in ("std", "pro"):
+            key = "seedream_" + variant
+            self.assertIn(key, fe, key)
+            self.assertEqual(fe[key], points.SEEDREAM_VARIANT_COST[variant], key)
+        self.assertEqual(points.SEEDREAM_VARIANT_COST["std"], {"std": 8, "hd": 12})
+        self.assertEqual(points.SEEDREAM_VARIANT_COST["pro"], {"std": 15, "hd": 20})
 
     def test_gpt_price_updated_on_both_sides(self):
         self.assertEqual(self._frontend_costbase()["gpt"], {"std": 20, "hd": 30})
