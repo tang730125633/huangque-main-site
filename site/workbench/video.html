@@ -371,7 +371,7 @@
         </div>
       </div>
 
-      <div id="talkingCostSummary" class="talking-cost">预计消耗 20 点</div>
+      <div id="talkingCostSummary" class="talking-cost">10 点/秒 · 按实际时长结算</div>
       <button id="generateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:10px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
         生成口播视频
       </button>
@@ -390,14 +390,14 @@
         <div class="line-switch">
           <div class="label">玩法</div>
           <div class="line-tabs" id="cineModeTabs">
-            <button type="button" class="line-tab active" data-cine-mode="motion"><b>动作模仿</b><span>1 个形象 + 1 段参考视频 → 照着它的动作演 · 10 点/秒</span></button>
+            <button type="button" class="line-tab active" data-cine-mode="motion"><b>动作模仿</b><span>1 个形象 + 1 段参考视频 → 照着它的动作演 · 30 点/秒</span></button>
             <!-- 双人动作模仿：页签已下掉。它在线上是 0 成 2 败 —— 被 HeyGen 的内容审核拦的
                  （网页原话 "Your content was flagged by our moderation system"，而 API 一个字
                  都不给）。中文提示词换过，但【一次都没实测】。与其让用户白等十几分钟再看到
                  「生成失败」，先下掉。
                  CINE_MODES 里的 duo 【保留】—— 后端仍然认这个玩法（只是拒绝提交），
                  实测通过后把 CINEMATIC_DUO_ENABLED=1 打开、把这个页签加回来即可，不用重写。 -->
-            <button type="button" class="line-tab" data-cine-mode="open"><b>开放式生成</b><span>最多 3 个形象 + 自己写画面描述 · 10 点/秒</span></button>
+            <button type="button" class="line-tab" data-cine-mode="open"><b>开放式生成</b><span>最多 3 个形象 + 自己写画面描述 · 30 点/秒</span></button>
           </div>
         </div>
 
@@ -688,6 +688,7 @@
   var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='S_d21F8OR62', activePreview=null, activePreviewBtn=null;
   var imageData='', imagePreview='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
   var talkingBatch=false, talkingBatchItems=[], videoCost=20, videoBatchMax=5, talkingBatchSeq=0;
+  var TALKING_RATE=10;   // 口播 10 点/秒（与后端 video.TALKING_RATE_PER_SEC 一致）；按实际输出时长结算，多退少不补
   var bgmData='', selectedBgmVolume=0.18;
   var selectedSubtitle='off', selectedSubtitleStyle='white', selectedSubtitlePosition='bottom';  // F4 字幕：默认关闭+底部，不勾选时行为与原来一致
   // 电影化身（HeyGen cinematic）：三个玩法共用一套控件，见 CINE_MODES
@@ -719,9 +720,9 @@
   //   durations  可选时长（只有开放式还用得上）；rate 每秒点数
   // ⚠️ rate 必须和后端 CINEMATIC_RATE_PER_SEC 逐字对齐 —— 对不上就是「界面说 30 点、实际扣 100 点」。
   var CINE_MODES={
-    motion:{label:'动作模仿',    avatars:1, exact:true,  fixed:true,  needRef:true,  durations:['auto'],            rate:10},
-    duo:   {label:'双人动作模仿', avatars:2, exact:true,  fixed:true,  needRef:true,  durations:['auto'],            rate:10},
-    open:  {label:'开放式生成',  avatars:3, exact:false, fixed:false, needRef:false, durations:['auto',5,10,12,15],  rate:10}
+    motion:{label:'动作模仿',    avatars:1, exact:true,  fixed:true,  needRef:true,  durations:['auto'],            rate:30},
+    duo:   {label:'双人动作模仿', avatars:2, exact:true,  fixed:true,  needRef:true,  durations:['auto'],            rate:30},
+    open:  {label:'开放式生成',  avatars:3, exact:false, fixed:false, needRef:false, durations:['auto',5,10,12,15],  rate:30}
   };
   var cineMode='motion';
   var cineRefSeconds=0;   // 参考视频的实际秒数（本地读的），用来预估点数
@@ -1455,7 +1456,7 @@
   function updateCineCount(){
     if($('cineAvatarCount')) $('cineAvatarCount').textContent=cineSelectedAvatarIds.length+' / '+cineCfg().avatars;
     renderCineRefs();          // 形象数一变，参考图的额度就变（两者共用 9 张图的预算）
-    updateCineDurationHint();  // 点数按秒算，形象数变了单价可能也变（双人 5 点/秒）
+    updateCineDurationHint();  // 点数按秒算，三个玩法统一 30 点/秒
   }
 
   // ===== 参考素材：视频 + 图片，多选，和形象共用媒体预算 =====
@@ -1945,9 +1946,15 @@
     ];
     if($('sideChecklist')) $('sideChecklist').innerHTML=items.map(function(x){return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 11px;border:1px solid rgba(148,164,187,.1);border-radius:12px;background:rgba(148,164,187,.03);"><span style="font-size:12.5px;color:#cbd5e1;">'+esc(x[0])+'</span><span style="font-size:11.5px;color:#e7b24c;">'+esc(x[1])+'</span></div>';}).join('');
     if($('generateBtn')) $('generateBtn').textContent=talkingBatch?(imageCount?'批量生成 '+imageCount+' 条口播视频':'批量生成口播视频'):'生成口播视频';
-    if($('talkingCostSummary')) $('talkingCostSummary').textContent=talkingBatch
-      ?(imageCount?(videoCost+' 点/条 × '+imageCount+' = 预计 '+(videoCost*imageCount)+' 点'):(videoCost+' 点/条 · 选择形象后显示总计'))
-      :('预计消耗 '+videoCost+' 点');
+    if($('talkingCostSummary')){
+      var perSec=TALKING_RATE+' 点/秒 · 按实际时长结算';
+      // text 模式按文案长度估算(4 字/秒，与后端预扣一致)；audio 模式时长要生成后才准，只标单价。
+      var estText=(mode==='text' && textReady)
+        ? Math.max(TALKING_RATE, Math.ceil($('scriptText').value.trim().length/4)*TALKING_RATE) : 0;
+      $('talkingCostSummary').textContent=talkingBatch
+        ?(perSec+(imageCount?('　·　共 '+imageCount+' 条'):''))
+        :(estText?('预计约 '+estText+' 点（'+perSec+'）'):perSec);
+    }
     if(mode==='text' && videoFunction==='talking') $('modeSummary').textContent=talkingBatch?'同一份口播文案将分别生成多条形象视频':'上传人物图，输入文案并选择音色生成口播视频';
     syncVideoGenerateButtons();
   }

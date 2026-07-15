@@ -75,28 +75,26 @@ class BillingTests(_Base):
     """按成片秒数计费。算错一次就是真金白银 —— 一条片子上游成本 $7。"""
 
     def test_rates(self):
-        """三个玩法统一 10 点/秒（kongli 2026-07-14）。
-
-        原来是 motion 3 / duo 5 / open 5。分档没有成本依据 —— HeyGen 对三者收的是同一个价
-        （$7/条，与玩法和时长都无关），却让成本最高的档卖出了最低的价。
+        """三个玩法统一 30 点/秒（kongli 2026-07-15；此前 10，更早 motion 3/duo 5/open 5）。
+        HeyGen 对三者收同一个价（$7/条，与玩法和时长都无关），这里不分档。
         """
-        self.assertEqual(video.cinematic_rate("motion"), 10)
-        self.assertEqual(video.cinematic_rate("duo"), 10)
-        self.assertEqual(video.cinematic_rate("open"), 10)
+        self.assertEqual(video.cinematic_rate("motion"), 30)
+        self.assertEqual(video.cinematic_rate("duo"), 30)
+        self.assertEqual(video.cinematic_rate("open"), 30)
 
     def test_cost_is_seconds_times_rate(self):
         # 动作模仿：时长锁死自适应 —— 参考片段 8.2s → 成片 9s
-        self.assertEqual(points.cost_of("cinematic", self.v()), 90)                        # 9 × 10
+        self.assertEqual(points.cost_of("cinematic", self.v()), 270)                       # 9 × 30
         self.assertEqual(points.cost_of("cinematic",
-                                        self.v(cine_mode="duo", avatar_ids=[1, 2])), 90)   # 9 × 10
+                                        self.v(cine_mode="duo", avatar_ids=[1, 2])), 270)  # 9 × 30
         self.assertEqual(points.cost_of("cinematic", self.v(cine_mode="open", avatar_ids=[1],
-                                                            prompt="海边跳舞", duration=12)), 120)
+                                                            prompt="海边跳舞", duration=12)), 360)  # 12 × 30
 
     def test_auto_is_billed_by_the_probed_length(self):
-        """8.2 秒的参考片段 → 成片 9 秒 → 90 点。界面上显示的必须就是这个数。"""
+        """8.2 秒的参考片段 → 成片 9 秒 → 270 点。界面上显示的必须就是这个数。"""
         body = self.v(duration="auto")
         self.assertEqual(body["duration"], 9)
-        self.assertEqual(points.cost_of("cinematic", body), 90)
+        self.assertEqual(points.cost_of("cinematic", body), 270)
 
     def test_an_unknown_mode_is_billed_at_the_highest_rate(self):
         """玩法认不出来时按最贵的收 —— 绝不能回落到最便宜的，更不能回落到 0。
