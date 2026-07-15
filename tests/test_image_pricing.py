@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT / "server"))
 core = importlib.import_module("content_domains.core")
 points = importlib.import_module("content_domains.points")
 BANANA = (ROOT / "site" / "workbench" / "banana.html").read_text(encoding="utf-8")
+IMGGEN_SRC = (ROOT / "server" / "imggen_api.py").read_text(encoding="utf-8")
 
 FRONTEND_RATIOS = ["1:1", "9:16", "16:9", "3:4"]
 
@@ -142,6 +143,28 @@ class FrontendBackendSyncTests(unittest.TestCase):
     def test_gpt_price_updated_on_both_sides(self):
         self.assertEqual(self._frontend_costbase()["gpt"], {"std": 4, "hd": 15})
         self.assertEqual(points.IMAGE_BASE_COST["openai"], {"std": 4, "hd": 15})
+
+    def _imggen_basecost(self):
+        # Nano Banana(nb2/pro) 的实扣在 imggen_api.py（独立服务），不在 points.py。
+        raw = re.search(r"BASE_COST\s*=\s*\{(.+?)\}\n", IMGGEN_SRC).group(1)
+        out = {}
+        for eng, std, hd in re.findall(r'"(\w+)":\s*\{"std":\s*(\d+),\s*"hd":\s*(\d+)\}', raw):
+            out[eng] = {"std": int(std), "hd": int(hd)}
+        return out
+
+    def test_banana_nb2_pro_agree_front_and_back(self):
+        """⚠ nb2/pro 的前端 COSTBASE 必须与 imggen_api.py 的 BASE_COST 逐字一致，
+        否则作图卡显示的点数与实际扣点对不上（这条链路 points.py 那侧的一致性测试盖不到）。"""
+        fe, be = self._frontend_costbase(), self._imggen_basecost()
+        for eng in ("nb2", "pro"):
+            self.assertIn(eng, be, "imggen_api.BASE_COST 缺 %s" % eng)
+            self.assertIn(eng, fe, "前端 COSTBASE 缺 %s" % eng)
+            self.assertEqual(fe[eng], be[eng], "%s 前后端点数不一致" % eng)
+
+    def test_banana_prices_are_the_new_values(self):
+        be = self._imggen_basecost()
+        self.assertEqual(be["nb2"], {"std": 15, "hd": 25})
+        self.assertEqual(be["pro"], {"std": 25, "hd": 30})
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@
 守的不变量：
 1. 只有一张 `data-engine="banana"` 卡，nb2/pro 不再是独立引擎卡
 2. 型号在 `#bananaVariantRow` 里选（data-variant=nb2|pro）
-3. **两个型号点数不同**（标10/高14 vs 标18/高26）——切型号必须重算点数，
+3. **两个型号点数不同**（标15/高25 vs 标25/高30）——切型号必须重算点数，
    这点和 Seedream 不同（Seedream 两档同价，忘了重算也看不出来）
 4. 提交时 body 带 model=<型号>，仍打 /api/gen/banana（后端未改）
 5. 老深链 ?engine=nb2 / ?engine=pro 必须继续工作 —— script.html 至今硬编码 &engine=nb2
@@ -55,8 +55,8 @@ class PointsRecalculationTests(unittest.TestCase):
 
     def test_costbase_keeps_distinct_prices(self):
         m = re.search(r"var COSTBASE=\{([^;]+)\};", BANANA).group(1)
-        self.assertIn("nb2:{std:10,hd:14}", m.replace(" ", ""))
-        self.assertIn("pro:{std:18,hd:26}", m.replace(" ", ""))
+        self.assertIn("nb2:{std:15,hd:25}", m.replace(" ", ""))
+        self.assertIn("pro:{std:25,hd:30}", m.replace(" ", ""))
 
     def test_cost_key_resolves_banana_to_variant(self):
         self.assertRegex(BANANA, r"function costKey\(eng\)\{ return eng==='banana' \? bananaVariant : eng; \}")

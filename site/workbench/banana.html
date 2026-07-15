@@ -132,7 +132,7 @@
 
       <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">引擎</div>
       <div id="engineRow" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(132px,1fr)); gap:10px;">
-        <div data-engine="banana" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; line-height:1.5;"><div style="font-weight:600;">Nano Banana</div><div style="font-size:11px; margin-top:3px; color:#e7b24c;">快·中文好 · <span data-engine-cost="banana">14点</span> ✦推荐</div></div>
+        <div data-engine="banana" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; line-height:1.5;"><div style="font-weight:600;">Nano Banana</div><div style="font-size:11px; margin-top:3px; color:#e7b24c;">快·中文好 · <span data-engine-cost="banana">25点</span> ✦推荐</div></div>
         <div data-engine="gpt" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">gpt-image-2</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">OpenAI·写实/局部改 · <span data-engine-cost="gpt">15点</span></div></div>
         <div data-engine="seedream" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">Seedream</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">字节·中文字/商用 · <span data-engine-cost="seedream">12点</span></div></div>
         <div data-engine="xiaole" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">果肉生图</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">写实·稳定 · <span data-engine-cost="xiaole">8点</span></div></div>
@@ -140,8 +140,8 @@
       </div>
       <!-- Nano Banana 型号子选择：只在选中 Nano Banana 时出现。两档点数不同，切换会重算 -->
       <div id="bananaVariantRow" style="display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-top:10px;">
-        <div data-variant="nb2" style="padding:9px 10px; text-align:center; font-size:12.5px; border-radius:10px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; line-height:1.45;"><div style="font-weight:600;">Banana 2</div><div style="font-size:11px; margin-top:2px;">快 · 约 30-90 秒 · 标10/高14</div></div>
-        <div data-variant="pro" style="padding:9px 10px; text-align:center; font-size:12.5px; border-radius:10px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.45;"><div style="font-weight:600;">Banana Pro</div><div style="font-size:11px; margin-top:2px;">最强中文/4K · 约 1-2 分钟 · 标18/高26</div></div>
+        <div data-variant="nb2" style="padding:9px 10px; text-align:center; font-size:12.5px; border-radius:10px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; line-height:1.45;"><div style="font-weight:600;">Banana 2</div><div style="font-size:11px; margin-top:2px;">快 · 约 30-90 秒 · 标15/高25</div></div>
+        <div data-variant="pro" style="padding:9px 10px; text-align:center; font-size:12.5px; border-radius:10px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.45;"><div style="font-weight:600;">Banana Pro</div><div style="font-size:11px; margin-top:2px;">最强中文/4K · 约 1-2 分钟 · 标25/高30</div></div>
       </div>
       <!-- Seedream 型号子选择：只在选中 Seedream 引擎时出现 -->
       <div id="seedreamVariantRow" style="display:none; grid-template-columns:repeat(2,1fr); gap:10px; margin-top:10px;">
@@ -305,7 +305,7 @@
   // 所以切换型号必须 updateCost()（Seedream 两档同价，没这个坑）。
   // ⚠ 必须与后端 points.IMAGE_BASE_COST 逐字一致（有回归测试守着），否则前端显示和实际扣点对不上。
   // gpt 按官方 $30/M image output token 实测折算(1点=0.1元)：标准≈¥0.30~0.37，高清=4倍≈¥1.20~1.50。
-  var COSTBASE={nb2:{std:10,hd:14}, pro:{std:18,hd:26}, gpt:{std:4,hd:15}, seedream:{std:8,hd:12}, xiaole:{std:8,hd:12}, zelong2:{std:8,hd:12}};
+  var COSTBASE={nb2:{std:15,hd:25}, pro:{std:25,hd:30}, gpt:{std:4,hd:15}, seedream:{std:8,hd:12}, xiaole:{std:8,hd:12}, zelong2:{std:8,hd:12}};
   // 数量上限(中转/循环慢→低)。必须与后端 points.cost_of 的 cap 一致，否则按 N 扣点却只出 cap 张。
   var ENGINE_MAXN={banana:2, gpt:4, seedream:2, xiaole:2, zelong2:2};
   // 引擎卡 → 计价用的 key。Nano Banana 一张卡两个型号，价格跟型号走。
@@ -409,7 +409,7 @@
         var v=c.getAttribute('data-variant');
         highlightVariant(rowId, v);
         onPick(v);
-        updateCost();   // Banana 2→Pro 点数从 14 跳到 26，必须立刻反映在按钮与提示上
+        updateCost();   // Banana 2→Pro 点数从 25 跳到 30，必须立刻反映在按钮与提示上
       };
     });
   }
