@@ -57,6 +57,11 @@ class AuthProfileTests(unittest.TestCase):
         with (client or self.client).open(self.base + path, timeout=3) as response:
             return json.loads(response.read())
 
+    def _delete(self, path, client=None):
+        req = urllib.request.Request(self.base + path, method="DELETE")
+        with (client or self.client).open(req, timeout=3) as response:
+            return json.loads(response.read())
+
     def _login_client(self, username):
         jar = http.cookiejar.CookieJar()
         client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
@@ -164,6 +169,59 @@ class AuthProfileTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as existing_ctx:
             self._post("/api/auth/friends/request", {"account_id": account_id})
         self.assertEqual(existing_ctx.exception.code, 409)
+
+    def test_delete_friend_removes_both_sides_and_allows_new_request(self):
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            account_id = c.execute(
+                "SELECT account_id FROM users WHERE username='friend_user'"
+            ).fetchone()[0]
+        finally:
+            c.close()
+
+        self._post("/api/auth/friends/request", {"account_id": account_id})
+        friend_client = self._login_client("friend_user")
+        request_id = self._get("/api/auth/friend-requests", friend_client)["incoming"][0]["id"]
+        self._post(
+            "/api/auth/friend-requests/respond",
+            {"request_id": request_id, "action": "accept"},
+            friend_client,
+        )
+
+        deleted = self._delete("/api/auth/friends/friend_user")
+        self.assertTrue(deleted["ok"])
+        self.assertEqual(deleted["friends"], [])
+        self.assertEqual(self._get("/api/auth/friends", friend_client)["friends"], [])
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            archived_statuses = [
+                row[0] for row in c.execute(
+                    "SELECT status FROM friend_requests WHERE from_username='profile_user' AND to_username='friend_user'"
+                ).fetchall()
+            ]
+        finally:
+            c.close()
+        self.assertTrue(any(status.startswith("removed:") for status in archived_statuses))
+
+        requested_again = self._post("/api/auth/friends/request", {"account_id": account_id})
+        self.assertTrue(requested_again["ok"])
+        self.assertEqual(requested_again["requests"]["outgoing"][0]["to_user"]["username"], "friend_user")
+        second_request_id = self._get(
+            "/api/auth/friend-requests", friend_client
+        )["incoming"][0]["id"]
+        accepted_again = self._post(
+            "/api/auth/friend-requests/respond",
+            {"request_id": second_request_id, "action": "accept"},
+            friend_client,
+        )
+        self.assertTrue(accepted_again["ok"])
+        self.assertEqual(accepted_again["friends"][0]["username"], "profile_user")
+        self.assertEqual(self._get("/api/auth/friends")["friends"][0]["username"], "friend_user")
+
+    def test_delete_friend_rejects_non_friend(self):
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self._delete("/api/auth/friends/friend_user")
+        self.assertEqual(ctx.exception.code, 404)
 
     def test_profile_rejects_empty_and_long_names(self):
         for name in ("   ", "a" * 33):

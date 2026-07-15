@@ -256,6 +256,28 @@ def list_friends(username):
     finally:
         c.close()
 
+def remove_friend(username, friend_username):
+    friend_username = (friend_username or "").strip()
+    if not friend_username or friend_username == username:
+        return None, "not_found"
+    c = db()
+    try:
+        if not are_friends(c, username, friend_username):
+            return None, "not_found"
+        c.execute("""DELETE FROM friendships
+                     WHERE (username=? AND friend_username=?)
+                        OR (username=? AND friend_username=?)""",
+                  (username, friend_username, friend_username, username))
+        c.execute("""UPDATE friend_requests SET status='removed:' || id
+                     WHERE status='accepted'
+                       AND ((from_username=? AND to_username=?)
+                         OR (from_username=? AND to_username=?))""",
+                  (username, friend_username, friend_username, username))
+        c.commit()
+        return list_friends(username), None
+    finally:
+        c.close()
+
 def add_friend_by_account_id(username, account_id):
     account_id = (account_id or "").strip().upper()
     if not account_id:
@@ -2044,10 +2066,17 @@ class H(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         p = self.path.split("?")[0]
+        friend_prefix = "/api/auth/friends/"
         canvas_prefix = "/api/auth/canvas/boards/"
         row = self._user()
         if not row:
             return self._send(401, {"detail": "未登录"})
+        if p.startswith(friend_prefix):
+            friend_username = urllib.parse.unquote(p[len(friend_prefix):])
+            friends, err = remove_friend(row["username"], friend_username)
+            if err == "not_found":
+                return self._send(404, {"detail": "好友关系不存在"})
+            return self._send(200, {"ok": True, "friends": friends})
         if p.startswith(canvas_prefix) and "/members/" in p[len(canvas_prefix):]:
             rest = p[len(canvas_prefix):]
             board_id, member_username = rest.split("/members/", 1)

@@ -88,6 +88,10 @@
   .friend-profile-avatar{width:46px;height:46px;border-radius:12px;background:rgba(231,178,76,.13);display:flex;align-items:center;justify-content:center;color:#e7b24c;font-size:18px;font-weight:900;flex:none}
   .friend-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
   .friend-detail-cell{padding:12px;border:1px solid rgba(148,164,187,.1);border-radius:9px;background:rgba(7,11,19,.28);min-width:0}
+  .friend-detail-actions{justify-content:space-between}
+  .friend-delete-modal{z-index:9400}
+  .friend-delete-summary{margin:0;padding:13px;border:1px solid rgba(244,112,138,.18);border-radius:9px;background:rgba(244,112,138,.06);color:var(--hq-text);font-size:13px;line-height:1.65}
+  .friend-delete-summary strong{color:#f4708a}
   @keyframes friend-panel-in{from{transform:translateY(-8px);opacity:.35}to{transform:none;opacity:1}}
   .badge{height:24px;padding:0 9px;border-radius:7px;font-size:11.5px;font-weight:800;display:inline-flex;align-items:center;flex:none;background:rgba(231,178,76,.12);color:#e7b24c}
   .badge.muted{background:rgba(148,164,187,.1);color:#94a4bb}
@@ -267,7 +271,10 @@
             </div>
             <form id="friendRemarkForm" class="settings-form">
               <label class="field"><span>修改备注</span><input id="friendRemarkInput" type="text" maxlength="24" autocomplete="off" placeholder="输入备注名"></label>
-              <div class="action-row"><button id="saveFriendRemarkBtn" class="btn primary" type="submit">保存备注</button></div>
+              <div class="action-row friend-detail-actions">
+                <button id="deleteFriendBtn" class="btn danger" type="button">删除好友</button>
+                <button id="saveFriendRemarkBtn" class="btn primary" type="submit">保存备注</button>
+              </div>
             </form>
           </div>
         </div>
@@ -359,6 +366,24 @@
         <div id="passwordNote" class="settings-card-note" aria-live="polite">改密成功会退出当前登录状态，请用新密码重新登录。</div>
         <div class="action-row"><button id="passwordSubmit" class="btn primary" type="submit">保存新密码</button></div>
       </form>
+    </div>
+  </section>
+</div>
+<div id="friendDeleteConfirm" class="modal-mask friend-delete-modal" aria-hidden="true">
+  <section class="settings-modal" role="alertdialog" aria-modal="true" aria-labelledby="friendDeleteTitle" aria-describedby="friendDeleteDescription">
+    <div class="settings-modal-head">
+      <div>
+        <div id="friendDeleteTitle" class="settings-card-title">删除好友</div>
+        <div class="settings-card-note">此操作会同时解除双方的好友关系。</div>
+      </div>
+      <button id="closeFriendDeleteConfirm" class="icon-btn" type="button" aria-label="关闭删除好友确认框">×</button>
+    </div>
+    <div class="settings-modal-body">
+      <p id="friendDeleteDescription" class="friend-delete-summary">确定删除好友 <strong id="friendDeleteName">--</strong> 吗？删除后需要重新发送申请才能再次添加。</p>
+      <div class="action-row">
+        <button id="cancelDeleteFriendBtn" class="btn" type="button">取消</button>
+        <button id="confirmDeleteFriendBtn" class="btn danger" type="button">确认删除</button>
+      </div>
     </div>
   </section>
 </div>
@@ -705,10 +730,18 @@
   document.addEventListener('click',function(e){
     var panel=friendPanel();
     if(!panel || !panel.classList.contains('show')) return;
+    if($('friendDeleteConfirm').contains(e.target)) return;
     if((panel.contains && panel.contains(e.target)) || (e.target.closest && e.target.closest('.hq-friends-btn'))) return;
     closeFriendPanel();
   });
-  document.addEventListener('keydown',function(e){ if(e.key === 'Escape') closeFriendPanel(); });
+  document.addEventListener('keydown',function(e){
+    if(e.key !== 'Escape') return;
+    if($('friendDeleteConfirm').classList.contains('show')){
+      closeFriendDeleteConfirm();
+      return;
+    }
+    closeFriendPanel();
+  });
 
   $('openAddFriendViewBtn').addEventListener('click',openAddFriendView);
   $('backFriendsListBtn').addEventListener('click',openFriendListView);
@@ -743,6 +776,65 @@
     renderFriends(localFriendState().friends);
     toast('备注已保存');
   });
+
+  function setFriendDeleteConfirmOpen(open){
+    var modal=$('friendDeleteConfirm');
+    if(!modal) return;
+    if(open){
+      var friend=findFriendByKey(activeFriendKey);
+      if(!friend) return;
+      var label=friendName(friend);
+      if(friend.account_id) label += '（' + friend.account_id + '）';
+      $('friendDeleteName').textContent=label;
+    }
+    modal.classList.toggle('show',!!open);
+    modal.setAttribute('aria-hidden',open?'false':'true');
+    if(open) setTimeout(function(){ $('cancelDeleteFriendBtn').focus(); },0);
+  }
+
+  function closeFriendDeleteConfirm(){
+    setFriendDeleteConfirmOpen(false);
+  }
+
+  $('deleteFriendBtn').addEventListener('click',function(){
+    setFriendDeleteConfirmOpen(true);
+  });
+  $('closeFriendDeleteConfirm').addEventListener('click',closeFriendDeleteConfirm);
+  $('cancelDeleteFriendBtn').addEventListener('click',closeFriendDeleteConfirm);
+  $('friendDeleteConfirm').addEventListener('click',function(e){
+    if(e.target === this) closeFriendDeleteConfirm();
+  });
+  $('confirmDeleteFriendBtn').addEventListener('click',function(){
+    var friend=findFriendByKey(activeFriendKey);
+    var btn=this;
+    if(!friend || !friend.username){
+      closeFriendDeleteConfirm();
+      toast('好友信息已失效，请刷新后重试');
+      return;
+    }
+    var deletedKey=activeFriendKey;
+    setBusy(btn,true,'删除中');
+    apiFetch('/api/auth/friends/' + encodeURIComponent(friend.username),{
+      method:'DELETE'
+    }).then(function(res){
+      if(!res || !res.ok) throw new Error(res && res.data && res.data.detail || '删除好友失败');
+      var state=localFriendState();
+      state.friends=Array.isArray(res.data.friends) ? res.data.friends : state.friends.filter(function(item){
+        return friendKey(item) !== deletedKey;
+      });
+      deleteFriendRemark(deletedKey);
+      saveLocalFriendState(state);
+      renderFriendState(state);
+      activeFriendKey = '';
+      closeFriendDeleteConfirm();
+      openFriendListView();
+      toast('好友已删除');
+    }).catch(function(err){
+      toast(err.message || '删除好友失败');
+    }).finally(function(){
+      setBusy(btn,false,'确认删除');
+    });
+  });
   function friendStateKey(){ return accountKey('hq_friend_state_v1'); }
   function friendRemarksKey(){ return accountKey('hq_friend_remarks_v1'); }
 
@@ -759,6 +851,14 @@
     if(remark) data[key]=remark;
     else delete data[key];
     writeJson(friendRemarksKey(), data);
+  }
+
+  function deleteFriendRemark(key){
+    var data=localFriendRemarks();
+    if(key && Object.prototype.hasOwnProperty.call(data,key)){
+      delete data[key];
+      writeJson(friendRemarksKey(),data);
+    }
   }
 
   function friendRemark(friend){
