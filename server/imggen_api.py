@@ -120,7 +120,7 @@ def _public_url(rel, content_type=None):
 
 MODELS = {"nb2": "gemini-3.1-flash-image", "pro": "gemini-3-pro-image"}
 # 璐ㄩ噺鍩轰环(鏈€缁堢偣鏁?鍩轰环脳鏁伴噺) + 娓呮櫚搴︹啋imageSize(鎸?model 鍒嗘。锛屽ぇ鍐橩)
-BASE_COST   = {"nb2": {"std": 10, "hd": 14}, "pro": {"std": 18, "hd": 26}}
+BASE_COST   = {"nb2": {"std": 15, "hd": 25}, "pro": {"std": 25, "hd": 30}}
 IMAGE_SIZES = {"nb2": {"std": "1K", "hd": "2K"}, "pro": {"std": "2K", "hd": "4K"}}
 RATIOS = {"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"}
 MAX_IMAGE_BYTES = 10 * 1024 * 1024

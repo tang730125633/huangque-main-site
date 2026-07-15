@@ -100,7 +100,7 @@
       </div>
 
       <button id="colBtn" class="hv-lift" style="width:100%; height:54px; margin-top:20px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit;">爬取</button>
-      <div id="colNote" style="text-align:center; font-size:12px; color:#5c6b82; margin-top:12px;">文案 + 评论默认提取 · 失败自动退点</div>
+      <div id="colNote" style="text-align:center; font-size:12px; color:#5c6b82; margin-top:12px;">文案 + 评论默认提取 · 约 30 点 · 失败自动退点</div>
     </div>
 
     <!-- ===== RIGHT: Results + History ===== -->
@@ -340,7 +340,7 @@
     kwModeEl.style.display   = m === 'keyword' ? '' : 'none';
     if (colBtn) colBtn.textContent = m === 'download' ? '⬇ 解析并下载视频' : '爬取';
     var cn = document.getElementById('colNote');
-    if (cn) cn.textContent = m === 'download' ? '仅解析并下载视频本身 · 不提取评论/文案' : '文案 + 评论默认提取 · 失败自动退点';
+    if (cn) cn.textContent = m === 'download' ? '仅解析并下载视频本身 · 不提取评论/文案 · 约 30 点' : '文案 + 评论默认提取 · 约 30 点 · 失败自动退点';
     selectedUrl = '';
   }
   tabLink.onclick = function () { setMode('link'); };

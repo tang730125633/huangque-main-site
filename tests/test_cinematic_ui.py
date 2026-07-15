@@ -34,12 +34,10 @@ class CinematicPanelTests(unittest.TestCase):
         self.assertIn("cap=cineCfg().avatars", HTML)
         self.assertIn("toast(cineCfg().label+'最多选 '+cap+' 个形象')", HTML)
 
-    def test_both_resolutions_are_selectable(self):
-        self.assertIn('data-cine-resolution="720p"', HTML)
-        self.assertIn('data-cine-resolution="1080p"', HTML)
-        # 1080p 不能是 disabled —— 这正是新功能相对动作模仿的卖点
-        seg = HTML.split("data-cine-resolution=", 1)[1].split("</div>", 1)[0]
-        self.assertNotIn("disabled", seg)
+    def test_open_resolution_is_fixed_at_1080p(self):
+        # 开放式生成不再给选分辨率（kongli 2026-07-15），固定 1080p：选择器移除、缺省常量 1080p。
+        self.assertNotIn('data-cine-resolution', HTML)
+        self.assertIn("selectedCineResolution='1080p'", HTML)
 
     def test_duration_options_are_within_heygen_range(self):
         # HeyGen cinematic: 4~15 秒
