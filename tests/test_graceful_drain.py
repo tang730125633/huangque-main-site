@@ -73,11 +73,18 @@ class TheCodeActuallyHandlesSigtermTests(unittest.TestCase):
         self.assertIn("signal.SIGTERM", block)
         self.assertIn("signal.SIGINT", block)
 
-    def test_the_http_server_is_reachable_by_the_drain(self):
-        """排空第一件事是停止收新提交 —— 拿不到 server 实例就 shutdown 不了它。"""
-        self.assertIn("core._http_server = srv", ENTRY_SRC)
-        block = CORE_SRC.split("def drain_and_exit")[1].split("\ndef ")[0]
-        self.assertIn("srv.shutdown", block)
+    def test_the_drain_wait_is_off_the_main_thread(self):
+        """⚠️ 信号处理器跑在【主线程】。等待循环若在这里跑，serve_forever 的 accept 就停摆，
+        排空那几分钟里【形象/资产等读接口全部拒连】（2026-07-15 事故：卡住的任务把排空拖满
+        ~19 分钟，整个 content API 下线）。等待必须丢到后台线程，且排空期间【绝不 shutdown
+        HTTP 服务】—— 读接口照常，do_POST 靠 is_shutting_down() 拒新提交即可。"""
+        handler = CORE_SRC.split("def drain_and_exit")[1].split("\ndef ")[0]
+        self.assertIn("threading.Thread(target=_drain_then_exit", handler,
+                      "等待没丢到后台线程 —— 会阻塞主线程 accept，读接口下线")
+        self.assertNotIn("while ", handler, "等待循环不能在信号处理器(主线程)里跑")
+        self.assertNotIn(".shutdown(", handler, "排空期间不能关 HTTP 服务，否则读接口全挂")
+        drainer = CORE_SRC.split("def _drain_then_exit")[1].split("\ndef ")[0]
+        self.assertNotIn(".shutdown(", drainer, "后台排空也不该关 HTTP —— 进程退出时端口自然释放")
 
     def test_a_second_signal_exits_immediately(self):
         """急着回滚的时候，得有办法不等 —— 再发一次 SIGTERM 就立刻退。"""
@@ -117,7 +124,7 @@ class WorkersDrainInsteadOfBlockingTests(unittest.TestCase):
         block = CORE_SRC.split("def _job_worker_loop")[1].split("\ndef ")[0]
         self.assertIn("_inflight += 1", block)
         self.assertIn("_inflight -= 1", block)
-        drain = CORE_SRC.split("def drain_and_exit")[1].split("\ndef ")[0]
+        drain = CORE_SRC.split("def _drain_then_exit")[1].split("\ndef ")[0]
         self.assertIn("_inflight", drain)
         self.assertIn("qsize()", drain)
 

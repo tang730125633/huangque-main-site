@@ -900,22 +900,24 @@ def start_job_workers():
 def drain_and_exit(signum=None, frame=None):
     """SIGTERM → 停止收新任务 → 等在飞的跑完 → 退出。
 
-    ⚠️ 这个函数跑在【信号处理器】里（主线程）。它必须尽快让 HTTP 停止收活，
-    然后就只是等 —— 真正干活的是 worker 线程，它们看到 _shutting_down 且队列空了会自己退。
+    ⚠️ 跑在【信号处理器】里（主线程），【绝不能在这里阻塞等待】——主线程一卡，serve_forever
+    的 accept 就停摆，排空那几分钟里【读接口(形象/资产/任务状态/文件)全部拒连】。2026-07-15
+    事故：一条卡住的任务把排空拖满 ~19 分钟，整个 content API 随之下线，形象/资产刷不出来。
 
-    第二次收到 SIGTERM/SIGINT → 立刻退出（不等了）。急着回滚时用得上。
+    正确做法：立刻置 _shutting_down（do_POST 据此 503 拒新提交、不扣点），HTTP 服务照常 serve
+    读接口、绝不在排空期间关它；等待丢给后台线程，排空完/超时才退出（进程退出端口才释放，
+    systemd 随即拉起新进程，只有毫秒级切换空档）。第二次信号 → 立刻退出（急着回滚用）。
     """
     if _shutting_down.is_set():
         print("[drain] 再次收到停机信号，立刻退出（在飞任务会被判失败退点）", flush=True)
         os._exit(1)
     _shutting_down.set()
+    # 等待放到后台线程 —— 主线程立刻返回，serve_forever 继续 accept，读接口不受影响。
+    threading.Thread(target=_drain_then_exit, args=(time.time(),), daemon=True).start()
 
-    t0 = time.time()
-    # HTTP 服务停掉：不再受理新提交。已经在队列里的、正在跑的，继续。
-    srv = globals().get("_http_server")
-    if srv is not None:
-        threading.Thread(target=srv.shutdown, daemon=True).start()
 
+def _drain_then_exit(t0):
+    """后台线程：等在飞任务跑完（或超时）再退。期间 HTTP 服务不停，读接口照常。"""
     while time.time() - t0 < DRAIN_TIMEOUT:
         queued = sum(q.qsize() for q in _ALL_JOB_QUEUES)
         with _inflight_lock:
@@ -923,7 +925,7 @@ def drain_and_exit(signum=None, frame=None):
         if queued == 0 and running == 0:
             print("[drain] 排空完成，用时 %.0fs" % (time.time() - t0), flush=True)
             os._exit(0)
-        print("[drain] 等在飞任务：排队 %d、执行中 %d（已等 %.0fs / 上限 %ds）"
+        print("[drain] 等在飞任务：排队 %d、执行中 %d（已等 %.0fs / 上限 %ds，期间读接口正常）"
               % (queued, running, time.time() - t0, DRAIN_TIMEOUT), flush=True)
         time.sleep(3)
 
