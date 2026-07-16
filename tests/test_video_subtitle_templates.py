@@ -39,6 +39,11 @@ class SubtitleTemplateValidationTests(unittest.TestCase):
         )
         self.assertTrue(all(item["defaults"].get("font_family") for item in config["templates"]))
         self.assertTrue(all(font["value"] in video._SUBTITLE_FONT_ALLOWLIST for font in config["fonts"]))
+        self.assertEqual(
+            [font["label"] for font in config["fonts"]],
+            ["简体中文黑体（推荐）", "中日韩黑体", "中日韩宋体"],
+        )
+        self.assertTrue(all(not any("a" <= char.lower() <= "z" for char in font["label"]) for font in config["fonts"]))
 
     def test_rejects_unknown_style_font_color_and_option(self):
         with self.assertRaisesRegex(ValueError, "不支持的字幕模板"):
@@ -152,6 +157,7 @@ class SubtitleTemplateUiTests(unittest.TestCase):
         self.assertIn('id="subtitlePreview"', VIDEO_HTML)
         self.assertIn('id="subtitleResetBtn"', VIDEO_HTML)
         self.assertIn("hq_video_subtitle_templates_v2", VIDEO_HTML)
+        self.assertIn('<option value="Noto Sans SC">简体中文黑体（推荐）</option>', VIDEO_HTML)
 
     def test_page_sends_options_and_labels_history(self):
         self.assertIn("subtitle_options:subtitleOpts", VIDEO_HTML)
