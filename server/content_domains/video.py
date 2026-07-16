@@ -2358,6 +2358,8 @@ def _xiaole_request(method, path, body=None, timeout=90):
     data = None
     if body is not None:
         headers["Content-Type"] = "application/json"
+        # 上游 xiaolevideo 要求付费创建请求带 8-128 字符幂等键，缺则 HTTP 400（果肉/豆姐/欧米共用此路）
+        headers["Idempotency-Key"] = uuid.uuid4().hex
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     # 429（API Key 媒体任务过多）自动退避重试，扛并发限流
     for attempt in range(_xiaole_429_retries + 1):
