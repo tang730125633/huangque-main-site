@@ -1902,6 +1902,11 @@ _SUBTITLE_FONT_ALLOWLIST = tuple(dict.fromkeys((
     "Noto Sans CJK SC",
     "Noto Serif CJK SC",
 )))
+_SUBTITLE_FONT_LABELS = {
+    "Noto Sans SC": "简体中文黑体（推荐）",
+    "Noto Sans CJK SC": "中日韩黑体",
+    "Noto Serif CJK SC": "中日韩宋体",
+}
 _SUBTITLE_TEMPLATE_LABELS = {
     "keyword_highlight": "关键词高亮",
     "word_highlight": "逐字高亮",
@@ -2017,7 +2022,10 @@ def subtitle_config():
             {"key": key, "label": label, "defaults": dict(_SUBTITLE_TEMPLATE_DEFAULTS[key])}
             for key, label in _SUBTITLE_TEMPLATE_LABELS.items()
         ],
-        "fonts": [{"value": name, "label": name} for name in _installed_subtitle_fonts()],
+        "fonts": [
+            {"value": name, "label": _SUBTITLE_FONT_LABELS.get(name, "服务器中文字体")}
+            for name in _installed_subtitle_fonts()
+        ],
         "positions": [
             {"value": key, "label": label}
             for key, label in (("top", "顶部"), ("upper", "偏上"), ("center", "中央"), ("lower", "偏下"), ("bottom", "底部"))
