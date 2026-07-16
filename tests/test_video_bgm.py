@@ -33,7 +33,7 @@ class VideoBgmTests(unittest.TestCase):
         html = (ROOT / "site/workbench/video.html").read_text(encoding="utf-8")
         self.assertIn('id="bgmPanel"', html)
         self.assertIn("bgm_data:bgmData,bgm_volume:selectedBgmVolume", html)
-        self.assertIn("var body=talkingPayload({});", html)
+        self.assertIn("body:JSON.stringify(talkingPayload({image_data:imageData}))", html)
 
 
 if __name__ == "__main__":

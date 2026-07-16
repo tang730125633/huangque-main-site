@@ -156,11 +156,12 @@ class VideoBatchIntegrationGuardTests(unittest.TestCase):
         self.assertIn('enqueue_jobs(job_ids, "video", "text")', route)
         self.assertIn('"available_slots"', route)
 
-    def test_ui_submits_every_avatar_and_tracks_every_returned_job(self):
-        for needle in ('data-talking-shape="batch"', 'id="batchImageFile"', "multiple hidden",
-                       "body.avatars=talkingBatchItems.map", "fetch('/api/gen/video/batch'",
-                       "jobs.forEach(function(job)", "batchId:res.data.batch_id", "resumeNextTrackedVideoTask"):
-            self.assertIn(needle, self.html)
+    def test_workbench_ui_only_exposes_single_avatar_talking_video(self):
+        for needle in ('data-talking-shape', 'id="batchImageFile"', 'id="batchTalkingImages"',
+                       '选择多个形象', "fetch('/api/gen/video/batch'", 'talkingBatchItems'):
+            self.assertNotIn(needle, self.html)
+        self.assertIn('id="imageFile"', self.html)
+        self.assertIn("fetch('/api/gen/video'", self.html)
 
     def test_inline_javascript_parses_as_utf8(self):
         scripts = re.findall(r"<script(?:\s[^>]*)?>([\s\S]*?)</script>", self.html)
