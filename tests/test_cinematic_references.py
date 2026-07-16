@@ -167,7 +167,7 @@ class UiTests(unittest.TestCase):
     def test_both_reference_kinds_can_be_uploaded_multiple(self):
         self.assertIn('id="cineVideoFile"', HTML)
         self.assertIn('id="cineImageFile"', HTML)
-        self.assertEqual(HTML.count('multiple hidden'), 3, "批量形象 + 参考视频 + 参考图片")
+        self.assertEqual(HTML.count('multiple hidden'), 2, "参考视频 + 参考图片")
 
     def test_the_shared_budget_is_shown(self):
         """预算随形象数变化，必须显示 —— 否则用户会以为「怎么只能传 6 张，文档说 9 张」。"""

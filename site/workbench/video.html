@@ -93,22 +93,6 @@
   .avatar-action{flex:1;height:28px;border:1px solid rgba(148,164,187,.14);border-radius:8px;background:rgba(7,11,19,.62);color:#94a4bb;font:800 11px inherit;cursor:pointer}
   .avatar-action:hover{color:#e7b24c;border-color:rgba(231,178,76,.3)}
   .avatar-empty{grid-column:1/-1;padding:14px;border:1px dashed rgba(148,164,187,.16);border-radius:12px;color:#5c6b82;font-size:12px;text-align:center}
-  .talking-shape-modes{max-width:280px;margin-bottom:12px}
-  .form-grid.batch-mode{grid-template-columns:1fr}
-  .batch-avatar-panel{min-height:var(--video-input-height);padding:12px;border:1px solid rgba(148,164,187,.13);border-radius:8px;background:rgba(148,164,187,.025)}
-  .batch-avatar-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:9px;max-height:318px;overflow-y:auto;padding-right:3px}
-  .batch-avatar-grid::-webkit-scrollbar{width:6px}.batch-avatar-grid::-webkit-scrollbar-thumb{background:rgba(148,164,187,.24);border-radius:99px}
-  .batch-avatar-card{position:relative;min-height:116px;border:1px solid rgba(148,164,187,.14);border-radius:8px;background:rgba(148,164,187,.04);color:#94a4bb;overflow:hidden;cursor:pointer;font-family:inherit;text-align:left}
-  .batch-avatar-card:hover{border-color:rgba(231,178,76,.32)}
-  .batch-avatar-card:disabled{opacity:.45;cursor:not-allowed}
-  .batch-avatar-card.on{border-color:rgba(231,178,76,.42);box-shadow:0 0 0 1px rgba(231,178,76,.1) inset;background:rgba(231,178,76,.08)}
-  .batch-avatar-card img{width:100%;height:82px;display:block;object-fit:cover;background:#090d14}
-  .batch-avatar-label{display:block;padding:8px 9px;color:#eaf1fa;font-size:11.5px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .batch-avatar-check{position:absolute;right:6px;top:6px;min-width:22px;height:22px;padding:0 5px;border-radius:11px;background:rgba(7,11,19,.82);border:1px solid rgba(148,164,187,.3);color:#94a4bb;font:800 10px/20px inherit;text-align:center}
-  .batch-avatar-card.on .batch-avatar-check{background:#e7b24c;color:#1a1206;border-color:#e7b24c}
-  .batch-avatar-add{display:flex;min-height:116px;align-items:center;justify-content:center;flex-direction:column;gap:7px;text-align:center;padding:12px}
-  .batch-avatar-add b{font-size:20px;color:#e7b24c}.batch-avatar-add span{font-size:11px;line-height:1.45;color:#5c6b82}
-  .batch-avatar-remove{position:absolute;right:6px;top:6px;width:24px;height:24px;border-radius:50%;border:1px solid rgba(148,164,187,.3);background:rgba(7,11,19,.84);color:#eaf1fa;font:800 15px/20px inherit;cursor:pointer}
   .talking-cost{margin-top:12px;text-align:center;color:#c8902f;font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
   .motion-grid.use-avatar{grid-template-columns:1fr}
   .motion-grid.use-avatar #motionImageDrop{display:none}
@@ -140,6 +124,9 @@
   .voice-card.on .voice-sub{color:#c8902f}
   .voice-play{position:absolute;right:10px;top:10px;width:26px;height:26px;border:1px solid rgba(148,164,187,.18);border-radius:50%;background:rgba(7,11,19,.45);color:#94a4bb;display:flex;align-items:center;justify-content:center;cursor:pointer}
   .voice-play:hover{color:#e7b24c;border-color:rgba(231,178,76,.36)}
+  .voice-native-preview{overflow:hidden}
+  .voice-preview-audio{position:absolute;left:-11px;top:-2px;width:300px;height:30px;cursor:pointer;z-index:1}
+  .voice-preview-audio::-webkit-media-controls-enclosure,.voice-preview-audio::-webkit-media-controls-panel{background:transparent}
   .audio-source{display:grid;grid-template-columns:1fr 1fr;gap:10px}
   .source-card{border:1px solid rgba(148,164,187,.14);border-radius:13px;background:rgba(148,164,187,.05);padding:13px;cursor:pointer;color:#94a4bb;transition:.16s}
   .source-card.on{color:#e7b24c;background:rgba(231,178,76,.1);border-color:rgba(231,178,76,.36)}
@@ -215,7 +202,7 @@
   .vidLoading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#e7b24c;font-size:13px;font-weight:800;letter-spacing:0;background:linear-gradient(145deg,rgba(7,11,19,.96),rgba(16,20,28,.94))}
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;transition:.2s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:12px;padding:11px 16px;color:#eaf1fa;font-size:13px;z-index:80}
   .toast.show{opacity:1;transform:translateX(-50%)}
-  @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid,.video-parameter-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source,.avatar-grid{grid-template-columns:1fr}.batch-avatar-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid,.video-parameter-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source,.avatar-grid{grid-template-columns:1fr}}
   @media (prefers-reduced-motion:reduce){.history-focus{animation:none}}
   .line-switch{margin:12px 0;padding:12px;background:rgba(255,255,255,.03);border:1px solid rgba(148,164,187,.14);border-radius:12px}
   .line-switch>.label{margin-bottom:8px}
@@ -272,24 +259,13 @@
 
       <div id="talkingFormGrid" class="form-grid">
         <div>
-          <div id="talkingShapeModes" class="seg talking-shape-modes" aria-label="口播形象数量">
-            <button class="on" type="button" data-talking-shape="single">单个形象</button>
-            <button type="button" data-talking-shape="batch">批量形象</button>
-          </div>
-          <div id="singleTalkingImage">
-            <div class="label" style="margin-bottom:10px;">人物形象图片</div>
-            <label id="imageDrop" class="upload-box">
-              <input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-              <span id="imageIcon" style="display:flex;width:34px;color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="8" r="4"/><path d="M5.5 20.5a7 7 0 0 1 13 0"/></svg></span>
-              <div id="imageMain" style="font-size:12.5px;font-weight:700;">上传人物形象图片</div>
-              <div id="imageSub" style="font-size:11px;color:#5c6b82;line-height:1.6;">清晰正面效果更好<br>jpg · png · webp</div>
-            </label>
-          </div>
-          <div id="batchTalkingImages" class="batch-avatar-panel hidden">
-            <div class="row" style="margin-bottom:10px;"><span class="label">选择多个形象</span><span id="batchAvatarCount" class="mono faint">0 / 5</span></div>
-            <input id="batchImageFile" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
-            <div id="talkingBatchGrid" class="batch-avatar-grid" aria-live="polite"></div>
-          </div>
+          <div class="label" style="margin-bottom:10px;">人物形象图片</div>
+          <label id="imageDrop" class="upload-box">
+            <input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+            <span id="imageIcon" style="display:flex;width:34px;color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="8" r="4"/><path d="M5.5 20.5a7 7 0 0 1 13 0"/></svg></span>
+            <div id="imageMain" style="font-size:12.5px;font-weight:700;">上传人物形象图片</div>
+            <div id="imageSub" style="font-size:11px;color:#5c6b82;line-height:1.6;">清晰正面效果更好<br>jpg · png · webp</div>
+          </label>
         </div>
 
         <div>
@@ -685,7 +661,6 @@
   var token='__cookie__';
   var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='S_d21F8OR62', activePreview=null, activePreviewBtn=null;
   var imageData='', imagePreview='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
-  var talkingBatch=false, talkingBatchItems=[], videoCost=20, videoBatchMax=5, talkingBatchSeq=0;
   var TALKING_RATE=10;   // 口播 10 点/秒（与后端 video.TALKING_RATE_PER_SEC 一致）；按实际输出时长结算，多退少不补
   var bgmData='', selectedBgmVolume=0.18;
   var selectedSubtitle='off', selectedSubtitleStyle='white', selectedSubtitlePosition='bottom';  // F4 字幕：默认关闭+底部，不勾选时行为与原来一致
@@ -1804,109 +1779,19 @@
       reader.readAsDataURL(file);
     });
   }
-  function talkingBatchIndex(key){
-    for(var i=0;i<talkingBatchItems.length;i++) if(talkingBatchItems[i].key===key) return i;
-    return -1;
-  }
-  function renderTalkingBatchImages(){
-    var grid=$('talkingBatchGrid'),count=$('batchAvatarCount');
-    if(!grid) return;
-    grid.innerHTML='';
-    var add=document.createElement('button');
-    add.type='button'; add.className='batch-avatar-card batch-avatar-add';
-    add.innerHTML='<b>＋</b><span>上传新照片<br>可多选</span>';
-    add.disabled=talkingBatchItems.length>=videoBatchMax;
-    add.title=add.disabled?'已达到本批上限':'上传人物形象图片';
-    add.onclick=function(){if(!add.disabled)$('batchImageFile').click();};
-    grid.appendChild(add);
-    talkingBatchItems.filter(function(item){return !!item.image_data;}).forEach(function(item){
-      var card=document.createElement('div');
-      card.className='batch-avatar-card on';
-      card.innerHTML='<img src="'+esc(item.preview||item.image_data)+'" alt=""><span class="batch-avatar-label">'+esc(item.label)+'</span>'
-        +'<button class="batch-avatar-remove" type="button" title="移除形象" aria-label="移除 '+esc(item.label)+'">×</button>';
-      card.querySelector('.batch-avatar-remove').onclick=function(){
-        var idx=talkingBatchIndex(item.key); if(idx>=0) talkingBatchItems.splice(idx,1);
-        renderTalkingBatchImages();
-      };
-      grid.appendChild(card);
-    });
-    motionAvatars.forEach(function(avatar){
-      var key='avatar:'+avatar.id,selected=talkingBatchIndex(key)>=0;
-      var card=document.createElement('button');
-      card.type='button'; card.className='batch-avatar-card'+(selected?' on':'');
-      card.setAttribute('aria-pressed',selected?'true':'false');
-      card.innerHTML='<img data-asset-src="'+esc(avatar.image_url||'../assets/cloud/logo-bird.png')+'" alt="">'
-        +'<span class="batch-avatar-label">'+esc(avatar.name||'未命名形象')+'</span><span class="batch-avatar-check">'+(selected?'已选':'选择')+'</span>';
-      setAssetImage(card.querySelector('[data-asset-src]'),avatar.image_url||'../assets/cloud/logo-bird.png');
-      card.onclick=function(){
-        var idx=talkingBatchIndex(key);
-        if(idx>=0) talkingBatchItems.splice(idx,1);
-        else if(talkingBatchItems.length>=videoBatchMax){toast('一次最多选择 '+videoBatchMax+' 个形象');return;}
-        else talkingBatchItems.push({key:key,label:avatar.name||'形象 '+avatar.id,avatar_id:avatar.id,preview:avatar.image_url||''});
-        renderTalkingBatchImages();
-      };
-      grid.appendChild(card);
-    });
-    if(count) count.textContent=talkingBatchItems.length+' / '+videoBatchMax;
-    updateChecklist();
-  }
-  function addTalkingBatchFiles(fileList){
-    var files=Array.prototype.slice.call(fileList||[]),available=videoBatchMax-talkingBatchItems.length;
-    if(available<=0){toast('一次最多选择 '+videoBatchMax+' 个形象');return;}
-    var valid=files.filter(function(file){
-      if(!/^image\/(png|jpe?g|webp)$/i.test(file.type||'')){toast('仅支持 jpg、png、webp 图片');return false;}
-      if(file.size>8*1024*1024){toast(file.name+' 超过 8MB');return false;}
-      return true;
-    }).slice(0,available);
-    if(files.length>available) toast('本批只保留前 '+available+' 张，最多 '+videoBatchMax+' 个形象');
-    Promise.all(valid.map(function(file){
-      return readFileData(file).then(function(data){
-        var name=String(file.name||'').replace(/\.[^.]+$/,'').trim().slice(0,60)||('上传形象 '+(talkingBatchSeq+1));
-        return {key:'upload:'+(++talkingBatchSeq),label:name,image_data:data,preview:data};
-      });
-    })).then(function(items){
-      items.forEach(function(item){
-        if(!talkingBatchItems.some(function(old){return old.image_data===item.image_data;})) talkingBatchItems.push(item);
-      });
-      renderTalkingBatchImages();
-    }).catch(function(e){toast(e.message||'图片读取失败');});
-  }
-  function setTalkingBatchMode(on){
-    on=!!on;
-    if(on && (mode!=='text' || videoBatchMax<2)){toast(mode!=='text'?'批量出片仅支持文案配音':'当前任务上限不支持批量出片');return;}
-    talkingBatch=on;
-    document.querySelectorAll('[data-talking-shape]').forEach(function(btn){btn.classList.toggle('on',(btn.dataset.talkingShape==='batch')===on);});
-    $('talkingFormGrid').classList.toggle('batch-mode',on);
-    $('singleTalkingImage').classList.toggle('hidden',on);
-    $('batchTalkingImages').classList.toggle('hidden',!on);
-    if(on && imageData && !talkingBatchItems.some(function(item){return item.image_data===imageData;}) && talkingBatchItems.length<videoBatchMax){
-      talkingBatchItems.push({key:'upload:'+(++talkingBatchSeq),label:'当前形象',image_data:imageData,preview:imagePreview||imageData});
-    }
-    if(on) loadMotionAvatars();
-    renderTalkingBatchImages();
-    updateChecklist();
-  }
   function loadTalkingLimits(){
     fetch(fresh('/api/gen/health'),{cache:'no-store'}).then(function(r){return r.ok?r.json():Promise.reject();}).then(function(d){
-      var cost=Number(d.video_cost),limit=Number(d.video_batch_max);
       var xiaoleCap=Number(d.max_user_active_xiaole_video), tryonCap=Number(d.max_user_active_tryon);
       var cineCap=Number(d.max_user_active_cinematic);
-      if(isFinite(cost)&&cost>0) videoCost=Math.round(cost);
-      if(isFinite(limit)&&limit>0) videoBatchMax=Math.min(5,Math.round(limit));
       if(isFinite(xiaoleCap)&&xiaoleCap>0) maxActiveXiaoleVideo=Math.round(xiaoleCap);
       if(isFinite(tryonCap)&&tryonCap>0) maxActiveTryon=Math.round(tryonCap);
       if(isFinite(cineCap)&&cineCap>0) maxActiveCinematic=Math.round(cineCap);
-      var batchBtn=document.querySelector('[data-talking-shape="batch"]');
-      if(batchBtn){batchBtn.disabled=videoBatchMax<2;batchBtn.title=videoBatchMax<2?'当前任务上限不支持批量出片':'';}
-      renderTalkingBatchImages();
       syncVideoGenerateButtons();
     }).catch(function(){updateChecklist();});
   }
   function updateMode(next){
     mode=next;
-    if(mode!=='text' && talkingBatch) setTalkingBatchMode(false);
     document.querySelectorAll('.mode-tab').forEach(function(b){b.classList.toggle('on',b.dataset.mode===mode);});
-    $('talkingShapeModes').classList.toggle('hidden',mode!=='text');
     $('textMode').classList.toggle('hidden',mode!=='text');
     $('voicePanel').classList.toggle('hidden',mode!=='text');
     $('audioMode').classList.toggle('hidden',mode!=='audio');
@@ -1951,29 +1836,26 @@
     syncVideoGenerateButtons();
   }
   function updateChecklist(){
-    var imageCount=talkingBatch?talkingBatchItems.length:(imageData?1:0);
-    var hasImage=talkingBatch?imageCount>=2:imageCount===1;
+    var hasImage=!!imageData;
     var textReady=$('scriptText').value.trim().length>0;
     var audioReady=($('audioFile').files&&$('audioFile').files[0]) || (document.querySelector('.source-card[data-source="asset"].on') && selectedAssetAudio);
-    if($('imageCheck')) $('imageCheck').textContent=hasImage?(talkingBatch?(imageCount+' 个'):'已上传'):'未上传';
+    if($('imageCheck')) $('imageCheck').textContent=hasImage?'已上传':'未上传';
     if($('inputCheck')) $('inputCheck').textContent=mode==='text'?(textReady?'已填写':'未填写'):(audioReady?'已选择':'未选择');
     var items=[
-      ['人物形象',hasImage?(talkingBatch?(imageCount+' 个已选'):'已上传'):(talkingBatch?'至少选择 2 个':'待上传')],
+      ['人物形象',hasImage?'已上传':'待上传'],
       [mode==='text'?'口播文案':'口播音频',mode==='text'?(textReady?'已准备':'待填写'):(audioReady?'已准备':'待选择')],
       [mode==='text'?'音色':'视频设置',mode==='text'?'可选择公共或个人音色':'可选择画面比例']
     ];
     if($('sideChecklist')) $('sideChecklist').innerHTML=items.map(function(x){return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 11px;border:1px solid rgba(148,164,187,.1);border-radius:12px;background:rgba(148,164,187,.03);"><span style="font-size:12.5px;color:#cbd5e1;">'+esc(x[0])+'</span><span style="font-size:11.5px;color:#e7b24c;">'+esc(x[1])+'</span></div>';}).join('');
-    if($('generateBtn')) $('generateBtn').textContent=talkingBatch?(imageCount?'批量生成 '+imageCount+' 条口播视频':'批量生成口播视频'):'生成口播视频';
+    if($('generateBtn')) $('generateBtn').textContent='生成口播视频';
     if($('talkingCostSummary')){
       var perSec=TALKING_RATE+' 点/秒 · 按实际时长结算';
       // text 模式按文案长度估算(4 字/秒，与后端预扣一致)；audio 模式时长要生成后才准，只标单价。
       var estText=(mode==='text' && textReady)
         ? Math.max(TALKING_RATE, Math.ceil($('scriptText').value.trim().length/4)*TALKING_RATE) : 0;
-      $('talkingCostSummary').textContent=talkingBatch
-        ?(perSec+(imageCount?('　·　共 '+imageCount+' 条'):''))
-        :(estText?('预计约 '+estText+' 点（'+perSec+'）'):perSec);
+      $('talkingCostSummary').textContent=estText?('预计约 '+estText+' 点（'+perSec+'）'):perSec;
     }
-    if(mode==='text' && videoFunction==='talking') $('modeSummary').textContent=talkingBatch?'同一份口播文案将分别生成多条形象视频':'上传人物图，输入文案并选择音色生成口播视频';
+    if(mode==='text' && videoFunction==='talking') $('modeSummary').textContent='上传人物图，输入文案并选择音色生成口播视频';
     syncVideoGenerateButtons();
   }
   function stopPreview(){
@@ -1985,10 +1867,19 @@
     if(activePreviewBtn===btn && activePreview && !activePreview.paused){stopPreview();return;}
     stopPreview();
     activePreviewBtn=btn; btn.textContent='Ⅱ';
-    assetUrl(url).then(function(src){
-      activePreview=new Audio(src);activePreview.onended=stopPreview;
-      return activePreview.play();
-    }).catch(function(){stopPreview();toast('试听失败');});
+    var failed=false;
+    function fail(error){
+      if(failed)return;failed=true;
+      if(window.console&&console.warn)console.warn('[voice-preview]',error&&error.name,error&&error.message);
+      stopPreview();toast('试听失败'+(error&&error.name?'：'+error.name:''));
+    }
+    function start(src){
+      activePreview=new Audio(src);activePreview.onended=stopPreview;activePreview.onerror=fail;
+      var started=activePreview.play();if(started&&started.catch)started.catch(fail);
+    }
+    // 公开试听地址必须在点击事件内同步 play；先包一层 Promise 会丢失浏览器的用户手势授权。
+    if(!isProtectedLocal(url)){try{start(fresh(url));}catch(e){fail();}return;}
+    assetUrl(url).then(start).catch(fail);
   }
   function renderVoices(){
     var grid=$('voiceGrid'), list=voices.filter(function(v){return v.scope===voiceTab;});
@@ -1999,12 +1890,22 @@
     }
     list.forEach(function(v){
       var key=v.voice_key, card=document.createElement('div'), on=key===selectedVoice;
+      var protectedPreview=v.preview_url&&isProtectedLocal(v.preview_url);
       card.className='voice-card'+(on?' on':'');
       card.innerHTML='<div class="voice-top"><div class="voice-avatar">'+esc((v.display_name||key).charAt(0).toUpperCase())+'</div><div style="min-width:0"><div class="voice-name">'+esc(v.display_name||key)+'</div><div class="voice-sub">'+esc(v.sub||(v.scope==='personal'?'个人音色':'公共音色'))+'</div></div></div>'
-        +(v.preview_url?'<button class="voice-play" type="button">▶</button>':'');
+        +(protectedPreview?'<button class="voice-play" type="button">▶</button>':'')
+        +(v.preview_url&&!protectedPreview?'<span class="voice-play voice-native-preview" title="试听"><audio class="voice-preview-audio" controls preload="none" controlslist="nodownload noplaybackrate" src="'+esc(fresh(v.preview_url))+'"></audio></span>':'');
       card.onclick=function(){selectedVoice=key;renderVoices();};
-      var btn=card.querySelector('.voice-play');
+      var btn=card.querySelector('button.voice-play');
       if(btn){btn.onclick=function(e){e.stopPropagation();playPreview(v.preview_url,btn);};}
+      var nativeAudio=card.querySelector('.voice-preview-audio');
+      if(nativeAudio){
+        nativeAudio.onclick=function(e){e.stopPropagation();};
+        nativeAudio.onplay=function(){
+          document.querySelectorAll('#voiceGrid .voice-preview-audio').forEach(function(a){if(a!==nativeAudio)a.pause();});
+          selectedVoice=key;document.querySelectorAll('#voiceGrid .voice-card').forEach(function(x){x.classList.toggle('on',x===card);});
+        };
+      }
       grid.appendChild(card);
     });
   }
@@ -2145,7 +2046,6 @@
   };});
   $('bgmFile').onchange=function(){var f=this.files&&this.files[0];if(!f)return;if(f.size>35*1024*1024){toast('BGM 不能超过 35MB');this.value='';return;}readFileData(f).then(function(data){bgmData=data;$('bgmFileName').textContent=f.name;$('bgmClear').classList.remove('hidden');}).catch(function(){toast('BGM 读取失败');});};
   $('bgmClear').onclick=function(){bgmData='';$('bgmFile').value='';$('bgmFileName').textContent='选择 BGM 音频';$('bgmClear').classList.add('hidden');};
-  document.querySelectorAll('[data-talking-shape]').forEach(function(b){b.onclick=function(){setTalkingBatchMode(b.dataset.talkingShape==='batch');};});
   $('scriptText').addEventListener('input',function(){$('charCount').textContent=$('scriptText').value.length+' / 1200';updateChecklist();});
   $('clearScript').onclick=function(){$('scriptText').value='';$('scriptText').dispatchEvent(new Event('input'));};
   function bindImageInput(input){
@@ -2163,7 +2063,6 @@
   function setImageFromPrefill(dataUrl, previewUrl){
     var box=$('imageDrop');
     if(!box||!dataUrl) return;
-    if(talkingBatch) setTalkingBatchMode(false);
     imageData=dataUrl;
     imagePreview=previewUrl||dataUrl;
     box.classList.add('has-img');
@@ -2172,7 +2071,6 @@
     updateChecklist();
   }
   bindImageInput($('imageFile'));
-  $('batchImageFile').onchange=function(){addTalkingBatchFiles(this.files);this.value='';};
 
   // ===== 电影化身：控件绑定 =====
   renderCineTemplates();
@@ -2249,7 +2147,6 @@
   // data/预览/重绑全走原路径，无需重写。换装人物框只在线路二(收图)时可粘(线路一收视频)。
   var PASTE_SLOTS = [
     {box:'imageDrop', input:'imageFile'},
-    {box:'batchTalkingImages', input:'batchImageFile', batchOnly:true},
     {box:'tryonVideoDrop', input:'tryonVideoFile', line2Only:true},
     {box:'tryonClothesDrop', input:'tryonClothesFile'},
     {box:'tryonBgDrop', input:'tryonBgFile'}
@@ -2263,7 +2160,6 @@
   });
   document.addEventListener('paste',function(e){
     if(!pasteHover) return;                                       // 只在悬停某上传框时接管
-    if(pasteHover.batchOnly && !talkingBatch) return;
     if(pasteHover.line2Only && selectedTryonLine!=='2') return;   // 换装人物框:线路一收视频,不接图片粘贴
     var items=(e.clipboardData&&e.clipboardData.items)||[];
     for(var i=0;i<items.length;i++){
@@ -2295,6 +2191,9 @@
       withHQTasks(function(tasks){var next=tasks.latestActive('video');if(next) resumeTrackedVideoTask(next.id);});
     },80);
   }
+  function refreshVideoPoints(){
+    if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
+  }
   function pollJob(id, tries){
     if(tries===0) resumedVideoTaskId=String(id);
     if(tries===0){
@@ -2324,6 +2223,7 @@
             {created_at:Math.floor(Date.now()/1000), job_id:String(id)}, result));
           renderVideoDrafts([]);
           setTimeout(loadVideoHistory,800);
+          refreshVideoPoints();
           setVideoStatus('任务已创建，已保存到视频资产');
           if(result.subtitle_error){toast('字幕生成失败，已保留无字幕视频');}
           resumeNextTrackedVideoTask();
@@ -2356,7 +2256,7 @@
         }
         setVideoStatus(e&&e.jobTerminal?(e.message||'生成失败'):'连接中断，任务仍在后台生成，可点侧栏任务继续');
         toast(e&&e.jobTerminal?(e.message||'生成失败'):'连接中断，任务仍在后台生成');
-        if(e&&e.jobTerminal) resumeNextTrackedVideoTask();
+        if(e&&e.jobTerminal){refreshVideoPoints();resumeNextTrackedVideoTask();}
       });
   }
   function submitTryon(){
@@ -2393,6 +2293,7 @@
       .then(function(res){
         if(res.status===401){setSubmitLock('tryon',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
+        refreshVideoPoints();
         setVideoStatus('换装换背景任务已提交...');
         setTimeout(loadVideoHistory,700);
         trackVideoJob(res.data.job_id,{status:'queued',label:'换装换背景视频',mode:'tryon',modeLabel:'换装换背景',ratio:'9:16'});
@@ -2416,44 +2317,13 @@
       bgm_data:bgmData,bgm_volume:selectedBgmVolume
     };
   }
-  function submitVideoBatch(text){
-    setSubmitLock('talking',true);
-    setBusy(true); currentVideoDraft=null;
-    var drafts=talkingBatchItems.map(function(item){return {mode:'text',image_url:item.preview||'',text:text,resolution:selectedResolution,ratio:selectedRatio,motion:selectedMotion,status:'processing',phase:'queued',batch_label:item.label,created_at:Math.floor(Date.now()/1000)};});
-    renderVideoDrafts(drafts);
-    setVideoStatus('正在提交 '+talkingBatchItems.length+' 条批量视频任务...');
-    var body=talkingPayload({});
-    delete body.image_data; delete body.avatar_id;
-    body.avatars=talkingBatchItems.map(function(item){return {image_data:item.image_data||'',avatar_id:item.avatar_id||'',label:item.label};});
-    fetch('/api/gen/video/batch',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body)})
-      .then(function(r){return r.json().catch(function(){return {};}).then(function(d){return {status:r.status,data:d};});})
-      .then(function(res){
-        if(res.status===401){setSubmitLock('talking',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
-        if(res.status<200||res.status>=300||!Array.isArray(res.data.job_ids)||!res.data.job_ids.length) throw new Error(res.data.detail||'批量任务提交失败');
-        var jobs=Array.isArray(res.data.jobs)&&res.data.jobs.length?res.data.jobs:res.data.job_ids.map(function(id,i){return {job_id:id,label:talkingBatchItems[i]&&talkingBatchItems[i].label,index:i+1};});
-        jobs.forEach(function(job){
-          trackVideoJob(job.job_id,{status:'queued',label:'批量口播 · '+(job.label||('形象 '+job.index)),mode:'text',modeLabel:'数字人口播',ratio:selectedRatio,batchId:res.data.batch_id,batchSize:jobs.length,batchIndex:job.index});
-        });
-        setSubmitLock('talking',false);
-        setBusy(false);
-        setVideoStatus('已提交 '+jobs.length+' 条视频任务，共消耗 '+res.data.cost+' 点');
-        toast('批量任务已受理');
-        setTimeout(loadVideoHistory,500);
-        resumeTrackedVideoTask(jobs[0].job_id);
-      })
-      .catch(function(e){setSubmitLock('talking',false);setBusy(false);loadVideoHistory();setVideoStatus(e.message||'批量任务提交失败');toast(e.message||'批量任务提交失败');});
-  }
   function submitVideo(){
-    if(talkingBatch){
-      if(mode!=='text'){toast('批量出片仅支持文案配音');return;}
-      if(talkingBatchItems.length<2){toast('请至少选择 2 个形象');return;}
-    }else if(!imageData){ toast('请先上传人物形象图片'); return; }
+    if(!imageData){ toast('请先上传人物形象图片'); return; }
     var text=$('scriptText').value.trim();
     if(mode==='text' && !text){ toast('请先输入口播文案'); return; }
     var assetSelected=document.querySelector('.source-card[data-source="asset"].on');
     if(mode==='audio' && assetSelected && !selectedAssetAudio){ toast('请选择一条配音资产'); return; }
     if(mode==='audio' && !assetSelected && !audioData){ toast('请先上传口播音频'); return; }
-    if(talkingBatch){submitVideoBatch(text);return;}
     setSubmitLock('talking',true);
     setBusy(true);
     var audioReadyPromise=assetSelected?fetchAssetAudioData(selectedAssetAudio):Promise.resolve(audioData);
@@ -2469,6 +2339,7 @@
       .then(function(res){
         if(res.status===401){setSubmitLock('talking',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
+        refreshVideoPoints();
         setVideoStatus('视频任务已提交...');
         setTimeout(loadVideoHistory,700);
         trackVideoJob(res.data.job_id,{status:'queued',label:mode==='audio'?'数字人口播（音频）':'数字人口播（文案）',mode:mode,modeLabel:'数字人口播',ratio:selectedRatio});
@@ -2522,6 +2393,7 @@
       .then(function(res){
         if(res.status===401){setSubmitLock('xiaole',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
         if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
+        refreshVideoPoints();
         if(statusEl) statusEl.textContent=label+'任务已提交'+(res.data.cost!=null?' · '+res.data.cost+'点':'')+'，生成中...';
         setTimeout(loadVideoHistory,700);
         trackVideoJob(res.data.job_id,{status:'queued',label:label,mode:channel,modeLabel:label,ratio:ratio});
