@@ -267,11 +267,13 @@ function testCanvasIntegration() {
     'canvas/canvas-state.js?v=',
     'canvas/canvas-storage.js?v=',
     'canvas/canvas-api.js?v=',
+    'canvas/canvas-export.js?v=',
+    'canvas-collab-sync.js?v=',
     'canvas/canvas-app.js?v=',
   ].map((asset) => html.indexOf(asset));
 
   assert.ok(order.every((index) => index >= 0), 'all canvas modules must be loaded');
-  assert.deepEqual(order, [...order].sort((left, right) => left - right), 'API must load after storage and before app');
+  assert.deepEqual(order, [...order].sort((left, right) => left - right), 'modules, collaboration sync, and app must load in dependency order');
   assert.match(app, /var apiModule=window\.HQCanvas&&window\.HQCanvas\.api;/);
   assert.match(app, /apiModule\.createClient\(/);
   assert.equal((app.match(/apiModule\.poll\(/g) || []).length, 2, 'image and video jobs share bounded polling');
@@ -279,8 +281,7 @@ function testCanvasIntegration() {
   assert.equal((app.match(/maxMs:900000/g) || []).length, 1, 'video jobs retain their 900 second limit');
   assert.match(app, /error&&error\.code==='timeout'/);
   assert.ok(app.includes("error.message='协作服务响应超时'"), 'collaboration timeout keeps its existing UI message');
-  assert.equal((app.match(/\bfetch\(/g) || []).length, 1, 'only Task 5 export image loading may still use fetch');
-  assert.match(app, /return fetch\(src,\{credentials:'include',cache:'no-store'\}\)/);
+  assert.equal((app.match(/\bfetch\(/g) || []).length, 0, 'all direct requests must be behind extracted modules');
 
   for (const endpoint of [
     '/api/gen/history?limit=60',

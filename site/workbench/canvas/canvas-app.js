@@ -4,6 +4,7 @@
   var stateApi=window.HQCanvas&&window.HQCanvas.state;
   var storageApi=window.HQCanvas&&window.HQCanvas.storage;
   var apiModule=window.HQCanvas&&window.HQCanvas.api;
+  var canvasExporter=window.HQCanvas&&window.HQCanvas.exporter;
   var canvasStorage=storageApi.createStorage({storage:function(){return window.localStorage;}});
   var apiClient=apiModule.createClient({fetchImpl:window.fetch.bind(window),tokenProvider:tok,AbortControllerImpl:window.AbortController,setTimeoutImpl:setTimeout,clearTimeoutImpl:clearTimeout});
   var wrap=document.querySelector('.nc-wrap'), inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty'), selectionBox=document.getElementById('ncSelectionBox'), selectedRegion=document.getElementById('ncSelectedRegion');
@@ -1375,39 +1376,7 @@
     var btn=document.getElementById('ncExportJpg');
     if(btn) btn.onclick=function(){ exportCanvasJpg(); };
   }
-  function exportRoundRect(ctx,x,y,w,h,r){
-    r=Math.min(r,w/2,h/2);
-    ctx.beginPath();
-    ctx.moveTo(x+r,y);
-    ctx.arcTo(x+w,y,x+w,y+h,r);
-    ctx.arcTo(x+w,y+h,x,y+h,r);
-    ctx.arcTo(x,y+h,x,y,r);
-    ctx.arcTo(x,y,x+w,y,r);
-    ctx.closePath();
-  }
-  function exportWrappedText(ctx,text,x,y,maxWidth,lineHeight,maxLines){
-    text=String(text||'').trim();
-    if(!text) return;
-    var lines=[], line='';
-    text.split(/\r?\n/).forEach(function(part,partIndex){
-      Array.from(part).forEach(function(ch){
-        var next=line+ch;
-        if(line&&ctx.measureText(next).width>maxWidth){ lines.push(line); line=ch; }
-        else line=next;
-      });
-      if(partIndex<text.split(/\r?\n/).length-1){ lines.push(line); line=''; }
-    });
-    if(line) lines.push(line);
-    lines=lines.slice(0,maxLines);
-    lines.forEach(function(value,index){
-      if(index===maxLines-1 && ctx.measureText(value).width>maxWidth){
-        while(value.length&&ctx.measureText(value+'…').width>maxWidth) value=value.slice(0,-1);
-        value+='…';
-      }
-      ctx.fillText(value,x,y+index*lineHeight);
-    });
-  }
-  function loadExportImage(src){
+  function loadCanvasExportImage(src){
     src=String(src||'');
     if(!src) return Promise.resolve(null);
     function fromUrl(url,revoke){
@@ -1419,101 +1388,22 @@
       });
     }
     if(src.indexOf('data:image/')===0||src.indexOf('blob:')===0) return fromUrl(src,false);
-    return fetch(src,{credentials:'include',cache:'no-store'}).then(function(res){
-      if(!res.ok) throw new Error('image '+res.status);
-      return res.blob();
-    }).then(function(blob){ return fromUrl(URL.createObjectURL(blob),true); }).catch(function(){ return null; });
-  }
-  function exportNodeImage(node){
-    if(!node) return '';
-    if(node.type==='image') return node.image||node.outputs&&node.outputs.image||'';
-    if(node.type==='gen') return node.outputs&&node.outputs.image||'';
-    return '';
-  }
-  function drawExportImage(ctx,img,x,y,w,h){
-    if(!img) return false;
-    var scale=Math.max(w/img.naturalWidth,h/img.naturalHeight);
-    var dw=img.naturalWidth*scale, dh=img.naturalHeight*scale;
-    ctx.save();
-    exportRoundRect(ctx,x,y,w,h,8); ctx.clip();
-    ctx.drawImage(img,x+(w-dw)/2,y+(h-dh)/2,dw,dh);
-    ctx.restore();
-    return true;
-  }
-  function drawExportNode(ctx,node,img,theme){
-    var x=node.x, y=node.y, w=(node.el&&node.el.offsetWidth)||250, h=(node.el&&node.el.offsetHeight)||160;
-    var light=theme==='light', palette=light?{
-      card:'#ffffff',border:'#d9e1eb',head:'#f8fafc',text:'#182235',muted:'#66758a',field:'#f4f7fb'
-    }:{card:'#0b1018',border:'#273244',head:'#0e1520',text:'#eaf1fa',muted:'#7e8da2',field:'#080d14'};
-    ctx.save();
-    ctx.shadowColor=light?'rgba(26,38,58,.15)':'rgba(0,0,0,.45)';
-    ctx.shadowBlur=18; ctx.shadowOffsetY=8;
-    exportRoundRect(ctx,x,y,w,h,12); ctx.fillStyle=palette.card; ctx.fill();
-    ctx.shadowColor='transparent'; ctx.strokeStyle=palette.border; ctx.lineWidth=1; ctx.stroke();
-    exportRoundRect(ctx,x,y,w,36,12); ctx.fillStyle=palette.head; ctx.fill();
-    ctx.beginPath(); ctx.moveTo(x,y+36); ctx.lineTo(x+w,y+36); ctx.strokeStyle=palette.border; ctx.stroke();
-    ctx.beginPath(); ctx.arc(x+15,y+18,4,0,Math.PI*2); ctx.fillStyle=(TYPE[node.type]||{}).color||'#e7b24c'; ctx.fill();
-    ctx.fillStyle=palette.text; ctx.font='700 13px "Microsoft YaHei",sans-serif'; ctx.textBaseline='middle';
-    var title=node.params&&node.params.title||TYPE[node.type]&&TYPE[node.type].name||'节点';
-    ctx.fillText(String(title).slice(0,24),x+26,y+18);
-    if(node.collapsed){ ctx.restore(); return; }
-    var bx=x+10, by=y+47, bw=w-20, bh=Math.max(30,h-57);
-    if(img){
-      drawExportImage(ctx,img,bx,by,bw,bh);
-    }else if(node.type==='image'||node.type==='gen'){
-      exportRoundRect(ctx,bx,by,bw,bh,8); ctx.fillStyle=palette.field; ctx.fill();
-      ctx.strokeStyle=palette.border; ctx.setLineDash([4,4]); ctx.stroke(); ctx.setLineDash([]);
-      ctx.fillStyle=palette.muted; ctx.font='12px "Microsoft YaHei",sans-serif'; ctx.textAlign='center';
-      ctx.fillText(node.type==='image'?'图片未载入':'暂无生成结果',x+w/2,by+bh/2);
-      ctx.textAlign='left';
-    }else{
-      exportRoundRect(ctx,bx,by,bw,bh,8); ctx.fillStyle=palette.field; ctx.fill();
-      ctx.fillStyle=palette.text; ctx.font='12px "Microsoft YaHei",sans-serif'; ctx.textBaseline='top';
-      var text=node.params&&node.params.text||node.outputs&&node.outputs.prompt||'';
-      if(node.type==='video'&&!text) text='视频生成节点';
-      exportWrappedText(ctx,text||'暂无内容',bx+10,by+10,bw-20,19,Math.max(1,Math.floor((bh-18)/19)));
-    }
-    ctx.restore();
+    return apiClient.asset(src).then(function(blob){return fromUrl(URL.createObjectURL(blob),true);}).catch(function(){return null;});
   }
   function exportCanvasJpg(){
     var bounds=canvasContentBounds();
     if(!bounds){ updateState('画布为空'); return; }
     updateState('正在导出预览...');
-    var ids=Object.keys(nodes), sources={};
-    ids.forEach(function(id){ var src=exportNodeImage(nodes[id]); if(src) sources[src]=null; });
-    Promise.all(Object.keys(sources).map(function(src){
-      return loadExportImage(src).then(function(img){ sources[src]=img; });
-    })).then(function(){
-      var theme=document.documentElement.getAttribute('data-theme')==='light'?'light':'dark';
-      var maxSide=Math.max(bounds.w,bounds.h), pixelScale=Math.min(2,4096/maxSide,Math.sqrt(16000000/(bounds.w*bounds.h)));
-      pixelScale=Math.max(.25,pixelScale);
-      var cv=document.createElement('canvas');
-      cv.width=Math.max(1,Math.ceil(bounds.w*pixelScale)); cv.height=Math.max(1,Math.ceil(bounds.h*pixelScale));
-      var ctx=cv.getContext('2d');
-      if(!ctx) throw new Error('canvas context unavailable');
-      ctx.scale(pixelScale,pixelScale);
-      ctx.fillStyle=theme==='light'?'#f5f8fc':'#070b13'; ctx.fillRect(0,0,bounds.w,bounds.h);
-      ctx.fillStyle=theme==='light'?'rgba(116,137,164,.22)':'rgba(148,164,187,.12)';
-      for(var gx=12;gx<bounds.w;gx+=24){ for(var gy=12;gy<bounds.h;gy+=24){ ctx.fillRect(gx,gy,1,1); } }
-      ctx.save(); ctx.translate(-bounds.x,-bounds.y);
-      edges.forEach(function(edge){
-        var a=portCenter(edge.from.node,'out',edge.from.port), b=portCenter(edge.to.node,'in',edge.to.port);
-        if(!a||!b) return;
-        var dx=Math.max(40,Math.abs(b.x-a.x)*.5);
-        ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.bezierCurveTo(a.x+dx,a.y,b.x-dx,b.y,b.x,b.y);
-        ctx.strokeStyle=theme==='light'?'rgba(225,166,45,.72)':'rgba(231,178,76,.58)'; ctx.lineWidth=2; ctx.stroke();
-      });
-      ids.forEach(function(id){ var node=nodes[id], src=exportNodeImage(node); drawExportNode(ctx,node,sources[src]||null,theme); });
-      ctx.restore();
-      cv.toBlob(function(out){
-        if(!out){ updateState('导出失败'); return; }
-        var href=URL.createObjectURL(out), a=document.createElement('a');
-        a.href=href;
-        a.download='canvas-preview-'+new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')+'.jpg';
-        document.body.appendChild(a); a.click(); a.remove();
-        setTimeout(function(){ URL.revokeObjectURL(href); },1500);
-        updateState('已导出 JPG');
-      },'image/jpeg',.92);
+    var exportNodes=Object.keys(nodes).map(function(id){
+      var node=nodes[id],type=TYPE[node.type]||{};
+      return {id:node.id,type:node.type,x:node.x,y:node.y,width:(node.el&&node.el.offsetWidth)||250,height:(node.el&&node.el.offsetHeight)||160,collapsed:node.el?node.el.classList.contains('collapsed'):!!node.collapsed,params:stateApi.cloneSnapshot(node.params||{}),outputs:stateApi.cloneSnapshot(node.outputs||{}),image:node.image||'',typeName:type.name||'',typeColor:type.color||''};
+    });
+    return canvasExporter.exportJpeg({
+      bounds:bounds,nodes:exportNodes,edges:stateApi.cloneSnapshot(edges),theme:document.documentElement.getAttribute('data-theme')==='light'?'light':'dark',portCenter:portCenter,
+      createCanvas:function(){return document.createElement('canvas');},loadImage:loadCanvasExportImage,createObjectURL:URL.createObjectURL.bind(URL),revokeObjectURL:URL.revokeObjectURL.bind(URL),
+      download:function(href,filename){var a=document.createElement('a');a.href=href;a.download=filename;document.body.appendChild(a);a.click();a.remove();},now:function(){return new Date();}
+    }).then(function(){
+      updateState('已导出 JPG');
     }).catch(function(err){
       console.error('canvas export failed',err);
       updateState('导出失败，请重试');
@@ -2462,11 +2352,11 @@
   }
   function exportTemplateItem(item){
     var name=(item&&item.name)||'画布模板';
-    var data={version:1,name:name,createdAt:(item&&item.createdAt)||Date.now(),data:sanitizeTemplateSnap((item&&item.data)||templateSnapshot())};
-    var blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+    var data={name:name,createdAt:(item&&item.createdAt)||Date.now(),data:sanitizeTemplateSnap((item&&item.data)||templateSnapshot())};
+    var blob=new Blob([canvasExporter.serializeTemplate(data)],{type:'application/json'});
     var a=document.createElement('a');
     a.href=URL.createObjectURL(blob);
-    a.download=(name||'canvas-template').replace(/[\\/:*?"<>|]+/g,'-')+'.json';
+    a.download=canvasExporter.safeFilename(name)+'.json';
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(function(){ URL.revokeObjectURL(a.href); },1000);
     updateState('模板已导出');
@@ -2476,11 +2366,8 @@
     var reader=new FileReader();
     reader.onload=function(){
       try{
-        var parsed=JSON.parse(reader.result);
-        var snap=parsed.data&&parsed.data.nodes?parsed.data:(parsed.nodes?parsed:null);
-        if(!snap||!Array.isArray(snap.nodes)) throw new Error('模板格式不正确');
-        var name=(parsed.name||file.name.replace(/\.json$/i,'')||'导入模板').slice(0,40);
-        snap=sanitizeTemplateSnap(snap);
+        var parsed=canvasExporter.parseTemplate(reader.result,file.name.replace(/\.json$/i,''));
+        var name=parsed.name, snap=sanitizeTemplateSnap(parsed.data);
         var list=normalizeTemplates(getTemplates());
         list.push({name:name,createdAt:Date.now(),data:snap});
         if(!saveTemplates(list)) return;
