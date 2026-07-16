@@ -15,7 +15,11 @@ DEV_PASSWORD="${DEV_TEST_PASSWORD:-$(openssl rand -base64 18 | tr -d '/+=')}"
 echo "== [1/8] 基础软件 =="
 sudo apt-get update -qq
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-  nginx git sqlite3 certbot python3-certbot-nginx rsync psmisc >/dev/null
+  nginx git sqlite3 certbot python3-certbot-nginx rsync psmisc python3-pip >/dev/null
+# COS 存储 SDK：缺它则音色试听/作图/视频成片存不进腾讯云 COS、回退本地私有地址而无法访问。
+# 必须装到服务实际用的解释器 /usr/bin/python3（服务以 ubuntu 用户跑该 python）。
+sudo /usr/bin/python3 -m pip install -q cos-python-sdk-v5 2>/dev/null \
+  || sudo /usr/bin/python3 -m pip install -q cos-python-sdk-v5 --break-system-packages 2>/dev/null || true
 
 echo "== [2/8] 仓库访问（只读 Deploy Key）=="
 [ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -C "deploy-$NAME-dev" -q
