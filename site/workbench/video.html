@@ -2768,10 +2768,19 @@
     if(_prefillVoice && applyTemplateVoice(_prefillVoice)) _prefillVoice='';
   }
   // 灵感页「一键跟创（视频）」：?prompt= 预填到果肉/豆姐渠道并切到对应 tab
+  // 编导「一键成片」：?function=talking&prompt= 预填到数字人口播
   function applyInspirationPrefill(){
     try{
       var q=new URLSearchParams(location.search);
       var pp=q.get('prompt'); if(!pp) return;
+      var func=q.get('function');
+      if(func==='talking'){
+        updateFunction('talking');
+        var ta=$('scriptText');
+        if(ta){ ta.value=pp; ta.dispatchEvent(new Event('input')); ta.focus(); }
+        if(typeof toast==='function') toast('已带入编导脚本，选择形象后即可生成');
+        return;
+      }
       var ch=(q.get('channel')||'grok').trim();
       if(ch!=='grok' && ch!=='micro') ch='grok';
       updateFunction(ch);
