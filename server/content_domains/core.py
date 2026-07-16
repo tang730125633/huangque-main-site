@@ -1560,6 +1560,8 @@ class H(BaseHTTPRequestHandler):
             try: lim = int((q.get("limit") or ["120"])[0])
             except Exception: lim = 120
             return self._send(200, {"items": audio_domain.list_audio_assets(user["username"], lim)})
+        if p == "/api/gen/video/subtitle-config":
+            user = verify(self._token()); return self._send(200, video_domain.subtitle_config()) if user else self._send(401, {"detail": "未登录"})
         if p == "/api/gen/video/avatars":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})

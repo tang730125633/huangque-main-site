@@ -194,6 +194,42 @@
   .video-poster{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:.9}
   .output-overlay{position:relative;z-index:2;padding:18px;color:#f6d78a;font-size:13px;line-height:1.45;font-weight:700;text-shadow:0 1px 12px rgba(0,0,0,.52)}
   .output-info{display:flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:#f6b729;color:#1b1205;font-weight:900;margin:0 auto 10px}
+  .subtitle-builder{display:flex;flex-direction:column;gap:14px;padding:14px;border:1px solid rgba(148,164,187,.12);border-radius:13px;background:rgba(7,11,19,.26)}
+  .subtitle-builder[style*="display:none"]{display:none!important}
+  .subtitle-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .subtitle-reset{border:0;background:transparent;color:#e7b24c;font:700 11.5px inherit;cursor:pointer;padding:4px 0}
+  .subtitle-template-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+  .subtitle-template{min-height:70px;padding:10px;border:1px solid rgba(148,164,187,.14);border-radius:10px;background:rgba(148,164,187,.04);color:#94a4bb;text-align:left;cursor:pointer;font-family:inherit;transition:.16s;overflow:hidden}
+  .subtitle-template:hover{border-color:rgba(231,178,76,.34);transform:translateY(-1px)}
+  .subtitle-template.on{border-color:rgba(231,178,76,.52);background:rgba(231,178,76,.1);color:#f4cd72;box-shadow:inset 0 0 0 1px rgba(231,178,76,.08)}
+  .subtitle-template b{display:block;color:#eaf1fa;font-size:12px;margin-bottom:4px}
+  .subtitle-template.on b{color:#f4cd72}
+  .subtitle-template span{display:block;font-size:10.5px;line-height:1.45;color:#5c6b82}
+  .subtitle-preview{position:relative;min-height:150px;border:1px solid rgba(148,164,187,.13);border-radius:12px;overflow:hidden;background:linear-gradient(160deg,#152032,#090f19);display:flex;align-items:flex-end;justify-content:center;padding:22px 16px;box-sizing:border-box}
+  .subtitle-preview:before{content:"实时预览";position:absolute;left:10px;top:9px;color:#5c6b82;font:700 10px/1 inherit;letter-spacing:.08em}
+  .subtitle-preview-copy{position:relative;z-index:1;max-width:94%;text-align:center;font-size:22px;font-weight:800;line-height:1.35;color:#fff;text-shadow:0 2px 0 #000,2px 0 0 #000,-2px 0 0 #000,0 -2px 0 #000;word-break:break-word}
+  .subtitle-preview-copy .sub-highlight{color:#ffe45c}
+  .subtitle-preview-copy.preview-karaoke .sub-pending{color:#8b95a7}
+  .subtitle-preview-copy.preview-glow{filter:drop-shadow(0 0 7px #35c8ff);text-shadow:0 0 12px #35c8ff,0 0 4px #35c8ff}
+  .subtitle-preview-copy.preview-bounce span{display:inline-block;animation:subtitle-bounce 1.05s ease-in-out infinite;animation-delay:calc(var(--i)*70ms)}
+  .subtitle-secondary{display:block;margin-top:7px;font-size:.58em;font-weight:600;color:#dce7f7;line-height:1.25}
+  @keyframes subtitle-bounce{0%,50%,100%{transform:translateY(0)}25%{transform:translateY(-8px)}}
+  .subtitle-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .subtitle-field{display:flex;flex-direction:column;gap:6px;min-width:0}
+  .subtitle-field.wide{grid-column:1/-1}
+  .subtitle-field>label{font-size:10.5px;font-weight:700;color:#718096}
+  .subtitle-field select,.subtitle-field input[type="text"],.subtitle-field textarea{width:100%;min-height:36px;box-sizing:border-box;border:1px solid #263041;border-radius:9px;background:#0e1420;color:#e8eefb;padding:7px 9px;font:12px inherit;outline:none}
+  .subtitle-field textarea{min-height:66px;resize:vertical;line-height:1.5}
+  .subtitle-field select:focus,.subtitle-field input[type="text"]:focus,.subtitle-field textarea:focus{border-color:rgba(231,178,76,.5)}
+  .subtitle-range{display:grid;grid-template-columns:1fr 48px;gap:8px;align-items:center;min-height:36px}
+  .subtitle-range input[type="range"]{width:100%;accent-color:#e7b24c}
+  .subtitle-range output{font:700 11px/1.2 ui-monospace,monospace;color:#e7b24c;text-align:right}
+  .subtitle-color{display:grid;grid-template-columns:42px 1fr;gap:8px;align-items:center}
+  .subtitle-color input[type="color"]{width:42px;height:36px;padding:2px;border:1px solid #263041;border-radius:9px;background:#0e1420;cursor:pointer}
+  .subtitle-color code{font-size:10.5px;color:#718096;white-space:nowrap}
+  .subtitle-specific{display:none;grid-column:1/-1;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding-top:2px}
+  .subtitle-specific.on{display:grid}
+  .subtitle-history-tag{color:#f4cd72;border-color:rgba(231,178,76,.28);background:rgba(231,178,76,.08)}
   .vidOv{position:fixed;inset:0;z-index:9999;background:rgba(2,5,10,.82);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:22px}
   .vidBox{position:relative;width:min(90vw,calc(90vh * 9 / 16));aspect-ratio:9/16;max-height:90vh;border:1px solid rgba(231,178,76,.24);border-radius:14px;background:#05070c;box-shadow:0 28px 80px rgba(0,0,0,.58);overflow:hidden}
   .vidBox video{width:100%;height:100%;object-fit:contain;background:#05070c;display:block}
@@ -202,7 +238,7 @@
   .vidLoading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#e7b24c;font-size:13px;font-weight:800;letter-spacing:0;background:linear-gradient(145deg,rgba(7,11,19,.96),rgba(16,20,28,.94))}
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;transition:.2s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:12px;padding:11px 16px;color:#eaf1fa;font-size:13px;z-index:80}
   .toast.show{opacity:1;transform:translateX(-50%)}
-  @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid,.video-parameter-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source,.avatar-grid{grid-template-columns:1fr}}
+  @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid,.video-parameter-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source,.avatar-grid{grid-template-columns:1fr}.subtitle-template-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
   @media (prefers-reduced-motion:reduce){.history-focus{animation:none}}
   .line-switch{margin:12px 0;padding:12px;background:rgba(255,255,255,.03);border:1px solid rgba(148,164,187,.14);border-radius:12px}
   .line-switch>.label{margin-bottom:8px}
@@ -333,9 +369,66 @@
             <div class="faint" style="font-size:12px;margin-bottom:8px;">自动字幕 <span style="color:#47536a;">· 识别口播并烧录进画面</span></div>
             <div class="seg" style="grid-template-columns:repeat(2,1fr);"><button class="on" data-subtitle="off">关闭</button><button data-subtitle="on">开启</button></div>
           </div>
-          <div id="subtitleStyleRow" style="display:none;">
-            <div class="faint" style="font-size:12px;margin-bottom:8px;">字幕样式</div>
-            <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button class="on" data-substyle="white">白字黑边</button><button data-substyle="variety">综艺大字</button><button data-substyle="bar">底部半透条</button></div>
+          <div id="subtitleStyleRow" class="subtitle-builder" style="display:none;">
+            <div class="subtitle-head">
+              <div><div class="label">字幕模板</div><div class="faint" style="font-size:10.5px;margin-top:3px;">模板决定动画和排版，颜色与字体可单独调整</div></div>
+              <button id="subtitleResetBtn" class="subtitle-reset" type="button">恢复模板默认值</button>
+            </div>
+            <div class="subtitle-template-grid" id="subtitleTemplateGrid">
+              <button type="button" class="subtitle-template on" data-substyle="keyword_highlight"><b>关键词高亮</b><span>重点词变色放大</span></button>
+              <button type="button" class="subtitle-template" data-substyle="word_highlight"><b>逐字高亮</b><span>跟随发音逐字点亮</span></button>
+              <button type="button" class="subtitle-template" data-substyle="karaoke"><b>卡拉 OK</b><span>已读与未读连续填充</span></button>
+              <button type="button" class="subtitle-template" data-substyle="bounce"><b>弹跳字幕</b><span>文字随节奏弹起</span></button>
+              <button type="button" class="subtitle-template" data-substyle="glow"><b>发光字幕</b><span>霓虹外发光效果</span></button>
+              <button type="button" class="subtitle-template" data-substyle="bilingual"><b>双语字幕</b><span>中文主字幕 + 英文副字幕</span></button>
+            </div>
+
+            <div id="subtitlePreview" class="subtitle-preview" aria-live="polite">
+              <div id="subtitlePreviewCopy" class="subtitle-preview-copy">让每一句口播都更有重点</div>
+            </div>
+
+            <div class="subtitle-controls" id="subtitleControls">
+              <div class="subtitle-field wide"><label for="subtitleFontFamily">字体</label><select id="subtitleFontFamily"><option value="Noto Sans SC">Noto Sans SC</option></select></div>
+              <div class="subtitle-field"><label for="subtitleFontSize">字号</label><div class="subtitle-range"><input id="subtitleFontSize" type="range" min="24" max="120" step="1"><output id="subtitleFontSizeOut">64</output></div></div>
+              <div class="subtitle-field"><label for="subtitleFontWeight">字重</label><select id="subtitleFontWeight"><option value="400">常规 400</option><option value="600">半粗 600</option><option value="700">粗体 700</option><option value="800">特粗 800</option><option value="900">黑体 900</option></select></div>
+              <div class="subtitle-field"><label for="subtitleFontColor">文字颜色</label><div class="subtitle-color"><input id="subtitleFontColor" type="color"><code id="subtitleFontColorText">#FFFFFF</code></div></div>
+              <div class="subtitle-field"><label for="subtitleHighlightColor">高亮颜色</label><div class="subtitle-color"><input id="subtitleHighlightColor" type="color"><code id="subtitleHighlightColorText">#FFE45C</code></div></div>
+              <div class="subtitle-field"><label for="subtitleOutlineColor">描边颜色</label><div class="subtitle-color"><input id="subtitleOutlineColor" type="color"><code id="subtitleOutlineColorText">#000000</code></div></div>
+              <div class="subtitle-field"><label for="subtitleOutlineWidth">描边宽度</label><div class="subtitle-range"><input id="subtitleOutlineWidth" type="range" min="0" max="12" step="0.5"><output id="subtitleOutlineWidthOut">4</output></div></div>
+              <div class="subtitle-field"><label for="subtitleBackgroundColor">背景颜色</label><div class="subtitle-color"><input id="subtitleBackgroundColor" type="color"><code id="subtitleBackgroundColorText">#000000</code></div></div>
+              <div class="subtitle-field"><label for="subtitleBackgroundOpacity">背景透明度</label><div class="subtitle-range"><input id="subtitleBackgroundOpacity" type="range" min="0" max="1" step="0.05"><output id="subtitleBackgroundOpacityOut">0</output></div></div>
+              <div class="subtitle-field wide"><label for="subtitleVerticalOffset">垂直偏移</label><div class="subtitle-range"><input id="subtitleVerticalOffset" type="range" min="-320" max="320" step="4"><output id="subtitleVerticalOffsetOut">0</output></div></div>
+
+              <div class="subtitle-specific on" data-subtitle-panel="keyword_highlight">
+                <div class="subtitle-field"><label for="subtitleKeywordMode">关键词方式</label><select id="subtitleKeywordMode"><option value="auto">自动提取</option><option value="manual">手动指定</option></select></div>
+                <div class="subtitle-field"><label for="subtitleKeywordScale">高亮缩放</label><div class="subtitle-range"><input id="subtitleKeywordScale" type="range" min="1" max="1.5" step="0.01"><output id="subtitleKeywordScaleOut">1.08</output></div></div>
+                <div class="subtitle-field wide"><label for="subtitleKeywords">手动关键词（逗号分隔）</label><input id="subtitleKeywords" type="text" placeholder="例如：焕肤，体验官，透亮"></div>
+              </div>
+              <div class="subtitle-specific" data-subtitle-panel="word_highlight">
+                <div class="subtitle-field"><label for="subtitleWordSpeed">高亮速度</label><div class="subtitle-range"><input id="subtitleWordSpeed" type="range" min="0.5" max="2" step="0.05"><output id="subtitleWordSpeedOut">1</output></div></div>
+                <div class="subtitle-field"><label for="subtitleActiveScale">当前字缩放</label><div class="subtitle-range"><input id="subtitleActiveScale" type="range" min="1" max="1.5" step="0.01"><output id="subtitleActiveScaleOut">1.08</output></div></div>
+              </div>
+              <div class="subtitle-specific" data-subtitle-panel="karaoke">
+                <div class="subtitle-field"><label for="subtitlePendingColor">未朗读颜色</label><div class="subtitle-color"><input id="subtitlePendingColor" type="color"><code id="subtitlePendingColorText">#8B95A7</code></div></div>
+                <div class="subtitle-field"><label for="subtitleProgressMode">填充效果</label><select id="subtitleProgressMode"><option value="sweep">连续填充</option><option value="step">逐字切换</option></select></div>
+              </div>
+              <div class="subtitle-specific" data-subtitle-panel="bounce">
+                <div class="subtitle-field"><label for="subtitleBounceHeight">弹跳幅度</label><div class="subtitle-range"><input id="subtitleBounceHeight" type="range" min="4" max="80" step="1"><output id="subtitleBounceHeightOut">18</output></div></div>
+                <div class="subtitle-field"><label for="subtitleBounceDuration">动画时长</label><div class="subtitle-range"><input id="subtitleBounceDuration" type="range" min="80" max="800" step="10"><output id="subtitleBounceDurationOut">220</output></div></div>
+              </div>
+              <div class="subtitle-specific" data-subtitle-panel="glow">
+                <div class="subtitle-field"><label for="subtitleGlowColor">发光颜色</label><div class="subtitle-color"><input id="subtitleGlowColor" type="color"><code id="subtitleGlowColorText">#35C8FF</code></div></div>
+                <div class="subtitle-field"><label for="subtitleGlowStrength">发光强度</label><div class="subtitle-range"><input id="subtitleGlowStrength" type="range" min="0.1" max="1" step="0.05"><output id="subtitleGlowStrengthOut">0.75</output></div></div>
+                <div class="subtitle-field wide"><label for="subtitleGlowRadius">发光范围</label><div class="subtitle-range"><input id="subtitleGlowRadius" type="range" min="1" max="20" step="1"><output id="subtitleGlowRadiusOut">8</output></div></div>
+              </div>
+              <div class="subtitle-specific" data-subtitle-panel="bilingual">
+                <div class="subtitle-field"><label for="subtitleSecondaryFont">副字幕字体</label><select id="subtitleSecondaryFont"><option value="Noto Sans SC">Noto Sans SC</option></select></div>
+                <div class="subtitle-field"><label for="subtitleSecondarySize">副字幕字号</label><div class="subtitle-range"><input id="subtitleSecondarySize" type="range" min="18" max="80" step="1"><output id="subtitleSecondarySizeOut">38</output></div></div>
+                <div class="subtitle-field"><label for="subtitleSecondaryColor">副字幕颜色</label><div class="subtitle-color"><input id="subtitleSecondaryColor" type="color"><code id="subtitleSecondaryColorText">#DCE7F7</code></div></div>
+                <div class="subtitle-field"><label for="subtitleLineGap">双语行距</label><div class="subtitle-range"><input id="subtitleLineGap" type="range" min="0" max="48" step="1"><output id="subtitleLineGapOut">12</output></div></div>
+                <div class="subtitle-field wide"><label for="subtitleSecondaryText">英文副字幕</label><textarea id="subtitleSecondaryText" placeholder="输入与中文口播对应的英文副字幕"></textarea></div>
+              </div>
+            </div>
           </div>
           <div id="subtitlePositionRow" style="display:none;margin-top:12px;">
             <div class="faint" style="font-size:12px;margin-bottom:8px;">字幕位置</div>
@@ -663,7 +756,18 @@
   var imageData='', imagePreview='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
   var TALKING_RATE=10;   // 口播 10 点/秒（与后端 video.TALKING_RATE_PER_SEC 一致）；按实际输出时长结算，多退少不补
   var bgmData='', selectedBgmVolume=0.18;
-  var selectedSubtitle='off', selectedSubtitleStyle='white', selectedSubtitlePosition='bottom';  // F4 字幕：默认关闭+底部，不勾选时行为与原来一致
+  var selectedSubtitle='off', selectedSubtitleStyle='keyword_highlight', selectedSubtitlePosition='bottom';
+  var SUBTITLE_STORAGE_KEY='hq_video_subtitle_templates_v2';
+  var SUBTITLE_TEMPLATE_NAMES={keyword_highlight:'关键词高亮',word_highlight:'逐字高亮',karaoke:'卡拉 OK',bounce:'弹跳字幕',glow:'发光字幕',bilingual:'双语字幕'};
+  var subtitleTemplateDefaults={
+    keyword_highlight:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,keyword_mode:'auto',keywords:[],keyword_scale:1.08},
+    word_highlight:{font_family:'Noto Sans SC',font_size:66,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,word_highlight_speed:1,active_word_scale:1.08},
+    karaoke:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:.12,pending_color:'#8B95A7',progress_mode:'sweep'},
+    bounce:{font_family:'Noto Sans SC',font_size:68,font_weight:900,font_color:'#FFFFFF',highlight_color:'#FFCE3A',outline_color:'#17120A',outline_width:5,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,bounce_height:18,animation_duration_ms:220},
+    glow:{font_family:'Noto Sans SC',font_size:66,font_weight:800,font_color:'#FFFFFF',highlight_color:'#8CEBFF',outline_color:'#102536',outline_width:3,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,glow_color:'#35C8FF',glow_strength:.75,glow_radius:8},
+    bilingual:{font_family:'Noto Sans SC',font_size:62,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,secondary_font_family:'Noto Sans SC',secondary_font_size:38,secondary_color:'#DCE7F7',line_gap:12,secondary_text:''}
+  };
+  var subtitleTemplateState={}, subtitleFonts=['Noto Sans SC'];
   // 电影化身（HeyGen cinematic）：三个玩法共用一套控件，见 CINE_MODES
   // 时长默认「自适应」：跟随参考视频的长度。既然给了参考片段，成片就该和它一样长，
   // 而不是被截断或硬拖到某个固定秒数。没传参考视频时后端回落到 10 秒。
@@ -787,6 +891,116 @@
   var voices=publicFallback.slice();
   var $=function(id){return document.getElementById(id);};
   function esc(s){return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+  function subtitleClone(value){return JSON.parse(JSON.stringify(value||{}));}
+  function subtitleDefaults(key){return subtitleClone(subtitleTemplateDefaults[key]||subtitleTemplateDefaults.keyword_highlight);}
+  function loadStoredSubtitleSettings(){
+    var saved={};
+    try{saved=JSON.parse(localStorage.getItem(SUBTITLE_STORAGE_KEY)||'{}')||{};}catch(e){saved={};}
+    if(saved.style&&subtitleTemplateDefaults[saved.style]) selectedSubtitleStyle=saved.style;
+    Object.keys(subtitleTemplateDefaults).forEach(function(key){
+      subtitleTemplateState[key]=Object.assign(subtitleDefaults(key),(saved.templates&&saved.templates[key])||{});
+    });
+    selectedSubtitlePosition=subtitleTemplateState[selectedSubtitleStyle].position||'bottom';
+  }
+  function persistSubtitleSettings(){
+    try{localStorage.setItem(SUBTITLE_STORAGE_KEY,JSON.stringify({style:selectedSubtitleStyle,templates:subtitleTemplateState}));}catch(e){}
+  }
+  function setSubtitleSelectOptions(id,items){
+    var el=$(id); if(!el)return;
+    var current=el.value;
+    el.innerHTML=(items||[]).map(function(item){var v=typeof item==='string'?item:item.value;var label=typeof item==='string'?item:(item.label||item.value);return '<option value="'+esc(v)+'">'+esc(label)+'</option>';}).join('');
+    if(Array.prototype.some.call(el.options,function(x){return x.value===current;}))el.value=current;
+  }
+  function subtitleSetValue(id,value){var el=$(id);if(el&&value!=null)el.value=String(value);}
+  function subtitleSetOutput(id,value){var el=$(id);if(el)el.textContent=String(value);}
+  function subtitleSetColor(id,textId,value){subtitleSetValue(id,value);subtitleSetOutput(textId,String(value||'').toUpperCase());}
+  function applySubtitleForm(){
+    var o=subtitleTemplateState[selectedSubtitleStyle]||subtitleDefaults(selectedSubtitleStyle);
+    selectedSubtitlePosition=o.position||selectedSubtitlePosition||'bottom';
+    document.querySelectorAll('[data-substyle]').forEach(function(b){b.classList.toggle('on',b.dataset.substyle===selectedSubtitleStyle);});
+    document.querySelectorAll('[data-subtitle-panel]').forEach(function(p){p.classList.toggle('on',p.dataset.subtitlePanel===selectedSubtitleStyle);});
+    document.querySelectorAll('[data-subpos]').forEach(function(b){b.classList.toggle('on',b.dataset.subpos===selectedSubtitlePosition);});
+    subtitleSetValue('subtitleFontFamily',o.font_family);subtitleSetValue('subtitleFontSize',o.font_size);subtitleSetOutput('subtitleFontSizeOut',o.font_size);
+    subtitleSetValue('subtitleFontWeight',o.font_weight);subtitleSetColor('subtitleFontColor','subtitleFontColorText',o.font_color);
+    subtitleSetColor('subtitleHighlightColor','subtitleHighlightColorText',o.highlight_color);subtitleSetColor('subtitleOutlineColor','subtitleOutlineColorText',o.outline_color);
+    subtitleSetValue('subtitleOutlineWidth',o.outline_width);subtitleSetOutput('subtitleOutlineWidthOut',o.outline_width);
+    subtitleSetColor('subtitleBackgroundColor','subtitleBackgroundColorText',o.background_color);subtitleSetValue('subtitleBackgroundOpacity',o.background_opacity);subtitleSetOutput('subtitleBackgroundOpacityOut',o.background_opacity);
+    subtitleSetValue('subtitleVerticalOffset',o.vertical_offset);subtitleSetOutput('subtitleVerticalOffsetOut',o.vertical_offset);
+    subtitleSetValue('subtitleKeywordMode',o.keyword_mode);subtitleSetValue('subtitleKeywords',(o.keywords||[]).join('，'));subtitleSetValue('subtitleKeywordScale',o.keyword_scale);subtitleSetOutput('subtitleKeywordScaleOut',o.keyword_scale);
+    subtitleSetValue('subtitleWordSpeed',o.word_highlight_speed);subtitleSetOutput('subtitleWordSpeedOut',o.word_highlight_speed);subtitleSetValue('subtitleActiveScale',o.active_word_scale);subtitleSetOutput('subtitleActiveScaleOut',o.active_word_scale);
+    subtitleSetColor('subtitlePendingColor','subtitlePendingColorText',o.pending_color);subtitleSetValue('subtitleProgressMode',o.progress_mode);
+    subtitleSetValue('subtitleBounceHeight',o.bounce_height);subtitleSetOutput('subtitleBounceHeightOut',o.bounce_height);subtitleSetValue('subtitleBounceDuration',o.animation_duration_ms);subtitleSetOutput('subtitleBounceDurationOut',o.animation_duration_ms);
+    subtitleSetColor('subtitleGlowColor','subtitleGlowColorText',o.glow_color);subtitleSetValue('subtitleGlowStrength',o.glow_strength);subtitleSetOutput('subtitleGlowStrengthOut',o.glow_strength);subtitleSetValue('subtitleGlowRadius',o.glow_radius);subtitleSetOutput('subtitleGlowRadiusOut',o.glow_radius);
+    subtitleSetValue('subtitleSecondaryFont',o.secondary_font_family);subtitleSetValue('subtitleSecondarySize',o.secondary_font_size);subtitleSetOutput('subtitleSecondarySizeOut',o.secondary_font_size);subtitleSetColor('subtitleSecondaryColor','subtitleSecondaryColorText',o.secondary_color);subtitleSetValue('subtitleLineGap',o.line_gap);subtitleSetOutput('subtitleLineGapOut',o.line_gap);subtitleSetValue('subtitleSecondaryText',o.secondary_text);
+    updateSubtitlePreview();
+  }
+  function subtitleNumber(id,fallback){var el=$(id),n=Number(el&&el.value);return isFinite(n)?n:fallback;}
+  function collectSubtitleOptions(){
+    var base=subtitleDefaults(selectedSubtitleStyle), o={
+      font_family:($('subtitleFontFamily')||{}).value||base.font_family,font_size:subtitleNumber('subtitleFontSize',base.font_size),font_weight:subtitleNumber('subtitleFontWeight',base.font_weight),
+      font_color:(($('subtitleFontColor')||{}).value||base.font_color).toUpperCase(),highlight_color:(($('subtitleHighlightColor')||{}).value||base.highlight_color).toUpperCase(),
+      outline_color:(($('subtitleOutlineColor')||{}).value||base.outline_color).toUpperCase(),outline_width:subtitleNumber('subtitleOutlineWidth',base.outline_width),position:selectedSubtitlePosition,
+      vertical_offset:subtitleNumber('subtitleVerticalOffset',base.vertical_offset),background_color:(($('subtitleBackgroundColor')||{}).value||base.background_color).toUpperCase(),background_opacity:subtitleNumber('subtitleBackgroundOpacity',base.background_opacity)
+    };
+    if(selectedSubtitleStyle==='keyword_highlight')Object.assign(o,{keyword_mode:($('subtitleKeywordMode')||{}).value||'auto',keywords:String(($('subtitleKeywords')||{}).value||'').split(/[,，\n]/).map(function(x){return x.trim();}).filter(Boolean),keyword_scale:subtitleNumber('subtitleKeywordScale',base.keyword_scale)});
+    if(selectedSubtitleStyle==='word_highlight')Object.assign(o,{word_highlight_speed:subtitleNumber('subtitleWordSpeed',base.word_highlight_speed),active_word_scale:subtitleNumber('subtitleActiveScale',base.active_word_scale)});
+    if(selectedSubtitleStyle==='karaoke')Object.assign(o,{pending_color:(($('subtitlePendingColor')||{}).value||base.pending_color).toUpperCase(),progress_mode:($('subtitleProgressMode')||{}).value||'sweep'});
+    if(selectedSubtitleStyle==='bounce')Object.assign(o,{bounce_height:subtitleNumber('subtitleBounceHeight',base.bounce_height),animation_duration_ms:subtitleNumber('subtitleBounceDuration',base.animation_duration_ms)});
+    if(selectedSubtitleStyle==='glow')Object.assign(o,{glow_color:(($('subtitleGlowColor')||{}).value||base.glow_color).toUpperCase(),glow_strength:subtitleNumber('subtitleGlowStrength',base.glow_strength),glow_radius:subtitleNumber('subtitleGlowRadius',base.glow_radius)});
+    if(selectedSubtitleStyle==='bilingual')Object.assign(o,{secondary_font_family:($('subtitleSecondaryFont')||{}).value||base.secondary_font_family,secondary_font_size:subtitleNumber('subtitleSecondarySize',base.secondary_font_size),secondary_color:(($('subtitleSecondaryColor')||{}).value||base.secondary_color).toUpperCase(),line_gap:subtitleNumber('subtitleLineGap',base.line_gap),secondary_text:String(($('subtitleSecondaryText')||{}).value||'').trim()});
+    subtitleTemplateState[selectedSubtitleStyle]=o;
+    persistSubtitleSettings();
+    return o;
+  }
+  function setSubtitleStyle(key){
+    if(!subtitleTemplateDefaults[key]||key===selectedSubtitleStyle)return;
+    collectSubtitleOptions();selectedSubtitleStyle=key;
+    selectedSubtitlePosition=(subtitleTemplateState[key]||subtitleDefaults(key)).position||'bottom';
+    persistSubtitleSettings();applySubtitleForm();
+  }
+  function updateSubtitlePreview(){
+    var copy=$('subtitlePreviewCopy'),stage=$('subtitlePreview');if(!copy||!stage)return;
+    var o=subtitleTemplateState[selectedSubtitleStyle]||subtitleDefaults(selectedSubtitleStyle);
+    var source=String(($('scriptText')||{}).value||'让每一句口播都更有重点').replace(/\s+/g,' ').trim().slice(0,22)||'让每一句口播都更有重点';
+    var chars=Array.from(source),html='';
+    if(selectedSubtitleStyle==='keyword_highlight'){
+      var kws=o.keyword_mode==='manual'?(o.keywords||[]):[];
+      if(!kws.length&&chars.length>=4)kws=[chars.slice(Math.max(0,Math.floor(chars.length/2)-1),Math.min(chars.length,Math.floor(chars.length/2)+2)).join('')];
+      var pattern=kws.length?new RegExp('('+kws.map(function(k){return String(k).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}).join('|')+')','i'):null;
+      html=pattern?source.split(pattern).map(function(part){return pattern.test(part)?'<span class="sub-highlight">'+esc(part)+'</span>':esc(part);}).join(''):esc(source);
+    }else if(selectedSubtitleStyle==='word_highlight'){
+      html=chars.map(function(ch,i){return '<span class="'+(i===Math.min(4,chars.length-1)?'sub-highlight':'')+'">'+esc(ch)+'</span>';}).join('');
+    }else if(selectedSubtitleStyle==='karaoke'){
+      html='<span class="sub-highlight">'+esc(chars.slice(0,Math.ceil(chars.length/2)).join(''))+'</span><span class="sub-pending">'+esc(chars.slice(Math.ceil(chars.length/2)).join(''))+'</span>';
+    }else if(selectedSubtitleStyle==='bounce'){
+      html=chars.map(function(ch,i){return '<span style="--i:'+i+'">'+esc(ch)+'</span>';}).join('');
+    }else if(selectedSubtitleStyle==='bilingual'){
+      html=esc(source)+'<span class="subtitle-secondary">'+esc(o.secondary_text||'Make every word stand out')+'</span>';
+    }else html=esc(source);
+    copy.className='subtitle-preview-copy preview-'+selectedSubtitleStyle.replace('_highlight','');copy.innerHTML=html;
+    copy.style.fontFamily=o.font_family||'inherit';copy.style.fontSize=Math.max(15,Math.min(34,Number(o.font_size||64)*.38))+'px';copy.style.fontWeight=o.font_weight||800;copy.style.color=o.font_color||'#fff';
+    copy.style.textShadow='0 '+Math.max(1,Number(o.outline_width||4)/2)+'px 0 '+(o.outline_color||'#000')+', '+Math.max(1,Number(o.outline_width||4)/2)+'px 0 0 '+(o.outline_color||'#000')+', -'+Math.max(1,Number(o.outline_width||4)/2)+'px 0 0 '+(o.outline_color||'#000');
+    if(selectedSubtitleStyle==='glow'){copy.style.filter='drop-shadow(0 0 '+Math.max(2,Number(o.glow_radius||8))+'px '+(o.glow_color||'#35C8FF')+')';}else copy.style.filter='';
+    stage.style.alignItems=o.position==='top'||o.position==='upper'?'flex-start':(o.position==='center'?'center':'flex-end');
+    stage.style.backgroundColor='rgba('+parseInt((o.background_color||'#000000').slice(1,3),16)+','+parseInt((o.background_color||'#000000').slice(3,5),16)+','+parseInt((o.background_color||'#000000').slice(5,7),16)+','+Math.min(.75,Number(o.background_opacity||0))+')';
+    copy.style.transform='translateY('+(-Number(o.vertical_offset||0)*.12)+'px)';
+  }
+  function refreshSubtitleStateFromForm(){subtitleTemplateState[selectedSubtitleStyle]=collectSubtitleOptions();updateSubtitlePreview();}
+  function bindSubtitleBuilder(){
+    loadStoredSubtitleSettings();
+    document.querySelectorAll('[data-substyle]').forEach(function(btn){btn.addEventListener('click',function(){setSubtitleStyle(btn.dataset.substyle);});});
+    var controls=$('subtitleControls');if(controls)controls.addEventListener('input',refreshSubtitleStateFromForm);if(controls)controls.addEventListener('change',refreshSubtitleStateFromForm);
+    if($('subtitleResetBtn'))$('subtitleResetBtn').onclick=function(){subtitleTemplateState[selectedSubtitleStyle]=subtitleDefaults(selectedSubtitleStyle);selectedSubtitlePosition=subtitleTemplateState[selectedSubtitleStyle].position;persistSubtitleSettings();applySubtitleForm();toast('已恢复模板默认值');};
+    applySubtitleForm();
+    fetch(fresh('/api/gen/video/subtitle-config'),{cache:'no-store',headers:{Authorization:'Bearer '+token}}).then(function(r){return r.ok?r.json():Promise.reject();}).then(function(data){
+      if(Array.isArray(data.fonts)&&data.fonts.length){
+        subtitleFonts=data.fonts.map(function(x){return x.value;});setSubtitleSelectOptions('subtitleFontFamily',data.fonts);setSubtitleSelectOptions('subtitleSecondaryFont',data.fonts);
+        Object.keys(subtitleTemplateState).forEach(function(key){var o=subtitleTemplateState[key];if(subtitleFonts.indexOf(o.font_family)<0)o.font_family=subtitleFonts[0];if(o.secondary_font_family&&subtitleFonts.indexOf(o.secondary_font_family)<0)o.secondary_font_family=subtitleFonts[0];});
+      }
+      (data.templates||[]).forEach(function(t){if(t&&subtitleTemplateDefaults[t.key]&&t.defaults){subtitleTemplateDefaults[t.key]=Object.assign(subtitleTemplateDefaults[t.key],t.defaults);subtitleTemplateState[t.key]=Object.assign(subtitleDefaults(t.key),subtitleTemplateState[t.key]||{});}});
+      applySubtitleForm();
+    }).catch(function(){});
+  }
   var resumedVideoTaskId='';
   var focusVideoTaskId='';
   function setPendingVideoFocus(id){
@@ -1183,6 +1397,8 @@
         +'<p class="history-text">'+esc(x.text||'视频生成记录')+'</p>'
         +'<div class="history-tags"><span class="history-tag">'+esc(videoModeTag(x))+'</span>'
         +(x.batch_label?'<span class="history-tag">'+esc(x.batch_label)+'</span>':'')
+        +(x.subtitle?'<span class="history-tag subtitle-history-tag">字幕 · '+esc(SUBTITLE_TEMPLATE_NAMES[x.subtitle_style]||'基础字幕')+'</span>':'')
+        +(x.subtitle_error?'<span class="history-tag" title="'+esc(x.subtitle_error)+'">字幕失败</span>':'')
         +'<span class="history-tag">'+esc(x.ratio||'9:16')+'</span><span class="history-tag">'+esc(duration)+'</span></div>'
         +progress
         +'<div class="history-stage"><div class="history-preview">'+preview+'</div></div>'
@@ -2039,14 +2255,13 @@
     }
     if(b.dataset.motion) selectedMotion=b.dataset.motion;
     if(b.dataset.bgmVolume) selectedBgmVolume=Number(b.dataset.bgmVolume);
-    if(b.dataset.subtitle){selectedSubtitle=b.dataset.subtitle;var on=selectedSubtitle==='on';var sr=$('subtitleStyleRow');if(sr)sr.style.display=(on?'':'none');var pr=$('subtitlePositionRow');if(pr)pr.style.display=(on?'':'none');}
-    if(b.dataset.substyle) selectedSubtitleStyle=b.dataset.substyle;
-    if(b.dataset.subpos) selectedSubtitlePosition=b.dataset.subpos;
+    if(b.dataset.subtitle){selectedSubtitle=b.dataset.subtitle;var on=selectedSubtitle==='on';var sr=$('subtitleStyleRow');if(sr)sr.style.display=(on?'flex':'none');var pr=$('subtitlePositionRow');if(pr)pr.style.display=(on?'':'none');if(on)updateSubtitlePreview();}
+    if(b.dataset.subpos){selectedSubtitlePosition=b.dataset.subpos;if(subtitleTemplateState[selectedSubtitleStyle])subtitleTemplateState[selectedSubtitleStyle].position=selectedSubtitlePosition;persistSubtitleSettings();updateSubtitlePreview();}
     updateChecklist();
   };});
   $('bgmFile').onchange=function(){var f=this.files&&this.files[0];if(!f)return;if(f.size>35*1024*1024){toast('BGM 不能超过 35MB');this.value='';return;}readFileData(f).then(function(data){bgmData=data;$('bgmFileName').textContent=f.name;$('bgmClear').classList.remove('hidden');}).catch(function(){toast('BGM 读取失败');});};
   $('bgmClear').onclick=function(){bgmData='';$('bgmFile').value='';$('bgmFileName').textContent='选择 BGM 音频';$('bgmClear').classList.add('hidden');};
-  $('scriptText').addEventListener('input',function(){$('charCount').textContent=$('scriptText').value.length+' / 1200';updateChecklist();});
+  $('scriptText').addEventListener('input',function(){$('charCount').textContent=$('scriptText').value.length+' / 1200';updateChecklist();updateSubtitlePreview();});
   $('clearScript').onclick=function(){$('scriptText').value='';$('scriptText').dispatchEvent(new Event('input'));};
   function bindImageInput(input){
     input.onchange=function(){
@@ -2309,11 +2524,12 @@
   }
   function talkingPayload(item){
     item=item||{};
+    var subtitleOpts=selectedSubtitle==='on'?collectSubtitleOptions():null;
     return {
       mode:mode,image_data:item.image_data||'',avatar_id:item.avatar_id||'',
       audio_data:mode==='audio'?audioData:'',text:mode==='text'?$('scriptText').value.trim():'',voice:mode==='text'?selectedVoice:'',
       resolution:selectedResolution,ratio:selectedRatio,motion:selectedMotion,subtitle:selectedSubtitle==='on',
-      subtitle_style:selectedSubtitleStyle,subtitle_position:selectedSubtitlePosition,
+      subtitle_style:selectedSubtitleStyle,subtitle_position:selectedSubtitlePosition,subtitle_options:subtitleOpts,
       bgm_data:bgmData,bgm_volume:selectedBgmVolume
     };
   }
@@ -2324,6 +2540,11 @@
     var assetSelected=document.querySelector('.source-card[data-source="asset"].on');
     if(mode==='audio' && assetSelected && !selectedAssetAudio){ toast('请选择一条配音资产'); return; }
     if(mode==='audio' && !assetSelected && !audioData){ toast('请先上传口播音频'); return; }
+    if(selectedSubtitle==='on'){
+      var subtitleOpts=collectSubtitleOptions();
+      if(selectedSubtitleStyle==='keyword_highlight'&&subtitleOpts.keyword_mode==='manual'&&!subtitleOpts.keywords.length){toast('手动关键词模式请至少填写一个关键词');return;}
+      if(selectedSubtitleStyle==='bilingual'&&!subtitleOpts.secondary_text){toast('双语字幕请填写英文副字幕');if($('subtitleSecondaryText'))$('subtitleSecondaryText').focus();return;}
+    }
     setSubmitLock('talking',true);
     setBusy(true);
     var audioReadyPromise=assetSelected?fetchAssetAudioData(selectedAssetAudio):Promise.resolve(audioData);
@@ -2652,6 +2873,7 @@
       if(typeof toast==='function') toast('已带入灵感提示词，可直接生成');
     }catch(e){}
   }
+  bindSubtitleBuilder();
   applyAssetPrefill();
   applyInspirationPrefill();
   loadVoices();

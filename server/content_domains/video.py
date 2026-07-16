@@ -370,6 +370,18 @@ def validate_video_payload(payload, username=None):
     if not 0.05 <= bgm_volume <= 0.8:
         raise ValueError("bgm_volume 必须是 0.05-0.8 的数字")
 
+    subtitle = payload.get("subtitle", False)
+    if not isinstance(subtitle, bool):
+        raise ValueError("subtitle 必须是布尔值")
+    subtitle_style = str(payload.get("subtitle_style") or "white").strip()
+    subtitle_position = str(payload.get("subtitle_position") or "bottom").strip()
+    subtitle_options = None
+    if subtitle:
+        subtitle_options = _normalize_subtitle_options(
+            subtitle_style, payload.get("subtitle_options"), subtitle_position,
+        )
+        subtitle_position = subtitle_options["position"]
+
     cleaned = dict(payload)
     cleaned["mode"] = mode
     cleaned["ratio"] = ratio
@@ -380,6 +392,10 @@ def validate_video_payload(payload, username=None):
         cleaned["audio_data"] = audio_data
     cleaned["bgm_data"] = bgm_data
     cleaned["bgm_volume"] = bgm_volume
+    cleaned["subtitle"] = subtitle
+    cleaned["subtitle_style"] = subtitle_style
+    cleaned["subtitle_position"] = subtitle_position
+    cleaned["subtitle_options"] = subtitle_options
     cleaned.pop("duration", None)
     cleaned.pop("line", None)   # 动作模仿不再有线路，别把老前端传来的 line 写进 payload 混淆历史记录
     return cleaned
@@ -665,6 +681,9 @@ def list_video_assets(username, limit=120):
                 for key in ("batch_id", "batch_label", "batch_index", "batch_size"):
                     if payload.get(key) is not None:
                         item[key] = payload[key]
+                for key in ("subtitle", "subtitle_style", "subtitle_position", "subtitle_options", "subtitle_error"):
+                    if result.get(key) is not None:
+                        item[key] = result[key]
         except Exception:
             pass
     try:
@@ -1734,6 +1753,244 @@ _SUB_POSITIONS = {
     "top":    (8, 0.06),   # 顶部
 }
 
+# Issue #2 · 字幕模板库。
+#
+# 字体名只能来自这份白名单，且运行时还会用 fontconfig 确认服务器确实安装了对应字体。
+# 用户输入永远不会作为字体路径或 ffmpeg 参数使用，避免 filtergraph/命令注入。
+_SUBTITLE_FONT_ALLOWLIST = tuple(dict.fromkeys((
+    SUBTITLE_FONT,
+    "Noto Sans CJK SC",
+    "Noto Serif CJK SC",
+)))
+_SUBTITLE_TEMPLATE_LABELS = {
+    "keyword_highlight": "关键词高亮",
+    "word_highlight": "逐字高亮",
+    "karaoke": "卡拉 OK",
+    "bounce": "弹跳字幕",
+    "glow": "发光字幕",
+    "bilingual": "双语字幕",
+}
+_SUBTITLE_TEMPLATE_DEFAULTS = {
+    "keyword_highlight": {
+        "font_family": SUBTITLE_FONT, "font_size": 64, "font_weight": 800,
+        "font_color": "#FFFFFF", "highlight_color": "#FFE45C",
+        "outline_color": "#000000", "outline_width": 4,
+        "position": "bottom", "vertical_offset": 0,
+        "background_color": "#000000", "background_opacity": 0.0,
+        "keyword_mode": "auto", "keywords": [], "keyword_scale": 1.08,
+    },
+    "word_highlight": {
+        "font_family": SUBTITLE_FONT, "font_size": 66, "font_weight": 800,
+        "font_color": "#FFFFFF", "highlight_color": "#FFE45C",
+        "outline_color": "#000000", "outline_width": 4,
+        "position": "bottom", "vertical_offset": 0,
+        "background_color": "#000000", "background_opacity": 0.0,
+        "word_highlight_speed": 1.0, "active_word_scale": 1.08,
+    },
+    "karaoke": {
+        "font_family": SUBTITLE_FONT, "font_size": 64, "font_weight": 800,
+        "font_color": "#FFFFFF", "highlight_color": "#FFE45C",
+        "outline_color": "#000000", "outline_width": 4,
+        "position": "bottom", "vertical_offset": 0,
+        "background_color": "#000000", "background_opacity": 0.12,
+        "pending_color": "#8B95A7", "progress_mode": "sweep",
+    },
+    "bounce": {
+        "font_family": SUBTITLE_FONT, "font_size": 68, "font_weight": 900,
+        "font_color": "#FFFFFF", "highlight_color": "#FFCE3A",
+        "outline_color": "#17120A", "outline_width": 5,
+        "position": "bottom", "vertical_offset": 0,
+        "background_color": "#000000", "background_opacity": 0.0,
+        "bounce_height": 18, "animation_duration_ms": 220,
+    },
+    "glow": {
+        "font_family": SUBTITLE_FONT, "font_size": 66, "font_weight": 800,
+        "font_color": "#FFFFFF", "highlight_color": "#8CEBFF",
+        "outline_color": "#102536", "outline_width": 3,
+        "position": "bottom", "vertical_offset": 0,
+        "background_color": "#000000", "background_opacity": 0.0,
+        "glow_color": "#35C8FF", "glow_strength": 0.75, "glow_radius": 8,
+    },
+    "bilingual": {
+        "font_family": SUBTITLE_FONT, "font_size": 62, "font_weight": 800,
+        "font_color": "#FFFFFF", "highlight_color": "#FFE45C",
+        "outline_color": "#000000", "outline_width": 4,
+        "position": "bottom", "vertical_offset": 0,
+        "background_color": "#000000", "background_opacity": 0.0,
+        "secondary_font_family": SUBTITLE_FONT, "secondary_font_size": 38,
+        "secondary_color": "#DCE7F7", "line_gap": 12, "secondary_text": "",
+    },
+}
+
+# 旧客户端/历史任务仍可提交这三个 key；新页面只展示上面的 6 类结构化模板。
+_LEGACY_SUBTITLE_DEFAULTS = {
+    "white": dict(_SUBTITLE_TEMPLATE_DEFAULTS["keyword_highlight"], keyword_mode="manual", keywords=[], highlight_color="#FFFFFF"),
+    "variety": dict(_SUBTITLE_TEMPLATE_DEFAULTS["keyword_highlight"], font_size=78, font_color="#FFE500", highlight_color="#FFE500", keyword_mode="manual", keywords=[]),
+    "bar": dict(_SUBTITLE_TEMPLATE_DEFAULTS["keyword_highlight"], font_size=60, keyword_mode="manual", keywords=[], highlight_color="#FFFFFF", background_opacity=0.50),
+}
+_SUBTITLE_ALL_DEFAULTS = dict(_LEGACY_SUBTITLE_DEFAULTS, **_SUBTITLE_TEMPLATE_DEFAULTS)
+_SUBTITLE_WORD_TIMELINE_STYLES = {"word_highlight", "karaoke", "bounce"}
+_SUBTITLE_COMMON_OPTION_KEYS = {
+    "font_family", "font_size", "font_weight", "font_color", "highlight_color",
+    "outline_color", "outline_width", "position", "vertical_offset",
+    "background_color", "background_opacity",
+}
+_SUBTITLE_STYLE_OPTION_KEYS = {
+    "keyword_highlight": {"keyword_mode", "keywords", "keyword_scale"},
+    "word_highlight": {"word_highlight_speed", "active_word_scale"},
+    "karaoke": {"pending_color", "progress_mode"},
+    "bounce": {"bounce_height", "animation_duration_ms"},
+    "glow": {"glow_color", "glow_strength", "glow_radius"},
+    "bilingual": {"secondary_font_family", "secondary_font_size", "secondary_color", "line_gap", "secondary_text"},
+}
+_HEX_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
+_subtitle_fonts_cache = None
+
+
+def _installed_subtitle_fonts():
+    """返回白名单中服务器实际安装的字体；fontconfig 不可用时只保留安全默认字体。"""
+    global _subtitle_fonts_cache
+    if _subtitle_fonts_cache is not None:
+        return list(_subtitle_fonts_cache)
+    installed = []
+    for family in _SUBTITLE_FONT_ALLOWLIST:
+        try:
+            out = subprocess.run(
+                ["fc-match", "-f", "%{family}", family], check=True, timeout=5,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            ).stdout.decode("utf-8", "replace")
+            names = [x.strip().lower() for x in out.split(",") if x.strip()]
+            if family.lower() in names:
+                installed.append(family)
+        except Exception:
+            continue
+    if not installed:
+        installed = [SUBTITLE_FONT]
+    _subtitle_fonts_cache = tuple(installed)
+    return list(_subtitle_fonts_cache)
+
+
+def subtitle_config():
+    """前端模板面板使用的公开配置；只返回白名单值，不返回服务器路径。"""
+    return {
+        "templates": [
+            {"key": key, "label": label, "defaults": dict(_SUBTITLE_TEMPLATE_DEFAULTS[key])}
+            for key, label in _SUBTITLE_TEMPLATE_LABELS.items()
+        ],
+        "fonts": [{"value": name, "label": name} for name in _installed_subtitle_fonts()],
+        "positions": [
+            {"value": key, "label": label}
+            for key, label in (("top", "顶部"), ("upper", "偏上"), ("center", "中央"), ("lower", "偏下"), ("bottom", "底部"))
+        ],
+    }
+
+
+def _subtitle_number(raw, key, default, minimum, maximum, integer=False):
+    value = raw.get(key, default)
+    if isinstance(value, bool):
+        raise ValueError("字幕参数 %s 格式不正确" % key)
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("字幕参数 %s 必须是数字" % key)
+    if not math.isfinite(value) or value < minimum or value > maximum:
+        raise ValueError("字幕参数 %s 超出允许范围" % key)
+    return int(round(value)) if integer else round(value, 3)
+
+
+def _subtitle_color(raw, key, default):
+    value = str(raw.get(key, default) or "").strip().upper()
+    if not _HEX_COLOR_RE.fullmatch(value):
+        raise ValueError("字幕颜色 %s 必须是 #RRGGBB" % key)
+    return value
+
+
+def _normalize_subtitle_options(style_key, raw=None, legacy_position=None):
+    """校验并归一化字幕参数。返回值可以安全写进 ASS，不允许任意路径/控制串。"""
+    style_key = str(style_key or "white").strip()
+    if style_key not in _SUBTITLE_ALL_DEFAULTS:
+        raise ValueError("不支持的字幕模板：%s" % style_key[:40])
+    if raw in (None, ""):
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("字幕参数 subtitle_options 必须是对象")
+    allowed = set(_SUBTITLE_COMMON_OPTION_KEYS)
+    allowed.update(_SUBTITLE_STYLE_OPTION_KEYS.get(style_key, set()))
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        raise ValueError("不支持的字幕参数：%s" % ", ".join(unknown[:5]))
+
+    defaults = dict(_SUBTITLE_ALL_DEFAULTS[style_key])
+    result = dict(defaults)
+    fonts = _installed_subtitle_fonts()
+    font = str(raw.get("font_family", defaults["font_family"]) or "").strip()
+    if font not in fonts:
+        raise ValueError("字幕字体未安装或不在白名单：%s" % font[:60])
+    result["font_family"] = font
+    result["font_size"] = _subtitle_number(raw, "font_size", defaults["font_size"], 24, 120, integer=True)
+    result["font_weight"] = _subtitle_number(raw, "font_weight", defaults["font_weight"], 400, 900, integer=True)
+    for key in ("font_color", "highlight_color", "outline_color", "background_color"):
+        result[key] = _subtitle_color(raw, key, defaults[key])
+    result["outline_width"] = _subtitle_number(raw, "outline_width", defaults["outline_width"], 0, 12)
+    position = str(raw.get("position", legacy_position or defaults["position"]) or "").strip()
+    if position not in _SUB_POSITIONS:
+        raise ValueError("字幕位置不正确")
+    result["position"] = position
+    result["vertical_offset"] = _subtitle_number(raw, "vertical_offset", defaults["vertical_offset"], -320, 320, integer=True)
+    result["background_opacity"] = _subtitle_number(raw, "background_opacity", defaults["background_opacity"], 0, 1)
+
+    if style_key == "keyword_highlight":
+        mode = str(raw.get("keyword_mode", defaults["keyword_mode"]) or "").strip()
+        if mode not in {"auto", "manual"}:
+            raise ValueError("关键词模式只能是 auto 或 manual")
+        keywords = raw.get("keywords", defaults["keywords"])
+        if isinstance(keywords, str):
+            keywords = re.split(r"[,，\n]", keywords)
+        if not isinstance(keywords, list):
+            raise ValueError("关键词必须是文本或数组")
+        clean_keywords = []
+        for item in keywords:
+            item = re.sub(r"[{}\\\r\n]", "", str(item or "")).strip()
+            if item and item not in clean_keywords:
+                clean_keywords.append(item[:16])
+        if len(clean_keywords) > 12:
+            raise ValueError("关键词最多 12 个")
+        if mode == "manual" and not clean_keywords:
+            raise ValueError("手动关键词模式请至少填写一个关键词")
+        result.update(keyword_mode=mode, keywords=clean_keywords)
+        result["keyword_scale"] = _subtitle_number(raw, "keyword_scale", defaults["keyword_scale"], 1, 1.5)
+    elif style_key == "word_highlight":
+        result["word_highlight_speed"] = _subtitle_number(raw, "word_highlight_speed", defaults["word_highlight_speed"], 0.5, 2)
+        result["active_word_scale"] = _subtitle_number(raw, "active_word_scale", defaults["active_word_scale"], 1, 1.5)
+    elif style_key == "karaoke":
+        result["pending_color"] = _subtitle_color(raw, "pending_color", defaults["pending_color"])
+        progress = str(raw.get("progress_mode", defaults["progress_mode"]) or "").strip()
+        if progress not in {"step", "sweep"}:
+            raise ValueError("卡拉 OK 进度模式只能是 step 或 sweep")
+        result["progress_mode"] = progress
+    elif style_key == "bounce":
+        result["bounce_height"] = _subtitle_number(raw, "bounce_height", defaults["bounce_height"], 4, 80, integer=True)
+        result["animation_duration_ms"] = _subtitle_number(raw, "animation_duration_ms", defaults["animation_duration_ms"], 80, 800, integer=True)
+    elif style_key == "glow":
+        result["glow_color"] = _subtitle_color(raw, "glow_color", defaults["glow_color"])
+        result["glow_strength"] = _subtitle_number(raw, "glow_strength", defaults["glow_strength"], 0.1, 1)
+        result["glow_radius"] = _subtitle_number(raw, "glow_radius", defaults["glow_radius"], 1, 20, integer=True)
+    elif style_key == "bilingual":
+        secondary_font = str(raw.get("secondary_font_family", defaults["secondary_font_family"]) or "").strip()
+        if secondary_font not in fonts:
+            raise ValueError("副字幕字体未安装或不在白名单：%s" % secondary_font[:60])
+        result["secondary_font_family"] = secondary_font
+        result["secondary_font_size"] = _subtitle_number(raw, "secondary_font_size", defaults["secondary_font_size"], 18, 80, integer=True)
+        result["secondary_color"] = _subtitle_color(raw, "secondary_color", defaults["secondary_color"])
+        result["line_gap"] = _subtitle_number(raw, "line_gap", defaults["line_gap"], 0, 48, integer=True)
+        secondary_text = str(raw.get("secondary_text", defaults["secondary_text"]) or "").strip()
+        if not secondary_text:
+            raise ValueError("双语字幕请填写英文副字幕")
+        if len(secondary_text) > 2400:
+            raise ValueError("英文副字幕不能超过 2400 个字符")
+        result["secondary_text"] = secondary_text
+    return result
+
 def _sub_ffmpeg(cmd, timeout, cwd=None):
     try:
         subprocess.run(cmd, check=True, timeout=timeout, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -1902,39 +2159,309 @@ def _redistribute_known_text(known_text, segs):
         out.append((st, en, chunk or rec))
     return out
 
-def _build_ass(segs, style_key, w, h, position="bottom"):
-    st = _SUB_STYLES.get(style_key) or _SUB_STYLES["white"]
+def _ass_color(value, opacity=1.0):
+    """#RRGGBB → ASS &HAABBGGRR。"""
+    value = str(value or "#FFFFFF")
+    r, g, b = value[1:3], value[3:5], value[5:7]
+    alpha = max(0, min(255, int(round((1.0 - float(opacity)) * 255))))
+    return "&H%02X%s%s%s" % (alpha, b, g, r)
+
+
+def _ass_inline_color(value):
+    return _ass_color(value, 1.0)[0:2] + _ass_color(value, 1.0)[4:] + "&"
+
+
+def _subtitle_units(text):
+    """中文按字、英文按词拆分，空格并入前一个单元，供时间轴与卡片切分使用。"""
+    text = _clean_sub_text(text)
+    units = re.findall(r"[A-Za-z0-9][A-Za-z0-9'’_-]*\s*|[\u3400-\u9fff]\s*|[^\s]", text)
+    return [u for u in units if u.strip()]
+
+
+def _segments_to_timed_words(segs):
+    timed = []
+    for start, end, text in segs:
+        units = _subtitle_units(text)
+        if not units:
+            continue
+        span = max(0.2, float(end) - float(start))
+        for index, unit in enumerate(units):
+            st = float(start) + span * index / len(units)
+            en = float(start) + span * (index + 1) / len(units)
+            timed.append((st, en, unit))
+    return timed
+
+
+def _retime_known_text(known_text, timed_words, segs):
+    """保留 Whisper 单词边界，用原始文案替换识别字词，减少错字。"""
+    source = _clean_sub_text(known_text)
+    if not source:
+        return timed_words or _segments_to_timed_words(segs)
+    if not timed_words:
+        corrected = _redistribute_known_text(known_text, segs)
+        return _segments_to_timed_words(corrected)
+    chars = list(source)
+    weights = [max(1, len(_clean_sub_text(item[2]).replace(" ", ""))) for item in timed_words]
+    total = sum(weights) or len(weights)
+    result, pos, acc = [], 0, 0
+    for index, (start, end, _word) in enumerate(timed_words):
+        acc += weights[index]
+        cut = len(chars) if index == len(timed_words) - 1 else max(pos + 1, int(round(len(chars) * acc / total)))
+        cut = min(len(chars), cut)
+        chunk = "".join(chars[pos:cut]).strip()
+        pos = cut
+        if chunk:
+            result.append((float(start), float(end), chunk))
+    return result or _segments_to_timed_words(_redistribute_known_text(known_text, segs))
+
+
+def _split_timed_word_cards(words, max_chars):
+    cards, current, count = [], [], 0
+    cap = max(8, min(16, int(max_chars)))
+    for start, end, text in words:
+        text = _clean_sub_text(text)
+        if not text:
+            continue
+        size = max(1, len(text.replace(" ", "")))
+        gap = float(start) - float(current[-1][1]) if current else 0
+        if current and (count + size > cap or gap > 0.85):
+            cards.append((current[0][0], current[-1][1], current))
+            current, count = [], 0
+        current.append((float(start), float(end), text))
+        count += size
+    if current:
+        cards.append((current[0][0], current[-1][1], current))
+    return cards
+
+
+def _auto_subtitle_keywords(text):
+    """轻量本地关键词提取：不联网，优先重复或较长的中文/英文短语。"""
+    candidates = re.findall(r"[\u3400-\u9fff]{2,8}|[A-Za-z][A-Za-z0-9_-]{2,15}", text or "")
+    counts = {}
+    for item in candidates:
+        key = item.strip()
+        if key:
+            counts[key] = counts.get(key, 0) + 1
+    ranked = sorted(counts, key=lambda item: (counts[item] > 1, counts[item], len(item)), reverse=True)
+    return ranked[:6]
+
+
+def _wrapped_text_lines(text, max_chars):
+    wrapped = _wrap_cn(_clean_sub_text(text), max_chars)
+    return [part for part in wrapped.split("\\N") if part]
+
+
+def _keyword_ass_line(text, keywords, options, max_chars):
+    keywords = sorted({k for k in keywords if k}, key=len, reverse=True)
+    if not keywords:
+        return "\\N".join(_ass_escape(line) for line in _wrapped_text_lines(text, max_chars))
+    pattern = re.compile("(" + "|".join(re.escape(k) for k in keywords) + ")", re.IGNORECASE)
+    hi = _ass_inline_color(options["highlight_color"])
+    normal = _ass_inline_color(options["font_color"])
+    scale = max(100, int(round(float(options.get("keyword_scale", 1.0)) * 100)))
+    rendered = []
+    for line in _wrapped_text_lines(text, max_chars):
+        pieces = []
+        for part in pattern.split(line):
+            if not part:
+                continue
+            if pattern.fullmatch(part):
+                pieces.append("{\\c%s\\fscx%d\\fscy%d}%s{\\c%s\\fscx100\\fscy100}" % (
+                    hi, scale, scale, _ass_escape(part), normal))
+            else:
+                pieces.append(_ass_escape(part))
+        rendered.append("".join(pieces))
+    return "\\N".join(rendered)
+
+
+def _karaoke_ass_line(words, tag="kf", speed=1.0):
+    body = []
+    speed = max(0.5, min(2.0, float(speed or 1.0)))
+    for index, (start, end, text) in enumerate(words):
+        next_start = words[index + 1][0] if index + 1 < len(words) else end
+        duration = max(1, int(round(max(0.05, float(next_start) - float(start)) * 100 / speed)))
+        body.append("{\\%s%d}%s" % (tag, duration, _ass_escape(text)))
+    return "".join(body)
+
+
+def _bounce_ass_line(words, height, duration_ms):
+    """按单词时间轴逐个缩放，避免整行同时弹跳或重复叠字。"""
+    if not words:
+        return ""
+    origin = float(words[0][0])
+    peak_scale = max(104, min(180, 100 + int(height)))
+    duration = max(80, min(800, int(duration_ms)))
+    body = []
+    for start, _end, text in words:
+        begin = max(0, int(round((float(start) - origin) * 1000)))
+        peak = begin + duration // 2
+        finish = begin + duration
+        body.append(
+            "{\\fscx100\\fscy100\\t(%d,%d,\\fscx%d\\fscy%d)"
+            "\\t(%d,%d,\\fscx100\\fscy100)}%s" % (
+                begin, peak, peak_scale, peak_scale,
+                peak, finish, _ass_escape(text),
+            )
+        )
+    return "".join(body)
+
+
+def _distribute_secondary_text(text, cards):
+    words = re.findall(r"\S+", str(text or "").strip())
+    if not words or not cards:
+        return [""] * len(cards)
+    weights = [max(1, len(card[2].replace(" ", ""))) for card in cards]
+    total = sum(weights) or len(weights)
+    result, pos, acc = [], 0, 0
+    for index, weight in enumerate(weights):
+        acc += weight
+        cut = len(words) if index == len(weights) - 1 else max(pos + 1, int(round(len(words) * acc / total)))
+        cut = min(len(words), cut)
+        result.append(" ".join(words[pos:cut]))
+        pos = cut
+    return result
+
+
+def _ass_style(name, font, size, primary, secondary, outline, back, weight, border, outline_width, shadow, align, mlr, margin_v):
+    return "Style: %s,%s,%d,%s,%s,%s,%s,%d,0,0,0,100,100,0,0,%d,%.1f,%.1f,%d,%d,%d,%d,1" % (
+        name, font, size, primary, secondary, outline, back,
+        -1 if int(weight) >= 600 else 0, border, float(outline_width), float(shadow),
+        align, mlr, mlr, margin_v,
+    )
+
+
+def _subtitle_anchor_y(position, height, offset_px):
+    ratios = {"bottom": 0.94, "lower": 0.80, "center": 0.50, "upper": 0.20, "top": 0.06}
+    raw = float(height) * ratios.get(position, 0.94) - float(offset_px)
+    return max(int(height * 0.03), min(int(height * 0.97), int(round(raw))))
+
+
+def _ass_position_tag(align, width, y):
+    return "{\\an%d\\pos(%d,%d)}" % (align, int(width) // 2, int(y))
+
+
+def _build_ass(segs, style_key, w, h, position="bottom", options=None, timed_words=None):
+    options = dict(options or _normalize_subtitle_options(style_key, {}, position))
+    position = options.get("position") or position or "bottom"
     align, mvf = _SUB_POSITIONS.get(position) or _SUB_POSITIONS["bottom"]
-    fs = max(18, int(h * st["fs"]))
-    mv = max(10, int(h * (st["mv"] if mvf is None else mvf)))  # bottom 沿用样式 mv，其余用档位系数
+    scale = min(float(w), float(h)) / 1080.0
+    fs = max(18, int(round(float(options["font_size"]) * scale)))
+    default_mvf = 0.06 if mvf is None else mvf
+    vertical_offset = int(options.get("vertical_offset", 0)) * scale
+    mv = max(10, int(h * default_mvf))
+    anchor_y = _subtitle_anchor_y(position, h, vertical_offset)
     mlr = max(10, int(w * 0.06))
-    # 单行最大字数按「可用宽度(减左右边距) ÷ 单字宽」算。中文全角字宽≈字号(1em)，取 1.05 留安全余量，
-    # 防长句超出画面边界。原来用全宽 w + 0.62 系数会算出约 1.6 倍字数→溢出。
-    max_chars = max(6, int((w - 2 * mlr) / (fs * 1.05)))
+    max_chars = max(8, min(16, int((w - 2 * mlr) / (fs * 1.05))))
+    primary_hex = options["font_color"]
+    secondary_hex = options["highlight_color"]
+    if style_key in _SUBTITLE_WORD_TIMELINE_STYLES:
+        primary_hex = options["highlight_color"]
+        secondary_hex = options.get("pending_color", options["font_color"])
+    border = 3 if float(options.get("background_opacity", 0)) > 0 else 1
+    back = _ass_color(options["background_color"], float(options.get("background_opacity", 0)))
+    default_mv, secondary_mv = mv, mv
+    secondary_fs = max(16, int(round(float(options.get("secondary_font_size", 38)) * scale)))
+    line_gap = max(0, int(round(float(options.get("line_gap", 12)) * scale)))
+    if style_key == "bilingual":
+        if align == 2:
+            default_mv = mv + secondary_fs + line_gap
+        elif align == 8:
+            secondary_mv = mv + fs + line_gap
+    styles = [
+        _ass_style("Default", options["font_family"], fs, _ass_color(primary_hex), _ass_color(secondary_hex),
+                   _ass_color(options["outline_color"]), back, options["font_weight"], border,
+                   options["outline_width"], 0, align, mlr, default_mv),
+    ]
+    if style_key == "glow":
+        glow_alpha = max(0.15, min(1.0, float(options["glow_strength"])))
+        styles.append(_ass_style(
+            "Glow", options["font_family"], fs, _ass_color(options["glow_color"], glow_alpha),
+            _ass_color(options["glow_color"], glow_alpha), _ass_color(options["glow_color"], glow_alpha),
+            _ass_color("#000000", 0), options["font_weight"], 1, options["glow_radius"], 0,
+            align, mlr, default_mv,
+        ))
+    if style_key == "bilingual":
+        styles.append(_ass_style(
+            "Secondary", options["secondary_font_family"], secondary_fs,
+            _ass_color(options["secondary_color"]), _ass_color(options["secondary_color"]),
+            _ass_color(options["outline_color"]), _ass_color("#000000", 0), 600, 1,
+            max(1, float(options["outline_width"]) * 0.65), 0, align, mlr, secondary_mv,
+        ))
     head = [
         "[Script Info]", "ScriptType: v4.00+", "PlayResX: %d" % w, "PlayResY: %d" % h,
         "WrapStyle: 0", "ScaledBorderAndShadow: yes", "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        "Style: Default,%s,%d,%s,&H000000FF,%s,%s,-1,0,0,0,100,100,0,0,%d,%.1f,%d,%d,%d,%d,%d,1" % (
-            SUBTITLE_FONT, fs, st["primary"], st["outline"], st["back"], st["border"], st["ow"], st["shadow"], align, mlr, mlr, mv),
+    ] + styles + [
         "", "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, Effect, Text",
     ]
     body = []
-    for (start, end, text) in _split_to_cards(segs, max_chars):  # 先按标点切成短卡片(去标点/分时间)
-        try:
-            start = float(start); end = float(end)
-        except Exception:
-            continue
-        if end <= start:
-            end = start + 1.2
-        line = _wrap_cn(_ass_escape(text), max_chars)  # 先转义再断行：否则 \N 的反斜杠会被二次转义成 \\N，画面出现多余反斜杠
-        if line:
-            body.append("Dialogue: 0,%s,%s,Default,,0,0,,%s" % (_ass_time(start), _ass_time(end), line))
+    if style_key in _SUBTITLE_WORD_TIMELINE_STYLES:
+        word_cards = _split_timed_word_cards(timed_words or _segments_to_timed_words(segs), max_chars)
+        for start, end, words in word_cards:
+            if end <= start:
+                end = start + 0.4
+            if style_key == "bounce":
+                line = _bounce_ass_line(words, options["bounce_height"], options["animation_duration_ms"])
+            else:
+                tag = "kf" if style_key == "karaoke" and options.get("progress_mode") == "sweep" else "k"
+                speed = options.get("word_highlight_speed", 1.0)
+                line = _karaoke_ass_line(words, tag=tag, speed=speed)
+            line = _ass_position_tag(align, w, anchor_y) + line
+            body.append("Dialogue: 1,%s,%s,Default,,0,0,,%s" % (_ass_time(start), _ass_time(end), line))
+    else:
+        cards = _split_to_cards(segs, max_chars)
+        keywords = list(options.get("keywords") or [])
+        if style_key == "keyword_highlight" and options.get("keyword_mode") == "auto":
+            keywords = _auto_subtitle_keywords(" ".join(card[2] for card in cards))
+        secondary_lines = _distribute_secondary_text(options.get("secondary_text"), cards) if style_key == "bilingual" else []
+        for index, (start, end, text) in enumerate(cards):
+            if end <= start:
+                end = start + 1.2
+            if style_key == "keyword_highlight":
+                line = _keyword_ass_line(text, keywords, options, max_chars)
+            else:
+                line = "\\N".join(_ass_escape(part) for part in _wrapped_text_lines(text, max_chars))
+            if not line:
+                continue
+            if style_key == "glow":
+                blur = max(1, int(round(options["glow_radius"] * options["glow_strength"])))
+                glow_line = _ass_position_tag(align, w, anchor_y) + "{\\blur%d}%s" % (blur, line)
+                body.append("Dialogue: 0,%s,%s,Glow,,0,0,,%s" % (_ass_time(start), _ass_time(end), glow_line))
+            if style_key == "bilingual":
+                secondary_max_chars = max(12, min(42, int((w - 2 * mlr) / max(1, secondary_fs * 0.58))))
+                secondary = _wrap_cn(
+                    _ass_escape(secondary_lines[index] if index < len(secondary_lines) else ""),
+                    secondary_max_chars,
+                )
+                primary_lines = line.count("\\N") + 1
+                secondary_count = secondary.count("\\N") + 1 if secondary else 0
+                if align == 2:
+                    secondary_y = anchor_y
+                    primary_y = secondary_y - secondary_count * secondary_fs - line_gap
+                    primary_tag = _ass_position_tag(2, w, primary_y)
+                    secondary_tag = _ass_position_tag(2, w, secondary_y)
+                elif align == 8:
+                    primary_y = anchor_y
+                    secondary_y = primary_y + primary_lines * fs + line_gap
+                    primary_tag = _ass_position_tag(8, w, primary_y)
+                    secondary_tag = _ass_position_tag(8, w, secondary_y)
+                else:
+                    total_height = primary_lines * fs + line_gap + secondary_count * secondary_fs
+                    top_y = anchor_y - total_height // 2
+                    primary_tag = _ass_position_tag(8, w, top_y)
+                    secondary_tag = _ass_position_tag(8, w, top_y + primary_lines * fs + line_gap)
+                body.append("Dialogue: 1,%s,%s,Default,,0,0,,%s%s" % (_ass_time(start), _ass_time(end), primary_tag, line))
+                if secondary:
+                    body.append("Dialogue: 1,%s,%s,Secondary,,0,0,,%s%s" % (_ass_time(start), _ass_time(end), secondary_tag, secondary))
+            else:
+                positioned_line = _ass_position_tag(align, w, anchor_y) + line
+                body.append("Dialogue: 1,%s,%s,Default,,0,0,,%s" % (_ass_time(start), _ass_time(end), positioned_line))
     return "\n".join(head + body) + "\n"
 
-def burn_subtitle(video_file, known_text=None, style_key="white", job_id=None, position="bottom"):
+
+def burn_subtitle(video_file, known_text=None, style_key="white", job_id=None, position="bottom", options=None):
     """把 video_file 抽音频→whisper 转写→生成 .ass→ffmpeg 烧录，返回带字幕视频的相对路径。"""
     src = _resolve_out_file(video_file)
     if not src:
@@ -1947,20 +2474,39 @@ def burn_subtitle(video_file, known_text=None, style_key="white", job_id=None, p
     try:
         _sub_ffmpeg(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(src),
                      "-vn", "-ar", "16000", "-ac", "1", str(wav)], timeout=300)
+        options = dict(options or _normalize_subtitle_options(style_key, {}, position))
+        needs_word_timestamps = style_key in _SUBTITLE_WORD_TIMELINE_STYLES
         with _whisper_sem:  # 限制并发转写，避免多任务把 CPU 打满
             update_video_asset_phase(job_id, "burning_subtitle")  # 心跳：拿到信号量、开始转写，刷新 updated_at 防 reaper 误杀
             model = _get_whisper_model()
-            seg_iter, _info = model.transcribe(str(wav), language="zh", vad_filter=True)
-            segs = [(s.start, s.end, (s.text or "").strip()) for s in seg_iter if (s.text or "").strip()]
+            seg_iter, _info = model.transcribe(
+                str(wav), language="zh", vad_filter=True,
+                word_timestamps=needs_word_timestamps,
+            )
+            segment_objects = list(seg_iter)
+            segs = [(s.start, s.end, (s.text or "").strip()) for s in segment_objects if (s.text or "").strip()]
+            timed_words = []
+            if needs_word_timestamps:
+                for segment in segment_objects:
+                    for word in (getattr(segment, "words", None) or []):
+                        text_value = (getattr(word, "word", "") or "").strip()
+                        if text_value:
+                            timed_words.append((float(word.start), float(word.end), text_value))
         if not segs:
             raise ValueError("字幕识别结果为空")
         if known_text:  # text 模式：用已知文案替换识别文本，时间轴仍用 whisper
             try:
+                timed_words = _retime_known_text(known_text, timed_words, segs) if needs_word_timestamps else timed_words
                 segs = _redistribute_known_text(known_text, segs)
             except Exception:
                 pass
+        elif needs_word_timestamps and not timed_words:
+            timed_words = _segments_to_timed_words(segs)
         w, h = _probe_video_size(src)
-        ass.write_text(_build_ass(segs, (style_key or "white"), w, h, position or "bottom"), encoding="utf-8")
+        ass.write_text(_build_ass(
+            segs, (style_key or "white"), w, h, position or "bottom",
+            options=options, timed_words=timed_words,
+        ), encoding="utf-8")
         update_video_asset_phase(job_id, "burning_subtitle")  # 心跳：开始烧录
         # cwd=视频目录 + ass 用文件名，避免 filtergraph 路径转义问题
         _sub_ffmpeg(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(src),
@@ -1983,6 +2529,16 @@ def gen_video(payload):
     mode = (payload.get("mode") or "text").strip()
     if mode not in {"text", "audio"}:
         raise ValueError("生成方式不正确")
+    # 先校验字幕参数，再调用 TTS/HeyGen。非法配置不能在上游已经计费后才发现。
+    subtitle_requested = bool(payload.get("subtitle"))
+    subtitle_style = str(payload.get("subtitle_style") or "white").strip()
+    subtitle_position = str(payload.get("subtitle_position") or "bottom").strip()
+    subtitle_options = None
+    if subtitle_requested:
+        subtitle_options = _normalize_subtitle_options(
+            subtitle_style, payload.get("subtitle_options"), subtitle_position,
+        )
+        subtitle_position = subtitle_options["position"]
     # 口播(text/audio)走 HeyGen。
     if not HEYGEN_API_KEY:
         raise ValueError("视频生成服务未配置")
@@ -2051,17 +2607,14 @@ def gen_video(payload):
     # F4：口播模式（text/audio）可选自动字幕；失败不影响已生成的视频（保留原片 + 记录错误）
     subtitle_on = False
     subtitle_error = None
-    subtitle_style = (payload.get("subtitle_style") or "white").strip()
-    if subtitle_style not in _SUB_STYLES:
-        subtitle_style = "white"
-    subtitle_position = (payload.get("subtitle_position") or "bottom").strip()
-    if subtitle_position not in _SUB_POSITIONS:
-        subtitle_position = "bottom"
-    if payload.get("subtitle") and mode in {"text", "audio"} and video_result.get("video_file"):
+    if subtitle_requested and mode in {"text", "audio"} and video_result.get("video_file"):
         try:
             update_video_asset_phase(job_id, "burning_subtitle")
             known = text if mode == "text" else None
-            subtitled = burn_subtitle(video_result["video_file"], known_text=known, style_key=subtitle_style, job_id=job_id, position=subtitle_position)
+            subtitled = burn_subtitle(
+                video_result["video_file"], known_text=known, style_key=subtitle_style,
+                job_id=job_id, position=subtitle_position, options=subtitle_options,
+            )
             video_result["plain_video_file"] = video_result.get("video_file")
             video_result["video_file"] = subtitled
             video_result["video_url"] = _file_url(subtitled)
@@ -2091,6 +2644,7 @@ def gen_video(payload):
         "subtitle": subtitle_on,
         "subtitle_style": subtitle_style if subtitle_on else None,
         "subtitle_position": subtitle_position if subtitle_on else None,
+        "subtitle_options": subtitle_options if subtitle_on else None,
         "subtitle_error": subtitle_error,
         "bgm_file": bgm_file,
         "bgm_volume": payload.get("bgm_volume", 0.18) if bgm_file else None,
