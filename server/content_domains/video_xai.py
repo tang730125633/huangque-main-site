@@ -168,6 +168,11 @@ def generate(model, prompt, duration, aspect_ratio, resolution, image_url=None,
     if not request_id:
         raise RuntimeError("xAI视频服务未返回 request_id")
 
+    if heartbeat:
+        heartbeat(
+            job_id, "xai_pending", provider_video_id=request_id,
+            model=model, error="",
+        )
     return _poll(opener, request_id, model, duration, job_id, heartbeat, now, sleep)
 
 
@@ -179,4 +184,9 @@ def edit(model, prompt, video_url, duration, job_id=None, heartbeat=None, now=No
     request_id = str(created.get("request_id") or "").strip()
     if not request_id:
         raise RuntimeError("xAI视频服务未返回 request_id")
+    if heartbeat:
+        heartbeat(
+            job_id, "xai_pending", provider_video_id=request_id,
+            model=model, error="",
+        )
     return _poll(opener, request_id, model, duration, job_id, heartbeat, now, sleep)

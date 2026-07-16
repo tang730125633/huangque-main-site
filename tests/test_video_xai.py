@@ -32,6 +32,27 @@ def _http_error(code, body=b'{}'):
 
 
 class XaiVideoTests(unittest.TestCase):
+    def test_request_id_is_persisted_before_first_poll(self):
+        opener = Mock()
+        opener.open.side_effect = [
+            _Response({"request_id": "rid-early"}),
+            _Response({"status": "done", "video": {
+                "url": "https://vidgen.x.ai/v.mp4",
+            }}),
+        ]
+        heartbeat = Mock()
+        clock = iter([0, 0, 1])
+        with patch.object(video_xai, "XAI_API_KEY", "test-key"), \
+             patch.object(video_xai, "_opener", return_value=opener):
+            video_xai.generate(
+                "grok-imagine-video", "demo", 5, "9:16", "720p",
+                job_id=7, heartbeat=heartbeat,
+                now=lambda: next(clock), sleep=lambda _: None,
+            )
+        first = heartbeat.call_args_list[0]
+        self.assertEqual(first.args[:2], (7, "xai_pending"))
+        self.assertEqual(first.kwargs["provider_video_id"], "rid-early")
+
     def test_poll_retries_503_without_second_create(self):
         opener = Mock()
         opener.open.side_effect = [
