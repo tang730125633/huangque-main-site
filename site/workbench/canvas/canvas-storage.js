@@ -22,23 +22,24 @@
   }
   function createStorage(options){
     options=options||{}; var storage=options.storage, keys=Object.assign({},DEFAULT_KEYS,options.keys||{});
+    function current(){ return typeof storage==='function'?storage():storage; }
     function read(key,fallback){
-      var raw; try{ raw=storage.getItem(key); }catch(error){ return failure('storage_unavailable',error); }
+      var raw; try{ raw=current().getItem(key); }catch(error){ return failure('storage_unavailable',error); }
       if(raw==null||raw==='') return result(fallback);
       try{ return result(JSON.parse(raw)); }catch(error){ return failure('corrupt_json',error); }
     }
     function write(key,value){
       var raw=JSON.stringify(value);
-      try{ storage.setItem(key,raw); return result(value); }
+      try{ current().setItem(key,raw); return result(value); }
       catch(error){ return failure(quota(error)?'quota_exceeded':'storage_unavailable',error); }
     }
-    function remove(key){ try{ storage.removeItem(key); return result(null); }catch(error){ return failure('storage_unavailable',error); } }
+    function remove(key){ try{ current().removeItem(key); return result(null); }catch(error){ return failure('storage_unavailable',error); } }
     return {
       loadDraft:function(){return read(keys.draft,null);}, saveDraft:function(v){return write(keys.draft,v);}, removeDraft:function(){return remove(keys.draft);},
       loadBoards:function(){return read(keys.boards,[]);}, saveBoards:function(v){return write(keys.boards,v);},
       loadTemplates:function(){return read(keys.templates,[]);}, saveTemplates:function(v){return write(keys.templates,v);},
-      loadActiveBoard:function(){ try{return result(storage.getItem(keys.activeBoard)||'');}catch(e){return failure('storage_unavailable',e);} },
-      saveActiveBoard:function(v){ try{ if(v) storage.setItem(keys.activeBoard,String(v)); else storage.removeItem(keys.activeBoard); return result(v||''); }catch(e){return failure(quota(e)?'quota_exceeded':'storage_unavailable',e);} }
+      loadActiveBoard:function(){ try{return result(current().getItem(keys.activeBoard)||'');}catch(e){return failure('storage_unavailable',e);} },
+      saveActiveBoard:function(v){ try{ if(v) current().setItem(keys.activeBoard,String(v)); else current().removeItem(keys.activeBoard); return result(v||''); }catch(e){return failure(quota(e)?'quota_exceeded':'storage_unavailable',e);} }
     };
   }
   return {DEFAULT_KEYS:DEFAULT_KEYS,createStorage:createStorage,stripHeavyOutputs:stripHeavyOutputs};

@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const storageModule = require('../site/workbench/canvas/canvas-storage.js');
 
 function createFakeStorage() {
@@ -119,6 +121,59 @@ assert.deepEqual(storageModule.DEFAULT_KEYS, {
   assert.equal(saved.error.code, 'quota_exceeded');
   assert.equal(writeCalls, 1, 'a failed write must not be retried');
   assert.deepEqual(JSON.parse(fake.values.get('hq_canvas_draft_v2')), { nodes: [{ id: 'old' }] });
+}
+
+{
+  const accessError = new Error('blocked by browser policy');
+  accessError.name = 'SecurityError';
+  let accesses = 0;
+  let storage;
+  assert.doesNotThrow(() => {
+    storage = storageModule.createStorage({
+      storage() {
+        accesses += 1;
+        throw accessError;
+      },
+    });
+  }, 'creating the adapter must not eagerly access browser storage');
+  assert.equal(accesses, 0);
+  const loaded = storage.loadDraft();
+  assert.equal(accesses, 1);
+  assert.equal(loaded.ok, false);
+  assert.equal(loaded.error.code, 'storage_unavailable');
+  assert.equal(loaded.error.message, 'blocked by browser policy');
+
+  const appSource = fs.readFileSync(path.join(__dirname, '..', 'site', 'workbench', 'canvas', 'canvas-app.js'), 'utf8');
+  assert.match(appSource, /createStorage\(\{storage:function\(\)\{return window\.localStorage;\}\}\)/);
+  assert.doesNotMatch(appSource, /createStorage\(\{storage:window\.localStorage\}\)/);
+}
+
+{
+  const accessError = new Error('method access denied');
+  accessError.name = 'SecurityError';
+  const readStorage = {};
+  Object.defineProperty(readStorage, 'getItem', { get() { throw accessError; } });
+  const loaded = storageModule.createStorage({ storage: readStorage }).loadDraft();
+  assert.equal(loaded.ok, false);
+  assert.equal(loaded.error.code, 'storage_unavailable');
+
+  const writeStorage = {};
+  Object.defineProperty(writeStorage, 'setItem', { get() { throw accessError; } });
+  const saved = storageModule.createStorage({ storage: writeStorage }).saveDraft({ nodes: [] });
+  assert.equal(saved.ok, false);
+  assert.equal(saved.error.code, 'storage_unavailable');
+}
+
+for (const code of [22, 1014]) {
+  const fake = createFakeStorage();
+  fake.setItem = function setItem() {
+    const error = new Error(`quota code ${code}`);
+    error.code = code;
+    throw error;
+  };
+  const saved = storageModule.createStorage({ storage: fake }).saveDraft({ nodes: [] });
+  assert.equal(saved.ok, false);
+  assert.equal(saved.error.code, 'quota_exceeded');
 }
 
 console.log('canvas storage: pass');
