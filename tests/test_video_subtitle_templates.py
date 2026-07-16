@@ -112,14 +112,18 @@ class SubtitleAssRenderingTests(unittest.TestCase):
         self.assertEqual(len(word_cards), karaoke_ass.count("Dialogue:"))
         self.assertIn("{\\k", word_ass)
         self.assertIn("{\\kf", karaoke_ass)
+        self.assertIn("\\fscx108", word_ass)
+        self.assertIn("\\t(", word_ass)
 
     def test_glow_and_bilingual_have_distinct_layers(self):
         glow = self._render("glow", {"glow_color": "#35C8FF", "glow_radius": 9})
         bilingual = self._render("bilingual", {"secondary_text": "Bright skin starts today"})
         self.assertIn("Style: Glow", glow)
         self.assertIn("{\\blur", glow)
+        self.assertIn("\\c&H", glow)
         self.assertIn("Style: Secondary", bilingual)
         self.assertIn("Bright skin", bilingual)
+        self.assertIn("\\c&H", bilingual)
 
     def test_bilingual_wraps_long_secondary_copy_without_overlapping_layers(self):
         bilingual = self._render("bilingual", {
@@ -164,6 +168,23 @@ class SubtitleTemplateUiTests(unittest.TestCase):
         self.assertIn("SUBTITLE_TEMPLATE_NAMES[x.subtitle_style]", VIDEO_HTML)
         self.assertIn("/api/gen/video/subtitle-config", VIDEO_HTML)
         self.assertIn('id="subtitleSecondaryText"', VIDEO_HTML)
+
+    def test_live_preview_wires_every_template_option(self):
+        preview = VIDEO_HTML.split("function updateSubtitlePreview(){", 1)[1].split("function refreshSubtitleStateFromForm", 1)[0]
+        for option in (
+            "font_family", "font_size", "font_weight", "font_color", "highlight_color",
+            "outline_color", "outline_width", "position", "vertical_offset",
+            "background_color", "background_opacity", "keyword_scale",
+            "word_highlight_speed", "active_word_scale", "pending_color", "progress_mode",
+            "bounce_height", "animation_duration_ms", "glow_color", "glow_strength",
+            "glow_radius", "secondary_font_family", "secondary_font_size",
+            "secondary_color", "line_gap", "secondary_text",
+        ):
+            with self.subTest(option=option):
+                self.assertIn(option, preview)
+        self.assertIn("subtitlePreviewOutline", preview)
+        self.assertIn("sub-karaoke-track", preview)
+        self.assertIn("--bounce-height", preview)
 
     def test_core_exposes_authenticated_font_config_route(self):
         route = CORE_SOURCE.index('if p == "/api/gen/video/subtitle-config":')

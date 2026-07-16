@@ -2282,13 +2282,28 @@ def _keyword_ass_line(text, keywords, options, max_chars):
     return "\\N".join(rendered)
 
 
-def _karaoke_ass_line(words, tag="kf", speed=1.0):
+def _karaoke_ass_line(words, tag="kf", speed=1.0, active_scale=1.0):
     body = []
     speed = max(0.5, min(2.0, float(speed or 1.0)))
+    active_scale = max(1.0, min(1.5, float(active_scale or 1.0)))
+    origin = float(words[0][0]) if words else 0.0
     for index, (start, end, text) in enumerate(words):
         next_start = words[index + 1][0] if index + 1 < len(words) else end
         duration = max(1, int(round(max(0.05, float(next_start) - float(start)) * 100 / speed)))
-        body.append("{\\%s%d}%s" % (tag, duration, _ass_escape(text)))
+        if active_scale > 1.0:
+            begin = max(0, int(round((float(start) - origin) * 1000)))
+            finish = max(begin + 50, int(round((float(next_start) - origin) * 1000)))
+            peak = begin + max(25, (finish - begin) // 3)
+            scaled = int(round(active_scale * 100))
+            body.append(
+                "{\\%s%d\\fscx100\\fscy100\\t(%d,%d,\\fscx%d\\fscy%d)"
+                "\\t(%d,%d,\\fscx100\\fscy100)}%s" % (
+                    tag, duration, begin, peak, scaled, scaled,
+                    peak, finish, _ass_escape(text),
+                )
+            )
+        else:
+            body.append("{\\%s%d}%s" % (tag, duration, _ass_escape(text)))
     return "".join(body)
 
 
@@ -2415,7 +2430,8 @@ def _build_ass(segs, style_key, w, h, position="bottom", options=None, timed_wor
             else:
                 tag = "kf" if style_key == "karaoke" and options.get("progress_mode") == "sweep" else "k"
                 speed = options.get("word_highlight_speed", 1.0)
-                line = _karaoke_ass_line(words, tag=tag, speed=speed)
+                active_scale = options.get("active_word_scale", 1.0) if style_key == "word_highlight" else 1.0
+                line = _karaoke_ass_line(words, tag=tag, speed=speed, active_scale=active_scale)
             line = _ass_position_tag(align, w, anchor_y) + line
             body.append("Dialogue: 1,%s,%s,Default,,0,0,,%s" % (_ass_time(start), _ass_time(end), line))
     else:
@@ -2423,11 +2439,13 @@ def _build_ass(segs, style_key, w, h, position="bottom", options=None, timed_wor
         keywords = list(options.get("keywords") or [])
         if style_key == "keyword_highlight" and options.get("keyword_mode") == "auto":
             keywords = _auto_subtitle_keywords(" ".join(card[2] for card in cards))
+        elif style_key in {"glow", "bilingual"}:
+            keywords = _auto_subtitle_keywords(" ".join(card[2] for card in cards))
         secondary_lines = _distribute_secondary_text(options.get("secondary_text"), cards) if style_key == "bilingual" else []
         for index, (start, end, text) in enumerate(cards):
             if end <= start:
                 end = start + 1.2
-            if style_key == "keyword_highlight":
+            if style_key in {"keyword_highlight", "glow", "bilingual"}:
                 line = _keyword_ass_line(text, keywords, options, max_chars)
             else:
                 line = "\\N".join(_ass_escape(part) for part in _wrapped_text_lines(text, max_chars))
