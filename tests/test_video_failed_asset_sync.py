@@ -21,6 +21,10 @@ import pathlib
 import unittest
 
 CORE = (pathlib.Path(__file__).resolve().parents[1] / "server/content_domains/core.py").read_text(encoding="utf-8")
+STARTUP_RECOVERY = (
+    pathlib.Path(__file__).resolve().parents[1]
+    / "server/content_domains/startup_recovery.py"
+).read_text(encoding="utf-8")
 
 
 class FailedAssetSyncTests(unittest.TestCase):
@@ -50,10 +54,9 @@ class FailedAssetSyncTests(unittest.TestCase):
 
     def test_reclaim_orphan_syncs_video_asset(self):
         """启动回收重启孤儿时也要同步 video_asset。SELECT 要带上 kind。"""
-        recl = CORE[CORE.index("def reclaim_orphaned_running"):]
-        recl = recl[:recl.index("# ============ HTTP")]
+        recl = STARTUP_RECOVERY[STARTUP_RECOVERY.index("def reclaim_orphaned_running"):]
         self.assertIn("SELECT id, username, cost, kind FROM jobs", recl)
-        self.assertIn('_mark_video_asset_failed(r["id"], r["kind"]', recl)
+        self.assertIn('mark_video_asset_failed(row["id"], row["kind"]', recl)
 
 
 if __name__ == "__main__":
