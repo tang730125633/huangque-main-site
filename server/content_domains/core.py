@@ -1085,31 +1085,33 @@ def reaper():
             pass
         time.sleep(60)
 
+def _requeue_running_job(job_id):
+    with closing(jdb()) as c:
+        cur = c.execute("UPDATE jobs SET status='pending', error=NULL, updated_at=? WHERE id=? AND status='running'",
+                        (int(time.time()), job_id))
+        c.commit(); return cur.rowcount == 1
 def reclaim_orphaned_running():
-    """启动时回收上一进程遗留的 running 孤儿任务。
-
-    本进程刚起、worker 尚未启动(此函数在 start_job_workers 之前调用)，此刻 DB 里
-    本服务名下任何 status='running' 都是上次 systemctl restart 时 worker 猝死留下的孤儿——没人
-    再刷 updated_at，用户会看着"生成中"干等 reaper 兜底(换装 grace 达 2400 秒=40 分钟)
-    才判失败退点。启动即当场判失败+退点，把"卡 40 分钟"变"秒退"。
-    CAS 抢终态 + 幂等退点复用 reaper 那套(_set_terminal/_refund_once)，与并发无竞态。"""
+    """启动时恢复可续查的 xAI 任务，并回收其余 running 孤儿。"""
     try:
         with closing(jdb()) as c:
-            # 按 owner 过滤(#511)：imggen/leadgen 是独立进程，content 重启与它们无关；不过滤就会把它们正在飞的任务判失败退点，而对面 worker 还在跑 → 用户既没图又白等
             rows = c.execute("SELECT id, username, cost, kind FROM jobs WHERE status='running' AND COALESCE(owner,?)=?",
                              (SERVICE_OWNER, SERVICE_OWNER)).fetchall()
-    except Exception:
-        return 0
-    n = 0
+    except Exception: return 0
+    n = requeued = failed = 0
     for r in rows:
+        resumable = None
+        if r["kind"] == "xiaole_video":
+            try: resumable = _domains()[2].get_resumable_xai_request(r["id"])
+            except Exception: pass
+        if resumable and _requeue_running_job(r["id"]):
+            print("[startup] 恢复xAI视频任务 job=%s request_id=%s" % (r["id"], resumable["request_id"]), flush=True)
+            requeued += 1; n += 1; continue
         if _set_terminal(r["id"], "error", error="服务重启中断，已退点，请重新提交"):
             _refund_once(r["id"], r["username"], r["cost"])
             _mark_video_asset_failed(r["id"], r["kind"], "服务重启中断，已退点，请重新提交")
-            n += 1
-    if n:
-        print("[startup] 回收重启遗留孤儿任务 %d 个(→失败退点)" % n, flush=True)
+            failed += 1; n += 1
+    if n: print("[startup] 处理重启遗留任务 %d 个(恢复排队 %d，失败退点 %d)" % (n, requeued, failed), flush=True)
     return n
-
 # ============ HTTP ============
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
