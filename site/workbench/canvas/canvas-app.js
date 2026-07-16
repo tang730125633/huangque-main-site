@@ -2,6 +2,8 @@
 (function(){
   var graphApi=window.HQCanvas&&window.HQCanvas.graph;
   var stateApi=window.HQCanvas&&window.HQCanvas.state;
+  var storageApi=window.HQCanvas&&window.HQCanvas.storage;
+  var canvasStorage=storageApi.createStorage({storage:window.localStorage});
   var wrap=document.querySelector('.nc-wrap'), inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty'), selectionBox=document.getElementById('ncSelectionBox'), selectedRegion=document.getElementById('ncSelectedRegion');
   var boardHome=document.getElementById('ncBoardHome'), editorView=document.getElementById('ncEditorView'), boardGrid=document.getElementById('ncBoardGrid'), boardSearch=document.getElementById('ncBoardSearch'), boardSort=document.getElementById('ncBoardSort'), backHomeBtn=document.getElementById('ncBackHome');
   var nodeCountEl=document.getElementById('ncNodeCount'), edgeCountEl=document.getElementById('ncEdgeCount'), runStateEl=document.getElementById('ncRunState');
@@ -17,7 +19,6 @@
   var selectedNode=null, selectedNodes={}, selectedEdge=-1, clipNode=null, zoom=1;
   var RUN_ALL_REMOTE_LIMIT=2, RUN_ALL_RETRY_MS=4000, runAllBatch=null, runAllRetryTimer=null;
   var activeSidePanel='', accountAssetsLoaded=false, accountAssets=[], accountAssetsPromise=null;
-  var DRAFT_KEY='hq_canvas_draft_v2', TPL_KEY='hq_canvas_templates_v2', BOARD_KEY='hq_canvas_boards_v1', ACTIVE_BOARD_KEY='hq_canvas_active_id';
   var currentBoardId=null, boardMode='mine', boardLastSeenUpdatedAt=0, boardConflict=false;
   var currentBoardScope='local', currentCollabVersion=0, currentCollabRole='', currentCollabName='', currentCollabMembers=[];
   var collabBoards=[], collabLoaded=false, collabLoading=false, collabError='', collabCreating=false, collabSaving=false, collabQueuedSnap=null;
@@ -160,51 +161,34 @@
     }
     var ok=true;
     if(currentBoardId){
-      try{ localStorage.removeItem(DRAFT_KEY); }catch(e){}
+      canvasStorage.removeDraft();
     }else{
-      try{ localStorage.setItem(DRAFT_KEY, JSON.stringify(snap)); }catch(e){ ok=false; }
+      if(!canvasStorage.saveDraft(snap).ok) ok=false;
     }
     if(!saveCurrentBoard(snap)) ok=false;
     if(boardConflict) setSaveState('conflict');
     else setSaveState(ok?'saved':'error');
   }
   function loadDraft(){
-    try{
-      var raw=localStorage.getItem(DRAFT_KEY);
-      if(!raw) return null;
-      var snap=JSON.parse(raw);
-      return snap&&snap.nodes?snap:null;
-    }catch(e){ return null; }
+    var loaded=canvasStorage.loadDraft(), snap=loaded.ok?loaded.value:null;
+    return snap&&snap.nodes?snap:null;
   }
   function getBoards(){
-    try{ return JSON.parse(localStorage.getItem(BOARD_KEY)||'[]')||[]; }catch(e){ return []; }
+    var loaded=canvasStorage.loadBoards();
+    return loaded.ok?(loaded.value||[]):[];
   }
   function setBoards(list){
-    try{ localStorage.setItem(BOARD_KEY, JSON.stringify(list)); return true; }catch(e){ return false; }
-  }
-  function stripHeavyOutputsFromSnap(snap){
-    if(!snap||!Array.isArray(snap.nodes)) return snap;
-    snap.nodes.forEach(function(n){
-      if(!n||!n.outputs) return;
-      if(n.type==='gen'){
-        delete n.outputs.image;
-      }
-      if(n.type==='video'){
-        delete n.outputs.video;
-        delete n.outputs.video_url;
-      }
-    });
-    return snap;
+    return canvasStorage.saveBoards(list).ok;
   }
   function cleanupSavedBoardOutputs(){
     var list=getBoards(), changed=false;
     list.forEach(function(board){
       if(board&&board.data){
-        stripHeavyOutputsFromSnap(board.data);
+        board.data=storageApi.stripHeavyOutputs(board.data);
         changed=true;
       }
     });
-    try{ localStorage.removeItem(DRAFT_KEY); }catch(e){}
+    canvasStorage.removeDraft();
     return changed?setBoards(list):true;
   }
   function compressImageSource(src){
@@ -697,7 +681,7 @@
     var draft=loadDraft();
     if(!draft||!Array.isArray(draft.nodes)||!draft.nodes.length) return;
     if(setBoards([{id:makeBoardId(),name:'未命名画布',updatedAt:Date.now(),data:draft}])){
-      try{ localStorage.removeItem(DRAFT_KEY); }catch(e){}
+      canvasStorage.removeDraft();
     }
   }
   function renderBoardHome(){
@@ -1060,7 +1044,7 @@
     currentCollabName='';
     currentCollabMembers=[];
     collabQueuedSnap=null;
-    try{ localStorage.removeItem(ACTIVE_BOARD_KEY); }catch(e){}
+    canvasStorage.saveActiveBoard('');
     clearBoardParam();
     if(localFullscreen) setLocalFullscreen(false);
     if(document.fullscreenElement&&document.exitFullscreen){ document.exitFullscreen().catch(function(){}); }
@@ -1100,7 +1084,7 @@
     boardLastSeenUpdatedAt=board.updatedAt||0;
     boardConflict=false;
     setBoardParam(board.id);
-    try{ localStorage.setItem(ACTIVE_BOARD_KEY,board.id); }catch(e){}
+    canvasStorage.saveActiveBoard(board.id);
     loading=true;
     restoreSnapshot(snap);
     loading=false;
@@ -1129,7 +1113,7 @@
     currentBoardId=id;
     boardLastSeenUpdatedAt=board.updatedAt||0;
     boardConflict=false;
-    try{ localStorage.setItem(ACTIVE_BOARD_KEY,id); }catch(e){}
+    canvasStorage.saveActiveBoard(id);
     loading=true;
     restoreSnapshot(board.data||emptySnapshot());
     loading=false;
@@ -1248,7 +1232,8 @@
     });
   }
   function getTemplates(){
-    try{ return JSON.parse(localStorage.getItem(TPL_KEY)||'[]')||[]; }catch(e){ return []; }
+    var loaded=canvasStorage.loadTemplates();
+    return loaded.ok?(loaded.value||[]):[];
   }
   function sanitizeTemplateSnap(snap){
     snap=stateApi.cloneSnapshot(snap||{});
@@ -1282,13 +1267,11 @@
     }).filter(function(t){ return t.data&&Array.isArray(t.data.nodes); });
   }
   function setTemplates(list){
-    try{
-      localStorage.setItem(TPL_KEY, JSON.stringify(normalizeTemplates(list)));
-      return true;
-    }catch(e){
+    if(!canvasStorage.saveTemplates(normalizeTemplates(list)).ok){
       updateState('模板保存失败：空间不足');
       return false;
     }
+    return true;
   }
   function saveTemplates(list){
     if(!setTemplates(list)) return false;
@@ -3301,7 +3284,7 @@
   if(undoBtn) undoBtn.onclick=function(){ undo(); };
   if(redoBtn) redoBtn.onclick=function(){ redo(); };
   window.addEventListener('storage',function(e){
-    if(e.key!==BOARD_KEY||!currentBoardId||currentBoardScope!=='local') return;
+    if(e.key!==storageApi.DEFAULT_KEYS.boards||!currentBoardId||currentBoardScope!=='local') return;
     var list=getBoards(), board=list.find(function(b){ return b.id===currentBoardId; });
     var latestAt=board&&board.updatedAt||0;
     if(latestAt && boardLastSeenUpdatedAt && latestAt!==boardLastSeenUpdatedAt){
