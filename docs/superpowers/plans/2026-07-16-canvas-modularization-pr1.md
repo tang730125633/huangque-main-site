@@ -239,6 +239,8 @@ Expected: one commit containing only the three listed paths.
 ### Task 3: Run canvas regression and repository quality gates
 
 **Files:**
+- Modify: `tests/test_canvas_realtime_sync.js`
+- Modify: `tests/test_canvas_board_card_layout.js`
 - Verify only; do not modify files unless a gate identifies a concrete extraction regression.
 
 **Interfaces:**
@@ -305,6 +307,8 @@ site/workbench/canvas.html
 site/workbench/canvas/canvas-app.js
 site/workbench/canvas/canvas.css
 tests/test_canvas_asset_extraction.py
+tests/test_canvas_realtime_sync.js
+tests/test_canvas_board_card_layout.js
 tests/test_stamp_assets.py
 ```
 
