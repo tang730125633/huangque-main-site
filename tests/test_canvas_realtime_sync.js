@@ -444,36 +444,42 @@ async function testControllerDropsQueuedEditsAfterRoleDowngrade() {
 function testCanvasIntegration() {
   const canvasHtml = fs.readFileSync(path.join(__dirname, '..', 'site', 'workbench', 'canvas.html'), 'utf8');
   const moduleSource = fs.readFileSync(path.join(__dirname, '..', 'site', 'workbench', 'canvas-collab-sync.js'), 'utf8').replace(/\r\n/g, '\n');
+  const appSource = fs.readFileSync(path.join(__dirname, '..', 'site', 'workbench', 'canvas', 'canvas-app.js'), 'utf8').replace(/\r\n/g, '\n');
   const moduleStamp = crypto.createHash('md5').update(moduleSource).digest('hex').slice(0, 8);
+  const appStamp = crypto.createHash('md5').update(appSource).digest('hex').slice(0, 8);
   const referencedStamp = canvasHtml.match(/canvas-collab-sync\.js\?v=([a-f0-9]{8})/);
+  const appReferencedStamp = canvasHtml.match(/canvas\/canvas-app\.js\?v=([a-f0-9]{8})/);
   assert.ok(referencedStamp);
+  assert.ok(appReferencedStamp);
   assert.equal(referencedStamp[1], moduleStamp, 'collab module cache stamp must be LF MD5');
+  assert.equal(appReferencedStamp[1], appStamp, 'canvas app cache stamp must be LF MD5');
   assert.match(canvasHtml, /canvas-collab-sync\.js\?v=[a-f0-9]{8}/);
-  assert.match(canvasHtml, /function startCollabSync\(/);
-  assert.match(canvasHtml, /function stopCollabSync\(/);
-  assert.match(canvasHtml, /function pollCollabOps\(/);
-  assert.match(canvasHtml, /function captureCollabFocus\(/);
-  assert.match(canvasHtml, /function restoreCollabFocus\(/);
-  assert.match(canvasHtml, /function flushActiveCollabTitle\(/);
-  assert.match(canvasHtml, /range\.toString\(\)\.length/);
-  assert.match(canvasHtml, /beginInlineRename\(node,true\)/);
-  assert.match(canvasHtml, /collabSyncGeneration/);
-  assert.match(canvasHtml, /collabPendingBatch/);
-  assert.match(canvasHtml, /function canEditCanvas\(/);
-  assert.ok((canvasHtml.match(/if\(!canEditCanvas\(\)\) return/g) || []).length >= 10);
-  assert.match(canvasHtml, /function cleanupLocalSpace\(\)\{\s*if\(!canEditCanvas\(\)\) return;/);
-  assert.match(canvasHtml, /function finish\(\)\{\s*if\(!canEditCanvas\(\)\)/);
-  assert.match(canvasHtml, /\/sync\?since=/);
-  assert.match(canvasHtml, /\/presence'/);
-  assert.match(canvasHtml, /collabNodeSeed='node'/);
-  assert.ok((canvasHtml.match(/makeNodeId\(collabNodeSeed/g) || []).length >= 3);
+  assert.match(appSource, /function startCollabSync\(/);
+  assert.match(appSource, /function stopCollabSync\(/);
+  assert.match(appSource, /function pollCollabOps\(/);
+  assert.match(appSource, /function captureCollabFocus\(/);
+  assert.match(appSource, /function restoreCollabFocus\(/);
+  assert.match(appSource, /function flushActiveCollabTitle\(/);
+  assert.match(appSource, /range\.toString\(\)\.length/);
+  assert.match(appSource, /beginInlineRename\(node,true\)/);
+  assert.match(appSource, /collabSyncGeneration/);
+  assert.match(appSource, /collabPendingBatch/);
+  assert.match(appSource, /function canEditCanvas\(/);
+  assert.ok((appSource.match(/if\(!canEditCanvas\(\)\) return/g) || []).length >= 10);
+  assert.match(appSource, /function cleanupLocalSpace\(\)\{\s*if\(!canEditCanvas\(\)\) return;/);
+  assert.match(appSource, /function finish\(\)\{\s*if\(!canEditCanvas\(\)\)/);
+  assert.match(appSource, /\/sync\?since=/);
+  assert.match(appSource, /\/presence'/);
+  assert.match(appSource, /collabNodeSeed='node'/);
+  assert.ok((appSource.match(/makeNodeId\(collabNodeSeed/g) || []).length >= 3);
   assert.match(canvasHtml, /id="ncOnlineState"/);
-  assert.match(canvasHtml, /currentBoardScope==='collab'\?'已同步':'已保存'/);
-  assert.match(canvasHtml, /currentBoardScope==='collab'\?'同步失败':'保存失败'/);
+  assert.match(appSource, /currentBoardScope==='collab'\?'已同步':'已保存'/);
+  assert.match(appSource, /currentBoardScope==='collab'\?'同步失败':'保存失败'/);
   const inlineScripts = [...canvasHtml.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)]
     .map((match) => match[1])
     .filter((source) => source.trim());
   inlineScripts.forEach((source) => assert.doesNotThrow(() => new Function(source)));
+  assert.doesNotThrow(() => new Function(appSource));
 }
 
 Promise.resolve()
