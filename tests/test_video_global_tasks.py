@@ -88,7 +88,7 @@ class VideoTaskIntegrationTests(unittest.TestCase):
         用户看不到进度、刷新后接不回来。当前 5 条：口播/电影化身/换装/小乐视频/Sora。
         「电影化身」的 label 随玩法变，见 CINE_MODES。"""
         self.assertEqual(VIDEO_HTML.count("trackVideoJob(res.data.job_id"), 5)
-        for label in ("电影化身", "换装换背景视频", "数字人口播", "label:label", "Sora 2 视频"):
+        for label in ("电影化身", "换装换背景视频", "数字化 IP", "label:label", "Sora 2 视频"):
             self.assertIn(label, VIDEO_HTML)
         # 电影化身那条的 label 不是写死的字符串，是当前玩法的名字
         self.assertIn("trackVideoJob(res.data.job_id,{status:'queued',label:cfg.label", VIDEO_HTML)

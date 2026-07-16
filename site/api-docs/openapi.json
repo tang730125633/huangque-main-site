@@ -18,7 +18,7 @@
     },
     {
       "name": "作图",
-      "description": "gpt-image + nano banana(content 8096 / imggen 8101)"
+      "description": "黄雀引擎 + 纳米香蕉（content 8096 / imggen 8101）"
     },
     {
       "name": "文案",
@@ -488,7 +488,7 @@
         "tags": [
           "作图"
         ],
-        "summary": "nano banana 作图(NB2 std 10点/hd 14点；Pro std 18点/hd 26点)",
+        "summary": "纳米香蕉作图（纳米香蕉 2 标准15点/高清25点；Pro 标准25点/高清30点）",
         "description": "异步返回 job_id。带 image 进图生图。提交前会校验 prompt/model/ratio/quality/count/image，参数错误直接 400，不扣点。",
         "requestBody": {
           "required": true,
@@ -511,7 +511,7 @@
                       "pro"
                     ],
                     "default": "nb2",
-                    "description": "nb2=gemini-3.1-flash-image,pro=gemini-3-pro-image"
+                    "description": "nb2=纳米香蕉 2，pro=纳米香蕉 Pro"
                   },
                   "ratio": {
                     "type": "string",
@@ -529,7 +529,7 @@
                       "hd"
                     ],
                     "default": "std",
-                    "description": "std=标准清晰度；hd=高清。默认 std，NB2 10点/张，Pro 18点/张"
+                    "description": "std=标准清晰度；hd=高清。默认 std；纳米香蕉 2 标准15点/高清25点，纳米香蕉 Pro 标准25点/高清30点"
                   },
                   "count": {
                     "type": "integer",
