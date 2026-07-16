@@ -41,7 +41,7 @@ echo "== [4/8] 环境文件（全新随机 token；API Key 留空待各自独立
 if ! sudo test -f /home/ubuntu/auth-service/auth.env; then
   TOKEN=$(openssl rand -hex 24)
   printf "HQ_INTERNAL_TOKEN=%s\nHQ_AUTH_TOKEN_TTL=2592000\n" "$TOKEN" | sudo tee /home/ubuntu/auth-service/auth.env >/dev/null
-  printf "HQ_INTERNAL_TOKEN=%s\n# 独立 API Key 发下来后填在这里\nOPENAI_API_KEY=\nGEMINI_API_KEY=\nTIKHUB_KEY=\n" "$TOKEN" | sudo tee /home/ubuntu/content-api/content.env >/dev/null
+  printf "HQ_INTERNAL_TOKEN=%s\n# 国外 API 走新加坡出境中转 sg.huangquechuanmei.com（本机公网 IP 需在其 nginx 白名单内）\nGEMINI_BASE=https://sg.huangquechuanmei.com/gemini\nOPENAI_BASE=https://sg.huangquechuanmei.com/openai\nNO_PROXY=127.0.0.1,localhost,::1\n# 独立 API Key 发下来后填在这里\nOPENAI_API_KEY=\nGEMINI_API_KEY=\nTIKHUB_KEY=\n" "$TOKEN" | sudo tee /home/ubuntu/content-api/content.env >/dev/null
 fi
 if sudo grep -qE '^(WX_PAY_|WX_MP_)' /home/ubuntu/auth-service/auth.env /home/ubuntu/content-api/content.env; then
   echo "❌ dev 环境禁止配置 WX_PAY_/WX_MP_，请移除支付变量后重跑"
