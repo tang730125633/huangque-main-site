@@ -67,6 +67,7 @@ ASSETS = (
     Asset("canvas/canvas-graph.js", required=False),
     Asset("canvas/canvas-state.js", required=False),
     Asset("canvas/canvas-storage.js", required=False),
+    Asset("canvas/canvas-api.js", required=False),
     Asset("canvas/canvas-app.js", required=False),
 )
 

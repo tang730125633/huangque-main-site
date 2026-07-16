@@ -3,7 +3,9 @@
   var graphApi=window.HQCanvas&&window.HQCanvas.graph;
   var stateApi=window.HQCanvas&&window.HQCanvas.state;
   var storageApi=window.HQCanvas&&window.HQCanvas.storage;
+  var apiModule=window.HQCanvas&&window.HQCanvas.api;
   var canvasStorage=storageApi.createStorage({storage:function(){return window.localStorage;}});
+  var apiClient=apiModule.createClient({fetchImpl:window.fetch.bind(window),tokenProvider:tok,AbortControllerImpl:window.AbortController,setTimeoutImpl:setTimeout,clearTimeoutImpl:clearTimeout});
   var wrap=document.querySelector('.nc-wrap'), inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty'), selectionBox=document.getElementById('ncSelectionBox'), selectedRegion=document.getElementById('ncSelectedRegion');
   var boardHome=document.getElementById('ncBoardHome'), editorView=document.getElementById('ncEditorView'), boardGrid=document.getElementById('ncBoardGrid'), boardSearch=document.getElementById('ncBoardSearch'), boardSort=document.getElementById('ncBoardSort'), backHomeBtn=document.getElementById('ncBackHome');
   var nodeCountEl=document.getElementById('ncNodeCount'), edgeCountEl=document.getElementById('ncEdgeCount'), runStateEl=document.getElementById('ncRunState');
@@ -34,43 +36,15 @@
   var collabNodeSeed='node'+(window.crypto&&window.crypto.randomUUID?window.crypto.randomUUID().replace(/-/g,''):Date.now().toString(36)+Math.random().toString(36).slice(2,14));
   function tok(){ return '__cookie__'; }
   function authJson(path, opts){
-    opts=opts||{};
-    var headers={'Accept':'application/json','Authorization':'Bearer '+tok()};
-    var body=opts.body;
-    var controller=null, timer=null;
-    if(window.AbortController){
-      controller=new AbortController();
-      timer=setTimeout(function(){ controller.abort(); }, opts.timeout||8000);
-    }
-    if(body!==undefined){
-      headers['Content-Type']='application/json';
-      body=JSON.stringify(body);
-    }
-    return fetch(path,{method:opts.method||'GET',credentials:'same-origin',cache:'no-store',headers:headers,body:body,signal:controller&&controller.signal})
-      .then(function(res){
-        return res.text().then(function(text){
-          var data={};
-          try{ data=text?JSON.parse(text):{}; }catch(e){ data={detail:text||res.statusText}; }
-          if(!res.ok){
-            var err=new Error(data.detail||('HTTP '+res.status));
-            err.status=res.status;
-            err.data=data;
-            throw err;
-          }
-          return data;
-        });
-      }).catch(function(err){
-        if(err&&err.name==='AbortError') throw new Error('协作服务响应超时');
-        throw err;
-      }).finally(function(){
-        if(timer) clearTimeout(timer);
-      });
+    return apiClient.json(path,opts).catch(function(error){
+      if(error&&error.code==='timeout') error.message='协作服务响应超时';
+      throw error;
+    });
   }
   function playableAssetUrl(u){
     u=String(u||'');
     if(!u||u.indexOf('/api/gen/file/')!==0) return Promise.resolve(u);
-    return fetch(u+(u.indexOf('?')>=0?'&':'?')+'_='+Date.now(),{cache:'no-store',headers:{'Authorization':'Bearer '+tok()}})
-      .then(function(r){ if(!r.ok) throw new Error('视频读取失败'); return r.blob(); })
+    return apiClient.asset(u+(u.indexOf('?')>=0?'&':'?')+'_='+Date.now())
       .then(function(blob){ return URL.createObjectURL(blob); });
   }
   function renderVideoResult(node,url){
@@ -1353,10 +1327,9 @@
   }
   function fetchAccountAssets(){
     if(accountAssetsPromise) return accountAssetsPromise;
-    var headers={'Authorization':'Bearer '+tok()};
     accountAssetsPromise=Promise.all([
-      fetch('/api/gen/history?limit=60',{headers:headers}).then(function(r){ return r.ok?r.json():{items:[]}; }).catch(function(){ return {items:[]}; }),
-      fetch('/api/gen/video/assets?limit=60',{headers:headers,cache:'no-store'}).then(function(r){ return r.ok?r.json():{items:[]}; }).catch(function(){ return {items:[]}; })
+      apiClient.json('/api/gen/history?limit=60').catch(function(){ return {items:[]}; }),
+      apiClient.json('/api/gen/video/assets?limit=60').catch(function(){ return {items:[]}; })
     ]).then(function(all){
       accountAssets=[];
       (all[0].items||[]).forEach(function(x){ accountAssets.push(normalizeAssetItem(x,'账户图片')); });
@@ -2965,8 +2938,8 @@
       if(!img){ setNodeState(node,'error','请把一个图片节点连到输入口','#f4708a'); updateState('缺少图片'); return Promise.reject('无图'); }
       var b64=img.indexOf(',')>=0?img.split(',')[1]:img;
       var run=node.el.querySelector('[data-f="run"]'); run.disabled=true; setNodeState(node,'running','反推中…','#2dd4bf'); updateState('运行中');
-      return fetch('/api/gen/reverse',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({image:b64})})
-        .then(function(r){return r.json();}).then(function(d){ run.disabled=false;
+      return apiClient.json('/api/gen/reverse',{method:'POST',body:{image:b64}})
+        .then(function(d){ run.disabled=false;
           if(!d.prompt) throw new Error(d.detail||'反推失败');
           node.outputs.prompt=d.prompt; var o=node.el.querySelector('[data-f="out"]'); if(o) o.value=d.prompt;
           setNodeState(node,'done','反推完成','#2bd576'); updateState('已完成'); if(window.HQ&&HQ.refreshPoints) HQ.refreshPoints(); })
@@ -2987,20 +2960,23 @@
         endpoint='/api/gen/banana'; bp.model=eng;
       }
       gbtn.disabled=true; setNodeState(node,'running','提交中…','#2dd4bf'); updateState('运行中');
-      return fetch(endpoint,{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(bp)})
-        .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
-        .then(function(x){
-          if(x.s===402) throw makeRunNodeError('点数不足',{code:'insufficient_points'});
-          if(x.s===429) throw makeRunNodeError((x.d&&x.d.detail)||'任务排队中，请稍后再试',{
-            code:(x.d&&x.d.code)||(x.d&&x.d.active_jobs!=null?'active_job_cap':'queue_full'),
+      return apiClient.json(endpoint,{method:'POST',body:bp})
+        .catch(function(error){
+          var data=error&&error.data||{};
+          if(error&&error.status===402) throw makeRunNodeError('点数不足',{code:'insufficient_points'});
+          if(error&&error.status===429) throw makeRunNodeError(data.detail||'任务排队中，请稍后再试',{
+            code:data.code||(data.active_jobs!=null?'active_job_cap':'queue_full'),
             retryable:true,
-            retryAfterMs:(x.d&&x.d.retry_after_ms)||RUN_ALL_RETRY_MS
+            retryAfterMs:data.retry_after_ms||RUN_ALL_RETRY_MS
           });
-          if(!x.d.job_id) throw makeRunNodeError((x.d&&x.d.detail)||'提交失败',{code:x.d&&x.d.code});
+          throw error;
+        })
+        .then(function(data){
+          if(!data.job_id) throw makeRunNodeError(data.detail||'提交失败',{code:data.code});
           return new Promise(function(res,rej){
             var t0=Date.now();
             var iv=setInterval(function(){
-              fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+              apiClient.json('/api/gen/job/'+data.job_id).then(function(d){
                 var sec=Math.round((Date.now()-t0)/1000);
                 if(d.status==='done'){ clearInterval(iv); var rr=typeof d.result==='string'?JSON.parse(d.result):d.result; res(rr); }
                 else if(d.status==='error'||d.status==='failed'){ clearInterval(iv); rej(makeRunNodeError(d.error||'生成失败',{code:d.code||'job_failed'})); }
@@ -3035,20 +3011,23 @@
       if(videoRefs.length) payload.reference_images=videoRefs.map(function(img){ return img.indexOf(',')>=0?img.split(',')[1]:img; });
       var vbtn=node.el.querySelector('[data-f="run"]');
       vbtn.disabled=true; setNodeState(node,'running','提交中...','#2dd4bf'); updateState('运行中');
-      return fetch('/api/gen/xiaole_video',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
-        .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
-        .then(function(x){
-          if(x.s===402) throw makeRunNodeError('点数不足',{code:'insufficient_points'});
-          if(x.s===429) throw makeRunNodeError((x.d&&x.d.detail)||'任务排队中，请稍后再试',{
-            code:(x.d&&x.d.code)||(x.d&&x.d.active_jobs!=null?'active_job_cap':'queue_full'),
+      return apiClient.json('/api/gen/xiaole_video',{method:'POST',body:payload})
+        .catch(function(error){
+          var data=error&&error.data||{};
+          if(error&&error.status===402) throw makeRunNodeError('点数不足',{code:'insufficient_points'});
+          if(error&&error.status===429) throw makeRunNodeError(data.detail||'任务排队中，请稍后再试',{
+            code:data.code||(data.active_jobs!=null?'active_job_cap':'queue_full'),
             retryable:true,
-            retryAfterMs:(x.d&&x.d.retry_after_ms)||RUN_ALL_RETRY_MS
+            retryAfterMs:data.retry_after_ms||RUN_ALL_RETRY_MS
           });
-          if(!x.d.job_id) throw makeRunNodeError((x.d&&x.d.detail)||'提交失败',{code:x.d&&x.d.code});
+          throw error;
+        })
+        .then(function(data){
+          if(!data.job_id) throw makeRunNodeError(data.detail||'提交失败',{code:data.code});
           return new Promise(function(res,rej){
             var t0=Date.now();
             var iv=setInterval(function(){
-              fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+              apiClient.json('/api/gen/job/'+data.job_id).then(function(d){
                 var sec=Math.round((Date.now()-t0)/1000);
                 if(d.status==='done'){ clearInterval(iv); var rr=typeof d.result==='string'?JSON.parse(d.result):d.result; res(rr); }
                 else if(d.status==='error'||d.status==='failed'){ clearInterval(iv); rej(makeRunNodeError(d.error||'生成失败',{code:d.code||'job_failed'})); }

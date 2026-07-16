@@ -55,17 +55,19 @@ class AssetRegistryTests(unittest.TestCase):
         self.assertIn("canvas/canvas-graph.js", assets)
         self.assertIn("canvas/canvas-state.js", assets)
         self.assertIn("canvas/canvas-storage.js", assets)
+        self.assertIn("canvas/canvas-api.js", assets)
         self.assertIn("canvas/canvas-app.js", assets)
         self.assertFalse(assets["canvas/canvas.css"].required)
         self.assertFalse(assets["canvas/canvas-graph.js"].required)
         self.assertFalse(assets["canvas/canvas-state.js"].required)
         self.assertFalse(assets["canvas/canvas-storage.js"].required)
+        self.assertFalse(assets["canvas/canvas-api.js"].required)
         self.assertFalse(assets["canvas/canvas-app.js"].required)
 
     def test_canvas_html_uses_current_canvas_asset_stamps(self):
         html = (ROOT / "site" / "workbench" / "canvas.html").read_bytes()
         assets = {a.name: a for a in stamp_assets.ASSETS}
-        for name in ("canvas/canvas.css", "canvas/canvas-graph.js", "canvas/canvas-state.js", "canvas/canvas-storage.js", "canvas/canvas-app.js"):
+        for name in ("canvas/canvas.css", "canvas/canvas-graph.js", "canvas/canvas-state.js", "canvas/canvas-storage.js", "canvas/canvas-api.js", "canvas/canvas-app.js"):
             asset = assets[name]
             match = asset.pattern.search(html)
             self.assertIsNotNone(match, name)
