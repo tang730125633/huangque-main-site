@@ -16,10 +16,17 @@ def gen_copy(payload):
     # 编导：结构化分镜脚本（返回 scenes 数组）
     if (payload.get("format") or "") == "script":
         style = payload.get("style") or "口播"; dur = payload.get("dur") or "30s"; plat = payload.get("platform") or "抖音"
+        # 不同风格的 line 字段含义不同，prompt 需区分
+        _STYLE_LINE = {
+            "口播": "口播台词（博主对着镜头说的话，口语化有钩子可直接念）",
+            "剧情": "台词/旁白（人物对话或画外音，推动情节发展）",
+            "种草": "种草文案（产品卖点+使用体验+购买引导，口语化有说服力）",
+        }
+        line_desc = _STYLE_LINE.get(style, _STYLE_LINE["口播"])
         raw = _chat("你是黄雀传媒资深短视频编导。只输出 JSON 本身，不要解释、不要 markdown 代码块。",
                     ("为以下选题生成一套可拍的%s短视频分镜脚本（平台%s，总时长约%s）。\n选题/卖点：%s\n"
-                     "严格输出 JSON：{\"scenes\":[{\"dur\":\"3s\",\"scene\":\"画面描述\",\"line\":\"口播台词\"}]}，"
-                     "3-4 个分镜，各 dur 之和≈总时长，口播口语化有钩子可直接念。" % (style, plat, dur, brief)), 0.85)
+                     "严格输出 JSON：{\"scenes\":[{\"dur\":\"3s\",\"scene\":\"画面描述\",\"line\":\"%s\"}]}，"
+                     "3-4 个分镜，各 dur 之和≈总时长。" % (style, plat, dur, brief, line_desc)), 0.85)
         s, e = raw.find("{"), raw.rfind("}"); scenes = []
         if s >= 0 and e > s:
             try: scenes = json.loads(raw[s:e+1]).get("scenes", [])
