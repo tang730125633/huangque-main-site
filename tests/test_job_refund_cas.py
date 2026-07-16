@@ -161,6 +161,59 @@ class JobRefundCasTests(unittest.TestCase):
         self.assertEqual(self._row(jid)["refunded"], 0)
         self.assertEqual(self.refunds, [])
 
+    def test_reclaim_lookup_exception_falls_back_and_refunds_once(self):
+        jid = self._insert(300, kind="xiaole_video")
+        points_domain = self.core._domains()[1]
+
+        class _BrokenVideo:
+            @staticmethod
+            def get_resumable_xai_request(job_id):
+                raise RuntimeError("lookup unavailable")
+
+        self.core._domains = lambda: (None, points_domain, _BrokenVideo)
+        self.assertEqual(self.core.reclaim_orphaned_running(), 1)
+        self.assertEqual(self._row(jid)["status"], "error")
+        self.assertEqual(self._row(jid)["refunded"], 1)
+        self.assertEqual(len(self.refunds), 1)
+        self.assertEqual(self.core.reclaim_orphaned_running(), 0)
+        self.assertEqual(len(self.refunds), 1)
+
+    def test_reclaim_lost_requeue_cas_does_not_refund_or_overwrite(self):
+        jid = self._insert(300, kind="xiaole_video")
+
+        class _FakeVideo:
+            @staticmethod
+            def get_resumable_xai_request(job_id):
+                return {"request_id": "rid-racing"}
+
+        self.core._domains = lambda: (None, type("P", (), {
+            "safe_refund_points": staticmethod(lambda *args: None)
+        }), _FakeVideo)
+        original_requeue = self.core._requeue_running_job
+        self.core._requeue_running_job = lambda job_id: False
+        try:
+            self.assertEqual(self.core.reclaim_orphaned_running(), 0)
+        finally:
+            self.core._requeue_running_job = original_requeue
+        self.assertEqual(self._row(jid)["status"], "running")
+        self.assertEqual(self._row(jid)["refunded"], 0)
+        self.assertEqual(self.refunds, [])
+
+    def test_reclaim_malformed_request_id_falls_back_safely(self):
+        jid = self._insert(300, kind="xiaole_video")
+        points_domain = self.core._domains()[1]
+
+        class _MalformedVideo:
+            @staticmethod
+            def get_resumable_xai_request(job_id):
+                return {"request_id": "   "}
+
+        self.core._domains = lambda: (None, points_domain, _MalformedVideo)
+        self.assertEqual(self.core.reclaim_orphaned_running(), 1)
+        self.assertEqual(self._row(jid)["status"], "error")
+        self.assertEqual(self._row(jid)["refunded"], 1)
+        self.assertEqual(len(self.refunds), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

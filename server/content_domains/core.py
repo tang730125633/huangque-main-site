@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store, submission_idempotency  # 领域存储模块均无反向依赖
+import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -1086,32 +1086,21 @@ def reaper():
         time.sleep(60)
 
 def _requeue_running_job(job_id):
-    with closing(jdb()) as c:
-        cur = c.execute("UPDATE jobs SET status='pending', error=NULL, updated_at=? WHERE id=? AND status='running'",
-                        (int(time.time()), job_id))
-        c.commit(); return cur.rowcount == 1
+    return startup_recovery.requeue_running_job(jdb, job_id)
+
+
 def reclaim_orphaned_running():
-    """启动时恢复可续查的 xAI 任务，并回收其余 running 孤儿。"""
-    try:
-        with closing(jdb()) as c:
-            rows = c.execute("SELECT id, username, cost, kind FROM jobs WHERE status='running' AND COALESCE(owner,?)=?",
-                             (SERVICE_OWNER, SERVICE_OWNER)).fetchall()
-    except Exception: return 0
-    n = requeued = failed = 0
-    for r in rows:
-        resumable = None
-        if r["kind"] == "xiaole_video":
-            try: resumable = _domains()[2].get_resumable_xai_request(r["id"])
-            except Exception: pass
-        if resumable and _requeue_running_job(r["id"]):
-            print("[startup] 恢复xAI视频任务 job=%s request_id=%s" % (r["id"], resumable["request_id"]), flush=True)
-            requeued += 1; n += 1; continue
-        if _set_terminal(r["id"], "error", error="服务重启中断，已退点，请重新提交"):
-            _refund_once(r["id"], r["username"], r["cost"])
-            _mark_video_asset_failed(r["id"], r["kind"], "服务重启中断，已退点，请重新提交")
-            failed += 1; n += 1
-    if n: print("[startup] 处理重启遗留任务 %d 个(恢复排队 %d，失败退点 %d)" % (n, requeued, failed), flush=True)
-    return n
+    return startup_recovery.reclaim_orphaned_running(
+        jdb=jdb,
+        service_owner=SERVICE_OWNER,
+        domains=_domains,
+        set_terminal=_set_terminal,
+        refund_once=_refund_once,
+        mark_video_asset_failed=_mark_video_asset_failed,
+        requeue_job=_requeue_running_job,
+    )
+
+
 # ============ HTTP ============
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
