@@ -198,9 +198,11 @@
       </div>
 
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:16px; padding-top:16px; border-top:1px solid rgba(148,164,187,.1);">
-        <span class="sc-hint">分镜可逐条转视频 / 转口播，或一键成片</span>
+        <span class="sc-hint">每张分镜可单独转视频/转口播，或使用下方批量操作</span>
         <div style="display:flex; gap:9px;">
           <button id="scOneClickVideo" class="sc-btn" type="button" style="color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border-color:rgba(231,178,76,.4); font-weight:700;">🎬 一键成片</button>
+          <a id="scAllToVideo" class="sc-btn" style="cursor:pointer;">转视频</a>
+          <a id="scAllToAudio" class="sc-btn" style="cursor:pointer;">转口播</a>
           <button id="scExport" class="sc-btn" type="button" style="color:#e7b24c; background:rgba(231,178,76,.08); border-color:rgba(231,178,76,.24);"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></span>导出脚本</button>
         </div>
       </div>
@@ -353,19 +355,30 @@
 
   function historyCard(item){
     var m=item.meta||{}, list=Array.isArray(m.scenes)?m.scenes:[];
+    var isBreakdown=!!m.source_platform;
     var btn=document.createElement('button'); btn.type='button'; btn.className='sc-history-item';
     var title=document.createElement('div'); title.className='sc-history-title'; title.textContent=item.title||'（无标题）'; title.title=item.title||'';
     var info=document.createElement('div'); info.className='sc-history-meta';
-    info.textContent=[m.style||'分镜脚本',m.dur||'',list.length+'个分镜'].filter(Boolean).join(' · ');
+    var platformLabel={douyin:'抖音',xiaohongshu:'小红书',weixin:'视频号',channels:'视频号'};
+    info.textContent=isBreakdown
+      ? ['🔍 拆解',platformLabel[m.source_platform]||m.source_platform||'',(m.duration||'')+'s',list.length+'个分镜'].filter(Boolean).join(' · ')
+      : [m.style||'分镜脚本',m.dur||'',list.length+'个分镜'].filter(Boolean).join(' · ');
     var when=document.createElement('div'); when.className='sc-history-time';
     when.textContent=item.created_at?new Date(Number(item.created_at)*1000).toLocaleString('zh-CN',{hour12:false}):'';
     btn.appendChild(title); btn.appendChild(info); btn.appendChild(when);
     btn.onclick=function(){
       var heading=item.title||'历史脚本';
-      if(topic) topic.value=heading;
-      setPicked('segStyle','.sc-opt',m.style); setPicked('segDur','.sc-opt',m.dur); setPicked('platRow','.sc-chip',m.platform);
-      render({scenes:list},heading,m.style||'口播',m.dur||'');
-      if(historyState) historyState.textContent='已载入：'+heading;
+      if(isBreakdown){
+        switchMode('breakdown');
+        renderBreakdown(m);
+        if(historyState) historyState.textContent='已载入：'+heading;
+      }else{
+        if(topic) topic.value=heading;
+        setPicked('segStyle','.sc-opt',m.style); setPicked('segDur','.sc-opt',m.dur); setPicked('platRow','.sc-chip',m.platform);
+        switchMode('write');
+        render({scenes:list},heading,m.style||'口播',m.dur||'');
+        if(historyState) historyState.textContent='已载入：'+heading;
+      }
       scenes.scrollIntoView({behavior:'smooth',block:'start'});
     };
     return btn;
@@ -373,13 +386,16 @@
   function loadHistory(){
     if(!historyList) return;
     if(historyState) historyState.textContent='正在加载…';
-    fetch('/api/gen/assets?limit=60&kind=copy',{cache:'no-store',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok()}})
-      .then(function(r){if(r.status===401){HQ.login();throw new Error('未登录');}if(!r.ok)throw new Error('加载失败');return r.json();})
-      .then(function(d){
-        var items=(d.items||[]).filter(function(item){return Array.isArray((item.meta||{}).scenes)&&item.meta.scenes.length;}).slice(0,12);
-        historyList.innerHTML=''; items.forEach(function(item){historyList.appendChild(historyCard(item));});
-        if(historyState) historyState.textContent=items.length?('共 '+items.length+' 条'):'暂无历史脚本';
-      }).catch(function(e){if(historyState&&(!e||e.message!=='未登录')) historyState.textContent='加载失败，请稍后重试';});
+    Promise.all([
+      fetch('/api/gen/assets?limit=60&kind=copy',{cache:'no-store',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.ok?r.json():{items:[]};}),
+      fetch('/api/gen/assets?limit=60&kind=breakdown',{cache:'no-store',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.ok?r.json():{items:[]};})
+    ]).then(function(results){
+      var copyItems=(results[0].items||[]).filter(function(item){return Array.isArray((item.meta||{}).scenes)&&item.meta.scenes.length;});
+      var bdItems=(results[1].items||[]).filter(function(item){return Array.isArray((item.meta||{}).scenes)&&item.meta.scenes.length;});
+      var all=copyItems.concat(bdItems).sort(function(a,b){return (b.created_at||0)-(a.created_at||0);}).slice(0,12);
+      historyList.innerHTML=''; all.forEach(function(item){historyList.appendChild(historyCard(item));});
+      if(historyState) historyState.textContent=all.length?('共 '+all.length+' 条'):'暂无历史脚本';
+    }).catch(function(e){if(historyState) historyState.textContent='加载失败，请稍后重试';});
   }
   if(historyBtn&&historySection) historyBtn.onclick=function(){historySection.scrollIntoView({behavior:'smooth',block:'start'});};
 
@@ -477,6 +493,23 @@
         },3000);
       }).catch(function(){ _resetOneClick(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络错误，请重试</div>'; });
   }; }
+  // ============ 批量转视频/转口播 ============
+  var allToVideo=document.getElementById('scAllToVideo');
+  if(allToVideo){ allToVideo.onclick=function(e){ e.preventDefault();
+    var list=lastScenes.length?lastScenes:readScenesFromDom();
+    if(!list.length){ location.href='video.html'; return; }
+    var txt=list.map(function(s){ return s.scene||''; }).filter(Boolean).join('\n\n');
+    if(window.HQ&&window.HQ.toast) HQ.toast('已带入全部 '+list.length+' 个画面描述');
+    location.href='video.html?prompt='+encodeURIComponent(txt||'');
+  };}
+  var allToAudio=document.getElementById('scAllToAudio');
+  if(allToAudio){ allToAudio.onclick=function(e){ e.preventDefault();
+    var list=lastScenes.length?lastScenes:readScenesFromDom();
+    if(!list.length){ location.href='audio.html'; return; }
+    var txt=list.map(function(s){ return s.line||''; }).filter(Boolean).join('\n\n');
+    if(window.HQ&&window.HQ.toast) HQ.toast('已带入全部 '+list.length+' 个口播文案');
+    location.href='audio.html?prompt='+encodeURIComponent(txt||'');
+  };}
   loadHistory();
 })();
 </script>
