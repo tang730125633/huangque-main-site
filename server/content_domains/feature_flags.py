@@ -19,10 +19,10 @@ _CACHE = {"loaded_at": 0, "items": {}}
 _TTL = 5
 
 CATALOG = [
-    {"key": "image", "name": "图片生成", "desc": "OpenAI 图片生成入口", "service": "content"},
-    {"key": "banana", "name": "Nano Banana 作图", "desc": "Gemini 图片生成入口", "service": "imggen"},
+    {"key": "image", "name": "图片生成", "desc": "黄雀引擎 1 / 2 图片生成入口", "service": "content"},
+    {"key": "banana", "name": "纳米香蕉作图", "desc": "纳米香蕉 2 / Pro 图片生成入口", "service": "imggen"},
     {"key": "audio", "name": "配音生成", "desc": "文案配音与音色复刻", "service": "content"},
-    {"key": "video", "name": "视频口播", "desc": "数字人口播视频生成", "service": "content"},
+    {"key": "video", "name": "视频口播", "desc": "数字化 IP 视频生成", "service": "content"},
     {"key": "sora_video", "name": "Sora 2 限时测试", "desc": "OpenAI Sora 2 / Pro 非真人通用视频（2026-09-24 下线）", "service": "content", "default_enabled": False},
     {"key": "avatar", "name": "数字人形象", "desc": "上传照片创建可复用的数字人形象", "service": "content"},
     {"key": "cinematic", "name": "AI 剧情视频", "desc": "选 1~3 个形象 + 提示词生成剧情视频", "service": "content"},

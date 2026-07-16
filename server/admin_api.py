@@ -110,8 +110,8 @@ SERVICES = [
 
 # 服务器实际在用的全部外部 API（来源:content.env/runninghub.env 变量盘点 2026-07-09）
 KEY_GROUPS = [
-    {"key": "openai", "name": "OpenAI 生图 gpt-image(经泽龙中转)", "env": ["OPENAI_API_KEY"]},
-    {"key": "gemini", "name": "Gemini 生图 nano banana", "env": ["GEMINI_API_KEY"]},
+    {"key": "openai", "name": "黄雀引擎 2 生图（经泽龙中转）", "env": ["OPENAI_API_KEY"]},
+    {"key": "gemini", "name": "纳米香蕉生图", "env": ["GEMINI_API_KEY"]},
     {"key": "zelong", "name": "泽龙生图渠道1(小乐AI)", "env": ["ZELONG_KEY"]},
     {"key": "zelong2", "name": "泽龙生图渠道2(zelong.vip)", "env": ["ZELONG2_KEY"]},
     {"key": "heygen", "name": "HeyGen 数字人视频(直连)", "env": ["HEYGEN_API_KEY"]},
@@ -223,13 +223,13 @@ ENDPOINT_CATALOG = json.loads(r"""
   {
    "m": "POST",
    "p": "/v1/images/generations",
-   "d": "gpt-image-2 文生图",
+   "d": "黄雀引擎 2 文生图",
    "fee": true
   },
   {
    "m": "POST",
    "p": "/v1/images/edits",
-   "d": "gpt-image-2 图生图/局部修改",
+   "d": "黄雀引擎 2 图生图/局部修改",
    "fee": true
   },
   {
@@ -249,7 +249,7 @@ ENDPOINT_CATALOG = json.loads(r"""
   {
    "m": "POST",
    "p": "/api/v1/generations",
-   "d": "gpt-image-2 文生图/图生图 创建生成任务",
+   "d": "黄雀引擎 2 文生图/图生图 创建生成任务",
    "fee": true
   },
   {
@@ -275,13 +275,13 @@ ENDPOINT_CATALOG = json.loads(r"""
   {
    "m": "POST",
    "p": "/v1/images/generations",
-   "d": "gpt-image-2 文生图",
+   "d": "黄雀引擎 2 文生图",
    "fee": true
   },
   {
    "m": "POST",
    "p": "/v1/images/edits",
-   "d": "gpt-image-2 图生图/局部修改",
+   "d": "黄雀引擎 2 图生图/局部修改",
    "fee": true
   }
  ],
@@ -289,13 +289,13 @@ ENDPOINT_CATALOG = json.loads(r"""
   {
    "m": "POST",
    "p": "/image-pool/v1/images/generations",
-   "d": "gpt-image-2 文生图",
+   "d": "黄雀引擎 2 文生图",
    "fee": true
   },
   {
    "m": "POST",
    "p": "/image-pool/v1/images/edits",
-   "d": "gpt-image-2 图生图/局部修改",
+   "d": "黄雀引擎 2 图生图/局部修改",
    "fee": true
   }
  ],
@@ -303,7 +303,7 @@ ENDPOINT_CATALOG = json.loads(r"""
   {
    "m": "POST",
    "p": "/v1beta/models/gemini-3.1-flash-image:generateContent",
-   "d": "Nano Banana 2 作图",
+   "d": "纳米香蕉 2 作图",
    "fee": true
   }
  ],
@@ -337,7 +337,7 @@ ENDPOINT_CATALOG = json.loads(r"""
   {
    "m": "POST",
    "p": "/videos",
-   "d": "数字人口播视频生成，泽龙中转路径",
+   "d": "数字化 IP 视频生成，泽龙中转路径",
    "fee": true
   },
   {
@@ -385,7 +385,7 @@ ENDPOINT_CATALOG = json.loads(r"""
   {
    "m": "POST",
    "p": "/v2/video/generate",
-   "d": "口播直连：talking_photo + 音频 asset 生成数字人口播视",
+   "d": "口播直连：talking_photo + 音频 asset 生成数字化 IP 视频",
    "fee": true
   },
   {
