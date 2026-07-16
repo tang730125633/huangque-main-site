@@ -12,6 +12,11 @@ try:
 except Exception:
     wxpay = None
 
+try:
+    from . import wechat_virtual_pay as wechat_vpay
+except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 启动
+    import wechat_virtual_pay as wechat_vpay
+
 DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
 PORT = 8095
 ITER = 200000
@@ -176,6 +181,26 @@ def init_db():
         reviewed_at INTEGER,
         review_note TEXT
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS virtual_pay_orders(
+        order_id TEXT PRIMARY KEY,
+        username TEXT NOT NULL,
+        openid TEXT NOT NULL,
+        package_id TEXT NOT NULL,
+        product_id TEXT NOT NULL,
+        amount_fen INTEGER NOT NULL,
+        points INTEGER NOT NULL,
+        env INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'created',
+        created_at INTEGER NOT NULL,
+        paid_at INTEGER,
+        credited_at INTEGER,
+        delivered_at INTEGER,
+        wx_order_id TEXT,
+        wxpay_order_id TEXT,
+        raw_order_json TEXT,
+        last_error TEXT
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_virtual_pay_orders_user ON virtual_pay_orders(username, created_at DESC)")
     cols = {r["name"] for r in c.execute("PRAGMA table_info(tokens)").fetchall()}
     if "expires_at" not in cols:
         c.execute("ALTER TABLE tokens ADD COLUMN expires_at INTEGER")
@@ -184,6 +209,10 @@ def init_db():
         c.execute("ALTER TABLE recharge_orders ADD COLUMN transaction_id TEXT")  # 微信支付流水号
     if "pay_channel" not in rcols:
         c.execute("ALTER TABLE recharge_orders ADD COLUMN pay_channel TEXT")     # wxpay_native / wxpay_jsapi / manual
+    user_cols = {r["name"] for r in c.execute("PRAGMA table_info(users)").fetchall()}
+    if "wx_openid" not in user_cols:
+        c.execute("ALTER TABLE users ADD COLUMN wx_openid TEXT")
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_wx_openid ON users(wx_openid) WHERE wx_openid IS NOT NULL")
     c.commit(); c.close()
 
 def generate_account_id():
@@ -1396,6 +1425,190 @@ def set_recharge_transaction(order_id, transaction_id, pay_channel):
     finally:
         c.close()
 
+def public_virtual_pay_order(row):
+    return {
+        "order_id": row["order_id"],
+        "package_id": row["package_id"],
+        "amount_fen": row["amount_fen"],
+        "points": row["points"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "paid_at": row["paid_at"],
+        "credited_at": row["credited_at"],
+        "delivered_at": row["delivered_at"],
+        "last_error": row["last_error"] or "",
+    }
+
+
+def public_virtual_pay_packages():
+    items = []
+    for item in wechat_vpay.products():
+        items.append({
+            "id": item["id"],
+            "title": item["title"],
+            "price_fen": item["price_fen"],
+            "price_yuan": "%.2f" % (item["price_fen"] / 100.0),
+            "points": item["points"],
+            "recommended": item["recommended"],
+        })
+    return items
+
+
+def create_virtual_pay_order(username, package_id, wx_code):
+    package_id = (package_id or "").strip()
+    if not wechat_vpay.is_configured():
+        return None, "not_configured"
+    product = wechat_vpay.product_by_id(package_id)
+    if not product:
+        return None, "package_not_found"
+    session = wechat_vpay.code_to_session(wx_code)
+    openid = session["openid"]
+    now = int(time.time())
+    order_id = "HQ%s%s" % (time.strftime("%y%m%d%H%M%S", time.localtime(now)), secrets.token_hex(5).upper())
+    payment = wechat_vpay.payment_params(product, order_id, session["session_key"])
+
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        user = c.execute("SELECT username,wx_openid FROM users WHERE username=?", (username,)).fetchone()
+        if not user:
+            c.rollback()
+            return None, "user_not_found"
+        owner = c.execute("SELECT username FROM users WHERE wx_openid=?", (openid,)).fetchone()
+        if owner and owner["username"] != username:
+            c.rollback()
+            return None, "openid_in_use"
+        if user["wx_openid"] and user["wx_openid"] != openid:
+            c.rollback()
+            return None, "openid_mismatch"
+        if not user["wx_openid"]:
+            c.execute("UPDATE users SET wx_openid=? WHERE username=?", (openid, username))
+        c.execute(
+            """INSERT INTO virtual_pay_orders(
+                 order_id,username,openid,package_id,product_id,amount_fen,points,env,status,created_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (order_id, username, openid, package_id, product["product_id"], product["price_fen"],
+             product["points"], wechat_vpay.pay_env(), "created", now),
+        )
+        row = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (order_id,)).fetchone()
+        c.commit()
+        return {"order": public_virtual_pay_order(row), "payment": payment}, None
+    except sqlite3.IntegrityError:
+        c.rollback()
+        return None, "conflict"
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+
+def _mark_delivery(order_id, env):
+    try:
+        wechat_vpay.notify_provide_goods(order_id, env)
+    except Exception as exc:
+        c = db()
+        try:
+            c.execute("UPDATE virtual_pay_orders SET last_error=? WHERE order_id=?",
+                      (("发货通知失败: " + str(exc))[:300], order_id))
+            c.commit()
+        finally:
+            c.close()
+        return False
+    c = db()
+    try:
+        c.execute("UPDATE virtual_pay_orders SET delivered_at=?,last_error='' WHERE order_id=?",
+                  (int(time.time()), order_id))
+        c.commit()
+    finally:
+        c.close()
+    return True
+
+
+def confirm_virtual_pay_order(username, order_id):
+    order_id = (order_id or "").strip()
+    c = db()
+    row = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=? AND username=?", (order_id, username)).fetchone()
+    c.close()
+    if not row:
+        return None, "not_found"
+
+    # 已加点的订单只重试未完成的发货通知，绝不重复加点。
+    if row["status"] == "credited":
+        if not row["delivered_at"]:
+            _mark_delivery(row["order_id"], row["env"])
+            c = db(); row = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (order_id,)).fetchone(); c.close()
+        return public_virtual_pay_order(row), None
+
+    result = wechat_vpay.query_order(row["openid"], row["order_id"], row["env"])
+    wx_order = result.get("order") or {}
+    wx_status = int(wx_order.get("status") or 0)
+    if wx_status in (0, 1):
+        c = db()
+        c.execute("UPDATE virtual_pay_orders SET last_error='' WHERE order_id=?", (order_id,))
+        c.commit(); row = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (order_id,)).fetchone(); c.close()
+        return public_virtual_pay_order(row), "pending"
+    if wx_status not in (2, 3, 4):
+        c = db()
+        c.execute("UPDATE virtual_pay_orders SET status='failed',last_error=? WHERE order_id=?",
+                  (("微信订单状态异常: %s" % wx_status), order_id))
+        c.commit(); row = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (order_id,)).fetchone(); c.close()
+        return public_virtual_pay_order(row), "not_paid"
+    if wx_order.get("order_id") and wx_order.get("order_id") != order_id:
+        return None, "order_mismatch"
+    if int(wx_order.get("order_fee") or 0) != int(row["amount_fen"]):
+        return None, "amount_mismatch"
+
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        fresh = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=? AND username=?", (order_id, username)).fetchone()
+        if not fresh:
+            c.rollback()
+            return None, "not_found"
+        if fresh["status"] != "credited":
+            user = c.execute("SELECT points FROM users WHERE username=?", (username,)).fetchone()
+            if not user:
+                c.rollback()
+                return None, "user_not_found"
+            before = int(user["points"] or 0)
+            delta = int(fresh["points"] or 0)
+            after = before + delta
+            now = int(time.time())
+            c.execute("UPDATE users SET points=? WHERE username=?", (after, username))
+            _write_audit(c, SYSTEM_ACTOR, username, delta, before, after, "微信虚拟支付: " + order_id)
+            c.execute(
+                """UPDATE virtual_pay_orders
+                   SET status='credited',paid_at=?,credited_at=?,wx_order_id=?,wxpay_order_id=?,
+                       raw_order_json=?,last_error=''
+                   WHERE order_id=?""",
+                (int(wx_order.get("paid_time") or now), now, str(wx_order.get("wx_order_id") or ""),
+                 str(wx_order.get("wxpay_order_id") or ""), json.dumps(wx_order, ensure_ascii=False), order_id),
+            )
+        c.commit()
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+    _mark_delivery(order_id, row["env"])
+    c = db(); final = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (order_id,)).fetchone(); c.close()
+    return public_virtual_pay_order(final), None
+
+
+def list_virtual_pay_orders(username, limit=20):
+    limit = max(1, min(100, int(limit or 20)))
+    c = db()
+    try:
+        rows = c.execute(
+            "SELECT * FROM virtual_pay_orders WHERE username=? ORDER BY created_at DESC,order_id DESC LIMIT ?",
+            (username, limit),
+        ).fetchall()
+        return [public_virtual_pay_order(row) for row in rows]
+    finally:
+        c.close()
+
 def cleanup_expired_tokens(c=None):
     own = c is None
     if own: c = db()
@@ -1600,6 +1813,64 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "order": order})
             except Exception:
                 return self._send(500, {"detail": "recharge review failed"})
+        if p == "/api/auth/virtual-pay/order":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                result, err = create_virtual_pay_order(
+                    row["username"], d.get("package_id"), d.get("wx_code")
+                )
+                if err == "not_configured":
+                    return self._send(503, {"detail": "虚拟支付正在配置中，请稍后再试"})
+                if err == "package_not_found":
+                    return self._send(404, {"detail": "充值套餐不存在"})
+                if err in {"openid_in_use", "openid_mismatch"}:
+                    return self._send(409, {"detail": "当前微信账号已绑定其他黄雀账号，请联系管理员"})
+                if err == "user_not_found":
+                    return self._send(404, {"detail": "用户不存在"})
+                if err:
+                    return self._send(409, {"detail": "订单创建失败，请重试"})
+                return self._send(200, {"ok": True, **result})
+            except wechat_vpay.VirtualPayError as exc:
+                status = 503 if exc.code == "not_configured" else 502
+                if exc.code in {"bad_request", "code2session_failed"}:
+                    status = 400
+                return self._send(status, {"detail": str(exc), "code": exc.code})
+            except Exception:
+                return self._send(500, {"detail": "虚拟支付订单创建失败"})
+        if p == "/api/auth/virtual-pay/confirm":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                order, err = confirm_virtual_pay_order(row["username"], d.get("order_id"))
+                if err == "not_found":
+                    return self._send(404, {"detail": "订单不存在"})
+                if err == "pending":
+                    return self._send(202, {"ok": False, "pending": True, "order": order})
+                if err == "not_paid":
+                    return self._send(409, {"detail": "微信订单未支付或已关闭", "order": order})
+                if err in {"order_mismatch", "amount_mismatch"}:
+                    return self._send(409, {"detail": "微信订单校验失败", "code": err})
+                if err:
+                    return self._send(400, {"detail": err})
+                points_row = get_points_row(row["username"])
+                return self._send(200, {
+                    "ok": True,
+                    "order": order,
+                    "points": points_row["points"] if points_row else None,
+                })
+            except wechat_vpay.VirtualPayError as exc:
+                return self._send(502, {"detail": str(exc), "code": exc.code})
+            except Exception:
+                return self._send(500, {"detail": "支付结果确认失败"})
         if p == "/api/auth/recharge/order":
             row = self._user()
             if not row:
@@ -2189,6 +2460,29 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, **data})
             except Exception:
                 return self._send(500, {"detail": "充值申请查询失败"})
+        if p == "/api/auth/virtual-pay/packages":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            try:
+                return self._send(200, {
+                    "ok": True,
+                    "configured": wechat_vpay.is_configured(),
+                    "environment": "production" if wechat_vpay.pay_env() == 0 else "sandbox",
+                    "items": public_virtual_pay_packages(),
+                })
+            except Exception:
+                return self._send(500, {"detail": "充值套餐读取失败"})
+        if p == "/api/auth/virtual-pay/orders":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                items = list_virtual_pay_orders(row["username"], (q.get("limit") or ["20"])[0])
+                return self._send(200, {"ok": True, "items": items})
+            except Exception:
+                return self._send(500, {"detail": "支付订单查询失败"})
         if p == "/api/auth/points":
             if not self._require_internal():
                 return
