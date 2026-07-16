@@ -28,6 +28,16 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("scenes:scenesForHandoff", self.html)
         self.assertIn("_resetOneClick", self.html)
 
+    def test_one_click_video_passes_style_and_selected_avatar(self):
+        self.assertIn("lastStyle=style||'口播'", self.html)
+        self.assertIn("_doOneClick({scenes:scenesForHandoff,style:'剧情'})", self.html)
+        self.assertIn("_doOneClick({scenes:scenesForHandoff,style:lastStyle,avatar_id:avatarId})", self.html)
+
+    def test_one_click_video_loads_avatar_picker_for_talking_styles(self):
+        self.assertIn("fetch('/api/gen/video/avatars?limit=60'", self.html)
+        self.assertIn('id="avatarPickModal"', self.html)
+        self.assertIn('id="avatarPickGrid"', self.html)
+
     def test_history_loads_copy_assets_and_restores_scenes(self):
         self.assertIn("'/api/gen/assets?limit=60&kind=copy'", self.html)
         self.assertIn("historyList.appendChild(historyCard(item))", self.html)

@@ -228,7 +228,7 @@
   var historyBtn=document.getElementById('scHistoryBtn'), exportBtn=document.getElementById('scExport'),
       historySection=document.getElementById('scHistorySection'), historyList=document.getElementById('scHistoryList'),
       historyState=document.getElementById('scHistoryState');
-  var orig=gen.innerHTML, lastScenes=[];
+  var orig=gen.innerHTML, lastScenes=[], lastStyle='口播';
   function tok(){ return '__cookie__'; }
   function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
   function escAttr(s){ return esc(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
@@ -292,7 +292,7 @@
   bindSceneHandoffs();
 
   function render(res, topicTxt, style, dur){
-    lastScenes=res.scenes||[];
+    lastScenes=res.scenes||[]; lastStyle=style||'口播';
     if(meta) meta.innerHTML='<span>'+esc(topicTxt)+'</span><span style="color:#5c6b82;">·</span><span style="color:#e7b24c;">'+esc(style)+'</span><span style="color:#5c6b82;">·</span><span class="mono">'+esc(dur)+'</span><span style="color:#5c6b82;">·</span><span>共 <span class="mono">'+lastScenes.length+'</span> 个分镜</span>';
     scenes.innerHTML=lastScenes.map(function(s,i){
       var no=('0'+(i+1)).slice(-2);
@@ -383,7 +383,7 @@
   }
   if(historyBtn&&historySection) historyBtn.onclick=function(){historySection.scrollIntoView({behavior:'smooth',block:'start'});};
 
-  // ============ 一键成片：调后端 API 直接生成数字人口播视频 ============
+  // ============ 一键成片：调后端 API 直接生成视频 ============
   var oneClickBtn=document.getElementById('scOneClickVideo');
   if(oneClickBtn){ var oneClickOrig=oneClickBtn.innerHTML; var _resetOneClick=function(){
     if(!oneClickBtn) return; oneClickBtn.disabled=false; oneClickBtn.style.opacity='1'; oneClickBtn.innerHTML=oneClickOrig;
@@ -391,13 +391,51 @@
     e.preventDefault();
     var scenesForHandoff=lastScenes.length?lastScenes:readScenesFromDom();
     if(!scenesForHandoff.length){ location.href='video.html'; return; }
+    if(lastStyle==='剧情'){
+      var hasScenes=scenesForHandoff.some(function(s){ return (s.scene||'').trim(); });
+      if(!hasScenes){ if(window.HQ&&window.HQ.toast) HQ.toast('脚本中没有画面描述'); return; }
+      _doOneClick({scenes:scenesForHandoff,style:'剧情'});
+      return;
+    }
     var hasLines=scenesForHandoff.some(function(s){ return (s.line||'').trim(); });
     if(!hasLines){ if(window.HQ&&window.HQ.toast) HQ.toast('脚本中没有口播文案'); return; }
+    _showAvatarPicker(function(avatarId){
+      _doOneClick({scenes:scenesForHandoff,style:lastStyle,avatar_id:avatarId});
+    });
+  };
+  function _showAvatarPicker(onPick){
+    var modal=document.getElementById('avatarPickModal'), grid=document.getElementById('avatarPickGrid');
+    if(!modal||!grid) return;
+    modal.style.display='flex'; grid.innerHTML='<div style="color:#5c6b82;font-size:13px;text-align:center;padding:40px 0;">正在读取形象…</div>';
+    fetch('/api/gen/video/avatars?limit=60',{headers:{'Authorization':'Bearer '+tok()}})
+      .then(function(r){return r.ok?r.json():Promise.reject();})
+      .then(function(d){
+        var avatars=d.items||[];
+        if(!avatars.length){ grid.innerHTML='<div style="color:#f4708a;font-size:13px;text-align:center;padding:30px 0;">还没有形象<br><a href="video.html" style="color:#60a5fa;">→ 去创建</a></div>'; return; }
+        grid.innerHTML='';
+        avatars.forEach(function(a){
+          var card=document.createElement('button');
+          card.type='button';
+          card.style.cssText='padding:10px;border:1px solid rgba(148,164,187,.14);border-radius:12px;background:rgba(7,11,19,.34);cursor:pointer;text-align:center;font-family:inherit;color:#eaf1fa;transition:.16s';
+          card.innerHTML='<div style="width:72px;height:72px;border-radius:50%;margin:0 auto 8px;background:rgba(148,164,187,.1);overflow:hidden;display:flex;align-items:center;justify-content:center;">'
+            +(a.image_url?'<img src="'+esc(a.image_url)+'" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display=\'none\'">':'')
+            +'<span style="font-size:24px;'+(a.image_url?'display:none':'')+'">🧑</span></div>'
+            +'<div style="font-size:12px;font-weight:600;">'+esc(a.name||'形象 '+a.id)+'</div>';
+          card.onmouseenter=function(){ this.style.borderColor='rgba(231,178,76,.4)'; };
+          card.onmouseleave=function(){ this.style.borderColor='rgba(148,164,187,.14)'; };
+          card.onclick=function(){ modal.style.display='none'; onPick(a.id); };
+          grid.appendChild(card);
+        });
+      }).catch(function(){ grid.innerHTML='<div style="color:#f4708a;font-size:13px;text-align:center;padding:30px 0;">形象加载失败，请重试</div>'; });
+    document.getElementById('avatarPickClose').onclick=function(){ modal.style.display='none'; _resetOneClick(); };
+    modal.onclick=function(e){ if(e.target===modal){ modal.style.display='none'; _resetOneClick(); } };
+  }
+  function _doOneClick(payload){
     oneClickBtn.disabled=true; oneClickBtn.style.opacity='.6'; oneClickBtn.textContent='提交中…';
     scenes.innerHTML='<div style="padding:34px;text-align:center;color:#e7b24c;font-size:13px;">🎬 正在启动一键成片…</div>';
     if(meta) meta.innerHTML='';
-    var pollCount=0, lastProgress=-1;
-    fetch('/api/gen/script_to_video',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({scenes:scenesForHandoff})})
+    var pollCount=0, lastProgress=-1, sceneCount=payload.scenes.length;
+    fetch('/api/gen/script_to_video',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
       .then(function(x){
         if(x.s===401){ _resetOneClick(); if(window.HQ) HQ.login(); return; }
@@ -415,7 +453,7 @@
               scenes.innerHTML='<div style="padding:24px;text-align:center;">'
                 +'<div style="font-size:40px;margin-bottom:10px;">✅</div>'
                 +'<div style="font-size:15px;font-weight:700;color:#eaf1fa;margin-bottom:8px;">一键成片完成！</div>'
-                +'<div style="font-size:12px;color:#94a4bb;margin-bottom:14px;">'+scenesForHandoff.length+' 个分镜已合成视频'+costInfo+'</div>'
+                +'<div style="font-size:12px;color:#94a4bb;margin-bottom:14px;">'+sceneCount+' 个分镜已合成视频'+costInfo+'</div>'
                 +(vurl?'<div style="margin-bottom:12px;"><video src="'+esc(vurl)+'" controls style="max-width:100%;max-height:260px;border-radius:10px;"></video></div>':'')
                 +'<div style="display:flex;gap:9px;justify-content:center;">'
                 +'<a href="assets.html" class="sc-btn" style="color:#e7b24c;">📁 查看资产库</a>'
@@ -442,5 +480,21 @@
   loadHistory();
 })();
 </script>
+
+<!-- 一键成片：形象选择弹窗 -->
+<div id="avatarPickModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:9999;align-items:center;justify-content:center;">
+<div style="background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:18px;padding:24px;width:540px;max-height:80vh;display:flex;flex-direction:column;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+    <b style="font-size:16px;">选择出镜形象</b>
+    <button id="avatarPickClose" style="background:transparent;border:none;color:#94a4bb;font-size:20px;cursor:pointer;">&times;</button>
+  </div>
+  <div id="avatarPickGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:10px;overflow-y:auto;flex:1;padding-right:4px;min-height:120px;">
+    <div style="color:#5c6b82;font-size:13px;text-align:center;padding:40px 0;">正在读取形象…</div>
+  </div>
+  <div style="margin-top:12px;text-align:center;font-size:11px;color:#5c6b82;">
+    没有合适的？<a href="video.html" style="color:#60a5fa;">去视频页创建新形象</a>
+  </div>
+</div>
+</div>
 </body>
 </html>
