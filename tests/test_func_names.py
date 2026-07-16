@@ -82,7 +82,7 @@ class NewKindsAreNamedTests(unittest.TestCase):
         self.assertEqual(F.func_name("xiaole_video", {"channel": "omni"}), "欧米视频生成")
 
     def test_image_engines_are_told_apart(self):
-        self.assertEqual(F.func_name("image", {"provider": "seedream"}), "作图 · Seedream")
+        self.assertEqual(F.func_name("image", {"provider": "seedream"}), "作图 · 黄雀引擎 1 标准")
         self.assertEqual(F.func_name("image", {"provider": "xiaole"}), "作图 · 果肉生图")
 
 
@@ -154,21 +154,21 @@ class NamesMatchTheProductTests(unittest.TestCase):
                           "「%s」不是前端 data-function=\"%s\" 的标签" % (name, ch))
 
     def test_the_video_function_names_use_the_ui_labels(self):
-        for tab in ("动作模仿", "电影化身", "换装换背景", "数字人口播"):
+        for tab in ("动作模仿", "电影化身", "换装换背景", "数字化 IP"):
             self.assertIn('>%s<' % tab, self.VIDEO_HTML)
         self.assertEqual(F.func_name("video", {"mode": "motion"}), "动作模仿")
         self.assertTrue(F.func_name("cinematic", {}).startswith("电影化身"))
-        self.assertTrue(F.func_name("video", {"mode": "text"}).startswith("数字人口播"))
+        self.assertTrue(F.func_name("video", {"mode": "text"}).startswith("数字化 IP"))
 
     def test_the_image_engine_names_use_the_ui_labels(self):
-        """UI 上叫 gpt-image-2 / 泽龙2生图，日志里就不能写成「GPT Image」「泽龙」。"""
-        for name in ("gpt-image-2", "Seedream", "果肉生图", "泽龙2生图", "Nano Banana"):
+        """UI 品牌名与日志必须一致，不能泄露上游原模型名。"""
+        for name in ("黄雀引擎 2", "黄雀引擎 1", "果肉生图", "泽龙2生图", "纳米香蕉"):
             self.assertIn(name, self.BANANA_HTML, "「%s」不是 banana.html 里的引擎标签" % name)
-        self.assertEqual(F.func_name("image", {}), "作图 · gpt-image-2")          # gpt 不发 provider
+        self.assertEqual(F.func_name("image", {}), "作图 · 黄雀引擎 2")          # gpt 不发 provider
         self.assertEqual(F.func_name("image", {"provider": "zelong2"}), "作图 · 泽龙2生图")
-        self.assertEqual(F.func_name("image", {"model": "nb2"}), "作图 · Nano Banana 2")
+        self.assertEqual(F.func_name("image", {"model": "nb2"}), "作图 · 纳米香蕉 2")
         self.assertEqual(F.func_name("image", {"provider": "seedream", "variant": "pro"}),
-                         "作图 · Seedream Pro")
+                         "作图 · 黄雀引擎 1 Pro")
 
     def test_the_legacy_zelong_pool_is_not_merged_into_zelong2(self):
         """zelong（不带 2）是老号池，界面上已经没入口了，但库里还有 66 条存量任务。

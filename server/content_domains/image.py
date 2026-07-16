@@ -311,7 +311,7 @@ def _seedream_error(e):
         pass
     if "SensitiveContent" in code:      # Output/InputImageSensitiveContentDetected；官方对此不计费
         return ValueError("内容审核未通过，换个提示词或参考图再试")
-    return ValueError("Seedream %s: %s" % (e.code, msg or code or "调用失败"))
+    return ValueError("黄雀引擎 1 %s: %s" % (e.code, msg or code or "调用失败"))
 
 def _seedream_fetch(url, tries=3):
     """直连下载出图结果。单独重试：下载失败不会重新生成图片，也就不会重复计费。
@@ -326,7 +326,7 @@ def _seedream_fetch(url, tries=3):
             last = e
             if i < tries - 1:
                 time.sleep(1.5 * (i + 1))
-    raise ValueError("Seedream 出图下载失败: %s" % str(last)[:120])
+    raise ValueError("黄雀引擎 1 出图下载失败: %s" % str(last)[:120])
 
 SEEDREAM_429_TRIES = int(os.environ.get("SEEDREAM_429_TRIES", "8") or 8)
 SEEDREAM_429_MAX_WAIT = int(os.environ.get("SEEDREAM_429_MAX_WAIT", "700") or 700)  # 总退避预算，压在 reaper image 900s 内
@@ -355,13 +355,13 @@ def _seedream_post(fn, tries=None, max_wait=None):
             # 两种 429 要分开：SetLimitExceeded=账号用量上限/安全体验模式，模型已被**暂停**——
             # 重试再久也没用，只会白占 worker(实测 246s×10 全失败)，立刻失败退点并给人话。
             if "SetLimitExceeded" in body or "Safe Experience" in body or "has been paused" in body:
-                raise ValueError("Seedream 已达账号用量上限、模型暂停，请在火山方舟控制台调整/关闭安全体验模式或开通正式付费")
+                raise ValueError("黄雀引擎 1 当前用量上限已达到，请稍后重试或联系管理员")
             # 其余 429 = 瞬时并发/速率限制，请求被拒未出图未计费 → 安全重试。
             if i == tries - 1:
-                raise ValueError("Seedream 并发繁忙，请稍后重试")
+                raise ValueError("黄雀引擎 1 并发繁忙，请稍后重试")
             delay = min(60.0, 3.0 * (2 ** i)) * (0.7 + random.random() * 0.6)   # 指数退避 + 抖动
             if waited + delay > max_wait:      # 退避预算耗尽 → 别再等，直接抛(走失败退点)
-                raise ValueError("Seedream 并发繁忙，请稍后重试")
+                raise ValueError("黄雀引擎 1 并发繁忙，请稍后重试")
             waited += delay
             print("[seedream] 429 并发限流，退避重试(%d/%d) 等%.1fs" % (i + 1, tries, delay), flush=True)
             time.sleep(delay)
@@ -387,7 +387,7 @@ def _seedream_one(model, prompt, size, img):
     items = d.get("data") or []
     url = (items[0] or {}).get("url") if items else None
     if not url:
-        raise ValueError("Seedream 返回为空")
+        raise ValueError("黄雀引擎 1 返回为空")
     return _seedream_fetch(url)
 
 def _gen_image_seedream(prompt, ratio, quality, count, img, variant):
@@ -395,7 +395,7 @@ def _gen_image_seedream(prompt, ratio, quality, count, img, variant):
     实测耗时(PNG 输出)：标准约 30~40s，Pro 约 85s —— Pro 慢一倍多，前端提示要分开写。
     单图 2~7MB。SEEDREAM_MAX_N=2 时 Pro 最坏约 170s，在 reaper image 900s 宽限内。"""
     if not ARK_API_KEY:
-        raise ValueError("Seedream 未配置（ARK_API_KEY）")
+        raise ValueError("黄雀引擎 1 暂未配置，请联系管理员")
     _seedream_check_ref(img)     # 坏参考图会让 Ark 回 500，先在本地拦掉并说人话
     model = SEEDREAM_MODELS.get(variant) or SEEDREAM_MODELS["std"]
     size = _seedream_size(ratio, quality, variant)   # Pro 的像素上限低得多，必须按型号夹逼
@@ -429,7 +429,7 @@ def gen_image(payload):
         return _gen_image_xiaole(prompt, ratio, quality, count, img)
     if provider == "seedream":
         if mask:
-            raise ValueError("Seedream 暂不支持局部修改（蒙版），请改用 gpt-image-2")
+            raise ValueError("黄雀引擎 1 暂不支持局部修改（蒙版），请改用黄雀引擎 2")
         variant = "pro" if str(payload.get("variant") or "").strip().lower() == "pro" else "std"
         q = "hd" if (payload.get("quality") or "hd") == "hd" else "std"   # Seedream 按像素分档，不用 high/medium
         count = max(1, min(SEEDREAM_MAX_N, int(payload.get("count") or 1)))

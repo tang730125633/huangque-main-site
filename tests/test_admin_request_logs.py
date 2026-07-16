@@ -195,8 +195,8 @@ class JobPayloadTests(unittest.TestCase):
         truncated = '{"mode": "text", "prompt": "' + "x" * 5000
         data = admin_api._job_payload(truncated)
         self.assertEqual(data.get("mode"), "text")
-        # 名字对齐产品里的叫法：视频页那个功能页签就叫「数字人口播」
-        self.assertEqual(admin_api.call_func_name("video", data), "数字人口播 · 文案")
+        # 名字对齐产品里的叫法：视频页那个功能页签就叫「数字化 IP」
+        self.assertEqual(admin_api.call_func_name("video", data), "数字化 IP · 文案")
         # 完整 JSON 走正常解析
         self.assertEqual(admin_api._job_payload('{"model": "nb2"}'), {"model": "nb2"})
         self.assertEqual(admin_api._job_payload(None), {})

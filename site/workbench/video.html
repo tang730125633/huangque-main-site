@@ -271,7 +271,7 @@
       </div>
 
       <div class="function-tabs" aria-label="视频功能分页">
-        <button class="function-tab on" type="button" data-function="talking">数字人口播</button>
+        <button class="function-tab on" type="button" data-function="talking">数字化 IP</button>
         <button class="function-tab" type="button" data-function="cinematic">电影化身</button>
         <button class="function-tab" type="button" data-function="tryon">换装换背景</button>
         <button class="function-tab" type="button" data-function="grok">果肉视频生成</button>
@@ -2599,7 +2599,7 @@
         refreshVideoPoints();
         setVideoStatus('视频任务已提交...');
         setTimeout(loadVideoHistory,700);
-        trackVideoJob(res.data.job_id,{status:'queued',label:mode==='audio'?'数字人口播（音频）':'数字人口播（文案）',mode:mode,modeLabel:'数字人口播',ratio:selectedRatio});
+        trackVideoJob(res.data.job_id,{status:'queued',label:mode==='audio'?'数字化 IP（音频）':'数字化 IP（文案）',mode:mode,modeLabel:'数字化 IP',ratio:selectedRatio});
         setSubmitLock('talking',false);
         pollJob(res.data.job_id,0);
       })
