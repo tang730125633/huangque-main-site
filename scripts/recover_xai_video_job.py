@@ -4,10 +4,18 @@
 import argparse
 import sqlite3
 import time
+from pathlib import Path
 
 
 DEFAULT_JOB_DB = "/opt/huangque-test-server/server/content_jobs.db"
 DEFAULT_ASSET_DB = "/opt/huangque-test-server/server/audio_assets.db"
+
+
+def _existing_rw_uri(path, label):
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError("%s不存在: %s" % (label, resolved))
+    return resolved.as_uri() + "?mode=rw"
 
 
 def _load_candidate(db, job_id):
@@ -37,9 +45,11 @@ def _load_candidate(db, job_id):
 
 def recover_job(job_id, apply=False, job_db=DEFAULT_JOB_DB, asset_db=DEFAULT_ASSET_DB):
     """Inspect or atomically requeue an eligible xAI job without changing refunds."""
-    db = sqlite3.connect(job_db, isolation_level=None)
+    job_uri = _existing_rw_uri(job_db, "任务数据库")
+    asset_uri = _existing_rw_uri(asset_db, "视频资产数据库")
+    db = sqlite3.connect(job_uri, isolation_level=None, uri=True)
     try:
-        db.execute("ATTACH DATABASE ? AS assets", (asset_db,))
+        db.execute("ATTACH DATABASE ? AS assets", (asset_uri,))
         if apply:
             db.execute("BEGIN IMMEDIATE")
         request_id, model = _load_candidate(db, job_id)

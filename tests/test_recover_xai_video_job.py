@@ -84,6 +84,28 @@ class RecoverXaiVideoJobTests(unittest.TestCase):
         self.assertEqual(self.job_row(7), before_job)
         self.assertEqual(self.asset_row(7), before_asset)
 
+    def test_dry_run_rejects_missing_job_db_without_creating_it(self):
+        missing = Path(self.job_db).with_name("missing jobs.db")
+
+        try:
+            with self.assertRaisesRegex(FileNotFoundError, "任务数据库不存在"):
+                recover.recover_job(
+                    7, apply=False, job_db=str(missing), asset_db=self.asset_db
+                )
+        finally:
+            self.assertFalse(missing.exists())
+
+    def test_dry_run_rejects_missing_asset_db_without_creating_it(self):
+        missing = Path(self.asset_db).with_name("missing assets.db")
+
+        try:
+            with self.assertRaisesRegex(FileNotFoundError, "视频资产数据库不存在"):
+                recover.recover_job(
+                    7, apply=False, job_db=self.job_db, asset_db=str(missing)
+                )
+        finally:
+            self.assertFalse(missing.exists())
+
     def test_apply_requeues_without_changing_cost_or_refunded(self):
         result = recover.recover_job(
             7, apply=True, job_db=self.job_db, asset_db=self.asset_db
