@@ -5,6 +5,11 @@ from server import sync_virtual_pay_goods as sync_goods
 
 
 class SyncVirtualPayGoodsTests(unittest.TestCase):
+    def test_goods_name_removes_characters_rejected_by_wechat(self):
+        self.assertEqual(sync_goods.goods_name("1000 点"), "1000点")
+        self.assertEqual(sync_goods.goods_name("黄雀点数 / Pro"), "黄雀点数Pro")
+        self.assertEqual(sync_goods.goods_name("黄雀·点数_5000"), "黄雀·点数_5000")
+
     def test_upload_and_publish_are_submitted_one_item_at_a_time(self):
         products = [
             {"product_id": "hq_1000", "title": "1000 点", "price_fen": 9900},
@@ -24,6 +29,10 @@ class SyncVirtualPayGoodsTests(unittest.TestCase):
         self.assertEqual(len(publish_calls), 3)
         self.assertTrue(all(len(entry.args[1]["upload_item"]) == 1 for entry in upload_calls))
         self.assertTrue(all(len(entry.args[1]["publish_item"]) == 1 for entry in publish_calls))
+        self.assertEqual(
+            [entry.args[1]["upload_item"][0]["name"] for entry in upload_calls],
+            ["1000点", "2000点", "5000点"],
+        )
         self.assertEqual(
             wait_for.call_args_list,
             [

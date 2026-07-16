@@ -2,6 +2,7 @@
 """将服务端配置的虚拟商品上传并发布到微信对应环境。"""
 import json
 import os
+import re
 import sys
 import time
 
@@ -15,6 +16,12 @@ ITEM_URL = os.environ.get(
     "WX_VIRTUAL_PAY_ITEM_URL",
     "https://huangquechuanmei.com/assets/cloud/logo-bird.png",
 ).strip()
+
+
+def goods_name(value):
+    """微信道具名称仅允许中英文、数字及 -_*·，不允许空格。"""
+    cleaned = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff\-_*\u00b7]", "", str(value or ""))
+    return cleaned[:20]
 
 
 def wait_for(uri, key, timeout=120):
@@ -45,7 +52,7 @@ def main():
     upload_items = [
         {
             "id": item["product_id"],
-            "name": item["title"][:20],
+            "name": goods_name(item["title"]) or item["product_id"][:20],
             "price": item["price_fen"],
             "remark": "黄雀 AI 生成任务点数，购买后自动到账",
             "item_url": ITEM_URL,
