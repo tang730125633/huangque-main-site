@@ -31,6 +31,13 @@ def wait_for(uri, key, timeout=120):
     raise TimeoutError("等待 %s 超时" % key)
 
 
+def submit_one_by_one(start_uri, query_uri, key, items):
+    """微信虚拟支付商品接口每次最多提交 1 个道具。"""
+    for item in items:
+        vpay._xpay(start_uri, {key: [item], "env": vpay.pay_env()})
+        wait_for(query_uri, key)
+
+
 def main():
     if not vpay.is_configured():
         raise RuntimeError("请先配置 offerId、对应环境 AppKey、AppID 和 AppSecret")
@@ -45,13 +52,18 @@ def main():
         }
         for item in products
     ]
-    vpay._xpay("/xpay/start_upload_goods", {"upload_item": upload_items, "env": vpay.pay_env()})
-    wait_for("/xpay/query_upload_goods", "upload_item")
-    vpay._xpay("/xpay/start_publish_goods", {
-        "publish_item": [{"id": item["product_id"]} for item in products],
-        "env": vpay.pay_env(),
-    })
-    wait_for("/xpay/query_publish_goods", "publish_item")
+    submit_one_by_one(
+        "/xpay/start_upload_goods",
+        "/xpay/query_upload_goods",
+        "upload_item",
+        upload_items,
+    )
+    submit_one_by_one(
+        "/xpay/start_publish_goods",
+        "/xpay/query_publish_goods",
+        "publish_item",
+        [{"id": item["product_id"]} for item in products],
+    )
     print("虚拟商品已发布到%s环境" % ("现网" if vpay.pay_env() == 0 else "沙箱"))
 
 
