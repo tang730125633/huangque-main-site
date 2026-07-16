@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store, submission_idempotency  # 领域存储模块均无反向依赖
+import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -1085,30 +1085,21 @@ def reaper():
             pass
         time.sleep(60)
 
-def reclaim_orphaned_running():
-    """启动时回收上一进程遗留的 running 孤儿任务。
+def _requeue_running_job(job_id):
+    return startup_recovery.requeue_running_job(jdb, job_id)
 
-    本进程刚起、worker 尚未启动(此函数在 start_job_workers 之前调用)，此刻 DB 里
-    本服务名下任何 status='running' 都是上次 systemctl restart 时 worker 猝死留下的孤儿——没人
-    再刷 updated_at，用户会看着"生成中"干等 reaper 兜底(换装 grace 达 2400 秒=40 分钟)
-    才判失败退点。启动即当场判失败+退点，把"卡 40 分钟"变"秒退"。
-    CAS 抢终态 + 幂等退点复用 reaper 那套(_set_terminal/_refund_once)，与并发无竞态。"""
-    try:
-        with closing(jdb()) as c:
-            # 按 owner 过滤(#511)：imggen/leadgen 是独立进程，content 重启与它们无关；不过滤就会把它们正在飞的任务判失败退点，而对面 worker 还在跑 → 用户既没图又白等
-            rows = c.execute("SELECT id, username, cost, kind FROM jobs WHERE status='running' AND COALESCE(owner,?)=?",
-                             (SERVICE_OWNER, SERVICE_OWNER)).fetchall()
-    except Exception:
-        return 0
-    n = 0
-    for r in rows:
-        if _set_terminal(r["id"], "error", error="服务重启中断，已退点，请重新提交"):
-            _refund_once(r["id"], r["username"], r["cost"])
-            _mark_video_asset_failed(r["id"], r["kind"], "服务重启中断，已退点，请重新提交")
-            n += 1
-    if n:
-        print("[startup] 回收重启遗留孤儿任务 %d 个(→失败退点)" % n, flush=True)
-    return n
+
+def reclaim_orphaned_running():
+    return startup_recovery.reclaim_orphaned_running(
+        jdb=jdb,
+        service_owner=SERVICE_OWNER,
+        domains=_domains,
+        set_terminal=_set_terminal,
+        refund_once=_refund_once,
+        mark_video_asset_failed=_mark_video_asset_failed,
+        requeue_job=_requeue_running_job,
+    )
+
 
 # ============ HTTP ============
 class H(BaseHTTPRequestHandler):
