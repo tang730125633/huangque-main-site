@@ -48,6 +48,7 @@ class CanvasAssetExtractionTests(unittest.TestCase):
 
     def test_app_uses_modules_instead_of_legacy_payloads(self):
         app = APP_PATH.read_text(encoding="utf-8")
+        exporter = (ROOT / "site" / "workbench" / "canvas" / "canvas-export.js").read_text(encoding="utf-8")
         for legacy in (
             "function exportRoundRect(",
             "function exportWrappedText(",
@@ -57,7 +58,19 @@ class CanvasAssetExtractionTests(unittest.TestCase):
         ):
             self.assertNotIn(legacy, app)
         self.assertNotRegex(app, r"\bfetch\(")
-        self.assertIn("window.HQCanvas&&window.HQCanvas.exporter", app)
+        for call in (
+            "canvasExporter.serializeTemplate(",
+            "canvasExporter.parseTemplate(",
+            "canvasExporter.safeFilename(",
+            "canvasExporter.exportJpeg(",
+        ):
+            self.assertIn(call, app)
+        self.assertIn("function renderExportPanel(", app)
+        self.assertIn("function updateState(", app)
+        self.assertNotIn("portCenter:portCenter", app)
+        self.assertRegex(app, r"exportEdges=edges\.map\(")
+        self.assertNotRegex(exporter, r"\b(?:document|window)\b")
+        self.assertNotIn("portCenter", exporter)
 
 
 if __name__ == "__main__":

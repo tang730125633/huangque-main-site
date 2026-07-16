@@ -34,6 +34,30 @@
     if(node.type==='gen') return node.outputs&&node.outputs.image||'';
     return '';
   }
+  function loadExportImage(src,options){
+    src=String(src||''); options=options||{};
+    if(!src) return Promise.resolve(null);
+    function fromUrl(url,revoke){
+      return new Promise(function(resolve){
+        var cleaned=false;
+        function cleanup(){
+          if(!revoke||cleaned) return;
+          cleaned=true;
+          try{options.revokeObjectURL(url);}catch(e){}
+        }
+        try{
+          var image=options.createImage();
+          image.onload=function(){cleanup();resolve(image);};
+          image.onerror=function(){cleanup();resolve(null);};
+          image.src=url;
+        }catch(error){cleanup();resolve(null);}
+      });
+    }
+    if(src.indexOf('data:image/')===0||src.indexOf('blob:')===0) return fromUrl(src,false);
+    return Promise.resolve().then(function(){return options.fetchBlob(src);}).then(function(blob){
+      return fromUrl(options.createObjectURL(blob),true);
+    }).catch(function(){return null;});
+  }
   function roundRect(ctx,x,y,w,h,r){
     r=Math.min(r,w/2,h/2);
     ctx.beginPath();
@@ -124,7 +148,7 @@
       for(var gx=12;gx<bounds.w;gx+=24){for(var gy=12;gy<bounds.h;gy+=24){ctx.fillRect(gx,gy,1,1);}}
       ctx.save(); ctx.translate(-bounds.x,-bounds.y);
       edges.forEach(function(edge){
-        var a=options.portCenter(edge.from.node,'out',edge.from.port),b=options.portCenter(edge.to.node,'in',edge.to.port);
+        var a=edge&&edge.from,b=edge&&edge.to;
         if(!a||!b) return;
         var dx=Math.max(40,Math.abs(b.x-a.x)*.5);
         ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.bezierCurveTo(a.x+dx,a.y,b.x-dx,b.y,b.x,b.y);
@@ -145,5 +169,5 @@
       });
     });
   }
-  return {serializeTemplate:serializeTemplate,parseTemplate:parseTemplate,safeFilename:safeFilename,wrappedLines:wrappedLines,nodeImageSource:nodeImageSource,exportJpeg:exportJpeg};
+  return {serializeTemplate:serializeTemplate,parseTemplate:parseTemplate,safeFilename:safeFilename,wrappedLines:wrappedLines,nodeImageSource:nodeImageSource,loadExportImage:loadExportImage,exportJpeg:exportJpeg};
 });

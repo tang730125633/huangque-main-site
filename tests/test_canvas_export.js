@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const exporter = require('../site/workbench/canvas/canvas-export.js');
 
 function testTemplateRoundTrip() {
@@ -44,47 +46,106 @@ function fakeContext() {
     context[name] = (...args) => calls.push([name, ...args]);
   }
   context.measureText = (value) => ({ width: String(value).length * 7 });
+  for (const property of ['fillStyle', 'strokeStyle', 'lineWidth', 'font', 'textBaseline', 'textAlign']) {
+    Object.defineProperty(context, property, {
+      set(value) { calls.push([`set:${property}`, value]); },
+    });
+  }
   return context;
 }
 
-async function testExportJpegLoadsImagesAndCleansUrl() {
-  const context = fakeContext();
-  const blob = { type: 'image/jpeg' };
-  let quality;
-  const canvas = {
+function fakeCanvas(context, blob, qualityLog) {
+  return {
     width: 0,
     height: 0,
     getContext: () => context,
     toBlob(callback, type, requestedQuality) {
       assert.equal(type, 'image/jpeg');
-      quality = requestedQuality;
+      qualityLog.push(requestedQuality);
       callback(blob);
     },
   };
+}
+
+function exportOptions(overrides) {
+  const context = fakeContext();
+  const blob = { type: 'image/jpeg' };
+  const quality = [];
+  const canvas = fakeCanvas(context, blob, quality);
   const loaded = [];
   const downloads = [];
   const revoked = [];
-  const result = await exporter.exportJpeg({
+  const options = {
     bounds: { x: 10, y: 20, w: 300, h: 180 },
-    nodes: [{ id: 'n1', type: 'image', x: 20, y: 30, width: 250, height: 160, collapsed: false, image: 'broken.png', params: {}, outputs: {} }],
-    edges: [],
-    theme: 'dark',
-    portCenter: () => null,
+    nodes: [{ id: 'n1', type: 'image', typeName: '素材', typeColor: '#46b4ff', x: 20, y: 30, width: 250, height: 160, collapsed: false, image: 'broken.png', params: {}, outputs: {} }],
+    edges: [{ from: { x: 21, y: 31 }, to: { x: 201, y: 131 } }],
+    theme: 'light',
     createCanvas: () => canvas,
     loadImage(src) { loaded.push(src); return Promise.reject(new Error('not available')); },
     createObjectURL(value) { assert.strictEqual(value, blob); return 'blob:download'; },
     revokeObjectURL(url) { revoked.push(url); },
     download(url, filename) { downloads.push({ url, filename }); },
     now: () => new Date('2026-07-16T08:09:10Z'),
-  });
+  };
+  return { context, blob, quality, canvas, loaded, downloads, revoked, options: Object.assign(options, overrides || {}) };
+}
+
+async function testExportJpegUsesExplicitGeometryAndDrawingConstants() {
+  const fixture = exportOptions();
+  const result = await exporter.exportJpeg(fixture.options);
 
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.deepEqual(loaded, ['broken.png'], 'image load failures resolve as null and do not abort export');
-  assert.equal(quality, 0.92);
-  assert.deepEqual(downloads, [{ url: 'blob:download', filename: 'canvas-preview-2026-07-16-08-09-10.jpg' }]);
-  assert.deepEqual(revoked, ['blob:download']);
-  assert.deepEqual(result, { filename: downloads[0].filename, blob });
-  assert.ok(context.calls.some((call) => call[0] === 'fillRect'), 'background is drawn');
+  assert.deepEqual(fixture.loaded, ['broken.png'], 'image load failures resolve as null and do not abort export');
+  assert.deepEqual(fixture.quality, [0.92]);
+  assert.equal(fixture.canvas.width, 600);
+  assert.equal(fixture.canvas.height, 360);
+  assert.deepEqual(fixture.downloads, [{ url: 'blob:download', filename: 'canvas-preview-2026-07-16-08-09-10.jpg' }]);
+  assert.deepEqual(fixture.revoked, ['blob:download']);
+  assert.deepEqual(result, { filename: fixture.downloads[0].filename, blob: fixture.blob });
+  assert.ok(fixture.context.calls.some((call) => JSON.stringify(call) === JSON.stringify(['scale', 2, 2])), 'pixel scaling is preserved');
+  assert.ok(fixture.context.calls.some((call) => JSON.stringify(call) === JSON.stringify(['set:fillStyle', '#f5f8fc'])), 'light background palette is preserved');
+  assert.ok(fixture.context.calls.some((call) => JSON.stringify(call) === JSON.stringify(['fillRect', 12, 12, 1, 1])), '24 pixel background grid is preserved');
+  assert.ok(fixture.context.calls.some((call) => JSON.stringify(call) === JSON.stringify(['bezierCurveTo', 111, 31, 111, 131, 201, 131])), 'edge uses explicit endpoint geometry');
+  assert.ok(fixture.context.calls.some((call) => call[0] === 'fillText' && call[1] === '素材'), 'node title is drawn from plain node data');
+}
+
+async function testExportJpegRejectsMissingContextAndBlob() {
+  const missingContext = exportOptions({ createCanvas: () => ({ getContext: () => null }) });
+  await assert.rejects(exporter.exportJpeg(missingContext.options), /canvas context unavailable/);
+
+  const missingBlob = exportOptions();
+  missingBlob.canvas.toBlob = (callback) => callback(null);
+  await assert.rejects(exporter.exportJpeg(missingBlob.options), /canvas blob unavailable/);
+}
+
+async function testDownloadFailureStillCleansUrl() {
+  const fixture = exportOptions({ download() { throw new Error('download blocked'); } });
+  await assert.rejects(exporter.exportJpeg(fixture.options), /download blocked/);
+  await Promise.resolve();
+  assert.deepEqual(fixture.revoked, ['blob:download']);
+}
+
+async function testBlobImageUrlIsRevokedOnSynchronousImageErrors() {
+  for (const createImage of [
+    () => { throw new Error('constructor failed'); },
+    () => ({ set src(value) { throw new Error(`src failed: ${value}`); } }),
+  ]) {
+    const revoked = [];
+    const image = await exporter.loadExportImage('/asset.png', {
+      fetchBlob: () => Promise.resolve({ bytes: 1 }),
+      createObjectURL: () => 'blob:image',
+      revokeObjectURL: (url) => revoked.push(url),
+      createImage,
+    });
+    assert.equal(image, null);
+    assert.deepEqual(revoked, ['blob:image']);
+  }
+}
+
+function testModuleHasNoDomAccess() {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'site', 'workbench', 'canvas', 'canvas-export.js'), 'utf8');
+  assert.doesNotMatch(source, /\b(?:document|window)\b/);
+  assert.doesNotMatch(source, /portCenter/);
 }
 
 Promise.resolve()
@@ -92,7 +153,11 @@ Promise.resolve()
   .then(testLegacyTemplateAndValidation)
   .then(testFilenameAndWrappedLines)
   .then(testNodeImageSource)
-  .then(testExportJpegLoadsImagesAndCleansUrl)
+  .then(testExportJpegUsesExplicitGeometryAndDrawingConstants)
+  .then(testExportJpegRejectsMissingContextAndBlob)
+  .then(testDownloadFailureStillCleansUrl)
+  .then(testBlobImageUrlIsRevokedOnSynchronousImageErrors)
+  .then(testModuleHasNoDomAccess)
   .then(() => console.log('canvas export: pass'))
   .catch((error) => {
     console.error(error);

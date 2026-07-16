@@ -1376,20 +1376,6 @@
     var btn=document.getElementById('ncExportJpg');
     if(btn) btn.onclick=function(){ exportCanvasJpg(); };
   }
-  function loadCanvasExportImage(src){
-    src=String(src||'');
-    if(!src) return Promise.resolve(null);
-    function fromUrl(url,revoke){
-      return new Promise(function(resolve){
-        var im=new Image();
-        im.onload=function(){ if(revoke) URL.revokeObjectURL(url); resolve(im); };
-        im.onerror=function(){ if(revoke) URL.revokeObjectURL(url); resolve(null); };
-        im.src=url;
-      });
-    }
-    if(src.indexOf('data:image/')===0||src.indexOf('blob:')===0) return fromUrl(src,false);
-    return apiClient.asset(src).then(function(blob){return fromUrl(URL.createObjectURL(blob),true);}).catch(function(){return null;});
-  }
   function exportCanvasJpg(){
     var bounds=canvasContentBounds();
     if(!bounds){ updateState('画布为空'); return; }
@@ -1398,9 +1384,13 @@
       var node=nodes[id],type=TYPE[node.type]||{};
       return {id:node.id,type:node.type,x:node.x,y:node.y,width:(node.el&&node.el.offsetWidth)||250,height:(node.el&&node.el.offsetHeight)||160,collapsed:node.el?node.el.classList.contains('collapsed'):!!node.collapsed,params:stateApi.cloneSnapshot(node.params||{}),outputs:stateApi.cloneSnapshot(node.outputs||{}),image:node.image||'',typeName:type.name||'',typeColor:type.color||''};
     });
+    var exportEdges=edges.map(function(edge){
+      var from=portCenter(edge.from.node,'out',edge.from.port),to=portCenter(edge.to.node,'in',edge.to.port);
+      return from&&to?{from:{x:from.x,y:from.y},to:{x:to.x,y:to.y}}:null;
+    }).filter(Boolean);
     return canvasExporter.exportJpeg({
-      bounds:bounds,nodes:exportNodes,edges:stateApi.cloneSnapshot(edges),theme:document.documentElement.getAttribute('data-theme')==='light'?'light':'dark',portCenter:portCenter,
-      createCanvas:function(){return document.createElement('canvas');},loadImage:loadCanvasExportImage,createObjectURL:URL.createObjectURL.bind(URL),revokeObjectURL:URL.revokeObjectURL.bind(URL),
+      bounds:bounds,nodes:exportNodes,edges:exportEdges,theme:document.documentElement.getAttribute('data-theme')==='light'?'light':'dark',
+      createCanvas:function(){return document.createElement('canvas');},loadImage:function(src){return canvasExporter.loadExportImage(src,{fetchBlob:function(url){return apiClient.asset(url);},createObjectURL:URL.createObjectURL.bind(URL),revokeObjectURL:URL.revokeObjectURL.bind(URL),createImage:function(){return new Image();}});},createObjectURL:URL.createObjectURL.bind(URL),revokeObjectURL:URL.revokeObjectURL.bind(URL),
       download:function(href,filename){var a=document.createElement('a');a.href=href;a.download=filename;document.body.appendChild(a);a.click();a.remove();},now:function(){return new Date();}
     }).then(function(){
       updateState('已导出 JPG');
