@@ -1,6 +1,7 @@
 /* 节点生产画布：文本→反推→作图 节点图，拖动/连线/调参/并行运行。复用 /api/gen/reverse|banana|image + 轮询。 */
 (function(){
   var graphApi=window.HQCanvas&&window.HQCanvas.graph;
+  var stateApi=window.HQCanvas&&window.HQCanvas.state;
   var wrap=document.querySelector('.nc-wrap'), inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty'), selectionBox=document.getElementById('ncSelectionBox'), selectedRegion=document.getElementById('ncSelectedRegion');
   var boardHome=document.getElementById('ncBoardHome'), editorView=document.getElementById('ncEditorView'), boardGrid=document.getElementById('ncBoardGrid'), boardSearch=document.getElementById('ncBoardSearch'), boardSort=document.getElementById('ncBoardSort'), backHomeBtn=document.getElementById('ncBackHome');
   var nodeCountEl=document.getElementById('ncNodeCount'), edgeCountEl=document.getElementById('ncEdgeCount'), runStateEl=document.getElementById('ncRunState');
@@ -11,7 +12,7 @@
   var tplSelect=document.getElementById('ncTemplateSelect'), tplName=document.getElementById('ncTemplateName'), tplImportFile=document.getElementById('ncTplImportFile'), menu=document.getElementById('ncMenu'), cleanupStorageBtn=document.getElementById('ncCleanupStorage');
   var sidePanel=document.getElementById('ncSidePanel'), sideTitle=document.getElementById('ncSideTitle'), sideBody=document.getElementById('ncSideBody'), sideClose=document.getElementById('ncSideClose');
   var sideTplMenu=document.getElementById('ncSideTplMenu'), sideMore=document.getElementById('ncSideMore');
-  var nodes={}, edges=[], nid=0, pendingPort=null, runLabel='就绪', undoStack=[], redoStack=[], restoring=false, loading=false, dragPort=null, suppressPortClick=false, suppressCanvasClick=false, mapDirty=false, saveTimer=null;
+  var nodes={}, edges=[], nid=0, pendingPort=null, runLabel='就绪', history=stateApi.createHistory({limit:60}), restoring=false, loading=false, dragPort=null, suppressPortClick=false, suppressCanvasClick=false, mapDirty=false, saveTimer=null;
   var localFullscreen=false;
   var selectedNode=null, selectedNodes={}, selectedEdge=-1, clipNode=null, zoom=1;
   var RUN_ALL_REMOTE_LIMIT=2, RUN_ALL_RETRY_MS=4000, runAllBatch=null, runAllRetryTimer=null;
@@ -100,10 +101,10 @@
     if(edgeCountEl) edgeCountEl.textContent=edges.length;
     if(runStateEl) runStateEl.textContent=runLabel;
     if(empty) empty.classList.toggle('on', count===0);
-    if(undoBtn) undoBtn.disabled=!canEditCanvas()||!undoStack.length;
-    if(redoBtn) redoBtn.disabled=!canEditCanvas()||!redoStack.length;
-    if(fsUndo) fsUndo.disabled=!canEditCanvas()||!undoStack.length;
-    if(fsRedo) fsRedo.disabled=!canEditCanvas()||!redoStack.length;
+    if(undoBtn) undoBtn.disabled=!canEditCanvas()||!history.canUndo();
+    if(redoBtn) redoBtn.disabled=!canEditCanvas()||!history.canRedo();
+    if(fsUndo) fsUndo.disabled=!canEditCanvas()||!history.canUndo();
+    if(fsRedo) fsRedo.disabled=!canEditCanvas()||!history.canRedo();
     syncZoomInputs();
     if(activeSidePanel) renderSidePanel();
     scheduleSave();
@@ -113,24 +114,23 @@
     if(state) node.el.setAttribute('data-state',state); else node.el.removeAttribute('data-state');
     if(msg!=null) noteOf(node,msg,color);
   }
-  function cloneData(v){ return JSON.parse(JSON.stringify(v)); }
   function snapshot(){
     return {
       nid:nid,
       runLabel:runLabel,
       zoom:zoom,
       scroll:{left:canvas?canvas.scrollLeft:0,top:canvas?canvas.scrollTop:0},
-      edges:cloneData(edges),
+      edges:stateApi.cloneSnapshot(edges),
       nodes:Object.keys(nodes).map(function(k){
         var n=nodes[k];
-        return {id:n.id,type:n.type,x:n.x,y:n.y,collapsed:n.el?n.el.classList.contains('collapsed'):!!n.collapsed,params:cloneData(n.params||{}),outputs:cloneData(n.outputs||{}),image:n.image||null,state:n.el?n.el.getAttribute('data-state')||'':n.state||'',note:n.el?(n.el.querySelector('[data-f="note"]')||{}).textContent||'':n.note||''};
+        return {id:n.id,type:n.type,x:n.x,y:n.y,collapsed:n.el?n.el.classList.contains('collapsed'):!!n.collapsed,params:stateApi.cloneSnapshot(n.params||{}),outputs:stateApi.cloneSnapshot(n.outputs||{}),image:n.image||null,state:n.el?n.el.getAttribute('data-state')||'':n.state||'',note:n.el?(n.el.querySelector('[data-f="note"]')||{}).textContent||'':n.note||''};
       })
     };
   }
   function templateSnapshot(){
     var snap=snapshot();
     snap.nodes=(snap.nodes||[]).map(function(n){
-      var x=cloneData(n);
+      var x=stateApi.cloneSnapshot(n);
       x.image=null;
       if(x.outputs&&x.outputs.image) delete x.outputs.image;
       if(x.outputs&&x.outputs.video) delete x.outputs.video;
@@ -1104,7 +1104,7 @@
     loading=true;
     restoreSnapshot(snap);
     loading=false;
-    undoStack=[]; redoStack=[];
+    history.clear();
     setSaveState('saved');
     showEditor();
     setEditorReadonly(false);
@@ -1133,7 +1133,7 @@
     loading=true;
     restoreSnapshot(board.data||emptySnapshot());
     loading=false;
-    undoStack=[]; redoStack=[];
+    history.clear();
     updateState(isNew?'已新建画布':'已打开画布');
     setSaveState('saved');
     showEditor();
@@ -1164,10 +1164,10 @@
       currentCollabRole=board.role||'viewer';
       currentCollabName=board.name||'未命名协作画布';
       currentCollabMembers=board.members||[];
-      collabBaseSnap=collabSync?collabSync.clone(board.data||emptySnapshot()):cloneData(board.data||emptySnapshot());
+      collabBaseSnap=collabSync?collabSync.clone(board.data||emptySnapshot()):stateApi.cloneSnapshot(board.data||emptySnapshot());
       rememberCollabBoard(board);
       restoreSnapshot(board.data||emptySnapshot());
-      undoStack=[]; redoStack=[];
+      history.clear();
       setSaveState(collabCanEdit()?'saved':'readonly');
       showEditor();
       setEditorReadonly(!collabCanEdit());
@@ -1223,7 +1223,7 @@
   function duplicateBoard(id){
     var list=getBoards(), board=list.find(function(b){ return b.id===id; });
     if(!board) return;
-    var copy=cloneData(board);
+    var copy=stateApi.cloneSnapshot(board);
     copy.id=makeBoardId();
     copy.name=cleanBoardName((board.name||'未命名画布')+' 副本')||'未命名画布 副本';
     copy.updatedAt=Date.now();
@@ -1251,7 +1251,7 @@
     try{ return JSON.parse(localStorage.getItem(TPL_KEY)||'[]')||[]; }catch(e){ return []; }
   }
   function sanitizeTemplateSnap(snap){
-    snap=cloneData(snap||{});
+    snap=stateApi.cloneSnapshot(snap||{});
     var valid={};
     (snap.nodes||[]).forEach(function(n){
       if(!n||!TYPE[n.type]) return;
@@ -1566,16 +1566,14 @@
   function pushUndo(snap){
     if(!canEditCanvas()) return;
     if(restoring) return;
-    undoStack.push(snap||snapshot());
-    if(undoStack.length>60) undoStack.shift();
-    redoStack=[];
+    history.push(snap||snapshot());
     updateState();
   }
   function restoreSnapshot(snap){
     if(!snap) return;
     restoring=true;
     Object.keys(nodes).forEach(function(id){ if(nodes[id]&&nodes[id].el) nodes[id].el.remove(); });
-    nodes={}; edges=cloneData(snap.edges||[]); nid=snap.nid||0; pendingPort=null; dragPort=null; selectedNode=null; selectedNodes={}; selectedEdge=-1; runLabel=snap.runLabel||'就绪';
+    nodes={}; edges=stateApi.cloneSnapshot(snap.edges||[]); nid=snap.nid||0; pendingPort=null; dragPort=null; selectedNode=null; selectedNodes={}; selectedEdge=-1; runLabel=snap.runLabel||'就绪';
     (snap.nodes||[]).forEach(function(n){ addNode(n.type,n.x,n.y,n); });
     if(snap.zoom){ zoom=Math.max(.5,Math.min(1.6,snap.zoom)); inner.style.transform='scale('+zoom+')'; }
     if(snap.scroll){ canvas.scrollLeft=snap.scroll.left||0; canvas.scrollTop=snap.scroll.top||0; }
@@ -1603,7 +1601,7 @@
     var target=Object.keys(nodes).length?{x:maxX+140,y:Math.max(80,canvas.scrollTop/zoom+80)}:viewportCenterPoint();
     var idMap={}, created=[];
     list.forEach(function(n){
-      var data=cloneData(n);
+      var data=stateApi.cloneSnapshot(n);
       var oldId=data.id;
       data.id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabNodeSeed,nid+1):'n'+(nid+1);
       data.x=target.x+((n.x||0)-minX);
@@ -1625,19 +1623,15 @@
   }
   function undo(){
     if(!canEditCanvas()) return;
-    var snap=undoStack.pop();
+    var snap=history.undo(snapshot());
     if(!snap) return;
-    redoStack.push(snapshot());
-    if(redoStack.length>60) redoStack.shift();
     restoreSnapshot(snap);
     updateState('已撤销');
   }
   function redo(){
     if(!canEditCanvas()) return;
-    var snap=redoStack.pop();
+    var snap=history.redo(snapshot());
     if(!snap) return;
-    undoStack.push(snapshot());
-    if(undoStack.length>60) undoStack.shift();
     restoreSnapshot(snap);
     updateState('已重做');
   }
@@ -1697,7 +1691,7 @@
   function addNode(type, x, y, data){
     var t=TYPE[type], nextNid=++nid, id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabNodeSeed,nextNid):'n'+nextNid;
     if(data&&data.id){ id=data.id; var m=String(id).match(/^n(\d+)$/); if(m) nid=Math.max(nid,parseInt(m[1],10)); }
-    var node={ id:id, type:type, x:(x==null?60+((nid*30)%400):x), y:(y==null?50+((nid*40)%300):y), collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',channel:'grok',ratio:'16:9',duration:'5',quality:'hd',title:'',remark:''},(data&&data.params)||{}), outputs:cloneData((data&&data.outputs)||{}), image:(data&&data.image)||null };
+    var node={ id:id, type:type, x:(x==null?60+((nid*30)%400):x), y:(y==null?50+((nid*40)%300):y), collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',channel:'grok',ratio:'16:9',duration:'5',quality:'hd',title:'',remark:''},(data&&data.params)||{}), outputs:stateApi.cloneSnapshot((data&&data.outputs)||{}), image:(data&&data.image)||null };
     var el=document.createElement('div'); el.className='nc-node'; el.style.left=node.x+'px'; el.style.top=node.y+'px';
     var body='';
     if(type==='text') body='<textarea class="nc-in" data-f="text" rows="3" placeholder="输入提示词，作为下游作图的词…"></textarea>';
@@ -1992,15 +1986,15 @@
         multi:true,
         nodes:ids.map(function(id){
           var n=nodes[id];
-          return {id:n.id,type:n.type,x:n.x,y:n.y,collapsed:n.collapsed,params:cloneData(n.params||{}),outputs:cloneData(n.outputs||{}),image:n.image||null,note:(n.el.querySelector('[data-f="note"]')||{}).textContent||''};
+          return {id:n.id,type:n.type,x:n.x,y:n.y,collapsed:n.collapsed,params:stateApi.cloneSnapshot(n.params||{}),outputs:stateApi.cloneSnapshot(n.outputs||{}),image:n.image||null,note:(n.el.querySelector('[data-f="note"]')||{}).textContent||''};
         }),
-        edges:edges.filter(function(e){ return set[e.from.node]&&set[e.to.node]; }).map(function(e){ return cloneData(e); })
+        edges:edges.filter(function(e){ return set[e.from.node]&&set[e.to.node]; }).map(function(e){ return stateApi.cloneSnapshot(e); })
       };
       updateState('已复制 '+ids.length+' 个节点');
       return;
     }
     var n=nodes[ids[0]];
-    clipNode={type:n.type,params:cloneData(n.params||{}),outputs:cloneData(n.outputs||{}),image:n.image||null,note:(n.el.querySelector('[data-f="note"]')||{}).textContent||''};
+    clipNode={type:n.type,params:stateApi.cloneSnapshot(n.params||{}),outputs:stateApi.cloneSnapshot(n.outputs||{}),image:n.image||null,note:(n.el.querySelector('[data-f="note"]')||{}).textContent||''};
     updateState('已复制节点');
   }
   function pasteNode(){
@@ -2008,13 +2002,13 @@
     if(!clipNode) return;
     pushUndo();
     if(clipNode.multi){
-      var copied=cloneData(clipNode), minX=Infinity, minY=Infinity, idMap={}, made=[];
+      var copied=stateApi.cloneSnapshot(clipNode), minX=Infinity, minY=Infinity, idMap={}, made=[];
       copied.nodes.forEach(function(n){ minX=Math.min(minX,n.x||0); minY=Math.min(minY,n.y||0); });
       if(!isFinite(minX)) minX=0;
       if(!isFinite(minY)) minY=0;
       var base=selectedNode&&nodes[selectedNode]?{x:nodes[selectedNode].x+40,y:nodes[selectedNode].y+40}:{x:canvas.scrollLeft/zoom+90,y:canvas.scrollTop/zoom+90};
       copied.nodes.forEach(function(n){
-        var data=cloneData(n), oldId=data.id;
+        var data=stateApi.cloneSnapshot(n), oldId=data.id;
         data.id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabNodeSeed,nid+1):'n'+(nid+1);
         data.x=Math.max(0,base.x+((n.x||0)-minX));
         data.y=Math.max(0,base.y+((n.y||0)-minY));
@@ -2031,7 +2025,7 @@
       return;
     }
     var base=selectedNode&&nodes[selectedNode]?nodes[selectedNode]:null;
-    var data=cloneData(clipNode);
+    var data=stateApi.cloneSnapshot(clipNode);
     var x=base?base.x+34:canvas.scrollLeft/zoom+90, y=base?base.y+34:canvas.scrollTop/zoom+90;
     var node=addNode(data.type,Math.max(0,x),Math.max(0,y),data);
     selectNode(node);
