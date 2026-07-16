@@ -2973,17 +2973,17 @@
         })
         .then(function(data){
           if(!data.job_id) throw makeRunNodeError(data.detail||'提交失败',{code:data.code});
-          return new Promise(function(res,rej){
-            var t0=Date.now();
-            var iv=setInterval(function(){
-              apiClient.json('/api/gen/job/'+data.job_id).then(function(d){
-                var sec=Math.round((Date.now()-t0)/1000);
-                if(d.status==='done'){ clearInterval(iv); var rr=typeof d.result==='string'?JSON.parse(d.result):d.result; res(rr); }
-                else if(d.status==='error'||d.status==='failed'){ clearInterval(iv); rej(makeRunNodeError(d.error||'生成失败',{code:d.code||'job_failed'})); }
-                else if(sec>420){ clearInterval(iv); rej(makeRunNodeError('超时',{code:'timeout'})); }
-                else setNodeState(node,'running','生成中… 已用 '+sec+'s','#2dd4bf');
-              }).catch(function(){});
-            },3000);
+          return apiModule.poll({
+            request:function(){ return apiClient.json('/api/gen/job/'+data.job_id); },
+            intervalMs:3000,
+            maxMs:420000,
+            inspect:function(d){
+              if(d.status==='done') return {done:true,value:typeof d.result==='string'?JSON.parse(d.result):d.result};
+              if(d.status==='error'||d.status==='failed') return {error:makeRunNodeError(d.error||'生成失败',{code:d.code||'job_failed'})};
+              return {pending:true};
+            },
+            onProgress:function(d,sec){ setNodeState(node,'running','生成中… 已用 '+sec+'s','#2dd4bf'); },
+            timeoutError:function(){ return makeRunNodeError('超时',{code:'timeout'}); }
           });
         })
         .then(function(result){ gbtn.disabled=false;
@@ -3024,17 +3024,17 @@
         })
         .then(function(data){
           if(!data.job_id) throw makeRunNodeError(data.detail||'提交失败',{code:data.code});
-          return new Promise(function(res,rej){
-            var t0=Date.now();
-            var iv=setInterval(function(){
-              apiClient.json('/api/gen/job/'+data.job_id).then(function(d){
-                var sec=Math.round((Date.now()-t0)/1000);
-                if(d.status==='done'){ clearInterval(iv); var rr=typeof d.result==='string'?JSON.parse(d.result):d.result; res(rr); }
-                else if(d.status==='error'||d.status==='failed'){ clearInterval(iv); rej(makeRunNodeError(d.error||'生成失败',{code:d.code||'job_failed'})); }
-                else if(sec>900){ clearInterval(iv); rej(makeRunNodeError('超时',{code:'timeout'})); }
-                else setNodeState(node,'running','生成中，已用 '+sec+'s','#2dd4bf');
-              }).catch(function(){});
-            },3000);
+          return apiModule.poll({
+            request:function(){ return apiClient.json('/api/gen/job/'+data.job_id); },
+            intervalMs:3000,
+            maxMs:900000,
+            inspect:function(d){
+              if(d.status==='done') return {done:true,value:typeof d.result==='string'?JSON.parse(d.result):d.result};
+              if(d.status==='error'||d.status==='failed') return {error:makeRunNodeError(d.error||'生成失败',{code:d.code||'job_failed'})};
+              return {pending:true};
+            },
+            onProgress:function(d,sec){ setNodeState(node,'running','生成中，已用 '+sec+'s','#2dd4bf'); },
+            timeoutError:function(){ return makeRunNodeError('超时',{code:'timeout'}); }
           });
         })
         .then(function(result){ vbtn.disabled=false;

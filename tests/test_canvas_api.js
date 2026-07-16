@@ -200,6 +200,64 @@ async function testAssetBlob() {
   assert.equal(call.options.body, undefined);
 }
 
+async function flushPromises() {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+async function testPollRejectsAndCleansUpAfterDeadline() {
+  const requestError = new Error('temporary network failure');
+  let now = 0;
+  let tick;
+  let intervalDelay;
+  let cleared;
+  const pending = apiModule.poll({
+    request: () => Promise.reject(requestError),
+    inspect: () => ({ pending: true }),
+    maxMs: 420000,
+    intervalMs: 3000,
+    now: () => now,
+    setIntervalImpl(fn, delay) { tick = fn; intervalDelay = delay; return 81; },
+    clearIntervalImpl(handle) { cleared = handle; },
+    timeoutError: () => apiModule.apiError('超时', { code: 'timeout' }),
+  });
+
+  assert.equal(intervalDelay, 3000);
+  now = 419000;
+  tick();
+  await flushPromises();
+  assert.equal(cleared, undefined, 'transient polling failures before the deadline keep retrying');
+
+  now = 423000;
+  tick();
+  await assert.rejects(pending, (error) => {
+    assert.equal(error.message, '超时');
+    assert.equal(error.code, 'timeout');
+    return true;
+  });
+  assert.equal(cleared, 81, 'deadline failure clears the polling interval');
+}
+
+async function testPollKeepsSuccessfulTerminalResult() {
+  let tick;
+  let cleared;
+  const pending = apiModule.poll({
+    request: () => Promise.resolve({ status: 'done', result: '{"url":"/done.png"}' }),
+    inspect(data) {
+      return { done: true, value: JSON.parse(data.result) };
+    },
+    maxMs: 420000,
+    intervalMs: 3000,
+    now: () => 500000,
+    setIntervalImpl(fn) { tick = fn; return 82; },
+    clearIntervalImpl(handle) { cleared = handle; },
+  });
+
+  tick();
+  assert.deepEqual(await pending, { url: '/done.png' });
+  assert.equal(cleared, 82);
+}
+
 function testCanvasIntegration() {
   const root = path.join(__dirname, '..');
   const html = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas.html'), 'utf8');
@@ -216,6 +274,9 @@ function testCanvasIntegration() {
   assert.deepEqual(order, [...order].sort((left, right) => left - right), 'API must load after storage and before app');
   assert.match(app, /var apiModule=window\.HQCanvas&&window\.HQCanvas\.api;/);
   assert.match(app, /apiModule\.createClient\(/);
+  assert.equal((app.match(/apiModule\.poll\(/g) || []).length, 2, 'image and video jobs share bounded polling');
+  assert.equal((app.match(/maxMs:420000/g) || []).length, 1, 'image jobs retain their 420 second limit');
+  assert.equal((app.match(/maxMs:900000/g) || []).length, 1, 'video jobs retain their 900 second limit');
   assert.match(app, /error&&error\.code==='timeout'/);
   assert.ok(app.includes("error.message='协作服务响应超时'"), 'collaboration timeout keeps its existing UI message');
   assert.equal((app.match(/\bfetch\(/g) || []).length, 1, 'only Task 5 export image loading may still use fetch');
@@ -230,7 +291,7 @@ function testCanvasIntegration() {
     '/api/gen/xiaole_video',
     '/api/gen/job/',
   ]) assert.ok(app.includes(endpoint), endpoint);
-  assert.equal((app.match(/\},3000\);/g) || []).length, 2, 'image and video jobs retain 3000 ms polling');
+  assert.equal((app.match(/intervalMs:3000/g) || []).length, 2, 'image and video jobs retain 3000 ms polling');
   for (const state of ['提交中…', '生成中… 已用 ', '提交中...', '生成中，已用 ', '点数不足', '等待队列空位']) {
     assert.ok(app.includes(state), state);
   }
@@ -245,6 +306,8 @@ Promise.resolve()
   .then(testTimeoutAbort)
   .then(testCallerAbort)
   .then(testAssetBlob)
+  .then(testPollRejectsAndCleansUpAfterDeadline)
+  .then(testPollKeepsSuccessfulTerminalResult)
   .then(testCanvasIntegration)
   .then(() => console.log('canvas API client: pass'))
   .catch((error) => {

@@ -34,5 +34,39 @@
     }
     return {json:function(path,opts){return request(path,opts,false);},asset:function(path,opts){return request(path,opts,true);}};
   }
-  return {createClient:createClient,apiError:apiError};
+  function poll(options){
+    options=options||{};
+    var request=options.request, inspect=options.inspect||function(){return {pending:true};};
+    var now=options.now||Date.now, repeat=options.setIntervalImpl||setInterval, stop=options.clearIntervalImpl||clearInterval;
+    var maxMs=options.maxMs==null?0:options.maxMs, intervalMs=options.intervalMs||3000, started=now(), timer=null, settled=false;
+    return new Promise(function(resolve,reject){
+      function finish(callback,value){
+        if(settled) return;
+        settled=true;
+        if(timer!=null) stop(timer);
+        callback(value);
+      }
+      function timedOut(){ return now()-started>maxMs; }
+      function rejectTimeout(){
+        var error=options.timeoutError?options.timeoutError():apiError('request timed out',{code:'timeout'});
+        finish(reject,error);
+      }
+      function tick(){
+        Promise.resolve().then(request).then(function(value){
+          if(settled) return;
+          var elapsedMs=now()-started, outcome;
+          try{ outcome=inspect(value,Math.round(elapsedMs/1000))||{pending:true}; }
+          catch(error){ finish(reject,error); return; }
+          if(outcome.done){ finish(resolve,outcome.value); return; }
+          if(outcome.error){ finish(reject,outcome.error); return; }
+          if(timedOut()){ rejectTimeout(); return; }
+          if(options.onProgress) options.onProgress(value,Math.round(elapsedMs/1000));
+        },function(){
+          if(!settled&&timedOut()) rejectTimeout();
+        });
+      }
+      timer=repeat(tick,intervalMs);
+    });
+  }
+  return {createClient:createClient,apiError:apiError,poll:poll};
 });
