@@ -1,0 +1,13 @@
+[Unit]
+Description=Huangque Auth Service
+After=network.target
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/auth-service
+EnvironmentFile=-/home/ubuntu/auth-service/auth.env
+ExecStart=/usr/bin/python3 /home/ubuntu/auth-service/auth_server.py
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=multi-user.target

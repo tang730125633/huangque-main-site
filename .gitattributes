@@ -1,0 +1,37 @@
+# 统一行尾符：所有文本源码强制 LF，杜绝服务器/不同编辑器造成的 CRLF phantom diff
+* text=auto eol=lf
+
+# 明确文本类型走 LF
+*.py    text eol=lf
+*.js    text eol=lf
+*.html  text eol=lf
+*.css   text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.sh    text eol=lf
+*.txt   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.svg   text eol=lf
+
+# 二进制资产：永不做行尾/文本转换
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.gif   binary
+*.ico   binary
+*.mp4   binary
+*.mov   binary
+*.webm  binary
+*.mp3   binary
+*.wav   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.onnx  binary
+*.mmdb  binary
+*.dat   binary
+*.zip   binary
+*.pdf   binary

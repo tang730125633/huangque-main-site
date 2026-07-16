@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>号池管理后台</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,"PingFang SC",system-ui,sans-serif; background:#f4f5f7; color:#1d1f23; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 18px; }
+  h1 { font-size: 20px; margin: 6px 0 16px; }
+  .card { background:#fff; border:1px solid #e6e8eb; border-radius:12px; padding:16px; margin-bottom:16px; }
+  .card h2 { font-size:15px; margin:0 0 12px; color:#3a3f47; }
+  button { cursor:pointer; border:none; border-radius:8px; padding:9px 16px; font-size:14px; font-weight:600; }
+  .btn-primary { background:#2b6cff; color:#fff; }
+  .btn-primary:disabled { background:#9bb6f0; cursor:not-allowed; }
+  .btn-ghost { background:#eef1f5; color:#3a3f47; }
+  .btn-danger { background:#fde8e8; color:#d23; padding:5px 10px; font-size:12px; }
+  textarea { width:100%; min-height:120px; border:1px solid #d6dae0; border-radius:8px; padding:10px; font-family:ui-monospace,Menlo,monospace; font-size:12px; resize:vertical; }
+  input[type=password] { width:100%; padding:11px; border:1px solid #d6dae0; border-radius:8px; font-size:15px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:9px 8px; border-bottom:1px solid #eef0f3; }
+  th { color:#7a818c; font-weight:600; font-size:12px; }
+  .pill { display:inline-block; padding:2px 9px; border-radius:99px; font-size:12px; font-weight:600; }
+  .ok { background:#e4f7ea; color:#16924b; }
+  .bad { background:#fde8e8; color:#d23; }
+  .mute { background:#eef1f5; color:#7a818c; }
+  .row-msg { padding:10px 12px; border-radius:8px; margin-top:10px; font-size:13px; line-height:1.5; display:none; }
+  .msg-ok { background:#e4f7ea; color:#16924b; display:block; }
+  .msg-bad { background:#fde8e8; color:#c0212e; display:block; }
+  .toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+  .toolbar .spacer { flex:1; }
+  .hint { color:#9097a1; font-size:12px; }
+  .center { max-width:360px; margin:14vh auto 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🗂️ 号池管理后台</h1>
+
+  <!-- 登录 -->
+  <div id="login" class="card center">
+    <h2>管理员登录</h2>
+    <input type="password" id="pw" placeholder="管理员密码" onkeydown="if(event.key==='Enter')login()">
+    <div style="margin-top:12px"><button class="btn-primary" style="width:100%" onclick="login()">登录</button></div>
+    <div id="loginErr" class="row-msg"></div>
+  </div>
+
+  <!-- 主面板 -->
+  <div id="panel" style="display:none">
+    <div class="card">
+      <h2>① 一键导入新号</h2>
+      <div class="hint" style="margin-bottom:8px">把浏览器导出的抖音 cookie（JSON 数组）整段粘贴进来 → 自动转换 + 入池 + 起 worker + 立即体检。无效会立刻提示。</div>
+      <textarea id="cookieBox" placeholder='[ {"name":"sessionid","value":"...","domain":".douyin.com",...}, ... ]'></textarea>
+      <div style="margin-top:10px; display:flex; gap:10px; align-items:center">
+        <button class="btn-primary" id="impBtn" onclick="doImport()">一键导入</button>
+        <span class="hint" id="impHint"></span>
+      </div>
+      <div id="impMsg" class="row-msg"></div>
+    </div>
+
+    <div class="card">
+      <div class="toolbar">
+        <h2 style="margin:0">② 号池状态</h2>
+        <span class="spacer"></span>
+        <span class="hint" id="poolMeta"></span>
+        <button class="btn-ghost" onclick="doHealth()">🩺 体检全池</button>
+        <button class="btn-ghost" onclick="loadPool()">↻ 刷新</button>
+        <button class="btn-ghost" onclick="logout()">退出</button>
+      </div>
+      <table>
+        <thead><tr><th>槽位</th><th>抖音号</th><th>昵称</th><th>有效性</th><th>worker</th><th>session过期</th><th></th></tr></thead>
+        <tbody id="poolBody"><tr><td colspan="7" class="hint">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+const T = () => localStorage.getItem('admtok') || '';
+function setMsg(el, text, ok){ el.className = 'row-msg ' + (ok ? 'msg-ok' : 'msg-bad'); el.innerHTML = text; }
+
+async function login(){
+  const pw = document.getElementById('pw').value;
+  const fd = new FormData(); fd.append('password', pw);
+  const r = await fetch('/api/admin/login', {method:'POST', body:fd});
+  if(r.ok){ const d = await r.json(); localStorage.setItem('admtok', d.token); show(); }
+  else { setMsg(document.getElementById('loginErr'), '❌ ' + (await r.json()).detail, false); }
+}
+function logout(){ localStorage.removeItem('admtok'); location.reload(); }
+function show(){ document.getElementById('login').style.display='none'; document.getElementById('panel').style.display='block'; loadPool(); }
+
+async function loadPool(){
+  const r = await fetch('/api/admin/pool?token=' + encodeURIComponent(T()));
+  if(r.status===403){ logout(); return; }
+  const d = await r.json();
+  document.getElementById('poolMeta').textContent =
+    `共 ${d.pool.length} 个号 · worker 上限 ${d.max_workers}` + (d.health_time ? ` · 上次体检 ${new Date(d.health_time*1000).toLocaleTimeString()}` : ' · 未体检');
+  const tb = document.getElementById('poolBody');
+  if(!d.pool.length){ tb.innerHTML = '<tr><td colspan="7" class="hint">号池为空，先导入一个号</td></tr>'; return; }
+  tb.innerHTML = d.pool.map(p => {
+    let valid = '<span class="pill mute">未体检</span>';
+    if(p.valid === true) valid = '<span class="pill ok">✅ 有效</span>';
+    else if(p.valid === false) valid = '<span class="pill bad">❌ 失效</span>';
+    const wk = p.active==='active' ? '<span class="pill ok">运行中</span>' : `<span class="pill bad">${p.active||'-'}</span>`;
+    return `<tr>
+      <td>cookie_${p.n}</td>
+      <td>${p.dyid||'<span class="hint">体检后显示</span>'}</td>
+      <td>${p.nick||'-'}</td>
+      <td>${valid}</td>
+      <td>${wk} <span class="hint">w${p.n}</span></td>
+      <td class="hint">${(p.expire||'-').replace('GMT','')}</td>
+      <td><button class="btn-danger" onclick="doRemove(${p.n})">停用</button></td>
+    </tr>`;
+  }).join('');
+}
+
+async function doImport(){
+  const box = document.getElementById('cookieBox');
+  const btn = document.getElementById('impBtn');
+  const msg = document.getElementById('impMsg');
+  if(!box.value.trim()){ setMsg(msg, '请先粘贴 cookie', false); return; }
+  btn.disabled = true; document.getElementById('impHint').textContent = '导入+起worker+体检中，约15-30秒…';
+  const fd = new FormData(); fd.append('token', T()); fd.append('cookies', box.value); fd.append('start_worker','1');
+  try {
+    const r = await fetch('/api/admin/pool/import', {method:'POST', body:fd});
+    const d = await r.json();
+    if(!r.ok){ setMsg(msg, '❌ ' + (d.detail||'导入失败'), false); }
+    else {
+      const h = d.health || {};
+      if(h.valid){
+        let t = `✅ 导入成功并体检通过！<b>抖音号 ${h.dyid||'?'}</b>（${h.nick||'-'}）→ 已入池 cookie_${d.slot}`;
+        t += d.worker_started ? `，worker_${d.slot} 已上线运行 🟢` : '，worker 未自动启动';
+        if(d.warn) t += `<br><span style="color:#b86">⚠️ ${d.warn}</span>`;
+        setMsg(msg, t, true);
+        box.value = '';
+      } else {
+        setMsg(msg, `❌ 这个号 cookie <b>无效/已失效</b>（${h.err||'登录态读不到'}），请重新从浏览器导出最新 cookie。<br><span class="hint">已占用 cookie_${d.slot} 槽位${d.worker_started?'，worker 已起但爬不出数据，建议在下方"停用"它':''}。</span>`, false);
+        loadPool();
+      }
+    }
+  } catch(e){ setMsg(msg, '❌ 请求出错：' + e, false); }
+  btn.disabled = false; document.getElementById('impHint').textContent = '';
+  loadPool();
+}
+
+async function doHealth(){
+  const fd = new FormData(); fd.append('token', T());
+  await fetch('/api/admin/pool/health', {method:'POST', body:fd});
+  document.getElementById('poolMeta').textContent = '🩺 体检进行中，每个号约 15 秒，稍后自动刷新…';
+  let n = 0; const timer = setInterval(()=>{ loadPool(); if(++n>=8) clearInterval(timer); }, 12000);
+}
+
+async function doRemove(n){
+  if(!confirm(`确认停用 cookie_${n} + worker_${n}？（cookie 会备份到 _removed）`)) return;
+  const fd = new FormData(); fd.append('token', T()); fd.append('n', n);
+  const r = await fetch('/api/admin/pool/remove', {method:'POST', body:fd});
+  if(r.ok){ loadPool(); } else { alert((await r.json()).detail); }
+}
+
+if(T()) show();
+</script>
+</body>
+</html>

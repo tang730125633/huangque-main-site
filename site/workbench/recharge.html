@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>充值 · 黄雀 AI 工作台</title>
+<link rel="icon" href="../assets/cloud/logo-bird.png">
+<link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
+<link rel="stylesheet" href="../assets/cloud.css?v=8">
+<script src="theme-init.js?v=11eb385e"></script>
+<style>
+  body{ overflow:hidden; }
+  .gPkg{ grid-template-columns:repeat(4,1fr); }
+  .gPay{ grid-template-columns:repeat(2,1fr); }
+  .txrow{ transition:.14s; }
+  .txrow:hover{ background:rgba(231,178,76,.03); }
+  .txscroll{ max-height:368px; overflow:auto; }
+  .txhead{ position:sticky; top:0; z-index:2; background:rgba(10,15,26,.96); backdrop-filter:blur(8px); }
+  @media (max-width:1100px){ .gPkg{ grid-template-columns:repeat(2,1fr);} }
+  @media (max-width:620px){ .gPkg{ grid-template-columns:1fr;} .gPay{ grid-template-columns:1fr;} }
+</style>
+<link rel="stylesheet" href="theme.css?v=5873a2f4">
+</head>
+<body>
+<div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
+
+<div class="hq-app"><div class="hq-content" data-active="recharge">
+  <div>
+    <h1 style="margin:0 0 20px; font-size:27px; font-weight:700; display:flex; align-items:center; gap:11px;"><img src="../assets/icons/ic_recharge.png" alt="" style="width:34px;height:34px;object-fit:contain;flex:none;">点数充值</h1>
+
+    <!-- 余额卡 -->
+    <div class="recharge-summary" style="position:relative; display:flex; align-items:center; gap:30px; padding:24px 28px; border:1px solid rgba(231,178,76,.22); border-radius:18px; background:linear-gradient(120deg, rgba(231,178,76,.1), rgba(20,17,10,.4)); overflow:hidden; margin-bottom:26px; flex-wrap:wrap;">
+      <div style="position:absolute; right:-30px; top:-30px; width:200px; height:200px; background:radial-gradient(circle, rgba(231,178,76,.16), transparent 70%);"></div>
+      <div style="display:flex; align-items:center; gap:18px; padding-right:30px; border-right:1px solid rgba(231,178,76,.18);">
+        <div style="width:52px; height:52px; border-radius:50%; background:radial-gradient(circle at 35% 30%, #f6d488, #c8902f); flex:none; box-shadow:0 8px 22px -6px rgba(231,178,76,.6);"></div>
+        <div><div style="font-size:13px; color:#94a4bb;">剩余点数</div><div id="pointsBalance" style="font-family:'JetBrains Mono',monospace; font-size:48px; font-weight:700; color:#e7b24c; line-height:1; letter-spacing:1px;">--</div></div>
+      </div>
+      <div style="position:relative;"><div style="font-size:13px; color:#94a4bb;">本月已消耗</div><div style="font-family:'JetBrains Mono',monospace; font-size:23px; font-weight:700; margin-top:8px; color:#eaf1fa;">1,280</div></div>
+      <div style="position:relative;"><div style="font-size:13px; color:#94a4bb;">本月毛利</div><div style="font-family:'JetBrains Mono',monospace; font-size:23px; font-weight:700; margin-top:8px; color:#2bd576;">¥8,960</div></div>
+      <div style="position:relative;"><div style="font-size:13px; color:#94a4bb;">套餐到期</div><div style="font-family:'JetBrains Mono',monospace; font-size:23px; font-weight:700; margin-top:8px; color:#e7b24c;">2026-12-31</div></div>
+    </div>
+
+    <!-- 点数套餐 -->
+    <div style="font-size:17px; font-weight:600; margin-bottom:14px;">点数套餐</div>
+    <div class="gPkg" style="display:grid; gap:16px; margin-bottom:28px;">
+      <!-- 99 元 · 1000 点 -->
+      <div class="hv-lift recharge-package" style="position:relative; padding:26px 22px; border:1px solid rgba(148,164,187,.14); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); cursor:pointer; text-align:center; transition:.18s;">
+        <div style="font-family:'JetBrains Mono',monospace; font-size:34px; font-weight:700; margin-top:6px;">1000 <span style="font-size:16px; color:#94a4bb; font-family:inherit;">点</span></div>
+        <div style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#eaf1fa; margin:18px 0 14px;">¥99</div>
+        <div style="font-size:13px; color:#94a4bb; margin-bottom:20px;">适合首次体验</div>
+        <button data-recharge data-amount="99" style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#eaf1fa; background:rgba(148,164,187,.07); border:1px solid rgba(148,164,187,.16); border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">立即充值</button>
+      </div>
+      <!-- 199 元 · 2000 点 -->
+      <div class="hv-lift recharge-package" style="position:relative; padding:26px 22px; border:1px solid rgba(148,164,187,.14); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); cursor:pointer; text-align:center; transition:.18s;">
+        <div style="font-family:'JetBrains Mono',monospace; font-size:34px; font-weight:700; margin-top:6px;">2000 <span style="font-size:16px; color:#94a4bb; font-family:inherit;">点</span></div>
+        <div style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#eaf1fa; margin:18px 0 14px;">¥199</div>
+        <div style="font-size:13px; color:#2bd576; margin-bottom:20px;">加赠 10 点</div>
+        <button data-recharge data-amount="199" style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#eaf1fa; background:rgba(148,164,187,.07); border:1px solid rgba(148,164,187,.16); border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">立即充值</button>
+      </div>
+      <!-- 499 元 · 5000 点 · 推荐 -->
+      <div class="hv-lift recharge-package recommended" style="position:relative; padding:26px 22px; border:1px solid rgba(231,178,76,.5); border-radius:16px; background:linear-gradient(165deg, rgba(231,178,76,.08), rgba(20,17,10,.4)); cursor:pointer; text-align:center; transition:.18s;">
+        <div style="position:absolute; top:0; right:0; padding:5px 13px; font-size:11px; font-weight:600; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border-radius:0 16px 0 12px;">推荐</div>
+        <div style="font-family:'JetBrains Mono',monospace; font-size:34px; font-weight:700; margin-top:6px;">5000 <span style="font-size:16px; color:#94a4bb; font-family:inherit;">点</span></div>
+        <div style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#e7b24c; margin:18px 0 14px;">¥499</div>
+        <div style="font-size:13px; color:#2bd576; margin-bottom:20px;">加赠 10 点</div>
+        <button data-recharge data-amount="499" style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:1px solid transparent; border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">立即充值</button>
+      </div>
+      <!-- 自定义金额 -->
+      <div class="hv-lift recharge-package" style="position:relative; padding:26px 22px; border:1px solid rgba(45,212,191,.2); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); text-align:center; transition:.18s;">
+        <div style="font-size:20px; font-weight:700; margin-top:6px;">自定义金额</div>
+        <div style="margin:16px 0 10px; display:flex; align-items:center; justify-content:center; gap:6px;">
+          <span style="font-size:20px; color:#94a4bb;">¥</span>
+          <input id="customAmount" type="number" min="10" max="5000" step="1" placeholder="10~5000" style="width:120px; padding:8px 10px; font-size:18px; font-weight:700; text-align:center; color:#eaf1fa; background:rgba(16,24,39,.55); border:1px solid rgba(148,164,187,.2); border-radius:10px; font-family:'JetBrains Mono',monospace; outline:none;">
+        </div>
+        <div id="customPoints" style="font-size:13px; color:#2dd4bf; margin-bottom:20px;">= 0 点（10 点/元）</div>
+        <button data-recharge data-custom="1" style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#2dd4bf; background:rgba(45,212,191,.08); border:1px solid rgba(45,212,191,.25); border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">立即充值</button>
+      </div>
+    </div>
+
+    <!-- 提交信息 -->
+    <div style="font-size:17px; font-weight:600; margin-bottom:14px;">提交信息</div>
+    <div class="gPay" style="display:grid; gap:16px; max-width:660px; margin-bottom:28px;">
+      <div data-method="wechat" style="display:flex; align-items:center; gap:12px; padding:16px 20px; border:1px solid rgba(231,178,76,.3); border-radius:14px; background:rgba(231,178,76,.05); cursor:pointer; transition:.16s;">
+        <div style="width:26px; height:26px; border-radius:7px; flex:none; background:#07c160; display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:700;">微</div>
+        <span style="flex:1; font-size:14.5px; font-weight:500;">微信支付</span>
+        <span style="width:18px; height:18px; border-radius:50%; border:2px solid #e7b24c; display:flex; align-items:center; justify-content:center;"><span style="width:9px; height:9px; border-radius:50%; background:#e7b24c; transform:scale(1); transition:.14s;"></span></span>
+      </div>
+      <div data-method="alipay" style="display:flex; align-items:center; gap:12px; padding:16px 20px; border:1px solid rgba(148,164,187,.14); border-radius:14px; background:rgba(148,164,187,.04); cursor:pointer; transition:.16s;">
+        <div style="width:26px; height:26px; border-radius:7px; flex:none; background:#1677ff; display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:700;">支</div>
+        <span style="flex:1; font-size:14.5px; font-weight:500;">支付宝</span>
+        <span style="width:18px; height:18px; border-radius:50%; border:2px solid rgba(148,164,187,.3); display:flex; align-items:center; justify-content:center;"><span style="width:9px; height:9px; border-radius:50%; background:#e7b24c; transform:scale(0); transition:.14s;"></span></span>
+      </div>
+    </div>
+    <div style="max-width:660px; margin:-14px 0 28px;">
+      <textarea id="rechargeNote" placeholder="填写付款方式、转账备注或需要说明的信息，提交后等待管理员确认到账。" style="width:100%; min-height:88px; resize:vertical; padding:13px 14px; color:#eaf1fa; background:rgba(16,24,39,.55); border:1px solid rgba(148,164,187,.16); border-radius:12px; font-family:inherit; outline:none;"></textarea>
+      <div id="rechargeTip" style="min-height:22px; margin-top:8px; font-size:12.5px; color:#94a4bb;">提交申请后不会立即到账，管理员确认后自动增加点数。</div>
+    </div>
+
+    <!-- 充值申请记录 -->
+    <div class="recharge-history" style="border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(180deg, rgba(16,24,39,.5), rgba(12,18,32,.4)); overflow:hidden;">
+      <div style="display:flex; align-items:center; justify-content:space-between; padding:18px 22px; border-bottom:1px solid rgba(148,164,187,.08);">
+        <div style="font-size:15.5px; font-weight:600;">充值申请记录</div>
+        <div id="orderRefresh" class="lk" style="display:flex; align-items:center; gap:4px; font-size:12.5px; color:#94a4bb; cursor:pointer;">刷新 <span style="display:flex; width:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 18l6-6-6-6"/></svg></span></div>
+      </div>
+      <div class="txscroll" id="orderBox">
+        <div class="txhead" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:12px 22px; font-size:12px; color:#5c6b82; border-bottom:1px solid rgba(148,164,187,.07);">
+          <div>时间</div><div>项目</div><div>类型</div><div>消耗点数</div><div>余额</div><div>订单号</div>
+        </div>
+
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-26 14:32</div>
+          <div>AI 作图-美业海报</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(231,178,76,.12); color:#e7b24c;">作图</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#eaf1fa;">-12</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">340</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260626-1432</div>
+        </div>
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-26 11:18</div>
+          <div>数字人口播-开业邀约</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(244,112,138,.12); color:#f4708a;">口播</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#eaf1fa;">-13</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">352</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260626-1118</div>
+        </div>
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-26 09:45</div>
+          <div>配音-门店宣传片</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(45,212,191,.12); color:#2dd4bf;">配音</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#eaf1fa;">-4</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">365</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260626-0945</div>
+        </div>
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-25 18:20</div>
+          <div>AI 作图-节日海报</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(231,178,76,.12); color:#e7b24c;">作图</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#eaf1fa;">-12</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">369</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260625-1820</div>
+        </div>
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-25 16:07</div>
+          <div>数字人口播-产品介绍（生成失败）</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(43,213,118,.12); color:#2bd576;">退点</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#2bd576;">+13</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">381</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260625-1607</div>
+        </div>
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-25 15:52</div>
+          <div>数字人口播-产品介绍</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(244,112,138,.12); color:#f4708a;">口播</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#eaf1fa;">-13</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">368</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260625-1552</div>
+        </div>
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-25 14:10</div>
+          <div>AI 作图-团购海报</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(231,178,76,.12); color:#e7b24c;">作图</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#eaf1fa;">-12</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">381</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260625-1410</div>
+        </div>
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-24 19:30</div>
+          <div>配音-活动口播</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(45,212,191,.12); color:#2dd4bf;">配音</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#eaf1fa;">-4</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">393</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260624-1930</div>
+        </div>
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-24 17:05</div>
+          <div>数字人口播-门店日常</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(244,112,138,.12); color:#f4708a;">口播</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#eaf1fa;">-13</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">397</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260624-1705</div>
+        </div>
+        <div class="txrow" style="display:grid; grid-template-columns:1.4fr 2fr .8fr 1fr 1fr 1.4fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; font-size:13px;">
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">2026-06-24 15:40</div>
+          <div>AI 作图-开业海报</div>
+          <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(231,178,76,.12); color:#e7b24c;">作图</span></div>
+          <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:#eaf1fa;">-12</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#94a4bb;">410</div>
+          <div style="font-family:'JetBrains Mono',monospace; color:#5c6b82; font-size:12px;">HQ20260624-1540</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div></div>
+
+<div id="wxpayModal" style="display:none; position:fixed; inset:0; z-index:60; background:rgba(6,10,18,.72); align-items:center; justify-content:center;">
+  <div style="background:#0f1727; border:1px solid rgba(148,164,187,.16); border-radius:18px; padding:30px 34px; text-align:center; max-width:340px;">
+    <div style="font-size:16px; font-weight:600; color:#eaf1fa; margin-bottom:6px;">微信扫码支付</div>
+    <div id="wxpayAmount" style="font-size:13px; color:#94a4bb; margin-bottom:18px;"></div>
+    <div id="wxpayQr" style="display:flex; justify-content:center; padding:14px; background:#fff; border-radius:12px; width:200px; height:200px; margin:0 auto;"></div>
+    <div id="wxpayStatus" style="font-size:13px; color:#e7b24c; margin-top:16px;">请用微信扫一扫完成支付</div>
+    <button id="wxpayClose" style="margin-top:18px; padding:9px 22px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.08); border:1px solid rgba(148,164,187,.16); border-radius:10px; cursor:pointer; font-family:inherit;">关闭</button>
+  </div>
+</div>
+<script src="qrcode.min.js?v=1"></script>
+<script src="../assets/cloud.js?v=8"></script>
+<script src="cloud-shell.js?v=302ad2ce"></script>
+<script>
+(function(){
+  var token='__cookie__';
+  var $=function(id){return document.getElementById(id)};
+  function setTip(msg,color){var el=$('rechargeTip'); if(el){el.textContent=msg; el.style.color=color||'#94a4bb'}}
+  function api(path,opt){
+    opt=opt||{};
+    opt.headers=Object.assign({'Authorization':'Bearer '+token}, opt.headers||{});
+    return fetch(path,opt).then(function(r){
+      return r.json().catch(function(){return {detail:'响应不是 JSON'}}).then(function(d){
+        if(!r.ok){var e=new Error(d.detail||('HTTP '+r.status)); e.status=r.status; throw e}
+        return d;
+      });
+    });
+  }
+  function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+  function statusLabel(s){
+    if(s==='approved') return '<span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(43,213,118,.12); color:#2bd576;">已到账</span>';
+    if(s==='rejected') return '<span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(244,112,138,.12); color:#f4708a;">已驳回</span>';
+    return '<span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(231,178,76,.12); color:#e7b24c;">待确认</span>';
+  }
+  function loadMe(){
+    api('/api/auth/me').then(function(d){
+      var p=d&&d.user&&d.user.points;
+      $('pointsBalance').textContent=Number(p||0).toLocaleString();
+    }).catch(function(){ $('pointsBalance').textContent='--' });
+  }
+  function renderOrders(items){
+    var box=$('orderBox');
+    if(!box) return;
+    if(!items.length){
+      box.innerHTML='<div style="padding:24px 22px; color:#94a4bb;">暂无充值申请</div>';
+      return;
+    }
+    box.innerHTML='<div class="txhead" style="display:grid; grid-template-columns:1.3fr 1fr 1fr 1fr 1.5fr 1.7fr; gap:14px; min-width:760px; padding:12px 22px; font-size:12px; color:#5c6b82; border-bottom:1px solid rgba(148,164,187,.07);"><div>提交时间</div><div>金额</div><div>点数</div><div>状态</div><div>订单号</div><div>备注</div></div>'+
+        items.map(function(x){
+          return '<div class="txrow" style="display:grid; grid-template-columns:1.3fr 1fr 1fr 1fr 1.5fr 1.7fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">'+
+            '<div style="font-family:&quot;JetBrains Mono&quot;,monospace; color:#94a4bb;">'+new Date(Number(x.created_at||0)*1000).toLocaleString()+'</div>'+
+            '<div style="font-family:&quot;JetBrains Mono&quot;,monospace; color:#eaf1fa;">¥'+Number(x.amount||0).toFixed(2)+'</div>'+
+            '<div style="font-family:&quot;JetBrains Mono&quot;,monospace; color:#e7b24c;">'+Number(x.points||0).toLocaleString()+'</div>'+
+            '<div>'+statusLabel(x.status)+'</div>'+
+            '<div style="font-family:&quot;JetBrains Mono&quot;,monospace; color:#5c6b82; font-size:12px;">'+esc(x.order_id)+'</div>'+
+            '<div style="color:#94a4bb;">'+esc(x.review_note||x.note||'')+'</div></div>';
+        }).join('');
+  }
+  function loadOrders(){
+    api('/api/auth/recharge/orders?limit=50').then(function(d){renderOrders(d.items||[])}).catch(function(e){setTip(e.message,'#f4708a')});
+  }
+  // 支付方式选择(默认微信)。点方式行切换,并联动小圆点填充。
+  var payMethod='wechat';
+  Array.prototype.forEach.call(document.querySelectorAll('[data-method]'),function(row){
+    row.addEventListener('click',function(){
+      payMethod=row.getAttribute('data-method');
+      Array.prototype.forEach.call(document.querySelectorAll('[data-method]'),function(r){
+        var dot=r.querySelector('span span'); var on=(r===row);
+        if(dot) dot.style.transform=on?'scale(1)':'scale(0)';
+        r.querySelector('span:last-child').style.borderColor=on?'#e7b24c':'rgba(148,164,187,.3)';
+      });
+    });
+  });
+
+  var wxpayPoll=null;
+  function closeWxpay(){ if(wxpayPoll){clearInterval(wxpayPoll);wxpayPoll=null;} $('wxpayModal').style.display='none'; }
+  if($('wxpayClose')) $('wxpayClose').onclick=closeWxpay;
+  function pollPaid(orderId){
+    var tries=0;
+    wxpayPoll=setInterval(function(){
+      tries++;
+      if(tries>100){ closeWxpay(); return; }   // ~5分钟上限
+      api('/api/auth/recharge/orders?limit=20').then(function(d){
+        var o=(d.items||[]).filter(function(x){return x.order_id===orderId})[0];
+        if(o&&o.status==='approved'){
+          clearInterval(wxpayPoll); wxpayPoll=null;
+          $('wxpayStatus').textContent='支付成功，点数已到账 ✅'; $('wxpayStatus').style.color='#2bd576';
+          loadMe(); loadOrders();
+          setTimeout(closeWxpay,1600);
+        }
+      }).catch(function(){});
+    },3000);
+  }
+  // 固定档金额 -> 显示点数(仅前端展示,实际点数以后端为准);自定义按10点/元
+  var TIER_POINTS={99:1000,199:2000,499:5000};
+  function pointsFor(amount){ return TIER_POINTS[amount] || (amount*10); }
+  function wxpayNative(amount){
+    setTip('正在生成支付二维码…','#94a4bb');
+    api('/api/auth/wxpay/native',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({amount:amount})})
+      .then(function(d){
+        setTip('','#94a4bb');
+        var qr=$('wxpayQr'); qr.innerHTML='';
+        new QRCode(qr,{text:d.code_url,width:180,height:180,correctLevel:QRCode.CorrectLevel.M});
+        var pts=(d.order&&d.order.points)||pointsFor(amount);
+        $('wxpayAmount').textContent='¥'+Number(amount).toFixed(2)+' · '+pts+' 点';
+        $('wxpayStatus').textContent='请用微信扫一扫完成支付'; $('wxpayStatus').style.color='#e7b24c';
+        $('wxpayModal').style.display='flex';
+        pollPaid(d.order.order_id);
+      })
+      .catch(function(e){setTip(e.message||'下单失败','#f4708a')});
+  }
+  // 自定义金额输入:实时算点数、限 10~5000 整数
+  function readCustomAmount(){
+    var v=parseInt(($('customAmount')&&$('customAmount').value)||'0',10);
+    return (v>=10 && v<=5000) ? v : 0;
+  }
+  if($('customAmount')){
+    $('customAmount').addEventListener('input',function(){
+      var v=readCustomAmount();
+      $('customPoints').textContent = v ? ('= '+(v*10)+' 点（10 点/元）') : '请输入 10~5000 元';
+    });
+  }
+  function submitOrder(btn){
+    if(!token){setTip('请先登录后再充值','#f4708a');return}
+    var amount;
+    if(btn.getAttribute('data-custom')){
+      amount=readCustomAmount();
+      if(!amount){setTip('自定义金额需为 10~5000 元的整数','#f4708a');return}
+    }else{
+      amount=parseInt(btn.getAttribute('data-amount')||'0',10);
+      if(!amount){setTip('套餐信息不完整','#f4708a');return}
+    }
+    if(payMethod==='wechat'){ wxpayNative(amount); return; }
+    // 支付宝暂无自动支付,走人工申请(填备注,管理员确认到账)
+    var note=($('rechargeNote')&&$('rechargeNote').value)||'';
+    btn.disabled=true;
+    api('/api/auth/recharge/order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({amount:amount,points:pointsFor(amount),note:note})})
+      .then(function(d){setTip('充值申请已提交，订单 '+(d.order&&d.order.order_id||''),'#2bd576'); loadOrders();})
+      .catch(function(e){setTip(e.message,'#f4708a')})
+      .finally(function(){btn.disabled=false});
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('[data-recharge]'),function(btn){
+    btn.addEventListener('click',function(){submitOrder(btn)});
+  });
+  if($('orderRefresh')) $('orderRefresh').onclick=loadOrders;
+  loadMe();
+  loadOrders();
+})();
+</script>
+</body>
+</html>

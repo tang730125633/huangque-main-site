@@ -1,0 +1,11 @@
+[Unit]
+Description=Huangque 作图后端 nano banana (独立于 content_api)
+After=network.target
+[Service]
+EnvironmentFile=/home/ubuntu/content-api/content.env
+WorkingDirectory=/home/ubuntu/content-api
+ExecStart=/usr/bin/python3 /home/ubuntu/content-api/imggen_api.py
+Restart=always
+User=ubuntu
+[Install]
+WantedBy=multi-user.target

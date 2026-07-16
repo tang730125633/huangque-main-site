@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+# ship — 黄雀一键上线：pull → commit → push → 部署 → 重启 → 验证
+#
+# 用法：  ./ship "提交说明" 文件1 [文件2 ...]
+#   后端：./ship "修获客超时" server/leadgen_api.py
+#   前端：./ship "改采集页文案" site/workbench/collect.html
+#   多个：./ship "联调获客" server/leadgen_api.py site/workbench/collect.html
+#
+# 全程在 git 里：自动备份 + 完整历史 + 一条命令回滚。绝不在服务器上直接改。
+
+# 密钥与主机可用环境变量覆盖：原来写死了某台开发机的路径和 ssh 别名，
+# 换一台机器（如 Windows/Git Bash）就跑不起来，只能手工 scp —— 那正是 ship 要杜绝的。
+SSH_KEY="${HQ_SSH_KEY:-$HOME/.ssh/dapeng_server_ed25519}"
+REMOTE="${HQ_REMOTE:-dapeng-server}"
+SSH_OPTS="-o IdentitiesOnly=yes"
+[ -f "$SSH_KEY" ] && SSH_OPTS="-i $SSH_KEY $SSH_OPTS"
+SSHC="ssh $SSH_OPTS"
+WWW="/var/www/huangquechuanmei"
+HEALTH_URL="${HQ_HEALTH_URL:-https://huangquechuanmei.com/api/gen/health}"
+SERVICE_WAIT_SECONDS="${HQ_SERVICE_WAIT_SECONDS:-30}"
+CONTENT_PYTHON="${HQ_CONTENT_PYTHON:-/usr/bin/python3}"
+
+case "$SERVICE_WAIT_SECONDS" in
+  ''|*[!0-9]*) echo "❌ HQ_SERVICE_WAIT_SECONDS 必须是正整数"; exit 1 ;;
+  0) echo "❌ HQ_SERVICE_WAIT_SECONDS 必须大于 0"; exit 1 ;;
+esac
+
+[ $# -lt 2 ] && { echo "用法: ./ship \"提交说明\" 文件1 [文件2 ...]"; exit 1; }
+
+$SSHC -o BatchMode=yes -o ConnectTimeout=8 "$REMOTE" true 2>/dev/null || {
+  echo "❌ 连不上 $REMOTE。设 HQ_REMOTE=user@host（和 HQ_SSH_KEY=私钥路径）再试。"; exit 1; }
+
+# 传文件：有 rsync 就用 rsync；没有（Windows/Git Bash 自带 ssh 但没 rsync）就
+# scp 到 /tmp 再 sudo 安装到位。必须保留原属主 —— 直接 sudo install 会把
+# /var/www 下的文件从 www-data 变成 root。
+push_file(){
+  local src="$1" dir="$2" base dst
+  base=$(basename "$src"); dst="${dir%/}/$base"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -az --rsync-path="sudo rsync" -e "$SSHC" "$src" "$REMOTE:$dir"
+  else
+    local tmp="/tmp/.ship.$$.$base"
+    scp -q $SSH_OPTS "$src" "$REMOTE:$tmp" || return 1
+    $SSHC "$REMOTE" "own=\$(stat -c '%U:%G' '$dst' 2>/dev/null || true); \
+      sudo mkdir -p '$dir' && sudo install -m 644 '$tmp' '$dst' && \
+      { [ -n \"\$own\" ] && sudo chown \"\$own\" '$dst' || true; }; rm -f '$tmp'"
+  fi
+}
+
+# 传目录（带 --delete，清掉线上多余文件）。没有本地 rsync 时借服务器上的 rsync：
+# scp 整个目录到 /tmp，再在服务器侧 rsync --delete 到位，语义完全一致。
+push_dir(){
+  local src="$1" dir="$2"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -az --delete --exclude='__pycache__' --exclude='*.db' --rsync-path="sudo rsync" -e "$SSHC" "$src" "$REMOTE:$dir"
+  else
+    local tmp="/tmp/.shipdir.$$"
+    $SSHC "$REMOTE" "rm -rf '$tmp' && mkdir -p '$tmp'" || return 1
+    scp -qr $SSH_OPTS "${src%/}/." "$REMOTE:$tmp/" || return 1
+    $SSHC "$REMOTE" "sudo mkdir -p '$dir' && \
+      sudo rsync -a --delete --exclude='__pycache__' --exclude='*.db' '$tmp/' '$dir' && rm -rf '$tmp'"
+  fi
+}
+MSG="$1"; shift
+
+# 1. 先拉最新（治"覆盖别人的活"）
+echo "==> 1/5 git pull --rebase（先同步对方的改动）"
+git pull --rebase || { echo "❌ pull 有冲突，先解决再 ship"; exit 1; }
+
+# 2. commit + push（进 git = 自动有备份）
+echo "==> 2/5 commit + push"
+git add "$@" || { echo "❌ 文件路径有误"; exit 1; }
+if git diff --cached --quiet; then
+  echo "  （这些文件没改动，跳过提交）"
+else
+  git commit -m "$MSG" || exit 1
+fi
+git push || { echo "❌ push 失败（先 pull？）"; exit 1; }
+
+# 3. 部署每个文件到对应位置 + 记下要重启的服务
+echo "==> 3/5 部署到服务器"
+RESTART=""
+DEPLOYED=""
+NEED_RELOAD=0   # 部署过 systemd 单元/drop-in 时置 1，重启前必须 daemon-reload，否则改动不生效
+CONTENT_DOMAINS_SYNCED=0
+add_svc(){ for s in $1; do case " $RESTART " in *" $s "*) ;; *) RESTART="$RESTART $s";; esac; done; }
+
+show_service_diagnostics(){
+  local services="${1:-${RESTART:-huangque-content}}" s
+  for s in $services; do
+    echo "  ── $s status / recent logs ──"
+    $SSHC "$REMOTE" "sudo systemctl status '$s' --no-pager -l || true; sudo journalctl -u '$s' -n 60 --no-pager || true" || true
+  done
+}
+
+wait_for_services(){
+  local s
+  [ -z "$RESTART" ] && return 0
+  for s in $RESTART; do
+    echo "  等待 $s 进入 active（最多 ${SERVICE_WAIT_SECONDS}s）"
+    if $SSHC "$REMOTE" "i=0; while [ \$i -lt $SERVICE_WAIT_SECONDS ]; do systemctl is-active --quiet '$s' && exit 0; i=\$((i + 1)); sleep 1; done; exit 1"; then
+      echo "  ✓ $s active"
+    else
+      echo "  ❌ $s 在 ${SERVICE_WAIT_SECONDS}s 内未进入 active"
+      show_service_diagnostics "$s"
+      return 1
+    fi
+  done
+}
+
+# 重启前冒烟：入口模块从 systemd ExecStart 反查，不再和本脚本的映射表二次漂移。
+# 缺文件/坏引用在这里暴露 → 「不重启、直接失败」，而不是重启后 ImportError 崩溃循环。
+smoke_import(){
+  $SSHC "$REMOTE" bash -s -- "$1" "$CONTENT_PYTHON" <<'RS'
+set -u
+svc="$1"; py_bin="$2"
+py=$(systemctl show -p ExecStart --value "$svc" 2>/dev/null | grep -oE '/[^ ;]+\.py' | head -1)
+[ -n "$py" ] || { echo "    ⏭ $svc 定位不到入口脚本，跳过冒烟"; exit 0; }
+wd=$(systemctl show -p WorkingDirectory --value "$svc" 2>/dev/null); [ -n "$wd" ] || wd=$(dirname "$py")
+mod=$(basename "$py" .py)
+if out=$(cd "$wd" && PYTHONDONTWRITEBYTECODE=1 "$py_bin" -c "import $mod" 2>&1); then
+  echo "    ✓ $svc: import $mod 通过"
+else
+  echo "    ❌ $svc: import $mod 失败 —— 中止，不重启（避免崩溃循环）"
+  printf '%s\n' "$out" | tail -8 | sed 's/^/       /'
+  exit 1
+fi
+RS
+}
+
+# 重启后置条件，两条一起断言：
+#   1. 服务启动时间晚于本次 ship 开始重启的时刻 → 证明 restart 真的发生了（不是静默没动）
+#   2. 没有任何 EnvironmentFile 比启动时间新   → 证明进程加载的是最新配置
+# 第 2 条抓的正是这个坑：配置写在重启之后，值进了文件却没进进程，「看起来上线了、实际没生效」。
+check_restart_effective(){
+  $SSHC "$REMOTE" bash -s -- "$1" "$2" <<'RS'
+set -u
+svc="$1"; t0="$2"
+ts=$(systemctl show -p ActiveEnterTimestamp --value "$svc" 2>/dev/null)
+[ -n "$ts" ] || { echo "    ⏭ $svc 取不到启动时间，跳过校验"; exit 0; }
+started=$(date -d "$ts" +%s 2>/dev/null) || { echo "    ⏭ $svc 启动时间无法解析，跳过校验"; exit 0; }
+
+if [ "$started" -lt "$t0" ]; then
+  echo "    ❌ $svc: 启动时间早于本次部署 —— restart 没有真的发生"
+  exit 1
+fi
+
+stale=""
+for f in $(systemctl show -p EnvironmentFiles --value "$svc" 2>/dev/null | tr ' ' '\n' | grep '^/'); do
+  m=$(sudo stat -c %Y "$f" 2>/dev/null) || continue
+  [ "$m" -gt "$started" ] && stale="$stale $f"
+done
+if [ -n "$stale" ]; then
+  echo "    ❌ $svc: 以下 env 文件比进程启动时间还新，新配置没被加载：$stale"
+  exit 1
+fi
+echo "    ✓ $svc 重启生效、配置已加载"
+RS
+}
+for f in "$@"; do
+  case "$f" in
+    server/auth_server.py) dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
+    server/content_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-content ;;
+    server/content_domains/*) dest=/home/ubuntu/content-api/content_domains/;  svc=huangque-content ;;
+    server/admin_api.py)   dest=/home/ubuntu/content-api/;  svc=huangque-admin ;;
+    server/leadgen_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-leadgen-api ;;
+    server/imggen_api.py)  dest=/home/ubuntu/content-api/;  svc=huangque-imggen-api ;;
+    server/dl_service.py)  dest=/home/ubuntu/dl-service/;   svc=huangque-dl ;;
+    server/tikhub.py)      dest=/home/ubuntu/content-api/;  svc="huangque-leadgen-api huangque-content huangque-imggen-api" ;;
+    scripts/drift_sentinel.py) dest=/home/ubuntu/hq-drift/; svc="" ;;
+    # systemd 单元与 drop-in。原来不在映射表里，只能手工 scp + daemon-reload —— 漏一步就出事：
+    # leadgen 曾因单元没加载 auth.env 而拿不到 HQ_INTERNAL_TOKEN，退点全部静默回退直写。
+    deploy/systemd/*.service.d/*.conf)
+             unit="${f#deploy/systemd/}"; unit="${unit%%/*}"          # huangque-xxx.service
+             dest="/etc/systemd/system/${unit}.d/"
+             svc="${unit%.service}"; NEED_RELOAD=1 ;;
+    deploy/systemd/*.service)
+             unit="$(basename "$f")"
+             dest=/etc/systemd/system/
+             svc="${unit%.service}"; NEED_RELOAD=1 ;;
+    deploy/systemd/*.example) echo "  ⏭ $f 只是示例，不部署"; continue ;;
+    site/admin/*)          dest="$WWW/admin/"; svc="" ;;
+    site/workbench/*)      dest="$WWW/workbench/"; svc="" ;;
+    site/*)  rel="${f#site/}"
+             case "$rel" in */*) dest="$WWW/${rel%/*}/" ;; *) dest="$WWW/" ;; esac
+             svc="" ;;
+    *) echo "  ⚠ 不认识 $f —— 不知道部署到哪，跳过（需要的话告诉我加进映射）"; continue ;;
+  esac
+  case "$dest" in /etc/systemd/system/*)
+    $SSHC "$REMOTE" "sudo mkdir -p $dest" || { echo "  ❌ $dest 创建失败"; exit 1; } ;;
+  esac
+  if [ "$f" = "scripts/drift_sentinel.py" ]; then
+    $SSHC "$REMOTE" "mkdir -p /home/ubuntu/hq-drift" || { echo "  ❌ hq-drift 目录创建失败"; exit 1; }
+  fi
+  push_file "$f" "$dest" \
+    && echo "  ✓ $f → $dest" || { echo "  ❌ $f 部署失败"; exit 1; }
+  DEPLOYED="$DEPLOYED $f"
+  case "$f" in
+    server/content_api.py|server/content_domains/*)
+      if [ "$CONTENT_DOMAINS_SYNCED" = "0" ] && [ -d server/content_domains ]; then
+        $SSHC "$REMOTE" "sudo mkdir -p /home/ubuntu/content-api/content_domains" || { echo "  ❌ content_domains 目录创建失败"; exit 1; }
+        push_dir server/content_domains/ /home/ubuntu/content-api/content_domains/ \
+          && echo "  ✓ server/content_domains/ → /home/ubuntu/content-api/content_domains/（整目录同步）" \
+          || { echo "  ❌ content_domains 整目录部署失败"; exit 1; }
+        CONTENT_DOMAINS_SYNCED=1
+      fi
+      ;;
+  esac
+  add_svc "$svc"
+done
+
+# 代码已同步但旧进程仍在运行。先对每个待重启服务做纯 import 冒烟，
+# 把缺模块/坏引用挡在 restart 前，避免把可用服务重启成崩溃循环。
+# 入口从 systemd ExecStart 反查（见 smoke_import），覆盖全部服务而非只有 content。
+if [ -n "$RESTART" ]; then
+  echo "==> 3.5/5 import 冒烟（每个待重启服务）"
+  for s in $RESTART; do smoke_import "$s" || exit 1; done
+fi
+
+# 4. 重启受影响的后端服务（纯前端则跳过）
+if [ "$NEED_RELOAD" = "1" ]; then
+  echo "==> 4/5 systemd 单元有改动，先 daemon-reload"
+  $SSHC "$REMOTE" "sudo systemctl daemon-reload" || { echo "  ❌ daemon-reload 失败"; exit 1; }
+fi
+if [ -n "$RESTART" ]; then
+  echo "==> 4/5 重启服务:$RESTART"
+  # 取「服务器」时间做基准（ActiveEnterTimestamp 是服务器时钟，用本地时间会因时差误判）
+  T0=$($SSHC "$REMOTE" "date +%s") || { echo "  ❌ 取服务器时间失败"; exit 1; }
+  $SSHC "$REMOTE" "sudo systemctl restart $RESTART" || { echo "  ❌ 重启失败"; exit 1; }
+  wait_for_services || exit 1
+  echo "  校验重启真的生效、配置已加载"
+  for s in $RESTART; do check_restart_effective "$s" "$T0" || exit 1; done
+else
+  echo "==> 4/5 纯前端，无需重启"
+fi
+
+# 部署后校验：只校验本次 ship 实际推送的文件线上 == git origin/main。
+if [ -n "$DEPLOYED" ]; then
+  $SSHC "$REMOTE" "test -f /home/ubuntu/hq-drift/drift_sentinel.py && python3 /home/ubuntu/hq-drift/drift_sentinel.py --verify-deploy $DEPLOYED" \
+    && echo "  ✓ 部署后漂移校验通过" || { echo "  ❌ 部署后漂移校验失败"; exit 1; }
+  $SSHC "$REMOTE" "python3 /home/ubuntu/hq-drift/drift_sentinel.py --bless-deploy $DEPLOYED" >/dev/null 2>&1 \
+    && echo "  ✓ 本次部署文件已记录" || echo "  （跳过部署记录：哨兵未安装）"
+fi
+
+# 服务器 checkout 只作为 git 镜像，不允许在服务器上直接提交热改。
+$SSHC "$REMOTE" 'if [ -d /home/ubuntu/huangque-main-site/.git ]; then
+  cd /home/ubuntu/huangque-main-site &&
+  mkdir -p .githooks-readonly &&
+  cat > .githooks-readonly/pre-commit <<'"'"'EOF'"'"'
+#!/usr/bin/env bash
+echo "禁止在服务器 checkout 直接提交。请在本地分支开 PR，合并后用 ./ship 部署。" >&2
+exit 1
+EOF
+  chmod +x .githooks-readonly/pre-commit &&
+  git config core.hooksPath .githooks-readonly
+fi' >/dev/null 2>&1 && echo "  ✓ 服务器 checkout 提交保护已安装" || echo "  （跳过 checkout 提交保护）"
+
+# 5. 验证 + 给回滚命令
+echo "==> 5/5 验证"
+if ! HEALTH_CODE=$(curl -sS -o /dev/null -w "%{http_code}" "$HEALTH_URL" --max-time 10); then
+  echo "  ❌ 健康检查请求失败: ${HEALTH_URL} (HTTP ${HEALTH_CODE:-000})"
+  show_service_diagnostics
+  exit 1
+fi
+case "$HEALTH_CODE" in
+  2??) echo "  ✓ 健康检查: HTTP $HEALTH_CODE" ;;
+  *)
+    echo "  ❌ 健康检查未通过: HTTP $HEALTH_CODE ($HEALTH_URL)"
+    show_service_diagnostics
+    exit 1
+    ;;
+esac
+SHA=$(git rev-parse --short HEAD)
+echo "✅ 上线完成 | 本次提交 $SHA"
+echo "   ↩ 要回滚这次：  git revert $SHA --no-edit && ./ship \"回滚 $SHA\" $*"

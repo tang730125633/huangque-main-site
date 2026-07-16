@@ -1,0 +1,73 @@
+/* ============================================================
+   黄雀 AI · Cloud Design 落地 — 共享基座 cloud.css
+   暗色"作战台 + 黄雀金" · 由 claude.ai/design 设计稿 1:1 转写
+   token / 字体 / 背景层 / keyframes / 滚动入场 / 通用 hover
+   ============================================================ */
+:root{
+  --bg:#070b13; --txt:#eaf1fa; --muted:#94a4bb; --faint:#5c6b82;
+  --gold:#e7b24c; --gold2:#f4cd72; --gold3:#f6d488; --gold-deep:#c8902f;
+  --cyan:#2dd4bf; --pink:#f4708a;
+  --line:rgba(148,164,187,.08); --line2:rgba(148,164,187,.14); --line3:rgba(148,164,187,.18);
+  --panel-a:rgba(16,24,39,.7); --panel-b:rgba(12,18,32,.55);
+  --sans:'Noto Sans SC',-apple-system,BlinkMacSystemFont,system-ui,'PingFang SC','Microsoft YaHei','Segoe UI',sans-serif;
+  --mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+}
+*{ box-sizing:border-box; }
+html,body{ margin:0; padding:0; }
+body{
+  background:var(--bg); color:var(--txt); font-family:var(--sans);
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+}
+a{ color:inherit; text-decoration:none; }
+button{ font-family:inherit; }
+.mono{ font-family:var(--mono); font-variant-numeric:tabular-nums; }
+::selection{ background:rgba(231,178,76,.28); }
+::-webkit-scrollbar{ width:10px; height:10px; }
+::-webkit-scrollbar-track{ background:transparent; }
+::-webkit-scrollbar-thumb{ background:rgba(148,164,187,.18); border-radius:99px; border:2px solid transparent; background-clip:padding-box; }
+::-webkit-scrollbar-thumb:hover{ background:rgba(148,164,187,.32); border:2px solid transparent; background-clip:padding-box; }
+
+/* ===== keyframes（沿用设计稿）===== */
+@keyframes hq-fadeUp{ from{ opacity:0; transform:translateY(16px); } to{ opacity:1; transform:none; } }
+@keyframes hq-fadeIn{ from{ opacity:0; } to{ opacity:1; } }
+@keyframes hq-spin{ to{ transform:rotate(360deg); } }
+@keyframes hq-pulse{ 0%,100%{ opacity:1; transform:scale(1); } 50%{ opacity:.45; transform:scale(.85); } }
+@keyframes hq-float{ 0%,100%{ transform:translateY(0); } 50%{ transform:translateY(-10px); } }
+@keyframes hq-shimmer{ 0%{ background-position:-180% 0; } 100%{ background-position:180% 0; } }
+@keyframes hq-ring{ to{ stroke-dashoffset:var(--to); } }
+@keyframes hq-toast{ from{ opacity:0; transform:translate(-50%,12px); } to{ opacity:1; transform:translate(-50%,0); } }
+@keyframes hq-pop{ from{ transform:scale(.95); } to{ transform:scale(1); } }
+
+/* ===== 固定背景层：径向辉光 + 网格 + 金色粒子 canvas ===== */
+.hq-bg{ position:fixed; inset:0; z-index:0; overflow:hidden; background:#070b13; pointer-events:none; }
+.hq-bg .glow{ position:absolute; inset:0; background:
+  radial-gradient(1100px 700px at 8% -8%, rgba(231,178,76,.14), transparent 60%),
+  radial-gradient(900px 620px at 100% 0%, rgba(45,212,191,.07), transparent 58%),
+  radial-gradient(1000px 800px at 50% 120%, rgba(231,178,76,.06), transparent 60%); }
+.hq-bg .grid{ position:absolute; inset:0; opacity:.5;
+  background-image:linear-gradient(rgba(148,164,187,.04) 1px, transparent 1px), linear-gradient(90deg, rgba(148,164,187,.04) 1px, transparent 1px);
+  background-size:46px 46px;
+  -webkit-mask-image:radial-gradient(circle at 50% 30%, #000, transparent 78%);
+  mask-image:radial-gradient(circle at 50% 30%, #000, transparent 78%); }
+.hq-bg canvas{ position:absolute; inset:0; width:100%; height:100%; }
+
+/* ===== 滚动入场 ===== */
+html.fx .reveal{ opacity:0; transform:translateY(18px); transition:opacity .7s cubic-bezier(.22,1,.36,1), transform .7s cubic-bezier(.22,1,.36,1); will-change:opacity,transform; }
+html.fx .reveal.in{ opacity:1; transform:none; }
+
+/* ===== 通用 hover（替代设计稿 style-hover）===== */
+.hv-lift{ transition:.2s; }
+.hv-lift:hover{ transform:translateY(-3px); }
+.hv-gold{ transition:.18s; }
+.hv-gold:hover{ border-color:rgba(231,178,76,.4)!important; }
+.hv-soft{ transition:.16s; }
+.hv-soft:hover{ background:rgba(148,164,187,.06)!important; color:#eaf1fa!important; }
+.btn-gold{ background:linear-gradient(135deg,var(--gold2),var(--gold)); color:#1a1206; border:none; cursor:pointer; transition:.2s; }
+.btn-gold:hover{ transform:translateY(-1px); }
+.lk{ transition:.16s; cursor:pointer; }
+.lk:hover{ color:var(--gold)!important; }
+
+@media (prefers-reduced-motion: reduce){
+  *{ animation-duration:.001ms !important; animation-iteration-count:1 !important; }
+  html.fx .reveal{ opacity:1; transform:none; transition:none; }
+}

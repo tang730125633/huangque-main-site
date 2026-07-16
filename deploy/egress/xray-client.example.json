@@ -1,0 +1,40 @@
+{
+  "_comment": "作图出境隧道客户端示例。复制为 /home/ubuntu/egress/xray-client.json(600)，把 <占位符> 换成 VPS 节点真实值。真实文件不进 git。",
+  "_source": "值来自 3X-UI 面板导出的 vless:// 分享链接：vless://<UUID>@<VPS_IP>:<PORT>?security=reality&pbk=<PUBLIC_KEY>&sni=<SNI>&sid=<SHORT_ID>&flow=<FLOW>",
+  "log": {"loglevel": "warning"},
+  "inbounds": [
+    {
+      "_comment": "本地 http 代理口，供 content-api/imggen 的 urllib 用（EGRESS_PROXY=http://127.0.0.1:10809）",
+      "listen": "127.0.0.1",
+      "port": 10809,
+      "protocol": "http"
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "<VPS_IP>",
+            "port": 11872,
+            "users": [
+              {"id": "<UUID>", "encryption": "none", "flow": "<FLOW: xtls-rprx-vision 或 xtls-rprx-vision-udp443>"}
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "<SNI: 如 www.oracle.com>",
+          "fingerprint": "chrome",
+          "publicKey": "<PUBLIC_KEY>",
+          "shortId": "<SHORT_ID>",
+          "spiderX": "/"
+        }
+      }
+    }
+  ]
+}

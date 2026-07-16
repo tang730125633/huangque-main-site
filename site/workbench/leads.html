@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>获客 · 黄雀 AI 工作台</title>
+<link rel="icon" href="../assets/cloud/logo-bird.png">
+<link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
+<link rel="stylesheet" href="../assets/cloud.css?v=8">
+<script src="theme-init.js?v=11eb385e"></script>
+<style>
+  body{ overflow:hidden; }
+  .gAcq{ grid-template-columns:repeat(4,1fr); }
+  .hqRow{ transition:.16s; }
+  .hqRow:hover{ background:rgba(231,178,76,.05); }
+  /* ponytail: row layout/border in CSS, not per-row inline */
+  .hqRow.lrowg{ padding:0 20px; min-height:44px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); }
+  .lrowg{ display:grid; grid-template-columns:40px minmax(170px,1.3fr) 112px 80px minmax(220px,2fr) 116px 180px 148px 80px; gap:12px; min-width:1320px; }
+  /* kwchip base state — JS overrides inline on click */
+  .kwchip{ padding:6px 12px; font-size:13px; border-radius:8px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; }
+  @media (max-width:1100px){ .gAcq{ grid-template-columns:repeat(2,1fr);} }
+  @media (max-width:560px){ .gAcq{ grid-template-columns:1fr;} }
+</style>
+<link rel="stylesheet" href="theme.css?v=5873a2f4">
+</head>
+<body>
+<div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
+
+<div class="hq-app"><div class="hq-content" data-active="leads">
+  <div>
+    <div style="margin-bottom:24px;">
+      <h1 style="margin:0; font-size:24px; font-weight:700; display:flex; align-items:center; gap:10px;"><img src="../assets/icons/ic_leads.png" alt="" style="width:30px;height:30px;object-fit:contain;flex:none;">关键词获客</h1>
+      <p style="margin:8px 0 0; font-size:14px; color:#94a4bb;">关键词进 → 抖音/小红书搜视频、扒评论区、AI 意图过滤 → 真实精准客户名单（含 IP 属地）</p>
+    </div>
+
+    <!-- KPI 概览条 -->
+    <div class="gAcq" style="display:grid; gap:16px; margin-bottom:20px;">
+      <div class="hv-lift lead-kpi-card" style="padding:16px; border:1px solid rgba(231,178,76,.22); border-radius:14px; background:linear-gradient(165deg, rgba(231,178,76,.07), rgba(12,18,32,.5));">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;"><div style="width:32px; height:32px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:8px; background:rgba(231,178,76,.12); color:#e7b24c;"><span style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg></span></div><span style="font-size:13px; font-weight:600;">精准客户</span></div>
+        <div style="display:flex; align-items:baseline; gap:8px;"><span id="kLeads" class="mono" style="font-size:32px; font-weight:700; letter-spacing:-1px; color:#e7b24c;">—</span><span style="font-size:12px; color:#94a4bb;">真实需求客户</span></div>
+      </div>
+      <div class="hv-lift lead-kpi-card" style="padding:16px; border:1px solid rgba(148,164,187,.1); border-radius:14px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5));">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;"><div style="width:32px; height:32px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:8px; background:rgba(244,112,138,.12); color:#f4708a;"><span style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6M14 11v6"/></svg></span></div><span style="font-size:13px; font-weight:600;">中介噪音</span></div>
+        <div style="display:flex; align-items:baseline; gap:8px;"><span id="kSpam" class="mono" style="font-size:32px; font-weight:700; letter-spacing:-1px; color:#f4708a;">—</span><span style="font-size:12px; color:#94a4bb;">已自动过滤</span></div>
+      </div>
+      <div class="hv-lift lead-kpi-card" style="padding:16px; border:1px solid rgba(148,164,187,.1); border-radius:14px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5));">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;"><div style="width:32px; height:32px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:8px; background:rgba(45,212,191,.12); color:#2dd4bf;"><span style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 11.5a8.4 8.4 0 0 1-9 8 9 9 0 0 1-4-1l-5 1 1-4a8.4 8.4 0 0 1-1-4 8.4 8.4 0 0 1 9-8 8.4 8.4 0 0 1 9 8z"/></svg></span></div><span style="font-size:13px; font-weight:600;">闲聊评论</span></div>
+        <div style="display:flex; align-items:baseline; gap:8px;"><span id="kChat" class="mono" style="font-size:32px; font-weight:700; letter-spacing:-1px; color:#2dd4bf;">—</span><span style="font-size:12px; color:#94a4bb;">无明确意向</span></div>
+      </div>
+      <div class="hv-lift lead-kpi-card" style="padding:16px; border:1px solid rgba(148,164,187,.1); border-radius:14px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5));">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;"><div style="width:32px; height:32px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:8px; background:rgba(148,164,187,.1); color:#94a4bb;"><span style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span></div><span style="font-size:13px; font-weight:600;">评论总数</span></div>
+        <div style="display:flex; align-items:baseline; gap:8px;"><span id="kTotal" class="mono" style="font-size:32px; font-weight:700; letter-spacing:-1px; color:#eaf1fa;">—</span><span style="font-size:12px; color:#94a4bb;">本次采集总量</span></div>
+      </div>
+    </div>
+
+    <!-- 搜索行 -->
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px; flex-wrap:wrap;">
+      <div style="flex:1; max-width:520px; display:flex; align-items:center; gap:12px; padding:0 16px; height:44px; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px;">
+        <span style="display:flex; width:16px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span>
+        <input id="kw" autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" placeholder="输入行业关键词，如 美业获客 / 皮肤管理…（也可直接粘抖音视频/主页链接）" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
+      </div>
+      <button id="goBtn" class="btn-gold" style="padding:0 24px; height:44px; font-size:14px; font-weight:600; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:12px; cursor:pointer; font-family:inherit; box-shadow:0 8px 20px -8px rgba(231,178,76,.55);">开始获客</button>
+      <span style="display:inline-flex; align-items:center; gap:4px; padding:4px 10px; font-size:12px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.18); border-radius:8px; font-family:'JetBrains Mono',monospace; white-space:nowrap;">30 点</span>
+    </div>
+
+    <!-- 平台选择 -->
+    <div style="display:flex; align-items:flex-start; gap:12px; margin-bottom:16px; flex-wrap:wrap;">
+      <span style="font-size:13px; color:#94a4bb; white-space:nowrap; line-height:32px;">采集平台</span>
+      <div style="display:flex; flex-wrap:wrap; gap:8px;">
+        <label style="display:flex; align-items:center; gap:6px; padding:6px 12px; font-size:13px; border-radius:8px; cursor:pointer; transition:.16s; user-select:none;">
+          <input class="plChk" type="checkbox" value="douyin" checked style="display:none;">抖音
+        </label>
+        <label style="display:flex; align-items:center; gap:6px; padding:6px 12px; font-size:13px; border-radius:8px; cursor:pointer; transition:.16s; user-select:none;">
+          <input class="plChk" type="checkbox" value="xhs" checked style="display:none;">小红书
+        </label>
+        <label style="display:flex; align-items:center; gap:6px; padding:6px 12px; font-size:13px; border-radius:8px; cursor:pointer; transition:.16s; user-select:none;">
+          <input class="plChk" type="checkbox" value="channels" style="display:none;">视频号
+        </label>
+      </div>
+      <div id="chTargetsRow" style="display:none; flex:0 0 100%; margin-top:8px; align-items:flex-start; gap:10px;">
+        <input id="chTargets" autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" placeholder="视频号目标：粘视频链接 / sph号 / finder号（多个用逗号分隔）" style="flex:1; height:36px; padding:0 12px; background:rgba(7,11,19,.5); color:#eaf1fa; border:1px solid rgba(148,164,187,.16); border-radius:8px; font-size:13px; font-family:inherit; outline:none;">
+        <span style="font-size:12px; color:#5c6b82; line-height:1.5; padding-top:10px; white-space:nowrap;">视频号需指定目标号（关键词搜不了全网）</span>
+      </div>
+    </div>
+
+    <!-- 行业关键词 chips -->
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
+      <span style="font-size:13px; color:#94a4bb; white-space:nowrap;">行业关键词推荐</span>
+      <div style="display:flex; flex-wrap:wrap; gap:8px;">
+        <div class="kwchip">美业获客</div>
+        <div class="kwchip">皮肤管理</div>
+        <div class="kwchip">医美获客</div>
+        <div class="kwchip">美容院拓客</div>
+        <div class="kwchip">纹绣获客</div>
+        <div class="kwchip">美甲店拓客</div>
+      </div>
+    </div>
+
+    <!-- 精准客户名单表 -->
+    <div class="leads-table" style="border:1px solid rgba(148,164,187,.1); border-radius:14px; background:linear-gradient(180deg, rgba(16,24,39,.5), rgba(12,18,32,.4)); overflow-x:auto;">
+      <div style="display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid rgba(148,164,187,.08);">
+        <div style="font-size:16px; font-weight:600;">精准客户名单 <span id="cntLabel" style="font-size:13px; color:#5c6b82; font-weight:400;"></span></div>
+        <div style="display:flex; align-items:center; gap:12px;">
+          <select id="histSel" title="历史获客记录" style="display:none; height:30px; max-width:230px; padding:0 8px; background:rgba(7,11,19,.5); color:#94a4bb; border:1px solid rgba(148,164,187,.16); border-radius:8px; font-size:12px; font-family:inherit; cursor:pointer;"></select>
+          <button id="exportBtn" style="display:none; align-items:center; gap:5px; padding:5px 11px; font-size:12px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); border-radius:8px; cursor:pointer; font-family:inherit;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></span>导出名单</button>
+          <div id="statusLine" style="display:flex; align-items:center; gap:7px; font-size:12px; color:#5c6b82;"><span id="statusDot" style="width:6px; height:6px; border-radius:50%; background:#5c6b82;"></span><span id="statusText">待开始 · 输入关键词点「开始获客」</span></div>
+        </div>
+      </div>
+      <div class="lrowg" style="position:sticky; top:0; z-index:2; padding:10px 20px; font-size:12px; color:#5c6b82; background:rgba(13,20,34,.96); border-bottom:1px solid rgba(148,164,187,.07);">
+        <div>#</div><div>昵称</div><div>平台账号</div><div>IP属地</div><div>需求原话</div><div>意向</div><div>跟进</div><div>来源视频</div><div>操作</div>
+      </div>
+      <div id="rows">
+        <div style="padding:64px 20px; text-align:center; color:#5c6b82;">
+          <div style="width:52px; height:52px; margin:0 auto 16px; display:flex; align-items:center; justify-content:center; border-radius:12px; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); color:#e7b24c;"><span style="display:flex; width:24px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span></div>
+          <div style="font-size:14px; color:#94a4bb;">输入行业关键词，点「开始获客」</div>
+          <div style="font-size:12px; margin-top:8px;">系统会真实跑抖音搜视频、扒评论、过滤意图，约 1-3 分钟出名单</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div></div>
+
+<script src="../assets/cloud.js?v=8"></script>
+<script src="cloud-shell.js?v=302ad2ce"></script>
+<script>
+(function(){
+  "use strict";
+  var input=document.getElementById('kw'), goBtn=document.getElementById('goBtn');
+  var rows=document.getElementById('rows'), cntLabel=document.getElementById('cntLabel');
+  var dot=document.getElementById('statusDot'), stat=document.getElementById('statusText');
+  var kLeads=document.getElementById('kLeads'),kSpam=document.getElementById('kSpam'),kChat=document.getElementById('kChat'),kTotal=document.getElementById('kTotal');
+  var poll=null, running=false, lastLeads=[];
+  var GRAD=['150deg,#9a6a3a,#5a3d22','150deg,#b04a60,#6a2d3d','150deg,#2c8478,#15534a','150deg,#7a5aa8,#3d2d5a','150deg,#3a6a9a,#22405a'];
+  var CRM_STATUSES=['待跟进','跟进中','已加微','已成交','无效'];
+  var CRM_INTENTS=['高意向','咨询','价格敏感','围观'];
+
+  function tok(){ return '__cookie__'; }
+  function getPlatforms(){ return Array.from(document.querySelectorAll('.plChk:checked')).map(function(el){return el.value;}); }
+  function getChannelsTargets(){
+    var el=document.getElementById('chTargets'); if(!el||!el.value.trim()) return [];
+    return el.value.split(',').map(function(s){return s.trim();}).filter(Boolean);
+  }
+  function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+  function crmStore(){
+    try{ return JSON.parse(localStorage.getItem('hq_leads_crm')||'{}')||{}; }catch(e){ return {}; }
+  }
+  function saveCrm(id, patch){
+    if(!id) return;
+    var all=crmStore(), cur=all[id]||{};
+    Object.keys(patch||{}).forEach(function(k){ cur[k]=patch[k]; });
+    all[id]=cur; localStorage.setItem('hq_leads_crm', JSON.stringify(all));
+    lastLeads=lastLeads.map(function(L){ return L.lead_id===id ? Object.assign({}, L, cur) : L; });
+    fetch('/api/gen/leads/crm',{
+      method:'POST',
+      credentials:'include',
+      headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},
+      body:JSON.stringify(Object.assign({lead_id:id}, cur))
+    }).then(function(r){ return r.json().then(function(d){return {s:r.status,d:d};}); })
+      .then(function(x){
+        if(x.s===200 && x.d && x.d.crm){
+          var all2=crmStore(); all2[id]=Object.assign({}, all2[id]||{}, x.d.crm);
+          localStorage.setItem('hq_leads_crm', JSON.stringify(all2));
+        }
+      }).catch(function(){});
+  }
+  function withCrm(L){
+    var saved=(crmStore()[L.lead_id]||{});
+    return Object.assign({}, L, {intent:L.intent||'高意向', intent_score:L.intent_score||0, intent_reason:L.intent_reason||'', follow_status:L.follow_status||'待跟进', follow_note:L.follow_note||''}, saved);
+  }
+  function optHTML(items, val){
+    return items.map(function(x){ return '<option value="'+esc(x)+'"'+(x===val?' selected':'')+'>'+esc(x)+'</option>'; }).join('');
+  }
+  function loadRemoteCrm(leads){
+    var ids=(leads||[]).map(function(L){ return L.lead_id; }).filter(Boolean);
+    if(!ids.length) return Promise.resolve(false);
+    return fetch('/api/gen/leads/crm?ids='+encodeURIComponent(ids.join(',')),{
+      credentials:'include',
+      headers:{'Authorization':'Bearer '+tok()}
+    }).then(function(r){ return r.ok ? r.json() : null; }).then(function(d){
+      var items=(d&&d.items)||{}, keys=Object.keys(items);
+      if(!keys.length) return false;
+      var all=crmStore();
+      keys.forEach(function(id){ all[id]=Object.assign({}, all[id]||{}, items[id]); });
+      localStorage.setItem('hq_leads_crm', JSON.stringify(all));
+      lastLeads=lastLeads.map(withCrm);
+      return true;
+    }).catch(function(){ return false; });
+  }
+  function setStatus(t,c){ stat.innerHTML=t; dot.style.background=c||'#5c6b82'; if(c==='#2dd4bf'){dot.style.animation='hq-pulse 2s infinite';}else{dot.style.animation='none';} }
+  function num(n){ return (n==null?'—':String(n)).replace(/\B(?=(\d{3})+(?!\d))/g,','); }
+  function setKPIs(r){ kLeads.textContent=num(r.leads_count); kSpam.textContent=num(r.spam); kChat.textContent=num(r.chat); kTotal.textContent=num(r.total); }
+
+  function platformBadge(p){
+    var map={douyin:{t:'抖音',bg:'rgba(232,72,72,.12)',c:'#e84848'},xhs:{t:'小红书',bg:'rgba(255,77,93,.12)',c:'#ff4d5d'},channels:{t:'视频号',bg:'rgba(7,193,96,.12)',c:'#07c160'}};
+    var m=map[p]||{t:esc(p||''),bg:'rgba(148,164,187,.08)',c:'#94a4bb'};
+    return m.t?('<span style="font-size:11px; padding:2px 6px; border-radius:4px; background:'+m.bg+'; color:'+m.c+'; display:inline-block; margin-top:3px;">'+m.t+'</span>'):'';
+  }
+
+  function rowHTML(L,i){
+    L=withCrm(L);
+    var n=L.nickname||'匿名', g=GRAD[i%GRAD.length], first=(n.trim()[0]||'客');
+    var uid=((L.platform==='xhs'?(L.red_id||L.user_unique_id):L.user_unique_id))||'—';
+    var src=L.title||'—';
+    var url=L.profile_url||'';
+    var leadId=esc(L.lead_id||'');
+    var intentScore=Number(L.intent_score||0);
+    var intentReason=L.intent_reason||'规则分级';
+    var scoreColor=intentScore>=80?'#2dd4bf':(intentScore>=60?'#e7b24c':'#94a4bb');
+    var nameInner=url
+      ?'<a href="'+esc(url)+'" target="_blank" rel="noopener" style="font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#eaf1fa; text-decoration:none;" class="hv-gold">'+esc(n)+'</a>'
+      :'<div style="font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+esc(n)+'</div>';
+    // 小红书主页打不开(平台墙,无 xsec_token)→ 复制小红书号去 app 搜;其余平台进主页
+    var actionHTML=(L.platform==='xhs' && L.red_id)
+      ?'<button class="hv-gold" onclick="navigator.clipboard.writeText(\''+esc(L.red_id)+'\');this.textContent=\'已复制 ✓\';" title="复制小红书号,去小红书 App 搜索联系" style="display:inline-flex; align-items:center; gap:5px; padding:5px 10px; font-size:12px; font-weight:500; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); border-radius:8px; cursor:pointer; white-space:nowrap; font-family:inherit;">复制小红书号</button>'
+      :url
+      ?'<a href="'+esc(url)+'" target="_blank" rel="noopener" class="hv-gold" style="display:inline-flex; align-items:center; gap:5px; padding:5px 10px; font-size:12px; font-weight:500; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.2); border-radius:8px; cursor:pointer; white-space:nowrap; text-decoration:none;"><span style="display:flex; width:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/></svg></span>进主页</a>'
+      :'<div style="display:inline-flex; align-items:center; gap:5px; padding:5px 10px; font-size:12px; font-weight:500; color:#3d4a5c; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.1); border-radius:8px; cursor:default; white-space:nowrap;">— 无主页</div>';
+    return '<div class="hqRow lrowg">'+
+      '<div class="mono" style="font-size:12px; color:#5c6b82;">'+(i+1<10?'0':'')+(i+1)+'</div>'+
+      '<div style="display:flex; align-items:center; gap:8px; min-width:0;"><div style="width:34px; height:34px; flex:none; border-radius:50%; background:linear-gradient('+g+'); display:flex; align-items:center; justify-content:center; color:#fff; font-size:13px; font-weight:600;">'+esc(first)+'</div><div style="min-width:0;">'+nameInner+'</div></div>'+
+      '<div style="min-width:0;"><div class="mono" style="font-size:12px; color:#94a4bb; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+esc(uid)+'</div>'+platformBadge(L.platform)+'</div>'+
+      '<div class="mono" style="font-size:12px; color:#94a4bb;">'+esc(L.ip_location||'—')+'</div>'+
+      '<div style="font-size:12px; color:#cdd7e6; line-height:1.55;">"'+esc(L.content||'')+'"</div>'+
+      '<div style="display:grid;gap:5px;"><select class="crm-intent" data-id="'+leadId+'" style="width:100%; height:30px; padding:0 7px; background:rgba(231,178,76,.08); color:#e7b24c; border:1px solid rgba(231,178,76,.2); border-radius:8px; font-size:12px; font-family:inherit;">'+optHTML(CRM_INTENTS,L.intent)+'</select><div title="'+esc(intentReason)+'" style="font-size:10.5px;line-height:1.2;color:'+scoreColor+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">智能 '+(intentScore||'—')+' · '+esc(intentReason)+'</div></div>'+
+      '<div style="display:grid; gap:6px;"><select class="crm-status" data-id="'+leadId+'" style="width:100%; height:30px; padding:0 7px; background:rgba(7,11,19,.45); color:#eaf1fa; border:1px solid rgba(148,164,187,.18); border-radius:8px; font-size:12px; font-family:inherit;">'+optHTML(CRM_STATUSES,L.follow_status)+'</select><input class="crm-note" data-id="'+leadId+'" value="'+esc(L.follow_note||'')+'" placeholder="跟进备注" style="width:100%; height:28px; box-sizing:border-box; padding:0 8px; background:rgba(7,11,19,.32); color:#cdd7e6; border:1px solid rgba(148,164,187,.12); border-radius:8px; font-size:12px; font-family:inherit; outline:none;"></div>'+
+      (L.video_url
+        ? '<a href="'+esc(L.video_url)+'" target="_blank" rel="noopener" class="hv-gold" style="display:block; font-size:12px; color:#e7b24c; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-decoration:none;">'+esc(src)+'</a>'
+        : '<div style="font-size:12px; color:#94a4bb; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+esc(src)+'</div>')+
+      actionHTML+
+    '</div>';
+  }
+  function renderLeads(leads, skipRemote){
+    lastLeads=(leads||[]).map(withCrm);
+    var expBtn=document.getElementById('exportBtn');
+    if(!leads || !leads.length){
+      rows.innerHTML='<div style="padding:54px 20px; text-align:center; color:#94a4bb; font-size:13px;">本次没从评论里过滤到精准客户，换个关键词再试。</div>';
+      cntLabel.textContent=''; if(expBtn) expBtn.style.display='none'; return;
+    }
+    rows.innerHTML=lastLeads.map(rowHTML).join('');
+    cntLabel.textContent='（共 '+lastLeads.length+' 条）';
+    if(expBtn) expBtn.style.display='inline-flex';
+    if(!skipRemote){
+      loadRemoteCrm(lastLeads).then(function(changed){ if(changed) renderLeads(lastLeads, true); });
+    }
+  }
+
+  function exportCSV(){
+    if(!lastLeads.length) return;
+    var header='平台,昵称,平台号,IP属地,意向,智能分,分级依据,跟进状态,跟进备注,需求原话,来源视频,视频链接,主页链接\n';
+    var body=lastLeads.map(function(L){
+      function q(s){ s=String(s==null?'':s); return '"'+s.replace(/"/g,'""')+'"'; }
+      L=withCrm(L);
+      return [q(L.platform),q(L.nickname),q(L.user_unique_id),q(L.ip_location),q(L.intent),q(L.intent_score),q(L.intent_reason),q(L.follow_status),q(L.follow_note),q(L.content),q(L.title),q(L.video_url),q(L.profile_url)].join(',');
+    }).join('\n');
+    var blob=new Blob(['﻿'+header+body],{type:'text/csv;charset=utf-8'});
+    var a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+    a.download='leads_'+Date.now()+'.csv'; document.body.appendChild(a); a.click(); a.remove();
+  }
+  function busy(b){ running=b; goBtn.style.opacity=b?'.65':'1'; goBtn.style.pointerEvents=b?'none':'auto'; goBtn.textContent=b?'获客中…':'开始获客'; }
+
+  function start(){
+    if(running) return;
+    var kw=(input.value||'').trim();
+    var platforms=getPlatforms();
+    if(!platforms.length){ setStatus('请至少选择一个平台','#f4708a'); return; }
+    var chTargets=getChannelsTargets();
+    if(platforms.length===1 && platforms[0]==='channels' && !chTargets.length){
+      setStatus('视频号需填写目标号（视频号搜不了全网）','#f4708a');
+      document.getElementById('chTargets').focus(); return;
+    }
+    if(!kw && !chTargets.length){ setStatus('请先输入关键词或视频号目标','#f4708a'); input.focus(); return; }
+    var t=tok(); if(!t){ HQ.login(); return; }
+    busy(true); setStatus('提交任务中…','#2dd4bf');
+    rows.innerHTML='<div style="padding:64px 20px; text-align:center; color:#94a4bb;"><div style="width:34px;height:34px;margin:0 auto 16px;border:3px solid rgba(148,164,187,.18);border-top-color:#e7b24c;border-radius:50%;animation:hq-spin .8s linear infinite;"></div><div style="font-size:14px;">正在跑多平台 · 搜视频 → 扒评论 → 意图过滤</div><div style="font-size:12px;margin-top:8px;color:#5c6b82;">约 1-3 分钟，请勿关闭页面</div></div>';
+    var body={keyword:kw, platforms:platforms, count:20, pages:1, channels_targets:chTargets};
+    var t0=Date.now();
+    fetch('/api/gen/leads',{method:'POST',headers:{'Authorization':'Bearer '+t,'Content-Type':'application/json'},body:JSON.stringify(body)})
+      .then(function(r){ return r.json().then(function(d){return {s:r.status,d:d};}); })
+      .then(function(x){
+        if(x.s===401){ HQ.login(); return; }
+        if(x.s===402){ busy(false); setStatus('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>','#f4708a'); rows.innerHTML=''; return; }
+        if(!x.d.job_id){ busy(false); setStatus('提交失败：'+((x.d&&x.d.detail)||'未知错误'),'#f4708a'); rows.innerHTML=''; return; }
+        if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
+        localStorage.setItem('hq_active_leads_job', JSON.stringify({id:x.d.job_id, t0:t0, kw:kw}));
+        watch(x.d.job_id, t0);
+      }).catch(function(){ busy(false); setStatus('网络错误，请重试','#f4708a'); rows.innerHTML=''; });
+  }
+
+  function watch(id, t0){
+    if(poll) clearInterval(poll);
+    setStatus('搜索中…多平台抓取+评论过滤','#2dd4bf');
+    var t=tok();
+    poll=setInterval(function(){
+      fetch('/api/gen/job/'+id,{headers:{'Authorization':'Bearer '+t}}).then(function(r){return r.json();}).then(function(d){
+        var sec=Math.round((Date.now()-t0)/1000);
+        if(d.status==='done'){
+          clearInterval(poll); busy(false); localStorage.removeItem('hq_active_leads_job');
+          if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
+          var r=d.result||{}; setKPIs(r); renderLeads(r.leads||[]);
+          setStatus('完成 · '+(r.leads_count||0)+' 个精准客户 · 去重 '+(r.deduped||0)+' 条（'+sec+'s）','#2bd576');
+          loadHistory(false);          // 本次跑完也进历史下拉
+
+        }else if(d.status==='error'||d.status==='failed'){
+          clearInterval(poll); busy(false); localStorage.removeItem('hq_active_leads_job');
+          setStatus('失败：'+(d.error||'未知错误'),'#f4708a');
+          rows.innerHTML='<div style="padding:54px 20px; text-align:center; color:#f4708a; font-size:13px;">'+esc(d.error||'任务失败')+'</div>';
+        }else if(sec>400){
+          clearInterval(poll); busy(false); localStorage.removeItem('hq_active_leads_job');
+          setStatus('获客超时（'+sec+'s）· 请重试','#f4708a');
+          rows.innerHTML='<div style="padding:54px 20px; text-align:center; color:#94a4bb; font-size:13px;">超时，请换关键词重试</div>';
+        }else{
+          setStatus('搜索中…（'+sec+'s · '+(d.status||'running')+'）','#2dd4bf');
+        }
+      }).catch(function(){});
+    },4000);
+  }
+
+  var expBtn2=document.getElementById('exportBtn');
+  if(expBtn2) expBtn2.onclick=exportCSV;
+  rows.addEventListener('change',function(e){
+    var t=e.target, id=t&&t.getAttribute('data-id');
+    if(t.classList.contains('crm-status')) saveCrm(id,{follow_status:t.value});
+    if(t.classList.contains('crm-intent')) saveCrm(id,{intent:t.value});
+  });
+  rows.addEventListener('input',function(e){
+    var t=e.target, id=t&&t.getAttribute('data-id');
+    if(t.classList.contains('crm-note')) saveCrm(id,{follow_note:t.value});
+  });
+  goBtn.onclick=start;
+  input.addEventListener('keydown',function(e){ if(e.key==='Enter') start(); });
+  document.querySelectorAll('.kwchip').forEach(function(c){ c.onclick=function(){
+    document.querySelectorAll('.kwchip').forEach(function(x){ x.style.color='#94a4bb'; x.style.background='rgba(148,164,187,.05)'; x.style.borderColor='rgba(148,164,187,.14)'; });
+    c.style.color='#e7b24c'; c.style.background='rgba(231,178,76,.1)'; c.style.borderColor='rgba(231,178,76,.3)';
+    input.value=c.textContent.trim(); input.focus();
+  };});
+  // Platform chip toggle + channels-targets visibility
+  document.querySelectorAll('.plChk').forEach(function(cb){
+    var lbl=cb.parentElement;
+    function sync(){
+      if(cb.checked){ lbl.style.color='#e7b24c'; lbl.style.background='rgba(231,178,76,.1)'; lbl.style.borderColor='rgba(231,178,76,.3)'; }
+      else { lbl.style.color='#94a4bb'; lbl.style.background='rgba(148,164,187,.05)'; lbl.style.borderColor='rgba(148,164,187,.14)'; }
+      var chRow=document.getElementById('chTargetsRow');
+      var chCb=document.querySelector('.plChk[value="channels"]');
+      if(chRow && chCb) chRow.style.display=chCb.checked?'flex':'none';
+    }
+    lbl.onclick=function(){ cb.checked=!cb.checked; sync(); };
+    sync();
+  });
+
+  // ===== 历史获客记录（服务端 assets 表持久化，切页/刷新/跑完都能回看，不再丢）=====
+  var histSel=document.getElementById('histSel'), histItems=[];
+  function fmtHistTime(ts){
+    if(!ts) return '';
+    var d=new Date(ts*1000), p=function(n){ return (n<10?'0':'')+n; };
+    return p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());
+  }
+  function renderHistory(item){
+    if(!item) return;
+    var m=item.meta||{};
+    setKPIs(m);
+    if((m.keyword||item.title) && input && !input.value) input.value=m.keyword||item.title;
+    renderLeads(m.leads||[]);
+    setStatus('历史记录 · '+esc(m.keyword||item.title||'获客')+'（'+(m.leads_count||0)+' 客户 · '+fmtHistTime(item.created_at)+'）','#5c6b82');
+  }
+  function loadHistory(autoRender){
+    return fetch('/api/gen/assets?kind=leads&limit=30',{credentials:'include',headers:{'Authorization':'Bearer '+tok()}})
+      .then(function(r){ return r.ok?r.json():null; }).then(function(d){
+        histItems=(d&&d.items)||[];
+        if(!histSel) return;
+        if(!histItems.length){ histSel.style.display='none'; histSel.innerHTML=''; return; }
+        histSel.innerHTML='<option value="">历史记录（'+histItems.length+'）</option>'+histItems.map(function(it,i){
+          var m=it.meta||{};
+          return '<option value="'+i+'">'+esc(m.keyword||it.title||'获客')+' · '+fmtHistTime(it.created_at)+' · '+(m.leads_count||0)+'客户</option>';
+        }).join('');
+        histSel.style.display='';
+        if(autoRender && histItems[0]){ histSel.value='0'; renderHistory(histItems[0]); }
+      }).catch(function(){});
+  }
+  if(histSel) histSel.onchange=function(){
+    var i=parseInt(histSel.value,10);
+    if(isNaN(i)||!histItems[i]) return;
+    renderHistory(histItems[i]);
+  };
+
+  // 初始化：有进行中的任务 → 接上（离开页面再回来不丢，任务在服务器一直在跑）；
+  //         没有 → 自动载入最近一次历史，避免切页回来一片空白。
+  try{
+    var aj=JSON.parse(localStorage.getItem('hq_active_leads_job')||'null');
+    if(aj && aj.id){
+      busy(true);
+      if(aj.kw && input) input.value=aj.kw;
+      setStatus('接上刚才的获客任务…','#2dd4bf');
+      rows.innerHTML='<div style="padding:64px 20px; text-align:center; color:#94a4bb;"><div style="width:34px;height:34px;margin:0 auto 16px;border:3px solid rgba(148,164,187,.18);border-top-color:#e7b24c;border-radius:50%;animation:hq-spin .8s linear infinite;"></div><div style="font-size:14px;">接上刚才的获客任务…（在服务器一直在跑）</div></div>';
+      watch(aj.id, aj.t0||Date.now());
+      loadHistory(false);          // 历史下拉也填上，跑完能切回看
+    }else{
+      loadHistory(true);           // 没有进行中 → 自动载入最近一次
+    }
+  }catch(e){ loadHistory(true); }
+})();
+</script>
+</body>
+</html>

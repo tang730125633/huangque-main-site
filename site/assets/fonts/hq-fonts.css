@@ -1,0 +1,63 @@
+@font-face{
+  font-family:"Noto Sans SC";
+  font-style:normal;
+  font-weight:300;
+  font-display:swap;
+  src:url("./noto-sans-sc-300.woff2") format("woff2");
+}
+@font-face{
+  font-family:"Noto Sans SC";
+  font-style:normal;
+  font-weight:400;
+  font-display:swap;
+  src:url("./noto-sans-sc-400.woff2") format("woff2");
+}
+@font-face{
+  font-family:"Noto Sans SC";
+  font-style:normal;
+  font-weight:500;
+  font-display:swap;
+  src:url("./noto-sans-sc-500.woff2") format("woff2");
+}
+@font-face{
+  font-family:"Noto Sans SC";
+  font-style:normal;
+  font-weight:700;
+  font-display:swap;
+  src:url("./noto-sans-sc-700.woff2") format("woff2");
+}
+@font-face{
+  font-family:"Noto Sans SC";
+  font-style:normal;
+  font-weight:900;
+  font-display:swap;
+  src:url("./noto-sans-sc-900.woff2") format("woff2");
+}
+@font-face{
+  font-family:"JetBrains Mono";
+  font-style:normal;
+  font-weight:400;
+  font-display:swap;
+  src:url("./jetbrains-mono-400.woff2") format("woff2");
+}
+@font-face{
+  font-family:"JetBrains Mono";
+  font-style:normal;
+  font-weight:500;
+  font-display:swap;
+  src:url("./jetbrains-mono-500.woff2") format("woff2");
+}
+@font-face{
+  font-family:"JetBrains Mono";
+  font-style:normal;
+  font-weight:600;
+  font-display:swap;
+  src:url("./jetbrains-mono-600.woff2") format("woff2");
+}
+@font-face{
+  font-family:"JetBrains Mono";
+  font-style:normal;
+  font-weight:700;
+  font-display:swap;
+  src:url("./jetbrains-mono-700.woff2") format("woff2");
+}

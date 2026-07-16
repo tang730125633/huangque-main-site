@@ -1,0 +1,145 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "TikHub · 我们在用的接口",
+    "version": "1.0.0",
+    "description": "黄雀后端 `server/tikhub.py` 实际调用的 TikHub 外部接口清单（抖音/小红书/视频号）。\n\n**这是外部第三方 API（api.tikhub.io），用 TikHub 的 Bearer key**（不是黄雀用户 token）。在右上 Authorize 填 TikHub key 即可 Try it。\n\n10 QPS/TPS 限制（一个 key）。我们这边 `tikhub.py` 有全局限流 + 缓存。"
+  },
+  "servers": [
+    { "url": "https://api.tikhub.io", "description": "海外" },
+    { "url": "https://api.tikhub.dev", "description": "大陆" }
+  ],
+  "tags": [
+    { "name": "抖音", "description": "搜索 / 详情 / 评论 / 短链解析" },
+    { "name": "小红书", "description": "app_v2 线：搜索 / 详情 / 评论 / 分享链解析" },
+    { "name": "视频号", "description": "盯号：sph号→finder / 视频列表 / 详情 / 评论" },
+    { "name": "账户", "description": "余额 / 用量" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": { "type": "http", "scheme": "bearer", "description": "TikHub 的 API key（不是黄雀 token）" }
+    },
+    "schemas": {
+      "TikHubResp": { "type": "object", "description": "TikHub 标准返回（code/data 包裹，结构随接口不同）", "properties": { "code": { "type": "integer" }, "data": { "type": "object" } } }
+    }
+  },
+  "security": [ { "bearerAuth": [] } ],
+  "paths": {
+    "/api/v1/douyin/search/fetch_general_search_v1": {
+      "post": {
+        "tags": ["抖音"], "summary": "关键词综合搜索（getleads/采集用）",
+        "description": "我们传 content_type=1 只要视频。POST 表单参数。",
+        "requestBody": { "content": { "application/x-www-form-urlencoded": { "schema": {
+          "type": "object", "required": ["keyword"],
+          "properties": {
+            "keyword": { "type": "string", "example": "美甲加盟" },
+            "cursor": { "type": "integer", "default": 0 },
+            "sort_type": { "type": "string", "default": "0", "description": "0综合 1最新 2最热" },
+            "publish_time": { "type": "string", "default": "0" },
+            "filter_duration": { "type": "string", "default": "0" },
+            "content_type": { "type": "string", "default": "1", "description": "1=只视频 0=全部" }
+          }
+        } } } },
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TikHubResp" } } } } }
+      }
+    },
+    "/api/v1/douyin/web/get_aweme_id": {
+      "get": {
+        "tags": ["抖音"], "summary": "短链/分享链 → aweme_id",
+        "parameters": [ { "name": "url", "in": "query", "required": true, "schema": { "type": "string" }, "example": "https://v.douyin.com/xxx/" } ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/v1/douyin/web/fetch_one_video": {
+      "get": {
+        "tags": ["抖音"], "summary": "视频/图文详情",
+        "parameters": [ { "name": "aweme_id", "in": "query", "required": true, "schema": { "type": "string" } } ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/v1/douyin/web/fetch_video_comments": {
+      "get": {
+        "tags": ["抖音"], "summary": "视频评论区",
+        "parameters": [
+          { "name": "aweme_id", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "cursor", "in": "query", "schema": { "type": "integer", "default": 0 } },
+          { "name": "count", "in": "query", "schema": { "type": "integer", "default": 20 } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/v1/xiaohongshu/app_v2/search_notes": {
+      "get": {
+        "tags": ["小红书"], "summary": "关键词搜笔记",
+        "parameters": [
+          { "name": "keyword", "in": "query", "required": true, "schema": { "type": "string" }, "example": "美甲" },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "note_type", "in": "query", "schema": { "type": "string" }, "description": "视频笔记 / 普通笔记 / 空=全部" }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/v1/xiaohongshu/app_v2/get_video_note_detail": {
+      "get": {
+        "tags": ["小红书"], "summary": "视频笔记详情（含免费字幕 .srt）",
+        "parameters": [ { "name": "note_id", "in": "query", "required": true, "schema": { "type": "string" } } ],
+        "responses": { "200": { "description": "OK · 注意：偶发返回不相关笔记，需校验 id 一致（tikhub.py 已做 4 次重试校验）" } }
+      }
+    },
+    "/api/v1/xiaohongshu/app_v2/get_image_note_detail": {
+      "get": {
+        "tags": ["小红书"], "summary": "图文笔记详情",
+        "parameters": [ { "name": "note_id", "in": "query", "required": true, "schema": { "type": "string" } } ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/v1/xiaohongshu/app_v2/get_note_comments": {
+      "get": {
+        "tags": ["小红书"], "summary": "笔记评论区（含 red_id 小红书号）",
+        "parameters": [ { "name": "note_id", "in": "query", "required": true, "schema": { "type": "string" } } ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/v1/xiaohongshu/app/extract_share_info": {
+      "get": {
+        "tags": ["小红书"], "summary": "分享链接 → note_id + xsec_token",
+        "parameters": [ { "name": "share_link", "in": "query", "required": true, "schema": { "type": "string" }, "example": "https://www.xiaohongshu.com/discovery/item/xxx" } ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/v1/wechat_channels/v2/fetch_channel_id_to_username": {
+      "post": {
+        "tags": ["视频号"], "summary": "sph 短号/channel_id → finder username",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "required": ["channel_id"], "properties": { "channel_id": { "type": "string" }, "raw": { "type": "boolean", "default": false } } } } } },
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/v1/wechat_channels/v2/fetch_user_videos": {
+      "post": {
+        "tags": ["视频号"], "summary": "账号视频列表（盯号）",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "required": ["username"], "properties": { "username": { "type": "string" }, "last_buffer": { "type": "string", "default": "" }, "raw": { "type": "boolean", "default": false } } } } } },
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/v1/wechat_channels/v2/fetch_video_detail": {
+      "post": {
+        "tags": ["视频号"], "summary": "视频详情（含加密下载）",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "object_id": { "type": "string" }, "raw": { "type": "boolean", "default": false } } } } } },
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/v1/wechat_channels/v2/fetch_video_comments": {
+      "post": {
+        "tags": ["视频号"], "summary": "视频评论区",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "object", "required": ["object_id"], "properties": { "object_id": { "type": "string" }, "last_buffer": { "type": "string", "default": "" }, "raw": { "type": "boolean", "default": false } } } } } },
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/v1/tikhub/user/get_user_info": {
+      "get": {
+        "tags": ["账户"], "summary": "TikHub 账户 / 余额",
+        "responses": { "200": { "description": "OK · 用量、余额" } }
+      }
+    }
+  }
+}

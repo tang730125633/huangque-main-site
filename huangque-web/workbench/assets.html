@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>资产库 · 黄雀 AI 工作台</title>
+<link rel="icon" href="../assets/cloud/logo-bird.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/cloud.css?v=8">
+<style>
+  body{ overflow:hidden; }
+  .gAsset{ grid-template-columns:repeat(4,1fr); }
+  .skel-shimmer{ background:linear-gradient(100deg, rgba(148,164,187,.04) 30%, rgba(45,212,191,.08) 50%, rgba(148,164,187,.04) 70%); background-size:200% 100%; animation:hq-shimmer 2.6s linear infinite; }
+  .chip{ transition:.16s; }
+  .chip:hover{ border-color:rgba(231,178,76,.4)!important; color:#eaf1fa!important; }
+  @media (max-width:1100px){ .gAsset{ grid-template-columns:repeat(3,1fr);} }
+  @media (max-width:760px){ .gAsset{ grid-template-columns:repeat(2,1fr);} }
+  @media (max-width:480px){ .gAsset{ grid-template-columns:1fr;} }
+</style>
+</head>
+<body>
+<div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
+
+<div class="hq-app"><div class="hq-content" data-active="assets">
+  <div style="display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:22px; gap:18px; flex-wrap:wrap;">
+    <div>
+      <h1 style="margin:0; font-size:27px; font-weight:700;">资产库</h1>
+      <p style="margin:9px 0 0; font-size:14px; color:#94a4bb;">素材、作品与交付物的统一仓库，生成的内容会自动归档于此</p>
+    </div>
+    <div style="display:flex; align-items:center; gap:18px; font-size:13px; color:#94a4bb;">
+      <div style="display:flex; flex-direction:column;"><span style="font-size:11.5px;">素材</span><span class="mono" style="font-size:18px; font-weight:700; color:#eaf1fa;">—</span></div>
+      <div style="width:1px; height:26px; background:rgba(148,164,187,.14);"></div>
+      <div style="display:flex; flex-direction:column;"><span style="font-size:11.5px;">作品</span><span id="cntWorks" class="mono" style="font-size:18px; font-weight:700; color:#eaf1fa;">—</span></div>
+      <div style="width:1px; height:26px; background:rgba(148,164,187,.14);"></div>
+      <div style="display:flex; flex-direction:column;"><span style="font-size:11.5px;">交付</span><span class="mono" style="font-size:18px; font-weight:700; color:#eaf1fa;">—</span></div>
+    </div>
+  </div>
+
+  <!-- 工具条：搜索 + 筛选 chip -->
+  <div style="display:flex; align-items:center; gap:14px; margin-bottom:16px; flex-wrap:wrap;">
+    <div style="display:flex; align-items:center; gap:9px; flex:1; min-width:220px; max-width:340px; padding:9px 14px; border:1px solid rgba(148,164,187,.14); border-radius:11px; background:rgba(148,164,187,.04);">
+      <span style="display:flex; width:16px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span>
+      <input type="text" placeholder="搜索作品、素材或标签…" style="flex:1; min-width:0; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; font-family:inherit;">
+    </div>
+    <button class="hv-gold" style="display:flex; align-items:center; gap:6px; padding:9px 14px; font-size:12.5px; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer;"><span style="display:flex; width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></span>排序</button>
+  </div>
+  <div id="catRow" style="display:flex; align-items:center; gap:9px; margin-bottom:26px; flex-wrap:wrap;">
+    <span class="chip" data-cat="all" style="padding:7px 15px; font-size:13px; font-weight:600; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.3); border-radius:99px; cursor:pointer;">全部</span>
+    <span class="chip" data-cat="text2img" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">文生图</span>
+    <span class="chip" data-cat="img2img" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">图生图</span>
+    <span class="chip" data-cat="inpaint" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">局部修改</span>
+    <span class="chip" data-cat="audio" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">音频资产</span>
+  </div>
+
+  <!-- 真实资产网格（生成历史，JS 填充；有作品时显示、空态隐藏） -->
+  <div id="assetGrid" class="gAsset" style="display:none; gap:16px; margin-bottom:26px;"></div>
+
+  <!-- 居中大空态 -->
+  <div id="assetEmpty" style="display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:44px 24px 40px; border:1px solid rgba(148,164,187,.1); border-radius:20px; background:linear-gradient(165deg, rgba(16,24,39,.55), rgba(12,18,32,.4)); margin-bottom:26px;">
+    <div style="position:relative; width:88px; height:88px; display:flex; align-items:center; justify-content:center; border-radius:24px; background:rgba(45,212,191,.08); border:1px solid rgba(45,212,191,.22); color:#2dd4bf; margin-bottom:22px;">
+      <span style="display:flex; width:40px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span>
+      <span style="position:absolute; right:-6px; top:-6px; width:30px; height:30px; display:flex; align-items:center; justify-content:center; border-radius:50%; background:#0c1220; border:1px solid rgba(231,178,76,.3); color:#e7b24c;"><span style="display:flex; width:15px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg></span></span>
+    </div>
+    <div style="font-size:20px; font-weight:700;">资产库陆续上线中</div>
+    <p style="margin:11px 0 22px; font-size:14px; color:#94a4bb; max-width:380px; line-height:1.7;">生成的作品会自动入库，这里陆续上线。先去作图，完成的海报、口播与配音都会归档在此，可随时检索与一键交付客户群。</p>
+    <a href="banana.html" class="btn-gold" style="display:inline-flex; align-items:center; gap:7px; padding:11px 22px; font-size:14px; font-weight:600; border-radius:11px;"><span style="display:flex; width:16px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span>去作图</a>
+  </div>
+
+  <!-- 即将上线的资产类型 · 骨架占位 -->
+  <div id="skelHdr" style="display:flex; align-items:center; gap:8px; margin-bottom:14px;">
+    <span style="display:flex; width:15px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+    <span style="font-size:14px; font-weight:600; color:#94a4bb;">即将上线的资产类型</span>
+  </div>
+  <div id="skelGrid" class="gAsset" style="display:grid; gap:16px;">
+    <!-- 卡片 1 -->
+    <div style="position:relative; border:1px dashed rgba(45,212,191,.24); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;">
+      <span style="position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(45,212,191,.14); color:#2dd4bf;">美业海报</span>
+      <div class="skel-shimmer" style="aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; color:rgba(45,212,191,.4);"><span style="display:flex; width:34px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span></div>
+      <div style="padding:13px 14px; display:flex; align-items:center; justify-content:space-between;"><div style="height:9px; width:54%; border-radius:5px; background:rgba(148,164,187,.12);"></div><span style="font-size:11.5px; color:#5c6b82;">敬请期待</span></div>
+    </div>
+    <!-- 卡片 2 -->
+    <div style="position:relative; border:1px dashed rgba(45,212,191,.24); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;">
+      <span style="position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(45,212,191,.14); color:#2dd4bf;">数字人口播</span>
+      <div class="skel-shimmer" style="aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; color:rgba(45,212,191,.4);"><span style="display:flex; width:34px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span></div>
+      <div style="padding:13px 14px; display:flex; align-items:center; justify-content:space-between;"><div style="height:9px; width:48%; border-radius:5px; background:rgba(148,164,187,.12);"></div><span style="font-size:11.5px; color:#5c6b82;">敬请期待</span></div>
+    </div>
+    <!-- 卡片 3 -->
+    <div style="position:relative; border:1px dashed rgba(45,212,191,.24); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;">
+      <span style="position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(45,212,191,.14); color:#2dd4bf;">小红书封面</span>
+      <div class="skel-shimmer" style="aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; color:rgba(45,212,191,.4);"><span style="display:flex; width:34px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 2l9 5-9 5-9-5z"/><path d="M3 12l9 5 9-5M3 17l9 5 9-5"/></svg></span></div>
+      <div style="padding:13px 14px; display:flex; align-items:center; justify-content:space-between;"><div style="height:9px; width:60%; border-radius:5px; background:rgba(148,164,187,.12);"></div><span style="font-size:11.5px; color:#5c6b82;">敬请期待</span></div>
+    </div>
+    <!-- 卡片 4 -->
+    <div style="position:relative; border:1px dashed rgba(45,212,191,.24); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;">
+      <span style="position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(45,212,191,.14); color:#2dd4bf;">节日营销</span>
+      <div class="skel-shimmer" style="aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; color:rgba(45,212,191,.4);"><span style="display:flex; width:34px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg></span></div>
+      <div style="padding:13px 14px; display:flex; align-items:center; justify-content:space-between;"><div style="height:9px; width:50%; border-radius:5px; background:rgba(148,164,187,.12);"></div><span style="font-size:11.5px; color:#5c6b82;">敬请期待</span></div>
+    </div>
+    <!-- 卡片 5 -->
+    <div style="position:relative; border:1px dashed rgba(45,212,191,.24); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;">
+      <span style="position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(45,212,191,.14); color:#2dd4bf;">活动促销</span>
+      <div class="skel-shimmer" style="aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; color:rgba(45,212,191,.4);"><span style="display:flex; width:34px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0l-7.2-7.2A2 2 0 0 1 2.8 12V4.8A2 2 0 0 1 4.8 2.8H12a2 2 0 0 1 1.4.6l7.2 7.2a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.2"/></svg></span></div>
+      <div style="padding:13px 14px; display:flex; align-items:center; justify-content:space-between;"><div style="height:9px; width:44%; border-radius:5px; background:rgba(148,164,187,.12);"></div><span style="font-size:11.5px; color:#5c6b82;">敬请期待</span></div>
+    </div>
+    <!-- 卡片 6 -->
+    <div style="position:relative; border:1px dashed rgba(45,212,191,.24); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;">
+      <span style="position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(45,212,191,.14); color:#2dd4bf;">配音</span>
+      <div class="skel-shimmer" style="aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; color:rgba(45,212,191,.4);"><span style="display:flex; width:34px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg></span></div>
+      <div style="padding:13px 14px; display:flex; align-items:center; justify-content:space-between;"><div style="height:9px; width:52%; border-radius:5px; background:rgba(148,164,187,.12);"></div><span style="font-size:11.5px; color:#5c6b82;">敬请期待</span></div>
+    </div>
+  </div>
+</div></div>
+
+<script src="../assets/cloud.js?v=8"></script>
+<script src="cloud-shell.js?v=11"></script>
+<script>
+/* 资产库读真实生成历史（生成即自动入库）+ 按模式分类筛选 */
+(function(){
+  var tok=localStorage.getItem('hq_token')||''; if(!tok) return;
+  var grid=document.getElementById('assetGrid'), empty=document.getElementById('assetEmpty'),
+      skelH=document.getElementById('skelHdr'), skelG=document.getElementById('skelGrid'), cnt=document.getElementById('cntWorks');
+  var MODE={text2img:'文生图', img2img:'图生图', inpaint:'局部修改'};
+  var params=new URLSearchParams(location.search);
+  var AUDIO_TAB=params.get('audioTab')||'public';
+  var ALL=[], cat=params.get('cat')||'all';
+  function card(x){
+    var label=MODE[x.mode]||'作图', p=(x.prompt||'').slice(0,22)||'—';
+    var w=document.createElement('div'); w.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;';
+    var tag=document.createElement('span'); tag.textContent=label; tag.style.cssText='position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.62); color:#e7b24c;';
+    var im=document.createElement('img'); im.src=x.url; im.loading='lazy'; im.style.cssText='display:block; width:100%; aspect-ratio:4/3; object-fit:cover; cursor:pointer;'; im.onclick=function(){ window.open(x.url,'_blank'); };
+    var foot=document.createElement('div'); foot.style.cssText='padding:11px 13px; display:flex; align-items:center; justify-content:space-between; gap:8px;';
+    var pt=document.createElement('div'); pt.textContent=p; pt.style.cssText='font-size:12px; color:#94a4bb; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+    var dl=document.createElement('a'); dl.textContent='下载'; dl.href=x.url; dl.setAttribute('download','huangque.png'); dl.style.cssText='flex:none; font-size:11.5px; color:#e7b24c; text-decoration:none;';
+    foot.appendChild(pt); foot.appendChild(dl); w.appendChild(tag); w.appendChild(im); w.appendChild(foot); return w;
+  }
+  function audioCard(x){
+    var w=document.createElement('div'); w.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden; padding:16px; display:flex; flex-direction:column; gap:13px;';
+    var tag=document.createElement('span'); tag.textContent='配音'; tag.style.cssText='align-self:flex-start; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.62); color:#2dd4bf;';
+    var title=document.createElement('div'); title.textContent=(x.text||x.prompt||'配音资产').slice(0,34)||'配音资产'; title.style.cssText='font-size:13px; color:#eaf1fa; font-weight:600; line-height:1.5; min-height:38px; overflow:hidden;';
+    var meta=document.createElement('div'); meta.textContent='语速 '+(x.speed||'1.0')+' · 音调 '+(x.pitch||'0')+' · 音量 '+(x.volume||'0'); meta.style.cssText='font-size:11.5px; color:#94a4bb;';
+    var player=document.createElement('audio'); player.controls=true; player.src=x.url; player.style.cssText='width:100%; height:34px;';
+    var dl=document.createElement('a'); dl.textContent='下载 MP3'; dl.href=x.url; dl.setAttribute('download','huangque-audio.mp3'); dl.style.cssText='font-size:11.5px; color:#e7b24c; text-decoration:none;';
+    w.appendChild(tag); w.appendChild(title); w.appendChild(meta); w.appendChild(player); w.appendChild(dl); return w;
+  }
+  function sectionTitle(t){
+    var h=document.createElement('div'); h.textContent=t; h.style.cssText='grid-column:1/-1; margin:4px 0 -4px; font-size:14px; font-weight:700; color:#eaf1fa;';
+    return h;
+  }
+  function voiceAssetCard(name, sub, tagText, accent, href, onClick){
+    var w=document.createElement(href?'a':'div');
+    if(href) w.href=href;
+    if(onClick){ w.tabIndex=0; w.setAttribute('role','button'); }
+    w.style.cssText='min-height:126px; box-sizing:border-box; padding:16px; border:1px '+(href?'dashed':'solid')+' '+(accent?'rgba(231,178,76,.28)':'rgba(148,164,187,.12)')+'; border-radius:16px; background:'+(accent?'rgba(231,178,76,.05)':'rgba(16,24,39,.4)')+'; text-decoration:none; display:flex; flex-direction:column; justify-content:space-between; gap:13px;'+(onClick?' cursor:pointer;':'');
+    if(onClick){
+      w.onclick=onClick;
+      w.onkeydown=function(e){ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); onClick(e); } };
+    }
+    var tag=document.createElement('span'); tag.textContent=tagText; tag.style.cssText='align-self:flex-start; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.62); color:'+(accent?'#e7b24c':'#2dd4bf')+';';
+    var title=document.createElement('div'); title.innerHTML='<div style="font-size:13px; color:#eaf1fa; font-weight:700; line-height:1.5;">'+name+'</div><div style="font-size:11.5px; color:#94a4bb; margin-top:4px; line-height:1.5;">'+sub+'</div>';
+    var bars=document.createElement('div'); bars.style.cssText='display:flex; align-items:center; gap:3px; height:20px;';
+    [6,13,9,17,11,7,15,10,18,6].forEach(function(n){ var b=document.createElement('span'); b.style.cssText='width:3px; height:'+n+'px; border-radius:2px; background:'+(accent?'rgba(231,178,76,.45)':'rgba(148,164,187,.3)')+';'; bars.appendChild(b); });
+    w.appendChild(tag); w.appendChild(title); w.appendChild(bars); return w;
+  }
+  function slotAssetCard(slot){
+    var used=!!slot.voice_id;
+    var training=slot.status==='training';
+    var failed=slot.status==='failed';
+    var readonly=!!slot.readonly;
+    var completed=used && !training && !failed;
+    var recloneCount=Math.max(0, Math.min(10, parseInt(slot.reclone_count||0,10)||0));
+    var recloneRemain=Math.max(0, 10-recloneCount);
+    var w=document.createElement('div');
+    if(!readonly && !completed){ w.tabIndex=0; w.setAttribute('role','button'); }
+    w.style.cssText='position:relative; min-height:154px; box-sizing:border-box; padding:16px; border:1px solid '+(used?'rgba(45,212,191,.42)':(training?'rgba(231,178,76,.28)':'rgba(148,164,187,.14)'))+'; border-radius:16px; background:'+(used?'linear-gradient(165deg, rgba(45,212,191,.1), rgba(16,24,39,.58))':'rgba(16,24,39,.4)')+'; display:flex; flex-direction:column; justify-content:space-between; gap:13px; cursor:'+((readonly||completed)?'default':'pointer')+'; box-shadow:'+(used?'0 18px 42px rgba(45,212,191,.1)':'none')+';';
+    if(!readonly && !completed){
+      w.onclick=function(){ openCloneVoiceModal(slot); };
+      w.onkeydown=function(e){ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); openCloneVoiceModal(slot); } };
+    }
+    var tag=document.createElement('span'); tag.textContent=training?'\u590d\u523b\u4e2d':(failed?'\u590d\u523b\u5931\u8d25':(used?'\u590d\u523b\u5b8c\u6210':'\u53ef\u590d\u523b')); tag.style.cssText='align-self:flex-start; padding:3px 9px; font-size:11px; font-weight:700; border-radius:6px; background:'+(used?'rgba(45,212,191,.16)':'rgba(7,11,19,.62)')+'; color:'+(used?'#2dd4bf':'#e7b24c')+';';
+    var title=document.createElement('div');
+    title.innerHTML=used
+      ? '<div style="display:flex;align-items:center;gap:9px;padding-right:'+(slot.preview_url?'54px':'0')+';"><span style="width:30px;height:30px;border-radius:50%;background:rgba(45,212,191,.14);color:#2dd4bf;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex:0 0 auto;">VIP</span><div style="min-width:0;"><div style="font-size:14px; color:#eaf1fa; font-weight:800; line-height:1.35; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">'+(slot.voice_name||'\u6211\u7684\u590d\u523b\u97f3\u8272')+'</div><div style="font-size:11.5px; color:#94a4bb; margin-top:4px; line-height:1.4;">\u4e13\u5c5e\u97f3\u8272 / \u53ef\u7528\u4e8e\u6587\u6848\u914d\u97f3</div></div></div>'
+      : '<div style="font-size:13px; color:#eaf1fa; font-weight:700; line-height:1.5;">\u4e2a\u4eba\u97f3\u8272\u69fd\u4f4d</div><div style="font-size:11.5px; color:#94a4bb; margin-top:4px; line-height:1.5;">\u70b9\u51fb\u4e0a\u4f20\u6837\u97f3\u8fdb\u884c\u590d\u523b</div>';
+    var meta=document.createElement('div'); meta.textContent=training?'\u6b63\u5728\u590d\u523b\uff0c\u5b8c\u6210\u540e\u4f1a\u751f\u6210\u8bd5\u542c\u97f3\u9891':(used?'\u5df2\u751f\u6210\u8bd5\u542c\uff0c\u53ef\u5728\u97f3\u9891\u6a21\u5757\u4e2d\u4f7f\u7528':'\u53ef\u7528\u4e8e\u590d\u523b\u4e2a\u4eba\u97f3\u8272'); meta.style.cssText='font-size:11.5px;color:'+(used?'#94a4bb':'#5c6b82')+';line-height:1.5;';
+    w.appendChild(tag); w.appendChild(title); w.appendChild(meta);
+    if(completed && !readonly){
+      var actions=document.createElement('div');
+      actions.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:2px;padding-top:12px;border-top:1px solid rgba(148,164,187,.1);';
+      var remain=document.createElement('div');
+      remain.textContent='\u5269\u4f59\u91cd\u65b0\u590d\u523b\u6b21\u6570\uff1a'+recloneRemain+'\u6b21';
+      remain.style.cssText='font-size:11.5px;color:'+(recloneRemain>0?'#94a4bb':'#f4708a')+';line-height:1.4;';
+      var redo=document.createElement('button');
+      redo.type='button';
+      redo.textContent=recloneRemain>0?'\u91cd\u65b0\u590d\u523b':'\u4e0d\u652f\u6301\u91cd\u65b0\u590d\u523b';
+      redo.disabled=recloneRemain<=0;
+      redo.style.cssText='height:32px;padding:0 12px;border:1px solid '+(recloneRemain>0?'rgba(45,212,191,.34)':'rgba(148,164,187,.12)')+';border-radius:9px;background:'+(recloneRemain>0?'rgba(45,212,191,.1)':'rgba(148,164,187,.06)')+';color:'+(recloneRemain>0?'#2dd4bf':'#5c6b82')+';font-size:12px;font-weight:700;cursor:'+(recloneRemain>0?'pointer':'not-allowed')+';font-family:inherit;white-space:nowrap;';
+      redo.onclick=function(e){ e.preventDefault(); e.stopPropagation(); if(recloneRemain>0) openCloneVoiceModal(slot); };
+      actions.appendChild(remain); actions.appendChild(redo); w.appendChild(actions);
+    }
+    if(slot.preview_url){
+      var playBtn=document.createElement('button');
+      playBtn.type='button';
+      var previewSrc=slot.preview_url+(slot.preview_url.indexOf('?')>=0?'&':'?')+'v='+(slot.updated_at||Date.now());
+      playBtn.setAttribute('data-preview-url', previewSrc);
+      playBtn.title='\u64ad\u653e\u8bd5\u542c';
+      playBtn.setAttribute('aria-label','\u64ad\u653e\u8bd5\u542c');
+      playBtn.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;"><path d="M8 5v14l11-7z"/></svg>';
+      playBtn.style.cssText='position:absolute;right:16px;top:50%;transform:translateY(-50%);width:40px;height:40px;border:none;border-radius:50%;background:linear-gradient(135deg,#2dd4bf,#4ade80);color:#06130f;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 12px 30px rgba(45,212,191,.22);';
+      var previewAudio=null;
+      playBtn.onclick=function(e){
+        e.preventDefault(); e.stopPropagation();
+        var src=playBtn.getAttribute('data-preview-url');
+        if(!previewAudio || previewAudio.src.indexOf(src)<0) previewAudio=new Audio(src);
+        if(previewAudio.paused){
+          previewAudio.play();
+          playBtn.title='\u6682\u505c\u8bd5\u542c';
+          playBtn.setAttribute('aria-label','\u6682\u505c\u8bd5\u542c');
+          playBtn.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor" style="width:17px;height:17px;"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>';
+        }else{
+          previewAudio.pause();
+          playBtn.title='\u64ad\u653e\u8bd5\u542c';
+          playBtn.setAttribute('aria-label','\u64ad\u653e\u8bd5\u542c');
+          playBtn.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;"><path d="M8 5v14l11-7z"/></svg>';
+        }
+      };
+      previewAudio.onended=function(){
+        playBtn.title='\u64ad\u653e\u8bd5\u542c';
+        playBtn.setAttribute('aria-label','\u64ad\u653e\u8bd5\u542c');
+        playBtn.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;"><path d="M8 5v14l11-7z"/></svg>';
+      };
+      w.appendChild(playBtn);
+    }
+    return w;
+  }
+  function personalVoiceAssetCard(voice){
+    return slotAssetCard({
+      status:'ready',
+      voice_id:voice.id,
+      voice_name:voice.display_name,
+      preview_url:voice.preview_url,
+      slot_id:voice.slot_id || '',
+      readonly:!voice.slot_id
+    });
+  }
+  function buySlotCard(){
+    return voiceAssetCard('\u8d2d\u4e70\u97f3\u8272\u69fd\u4f4d','\u8d2d\u4e70\u540e\u81ea\u52a8\u5206\u914d\u4e00\u4e2a\u4e13\u5c5e\u97f3\u8272\u69fd\u4f4d','\u8d2d\u4e70',true,null,function(){
+      openSlotCodeModal();
+    });
+  }
+  function openSlotCodeModal(){
+    var old=document.getElementById('slotCodeModal'); if(old) old.remove();
+    var wrap=document.createElement('div'); wrap.id='slotCodeModal';
+    wrap.style.cssText='position:fixed; inset:0; z-index:10000; display:flex; align-items:center; justify-content:center; padding:22px; background:rgba(3,7,15,.72); backdrop-filter:blur(10px);';
+    var modal=document.createElement('div');
+    modal.style.cssText='width:min(420px,100%); border:1px solid rgba(148,164,187,.16); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.98), rgba(8,13,24,.98)); box-shadow:0 28px 80px rgba(0,0,0,.48); overflow:hidden;';
+    modal.innerHTML='<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 20px;border-bottom:1px solid rgba(148,164,187,.12);">'
+      +'<div><div style="font-size:17px;font-weight:700;color:#eaf1fa;">\u5151\u6362\u97f3\u8272\u69fd\u4f4d</div><div style="margin-top:5px;font-size:12.5px;color:#94a4bb;">\u8f93\u5165\u5151\u6362\u7801\u540e\u5206\u914d\u4e13\u5c5e\u97f3\u8272\u69fd\u4f4d</div></div>'
+      +'<button type="button" data-close-slot style="width:34px;height:34px;border:none;border-radius:9px;background:rgba(148,164,187,.08);color:#94a4bb;cursor:pointer;font-size:20px;line-height:1;">×</button></div>'
+      +'<div style="padding:20px;display:flex;flex-direction:column;gap:14px;">'
+      +'<label style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:12.5px;font-weight:600;color:#eaf1fa;">\u5151\u6362\u7801</span><input id="slotCodeInput" maxlength="64" placeholder="\u8bf7\u8f93\u5165\u5151\u6362\u7801" style="height:42px;border:1px solid rgba(148,164,187,.16);border-radius:11px;background:rgba(7,11,19,.5);color:#eaf1fa;outline:none;padding:0 12px;font-family:inherit;font-size:13px;"></label>'
+      +'<div id="slotCodeNote" style="font-size:12px;color:#5c6b82;line-height:1.6;">\u5151\u6362\u6210\u529f\u540e\uff0c\u7cfb\u7edf\u4f1a\u81ea\u52a8\u5206\u914d\u4e00\u4e2a\u672a\u4f7f\u7528\u7684\u4e2a\u4eba\u97f3\u8272\u69fd\u4f4d\u3002</div>'
+      +'</div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid rgba(148,164,187,.12);"><button type="button" data-close-slot style="height:38px;padding:0 15px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-family:inherit;">\u53d6\u6d88</button><button type="button" id="slotCodeSubmit" style="height:38px;padding:0 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;font-weight:700;cursor:pointer;font-family:inherit;">\u786e\u8ba4\u5151\u6362</button></div>';
+    wrap.appendChild(modal); document.body.appendChild(wrap);
+    function close(){ wrap.remove(); }
+    wrap.querySelectorAll('[data-close-slot]').forEach(function(b){ b.onclick=close; });
+    wrap.addEventListener('click',function(e){ if(e.target===wrap) close(); });
+    var input=wrap.querySelector('#slotCodeInput'), note=wrap.querySelector('#slotCodeNote');
+    setTimeout(function(){ input.focus(); },0);
+    var submit=wrap.querySelector('#slotCodeSubmit');
+    submit.onclick=function(){
+      var code=input.value.trim();
+      if(!code){ note.style.color='#f4708a'; note.textContent='\u8bf7\u5148\u8f93\u5165\u5151\u6362\u7801'; return; }
+      submit.disabled=true; submit.style.opacity='.72'; note.style.color='#e7b24c'; note.textContent='\u6b63\u5728\u5151\u6362...';
+      fetch('/api/gen/audio/redeem-slot',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({code:code})})
+        .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+        .then(function(res){
+          if(res.status===401){ location.href='../login.html?redirect=assets'; return; }
+          if(!res.data.ok){ throw new Error(res.data.detail||'\u5151\u6362\u5931\u8d25'); }
+          note.style.color='#2bd576'; note.textContent='\u5151\u6362\u6210\u529f\uff0c\u5df2\u5206\u914d\u4e2a\u4eba\u97f3\u8272\u69fd\u4f4d';
+          setTimeout(function(){ close(); renderAudioTab('personal'); },700);
+        }).catch(function(e){
+          submit.disabled=false; submit.style.opacity='1'; note.style.color='#f4708a'; note.textContent=e.message||'\u5151\u6362\u5931\u8d25';
+        });
+    };
+  }
+  function loadPersonalVoiceSlots(){
+    var loading=document.createElement('div');
+    loading.style.cssText='grid-column:1/-1; padding:18px; text-align:center; font-size:12.5px; color:#5c6b82; border:1px dashed rgba(148,164,187,.16); border-radius:16px; background:rgba(148,164,187,.02);';
+    loading.textContent='\u6b63\u5728\u8bfb\u53d6\u4e2a\u4eba\u97f3\u8272\u69fd\u4f4d...';
+    grid.appendChild(loading);
+    fetch('/api/gen/audio/slots',{headers:{'Authorization':'Bearer '+tok}})
+      .then(function(r){ return r.json().then(function(d){ return {status:r.status,data:d}; }); })
+      .then(function(res){
+      if(res.status===401){ location.href='../login.html?redirect=assets&cat=audio&audioTab=personal'; return; }
+      loading.remove();
+      var slots=res.data.items||[];
+      var slotIds={};
+      grid.appendChild(buySlotCard());
+      slots.forEach(function(slot){
+        if(slot.slot_id) slotIds[slot.slot_id]=true;
+        grid.appendChild(slotAssetCard(slot));
+      });
+      fetch('/api/gen/audio/voices',{headers:{'Authorization':'Bearer '+tok}})
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+          var voices=(d.items||[]).filter(function(v){ return v.scope==='personal'; });
+          voices.forEach(function(voice){
+            if(voice.slot_id && slotIds[voice.slot_id]) return;
+            grid.appendChild(personalVoiceAssetCard(voice));
+          });
+        }).catch(function(){});
+    }).catch(function(){
+      loading.textContent='\u4e2a\u4eba\u97f3\u8272\u69fd\u4f4d\u8bfb\u53d6\u5931\u8d25\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5';
+      });
+  }
+  function getAudioDuration(file){
+    return new Promise(function(resolve,reject){
+      var a=document.createElement('audio'), url=URL.createObjectURL(file);
+      a.preload='metadata';
+      a.onloadedmetadata=function(){ URL.revokeObjectURL(url); resolve(a.duration||0); };
+      a.onerror=function(){ URL.revokeObjectURL(url); reject(new Error('\u65e0\u6cd5\u8bfb\u53d6\u97f3\u9891\u65f6\u957f')); };
+      a.src=url;
+    });
+  }
+  function encodeWav(buffer){
+    var ch=buffer.numberOfChannels, rate=buffer.sampleRate, len=buffer.length, bytes=44+len*ch*2;
+    var out=new ArrayBuffer(bytes), view=new DataView(out), pos=0;
+    function str(s){ for(var i=0;i<s.length;i++) view.setUint8(pos++,s.charCodeAt(i)); }
+    str('RIFF'); view.setUint32(pos,bytes-8,true); pos+=4; str('WAVE'); str('fmt ');
+    view.setUint32(pos,16,true); pos+=4; view.setUint16(pos,1,true); pos+=2; view.setUint16(pos,ch,true); pos+=2;
+    view.setUint32(pos,rate,true); pos+=4; view.setUint32(pos,rate*ch*2,true); pos+=4; view.setUint16(pos,ch*2,true); pos+=2; view.setUint16(pos,16,true); pos+=2;
+    str('data'); view.setUint32(pos,len*ch*2,true); pos+=4;
+    var data=[]; for(var c=0;c<ch;c++) data.push(buffer.getChannelData(c));
+    for(var i=0;i<len;i++) for(var c=0;c<ch;c++){ var v=Math.max(-1,Math.min(1,data[c][i])); view.setInt16(pos,v<0?v*0x8000:v*0x7fff,true); pos+=2; }
+    return new Blob([out],{type:'audio/wav'});
+  }
+  function trimAudioTo60(file){
+    return file.arrayBuffer().then(function(buf){
+      var Ctx=window.AudioContext||window.webkitAudioContext, ctx=new Ctx();
+      return ctx.decodeAudioData(buf).then(function(audio){
+        var len=Math.min(audio.length, Math.floor(audio.sampleRate*60));
+        var out=ctx.createBuffer(1, len, audio.sampleRate);
+        var mono=out.getChannelData(0);
+        for(var i=0;i<len;i++){
+          var sum=0;
+          for(var c=0;c<audio.numberOfChannels;c++) sum+=audio.getChannelData(c)[i]||0;
+          mono[i]=sum/audio.numberOfChannels;
+        }
+        if(ctx.close) ctx.close();
+        return new File([encodeWav(out)], (file.name.replace(/\.[^.]+$/,'')||'sample')+'-60s.wav', {type:'audio/wav'});
+      });
+    });
+  }
+  function confirmShortAudio(){
+    return new Promise(function(resolve){
+      var old=document.getElementById('shortAudioModal'); if(old) old.remove();
+      var wrap=document.createElement('div'); wrap.id='shortAudioModal';
+      wrap.style.cssText='position:fixed;inset:0;z-index:11000;display:flex;align-items:center;justify-content:center;padding:22px;background:rgba(3,7,15,.72);backdrop-filter:blur(10px);';
+      wrap.innerHTML='<div style="width:min(420px,100%);border:1px solid rgba(148,164,187,.16);border-radius:18px;background:linear-gradient(165deg,rgba(16,24,39,.98),rgba(8,13,24,.98));box-shadow:0 28px 80px rgba(0,0,0,.48);overflow:hidden;"><div style="padding:20px;border-bottom:1px solid rgba(148,164,187,.12);"><div style="font-size:17px;font-weight:700;color:#eaf1fa;">\u6837\u97f3\u65f6\u957f\u504f\u77ed</div><div style="margin-top:8px;font-size:13px;color:#94a4bb;line-height:1.7;">\u97f3\u9891\u65f6\u957f\u5927\u4e8e60s\uff0c\u6548\u679c\u6700\u4f73</div></div><div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;"><button type="button" data-short-cancel style="height:38px;padding:0 15px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-family:inherit;">\u53d6\u6d88</button><button type="button" data-short-ok style="height:38px;padding:0 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;font-weight:700;cursor:pointer;font-family:inherit;">\u7ee7\u7eed\u590d\u523b</button></div></div>';
+      document.body.appendChild(wrap);
+      function done(v){ wrap.remove(); resolve(v); }
+      wrap.querySelector('[data-short-cancel]').onclick=function(){ done(false); };
+      wrap.querySelector('[data-short-ok]').onclick=function(){ done(true); };
+      wrap.addEventListener('click',function(e){ if(e.target===wrap) done(false); });
+    });
+  }
+  function pollCloneReady(slotId, note, tries, onReady){
+    tries=tries||0;
+    fetch('/api/gen/audio/clone-status?slot_id='+encodeURIComponent(slotId),{headers:{'Authorization':'Bearer '+tok}})
+      .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+      .then(function(res){
+        if(!res.data.ok){ throw new Error(res.data.detail||'\u590d\u523b\u72b6\u6001\u67e5\u8be2\u5931\u8d25'); }
+        var result=res.data.result||{};
+        if(result.status==='ready'){
+          note.style.color='#2bd576';
+          note.textContent=result.preview_url?'\u590d\u523b\u5b8c\u6210\uff0c\u5df2\u751f\u6210\u6d4b\u8bd5\u97f3\u9891':'\u590d\u523b\u5b8c\u6210';
+          setTimeout(function(){ if(onReady) onReady(); renderAudioTab('personal'); },500);
+          return;
+        }
+        if(result.status==='failed'){ throw new Error(result.clone_error||'\u8c46\u5305\u590d\u523b\u5931\u8d25'); }
+        note.style.color='#e7b24c';
+        note.textContent=result.stale_result
+          ? '\u8c46\u5305\u4ecd\u8fd4\u56de\u4e0a\u4e00\u6b21\u590d\u523b\u7ed3\u679c\uff0c\u6b63\u5728\u7b49\u5f85\u672c\u6b21\u65b0\u7ed3\u679c...'
+          : '\u590d\u523b\u5904\u7406\u4e2d\uff0c\u6b63\u5728\u7b49\u5f85\u8bd5\u542c\u97f3\u9891...';
+        if(tries<60){ setTimeout(function(){ pollCloneReady(slotId,note,tries+1,onReady); },5000); }
+        else{ note.style.color='#f4708a'; note.textContent='\u8c46\u5305\u6682\u672a\u8fd4\u56de\u672c\u6b21\u65b0\u590d\u523b\u7ed3\u679c\uff0c\u8bf7\u7a0d\u540e\u5237\u65b0\u6216\u91cd\u65b0\u63d0\u4ea4'; renderAudioTab('personal'); }
+      }).catch(function(e){
+        note.style.color='#f4708a';
+        note.textContent=e.message||'\u590d\u523b\u72b6\u6001\u67e5\u8be2\u5931\u8d25';
+        renderAudioTab('personal');
+      });
+  }
+  function openCloneVoiceModal(slot){
+    var old=document.getElementById('cloneVoiceModal'); if(old) old.remove();
+    var wrap=document.createElement('div'); wrap.id='cloneVoiceModal';
+    wrap.style.cssText='position:fixed; inset:0; z-index:10000; display:flex; align-items:center; justify-content:center; padding:22px; background:rgba(3,7,15,.72); backdrop-filter:blur(10px);';
+    var modal=document.createElement('div');
+    modal.style.cssText='width:min(560px,100%); border:1px solid rgba(148,164,187,.16); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.98), rgba(8,13,24,.98)); box-shadow:0 28px 80px rgba(0,0,0,.48); overflow:hidden;';
+    modal.innerHTML='<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 20px;border-bottom:1px solid rgba(148,164,187,.12);">'
+      +'<div><div style="font-size:17px;font-weight:700;color:#eaf1fa;">复刻音色</div><div style="margin-top:5px;font-size:12.5px;color:#94a4bb;">上传一段清晰样音，创建自己的个人音色</div></div>'
+      +'<button type="button" data-close-clone style="width:34px;height:34px;border:none;border-radius:9px;background:rgba(148,164,187,.08);color:#94a4bb;cursor:pointer;font-size:20px;line-height:1;">×</button></div>'
+      +'<div style="padding:20px;display:flex;flex-direction:column;gap:16px;">'
+      +'<label style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:12.5px;font-weight:600;color:#eaf1fa;">音色名称</span><input id="cloneVoiceName" maxlength="24" placeholder="例如：我的门店口播音色" style="height:40px;border:1px solid rgba(148,164,187,.16);border-radius:11px;background:rgba(7,11,19,.5);color:#eaf1fa;outline:none;padding:0 12px;font-family:inherit;font-size:13px;"></label>'
+      +'<label style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:12.5px;font-weight:600;color:#eaf1fa;">上传样音</span><div style="border:1px dashed rgba(231,178,76,.3);border-radius:14px;background:rgba(231,178,76,.04);padding:18px;text-align:center;cursor:pointer;"><input id="cloneVoiceFile" type="file" accept="audio/*" style="display:none;"><div style="font-size:13px;color:#e7b24c;font-weight:700;">\u9009\u62e960\u79d2\u4ee5\u4e0a\u7684\u97f3\u9891\u6548\u679c\u66f4\u597d</div><div id="cloneVoiceFileName" style="margin-top:7px;font-size:12px;color:#94a4bb;">支持 mp3、wav、m4a，建议 10-60 秒清晰人声</div></div></label>'
+      +'<audio id="cloneVoicePreview" controls style="display:none;width:100%;height:36px;"></audio>'
+      +'<div id="cloneVoiceNote" style="font-size:12px;color:#5c6b82;line-height:1.6;">\u9ed8\u8ba4\u53c2\u6570\u6548\u679c\u63cf\u8ff0\uff1a\u6837\u97f3\u8d8a\u6e05\u6670\u3001\u80cc\u666f\u58f0\u8d8a\u5c11\uff0c\u540e\u7eed\u590d\u523b\u51fa\u7684\u4e2a\u4eba\u97f3\u8272\u8d8a\u7a33\u5b9a\u3002</div>'
+      +'<div id="cloneVoiceVipTip" style="font-size:12px;color:#e7b24c;line-height:1.6;">VIP\u590d\u523b\u4f1a\u91c7\u7528\u66f4\u9ad8\u7cbe\u5ea6\u7684\u97f3\u8272\u5904\u7406\uff0c\u97f3\u8272\u8fd8\u539f\u5ea6\u548c\u53ef\u7528\u7a33\u5b9a\u6027\u66f4\u597d\u3002</div>'
+      +'</div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid rgba(148,164,187,.12);"><button type="button" data-close-clone style="height:38px;padding:0 15px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-family:inherit;">\u53d6\u6d88</button><button type="button" id="cloneVoiceBasic" style="height:38px;padding:0 18px;border:1px solid rgba(231,178,76,.35);border-radius:10px;background:rgba(231,178,76,.08);color:#e7b24c;font-weight:700;cursor:pointer;font-family:inherit;">\u590d\u523b</button><button type="button" id="cloneVoiceVip" style="height:38px;padding:0 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;font-weight:700;cursor:pointer;font-family:inherit;">VIP\u590d\u523b</button></div>';
+    wrap.appendChild(modal); document.body.appendChild(wrap);
+    function close(){ wrap.remove(); }
+    wrap.querySelectorAll('[data-close-clone]').forEach(function(b){ b.onclick=close; });
+    wrap.addEventListener('click',function(e){ if(e.target===wrap) close(); });
+    document.addEventListener('keydown',function esc(e){ if(e.key==='Escape'&&document.getElementById('cloneVoiceModal')){ close(); document.removeEventListener('keydown',esc); } });
+    var picker=wrap.querySelector('#cloneVoiceFile'), fileName=wrap.querySelector('#cloneVoiceFileName'), preview=wrap.querySelector('#cloneVoicePreview'), note=wrap.querySelector('#cloneVoiceNote'), voiceName=wrap.querySelector('#cloneVoiceName');
+    picker.parentNode.onclick=function(e){ e.preventDefault(); e.stopPropagation(); picker.click(); };
+    picker.onclick=function(e){ e.stopPropagation(); };
+    picker.onchange=function(){
+      var f=picker.files&&picker.files[0]; if(!f) return;
+      fileName.textContent=f.name;
+      preview.src=URL.createObjectURL(f);
+      preview.style.display='block';
+      note.textContent='已选择样音，可以先试听确认人声清晰。';
+    };
+    wrap.querySelector('#cloneVoiceBasic').onclick=function(){
+      note.style.color='#e7b24c';
+      note.textContent='\u666e\u901a\u590d\u523b\u8bf7\u6c42\u5f85\u63a5\u5165\u3002';
+    };
+    var vipBtn=wrap.querySelector('#cloneVoiceVip');
+    function submitVipFile(file, ext){
+      vipBtn.disabled=true; vipBtn.style.opacity='.72'; note.style.color='#e7b24c'; note.textContent='\u6b63\u5728\u5904\u7406\u6837\u97f3\u5e76\u63d0\u4ea4VIP\u590d\u523b...';
+      trimAudioTo60(file).then(function(sendFile){
+      var reader=new FileReader();
+      reader.onload=function(){
+        var data=String(reader.result||''), audio=data.indexOf(',')>=0?data.split(',').pop():data;
+        fetch('/api/gen/audio/clone-vip',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({slot_id:slot.slot_id,name:(voiceName&&voiceName.value)||'',audio:audio,audio_format:'wav'})})
+          .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+          .then(function(res){
+            if(res.status===401){ location.href='../login.html?redirect=assets'; return; }
+            if(!res.data.ok){ throw new Error(res.data.detail||'VIP\u590d\u523b\u5931\u8d25'); }
+            note.style.color='#e7b24c';
+            note.textContent='VIP\u590d\u523b\u5df2\u63d0\u4ea4\uff0c\u6b63\u5728\u7b49\u5f85\u8bd5\u542c\u97f3\u9891...';
+            renderAudioTab('personal');
+            pollCloneReady(slot.slot_id, note, 0, close);
+          }).catch(function(e){
+            vipBtn.disabled=false; vipBtn.style.opacity='1'; note.style.color='#f4708a'; note.textContent=e.message||'VIP\u590d\u523b\u5931\u8d25';
+          });
+      };
+      reader.onerror=function(){ vipBtn.disabled=false; vipBtn.style.opacity='1'; note.style.color='#f4708a'; note.textContent='\u6837\u97f3\u8bfb\u53d6\u5931\u8d25'; };
+      reader.readAsDataURL(sendFile);
+      }).catch(function(e){
+        vipBtn.disabled=false; vipBtn.style.opacity='1'; note.style.color='#f4708a'; note.textContent=e.message||'\u6837\u97f3\u5904\u7406\u5931\u8d25';
+      });
+    }
+    vipBtn.onclick=function(){
+      if(!slot||!slot.slot_id){ note.style.color='#f4708a'; note.textContent='\u8bf7\u5148\u5151\u6362\u97f3\u8272\u69fd\u4f4d'; return; }
+      var f=picker.files&&picker.files[0];
+      if(!f){ note.style.color='#f4708a'; note.textContent='\u8bf7\u5148\u9009\u62e9\u6837\u97f3\u6587\u4ef6'; return; }
+      note.style.color='#e7b24c'; note.textContent='\u6b63\u5728\u68c0\u67e5\u97f3\u9891\u65f6\u957f...';
+      getAudioDuration(f).then(function(sec){
+        if(sec>60){
+          note.textContent='\u97f3\u9891\u8d85\u8fc760\u79d2\uff0c\u7cfb\u7edf\u5c06\u81ea\u52a8\u622a\u53d6\u524d60\u79d2\u5e76\u538b\u7f29\u540e\u590d\u523b...';
+          return submitVipFile(f,(f.name.split('.').pop()||'mp3').toLowerCase());
+        }
+        if(sec<40){
+          return confirmShortAudio().then(function(ok){ if(ok) submitVipFile(f,(f.name.split('.').pop()||'mp3').toLowerCase()); else note.textContent='\u5df2\u53d6\u6d88VIP\u590d\u523b'; });
+        }
+        submitVipFile(f,(f.name.split('.').pop()||'mp3').toLowerCase());
+      }).catch(function(e){
+        vipBtn.disabled=false; vipBtn.style.opacity='1'; note.style.color='#f4708a'; note.textContent=e.message||'\u97f3\u9891\u5904\u7406\u5931\u8d25';
+      });
+    };
+  }
+  function renderAudioAssets(){
+    grid.innerHTML='';
+    if(empty) empty.style.display='none'; if(skelH) skelH.style.display='none'; if(skelG) skelG.style.display='none';
+    grid.style.display='grid';
+    var tabs=document.createElement('div');
+    tabs.style.cssText='grid-column:1/-1; display:flex; gap:8px; margin-bottom:2px; padding:4px; border:1px solid rgba(148,164,187,.12); border-radius:12px; background:rgba(7,11,19,.35);';
+    [
+      ['public','公共音色'],
+      ['personal','个人音色'],
+      ['audio','配音资产']
+    ].forEach(function(t){
+      var on=t[0]===AUDIO_TAB;
+      var b=document.createElement('button');
+      b.type='button'; b.textContent=t[1]; b.setAttribute('data-audio-tab',t[0]);
+      b.style.cssText='flex:1; height:34px; border:none; border-radius:9px; cursor:pointer; color:'+(on?'#1a1206':'#94a4bb')+'; background:'+(on?'linear-gradient(135deg,#f4cd72,#e7b24c)':'transparent')+'; font-size:12.5px; font-weight:700; font-family:inherit;';
+      b.onclick=function(){ renderAudioTab(t[0]); };
+      tabs.appendChild(b);
+    });
+    grid.appendChild(tabs);
+    renderAudioTab(AUDIO_TAB);
+  }
+  function renderAudioTab(tab){
+    AUDIO_TAB=tab||'public';
+    [].slice.call(grid.children).forEach(function(n,idx){ if(idx>0) grid.removeChild(n); });
+    document.querySelectorAll('[data-audio-tab]').forEach(function(b){
+      var on=b.getAttribute('data-audio-tab')===tab;
+      b.style.color=on?'#1a1206':'#94a4bb';
+      b.style.background=on?'linear-gradient(135deg,#f4cd72,#e7b24c)':'transparent';
+    });
+    if(tab==='public'){
+      [
+        ['大鹏 IVC','克隆 · 亲切','公共音色'],
+        ['泽龙 IVC','克隆 · 磁性','公共音色'],
+        ['Paul 男声','官方 · 沉稳','公共音色']
+      ].forEach(function(v){ grid.appendChild(voiceAssetCard(v[0],v[1],v[2],false)); });
+      return;
+    }
+    if(tab==='personal'){
+      loadPersonalVoiceSlots();
+      return;
+    }
+    if(!ALL.length){
+      var e=document.createElement('div'); e.style.cssText='grid-column:1/-1; padding:24px; text-align:center; font-size:13px; color:#5c6b82; border:1px dashed rgba(148,164,187,.16); border-radius:16px; background:rgba(148,164,187,.02);'; e.textContent='暂无生成配音，去音频模块生成后会自动入库'; grid.appendChild(e); return;
+    }
+    ALL.forEach(function(x){ grid.appendChild(audioCard(x)); });
+  }
+  function render(){
+    if(cat==='audio'){ renderAudioAssets(); return; }
+    var list = cat==='all' ? ALL : (cat==='audio' ? ALL.filter(function(x){ return x.type==='audio' || x.url; }) : ALL.filter(function(x){ return (x.mode||'text2img')===cat; }));
+    grid.innerHTML='';
+    if(!ALL.length){ grid.style.display='none'; if(empty) empty.style.display='flex'; return; }
+    if(empty) empty.style.display='none'; if(skelH) skelH.style.display='none'; if(skelG) skelG.style.display='none';
+    grid.style.display='grid';
+    if(!list.length){ var e=document.createElement('div'); e.style.cssText='grid-column:1/-1; padding:30px; text-align:center; font-size:13px; color:#5c6b82;'; e.textContent='该分类下暂无作品'; grid.appendChild(e); return; }
+    list.forEach(function(x){ grid.appendChild(cat==='audio' ? audioCard(x) : card(x)); });
+  }
+  function load(kind){
+    var url='/api/gen/history?limit=120'+(kind==='audio'?'&kind=audio':'');
+    fetch(url,{headers:{'Authorization':'Bearer '+tok}}).then(function(r){return r.json();}).then(function(d){
+      ALL=d.items||[]; if(cnt) cnt.textContent=ALL.length; render();
+    }).catch(function(){});
+  }
+  document.querySelectorAll('#catRow .chip').forEach(function(ch){ ch.onclick=function(){
+    setCat(ch.getAttribute('data-cat'));
+    load(cat==='audio'?'audio':'image');
+  };});
+  function setCat(next){
+    cat=next||'all';
+    document.querySelectorAll('#catRow .chip').forEach(function(c){
+      var on=c.getAttribute('data-cat')===cat;
+      c.style.color=on?'#e7b24c':'#94a4bb';
+      c.style.background=on?'rgba(231,178,76,.1)':'rgba(148,164,187,.04)';
+      c.style.borderColor=on?'rgba(231,178,76,.3)':'rgba(148,164,187,.14)';
+      c.style.fontWeight=on?'600':'400';
+    });
+  }
+  setCat(cat);
+  load(cat==='audio'?'audio':'image');
+})();
+</script>
+</body>
+</html>

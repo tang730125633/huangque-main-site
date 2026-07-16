@@ -1,0 +1,14 @@
+[Unit]
+Description=Huangque Content API (image/copy/video gen + points)
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/content-api
+EnvironmentFile=/home/ubuntu/content-api/content.env
+ExecStart=/usr/bin/python3 /home/ubuntu/content-api/content_api.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

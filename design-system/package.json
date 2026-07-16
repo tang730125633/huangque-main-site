@@ -1,0 +1,33 @@
+{
+  "name": "huangque-design-system",
+  "version": "0.1.0",
+  "description": "黄雀 AI · 设计系统（tokens + React 组件 + 粒子动效）。供 Claude Design /design-sync 同步。",
+  "private": true,
+  "type": "module",
+  "types": "dist/types/index.d.ts",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "build:types": "tsc -p tsconfig.build.json",
+    "build:lib": "vite build -c vite.lib.config.ts",
+    "build:ds": "npm run build:types && npm run build:lib",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "framer-motion": "^11.3.28",
+    "three": "^0.167.1",
+    "@react-three/fiber": "^8.17.6",
+    "@react-three/drei": "^9.111.3",
+    "gsap": "^3.12.5"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@types/three": "^0.167.2",
+    "@vitejs/plugin-react": "^4.3.1",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2"
+  }
+}

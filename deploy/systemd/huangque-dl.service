@@ -1,0 +1,10 @@
+[Unit]
+Description=Huangque video download proxy (independent of content_api)
+After=network.target
+[Service]
+ExecStart=/usr/bin/python3 /home/ubuntu/dl-service/dl_service.py
+WorkingDirectory=/home/ubuntu/dl-service
+Restart=always
+User=ubuntu
+[Install]
+WantedBy=multi-user.target

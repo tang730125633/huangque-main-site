@@ -1,0 +1,10 @@
+{
+  "pkg": "huangque-design-system",
+  "globalName": "HuangQue",
+  "projectId": "6344b79d-3634-4af2-b030-b173aadc1d34",
+  "shape": "package",
+  "buildCmd": "npm run build:ds",
+  "entry": "./dist/lib/index.js",
+  "tsconfig": "tsconfig.json",
+  "readmeHeader": ".design-sync/conventions.md"
+}

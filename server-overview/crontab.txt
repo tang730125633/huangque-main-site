@@ -1,0 +1,2 @@
+* * * * * /home/ubuntu/watchdog_openclaw.sh >/dev/null 2>&1
+@reboot sleep 10 && /home/ubuntu/watchdog_openclaw.sh >/dev/null 2>&1

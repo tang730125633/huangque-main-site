@@ -1,0 +1,22 @@
+{
+  "updated": "2026-06-24",
+  "note": "脱敏聚合指标，零 PII。真实名单按隐私红线不进任何公开产物。",
+  "pool": [
+    { "label": "真实采集评论", "value": 1770, "suffix": "+", "hint": "抖音/小红书评论区" },
+    { "label": "去重抖音账号线索", "value": 3168, "hint": "潜在客户线索池" },
+    { "label": "获客关键词", "value": 5, "suffix": "+", "hint": "美业 / 电商等垂类" }
+  ],
+  "delivery": [
+    { "label": "精准客户名单", "value": 100, "suffix": "+", "hint": "意图过滤后沉淀" },
+    { "label": "美业商家直采", "value": 12, "hint": "美业获客精准客户" },
+    { "label": "深采对标视频", "value": 37, "hint": "口播 ASR 素材" },
+    { "label": "单关键词转化", "value": "140→42", "hint": "评论 → 精准客户" }
+  ],
+  "highlight": {
+    "capability": "获客",
+    "reply_rate": 80,
+    "received": 879,
+    "replies": 701,
+    "clients": 31
+  }
+}

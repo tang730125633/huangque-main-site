@@ -1,0 +1,1950 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>资产库 · 黄雀 AI 工作台</title>
+<link rel="icon" href="../assets/cloud/logo-bird.png">
+<link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
+<link rel="stylesheet" href="../assets/cloud.css?v=8">
+<script src="theme-init.js?v=11eb385e"></script>
+<style>
+  body{ overflow:hidden; }
+  .gAsset{ grid-template-columns:repeat(4,1fr); }
+  /* 通知中心带 ?task= 跳进来时，短暂高亮那条产物（金调，与 DESIGN.md 一致） */
+  .asset-focus{animation:asset-focus-pulse 2.6s ease-out 1;border-color:rgba(231,178,76,.62) !important}
+  @keyframes asset-focus-pulse{
+    0%{box-shadow:0 0 0 0 rgba(231,178,76,.42)}
+    18%{box-shadow:0 0 0 5px rgba(231,178,76,.28)}
+    100%{box-shadow:0 0 0 0 rgba(231,178,76,0)}
+  }
+  @media (prefers-reduced-motion:reduce){ .asset-focus{animation:none} }
+  .asset-page-scroll{scrollbar-width:auto;scrollbar-color:rgba(231,178,76,.62) rgba(148,164,187,.07)}
+  .asset-page-scroll::-webkit-scrollbar{width:12px}
+  .asset-page-scroll::-webkit-scrollbar-track{background:rgba(148,164,187,.07);border-radius:99px}
+  .asset-page-scroll::-webkit-scrollbar-thumb{background:rgba(231,178,76,.58);border:2px solid rgba(7,11,19,.74);border-radius:99px;background-clip:padding-box}
+  .asset-page-scroll::-webkit-scrollbar-thumb:hover{background:rgba(244,205,114,.78);border:2px solid rgba(7,11,19,.74);background-clip:padding-box}
+  .skel-shimmer{ background:linear-gradient(100deg, rgba(148,164,187,.04) 30%, rgba(45,212,191,.08) 50%, rgba(148,164,187,.04) 70%); background-size:200% 100%; animation:hq-shimmer 2.6s linear infinite; }
+  .chip{ transition:.16s; }
+  .chip:hover{ border-color:rgba(231,178,76,.4)!important; color:#eaf1fa!important; }
+  .asset-action{height:28px;padding:0 10px;border-radius:8px;border:1px solid rgba(148,164,187,.13);background:rgba(148,164,187,.04);color:#94a4bb;text-decoration:none;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;font-family:inherit;white-space:nowrap}
+  .asset-action:hover{color:#e7b24c;border-color:rgba(231,178,76,.28)}
+  .asset-action.gold{border-color:rgba(231,178,76,.28);background:rgba(231,178,76,.08);color:#e7b24c}
+  .asset-action.danger{border-color:rgba(244,112,138,.24);background:rgba(244,112,138,.07);color:#f4708a}
+  .asset-action.danger:hover{border-color:rgba(244,112,138,.42);color:#ff9bae}
+  .asset-prompt-modal{position:fixed;inset:0;z-index:45;display:flex;align-items:center;justify-content:center;padding:18px;background:rgba(3,7,13,.68);backdrop-filter:blur(12px)}
+  .asset-prompt-box{width:min(640px,92vw);max-height:min(560px,86vh);display:flex;flex-direction:column;border:1px solid rgba(231,178,76,.26);border-radius:14px;background:linear-gradient(165deg,rgba(16,24,39,.96),rgba(9,14,24,.96));box-shadow:0 24px 70px rgba(0,0,0,.44);overflow:hidden}
+  .asset-prompt-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid rgba(148,164,187,.12)}
+  .asset-prompt-title{font-size:14px;font-weight:700;color:#eaf1fa}
+  .asset-prompt-close{width:30px;height:30px;border:1px solid rgba(148,164,187,.16);border-radius:8px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-size:18px;line-height:1}
+  .asset-prompt-text{margin:0;padding:16px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.72;color:#d8e2ef}
+  .asset-prompt-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid rgba(148,164,187,.12)}
+  .asset-leads-box{width:min(880px,94vw);max-height:min(680px,88vh)}
+  .asset-leads-summary{padding:11px 16px;border-bottom:1px solid rgba(148,164,187,.1);font-size:12px;color:#94a4bb}
+  .asset-leads-list{padding:14px;overflow:auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .asset-lead-card{min-width:0;padding:12px;border:1px solid rgba(148,164,187,.13);border-radius:8px;background:rgba(7,11,19,.38);display:flex;flex-direction:column;gap:8px}
+  .asset-lead-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .asset-lead-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:700;color:#eaf1fa}
+  .asset-lead-meta{font-size:11px;color:#94a4bb;white-space:nowrap}
+  .asset-lead-content{font-size:12.5px;line-height:1.65;color:#d8e2ef;white-space:pre-wrap;word-break:break-word}
+  .asset-lead-source{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11.5px;color:#5c6b82}
+  .asset-lead-links{display:flex;align-items:center;gap:8px;flex:none}
+  .asset-lead-links a{color:#e7b24c;text-decoration:none;font-weight:600}
+  @media (max-width:720px){.asset-leads-list{grid-template-columns:1fr}.asset-lead-source{align-items:flex-start;flex-direction:column}.asset-lead-links{width:100%}}
+  .asset-video-modal{position:fixed;inset:0;z-index:46;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(3,7,13,.74);backdrop-filter:blur(12px)}
+  .asset-video-box{position:relative;width:min(92vw,960px);height:min(86vh,540px);border:1px solid rgba(231,178,76,.24);border-radius:14px;background:#050812;box-shadow:0 28px 80px rgba(0,0,0,.5);overflow:hidden}
+  .asset-video-box video{width:100%;height:100%;object-fit:contain;background:#050812;display:block}
+  .asset-video-close{position:absolute;right:10px;top:10px;z-index:3;width:34px;height:34px;border:1px solid rgba(255,255,255,.16);border-radius:50%;background:rgba(7,11,19,.78);color:#eaf1fa;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:18px;line-height:1}
+  .asset-video-close:hover{color:#e7b24c;border-color:rgba(231,178,76,.38)}
+  .asset-video-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#e7b24c;font-size:13px;font-weight:800;background:linear-gradient(145deg,rgba(7,11,19,.96),rgba(16,20,28,.94))}
+  .asset-image-box{position:relative;width:min(92vw,960px);height:min(86vh,720px);border:1px solid rgba(231,178,76,.24);border-radius:14px;background:#050812;box-shadow:0 28px 80px rgba(0,0,0,.5);overflow:hidden;display:flex;align-items:center;justify-content:center}
+  .asset-image-box img{max-width:100%;max-height:100%;object-fit:contain;display:block}
+  .asset-image-nav{position:absolute;top:50%;transform:translateY(-50%);z-index:3;width:40px;height:40px;border:1px solid rgba(255,255,255,.16);border-radius:50%;background:rgba(7,11,19,.72);color:#eaf1fa;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:20px;line-height:1}
+  .asset-image-nav:hover{color:#e7b24c;border-color:rgba(231,178,76,.38)}
+  .asset-image-nav.prev{left:10px}
+  .asset-image-nav.next{right:10px}
+  .asset-image-nav:disabled{opacity:.3;cursor:not-allowed}
+  .asset-image-foot{position:absolute;left:0;right:0;bottom:0;z-index:3;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;background:linear-gradient(0deg,rgba(3,7,13,.82),transparent)}
+  .asset-image-count{font-size:12px;color:#dbe7f5;}
+  .asset-video-open{position:absolute;right:11px;bottom:11px;z-index:2;height:30px;padding:0 10px;border:1px solid rgba(231,178,76,.28);border-radius:9px;background:rgba(7,11,19,.72);color:#e7b24c;font-size:11.5px;font-weight:800;cursor:pointer;backdrop-filter:blur(8px)}
+  .asset-select{position:absolute;top:10px;right:10px;z-index:4;width:30px;height:30px;display:none;align-items:center;justify-content:center;border:1px solid rgba(231,178,76,.34);border-radius:9px;background:rgba(7,11,19,.72);backdrop-filter:blur(8px)}
+  .asset-select input{width:16px;height:16px;accent-color:#e7b24c;cursor:pointer}
+  .multi-on .asset-select{display:flex}
+  .mark-tool{height:28px;padding:0 9px;border-radius:8px;border:1px solid rgba(148,164,187,.13);background:rgba(148,164,187,.04);color:#94a4bb;font-size:11.5px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;gap:4px;cursor:pointer;font-family:inherit;white-space:nowrap}
+  .mark-tool.on{border-color:rgba(231,178,76,.34);background:rgba(231,178,76,.1);color:#e7b24c}
+  .mark-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:9px}
+  .mark-tag{max-width:108px;padding:3px 7px;border-radius:999px;background:rgba(45,212,191,.1);border:1px solid rgba(45,212,191,.18);color:#2dd4bf;font-size:10.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  @media (max-width:1100px){ .gAsset{ grid-template-columns:repeat(3,1fr);} }
+  @media (max-width:760px){ .gAsset{ grid-template-columns:repeat(2,1fr);} }
+  @media (max-width:480px){ .gAsset{ grid-template-columns:1fr;} }
+</style>
+<link rel="stylesheet" href="theme.css?v=5873a2f4">
+</head>
+<body>
+<div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
+
+<div class="hq-app"><div class="hq-content" data-active="assets">
+  <div style="display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:22px; gap:18px; flex-wrap:wrap;">
+    <div>
+      <h1 style="margin:0; font-size:27px; font-weight:700; display:flex; align-items:center; gap:11px;"><img src="../assets/icons/ic_assets.png" alt="" style="width:34px;height:34px;object-fit:contain;flex:none;">资产库</h1>
+      <p style="margin:9px 0 0; font-size:14px; color:#94a4bb;">素材、作品与交付物的统一仓库，生成的内容会自动归档于此</p>
+    </div>
+    <div style="display:flex; align-items:center; gap:18px; font-size:13px; color:#94a4bb;">
+      <div style="display:flex; flex-direction:column;"><span style="font-size:11.5px;">素材</span><span class="mono" style="font-size:18px; font-weight:700; color:#eaf1fa;">—</span></div>
+      <div style="width:1px; height:26px; background:rgba(148,164,187,.14);"></div>
+      <div style="display:flex; flex-direction:column;"><span style="font-size:11.5px;">作品</span><span id="cntWorks" class="mono" style="font-size:18px; font-weight:700; color:#eaf1fa;">—</span></div>
+      <div style="width:1px; height:26px; background:rgba(148,164,187,.14);"></div>
+      <div style="display:flex; flex-direction:column;"><span style="font-size:11.5px;">交付</span><span class="mono" style="font-size:18px; font-weight:700; color:#eaf1fa;">—</span></div>
+    </div>
+  </div>
+
+  <!-- 工具条：搜索 + 筛选 chip -->
+  <div style="display:flex; align-items:center; gap:14px; margin-bottom:16px; flex-wrap:wrap;">
+    <div style="display:flex; align-items:center; gap:9px; flex:1; min-width:220px; max-width:340px; padding:9px 14px; border:1px solid rgba(148,164,187,.14); border-radius:11px; background:rgba(148,164,187,.04);">
+      <span style="display:flex; width:16px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span>
+      <input type="text" name="hq_asset_search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" readonly onfocus="this.removeAttribute('readonly')" aria-label="搜索资产" placeholder="搜索作品、素材或标签…" style="flex:1; min-width:0; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; font-family:inherit;">
+
+    </div>
+    <button id="bulkToggle" class="hv-gold" type="button" style="display:flex; align-items:center; gap:6px; padding:9px 14px; font-size:12.5px; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; font-family:inherit;"><span style="display:flex; width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span>多选</button>
+    <button id="bulkAll" class="hv-gold" type="button" style="display:none; align-items:center; gap:6px; padding:9px 14px; font-size:12.5px; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; font-family:inherit;">全选</button>
+    <button id="favOnly" class="hv-gold" type="button" style="display:flex; align-items:center; gap:6px; padding:9px 14px; font-size:12.5px; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer; font-family:inherit;">★ 只看收藏</button>
+    <select id="tagFilter" aria-label="按标签筛选" style="height:38px; min-width:132px; padding:0 11px; border:1px solid rgba(148,164,187,.14); border-radius:11px; background:rgba(148,164,187,.05); color:#94a4bb; outline:none; font-size:12.5px; font-family:inherit;">
+      <option value="">全部标签</option>
+    </select>
+  </div>
+  <div id="catRow" style="display:flex; align-items:center; gap:9px; margin-bottom:26px; flex-wrap:wrap;">
+    <span class="chip" data-cat="image" style="padding:7px 15px; font-size:13px; font-weight:600; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.3); border-radius:99px; cursor:pointer;">图片资产</span>
+    <span class="chip" data-cat="audio" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">音频资产</span>
+    <span class="chip" data-cat="video" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">视频资产</span>
+    <span class="chip" data-cat="avatar" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">数字人形象</span>
+    <span class="chip" data-cat="copy" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">文案脚本</span>
+    <span class="chip" data-cat="collect" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">采集素材</span>
+    <span class="chip" data-cat="leads" style="padding:7px 15px; font-size:13px; color:#94a4bb; background:rgba(148,164,187,.04); border:1px solid rgba(148,164,187,.14); border-radius:99px; cursor:pointer;">客户名单</span>
+  </div>
+
+  <!-- 真实资产网格（生成历史，JS 填充；有作品时显示、空态隐藏） -->
+  <div id="assetGrid" class="gAsset" style="display:none; gap:16px; margin-bottom:26px;"></div>
+  <div id="bulkBar" style="display:none; position:fixed; left:50%; bottom:22px; transform:translateX(-50%); z-index:20; align-items:center; gap:12px; padding:10px 12px; border:1px solid rgba(231,178,76,.28); border-radius:14px; background:rgba(7,11,19,.86); box-shadow:0 12px 34px rgba(0,0,0,.32); backdrop-filter:blur(14px);">
+    <span id="bulkCount" style="min-width:74px; font-size:12.5px; color:#eaf1fa; font-weight:700;">已选 0 个</span>
+    <button id="bulkDownload" class="asset-action gold" type="button" style="height:32px;">批量下载</button>
+    <button id="bulkDelete" class="asset-action danger" type="button" style="height:32px;">批量删除</button>
+    <button id="bulkCancel" class="asset-action" type="button" style="height:32px;">取消</button>
+  </div>
+
+  <!-- 居中大空态 -->
+  <div id="assetEmpty" style="display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; padding:44px 24px 40px; border:1px solid rgba(148,164,187,.1); border-radius:20px; background:linear-gradient(165deg, rgba(16,24,39,.55), rgba(12,18,32,.4)); margin-bottom:26px;">
+    <div style="position:relative; width:88px; height:88px; display:flex; align-items:center; justify-content:center; border-radius:24px; background:rgba(45,212,191,.08); border:1px solid rgba(45,212,191,.22); color:#2dd4bf; margin-bottom:22px;">
+      <span style="display:flex; width:40px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span>
+      <span style="position:absolute; right:-6px; top:-6px; width:30px; height:30px; display:flex; align-items:center; justify-content:center; border-radius:50%; background:#0c1220; border:1px solid rgba(231,178,76,.3); color:#e7b24c;"><span style="display:flex; width:15px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg></span></span>
+    </div>
+    <div style="font-size:20px; font-weight:700;">资产库陆续上线中</div>
+    <p style="margin:11px 0 22px; font-size:14px; color:#94a4bb; max-width:380px; line-height:1.7;">生成的作品会自动入库，这里陆续上线。先去作图，完成的海报、口播与配音都会归档在此，可随时检索与一键交付客户群。</p>
+    <a href="banana.html" class="btn-gold" style="display:inline-flex; align-items:center; gap:7px; padding:11px 22px; font-size:14px; font-weight:600; border-radius:11px;"><span style="display:flex; width:16px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span>去作图</a>
+  </div>
+
+  <!-- 即将上线的资产类型 · 骨架占位 -->
+  <div id="skelHdr" style="display:flex; align-items:center; gap:8px; margin-bottom:14px;">
+    <span style="display:flex; width:15px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+    <span style="font-size:14px; font-weight:600; color:#94a4bb;">即将上线的资产类型</span>
+  </div>
+  <div id="skelGrid" class="gAsset" style="display:grid; gap:16px;">
+    <!-- 卡片 1 -->
+    <div style="position:relative; border:1px dashed rgba(45,212,191,.24); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;">
+      <span style="position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(45,212,191,.14); color:#2dd4bf;">美业海报</span>
+      <div class="skel-shimmer" style="aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; color:rgba(45,212,191,.4);"><span style="display:flex; width:34px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span></div>
+      <div style="padding:13px 14px; display:flex; align-items:center; justify-content:space-between;"><div style="height:9px; width:54%; border-radius:5px; background:rgba(148,164,187,.12);"></div><span style="font-size:11.5px; color:#5c6b82;">敬请期待</span></div>
+    </div>
+    <!-- 卡片 2 -->
+    <div style="position:relative; border:1px dashed rgba(45,212,191,.24); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;">
+      <span style="position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(45,212,191,.14); color:#2dd4bf;">数字人口播</span>
+      <div class="skel-shimmer" style="aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; color:rgba(45,212,191,.4);"><span style="display:flex; width:34px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span></div>
+      <div style="padding:13px 14px; display:flex; align-items:center; justify-content:space-between;"><div style="height:9px; width:48%; border-radius:5px; background:rgba(148,164,187,.12);"></div><span style="font-size:11.5px; color:#5c6b82;">敬请期待</span></div>
+    </div>
+    <!-- 卡片 3 -->
+    <div style="position:relative; border:1px dashed rgba(45,212,191,.24); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;">
+      <span style="position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(45,212,191,.14); color:#2dd4bf;">小红书封面</span>
+      <div class="skel-shimmer" style="aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; color:rgba(45,212,191,.4);"><span style="display:flex; width:34px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 2l9 5-9 5-9-5z"/><path d="M3 12l9 5 9-5M3 17l9 5 9-5"/></svg></span></div>
+      <div style="padding:13px 14px; display:flex; align-items:center; justify-content:space-between;"><div style="height:9px; width:60%; border-radius:5px; background:rgba(148,164,187,.12);"></div><span style="font-size:11.5px; color:#5c6b82;">敬请期待</span></div>
+    </div>
+    <!-- 卡片 4 -->
+    <div style="position:relative; border:1px dashed rgba(45,212,191,.24); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;">
+      <span style="position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(45,212,191,.14); color:#2dd4bf;">节日营销</span>
+      <div class="skel-shimmer" style="aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; color:rgba(45,212,191,.4);"><span style="display:flex; width:34px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg></span></div>
+      <div style="padding:13px 14px; display:flex; align-items:center; justify-content:space-between;"><div style="height:9px; width:50%; border-radius:5px; background:rgba(148,164,187,.12);"></div><span style="font-size:11.5px; color:#5c6b82;">敬请期待</span></div>
+    </div>
+    <!-- 卡片 5 -->
+    <div style="position:relative; border:1px dashed rgba(45,212,191,.24); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;">
+      <span style="position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(45,212,191,.14); color:#2dd4bf;">活动促销</span>
+      <div class="skel-shimmer" style="aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; color:rgba(45,212,191,.4);"><span style="display:flex; width:34px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0l-7.2-7.2A2 2 0 0 1 2.8 12V4.8A2 2 0 0 1 4.8 2.8H12a2 2 0 0 1 1.4.6l7.2 7.2a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.2"/></svg></span></div>
+      <div style="padding:13px 14px; display:flex; align-items:center; justify-content:space-between;"><div style="height:9px; width:44%; border-radius:5px; background:rgba(148,164,187,.12);"></div><span style="font-size:11.5px; color:#5c6b82;">敬请期待</span></div>
+    </div>
+    <!-- 卡片 6 -->
+    <div style="position:relative; border:1px dashed rgba(45,212,191,.24); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;">
+      <span style="position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(45,212,191,.14); color:#2dd4bf;">配音</span>
+      <div class="skel-shimmer" style="aspect-ratio:4/3; display:flex; align-items:center; justify-content:center; color:rgba(45,212,191,.4);"><span style="display:flex; width:34px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg></span></div>
+      <div style="padding:13px 14px; display:flex; align-items:center; justify-content:space-between;"><div style="height:9px; width:52%; border-radius:5px; background:rgba(148,164,187,.12);"></div><span style="font-size:11.5px; color:#5c6b82;">敬请期待</span></div>
+    </div>
+  </div>
+</div></div>
+
+<script src="../assets/cloud.js?v=8"></script>
+<script src="cloud-shell.js?v=302ad2ce"></script>
+<script>
+/* 资产库读真实生成历史（生成即自动入库）+ 按模式分类筛选 */
+(function(){
+  var tok='__cookie__';
+  var grid=document.getElementById('assetGrid'), empty=document.getElementById('assetEmpty'),
+      skelH=document.getElementById('skelHdr'), skelG=document.getElementById('skelGrid'), cnt=document.getElementById('cntWorks');
+  function markAssetPageScroll(){
+    var assetContent=document.querySelector('.hq-content');
+    var assetPageScroll=assetContent&&assetContent.parentElement;
+    if(assetPageScroll) assetPageScroll.classList.add('asset-page-scroll');
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',markAssetPageScroll);
+  else markAssetPageScroll();
+  var MODE={text2img:'文生图', img2img:'图生图', inpaint:'局部修改'};
+  function normCat(m){ m=m||''; if(m.indexOf('inpaint')>=0) return 'inpaint'; if(m.indexOf('img2img')>=0) return 'img2img'; return 'text2img'; }  // 各引擎mode→标准类(含 nanobanana_*)
+  var params=new URLSearchParams(location.search);
+  var ALL=[], cat=params.get('cat')||'image', imgSub=params.get('imgSub')||'all';
+  // 兼容旧链接：旧的「全部/文生图/图生图/局部修改」顶层 → 图片资产 + 子筛选
+  if(cat==='all'){ cat='image'; }
+  else if(cat==='text2img'||cat==='img2img'||cat==='inpaint'){ imgSub=cat; cat='image'; }
+  var AUDIO_TAB=params.get('audioTab')||(cat==='audio'?'audio':'public');
+  var currentLoadKind='';
+  // 通知中心「生成任务已完成」点进来时带 ?task=<job_id>：定位并高亮那条产物。
+  // 只用一次，滚动过去后清掉，避免用户之后切分类还被反复拉回去。
+  var focusTask=String(params.get('task')||'');
+  var personalVoiceLoadSeq=0, activePreviewAudio=null, activePreviewButton=null;
+  var searchInput=document.querySelector('input[name="hq_asset_search"]');
+  var bulkToggle=document.getElementById('bulkToggle'), bulkAll=document.getElementById('bulkAll'), bulkBar=document.getElementById('bulkBar'),
+      bulkCount=document.getElementById('bulkCount'), bulkDownload=document.getElementById('bulkDownload'), bulkDelete=document.getElementById('bulkDelete'), bulkCancel=document.getElementById('bulkCancel');
+  var favOnly=document.getElementById('favOnly'), tagFilter=document.getElementById('tagFilter');
+  var searchTerm='', multi=false, selected={}, visibleItems=[], MARKS={}, onlyFav=false, activeTag='';
+  function freshUrl(url){
+    url=String(url||'');
+    return /[?&]q-sign-/.test(url)||/voice_preview_/.test(url)?url:url+(url.indexOf('?')>=0?'&':'?')+'_='+(Date.now());  // voice_preview_ 内容哈希不可变，别击穿浏览器缓存
+  }
+  function playableUrl(url,options){
+    options=options||{};
+    if(options.proxy){
+      var proxy='/api/gen/dl?url='+encodeURIComponent(url)+'&name='+encodeURIComponent(options.name||'collect-video');
+      return fetch(proxy,{cache:'no-store',credentials:'same-origin',headers:{Authorization:'Bearer '+tok}})
+        .then(function(r){
+          if(r.status===401){HQ.login();throw new Error('登录已过期');}
+          if(r.status===502) throw new Error('视频链接已过期，请重新采集后再试');
+          if(!r.ok) throw new Error('视频暂时无法读取，请稍后重试');
+          return r.blob();
+        })
+        .then(function(blob){return URL.createObjectURL(blob);});
+    }
+    if(String(url||'').indexOf('/api/gen/file/')!==0) return Promise.resolve(freshUrl(url));
+    return fetch(freshUrl(url),{cache:'no-store',headers:{Authorization:'Bearer '+tok}})
+      .then(function(r){if(r.status===401){HQ.login();throw new Error('登录已过期');}if(!r.ok)throw new Error('素材读取失败');return r.blob();})
+      .then(function(blob){return URL.createObjectURL(blob);});
+  }
+  // 缩略图：COS 图走 imageMogr2 缩略+webp(体积降数十倍)，且不加缓存穿透→让浏览器缓存缩略图，避免每次进页面全量重下 4.9MB 原图导致裂图(#225)。非COS/本地/视频原样返回。点开/下载仍用原图 x.url。
+  function thumbUrl(url, px){
+    if(!url || url.indexOf('myqcloud.com')<0) return url;
+    if(url.indexOf('imageMogr2')>=0 || url.indexOf('?')>=0) return url;
+    if(!/\.(png|jpe?g|webp|gif|bmp)(\?|$)/i.test(url)) return url;
+    px=px||420;
+    return url+'?imageMogr2/thumbnail/!'+px+'x'+px+'r/format/webp/quality/82';
+  }
+  function assetUrl(x){ return x.url||x.video_url||x.audio_url||x.image_url||x.preview_url||''; }
+  function assetId(x,kind){ return kind==='image' ? (x.id||x.job_id) : x.id; }
+  function assetKey(x,kind){ return [kind||cat, x.id||x.job_id||x.asset_id||'', assetUrl(x), x.prompt||x.text||''].join('|'); }
+  function markKey(x,kind){ return String(x.job_id||x.id||x.asset_id||assetUrl(x)||x.voice_key||x.provider_avatar_id||''); }
+  function markOf(x,kind){ return MARKS[markKey(x,kind)]||{favorite:false,tags:[]}; }
+  // 统一 assets 表返回的行把有信息量的内容都放在 meta 里（copy 的正文、collect 的作者/平台/描述、
+  // leads 的平台列表），title 只是提示词裁到 120 字。不摊平 meta 的话这三类搜索基本是坏的。
+  function metaText(x){
+    var m=x&&x.meta; if(!m||typeof m!=='object') return '';
+    var out=[];
+    Object.keys(m).forEach(function(k){
+      var v=m[k];
+      if(v==null||typeof v==='boolean') return;
+      if(Array.isArray(v)) out.push(v.filter(function(i){return typeof i!=='object';}).join(' '));
+      else if(typeof v!=='object') out.push(v);
+    });
+    return out.join(' ');
+  }
+  function searchableText(x,kind){
+    var m=markOf(x,kind);
+    return [
+      kind||cat, x.prompt, x.text, x.mode, x.ratio, x.quality, x.model, x.voice, x.voice_key,
+      x.voice_name, x.status, x.title, x.display_name, x.sub, x.created_at, metaText(x), (m.tags||[]).join(' ')
+    ].filter(Boolean).join(' ').toLowerCase();
+  }
+  function filterAssets(list,kind){
+    var q=(searchTerm||'').trim().toLowerCase();
+    return list.filter(function(x){
+      var m=markOf(x,kind);
+      if(onlyFav && !m.favorite) return false;
+      if(activeTag && (m.tags||[]).indexOf(activeTag)<0) return false;
+      return !q || searchableText(x,kind).indexOf(q)>=0;
+    });
+  }
+  function setVisible(list,kind){
+    visibleItems=list.map(function(x){ return {key:assetKey(x,kind), kind:kind, id:assetId(x,kind), url:assetUrl(x)}; }).filter(function(x){ return !!x.id; });
+    updateBulk();
+    return list;
+  }
+  function selectedCount(){ return Object.keys(selected).filter(function(k){ return selected[k]; }).length; }
+  function selectedAssets(){
+    return Object.keys(selected).map(function(k){ return selected[k]; }).filter(function(x){ return x && x.kind && x.id; })
+      .map(function(x){ return {kind:x.kind,id:x.id}; });
+  }
+  function currentAssetKind(){
+    return cat==='audio'?'audio':(cat==='video'?'video':(cat==='avatar'?'avatar':'image'));
+  }
+  function updateBulk(){
+    var n=selectedCount();
+    if(grid) grid.classList.toggle('multi-on', !!multi);
+    if(bulkToggle){
+      bulkToggle.style.color=multi?'#e7b24c':'#94a4bb';
+      bulkToggle.style.borderColor=multi?'rgba(231,178,76,.32)':'rgba(148,164,187,.14)';
+    }
+    if(bulkAll) bulkAll.style.display=multi?'flex':'none';
+    if(bulkBar) bulkBar.style.display=(multi&&n)?'flex':'none';
+    if(bulkCount) bulkCount.textContent='已选 '+n+' 个';
+    if(bulkDownload) bulkDownload.disabled=!n;
+    if(bulkDelete) bulkDelete.disabled=!n;
+    if(bulkAll && multi) bulkAll.textContent=visibleItems.some(function(v){return !selected[v.key];})?'全选':'取消全选';
+  }
+  function refreshMarkFilters(){
+    if(favOnly){
+      favOnly.style.color=onlyFav?'#e7b24c':'#94a4bb';
+      favOnly.style.borderColor=onlyFav?'rgba(231,178,76,.32)':'rgba(148,164,187,.14)';
+      favOnly.style.background=onlyFav?'rgba(231,178,76,.08)':'rgba(148,164,187,.05)';
+    }
+    if(tagFilter){
+      var tags=[], seen={};
+      Object.keys(MARKS||{}).forEach(function(k){
+        (MARKS[k].tags||[]).forEach(function(t){ if(t&&!seen[t]){ seen[t]=1; tags.push(t); } });
+      });
+      tags.sort();
+      var prev=activeTag;
+      tagFilter.innerHTML='<option value="">全部标签</option>'+tags.map(function(t){ return '<option value="'+escapeHtml(t)+'">'+escapeHtml(t)+'</option>'; }).join('');
+      if(prev && tags.indexOf(prev)>=0){ tagFilter.value=prev; } else { activeTag=''; }
+    }
+  }
+  function saveFavorite(x,kind,next,btn){
+    var key=markKey(x,kind); if(!key) return;
+    btn.disabled=true;
+    fetch('/api/gen/asset/favorite',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({kind:kind,key:key,favorite:next})})
+      .then(function(r){ if(r.status===401){ HQ.login(); return null; } return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
+      .then(function(res){
+        if(!res) return;
+        if(!res.ok) throw new Error((res.data&&res.data.detail)||'收藏保存失败');
+        MARKS[key]=res.data.mark||{favorite:next,tags:(MARKS[key]&&MARKS[key].tags)||[]};
+        toast(next?'已收藏':'已取消收藏',true); refreshMarkFilters(); render();
+      })
+      .catch(function(e){ toast(e.message||'收藏保存失败',false); })
+      .finally(function(){ btn.disabled=false; });
+  }
+  function editTags(x,kind){
+    var key=markKey(x,kind); if(!key) return;
+    var old=(markOf(x,kind).tags||[]).join('，');
+    var input=prompt('输入标签，用逗号分隔', old);
+    if(input===null) return;
+    var tags=input.split(/[,，]/).map(function(t){ return t.trim(); }).filter(Boolean);
+    fetch('/api/gen/asset/tags',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({kind:kind,key:key,tags:tags})})
+      .then(function(r){ if(r.status===401){ HQ.login(); return null; } return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
+      .then(function(res){
+        if(!res) return;
+        if(!res.ok) throw new Error((res.data&&res.data.detail)||'标签保存失败');
+        MARKS[key]=res.data.mark||{favorite:(MARKS[key]&&MARKS[key].favorite)||false,tags:tags};
+        toast('标签已保存',true); refreshMarkFilters(); render();
+      })
+      .catch(function(e){ toast(e.message||'标签保存失败',false); });
+  }
+  function addMarkTools(cardEl,x,kind){
+    var m=markOf(x,kind), row=document.createElement('div'), fav=document.createElement('button'), tagBtn=document.createElement('button');
+    row.className='mark-row';
+    fav.type='button'; fav.className='mark-tool'+(m.favorite?' on':''); fav.textContent=m.favorite?'★ 已收藏':'☆ 收藏';
+    fav.onclick=function(e){ e.preventDefault(); e.stopPropagation(); saveFavorite(x,kind,!markOf(x,kind).favorite,fav); };
+    tagBtn.type='button'; tagBtn.className='mark-tool'; tagBtn.textContent='标签';
+    tagBtn.onclick=function(e){ e.preventDefault(); e.stopPropagation(); editTags(x,kind); };
+    row.appendChild(fav); row.appendChild(tagBtn);
+    (m.tags||[]).slice(0,3).forEach(function(t){ var chip=document.createElement('span'); chip.className='mark-tag'; chip.textContent=t; chip.title=t; row.appendChild(chip); });
+    if(kind!=='audio') row.style.padding='0 13px 12px';
+    cardEl.appendChild(row);
+    return cardEl;
+  }
+  function addSelectBox(cardEl,x,kind){
+    var key=assetKey(x,kind), meta={key:key,kind:kind,id:assetId(x,kind),url:assetUrl(x)}, box=document.createElement('label'), ck=document.createElement('input');
+    box.className='asset-select'; ck.type='checkbox'; ck.checked=!!selected[key];
+    ck.disabled=!meta.id;
+    ck.onchange=function(){ if(ck.checked) selected[key]=meta; else delete selected[key]; updateBulk(); };
+    box.onclick=function(e){ e.stopPropagation(); };
+    box.appendChild(ck); cardEl.appendChild(box); return cardEl;
+  }
+  function selectVisible(on){
+    visibleItems.forEach(function(v){ if(on) selected[v.key]=v; else delete selected[v.key]; });
+    [].slice.call(grid.querySelectorAll('.asset-select input')).forEach(function(ck){ ck.checked=!!on; });
+    updateBulk();
+  }
+  function triggerDownload(url,idx,name){
+    if(!url) return;
+    var a=document.createElement('a'); a.href=url; a.download=name||('huangque-asset-'+(idx+1)); a.style.display='none';
+    document.body.appendChild(a); a.click(); setTimeout(function(){ a.remove(); }, 60);
+  }
+  function readDownloadBlob(url,name){
+    url=String(url||'').trim();
+    if(!url) return Promise.reject(new Error('素材文件缺失'));
+    var absolute=new URL(url,location.href), sameOrigin=absolute.origin===location.origin;
+    function read(target,local){
+      return fetch(target,{cache:'no-store',credentials:local?'same-origin':'omit',headers:local?{Authorization:'Bearer '+tok}:{}})
+        .then(function(r){
+          if(local&&r.status===401){ HQ.login(); throw new Error('登录已过期'); }
+          if(!r.ok) return r.json().catch(function(){ return {}; }).then(function(data){ throw new Error((data&&data.detail)||('下载请求失败（'+r.status+'）')); });
+          return r.blob();
+        });
+    }
+    if(sameOrigin||url.indexOf('data:')===0||url.indexOf('blob:')===0) return read(url,sameOrigin);
+    var proxy='/api/gen/dl?url='+encodeURIComponent(url)+'&name='+encodeURIComponent(name||'huangque-asset');
+    return read(proxy,true).catch(function(proxyError){
+      return read(url,false).catch(function(){ throw proxyError; });
+    });
+  }
+  function downloadAsset(url,name,button){
+    var oldText=button&&button.textContent;
+    if(button){ button.disabled=true; button.textContent='下载中'; }
+    return readDownloadBlob(url,name).then(function(blob){
+      if(!blob||!blob.size) throw new Error('下载文件为空');
+      var ext={'image/jpeg':'.jpg','image/png':'.png','image/webp':'.webp','image/gif':'.gif','audio/mpeg':'.mp3','audio/wav':'.wav','video/mp4':'.mp4','application/zip':'.zip'}[String(blob.type||'').split(';')[0]]||'';
+      var fileName=String(name||'huangque-asset');
+      if(ext&&!/\.[a-z0-9]{2,5}$/i.test(fileName)) fileName+=ext;
+      var objectUrl=URL.createObjectURL(blob);
+      triggerDownload(objectUrl,0,fileName);
+      setTimeout(function(){ URL.revokeObjectURL(objectUrl); },4000);
+      toast('已开始下载',true);
+    }).catch(function(e){
+      toast((e&&e.message)||'下载失败，请稍后重试',false);
+    }).finally(function(){
+      if(button){ button.disabled=false; button.textContent=oldText||'下载'; }
+    });
+  }
+  function downloadSelected(){
+    var assets=selectedAssets();
+    if(!assets.length){ toast('请选择要下载的资产',false); return; }
+    bulkDownload.disabled=true; bulkDownload.textContent='打包中';
+    fetch('/api/gen/asset/batch-download',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({assets:assets})})
+      .then(function(r){
+        if(r.status===401){ HQ.login(); return null; }
+        if(!r.ok){ return r.json().then(function(d){ throw new Error((d&&d.detail)||'批量下载失败'); }); }
+        return r.blob();
+      })
+      .then(function(blob){
+        if(!blob) return;
+        var url=URL.createObjectURL(blob);
+        triggerDownload(url,0,'huangque-assets.zip');
+        setTimeout(function(){ URL.revokeObjectURL(url); }, 4000);
+        toast('已生成 ZIP 下载包',true);
+      })
+      .catch(function(e){ toast(e.message||'批量下载失败',false); })
+      .finally(function(){ bulkDownload.disabled=false; bulkDownload.textContent='批量下载'; updateBulk(); });
+  }
+  function deleteSelected(){
+    var assets=selectedAssets();
+    if(!assets.length){ toast('请选择要删除的资产',false); return; }
+    if(!confirm('确定删除选中的 '+assets.length+' 个资产？删除后将从资产库移除')) return;
+    bulkDelete.disabled=true; bulkDelete.textContent='删除中';
+    fetch('/api/gen/asset/batch-delete',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({assets:assets})})
+      .then(function(r){ if(r.status===401){ HQ.login(); return null; } return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
+      .then(function(res){
+        if(!res) return;
+        if(!res.ok) throw new Error((res.data&&res.data.detail)||'批量删除失败');
+        var deleted=(res.data.deleted||[]).length, failed=(res.data.failed||[]).length;
+        selected={};
+        toast(failed?('已删除 '+deleted+' 个，'+failed+' 个跳过'):('已删除 '+deleted+' 个'), failed===0);
+        load(currentAssetKind());
+      })
+      .catch(function(e){ toast(e.message||'批量删除失败',false); })
+      .finally(function(){ bulkDelete.disabled=false; bulkDelete.textContent='批量删除'; updateBulk(); });
+  }
+  function toast(msg,ok){
+    var n=document.createElement('div');
+    n.textContent=msg;
+    n.style.cssText='position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:40;padding:10px 14px;border-radius:10px;background:'+(ok?'rgba(45,212,191,.16)':'rgba(244,112,138,.16)')+';border:1px solid '+(ok?'rgba(45,212,191,.28)':'rgba(244,112,138,.28)')+';color:#eaf1fa;font-size:12.5px;font-weight:700;box-shadow:0 12px 32px rgba(0,0,0,.28);';
+    document.body.appendChild(n); setTimeout(function(){ n.remove(); }, 2200);
+  }
+  function copyText(text,label){
+    text=String(text||'');
+    label=label||'提示词';
+    if(!text.trim()){ toast('没有可复制的'+label,false); return; }
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){ toast('已复制'+label,true); }).catch(function(){ fallbackCopyText(text,label); });
+      return;
+    }
+    fallbackCopyText(text,label);
+  }
+  function fallbackCopyText(text,label){
+    var ta=document.createElement('textarea');
+    ta.value=text;
+    ta.setAttribute('readonly','');
+    ta.style.cssText='position:fixed;left:-9999px;top:0;opacity:0;';
+    document.body.appendChild(ta);
+    ta.select();
+    try{ document.execCommand('copy'); toast('已复制'+(label||'提示词'),true); }
+    catch(e){ toast('复制失败，请手动复制',false); }
+    ta.remove();
+  }
+  function openTextModal(text,options){
+    text=String(text||'').trim();
+    options=options||{};
+    if(!text){ toast(options.emptyMessage||'暂无可查看内容',false); return; }
+    var old=document.getElementById('assetPromptModal'); if(old && old._close) old._close(); else if(old) old.remove();
+    var wrap=document.createElement('div'); wrap.id='assetPromptModal'; wrap.className='asset-prompt-modal';
+    var box=document.createElement('div'); box.className='asset-prompt-box'; box.setAttribute('role','dialog'); box.setAttribute('aria-modal','true'); box.setAttribute('aria-label',options.title||'完整内容');
+    var head=document.createElement('div'); head.className='asset-prompt-head';
+    var title=document.createElement('div'); title.className='asset-prompt-title'; title.textContent=options.title||'完整内容';
+    var close=document.createElement('button'); close.type='button'; close.className='asset-prompt-close'; close.setAttribute('aria-label','关闭'); close.textContent='×';
+    var body=document.createElement('pre'); body.className='asset-prompt-text'; body.textContent=text;
+    var foot=document.createElement('div'); foot.className='asset-prompt-foot';
+    var copyLabel=options.copyLabel||'提示词';
+    var copy=actionBtn('复制'+copyLabel,function(){ copyText(text,copyLabel); }); copy.className+=' gold';
+    var closeModal=function(){ document.removeEventListener('keydown',onKey); wrap.remove(); };
+    var onKey=function(e){ if(e.key==='Escape') closeModal(); };
+    var done=actionBtn('关闭',closeModal);
+    head.appendChild(title); head.appendChild(close); foot.appendChild(copy); foot.appendChild(done);
+    box.appendChild(head); box.appendChild(body); box.appendChild(foot); wrap.appendChild(box);
+    wrap._close=closeModal; close.onclick=closeModal;
+    wrap.onclick=function(e){ if(e.target===wrap) closeModal(); };
+    document.addEventListener('keydown',onKey);
+    document.body.appendChild(wrap);
+  }
+  function openPromptModal(text){
+    openTextModal(text,{title:'完整生成提示词',copyLabel:'提示词',emptyMessage:'该图片暂无提示词'});
+  }
+  function openAssetVideoModal(videoUrl,title,posterUrl,options){
+    videoUrl=String(videoUrl||'').trim();
+    if(!videoUrl){ toast('视频还未生成',false); return; }
+    var old=document.getElementById('assetVideoModal'); if(old && old._close) old._close();
+    var wrap=document.createElement('div'); wrap.id='assetVideoModal'; wrap.className='asset-video-modal';
+    var box=document.createElement('div'); box.className='asset-video-box'; box.setAttribute('role','dialog'); box.setAttribute('aria-modal','true'); box.setAttribute('aria-label',title||'视频预览');
+    var close=document.createElement('button'); close.type='button'; close.className='asset-video-close'; close.setAttribute('aria-label','关闭'); close.textContent='×';
+    var loading=document.createElement('div'); loading.className='asset-video-loading'; loading.textContent='正在读取视频信息...';
+    var video=document.createElement('video'); video.controls=true; video.playsInline=true; video.autoplay=true; video.preload='metadata';
+    if(posterUrl) video.poster=thumbUrl(posterUrl,720);
+    var objectUrl='';
+    var closed=false;
+    var hideLoading=function(){ loading.style.display='none'; };
+    var closeModal=function(){
+      closed=true;
+      document.removeEventListener('keydown',onKey);
+      try{ video.pause(); }catch(e){}
+      try{ video.src=''; video.load(); }catch(e){}
+      if(objectUrl && objectUrl.indexOf('blob:')===0) URL.revokeObjectURL(objectUrl);
+      wrap.remove();
+    };
+    var onKey=function(e){ if(e.key==='Escape') closeModal(); };
+    wrap._close=closeModal;
+    close.onclick=closeModal;
+    wrap.onclick=function(e){ if(e.target===wrap) closeModal(); };
+    box.onclick=function(e){ e.stopPropagation(); };
+    box.appendChild(close); box.appendChild(loading); box.appendChild(video); wrap.appendChild(box);
+    document.addEventListener('keydown',onKey);
+    document.body.appendChild(wrap);
+    video.addEventListener('loadedmetadata',function(){ loading.textContent='视频已就绪，正在起播...'; });
+    video.addEventListener('loadeddata',hideLoading);
+    video.addEventListener('canplay',hideLoading);
+    video.addEventListener('playing',hideLoading);
+    video.addEventListener('error',function(){
+      loading.style.display='flex';
+      loading.textContent='视频无法播放，素材可能已失效';
+    });
+    playableUrl(videoUrl,options).then(function(src){
+      if(closed){ URL.revokeObjectURL(src); return; }
+      objectUrl=src;
+      video.src=src;
+      var p=video.play();
+      if(p && p.catch) p.catch(function(){ if(video.readyState>=1) hideLoading(); });
+    }).catch(function(e){
+      if(closed) return;
+      loading.textContent=(e&&e.message)||'视频加载失败';
+      toast((e&&e.message)||'视频加载失败',false);
+    });
+  }
+  function openAssetImageModal(list,idx){
+    list=Array.isArray(list)?list:[];
+    if(!list.length) return;
+    idx=Math.max(0,Math.min(idx||0,list.length-1));
+    var old=document.getElementById('assetImageModal'); if(old && old._close) old._close();
+    var wrap=document.createElement('div'); wrap.id='assetImageModal'; wrap.className='asset-video-modal';
+    var box=document.createElement('div'); box.className='asset-image-box'; box.setAttribute('role','dialog'); box.setAttribute('aria-modal','true'); box.setAttribute('aria-label','图片预览');
+    var close=document.createElement('button'); close.type='button'; close.className='asset-video-close'; close.setAttribute('aria-label','关闭'); close.textContent='×';
+    var img=document.createElement('img'); img.alt='';
+    var prev=document.createElement('button'); prev.type='button'; prev.className='asset-image-nav prev'; prev.setAttribute('aria-label','上一张'); prev.textContent='‹';
+    var next=document.createElement('button'); next.type='button'; next.className='asset-image-nav next'; next.setAttribute('aria-label','下一张'); next.textContent='›';
+    var foot=document.createElement('div'); foot.className='asset-image-foot';
+    var count=document.createElement('span'); count.className='asset-image-count';
+    var dl=document.createElement('button'); dl.type='button'; dl.textContent='下载'; dl.className='asset-action gold';
+    foot.appendChild(count); foot.appendChild(dl);
+    var closeModal=function(){ document.removeEventListener('keydown',onKey); wrap.remove(); };
+    var onKey=function(e){
+      if(e.key==='Escape') closeModal();
+      else if(e.key==='ArrowLeft') show(idx-1);
+      else if(e.key==='ArrowRight') show(idx+1);
+    };
+    function show(i){
+      if(i<0||i>=list.length) return;
+      idx=i;
+      var x=list[idx]||{};
+      img.src=x.url||'';
+      count.textContent=(idx+1)+' / '+list.length;
+      dl.onclick=function(){ downloadAsset(x.url,'huangque-image-'+(idx+1),dl); };
+      prev.disabled=idx<=0;
+      next.disabled=idx>=list.length-1;
+    }
+    wrap._close=closeModal;
+    close.onclick=closeModal;
+    wrap.onclick=function(e){ if(e.target===wrap) closeModal(); };
+    box.onclick=function(e){ e.stopPropagation(); };
+    prev.onclick=function(){ show(idx-1); };
+    next.onclick=function(){ show(idx+1); };
+    box.appendChild(close); box.appendChild(prev); box.appendChild(img); box.appendChild(next); box.appendChild(foot);
+    wrap.appendChild(box);
+    document.addEventListener('keydown',onKey);
+    document.body.appendChild(wrap);
+    show(idx);
+  }
+  function isMotionAsset(x){
+    x=x||{};
+    return !!(x.reference_video_url||x.reference_video_file||x.reference_video_data||x.reference_video);
+  }
+  function regenPayload(x,kind){
+    if(kind==='audio'){
+      var audioParams=new URLSearchParams();
+      audioParams.set('prompt',x.text||x.prompt||'');
+      audioParams.set('voice',x.voice||x.voice_key||'');
+      audioParams.set('speed',x.speed==null?1:x.speed);
+      audioParams.set('pitch',x.pitch==null?0:x.pitch);
+      audioParams.set('volume',x.volume==null?0:x.volume);
+      audioParams.set('prefill','asset');
+      return {href:'audio.html?'+audioParams.toString()};
+    }
+    if(kind==='video'){
+      var mode=String(x.mode||'').toLowerCase();
+      if(['digital_human','talking','talking_head','talking_text','text2video'].indexOf(mode)>=0) mode='text';
+      if(['talking_audio','audio2video'].indexOf(mode)>=0) mode='audio';
+      if(!mode || mode==='video') mode=isMotionAsset(x)?'motion':((x.audio_file||x.audio_url)&&!(x.text||x.prompt)?'audio':'text');
+      var prefill={
+        mode:mode,
+        prompt:x.prompt||x.text||'',
+        text:x.text||x.prompt||'',
+        voice:x.voice||x.voice_key||x.provider_voice||x.voice_name||'',
+        voice_key:x.voice_key||x.voice||'',
+        voice_name:x.voice_name||'',
+        ratio:x.ratio||'9:16',
+        resolution:x.resolution||'',
+        motion:x.motion||'',
+        image_url:x.source_image_url||x.person_image_url||x.image_url||(x.image_file?('/api/gen/file/'+x.image_file):''),
+        audio_url:x.audio_url||(x.audio_file?('/api/gen/file/'+x.audio_file):''),
+        reference_video_url:x.reference_video_url||(x.reference_video_file?('/api/gen/file/'+x.reference_video_file):''),
+        background_url:x.background_url||(x.background_file?('/api/gen/file/'+x.background_file):''),
+        tryon_mode:x.tryon_mode||'',
+        model:x.model||''
+      };
+      localStorage.setItem('hq_video_prefill', JSON.stringify(prefill));
+      location.href='video.html?prefill=asset';
+      return null;
+    }
+    var mode=String(x.mode||'').toLowerCase();
+    var provider=String(x.provider||'').toLowerCase();
+    var model=String(x.model||'').toLowerCase();
+    var engine='gpt';
+    if(mode.indexOf('nanobanana')>=0 || provider==='banana' || model==='nb2' || model==='pro') engine=model==='pro'?'pro':'nb2';
+    else if(mode.indexOf('seedream')>=0 || provider==='seedream') engine='seedream';
+    else if(mode.indexOf('xiaole')>=0 || provider==='xiaole') engine='xiaole';
+    else if(mode.indexOf('zelong')>=0 || provider.indexOf('zelong')===0) engine='zelong2';
+    var imageParams=new URLSearchParams();
+    imageParams.set('prompt',x.prompt||'');
+    imageParams.set('engine',engine);
+    imageParams.set('prefill','asset');
+    return {href:'banana.html?'+imageParams.toString()};
+  }
+  function regenerate(x,kind,btn){
+    var cfg=regenPayload(x,kind); if(!cfg) return;
+    if(cfg.href){ location.href=cfg.href; return; }
+    btn.disabled=true; btn.textContent='提交中';
+    fetch(cfg.url,{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify(cfg.body)})
+      .then(function(r){ if(r.status===401){ HQ.login(); return null; } return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
+      .then(function(res){ if(!res) return; if(!res.ok) throw new Error((res.data&&res.data.detail)||'重生成失败'); toast('已提交重生成任务',true); })
+      .catch(function(e){ toast(e.message||'重生成失败',false); })
+      .finally(function(){ btn.disabled=false; btn.textContent='重生成'; });
+  }
+  function deleteAsset(x,kind,btn){
+    var id = kind==='image' ? (x.id||x.job_id) : x.id;
+    if(!id){ toast('缺少资产标识，无法删除',false); return; }
+    if(!confirm('确定删除该资产？删除后将从资产库移除')) return;
+    btn.disabled=true; btn.textContent='删除中';
+    fetch('/api/gen/asset/delete',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({kind:kind,id:id})})
+      .then(function(r){ if(r.status===401){ HQ.login(); return null; } return r.json().then(function(d){ return {ok:r.ok,data:d}; }); })
+      .then(function(res){
+        if(!res) return;
+        if(!res.ok) throw new Error((res.data&&res.data.detail)||'删除失败');
+        var sid=String(id);
+        ALL=ALL.filter(function(item){
+          var iid = kind==='image' ? (item.id||item.job_id) : item.id;
+          return String(iid)!==sid;
+        });
+        delete MARKS[markKey(x,kind)];
+        selected={};
+        if(cnt) cnt.textContent=ALL.length;
+        toast('已删除',true);
+        render();
+      })
+      .catch(function(e){ toast(e.message||'删除失败',false); })
+      .finally(function(){ btn.disabled=false; btn.textContent='删除'; });
+  }
+  function actionBtn(text,fn){
+    var b=document.createElement('button'); b.type='button'; b.textContent=text; b.className='asset-action'; b.onclick=fn; return b;
+  }
+  function stopActivePreviewAudio(){
+    if(activePreviewAudio){
+      try{ activePreviewAudio.pause(); activePreviewAudio.currentTime=0; }catch(e){}
+      activePreviewAudio=null;
+    }
+    if(activePreviewButton) resetPreviewButton(activePreviewButton);
+    activePreviewButton=null;
+  }
+  function resetPreviewButton(btn){
+    if(!btn) return;
+    btn.title='\u64ad\u653e\u8bd5\u542c';
+    btn.setAttribute('aria-label','\u64ad\u653e\u8bd5\u542c');
+    btn.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;"><path d="M8 5v14l11-7z"/></svg>';
+  }
+  function setPreviewButtonPlaying(btn){
+    if(!btn) return;
+    btn.title='\u6682\u505c\u8bd5\u542c';
+    btn.setAttribute('aria-label','\u6682\u505c\u8bd5\u542c');
+    btn.innerHTML='<svg viewBox="0 0 24 24" fill="currentColor" style="width:17px;height:17px;"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>';
+  }
+  function card(x,list,idx){
+    var label=MODE[normCat(x.mode)]||'作图', promptText=String(x.prompt||'').trim(), p=promptText.slice(0,22)||'无提示词';
+    var w=document.createElement('div'); w.className='asset-library-card'; w.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:rgba(16,24,39,.4); overflow:hidden;';
+    var tag=document.createElement('span'); tag.textContent=label; tag.style.cssText='position:absolute; top:11px; left:11px; z-index:2; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.62); color:#e7b24c;';
+    var im=document.createElement('img'); im.src=thumbUrl(x.url,420); im.loading='lazy'; im.style.cssText='display:block; width:100%; aspect-ratio:4/3; object-fit:cover; cursor:pointer;'; im.onclick=function(){ openAssetImageModal(list||[x],idx||0); };
+    var foot=document.createElement('div'); foot.style.cssText='padding:11px 13px; display:flex; flex-direction:column; gap:9px;';
+    var promptRow=document.createElement('div'); promptRow.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;';
+    var pt=document.createElement('button'); pt.type='button'; pt.textContent=p; pt.title=promptText||'该图片暂无提示词'; pt.disabled=!promptText; pt.style.cssText='min-width:0;flex:1;border:0;background:transparent;padding:0;text-align:left;font:inherit;font-size:12px;color:'+(promptText?'#94a4bb':'#5c6b82')+';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:'+(promptText?'pointer':'default')+';';
+    pt.onclick=function(){ openPromptModal(promptText); };
+    var promptActions=document.createElement('div'); promptActions.style.cssText='display:flex;align-items:center;gap:6px;flex:none;';
+    if(promptText){
+      var viewPrompt=actionBtn('查看',function(){ openPromptModal(promptText); });
+      var copyPrompt=actionBtn('复制',function(){ copyText(promptText); }); copyPrompt.className+=' gold';
+      promptActions.appendChild(viewPrompt); promptActions.appendChild(copyPrompt);
+    }
+    promptRow.appendChild(pt); promptRow.appendChild(promptActions);
+    var actions=document.createElement('div'); actions.style.cssText='display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
+    var regen=actionBtn('重生成',function(){ regenerate(x,'image',regen); });
+    var del=actionBtn('删除',function(){ deleteAsset(x,'image',del); }); del.className+=' danger';
+    var dl=actionBtn('下载',function(){ downloadAsset(x.url,'huangque-image',dl); }); dl.className+=' gold';
+    actions.appendChild(regen); actions.appendChild(del); actions.appendChild(dl);
+    foot.appendChild(promptRow); foot.appendChild(actions); w.appendChild(tag); w.appendChild(im); w.appendChild(foot); addMarkTools(w,x,'image'); return addSelectBox(w,x,'image');
+  }
+  function audioCard(x){
+    var text=x.text||x.prompt||'配音资产';
+    var url=x.url||'';
+    var voice=x.voice_name||x.voice_key||x.voice||'未命名音色';
+    var created=x.created_at?new Date(Number(x.created_at)*1000):null;
+    var dateText=created&&!isNaN(created.getTime())?(String(created.getMonth()+1).padStart(2,'0')+'-'+String(created.getDate()).padStart(2,'0')+' '+String(created.getHours()).padStart(2,'0')+':'+String(created.getMinutes()).padStart(2,'0')):'最近生成';
+    var w=document.createElement('div'); w.className='asset-library-card';
+    w.style.cssText='position:relative; min-height:188px; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.56), rgba(9,14,24,.44)); overflow:hidden; padding:16px; display:flex; flex-direction:column; gap:12px; box-shadow:0 16px 42px rgba(0,0,0,.12);';
+    var top=document.createElement('div');
+    top.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:10px;';
+    var tag=document.createElement('span');
+    tag.textContent='配音资产';
+    tag.style.cssText='align-self:flex-start; padding:3px 9px; font-size:11px; font-weight:700; border-radius:6px; background:rgba(45,212,191,.12); color:#2dd4bf;';
+    var time=document.createElement('span');
+    time.textContent=dateText;
+    time.style.cssText='font-size:11px;color:#5c6b82;white-space:nowrap;';
+    top.appendChild(tag); top.appendChild(time);
+    var body=document.createElement('div');
+    body.style.cssText='display:flex;align-items:flex-start;gap:12px;min-width:0;';
+    var play=document.createElement('button');
+    play.type='button';
+    play.style.cssText='width:42px;height:42px;border:none;border-radius:50%;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;display:flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto;box-shadow:0 12px 26px rgba(231,178,76,.18);';
+    resetPreviewButton(play);
+    var textBox=document.createElement('div');
+    textBox.style.cssText='min-width:0;flex:1;';
+    var title=document.createElement('div');
+    title.textContent=text;
+    title.title=text;
+    title.style.cssText='font-size:13.5px;color:#eaf1fa;font-weight:700;line-height:1.5;height:42px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;';
+    var voiceLine=document.createElement('div');
+    voiceLine.textContent=voice;
+    voiceLine.style.cssText='margin-top:5px;font-size:11.5px;color:#94a4bb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    textBox.appendChild(title); textBox.appendChild(voiceLine);
+    body.appendChild(play); body.appendChild(textBox);
+    var params=document.createElement('div');
+    params.style.cssText='display:grid;grid-template-columns:repeat(3,1fr);gap:7px;';
+    [['语速',x.speed||'1.0'],['音调',x.pitch||'0'],['音量',x.volume||'0']].forEach(function(p){
+      var pill=document.createElement('div');
+      pill.innerHTML='<div style="font-size:10.5px;color:#5c6b82;line-height:1.2;">'+p[0]+'</div><div class="mono" style="font-size:12.5px;color:#eaf1fa;font-weight:700;margin-top:3px;">'+p[1]+'</div>';
+      pill.style.cssText='padding:8px 9px;border:1px solid rgba(148,164,187,.1);border-radius:10px;background:rgba(7,11,19,.28);min-width:0;';
+      params.appendChild(pill);
+    });
+    var actions=document.createElement('div');
+    actions.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:auto;padding-top:10px;border-top:1px solid rgba(148,164,187,.1);';
+    var hint=document.createElement('div');
+    hint.textContent=url?'可试听 / 下载 MP3':'音频文件缺失';
+    hint.style.cssText='font-size:11.5px;color:'+(url?'#5c6b82':'#f4708a')+';';
+    var buttons=document.createElement('div');
+    buttons.style.cssText='display:flex;align-items:center;gap:6px;flex:0 0 auto;';
+    var regen=actionBtn('重生成',function(){ regenerate(x,'audio',regen); });
+    var del=actionBtn('删除',function(){ deleteAsset(x,'audio',del); }); del.className+=' danger';
+    var dl=actionBtn('下载',function(){ downloadAsset(url,'huangque-audio.mp3',dl); });
+    dl.className+=' gold';
+    dl.style.height='30px';
+    buttons.appendChild(regen); buttons.appendChild(del); buttons.appendChild(dl);
+    actions.appendChild(hint); actions.appendChild(buttons);
+    var audio=null;
+    play.onclick=function(e){
+      e.preventDefault(); e.stopPropagation();
+      if(!url) return;
+      if(activePreviewButton===play && activePreviewAudio && !activePreviewAudio.paused){
+        stopActivePreviewAudio(); return;
+      }
+      stopActivePreviewAudio();
+      playableUrl(url).then(function(src){
+        audio=new Audio(src);
+        audio.onended=stopActivePreviewAudio;
+        audio.onpause=function(){ if(activePreviewAudio===audio) resetPreviewButton(play); };
+        activePreviewAudio=audio;
+        activePreviewButton=play;
+        setPreviewButtonPlaying(play);
+        return audio.play();
+      }).catch(function(){ stopActivePreviewAudio(); });
+    };
+    w.appendChild(top); w.appendChild(body); w.appendChild(params); w.appendChild(actions); addMarkTools(w,x,'audio'); return addSelectBox(w,x,'audio');
+  }
+  function videoStatusLabel(status){
+    var s=String(status||'pending').toLowerCase();
+    if(s==='done' || s==='ready' || s==='success') return '已完成';
+    if(s==='running' || s==='processing') return '生成中';
+    if(s==='failed' || s==='error') return '失败';
+    return '待生成';
+  }
+  function videoCard(x){
+    var status=videoStatusLabel(x.status);
+    var videoUrl=x.video_url||x.url||'';
+    var imageUrl=x.image_url||(x.image_file?('/api/gen/file/'+x.image_file):'');
+    var created=x.created_at?new Date(Number(x.created_at)*1000):null;
+    var dateText=created&&!isNaN(created.getTime())?(String(created.getMonth()+1).padStart(2,'0')+'-'+String(created.getDate()).padStart(2,'0')+' '+String(created.getHours()).padStart(2,'0')+':'+String(created.getMinutes()).padStart(2,'0')):'最近创建';
+    var title=x.prompt||x.text||'视频资产';
+    var w=document.createElement('div'); w.className='asset-library-card';
+    w.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.56), rgba(9,14,24,.44)); overflow:hidden; display:flex; flex-direction:column; min-height:260px;';
+    var media=document.createElement('div');
+    media.style.cssText='position:relative; aspect-ratio:4/3; background:rgba(7,11,19,.38); display:flex; align-items:center; justify-content:center; color:#5c6b82; overflow:hidden;'+(videoUrl?' cursor:pointer;':'');
+    if(videoUrl){
+      var v=document.createElement('video');
+      v.controls=false; v.preload='metadata'; v.dataset.src=videoUrl; v.muted=true; v.playsInline=true;
+      if(imageUrl) v.poster=thumbUrl(imageUrl,420);
+      v.style.cssText='width:100%;height:100%;object-fit:contain;display:block;background:#050812;';
+      media.onclick=function(){ openAssetVideoModal(videoUrl,title,imageUrl); };
+      media.appendChild(v);
+      var openBtn=document.createElement('button');
+      openBtn.type='button'; openBtn.className='asset-video-open'; openBtn.textContent='放大预览';
+      openBtn.onclick=function(e){ e.preventDefault(); e.stopPropagation(); openAssetVideoModal(videoUrl,title,imageUrl); };
+      media.appendChild(openBtn);
+    }else if(imageUrl){
+      var im=document.createElement('img');
+      im.src=imageUrl; im.loading='lazy';
+      im.style.cssText='width:100%;height:100%;object-fit:cover;display:block;';
+      media.appendChild(im);
+    }else{
+      media.innerHTML='<span style="display:flex;width:36px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span>';
+    }
+    var tag=document.createElement('span');
+    tag.textContent=status;
+    tag.style.cssText='position:absolute;top:11px;left:11px;z-index:2;padding:3px 9px;font-size:11px;font-weight:700;border-radius:6px;background:rgba(7,11,19,.66);color:'+(status==='失败'?'#f4708a':status==='已完成'?'#2dd4bf':'#e7b24c')+';';
+    media.appendChild(tag);
+    var body=document.createElement('div');
+    body.style.cssText='padding:13px 14px 14px;display:flex;flex-direction:column;gap:10px;flex:1;';
+    var head=document.createElement('div');
+    head.style.cssText='display:flex;align-items:flex-start;justify-content:space-between;gap:10px;';
+    var name=document.createElement('div');
+    name.textContent=title; name.title=title;
+    name.style.cssText='font-size:13.5px;color:#eaf1fa;font-weight:700;line-height:1.45;height:40px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;';
+    var time=document.createElement('span');
+    time.textContent=dateText;
+    time.style.cssText='font-size:11px;color:#5c6b82;white-space:nowrap;margin-top:2px;';
+    head.appendChild(name); head.appendChild(time);
+    var meta=document.createElement('div');
+    meta.style.cssText='display:flex;gap:7px;flex-wrap:wrap;';
+    [['分辨率',x.resolution||'--'],['比例',x.ratio||'--'],['强度',x.motion||'--']].forEach(function(p){
+      var pill=document.createElement('span');
+      pill.textContent=p[0]+' '+p[1];
+      pill.style.cssText='padding:4px 8px;border-radius:8px;border:1px solid rgba(148,164,187,.1);background:rgba(7,11,19,.25);font-size:11px;color:#94a4bb;';
+      meta.appendChild(pill);
+    });
+    var foot=document.createElement('div');
+    foot.style.cssText='margin-top:auto;display:flex;align-items:center;justify-content:space-between;gap:10px;padding-top:10px;border-top:1px solid rgba(148,164,187,.1);';
+    var hint=document.createElement('span');
+    hint.textContent=videoUrl?'可预览 / 下载':'任务已创建，完成后可预览';
+    hint.style.cssText='font-size:11.5px;color:#5c6b82;';
+    var buttons=document.createElement('div');
+    buttons.style.cssText='display:flex;align-items:center;gap:6px;flex:0 0 auto;';
+    var regen=actionBtn('重生成',function(){ regenerate(x,'video',regen); });
+    var del=actionBtn('删除',function(){ deleteAsset(x,'video',del); }); del.className+=' danger';
+    var dl=document.createElement('button');
+    dl.type='button';
+    dl.textContent=videoUrl?'下载':'去生成';
+    dl.onclick=function(){ if(videoUrl) downloadAsset(videoUrl,'huangque-video.mp4',dl); else location.href='video.html'; };
+    dl.className='asset-action gold';
+    dl.style.height='30px';
+    buttons.appendChild(regen); buttons.appendChild(del); buttons.appendChild(dl);
+    foot.appendChild(hint); foot.appendChild(buttons);
+    body.appendChild(head); body.appendChild(meta); body.appendChild(foot);
+    w.appendChild(media); w.appendChild(body); addMarkTools(w,x,'video');
+    return addSelectBox(w,x,'video');
+  }
+  function escapeHtml(s){
+    return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});
+  }
+  function avatarDate(ts){
+    var d=ts?new Date(Number(ts)*1000):null;
+    if(!d || isNaN(d.getTime())) return '已保存';
+    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+  }
+  function avatarCard(x){
+    var image=x.image_url||'../assets/cloud/logo-bird.png';
+    var name=x.name||'未命名形象';
+    var w=document.createElement('div'); w.className='asset-library-card';
+    w.style.cssText='position:relative; min-height:252px; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.56), rgba(9,14,24,.44)); overflow:hidden; display:flex; flex-direction:column; box-shadow:0 16px 42px rgba(0,0,0,.12);';
+    var media=document.createElement('div');
+    media.style.cssText='position:relative; aspect-ratio:4/3; background:rgba(7,11,19,.38); overflow:hidden;';
+    media.innerHTML='<img src="'+escapeHtml(thumbUrl(image,420))+'" loading="lazy" alt="" style="width:100%;height:100%;object-fit:cover;display:block;">'
+      +'<span style="position:absolute;top:11px;left:11px;z-index:2;padding:3px 9px;font-size:11px;font-weight:700;border-radius:6px;background:rgba(7,11,19,.66);color:#2dd4bf;">数字人形象</span>';
+    var body=document.createElement('div');
+    body.style.cssText='padding:13px 14px 14px;display:flex;flex-direction:column;gap:10px;flex:1;';
+    body.innerHTML='<div style="font-size:14px;color:#eaf1fa;font-weight:800;line-height:1.45;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+escapeHtml(name)+'">'+escapeHtml(name)+'</div>'
+      +'<div style="font-size:11.5px;color:#94a4bb;line-height:1.5;">保存于 '+escapeHtml(avatarDate(x.created_at))+'</div>'
+      +'<div style="font-size:11px;color:#5c6b82;line-height:1.5;min-height:16px;">可在视频模块动作模仿中复用</div>';
+    var actions=document.createElement('div');
+    actions.style.cssText='display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:auto;padding-top:10px;border-top:1px solid rgba(148,164,187,.1);';
+    var rename=document.createElement('button');
+    rename.type='button'; rename.textContent='改名';
+    rename.style.cssText='height:32px;border:1px solid rgba(231,178,76,.28);border-radius:9px;background:rgba(231,178,76,.08);color:#e7b24c;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;';
+    rename.onclick=function(e){ e.preventDefault(); e.stopPropagation(); openRenameAvatarModal(x); };
+    var del=document.createElement('button');
+    del.type='button'; del.textContent='删除';
+    del.style.cssText='height:32px;border:1px solid rgba(244,112,138,.24);border-radius:9px;background:rgba(244,112,138,.07);color:#f4708a;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;';
+    del.onclick=function(e){ e.preventDefault(); e.stopPropagation(); deleteAvatar(x); };
+    actions.appendChild(rename); actions.appendChild(del);
+    body.appendChild(actions);
+    w.appendChild(media); w.appendChild(body); addMarkTools(w,x,'avatar');
+    return addSelectBox(w,x,'avatar');
+  }
+  function openRenameAvatarModal(avatar){
+    var old=document.getElementById('renameAvatarModal'); if(old) old.remove();
+    var wrap=document.createElement('div'); wrap.id='renameAvatarModal';
+    wrap.style.cssText='position:fixed; inset:0; z-index:10000; display:flex; align-items:center; justify-content:center; padding:22px; background:rgba(3,7,15,.72); backdrop-filter:blur(10px);';
+    var modal=document.createElement('div');
+    modal.style.cssText='width:min(420px,100%); border:1px solid rgba(148,164,187,.16); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.98), rgba(8,13,24,.98)); box-shadow:0 28px 80px rgba(0,0,0,.48); overflow:hidden;';
+    modal.innerHTML='<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 20px;border-bottom:1px solid rgba(148,164,187,.12);">'
+      +'<div><div style="font-size:17px;font-weight:700;color:#eaf1fa;">修改形象名称</div><div style="margin-top:5px;font-size:12.5px;color:#94a4bb;">名称会同步显示在视频页「我的形象」里</div></div>'
+      +'<button type="button" data-close-avatar style="width:34px;height:34px;border:none;border-radius:9px;background:rgba(148,164,187,.08);color:#94a4bb;cursor:pointer;font-size:20px;line-height:1;">×</button></div>'
+      +'<div style="padding:20px;display:flex;flex-direction:column;gap:14px;">'
+      +'<label style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:12.5px;font-weight:600;color:#eaf1fa;">形象名称</span><input id="renameAvatarInput" maxlength="40" autocomplete="off" placeholder="请输入形象名称" style="height:42px;border:1px solid rgba(148,164,187,.16);border-radius:11px;background:rgba(7,11,19,.5);color:#eaf1fa;outline:none;padding:0 12px;font-family:inherit;font-size:13px;"></label>'
+      +'<div id="renameAvatarNote" style="font-size:12px;color:#5c6b82;line-height:1.6;">用于区分不同人物形象，不会影响已生成的视频。</div>'
+      +'</div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid rgba(148,164,187,.12);"><button type="button" data-close-avatar style="height:38px;padding:0 15px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-family:inherit;">取消</button><button type="button" id="renameAvatarSubmit" style="height:38px;padding:0 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;font-weight:700;cursor:pointer;font-family:inherit;">保存</button></div>';
+    wrap.appendChild(modal); document.body.appendChild(wrap);
+    function close(){ wrap.remove(); }
+    wrap.querySelectorAll('[data-close-avatar]').forEach(function(b){ b.onclick=close; });
+    wrap.addEventListener('click',function(e){ if(e.target===wrap) close(); });
+    var input=wrap.querySelector('#renameAvatarInput'), note=wrap.querySelector('#renameAvatarNote'), submit=wrap.querySelector('#renameAvatarSubmit');
+    input.value=avatar.name||'';
+    setTimeout(function(){ input.focus(); input.select(); },0);
+    submit.onclick=function(){
+      var name=input.value.trim();
+      if(!name){ note.style.color='#f4708a'; note.textContent='请输入形象名称'; return; }
+      submit.disabled=true; submit.style.opacity='.72'; note.style.color='#e7b24c'; note.textContent='正在保存...';
+      fetch('/api/gen/video/avatar-name',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({id:avatar.id,name:name})})
+        .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+        .then(function(res){
+          if(res.status===401){ HQ.login(); return; }
+          if(!res.data.ok) throw new Error(res.data.detail||'保存失败');
+          close(); load('avatar');
+        })
+        .catch(function(err){ submit.disabled=false; submit.style.opacity='1'; note.style.color='#f4708a'; note.textContent=err.message||'保存失败'; });
+    };
+    input.onkeydown=function(e){ if(e.key==='Enter') submit.click(); };
+  }
+  function deleteAvatar(avatar){
+    if(!confirm('确定删除这个数字人形象吗？只会从形象库移除，不会删除已生成的视频。')) return;
+    fetch('/api/gen/video/avatar-delete',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({id:avatar.id})})
+      .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+      .then(function(res){
+        if(res.status===401){ HQ.login(); return; }
+        if(!res.data.ok) throw new Error(res.data.detail||'删除失败');
+        load('avatar');
+      })
+      .catch(function(err){ alert(err.message||'删除失败'); });
+  }
+  function sectionTitle(t){
+    var h=document.createElement('div'); h.textContent=t; h.style.cssText='grid-column:1/-1; margin:4px 0 -4px; font-size:14px; font-weight:700; color:#eaf1fa;';
+    return h;
+  }
+  function voiceAssetCard(name, sub, tagText, accent, href, onClick, previewUrl){
+    var w=document.createElement(href?'a':'div');
+    if(href) w.href=href;
+    if(onClick){ w.tabIndex=0; w.setAttribute('role','button'); }
+    w.style.cssText='position:relative; min-height:126px; box-sizing:border-box; padding:16px; border:1px '+(href?'dashed':'solid')+' '+(accent?'rgba(231,178,76,.28)':'rgba(148,164,187,.12)')+'; border-radius:16px; background:'+(accent?'rgba(231,178,76,.05)':'rgba(16,24,39,.4)')+'; text-decoration:none; display:flex; flex-direction:column; justify-content:space-between; gap:13px;'+(onClick?' cursor:pointer;':'');
+    if(onClick){
+      w.onclick=onClick;
+      w.onkeydown=function(e){ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); onClick(e); } };
+    }
+    var tag=document.createElement('span'); tag.textContent=tagText; tag.style.cssText='align-self:flex-start; padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.62); color:'+(accent?'#e7b24c':'#2dd4bf')+';';
+    var title=document.createElement('div'); title.innerHTML='<div style="font-size:13px; color:#eaf1fa; font-weight:700; line-height:1.5;">'+name+'</div><div style="font-size:11.5px; color:#94a4bb; margin-top:4px; line-height:1.5;">'+sub+'</div>';
+    var bars=document.createElement('div'); bars.style.cssText='display:flex; align-items:center; gap:3px; height:20px;';
+    [6,13,9,17,11,7,15,10,18,6].forEach(function(n){ var b=document.createElement('span'); b.style.cssText='width:3px; height:'+n+'px; border-radius:2px; background:'+(accent?'rgba(231,178,76,.45)':'rgba(148,164,187,.3)')+';'; bars.appendChild(b); });
+    w.appendChild(tag); w.appendChild(title); w.appendChild(bars);
+    if(previewUrl){
+      var playBtn=document.createElement('button');
+      playBtn.type='button';
+      resetPreviewButton(playBtn);
+      playBtn.style.cssText='position:absolute;right:14px;top:14px;width:34px;height:34px;border:none;border-radius:50%;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 10px 24px rgba(231,178,76,.18);';
+      playBtn.onclick=function(e){
+        e.preventDefault(); e.stopPropagation();
+        if(activePreviewButton===playBtn && activePreviewAudio && !activePreviewAudio.paused){
+          stopActivePreviewAudio();
+          return;
+        }
+        stopActivePreviewAudio();
+        activePreviewButton=playBtn;
+        playableUrl(previewUrl).then(function(src){
+          activePreviewAudio=new Audio(src);activePreviewAudio.onended=stopActivePreviewAudio;
+          return activePreviewAudio.play();
+        }).then(function(){setPreviewButtonPlaying(playBtn);}).catch(function(){stopActivePreviewAudio();});
+      };
+      w.appendChild(playBtn);
+    }
+    return w;
+  }
+  function openRenameVoiceModal(slot){
+    var old=document.getElementById('renameVoiceModal'); if(old) old.remove();
+    var wrap=document.createElement('div'); wrap.id='renameVoiceModal';
+    wrap.style.cssText='position:fixed; inset:0; z-index:10000; display:flex; align-items:center; justify-content:center; padding:22px; background:rgba(3,7,15,.72); backdrop-filter:blur(10px);';
+    var modal=document.createElement('div');
+    modal.style.cssText='width:min(420px,100%); border:1px solid rgba(148,164,187,.16); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.98), rgba(8,13,24,.98)); box-shadow:0 28px 80px rgba(0,0,0,.48); overflow:hidden;';
+    modal.innerHTML='<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 20px;border-bottom:1px solid rgba(148,164,187,.12);">'
+      +'<div><div style="font-size:17px;font-weight:700;color:#eaf1fa;">修改音色名称</div><div style="margin-top:5px;font-size:12.5px;color:#94a4bb;">给这个个人音色设置一个更好识别的名字</div></div>'
+      +'<button type="button" data-close-rename style="width:34px;height:34px;border:none;border-radius:9px;background:rgba(148,164,187,.08);color:#94a4bb;cursor:pointer;font-size:20px;line-height:1;">×</button></div>'
+      +'<div style="padding:20px;display:flex;flex-direction:column;gap:14px;">'
+      +'<label style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:12.5px;font-weight:600;color:#eaf1fa;">音色名称</span><input id="renameVoiceInput" maxlength="40" autocomplete="off" placeholder="请输入音色名称" style="height:42px;border:1px solid rgba(148,164,187,.16);border-radius:11px;background:rgba(7,11,19,.5);color:#eaf1fa;outline:none;padding:0 12px;font-family:inherit;font-size:13px;"></label>'
+      +'<div id="renameVoiceNote" style="font-size:12px;color:#5c6b82;line-height:1.6;">名称只会显示在你的个人音色卡片和选择音色列表中。</div>'
+      +'</div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid rgba(148,164,187,.12);"><button type="button" data-close-rename style="height:38px;padding:0 15px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-family:inherit;">取消</button><button type="button" id="renameVoiceSubmit" style="height:38px;padding:0 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;font-weight:700;cursor:pointer;font-family:inherit;">保存</button></div>';
+    wrap.appendChild(modal); document.body.appendChild(wrap);
+    function close(){ wrap.remove(); }
+    wrap.querySelectorAll('[data-close-rename]').forEach(function(b){ b.onclick=close; });
+    wrap.addEventListener('click',function(e){ if(e.target===wrap) close(); });
+    var input=wrap.querySelector('#renameVoiceInput'), note=wrap.querySelector('#renameVoiceNote'), submit=wrap.querySelector('#renameVoiceSubmit');
+    input.value=slot.voice_name||'';
+    setTimeout(function(){ input.focus(); input.select(); },0);
+    submit.onclick=function(){
+      var name=input.value.trim();
+      if(!name){ note.style.color='#f4708a'; note.textContent='请输入音色名称'; return; }
+      submit.disabled=true; submit.style.opacity='.72'; note.style.color='#e7b24c'; note.textContent='正在保存...';
+      fetch('/api/gen/audio/voice-name',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({slot_id:slot.slot_id,name:name})})
+        .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+        .then(function(res){
+          if(res.status===401){ HQ.login(); return; }
+          if(!res.data.ok) throw new Error(res.data.detail||'保存失败');
+          close(); renderAudioTab('personal');
+        })
+        .catch(function(err){ submit.disabled=false; submit.style.opacity='1'; note.style.color='#f4708a'; note.textContent=err.message||'保存失败'; });
+    };
+    input.onkeydown=function(e){ if(e.key==='Enter') submit.click(); };
+  }
+  function slotAssetCard(slot){
+    var used=!!slot.voice_id;
+    var training=slot.status==='training';
+    var failed=slot.status==='failed';
+    var readonly=!!slot.readonly;
+    var completed=used && !training && !failed;
+    var recloneCount=Math.max(0, Math.min(10, parseInt(slot.reclone_count||0,10)||0));
+    var recloneRemain=Math.max(0, 10-recloneCount);
+    var w=document.createElement('div'); w.className='asset-library-card';
+    if(slot.slot_id) w.setAttribute('data-slot-id', slot.slot_id);
+    if(!readonly && !completed){ w.tabIndex=0; w.setAttribute('role','button'); }
+    w.style.cssText='position:relative; min-height:154px; box-sizing:border-box; padding:16px; border:1px solid '+(used?'rgba(45,212,191,.42)':(training?'rgba(231,178,76,.28)':'rgba(148,164,187,.14)'))+'; border-radius:16px; background:'+(used?'linear-gradient(165deg, rgba(45,212,191,.1), rgba(16,24,39,.58))':'rgba(16,24,39,.4)')+'; display:flex; flex-direction:column; justify-content:space-between; gap:13px; cursor:'+((readonly||completed)?'default':'pointer')+'; box-shadow:'+(used?'0 18px 42px rgba(45,212,191,.1)':'none')+';';
+    if(!readonly && !completed){
+      w.onclick=function(){ openCloneVoiceModal(slot); };
+      w.onkeydown=function(e){ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); openCloneVoiceModal(slot); } };
+    }
+    var tag=document.createElement('span'); tag.textContent=training?'\u590d\u523b\u4e2d':(failed?'\u590d\u523b\u5931\u8d25':(used?'\u590d\u523b\u5b8c\u6210':'\u53ef\u590d\u523b')); tag.style.cssText='align-self:flex-start; padding:3px 9px; font-size:11px; font-weight:700; border-radius:6px; background:'+(used?'rgba(45,212,191,.16)':'rgba(7,11,19,.62)')+'; color:'+(used?'#2dd4bf':'#e7b24c')+';';
+    var title=document.createElement('div');
+    title.innerHTML=used
+      ? '<div style="display:flex;align-items:center;gap:9px;padding-right:'+(slot.preview_url?'54px':'0')+';"><span style="width:30px;height:30px;border-radius:50%;background:rgba(45,212,191,.14);color:#2dd4bf;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex:0 0 auto;">VIP</span><div style="min-width:0;"><div style="font-size:14px; color:#eaf1fa; font-weight:800; line-height:1.35; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">'+(slot.voice_name||'\u6211\u7684\u590d\u523b\u97f3\u8272')+'</div><div style="font-size:11.5px; color:#94a4bb; margin-top:4px; line-height:1.4;">\u4e13\u5c5e\u97f3\u8272 / \u53ef\u7528\u4e8e\u6587\u6848\u914d\u97f3</div></div></div>'
+      : '<div style="font-size:13px; color:#eaf1fa; font-weight:700; line-height:1.5;">\u4e2a\u4eba\u97f3\u8272\u69fd\u4f4d</div><div style="font-size:11.5px; color:#94a4bb; margin-top:4px; line-height:1.5;">\u70b9\u51fb\u4e0a\u4f20\u6837\u97f3\u8fdb\u884c\u590d\u523b</div>';
+    var meta=document.createElement('div'); meta.textContent=training?'\u6b63\u5728\u590d\u523b\uff0c\u5b8c\u6210\u540e\u4f1a\u751f\u6210\u8bd5\u542c\u97f3\u9891':(used?'\u5df2\u751f\u6210\u8bd5\u542c\uff0c\u53ef\u5728\u97f3\u9891\u6a21\u5757\u4e2d\u4f7f\u7528':'\u53ef\u7528\u4e8e\u590d\u523b\u4e2a\u4eba\u97f3\u8272'); meta.style.cssText='font-size:11.5px;color:'+(used?'#94a4bb':'#5c6b82')+';line-height:1.5;';
+    w.appendChild(tag); w.appendChild(title); w.appendChild(meta);
+    if(completed && !readonly){
+      var renameBtn=document.createElement('button');
+      renameBtn.type='button';
+      renameBtn.title='修改音色名称';
+      renameBtn.textContent='改名';
+      renameBtn.style.cssText='position:absolute;right:14px;top:14px;height:26px;padding:0 9px;border:1px solid rgba(45,212,191,.28);border-radius:8px;background:rgba(45,212,191,.08);color:#2dd4bf;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;';
+      renameBtn.onclick=function(e){ e.preventDefault(); e.stopPropagation(); openRenameVoiceModal(slot); };
+      w.appendChild(renameBtn);
+    }
+    if(completed && !readonly){
+      var actions=document.createElement('div');
+      actions.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:2px;padding-top:12px;border-top:1px solid rgba(148,164,187,.1);';
+      var remain=document.createElement('div');
+      remain.textContent='\u5269\u4f59\u91cd\u65b0\u590d\u523b\u6b21\u6570\uff1a'+recloneRemain+'\u6b21';
+      remain.style.cssText='font-size:11.5px;color:'+(recloneRemain>0?'#94a4bb':'#f4708a')+';line-height:1.4;';
+      var redo=document.createElement('button');
+      redo.type='button';
+      redo.textContent=recloneRemain>0?'\u91cd\u65b0\u590d\u523b':'\u4e0d\u652f\u6301\u91cd\u65b0\u590d\u523b';
+      redo.disabled=recloneRemain<=0;
+      redo.style.cssText='height:32px;padding:0 12px;border:1px solid '+(recloneRemain>0?'rgba(45,212,191,.34)':'rgba(148,164,187,.12)')+';border-radius:9px;background:'+(recloneRemain>0?'rgba(45,212,191,.1)':'rgba(148,164,187,.06)')+';color:'+(recloneRemain>0?'#2dd4bf':'#5c6b82')+';font-size:12px;font-weight:700;cursor:'+(recloneRemain>0?'pointer':'not-allowed')+';font-family:inherit;white-space:nowrap;';
+      redo.onclick=function(e){ e.preventDefault(); e.stopPropagation(); if(recloneRemain>0) openCloneVoiceModal(slot); };
+      actions.appendChild(remain); actions.appendChild(redo); w.appendChild(actions);
+    }
+    if(slot.preview_url){
+      var playBtn=document.createElement('button');
+      playBtn.type='button';
+      playBtn.setAttribute('data-preview-url', slot.preview_url);
+      playBtn.setAttribute('data-preview-version', String(slot.voice_updated_at||slot.updated_at||slot.preview_file||Date.now()));
+      resetPreviewButton(playBtn);
+      playBtn.style.cssText='position:absolute;right:16px;top:50%;transform:translateY(-50%);width:40px;height:40px;border:none;border-radius:50%;background:linear-gradient(135deg,#2dd4bf,#4ade80);color:#06130f;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 12px 30px rgba(45,212,191,.22);';
+      var previewAudio=null;
+      playBtn.onclick=function(e){
+        e.preventDefault(); e.stopPropagation();
+        if(activePreviewButton===playBtn && activePreviewAudio && !activePreviewAudio.paused){
+          activePreviewAudio.pause();
+          activePreviewAudio=null;
+          activePreviewButton=null;
+          resetPreviewButton(playBtn);
+          return;
+        }
+        var baseSrc=playBtn.getAttribute('data-preview-url')||'';
+        var src=freshUrl(baseSrc);
+        playableUrl(src).then(function(resolved){
+          previewAudio=new Audio(resolved);
+          previewAudio.onended=function(){
+            resetPreviewButton(playBtn);
+            if(activePreviewAudio===previewAudio) activePreviewAudio=null;
+            if(activePreviewButton===playBtn) activePreviewButton=null;
+          };
+          if(activePreviewAudio && activePreviewAudio!==previewAudio){
+            try{ activePreviewAudio.pause(); activePreviewAudio.currentTime=0; }catch(e){}
+            if(activePreviewButton) resetPreviewButton(activePreviewButton);
+          }
+          activePreviewAudio=previewAudio;
+          activePreviewButton=playBtn;
+          previewAudio.play().catch(function(){stopActivePreviewAudio();});
+          setPreviewButtonPlaying(playBtn);
+        }).catch(function(){stopActivePreviewAudio();});
+      };
+      w.appendChild(playBtn);
+    }
+    return w;
+  }
+  function reloadPersonalVoiceAssets(){
+    var url=new URL(location.href);
+    url.pathname=url.pathname.replace(/\/assets(?:\.html)?$/, '/assets.html');
+    url.searchParams.set('cat','audio');
+    url.searchParams.set('audioTab','personal');
+    url.searchParams.set('_', Date.now());
+    location.replace(url.toString());
+  }
+  function personalVoiceAssetCard(voice){
+    return slotAssetCard({
+      status:'ready',
+      voice_id:voice.id,
+      voice_name:voice.display_name,
+      preview_url:voice.preview_url,
+      preview_file:voice.preview_file,
+      voice_updated_at:voice.updated_at,
+      slot_id:voice.slot_id || '',
+      readonly:!voice.slot_id
+    });
+  }
+  function buySlotCard(meta){
+    var count=Math.max(0,Number(meta.count)||0), max=Math.max(1,Number(meta.max)||5), cost=Math.max(1,Number(meta.cost)||50);
+    var full=count>=max;
+    return voiceAssetCard(full?'音色槽位已满':'购买音色槽位',full?('当前 '+count+'/'+max+'，已达到单账号上限'):('消耗 '+cost+' 点，购买后立即获得个人音色槽位'),full?'已达上限':(cost+' 点'),true,null,function(){
+      openSlotPurchaseModal(meta);
+    });
+  }
+  function openSlotPurchaseModal(meta){
+    var old=document.getElementById('slotPurchaseModal'); if(old) old.remove();
+    var count=Math.max(0,Number(meta.count)||0), max=Math.max(1,Number(meta.max)||5), cost=Math.max(1,Number(meta.cost)||50);
+    var parsedPoints=Number(meta.points), points=meta.points==null||!isFinite(parsedPoints)?null:parsedPoints;
+    var full=count>=max, previousFocus=document.activeElement, submitting=false;
+    var wrap=document.createElement('div'); wrap.id='slotPurchaseModal';
+    wrap.style.cssText='position:fixed; inset:0; z-index:10000; display:flex; align-items:center; justify-content:center; padding:22px; background:rgba(3,7,15,.72); backdrop-filter:blur(10px);';
+    var modal=document.createElement('div');
+    modal.setAttribute('role','dialog'); modal.setAttribute('aria-modal','true'); modal.setAttribute('aria-labelledby','slotPurchaseTitle');
+    modal.style.cssText='width:min(420px,100%); border:1px solid rgba(148,164,187,.16); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.98), rgba(8,13,24,.98)); box-shadow:0 28px 80px rgba(0,0,0,.48); overflow:hidden;';
+    modal.innerHTML='<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 20px;border-bottom:1px solid rgba(148,164,187,.12);">'
+      +'<div><div id="slotPurchaseTitle" style="font-size:17px;font-weight:700;color:#eaf1fa;">购买音色槽位</div><div style="margin-top:5px;font-size:12.5px;color:#94a4bb;">购买后立即获得一个个人音色槽位</div></div>'
+      +'<button type="button" data-close-slot aria-label="关闭" title="关闭" style="width:34px;height:34px;border:none;border-radius:9px;background:rgba(148,164,187,.08);color:#94a4bb;cursor:pointer;font-size:20px;line-height:1;">×</button></div>'
+      +'<div style="padding:20px;display:flex;flex-direction:column;gap:14px;">'
+      +'<div style="display:grid;grid-template-columns:1fr auto;gap:10px 16px;align-items:center;font-size:13px;line-height:1.5;">'
+      +'<span style="color:#94a4bb;">本次消耗</span><strong id="slotPurchaseCost" style="color:#e7b24c;font-variant-numeric:tabular-nums;"></strong>'
+      +'<span style="color:#94a4bb;">当前余额</span><strong id="slotPurchasePoints" style="color:#eaf1fa;font-variant-numeric:tabular-nums;"></strong>'
+      +'<span style="color:#94a4bb;">已有槽位</span><strong id="slotPurchaseCount" style="color:#eaf1fa;font-variant-numeric:tabular-nums;"></strong></div>'
+      +'<div id="slotPurchaseNote" style="font-size:12px;color:#5c6b82;line-height:1.6;"></div></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid rgba(148,164,187,.12);"><button type="button" data-close-slot style="height:38px;padding:0 15px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-family:inherit;">取消</button><button type="button" id="slotPurchaseSubmit" style="height:38px;padding:0 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;font-weight:700;cursor:pointer;font-family:inherit;"></button></div>';
+    wrap.appendChild(modal); document.body.appendChild(wrap);
+    var note=wrap.querySelector('#slotPurchaseNote'), submit=wrap.querySelector('#slotPurchaseSubmit');
+    wrap.querySelector('#slotPurchaseCost').textContent=cost+' 点';
+    wrap.querySelector('#slotPurchasePoints').textContent=points==null?'读取中...':(points+' 点');
+    wrap.querySelector('#slotPurchaseCount').textContent=count+'/'+max;
+    function setNote(message,color,recharge){
+      note.style.color=color||'#5c6b82'; note.textContent=message||'';
+      if(recharge){
+        note.appendChild(document.createTextNode(' · '));
+        var link=document.createElement('a'); link.href='recharge.html'; link.textContent='去充值'; link.style.color='#e7b24c'; note.appendChild(link);
+      }
+    }
+    function setBusy(busy){
+      submitting=busy; submit.disabled=busy||full; submit.style.opacity=submit.disabled?'.58':'1';
+      submit.textContent=full?'已达上限':(busy?'购买中...':('确认购买（'+cost+' 点）'));
+    }
+    function close(force){
+      if(submitting&&force!==true) return;
+      document.removeEventListener('keydown',onKeydown); wrap.remove();
+      if(previousFocus&&previousFocus.focus) previousFocus.focus();
+    }
+    function onKeydown(e){ if(e.key==='Escape') close(); }
+    document.addEventListener('keydown',onKeydown);
+    wrap.querySelectorAll('[data-close-slot]').forEach(function(b){ b.onclick=function(){close();}; });
+    wrap.addEventListener('click',function(e){ if(e.target===wrap) close(); });
+    setBusy(false);
+    if(full) setNote('最多 '+max+' 个音色槽位，当前账号已达上限。','#f4708a');
+    else setNote('购买成功后可立即上传样音进行 CosyVoice 复刻。');
+    fetch('/api/auth/me',{credentials:'same-origin',cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).then(function(d){
+      if(!d||!d.user||d.user.points==null) return;
+      points=Number(d.user.points); wrap.querySelector('#slotPurchasePoints').textContent=points+' 点';
+    }).catch(function(){ if(points==null) wrap.querySelector('#slotPurchasePoints').textContent='暂时无法读取'; });
+    submit.onclick=function(){
+      if(submitting||full) return;
+      setBusy(true); setNote('正在购买音色槽位...','#e7b24c');
+      fetch('/api/gen/audio/buy-slot',{method:'POST',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:'{}'})
+        .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+        .then(function(res){
+          if(res.status===401){ setBusy(false); HQ.login(); return; }
+          if(res.status===402){ setBusy(false); setNote('点数不足','#f4708a',true); return; }
+          if(!res.data.ok){ throw new Error(res.data.detail||'购买失败'); }
+          var left=res.data.points_left!=null?res.data.points_left:(res.data.slot&&res.data.slot.points_left);
+          if(left!=null) wrap.querySelector('#slotPurchasePoints').textContent=left+' 点';
+          setNote('购买成功，已获得个人音色槽位。','#2bd576');
+          if(window.HQ&&HQ.refreshPoints) HQ.refreshPoints();
+          setTimeout(function(){ close(true); renderAudioTab('personal'); },600);
+        }).catch(function(e){
+          setBusy(false); setNote(e.message||'购买失败','#f4708a');
+        });
+    };
+    setTimeout(function(){ (full?wrap.querySelector('[data-close-slot]'):submit).focus(); },0);
+  }
+  function loadPersonalVoiceSlots(){
+    var seq=++personalVoiceLoadSeq;
+    stopActivePreviewAudio();
+    var loading=document.createElement('div');
+    loading.style.cssText='grid-column:1/-1; padding:18px; text-align:center; font-size:12.5px; color:#5c6b82; border:1px dashed rgba(148,164,187,.16); border-radius:16px; background:rgba(148,164,187,.02);';
+    loading.textContent='\u6b63\u5728\u8bfb\u53d6\u4e2a\u4eba\u97f3\u8272\u69fd\u4f4d...';
+    grid.appendChild(loading);
+    fetch(freshUrl('/api/gen/audio/slots'),{cache:'no-store',headers:{'Authorization':'Bearer '+tok,'Cache-Control':'no-cache'}})
+      .then(function(r){ return r.json().then(function(d){ return {status:r.status,data:d}; }); })
+      .then(function(res){
+      if(seq!==personalVoiceLoadSeq) return;
+      if(res.status===401){ HQ.login(); return; }
+      loading.remove();
+      var slots=res.data.items||[];
+      var slotIds={};
+      var validCount=res.data.slot_count==null?slots.filter(function(slot){return ['active','training','ready','failed'].indexOf(slot.status)>=0;}).length:Number(res.data.slot_count);
+      grid.appendChild(buySlotCard({count:validCount,max:res.data.slot_max,cost:res.data.slot_cost,points:res.data.points}));
+      slots.forEach(function(slot){
+        if(slot.slot_id) slotIds[slot.slot_id]=true;
+        grid.appendChild(slotAssetCard(slot));
+      });
+      fetch(freshUrl('/api/gen/audio/voices'),{cache:'no-store',headers:{'Authorization':'Bearer '+tok,'Cache-Control':'no-cache'}})
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+          if(seq!==personalVoiceLoadSeq) return;
+          var voices=(d.items||[]).filter(function(v){ return v.scope==='personal' && v.slot_id; });
+          voices.forEach(function(voice){
+            if(slotIds[voice.slot_id]) return;
+            grid.appendChild(personalVoiceAssetCard(voice));
+          });
+        }).catch(function(){});
+    }).catch(function(){
+      if(seq!==personalVoiceLoadSeq) return;
+      loading.textContent='\u4e2a\u4eba\u97f3\u8272\u69fd\u4f4d\u8bfb\u53d6\u5931\u8d25\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5';
+      });
+  }
+  function getAudioDuration(file){
+    return new Promise(function(resolve,reject){
+      var a=document.createElement('audio'), url=URL.createObjectURL(file);
+      a.preload='metadata';
+      a.onloadedmetadata=function(){ URL.revokeObjectURL(url); resolve(a.duration||0); };
+      a.onerror=function(){ URL.revokeObjectURL(url); reject(new Error('\u65e0\u6cd5\u8bfb\u53d6\u97f3\u9891\u65f6\u957f')); };
+      a.src=url;
+    });
+  }
+  function encodeWav(buffer){
+    var ch=buffer.numberOfChannels, rate=buffer.sampleRate, len=buffer.length, bytes=44+len*ch*2;
+    var out=new ArrayBuffer(bytes), view=new DataView(out), pos=0;
+    function str(s){ for(var i=0;i<s.length;i++) view.setUint8(pos++,s.charCodeAt(i)); }
+    str('RIFF'); view.setUint32(pos,bytes-8,true); pos+=4; str('WAVE'); str('fmt ');
+    view.setUint32(pos,16,true); pos+=4; view.setUint16(pos,1,true); pos+=2; view.setUint16(pos,ch,true); pos+=2;
+    view.setUint32(pos,rate,true); pos+=4; view.setUint32(pos,rate*ch*2,true); pos+=4; view.setUint16(pos,ch*2,true); pos+=2; view.setUint16(pos,16,true); pos+=2;
+    str('data'); view.setUint32(pos,len*ch*2,true); pos+=4;
+    var data=[]; for(var c=0;c<ch;c++) data.push(buffer.getChannelData(c));
+    for(var i=0;i<len;i++) for(var c=0;c<ch;c++){ var v=Math.max(-1,Math.min(1,data[c][i])); view.setInt16(pos,v<0?v*0x8000:v*0x7fff,true); pos+=2; }
+    return new Blob([out],{type:'audio/wav'});
+  }
+  function trimAudioTo60(file){
+    return file.arrayBuffer().then(function(buf){
+      var Ctx=window.AudioContext||window.webkitAudioContext, ctx=new Ctx();
+      return ctx.decodeAudioData(buf).then(function(audio){
+        var len=Math.min(audio.length, Math.floor(audio.sampleRate*60));
+        var out=ctx.createBuffer(1, len, audio.sampleRate);
+        var mono=out.getChannelData(0);
+        for(var i=0;i<len;i++){
+          var sum=0;
+          for(var c=0;c<audio.numberOfChannels;c++) sum+=audio.getChannelData(c)[i]||0;
+          mono[i]=sum/audio.numberOfChannels;
+        }
+        if(ctx.close) ctx.close();
+        return new File([encodeWav(out)], (file.name.replace(/\.[^.]+$/,'')||'sample')+'-60s.wav', {type:'audio/wav'});
+      });
+    });
+  }
+  function confirmShortAudio(){
+    return new Promise(function(resolve){
+      var old=document.getElementById('shortAudioModal'); if(old) old.remove();
+      var wrap=document.createElement('div'); wrap.id='shortAudioModal';
+      wrap.style.cssText='position:fixed;inset:0;z-index:11000;display:flex;align-items:center;justify-content:center;padding:22px;background:rgba(3,7,15,.72);backdrop-filter:blur(10px);';
+      wrap.innerHTML='<div style="width:min(420px,100%);border:1px solid rgba(148,164,187,.16);border-radius:18px;background:linear-gradient(165deg,rgba(16,24,39,.98),rgba(8,13,24,.98));box-shadow:0 28px 80px rgba(0,0,0,.48);overflow:hidden;"><div style="padding:20px;border-bottom:1px solid rgba(148,164,187,.12);"><div style="font-size:17px;font-weight:700;color:#eaf1fa;">\u6837\u97f3\u65f6\u957f\u504f\u77ed</div><div style="margin-top:8px;font-size:13px;color:#94a4bb;line-height:1.7;">\u97f3\u9891\u65f6\u957f\u5927\u4e8e60s\uff0c\u6548\u679c\u6700\u4f73</div></div><div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;"><button type="button" data-short-cancel style="height:38px;padding:0 15px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-family:inherit;">\u53d6\u6d88</button><button type="button" data-short-ok style="height:38px;padding:0 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;font-weight:700;cursor:pointer;font-family:inherit;">\u7ee7\u7eed\u590d\u523b</button></div></div>';
+      document.body.appendChild(wrap);
+      function done(v){ wrap.remove(); resolve(v); }
+      wrap.querySelector('[data-short-cancel]').onclick=function(){ done(false); };
+      wrap.querySelector('[data-short-ok]').onclick=function(){ done(true); };
+      wrap.addEventListener('click',function(e){ if(e.target===wrap) done(false); });
+    });
+  }
+  function pollCloneReady(slotId, note, tries, onReady, currentSlot){
+    tries=tries||0;
+    fetch(freshUrl('/api/gen/audio/clone-status?slot_id='+encodeURIComponent(slotId)),{cache:'no-store',headers:{'Authorization':'Bearer '+tok,'Cache-Control':'no-cache'}})
+      .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+      .then(function(res){
+        if(!res.data.ok){ throw new Error(res.data.detail||'\u590d\u523b\u72b6\u6001\u67e5\u8be2\u5931\u8d25'); }
+        var result=res.data.result||{};
+        if(result.status==='ready'){
+          note.style.color='#2bd576';
+          note.textContent=result.preview_url?'\u590d\u523b\u5b8c\u6210\uff0c\u5df2\u751f\u6210\u6d4b\u8bd5\u97f3\u9891':'\u590d\u523b\u5b8c\u6210';
+          stopActivePreviewAudio();
+          setTimeout(function(){
+            note.textContent='\u590d\u523b\u5b8c\u6210\uff0c\u6b63\u5728\u5237\u65b0\u8d44\u4ea7\u9875...';
+            setTimeout(function(){ if(onReady) onReady(true); reloadPersonalVoiceAssets(); },10000);
+          },500);
+          return;
+        }
+        if(result.status==='failed'){ throw new Error(result.clone_error||'\u8c46\u5305\u590d\u523b\u5931\u8d25'); }
+        note.style.color='#e7b24c';
+        note.textContent=result.stale_result
+          ? '\u8c46\u5305\u4ecd\u8fd4\u56de\u4e0a\u4e00\u6b21\u590d\u523b\u7ed3\u679c\uff0c\u6b63\u5728\u7b49\u5f85\u672c\u6b21\u65b0\u7ed3\u679c...'
+          : '\u590d\u523b\u5904\u7406\u4e2d\uff0c\u6b63\u5728\u7b49\u5f85\u8bd5\u542c\u97f3\u9891...';
+        if(tries<60){ setTimeout(function(){ pollCloneReady(slotId,note,tries+1,onReady,currentSlot); },5000); }
+        else{ note.style.color='#f4708a'; note.textContent='\u8c46\u5305\u6682\u672a\u8fd4\u56de\u672c\u6b21\u65b0\u590d\u523b\u7ed3\u679c\uff0c\u8bf7\u7a0d\u540e\u5237\u65b0\u6216\u91cd\u65b0\u63d0\u4ea4'; renderAudioTab('personal'); }
+      }).catch(function(e){
+        note.style.color='#f4708a';
+        note.textContent=e.message||'\u590d\u523b\u72b6\u6001\u67e5\u8be2\u5931\u8d25';
+        renderAudioTab('personal');
+      });
+  }
+  function openCloneVoiceModal(slot){
+    var old=document.getElementById('cloneVoiceModal'); if(old) old.remove();
+    var wrap=document.createElement('div'); wrap.id='cloneVoiceModal';
+    wrap.style.cssText='position:fixed; inset:0; z-index:10000; display:flex; align-items:center; justify-content:center; padding:22px; background:rgba(3,7,15,.72); backdrop-filter:blur(10px);';
+    var modal=document.createElement('div');
+    modal.style.cssText='width:min(560px,100%); border:1px solid rgba(148,164,187,.16); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.98), rgba(8,13,24,.98)); box-shadow:0 28px 80px rgba(0,0,0,.48); overflow:hidden;';
+    modal.innerHTML='<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 20px;border-bottom:1px solid rgba(148,164,187,.12);">'
+      +'<div><div style="font-size:17px;font-weight:700;color:#eaf1fa;">复刻音色</div><div style="margin-top:5px;font-size:12.5px;color:#94a4bb;">上传一段清晰样音，创建自己的个人音色</div></div>'
+      +'<button type="button" data-close-clone style="width:34px;height:34px;border:none;border-radius:9px;background:rgba(148,164,187,.08);color:#94a4bb;cursor:pointer;font-size:20px;line-height:1;">×</button></div>'
+      +'<div style="padding:20px;display:flex;flex-direction:column;gap:16px;">'
+      +'<label style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:12.5px;font-weight:600;color:#eaf1fa;">音色名称</span><input id="cloneVoiceName" maxlength="24" placeholder="例如：我的门店口播音色" style="height:40px;border:1px solid rgba(148,164,187,.16);border-radius:11px;background:rgba(7,11,19,.5);color:#eaf1fa;outline:none;padding:0 12px;font-family:inherit;font-size:13px;"></label>'
+      +'<label style="display:flex;flex-direction:column;gap:8px;"><span style="font-size:12.5px;font-weight:600;color:#eaf1fa;">上传样音</span><div style="border:1px dashed rgba(231,178,76,.3);border-radius:14px;background:rgba(231,178,76,.04);padding:18px;text-align:center;cursor:pointer;"><input id="cloneVoiceFile" type="file" accept="audio/*" style="display:none;"><div style="font-size:13px;color:#e7b24c;font-weight:700;">\u9009\u62e960\u79d2\u4ee5\u4e0a\u7684\u97f3\u9891\u6548\u679c\u66f4\u597d</div><div id="cloneVoiceFileName" style="margin-top:7px;font-size:12px;color:#94a4bb;">支持 mp3、wav、m4a，建议 10-60 秒清晰人声</div></div></label>'
+      +'<audio id="cloneVoicePreview" controls style="display:none;width:100%;height:36px;"></audio>'
+      +'<div id="cloneVoiceNote" style="font-size:12px;color:#5c6b82;line-height:1.6;">\u9ed8\u8ba4\u53c2\u6570\u6548\u679c\u63cf\u8ff0\uff1a\u6837\u97f3\u8d8a\u6e05\u6670\u3001\u80cc\u666f\u58f0\u8d8a\u5c11\uff0c\u540e\u7eed\u590d\u523b\u51fa\u7684\u4e2a\u4eba\u97f3\u8272\u8d8a\u7a33\u5b9a\u3002</div>'
+      +'<div id="cloneVoiceVipTip" style="font-size:12px;color:#e7b24c;line-height:1.6;">VIP\u590d\u523b\u4f1a\u91c7\u7528\u66f4\u9ad8\u7cbe\u5ea6\u7684\u97f3\u8272\u5904\u7406\uff0c\u97f3\u8272\u8fd8\u539f\u5ea6\u548c\u53ef\u7528\u7a33\u5b9a\u6027\u66f4\u597d\u3002</div>'
+      +'</div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid rgba(148,164,187,.12);"><button type="button" data-close-clone style="height:38px;padding:0 15px;border:1px solid rgba(148,164,187,.16);border-radius:10px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-family:inherit;">\u53d6\u6d88</button><button type="button" id="cloneVoiceBasic" style="height:38px;padding:0 18px;border:1px solid rgba(231,178,76,.35);border-radius:10px;background:rgba(231,178,76,.08);color:#e7b24c;font-weight:700;cursor:pointer;font-family:inherit;">\u590d\u523b</button><button type="button" id="cloneVoiceVip" style="height:38px;padding:0 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#f4cd72,#e7b24c);color:#1a1206;font-weight:700;cursor:pointer;font-family:inherit;">VIP\u590d\u523b</button></div>';
+    wrap.appendChild(modal); document.body.appendChild(wrap);
+    var cloneSubmitting=false;
+    function close(force){ if(cloneSubmitting && force!==true) return; wrap.remove(); }
+    wrap.querySelectorAll('[data-close-clone]').forEach(function(b){ b.onclick=close; });
+    wrap.addEventListener('click',function(e){ if(e.target===wrap) close(); });
+    document.addEventListener('keydown',function esc(e){ if(e.key==='Escape'&&document.getElementById('cloneVoiceModal')){ close(); document.removeEventListener('keydown',esc); } });
+    var picker=wrap.querySelector('#cloneVoiceFile'), fileName=wrap.querySelector('#cloneVoiceFileName'), preview=wrap.querySelector('#cloneVoicePreview'), note=wrap.querySelector('#cloneVoiceNote'), voiceName=wrap.querySelector('#cloneVoiceName');
+    var basicBtn=wrap.querySelector('#cloneVoiceBasic'), vipBtn=wrap.querySelector('#cloneVoiceVip');
+    var closeBtns=[].slice.call(wrap.querySelectorAll('[data-close-clone]'));
+    function setCloneBusy(on){
+      cloneSubmitting=!!on;
+      vipBtn.disabled=!!on;
+      basicBtn.disabled=!!on;
+      picker.disabled=!!on;
+      closeBtns.forEach(function(b){ b.disabled=!!on; b.style.opacity=on?'.45':'1'; b.style.cursor=on?'not-allowed':'pointer'; });
+      vipBtn.style.opacity=on?'.72':'1';
+      vipBtn.style.cursor=on?'wait':'pointer';
+      basicBtn.style.opacity=on?'.45':'1';
+      basicBtn.style.cursor=on?'not-allowed':'pointer';
+      picker.parentNode.style.pointerEvents=on?'none':'auto';
+      picker.parentNode.style.opacity=on?'.72':'1';
+    }
+    picker.parentNode.onclick=function(e){ e.preventDefault(); e.stopPropagation(); if(cloneSubmitting) return; picker.click(); };
+    picker.onclick=function(e){ e.stopPropagation(); };
+    picker.onchange=function(){
+      var f=picker.files&&picker.files[0]; if(!f) return;
+      fileName.textContent=f.name;
+      preview.src=URL.createObjectURL(f);
+      preview.style.display='block';
+      note.textContent='已选择样音，可以先试听确认人声清晰。';
+    };
+    basicBtn.onclick=function(){
+      if(cloneSubmitting) return;
+      note.style.color='#e7b24c';
+      note.textContent='\u666e\u901a\u590d\u523b\u8bf7\u6c42\u5f85\u63a5\u5165\u3002';
+    };
+    function submitVipFile(file, ext){
+      setCloneBusy(true); note.style.color='#e7b24c'; note.textContent='\u6b63\u5728\u5904\u7406\u6837\u97f3\u5e76\u63d0\u4ea4VIP\u590d\u523b...';
+      trimAudioTo60(file).then(function(sendFile){
+      var reader=new FileReader();
+      reader.onload=function(){
+        var data=String(reader.result||''), audio=data.indexOf(',')>=0?data.split(',').pop():data;
+        fetch('/api/gen/audio/clone-vip',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({slot_id:slot.slot_id,name:(voiceName&&voiceName.value)||'',audio:audio,audio_format:'wav'})})
+          .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+          .then(function(res){
+            if(res.status===401){ HQ.login(); return; }
+            if(!res.data.ok){ throw new Error(res.data.detail||'VIP\u590d\u523b\u5931\u8d25'); }
+            note.style.color='#e7b24c';
+            note.textContent='VIP\u590d\u523b\u5df2\u63d0\u4ea4\uff0c\u6b63\u5728\u7b49\u5f85\u8bd5\u542c\u97f3\u9891...';
+            stopActivePreviewAudio();
+            renderAudioTab('personal');
+            pollCloneReady(slot.slot_id, note, 0, close, slot);
+          }).catch(function(e){
+            setCloneBusy(false); note.style.color='#f4708a'; note.textContent=e.message||'VIP\u590d\u523b\u5931\u8d25';
+          });
+      };
+      reader.onerror=function(){ setCloneBusy(false); note.style.color='#f4708a'; note.textContent='\u6837\u97f3\u8bfb\u53d6\u5931\u8d25'; };
+      reader.readAsDataURL(sendFile);
+      }).catch(function(e){
+        setCloneBusy(false); note.style.color='#f4708a'; note.textContent=e.message||'\u6837\u97f3\u5904\u7406\u5931\u8d25';
+      });
+    }
+    vipBtn.onclick=function(){
+      if(cloneSubmitting) return;
+      if(!slot||!slot.slot_id){ note.style.color='#f4708a'; note.textContent='请先购买音色槽位'; return; }
+      var f=picker.files&&picker.files[0];
+      if(!f){ note.style.color='#f4708a'; note.textContent='\u8bf7\u5148\u9009\u62e9\u6837\u97f3\u6587\u4ef6'; return; }
+      setCloneBusy(true);
+      note.style.color='#e7b24c'; note.textContent='\u6b63\u5728\u68c0\u67e5\u97f3\u9891\u65f6\u957f...';
+      getAudioDuration(f).then(function(sec){
+        if(sec>60){
+          note.textContent='\u97f3\u9891\u8d85\u8fc760\u79d2\uff0c\u7cfb\u7edf\u5c06\u81ea\u52a8\u622a\u53d6\u524d60\u79d2\u5e76\u538b\u7f29\u540e\u590d\u523b...';
+          return submitVipFile(f,(f.name.split('.').pop()||'mp3').toLowerCase());
+        }
+        if(sec<40){
+          return confirmShortAudio().then(function(ok){ if(ok) submitVipFile(f,(f.name.split('.').pop()||'mp3').toLowerCase()); else { setCloneBusy(false); note.textContent='\u5df2\u53d6\u6d88VIP\u590d\u523b'; } });
+        }
+        submitVipFile(f,(f.name.split('.').pop()||'mp3').toLowerCase());
+      }).catch(function(e){
+        setCloneBusy(false); note.style.color='#f4708a'; note.textContent=e.message||'\u97f3\u9891\u5904\u7406\u5931\u8d25';
+      });
+    };
+  }
+  function renderAudioAssets(){
+    grid.innerHTML='';
+    if(empty) empty.style.display='none'; if(skelH) skelH.style.display='none'; if(skelG) skelG.style.display='none';
+    grid.style.display='grid';
+    var tabs=document.createElement('div'); tabs.className='asset-library-tabs';
+    tabs.style.cssText='grid-column:1/-1; display:flex; gap:8px; margin-bottom:2px; padding:4px; border:1px solid rgba(148,164,187,.12); border-radius:12px; background:rgba(7,11,19,.35);';
+    [
+      ['public','公共音色'],
+      ['personal','个人音色'],
+      ['audio','配音资产']
+    ].forEach(function(t){
+      var on=t[0]===AUDIO_TAB;
+      var b=document.createElement('button');
+      b.type='button'; b.textContent=t[1]; b.setAttribute('data-audio-tab',t[0]);
+      b.style.cssText='flex:1; height:34px; border:none; border-radius:9px; cursor:pointer; color:'+(on?'#1a1206':'#94a4bb')+'; background:'+(on?'linear-gradient(135deg,#f4cd72,#e7b24c)':'transparent')+'; font-size:12.5px; font-weight:700; font-family:inherit;';
+      b.onclick=function(){
+        var u=new URL(location.href);
+        u.searchParams.set('cat','audio');
+        u.searchParams.set('audioTab',t[0]);
+        history.replaceState(null,'',u.toString());
+        renderAudioTab(t[0]);
+      };
+      tabs.appendChild(b);
+    });
+    grid.appendChild(tabs);
+    renderAudioTab(AUDIO_TAB);
+  }
+  function renderAudioTab(tab){
+    AUDIO_TAB=tab||'public';
+    if(tab==='personal') personalVoiceLoadSeq++;
+    [].slice.call(grid.children).forEach(function(n,idx){ if(idx>0) grid.removeChild(n); });
+    document.querySelectorAll('[data-audio-tab]').forEach(function(b){
+      var on=b.getAttribute('data-audio-tab')===tab;
+      b.style.color=on?'#1a1206':'#94a4bb';
+      b.style.background=on?'linear-gradient(135deg,#f4cd72,#e7b24c)':'transparent';
+    });
+    if(tab==='public'){
+      var loading=document.createElement('div');
+      loading.style.cssText='grid-column:1/-1; padding:18px; border:1px dashed rgba(148,164,187,.14); border-radius:14px; color:#94a4bb; font-size:12.5px; text-align:center;';
+      loading.textContent='正在加载公共音色...';
+      grid.appendChild(loading);
+      fetch(freshUrl('/api/gen/audio/voices'),{cache:'no-store',headers:{'Authorization':'Bearer '+tok,'Cache-Control':'no-cache'}})
+        .then(function(r){ if(r.status===401){ HQ.login(); return Promise.reject(); } return r.json(); })
+        .then(function(d){
+          if(AUDIO_TAB!=='public') return;
+          if(loading.parentNode) loading.remove();
+          var items=(d.items||[]).filter(function(v){ return v.scope==='public'; });
+          if(!items.length){
+            items=[
+              {display_name:'大鹏 IVC',sub:'克隆 · 亲切'},
+              {display_name:'泽龙 IVC',sub:'克隆 · 磁性'},
+              {display_name:'Paul 男声',sub:'官方 · 沉稳'}
+            ];
+          }
+          items=filterAssets(items,'voice');
+          if(!items.length){ var pe=document.createElement('div'); pe.style.cssText='grid-column:1/-1; padding:24px; text-align:center; font-size:13px; color:#5c6b82;'; pe.textContent='没有匹配的公共音色'; grid.appendChild(pe); return; }
+          items.forEach(function(v){
+            grid.appendChild(voiceAssetCard(v.display_name||v.voice_key||'公共音色', v.sub||'公共音色', '公共音色', false, null, null, v.preview_url));
+          });
+        })
+        .catch(function(){
+          if(AUDIO_TAB!=='public') return;
+          if(loading.parentNode) loading.remove();
+          [
+            ['大鹏 IVC','克隆 · 亲切','公共音色'],
+            ['泽龙 IVC','克隆 · 磁性','公共音色'],
+            ['Paul 男声','官方 · 沉稳','公共音色']
+          ].forEach(function(v){ grid.appendChild(voiceAssetCard(v[0],v[1],v[2],false)); });
+        });
+      return;
+    }
+    if(false && tab==='public'){
+      [
+        ['大鹏 IVC','克隆 · 亲切','公共音色'],
+        ['泽龙 IVC','克隆 · 磁性','公共音色'],
+        ['Paul 男声','官方 · 沉稳','公共音色']
+      ].forEach(function(v){ grid.appendChild(voiceAssetCard(v[0],v[1],v[2],false)); });
+      return;
+    }
+    if(tab==='personal'){
+      loadPersonalVoiceSlots();
+      return;
+    }
+    if(currentLoadKind!=='audio'){
+      load('audio');
+      return;
+    }
+    if(!ALL.length){
+      var e=document.createElement('div'); e.style.cssText='grid-column:1/-1; padding:24px; text-align:center; font-size:13px; color:#5c6b82; border:1px dashed rgba(148,164,187,.16); border-radius:16px; background:rgba(148,164,187,.02);'; e.textContent='暂无生成配音，去音频模块生成后会自动入库'; grid.appendChild(e); return;
+    }
+    var list=setVisible(filterAssets(ALL,'audio'),'audio');
+    if(!list.length){ var ae=document.createElement('div'); ae.style.cssText='grid-column:1/-1; padding:24px; text-align:center; font-size:13px; color:#5c6b82; border:1px dashed rgba(148,164,187,.16); border-radius:16px; background:rgba(148,164,187,.02);'; ae.textContent=searchTerm?'没有匹配的配音资产':'暂无生成配音，去音频模块生成后会自动入库'; grid.appendChild(ae); return; }
+    list.forEach(function(x){ grid.appendChild(withJob(audioCard(x),x)); });
+  }
+  // 把任务号挂到卡片上，供通知中心的 ?task= 定位。job_id 是 jobs 表主键，
+  // 与通知里的 task_id 同源；部分半入库资产只有 id，退而求其次。
+  function withJob(el,x){
+    if(!el||!x) return el;
+    var jid=x.job_id!=null?x.job_id:x.id;
+    if(jid!=null&&jid!=='') el.setAttribute('data-job',String(jid));
+    return el;
+  }
+  function focusJobCard(){
+    if(!focusTask) return;
+    var el=grid&&grid.querySelector('[data-job="'+(window.CSS&&CSS.escape?CSS.escape(focusTask):focusTask)+'"]');
+    if(!el) return;                       // 不在当前分类/已被筛掉，就别打扰用户
+    focusTask='';                         // 一次性：滚过去就消费掉
+    try{ el.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){ el.scrollIntoView(); }
+    el.classList.add('asset-focus');
+    setTimeout(function(){ el.classList.remove('asset-focus'); },2600);
+  }
+  // render 有多个 early-return 分支，包一层统一在渲染完成后做 ?task= 定位。
+  function render(){
+    _renderBody();
+    focusJobCard();
+  }
+  function _renderBody(){
+    visibleItems=[];
+    updateBulk();
+    if(cat==='audio'){ renderAudioAssets(); return; }
+    if(cat==='avatar'){ renderAvatarAssets(); return; }
+    if(DOC_KINDS.indexOf(cat)>=0){ renderDocAssets(cat); return; }
+    if(cat==='video'){
+      grid.innerHTML='';
+      if(!ALL.length){
+        grid.style.display='none';
+        if(empty) empty.style.display='flex';
+        if(skelH) skelH.style.display='none';
+        if(skelG) skelG.style.display='none';
+        var p=empty&&empty.querySelector('p');
+        var a=empty&&empty.querySelector('a');
+        if(p) p.textContent='暂无视频资产，去视频模块生成后会自动入库。';
+        if(a){ a.href='video.html'; a.lastChild.textContent='去生成视频'; }
+        return;
+      }
+      if(empty) empty.style.display='none'; if(skelH) skelH.style.display='none'; if(skelG) skelG.style.display='none';
+      grid.style.display='grid';
+      var videos=setVisible(filterAssets(ALL,'video'),'video');
+      if(!videos.length){ var ve=document.createElement('div'); ve.style.cssText='grid-column:1/-1; padding:30px; text-align:center; font-size:13px; color:#5c6b82;'; ve.textContent=searchTerm?'没有匹配的视频资产':'暂无视频资产'; grid.appendChild(ve); return; }
+      videos.forEach(function(x){ grid.appendChild(withJob(videoCard(x),x)); });
+      return;
+    }
+    renderImageAssets();
+  }
+  function renderAvatarAssets(){
+    grid.innerHTML='';
+    if(empty) empty.style.display='none';
+    if(skelH) skelH.style.display='none';
+    if(skelG) skelG.style.display='none';
+    grid.style.display='grid';
+    if(!ALL.length){
+      var e=document.createElement('div');
+      e.style.cssText='grid-column:1/-1; padding:34px 24px; text-align:center; font-size:13px; color:#94a4bb; border:1px dashed rgba(148,164,187,.16); border-radius:16px; background:rgba(148,164,187,.02); line-height:1.8;';
+      e.innerHTML='<div style="font-size:15px;font-weight:700;color:#eaf1fa;margin-bottom:6px;">还没有数字人形象</div><div>去「视频 → 动作模仿」用照片生成一次，形象会自动保存到这里。</div><a href="video.html" style="display:inline-flex;margin-top:14px;height:34px;padding:0 14px;align-items:center;justify-content:center;border-radius:9px;background:rgba(231,178,76,.1);border:1px solid rgba(231,178,76,.28);color:#e7b24c;text-decoration:none;font-size:12px;font-weight:700;">去生成数字人形象</a>';
+      grid.appendChild(e);
+      return;
+    }
+    var avatars=setVisible(filterAssets(ALL,'avatar'),'avatar');
+    if(!avatars.length){ var ne=document.createElement('div'); ne.style.cssText='grid-column:1/-1; padding:30px; text-align:center; font-size:13px; color:#5c6b82;'; ne.textContent='没有匹配的数字人形象'; grid.appendChild(ne); return; }
+    avatars.forEach(function(x){ grid.appendChild(withJob(avatarCard(x),x)); });
+  }
+  // 图片资产：顶层一类，内部子筛选(样式仿音频资产子tab) 全部/文生图/图生图/局部修改
+  function renderImageAssets(){
+    grid.innerHTML='';
+    if(!ALL.length){ grid.style.display='none'; if(skelH) skelH.style.display='none'; if(skelG) skelG.style.display='none';
+      if(empty){ empty.style.display='flex'; var ep=empty.querySelector('p'), ea=empty.querySelector('a');
+        if(ep) ep.textContent='暂无图片资产，去作图模块生成后会自动入库。'; if(ea){ ea.href='banana.html'; if(ea.lastChild) ea.lastChild.textContent='去作图'; } }
+      return; }
+    if(empty) empty.style.display='none'; if(skelH) skelH.style.display='none'; if(skelG) skelG.style.display='none';
+    grid.style.display='grid';
+    var tabs=document.createElement('div'); tabs.className='asset-library-tabs';
+    tabs.style.cssText='grid-column:1/-1; display:flex; gap:8px; margin-bottom:2px; padding:4px; border:1px solid rgba(148,164,187,.12); border-radius:12px; background:rgba(7,11,19,.35);';
+    [['all','全部'],['text2img','文生图'],['img2img','图生图'],['inpaint','局部修改']].forEach(function(t){
+      var on=t[0]===imgSub;
+      var b=document.createElement('button'); b.type='button'; b.textContent=t[1]; b.setAttribute('data-img-tab',t[0]);
+      b.style.cssText='flex:1; height:34px; border:none; border-radius:9px; cursor:pointer; color:'+(on?'#1a1206':'#94a4bb')+'; background:'+(on?'linear-gradient(135deg,#f4cd72,#e7b24c)':'transparent')+'; font-size:12.5px; font-weight:700; font-family:inherit;';
+      b.onclick=function(){ var u=new URL(location.href); u.searchParams.set('cat','image'); u.searchParams.set('imgSub',t[0]); history.replaceState(null,'',u.toString()); imgSub=t[0]; renderImageGrid(); };
+      tabs.appendChild(b);
+    });
+    grid.appendChild(tabs);
+    renderImageGrid();
+  }
+  function renderImageGrid(){
+    [].slice.call(grid.children).forEach(function(n,idx){ if(idx>0) grid.removeChild(n); });  // 保留首行子tab，清旧卡片
+    document.querySelectorAll('[data-img-tab]').forEach(function(b){ var on=b.getAttribute('data-img-tab')===imgSub; b.style.color=on?'#1a1206':'#94a4bb'; b.style.background=on?'linear-gradient(135deg,#f4cd72,#e7b24c)':'transparent'; });
+    var list = imgSub==='all' ? ALL : ALL.filter(function(x){ return normCat(x.mode)===imgSub; });
+    list=setVisible(filterAssets(list,'image'),'image');
+    if(!list.length){ var e=document.createElement('div'); e.style.cssText='grid-column:1/-1; padding:30px; text-align:center; font-size:13px; color:#5c6b82;'; e.textContent=searchTerm?'没有匹配的图片资产':'该分类下暂无作品'; grid.appendChild(e); return; }
+    list.forEach(function(x,i){ grid.appendChild(withJob(card(x,list,i),x)); });
+  }
+  // 统一 assets 表的三类（文案/采集素材/客户名单）。它们没有缩略图，用文本卡片渲染。
+  // 后端 stage：material 素材 / work 作品 / delivery 交付（DESIGN.md「素材、作品、交付分开」）
+  var DOC_KINDS=['copy','collect','leads'];
+  var STAGE_LABEL={material:'素材', work:'作品', delivery:'交付'};
+  // 分类 chip → 拉取用的 kind。未知分类回退 image（原来是三层嵌套三元，加一类就要改两处）
+  function loadKindOf(c){
+    return ['audio','video','avatar'].concat(DOC_KINDS).indexOf(c)>=0 ? c : 'image';
+  }
+  var DOC_EMPTY={
+    copy:   {text:'暂无文案脚本，去编导模块生成后会自动入库。', href:'script.html', cta:'去写文案'},
+    collect:{text:'暂无采集素材，去内容爬取采集后会自动入库。', href:'collect.html', cta:'去采集'},
+    leads:  {text:'暂无客户名单，去获客模块跑一次后会自动入库。', href:'leads.html', cta:'去获客'}
+  };
+  function copyBody(data){
+    data=data||{};
+    var body=String(data.body||data.text||'').trim();
+    if(body) return body;
+    return (Array.isArray(data.scenes)?data.scenes:[]).map(function(s,i){
+      if(!s || typeof s!=='object') return '';
+      var dur=String(s.dur||'').trim(), scene=String(s.scene||'').trim(), line=String(s.line||'').trim();
+      if(!dur && !scene && !line) return '';
+      return '镜号'+('0'+(i+1)).slice(-2)+'（'+dur+'）\n画面：'+scene+'\n口播：'+line;
+    }).filter(Boolean).join('\n\n');
+  }
+  function safeDocUrl(value){
+    try{
+      var u=new URL(String(value||''),location.origin);
+      return u.protocol==='http:'||u.protocol==='https:'?u.href:'';
+    }catch(e){ return ''; }
+  }
+  function mergeDocPayload(x,payload){
+    payload=payload||{};
+    var meta=x.meta||{};
+    if(x.kind==='copy'){
+      meta.body=copyBody(payload)||copyBody(meta);
+      if(payload.text) meta.text=payload.text;
+      if(Array.isArray(payload.scenes)) meta.scenes=payload.scenes;
+    }
+    if(x.kind==='leads'){
+      if(Array.isArray(payload.leads)) meta.leads=payload.leads;
+      ['keyword','platforms','leads_count','spam','chat','total'].forEach(function(key){
+        if(payload[key]!=null) meta[key]=payload[key];
+      });
+    }
+    x.meta=meta;
+    return meta;
+  }
+  function loadDocPayload(x){
+    var meta=x.meta||{};
+    if(x.kind==='copy' && copyBody(meta)) return Promise.resolve(meta);
+    if(x.kind==='leads' && Array.isArray(meta.leads)) return Promise.resolve(meta);
+    if(!x.job_id) return Promise.reject(new Error('该资产缺少来源任务，无法读取详情'));
+    return fetch('/api/gen/job/'+encodeURIComponent(x.job_id),{
+      cache:'no-store',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok,'Cache-Control':'no-cache'}
+    }).then(function(r){
+      if(r.status===401){ HQ.login(); throw new Error('请先登录后查看'); }
+      return r.json().catch(function(){return {};}).then(function(d){
+        if(!r.ok) throw new Error(d.detail||'详情读取失败');
+        return mergeDocPayload(x,d.result||{});
+      });
+    });
+  }
+  function runDocAction(button,loadingLabel,work){
+    var original=button&&button.textContent;
+    if(button){ button.disabled=true; button.textContent=loadingLabel; }
+    return work().catch(function(e){ toast(e.message||'详情读取失败',false); }).finally(function(){
+      if(button){ button.disabled=false; button.textContent=original; }
+    });
+  }
+  function openCopyAsset(x,button){
+    return runDocAction(button,'读取中',function(){
+      return loadDocPayload(x).then(function(payload){
+        var body=copyBody(payload);
+        if(!body) throw new Error('该文案资产没有可查看内容');
+        openTextModal(body,{title:'完整文案脚本',copyLabel:'文案',emptyMessage:'该文案资产没有可查看内容'});
+      });
+    });
+  }
+  function leadsText(leads){
+    return (leads||[]).map(function(item,i){
+      return (i+1)+'. '+(item.nickname||'匿名用户')+' · '+(item.ip_location||'未知属地')+
+        '\n需求：'+(item.content||'—')+'\n来源：'+(item.title||item.platform||'—');
+    }).join('\n\n');
+  }
+  function openLeadsModal(payload,x){
+    var leads=Array.isArray(payload.leads)?payload.leads:[];
+    var old=document.getElementById('assetLeadsModal'); if(old && old._close) old._close();
+    var wrap=document.createElement('div'); wrap.id='assetLeadsModal'; wrap.className='asset-prompt-modal';
+    var box=document.createElement('div'); box.className='asset-prompt-box asset-leads-box'; box.setAttribute('role','dialog'); box.setAttribute('aria-modal','true'); box.setAttribute('aria-label','客户名单详情');
+    var head=document.createElement('div'); head.className='asset-prompt-head';
+    var title=document.createElement('div'); title.className='asset-prompt-title'; title.textContent='客户名单 · '+(payload.keyword||x.title||'获客结果');
+    var close=document.createElement('button'); close.type='button'; close.className='asset-prompt-close'; close.setAttribute('aria-label','关闭'); close.textContent='×';
+    var summary=document.createElement('div'); summary.className='asset-leads-summary';
+    var stats=[leads.length+' 个客户'];
+    if(payload.total!=null) stats.push('扫描 '+payload.total+' 条评论');
+    if(payload.spam) stats.push('过滤广告 '+payload.spam+' 条');
+    summary.textContent=stats.join(' · ');
+    var list=document.createElement('div'); list.className='asset-leads-list';
+    if(!leads.length){
+      var emptyLead=document.createElement('div'); emptyLead.className='asset-lead-card'; emptyLead.textContent='该名单没有可显示的客户详情'; list.appendChild(emptyLead);
+    }
+    leads.forEach(function(item){
+      item=item||{};
+      var card=document.createElement('div'); card.className='asset-lead-card';
+      var leadHead=document.createElement('div'); leadHead.className='asset-lead-head';
+      var name=document.createElement('div'); name.className='asset-lead-name'; name.textContent=item.nickname||'匿名用户';
+      var meta=document.createElement('div'); meta.className='asset-lead-meta';
+      meta.textContent=[item.ip_location||'未知属地',item.intent||item.platform||''].filter(Boolean).join(' · ');
+      leadHead.appendChild(name); leadHead.appendChild(meta);
+      var content=document.createElement('div'); content.className='asset-lead-content'; content.textContent=item.content||'（无需求原文）';
+      var source=document.createElement('div'); source.className='asset-lead-source';
+      var sourceText=document.createElement('span'); sourceText.textContent='来源：'+(item.title||item.platform||'未知内容');
+      var links=document.createElement('span'); links.className='asset-lead-links';
+      [['查看主页',item.profile_url],['来源视频',item.video_url]].forEach(function(pair){
+        var href=safeDocUrl(pair[1]); if(!href) return;
+        var a=document.createElement('a'); a.href=href; a.target='_blank'; a.rel='noopener'; a.textContent=pair[0]; links.appendChild(a);
+      });
+      source.appendChild(sourceText); if(links.childNodes.length) source.appendChild(links);
+      card.appendChild(leadHead); card.appendChild(content); card.appendChild(source); list.appendChild(card);
+    });
+    var foot=document.createElement('div'); foot.className='asset-prompt-foot';
+    if(leads.length){ var copy=actionBtn('复制名单',function(){ copyText(leadsText(leads),'客户名单'); }); copy.className+=' gold'; foot.appendChild(copy); }
+    var closeModal=function(){ document.removeEventListener('keydown',onKey); wrap.remove(); };
+    var onKey=function(e){ if(e.key==='Escape') closeModal(); };
+    var done=actionBtn('关闭',closeModal); foot.appendChild(done);
+    head.appendChild(title); head.appendChild(close); box.appendChild(head); box.appendChild(summary); box.appendChild(list); box.appendChild(foot); wrap.appendChild(box);
+    wrap._close=closeModal; close.onclick=closeModal; wrap.onclick=function(e){ if(e.target===wrap) closeModal(); }; box.onclick=function(e){ e.stopPropagation(); };
+    document.addEventListener('keydown',onKey); document.body.appendChild(wrap);
+  }
+  function openLeadsAsset(x,button){
+    return runDocAction(button,'读取中',function(){
+      return loadDocPayload(x).then(function(payload){ openLeadsModal(payload,x); });
+    });
+  }
+  function docSummary(x){
+    var m=x.meta||{}, bits=[];
+    if(x.kind==='copy'){ if(m.ctype) bits.push(m.ctype); if(m.mode==='script') bits.push('分镜脚本'); if(m.platform) bits.push(m.platform); }
+    if(x.kind==='collect'){ if(m.platform) bits.push(m.platform); if(m.author) bits.push('@'+m.author);
+      if(m.has_transcript) bits.push('有口播文案'); if(m.comments_count) bits.push(m.comments_count+' 条评论'); }
+    if(x.kind==='leads'){ if(m.leads_count!=null) bits.push(m.leads_count+' 个客户');
+      if(m.total!=null) bits.push('扫 '+m.total+' 条'); if(m.spam) bits.push('滤广告 '+m.spam); }
+    return bits.join(' · ')||'—';
+  }
+  function docBody(x){
+    if(x.kind==='copy') return copyBody(x.meta||{});
+    if(x.kind==='collect') return String((x.meta||{}).desc||'').trim();
+    if(x.kind==='leads'){
+      var first=(Array.isArray((x.meta||{}).leads)?x.meta.leads:[])[0];
+      if(first) return (first.nickname||'匿名用户')+'：'+(first.content||'无需求原文');
+    }
+    return '';
+  }
+  function docCard(x){
+    var kind=x.kind;
+    var w=document.createElement('div'); w.className='asset-library-card';
+    w.style.cssText='display:flex; flex-direction:column; gap:9px; padding:14px 15px 0; border:1px solid rgba(148,164,187,.12); border-radius:16px; background:rgba(16,24,39,.4);';
+    var head=document.createElement('div'); head.style.cssText='display:flex; align-items:center; gap:8px;';
+    var badge=document.createElement('span'); badge.textContent=STAGE_LABEL[x.stage]||x.stage||'';
+    badge.style.cssText='padding:3px 9px; font-size:11px; font-weight:600; border-radius:6px; background:rgba(231,178,76,.1); color:#e7b24c; flex:none;';
+    var t=document.createElement('div'); t.textContent=x.title||'（无标题）'; t.title=x.title||'';
+    t.style.cssText='flex:1; min-width:0; font-size:13.5px; font-weight:600; color:#eaf1fa; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+    head.appendChild(badge); head.appendChild(t);
+    var sub=document.createElement('div'); sub.textContent=docSummary(x);
+    sub.style.cssText='font-size:12px; color:#94a4bb; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+    w.appendChild(head); w.appendChild(sub);
+    var body=docBody(x);
+    if(body){
+      var pre=document.createElement('div'); pre.textContent=body.slice(0,180)+(body.length>180?'…':'');
+      pre.style.cssText='font-size:12px; color:#5c6b82; line-height:1.65; max-height:66px; overflow:hidden;';
+      if(kind==='copy'){ pre.style.cursor='pointer'; pre.title='点击查看全文'; pre.onclick=function(){ openCopyAsset(x); }; }
+      w.appendChild(pre);
+    }
+    var foot=document.createElement('div'); foot.style.cssText='display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:11.5px; color:#5c6b82;';
+    var when=document.createElement('span');
+    when.textContent=x.created_at?new Date(Number(x.created_at)*1000).toLocaleString('zh-CN',{hour12:false}):'';
+    foot.appendChild(when);
+    var right=document.createElement('span'); right.style.cssText='display:flex; align-items:center; gap:8px;';
+    if(kind==='copy'){
+      var viewCopy=document.createElement('button'); viewCopy.type='button'; viewCopy.className='asset-action gold'; viewCopy.textContent='查看全文';
+      viewCopy.onclick=function(){ openCopyAsset(x,viewCopy); }; right.appendChild(viewCopy);
+    }
+    if(kind==='leads'){
+      var viewLeads=document.createElement('button'); viewLeads.type='button'; viewLeads.className='asset-action gold'; viewLeads.textContent='查看名单';
+      viewLeads.onclick=function(){ openLeadsAsset(x,viewLeads); }; right.appendChild(viewLeads);
+    }
+    if(x.url){
+      // COS 转存失败时后端回退了第三方 CDN 直链，那种链接带时效、几天后就是死链
+      if(kind==='collect' && (x.meta||{}).permanent===false){
+        var warn=document.createElement('span'); warn.textContent='链接会过期'; warn.title='未能转存到永久存储，建议尽快下载';
+        warn.style.cssText='color:#f4b740;'; right.appendChild(warn);
+      }
+      if(kind==='collect'){
+        var preview=document.createElement('button'); preview.type='button'; preview.className='asset-action gold'; preview.textContent='预览视频';
+        preview.onclick=function(){
+          var meta=x.meta||{};
+          openAssetVideoModal(x.url,x.title,meta.cover,{proxy:meta.permanent===false,name:x.title||'collect-video'});
+        };
+        right.appendChild(preview);
+      }else{
+        var a=document.createElement('a'); a.href=x.url; a.target='_blank'; a.rel='noopener'; a.textContent='打开';
+        a.style.cssText='color:#e7b24c; text-decoration:none; font-weight:600;';
+        right.appendChild(a);
+      }
+    }
+    if(right.childNodes.length) foot.appendChild(right);
+    w.appendChild(foot);
+    // 收藏 + 标签统一走 addMarkTools（和 card/audioCard/videoCard/avatarCard 一致）。
+    // 之前这里手搓了个收藏按钮，漏掉了「标签」按钮和标签 chip，后端接口其实早就支持。
+    return addMarkTools(w, x, kind);
+  }
+  function renderDocAssets(kind){
+    grid.innerHTML='';
+    if(skelH) skelH.style.display='none';
+    if(skelG) skelG.style.display='none';
+    var cfg=DOC_EMPTY[kind]||{};
+    if(!ALL.length){
+      grid.style.display='none';
+      if(empty){ empty.style.display='flex';
+        var ep=empty.querySelector('p'), ea=empty.querySelector('a');
+        if(ep) ep.textContent=cfg.text||'暂无资产';
+        if(ea){ ea.href=cfg.href||'#'; if(ea.lastChild) ea.lastChild.textContent=cfg.cta||'去生成'; } }
+      return;
+    }
+    if(empty) empty.style.display='none';
+    grid.style.display='grid';
+    // 这三类没有文件，批量下载/删除不适用，故不进 visibleItems（批量条保持 0）
+    var list=filterAssets(ALL,kind);
+    if(!list.length){
+      var ne=document.createElement('div');
+      ne.style.cssText='grid-column:1/-1; padding:30px; text-align:center; font-size:13px; color:#5c6b82;';
+      ne.textContent='没有匹配的资产';
+      grid.appendChild(ne); return;
+    }
+    list.forEach(function(x){ grid.appendChild(withJob(docCard(x),x)); });
+  }
+  function loadMarks(kind){
+    if(['image','audio','video','avatar'].concat(DOC_KINDS).indexOf(kind)<0){ MARKS={}; refreshMarkFilters(); return Promise.resolve(); }
+    return fetch(freshUrl('/api/gen/asset/marks?kind='+encodeURIComponent(kind)),{cache:'no-store',headers:{'Authorization':'Bearer '+tok,'Cache-Control':'no-cache'}})
+      .then(function(r){ if(r.status===401){ HQ.login(); return null; } return r.json(); })
+      .then(function(d){ MARKS=(d&&d.items)||{}; refreshMarkFilters(); })
+      .catch(function(){ MARKS={}; refreshMarkFilters(); });
+  }
+  function load(kind){
+    currentLoadKind=kind;
+    var url=kind==='audio'?'/api/gen/audio/assets?limit=120':(kind==='video'?'/api/gen/video/assets?limit=120':(kind==='avatar'?'/api/gen/video/avatars?limit=120':
+      (DOC_KINDS.indexOf(kind)>=0?'/api/gen/assets?limit=120&kind='+encodeURIComponent(kind):'/api/gen/history?limit=120')));
+    var fetchUrl=kind==='avatar'?freshUrl(url):url;
+    var headers={'Authorization':'Bearer '+tok};
+    if(kind==='avatar') headers['Cache-Control']='no-cache';
+    fetch(fetchUrl,{cache:kind==='avatar'?'no-store':'default',headers:headers}).then(function(r){ if(r.status===401){ HQ.login(); return null; } return r.json(); }).then(function(d){
+      if(!d) return;
+      ALL=d.items||[];
+      if(kind==='audio' && !ALL.length){
+        return fetch('/api/gen/history?limit=120&kind=audio',{headers:{'Authorization':'Bearer '+tok}})
+          .then(function(r){return r.json();})
+          .then(function(h){ ALL=h.items||[]; if(cnt) cnt.textContent=ALL.length; return loadMarks(kind).then(render); });
+      }
+      if(cnt) cnt.textContent=ALL.length; return loadMarks(kind).then(render);
+    }).catch(function(){});
+  }
+  document.querySelectorAll('#catRow .chip').forEach(function(ch){ ch.onclick=function(){
+    setCat(ch.getAttribute('data-cat'));
+    selected={}; updateBulk();
+    load(loadKindOf(cat));
+  };});
+  function setCat(next){
+    cat=next||'all';
+    document.querySelectorAll('#catRow .chip').forEach(function(c){
+      var on=c.getAttribute('data-cat')===cat;
+      c.style.color=on?'#e7b24c':'#94a4bb';
+      c.style.background=on?'rgba(231,178,76,.1)':'rgba(148,164,187,.04)';
+      c.style.borderColor=on?'rgba(231,178,76,.3)':'rgba(148,164,187,.14)';
+      c.style.fontWeight=on?'600':'400';
+    });
+  }
+  setCat(cat);
+  if(searchInput){
+    searchInput.addEventListener('input',function(){
+      searchTerm=searchInput.value||'';
+      selected={};
+      render();
+    });
+  }
+  if(bulkToggle){ bulkToggle.onclick=function(){ multi=!multi; if(!multi) selected={}; render(); }; }
+  if(bulkAll){ bulkAll.onclick=function(){ selectVisible(visibleItems.some(function(v){return !selected[v.key];})); }; }
+  if(bulkCancel){ bulkCancel.onclick=function(){ multi=false; selected={}; render(); }; }
+  if(bulkDownload){ bulkDownload.onclick=downloadSelected; }
+  if(bulkDelete){ bulkDelete.onclick=deleteSelected; }
+  if(favOnly){ favOnly.onclick=function(){ onlyFav=!onlyFav; selected={}; refreshMarkFilters(); render(); }; }
+  if(tagFilter){ tagFilter.onchange=function(){ activeTag=tagFilter.value||''; selected={}; render(); }; }
+  load(loadKindOf(cat));
+})();
+</script>
+</body>
+</html>

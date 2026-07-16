@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>黄雀 AI · 后端 API 文档（Swagger UI）</title>
+<link rel="icon" href="/assets/cloud/logo-bird.png">
+<link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+<style>
+  body{margin:0;background:#0b0e14}
+  .swagger-ui .topbar{display:none}
+  #hq-head{padding:16px 28px;border-bottom:1px solid #1f2733;background:#0b0e14;color:#eaf1fa;font-family:system-ui,sans-serif}
+  #hq-head b{color:#e7b24c}
+  #hq-head small{color:#94a4bb}
+  .hqbtn{margin-top:12px;margin-right:10px;height:34px;padding:0 16px;border-radius:9px;cursor:pointer;
+    font-family:inherit;font-size:13px;font-weight:600;color:#94a4bb;background:rgba(148,164,187,.06);border:1px solid rgba(148,164,187,.18)}
+  .hqbtn.on{color:#1c1402;background:linear-gradient(135deg,#f6d488,#e7b24c);border-color:transparent}
+  #swagger-ui{background:#fff}
+</style>
+</head>
+<body>
+<div id="hq-head">
+  <div style="font-size:17px;font-weight:600">🐦 黄雀 AI · 后端 API <b>Swagger UI</b></div>
+  <small>登录拿 token → 右上 Authorize 填 token → 各接口点 “Try it out” 在线测。｜ 导出给 Apifox：openapi.json / openapi-tikhub.json</small>
+  <div>
+    <button class="hqbtn on" id="btnHQ" onclick="loadSpec('openapi.json',this)">黄雀后端 API（我们的接口）</button>
+    <button class="hqbtn" id="btnTH" onclick="loadSpec('openapi-tikhub.json',this)">TikHub（我们在用的外部接口）</button>
+  </div>
+</div>
+<div id="swagger-ui"></div>
+<script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+<script>
+  function loadSpec(u, btn){
+    document.querySelectorAll('.hqbtn').forEach(function(b){ b.classList.remove('on'); });
+    if(btn) btn.classList.add('on');
+    window.ui = SwaggerUIBundle({
+      url: u,
+      dom_id: '#swagger-ui',
+      deepLinking: true,
+      persistAuthorization: true,
+      tryItOutEnabled: true,
+      docExpansion: 'list'
+    });
+  }
+  window.onload = function(){ loadSpec('openapi.json', document.getElementById('btnHQ')); };
+</script>
+</body>
+</html>

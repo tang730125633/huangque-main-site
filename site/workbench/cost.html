@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>成本账本 · 黄雀 AI 工作台</title>
+<link rel="icon" href="../assets/cloud/logo-bird.png">
+<link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
+<link rel="stylesheet" href="../assets/cloud.css?v=8">
+<script src="theme-init.js?v=11eb385e"></script>
+<style>
+  body{ overflow:hidden; }
+  .gKpi{ grid-template-columns:repeat(4,1fr); }
+  .gMid{ grid-template-columns:1.5fr .85fr; }
+  .txrow{ transition:.14s; }
+  .txrow:hover{ background:rgba(231,178,76,.03); }
+  .txscroll{ max-height:392px; overflow:auto; }
+  .txhead{ position:sticky; top:0; z-index:2; background:rgba(10,15,26,.96); backdrop-filter:blur(8px); }
+  .fakeui-notice{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin:0 0 18px;padding:13px 15px;border:1px solid rgba(231,178,76,.28);border-radius:12px;background:rgba(231,178,76,.08);color:#eaf1fa}
+  .fakeui-notice b{font-size:14px}
+  .fakeui-notice p{margin:4px 0 0;color:#94a4bb;font-size:12.5px;line-height:1.5}
+  .fakeui-badge{display:inline-flex;align-items:center;height:24px;padding:0 9px;border-radius:6px;background:rgba(231,178,76,.16);color:#e7b24c;font-size:12px;font-weight:700;white-space:nowrap}
+  .fakeui-link{display:inline-flex;align-items:center;height:30px;padding:0 11px;border:1px solid rgba(231,178,76,.32);border-radius:8px;color:#e7b24c;text-decoration:none;font-size:12.5px;white-space:nowrap}
+  .hq-content button:disabled{opacity:.45;cursor:not-allowed}
+  @media (max-width:1100px){ .gKpi{ grid-template-columns:repeat(2,1fr);} .gMid{ grid-template-columns:1fr;} }
+  @media (max-width:620px){ .gKpi{ grid-template-columns:1fr;} }
+</style>
+<script>
+  /* 成本账本 = 运营统计，仅管理员可见。非管理员直接访问 → 跳灵感 */
+  (function(){ try{
+    var q=new URLSearchParams(location.search);
+    if(q.get('admin')==='1') localStorage.setItem('hq_role','admin');
+    if(q.get('admin')==='0') localStorage.removeItem('hq_role');
+    var u=JSON.parse(localStorage.getItem('hq_user')||'null');
+    var admin = u ? (u.role==='admin') : (localStorage.getItem('hq_role')==='admin');
+    if(!admin) location.replace('inspiration.html');
+  }catch(e){} })();
+</script>
+<link rel="stylesheet" href="theme.css?v=5873a2f4">
+</head>
+<body>
+<div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
+
+<div class="hq-app"><div class="hq-content" data-active="cost">
+  <div class="fakeui-notice">
+    <div>
+      <span class="fakeui-badge">示例预览</span>
+      <b style="margin-left:8px;">成本账本暂未接入实时成本流水</b>
+      <p>本页 KPI、趋势图、能力拆解和消费明细为样式预览，不能作为真实成本账本使用。真实调用统计和用户点数流水请前往运营后台查看。</p>
+    </div>
+    <a class="fakeui-link" href="/admin/index.html">打开真实运营后台</a>
+  </div>
+  <div style="display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:24px; gap:18px; flex-wrap:wrap;">
+    <div>
+      <h1 style="margin:0; font-size:27px; font-weight:700; display:flex; align-items:center; gap:11px;"><img src="../assets/icons/ic_cost.png" alt="" style="width:34px;height:34px;object-fit:contain;flex:none;">成本账本</h1>
+      <p style="margin:9px 0 0; font-size:14px; color:#94a4bb;">每一笔生成消耗、退点与毛利，按能力清晰可查</p>
+    </div>
+    <div style="display:flex; gap:9px;">
+      <div style="display:flex; padding:3px; gap:3px; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px;">
+        <button class="hv-soft" style="padding:6px 14px; font-size:12.5px; color:#94a4bb; background:transparent; border:none; border-radius:8px; cursor:pointer;">近 7 天</button>
+        <button style="padding:6px 14px; font-size:12.5px; color:#e7b24c; background:rgba(231,178,76,.1); border:none; border-radius:8px; cursor:pointer; font-weight:600;">本月</button>
+        <button class="hv-soft" style="padding:6px 14px; font-size:12.5px; color:#94a4bb; background:transparent; border:none; border-radius:8px; cursor:pointer;">本季</button>
+      </div>
+      <button class="hv-gold" style="display:flex; align-items:center; gap:6px; padding:7px 14px; font-size:12.5px; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:11px; cursor:pointer;"><span style="display:flex; width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></span>导出账单</button>
+    </div>
+  </div>
+
+  <!-- KPI -->
+  <div class="gKpi" style="display:grid; gap:14px; margin-bottom:22px;">
+    <div class="hv-lift" style="position:relative; padding:18px 18px 8px; border:1px solid rgba(148,164,187,.1); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5)); overflow:hidden;">
+      <div style="display:flex; align-items:center; gap:9px;"><div style="width:30px; height:30px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:9px; background:rgba(231,178,76,.12); color:#e7b24c;"><span style="display:flex; width:17px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="8" cy="8" r="6"/><path d="M18.1 6.6A6 6 0 1 1 9.9 18.5"/></svg></span></div><span style="font-size:12.5px; color:#94a4bb;">今日成本</span></div>
+      <div class="mono" style="font-size:28px; font-weight:700; letter-spacing:-1px; margin:12px 0 6px; color:#e7b24c;">¥1,280</div>
+      <div style="font-size:12px; color:#94a4bb;">较昨日 <span class="mono" style="color:#e0a93c; font-weight:600;">↑ 8.2%</span></div>
+      <div style="margin:8px -18px -8px;"><svg viewBox="0 0 120 32" preserveAspectRatio="none" style="width:100%;height:32px;display:block"><polyline points="0,22 20,18 40,20 60,14 80,16 100,12 120,14" fill="none" stroke="#e7b24c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+    </div>
+    <div class="hv-lift" style="position:relative; padding:18px 18px 8px; border:1px solid rgba(148,164,187,.1); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5)); overflow:hidden;">
+      <div style="display:flex; align-items:center; gap:9px;"><div style="width:30px; height:30px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:9px; background:rgba(231,178,76,.12); color:#e7b24c;"><span style="display:flex; width:17px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg></span></div><span style="font-size:12.5px; color:#94a4bb;">本月成本</span></div>
+      <div class="mono" style="font-size:28px; font-weight:700; letter-spacing:-1px; margin:12px 0 6px; color:#e7b24c;">¥31,680</div>
+      <div style="font-size:12px; color:#94a4bb;">较上月 <span class="mono" style="color:#e0a93c; font-weight:600;">↑ 14.6%</span></div>
+      <div style="margin:8px -18px -8px;"><svg viewBox="0 0 120 32" preserveAspectRatio="none" style="width:100%;height:32px;display:block"><polyline points="0,26 20,22 40,24 60,18 80,15 100,12 120,9" fill="none" stroke="#e7b24c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+    </div>
+    <div class="hv-lift" style="position:relative; padding:18px 18px 8px; border:1px solid rgba(148,164,187,.1); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5)); overflow:hidden;">
+      <div style="display:flex; align-items:center; gap:9px;"><div style="width:30px; height:30px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:9px; background:rgba(43,213,118,.12); color:#2bd576;"><span style="display:flex; width:17px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M3 17l6-6 4 4 7-7"/><path d="M17 8h4v4"/></svg></span></div><span style="font-size:12.5px; color:#94a4bb;">毛利率</span></div>
+      <div class="mono" style="font-size:28px; font-weight:700; letter-spacing:-1px; margin:12px 0 6px; color:#2bd576;">62.4%</div>
+      <div style="font-size:12px; color:#94a4bb;">较上月 <span class="mono" style="color:#2bd576; font-weight:600;">↑ 3.1%</span></div>
+      <div style="margin:8px -18px -8px;"><svg viewBox="0 0 120 32" preserveAspectRatio="none" style="width:100%;height:32px;display:block"><polyline points="0,18 20,16 40,19 60,12 80,14 100,9 120,8" fill="none" stroke="#2bd576" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+    </div>
+    <div class="hv-lift" style="position:relative; padding:18px 18px 8px; border:1px solid rgba(148,164,187,.1); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.66), rgba(12,18,32,.5)); overflow:hidden;">
+      <div style="display:flex; align-items:center; gap:9px;"><div style="width:30px; height:30px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:9px; background:rgba(244,112,138,.12); color:#f4708a;"><span style="display:flex; width:17px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.8-3.4L23 10M1 14l4.7 4.4A9 9 0 0 0 20.5 15"/></svg></span></div><span style="font-size:12.5px; color:#94a4bb;">失败退点</span></div>
+      <div class="mono" style="font-size:28px; font-weight:700; letter-spacing:-1px; margin:12px 0 6px; color:#f4708a;">1,240</div>
+      <div style="font-size:12px; color:#94a4bb;">已自动退还 <span class="mono" style="color:#2bd576; font-weight:600;">98 单</span></div>
+      <div style="margin:8px -18px -8px;"><svg viewBox="0 0 120 32" preserveAspectRatio="none" style="width:100%;height:32px;display:block"><polyline points="0,12 20,15 40,11 60,17 80,14 100,20 120,18" fill="none" stroke="#f4708a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+    </div>
+  </div>
+
+  <!-- 趋势 + 拆解 -->
+  <div class="gMid" style="display:grid; gap:18px; margin-bottom:22px;">
+    <!-- 成本趋势折线 -->
+    <div style="padding:20px 22px; border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45));">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; flex-wrap:wrap; gap:10px;">
+        <div style="font-size:16px; font-weight:600;">成本趋势</div>
+        <div style="display:flex; align-items:center; gap:16px; font-size:12px; color:#94a4bb;">
+          <span style="display:flex; align-items:center; gap:6px;"><span style="width:9px; height:9px; border-radius:2px; background:#e7b24c;"></span>总成本</span>
+          <span style="display:flex; align-items:center; gap:6px;"><span style="width:9px; height:9px; border-radius:2px; background:#2dd4bf;"></span>毛利</span>
+        </div>
+      </div>
+      <div style="width:100%;">
+        <svg viewBox="0 0 640 268" style="width:100%; height:auto; display:block;">
+          <defs>
+            <linearGradient id="gGold" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#e7b24c" stop-opacity=".28"/><stop offset="100%" stop-color="#e7b24c" stop-opacity="0"/></linearGradient>
+            <linearGradient id="gCyan" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#2dd4bf" stop-opacity=".22"/><stop offset="100%" stop-color="#2dd4bf" stop-opacity="0"/></linearGradient>
+          </defs>
+          <!-- gridlines -->
+          <line x1="44" y1="40" x2="624" y2="40" stroke="rgba(148,164,187,.08)" stroke-width="1"/>
+          <line x1="44" y1="95" x2="624" y2="95" stroke="rgba(148,164,187,.08)" stroke-width="1"/>
+          <line x1="44" y1="150" x2="624" y2="150" stroke="rgba(148,164,187,.08)" stroke-width="1"/>
+          <line x1="44" y1="205" x2="624" y2="205" stroke="rgba(148,164,187,.08)" stroke-width="1"/>
+          <!-- y labels -->
+          <text x="36" y="44" text-anchor="end" font-family="'JetBrains Mono',monospace" font-size="11" fill="#5c6b82">2,000</text>
+          <text x="36" y="99" text-anchor="end" font-family="'JetBrains Mono',monospace" font-size="11" fill="#5c6b82">1,400</text>
+          <text x="36" y="154" text-anchor="end" font-family="'JetBrains Mono',monospace" font-size="11" fill="#5c6b82">800</text>
+          <text x="36" y="209" text-anchor="end" font-family="'JetBrains Mono',monospace" font-size="11" fill="#5c6b82">200</text>
+          <!-- gold area -->
+          <polygon points="44,150 100,140 156,158 212,120 268,132 324,105 380,118 436,95 492,110 548,88 604,100 624,98 624,222 44,222" fill="url(#gGold)"/>
+          <!-- cyan area -->
+          <polygon points="44,185 100,178 156,188 212,165 268,172 324,150 380,160 436,140 492,152 548,130 604,142 624,140 624,222 44,222" fill="url(#gCyan)"/>
+          <!-- gold line -->
+          <polyline points="44,150 100,140 156,158 212,120 268,132 324,105 380,118 436,95 492,110 548,88 604,100 624,98" fill="none" stroke="#e7b24c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+          <!-- cyan line -->
+          <polyline points="44,185 100,178 156,188 212,165 268,172 324,150 380,160 436,140 492,152 548,130 604,142 624,140" fill="none" stroke="#2dd4bf" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+          <!-- peak dot -->
+          <circle cx="548" cy="88" r="3.6" fill="#070b13" stroke="#e7b24c" stroke-width="2.2"/>
+          <!-- x labels -->
+          <text x="44" y="240" text-anchor="middle" font-family="'JetBrains Mono',monospace" font-size="11" fill="#5c6b82">06-15</text>
+          <text x="212" y="240" text-anchor="middle" font-family="'JetBrains Mono',monospace" font-size="11" fill="#5c6b82">06-18</text>
+          <text x="380" y="240" text-anchor="middle" font-family="'JetBrains Mono',monospace" font-size="11" fill="#5c6b82">06-21</text>
+          <text x="548" y="240" text-anchor="middle" font-family="'JetBrains Mono',monospace" font-size="11" fill="#5c6b82">06-24</text>
+          <text x="624" y="240" text-anchor="end" font-family="'JetBrains Mono',monospace" font-size="11" fill="#5c6b82">06-26</text>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 按能力拆解环图 -->
+    <div style="padding:20px 22px; border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45));">
+      <div style="font-size:16px; font-weight:600; margin-bottom:14px;">按能力拆解</div>
+      <div style="display:flex; align-items:center; justify-content:center; margin-bottom:18px;">
+        <div style="position:relative; width:168px; height:168px;">
+          <svg width="168" height="168" viewBox="0 0 168 168">
+            <circle cx="84" cy="84" r="54" fill="none" stroke="rgba(148,164,187,.1)" stroke-width="20"/>
+            <circle cx="84" cy="84" r="54" fill="none" stroke="#e7b24c" stroke-width="20" stroke-dasharray="142.5 196.8" stroke-dashoffset="0" transform="rotate(-90 84 84)"/>
+            <circle cx="84" cy="84" r="54" fill="none" stroke="#f4708a" stroke-width="20" stroke-dasharray="95.0 244.3" stroke-dashoffset="-142.5" transform="rotate(-90 84 84)"/>
+            <circle cx="84" cy="84" r="54" fill="none" stroke="#2dd4bf" stroke-width="20" stroke-dasharray="40.7 298.6" stroke-dashoffset="-237.5" transform="rotate(-90 84 84)"/>
+            <circle cx="84" cy="84" r="54" fill="none" stroke="#2bd576" stroke-width="20" stroke-dasharray="61.1 278.2" stroke-dashoffset="-278.2" transform="rotate(-90 84 84)"/>
+          </svg>
+          <div style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;">
+            <div style="font-size:11.5px; color:#94a4bb;">本月成本</div>
+            <div class="mono" style="font-size:21px; font-weight:700; color:#eaf1fa; letter-spacing:-.5px;">¥31,680</div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:11px;">
+        <div style="display:flex; align-items:center; gap:10px; font-size:13px;"><span style="width:9px; height:9px; border-radius:2px; background:#e7b24c; flex:none;"></span><span style="flex:1; color:#94a4bb;">作图</span><span class="mono" style="color:#eaf1fa;">¥13,306</span><span class="mono" style="color:#5c6b82; width:42px; text-align:right;">42%</span></div>
+        <div style="display:flex; align-items:center; gap:10px; font-size:13px;"><span style="width:9px; height:9px; border-radius:2px; background:#f4708a; flex:none;"></span><span style="flex:1; color:#94a4bb;">口播</span><span class="mono" style="color:#eaf1fa;">¥8,870</span><span class="mono" style="color:#5c6b82; width:42px; text-align:right;">28%</span></div>
+        <div style="display:flex; align-items:center; gap:10px; font-size:13px;"><span style="width:9px; height:9px; border-radius:2px; background:#2dd4bf; flex:none;"></span><span style="flex:1; color:#94a4bb;">配音</span><span class="mono" style="color:#eaf1fa;">¥3,802</span><span class="mono" style="color:#5c6b82; width:42px; text-align:right;">12%</span></div>
+        <div style="display:flex; align-items:center; gap:10px; font-size:13px;"><span style="width:9px; height:9px; border-radius:2px; background:#2bd576; flex:none;"></span><span style="flex:1; color:#94a4bb;">编导</span><span class="mono" style="color:#eaf1fa;">¥5,702</span><span class="mono" style="color:#5c6b82; width:42px; text-align:right;">18%</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 消费明细 -->
+  <div style="border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(180deg, rgba(16,24,39,.5), rgba(12,18,32,.4)); overflow:hidden;">
+    <div style="display:flex; align-items:center; justify-content:space-between; padding:18px 22px; border-bottom:1px solid rgba(148,164,187,.08);">
+      <div style="font-size:15.5px; font-weight:600;">消费明细</div>
+      <div class="lk" style="display:flex; align-items:center; gap:4px; font-size:12.5px; color:#94a4bb; cursor:pointer;">查看全部 <span style="display:flex; width:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 18l6-6-6-6"/></svg></span></div>
+    </div>
+    <div class="txscroll">
+      <div class="txhead" style="display:grid; grid-template-columns:1.5fr 2.1fr .8fr 1.3fr 1fr 1fr 1.2fr; gap:14px; min-width:880px; padding:12px 22px; font-size:12px; color:#5c6b82; border-bottom:1px solid rgba(148,164,187,.07);">
+        <div>时间</div><div>项目</div><div>类型</div><div>模型</div><div style="text-align:right;">消耗点数</div><div style="text-align:right;">金额</div><div>状态</div>
+      </div>
+
+      <div class="txrow" style="display:grid; grid-template-columns:1.5fr 2.1fr .8fr 1.3fr 1fr 1fr 1.2fr; gap:14px; min-width:880px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+        <div class="mono" style="color:#94a4bb;">2026-06-26 14:32</div>
+        <div>AI 作图-美业海报</div>
+        <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(231,178,76,.12); color:#e7b24c;">作图</span></div>
+        <div class="mono" style="color:#94a4bb; font-size:12px;">gpt-image-2</div>
+        <div class="mono" style="text-align:right; font-weight:600; color:#eaf1fa;">-12</div>
+        <div class="mono" style="text-align:right; color:#eaf1fa;">¥3.60</div>
+        <div><span style="display:inline-flex; align-items:center; gap:5px; padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(43,213,118,.12); color:#2bd576;"><span style="width:5px; height:5px; border-radius:50%; background:#2bd576;"></span>成功</span></div>
+      </div>
+      <div class="txrow" style="display:grid; grid-template-columns:1.5fr 2.1fr .8fr 1.3fr 1fr 1fr 1.2fr; gap:14px; min-width:880px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+        <div class="mono" style="color:#94a4bb;">2026-06-26 13:05</div>
+        <div>数字人口播-开业邀约</div>
+        <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(244,112,138,.12); color:#f4708a;">口播</span></div>
+        <div class="mono" style="color:#94a4bb; font-size:12px;">HeyGen-Avatar</div>
+        <div class="mono" style="text-align:right; font-weight:600; color:#eaf1fa;">-13</div>
+        <div class="mono" style="text-align:right; color:#eaf1fa;">¥18.20</div>
+        <div><span style="display:inline-flex; align-items:center; gap:5px; padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(43,213,118,.12); color:#2bd576;"><span style="width:5px; height:5px; border-radius:50%; background:#2bd576;"></span>成功</span></div>
+      </div>
+      <div class="txrow" style="display:grid; grid-template-columns:1.5fr 2.1fr .8fr 1.3fr 1fr 1fr 1.2fr; gap:14px; min-width:880px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+        <div class="mono" style="color:#94a4bb;">2026-06-26 11:18</div>
+        <div>配音-门店宣传片</div>
+        <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(45,212,191,.12); color:#2dd4bf;">配音</span></div>
+        <div class="mono" style="color:#94a4bb; font-size:12px;">ElevenLabs-v2</div>
+        <div class="mono" style="text-align:right; font-weight:600; color:#eaf1fa;">-4</div>
+        <div class="mono" style="text-align:right; color:#eaf1fa;">¥2.40</div>
+        <div><span style="display:inline-flex; align-items:center; gap:5px; padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(43,213,118,.12); color:#2bd576;"><span style="width:5px; height:5px; border-radius:50%; background:#2bd576;"></span>成功</span></div>
+      </div>
+      <div class="txrow" style="display:grid; grid-template-columns:1.5fr 2.1fr .8fr 1.3fr 1fr 1fr 1.2fr; gap:14px; min-width:880px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+        <div class="mono" style="color:#94a4bb;">2026-06-26 10:42</div>
+        <div>编导-小红书种草脚本</div>
+        <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(43,213,118,.12); color:#2bd576;">编导</span></div>
+        <div class="mono" style="color:#94a4bb; font-size:12px;">GPT-4o</div>
+        <div class="mono" style="text-align:right; font-weight:600; color:#eaf1fa;">-2</div>
+        <div class="mono" style="text-align:right; color:#eaf1fa;">¥0.80</div>
+        <div><span style="display:inline-flex; align-items:center; gap:5px; padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(43,213,118,.12); color:#2bd576;"><span style="width:5px; height:5px; border-radius:50%; background:#2bd576;"></span>成功</span></div>
+      </div>
+      <div class="txrow" style="display:grid; grid-template-columns:1.5fr 2.1fr .8fr 1.3fr 1fr 1fr 1.2fr; gap:14px; min-width:880px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px; background:rgba(244,112,138,.04);">
+        <div class="mono" style="color:#94a4bb;">2026-06-25 18:20</div>
+        <div style="color:#f4708a;">数字人口播-产品介绍</div>
+        <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(244,112,138,.12); color:#f4708a;">口播</span></div>
+        <div class="mono" style="color:#94a4bb; font-size:12px;">HeyGen-Avatar</div>
+        <div class="mono" style="text-align:right; font-weight:600; color:#2bd576;">+13</div>
+        <div class="mono" style="text-align:right; color:#5c6b82;">¥0.00</div>
+        <div><span style="display:inline-flex; align-items:center; gap:5px; padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(244,112,138,.14); color:#f4708a;"><span style="width:5px; height:5px; border-radius:50%; background:#f4708a;"></span>失败 · 已退点</span></div>
+      </div>
+      <div class="txrow" style="display:grid; grid-template-columns:1.5fr 2.1fr .8fr 1.3fr 1fr 1fr 1.2fr; gap:14px; min-width:880px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+        <div class="mono" style="color:#94a4bb;">2026-06-25 16:07</div>
+        <div>AI 作图-节日海报</div>
+        <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(231,178,76,.12); color:#e7b24c;">作图</span></div>
+        <div class="mono" style="color:#94a4bb; font-size:12px;">gpt-image-2</div>
+        <div class="mono" style="text-align:right; font-weight:600; color:#eaf1fa;">-12</div>
+        <div class="mono" style="text-align:right; color:#eaf1fa;">¥3.60</div>
+        <div><span style="display:inline-flex; align-items:center; gap:5px; padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(43,213,118,.12); color:#2bd576;"><span style="width:5px; height:5px; border-radius:50%; background:#2bd576;"></span>成功</span></div>
+      </div>
+      <div class="txrow" style="display:grid; grid-template-columns:1.5fr 2.1fr .8fr 1.3fr 1fr 1fr 1.2fr; gap:14px; min-width:880px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+        <div class="mono" style="color:#94a4bb;">2026-06-25 15:52</div>
+        <div>AI 作图-团购海报 ×4</div>
+        <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(231,178,76,.12); color:#e7b24c;">作图</span></div>
+        <div class="mono" style="color:#94a4bb; font-size:12px;">gpt-image-2</div>
+        <div class="mono" style="text-align:right; font-weight:600; color:#eaf1fa;">-48</div>
+        <div class="mono" style="text-align:right; color:#eaf1fa;">¥14.40</div>
+        <div><span style="display:inline-flex; align-items:center; gap:5px; padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(43,213,118,.12); color:#2bd576;"><span style="width:5px; height:5px; border-radius:50%; background:#2bd576;"></span>成功</span></div>
+      </div>
+      <div class="txrow" style="display:grid; grid-template-columns:1.5fr 2.1fr .8fr 1.3fr 1fr 1fr 1.2fr; gap:14px; min-width:880px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">
+        <div class="mono" style="color:#94a4bb;">2026-06-25 14:10</div>
+        <div>配音-活动促销口播</div>
+        <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(45,212,191,.12); color:#2dd4bf;">配音</span></div>
+        <div class="mono" style="color:#94a4bb; font-size:12px;">ElevenLabs-v2</div>
+        <div class="mono" style="text-align:right; font-weight:600; color:#eaf1fa;">-4</div>
+        <div class="mono" style="text-align:right; color:#eaf1fa;">¥2.40</div>
+        <div><span style="display:inline-flex; align-items:center; gap:5px; padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(43,213,118,.12); color:#2bd576;"><span style="width:5px; height:5px; border-radius:50%; background:#2bd576;"></span>成功</span></div>
+      </div>
+      <div class="txrow" style="display:grid; grid-template-columns:1.5fr 2.1fr .8fr 1.3fr 1fr 1fr 1.2fr; gap:14px; min-width:880px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px; background:rgba(244,112,138,.04);">
+        <div class="mono" style="color:#94a4bb;">2026-06-24 19:30</div>
+        <div style="color:#f4708a;">数字人口播-门店日常</div>
+        <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(244,112,138,.12); color:#f4708a;">口播</span></div>
+        <div class="mono" style="color:#94a4bb; font-size:12px;">HeyGen-Avatar</div>
+        <div class="mono" style="text-align:right; font-weight:600; color:#2bd576;">+13</div>
+        <div class="mono" style="text-align:right; color:#5c6b82;">¥0.00</div>
+        <div><span style="display:inline-flex; align-items:center; gap:5px; padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(244,112,138,.14); color:#f4708a;"><span style="width:5px; height:5px; border-radius:50%; background:#f4708a;"></span>失败 · 已退点</span></div>
+      </div>
+      <div class="txrow" style="display:grid; grid-template-columns:1.5fr 2.1fr .8fr 1.3fr 1fr 1fr 1.2fr; gap:14px; min-width:880px; padding:14px 22px; align-items:center; font-size:13px;">
+        <div class="mono" style="color:#94a4bb;">2026-06-24 17:05</div>
+        <div>编导-节日营销文案</div>
+        <div><span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(43,213,118,.12); color:#2bd576;">编导</span></div>
+        <div class="mono" style="color:#94a4bb; font-size:12px;">GPT-4o</div>
+        <div class="mono" style="text-align:right; font-weight:600; color:#eaf1fa;">-2</div>
+        <div class="mono" style="text-align:right; color:#eaf1fa;">¥0.80</div>
+        <div><span style="display:inline-flex; align-items:center; gap:5px; padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(43,213,118,.12); color:#2bd576;"><span style="width:5px; height:5px; border-radius:50%; background:#2bd576;"></span>成功</span></div>
+      </div>
+    </div>
+  </div>
+</div></div>
+
+<script src="../assets/cloud.js?v=8"></script>
+<script>document.querySelectorAll('.hq-content button').forEach(function(btn){btn.disabled=true;btn.title='示例预览暂不可操作，请前往真实运营后台';});</script>
+<script src="cloud-shell.js?v=302ad2ce"></script>
+</body>
+</html>

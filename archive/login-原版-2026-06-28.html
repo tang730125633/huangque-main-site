@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 · 黄雀 AI 工作台</title>
+<link rel="icon" href="assets/cloud/logo-bird.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/cloud.css?v=8">
+<style>
+  .gLogin{ grid-template-columns:1.05fr .95fr; }
+  /* 窄屏/重度缩放：收成顶部横幅，登录框移到下方，整页可滚动 */
+  @media (max-width:900px){
+    body{ overflow:auto !important; }
+    .gLogin{
+      grid-template-columns:1fr !important;
+      grid-template-rows:auto 1fr !important;
+      overflow:visible !important;
+    }
+    .brand-panel{ height:38vh; min-height:188px; }
+    .brand-panel > img{
+      object-position:center 30% !important;
+      -webkit-mask-image:linear-gradient(180deg,#000 60%,rgba(0,0,0,.4) 84%,transparent 100%) !important;
+              mask-image:linear-gradient(180deg,#000 60%,rgba(0,0,0,.4) 84%,transparent 100%) !important;
+    }
+    .login-right{ margin-left:0 !important; padding:20px 26px 32px !important; }
+    /* 横幅模式：只保留 logo + 主标题，副标题/药丸/数字行收起 */
+    .brand-subtitle,.brand-pill,.brand-stats{ display:none !important; }
+    .brand-text{ padding:16px 22px 20px !important; justify-content:flex-end !important; }
+  }
+  @media (max-width:520px){
+    .brand-panel{ height:30vh; min-height:150px; }
+    .brand-text{ padding:12px 16px 14px !important; }
+  }
+  /* 品牌 DOM 文字层 */
+  .brand-text{
+    position:absolute; inset:0; z-index:2;
+    display:flex; flex-direction:column;
+    padding:7% 9%;
+    box-sizing:border-box;
+  }
+</style>
+</head>
+<body style="overflow:hidden;">
+<div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
+
+<div class="gLogin" style="position:relative; z-index:1; min-height:100vh; display:grid; overflow:hidden;">
+  <!-- ===== 左 · 品牌场景区（场景图 + DOM 文字层）===== -->
+  <div class="brand-panel" style="position:relative; overflow:hidden;">
+    <!-- 纯场景背景图（无文字） -->
+    <img src="assets/cloud/login-scene.png" alt="黄雀 AI · 全栈 AI 获客与内容创作平台" style="position:absolute; inset:0; width:100%; height:100%; object-fit:cover; object-position:center top; -webkit-mask-image:linear-gradient(90deg, #000 38%, rgba(0,0,0,.55) 66%, rgba(0,0,0,.16) 88%, transparent 100%); mask-image:linear-gradient(90deg, #000 38%, rgba(0,0,0,.55) 66%, rgba(0,0,0,.16) 88%, transparent 100%);">
+    <!-- 暗化叠层，提升文字对比度（右缘同样淡出，消除与背景图错位的硬边线） -->
+    <div style="position:absolute; inset:0; z-index:1; background:linear-gradient(180deg,rgba(4,6,12,.54) 0%,rgba(4,6,12,.12) 38%,rgba(4,6,12,.60) 100%); -webkit-mask-image:linear-gradient(90deg,#000 44%,rgba(0,0,0,.5) 74%,transparent 96%); mask-image:linear-gradient(90deg,#000 44%,rgba(0,0,0,.5) 74%,transparent 96%); pointer-events:none;"></div>
+    <!-- DOM 文字层 -->
+    <div class="brand-text">
+      <!-- Logo -->
+      <a href="workbench/inspiration.html" style="display:inline-flex; align-items:center; gap:9px; text-decoration:none; margin-bottom:18px; align-self:flex-start;">
+        <img src="assets/cloud/logo-bird.png" alt="黄雀" style="width:26px; height:26px; object-fit:contain;">
+        <span style="font-size:17px; font-weight:700; color:#f0d080; letter-spacing:.4px;">黄雀 AI</span>
+      </a>
+      <!-- 中间内容区（药丸 + 主标题 + 副标题），flex:1 让 stats 自然沉底 -->
+      <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+        <!-- 药丸标签 -->
+        <div class="brand-pill" style="display:inline-flex; align-items:center; padding:5px 13px; border:1px solid rgba(244,205,114,.30); border-radius:999px; background:rgba(244,205,114,.07); color:rgba(244,205,114,.78); font-size:12px; letter-spacing:.25px; margin-bottom:20px; align-self:flex-start; white-space:nowrap;">✦ 黄雀 AI · 全栈 AI 获客与内容创作平台</div>
+        <!-- 主标题 第一行（白） -->
+        <div style="font-size:clamp(22px,3vw,40px); font-weight:900; line-height:1.22; color:#eaf1fa; letter-spacing:-.3px; margin-bottom:5px;">不止获客成交</div>
+        <!-- 主标题 第二行（金色渐变，与 login-left.png 一致） -->
+        <div style="font-size:clamp(22px,3vw,40px); font-weight:900; line-height:1.22; background:linear-gradient(90deg,#f4cd72 0%,#e7b24c 100%); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; margin-bottom:18px;">全栈 AI 一站直达</div>
+        <!-- 副标题 -->
+        <div class="brand-subtitle" style="font-size:clamp(11.5px,1vw,13.5px); color:rgba(234,241,250,.56); line-height:1.75; max-width:340px;">关键词获客 · AI 作图 · 数字人视频 · 智能分发 —— 一个平台，覆盖内容生意全链路，让 AI 成为你增长路上的最佳拍档。</div>
+      </div>
+      <!-- 统计数字行（count-up 目标） -->
+      <div class="brand-stats" style="display:flex; gap:clamp(16px,2vw,30px); flex-wrap:nowrap; margin-top:4px;">
+        <div style="display:flex; flex-direction:column; gap:5px;">
+          <span class="cu-num" data-target="1770" data-suffix="+"
+            style="display:inline-block; min-width:5ch; font-size:clamp(20px,2.3vw,30px); font-weight:800; color:#f4cd72; font-variant-numeric:tabular-nums; line-height:1; letter-spacing:-.5px;">0+</span>
+          <span style="font-size:11px; color:rgba(234,241,250,.44); letter-spacing:.3px;">评论采集</span>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:5px;">
+          <span class="cu-num" data-target="3168" data-suffix="+"
+            style="display:inline-block; min-width:5ch; font-size:clamp(20px,2.3vw,30px); font-weight:800; color:#f4cd72; font-variant-numeric:tabular-nums; line-height:1; letter-spacing:-.5px;">0+</span>
+          <span style="font-size:11px; color:rgba(234,241,250,.44); letter-spacing:.3px;">账号线索</span>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:5px;">
+          <span class="cu-num" data-target="100" data-suffix="+"
+            style="display:inline-block; min-width:4ch; font-size:clamp(20px,2.3vw,30px); font-weight:800; color:#f4cd72; font-variant-numeric:tabular-nums; line-height:1; letter-spacing:-.5px;">0+</span>
+          <span style="font-size:11px; color:rgba(234,241,250,.44); letter-spacing:.3px;">精准客户</span>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:5px;">
+          <span class="cu-num" data-target="80" data-suffix="%"
+            style="display:inline-block; min-width:3ch; font-size:clamp(20px,2.3vw,30px); font-weight:800; color:#f4cd72; font-variant-numeric:tabular-nums; line-height:1; letter-spacing:-.5px;">0%</span>
+          <span style="font-size:11px; color:rgba(234,241,250,.44); letter-spacing:.3px;">回复率提升</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 右 · 登录区 ===== -->
+  <div class="login-right" style="position:relative; z-index:1; display:flex; align-items:center; justify-content:center; padding:26px; margin-left:-4%;">
+    <div style="position:absolute; left:-22%; top:0; bottom:0; width:70%; background:radial-gradient(60% 75% at 30% 62%, rgba(231,178,76,.16), rgba(231,178,76,.05) 46%, transparent 74%); pointer-events:none;"></div>
+    <div style="position:absolute; right:-8%; top:50%; transform:translateY(-50%); width:860px; height:860px; background:radial-gradient(circle, rgba(231,178,76,.16), rgba(231,178,76,.05) 38%, transparent 66%); pointer-events:none;"></div>
+    <svg viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet" style="position:absolute; right:-16%; top:50%; transform:translateY(-50%); width:1060px; height:1060px; pointer-events:none;">
+      <defs>
+        <radialGradient id="hq-arcfade" cx="50%" cy="50%" r="50%">
+          <stop offset="60%" stop-color="#e7b24c" stop-opacity="0"></stop>
+          <stop offset="82%" stop-color="#f4cd72" stop-opacity=".5"></stop>
+          <stop offset="100%" stop-color="#e7b24c" stop-opacity="0"></stop>
+        </radialGradient>
+        <linearGradient id="hq-sweep1" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#f6d488" stop-opacity="0"></stop>
+          <stop offset="50%" stop-color="#f6d488" stop-opacity=".85"></stop>
+          <stop offset="100%" stop-color="#f6d488" stop-opacity="0"></stop>
+        </linearGradient>
+        <linearGradient id="hq-sweep2" x1="1" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#e7b24c" stop-opacity="0"></stop>
+          <stop offset="50%" stop-color="#e7b24c" stop-opacity=".6"></stop>
+          <stop offset="100%" stop-color="#e7b24c" stop-opacity="0"></stop>
+        </linearGradient>
+        <filter id="hq-soft" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.2"></feGaussianBlur></filter>
+      </defs>
+      <g fill="none" stroke="#e7b24c">
+        <circle cx="500" cy="500" r="150" stroke-opacity=".1" stroke-width="1.2"></circle>
+        <circle cx="500" cy="500" r="230" stroke-opacity=".08" stroke-width="1.2"></circle>
+        <circle cx="500" cy="500" r="320" stroke-opacity=".06" stroke-width="1.2"></circle>
+        <circle cx="500" cy="500" r="410" stroke-opacity=".045" stroke-width="1.2"></circle>
+        <circle cx="500" cy="500" r="500" stroke-opacity=".03" stroke-width="1.2"></circle>
+      </g>
+      <circle cx="500" cy="500" r="320" fill="none" stroke="url(#hq-arcfade)" stroke-width="42" opacity=".4"></circle>
+      <g filter="url(#hq-soft)" style="transform-box:fill-box; transform-origin:center; animation:hq-spin 72s linear infinite;">
+        <circle cx="500" cy="500" r="270" fill="none" stroke="url(#hq-sweep1)" stroke-width="2.4" stroke-dasharray="360 1340" stroke-linecap="round"></circle>
+        <circle cx="500" cy="500" r="270" fill="none" stroke="url(#hq-sweep2)" stroke-width="1.6" stroke-dasharray="120 1580" stroke-dashoffset="700" stroke-linecap="round"></circle>
+      </g>
+      <g filter="url(#hq-soft)" style="transform-box:fill-box; transform-origin:center; animation:hq-spin 108s linear infinite reverse;">
+        <circle cx="500" cy="500" r="400" fill="none" stroke="url(#hq-sweep2)" stroke-width="2" stroke-dasharray="460 2050" stroke-linecap="round"></circle>
+        <circle cx="500" cy="500" r="466" fill="none" stroke="url(#hq-sweep1)" stroke-width="1.4" stroke-dasharray="200 2730" stroke-dashoffset="1100" stroke-linecap="round"></circle>
+      </g>
+    </svg>
+
+    <div style="position:relative; width:100%; max-width:424px; padding:38px 38px 32px; border:1px solid rgba(231,178,76,.2); border-radius:24px; background:linear-gradient(165deg, rgba(28,23,13,.5), rgba(12,16,26,.42)); backdrop-filter:blur(26px) saturate(1.2); -webkit-backdrop-filter:blur(26px) saturate(1.2); box-shadow:0 40px 100px -30px rgba(0,0,0,.85), 0 0 0 1px rgba(231,178,76,.05), inset 0 1px 0 rgba(255,255,255,.08), inset 0 -1px 30px rgba(231,178,76,.04);">
+      <div style="text-align:center; font-size:21px; font-weight:700;">欢迎回来 👋</div>
+      <div style="text-align:center; font-size:13px; color:#94a4bb; margin-top:8px;">登录黄雀 AI 工作台，开启智能获客与内容创作</div>
+      <div style="display:flex; gap:28px; margin-top:26px; border-bottom:1px solid rgba(148,164,187,.1);">
+        <div id="tabPhone" style="padding:11px 2px; font-size:14.5px; font-weight:600; cursor:pointer; white-space:nowrap; border-bottom:2px solid #e7b24c; color:#eaf1fa; margin-bottom:-1px; transition:.18s;">手机号登录</div>
+        <div id="tabPwd" style="padding:11px 2px; font-size:14.5px; font-weight:600; cursor:pointer; white-space:nowrap; border-bottom:2px solid transparent; color:#94a4bb; margin-bottom:-1px; transition:.18s;">密码登录</div>
+      </div>
+      <div style="margin-top:22px; display:flex; flex-direction:column; gap:14px;">
+        <div style="display:flex; align-items:center; gap:11px; padding:0 15px; height:48px; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px;">
+          <span style="display:flex; width:17px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span>
+          <input id="username" placeholder="请输入手机号 / 账号" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
+        </div>
+        <div id="rowPhone" style="display:flex; gap:10px;">
+          <div style="flex:1; display:flex; align-items:center; gap:11px; padding:0 15px; height:48px; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px;">
+            <span style="display:flex; width:17px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg></span>
+            <input id="code" placeholder="请输入验证码" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
+          </div>
+          <button type="button" id="getCode" style="flex:none; padding:0 15px; height:48px; white-space:nowrap; font-size:13px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.28); border-radius:12px; cursor:pointer; font-family:inherit; transition:.18s;">获取验证码</button>
+        </div>
+        <div id="rowPwd" style="display:none; align-items:center; gap:11px; padding:0 15px; height:48px; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px;">
+          <span style="display:flex; width:17px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></span>
+          <input id="password" type="password" placeholder="请输入密码" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
+        </div>
+      </div>
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-top:18px;">
+        <label id="remember" style="display:flex; align-items:center; gap:8px; font-size:13px; color:#94a4bb; cursor:pointer;">
+          <span id="rememberBox" style="width:16px; height:16px; border-radius:5px; border:1.5px solid rgba(148,164,187,.3); background:transparent; display:flex; align-items:center; justify-content:center; color:#1a1206; transition:.16s;"><span id="rememberMark" style="display:flex; width:11px; opacity:0;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M20 6L9 17l-5-5"/></svg></span></span>记住我
+        </label>
+        <a class="lk" style="font-size:13px; color:#94a4bb; cursor:pointer;">忘记密码？</a>
+      </div>
+      <button type="button" id="submitBtn" class="btn-gold" style="width:100%; height:48px; margin-top:22px; font-size:15px; font-weight:700; letter-spacing:2px; border-radius:12px; box-shadow:0 14px 34px -12px rgba(231,178,76,.7);">登 录</button>
+      <div id="msg" style="text-align:center; font-size:12.5px; margin-top:12px; min-height:16px; color:#f4708a;"></div>
+      <div style="display:flex; align-items:center; gap:14px; margin:16px 0 16px; color:#5c6b82; font-size:12px;"><div style="flex:1; height:1px; background:rgba(148,164,187,.12);"></div>或<div style="flex:1; height:1px; background:rgba(148,164,187,.12);"></div></div>
+      <div id="teamLogin" style="text-align:center; font-size:14px; color:#2dd4bf; cursor:pointer; font-weight:500;">团队口令登录 →</div>
+      <div style="text-align:center; font-size:11.5px; color:#5c6b82; margin-top:18px;">登录即代表您同意 <span style="color:#94a4bb;">《用户协议》</span> 与 <span style="color:#94a4bb;">《隐私政策》</span></div>
+    </div>
+  </div>
+</div>
+
+<script src="assets/cloud.js?v=8"></script>
+<script>
+(function(){
+  "use strict";
+  var phone=true, remember=false;
+  var tabPhone=document.getElementById("tabPhone"), tabPwd=document.getElementById("tabPwd");
+  var rowPhone=document.getElementById("rowPhone"), rowPwd=document.getElementById("rowPwd");
+  var msg=document.getElementById("msg"), btn=document.getElementById("submitBtn");
+  function setMsg(t,kind){ msg.textContent=t||""; msg.style.color=(kind==="ok")?"#2bd576":(kind==="err"?"#f4708a":"#94a4bb"); }
+  function setTab(p){
+    phone=p;
+    tabPhone.style.borderBottomColor=p?"#e7b24c":"transparent"; tabPhone.style.color=p?"#eaf1fa":"#94a4bb";
+    tabPwd.style.borderBottomColor=p?"transparent":"#e7b24c"; tabPwd.style.color=p?"#94a4bb":"#eaf1fa";
+    rowPhone.style.display=p?"flex":"none"; rowPwd.style.display=p?"none":"flex";
+  }
+  tabPhone.onclick=function(){setTab(true);}; tabPwd.onclick=function(){setTab(false);};
+  document.getElementById("remember").onclick=function(){
+    remember=!remember;
+    document.getElementById("rememberBox").style.background=remember?"#e7b24c":"transparent";
+    document.getElementById("rememberBox").style.borderColor=remember?"#e7b24c":"rgba(148,164,187,.3)";
+    document.getElementById("rememberMark").style.opacity=remember?"1":"0";
+  };
+  document.getElementById("getCode").onclick=function(){ setMsg("验证码登录即将上线，请用密码登录","err"); };
+
+  function doLogin(){
+    var username=(document.getElementById("username").value||"").trim();
+    var secret=phone ? (document.getElementById("code").value||"") : (document.getElementById("password").value||"");
+    if(!username||!secret){ setMsg(phone?"请填写账号和验证码":"请填写账号和密码","err"); return; }
+    btn.disabled=true; btn.style.opacity=".7"; setMsg("登录中…");
+    fetch("/api/auth/login",{
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({username:username,password:secret})
+    }).then(function(r){
+      if(r.status===404){ throw new Error("__nobackend__"); }
+      return r.json().then(function(d){ return {ok:r.ok,d:d}; });
+    }).then(function(res){
+      if(res.ok && res.d && res.d.token){
+        try{ localStorage.removeItem("hq_role"); localStorage.setItem("hq_token",res.d.token); if(res.d.user) localStorage.setItem("hq_user",JSON.stringify(res.d.user)); }catch(e){}
+        setMsg("登录成功，正在进入…","ok");
+        var role=(res.d.user && res.d.user.role) || "member";
+        var rd=new URLSearchParams(location.search).get("redirect");
+        var dest=(rd && /^[a-zA-Z0-9_-]+$/.test(rd)) ? rd : (role==="admin" ? "dashboard" : "inspiration");
+        location.href="workbench/"+dest+".html";
+      }else{
+        btn.disabled=false; btn.style.opacity="1"; setMsg((res.d&&res.d.detail)||"账号或密码错误","err");
+      }
+    }).catch(function(err){
+      btn.disabled=false; btn.style.opacity="1";
+      if(err&&err.message==="__nobackend__"){ setMsg("登录服务即将上线（账号体系开发中）","err"); }
+      else{ setMsg("网络错误，请重试","err"); }
+    });
+  }
+  btn.onclick=doLogin;
+  document.getElementById("teamLogin").onclick=doLogin;
+  [["username","code","password"]].forEach(function(){});
+  ["username","code","password"].forEach(function(id){
+    var el=document.getElementById(id); if(el) el.addEventListener("keydown",function(e){ if(e.key==="Enter") doLogin(); });
+  });
+
+  // count-up 动画：页面加载时数字从 0 递增到目标值
+  (function(){
+    var els=document.querySelectorAll(".cu-num");
+    if(!els.length) return;
+    function fmt(n,suffix){ return n.toLocaleString("en")+suffix; }
+    function run(el){
+      var target=parseInt(el.dataset.target,10)||0;
+      var suffix=el.dataset.suffix||"";
+      var dur=1400; // ms，ease-out cubic
+      var t0=performance.now();
+      (function step(now){
+        var p=Math.min((now-t0)/dur,1);
+        var eased=1-Math.pow(1-p,3);
+        el.textContent=fmt(Math.round(eased*target),suffix);
+        if(p<1) requestAnimationFrame(step);
+      })(t0);
+    }
+    els.forEach(run);
+  })();
+})();
+</script>
+</body>
+</html>

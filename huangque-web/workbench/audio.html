@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 配音 · 黄雀 AI 工作台</title>
+<link rel="icon" href="../assets/cloud/logo-bird.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/cloud.css?v=8">
+<style>
+  body{ overflow:hidden; }
+  .gAud{ grid-template-columns:1.45fr 1fr; }
+  @media (max-width:1100px){ .gAud{ grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<div class="hq-bg"><div class="glow"></div><div class="grid"></div><canvas></canvas></div>
+
+<div class="hq-app"><div class="hq-content" data-active="audio">
+  <div class="gAud" style="display:grid; gap:18px; align-items:start;">
+
+    <!-- ===== 左：创作面板 ===== -->
+    <div style="border:1px solid rgba(148,164,187,.1); border-radius:18px; background:linear-gradient(165deg, rgba(16,24,39,.58), rgba(12,18,32,.46)); padding:22px;">
+      <div style="display:flex; align-items:flex-start; justify-content:space-between;">
+        <div><h1 style="margin:0; font-size:21px; font-weight:700;">AI 配音</h1><p style="margin:7px 0 0; font-size:13px; color:#94a4bb;">输入文案，选择音色，一键生成真实口播配音</p></div>
+        <button class="hv-gold" style="width:34px; height:34px; display:flex; align-items:center; justify-content:center; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); border-radius:9px; cursor:pointer; transition:.16s;"><span style="display:flex; width:17px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg></span></button>
+      </div>
+
+      <!-- 配音文案 -->
+      <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 10px;">
+        <span style="font-size:13.5px; font-weight:600;">配音文案</span>
+        <button style="display:flex; align-items:center; gap:5px; padding:5px 11px; font-size:12px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.24); border-radius:8px; cursor:pointer; font-family:inherit;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 14l.7 1.9L22 17l-2.3.6L19 20l-.7-2.4L16 17l2.3-.5z"/></svg></span>套用文案</button>
+      </div>
+      <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:14px 15px;">
+        <textarea rows="4" placeholder="输入要配音的文案，支持口播稿、广告语、门店通知…" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.75; font-family:inherit;">仙颜美容温馨提醒：本周末「科技焕肤」体验官名额仅剩 8 席，到店即享冷光嫩肤 + 小气泡清洁双重护理。预约请回复门店姑娘，我们在仙颜等你变美～</textarea>
+        <div style="display:flex; align-items:center; justify-content:flex-end; gap:12px; font-size:11.5px; color:#5c6b82; margin-top:8px;"><span class="mono">68 / 500</span><span style="cursor:pointer;">清空</span></div>
+      </div>
+
+      <!-- 音色 -->
+      <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 10px;">
+        <span style="font-size:13.5px; font-weight:600;">选择音色</span>
+        <a href="settings.html" style="display:flex; align-items:center; gap:4px; font-size:12px; color:#94a4bb; text-decoration:none; cursor:pointer;">管理音色 <span style="display:flex; width:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 18l6-6-6-6"/></svg></span></a>
+      </div>
+      <div>
+        <div style="display:flex; gap:8px; margin-bottom:10px; padding:4px; border:1px solid rgba(148,164,187,.12); border-radius:12px; background:rgba(7,11,19,.35);">
+          <button type="button" class="voiceTab" data-voice-tab="public" style="flex:1; height:34px; border:none; border-radius:9px; cursor:pointer; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); font-size:12.5px; font-weight:700; font-family:inherit;">公共音色</button>
+          <button type="button" class="voiceTab" data-voice-tab="personal" style="flex:1; height:34px; border:none; border-radius:9px; cursor:pointer; color:#94a4bb; background:transparent; font-size:12.5px; font-weight:700; font-family:inherit;">个人音色</button>
+        </div>
+        <div class="voicePanel" data-voice-panel="public">
+          <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px;">
+                  <div class="voiceCard" data-voice="dapeng" style="min-height:86px; box-sizing:border-box; padding:13px 13px; border-radius:13px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s;">
+                    <div style="display:flex; align-items:center; gap:9px;">
+                      <span style="width:30px; height:30px; border-radius:50%; flex:none; background:linear-gradient(150deg,#9a6a3a,#5a3d22); display:flex; align-items:center; justify-content:center; color:#fff; font-size:12px; font-weight:600;">鹏</span>
+                      <div style="min-width:0;"><div style="font-size:13px; font-weight:600;">大鹏 IVC</div><div style="font-size:11px; color:#c8902f;">克隆 · 亲切</div></div>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:3px; height:20px; margin-top:11px;"><span style="width:3px; height:5px; border-radius:2px; background:rgba(231,178,76,.55);"></span><span style="width:3px; height:11px; border-radius:2px; background:rgba(231,178,76,.55);"></span><span style="width:3px; height:17px; border-radius:2px; background:rgba(231,178,76,.55);"></span><span style="width:3px; height:9px; border-radius:2px; background:rgba(231,178,76,.55);"></span><span style="width:3px; height:14px; border-radius:2px; background:rgba(231,178,76,.55);"></span><span style="width:3px; height:7px; border-radius:2px; background:rgba(231,178,76,.55);"></span><span style="width:3px; height:13px; border-radius:2px; background:rgba(231,178,76,.55);"></span><span style="width:3px; height:18px; border-radius:2px; background:rgba(231,178,76,.55);"></span><span style="width:3px; height:8px; border-radius:2px; background:rgba(231,178,76,.55);"></span><span style="width:3px; height:6px; border-radius:2px; background:rgba(231,178,76,.55);"></span></div>
+                  </div>
+                  <div class="voiceCard" data-voice="zelong" style="min-height:86px; box-sizing:border-box; padding:13px 13px; border-radius:13px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">
+                    <div style="display:flex; align-items:center; gap:9px;">
+                      <span style="width:30px; height:30px; border-radius:50%; flex:none; background:rgba(148,164,187,.12); display:flex; align-items:center; justify-content:center; color:#94a4bb; font-size:12px; font-weight:600;">龙</span>
+                      <div style="min-width:0;"><div style="font-size:13px; font-weight:600;">泽龙 IVC</div><div style="font-size:11px; color:#5c6b82;">克隆 · 磁性</div></div>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:3px; height:20px; margin-top:11px;"><span style="width:3px; height:6px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:13px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:9px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:17px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:11px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:7px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:15px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:10px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:18px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:6px; border-radius:2px; background:rgba(148,164,187,.3);"></span></div>
+                  </div>
+                  <div class="voiceCard" data-voice="paul" style="min-height:86px; box-sizing:border-box; padding:13px 13px; border-radius:13px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">
+                    <div style="display:flex; align-items:center; gap:9px;">
+                      <span style="width:30px; height:30px; border-radius:50%; flex:none; background:rgba(148,164,187,.12); display:flex; align-items:center; justify-content:center; color:#94a4bb; font-size:12px; font-weight:600;">P</span>
+                      <div style="min-width:0;"><div style="font-size:13px; font-weight:600;">Paul 男声</div><div style="font-size:11px; color:#5c6b82;">官方 · 沉稳</div></div>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:3px; height:20px; margin-top:11px;"><span style="width:3px; height:8px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:14px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:6px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:16px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:10px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:18px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:7px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:12px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:9px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:5px; border-radius:2px; background:rgba(148,164,187,.3);"></span></div>
+                  </div>
+                </div>
+        </div>
+        <div class="voicePanel" data-voice-panel="personal" style="display:none;">
+          <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px;">
+            <a href="assets.html?cat=audio&audioTab=personal" style="min-height:86px; box-sizing:border-box; padding:13px; border-radius:13px; border:1px dashed rgba(231,178,76,.28); background:rgba(231,178,76,.05); text-decoration:none; display:flex; flex-direction:column; justify-content:center; gap:8px;">
+              <div style="font-size:13px; color:#e7b24c; font-weight:700;">复刻音色</div>
+              <div style="font-size:11.5px; color:#94a4bb; line-height:1.5;">上传样音，生成自己的专属音色</div>
+            </a>
+            <div class="voiceCard" data-voice="personal" style="min-height:86px; box-sizing:border-box; padding:13px 13px; border-radius:13px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s;">
+              <div style="display:flex; align-items:center; gap:9px;">
+                <span style="width:30px; height:30px; border-radius:50%; flex:none; background:rgba(148,164,187,.12); display:flex; align-items:center; justify-content:center; color:#94a4bb; font-size:12px; font-weight:600;">我</span>
+                <div style="min-width:0;"><div style="font-size:13px; font-weight:600;">我的复刻音色</div><div style="font-size:11px; color:#5c6b82;">后续接入 · 专属</div></div>
+              </div>
+              <div style="display:flex; align-items:center; gap:3px; height:20px; margin-top:11px;"><span style="width:3px; height:7px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:15px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:9px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:18px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:10px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:6px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:14px; border-radius:2px; background:rgba(148,164,187,.3);"></span><span style="width:3px; height:8px; border-radius:2px; background:rgba(148,164,187,.3);"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:22px;">
+        <div>
+          <div style="display:flex; align-items:center; gap:6px; font-size:13.5px; font-weight:600; margin-bottom:10px;">语速 <span class="tipMark" data-tip="默认 1.0：正常朗读速度；数值越小越慢，越大越快。" style="position:relative; width:15px; height:15px; display:inline-flex; align-items:center; justify-content:center; border-radius:50%; color:#e7b24c; border:1px solid rgba(231,178,76,.36); background:rgba(231,178,76,.08); font-size:10px; line-height:1; cursor:help;">!</span></div>
+          <div id="speedStepper" style="display:grid; grid-template-columns:34px 1fr 34px; gap:7px; align-items:center;">
+            <button type="button" data-speed-step="-0.1" style="height:42px; display:flex; align-items:center; justify-content:center; font-size:18px; font-weight:700; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.28); transition:.16s; font-family:inherit;">-</button>
+            <div id="speedValue" class="mono" style="height:42px; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700; border-radius:11px; color:#eaf1fa; background:rgba(7,11,19,.52); border:1px solid rgba(148,164,187,.16);">1.0</div>
+            <button type="button" data-speed-step="0.1" style="height:42px; display:flex; align-items:center; justify-content:center; font-size:18px; font-weight:700; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.28); transition:.16s; font-family:inherit;">+</button>
+          </div>
+        </div>
+        <div>
+              <div style="display:flex; align-items:center; gap:6px; font-size:13.5px; font-weight:600; margin-bottom:10px;">音调 <span class="tipMark" data-tip="默认 0：保持原始音高；负数更低沉，正数更明亮。" style="position:relative; width:15px; height:15px; display:inline-flex; align-items:center; justify-content:center; border-radius:50%; color:#e7b24c; border:1px solid rgba(231,178,76,.36); background:rgba(231,178,76,.08); font-size:10px; line-height:1; cursor:help;">!</span></div>
+              <div style="display:grid; grid-template-columns:34px 1fr 34px; gap:7px; align-items:center;">
+                <button type="button" data-pitch-step="-1" style="height:42px; display:flex; align-items:center; justify-content:center; font-size:18px; font-weight:700; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.28); transition:.16s; font-family:inherit;">-</button>
+                <div id="pitchValue" class="mono" style="height:42px; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700; border-radius:11px; color:#eaf1fa; background:rgba(7,11,19,.52); border:1px solid rgba(148,164,187,.16);">0</div>
+                <button type="button" data-pitch-step="1" style="height:42px; display:flex; align-items:center; justify-content:center; font-size:18px; font-weight:700; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.28); transition:.16s; font-family:inherit;">+</button>
+              </div>
+        </div>
+        <div>
+              <div style="display:flex; align-items:center; gap:6px; font-size:13.5px; font-weight:600; margin-bottom:10px;">音量 <span class="tipMark" data-tip="默认 0：保持原始音量；负数降低音量，正数增强音量。" style="position:relative; width:15px; height:15px; display:inline-flex; align-items:center; justify-content:center; border-radius:50%; color:#e7b24c; border:1px solid rgba(231,178,76,.36); background:rgba(231,178,76,.08); font-size:10px; line-height:1; cursor:help;">!</span></div>
+              <div style="display:grid; grid-template-columns:34px 1fr 34px; gap:7px; align-items:center;">
+                <button type="button" data-volume-step="-10" style="height:42px; display:flex; align-items:center; justify-content:center; font-size:18px; font-weight:700; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.28); transition:.16s; font-family:inherit;">-</button>
+                <div id="volumeValue" class="mono" style="height:42px; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700; border-radius:11px; color:#eaf1fa; background:rgba(7,11,19,.52); border:1px solid rgba(148,164,187,.16);">0</div>
+                <button type="button" data-volume-step="10" style="height:42px; display:flex; align-items:center; justify-content:center; font-size:18px; font-weight:700; border-radius:11px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.28); transition:.16s; font-family:inherit;">+</button>
+              </div>
+        </div>
+      </div>
+
+      <button class="hv-lift" style="width:100%; height:54px; margin-top:24px; display:flex; align-items:center; justify-content:center; gap:10px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit;">
+        生成配音
+        <span class="mono" style="display:inline-flex; align-items:center; padding:3px 10px; font-size:13px; font-weight:600; background:rgba(26,18,6,.18); border-radius:8px;">4 点</span>
+      </button>
+      <div style="text-align:center; font-size:11.5px; color:#5c6b82; margin-top:11px;">本次预计消耗 <span class="mono" style="color:#e7b24c;">4</span> 点 · 数秒出声 · 失败自动退点</div>
+    </div>
+
+    <!-- ===== 右：结果检视 ===== -->
+    <div style="position:sticky; top:0; border:1px solid rgba(231,178,76,.16); border-radius:18px; background:linear-gradient(165deg, rgba(20,17,10,.6), rgba(12,16,26,.5)); padding:20px;">
+      <div style="font-size:16px; font-weight:600; margin-bottom:14px;">生成结果</div>
+
+      <!-- 大金色波形 空态 -->
+      <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; text-align:center; padding:34px 22px; border:1px dashed rgba(231,178,76,.28); border-radius:14px; background:rgba(7,11,19,.4);">
+        <div style="display:flex; align-items:center; justify-content:center; gap:4px; height:64px;">
+          <span style="width:4px; height:8px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:14px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:22px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:32px; border-radius:2px; background:rgba(231,178,76,.4);"></span>
+          <span style="width:4px; height:42px; border-radius:2px; background:rgba(231,178,76,.4);"></span>
+          <span style="width:4px; height:30px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:20px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:13px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:26px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:38px; border-radius:2px; background:rgba(231,178,76,.4);"></span>
+          <span style="width:4px; height:48px; border-radius:2px; background:rgba(231,178,76,.5);"></span>
+          <span style="width:4px; height:38px; border-radius:2px; background:rgba(231,178,76,.4);"></span>
+          <span style="width:4px; height:26px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:18px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:28px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:40px; border-radius:2px; background:rgba(231,178,76,.4);"></span>
+          <span style="width:4px; height:30px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:22px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:14px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:9px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+          <span style="width:4px; height:6px; border-radius:2px; background:rgba(231,178,76,.32);"></span>
+        </div>
+        <div style="font-size:13px; color:#94a4bb; font-weight:500;">生成后在此预览音频波形</div>
+        <div style="font-size:11.5px; color:#5c6b82; line-height:1.6;">填写文案、选好音色，点击「生成配音」</div>
+      </div>
+
+      <!-- 播放器 空态 -->
+      <div style="display:flex; align-items:center; gap:12px; margin-top:14px; padding:12px 14px; border:1px solid rgba(148,164,187,.1); border-radius:12px; background:rgba(7,11,19,.4);">
+        <span style="width:36px; height:36px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:50%; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.24); color:rgba(231,178,76,.55);"><span style="display:flex; width:15px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M7 4v16l13-8z"/></svg></span></span>
+        <div style="flex:1; height:5px; border-radius:99px; background:rgba(148,164,187,.12); position:relative; overflow:hidden;"><div style="position:absolute; left:0; top:0; bottom:0; width:0; background:linear-gradient(90deg,#f4cd72,#e7b24c);"></div></div>
+        <span class="mono" style="font-size:12px; color:#5c6b82;">00:00 / 00:00</span>
+      </div>
+
+      <!-- 试听记录 空态 -->
+      <div style="font-size:15px; font-weight:600; margin:24px 0 12px;">试听记录</div>
+      <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:11px; text-align:center; padding:26px 18px; border:1px dashed rgba(148,164,187,.18); border-radius:14px; background:rgba(148,164,187,.02);">
+        <span style="display:flex; width:28px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+        <div style="font-size:12.5px; color:#94a4bb;">暂无试听记录，生成后可逐条回放对比</div>
+      </div>
+
+      <!-- 最近音频 空态 -->
+      <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 12px;">
+        <span style="font-size:15px; font-weight:600;">最近音频</span>
+        <a href="assets.html" style="display:flex; align-items:center; gap:4px; font-size:12.5px; color:#94a4bb; cursor:pointer; text-decoration:none;">全部音频 <span style="display:flex; width:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 18l6-6-6-6"/></svg></span></a>
+      </div>
+      <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:11px; text-align:center; padding:26px 18px; border:1px dashed rgba(148,164,187,.18); border-radius:14px; background:rgba(148,164,187,.02);">
+        <span style="display:flex; width:28px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg></span>
+        <div style="font-size:12.5px; color:#94a4bb;">暂无音频，生成后自动入库</div>
+      </div>
+    </div>
+
+  </div>
+</div></div>
+
+<script src="../assets/cloud.js?v=8"></script>
+<script src="cloud-shell.js?v=9"></script>
+<script>
+(function(){
+  var txt=document.querySelector('textarea');
+  var gen=[].slice.call(document.querySelectorAll('button')).filter(function(b){return b.textContent.indexOf('生成配音')>=0;})[0];
+  var panels=document.querySelectorAll('.gAud > div');
+  var result=panels[1];
+  if(!txt||!gen||!result) return;
+  var voice='dapeng', speed=1.0, pitch=0, volume=0, orig=gen.innerHTML;
+  function tok(){ return localStorage.getItem('hq_token')||''; }
+  function esc(s){ return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+  function notice(t,c){
+    var n=document.getElementById('audNote');
+    if(!n){ n=document.createElement('div'); n.id='audNote'; n.style.cssText='text-align:center;font-size:12px;margin-top:10px;color:#5c6b82;'; gen.parentNode.insertBefore(n, gen.nextSibling); }
+    n.innerHTML=t; n.style.color=c||'#5c6b82';
+  }
+  function busy(on){ gen.style.pointerEvents=on?'none':'auto'; gen.style.opacity=on?'.7':'1'; gen.innerHTML=on?'生成中…':orig; }
+  function active(el,on){
+    el.style.color=on?'#e7b24c':'#94a4bb';
+    el.style.background=on?'rgba(231,178,76,.1)':'rgba(148,164,187,.05)';
+    el.style.borderColor=on?'rgba(231,178,76,.32)':'rgba(148,164,187,.14)';
+  }
+  function setTab(tab){
+    document.querySelectorAll('.voiceTab').forEach(function(b){
+      var on=b.getAttribute('data-voice-tab')===tab;
+      b.style.color=on?'#1a1206':'#94a4bb';
+      b.style.background=on?'linear-gradient(135deg,#f4cd72,#e7b24c)':'transparent';
+    });
+    document.querySelectorAll('.voicePanel').forEach(function(p){
+      p.style.display=p.getAttribute('data-voice-panel')===tab?'block':'none';
+    });
+  }
+  document.querySelectorAll('.voiceTab').forEach(function(b){
+    b.onclick=function(){ setTab(b.getAttribute('data-voice-tab')||'public'); };
+  });
+  var voiceCards=[].slice.call(document.querySelectorAll('.voiceCard'));
+  voiceCards.forEach(function(card){
+    card.onclick=function(e){
+      if(e.target.closest && e.target.closest('a')) return;
+      voiceCards.forEach(function(x){active(x,false);});
+      active(card,true);
+      voice=card.getAttribute('data-voice')||'dapeng';
+    };
+  });
+  var speedValue=document.getElementById('speedValue');
+  document.querySelectorAll('[data-speed-step]').forEach(function(b){
+    b.onclick=function(){
+      speed=Math.max(0.5, Math.min(2.0, Math.round((speed + Number(b.getAttribute('data-speed-step'))) * 10) / 10));
+      if(speedValue) speedValue.textContent=speed.toFixed(1);
+    };
+  });
+  function bindStepper(name,min,max,initial,decimals){
+    var val=initial, out=document.getElementById(name+'Value');
+    document.querySelectorAll('[data-'+name+'-step]').forEach(function(b){
+      b.onclick=function(){
+        val=Math.max(min, Math.min(max, val + Number(b.getAttribute('data-'+name+'-step'))));
+        if(out) out.textContent=decimals ? val.toFixed(decimals) : String(val);
+        if(name==='pitch') pitch=val;
+        if(name==='volume') volume=val;
+      };
+    });
+  }
+  bindStepper('pitch',-12,12,0,0);
+  bindStepper('volume',-50,100,0,0);
+  var tipBox=document.createElement('div');
+  tipBox.style.cssText='position:fixed; z-index:10000; display:none; max-width:180px; padding:8px 10px; border:1px solid rgba(231,178,76,.28); border-radius:9px; background:rgba(7,11,19,.94); box-shadow:0 12px 32px rgba(0,0,0,.35); color:#eaf1fa; font-size:12px; line-height:1.5; pointer-events:none;';
+  document.body.appendChild(tipBox);
+  function showTip(el){
+    tipBox.textContent=el.getAttribute('data-tip')||'';
+    var r=el.getBoundingClientRect();
+    tipBox.style.display='block';
+    var left=Math.min(window.innerWidth-200, Math.max(12, r.left + r.width/2 - tipBox.offsetWidth/2));
+    var top=Math.max(12, r.bottom + 8);
+    tipBox.style.left=left+'px';
+    tipBox.style.top=top+'px';
+  }
+  document.querySelectorAll('.tipMark').forEach(function(el){
+    el.addEventListener('click',function(e){ e.preventDefault(); e.stopPropagation(); showTip(el); });
+    el.addEventListener('mouseleave',function(){ tipBox.style.display='none'; });
+  });
+  document.addEventListener('mousemove',function(e){
+    if(!e.target.closest || !e.target.closest('.tipMark')) tipBox.style.display='none';
+  });
+  function renderAudio(url, meta){
+    var old=document.getElementById('audPreview');
+    if(!old){
+      old=document.createElement('div'); old.id='audPreview';
+      result.insertBefore(old, result.children[1]);
+    }
+    old.innerHTML='<div style="display:flex;flex-direction:column;gap:13px;padding:18px;border:1px solid rgba(231,178,76,.22);border-radius:14px;background:rgba(7,11,19,.45);">'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;"><div><div style="font-size:14px;font-weight:700;color:#eaf1fa;">配音已生成</div><div style="margin-top:4px;font-size:12px;color:#94a4bb;">'+esc((meta&&meta.voice)||voice)+' · 语速 '+esc((meta&&meta.speed)||speed)+' · 音调 '+esc((meta&&meta.pitch)||pitch)+' · 音量 '+esc((meta&&meta.volume)||volume)+'</div></div><a href="'+url+'" download style="padding:8px 12px;border:1px solid rgba(231,178,76,.24);border-radius:9px;color:#e7b24c;text-decoration:none;font-size:12.5px;">下载 MP3</a></div>'
+      +'<audio controls src="'+url+'" style="width:100%;height:38px;"></audio></div>';
+  }
+  function poll(id,t0){
+    var iv=setInterval(function(){
+      fetch('/api/gen/job/'+id).then(function(r){return r.json();}).then(function(d){
+        var sec=Math.round((Date.now()-t0)/1000);
+        if(d.status==='done'){
+          clearInterval(iv); busy(false); localStorage.removeItem('hq_audio_job');
+          renderAudio(d.result.url+'?t='+Date.now(), d.result);
+          notice('生成完成（'+sec+'s）· 已自动入库','#2bd576');
+          loadHistory();
+        }else if(d.status==='error'){
+          clearInterval(iv); busy(false); localStorage.removeItem('hq_audio_job');
+          notice('失败：'+esc(d.error||'未知错误')+' · 已退点','#f4708a');
+        }else{
+          notice('生成中（'+sec+'s）· 可切走，回来自动接上','#2dd4bf');
+        }
+      }).catch(function(){});
+    },2500);
+  }
+  function loadHistory(){
+    if(!tok()) return;
+    fetch('/api/gen/history?kind=audio&limit=8',{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+      var rows=(d.items||[]).map(function(it){
+        return '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid rgba(148,164,187,.12);border-radius:11px;background:rgba(148,164,187,.03);"><audio controls src="'+esc(it.url)+'" style="height:32px;flex:1;min-width:0;"></audio><a href="'+esc(it.url)+'" download style="font-size:12px;color:#e7b24c;text-decoration:none;">下载</a></div>';
+      }).join('');
+      var blocks=[].slice.call(result.children);
+      var title=blocks.filter(function(x){return x.textContent.indexOf('最近音频')>=0;})[0];
+      var box=title&&title.nextElementSibling;
+      if(box&&rows) box.innerHTML=rows;
+    }).catch(function(){});
+  }
+  txt.addEventListener('input',function(){
+    var m=txt.parentNode.querySelector('.mono'); if(m) m.textContent=txt.value.length+' / 1200';
+  });
+  gen.onclick=function(){
+    var text=(txt.value||'').trim();
+    if(!text){ notice('请先输入配音文案','#f4708a'); return; }
+    if(!tok()){ location.href='../login.html?redirect=audio'; return; }
+    busy(true); notice('已提交 · 正在生成配音','#2dd4bf');
+    var t0=Date.now();
+    fetch('/api/gen/audio',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({text:text,voice:voice,speed:speed,pitch:pitch,volume:volume})})
+      .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
+      .then(function(x){
+        if(x.s===401){ location.href='../login.html?redirect=audio'; return; }
+        if(x.s===402){ busy(false); notice('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>','#f4708a'); return; }
+        if(!x.d.job_id){ busy(false); notice('提交失败：'+esc((x.d&&x.d.detail)||'未知错误'),'#f4708a'); return; }
+        localStorage.setItem('hq_audio_job', JSON.stringify({id:x.d.job_id,t0:t0}));
+        poll(x.d.job_id,t0);
+      }).catch(function(){ busy(false); notice('网络错误，请重试','#f4708a'); });
+  };
+  try{ var j=JSON.parse(localStorage.getItem('hq_audio_job')||'null'); if(j&&j.id){ busy(true); poll(j.id,j.t0||Date.now()); } }catch(e){}
+  loadHistory();
+})();
+</script>
+</body>
+</html>

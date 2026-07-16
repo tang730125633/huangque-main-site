@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>黄雀 AI · 运营后台</title>
+  <link rel="icon" href="/assets/cloud/logo-bird.png">
+  <style>
+    :root{
+      --bg:#101412;--surface:#171d1a;--surface2:#202822;--line:#2e3832;
+      --text:#ecf1ea;--muted:#9aa69f;--primary:#22c5a5;--gold:#f0be55;
+      --warn:#d99b35;--error:#e06b64;--ok:#4fd47e;--info:#6ea8ff;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 "Source Sans 3","PingFang SC",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    body:before{content:"";position:fixed;inset:0;pointer-events:none;background:
+      radial-gradient(circle at 16% 8%,rgba(240,190,85,.11),transparent 26%),
+      linear-gradient(135deg,rgba(34,197,165,.09),transparent 34%,rgba(240,190,85,.05));opacity:.7}
+    .shell{position:relative;max-width:1440px;margin:0 auto;padding:28px 28px 44px}
+    header{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:22px}
+    h1{margin:0;font-size:26px;letter-spacing:0;font-weight:800}
+    .sub{color:var(--muted);margin-top:6px}
+    .user{display:flex;gap:10px;align-items:center;padding:10px 12px;border:1px solid var(--line);background:rgba(23,29,26,.8);border-radius:8px}
+    .avatar{width:32px;height:32px;border-radius:8px;background:#9b642f;color:#fff;display:grid;place-items:center;font-weight:800}
+    .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}
+    .card{background:rgba(23,29,26,.86);border:1px solid var(--line);border-radius:8px;padding:16px;box-shadow:0 20px 60px rgba(0,0,0,.16)}
+    .span3{grid-column:span 3}.span4{grid-column:span 4}.span6{grid-column:span 6}.span8{grid-column:span 8}.span12{grid-column:span 12}
+    .metric{display:flex;justify-content:space-between;align-items:center;min-height:86px}
+    .metric b{font-size:30px;font-variant-numeric:tabular-nums;color:var(--gold)}
+    .metric span,.label{font-size:12px;color:var(--muted)}
+    h2{font-size:16px;margin:0 0 12px}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:10px 8px;border-bottom:1px solid rgba(46,56,50,.8);text-align:left;vertical-align:middle}
+    th{font-size:12px;color:var(--muted);font-weight:700}
+    td{font-size:13px}
+    code{font-family:"Geist Mono","JetBrains Mono",Consolas,monospace;font-size:12px;color:#cfe1d8}
+    .pill{display:inline-flex;align-items:center;height:24px;padding:0 9px;border-radius:6px;font-size:12px;font-weight:700;border:1px solid var(--line);background:var(--surface2)}
+    .pill.ok{color:var(--ok);border-color:rgba(79,212,126,.22);background:rgba(79,212,126,.1)}
+    .pill.fail{color:var(--error);border-color:rgba(224,107,100,.25);background:rgba(224,107,100,.1)}
+    .pill.warn{color:var(--warn);border-color:rgba(217,155,53,.28);background:rgba(217,155,53,.1)}
+    .pill.neutral{color:var(--muted);border-color:rgba(154,166,159,.18);background:rgba(154,166,159,.08)}
+    .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+    .module-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}
+    .tab{height:38px;border-radius:6px;border:1px solid var(--line);background:rgba(32,40,34,.75);color:var(--muted);font-weight:800;padding:0 14px;cursor:pointer}
+    .tab.active{color:#201604;border-color:rgba(240,190,85,.72);background:linear-gradient(135deg,#ffd979,#e5ad35)}
+    .module-card[hidden]{display:none}
+    .section-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:12px}
+    .section-head h2{margin:0}
+    .hint{font-size:12px;color:var(--muted)}
+    button,.btn{height:36px;border-radius:6px;border:1px solid var(--line);background:var(--surface2);color:var(--text);font-weight:700;padding:0 13px;cursor:pointer}
+    button.primary{background:linear-gradient(135deg,#ffd979,#e5ad35);color:#201604;border-color:rgba(240,190,85,.7)}
+    button:disabled{opacity:.55;cursor:not-allowed}
+    .channels{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    .channel{border:1px solid var(--line);border-radius:8px;padding:14px;background:rgba(32,40,34,.72)}
+    .row{display:flex;justify-content:space-between;gap:12px;align-items:center}
+    .switch{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:12px}
+    .switch input{accent-color:var(--primary);width:18px;height:18px}
+    textarea{width:100%;min-height:96px;margin-top:10px;border:1px solid var(--line);background:#111613;color:var(--text);border-radius:6px;padding:10px;font:12px/1.45 "JetBrains Mono",Consolas,monospace;resize:vertical}
+    input.reason{width:100%;height:34px;border:1px solid var(--line);background:#111613;color:var(--text);border-radius:6px;padding:0 10px;margin:10px 0}
+    .field,select{height:36px;border:1px solid var(--line);background:#111613;color:var(--text);border-radius:6px;padding:0 10px}
+    .field{min-width:220px}
+    .actions{display:flex;gap:6px;flex-wrap:wrap}
+    .mini{height:30px;padding:0 10px;font-size:12px}
+    .danger{color:#ffd0cc;border-color:rgba(224,107,100,.32);background:rgba(224,107,100,.08)}
+    .empty,.error{padding:18px;border:1px dashed var(--line);border-radius:8px;color:var(--muted);background:rgba(23,29,26,.7)}
+    .error{color:#ffd0cc;border-color:rgba(224,107,100,.3)}
+    .bar{height:8px;background:#111613;border-radius:999px;overflow:hidden;border:1px solid var(--line)}
+    .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--primary),var(--gold))}
+    .muted{color:var(--muted)}
+    .dot{display:inline-block;width:7px;height:7px;border-radius:999px;margin-right:6px;background:var(--muted);box-shadow:0 0 0 3px rgba(154,166,159,.09)}
+    .dot.ok{background:var(--ok);box-shadow:0 0 0 3px rgba(79,212,126,.12)}
+    .dot.fail{background:var(--error);box-shadow:0 0 0 3px rgba(224,107,100,.12)}
+    .dot.warn{background:var(--warn);box-shadow:0 0 0 3px rgba(217,155,53,.12)}
+    .table-wrap{width:100%;overflow-x:auto;border-radius:8px}
+    .truncate{max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .feature-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+    .feature-card{border:1px solid var(--line);border-radius:8px;background:rgba(32,40,34,.72);padding:14px;display:flex;flex-direction:column;gap:12px;min-height:154px}
+    .feature-card.off{border-color:rgba(224,107,100,.28);background:rgba(224,107,100,.06)}
+    .feature-card .meta{display:flex;gap:8px;flex-wrap:wrap}
+    .right{text-align:right}
+    .toast{position:fixed;right:22px;bottom:22px;background:#111613;border:1px solid var(--line);border-radius:8px;padding:12px 14px;box-shadow:0 18px 44px rgba(0,0,0,.3);display:none}
+    details.eplist{margin-top:8px}
+    details.eplist summary{cursor:pointer;font-size:12px;color:var(--info);user-select:none}
+    details.eplist .ep{padding:6px 0 6px 12px;border-left:2px solid var(--line);margin-top:6px}
+    details.eplist .ep code{font-size:11px;word-break:break-all}
+    @media (max-width:960px){.shell{padding:20px 14px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid{grid-template-columns:1fr}header{flex-direction:column}.user{width:100%}}
+  </style>
+</head>
+<body>
+<main class="shell">
+  <header>
+    <div>
+      <h1>运营后台</h1>
+      <div class="sub">接口调试、日志监控、渠道开关与用户运营</div>
+    </div>
+    <div class="user" id="userBox"><div class="avatar">?</div><div><b>未登录</b><div class="muted">等待校验</div></div></div>
+  </header>
+
+  <section id="gate" class="empty" style="display:none">
+    当前没有可用登录态。请先使用管理员账号登录黄雀工作台。
+    <a class="btn" href="/login?redirect=/admin-console/" style="margin-left:10px;text-decoration:none">去登录</a>
+  </section>
+
+  <section id="app" style="display:none">
+    <div class="toolbar">
+      <button class="primary" id="refreshBtn">刷新状态</button>
+      <button id="days7">近 7 天</button>
+      <button id="days30">近 30 天</button>
+      <span class="muted" id="updatedAt"></span>
+    </div>
+    <div class="grid">
+      <div class="card metric span3"><div><span>服务在线</span><b id="svcOnline">-</b></div><span id="svcTotal">-</span></div>
+      <div class="card metric span3"><div><span>密钥已配置</span><b id="keyReady">-</b></div><span id="keyTotal">-</span></div>
+      <div class="card metric span3"><div><span>调用总量</span><b id="jobTotal">-</b></div><span id="statDays">-</span></div>
+      <div class="card metric span3"><div><span>高失败项</span><b id="failKinds">-</b></div><span>失败率 >= 50%</span></div>
+
+      <div class="module-tabs span12" id="moduleTabs">
+        <button class="tab active" data-module-tab="ops">接口调试</button>
+        <button class="tab" data-module-tab="logs">日志监控</button>
+        <button class="tab" data-module-tab="features">功能开关</button>
+        <button class="tab" data-module-tab="users">用户管理</button>
+        <button class="tab" data-module-tab="recharge">充值审批</button>
+      </div>
+
+      <section class="card span8 module-card" data-module="ops">
+        <div class="section-head"><div><h2>服务健康</h2><div class="hint">探测各服务 health；点「测试」单独 ping 一次，返回 200 即正常。</div></div></div>
+        <div id="serviceBox"></div>
+      </section>
+      <section class="card span4 module-card" data-module="ops">
+        <div class="section-head"><div><h2>外部 API 密钥</h2><div class="hint">服务器在用的全部上游渠道。点「测试」真实调一次：带密钥的验证密钥有效性；签名类（COS/豆包等）测连通与延迟。不展示密钥真值。</div></div></div>
+        <div id="keyBox"></div>
+      </section>
+      <section class="card span12 module-card" data-module="ops">
+        <div class="section-head"><div><h2>渠道开关 / 配置</h2><div class="hint">管理上游 AI 渠道配置，保存会写入审计流水。</div></div></div>
+        <div id="channelBox" class="channels"></div>
+      </section>
+      <section class="card span12 module-card" data-module="features" hidden>
+        <div class="section-head">
+          <div><h2>平台功能开关</h2><div class="hint">管理黄雀自有功能模块。禁用后用户提交会返回维护提示，不扣点、不建任务。</div></div>
+          <span class="muted" id="featureCount">-</span>
+        </div>
+        <div id="featureBox" class="feature-grid"></div>
+      </section>
+      <section class="card span12 module-card" data-module="users" hidden>
+        <div class="row" style="margin-bottom:12px">
+          <div><h2 style="margin:0">用户管理</h2><div class="hint">查看账号、点数和改密状态；加减点前请填写明确原因。</div></div>
+          <span class="muted" id="userCount">-</span>
+        </div>
+        <div class="toolbar">
+          <input class="field" id="userSearch" autocomplete="off" placeholder="搜索 username / 昵称">
+          <select id="userSort">
+            <option value="created_at">按注册时间</option>
+            <option value="points">按点数</option>
+            <option value="username">按账号</option>
+            <option value="role">按角色</option>
+          </select>
+          <select id="userDir">
+            <option value="desc">降序</option>
+            <option value="asc">升序</option>
+          </select>
+          <button id="userRefresh">刷新用户</button>
+        </div>
+        <div id="usersBox"></div>
+        <h2 style="margin-top:18px">点数流水
+          <select id="auditActor" style="margin-left:10px;font-size:13px;vertical-align:middle">
+            <option value="admin">人工加减点</option>
+            <option value="system">任务扣退点</option>
+            <option value="">全部</option>
+          </select>
+        </h2>
+        <div id="auditBox"></div>
+      </section>
+      <section class="card span12 module-card" data-module="recharge" hidden>
+        <div class="row" style="margin-bottom:12px">
+          <div><h2 style="margin:0">充值审批</h2><div class="hint">确认到账会给用户加点，驳回需要写清原因。</div></div>
+          <span class="muted" id="rechargeCount">-</span>
+        </div>
+        <div class="toolbar">
+          <select id="rechargeStatus">
+            <option value="pending">待审批</option>
+            <option value="">全部订单</option>
+            <option value="approved">已通过</option>
+            <option value="rejected">已驳回</option>
+          </select>
+          <input class="field" id="rechargeUser" autocomplete="off" placeholder="按用户筛选">
+          <button id="rechargeRefresh">刷新充值申请</button>
+        </div>
+        <div id="rechargeBox"></div>
+      </section>
+      <section class="card span12 module-card" data-module="logs" hidden>
+        <div class="section-head">
+          <div><h2>调用与请求日志</h2><div class="hint">任务记录（用户/功能/耗时/点数）与 nginx 后端请求按时间混排成一条时间线。HTTP 行的用户来自任务号反查，登录等请求网关日志不含身份、显示 -。</div></div>
+          <span class="muted" id="reqCount">-</span>
+        </div>
+        <div class="toolbar">
+          <select id="reqSource">
+            <option value="">任务 + HTTP 请求</option>
+            <option value="job">只看任务</option>
+            <option value="http">只看 HTTP 请求</option>
+          </select>
+          <select id="reqStatus">
+            <option value="">全部状态</option>
+            <option value="ok">成功</option>
+            <option value="fail">失败</option>
+            <option value="running">进行中</option>
+          </select>
+          <input class="field" id="reqSearch" autocomplete="off" placeholder="搜索路径 / 用户 / 功能">
+          <label class="switch"><input type="checkbox" id="reqNoise"> 显示轮询噪音</label>
+          <button id="reqRefresh">刷新日志</button>
+        </div>
+        <div id="reqBox"></div>
+      </section>
+      <section class="card span12 module-card" data-module="logs" hidden>
+        <div class="section-head"><div><h2>调用统计</h2><div class="hint">按能力统计成功率和失败率。</div></div></div>
+        <div id="statsBox"></div>
+      </section>
+    </div>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+(function(){
+  var token = '__cookie__';
+  var state = {days:7, data:null, userTimer:null, module:'ops'};
+  var el = function(id){return document.getElementById(id)};
+  function toast(msg){var t=el('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(t._tm); t._tm=setTimeout(function(){t.style.display='none'},2600)}
+  function authHeaders(extra){return Object.assign({'Authorization':'Bearer '+token}, extra||{})}
+  function api(path,opt){
+    opt=opt||{}; opt.headers=authHeaders(opt.headers);
+    return fetch(path,opt).then(function(r){return r.json().catch(function(){return {detail:'响应不是 JSON'}}).then(function(d){if(!r.ok){var e=new Error(d.detail||('HTTP '+r.status)); e.status=r.status; throw e} return d})})
+  }
+  function pct(v){return Math.round((v||0)*100)+'%'}
+  function statusPill(ok, text){return '<span class="pill '+(ok?'ok':'fail')+'">'+text+'</span>'}
+  function statusIcon(cls, text){return '<span><i class="dot '+cls+'"></i>'+esc(text)+'</span>'}
+  function fmtTime(ts){return ts ? new Date(Number(ts)*1000).toLocaleString() : '-'}
+  function fmtDuration(sec){
+    sec=Number(sec);
+    if(!isFinite(sec) || sec<0) return '-';
+    sec=Math.round(sec);
+    if(sec<60) return sec+'秒';
+    var m=Math.floor(sec/60), s=sec%60;
+    if(m<60) return m+'分'+(s?s+'秒':'');
+    var h=Math.floor(m/60); m=m%60;
+    return h+'小时'+(m?m+'分':'');
+  }
+  function kindName(k){return ({image:'图片生成',banana:'Nano Banana',audio:'配音生成',video:'视频口播',motion:'动作模仿',tryon:'换装换背景',collect:'内容采集',leads:'获客分析',leadgen:'获客分析',dl:'下载代理',copy:'文案生成',xiaole_video:'视频·小乐'})[k]||k}
+  function jobStatusName(s){return ({done:'已完成',error:'失败',running:'生成中',queued:'排队中',pending:'待处理'})[s]||s}
+  function jobStatusPill(s){
+    var cls='neutral';
+    if(s==='done') cls='ok';
+    else if(s==='error') cls='fail';
+    return '<span class="pill '+cls+'">'+esc(jobStatusName(s))+'</span>';
+  }
+  function setUser(user){
+    el('userBox').innerHTML='<div class="avatar">'+(user.username||'?').slice(0,1).toUpperCase()+'</div><div><b>'+esc(user.username||'admin')+'</b><div class="muted">'+esc(user.role||'')+'</div></div>';
+  }
+  function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+  function renderServices(items){
+    if(!items.length){el('serviceBox').innerHTML='<div class="empty">暂无服务数据</div>';return}
+    el('serviceBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>服务</th><th>状态</th><th>端口</th><th>耗时</th><th>文件</th><th>接口调试</th></tr></thead><tbody>'+items.map(function(s){
+      return '<tr><td><b>'+esc(s.name)+'</b><div class="muted truncate" title="'+esc(s.error||'')+'">'+esc(s.error||'')+'</div></td><td>'+statusIcon(s.online?'ok':'fail',s.online?'在线':'离线')+'</td><td><code>'+esc(s.port)+'</code></td><td>'+esc(s.latency_ms)+' ms</td><td><code class="truncate" title="'+esc(s.service_file)+'">'+esc(s.service_file)+'</code></td><td><button class="mini" data-ping-svc="'+esc(s.key)+'">测试</button> <span data-ping-out="svc:'+esc(s.key)+'"></span></td></tr>';
+    }).join('')+'</tbody></table></div>';
+    bindPing('serviceBox','data-ping-svc','service','svc');
+  }
+  function pingResultHtml(d){
+    var reach=d.mode==='reach';
+    if(d.online===true || d.ok===true){
+      var code=d.http_status||200;
+      var bal=d.balance!=null?' <span class="pill" style="color:var(--gold)">余额 '+esc(Number(d.balance).toLocaleString())+'</span>':'';
+      return '<span class="pill ok">'+esc(code)+(reach?' 可达':' 正常')+' · '+esc(d.latency_ms)+'ms</span>'+bal
+        +(reach?' <span class="muted">仅测连通，不验密钥</span>':'');
+    }
+    var text=d.error||(d.http_status?('HTTP '+d.http_status):'失败');
+    return '<span class="pill fail" title="'+esc(text)+'">'+esc(String(text).slice(0,40))+'</span>';
+  }
+  function bindPing(boxId, attr, param, prefix){
+    Array.prototype.forEach.call(el(boxId).querySelectorAll('['+attr+']'), function(btn){
+      btn.onclick=function(){
+        var key=btn.getAttribute(attr);
+        // 每次都实时查节点：拨测最长12s，期间页面可能重渲染，写闭包旧节点会丢结果
+        var out=function(){return el(boxId).querySelector('[data-ping-out="'+prefix+':'+key+'"]')};
+        var put=function(html){var n=out(); if(n) n.innerHTML=html};
+        btn.disabled=true;
+        put('<span class="muted">测试中…</span>');
+        api('/api/admin/ping?'+param+'='+encodeURIComponent(key))
+          .then(function(d){put(pingResultHtml(d))})
+          .catch(function(e){put('<span class="pill fail">'+esc(e.message)+'</span>')})
+          .finally(function(){btn.disabled=false});
+      };
+    });
+  }
+  function renderKeys(items){
+    el('keyBox').innerHTML=items.map(function(k){
+      var src=(k.sources||[]).map(function(s){return '<div><code>'+esc(s.env)+'</code><span class="muted"> · '+esc(s.source)+'</span></div>'}).join('') || '<div class="muted">未检测到</div>';
+      var act=k.pingable
+        ? '<div style="margin-top:8px"><button class="mini" data-ping-key="'+esc(k.key)+'">测试密钥</button> <span data-ping-out="key:'+esc(k.key)+'"></span></div>'
+        : '<div class="hint" style="margin-top:8px">该渠道需签名请求，不支持在线测试</div>';
+      var eps=k.endpoints||[];
+      var eplist=eps.length
+        ? '<details class="eplist"><summary>接口清单（'+eps.length+'）</summary>'+eps.map(function(e){
+            return '<div class="ep"><code>'+esc(e.m)+' '+esc(e.p)+'</code><div class="muted">'+esc(e.d)+(e.fee?' <span class="pill warn" style="height:18px;font-size:11px">计费</span>':' <span class="pill neutral" style="height:18px;font-size:11px">免费</span>')+'</div></div>';
+          }).join('')+'</details>'
+        : '';
+      return '<div style="padding:10px 0;border-bottom:1px solid var(--line)"><div class="row"><b>'+esc(k.name)+'</b>'+statusPill(k.configured,k.configured?'已配置':'缺失')+'</div><div style="margin-top:6px">'+src+'</div>'+act+eplist+'</div>';
+    }).join('');
+    bindPing('keyBox','data-ping-key','key','key');
+  }
+  function renderActivity(d){
+    var items=d.items||[];
+    el('reqCount').textContent=items.length+' 条（最新在前）';
+    if(!items.length){el('reqBox').innerHTML='<div class="empty">'+esc(d.message||'没有匹配的日志')+'</div>';return}
+    el('reqBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>时间</th><th>类型</th><th>用户</th><th>功能</th><th>状态</th><th>耗时</th><th>点数</th><th>路径</th><th>来源 IP</th></tr></thead><tbody>'+items.map(function(x){
+      var isJob=x.source==='job';
+      var type=isJob?'<span class="pill">任务</span>':'<span class="pill neutral">请求</span>';
+      var user=x.user&&x.user!=='-'?'<b>'+esc(x.user)+'</b>':'<span class="muted">-</span>';
+      var st;
+      if(isJob){st=jobStatusPill(x.status_text)}
+      else{var cls=x.cat==='fail'?(Number(x.status_text)>=500?'fail':'warn'):'ok'; st='<span class="pill '+cls+'">'+esc(x.status_text)+'</span>'}
+      var pathCell=x.path?'<div class="truncate" style="max-width:300px" title="'+esc(x.path)+'"><code>'+esc(x.path)+'</code></div>':'<span class="muted">-</span>';
+      var ipCell=x.ip?'<code title="'+esc(x.ua||'')+'">'+esc(x.ip)+'</code>':'<span class="muted">-</span>';
+      return '<tr><td><code>'+esc(x.time)+'</code></td><td>'+type+'</td><td>'+user+'</td><td>'+(x.func?esc(x.func):'<span class="muted">-</span>')+'</td><td>'+st+'</td><td><code>'+(isJob?esc(fmtDuration(x.duration_sec)):'-')+'</code></td><td class="right"><code>'+(x.cost!=null?Number(x.cost).toLocaleString():'-')+'</code></td><td>'+pathCell+'</td><td>'+ipCell+'</td></tr>';
+    }).join('')+'</tbody></table></div>';
+  }
+  function loadReqLogs(){
+    var q='?limit=200&days='+encodeURIComponent(state.days)
+      +'&source='+encodeURIComponent(el('reqSource').value||'')
+      +'&status='+encodeURIComponent(el('reqStatus').value||'')
+      +'&q='+encodeURIComponent(el('reqSearch').value||'')
+      +(el('reqNoise').checked?'&noise=1':'');
+    el('reqBox').innerHTML='<div class="empty">加载中…</div>';
+    api('/api/admin/activity'+q).then(renderActivity).catch(function(e){el('reqBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
+  }
+  function renderChannels(items){
+    el('channelBox').innerHTML=items.map(function(c){
+      return '<div class="channel" data-channel="'+esc(c.key)+'"><div class="row"><div><b>'+esc(c.name)+'</b><div class="muted">'+(c.configured?'密钥已配置':'密钥未配置')+'</div></div><label class="switch"><input type="checkbox" '+(c.enabled?'checked':'')+'> 启用</label></div><textarea spellcheck="false">'+esc(JSON.stringify(c.config||{},null,2))+'</textarea><input class="reason" placeholder="变更原因"><button>保存</button><span class="muted" style="margin-left:8px">'+(c.updated_at?new Date(c.updated_at*1000).toLocaleString():'')+'</span></div>';
+    }).join('');
+    Array.prototype.forEach.call(document.querySelectorAll('.channel button'), function(btn){
+      btn.onclick=function(){
+        var box=btn.closest('.channel'), key=box.getAttribute('data-channel'), config={};
+        try{config=JSON.parse(box.querySelector('textarea').value||'{}')}catch(e){toast('配置不是合法 JSON');return}
+        btn.disabled=true;
+        api('/api/admin/channel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:key,enabled:box.querySelector('input[type=checkbox]').checked,config:config,reason:box.querySelector('.reason').value||''})})
+          .then(function(){toast('已保存');load()})
+          .catch(function(e){toast(e.message)})
+          .finally(function(){btn.disabled=false});
+      };
+    });
+  }
+  function renderFeatures(items){
+    var enabled=items.filter(function(x){return x.enabled}).length;
+    el('featureCount').textContent='启用 '+enabled+' / '+items.length;
+    if(!items.length){el('featureBox').innerHTML='<div class="empty">暂无功能数据</div>';return}
+    el('featureBox').innerHTML=items.map(function(f){
+      var online=f.online===null||f.online===undefined ? '未知' : (f.online?'在线':'离线');
+      var onlineCls=f.online===null||f.online===undefined ? 'warn' : (f.online?'ok':'fail');
+      return '<div class="feature-card '+(f.enabled?'':'off')+'" data-feature="'+esc(f.key)+'"><div class="row"><div><b>'+esc(f.name||kindName(f.key))+'</b><div class="muted">'+esc(f.desc||'')+'</div></div><label class="switch"><input type="checkbox" '+(f.enabled?'checked':'')+'> 启用</label></div><div class="meta"><span class="pill '+(f.enabled?'ok':'fail')+'">'+(f.enabled?'已启用':'已禁用')+'</span><span class="pill '+onlineCls+'">'+online+'</span><span class="pill">'+esc(f.service_name||f.service||'')+'</span></div><div class="hint">最近更新：'+esc(fmtTime(f.updated_at))+(f.updated_by?' · '+esc(f.updated_by):'')+'</div><input class="reason" placeholder="启停原因，建议填写"><button class="mini">保存开关</button></div>';
+    }).join('');
+    Array.prototype.forEach.call(document.querySelectorAll('.feature-card button'), function(btn){
+      btn.onclick=function(){
+        var box=btn.closest('.feature-card'), key=box.getAttribute('data-feature');
+        btn.disabled=true;
+        api('/api/admin/features/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({feature:key,enabled:box.querySelector('input[type=checkbox]').checked,reason:box.querySelector('.reason').value||''})})
+          .then(function(){toast('功能开关已保存');load()})
+          .catch(function(e){toast(e.message)})
+          .finally(function(){btn.disabled=false});
+      };
+    });
+  }
+  function roleName(role){return role==='admin'?'管理员':'成员'}
+  function renderUsers(d){
+    var items=d.items||[];
+    el('userCount').textContent='当前 '+items.length+' / 总 '+(d.total||0)+' 个账号';
+    if(!items.length){el('usersBox').innerHTML='<div class="empty">暂无用户</div>';return}
+    el('usersBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>账号</th><th>昵称</th><th>点数</th><th>角色</th><th>改密</th><th>注册时间</th><th>操作</th></tr></thead><tbody>'+items.map(function(u){
+      return '<tr><td><b>'+esc(u.username)+'</b></td><td><div class="truncate" title="'+esc(u.display_name||'')+'">'+esc(u.display_name||'')+'</div></td><td><code>'+Number(u.points||0).toLocaleString()+'</code></td><td>'+esc(roleName(u.role))+'</td><td>'+(u.must_change?'<span class="pill warn">需改密</span>':'<span class="pill ok">正常</span>')+'</td><td><code>'+esc(u.created_at||'')+'</code></td><td><div class="actions"><button class="mini" data-act="plus" data-user="'+esc(u.username)+'">加点</button><button class="mini danger" data-act="minus" data-user="'+esc(u.username)+'">扣点</button><button class="mini" data-act="audit" data-user="'+esc(u.username)+'">流水</button></div></td></tr>';
+    }).join('')+'</tbody></table></div>';
+    Array.prototype.forEach.call(document.querySelectorAll('#usersBox button'), function(btn){
+      btn.onclick=function(){
+        var act=btn.getAttribute('data-act'), username=btn.getAttribute('data-user');
+        if(act==='audit') return loadAudit(username);
+        adjustPoints(username, act==='minus'?-1:1);
+      };
+    });
+  }
+  function renderAudit(d, username){
+    var items=d.items||[];
+    var title=username?(' · '+username):'';
+    if(!items.length){el('auditBox').innerHTML='<div class="empty">暂无点数流水'+esc(title)+'</div>';return}
+    el('auditBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>时间</th><th>管理员</th><th>用户</th><th>变化</th><th>前</th><th>后</th><th>原因</th></tr></thead><tbody>'+items.map(function(x){
+      var delta=Number(x.delta||0);
+      return '<tr><td><code>'+fmtTime(x.created_at)+'</code></td><td>'+esc(x.who_admin)+'</td><td><b>'+esc(x.username)+'</b></td><td><span class="pill '+(delta>=0?'ok':'fail')+'">'+(delta>0?'+':'')+delta+'</span></td><td><code>'+Number(x.before_points||0).toLocaleString()+'</code></td><td><code>'+Number(x.after_points||0).toLocaleString()+'</code></td><td><div class="truncate" title="'+esc(x.reason||'')+'">'+esc(x.reason||'')+'</div></td></tr>';
+    }).join('')+'</tbody></table></div>';
+  }
+  function userQuery(){
+    return '?q='+encodeURIComponent(el('userSearch').value||'')+'&sort='+encodeURIComponent(el('userSort').value||'created_at')+'&dir='+encodeURIComponent(el('userDir').value||'desc')+'&limit=120';
+  }
+  function loadUsers(){
+    if(!token) return;
+    api('/api/admin/users'+userQuery()).then(renderUsers).catch(function(e){el('usersBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
+    loadAudit();
+  }
+  function loadAudit(username){
+    // 默认只看人工加减点：任务扣退点条数是它的几百倍，混在一起第一页就看不到管理员操作了。
+    var actor=(el('auditActor')||{}).value;
+    if(actor===undefined) actor='admin';
+    var q='?limit=80&actor='+encodeURIComponent(actor)+(username?'&username='+encodeURIComponent(username):'');
+    api('/api/admin/points/audit'+q).then(function(d){renderAudit(d, username)}).catch(function(e){el('auditBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
+  }
+  function adjustPoints(username, sign){
+    var raw=prompt((sign>0?'给 ':'从 ')+username+(sign>0?' 加多少点？':' 扣多少点？'));
+    if(raw==null) return;
+    var amount=Math.abs(parseInt(raw,10)||0);
+    if(!amount){toast('请输入非 0 点数');return}
+    var reason=prompt('填写调整原因');
+    if(reason==null) return;
+    api('/api/admin/points/adjust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,delta:sign*amount,reason:reason})})
+      .then(function(){toast('点数已调整');loadUsers()})
+      .catch(function(e){toast(e.message)});
+  }
+  function orderStatus(s){
+    if(s==='approved') return '<span class="pill ok">已通过</span>';
+    if(s==='rejected') return '<span class="pill fail">已驳回</span>';
+    return '<span class="pill warn">待审批</span>';
+  }
+  function rechargeQuery(){
+    var q='?limit=120';
+    if(el('rechargeStatus').value) q+='&status='+encodeURIComponent(el('rechargeStatus').value);
+    if(el('rechargeUser').value) q+='&username='+encodeURIComponent(el('rechargeUser').value);
+    return q;
+  }
+  function renderRecharge(d){
+    var items=d.items||[];
+    el('rechargeCount').textContent='当前 '+items.length+' 条';
+    if(!items.length){el('rechargeBox').innerHTML='<div class="empty">暂无充值申请</div>';return}
+    el('rechargeBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>订单</th><th>用户</th><th>金额</th><th>点数</th><th>状态</th><th>提交时间</th><th>备注</th><th>审核</th></tr></thead><tbody>'+items.map(function(x){
+      var pending=x.status==='pending';
+      return '<tr><td><code>'+esc(x.order_id)+'</code></td><td><b>'+esc(x.username)+'</b></td><td><code>¥'+Number(x.amount||0).toFixed(2)+'</code></td><td><code>'+Number(x.points||0).toLocaleString()+'</code></td><td>'+orderStatus(x.status)+'</td><td><code>'+fmtTime(x.created_at)+'</code></td><td><div class="truncate" title="'+esc(x.note||x.review_note||'')+'">'+esc(x.note||x.review_note||'')+'</div></td><td><div class="actions">'+(pending?'<button class="mini" data-act="approve" data-id="'+esc(x.order_id)+'">确认到账</button><button class="mini danger" data-act="reject" data-id="'+esc(x.order_id)+'">驳回</button>':'<span class="muted">'+esc(x.reviewed_by||'')+'</span>')+'</div></td></tr>';
+    }).join('')+'</tbody></table></div>';
+    Array.prototype.forEach.call(document.querySelectorAll('#rechargeBox button'), function(btn){
+      btn.onclick=function(){reviewRecharge(btn.getAttribute('data-id'), btn.getAttribute('data-act'))};
+    });
+  }
+  function loadRecharge(){
+    if(!token) return;
+    api('/api/admin/recharge/orders'+rechargeQuery()).then(renderRecharge).catch(function(e){el('rechargeBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
+  }
+  function reviewRecharge(orderId, action){
+    var text=action==='approve'?'确认该订单已到账并给用户加点？':'填写驳回原因';
+    var reason=prompt(text);
+    if(reason==null) return;
+    api('/api/admin/recharge/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:orderId,action:action,reason:reason})})
+      .then(function(){toast(action==='approve'?'已确认到账':'已驳回');loadRecharge();loadUsers()})
+      .catch(function(e){toast(e.message)});
+  }
+  function renderStats(st){
+    var rows=(st.by_kind||[]).map(function(x){
+      return '<tr><td><b>'+esc(kindName(x.kind))+'</b><div class="muted">'+esc(x.kind)+'</div></td><td>'+Number(x.total||0).toLocaleString()+'</td><td>'+Number(x.done||0).toLocaleString()+'</td><td>'+Number(x.error||0).toLocaleString()+'</td><td>'+pct(x.success_rate)+'</td><td><div class="bar"><i style="width:'+pct(x.failure_rate)+'"></i></div><span class="muted">'+pct(x.failure_rate)+'</span></td></tr>';
+    }).join('');
+    el('statsBox').innerHTML=rows?'<div class="table-wrap"><table><thead><tr><th>类型</th><th>总量</th><th>成功</th><th>失败</th><th>成功率</th><th>失败率</th></tr></thead><tbody>'+rows+'</tbody></table></div>':'<div class="empty">'+esc(st.message||'暂无调用数据')+'</div>';
+  }
+  function switchModule(name){
+    state.module=name;
+    Array.prototype.forEach.call(document.querySelectorAll('[data-module-tab]'), function(btn){btn.classList.toggle('active', btn.getAttribute('data-module-tab')===name)});
+    Array.prototype.forEach.call(document.querySelectorAll('[data-module]'), function(card){card.hidden=card.getAttribute('data-module')!==name});
+    if(name==='logs'){loadReqLogs()}
+  }
+  function render(d){
+    state.data=d; setUser(d.user||{});
+    el('app').style.display='block'; el('gate').style.display='none';
+    var online=(d.services||[]).filter(function(x){return x.online}).length;
+    var keys=(d.keys||[]).filter(function(x){return x.configured}).length;
+    el('svcOnline').textContent=online; el('svcTotal').textContent='共 '+(d.services||[]).length+' 个服务';
+    el('keyReady').textContent=keys; el('keyTotal').textContent='共 '+(d.keys||[]).length+' 组密钥';
+    el('jobTotal').textContent=(d.stats&&d.stats.total)||0; el('statDays').textContent='近 '+((d.stats&&d.stats.days)||state.days)+' 天';
+    el('failKinds').textContent=((d.stats&&d.stats.high_failure)||[]).length;
+    el('updatedAt').textContent='更新于 '+new Date().toLocaleTimeString();
+    renderServices(d.services||[]); renderKeys(d.keys||[]); renderChannels(d.channels||[]); renderFeatures(d.features||[]); renderStats(d.stats||{});
+    switchModule(state.module);
+    loadUsers(); loadRecharge();
+  }
+  function load(){
+    if(!token){el('gate').style.display='block';return}
+    el('refreshBtn').disabled=true;
+    api('/api/admin/overview?days='+state.days).then(render).catch(function(e){
+      el('app').style.display='none'; el('gate').style.display='block';
+      el('gate').innerHTML='<div class="error">'+esc(e.message)+'</div>';
+    }).finally(function(){el('refreshBtn').disabled=false});
+  }
+  el('refreshBtn').onclick=load;
+  el('days7').onclick=function(){state.days=7;load()};
+  el('days30').onclick=function(){state.days=30;load()};
+  el('userRefresh').onclick=loadUsers;
+  el('auditActor').onchange=function(){loadAudit()};
+  el('userSort').onchange=loadUsers;
+  el('userDir').onchange=loadUsers;
+  el('userSearch').oninput=function(){clearTimeout(state.userTimer);state.userTimer=setTimeout(loadUsers,260)};
+  el('reqRefresh').onclick=loadReqLogs;
+  el('reqSource').onchange=loadReqLogs;
+  el('reqStatus').onchange=loadReqLogs;
+  el('reqNoise').onchange=loadReqLogs;
+  el('reqSearch').oninput=function(){clearTimeout(state.reqTimer);state.reqTimer=setTimeout(loadReqLogs,300)};
+  el('rechargeRefresh').onclick=loadRecharge;
+  el('rechargeStatus').onchange=loadRecharge;
+  el('rechargeUser').oninput=function(){clearTimeout(state.rechargeTimer);state.rechargeTimer=setTimeout(loadRecharge,260)};
+  Array.prototype.forEach.call(document.querySelectorAll('[data-module-tab]'), function(btn){
+    btn.onclick=function(){switchModule(btn.getAttribute('data-module-tab'))};
+  });
+  load();
+})();
+</script>
+</body>
+</html>
