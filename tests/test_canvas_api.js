@@ -200,6 +200,46 @@ async function testAssetBlob() {
   assert.equal(call.options.body, undefined);
 }
 
+async function testExternalAssetKeepsPublicFetchSemantics() {
+  const assetBlob = new Blob(['image-bytes'], { type: 'image/png' });
+  const calls = [];
+  const timers = [];
+  const client = apiModule.createClient({
+    fetchImpl(path, options) {
+      calls.push({ path, options });
+      return Promise.resolve(response({ blob: assetBlob }));
+    },
+    tokenProvider: () => 'private-token',
+    AbortControllerImpl: fakeControllerClass(),
+    setTimeoutImpl(fn, delay) { timers.push({ fn, delay }); return 91; },
+    clearTimeoutImpl(handle) { timers.push({ cleared: handle }); },
+  });
+
+  assert.strictEqual(await client.asset('https://cdn.example.com/public/image.png'), assetBlob);
+  assert.equal(calls[0].options.credentials, 'include');
+  assert.equal(calls[0].options.cache, 'no-store');
+  assert.deepEqual(calls[0].options.headers, {});
+  assert.equal(calls[0].options.body, undefined);
+  assert.deepEqual(timers.filter((item) => item.cleared).map((item) => item.cleared), [91]);
+}
+
+async function testExternalAssetHttpErrorAndCleanup() {
+  const timers = [];
+  const client = apiModule.createClient({
+    fetchImpl: () => Promise.resolve(response({ ok: false, status: 403 })),
+    AbortControllerImpl: fakeControllerClass(),
+    setTimeoutImpl(fn, delay) { timers.push({ fn, delay }); return 92; },
+    clearTimeoutImpl(handle) { timers.push({ cleared: handle }); },
+  });
+
+  await assert.rejects(client.asset('https://cos.example.com/denied.png'), (error) => {
+    assert.equal(error.message, 'HTTP 403');
+    assert.equal(error.status, 403);
+    return true;
+  });
+  assert.deepEqual(timers.filter((item) => item.cleared).map((item) => item.cleared), [92]);
+}
+
 async function flushPromises() {
   await Promise.resolve();
   await Promise.resolve();
@@ -241,6 +281,7 @@ async function testPollRejectsAndCleansUpAfterDeadline() {
 async function testPollKeepsSuccessfulTerminalResult() {
   let tick;
   let cleared;
+  let nowCalls = 0;
   const pending = apiModule.poll({
     request: () => Promise.resolve({ status: 'done', result: '{"url":"/done.png"}' }),
     inspect(data) {
@@ -248,7 +289,7 @@ async function testPollKeepsSuccessfulTerminalResult() {
     },
     maxMs: 420000,
     intervalMs: 3000,
-    now: () => 500000,
+    now: () => nowCalls++ === 0 ? 0 : 500000,
     setIntervalImpl(fn) { tick = fn; return 82; },
     clearIntervalImpl(handle) { cleared = handle; },
   });
@@ -256,6 +297,23 @@ async function testPollKeepsSuccessfulTerminalResult() {
   tick();
   assert.deepEqual(await pending, { url: '/done.png' });
   assert.equal(cleared, 82);
+}
+
+async function testPollKeepsFailedTerminalResultAfterDeadline() {
+  let tick;
+  const terminalError = new Error('generation failed');
+  let nowCalls = 0;
+  const pending = apiModule.poll({
+    request: () => Promise.resolve({ status: 'failed' }),
+    inspect: () => ({ error: terminalError }),
+    maxMs: 420000,
+    now: () => nowCalls++ === 0 ? 0 : 500000,
+    setIntervalImpl(fn) { tick = fn; return 83; },
+    clearIntervalImpl() {},
+  });
+
+  tick();
+  await assert.rejects(pending, (error) => error === terminalError);
 }
 
 function testCanvasIntegration() {
@@ -307,8 +365,11 @@ Promise.resolve()
   .then(testTimeoutAbort)
   .then(testCallerAbort)
   .then(testAssetBlob)
+  .then(testExternalAssetKeepsPublicFetchSemantics)
+  .then(testExternalAssetHttpErrorAndCleanup)
   .then(testPollRejectsAndCleansUpAfterDeadline)
   .then(testPollKeepsSuccessfulTerminalResult)
+  .then(testPollKeepsFailedTerminalResultAfterDeadline)
   .then(testCanvasIntegration)
   .then(() => console.log('canvas API client: pass'))
   .catch((error) => {

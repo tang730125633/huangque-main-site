@@ -13,13 +13,13 @@
     options=options||{};
     var fetchImpl=options.fetchImpl, tokenProvider=options.tokenProvider||function(){return '';};
     var Controller=options.AbortControllerImpl, later=options.setTimeoutImpl||setTimeout, cancel=options.clearTimeoutImpl||clearTimeout;
-    function request(path,requestOptions,wantBlob){
+    function request(path,requestOptions,wantBlob,publicAsset){
       requestOptions=requestOptions||{};
-      var headers=Object.assign({'Accept':'application/json','Authorization':'Bearer '+tokenProvider()},requestOptions.headers||{});
+      var headers=publicAsset?Object.assign({},requestOptions.headers||{}):Object.assign({'Accept':'application/json','Authorization':'Bearer '+tokenProvider()},requestOptions.headers||{});
       var body=requestOptions.body, callerSignal=requestOptions.signal, controller=!callerSignal&&Controller?new Controller():null, timer=null;
       if(body!==undefined&&!wantBlob){ headers['Content-Type']='application/json'; body=JSON.stringify(body); }
       if(controller) timer=later(function(){ controller.abort(); },requestOptions.timeout||8000);
-      return fetchImpl(path,{method:requestOptions.method||'GET',credentials:'same-origin',cache:'no-store',headers:headers,body:body,signal:requestOptions.signal||(controller&&controller.signal)})
+      return fetchImpl(path,{method:requestOptions.method||'GET',credentials:publicAsset?'include':'same-origin',cache:'no-store',headers:headers,body:body,signal:requestOptions.signal||(controller&&controller.signal)})
         .then(function(response){
           if(wantBlob){ if(!response.ok) throw apiError('HTTP '+response.status,{status:response.status}); return response.blob(); }
           return response.text().then(function(text){
@@ -32,7 +32,7 @@
           throw error;
         }).finally(function(){ if(timer) cancel(timer); });
     }
-    return {json:function(path,opts){return request(path,opts,false);},asset:function(path,opts){return request(path,opts,true);}};
+    return {json:function(path,opts){return request(path,opts,false,false);},asset:function(path,opts){return request(path,opts,true,String(path||'').indexOf('/api/gen/file/')!==0);}};
   }
   function poll(options){
     options=options||{};
