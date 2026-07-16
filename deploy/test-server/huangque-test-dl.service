@@ -1,5 +1,5 @@
 [Unit]
-Description=Huangque Test Admin API
+Description=Huangque Test Video Download Proxy
 After=network.target huangque-test-auth.service huangque-test-egress.service
 Requires=huangque-test-auth.service
 Wants=huangque-test-egress.service
@@ -12,7 +12,7 @@ WorkingDirectory=/opt/huangque-test-server/server
 EnvironmentFile=/etc/huangque-test/test.env
 EnvironmentFile=/etc/huangque-test/providers.env
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 /opt/huangque-test-server/server/admin_api.py
+ExecStart=/usr/bin/python3 /opt/huangque-test-server/server/dl_service.py
 Restart=always
 RestartSec=3
 
