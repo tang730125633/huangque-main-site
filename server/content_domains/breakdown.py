@@ -68,13 +68,13 @@ def _do_breakdown(payload, info, url):
             "时长：" + str(duration) + "s\n"
             "平台：" + str(platform) + "\n\n"
             "口播文案（带时间轴）：\n" + str(script_text) + "\n\n"
-            '请输出 JSON：{"rhythm":[{"phase":"","time":"","strategy":""}],'
-            '"scenes":[{"dur":"","scale":"","camera":"","scene":"","line":""}],'
-            '"viral_logic":"","template":""}'
+            "请严格输出 JSON：{\"scenes\":[{\"dur\":\"3s\",\"scene\":\"画面描述(10字内)\",\"line\":\"口播台词\"}]}，"
+            "只输出 JSON 本身，不要解释、不要 markdown 代码块。"
+            "每个 scene 一句话说清画面，line 是原视频对应的口播内容。"
         )
         raw = _chat_multimodal(
-            "你是黄雀传媒资深短视频编导。分析以下视频的关键帧和口播文案，"
-            "拆解出完整分镜脚本。只输出 JSON，不要解释。",
+            "你是黄雀传媒资深短视频编导。分析视频关键帧和口播，拆解为简洁的分镜脚本。"
+            "只输出 JSON，不要多余内容。",
             usermsg, frames
         )
 
@@ -89,10 +89,7 @@ def _do_breakdown(payload, info, url):
             "source_title": title,
             "source_platform": platform,
             "duration": duration,
-            "rhythm": result.get("rhythm", []),
             "scenes": result.get("scenes", []),
-            "viral_logic": result.get("viral_logic", ""),
-            "template": result.get("template", ""),
         }
     finally:
         if tmp_video:
