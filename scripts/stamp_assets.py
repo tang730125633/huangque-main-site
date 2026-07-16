@@ -64,6 +64,7 @@ ASSETS = (
     Asset("theme.css", required=False),
     Asset("theme-init.js", required=False),
     Asset("canvas/canvas.css", required=False),
+    Asset("canvas/canvas-graph.js", required=False),
     Asset("canvas/canvas-app.js", required=False),
 )
 

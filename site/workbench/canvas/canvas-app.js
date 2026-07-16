@@ -1,5 +1,6 @@
 /* 节点生产画布：文本→反推→作图 节点图，拖动/连线/调参/并行运行。复用 /api/gen/reverse|banana|image + 轮询。 */
 (function(){
+  var graphApi=window.HQCanvas&&window.HQCanvas.graph;
   var wrap=document.querySelector('.nc-wrap'), inner=document.getElementById('ncInner'), svg=document.getElementById('ncEdges'), canvas=document.getElementById('ncCanvas'), empty=document.getElementById('ncEmpty'), selectionBox=document.getElementById('ncSelectionBox'), selectedRegion=document.getElementById('ncSelectedRegion');
   var boardHome=document.getElementById('ncBoardHome'), editorView=document.getElementById('ncEditorView'), boardGrid=document.getElementById('ncBoardGrid'), boardSearch=document.getElementById('ncBoardSearch'), boardSort=document.getElementById('ncBoardSort'), backHomeBtn=document.getElementById('ncBackHome');
   var nodeCountEl=document.getElementById('ncNodeCount'), edgeCountEl=document.getElementById('ncEdgeCount'), runStateEl=document.getElementById('ncRunState');
@@ -1406,16 +1407,10 @@
     });
   }
   function canvasContentBounds(){
-    var ids=Object.keys(nodes);
-    if(!ids.length) return null;
-    var minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
-    ids.forEach(function(id){
-      var n=nodes[id], w=(n.el&&n.el.offsetWidth)||250, h=(n.el&&n.el.offsetHeight)||160;
-      minX=Math.min(minX,n.x); minY=Math.min(minY,n.y);
-      maxX=Math.max(maxX,n.x+w); maxY=Math.max(maxY,n.y+h);
-    });
-    var pad=60;
-    return {x:Math.max(0,minX-pad),y:Math.max(0,minY-pad),w:Math.max(360,maxX-minX+pad*2),h:Math.max(240,maxY-minY+pad*2)};
+    return graphApi.contentBounds(Object.keys(nodes).map(function(id){
+      var n=nodes[id];
+      return {id:id,x:n.x,y:n.y,width:(n.el&&n.el.offsetWidth)||250,height:(n.el&&n.el.offsetHeight)||160};
+    }));
   }
   function renderExportPanel(){
     if(sideTitle) sideTitle.textContent='导出全局预览';
@@ -2054,23 +2049,13 @@
     var ids=Object.keys(nodes);
     if(!ids.length) return;
     pushUndo();
-    var indeg={}, level={}, outgoing={};
-    ids.forEach(function(id){ indeg[id]=0; level[id]=0; outgoing[id]=[]; });
-    edges.forEach(function(e){ if(nodes[e.from.node]&&nodes[e.to.node]){ indeg[e.to.node]++; outgoing[e.from.node].push(e.to.node); } });
-    var q=ids.filter(function(id){ return !indeg[id]; }), seen={};
-    while(q.length){
-      var id=q.shift(); seen[id]=true;
-      outgoing[id].forEach(function(to){ level[to]=Math.max(level[to],level[id]+1); indeg[to]--; if(indeg[to]===0) q.push(to); });
-    }
-    ids.forEach(function(id){ if(!seen[id]) level[id]=level[id]||0; });
-    var buckets={};
-    ids.forEach(function(id){ (buckets[level[id]]||(buckets[level[id]]=[])).push(id); });
-    Object.keys(buckets).sort(function(a,b){ return a-b; }).forEach(function(l){
-      buckets[l].forEach(function(id,i){
-        var n=nodes[id];
-        n.x=60+Number(l)*310; n.y=60+i*190;
+    var positions=graphApi.computeAutoLayout(ids.map(function(id){ return {id:id}; }),edges);
+    ids.forEach(function(id){
+      var n=nodes[id], position=positions[id];
+      if(position){
+        n.x=position.x; n.y=position.y;
         n.el.style.left=n.x+'px'; n.el.style.top=n.y+'px';
-      });
+      }
     });
     redraw();
     updateState('已自动整理');
@@ -3118,25 +3103,7 @@
 
   // ---------- 循环依赖检测 ----------
   function detectCycle(){
-    var visiting={}, visited={}, stack=[], cycle=[];
-    function dfs(id){
-      if(cycle.length) return true;
-      if(visiting[id]){
-        var at=stack.indexOf(id);
-        cycle=stack.slice(at>=0?at:0).concat(id);
-        return true;
-      }
-      if(visited[id]) return false;
-      visiting[id]=true;
-      stack.push(id);
-      edges.filter(function(e){ return e.from.node===id; }).some(function(e){ return dfs(e.to.node); });
-      stack.pop();
-      visiting[id]=false;
-      visited[id]=true;
-      return !!cycle.length;
-    }
-    Object.keys(nodes).some(function(id){ return dfs(id); });
-    return cycle.filter(function(id,i,a){ return a.indexOf(id)===i; });
+    return graphApi.detectCycle(Object.keys(nodes).map(function(id){ return {id:id}; }),edges);
   }
   function markCycle(ids){
     if(!ids||!ids.length) return;
