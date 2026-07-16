@@ -21,7 +21,7 @@ class ContentDomainTests(unittest.TestCase):
         # （avatar/cinematic 是把动作模仿拆成「建形象 / 生成剧情视频」两步时加的）
         self.assertEqual(
             sorted(content_api.HANDLERS),
-            ["audio", "avatar", "breakdown", "cinematic", "collect", "copy", "image", "leads", "tryon", "video", "xiaole_video"],
+            ["audio", "avatar", "breakdown", "cinematic", "collect", "copy", "image", "leads", "script_to_video", "tryon", "video", "xiaole_video"],
         )
         self.assertIs(content_api.HANDLERS, content_api.registry.HANDLERS)
 
