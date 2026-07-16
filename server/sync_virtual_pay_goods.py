@@ -14,7 +14,7 @@ except ImportError:
 
 ITEM_URL = os.environ.get(
     "WX_VIRTUAL_PAY_ITEM_URL",
-    "https://huangquechuanmei.com/assets/cloud/logo-bird.png",
+    "https://huangquechuanmei.com/assets/cloud/virtual-pay-item-200.png",
 ).strip()
 
 
