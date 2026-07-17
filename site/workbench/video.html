@@ -443,8 +443,6 @@
               <div class="subtitle-field"><label for="subtitleOutlineWidth">描边宽度</label><div class="subtitle-range"><input id="subtitleOutlineWidth" type="range" min="0" max="12" step="0.5"><output id="subtitleOutlineWidthOut">4</output></div></div>
               <div class="subtitle-field"><label for="subtitleBackgroundColor">背景颜色</label><div class="subtitle-color"><input id="subtitleBackgroundColor" type="color"><code id="subtitleBackgroundColorText">#000000</code></div></div>
               <div class="subtitle-field"><label for="subtitleBackgroundOpacity">背景透明度</label><div class="subtitle-range"><input id="subtitleBackgroundOpacity" type="range" min="0" max="1" step="0.05"><output id="subtitleBackgroundOpacityOut">0</output></div></div>
-              <div class="subtitle-field wide"><label for="subtitleVerticalOffset">垂直偏移</label><div class="subtitle-range"><input id="subtitleVerticalOffset" type="range" min="-320" max="320" step="4"><output id="subtitleVerticalOffsetOut">0</output></div></div>
-
               <div id="subtitleKeywordFeature" class="subtitle-keyword-feature">
                 <div class="subtitle-keyword-head">
                   <div class="subtitle-keyword-copy"><b>关键词高亮</b><span>仅强调文案重点词；逐字高亮与卡拉 OK 的跟读动画不受此开关影响</span></div>
@@ -872,12 +870,12 @@
   var SUBTITLE_KEYWORD_STYLES={keyword_highlight:true,glow:true,bilingual:true};
   var SUBTITLE_FONT_SIZES=[24,32,40,48,56,64,72,80,96,112,120];
   var subtitleTemplateDefaults={
-    keyword_highlight:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,keyword_highlight_enabled:false,keyword_mode:'auto',keywords:[],keyword_scale:1.08},
-    word_highlight:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,word_highlight_speed:1,active_word_scale:1.08},
-    karaoke:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:.12,pending_color:'#8B95A7',progress_mode:'sweep'},
-    bounce:{font_family:'Noto Sans SC',font_size:72,font_weight:900,font_color:'#FFFFFF',highlight_color:'#FFCE3A',outline_color:'#17120A',outline_width:5,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,bounce_height:18,animation_duration_ms:220},
-    glow:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#8CEBFF',outline_color:'#102536',outline_width:3,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,keyword_highlight_enabled:false,keyword_mode:'auto',keywords:[],keyword_scale:1.08,glow_color:'#35C8FF',glow_strength:.75,glow_radius:8},
-    bilingual:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,keyword_highlight_enabled:false,keyword_mode:'auto',keywords:[],keyword_scale:1.08,secondary_font_family:'Noto Sans SC',secondary_font_size:38,secondary_color:'#DCE7F7',line_gap:12,secondary_text:''}
+    keyword_highlight:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',background_color:'#000000',background_opacity:0,keyword_highlight_enabled:false,keyword_mode:'auto',keywords:[],keyword_scale:1.08},
+    word_highlight:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',background_color:'#000000',background_opacity:0,word_highlight_speed:1,active_word_scale:1.08},
+    karaoke:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',background_color:'#000000',background_opacity:.12,pending_color:'#8B95A7',progress_mode:'sweep'},
+    bounce:{font_family:'Noto Sans SC',font_size:72,font_weight:900,font_color:'#FFFFFF',highlight_color:'#FFCE3A',outline_color:'#17120A',outline_width:5,position:'bottom',background_color:'#000000',background_opacity:0,bounce_height:18,animation_duration_ms:220},
+    glow:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#8CEBFF',outline_color:'#102536',outline_width:3,position:'bottom',background_color:'#000000',background_opacity:0,keyword_highlight_enabled:false,keyword_mode:'auto',keywords:[],keyword_scale:1.08,glow_color:'#35C8FF',glow_strength:.75,glow_radius:8},
+    bilingual:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',background_color:'#000000',background_opacity:0,keyword_highlight_enabled:false,keyword_mode:'auto',keywords:[],keyword_scale:1.08,secondary_font_family:'Noto Sans SC',secondary_font_size:38,secondary_color:'#DCE7F7',line_gap:12,secondary_text:''}
   };
   var subtitleTemplateState={}, subtitleFonts=['Noto Sans SC'];
   var subtitleWordPreviewTimer=null, subtitleWordPreviewIndex=0;
@@ -1081,7 +1079,6 @@
     subtitleSetColor('subtitleHighlightColor','subtitleHighlightColorText',o.highlight_color);subtitleSetColor('subtitleOutlineColor','subtitleOutlineColorText',o.outline_color);
     subtitleSetValue('subtitleOutlineWidth',o.outline_width);subtitleSetOutput('subtitleOutlineWidthOut',o.outline_width);
     subtitleSetColor('subtitleBackgroundColor','subtitleBackgroundColorText',o.background_color);subtitleSetValue('subtitleBackgroundOpacity',o.background_opacity);subtitleSetOutput('subtitleBackgroundOpacityOut',o.background_opacity);
-    subtitleSetValue('subtitleVerticalOffset',o.vertical_offset);subtitleSetOutput('subtitleVerticalOffsetOut',o.vertical_offset);
     subtitleSetValue('subtitleKeywordMode',o.keyword_mode);subtitleSetValue('subtitleKeywords',(o.keywords||[]).join('，'));subtitleSetValue('subtitleKeywordScale',o.keyword_scale);subtitleSetOutput('subtitleKeywordScaleOut',o.keyword_scale);
     syncSubtitleKeywordControls(o);
     subtitleSetValue('subtitleWordSpeed',o.word_highlight_speed);subtitleSetOutput('subtitleWordSpeedOut',o.word_highlight_speed);subtitleSetValue('subtitleActiveScale',o.active_word_scale);subtitleSetOutput('subtitleActiveScaleOut',o.active_word_scale);
@@ -1097,7 +1094,7 @@
       font_family:($('subtitleFontFamily')||{}).value||base.font_family,font_size:subtitleNumber('subtitleFontSize',base.font_size),font_weight:subtitleNumber('subtitleFontWeight',base.font_weight),
       font_color:(($('subtitleFontColor')||{}).value||base.font_color).toUpperCase(),highlight_color:(($('subtitleHighlightColor')||{}).value||base.highlight_color).toUpperCase(),
       outline_color:(($('subtitleOutlineColor')||{}).value||base.outline_color).toUpperCase(),outline_width:subtitleNumber('subtitleOutlineWidth',base.outline_width),position:selectedSubtitlePosition,
-      vertical_offset:subtitleNumber('subtitleVerticalOffset',base.vertical_offset),background_color:(($('subtitleBackgroundColor')||{}).value||base.background_color).toUpperCase(),background_opacity:subtitleNumber('subtitleBackgroundOpacity',base.background_opacity)
+      background_color:(($('subtitleBackgroundColor')||{}).value||base.background_color).toUpperCase(),background_opacity:subtitleNumber('subtitleBackgroundOpacity',base.background_opacity)
     };
     if(subtitleSupportsKeywords(selectedSubtitleStyle))Object.assign(o,{keyword_highlight_enabled:!!(($('subtitleKeywordEnabled')||{}).checked),keyword_mode:($('subtitleKeywordMode')||{}).value||'auto',keywords:String(($('subtitleKeywords')||{}).value||'').split(/[,，\n]/).map(function(x){return x.trim();}).filter(Boolean),keyword_scale:subtitleNumber('subtitleKeywordScale',base.keyword_scale)});
     if(selectedSubtitleStyle==='word_highlight')Object.assign(o,{word_highlight_speed:subtitleNumber('subtitleWordSpeed',base.word_highlight_speed),active_word_scale:subtitleNumber('subtitleActiveScale',base.active_word_scale)});
@@ -1167,7 +1164,7 @@
     var secondary=copy.querySelector('.subtitle-secondary');
     if(secondary){secondary.style.fontFamily=subtitlePreviewFont(o.secondary_font_family);secondary.style.fontSize=Math.max(10,Math.min(28,Number(o.secondary_font_size||38)*.38))+'px';secondary.style.color=o.secondary_color||'#DCE7F7';secondary.style.marginTop=Math.max(0,Number(o.line_gap||12)*.22)+'px';}
     var previewPositions={top:22,upper:36,center:50,lower:66,bottom:80};copy.style.top=(previewPositions[o.position]||80)+'%';
-    copy.style.transform='translate(-50%,-50%) translateY('+(-Number(o.vertical_offset||0)*.10)+'px)';
+    copy.style.transform='translate(-50%,-50%)';
     startSubtitleWordPreview(copy,o.word_highlight_speed);
   }
   function refreshSubtitleStateFromForm(){subtitleTemplateState[selectedSubtitleStyle]=collectSubtitleOptions();syncSubtitleKeywordControls(subtitleTemplateState[selectedSubtitleStyle]);subtitleSyncRangeOutputs();updateSubtitlePreview();}

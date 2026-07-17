@@ -210,7 +210,7 @@ class SubtitleTemplateUiTests(unittest.TestCase):
         preview = VIDEO_HTML.split("function updateSubtitlePreview(){", 1)[1].split("function refreshSubtitleStateFromForm", 1)[0]
         for option in (
             "font_family", "font_size", "font_weight", "font_color", "highlight_color",
-            "outline_color", "outline_width", "position", "vertical_offset",
+            "outline_color", "outline_width", "position",
             "background_color", "background_opacity", "keyword_highlight_enabled", "keyword_scale",
             "word_highlight_speed", "active_word_scale", "pending_color", "progress_mode",
             "bounce_height", "animation_duration_ms", "glow_color", "glow_strength",
@@ -224,6 +224,17 @@ class SubtitleTemplateUiTests(unittest.TestCase):
         self.assertIn("--bounce-height", preview)
         bounce_preview = preview.split("}else if(selectedSubtitleStyle==='bounce'){", 1)[1].split("}else if(", 1)[0]
         self.assertNotIn("sub-highlight", bounce_preview)
+
+    def test_vertical_offset_control_and_payload_are_removed(self):
+        self.assertNotIn('id="subtitleVerticalOffset"', VIDEO_HTML)
+        self.assertNotIn('id="subtitleVerticalOffsetOut"', VIDEO_HTML)
+        defaults = VIDEO_HTML.split("var subtitleTemplateDefaults={", 1)[1].split("};", 1)[0]
+        collector = VIDEO_HTML.split("function collectSubtitleOptions(){", 1)[1].split("function setSubtitleStyle", 1)[0]
+        preview = VIDEO_HTML.split("function updateSubtitlePreview(){", 1)[1].split("function refreshSubtitleStateFromForm", 1)[0]
+        self.assertNotIn("vertical_offset", defaults)
+        self.assertNotIn("vertical_offset", collector)
+        self.assertNotIn("vertical_offset", preview)
+        self.assertIn("copy.style.transform='translate(-50%,-50%)'", preview)
 
     def test_word_highlight_preview_advances_current_character(self):
         preview = VIDEO_HTML.split("function updateSubtitlePreview(){", 1)[1].split("function refreshSubtitleStateFromForm", 1)[0]
