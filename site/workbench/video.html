@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>视频模块 · 黄雀 AI 工作台</title>
 <link rel="icon" href="../assets/cloud/logo-bird.png">
-<link rel="stylesheet" href="../assets/fonts/hq-fonts.css">
+<link rel="stylesheet" href="../assets/fonts/hq-fonts.css?v=2">
 <link rel="stylesheet" href="../assets/cloud.css?v=8">
 <script src="theme-init.js?v=11eb385e"></script>
 <style>
@@ -1041,9 +1041,11 @@
   }
   function subtitleSetColor(id,textId,value){subtitleSetValue(id,value);subtitleSetOutput(textId,String(value||'').toUpperCase());}
   function subtitlePreviewFont(family){
-    if(family==='Noto Serif CJK SC')return 'SimSun, "Songti SC", "Times New Roman", serif';
-    if(family==='Noto Sans CJK SC')return 'SimHei, "Microsoft YaHei", "PingFang SC", sans-serif';
-    return '"Microsoft YaHei", "PingFang SC", Arial, sans-serif';
+    if(family==='Smiley Sans')return '"Smiley Sans", "Noto Sans SC", "Microsoft YaHei", sans-serif';
+    if(family==='ZCOOL KuaiLe')return '"ZCOOL KuaiLe", "Noto Sans SC", "Microsoft YaHei", sans-serif';
+    if(family==='Noto Serif CJK SC')return '"Noto Serif CJK SC", SimSun, "Songti SC", serif';
+    if(family==='Noto Sans CJK SC')return '"Noto Sans CJK SC", SimHei, "Microsoft YaHei", sans-serif';
+    return '"Noto Sans SC", "Microsoft YaHei", "PingFang SC", Arial, sans-serif';
   }
   function subtitlePreviewRgba(color,opacity){
     var hex=String(color||'#000000').replace('#',''),alpha=Math.max(0,Math.min(1,Number(opacity)||0));

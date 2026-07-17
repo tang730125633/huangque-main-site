@@ -1901,11 +1901,15 @@ _SUBTITLE_FONT_ALLOWLIST = tuple(dict.fromkeys((
     SUBTITLE_FONT,
     "Noto Sans CJK SC",
     "Noto Serif CJK SC",
+    "Smiley Sans",
+    "ZCOOL KuaiLe",
 )))
 _SUBTITLE_FONT_LABELS = {
     "Noto Sans SC": "简体中文黑体（推荐）",
     "Noto Sans CJK SC": "中日韩黑体",
     "Noto Serif CJK SC": "中日韩宋体",
+    "Smiley Sans": "得意黑（设计感）",
+    "ZCOOL KuaiLe": "站酷快乐体（活泼）",
 }
 _SUBTITLE_TEMPLATE_LABELS = {
     # 保留历史 key，避免旧任务/客户端失效；界面上把它作为无动画的基础字幕。

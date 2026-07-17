@@ -61,3 +61,17 @@
   font-display:swap;
   src:url("./jetbrains-mono-700.woff2") format("woff2");
 }
+@font-face{
+  font-family:"Smiley Sans";
+  font-style:normal;
+  font-weight:400;
+  font-display:swap;
+  src:url("./smiley-sans-oblique.woff2") format("woff2");
+}
+@font-face{
+  font-family:"ZCOOL KuaiLe";
+  font-style:normal;
+  font-weight:400;
+  font-display:swap;
+  src:url("./zcool-kuaile-regular.woff2") format("woff2");
+}

@@ -25,6 +25,7 @@ class SubtitleTemplateValidationTests(unittest.TestCase):
     def setUp(self):
         self.fonts = patch.object(video, "_subtitle_fonts_cache", (
             "Noto Sans SC", "Noto Sans CJK SC", "Noto Serif CJK SC",
+            "Smiley Sans", "ZCOOL KuaiLe",
         ))
         self.fonts.start()
 
@@ -47,7 +48,7 @@ class SubtitleTemplateValidationTests(unittest.TestCase):
         self.assertTrue(all(font["value"] in video._SUBTITLE_FONT_ALLOWLIST for font in config["fonts"]))
         self.assertEqual(
             [font["label"] for font in config["fonts"]],
-            ["简体中文黑体（推荐）", "中日韩黑体", "中日韩宋体"],
+            ["简体中文黑体（推荐）", "中日韩黑体", "中日韩宋体", "得意黑（设计感）", "站酷快乐体（活泼）"],
         )
         self.assertTrue(all(not any("a" <= char.lower() <= "z" for char in font["label"]) for font in config["fonts"]))
 
@@ -205,6 +206,23 @@ class SubtitleTemplateUiTests(unittest.TestCase):
         self.assertIn("SUBTITLE_TEMPLATE_NAMES[x.subtitle_style]", VIDEO_HTML)
         self.assertIn("/api/gen/video/subtitle-config", VIDEO_HTML)
         self.assertIn('id="subtitleSecondaryText"', VIDEO_HTML)
+
+    def test_attractive_fonts_are_available_in_config_and_live_preview(self):
+        with patch.object(video, "_subtitle_fonts_cache", ("Smiley Sans", "ZCOOL KuaiLe")):
+            config = video.subtitle_config()
+        values = [item["value"] for item in config["fonts"]]
+        self.assertIn("Smiley Sans", values)
+        self.assertIn("ZCOOL KuaiLe", values)
+        preview_font = VIDEO_HTML.split("function subtitlePreviewFont(family){", 1)[1].split("function subtitlePreviewRgba", 1)[0]
+        self.assertIn("'Smiley Sans'", preview_font)
+        self.assertIn("'ZCOOL KuaiLe'", preview_font)
+        font_dir = ROOT / "site" / "assets" / "fonts"
+        self.assertTrue((font_dir / "smiley-sans-oblique.woff2").is_file())
+        self.assertTrue((font_dir / "zcool-kuaile-regular.woff2").is_file())
+        css = (font_dir / "hq-fonts.css").read_text(encoding="utf-8")
+        self.assertIn('font-family:"Smiley Sans"', css)
+        self.assertIn('font-family:"ZCOOL KuaiLe"', css)
+        self.assertIn("hq-fonts.css?v=2", VIDEO_HTML)
 
     def test_live_preview_wires_every_template_option(self):
         preview = VIDEO_HTML.split("function updateSubtitlePreview(){", 1)[1].split("function refreshSubtitleStateFromForm", 1)[0]
