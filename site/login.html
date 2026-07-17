@@ -195,6 +195,27 @@
   var registerToggle=document.getElementById("registerToggle"), teamLogin=document.getElementById("teamLogin");
   var msg=document.getElementById("msg"), btn=document.getElementById("submitBtn");
   function setMsg(t,kind){ msg.textContent=t||""; msg.style.color=(kind==="ok")?"#2bd576":(kind==="err"?"#f4708a":"#94a4bb"); }
+  function csrfToken(){
+    var match=(document.cookie||'').match(/(?:^|;\s*)hq_csrf=([^;]*)/);
+    if(!match) return '';
+    try{ return decodeURIComponent(match[1]); }catch(e){ return ''; }
+  }
+  function secureFetch(input,init){
+    var options=Object.assign({},init||{});
+    var target=(input&&typeof input==='object'&&input.url)?input.url:input;
+    var method=String(options.method||(input&&input.method)||'GET').toUpperCase();
+    var headers=new Headers(options.headers!==undefined?options.headers:((input&&input.headers)||{}));
+    var sameOrigin=false;
+    try{ sameOrigin=new URL(target,location.href).origin===location.origin; }catch(e){}
+    var eligible=sameOrigin&&/^(POST|PUT|PATCH|DELETE)$/.test(method)&&!/^Bearer\s/i.test(headers.get('Authorization')||'');
+    if(!eligible) headers.delete('X-CSRF-Token');
+    else if(!headers.has('X-CSRF-Token')){
+      var token=csrfToken();
+      if(token) headers.set('X-CSRF-Token',token);
+    }
+    options.headers=headers;
+    return fetch(input,options);
+  }
   function setTab(p){
     if(registering) p=false;
     phone=p;
@@ -248,7 +269,7 @@
     if(password.length<6){ setMsg("密码至少 6 位","err"); return; }
     if(password!==confirmPassword){ setMsg("两次输入的密码不一致","err"); return; }
     btn.disabled=true; btn.style.opacity=".7"; setMsg("注册中…");
-    fetch("/api/auth/register",{
+    secureFetch("/api/auth/register",{
       method:"POST", credentials:"same-origin", headers:{"Content-Type":"application/json"},
       body:JSON.stringify({username:username,password:password,display_name:displayName})
     }).then(function(r){
@@ -274,7 +295,7 @@
     var secret=phone ? (document.getElementById("code").value||"") : (document.getElementById("password").value||"");
     if(!username||!secret){ setMsg(phone?"请填写账号和验证码":"请填写账号和密码","err"); return; }
     btn.disabled=true; btn.style.opacity=".7"; setMsg("登录中…");
-    fetch("/api/auth/login",{
+    secureFetch("/api/auth/login",{
       method:"POST", credentials:"same-origin", headers:{"Content-Type":"application/json"},
       body:JSON.stringify({username:username,password:secret})
     }).then(function(r){

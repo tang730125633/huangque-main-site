@@ -507,7 +507,8 @@
     opt.credentials = 'same-origin';
     opt.cache = 'no-store';
     opt.headers = Object.assign({}, opt.headers || {});
-    return fetch(url, opt).then(function(r){
+    var fetcher=(window.HQ&&typeof window.HQ.secureFetch==='function')?window.HQ.secureFetch:fetch;
+    return fetcher(url, opt).then(function(r){
       return r.json().catch(function(){return {};}).then(function(data){
         if(r.status === 401){
           clearLocalAuth();
