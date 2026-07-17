@@ -14,8 +14,12 @@ from http.server import ThreadingHTTPServer
 class AuthCanvasCollabTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.old_db = os.environ.get("HQ_TEST_AUTH_DB")
+        self.old_env = {key: os.environ.get(key) for key in (
+            "HQ_TEST_AUTH_DB", "HQ_CSRF_SECRET", "HQ_ALLOWED_ORIGINS"
+        )}
         os.environ["HQ_TEST_AUTH_DB"] = os.path.join(self.tmp.name, "users.db")
+        os.environ["HQ_CSRF_SECRET"] = "canvas-collab-csrf-secret"
+        os.environ["HQ_ALLOWED_ORIGINS"] = "https://app.example.test"
 
         import server.auth_server as auth_server
 
@@ -37,20 +41,26 @@ class AuthCanvasCollabTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=3)
-        if self.old_db is None:
-            os.environ.pop("HQ_TEST_AUTH_DB", None)
-        else:
-            os.environ["HQ_TEST_AUTH_DB"] = self.old_db
+        for key, value in self.old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         self.tmp.cleanup()
 
     def _post(self, path, payload, client=None):
+        active_client = client or self.client
         req = urllib.request.Request(
             self.base + path,
             data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "https://app.example.test",
+                "X-CSRF-Token": active_client.hq_csrf,
+            },
             method="POST",
         )
-        with (client or self.client).open(req, timeout=3) as response:
+        with active_client.open(req, timeout=3) as response:
             return json.loads(response.read())
 
     def _get(self, path, client=None):
@@ -58,8 +68,18 @@ class AuthCanvasCollabTests(unittest.TestCase):
             return json.loads(response.read())
 
     def _delete(self, path, client=None):
-        req = urllib.request.Request(self.base + path, method="DELETE")
-        with (client or self.client).open(req, timeout=3) as response:
+        active_client = client or self.client
+        req = urllib.request.Request(
+            self.base + path,
+            data=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "https://app.example.test",
+                "X-CSRF-Token": active_client.hq_csrf,
+            },
+            method="DELETE",
+        )
+        with active_client.open(req, timeout=3) as response:
             return json.loads(response.read())
 
     def _ops(self, board_id, op_id, ops, client_id="owner-tab", client=None, base_version=1):
@@ -87,11 +107,20 @@ class AuthCanvasCollabTests(unittest.TestCase):
         req = urllib.request.Request(
             self.base + "/api/auth/login",
             data=json.dumps({"username": username, "password": "secret123"}).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "https://app.example.test",
+            },
             method="POST",
         )
         with client.open(req, timeout=3) as response:
             json.loads(response.read())
+        client.hq_session = next(
+            cookie.value for cookie in jar if cookie.name == self.auth.AUTH_COOKIE_NAME
+        )
+        client.hq_csrf = next(
+            cookie.value for cookie in jar if cookie.name == self.auth.CSRF_COOKIE_NAME
+        )
         return client
 
     def _account_id(self, username):
@@ -591,8 +620,15 @@ class AuthCanvasCollabTests(unittest.TestCase):
 
         sent = []
         handler = object.__new__(self.auth.H)
+        handler.command = "POST"
         handler.path = "/api/auth/canvas/boards/board-id/ops"
-        handler.headers = {"Content-Length": str(self.auth.CANVAS_OPS_MAX_BYTES + 1)}
+        handler.headers = {
+            "Content-Length": str(self.auth.CANVAS_OPS_MAX_BYTES + 1),
+            "Content-Type": "application/json",
+            "Origin": "https://app.example.test",
+            "Cookie": self.auth.AUTH_COOKIE_NAME + "=" + self.client.hq_session,
+            "X-CSRF-Token": self.client.hq_csrf,
+        }
         handler.rfile = UnreadableBody()
         handler._user = lambda: {"username": "owner"}
         handler._send = lambda code, payload: sent.append((code, payload))
@@ -608,8 +644,15 @@ class AuthCanvasCollabTests(unittest.TestCase):
 
         sent = []
         handler = object.__new__(self.auth.H)
+        handler.command = "POST"
         handler.path = "/api/auth/canvas/boards/board-id/presence"
-        handler.headers = {"Content-Length": str(self.auth.CANVAS_PRESENCE_MAX_BYTES + 1)}
+        handler.headers = {
+            "Content-Length": str(self.auth.CANVAS_PRESENCE_MAX_BYTES + 1),
+            "Content-Type": "application/json",
+            "Origin": "https://app.example.test",
+            "Cookie": self.auth.AUTH_COOKIE_NAME + "=" + self.client.hq_session,
+            "X-CSRF-Token": self.client.hq_csrf,
+        }
         handler.rfile = UnreadableBody()
         handler._user = lambda: {"username": "owner"}
         handler._send = lambda code, payload: sent.append((code, payload))

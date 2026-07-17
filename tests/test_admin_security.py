@@ -1,4 +1,6 @@
 import importlib
+import hashlib
+import hmac
 import http.client
 import json
 import os
@@ -26,17 +28,22 @@ class _Response:
 
 class AdminIngressValidationTests(unittest.TestCase):
     def setUp(self):
-        self.old_max_delta = os.environ.get("HQ_ADMIN_POINTS_MAX_DELTA")
+        self.old_env = {key: os.environ.get(key) for key in (
+            "HQ_ADMIN_POINTS_MAX_DELTA", "HQ_CSRF_SECRET", "HQ_ALLOWED_ORIGINS"
+        )}
         os.environ["HQ_ADMIN_POINTS_MAX_DELTA"] = "1000"
+        os.environ["HQ_CSRF_SECRET"] = "admin-ingress-csrf-secret"
+        os.environ["HQ_ALLOWED_ORIGINS"] = "https://app.example.test"
         import server.admin_api as admin_api
 
         self.admin = importlib.reload(admin_api)
 
     def tearDown(self):
-        if self.old_max_delta is None:
-            os.environ.pop("HQ_ADMIN_POINTS_MAX_DELTA", None)
-        else:
-            os.environ["HQ_ADMIN_POINTS_MAX_DELTA"] = self.old_max_delta
+        for key, value in self.old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     def test_reason_requires_trimmed_4_to_120_characters(self):
         for value in (None, "", " abc ", "x" * 121):
@@ -71,6 +78,151 @@ class AdminIngressValidationTests(unittest.TestCase):
         self.assertRegex(generated, r"^[0-9a-f]{32}$")
         self.assertNotIn("session-secret", generated)
         self.assertNotIn("internal-secret", generated)
+
+    def test_admin_guard_helpers_match_auth_contract_and_use_constant_time_comparison(self):
+        import server.auth_server as auth_server
+
+        auth = importlib.reload(auth_server)
+        values = (
+            "https://app.example.test",
+            "https://APP.example.test:443",
+            "https://app.example.test/path",
+            "https://app.example.test?query=1",
+            "null",
+            "https://user@app.example.test",
+        )
+        for value in values:
+            with self.subTest(value=value):
+                self.assertEqual(self.admin.normalized_origin(value), auth.normalized_origin(value))
+                self.assertEqual(
+                    self.admin.normalized_origin(value, allow_path=True),
+                    auth.normalized_origin(value, allow_path=True),
+                )
+
+        handler = object.__new__(self.admin.H)
+        session = "session-secret"
+        expected = hmac.new(
+            b"admin-ingress-csrf-secret", session.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        handler.headers = {"X-CSRF-Token": expected}
+        with mock.patch.object(
+            self.admin.secrets, "compare_digest", wraps=self.admin.secrets.compare_digest
+        ) as compare:
+            self.assertTrue(handler._csrf_valid(session))
+        compare.assert_called_once_with(expected, expected)
+
+    def test_cookie_admin_mutations_require_origin_session_csrf_and_json(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.admin.H)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = "http://127.0.0.1:%d" % server.server_address[1]
+        session = "session-secret"
+        csrf = hmac.new(
+            b"admin-ingress-csrf-secret", session.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        paths = (
+            "/api/admin/channel",
+            "/api/admin/features/toggle",
+            "/api/admin/points/adjust",
+            "/api/admin/recharge/review",
+        )
+
+        def post(path, headers):
+            request = urllib.request.Request(
+                base + path,
+                data=b"{}",
+                headers=headers,
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=3) as response:
+                    return response.status
+            except urllib.error.HTTPError as exc:
+                return exc.code
+
+        valid = {
+            "Content-Type": "application/json; charset=utf-8",
+            "Origin": "https://app.example.test",
+            "Cookie": "hq_session=" + session,
+            "X-CSRF-Token": csrf,
+        }
+        invalid_headers = (
+            ({key: value for key, value in valid.items() if key != "Origin"}, 403),
+            ({**valid, "Origin": "https://evil.example.test"}, 403),
+            ({key: value for key, value in valid.items() if key != "X-CSRF-Token"}, 403),
+            ({**valid, "X-CSRF-Token": "wrong"}, 403),
+            ({**valid, "Content-Type": "text/plain"}, 415),
+        )
+        try:
+            with mock.patch.object(
+                self.admin, "verify", return_value={"username": "boss", "role": "admin"}
+            ), mock.patch.object(self.admin, "save_channel", return_value={"key": "x"}) as channel, \
+                 mock.patch.object(self.admin, "save_feature", return_value={"key": "x"}) as feature, \
+                 mock.patch.object(self.admin, "auth_admin_request", return_value={"ok": True}) as forwarded:
+                for path in paths:
+                    for headers, expected_status in invalid_headers:
+                        with self.subTest(path=path, headers=headers):
+                            self.assertEqual(post(path, headers), expected_status)
+                channel.assert_not_called()
+                feature.assert_not_called()
+                forwarded.assert_not_called()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+    def test_valid_cookie_referer_and_explicit_bearer_admin_mutations_remain_compatible(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.admin.H)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = "http://127.0.0.1:%d" % server.server_address[1]
+        session = "session-secret"
+        csrf = hmac.new(
+            b"admin-ingress-csrf-secret", session.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+
+        def post(path, headers, payload):
+            request = urllib.request.Request(
+                base + path,
+                data=json.dumps(payload).encode(),
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=3) as response:
+                return response.status
+
+        cases = (
+            ("/api/admin/channel", {"channel": "x"}),
+            ("/api/admin/features/toggle", {"feature": "x"}),
+            ("/api/admin/points/adjust", {"delta": 1, "reason": "valid reason"}),
+            ("/api/admin/recharge/review", {"reason": "valid reason"}),
+        )
+        cookie_headers = {
+            "Content-Type": "application/json",
+            "Referer": "https://app.example.test/admin/?tab=ops",
+            "Cookie": "hq_session=" + session,
+            "X-CSRF-Token": csrf,
+        }
+        bearer_headers = {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer explicit-token",
+            "Cookie": "hq_session=ambient-cookie-must-not-win",
+        }
+        try:
+            with mock.patch.object(
+                self.admin, "verify", return_value={"username": "boss", "role": "admin"}
+            ), mock.patch.object(self.admin, "save_channel", return_value={"key": "x"}), \
+                 mock.patch.object(self.admin, "save_feature", return_value={"key": "x"}), \
+                 mock.patch.object(self.admin, "auth_admin_request", return_value={"ok": True}):
+                for path, payload in cases:
+                    with self.subTest(path=path, mode="cookie"):
+                        self.assertEqual(post(path, cookie_headers, payload), 200)
+                    with self.subTest(path=path, mode="bearer"):
+                        self.assertEqual(post(path, bearer_headers, payload), 200)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
 
     def test_ingress_rejects_non_object_json_with_controlled_400(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), self.admin.H)

@@ -9,10 +9,14 @@ All /api/admin/* routes require a platform token whose user role is admin.
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from contextlib import closing
 from http import cookies
+import hashlib
+import hmac
 import json
 import os
 import pathlib
 import re
+import secrets
+import sys
 
 try:
     import func_names                    # 生产：admin_api.py 直接跑，同目录下就是 func_names.py
@@ -31,20 +35,92 @@ except ImportError:
     feature_flags = None
 
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
+CSRF_SECRET = os.environ.get("HQ_CSRF_SECRET", "").encode("utf-8")
+ALLOWED_ORIGIN_VALUES = tuple(
+    value.strip()
+    for value in os.environ.get("HQ_ALLOWED_ORIGINS", "").split(",")
+    if value.strip()
+)
 
-def request_token(headers):
-    auth = headers.get("Authorization") or ""
+
+def bearer_token(value):
+    auth = value or ""
     if auth.lower().startswith("bearer "):
-        token = auth.split(" ", 1)[1].strip()
-        if token and token != "__cookie__":
-            return token
+        return auth.split(" ", 1)[1].strip()
+    return ""
+
+
+def cookie_token(value):
     try:
         jar = cookies.SimpleCookie()
-        jar.load(headers.get("Cookie") or "")
+        jar.load(value or "")
         morsel = jar.get(AUTH_COOKIE_NAME)
         return morsel.value.strip() if morsel and morsel.value else ""
     except Exception:
         return ""
+
+
+def request_token(headers):
+    token = bearer_token(headers.get("Authorization"))
+    if token and token != "__cookie__":
+        return token
+    return cookie_token(headers.get("Cookie"))
+
+
+def request_auth_mode(headers):
+    token = bearer_token(headers.get("Authorization"))
+    if token and token != "__cookie__":
+        return "bearer"
+    return "cookie" if cookie_token(headers.get("Cookie")) else ""
+
+
+def normalized_origin(value, *, allow_path=False):
+    value = (value or "").strip()
+    if not value or value == "null":
+        return None
+    if not allow_path and ("?" in value or "#" in value):
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        if parsed.scheme.lower() not in {"http", "https"}:
+            return None
+        if not parsed.hostname or parsed.username is not None or parsed.password is not None:
+            return None
+        if not allow_path and (parsed.path or parsed.query or parsed.fragment):
+            return None
+        port = parsed.port
+    except (TypeError, ValueError):
+        return None
+    if port is None:
+        port = 443 if parsed.scheme.lower() == "https" else 80
+    return parsed.scheme.lower(), parsed.hostname.lower(), port
+
+
+def serialized_origin(origin):
+    if origin is None:
+        return "<invalid>"
+    scheme, host, port = origin
+    if ":" in host:
+        host = "[" + host + "]"
+    default_port = 443 if scheme == "https" else 80
+    return "%s://%s%s" % (
+        scheme, host, "" if port == default_port else ":%d" % port,
+    )
+
+
+ALLOWED_ORIGINS = frozenset(
+    origin
+    for origin in (normalized_origin(value) for value in ALLOWED_ORIGIN_VALUES)
+    if origin is not None
+)
+
+
+def csrf_token_for(session_token: str) -> str:
+    if not session_token:
+        raise ValueError("session token must not be empty")
+    if not CSRF_SECRET:
+        raise RuntimeError("HQ_CSRF_SECRET must be set")
+    return hmac.new(CSRF_SECRET, session_token.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 BASE = pathlib.Path(__file__).resolve().parent
@@ -1428,6 +1504,74 @@ class H(BaseHTTPRequestHandler):
         except Exception:
             raise ValueError("请求体不是合法 JSON")
 
+    def _client_ip(self):
+        real_ip = (self.headers.get("X-Real-IP") or "").strip()
+        if real_ip:
+            return real_ip
+        forwarded = [
+            part.strip()
+            for part in (self.headers.get("X-Forwarded-For") or "").split(",")
+            if part.strip()
+        ]
+        if forwarded:
+            return forwarded[-1]
+        return self.client_address[0] if self.client_address else ""
+
+    def _csrf_valid(self, session_token: str) -> bool:
+        supplied = self.headers.get("X-CSRF-Token") or ""
+        if not session_token or not supplied:
+            return False
+        try:
+            expected = csrf_token_for(session_token)
+        except (RuntimeError, ValueError):
+            return False
+        try:
+            return secrets.compare_digest(supplied, expected)
+        except TypeError:
+            return False
+
+    def _request_origin_allowed(self) -> bool:
+        origin = self.headers.get("Origin")
+        if origin is not None:
+            candidate = normalized_origin(origin)
+        else:
+            candidate = normalized_origin(self.headers.get("Referer"), allow_path=True)
+        return candidate is not None and candidate in ALLOWED_ORIGINS
+
+    def _reject_mutation(self, path: str, code: int, reason: str) -> bool:
+        source = self.headers.get("Origin")
+        allow_path = False
+        if source is None:
+            source = self.headers.get("Referer") or ""
+            allow_path = True
+        event = {
+            "request_id": self._current_request_id,
+            "path": path[:512],
+            "client_ip": self._client_ip()[:128],
+            "origin": (
+                serialized_origin(normalized_origin(source, allow_path=allow_path))
+                if source else "<missing>"
+            ),
+            "reason": reason,
+        }
+        print(json.dumps(event, ensure_ascii=False), file=sys.stderr, flush=True)
+        detail = "unsupported media type" if code == 415 else "forbidden"
+        self._send(code, {"detail": detail})
+        return False
+
+    def _require_browser_mutation_security(self, path: str) -> bool:
+        content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            return self._reject_mutation(path, 415, "content_type")
+        if request_auth_mode(self.headers) == "bearer":
+            return True
+        if request_auth_mode(self.headers) == "cookie":
+            if not self._request_origin_allowed():
+                return self._reject_mutation(path, 403, "origin")
+            if not self._csrf_valid(cookie_token(self.headers.get("Cookie"))):
+                return self._reject_mutation(path, 403, "csrf")
+        return True
+
     def _admin(self):
         user = verify(self._token())
         if not user:
@@ -1557,6 +1701,8 @@ class H(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if not path.startswith("/api/admin/"):
             return self._send(404, {"detail": "not found"})
+        if not self._require_browser_mutation_security(path):
+            return
         user = self._admin()
         if not user:
             return
