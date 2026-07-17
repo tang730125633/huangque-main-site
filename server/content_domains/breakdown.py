@@ -8,6 +8,9 @@ from . import egress
 
 # 不支持的平台（视频号加密流需要 Isaac64 解密，暂不支持）
 _UNSUPPORTED_PLATFORMS = {"channels", "weixin", "wechat"}
+_BREAKDOWN_MODE_SCENES = "scenes"
+_BREAKDOWN_MODE_REVERSE_PROMPT = "reverse_prompt"
+_BREAKDOWN_SUPPORTED_MODES = {_BREAKDOWN_MODE_SCENES, _BREAKDOWN_MODE_REVERSE_PROMPT}
 
 
 def gen_breakdown(payload):
@@ -16,6 +19,7 @@ def gen_breakdown(payload):
     支持单个 url 或批量 urls（≤5 条，顺序处理）。"""
     import tikhub
 
+    mode = _normalize_mode(payload)
     urls = payload.get("urls")
     if urls and isinstance(urls, list):
         urls = [u.strip() for u in urls if isinstance(u, str) and u.strip()]
@@ -35,7 +39,16 @@ def gen_breakdown(payload):
     if platform in _UNSUPPORTED_PLATFORMS:
         raise ValueError("视频号暂不支持拆解，请粘贴抖音/小红书链接")
 
-    return _do_breakdown(payload, info, url)
+    return _do_breakdown(payload, info, url, mode)
+
+
+def _normalize_mode(payload):
+    mode = str((payload or {}).get("mode") or _BREAKDOWN_MODE_SCENES).strip().lower()
+    if not mode:
+        mode = _BREAKDOWN_MODE_SCENES
+    if mode not in _BREAKDOWN_SUPPORTED_MODES:
+        raise ValueError("mode 仅支持 scenes / reverse_prompt")
+    return mode
 
 
 def _do_batch_breakdown(payload, urls):
@@ -68,9 +81,10 @@ def _do_batch_breakdown(payload, urls):
     }
 
 
-def _do_breakdown(payload, info, url):
+def _do_breakdown(payload, info, url, mode=None):
     import tikhub
 
+    mode = mode or _normalize_mode(payload)
     det = tikhub.detail(info["platform"], info["id"], info.get("note_type"))
     play_url = det.get("play_url")
     if not play_url:
@@ -104,28 +118,20 @@ def _do_breakdown(payload, info, url):
 
         _heartbeat(job_id, "analyzing")
         platform = info.get("platform", "")
-        usermsg = (
-            "视频标题：" + str(title) + "\n"
-            "时长：" + str(duration) + "s\n"
-            "平台：" + str(platform) + "\n\n"
-            "口播文案（带时间轴）：\n" + (str(script_text) if script_text else "（ASR 转录失败，请根据画面帧判断内容）") + "\n\n"
-            "请严格输出 JSON：{\"scenes\":[{\"dur\":\"3s\",\"scene\":\"画面描述(10字内)\",\"line\":\"口播台词\"}],"
-            "\"analysis\":\"视频内容综合分析(含视频主题、背景、构图运镜、人物特征、产品细节、情绪氛围、字幕建议等)\"}，"
-            "只输出 JSON 本身，不要解释、不要 markdown 代码块。"
-            "每个 scene 一句话说清画面，line 是原视频对应的口播内容。"
-        )
-        _sysmsg = ("你是黄雀传媒资深短视频编导。分析视频关键帧和口播，拆解为简洁的分镜脚本，同时输出一份视频内容综合分析。"
-                   "只输出 JSON，不要多余内容。")
-        raw = _chat_multimodal(_sysmsg, usermsg, frames)
+        if mode == _BREAKDOWN_MODE_REVERSE_PROMPT:
+            prompt = _reverse_prompt_from_frames(title, duration, platform, script_text, frames)
+            return {
+                "type": "breakdown_reverse",
+                "source_url": url,
+                "source_title": title,
+                "source_platform": platform,
+                "duration": duration,
+                "prompt": prompt,
+                "frame_count": len(frames or []),
+                "asr_failed": asr_failed,
+            }
 
-        try:
-            result = _parse_breakdown_json(raw)
-        except ValueError:
-            # 热修(20260717)：解析失败自动重试一次（多为模型输出截断/偶发格式异常），并落原始输出便于诊断
-            print("[breakdown] parse failed, raw(%d)=%s" % (len(raw or ""), str(raw)[:400].replace("\n", " ")))
-            _heartbeat(job_id, "analyzing")
-            raw = _chat_multimodal(_sysmsg, usermsg, frames)
-            result = _parse_breakdown_json(raw)
+        result = _breakdown_scenes_from_frames(title, duration, platform, script_text, frames)
 
         # 读取关键帧作为缩略图，供前端展示故事板
         frame_thumbnails = []
@@ -158,6 +164,69 @@ def _do_breakdown(payload, info, url):
 
 
 # ============ 辅助函数 ============
+
+
+def _breakdown_source_context(title, duration, platform, script_text):
+    return (
+        "视频标题：" + str(title) + "\n"
+        "时长：" + str(duration) + "s\n"
+        "平台：" + str(platform) + "\n\n"
+        "口播文案（带时间轴）：\n" + (str(script_text) if script_text else "（ASR 转录失败，请根据画面帧判断内容）")
+    )
+
+
+def _breakdown_scenes_from_frames(title, duration, platform, script_text, frames):
+    usermsg = (
+        _breakdown_source_context(title, duration, platform, script_text) + "\n\n"
+        "请严格输出 JSON：{\"scenes\":[{\"dur\":\"3s\",\"scene\":\"画面描述(10字内)\",\"line\":\"口播台词\"}],"
+        "\"analysis\":\"视频内容综合分析(含视频主题、背景、构图运镜、人物特征、产品细节、情绪氛围、字幕建议等)\"}，"
+        "只输出 JSON 本身，不要解释、不要 markdown 代码块。"
+        "每个 scene 一句话说清画面，line 是原视频对应的口播内容。"
+    )
+    sysmsg = (
+        "你是黄雀传媒资深短视频编导。分析视频关键帧和口播，拆解为简洁的分镜脚本，同时输出一份视频内容综合分析。"
+        "只输出 JSON，不要多余内容。"
+    )
+    raw = _chat_multimodal(sysmsg, usermsg, frames)
+    try:
+        return _parse_breakdown_json(raw)
+    except ValueError:
+        print("[breakdown] parse failed, raw(%d)=%s" % (len(raw or ""), str(raw)[:400].replace("\n", " ")))
+        raw = _chat_multimodal(sysmsg, usermsg, frames)
+        return _parse_breakdown_json(raw)
+
+
+def _reverse_prompt_from_frames(title, duration, platform, script_text, frames):
+    usermsg = (
+        _breakdown_source_context(title, duration, platform, script_text) + "\n\n"
+        "请基于关键帧和口播，反推出一条适合后续作图/创作的中文提示词。"
+        "目标不是逐字复刻原视频，而是保留它的主体设定、镜头语言、场景道具、光线氛围、色调质感、构图与文案钩子，"
+        "用于生成同风格但原创的新内容。"
+        "直接输出 1 条完整提示词，80-160 字，不要 JSON、不要标题、不要解释、不要 markdown 代码块。"
+    )
+    sysmsg = (
+        "你是黄雀传媒资深短视频创意总监。你擅长根据视频关键帧和口播，提炼出可直接用于后续创作的中文提示词。"
+        "只输出提示词本身，不要任何多余内容。"
+    )
+    raw = _chat_multimodal(sysmsg, usermsg, frames, temp=0.6)
+    try:
+        return _clean_reverse_prompt(raw)
+    except ValueError:
+        print("[breakdown] reverse prompt parse failed, raw(%d)=%s" % (len(raw or ""), str(raw)[:400].replace("\n", " ")))
+        raw = _chat_multimodal(sysmsg, usermsg, frames, temp=0.6)
+        return _clean_reverse_prompt(raw)
+
+
+def _clean_reverse_prompt(raw):
+    text = str(raw or "").replace("\r", "").strip()
+    if text.startswith("```"):
+        lines = [line for line in text.splitlines() if not line.strip().startswith("```")]
+        text = "\n".join(lines).strip()
+    text = " ".join(line.strip() for line in text.splitlines() if line.strip()).strip().strip('"“”')
+    if not text:
+        raise ValueError("反推结果解析失败，请重试")
+    return text[:600]
+
 
 def _strip_json_code_fence(raw):
     text = str(raw or "").strip()

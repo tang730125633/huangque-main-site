@@ -106,6 +106,80 @@ class BreakdownTests(unittest.TestCase):
         self.assertEqual(result["duration"], 18)
         self.assertEqual(len(result["scenes"]), 1)
 
+    def test_do_breakdown_reverse_prompt_returns_prompt_and_keeps_asr_flag(self):
+        calls = self._install_fake_env(
+            '```\n轻奢美容院场景，主角手持精华产品，暖金柔光，近景推镜，突出肌肤通透感与活动钩子\n```',
+            transcript=None,
+        )
+
+        result = self.breakdown._do_breakdown(
+            {"_job_id": 14, "mode": "reverse_prompt"},
+            {"platform": "douyin", "id": "rev-1"},
+            "https://example.test/post/reverse",
+            "reverse_prompt",
+        )
+
+        self.assertEqual(result["type"], "breakdown_reverse")
+        self.assertEqual(result["source_platform"], "douyin")
+        self.assertIn("轻奢美容院场景", result["prompt"])
+        self.assertEqual(result["frame_count"], 2)
+        self.assertFalse(result["asr_failed"])
+        self.assertIn("反推出一条适合后续作图/创作的中文提示词", calls["usermsg"])
+        self.assertIn("只输出提示词本身", calls["sysmsg"])
+        self.assertEqual(calls["phases"], ["downloading", "extracting_frames", "transcribing", "analyzing"])
+
+    def test_breakdown_scenes_retries_once_when_parse_fails(self):
+        calls = []
+        original_parse = self.breakdown._parse_breakdown_json
+        try:
+            def fake_chat_multimodal(sysmsg, usermsg, frames, temp=0.7):
+                calls.append((sysmsg, usermsg, list(frames), temp))
+                return 'first' if len(calls) == 1 else '{"scenes":[],"analysis":"ok"}'
+
+            seen = {"count": 0}
+            def fake_parse(raw):
+                seen["count"] += 1
+                if seen["count"] == 1:
+                    raise ValueError("拆解结果解析失败，请重试")
+                return original_parse(raw)
+
+            self.breakdown._chat_multimodal = fake_chat_multimodal
+            self.breakdown._parse_breakdown_json = fake_parse
+            result = self.breakdown._breakdown_scenes_from_frames("标题", 18, "douyin", "文案", ["f1.jpg"])
+        finally:
+            self.breakdown._parse_breakdown_json = original_parse
+
+        self.assertEqual(result["analysis"], "ok")
+        self.assertEqual(len(calls), 2)
+
+    def test_breakdown_reverse_prompt_retries_once_when_clean_fails(self):
+        calls = []
+        original_clean = self.breakdown._clean_reverse_prompt
+        try:
+            def fake_chat_multimodal(sysmsg, usermsg, frames, temp=0.7):
+                calls.append((sysmsg, usermsg, list(frames), temp))
+                return 'first' if len(calls) == 1 else '轻奢美容院场景，主角手持精华产品，暖金柔光'
+
+            seen = {"count": 0}
+            def fake_clean(raw):
+                seen["count"] += 1
+                if seen["count"] == 1:
+                    raise ValueError("反推结果解析失败，请重试")
+                return original_clean(raw)
+
+            self.breakdown._chat_multimodal = fake_chat_multimodal
+            self.breakdown._clean_reverse_prompt = fake_clean
+            result = self.breakdown._reverse_prompt_from_frames("标题", 18, "douyin", "文案", ["f1.jpg"])
+        finally:
+            self.breakdown._clean_reverse_prompt = original_clean
+
+        self.assertIn("轻奢美容院场景", result)
+        self.assertEqual(len(calls), 2)
+
+    def test_gen_breakdown_rejects_unknown_mode(self):
+        with self.assertRaisesRegex(ValueError, "mode 仅支持 scenes / reverse_prompt"):
+            self.breakdown.gen_breakdown({"url": "https://example.test/v/1", "mode": "mystery"})
+
     def test_parse_breakdown_json_accepts_fenced_json(self):
         result = self.breakdown._parse_breakdown_json(
             '```json\n{"scenes":[{"dur":"3s","scene":"门头","line":"欢迎来到门店"}],"analysis":"先钩子再转化"}\n```'
