@@ -918,7 +918,13 @@
     if(Array.prototype.some.call(el.options,function(x){return x.value===current;}))el.value=current;
   }
   function subtitleSetValue(id,value){var el=$(id);if(el&&value!=null)el.value=String(value);}
-  function subtitleSetOutput(id,value){var el=$(id);if(el)el.textContent=String(value);}
+  function subtitleSetOutput(id,value){var el=$(id);if(el&&value!=null)el.textContent=String(value);}
+  function subtitleSyncRangeOutputs(){
+    var controls=$('subtitleControls');if(!controls)return;
+    controls.querySelectorAll('input[type="range"]').forEach(function(input){
+      var output=$(input.id+'Out');if(output)output.textContent=input.value;
+    });
+  }
   function subtitleSetColor(id,textId,value){subtitleSetValue(id,value);subtitleSetOutput(textId,String(value||'').toUpperCase());}
   function subtitlePreviewFont(family){
     if(family==='Noto Serif CJK SC')return 'SimSun, "Songti SC", "Times New Roman", serif';
@@ -958,7 +964,7 @@
     subtitleSetValue('subtitleBounceHeight',o.bounce_height);subtitleSetOutput('subtitleBounceHeightOut',o.bounce_height);subtitleSetValue('subtitleBounceDuration',o.animation_duration_ms);subtitleSetOutput('subtitleBounceDurationOut',o.animation_duration_ms);
     subtitleSetColor('subtitleGlowColor','subtitleGlowColorText',o.glow_color);subtitleSetValue('subtitleGlowStrength',o.glow_strength);subtitleSetOutput('subtitleGlowStrengthOut',o.glow_strength);subtitleSetValue('subtitleGlowRadius',o.glow_radius);subtitleSetOutput('subtitleGlowRadiusOut',o.glow_radius);
     subtitleSetValue('subtitleSecondaryFont',o.secondary_font_family);subtitleSetValue('subtitleSecondarySize',o.secondary_font_size);subtitleSetOutput('subtitleSecondarySizeOut',o.secondary_font_size);subtitleSetColor('subtitleSecondaryColor','subtitleSecondaryColorText',o.secondary_color);subtitleSetValue('subtitleLineGap',o.line_gap);subtitleSetOutput('subtitleLineGapOut',o.line_gap);subtitleSetValue('subtitleSecondaryText',o.secondary_text);
-    updateSubtitlePreview();
+    subtitleSyncRangeOutputs();updateSubtitlePreview();
   }
   function subtitleNumber(id,fallback){var el=$(id),n=Number(el&&el.value);return isFinite(n)?n:fallback;}
   function collectSubtitleOptions(){
@@ -1021,7 +1027,7 @@
     var previewPositions={top:22,upper:36,center:50,lower:66,bottom:80};copy.style.top=(previewPositions[o.position]||80)+'%';
     copy.style.transform='translate(-50%,-50%) translateY('+(-Number(o.vertical_offset||0)*.10)+'px)';
   }
-  function refreshSubtitleStateFromForm(){subtitleTemplateState[selectedSubtitleStyle]=collectSubtitleOptions();updateSubtitlePreview();}
+  function refreshSubtitleStateFromForm(){subtitleTemplateState[selectedSubtitleStyle]=collectSubtitleOptions();subtitleSyncRangeOutputs();updateSubtitlePreview();}
   function bindSubtitleBuilder(){
     loadStoredSubtitleSettings();
     document.querySelectorAll('[data-substyle]').forEach(function(btn){btn.addEventListener('click',function(){setSubtitleStyle(btn.dataset.substyle);});});
