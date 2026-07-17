@@ -414,7 +414,7 @@
     if(previewTitle) previewTitle.textContent=currentMode==='breakdown'?'拆解结果 · 分镜预览':initialPreviewTitle;
     if(batchHint) batchHint.textContent=currentMode==='breakdown'?'拆解完成后可直接生成同款视频，或继续逐条转视频 / 转口播':initialBatchHint;
     if(bdRemakeBtn) bdRemakeBtn.style.display=currentMode==='breakdown'?'':'none';
-    if(bdEditBtn) bdEditBtn.style.display=currentMode==='breakdown' && lastBreakdown && (lastBreakdown.scenes||[]).length?'':'none';
+    if(bdEditBtn){ var hasScenes=currentMode==='breakdown' ? (lastBreakdown&&(lastBreakdown.scenes||[]).length) : (lastScenes.length>0); bdEditBtn.style.display=hasScenes?'':'none'; }
     if(genVideoBtn) genVideoBtn.style.display=currentMode==='breakdown'?'none':'';
     if(genAudioBtn) genAudioBtn.style.display=currentMode==='breakdown'?'none':'';
   }
@@ -433,9 +433,11 @@
   }
   function render(res, topicTxt, style, dur){
     lastScenes=res.scenes||[]; lastStyle=style||'口播';
+    bdEditing=false; if(bdEditBtn) bdEditBtn.textContent='✏️ 编辑分镜';
     if(meta) meta.innerHTML='<span>'+esc(topicTxt)+'</span><span style="color:#5c6b82;">·</span><span style="color:#e7b24c;">'+esc(style)+'</span><span style="color:#5c6b82;">·</span><span class="mono">'+esc(dur)+'</span><span style="color:#5c6b82;">·</span><span>共 <span class="mono">'+lastScenes.length+'</span> 个分镜</span>';
     scenes.innerHTML=lastScenes.map(function(s,i){ return sceneCardHTML(s,i); }).join('');
     hideBreakdownMeta();
+    if(bdEditBtn) bdEditBtn.style.display=lastScenes.length?'':'none';
     bindSceneHandoffs();
   }
   function renderBreakdown(bd){
@@ -512,14 +514,16 @@
     overlay.onclick=function(e){ if(e.target===overlay) document.body.removeChild(overlay); };
   }
   function _toggleBreakdownEdit(){
-    if(!lastBreakdown){ return; }
+    var hasScenes=currentMode==='breakdown' ? (lastBreakdown&&(lastBreakdown.scenes||[]).length) : (lastScenes.length>0);
+    if(!hasScenes){ return; }
     bdEditing=!bdEditing;
     if(bdEditBtn) bdEditBtn.textContent=bdEditing?'💾 保存分镜':'✏️ 编辑分镜';
     if(bdEditing){
       _renderBreakdownEditMode();
     } else {
       _saveBreakdownEdit();
-      renderBreakdown(lastBreakdown);
+      if(currentMode==='breakdown'&&lastBreakdown){ renderBreakdown(lastBreakdown); }
+      else if(lastScenes.length){ render({scenes:lastScenes}, (topic&&topic.value)||'', lastStyle||'口播', pick('segDur','.sc-opt','30s')); }
     }
   }
   function _editableCardHTML(s,i){
@@ -533,11 +537,11 @@
   }
   function _renderBreakdownEditMode(){
     if(!scenes) return;
-    var list=normalizeBreakdownScenes((lastBreakdown&&lastBreakdown.scenes)||[]);
+    var list=currentMode==='breakdown' ? normalizeBreakdownScenes((lastBreakdown&&lastBreakdown.scenes)||[]) : lastScenes;
     scenes.innerHTML=list.length ? list.map(function(s,i){ return _editableCardHTML(s,i); }).join('') : '<div style="padding:24px;text-align:center;color:#f4708a;">无可编辑分镜</div>';
   }
   function _saveBreakdownEdit(){
-    if(!scenes||!lastBreakdown) return;
+    if(!scenes) return;
     var cards=scenes.querySelectorAll('.sc-card');
     var updated=[];
     cards.forEach(function(card){
@@ -550,7 +554,9 @@
         line:(lineInput&&lineInput.value)||''
       });
     });
-    lastBreakdown.scenes=updated.filter(function(s){ return s.scene||s.line; });
+    updated=updated.filter(function(s){ return s.scene||s.line; });
+    if(currentMode==='breakdown'&&lastBreakdown){ lastBreakdown.scenes=updated; }
+    else { lastScenes=updated; }
   }
   if(bdEditBtn){ bdEditBtn.onclick=function(){ _toggleBreakdownEdit(); }; }
   function setBdPhase(phase,state){
