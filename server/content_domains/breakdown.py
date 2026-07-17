@@ -54,12 +54,13 @@ def _do_breakdown(payload, info, url):
         frame_dir, frames = _extract_frames(tmp_video.name, frame_count, duration)
 
         script_text = ""
+        asr_failed = False
         try:
             _heartbeat(job_id, "transcribing")
             segs = tikhub.transcript(det, video_path=tmp_video.name)
             script_text = _format_transcript(segs)
         except Exception:
-            pass
+            asr_failed = True
 
         _heartbeat(job_id, "analyzing")
         platform = info.get("platform", "")
@@ -67,7 +68,7 @@ def _do_breakdown(payload, info, url):
             "视频标题：" + str(title) + "\n"
             "时长：" + str(duration) + "s\n"
             "平台：" + str(platform) + "\n\n"
-            "口播文案（带时间轴）：\n" + str(script_text) + "\n\n"
+            "口播文案（带时间轴）：\n" + (str(script_text) if script_text else "（ASR 转录失败，请根据画面帧判断内容）") + "\n\n"
             "请严格输出 JSON：{\"scenes\":[{\"dur\":\"3s\",\"scene\":\"画面描述(10字内)\",\"line\":\"口播台词\"}],"
             "\"analysis\":\"视频内容综合分析(含视频主题、背景、构图运镜、人物特征、产品细节、情绪氛围、字幕建议等)\"}，"
             "只输出 JSON 本身，不要解释、不要 markdown 代码块。"
@@ -89,6 +90,7 @@ def _do_breakdown(payload, info, url):
             "duration": duration,
             "scenes": result.get("scenes", []),
             "analysis": result.get("analysis", ""),
+            "asr_failed": asr_failed,
         }
     finally:
         if tmp_video:

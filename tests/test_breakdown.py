@@ -83,6 +83,7 @@ class BreakdownTests(unittest.TestCase):
         self.assertEqual(result["source_platform"], "douyin")
         self.assertEqual(result["analysis"], "这是一条团购探店口播视频")
         self.assertEqual(result["scenes"][0]["scene"], "门店门头")
+        self.assertFalse(result["asr_failed"])
         self.assertIn('"analysis"', calls["usermsg"])
         self.assertIn("同时输出一份视频内容综合分析", calls["sysmsg"])
         self.assertIn("每个 scene 一句话说清画面", calls["usermsg"])
@@ -132,6 +133,54 @@ class BreakdownTests(unittest.TestCase):
     def test_parse_breakdown_json_raises_same_error_for_invalid_output(self):
         with self.assertRaisesRegex(ValueError, "拆解结果解析失败，请重试"):
             self.breakdown._parse_breakdown_json("not json at all")
+
+    def test_do_breakdown_records_asr_failure(self):
+        calls = {}
+
+        class FakeTikHub:
+            @staticmethod
+            def detail(platform, item_id, note_type=None):
+                calls["detail"] = (platform, item_id, note_type)
+                return {
+                    "play_url": "https://example.test/demo.mp4",
+                    "duration": 18,
+                    "title": "团购探店案例",
+                }
+
+            @staticmethod
+            def download_to_file(play_url, deadline, filename):
+                calls["download"] = (play_url, filename)
+
+            @staticmethod
+            def transcript(det, video_path=None):
+                calls["transcript"] = (det.get("title"), video_path)
+                raise RuntimeError("ASR service unavailable")
+
+        self.breakdown._heartbeat = lambda job_id, phase: calls.setdefault("phases", []).append(phase)
+        self.breakdown._extract_frames = lambda video_path, count, duration: (
+            "fake-frame-dir",
+            ["frame_1.jpg", "frame_2.jpg"],
+        )
+
+        def fake_chat_multimodal(sysmsg, usermsg, frames, temp=0.7):
+            calls["sysmsg"] = sysmsg
+            calls["usermsg"] = usermsg
+            calls["frames"] = list(frames)
+            return '{"scenes":[{"dur":"3s","scene":"门头","line":"欢迎光临"}],"analysis":"探店视频"}'
+
+        self.breakdown._chat_multimodal = fake_chat_multimodal
+        self.breakdown.tempfile.NamedTemporaryFile = lambda suffix="", delete=False: type("Tmp", (), {"name": "fake-video.mp4"})()
+        sys.modules["tikhub"] = FakeTikHub
+
+        result = self.breakdown._do_breakdown(
+            {"_job_id": 13},
+            {"platform": "douyin", "id": "abc456"},
+            "https://example.test/post/3",
+        )
+
+        self.assertTrue(result["asr_failed"])
+        self.assertIn("ASR 转录失败", calls["usermsg"])
+        self.assertEqual(calls["phases"], ["downloading", "extracting_frames", "transcribing", "analyzing"])
 
 
 if __name__ == "__main__":
