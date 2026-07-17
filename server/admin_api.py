@@ -23,6 +23,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 try:
     from content_domains import feature_flags
@@ -50,6 +51,7 @@ BASE = pathlib.Path(__file__).resolve().parent
 PORT = int(os.environ.get("ADMIN_API_PORT", "8099"))
 AUTH_BASE = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095").rstrip("/")
 AUTH_INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
+ADMIN_POINTS_MAX_DELTA = int(os.environ.get("HQ_ADMIN_POINTS_MAX_DELTA", "1000"))
 JOB_DB = pathlib.Path(os.environ.get("CONTENT_JOB_DB", str(BASE / "content_jobs.db")))
 ADMIN_DB = pathlib.Path(os.environ.get("ADMIN_DB", str(BASE / "admin_config.db")))
 
@@ -603,13 +605,39 @@ def verify(token):
         return None
 
 
-def auth_admin_request(path, token, method="GET", payload=None):
+def validate_admin_reason(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("reason must be 4 to 120 characters")
+    reason = value.strip()
+    if not 4 <= len(reason) <= 120:
+        raise ValueError("reason must be 4 to 120 characters")
+    return reason
+
+
+def validate_points_delta(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("delta must be an integer")
+    if value == 0 or abs(value) > ADMIN_POINTS_MAX_DELTA:
+        raise ValueError("delta must be nonzero and within %d" % ADMIN_POINTS_MAX_DELTA)
+    return value
+
+
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+
+def normalize_request_id(value: object) -> str:
+    request_id = value.strip() if isinstance(value, str) else ""
+    return request_id if _REQUEST_ID_RE.fullmatch(request_id) else uuid.uuid4().hex
+
+
+def auth_admin_request(path, token, method="GET", payload=None, request_id=None):
     if not AUTH_INTERNAL_TOKEN:
         raise RuntimeError("未配置内部点数接口密钥")
     data = None
     headers = {
         "Authorization": "Bearer " + (token or ""),
         "X-HQ-Internal-Token": AUTH_INTERNAL_TOKEN,
+        "X-Request-ID": normalize_request_id(request_id),
     }
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -1384,6 +1412,8 @@ class H(BaseHTTPRequestHandler):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        if getattr(self, "_current_request_id", ""):
+            self.send_header("X-Request-ID", self._current_request_id)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1409,6 +1439,7 @@ class H(BaseHTTPRequestHandler):
         return user
 
     def do_GET(self):
+        self._current_request_id = normalize_request_id(self.headers.get("X-Request-ID"))
         path = self.path.split("?", 1)[0]
         if not path.startswith("/api/admin/"):
             return self._send(404, {"detail": "not found"})
@@ -1522,6 +1553,7 @@ class H(BaseHTTPRequestHandler):
         return self._send(404, {"detail": "not found"})
 
     def do_POST(self):
+        self._current_request_id = normalize_request_id(self.headers.get("X-Request-ID"))
         path = self.path.split("?", 1)[0]
         if not path.startswith("/api/admin/"):
             return self._send(404, {"detail": "not found"})
@@ -1546,9 +1578,15 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "feature": item})
         if path == "/api/admin/points/adjust":
             try:
+                payload = self._body()
+                payload["reason"] = validate_admin_reason(payload.get("reason"))
+                payload["delta"] = validate_points_delta(payload.get("delta"))
                 return self._send(
                     200,
-                    auth_admin_request("/api/auth/admin/points/adjust", self._token(), method="POST", payload=self._body()),
+                    auth_admin_request(
+                        "/api/auth/admin/points/adjust", self._token(), method="POST",
+                        payload=payload, request_id=self._current_request_id,
+                    ),
                 )
             except ValueError as e:
                 return self._send(400, {"detail": str(e)})
@@ -1556,9 +1594,14 @@ class H(BaseHTTPRequestHandler):
                 return auth_error_response(self, e)
         if path == "/api/admin/recharge/review":
             try:
+                payload = self._body()
+                payload["reason"] = validate_admin_reason(payload.get("reason") or payload.get("review_note"))
                 return self._send(
                     200,
-                    auth_admin_request("/api/auth/admin/recharge/review", self._token(), method="POST", payload=self._body()),
+                    auth_admin_request(
+                        "/api/auth/admin/recharge/review", self._token(), method="POST",
+                        payload=payload, request_id=self._current_request_id,
+                    ),
                 )
             except ValueError as e:
                 return self._send(400, {"detail": str(e)})
