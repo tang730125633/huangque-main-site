@@ -645,7 +645,7 @@
           "配音音色"
         ],
         "summary": "TTS 配音 · 4点",
-        "description": "异步。voice 可填预设(dapeng/zelong/paul)或个人 VIP 音色 key。",
+        "description": "异步。仅使用阿里百炼 CosyVoice：公共预设走 cosyvoice-v1，个人复刻音色走 cosyvoice-v3.5-plus；不回退豆包或 OpenAI TTS。",
         "requestBody": {
           "required": true,
           "content": {
@@ -662,7 +662,7 @@
                   },
                   "voice": {
                     "type": "string",
-                    "default": "dapeng"
+                    "default": "S_d21F8OR62"
                   },
                   "speed": {
                     "type": "number",
@@ -880,6 +880,7 @@
           "配音音色"
         ],
         "summary": "上传样音 → 触发音色克隆训练",
+        "description": "仅使用阿里百炼 cosyvoice-v3.5-plus，不回退其他声音复刻服务。",
         "requestBody": {
           "required": true,
           "content": {

@@ -366,7 +366,9 @@ def check_clone_status(username, slot_id):
             WHERE username=? AND slot_id=? ORDER BY id DESC LIMIT 1""", (username, slot_id)).fetchone()
     if not slot:
         raise ValueError("\u97f3\u8272\u69fd\u4f4d\u4e0d\u5b58\u5728\u6216\u4e0d\u5c5e\u4e8e\u5f53\u524d\u8d26\u53f7")
-    # CosyVoice\uff1aprovider_voice \u662f CosyVoice voice_id \u5c31\u67e5\u5b83\u7684 list_voice \u72b6\u6001\uff0c\u4e0d\u78b0\u8c46\u5305\u3002
+    if not cosyvoice.enabled():
+        raise ValueError("声音复刻仅支持 CosyVoice，当前未配置 DASHSCOPE_API_KEY")
+    # CosyVoice：provider_voice 是 CosyVoice voice_id 就查询其训练状态。
     if cosyvoice.enabled():
         with closing(adb()) as c:
             pv = c.execute("""SELECT provider_voice FROM audio_voices WHERE username=? AND slot_id=?
@@ -386,6 +388,13 @@ def check_clone_status(username, slot_id):
                               (new_status, int(time.time()), username, slot_id))
                     c.commit()
             return {"status": new_status, "cosy_status": cv_status}
+        if slot["status"] == "active":
+            return {"status": "active"}
+        if slot["status"] == "training":
+            return {"status": "training"}
+        if slot["status"] == "failed":
+            return {"status": "failed", "clone_error": slot["clone_error"] or "复刻失败"}
+        raise ValueError("该音色不是 CosyVoice 音色，请重新复刻")
     if slot["status"] == "failed":
         return {"status": "failed", "clone_error": slot["clone_error"] or "\u8c46\u5305\u590d\u523b\u5931\u8d25", "doubao_status": None}
     if slot["status"] == "ready" and voice and voice["preview_url"] and not slot["clone_started_at"]:
@@ -701,16 +710,15 @@ def clone_vip_voice(username, payload):
         raise ValueError("\u7f3a\u5c11\u97f3\u8272\u69fd\u4f4d")
     if not audio_b64:
         raise ValueError("\u8bf7\u5148\u4e0a\u4f20\u6837\u97f3")
-    if not cosyvoice.enabled() and (not DOUBAO_APPID or not DOUBAO_TOKEN):
-        raise ValueError("\u8c46\u5305\u58f0\u97f3\u590d\u523b\u914d\u7f6e\u672a\u5b8c\u6210")
+    if not cosyvoice.enabled():
+        raise ValueError("声音复刻仅支持 CosyVoice，当前未配置 DASHSCOPE_API_KEY")
     with closing(adb()) as c:
         slot = c.execute("""SELECT id, slot_id, voice_id FROM audio_voice_slots
             WHERE username=? AND slot_id=? AND status IN ('active','training','failed','ready')""", (username, slot_id)).fetchone()
     if not slot:
         raise ValueError("\u97f3\u8272\u69fd\u4f4d\u4e0d\u5b58\u5728\u6216\u4e0d\u5c5e\u4e8e\u5f53\u524d\u8d26\u53f7")
     audio_b64, audio_format = prepare_clone_audio(audio_b64, audio_format)
-    if cosyvoice.enabled():
-        return _clone_via_cosyvoice(username, slot_id, name, audio_b64)
+    return _clone_via_cosyvoice(username, slot_id, name, audio_b64)
     baseline_version = baseline_icl = baseline_demo = ""
     try:
         baseline = query_doubao_clone_status(slot_id)
@@ -904,21 +912,21 @@ def _ensure_public_voice_preview(row):
     d = dict(row)
     if d.get("scope") != "public" or d.get("preview_url"):
         return d
-    speaker = (d.get("provider_voice") or d.get("voice_key") or "").strip()
-    if not speaker.startswith("S_"):   # 仅豆包/火山 S_ 音色可合成试听样音
+    if not cosyvoice.enabled():
         return d
     try:
-        preview = generate_doubao_preview(speaker, PUBLIC_VOICE_SAMPLE_TEXT)
-        fn = preview.get("file")
-        if fn:
-            url = public_url(fn, "audio/mpeg")   # 走 COS 直链（与其它产出一致）
-            now = int(time.time())
-            with closing(adb()) as c:
-                c.execute("UPDATE audio_voices SET preview_file=?, preview_url=?, updated_at=? WHERE id=?",
-                          (fn, url, now, d["id"]))
-                c.commit()
-            d["preview_file"] = fn
-            d["preview_url"] = url
+        speaker = _cosy_voice_for(d.get("provider_voice") or d.get("voice_key") or "")
+        audio_bytes = cosyvoice.synth(speaker, PUBLIC_VOICE_SAMPLE_TEXT)
+        fn = "audio/voice_preview_%s.mp3" % uuid.uuid4().hex
+        _out_path(fn).write_bytes(audio_bytes)
+        url = public_url(fn, "audio/mpeg")
+        now = int(time.time())
+        with closing(adb()) as c:
+            c.execute("UPDATE audio_voices SET preview_file=?, preview_url=?, updated_at=? WHERE id=?",
+                      (fn, url, now, d["id"]))
+            c.commit()
+        d["preview_file"] = fn
+        d["preview_url"] = url
     except Exception as e:
         print("[audio-preview-warmup] 公共音色试听样音生成失败 voice=%s error=%s" %
               (d.get("voice_key"), str(e)[:200]), flush=True)
@@ -1120,43 +1128,15 @@ def gen_audio(payload):
     pitch = knob("pitch", -12, 12, 0)
     volume = knob("volume", -50, 100, 0)
 
-    # CosyVoice 全量通道：配了 DASHSCOPE_API_KEY 就走这里，否则回落豆包/OpenAI(合并零风险)。
-    if cosyvoice.enabled():
-        cv_voice = _cosy_voice_for(voice)
-        # knob 的 pitch/-12~12、volume/-50~100 是豆包量纲；CosyVoice 用 pitch 0.5~2、volume 0~100。
-        cv_audio = cosyvoice.synth(cv_voice, text, rate=speed,
-                                   pitch=max(0.5, min(2.0, 1.0 + pitch / 24.0)),
-                                   volume=max(0, min(100, 50 + volume // 2)))
-        fn = "audio/aud_%d.mp3" % int(time.time() * 1000)   # 非敏感命名 → 可走 COS 公开直链
-        _out_path(fn).write_bytes(cv_audio)
-        return {"type": "audio", "file": fn, "url": public_url(fn, "audio/mpeg"), "voice": voice_key,
-                "speed": speed, "pitch": pitch, "volume": volume, "text": text, "prompt": text}
-
-    if str(voice).startswith("S_"):
-        speech_rate = int(round((speed - 1.0) * 100))
-        preview = generate_doubao_preview(voice, text, speech_rate=speech_rate, loudness_rate=volume, pitch_rate=pitch)
-        fn = preview.get("file")
-        # 正式配音不能复用 voice_preview 本地URL(敏感文件需归属鉴权且不走COS)。
-        # 转存为独立 aud_*.mp3(非敏感)再 public_url→COS公开直链,可直接试听/下载。
-        if fn:
-            formal_fn = "audio/aud_%d.mp3" % int(time.time() * 1000)
-            _out_path(formal_fn).write_bytes(_out_path(fn).read_bytes())
-            try:
-                _out_path(fn).unlink()
-            except Exception:
-                pass
-            fn = formal_fn
-        url = public_url(fn, "audio/mpeg") if fn else preview.get("url")
-        return {"type": "audio", "file": fn, "url": url, "voice": voice_key,
-                "speed": speed, "pitch": pitch, "volume": volume, "text": text, "prompt": text}
-    instructions = "中文短视频口播配音，语气自然，吐字清晰，节奏适合美业/本地生活转化。"
-    body = json.dumps({
-        "model": TTS_MODEL, "voice": voice, "input": text,
-        "instructions": instructions, "response_format": "mp3", "speed": speed,
-    }, ensure_ascii=False).encode()
-    data = _post_bytes("/v1/audio/speech", body, "application/json")
+    if not cosyvoice.enabled():
+        raise ValueError("语音服务仅支持 CosyVoice，当前未配置 DASHSCOPE_API_KEY")
+    cv_voice = _cosy_voice_for(voice)
+    # 页面参数仍沿用原量纲；在这里统一换算为 CosyVoice 的 pitch 0.5~2、volume 0~100。
+    cv_audio = cosyvoice.synth(cv_voice, text, rate=speed,
+                               pitch=max(0.5, min(2.0, 1.0 + pitch / 24.0)),
+                               volume=max(0, min(100, 50 + volume // 2)))
     fn = "audio/aud_%d.mp3" % int(time.time() * 1000)
-    _out_path(fn).write_bytes(data)
+    _out_path(fn).write_bytes(cv_audio)
     return {"type": "audio", "file": fn, "url": public_url(fn, "audio/mpeg"), "voice": voice_key,
             "speed": speed, "pitch": pitch, "volume": volume, "text": text, "prompt": text}
 
