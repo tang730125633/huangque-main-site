@@ -190,10 +190,12 @@ def _breakdown_source_context(title, duration, platform, script_text):
 def _breakdown_scenes_from_frames(title, duration, platform, script_text, frames):
     usermsg = (
         _breakdown_source_context(title, duration, platform, script_text) + "\n\n"
-        "请严格输出 JSON：{\"scenes\":[{\"dur\":\"3s\",\"scene\":\"画面描述(10字内)\",\"line\":\"口播台词\"}],"
+        "请严格输出 JSON：{\"scenes\":[{\"dur\":\"3s\",\"scene\":\"画面描述(20-40字)\",\"line\":\"口播台词\"}],"
         "\"analysis\":\"视频内容综合分析(含视频主题、背景、构图运镜、人物特征、产品细节、情绪氛围、字幕建议等)\"}，"
         "只输出 JSON 本身，不要解释、不要 markdown 代码块。"
-        "每个 scene 一句话说清画面，line 是原视频对应的口播内容。"
+        "4-6 个分镜，各 dur 之和≈总时长；每个 scene 用 20-40 字具体写清画面：主体是谁、在做什么动作、"
+        "场景环境与关键道具、镜头语言（特写/中景/运镜），结合关键帧里看得见的细节，不要笼统概括。"
+        "line 是原视频对应的口播内容。"
         "若原视频没有人物口播（纯音乐/歌舞/背景乐），或上方口播文案实为歌词、听写乱码、与画面无关的内容，"
         "所有 line 输出空串\"\"，不要编造台词。"
     )
@@ -216,7 +218,9 @@ def _reverse_prompt_from_frames(title, duration, platform, script_text, frames):
         "请基于关键帧和口播，反推出一条适合后续作图/创作的中文提示词。"
         "目标不是逐字复刻原视频，而是保留它的主体设定、镜头语言、场景道具、光线氛围、色调质感、构图与文案钩子，"
         "用于生成同风格但原创的新内容。"
-        "直接输出 1 条完整提示词，80-160 字，不要 JSON、不要标题、不要解释、不要 markdown 代码块。"
+        "提示词要具体可执行，写清五个层次：①主体（人物/产品的外观、姿态、动作细节）②场景（环境、道具、背景层次）"
+        "③镜头（景别、运镜、视角）④光线与色调（氛围、质感）⑤节奏与情绪钩子。"
+        "直接输出 1 条完整提示词，150-300 字，不要 JSON、不要标题、不要解释、不要 markdown 代码块。"
     )
     sysmsg = (
         "你是黄雀传媒资深短视频创意总监。你擅长根据视频关键帧和口播，提炼出可直接用于后续创作的中文提示词。"

@@ -86,7 +86,7 @@ class BreakdownTests(unittest.TestCase):
         self.assertFalse(result["asr_failed"])
         self.assertIn('"analysis"', calls["usermsg"])
         self.assertIn("同时输出一份视频内容综合分析", calls["sysmsg"])
-        self.assertIn("每个 scene 一句话说清画面", calls["usermsg"])
+        self.assertIn("20-40 字具体写清画面", calls["usermsg"])
         self.assertEqual(calls["frames"], ["frame_1.jpg", "frame_2.jpg"])
         self.assertEqual(calls["phases"], ["downloading", "extracting_frames", "transcribing", "analyzing"])
 
@@ -105,6 +105,21 @@ class BreakdownTests(unittest.TestCase):
         self.assertEqual(result["source_title"], "团购探店案例")
         self.assertEqual(result["duration"], 18)
         self.assertEqual(len(result["scenes"]), 1)
+
+    def test_scenes_prompt_requires_rich_detail(self):
+        """分镜 prompt 必须要求细致画面（20-40字、4-6镜、镜头语言），不再限 10 字"""
+        import inspect
+        src = inspect.getsource(self.breakdown._breakdown_scenes_from_frames)
+        self.assertIn("20-40字", src)
+        self.assertIn("4-6 个分镜", src)
+        self.assertNotIn("10字内", src)
+
+    def test_reverse_prompt_requires_structured_detail(self):
+        """反推 prompt 必须要求五层结构（主体/场景/镜头/光线/钩子）且 150-300 字"""
+        import inspect
+        src = inspect.getsource(self.breakdown._reverse_prompt_from_frames)
+        self.assertIn("150-300 字", src)
+        self.assertIn("镜头（景别、运镜、视角）", src)
 
     def test_do_breakdown_reverse_prompt_returns_prompt_and_keeps_asr_flag(self):
         import os, tempfile
