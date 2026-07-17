@@ -570,6 +570,28 @@ def update_video_asset_phase(job_id, phase, **fields):
     except Exception:
         pass
 
+def get_resumable_xai_request(job_id):
+    if not job_id:
+        return None
+    with closing(adb()) as c:
+        row = c.execute(
+            """SELECT provider_video_id, model, phase, status
+               FROM video_assets WHERE job_id=?""",
+            (job_id,),
+        ).fetchone()
+    if not row or not row["provider_video_id"]:
+        return None
+    phase = str(row["phase"] or "")
+    if not (phase.startswith("xai_") or phase == "downloading"):
+        return None
+    return {
+        "request_id": row["provider_video_id"],
+        "model": row["model"] or "grok-imagine-video",
+        "phase": phase,
+        "status": row["status"],
+    }
+
+
 def record_video_pending_asset(job_id, username, payload):
     # 换装/换背景(tryon)与常规视频共用 video_assets 表；tryon 没有 mode/voice 等字段，兜底为空即可
     is_tryon = bool(payload.get("person_video_data") or payload.get("person_image_data")
@@ -2524,13 +2546,20 @@ def gen_xiaole_video(payload):
         if raw_refs:
             ref_images = [_xiaole_ref_to_url(r) for r in raw_refs]
     label = {"grok": "果肉视频", "micro": "豆姐视频", "omni": "欧米视频"}.get(channel, model)
-    if job_id:
+    existing = get_resumable_xai_request(job_id) if use_xai else None
+    if job_id and not existing:
         update_video_asset_phase(job_id, "queued", mode=channel, text=prompt, model=model)
     if use_xai:
         from . import video_xai
         operation = payload.get("operation") or "generate"
         reference_video_file = reference_video_url = None
-        if operation == "edit":
+        if existing:
+            xres = video_xai.resume(
+                existing["request_id"], existing.get("model") or model,
+                payload.get("duration") or 10,
+                job_id=job_id, heartbeat=update_video_asset_phase,
+            )
+        elif operation == "edit":
             reference_video_file = _save_data_file(payload.get("reference_video_data"), "grok_edit_source", [".mp4"])
             if not reference_video_file:
                 raise RuntimeError("参考视频保存失败")
