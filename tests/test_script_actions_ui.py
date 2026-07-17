@@ -88,6 +88,17 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("网络不稳定，正在重试", self.html)
         self.assertIn("网络连接失败，请检查网络后重试", self.html)
 
+    def test_breakdown_scenes_are_editable(self):
+        self.assertIn('id="bdEditBtn"', self.html)
+        self.assertIn("function _toggleBreakdownEdit()", self.html)
+        self.assertIn("function _editableCardHTML(s,i)", self.html)
+        self.assertIn("function _saveBreakdownEdit()", self.html)
+        self.assertIn("function _renderBreakdownEditMode()", self.html)
+        self.assertIn('data-scene-dur', self.html)
+        self.assertIn('data-scene-text', self.html)
+        self.assertIn('data-scene-line', self.html)
+        self.assertIn("bdEditing=false", self.html)
+
 
 if __name__ == "__main__":
     unittest.main()
