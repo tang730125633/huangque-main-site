@@ -182,6 +182,12 @@ class BreakdownTests(unittest.TestCase):
         self.assertIn("ASR 转录失败", calls["usermsg"])
         self.assertEqual(calls["phases"], ["downloading", "extracting_frames", "transcribing", "analyzing"])
 
+    def test_heartbeat_uses_prefixed_key_to_avoid_collision(self):
+        import inspect
+        src = inspect.getsource(self.breakdown._heartbeat)
+        self.assertIn('"_hb_phase"', src)
+        self.assertNotIn('"phase"', src)
+
 
 if __name__ == "__main__":
     unittest.main()

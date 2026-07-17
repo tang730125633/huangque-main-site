@@ -171,14 +171,14 @@ def _parse_breakdown_json(raw):
 
 
 def _heartbeat(job_id, phase):
-    """刷新 updated_at 防止 reaper 误杀 + 写 phase 供前端展示"""
+    """刷新 updated_at 防止 reaper 误杀 + 写 _hb_phase 供前端展示（用前缀防与用户 payload 字段冲突）"""
     try:
         now = int(time.time())
         with closing(jdb()) as c:
             row = c.execute("SELECT payload FROM jobs WHERE id=?", (job_id,)).fetchone()
             if row:
                 p = json.loads(row["payload"] or "{}")
-                p["phase"] = phase
+                p["_hb_phase"] = phase
                 c.execute("UPDATE jobs SET payload=?, updated_at=? WHERE id=?",
                           (json.dumps(p, ensure_ascii=False), now, job_id))
                 c.commit()
