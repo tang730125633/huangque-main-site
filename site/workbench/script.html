@@ -600,6 +600,7 @@
     if(!t){ scenes.innerHTML='<div style="padding:22px;text-align:center;color:#f4708a;font-size:13px;">请先填「选题」</div>'; return; }
     currentMode='write'; syncModeUi();
     var style=pick('segStyle','.sc-opt','口播'), dur=pick('segDur','.sc-opt','30s'), plat=pick('platRow','.sc-chip','抖音');
+    var pollCount=0, pollErrors=0;
     setBtn('生成中…',true);
     scenes.innerHTML='<div style="padding:34px; text-align:center; color:#2dd4bf; font-size:13px;">编导生成中…（约 10-20 秒）</div>';
     hideBreakdownMeta();
@@ -614,10 +615,17 @@
         if(x.s===402){ setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
         if(!x.d.job_id){ setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+((x.d&&x.d.detail)||'未知')+'</div>'; return; }
         var iv=setInterval(function(){
+          pollCount++;
           fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+            pollErrors=0;
             if(d.status==='done'){ clearInterval(iv); setBtn(orig,false); render(d.result, t, style, dur); loadHistory(); if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints(); }
             else if(d.status==='error'||d.status==='failed'){ clearInterval(iv); setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">失败：'+(d.error||'')+' · 已退点</div>'; }
-          }).catch(function(){});
+            if(pollCount>200){ clearInterval(iv); setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">生成超时，请稍后重试</div>'; }
+          }).catch(function(){
+            pollErrors++;
+            if(pollErrors>=3) scenes.innerHTML='<div style="padding:34px;text-align:center;color:#f4a460;font-size:13px;">网络不稳定，正在重试…（'+pollErrors+'/10）</div>';
+            if(pollErrors>=10){ clearInterval(iv); setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络连接失败，请检查网络后重试</div>'; }
+          });
         },3000);
       }).catch(function(){ setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络错误，请重试</div>'; });
   };
@@ -781,7 +789,7 @@
     scenes.innerHTML='<div style="padding:34px;text-align:center;color:#e7b24c;font-size:13px;">🎬 正在启动生成…</div>';
     if(meta) meta.innerHTML='';
     hideBreakdownMeta();
-    var pollCount=0, lastProgress=-1, sceneCount=payload.scenes.length;
+    var pollCount=0, lastProgress=-1, pollErrors=0, sceneCount=payload.scenes.length;
     fetch('/api/gen/script_to_video',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
       .then(function(x){
@@ -793,6 +801,7 @@
         var iv=setInterval(function(){
           pollCount++;
           fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+            pollErrors=0;
             if(d.status==='done'){
               clearInterval(iv); _setGenerateBusy(btn,false);
               var vurl=(d.result&&d.result.video_url)||'';
@@ -820,7 +829,11 @@
               }
             }
             if(pollCount>120){ clearInterval(iv); _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">成片超时（6分钟），请稍后在视频页查看</div>'; }
-          }).catch(function(){});
+          }).catch(function(){
+            pollErrors++;
+            if(pollErrors>=3) scenes.innerHTML='<div style="padding:34px;text-align:center;color:#f4a460;font-size:13px;">网络不稳定，正在重试…（'+pollErrors+'/10）</div>';
+            if(pollErrors>=10){ clearInterval(iv); _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络连接失败，请检查网络后重试</div>'; }
+          });
         },3000);
       }).catch(function(){ _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络错误，请重试</div>'; });
   }
