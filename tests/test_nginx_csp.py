@@ -13,14 +13,30 @@ REQUIRED_HEADERS = {
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
 }
+ADD_HEADER_DIRECTIVE = re.compile(
+    r'^[ \t]*add_header[ \t]+'
+    r'(?P<name>[^\s;]+)[ \t]+'
+    r'(?P<value>"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|[^\s;]+)'
+    r'(?P<tail>(?:[ \t]+[^\s;]+)*)[ \t]*;',
+    flags=re.MULTILINE,
+)
+
+
+def _active_header_directives(config, name):
+    directives = []
+    for match in ADD_HEADER_DIRECTIVE.finditer(_strip_comments(config)):
+        if match.group("name") != name:
+            continue
+        value = match.group("value")
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = value[1:-1]
+        tail = match.group("tail").split()
+        directives.append((value, tail == ["always"]))
+    return directives
 
 
 def _active_header_values(config, name):
-    return re.findall(
-        rf'^[ \t]*add_header[ \t]+{re.escape(name)}[ \t]+"([^"]+)"[ \t]+always[ \t]*;',
-        _strip_comments(config),
-        flags=re.MULTILINE,
-    )
+    return [value for value, _ in _active_header_directives(config, name)]
 
 
 def _first_server_without_locations(config):
@@ -39,33 +55,39 @@ def _first_server_without_locations(config):
 def _assert_required_headers(test_case, config, require_hsts=False):
     server_block = _first_server_without_locations(config)
     for name, value in REQUIRED_HEADERS.items():
-        test_case.assertEqual(_active_header_values(server_block, name), [value], name)
+        test_case.assertEqual(
+            _active_header_directives(server_block, name),
+            [(value, True)],
+            name,
+        )
 
-    server_policies = _active_header_values(server_block, "Content-Security-Policy")
+    server_policies = _active_header_directives(server_block, "Content-Security-Policy")
     test_case.assertEqual(len(server_policies), 1, "server must set CSP exactly once")
-    test_case.assertIn("frame-ancestors 'self'", server_policies[0])
+    test_case.assertTrue(server_policies[0][1], "server CSP must use always")
+    test_case.assertIn("frame-ancestors 'self'", server_policies[0][0])
 
     if require_hsts:
         test_case.assertEqual(
-            _active_header_values(server_block, "Strict-Transport-Security"),
-            ["max-age=31536000; includeSubDomains"],
+            _active_header_directives(server_block, "Strict-Transport-Security"),
+            [("max-age=31536000; includeSubDomains", True)],
         )
 
     for _, path, _, block in _active_locations(config):
         if re.search(r"^[ \t]*add_header\s+", block, flags=re.MULTILINE):
             for name, value in REQUIRED_HEADERS.items():
                 test_case.assertEqual(
-                    _active_header_values(block, name),
-                    [value],
+                    _active_header_directives(block, name),
+                    [(value, True)],
                     f"{path} replaces inherited headers and must retain {name}",
                 )
-            policies = _active_header_values(block, "Content-Security-Policy")
+            policies = _active_header_directives(block, "Content-Security-Policy")
             test_case.assertEqual(len(policies), 1, f"{path} must retain CSP")
-            test_case.assertIn("frame-ancestors 'self'", policies[0])
+            test_case.assertTrue(policies[0][1], f"{path} CSP must use always")
+            test_case.assertIn("frame-ancestors 'self'", policies[0][0])
             if require_hsts:
                 test_case.assertEqual(
-                    _active_header_values(block, "Strict-Transport-Security"),
-                    ["max-age=31536000; includeSubDomains"],
+                    _active_header_directives(block, "Strict-Transport-Security"),
+                    [("max-age=31536000; includeSubDomains", True)],
                     f"{path} replaces inherited headers and must retain HSTS",
                 )
 
@@ -122,6 +144,39 @@ class NginxHeaderValidatorMutationTest(unittest.TestCase):
     def test_duplicate_location_header_is_rejected(self):
         marker = '        add_header Referrer-Policy "strict-origin-when-cross-origin" always;'
         mutated = self.config.replace(marker, f"{marker}\n{marker}", 1)
+
+        with self.assertRaises(AssertionError):
+            _assert_required_headers(self, mutated, require_hsts=True)
+
+    def test_unquoted_duplicate_nosniff_is_rejected(self):
+        marker = '        add_header X-Content-Type-Options "nosniff" always;'
+        mutated = self.config.replace(
+            marker,
+            f"{marker}\n        add_header X-Content-Type-Options nosniff always;",
+            1,
+        )
+
+        with self.assertRaises(AssertionError):
+            _assert_required_headers(self, mutated, require_hsts=True)
+
+    def test_conflicting_quoted_referrer_policy_is_rejected(self):
+        marker = '        add_header Referrer-Policy "strict-origin-when-cross-origin" always;'
+        mutated = self.config.replace(
+            marker,
+            f'{marker}\n        add_header Referrer-Policy "no-referrer" always;',
+            1,
+        )
+
+        with self.assertRaises(AssertionError):
+            _assert_required_headers(self, mutated, require_hsts=True)
+
+    def test_duplicate_without_always_is_rejected(self):
+        marker = '        add_header X-Content-Type-Options "nosniff" always;'
+        mutated = self.config.replace(
+            marker,
+            f'{marker}\n        add_header X-Content-Type-Options "nosniff";',
+            1,
+        )
 
         with self.assertRaises(AssertionError):
             _assert_required_headers(self, mutated, require_hsts=True)
