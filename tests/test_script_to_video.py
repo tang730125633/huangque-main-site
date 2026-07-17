@@ -49,6 +49,7 @@ class ScriptToVideoTests(unittest.TestCase):
         self.assertIn("电影质感", calls["payload"]["prompt"])
         self.assertEqual(result["pipeline"], "grok")
         self.assertEqual(result["scene_count"], 2)
+        self.assertEqual(result["type"], "script_to_video")
 
     def test_talking_style_uses_selected_avatar_id(self):
         calls = {}

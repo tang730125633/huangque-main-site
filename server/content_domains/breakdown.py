@@ -124,6 +124,7 @@ def _do_breakdown(payload, info, url, mode=None):
 
         _heartbeat(job_id, "analyzing")
         platform = info.get("platform", "")
+        frame_thumbnails = _frame_thumbnails(frames)
         if mode == _BREAKDOWN_MODE_REVERSE_PROMPT:
             prompt = _reverse_prompt_from_frames(title, duration, platform, script_text, frames)
             return {
@@ -134,20 +135,11 @@ def _do_breakdown(payload, info, url, mode=None):
                 "duration": duration,
                 "prompt": prompt,
                 "frame_count": len(frames or []),
+                "frame_thumbnails": frame_thumbnails,
                 "asr_failed": asr_failed,
             }
 
         result = _breakdown_scenes_from_frames(title, duration, platform, script_text, frames)
-
-        # 读取关键帧作为缩略图，供前端展示故事板
-        frame_thumbnails = []
-        for fp in (frames or [])[:4]:
-            try:
-                with open(fp, "rb") as f:
-                    b64 = base64.b64encode(f.read()).decode()
-                frame_thumbnails.append("data:image/jpeg;base64," + b64)
-            except Exception:
-                pass
 
         return {
             "type": "breakdown",
@@ -170,6 +162,18 @@ def _do_breakdown(payload, info, url, mode=None):
 
 
 # ============ 辅助函数 ============
+
+
+def _frame_thumbnails(frames, limit=4):
+    thumbs = []
+    for fp in (frames or [])[:max(0, int(limit or 0))]:
+        try:
+            with open(fp, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode()
+            thumbs.append("data:image/jpeg;base64," + b64)
+        except Exception:
+            pass
+    return thumbs
 
 
 def _breakdown_source_context(title, duration, platform, script_text):

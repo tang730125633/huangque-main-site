@@ -148,6 +148,22 @@ def _lead_details(items):
     return out
 
 
+def _project_breakdown_item(result):
+    r = result or {}
+    return {
+        "type": r.get("type") or "breakdown",
+        "source_url": r.get("source_url"),
+        "source_title": r.get("source_title"),
+        "source_platform": r.get("source_platform"),
+        "duration": r.get("duration"),
+        "scenes": r.get("scenes"),
+        "analysis": r.get("analysis"),
+        "prompt": r.get("prompt"),
+        "frame_thumbnails": r.get("frame_thumbnails") or [],
+    }
+
+
+
 def _project(kind, result):
     """把各 kind 形状各异的 result 投影成 (title, file, url, meta)。
 
@@ -190,11 +206,18 @@ def _project(kind, result):
             "leads": _lead_details(r.get("leads")),
         })
     if kind == "breakdown":
-        return (_clip(r.get("source_title")), None, r.get("source_url"), {
-            "source_url": r.get("source_url"), "source_platform": r.get("source_platform"),
-            "duration": r.get("duration"), "scenes": r.get("scenes"),
-            "analysis": r.get("analysis"),
-        })
+        if r.get("type") == "breakdown_batch":
+            results = [_project_breakdown_item(item) for item in (r.get("results") or []) if isinstance(item, dict)]
+            first = results[0] if results else {}
+            title = _clip((first or {}).get("source_title")) or "批量视频拆解"
+            return (title, None, (first or {}).get("source_url"), {
+                "type": "breakdown_batch",
+                "results": results,
+                "errors": r.get("errors") or [],
+                "total": r.get("total"),
+            })
+        item = _project_breakdown_item(r)
+        return (_clip(r.get("source_title")), None, r.get("source_url"), item)
     return (None, None, None, {})
 
 

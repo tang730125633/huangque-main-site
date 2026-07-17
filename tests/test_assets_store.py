@@ -109,27 +109,83 @@ class AssetsStoreTests(unittest.TestCase):
             "duration": 27,
             "scenes": [{"dur": "3s", "scene": "门头特写", "line": "先看招牌"}],
             "analysis": "前3秒强钩子，后面用价格锚点推进转化",
+            "frame_thumbnails": ["data:image/jpeg;base64,thumb1"],
         }
         self.assertTrue(self.store.record_asset(16, "u", "breakdown", result))
         a = self.store.list_assets("u", kind="breakdown")[0]
         self.assertEqual(a["stage"], "work")
         self.assertEqual(a["title"], self.store._clip(result["source_title"]))
         self.assertEqual(a["url"], "https://example.com/video/9")
+        self.assertEqual(a["meta"]["type"], "breakdown")
         self.assertEqual(a["meta"]["source_platform"], "douyin")
         self.assertEqual(a["meta"]["duration"], 27)
         self.assertEqual(a["meta"]["scenes"][0]["scene"], "门头特写")
         self.assertEqual(a["meta"]["analysis"], "前3秒强钩子，后面用价格锚点推进转化")
+        self.assertEqual(a["meta"]["frame_thumbnails"], ["data:image/jpeg;base64,thumb1"])
+
+    def test_record_breakdown_reverse_keeps_prompt(self):
+        result = {
+            "type": "breakdown_reverse",
+            "source_title": "爆款提示词反推",
+            "source_url": "https://example.com/video/reverse",
+            "source_platform": "xiaohongshu",
+            "duration": 19,
+            "prompt": "暖金美容院场景，女生手持精华，近景推镜",
+            "frame_thumbnails": ["data:image/jpeg;base64,thumb2"],
+        }
+        self.assertTrue(self.store.record_asset(18, "u", "breakdown", result))
+        a = self.store.list_assets("u", kind="breakdown")[0]
+        self.assertEqual(a["meta"]["type"], "breakdown_reverse")
+        self.assertEqual(a["meta"]["prompt"], result["prompt"])
+        self.assertEqual(a["meta"]["frame_thumbnails"], ["data:image/jpeg;base64,thumb2"])
+
+    def test_record_breakdown_batch_keeps_all_results(self):
+        result = {
+            "type": "breakdown_batch",
+            "total": 2,
+            "results": [
+                {
+                    "type": "breakdown",
+                    "source_title": "视频一",
+                    "source_url": "https://example.com/video/1",
+                    "source_platform": "douyin",
+                    "duration": 12,
+                    "scenes": [{"dur": "3s", "scene": "门头", "line": "欢迎"}],
+                },
+                {
+                    "type": "breakdown_reverse",
+                    "source_title": "视频二",
+                    "source_url": "https://example.com/video/2",
+                    "source_platform": "xiaohongshu",
+                    "duration": 18,
+                    "prompt": "女生展示产品，暖调柔光",
+                },
+            ],
+            "errors": [{"url": "https://example.com/video/3", "error": "下载失败"}],
+        }
+        self.assertTrue(self.store.record_asset(19, "u", "breakdown", result))
+        a = self.store.list_assets("u", kind="breakdown")[0]
+        self.assertEqual(a["meta"]["type"], "breakdown_batch")
+        self.assertEqual(a["meta"]["total"], 2)
+        self.assertEqual(len(a["meta"]["results"]), 2)
+        self.assertEqual(a["meta"]["results"][0]["source_title"], "视频一")
+        self.assertEqual(a["meta"]["results"][1]["type"], "breakdown_reverse")
+        self.assertEqual(a["meta"]["results"][1]["prompt"], "女生展示产品，暖调柔光")
+        self.assertEqual(len(a["meta"]["errors"]), 1)
 
     def test_record_breakdown_tolerates_missing_fields(self):
         self.assertTrue(self.store.record_asset(17, "u", "breakdown", None))
         a = self.store.list_assets("u", kind="breakdown")[0]
         self.assertIsNone(a["title"])
         self.assertIsNone(a["url"])
+        self.assertEqual(a["meta"]["type"], "breakdown")
         self.assertIsNone(a["meta"]["source_url"])
         self.assertIsNone(a["meta"]["source_platform"])
         self.assertIsNone(a["meta"]["duration"])
         self.assertIsNone(a["meta"]["scenes"])
         self.assertIsNone(a["meta"]["analysis"])
+        self.assertIsNone(a["meta"]["prompt"])
+        self.assertEqual(a["meta"]["frame_thumbnails"], [])
 
     # --- 幂等：回填脚本会反复跑 ---
     def test_record_is_idempotent(self):

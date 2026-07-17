@@ -107,22 +107,43 @@ class BreakdownTests(unittest.TestCase):
         self.assertEqual(len(result["scenes"]), 1)
 
     def test_do_breakdown_reverse_prompt_returns_prompt_and_keeps_asr_flag(self):
+        import os, tempfile
+        thumb = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+        thumb.write(bytes.fromhex(
+            "ffd8ffe000104a46494600010101006000600000ffdb004300080606070605080707070909080a0c"
+            "140d0c0b0b0c1912130f141d1a1f1e1d1a1c1c20242e2720222c231c1c2837292c3031343434"
+            "1f27393d38323c2e333432ffdb0043010909090c0b0c180d0d1832211c21323232323232323232"
+            "323232323232323232323232323232323232323232323232323232323232323232323232323232"
+            "ffc00011080001000103012200021101031101ffc4001400010000000000000000000000000000"
+            "0008ffc40014100100000000000000000000000000000000ffda0008010100013f10c9b0a3c4ff"
+            "d9"
+        ))
+        thumb.close()
         calls = self._install_fake_env(
             '```\n轻奢美容院场景，主角手持精华产品，暖金柔光，近景推镜，突出肌肤通透感与活动钩子\n```',
             transcript=None,
         )
-
-        result = self.breakdown._do_breakdown(
-            {"_job_id": 14, "mode": "reverse_prompt"},
-            {"platform": "douyin", "id": "rev-1"},
-            "https://example.test/post/reverse",
-            "reverse_prompt",
+        self.breakdown._extract_frames = lambda video_path, count, duration: (
+            "fake-frame-dir",
+            [thumb.name, thumb.name],
         )
+
+        try:
+            result = self.breakdown._do_breakdown(
+                {"_job_id": 14, "mode": "reverse_prompt"},
+                {"platform": "douyin", "id": "rev-1"},
+                "https://example.test/post/reverse",
+                "reverse_prompt",
+            )
+        finally:
+            os.unlink(thumb.name)
 
         self.assertEqual(result["type"], "breakdown_reverse")
         self.assertEqual(result["source_platform"], "douyin")
         self.assertIn("轻奢美容院场景", result["prompt"])
         self.assertEqual(result["frame_count"], 2)
+        self.assertEqual(len(result["frame_thumbnails"]), 2)
+        self.assertTrue(result["frame_thumbnails"][0].startswith("data:image/jpeg;base64,"))
         self.assertFalse(result["asr_failed"])
         self.assertIn("反推出一条适合后续作图/创作的中文提示词", calls["usermsg"])
         self.assertIn("只输出提示词本身", calls["sysmsg"])
