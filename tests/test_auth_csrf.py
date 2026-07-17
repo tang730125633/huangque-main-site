@@ -157,6 +157,36 @@ class AuthCsrfTests(unittest.TestCase):
         self.assertIn("Max-Age=0", self._cookie(cleared, self.auth.AUTH_COOKIE_NAME))
         self.assertIn("Max-Age=0", self._cookie(cleared, "hq_csrf"))
 
+    def test_bearer_logout_ignores_unrelated_ambient_session_cookie(self):
+        self.auth.create_user("bearer_user", "secret123", 5)
+        with self._post(
+            "/api/auth/miniprogram-login",
+            {"username": "bearer_user", "password": "secret123"},
+        ) as response:
+            token = json.loads(response.read())["token"]
+
+        with self._post(
+            "/api/auth/logout",
+            {},
+            {
+                "Authorization": "Bearer " + token,
+                "Cookie": self.auth.AUTH_COOKIE_NAME + "=unrelated-stale-session",
+            },
+        ) as response:
+            self.assertEqual(response.status, 200)
+
+    def test_logout_rejects_non_ascii_csrf_token_with_403(self):
+        cookies = self._login("non_ascii_csrf_user")
+        cookie_header = "; ".join(cookie.split(";", 1)[0] for cookie in cookies)
+
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self._post(
+                "/api/auth/logout",
+                {},
+                {"Cookie": cookie_header, "X-CSRF-Token": "é"},
+            )
+        self.assertEqual(error.exception.code, 403)
+
 
 if __name__ == "__main__":
     unittest.main()

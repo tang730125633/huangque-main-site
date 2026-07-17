@@ -1437,6 +1437,12 @@ def request_token(headers):
         return token
     return cookie_token(headers.get("Cookie"))
 
+def request_auth_mode(headers):
+    token = bearer_token(headers.get("Authorization"))
+    if token and token != "__cookie__":
+        return "bearer"
+    return "cookie" if cookie_token(headers.get("Cookie")) else ""
+
 def auth_cookie_header(token):
     parts = [f"{AUTH_COOKIE_NAME}={token}", "Path=/", f"Max-Age={TOKEN_TTL}", "HttpOnly", "SameSite=Lax"]
     if AUTH_COOKIE_SECURE:
@@ -1568,7 +1574,10 @@ class H(BaseHTTPRequestHandler):
             expected = csrf_token_for(session_token)
         except (RuntimeError, ValueError):
             return False
-        return secrets.compare_digest(supplied, expected)
+        try:
+            return secrets.compare_digest(supplied, expected)
+        except TypeError:
+            return False
 
     def _require_internal(self):
         if self._internal_auth():
@@ -1905,7 +1914,7 @@ class H(BaseHTTPRequestHandler):
             tok = request_token(self.headers)
             if not tok:
                 return self._send(200, {"ok": True}, clear_cookie)
-            if cookie_token(self.headers.get("Cookie")) and not self._csrf_valid(tok):
+            if request_auth_mode(self.headers) == "cookie" and not self._csrf_valid(tok):
                 return self._send(403, {"detail": "forbidden"})
             if not tok:
                 return self._send(401, {"detail": "未登录"})
