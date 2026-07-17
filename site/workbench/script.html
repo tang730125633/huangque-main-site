@@ -451,7 +451,7 @@
     if(bdActionHint) bdActionHint.textContent=reverseMode?'下载 → 抽帧 → 转写 → AI反推 · 约 40-90 秒':'下载 → 抽帧 → 转写 → AI分析 · 约 40-90 秒';
     if(previewTitle) previewTitle.textContent=currentMode==='breakdown' ? (reverseMode?'拆解结果 · 提示词反推':'拆解结果 · 分镜预览') : initialPreviewTitle;
     if(batchHint) batchHint.textContent=currentMode==='breakdown' ? (reverseMode?'反推完成后可复制提示词，或直接去作图继续生成':'拆解完成后可直接生成同款视频，或继续逐条转视频 / 转口播') : initialBatchHint;
-    if(bdRemakeBtn) bdRemakeBtn.style.display=currentMode==='breakdown'&&!reverseMode&&hasBreakdownScenes?'':'none';
+    if(bdRemakeBtn) bdRemakeBtn.style.display=currentMode==='breakdown'&&((!reverseMode&&hasBreakdownScenes)||(reverseMode&&hasReversePrompt))?'':'none';
     if(bdEditBtn){ var hasScenes=currentMode==='breakdown' ? (!reverseMode&&hasBreakdownScenes) : (lastScenes.length>0); bdEditBtn.style.display=hasScenes?'':'none'; }
     if(bdReverseCopyBtn) bdReverseCopyBtn.style.display=currentMode==='breakdown'&&reverseMode&&hasReversePrompt?'':'none';
     if(bdReverseDrawBtn) bdReverseDrawBtn.style.display=currentMode==='breakdown'&&reverseMode&&hasReversePrompt?'':'none';
@@ -1001,9 +1001,16 @@
   }; }
   if(bdRemakeBtn){ bdRemakeBtn.onclick=function(e){
     e.preventDefault();
-    if(!lastBreakdown){ if(window.HQ&&window.HQ.toast) HQ.toast('请先完成拆解'); return; }
-    var scenes=normalizeBreakdownScenes((lastBreakdown&&lastBreakdown.scenes)||[]);
-    if(!scenes.length){ if(window.HQ&&window.HQ.toast) HQ.toast('拆解结果里没有可用分镜'); return; }
+    var scenes;
+    if(isBreakdownReverseTool()){
+      var prompt=reversePromptText();
+      if(!prompt){ if(window.HQ&&window.HQ.toast) HQ.toast('请先完成提示词反推'); return; }
+      scenes=[{scene:prompt, line:'', dur:'30s'}];
+    } else {
+      if(!lastBreakdown){ if(window.HQ&&window.HQ.toast) HQ.toast('请先完成拆解'); return; }
+      scenes=normalizeBreakdownScenes((lastBreakdown&&lastBreakdown.scenes)||[]);
+    }
+    if(!scenes.length){ if(window.HQ&&window.HQ.toast) HQ.toast('没有可用分镜'); return; }
     _pickRemakeStyle(function(style){
       if(style==='剧情'){
         if(!scenes.some(function(s){ return (s.scene||'').trim(); })){ if(window.HQ&&window.HQ.toast) HQ.toast('拆解结果里没有画面描述，无法生成剧情视频'); return; }
