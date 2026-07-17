@@ -664,6 +664,7 @@
   function setBdPhase(phase,state){
     if(!bdPhases) return;
     var order=['downloading','extracting_frames','transcribing','analyzing'];
+    if(order.indexOf(phase)<0) return;  // 未知 phase（如 batch_N_M）保持进度条不动
     bdPhases.querySelectorAll('.bd-phase').forEach(function(node){
       var p=node.getAttribute('data-phase');
       node.classList.remove('active','done');
@@ -720,7 +721,7 @@
     fetch('/api/gen/copy',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
       .then(function(x){
-        if(x.s===401){ if(window.HQ) HQ.login(); return; }
+        if(x.s===401){ setBtn(orig,false); if(window.HQ) HQ.login(); return; }
         if(x.s===402){ setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
         if(!x.d.job_id){ setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+((x.d&&x.d.detail)||'未知')+'</div>'; return; }
         var iv=setInterval(function(){
@@ -791,7 +792,8 @@
               scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">'+(submitMode==='reverse_prompt'?'反推失败：':'拆解失败：')+(d.error||'')+' · 已退点</div>';
             } else if(d.phase){
               var phaseMsg={downloading:'正在下载视频…',extracting_frames:'正在抽取关键帧…',transcribing:'正在转写口播…',analyzing:submitMode==='reverse_prompt'?'AI 正在反推提示词…':'AI 分析拆解中…'};
-              scenes.innerHTML='<div style="padding:34px; text-align:center; color:#60a5fa; font-size:13px;">'+(phaseMsg[d.phase]||'处理中…')+'</div>';
+              var bm=/^batch_(d+)_(d+)$/.exec(d.phase||'');
+              scenes.innerHTML='<div style="padding:34px; text-align:center; color:#60a5fa; font-size:13px;">'+(bm?('批量拆解中（第'+bm[1]+'条/共'+bm[2]+'条）'):(phaseMsg[d.phase]||'处理中…'))+'</div>';
             }
             if(pollCount>120){ clearInterval(iv); resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">'+(submitMode==='reverse_prompt'?'反推超时，请稍后重试':'拆解超时，请稍后重试')+'</div>'; }
           }).catch(function(){
@@ -878,7 +880,7 @@
       var localItems=readBreakdownHistory();
       var all=copyItems.concat(bdItems).concat(localItems).sort(function(a,b){return (b.created_at||0)-(a.created_at||0);}).slice(0,12);
       // 去重
-      var seen={}; all=all.filter(function(item){ var meta=(item&&item.meta)||{}; var key=(meta.type||'copy')+'|'+(item.title||'')+'|'+(meta.source_url||''); if(seen[key]) return false; seen[key]=true; return true; });
+      var seen={}; all=all.filter(function(item){ var meta=(item&&item.meta)||{}; if(!meta.source_url) return true; var key=(meta.type||'copy')+'|'+(item.title||'')+'|'+(meta.source_url||''); if(seen[key]) return false; seen[key]=true; return true; });
       historyList.innerHTML=''; all.forEach(function(item){historyList.appendChild(historyCard(item));});
       if(historyState) historyState.textContent=all.length?('共 '+all.length+' 条'):'暂无历史脚本';
     }).catch(function(){ if(historyState) historyState.textContent='加载失败，请稍后重试'; });
@@ -1004,8 +1006,10 @@
     if(!scenes.length){ if(window.HQ&&window.HQ.toast) HQ.toast('拆解结果里没有可用分镜'); return; }
     _pickRemakeStyle(function(style){
       if(style==='剧情'){
+        if(!scenes.some(function(s){ return (s.scene||'').trim(); })){ if(window.HQ&&window.HQ.toast) HQ.toast('拆解结果里没有画面描述，无法生成剧情视频'); return; }
         _doGenerate({scenes:scenes,style:'剧情'},bdRemakeBtn);
       } else {
+        if(!scenes.some(function(s){ return (s.line||'').trim(); })){ if(window.HQ&&window.HQ.toast) HQ.toast('拆解结果里没有口播文案，无法生成'+style+'视频'); return; }
         _showAvatarPicker(function(avatarId){
           _doGenerate({scenes:scenes,style:style,avatar_id:avatarId},bdRemakeBtn);
         });

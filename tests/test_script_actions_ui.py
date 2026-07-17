@@ -141,5 +141,23 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("function _doGenerateImage(prompt, btn)", self.html)
         self.assertIn("fetch('/api/gen/image'", self.html)
 
+    def test_write_gen_401_resets_button(self):
+        """写脚本 401 必须复位生成按钮，否则按钮卡死在生成中"""
+        self.assertIn("if(x.s===401){ setBtn(orig,false); if(window.HQ) HQ.login(); return; }", self.html)
+
+    def test_remake_validates_scenes_by_style(self):
+        """生成同款视频按风格前置校验：剧情要画面、口播/种草要文案"""
+        self.assertIn("无法生成剧情视频", self.html)
+        self.assertIn("无法生成'+style+'视频", self.html)
+
+    def test_history_dedup_skips_items_without_source_url(self):
+        """普通脚本历史（无 source_url）不参与去重，同标题多版本都要保留"""
+        self.assertIn("if(!meta.source_url) return true;", self.html)
+
+    def test_unknown_phase_keeps_progress_bar(self):
+        """未知 phase（如 batch_N_M）不得打空进度条，且显示批量进度"""
+        self.assertIn("if(order.indexOf(phase)<0) return;", self.html)
+        self.assertIn("批量拆解中（第'", self.html)
+
 if __name__ == "__main__":
     unittest.main()

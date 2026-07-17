@@ -80,6 +80,11 @@ class ScriptToVideoTests(unittest.TestCase):
         self.assertEqual(result["pipeline"], "talking")
         self.assertEqual(result["type"], "script_to_video")
 
+    def test_talking_pipeline_gets_real_duration_settlement(self):
+        """run_job 的口播真实时长结算必须覆盖 script_to_video 的 talking 链路（剧情走 grok 不结算）"""
+        core_src = (Path(__file__).resolve().parents[1] / "server/content_domains/core.py").read_text(encoding="utf-8")
+        self.assertIn('kind == "script_to_video" and (result or {}).get("pipeline") == "talking"', core_src)
+
 
 if __name__ == "__main__":
     unittest.main()
