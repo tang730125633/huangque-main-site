@@ -672,6 +672,7 @@
     if(!lastBreakdown){ if(window.HQ&&window.HQ.toast) HQ.toast('请先完成拆解'); return; }
     var payload=prepareBreakdownRemakePayload(lastBreakdown);
     if(!payload.scenes.length){ if(window.HQ&&window.HQ.toast) HQ.toast('拆解结果里没有可用分镜'); return; }
+    _busyBtn=bdRemakeBtn;
     _doGenerate(payload);
   };}
   loadHistory();
