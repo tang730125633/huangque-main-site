@@ -454,6 +454,7 @@
   }
   function saveBreakdownHistory(bd){
     if(!bd) return;
+    var frames=(bd.frame_thumbnails||[]).slice(0,2);  // 最多存2帧防 localStorage 超限
     var item={
       kind:'breakdown',
       title:bd.source_title||'爆款拆解',
@@ -464,7 +465,8 @@
         source_platform:bd.source_platform||'',
         duration:bd.duration||'',
         analysis:(bd.analysis||''),
-        scenes:normalizeBreakdownScenes(bd.scenes||[])
+        scenes:normalizeBreakdownScenes(bd.scenes||[]),
+        frame_thumbnails:frames
       }
     };
     try{
@@ -711,7 +713,7 @@
       if(isBreakdown){
         if(bdUrl) bdUrl.value=m.source_url||'';
         switchMode('breakdown');
-        renderBreakdown({source_url:m.source_url,source_title:m.source_title||heading,source_platform:m.source_platform,duration:m.duration,analysis:m.analysis||'',scenes:list});
+        renderBreakdown({source_url:m.source_url,source_title:m.source_title||heading,source_platform:m.source_platform,duration:m.duration,analysis:m.analysis||'',scenes:list,frame_thumbnails:m.frame_thumbnails||[]});
         if(historyState) historyState.textContent='已载入：'+heading;
       }else{
         if(topic) topic.value=heading;
