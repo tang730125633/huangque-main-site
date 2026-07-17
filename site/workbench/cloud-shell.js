@@ -319,7 +319,10 @@
     var headers=new Headers(options.headers!==undefined?options.headers:((input&&input.headers)||{}));
     var sameOrigin=false;
     try{ sameOrigin=new URL(target,location.href).origin===location.origin; }catch(e){}
-    var eligible=sameOrigin&&/^(POST|PUT|PATCH|DELETE)$/.test(method)&&!/^Bearer\s/i.test(headers.get('Authorization')||'');
+    var authorization=headers.get('Authorization')||'';
+    var cookieSentinel=/^Bearer\s+__cookie__\s*$/i.test(authorization);
+    if(cookieSentinel) headers.delete('Authorization');
+    var eligible=sameOrigin&&/^(POST|PUT|PATCH|DELETE)$/.test(method)&&!(/^Bearer\s/i.test(authorization)&&!cookieSentinel);
     if(!eligible) headers.delete('X-CSRF-Token');
     else if(!headers.has('X-CSRF-Token')){
       var token=csrfToken();

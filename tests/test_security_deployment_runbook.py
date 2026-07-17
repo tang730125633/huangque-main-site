@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 VERIFY_SCRIPT = ROOT / "deploy/test-server/verify-full-environment.sh"
 RUNBOOK = ROOT / "docs/security/test-server-security-runbook.md"
 SHELL_HARNESS = ROOT / "tests/test_verify_full_environment.sh"
+ALLOWLIST_VERIFIER = ROOT / "deploy/test-server/verify-admin-allowlist.py"
 
 INTERNAL_PATHS = (
     "/api/auth/points/deduct",
@@ -128,9 +129,13 @@ class FullEnvironmentVerificationScriptTest(unittest.TestCase):
     def test_verifies_the_deployed_allowlist_exactly(self):
         self.assertIn("huangque-admin-allowlist.conf", self.script)
         self.assertIn("ADMIN_ALLOWED_SOURCE", self.script)
-        self.assertIn('awk -v expected="$ADMIN_ALLOWED_SOURCE"', self.script)
-        self.assertIn('$1 == "allow" && $2 == expected ";"', self.script)
-        self.assertIn("deny all", self.script)
+        self.assertIn("verify_admin_allowlist", self.script)
+        self.assertIn("python3", self.script)
+        verifier = ALLOWLIST_VERIFIER.read_text(encoding="utf-8")
+        self.assertIn("ipaddress.ip_network", verifier)
+        self.assertIn('directives[-1].lower() != "deny all;"', verifier)
+        self.assertIn("unexpected active directive", verifier)
+        self.assertIn("expected not in allowed", verifier)
 
     def test_expected_error_status_helper_does_not_use_fail_with_body(self):
         body = self._function_body("expect_status")

@@ -9,6 +9,8 @@ fail() {
 : "${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL to the externally reachable site origin}"
 AUTH_INTERNAL_URL="${AUTH_INTERNAL_URL:-http://127.0.0.1:8095}"
 : "${ADMIN_ALLOWED_SOURCE:?set ADMIN_ALLOWED_SOURCE to the exact deployed allowlisted IP or CIDR}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VERIFY_ADMIN_ALLOWLIST_PATH="${VERIFY_ADMIN_ALLOWLIST_PATH:-${SCRIPT_DIR}/verify-admin-allowlist.py}"
 
 validate_inputs() {
     if [[ ! "$PUBLIC_BASE_URL" =~ ^https?://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?)(:[0-9]{1,5})?/?$ ]]; then
@@ -69,6 +71,13 @@ require_header() {
         || fail "required response header missing: ${header_name}"
 }
 
+verify_admin_allowlist() {
+    config_path="$1"
+    expected_source="$2"
+    python3 "$VERIFY_ADMIN_ALLOWLIST_PATH" "$config_path" "$expected_source" \
+        || fail "admin allowlist is unsafe or does not contain the expected source"
+}
+
 # END TESTABLE PROBE HELPERS
 
 test -f /etc/huangque-test/providers.env || fail "providers.env missing"
@@ -90,19 +99,7 @@ done
 nginx -t >/dev/null 2>&1 || fail "nginx configuration invalid"
 
 test -f /etc/nginx/snippets/huangque-admin-allowlist.conf || fail "admin allowlist snippet missing"
-awk -v expected="$ADMIN_ALLOWED_SOURCE" '
-    /^[[:space:]]*#/ { next }
-    $1 == "allow" && $2 == expected ";" { found = 1 }
-    END { exit(found ? 0 : 1) }
-' /etc/nginx/snippets/huangque-admin-allowlist.conf || fail "expected admin allowlist source is not active"
-awk '
-    {
-        sub(/#.*/, "")
-        gsub(/^[[:space:]]+|[[:space:]]+$/, "")
-        if (length($0)) last = $0
-    }
-    END { exit(last == "deny all;" ? 0 : 1) }
-' /etc/nginx/snippets/huangque-admin-allowlist.conf || fail "admin allowlist must end with deny all"
+verify_admin_allowlist /etc/nginx/snippets/huangque-admin-allowlist.conf "$ADMIN_ALLOWED_SOURCE"
 
 ss -ltn | grep -q '127.0.0.1:10809' || fail "xray loopback port missing"
 for port in 8095 8096 8097 8098 8100 8101; do

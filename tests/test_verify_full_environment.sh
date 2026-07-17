@@ -106,6 +106,43 @@ run_case 2xx 0 "" 204
 run_case redirect 1 "" 302
 run_case paired 0 paired 200
 
+run_allowlist_case() {
+    local name="$1"
+    local expected_exit="$2"
+    local expected_source="$3"
+    local contents="$4"
+    local config="${HARNESS_TEMP}/${name}.conf"
+    local output="${HARNESS_TEMP}/${name}-allowlist.out"
+    local actual_exit
+    printf '%s\n' "$contents" >"$config"
+    set +e
+    SCRIPT_PATH="$SCRIPT_PATH" VERIFY_ADMIN_ALLOWLIST_PATH="${ROOT}/deploy/test-server/verify-admin-allowlist.py" CONFIG_PATH="$config" EXPECTED_SOURCE="$expected_source" bash -c '
+        source <(sed -n "1,/^# END TESTABLE PROBE HELPERS$/p" "$SCRIPT_PATH")
+        verify_admin_allowlist "$CONFIG_PATH" "$EXPECTED_SOURCE"
+    ' >"$output" 2>&1
+    actual_exit=$?
+    set -e
+    [[ "$actual_exit" == "$expected_exit" ]] || {
+        printf 'allowlist case %s: expected exit %s, got %s\n' "$name" "$expected_exit" "$actual_exit" >&2
+        return 1
+    }
+    if grep -Fq "$expected_source" "$output"; then
+        printf 'allowlist case %s leaked the configured source\n' "$name" >&2
+        return 1
+    fi
+}
+
+run_allowlist_case env-all 1 all $'allow 192.0.2.10/32;\ndeny all;'
+run_allowlist_case allow-all 1 192.0.2.10/32 $'allow all;\ndeny all;'
+run_allowlist_case ipv4-universal 1 192.0.2.10/32 $'allow 0.0.0.0/0;\nallow 192.0.2.10/32;\ndeny all;'
+run_allowlist_case ipv6-universal 1 2001:db8::10/128 $'allow ::/0;\nallow 2001:db8::10/128;\ndeny all;'
+run_allowlist_case early-deny 1 192.0.2.10/32 $'deny all;\nallow 192.0.2.10/32;\ndeny all;'
+run_allowlist_case unexpected 1 192.0.2.10/32 $'allow 192.0.2.10/32;\nsatisfy any;\ndeny all;'
+run_allowlist_case malformed 1 192.0.2.10/32 $'allow 999.0.2.10/33;\ndeny all;'
+run_allowlist_case missing-expected 1 192.0.2.10/32 $'allow 198.51.100.7/32;\ndeny all;'
+run_allowlist_case valid-ipv4 0 192.0.2.10 $'# managed\nallow 192.0.2.10/32;\nallow 198.51.100.0/24;\ndeny all;'
+run_allowlist_case valid-ipv6 0 2001:db8::10 $'allow 2001:db8::10/128;\nallow 2001:db8:1::/64;\ndeny all;'
+
 if find "${HARNESS_TEMP}/probe-tmp" -mindepth 1 -print -quit | grep -q .; then
     printf 'cleanup failed: probe temp directory is not empty\n' >&2
     exit 1

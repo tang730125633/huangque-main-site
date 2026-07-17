@@ -55,7 +55,6 @@ async function testGetDefaults() {
   assert.equal(calls[0].options.cache, 'no-store');
   assert.deepEqual(calls[0].options.headers, {
     Accept: 'application/json',
-    Authorization: 'Bearer __cookie__',
   });
   assert.equal(calls[0].options.body, undefined);
   assert.equal(calls[0].options.signal.aborted, false);
@@ -193,7 +192,7 @@ async function testAssetBlob() {
   });
 
   assert.strictEqual(await client.asset('/api/gen/file/example.mp4'), assetBlob);
-  assert.equal(call.options.headers.Authorization, 'Bearer __cookie__');
+  assert.equal(call.options.headers.Authorization, undefined);
   assert.equal(call.options.headers.Accept, 'application/json');
   assert.equal(call.options.credentials, 'same-origin');
   assert.equal(call.options.cache, 'no-store');
