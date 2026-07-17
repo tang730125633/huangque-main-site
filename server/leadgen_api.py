@@ -525,6 +525,8 @@ def run_job(job_id):
             assets_store.record_asset(job_id, r["username"], kind, result)
         except Exception as e:
             print("[leadgen] 资产入库失败 job=%s: %s" % (job_id, e), flush=True)
+        from content_domains import notifications
+        notifications.notify_work_complete_async(r["username"], job_id, kind)
     except Exception as e:
         # from_states 含 pending：认领那句 UPDATE 自己抛异常时任务还停在 pending，
         # 只认 running 会导致不退点且 reaper 永远扫不到它（预扣的点永久丢失）

@@ -362,6 +362,8 @@ def run_job(job_id):
             return
         # 出图产物不入统一 assets 表：图片走 jobs.result → /api/gen/history，
         # 那才是 assets.html 图片分类读的数据源。见 assets_store.KIND_STAGE 的注释。
+        from content_domains import notifications
+        notifications.notify_work_complete_async(r["username"], job_id, "image")
     except Exception as e:
         # from_states 含 pending：认领那句 UPDATE 自己抛异常时任务还停在 pending，
         # 只认 running 会导致不退点且 reaper 永远扫不到它

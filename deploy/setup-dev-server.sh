@@ -34,7 +34,7 @@ git -C "$R" pull -q --ff-only
 echo "== [3/8] ubuntu 用户与目录（照抄生产布局）=="
 sudo useradd -m -s /bin/bash ubuntu 2>/dev/null || true
 sudo mkdir -p /home/ubuntu/{auth-service,content-api,dl-service} /etc/huangque
-sudo cp "$R"/server/auth_server.py "$R"/server/wxpay.py /home/ubuntu/auth-service/
+sudo cp "$R"/server/auth_server.py "$R"/server/wxpay.py "$R"/server/wechat_virtual_pay.py "$R"/server/wechat_subscribe.py /home/ubuntu/auth-service/
 sudo cp "$R"/server/content_api.py "$R"/server/leadgen_api.py "$R"/server/imggen_api.py \
   "$R"/server/admin_api.py "$R"/server/tikhub.py "$R"/server/func_names.py /home/ubuntu/content-api/
 sudo mkdir -p /home/ubuntu/content-api/content_domains

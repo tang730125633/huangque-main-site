@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # 黄雀 AI · 独立认证服务（零依赖，标准库）
 # 端口 127.0.0.1:8095，nginx 把 /api/auth/ 路由过来。与 leadgen(8090) 完全隔离。
-import sqlite3, hashlib, secrets, json, os, sys, time, urllib.parse
+import sqlite3, hashlib, secrets, json, os, sys, time, urllib.parse, threading
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -16,6 +16,11 @@ try:
     from . import wechat_virtual_pay as wechat_vpay
 except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 启动
     import wechat_virtual_pay as wechat_vpay
+
+try:
+    from . import wechat_subscribe
+except ImportError:
+    import wechat_subscribe
 
 DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
 PORT = 8095
@@ -36,6 +41,8 @@ RECHARGE_TIERS = {99: 1000, 199: 2000, 499: 5000}   # 金额(元) -> 点数(含�
 RECHARGE_RATE = 10                                   # 自定义:每元 10 点
 RECHARGE_CUSTOM_MIN = 10
 RECHARGE_CUSTOM_MAX = 5000
+VIRTUAL_PAY_RECONCILE_INTERVAL = max(0, int(os.environ.get("WX_VIRTUAL_PAY_RECONCILE_INTERVAL", "30")))
+VIRTUAL_PAY_RECONCILE_MAX_AGE = max(300, int(os.environ.get("WX_VIRTUAL_PAY_RECONCILE_MAX_AGE", "86400")))
 
 def recharge_points_for(amount):
     """金额(元) -> 点数。固定档用赠送价；其余按 10 点/元(限 10~5000 元整数)。非法返回 None。
@@ -201,6 +208,34 @@ def init_db():
         last_error TEXT
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_virtual_pay_orders_user ON virtual_pay_orders(username, created_at DESC)")
+    vcols = {r["name"] for r in c.execute("PRAGMA table_info(virtual_pay_orders)").fetchall()}
+    if "reconcile_attempts" not in vcols:
+        c.execute("ALTER TABLE virtual_pay_orders ADD COLUMN reconcile_attempts INTEGER NOT NULL DEFAULT 0")
+    if "reconcile_after" not in vcols:
+        c.execute("ALTER TABLE virtual_pay_orders ADD COLUMN reconcile_after INTEGER NOT NULL DEFAULT 0")
+    c.execute("""CREATE TABLE IF NOT EXISTS wechat_subscription_grants(
+        username TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        template_id TEXT NOT NULL,
+        remaining INTEGER NOT NULL DEFAULT 0,
+        last_choice TEXT NOT NULL DEFAULT '',
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(username,event_type,template_id)
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS wechat_subscription_deliveries(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        business_id TEXT NOT NULL,
+        template_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        response_json TEXT,
+        created_at INTEGER NOT NULL,
+        sent_at INTEGER,
+        UNIQUE(username,event_type,business_id)
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_subscription_grants_user ON wechat_subscription_grants(username,event_type)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_subscription_delivery_status ON wechat_subscription_deliveries(status,created_at)")
     cols = {r["name"] for r in c.execute("PRAGMA table_info(tokens)").fetchall()}
     if "expires_at" not in cols:
         c.execute("ALTER TABLE tokens ADD COLUMN expires_at INTEGER")
@@ -1505,10 +1540,10 @@ def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=N
             c.execute("UPDATE users SET wx_openid=? WHERE username=?", (openid, username))
         c.execute(
             """INSERT INTO virtual_pay_orders(
-                 order_id,username,openid,package_id,product_id,amount_fen,points,env,status,created_at
-               ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                 order_id,username,openid,package_id,product_id,amount_fen,points,env,status,created_at,reconcile_after
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
             (order_id, username, openid, package_id, product["product_id"], purchase["amount_fen"],
-             purchase["points"], wechat_vpay.pay_env(), "created", now),
+             purchase["points"], wechat_vpay.pay_env(), "created", now, now + 10),
         )
         row = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (order_id,)).fetchone()
         c.commit()
@@ -1547,6 +1582,7 @@ def _mark_delivery(order_id, env):
 
 def confirm_virtual_pay_order(username, order_id):
     order_id = (order_id or "").strip()
+    newly_credited = False
     c = db()
     row = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=? AND username=?", (order_id, username)).fetchone()
     c.close()
@@ -1605,6 +1641,7 @@ def confirm_virtual_pay_order(username, order_id):
                 (int(wx_order.get("paid_time") or now), now, str(wx_order.get("wx_order_id") or ""),
                  str(wx_order.get("wxpay_order_id") or ""), json.dumps(wx_order, ensure_ascii=False), order_id),
             )
+            newly_credited = True
         c.commit()
     except Exception:
         c.rollback()
@@ -1614,6 +1651,11 @@ def confirm_virtual_pay_order(username, order_id):
 
     _mark_delivery(order_id, row["env"])
     c = db(); final = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (order_id,)).fetchone(); c.close()
+    if newly_credited:
+        try:
+            _notify_recharge_credited(final)
+        except Exception as exc:
+            print("[subscribe-recharge] order=%s %s" % (order_id, str(exc)[:200]), flush=True)
     return public_virtual_pay_order(final), None
 
 
@@ -1628,6 +1670,288 @@ def list_virtual_pay_orders(username, limit=20):
         return [public_virtual_pay_order(row) for row in rows]
     finally:
         c.close()
+
+
+def _bind_wechat_openid(username, wx_code):
+    session = wechat_vpay.code_to_session(wx_code)
+    openid = str(session.get("openid") or "").strip()
+    if not openid:
+        return None, "missing_openid"
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        user = c.execute("SELECT username,wx_openid FROM users WHERE username=?", (username,)).fetchone()
+        if not user:
+            c.rollback()
+            return None, "user_not_found"
+        owner = c.execute("SELECT username FROM users WHERE wx_openid=?", (openid,)).fetchone()
+        if owner and owner["username"] != username:
+            c.rollback()
+            return None, "openid_in_use"
+        if user["wx_openid"] and user["wx_openid"] != openid:
+            c.rollback()
+            return None, "openid_mismatch"
+        if not user["wx_openid"]:
+            c.execute("UPDATE users SET wx_openid=? WHERE username=?", (openid, username))
+        c.commit()
+        return openid, None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+
+def subscription_status(username):
+    events = wechat_subscribe.public_config()
+    c = db()
+    try:
+        rows = c.execute(
+            "SELECT event_type,template_id,remaining,last_choice FROM wechat_subscription_grants WHERE username=?",
+            (username,),
+        ).fetchall()
+    finally:
+        c.close()
+    grants = {(row["event_type"], row["template_id"]): row for row in rows}
+    items = []
+    for event in events:
+        row = grants.get((event["event_type"], event["template_id"]))
+        items.append({
+            **event,
+            "remaining": int(row["remaining"] or 0) if row else 0,
+            "last_choice": row["last_choice"] if row else "",
+        })
+    return {"configured": bool(events), "events": items}
+
+
+def record_subscription_choices(username, choices, wx_code):
+    if not isinstance(choices, dict):
+        return None, "bad_choices"
+    configs = {item["event_type"]: item for item in wechat_subscribe.public_config()}
+    clean = {}
+    for event_type, choice in choices.items():
+        event_type = str(event_type or "").strip()
+        choice = str(choice or "").strip().lower()
+        if event_type not in configs or choice not in {"accept", "reject", "ban", "filter"}:
+            return None, "bad_choices"
+        clean[event_type] = choice
+    if not clean:
+        return None, "bad_choices"
+    openid, err = _bind_wechat_openid(username, wx_code)
+    if err:
+        return None, err
+    now = int(time.time())
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        for event_type, choice in clean.items():
+            template_id = configs[event_type]["template_id"]
+            increment = 1 if choice == "accept" else 0
+            c.execute(
+                """INSERT INTO wechat_subscription_grants(
+                       username,event_type,template_id,remaining,last_choice,updated_at
+                   ) VALUES(?,?,?,?,?,?)
+                   ON CONFLICT(username,event_type,template_id) DO UPDATE SET
+                       remaining=wechat_subscription_grants.remaining+excluded.remaining,
+                       last_choice=excluded.last_choice,
+                       updated_at=excluded.updated_at""",
+                (username, event_type, template_id, increment, choice, now),
+            )
+        c.commit()
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+    return {"openid_bound": bool(openid), **subscription_status(username)}, None
+
+
+def dispatch_subscription_event(username, event_type, business_id, values):
+    business_id = str(business_id or "").strip()[:160]
+    config = wechat_subscribe.event_config(event_type)
+    if not business_id or not config or not config["configured"]:
+        return {"status": "not_configured"}
+    now = int(time.time())
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        previous = c.execute(
+            "SELECT status FROM wechat_subscription_deliveries WHERE username=? AND event_type=? AND business_id=?",
+            (username, event_type, business_id),
+        ).fetchone()
+        if previous:
+            c.rollback()
+            return {"status": "duplicate", "delivery_status": previous["status"]}
+        user = c.execute("SELECT wx_openid FROM users WHERE username=?", (username,)).fetchone()
+        grant = c.execute(
+            """SELECT remaining FROM wechat_subscription_grants
+               WHERE username=? AND event_type=? AND template_id=?""",
+            (username, event_type, config["template_id"]),
+        ).fetchone()
+        if not user or not user["wx_openid"] or not grant or int(grant["remaining"] or 0) < 1:
+            c.rollback()
+            return {"status": "no_grant"}
+        c.execute(
+            """UPDATE wechat_subscription_grants SET remaining=remaining-1,updated_at=?
+               WHERE username=? AND event_type=? AND template_id=? AND remaining>0""",
+            (now, username, event_type, config["template_id"]),
+        )
+        c.execute(
+            """INSERT INTO wechat_subscription_deliveries(
+                   username,event_type,business_id,template_id,status,created_at
+               ) VALUES(?,?,?,?,?,?)""",
+            (username, event_type, business_id, config["template_id"], "sending", now),
+        )
+        openid = user["wx_openid"]
+        c.commit()
+    except sqlite3.IntegrityError:
+        c.rollback()
+        return {"status": "duplicate"}
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+    try:
+        response = wechat_subscribe.send(event_type, openid, values)
+    except Exception as exc:
+        response = getattr(exc, "response", None) or {"errmsg": str(exc)[:240]}
+        code = str(getattr(exc, "code", "send_failed"))
+        c = db()
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute(
+                """UPDATE wechat_subscription_deliveries SET status='failed',response_json=?
+                   WHERE username=? AND event_type=? AND business_id=?""",
+                (json.dumps(response, ensure_ascii=False), username, event_type, business_id),
+            )
+            if code == "43101":
+                c.execute(
+                    """UPDATE wechat_subscription_grants SET remaining=0,last_choice='expired',updated_at=?
+                       WHERE username=? AND event_type=? AND template_id=?""",
+                    (int(time.time()), username, event_type, config["template_id"]),
+                )
+            else:
+                c.execute(
+                    """UPDATE wechat_subscription_grants SET remaining=remaining+1,updated_at=?
+                       WHERE username=? AND event_type=? AND template_id=?""",
+                    (int(time.time()), username, event_type, config["template_id"]),
+                )
+            c.commit()
+        finally:
+            c.close()
+        return {"status": "failed", "code": code}
+
+    c = db()
+    try:
+        c.execute(
+            """UPDATE wechat_subscription_deliveries SET status='sent',response_json=?,sent_at=?
+               WHERE username=? AND event_type=? AND business_id=?""",
+            (json.dumps(response, ensure_ascii=False), int(time.time()), username, event_type, business_id),
+        )
+        c.commit()
+    finally:
+        c.close()
+    return {"status": "sent"}
+
+
+def notify_work_complete(username, job_id, kind):
+    labels = {
+        "image": "图片作品已完成",
+        "audio": "配音作品已完成",
+        "video": "视频作品已完成",
+        "tryon": "视频换装已完成",
+        "xiaole_video": "视频作品已完成",
+        "cinematic": "电影化身已完成",
+        "avatar": "数字化IP已完成",
+        "copy": "文案作品已完成",
+        "breakdown": "灵感拆解已完成",
+        "collect": "采集任务已完成",
+        "leads": "获客任务已完成",
+    }
+    kind = str(kind or "").strip().lower()
+    now = int(time.time())
+    return dispatch_subscription_event(username, "work_complete", "job:%s" % job_id, {
+        "title": labels.get(kind, "作品已生成"),
+        "status": "已完成",
+        "time": time.strftime("%Y年%m月%d日 %H:%M", time.localtime(now)),
+        "job_id": str(job_id),
+    })
+
+
+def _notify_recharge_credited(order):
+    if not order:
+        return {"status": "missing_order"}
+    credited_at = int(order["credited_at"] or time.time())
+    return dispatch_subscription_event(order["username"], "recharge_credited", "order:%s" % order["order_id"], {
+        "points": str(int(order["points"] or 0)),
+        "amount": "¥%.2f" % (int(order["amount_fen"] or 0) / 100.0),
+        "time": time.strftime("%Y年%m月%d日 %H:%M", time.localtime(credited_at)),
+        "order_id": order["order_id"],
+    })
+
+
+def reconcile_virtual_pay_orders_once(limit=20):
+    if not wechat_vpay.is_configured():
+        return 0
+    now = int(time.time())
+    cutoff = now - VIRTUAL_PAY_RECONCILE_MAX_AGE
+    c = db()
+    try:
+        rows = c.execute(
+            """SELECT order_id,username,reconcile_attempts FROM virtual_pay_orders
+               WHERE status='created' AND created_at>=? AND COALESCE(reconcile_after,0)<=?
+               ORDER BY created_at ASC LIMIT ?""",
+            (cutoff, now, max(1, min(100, int(limit or 20)))),
+        ).fetchall()
+    finally:
+        c.close()
+    for row in rows:
+        attempts = int(row["reconcile_attempts"] or 0) + 1
+        delay = min(300, 15 * (2 ** min(4, max(0, attempts - 1))))
+        c = db()
+        try:
+            c.execute(
+                """UPDATE virtual_pay_orders SET reconcile_attempts=?,reconcile_after=?
+                   WHERE order_id=? AND status='created'""",
+                (attempts, now + delay, row["order_id"]),
+            )
+            c.commit()
+        finally:
+            c.close()
+        try:
+            confirm_virtual_pay_order(row["username"], row["order_id"])
+        except Exception as exc:
+            c = db()
+            try:
+                c.execute("UPDATE virtual_pay_orders SET last_error=? WHERE order_id=? AND status='created'",
+                          (("后台补查失败: " + str(exc))[:300], row["order_id"]))
+                c.commit()
+            finally:
+                c.close()
+    return len(rows)
+
+
+def _virtual_pay_reconcile_loop():
+    while True:
+        try:
+            reconcile_virtual_pay_orders_once()
+        except Exception as exc:
+            print("[virtual-pay-reconcile] %s" % str(exc)[:240], flush=True)
+        time.sleep(VIRTUAL_PAY_RECONCILE_INTERVAL)
+
+
+def start_virtual_pay_reconcile_thread():
+    if VIRTUAL_PAY_RECONCILE_INTERVAL <= 0:
+        return None
+    thread = threading.Thread(
+        target=_virtual_pay_reconcile_loop,
+        name="virtual-pay-reconcile",
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 def cleanup_expired_tokens(c=None):
     own = c is None
@@ -1776,6 +2100,44 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        if p == "/api/auth/subscription/consent":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                result, err = record_subscription_choices(
+                    row["username"], d.get("choices"), d.get("wx_code")
+                )
+                if err == "bad_choices":
+                    return self._send(400, {"detail": "订阅结果无效"})
+                if err in {"openid_in_use", "openid_mismatch"}:
+                    return self._send(409, {"detail": "当前微信账号已绑定其他黄雀账号"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, **result})
+            except wechat_vpay.VirtualPayError as exc:
+                status = 400 if exc.code in {"bad_request", "code2session_failed"} else 502
+                return self._send(status, {"detail": str(exc), "code": exc.code})
+            except Exception:
+                return self._send(500, {"detail": "订阅状态保存失败"})
+        if p == "/api/auth/internal/subscription/work-complete":
+            if not self._require_internal():
+                return
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            username = str(d.get("username") or "").strip()
+            job_id = str(d.get("job_id") or "").strip()
+            kind = str(d.get("kind") or "").strip()
+            if not username or not job_id:
+                return self._send(400, {"detail": "missing username or job_id"})
+            try:
+                return self._send(200, {"ok": True, **notify_work_complete(username, job_id, kind)})
+            except Exception:
+                return self._send(500, {"detail": "work notification failed"})
         if p == "/api/auth/admin/points/adjust":
             if not self._require_internal():
                 return
@@ -2496,6 +2858,16 @@ class H(BaseHTTPRequestHandler):
                 })
             except Exception:
                 return self._send(500, {"detail": "充值套餐读取失败"})
+        if p == "/api/auth/subscription/config":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            try:
+                return self._send(200, {"ok": True, **subscription_status(row["username"])})
+            except wechat_subscribe.SubscribeMessageError as exc:
+                return self._send(500, {"detail": str(exc), "code": exc.code})
+            except Exception:
+                return self._send(500, {"detail": "订阅消息配置读取失败"})
         if p == "/api/auth/virtual-pay/orders":
             row = self._user()
             if not row:
@@ -2589,5 +2961,6 @@ if __name__ == "__main__":
         create_user(sys.argv[2], sys.argv[3], pts, role)
         sys.exit(0)
     init_db()
+    start_virtual_pay_reconcile_thread()
     print("huangque-auth on 127.0.0.1:%d" % PORT)
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()

@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency  # 领域存储模块均无反向依赖
+import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, notifications  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -1041,6 +1041,7 @@ def run_job(job_id):
             assets_store.record_asset(job_id, username, kind, result)  # 只有 copy 会入统一 assets 表；其余 kind 内部忽略
         except Exception:
             pass
+        notifications.notify_work_complete_async(username, job_id, kind)
     except Exception as e:
         # 生成失败：CAS 抢 error 终态；抢到才记失败资产。退点走幂等(reaper 若已退则跳过)
         # from_states 含 pending：抢 running 那句自己抛异常时任务还停在 pending，只认 running 会不退点
