@@ -160,6 +160,8 @@ RS
 for f in "$@"; do
   case "$f" in
     server/auth_server.py) dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
+    server/wechat_virtual_pay.py|server/sync_virtual_pay_goods.py)
+             dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
     server/content_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-content ;;
     server/content_domains/*) dest=/home/ubuntu/content-api/content_domains/;  svc=huangque-content ;;
     server/admin_api.py)   dest=/home/ubuntu/content-api/;  svc=huangque-admin ;;

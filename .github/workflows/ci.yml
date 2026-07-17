@@ -35,6 +35,9 @@ jobs:
           cache: npm
           cache-dependency-path: design-system/package-lock.json
 
+      - name: 安装微信消息推送加密依赖
+        run: python -m pip install "cryptography>=41,<50"
+
       - name: 检查敏感文件与静态资源
         run: python scripts/ci_validate.py
 
