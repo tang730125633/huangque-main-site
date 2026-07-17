@@ -395,7 +395,7 @@
 
             <div class="subtitle-controls" id="subtitleControls">
               <div class="subtitle-field wide"><label for="subtitleFontFamily">字体</label><select id="subtitleFontFamily"><option value="Noto Sans SC">简体中文黑体（推荐）</option></select></div>
-              <div class="subtitle-field"><label for="subtitleFontSize">字号</label><div class="subtitle-range"><input id="subtitleFontSize" type="range" min="24" max="120" step="1"><output id="subtitleFontSizeOut">64</output></div></div>
+              <div class="subtitle-field"><label for="subtitleFontSize">字号</label><select id="subtitleFontSize"><option value="24">24</option><option value="32">32</option><option value="40">40</option><option value="48">48</option><option value="56">56</option><option value="64">64</option><option value="72">72</option><option value="80">80</option><option value="96">96</option><option value="112">112</option><option value="120">120</option></select></div>
               <div class="subtitle-field"><label for="subtitleFontWeight">字重</label><select id="subtitleFontWeight"><option value="400">常规 400</option><option value="600">半粗 600</option><option value="700">粗体 700</option><option value="800">特粗 800</option><option value="900">黑体 900</option></select></div>
               <div class="subtitle-field"><label for="subtitleFontColor">文字颜色</label><div class="subtitle-color"><input id="subtitleFontColor" type="color"><code id="subtitleFontColorText">#FFFFFF</code></div></div>
               <div class="subtitle-field"><label for="subtitleHighlightColor">高亮颜色</label><div class="subtitle-color"><input id="subtitleHighlightColor" type="color"><code id="subtitleHighlightColorText">#FFE45C</code></div></div>
@@ -765,13 +765,14 @@
   var selectedSubtitle='off', selectedSubtitleStyle='keyword_highlight', selectedSubtitlePosition='bottom';
   var SUBTITLE_STORAGE_KEY='hq_video_subtitle_templates_v2';
   var SUBTITLE_TEMPLATE_NAMES={keyword_highlight:'关键词高亮',word_highlight:'逐字高亮',karaoke:'卡拉 OK',bounce:'弹跳字幕',glow:'发光字幕',bilingual:'双语字幕'};
+  var SUBTITLE_FONT_SIZES=[24,32,40,48,56,64,72,80,96,112,120];
   var subtitleTemplateDefaults={
     keyword_highlight:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,keyword_mode:'auto',keywords:[],keyword_scale:1.08},
-    word_highlight:{font_family:'Noto Sans SC',font_size:66,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,word_highlight_speed:1,active_word_scale:1.08},
+    word_highlight:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,word_highlight_speed:1,active_word_scale:1.08},
     karaoke:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:.12,pending_color:'#8B95A7',progress_mode:'sweep'},
-    bounce:{font_family:'Noto Sans SC',font_size:68,font_weight:900,font_color:'#FFFFFF',highlight_color:'#FFCE3A',outline_color:'#17120A',outline_width:5,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,bounce_height:18,animation_duration_ms:220},
-    glow:{font_family:'Noto Sans SC',font_size:66,font_weight:800,font_color:'#FFFFFF',highlight_color:'#8CEBFF',outline_color:'#102536',outline_width:3,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,glow_color:'#35C8FF',glow_strength:.75,glow_radius:8},
-    bilingual:{font_family:'Noto Sans SC',font_size:62,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,secondary_font_family:'Noto Sans SC',secondary_font_size:38,secondary_color:'#DCE7F7',line_gap:12,secondary_text:''}
+    bounce:{font_family:'Noto Sans SC',font_size:72,font_weight:900,font_color:'#FFFFFF',highlight_color:'#FFCE3A',outline_color:'#17120A',outline_width:5,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,bounce_height:18,animation_duration_ms:220},
+    glow:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#8CEBFF',outline_color:'#102536',outline_width:3,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,glow_color:'#35C8FF',glow_strength:.75,glow_radius:8},
+    bilingual:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,secondary_font_family:'Noto Sans SC',secondary_font_size:38,secondary_color:'#DCE7F7',line_gap:12,secondary_text:''}
   };
   var subtitleTemplateState={}, subtitleFonts=['Noto Sans SC'];
   // 电影化身（HeyGen cinematic）：三个玩法共用一套控件，见 CINE_MODES
@@ -898,13 +899,18 @@
   var $=function(id){return document.getElementById(id);};
   function esc(s){return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
   function subtitleClone(value){return JSON.parse(JSON.stringify(value||{}));}
-  function subtitleDefaults(key){return subtitleClone(subtitleTemplateDefaults[key]||subtitleTemplateDefaults.keyword_highlight);}
+  function subtitleNormalizeFontSize(value){
+    var target=Number(value);if(!isFinite(target))target=64;
+    return SUBTITLE_FONT_SIZES.reduce(function(best,size){var gap=Math.abs(size-target),bestGap=Math.abs(best-target);return gap<bestGap||(gap===bestGap&&size>best)?size:best;},SUBTITLE_FONT_SIZES[0]);
+  }
+  function subtitleDefaults(key){var defaults=subtitleClone(subtitleTemplateDefaults[key]||subtitleTemplateDefaults.keyword_highlight);defaults.font_size=subtitleNormalizeFontSize(defaults.font_size);return defaults;}
   function loadStoredSubtitleSettings(){
     var saved={};
     try{saved=JSON.parse(localStorage.getItem(SUBTITLE_STORAGE_KEY)||'{}')||{};}catch(e){saved={};}
     if(saved.style&&subtitleTemplateDefaults[saved.style]) selectedSubtitleStyle=saved.style;
     Object.keys(subtitleTemplateDefaults).forEach(function(key){
       subtitleTemplateState[key]=Object.assign(subtitleDefaults(key),(saved.templates&&saved.templates[key])||{});
+      subtitleTemplateState[key].font_size=subtitleNormalizeFontSize(subtitleTemplateState[key].font_size);
     });
     selectedSubtitlePosition=subtitleTemplateState[selectedSubtitleStyle].position||'bottom';
   }
@@ -952,7 +958,7 @@
     document.querySelectorAll('[data-substyle]').forEach(function(b){b.classList.toggle('on',b.dataset.substyle===selectedSubtitleStyle);});
     document.querySelectorAll('[data-subtitle-panel]').forEach(function(p){p.classList.toggle('on',p.dataset.subtitlePanel===selectedSubtitleStyle);});
     document.querySelectorAll('[data-subpos]').forEach(function(b){b.classList.toggle('on',b.dataset.subpos===selectedSubtitlePosition);});
-    subtitleSetValue('subtitleFontFamily',o.font_family);subtitleSetValue('subtitleFontSize',o.font_size);subtitleSetOutput('subtitleFontSizeOut',o.font_size);
+    subtitleSetValue('subtitleFontFamily',o.font_family);subtitleSetValue('subtitleFontSize',o.font_size);
     subtitleSetValue('subtitleFontWeight',o.font_weight);subtitleSetColor('subtitleFontColor','subtitleFontColorText',o.font_color);
     subtitleSetColor('subtitleHighlightColor','subtitleHighlightColorText',o.highlight_color);subtitleSetColor('subtitleOutlineColor','subtitleOutlineColorText',o.outline_color);
     subtitleSetValue('subtitleOutlineWidth',o.outline_width);subtitleSetOutput('subtitleOutlineWidthOut',o.outline_width);
@@ -966,7 +972,7 @@
     subtitleSetValue('subtitleSecondaryFont',o.secondary_font_family);subtitleSetValue('subtitleSecondarySize',o.secondary_font_size);subtitleSetOutput('subtitleSecondarySizeOut',o.secondary_font_size);subtitleSetColor('subtitleSecondaryColor','subtitleSecondaryColorText',o.secondary_color);subtitleSetValue('subtitleLineGap',o.line_gap);subtitleSetOutput('subtitleLineGapOut',o.line_gap);subtitleSetValue('subtitleSecondaryText',o.secondary_text);
     subtitleSyncRangeOutputs();updateSubtitlePreview();
   }
-  function subtitleNumber(id,fallback){var el=$(id),n=Number(el&&el.value);return isFinite(n)?n:fallback;}
+  function subtitleNumber(id,fallback){var el=$(id);if(!el||el.value==='')return fallback;var n=Number(el.value);return isFinite(n)?n:fallback;}
   function collectSubtitleOptions(){
     var base=subtitleDefaults(selectedSubtitleStyle), o={
       font_family:($('subtitleFontFamily')||{}).value||base.font_family,font_size:subtitleNumber('subtitleFontSize',base.font_size),font_weight:subtitleNumber('subtitleFontWeight',base.font_weight),

@@ -198,6 +198,19 @@ class SubtitleTemplateUiTests(unittest.TestCase):
         setter = VIDEO_HTML.split("function subtitleSetOutput", 1)[1].split("function subtitleSyncRangeOutputs", 1)[0]
         self.assertIn("value!=null", setter)
 
+    def test_font_size_uses_standard_numeric_select(self):
+        field = VIDEO_HTML.split('<label for="subtitleFontSize">字号</label>', 1)[1].split('</div>', 1)[0]
+        self.assertIn('<select id="subtitleFontSize">', field)
+        self.assertNotIn('type="range"', field)
+        for size in (24, 32, 40, 48, 56, 64, 72, 80, 96, 112, 120):
+            self.assertIn('<option value="{0}">{0}</option>'.format(size), field)
+
+    def test_legacy_font_sizes_snap_to_standard_options(self):
+        self.assertIn("var SUBTITLE_FONT_SIZES=[24,32,40,48,56,64,72,80,96,112,120]", VIDEO_HTML)
+        normalizer = VIDEO_HTML.split("function subtitleNormalizeFontSize", 1)[1].split("function subtitleDefaults", 1)[0]
+        self.assertIn("Math.abs(size-target)", normalizer)
+        self.assertIn("gap===bestGap&&size>best", normalizer)
+
     def test_core_exposes_authenticated_font_config_route(self):
         route = CORE_SOURCE.index('if p == "/api/gen/video/subtitle-config":')
         verify = CORE_SOURCE.index("verify(self._token())", route)
