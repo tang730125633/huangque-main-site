@@ -42,8 +42,12 @@ class ScriptActionsUiTests(unittest.TestCase):
     def test_breakdown_mode_ui_and_api_exist(self):
         self.assertIn('data-mode="breakdown"', self.html)
         self.assertIn('id="panelBreakdown"', self.html)
+        self.assertIn('id="bdToolScenes"', self.html)
+        self.assertIn('id="bdToolReverse"', self.html)
+        self.assertIn("data-bd-tool=\"reverse_prompt\"", self.html)
         self.assertIn('id="bdGen"', self.html)
         self.assertIn("fetch('/api/gen/breakdown'", self.html)
+        self.assertIn("var reqBody=isBatch?{urls:lines,mode:'scenes'}:{url:lines[0],mode:submitMode};", self.html)
 
     def test_breakdown_progress_and_history_restore_exist(self):
         self.assertIn('id="bdProgress"', self.html)
@@ -70,6 +74,16 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("_pickRemakeStyle(function(style)", self.html)
         self.assertIn("_showAvatarPicker(function(avatarId)", self.html)
         self.assertIn("_doGenerate({scenes:scenes,style:'剧情'},bdRemakeBtn)", self.html)
+
+    def test_breakdown_reverse_prompt_ui_and_actions_exist(self):
+        self.assertIn('id="bdReverseCopyBtn"', self.html)
+        self.assertIn('id="bdReverseDrawBtn"', self.html)
+        self.assertIn("function renderBreakdownReverse(bd)", self.html)
+        self.assertIn("} else if(result.type==='breakdown_reverse'){", self.html)
+        self.assertIn("switchBreakdownTool('reverse_prompt')", self.html)
+        self.assertIn("location.href=handoffUrl('banana.html',prompt)", self.html)
+        self.assertIn("if(currentMode==='breakdown' && isBreakdownReverseTool()) txt=reversePromptText();", self.html)
+        self.assertIn("提示词反推暂仅支持单条视频链接", self.html)
 
     def test_history_loads_copy_assets_and_restores_scenes(self):
         self.assertIn("'/api/gen/assets?limit=60&kind=copy'", self.html)
