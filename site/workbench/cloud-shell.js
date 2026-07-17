@@ -307,6 +307,27 @@
     var h=extra||{};
     return h;
   }
+  function csrfToken(){
+    var match=(document.cookie||'').match(/(?:^|;\s*)hq_csrf=([^;]*)/);
+    if(!match) return '';
+    try{ return decodeURIComponent(match[1]); }catch(e){ return ''; }
+  }
+  function secureFetch(input,init){
+    var options=Object.assign({},init||{});
+    var target=(input&&typeof input==='object'&&input.url)?input.url:input;
+    var method=String(options.method||(input&&input.method)||'GET').toUpperCase();
+    var headers=new Headers(options.headers!==undefined?options.headers:((input&&input.headers)||{}));
+    var sameOrigin=false;
+    try{ sameOrigin=new URL(target,location.href).origin===location.origin; }catch(e){}
+    var eligible=sameOrigin&&/^(POST|PUT|PATCH|DELETE)$/.test(method)&&!/^Bearer\s/i.test(headers.get('Authorization')||'');
+    if(!eligible) headers.delete('X-CSRF-Token');
+    else if(!headers.has('X-CSRF-Token')){
+      var token=csrfToken();
+      if(token) headers.set('X-CSRF-Token',token);
+    }
+    options.headers=headers;
+    return fetch(input,options);
+  }
   function refreshPoints(){
     fetch('/api/auth/me',{credentials:'same-origin',cache:'no-store',headers:authHeaders()}).then(function(r){ if(!r.ok) return null; return r.json(); }).then(function(d){
       if(d&&d.user){ try{ localStorage.removeItem('hq_token'); localStorage.setItem('hq_user',JSON.stringify(d.user)); }catch(e){} renderUser(); }
@@ -715,7 +736,7 @@
     var secret=_hqPhone?(document.getElementById('hqC').value||''):(document.getElementById('hqP').value||'');
     if(!username||!secret){ hqMsg(_hqPhone?'请填写账号和验证码':'请填写账号和密码','err'); return; }
     var b=document.getElementById('hqSub'); b.disabled=true; b.style.opacity='.7'; hqMsg('登录中…');
-    fetch('/api/auth/login',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,password:secret})})
+    secureFetch('/api/auth/login',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,password:secret})})
     .then(function(r){ if(r.status===404) throw new Error('__nobackend__'); return r.json().then(function(d){return {ok:r.ok,d:d};}); })
     .then(function(res){
       b.disabled=false; b.style.opacity='1';
@@ -737,7 +758,7 @@
     var payload={username:username,password:password};
     if(displayName) payload.display_name=displayName;
     var b=document.getElementById('hqSub'); b.disabled=true; b.style.opacity='.7'; hqMsg('注册中…');
-    fetch('/api/auth/register',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    secureFetch('/api/auth/register',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
     .then(function(r){ if(r.status===404) throw new Error('__nobackend__'); return r.json().then(function(d){return {ok:r.ok,status:r.status,d:d};}); })
     .then(function(res){
       b.disabled=false; b.style.opacity='1';
@@ -758,9 +779,11 @@
     try{ var value=JSON.parse(localStorage.getItem(accountStorageKey(prefix,user))||'{}'); return value&&typeof value==='object'?value:{}; }catch(e){ return {}; }
   }
   function _logout(){
-    var h=authHeaders();
-    try{ localStorage.removeItem('hq_token'); localStorage.removeItem('hq_user'); localStorage.removeItem('hq_role'); }catch(e){}
-    fetch('/api/auth/logout',{method:'POST',credentials:'same-origin',headers:h}).finally(function(){ location.reload(); });
+    secureFetch('/api/auth/logout',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:'{}'}).finally(function(){
+      try{ localStorage.removeItem('hq_token'); localStorage.removeItem('hq_user'); localStorage.removeItem('hq_role'); }catch(e){}
+      renderUser();
+      location.reload();
+    });
   }
   function renderUser(){
     var u=currentUser(), inn=!!u;
@@ -809,7 +832,7 @@
     document.head.appendChild(script);
   }
 
-  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, setFriendsBadge:updateFriendsBadge, registerFriendsPanel:registerFriendsPanel, setFriendsPanelExpanded:setFriendsPanelExpanded, openFriendsPanel:openFriendsPanel, login:openLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser };
+  window.HQ={ icon:icon, nav:NAV, escapeHtml:escapeHtml, escapeAttr:escapeAttr, safeUrl:safeUrl, isAdmin:isAdmin, csrfToken:csrfToken, secureFetch:secureFetch, refreshPoints:refreshPoints, refreshNotifications:refreshNotificationBadge, setFriendsBadge:updateFriendsBadge, registerFriendsPanel:registerFriendsPanel, setFriendsPanelExpanded:setFriendsPanelExpanded, openFriendsPanel:openFriendsPanel, login:openLogin, register:openRegister, closeLogin:closeLogin, renderUser:renderUser };
   function _hqInit(){ build(); buildLoginModal(); loadTaskTracker(); }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_hqInit); else _hqInit();
 })();

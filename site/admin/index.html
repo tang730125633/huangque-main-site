@@ -224,10 +224,35 @@
   var state = {days:7, data:null, userTimer:null, module:'ops'};
   var el = function(id){return document.getElementById(id)};
   function toast(msg){var t=el('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(t._tm); t._tm=setTimeout(function(){t.style.display='none'},2600)}
-  function authHeaders(extra){return Object.assign({'Authorization':'Bearer '+token}, extra||{})}
+  function csrfToken(){
+    var match=(document.cookie||'').match(/(?:^|;\s*)hq_csrf=([^;]*)/);
+    if(!match) return '';
+    try{ return decodeURIComponent(match[1]); }catch(e){ return ''; }
+  }
+  function secureFetch(input,init){
+    var options=Object.assign({},init||{});
+    var target=(input&&typeof input==='object'&&input.url)?input.url:input;
+    var method=String(options.method||(input&&input.method)||'GET').toUpperCase();
+    var headers=new Headers(options.headers!==undefined?options.headers:((input&&input.headers)||{}));
+    var sameOrigin=false;
+    try{ sameOrigin=new URL(target,location.href).origin===location.origin; }catch(e){}
+    var eligible=sameOrigin&&/^(POST|PUT|PATCH|DELETE)$/.test(method)&&!/^Bearer\s/i.test(headers.get('Authorization')||'');
+    if(!eligible) headers.delete('X-CSRF-Token');
+    else if(!headers.has('X-CSRF-Token')){
+      var csrf=csrfToken();
+      if(csrf) headers.set('X-CSRF-Token',csrf);
+    }
+    options.headers=headers;
+    return fetch(input,options);
+  }
+  function authHeaders(extra){
+    var headers=new Headers(extra||{});
+    if(token&&token!=='__cookie__') headers.set('Authorization','Bearer '+token);
+    return headers;
+  }
   function api(path,opt){
     opt=opt||{}; opt.headers=authHeaders(opt.headers);
-    return fetch(path,opt).then(function(r){return r.json().catch(function(){return {detail:'响应不是 JSON'}}).then(function(d){if(!r.ok){var e=new Error(d.detail||('HTTP '+r.status)); e.status=r.status; throw e} return d})})
+    return secureFetch(path,opt).then(function(r){return r.json().catch(function(){return {detail:'响应不是 JSON'}}).then(function(d){if(!r.ok){var e=new Error(d.detail||('HTTP '+r.status)); e.status=r.status; throw e} return d})})
   }
   function pct(v){return Math.round((v||0)*100)+'%'}
   function statusPill(ok, text){return '<span class="pill '+(ok?'ok':'fail')+'">'+text+'</span>'}
