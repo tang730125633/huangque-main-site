@@ -415,7 +415,7 @@
     var list=frames||[];
     bdStoryboard.style.display=list.length?'':'none';
     bdStoryboardStrip.innerHTML=list.length ? list.map(function(uri,i){
-      return '<div style="flex:none;position:relative;"><span style="position:absolute;top:4px;left:6px;font-size:10px;font-weight:700;color:#0f172a;background:rgba(231,178,76,.88);padding:1px 6px;border-radius:4px;">'+(i+1)+'</span><img src="'+escAttr(uri)+'" style="width:140px;height:auto;max-height:100px;object-fit:cover;border-radius:10px;border:1px solid rgba(148,164,187,.16);" loading="lazy"></div>';
+      return '<div style="flex:none;position:relative;"><span style="position:absolute;top:4px;left:6px;font-size:10px;font-weight:700;color:#0f172a;background:rgba(231,178,76,.88);padding:1px 6px;border-radius:4px;">'+(i+1)+'</span><img src="'+escAttr(uri)+'" style="width:140px;height:auto;max-height:100px;object-fit:cover;border-radius:10px;border:1px solid rgba(148,164,187,.16);cursor:zoom-in;" loading="lazy"></div>';
     }).join('') : '';
   }
   function resetPreview(){
@@ -953,7 +953,7 @@
                 +'<div style="font-size:40px;margin-bottom:10px;">✅</div>'
                 +'<div style="font-size:15px;font-weight:700;color:#eaf1fa;margin-bottom:8px;">生成完成！</div>'
                 +'<div style="font-size:12px;color:#94a4bb;margin-bottom:14px;">'+sceneCount+' 个分镜已合成视频'+costInfo+'</div>'
-                +(vurl?'<div style="margin-bottom:12px;"><video src="'+esc(vurl)+'" controls style="max-width:100%;max-height:260px;border-radius:10px;"></video></div>':'')
+                +(vurl?'<div style="margin-bottom:12px;"><video src="'+esc(vurl)+'" controls style="max-width:100%;max-height:260px;border-radius:10px;cursor:zoom-in;"></video></div>':'')
                 +'<div style="display:flex;gap:9px;justify-content:center;">'
                 +'<a href="assets.html" class="sc-btn" style="color:#e7b24c;">📁 查看资产库</a>'
                 +'<a href="video.html" class="sc-btn">📹 去视频页</a></div></div>';
@@ -1052,7 +1052,7 @@
             if(d.status==='done'){
               clearInterval(iv); _setGenerateBusy(btn,false);
               var us=(d.result&&d.result.urls&&d.result.urls.length)?d.result.urls:[(d.result&&d.result.url)||''];
-              var imgHtml=us.map(function(u){ return '<img src="'+esc(u)+'" style="max-width:100%;max-height:340px;border-radius:10px;border:1px solid rgba(148,164,187,.16);margin-bottom:8px;">'; }).join('');
+              var imgHtml=us.map(function(u){ return '<img src="'+esc(u)+'" style="max-width:100%;max-height:340px;border-radius:10px;border:1px solid rgba(148,164,187,.16);margin-bottom:8px;cursor:zoom-in;">'; }).join('');
               scenes.innerHTML='<div style="padding:24px;text-align:center;">'
                 +'<div style="font-size:40px;margin-bottom:10px;">✅</div>'
                 +'<div style="font-size:15px;font-weight:700;color:#eaf1fa;margin-bottom:8px;">图片生成完成！</div>'
@@ -1075,6 +1075,38 @@
         },3000);
       }).catch(function(){ _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络错误，请重试</div>'; });
   }
+  // 媒体放大预览：点击生成结果的视频/图片、故事板缩略图 → 全屏灯箱
+  function _openMediaLightbox(kind, src){
+    if(!src) return;
+    var old=document.getElementById('hqMediaLightbox'); if(old) old.remove();
+    var wrap=document.createElement('div'); wrap.id='hqMediaLightbox';
+    wrap.style.cssText='position:fixed;inset:0;z-index:10001;display:flex;align-items:center;justify-content:center;background:rgba(3,7,15,.88);backdrop-filter:blur(6px);cursor:zoom-out;';
+    var media=kind==='video'?document.createElement('video'):document.createElement('img');
+    media.src=src;
+    if(kind==='video'){ media.controls=true; media.autoplay=true; }
+    media.style.cssText='max-width:92vw;max-height:88vh;border-radius:12px;box-shadow:0 28px 90px rgba(0,0,0,.6);cursor:default;';
+    var close=document.createElement('button');
+    close.type='button'; close.textContent='×';
+    close.style.cssText='position:absolute;top:18px;right:22px;width:40px;height:40px;border:none;border-radius:50%;background:rgba(148,164,187,.16);color:#eaf1fa;font-size:24px;cursor:pointer;line-height:1;';
+    wrap.appendChild(media); wrap.appendChild(close);
+    document.body.appendChild(wrap);
+    function done(){ wrap.remove(); document.removeEventListener('keydown', onKey); }
+    function onKey(e){ if(e.key==='Escape') done(); }
+    close.onclick=function(e){ e.stopPropagation(); done(); };
+    wrap.onclick=function(e){ if(e.target===wrap) done(); };
+    document.addEventListener('keydown', onKey);
+  }
+  document.addEventListener('click', function(e){
+    var t=e.target;
+    if(!t||!t.tagName) return;
+    var tag=t.tagName.toLowerCase();
+    if(tag!=='img'&&tag!=='video') return;
+    if(!(t.closest('#scScenes')||t.closest('#bdStoryboardStrip'))) return;
+    var src=t.currentSrc||t.src||'';
+    if(!src) return;
+    e.preventDefault();
+    _openMediaLightbox(tag, src);
+  });
   loadHistory();
 })();
 </script>
