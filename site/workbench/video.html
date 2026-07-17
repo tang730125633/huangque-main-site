@@ -1127,7 +1127,7 @@
     }else if(selectedSubtitleStyle==='karaoke'){
       html=o.progress_mode==='sweep'?'<span class="sub-karaoke-track">'+esc(source)+'<span class="sub-karaoke-fill">'+esc(source)+'</span></span>':'<span class="sub-highlight">'+esc(chars.slice(0,Math.ceil(chars.length/2)).join(''))+'</span><span class="sub-pending">'+esc(chars.slice(Math.ceil(chars.length/2)).join(''))+'</span>';
     }else if(selectedSubtitleStyle==='bounce'){
-      html=chars.map(function(ch,i){return '<span class="'+(i===Math.min(4,chars.length-1)?'sub-highlight':'')+'" style="--i:'+i+'">'+esc(ch)+'</span>';}).join('');
+      html=chars.map(function(ch,i){return '<span style="--i:'+i+'">'+esc(ch)+'</span>';}).join('');
     }else if(selectedSubtitleStyle==='glow'){
       html=o.keyword_highlight_enabled?subtitlePreviewHighlight(source,o.keyword_mode==='manual'?(o.keywords||[]):[]):esc(source);
     }else if(selectedSubtitleStyle==='bilingual'){

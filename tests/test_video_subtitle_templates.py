@@ -161,9 +161,16 @@ class SubtitleAssRenderingTests(unittest.TestCase):
         self.assertIn("{\\an2\\pos(", bilingual)
 
     def test_bounce_uses_per_word_timeline_transforms(self):
-        bounce = self._render("bounce", {"bounce_height": 20, "animation_duration_ms": 240})
+        bounce = self._render("bounce", {
+            "bounce_height": 20,
+            "animation_duration_ms": 240,
+            "font_color": "#FFFFFF",
+            "highlight_color": "#FFCE3A",
+        })
         self.assertGreater(bounce.count("\\t("), 2)
         self.assertNotIn("\\move(", bounce)
+        default_style = next(line for line in bounce.splitlines() if line.startswith("Style: Default,"))
+        self.assertEqual(video._ass_color("#FFFFFF"), default_style.split(",")[3])
 
     def test_known_copy_keeps_whisper_boundaries(self):
         raw = [(0.0, 0.5, "错"), (0.5, 1.0, "别字")]
@@ -215,6 +222,8 @@ class SubtitleTemplateUiTests(unittest.TestCase):
         self.assertIn("subtitlePreviewOutline", preview)
         self.assertIn("sub-karaoke-track", preview)
         self.assertIn("--bounce-height", preview)
+        bounce_preview = preview.split("}else if(selectedSubtitleStyle==='bounce'){", 1)[1].split("}else if(", 1)[0]
+        self.assertNotIn("sub-highlight", bounce_preview)
 
     def test_keyword_controls_are_independent_and_default_off(self):
         self.assertIn("var SUBTITLE_KEYWORD_STYLES={keyword_highlight:true,glow:true,bilingual:true}", VIDEO_HTML)
