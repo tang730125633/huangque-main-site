@@ -92,6 +92,33 @@ class VirtualPaymentTests(unittest.TestCase):
         finally:
             c.close()
 
+    def test_create_order_reports_existing_wechat_binding_owner(self):
+        self.auth.create_user("owner", "secret123", 0)
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            c.execute("UPDATE users SET wx_openid=? WHERE username=?", ("openid-owner", "owner"))
+            c.commit()
+        finally:
+            c.close()
+
+        with patch.object(
+            self.auth.wechat_vpay,
+            "code_to_session",
+            return_value={"openid": "openid-owner", "session_key": "session-key"},
+        ):
+            result, err = self.auth.create_virtual_pay_order("buyer", "test_pack", "wx-code")
+
+        self.assertIsNone(result)
+        self.assertEqual(err, "openid_in_use:owner")
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            self.assertIsNone(c.execute(
+                "SELECT wx_openid FROM users WHERE username='buyer'"
+            ).fetchone()[0])
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM virtual_pay_orders").fetchone()[0], 0)
+        finally:
+            c.close()
+
     def test_paid_order_credits_points_exactly_once(self):
         with patch.object(
             self.auth.wechat_vpay,

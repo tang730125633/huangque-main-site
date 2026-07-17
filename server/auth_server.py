@@ -1497,7 +1497,7 @@ def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=N
         owner = c.execute("SELECT username FROM users WHERE wx_openid=?", (openid,)).fetchone()
         if owner and owner["username"] != username:
             c.rollback()
-            return None, "openid_in_use"
+            return None, "openid_in_use:%s" % owner["username"]
         if user["wx_openid"] and user["wx_openid"] != openid:
             c.rollback()
             return None, "openid_mismatch"
@@ -2009,8 +2009,18 @@ class H(BaseHTTPRequestHandler):
                     return self._send(404, {"detail": "充值套餐不存在"})
                 if err == "invalid_custom_amount":
                     return self._send(400, {"detail": "自定义充值金额须为1~5000元整数"})
-                if err in {"openid_in_use", "openid_mismatch"}:
-                    return self._send(409, {"detail": "当前微信账号已绑定其他黄雀账号，请联系管理员"})
+                if isinstance(err, str) and err.startswith("openid_in_use:"):
+                    bound_username = err.split(":", 1)[1]
+                    return self._send(409, {
+                        "detail": "当前微信账号已绑定黄雀账号：%s" % bound_username,
+                        "code": "openid_in_use",
+                        "bound_username": bound_username,
+                    })
+                if err == "openid_mismatch":
+                    return self._send(409, {
+                        "detail": "当前黄雀账号已绑定其他微信账号，请使用原微信或联系管理员",
+                        "code": "openid_mismatch",
+                    })
                 if err == "user_not_found":
                     return self._send(404, {"detail": "用户不存在"})
                 if err:
