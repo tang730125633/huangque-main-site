@@ -1206,15 +1206,15 @@ class H(BaseHTTPRequestHandler):
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
             return self._send(410, {"detail": "音色槽位已改为点数购买，请使用购买入口"})
-        if p == "/api/gen/audio/voice-name":
+        if p in ("/api/gen/audio/voice-name", "/api/gen/audio/voice-delete"):
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "\u672a\u767b\u5f55"})
             body = self._json_body()
             try:
-                voice = audio_domain.rename_audio_voice(user["username"], body.get("slot_id"), body.get("name"))
-                return self._send(200, {"ok": True, "voice": voice})
+                deleting = p.endswith("voice-delete"); result = audio_domain.delete_audio_voice(user["username"], body.get("slot_id")) if deleting else audio_domain.rename_audio_voice(user["username"], body.get("slot_id"), body.get("name"))
+                return self._send(200, {"ok": True, "result" if deleting else "voice": result})
             except Exception as e:
-                return self._send(400, {"detail": str(e)[:160]})
+                return self._send(getattr(e, "status", 400), {"detail": str(e)[:160]})
         if p == "/api/gen/audio/clone-vip":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})

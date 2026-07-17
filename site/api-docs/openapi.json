@@ -750,6 +750,63 @@
         }
       }
     },
+    "/api/gen/audio/voice-name": {
+      "post": {
+        "tags": [
+          "配音音色"
+        ],
+        "summary": "重命名当前账号的个人音色",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["slot_id", "name"],
+                "properties": {
+                  "slot_id": {"type": "string"},
+                  "name": {"type": "string", "maxLength": 40}
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {"description": "重命名成功"},
+          "400": {"description": "音色不存在或参数错误"},
+          "401": {"description": "未登录或 token 无效"}
+        }
+      }
+    },
+    "/api/gen/audio/voice-delete": {
+      "post": {
+        "tags": [
+          "配音音色"
+        ],
+        "summary": "删除个人音色并保留已购买槽位",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["slot_id"],
+                "properties": {
+                  "slot_id": {"type": "string"}
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {"description": "音色已删除，槽位重置为 active"},
+          "400": {"description": "槽位中没有可删除的音色"},
+          "401": {"description": "未登录或 token 无效"},
+          "404": {"description": "音色槽位不存在或无权访问"},
+          "409": {"description": "音色正在克隆中，暂时不能删除"}
+        }
+      }
+    },
     "/api/gen/audio/clone-status": {
       "get": {
         "tags": [
