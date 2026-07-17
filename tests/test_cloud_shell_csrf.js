@@ -8,6 +8,9 @@ const shell = fs.readFileSync(path.join(root, 'site/workbench/cloud-shell.js'), 
 const login = fs.readFileSync(path.join(root, 'site/login.html'), 'utf8');
 const admin = fs.readFileSync(path.join(root, 'site/admin/index.html'), 'utf8');
 const settings = fs.readFileSync(path.join(root, 'site/workbench/settings.html'), 'utf8');
+const recharge = fs.readFileSync(path.join(root, 'site/workbench/recharge.html'), 'utf8');
+const canvasApp = fs.readFileSync(path.join(root, 'site/workbench/canvas/canvas-app.js'), 'utf8');
+const canvasApi = require('../site/workbench/canvas/canvas-api.js');
 
 function extractFunction(source, name) {
   const start = source.indexOf(`function ${name}(`);
@@ -36,7 +39,7 @@ function loadHelpers(cookie = 'hq_csrf=csrf%2Btoken%2Fvalue%3D', source = shell)
   const calls = [];
   const fakeFetch = (input, init) => {
     calls.push({input, init});
-    return Promise.resolve({ok: true});
+    return Promise.resolve({ok: true, status: 200, statusText: '', text: () => Promise.resolve('{}')});
   };
   const document = {cookie};
   const location = {href: 'https://app.example/workbench/settings.html', origin: 'https://app.example'};
@@ -119,6 +122,68 @@ test('explicit Bearer requests never receive the CSRF header', async () => {
   const headers = new Headers(calls[0].init.headers);
   assert.equal(headers.get('Authorization'), 'Bearer mini-app-token');
   assert.equal(headers.has('X-CSRF-Token'), false);
+});
+
+test('cookie sentinel is removed and treated as cookie-authenticated mutation', async () => {
+  const {secureFetch, calls} = loadHelpers();
+  await secureFetch('/api/auth/profile', {
+    method: 'PATCH',
+    headers: {Authorization: 'Bearer __cookie__'},
+  });
+  const headers = new Headers(calls[0].init.headers);
+  assert.equal(headers.has('Authorization'), false);
+  assert.equal(headers.get('X-CSRF-Token'), 'csrf+token/value=');
+});
+
+test('cookie sentinel is removed without adding CSRF to GET or cross-origin requests', async () => {
+  const {secureFetch, calls} = loadHelpers();
+  await secureFetch('/api/auth/me', {headers: {Authorization: 'Bearer __cookie__'}});
+  await secureFetch('https://evil.example/change', {
+    method: 'POST',
+    headers: {Authorization: 'Bearer __cookie__', 'X-CSRF-Token': 'must-remove'},
+  });
+  for (const call of calls) {
+    const headers = new Headers(call.init.headers);
+    assert.equal(headers.has('Authorization'), false);
+    assert.equal(headers.has('X-CSRF-Token'), false);
+  }
+});
+
+test('Recharge native and manual mutations use canonical secureFetch without sentinel auth', () => {
+  assert.match(recharge, /function api\(path,opt\)[\s\S]*window\.HQ\.secureFetch\(path,opt\)/);
+  assert.doesNotMatch(recharge, /['"]Authorization['"]\s*:\s*['"]Bearer /);
+  assert.doesNotMatch(recharge, /return fetch\(path,opt\)/);
+  assert.match(recharge, /api\('\/api\/auth\/wxpay\/native',\{method:'POST'/);
+  assert.match(recharge, /api\('\/api\/auth\/recharge\/order',\{method:'POST'/);
+});
+
+test('Canvas board, presence, operation, and member mutations use canonical secureFetch', async () => {
+  assert.match(canvasApp, /fetchImpl:window\.HQ\.secureFetch\.bind\(window\.HQ\)/);
+  assert.doesNotMatch(canvasApp, /fetchImpl:window\.fetch/);
+  for (const fragment of [
+    "+'/ops',{method:'POST'",
+    "+'/presence',{method:'POST'",
+    "'/api/auth/canvas/boards',{method:'POST'",
+    "+encodeURIComponent(board.id),{method:'DELETE'",
+    "+encodeURIComponent(board.id)+'/members',{method:'POST'",
+    "+encodeURIComponent(username),{method:'DELETE'",
+  ]) assert.ok(canvasApp.includes(fragment), fragment);
+
+  const {secureFetch, calls} = loadHelpers();
+  const client = canvasApi.createClient({fetchImpl: secureFetch, tokenProvider: () => '__cookie__'});
+  for (const [url, method] of [
+    ['/api/auth/canvas/boards', 'POST'],
+    ['/api/auth/canvas/boards/b1/ops', 'POST'],
+    ['/api/auth/canvas/boards/b1/presence', 'POST'],
+    ['/api/auth/canvas/boards/b1', 'DELETE'],
+    ['/api/auth/canvas/boards/b1/members', 'POST'],
+    ['/api/auth/canvas/boards/b1/members/alice', 'DELETE'],
+  ]) await client.json(url, {method, body: {}});
+  for (const call of calls) {
+    const headers = new Headers(call.init.headers);
+    assert.equal(headers.has('Authorization'), false);
+    assert.equal(headers.get('X-CSRF-Token'), 'csrf+token/value=');
+  }
 });
 
 test('standalone wrappers mirror the no-leak mutation behavior', async () => {
