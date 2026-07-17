@@ -12,6 +12,20 @@ class XiaoleVideoTests(unittest.TestCase):
         from content_domains import video
         self.video = video
 
+    def test_unstable_micro_and_omni_channels_are_rejected(self):
+        for channel in ("micro", "omni"):
+            with self.subTest(channel=channel):
+                with self.assertRaisesRegex(ValueError, "渠道维护中"):
+                    self.video.validate_xiaole_video_payload({"channel": channel, "prompt": "demo"})
+                with self.assertRaisesRegex(ValueError, "渠道维护中"):
+                    self.video.gen_xiaole_video({"channel": channel, "prompt": "demo"})
+
+    def test_unstable_channel_tabs_are_hidden(self):
+        html = (Path(__file__).resolve().parents[1] / "site" / "workbench" / "video.html").read_text()
+        self.assertIn('class="function-tab hidden" type="button" data-function="micro"', html)
+        self.assertIn('class="function-tab hidden" type="button" data-function="omni"', html)
+        self.assertIn("if(ch!=='grok') ch='grok';", html)
+
     def test_generate_xiaole_video_sends_size_without_aspect_ratio(self):
         calls = []
 
