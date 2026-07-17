@@ -625,16 +625,20 @@
   function loadHistory(){
     if(!historyList) return;
     if(historyState) historyState.textContent='正在加载…';
-    fetch('/api/gen/assets?limit=60&kind=copy',{cache:'no-store',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok()}})
-      .then(function(r){return r.ok?r.json():{items:[]};})
-      .catch(function(){return {items:[]};})
-      .then(function(d){
-        var copyItems=(d.items||[]).filter(function(item){return Array.isArray((item.meta||{}).scenes)&&item.meta.scenes.length;});
-        var breakdownItems=readBreakdownHistory();
-        var all=copyItems.concat(breakdownItems).sort(function(a,b){return (b.created_at||0)-(a.created_at||0);}).slice(0,12);
-        historyList.innerHTML=''; all.forEach(function(item){historyList.appendChild(historyCard(item));});
-        if(historyState) historyState.textContent=all.length?('共 '+all.length+' 条'):'暂无历史脚本';
-      }).catch(function(){ if(historyState) historyState.textContent='加载失败，请稍后重试'; });
+    Promise.all([
+      fetch('/api/gen/assets?limit=60&kind=copy',{cache:'no-store',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.ok?r.json():{items:[]};}).catch(function(){return {items:[]};}),
+      fetch('/api/gen/assets?limit=60&kind=breakdown',{cache:'no-store',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.ok?r.json():{items:[]};}).catch(function(){return {items:[]};})
+    ]).then(function(results){
+      var copyItems=(results[0].items||[]).filter(function(item){return Array.isArray((item.meta||{}).scenes)&&item.meta.scenes.length;});
+      var bdItems=(results[1].items||[]).filter(function(item){return Array.isArray((item.meta||{}).scenes)&&item.meta.scenes.length;});
+      // 合并 API 结果 + localStorage 兜底
+      var localItems=readBreakdownHistory();
+      var all=copyItems.concat(bdItems).concat(localItems).sort(function(a,b){return (b.created_at||0)-(a.created_at||0);}).slice(0,12);
+      // 去重
+      var seen={}; all=all.filter(function(item){ var key=item.title+'|'+(item.meta||{}).source_url; if(seen[key]) return false; seen[key]=true; return true; });
+      historyList.innerHTML=''; all.forEach(function(item){historyList.appendChild(historyCard(item));});
+      if(historyState) historyState.textContent=all.length?('共 '+all.length+' 条'):'暂无历史脚本';
+    }).catch(function(){ if(historyState) historyState.textContent='加载失败，请稍后重试'; });
   }
   if(historyBtn&&historySection) historyBtn.onclick=function(){historySection.scrollIntoView({behavior:'smooth',block:'start'});};
 
