@@ -104,11 +104,20 @@ def _locations_for(locations, modifier, path):
     return [location for location in locations if location[:2] == (modifier, path)]
 
 
+def _unique_public_proxy(locations, path):
+    matching_locations = [location for location in locations if location[1] == path]
+    if len(matching_locations) != 1:
+        raise AssertionError(
+            f"expected one active location for {path}, found {len(matching_locations)}"
+        )
+    if matching_locations[0][0] != "^~":
+        raise AssertionError(f"public proxy for {path} must use ^~")
+    return matching_locations[0]
+
+
 def _validate_exact_404s(config):
     locations = _active_locations(config)
-    public_auth = _locations_for(locations, "^~", "/api/auth/")
-    if len(public_auth) != 1:
-        raise AssertionError(f"expected one public auth proxy, found {len(public_auth)}")
+    public_auth = _unique_public_proxy(locations, "/api/auth/")
 
     for path in INTERNAL_AUTH_PATHS:
         exact_locations = _locations_for(locations, "=", path)
@@ -121,7 +130,7 @@ def _validate_exact_404s(config):
             re.MULTILINE,
         ) is None:
             raise AssertionError(f"missing return 404 for {path}")
-        if exact_location[2] >= public_auth[0][2]:
+        if exact_location[2] >= public_auth[2]:
             raise AssertionError(f"{path} must precede public auth proxy")
 
 
@@ -142,12 +151,10 @@ def _validate_no_broad_regex(config):
 def _validate_token_headers(config):
     locations = _active_locations(config)
     for path in ("/api/auth/", "/api/admin/"):
-        proxies = _locations_for(locations, "^~", path)
-        if len(proxies) != 1:
-            raise AssertionError(f"expected one public proxy for {path}, found {len(proxies)}")
+        proxy = _unique_public_proxy(locations, path)
         active_headers = re.findall(
             r'^[ \t]*proxy_set_header[ \t]+X-HQ-Internal-Token[ \t]+""[ \t]*;',
-            proxies[0][3],
+            proxy[3],
             flags=re.MULTILINE,
         )
         if len(active_headers) != 1:
@@ -217,6 +224,15 @@ class NginxSecurityBoundaryValidatorMutationTest(unittest.TestCase):
 
         with self.assertRaises(AssertionError):
             _validate_config(mutated)
+
+    def test_plain_prefix_duplicates_of_public_proxies_are_rejected(self):
+        for path in ("/api/auth/", "/api/admin/"):
+            directive = (
+                f'location {path} {{ proxy_set_header X-HQ-Internal-Token ""; }}'
+            )
+            with self.subTest(path=path):
+                with self.assertRaises(AssertionError):
+                    _validate_config(self._insert_before_public_auth(directive))
 
     def test_alternate_whitespace_duplicate_is_rejected(self):
         mutated = self._insert_before_public_auth(
