@@ -165,5 +165,10 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("hqMediaLightbox", self.html)
         self.assertIn("t.closest('#scScenes')||t.closest('#bdStoryboardStrip')", self.html)
 
+    def test_scene_card_hides_empty_voiceover(self):
+        """口播为空（纯音乐/歌舞视频）时不渲染口播行和转口播按钮"""
+        self.assertIn("((s.line||'').trim()?'<div style=\"font-size:13px; color:#eaf1fa;", self.html)
+        self.assertIn("((s.line||'').trim()?'<a data-to-audio=", self.html)
+
 if __name__ == "__main__":
     unittest.main()

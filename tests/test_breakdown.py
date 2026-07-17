@@ -278,8 +278,30 @@ class BreakdownTests(unittest.TestCase):
         )
 
         self.assertTrue(result["asr_failed"])
-        self.assertIn("ASR 转录失败", calls["usermsg"])
+        self.assertIn("无人物口播或转写不可用", calls["usermsg"])
         self.assertEqual(calls["phases"], ["downloading", "extracting_frames", "transcribing", "analyzing"])
+
+    def test_short_transcript_treated_as_no_speech(self):
+        """转写文本过短（<8字，≈纯音乐/歌舞）按无口播处理，prompt 要求 line 返回空串"""
+        calls = self._install_fake_env(
+            '{"scenes":[{"dur":"3s","scene":"舞者起舞","line":""}],"analysis":"歌舞视频"}',
+            transcript=[{"start": 0, "end": 3, "text": "嗯啊"}],
+        )
+
+        result = self.breakdown._do_breakdown(
+            {"_job_id": 60},
+            {"platform": "douyin", "id": "music-video"},
+            "https://example.test/post/music",
+        )
+
+        self.assertFalse(result["asr_failed"])
+        self.assertIn("无人物口播或转写不可用", calls["usermsg"])
+        self.assertIn("歌词、听写乱码", calls["usermsg"])
+
+    def test_scenes_prompt_allows_empty_line_for_music_videos(self):
+        import inspect
+        src = inspect.getsource(self.breakdown._breakdown_scenes_from_frames)
+        self.assertIn("所有 line 输出空串", src)
 
     def test_heartbeat_uses_prefixed_key_to_avoid_collision(self):
         import inspect
