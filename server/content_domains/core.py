@@ -1026,7 +1026,7 @@ def run_job(job_id):
             return  # 已被 reaper 接管为 error+退点：放弃成功副作用(不入库、不覆盖状态)
         # 口播按成片真实时长结算：预扣(cost)是 hold，跑完多退少不补。只在抢到 done 后调 —— done CAS
         # 互斥 + reaper/reclaim 不碰 done → 每 job 至多结算一次，不重复退。结算失败不影响出片。
-        if kind == "video":
+        if kind == "video" or (kind == "script_to_video" and (result or {}).get("pipeline") == "talking"):  # 含一键成片的口播链路（剧情走 grok 不按秒结算）
             try:
                 actual = _domains()[2].talking_actual_cost(result)
                 if actual and int(cost or 0) > actual:
