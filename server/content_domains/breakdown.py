@@ -68,12 +68,13 @@ def _do_breakdown(payload, info, url):
             "时长：" + str(duration) + "s\n"
             "平台：" + str(platform) + "\n\n"
             "口播文案（带时间轴）：\n" + str(script_text) + "\n\n"
-            "请严格输出 JSON：{\"scenes\":[{\"dur\":\"3s\",\"scene\":\"画面描述(10字内)\",\"line\":\"口播台词\"}]}，"
+            "请严格输出 JSON：{\"scenes\":[{\"dur\":\"3s\",\"scene\":\"画面描述(10字内)\",\"line\":\"口播台词\"}],"
+            "\"analysis\":\"视频内容综合分析(含视频主题、背景、构图运镜、人物特征、产品细节、情绪氛围、字幕建议等)\"}，"
             "只输出 JSON 本身，不要解释、不要 markdown 代码块。"
             "每个 scene 一句话说清画面，line 是原视频对应的口播内容。"
         )
         raw = _chat_multimodal(
-            "你是黄雀传媒资深短视频编导。分析视频关键帧和口播，拆解为简洁的分镜脚本。"
+            "你是黄雀传媒资深短视频编导。分析视频关键帧和口播，拆解为简洁的分镜脚本，同时输出一份视频内容综合分析。"
             "只输出 JSON，不要多余内容。",
             usermsg, frames
         )
@@ -90,6 +91,7 @@ def _do_breakdown(payload, info, url):
             "source_platform": platform,
             "duration": duration,
             "scenes": result.get("scenes", []),
+            "analysis": result.get("analysis", ""),
         }
     finally:
         if tmp_video:
