@@ -186,6 +186,18 @@ class SubtitleTemplateUiTests(unittest.TestCase):
         self.assertIn("sub-karaoke-track", preview)
         self.assertIn("--bounce-height", preview)
 
+    def test_range_values_stay_in_sync_with_slider_inputs(self):
+        sync = VIDEO_HTML.split("function subtitleSyncRangeOutputs(){", 1)[1].split("function subtitleSetColor", 1)[0]
+        refresh = VIDEO_HTML.split("function refreshSubtitleStateFromForm(){", 1)[1].split("function bindSubtitleBuilder", 1)[0]
+        self.assertIn("input[type=\"range\"]", sync)
+        self.assertIn("input.id+'Out'", sync)
+        self.assertIn("output.textContent=input.value", sync)
+        self.assertIn("subtitleSyncRangeOutputs()", refresh)
+
+    def test_missing_template_fields_do_not_render_as_undefined(self):
+        setter = VIDEO_HTML.split("function subtitleSetOutput", 1)[1].split("function subtitleSyncRangeOutputs", 1)[0]
+        self.assertIn("value!=null", setter)
+
     def test_core_exposes_authenticated_font_config_route(self):
         route = CORE_SOURCE.index('if p == "/api/gen/video/subtitle-config":')
         verify = CORE_SOURCE.index("verify(self._token())", route)
