@@ -1870,6 +1870,8 @@ def normalized_origin(value, *, allow_path=False):
     value = (value or "").strip()
     if not value or value == "null":
         return None
+    if not allow_path and ("?" in value or "#" in value):
+        return None
     try:
         parsed = urllib.parse.urlsplit(value)
         if parsed.scheme.lower() not in {"http", "https"}:
@@ -1886,6 +1888,19 @@ def normalized_origin(value, *, allow_path=False):
     if port is None:
         port = 443 if parsed.scheme.lower() == "https" else 80
     return parsed.scheme.lower(), parsed.hostname.lower(), port
+
+def serialized_origin(origin):
+    if origin is None:
+        return "<invalid>"
+    scheme, host, port = origin
+    if ":" in host:
+        host = "[" + host + "]"
+    default_port = 443 if scheme == "https" else 80
+    return "%s://%s%s" % (
+        scheme,
+        host,
+        "" if port == default_port else ":%d" % port,
+    )
 
 ALLOWED_ORIGINS = frozenset(
     origin
@@ -2049,13 +2064,20 @@ class H(BaseHTTPRequestHandler):
 
     def _reject_mutation(self, path: str, code: int, reason: str) -> bool:
         source = self.headers.get("Origin")
+        allow_path = False
         if source is None:
             source = self.headers.get("Referer") or ""
+            allow_path = True
+        safe_origin = (
+            serialized_origin(normalized_origin(source, allow_path=allow_path))
+            if source
+            else "<missing>"
+        )
         event = {
             "request_id": (self.headers.get("X-Request-ID") or secrets.token_hex(8))[:128],
             "path": path[:512],
             "client_ip": self._client_ip()[:128],
-            "origin": source[:512],
+            "origin": safe_origin,
             "reason": reason,
         }
         print(json.dumps(event, ensure_ascii=False), file=sys.stderr, flush=True)

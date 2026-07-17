@@ -148,6 +148,18 @@ class SecurityRegressionTests(unittest.TestCase):
             },
         )
 
+    def test_origin_with_empty_query_or_fragment_delimiter_is_rejected(self):
+        headers = self._cookie_headers("empty_origin_delimiters")
+        for delimiter in ("?", "#", "?#"):
+            with self.subTest(delimiter=delimiter):
+                self._assert_http_error(
+                    403,
+                    "POST",
+                    "/api/auth/profile",
+                    {"display_name": "blocked"},
+                    {**headers, "Origin": self.ORIGIN + delimiter},
+                )
+
     def test_allowed_referer_is_used_only_when_origin_is_absent(self):
         headers = self._cookie_headers("referer_user")
         headers.pop("Origin")
@@ -182,6 +194,14 @@ class SecurityRegressionTests(unittest.TestCase):
             415, "POST", "/api/auth/profile", headers=headers, raw=b"{}"
         )
 
+    def test_json_with_utf8_charset_is_accepted(self):
+        headers = self._cookie_headers("json_charset")
+        headers["Content-Type"] = "application/json; charset=utf-8"
+        with self._request(
+            "POST", "/api/auth/profile", {"display_name": "Charset User"}, headers
+        ) as response:
+            self.assertEqual(response.status, 200)
+
     def test_login_requires_allowed_origin_and_json(self):
         self.auth.create_user("login_guard", "secret123", 5)
         payload = {"username": "login_guard", "password": "secret123"}
@@ -209,6 +229,27 @@ class SecurityRegressionTests(unittest.TestCase):
             },
         )
 
+    def test_register_requires_allowed_origin_and_json(self):
+        payload = {"username": "register_guard", "password": "secret123"}
+        self._assert_http_error(
+            403,
+            "POST",
+            "/api/auth/register",
+            payload,
+            {"Origin": "https://evil.example"},
+        )
+        self._assert_http_error(
+            415,
+            "POST",
+            "/api/auth/register",
+            headers={"Origin": self.ORIGIN, "Content-Type": "text/plain"},
+            raw=json.dumps(payload).encode(),
+        )
+        with self._request(
+            "POST", "/api/auth/register", payload, {"Origin": self.ORIGIN}
+        ) as response:
+            self.assertEqual(response.status, 200)
+
     def test_bearer_miniprogram_flow_does_not_require_browser_csrf(self):
         self.auth.create_user("mini_user", "secret123", 5)
         with self._request(
@@ -225,6 +266,25 @@ class SecurityRegressionTests(unittest.TestCase):
         ) as response:
             self.assertEqual(response.status, 200)
 
+    def test_bearer_auth_takes_precedence_over_ambient_cookie(self):
+        self.auth.create_user("bearer_precedence", "secret123", 5)
+        with self._request(
+            "POST",
+            "/api/auth/miniprogram-login",
+            {"username": "bearer_precedence", "password": "secret123"},
+        ) as response:
+            token = json.loads(response.read())["token"]
+        with self._request(
+            "POST",
+            "/api/auth/profile",
+            {"display_name": "Bearer Wins"},
+            {
+                "Authorization": "Bearer " + token,
+                "Cookie": self.auth.AUTH_COOKIE_NAME + "=ambient-stale-session",
+            },
+        ) as response:
+            self.assertEqual(response.status, 200)
+
     def test_wxpay_notify_still_reaches_signature_verification(self):
         fake_wxpay = mock.Mock()
         fake_wxpay.configured.return_value = True
@@ -238,6 +298,15 @@ class SecurityRegressionTests(unittest.TestCase):
             raw=b"{}",
         )
         fake_wxpay.verify_notify.assert_called_once()
+
+    def test_near_miss_wxpay_notify_path_is_not_exempt(self):
+        self._assert_http_error(
+            415,
+            "POST",
+            "/api/auth/wxpay/notify-extra",
+            headers={"Content-Type": "application/octet-stream"},
+            raw=b"{}",
+        )
 
     def test_get_and_head_do_not_require_csrf(self):
         cookie, _ = self._login("safe_methods")
@@ -280,6 +349,33 @@ class SecurityRegressionTests(unittest.TestCase):
         serialized = json.dumps(event)
         for secret in ("session-secret", "csrf-secret", "bearer-secret"):
             self.assertNotIn(secret, serialized)
+
+    def test_referer_security_event_omits_path_and_sensitive_query(self):
+        handler = object.__new__(self.auth.H)
+        handler.command = "POST"
+        handler.path = "/api/auth/profile"
+        handler.client_address = ("192.0.2.11", 54321)
+        handler.headers = {
+            "Content-Type": "application/json",
+            "Referer": "https://evil.example/private/path?access_token=sensitive-query",
+            "Cookie": self.auth.AUTH_COOKIE_NAME + "=session-secret",
+            "X-CSRF-Token": "csrf-secret",
+            "X-Request-ID": "request-456",
+        }
+        handler._send = mock.Mock()
+        with mock.patch.object(builtins, "print") as printed:
+            self.assertFalse(handler._require_browser_mutation_security(handler.path))
+        event = json.loads(printed.call_args.args[0])
+        self.assertEqual(event["origin"], "https://evil.example")
+        serialized = json.dumps(event)
+        self.assertNotIn("/private/path", serialized)
+        self.assertNotIn("sensitive-query", serialized)
+
+    def test_empty_allowed_origins_fails_closed(self):
+        handler = object.__new__(self.auth.H)
+        handler.headers = {"Origin": self.ORIGIN}
+        with mock.patch.object(self.auth, "ALLOWED_ORIGINS", frozenset()):
+            self.assertFalse(handler._request_origin_allowed())
 
 
 if __name__ == "__main__":
