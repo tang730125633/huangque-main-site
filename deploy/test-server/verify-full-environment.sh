@@ -1,27 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+fail() {
+    printf 'FAIL: %s\n' "$1" >&2
+    exit 1
+}
+
 : "${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL to the externally reachable site origin}"
 AUTH_INTERNAL_URL="${AUTH_INTERNAL_URL:-http://127.0.0.1:8095}"
 : "${ADMIN_ALLOWED_SOURCE:?set ADMIN_ALLOWED_SOURCE to the exact deployed allowlisted IP or CIDR}"
 
+validate_inputs() {
+    if [[ ! "$PUBLIC_BASE_URL" =~ ^https?://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?)(:[0-9]{1,5})?/?$ ]]; then
+        fail "PUBLIC_BASE_URL must be an HTTP(S) origin without credentials, path, query, fragment, whitespace, or options"
+    fi
+    if [[ "$AUTH_INTERNAL_URL" != "http://127.0.0.1:8095" ]]; then
+        fail "AUTH_INTERNAL_URL must be exactly http://127.0.0.1:8095"
+    fi
+}
+
+validate_inputs
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL%/}"
-AUTH_INTERNAL_URL="${AUTH_INTERNAL_URL%/}"
-ADMIN_ALLOWLIST_FILE="${ADMIN_ALLOWLIST_FILE:-/etc/nginx/snippets/huangque-admin-allowlist.conf}"
-CONTENT_INTERNAL_URL="${CONTENT_INTERNAL_URL:-http://127.0.0.1:8096}"
-IMGGEN_INTERNAL_URL="${IMGGEN_INTERNAL_URL:-http://127.0.0.1:8101}"
-LEADGEN_INTERNAL_URL="${LEADGEN_INTERNAL_URL:-http://127.0.0.1:8100}"
-DL_INTERNAL_URL="${DL_INTERNAL_URL:-http://127.0.0.1:8097}"
 
 umask 077
 TEMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEMP_DIR"' EXIT
 probe_number=0
-
-fail() {
-    printf 'FAIL: %s\n' "$1" >&2
-    exit 1
-}
 
 fetch_success() {
     label="$1"
@@ -29,11 +33,17 @@ fetch_success() {
     probe_number=$((probe_number + 1))
     body_file="${TEMP_DIR}/body-${probe_number}"
     header_file="${TEMP_DIR}/headers-${probe_number}"
-    if ! curl --fail-with-body --silent --show-error \
-        --output "$body_file" --dump-header "$header_file" "$url"; then
+    if ! status="$(curl --fail-with-body --silent --show-error \
+        --connect-timeout 5 --max-time 20 \
+        --output "$body_file" --dump-header "$header_file" \
+        --write-out '%{http_code}' -- "$url")"; then
         fail "${label} request failed"
     fi
-    printf 'CHECK: %s -> success\n' "$label"
+    case "$status" in
+        2??) ;;
+        *) fail "${label} expected 2xx, received ${status}" ;;
+    esac
+    printf 'CHECK: %s -> %s\n' "$label" "$status"
 }
 
 expect_status() {
@@ -43,8 +53,9 @@ expect_status() {
     shift 3
     probe_number=$((probe_number + 1))
     body_file="${TEMP_DIR}/body-${probe_number}"
-    if ! status="$(curl --silent --show-error --output "$body_file" \
-        --write-out '%{http_code}' "$@" "$url")"; then
+    if ! status="$(curl --silent --show-error \
+        --connect-timeout 5 --max-time 20 \
+        --output "$body_file" --write-out '%{http_code}' "$@" -- "$url")"; then
         fail "${label} request failed before an HTTP status was received"
     fi
     printf 'CHECK: %s -> %s\n' "$label" "$status"
@@ -57,6 +68,8 @@ require_header() {
     grep -Eqi "^${header_name}:[[:space:]]*[^[:space:]]" "$header_file" \
         || fail "required response header missing: ${header_name}"
 }
+
+# END TESTABLE PROBE HELPERS
 
 test -f /etc/huangque-test/providers.env || fail "providers.env missing"
 test "$(stat -c '%a' /etc/huangque-test/providers.env)" = "600" || fail "providers.env mode is not 600"
@@ -76,12 +89,12 @@ done
 
 nginx -t >/dev/null 2>&1 || fail "nginx configuration invalid"
 
-test -f "$ADMIN_ALLOWLIST_FILE" || fail "admin allowlist snippet missing"
+test -f /etc/nginx/snippets/huangque-admin-allowlist.conf || fail "admin allowlist snippet missing"
 awk -v expected="$ADMIN_ALLOWED_SOURCE" '
     /^[[:space:]]*#/ { next }
     $1 == "allow" && $2 == expected ";" { found = 1 }
     END { exit(found ? 0 : 1) }
-' "$ADMIN_ALLOWLIST_FILE" || fail "expected admin allowlist source is not active"
+' /etc/nginx/snippets/huangque-admin-allowlist.conf || fail "expected admin allowlist source is not active"
 awk '
     {
         sub(/#.*/, "")
@@ -89,7 +102,7 @@ awk '
         if (length($0)) last = $0
     }
     END { exit(last == "deny all;" ? 0 : 1) }
-' "$ADMIN_ALLOWLIST_FILE" || fail "admin allowlist must end with deny all"
+' /etc/nginx/snippets/huangque-admin-allowlist.conf || fail "admin allowlist must end with deny all"
 
 ss -ltn | grep -q '127.0.0.1:10809' || fail "xray loopback port missing"
 for port in 8095 8096 8097 8098 8100 8101; do
@@ -103,14 +116,14 @@ fetch_success "internal auth health" "${AUTH_INTERNAL_URL}/api/auth/health"
 auth_body="${TEMP_DIR}/body-${probe_number}"
 grep -Eq '"ok"[[:space:]]*:[[:space:]]*true' "$auth_body" || fail "auth health failed"
 
-fetch_success "internal content health" "${CONTENT_INTERNAL_URL}/api/gen/health"
+fetch_success "internal content health" "http://127.0.0.1:8096/api/gen/health"
 content_body="${TEMP_DIR}/body-${probe_number}"
 grep -Eq '"has_openai"[[:space:]]*:[[:space:]]*true' "$content_body" || fail "OpenAI key not loaded"
 grep -Eq '"has_tikhub"[[:space:]]*:[[:space:]]*true' "$content_body" || fail "TikHub key not loaded"
 
-fetch_success "internal image health" "${IMGGEN_INTERNAL_URL}/api/gen/banana/health"
-fetch_success "internal lead generation health" "${LEADGEN_INTERNAL_URL}/api/gen/leadgen/health"
-fetch_success "internal download health" "${DL_INTERNAL_URL}/api/gen/dl/health"
+fetch_success "internal image health" "http://127.0.0.1:8101/api/gen/banana/health"
+fetch_success "internal lead generation health" "http://127.0.0.1:8100/api/gen/leadgen/health"
+fetch_success "internal download health" "http://127.0.0.1:8097/api/gen/dl/health"
 
 fetch_success "public login /login.html" "${PUBLIC_BASE_URL}/login.html"
 login_headers="${TEMP_DIR}/headers-${probe_number}"
@@ -146,7 +159,9 @@ done
 expect_status "non-allowlisted admin page /admin/" 403 "${PUBLIC_BASE_URL}/admin/"
 expect_status "non-allowlisted admin API /api/admin/" 403 "${PUBLIC_BASE_URL}/api/admin/"
 
-proxy_code="$(curl --proxy http://127.0.0.1:10809 --silent --output /dev/null --write-out '%{http_code}' --max-time 15 https://api.openai.com/v1/models)"
+proxy_code="$(curl --proxy http://127.0.0.1:10809 --silent --show-error \
+    --connect-timeout 5 --max-time 15 --output /dev/null \
+    --write-out '%{http_code}' -- https://api.openai.com/v1/models)"
 case "$proxy_code" in
     401|403) ;;
     *) fail "unexpected no-auth OpenAI connectivity status: ${proxy_code}" ;;

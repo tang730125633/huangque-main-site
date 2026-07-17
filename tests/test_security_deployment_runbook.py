@@ -1,4 +1,6 @@
+import ipaddress
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -6,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 VERIFY_SCRIPT = ROOT / "deploy/test-server/verify-full-environment.sh"
 RUNBOOK = ROOT / "docs/security/test-server-security-runbook.md"
+SHELL_HARNESS = ROOT / "tests/test_verify_full_environment.sh"
 
 INTERNAL_PATHS = (
     "/api/auth/points/deduct",
@@ -38,6 +41,37 @@ class FullEnvironmentVerificationScriptTest(unittest.TestCase):
         self.assertRegex(self.script, r"mktemp")
         self.assertRegex(self.script, r"trap\s+[^\n]*EXIT")
 
+    def test_has_only_the_three_documented_runtime_inputs(self):
+        for forbidden in (
+            "ADMIN_ALLOWLIST_FILE",
+            "CONTENT_INTERNAL_URL",
+            "IMGGEN_INTERNAL_URL",
+            "LEADGEN_INTERNAL_URL",
+            "DL_INTERNAL_URL",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, self.script)
+        self.assertIn(
+            "/etc/nginx/snippets/huangque-admin-allowlist.conf", self.script
+        )
+        for endpoint in (
+            "http://127.0.0.1:8096/api/gen/health",
+            "http://127.0.0.1:8101/api/gen/banana/health",
+            "http://127.0.0.1:8100/api/gen/leadgen/health",
+            "http://127.0.0.1:8097/api/gen/dl/health",
+        ):
+            with self.subTest(endpoint=endpoint):
+                self.assertIn(endpoint, self.script)
+
+    def test_validates_public_origin_and_exact_internal_auth_url(self):
+        body = self._function_body("validate_inputs")
+        self.assertIn("PUBLIC_BASE_URL", body)
+        self.assertIn("https?", body)
+        for rejected_component in ("credentials", "path", "query", "fragment", "whitespace"):
+            with self.subTest(component=rejected_component):
+                self.assertIn(rejected_component, body.lower())
+        self.assertIn('AUTH_INTERNAL_URL" != "http://127.0.0.1:8095', body)
+
     def test_checks_core_health_and_public_login(self):
         for path in (
             "/api/auth/health",
@@ -50,6 +84,31 @@ class FullEnvironmentVerificationScriptTest(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIn(path, self.script)
         self.assertIn("--fail-with-body", self.script)
+
+    def test_success_helper_requires_2xx_without_following_redirects(self):
+        body = self._function_body("fetch_success")
+        self.assertIn("--write-out", body)
+        self.assertRegex(body, r"2\?\?|\[2[0-9][0-9]\]")
+        self.assertNotIn("--location", body)
+        self.assertNotIn("--location-trusted", body)
+        self.assertIn("--output", body)
+        self.assertIn("--dump-header", body)
+
+    def test_every_curl_probe_has_timeouts_and_url_option_terminator(self):
+        normalized = self.script.replace("\\\n", " ")
+        commands = [
+            match.group(0)
+            for match in re.finditer(r"\bcurl\b[^\n]*", normalized)
+        ]
+        self.assertGreaterEqual(len(commands), 3)
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertIn("--connect-timeout", command)
+                self.assertIn("--max-time", command)
+                self.assertRegex(
+                    command,
+                    r"\s--\s+(?:\"\$url\"|https://api\.openai\.com/v1/models)",
+                )
 
     def test_checks_every_internal_path_with_and_without_spoofed_token(self):
         for path in INTERNAL_PATHS:
@@ -74,27 +133,17 @@ class FullEnvironmentVerificationScriptTest(unittest.TestCase):
         self.assertIn("deny all", self.script)
 
     def test_expected_error_status_helper_does_not_use_fail_with_body(self):
-        match = re.search(
-            r"(?:expected_status|expect_status)\(\)\s*\{(?P<body>.*?)^\}",
-            self.script,
-            flags=re.MULTILINE | re.DOTALL,
-        )
-        self.assertIsNotNone(match, "expected-status helper is missing")
-        self.assertNotIn("--fail-with-body", match.group("body"))
-        self.assertIn("--write-out", match.group("body"))
+        body = self._function_body("expect_status")
+        self.assertNotIn("--fail-with-body", body)
+        self.assertIn("--write-out", body)
 
     def test_does_not_print_secret_bearing_values(self):
-        forbidden_expansions = (
-            "${COOKIE",
-            "$COOKIE",
-            "${CSRF",
-            "$CSRF",
-            "${HQ_INTERNAL_TOKEN",
-            "$HQ_INTERNAL_TOKEN",
-            "${OPENAI_API_KEY",
-            "$OPENAI_API_KEY",
-            "${GEMINI_API_KEY",
-            "$GEMINI_API_KEY",
+        normalized = self.script.replace("\\\n", " ")
+        self.assertNotRegex(self.script, r"(?m)^\s*set\s+-[^\n]*x")
+        self.assertNotRegex(normalized, r"\bcurl\b[^\n]*(?:--verbose|-v\b|--trace)")
+        self.assertNotRegex(
+            normalized,
+            r"(?m)^\s*(?:cat|tee)\b[^\n]*(?:TEMP_DIR|body|header)",
         )
         output_lines = [
             line
@@ -103,7 +152,45 @@ class FullEnvironmentVerificationScriptTest(unittest.TestCase):
         ]
         for line in output_lines:
             with self.subTest(line=line):
-                self.assertFalse(any(value in line for value in forbidden_expansions))
+                self.assertNotRegex(
+                    line,
+                    r"(?i)\$(?:\{)?[A-Z0-9_]*(?:PASSWORD|TOKEN|SECRET|KEY|COOKIE|CSRF)[A-Z0-9_]*",
+                )
+                self.assertNotRegex(line, r"\$(?:\{)?(?:TEMP_DIR|body_file|header_file)")
+
+    def test_linux_fake_curl_harness_is_executable_and_covers_security_cases(self):
+        harness = SHELL_HARNESS.read_text(encoding="utf-8")
+        self.assertTrue(harness.startswith("#!/usr/bin/env bash\n"))
+        for marker in (
+            "redirect",
+            "2xx",
+            "paired",
+            "cleanup",
+            "super-secret-body",
+            "session-secret",
+            "csrf-secret",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, harness)
+        index = subprocess.run(
+            ["git", "ls-files", "--stage", "--", str(SHELL_HARNESS.relative_to(ROOT))],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertTrue(index.startswith("100755 "), "harness must be executable in Git")
+
+    @classmethod
+    def _function_body(cls, name):
+        match = re.search(
+            rf"{re.escape(name)}\(\)\s*\{{(?P<body>.*?)^\}}",
+            cls.script,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+        if match is None:
+            raise AssertionError(f"{name} helper is missing")
+        return match.group("body")
 
 
 class SecurityDeploymentRunbookTest(unittest.TestCase):
@@ -154,11 +241,33 @@ class SecurityDeploymentRunbookTest(unittest.TestCase):
         self.assertIn("不执行数据库 schema 回滚", text)
 
     def test_uses_only_documentation_addresses_and_no_credentials(self):
-        self.assertNotRegex(
-            self.text,
-            r"(?<![\d.])(?:8\.138\.143\.64|129\.204\.166\.13)(?![\d.])",
+        addresses = re.findall(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?", self.text)
+        documentation_networks = (
+            ipaddress.ip_network("192.0.2.0/24"),
+            ipaddress.ip_network("198.51.100.0/24"),
+            ipaddress.ip_network("203.0.113.0/24"),
         )
+        for address in addresses:
+            parsed = ipaddress.ip_interface(address).ip
+            with self.subTest(address=address):
+                self.assertTrue(
+                    parsed.is_loopback
+                    or any(parsed in network for network in documentation_networks)
+                )
+        self.assertNotRegex(self.text, r"(?m)^\s*allow\s+\d")
         self.assertNotRegex(self.text, r"(?i)(?:password|token|secret)\s*[:=]\s*\S+")
+
+    def test_documents_strict_inputs_negative_source_and_timeouts(self):
+        for requirement in (
+            "仅接受",
+            "HTTP(S) origin",
+            "非白名单来源",
+            "不跟随重定向",
+            "连接超时",
+            "总超时",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, self.text)
 
 
 if __name__ == "__main__":

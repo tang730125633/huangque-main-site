@@ -23,6 +23,8 @@
 
 从非白名单来源运行完整校验。变量值应通过当前 shell 的受保护环境注入，不要使用会把 secret 记入历史的命令行参数：
 
+脚本仅接受三项运行输入：`PUBLIC_BASE_URL`、`AUTH_INTERNAL_URL` 和 `ADMIN_ALLOWED_SOURCE`。`PUBLIC_BASE_URL` 必须是没有凭据、路径、查询、片段或空白的 HTTP(S) origin（只允许可选末尾斜杠）；`AUTH_INTERNAL_URL` 只能是默认且精确的 `http://127.0.0.1:8095`；`ADMIN_ALLOWED_SOURCE` 只用于核对固定 allowlist 文件中的活动规则。负向 403 必须由当前非白名单来源自然发起，不得把允许地址绑定为 curl 的本地接口。
+
 ```sh
 PUBLIC_BASE_URL=https://test.example.invalid \
 ADMIN_ALLOWED_SOURCE=192.0.2.10/32 \
@@ -31,6 +33,8 @@ deploy/test-server/verify-full-environment.sh
 ```
 
 校验必须全部通过：核心服务健康、公开登录页、7 个内部路径均为 404、伪造 `X-HQ-Internal-Token` 仍为 404、安全响应头、管理员页面与 API 从非白名单来源均为 403。预期 403/404 的请求仅记录路径和状态码，不打印响应体或请求头。
+
+所有 HTTP 探测都有 5 秒连接超时和 20 秒总超时（无成本出口连通性总超时为 15 秒），并在 URL 前使用 curl 的 `--` 选项终止符。健康接口和登录页仅接受 2xx，采取不跟随重定向策略；任何 3xx 都视为部署错误，避免校验落到非预期主机或页面。
 
 随后执行人工冒烟：
 
