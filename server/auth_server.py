@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # 黄雀 AI · 独立认证服务（零依赖，标准库）
 # 端口 127.0.0.1:8095，nginx 把 /api/auth/ 路由过来。与 leadgen(8090) 完全隔离。
-import sqlite3, hashlib, secrets, json, os, sys, time, urllib.parse
+import sqlite3, hashlib, hmac, secrets, json, os, sys, time, urllib.parse
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -23,6 +23,8 @@ ITER = 200000
 TOKEN_TTL = int(os.environ.get("HQ_AUTH_TOKEN_TTL", str(30 * 24 * 3600)))
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
 AUTH_COOKIE_SECURE = os.environ.get("HQ_AUTH_COOKIE_SECURE", "1").strip().lower() not in ("0", "false", "no")
+CSRF_COOKIE_NAME = "hq_csrf"
+CSRF_SECRET = os.environ.get("HQ_CSRF_SECRET", "").encode("utf-8")
 INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
 LOGIN_FAIL_WINDOW = int(os.environ.get("HQ_AUTH_FAIL_WINDOW", "300"))
 LOGIN_FAIL_MAX = int(os.environ.get("HQ_AUTH_FAIL_MAX", "5"))
@@ -1865,13 +1867,46 @@ def clear_auth_cookie_header():
         parts.append("Secure")
     return "; ".join(parts)
 
+def require_csrf_secret():
+    if not CSRF_SECRET:
+        raise RuntimeError("HQ_CSRF_SECRET must be set")
+    return CSRF_SECRET
+
+def csrf_token_for(session_token: str) -> str:
+    if not session_token:
+        raise ValueError("session token must not be empty")
+    return hmac.new(
+        require_csrf_secret(),
+        session_token.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+def csrf_cookie_header(session_token: str) -> str:
+    parts = [
+        f"{CSRF_COOKIE_NAME}={csrf_token_for(session_token)}",
+        "Path=/",
+        f"Max-Age={TOKEN_TTL}",
+        "SameSite=Lax",
+    ]
+    if AUTH_COOKIE_SECURE:
+        parts.append("Secure")
+    return "; ".join(parts)
+
+def clear_csrf_cookie_header() -> str:
+    parts = [f"{CSRF_COOKIE_NAME}=", "Path=/", "Max-Age=0", "SameSite=Lax"]
+    if AUTH_COOKIE_SECURE:
+        parts.append("Secure")
+    return "; ".join(parts)
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def _send(self, code, obj, extra_headers=None):
         body = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        for key, value in (extra_headers or {}).items():
+        headers = extra_headers or {}
+        headers = headers.items() if hasattr(headers, "items") else headers
+        for key, value in headers:
             self.send_header(key, value)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -1949,6 +1984,16 @@ class H(BaseHTTPRequestHandler):
             return False
         token = self.headers.get("X-HQ-Internal-Token") or ""
         return secrets.compare_digest(token, INTERNAL_TOKEN)
+
+    def _csrf_valid(self, session_token: str) -> bool:
+        supplied = self.headers.get("X-CSRF-Token") or ""
+        if not session_token or not supplied:
+            return False
+        try:
+            expected = csrf_token_for(session_token)
+        except (RuntimeError, ValueError):
+            return False
+        return secrets.compare_digest(supplied, expected)
 
     def _require_internal(self):
         if self._internal_auth():
@@ -2292,7 +2337,10 @@ class H(BaseHTTPRequestHandler):
                 return self._send(500, {"detail": "注册失败"})
             finally:
                 c.close()
-            return self._send(200, {"user": public_user(u, name, NEW_USER_TRIAL_POINTS, account_id=account_id)}, {"Set-Cookie": auth_cookie_header(tok)})
+            return self._send(200, {"user": public_user(u, name, NEW_USER_TRIAL_POINTS, account_id=account_id)}, [
+                ("Set-Cookie", auth_cookie_header(tok)),
+                ("Set-Cookie", csrf_cookie_header(tok)),
+            ])
         if p == "/api/auth/login":
             d = self._body()
             if self._bad_json():
@@ -2311,7 +2359,10 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"user": {
                 "username": u, "name": row["display_name"], "points": row["points"],
                 "role": row["role"], "must_change": bool(row["must_change"]),
-                "account_id": account_id}}, {"Set-Cookie": auth_cookie_header(tok)})
+                "account_id": account_id}}, [
+                    ("Set-Cookie", auth_cookie_header(tok)),
+                    ("Set-Cookie", csrf_cookie_header(tok)),
+                ])
         if p == "/api/auth/miniprogram-login":
             # 小程序 wx.request 不像浏览器那样自动带 httpOnly cookie，专供小程序客户端：
             # token 放响应体让小程序自己存起来，后续走 Authorization: Bearer 请求头（网站登录/注册不受影响，仍只走 cookie）。
@@ -2372,10 +2423,15 @@ class H(BaseHTTPRequestHandler):
                 c.close()
             return self._send(200, {"token": tok, "user": public_user(u, name, NEW_USER_TRIAL_POINTS, account_id=account_id)})
         if p == "/api/auth/logout":
-            clear_cookie = {"Set-Cookie": clear_auth_cookie_header()}
+            clear_cookie = [
+                ("Set-Cookie", clear_auth_cookie_header()),
+                ("Set-Cookie", clear_csrf_cookie_header()),
+            ]
             tok = request_token(self.headers)
             if not tok:
                 return self._send(200, {"ok": True}, clear_cookie)
+            if cookie_token(self.headers.get("Cookie")) and not self._csrf_valid(tok):
+                return self._send(403, {"detail": "forbidden"})
             if not tok:
                 return self._send(401, {"detail": "未登录"})
             if tok in REVOKED_TOKENS:
@@ -2827,6 +2883,7 @@ if __name__ == "__main__":
         role = sys.argv[5] if len(sys.argv) > 5 else 'member'
         create_user(sys.argv[2], sys.argv[3], pts, role)
         sys.exit(0)
+    require_csrf_secret()
     init_db()
     print("huangque-auth on 127.0.0.1:%d" % PORT)
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
