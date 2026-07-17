@@ -123,5 +123,9 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("frame_thumbnails", self.html)
         self.assertIn("setBreakdownStoryboard((bd&&bd.frame_thumbnails)||[])", self.html)
 
+    def test_esc_tolerates_non_string_values(self):
+        """esc 必须容忍数字等非字符串（后端 duration 是毫秒整数）"""
+        self.assertIn("String(s==null?'':s)", self.html)
+
 if __name__ == "__main__":
     unittest.main()

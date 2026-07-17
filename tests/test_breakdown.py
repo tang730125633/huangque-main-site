@@ -399,5 +399,24 @@ class BreakdownTests(unittest.TestCase):
                 "https://example.test/post/retry-fail",
             )
 
+    def test_do_breakdown_normalizes_millisecond_duration(self):
+        """tikhub 返回毫秒时长（18320），结果必须统一成秒（18）"""
+        self._install_fake_env(
+            '{"scenes":[{"dur":"3s","scene":"门头","line":"欢迎"}],"analysis":"ok"}'
+        )
+        sys.modules["tikhub"].detail = lambda platform, item_id, note_type=None: {
+            "play_url": "https://example.test/demo.mp4",
+            "duration": 18320,
+            "title": "毫秒时长视频",
+        }
+
+        result = self.breakdown._do_breakdown(
+            {"_job_id": 50},
+            {"platform": "douyin", "id": "ms-duration"},
+            "https://example.test/post/ms",
+        )
+
+        self.assertEqual(result["duration"], 18)
+
 if __name__ == "__main__":
     unittest.main()
