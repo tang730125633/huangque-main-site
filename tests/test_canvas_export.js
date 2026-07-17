@@ -85,6 +85,7 @@ function exportOptions(overrides) {
   const loaded = [];
   const downloads = [];
   const revoked = [];
+  const scheduled = [];
   const options = {
     bounds: { x: 10, y: 20, w: 300, h: 180 },
     nodes: [{ id: 'n1', type: 'image', typeName: '素材', typeColor: '#46b4ff', x: 20, y: 30, width: 250, height: 160, collapsed: false, image: 'broken.png', params: {}, outputs: {} }],
@@ -95,21 +96,25 @@ function exportOptions(overrides) {
     createObjectURL(value) { assert.strictEqual(value, blob); return 'blob:download'; },
     revokeObjectURL(url) { revoked.push(url); },
     download(url, filename) { downloads.push({ url, filename }); },
+    setTimeoutImpl(fn, delay) { scheduled.push({ fn, delay }); return scheduled.length; },
     now: () => new Date('2026-07-16T08:09:10Z'),
   };
-  return { context, blob, quality, canvas, loaded, downloads, revoked, options: Object.assign(options, overrides || {}) };
+  return { context, blob, quality, canvas, loaded, downloads, revoked, scheduled, options: Object.assign(options, overrides || {}) };
 }
 
 async function testExportJpegUsesExplicitGeometryAndDrawingConstants() {
   const fixture = exportOptions();
   const result = await exporter.exportJpeg(fixture.options);
 
-  await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(fixture.loaded, ['broken.png'], 'image load failures resolve as null and do not abort export');
   assert.deepEqual(fixture.quality, [0.92]);
   assert.equal(fixture.canvas.width, 600);
   assert.equal(fixture.canvas.height, 360);
   assert.deepEqual(fixture.downloads, [{ url: 'blob:download', filename: 'canvas-preview-2026-07-16-08-09-10.jpg' }]);
+  assert.deepEqual(fixture.revoked, [], 'download URL must remain valid until delayed cleanup runs');
+  assert.equal(fixture.scheduled.length, 1);
+  assert.equal(fixture.scheduled[0].delay, 1500);
+  fixture.scheduled[0].fn();
   assert.deepEqual(fixture.revoked, ['blob:download']);
   assert.deepEqual(result, { filename: fixture.downloads[0].filename, blob: fixture.blob });
   assert.ok(fixture.context.calls.some((call) => JSON.stringify(call) === JSON.stringify(['scale', 2, 2])), 'pixel scaling is preserved');
@@ -131,7 +136,10 @@ async function testExportJpegRejectsMissingContextAndBlob() {
 async function testDownloadFailureStillCleansUrl() {
   const fixture = exportOptions({ download() { throw new Error('download blocked'); } });
   await assert.rejects(exporter.exportJpeg(fixture.options), /download blocked/);
-  await Promise.resolve();
+  assert.deepEqual(fixture.revoked, []);
+  assert.equal(fixture.scheduled.length, 1);
+  assert.equal(fixture.scheduled[0].delay, 1500);
+  fixture.scheduled[0].fn();
   assert.deepEqual(fixture.revoked, ['blob:download']);
 }
 

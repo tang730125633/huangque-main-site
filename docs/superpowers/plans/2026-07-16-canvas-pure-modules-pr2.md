@@ -515,3 +515,52 @@ Repeat all five module tests, existing canvas regressions, targeted Python tests
 - [ ] **Step 3: Stop and report**
 
 Report branch, commits, changed files, module line counts, local test evidence, and any Windows-only full-suite limitations. Do not push, open a PR, merge, or deploy until the user explicitly authorizes publication.
+
+---
+
+### Task 8: Address PR2 review findings before merge
+
+**Files:**
+- Modify: `tests/test_canvas_export.js`
+- Modify: `site/workbench/canvas/canvas-export.js`
+- Modify: `tests/test_canvas_storage.js`
+- Modify: `site/workbench/canvas/canvas-storage.js`
+
+**Interfaces:**
+- Preserves: `exportJpeg(options) -> Promise<{filename,blob}>` and schedules download URL cleanup through an injected timer.
+- Preserves: storage writes return `{ok:false,error}` for both serialization and browser storage failures.
+
+- [ ] **Step 1: Write and run the failing export cleanup test**
+
+Inject `setTimeoutImpl` into `exportJpeg`, assert that `revokeObjectURL` is not called before the timer runs, and assert the scheduled delay is `1500`. Run `node tests/test_canvas_export.js`; expected failure: the current microtask cleanup revokes immediately and never schedules the timer.
+
+- [ ] **Step 2: Implement delayed download cleanup**
+
+Replace the microtask cleanup with:
+
+```js
+var later=options.setTimeoutImpl||setTimeout;
+later(function(){options.revokeObjectURL(url);},1500);
+```
+
+Run `node tests/test_canvas_export.js`; expected: pass.
+
+- [ ] **Step 3: Write and run the failing storage serialization test**
+
+Save a circular draft, assert the call does not throw, assert `{ok:false,error:{code:'serialization_failed'}}`, and assert `setItem` was not called. Run `node tests/test_canvas_storage.js`; expected failure: `JSON.stringify` throws outside the adapter result contract.
+
+- [ ] **Step 4: Implement serialization failure handling**
+
+Wrap serialization separately before the storage write:
+
+```js
+var raw;
+try{ raw=JSON.stringify(value); }
+catch(error){ return failure('serialization_failed',error); }
+```
+
+Keep the existing single `setItem` attempt and quota classification. Run `node tests/test_canvas_storage.js`; expected: pass.
+
+- [ ] **Step 5: Verify, commit, update PR, and merge**
+
+Run all five module tests, the canvas extraction/stamp tests, full Ubuntu `unittest` discovery, and `git diff --check`. Commit only the plan, two modules, and two tests; push `codex/canvas-pure-modules` without force. Fetch current `origin/main`, merge the PR branch into a clean isolated main worktree, repeat the complete Ubuntu suite, then push `main` without force so GitHub records PR2 as merged.

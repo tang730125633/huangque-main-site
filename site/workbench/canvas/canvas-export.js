@@ -129,7 +129,7 @@
   }
   function exportJpeg(options){
     options=options||{};
-    var bounds=options.bounds,nodes=options.nodes||[],edges=options.edges||[],theme=options.theme==='light'?'light':'dark';
+    var bounds=options.bounds,nodes=options.nodes||[],edges=options.edges||[],theme=options.theme==='light'?'light':'dark',later=options.setTimeoutImpl||setTimeout;
     if(!bounds) return Promise.reject(new Error('canvas bounds unavailable'));
     var sources={};
     nodes.forEach(function(node){var src=nodeImageSource(node);if(src) sources[src]=null;});
@@ -164,7 +164,7 @@
             options.download(url,filename);
             resolve({filename:filename,blob:blob});
           }catch(error){reject(error);}
-          finally{Promise.resolve().then(function(){options.revokeObjectURL(url);});}
+          finally{later(function(){options.revokeObjectURL(url);},1500);}
         },'image/jpeg',.92);
       });
     });

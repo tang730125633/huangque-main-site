@@ -176,4 +176,18 @@ for (const code of [22, 1014]) {
   assert.equal(saved.error.code, 'quota_exceeded');
 }
 
+{
+  const fake = createFakeStorage();
+  let writes = 0;
+  fake.setItem = function setItem() { writes += 1; };
+  const circular = { nodes: [] };
+  circular.self = circular;
+  const storage = storageModule.createStorage({ storage: fake });
+  let saved;
+  assert.doesNotThrow(() => { saved = storage.saveDraft(circular); });
+  assert.equal(saved.ok, false);
+  assert.equal(saved.error.code, 'serialization_failed');
+  assert.equal(writes, 0, 'serialization failures must not attempt browser storage writes');
+}
+
 console.log('canvas storage: pass');

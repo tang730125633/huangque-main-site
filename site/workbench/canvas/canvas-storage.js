@@ -29,7 +29,9 @@
       try{ return result(JSON.parse(raw)); }catch(error){ return failure('corrupt_json',error); }
     }
     function write(key,value){
-      var raw=JSON.stringify(value);
+      var raw;
+      try{ raw=JSON.stringify(value); }
+      catch(error){ return failure('serialization_failed',error); }
       try{ current().setItem(key,raw); return result(value); }
       catch(error){ return failure(quota(error)?'quota_exceeded':'storage_unavailable',error); }
     }
