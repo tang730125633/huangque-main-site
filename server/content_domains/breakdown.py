@@ -92,6 +92,12 @@ def _do_breakdown(payload, info, url, mode=None):
             raise ValueError("该链接是图文笔记，不是视频，暂不支持拆解")
         raise ValueError("未找到视频下载地址，可能是私密或已删除")
     duration = det.get("duration") or 30
+    try:
+        duration = int(float(duration))
+    except Exception:
+        duration = 30
+    if duration > 1000:
+        duration = max(1, round(duration / 1000.0))  # 热修(20260717)：tikhub 返回毫秒，统一转秒
     title = det.get("title") or det.get("desc") or ""
 
     job_id = payload.get("_job_id")
