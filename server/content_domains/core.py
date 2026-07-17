@@ -1468,7 +1468,7 @@ class H(BaseHTTPRequestHandler):
             phase = video_domain.get_video_job_phase(jid) if r["kind"] in {"video", "tryon", "xiaole_video", "cinematic"} else None
             if phase is None and r["kind"] == "breakdown":
                 try:
-                    phase = (json.loads(r["payload"] or "{}") or {}).get("phase")
+                    p = json.loads(r["payload"] or "{}") or {}; phase = p.get("_hb_phase") or p.get("phase")  # 新 key 优先，兼容旧数据
                 except Exception:
                     pass
             d = _job_public_dict(r, phase)
