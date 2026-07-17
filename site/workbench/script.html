@@ -244,12 +244,11 @@
       </div>
 
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:16px; padding-top:16px; border-top:1px solid rgba(148,164,187,.1);">
-        <span id="scBatchHint" class="sc-hint">每张分镜可单独转视频/转口播，或使用下方批量操作</span>
+        <span id="scBatchHint" class="sc-hint">每张分镜可单独转视频/转口播，或使用下方一键生成</span>
         <div style="display:flex; gap:9px; flex-wrap:wrap; justify-content:flex-end;">
           <button id="bdRemakeBtn" class="sc-btn" type="button" style="display:none; color:#0f172a; background:linear-gradient(135deg,#93c5fd,#60a5fa); border-color:rgba(96,165,250,.35); font-weight:700;">🎬 生成同款视频</button>
-          <button id="scOneClickVideo" class="sc-btn" type="button" style="color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border-color:rgba(231,178,76,.4); font-weight:700;">🎬 一键成片</button>
-          <a id="scAllToVideo" class="sc-btn" style="cursor:pointer;">转视频</a>
-          <a id="scAllToAudio" class="sc-btn" style="cursor:pointer;">转口播</a>
+          <button id="scGenVideo" class="sc-btn" type="button" style="color:#0f172a; background:linear-gradient(135deg,#93c5fd,#60a5fa); border-color:rgba(96,165,250,.35); font-weight:700;">🎬 一键生成视频</button>
+          <button id="scGenAudio" class="sc-btn" type="button" style="color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border-color:rgba(231,178,76,.4); font-weight:700;">🎙 一键生成口播</button>
           <button id="scExport" class="sc-btn" type="button" style="color:#e7b24c; background:rgba(231,178,76,.08); border-color:rgba(231,178,76,.24);"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></span>导出脚本</button>
         </div>
       </div>
@@ -279,8 +278,8 @@
       historyState=document.getElementById('scHistoryState');
   var previewTitle=document.getElementById('scPreviewTitle'), batchHint=document.getElementById('scBatchHint');
   var panelWrite=document.getElementById('panelWrite'), panelBreakdown=document.getElementById('panelBreakdown');
-  var oneClickBtn=document.getElementById('scOneClickVideo'), allToVideo=document.getElementById('scAllToVideo'),
-      allToAudio=document.getElementById('scAllToAudio'), bdRemakeBtn=document.getElementById('bdRemakeBtn');
+  var genVideoBtn=document.getElementById('scGenVideo'), genAudioBtn=document.getElementById('scGenAudio'),
+      bdRemakeBtn=document.getElementById('bdRemakeBtn');
   var bdUrl=document.getElementById('bdUrl'), bdGen=document.getElementById('bdGen'),
       bdProgress=document.getElementById('bdProgress'), bdPhases=document.getElementById('bdPhases'),
       bdResultMeta=document.getElementById('bdResultMeta'), bdSourceLink=document.getElementById('bdSourceLink');
@@ -373,7 +372,8 @@
     if(previewTitle) previewTitle.textContent=currentMode==='breakdown'?'拆解结果 · 分镜预览':initialPreviewTitle;
     if(batchHint) batchHint.textContent=currentMode==='breakdown'?'拆解完成后可直接生成同款视频，或继续逐条转视频 / 转口播':initialBatchHint;
     if(bdRemakeBtn) bdRemakeBtn.style.display=currentMode==='breakdown'?'':'none';
-    if(oneClickBtn) oneClickBtn.style.display=currentMode==='breakdown'?'none':'';
+    if(genVideoBtn) genVideoBtn.style.display=currentMode==='breakdown'?'none':'';
+    if(genAudioBtn) genAudioBtn.style.display=currentMode==='breakdown'?'none':'';
   }
   function switchMode(mode){
     currentMode=mode==='breakdown'?'breakdown':'write';
@@ -595,25 +595,7 @@
   }
   if(historyBtn&&historySection) historyBtn.onclick=function(){historySection.scrollIntoView({behavior:'smooth',block:'start'});};
 
-  if(oneClickBtn){ var oneClickOrig=oneClickBtn.innerHTML; var _resetOneClick=function(){
-    if(!oneClickBtn) return; oneClickBtn.disabled=false; oneClickBtn.style.opacity='1'; oneClickBtn.innerHTML=oneClickOrig;
-  }; oneClickBtn.onclick=function(e){
-    e.preventDefault();
-    var scenesForHandoff=lastScenes.length?lastScenes:readScenesFromDom();
-    if(!scenesForHandoff.length){ location.href='video.html'; return; }
-    if(lastStyle==='剧情'){
-      var hasScenes=scenesForHandoff.some(function(s){ return (s.scene||'').trim(); });
-      if(!hasScenes){ if(window.HQ&&window.HQ.toast) HQ.toast('脚本中没有画面描述'); return; }
-      _doOneClick({scenes:scenesForHandoff,style:'剧情'});
-      return;
-    }
-    var hasLines=scenesForHandoff.some(function(s){ return (s.line||'').trim(); });
-    if(!hasLines){ if(window.HQ&&window.HQ.toast) HQ.toast('脚本中没有口播文案'); return; }
-    _showAvatarPicker(function(avatarId){
-      _doOneClick({scenes:scenesForHandoff,style:lastStyle,avatar_id:avatarId});
-    });
-  };
-  function _showAvatarPicker(onPick){
+  function _showAvatarPicker(onPick, onCancel){
     var modal=document.getElementById('avatarPickModal'), grid=document.getElementById('avatarPickGrid');
     if(!modal||!grid) return;
     modal.style.display='flex'; grid.innerHTML='<div style="color:#5c6b82;font-size:13px;text-align:center;padding:40px 0;">正在读取形象…</div>';
@@ -637,33 +619,46 @@
           grid.appendChild(card);
         });
       }).catch(function(){ grid.innerHTML='<div style="color:#f4708a;font-size:13px;text-align:center;padding:30px 0;">形象加载失败，请重试</div>'; });
-    document.getElementById('avatarPickClose').onclick=function(){ modal.style.display='none'; _resetOneClick(); };
-    modal.onclick=function(e){ if(e.target===modal){ modal.style.display='none'; _resetOneClick(); } };
+    document.getElementById('avatarPickClose').onclick=function(){ modal.style.display='none'; if(onCancel) onCancel(); };
+    modal.onclick=function(e){ if(e.target===modal){ modal.style.display='none'; if(onCancel) onCancel(); } };
   }
-  function _doOneClick(payload){
-    oneClickBtn.disabled=true; oneClickBtn.style.opacity='.6'; oneClickBtn.textContent='提交中…';
-    scenes.innerHTML='<div style="padding:34px;text-align:center;color:#e7b24c;font-size:13px;">🎬 正在启动一键成片…</div>';
+  function _setGenerateBusy(btn, busy){
+    if(!btn) return;
+    if(busy){
+      btn.dataset.origLabel=btn.innerHTML;
+      btn.disabled=true;
+      btn.style.opacity='.6';
+      btn.textContent='提交中…';
+      return;
+    }
+    btn.disabled=false;
+    btn.style.opacity='1';
+    btn.innerHTML=btn.dataset.origLabel||btn.innerHTML;
+  }
+  function _doGenerate(payload, btn){
+    _setGenerateBusy(btn,true);
+    scenes.innerHTML='<div style="padding:34px;text-align:center;color:#e7b24c;font-size:13px;">🎬 正在启动生成…</div>';
     if(meta) meta.innerHTML='';
     hideBreakdownMeta();
     var pollCount=0, lastProgress=-1, sceneCount=payload.scenes.length;
     fetch('/api/gen/script_to_video',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
       .then(function(x){
-        if(x.s===401){ _resetOneClick(); if(window.HQ) HQ.login(); return; }
-        if(x.s===402){ _resetOneClick(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足（需要 '+ (x.d.cost||20) +' 点）· <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
-        if(!x.d.job_id){ _resetOneClick(); var msg=(x.d&&x.d.detail)||'未知错误';
+        if(x.s===401){ _setGenerateBusy(btn,false); if(window.HQ) HQ.login(); return; }
+        if(x.s===402){ _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足（需要 '+ (x.d.cost||20) +' 点）· <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
+        if(!x.d.job_id){ _setGenerateBusy(btn,false); var msg=(x.d&&x.d.detail)||'未知错误';
           if(msg.indexOf('形象')>=0||msg.indexOf('人物')>=0) msg+='<br><a href="video.html" style="color:#60a5fa;">→ 去视频页创建形象</a>';
           scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+msg+'</div>'; return; }
         var iv=setInterval(function(){
           pollCount++;
           fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
             if(d.status==='done'){
-              clearInterval(iv); _resetOneClick();
+              clearInterval(iv); _setGenerateBusy(btn,false);
               var vurl=(d.result&&d.result.video_url)||'';
               var costInfo=x.d.cost!=null?' · 消耗 '+x.d.cost+' 点':'';
               scenes.innerHTML='<div style="padding:24px;text-align:center;">'
                 +'<div style="font-size:40px;margin-bottom:10px;">✅</div>'
-                +'<div style="font-size:15px;font-weight:700;color:#eaf1fa;margin-bottom:8px;">一键成片完成！</div>'
+                +'<div style="font-size:15px;font-weight:700;color:#eaf1fa;margin-bottom:8px;">生成完成！</div>'
                 +'<div style="font-size:12px;color:#94a4bb;margin-bottom:14px;">'+sceneCount+' 个分镜已合成视频'+costInfo+'</div>'
                 +(vurl?'<div style="margin-bottom:12px;"><video src="'+esc(vurl)+'" controls style="max-width:100%;max-height:260px;border-radius:10px;"></video></div>':'')
                 +'<div style="display:flex;gap:9px;justify-content:center;">'
@@ -672,7 +667,7 @@
               if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
               loadHistory();
             } else if(d.status==='error'||d.status==='failed'){
-              clearInterval(iv); _resetOneClick();
+              clearInterval(iv); _setGenerateBusy(btn,false);
               scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">成片失败：'+(d.error||'')+' · 已退点</div>';
             } else {
               var elapsed=pollCount*3;
@@ -683,33 +678,37 @@
                 scenes.innerHTML='<div style="padding:34px;text-align:center;color:#e7b24c;font-size:13px;">🎬 '+msgs[bucket]+'</div>';
               }
             }
-            if(pollCount>120){ clearInterval(iv); _resetOneClick(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">成片超时（6分钟），请稍后在视频页查看</div>'; }
+            if(pollCount>120){ clearInterval(iv); _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">成片超时（6分钟），请稍后在视频页查看</div>'; }
           }).catch(function(){});
         },3000);
-      }).catch(function(){ _resetOneClick(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络错误，请重试</div>'; });
+      }).catch(function(){ _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络错误，请重试</div>'; });
+  }
+  if(genVideoBtn){ genVideoBtn.onclick=function(e){
+    e.preventDefault();
+    var list=getDisplayedScenes();
+    if(!list.length){ location.href='video.html'; return; }
+    var hasScenes=list.some(function(s){ return (s.scene||'').trim(); });
+    if(!hasScenes){ if(window.HQ&&window.HQ.toast) HQ.toast('脚本中没有画面描述'); return; }
+    _doGenerate({scenes:list,style:'剧情'},genVideoBtn);
+  }; }
+  if(genAudioBtn){ genAudioBtn.onclick=function(e){
+    e.preventDefault();
+    var list=getDisplayedScenes();
+    if(!list.length){ location.href='video.html'; return; }
+    var hasLines=list.some(function(s){ return (s.line||'').trim(); });
+    if(!hasLines){ if(window.HQ&&window.HQ.toast) HQ.toast('脚本中没有口播文案'); return; }
+    var talkingStyle=lastStyle==='剧情'?'口播':(lastStyle||'口播');
+    _showAvatarPicker(function(avatarId){
+      _doGenerate({scenes:list,style:talkingStyle,avatar_id:avatarId},genAudioBtn);
+    });
   }; }
   if(bdRemakeBtn){ bdRemakeBtn.onclick=function(e){
     e.preventDefault();
     if(!lastBreakdown){ if(window.HQ&&window.HQ.toast) HQ.toast('请先完成拆解'); return; }
     var payload=prepareBreakdownRemakePayload(lastBreakdown);
     if(!payload.scenes.length){ if(window.HQ&&window.HQ.toast) HQ.toast('拆解结果里没有可用分镜'); return; }
-    _doOneClick(payload);
+    _doGenerate(payload,bdRemakeBtn);
   }; }
-
-  if(allToVideo){ allToVideo.onclick=function(e){ e.preventDefault();
-    var list=getDisplayedScenes();
-    if(!list.length){ location.href='video.html'; return; }
-    var txt=list.map(function(s){ return s.scene||''; }).filter(Boolean).join('\n\n');
-    if(window.HQ&&window.HQ.toast) HQ.toast('已带入全部 '+list.length+' 个画面描述');
-    location.href='video.html?prompt='+encodeURIComponent(txt||'');
-  };}
-  if(allToAudio){ allToAudio.onclick=function(e){ e.preventDefault();
-    var list=getDisplayedScenes();
-    if(!list.length){ location.href='audio.html'; return; }
-    var txt=list.map(function(s){ return s.line||''; }).filter(Boolean).join('\n\n');
-    if(window.HQ&&window.HQ.toast) HQ.toast('已带入全部 '+list.length+' 个口播文案');
-    location.href='audio.html?prompt='+encodeURIComponent(txt||'');
-  };}
   loadHistory();
 })();
 </script>

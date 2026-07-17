@@ -23,15 +23,16 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("a.download=filename", self.html)
 
     def test_one_click_video_calls_script_to_video_api(self):
-        self.assertIn('id="scOneClickVideo"', self.html)
+        self.assertIn('id="scGenVideo"', self.html)
+        self.assertIn('id="scGenAudio"', self.html)
         self.assertIn("fetch('/api/gen/script_to_video'", self.html)
-        self.assertIn("scenes:scenesForHandoff", self.html)
-        self.assertIn("_resetOneClick", self.html)
+        self.assertIn("_setGenerateBusy", self.html)
+        self.assertIn("_doGenerate({scenes:list,style:'剧情'},genVideoBtn)", self.html)
 
     def test_one_click_video_passes_style_and_selected_avatar(self):
         self.assertIn("lastStyle=style||'口播'", self.html)
-        self.assertIn("_doOneClick({scenes:scenesForHandoff,style:'剧情'})", self.html)
-        self.assertIn("_doOneClick({scenes:scenesForHandoff,style:lastStyle,avatar_id:avatarId})", self.html)
+        self.assertIn("var talkingStyle=lastStyle==='剧情'?'口播':(lastStyle||'口播');", self.html)
+        self.assertIn("_doGenerate({scenes:list,style:talkingStyle,avatar_id:avatarId},genAudioBtn)", self.html)
 
     def test_one_click_video_loads_avatar_picker_for_talking_styles(self):
         self.assertIn("fetch('/api/gen/video/avatars?limit=60'", self.html)
@@ -58,7 +59,7 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn('id="bdRemakeBtn"', self.html)
         self.assertIn("prepareBreakdownRemakePayload(lastBreakdown)", self.html)
         self.assertIn("return {scenes:normalizeBreakdownScenes((bd&&bd.scenes)||[]),style:'剧情'};", self.html)
-        self.assertIn("_doOneClick(payload)", self.html)
+        self.assertIn("_doGenerate(payload,bdRemakeBtn)", self.html)
         self.assertIn("fetch('/api/gen/script_to_video'", self.html)
 
     def test_history_loads_copy_assets_and_restores_scenes(self):
