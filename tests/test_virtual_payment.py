@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import sqlite3
@@ -15,6 +16,8 @@ class VirtualPaymentTests(unittest.TestCase):
         "WX_VIRTUAL_PAY_APP_KEY_PROD",
         "WX_VIRTUAL_PAY_APP_KEY_SANDBOX",
         "WX_VIRTUAL_PAY_PRODUCTS_JSON",
+        "WX_MESSAGE_PUSH_TOKEN",
+        "WX_MESSAGE_PUSH_AES_KEY",
     )
 
     def setUp(self):
@@ -30,6 +33,8 @@ class VirtualPaymentTests(unittest.TestCase):
                 '[{"id":"test_pack","product_id":"hq_test_pack","title":"测试包",'
                 '"price_fen":1,"points":10,"recommended":true}]'
             ),
+            "WX_MESSAGE_PUSH_TOKEN": "push-token",
+            "WX_MESSAGE_PUSH_AES_KEY": base64.b64encode(b"K" * 32).decode().rstrip("="),
         })
 
         import importlib
@@ -212,6 +217,102 @@ class VirtualPaymentTests(unittest.TestCase):
             "max_amount_yuan": 5000,
             "points_per_yuan": 10,
         })
+
+    def test_secure_message_push_round_trip_and_signature_check(self):
+        message = {
+            "Event": "xpay_subscribe_ios_refund_query_notify",
+            "pay_order_id": "wx-order-1",
+        }
+        ciphertext = self.auth.wechat_vpay.encrypt_message(json.dumps(message))
+        query = {"timestamp": ["1784200000"], "nonce": ["nonce-1"]}
+        query["msg_signature"] = [self.auth.wechat_vpay.message_signature(
+            "push-token", "1784200000", "nonce-1", ciphertext
+        )]
+        decoded, encrypted = self.auth.wechat_vpay.decode_message_push(
+            query, {"Encrypt": ciphertext}
+        )
+        self.assertTrue(encrypted)
+        self.assertEqual(decoded, message)
+
+        encoded = self.auth.wechat_vpay.encode_message_push({"result_code": 0}, True)
+        self.assertEqual(json.loads(self.auth.wechat_vpay.decrypt_message(encoded["Encrypt"])), {
+            "result_code": 0,
+        })
+        self.assertEqual(
+            encoded["MsgSignature"],
+            self.auth.wechat_vpay.message_signature(
+                "push-token", encoded["TimeStamp"], encoded["Nonce"], encoded["Encrypt"]
+            ),
+        )
+
+        bad_query = dict(query)
+        bad_query["msg_signature"] = ["bad"]
+        with self.assertRaises(self.auth.wechat_vpay.MessagePushError):
+            self.auth.wechat_vpay.decode_message_push(bad_query, {"Encrypt": ciphertext})
+
+    def _create_and_credit_order(self):
+        with patch.object(
+            self.auth.wechat_vpay,
+            "code_to_session",
+            return_value={"openid": "openid-buyer", "session_key": "session-key"},
+        ):
+            result, err = self.auth.create_virtual_pay_order("buyer", "test_pack", "wx-code")
+        self.assertIsNone(err)
+        order_id = result["order"]["order_id"]
+        with patch.object(self.auth.wechat_vpay, "query_order", return_value={
+            "order": {
+                "order_id": order_id,
+                "status": 2,
+                "order_fee": 1,
+                "paid_time": 1784200000,
+                "wx_order_id": "wx-order-refund",
+                "wxpay_order_id": "wxpay-refund",
+            },
+        }), patch.object(self.auth.wechat_vpay, "notify_provide_goods", return_value={}):
+            _, confirm_err = self.auth.confirm_virtual_pay_order("buyer", order_id)
+        self.assertIsNone(confirm_err)
+        return order_id
+
+    def test_ios_refund_query_uses_local_delivery_evidence(self):
+        self._create_and_credit_order()
+        response = self.auth.process_virtual_pay_message({
+            "Event": "xpay_subscribe_ios_refund_query_notify",
+            "pay_order_id": "wx-order-refund",
+        })
+        self.assertEqual(response["result_code"], 1)
+        self.assertIn("已发放", response["evidence"])
+
+        missing = self.auth.process_virtual_pay_message({
+            "Event": "xpay_subscribe_ios_refund_query_notify",
+            "pay_order_id": "missing",
+        })
+        self.assertEqual(missing["result_code"], 0)
+
+    def test_refund_notification_reverses_points_exactly_once(self):
+        order_id = self._create_and_credit_order()
+        self.assertEqual(self.auth.get_points_row("buyer")["points"], 15)
+        event = {"Event": "xpay_refund_notify", "pay_order_id": "wx-order-refund"}
+        first = self.auth.process_virtual_pay_message(event)
+        second = self.auth.process_virtual_pay_message(event)
+
+        self.assertEqual(first["errcode"], 0)
+        self.assertEqual(second["errcode"], 0)
+        self.assertEqual(self.auth.get_points_row("buyer")["points"], 5)
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            self.assertEqual(
+                c.execute("SELECT status FROM virtual_pay_orders WHERE order_id=?", (order_id,)).fetchone()[0],
+                "refunded",
+            )
+            self.assertEqual(
+                c.execute(
+                    "SELECT COUNT(*) FROM points_audit WHERE reason=?",
+                    ("微信虚拟支付退款: " + order_id,),
+                ).fetchone()[0],
+                1,
+            )
+        finally:
+            c.close()
 
 
 if __name__ == "__main__":

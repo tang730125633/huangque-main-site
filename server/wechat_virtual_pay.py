@@ -11,8 +11,11 @@
 """
 import hashlib
 import hmac
+import base64
 import json
 import os
+import secrets
+import struct
 import threading
 import time
 import urllib.parse
@@ -70,12 +73,162 @@ class VirtualPayError(RuntimeError):
         self.response = response or {}
 
 
+class MessagePushError(RuntimeError):
+    pass
+
+
 def compact_json(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 def _hmac_hex(key, message):
     return hmac.new(key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def message_push_token():
+    return (os.environ.get("WX_MESSAGE_PUSH_TOKEN") or "").strip()
+
+
+def message_push_aes_key():
+    value = (os.environ.get("WX_MESSAGE_PUSH_AES_KEY") or "").strip()
+    if value and len(value) != 43:
+        raise MessagePushError("WX_MESSAGE_PUSH_AES_KEY 必须是 43 位 EncodingAESKey")
+    return value
+
+
+def message_push_configured():
+    try:
+        return bool(message_push_token() and message_push_aes_key() and (os.environ.get("WX_MP_APPID") or "").strip())
+    except Exception:
+        return False
+
+
+def message_signature(*parts):
+    return hashlib.sha1("".join(sorted(str(part or "") for part in parts)).encode("utf-8")).hexdigest()
+
+
+def _message_aes_key():
+    value = message_push_aes_key()
+    if not value:
+        raise MessagePushError("消息推送 EncodingAESKey 未配置")
+    try:
+        key = base64.b64decode(value + "=")
+    except Exception as exc:
+        raise MessagePushError("消息推送 EncodingAESKey 无效") from exc
+    if len(key) != 32:
+        raise MessagePushError("消息推送 EncodingAESKey 无效")
+    return key
+
+
+def _pkcs7_pad(value):
+    padding = 32 - (len(value) % 32)
+    return value + bytes([padding]) * padding
+
+
+def _pkcs7_unpad(value):
+    if not value:
+        raise MessagePushError("消息解密结果为空")
+    padding = value[-1]
+    if padding < 1 or padding > 32 or value[-padding:] != bytes([padding]) * padding:
+        raise MessagePushError("消息填充无效")
+    return value[:-padding]
+
+
+def decrypt_message(ciphertext):
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        key = _message_aes_key()
+        encrypted = base64.b64decode(str(ciphertext or ""))
+        decryptor = Cipher(algorithms.AES(key), modes.CBC(key[:16])).decryptor()
+        plain = _pkcs7_unpad(decryptor.update(encrypted) + decryptor.finalize())
+        if len(plain) < 20:
+            raise MessagePushError("消息解密长度无效")
+        size = struct.unpack("!I", plain[16:20])[0]
+        message = plain[20:20 + size]
+        received_appid = plain[20 + size:].decode("utf-8")
+        expected_appid = (os.environ.get("WX_MP_APPID") or "").strip()
+        if not expected_appid or not secrets.compare_digest(received_appid, expected_appid):
+            raise MessagePushError("消息 AppID 校验失败")
+        return message.decode("utf-8")
+    except MessagePushError:
+        raise
+    except Exception as exc:
+        raise MessagePushError("消息解密失败") from exc
+
+
+def encrypt_message(message):
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        key = _message_aes_key()
+        appid = (os.environ.get("WX_MP_APPID") or "").strip().encode("utf-8")
+        if not appid:
+            raise MessagePushError("小程序 AppID 未配置")
+        payload = str(message or "").encode("utf-8")
+        plain = secrets.token_bytes(16) + struct.pack("!I", len(payload)) + payload + appid
+        encryptor = Cipher(algorithms.AES(key), modes.CBC(key[:16])).encryptor()
+        encrypted = encryptor.update(_pkcs7_pad(plain)) + encryptor.finalize()
+        return base64.b64encode(encrypted).decode("ascii")
+    except MessagePushError:
+        raise
+    except Exception as exc:
+        raise MessagePushError("消息加密失败") from exc
+
+
+def verify_message_url(query):
+    token = message_push_token()
+    if not token:
+        raise MessagePushError("消息推送 Token 未配置")
+    timestamp = (query.get("timestamp") or [""])[0]
+    nonce = (query.get("nonce") or [""])[0]
+    echo = (query.get("echostr") or [""])[0]
+    msg_sig = (query.get("msg_signature") or [""])[0]
+    if msg_sig:
+        expected = message_signature(token, timestamp, nonce, echo)
+        if not secrets.compare_digest(msg_sig, expected):
+            raise MessagePushError("消息推送验签失败")
+        return decrypt_message(echo)
+    signature = (query.get("signature") or [""])[0]
+    expected = message_signature(token, timestamp, nonce)
+    if not signature or not secrets.compare_digest(signature, expected):
+        raise MessagePushError("消息推送验签失败")
+    return echo
+
+
+def decode_message_push(query, body):
+    token = message_push_token()
+    if not token:
+        raise MessagePushError("消息推送 Token 未配置")
+    timestamp = (query.get("timestamp") or [""])[0]
+    nonce = (query.get("nonce") or [""])[0]
+    encrypted = body.get("Encrypt") or body.get("encrypt")
+    if encrypted:
+        provided = (query.get("msg_signature") or [""])[0]
+        expected = message_signature(token, timestamp, nonce, encrypted)
+        if not provided or not secrets.compare_digest(provided, expected):
+            raise MessagePushError("消息推送验签失败")
+        try:
+            return json.loads(decrypt_message(encrypted)), True
+        except json.JSONDecodeError as exc:
+            raise MessagePushError("消息推送 JSON 无效") from exc
+    signature = (query.get("signature") or [""])[0]
+    expected = message_signature(token, timestamp, nonce)
+    if not signature or not secrets.compare_digest(signature, expected):
+        raise MessagePushError("消息推送验签失败")
+    return body, False
+
+
+def encode_message_push(payload, encrypted):
+    if not encrypted:
+        return payload
+    timestamp = str(int(time.time()))
+    nonce = secrets.token_hex(8)
+    ciphertext = encrypt_message(compact_json(payload))
+    return {
+        "Encrypt": ciphertext,
+        "MsgSignature": message_signature(message_push_token(), timestamp, nonce, ciphertext),
+        "TimeStamp": timestamp,
+        "Nonce": nonce,
+    }
 
 
 def calc_pay_sig(uri, post_body, app_key):

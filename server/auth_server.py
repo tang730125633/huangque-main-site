@@ -1629,6 +1629,138 @@ def list_virtual_pay_orders(username, limit=20):
     finally:
         c.close()
 
+
+def _virtual_pay_event_payload(message):
+    if not isinstance(message, dict):
+        return {}
+    candidates = [message]
+    candidates.extend(value for value in message.values() if isinstance(value, dict))
+    for candidate in candidates:
+        keys = {str(key).lower() for key in candidate}
+        if keys.intersection({"pay_order_id", "order_id", "out_trade_no", "product_id"}):
+            return candidate
+    return message
+
+
+def _virtual_pay_event_name(message):
+    if not isinstance(message, dict):
+        return ""
+    for key in ("Event", "event", "event_type", "EventType", "MsgType", "msg_type"):
+        value = message.get(key)
+        if isinstance(value, str) and value:
+            return value.strip().lower()
+    text = json.dumps(message, ensure_ascii=False).lower()
+    for name in (
+        "xpay_subscribe_ios_refund_query_notify",
+        "xpay_refund_notify",
+        "xpay_goods_deliver_notify",
+        "xpay_complaint_notify",
+    ):
+        if name in text:
+            return name
+    return ""
+
+
+def _virtual_pay_order_by_reference(reference):
+    reference = str(reference or "").strip()
+    if not reference:
+        return None
+    c = db()
+    try:
+        return c.execute(
+            """SELECT * FROM virtual_pay_orders
+               WHERE order_id=? OR wx_order_id=? OR wxpay_order_id=?
+               ORDER BY created_at DESC LIMIT 1""",
+            (reference, reference, reference),
+        ).fetchone()
+    finally:
+        c.close()
+
+
+def _virtual_pay_event_order(message):
+    payload = _virtual_pay_event_payload(message)
+    for key in ("order_id", "out_trade_no", "pay_order_id", "wx_order_id", "wxpay_order_id"):
+        row = _virtual_pay_order_by_reference(payload.get(key))
+        if row:
+            return row
+    return None
+
+
+def refund_virtual_pay_order(message):
+    row = _virtual_pay_event_order(message)
+    if not row:
+        return None, "not_found"
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        fresh = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (row["order_id"],)).fetchone()
+        if not fresh:
+            c.rollback()
+            return None, "not_found"
+        if fresh["status"] == "refunded":
+            c.rollback()
+            return public_virtual_pay_order(fresh), None
+        if fresh["status"] == "credited":
+            user = c.execute("SELECT points FROM users WHERE username=?", (fresh["username"],)).fetchone()
+            if not user:
+                c.rollback()
+                return None, "user_not_found"
+            before = int(user["points"] or 0)
+            delta = -int(fresh["points"] or 0)
+            after = before + delta
+            c.execute("UPDATE users SET points=? WHERE username=?", (after, fresh["username"]))
+            _write_audit(
+                c, SYSTEM_ACTOR, fresh["username"], delta, before, after,
+                "微信虚拟支付退款: " + fresh["order_id"],
+            )
+        c.execute(
+            "UPDATE virtual_pay_orders SET status='refunded',last_error='' WHERE order_id=?",
+            (fresh["order_id"],),
+        )
+        final = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (fresh["order_id"],)).fetchone()
+        c.commit()
+        return public_virtual_pay_order(final), None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+
+def process_virtual_pay_message(message):
+    event = _virtual_pay_event_name(message)
+    payload = _virtual_pay_event_payload(message)
+    if event == "xpay_subscribe_ios_refund_query_notify":
+        row = _virtual_pay_event_order(message)
+        if row and row["status"] == "credited":
+            return {
+                "result_code": 1,
+                "result_info": "虚拟点数已发放",
+                "evidence": "订单 %s 已发放 %s 点，最终退款结果将由 Apple 审核。" % (
+                    row["order_id"], row["points"]
+                ),
+            }
+        return {
+            "result_code": 0,
+            "result_info": "未确认发放或未找到订单，建议退款",
+            "evidence": "pay_order_id=%s" % str(payload.get("pay_order_id") or "unknown")[:80],
+        }
+    if event == "xpay_refund_notify":
+        order, err = refund_virtual_pay_order(message)
+        if err not in (None, "not_found"):
+            raise RuntimeError("虚拟支付退款处理失败: " + err)
+        return {"errcode": 0, "errmsg": "ok", "order": order or {}}
+    if event == "xpay_goods_deliver_notify":
+        row = _virtual_pay_event_order(message)
+        if row and row["status"] not in ("credited", "refunded"):
+            _, err = confirm_virtual_pay_order(row["username"], row["order_id"])
+            if err not in (None, "pending"):
+                raise RuntimeError("虚拟支付发货通知处理失败: " + err)
+        return {"errcode": 0, "errmsg": "ok"}
+    if event == "xpay_complaint_notify":
+        return {"errcode": 0, "errmsg": "ok"}
+    return {"errcode": 0, "errmsg": "ignored"}
+
 def cleanup_expired_tokens(c=None):
     own = c is None
     if own: c = db()
@@ -1688,6 +1820,13 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         for key, value in (extra_headers or {}).items():
             self.send_header(key, value)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def _send_raw(self, code, body, content_type="text/plain; charset=utf-8"):
+        body = body if isinstance(body, bytes) else str(body).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1776,6 +1915,26 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        if p == "/api/auth/wechat/message-push":
+            if not wechat_vpay.message_push_configured():
+                return self._send(503, {"detail": "message push not configured"})
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                if n <= 0 or n > 1024 * 1024:
+                    return self._send(400, {"detail": "bad message body"})
+                body = json.loads(self.rfile.read(n))
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                message, encrypted = wechat_vpay.decode_message_push(query, body)
+                response = process_virtual_pay_message(message)
+                encoded = wechat_vpay.encode_message_push(response, encrypted)
+                return self._send_raw(
+                    200, json.dumps(encoded, ensure_ascii=False, separators=(",", ":")),
+                    "application/json; charset=utf-8",
+                )
+            except wechat_vpay.MessagePushError as exc:
+                return self._send(403, {"detail": str(exc)})
+            except Exception:
+                return self._send(500, {"detail": "message push failed"})
         if p == "/api/auth/admin/points/adjust":
             if not self._require_internal():
                 return
@@ -2419,6 +2578,13 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path.split("?")[0]
+        if p == "/api/auth/wechat/message-push":
+            try:
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                echo = wechat_vpay.verify_message_url(query)
+                return self._send_raw(200, echo)
+            except wechat_vpay.MessagePushError:
+                return self._send_raw(403, "forbidden")
         if p == "/api/auth/admin/users":
             if not self._require_internal():
                 return
