@@ -159,5 +159,11 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("if(order.indexOf(phase)<0) return;", self.html)
         self.assertIn("批量拆解中（第'", self.html)
 
+    def test_media_lightbox_for_generated_results(self):
+        """生成的视频/图片、故事板缩略图必须可点击放大预览"""
+        self.assertIn("function _openMediaLightbox(kind, src)", self.html)
+        self.assertIn("hqMediaLightbox", self.html)
+        self.assertIn("t.closest('#scScenes')||t.closest('#bdStoryboardStrip')", self.html)
+
 if __name__ == "__main__":
     unittest.main()
