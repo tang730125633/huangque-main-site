@@ -28,6 +28,18 @@ class VoiceSlotPurchaseError(VoiceSlotError):
     pass
 
 
+class VoiceSlotNotFoundError(VoiceSlotError):
+    status = 404
+
+
+class VoiceSlotBusyError(VoiceSlotError):
+    status = 409
+
+
+class VoiceSlotEmptyError(VoiceSlotError):
+    status = 400
+
+
 def _valid_voice_slot_count(conn, username):
     placeholders = ",".join("?" for _ in VALID_VOICE_SLOT_STATUSES)
     row = conn.execute(
@@ -966,6 +978,86 @@ def rename_audio_voice(username, slot_id, display_name):
                   (now, username, slot_id))
         c.commit()
     return {"slot_id": slot_id, "display_name": name, "updated_at": now}
+
+
+def delete_audio_voice(username, slot_id):
+    """删除个人音色，但保留用户已经购买的槽位供重新克隆。"""
+    username = (username or "").strip()
+    slot_id = (slot_id or "").strip()
+    if not slot_id:
+        raise VoiceSlotEmptyError("缺少音色槽位")
+
+    now = int(time.time())
+    voice_id = None
+    provider_voice = ""
+    preview_file = ""
+    preview_url = ""
+    with closing(adb()) as c:
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute("""SELECT s.status, s.voice_id,
+                       v.provider_voice, v.preview_file, v.preview_url
+                FROM audio_voice_slots s
+                LEFT JOIN audio_voices v
+                  ON v.id=s.voice_id AND v.username=s.username AND v.scope='personal'
+                WHERE s.username=? AND s.slot_id=?""", (username, slot_id)).fetchone()
+            if not row:
+                raise VoiceSlotNotFoundError("音色槽位不存在或不属于当前账号")
+            if row["status"] == "training":
+                raise VoiceSlotBusyError("音色正在克隆中，暂时不能删除")
+            voice_id = row["voice_id"]
+            if not voice_id:
+                raise VoiceSlotEmptyError("当前槽位没有可删除的个人音色")
+
+            provider_voice = (row["provider_voice"] or "").strip()
+            preview_file = (row["preview_file"] or "").strip()
+            preview_url = (row["preview_url"] or "").strip()
+            c.execute("UPDATE audio_assets SET voice_id=NULL WHERE username=? AND voice_id=?",
+                      (username, voice_id))
+            c.execute("DELETE FROM audio_voices WHERE id=? AND username=? AND scope='personal'",
+                      (voice_id, username))
+            c.execute("""UPDATE audio_voice_slots
+                SET status='active', voice_id=NULL, clone_started_at=NULL,
+                    previous_preview_url=NULL, clone_upload_at=NULL, clone_error=NULL,
+                    clone_upload_speaker_id=NULL, clone_upload_response=NULL,
+                    clone_baseline_version=NULL, clone_baseline_icl_speaker_id=NULL,
+                    clone_baseline_demo_audio=NULL, updated_at=?
+                WHERE username=? AND slot_id=?""", (now, username, slot_id))
+            c.commit()
+        except Exception:
+            c.rollback()
+            raise
+
+    # 数据库删除成功后再做外部清理，外部服务失败不影响用户继续使用已购槽位。
+    refs = [preview_file]
+    if preview_url.startswith("/api/gen/file/"):
+        refs.append(preview_url[len("/api/gen/file/"):])
+    for ref in refs:
+        name = os.path.basename(str(ref or ""))
+        if name.startswith("voice_preview_") and name.endswith(".mp3"):
+            try:
+                fp = _resolve_out_file(ref)
+                if fp and fp.exists():
+                    fp.unlink()
+            except Exception as e:
+                print("[delete_audio_voice] preview cleanup failed file=%s error=%s" %
+                      (name, str(e)[:160]), flush=True)
+
+    remote_deleted = False
+    if provider_voice.startswith(cosyvoice.CLONE_MODEL) and cosyvoice.enabled():
+        try:
+            cosyvoice.delete_voice(provider_voice)
+            remote_deleted = True
+        except Exception as e:
+            print("[delete_audio_voice] provider cleanup failed voice=%s error=%s" %
+                  (provider_voice[:40], str(e)[:160]), flush=True)
+
+    return {
+        "slot_id": slot_id,
+        "status": "active",
+        "voice_deleted": True,
+        "remote_deleted": remote_deleted,
+    }
 
 def list_audio_assets(username, limit=120):
     limit = max(1, min(120, int(limit or 120)))
