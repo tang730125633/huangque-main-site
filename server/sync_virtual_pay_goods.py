@@ -16,6 +16,8 @@ ITEM_URL = os.environ.get(
     "WX_VIRTUAL_PAY_ITEM_URL",
     "https://huangquechuanmei.com/assets/cloud/virtual-pay-item-200.png",
 ).strip()
+RATE_LIMIT_RETRIES = 6
+RATE_LIMIT_DELAY_SECONDS = 10
 
 
 def goods_name(value):
@@ -41,7 +43,24 @@ def wait_for(uri, key, timeout=120):
 def submit_one_by_one(start_uri, query_uri, key, items):
     """微信虚拟支付商品接口每次最多提交 1 个道具。"""
     for item in items:
-        vpay._xpay(start_uri, {key: [item], "env": vpay.pay_env()})
+        for attempt in range(RATE_LIMIT_RETRIES + 1):
+            try:
+                vpay._xpay(start_uri, {key: [item], "env": vpay.pay_env()})
+                break
+            except vpay.VirtualPayError as exc:
+                message = str(exc)
+                errcode = int((exc.response or {}).get("errcode") or 0)
+                rate_limited = errcode == 45009 or "频率限制" in message
+                if not rate_limited or attempt >= RATE_LIMIT_RETRIES:
+                    raise
+                delay = RATE_LIMIT_DELAY_SECONDS * (attempt + 1)
+                print(json.dumps({
+                    "stage": key,
+                    "status": "rate_limited",
+                    "retry_in_seconds": delay,
+                    "attempt": attempt + 1,
+                }, ensure_ascii=False))
+                time.sleep(delay)
         wait_for(query_uri, key)
 
 

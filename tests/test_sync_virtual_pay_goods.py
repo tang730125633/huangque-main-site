@@ -45,6 +45,25 @@ class SyncVirtualPayGoodsTests(unittest.TestCase):
             ],
         )
 
+    def test_rate_limit_is_retried_before_querying_status(self):
+        item = {"id": "hq_custom", "name": "自定义点数", "price": 100}
+        rate_limit = sync_goods.vpay.VirtualPayError(
+            "频率限制",
+            "xpay_failed",
+            {"errcode": 45009},
+        )
+        with patch.object(sync_goods.vpay, "pay_env", return_value=0), \
+             patch.object(sync_goods.vpay, "_xpay", side_effect=[rate_limit, {}]) as xpay, \
+             patch.object(sync_goods, "wait_for") as wait_for, \
+             patch.object(sync_goods.time, "sleep") as sleep:
+            sync_goods.submit_one_by_one("/start", "/query", "upload_item", [item])
+
+        self.assertEqual(xpay.call_count, 2)
+        self.assertEqual(xpay.call_args_list[0], call("/start", {"upload_item": [item], "env": 0}))
+        self.assertEqual(xpay.call_args_list[1], call("/start", {"upload_item": [item], "env": 0}))
+        sleep.assert_called_once_with(10)
+        wait_for.assert_called_once_with("/query", "upload_item")
+
 
 if __name__ == "__main__":
     unittest.main()
