@@ -119,6 +119,8 @@ def _do_breakdown(payload, info, url, mode=None):
             _heartbeat(job_id, "transcribing")
             segs = tikhub.transcript(det, video_path=tmp_video.name)
             script_text = _format_transcript(segs)
+            if _speech_chars(script_text) < 8:
+                script_text = ""  # 热修(20260717)：实际口播字数过短≈无人声（纯音乐/歌舞），按无口播处理
         except Exception:
             asr_failed = True
 
@@ -181,7 +183,7 @@ def _breakdown_source_context(title, duration, platform, script_text):
         "视频标题：" + str(title) + "\n"
         "时长：" + str(duration) + "s\n"
         "平台：" + str(platform) + "\n\n"
-        "口播文案（带时间轴）：\n" + (str(script_text) if script_text else "（ASR 转录失败，请根据画面帧判断内容）")
+        "口播文案（带时间轴）：\n" + (str(script_text) if script_text else "（无人物口播或转写不可用，请根据画面帧判断内容）")
     )
 
 
@@ -192,6 +194,8 @@ def _breakdown_scenes_from_frames(title, duration, platform, script_text, frames
         "\"analysis\":\"视频内容综合分析(含视频主题、背景、构图运镜、人物特征、产品细节、情绪氛围、字幕建议等)\"}，"
         "只输出 JSON 本身，不要解释、不要 markdown 代码块。"
         "每个 scene 一句话说清画面，line 是原视频对应的口播内容。"
+        "若原视频没有人物口播（纯音乐/歌舞/背景乐），或上方口播文案实为歌词、听写乱码、与画面无关的内容，"
+        "所有 line 输出空串\"\"，不要编造台词。"
     )
     sysmsg = (
         "你是黄雀传媒资深短视频编导。分析视频关键帧和口播，拆解为简洁的分镜脚本，同时输出一份视频内容综合分析。"
@@ -322,6 +326,12 @@ def _heartbeat(job_id, phase):
                 c.commit()
     except Exception:
         pass
+
+
+def _speech_chars(transcript_text):
+    """量转写里的实际口播字数（剥掉 [0s-3s] 时间轴标记），过短≈无人声"""
+    import re as _re
+    return len(_re.sub(r"\[[^\]]*\]", "", transcript_text or "").strip())
 
 
 def _format_transcript(segs):
