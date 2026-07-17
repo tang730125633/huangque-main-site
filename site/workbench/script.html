@@ -242,6 +242,12 @@
       <div id="bdResultMeta" style="display:none; margin-top:12px; font-size:11.5px; color:#5c6b82;">
         <span>拆解来源：</span><a id="bdSourceLink" href="#" target="_blank" rel="noopener" style="color:#60a5fa;">查看原视频 →</a>
       </div>
+      <div id="bdAnalysis" style="display:none; margin-top:14px; padding:14px 16px; border-radius:14px; border:1px solid rgba(96,165,250,.18); background:linear-gradient(180deg,rgba(96,165,250,.08),rgba(59,130,246,.04));">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px; font-size:12px; font-weight:700; color:#93c5fd;">
+          <span>✨</span><span>内容分析</span>
+        </div>
+        <div id="bdAnalysisText" style="font-size:13px; line-height:1.8; color:#dbeafe; white-space:pre-wrap;"></div>
+      </div>
 
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:16px; padding-top:16px; border-top:1px solid rgba(148,164,187,.1);">
         <span id="scBatchHint" class="sc-hint">每张分镜可单独转视频/转口播，或使用下方一键生成</span>
@@ -282,7 +288,8 @@
       bdRemakeBtn=document.getElementById('bdRemakeBtn');
   var bdUrl=document.getElementById('bdUrl'), bdGen=document.getElementById('bdGen'),
       bdProgress=document.getElementById('bdProgress'), bdPhases=document.getElementById('bdPhases'),
-      bdResultMeta=document.getElementById('bdResultMeta'), bdSourceLink=document.getElementById('bdSourceLink');
+      bdResultMeta=document.getElementById('bdResultMeta'), bdSourceLink=document.getElementById('bdSourceLink'),
+      bdAnalysis=document.getElementById('bdAnalysis'), bdAnalysisText=document.getElementById('bdAnalysisText');
   var orig=gen.innerHTML, lastScenes=[], lastStyle='口播', lastBreakdown=null, currentMode='write';
   var initialMeta=meta?meta.innerHTML:'', initialScenes=scenes?scenes.innerHTML:'',
       initialPreviewTitle=previewTitle?previewTitle.textContent:'脚本 · 分镜预览',
@@ -358,6 +365,14 @@
   function hideBreakdownMeta(){
     if(bdResultMeta) bdResultMeta.style.display='none';
     if(bdSourceLink) bdSourceLink.removeAttribute('href');
+    if(bdAnalysis) bdAnalysis.style.display='none';
+    if(bdAnalysisText) bdAnalysisText.textContent='';
+  }
+  function setBreakdownAnalysis(text){
+    var content=(text||'').trim();
+    if(!bdAnalysis||!bdAnalysisText) return;
+    bdAnalysis.style.display=content?'':'none';
+    bdAnalysisText.textContent=content;
   }
   function resetPreview(){
     if(scenes) scenes.innerHTML=initialScenes;
@@ -398,10 +413,12 @@
   function renderBreakdown(bd){
     lastBreakdown=bd;
     var list=normalizeBreakdownScenes((bd&&bd.scenes)||[]);
+    var analysis=(bd&&bd.analysis)||'';
     if(meta) meta.innerHTML='<span style="color:#60a5fa;">拆解</span><span style="color:#5c6b82;">·</span><span>'+esc((bd&&bd.source_title)||'爆款拆解')+'</span><span style="color:#5c6b82;">·</span><span>'+esc(platformText(bd&&bd.source_platform))+'</span><span style="color:#5c6b82;">·</span><span class="mono">'+esc((bd&&bd.duration)||'')+'s</span><span style="color:#5c6b82;">·</span><span>共 <span class="mono">'+list.length+'</span> 个分镜</span>';
     scenes.innerHTML=list.length ? list.map(function(s,i){ return sceneCardHTML(s,i); }).join('') : '<div style="padding:24px;text-align:center;color:#f4708a;">拆解结果为空，请重试</div>';
     if(bdResultMeta && bd && bd.source_url){ bdResultMeta.style.display=''; }
     if(bdSourceLink && bd && bd.source_url){ bdSourceLink.href=bd.source_url; }
+    setBreakdownAnalysis(analysis);
     bindSceneHandoffs();
   }
   function saveBreakdownHistory(bd){
@@ -415,6 +432,7 @@
         source_title:bd.source_title||'',
         source_platform:bd.source_platform||'',
         duration:bd.duration||'',
+        analysis:(bd.analysis||''),
         scenes:normalizeBreakdownScenes(bd.scenes||[])
       }
     };
@@ -566,7 +584,7 @@
       if(isBreakdown){
         if(bdUrl) bdUrl.value=m.source_url||'';
         switchMode('breakdown');
-        renderBreakdown({source_url:m.source_url,source_title:m.source_title||heading,source_platform:m.source_platform,duration:m.duration,scenes:list});
+        renderBreakdown({source_url:m.source_url,source_title:m.source_title||heading,source_platform:m.source_platform,duration:m.duration,analysis:m.analysis||'',scenes:list});
         if(historyState) historyState.textContent='已载入：'+heading;
       }else{
         if(topic) topic.value=heading;

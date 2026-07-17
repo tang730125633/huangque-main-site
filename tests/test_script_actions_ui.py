@@ -54,6 +54,14 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("BREAKDOWN_HISTORY_KEY='hq_script_breakdown_history'", self.html)
         self.assertIn("switchMode('breakdown')", self.html)
         self.assertIn("renderBreakdown({source_url:m.source_url", self.html)
+        self.assertIn("analysis:m.analysis||''", self.html)
+
+    def test_breakdown_analysis_is_rendered_and_saved_to_history(self):
+        self.assertIn('id="bdAnalysis"', self.html)
+        self.assertIn('id="bdAnalysisText"', self.html)
+        self.assertIn("function setBreakdownAnalysis(text)", self.html)
+        self.assertIn("setBreakdownAnalysis(analysis)", self.html)
+        self.assertIn("analysis:(bd.analysis||'')", self.html)
 
     def test_breakdown_remake_reuses_current_one_click_flow(self):
         self.assertIn('id="bdRemakeBtn"', self.html)
