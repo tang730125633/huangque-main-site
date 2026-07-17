@@ -31,6 +31,7 @@ ALLOWED_ORIGIN_VALUES = tuple(
     if value.strip()
 )
 INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
+ADMIN_POINTS_MAX_DELTA = int(os.environ.get("HQ_ADMIN_POINTS_MAX_DELTA", "1000"))
 LOGIN_FAIL_WINDOW = int(os.environ.get("HQ_AUTH_FAIL_WINDOW", "300"))
 LOGIN_FAIL_MAX = int(os.environ.get("HQ_AUTH_FAIL_MAX", "5"))
 REGISTER_WINDOW = int(os.environ.get("HQ_AUTH_REGISTER_WINDOW", "300"))
@@ -98,6 +99,59 @@ def db():
     c = sqlite3.connect(DB, timeout=10)
     c.row_factory = sqlite3.Row
     return c
+
+
+def validate_admin_reason(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("reason must be 4 to 120 characters")
+    reason = value.strip()
+    if not 4 <= len(reason) <= 120:
+        raise ValueError("reason must be 4 to 120 characters")
+    return reason
+
+
+def validate_points_delta(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("delta must be an integer")
+    if value == 0 or abs(value) > ADMIN_POINTS_MAX_DELTA:
+        raise ValueError("delta must be nonzero and within %d" % ADMIN_POINTS_MAX_DELTA)
+    return value
+
+
+def normalize_request_id(value: object) -> str:
+    request_id = value.strip() if isinstance(value, str) else ""
+    if request_id and len(request_id) <= 128 and all(
+        ch.isascii() and (ch.isalnum() or ch in "._:-") for ch in request_id
+    ):
+        return request_id
+    return secrets.token_hex(16)
+
+
+def admin_audit_reason(reason: str, request_id: str) -> str:
+    return json.dumps(
+        {"reason": validate_admin_reason(reason), "request_id": normalize_request_id(request_id)},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def public_audit_row(row):
+    item = dict(row)
+    raw = item.get("reason") or ""
+    try:
+        envelope = json.loads(raw)
+    except (TypeError, ValueError):
+        return item
+    if (
+        isinstance(envelope, dict)
+        and set(envelope) == {"reason", "request_id"}
+        and isinstance(envelope["reason"], str)
+        and isinstance(envelope["request_id"], str)
+    ):
+        item["reason"] = envelope["reason"]
+        item["request_id"] = envelope["request_id"]
+    return item
 
 def init_db():
     c = db()
@@ -1267,10 +1321,11 @@ def list_admin_users(query="", sort="created_at", direction="desc", limit=100):
     finally:
         c.close()
 
-def adjust_points_admin(who_admin, username, delta, reason=""):
+def adjust_points_admin(who_admin, username, delta, reason="", request_id=""):
     username = (username or "").strip()
-    delta = int(delta or 0)
-    reason = (reason or "").strip()[:300]
+    delta = validate_points_delta(delta)
+    reason = validate_admin_reason(reason)
+    encoded_reason = admin_audit_reason(reason, request_id)
     if not username:
         return None, "missing_username"
     if delta == 0:
@@ -1292,7 +1347,7 @@ def adjust_points_admin(who_admin, username, delta, reason=""):
         c.execute(
             """INSERT INTO points_audit(who_admin, username, delta, before_points, after_points, reason, created_at)
                VALUES(?,?,?,?,?,?,?)""",
-            (who_admin, username, delta, before, after, reason, now),
+            (who_admin, username, delta, before, after, encoded_reason, now),
         )
         c.commit()
         return {
@@ -1336,7 +1391,7 @@ def list_points_audit(username="", limit=100, actor=""):
     c = db()
     try:
         rows = c.execute(sql, args).fetchall()
-        return {"items": [dict(r) for r in rows]}
+        return {"items": [public_audit_row(r) for r in rows]}
     finally:
         c.close()
 
@@ -1404,11 +1459,20 @@ def list_recharge_orders(username="", status="", limit=100):
     finally:
         c.close()
 
-def review_recharge_order(who_admin, order_id, action, reason="", transaction_id="", pay_channel=""):
+def review_recharge_order(
+    who_admin,
+    order_id,
+    action,
+    reason="",
+    transaction_id="",
+    pay_channel="",
+    request_id="",
+):
     who_admin = (who_admin or "").strip()
     order_id = (order_id or "").strip()
     action = (action or "").strip().lower()
-    reason = (reason or "").strip()[:300]
+    reason = validate_admin_reason(reason)
+    encoded_reason = admin_audit_reason(reason, request_id)
     transaction_id = (transaction_id or "").strip()
     pay_channel = (pay_channel or "").strip()
     if action not in {"approve", "reject"}:
@@ -1444,7 +1508,7 @@ def review_recharge_order(who_admin, order_id, action, reason="", transaction_id
             c.execute(
                 """INSERT INTO points_audit(who_admin, username, delta, before_points, after_points, reason, created_at)
                    VALUES(?,?,?,?,?,?,?)""",
-                (who_admin, order["username"], delta, before, after, "充值审批: %s %s" % (order_id, reason), now),
+                (who_admin, order["username"], delta, before, after, encoded_reason, now),
             )
             status = "approved"
         else:
@@ -1961,6 +2025,8 @@ class H(BaseHTTPRequestHandler):
         headers = headers.items() if hasattr(headers, "items") else headers
         for key, value in headers:
             self.send_header(key, value)
+        if getattr(self, "_current_request_id", ""):
+            self.send_header("X-Request-ID", self._current_request_id)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -2074,7 +2140,7 @@ class H(BaseHTTPRequestHandler):
             else "<missing>"
         )
         event = {
-            "request_id": (self.headers.get("X-Request-ID") or secrets.token_hex(8))[:128],
+            "request_id": normalize_request_id(self.headers.get("X-Request-ID")),
             "path": path[:512],
             "client_ip": self._client_ip()[:128],
             "origin": safe_origin,
@@ -2131,6 +2197,7 @@ class H(BaseHTTPRequestHandler):
         return row
 
     def do_POST(self):
+        self._current_request_id = normalize_request_id(self.headers.get("X-Request-ID"))
         p = self.path.split("?")[0]
         if p == "/api/auth/wechat/message-push":
             if not wechat_vpay.message_push_configured():
@@ -2164,17 +2231,17 @@ class H(BaseHTTPRequestHandler):
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
             username = (d.get("username") or "").strip()
-            reason = (d.get("reason") or "").strip()
             try:
-                delta = int(d.get("delta") or 0)
-            except Exception:
-                return self._send(400, {"detail": "delta must be an integer"})
+                reason = validate_admin_reason(d.get("reason"))
+                delta = validate_points_delta(d.get("delta"))
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
             if not username:
                 return self._send(400, {"detail": "missing username"})
-            if delta == 0:
-                return self._send(400, {"detail": "delta cannot be 0"})
             try:
-                result, err = adjust_points_admin(admin["username"], username, delta, reason)
+                result, err = adjust_points_admin(
+                    admin["username"], username, delta, reason, self._current_request_id
+                )
                 if err == "not_found":
                     return self._send(404, {"detail": "user not found"})
                 if err == "insufficient":
@@ -2194,21 +2261,25 @@ class H(BaseHTTPRequestHandler):
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
             try:
+                reason = validate_admin_reason(d.get("reason") or d.get("review_note"))
                 order, err = review_recharge_order(
                     admin["username"],
                     d.get("order_id"),
                     d.get("action"),
-                    d.get("reason") or d.get("review_note") or "",
+                    reason,
+                    request_id=self._current_request_id,
                 )
                 if err == "not_found":
                     return self._send(404, {"detail": "order not found"})
                 if err == "user_not_found":
                     return self._send(404, {"detail": "user not found"})
                 if err == "already_reviewed":
-                    return self._send(409, {"detail": "订单已审批", "order": order})
+                    return self._send(200, {"ok": True, "order": order, "idempotent": True})
                 if err:
                     return self._send(400, {"detail": err})
                 return self._send(200, {"ok": True, "order": order})
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
             except Exception:
                 return self._send(500, {"detail": "recharge review failed"})
         if p == "/api/auth/virtual-pay/order":
