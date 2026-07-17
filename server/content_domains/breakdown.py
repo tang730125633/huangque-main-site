@@ -114,13 +114,18 @@ def _do_breakdown(payload, info, url):
             "只输出 JSON 本身，不要解释、不要 markdown 代码块。"
             "每个 scene 一句话说清画面，line 是原视频对应的口播内容。"
         )
-        raw = _chat_multimodal(
-            "你是黄雀传媒资深短视频编导。分析视频关键帧和口播，拆解为简洁的分镜脚本，同时输出一份视频内容综合分析。"
-            "只输出 JSON，不要多余内容。",
-            usermsg, frames
-        )
+        _sysmsg = ("你是黄雀传媒资深短视频编导。分析视频关键帧和口播，拆解为简洁的分镜脚本，同时输出一份视频内容综合分析。"
+                   "只输出 JSON，不要多余内容。")
+        raw = _chat_multimodal(_sysmsg, usermsg, frames)
 
-        result = _parse_breakdown_json(raw)
+        try:
+            result = _parse_breakdown_json(raw)
+        except ValueError:
+            # 热修(20260717)：解析失败自动重试一次（多为模型输出截断/偶发格式异常），并落原始输出便于诊断
+            print("[breakdown] parse failed, raw(%d)=%s" % (len(raw or ""), str(raw)[:400].replace("\n", " ")))
+            _heartbeat(job_id, "analyzing")
+            raw = _chat_multimodal(_sysmsg, usermsg, frames)
+            result = _parse_breakdown_json(raw)
 
         # 读取关键帧作为缩略图，供前端展示故事板
         frame_thumbnails = []

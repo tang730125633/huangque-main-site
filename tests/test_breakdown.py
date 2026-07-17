@@ -289,5 +289,41 @@ class BreakdownTests(unittest.TestCase):
         self.assertEqual(len(result["frame_thumbnails"]), 1)
         self.assertTrue(result["frame_thumbnails"][0].startswith("data:image/jpeg;base64,"))
         import os; os.unlink(tmp.name)
+
+    def test_do_breakdown_retries_once_on_parse_failure(self):
+        self._install_fake_env('{"scenes":[]}')
+        responses = [
+            "这不是 JSON，完全无法解析",
+            '{"scenes":[{"dur":"3s","scene":"门头","line":"欢迎光临"}],"analysis":"ok"}',
+        ]
+        calls = {"n": 0}
+
+        def flaky_chat(sysmsg, usermsg, frames, temp=0.7):
+            r = responses[calls["n"]]
+            calls["n"] += 1
+            return r
+
+        self.breakdown._chat_multimodal = flaky_chat
+
+        result = self.breakdown._do_breakdown(
+            {"_job_id": 40},
+            {"platform": "douyin", "id": "retry-ok"},
+            "https://example.test/post/retry",
+        )
+
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(result["scenes"][0]["scene"], "门头")
+
+    def test_do_breakdown_raises_after_two_parse_failures(self):
+        self._install_fake_env('{"scenes":[]}')
+        self.breakdown._chat_multimodal = lambda sysmsg, usermsg, frames, temp=0.7: "not json at all"
+
+        with self.assertRaisesRegex(ValueError, "拆解结果解析失败，请重试"):
+            self.breakdown._do_breakdown(
+                {"_job_id": 41},
+                {"platform": "douyin", "id": "retry-fail"},
+                "https://example.test/post/retry-fail",
+            )
+
 if __name__ == "__main__":
     unittest.main()
