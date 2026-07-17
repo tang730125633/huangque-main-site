@@ -170,5 +170,9 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("((s.line||'').trim()?'<div style=\"font-size:13px; color:#eaf1fa;", self.html)
         self.assertIn("((s.line||'').trim()?'<a data-to-audio=", self.html)
 
+    def test_reverse_mode_remake_skips_style_picker_goes_drama(self):
+        self.assertIn("if(isReverse){", self.html)
+        self.assertIn("_doGenerate({scenes:scenes,style:'剧情'},bdRemakeBtn);", self.html)
+
 if __name__ == "__main__":
     unittest.main()

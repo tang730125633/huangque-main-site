@@ -1001,8 +1001,8 @@
   }; }
   if(bdRemakeBtn){ bdRemakeBtn.onclick=function(e){
     e.preventDefault();
-    var scenes;
-    if(isBreakdownReverseTool()){
+    var scenes, isReverse=isBreakdownReverseTool();
+    if(isReverse){
       var prompt=reversePromptText();
       if(!prompt){ if(window.HQ&&window.HQ.toast) HQ.toast('请先完成提示词反推'); return; }
       scenes=[{scene:prompt, line:'', dur:'30s'}];
@@ -1011,6 +1011,11 @@
       scenes=normalizeBreakdownScenes((lastBreakdown&&lastBreakdown.scenes)||[]);
     }
     if(!scenes.length){ if(window.HQ&&window.HQ.toast) HQ.toast('没有可用分镜'); return; }
+    if(isReverse){
+      // 反推模式：提示词即画面描述，直接走剧情链路
+      _doGenerate({scenes:scenes,style:'剧情'},bdRemakeBtn);
+      return;
+    }
     _pickRemakeStyle(function(style){
       if(style==='剧情'){
         if(!scenes.some(function(s){ return (s.scene||'').trim(); })){ if(window.HQ&&window.HQ.toast) HQ.toast('拆解结果里没有画面描述，无法生成剧情视频'); return; }
