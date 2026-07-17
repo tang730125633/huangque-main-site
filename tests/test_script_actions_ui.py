@@ -127,5 +127,10 @@ class ScriptActionsUiTests(unittest.TestCase):
         """esc 必须容忍数字等非字符串（后端 duration 是毫秒整数）"""
         self.assertIn("String(s==null?'':s)", self.html)
 
+    def test_breakdown_to_image_button_generates_in_page(self):
+        self.assertIn('id="bdToImageBtn"', self.html)
+        self.assertIn("function _doGenerateImage(prompt, btn)", self.html)
+        self.assertIn("fetch('/api/gen/image'", self.html)
+
 if __name__ == "__main__":
     unittest.main()
