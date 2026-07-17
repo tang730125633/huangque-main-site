@@ -15,7 +15,11 @@ class AuthProfileTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.old_db = os.environ.get("HQ_TEST_AUTH_DB")
+        self.old_secret = os.environ.get("HQ_CSRF_SECRET")
+        self.old_allowed_origins = os.environ.get("HQ_ALLOWED_ORIGINS")
         os.environ["HQ_TEST_AUTH_DB"] = os.path.join(self.tmp.name, "users.db")
+        os.environ["HQ_CSRF_SECRET"] = "profile-test-csrf-secret"
+        os.environ["HQ_ALLOWED_ORIGINS"] = "https://app.example.test"
 
         import server.auth_server as auth_server
 
@@ -31,6 +35,7 @@ class AuthProfileTests(unittest.TestCase):
         self.base = "http://127.0.0.1:%d" % self.server.server_address[1]
         jar = http.cookiejar.CookieJar()
         self.client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        self.client.hq_cookie_jar = jar
         self._post("/api/auth/login", {"username": "profile_user", "password": "secret123"})
 
     def tearDown(self):
@@ -41,16 +46,39 @@ class AuthProfileTests(unittest.TestCase):
             os.environ.pop("HQ_TEST_AUTH_DB", None)
         else:
             os.environ["HQ_TEST_AUTH_DB"] = self.old_db
+        if self.old_secret is None:
+            os.environ.pop("HQ_CSRF_SECRET", None)
+        else:
+            os.environ["HQ_CSRF_SECRET"] = self.old_secret
+        if self.old_allowed_origins is None:
+            os.environ.pop("HQ_ALLOWED_ORIGINS", None)
+        else:
+            os.environ["HQ_ALLOWED_ORIGINS"] = self.old_allowed_origins
         self.tmp.cleanup()
 
     def _post(self, path, payload, client=None):
+        active_client = client or self.client
+        headers = {
+            "Content-Type": "application/json",
+            "Origin": "https://app.example.test",
+        }
+        csrf = next(
+            (
+                cookie.value
+                for cookie in getattr(active_client, "hq_cookie_jar", ())
+                if cookie.name == "hq_csrf"
+            ),
+            "",
+        )
+        if csrf:
+            headers["X-CSRF-Token"] = csrf
         req = urllib.request.Request(
             self.base + path,
             data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
-        with (client or self.client).open(req, timeout=3) as response:
+        with active_client.open(req, timeout=3) as response:
             return json.loads(response.read())
 
     def _get(self, path, client=None):
@@ -58,13 +86,27 @@ class AuthProfileTests(unittest.TestCase):
             return json.loads(response.read())
 
     def _delete(self, path, client=None):
-        req = urllib.request.Request(self.base + path, method="DELETE")
-        with (client or self.client).open(req, timeout=3) as response:
+        active_client = client or self.client
+        csrf = next(
+            cookie.value for cookie in active_client.hq_cookie_jar if cookie.name == "hq_csrf"
+        )
+        req = urllib.request.Request(
+            self.base + path,
+            data=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "https://app.example.test",
+                "X-CSRF-Token": csrf,
+            },
+            method="DELETE",
+        )
+        with active_client.open(req, timeout=3) as response:
             return json.loads(response.read())
 
     def _login_client(self, username):
         jar = http.cookiejar.CookieJar()
         client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        client.hq_cookie_jar = jar
         self._post("/api/auth/login", {"username": username, "password": "secret123"}, client)
         return client
 
