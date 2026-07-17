@@ -20,6 +20,11 @@ AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
 AUTH_COOKIE_SECURE = os.environ.get("HQ_AUTH_COOKIE_SECURE", "1").strip().lower() not in ("0", "false", "no")
 CSRF_COOKIE_NAME = "hq_csrf"
 CSRF_SECRET = os.environ.get("HQ_CSRF_SECRET", "").encode("utf-8")
+ALLOWED_ORIGIN_VALUES = tuple(
+    value.strip()
+    for value in os.environ.get("HQ_ALLOWED_ORIGINS", "").split(",")
+    if value.strip()
+)
 INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
 LOGIN_FAIL_WINDOW = int(os.environ.get("HQ_AUTH_FAIL_WINDOW", "300"))
 LOGIN_FAIL_MAX = int(os.environ.get("HQ_AUTH_FAIL_MAX", "5"))
@@ -1443,6 +1448,33 @@ def request_auth_mode(headers):
         return "bearer"
     return "cookie" if cookie_token(headers.get("Cookie")) else ""
 
+def normalized_origin(value, *, allow_path=False):
+    value = (value or "").strip()
+    if not value or value == "null":
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        if parsed.scheme.lower() not in {"http", "https"}:
+            return None
+        if not parsed.hostname or parsed.username is not None or parsed.password is not None:
+            return None
+        if not allow_path and (
+            parsed.path or parsed.query or parsed.fragment
+        ):
+            return None
+        port = parsed.port
+    except (TypeError, ValueError):
+        return None
+    if port is None:
+        port = 443 if parsed.scheme.lower() == "https" else 80
+    return parsed.scheme.lower(), parsed.hostname.lower(), port
+
+ALLOWED_ORIGINS = frozenset(
+    origin
+    for origin in (normalized_origin(value) for value in ALLOWED_ORIGIN_VALUES)
+    if origin is not None
+)
+
 def auth_cookie_header(token):
     parts = [f"{AUTH_COOKIE_NAME}={token}", "Path=/", f"Max-Age={TOKEN_TTL}", "HttpOnly", "SameSite=Lax"]
     if AUTH_COOKIE_SECURE:
@@ -1579,6 +1611,62 @@ class H(BaseHTTPRequestHandler):
         except TypeError:
             return False
 
+    def _uses_bearer_auth(self) -> bool:
+        return request_auth_mode(self.headers) == "bearer"
+
+    def _request_origin_allowed(self) -> bool:
+        origin = self.headers.get("Origin")
+        if origin is not None:
+            candidate = normalized_origin(origin)
+        else:
+            candidate = normalized_origin(self.headers.get("Referer"), allow_path=True)
+        return candidate is not None and candidate in ALLOWED_ORIGINS
+
+    def _reject_mutation(self, path: str, code: int, reason: str) -> bool:
+        source = self.headers.get("Origin")
+        if source is None:
+            source = self.headers.get("Referer") or ""
+        event = {
+            "request_id": (self.headers.get("X-Request-ID") or secrets.token_hex(8))[:128],
+            "path": path[:512],
+            "client_ip": self._client_ip()[:128],
+            "origin": source[:512],
+            "reason": reason,
+        }
+        print(json.dumps(event, ensure_ascii=False), file=sys.stderr, flush=True)
+        detail = "unsupported media type" if code == 415 else "forbidden"
+        self._send(code, {"detail": detail})
+        return False
+
+    def _require_browser_mutation_security(self, path: str) -> bool:
+        if self.command not in {"POST", "PUT", "PATCH", "DELETE"}:
+            return True
+        if path == "/api/auth/wxpay/notify":
+            return True
+
+        content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            return self._reject_mutation(path, 415, "content_type")
+
+        if path in {
+            "/api/auth/miniprogram-login",
+            "/api/auth/miniprogram-register",
+        }:
+            return True
+        if path in {"/api/auth/login", "/api/auth/register"}:
+            if self._request_origin_allowed():
+                return True
+            return self._reject_mutation(path, 403, "origin")
+        if self._uses_bearer_auth():
+            return True
+
+        if request_auth_mode(self.headers) == "cookie":
+            if not self._request_origin_allowed():
+                return self._reject_mutation(path, 403, "origin")
+            if not self._csrf_valid(cookie_token(self.headers.get("Cookie"))):
+                return self._reject_mutation(path, 403, "csrf")
+        return True
+
     def _require_internal(self):
         if self._internal_auth():
             return True
@@ -1597,6 +1685,8 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        if not self._require_browser_mutation_security(p):
+            return
         if p == "/api/auth/admin/points/adjust":
             if not self._require_internal():
                 return
@@ -2147,6 +2237,8 @@ class H(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         p = self.path.split("?")[0]
+        if not self._require_browser_mutation_security(p):
+            return
         friend_prefix = "/api/auth/friends/"
         canvas_prefix = "/api/auth/canvas/boards/"
         row = self._user()
@@ -2188,6 +2280,18 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 return self._send(500, {"detail": "canvas delete failed"})
         self._send(404, {"detail": "not found"})
+
+    def _unsupported_mutation(self):
+        p = self.path.split("?")[0]
+        if not self._require_browser_mutation_security(p):
+            return
+        self.send_error(501, "Unsupported method (%r)" % self.command)
+
+    def do_PUT(self):
+        self._unsupported_mutation()
+
+    def do_PATCH(self):
+        self._unsupported_mutation()
 
     def do_GET(self):
         p = self.path.split("?")[0]

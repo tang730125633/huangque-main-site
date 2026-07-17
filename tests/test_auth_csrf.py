@@ -17,8 +17,10 @@ class AuthCsrfTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.old_secret = os.environ.get("HQ_CSRF_SECRET")
         self.old_secure = os.environ.get("HQ_AUTH_COOKIE_SECURE")
+        self.old_allowed_origins = os.environ.get("HQ_ALLOWED_ORIGINS")
         os.environ["HQ_CSRF_SECRET"] = "fixed-test-csrf-secret"
         os.environ["HQ_AUTH_COOKIE_SECURE"] = "0"
+        os.environ["HQ_ALLOWED_ORIGINS"] = "https://app.example.test"
 
         import server.auth_server as auth_server
 
@@ -42,10 +44,17 @@ class AuthCsrfTests(unittest.TestCase):
             os.environ.pop("HQ_AUTH_COOKIE_SECURE", None)
         else:
             os.environ["HQ_AUTH_COOKIE_SECURE"] = self.old_secure
+        if self.old_allowed_origins is None:
+            os.environ.pop("HQ_ALLOWED_ORIGINS", None)
+        else:
+            os.environ["HQ_ALLOWED_ORIGINS"] = self.old_allowed_origins
         self.tmp.cleanup()
 
     def _post(self, path, payload, headers=None):
-        request_headers = {"Content-Type": "application/json"}
+        request_headers = {
+            "Content-Type": "application/json",
+            "Origin": "https://app.example.test",
+        }
         request_headers.update(headers or {})
         request = urllib.request.Request(
             self.base + path,
