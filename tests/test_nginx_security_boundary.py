@@ -1,3 +1,4 @@
+import ipaddress
 import re
 import unittest
 from pathlib import Path
@@ -7,6 +8,14 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATHS = (
     ROOT / "deploy/nginx-huangquechuanmei.conf",
 )
+ADMIN_ALLOWLIST = "/etc/nginx/snippets/huangque-admin-allowlist.conf"
+ADMIN_ALLOWLIST_EXAMPLE = ROOT / "deploy/admin-allowlist.conf.example"
+DOCUMENTATION_NETWORKS = {
+    ipaddress.ip_network("192.0.2.0/24"),
+    ipaddress.ip_network("198.51.100.0/24"),
+    ipaddress.ip_network("203.0.113.0/24"),
+    ipaddress.ip_network("2001:db8::/32"),
+}
 INTERNAL_AUTH_PATHS = (
     "/api/auth/points/deduct",
     "/api/auth/points/refund",
@@ -161,10 +170,47 @@ def _validate_token_headers(config):
             raise AssertionError(f"{path} does not clear internal token")
 
 
+def _validate_admin_allowlist(config):
+    locations = _active_locations(config)
+    for path in ("/admin/", "/api/admin/"):
+        location = _unique_public_proxy(locations, path)
+        includes = re.findall(
+            rf"^[ \t]*include[ \t]+{re.escape(ADMIN_ALLOWLIST)}[ \t]*;",
+            location[3],
+            flags=re.MULTILINE,
+        )
+        if len(includes) != 1:
+            raise AssertionError(
+                f"{path} must include the admin allowlist exactly once"
+            )
+
+
+def _validate_allowlist_example(config):
+    active_config = _strip_comments(config)
+    directives = [
+        " ".join(match.group(1).split())
+        for match in re.finditer(r"^[ \t]*(allow\s+[^;]+|deny\s+all)[ \t]*;", active_config, re.MULTILINE)
+    ]
+    if not directives or not any(directive.startswith("allow ") for directive in directives):
+        raise AssertionError("allowlist example must document at least one CIDR")
+    for directive in directives[:-1]:
+        if not directive.startswith("allow "):
+            raise AssertionError("only allow CIDRs may precede deny all")
+        try:
+            network = ipaddress.ip_network(directive.removeprefix("allow "), strict=True)
+        except ValueError as error:
+            raise AssertionError("allowlist example entries must be CIDRs") from error
+        if network not in DOCUMENTATION_NETWORKS:
+            raise AssertionError("allowlist example must only use documentation CIDRs")
+    if directives[-1] != "deny all":
+        raise AssertionError("allowlist example must end with an active deny all")
+
+
 def _validate_config(config):
     _validate_exact_404s(config)
     _validate_no_broad_regex(config)
     _validate_token_headers(config)
+    _validate_admin_allowlist(config)
 
 
 class NginxSecurityBoundaryTest(unittest.TestCase):
@@ -185,6 +231,15 @@ class NginxSecurityBoundaryTest(unittest.TestCase):
             with self.subTest(config=config_path.name):
                 config = config_path.read_text(encoding="utf-8")
                 _validate_token_headers(config)
+
+    def test_admin_page_and_api_use_the_same_allowlist(self):
+        for config_path in CONFIG_PATHS:
+            with self.subTest(config=config_path.name):
+                _validate_admin_allowlist(config_path.read_text(encoding="utf-8"))
+
+    def test_allowlist_example_ends_with_deny_all(self):
+        self.assertTrue(ADMIN_ALLOWLIST_EXAMPLE.is_file(), "allowlist example is missing")
+        _validate_allowlist_example(ADMIN_ALLOWLIST_EXAMPLE.read_text(encoding="utf-8"))
 
 
 class NginxSecurityBoundaryValidatorMutationTest(unittest.TestCase):
@@ -212,6 +267,24 @@ class NginxSecurityBoundaryValidatorMutationTest(unittest.TestCase):
         mutated = mutated.replace(
             '        proxy_set_header X-HQ-Internal-Token "";',
             '        # proxy_set_header X-HQ-Internal-Token "";',
+        )
+
+        with self.assertRaises(AssertionError):
+            _validate_config(mutated)
+
+    def test_commented_allowlist_include_does_not_satisfy_boundary(self):
+        mutated = self.config.replace(
+            f"include {ADMIN_ALLOWLIST};",
+            f"# include {ADMIN_ALLOWLIST};",
+            1,
+        )
+
+        with self.assertRaises(AssertionError):
+            _validate_config(mutated)
+
+    def test_duplicate_admin_page_location_is_rejected(self):
+        mutated = self._insert_before_public_auth(
+            f"location /admin/ {{ include {ADMIN_ALLOWLIST}; }}"
         )
 
         with self.assertRaises(AssertionError):
