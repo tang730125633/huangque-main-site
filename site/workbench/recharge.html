@@ -203,16 +203,15 @@
 </div>
 <script src="qrcode.min.js?v=1"></script>
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=302ad2ce"></script>
+<script src="cloud-shell.js?v=313b9433"></script>
 <script>
 (function(){
-  var token='__cookie__';
   var $=function(id){return document.getElementById(id)};
   function setTip(msg,color){var el=$('rechargeTip'); if(el){el.textContent=msg; el.style.color=color||'#94a4bb'}}
   function api(path,opt){
     opt=opt||{};
-    opt.headers=Object.assign({'Authorization':'Bearer '+token}, opt.headers||{});
-    return fetch(path,opt).then(function(r){
+    if(!window.HQ||typeof window.HQ.secureFetch!=='function') return Promise.reject(new Error('安全请求组件不可用'));
+    return window.HQ.secureFetch(path,opt).then(function(r){
       return r.json().catch(function(){return {detail:'响应不是 JSON'}}).then(function(d){
         if(!r.ok){var e=new Error(d.detail||('HTTP '+r.status)); e.status=r.status; throw e}
         return d;
@@ -314,7 +313,6 @@
     });
   }
   function submitOrder(btn){
-    if(!token){setTip('请先登录后再充值','#f4708a');return}
     var amount;
     if(btn.getAttribute('data-custom')){
       amount=readCustomAmount();

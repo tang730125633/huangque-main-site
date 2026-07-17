@@ -388,7 +388,7 @@
   </section>
 </div>
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=302ad2ce"></script>
+<script src="cloud-shell.js?v=313b9433"></script>
 <script>
 (function(){
   var $ = function(id){return document.getElementById(id);};
@@ -506,8 +506,9 @@
     opt = opt || {};
     opt.credentials = 'same-origin';
     opt.cache = 'no-store';
-    opt.headers = Object.assign({}, opt.headers || {});
-    return fetch(url, opt).then(function(r){
+    opt.headers = new Headers(opt.headers || {});
+    var fetcher=(window.HQ&&typeof window.HQ.secureFetch==='function')?window.HQ.secureFetch:fetch;
+    return fetcher(url, opt).then(function(r){
       return r.json().catch(function(){return {};}).then(function(data){
         if(r.status === 401){
           clearLocalAuth();
