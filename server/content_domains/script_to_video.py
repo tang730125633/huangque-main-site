@@ -84,6 +84,7 @@ def _gen_drama(username, scenes, payload):
         "resolution": payload.get("resolution") or "720p",
     }
     result = gen_xiaole_video(grok_payload)
+    result["type"] = "script_to_video"
     result["scene_count"] = len(scenes)
     result["pipeline"] = "grok"
     return result
