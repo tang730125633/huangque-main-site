@@ -79,10 +79,7 @@ def _do_breakdown(payload, info, url):
             usermsg, frames
         )
 
-        s, e = raw.find("{"), raw.rfind("}")
-        if s < 0 or e <= s:
-            raise ValueError("拆解结果解析失败，请重试")
-        result = json.loads(raw[s:e+1])
+        result = _parse_breakdown_json(raw)
 
         return {
             "type": "breakdown",
@@ -103,6 +100,73 @@ def _do_breakdown(payload, info, url):
 
 
 # ============ 辅助函数 ============
+
+def _strip_json_code_fence(raw):
+    text = str(raw or "").strip()
+    if not text.startswith("```"):
+        return text
+    lines = text.splitlines()
+    if len(lines) < 3:
+        return text
+    first = lines[0].strip().lower()
+    last = lines[-1].strip()
+    if not last.startswith("```"):
+        return text
+    if first not in ("```", "```json"):
+        return text
+    return "\n".join(lines[1:-1]).strip()
+
+
+def _iter_json_objects(raw):
+    text = str(raw or "")
+    n = len(text)
+    for start in range(n):
+        if text[start] != "{":
+            continue
+        depth = 0
+        in_str = False
+        escape = False
+        for i in range(start, n):
+            ch = text[i]
+            if in_str:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    yield text[start:i + 1]
+                    break
+
+
+def _parse_breakdown_json(raw):
+    candidates = []
+    seen = set()
+    for candidate in (str(raw or "").strip(), _strip_json_code_fence(raw)):
+        if candidate and candidate not in seen:
+            candidates.append(candidate)
+            seen.add(candidate)
+    for candidate in list(candidates):
+        for obj in _iter_json_objects(candidate):
+            if obj not in seen:
+                candidates.append(obj)
+                seen.add(obj)
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+    raise ValueError("拆解结果解析失败，请重试")
+
 
 def _heartbeat(job_id, phase):
     """刷新 updated_at 防止 reaper 误杀 + 写 phase 供前端展示"""
