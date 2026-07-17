@@ -185,13 +185,33 @@ def _validate_admin_allowlist(config):
             )
 
 
+def _validate_admin_console_allowlist(config):
+    locations = _active_locations(config)
+    location = _unique_public_proxy(locations, "/admin-console")
+    includes = re.findall(
+        rf"^[ \t]*include[ \t]+{re.escape(ADMIN_ALLOWLIST)}[ \t]*;",
+        location[3],
+        flags=re.MULTILINE,
+    )
+    if len(includes) != 1:
+        raise AssertionError(
+            "/admin-console and its slash variant must include the admin allowlist"
+        )
+
+
 def _validate_allowlist_example(config):
     active_config = _strip_comments(config)
     directives = [
         " ".join(match.group(1).split())
-        for match in re.finditer(r"^[ \t]*(allow\s+[^;]+|deny\s+all)[ \t]*;", active_config, re.MULTILINE)
+        for match in re.finditer(
+            r"(?:^|;)[ \t]*([^;\n]+?)[ \t]*;",
+            active_config,
+            re.MULTILINE,
+        )
     ]
-    if not directives or not any(directive.startswith("allow ") for directive in directives):
+    if not directives or directives[-1] != "deny all":
+        raise AssertionError("allowlist example must end with an active deny all")
+    if not any(directive.startswith("allow ") for directive in directives[:-1]):
         raise AssertionError("allowlist example must document at least one CIDR")
     for directive in directives[:-1]:
         if not directive.startswith("allow "):
@@ -202,8 +222,6 @@ def _validate_allowlist_example(config):
             raise AssertionError("allowlist example entries must be CIDRs") from error
         if network not in DOCUMENTATION_NETWORKS:
             raise AssertionError("allowlist example must only use documentation CIDRs")
-    if directives[-1] != "deny all":
-        raise AssertionError("allowlist example must end with an active deny all")
 
 
 def _validate_config(config):
@@ -236,6 +254,9 @@ class NginxSecurityBoundaryTest(unittest.TestCase):
         for config_path in CONFIG_PATHS:
             with self.subTest(config=config_path.name):
                 _validate_admin_allowlist(config_path.read_text(encoding="utf-8"))
+
+    def test_production_admin_console_and_slash_variant_use_the_allowlist(self):
+        _validate_admin_console_allowlist(CONFIG_PATHS[1].read_text(encoding="utf-8"))
 
     def test_allowlist_example_ends_with_deny_all(self):
         self.assertTrue(ADMIN_ALLOWLIST_EXAMPLE.is_file(), "allowlist example is missing")
@@ -323,6 +344,15 @@ class NginxSecurityBoundaryValidatorMutationTest(unittest.TestCase):
             with self.subTest(directive=directive):
                 with self.assertRaises(AssertionError):
                     _validate_config(self._insert_before_public_auth(directive))
+
+
+class NginxAllowlistExampleValidatorMutationTest(unittest.TestCase):
+    def test_active_directive_after_deny_all_is_rejected(self):
+        config = ADMIN_ALLOWLIST_EXAMPLE.read_text(encoding="utf-8")
+        mutated = f"{config}add_header X-Test test;\n"
+
+        with self.assertRaises(AssertionError):
+            _validate_allowlist_example(mutated)
 
 
 if __name__ == "__main__":
