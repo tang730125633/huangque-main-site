@@ -257,6 +257,12 @@
         </div>
         <div id="bdAnalysisText" style="font-size:13px; line-height:1.8; color:#dbeafe; white-space:pre-wrap;"></div>
       </div>
+      <div id="bdStoryboard" style="display:none; margin-top:14px;">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px; font-size:12px; font-weight:700; color:#93c5fd;">
+          <span>🎞️</span><span>关键帧故事板</span>
+        </div>
+        <div id="bdStoryboardStrip" style="display:flex; gap:8px; overflow-x:auto; padding-bottom:6px;"></div>
+      </div>
 
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:16px; padding-top:16px; border-top:1px solid rgba(148,164,187,.1);">
         <span id="scBatchHint" class="sc-hint">每张分镜可单独转视频/转口播，或使用下方一键生成</span>
@@ -299,7 +305,8 @@
   var bdUrl=document.getElementById('bdUrl'), bdGen=document.getElementById('bdGen'),
       bdProgress=document.getElementById('bdProgress'), bdPhases=document.getElementById('bdPhases'),
       bdResultMeta=document.getElementById('bdResultMeta'), bdSourceLink=document.getElementById('bdSourceLink'),
-      bdAnalysis=document.getElementById('bdAnalysis'), bdAnalysisText=document.getElementById('bdAnalysisText');
+      bdAnalysis=document.getElementById('bdAnalysis'), bdAnalysisText=document.getElementById('bdAnalysisText'),
+      bdStoryboard=document.getElementById('bdStoryboard'), bdStoryboardStrip=document.getElementById('bdStoryboardStrip');
   var orig=gen.innerHTML, lastScenes=[], lastStyle='口播', lastBreakdown=null, currentMode='write', refImageData=null, bdEditing=false;
   var initialMeta=meta?meta.innerHTML:'', initialScenes=scenes?scenes.innerHTML:'',
       initialPreviewTitle=previewTitle?previewTitle.textContent:'脚本 · 分镜预览',
@@ -377,12 +384,22 @@
     if(bdSourceLink) bdSourceLink.removeAttribute('href');
     if(bdAnalysis) bdAnalysis.style.display='none';
     if(bdAnalysisText) bdAnalysisText.textContent='';
+    if(bdStoryboard) bdStoryboard.style.display='none';
+    if(bdStoryboardStrip) bdStoryboardStrip.innerHTML='';
   }
   function setBreakdownAnalysis(text){
     var content=(text||'').trim();
     if(!bdAnalysis||!bdAnalysisText) return;
     bdAnalysis.style.display=content?'':'none';
     bdAnalysisText.textContent=content;
+  }
+  function setBreakdownStoryboard(frames){
+    if(!bdStoryboard||!bdStoryboardStrip) return;
+    var list=frames||[];
+    bdStoryboard.style.display=list.length?'':'none';
+    bdStoryboardStrip.innerHTML=list.length ? list.map(function(uri,i){
+      return '<div style="flex:none;position:relative;"><span style="position:absolute;top:4px;left:6px;font-size:10px;font-weight:700;color:#0f172a;background:rgba(231,178,76,.88);padding:1px 6px;border-radius:4px;">'+(i+1)+'</span><img src="'+escAttr(uri)+'" style="width:140px;height:auto;max-height:100px;object-fit:cover;border-radius:10px;border:1px solid rgba(148,164,187,.16);" loading="lazy"></div>';
+    }).join('') : '';
   }
   function resetPreview(){
     if(scenes) scenes.innerHTML=initialScenes;
@@ -432,6 +449,7 @@
     if(bdSourceLink && bd && bd.source_url){ bdSourceLink.href=bd.source_url; }
     setBreakdownAnalysis(analysis);
     if(bdEditBtn) bdEditBtn.style.display=list.length?'':'none';
+    setBreakdownStoryboard((bd&&bd.frame_thumbnails)||[]);
     bindSceneHandoffs();
   }
   function saveBreakdownHistory(bd){
