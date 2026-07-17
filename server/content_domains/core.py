@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency  # 领域存储模块均无反向依赖
+import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -1340,6 +1340,9 @@ class H(BaseHTTPRequestHandler):
             try:
                 body = self._json_body_strict() if kind in {"video", "tryon", "cinematic", "avatar"} else self._json_body()
                 request_body = dict(body) if isinstance(body, dict) else body
+                # 微信小程序内容安全：必须在校验、扣点和入队之前完成。违规内容不扣点；
+                # 微信服务异常时不收单，避免网络故障成为绕过审核的通道。
+                miniprogram_security.check_payload(body)
                 if kind == "video":
                     body = video_domain.validate_video_payload(body, user["username"])
                 elif kind == "tryon":
@@ -1355,6 +1358,10 @@ class H(BaseHTTPRequestHandler):
                     body = image_domain.validate_image_payload(body)
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
                 idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"video", "tryon", "xiaole_video", "cinematic"} else ""
+            except miniprogram_security.ContentRejected as e:
+                return self._send(400, {"detail": str(e), "code": "content_rejected"})
+            except miniprogram_security.SecurityUnavailable as e:
+                return self._send(503, {"detail": str(e), "code": "content_security_unavailable", "retry_after_ms": 5000})
             except ValueError as e:
                 return self._send(400, {"detail": str(e)[:220]})
             # 正在停机（部署中）→ 不收新活。⚠️ 必须在【扣点之前】。
