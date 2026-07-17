@@ -305,8 +305,8 @@ def query_order(openid, order_id, env=None):
 
 
 def notify_provide_goods(order_id, env=None):
-    # 该接口官方文档仅要求 access_token，不要求 pay_sig。
+    # 现网接口会校验 pay_sig；与查询订单相同，签名内容必须覆盖完整请求体。
     return _xpay("/xpay/notify_provide_goods", {
         "order_id": order_id,
         "env": pay_env() if env is None else int(env),
-    }, signed=False)
+    })

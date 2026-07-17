@@ -56,6 +56,16 @@ class VirtualPaymentTests(unittest.TestCase):
             expected,
         )
 
+    def test_delivery_notification_includes_pay_signature(self):
+        with patch.object(self.auth.wechat_vpay, "access_token", return_value="wx-token"), \
+             patch.object(self.auth.wechat_vpay, "_json_request", return_value={}) as request:
+            self.auth.wechat_vpay.notify_provide_goods("HQ1", 0)
+
+        url, body = request.call_args.args[:2]
+        self.assertIn("/xpay/notify_provide_goods?", url)
+        self.assertIn("pay_sig=", url)
+        self.assertEqual(json.loads(body), {"order_id": "HQ1", "env": 0})
+
     def test_create_order_returns_only_client_payment_fields_and_binds_openid(self):
         with patch.object(
             self.auth.wechat_vpay,
