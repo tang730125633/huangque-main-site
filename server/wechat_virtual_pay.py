@@ -48,7 +48,19 @@ DEFAULT_PRODUCTS = (
         "points": 5000,
         "recommended": True,
     },
+    {
+        "id": "custom_points",
+        "product_id": "hq_points_custom",
+        "title": "自定义点数",
+        "price_fen": 100,
+        "points": 10,
+        "recommended": False,
+        "custom_amount": True,
+    },
 )
+
+CUSTOM_MIN_AMOUNT_YUAN = 1
+CUSTOM_MAX_AMOUNT_YUAN = 5000
 
 
 class VirtualPayError(RuntimeError):
@@ -110,6 +122,7 @@ def products():
             "price_fen": int(item.get("price_fen") or 0),
             "points": int(item.get("points") or 0),
             "recommended": bool(item.get("recommended")),
+            "custom_amount": bool(item.get("custom_amount")),
         }
         if not product["id"] or product["id"] in seen:
             raise VirtualPayError("虚拟支付商品 id 缺失或重复", "bad_config")
@@ -117,8 +130,12 @@ def products():
             raise VirtualPayError("虚拟支付 product_id 无效", "bad_config")
         if product["price_fen"] <= 0 or product["points"] <= 0 or not product["title"]:
             raise VirtualPayError("虚拟支付商品价格、点数或名称无效", "bad_config")
+        if product["custom_amount"] and product["price_fen"] != 100:
+            raise VirtualPayError("虚拟支付自定义金额商品单价必须为1元", "bad_config")
         seen.add(product["id"])
         result.append(product)
+    if sum(1 for item in result if item["custom_amount"]) > 1:
+        raise VirtualPayError("虚拟支付自定义金额商品只能配置一个", "bad_config")
     return result
 
 
@@ -127,6 +144,47 @@ def product_by_id(package_id):
         if item["id"] == package_id:
             return item
     return None
+
+
+def custom_product():
+    for item in products():
+        if item["custom_amount"]:
+            return item
+    return None
+
+
+def custom_quantity(value):
+    """把用户输入转换为整数元数量；拒绝浮点数、布尔值和越界值。"""
+    if isinstance(value, bool):
+        return None
+    text = str(value if value is not None else "").strip()
+    if not text.isdigit():
+        return None
+    quantity = int(text)
+    if quantity < CUSTOM_MIN_AMOUNT_YUAN or quantity > CUSTOM_MAX_AMOUNT_YUAN:
+        return None
+    return quantity
+
+
+def purchase_for(product, custom_amount_yuan=None):
+    """返回可信的购买数量、订单总额和到账点数。"""
+    if product.get("custom_amount"):
+        quantity = custom_quantity(custom_amount_yuan)
+        if quantity is None:
+            raise VirtualPayError(
+                "自定义充值金额须为%d~%d元整数" % (
+                    CUSTOM_MIN_AMOUNT_YUAN,
+                    CUSTOM_MAX_AMOUNT_YUAN,
+                ),
+                "invalid_custom_amount",
+            )
+    else:
+        quantity = 1
+    return {
+        "quantity": quantity,
+        "amount_fen": int(product["price_fen"]) * quantity,
+        "points": int(product["points"]) * quantity,
+    }
 
 
 def is_configured():
@@ -205,17 +263,18 @@ def access_token():
         return _TOKEN_CACHE["value"]
 
 
-def payment_params(product, order_id, session_key):
+def payment_params(product, order_id, session_key, purchase=None):
     env = pay_env()
+    purchase = purchase or purchase_for(product)
     sign_obj = {
         "offerId": offer_id(),
-        "buyQuantity": 1,
+        "buyQuantity": int(purchase["quantity"]),
         "env": env,
         "currencyType": "CNY",
         "productId": product["product_id"],
         "goodsPrice": int(product["price_fen"]),
         "outTradeNo": order_id,
-        "attach": "points:" + str(product["points"]),
+        "attach": "points:" + str(purchase["points"]),
     }
     sign_data = compact_json(sign_obj)
     return {

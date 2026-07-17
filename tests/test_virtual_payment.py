@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 import tempfile
@@ -134,6 +135,73 @@ class VirtualPaymentTests(unittest.TestCase):
         self.assertIsNone(confirmed)
         self.assertEqual(err, "amount_mismatch")
         self.assertEqual(self.auth.get_points_row("buyer")["points"], 5)
+
+    def test_custom_amount_uses_one_yuan_unit_goods_and_server_calculated_points(self):
+        os.environ["WX_VIRTUAL_PAY_PRODUCTS_JSON"] = (
+            '[{"id":"custom_points","product_id":"hq_points_custom","title":"自定义点数",'
+            '"price_fen":100,"points":10,"custom_amount":true}]'
+        )
+        with patch.object(
+            self.auth.wechat_vpay,
+            "code_to_session",
+            return_value={"openid": "openid-buyer", "session_key": "session-key"},
+        ):
+            result, err = self.auth.create_virtual_pay_order(
+                "buyer", "custom_points", "wx-code", "25"
+            )
+
+        self.assertIsNone(err)
+        self.assertEqual(result["order"]["amount_fen"], 2500)
+        self.assertEqual(result["order"]["points"], 250)
+        sign_data = json.loads(result["payment"]["signData"])
+        self.assertEqual(sign_data["productId"], "hq_points_custom")
+        self.assertEqual(sign_data["goodsPrice"], 100)
+        self.assertEqual(sign_data["buyQuantity"], 25)
+        self.assertEqual(sign_data["attach"], "points:250")
+
+    def test_custom_amount_rejects_missing_decimal_boolean_and_out_of_range_values(self):
+        os.environ["WX_VIRTUAL_PAY_PRODUCTS_JSON"] = (
+            '[{"id":"custom_points","product_id":"hq_points_custom","title":"自定义点数",'
+            '"price_fen":100,"points":10,"custom_amount":true}]'
+        )
+        invalid_values = (None, "", "0", "1.5", 1.5, 5001, True)
+        with patch.object(self.auth.wechat_vpay, "code_to_session") as code_to_session:
+            for value in invalid_values:
+                result, err = self.auth.create_virtual_pay_order(
+                    "buyer", "custom_points", "wx-code", value
+                )
+                self.assertIsNone(result)
+                self.assertEqual(err, "invalid_custom_amount")
+        code_to_session.assert_not_called()
+
+    def test_fixed_package_never_trusts_forged_custom_amount(self):
+        with patch.object(
+            self.auth.wechat_vpay,
+            "code_to_session",
+            return_value={"openid": "openid-buyer", "session_key": "session-key"},
+        ):
+            result, err = self.auth.create_virtual_pay_order(
+                "buyer", "test_pack", "wx-code", 5000
+            )
+        self.assertIsNone(err)
+        self.assertEqual(result["order"]["amount_fen"], 1)
+        self.assertEqual(result["order"]["points"], 10)
+        self.assertEqual(json.loads(result["payment"]["signData"])["buyQuantity"], 1)
+
+    def test_public_packages_separate_fixed_tiers_from_custom_configuration(self):
+        os.environ["WX_VIRTUAL_PAY_PRODUCTS_JSON"] = (
+            '[{"id":"fixed","product_id":"hq_fixed","title":"固定档",'
+            '"price_fen":9900,"points":1000},'
+            '{"id":"custom_points","product_id":"hq_points_custom","title":"自定义点数",'
+            '"price_fen":100,"points":10,"custom_amount":true}]'
+        )
+        self.assertEqual([item["id"] for item in self.auth.public_virtual_pay_packages()], ["fixed"])
+        self.assertEqual(self.auth.public_virtual_pay_custom(), {
+            "package_id": "custom_points",
+            "min_amount_yuan": 1,
+            "max_amount_yuan": 5000,
+            "points_per_yuan": 10,
+        })
 
 
 if __name__ == "__main__":

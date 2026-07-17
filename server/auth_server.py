@@ -1443,6 +1443,8 @@ def public_virtual_pay_order(row):
 def public_virtual_pay_packages():
     items = []
     for item in wechat_vpay.products():
+        if item.get("custom_amount"):
+            continue
         items.append({
             "id": item["id"],
             "title": item["title"],
@@ -1454,18 +1456,36 @@ def public_virtual_pay_packages():
     return items
 
 
-def create_virtual_pay_order(username, package_id, wx_code):
+def public_virtual_pay_custom():
+    item = wechat_vpay.custom_product()
+    if not item:
+        return None
+    return {
+        "package_id": item["id"],
+        "min_amount_yuan": wechat_vpay.CUSTOM_MIN_AMOUNT_YUAN,
+        "max_amount_yuan": wechat_vpay.CUSTOM_MAX_AMOUNT_YUAN,
+        "points_per_yuan": item["points"],
+    }
+
+
+def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=None):
     package_id = (package_id or "").strip()
     if not wechat_vpay.is_configured():
         return None, "not_configured"
     product = wechat_vpay.product_by_id(package_id)
     if not product:
         return None, "package_not_found"
+    try:
+        purchase = wechat_vpay.purchase_for(product, custom_amount_yuan)
+    except wechat_vpay.VirtualPayError as exc:
+        if exc.code == "invalid_custom_amount":
+            return None, exc.code
+        raise
     session = wechat_vpay.code_to_session(wx_code)
     openid = session["openid"]
     now = int(time.time())
     order_id = "HQ%s%s" % (time.strftime("%y%m%d%H%M%S", time.localtime(now)), secrets.token_hex(5).upper())
-    payment = wechat_vpay.payment_params(product, order_id, session["session_key"])
+    payment = wechat_vpay.payment_params(product, order_id, session["session_key"], purchase)
 
     c = db()
     try:
@@ -1487,8 +1507,8 @@ def create_virtual_pay_order(username, package_id, wx_code):
             """INSERT INTO virtual_pay_orders(
                  order_id,username,openid,package_id,product_id,amount_fen,points,env,status,created_at
                ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
-            (order_id, username, openid, package_id, product["product_id"], product["price_fen"],
-             product["points"], wechat_vpay.pay_env(), "created", now),
+            (order_id, username, openid, package_id, product["product_id"], purchase["amount_fen"],
+             purchase["points"], wechat_vpay.pay_env(), "created", now),
         )
         row = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (order_id,)).fetchone()
         c.commit()
@@ -1822,12 +1842,14 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
             try:
                 result, err = create_virtual_pay_order(
-                    row["username"], d.get("package_id"), d.get("wx_code")
+                    row["username"], d.get("package_id"), d.get("wx_code"), d.get("custom_amount_yuan")
                 )
                 if err == "not_configured":
                     return self._send(503, {"detail": "虚拟支付正在配置中，请稍后再试"})
                 if err == "package_not_found":
                     return self._send(404, {"detail": "充值套餐不存在"})
+                if err == "invalid_custom_amount":
+                    return self._send(400, {"detail": "自定义充值金额须为1~5000元整数"})
                 if err in {"openid_in_use", "openid_mismatch"}:
                     return self._send(409, {"detail": "当前微信账号已绑定其他黄雀账号，请联系管理员"})
                 if err == "user_not_found":
@@ -2470,6 +2492,7 @@ class H(BaseHTTPRequestHandler):
                     "configured": wechat_vpay.is_configured(),
                     "environment": "production" if wechat_vpay.pay_env() == 0 else "sandbox",
                     "items": public_virtual_pay_packages(),
+                    "custom": public_virtual_pay_custom(),
                 })
             except Exception:
                 return self._send(500, {"detail": "充值套餐读取失败"})
