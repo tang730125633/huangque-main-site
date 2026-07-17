@@ -1,0 +1,19 @@
+const assert = require('node:assert/strict');
+const graph = require('../site/workbench/canvas/canvas-graph.js');
+
+const nodes = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+const chain = [
+  { from: { node: 'a' }, to: { node: 'b' } },
+  { from: { node: 'b' }, to: { node: 'c' } },
+];
+assert.deepEqual(graph.detectCycle(nodes, chain), []);
+assert.deepEqual(graph.topologicalOrder(nodes, chain), ['a', 'b', 'c']);
+assert.deepEqual(graph.detectCycle(nodes, chain.concat({ from: { node: 'c' }, to: { node: 'a' } })), ['a', 'b', 'c']);
+assert.deepEqual(graph.computeAutoLayout(nodes, chain), {
+  a: { x: 60, y: 60 }, b: { x: 370, y: 60 }, c: { x: 680, y: 60 },
+});
+assert.deepEqual(graph.contentBounds([{ id: 'a', x: 100, y: 100, width: 250, height: 160 }]), {
+  x: 40, y: 40, w: 370, h: 280,
+});
+assert.deepEqual(nodes, [{ id: 'a' }, { id: 'b' }, { id: 'c' }], 'inputs must not be mutated');
+console.log('canvas graph: pass');
