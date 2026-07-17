@@ -38,7 +38,7 @@ STAGES = {MATERIAL, WORK, DELIVERY}
 # 纯粹的死写：每次出图多一次 SQLite 写入，soft_delete 对它生效却影响不到 UI 看到的数据。
 # 要把 image 也收进来，得先让前端图片分类改读 /api/gen/assets 并把 meta 摊平，
 # 那是一次独立的迁移，不该顺手夹带。
-KIND_STAGE = {"copy": WORK, "collect": MATERIAL, "leads": DELIVERY}
+KIND_STAGE = {"copy": WORK, "collect": MATERIAL, "leads": DELIVERY, "breakdown": WORK}
 KINDS = set(KIND_STAGE)
 
 _initialized = False
@@ -188,6 +188,12 @@ def _project(kind, result):
             "leads_count": r.get("leads_count"), "spam": r.get("spam"),
             "chat": r.get("chat"), "total": r.get("total"),
             "leads": _lead_details(r.get("leads")),
+        })
+    if kind == "breakdown":
+        return (_clip(r.get("source_title")), None, r.get("source_url"), {
+            "source_url": r.get("source_url"), "source_platform": r.get("source_platform"),
+            "duration": r.get("duration"), "scenes": r.get("scenes"),
+            "analysis": r.get("analysis"),
         })
     return (None, None, None, {})
 
