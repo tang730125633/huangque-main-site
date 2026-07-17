@@ -105,6 +105,34 @@ class BreakdownTests(unittest.TestCase):
         self.assertEqual(result["duration"], 18)
         self.assertEqual(len(result["scenes"]), 1)
 
+    def test_parse_breakdown_json_accepts_fenced_json(self):
+        result = self.breakdown._parse_breakdown_json(
+            '```json\n{"scenes":[{"dur":"3s","scene":"门头","line":"欢迎来到门店"}],"analysis":"先钩子再转化"}\n```'
+        )
+
+        self.assertEqual(result["analysis"], "先钩子再转化")
+        self.assertEqual(result["scenes"][0]["scene"], "门头")
+
+    def test_parse_breakdown_json_accepts_wrapped_prose(self):
+        result = self.breakdown._parse_breakdown_json(
+            '下面是拆解结果，请直接取 JSON：\n```json\n{"scenes":[{"dur":"5s","scene":"产品特写","line":"先看成分"}],"analysis":"中段突出卖点"}\n```\n请查收。'
+        )
+
+        self.assertEqual(result["analysis"], "中段突出卖点")
+        self.assertEqual(result["scenes"][0]["line"], "先看成分")
+
+    def test_parse_breakdown_json_ignores_trailing_braces_in_prose(self):
+        result = self.breakdown._parse_breakdown_json(
+            '{"scenes":[{"dur":"4s","scene":"护理镜头","line":"重点看手法"}],"analysis":"结尾给行动指令"}\n备注：字段 {analysis} 已生成。'
+        )
+
+        self.assertEqual(result["analysis"], "结尾给行动指令")
+        self.assertEqual(result["scenes"][0]["dur"], "4s")
+
+    def test_parse_breakdown_json_raises_same_error_for_invalid_output(self):
+        with self.assertRaisesRegex(ValueError, "拆解结果解析失败，请重试"):
+            self.breakdown._parse_breakdown_json("not json at all")
+
 
 if __name__ == "__main__":
     unittest.main()
