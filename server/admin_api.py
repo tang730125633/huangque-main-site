@@ -1579,6 +1579,8 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/admin/points/adjust":
             try:
                 payload = self._body()
+                if not isinstance(payload, dict):
+                    raise ValueError("request body must be a JSON object")
                 payload["reason"] = validate_admin_reason(payload.get("reason"))
                 payload["delta"] = validate_points_delta(payload.get("delta"))
                 return self._send(
@@ -1595,6 +1597,8 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/admin/recharge/review":
             try:
                 payload = self._body()
+                if not isinstance(payload, dict):
+                    raise ValueError("request body must be a JSON object")
                 payload["reason"] = validate_admin_reason(payload.get("reason") or payload.get("review_note"))
                 return self._send(
                     200,

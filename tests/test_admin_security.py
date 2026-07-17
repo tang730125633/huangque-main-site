@@ -1,4 +1,5 @@
 import importlib
+import http.client
 import json
 import os
 import pathlib
@@ -70,6 +71,38 @@ class AdminIngressValidationTests(unittest.TestCase):
         self.assertRegex(generated, r"^[0-9a-f]{32}$")
         self.assertNotIn("session-secret", generated)
         self.assertNotIn("internal-secret", generated)
+
+    def test_ingress_rejects_non_object_json_with_controlled_400(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.admin.H)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = "http://127.0.0.1:%d" % server.server_address[1]
+        try:
+            with mock.patch.object(
+                self.admin, "verify", return_value={"username": "boss", "role": "admin"}
+            ), mock.patch.object(self.admin, "auth_admin_request") as forwarded:
+                for path in ("/api/admin/points/adjust", "/api/admin/recharge/review"):
+                    for payload in (None, [], 7, "text"):
+                        with self.subTest(path=path, payload=payload):
+                            req = urllib.request.Request(
+                                base + path,
+                                data=json.dumps(payload).encode(),
+                                headers={"Content-Type": "application/json", "Authorization": "Bearer test"},
+                                method="POST",
+                            )
+                            try:
+                                urllib.request.urlopen(req, timeout=3)
+                                status = 200
+                            except urllib.error.HTTPError as exc:
+                                status = exc.code
+                            except http.client.RemoteDisconnected:
+                                status = None
+                            self.assertEqual(status, 400)
+                forwarded.assert_not_called()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
 
 
 class AdminUiSecurityTests(unittest.TestCase):
@@ -145,6 +178,8 @@ class AuthAdminSecurityTests(unittest.TestCase):
                 return response.status, json.loads(response.read())
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read())
+        except http.client.RemoteDisconnected:
+            return None, {}
 
     def _snapshot(self):
         c = sqlite3.connect(self.auth.DB)
@@ -179,7 +214,11 @@ class AuthAdminSecurityTests(unittest.TestCase):
             ({"username": "fang", "delta": 1, "reason": "abc"}, "reason"),
             ({"username": "fang", "delta": 1, "reason": "x" * 121}, "reason"),
             ({"username": "fang", "delta": 1.5, "reason": "valid reason"}, "delta"),
+            ({"username": "fang", "delta": 0, "reason": "valid reason"}, "delta"),
+            ({"username": "fang", "delta": True, "reason": "valid reason"}, "delta"),
+            ({"username": "fang", "delta": "1", "reason": "valid reason"}, "delta"),
             ({"username": "fang", "delta": 1001, "reason": "valid reason"}, "delta"),
+            ({"username": "fang", "delta": -1001, "reason": "valid reason"}, "delta"),
         ]
         for payload, expected in cases:
             with self.subTest(payload=payload):
@@ -188,6 +227,48 @@ class AuthAdminSecurityTests(unittest.TestCase):
                 self.assertEqual(status, 400)
                 self.assertIn(expected, body["detail"].lower())
                 self.assertEqual(self._snapshot(), before)
+
+    def test_final_boundaries_reject_non_object_json_without_side_effects(self):
+        for path in ("/api/auth/admin/points/adjust", "/api/auth/admin/recharge/review"):
+            for payload in (None, [], 7, "text"):
+                with self.subTest(path=path, payload=payload):
+                    before = self._snapshot()
+                    status, body = self._post(path, payload)
+                    self.assertEqual(status, 400)
+                    self.assertIn("object", body.get("detail", "").lower())
+                    self.assertEqual(self._snapshot(), before)
+
+    def test_audit_decoder_preserves_legacy_json_looking_reason(self):
+        legacy = '{"reason":"legacy reason","request_id":"legacy-id"}'
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            c.execute(
+                "INSERT INTO points_audit(who_admin,username,delta,before_points,after_points,reason,created_at) "
+                "VALUES('legacy','fang',1,10,11,?,1)",
+                (legacy,),
+            )
+            c.commit()
+        finally:
+            c.close()
+        item = self.auth.list_points_audit(actor="admin")["items"][0]
+        self.assertEqual(item["reason"], legacy)
+        self.assertNotIn("request_id", item)
+
+    def test_audit_decoder_requires_exact_integer_envelope_version(self):
+        legacy = '{"_hq_admin_audit":true,"reason":"legacy reason","request_id":"legacy-id"}'
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            c.execute(
+                "INSERT INTO points_audit(who_admin,username,delta,before_points,after_points,reason,created_at) "
+                "VALUES('legacy','fang',1,10,11,?,1)",
+                (legacy,),
+            )
+            c.commit()
+        finally:
+            c.close()
+        item = self.auth.list_points_audit(actor="admin")["items"][0]
+        self.assertEqual(item["reason"], legacy)
+        self.assertNotIn("request_id", item)
 
     def test_valid_adjustment_is_atomic_and_uses_request_id_json_envelope(self):
         status, body = self._post(
@@ -211,7 +292,7 @@ class AuthAdminSecurityTests(unittest.TestCase):
         self.assertEqual(row["after_points"], 17)
         self.assertEqual(
             row["reason"],
-            '{"reason":"manual correction","request_id":"req-42"}',
+            '{"_hq_admin_audit":1,"reason":"manual correction","request_id":"req-42"}',
         )
         public = self.auth.list_points_audit(actor="admin")["items"][0]
         self.assertEqual(public["reason"], "manual correction")
@@ -240,6 +321,22 @@ class AuthAdminSecurityTests(unittest.TestCase):
         )
         self.assertEqual(first_status, 200)
         self.assertEqual(second_status, 200)
+        self.assertEqual(second["order"], first["order"])
+        self.assertEqual(self._snapshot(), after_first)
+
+    def test_repeated_rejection_is_idempotent(self):
+        order, _ = self.auth.create_recharge_order("fang", 10, 100, "test")
+        payload = {"order_id": order["order_id"], "action": "reject", "reason": "payment not found"}
+        first_status, first = self._post(
+            "/api/auth/admin/recharge/review", payload, request_id="reject-9"
+        )
+        after_first = self._snapshot()
+        second_status, second = self._post(
+            "/api/auth/admin/recharge/review", payload, request_id="reject-9"
+        )
+        self.assertEqual(first_status, 200)
+        self.assertEqual(second_status, 200)
+        self.assertEqual(first["order"]["status"], "rejected")
         self.assertEqual(second["order"], first["order"])
         self.assertEqual(self._snapshot(), after_first)
 
