@@ -185,6 +185,7 @@ class VoiceSlotPurchaseTest(unittest.TestCase):
                 self.assertEqual(1, slots["slot_count"])
                 self.assertEqual(5, slots["slot_max"])
                 self.assertEqual(50, slots["slot_cost"])
+                self.assertEqual(20, slots["reclone_max"])
                 self.assertEqual(75, slots["points"])
 
                 deprecated = urllib.request.Request(

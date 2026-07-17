@@ -73,6 +73,38 @@ class VoiceSlotManagementTest(unittest.TestCase):
         with self.assertRaises(audio.VoiceSlotBusyError):
             audio.delete_audio_voice("alice", "slot_a")
 
+    def test_slot_list_exposes_shared_reclone_limit_and_remaining_count(self):
+        self._create_ready_voice()
+        with closing(core.adb()) as conn:
+            conn.execute("UPDATE audio_voice_slots SET reclone_count=19 WHERE slot_id='slot_a'")
+            conn.commit()
+
+        slot = audio.list_user_audio_voice_slots("alice")[0]
+
+        self.assertEqual(20, audio.VOICE_RECLONE_MAX)
+        self.assertEqual(audio.VOICE_RECLONE_MAX, slot["reclone_max"])
+        self.assertEqual(1, slot["reclone_remaining"])
+
+    def test_nineteenth_reclone_reaches_limit_without_exceeding_it(self):
+        self._create_ready_voice()
+        with closing(core.adb()) as conn:
+            conn.execute("UPDATE audio_voice_slots SET reclone_count=19 WHERE slot_id='slot_a'")
+            conn.commit()
+
+        result = audio.mark_clone_training("alice", "slot_a", "第二十次")
+
+        self.assertEqual(20, result["reclone_count"])
+        self.assertEqual(20, result["reclone_max"])
+        self.assertEqual(0, result["reclone_remaining"])
+
+
+class VoiceSlotQuotaFrontendTest(unittest.TestCase):
+    def test_web_frontend_consumes_backend_quota_fields(self):
+        html = (ROOT / "site" / "workbench" / "assets.html").read_text(encoding="utf-8")
+        self.assertIn("slot.reclone_max", html)
+        self.assertIn("slot.reclone_remaining", html)
+        self.assertNotIn("Math.min(10, parseInt(slot.reclone_count", html)
+
 
 if __name__ == "__main__":
     unittest.main()

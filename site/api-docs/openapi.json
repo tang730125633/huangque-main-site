@@ -743,6 +743,7 @@
           "配音音色"
         ],
         "summary": "音色克隆槽位 + 训练状态",
+        "description": "每个槽位包含 reclone_count、reclone_max=20 和 reclone_remaining；响应顶层同时返回 reclone_max。",
         "responses": {
           "200": {
             "description": "OK"

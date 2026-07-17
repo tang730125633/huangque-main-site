@@ -303,7 +303,7 @@ class ContentDomainTests(unittest.TestCase):
                         self.assertEqual(before, self._slot_snapshot(test_adb, "fang", "S_demo"))
 
                 with closing(test_adb()) as c:
-                    c.execute("UPDATE audio_voice_slots SET reclone_count=10 WHERE username='fang' AND slot_id='S_demo'")
+                    c.execute("UPDATE audio_voice_slots SET reclone_count=? WHERE username='fang' AND slot_id='S_demo'", (audio.VOICE_RECLONE_MAX,))
                     c.commit()
                 before_limit = self._slot_snapshot(test_adb, "fang", "S_demo")
                 with self.assertRaises(audio.CloneVipValidationError) as cm:
