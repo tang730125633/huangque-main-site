@@ -111,6 +111,78 @@ class AdminIngressValidationTests(unittest.TestCase):
             self.assertTrue(handler._csrf_valid(session))
         compare.assert_called_once_with(expected, expected)
 
+    def test_bearer_parsing_matches_auth_contract_and_cookie_sentinel(self):
+        import server.auth_server as auth_server
+
+        auth = importlib.reload(auth_server)
+        values = (
+            None,
+            "",
+            "Bearer token",
+            "  Bearer\t token  ",
+            "bearer    token",
+            "Bearer",
+            "Bearer ",
+            "Basic token",
+            "Bearer __cookie__",
+            "Bearer\t__cookie__",
+        )
+        for value in values:
+            with self.subTest(value=value):
+                self.assertEqual(self.admin.bearer_token(value), auth.bearer_token(value))
+
+        headers = {
+            "Authorization": "  Bearer\t __cookie__  ",
+            "Cookie": "hq_session=cookie-session",
+        }
+        self.assertEqual(self.admin.request_token(headers), "cookie-session")
+        self.assertEqual(self.admin.request_auth_mode(headers), "cookie")
+
+    def test_cookie_guard_fails_closed_for_empty_configuration_and_invalid_origin_precedence(self):
+        handler = object.__new__(self.admin.H)
+        handler.command = "POST"
+        handler.path = "/api/admin/channel"
+        handler._current_request_id = "req-test"
+        handler.client_address = ("127.0.0.1", 1234)
+        sent = []
+        handler._send = lambda code, payload: sent.append((code, payload))
+        session = "session-secret"
+        csrf = hmac.new(
+            b"admin-ingress-csrf-secret", session.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        valid_headers = {
+            "Content-Type": "application/json",
+            "Origin": "https://app.example.test",
+            "Cookie": "hq_session=" + session,
+            "X-CSRF-Token": csrf,
+        }
+
+        original_origins = self.admin.ALLOWED_ORIGINS
+        original_secret = self.admin.CSRF_SECRET
+        try:
+            self.admin.ALLOWED_ORIGINS = frozenset()
+            handler.headers = valid_headers
+            self.assertFalse(handler._require_browser_mutation_security(handler.path))
+            self.assertEqual(sent.pop()[0], 403)
+
+            self.admin.ALLOWED_ORIGINS = original_origins
+            self.admin.CSRF_SECRET = b""
+            handler.headers = valid_headers
+            self.assertFalse(handler._require_browser_mutation_security(handler.path))
+            self.assertEqual(sent.pop()[0], 403)
+
+            self.admin.CSRF_SECRET = original_secret
+            handler.headers = {
+                **valid_headers,
+                "Origin": "https://evil.example.test",
+                "Referer": "https://app.example.test/admin/",
+            }
+            self.assertFalse(handler._require_browser_mutation_security(handler.path))
+            self.assertEqual(sent.pop()[0], 403)
+        finally:
+            self.admin.ALLOWED_ORIGINS = original_origins
+            self.admin.CSRF_SECRET = original_secret
+
     def test_cookie_admin_mutations_require_origin_session_csrf_and_json(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), self.admin.H)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -232,8 +304,15 @@ class AdminIngressValidationTests(unittest.TestCase):
         try:
             with mock.patch.object(
                 self.admin, "verify", return_value={"username": "boss", "role": "admin"}
-            ), mock.patch.object(self.admin, "auth_admin_request") as forwarded:
-                for path in ("/api/admin/points/adjust", "/api/admin/recharge/review"):
+            ), mock.patch.object(self.admin, "save_channel") as channel, \
+                 mock.patch.object(self.admin, "save_feature") as feature, \
+                 mock.patch.object(self.admin, "auth_admin_request") as forwarded:
+                for path in (
+                    "/api/admin/channel",
+                    "/api/admin/features/toggle",
+                    "/api/admin/points/adjust",
+                    "/api/admin/recharge/review",
+                ):
                     for payload in (None, [], 7, "text"):
                         with self.subTest(path=path, payload=payload):
                             req = urllib.request.Request(
@@ -250,7 +329,37 @@ class AdminIngressValidationTests(unittest.TestCase):
                             except http.client.RemoteDisconnected:
                                 status = None
                             self.assertEqual(status, 400)
+                channel.assert_not_called()
+                feature.assert_not_called()
                 forwarded.assert_not_called()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+    def test_feature_generic_failure_does_not_expose_exception_text(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.admin.H)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = "http://127.0.0.1:%d" % server.server_address[1]
+        try:
+            with mock.patch.object(
+                self.admin, "verify", return_value={"username": "boss", "role": "admin"}
+            ), mock.patch.object(
+                self.admin, "save_feature", side_effect=RuntimeError("sensitive backend detail")
+            ):
+                req = urllib.request.Request(
+                    base + "/api/admin/features/toggle",
+                    data=b'{"feature":"x"}',
+                    headers={"Content-Type": "application/json", "Authorization": "Bearer test"},
+                    method="POST",
+                )
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    urllib.request.urlopen(req, timeout=3)
+                self.assertEqual(error.exception.code, 500)
+                body = json.loads(error.exception.read())
+                self.assertEqual(body["detail"], "保存失败")
+                self.assertNotIn("sensitive backend detail", json.dumps(body))
         finally:
             server.shutdown()
             server.server_close()

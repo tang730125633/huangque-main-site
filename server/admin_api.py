@@ -44,10 +44,10 @@ ALLOWED_ORIGIN_VALUES = tuple(
 
 
 def bearer_token(value):
-    auth = value or ""
-    if auth.lower().startswith("bearer "):
-        return auth.split(" ", 1)[1].strip()
-    return ""
+    parts = (value or "").strip().split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return ""
+    return parts[1].strip()
 
 
 def cookie_token(value):
@@ -1706,9 +1706,15 @@ class H(BaseHTTPRequestHandler):
         user = self._admin()
         if not user:
             return
+        try:
+            payload = self._body()
+        except ValueError as e:
+            return self._send(400, {"detail": str(e)})
+        if not isinstance(payload, dict):
+            return self._send(400, {"detail": "request body must be a JSON object"})
         if path == "/api/admin/channel":
             try:
-                item = save_channel(user.get("username") or "admin", self._body())
+                item = save_channel(user.get("username") or "admin", payload)
             except ValueError as e:
                 return self._send(400, {"detail": str(e)})
             except Exception:
@@ -1716,17 +1722,14 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "channel": item})
         if path == "/api/admin/features/toggle":
             try:
-                item = save_feature(user.get("username") or "admin", self._body())
+                item = save_feature(user.get("username") or "admin", payload)
             except ValueError as e:
                 return self._send(400, {"detail": str(e)})
-            except Exception as e:
-                return self._send(500, {"detail": str(e)[:160] or "保存失败"})
+            except Exception:
+                return self._send(500, {"detail": "保存失败"})
             return self._send(200, {"ok": True, "feature": item})
         if path == "/api/admin/points/adjust":
             try:
-                payload = self._body()
-                if not isinstance(payload, dict):
-                    raise ValueError("request body must be a JSON object")
                 payload["reason"] = validate_admin_reason(payload.get("reason"))
                 payload["delta"] = validate_points_delta(payload.get("delta"))
                 return self._send(
@@ -1742,9 +1745,6 @@ class H(BaseHTTPRequestHandler):
                 return auth_error_response(self, e)
         if path == "/api/admin/recharge/review":
             try:
-                payload = self._body()
-                if not isinstance(payload, dict):
-                    raise ValueError("request body must be a JSON object")
                 payload["reason"] = validate_admin_reason(payload.get("reason") or payload.get("review_note"))
                 return self._send(
                     200,
