@@ -11,7 +11,7 @@
 <style>
   body{overflow:hidden}
   .hq-content[data-active="video"]{height:100%;min-height:0}
-  .gVid{display:grid;grid-template-columns:1.45fr 1fr;gap:18px;align-items:stretch;height:100%;min-height:0;overflow:hidden}
+  .gVid{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(320px,.85fr);gap:18px;align-items:stretch;height:100%;min-height:0;overflow:hidden}
   .vid-card{min-height:0;border:1px solid rgba(148,164,187,.1);border-radius:0;background:linear-gradient(165deg,rgba(16,24,39,.58),rgba(12,18,32,.46));padding:22px}
   .vid-main{height:100%;overflow-y:auto;overflow-x:hidden;padding-right:4px}
   .vid-main::-webkit-scrollbar{width:7px}
@@ -29,8 +29,8 @@
   .mode-tab.on .mode-title{color:#e7b24c}
   .mode-desc{font-size:11.5px;line-height:1.55;color:#5c6b82;margin-top:6px}
   .mode-tab.on .mode-desc{color:#c8902f}
-  .function-tabs{display:flex;align-items:center;gap:8px;margin-top:18px;padding:4px;border:1px solid rgba(148,164,187,.12);border-radius:13px;background:rgba(7,11,19,.34)}
-  .function-tab{height:36px;padding:0 18px;border:1px solid transparent;border-radius:10px;background:transparent;color:#94a4bb;font:800 13px inherit;cursor:pointer}
+  .function-tabs{display:flex;align-items:center;gap:6px;margin-top:18px;padding:4px;border:1px solid rgba(148,164,187,.12);border-radius:10px;background:rgba(7,11,19,.34);overflow-x:auto}
+  .function-tab{flex:1;min-width:96px;height:38px;padding:0 10px;border:1px solid transparent;border-radius:7px;background:transparent;color:#94a4bb;font:800 12.5px inherit;cursor:pointer;white-space:nowrap}
   .function-tab.on{color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);box-shadow:0 10px 24px rgba(231,178,76,.14)}
   .function-panel{min-height:0}
   .motion-panel{margin-top:22px;border:1px solid rgba(148,164,187,.12);border-radius:15px;background:rgba(7,11,19,.28);padding:18px}
@@ -93,15 +93,35 @@
   .avatar-action{flex:1;height:28px;border:1px solid rgba(148,164,187,.14);border-radius:8px;background:rgba(7,11,19,.62);color:#94a4bb;font:800 11px inherit;cursor:pointer}
   .avatar-action:hover{color:#e7b24c;border-color:rgba(231,178,76,.3)}
   .avatar-empty{grid-column:1/-1;padding:14px;border:1px dashed rgba(148,164,187,.16);border-radius:12px;color:#5c6b82;font-size:12px;text-align:center}
-  .talking-cost{margin-top:12px;text-align:center;color:#c8902f;font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
+  .talking-cost{margin:0;color:#e7b24c;font-size:12px;font-weight:800;font-variant-numeric:tabular-nums}
   .motion-grid.use-avatar{grid-template-columns:1fr}
   .motion-grid.use-avatar #motionImageDrop{display:none}
-  .form-grid{--video-input-height:168px;display:grid;grid-template-columns:calc(var(--video-input-height) * .75) 1fr;gap:16px;margin-top:22px;align-items:start}
-  .upload-box{position:relative;height:var(--video-input-height);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:11px;text-align:center;padding:16px;border:1px dashed rgba(148,164,187,.26);background:rgba(148,164,187,.04);border-radius:14px;color:#94a4bb;cursor:pointer;overflow:hidden;transition:.16s}
+  .form-grid{--video-input-height:184px;display:grid;grid-template-columns:minmax(176px,.52fr) minmax(0,1.48fr);gap:16px;margin-top:12px;align-items:start;padding:16px;border:1px solid rgba(148,164,187,.12);border-radius:10px;background:rgba(7,11,19,.2)}
+  .upload-box{position:relative;height:var(--video-input-height);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:11px;text-align:center;padding:16px;border:1px dashed rgba(148,164,187,.28);background:rgba(148,164,187,.04);border-radius:8px;color:#94a4bb;cursor:pointer;overflow:hidden;transition:.16s}
   .upload-box:hover{border-color:rgba(231,178,76,.38);color:#e7b24c}
   .upload-box img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
   .upload-box.has-img:after{content:"更换图片";position:absolute;left:10px;right:10px;bottom:10px;height:30px;display:flex;align-items:center;justify-content:center;border-radius:9px;background:rgba(7,11,19,.72);color:#eaf1fa;font-size:12px}
-  .panel{margin-top:18px;border:1px solid rgba(148,164,187,.12);border-radius:15px;background:rgba(7,11,19,.28);padding:16px}
+  .panel{margin-top:18px;border:1px solid rgba(148,164,187,.12);border-radius:10px;background:rgba(7,11,19,.28);padding:16px}
+  .talking-flow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:14px}
+  .talking-flow-item{display:flex;align-items:center;gap:9px;min-width:0;padding:9px 10px;border:1px solid rgba(148,164,187,.1);border-radius:8px;background:rgba(148,164,187,.025);color:#718096}
+  .talking-flow-item span{width:22px;height:22px;display:grid;place-items:center;flex:none;border-radius:6px;background:rgba(148,164,187,.08);font:800 10px/1 ui-monospace,monospace}
+  .talking-flow-item b{font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .talking-flow-item.on{border-color:rgba(231,178,76,.24);background:rgba(231,178,76,.055);color:#e7b24c}
+  .talking-flow-item.on span{background:rgba(231,178,76,.14)}
+  .talking-section-title{display:flex;align-items:center;gap:10px;margin-top:18px}
+  .talking-section-title .step-no{width:28px;height:28px;display:grid;place-items:center;flex:none;border:1px solid rgba(231,178,76,.25);border-radius:7px;background:rgba(231,178,76,.07);color:#e7b24c;font:800 10.5px/1 ui-monospace,monospace}
+  .talking-section-copy{min-width:0;display:flex;flex-direction:column;gap:2px}
+  .talking-section-copy b{font-size:13.5px;color:#eaf1fa}
+  .talking-section-copy span{font-size:10.5px;color:#5c6b82}
+  .talking-section-action{margin-left:auto;color:#94a4bb;text-decoration:none;font-size:11.5px;white-space:nowrap}
+  .talking-section-action:hover{color:#e7b24c}
+  .workflow-panel{padding-top:14px}
+  .workflow-panel>.talking-section-title{margin-top:0;padding-bottom:12px;border-bottom:1px solid rgba(148,164,187,.08)}
+  .bgm-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,.55fr);gap:12px;margin-top:12px;align-items:center}
+  .talking-submit{position:sticky;bottom:-1px;z-index:12;display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,.72fr);gap:16px;align-items:center;margin-top:16px;padding:12px 14px;border:1px solid rgba(231,178,76,.2);border-radius:10px;background:rgba(10,15,25,.94);box-shadow:0 -12px 30px rgba(3,7,14,.34);backdrop-filter:blur(12px)}
+  .talking-submit-copy{min-width:0}
+  .talking-generate{width:100%;height:48px;display:flex;align-items:center;justify-content:center;gap:10px;font:800 15px inherit;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:0;border-radius:8px;cursor:pointer;box-shadow:0 12px 28px -14px rgba(231,178,76,.78)}
+  .talking-status{font-size:10.5px;margin-top:4px;color:#5c6b82}
   .hidden{display:none!important}
   textarea,.text-input{box-sizing:border-box;width:100%;border:1px solid rgba(148,164,187,.16);border-radius:12px;background:rgba(7,11,19,.5);color:#eaf1fa;outline:none;font-family:inherit;font-size:13.5px}
   textarea{resize:none;line-height:1.75;padding:13px 14px}
@@ -170,7 +190,7 @@
   .history-text{margin:0;color:#eaf1fa;font-size:13.2px;font-weight:800;line-height:1.55;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
   .history-tags{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .history-tag{height:30px;padding:0 12px;border-radius:8px;background:rgba(148,164,187,.08);border:1px solid rgba(148,164,187,.1);font-size:11.5px;color:#f4f7fb;font-weight:800;display:inline-flex;align-items:center}
-  .history-stage{width:202px;border:1px solid rgba(148,164,187,.13);border-radius:9px;background:#15181f;overflow:hidden}
+  .history-stage{width:202px;align-self:center;border:1px solid rgba(148,164,187,.13);border-radius:9px;background:#15181f;overflow:hidden}
   .history-preview{height:312px;aspect-ratio:9/16;width:100%;position:relative;display:flex;align-items:center;justify-content:center;text-align:center;overflow:hidden;background:linear-gradient(145deg,rgba(11,15,22,.95),rgba(21,24,31,.94))}
   .history-preview img,.history-preview video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
   .history-preview .blur-bg{position:absolute;inset:0;filter:blur(8px);transform:scale(1.08);opacity:.28}
@@ -244,7 +264,8 @@
   .vidLoading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#e7b24c;font-size:13px;font-weight:800;letter-spacing:0;background:linear-gradient(145deg,rgba(7,11,19,.96),rgba(16,20,28,.94))}
   .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;transition:.2s;background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:12px;padding:11px 16px;color:#eaf1fa;font-size:13px;z-index:80}
   .toast.show{opacity:1;transform:translateX(-50%)}
-  @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid,.video-parameter-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source,.avatar-grid{grid-template-columns:1fr}.subtitle-template-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media (max-width:1100px){.gVid{height:auto;min-height:0;overflow:visible}.gVid,.form-grid,.motion-grid,.video-parameter-grid{grid-template-columns:1fr}.vid-main,.vid-side{height:auto;overflow:visible}.history-list{max-height:420px}.voice-grid,.audio-source,.avatar-grid{grid-template-columns:1fr}.subtitle-template-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.talking-submit{position:static}}
+  @media (max-width:700px){.vid-card{padding:14px}.function-tab{min-width:92px}.talking-flow{grid-template-columns:1fr}.form-grid{padding:12px}.bgm-grid,.talking-submit{grid-template-columns:1fr}.talking-section-title{align-items:flex-start}.talking-section-action{font-size:10.5px}}
   @media (prefers-reduced-motion:reduce){.history-focus{animation:none}.subtitle-preview-copy *{animation-duration:2.4s!important}}
   .line-switch{margin:12px 0;padding:12px;background:rgba(255,255,255,.03);border:1px solid rgba(148,164,187,.14);border-radius:12px}
   .line-switch>.label{margin-bottom:8px}
@@ -266,7 +287,7 @@
       <div class="row">
         <div>
           <h1 style="margin:0;font-size:21px;font-weight:800; display:flex; align-items:center; gap:10px;"><img src="../assets/icons/ic_video.png" alt="" style="width:30px;height:30px;object-fit:contain;flex:none;">视频模块</h1>
-          <p id="modeSummary" class="muted" style="margin:7px 0 0;font-size:13px;">选择视频生成功能，创建对应的视频内容</p>
+          <p id="modeSummary" class="muted" style="margin:7px 0 0;font-size:13px;">上传形象、准备内容、选择音色，三步生成口播视频</p>
         </div>
       </div>
 
@@ -279,14 +300,6 @@
         <button class="function-tab" type="button" data-function="omni">欧米视频生成</button>
       </div>
 
-      <div id="bgmPanel" class="panel" style="margin-top:14px;">
-        <div class="row"><span class="label">背景音乐 <span class="faint">· 可选，自动循环到成片结束</span></span><button id="bgmClear" type="button" class="hidden" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font-family:inherit;">移除</button></div>
-        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,.55fr);gap:12px;margin-top:10px;align-items:center;">
-          <label class="file-row"><input id="bgmFile" type="file" accept="audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/mp4,audio/m4a,audio/x-m4a" hidden><span id="bgmFileName" style="font-size:12.5px;font-weight:700;">选择 BGM 音频</span></label>
-          <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-bgm-volume="0.12">轻</button><button class="on" data-bgm-volume="0.18">中</button><button data-bgm-volume="0.28">强</button></div>
-        </div>
-      </div>
-
       <div id="talkingPanel" class="function-panel">
       <div class="mode-tabs">
         <button class="mode-tab on" data-mode="text">
@@ -297,6 +310,17 @@
           <div class="mode-title">现成音频生成</div>
           <div class="mode-desc">上传人物形象图，选择本地音频或资产库音频，直接生成口播视频。</div>
         </button>
+      </div>
+
+      <div class="talking-flow" aria-label="数字化 IP 生成流程">
+        <div class="talking-flow-item on"><span>01</span><b>形象与内容</b></div>
+        <div class="talking-flow-item"><span>02</span><b id="talkingFlowSound">选择音色</b></div>
+        <div class="talking-flow-item"><span>03</span><b>画面与字幕</b></div>
+      </div>
+
+      <div class="talking-section-title">
+        <span class="step-no">01</span>
+        <div class="talking-section-copy"><b>准备形象与内容</b><span>上传清晰正面人物图，并填写口播文案或选择现成音频</span></div>
       </div>
 
       <div id="talkingFormGrid" class="form-grid">
@@ -323,6 +347,10 @@
           </div>
 
           <div id="audioMode" class="hidden">
+            <div class="talking-section-title" style="margin:0 0 12px;">
+              <span class="step-no">02</span>
+              <div class="talking-section-copy"><b>准备口播音频</b><span>上传本地音频，或从资产库选择已有素材</span></div>
+            </div>
             <div class="label" style="margin-bottom:10px;">音频来源</div>
             <div class="audio-source">
               <div class="source-card on" data-source="local">
@@ -344,10 +372,11 @@
         </div>
       </div>
 
-      <div id="voicePanel" class="panel">
-        <div class="row">
-          <span class="label">选择资产库音色</span>
-          <a href="assets.html?cat=audio&audioTab=personal" style="font-size:12px;color:#94a4bb;text-decoration:none;">管理个人音色 ›</a>
+      <div id="voicePanel" class="panel workflow-panel">
+        <div class="talking-section-title">
+          <span class="step-no">02</span>
+          <div class="talking-section-copy"><b>选择口播音色</b><span>试听并选择最适合当前内容的声音</span></div>
+          <a class="talking-section-action" href="assets.html?cat=audio&audioTab=personal">管理个人音色 ›</a>
         </div>
         <div class="voice-tabs">
           <button class="voice-tab on" data-voice-tab="public">公共音色</button>
@@ -356,10 +385,11 @@
         <div id="voiceGrid" class="voice-grid"></div>
       </div>
 
-      <div class="panel">
-        <div class="row">
-          <span class="label">视频参数</span>
-          <span class="faint" style="font-size:11.5px;">生成失败自动退点</span>
+      <div id="talkingParameterPanel" class="panel workflow-panel">
+        <div class="talking-section-title">
+          <span class="step-no">03</span>
+          <div class="talking-section-copy"><b>画面与字幕设置</b><span>确认比例、动作强度和字幕样式</span></div>
+          <span class="faint talking-section-action">生成失败自动退点</span>
         </div>
         <div style="display:grid;grid-template-columns:1fr;gap:18px;margin-top:13px;">
           <!-- 分辨率固定 1080p（不再给选，selectedResolution 常量 1080p，后端缺省也是 1080p）-->
@@ -443,11 +473,25 @@
         </div>
       </div>
 
-      <div id="talkingCostSummary" class="talking-cost">10 点/秒 · 按实际时长结算</div>
-      <button id="generateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:10px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
-        生成口播视频
-      </button>
-      <div id="statusText" class="faint" style="text-align:center;font-size:11.5px;margin-top:11px;">生成完成后会自动保存到视频资产</div>
+      <div id="bgmPanel" class="panel workflow-panel">
+        <div class="talking-section-title">
+          <span class="step-no">+</span>
+          <div class="talking-section-copy"><b>背景音乐</b><span>可选，自动循环到成片结束</span></div>
+          <button id="bgmClear" type="button" class="hidden talking-section-action" style="border:0;background:transparent;cursor:pointer;font-family:inherit;">移除</button>
+        </div>
+        <div class="bgm-grid">
+          <label class="file-row"><input id="bgmFile" type="file" accept="audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/mp4,audio/m4a,audio/x-m4a" hidden><span id="bgmFileName" style="font-size:12.5px;font-weight:700;">选择 BGM 音频</span></label>
+          <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-bgm-volume="0.12">轻</button><button class="on" data-bgm-volume="0.18">中</button><button data-bgm-volume="0.28">强</button></div>
+        </div>
+      </div>
+
+      <div class="talking-submit">
+        <div class="talking-submit-copy">
+          <div id="talkingCostSummary" class="talking-cost">10 点/秒 · 按实际时长结算</div>
+          <div id="statusText" class="talking-status">生成完成后会自动保存到视频资产</div>
+        </div>
+        <button id="generateBtn" class="hv-lift talking-generate">生成口播视频</button>
+      </div>
       </div>
 
       <div id="cinematicPanel" class="function-panel motion-panel hidden">
@@ -2059,7 +2103,8 @@
     $('textMode').classList.toggle('hidden',mode!=='text');
     $('voicePanel').classList.toggle('hidden',mode!=='text');
     $('audioMode').classList.toggle('hidden',mode!=='audio');
-    $('modeSummary').textContent=mode==='text'?'上传人物图，输入文案并选择音色生成口播视频':'上传人物图，选择本地或资产库音频生成口播视频';
+    if($('talkingFlowSound')) $('talkingFlowSound').textContent=mode==='text'?'选择音色':'选择音频';
+    $('modeSummary').textContent=mode==='text'?'上传形象、准备文案、选择音色，三步生成口播视频':'上传形象并选择本地或资产库音频，快速生成口播视频';
     if($('modeName')) $('modeName').textContent=mode==='text'?'文案配音':'现成音频';
     if($('inputCheckTitle')) $('inputCheckTitle').textContent=mode==='text'?'口播文案':'口播音频';
     updateChecklist();
@@ -2119,7 +2164,7 @@
         ? Math.max(TALKING_RATE, Math.ceil($('scriptText').value.trim().length/4)*TALKING_RATE) : 0;
       $('talkingCostSummary').textContent=estText?('预计约 '+estText+' 点（'+perSec+'）'):perSec;
     }
-    if(mode==='text' && videoFunction==='talking') $('modeSummary').textContent='上传人物图，输入文案并选择音色生成口播视频';
+    if(mode==='text' && videoFunction==='talking') $('modeSummary').textContent='上传形象、准备文案、选择音色，三步生成口播视频';
     syncVideoGenerateButtons();
   }
   function stopPreview(){
