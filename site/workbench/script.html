@@ -102,6 +102,15 @@
           </div>
         </div>
 
+        <div class="sc-lab">参考图 <span style="font-weight:400;font-size:11px;color:#5c6b82;">（可选，上传产品/场景图辅助生成）</span></div>
+        <div style="position:relative; border:1px dashed rgba(148,164,187,.16); border-radius:12px; padding:12px; text-align:center;">
+          <input id="scRefImage" type="file" accept="image/*" style="display:none;">
+          <button id="scRefImageBtn" class="sc-btn" type="button" style="font-size:12px;">📷 上传参考图</button>
+          <span id="scRefImageName" style="font-size:11px;color:#5c6b82;margin-left:8px;"></span>
+          <img id="scRefPreview" src="" style="display:none;max-width:100%;max-height:120px;margin-top:8px;border-radius:8px;">
+          <span id="scRefClear" style="display:none;position:absolute;top:4px;right:8px;cursor:pointer;color:#f4708a;font-size:18px;">&times;</span>
+        </div>
+
         <div class="sc-lab">风格</div>
         <div id="segStyle" class="sc-seg" style="grid-template-columns:repeat(3,1fr);">
           <div class="sc-opt on">口播</div>
@@ -290,7 +299,7 @@
       bdProgress=document.getElementById('bdProgress'), bdPhases=document.getElementById('bdPhases'),
       bdResultMeta=document.getElementById('bdResultMeta'), bdSourceLink=document.getElementById('bdSourceLink'),
       bdAnalysis=document.getElementById('bdAnalysis'), bdAnalysisText=document.getElementById('bdAnalysisText');
-  var orig=gen.innerHTML, lastScenes=[], lastStyle='口播', lastBreakdown=null, currentMode='write';
+  var orig=gen.innerHTML, lastScenes=[], lastStyle='口播', lastBreakdown=null, currentMode='write', refImageData=null;
   var initialMeta=meta?meta.innerHTML:'', initialScenes=scenes?scenes.innerHTML:'',
       initialPreviewTitle=previewTitle?previewTitle.textContent:'脚本 · 分镜预览',
       initialBatchHint=batchHint?batchHint.textContent:'';
@@ -472,6 +481,21 @@
   function seg(id,sel){ var box=document.getElementById(id); if(!box) return; box.querySelectorAll(sel).forEach(function(o){ o.onclick=function(){ box.querySelectorAll(sel).forEach(function(x){x.classList.remove('on');}); o.classList.add('on'); }; }); }
   seg('segStyle','.sc-opt'); seg('segDur','.sc-opt'); seg('platRow','.sc-chip');
   document.querySelectorAll('.sc-tag').forEach(function(tag){ tag.onclick=function(){ this.classList.toggle('on'); }; });
+  // 参考图上传
+  var scRefImage=document.getElementById('scRefImage'), scRefImageBtn=document.getElementById('scRefImageBtn'),
+      scRefImageName=document.getElementById('scRefImageName'), scRefPreview=document.getElementById('scRefPreview'),
+      scRefClear=document.getElementById('scRefClear');
+  if(scRefImage&&scRefImageBtn){
+    scRefImageBtn.onclick=function(){ scRefImage.click(); };
+    scRefImage.onchange=function(){
+      var f=scRefImage.files&&scRefImage.files[0]; if(!f) return;
+      if(f.size>5*1024*1024){ if(window.HQ&&window.HQ.toast) HQ.toast('图片不能超过 5MB'); return; }
+      var reader=new FileReader();
+      reader.onload=function(){ refImageData=reader.result; scRefPreview.src=reader.result; scRefPreview.style.display=''; scRefClear.style.display=''; scRefImageName.textContent=f.name; scRefImageBtn.textContent='已上传 ✓'; };
+      reader.readAsDataURL(f);
+    };
+    scRefClear.onclick=function(){ refImageData=null; scRefPreview.src=''; scRefPreview.style.display='none'; scRefClear.style.display='none'; scRefImageName.textContent=''; scRefImageBtn.textContent='📷 上传参考图'; scRefImage.value=''; };
+  }
   document.querySelectorAll('.sc-mode-tab').forEach(function(tab){ tab.onclick=function(){ switchMode(this.getAttribute('data-mode')); }; });
   function pick(id,s,def){ var on=document.querySelector('#'+id+' '+s+'.on'); return on?on.textContent.trim():def; }
   function setBtn(t,busy){ gen.innerHTML=busy?t:orig; gen.style.pointerEvents=busy?'none':'auto'; gen.style.opacity=busy?'.7':'1'; }
@@ -494,6 +518,7 @@
     var payload={prompt:t+(s?('\n卖点：'+s):''), format:'script', style:style, dur:dur, platform:plat, ctype:'分镜脚本'};
     var tags=[]; document.querySelectorAll('.sc-tag.on').forEach(function(tag){ tags.push(tag.textContent.trim()); });
     if(tags.length) payload.prompt+='\n标签：'+tags.join('、');
+    if(refImageData) payload.reference_images=[refImageData];
     fetch('/api/gen/copy',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
       .then(function(x){
