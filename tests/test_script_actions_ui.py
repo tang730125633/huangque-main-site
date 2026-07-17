@@ -87,6 +87,9 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("pollErrors++;", self.html)
         self.assertIn("网络不稳定，正在重试", self.html)
         self.assertIn("网络连接失败，请检查网络后重试", self.html)
+        # 三处轮询（写脚本、拆解、成片）都已覆盖
+        self.assertTrue(self.html.count("pollErrors=0") >= 6)
+        self.assertTrue(self.html.count("网络不稳定，正在重试") >= 3)
 
     def test_breakdown_scenes_are_editable(self):
         self.assertIn('id="bdEditBtn"', self.html)
