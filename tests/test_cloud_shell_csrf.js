@@ -44,9 +44,29 @@ function loadHelpers(cookie = 'hq_csrf=csrf%2Btoken%2Fvalue%3D', source = shell)
   return {...helpers, calls};
 }
 
+function loadSettingsApiFetch() {
+  const calls = [];
+  const secureFetch = (input, init) => {
+    calls.push({input, init});
+    return Promise.resolve({ok: true, status: 200, json: () => Promise.resolve({})});
+  };
+  const window = {HQ: {secureFetch}};
+  const apiFetch = new Function(
+    'window', 'fetch', 'clearLocalAuth', 'openLogin',
+    `${extractFunction(settings, 'apiFetch')}; return apiFetch;`,
+  )(window, () => { throw new Error('global fetch must not be used'); }, () => {}, () => {});
+  return {apiFetch, calls};
+}
+
 test('csrfToken decodes the hq_csrf cookie', () => {
   const {csrfToken} = loadHelpers('theme=dark; hq_csrf=csrf%2Btoken%2Fvalue%3D; other=1');
   assert.equal(csrfToken(), 'csrf+token/value=');
+});
+
+test('malformed percent-encoded CSRF cookie returns empty without throwing', () => {
+  const {csrfToken} = loadHelpers('hq_csrf=%E0%A4%A');
+  assert.doesNotThrow(() => csrfToken());
+  assert.equal(csrfToken(), '');
 });
 
 test('same-origin mutations receive the CSRF header and preserve caller headers', async () => {
@@ -69,6 +89,28 @@ test('GET and cross-origin requests never receive the CSRF header', async () => 
   await secureFetch('/api/auth/me', {method: 'GET', headers: {'X-CSRF-Token': 'must-remove'}});
   await secureFetch('https://evil.example/collect', {method: 'POST', headers: {'X-CSRF-Token': 'must-remove'}});
   for (const call of calls) assert.equal(new Headers(call.init.headers).has('X-CSRF-Token'), false);
+});
+
+test('protocol-relative cross-origin URL never receives the CSRF header', async () => {
+  const {secureFetch, calls} = loadHelpers();
+  await secureFetch('//evil.example/collect', {method: 'DELETE', headers: {'X-CSRF-Token': 'must-remove'}});
+  assert.equal(new Headers(calls[0].init.headers).has('X-CSRF-Token'), false);
+});
+
+test('Request input preserves its method and headers while applying same-origin CSRF', async () => {
+  const {secureFetch, calls} = loadHelpers();
+  const request = new Request('https://app.example/api/auth/profile', {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json', 'X-Request-Header': 'kept'},
+    body: '{}',
+  });
+  await secureFetch(request);
+  assert.equal(calls[0].input, request);
+  assert.equal(calls[0].input.method, 'PATCH');
+  const headers = new Headers(calls[0].init.headers);
+  assert.equal(headers.get('Content-Type'), 'application/json');
+  assert.equal(headers.get('X-Request-Header'), 'kept');
+  assert.equal(headers.get('X-CSRF-Token'), 'csrf+token/value=');
 });
 
 test('explicit Bearer requests never receive the CSRF header', async () => {
@@ -99,6 +141,15 @@ test('workbench auth and profile mutations use secureFetch', () => {
   assert.match(settings, /typeof window\.HQ\.secureFetch==='function'/);
   assert.match(settings, /apiFetch\('\/api\/auth\/profile'/);
   assert.doesNotMatch(shell, /window\.fetch\s*=/);
+});
+
+test('settings adapter preserves a caller Headers instance for secureFetch', async () => {
+  const {apiFetch, calls} = loadSettingsApiFetch();
+  const callerHeaders = new Headers([['Content-Type', 'application/json'], ['X-Caller', 'kept']]);
+  await apiFetch('/api/auth/profile', {method: 'POST', headers: callerHeaders, body: '{}'});
+  const forwarded = new Headers(calls[0].init.headers);
+  assert.equal(forwarded.get('Content-Type'), 'application/json');
+  assert.equal(forwarded.get('X-Caller'), 'kept');
 });
 
 test('logout remains a legal JSON mutation under the server gate', () => {
