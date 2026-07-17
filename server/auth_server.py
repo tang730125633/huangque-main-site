@@ -1356,11 +1356,13 @@ def list_recharge_orders(username="", status="", limit=100):
     finally:
         c.close()
 
-def review_recharge_order(who_admin, order_id, action, reason=""):
+def review_recharge_order(who_admin, order_id, action, reason="", transaction_id="", pay_channel=""):
     who_admin = (who_admin or "").strip()
     order_id = (order_id or "").strip()
     action = (action or "").strip().lower()
     reason = (reason or "").strip()[:300]
+    transaction_id = (transaction_id or "").strip()
+    pay_channel = (pay_channel or "").strip()
     if action not in {"approve", "reject"}:
         return None, "bad_action"
     c = db()
@@ -1373,6 +1375,14 @@ def review_recharge_order(who_admin, order_id, action, reason=""):
         if order["status"] != "pending":
             c.rollback()
             return public_recharge_order(order), "already_reviewed"
+        if transaction_id:
+            duplicate = c.execute(
+                "SELECT order_id FROM recharge_orders WHERE transaction_id=? AND order_id<>? LIMIT 1",
+                (transaction_id, order_id),
+            ).fetchone()
+            if duplicate:
+                c.rollback()
+                return None, "transaction_in_use"
         now = int(time.time())
         if action == "approve":
             user = c.execute("SELECT id, username, points FROM users WHERE username=?", (order["username"],)).fetchone()
@@ -1392,9 +1402,11 @@ def review_recharge_order(who_admin, order_id, action, reason=""):
         else:
             status = "rejected"
         c.execute(
-            """UPDATE recharge_orders SET status=?, reviewed_by=?, reviewed_at=?, review_note=?
+            """UPDATE recharge_orders SET status=?, reviewed_by=?, reviewed_at=?, review_note=?,
+                                              transaction_id=?, pay_channel=?
                WHERE order_id=?""",
-            (status, who_admin, now, reason, order_id),
+            (status, who_admin, now, reason, transaction_id or order["transaction_id"],
+             pay_channel or order["pay_channel"], order_id),
         )
         row = c.execute("SELECT * FROM recharge_orders WHERE order_id=?", (order_id,)).fetchone()
         c.commit()
@@ -2148,6 +2160,8 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"code": "FAIL", "message": "解密失败"})
             if resource.get("trade_state") != "SUCCESS":
                 return self._send(200, {"code": "SUCCESS"})   # 非成功态,确认收到即可,不加点
+            if not wxpay.payment_identity_matches(resource):
+                return self._send(200, {"code": "SUCCESS"})   # AppID/商户号不属于本系统,不加点
             order_id = (resource.get("out_trade_no") or "").strip()
             txn_id = (resource.get("transaction_id") or "").strip()
             paid_total = (resource.get("amount") or {}).get("total")
@@ -2159,8 +2173,12 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"code": "SUCCESS"})   # 金额不符,不加点
             try:
                 # review_recharge_order 自带幂等:重复回调因 status 已 approved 返回 already_reviewed,不重复加点
-                review_recharge_order("wxpay", order_id, "approve", "wxpay txn=%s" % txn_id)
-                set_recharge_transaction(order_id, txn_id, "wxpay")
+                _, err = review_recharge_order(
+                    "wxpay", order_id, "approve", "wxpay txn=%s" % txn_id,
+                    transaction_id=txn_id, pay_channel="wxpay",
+                )
+                if err == "transaction_in_use":
+                    return self._send(200, {"code": "SUCCESS"})  # 同一微信流水不得给两个订单加点
                 return self._send(200, {"code": "SUCCESS"})
             except Exception:
                 return self._send(500, {"code": "FAIL", "message": "处理失败"})   # 抛错让微信重推
