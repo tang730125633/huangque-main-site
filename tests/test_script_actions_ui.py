@@ -99,6 +99,12 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn('data-scene-line', self.html)
         self.assertIn("bdEditing=false", self.html)
 
+    def test_breakdown_storyboard_ui_elements_exist(self):
+        self.assertIn('id="bdStoryboard"', self.html)
+        self.assertIn('id="bdStoryboardStrip"', self.html)
+        self.assertIn("function setBreakdownStoryboard(frames)", self.html)
+        self.assertIn("frame_thumbnails", self.html)
+        self.assertIn("setBreakdownStoryboard((bd&&bd.frame_thumbnails)||[])", self.html)
 
 if __name__ == "__main__":
     unittest.main()
