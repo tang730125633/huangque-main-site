@@ -19,7 +19,7 @@ class ScriptActionsUiTests(unittest.TestCase):
 
     def test_export_builds_utf8_text_download(self):
         self.assertIn('id="scExport"', self.html)
-        self.assertIn("new Blob(['\\ufeff'+scriptText(exportScenes)]", self.html)
+        self.assertIn("new Blob(['﻿'+scriptText(exportScenes)]", self.html)
         self.assertIn("a.download=filename", self.html)
 
     def test_one_click_video_calls_script_to_video_api(self):
@@ -38,10 +38,34 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn('id="avatarPickModal"', self.html)
         self.assertIn('id="avatarPickGrid"', self.html)
 
+    def test_breakdown_mode_ui_and_api_exist(self):
+        self.assertIn('data-mode="breakdown"', self.html)
+        self.assertIn('id="panelBreakdown"', self.html)
+        self.assertIn('id="bdGen"', self.html)
+        self.assertIn("fetch('/api/gen/breakdown'", self.html)
+
+    def test_breakdown_progress_and_history_restore_exist(self):
+        self.assertIn('id="bdProgress"', self.html)
+        self.assertIn('data-phase="downloading"', self.html)
+        self.assertIn('data-phase="extracting_frames"', self.html)
+        self.assertIn('data-phase="transcribing"', self.html)
+        self.assertIn('data-phase="analyzing"', self.html)
+        self.assertIn("BREAKDOWN_HISTORY_KEY='hq_script_breakdown_history'", self.html)
+        self.assertIn("switchMode('breakdown')", self.html)
+        self.assertIn("renderBreakdown({source_url:m.source_url", self.html)
+
+    def test_breakdown_remake_reuses_current_one_click_flow(self):
+        self.assertIn('id="bdRemakeBtn"', self.html)
+        self.assertIn("prepareBreakdownRemakePayload(lastBreakdown)", self.html)
+        self.assertIn("return {scenes:normalizeBreakdownScenes((bd&&bd.scenes)||[]),style:'剧情'};", self.html)
+        self.assertIn("_doOneClick(payload)", self.html)
+        self.assertIn("fetch('/api/gen/script_to_video'", self.html)
+
     def test_history_loads_copy_assets_and_restores_scenes(self):
         self.assertIn("'/api/gen/assets?limit=60&kind=copy'", self.html)
         self.assertIn("historyList.appendChild(historyCard(item))", self.html)
         self.assertIn("render({scenes:list},heading", self.html)
+        self.assertIn("readBreakdownHistory()", self.html)
 
     def test_history_controls_are_accessible_buttons(self):
         self.assertIn('id="scHistoryBtn" class="sc-btn" type="button"', self.html)

@@ -44,6 +44,13 @@
   .sc-history-meta{margin-top:8px;color:#94a4bb;font-size:11.5px;line-height:1.6}
   .sc-history-time{margin-top:10px;color:#5c6b82;font-size:11px}
   @media (max-width:760px){.sc-history-grid{grid-template-columns:1fr}}
+  .sc-mode-tab{padding:9px 18px;font-size:14px;font-weight:600;border:1px solid rgba(148,164,187,.16);border-radius:12px;background:rgba(148,164,187,.04);color:#94a4bb;cursor:pointer;font-family:inherit;transition:.16s}
+  .sc-mode-tab:hover{border-color:rgba(231,178,76,.34);color:#eaf1fa}
+  .sc-mode-tab.on{color:#e7b24c;background:rgba(231,178,76,.1);border-color:rgba(231,178,76,.32)}
+  .bd-progress{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:14px}
+  .bd-phase{padding:4px 10px;font-size:11px;border-radius:7px;color:#5c6b82;background:rgba(148,164,187,.06);border:1px solid rgba(148,164,187,.1)}
+  .bd-phase.active{color:#2dd4bf;border-color:rgba(45,212,191,.3);background:rgba(45,212,191,.06)}
+  .bd-phase.done{color:#4ade80;border-color:rgba(74,222,128,.2);background:rgba(74,222,128,.05)}
 </style>
 <link rel="stylesheet" href="theme.css?v=5873a2f4">
 </head>
@@ -65,56 +72,91 @@
     </div>
   </div>
 
+  <div id="scModeTabs" style="display:flex; gap:6px; margin-bottom:18px;">
+    <button class="sc-mode-tab on" data-mode="write" type="button">✍️ AI写脚本</button>
+    <button class="sc-mode-tab" data-mode="breakdown" type="button">🔍 拆解视频</button>
+  </div>
+
   <div class="gScript">
 
     <!-- 左：创作面板 -->
-    <div class="sc-panel">
-      <div style="display:flex; align-items:flex-start; justify-content:space-between;">
-        <div><h1 style="margin:0; font-size:21px; font-weight:700; display:flex; align-items:center; gap:10px;"><img src="../assets/icons/ic_script.png" alt="" style="width:30px;height:30px;object-fit:contain;flex:none;">文案编导</h1><p style="margin:7px 0 0; font-size:13px; color:#94a4bb;">填好选题与卖点，一键生成可拍的分镜脚本</p></div>
+    <div class="sc-panel" id="scLeftPanel">
+      <div id="panelWrite">
+        <div style="display:flex; align-items:flex-start; justify-content:space-between;">
+          <div><h1 style="margin:0; font-size:21px; font-weight:700; display:flex; align-items:center; gap:10px;"><img src="../assets/icons/ic_script.png" alt="" style="width:30px;height:30px;object-fit:contain;flex:none;">文案编导</h1><p style="margin:7px 0 0; font-size:13px; color:#94a4bb;">填好选题与卖点，一键生成可拍的分镜脚本</p></div>
+        </div>
+
+        <div class="sc-lab" style="margin-top:22px;">选题 · 主题</div>
+        <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:13px 14px;">
+          <textarea id="scTopic" rows="2" placeholder="例：仙颜美容 · 夏日护肤焕新活动" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;">仙颜美容 · 夏日护肤焕新活动</textarea>
+        </div>
+
+        <div class="sc-lab">核心卖点</div>
+        <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:13px 14px;">
+          <textarea id="scSell" rows="2" placeholder="一句话说清产品/活动的核心利益点" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;">夏日焕新精华 · 清爽不黏腻 · 三秒吸收 · 到店体验立减 100</textarea>
+          <div style="display:flex; flex-wrap:wrap; gap:7px; margin-top:11px;">
+            <span class="sc-tag on">清爽控油</span>
+            <span class="sc-tag">补水保湿</span>
+            <span class="sc-tag">抗老紧致</span>
+            <span class="sc-tag">提亮肤色</span>
+          </div>
+        </div>
+
+        <div class="sc-lab">风格</div>
+        <div id="segStyle" class="sc-seg" style="grid-template-columns:repeat(3,1fr);">
+          <div class="sc-opt on">口播</div>
+          <div class="sc-opt">剧情</div>
+          <div class="sc-opt">种草</div>
+        </div>
+
+        <div class="sc-lab">时长</div>
+        <div id="segDur" class="sc-seg" style="grid-template-columns:repeat(3,1fr);">
+          <div class="sc-opt"><span class="mono">15s</span></div>
+          <div class="sc-opt on"><span class="mono">30s</span></div>
+          <div class="sc-opt"><span class="mono">60s</span></div>
+        </div>
+
+        <div class="sc-lab">平台</div>
+        <div id="platRow" style="display:flex; flex-wrap:wrap; gap:10px;">
+          <span class="sc-chip on"><span class="sc-ico" style="width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></span>抖音</span>
+          <span class="sc-chip"><span class="sc-ico" style="width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 8v8M8 12h2.5a2 2 0 0 0 0-4H8M14 16V8l3 5V8"/></svg></span>小红书</span>
+          <span class="sc-chip"><span class="sc-ico" style="width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span>视频号</span>
+        </div>
+
+        <button id="scGen" class="hv-lift" style="width:100%; height:54px; margin-top:24px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit; display:flex; align-items:center; justify-content:center; gap:9px;">
+          <span class="sc-ico" style="width:19px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 14l.7 1.9L22 17l-2.3.6L19 20l-.7-2.4L16 17l2.3-.5z"/></svg></span>
+          生成脚本（3 点）
+        </button>
+        <div style="text-align:center; margin-top:11px;"><span class="sc-hint">每次生成 1 套 3 分镜脚本 · 失败自动退点</span></div>
       </div>
 
-      <div class="sc-lab" style="margin-top:22px;">选题 · 主题</div>
-      <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:13px 14px;">
-        <textarea id="scTopic" rows="2" placeholder="例：仙颜美容 · 夏日护肤焕新活动" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;">仙颜美容 · 夏日护肤焕新活动</textarea>
-      </div>
+      <div id="panelBreakdown" style="display:none;">
+        <div style="display:flex; align-items:flex-start; justify-content:space-between;">
+          <div><h1 style="margin:0; font-size:21px; font-weight:700; display:flex; align-items:center; gap:10px;"><span style="font-size:26px;">🔍</span>爆款拆解</h1><p style="margin:7px 0 0; font-size:13px; color:#94a4bb;">粘贴竞品视频链接，AI 拆出分镜结构，再沿当前主线生成同款视频</p></div>
+        </div>
 
-      <div class="sc-lab">核心卖点</div>
-      <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:13px 14px;">
-        <textarea id="scSell" rows="2" placeholder="一句话说清产品/活动的核心利益点" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;">夏日焕新精华 · 清爽不黏腻 · 三秒吸收 · 到店体验立减 100</textarea>
-        <div style="display:flex; flex-wrap:wrap; gap:7px; margin-top:11px;">
-          <span class="sc-tag on">清爽控油</span>
-          <span class="sc-tag">补水保湿</span>
-          <span class="sc-tag">抗老紧致</span>
-          <span class="sc-tag">提亮肤色</span>
+        <div class="sc-lab" style="margin-top:22px;">视频链接</div>
+        <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:13px 14px;">
+          <input id="bdUrl" type="text" placeholder="粘贴抖音/小红书视频链接…" style="width:100%; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;">
+        </div>
+        <div style="margin-top:8px; font-size:11px; color:#5c6b82;">支持抖音、小红书公开视频链接，完成后可直接生成同款视频</div>
+
+        <button id="bdGen" class="hv-lift" style="width:100%; height:54px; margin-top:18px; font-size:16px; font-weight:700; color:#0f172a; background:linear-gradient(135deg,#93c5fd,#60a5fa); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(96,165,250,.55); transition:.2s; font-family:inherit; display:flex; align-items:center; justify-content:center; gap:9px;">
+          <span class="sc-ico" style="width:19px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></span>
+          开始拆解（8 点）
+        </button>
+        <div style="text-align:center; margin-top:11px;"><span class="sc-hint">下载 → 抽帧 → 转写 → AI分析 · 约 40-90 秒</span></div>
+
+        <div id="bdProgress" style="display:none; margin-top:20px;">
+          <div style="font-size:12.5px; font-weight:600; color:#94a4bb; margin-bottom:8px;">拆解进度</div>
+          <div class="bd-progress" id="bdPhases">
+            <span class="bd-phase" data-phase="downloading">下载</span><span style="color:#5c6b82;font-size:10px;">→</span>
+            <span class="bd-phase" data-phase="extracting_frames">抽帧</span><span style="color:#5c6b82;font-size:10px;">→</span>
+            <span class="bd-phase" data-phase="transcribing">转写</span><span style="color:#5c6b82;font-size:10px;">→</span>
+            <span class="bd-phase" data-phase="analyzing">AI分析</span>
+          </div>
         </div>
       </div>
-
-      <div class="sc-lab">风格</div>
-      <div id="segStyle" class="sc-seg" style="grid-template-columns:repeat(3,1fr);">
-        <div class="sc-opt on">口播</div>
-        <div class="sc-opt">剧情</div>
-        <div class="sc-opt">种草</div>
-      </div>
-
-      <div class="sc-lab">时长</div>
-      <div id="segDur" class="sc-seg" style="grid-template-columns:repeat(3,1fr);">
-        <div class="sc-opt"><span class="mono">15s</span></div>
-        <div class="sc-opt on"><span class="mono">30s</span></div>
-        <div class="sc-opt"><span class="mono">60s</span></div>
-      </div>
-
-      <div class="sc-lab">平台</div>
-      <div id="platRow" style="display:flex; flex-wrap:wrap; gap:10px;">
-        <span class="sc-chip on"><span class="sc-ico" style="width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></span>抖音</span>
-        <span class="sc-chip"><span class="sc-ico" style="width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 8v8M8 12h2.5a2 2 0 0 0 0-4H8M14 16V8l3 5V8"/></svg></span>小红书</span>
-        <span class="sc-chip"><span class="sc-ico" style="width:14px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span>视频号</span>
-      </div>
-
-      <button id="scGen" class="hv-lift" style="width:100%; height:54px; margin-top:24px; font-size:16px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:14px; cursor:pointer; box-shadow:0 14px 34px -12px rgba(231,178,76,.7); transition:.2s; font-family:inherit; display:flex; align-items:center; justify-content:center; gap:9px;">
-        <span class="sc-ico" style="width:19px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 14l.7 1.9L22 17l-2.3.6L19 20l-.7-2.4L16 17l2.3-.5z"/></svg></span>
-        生成脚本（3 点）
-      </button>
-      <div style="text-align:center; margin-top:11px;"><span class="sc-hint">每次生成 1 套 3 分镜脚本 · 失败自动退点</span></div>
     </div>
 
     <!-- 右：脚本 / 分镜预览 -->
@@ -122,7 +164,7 @@
       <div style="display:flex; align-items:center; justify-content:space-between;">
         <div style="display:flex; align-items:center; gap:9px;">
           <span class="sc-ico" style="width:18px; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4"/></svg></span>
-          <span style="font-size:16px; font-weight:600;">脚本 · 分镜预览</span>
+          <span id="scPreviewTitle" style="font-size:16px; font-weight:600;">脚本 · 分镜预览</span>
         </div>
         <button class="sc-btn"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span>复制全部</button>
       </div>
@@ -197,9 +239,14 @@
 
       </div>
 
+      <div id="bdResultMeta" style="display:none; margin-top:12px; font-size:11.5px; color:#5c6b82;">
+        <span>拆解来源：</span><a id="bdSourceLink" href="#" target="_blank" rel="noopener" style="color:#60a5fa;">查看原视频 →</a>
+      </div>
+
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:16px; padding-top:16px; border-top:1px solid rgba(148,164,187,.1);">
-        <span class="sc-hint">每张分镜可单独转视频/转口播，或使用下方批量操作</span>
-        <div style="display:flex; gap:9px;">
+        <span id="scBatchHint" class="sc-hint">每张分镜可单独转视频/转口播，或使用下方批量操作</span>
+        <div style="display:flex; gap:9px; flex-wrap:wrap; justify-content:flex-end;">
+          <button id="bdRemakeBtn" class="sc-btn" type="button" style="display:none; color:#0f172a; background:linear-gradient(135deg,#93c5fd,#60a5fa); border-color:rgba(96,165,250,.35); font-weight:700;">🎬 生成同款视频</button>
           <button id="scOneClickVideo" class="sc-btn" type="button" style="color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border-color:rgba(231,178,76,.4); font-weight:700;">🎬 一键成片</button>
           <a id="scAllToVideo" class="sc-btn" style="cursor:pointer;">转视频</a>
           <a id="scAllToAudio" class="sc-btn" style="cursor:pointer;">转口播</a>
@@ -222,7 +269,7 @@
 <script src="../assets/cloud.js?v=8"></script>
 <script src="cloud-shell.js?v=302ad2ce"></script>
 <script>
-/* 编导页接 /api/gen/copy（format=script）→ 结构化分镜脚本 */
+/* 编导页接 /api/gen/copy（format=script）+ /api/gen/breakdown → 脚本/拆解双模式 */
 (function(){
   var gen=document.getElementById('scGen'); if(!gen) return;
   var topic=document.getElementById('scTopic'), sell=document.getElementById('scSell'),
@@ -230,7 +277,19 @@
   var historyBtn=document.getElementById('scHistoryBtn'), exportBtn=document.getElementById('scExport'),
       historySection=document.getElementById('scHistorySection'), historyList=document.getElementById('scHistoryList'),
       historyState=document.getElementById('scHistoryState');
-  var orig=gen.innerHTML, lastScenes=[], lastStyle='口播';
+  var previewTitle=document.getElementById('scPreviewTitle'), batchHint=document.getElementById('scBatchHint');
+  var panelWrite=document.getElementById('panelWrite'), panelBreakdown=document.getElementById('panelBreakdown');
+  var oneClickBtn=document.getElementById('scOneClickVideo'), allToVideo=document.getElementById('scAllToVideo'),
+      allToAudio=document.getElementById('scAllToAudio'), bdRemakeBtn=document.getElementById('bdRemakeBtn');
+  var bdUrl=document.getElementById('bdUrl'), bdGen=document.getElementById('bdGen'),
+      bdProgress=document.getElementById('bdProgress'), bdPhases=document.getElementById('bdPhases'),
+      bdResultMeta=document.getElementById('bdResultMeta'), bdSourceLink=document.getElementById('bdSourceLink');
+  var orig=gen.innerHTML, lastScenes=[], lastStyle='口播', lastBreakdown=null, currentMode='write';
+  var initialMeta=meta?meta.innerHTML:'', initialScenes=scenes?scenes.innerHTML:'',
+      initialPreviewTitle=previewTitle?previewTitle.textContent:'脚本 · 分镜预览',
+      initialBatchHint=batchHint?batchHint.textContent:'';
+  var BREAKDOWN_HISTORY_KEY='hq_script_breakdown_history';
+
   function tok(){ return '__cookie__'; }
   function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
   function escAttr(s){ return esc(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
@@ -252,6 +311,11 @@
     return Array.prototype.slice.call(scenes.querySelectorAll('.sc-card')).map(function(card){
       return {scene:cardText(card,'画面'), line:cardText(card,'口播')};
     }).filter(function(s){return s.scene||s.line;});
+  }
+  function normalizeBreakdownScenes(list){
+    return (list||[]).map(function(s){
+      return {dur:s&&s.dur||'', scene:s&&s.scene||'', line:s&&s.line||''};
+    }).filter(function(s){ return s.scene||s.line; });
   }
   function scriptText(list){
     return (list||[]).map(function(s,i){
@@ -278,49 +342,144 @@
       });
     });
   }
-  // 选项单选切换
+  function sceneCardHTML(s,i){
+    var no=('0'+(i+1)).slice(-2);
+    return '<div class="sc-card"><div class="sc-shot"><span style="display:flex; width:20px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4"/></svg></span><span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">'+no+'</span></div>'
+      +'<div style="flex:1; min-width:0;">'
+      +'<div style="display:flex; align-items:center; gap:9px; margin-bottom:9px;"><span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">镜号 '+no+'</span><span style="display:inline-flex; align-items:center; gap:4px; padding:3px 9px; font-size:11px; border-radius:7px; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.12);"><span class="mono">'+esc(s.dur||'')+'</span></span></div>'
+      +'<div style="font-size:12px; color:#94a4bb; margin-bottom:7px;"><span style="color:#5c6b82;">画面：</span>'+esc(s.scene||'')+'</div>'
+      +'<div style="font-size:13px; color:#eaf1fa; line-height:1.7; margin-bottom:12px;"><span style="color:#5c6b82; font-size:12px;">口播：</span>'+esc(s.line||'')+'</div>'
+      +'<div style="display:flex; gap:9px;"><a data-to-video="'+escAttr(s.scene||'')+'" class="sc-btn">转视频</a><a data-to-audio="'+escAttr(s.line||'')+'" class="sc-btn">转口播</a></div>'
+      +'</div></div>';
+  }
+  function getDisplayedScenes(){
+    if(currentMode==='breakdown' && lastBreakdown) return normalizeBreakdownScenes(lastBreakdown.scenes||[]);
+    return lastScenes.length?lastScenes:readScenesFromDom();
+  }
+  function hideBreakdownMeta(){
+    if(bdResultMeta) bdResultMeta.style.display='none';
+    if(bdSourceLink) bdSourceLink.removeAttribute('href');
+  }
+  function resetPreview(){
+    if(scenes) scenes.innerHTML=initialScenes;
+    if(meta) meta.innerHTML=initialMeta;
+    hideBreakdownMeta();
+    bindSceneHandoffs();
+  }
+  function syncModeUi(){
+    document.querySelectorAll('.sc-mode-tab').forEach(function(tab){ tab.classList.toggle('on', tab.getAttribute('data-mode')===currentMode); });
+    if(panelWrite) panelWrite.style.display=currentMode==='write'?'':'none';
+    if(panelBreakdown) panelBreakdown.style.display=currentMode==='breakdown'?'':'none';
+    if(previewTitle) previewTitle.textContent=currentMode==='breakdown'?'拆解结果 · 分镜预览':initialPreviewTitle;
+    if(batchHint) batchHint.textContent=currentMode==='breakdown'?'拆解完成后可直接生成同款视频，或继续逐条转视频 / 转口播':initialBatchHint;
+    if(bdRemakeBtn) bdRemakeBtn.style.display=currentMode==='breakdown'?'':'none';
+    if(oneClickBtn) oneClickBtn.style.display=currentMode==='breakdown'?'none':'';
+  }
+  function switchMode(mode){
+    currentMode=mode==='breakdown'?'breakdown':'write';
+    syncModeUi();
+    if(currentMode==='breakdown'){
+      if(lastBreakdown) renderBreakdown(lastBreakdown); else resetPreview();
+    }else{
+      if(lastScenes.length) render({scenes:lastScenes}, (topic&&topic.value)||'', lastStyle||'口播', pick('segDur','.sc-opt','30s'));
+      else resetPreview();
+    }
+  }
+  function platformText(name){
+    return ({douyin:'抖音',xiaohongshu:'小红书',weixin:'视频号',channels:'视频号'})[name]||name||'';
+  }
+  function render(res, topicTxt, style, dur){
+    lastScenes=res.scenes||[]; lastStyle=style||'口播';
+    if(meta) meta.innerHTML='<span>'+esc(topicTxt)+'</span><span style="color:#5c6b82;">·</span><span style="color:#e7b24c;">'+esc(style)+'</span><span style="color:#5c6b82;">·</span><span class="mono">'+esc(dur)+'</span><span style="color:#5c6b82;">·</span><span>共 <span class="mono">'+lastScenes.length+'</span> 个分镜</span>';
+    scenes.innerHTML=lastScenes.map(function(s,i){ return sceneCardHTML(s,i); }).join('');
+    hideBreakdownMeta();
+    bindSceneHandoffs();
+  }
+  function renderBreakdown(bd){
+    lastBreakdown=bd;
+    var list=normalizeBreakdownScenes((bd&&bd.scenes)||[]);
+    if(meta) meta.innerHTML='<span style="color:#60a5fa;">拆解</span><span style="color:#5c6b82;">·</span><span>'+esc((bd&&bd.source_title)||'爆款拆解')+'</span><span style="color:#5c6b82;">·</span><span>'+esc(platformText(bd&&bd.source_platform))+'</span><span style="color:#5c6b82;">·</span><span class="mono">'+esc((bd&&bd.duration)||'')+'s</span><span style="color:#5c6b82;">·</span><span>共 <span class="mono">'+list.length+'</span> 个分镜</span>';
+    scenes.innerHTML=list.length ? list.map(function(s,i){ return sceneCardHTML(s,i); }).join('') : '<div style="padding:24px;text-align:center;color:#f4708a;">拆解结果为空，请重试</div>';
+    if(bdResultMeta && bd && bd.source_url){ bdResultMeta.style.display=''; }
+    if(bdSourceLink && bd && bd.source_url){ bdSourceLink.href=bd.source_url; }
+    bindSceneHandoffs();
+  }
+  function saveBreakdownHistory(bd){
+    if(!bd) return;
+    var item={
+      kind:'breakdown',
+      title:bd.source_title||'爆款拆解',
+      created_at:Math.floor(Date.now()/1000),
+      meta:{
+        source_url:bd.source_url||'',
+        source_title:bd.source_title||'',
+        source_platform:bd.source_platform||'',
+        duration:bd.duration||'',
+        scenes:normalizeBreakdownScenes(bd.scenes||[])
+      }
+    };
+    try{
+      var list=JSON.parse(localStorage.getItem(BREAKDOWN_HISTORY_KEY)||'[]');
+      if(!Array.isArray(list)) list=[];
+      var dedup=list.filter(function(x){
+        var m=x&&x.meta||{};
+        return !(m.source_url && item.meta.source_url && m.source_url===item.meta.source_url);
+      });
+      dedup.unshift(item);
+      localStorage.setItem(BREAKDOWN_HISTORY_KEY, JSON.stringify(dedup.slice(0,12)));
+    }catch(_e){}
+  }
+  function readBreakdownHistory(){
+    try{
+      var list=JSON.parse(localStorage.getItem(BREAKDOWN_HISTORY_KEY)||'[]');
+      return Array.isArray(list)?list.filter(function(item){ return Array.isArray(((item||{}).meta||{}).scenes)&&((item.meta||{}).scenes.length); }):[];
+    }catch(_e){ return []; }
+  }
+  function prepareBreakdownRemakePayload(bd){
+    return {scenes:normalizeBreakdownScenes((bd&&bd.scenes)||[]),style:'剧情'};
+  }
+  function setBdPhase(phase,state){
+    if(!bdPhases) return;
+    var order=['downloading','extracting_frames','transcribing','analyzing'];
+    bdPhases.querySelectorAll('.bd-phase').forEach(function(node){
+      var p=node.getAttribute('data-phase');
+      node.classList.remove('active','done');
+      if(order.indexOf(p) < order.indexOf(phase)) node.classList.add('done');
+      if(p===phase) node.classList.add(state||'active');
+    });
+  }
+  function markAllBdPhasesDone(){ if(bdPhases) bdPhases.querySelectorAll('.bd-phase').forEach(function(node){ node.classList.remove('active'); node.classList.add('done'); }); }
+  function resetBdBtn(){ if(!bdGen) return; bdGen.disabled=false; bdGen.style.opacity='1'; bdGen.innerHTML='开始拆解（8 点）'; }
+
   function seg(id,sel){ var box=document.getElementById(id); if(!box) return; box.querySelectorAll(sel).forEach(function(o){ o.onclick=function(){ box.querySelectorAll(sel).forEach(function(x){x.classList.remove('on');}); o.classList.add('on'); }; }); }
   seg('segStyle','.sc-opt'); seg('segDur','.sc-opt'); seg('platRow','.sc-chip');
-  // 卖点标签：多选切换
   document.querySelectorAll('.sc-tag').forEach(function(tag){ tag.onclick=function(){ this.classList.toggle('on'); }; });
+  document.querySelectorAll('.sc-mode-tab').forEach(function(tab){ tab.onclick=function(){ switchMode(this.getAttribute('data-mode')); }; });
   function pick(id,s,def){ var on=document.querySelector('#'+id+' '+s+'.on'); return on?on.textContent.trim():def; }
   function setBtn(t,busy){ gen.innerHTML=busy?t:orig; gen.style.pointerEvents=busy?'none':'auto'; gen.style.opacity=busy?'.7':'1'; }
 
-  // 事件委托：动态分镜的「转视频」/「转口播」(data-to-video / data-to-audio 带画面/口播文案)
   if(scenes){ scenes.addEventListener('click', function(e){
     var a=e.target.closest('[data-to-video]'); if(a){ e.preventDefault(); location.href=handoffUrl('video.html',a.getAttribute('data-to-video')); return; }
     var b=e.target.closest('[data-to-audio]'); if(b){ e.preventDefault(); location.href=handoffUrl('audio.html',b.getAttribute('data-to-audio')); return; }
   }); }
   bindSceneHandoffs();
-
-  function render(res, topicTxt, style, dur){
-    lastScenes=res.scenes||[]; lastStyle=style||'口播';
-    if(meta) meta.innerHTML='<span>'+esc(topicTxt)+'</span><span style="color:#5c6b82;">·</span><span style="color:#e7b24c;">'+esc(style)+'</span><span style="color:#5c6b82;">·</span><span class="mono">'+esc(dur)+'</span><span style="color:#5c6b82;">·</span><span>共 <span class="mono">'+lastScenes.length+'</span> 个分镜</span>';
-    scenes.innerHTML=lastScenes.map(function(s,i){
-      var no=('0'+(i+1)).slice(-2);
-      return '<div class="sc-card"><div class="sc-shot"><span style="display:flex; width:20px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4"/></svg></span><span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">'+no+'</span></div>'
-        +'<div style="flex:1; min-width:0;">'
-        +'<div style="display:flex; align-items:center; gap:9px; margin-bottom:9px;"><span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">镜号 '+no+'</span><span style="display:inline-flex; align-items:center; gap:4px; padding:3px 9px; font-size:11px; border-radius:7px; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.12);"><span class="mono">'+esc(s.dur||'')+'</span></span></div>'
-        +'<div style="font-size:12px; color:#94a4bb; margin-bottom:7px;"><span style="color:#5c6b82;">画面：</span>'+esc(s.scene||'')+'</div>'
-        +'<div style="font-size:13px; color:#eaf1fa; line-height:1.7; margin-bottom:12px;"><span style="color:#5c6b82; font-size:12px;">口播：</span>'+esc(s.line||'')+'</div>'
-        +'<div style="display:flex; gap:9px;"><a data-to-video="'+escAttr(s.scene||'')+'" class="sc-btn">转视频</a><a data-to-audio="'+escAttr(s.line||'')+'" class="sc-btn">转口播</a></div>'
-        +'</div></div>';
-    }).join('');
-  }
+  syncModeUi();
 
   gen.onclick=function(){
     var t=(topic.value||'').trim(), s=(sell.value||'').trim();
     if(!t){ scenes.innerHTML='<div style="padding:22px;text-align:center;color:#f4708a;font-size:13px;">请先填「选题」</div>'; return; }
+    currentMode='write'; syncModeUi();
     var style=pick('segStyle','.sc-opt','口播'), dur=pick('segDur','.sc-opt','30s'), plat=pick('platRow','.sc-chip','抖音');
     setBtn('生成中…',true);
     scenes.innerHTML='<div style="padding:34px; text-align:center; color:#2dd4bf; font-size:13px;">编导生成中…（约 10-20 秒）</div>';
+    hideBreakdownMeta();
     var payload={prompt:t+(s?('\n卖点：'+s):''), format:'script', style:style, dur:dur, platform:plat, ctype:'分镜脚本'};
     var tags=[]; document.querySelectorAll('.sc-tag.on').forEach(function(tag){ tags.push(tag.textContent.trim()); });
     if(tags.length) payload.prompt+='\n标签：'+tags.join('、');
     fetch('/api/gen/copy',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
       .then(function(x){
-        if(x.s===401){ HQ.login(); return; }
+        if(x.s===401){ if(window.HQ) HQ.login(); return; }
         if(x.s===402){ setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
         if(!x.d.job_id){ setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+((x.d&&x.d.detail)||'未知')+'</div>'; return; }
         var iv=setInterval(function(){
@@ -332,10 +491,46 @@
       }).catch(function(){ setBtn(orig,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络错误，请重试</div>'; });
   };
 
-  // 复制全部
+  if(bdGen){ bdGen.onclick=function(){
+    var url=(bdUrl.value||'').trim();
+    if(!url){ scenes.innerHTML='<div style="padding:22px;text-align:center;color:#f4708a;font-size:13px;">请先粘贴视频链接</div>'; return; }
+    currentMode='breakdown'; syncModeUi();
+    bdGen.disabled=true; bdGen.style.opacity='.6'; bdGen.textContent='提交中…';
+    if(bdProgress) bdProgress.style.display='';
+    setBdPhase('downloading','active');
+    scenes.innerHTML='<div style="padding:34px; text-align:center; color:#60a5fa; font-size:13px;">正在下载视频…</div>';
+    hideBreakdownMeta();
+    var pollCount=0, lastPhase='downloading';
+    fetch('/api/gen/breakdown',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({url:url})})
+      .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
+      .then(function(x){
+        if(x.s===401){ resetBdBtn(); if(window.HQ) HQ.login(); return; }
+        if(x.s===402){ resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
+        if(!x.d.job_id){ resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+((x.d&&x.d.detail)||'未知')+'</div>'; return; }
+        var iv=setInterval(function(){
+          pollCount++;
+          fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+            if(d.phase && d.phase!==lastPhase){ lastPhase=d.phase; setBdPhase(d.phase,'active'); }
+            if(d.status==='done'){
+              clearInterval(iv); resetBdBtn(); markAllBdPhasesDone();
+              renderBreakdown(d.result||{}); saveBreakdownHistory(d.result||{}); loadHistory();
+              if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
+            } else if(d.status==='error'||d.status==='failed'){
+              clearInterval(iv); resetBdBtn();
+              scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">拆解失败：'+(d.error||'')+' · 已退点</div>';
+            } else if(d.phase){
+              var phaseMsg={downloading:'正在下载视频…',extracting_frames:'正在抽取关键帧…',transcribing:'正在转写口播…',analyzing:'AI 分析拆解中…'};
+              scenes.innerHTML='<div style="padding:34px; text-align:center; color:#60a5fa; font-size:13px;">'+(phaseMsg[d.phase]||'处理中…')+'</div>';
+            }
+            if(pollCount>120){ clearInterval(iv); resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">拆解超时，请稍后重试</div>'; }
+          }).catch(function(){});
+        },3000);
+      }).catch(function(){ resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络错误，请重试</div>'; });
+  }; }
+
   var copyBtn=null; document.querySelectorAll('.sc-btn').forEach(function(b){ if(b.textContent.indexOf('复制全部')>=0) copyBtn=b; });
   if(copyBtn){ var co=copyBtn.innerHTML; copyBtn.onclick=function(){
-    var copyScenes=lastScenes.length?lastScenes:readScenesFromDom();
+    var copyScenes=getDisplayedScenes();
     if(!copyScenes.length) return;
     var txt=scriptText(copyScenes);
     if(navigator.clipboard) navigator.clipboard.writeText(txt);
@@ -343,11 +538,12 @@
   }; }
 
   if(exportBtn){ var exportOrig=exportBtn.innerHTML; exportBtn.onclick=function(){
-    var exportScenes=lastScenes.length?lastScenes:readScenesFromDom();
+    var exportScenes=getDisplayedScenes();
     if(!exportScenes.length){ exportBtn.textContent='暂无可导出脚本'; setTimeout(function(){exportBtn.innerHTML=exportOrig;},1500); return; }
-    var blob=new Blob(['\ufeff'+scriptText(exportScenes)],{type:'text/plain;charset=utf-8'});
+    var blob=new Blob(['﻿'+scriptText(exportScenes)],{type:'text/plain;charset=utf-8'});
     var url=URL.createObjectURL(blob), a=document.createElement('a');
-    var filename=((topic.value||'黄雀分镜脚本').trim().replace(/[\\/:*?"<>|]+/g,'-').slice(0,48)||'黄雀分镜脚本')+'.txt';
+    var exportTitle=currentMode==='breakdown' && lastBreakdown ? (lastBreakdown.source_title||'黄雀拆解脚本') : ((topic&&topic.value)||'黄雀分镜脚本');
+    var filename=((exportTitle||'黄雀分镜脚本').trim().replace(/[\\/:*?"<>|]+/g,'-').slice(0,48)||'黄雀分镜脚本')+'.txt';
     a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove();
     setTimeout(function(){URL.revokeObjectURL(url);},0);
     exportBtn.textContent='已导出 ✓'; setTimeout(function(){exportBtn.innerHTML=exportOrig;},1500);
@@ -355,13 +551,12 @@
 
   function historyCard(item){
     var m=item.meta||{}, list=Array.isArray(m.scenes)?m.scenes:[];
-    var isBreakdown=!!m.source_platform;
+    var isBreakdown=(item.kind==='breakdown')||!!m.source_platform;
     var btn=document.createElement('button'); btn.type='button'; btn.className='sc-history-item';
     var title=document.createElement('div'); title.className='sc-history-title'; title.textContent=item.title||'（无标题）'; title.title=item.title||'';
     var info=document.createElement('div'); info.className='sc-history-meta';
-    var platformLabel={douyin:'抖音',xiaohongshu:'小红书',weixin:'视频号',channels:'视频号'};
     info.textContent=isBreakdown
-      ? ['🔍 拆解',platformLabel[m.source_platform]||m.source_platform||'',(m.duration||'')+'s',list.length+'个分镜'].filter(Boolean).join(' · ')
+      ? ['拆解',platformText(m.source_platform),(m.duration||'')?((m.duration||'')+'s'):'',list.length+'个分镜'].filter(Boolean).join(' · ')
       : [m.style||'分镜脚本',m.dur||'',list.length+'个分镜'].filter(Boolean).join(' · ');
     var when=document.createElement('div'); when.className='sc-history-time';
     when.textContent=item.created_at?new Date(Number(item.created_at)*1000).toLocaleString('zh-CN',{hour12:false}):'';
@@ -369,8 +564,9 @@
     btn.onclick=function(){
       var heading=item.title||'历史脚本';
       if(isBreakdown){
+        if(bdUrl) bdUrl.value=m.source_url||'';
         switchMode('breakdown');
-        renderBreakdown(m);
+        renderBreakdown({source_url:m.source_url,source_title:m.source_title||heading,source_platform:m.source_platform,duration:m.duration,scenes:list});
         if(historyState) historyState.textContent='已载入：'+heading;
       }else{
         if(topic) topic.value=heading;
@@ -386,21 +582,19 @@
   function loadHistory(){
     if(!historyList) return;
     if(historyState) historyState.textContent='正在加载…';
-    Promise.all([
-      fetch('/api/gen/assets?limit=60&kind=copy',{cache:'no-store',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.ok?r.json():{items:[]};}),
-      fetch('/api/gen/assets?limit=60&kind=breakdown',{cache:'no-store',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.ok?r.json():{items:[]};})
-    ]).then(function(results){
-      var copyItems=(results[0].items||[]).filter(function(item){return Array.isArray((item.meta||{}).scenes)&&item.meta.scenes.length;});
-      var bdItems=(results[1].items||[]).filter(function(item){return Array.isArray((item.meta||{}).scenes)&&item.meta.scenes.length;});
-      var all=copyItems.concat(bdItems).sort(function(a,b){return (b.created_at||0)-(a.created_at||0);}).slice(0,12);
-      historyList.innerHTML=''; all.forEach(function(item){historyList.appendChild(historyCard(item));});
-      if(historyState) historyState.textContent=all.length?('共 '+all.length+' 条'):'暂无历史脚本';
-    }).catch(function(e){if(historyState) historyState.textContent='加载失败，请稍后重试';});
+    fetch('/api/gen/assets?limit=60&kind=copy',{cache:'no-store',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok()}})
+      .then(function(r){return r.ok?r.json():{items:[]};})
+      .catch(function(){return {items:[]};})
+      .then(function(d){
+        var copyItems=(d.items||[]).filter(function(item){return Array.isArray((item.meta||{}).scenes)&&item.meta.scenes.length;});
+        var breakdownItems=readBreakdownHistory();
+        var all=copyItems.concat(breakdownItems).sort(function(a,b){return (b.created_at||0)-(a.created_at||0);}).slice(0,12);
+        historyList.innerHTML=''; all.forEach(function(item){historyList.appendChild(historyCard(item));});
+        if(historyState) historyState.textContent=all.length?('共 '+all.length+' 条'):'暂无历史脚本';
+      }).catch(function(){ if(historyState) historyState.textContent='加载失败，请稍后重试'; });
   }
   if(historyBtn&&historySection) historyBtn.onclick=function(){historySection.scrollIntoView({behavior:'smooth',block:'start'});};
 
-  // ============ 一键成片：调后端 API 直接生成视频 ============
-  var oneClickBtn=document.getElementById('scOneClickVideo');
   if(oneClickBtn){ var oneClickOrig=oneClickBtn.innerHTML; var _resetOneClick=function(){
     if(!oneClickBtn) return; oneClickBtn.disabled=false; oneClickBtn.style.opacity='1'; oneClickBtn.innerHTML=oneClickOrig;
   }; oneClickBtn.onclick=function(e){
@@ -450,6 +644,7 @@
     oneClickBtn.disabled=true; oneClickBtn.style.opacity='.6'; oneClickBtn.textContent='提交中…';
     scenes.innerHTML='<div style="padding:34px;text-align:center;color:#e7b24c;font-size:13px;">🎬 正在启动一键成片…</div>';
     if(meta) meta.innerHTML='';
+    hideBreakdownMeta();
     var pollCount=0, lastProgress=-1, sceneCount=payload.scenes.length;
     fetch('/api/gen/script_to_video',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
@@ -493,18 +688,23 @@
         },3000);
       }).catch(function(){ _resetOneClick(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络错误，请重试</div>'; });
   }; }
-  // ============ 批量转视频/转口播 ============
-  var allToVideo=document.getElementById('scAllToVideo');
+  if(bdRemakeBtn){ bdRemakeBtn.onclick=function(e){
+    e.preventDefault();
+    if(!lastBreakdown){ if(window.HQ&&window.HQ.toast) HQ.toast('请先完成拆解'); return; }
+    var payload=prepareBreakdownRemakePayload(lastBreakdown);
+    if(!payload.scenes.length){ if(window.HQ&&window.HQ.toast) HQ.toast('拆解结果里没有可用分镜'); return; }
+    _doOneClick(payload);
+  }; }
+
   if(allToVideo){ allToVideo.onclick=function(e){ e.preventDefault();
-    var list=lastScenes.length?lastScenes:readScenesFromDom();
+    var list=getDisplayedScenes();
     if(!list.length){ location.href='video.html'; return; }
     var txt=list.map(function(s){ return s.scene||''; }).filter(Boolean).join('\n\n');
     if(window.HQ&&window.HQ.toast) HQ.toast('已带入全部 '+list.length+' 个画面描述');
     location.href='video.html?prompt='+encodeURIComponent(txt||'');
   };}
-  var allToAudio=document.getElementById('scAllToAudio');
   if(allToAudio){ allToAudio.onclick=function(e){ e.preventDefault();
-    var list=lastScenes.length?lastScenes:readScenesFromDom();
+    var list=getDisplayedScenes();
     if(!list.length){ location.href='audio.html'; return; }
     var txt=list.map(function(s){ return s.line||''; }).filter(Boolean).join('\n\n');
     if(window.HQ&&window.HQ.toast) HQ.toast('已带入全部 '+list.length+' 个口播文案');
