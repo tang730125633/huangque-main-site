@@ -247,7 +247,7 @@
         <span id="scBatchHint" class="sc-hint">每张分镜可单独转视频/转口播，或使用下方一键生成</span>
         <div style="display:flex; gap:9px; flex-wrap:wrap; justify-content:flex-end;">
           <button id="bdRemakeBtn" class="sc-btn" type="button" style="display:none; color:#0f172a; background:linear-gradient(135deg,#93c5fd,#60a5fa); border-color:rgba(96,165,250,.35); font-weight:700;">🎬 生成同款视频</button>
-          <button id="scGenVideo" class="sc-btn" type="button" style="color:#1a1206; background:linear-gradient(135deg,#60a5fa,#3b82f6); border-color:rgba(59,130,246,.4); font-weight:700;">🎬 一键生成视频</button>
+          <button id="scGenVideo" class="sc-btn" type="button" style="color:#0f172a; background:linear-gradient(135deg,#93c5fd,#60a5fa); border-color:rgba(96,165,250,.35); font-weight:700;">🎬 一键生成视频</button>
           <button id="scGenAudio" class="sc-btn" type="button" style="color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border-color:rgba(231,178,76,.4); font-weight:700;">🎙 一键生成口播</button>
           <button id="scExport" class="sc-btn" type="button" style="color:#e7b24c; background:rgba(231,178,76,.08); border-color:rgba(231,178,76,.24);"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></span>导出脚本</button>
         </div>
@@ -595,12 +595,7 @@
   }
   if(historyBtn&&historySection) historyBtn.onclick=function(){historySection.scrollIntoView({behavior:'smooth',block:'start'});};
 
-  var _busyBtn=null, _busyOrig='';
-  function _setBusy(btn, on){
-    if(on){ _busyBtn=btn; _busyOrig=btn.innerHTML; btn.disabled=true; btn.style.opacity='.6'; btn.textContent='提交中…'; }
-    else{ if(_busyBtn){ _busyBtn.disabled=false; _busyBtn.style.opacity='1'; _busyBtn.innerHTML=_busyOrig; } _busyBtn=null; }
-  }
-  function _showAvatarPicker(onPick){
+  function _showAvatarPicker(onPick, onCancel){
     var modal=document.getElementById('avatarPickModal'), grid=document.getElementById('avatarPickGrid');
     if(!modal||!grid) return;
     modal.style.display='flex'; grid.innerHTML='<div style="color:#5c6b82;font-size:13px;text-align:center;padding:40px 0;">正在读取形象…</div>';
@@ -609,72 +604,111 @@
       .then(function(d){
         var avatars=d.items||[];
         if(!avatars.length){ grid.innerHTML='<div style="color:#f4708a;font-size:13px;text-align:center;padding:30px 0;">还没有形象<br><a href="video.html" style="color:#60a5fa;">→ 去创建</a></div>'; return; }
-        grid.innerHTML=''; avatars.forEach(function(a){
-          var card=document.createElement('button'); card.type='button';
+        grid.innerHTML='';
+        avatars.forEach(function(a){
+          var card=document.createElement('button');
+          card.type='button';
           card.style.cssText='padding:10px;border:1px solid rgba(148,164,187,.14);border-radius:12px;background:rgba(7,11,19,.34);cursor:pointer;text-align:center;font-family:inherit;color:#eaf1fa;transition:.16s';
-          card.innerHTML='<div style=\"width:72px;height:72px;border-radius:50%;margin:0 auto 8px;background:rgba(148,164,187,.1);overflow:hidden;display:flex;align-items:center;justify-content:center;\">'+(a.image_url?'<img src=\"'+esc(a.image_url)+'\" style=\"width:100%;height:100%;object-fit:cover;\" onerror=\"this.style.display=\\'none\\'\">':'')+'<span style=\"font-size:24px;'+(a.image_url?'display:none':'')+'\">🧑</span></div><div style=\"font-size:12px;font-weight:600;\">'+esc(a.name||'形象 '+a.id)+'</div>';
+          card.innerHTML='<div style="width:72px;height:72px;border-radius:50%;margin:0 auto 8px;background:rgba(148,164,187,.1);overflow:hidden;display:flex;align-items:center;justify-content:center;">'
+            +(a.image_url?'<img src="'+esc(a.image_url)+'" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display=\'none\'">':'')
+            +'<span style="font-size:24px;'+(a.image_url?'display:none':'')+'">🧑</span></div>'
+            +'<div style="font-size:12px;font-weight:600;">'+esc(a.name||'形象 '+a.id)+'</div>';
           card.onmouseenter=function(){ this.style.borderColor='rgba(231,178,76,.4)'; };
           card.onmouseleave=function(){ this.style.borderColor='rgba(148,164,187,.14)'; };
           card.onclick=function(){ modal.style.display='none'; onPick(a.id); };
           grid.appendChild(card);
         });
-      }).catch(function(){ grid.innerHTML='<div style=\"color:#f4708a;font-size:13px;text-align:center;padding:30px 0;\">形象加载失败，请重试</div>'; });
-    document.getElementById('avatarPickClose').onclick=function(){ modal.style.display='none'; _setBusy(null,false); };
-    modal.onclick=function(e){ if(e.target===modal){ modal.style.display='none'; _setBusy(null,false); } };
+      }).catch(function(){ grid.innerHTML='<div style="color:#f4708a;font-size:13px;text-align:center;padding:30px 0;">形象加载失败，请重试</div>'; });
+    document.getElementById('avatarPickClose').onclick=function(){ modal.style.display='none'; if(onCancel) onCancel(); };
+    modal.onclick=function(e){ if(e.target===modal){ modal.style.display='none'; if(onCancel) onCancel(); } };
   }
-  function _doGenerate(payload){
-    _setBusy(_busyBtn,true);
-    scenes.innerHTML='<div style=\"padding:34px;text-align:center;color:#e7b24c;font-size:13px;\">🎬 正在启动生成…</div>';
-    if(meta) meta.innerHTML=''; hideBreakdownMeta();
+  function _setGenerateBusy(btn, busy){
+    if(!btn) return;
+    if(busy){
+      btn.dataset.origLabel=btn.innerHTML;
+      btn.disabled=true;
+      btn.style.opacity='.6';
+      btn.textContent='提交中…';
+      return;
+    }
+    btn.disabled=false;
+    btn.style.opacity='1';
+    btn.innerHTML=btn.dataset.origLabel||btn.innerHTML;
+  }
+  function _doGenerate(payload, btn){
+    _setGenerateBusy(btn,true);
+    scenes.innerHTML='<div style="padding:34px;text-align:center;color:#e7b24c;font-size:13px;">🎬 正在启动生成…</div>';
+    if(meta) meta.innerHTML='';
+    hideBreakdownMeta();
     var pollCount=0, lastProgress=-1, sceneCount=payload.scenes.length;
     fetch('/api/gen/script_to_video',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
       .then(function(x){
-        if(x.s===401){ _setBusy(null,false); if(window.HQ) HQ.login(); return; }
-        if(x.s===402){ _setBusy(null,false); scenes.innerHTML='<div style=\"padding:24px;text-align:center;color:#f4708a;\">点数不足· <a href=\"recharge.html\" style=\"color:#e7b24c;\">去充值</a></div>'; return; }
-        if(!x.d.job_id){ _setBusy(null,false); var msg=(x.d&&x.d.detail)||'未知错误';
-          if(msg.indexOf('形象')>=0||msg.indexOf('人物')>=0) msg+='<br><a href=\"video.html\" style=\"color:#60a5fa;\">→ 去视频页创建形象</a>';
-          scenes.innerHTML='<div style=\"padding:24px;text-align:center;color:#f4708a;\">提交失败：'+msg+'</div>'; return; }
-        var iv=setInterval(function(){ pollCount++;
+        if(x.s===401){ _setGenerateBusy(btn,false); if(window.HQ) HQ.login(); return; }
+        if(x.s===402){ _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足（需要 '+ (x.d.cost||20) +' 点）· <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
+        if(!x.d.job_id){ _setGenerateBusy(btn,false); var msg=(x.d&&x.d.detail)||'未知错误';
+          if(msg.indexOf('形象')>=0||msg.indexOf('人物')>=0) msg+='<br><a href="video.html" style="color:#60a5fa;">→ 去视频页创建形象</a>';
+          scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+msg+'</div>'; return; }
+        var iv=setInterval(function(){
+          pollCount++;
           fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
-            if(d.status==='done'){ clearInterval(iv); _setBusy(null,false);
+            if(d.status==='done'){
+              clearInterval(iv); _setGenerateBusy(btn,false);
               var vurl=(d.result&&d.result.video_url)||'';
-              scenes.innerHTML='<div style=\"padding:24px;text-align:center;\"><div style=\"font-size:40px;\">✅</div><div style=\"font-size:15px;font-weight:700;color:#eaf1fa;\">生成完成！</div><div style=\"font-size:12px;color:#94a4bb;margin:8px 0 14px;\">'+sceneCount+' 个分镜已合成视频</div>'+(vurl?'<div style=\"margin-bottom:12px;\"><video src=\"'+esc(vurl)+'\" controls style=\"max-width:100%;max-height:260px;border-radius:10px;\"></video></div>':'')+'<div style=\"display:flex;gap:9px;justify-content:center;\"><a href=\"assets.html\" class=\"sc-btn\" style=\"color:#e7b24c;\">📁 资产库</a><a href=\"video.html\" class=\"sc-btn\">📹 视频页</a></div></div>';
-              if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints(); loadHistory();
-            }else if(d.status==='error'||d.status==='failed'){ clearInterval(iv); _setBusy(null,false);
-              scenes.innerHTML='<div style=\"padding:24px;text-align:center;color:#f4708a;\">失败：'+(d.error||'')+' · 已退点</div>';
-            }else{ var elapsed=pollCount*3, bucket=elapsed<30?0:(elapsed<90?1:2);
-              if(bucket!==lastProgress){ lastProgress=bucket;
-                var msgs=['正在生成音频…','正在生成视频…（约 1-3 分钟）','视频生成中…已等待 '+Math.floor(elapsed/60)+' 分'];
-                scenes.innerHTML='<div style=\"padding:34px;text-align:center;color:#e7b24c;font-size:13px;\">🎬 '+msgs[bucket]+'</div>';
-              }}
-            if(pollCount>120){ clearInterval(iv); _setBusy(null,false); scenes.innerHTML='<div style=\"padding:24px;text-align:center;color:#f4708a;\">超时，请稍后在视频页查看</div>'; }
+              var costInfo=x.d.cost!=null?' · 消耗 '+x.d.cost+' 点':'';
+              scenes.innerHTML='<div style="padding:24px;text-align:center;">'
+                +'<div style="font-size:40px;margin-bottom:10px;">✅</div>'
+                +'<div style="font-size:15px;font-weight:700;color:#eaf1fa;margin-bottom:8px;">生成完成！</div>'
+                +'<div style="font-size:12px;color:#94a4bb;margin-bottom:14px;">'+sceneCount+' 个分镜已合成视频'+costInfo+'</div>'
+                +(vurl?'<div style="margin-bottom:12px;"><video src="'+esc(vurl)+'" controls style="max-width:100%;max-height:260px;border-radius:10px;"></video></div>':'')
+                +'<div style="display:flex;gap:9px;justify-content:center;">'
+                +'<a href="assets.html" class="sc-btn" style="color:#e7b24c;">📁 查看资产库</a>'
+                +'<a href="video.html" class="sc-btn">📹 去视频页</a></div></div>';
+              if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
+              loadHistory();
+            } else if(d.status==='error'||d.status==='failed'){
+              clearInterval(iv); _setGenerateBusy(btn,false);
+              scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">成片失败：'+(d.error||'')+' · 已退点</div>';
+            } else {
+              var elapsed=pollCount*3;
+              var bucket=elapsed<30?0:(elapsed<90?1:2);
+              if(bucket!==lastProgress){
+                lastProgress=bucket;
+                var msgs=['正在生成口播音频…','正在生成数字人视频…（约 1-3 分钟）','视频生成中…已等待 '+Math.floor(elapsed/60)+' 分 '+(elapsed%60)+' 秒'];
+                scenes.innerHTML='<div style="padding:34px;text-align:center;color:#e7b24c;font-size:13px;">🎬 '+msgs[bucket]+'</div>';
+              }
+            }
+            if(pollCount>120){ clearInterval(iv); _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">成片超时（6分钟），请稍后在视频页查看</div>'; }
           }).catch(function(){});
         },3000);
-      }).catch(function(){ _setBusy(null,false); scenes.innerHTML='<div style=\"padding:24px;text-align:center;color:#f4708a;\">网络错误，请重试</div>'; });
+      }).catch(function(){ _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络错误，请重试</div>'; });
   }
-  // 🎬 一键生成视频
-  if(genVideoBtn){ genVideoBtn.onclick=function(e){ e.preventDefault();
-    var list=getDisplayedScenes(); if(!list.length){ location.href='video.html'; return; }
-    _busyBtn=genVideoBtn; _showAvatarPicker(function(avatarId){
-      _doGenerate({scenes:list,style:lastStyle,avatar_id:avatarId});
+  if(genVideoBtn){ genVideoBtn.onclick=function(e){
+    e.preventDefault();
+    var list=getDisplayedScenes();
+    if(!list.length){ location.href='video.html'; return; }
+    var hasScenes=list.some(function(s){ return (s.scene||'').trim(); });
+    if(!hasScenes){ if(window.HQ&&window.HQ.toast) HQ.toast('脚本中没有画面描述'); return; }
+    _doGenerate({scenes:list,style:'剧情'},genVideoBtn);
+  }; }
+  if(genAudioBtn){ genAudioBtn.onclick=function(e){
+    e.preventDefault();
+    var list=getDisplayedScenes();
+    if(!list.length){ location.href='video.html'; return; }
+    var hasLines=list.some(function(s){ return (s.line||'').trim(); });
+    if(!hasLines){ if(window.HQ&&window.HQ.toast) HQ.toast('脚本中没有口播文案'); return; }
+    var talkingStyle=lastStyle==='剧情'?'口播':(lastStyle||'口播');
+    _showAvatarPicker(function(avatarId){
+      _doGenerate({scenes:list,style:talkingStyle,avatar_id:avatarId},genAudioBtn);
     });
-  };}
-  // 🎙 一键生成口播
-  if(genAudioBtn){ genAudioBtn.onclick=function(e){ e.preventDefault();
-    var list=getDisplayedScenes(); if(!list.length){ location.href='video.html'; return; }
-    _busyBtn=genAudioBtn; _showAvatarPicker(function(avatarId){
-      _doGenerate({scenes:list,style:lastStyle,avatar_id:avatarId});
-    });
-  };}
+  }; }
   if(bdRemakeBtn){ bdRemakeBtn.onclick=function(e){
     e.preventDefault();
     if(!lastBreakdown){ if(window.HQ&&window.HQ.toast) HQ.toast('请先完成拆解'); return; }
     var payload=prepareBreakdownRemakePayload(lastBreakdown);
     if(!payload.scenes.length){ if(window.HQ&&window.HQ.toast) HQ.toast('拆解结果里没有可用分镜'); return; }
-    _busyBtn=bdRemakeBtn;
-    _doGenerate(payload);
-  };}
+    _doGenerate(payload,bdRemakeBtn);
+  }; }
   loadHistory();
 })();
 </script>
