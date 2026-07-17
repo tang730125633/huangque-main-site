@@ -255,6 +255,15 @@
   .subtitle-color code{font-size:10.5px;color:#718096;white-space:nowrap}
   .subtitle-specific{display:none;grid-column:1/-1;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding-top:2px}
   .subtitle-specific.on{display:grid}
+  .subtitle-keyword-feature{grid-column:1/-1;display:grid;gap:10px;padding:11px 12px;border:1px solid rgba(148,164,187,.14);border-radius:11px;background:rgba(148,164,187,.035)}
+  .subtitle-keyword-feature[hidden]{display:none}
+  .subtitle-keyword-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .subtitle-keyword-copy b{display:block;color:#eaf1fa;font-size:11.5px;margin-bottom:3px}
+  .subtitle-keyword-copy span{display:block;color:#5c6b82;font-size:10.5px;line-height:1.45}
+  .subtitle-keyword-switch{display:flex;align-items:center;gap:7px;color:#94a4bb;font-size:11px;font-weight:700;white-space:nowrap;cursor:pointer}
+  .subtitle-keyword-switch input{width:16px;height:16px;accent-color:#e7b24c;cursor:pointer}
+  .subtitle-keyword-options{display:none;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding-top:2px}
+  .subtitle-keyword-options.on{display:grid}
   .subtitle-history-tag{color:#f4cd72;border-color:rgba(231,178,76,.28);background:rgba(231,178,76,.08)}
   .vidOv{position:fixed;inset:0;z-index:9999;background:rgba(2,5,10,.82);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:22px}
   .vidBox{position:relative;width:min(90vw,calc(90vh * 9 / 16));aspect-ratio:9/16;max-height:90vh;border:1px solid rgba(231,178,76,.24);border-radius:14px;background:#05070c;box-shadow:0 28px 80px rgba(0,0,0,.58);overflow:hidden}
@@ -411,7 +420,7 @@
               <button id="subtitleResetBtn" class="subtitle-reset" type="button">恢复模板默认值</button>
             </div>
             <div class="subtitle-template-grid" id="subtitleTemplateGrid">
-              <button type="button" class="subtitle-template on" data-substyle="keyword_highlight"><b>关键词高亮</b><span>重点词变色放大</span></button>
+              <button type="button" class="subtitle-template on" data-substyle="keyword_highlight"><b>基础字幕</b><span>简洁清晰，无额外动画</span></button>
               <button type="button" class="subtitle-template" data-substyle="word_highlight"><b>逐字高亮</b><span>跟随发音逐字点亮</span></button>
               <button type="button" class="subtitle-template" data-substyle="karaoke"><b>卡拉 OK</b><span>已读与未读连续填充</span></button>
               <button type="button" class="subtitle-template" data-substyle="bounce"><b>弹跳字幕</b><span>文字随节奏弹起</span></button>
@@ -428,17 +437,23 @@
               <div class="subtitle-field"><label for="subtitleFontSize">字号</label><select id="subtitleFontSize"><option value="24">24</option><option value="32">32</option><option value="40">40</option><option value="48">48</option><option value="56">56</option><option value="64">64</option><option value="72">72</option><option value="80">80</option><option value="96">96</option><option value="112">112</option><option value="120">120</option></select></div>
               <div class="subtitle-field"><label for="subtitleFontWeight">字重</label><select id="subtitleFontWeight"><option value="400">常规 400</option><option value="600">半粗 600</option><option value="700">粗体 700</option><option value="800">特粗 800</option><option value="900">黑体 900</option></select></div>
               <div class="subtitle-field"><label for="subtitleFontColor">文字颜色</label><div class="subtitle-color"><input id="subtitleFontColor" type="color"><code id="subtitleFontColorText">#FFFFFF</code></div></div>
-              <div class="subtitle-field"><label for="subtitleHighlightColor">高亮颜色</label><div class="subtitle-color"><input id="subtitleHighlightColor" type="color"><code id="subtitleHighlightColorText">#FFE45C</code></div></div>
+              <div class="subtitle-field"><label for="subtitleHighlightColor">效果 / 高亮颜色</label><div class="subtitle-color"><input id="subtitleHighlightColor" type="color"><code id="subtitleHighlightColorText">#FFE45C</code></div></div>
               <div class="subtitle-field"><label for="subtitleOutlineColor">描边颜色</label><div class="subtitle-color"><input id="subtitleOutlineColor" type="color"><code id="subtitleOutlineColorText">#000000</code></div></div>
               <div class="subtitle-field"><label for="subtitleOutlineWidth">描边宽度</label><div class="subtitle-range"><input id="subtitleOutlineWidth" type="range" min="0" max="12" step="0.5"><output id="subtitleOutlineWidthOut">4</output></div></div>
               <div class="subtitle-field"><label for="subtitleBackgroundColor">背景颜色</label><div class="subtitle-color"><input id="subtitleBackgroundColor" type="color"><code id="subtitleBackgroundColorText">#000000</code></div></div>
               <div class="subtitle-field"><label for="subtitleBackgroundOpacity">背景透明度</label><div class="subtitle-range"><input id="subtitleBackgroundOpacity" type="range" min="0" max="1" step="0.05"><output id="subtitleBackgroundOpacityOut">0</output></div></div>
               <div class="subtitle-field wide"><label for="subtitleVerticalOffset">垂直偏移</label><div class="subtitle-range"><input id="subtitleVerticalOffset" type="range" min="-320" max="320" step="4"><output id="subtitleVerticalOffsetOut">0</output></div></div>
 
-              <div class="subtitle-specific on" data-subtitle-panel="keyword_highlight">
-                <div class="subtitle-field"><label for="subtitleKeywordMode">关键词方式</label><select id="subtitleKeywordMode"><option value="auto">自动提取</option><option value="manual">手动指定</option></select></div>
-                <div class="subtitle-field"><label for="subtitleKeywordScale">高亮缩放</label><div class="subtitle-range"><input id="subtitleKeywordScale" type="range" min="1" max="1.5" step="0.01"><output id="subtitleKeywordScaleOut">1.08</output></div></div>
-                <div class="subtitle-field wide"><label for="subtitleKeywords">手动关键词（逗号分隔）</label><input id="subtitleKeywords" type="text" placeholder="例如：焕肤，体验官，透亮"></div>
+              <div id="subtitleKeywordFeature" class="subtitle-keyword-feature">
+                <div class="subtitle-keyword-head">
+                  <div class="subtitle-keyword-copy"><b>关键词高亮</b><span>仅强调文案重点词；逐字高亮与卡拉 OK 的跟读动画不受此开关影响</span></div>
+                  <label class="subtitle-keyword-switch" for="subtitleKeywordEnabled"><input id="subtitleKeywordEnabled" type="checkbox">开启</label>
+                </div>
+                <div id="subtitleKeywordOptions" class="subtitle-keyword-options">
+                  <div class="subtitle-field"><label for="subtitleKeywordMode">关键词方式</label><select id="subtitleKeywordMode"><option value="auto">自动提取</option><option value="manual">手动指定</option></select></div>
+                  <div class="subtitle-field"><label for="subtitleKeywordScale">高亮缩放</label><div class="subtitle-range"><input id="subtitleKeywordScale" type="range" min="1" max="1.5" step="0.01"><output id="subtitleKeywordScaleOut">1.08</output></div></div>
+                  <div class="subtitle-field wide"><label for="subtitleKeywords">手动关键词（逗号分隔）</label><input id="subtitleKeywords" type="text" placeholder="例如：焕肤，体验官，透亮"></div>
+                </div>
               </div>
               <div class="subtitle-specific" data-subtitle-panel="word_highlight">
                 <div class="subtitle-field"><label for="subtitleWordSpeed">高亮速度</label><div class="subtitle-range"><input id="subtitleWordSpeed" type="range" min="0.5" max="2" step="0.05"><output id="subtitleWordSpeedOut">1</output></div></div>
@@ -808,15 +823,16 @@
   var bgmData='', selectedBgmVolume=0.18;
   var selectedSubtitle='off', selectedSubtitleStyle='keyword_highlight', selectedSubtitlePosition='bottom';
   var SUBTITLE_STORAGE_KEY='hq_video_subtitle_templates_v2';
-  var SUBTITLE_TEMPLATE_NAMES={keyword_highlight:'关键词高亮',word_highlight:'逐字高亮',karaoke:'卡拉 OK',bounce:'弹跳字幕',glow:'发光字幕',bilingual:'双语字幕'};
+  var SUBTITLE_TEMPLATE_NAMES={keyword_highlight:'基础字幕',word_highlight:'逐字高亮',karaoke:'卡拉 OK',bounce:'弹跳字幕',glow:'发光字幕',bilingual:'双语字幕'};
+  var SUBTITLE_KEYWORD_STYLES={keyword_highlight:true,glow:true,bilingual:true};
   var SUBTITLE_FONT_SIZES=[24,32,40,48,56,64,72,80,96,112,120];
   var subtitleTemplateDefaults={
-    keyword_highlight:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,keyword_mode:'auto',keywords:[],keyword_scale:1.08},
+    keyword_highlight:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,keyword_highlight_enabled:false,keyword_mode:'auto',keywords:[],keyword_scale:1.08},
     word_highlight:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,word_highlight_speed:1,active_word_scale:1.08},
     karaoke:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:.12,pending_color:'#8B95A7',progress_mode:'sweep'},
     bounce:{font_family:'Noto Sans SC',font_size:72,font_weight:900,font_color:'#FFFFFF',highlight_color:'#FFCE3A',outline_color:'#17120A',outline_width:5,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,bounce_height:18,animation_duration_ms:220},
-    glow:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#8CEBFF',outline_color:'#102536',outline_width:3,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,glow_color:'#35C8FF',glow_strength:.75,glow_radius:8},
-    bilingual:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,secondary_font_family:'Noto Sans SC',secondary_font_size:38,secondary_color:'#DCE7F7',line_gap:12,secondary_text:''}
+    glow:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#8CEBFF',outline_color:'#102536',outline_width:3,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,keyword_highlight_enabled:false,keyword_mode:'auto',keywords:[],keyword_scale:1.08,glow_color:'#35C8FF',glow_strength:.75,glow_radius:8},
+    bilingual:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,keyword_highlight_enabled:false,keyword_mode:'auto',keywords:[],keyword_scale:1.08,secondary_font_family:'Noto Sans SC',secondary_font_size:38,secondary_color:'#DCE7F7',line_gap:12,secondary_text:''}
   };
   var subtitleTemplateState={}, subtitleFonts=['Noto Sans SC'];
   // 电影化身（HeyGen cinematic）：三个玩法共用一套控件，见 CINE_MODES
@@ -996,6 +1012,14 @@
     var pattern=items.length?new RegExp('('+items.map(function(k){return String(k).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}).join('|')+')','i'):null;
     return pattern?source.split(pattern).map(function(part){return pattern.test(part)?'<span class="sub-highlight">'+esc(part)+'</span>':esc(part);}).join(''):esc(source);
   }
+  function subtitleSupportsKeywords(key){return !!SUBTITLE_KEYWORD_STYLES[key];}
+  function syncSubtitleKeywordControls(options){
+    var supported=subtitleSupportsKeywords(selectedSubtitleStyle),enabled=supported&&!!(options||{}).keyword_highlight_enabled;
+    var feature=$('subtitleKeywordFeature'),toggle=$('subtitleKeywordEnabled'),fields=$('subtitleKeywordOptions');
+    if(feature)feature.hidden=!supported;
+    if(toggle)toggle.checked=enabled;
+    if(fields)fields.classList.toggle('on',enabled);
+  }
   function applySubtitleForm(){
     var o=subtitleTemplateState[selectedSubtitleStyle]||subtitleDefaults(selectedSubtitleStyle);
     selectedSubtitlePosition=o.position||selectedSubtitlePosition||'bottom';
@@ -1009,6 +1033,7 @@
     subtitleSetColor('subtitleBackgroundColor','subtitleBackgroundColorText',o.background_color);subtitleSetValue('subtitleBackgroundOpacity',o.background_opacity);subtitleSetOutput('subtitleBackgroundOpacityOut',o.background_opacity);
     subtitleSetValue('subtitleVerticalOffset',o.vertical_offset);subtitleSetOutput('subtitleVerticalOffsetOut',o.vertical_offset);
     subtitleSetValue('subtitleKeywordMode',o.keyword_mode);subtitleSetValue('subtitleKeywords',(o.keywords||[]).join('，'));subtitleSetValue('subtitleKeywordScale',o.keyword_scale);subtitleSetOutput('subtitleKeywordScaleOut',o.keyword_scale);
+    syncSubtitleKeywordControls(o);
     subtitleSetValue('subtitleWordSpeed',o.word_highlight_speed);subtitleSetOutput('subtitleWordSpeedOut',o.word_highlight_speed);subtitleSetValue('subtitleActiveScale',o.active_word_scale);subtitleSetOutput('subtitleActiveScaleOut',o.active_word_scale);
     subtitleSetColor('subtitlePendingColor','subtitlePendingColorText',o.pending_color);subtitleSetValue('subtitleProgressMode',o.progress_mode);
     subtitleSetValue('subtitleBounceHeight',o.bounce_height);subtitleSetOutput('subtitleBounceHeightOut',o.bounce_height);subtitleSetValue('subtitleBounceDuration',o.animation_duration_ms);subtitleSetOutput('subtitleBounceDurationOut',o.animation_duration_ms);
@@ -1024,7 +1049,7 @@
       outline_color:(($('subtitleOutlineColor')||{}).value||base.outline_color).toUpperCase(),outline_width:subtitleNumber('subtitleOutlineWidth',base.outline_width),position:selectedSubtitlePosition,
       vertical_offset:subtitleNumber('subtitleVerticalOffset',base.vertical_offset),background_color:(($('subtitleBackgroundColor')||{}).value||base.background_color).toUpperCase(),background_opacity:subtitleNumber('subtitleBackgroundOpacity',base.background_opacity)
     };
-    if(selectedSubtitleStyle==='keyword_highlight')Object.assign(o,{keyword_mode:($('subtitleKeywordMode')||{}).value||'auto',keywords:String(($('subtitleKeywords')||{}).value||'').split(/[,，\n]/).map(function(x){return x.trim();}).filter(Boolean),keyword_scale:subtitleNumber('subtitleKeywordScale',base.keyword_scale)});
+    if(subtitleSupportsKeywords(selectedSubtitleStyle))Object.assign(o,{keyword_highlight_enabled:!!(($('subtitleKeywordEnabled')||{}).checked),keyword_mode:($('subtitleKeywordMode')||{}).value||'auto',keywords:String(($('subtitleKeywords')||{}).value||'').split(/[,，\n]/).map(function(x){return x.trim();}).filter(Boolean),keyword_scale:subtitleNumber('subtitleKeywordScale',base.keyword_scale)});
     if(selectedSubtitleStyle==='word_highlight')Object.assign(o,{word_highlight_speed:subtitleNumber('subtitleWordSpeed',base.word_highlight_speed),active_word_scale:subtitleNumber('subtitleActiveScale',base.active_word_scale)});
     if(selectedSubtitleStyle==='karaoke')Object.assign(o,{pending_color:(($('subtitlePendingColor')||{}).value||base.pending_color).toUpperCase(),progress_mode:($('subtitleProgressMode')||{}).value||'sweep'});
     if(selectedSubtitleStyle==='bounce')Object.assign(o,{bounce_height:subtitleNumber('subtitleBounceHeight',base.bounce_height),animation_duration_ms:subtitleNumber('subtitleBounceDuration',base.animation_duration_ms)});
@@ -1047,7 +1072,7 @@
     var chars=Array.from(source),html='';
     if(selectedSubtitleStyle==='keyword_highlight'){
       var kws=o.keyword_mode==='manual'?(o.keywords||[]):[];
-      html=subtitlePreviewHighlight(source,kws);
+      html=o.keyword_highlight_enabled?subtitlePreviewHighlight(source,kws):esc(source);
     }else if(selectedSubtitleStyle==='word_highlight'){
       html=chars.map(function(ch,i){return '<span class="'+(i===Math.min(4,chars.length-1)?'sub-highlight':'')+'">'+esc(ch)+'</span>';}).join('');
     }else if(selectedSubtitleStyle==='karaoke'){
@@ -1055,9 +1080,9 @@
     }else if(selectedSubtitleStyle==='bounce'){
       html=chars.map(function(ch,i){return '<span class="'+(i===Math.min(4,chars.length-1)?'sub-highlight':'')+'" style="--i:'+i+'">'+esc(ch)+'</span>';}).join('');
     }else if(selectedSubtitleStyle==='glow'){
-      html=subtitlePreviewHighlight(source,[]);
+      html=o.keyword_highlight_enabled?subtitlePreviewHighlight(source,o.keyword_mode==='manual'?(o.keywords||[]):[]):esc(source);
     }else if(selectedSubtitleStyle==='bilingual'){
-      html=subtitlePreviewHighlight(source,[])+'<span class="subtitle-secondary">'+esc(o.secondary_text||'Make every word stand out')+'</span>';
+      html=(o.keyword_highlight_enabled?subtitlePreviewHighlight(source,o.keyword_mode==='manual'?(o.keywords||[]):[]):esc(source))+'<span class="subtitle-secondary">'+esc(o.secondary_text||'Make every word stand out')+'</span>';
     }else html=esc(source);
     copy.className='subtitle-preview-copy preview-'+selectedSubtitleStyle.replace('_highlight','');copy.innerHTML=html;
     copy.style.setProperty('--sub-highlight',o.highlight_color||'#FFE45C');copy.style.setProperty('--sub-pending',o.pending_color||o.font_color||'#8B95A7');
@@ -1077,7 +1102,7 @@
     var previewPositions={top:22,upper:36,center:50,lower:66,bottom:80};copy.style.top=(previewPositions[o.position]||80)+'%';
     copy.style.transform='translate(-50%,-50%) translateY('+(-Number(o.vertical_offset||0)*.10)+'px)';
   }
-  function refreshSubtitleStateFromForm(){subtitleTemplateState[selectedSubtitleStyle]=collectSubtitleOptions();subtitleSyncRangeOutputs();updateSubtitlePreview();}
+  function refreshSubtitleStateFromForm(){subtitleTemplateState[selectedSubtitleStyle]=collectSubtitleOptions();syncSubtitleKeywordControls(subtitleTemplateState[selectedSubtitleStyle]);subtitleSyncRangeOutputs();updateSubtitlePreview();}
   function bindSubtitleBuilder(){
     loadStoredSubtitleSettings();
     document.querySelectorAll('[data-substyle]').forEach(function(btn){btn.addEventListener('click',function(){setSubtitleStyle(btn.dataset.substyle);});});
@@ -2635,7 +2660,7 @@
     if(mode==='audio' && !assetSelected && !audioData){ toast('请先上传口播音频'); return; }
     if(selectedSubtitle==='on'){
       var subtitleOpts=collectSubtitleOptions();
-      if(selectedSubtitleStyle==='keyword_highlight'&&subtitleOpts.keyword_mode==='manual'&&!subtitleOpts.keywords.length){toast('手动关键词模式请至少填写一个关键词');return;}
+      if(subtitleSupportsKeywords(selectedSubtitleStyle)&&subtitleOpts.keyword_highlight_enabled&&subtitleOpts.keyword_mode==='manual'&&!subtitleOpts.keywords.length){toast('手动关键词模式请至少填写一个关键词');return;}
       if(selectedSubtitleStyle==='bilingual'&&!subtitleOpts.secondary_text){toast('双语字幕请填写英文副字幕');if($('subtitleSecondaryText'))$('subtitleSecondaryText').focus();return;}
     }
     setSubmitLock('talking',true);
