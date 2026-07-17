@@ -80,6 +80,13 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn('id="scHistoryBtn" class="sc-btn" type="button"', self.html)
         self.assertIn("btn.type='button'; btn.className='sc-history-item'", self.html)
 
+    def test_breakdown_poll_handles_network_errors(self):
+        self.assertIn("pollErrors=0", self.html)
+        self.assertIn("MAX_POLL_ERRORS=10", self.html)
+        self.assertIn("pollErrors++;", self.html)
+        self.assertIn("网络不稳定，正在重试", self.html)
+        self.assertIn("网络连接失败，请检查网络后重试", self.html)
+
 
 if __name__ == "__main__":
     unittest.main()

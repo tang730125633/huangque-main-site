@@ -543,16 +543,18 @@
     setBdPhase('downloading','active');
     scenes.innerHTML='<div style="padding:34px; text-align:center; color:#60a5fa; font-size:13px;">正在下载视频…</div>';
     hideBreakdownMeta();
-    var pollCount=0, lastPhase='downloading';
+    var pollCount=0, lastPhase='downloading', pollErrors=0;
     fetch('/api/gen/breakdown',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({url:url})})
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
       .then(function(x){
         if(x.s===401){ resetBdBtn(); if(window.HQ) HQ.login(); return; }
         if(x.s===402){ resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
         if(!x.d.job_id){ resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+((x.d&&x.d.detail)||'未知')+'</div>'; return; }
+        var MAX_POLL_ERRORS=10;
         var iv=setInterval(function(){
           pollCount++;
           fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+            pollErrors=0;
             if(d.phase && d.phase!==lastPhase){ lastPhase=d.phase; setBdPhase(d.phase,'active'); }
             if(d.status==='done'){
               clearInterval(iv); resetBdBtn(); markAllBdPhasesDone();
@@ -566,7 +568,11 @@
               scenes.innerHTML='<div style="padding:34px; text-align:center; color:#60a5fa; font-size:13px;">'+(phaseMsg[d.phase]||'处理中…')+'</div>';
             }
             if(pollCount>120){ clearInterval(iv); resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">拆解超时，请稍后重试</div>'; }
-          }).catch(function(){});
+          }).catch(function(){
+            pollErrors++;
+            if(pollErrors>=3 && pollErrors<MAX_POLL_ERRORS) scenes.innerHTML='<div style="padding:34px; text-align:center; color:#f4a460; font-size:13px;">网络不稳定，正在重试…（'+pollErrors+'/'+MAX_POLL_ERRORS+'）</div>';
+            if(pollErrors>=MAX_POLL_ERRORS){ clearInterval(iv); resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络连接失败，请检查网络后重试</div>'; }
+          });
         },3000);
       }).catch(function(){ resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络错误，请重试</div>'; });
   }; }
