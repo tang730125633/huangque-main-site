@@ -506,7 +506,7 @@
     opt = opt || {};
     opt.credentials = 'same-origin';
     opt.cache = 'no-store';
-    opt.headers = Object.assign({}, opt.headers || {});
+    opt.headers = new Headers(opt.headers || {});
     var fetcher=(window.HQ&&typeof window.HQ.secureFetch==='function')?window.HQ.secureFetch:fetch;
     return fetcher(url, opt).then(function(r){
       return r.json().catch(function(){return {};}).then(function(data){
