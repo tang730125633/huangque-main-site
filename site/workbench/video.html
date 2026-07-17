@@ -880,6 +880,7 @@
     bilingual:{font_family:'Noto Sans SC',font_size:64,font_weight:800,font_color:'#FFFFFF',highlight_color:'#FFE45C',outline_color:'#000000',outline_width:4,position:'bottom',vertical_offset:0,background_color:'#000000',background_opacity:0,keyword_highlight_enabled:false,keyword_mode:'auto',keywords:[],keyword_scale:1.08,secondary_font_family:'Noto Sans SC',secondary_font_size:38,secondary_color:'#DCE7F7',line_gap:12,secondary_text:''}
   };
   var subtitleTemplateState={}, subtitleFonts=['Noto Sans SC'];
+  var subtitleWordPreviewTimer=null, subtitleWordPreviewIndex=0;
   // 电影化身（HeyGen cinematic）：三个玩法共用一套控件，见 CINE_MODES
   // 时长默认「自适应」：跟随参考视频的长度。既然给了参考片段，成片就该和它一样长，
   // 而不是被截断或硬拖到某个固定秒数。没传参考视频时后端回落到 10 秒。
@@ -1114,8 +1115,25 @@
     selectedSubtitlePosition=(subtitleTemplateState[key]||subtitleDefaults(key)).position||'bottom';
     persistSubtitleSettings();applySubtitleForm();
   }
+  function stopSubtitleWordPreview(){
+    if(subtitleWordPreviewTimer)clearInterval(subtitleWordPreviewTimer);
+    subtitleWordPreviewTimer=null;subtitleWordPreviewIndex=0;
+  }
+  function advanceSubtitleWordPreview(copy){
+    var spans=copy?copy.querySelectorAll('span'):[];if(!spans.length)return;
+    Array.prototype.forEach.call(spans,function(span){span.classList.remove('sub-highlight');});
+    spans[subtitleWordPreviewIndex%spans.length].classList.add('sub-highlight');
+    subtitleWordPreviewIndex=(subtitleWordPreviewIndex+1)%spans.length;
+  }
+  function startSubtitleWordPreview(copy,speed){
+    stopSubtitleWordPreview();if(!copy||selectedSubtitle!=='on'||selectedSubtitleStyle!=='word_highlight')return;
+    advanceSubtitleWordPreview(copy);
+    var delay=Math.max(240,Math.min(1200,600/Math.max(.5,Number(speed||1))));
+    subtitleWordPreviewTimer=setInterval(function(){advanceSubtitleWordPreview(copy);},delay);
+  }
   function updateSubtitlePreview(){
     var copy=$('subtitlePreviewCopy'),stage=$('subtitlePreview');if(!copy||!stage)return;
+    stopSubtitleWordPreview();
     var o=subtitleTemplateState[selectedSubtitleStyle]||subtitleDefaults(selectedSubtitleStyle);
     var source=String(($('scriptText')||{}).value||'让每一句口播都更有重点').replace(/\s+/g,' ').trim().slice(0,22)||'让每一句口播都更有重点';
     var chars=Array.from(source),html='';
@@ -1123,7 +1141,7 @@
       var kws=o.keyword_mode==='manual'?(o.keywords||[]):[];
       html=o.keyword_highlight_enabled?subtitlePreviewHighlight(source,kws):esc(source);
     }else if(selectedSubtitleStyle==='word_highlight'){
-      html=chars.map(function(ch,i){return '<span class="'+(i===Math.min(4,chars.length-1)?'sub-highlight':'')+'">'+esc(ch)+'</span>';}).join('');
+      html=chars.map(function(ch){return '<span>'+esc(ch)+'</span>';}).join('');
     }else if(selectedSubtitleStyle==='karaoke'){
       html=o.progress_mode==='sweep'?'<span class="sub-karaoke-track">'+esc(source)+'<span class="sub-karaoke-fill">'+esc(source)+'</span></span>':'<span class="sub-highlight">'+esc(chars.slice(0,Math.ceil(chars.length/2)).join(''))+'</span><span class="sub-pending">'+esc(chars.slice(Math.ceil(chars.length/2)).join(''))+'</span>';
     }else if(selectedSubtitleStyle==='bounce'){
@@ -1150,6 +1168,7 @@
     if(secondary){secondary.style.fontFamily=subtitlePreviewFont(o.secondary_font_family);secondary.style.fontSize=Math.max(10,Math.min(28,Number(o.secondary_font_size||38)*.38))+'px';secondary.style.color=o.secondary_color||'#DCE7F7';secondary.style.marginTop=Math.max(0,Number(o.line_gap||12)*.22)+'px';}
     var previewPositions={top:22,upper:36,center:50,lower:66,bottom:80};copy.style.top=(previewPositions[o.position]||80)+'%';
     copy.style.transform='translate(-50%,-50%) translateY('+(-Number(o.vertical_offset||0)*.10)+'px)';
+    startSubtitleWordPreview(copy,o.word_highlight_speed);
   }
   function refreshSubtitleStateFromForm(){subtitleTemplateState[selectedSubtitleStyle]=collectSubtitleOptions();syncSubtitleKeywordControls(subtitleTemplateState[selectedSubtitleStyle]);subtitleSyncRangeOutputs();updateSubtitlePreview();}
   function bindSubtitleBuilder(){
@@ -2473,7 +2492,7 @@
     }
     if(b.dataset.motion) selectedMotion=b.dataset.motion;
     if(b.dataset.bgmVolume) selectedBgmVolume=Number(b.dataset.bgmVolume);
-    if(b.dataset.subtitle){selectedSubtitle=b.dataset.subtitle;var on=selectedSubtitle==='on';var sr=$('subtitleStyleRow');if(sr)sr.style.display=(on?'flex':'none');var pr=$('subtitlePositionRow');if(pr)pr.style.display=(on?'':'none');if(on)updateSubtitlePreview();}
+    if(b.dataset.subtitle){selectedSubtitle=b.dataset.subtitle;var on=selectedSubtitle==='on';var sr=$('subtitleStyleRow');if(sr)sr.style.display=(on?'flex':'none');var pr=$('subtitlePositionRow');if(pr)pr.style.display=(on?'':'none');if(on)updateSubtitlePreview();else stopSubtitleWordPreview();}
     if(b.dataset.subpos){selectedSubtitlePosition=b.dataset.subpos;if(subtitleTemplateState[selectedSubtitleStyle])subtitleTemplateState[selectedSubtitleStyle].position=selectedSubtitlePosition;persistSubtitleSettings();updateSubtitlePreview();}
     updateChecklist();
   };});

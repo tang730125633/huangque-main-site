@@ -225,6 +225,18 @@ class SubtitleTemplateUiTests(unittest.TestCase):
         bounce_preview = preview.split("}else if(selectedSubtitleStyle==='bounce'){", 1)[1].split("}else if(", 1)[0]
         self.assertNotIn("sub-highlight", bounce_preview)
 
+    def test_word_highlight_preview_advances_current_character(self):
+        preview = VIDEO_HTML.split("function updateSubtitlePreview(){", 1)[1].split("function refreshSubtitleStateFromForm", 1)[0]
+        word_preview = preview.split("}else if(selectedSubtitleStyle==='word_highlight'){", 1)[1].split("}else if(", 1)[0]
+        animator = VIDEO_HTML.split("function stopSubtitleWordPreview(){", 1)[1].split("function updateSubtitlePreview(){", 1)[0]
+        self.assertNotIn("Math.min(4", word_preview)
+        self.assertIn("'<span>'+esc(ch)+'</span>'", word_preview)
+        self.assertIn("subtitleWordPreviewIndex", animator)
+        self.assertIn("classList.add('sub-highlight')", animator)
+        self.assertIn("setInterval", animator)
+        self.assertIn("600/Math.max(.5,Number(speed||1))", animator)
+        self.assertIn("startSubtitleWordPreview(copy,o.word_highlight_speed)", preview)
+
     def test_keyword_controls_are_independent_and_default_off(self):
         self.assertIn("var SUBTITLE_KEYWORD_STYLES={keyword_highlight:true,glow:true,bilingual:true}", VIDEO_HTML)
         self.assertGreaterEqual(VIDEO_HTML.count("keyword_highlight_enabled:false"), 3)
