@@ -37,6 +37,12 @@ class SubtitleTemplateValidationTests(unittest.TestCase):
             [item["key"] for item in config["templates"]],
             ["keyword_highlight", "word_highlight", "karaoke", "bounce", "glow", "bilingual"],
         )
+        self.assertEqual("基础字幕", config["templates"][0]["label"])
+        keyword_capable = {"keyword_highlight", "glow", "bilingual"}
+        self.assertTrue(all(
+            item["defaults"].get("keyword_highlight_enabled") is False
+            for item in config["templates"] if item["key"] in keyword_capable
+        ))
         self.assertTrue(all(item["defaults"].get("font_family") for item in config["templates"]))
         self.assertTrue(all(font["value"] in video._SUBTITLE_FONT_ALLOWLIST for font in config["fonts"]))
         self.assertEqual(
@@ -57,7 +63,17 @@ class SubtitleTemplateValidationTests(unittest.TestCase):
 
     def test_template_specific_requirements_are_explicit(self):
         with self.assertRaisesRegex(ValueError, "至少填写一个关键词"):
-            video._normalize_subtitle_options("keyword_highlight", {"keyword_mode": "manual"})
+            video._normalize_subtitle_options("keyword_highlight", {
+                "keyword_highlight_enabled": True,
+                "keyword_mode": "manual",
+            })
+        disabled = video._normalize_subtitle_options("keyword_highlight", {
+            "keyword_highlight_enabled": False,
+            "keyword_mode": "manual",
+        })
+        self.assertFalse(disabled["keyword_highlight_enabled"])
+        with self.assertRaisesRegex(ValueError, "布尔值"):
+            video._normalize_subtitle_options("glow", {"keyword_highlight_enabled": "true"})
         with self.assertRaisesRegex(ValueError, "英文副字幕"):
             video._normalize_subtitle_options("bilingual", {})
         opts = video._normalize_subtitle_options("bilingual", {
@@ -120,10 +136,21 @@ class SubtitleAssRenderingTests(unittest.TestCase):
         bilingual = self._render("bilingual", {"secondary_text": "Bright skin starts today"})
         self.assertIn("Style: Glow", glow)
         self.assertIn("{\\blur", glow)
-        self.assertIn("\\c&H", glow)
         self.assertIn("Style: Secondary", bilingual)
         self.assertIn("Bright skin", bilingual)
-        self.assertIn("\\c&H", bilingual)
+
+    def test_semantic_keyword_highlight_is_opt_in(self):
+        for key in ("keyword_highlight", "glow", "bilingual"):
+            base = {"secondary_text": "Bright skin starts today"} if key == "bilingual" else {}
+            with self.subTest(key=key, enabled=False):
+                ass = self._render(key, base)
+                self.assertNotIn("{\\c&H", ass)
+                self.assertNotIn("\\fscx108", ass)
+            enabled = dict(base, keyword_highlight_enabled=True, keyword_mode="manual", keywords=["焕肤"])
+            with self.subTest(key=key, enabled=True):
+                ass = self._render(key, enabled)
+                self.assertIn("{\\c&H", ass)
+                self.assertIn("\\fscx108", ass)
 
     def test_bilingual_wraps_long_secondary_copy_without_overlapping_layers(self):
         bilingual = self._render("bilingual", {
@@ -157,9 +184,12 @@ class SubtitleTemplateUiTests(unittest.TestCase):
     def test_page_has_six_templates_and_live_preview(self):
         for key in ("keyword_highlight", "word_highlight", "karaoke", "bounce", "glow", "bilingual"):
             self.assertIn('data-substyle="%s"' % key, VIDEO_HTML)
+        for key in ("word_highlight", "karaoke", "bounce", "glow", "bilingual"):
             self.assertIn('data-subtitle-panel="%s"' % key, VIDEO_HTML)
         self.assertIn('id="subtitlePreview"', VIDEO_HTML)
         self.assertIn('id="subtitleResetBtn"', VIDEO_HTML)
+        self.assertIn('id="subtitleKeywordEnabled" type="checkbox"', VIDEO_HTML)
+        self.assertIn('<b>基础字幕</b>', VIDEO_HTML)
         self.assertIn("hq_video_subtitle_templates_v2", VIDEO_HTML)
         self.assertIn('<option value="Noto Sans SC">简体中文黑体（推荐）</option>', VIDEO_HTML)
 
@@ -174,7 +204,7 @@ class SubtitleTemplateUiTests(unittest.TestCase):
         for option in (
             "font_family", "font_size", "font_weight", "font_color", "highlight_color",
             "outline_color", "outline_width", "position", "vertical_offset",
-            "background_color", "background_opacity", "keyword_scale",
+            "background_color", "background_opacity", "keyword_highlight_enabled", "keyword_scale",
             "word_highlight_speed", "active_word_scale", "pending_color", "progress_mode",
             "bounce_height", "animation_duration_ms", "glow_color", "glow_strength",
             "glow_radius", "secondary_font_family", "secondary_font_size",
@@ -185,6 +215,15 @@ class SubtitleTemplateUiTests(unittest.TestCase):
         self.assertIn("subtitlePreviewOutline", preview)
         self.assertIn("sub-karaoke-track", preview)
         self.assertIn("--bounce-height", preview)
+
+    def test_keyword_controls_are_independent_and_default_off(self):
+        self.assertIn("var SUBTITLE_KEYWORD_STYLES={keyword_highlight:true,glow:true,bilingual:true}", VIDEO_HTML)
+        self.assertGreaterEqual(VIDEO_HTML.count("keyword_highlight_enabled:false"), 3)
+        collector = VIDEO_HTML.split("function collectSubtitleOptions(){", 1)[1].split("function setSubtitleStyle", 1)[0]
+        self.assertIn("subtitleSupportsKeywords(selectedSubtitleStyle)", collector)
+        self.assertIn("keyword_highlight_enabled", collector)
+        renderer = VIDEO_HTML.split("function updateSubtitlePreview(){", 1)[1].split("function refreshSubtitleStateFromForm", 1)[0]
+        self.assertIn("o.keyword_highlight_enabled?subtitlePreviewHighlight", renderer)
 
     def test_range_values_stay_in_sync_with_slider_inputs(self):
         sync = VIDEO_HTML.split("function subtitleSyncRangeOutputs(){", 1)[1].split("function subtitleSetColor", 1)[0]

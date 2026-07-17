@@ -1908,7 +1908,8 @@ _SUBTITLE_FONT_LABELS = {
     "Noto Serif CJK SC": "中日韩宋体",
 }
 _SUBTITLE_TEMPLATE_LABELS = {
-    "keyword_highlight": "关键词高亮",
+    # 保留历史 key，避免旧任务/客户端失效；界面上把它作为无动画的基础字幕。
+    "keyword_highlight": "基础字幕",
     "word_highlight": "逐字高亮",
     "karaoke": "卡拉 OK",
     "bounce": "弹跳字幕",
@@ -1922,6 +1923,7 @@ _SUBTITLE_TEMPLATE_DEFAULTS = {
         "outline_color": "#000000", "outline_width": 4,
         "position": "bottom", "vertical_offset": 0,
         "background_color": "#000000", "background_opacity": 0.0,
+        "keyword_highlight_enabled": False,
         "keyword_mode": "auto", "keywords": [], "keyword_scale": 1.08,
     },
     "word_highlight": {
@@ -1954,6 +1956,8 @@ _SUBTITLE_TEMPLATE_DEFAULTS = {
         "outline_color": "#102536", "outline_width": 3,
         "position": "bottom", "vertical_offset": 0,
         "background_color": "#000000", "background_opacity": 0.0,
+        "keyword_highlight_enabled": False,
+        "keyword_mode": "auto", "keywords": [], "keyword_scale": 1.08,
         "glow_color": "#35C8FF", "glow_strength": 0.75, "glow_radius": 8,
     },
     "bilingual": {
@@ -1962,6 +1966,8 @@ _SUBTITLE_TEMPLATE_DEFAULTS = {
         "outline_color": "#000000", "outline_width": 4,
         "position": "bottom", "vertical_offset": 0,
         "background_color": "#000000", "background_opacity": 0.0,
+        "keyword_highlight_enabled": False,
+        "keyword_mode": "auto", "keywords": [], "keyword_scale": 1.08,
         "secondary_font_family": SUBTITLE_FONT, "secondary_font_size": 38,
         "secondary_color": "#DCE7F7", "line_gap": 12, "secondary_text": "",
     },
@@ -1975,18 +1981,19 @@ _LEGACY_SUBTITLE_DEFAULTS = {
 }
 _SUBTITLE_ALL_DEFAULTS = dict(_LEGACY_SUBTITLE_DEFAULTS, **_SUBTITLE_TEMPLATE_DEFAULTS)
 _SUBTITLE_WORD_TIMELINE_STYLES = {"word_highlight", "karaoke", "bounce"}
+_SUBTITLE_KEYWORD_STYLES = {"keyword_highlight", "glow", "bilingual"}
 _SUBTITLE_COMMON_OPTION_KEYS = {
     "font_family", "font_size", "font_weight", "font_color", "highlight_color",
     "outline_color", "outline_width", "position", "vertical_offset",
     "background_color", "background_opacity",
 }
 _SUBTITLE_STYLE_OPTION_KEYS = {
-    "keyword_highlight": {"keyword_mode", "keywords", "keyword_scale"},
+    "keyword_highlight": {"keyword_highlight_enabled", "keyword_mode", "keywords", "keyword_scale"},
     "word_highlight": {"word_highlight_speed", "active_word_scale"},
     "karaoke": {"pending_color", "progress_mode"},
     "bounce": {"bounce_height", "animation_duration_ms"},
-    "glow": {"glow_color", "glow_strength", "glow_radius"},
-    "bilingual": {"secondary_font_family", "secondary_font_size", "secondary_color", "line_gap", "secondary_text"},
+    "glow": {"keyword_highlight_enabled", "keyword_mode", "keywords", "keyword_scale", "glow_color", "glow_strength", "glow_radius"},
+    "bilingual": {"keyword_highlight_enabled", "keyword_mode", "keywords", "keyword_scale", "secondary_font_family", "secondary_font_size", "secondary_color", "line_gap", "secondary_text"},
 }
 _HEX_COLOR_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 _subtitle_fonts_cache = None
@@ -2087,7 +2094,10 @@ def _normalize_subtitle_options(style_key, raw=None, legacy_position=None):
     result["vertical_offset"] = _subtitle_number(raw, "vertical_offset", defaults["vertical_offset"], -320, 320, integer=True)
     result["background_opacity"] = _subtitle_number(raw, "background_opacity", defaults["background_opacity"], 0, 1)
 
-    if style_key == "keyword_highlight":
+    if style_key in _SUBTITLE_KEYWORD_STYLES:
+        enabled = raw.get("keyword_highlight_enabled", defaults["keyword_highlight_enabled"])
+        if not isinstance(enabled, bool):
+            raise ValueError("关键词高亮开关必须是布尔值")
         mode = str(raw.get("keyword_mode", defaults["keyword_mode"]) or "").strip()
         if mode not in {"auto", "manual"}:
             raise ValueError("关键词模式只能是 auto 或 manual")
@@ -2103,11 +2113,12 @@ def _normalize_subtitle_options(style_key, raw=None, legacy_position=None):
                 clean_keywords.append(item[:16])
         if len(clean_keywords) > 12:
             raise ValueError("关键词最多 12 个")
-        if mode == "manual" and not clean_keywords:
+        if enabled and mode == "manual" and not clean_keywords:
             raise ValueError("手动关键词模式请至少填写一个关键词")
-        result.update(keyword_mode=mode, keywords=clean_keywords)
+        result.update(keyword_highlight_enabled=enabled, keyword_mode=mode, keywords=clean_keywords)
         result["keyword_scale"] = _subtitle_number(raw, "keyword_scale", defaults["keyword_scale"], 1, 1.5)
-    elif style_key == "word_highlight":
+
+    if style_key == "word_highlight":
         result["word_highlight_speed"] = _subtitle_number(raw, "word_highlight_speed", defaults["word_highlight_speed"], 0.5, 2)
         result["active_word_scale"] = _subtitle_number(raw, "active_word_scale", defaults["active_word_scale"], 1, 1.5)
     elif style_key == "karaoke":
@@ -2394,8 +2405,29 @@ def _auto_subtitle_keywords(text):
     return ranked[:6]
 
 
-def _wrapped_text_lines(text, max_chars):
-    wrapped = _wrap_cn(_clean_sub_text(text), max_chars)
+def _wrapped_text_lines(text, max_chars, protected_terms=None):
+    cleaned = _clean_sub_text(text)
+    terms = sorted({str(item) for item in (protected_terms or []) if item}, key=len, reverse=True)
+    if not terms:
+        wrapped = _wrap_cn(cleaned, max_chars)
+        return [part for part in wrapped.split("\\N") if part]
+
+    # 关键词落在换行边界时，优先把整词移到下一行，避免“焕\N肤”导致高亮失效。
+    lines, current = [], cleaned
+    while len(current) > max_chars and len(lines) < 4:
+        cut = current.rfind(" ", 0, max_chars + 1)
+        if cut < max_chars * 0.5:
+            cut = max_chars
+        for term in terms:
+            match = re.search(re.escape(term), current, re.IGNORECASE)
+            if match and match.start() < cut < match.end():
+                cut = match.start() or match.end()
+                break
+        lines.append(current[:cut].strip())
+        current = current[cut:].strip()
+    if current:
+        lines.append(current[:max_chars] if len(current) > max_chars else current)
+    wrapped = "\\N".join(line for line in lines if line)
     return [part for part in wrapped.split("\\N") if part]
 
 
@@ -2408,7 +2440,7 @@ def _keyword_ass_line(text, keywords, options, max_chars):
     normal = _ass_inline_color(options["font_color"])
     scale = max(100, int(round(float(options.get("keyword_scale", 1.0)) * 100)))
     rendered = []
-    for line in _wrapped_text_lines(text, max_chars):
+    for line in _wrapped_text_lines(text, max_chars, keywords):
         pieces = []
         for part in pattern.split(line):
             if not part:
@@ -2577,15 +2609,17 @@ def _build_ass(segs, style_key, w, h, position="bottom", options=None, timed_wor
     else:
         cards = _split_to_cards(segs, max_chars)
         keywords = list(options.get("keywords") or [])
-        if style_key == "keyword_highlight" and options.get("keyword_mode") == "auto":
-            keywords = _auto_subtitle_keywords(" ".join(card[2] for card in cards))
-        elif style_key in {"glow", "bilingual"}:
+        keyword_highlight_enabled = (
+            style_key in _SUBTITLE_KEYWORD_STYLES
+            and bool(options.get("keyword_highlight_enabled"))
+        )
+        if keyword_highlight_enabled and options.get("keyword_mode") == "auto":
             keywords = _auto_subtitle_keywords(" ".join(card[2] for card in cards))
         secondary_lines = _distribute_secondary_text(options.get("secondary_text"), cards) if style_key == "bilingual" else []
         for index, (start, end, text) in enumerate(cards):
             if end <= start:
                 end = start + 1.2
-            if style_key in {"keyword_highlight", "glow", "bilingual"}:
+            if keyword_highlight_enabled:
                 line = _keyword_ass_line(text, keywords, options, max_chars)
             else:
                 line = "\\N".join(_ass_escape(part) for part in _wrapped_text_lines(text, max_chars))
