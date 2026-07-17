@@ -462,8 +462,32 @@
       return Array.isArray(list)?list.filter(function(item){ return Array.isArray(((item||{}).meta||{}).scenes)&&((item.meta||{}).scenes.length); }):[];
     }catch(_e){ return []; }
   }
-  function prepareBreakdownRemakePayload(bd){
-    return {scenes:normalizeBreakdownScenes((bd&&bd.scenes)||[]),style:'剧情'};
+  function prepareBreakdownRemakePayload(bd, style){
+    return {scenes:normalizeBreakdownScenes((bd&&bd.scenes)||[]),style:style||'剧情'};
+  }
+  function _pickRemakeStyle(onPick){
+    var overlay=document.createElement('div');
+    overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:9999;display:flex;align-items:center;justify-content:center;';
+    var box=document.createElement('div');
+    box.style.cssText='background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:18px;padding:24px;width:360px;';
+    box.innerHTML='<div style="font-size:16px;font-weight:700;color:#eaf1fa;margin-bottom:6px;">🎬 生成同款视频</div>'
+      +'<div style="font-size:12px;color:#94a4bb;margin-bottom:18px;">选择视频风格后开始生成</div>'
+      +'<div style="display:flex;flex-direction:column;gap:9px;">'
+      +'<button data-style="口播" style="width:100%;padding:13px 16px;font-size:14px;font-weight:600;border:1px solid rgba(231,178,76,.3);border-radius:12px;background:rgba(231,178,76,.1);color:#e7b24c;cursor:pointer;text-align:left;">🎙 口播 · 数字人出镜</button>'
+      +'<button data-style="剧情" style="width:100%;padding:13px 16px;font-size:14px;font-weight:600;border:1px solid rgba(96,165,250,.3);border-radius:12px;background:rgba(96,165,250,.1);color:#60a5fa;cursor:pointer;text-align:left;">🎬 剧情 · AI 画面生成</button>'
+      +'<button data-style="种草" style="width:100%;padding:13px 16px;font-size:14px;font-weight:600;border:1px solid rgba(74,222,128,.3);border-radius:12px;background:rgba(74,222,128,.1);color:#4ade80;cursor:pointer;text-align:left;">🌿 种草 · 数字人带货</button>'
+      +'</div>'
+      +'<button data-style="" style="width:100%;margin-top:10px;padding:10px;font-size:13px;border:1px solid rgba(148,164,187,.14);border-radius:10px;background:transparent;color:#94a4bb;cursor:pointer;">取消</button>';
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    box.querySelectorAll('button').forEach(function(btn){
+      btn.onclick=function(){
+        var style=btn.getAttribute('data-style');
+        document.body.removeChild(overlay);
+        if(style) onPick(style);
+      };
+    });
+    overlay.onclick=function(e){ if(e.target===overlay) document.body.removeChild(overlay); };
   }
   function setBdPhase(phase,state){
     if(!bdPhases) return;
@@ -758,9 +782,17 @@
   if(bdRemakeBtn){ bdRemakeBtn.onclick=function(e){
     e.preventDefault();
     if(!lastBreakdown){ if(window.HQ&&window.HQ.toast) HQ.toast('请先完成拆解'); return; }
-    var payload=prepareBreakdownRemakePayload(lastBreakdown);
-    if(!payload.scenes.length){ if(window.HQ&&window.HQ.toast) HQ.toast('拆解结果里没有可用分镜'); return; }
-    _doGenerate(payload,bdRemakeBtn);
+    var scenes=normalizeBreakdownScenes((lastBreakdown&&lastBreakdown.scenes)||[]);
+    if(!scenes.length){ if(window.HQ&&window.HQ.toast) HQ.toast('拆解结果里没有可用分镜'); return; }
+    _pickRemakeStyle(function(style){
+      if(style==='剧情'){
+        _doGenerate({scenes:scenes,style:'剧情'},bdRemakeBtn);
+      } else {
+        _showAvatarPicker(function(avatarId){
+          _doGenerate({scenes:scenes,style:style,avatar_id:avatarId},bdRemakeBtn);
+        });
+      }
+    });
   }; }
   loadHistory();
 })();

@@ -65,10 +65,11 @@ class ScriptActionsUiTests(unittest.TestCase):
 
     def test_breakdown_remake_reuses_current_one_click_flow(self):
         self.assertIn('id="bdRemakeBtn"', self.html)
-        self.assertIn("prepareBreakdownRemakePayload(lastBreakdown)", self.html)
-        self.assertIn("return {scenes:normalizeBreakdownScenes((bd&&bd.scenes)||[]),style:'剧情'};", self.html)
-        self.assertIn("_doGenerate(payload,bdRemakeBtn)", self.html)
-        self.assertIn("fetch('/api/gen/script_to_video'", self.html)
+        self.assertIn("prepareBreakdownRemakePayload(bd, style)", self.html)
+        self.assertIn("return {scenes:normalizeBreakdownScenes((bd&&bd.scenes)||[]),style:style||'剧情'};", self.html)
+        self.assertIn("_pickRemakeStyle(function(style)", self.html)
+        self.assertIn("_showAvatarPicker(function(avatarId)", self.html)
+        self.assertIn("_doGenerate({scenes:scenes,style:'剧情'},bdRemakeBtn)", self.html)
 
     def test_history_loads_copy_assets_and_restores_scenes(self):
         self.assertIn("'/api/gen/assets?limit=60&kind=copy'", self.html)
