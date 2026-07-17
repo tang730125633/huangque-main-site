@@ -158,6 +158,9 @@ def validate_image_payload(payload):
     if not isinstance(payload, dict):
         raise ValueError("\u8bf7\u6c42\u4f53\u5fc5\u987b\u662f JSON \u5bf9\u8c61")
     body = dict(payload)
+    provider = str(body.get("provider") or "openai").strip().lower()
+    if provider == "zelong2":
+        raise ValueError("泽龙2生图渠道维护中，请使用 Seedream 或果肉生图")
     prompt = (body.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("\u63d0\u793a\u8bcd\u4e0d\u80fd\u4e3a\u7a7a")
@@ -424,6 +427,8 @@ def gen_image(payload):
     mask  = _clean_b64(payload.get("mask"))   # 蒙版(透明处=要重绘的区域) → 局部修改
     quality = "high" if (payload.get("quality") or "hd") == "hd" else "medium"  # 标准=medium/高清=high
     provider = (payload.get("provider") or "openai").strip().lower()
+    if provider == "zelong2":
+        raise ValueError("泽龙2生图渠道维护中，请使用 Seedream 或果肉生图")
     if provider == "xiaole":
         count = 1 if mask else max(1, min(2, int(payload.get("count") or 1)))
         return _gen_image_xiaole(prompt, ratio, quality, count, img)

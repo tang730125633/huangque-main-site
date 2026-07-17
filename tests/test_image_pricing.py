@@ -28,8 +28,20 @@ core = importlib.import_module("content_domains.core")
 points = importlib.import_module("content_domains.points")
 BANANA = (ROOT / "site" / "workbench" / "banana.html").read_text(encoding="utf-8")
 IMGGEN_SRC = (ROOT / "server" / "imggen_api.py").read_text(encoding="utf-8")
+image_domain = importlib.import_module("content_domains.image")
 
 FRONTEND_RATIOS = ["1:1", "9:16", "16:9", "3:4"]
+
+
+class ChannelShutdownTests(unittest.TestCase):
+    def test_zelong2_is_rejected_before_points_are_deducted(self):
+        with self.assertRaisesRegex(ValueError, "泽龙2生图渠道维护中"):
+            image_domain.validate_image_payload({"provider": "zelong2", "prompt": "demo"})
+        with self.assertRaisesRegex(ValueError, "泽龙2生图渠道维护中"):
+            image_domain.gen_image({"provider": "zelong2", "prompt": "demo"})
+
+    def test_zelong2_card_is_hidden(self):
+        self.assertRegex(BANANA, r'data-engine="zelong2"[^>]*aria-hidden="true"[^>]*display:none')
 
 
 def _wh(size):
