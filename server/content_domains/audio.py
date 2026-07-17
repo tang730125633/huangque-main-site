@@ -12,6 +12,7 @@ from . import points as points_domain
 
 VOICE_SLOT_COST = 50
 VOICE_SLOT_MAX_PER_USER = 5
+VOICE_RECLONE_MAX = 20
 VALID_VOICE_SLOT_STATUSES = ("active", "training", "ready", "failed")
 _voice_slot_purchase_lock = threading.Lock()
 
@@ -197,6 +198,8 @@ def list_user_audio_voice_slots(username):
         d = dict(r)
         if d.get("preview_url") and d.get("voice_id") and d.get("status") == "training":
             d["status"] = "ready"
+        d["reclone_max"] = VOICE_RECLONE_MAX
+        d["reclone_remaining"] = max(0, VOICE_RECLONE_MAX - int(d.get("reclone_count") or 0))
         items.append(d)
     return items
 
@@ -502,7 +505,7 @@ def validate_clone_vip_payload(username, payload):
             raise CloneVipValidationError(409, "音色正在复刻中，请等待完成")
     is_reclone = slot["status"] == "ready" and bool(slot["voice_id"])
     reclone_count = int(slot["reclone_count"] or 0)
-    if is_reclone and reclone_count >= 10:
+    if is_reclone and reclone_count >= VOICE_RECLONE_MAX:
         raise CloneVipValidationError(409, "该槽位已达复刻上限")
     checked = dict(payload)
     checked["slot_id"] = slot_id
@@ -528,8 +531,8 @@ def mark_clone_training(username, slot_id, name):
                 raise ValueError("\u97f3\u8272\u6b63\u5728\u590d\u523b\u4e2d\uff0c\u8bf7\u7b49\u5f85\u5b8c\u6210")
         is_reclone = slot["status"] == "ready" and bool(slot["voice_id"])
         reclone_count = int(slot["reclone_count"] or 0)
-        if is_reclone and reclone_count >= 10:
-            raise ValueError("\u8be5\u97f3\u8272\u5df2\u8fbe\u5230\u6700\u9ad810\u6b21\u91cd\u65b0\u590d\u523b\u4e0a\u9650")
+        if is_reclone and reclone_count >= VOICE_RECLONE_MAX:
+            raise ValueError("该音色已达到最高%d次重新复刻上限" % VOICE_RECLONE_MAX)
         next_reclone_count = reclone_count + 1 if is_reclone else reclone_count
         c.execute("""INSERT OR IGNORE INTO audio_voices
             (username, scope, voice_key, display_name, provider_voice, slot_id, created_at, updated_at)
@@ -546,7 +549,7 @@ def mark_clone_training(username, slot_id, name):
             WHERE username=? AND slot_id=?""", (voice_id, next_reclone_count, now, now, username, slot_id))
         c.commit()
     clear_voice_preview(username, slot_id)
-    return {"voice_id": voice_id, "voice_key": voice_key, "display_name": name, "status": "training", "reclone_count": next_reclone_count, "reclone_remaining": max(0, 10 - next_reclone_count)}
+    return {"voice_id": voice_id, "voice_key": voice_key, "display_name": name, "status": "training", "reclone_count": next_reclone_count, "reclone_max": VOICE_RECLONE_MAX, "reclone_remaining": max(0, VOICE_RECLONE_MAX - next_reclone_count)}
 
 def clone_vip_voice_background(username, payload):
     try:

@@ -1623,7 +1623,7 @@ class H(BaseHTTPRequestHandler):
             items = audio_domain.list_user_audio_voice_slots(user["username"])
             return self._send(200, {"items": items,
                 "slot_count": sum(1 for item in items if item.get("status") in audio_domain.VALID_VOICE_SLOT_STATUSES),
-                "slot_max": audio_domain.VOICE_SLOT_MAX_PER_USER, "slot_cost": audio_domain.VOICE_SLOT_COST,
+                "slot_max": audio_domain.VOICE_SLOT_MAX_PER_USER, "slot_cost": audio_domain.VOICE_SLOT_COST, "reclone_max": audio_domain.VOICE_RECLONE_MAX,
                 "points": user.get("points")})
         if p == "/api/gen/audio/clone-status":
             user = verify(self._token())

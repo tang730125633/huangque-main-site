@@ -1067,8 +1067,9 @@
     var failed=slot.status==='failed';
     var readonly=!!slot.readonly;
     var completed=used && !training && !failed;
-    var recloneCount=Math.max(0, Math.min(10, parseInt(slot.reclone_count||0,10)||0));
-    var recloneRemain=Math.max(0, 10-recloneCount);
+    var recloneMax=Math.max(0,parseInt(slot.reclone_max||0,10)||0);
+    var recloneCount=Math.max(0,Math.min(recloneMax,parseInt(slot.reclone_count||0,10)||0));
+    var recloneRemain=slot.reclone_remaining==null?Math.max(0,recloneMax-recloneCount):Math.max(0,Math.min(recloneMax,parseInt(slot.reclone_remaining,10)||0));
     var w=document.createElement('div'); w.className='asset-library-card';
     if(slot.slot_id) w.setAttribute('data-slot-id', slot.slot_id);
     if(!readonly && !completed){ w.tabIndex=0; w.setAttribute('role','button'); }
@@ -1097,7 +1098,7 @@
       var actions=document.createElement('div');
       actions.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:2px;padding-top:12px;border-top:1px solid rgba(148,164,187,.1);';
       var remain=document.createElement('div');
-      remain.textContent='\u5269\u4f59\u91cd\u65b0\u590d\u523b\u6b21\u6570\uff1a'+recloneRemain+'\u6b21';
+      remain.textContent='\u5269\u4f59\u91cd\u65b0\u590d\u523b\u6b21\u6570\uff1a'+recloneRemain+' / '+recloneMax+'\u6b21';
       remain.style.cssText='font-size:11.5px;color:'+(recloneRemain>0?'#94a4bb':'#f4708a')+';line-height:1.4;';
       var redo=document.createElement('button');
       redo.type='button';
@@ -1260,6 +1261,7 @@
       if(res.status===401){ HQ.login(); return; }
       loading.remove();
       var slots=res.data.items||[];
+      slots.forEach(function(slot){ if(slot.reclone_max==null) slot.reclone_max=Number(res.data.reclone_max||0); });
       var slotIds={};
       var validCount=res.data.slot_count==null?slots.filter(function(slot){return ['active','training','ready','failed'].indexOf(slot.status)>=0;}).length:Number(res.data.slot_count);
       grid.appendChild(buySlotCard({count:validCount,max:res.data.slot_max,cost:res.data.slot_cost,points:res.data.points}));
