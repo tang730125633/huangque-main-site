@@ -127,9 +127,17 @@ def normalize_request_id(value: object) -> str:
     return secrets.token_hex(16)
 
 
+_ADMIN_AUDIT_MARKER = "_hq_admin_audit"
+_ADMIN_AUDIT_VERSION = 1
+
+
 def admin_audit_reason(reason: str, request_id: str) -> str:
     return json.dumps(
-        {"reason": validate_admin_reason(reason), "request_id": normalize_request_id(request_id)},
+        {
+            _ADMIN_AUDIT_MARKER: _ADMIN_AUDIT_VERSION,
+            "reason": validate_admin_reason(reason),
+            "request_id": normalize_request_id(request_id),
+        },
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
@@ -145,7 +153,9 @@ def public_audit_row(row):
         return item
     if (
         isinstance(envelope, dict)
-        and set(envelope) == {"reason", "request_id"}
+        and set(envelope) == {_ADMIN_AUDIT_MARKER, "reason", "request_id"}
+        and type(envelope[_ADMIN_AUDIT_MARKER]) is int
+        and envelope[_ADMIN_AUDIT_MARKER] == _ADMIN_AUDIT_VERSION
         and isinstance(envelope["reason"], str)
         and isinstance(envelope["request_id"], str)
     ):
@@ -2230,6 +2240,8 @@ class H(BaseHTTPRequestHandler):
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
+            if not isinstance(d, dict):
+                return self._send(400, {"detail": "request body must be a JSON object"})
             username = (d.get("username") or "").strip()
             try:
                 reason = validate_admin_reason(d.get("reason"))
@@ -2260,6 +2272,8 @@ class H(BaseHTTPRequestHandler):
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
+            if not isinstance(d, dict):
+                return self._send(400, {"detail": "request body must be a JSON object"})
             try:
                 reason = validate_admin_reason(d.get("reason") or d.get("review_note"))
                 order, err = review_recharge_order(
