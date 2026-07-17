@@ -2,9 +2,9 @@
 """统一 assets 表：写入幂等、stage 归类、meta 投影、读取过滤。
 
 要点：
-- record_asset 只对 copy/collect/leads 生效（image 走 jobs.result→/api/gen/history；audio/video 走各自旧表）
+- record_asset 对 copy/collect/leads/breakdown 生效（image 走 jobs.result→/api/gen/history；audio/video 走各自旧表）
 - UNIQUE(kind, job_id) + INSERT OR IGNORE → 重复写不产生重复行（回填脚本可反复跑）
-- collect 评论不复制；copy 正文和 leads 查看字段投影到 meta
+- collect 评论不复制；copy / leads / breakdown 只保留资产库展示需要的投影字段
 """
 import importlib, os, sys, tempfile, unittest
 from contextlib import closing
@@ -35,6 +35,7 @@ class AssetsStoreTests(unittest.TestCase):
         self.assertEqual(self.store.KIND_STAGE["collect"], self.store.MATERIAL)
         self.assertEqual(self.store.KIND_STAGE["copy"], self.store.WORK)
         self.assertEqual(self.store.KIND_STAGE["leads"], self.store.DELIVERY)
+        self.assertEqual(self.store.KIND_STAGE["breakdown"], self.store.WORK)
         self.assertNotIn("image", self.store.KIND_STAGE, "image 走 jobs.result，不进 assets 表")
 
     def test_image_is_not_recorded(self):
@@ -98,6 +99,37 @@ class AssetsStoreTests(unittest.TestCase):
         self.assertIn("镜号01（3s）", body)
         self.assertIn("画面：门店外景", body)
         self.assertIn("口播：皮肤透亮", body)
+
+    def test_record_breakdown_projects_asset_fields(self):
+        result = {
+            "type": "breakdown",
+            "source_title": "  新客到店拆解  " * 20,
+            "source_url": "https://example.com/video/9",
+            "source_platform": "douyin",
+            "duration": 27,
+            "scenes": [{"dur": "3s", "scene": "门头特写", "line": "先看招牌"}],
+            "analysis": "前3秒强钩子，后面用价格锚点推进转化",
+        }
+        self.assertTrue(self.store.record_asset(16, "u", "breakdown", result))
+        a = self.store.list_assets("u", kind="breakdown")[0]
+        self.assertEqual(a["stage"], "work")
+        self.assertEqual(a["title"], self.store._clip(result["source_title"]))
+        self.assertEqual(a["url"], "https://example.com/video/9")
+        self.assertEqual(a["meta"]["source_platform"], "douyin")
+        self.assertEqual(a["meta"]["duration"], 27)
+        self.assertEqual(a["meta"]["scenes"][0]["scene"], "门头特写")
+        self.assertEqual(a["meta"]["analysis"], "前3秒强钩子，后面用价格锚点推进转化")
+
+    def test_record_breakdown_tolerates_missing_fields(self):
+        self.assertTrue(self.store.record_asset(17, "u", "breakdown", None))
+        a = self.store.list_assets("u", kind="breakdown")[0]
+        self.assertIsNone(a["title"])
+        self.assertIsNone(a["url"])
+        self.assertIsNone(a["meta"]["source_url"])
+        self.assertIsNone(a["meta"]["source_platform"])
+        self.assertIsNone(a["meta"]["duration"])
+        self.assertIsNone(a["meta"]["scenes"])
+        self.assertIsNone(a["meta"]["analysis"])
 
     # --- 幂等：回填脚本会反复跑 ---
     def test_record_is_idempotent(self):
