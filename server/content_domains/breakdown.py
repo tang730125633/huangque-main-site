@@ -12,12 +12,22 @@ _UNSUPPORTED_PLATFORMS = {"channels", "weixin", "wechat"}
 
 def gen_breakdown(payload):
     """下载视频 → 抽帧 → ASR → GPT-4o 多模态分析 → 分镜拆解。
-    由 run_job 调用，走标准 job 生命周期（扣点/退点/reaper 全自动）。"""
+    由 run_job 调用，走标准 job 生命周期（扣点/退点/reaper 全自动）。
+    支持单个 url 或批量 urls（≤5 条，顺序处理）。"""
+    import tikhub
+
+    urls = payload.get("urls")
+    if urls and isinstance(urls, list):
+        urls = [u.strip() for u in urls if isinstance(u, str) and u.strip()]
+        if not urls:
+            raise ValueError("请粘贴抖音/小红书/视频号链接")
+        if len(urls) > 5:
+            raise ValueError("批量拆解最多 5 条链接")
+        return _do_batch_breakdown(payload, urls)
+
     url = (payload.get("url") or "").strip()
     if not url:
         raise ValueError("请粘贴抖音/小红书/视频号链接")
-
-    import tikhub
 
     # ① 解析链接
     info = tikhub.parse_link(url)
@@ -26,6 +36,36 @@ def gen_breakdown(payload):
         raise ValueError("视频号暂不支持拆解，请粘贴抖音/小红书链接")
 
     return _do_breakdown(payload, info, url)
+
+
+def _do_batch_breakdown(payload, urls):
+    """批量拆解：逐个处理，收拢结果。"""
+    import tikhub
+
+    job_id = payload.get("_job_id")
+    results = []
+    errors = []
+    for idx, url in enumerate(urls):
+        _heartbeat(job_id, "batch_%d_%d" % (idx + 1, len(urls)))
+        try:
+            info = tikhub.parse_link(url)
+            platform = (info.get("platform") or "").lower()
+            if platform in _UNSUPPORTED_PLATFORMS:
+                errors.append({"url": url, "error": "视频号暂不支持"})
+                continue
+            r = _do_breakdown(payload, info, url)
+            results.append(r)
+        except ValueError as e:
+            errors.append({"url": url, "error": str(e)})
+        except Exception as e:
+            errors.append({"url": url, "error": "拆解失败：" + str(e)[:200]})
+
+    return {
+        "type": "breakdown_batch",
+        "results": results,
+        "errors": errors,
+        "total": len(urls),
+    }
 
 
 def _do_breakdown(payload, info, url):
@@ -82,6 +122,16 @@ def _do_breakdown(payload, info, url):
 
         result = _parse_breakdown_json(raw)
 
+        # 读取关键帧作为缩略图，供前端展示故事板
+        frame_thumbnails = []
+        for fp in (frames or [])[:4]:
+            try:
+                with open(fp, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode()
+                frame_thumbnails.append("data:image/jpeg;base64," + b64)
+            except Exception:
+                pass
+
         return {
             "type": "breakdown",
             "source_url": url,
@@ -91,6 +141,7 @@ def _do_breakdown(payload, info, url):
             "scenes": result.get("scenes", []),
             "analysis": result.get("analysis", ""),
             "asr_failed": asr_failed,
+            "frame_thumbnails": frame_thumbnails,
         }
     finally:
         if tmp_video:
@@ -120,8 +171,11 @@ def _strip_json_code_fence(raw):
 
 
 def _iter_json_objects(raw):
+    """扫描文本中所有 JSON 对象。超长输入跳过扫描直接返回空（防 O(n²) 卡死）。"""
     text = str(raw or "")
     n = len(text)
+    if n > 50000:   # 超长文本不逐字符扫描，交给外层 json.loads 直接试
+        return
     for start in range(n):
         if text[start] != "{":
             continue
@@ -207,30 +261,37 @@ def _format_transcript(segs):
 
 def _extract_frames(video_path, count=6, duration=30):
     """ffmpeg 抽帧：场景检测 + 均匀采样兜底。返回 (outdir, [paths])"""
+    count = max(2, min(count, 12))  # 限制 2-12 帧，防止异常参数
     outdir = tempfile.mkdtemp()
-    subprocess.run(
-        ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-         "-i", video_path,
-         "-vf", "select='gt(scene,0.15)',scale=512:-1",
-         "-vsync", "vfr", "-vframes", str(count),
-         "%s/frame_%%d.jpg" % outdir],
-        check=True, timeout=60,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    frames = sorted([os.path.join(outdir, f) for f in os.listdir(outdir)
-                     if f.endswith(".jpg")],
-                    key=lambda p: int(os.path.splitext(os.path.basename(p))[0].split("_")[-1]))
-    if len(frames) < max(3, count // 2):
-        shutil.rmtree(outdir)
-        outdir = tempfile.mkdtemp()
-        fps = max(float(count) / max(float(duration or 1), 1.0), 0.001)
+    try:
         subprocess.run(
             ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
              "-i", video_path,
-             "-vf", "fps=%.6f,scale=512:-1" % fps,
-             "-vframes", str(count),
+             "-vf", "select='gt(scene,0.15)',scale=512:-1",
+             "-vsync", "vfr", "-vframes", str(count),
              "%s/frame_%%d.jpg" % outdir],
             check=True, timeout=60,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError:
+        pass  # 场景检测失败 → 退到均匀采样
+    frames = sorted([os.path.join(outdir, f) for f in os.listdir(outdir)
+                     if f.endswith(".jpg")],
+                    key=lambda p: int(os.path.splitext(os.path.basename(p))[0].split("_")[-1]))
+    if len(frames) < max(2, count // 2):
+        shutil.rmtree(outdir)
+        outdir = tempfile.mkdtemp()
+        fps = max(float(count) / max(float(duration or 1), 1.0), 0.001)
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                 "-i", video_path,
+                 "-vf", "fps=%.6f,scale=512:-1" % fps,
+                 "-vframes", str(count),
+                 "%s/frame_%%d.jpg" % outdir],
+                check=True, timeout=60,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError:
+            pass  # 均匀采样也失败 → 返回已有帧（可能 0 张，GPT-4o 仍可纯文本分析）
         frames = sorted([os.path.join(outdir, f) for f in os.listdir(outdir)
                          if f.endswith(".jpg")],
                         key=lambda p: int(os.path.splitext(os.path.basename(p))[0].split("_")[-1]))

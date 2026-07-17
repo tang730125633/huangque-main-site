@@ -134,6 +134,10 @@ class BreakdownTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "拆解结果解析失败，请重试"):
             self.breakdown._parse_breakdown_json("not json at all")
 
+    def test_parse_breakdown_json_raises_same_error_for_invalid_output(self):
+        with self.assertRaisesRegex(ValueError, "拆解结果解析失败，请重试"):
+            self.breakdown._parse_breakdown_json("not json at all")
+
     def test_do_breakdown_records_asr_failure(self):
         calls = {}
 
@@ -188,6 +192,102 @@ class BreakdownTests(unittest.TestCase):
         self.assertIn('"_hb_phase"', src)
         self.assertNotIn('"phase"', src)
 
+    def test_iter_json_objects_skips_oversized_input(self):
+        big = "x" * 50001
+        result = list(self.breakdown._iter_json_objects(big))
+        self.assertEqual(result, [])
 
+    def test_iter_json_objects_handles_normal_input(self):
+        result = list(self.breakdown._iter_json_objects('{"a":1} extra {"b":2}'))
+        self.assertEqual(len(result), 2)
+        self.assertIn('{"a":1}', result)
+        self.assertIn('{"b":2}', result)
+
+    def test_extract_frames_clamps_count_to_range(self):
+        import inspect
+        src = inspect.getsource(self.breakdown._extract_frames)
+        self.assertIn("max(2, min(count, 12))", src)
+
+    def test_gen_breakdown_single_url_still_works(self):
+        calls = self._install_fake_env(
+            '{"scenes":[{"dur":"3s","scene":"门头","line":"欢迎"}],"analysis":"ok"}'
+        )
+        sys.modules["tikhub"].parse_link = lambda url: {"platform": "douyin", "id": "abc123"}
+
+        result = self.breakdown.gen_breakdown({"url": "https://example.test/v/1", "_job_id": 20})
+
+        self.assertEqual(result["type"], "breakdown")
+        self.assertEqual(result["source_platform"], "douyin")
+
+    def test_gen_breakdown_batch_urls_returns_combined_results(self):
+        calls = {}
+
+        class FakeTikHub:
+            @staticmethod
+            def parse_link(url):
+                return {"platform": "douyin", "id": "abc" + url[-1]}
+            @staticmethod
+            def detail(platform, item_id, note_type=None):
+                return {
+                    "play_url": "https://example.test/demo.mp4",
+                    "duration": 18,
+                    "title": "测试视频",
+                }
+            @staticmethod
+            def download_to_file(play_url, deadline, filename):
+                pass
+            @staticmethod
+            def transcript(det, video_path=None):
+                return [{"start": 0, "end": 3, "text": "测试文案"}]
+
+        self.breakdown._heartbeat = lambda job_id, phase: None
+        self.breakdown._extract_frames = lambda video_path, count, duration: ("d", ["f1.jpg", "f2.jpg"])
+        self.breakdown._chat_multimodal = lambda sysmsg, usermsg, frames, temp=0.7: '{"scenes":[{"dur":"3s","scene":"画面","line":"口播"}],"analysis":"分析"}'
+        self.breakdown.tempfile.NamedTemporaryFile = lambda suffix="", delete=False: type("Tmp", (), {"name": "f.mp4"})()
+        sys.modules["tikhub"] = FakeTikHub
+
+        result = self.breakdown.gen_breakdown({"urls": ["https://example.test/v/1", "https://example.test/v/2"], "_job_id": 21})
+
+        self.assertEqual(result["type"], "breakdown_batch")
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(len(result["results"]), 2)
+        self.assertEqual(len(result["errors"]), 0)
+
+    def test_gen_breakdown_batch_rejects_more_than_5(self):
+        with self.assertRaisesRegex(ValueError, "最多 5 条"):
+            self.breakdown.gen_breakdown({"urls": ["http://a.test/1"] * 6, "_job_id": 22})
+
+    def test_do_breakdown_includes_frame_thumbnails(self):
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+        tmp.write(bytes.fromhex(
+            "ffd8ffe000104a46494600010101006000600000ffdb004300080606070605080707070909080a0c"
+            "140d0c0b0b0c1912130f141d1a1f1e1d1a1c1c20242e2720222c231c1c2837292c3031343434"
+            "1f27393d38323c2e333432ffdb0043010909090c0b0c180d0d1832211c21323232323232323232"
+            "323232323232323232323232323232323232323232323232323232323232323232323232323232"
+            "ffc00011080001000103012200021101031101ffc4001400010000000000000000000000000000"
+            "0008ffc40014100100000000000000000000000000000000ffda0008010100013f10c9b0a3c4ff"
+            "d9"
+        ))
+        tmp.close()
+
+        calls = self._install_fake_env(
+            '{"scenes":[{"dur":"3s","scene":"门头","line":"欢迎"}],"analysis":"ok"}'
+        )
+        self.breakdown._extract_frames = lambda video_path, count, duration: (
+            "fake-frame-dir",
+            [tmp.name],
+        )
+
+        result = self.breakdown._do_breakdown(
+            {"_job_id": 30},
+            {"platform": "douyin", "id": "thumb-test"},
+            "https://example.test/post/thumb",
+        )
+
+        self.assertIn("frame_thumbnails", result)
+        self.assertEqual(len(result["frame_thumbnails"]), 1)
+        self.assertTrue(result["frame_thumbnails"][0].startswith("data:image/jpeg;base64,"))
+        import os; os.unlink(tmp.name)
 if __name__ == "__main__":
     unittest.main()
