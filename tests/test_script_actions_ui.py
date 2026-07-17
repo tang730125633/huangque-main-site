@@ -58,6 +58,7 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("BREAKDOWN_HISTORY_KEY='hq_script_breakdown_history'", self.html)
         self.assertIn("switchMode('breakdown')", self.html)
         self.assertIn("renderBreakdown({source_url:m.source_url", self.html)
+        self.assertIn("renderBreakdownReverse({type:'breakdown_reverse'", self.html)
         self.assertIn("analysis:m.analysis||''", self.html)
 
     def test_breakdown_analysis_is_rendered_and_saved_to_history(self):
@@ -90,6 +91,14 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("historyList.appendChild(historyCard(item))", self.html)
         self.assertIn("render({scenes:list},heading", self.html)
         self.assertIn("readBreakdownHistory()", self.html)
+        self.assertIn("flattenBreakdownAsset(item)", self.html)
+        self.assertIn("saveBreakdownHistory(item);", self.html)
+
+    def test_reverse_history_is_saved_and_restored(self):
+        self.assertIn("prompt:(bd.prompt||'')", self.html)
+        self.assertIn("return !!((Array.isArray(meta.scenes)&&meta.scenes.length)||String(meta.prompt||'').trim());", self.html)
+        self.assertIn("renderBreakdownReverse(result); saveBreakdownHistory(result); loadHistory();", self.html)
+        self.assertIn("isReverse?'反推':'拆解'", self.html)
 
     def test_history_controls_are_accessible_buttons(self):
         self.assertIn('id="scHistoryBtn" class="sc-btn" type="button"', self.html)

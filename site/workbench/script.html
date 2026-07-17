@@ -528,29 +528,38 @@
     setBreakdownStoryboard((bd&&bd.frame_thumbnails)||[]);
     syncModeUi();
   }
+  function breakdownMetaFromResult(bd){
+    bd=bd||{};
+    return {
+      type:bd.type||'breakdown',
+      source_url:bd.source_url||'',
+      source_title:bd.source_title||'',
+      source_platform:bd.source_platform||'',
+      duration:bd.duration||'',
+      analysis:(bd.analysis||''),
+      scenes:normalizeBreakdownScenes(bd.scenes||[]),
+      prompt:(bd.prompt||''),
+      frame_thumbnails:(bd.frame_thumbnails||[]).slice(0,2)
+    };
+  }
+  function isBreakdownHistoryMeta(meta){
+    meta=meta||{};
+    return !!((Array.isArray(meta.scenes)&&meta.scenes.length)||String(meta.prompt||'').trim());
+  }
   function saveBreakdownHistory(bd){
     if(!bd) return;
-    var frames=(bd.frame_thumbnails||[]).slice(0,2);  // 最多存2帧防 localStorage 超限
     var item={
       kind:'breakdown',
-      title:bd.source_title||'爆款拆解',
+      title:bd.source_title||((bd.type==='breakdown_reverse')?'视频提示词反推':'爆款拆解'),
       created_at:Math.floor(Date.now()/1000),
-      meta:{
-        source_url:bd.source_url||'',
-        source_title:bd.source_title||'',
-        source_platform:bd.source_platform||'',
-        duration:bd.duration||'',
-        analysis:(bd.analysis||''),
-        scenes:normalizeBreakdownScenes(bd.scenes||[]),
-        frame_thumbnails:frames
-      }
+      meta:breakdownMetaFromResult(bd)
     };
     try{
       var list=JSON.parse(localStorage.getItem(BREAKDOWN_HISTORY_KEY)||'[]');
       if(!Array.isArray(list)) list=[];
       var dedup=list.filter(function(x){
         var m=x&&x.meta||{};
-        return !(m.source_url && item.meta.source_url && m.source_url===item.meta.source_url);
+        return !(m.source_url && item.meta.source_url && m.source_url===item.meta.source_url && (m.type||'breakdown')===(item.meta.type||'breakdown'));
       });
       dedup.unshift(item);
       localStorage.setItem(BREAKDOWN_HISTORY_KEY, JSON.stringify(dedup.slice(0,12)));
@@ -559,8 +568,22 @@
   function readBreakdownHistory(){
     try{
       var list=JSON.parse(localStorage.getItem(BREAKDOWN_HISTORY_KEY)||'[]');
-      return Array.isArray(list)?list.filter(function(item){ return Array.isArray(((item||{}).meta||{}).scenes)&&((item.meta||{}).scenes.length); }):[];
+      return Array.isArray(list)?list.filter(function(item){ return isBreakdownHistoryMeta(((item||{}).meta||{})); }):[];
     }catch(_e){ return []; }
+  }
+  function flattenBreakdownAsset(item){
+    var meta=(item&&item.meta)||{};
+    if((meta.type||'')==='breakdown_batch'){
+      return (meta.results||[]).map(function(bd, idx){
+        return {
+          kind:'breakdown',
+          title:bd.source_title||((item&&item.title)||('批量拆解 '+(idx+1))),
+          created_at:item&&item.created_at,
+          meta:breakdownMetaFromResult(bd)
+        };
+      }).filter(function(x){ return isBreakdownHistoryMeta(x.meta); });
+    }
+    return isBreakdownHistoryMeta(meta) ? [{kind:'breakdown',title:item&&item.title,created_at:item&&item.created_at,meta:meta}] : [];
   }
   function prepareBreakdownRemakePayload(bd, style){
     return {scenes:normalizeBreakdownScenes((bd&&bd.scenes)||[]),style:style||'剧情'};
@@ -746,14 +769,15 @@
               if(result.type==='breakdown_batch'){
                 switchBreakdownTool('scenes');
                 var first=result.results[0];
-                if(first){ renderBreakdown(first); saveBreakdownHistory(first); }
+                if(first) renderBreakdown(first);
+                (result.results||[]).forEach(function(item){ saveBreakdownHistory(item); });
                 var msg='批量完成：'+result.results.length+'/'+result.total+' 成功';
                 if(result.errors.length) msg+='，'+result.errors.length+' 条失败';
                 if(window.HQ&&window.HQ.toast) HQ.toast(msg);
                 loadHistory();
               } else if(result.type==='breakdown_reverse'){
                 switchBreakdownTool('reverse_prompt');
-                renderBreakdownReverse(result);
+                renderBreakdownReverse(result); saveBreakdownHistory(result); loadHistory();
               } else {
                 switchBreakdownTool('scenes');
                 renderBreakdown(result); saveBreakdownHistory(result); loadHistory();
@@ -804,11 +828,12 @@
   function historyCard(item){
     var m=item.meta||{}, list=Array.isArray(m.scenes)?m.scenes:[];
     var isBreakdown=(item.kind==='breakdown')||!!m.source_platform;
+    var isReverse=isBreakdown && (m.type==='breakdown_reverse' || String(m.prompt||'').trim());
     var btn=document.createElement('button'); btn.type='button'; btn.className='sc-history-item';
     var title=document.createElement('div'); title.className='sc-history-title'; title.textContent=item.title||'（无标题）'; title.title=item.title||'';
     var info=document.createElement('div'); info.className='sc-history-meta';
     info.textContent=isBreakdown
-      ? ['拆解',platformText(m.source_platform),(m.duration||'')?((m.duration||'')+'s'):'',list.length+'个分镜'].filter(Boolean).join(' · ')
+      ? [isReverse?'反推':'拆解',platformText(m.source_platform),(m.duration||'')?((m.duration||'')+'s'):'',isReverse?'提示词':(list.length+'个分镜')].filter(Boolean).join(' · ')
       : [m.style||'分镜脚本',m.dur||'',list.length+'个分镜'].filter(Boolean).join(' · ');
     var when=document.createElement('div'); when.className='sc-history-time';
     when.textContent=item.created_at?new Date(Number(item.created_at)*1000).toLocaleString('zh-CN',{hour12:false}):'';
@@ -817,9 +842,14 @@
       var heading=item.title||'历史脚本';
       if(isBreakdown){
         if(bdUrl) bdUrl.value=m.source_url||'';
-        switchBreakdownTool('scenes');
         switchMode('breakdown');
-        renderBreakdown({source_url:m.source_url,source_title:m.source_title||heading,source_platform:m.source_platform,duration:m.duration,analysis:m.analysis||'',scenes:list,frame_thumbnails:m.frame_thumbnails||[]});
+        if(isReverse){
+          switchBreakdownTool('reverse_prompt');
+          renderBreakdownReverse({type:'breakdown_reverse',source_url:m.source_url,source_title:m.source_title||heading,source_platform:m.source_platform,duration:m.duration,prompt:m.prompt||'',frame_thumbnails:m.frame_thumbnails||[]});
+        }else{
+          switchBreakdownTool('scenes');
+          renderBreakdown({source_url:m.source_url,source_title:m.source_title||heading,source_platform:m.source_platform,duration:m.duration,analysis:m.analysis||'',scenes:list,frame_thumbnails:m.frame_thumbnails||[]});
+        }
         if(historyState) historyState.textContent='已载入：'+heading;
       }else{
         if(topic) topic.value=heading;
@@ -840,12 +870,12 @@
       fetch('/api/gen/assets?limit=60&kind=breakdown',{cache:'no-store',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.ok?r.json():{items:[]};}).catch(function(){return {items:[]};})
     ]).then(function(results){
       var copyItems=(results[0].items||[]).filter(function(item){return Array.isArray((item.meta||{}).scenes)&&item.meta.scenes.length;});
-      var bdItems=(results[1].items||[]).filter(function(item){return Array.isArray((item.meta||{}).scenes)&&item.meta.scenes.length;});
+      var bdItems=(results[1].items||[]).reduce(function(all, item){ return all.concat(flattenBreakdownAsset(item)); }, []);
       // 合并 API 结果 + localStorage 兜底
       var localItems=readBreakdownHistory();
       var all=copyItems.concat(bdItems).concat(localItems).sort(function(a,b){return (b.created_at||0)-(a.created_at||0);}).slice(0,12);
       // 去重
-      var seen={}; all=all.filter(function(item){ var key=item.title+'|'+(item.meta||{}).source_url; if(seen[key]) return false; seen[key]=true; return true; });
+      var seen={}; all=all.filter(function(item){ var meta=(item&&item.meta)||{}; var key=(meta.type||'copy')+'|'+(item.title||'')+'|'+(meta.source_url||''); if(seen[key]) return false; seen[key]=true; return true; });
       historyList.innerHTML=''; all.forEach(function(item){historyList.appendChild(historyCard(item));});
       if(historyState) historyState.textContent=all.length?('共 '+all.length+' 条'):'暂无历史脚本';
     }).catch(function(){ if(historyState) historyState.textContent='加载失败，请稍后重试'; });
