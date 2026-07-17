@@ -6,7 +6,7 @@
 
 1. 记录当前已验证的代码 SHA、部署时间、操作人和回滚负责人。
 2. 在仅 root 可读的时间戳目录备份测试数据库、Nginx 站点配置与管理员白名单 snippet、相关 systemd unit/drop-in，以及服务环境文件。校验备份文件存在、权限正确，并记录恢复命令；环境文件只记录路径和校验结果，不打印内容。
-3. 在受保护的环境文件中设置独立随机的 `HQ_CSRF_SECRET`、精确 Origin 列表 `HQ_ALLOWED_ORIGINS`、调点阈值 `HQ_ADMIN_ADJUST_MAX_ABS` 及其他服务所需值。权限设为 root 可读，禁止复用生产环境值。
+3. 在受保护的环境文件中设置独立随机的 `HQ_CSRF_SECRET`、精确 Origin 列表 `HQ_ALLOWED_ORIGINS`、调点阈值 `HQ_ADMIN_POINTS_MAX_DELTA` 及其他服务所需值。权限设为 root 可读，禁止复用生产环境值。
 4. 将管理员来源写入 Nginx 白名单：使用文档示例时可写 `allow 192.0.2.10/32;`，最后一条活动规则必须是 `deny all;`。部署校验命令中的 `ADMIN_ALLOWED_SOURCE` 必须与活动的 allow IP/CIDR 完全一致。
 5. 准备两个验证来源：白名单来源用于手工确认管理员登录；非白名单来源用于运行 403 负向探测。`ADMIN_ALLOWED_SOURCE` 表示预期已部署的允许项，不是 `curl --interface` 参数。
 6. 确认变更不包含数据库 schema 修改，因此本批次不安排 schema 迁移或 schema 回滚。

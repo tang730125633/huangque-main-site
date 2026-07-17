@@ -194,6 +194,11 @@ class FullEnvironmentVerificationScriptTest(unittest.TestCase):
 
 
 class SecurityDeploymentRunbookTest(unittest.TestCase):
+    def test_runbook_uses_the_implemented_admin_points_limit_variable(self):
+        text = RUNBOOK.read_text(encoding="utf-8")
+        self.assertIn("HQ_ADMIN_POINTS_MAX_DELTA", text)
+        self.assertNotIn("HQ_ADMIN_ADJUST_MAX_ABS", text)
+
     @classmethod
     def setUpClass(cls):
         cls.text = RUNBOOK.read_text(encoding="utf-8")
@@ -206,7 +211,7 @@ class SecurityDeploymentRunbookTest(unittest.TestCase):
             "环境文件",
             "HQ_CSRF_SECRET",
             "HQ_ALLOWED_ORIGINS",
-            "HQ_ADMIN_ADJUST_MAX_ABS",
+            "HQ_ADMIN_POINTS_MAX_DELTA",
             "白名单",
             "ADMIN_ALLOWED_SOURCE",
             "非白名单来源",
