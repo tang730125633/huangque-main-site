@@ -36,7 +36,7 @@ class FailedAssetSyncTests(unittest.TestCase):
         self.assertIn("update_video_asset_phase(job_id, \"failed\", status=\"failed\"", block)
         self.assertNotIn("video_domain.record_video_asset", block)   # 实际调用不能是 record_video_asset
         # 只对视频类 kind 生效
-        self.assertIn('kind not in {"video", "tryon", "xiaole_video", "cinematic"}', block)
+        self.assertIn('kind not in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}', block)
 
     def test_run_job_error_branch_syncs_via_helper(self):
         """失败分支不再 record_video_asset(dict(payload))——那正是 mode=None 抛 NOT NULL 的地方。"""

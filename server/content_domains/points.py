@@ -26,6 +26,16 @@ SEEDREAM_VARIANT_COST = {
     "std": {"std": 8,  "hd": 12},   # 5.0 标准
     "pro": {"std": 15, "hd": 20},   # 5.0 Pro
 }
+
+# Sora 2 限时 Beta 售价（点/秒）。官方标准价分别为 $0.10 / $0.30 / $0.50 / $0.70
+# 每秒；按 7.1 汇率与 1 元=10 点，裸成本约 7.1 / 21.3 / 35.5 / 49.7 点/秒。
+# 这里延续现有 Grok 30 点/秒约 4.2x 的安全垫，覆盖失败、存储、运维与汇率波动。
+SORA_VIDEO_RATE = {
+    ("sora-2", "720p"): 30,
+    ("sora-2-pro", "720p"): 90,
+    ("sora-2-pro", "1024p"): 150,
+    ("sora-2-pro", "1080p"): 210,
+}
 # 数量上限必须与 image.gen_image 里的 cap 逐字一致，否则按 N 扣点却只出 cap 张 = 超收。
 _IMAGE_CAP_2 = {"zelong", "zelong2", "xiaole", "seedream"}
 
@@ -79,6 +89,18 @@ def cost_of(kind, body):
         else:
             duration = min(15, int(body.get("duration") or 10))
         return max(30, int(math.ceil(duration)) * 30)
+    if kind == "sora_video":
+        model = str(body.get("model") or "sora-2").strip().lower()
+        resolution = str(body.get("resolution") or "720p").strip().lower()
+        # 未知组合用最高档兜底；正常请求会在 validate_sora_video_payload 先被拒绝，
+        # 这里的目标是即使未来接线漏校验，也绝不能回落成 0 点免费送高价 Pro。
+        rate = SORA_VIDEO_RATE.get((model, resolution), max(SORA_VIDEO_RATE.values()))
+        try:
+            seconds = int(body.get("seconds") or 4)
+        except (TypeError, ValueError):
+            seconds = 4
+        seconds = max(4, min(12, seconds))
+        return rate * seconds
     return COST.get(kind, 0)
 
 class AuthPointsError(Exception):

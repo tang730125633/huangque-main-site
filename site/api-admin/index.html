@@ -63,7 +63,7 @@
     <tr><th>渠道</th><th>模型/用途</th><th>base_url</th><th>认证</th><th>key 存放（打码）</th><th>状态</th></tr>
     <tr><td><b>Seedance（火山 Ark）</b></td><td>字节 Seedance 文/图生视频</td><td><code>ark.cn-beijing.volces.com/api/v3</code></td><td class="tag gold">Bearer（Ark key）</td><td>本地 <code>secret.env</code> / 服务器 <code>DOUBAO_TOKEN</code></td><td class="st-todo">●</td></tr>
     <tr><td><b>Grok i2v</b></td><td>xAI Grok 图生视频</td><td>x.ai / 中转</td><td class="tag gray">Bearer</td><td><span class="st-warn">待补：grok key 存放位置</span></td><td class="st-warn">●</td></tr>
-    <tr><td><b>Sora</b></td><td>OpenAI 视频（走中转）</td><td>中转站</td><td class="tag gray">随中转</td><td><span class="st-warn">待补</span></td><td class="st-warn">●</td></tr>
+    <tr><td><b>Sora 2 限时 Beta</b></td><td>OpenAI Sora 2 / Pro 文生视频（官方 2026-09-24 下线）</td><td><code>OPENAI_BASE</code> → <code>/v1/videos</code></td><td class="tag gold">Bearer</td><td><code>content.env</code> → <code>OPENAI_API_KEY</code>；另需 <code>SORA_VIDEO_ENABLED=1</code></td><td class="st-warn">●</td></tr>
   </table>
 
   <h2><span class="dot"></span>四、LLM / 对话 / 中转站</h2>

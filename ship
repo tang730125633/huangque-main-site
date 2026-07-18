@@ -163,6 +163,7 @@ for f in "$@"; do
     server/wechat_virtual_pay.py|server/sync_virtual_pay_goods.py)
              dest=/home/ubuntu/auth-service/; svc=huangque-auth ;;
     server/content_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-content ;;
+    server/func_names.py)  dest=/home/ubuntu/content-api/;  svc="huangque-content huangque-admin" ;;
     server/content_domains/*) dest=/home/ubuntu/content-api/content_domains/;  svc=huangque-content ;;
     server/admin_api.py)   dest=/home/ubuntu/content-api/;  svc=huangque-admin ;;
     server/leadgen_api.py) dest=/home/ubuntu/content-api/;  svc=huangque-leadgen-api ;;
