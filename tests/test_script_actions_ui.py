@@ -27,7 +27,7 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn('id="scGenAudio"', self.html)
         self.assertIn("fetch('/api/gen/script_to_video'", self.html)
         self.assertIn("_setGenerateBusy", self.html)
-        self.assertIn("_doGenerate({scenes:list,style:'剧情'},genVideoBtn)", self.html)
+        self.assertIn("_doGenerate({scenes:list,style:'剧情',duration:_dramaDuration(list)},genVideoBtn)", self.html)
 
     def test_one_click_video_passes_style_and_selected_avatar(self):
         self.assertIn("lastStyle=style||'口播'", self.html)
@@ -74,7 +74,7 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("return {scenes:normalizeBreakdownScenes((bd&&bd.scenes)||[]),style:style||'剧情'};", self.html)
         self.assertIn("_pickRemakeStyle(function(style)", self.html)
         self.assertIn("_showAvatarPicker(function(avatarId)", self.html)
-        self.assertIn("_doGenerate({scenes:scenes,style:'剧情'},bdRemakeBtn)", self.html)
+        self.assertIn("_doGenerate({scenes:scenes,style:'剧情',duration:_dramaDuration(scenes)},bdRemakeBtn)", self.html)
 
     def test_breakdown_reverse_prompt_ui_and_actions_exist(self):
         self.assertIn('id="bdReverseCopyBtn"', self.html)
@@ -254,6 +254,11 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("/api/gen/audio/voices", self.html)
         self.assertIn("voice:voice", self.html)
         self.assertIn("scope==='personal'", self.html)
+
+    def test_drama_duration_sums_scenes_and_clamps_to_15(self):
+        """剧情时长求和所有分镜 dur 并 clamp 到 [1,15]"""
+        self.assertIn("function _dramaDuration(list)", self.html)
+        self.assertIn("Math.min(15, Math.max(1", self.html)
 
 if __name__ == "__main__":
     unittest.main()
