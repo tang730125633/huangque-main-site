@@ -36,6 +36,8 @@ RECHARGE_TIERS = {99: 1000, 199: 2000, 499: 5000}   # 金额(元) -> 点数(含�
 RECHARGE_RATE = 10                                   # 自定义:每元 10 点
 RECHARGE_CUSTOM_MIN = 10
 RECHARGE_CUSTOM_MAX = 5000
+JSAPI_TEST_AMOUNT_YUAN = 0.1
+JSAPI_TEST_POINTS = 1
 
 def recharge_points_for(amount):
     """金额(元) -> 点数。固定档用赠送价；其余按 10 点/元(限 10~5000 元整数)。非法返回 None。
@@ -51,6 +53,22 @@ def recharge_points_for(amount):
     if RECHARGE_CUSTOM_MIN <= yuan <= RECHARGE_CUSTOM_MAX:
         return yuan * RECHARGE_RATE
     return None
+
+def jsapi_recharge_quote(amount):
+    """小程序 JSAPI 下单定价。
+
+    保留 0.10 元 / 1 点的真机支付测试档，其余金额仍严格使用公开充值定价。
+    """
+    try:
+        is_test_amount = int(round(float(amount) * 100)) == 10 and abs(float(amount) - 0.1) < 1e-9
+    except (TypeError, ValueError, OverflowError):
+        is_test_amount = False
+    if is_test_amount:
+        return JSAPI_TEST_AMOUNT_YUAN, JSAPI_TEST_POINTS
+    points = recharge_points_for(amount)
+    if points is None:
+        return None
+    return int(amount), points
 LOGIN_FAILS = {}
 REGISTER_HITS = {}
 REVOKED_TOKENS = set()
@@ -2130,18 +2148,17 @@ class H(BaseHTTPRequestHandler):
             js_code = (d.get("js_code") or "").strip()
             if not js_code:
                 return self._send(400, {"detail": "缺少 js_code"})
-            amount = d.get("amount")                 # 客户端只传金额(元)
-            points = recharge_points_for(amount)     # 点数服务端算,不信客户端
-            if points is None:
+            quote = jsapi_recharge_quote(d.get("amount"))
+            if quote is None:
                 return self._send(400, {"detail": "无效的充值金额(固定档 99/199/499，或自定义 10~5000 元整数)"})
-            amount = int(amount)
+            amount, points = quote
             try:
                 openid = wxpay.jscode2session(js_code)
                 order, err = create_recharge_order(row["username"], amount, points, "微信小程序充值")
                 if err:
                     return self._send(400, {"detail": err})
                 prepay_id = wxpay.create_jsapi(
-                    order["order_id"], "黄雀点数充值 %d点" % points, amount * 100, openid)
+                    order["order_id"], "黄雀点数充值 %d点" % points, int(round(amount * 100)), openid)
                 pay = wxpay.jsapi_pay_params(prepay_id)   # 客户端 wx.requestPayment 参数
                 return self._send(200, {"ok": True, "order": order, "pay": pay})
             except Exception as e:
