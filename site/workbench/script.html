@@ -952,7 +952,7 @@
     scenes.innerHTML='<div style="padding:34px;text-align:center;color:#e7b24c;font-size:13px;">🎬 正在启动生成…</div>';
     if(meta) meta.innerHTML='';
     hideBreakdownMeta();
-    var pollCount=0, lastProgress=-1, pollErrors=0, sceneCount=payload.scenes.length;
+    var pollCount=0, lastProgress=-1, pollErrors=0, sceneCount=payload.scenes.length, startTs=Date.now();
     fetch('/api/gen/script_to_video',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
       .then(function(x){
@@ -983,9 +983,9 @@
               clearInterval(iv); _setGenerateBusy(btn,false);
               scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">成片失败：'+(d.error||'')+' · 已退点</div>';
             } else {
-              var elapsed=pollCount*3;
+              var elapsed=Math.floor((Date.now()-startTs)/1000);
               var bucket=elapsed<30?0:(elapsed<90?1:2);
-              if(bucket!==lastProgress){
+              if(bucket!==lastProgress||bucket===2){  // 第三档每次轮询都刷新，等待时间实时走秒
                 lastProgress=bucket;
                 var msgs=['正在生成口播音频…','正在生成数字人视频…（约 1-3 分钟）','视频生成中…已等待 '+Math.floor(elapsed/60)+' 分 '+(elapsed%60)+' 秒'];
                 scenes.innerHTML='<div style="padding:34px;text-align:center;color:#e7b24c;font-size:13px;">🎬 '+msgs[bucket]+'</div>';

@@ -219,5 +219,11 @@ class ScriptActionsUiTests(unittest.TestCase):
         """P3: 风格选择器有说明文字"""
         self.assertIn("口播/种草=数字人念稿", self.html)
 
+    def test_video_wait_timer_is_realtime(self):
+        """成片等待时间必须按真实时间实时刷新，不能在第三档冻住"""
+        self.assertIn("startTs=Date.now()", self.html)
+        self.assertIn("Math.floor((Date.now()-startTs)/1000)", self.html)
+        self.assertIn("bucket!==lastProgress||bucket===2", self.html)
+
 if __name__ == "__main__":
     unittest.main()
