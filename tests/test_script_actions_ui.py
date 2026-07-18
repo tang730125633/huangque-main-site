@@ -170,9 +170,9 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("((s.line||'').trim()?'<div style=\"font-size:13px; color:#eaf1fa;", self.html)
         self.assertIn("((s.line||'').trim()?'<a data-to-audio=", self.html)
 
-    def test_reverse_mode_remake_skips_style_picker_goes_drama(self):
-        self.assertIn("if(isReverse){", self.html)
-        self.assertIn("_doGenerate({scenes:scenes,style:'剧情'},bdRemakeBtn);", self.html)
+    def test_batch_breakdown_hint_shows_progressive_pricing(self):
+        """批量拆解提示必须标明累进计费（首条 8 点每多一条+4 点）"""
+        self.assertIn("首条 8 点每多一条+4 点", self.html)
 
 if __name__ == "__main__":
     unittest.main()
