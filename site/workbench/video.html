@@ -246,8 +246,8 @@
         <button class="function-tab" type="button" data-function="cinematic">电影化身</button>
         <button class="function-tab" type="button" data-function="tryon">换装换背景</button>
         <button class="function-tab" type="button" data-function="grok">果肉视频生成</button>
-        <button class="function-tab" type="button" data-function="micro">豆姐视频生成</button>
-        <button class="function-tab" type="button" data-function="omni">欧米视频生成</button>
+        <button class="function-tab hidden" type="button" data-function="micro" aria-hidden="true">豆姐视频生成</button>
+        <button class="function-tab hidden" type="button" data-function="omni" aria-hidden="true">欧米视频生成</button>
       </div>
 
       <div id="bgmPanel" class="panel" style="margin-top:14px;">
@@ -2773,7 +2773,7 @@
       var q=new URLSearchParams(location.search);
       var pp=q.get('prompt'); if(!pp) return;
       var ch=(q.get('channel')||'grok').trim();
-      if(ch!=='grok' && ch!=='micro') ch='grok';
+      if(ch!=='grok') ch='grok';
       updateFunction(ch);
       var ta=(ch==='grok')?$('grokPrompt'):$('microPrompt');
       if(ta){ ta.value=pp; ta.focus(); }

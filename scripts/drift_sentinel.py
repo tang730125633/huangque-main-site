@@ -48,6 +48,8 @@ GIT_REF = os.environ.get('HQ_DRIFT_REF', 'origin/main')
 
 BACKEND_RUNTIME = {
     'server/auth_server.py': '/home/ubuntu/auth-service/auth_server.py',
+    'server/wechat_virtual_pay.py': '/home/ubuntu/auth-service/wechat_virtual_pay.py',
+    'server/sync_virtual_pay_goods.py': '/home/ubuntu/auth-service/sync_virtual_pay_goods.py',
     'server/content_api.py': '/home/ubuntu/content-api/content_api.py',
     'server/imggen_api.py': '/home/ubuntu/content-api/imggen_api.py',
     'server/leadgen_api.py': '/home/ubuntu/content-api/leadgen_api.py',

@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency  # 领域存储模块均无反向依赖
+import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -218,11 +218,11 @@ VIDEO_GEN_DEADLINE = _env_positive_int("VIDEO_GEN_DEADLINE", 900)
 # 上传/下载/烧字幕/混 BGM —— 那些阶段不刷 updated_at。
 VIDEO_REAPER_GRACE = VIDEO_GEN_DEADLINE + 300
 
-# 【电影化身单独一条死线】20 分钟(kongli 2026-07-14，原跟全站 15 分钟走)。它是唯一「提交即扣费」
+# 【电影化身单独一条死线】30 分钟(kongli 2026-07-17，原 20 分钟→更早 15 分钟)。它是唯一「提交即扣费」
 # 的引擎($7/条，收钱在提交那一刻)：别的引擎超时顶多白等，它超时【钱已经花了】。线上真出现过我们
-# 900s 判超时退点、HeyGen 那边其实已 completed 出片 —— 片子被扔、$7 照付。宁可多等 5 分钟。
+# 20 分钟判超时退点、HeyGen 那边其实还在渲染/已 completed 出片 —— 片子被扔、$7 照付。宁可多等。
 # ⚠️ 宽限用加法钉死，别拆成两个字面量各写各的(口播就栽过：死线 1200s、宽限却 540s，reaper 先杀)。
-CINEMATIC_GEN_DEADLINE = _env_positive_int("HEYGEN_MOTION_DEADLINE", 1200)
+CINEMATIC_GEN_DEADLINE = _env_positive_int("HEYGEN_MOTION_DEADLINE", 1800)
 CINEMATIC_REAPER_GRACE = CINEMATIC_GEN_DEADLINE + 300
 # 没登记的 kind 用它 —— 绝不能是 0（见 reaper 里的注释：0 的语义是「立刻杀」）。
 KIND_GRACE_DEFAULT = _env_positive_int("KIND_GRACE_DEFAULT", 900)
@@ -695,8 +695,9 @@ _workers_started = False
 _shutting_down = threading.Event()
 _inflight = 0                      # 正在 run_job 里跑着的任务数
 _inflight_lock = threading.Lock()
-# 排空最长等多久。视频最长 15 分钟（VIDEO_GEN_DEADLINE=900s）+ 上传下载余量。
-DRAIN_TIMEOUT = _env_positive_int("CONTENT_DRAIN_TIMEOUT", 1200)
+# 排空最长等多久。最长任务是电影化身 30 分钟（CINEMATIC_GEN_DEADLINE=1800s）+ 上传下载余量。
+# 必须 ≥ 最长死线，否则重启时会把跑到一半的 30 分钟剧情视频砍掉（$7 已扣，片子丢）。
+DRAIN_TIMEOUT = _env_positive_int("CONTENT_DRAIN_TIMEOUT", 1800)
 
 
 def is_shutting_down():
@@ -1340,6 +1341,9 @@ class H(BaseHTTPRequestHandler):
             try:
                 body = self._json_body_strict() if kind in {"video", "tryon", "cinematic", "avatar"} else self._json_body()
                 request_body = dict(body) if isinstance(body, dict) else body
+                # 微信小程序内容安全：必须在校验、扣点和入队之前完成。违规内容不扣点；
+                # 微信服务异常时不收单，避免网络故障成为绕过审核的通道。
+                miniprogram_security.check_payload(body)
                 if kind == "video":
                     body = video_domain.validate_video_payload(body, user["username"])
                 elif kind == "tryon":
@@ -1355,6 +1359,10 @@ class H(BaseHTTPRequestHandler):
                     body = image_domain.validate_image_payload(body)
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
                 idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"video", "tryon", "xiaole_video", "cinematic"} else ""
+            except miniprogram_security.ContentRejected as e:
+                return self._send(400, {"detail": str(e), "code": "content_rejected"})
+            except miniprogram_security.SecurityUnavailable as e:
+                return self._send(503, {"detail": str(e), "code": "content_security_unavailable", "retry_after_ms": 5000})
             except ValueError as e:
                 return self._send(400, {"detail": str(e)[:220]})
             # 正在停机（部署中）→ 不收新活。⚠️ 必须在【扣点之前】。
