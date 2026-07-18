@@ -118,6 +118,7 @@
           <div class="sc-opt on"><span class="mono">30s</span></div>
           <div class="sc-opt"><span class="mono">60s</span></div>
         </div>
+        <div id="scDurHint" style="font-size:11px; color:#5c6b82; margin-top:6px;">预计产出 3-4 个分镜</div>
 
         <div class="sc-lab">平台</div>
         <div id="platRow" style="display:flex; flex-wrap:wrap; gap:10px;">
@@ -145,7 +146,7 @@
 
         <div class="sc-lab" style="margin-top:22px;">视频链接</div>
         <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:13px 14px;">
-          <textarea id="bdUrl" rows="1" placeholder="粘贴抖音/小红书视频链接…（每行一个，可批量≤5条）" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;"></textarea>
+          <textarea id="bdUrl" rows="2" placeholder="粘贴抖音/小红书视频链接…（每行一个，可批量≤5条）" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;"></textarea>
         </div>
         <div id="bdUrlHint" style="margin-top:8px; font-size:11px; color:#5c6b82;">支持抖音、小红书公开视频链接，最多 5 条（每行一个，首条 8 点每多一条+4 点），完成后可直接生成同款视频</div>
 
@@ -186,7 +187,7 @@
       <div id="scScenes" style="display:flex; flex-direction:column; gap:12px;">
 
         <!-- 分镜 01 -->
-        <div class="sc-card">
+        <div class="sc-card" data-placeholder="1">
           <div class="sc-shot">
             <span style="display:flex; width:22px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span>
             <span style="font-size:10.5px; line-height:1.4;">生成后<br>在此预览</span>
@@ -199,14 +200,14 @@
             <div style="font-size:12px; color:#94a4bb; margin-bottom:7px;"><span style="color:#5c6b82;">画面：</span>开场特写，博主手持新品，柔光打在金色瓶身上，背景虚化门店环境。</div>
             <div style="font-size:13px; color:#eaf1fa; line-height:1.7; margin-bottom:12px;"><span style="color:#5c6b82; font-size:12px;">口播：</span>“姐妹们，最近脸又干又暗沉？这瓶夏日焕新精华，我用两周就回购了。”</div>
             <div style="display:flex; gap:9px;">
-              <a href="video.html" class="sc-btn"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span>转视频</a>
-              <a href="audio.html" class="sc-btn"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg></span>转口播</a>
+              <a href="video.html" class="sc-btn" target="_blank" rel="noopener"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span>转视频</a>
+              <a href="audio.html" class="sc-btn" target="_blank" rel="noopener"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg></span>转口播</a>
             </div>
           </div>
         </div>
 
         <!-- 分镜 02 -->
-        <div class="sc-card">
+        <div class="sc-card" data-placeholder="1">
           <div class="sc-shot">
             <span style="display:flex; width:22px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span>
             <span style="font-size:10.5px; line-height:1.4;">生成后<br>在此预览</span>
@@ -219,14 +220,14 @@
             <div style="font-size:12px; color:#94a4bb; margin-bottom:7px;"><span style="color:#5c6b82;">画面：</span>半身镜头，博主上脸演示，镜头推近至吸收瞬间，肤色透亮。</div>
             <div style="font-size:13px; color:#eaf1fa; line-height:1.7; margin-bottom:12px;"><span style="color:#5c6b82; font-size:12px;">口播：</span>“质地清爽不黏腻，上脸三秒吸收，油皮干皮都能闭眼入。”</div>
             <div style="display:flex; gap:9px;">
-              <a href="video.html" class="sc-btn"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span>转视频</a>
-              <a href="audio.html" class="sc-btn"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg></span>转口播</a>
+              <a href="video.html" class="sc-btn" target="_blank" rel="noopener"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span>转视频</a>
+              <a href="audio.html" class="sc-btn" target="_blank" rel="noopener"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg></span>转口播</a>
             </div>
           </div>
         </div>
 
         <!-- 分镜 03 -->
-        <div class="sc-card">
+        <div class="sc-card" data-placeholder="1">
           <div class="sc-shot">
             <span style="display:flex; width:22px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.6"/><path d="M21 15l-5-5L5 21"/></svg></span>
             <span style="font-size:10.5px; line-height:1.4;">生成后<br>在此预览</span>
@@ -239,8 +240,8 @@
             <div style="font-size:12px; color:#94a4bb; margin-bottom:7px;"><span style="color:#5c6b82;">画面：</span>产品与活动海报同框，价格标签弹出，二维码与门店地址露出。</div>
             <div style="font-size:13px; color:#eaf1fa; line-height:1.7; margin-bottom:12px;"><span style="color:#5c6b82; font-size:12px;">口播：</span>“本周到店体验立减 100，名额有限，点下方链接预约。”</div>
             <div style="display:flex; gap:9px;">
-              <a href="video.html" class="sc-btn"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span>转视频</a>
-              <a href="audio.html" class="sc-btn"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg></span>转口播</a>
+              <a href="video.html" class="sc-btn" target="_blank" rel="noopener"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 8l-6 4 6 4z"/></svg></span>转视频</a>
+              <a href="audio.html" class="sc-btn" target="_blank" rel="noopener"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg></span>转口播</a>
             </div>
           </div>
         </div>
@@ -268,8 +269,9 @@
         <div style="display:flex; gap:9px; flex-wrap:wrap; justify-content:flex-end;">
           <button id="bdRemakeBtn" class="sc-btn" type="button" style="display:none; color:#0f172a; background:linear-gradient(135deg,#93c5fd,#60a5fa); border-color:rgba(96,165,250,.35); font-weight:700;">🎬 生成同款视频</button>
           <button id="bdEditBtn" class="sc-btn" type="button" style="display:none; color:#60a5fa; background:rgba(96,165,250,.08); border-color:rgba(96,165,250,.24);">✏️ 编辑分镜</button>
+          <button id="bdEditCancelBtn" class="sc-btn" type="button" style="display:none; color:#f4708a; background:rgba(244,112,138,.08); border-color:rgba(244,112,138,.24);">❌ 取消</button>
           <button id="bdReverseCopyBtn" class="sc-btn" type="button" style="display:none; color:#0f172a; background:linear-gradient(135deg,#f4cd72,#e7b24c); border-color:rgba(231,178,76,.4); font-weight:700;">📋 复制提示词</button>
-          <button id="bdReverseDrawBtn" class="sc-btn" type="button" style="display:none; color:#111827; background:linear-gradient(135deg,#c4b5fd,#a78bfa); border-color:rgba(167,139,250,.36); font-weight:700;">🎨 去作图</button>
+          <button id="bdReverseDrawBtn" class="sc-btn" type="button" style="display:none; color:#111827; background:linear-gradient(135deg,#c4b5fd,#a78bfa); border-color:rgba(167,139,250,.36); font-weight:700;">🎨 去作图页精修</button>
           <button id="bdToImageBtn" class="sc-btn" type="button" style="display:none; color:#e7b24c; background:rgba(231,178,76,.08); border-color:rgba(231,178,76,.24);">🎨 一键做图</button>
           <button id="scGenVideo" class="sc-btn" type="button" style="color:#0f172a; background:linear-gradient(135deg,#93c5fd,#60a5fa); border-color:rgba(96,165,250,.35); font-weight:700;">🎬 一键生成视频</button>
           <button id="scGenAudio" class="sc-btn" type="button" style="color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border-color:rgba(231,178,76,.4); font-weight:700;">🎙 一键生成口播</button>
@@ -304,6 +306,7 @@
   var panelWrite=document.getElementById('panelWrite'), panelBreakdown=document.getElementById('panelBreakdown');
   var genVideoBtn=document.getElementById('scGenVideo'), genAudioBtn=document.getElementById('scGenAudio'),
       bdRemakeBtn=document.getElementById('bdRemakeBtn'), bdEditBtn=document.getElementById('bdEditBtn'),
+      bdEditCancelBtn=document.getElementById('bdEditCancelBtn'),
       bdReverseCopyBtn=document.getElementById('bdReverseCopyBtn'), bdReverseDrawBtn=document.getElementById('bdReverseDrawBtn'),
       bdToImageBtn=document.getElementById('bdToImageBtn');
   var bdUrl=document.getElementById('bdUrl'), bdGen=document.getElementById('bdGen'), bdGenText=document.getElementById('bdGenText'),
@@ -342,7 +345,7 @@
     return found;
   }
   function readScenesFromDom(){
-    return Array.prototype.slice.call(scenes.querySelectorAll('.sc-card')).map(function(card){
+    return Array.prototype.slice.call(scenes.querySelectorAll('.sc-card')).filter(function(card){ return !card.hasAttribute('data-placeholder'); }).map(function(card){
       return {scene:cardText(card,'画面'), line:cardText(card,'口播')};
     }).filter(function(s){return s.scene||s.line;});
   }
@@ -367,9 +370,9 @@
   }
   function bindSceneHandoffs(){
     if(!scenes) return;
-    readScenesFromDom().forEach(function(s,i){
-      var card=scenes.querySelectorAll('.sc-card')[i];
-      if(!card) return;
+    var cards=Array.prototype.slice.call(scenes.querySelectorAll('.sc-card')).filter(function(card){ return !card.hasAttribute('data-placeholder'); });
+    cards.forEach(function(card){
+      var s={scene:cardText(card,'画面'), line:cardText(card,'口播')};
       card.querySelectorAll('.sc-btn').forEach(function(btn){
         if(btn.textContent.indexOf('转视频')>=0 && !btn.hasAttribute('data-to-video')) btn.setAttribute('data-to-video',s.scene||'');
         if(btn.textContent.indexOf('转口播')>=0 && !btn.hasAttribute('data-to-audio')) btn.setAttribute('data-to-audio',s.line||'');
@@ -383,7 +386,7 @@
       +'<div style="display:flex; align-items:center; gap:9px; margin-bottom:9px;"><span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">镜号 '+no+'</span><span style="display:inline-flex; align-items:center; gap:4px; padding:3px 9px; font-size:11px; border-radius:7px; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.12);"><span class="mono">'+esc(s.dur||'')+'</span></span></div>'
       +'<div style="font-size:12px; color:#94a4bb; margin-bottom:7px;"><span style="color:#5c6b82;">画面：</span>'+esc(s.scene||'')+'</div>'
       +((s.line||'').trim()?'<div style="font-size:13px; color:#eaf1fa; line-height:1.7; margin-bottom:12px;"><span style="color:#5c6b82; font-size:12px;">口播：</span>'+esc(s.line||'')+'</div>':'')
-      +'<div style="display:flex; gap:9px;"><a data-to-video="'+escAttr(s.scene||'')+'" class="sc-btn">转视频</a>'+((s.line||'').trim()?'<a data-to-audio="'+escAttr(s.line||'')+'" class="sc-btn">转口播</a>':'')+'</div>'
+      +'<div style="display:flex; gap:9px;"><a data-to-video="'+escAttr(s.scene||'')+'" class="sc-btn" target="_blank" rel="noopener">转视频</a>'+((s.line||'').trim()?'<a data-to-audio="'+escAttr(s.line||'')+'" class="sc-btn" target="_blank" rel="noopener">转口播</a>':'')+'</div>'
       +'</div></div>';
   }
   function getDisplayedScenes(){
@@ -486,7 +489,7 @@
   }
   function render(res, topicTxt, style, dur){
     lastScenes=res.scenes||[]; lastStyle=style||'口播';
-    bdEditing=false; if(bdEditBtn) bdEditBtn.textContent='✏️ 编辑分镜';
+    bdEditing=false; if(bdEditBtn) bdEditBtn.textContent='✏️ 编辑分镜'; if(bdEditCancelBtn) bdEditCancelBtn.style.display='none';
     if(meta) meta.innerHTML='<span>'+esc(topicTxt)+'</span><span style="color:#5c6b82;">·</span><span style="color:#e7b24c;">'+esc(style)+'</span><span style="color:#5c6b82;">·</span><span class="mono">'+esc(dur)+'</span><span style="color:#5c6b82;">·</span><span>共 <span class="mono">'+lastScenes.length+'</span> 个分镜</span>';
     scenes.innerHTML=lastScenes.map(function(s,i){ return sceneCardHTML(s,i); }).join('');
     hideBreakdownMeta();
@@ -495,7 +498,7 @@
   }
   function renderBreakdown(bd){
     lastBreakdown=bd;
-    bdEditing=false; if(bdEditBtn) bdEditBtn.textContent='✏️ 编辑分镜';
+    bdEditing=false; if(bdEditBtn) bdEditBtn.textContent='✏️ 编辑分镜'; if(bdEditCancelBtn) bdEditCancelBtn.style.display='none';
     var list=normalizeBreakdownScenes((bd&&bd.scenes)||[]);
     var analysis=(bd&&bd.analysis)||'';
     if(meta) meta.innerHTML='<span style="color:#60a5fa;">拆解</span><span style="color:#5c6b82;">·</span><span>'+esc((bd&&bd.source_title)||'爆款拆解')+'</span><span style="color:#5c6b82;">·</span><span>'+esc(platformText(bd&&bd.source_platform))+'</span><span style="color:#5c6b82;">·</span><span class="mono">'+esc((bd&&bd.duration)||'')+'s</span><span style="color:#5c6b82;">·</span><span>共 <span class="mono">'+list.length+'</span> 个分镜</span>';
@@ -510,7 +513,7 @@
   }
   function renderBreakdownReverse(bd){
     lastBreakdownReverse=bd;
-    bdEditing=false; if(bdEditBtn) bdEditBtn.textContent='✏️ 编辑分镜';
+    bdEditing=false; if(bdEditBtn) bdEditBtn.textContent='✏️ 编辑分镜'; if(bdEditCancelBtn) bdEditCancelBtn.style.display='none';
     var prompt=((bd&&bd.prompt)||'').trim();
     if(meta) meta.innerHTML='<span style="color:#a78bfa;">反推</span><span style="color:#5c6b82;">·</span><span>'+esc((bd&&bd.source_title)||'视频提示词反推')+'</span><span style="color:#5c6b82;">·</span><span>'+esc(platformText(bd&&bd.source_platform))+'</span><span style="color:#5c6b82;">·</span><span class="mono">'+esc((bd&&bd.duration)||'')+'s</span>';
     scenes.innerHTML=prompt
@@ -591,6 +594,7 @@
     var box=document.createElement('div');
     box.style.cssText='background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:18px;padding:24px;width:360px;';
     box.innerHTML='<div style="font-size:16px;font-weight:700;color:#eaf1fa;margin-bottom:6px;">🎬 生成同款视频</div>'
+      +'<div style="font-size:11px;color:#5c6b82;margin-bottom:14px;">口播/种草=数字人念稿（需要有口播文案），剧情=AI 生成画面（需要有画面描述）</div>'
       +'<div style="font-size:12px;color:#94a4bb;margin-bottom:18px;">选择视频风格后开始生成</div>'
       +'<div style="display:flex;flex-direction:column;gap:9px;">'
       +'<button data-style="口播" style="width:100%;padding:13px 16px;font-size:14px;font-weight:600;border:1px solid rgba(231,178,76,.3);border-radius:12px;background:rgba(231,178,76,.1);color:#e7b24c;cursor:pointer;text-align:left;">🎙 口播 · 数字人出镜</button>'
@@ -614,6 +618,7 @@
     if(!hasScenes){ return; }
     bdEditing=!bdEditing;
     if(bdEditBtn) bdEditBtn.textContent=bdEditing?'💾 保存分镜':'✏️ 编辑分镜';
+    if(bdEditCancelBtn) bdEditCancelBtn.style.display=bdEditing?'':'none';
     if(bdEditing){
       _renderBreakdownEditMode();
     } else {
@@ -621,6 +626,13 @@
       if(currentMode==='breakdown'&&lastBreakdown){ renderBreakdown(lastBreakdown); }
       else if(lastScenes.length){ render({scenes:lastScenes}, (topic&&topic.value)||'', lastStyle||'口播', pick('segDur','.sc-opt','30s')); }
     }
+  }
+  function _cancelBreakdownEdit(){
+    bdEditing=false;
+    if(bdEditBtn) bdEditBtn.textContent='✏️ 编辑分镜';
+    if(bdEditCancelBtn) bdEditCancelBtn.style.display='none';
+    if(currentMode==='breakdown'&&lastBreakdown){ renderBreakdown(lastBreakdown); }
+    else if(lastScenes.length){ render({scenes:lastScenes}, (topic&&topic.value)||'', lastStyle||'口播', pick('segDur','.sc-opt','30s')); }
   }
   function _editableCardHTML(s,i){
     var no=('0'+(i+1)).slice(-2);
@@ -655,6 +667,7 @@
     else { lastScenes=updated; }
   }
   if(bdEditBtn){ bdEditBtn.onclick=function(){ _toggleBreakdownEdit(); }; }
+  if(bdEditCancelBtn){ bdEditCancelBtn.onclick=function(){ _cancelBreakdownEdit(); }; }
   function setBdPhase(phase,state){
     if(!bdPhases) return;
     var order=['downloading','extracting_frames','transcribing','analyzing'];
@@ -671,6 +684,17 @@
 
   function seg(id,sel){ var box=document.getElementById(id); if(!box) return; box.querySelectorAll(sel).forEach(function(o){ o.onclick=function(){ box.querySelectorAll(sel).forEach(function(x){x.classList.remove('on');}); o.classList.add('on'); }; }); }
   seg('segStyle','.sc-opt'); seg('segDur','.sc-opt'); seg('platRow','.sc-chip');
+  // 时长联动分镜数提示
+  var scDurHint=document.getElementById('scDurHint');
+  if(scDurHint && document.getElementById('segDur')){
+    document.getElementById('segDur').addEventListener('click', function(e){
+      var opt=e.target.closest('.sc-opt'); if(!opt) return;
+      var durText=(opt.textContent||'').trim().replace('s','');
+      var sec=parseInt(durText)||30;
+      var n=Math.max(3, Math.min(8, Math.max(1, Math.floor(sec/8))));
+      scDurHint.textContent='预计产出 '+n+'-'+(n+1)+' 个分镜';
+    });
+  }
   document.querySelectorAll('.sc-tag').forEach(function(tag){ tag.onclick=function(){ this.classList.toggle('on'); }; });
   // 参考图上传
   var scRefImage=document.getElementById('scRefImage'), scRefImageBtn=document.getElementById('scRefImageBtn'),
@@ -693,8 +717,8 @@
   function setBtn(t,busy){ gen.innerHTML=busy?t:orig; gen.style.pointerEvents=busy?'none':'auto'; gen.style.opacity=busy?'.7':'1'; }
 
   if(scenes){ scenes.addEventListener('click', function(e){
-    var a=e.target.closest('[data-to-video]'); if(a){ e.preventDefault(); location.href=handoffUrl('video.html',a.getAttribute('data-to-video')); return; }
-    var b=e.target.closest('[data-to-audio]'); if(b){ e.preventDefault(); location.href=handoffUrl('audio.html',b.getAttribute('data-to-audio')); return; }
+    var a=e.target.closest('[data-to-video]'); if(a){ e.preventDefault(); window.open(handoffUrl('video.html',a.getAttribute('data-to-video')),'_blank','noopener'); return; }
+    var b=e.target.closest('[data-to-audio]'); if(b){ e.preventDefault(); window.open(handoffUrl('audio.html',b.getAttribute('data-to-audio')),'_blank','noopener'); return; }
   }); }
   bindSceneHandoffs();
   syncModeUi();
@@ -815,7 +839,9 @@
   if(exportBtn){ var exportOrig=exportBtn.innerHTML; exportBtn.onclick=function(){
     var exportScenes=getDisplayedScenes();
     if(!exportScenes.length){ exportBtn.textContent='暂无可导出脚本'; setTimeout(function(){exportBtn.innerHTML=exportOrig;},1500); return; }
-    var blob=new Blob(['﻿'+scriptText(exportScenes)],{type:'text/plain;charset=utf-8'});
+    var txt=scriptText(exportScenes);
+    if(currentMode==='breakdown' && lastBreakdown && (lastBreakdown.analysis||'').trim()) txt+='\n\n---\n内容分析：\n'+lastBreakdown.analysis;
+    var blob=new Blob(['﻿'+txt],{type:'text/plain;charset=utf-8'});
     var url=URL.createObjectURL(blob), a=document.createElement('a');
     var exportTitle=currentMode==='breakdown' && lastBreakdown ? (lastBreakdown.source_title||'黄雀拆解脚本') : ((topic&&topic.value)||'黄雀分镜脚本');
     var filename=((exportTitle||'黄雀分镜脚本').trim().replace(/[\\/:*?"<>|]+/g,'-').slice(0,48)||'黄雀分镜脚本')+'.txt';

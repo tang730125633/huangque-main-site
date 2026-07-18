@@ -39,11 +39,15 @@ def gen_copy(payload):
             "种草": "种草文案（产品卖点+使用体验+购买引导，口语化有说服力）",
         }
         line_desc = _STYLE_LINE.get(style, _STYLE_LINE["口播"])
+        # 镜数按时长计算：每 8-10 秒 1 镜，最少 3 最多 8
+        try: dur_sec = int((dur or "30s").replace("s","").strip())
+        except: dur_sec = 30
+        n_scenes = max(3, min(8, max(1, dur_sec // 8)))
         sysmsg = "你是黄雀传媒资深短视频编导。只输出 JSON 本身，不要解释、不要 markdown 代码块。"
         usermsg = ("为以下选题生成一套可拍的%s短视频分镜脚本（平台%s，总时长约%s）。\n选题/卖点：%s\n"
                     "严格输出 JSON：{\"scenes\":[{\"dur\":\"3s\",\"scene\":\"画面描述\",\"line\":\"%s\"}]}，"
-                    "3-4 个分镜，各 dur 之和≈总时长。"
-                    % (style, plat, dur, brief, line_desc))
+                    "生成 %d 个分镜，各 dur 之和≈总时长。"
+                    % (style, plat, dur, brief, line_desc, n_scenes))
         if ref_images:
             usermsg += "\n（可参考上传的图片来构思分镜画面）"
             raw = _chat_multimodal(sysmsg, usermsg, ref_images)
