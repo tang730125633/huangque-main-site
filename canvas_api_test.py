@@ -70,7 +70,7 @@ check("B3 非法数据→400", s == 400, (s, d.get("detail")))
 s, d = call("GET", "/api/auth/canvas/boards", ta)
 mc = [b.get("members_count") for b in d.get("boards", []) if b.get("id") == BID]
 check("B4 boards 列表包含新板", bool(mc), mc)
-check("B4a [疑点] members_count 不含 owner→0", mc and mc[0] == 0, mc)
+check("B4a [修复] members_count 含 owner→1", mc and mc[0] == 1, mc)
 
 s, d = call("GET", f"/api/auth/canvas/boards/{BID}", ta)
 check("B5 读单板含 data+members", s == 200 and "members" in d.get("board", {}), s)
@@ -159,13 +159,15 @@ check("D13 since 超当前→reset=true", s == 200 and d.get("reset") is True an
 s, d = call("GET", f"/api/auth/canvas/boards/{BID}/sync?since=1", te)
 check("D14 非成员 sync→404", s == 404, s)
 
-# 【BUG 验证 3】全量 save 后,sync 客户端被强制 reset(全量下载)
+# 【修复验证 3】/save 写检查点批次,sync 走增量快照而非全量 reset
 s, d = call("GET", f"/api/auth/canvas/boards/{BID}", ta)
 vs = d["board"]["version"]
 s, d = call("POST", f"/api/auth/canvas/boards/{BID}/save", ta, {"version": vs, "data": d["board"]["data"], "name": "整存一次"})
 check("D15 /save→200 版本+1", s == 200 and d.get("board", {}).get("version") == vs + 1, (s, d.get("detail")))
 s, d = call("GET", f"/api/auth/canvas/boards/{BID}/sync?since={vs}", tb)
-check("D16 [设计] /save 后 sync→reset=true 全量回源", s == 200 and d.get("reset") is True and "board" in d, (s, d.get("reset")))
+batches = d.get("batches", [])
+is_ckpt = len(batches) == 1 and (batches[0].get("ops") or [{}])[0].get("type") == "board.snapshot"
+check("D16 [修复] /save 后 sync→增量 board.snapshot 检查点", s == 200 and d.get("reset") is False and is_ckpt, (s, d.get("reset"), len(batches)))
 
 # /save 版本冲突
 s, d = call("POST", f"/api/auth/canvas/boards/{BID}/save", tb, {"version": 1, "data": {}})
@@ -183,14 +185,14 @@ call("POST", f"/api/auth/canvas/boards/{BID}/members", ta, {"account_id": bob_ac
 s, d = call("POST", f"/api/auth/canvas/boards/{BID}/presence", ta, {"client_id": "alice-pc"})
 check("E1 owner 心跳→online=1", s == 200 and d.get("online_count") == 1, (s, d))
 s, d = call("POST", f"/api/auth/canvas/boards/{BID}/presence", ta, {"client_id": "alice-phone"})
-check("E2 [BUG3] 同一人第二个客户端→online=2(按端不按人)", s == 200 and d.get("online_count") == 2, (s, d))
+check("E2 [修复] 同一人第二个客户端→online 仍=1(按人去重)", s == 200 and d.get("online_count") == 1, (s, d))
 s, d = call("POST", f"/api/auth/canvas/boards/{BID}/presence", tb, {"client_id": "bob-pc"})
-check("E3 editor 心跳→online=3", s == 200 and d.get("online_count") == 3, (s, d))
+check("E3 editor 心跳→online=2", s == 200 and d.get("online_count") == 2, (s, d))
 s, d = call("POST", f"/api/auth/canvas/boards/{BID}/presence", te, {"client_id": "eve-pc"})
 check("E4 非成员心跳→404", s == 404, s)
 call("POST", f"/api/auth/canvas/boards/{BID}/members", ta, {"account_id": bob_acc, "role": "viewer"})
 s, d = call("POST", f"/api/auth/canvas/boards/{BID}/presence", tb, {"client_id": "bob-pc"})
-check("E5 [疑点] viewer 心跳不计入在线数", s == 200 and d.get("online_count") == 2, (s, d))
+check("E5 [修复] viewer 心跳也计入在线数", s == 200 and d.get("online_count") == 2, (s, d))
 s, d = call("POST", f"/api/auth/canvas/boards/{BID}/presence", ta, {"client_id": "  "})
 check("E6 空 client_id→400", s == 400, (s, d.get("detail")))
 

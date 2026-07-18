@@ -620,7 +620,8 @@ def list_canvas_members(c, board_id):
 
 def canvas_member_count(c, board_id):
     row = c.execute("SELECT COUNT(*) AS n FROM canvas_members WHERE board_id=?", (board_id,)).fetchone()
-    return int(row["n"] or 0) if row else 0
+    # +1：创建者本人也算成员
+    return (int(row["n"] or 0) if row else 0) + 1
 
 def public_canvas_board(row, role, include_data=False, members_count=None):
     board = {
@@ -656,11 +657,11 @@ def list_canvas_boards(username):
     c = db()
     try:
         items = []
-        owned = c.execute("""SELECT b.*, (SELECT COUNT(*) FROM canvas_members m WHERE m.board_id=b.id) AS members_count
+        owned = c.execute("""SELECT b.*, (SELECT COUNT(*)+1 FROM canvas_members m WHERE m.board_id=b.id) AS members_count
                              FROM canvas_boards b
                              WHERE b.owner_username=?""", (username,)).fetchall()
         shared = c.execute("""SELECT b.*, m.role AS access_role,
-                                     (SELECT COUNT(*) FROM canvas_members cm WHERE cm.board_id=b.id) AS members_count
+                                     (SELECT COUNT(*)+1 FROM canvas_members cm WHERE cm.board_id=b.id) AS members_count
                               FROM canvas_members m
                               JOIN canvas_boards b ON b.id=m.board_id
                               WHERE m.username=? AND b.owner_username<>?""", (username, username)).fetchall()
@@ -747,6 +748,18 @@ def save_canvas_board(username, board_id, payload):
         c.execute("""UPDATE canvas_boards
                      SET name=?, data_json=?, version=version+1, updated_at=?
                      WHERE id=?""", (name, data_json, now, board_id))
+        # 写入检查点批次: 其他协作者 sync 时拿到 board.snapshot 直接覆盖本地,
+        # 不再因版本空洞触发 reset 全量重下
+        snapshot_ops = json.dumps(
+            [{"type": "board.snapshot", "name": name, "data": json.loads(data_json)}],
+            ensure_ascii=False, separators=(",", ":"))
+        c.execute("""INSERT INTO canvas_ops(board_id, version, op_id, client_id, username, ops_json, created_at)
+                     VALUES(?,?,?,?,?,?,?)""",
+                  (board_id, current_version + 1, "save-" + secrets.token_hex(8), "server", username, snapshot_ops, now))
+        c.execute("""DELETE FROM canvas_ops WHERE rowid IN (
+                     SELECT rowid FROM canvas_ops WHERE board_id=?
+                     ORDER BY version DESC LIMIT -1 OFFSET ?
+                   )""", (board_id, CANVAS_OPS_RETAINED_BATCHES))
         fresh = c.execute("SELECT * FROM canvas_boards WHERE id=?", (board_id,)).fetchone()
         board = public_canvas_board(fresh, role, include_data=True, members_count=canvas_member_count(c, board_id))
         board["members"] = list_canvas_members(c, board_id)
@@ -838,6 +851,19 @@ def normalize_canvas_ops_payload(payload):
             if err:
                 return None, err
             normalized.append({"type": kind, "name": name})
+        elif kind == "board.snapshot":
+            # 整体快照(由 /save 写入检查点,也允许客户端通过 /ops 提交):
+            # 收到方直接用 data 覆盖本地画布,避免全量 reset 重下
+            data = op.get("data")
+            if not isinstance(data, dict):
+                return None, "bad_op"
+            packed, err = pack_canvas_data(data)
+            if err:
+                return None, err
+            name, err = normalize_canvas_name(op.get("name"))
+            if err:
+                return None, err
+            normalized.append({"type": kind, "name": name, "data": json.loads(packed)})
         else:
             return None, "bad_op"
     return {"op_id": op_id.strip(), "client_id": client_id.strip(), "base_version": base_version, "ops": normalized}, None
@@ -904,6 +930,14 @@ def apply_canvas_ops_to_snapshot(data, name, ops):
             edges = [item for item in edges if canvas_edge_key(item) != deleted_key]
         elif kind == "board.rename":
             name = op["name"]
+        elif kind == "board.snapshot":
+            incoming = op["data"] if isinstance(op.get("data"), dict) else {}
+            snapshot = dict(incoming)
+            nodes = [dict(item) for item in snapshot.get("nodes", []) if isinstance(item, dict)]
+            edges = [dict(item) for item in snapshot.get("edges", []) if isinstance(item, dict)]
+            node_index = {item.get("id"): item for item in nodes if isinstance(item.get("id"), str) and item["id"]}
+            edge_index = {canvas_edge_key(item): item for item in edges if canvas_edge_key(item) is not None}
+            name = op["name"]
     snapshot["nodes"] = nodes
     snapshot["edges"] = edges
     return snapshot, name
@@ -925,12 +959,12 @@ def canvas_online_count(c, board_id, now=None):
     now = int(time.time()) if now is None else int(now)
     cutoff = now - CANVAS_PRESENCE_WINDOW_SECONDS
     c.execute("DELETE FROM canvas_presence WHERE board_id=? AND last_seen<?", (board_id, cutoff))
-    row = c.execute("""SELECT COUNT(*) AS n
+    row = c.execute("""SELECT COUNT(DISTINCT p.username) AS n
                        FROM canvas_presence p
                        JOIN canvas_boards b ON b.id=p.board_id
                        LEFT JOIN canvas_members m ON m.board_id=p.board_id AND m.username=p.username
                        WHERE p.board_id=? AND p.last_seen>=?
-                         AND (p.username=b.owner_username OR m.role='editor')""", (board_id, cutoff)).fetchone()
+                         AND (p.username=b.owner_username OR m.role IN ('viewer','editor'))""", (board_id, cutoff)).fetchone()
     return int(row["n"] or 0) if row else 0
 
 def apply_canvas_ops(username, board_id, payload):
