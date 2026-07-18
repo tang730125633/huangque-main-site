@@ -685,24 +685,45 @@ def canvas_role_and_board(c, username, board_id):
         return None, row
     return member["role"], row
 
-def list_canvas_boards(username):
+def list_canvas_boards(username, limit=None, offset=0):
     c = db()
     try:
-        items = []
-        owned = c.execute("""SELECT b.*, (SELECT COUNT(*)+1 FROM canvas_members m WHERE m.board_id=b.id) AS members_count
-                             FROM canvas_boards b
-                             WHERE b.owner_username=?""", (username,)).fetchall()
-        shared = c.execute("""SELECT b.*, m.role AS access_role,
-                                     (SELECT COUNT(*)+1 FROM canvas_members cm WHERE cm.board_id=b.id) AS members_count
-                              FROM canvas_members m
-                              JOIN canvas_boards b ON b.id=m.board_id
-                              WHERE m.username=? AND b.owner_username<>?""", (username, username)).fetchall()
-        for row in owned:
-            items.append(public_canvas_board(row, "owner", members_count=row["members_count"]))
-        for row in shared:
-            items.append(public_canvas_board(row, row["access_role"], members_count=row["members_count"]))
-        items.sort(key=lambda item: item["updated_at"], reverse=True)
-        return items, None
+        # 分页下推 SQL：UNION ALL 后在数据库内排序切片，避免全量拉取
+        # 次键 id DESC 保证 updated_at 相同时顺序确定，跨页不重不漏
+        offset = max(int(offset or 0), 0)
+        params = [username, username, username]
+        if limit is not None:
+            limit = max(int(limit), 0)
+            page_clause = " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        elif offset:
+            # SQLite 的 OFFSET 必须搭配 LIMIT；-1 表示不限行数
+            page_clause = " LIMIT -1 OFFSET ?"
+            params.append(offset)
+        else:
+            page_clause = ""
+        rows = c.execute("""SELECT * FROM (
+                                SELECT b.*, 'owner' AS access_role
+                                FROM canvas_boards b
+                                WHERE b.owner_username=?
+                                UNION ALL
+                                SELECT b.*, m.role AS access_role
+                                FROM canvas_members m
+                                JOIN canvas_boards b ON b.id=m.board_id
+                                WHERE m.username=? AND b.owner_username<>?
+                            ) ORDER BY updated_at DESC, id DESC""" + page_clause,
+                         params).fetchall()
+        # 成员数只对当前页逐行算（主键 COUNT），避免全量子查询
+        items = [public_canvas_board(row, row["access_role"],
+                                     members_count=canvas_member_count(c, row["id"]))
+                 for row in rows]
+        total_row = c.execute("""SELECT (SELECT COUNT(*) FROM canvas_boards WHERE owner_username=?)
+                                      + (SELECT COUNT(*) FROM canvas_members m
+                                         JOIN canvas_boards b ON b.id=m.board_id
+                                         WHERE m.username=? AND b.owner_username<>?) AS n""",
+                              (username, username, username)).fetchone()
+        total = int(total_row["n"] or 0) if total_row else 0
+        return items, total, None
     finally:
         c.close()
 
@@ -987,17 +1008,22 @@ def public_canvas_batch(row):
         "ops": ops,
     }
 
-def canvas_online_count(c, board_id, now=None):
+def canvas_online_users(c, board_id, now=None):
     now = int(time.time()) if now is None else int(now)
     cutoff = now - CANVAS_PRESENCE_WINDOW_SECONDS
     c.execute("DELETE FROM canvas_presence WHERE board_id=? AND last_seen<?", (board_id, cutoff))
-    row = c.execute("""SELECT COUNT(DISTINCT p.username) AS n
-                       FROM canvas_presence p
-                       JOIN canvas_boards b ON b.id=p.board_id
-                       LEFT JOIN canvas_members m ON m.board_id=p.board_id AND m.username=p.username
-                       WHERE p.board_id=? AND p.last_seen>=?
-                         AND (p.username=b.owner_username OR m.role IN ('viewer','editor'))""", (board_id, cutoff)).fetchone()
-    return int(row["n"] or 0) if row else 0
+    rows = c.execute("""SELECT DISTINCT p.username, u.display_name
+                        FROM canvas_presence p
+                        JOIN canvas_boards b ON b.id=p.board_id
+                        JOIN users u ON u.username=p.username
+                        LEFT JOIN canvas_members m ON m.board_id=p.board_id AND m.username=p.username
+                        WHERE p.board_id=? AND p.last_seen>=?
+                          AND (p.username=b.owner_username OR m.role IN ('viewer','editor'))
+                        ORDER BY p.username""", (board_id, cutoff)).fetchall()
+    return [{"username": r["username"], "name": r["display_name"] or r["username"]} for r in rows]
+
+def canvas_online_count(c, board_id, now=None):
+    return len(canvas_online_users(c, board_id, now))
 
 def apply_canvas_ops(username, board_id, payload):
     normalized, err = normalize_canvas_ops_payload(payload)
@@ -1106,7 +1132,7 @@ def sync_canvas_ops(username, board_id, since_version):
         reset = since_version > current_version or (
             oldest_version is not None and since_version < oldest_version - 1
         )
-        online_count = canvas_online_count(c, board_id)
+        online_users = canvas_online_users(c, board_id)
         batches = []
         if not reset:
             cursor = c.execute("SELECT * FROM canvas_ops WHERE board_id=? AND version>? ORDER BY version ASC LIMIT ?",
@@ -1136,7 +1162,8 @@ def sync_canvas_ops(username, board_id, since_version):
             if expected_version != current_version + 1:
                 reset = True
                 batches = []
-        result = {"version": current_version, "role": role, "batches": batches, "reset": reset, "online_count": online_count}
+        result = {"version": current_version, "role": role, "batches": batches, "reset": reset,
+                  "online_count": len(online_users), "online_users": online_users}
         if reset:
             board = public_canvas_board(row, role, include_data=True, members_count=canvas_member_count(c, board_id))
             board["members"] = list_canvas_members(c, board_id)
@@ -1168,14 +1195,16 @@ def record_canvas_presence(username, board_id, payload):
         if (prev and prev["username"] == username
                 and now - int(prev["last_seen"] or 0) < CANVAS_PRESENCE_MIN_INTERVAL_SECONDS):
             # 周期心跳去重: 间隔过近不写库, 直接回当前在线数
-            result = {"online_count": canvas_online_count(c, board_id, now), "deduped": True}
+            users = canvas_online_users(c, board_id, now)
+            result = {"online_count": len(users), "online_users": users, "deduped": True}
             c.commit()
             return result, None
         c.execute("""INSERT INTO canvas_presence(board_id, client_id, username, last_seen)
                      VALUES(?,?,?,?) ON CONFLICT(board_id, client_id) DO UPDATE SET
                        username=excluded.username, last_seen=excluded.last_seen""",
                   (board_id, client_id.strip(), username, now))
-        result = {"online_count": canvas_online_count(c, board_id, now)}
+        users = canvas_online_users(c, board_id, now)
+        result = {"online_count": len(users), "online_users": users}
         c.commit()
         return result, None
     except Exception:
@@ -1250,6 +1279,27 @@ def remove_canvas_member(username, board_id, member_username):
         members = list_canvas_members(c, board_id)
         c.commit()
         return members, None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+def leave_canvas_board(username, board_id):
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        access, board = canvas_role_and_board(c, username, board_id)
+        if not access:
+            c.rollback()
+            return None, "not_found"
+        if access == "owner":
+            c.rollback()
+            return None, "owner_cannot_leave"
+        c.execute("DELETE FROM canvas_members WHERE board_id=? AND username=?", (board_id, username))
+        c.execute("DELETE FROM canvas_presence WHERE board_id=? AND username=?", (board_id, username))
+        c.commit()
+        return {"ok": True}, None
     except Exception:
         c.rollback()
         raise
@@ -2880,6 +2930,22 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "members": members})
             except Exception:
                 return self._send(500, {"detail": "canvas member update failed"})
+        if p.startswith(canvas_prefix) and p.endswith("/leave"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            board_id = urllib.parse.unquote(p[len(canvas_prefix):-len("/leave")])
+            try:
+                result, err = leave_canvas_board(row["username"], board_id)
+                if err == "not_found":
+                    return self._send(404, {"detail": "协作画布不存在或你不是成员"})
+                if err == "owner_cannot_leave":
+                    return self._send(400, {"detail": "创建者不能退出画布，可以选择删除画布"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, result)
+            except Exception:
+                return self._send(500, {"detail": "canvas leave failed"})
         if p in {"/api/auth/friends/request", "/api/auth/friends/add"}:
             row = self._user()
             if not row:
@@ -3102,11 +3168,22 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/auth/canvas/boards":
             row = self._user()
             if not row: return self._send(401, {"detail": "未登录"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             try:
-                boards, err = list_canvas_boards(row["username"])
+                limit_raw = (q.get("limit") or [""])[0]
+                limit = None if limit_raw == "" else int(limit_raw)
+                offset = int((q.get("offset") or ["0"])[0])
+            except Exception:
+                return self._send(400, {"detail": "bad_pagination"})
+            if offset < 0 or (limit is not None and limit < 1):
+                return self._send(400, {"detail": "bad_pagination"})
+            if limit is not None:
+                limit = min(limit, 100)
+            try:
+                boards, total, err = list_canvas_boards(row["username"], limit=limit, offset=offset)
                 if err:
                     return self._send(400, {"detail": err})
-                return self._send(200, {"ok": True, "boards": boards})
+                return self._send(200, {"ok": True, "boards": boards, "total": total})
             except Exception:
                 return self._send(500, {"detail": "canvas list failed"})
         canvas_prefix = "/api/auth/canvas/boards/"

@@ -252,6 +252,8 @@ call("POST", f"/api/auth/canvas/boards/{BID}/members", ta, {"account_id": bob_ac
 time.sleep(3.2)  # 避开 3 秒心跳去重窗口, 确保 E5 真实写库
 s, d = call("POST", f"/api/auth/canvas/boards/{BID}/presence", tb, {"client_id": "bob-pc"})
 check("E5 [修复] viewer 心跳也计入在线数", s == 200 and d.get("online_count") == 2, (s, d))
+names = sorted(u.get("username") for u in d.get("online_users", []))
+check("E7 [A2] presence 回在线成员列表", names == ["cvs_alice", "cvs_bob"], names)
 s, d = call("POST", f"/api/auth/canvas/boards/{BID}/presence", ta, {"client_id": "  "})
 check("E6 空 client_id→400", s == 400, (s, d.get("detail")))
 
@@ -260,6 +262,14 @@ s, d = call("DELETE", f"/api/auth/canvas/boards/{BID}/members/cvs_bob", None, ra
 check("F1 非 owner 移除成员→403", s == 403, (s, d.get("detail")))
 s, d = call("DELETE", f"/api/auth/canvas/boards/{BID}/members/cvs_bob", ta)
 check("F2 owner 移除成员→200", s == 200 and all(m.get("username") != "cvs_bob" for m in d.get("members", [])), (s, d))
+# 成员主动退出
+call("POST", f"/api/auth/canvas/boards/{BID}/members", ta, {"account_id": bob_acc, "role": "editor"})
+s, d = call("POST", f"/api/auth/canvas/boards/{BID}/leave", tb, {})
+check("F3 [A1] 成员主动退出→200", s == 200 and d.get("ok") is True, (s, d))
+s, d = call("GET", f"/api/auth/canvas/boards/{BID}", tb)
+check("F4 [A1] 退出后读板→404", s == 404, s)
+s, d = call("POST", f"/api/auth/canvas/boards/{BID}/leave", ta, {})
+check("F5 [A1] owner 退出→400", s == 400, (s, d.get("detail")))
 
 # ---------- G. 建板上限(服务以 HQ_CANVAS_MAX_BOARDS_PER_USER=3 运行时有效) ----------
 tmp_boards = []
@@ -276,6 +286,20 @@ for i in range(5):
 check("G1 [修复] 已有 1 板时再建 2 块成功", created == 2, created)
 check("G2 [修复] 达到上限→429", limited, limited)
 for bid_tmp in tmp_boards:
+    call("DELETE", f"/api/auth/canvas/boards/{bid_tmp}", ta)
+
+# ---------- G3/G4. boards 列表分页 ----------
+page_boards = []
+for i in range(2):
+    s, d = call("POST", "/api/auth/canvas/boards", ta, {"name": f"分页{i}", "data": {"nodes": [], "edges": []}})
+    if s == 200: page_boards.append(d["board"]["id"])
+s, d = call("GET", "/api/auth/canvas/boards?limit=2", ta)
+check("G3 [A3] limit=2→2 块且 total=3", s == 200 and len(d.get("boards", [])) == 2 and d.get("total") == 3, (s, d.get("total")))
+s, d = call("GET", "/api/auth/canvas/boards?limit=2&offset=2", ta)
+check("G4 [A3] offset=2→1 块", s == 200 and len(d.get("boards", [])) == 1, (s, len(d.get("boards", []))))
+s, d = call("GET", "/api/auth/canvas/boards?limit=abc", ta)
+check("G5 [A3] limit 非法→400", s == 400, s)
+for bid_tmp in page_boards:
     call("DELETE", f"/api/auth/canvas/boards/{bid_tmp}", ta)
 
 # ---------- H. 删板 ----------

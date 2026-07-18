@@ -841,6 +841,68 @@ class AuthCanvasCollabTests(unittest.TestCase):
         self.assertEqual(row[0], "editor")
         self.assertEqual(second["online_count"], 1)
 
+    def test_member_can_leave_board_but_owner_cannot(self):
+        board = self._create_board()
+        self._invite(board, "editor", "editor")
+        editor_client = self._login_client("editor")
+
+        left = self._post("/api/auth/canvas/boards/%s/leave" % board["id"], {}, editor_client)
+        self.assertTrue(left["ok"])
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self._get("/api/auth/canvas/boards/%s" % board["id"], editor_client)
+        self.assertEqual(ctx.exception.code, 404)
+        read = self._get("/api/auth/canvas/boards/%s" % board["id"])
+        self.assertEqual(read["board"]["members"], [])
+
+        with self.assertRaises(urllib.error.HTTPError) as owner_ctx:
+            self._post("/api/auth/canvas/boards/%s/leave" % board["id"], {})
+        self.assertEqual(owner_ctx.exception.code, 400)
+
+    def test_presence_reports_online_users(self):
+        board = self._create_board()
+        self._invite(board, "editor", "editor")
+        editor_client = self._login_client("editor")
+        self._post("/api/auth/canvas/boards/%s/presence" % board["id"], {"client_id": "owner-tab"})
+        resp = self._post(
+            "/api/auth/canvas/boards/%s/presence" % board["id"],
+            {"client_id": "editor-tab"},
+            editor_client,
+        )
+        self.assertEqual(resp["online_count"], 2)
+        names = [item["username"] for item in resp["online_users"]]
+        self.assertEqual(names, ["editor", "owner"])
+        synced = self._get("/api/auth/canvas/boards/%s/sync?since=1" % board["id"])
+        self.assertEqual([item["username"] for item in synced["online_users"]], ["editor", "owner"])
+
+    def test_boards_list_pagination(self):
+        for _ in range(3):
+            self._create_board()
+        page = self._get("/api/auth/canvas/boards?limit=2")
+        self.assertEqual(len(page["boards"]), 2)
+        self.assertEqual(page["total"], 3)
+        rest = self._get("/api/auth/canvas/boards?limit=2&offset=2")
+        self.assertEqual(len(rest["boards"]), 1)
+        self.assertEqual(rest["total"], 3)
+        everything = self._get("/api/auth/canvas/boards")
+        self.assertEqual(len(everything["boards"]), 3)
+        self.assertEqual(everything["total"], 3)
+        with self.assertRaises(urllib.error.HTTPError) as bad_limit:
+            self._get("/api/auth/canvas/boards?limit=abc")
+        self.assertEqual(bad_limit.exception.code, 400)
+        with self.assertRaises(urllib.error.HTTPError) as bad_offset:
+            self._get("/api/auth/canvas/boards?offset=-1")
+        self.assertEqual(bad_offset.exception.code, 400)
+        # 稳定排序：三块板同一秒创建（updated_at 相同），
+        # 靠次键 id DESC 保证逐页拉取不重不漏，且与一次拉全的顺序一致
+        paged_ids = []
+        for off in range(3):
+            one = self._get("/api/auth/canvas/boards?limit=1&offset=%d" % off)
+            self.assertEqual(len(one["boards"]), 1)
+            self.assertEqual(one["total"], 3)
+            paged_ids.extend(b["id"] for b in one["boards"])
+        self.assertEqual(len(set(paged_ids)), 3)
+        self.assertEqual(paged_ids, [b["id"] for b in everything["boards"]])
+
 
 if __name__ == "__main__":
     unittest.main()
