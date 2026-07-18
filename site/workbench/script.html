@@ -915,6 +915,48 @@
   }
   if(historyBtn&&historySection) historyBtn.onclick=function(){historySection.scrollIntoView({behavior:'smooth',block:'start'});};
 
+  // 音色选择弹窗：默认公共音色 + 用户个人音色（复刻）
+  function _pickVoice(onPick){
+    var overlay=document.createElement('div');
+    overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:9999;display:flex;align-items:center;justify-content:center;';
+    var box=document.createElement('div');
+    box.style.cssText='background:#111827;border:1px solid rgba(148,164,187,.2);border-radius:18px;padding:24px;width:380px;max-height:80vh;overflow-y:auto;';
+    box.innerHTML='<div style="font-size:16px;font-weight:700;color:#eaf1fa;margin-bottom:6px;">🎙 选择音色</div>'
+      +'<div style="font-size:12px;color:#94a4bb;margin-bottom:16px;">用默认公共音色，或选你的个人复刻音色</div>'
+      +'<div id="hqVoiceList"><div style="font-size:12px;color:#5c6b82;padding:12px 0;text-align:center;">正在读取音色…</div></div>'
+      +'<button data-close style="width:100%;margin-top:10px;padding:10px;font-size:13px;border:1px solid rgba(148,164,187,.14);border-radius:10px;background:transparent;color:#94a4bb;cursor:pointer;">取消</button>';
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    function close(){ overlay.remove(); }
+    box.querySelector('[data-close]').onclick=close;
+    overlay.onclick=function(e){ if(e.target===overlay) close(); };
+    function mkVoiceBtn(label, sub, voiceKey){
+      var b=document.createElement('button');
+      b.type='button';
+      b.style.cssText='width:100%;padding:12px 14px;margin-bottom:8px;font-size:14px;font-weight:600;border:1px solid rgba(74,222,128,.3);border-radius:12px;background:rgba(74,222,128,.08);color:#4ade80;cursor:pointer;text-align:left;';
+      b.innerHTML=esc(label)+(sub?'<div style="font-size:11px;font-weight:400;color:#94a4bb;margin-top:3px;">'+esc(sub)+'</div>':'');
+      b.onclick=function(){ close(); onPick(voiceKey); };
+      return b;
+    }
+    fetch('/api/gen/audio/voices',{cache:'no-store',headers:{'Authorization':'Bearer '+tok()}})
+      .then(function(r){ return r.ok?r.json():{items:[]}; })
+      .catch(function(){ return {items:[]}; })
+      .then(function(d){
+        var list=box.querySelector('#hqVoiceList');
+        list.innerHTML='';
+        list.appendChild(mkVoiceBtn('🎙 默认音色（温柔女声）','公共音色 · 情感种草 柔和自然',''));
+        var personals=((d&&d.items)||[]).filter(function(v){ return v.scope==='personal'&&v.provider_voice; });
+        personals.forEach(function(v){
+          list.appendChild(mkVoiceBtn('👤 '+(v.display_name||v.voice_key||'个人音色'),'个人复刻音色',v.voice_key||''));
+        });
+        if(!personals.length){
+          var tip=document.createElement('div');
+          tip.style.cssText='font-size:11px;color:#5c6b82;text-align:center;padding:6px 0 2px;';
+          tip.innerHTML='还没有个人音色？<a href="assets.html?cat=audio&audioTab=personal" style="color:#60a5fa;">去创建 ›</a>';
+          list.appendChild(tip);
+        }
+      });
+  }
   function _showAvatarPicker(onPick, onCancel){
     var modal=document.getElementById('avatarPickModal'), grid=document.getElementById('avatarPickGrid');
     if(!modal||!grid) return;
@@ -1028,7 +1070,9 @@
     if(!hasLines){ if(window.HQ&&window.HQ.toast) HQ.toast('脚本中没有口播文案'); return; }
     var talkingStyle=lastStyle==='剧情'?'口播':(lastStyle||'口播');
     _showAvatarPicker(function(avatarId){
-      _doGenerate({scenes:list,style:talkingStyle,avatar_id:avatarId},genAudioBtn);
+      _pickVoice(function(voice){
+        _doGenerate({scenes:list,style:talkingStyle,avatar_id:avatarId,voice:voice},genAudioBtn);
+      });
     });
   }; }
   if(bdRemakeBtn){ bdRemakeBtn.onclick=function(e){
@@ -1055,7 +1099,9 @@
       } else {
         if(!scenes.some(function(s){ return (s.line||'').trim(); })){ if(window.HQ&&window.HQ.toast) HQ.toast('拆解结果里没有口播文案，无法生成'+style+'视频'); return; }
         _showAvatarPicker(function(avatarId){
-          _doGenerate({scenes:scenes,style:style,avatar_id:avatarId},bdRemakeBtn);
+          _pickVoice(function(voice){
+            _doGenerate({scenes:scenes,style:style,avatar_id:avatarId,voice:voice},bdRemakeBtn);
+          });
         });
       }
     });

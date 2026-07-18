@@ -32,7 +32,7 @@ class ScriptActionsUiTests(unittest.TestCase):
     def test_one_click_video_passes_style_and_selected_avatar(self):
         self.assertIn("lastStyle=style||'口播'", self.html)
         self.assertIn("var talkingStyle=lastStyle==='剧情'?'口播':(lastStyle||'口播');", self.html)
-        self.assertIn("_doGenerate({scenes:list,style:talkingStyle,avatar_id:avatarId},genAudioBtn)", self.html)
+        self.assertIn("_doGenerate({scenes:list,style:talkingStyle,avatar_id:avatarId,voice:voice},genAudioBtn)", self.html)
 
     def test_one_click_video_loads_avatar_picker_for_talking_styles(self):
         self.assertIn("fetch('/api/gen/video/avatars?limit=60'", self.html)
@@ -238,6 +238,13 @@ class ScriptActionsUiTests(unittest.TestCase):
         """存量毫秒时长显示修正（fmtDur 18320→18）"""
         self.assertIn("function fmtDur(d)", self.html)
         self.assertIn("n>1000", self.html)
+
+    def test_talking_flow_offers_personal_voice_picker(self):
+        """一键生成口播/同款口播必须提供个人音色选择"""
+        self.assertIn("function _pickVoice(onPick)", self.html)
+        self.assertIn("/api/gen/audio/voices", self.html)
+        self.assertIn("voice:voice", self.html)
+        self.assertIn("scope==='personal'", self.html)
 
 if __name__ == "__main__":
     unittest.main()
