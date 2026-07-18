@@ -100,6 +100,15 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("renderBreakdownReverse(result); saveBreakdownHistory(result); loadHistory();", self.html)
         self.assertIn("isReverse?'反推':'拆解'", self.html)
 
+    def test_theme_toggle_ui_and_sync_exist(self):
+        self.assertIn('id="scThemeLight"', self.html)
+        self.assertIn('id="scThemeDark"', self.html)
+        self.assertIn('data-theme-option="light"', self.html)
+        self.assertIn('data-theme-option="dark"', self.html)
+        self.assertIn("function renderThemeToggle(theme)", self.html)
+        self.assertIn("window.HQTheme.set(theme); renderThemeToggle(theme);", self.html)
+        self.assertIn("document.addEventListener('hq-theme-change'", self.html)
+
     def test_history_controls_are_accessible_buttons(self):
         self.assertIn('id="scHistoryBtn" class="sc-btn" type="button"', self.html)
         self.assertIn("btn.type='button'; btn.className='sc-history-item'", self.html)

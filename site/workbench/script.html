@@ -51,6 +51,9 @@
   .bd-phase{padding:4px 10px;font-size:11px;border-radius:7px;color:#5c6b82;background:rgba(148,164,187,.06);border:1px solid rgba(148,164,187,.1)}
   .bd-phase.active{color:#2dd4bf;border-color:rgba(45,212,191,.3);background:rgba(45,212,191,.06)}
   .bd-phase.done{color:#4ade80;border-color:rgba(74,222,128,.2);background:rgba(74,222,128,.05)}
+  .sc-theme-toggle{display:flex;align-items:center;gap:6px;padding:4px;border:1px solid rgba(148,164,187,.14);border-radius:12px;background:rgba(148,164,187,.05)}
+  .sc-theme-btn{min-width:74px;justify-content:center;font-weight:700}
+  .sc-theme-btn.on{color:#0f172a;background:linear-gradient(135deg,#f4cd72,#e7b24c);border-color:rgba(231,178,76,.42)}
 </style>
 <link rel="stylesheet" href="theme.css?v=5873a2f4">
 </head>
@@ -67,7 +70,11 @@
       <span style="color:#5c6b82;">·</span>
       <span style="font-size:15px; font-weight:600;">文案脚本</span>
     </div>
-    <div style="display:flex; align-items:center; gap:9px;">
+    <div style="display:flex; align-items:center; gap:9px; flex-wrap:wrap; justify-content:flex-end;">
+      <div class="sc-theme-toggle" role="group" aria-label="页面主题">
+        <button id="scThemeLight" class="sc-btn sc-theme-btn" type="button" data-theme-option="light" aria-pressed="false">☀️ 浅色</button>
+        <button id="scThemeDark" class="sc-btn sc-theme-btn" type="button" data-theme-option="dark" aria-pressed="false">🌙 深色</button>
+      </div>
       <button id="scHistoryBtn" class="sc-btn" type="button"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>历史脚本</button>
     </div>
   </div>
@@ -301,7 +308,8 @@
       scenes=document.getElementById('scScenes'), meta=document.getElementById('scMeta');
   var historyBtn=document.getElementById('scHistoryBtn'), exportBtn=document.getElementById('scExport'),
       historySection=document.getElementById('scHistorySection'), historyList=document.getElementById('scHistoryList'),
-      historyState=document.getElementById('scHistoryState');
+      historyState=document.getElementById('scHistoryState'), themeLightBtn=document.getElementById('scThemeLight'),
+      themeDarkBtn=document.getElementById('scThemeDark');
   var previewTitle=document.getElementById('scPreviewTitle'), batchHint=document.getElementById('scBatchHint');
   var panelWrite=document.getElementById('panelWrite'), panelBreakdown=document.getElementById('panelBreakdown');
   var genVideoBtn=document.getElementById('scGenVideo'), genAudioBtn=document.getElementById('scGenAudio'),
@@ -325,6 +333,15 @@
   var BD_REVERSE_LABEL='开始反推（8 点）';
 
   function tok(){ return '__cookie__'; }
+  function currentTheme(){ return window.HQTheme ? window.HQTheme.get() : ((document.documentElement.getAttribute('data-theme')==='light')?'light':'dark'); }
+  function renderThemeToggle(theme){
+    [themeLightBtn, themeDarkBtn].forEach(function(btn){
+      if(!btn) return;
+      var on=btn.getAttribute('data-theme-option')===theme;
+      btn.classList.toggle('on', on);
+      btn.setAttribute('aria-pressed', on?'true':'false');
+    });
+  }
   function isBreakdownReverseTool(){ return currentBreakdownTool==='reverse_prompt'; }
   function breakdownSceneList(){ return normalizeBreakdownScenes((lastBreakdown&&lastBreakdown.scenes)||[]); }
   function reversePromptText(){ return ((lastBreakdownReverse&&lastBreakdownReverse.prompt)||'').trim(); }
@@ -720,6 +737,9 @@
   }
   document.querySelectorAll('.sc-mode-tab').forEach(function(tab){ tab.onclick=function(){ switchMode(this.getAttribute('data-mode')); }; });
   document.querySelectorAll('[data-bd-tool]').forEach(function(tab){ tab.onclick=function(){ switchBreakdownTool(this.getAttribute('data-bd-tool')); }; });
+  document.querySelectorAll('[data-theme-option]').forEach(function(btn){ btn.onclick=function(){ if(!window.HQTheme) return; var theme=btn.getAttribute('data-theme-option'); window.HQTheme.set(theme); renderThemeToggle(theme); }; });
+  renderThemeToggle(currentTheme());
+  document.addEventListener('hq-theme-change', function(e){ renderThemeToggle((e.detail&&e.detail.theme)||currentTheme()); });
   function pick(id,s,def){ var on=document.querySelector('#'+id+' '+s+'.on'); return on?on.textContent.trim():def; }
   function setBtn(t,busy){ gen.innerHTML=busy?t:orig; gen.style.pointerEvents=busy?'none':'auto'; gen.style.opacity=busy?'.7':'1'; }
 
