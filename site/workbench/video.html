@@ -1762,9 +1762,9 @@
     limitAvatarGridRows(grid);   // 最多两排，多的滚动
   }
   function loadMotionAvatars(force){
-    if(avatarsLoaded && !force){renderMotionAvatars();renderTalkingBatchImages();return;}
+    if(avatarsLoaded && !force){renderCineAvatars();return;}
     avatarsLoaded=true;
-    var grid=$('motionAvatarGrid');
+    var grid=$('cineAvatarGrid');
     if(grid) grid.innerHTML='<div class="avatar-empty">正在读取我的形象...</div>';
     fetch(fresh('/api/gen/video/avatars?limit=120'),{cache:'no-store',headers:{Authorization:'Bearer '+token,'Cache-Control':'no-cache'}})
       .then(function(r){if(r.status===401){location.href='../login.html?redirect=workbench/video';return null;} return r.ok?r.json():Promise.reject(new Error('形象列表读取失败'));})
@@ -1775,11 +1775,9 @@
           selectedMotionAvatarId=null; useNewMotionImage=true;
           if($('motionGrid')) $('motionGrid').classList.remove('use-avatar');
         }
-        renderMotionAvatars();
-        renderTalkingBatchImages();
         renderCineAvatars();
       })
-      .catch(function(e){if(grid) grid.innerHTML='<div class="avatar-empty" style="color:#f4708a;">'+esc(e.message||'形象列表读取失败')+'</div>';renderTalkingBatchImages();});
+      .catch(function(e){if(grid) grid.innerHTML='<div class="avatar-empty" style="color:#f4708a;">'+esc(e.message||'形象列表读取失败')+'</div>';});
   }
 
   // ===== 电影化身：形象多选（HeyGen 会把多个形象放进同一个镜头）=====

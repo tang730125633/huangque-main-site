@@ -134,5 +134,17 @@ class CinematicCardUsesTheRightSkeletonTests(unittest.TestCase):
         self.assertIn('avatar-pick', HTML.split("function syncCineSelection")[1].split("function ")[0])
 
 
+class AvatarListLoadingTests(unittest.TestCase):
+    def setUp(self):
+        self.block = HTML.split("function loadMotionAvatars")[1].split("// =====", 1)[0]
+
+    def test_removed_talking_batch_renderer_is_not_called(self):
+        self.assertNotIn("renderTalkingBatchImages", self.block)
+
+    def test_loading_and_errors_target_the_cinematic_grid(self):
+        self.assertIn("var grid=$('cineAvatarGrid')", self.block)
+        self.assertIn("renderCineAvatars()", self.block)
+
+
 if __name__ == "__main__":
     unittest.main()
