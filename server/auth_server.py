@@ -76,6 +76,7 @@ CANVAS_PRESENCE_MAX_BYTES = 4096
 CANVAS_NODE_TYPES = {"text", "image", "reverse", "gen", "video"}
 CANVAS_OPS_RETAINED_BATCHES = 1000
 CANVAS_PRESENCE_WINDOW_SECONDS = 30
+CANVAS_MAX_BOARDS_PER_USER = int(os.environ.get("HQ_CANVAS_MAX_BOARDS_PER_USER", "50"))
 
 def db():
     c = sqlite3.connect(DB, timeout=10)
@@ -681,6 +682,10 @@ def create_canvas_board(username, payload):
         return None, err
     c = db()
     try:
+        owned = c.execute("SELECT COUNT(*) AS n FROM canvas_boards WHERE owner_username=?",
+                          (username,)).fetchone()
+        if owned and int(owned["n"] or 0) >= CANVAS_MAX_BOARDS_PER_USER:
+            return None, "too_many_boards"
         now = int(time.time())
         board_id = make_canvas_id(c)
         c.execute("""INSERT INTO canvas_boards(id, owner_username, name, data_json, version, created_at, updated_at)
@@ -960,6 +965,12 @@ def apply_canvas_ops(username, board_id, payload):
             }
             c.rollback()
             return result, None
+        current_version = int(row["version"] or 1)
+        if normalized["base_version"] != current_version:
+            # 客户端基于过期版本提交：拒绝并告知当前版本，让客户端先 sync 再重试，
+            # 避免后到请求静默覆盖其他协作者已提交的改动。
+            c.rollback()
+            return {"version": current_version}, "conflict"
         try:
             data = json.loads(row["data_json"] or "{}")
         except Exception:
@@ -2652,6 +2663,8 @@ class H(BaseHTTPRequestHandler):
                     return self._send(400, {"detail": "画布数据格式不正确"})
                 if err == "too_large":
                     return self._send(413, {"detail": "画布数据过大"})
+                if err == "too_many_boards":
+                    return self._send(429, {"detail": "画布数量已达上限，请先删除不再需要的画布"})
                 if err:
                     return self._send(400, {"detail": err})
                 return self._send(200, {"ok": True, "board": board})
@@ -2703,6 +2716,9 @@ class H(BaseHTTPRequestHandler):
                     return self._send(404, {"detail": "协作画布不存在"})
                 if err == "forbidden":
                     return self._send(403, {"detail": "没有编辑权限"})
+                if err == "conflict":
+                    return self._send(409, {"detail": "画布已被其他成员更新，请先同步",
+                                            "version": (result or {}).get("version")})
                 if err in {"too_many_ops", "too_large"}:
                     return self._send(413, {"detail": "画布操作数据过大"})
                 if err:
