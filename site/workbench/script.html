@@ -487,6 +487,13 @@
   function platformText(name){
     return ({douyin:'抖音',xiaohongshu:'小红书',weixin:'视频号',channels:'视频号'})[name]||name||'';
   }
+  function fmtDur(d){
+    // 兼容存量毫秒数据：>1000 视为毫秒转秒（tikhub 原始值如 18320 → 18s）
+    var n=Number(d);
+    if(!isFinite(n)||n<=0) return d||'';
+    if(n>1000) n=Math.round(n/1000);
+    return n;
+  }
   function render(res, topicTxt, style, dur){
     lastScenes=res.scenes||[]; lastStyle=style||'口播';
     bdEditing=false; if(bdEditBtn) bdEditBtn.textContent='✏️ 编辑分镜'; if(bdEditCancelBtn) bdEditCancelBtn.style.display='none';
@@ -501,7 +508,7 @@
     bdEditing=false; if(bdEditBtn) bdEditBtn.textContent='✏️ 编辑分镜'; if(bdEditCancelBtn) bdEditCancelBtn.style.display='none';
     var list=normalizeBreakdownScenes((bd&&bd.scenes)||[]);
     var analysis=(bd&&bd.analysis)||'';
-    if(meta) meta.innerHTML='<span style="color:#60a5fa;">拆解</span><span style="color:#5c6b82;">·</span><span>'+esc((bd&&bd.source_title)||'爆款拆解')+'</span><span style="color:#5c6b82;">·</span><span>'+esc(platformText(bd&&bd.source_platform))+'</span><span style="color:#5c6b82;">·</span><span class="mono">'+esc((bd&&bd.duration)||'')+'s</span><span style="color:#5c6b82;">·</span><span>共 <span class="mono">'+list.length+'</span> 个分镜</span>';
+    if(meta) meta.innerHTML='<span style="color:#60a5fa;">拆解</span><span style="color:#5c6b82;">·</span><span>'+esc((bd&&bd.source_title)||'爆款拆解')+'</span><span style="color:#5c6b82;">·</span><span>'+esc(platformText(bd&&bd.source_platform))+'</span><span style="color:#5c6b82;">·</span><span class="mono">'+esc(String(fmtDur((bd&&bd.duration)||'')))+'s</span><span style="color:#5c6b82;">·</span><span>共 <span class="mono">'+list.length+'</span> 个分镜</span>';
     scenes.innerHTML=list.length ? list.map(function(s,i){ return sceneCardHTML(s,i); }).join('') : '<div style="padding:24px;text-align:center;color:#f4708a;">拆解结果为空，请重试</div>';
     if(bdResultMeta && bd && bd.source_url){ bdResultMeta.style.display=''; }
     if(bdSourceLink && bd && bd.source_url){ bdSourceLink.href=bd.source_url; }
@@ -515,7 +522,7 @@
     lastBreakdownReverse=bd;
     bdEditing=false; if(bdEditBtn) bdEditBtn.textContent='✏️ 编辑分镜'; if(bdEditCancelBtn) bdEditCancelBtn.style.display='none';
     var prompt=((bd&&bd.prompt)||'').trim();
-    if(meta) meta.innerHTML='<span style="color:#a78bfa;">反推</span><span style="color:#5c6b82;">·</span><span>'+esc((bd&&bd.source_title)||'视频提示词反推')+'</span><span style="color:#5c6b82;">·</span><span>'+esc(platformText(bd&&bd.source_platform))+'</span><span style="color:#5c6b82;">·</span><span class="mono">'+esc((bd&&bd.duration)||'')+'s</span>';
+    if(meta) meta.innerHTML='<span style="color:#a78bfa;">反推</span><span style="color:#5c6b82;">·</span><span>'+esc((bd&&bd.source_title)||'视频提示词反推')+'</span><span style="color:#5c6b82;">·</span><span>'+esc(platformText(bd&&bd.source_platform))+'</span><span style="color:#5c6b82;">·</span><span class="mono">'+esc(String(fmtDur((bd&&bd.duration)||'')))+'s</span>';
     scenes.innerHTML=prompt
       ? '<div id="bdReverseResult" class="sc-card" style="display:block;">'
         +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:12px;font-weight:700;color:#c4b5fd;"><span>✨</span><span>反推提示词</span></div>'
@@ -772,6 +779,7 @@
     scenes.innerHTML='<div style="padding:34px; text-align:center; color:#60a5fa; font-size:13px;">正在下载视频…</div>';
     hideBreakdownMeta();
     var pollCount=0, lastPhase='downloading', pollErrors=0;
+    var maxPolls=isBatch?(100*lines.length):120;  // 批量按条数放宽：每条最长约90s，5条≈450s+，避免后端还在跑前端先报超时
     var reqBody=isBatch?{urls:lines,mode:'scenes'}:{url:lines[0],mode:submitMode};
     fetch('/api/gen/breakdown',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(reqBody)})
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
@@ -813,7 +821,7 @@
               var bm=/^batch_(d+)_(d+)$/.exec(d.phase||'');
               scenes.innerHTML='<div style="padding:34px; text-align:center; color:#60a5fa; font-size:13px;">'+(bm?('批量拆解中（第'+bm[1]+'条/共'+bm[2]+'条）'):(phaseMsg[d.phase]||'处理中…'))+'</div>';
             }
-            if(pollCount>120){ clearInterval(iv); resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">'+(submitMode==='reverse_prompt'?'反推超时，请稍后重试':'拆解超时，请稍后重试')+'</div>'; }
+            if(pollCount>maxPolls){ clearInterval(iv); resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">'+(submitMode==='reverse_prompt'?'反推超时，请稍后重试':'拆解超时，请稍后重试')+'</div>'; }
           }).catch(function(){
             pollErrors++;
             if(pollErrors>=3 && pollErrors<MAX_POLL_ERRORS) scenes.innerHTML='<div style="padding:34px; text-align:center; color:#f4a460; font-size:13px;">网络不稳定，正在重试…（'+pollErrors+'/'+MAX_POLL_ERRORS+'）</div>';
@@ -858,7 +866,7 @@
     var title=document.createElement('div'); title.className='sc-history-title'; title.textContent=item.title||'（无标题）'; title.title=item.title||'';
     var info=document.createElement('div'); info.className='sc-history-meta';
     info.textContent=isBreakdown
-      ? [isReverse?'反推':'拆解',platformText(m.source_platform),(m.duration||'')?((m.duration||'')+'s'):'',isReverse?'提示词':(list.length+'个分镜')].filter(Boolean).join(' · ')
+      ? [isReverse?'反推':'拆解',platformText(m.source_platform),fmtDur(m.duration)?(fmtDur(m.duration)+'s'):'',isReverse?'提示词':(list.length+'个分镜')].filter(Boolean).join(' · ')
       : [m.style||'分镜脚本',m.dur||'',list.length+'个分镜'].filter(Boolean).join(' · ');
     var when=document.createElement('div'); when.className='sc-history-time';
     when.textContent=item.created_at?new Date(Number(item.created_at)*1000).toLocaleString('zh-CN',{hour12:false}):'';
@@ -969,7 +977,7 @@
               clearInterval(iv); _setGenerateBusy(btn,false);
               var vurl=(d.result&&d.result.video_url)||'';
               var costInfo=x.d.cost!=null?' · 消耗 '+x.d.cost+' 点':'';
-              scenes.innerHTML='<div style="padding:24px;text-align:center;">'
+              var successHtml='<div style="padding:24px;text-align:center;margin-bottom:6px;">'
                 +'<div style="font-size:40px;margin-bottom:10px;">✅</div>'
                 +'<div style="font-size:15px;font-weight:700;color:#eaf1fa;margin-bottom:8px;">生成完成！</div>'
                 +'<div style="font-size:12px;color:#94a4bb;margin-bottom:14px;">'+sceneCount+' 个分镜已合成视频'+costInfo+'</div>'
@@ -977,6 +985,10 @@
                 +'<div style="display:flex;gap:9px;justify-content:center;">'
                 +'<a href="assets.html" class="sc-btn" style="color:#e7b24c;">📁 查看资产库</a>'
                 +'<a href="video.html" class="sc-btn">📹 去视频页</a></div></div>';
+              // 成功后保留分镜列表：先重渲染分镜，再把成功横幅插到顶部
+              if(currentMode==='breakdown'&&lastBreakdown){ renderBreakdown(lastBreakdown); scenes.insertAdjacentHTML('afterbegin',successHtml); }
+              else if(lastScenes.length){ render({scenes:lastScenes},(topic&&topic.value)||'',lastStyle||'口播',pick('segDur','.sc-opt','30s')); scenes.insertAdjacentHTML('afterbegin',successHtml); }
+              else { scenes.innerHTML=successHtml; }
               if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
               loadHistory();
             } else if(d.status==='error'||d.status==='failed'){
@@ -1085,11 +1097,15 @@
               clearInterval(iv); _setGenerateBusy(btn,false);
               var us=(d.result&&d.result.urls&&d.result.urls.length)?d.result.urls:[(d.result&&d.result.url)||''];
               var imgHtml=us.map(function(u){ return '<img src="'+esc(u)+'" style="max-width:100%;max-height:340px;border-radius:10px;border:1px solid rgba(148,164,187,.16);margin-bottom:8px;cursor:zoom-in;">'; }).join('');
-              scenes.innerHTML='<div style="padding:24px;text-align:center;">'
+              var successHtml='<div style="padding:24px;text-align:center;margin-bottom:6px;">'
                 +'<div style="font-size:40px;margin-bottom:10px;">✅</div>'
                 +'<div style="font-size:15px;font-weight:700;color:#eaf1fa;margin-bottom:8px;">图片生成完成！</div>'
                 +(imgHtml||'<div style="color:#94a4bb;">图片已生成，请在资产库查看</div>')
                 +'</div>';
+              // 成功后保留分镜列表：先重渲染分镜，再把成功横幅插到顶部
+              if(currentMode==='breakdown'&&lastBreakdown){ renderBreakdown(lastBreakdown); scenes.insertAdjacentHTML('afterbegin',successHtml); }
+              else if(lastScenes.length){ render({scenes:lastScenes},(topic&&topic.value)||'',lastStyle||'口播',pick('segDur','.sc-opt','30s')); scenes.insertAdjacentHTML('afterbegin',successHtml); }
+              else { scenes.innerHTML=successHtml; }
               if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
             } else if(d.status==='error'||d.status==='failed'){
               clearInterval(iv); _setGenerateBusy(btn,false);

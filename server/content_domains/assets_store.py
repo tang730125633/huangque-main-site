@@ -261,8 +261,37 @@ def list_assets(username, kind=None, stage=None, limit=60, offset=0):
             d["meta"] = json.loads(d.get("meta") or "{}")
         except Exception:
             d["meta"] = {}
+        d["meta"] = _slim_meta_for_list(d["meta"])
         out.append(d)
     return out
+
+
+def _slim_meta_for_list(meta):
+    """列表视图瘦身：关键帧缩略图每条只保留 1 张（原是 ≤4 张 base64，批量资产 5×4 张，
+    limit=60 时响应可到数 MB），同时给 frame_count 让前端知道原来有几帧。"""
+    if not isinstance(meta, dict):
+        return meta
+    thumbs = meta.get("frame_thumbnails") or []
+    if len(thumbs) > 1:
+        meta = dict(meta)
+        meta["frame_thumbnails"] = thumbs[:1]
+        meta["frame_count"] = len(thumbs)
+    results = meta.get("results")
+    if isinstance(results, list):
+        slimmed = []
+        changed = False
+        for b in results:
+            if isinstance(b, dict) and len(b.get("frame_thumbnails") or []) > 1:
+                orig = len(b.get("frame_thumbnails") or [])
+                b = dict(b)
+                b["frame_thumbnails"] = (b.get("frame_thumbnails") or [])[:1]
+                b["frame_count"] = orig
+                changed = True
+            slimmed.append(b)
+        if changed:
+            meta = dict(meta)
+            meta["results"] = slimmed
+    return meta
 
 
 def list_assets_response(username, query):

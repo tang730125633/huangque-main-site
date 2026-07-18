@@ -225,5 +225,19 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("Math.floor((Date.now()-startTs)/1000)", self.html)
         self.assertIn("bucket!==lastProgress||bucket===2", self.html)
 
+    def test_batch_poll_timeout_scales_with_url_count(self):
+        """批量拆解轮询上限按条数放宽，避免后端还在跑前端先报超时"""
+        self.assertIn("var maxPolls=isBatch?(100*lines.length):120;", self.html)
+        self.assertIn("if(pollCount>maxPolls)", self.html)
+
+    def test_generate_success_keeps_scenes_visible(self):
+        """一键成片/做图成功后分镜列表保留，成功横幅插入顶部"""
+        self.assertIn("scenes.insertAdjacentHTML('afterbegin',successHtml)", self.html)
+
+    def test_legacy_millisecond_duration_display_fixed(self):
+        """存量毫秒时长显示修正（fmtDur 18320→18）"""
+        self.assertIn("function fmtDur(d)", self.html)
+        self.assertIn("n>1000", self.html)
+
 if __name__ == "__main__":
     unittest.main()

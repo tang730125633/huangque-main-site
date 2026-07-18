@@ -123,6 +123,22 @@ class AssetsStoreTests(unittest.TestCase):
         self.assertEqual(a["meta"]["analysis"], "前3秒强钩子，后面用价格锚点推进转化")
         self.assertEqual(a["meta"]["frame_thumbnails"], ["data:image/jpeg;base64,thumb1"])
 
+    def test_list_assets_slims_frame_thumbnails(self):
+        """列表视图缩略图每条最多 1 张并带 frame_count（防响应膨胀，批量子项同样瘦身）"""
+        result = {
+            "type": "breakdown",
+            "source_title": "多帧拆解",
+            "source_url": "https://example.com/video/slim",
+            "source_platform": "douyin",
+            "duration": 27,
+            "scenes": [{"dur": "3s", "scene": "门头", "line": "欢迎"}],
+            "frame_thumbnails": ["t1", "t2", "t3"],
+        }
+        self.assertTrue(self.store.record_asset(17, "u", "breakdown", result))
+        a = [x for x in self.store.list_assets("u", kind="breakdown") if x["url"] == result["source_url"]][0]
+        self.assertEqual(a["meta"]["frame_thumbnails"], ["t1"])
+        self.assertEqual(a["meta"]["frame_count"], 3)
+
     def test_record_breakdown_reverse_keeps_prompt(self):
         result = {
             "type": "breakdown_reverse",
