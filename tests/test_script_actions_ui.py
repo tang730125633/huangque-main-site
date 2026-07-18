@@ -19,7 +19,7 @@ class ScriptActionsUiTests(unittest.TestCase):
 
     def test_export_builds_utf8_text_download(self):
         self.assertIn('id="scExport"', self.html)
-        self.assertIn("new Blob(['﻿'+scriptText(exportScenes)]", self.html)
+        self.assertIn("new Blob(['﻿'+txt]", self.html)
         self.assertIn("a.download=filename", self.html)
 
     def test_one_click_video_calls_script_to_video_api(self):
@@ -178,6 +178,46 @@ class ScriptActionsUiTests(unittest.TestCase):
         """核心卖点下的默认标签（清爽控油/补水保湿/抗老紧致/提亮肤色）已移除"""
         for tag in ("清爽控油", "补水保湿", "抗老紧致", "提亮肤色"):
             self.assertNotIn(tag, self.html)
+
+    # === 8 UX fixes ===
+
+    def test_placeholder_cards_have_data_attribute_and_are_skipped(self):
+        """P0: 占位分镜带 data-placeholder，readScenesFromDom 跳过"""
+        self.assertIn('data-placeholder="1"', self.html)
+        self.assertIn("!card.hasAttribute('data-placeholder')", self.html)
+
+    def test_scene_handoff_links_open_new_tab(self):
+        """P1: 转视频/转口播以新标签页打开"""
+        self.assertIn('target="_blank" rel="noopener">转视频<', self.html)
+        self.assertIn("window.open(handoffUrl('video.html'", self.html)
+        self.assertIn("window.open(handoffUrl('audio.html'", self.html)
+
+    def test_edit_mode_has_cancel_button(self):
+        """P2: 编辑模式有取消按钮"""
+        self.assertIn('id="bdEditCancelBtn"', self.html)
+        self.assertIn("function _cancelBreakdownEdit()", self.html)
+        self.assertIn("bdEditCancelBtn.style.display=bdEditing?'':'none'", self.html)
+
+    def test_duration_hint_shows_estimated_scenes(self):
+        """P2: 时长选择下方显示预计分镜数"""
+        self.assertIn('id="scDurHint"', self.html)
+        self.assertIn("预计产出", self.html)
+
+    def test_batch_url_textarea_rows_two(self):
+        """P3: bdUrl textarea rows=2"""
+        self.assertIn('id="bdUrl" rows="2"', self.html)
+
+    def test_reverse_draw_button_label(self):
+        """P3: 去作图按钮改为「去作图页精修」"""
+        self.assertIn("去作图页精修", self.html)
+
+    def test_export_includes_content_analysis(self):
+        """P3: 导出补内容分析"""
+        self.assertIn("lastBreakdown.analysis", self.html)
+
+    def test_style_picker_has_description(self):
+        """P3: 风格选择器有说明文字"""
+        self.assertIn("口播/种草=数字人念稿", self.html)
 
 if __name__ == "__main__":
     unittest.main()

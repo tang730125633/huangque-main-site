@@ -38,6 +38,12 @@ class ScriptPromptStyleTests(unittest.TestCase):
         self.assertIn('"dur"', self.source,
                       "每个分镜应仍包含 dur 字段")
 
+    def test_scene_count_calculated_from_duration(self):
+        """镜数由时长计算：dur_sec // 8，3-8 区间"""
+        self.assertIn("dur_sec", self.source)
+        self.assertIn("n_scenes", self.source)
+        self.assertIn("max(3, min(8", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()
