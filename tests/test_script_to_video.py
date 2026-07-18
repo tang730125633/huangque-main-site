@@ -80,6 +80,32 @@ class ScriptToVideoTests(unittest.TestCase):
         self.assertEqual(result["pipeline"], "talking")
         self.assertEqual(result["type"], "script_to_video")
 
+    def test_talking_passes_voice_through_and_defaults(self):
+        """voice 参数透传 gen_video（个人音色 vip_xxx）；缺省回落默认音色"""
+        calls = {}
+
+        def fake_gen_video(payload):
+            calls["payload"] = payload
+            return {"video_url": "https://example.test/talking.mp4"}
+
+        self.video.gen_video = fake_gen_video
+        self.script_to_video._get_first_avatar = lambda username: {"id": 1}
+
+        self.script_to_video.gen_script_to_video({
+            "_username": "fang",
+            "style": "口播",
+            "voice": "vip_abc123",
+            "scenes": [{"line": "第一句"}],
+        })
+        self.assertEqual(calls["payload"]["voice"], "vip_abc123")
+
+        self.script_to_video.gen_script_to_video({
+            "_username": "fang",
+            "style": "口播",
+            "scenes": [{"line": "第一句"}],
+        })
+        self.assertEqual(calls["payload"]["voice"], "S_d21F8OR62")
+
     def test_talking_pipeline_gets_real_duration_settlement(self):
         """run_job 的口播真实时长结算必须覆盖 script_to_video 的 talking 链路（剧情走 grok 不结算）"""
         core_src = (Path(__file__).resolve().parents[1] / "server/content_domains/core.py").read_text(encoding="utf-8")
