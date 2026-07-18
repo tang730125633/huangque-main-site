@@ -32,6 +32,10 @@
 
   .sc-card{ border:1px solid rgba(148,164,187,.1); border-radius:14px; background:rgba(7,11,19,.4); padding:14px; display:flex; gap:14px; transition:.18s; }
   .sc-card:hover{ border-color:rgba(231,178,76,.26); }
+  .sc-card[data-scene-idx]{ cursor:pointer; }
+  .sc-card[data-scene-idx]:active{ cursor:grabbing; }
+  .sc-card.dragging{ opacity:.45; border-color:rgba(231,178,76,.44); box-shadow:0 10px 28px -18px rgba(231,178,76,.5); }
+  .sc-card.drag-over{ border-color:rgba(96,165,250,.48); background:rgba(96,165,250,.08); }
   .sc-shot{ width:96px; flex:none; aspect-ratio:3/4; border:1px dashed rgba(148,164,187,.26); border-radius:11px; background:rgba(148,164,187,.03); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:7px; color:#5c6b82; text-align:center; padding:8px; }
 
   .sc-btn{ display:inline-flex; align-items:center; gap:6px; padding:7px 13px; font-size:12.5px; border-radius:9px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; }
@@ -184,11 +188,18 @@
         </div>
         <button class="sc-btn"><span class="sc-ico" style="width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span>复制全部</button>
       </div>
-      <div id="scMeta" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:12px 0 16px; font-size:12.5px; color:#94a4bb;">
+      <div id="scMeta" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:12px 0 10px; font-size:12.5px; color:#94a4bb;">
         <span>仙颜美容 · 夏日护肤焕新活动</span><span style="color:#5c6b82;">·</span>
         <span style="color:#e7b24c;">口播</span><span style="color:#5c6b82;">·</span>
         <span class="mono">30s</span><span style="color:#5c6b82;">·</span>
         <span>共 <span class="mono">3</span> 个分镜</span>
+      </div>
+      <div id="scLiveStats" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:16px; font-size:11.5px; color:#5c6b82;">
+        <span id="scSceneCount">分镜 3 条</span>
+        <span style="color:#334155;">•</span>
+        <span id="scWordCount">总字数 66 字</span>
+        <span style="color:#334155;">•</span>
+        <span id="scEstimateDuration">预估时长 17 秒</span>
       </div>
 
       <div id="scScenes" style="display:flex; flex-direction:column; gap:12px;">
@@ -310,7 +321,9 @@
       historySection=document.getElementById('scHistorySection'), historyList=document.getElementById('scHistoryList'),
       historyState=document.getElementById('scHistoryState'), themeLightBtn=document.getElementById('scThemeLight'),
       themeDarkBtn=document.getElementById('scThemeDark');
-  var previewTitle=document.getElementById('scPreviewTitle'), batchHint=document.getElementById('scBatchHint');
+  var previewTitle=document.getElementById('scPreviewTitle'), batchHint=document.getElementById('scBatchHint'),
+      liveStats=document.getElementById('scLiveStats'), sceneCountStat=document.getElementById('scSceneCount'),
+      wordCountStat=document.getElementById('scWordCount'), estimateDurationStat=document.getElementById('scEstimateDuration');
   var panelWrite=document.getElementById('panelWrite'), panelBreakdown=document.getElementById('panelBreakdown');
   var genVideoBtn=document.getElementById('scGenVideo'), genAudioBtn=document.getElementById('scGenAudio'),
       bdRemakeBtn=document.getElementById('bdRemakeBtn'), bdEditBtn=document.getElementById('bdEditBtn'),
@@ -371,10 +384,74 @@
       return {dur:s&&s.dur||'', scene:s&&s.scene||'', line:s&&s.line||''};
     }).filter(function(s){ return s.scene||s.line; });
   }
+  function sceneText(s,i){
+    return '镜号'+('0'+(i+1)).slice(-2)+'（'+(s.dur||'')+'）\n画面：'+(s.scene||'')+'\n口播：'+(s.line||'');
+  }
   function scriptText(list){
     return (list||[]).map(function(s,i){
-      return '镜号'+('0'+(i+1)).slice(-2)+'（'+(s.dur||'')+'）\n画面：'+(s.scene||'')+'\n口播：'+(s.line||'');
+      return sceneText(s,i);
     }).join('\n\n');
+  }
+  function readEditingScenes(){
+    if(!scenes) return [];
+    return Array.prototype.slice.call(scenes.querySelectorAll('.sc-card')).map(function(card){
+      var durInput=card.querySelector('[data-scene-dur]');
+      var textInput=card.querySelector('[data-scene-text]');
+      var lineInput=card.querySelector('[data-scene-line]');
+      return {
+        dur:(durInput&&durInput.value)||'',
+        scene:(textInput&&textInput.value)||'',
+        line:(lineInput&&lineInput.value)||''
+      };
+    }).filter(function(s){ return s.scene||s.line; });
+  }
+  function parseSceneSeconds(value){
+    var txt=String(value||'').trim();
+    if(!txt) return 0;
+    var mmss=txt.match(/^(\d{1,2})\s*[:：]\s*(\d{1,2})$/);
+    if(mmss) return Number(mmss[1])*60+Number(mmss[2]);
+    var m=txt.match(/(\d+(?:\.\d+)?)/);
+    return m?Math.round(Number(m[1])||0):0;
+  }
+  function estimateSpeechSeconds(charCount){
+    return charCount?Math.max(3, Math.round(charCount/4.2)):0;
+  }
+  function sceneStats(list){
+    var chars=0, sceneSeconds=0;
+    (list||[]).forEach(function(item){
+      chars+=String((item&&item.line)||'').replace(/\s+/g,'').length;
+      sceneSeconds+=parseSceneSeconds(item&&item.dur);
+    });
+    return { chars:chars, seconds:Math.max(sceneSeconds, estimateSpeechSeconds(chars)) };
+  }
+  function renderSceneStats(list){
+    if(!liveStats||!sceneCountStat||!wordCountStat||!estimateDurationStat) return;
+    var rows=list||[];
+    var stats=sceneStats(rows);
+    sceneCountStat.textContent='分镜 '+rows.length+' 条';
+    wordCountStat.textContent='总字数 '+stats.chars+' 字';
+    estimateDurationStat.textContent='预估时长 '+stats.seconds+' 秒';
+    liveStats.style.display=(rows.length||stats.chars)?'flex':'none';
+  }
+  function copyText(text, onDone){
+    if(!text) return Promise.resolve(false);
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      return navigator.clipboard.writeText(text).then(function(){ if(onDone) onDone(); return true; }).catch(function(){ return false; });
+    }
+    try{
+      var ta=document.createElement('textarea');
+      ta.value=text;
+      ta.setAttribute('readonly','readonly');
+      ta.style.cssText='position:fixed;left:-9999px;top:0;opacity:0;';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      if(onDone) onDone();
+      return Promise.resolve(true);
+    }catch(_e){
+      return Promise.resolve(false);
+    }
   }
   function setPicked(id,selector,value){
     if(!value) return;
@@ -398,15 +475,16 @@
   }
   function sceneCardHTML(s,i){
     var no=('0'+(i+1)).slice(-2);
-    return '<div class="sc-card"><div class="sc-shot"><span style="display:flex; width:20px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4"/></svg></span><span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">'+no+'</span></div>'
+    return '<div class="sc-card" draggable="true" data-scene-idx="'+i+'"><div class="sc-shot"><span style="display:flex; width:20px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4"/></svg></span><span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">'+no+'</span><span style="font-size:10px; line-height:1.45;">拖拽排序<br>点击编辑</span></div>'
       +'<div style="flex:1; min-width:0;">'
-      +'<div style="display:flex; align-items:center; gap:9px; margin-bottom:9px;"><span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">镜号 '+no+'</span><span style="display:inline-flex; align-items:center; gap:4px; padding:3px 9px; font-size:11px; border-radius:7px; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.12);"><span class="mono">'+esc(s.dur||'')+'</span></span></div>'
+      +'<div style="display:flex; align-items:center; gap:9px; margin-bottom:9px; flex-wrap:wrap;"><span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">镜号 '+no+'</span><span style="display:inline-flex; align-items:center; gap:4px; padding:3px 9px; font-size:11px; border-radius:7px; color:#94a4bb; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.12);"><span class="mono">'+esc(s.dur||'')+'</span></span><span style="font-size:10.5px;color:#5c6b82;">点击卡片可直接编辑</span></div>'
       +'<div style="font-size:12px; color:#94a4bb; margin-bottom:7px;"><span style="color:#5c6b82;">画面：</span>'+esc(s.scene||'')+'</div>'
       +((s.line||'').trim()?'<div style="font-size:13px; color:#eaf1fa; line-height:1.7; margin-bottom:12px;"><span style="color:#5c6b82; font-size:12px;">口播：</span>'+esc(s.line||'')+'</div>':'')
-      +'<div style="display:flex; gap:9px;"><a data-to-video="'+escAttr(s.scene||'')+'" class="sc-btn" target="_blank" rel="noopener">转视频</a>'+((s.line||'').trim()?'<a data-to-audio="'+escAttr(s.line||'')+'" class="sc-btn" target="_blank" rel="noopener">转口播</a>':'')+'</div>'
+      +'<div style="display:flex; gap:9px; flex-wrap:wrap;"><button type="button" data-scene-copy="'+i+'" class="sc-btn">📋 复制本镜</button><a data-to-video="'+escAttr(s.scene||'')+'" class="sc-btn" target="_blank" rel="noopener">转视频</a>'+((s.line||'').trim()?'<a data-to-audio="'+escAttr(s.line||'')+'" class="sc-btn" target="_blank" rel="noopener">转口播</a>':'')+'</div>'
       +'</div></div>';
   }
   function getDisplayedScenes(){
+    if(bdEditing) return readEditingScenes();
     if(currentMode==='breakdown' && lastBreakdown) return normalizeBreakdownScenes(lastBreakdown.scenes||[]);
     return lastScenes.length?lastScenes:readScenesFromDom();
   }
@@ -436,6 +514,7 @@
     if(scenes) scenes.innerHTML=initialScenes;
     if(meta) meta.innerHTML=initialMeta;
     hideBreakdownMeta();
+    renderSceneStats(readScenesFromDom());
     bindSceneHandoffs();
   }
   function syncModeUi(){
@@ -467,6 +546,7 @@
     if(batchHint) batchHint.textContent=currentMode==='breakdown' ? (reverseMode?'反推完成后可复制提示词，或直接去作图继续生成':'拆解完成后可直接生成同款视频，或继续逐条转视频 / 转口播') : initialBatchHint;
     if(bdRemakeBtn) bdRemakeBtn.style.display=currentMode==='breakdown'&&((!reverseMode&&hasBreakdownScenes)||(reverseMode&&hasReversePrompt))?'':'none';
     if(bdEditBtn){ var hasScenes=currentMode==='breakdown' ? (!reverseMode&&hasBreakdownScenes) : (lastScenes.length>0); bdEditBtn.style.display=hasScenes?'':'none'; }
+    if(liveStats && currentMode==='breakdown' && ((reverseMode&&!hasReversePrompt)||(!reverseMode&&!hasBreakdownScenes))) liveStats.style.display='none';
     if(bdReverseCopyBtn) bdReverseCopyBtn.style.display=currentMode==='breakdown'&&reverseMode&&hasReversePrompt?'':'none';
     if(bdReverseDrawBtn) bdReverseDrawBtn.style.display=currentMode==='breakdown'&&reverseMode&&hasReversePrompt?'':'none';
     if(bdToImageBtn) bdToImageBtn.style.display=currentMode==='breakdown'&&!reverseMode&&hasBreakdownScenes?'':'none';
@@ -517,6 +597,7 @@
     if(meta) meta.innerHTML='<span>'+esc(topicTxt)+'</span><span style="color:#5c6b82;">·</span><span style="color:#e7b24c;">'+esc(style)+'</span><span style="color:#5c6b82;">·</span><span class="mono">'+esc(dur)+'</span><span style="color:#5c6b82;">·</span><span>共 <span class="mono">'+lastScenes.length+'</span> 个分镜</span>';
     scenes.innerHTML=lastScenes.map(function(s,i){ return sceneCardHTML(s,i); }).join('');
     hideBreakdownMeta();
+    renderSceneStats(lastScenes);
     if(bdEditBtn) bdEditBtn.style.display=lastScenes.length?'':'none';
     bindSceneHandoffs();
   }
@@ -530,6 +611,7 @@
     if(bdResultMeta && bd && bd.source_url){ bdResultMeta.style.display=''; }
     if(bdSourceLink && bd && bd.source_url){ bdSourceLink.href=bd.source_url; }
     setBreakdownAnalysis(analysis);
+    renderSceneStats(list);
     if(bdEditBtn) bdEditBtn.style.display=list.length?'':'none';
     setBreakdownStoryboard((bd&&bd.frame_thumbnails)||[]);
     bindSceneHandoffs();
@@ -549,6 +631,7 @@
     if(bdResultMeta && bd && bd.source_url){ bdResultMeta.style.display=''; }
     if(bdSourceLink && bd && bd.source_url){ bdSourceLink.href=bd.source_url; }
     setBreakdownAnalysis('');
+    renderSceneStats([]);
     setBreakdownStoryboard((bd&&bd.frame_thumbnails)||[]);
     syncModeUi();
   }
@@ -637,6 +720,34 @@
     });
     overlay.onclick=function(e){ if(e.target===overlay) document.body.removeChild(overlay); };
   }
+  function applySceneList(list){
+    var updated=normalizeBreakdownScenes(list||[]);
+    if(currentMode==='breakdown'&&lastBreakdown){
+      lastBreakdown.scenes=updated;
+      renderBreakdown(lastBreakdown);
+    }else{
+      lastScenes=updated;
+      render({scenes:lastScenes}, (topic&&topic.value)||'', lastStyle||'口播', pick('segDur','.sc-opt','30s'));
+    }
+  }
+  function startDirectSceneEdit(index){
+    if(isBreakdownReverseTool()) return;
+    var list=getDisplayedScenes();
+    if(!list.length) return;
+    if(!bdEditing){
+      bdEditing=true;
+      if(bdEditBtn) bdEditBtn.textContent='💾 保存分镜';
+      _renderBreakdownEditMode();
+    }
+    var textInput=scenes&&scenes.querySelector('[data-scene-text="'+index+'"]');
+    var lineInput=scenes&&scenes.querySelector('[data-scene-line="'+index+'"]');
+    var target=textInput||lineInput;
+    if(target){
+      target.focus();
+      if(target.select) target.select();
+      if(target.scrollIntoView) target.scrollIntoView({behavior:'smooth',block:'center'});
+    }
+  }
   function _toggleBreakdownEdit(){
     var hasScenes=currentMode==='breakdown' ? (lastBreakdown&&(lastBreakdown.scenes||[]).length) : (lastScenes.length>0);
     if(!hasScenes){ return; }
@@ -647,8 +758,7 @@
       _renderBreakdownEditMode();
     } else {
       _saveBreakdownEdit();
-      if(currentMode==='breakdown'&&lastBreakdown){ renderBreakdown(lastBreakdown); }
-      else if(lastScenes.length){ render({scenes:lastScenes}, (topic&&topic.value)||'', lastStyle||'口播', pick('segDur','.sc-opt','30s')); }
+      applySceneList(currentMode==='breakdown'&&lastBreakdown ? lastBreakdown.scenes : lastScenes);
     }
   }
   function _cancelBreakdownEdit(){
@@ -660,35 +770,25 @@
   }
   function _editableCardHTML(s,i){
     var no=('0'+(i+1)).slice(-2);
-    return '<div class="sc-card"><div class="sc-shot"><span style="display:flex; width:20px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4"/></svg></span><span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">'+no+'</span></div>'
+    return '<div class="sc-card"><div class="sc-shot"><span style="display:flex; width:20px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4"/></svg></span><span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">'+no+'</span><span style="font-size:10px; line-height:1.45;">实时统计<br>自动刷新</span></div>'
       +'<div style="flex:1; min-width:0;">'
-      +'<div style="display:flex; align-items:center; gap:9px; margin-bottom:9px;"><span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">镜号 '+no+'</span><input data-scene-dur="'+i+'" value="'+escAttr(s.dur||'')+'" style="width:56px;padding:3px 8px;font-size:11px;border-radius:7px;color:#eaf1fa;background:rgba(148,164,187,.08);border:1px solid rgba(148,164,187,.2);outline:none;"></div>'
+      +'<div style="display:flex; align-items:center; gap:9px; margin-bottom:9px; flex-wrap:wrap;"><span class="mono" style="font-size:13px; font-weight:700; color:#e7b24c;">镜号 '+no+'</span><input data-scene-dur="'+i+'" value="'+escAttr(s.dur||'')+'" style="width:56px;padding:3px 8px;font-size:11px;border-radius:7px;color:#eaf1fa;background:rgba(148,164,187,.08);border:1px solid rgba(148,164,187,.2);outline:none;"><span style="font-size:10.5px;color:#5c6b82;">修改口播会实时刷新字数 / 时长</span></div>'
       +'<div style="font-size:12px; color:#94a4bb; margin-bottom:7px;"><span style="color:#5c6b82;">画面：</span><input data-scene-text="'+i+'" value="'+escAttr(s.scene||'')+'" style="width:100%;padding:5px 9px;font-size:12px;border-radius:8px;color:#eaf1fa;background:rgba(148,164,187,.08);border:1px solid rgba(148,164,187,.2);outline:none;box-sizing:border-box;"></div>'
       +'<div style="font-size:13px; color:#eaf1fa; line-height:1.7; margin-bottom:12px;"><span style="color:#5c6b82; font-size:12px;">口播：</span><textarea data-scene-line="'+i+'" rows="2" style="width:100%;padding:5px 9px;font-size:13px;border-radius:8px;color:#eaf1fa;background:rgba(148,164,187,.08);border:1px solid rgba(148,164,187,.2);outline:none;resize:vertical;box-sizing:border-box;font-family:inherit;line-height:1.6;">'+esc(s.line||'')+'</textarea></div>'
+      +'<div style="display:flex; gap:9px; flex-wrap:wrap;"><button type="button" data-scene-copy="'+i+'" class="sc-btn">📋 复制本镜</button></div>'
       +'</div></div>';
   }
   function _renderBreakdownEditMode(){
     if(!scenes) return;
     var list=currentMode==='breakdown' ? normalizeBreakdownScenes((lastBreakdown&&lastBreakdown.scenes)||[]) : lastScenes;
     scenes.innerHTML=list.length ? list.map(function(s,i){ return _editableCardHTML(s,i); }).join('') : '<div style="padding:24px;text-align:center;color:#f4708a;">无可编辑分镜</div>';
+    renderSceneStats(list);
   }
   function _saveBreakdownEdit(){
-    if(!scenes) return;
-    var cards=scenes.querySelectorAll('.sc-card');
-    var updated=[];
-    cards.forEach(function(card){
-      var durInput=card.querySelector('[data-scene-dur]');
-      var textInput=card.querySelector('[data-scene-text]');
-      var lineInput=card.querySelector('[data-scene-line]');
-      updated.push({
-        dur:(durInput&&durInput.value)||'',
-        scene:(textInput&&textInput.value)||'',
-        line:(lineInput&&lineInput.value)||''
-      });
-    });
-    updated=updated.filter(function(s){ return s.scene||s.line; });
+    var updated=readEditingScenes();
     if(currentMode==='breakdown'&&lastBreakdown){ lastBreakdown.scenes=updated; }
     else { lastScenes=updated; }
+    renderSceneStats(updated);
   }
   if(bdEditBtn){ bdEditBtn.onclick=function(){ _toggleBreakdownEdit(); }; }
   if(bdEditCancelBtn){ bdEditCancelBtn.onclick=function(){ _cancelBreakdownEdit(); }; }
@@ -743,11 +843,80 @@
   function pick(id,s,def){ var on=document.querySelector('#'+id+' '+s+'.on'); return on?on.textContent.trim():def; }
   function setBtn(t,busy){ gen.innerHTML=busy?t:orig; gen.style.pointerEvents=busy?'none':'auto'; gen.style.opacity=busy?'.7':'1'; }
 
-  if(scenes){ scenes.addEventListener('click', function(e){
-    var a=e.target.closest('[data-to-video]'); if(a){ e.preventDefault(); window.open(handoffUrl('video.html',a.getAttribute('data-to-video')),'_blank','noopener'); return; }
-    var b=e.target.closest('[data-to-audio]'); if(b){ e.preventDefault(); window.open(handoffUrl('audio.html',b.getAttribute('data-to-audio')),'_blank','noopener'); return; }
-  }); }
+  if(scenes){
+    var draggedSceneIndex=null;
+    function clearSceneDragState(){
+      draggedSceneIndex=null;
+      scenes.querySelectorAll('.sc-card').forEach(function(card){ card.classList.remove('dragging','drag-over'); });
+    }
+    function moveScene(list, fromIndex, toIndex){
+      var next=(list||[]).slice();
+      if(fromIndex===toIndex||fromIndex<0||toIndex<0||fromIndex>=next.length||toIndex>=next.length) return next;
+      var moved=next.splice(fromIndex,1)[0];
+      next.splice(toIndex,0,moved);
+      return next;
+    }
+    scenes.addEventListener('click', function(e){
+      var copyBtn=e.target.closest('[data-scene-copy]');
+      if(copyBtn){
+        e.preventDefault();
+        var idx=Number(copyBtn.getAttribute('data-scene-copy')||'-1');
+        var list=getDisplayedScenes();
+        var item=list[idx];
+        if(!item) return;
+        var origLabel=copyBtn.innerHTML;
+        copyText(sceneText(item, idx), function(){
+          copyBtn.textContent='已复制 ✓';
+          setTimeout(function(){ copyBtn.innerHTML=origLabel; },1500);
+        });
+        return;
+      }
+      var a=e.target.closest('[data-to-video]'); if(a){ e.preventDefault(); window.open(handoffUrl('video.html',a.getAttribute('data-to-video')),'_blank','noopener'); return; }
+      var b=e.target.closest('[data-to-audio]'); if(b){ e.preventDefault(); window.open(handoffUrl('audio.html',b.getAttribute('data-to-audio')),'_blank','noopener'); return; }
+      var card=e.target.closest('.sc-card[data-scene-idx]');
+      if(card && !bdEditing && !e.target.closest('a,button,input,textarea')){
+        startDirectSceneEdit(Number(card.getAttribute('data-scene-idx')||'0'));
+      }
+    });
+    scenes.addEventListener('input', function(e){
+      if(e.target.closest('[data-scene-dur],[data-scene-text],[data-scene-line]')) renderSceneStats(readEditingScenes());
+    });
+    scenes.addEventListener('dragstart', function(e){
+      var card=e.target.closest('.sc-card[data-scene-idx]');
+      if(!card||bdEditing||isBreakdownReverseTool()) return;
+      draggedSceneIndex=Number(card.getAttribute('data-scene-idx')||'-1');
+      if(draggedSceneIndex<0) return;
+      if(e.dataTransfer){
+        e.dataTransfer.effectAllowed='move';
+        e.dataTransfer.setData('text/plain', String(draggedSceneIndex));
+      }
+      card.classList.add('dragging');
+    });
+    scenes.addEventListener('dragover', function(e){
+      var card=e.target.closest('.sc-card[data-scene-idx]');
+      if(!card||draggedSceneIndex===null||draggedSceneIndex<0||card.classList.contains('dragging')) return;
+      e.preventDefault();
+      scenes.querySelectorAll('.sc-card.drag-over').forEach(function(node){ if(node!==card) node.classList.remove('drag-over'); });
+      card.classList.add('drag-over');
+    });
+    scenes.addEventListener('dragleave', function(e){
+      var card=e.target.closest('.sc-card[data-scene-idx]');
+      if(card) card.classList.remove('drag-over');
+    });
+    scenes.addEventListener('drop', function(e){
+      var card=e.target.closest('.sc-card[data-scene-idx]');
+      if(!card||draggedSceneIndex===null||draggedSceneIndex<0) return;
+      e.preventDefault();
+      var targetIndex=Number(card.getAttribute('data-scene-idx')||'-1');
+      var movedList=moveScene(getDisplayedScenes(), draggedSceneIndex, targetIndex);
+      clearSceneDragState();
+      applySceneList(movedList);
+      if(window.HQ&&window.HQ.toast&&targetIndex!==draggedSceneIndex) HQ.toast('分镜顺序已更新');
+    });
+    scenes.addEventListener('dragend', clearSceneDragState);
+  }
   bindSceneHandoffs();
+  renderSceneStats(readScenesFromDom());
   syncModeUi();
 
   gen.onclick=function(){

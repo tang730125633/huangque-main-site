@@ -260,5 +260,21 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("function _dramaDuration(list)", self.html)
         self.assertIn("Math.min(15, Math.max(1", self.html)
 
+    def test_scene_cards_support_copy_drag_and_direct_edit(self):
+        self.assertIn('data-scene-copy="', self.html)
+        self.assertIn('draggable="true" data-scene-idx="', self.html)
+        self.assertIn("function startDirectSceneEdit(index)", self.html)
+        self.assertIn("点击卡片可直接编辑", self.html)
+        self.assertIn("HQ.toast('分镜顺序已更新')", self.html)
+
+    def test_live_scene_stats_render_and_refresh(self):
+        self.assertIn('id="scLiveStats"', self.html)
+        self.assertIn('id="scWordCount"', self.html)
+        self.assertIn('id="scEstimateDuration"', self.html)
+        self.assertIn("function sceneStats(list)", self.html)
+        self.assertIn("function renderSceneStats(list)", self.html)
+        self.assertIn("renderSceneStats(readEditingScenes())", self.html)
+        self.assertIn("修改口播会实时刷新字数 / 时长", self.html)
+
 if __name__ == "__main__":
     unittest.main()
