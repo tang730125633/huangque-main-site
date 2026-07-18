@@ -174,5 +174,10 @@ class ScriptActionsUiTests(unittest.TestCase):
         """批量拆解提示必须标明累进计费（首条 8 点每多一条+4 点）"""
         self.assertIn("首条 8 点每多一条+4 点", self.html)
 
+    def test_default_selling_point_tags_removed(self):
+        """核心卖点下的默认标签（清爽控油/补水保湿/抗老紧致/提亮肤色）已移除"""
+        for tag in ("清爽控油", "补水保湿", "抗老紧致", "提亮肤色"):
+            self.assertNotIn(tag, self.html)
+
 if __name__ == "__main__":
     unittest.main()
