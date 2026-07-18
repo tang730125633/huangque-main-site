@@ -706,12 +706,10 @@ def is_shutting_down():
 # CAS 抢终态 / 退点幂等：实现在 content_domains/jobs_store.py，三个共写 jobs 表的服务共用一份。
 def _set_terminal(job_id, status, result=None, error=None, from_states=("running",)):
     return jobs_store.set_terminal(jdb, job_id, status, result, error, from_states)
-
-def _refund_once(job_id, username, cost):
-    # safe_refund_points 吞掉异常并返回当前点数，不让退点接口故障影响主流程 → 视为永远成功。
-    return jobs_store.refund_once(jdb, job_id, username, cost,
-                                  lambda u, c: (_domains()[1].safe_refund_points(u, c, "job#%d" % job_id), True)[1])
-
+def _refund_once(job_id, username, cost, transaction_key=""):
+    transaction_key = transaction_key or jobs_store.refund_transaction_key(job_id, username)
+    return jobs_store.refund_once(jdb, job_id, username, cost, lambda u, c: (
+        _domains()[1].refund_points(u, c, "job#%d" % job_id, transaction_key=transaction_key), True)[1])
 def _pick_job_queue(kind, mode=None):
     # kind缺省(旧调用/测试)保守走慢队列；生图(慢90~450s)走生图池；秒级快任务(音频/文案/采集/名单)走快队列；
     # video(口播 text/audio)走口播池；tryon/xiaole_video 走慢池。
@@ -822,13 +820,7 @@ def _global_running_breakdown_count():   # 全局运行中的爆款拆解数（�
     return int(row["n"] if row else 0)
 
 def _reject_pending_job(job_id, username, cost, reason):
-    now = int(time.time())
-    with closing(jdb()) as c:
-        cur = c.execute("""UPDATE jobs SET status='error', error=?, updated_at=?
-                           WHERE id=? AND status='pending'""",
-                        (str(reason or "")[:300], now, job_id))
-        c.commit()
-        claimed = cur.rowcount >= 1
+    claimed = _set_terminal(job_id, "error", error=reason, from_states=("pending",))
     if claimed:
         _refund_once(job_id, username, cost)
     return claimed
@@ -874,6 +866,7 @@ def _pending_job_scanner():
     while True:
         try:
             _recover_pending_jobs(JOB_QUEUE_MAX)
+            jobs_store.retry_failed_refunds(jdb, _refund_once, JOB_QUEUE_MAX)
         except Exception:
             pass
         time.sleep(30)
@@ -897,7 +890,6 @@ def start_job_workers():
             threading.Thread(target=_job_worker_loop, args=(q,), name="%s-%d" % (prefix, i + 1), daemon=True).start()
     threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start()
     _recover_pending_jobs(JOB_QUEUE_MAX)
-
 def drain_and_exit(signum=None, frame=None):
     """SIGTERM → 停止收新任务 → 等在飞的跑完 → 退出。
 
@@ -1079,9 +1071,9 @@ def reaper():
                 if grace and r["updated_at"] >= now - grace:
                     continue
                 # CAS 抢 error 终态；抢到(说明 worker 尚未写 done)才退点，退点本身再幂等一层
-                if _set_terminal(r["id"], "error", error="生成超时自动结束，已退点"):
+                if _set_terminal(r["id"], "error", error="生成超时自动结束，退款处理中"):
                     _refund_once(r["id"], r["username"], r["cost"])
-                    _mark_video_asset_failed(r["id"], r["kind"], "生成超时自动结束，已退点")
+                    _mark_video_asset_failed(r["id"], r["kind"], "生成超时自动结束，退款处理中")
         except Exception:
             pass
         time.sleep(60)
@@ -1291,38 +1283,39 @@ class H(BaseHTTPRequestHandler):
                     return self._send(429, {"detail": "当前仅剩 %d 个任务位，无法提交 %d 条批量视频" %
                         (max(0, MAX_USER_ACTIVE_JOBS - active_jobs), len(payloads)), "active_jobs": active_jobs,
                         "available_slots": max(0, MAX_USER_ACTIVE_JOBS - active_jobs), "requested": len(payloads)})
+                batch_id = uuid.uuid4().hex
+                for body in payloads:
+                    body["batch_id"] = batch_id
+                job_ids = []
                 try:
-                    points_left = points_domain.deduct_points(user["username"], total, "job:video_batch")
+                    job_ids, points_left = jobs_store.create_paid_jobs(
+                        jdb, points_domain.deduct_points, points_domain.refund_points, "video",
+                        user["username"], zip(costs, payloads), SERVICE_OWNER, "video_batch")
+                    for jid, body in zip(job_ids, payloads):
+                        video_domain.record_video_pending_asset(jid, user["username"], body)
                 except points_domain.AuthPointsError as e:
                     _idempotency_abort(user["username"], p, idem_key)
                     return self._send(402 if e.status == 402 else 502, {"detail": e.detail, "need": total})
-                now, batch_id, job_ids, committed = int(time.time()), uuid.uuid4().hex, [], False
-                try:
-                    with closing(jdb()) as c:
-                        for body, cost in zip(payloads, costs):
-                            body["batch_id"] = batch_id
-                            cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) VALUES(?,?,?,?,?,?,?)",
-                                ("video", user["username"], cost, json.dumps(body, ensure_ascii=False), now, now, SERVICE_OWNER))
-                            job_ids.append(cur.lastrowid)
-                        c.commit()
-                        committed = True
-                    for jid, body in zip(job_ids, payloads):
-                        video_domain.record_video_pending_asset(jid, user["username"], body)
-                except Exception:
-                    if committed:
-                        for jid, cost in zip(job_ids, costs):
-                            _reject_pending_job(jid, user["username"], cost, "批量任务创建失败")
-                            video_domain.update_video_asset_phase(jid, "failed", status="failed", error="批量任务创建失败")
-                    else:
-                        points_domain.safe_refund_points(user["username"], total, "job:video_batch_insert_failed")
+                except jobs_store.PaidJobInsertError as e:
                     _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(500, {"detail": "批量任务创建失败，点数已退回"})
+                    return self._send(500, {"detail": {"refunded": "批量任务创建失败，点数已退回",
+                        "queued": "批量任务创建失败，退款正在自动重试"}.get(e.compensation,
+                        "批量任务创建失败，退款需人工核对"), "submission_ref": e.submission_ref})
+                except Exception:
+                    for jid, cost in zip(job_ids, costs):
+                        _reject_pending_job(jid, user["username"], cost, "批量任务创建失败")
+                        try:
+                            video_domain.update_video_asset_phase(jid, "failed", status="failed", error="批量任务创建失败")
+                        except Exception:
+                            pass
+                    _idempotency_abort(user["username"], p, idem_key)
+                    return self._send(500, {"detail": "批量任务创建失败，退款正在自动处理"})
                 if not enqueue_jobs(job_ids, "video", "text"):
                     for jid, cost in zip(job_ids, costs):
                         _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
                         video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
                     _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(429, {"detail": "任务队列已满，批量任务未受理，点数已退回", "need": total})
+                    return self._send(429, {"detail": "任务队列已满，批量任务未受理，退款正在处理", "need": total})
             jobs = [{"job_id": jid, "label": body.get("batch_label"), "index": body.get("batch_index")}
                     for jid, body in zip(job_ids, payloads)]
             response = {"batch_id": batch_id, "job_ids": job_ids, "jobs": jobs,
@@ -1402,17 +1395,22 @@ class H(BaseHTTPRequestHandler):
                         "code": "active_job_cap", "active_jobs": active_jobs, "max_active_jobs": MAX_USER_ACTIVE_JOBS,
                         "retry_after_ms": 4000, "need": cost})
                 try:
-                    points_left = points_domain.deduct_points(user["username"], cost, "job:" + kind)  # 原子预扣
+                    jid, points_left = jobs_store.create_paid_job(
+                        jdb, points_domain.deduct_points, points_domain.refund_points,
+                        kind, user["username"], cost, body, SERVICE_OWNER)
                 except points_domain.AuthPointsError as e:
                     _idempotency_abort(user["username"], p, idem_key)
                     return self._send(402 if e.status == 402 else 502, {"detail": e.detail, "need": cost})
-                now = int(time.time())
-                with closing(jdb()) as c:
-                    cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) VALUES(?,?,?,?,?,?,?)",
-                                    (kind, user["username"], cost, json.dumps(body, ensure_ascii=False), now, now, SERVICE_OWNER))
-                    c.commit(); jid = cur.lastrowid
+                except jobs_store.PaidJobInsertError as e:
+                    _idempotency_abort(user["username"], p, idem_key)
+                    return self._send(500, {"detail": {"refunded": "任务创建失败，点数已退回",
+                        "queued": "任务创建失败，退款正在自动重试"}.get(e.compensation, "任务创建失败，退款需人工核对"),
+                        "submission_ref": e.submission_ref})
                 if kind in {"video", "tryon", "xiaole_video", "cinematic"}:
-                    video_domain.record_video_pending_asset(jid, user["username"], body)
+                    try: video_domain.record_video_pending_asset(jid, user["username"], body)
+                    except Exception:
+                        _reject_pending_job(jid, user["username"], cost, "视频资产登记失败"); _idempotency_abort(user["username"], p, idem_key)
+                        return self._send(500, {"detail": "任务创建失败，退款正在自动处理", "job_id": jid})
                 if not enqueue_job(jid, kind, body.get("mode")):
                     _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
                     if kind in {"video", "tryon", "xiaole_video", "cinematic"}:

@@ -55,6 +55,30 @@ class AuthPointsTests(unittest.TestCase):
         self.assertIsNone(err)
         self.assertEqual(points["points"], 15)
 
+    def test_refund_transaction_key_is_idempotent(self):
+        first, first_err = self.auth.refund_points("fang", 5, "job#42", "job-refund:42")
+        replay, replay_err = self.auth.refund_points("fang", 5, "job#42", "job-refund:42")
+
+        self.assertIsNone(first_err)
+        self.assertIsNone(replay_err)
+        self.assertEqual(first["points"], 15)
+        self.assertEqual(replay["points"], 15)
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            self.assertEqual(c.execute(
+                "SELECT COUNT(*) FROM points_audit WHERE transaction_key='job-refund:42'"
+            ).fetchone()[0], 1)
+        finally:
+            c.close()
+
+    def test_refund_transaction_key_rejects_different_amount(self):
+        self.auth.refund_points("fang", 5, "job#42", "job-refund:42")
+        points, err = self.auth.refund_points("fang", 6, "job#43", "job-refund:42")
+
+        self.assertIsNone(points)
+        self.assertEqual(err, "transaction_conflict")
+        self.assertEqual(self.auth.get_points_row("fang")["points"], 15)
+
     def test_wechat_transaction_can_only_approve_one_recharge_order(self):
         first, first_err = self.auth.create_recharge_order("fang", 99, 1000, "微信扫码充值")
         second, second_err = self.auth.create_recharge_order("fang", 99, 1000, "微信扫码充值")

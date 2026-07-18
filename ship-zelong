@@ -84,6 +84,10 @@ map_path() {
       printf '10|/home/ubuntu/auth-service/%s|auth|0\n' "${path#server/}" ;;
     server/auth_server.py)
       printf '30|/home/ubuntu/auth-service/auth_server.py|auth|0\n' ;;
+    server/imggen_api.py)
+      printf '30|/home/ubuntu/content-api/imggen_api.py|imggen|0\n' ;;
+    server/leadgen_api.py)
+      printf '30|/home/ubuntu/content-api/leadgen_api.py|leadgen|0\n' ;;
     server/tikhub.py|server/func_names.py)
       printf '10|/home/ubuntu/content-api/%s|content|0\n' "${path#server/}" ;;
     server/content_domains/*.py)
@@ -220,7 +224,7 @@ test -f "$manifest"
 sudo install -d -o root -g root -m 700 "$backup/files" "$backup/sqlite"
 sudo cp "$manifest" "$backup/manifest.tsv"
 sudo sh -c "printf 'commit=%s\nplan=%s\nrun=%s\ndomain=%s\n' '$commit' '$plan' '$run' '$domain' >'$backup/metadata'"
-need_auth=0; need_content=0; need_reload=0
+need_auth=0; need_content=0; need_imggen=0; need_leadgen=0; need_reload=0
 while IFS="$(printf '\t')" read -r rank path target expected service reload; do
   case "$target" in
     /home/ubuntu/auth-service/*|/home/ubuntu/content-api/*|/etc/systemd/system/huangque-auth.service|/etc/systemd/system/huangque-auth.service.d/*|/etc/systemd/system/huangque-content.service|/etc/systemd/system/huangque-content.service.d/*|/var/www/huangquechuanmei/*) ;;
@@ -236,13 +240,15 @@ while IFS="$(printf '\t')" read -r rank path target expected service reload; do
   fi
   test "$service" = auth && need_auth=1
   test "$service" = content && need_content=1
+  test "$service" = imggen && need_imggen=1
+  test "$service" = leadgen && need_leadgen=1
   test "$reload" = 1 && need_reload=1
 done <"$manifest"
 
 # SQLite CLI 的 .backup 使用 online backup API，不拷贝正在写入的 db/wal 文件。
 backup_db() { db="$1"; name="$2"; sudo test ! -f "$db" || sudo sqlite3 "$db" ".backup '$backup/sqlite/$name'"; }
 test "$need_auth" = 0 || backup_db /home/ubuntu/auth-service/users.db users.db
-if test "$need_content" = 1; then
+if test "$need_content$need_imggen$need_leadgen" != 000; then
   backup_db /home/ubuntu/content-api/content_jobs.db content_jobs.db
   backup_db /home/ubuntu/content-api/audio_assets.db audio_assets.db
   backup_db /home/ubuntu/content-api/admin_config.db admin_config.db
@@ -268,8 +274,16 @@ fi
 if test "$need_content" = 1; then
   sudo -u ubuntu bash -c 'cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import content_api"'
 fi
+if test "$need_imggen" = 1; then
+  sudo -u ubuntu bash -c 'cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import imggen_api"'
+fi
+if test "$need_leadgen" = 1; then
+  sudo -u ubuntu bash -c 'cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import leadgen_api"'
+fi
 test "$need_reload" = 0 || sudo systemctl daemon-reload
 if test "$need_auth" = 1; then sudo systemctl restart huangque-auth; systemctl is-active --quiet huangque-auth; fi
+if test "$need_imggen" = 1; then sudo systemctl restart huangque-imggen-api; systemctl is-active --quiet huangque-imggen-api; fi
+if test "$need_leadgen" = 1; then sudo systemctl restart huangque-leadgen-api; systemctl is-active --quiet huangque-leadgen-api; fi
 if test "$need_content" = 1; then sudo systemctl restart huangque-content; systemctl is-active --quiet huangque-content; fi
 
 while IFS="$(printf '\t')" read -r rank path target expected service reload; do
@@ -277,6 +291,8 @@ while IFS="$(printf '\t')" read -r rank path target expected service reload; do
 done <"$manifest"
 curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/auth/health" >/dev/null
 curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/health" >/dev/null
+test "$need_imggen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/banana/health" >/dev/null
+test "$need_leadgen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/leadgen/health" >/dev/null
 sudo install -d -o root -g root -m 755 "$state_root"
 manifest_sha="$(sha256sum "$manifest" | awk '{print $1}')"
 sudo sh -c "printf 'commit=%s\nplan=%s\nrun=%s\nmanifest_sha256=%s\n' '$commit' '$plan' '$run' '$manifest_sha' >'$state_root/current'"
@@ -303,10 +319,19 @@ run="$1"; domain="$2"; backup_root="$3"; backup="$backup_root/$run"
 case "$run" in ''|*[!A-Za-z0-9._-]*) exit 2;; esac
 test "$domain" = "zelong.huangquechuanmei.com"
 test -f "$backup/restore.tsv"; test -f "$backup/manifest.tsv"
-need_auth=0; need_content=0; need_reload=0
+# 旧 jobs_store 不认识 refunded=2。存在待确认退款时盲回滚会永久卡单，即使健康检查仍是绿的。
+pending_refunds="$(sudo sqlite3 /home/ubuntu/content-api/content_jobs.db \
+  "SELECT COUNT(*) FROM jobs WHERE status='error' AND refunded=2;")"
+test "$pending_refunds" = 0 || {
+  echo "refuse rollback: $pending_refunds refunds are still pending confirmation" >&2
+  exit 1
+}
+need_auth=0; need_content=0; need_imggen=0; need_leadgen=0; need_reload=0
 while IFS="$(printf '\t')" read -r rank path target expected service reload; do
   test "$service" = auth && need_auth=1
   test "$service" = content && need_content=1
+  test "$service" = imggen && need_imggen=1
+  test "$service" = leadgen && need_leadgen=1
   test "$reload" = 1 && need_reload=1
 done <"$backup/manifest.tsv"
 while IFS="$(printf '\t')" read -r status target expected; do
@@ -326,11 +351,17 @@ while IFS="$(printf '\t')" read -r status target expected; do
 done <"$backup/restore.tsv"
 if test "$need_auth" = 1; then sudo -u ubuntu bash -c 'cd /home/ubuntu/auth-service && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import auth_server"'; fi
 if test "$need_content" = 1; then sudo -u ubuntu bash -c 'cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import content_api"'; fi
+if test "$need_imggen" = 1; then sudo -u ubuntu bash -c 'cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import imggen_api"'; fi
+if test "$need_leadgen" = 1; then sudo -u ubuntu bash -c 'cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import leadgen_api"'; fi
 test "$need_reload" = 0 || sudo systemctl daemon-reload
 if test "$need_auth" = 1; then sudo systemctl restart huangque-auth; systemctl is-active --quiet huangque-auth; fi
+if test "$need_imggen" = 1; then sudo systemctl restart huangque-imggen-api; systemctl is-active --quiet huangque-imggen-api; fi
+if test "$need_leadgen" = 1; then sudo systemctl restart huangque-leadgen-api; systemctl is-active --quiet huangque-leadgen-api; fi
 if test "$need_content" = 1; then sudo systemctl restart huangque-content; systemctl is-active --quiet huangque-content; fi
 curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/auth/health" >/dev/null
 curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/health" >/dev/null
+test "$need_imggen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/banana/health" >/dev/null
+test "$need_leadgen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/leadgen/health" >/dev/null
 printf '✅ 已回滚部署文件 | RUN_ID=%s\n' "$run"
 printf 'ℹ SQLite online backup 保留在 %s/sqlite，未自动覆盖数据库。\n' "$backup"
 REMOTE

@@ -217,14 +217,17 @@ def get_points(username):
     except Exception:
         return 0
 
-def _auth_points(path, username, amount, reason=""):
+def _auth_points(path, username, amount, reason="", transaction_key=""):
     """调 auth 服务的点数接口（BEGIN IMMEDIATE 事务 + points_audit 流水），与 imggen_api 同一范式。
 
     reason 形如 job:collect#1354，会作为审计行的 reason 落库，用于对账。
     """
     if not INTERNAL_TOKEN:
         return 500, {"detail": "HQ_INTERNAL_TOKEN 未配置"}
-    body = json.dumps({"username": username, "amount": int(amount), "reason": reason}, ensure_ascii=False).encode()
+    payload = {"username": username, "amount": int(amount), "reason": reason}
+    if transaction_key:
+        payload["transaction_key"] = str(transaction_key)
+    body = json.dumps(payload, ensure_ascii=False).encode()
     req = urllib.request.Request(AUTH_BASE + path, data=body, method="POST",
                                  headers={"Content-Type": "application/json",
                                           "X-HQ-Internal-Token": INTERNAL_TOKEN})
@@ -242,8 +245,18 @@ def _auth_points(path, username, amount, reason=""):
 def deduct_points(username, amount, reason=""):
     return _auth_points("/api/auth/points/deduct", username, amount, reason)   # 带 BEGIN IMMEDIATE + points>=amount 原子校验
 
-def refund_points(username, amount, reason=""):
+def refund_points(username, amount, reason="", transaction_key=""):
+    if transaction_key:
+        return _auth_points("/api/auth/points/refund", username, amount, reason, transaction_key)
     return _auth_points("/api/auth/points/refund", username, amount, reason)
+
+
+def _deduct_paid_job(username, amount, reason):
+    from content_domains import jobs_store
+    status, data = deduct_points(username, amount, reason)
+    if status != 200:
+        raise jobs_store.PaidJobDeductError(status, (data or {}).get("detail") or "点数扣除失败")
+    return int((data or {}).get("points") or 0)
 
 def _add_points_direct(username, delta):
     """兜底：直接写 users.db。无事务保护、不进 points_audit —— 只在 auth 不可用时用。
@@ -264,7 +277,7 @@ def _add_points_direct(username, delta):
         print("[leadgen] 直写 users.db 失败 user=%s delta=%s: %s" % (username, delta, e), flush=True)
         return False
 
-def add_points(username, delta, reason=""):
+def add_points(username, delta, reason="", transaction_key=""):
     """加/减点数。delta>0 退点走 auth 的 /refund，delta<0 扣点走 /deduct。
 
     ⚠ 这个函数同时被扣点(do_POST 里 -cost / -1)和退点(_refund_once 里 +cost)调用。
@@ -279,13 +292,19 @@ def add_points(username, delta, reason=""):
     if delta == 0:
         return True
     if delta > 0:
-        status, data = refund_points(username, delta, reason)
+        status, data = refund_points(username, delta, reason, transaction_key)
     else:
         status, data = deduct_points(username, -delta, reason)
         if status == 402:
             return False   # 点数不足：auth 的原子校验已经拒绝，不要再直写
     if status == 200:
         return True
+    # 稳定退款键说明这是一笔可重试的任务退款。Auth 可能已提交、只丢了 HTTP 响应；
+    # 此时再直写 users.db 会双退，必须返回失败并保持退款待确认态。
+    if delta > 0 and transaction_key:
+        print("[leadgen] auth 任务退款未确认(delta=%s status=%s)，保留重试，不直写 users.db"
+              % (delta, status), flush=True)
+        return False
     print("[leadgen] auth 点数接口失败(delta=%s status=%s detail=%s)，回退直写 users.db；本次不进 points_audit"
           % (delta, status, (data or {}).get("detail")), flush=True)
     return _add_points_direct(username, delta)
@@ -500,8 +519,11 @@ def _set_terminal(job_id, status, result=None, error=None, from_states=("running
 
 def _refund_once(job_id, username, cost):
     from content_domains import jobs_store
-    # add_points：auth 的 /refund 优先，失败回退直写 users.db；返回 False 时 jobs_store 会回滚 refunded 标记
-    return jobs_store.refund_once(jdb, job_id, username, cost, lambda u, c: add_points(u, c, "job#%d" % job_id))
+    transaction_key = jobs_store.refund_transaction_key(job_id, username)
+    return jobs_store.refund_once(
+        jdb, job_id, username, cost,
+        lambda u, c: add_points(u, c, "job#%d" % job_id, transaction_key),
+    )
 
 def run_job(job_id):
     with closing(jdb()) as c:
@@ -556,19 +578,22 @@ class H(BaseHTTPRequestHandler):
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             body = self._json_body()
             cost = cost_of(kind, body)
-            # 原来是「先 get_points 查余额，再 add_points 扣」——两步之间有并发超扣窗口。
-            # 现在扣点直接走 auth 的 /deduct（BEGIN IMMEDIATE + points>=amount 原子校验），
-            # 扣不动就说明余额不足，不建任务。
-            if not add_points(user["username"], -cost, "job:" + kind):
-                return self._send(402, {"detail": "点数不足", "need": cost})
-            now = int(time.time())
-            with closing(jdb()) as c:
-                # owner 署名(#511)：jobs 表三服务共用，不署名 content 重启会把本服务在飞的任务判失败退点
-                cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) VALUES(?,?,?,?,?,?,?)",
-                                (kind, user["username"], cost, json.dumps(body, ensure_ascii=False), now, now, SERVICE_OWNER))
-                c.commit(); jid = cur.lastrowid
+            try:
+                from content_domains import jobs_store
+                jid, points_left = jobs_store.create_paid_job(
+                    jdb, _deduct_paid_job,
+                    lambda u, c, reason="", transaction_key="": add_points(
+                        u, c, reason, transaction_key),
+                    kind, user["username"], cost, body, SERVICE_OWNER)
+            except jobs_store.PaidJobDeductError as e:
+                return self._send(402 if e.status == 402 else 502,
+                                  {"detail": e.detail, "need": cost})
+            except jobs_store.PaidJobInsertError as e:
+                return self._send(500, {"detail": {"refunded": "任务创建失败，点数已退回",
+                    "queued": "任务创建失败，退款正在自动确认"}.get(e.compensation,
+                    "任务创建失败，退款需人工核对"), "submission_ref": e.submission_ref})
             threading.Thread(target=run_job, args=(jid,), daemon=True).start()
-            return self._send(200, {"job_id": jid, "cost": cost, "points_left": get_points(user["username"])})
+            return self._send(200, {"job_id": jid, "cost": cost, "points_left": points_left})
         self._send(404, {"detail": "not found"})
 
     def do_GET(self):

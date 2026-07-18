@@ -124,15 +124,15 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
             SRC,
         )
 
-    def test_only_auth_and_content_can_restart(self):
+    def test_only_expected_huangque_services_can_restart(self):
         restarts = re.findall(r"systemctl restart ([A-Za-z0-9_-]+)", SRC)
         self.assertTrue(restarts)
-        self.assertEqual({"huangque-auth", "huangque-content"}, set(restarts))
+        self.assertEqual({"huangque-auth", "huangque-content", "huangque-imggen-api",
+                          "huangque-leadgen-api"}, set(restarts))
 
     def test_rejects_non_whitelisted_backend_and_sensitive_paths(self):
         for path in (
             "server/admin_api.py",
-            "server/imggen_api.py",
             "deploy/systemd/huangque-admin.service",
             "server/secret.env",
             "data/users.db",
@@ -146,6 +146,8 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
             "server/tikhub.py": (10, "/home/ubuntu/content-api/tikhub.py", "content", 0),
             "server/content_domains/core.py": (20, "/home/ubuntu/content-api/content_domains/core.py", "content", 0),
             "server/content_api.py": (30, "/home/ubuntu/content-api/content_api.py", "content", 0),
+            "server/imggen_api.py": (30, "/home/ubuntu/content-api/imggen_api.py", "imggen", 0),
+            "server/leadgen_api.py": (30, "/home/ubuntu/content-api/leadgen_api.py", "leadgen", 0),
             "site/workbench/cloud-shell.js": (40, "/var/www/huangquechuanmei/workbench/cloud-shell.js", "-", 0),
             "site/workbench/video.html": (50, "/var/www/huangquechuanmei/workbench/video.html", "-", 0),
         }
@@ -182,8 +184,8 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
             "--retry-connrefused --max-time 5"
         )
         # deploy has remote + caller-side checks, and rollback has remote checks;
-        # both auth and content must tolerate the brief nginx 502 startup window.
-        self.assertEqual(6, SRC.count(retry_options))
+        # all four managed services tolerate the brief nginx 502 startup window.
+        self.assertEqual(10, SRC.count(retry_options))
         self.assertNotIn("curl -fsS --max-time 15", SRC)
 
     def test_online_sqlite_backup_and_missing_markers(self):
@@ -191,6 +193,10 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         self.assertIn("PRESENT\\t%s", SRC)
         self.assertIn("MISSING\\t%s", SRC)
         self.assertIn("--parents", SRC)
+
+    def test_rollback_refuses_pending_refunds(self):
+        self.assertIn("status='error' AND refunded=2", SRC)
+        self.assertIn("refuse rollback:", SRC)
 
     def test_no_implicit_git_mutation(self):
         self.assertIsNone(re.search(r"\bgit\s+(?:fetch|pull|commit|push)\b", SRC))

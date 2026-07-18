@@ -126,9 +126,16 @@ def init_db():
         reason TEXT,
         created_at INTEGER NOT NULL
     )""")
+    audit_cols = {r["name"] for r in c.execute("PRAGMA table_info(points_audit)").fetchall()}
+    if "transaction_key" not in audit_cols:
+        c.execute("ALTER TABLE points_audit ADD COLUMN transaction_key TEXT")
     # 任务扣点/退点接入审计后，这张表按任务量增长（原来只有人工加减点，几乎不涨）。
     # 按用户查流水是后台最常用的路径，没索引会随表全扫。
     c.execute("CREATE INDEX IF NOT EXISTS idx_points_audit_user ON points_audit(username, id DESC)")
+    # 退款键直接落在现有资金流水上：Auth 已提交但响应丢失时，调用方用同一个键重试，
+    # 只能命中原流水，不能再次加点。NULL 不参与冲突，老调用方保持原行为。
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_points_audit_transaction_key "
+              "ON points_audit(transaction_key)")
     c.execute("""CREATE TABLE IF NOT EXISTS friendships(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT NOT NULL,
@@ -1124,12 +1131,12 @@ def get_points_row(username, c=None):
 SYSTEM_ACTOR = "system"   # points_audit.who_admin：非管理员操作（任务扣点/退点）用它，与人工加减点区分
 
 
-def _write_audit(c, who_admin, username, delta, before, after, reason):
+def _write_audit(c, who_admin, username, delta, before, after, reason, transaction_key=None):
     """在【同一个事务里】写审计流水。分开写会出现「扣了点但审计没记」或反过来。"""
     c.execute(
-        "INSERT INTO points_audit(who_admin, username, delta, before_points, after_points, reason, created_at) "
-        "VALUES(?,?,?,?,?,?,?)",
-        (who_admin, username, delta, before, after, (reason or "")[:120], int(time.time())))
+        "INSERT INTO points_audit(who_admin, username, delta, before_points, after_points, reason, created_at, transaction_key) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (who_admin, username, delta, before, after, (reason or "")[:120], int(time.time()), transaction_key))
 
 
 def deduct_points(username, amount, reason=""):
@@ -1172,14 +1179,29 @@ def deduct_points(username, amount, reason=""):
     finally:
         c.close()
 
-def refund_points(username, amount, reason=""):
-    """任务失败/超时后退点。reason 同 deduct_points。"""
+def refund_points(username, amount, reason="", transaction_key=""):
+    """任务失败/超时后退点；稳定 transaction_key 让重试只入账一次。"""
     amount = int(amount or 0)
     if amount < 0:
         raise ValueError("amount must be >= 0")
+    transaction_key = str(transaction_key or "").strip()
+    if len(transaction_key) > 160:
+        raise ValueError("transaction_key too long")
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
+        if transaction_key:
+            prior = c.execute(
+                "SELECT username,delta FROM points_audit WHERE transaction_key=?",
+                (transaction_key,),
+            ).fetchone()
+            if prior:
+                if prior["username"] != username or int(prior["delta"] or 0) != amount:
+                    c.rollback()
+                    return None, "transaction_conflict"
+                row = get_points_row(username, c)
+                c.rollback()
+                return (public_points(row), None) if row else (None, "not_found")
         before_row = get_points_row(username, c)
         if not before_row:
             c.rollback()
@@ -1195,7 +1217,8 @@ def refund_points(username, amount, reason=""):
             c.rollback()
             return None, "not_found"
         if amount:
-            _write_audit(c, SYSTEM_ACTOR, username, amount, before, int(row["points"] or 0), reason)
+            _write_audit(c, SYSTEM_ACTOR, username, amount, before, int(row["points"] or 0), reason,
+                         transaction_key or None)
         c.commit()
         return public_points(row), None
     except Exception:
@@ -1287,7 +1310,7 @@ def list_points_audit(username="", limit=100, actor=""):
     """
     limit = max(1, min(300, int(limit or 100)))
     username = (username or "").strip()
-    sql = """SELECT id, who_admin, username, delta, before_points, after_points, reason, created_at
+    sql = """SELECT id, who_admin, username, delta, before_points, after_points, reason, created_at, transaction_key
              FROM points_audit"""
     where, args = [], []
     if username:
@@ -2215,13 +2238,18 @@ class H(BaseHTTPRequestHandler):
             if amount < 0:
                 return self._send(400, {"detail": "amount must be >= 0"})
             reason = str(d.get("reason") or "")   # 形如 job:collect#1354；老调用方不传就留空
+            transaction_key = str(d.get("transaction_key") or "").strip()
+            if len(transaction_key) > 160:
+                return self._send(400, {"detail": "transaction_key too long"})
             try:
                 if p.endswith("/deduct"):
                     points, err = deduct_points(username, amount, reason)
                     if err == "insufficient":
                         return self._send(402, {"detail": "点数不足", "need": amount})
                 else:
-                    points, err = refund_points(username, amount, reason)
+                    points, err = refund_points(username, amount, reason, transaction_key)
+                    if err == "transaction_conflict":
+                        return self._send(409, {"detail": "transaction_key 已用于另一笔退款"})
                 if err == "not_found":
                     return self._send(404, {"detail": "user not found"})
                 return self._send(200, {"ok": True, "points": points["points"], "user": points})

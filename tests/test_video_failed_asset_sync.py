@@ -40,7 +40,8 @@ class FailedAssetSyncTests(unittest.TestCase):
 
     def test_run_job_error_branch_syncs_via_helper(self):
         """失败分支不再 record_video_asset(dict(payload))——那正是 mode=None 抛 NOT NULL 的地方。"""
-        err = CORE[CORE.index("claimed = _set_terminal(job_id, \"error\""):]
+        run_job = CORE[CORE.index("def run_job("):CORE.index("# ============ 超时清道夫")]
+        err = run_job[run_job.index("claimed = _set_terminal(job_id, \"error\""):]
         err = err[:err.index("_refund_once(job_id")]
         self.assertIn("_mark_video_asset_failed(job_id, kind, e)", err)
         self.assertNotIn("record_video_asset", err)

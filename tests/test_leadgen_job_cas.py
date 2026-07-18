@@ -28,17 +28,20 @@ class LeadgenJobCasTests(unittest.TestCase):
             c.execute("""CREATE TABLE jobs(
                 id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, username TEXT, cost INTEGER,
                 status TEXT DEFAULT 'pending', payload TEXT, result TEXT, error TEXT,
-                created_at INTEGER, updated_at INTEGER, deleted INTEGER DEFAULT 0, refunded INTEGER DEFAULT 0)""")
+                created_at INTEGER, updated_at INTEGER, deleted INTEGER DEFAULT 0, refunded INTEGER DEFAULT 0,
+                owner TEXT)""")
             c.commit()
         # 打桩 add_points，统计真正退点次数（不碰 users.db）。
-        # 必须返回 True：_refund_once 现在按返回值判断退点是否成功，失败会回滚 refunded 标记。
+        # 必须返回 True：只有 Auth 明确确认后，refunded 才会从 2 变为 1。
         self.refunds = []
         self._orig_add_points = self.lg.add_points
-        self.lg.add_points = lambda username, delta, reason="": (self.refunds.append((username, delta, reason)), True)[1]
+        self._orig_deduct = self.lg.deduct_points
+        self.lg.add_points = lambda username, delta, reason="", transaction_key="": (self.refunds.append((username, delta, reason)), True)[1]
 
     def tearDown(self):
         self.lg.JOB_DB = self._orig_jobdb
         self.lg.add_points = self._orig_add_points
+        self.lg.deduct_points = self._orig_deduct
         self.tmp.cleanup()
 
     def _insert(self, cost=6, status="running"):
@@ -58,6 +61,19 @@ class LeadgenJobCasTests(unittest.TestCase):
         """content_api 的 reaper：CAS 抢 error，抢到才幂等退点。"""
         if self.lg._set_terminal(jid, "error", error="生成超时自动结束，已退点"):
             self.lg._refund_once(jid, "u", cost)
+
+    def test_paid_job_creation_uses_common_safe_path(self):
+        from content_domains import jobs_store
+        self.lg.deduct_points = lambda *_args, **_kwargs: (200, {"points": 94})
+        jid, points_left = jobs_store.create_paid_job(
+            self.lg.jdb, self.lg._deduct_paid_job,
+            lambda u, c, reason="", transaction_key="": self.lg.add_points(
+                u, c, reason, transaction_key),
+            "collect", "u", 6, {"url": "x"}, "leadgen")
+        self.assertEqual(94, points_left)
+        with closing(self.lg.jdb()) as c:
+            row = c.execute("SELECT status,cost,owner FROM jobs WHERE id=?", (jid,)).fetchone()
+        self.assertEqual(("pending", 6, "leadgen"), tuple(row))
 
     # --- 核心回归：reaper 判超时退点在先，worker 随后成功 → 不得覆写 done、不得二次退点 ---
     def test_reaper_wins_then_worker_success_cannot_overwrite(self):
@@ -126,15 +142,15 @@ class LeadgenJobCasTests(unittest.TestCase):
         jid = self._insert(6, status="pending")
         self.assertFalse(self.lg._set_terminal(jid, "done", result={"x": 1}))
 
-    # --- 回归：退点失败必须回滚 refunded 标记，否则用户的点永久拿不回来 ---
-    def test_refund_failure_rolls_back_refunded_flag(self):
+    # --- 回归：退点失败保持待确认，恢复后可重试 ---
+    def test_refund_failure_stays_pending(self):
         jid = self._insert(6)
         self.assertTrue(self.lg._set_terminal(jid, "error", error="boom"))
-        self.lg.add_points = lambda u, d, reason="": False          # auth 挂了 + 直写也失败
+        self.lg.add_points = lambda u, d, reason="", transaction_key="": False  # auth 挂了 + 直写也失败
         self.lg._refund_once(jid, "u", 6)
-        self.assertEqual(self._row(jid)["refunded"], 0, "退点失败却留下 refunded=1，点数永久丢失")
+        self.assertEqual(self._row(jid)["refunded"], 2)
         # 恢复后重试应能成功退一次
-        self.lg.add_points = lambda u, d, reason="": (self.refunds.append((u, d, reason)), True)[1]
+        self.lg.add_points = lambda u, d, reason="", transaction_key="": (self.refunds.append((u, d, reason)), True)[1]
         self.lg._refund_once(jid, "u", 6)
         self.assertEqual(len(self.refunds), 1)
         self.assertEqual(self._row(jid)["refunded"], 1)

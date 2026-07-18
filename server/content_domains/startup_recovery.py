@@ -48,8 +48,12 @@ def reclaim_orphaned_running(
                 request_id = _valid_request_id(
                     domains()[2].get_resumable_xai_request(row["id"])
                 )
-            except Exception:
-                request_id = None
+            except Exception as exc:
+                # 查询失败是“未知”，不是“确认没有上游任务”。后者才允许失败退款；
+                # 否则 Auth/SQLite 短暂抖动会把仍在上游运行的付费视频免费送给用户。
+                logger("[startup] xAI恢复信息查询失败，保留running不退款 job=%s: %s" %
+                       (row["id"], exc), flush=True)
+                continue
 
         if request_id:
             try:
@@ -73,7 +77,7 @@ def reclaim_orphaned_running(
             # overwrite or refund based on the stale row selected above.
             continue
 
-        error = "服务重启中断，已退点，请重新提交"
+        error = "服务重启中断，退款处理中，请重新提交"
         if set_terminal(row["id"], "error", error=error):
             refund_once(row["id"], row["username"], row["cost"])
             mark_video_asset_failed(row["id"], row["kind"], error)

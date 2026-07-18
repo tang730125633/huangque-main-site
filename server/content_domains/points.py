@@ -140,12 +140,15 @@ def deduct_points(username, amount, reason=""):
                                {"username": username, "amount": amount, "reason": reason})
     return int(res.get("points") or 0)
 
-def refund_points(username, amount, reason=""):
+def refund_points(username, amount, reason="", transaction_key=""):
     amount = int(amount or 0)
     if amount <= 0:
         return get_points(username)
+    payload = {"username": username, "amount": amount, "reason": reason}
+    if transaction_key:
+        payload["transaction_key"] = str(transaction_key)
     res = _auth_points_request("/api/auth/points/refund",
-                               {"username": username, "amount": amount, "reason": reason})
+                               payload)
     return int(res.get("points") or 0)
 
 def safe_refund_points(username, amount, reason=""):
@@ -219,7 +222,7 @@ def history(username, days=30, kind="", page=1, page_size=20):
     items = []
     for row in rows:
         payload = _job_payload(row["payload"])
-        refunded = bool(row["refunded"])
+        refunded = int(row["refunded"] or 0) == 1
         cost = int(row["cost"] or 0)
         items.append({
             "task_id": row["id"],
