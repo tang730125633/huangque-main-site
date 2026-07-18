@@ -24,7 +24,7 @@
   var activeSidePanel='', accountAssetsLoaded=false, accountAssets=[], accountAssetsPromise=null;
   var currentBoardId=null, boardMode='mine', boardLastSeenUpdatedAt=0, boardConflict=false;
   var currentBoardScope='local', currentCollabVersion=0, currentCollabRole='', currentCollabName='', currentCollabMembers=[];
-  var collabBoards=[], collabLoaded=false, collabLoading=false, collabError='', collabCreating=false, collabSaving=false, collabQueuedSnap=null;
+  var collabBoards=[], collabLoaded=false, collabLoading=false, collabError='', collabErrorHint='', collabCreating=false, collabSaving=false, collabQueuedSnap=null;
   var collabSync=window.HQCanvasCollabSync||null, collabController=null, collabBaseSnap=null, collabPollTimer=null, collabPresenceTimer=null, collabRetryCount=0;
   var collabSyncGeneration=0, collabPendingBatch=null;
   var collabClientId=(function(){
@@ -735,7 +735,7 @@
     if(collabError){
       var errorEl=document.createElement('div');
       errorEl.className='nc-board-empty';
-      errorEl.innerHTML=escapeHtml(collabError)+'<br><span style="font-size:12px;color:#94a4bb;">协作服务暂不可用，可先新建本地画布继续编辑。</span>';
+      errorEl.innerHTML=escapeHtml(collabError)+'<br><span style="font-size:12px;color:#94a4bb;">'+escapeHtml(collabErrorHint||'协作服务暂不可用，可先新建本地画布继续编辑。')+'</span>';
       boardGrid.appendChild(errorEl);
       return;
     }
@@ -781,12 +781,18 @@
     if(collabLoaded&&!force) return;
     collabLoading=true;
     collabError='';
+    collabErrorHint='';
     authJson('/api/auth/canvas/boards').then(function(data){
       collabBoards=Array.isArray(data.boards)?data.boards:[];
       collabLoaded=true;
     }).catch(function(err){
       collabLoaded=false;
-      collabError=(err&&err.message)||'协作画布读取失败';
+      if(err&&err.status===403){
+        collabError='登录状态已过期';
+        collabErrorHint='请退出重新登录后再使用协作画布。';
+      }else{
+        collabError=(err&&err.message)||'协作画布读取失败';
+      }
     }).finally(function(){
       collabLoading=false;
       if(boardMode==='collab') renderBoardHome();
@@ -809,6 +815,12 @@
         var msg=(err&&err.message)||'协作画布创建失败';
         collabError=msg;
         collabLoaded=true;
+        if(err&&err.status===403){
+          collabErrorHint='请退出重新登录后再使用协作画布。';
+          updateState('登录状态已过期，请重新登录');
+          openMessageDialog('协作画布','登录状态已过期（安全校验未通过），请退出重新登录后再使用协作画布。');
+          return;
+        }
         updateState('协作服务不可用，已新建本地画布');
         var id=createBoardRecord();
         openMessageDialog('协作画布', msg+'。当前本地服务未接通协作接口，已为你新建一个本地画布，后端服务启动后再使用协作画布。');

@@ -2029,6 +2029,15 @@ def cookie_token(header):
     except Exception:
         return ""
 
+def csrf_cookie_value(header):
+    try:
+        jar = cookies.SimpleCookie()
+        jar.load(header or "")
+        morsel = jar.get(CSRF_COOKIE_NAME)
+        return morsel.value.strip() if morsel and morsel.value else ""
+    except Exception:
+        return ""
+
 def request_token(headers):
     token = bearer_token(headers.get("Authorization"))
     if token and token != "__cookie__":
@@ -2136,6 +2145,12 @@ class H(BaseHTTPRequestHandler):
         headers = headers.items() if hasattr(headers, "items") else headers
         for key, value in headers:
             self.send_header(key, value)
+        reissue_csrf = getattr(self, "_reissue_csrf", "")
+        if reissue_csrf:
+            try:
+                self.send_header("Set-Cookie", csrf_cookie_header(reissue_csrf))
+            except (RuntimeError, ValueError):
+                pass
         if getattr(self, "_current_request_id", ""):
             self.send_header("X-Request-ID", self._current_request_id)
         self.send_header("Content-Length", str(len(body)))
@@ -2208,7 +2223,27 @@ class H(BaseHTTPRequestHandler):
                          WHERE t.token=? AND (t.expires_at IS NULL OR t.expires_at > ?)""",
                       (tok, int(time.time()))).fetchone()
         c.close()
+        if r is not None:
+            self._maybe_reissue_csrf(tok)
         return r
+    def _maybe_reissue_csrf(self, session_token):
+        # CSRF 上线前登录的老会话没有 hq_csrf cookie，写操作会全部 403。
+        # 在已认证的 cookie 会话请求上发现缺失/不匹配时标记补发，
+        # 由 _send 附带 Set-Cookie，浏览器拿到后写操作即恢复（自愈，免重新登录）。
+        if request_auth_mode(self.headers) != "cookie":
+            return
+        try:
+            expected = csrf_token_for(session_token)
+        except (RuntimeError, ValueError):
+            return
+        supplied = csrf_cookie_value(self.headers.get("Cookie"))
+        if supplied:
+            try:
+                if secrets.compare_digest(supplied, expected):
+                    return
+            except TypeError:
+                pass
+        self._reissue_csrf = session_token
     def _internal_auth(self):
         if not INTERNAL_TOKEN:
             return False

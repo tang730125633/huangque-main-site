@@ -196,6 +196,69 @@ class AuthCsrfTests(unittest.TestCase):
             )
         self.assertEqual(error.exception.code, 403)
 
+    def _get(self, path, headers=None):
+        request = urllib.request.Request(
+            self.base + path, headers=headers or {}, method="GET"
+        )
+        return urllib.request.urlopen(request, timeout=3)
+
+    def test_stale_session_without_csrf_cookie_gets_self_heal_reissue(self):
+        # CSRF 上线前登录的老会话：只有会话 cookie、没有 hq_csrf，
+        # 已认证 GET 应自愈补发 hq_csrf，补发后写操作放行（免重新登录）
+        cookies = self._login("stale_user")
+        session_pair = self._cookie(cookies, self.auth.AUTH_COOKIE_NAME).split(";", 1)[0]
+        session_token = session_pair.split("=", 1)[1]
+
+        with self._get("/api/auth/me", {"Cookie": session_pair}) as response:
+            self.assertEqual(response.status, 200)
+            reissued = response.headers.get_all("Set-Cookie") or []
+        self.assertEqual(len(reissued), 1)
+        csrf_cookie = reissued[0]
+        expected = self.auth.csrf_token_for(session_token)
+        self.assertIn("hq_csrf=" + expected, csrf_cookie)
+        self.assertIn("Path=/", csrf_cookie)
+        self.assertNotIn("HttpOnly", csrf_cookie)
+
+        cookie_header = session_pair + "; hq_csrf=" + expected
+        with self._post(
+            "/api/auth/logout",
+            {},
+            {"Cookie": cookie_header, "X-CSRF-Token": expected},
+        ) as response:
+            self.assertEqual(response.status, 200)
+
+    def test_mismatched_csrf_cookie_also_reissued(self):
+        cookies = self._login("mismatch_user")
+        session_pair = self._cookie(cookies, self.auth.AUTH_COOKIE_NAME).split(";", 1)[0]
+        session_token = session_pair.split("=", 1)[1]
+
+        with self._get(
+            "/api/auth/me", {"Cookie": session_pair + "; hq_csrf=wrong-value"}
+        ) as response:
+            reissued = response.headers.get_all("Set-Cookie") or []
+        self.assertEqual(len(reissued), 1)
+        self.assertIn("hq_csrf=" + self.auth.csrf_token_for(session_token), reissued[0])
+
+    def test_matching_csrf_cookie_is_not_reissued(self):
+        cookies = self._login("fresh_user")
+        cookie_header = "; ".join(cookie.split(";", 1)[0] for cookie in cookies)
+
+        with self._get("/api/auth/me", {"Cookie": cookie_header}) as response:
+            self.assertEqual(response.status, 200)
+            self.assertIsNone(response.headers.get("Set-Cookie"))
+
+    def test_bearer_auth_does_not_reissue_csrf_cookie(self):
+        self.auth.create_user("bearer_get_user", "secret123", 5)
+        with self._post(
+            "/api/auth/miniprogram-login",
+            {"username": "bearer_get_user", "password": "secret123"},
+        ) as response:
+            token = json.loads(response.read())["token"]
+
+        with self._get("/api/auth/me", {"Authorization": "Bearer " + token}) as response:
+            self.assertEqual(response.status, 200)
+            self.assertIsNone(response.headers.get("Set-Cookie"))
+
 
 if __name__ == "__main__":
     unittest.main()
