@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # 黄雀 AI · 独立认证服务（零依赖，标准库）
 # 端口 127.0.0.1:8095，nginx 把 /api/auth/ 路由过来。与 leadgen(8090) 完全隔离。
-import sqlite3, hashlib, hmac, secrets, json, os, sys, time, urllib.parse
+import sqlite3, hashlib, hmac, secrets, json, os, sys, time, urllib.parse, threading
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -77,6 +77,38 @@ CANVAS_NODE_TYPES = {"text", "image", "reverse", "gen", "video"}
 CANVAS_OPS_RETAINED_BATCHES = 1000
 CANVAS_PRESENCE_WINDOW_SECONDS = 30
 CANVAS_MAX_BOARDS_PER_USER = int(os.environ.get("HQ_CANVAS_MAX_BOARDS_PER_USER", "50"))
+CANVAS_MAX_MEMBERS_PER_BOARD = int(os.environ.get("HQ_CANVAS_MAX_MEMBERS_PER_BOARD", "20"))
+CANVAS_OPS_RATE_WINDOW_SECONDS = int(os.environ.get("HQ_CANVAS_OPS_RATE_WINDOW_SECONDS", "10"))
+CANVAS_OPS_RATE_MAX_PER_WINDOW = int(os.environ.get("HQ_CANVAS_OPS_RATE_MAX_PER_WINDOW", "10"))
+CANVAS_PRESENCE_MIN_INTERVAL_SECONDS = int(os.environ.get("HQ_CANVAS_PRESENCE_MIN_INTERVAL_SECONDS", "3"))
+CANVAS_SYNC_MAX_WAIT_SECONDS = int(os.environ.get("HQ_CANVAS_SYNC_MAX_WAIT_SECONDS", "30"))
+CANVAS_SYNC_WAIT_MAX_CONCURRENT = int(os.environ.get("HQ_CANVAS_SYNC_WAIT_MAX_CONCURRENT", "100"))
+CANVAS_SYNC_WAIT_MAX_PER_USER = int(os.environ.get("HQ_CANVAS_SYNC_WAIT_MAX_PER_USER", "3"))
+# 长轮询等待名额: 全局信号量限制同时在 hold 的请求数(防线程被耗尽),
+# 每用户计数防单账号吃光全局额度; 超额时降级为立即返回(wait=0 行为)
+_CANVAS_SYNC_WAIT_SEMAPHORE = threading.BoundedSemaphore(value=max(1, CANVAS_SYNC_WAIT_MAX_CONCURRENT))
+_CANVAS_SYNC_WAIT_USERS = {}
+_CANVAS_SYNC_WAIT_USERS_LOCK = threading.Lock()
+
+def _canvas_sync_wait_acquire(username):
+    if not _CANVAS_SYNC_WAIT_SEMAPHORE.acquire(blocking=False):
+        return False
+    with _CANVAS_SYNC_WAIT_USERS_LOCK:
+        count = _CANVAS_SYNC_WAIT_USERS.get(username, 0)
+        if count >= CANVAS_SYNC_WAIT_MAX_PER_USER:
+            _CANVAS_SYNC_WAIT_SEMAPHORE.release()
+            return False
+        _CANVAS_SYNC_WAIT_USERS[username] = count + 1
+    return True
+
+def _canvas_sync_wait_release(username):
+    with _CANVAS_SYNC_WAIT_USERS_LOCK:
+        count = _CANVAS_SYNC_WAIT_USERS.get(username, 0)
+        if count <= 1:
+            _CANVAS_SYNC_WAIT_USERS.pop(username, None)
+        else:
+            _CANVAS_SYNC_WAIT_USERS[username] = count - 1
+    _CANVAS_SYNC_WAIT_SEMAPHORE.release()
 
 def db():
     c = sqlite3.connect(DB, timeout=10)
@@ -1005,6 +1037,13 @@ def apply_canvas_ops(username, board_id, payload):
             # 避免后到请求静默覆盖其他协作者已提交的改动。
             c.rollback()
             return {"version": current_version}, "conflict"
+        rate_since = int(time.time()) - CANVAS_OPS_RATE_WINDOW_SECONDS
+        recent = c.execute("""SELECT COUNT(*) AS n FROM canvas_ops
+                              WHERE board_id=? AND username=? AND created_at>=?""",
+                           (board_id, username, rate_since)).fetchone()
+        if recent and int(recent["n"] or 0) >= CANVAS_OPS_RATE_MAX_PER_WINDOW:
+            c.rollback()
+            return {"retry_after": CANVAS_OPS_RATE_WINDOW_SECONDS}, "rate_limited"
         try:
             data = json.loads(row["data_json"] or "{}")
         except Exception:
@@ -1040,6 +1079,16 @@ def apply_canvas_ops(username, board_id, payload):
     except Exception:
         c.rollback()
         raise
+    finally:
+        c.close()
+
+def canvas_board_version_probe(board_id):
+    # 纯只读版本探测: 普通 SELECT(延迟事务), 不获取 SQLite 写锁,
+    # 供长轮询等待阶段轮询; 画板被删时返回 None
+    c = db()
+    try:
+        row = c.execute("SELECT version FROM canvas_boards WHERE id=?", (board_id,)).fetchone()
+        return int(row["version"]) if row else None
     finally:
         c.close()
 
@@ -1112,6 +1161,16 @@ def record_canvas_presence(username, board_id, payload):
             c.rollback()
             return None, "not_found"
         now = int(time.time())
+        prev = c.execute("SELECT username, last_seen FROM canvas_presence WHERE board_id=? AND client_id=?",
+                         (board_id, client_id.strip())).fetchone()
+        # 仅"同用户+同端+间隔过近"才去重; 其他成员复用同 client_id 时走 upsert,
+        # 把该行 username/last_seen 更新为当前心跳用户, 避免在线身份失真
+        if (prev and prev["username"] == username
+                and now - int(prev["last_seen"] or 0) < CANVAS_PRESENCE_MIN_INTERVAL_SECONDS):
+            # 周期心跳去重: 间隔过近不写库, 直接回当前在线数
+            result = {"online_count": canvas_online_count(c, board_id, now), "deduped": True}
+            c.commit()
+            return result, None
         c.execute("""INSERT INTO canvas_presence(board_id, client_id, username, last_seen)
                      VALUES(?,?,?,?) ON CONFLICT(board_id, client_id) DO UPDATE SET
                        username=excluded.username, last_seen=excluded.last_seen""",
@@ -1153,6 +1212,14 @@ def add_canvas_member(username, board_id, payload):
         if not are_friends(c, username, target_username):
             c.rollback()
             return None, "not_friend"
+        existing_member = c.execute("SELECT 1 FROM canvas_members WHERE board_id=? AND username=?",
+                                    (board_id, target_username)).fetchone()
+        if not existing_member:
+            cnt = c.execute("SELECT COUNT(*) AS n FROM canvas_members WHERE board_id=?",
+                            (board_id,)).fetchone()
+            if cnt and int(cnt["n"] or 0) >= CANVAS_MAX_MEMBERS_PER_BOARD:
+                c.rollback()
+                return None, "too_many_members"
         now = int(time.time())
         c.execute("""INSERT INTO canvas_members(board_id, username, role, invited_by, created_at)
                      VALUES(?,?,?,?,?)
@@ -2753,6 +2820,9 @@ class H(BaseHTTPRequestHandler):
                 if err == "conflict":
                     return self._send(409, {"detail": "画布已被其他成员更新，请先同步",
                                             "version": (result or {}).get("version")})
+                if err == "rate_limited":
+                    return self._send(429, {"detail": "操作太频繁，请稍候",
+                                            "retry_after": (result or {}).get("retry_after")})
                 if err in {"too_many_ops", "too_large"}:
                     return self._send(413, {"detail": "画布操作数据过大"})
                 if err:
@@ -2803,6 +2873,8 @@ class H(BaseHTTPRequestHandler):
                     return self._send(400, {"detail": "不能邀请自己"})
                 if err == "not_friend":
                     return self._send(403, {"detail": "只能邀请已添加的好友"})
+                if err == "too_many_members":
+                    return self._send(429, {"detail": "画布成员数量已达上限"})
                 if err:
                     return self._send(400, {"detail": err})
                 return self._send(200, {"ok": True, "members": members})
@@ -3051,12 +3123,47 @@ class H(BaseHTTPRequestHandler):
             if since_version < 1:
                 return self._send(400, {"detail": "bad_since"})
             try:
+                wait_seconds = int((query.get("wait") or ["0"])[0])
+            except Exception:
+                return self._send(400, {"detail": "bad_wait"})
+            if wait_seconds < 0:
+                return self._send(400, {"detail": "bad_wait"})
+            wait_seconds = min(wait_seconds, CANVAS_SYNC_MAX_WAIT_SECONDS)
+            try:
+                # 首次完整同步(含成员校验)。有变化或 wait=0 → 直接返回
                 result, err = sync_canvas_ops(row["username"], board_id, since_version)
                 if err == "not_found":
                     return self._send(404, {"detail": "协作画布不存在"})
                 if err:
                     return self._send(400, {"detail": err})
-                return self._send(200, {"ok": True, **result})
+                changed = (result.get("reset") or result.get("batches")
+                           or int(result.get("version") or 0) != since_version)
+                if changed or wait_seconds <= 0:
+                    return self._send(200, {"ok": True, **result})
+                if not _canvas_sync_wait_acquire(row["username"]):
+                    # 等待名额已满: 降级为立即返回当前状态, 客户端可继续普通轮询
+                    return self._send(200, {"ok": True, **result, "wait_degraded": True})
+                try:
+                    # 等待阶段只做只读版本探测(不拿写锁); 检测到变化或超时才做完整同步
+                    deadline = time.time() + wait_seconds
+                    while time.time() < deadline:
+                        time.sleep(0.5)
+                        probed = canvas_board_version_probe(board_id)
+                        if probed is None or probed != since_version:
+                            result, err = sync_canvas_ops(row["username"], board_id, since_version)
+                            if err == "not_found":
+                                return self._send(404, {"detail": "协作画布不存在"})
+                            if err:
+                                return self._send(400, {"detail": err})
+                            return self._send(200, {"ok": True, **result})
+                    result, err = sync_canvas_ops(row["username"], board_id, since_version)
+                    if err == "not_found":
+                        return self._send(404, {"detail": "协作画布不存在"})
+                    if err:
+                        return self._send(400, {"detail": err})
+                    return self._send(200, {"ok": True, **result})
+                finally:
+                    _canvas_sync_wait_release(row["username"])
             except Exception:
                 return self._send(500, {"detail": "canvas sync failed"})
         if p.startswith(canvas_prefix):

@@ -31,6 +31,10 @@ def login(u, p):
 
 # ---------- 0. 建测试用户（直接建库行,模拟 create-user CLI 等价物） ----------
 import hashlib, secrets, os
+PW = os.environ.get("CVSTEST_PW")
+if not PW:
+    print("缺少测试密码: 请先设置环境变量 CVSTEST_PW (仅测试站临时账号使用)")
+    sys.exit(2)
 sys.path.insert(0, "/opt/huangque-test-server/server")
 c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
 for u in ("cvs_alice", "cvs_bob", "cvs_eve"):
@@ -40,14 +44,14 @@ c.commit()
 import subprocess
 for u, pts in (("cvs_alice", 100), ("cvs_bob", 100), ("cvs_eve", 100)):
     r = subprocess.run(["/usr/bin/python3", "/opt/huangque-test-server/server/auth_server.py",
-                        "create-user", u, "CvsTest#2026", str(pts), "member"],
+                        "create-user", u, PW, str(pts), "member"],
                        capture_output=True, text=True)
     if r.returncode != 0: print("create-user fail", u, r.stderr.strip())
 c.close()
 
-ta, sa, da = login("cvs_alice", "CvsTest#2026")
-tb, sb, db_ = login("cvs_bob", "CvsTest#2026")
-te, se, de = login("cvs_eve", "CvsTest#2026")
+ta, sa, da = login("cvs_alice", PW)
+tb, sb, db_ = login("cvs_bob", PW)
+te, se, de = login("cvs_eve", PW)
 print("login status:", sa, sb, se)
 if not (ta and tb and te):
     print("登录响应样例:", da); sys.exit(1)
@@ -95,6 +99,18 @@ s, d = call("POST", f"/api/auth/canvas/boards/{BID}/members", ta, {"account_id":
 check("C2 邀请非好友→403 not_friend", s == 403, (s, d.get("detail")))
 s, d = call("POST", f"/api/auth/canvas/boards/{BID}/members", tb, {"account_id": eve_acc, "role": "viewer"})
 check("C3 非 owner 邀请→403", s == 403, (s, d.get("detail")))
+
+# 补加 alice↔eve 好友, 用于成员上限验证(服务以 HQ_CANVAS_MAX_MEMBERS_PER_BOARD=1 运行)
+call("POST", "/api/auth/friends/request", ta, {"account_id": eve_acc})
+s, d = call("GET", "/api/auth/friend-requests", te)
+rid = None
+for r in (d.get("incoming") or d.get("requests") or []):
+    rid = r.get("id") or r.get("request_id")
+if rid: call("POST", "/api/auth/friend-requests/respond", te, {"request_id": rid, "action": "accept"})
+s, d = call("POST", f"/api/auth/canvas/boards/{BID}/members", ta, {"account_id": eve_acc, "role": "viewer"})
+check("C4 [P0-3] 已有 1 成员时再邀新人→429", s == 429, (s, d.get("detail")))
+s, d = call("POST", f"/api/auth/canvas/boards/{BID}/members", ta, {"account_id": bob_acc, "role": "editor"})
+check("C5 [P0-3] 已达上限时老成员改角色(upsert)→200", s == 200, (s, d.get("detail")))
 
 # ---------- D. ops / sync ----------
 s, d = call("GET", f"/api/auth/canvas/boards/{BID}", ta)
@@ -181,9 +197,51 @@ s, d = call("POST", f"/api/auth/canvas/boards/{BID}/ops", tb, ops_body(1, [{"typ
 check("D19 viewer 提交 ops→403", s == 403, (s, d.get("detail")))
 call("POST", f"/api/auth/canvas/boards/{BID}/members", ta, {"account_id": bob_acc, "role": "editor"})
 
+# ---------- L. sync 长轮询 ----------
+import threading
+s, d = call("GET", f"/api/auth/canvas/boards/{BID}", ta)
+vl = d["board"]["version"]
+t0 = time.time()
+s, d = call("GET", f"/api/auth/canvas/boards/{BID}/sync?since={vl}&wait=2", ta)
+el = time.time() - t0
+check("L1 [P1] 无变化 hold 到超时(~2s)再回空", s == 200 and el >= 1.5 and d.get("batches") == [] and d.get("reset") is False, (s, round(el, 1)))
+s, d = call("GET", f"/api/auth/canvas/boards/{BID}", ta)
+vl = d["board"]["version"]
+holder = {}
+def waiter():
+    tt = time.time()
+    ss, dd = call("GET", f"/api/auth/canvas/boards/{BID}/sync?since={vl}&wait=10", tb)
+    holder.update(s=ss, d=dd, el=time.time() - tt)
+th = threading.Thread(target=waiter)
+th.start()
+time.sleep(1.0)
+s2, d2 = call("POST", f"/api/auth/canvas/boards/{BID}/ops", tb, ops_body(vl, [{"type": "board.rename", "name": "唤醒长轮询"}], "lp-001", "client-bob"))
+th.join(timeout=15)
+check("L2 [P1] hold 期间新 ops→提前返回带批次", holder.get("s") == 200 and holder.get("el", 99) < 8 and len(holder.get("d", {}).get("batches", [])) == 1, (holder.get("s"), round(holder.get("el", -1), 1)))
+s, d = call("GET", f"/api/auth/canvas/boards/{BID}/sync?since={vl}&wait=abc", ta)
+check("L3 [P1] wait 非法→400", s == 400, s)
+
+# ---------- D20. ops 限频(默认 10 批/10 秒/人/板) ----------
+s, d = call("POST", "/api/auth/canvas/boards", ta, {"name": "限频板", "data": {"nodes": [], "edges": []}})
+rb = d["board"]["id"]
+ok200, got429 = 0, False
+for i in range(12):
+    s, d = call("POST", f"/api/auth/canvas/boards/{rb}/ops", ta,
+                ops_body(1 + i, [{"type": "board.rename", "name": f"名{i}"}], f"rl-{i}"))
+    if s == 200:
+        ok200 += 1
+    elif s == 429:
+        got429 = True
+        break
+check("D20 [P0-1] 窗口内 10 批放行", ok200 == 10, ok200)
+check("D21 [P0-1] 第 11 批→429 rate_limited", got429, got429)
+call("DELETE", f"/api/auth/canvas/boards/{rb}", ta)
+
 # ---------- E. presence ----------
 s, d = call("POST", f"/api/auth/canvas/boards/{BID}/presence", ta, {"client_id": "alice-pc"})
 check("E1 owner 心跳→online=1", s == 200 and d.get("online_count") == 1, (s, d))
+s, d = call("POST", f"/api/auth/canvas/boards/{BID}/presence", ta, {"client_id": "alice-pc"})
+check("E1b [P0-2] 3秒内同端心跳→deduped 不写库", s == 200 and d.get("deduped") is True and d.get("online_count") == 1, (s, d))
 s, d = call("POST", f"/api/auth/canvas/boards/{BID}/presence", ta, {"client_id": "alice-phone"})
 check("E2 [修复] 同一人第二个客户端→online 仍=1(按人去重)", s == 200 and d.get("online_count") == 1, (s, d))
 s, d = call("POST", f"/api/auth/canvas/boards/{BID}/presence", tb, {"client_id": "bob-pc"})
@@ -191,6 +249,7 @@ check("E3 editor 心跳→online=2", s == 200 and d.get("online_count") == 2, (s
 s, d = call("POST", f"/api/auth/canvas/boards/{BID}/presence", te, {"client_id": "eve-pc"})
 check("E4 非成员心跳→404", s == 404, s)
 call("POST", f"/api/auth/canvas/boards/{BID}/members", ta, {"account_id": bob_acc, "role": "viewer"})
+time.sleep(3.2)  # 避开 3 秒心跳去重窗口, 确保 E5 真实写库
 s, d = call("POST", f"/api/auth/canvas/boards/{BID}/presence", tb, {"client_id": "bob-pc"})
 check("E5 [修复] viewer 心跳也计入在线数", s == 200 and d.get("online_count") == 2, (s, d))
 s, d = call("POST", f"/api/auth/canvas/boards/{BID}/presence", ta, {"client_id": "  "})
