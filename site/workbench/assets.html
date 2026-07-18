@@ -1943,6 +1943,40 @@
   if(bulkDelete){ bulkDelete.onclick=deleteSelected; }
   if(favOnly){ favOnly.onclick=function(){ onlyFav=!onlyFav; selected={}; refreshMarkFilters(); render(); }; }
   if(tagFilter){ tagFilter.onchange=function(){ activeTag=tagFilter.value||''; selected={}; render(); }; }
+  // 媒体放大预览：点击资产卡片里的图片/视频 → 全屏灯箱
+  function _openMediaLightbox(kind, src){
+    if(!src) return;
+    var old=document.getElementById('hqMediaLightbox'); if(old) old.remove();
+    var wrap=document.createElement('div'); wrap.id='hqMediaLightbox';
+    wrap.style.cssText='position:fixed;inset:0;z-index:10001;display:flex;align-items:center;justify-content:center;background:rgba(3,7,15,.88);backdrop-filter:blur(6px);cursor:zoom-out;';
+    var media=kind==='video'?document.createElement('video'):document.createElement('img');
+    media.src=src;
+    if(kind==='video'){ media.controls=true; media.autoplay=true; }
+    media.style.cssText='max-width:92vw;max-height:88vh;border-radius:12px;box-shadow:0 28px 90px rgba(0,0,0,.6);cursor:default;';
+    var close=document.createElement('button');
+    close.type='button'; close.textContent='×';
+    close.style.cssText='position:absolute;top:18px;right:22px;width:40px;height:40px;border:none;border-radius:50%;background:rgba(148,164,187,.16);color:#eaf1fa;font-size:24px;cursor:pointer;line-height:1;';
+    wrap.appendChild(media); wrap.appendChild(close);
+    document.body.appendChild(wrap);
+    function done(){ wrap.remove(); document.removeEventListener('keydown', onKey); }
+    function onKey(e){ if(e.key==='Escape') done(); }
+    close.onclick=function(e){ e.stopPropagation(); done(); };
+    wrap.onclick=function(e){ if(e.target===wrap) done(); };
+    document.addEventListener('keydown', onKey);
+  }
+  document.addEventListener('click', function(e){
+    if(multi) return;  // 多选模式下不触发灯箱
+    var t=e.target;
+    if(!t||!t.tagName) return;
+    var tag=t.tagName.toLowerCase();
+    if(tag!=='img'&&tag!=='video') return;
+    if(!t.closest('#assetGrid')) return;
+    if(t.closest('button')||t.closest('a')) return;  // 按钮/链接里的图标不抢事件
+    var src=t.currentSrc||t.src||'';
+    if(!src||src.indexOf('assets/')>=0) return;  // 跳过图标类资源
+    e.preventDefault();
+    _openMediaLightbox(tag, src);
+  });
   load(loadKindOf(cat));
 })();
 </script>
