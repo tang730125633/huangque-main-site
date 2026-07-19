@@ -118,6 +118,11 @@ class PipelineWiringTests(unittest.TestCase):
         # 20 路并发实测通过 → 剧情视频不再需要「份额上限」，给满 10 个
         self.assertEqual(core.CINEMATIC_JOB_WORKERS, 10)
 
+    def test_talking_pool_and_backlog_match_capacity_config(self):
+        self.assertEqual(core.TALKING_JOB_WORKERS, 20)
+        self.assertEqual(core.JOB_QUEUE_MAX, 192)
+        self.assertEqual(core._talking_job_queue.maxsize, 192)
+
     def test_every_heygen_generation_path_takes_a_slot(self):
         """漏掉任何一条路径，那条就绕过了闸 —— 包括中转（泽龙转发的是同一个账号）。"""
         src = Path(video.__file__).read_text(encoding="utf-8")

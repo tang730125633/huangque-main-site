@@ -1623,7 +1623,7 @@ def _heygen_retry_429(fn, what=""):
 #
 # 槽只在【生成期间】持有（建视频 → 轮询出片）。上传素材、查 look 状态不占槽。
 # 中转(泽龙)转发的是同一个账号，所以中转路径同样要占槽 —— 不占就等于绕过了闸。
-HEYGEN_MAX_CONCURRENCY = int(os.environ.get("HEYGEN_MAX_CONCURRENCY", "21") or 21)
+HEYGEN_MAX_CONCURRENCY = int(os.environ.get("HEYGEN_MAX_CONCURRENCY", "31") or 31)
 _heygen_gen_sem = threading.BoundedSemaphore(HEYGEN_MAX_CONCURRENCY)
 
 
