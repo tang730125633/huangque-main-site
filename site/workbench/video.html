@@ -29,7 +29,7 @@
   .mode-tab.on .mode-title{color:#e7b24c}
   .mode-desc{font-size:11.5px;line-height:1.55;color:#5c6b82;margin-top:6px}
   .mode-tab.on .mode-desc{color:#c8902f}
-  .function-tabs{display:flex;align-items:center;gap:8px;margin-top:18px;padding:4px;border:1px solid rgba(148,164,187,.12);border-radius:13px;background:rgba(7,11,19,.34)}
+  .function-tabs{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:18px;padding:4px;border:1px solid rgba(148,164,187,.12);border-radius:13px;background:rgba(7,11,19,.34)}
   .function-tab{height:36px;padding:0 18px;border:1px solid transparent;border-radius:10px;background:transparent;color:#94a4bb;font:800 13px inherit;cursor:pointer}
   .function-tab.on{color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);box-shadow:0 10px 24px rgba(231,178,76,.14)}
   .function-panel{min-height:0}
@@ -246,6 +246,7 @@
         <button class="function-tab" type="button" data-function="cinematic">电影化身</button>
         <button class="function-tab" type="button" data-function="tryon">换装换背景</button>
         <button class="function-tab" type="button" data-function="grok">果肉视频生成</button>
+        <button class="function-tab" type="button" data-function="sora">Sora 2</button>
         <button class="function-tab hidden" type="button" data-function="micro" aria-hidden="true">豆姐视频生成</button>
         <button class="function-tab hidden" type="button" data-function="omni" aria-hidden="true">欧米视频生成</button>
       </div>
@@ -608,6 +609,50 @@
         <div id="grokStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:8px;">Grok Video · 生成后自动保存到视频资产</div>
       </div>
 
+      <div id="soraPanel" class="function-panel motion-panel hidden">
+        <div class="row">
+          <div>
+            <div class="label">Sora 2 视频生成 <span class="pill-fixed" style="margin-left:7px;">限时 Beta</span></div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">OpenAI Sora 2 / Sora 2 Pro · 输入画面描述生成视频</div>
+          </div>
+          <span class="faint" style="font-size:11.5px;">生成失败自动退点</span>
+        </div>
+        <div class="cine-notice">
+          <b>提交前请确认</b>
+          <span>· 当前只支持非真人文生视频，不支持参考图</span>
+          <span>· 请勿生成真人、公众人物、受版权保护角色或品牌标识</span>
+          <span>· 该能力为限时测试，官方计划于 2026-09-24 下线</span>
+        </div>
+        <div class="panel" style="margin-top:14px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">视频提示词 <span style="color:#5c6b82;">· 描述主体、动作、镜头和光线</span></div>
+          <textarea id="soraPrompt" rows="4" maxlength="2000" placeholder="例如：琥珀色精华瓶置于石台上，金色晨光缓慢扫过瓶身，镜头平稳向前推进，高级护肤广告质感，无人物、无文字、无标识" style="width:100%;min-height:120px;resize:vertical;background:rgba(7,11,19,.5);border:1px solid rgba(148,164,187,.16);border-radius:12px;color:#eaf1fa;padding:12px 14px;font:inherit;font-size:14px;"></textarea>
+          <div id="soraPromptCount" class="faint" style="font-size:11.5px;text-align:right;margin-top:6px;">0 / 2000</div>
+        </div>
+        <div class="panel" style="margin-top:12px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">模型</div>
+          <div class="seg" style="grid-template-columns:repeat(2,1fr);"><button class="on" data-sora-model="sora-2">Sora 2 · 标准</button><button data-sora-model="sora-2-pro">Sora 2 Pro · 高画质</button></div>
+        </div>
+        <div class="panel" style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+          <div>
+            <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
+            <div class="seg" style="grid-template-columns:repeat(2,1fr);"><button data-sora-ratio="9:16">9:16</button><button class="on" data-sora-ratio="16:9">16:9</button></div>
+          </div>
+          <div>
+            <div class="faint" style="font-size:12px;margin-bottom:8px;">生成时长</div>
+            <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-sora-seconds="4">4 秒</button><button data-sora-seconds="8">8 秒</button><button class="on" data-sora-seconds="12">12 秒</button></div>
+          </div>
+          <div style="grid-column:1/-1;">
+            <div class="faint" style="font-size:12px;margin-bottom:8px;">分辨率</div>
+            <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button class="on" data-sora-resolution="720p">720p</button><button data-sora-resolution="1024p" disabled>1024p · Pro</button><button data-sora-resolution="1080p" disabled>1080p · Pro</button></div>
+          </div>
+        </div>
+        <button id="soraGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:18px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
+          生成 Sora 视频
+        </button>
+        <div id="soraCostNote" class="talking-cost" style="margin-top:9px;"></div>
+        <div id="soraStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:8px;">正在检查 Sora 测试通道...</div>
+      </div>
+
       <div id="microPanel" class="function-panel motion-panel hidden">
         <div class="row">
           <div>
@@ -749,6 +794,10 @@
   ];
   var selectedGrokRatio='16:9', selectedGrokDuration=10, selectedGrokResolution='720p', selectedGrokModel='grok-imagine-video';
   var grokOperation='generate', grokEditVideoData='', grokEditDuration=0;
+  var selectedSoraModel='sora-2', selectedSoraRatio='16:9', selectedSoraSeconds=12, selectedSoraResolution='720p';
+  var soraAvailable=false, soraHealthKnown=false, maxActiveSoraVideo=1;
+  var SORA_RETRY_STORAGE='hq_sora_pending_submit';
+  var soraRetryKey='', soraRetryBody='';
   // 换装的第一个上传框在两条线路收的东西不同：线路一收换装视频，线路二收人物照片。
   // 必须各存各的变量 —— 共用一个的话，线路一传了视频再切到线路二，视频会被当人物照发出去（#537）。
   var tryonVideoData='', tryonPersonImageData='', tryonClothesData='', tryonBackgroundData='', selectedTryonLine='2', selectedTryonSeconds=6;
@@ -801,7 +850,7 @@
   var currentVideoDraft=null;
   var videoBusyCount=0;
   var maxActiveXiaoleVideo=3, maxActiveTryon=1, maxActiveCinematic=2;
-  var videoSubmitLocks={talking:false,cinematic:false,tryon:false,xiaole:false};
+  var videoSubmitLocks={talking:false,cinematic:false,tryon:false,xiaole:false,sora:false};
   var videoTaskSyncBound=false;
   var publicFallback=[
     {scope:'public',voice_key:'S_d21F8OR62',display_name:'温柔女声',provider_voice:'S_d21F8OR62',sub:'情感种草 · 柔和自然'},
@@ -855,7 +904,7 @@
     return st==='queued' || st==='running' || st==='pending' || st==='processing';
   }
   function activeVideoTaskCounts(){
-    var counts={talking:0,cinematic:0,tryon:0,xiaole:0};
+    var counts={talking:0,cinematic:0,tryon:0,xiaole:0,sora:0};
     var tasks=window.HQTasks;
     if(!tasks || !tasks.list) return counts;
     (tasks.list()||[]).forEach(function(job){
@@ -863,6 +912,7 @@
       var m=String(job.mode||'').toLowerCase();
       if(m==='cinematic') counts.cinematic++;
       else if(m==='tryon') counts.tryon++;
+      else if(m==='sora') counts.sora++;
       else if(m==='grok' || m==='micro' || m==='omni') counts.xiaole++;
       else counts.talking++;
     });
@@ -909,6 +959,10 @@
       setBusy(true);
       currentVideoDraft={
         job_id:id,
+        mode:task.mode||'',
+        model:task.model||'',
+        resolution:task.resolution||'',
+        duration:task.duration||'',
         text:task.label||'视频任务',
         ratio:task.ratio||'—',
         motion:task.modeLabel||'视频生成',
@@ -1081,6 +1135,7 @@
   function setVideoStatus(msg){
     if($('statusText')) $('statusText').textContent=msg;
     if($('tryonStatus')) $('tryonStatus').textContent=msg;
+    if($('soraStatus')) $('soraStatus').textContent=msg;
   }
   function motionLabel(v){return v==='high'?'高':(v==='medium'?'中等':'低');}
   function normalizeVideoAsset(x){
@@ -1103,6 +1158,7 @@
     if(m==='grok') return '果肉视频';
     if(m==='micro') return '豆姐视频';
     if(m==='omni') return '欧米视频';
+    if(m==='sora') return String(x&&x.model||'').toLowerCase()==='sora-2-pro'?'Sora 2 Pro':'Sora 2';
     return motionLabel((x&&x.motion)||'medium');
   }
   function videoDurationTag(x){
@@ -1112,6 +1168,7 @@
     if(m==='motion') return '跟随参考';
     if(m==='tryon') return '按提交时长';
     if(m==='omni') return '10秒';
+    if(m==='sora') return '按提交时长';
     if(m==='grok'||m==='micro') return '平台默认';
     return statusLabel(x&&x.status);
   }
@@ -1139,7 +1196,14 @@
       uploading:{label:'上传素材',step:1,percent:20,eta:'预计还需 3-6 分钟'},
       tryon_running:{label:'换装生成中（较久）',step:3,percent:55,eta:'预计还需 2-5 分钟'},
       bg_running:{label:'换背景生成中（较久）',step:4,percent:80,eta:'预计还需 2-5 分钟'},
-      downloading:{label:'下载成品',step:5,percent:94,eta:'即将完成'}
+      downloading:{label:'下载成品',step:5,percent:94,eta:'即将完成'},
+      sora_submitting:{label:'提交 Sora',step:1,percent:12,eta:'正在确认上游任务'},
+      sora_queued:{label:'Sora 排队中',step:2,percent:28,eta:'等待生成'},
+      sora_in_progress:{label:'Sora 生成中',step:4,percent:72,eta:'正在渲染视频'},
+      sora_retrying:{label:'Sora 状态重试',step:3,percent:48,eta:'正在恢复查询'},
+      sora_completed:{label:'Sora 已完成',step:4,percent:88,eta:'准备下载成品'},
+      sora_downloading:{label:'下载 Sora 成品',step:5,percent:94,eta:'即将完成'},
+      sora_recovery_required:{label:'需要人工核对',step:2,percent:35,eta:'请联系管理员，勿重复提交'}
     };
     return map[ph] || {label:statusLabel(st)||'生成中',step:1,percent:12,eta:'正在处理'};
   }
@@ -1772,6 +1836,15 @@
     applyButtonState('grokGenerateBtn', xiaoleEnabled, xiaoleTitle);
     applyButtonState('microGenerateBtn', xiaoleEnabled, xiaoleTitle);
     applyButtonState('omniGenerateBtn', xiaoleEnabled, xiaoleTitle);
+    var soraCapReached=counts.sora>=maxActiveSoraVideo;
+    var soraEnabled=soraAvailable && !videoSubmitLocks.sora && !soraCapReached;
+    var soraTitle=!soraAvailable
+      ?(soraHealthKnown?'Sora 限时测试暂未开放':'正在检查 Sora 测试通道')
+      :(soraCapReached?'当前 Sora 最多同时生成 '+maxActiveSoraVideo+' 个任务，请等待完成后再继续'
+                       :(videoSubmitLocks.sora?'Sora 任务提交中，请稍候':''));
+    applyButtonState('soraGenerateBtn', soraEnabled, soraTitle);
+    if($('soraStatus') && soraHealthKnown && !soraAvailable) $('soraStatus').textContent='Sora 限时测试暂未开放';
+    if($('soraStatus') && soraAvailable && $('soraStatus').textContent==='正在检查 Sora 测试通道...') $('soraStatus').textContent='测试通道已开启 · 生成后自动保存到视频资产';
     updateVideoCosts();
   }
   // 果肉/豆姐/欧米(xiaole_video) 与 试衣(tryon) 的前端预估价，必须和后端实扣对上。
@@ -1786,10 +1859,29 @@
     var secs=channel==='grok' ? selectedGrokDuration : 10;
     return '预计 '+(secs*XIAOLE_RATE)+' 点（'+XIAOLE_RATE+' 点/秒 × '+secs+' 秒）';
   }
+  var SORA_RATES={
+    'sora-2:720p':30,
+    'sora-2-pro:720p':90,
+    'sora-2-pro:1024p':150,
+    'sora-2-pro:1080p':210
+  };
+  function soraRate(){return SORA_RATES[selectedSoraModel+':'+selectedSoraResolution]||210;}
+  function updateSoraControls(){
+    var pro=selectedSoraModel==='sora-2-pro';
+    if(!pro && selectedSoraResolution!=='720p') selectedSoraResolution='720p';
+    document.querySelectorAll('[data-sora-model]').forEach(function(b){b.classList.toggle('on',b.dataset.soraModel===selectedSoraModel);});
+    document.querySelectorAll('[data-sora-resolution]').forEach(function(b){
+      b.disabled=!pro && b.dataset.soraResolution!=='720p';
+      b.classList.toggle('on',b.dataset.soraResolution===selectedSoraResolution);
+    });
+    updateVideoCosts();
+  }
   function updateVideoCosts(){
     var g=$('grokCostNote'); if(g) g.textContent=xiaoleCostNote('grok');
     var mi=$('microCostNote'); if(mi) mi.textContent=xiaoleCostNote('micro');
     var o=$('omniCostNote'); if(o) o.textContent=xiaoleCostNote('omni');
+    var s=$('soraCostNote');
+    if(s) s.textContent='预计 '+(soraRate()*selectedSoraSeconds)+' 点（'+soraRate()+' 点/秒 × '+selectedSoraSeconds+' 秒）';
     var t=$('tryonCostNote');
     if(t){   // 换装+换背景需同时有衣服图和背景图(与后端 40 判定一致)，否则 25
       var pricey=!!tryonClothesData && !!tryonBackgroundData;
@@ -1891,16 +1983,20 @@
       var cost=Number(d.video_cost),limit=Number(d.video_batch_max);
       var xiaoleCap=Number(d.max_user_active_xiaole_video), tryonCap=Number(d.max_user_active_tryon);
       var cineCap=Number(d.max_user_active_cinematic);
+      var soraCap=Number(d.max_user_active_sora_video);
+      soraAvailable=d.sora_video_enabled===true;
+      soraHealthKnown=true;
       if(isFinite(cost)&&cost>0) videoCost=Math.round(cost);
       if(isFinite(limit)&&limit>0) videoBatchMax=Math.min(5,Math.round(limit));
       if(isFinite(xiaoleCap)&&xiaoleCap>0) maxActiveXiaoleVideo=Math.round(xiaoleCap);
       if(isFinite(tryonCap)&&tryonCap>0) maxActiveTryon=Math.round(tryonCap);
       if(isFinite(cineCap)&&cineCap>0) maxActiveCinematic=Math.round(cineCap);
+      if(isFinite(soraCap)&&soraCap>0) maxActiveSoraVideo=Math.round(soraCap);
       var batchBtn=document.querySelector('[data-talking-shape="batch"]');
       if(batchBtn){batchBtn.disabled=videoBatchMax<2;batchBtn.title=videoBatchMax<2?'当前任务上限不支持批量出片':'';}
       renderTalkingBatchImages();
       syncVideoGenerateButtons();
-    }).catch(function(){updateChecklist();});
+    }).catch(function(){soraAvailable=false;soraHealthKnown=true;updateChecklist();});
   }
   function updateMode(next){
     mode=next;
@@ -1923,6 +2019,7 @@
     if($('cinematicPanel')) $('cinematicPanel').classList.toggle('hidden',videoFunction!=='cinematic');
     if($('tryonPanel')) $('tryonPanel').classList.toggle('hidden',videoFunction!=='tryon');
     if($('grokPanel')) $('grokPanel').classList.toggle('hidden',videoFunction!=='grok');
+    if($('soraPanel')) $('soraPanel').classList.toggle('hidden',videoFunction!=='sora');
     if($('microPanel')) $('microPanel').classList.toggle('hidden',videoFunction!=='micro');
     if($('omniPanel')) $('omniPanel').classList.toggle('hidden',videoFunction!=='omni');
     // 面板 hidden 的时候量不到卡片高度（getBoundingClientRect 全是 0），刚显示出来要重量一次，
@@ -1939,6 +2036,9 @@
     }else if(videoFunction==='grok'){
       $('modeSummary').textContent='果肉视频（Grok Video）：输入提示词直接生成视频';
       if($('modeName')) $('modeName').textContent='果肉视频';
+    }else if(videoFunction==='sora'){
+      $('modeSummary').textContent='Sora 2 / Pro：输入画面描述，生成非真人高质量视频';
+      if($('modeName')) $('modeName').textContent='Sora 2';
     }else if(videoFunction==='micro'){
       $('modeSummary').textContent='豆姐视频（Seedance 2.0 Fast）：输入提示词，或上传参考图做图生视频';
       if($('modeName')) $('modeName').textContent='豆姐视频';
@@ -2536,11 +2636,103 @@
         toast(e.message||'提交失败');
       });
   }
+  function saveSoraRetry(){
+    try{sessionStorage.setItem(SORA_RETRY_STORAGE,JSON.stringify({key:soraRetryKey,body:soraRetryBody}));}catch(e){}
+  }
+  function clearSoraRetry(){
+    soraRetryKey='';soraRetryBody='';
+    try{sessionStorage.removeItem(SORA_RETRY_STORAGE);}catch(e){}
+  }
+  function restoreSoraRetry(){
+    var saved=null,payload=null;
+    try{saved=JSON.parse(sessionStorage.getItem(SORA_RETRY_STORAGE)||'null');}catch(e){}
+    try{payload=saved&&JSON.parse(saved.body||'');}catch(e){}
+    if(!saved || !/^[A-Za-z0-9._:-]{8,128}$/.test(saved.key||'') || !payload || !payload.prompt){
+      if(saved) clearSoraRetry();
+      return;
+    }
+    var restoredPrompt=String(payload.prompt).trim();
+    if(!restoredPrompt || restoredPrompt.length>2000){clearSoraRetry();return;}
+    var model=payload.model==='sora-2-pro'?'sora-2-pro':'sora-2';
+    var resolution=String(payload.resolution||'720p');
+    if(model==='sora-2' || ['720p','1024p','1080p'].indexOf(resolution)<0) resolution='720p';
+    var seconds=Number(payload.seconds);
+    if([4,8,12].indexOf(seconds)<0) seconds=12;
+    selectedSoraModel=model;selectedSoraResolution=resolution;selectedSoraSeconds=seconds;
+    selectedSoraRatio=payload.ratio==='9:16'?'9:16':'16:9';
+    soraRetryKey=saved.key;soraRetryBody=saved.body;
+    if($('soraPrompt')) $('soraPrompt').value=restoredPrompt;
+    document.querySelectorAll('[data-sora-ratio]').forEach(function(b){b.classList.toggle('on',b.dataset.soraRatio===selectedSoraRatio);});
+    document.querySelectorAll('[data-sora-seconds]').forEach(function(b){b.classList.toggle('on',Number(b.dataset.soraSeconds)===selectedSoraSeconds);});
+    if($('soraPromptCount')) $('soraPromptCount').textContent=String(($('soraPrompt')||{}).value||'').length+' / 2000';
+    if($('soraStatus')) $('soraStatus').textContent='检测到一笔结果未确认的提交；保持当前参数重试会复用原请求编号';
+  }
+  function newSoraIdempotencyKey(){
+    var random=(window.crypto&&window.crypto.randomUUID)
+      ?window.crypto.randomUUID()
+      :(Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2));
+    return 'sora-web-'+Date.now().toString(36)+'-'+random;
+  }
+  function submitSora(){
+    if(!token){location.href='../login.html?redirect=workbench/video';return;}
+    if(!soraAvailable){toast(soraHealthKnown?'Sora 限时测试暂未开放':'正在检查 Sora 测试通道');return;}
+    var prompt=String(($('soraPrompt')||{}).value||'').trim();
+    if(!prompt){toast('请输入视频提示词');if($('soraPrompt'))$('soraPrompt').focus();return;}
+    var payload={model:selectedSoraModel,prompt:prompt,seconds:selectedSoraSeconds,ratio:selectedSoraRatio,resolution:selectedSoraResolution};
+    var body=JSON.stringify(payload);
+    if(soraRetryKey && soraRetryBody!==body){toast('上一笔提交结果尚未确认，请保持原参数重试');return;}
+    if(!soraRetryKey){soraRetryBody=body;soraRetryKey=newSoraIdempotencyKey();saveSoraRetry();}
+    var requestKey=soraRetryKey;
+    setSubmitLock('sora',true);
+    setBusy(true);
+    currentVideoDraft={mode:'sora',text:prompt,ratio:selectedSoraRatio,duration:selectedSoraSeconds,
+      resolution:selectedSoraResolution,model:selectedSoraModel,status:'processing',phase:'sora_submitting',created_at:Math.floor(Date.now()/1000)};
+    renderVideoDrafts([currentVideoDraft]);
+    if($('soraStatus')) $('soraStatus').textContent='正在提交 Sora 任务，请勿重复点击...';
+    fetch('/api/gen/sora_video',{
+      method:'POST',
+      headers:{Authorization:'Bearer '+token,'Content-Type':'application/json','Idempotency-Key':requestKey},
+      body:body
+    }).then(function(r){return r.json().catch(function(){return {};}).then(function(d){return {status:r.status,data:d};});})
+      .then(function(res){
+        if(res.status===401){clearSoraRetry();setSubmitLock('sora',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
+        if(!res.data.job_id){
+          var err=new Error(res.data.detail||'Sora 提交失败');
+          err.httpStatus=res.status;err.errorCode=res.data.code||'';
+          err.uncertain=res.status>=200 && res.status<300;
+          throw err;
+        }
+        clearSoraRetry();
+        if($('soraStatus')) $('soraStatus').textContent='Sora 任务已提交'+(res.data.cost!=null?' · '+res.data.cost+'点':'')+'，正在生成...';
+        setTimeout(loadVideoHistory,700);
+        trackVideoJob(res.data.job_id,{status:'queued',phase:'sora_queued',label:selectedSoraModel==='sora-2-pro'?'Sora 2 Pro 视频':'Sora 2 视频',mode:'sora',model:selectedSoraModel,resolution:selectedSoraResolution,duration:selectedSoraSeconds,modeLabel:selectedSoraModel==='sora-2-pro'?'Sora 2 Pro':'Sora 2',ratio:selectedSoraRatio});
+        setSubmitLock('sora',false);
+        pollJob(res.data.job_id,0);
+      })
+      .catch(function(e){
+        setSubmitLock('sora',false);
+        setBusy(false);
+        var uncertain=e.uncertain || !e.httpStatus || e.httpStatus>=500 || (e.httpStatus===409 && e.errorCode==='idempotency_in_progress');
+        if(uncertain) saveSoraRetry(); else clearSoraRetry();
+        if(currentVideoDraft){currentVideoDraft.status=uncertain?'processing':'error';renderVideoDrafts([currentVideoDraft]);}
+        var message=uncertain?'提交结果暂未确认；请保持参数不变后重试，系统会复用同一请求编号':(e.message||'Sora 提交失败');
+        if($('soraStatus')) $('soraStatus').textContent=message;
+        toast(message);
+      });
+  }
   $('generateBtn').onclick=submitVideo;
   $('tryonGenerateBtn').onclick=submitTryon;
   if($('grokGenerateBtn')) $('grokGenerateBtn').onclick=function(){submitXiaole('grok');};
+  if($('soraGenerateBtn')) $('soraGenerateBtn').onclick=submitSora;
   if($('microGenerateBtn')) $('microGenerateBtn').onclick=function(){submitXiaole('micro');};
   if($('omniGenerateBtn')) $('omniGenerateBtn').onclick=function(){submitXiaole('omni');};
+  document.querySelectorAll('[data-sora-model]').forEach(function(b){b.onclick=function(){selectedSoraModel=b.dataset.soraModel;updateSoraControls();};});
+  document.querySelectorAll('[data-sora-ratio]').forEach(function(b){b.onclick=function(){selectedSoraRatio=b.dataset.soraRatio;document.querySelectorAll('[data-sora-ratio]').forEach(function(x){x.classList.toggle('on',x===b);});};});
+  document.querySelectorAll('[data-sora-seconds]').forEach(function(b){b.onclick=function(){selectedSoraSeconds=Number(b.dataset.soraSeconds);document.querySelectorAll('[data-sora-seconds]').forEach(function(x){x.classList.toggle('on',x===b);});updateVideoCosts();};});
+  document.querySelectorAll('[data-sora-resolution]').forEach(function(b){b.onclick=function(){if(b.disabled)return;selectedSoraResolution=b.dataset.soraResolution;updateSoraControls();};});
+  if($('soraPrompt')) $('soraPrompt').oninput=function(){if($('soraPromptCount'))$('soraPromptCount').textContent=String($('soraPrompt').value||'').length+' / 2000';};
+  restoreSoraRetry();
+  updateSoraControls();
   // ---- 果肉(Grok)官方面板：基础图生视频接口单图输入 ----
   var GROK_REF_MAX=7;
   var grokRefData=[];
