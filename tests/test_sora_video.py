@@ -78,7 +78,7 @@ class SoraPayloadTests(unittest.TestCase):
                 )
 
     def test_only_small_beta_duration_matrix_is_exposed(self):
-        for seconds in (4, 8, 12):
+        for seconds in (4, 8, 10, 12):
             self.assertEqual(self.validate(seconds=seconds)["seconds"], seconds)
         for seconds in (0, 5, 16, 20, "4.0", True):
             with self.subTest(seconds=seconds):
@@ -109,6 +109,16 @@ class SoraPointsTests(unittest.TestCase):
                         "model": model, "resolution": resolution, "seconds": 4,
                     }),
                     rate * 4,
+                )
+
+    def test_ten_second_points_are_rate_times_ten(self):
+        for (model, resolution), rate in points.SORA_VIDEO_RATE.items():
+            with self.subTest(model=model, resolution=resolution):
+                self.assertEqual(
+                    points.cost_of("sora_video", {
+                        "model": model, "resolution": resolution, "seconds": 10,
+                    }),
+                    rate * 10,
                 )
 
     def test_unknown_sora_price_never_becomes_free(self):
