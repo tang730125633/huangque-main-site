@@ -62,7 +62,7 @@ XAI_GROK_RESOLUTIONS = {"480p", "720p"}
 SORA_VIDEO_ENABLED = os.environ.get("SORA_VIDEO_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 SORA_VIDEO_SUNSET = "2026-09-24"
 SORA_MODELS = {"sora-2", "sora-2-pro"}
-SORA_SECONDS = {4, 8, 10, 12}  # Beta 只放受控测试时长；16/20 秒待测速和成本验收。
+SORA_SECONDS = {4, 8, 12}  # 上游 create 接口实测只接受 4/8/12 秒。
 SORA_RATIOS = {"9:16", "16:9"}
 SORA_SIZE_MAP = {
     ("sora-2", "720p", "9:16"): "720x1280",
@@ -204,13 +204,13 @@ def validate_sora_video_payload(payload):
         raise ValueError("Sora 模型不支持：%s" % model)
     raw_seconds = payload.get("seconds", 4)
     if isinstance(raw_seconds, bool):
-        raise ValueError("Sora 视频时长仅支持 4、8、10、12 秒")
+        raise ValueError("Sora 视频时长仅支持 4、8、12 秒")
     try:
         seconds = int(raw_seconds)
     except (TypeError, ValueError):
-        raise ValueError("Sora 视频时长仅支持 4、8、10、12 秒")
+        raise ValueError("Sora 视频时长仅支持 4、8、12 秒")
     if str(raw_seconds).strip() != str(seconds) or seconds not in SORA_SECONDS:
-        raise ValueError("Sora 视频时长仅支持 4、8、10、12 秒")
+        raise ValueError("Sora 视频时长仅支持 4、8、12 秒")
     ratio = str(payload.get("ratio") or "9:16").strip()
     if ratio not in SORA_RATIOS:
         raise ValueError("Sora 画面比例仅支持 9:16、16:9")
