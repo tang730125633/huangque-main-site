@@ -1,6 +1,7 @@
 import os
 import re
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -36,19 +37,21 @@ def baseline_files() -> list[str]:
     return result.stdout.splitlines()
 
 
-def baseline_content_matches(commit: str) -> bool:
+def unchanged_paths_match(repo: Path, source: str, requested: str, paths: list[str]) -> bool:
     env = os.environ.copy()
     env["SHIP_ZELONG_LIB_ONLY"] = "1"
     result = subprocess.run(
         [
             "bash",
             "-c",
-            'source "$1"; load_adspower_baseline; validate_adspower_baseline_content "$2" "${files[@]}"',
+            'source "$1"; shift; validate_unchanged_paths "$@"',
             "_",
             str(SHIP),
-            commit,
+            source,
+            requested,
+            *paths,
         ],
-        cwd=ROOT,
+        cwd=repo,
         env=env,
         text=True,
         capture_output=True,
@@ -88,15 +91,38 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         self.assertIn("--adspower-baseline 禁止与 --file 混用", SRC)
 
     def test_adspower_baseline_accepts_unchanged_newer_commit_and_rejects_changed_content(self):
-        source = "fb59e511c16f11edef1617b07fe6f2160c14e78e"
-        self.assertTrue(baseline_content_matches(source))
-        # 当前分支只新增部署工具，11 个目标文件未变，应允许 main 前进。
-        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-        self.assertTrue(baseline_content_matches(head))
-        # fb59 的父提交尚未包含已审核的 miniprogram_security 改动。
-        parent = subprocess.check_output(["git", "rev-parse", f"{source}^"], cwd=ROOT, text=True).strip()
-        self.assertFalse(baseline_content_matches(parent))
-        self.assertIn('git diff --quiet "$ADSPOWER_BASELINE_SOURCE_COMMIT" "$requested" -- "$@"', SRC)
+        # CI 使用浅克隆，不能假设历史中的 fb59e51 对象已被检出。用临时仓库
+        # 验证同一 helper 的 fail-closed 行为，不进行网络 fetch，也不放宽部署规则。
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "CI"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "ci@example.invalid"], cwd=repo, check=True)
+
+            (repo / "target.txt").write_text("audited\n", encoding="utf-8")
+            subprocess.run(["git", "add", "target.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "baseline"], cwd=repo, check=True)
+            source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+
+            (repo / "unrelated.txt").write_text("safe\n", encoding="utf-8")
+            subprocess.run(["git", "add", "unrelated.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "unrelated"], cwd=repo, check=True)
+            unchanged = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+
+            (repo / "target.txt").write_text("changed\n", encoding="utf-8")
+            subprocess.run(["git", "add", "target.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "changed"], cwd=repo, check=True)
+            changed = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+
+            self.assertTrue(unchanged_paths_match(repo, source, source, ["target.txt"]))
+            self.assertTrue(unchanged_paths_match(repo, source, unchanged, ["target.txt"]))
+            self.assertFalse(unchanged_paths_match(repo, source, changed, ["target.txt"]))
+            self.assertFalse(unchanged_paths_match(repo, "0" * 40, changed, ["target.txt"]))
+
+        self.assertIn(
+            'validate_unchanged_paths "$ADSPOWER_BASELINE_SOURCE_COMMIT" "$requested" "$@"',
+            SRC,
+        )
 
     def test_only_auth_and_content_can_restart(self):
         restarts = re.findall(r"systemctl restart ([A-Za-z0-9_-]+)", SRC)

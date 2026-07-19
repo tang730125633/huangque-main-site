@@ -123,11 +123,18 @@ validate_remote_main() {
   test -n "$remote_main" && test "$requested" = "$remote_main"
 }
 
+validate_unchanged_paths() {
+  local source="$1" requested="$2"
+  shift 2
+  git cat-file -e "$source^{commit}" 2>/dev/null || return 1
+  git cat-file -e "$requested^{commit}" 2>/dev/null || return 1
+  git diff --quiet "$source" "$requested" -- "$@"
+}
+
 validate_adspower_baseline_content() {
   local requested="$1"
   shift
-  git cat-file -e "$ADSPOWER_BASELINE_SOURCE_COMMIT^{commit}" 2>/dev/null || return 1
-  git diff --quiet "$ADSPOWER_BASELINE_SOURCE_COMMIT" "$requested" -- "$@"
+  validate_unchanged_paths "$ADSPOWER_BASELINE_SOURCE_COMMIT" "$requested" "$@"
 }
 
 remote_guard() {
