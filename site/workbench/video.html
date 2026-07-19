@@ -325,7 +325,7 @@
       <div class="talking-flow" aria-label="数字化 IP 生成流程">
         <div class="talking-flow-item on"><span>01</span><b>形象与内容</b></div>
         <div class="talking-flow-item"><span>02</span><b id="talkingFlowSound">选择音色</b></div>
-        <div class="talking-flow-item"><span>03</span><b>画面与字幕</b></div>
+        <div class="talking-flow-item"><span>03</span><b>画面设置</b></div>
       </div>
 
       <div class="talking-section-title">
@@ -398,7 +398,7 @@
       <div id="talkingParameterPanel" class="panel workflow-panel">
         <div class="talking-section-title">
           <span class="step-no">03</span>
-          <div class="talking-section-copy"><b>画面与字幕设置</b><span>确认比例、动作强度和字幕样式</span></div>
+          <div class="talking-section-copy"><b>画面设置</b><span>确认画面比例和动作强度</span></div>
           <span class="faint talking-section-action">生成失败自动退点</span>
         </div>
         <div style="display:grid;grid-template-columns:1fr;gap:18px;margin-top:13px;">
@@ -410,79 +410,6 @@
           <div>
             <div class="faint" style="font-size:12px;margin-bottom:8px;">表情动作强度</div>
             <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-motion="low">低</button><button class="on" data-motion="medium">中等</button><button data-motion="high">高</button></div>
-          </div>
-          <div>
-            <div class="faint" style="font-size:12px;margin-bottom:8px;">自动字幕 <span style="color:#47536a;">· 识别口播并烧录进画面</span></div>
-            <div class="seg" style="grid-template-columns:repeat(2,1fr);"><button class="on" data-subtitle="off">关闭</button><button data-subtitle="on">开启</button></div>
-          </div>
-          <div id="subtitleStyleRow" class="subtitle-builder" style="display:none;">
-            <div class="subtitle-head">
-              <div><div class="label">字幕模板</div><div class="faint" style="font-size:10.5px;margin-top:3px;">模板决定动画和排版，颜色与字体可单独调整</div></div>
-              <button id="subtitleResetBtn" class="subtitle-reset" type="button">恢复模板默认值</button>
-            </div>
-            <div class="subtitle-template-grid" id="subtitleTemplateGrid">
-              <button type="button" class="subtitle-template on" data-substyle="keyword_highlight"><b>基础字幕</b><span>简洁清晰，无额外动画</span></button>
-              <button type="button" class="subtitle-template" data-substyle="word_highlight"><b>逐字高亮</b><span>跟随发音逐字点亮</span></button>
-              <button type="button" class="subtitle-template" data-substyle="karaoke"><b>卡拉 OK</b><span>已读与未读连续填充</span></button>
-              <button type="button" class="subtitle-template" data-substyle="bounce"><b>弹跳字幕</b><span>文字随节奏弹起</span></button>
-              <button type="button" class="subtitle-template" data-substyle="glow"><b>发光字幕</b><span>霓虹外发光效果</span></button>
-              <button type="button" class="subtitle-template" data-substyle="bilingual"><b>双语字幕</b><span>中文主字幕 + 英文副字幕</span></button>
-            </div>
-
-            <div id="subtitlePreview" class="subtitle-preview" aria-live="polite">
-              <div id="subtitlePreviewCopy" class="subtitle-preview-copy">让每一句口播都更有重点</div>
-            </div>
-
-            <div class="subtitle-controls" id="subtitleControls">
-              <div class="subtitle-field wide"><label for="subtitleFontFamily">字体</label><select id="subtitleFontFamily"><option value="Noto Sans SC">简体中文黑体（推荐）</option></select></div>
-              <div class="subtitle-field"><label for="subtitleFontSize">字号</label><select id="subtitleFontSize"><option value="24">24</option><option value="32">32</option><option value="40">40</option><option value="48">48</option><option value="56">56</option><option value="64">64</option><option value="72">72</option><option value="80">80</option><option value="96">96</option><option value="112">112</option><option value="120">120</option></select></div>
-              <div class="subtitle-field"><label for="subtitleFontWeight">字重</label><select id="subtitleFontWeight"><option value="400">常规 400</option><option value="600">半粗 600</option><option value="700">粗体 700</option><option value="800">特粗 800</option><option value="900">黑体 900</option></select></div>
-              <div class="subtitle-field"><label for="subtitleFontColor">文字颜色</label><div class="subtitle-color"><input id="subtitleFontColor" type="color"><code id="subtitleFontColorText">#FFFFFF</code></div></div>
-              <div class="subtitle-field"><label for="subtitleHighlightColor">效果 / 高亮颜色</label><div class="subtitle-color"><input id="subtitleHighlightColor" type="color"><code id="subtitleHighlightColorText">#FFE45C</code></div></div>
-              <div class="subtitle-field"><label for="subtitleOutlineColor">描边颜色</label><div class="subtitle-color"><input id="subtitleOutlineColor" type="color"><code id="subtitleOutlineColorText">#000000</code></div></div>
-              <div class="subtitle-field"><label for="subtitleOutlineWidth">描边宽度</label><div class="subtitle-range"><input id="subtitleOutlineWidth" type="range" min="0" max="12" step="0.5"><output id="subtitleOutlineWidthOut">4</output></div></div>
-              <div class="subtitle-field"><label for="subtitleBackgroundColor">背景颜色</label><div class="subtitle-color"><input id="subtitleBackgroundColor" type="color"><code id="subtitleBackgroundColorText">#000000</code></div></div>
-              <div class="subtitle-field"><label for="subtitleBackgroundOpacity">背景透明度</label><div class="subtitle-range"><input id="subtitleBackgroundOpacity" type="range" min="0" max="1" step="0.05"><output id="subtitleBackgroundOpacityOut">0</output></div></div>
-              <div id="subtitleKeywordFeature" class="subtitle-keyword-feature">
-                <div class="subtitle-keyword-head">
-                  <div class="subtitle-keyword-copy"><b>关键词高亮</b><span>仅强调文案重点词；逐字高亮与卡拉 OK 的跟读动画不受此开关影响</span></div>
-                  <label class="subtitle-keyword-switch" for="subtitleKeywordEnabled"><input id="subtitleKeywordEnabled" type="checkbox">开启</label>
-                </div>
-                <div id="subtitleKeywordOptions" class="subtitle-keyword-options">
-                  <div class="subtitle-field"><label for="subtitleKeywordMode">关键词方式</label><select id="subtitleKeywordMode"><option value="auto">自动提取</option><option value="manual">手动指定</option></select></div>
-                  <div class="subtitle-field"><label for="subtitleKeywordScale">高亮缩放</label><div class="subtitle-range"><input id="subtitleKeywordScale" type="range" min="1" max="1.5" step="0.01"><output id="subtitleKeywordScaleOut">1.08</output></div></div>
-                  <div class="subtitle-field wide"><label for="subtitleKeywords">手动关键词（逗号分隔）</label><input id="subtitleKeywords" type="text" placeholder="例如：焕肤，体验官，透亮"></div>
-                </div>
-              </div>
-              <div class="subtitle-specific" data-subtitle-panel="word_highlight">
-                <div class="subtitle-field"><label for="subtitleWordSpeed">高亮速度</label><div class="subtitle-range"><input id="subtitleWordSpeed" type="range" min="0.5" max="2" step="0.05"><output id="subtitleWordSpeedOut">1</output></div></div>
-                <div class="subtitle-field"><label for="subtitleActiveScale">当前字缩放</label><div class="subtitle-range"><input id="subtitleActiveScale" type="range" min="1" max="1.5" step="0.01"><output id="subtitleActiveScaleOut">1.08</output></div></div>
-              </div>
-              <div class="subtitle-specific" data-subtitle-panel="karaoke">
-                <div class="subtitle-field"><label for="subtitlePendingColor">未朗读颜色</label><div class="subtitle-color"><input id="subtitlePendingColor" type="color"><code id="subtitlePendingColorText">#8B95A7</code></div></div>
-                <div class="subtitle-field"><label for="subtitleProgressMode">填充效果</label><select id="subtitleProgressMode"><option value="sweep">连续填充</option><option value="step">逐字切换</option></select></div>
-              </div>
-              <div class="subtitle-specific" data-subtitle-panel="bounce">
-                <div class="subtitle-field"><label for="subtitleBounceHeight">弹跳幅度</label><div class="subtitle-range"><input id="subtitleBounceHeight" type="range" min="4" max="80" step="1"><output id="subtitleBounceHeightOut">18</output></div></div>
-                <div class="subtitle-field"><label for="subtitleBounceDuration">动画时长</label><div class="subtitle-range"><input id="subtitleBounceDuration" type="range" min="80" max="800" step="10"><output id="subtitleBounceDurationOut">220</output></div></div>
-              </div>
-              <div class="subtitle-specific" data-subtitle-panel="glow">
-                <div class="subtitle-field"><label for="subtitleGlowColor">发光颜色</label><div class="subtitle-color"><input id="subtitleGlowColor" type="color"><code id="subtitleGlowColorText">#35C8FF</code></div></div>
-                <div class="subtitle-field"><label for="subtitleGlowStrength">发光强度</label><div class="subtitle-range"><input id="subtitleGlowStrength" type="range" min="0.1" max="1" step="0.05"><output id="subtitleGlowStrengthOut">0.75</output></div></div>
-                <div class="subtitle-field wide"><label for="subtitleGlowRadius">发光范围</label><div class="subtitle-range"><input id="subtitleGlowRadius" type="range" min="1" max="20" step="1"><output id="subtitleGlowRadiusOut">8</output></div></div>
-              </div>
-              <div class="subtitle-specific" data-subtitle-panel="bilingual">
-                <div class="subtitle-field"><label for="subtitleSecondaryFont">副字幕字体</label><select id="subtitleSecondaryFont"><option value="Noto Sans SC">简体中文黑体（推荐）</option></select></div>
-                <div class="subtitle-field"><label for="subtitleSecondarySize">副字幕字号</label><div class="subtitle-range"><input id="subtitleSecondarySize" type="range" min="18" max="80" step="1"><output id="subtitleSecondarySizeOut">38</output></div></div>
-                <div class="subtitle-field"><label for="subtitleSecondaryColor">副字幕颜色</label><div class="subtitle-color"><input id="subtitleSecondaryColor" type="color"><code id="subtitleSecondaryColorText">#DCE7F7</code></div></div>
-                <div class="subtitle-field"><label for="subtitleLineGap">双语行距</label><div class="subtitle-range"><input id="subtitleLineGap" type="range" min="0" max="48" step="1"><output id="subtitleLineGapOut">12</output></div></div>
-                <div class="subtitle-field wide"><label for="subtitleSecondaryText">英文副字幕</label><textarea id="subtitleSecondaryText" placeholder="输入与中文口播对应的英文副字幕"></textarea></div>
-              </div>
-            </div>
-          </div>
-          <div id="subtitlePositionRow" style="display:none;margin-top:12px;">
-            <div class="faint" style="font-size:12px;margin-bottom:8px;">字幕位置</div>
-            <div class="seg" style="grid-template-columns:repeat(5,1fr);"><button data-subpos="top">顶部</button><button data-subpos="upper">偏上</button><button data-subpos="center">中央</button><button data-subpos="lower">偏下</button><button class="on" data-subpos="bottom">底部</button></div>
           </div>
         </div>
       </div>
@@ -2489,13 +2416,11 @@
     }
     if(b.dataset.motion) selectedMotion=b.dataset.motion;
     if(b.dataset.bgmVolume) selectedBgmVolume=Number(b.dataset.bgmVolume);
-    if(b.dataset.subtitle){selectedSubtitle=b.dataset.subtitle;var on=selectedSubtitle==='on';var sr=$('subtitleStyleRow');if(sr)sr.style.display=(on?'flex':'none');var pr=$('subtitlePositionRow');if(pr)pr.style.display=(on?'':'none');if(on)updateSubtitlePreview();else stopSubtitleWordPreview();}
-    if(b.dataset.subpos){selectedSubtitlePosition=b.dataset.subpos;if(subtitleTemplateState[selectedSubtitleStyle])subtitleTemplateState[selectedSubtitleStyle].position=selectedSubtitlePosition;persistSubtitleSettings();updateSubtitlePreview();}
     updateChecklist();
   };});
   $('bgmFile').onchange=function(){var f=this.files&&this.files[0];if(!f)return;if(f.size>35*1024*1024){toast('BGM 不能超过 35MB');this.value='';return;}readFileData(f).then(function(data){bgmData=data;$('bgmFileName').textContent=f.name;$('bgmClear').classList.remove('hidden');}).catch(function(){toast('BGM 读取失败');});};
   $('bgmClear').onclick=function(){bgmData='';$('bgmFile').value='';$('bgmFileName').textContent='选择 BGM 音频';$('bgmClear').classList.add('hidden');};
-  $('scriptText').addEventListener('input',function(){$('charCount').textContent=$('scriptText').value.length+' / 1200';updateChecklist();updateSubtitlePreview();});
+  $('scriptText').addEventListener('input',function(){$('charCount').textContent=$('scriptText').value.length+' / 1200';updateChecklist();});
   $('clearScript').onclick=function(){$('scriptText').value='';$('scriptText').dispatchEvent(new Event('input'));};
   function bindImageInput(input){
     input.onchange=function(){
@@ -2758,12 +2683,10 @@
   }
   function talkingPayload(item){
     item=item||{};
-    var subtitleOpts=selectedSubtitle==='on'?collectSubtitleOptions():null;
     return {
       mode:mode,image_data:item.image_data||'',avatar_id:item.avatar_id||'',
       audio_data:mode==='audio'?audioData:'',text:mode==='text'?$('scriptText').value.trim():'',voice:mode==='text'?selectedVoice:'',
-      resolution:selectedResolution,ratio:selectedRatio,motion:selectedMotion,subtitle:selectedSubtitle==='on',
-      subtitle_style:selectedSubtitleStyle,subtitle_position:selectedSubtitlePosition,subtitle_options:subtitleOpts,
+      resolution:selectedResolution,ratio:selectedRatio,motion:selectedMotion,
       bgm_data:bgmData,bgm_volume:selectedBgmVolume
     };
   }
@@ -2774,11 +2697,6 @@
     var assetSelected=document.querySelector('.source-card[data-source="asset"].on');
     if(mode==='audio' && assetSelected && !selectedAssetAudio){ toast('请选择一条配音资产'); return; }
     if(mode==='audio' && !assetSelected && !audioData){ toast('请先上传口播音频'); return; }
-    if(selectedSubtitle==='on'){
-      var subtitleOpts=collectSubtitleOptions();
-      if(subtitleSupportsKeywords(selectedSubtitleStyle)&&subtitleOpts.keyword_highlight_enabled&&subtitleOpts.keyword_mode==='manual'&&!subtitleOpts.keywords.length){toast('手动关键词模式请至少填写一个关键词');return;}
-      if(selectedSubtitleStyle==='bilingual'&&!subtitleOpts.secondary_text){toast('双语字幕请填写英文副字幕');if($('subtitleSecondaryText'))$('subtitleSecondaryText').focus();return;}
-    }
     setSubmitLock('talking',true);
     setBusy(true);
     var audioReadyPromise=assetSelected?fetchAssetAudioData(selectedAssetAudio):Promise.resolve(audioData);
@@ -3199,7 +3117,6 @@
       if(typeof toast==='function') toast('已带入灵感提示词，可直接生成');
     }catch(e){}
   }
-  bindSubtitleBuilder();
   applyAssetPrefill();
   applyInspirationPrefill();
   loadVoices();

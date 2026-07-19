@@ -189,23 +189,21 @@ class SubtitleAssRenderingTests(unittest.TestCase):
 
 
 class SubtitleTemplateUiTests(unittest.TestCase):
-    def test_page_has_six_templates_and_live_preview(self):
-        for key in ("keyword_highlight", "word_highlight", "karaoke", "bounce", "glow", "bilingual"):
-            self.assertIn('data-substyle="%s"' % key, VIDEO_HTML)
-        for key in ("word_highlight", "karaoke", "bounce", "glow", "bilingual"):
-            self.assertIn('data-subtitle-panel="%s"' % key, VIDEO_HTML)
-        self.assertIn('id="subtitlePreview"', VIDEO_HTML)
-        self.assertIn('id="subtitleResetBtn"', VIDEO_HTML)
-        self.assertIn('id="subtitleKeywordEnabled" type="checkbox"', VIDEO_HTML)
-        self.assertIn('<b>基础字幕</b>', VIDEO_HTML)
-        self.assertIn("hq_video_subtitle_templates_v2", VIDEO_HTML)
-        self.assertIn('<option value="Noto Sans SC">简体中文黑体（推荐）</option>', VIDEO_HTML)
+    def test_page_does_not_show_automatic_subtitle_controls(self):
+        self.assertNotIn("自动字幕", VIDEO_HTML)
+        self.assertNotIn("画面与字幕", VIDEO_HTML)
+        self.assertNotIn('data-subtitle="on"', VIDEO_HTML)
+        self.assertNotIn('id="subtitleStyleRow"', VIDEO_HTML)
+        self.assertNotIn('id="subtitlePositionRow"', VIDEO_HTML)
+        self.assertNotIn('id="subtitlePreview"', VIDEO_HTML)
+        self.assertNotIn('id="subtitleKeywordEnabled"', VIDEO_HTML)
 
-    def test_page_sends_options_and_labels_history(self):
-        self.assertIn("subtitle_options:subtitleOpts", VIDEO_HTML)
+    def test_page_does_not_send_or_load_automatic_subtitles(self):
+        payload = VIDEO_HTML.split("function talkingPayload(item){", 1)[1].split("function submitVideo(){", 1)[0]
+        self.assertNotIn("subtitle:", payload)
+        self.assertNotIn("subtitle_options", payload)
+        self.assertNotIn("bindSubtitleBuilder();", VIDEO_HTML)
         self.assertIn("SUBTITLE_TEMPLATE_NAMES[x.subtitle_style]", VIDEO_HTML)
-        self.assertIn("/api/gen/video/subtitle-config", VIDEO_HTML)
-        self.assertIn('id="subtitleSecondaryText"', VIDEO_HTML)
 
     def test_attractive_fonts_are_available_in_config_and_live_preview(self):
         with patch.object(video, "_subtitle_fonts_cache", ("Smiley Sans", "ZCOOL KuaiLe")):
@@ -287,12 +285,8 @@ class SubtitleTemplateUiTests(unittest.TestCase):
         setter = VIDEO_HTML.split("function subtitleSetOutput", 1)[1].split("function subtitleSyncRangeOutputs", 1)[0]
         self.assertIn("value!=null", setter)
 
-    def test_font_size_uses_standard_numeric_select(self):
-        field = VIDEO_HTML.split('<label for="subtitleFontSize">字号</label>', 1)[1].split('</div>', 1)[0]
-        self.assertIn('<select id="subtitleFontSize">', field)
-        self.assertNotIn('type="range"', field)
-        for size in (24, 32, 40, 48, 56, 64, 72, 80, 96, 112, 120):
-            self.assertIn('<option value="{0}">{0}</option>'.format(size), field)
+    def test_font_size_control_is_not_rendered(self):
+        self.assertNotIn('id="subtitleFontSize"', VIDEO_HTML)
 
     def test_legacy_font_sizes_snap_to_standard_options(self):
         self.assertIn("var SUBTITLE_FONT_SIZES=[24,32,40,48,56,64,72,80,96,112,120]", VIDEO_HTML)
