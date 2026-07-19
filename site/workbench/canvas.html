@@ -473,7 +473,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=302ad2ce"></script>
+<script src="cloud-shell.js?v=313b9433"></script>
 <script src="canvas-collab-sync.js?v=d0a1fe63"></script>
 <script>
 /* 节点生产画布：文本→反推→作图 节点图，拖动/连线/调参/并行运行。复用 /api/gen/reverse|banana|image + 轮询。 */
@@ -521,7 +521,7 @@
       headers['Content-Type']='application/json';
       body=JSON.stringify(body);
     }
-    return fetch(path,{method:opts.method||'GET',credentials:'same-origin',cache:'no-store',headers:headers,body:body,signal:controller&&controller.signal})
+    return window.HQ.secureFetch(path,{method:opts.method||'GET',credentials:'same-origin',cache:'no-store',headers:headers,body:body,signal:controller&&controller.signal})
       .then(function(res){
         return res.text().then(function(text){
           var data={};

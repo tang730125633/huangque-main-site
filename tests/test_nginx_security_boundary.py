@@ -256,7 +256,7 @@ class NginxSecurityBoundaryTest(unittest.TestCase):
                 _validate_admin_allowlist(config_path.read_text(encoding="utf-8"))
 
     def test_production_admin_console_and_slash_variant_use_the_allowlist(self):
-        _validate_admin_console_allowlist(CONFIG_PATHS[1].read_text(encoding="utf-8"))
+        _validate_admin_console_allowlist(CONFIG_PATHS[0].read_text(encoding="utf-8"))
 
     def test_allowlist_example_ends_with_deny_all(self):
         self.assertTrue(ADMIN_ALLOWLIST_EXAMPLE.is_file(), "allowlist example is missing")

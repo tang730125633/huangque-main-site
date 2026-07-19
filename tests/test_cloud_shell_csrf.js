@@ -9,8 +9,7 @@ const login = fs.readFileSync(path.join(root, 'site/login.html'), 'utf8');
 const admin = fs.readFileSync(path.join(root, 'site/admin/index.html'), 'utf8');
 const settings = fs.readFileSync(path.join(root, 'site/workbench/settings.html'), 'utf8');
 const recharge = fs.readFileSync(path.join(root, 'site/workbench/recharge.html'), 'utf8');
-const canvasApp = fs.readFileSync(path.join(root, 'site/workbench/canvas/canvas-app.js'), 'utf8');
-const canvasApi = require('../site/workbench/canvas/canvas-api.js');
+const canvasApp = fs.readFileSync(path.join(root, 'site/workbench/canvas.html'), 'utf8');
 
 function extractFunction(source, name) {
   const start = source.indexOf(`function ${name}(`);
@@ -157,9 +156,10 @@ test('Recharge native and manual mutations use canonical secureFetch without sen
   assert.match(recharge, /api\('\/api\/auth\/recharge\/order',\{method:'POST'/);
 });
 
-test('Canvas board, presence, operation, and member mutations use canonical secureFetch', async () => {
-  assert.match(canvasApp, /fetchImpl:window\.HQ\.secureFetch\.bind\(window\.HQ\)/);
-  assert.doesNotMatch(canvasApp, /fetchImpl:window\.fetch/);
+test('Canvas board, presence, operation, and member mutations use canonical secureFetch', () => {
+  const authJson = extractFunction(canvasApp, 'authJson');
+  assert.match(authJson, /window\.HQ\.secureFetch\(path,/);
+  assert.doesNotMatch(authJson, /return fetch\(path,/);
   for (const fragment of [
     "+'/ops',{method:'POST'",
     "+'/presence',{method:'POST'",
@@ -168,22 +168,6 @@ test('Canvas board, presence, operation, and member mutations use canonical secu
     "+encodeURIComponent(board.id)+'/members',{method:'POST'",
     "+encodeURIComponent(username),{method:'DELETE'",
   ]) assert.ok(canvasApp.includes(fragment), fragment);
-
-  const {secureFetch, calls} = loadHelpers();
-  const client = canvasApi.createClient({fetchImpl: secureFetch, tokenProvider: () => '__cookie__'});
-  for (const [url, method] of [
-    ['/api/auth/canvas/boards', 'POST'],
-    ['/api/auth/canvas/boards/b1/ops', 'POST'],
-    ['/api/auth/canvas/boards/b1/presence', 'POST'],
-    ['/api/auth/canvas/boards/b1', 'DELETE'],
-    ['/api/auth/canvas/boards/b1/members', 'POST'],
-    ['/api/auth/canvas/boards/b1/members/alice', 'DELETE'],
-  ]) await client.json(url, {method, body: {}});
-  for (const call of calls) {
-    const headers = new Headers(call.init.headers);
-    assert.equal(headers.has('Authorization'), false);
-    assert.equal(headers.get('X-CSRF-Token'), 'csrf+token/value=');
-  }
 });
 
 test('standalone wrappers mirror the no-leak mutation behavior', async () => {

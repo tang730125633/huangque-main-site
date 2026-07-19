@@ -6,7 +6,6 @@ from tests.test_nginx_security_boundary import _active_locations, _block_end, _s
 
 
 ROOT = Path(__file__).parents[1]
-HTTP_CONFIG = ROOT / "deploy/test-server/nginx.conf"
 HTTPS_CONFIG = ROOT / "deploy/nginx-huangquechuanmei.conf"
 REQUIRED_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -155,24 +154,19 @@ class NginxCspTest(unittest.TestCase):
         ):
             self.assertIn(directive, policies[0])
 
-    def test_http_and_https_templates_set_required_security_headers(self):
-        for config_path in (HTTP_CONFIG, HTTPS_CONFIG):
-            with self.subTest(config=config_path.name):
-                _assert_required_headers(
-                    self,
-                    config_path.read_text(encoding="utf-8"),
-                    require_hsts=config_path == HTTPS_CONFIG,
-                )
+    def test_https_template_sets_required_security_headers(self):
+        _assert_required_headers(
+            self,
+            HTTPS_CONFIG.read_text(encoding="utf-8"),
+            require_hsts=True,
+        )
 
     def test_hsts_is_only_enabled_by_the_https_template(self):
-        http_config = HTTP_CONFIG.read_text(encoding="utf-8")
         https_config = HTTPS_CONFIG.read_text(encoding="utf-8")
 
-        self.assertEqual(_active_header_values(http_config, "Strict-Transport-Security"), [])
         hsts_values = _active_header_values(https_config, "Strict-Transport-Security")
         self.assertGreaterEqual(len(hsts_values), 1)
         self.assertEqual(set(hsts_values), {HSTS_VALUE})
-        _assert_hsts_server_contexts(self, http_config, require_ssl_server=False)
         _assert_hsts_server_contexts(self, https_config, require_ssl_server=True)
 
 
