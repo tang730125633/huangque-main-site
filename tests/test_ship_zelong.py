@@ -176,6 +176,16 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         self.assertIn("/api/auth/health", SRC)
         self.assertIn("/api/gen/health", SRC)
 
+    def test_health_checks_wait_through_the_service_startup_window(self):
+        retry_options = (
+            "--retry 15 --retry-delay 2 --retry-max-time 35 "
+            "--retry-connrefused --max-time 5"
+        )
+        # deploy has remote + caller-side checks, and rollback has remote checks;
+        # both auth and content must tolerate the brief nginx 502 startup window.
+        self.assertEqual(6, SRC.count(retry_options))
+        self.assertNotIn("curl -fsS --max-time 15", SRC)
+
     def test_online_sqlite_backup_and_missing_markers(self):
         self.assertIn('sqlite3 "$db" ".backup', SRC)
         self.assertIn("PRESENT\\t%s", SRC)

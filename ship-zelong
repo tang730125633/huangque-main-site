@@ -275,8 +275,8 @@ if test "$need_content" = 1; then sudo systemctl restart huangque-content; syste
 while IFS="$(printf '\t')" read -r rank path target expected service reload; do
   test "$(sudo sha256sum "$target" | awk '{print $1}')" = "$expected"
 done <"$manifest"
-curl -fsS --max-time 15 "https://$domain/api/auth/health" >/dev/null
-curl -fsS --max-time 15 "https://$domain/api/gen/health" >/dev/null
+curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/auth/health" >/dev/null
+curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/health" >/dev/null
 sudo install -d -o root -g root -m 755 "$state_root"
 manifest_sha="$(sha256sum "$manifest" | awk '{print $1}')"
 sudo sh -c "printf 'commit=%s\nplan=%s\nrun=%s\nmanifest_sha256=%s\n' '$commit' '$plan' '$run' '$manifest_sha' >'$state_root/current'"
@@ -287,8 +287,8 @@ REMOTE
     printf '   先检查：./ship-zelong --rollback %s\n' "$run" >&2
     return 1
   fi
-  curl -fsS --max-time 15 "$BASE_URL/api/auth/health" >/dev/null
-  curl -fsS --max-time 15 "$BASE_URL/api/gen/health" >/dev/null
+  curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "$BASE_URL/api/auth/health" >/dev/null
+  curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "$BASE_URL/api/gen/health" >/dev/null
 }
 
 rollback_payload() {
@@ -329,8 +329,8 @@ if test "$need_content" = 1; then sudo -u ubuntu bash -c 'cd /home/ubuntu/conten
 test "$need_reload" = 0 || sudo systemctl daemon-reload
 if test "$need_auth" = 1; then sudo systemctl restart huangque-auth; systemctl is-active --quiet huangque-auth; fi
 if test "$need_content" = 1; then sudo systemctl restart huangque-content; systemctl is-active --quiet huangque-content; fi
-curl -fsS --max-time 15 "https://$domain/api/auth/health" >/dev/null
-curl -fsS --max-time 15 "https://$domain/api/gen/health" >/dev/null
+curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/auth/health" >/dev/null
+curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/health" >/dev/null
 printf '✅ 已回滚部署文件 | RUN_ID=%s\n' "$run"
 printf 'ℹ SQLite online backup 保留在 %s/sqlite，未自动覆盖数据库。\n' "$backup"
 REMOTE
