@@ -90,7 +90,7 @@ class OpenAIVideoAdapterTests(unittest.TestCase):
                 "https://relay.example/openai/v1/videos",
             )
 
-    def test_generate_posts_ten_second_json_once_persists_id_then_polls(self):
+    def test_generate_posts_twelve_second_json_once_persists_id_then_polls(self):
         events = []
 
         class Opener:
@@ -105,14 +105,14 @@ class OpenAIVideoAdapterTests(unittest.TestCase):
                         "id": "video_early",
                         "status": "queued",
                         "model": "sora-2-pro",
-                        "seconds": "10",
+                        "seconds": "12",
                         "size": "1280x720",
                     })
                 return _Response({
                     "id": "video_early",
                     "status": "completed",
                     "model": "sora-2-pro",
-                    "seconds": "10",
+                    "seconds": "12",
                     "size": "1280x720",
                 })
 
@@ -129,7 +129,7 @@ class OpenAIVideoAdapterTests(unittest.TestCase):
             result = video_openai.generate(
                 "sora-2-pro",
                 "demo",
-                10,
+                12,
                 "1280x720",
                 job_id=17,
                 heartbeat=heartbeat,
@@ -147,7 +147,7 @@ class OpenAIVideoAdapterTests(unittest.TestCase):
             {
                 "model": "sora-2-pro",
                 "prompt": "demo",
-                "seconds": "10",
+                "seconds": "12",
                 "size": "1280x720",
             },
         )
@@ -158,7 +158,7 @@ class OpenAIVideoAdapterTests(unittest.TestCase):
         self.assertEqual(result["video_id"], "video_early")
         self.assertEqual(result["model"], "sora-2-pro")
         self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["seconds"], "10")
+        self.assertEqual(result["seconds"], "12")
         self.assertEqual(result["size"], "1280x720")
 
     def test_provider_id_persistence_failure_stops_before_first_get(self):
