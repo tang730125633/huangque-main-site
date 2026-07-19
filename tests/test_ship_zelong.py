@@ -187,6 +187,11 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
         # all four managed services tolerate the brief nginx 502 startup window.
         self.assertEqual(10, SRC.count(retry_options))
         self.assertNotIn("curl -fsS --max-time 15", SRC)
+        self.assertEqual(
+            2,
+            SRC.count('"http://127.0.0.1:8100/api/gen/leadgen/health"'),
+        )
+        self.assertNotIn('"https://$domain/api/gen/leadgen/health"', SRC)
 
     def test_online_sqlite_backup_and_missing_markers(self):
         self.assertIn('sqlite3 "$db" ".backup', SRC)

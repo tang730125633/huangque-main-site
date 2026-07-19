@@ -292,7 +292,7 @@ done <"$manifest"
 curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/auth/health" >/dev/null
 curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/health" >/dev/null
 test "$need_imggen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/banana/health" >/dev/null
-test "$need_leadgen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/leadgen/health" >/dev/null
+test "$need_leadgen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "http://127.0.0.1:8100/api/gen/leadgen/health" >/dev/null
 sudo install -d -o root -g root -m 755 "$state_root"
 manifest_sha="$(sha256sum "$manifest" | awk '{print $1}')"
 sudo sh -c "printf 'commit=%s\nplan=%s\nrun=%s\nmanifest_sha256=%s\n' '$commit' '$plan' '$run' '$manifest_sha' >'$state_root/current'"
@@ -361,7 +361,7 @@ if test "$need_content" = 1; then sudo systemctl restart huangque-content; syste
 curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/auth/health" >/dev/null
 curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/health" >/dev/null
 test "$need_imggen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/banana/health" >/dev/null
-test "$need_leadgen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/leadgen/health" >/dev/null
+test "$need_leadgen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "http://127.0.0.1:8100/api/gen/leadgen/health" >/dev/null
 printf '✅ 已回滚部署文件 | RUN_ID=%s\n' "$run"
 printf 'ℹ SQLite online backup 保留在 %s/sqlite，未自动覆盖数据库。\n' "$backup"
 REMOTE
