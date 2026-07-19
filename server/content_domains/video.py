@@ -43,6 +43,9 @@ XIAOLE_CHANNEL_MODELS = {
     "micro": "seedance-2.0-fast", # 豆姐视频（Seedance 2.0 Fast：文生/图生视频）
     "omni": "omni-fast",          # 欧米视频（Omni Fast：文生/图生视频，~100s快；文生真人会被上游内容审核拦，图生真人不拦）
 }
+# 2026-07-18 线上近 7 天实测：豆姐 18.8%、欧米 30.0%，且复测仍出现无害提示词
+# 被误判安全审核、长时间无终态。先从客户入口下线，保留映射仅用于历史任务展示。
+DISABLED_XIAOLE_VIDEO_CHANNELS = {"micro", "omni"}
 XIAOLE_IMAGE_CHANNELS = {"grok", "micro", "omni"}  # 支持参考图（图生视频）的渠道
 # 文生视频固定时长的渠道（None=用平台默认）。omni-fast 只支持 10 秒(duration_options=[10])，不传会 400。
 XIAOLE_CHANNEL_DURATION = {"omni": 10}
@@ -94,6 +97,8 @@ def validate_xiaole_video_payload(payload):
     channel = str(cleaned.get("channel") or "grok").strip().lower()
     if channel not in XIAOLE_CHANNEL_MODELS:
         raise ValueError("未知视频渠道：%s" % channel)
+    if channel in DISABLED_XIAOLE_VIDEO_CHANNELS:
+        raise ValueError("该视频渠道维护中，请使用果肉视频生成")
     prompt = str(cleaned.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("请输入视频提示词")
@@ -2531,6 +2536,8 @@ def generate_xiaole_video(model, prompt, reference_images=None, size="720x1280",
 def gen_xiaole_video(payload):
     job_id = payload.get("_job_id")
     channel = (payload.get("channel") or "grok").strip()
+    if channel in DISABLED_XIAOLE_VIDEO_CHANNELS:
+        raise ValueError("该视频渠道维护中，请使用果肉视频生成")
     use_xai = channel == "grok" and GROK_VIDEO_PROVIDER != "xiaole"
     model = (payload.get("model") or "grok-imagine-video") if use_xai else XIAOLE_CHANNEL_MODELS.get(channel)
     if not model:

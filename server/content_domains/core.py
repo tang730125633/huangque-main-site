@@ -218,11 +218,11 @@ VIDEO_GEN_DEADLINE = _env_positive_int("VIDEO_GEN_DEADLINE", 900)
 # 上传/下载/烧字幕/混 BGM —— 那些阶段不刷 updated_at。
 VIDEO_REAPER_GRACE = VIDEO_GEN_DEADLINE + 300
 
-# 【电影化身单独一条死线】20 分钟(kongli 2026-07-14，原跟全站 15 分钟走)。它是唯一「提交即扣费」
+# 【电影化身单独一条死线】30 分钟(kongli 2026-07-17，原 20 分钟→更早 15 分钟)。它是唯一「提交即扣费」
 # 的引擎($7/条，收钱在提交那一刻)：别的引擎超时顶多白等，它超时【钱已经花了】。线上真出现过我们
-# 900s 判超时退点、HeyGen 那边其实已 completed 出片 —— 片子被扔、$7 照付。宁可多等 5 分钟。
+# 20 分钟判超时退点、HeyGen 那边其实还在渲染/已 completed 出片 —— 片子被扔、$7 照付。宁可多等。
 # ⚠️ 宽限用加法钉死，别拆成两个字面量各写各的(口播就栽过：死线 1200s、宽限却 540s，reaper 先杀)。
-CINEMATIC_GEN_DEADLINE = _env_positive_int("HEYGEN_MOTION_DEADLINE", 1200)
+CINEMATIC_GEN_DEADLINE = _env_positive_int("HEYGEN_MOTION_DEADLINE", 1800)
 CINEMATIC_REAPER_GRACE = CINEMATIC_GEN_DEADLINE + 300
 # 没登记的 kind 用它 —— 绝不能是 0（见 reaper 里的注释：0 的语义是「立刻杀」）。
 KIND_GRACE_DEFAULT = _env_positive_int("KIND_GRACE_DEFAULT", 900)
@@ -695,8 +695,9 @@ _workers_started = False
 _shutting_down = threading.Event()
 _inflight = 0                      # 正在 run_job 里跑着的任务数
 _inflight_lock = threading.Lock()
-# 排空最长等多久。视频最长 15 分钟（VIDEO_GEN_DEADLINE=900s）+ 上传下载余量。
-DRAIN_TIMEOUT = _env_positive_int("CONTENT_DRAIN_TIMEOUT", 1200)
+# 排空最长等多久。最长任务是电影化身 30 分钟（CINEMATIC_GEN_DEADLINE=1800s）+ 上传下载余量。
+# 必须 ≥ 最长死线，否则重启时会把跑到一半的 30 分钟剧情视频砍掉（$7 已扣，片子丢）。
+DRAIN_TIMEOUT = _env_positive_int("CONTENT_DRAIN_TIMEOUT", 1800)
 
 
 def is_shutting_down():

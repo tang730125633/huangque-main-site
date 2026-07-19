@@ -84,6 +84,16 @@ def configured():
         return False
 
 
+def payment_identity_matches(payment):
+    """核对回调中的 AppID/商户号，防止其他商户或应用的支付结果被用来加点。"""
+    c = _config()
+    return bool(
+        isinstance(payment, dict)
+        and payment.get("appid") == c["appid"]
+        and payment.get("mchid") == c["mchid"]
+    )
+
+
 def _authorization(method, url_path, body):
     c = _config()
     ts = str(int(time.time()))

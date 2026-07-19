@@ -7,6 +7,7 @@ import urllib.error
 import urllib.request
 import unittest
 from http.server import ThreadingHTTPServer
+from unittest.mock import patch
 
 
 class AuthPointsTests(unittest.TestCase):
@@ -53,6 +54,48 @@ class AuthPointsTests(unittest.TestCase):
         points, err = self.auth.refund_points("fang", 5)
         self.assertIsNone(err)
         self.assertEqual(points["points"], 15)
+
+    def test_wechat_transaction_can_only_approve_one_recharge_order(self):
+        first, first_err = self.auth.create_recharge_order("fang", 99, 1000, "微信扫码充值")
+        second, second_err = self.auth.create_recharge_order("fang", 99, 1000, "微信扫码充值")
+        self.assertIsNone(first_err)
+        self.assertIsNone(second_err)
+
+        _, approve_err = self.auth.review_recharge_order(
+            "wxpay", first["order_id"], "approve", "paid",
+            transaction_id="wx-transaction-1", pay_channel="wxpay",
+        )
+        duplicate, duplicate_err = self.auth.review_recharge_order(
+            "wxpay", second["order_id"], "approve", "paid",
+            transaction_id="wx-transaction-1", pay_channel="wxpay",
+        )
+
+        self.assertIsNone(approve_err)
+        self.assertIsNone(duplicate)
+        self.assertEqual(duplicate_err, "transaction_in_use")
+        self.assertEqual(self.auth.get_points_row("fang")["points"], 1010)
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            row = c.execute(
+                "SELECT transaction_id,pay_channel FROM recharge_orders WHERE order_id=?",
+                (first["order_id"],),
+            ).fetchone()
+            self.assertEqual(row, ("wx-transaction-1", "wxpay"))
+        finally:
+            c.close()
+
+    def test_wechat_callback_identity_must_match_merchant_and_app(self):
+        import server.wxpay as wxpay
+
+        expected = {"appid": "wx-huangque", "mchid": "merchant-huangque"}
+        with patch.object(wxpay, "_config", return_value=expected):
+            self.assertTrue(wxpay.payment_identity_matches(expected))
+            self.assertFalse(wxpay.payment_identity_matches({
+                "appid": "wx-other", "mchid": "merchant-huangque",
+            }))
+            self.assertFalse(wxpay.payment_identity_matches({
+                "appid": "wx-huangque", "mchid": "merchant-other",
+            }))
 
     def test_concurrent_deduct_never_overdraws(self):
         results = []

@@ -150,8 +150,8 @@ class NamesMatchTheProductTests(unittest.TestCase):
 
     def test_the_three_third_party_channels_use_the_ui_labels(self):
         for ch, name in F.XIAOLE_CHANNELS.items():
-            self.assertIn('data-function="%s">%s<' % (ch, name), self.VIDEO_HTML,
-                          "「%s」不是前端 data-function=\"%s\" 的标签" % (name, ch))
+            self.assertRegex(self.VIDEO_HTML, r'data-function="%s"[^>]*>%s<' % (ch, name),
+                             "「%s」不是前端 data-function=\"%s\" 的标签" % (name, ch))
 
     def test_the_video_function_names_use_the_ui_labels(self):
         for tab in ("动作模仿", "电影化身", "换装换背景", "数字人口播"):

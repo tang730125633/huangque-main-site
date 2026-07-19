@@ -59,11 +59,11 @@ class FifteenMinutesTests(unittest.TestCase):
         self.assertIn("_heygen_poll_video(video_id, deadline_s=VIDEO_GEN_DEADLINE)", VIDEO_SRC)
 
 
-class CinematicGetsTwentyMinutesTests(unittest.TestCase):
-    """动作模仿 + 开放式生成（都是 kind=cinematic）：20 分钟。"""
+class CinematicGetsThirtyMinutesTests(unittest.TestCase):
+    """动作模仿 + 开放式生成（都是 kind=cinematic）：30 分钟（kongli 2026-07-17，原 20 分钟）。"""
 
-    def test_the_deadline_is_twenty_minutes(self):
-        self.assertEqual(core.CINEMATIC_GEN_DEADLINE, 20 * 60)
+    def test_the_deadline_is_thirty_minutes(self):
+        self.assertEqual(core.CINEMATIC_GEN_DEADLINE, 30 * 60)
 
     def test_the_poll_loop_actually_uses_it(self):
         """常量改了但轮询还用 VIDEO_GEN_DEADLINE = 白改。"""
@@ -75,7 +75,7 @@ class CinematicGetsTwentyMinutesTests(unittest.TestCase):
 
     def test_the_env_override_still_works(self):
         """线上要临时加裕量时，改 env 就行，不用发版。"""
-        self.assertIn('_env_positive_int("HEYGEN_MOTION_DEADLINE", 1200)', CORE_SRC)
+        self.assertIn('_env_positive_int("HEYGEN_MOTION_DEADLINE", 1800)', CORE_SRC)
 
     def test_video_py_does_not_hardcode_its_own_number(self):
         """⚠️ 两边各写一个字面量 → 改了一边忘了另一边 → reaper 先杀。

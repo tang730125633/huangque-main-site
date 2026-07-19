@@ -69,7 +69,7 @@ class PipelineWiringTests(unittest.TestCase):
     def test_reaper_grace_is_long_enough(self):
         # cinematic 现在跟全站的 15 分钟死线走（见 test_video_gen_deadline）：
         # reaper 的宽限必须【后】于引擎自己的死线触发，否则白扣一次上游的钱。
-        # 电影化身有【自己的】死线(20 分钟)和宽限(25 分钟)，不再跟口播那条 VIDEO_REAPER_GRACE 走。
+        # 电影化身有【自己的】死线(30 分钟)和宽限(35 分钟)，不再跟口播那条 VIDEO_REAPER_GRACE 走。
         self.assertEqual(core.KIND_GRACE["cinematic"], core.CINEMATIC_REAPER_GRACE)
         self.assertGreater(core.KIND_GRACE["cinematic"], core.CINEMATIC_GEN_DEADLINE)
         self.assertGreater(core.VIDEO_REAPER_GRACE, core.VIDEO_GEN_DEADLINE)
