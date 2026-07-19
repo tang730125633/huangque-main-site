@@ -1105,12 +1105,59 @@ def _cosy_voice_for(provider_voice):
         raise ValueError("该音色尚未迁移到新引擎，请重新复刻一次")
     return v      # 兜底：当作预置名直接用
 
-def gen_audio(payload):
-    text = (payload.get("text") or payload.get("prompt") or "").strip()
+
+def validate_audio_payload(payload):
+    """Validate and normalize TTS input before points are deducted.
+
+    In particular, reject the characteristic all-question-mark payload caused by
+    a broken Windows console encoding. Sending that payload upstream creates a
+    paid job which can only fail with an opaque ``InvalidParameter`` response.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("配音参数格式错误")
+    normalized = dict(payload)
+    text = str(normalized.get("text") or normalized.get("prompt") or "").strip()
     if not text:
         raise ValueError("配音文案不能为空")
     if len(text) > 1200:
         raise ValueError("配音文案过长，请控制在 1200 字以内")
+    compact = re.sub(r"\s+", "", text)
+    if "\ufffd" in text or (len(compact) >= 8 and compact.count("?") / len(compact) >= 0.8):
+        raise ValueError("配音文案疑似编码异常，请重新粘贴后再试")
+    normalized["text"] = text
+    return normalized
+
+
+def _is_transient_cosyvoice_error(exc):
+    if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+        return True
+    if isinstance(exc, ValueError):
+        return False
+    message = str(exc or "").lower()
+    if any(marker in message for marker in (
+            "invalidparameter", "invalid parameter", "parametererror",
+            "bad request", "unauthorized", "forbidden")):
+        return False
+    return any(marker in message for marker in (
+        "连接", "握手", "关闭", "返回为空", "timeout", "timed out",
+        "temporar", "connection", "websocket", "internalerror",
+        "service unavailable", "too many requests", "http 429", "http 5",
+    ))
+
+
+def _cosy_synth_with_retry(voice, text, **kwargs):
+    """Retry one transient transport/upstream failure, never bad input."""
+    for attempt in range(2):
+        try:
+            return cosyvoice.synth(voice, text, **kwargs)
+        except Exception as exc:
+            if attempt or not _is_transient_cosyvoice_error(exc):
+                raise
+            time.sleep(0.5)
+
+def gen_audio(payload):
+    payload = validate_audio_payload(payload)
+    text = payload["text"]
     username = (payload.get("_username") or "").strip()
     raw_voice_key = (payload.get("voice") or "S_d21F8OR62").strip()
     voice_key = raw_voice_key.lower() if raw_voice_key.lower() in set() else raw_voice_key
@@ -1132,9 +1179,10 @@ def gen_audio(payload):
         raise ValueError("语音服务仅支持 CosyVoice，当前未配置 DASHSCOPE_API_KEY")
     cv_voice = _cosy_voice_for(voice)
     # 页面参数仍沿用原量纲；在这里统一换算为 CosyVoice 的 pitch 0.5~2、volume 0~100。
-    cv_audio = cosyvoice.synth(cv_voice, text, rate=speed,
-                               pitch=max(0.5, min(2.0, 1.0 + pitch / 24.0)),
-                               volume=max(0, min(100, 50 + volume // 2)))
+    cv_audio = _cosy_synth_with_retry(
+        cv_voice, text, rate=speed,
+        pitch=max(0.5, min(2.0, 1.0 + pitch / 24.0)),
+        volume=max(0, min(100, 50 + volume // 2)))
     fn = "audio/aud_%d.mp3" % int(time.time() * 1000)
     _out_path(fn).write_bytes(cv_audio)
     return {"type": "audio", "file": fn, "url": public_url(fn, "audio/mpeg"), "voice": voice_key,

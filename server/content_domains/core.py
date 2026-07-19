@@ -882,6 +882,29 @@ _ALL_JOB_QUEUES = (_job_queue, _fast_job_queue, _talking_job_queue,
                    _image_job_queue, _cinematic_job_queue, _avatar_job_queue)
 
 
+def _queue_health():
+    queues = {
+        "general": _job_queue,
+        "fast": _fast_job_queue,
+        "talking": _talking_job_queue,
+        "image": _image_job_queue,
+        "cinematic": _cinematic_job_queue,
+        "avatar": _avatar_job_queue,
+    }
+    snapshot = {}
+    for name, job_queue in queues.items():
+        depth = job_queue.qsize()
+        capacity = int(job_queue.maxsize or 0)
+        snapshot[name] = {
+            "depth": depth,
+            "capacity": capacity,
+            "remaining": max(0, capacity - depth) if capacity else None,
+        }
+    with _inflight_lock:
+        inflight = int(_inflight)
+    return snapshot, inflight
+
+
 def start_job_workers():
     global _workers_started
     with _job_queue_lock:
@@ -1365,6 +1388,8 @@ class H(BaseHTTPRequestHandler):
                 return self._send(503, {"detail": str(e)})
             try:
                 body = self._json_body_strict() if kind in {"video", "tryon", "sora_video", "cinematic", "avatar"} else self._json_body()
+                if kind == "audio":
+                    body = audio_domain.validate_audio_payload(body)
                 request_body = dict(body) if isinstance(body, dict) else body
                 # 微信小程序内容安全：必须在校验、扣点和入队之前完成。违规内容不扣点；
                 # 微信服务异常时不收单，避免网络故障成为绕过审核的通道。
@@ -1686,7 +1711,10 @@ class H(BaseHTTPRequestHandler):
                       "stats": {"like": it.get("like"), "comment": it.get("comment")}} for it in (r.get("items") or [])]
             return self._send(200, {"items": items, "cost": 1, "points_left": points_left})
         if p == "/api/gen/health":
+            queues, inflight_jobs = _queue_health()
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS), "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS, "talking_job_workers": TALKING_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS,
+                                    "queues": queues, "inflight_jobs": inflight_jobs,
+                                    "talking_queue_depth": queues["talking"]["depth"], "talking_queue_capacity": queues["talking"]["capacity"], "talking_queue_remaining": queues["talking"]["remaining"],
                                     "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_active_xiaole_video": MAX_USER_ACTIVE_XIAOLE_VIDEO, "max_user_active_sora_video": MAX_USER_ACTIVE_SORA_VIDEO, "max_user_active_tryon": MAX_USER_ACTIVE_TRYON, "max_user_active_cinematic": MAX_USER_ACTIVE_CINEMATIC,
                                     "sora_video_enabled": bool(video_domain.sora_video_is_open() and OPENAI_KEY and feature_flags.is_enabled("sora_video")),
                                     "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE, "video_cost": VIDEO_COST, "video_batch_max": min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS), "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})

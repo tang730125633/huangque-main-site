@@ -52,8 +52,8 @@ class ContentDomainTests(unittest.TestCase):
         #   下载+ffmpeg+ASR+多模态 domain 逻辑全在 breakdown.py，故门禁上调到 1665。
         # 口播按秒结算：run_job 抢到 done 后按成片真实时长结算多退（thin 计费生命周期胶水，
         #   真实点数计算 talking_actual_cost 在 video.py），门禁上调到 1675。
-        # Sora 限时 Beta 只在 core 增加 kind 路由/并发/资产/健康薄接线；API 协议仍在 video_openai.py。
-        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1710)
+        # Sora 与队列健康指标只在 core 增加薄接线；API 协议仍在 video_openai.py。
+        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1750)
 
     def test_content_api_reclaims_orphans_on_startup(self):
         # 防回归：孤儿回收必须挂在真入口 content_api.main（服务走 content_api.py，
