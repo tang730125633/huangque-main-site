@@ -122,7 +122,12 @@ class PipelineWiringTests(unittest.TestCase):
         self.assertEqual(core.TALKING_JOB_WORKERS, 20)
         self.assertEqual(video.HEYGEN_MAX_CONCURRENCY, 31)
         self.assertEqual(core.JOB_QUEUE_MAX, 64)
-        self.assertEqual(core._talking_job_queue.maxsize, 64)
+        self.assertEqual(core.TALKING_JOB_QUEUE_MAX, 192)
+        self.assertEqual(core._talking_job_queue.maxsize, 192)
+        for q in (core._job_queue, core._fast_job_queue, core._image_job_queue,
+                  core._cinematic_job_queue, core._avatar_job_queue):
+            self.assertEqual(q.maxsize, 64)
+        self.assertEqual(core._PENDING_RECOVERY_LIMIT, 192)
 
     def test_every_heygen_generation_path_takes_a_slot(self):
         """漏掉任何一条路径，那条就绕过了闸 —— 包括中转（泽龙转发的是同一个账号）。"""
