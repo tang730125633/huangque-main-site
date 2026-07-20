@@ -211,10 +211,13 @@ def _normalize_image_ratio(raw, ratio):
 def jdb():
     c = sqlite3.connect(JOB_DB, timeout=10); c.row_factory = sqlite3.Row; return c
 
-def _auth_points(path, username, amount, reason=""):
+def _auth_points(path, username, amount, reason="", transaction_key=""):
     if not INTERNAL_TOKEN:
         return 500, {"detail": "HQ_INTERNAL_TOKEN 未配置"}
-    body = json.dumps({"username": username, "amount": int(amount), "reason": reason}, ensure_ascii=False).encode()
+    payload = {"username": username, "amount": int(amount), "reason": reason}
+    if transaction_key:
+        payload["transaction_key"] = str(transaction_key)
+    body = json.dumps(payload, ensure_ascii=False).encode()
     req = urllib.request.Request(
         AUTH_BASE + path,
         data=body,
@@ -236,8 +239,18 @@ def _auth_points(path, username, amount, reason=""):
 def deduct_points(username, amount, reason=""):
     return _auth_points("/api/auth/points/deduct", username, amount, reason)
 
-def refund_points(username, amount, reason=""):
+def refund_points(username, amount, reason="", transaction_key=""):
+    if transaction_key:
+        return _auth_points("/api/auth/points/refund", username, amount, reason, transaction_key)
     return _auth_points("/api/auth/points/refund", username, amount, reason)
+
+
+def _deduct_paid_job(username, amount, reason):
+    from content_domains import jobs_store
+    status, data = deduct_points(username, amount, reason)
+    if status != 200:
+        raise jobs_store.PaidJobDeductError(status, (data or {}).get("detail") or "点数扣除失败")
+    return int((data or {}).get("points") or 0)
 
 def verify(token):
     if not token: return None
@@ -320,19 +333,21 @@ def _set_terminal(job_id, status, result=None, error=None, from_states=("running
     from content_domains import jobs_store
     return jobs_store.set_terminal(jdb, job_id, status, result, error, from_states)
 
-def _refund_via_auth(username, cost, reason=""):
-    """本服务没有直写 users.db 的兜底：auth 不可用就退不了点，返回 False 让 jobs_store 回滚 refunded。"""
-    status, data = refund_points(username, cost, reason)
+def _refund_via_auth(username, cost, reason="", transaction_key=""):
+    """本服务没有直写 users.db 的兜底：Auth 未确认就保持退款待确认态。"""
+    status, data = refund_points(username, cost, reason, transaction_key)
     if status == 200:
         return True
-    print("imggen refund failed user=%s status=%s detail=%s（refunded 标记将回滚，留待重试）" % (
+    print("imggen refund pending user=%s status=%s detail=%s（保留待确认，稍后重试）" % (
         username, status, (data or {}).get("detail")), flush=True)
     return False
 
 def _refund_once(job_id, username, cost):
     from content_domains import jobs_store
+    transaction_key = jobs_store.refund_transaction_key(job_id, username)
     return jobs_store.refund_once(jdb, job_id, username, cost,
-                                  lambda u, c: _refund_via_auth(u, c, "job#%d" % job_id))
+                                  lambda u, c: _refund_via_auth(
+                                      u, c, "job#%d" % job_id, transaction_key))
 
 def run_job(job_id):
     with closing(jdb()) as c:
@@ -539,25 +554,18 @@ class H(BaseHTTPRequestHandler):
                                             "code": "active_job_cap", "active_jobs": active_jobs,
                                             "max_active_jobs": MAX_USER_ACTIVE_JOBS,
                                             "retry_after_ms": 4000, "need": cost})
-                deduct_status, deduct_data = deduct_points(user["username"], cost, "job:image")
-                if deduct_status == 402:
-                    return self._send(402, {"detail": "点数不足", "need": cost})
-                if deduct_status != 200:
-                    return self._send(500, {"detail": (deduct_data or {}).get("detail") or "点数扣除失败"})
-                points_left = (deduct_data.get("points") if isinstance(deduct_data, dict) else None)
-                now = int(time.time())
                 try:
-                    with closing(jdb()) as c:
-                        cur = c.execute("INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) VALUES('image',?,?,?,?,?,?)",
-                                        (user["username"], cost, json.dumps(body, ensure_ascii=False), now, now, SERVICE_OWNER))
-                        c.commit(); jid = cur.lastrowid
-                except Exception:
-                    refund_status, refund_data = refund_points(user["username"], cost, "job:image:insert_failed")
-                    if refund_status != 200:
-                        print("imggen refund failed after job insert error user=%s status=%s detail=%s" % (
-                            user["username"], refund_status, (refund_data or {}).get("detail")
-                        ))
-                    return self._send(500, {"detail": "任务创建失败，已尝试退点"})
+                    from content_domains import jobs_store
+                    jid, points_left = jobs_store.create_paid_job(
+                        jdb, _deduct_paid_job, _refund_via_auth, "image", user["username"],
+                        cost, body, SERVICE_OWNER)
+                except jobs_store.PaidJobDeductError as e:
+                    return self._send(402 if e.status == 402 else 500,
+                                      {"detail": e.detail, "need": cost})
+                except jobs_store.PaidJobInsertError as e:
+                    return self._send(500, {"detail": {"refunded": "任务创建失败，点数已退回",
+                        "queued": "任务创建失败，退款正在自动确认"}.get(e.compensation,
+                        "任务创建失败，退款需人工核对"), "submission_ref": e.submission_ref})
                 # 入队，不再裸起线程：有界 worker 池 + 单用户运行闸(见 run_job)。
                 # 队列满就当场判死退点——静默丢任务等于白扣用户的点。
                 if not enqueue_job(jid):

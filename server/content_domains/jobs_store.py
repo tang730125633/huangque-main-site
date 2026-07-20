@@ -19,13 +19,33 @@ content_jobs.db 的 jobs 表被三个进程共写：
 """
 import json
 import time
+import uuid
 from contextlib import closing
+
+
+def refund_transaction_key(job_id, username=""):
+    """跨 content/auth 重试时保持稳定的任务退款键。"""
+    return "job-refund:%s:%d" % (str(username or "unknown")[:64], int(job_id))
+
+
+class PaidJobInsertError(Exception):
+    def __init__(self, compensation, submission_ref):
+        super().__init__("paid job insert failed")
+        self.compensation = compensation
+        self.submission_ref = submission_ref
+
+
+class PaidJobDeductError(Exception):
+    def __init__(self, status, detail):
+        super().__init__(detail)
+        self.status = int(status or 500)
+        self.detail = str(detail or "点数扣除失败")
 
 
 def public_dict(row, phase=None):
     data = {key: row[key] for key in (
         "id", "kind", "username", "cost", "status", "result", "error", "created_at", "updated_at")}
-    data["refunded"] = bool(row["refunded"]) if "refunded" in row.keys() else False
+    data["refunded"] = int(row["refunded"] or 0) == 1 if "refunded" in row.keys() else False
     if data.get("result"):
         try:
             data["result"] = json.loads(data["result"])
@@ -73,7 +93,9 @@ def set_terminal(jdb, job_id, status, result=None, error=None, from_states=("run
                 (json.dumps(result, ensure_ascii=False), now, job_id) + tuple(from_states))
         else:
             cur = c.execute(
-                "UPDATE jobs SET status='error', error=?, updated_at=? WHERE id=? AND status IN (%s)" % holes,
+                """UPDATE jobs SET status='error', error=?, updated_at=?,
+                   refunded=CASE WHEN COALESCE(cost,0)>0 AND COALESCE(refunded,0)=0 THEN 2 ELSE refunded END
+                   WHERE id=? AND status IN (%s)""" % holes,
                 (str(error or "")[:300], now, job_id) + tuple(from_states))
         c.commit()
         return cur.rowcount >= 1
@@ -92,15 +114,9 @@ def claim_running(jdb, job_id):
 
 
 def refund_once(jdb, job_id, username, cost, refund):
-    """退点 job 级幂等：refunded 列 CAS，仅第一次真正加回点数(#187)。
+    """确认待退款任务：2=待确认，1=Auth 已确认，0=历史未知/未发起。
 
-    先置位再退点，保证「最多退一次」；但退点若真的失败，必须把 refunded 放回 0，
-    否则这条 job 被永久标记「已退过」，用户的点再也拿不回来。
-
-    refund(username, cost) -> 真值表示退点成功。调用方各自决定怎么退：
-        content_api  points.safe_refund_points（吞异常，永远算成功）
-        imggen_api   auth 的 /api/auth/points/refund（无兜底，失败要回滚）
-        leadgen_api  auth 优先 + 直写 users.db 兜底
+    refund(username, cost) 只有在幂等 Auth 明确确认后才返回真；未知结果保持 2。
     """
     try:
         cost = int(cost or 0)
@@ -109,14 +125,105 @@ def refund_once(jdb, job_id, username, cost, refund):
     if cost <= 0:
         return False
     with closing(jdb()) as c:
-        # 双重保险：仅当终态确为 error 且尚未退过，才置位并退点
-        cur = c.execute("UPDATE jobs SET refunded=1 WHERE id=? AND refunded=0 AND status='error'", (job_id,))
-        c.commit()
-        if cur.rowcount < 1:
-            return False   # 已退过 / 非 error 终态，跳过
-    if refund(username, cost):
-        return True
-    with closing(jdb()) as c:   # 退点没成功，把幂等锁放回去，留给下次重试
-        c.execute("UPDATE jobs SET refunded=0 WHERE id=? AND refunded=1", (job_id,))
+        row = c.execute("SELECT 1 FROM jobs WHERE id=? AND status='error' AND refunded=2",
+                        (job_id,)).fetchone()
+    if not row:
+        return False
+    try:
+        refunded = bool(refund(username, cost))
+    except Exception:
+        refunded = False
+    if refunded:
+        with closing(jdb()) as c:
+            cur = c.execute("UPDATE jobs SET refunded=1,updated_at=? WHERE id=? AND refunded=2",
+                            (int(time.time()), job_id))
+            c.commit()
+            return cur.rowcount > 0 or bool(c.execute(
+                "SELECT 1 FROM jobs WHERE id=? AND refunded=1", (job_id,)).fetchone())
+    with closing(jdb()) as c:
+        c.execute("UPDATE jobs SET updated_at=? WHERE id=? AND refunded=2",
+                  (int(time.time()), job_id))
         c.commit()
     return False
+
+
+def retry_failed_refunds(jdb, refund_job, limit=100):
+    """轮转补扫明确处于待确认态的退款；历史 refunded=0 永远不自动处理。"""
+    with closing(jdb()) as c:
+        rows = c.execute(
+            """SELECT id,username,cost FROM jobs
+               WHERE status='error' AND refunded=2 AND COALESCE(cost,0)>0
+               ORDER BY updated_at ASC,id ASC LIMIT ?""",
+            (max(1, int(limit or 100)),),
+        ).fetchall()
+    recovered = 0
+    for row in rows:
+        if refund_job(row["id"], row["username"], row["cost"]):
+            recovered += 1
+    return recovered
+
+
+def _compensate_failed_insert(jdb, refund, username, cost, kind, submission_ref, error, owner):
+    if int(cost or 0) <= 0:
+        return "refunded"
+    fallback_key = "job-insert-refund:%s" % submission_ref
+    reason = "job:%s:insert_failed submit:%s" % (kind, submission_ref)
+    now = int(time.time())
+    payload = json.dumps({"_submission_ref": submission_ref}, ensure_ascii=False)
+    try:
+        with closing(jdb()) as c:
+            cur = c.execute(
+                """INSERT INTO jobs(kind,username,cost,status,payload,error,created_at,updated_at,owner,refunded)
+                   VALUES(?,?,?,'error',?,?,?,?,?,2)""",
+                (kind, username, int(cost), payload,
+                 "任务创建失败，退款待确认: %s" % str(error or "")[:180], now, now, owner),
+            )
+            c.commit()
+            retry_job_id = cur.lastrowid
+    except Exception as record_error:
+        try:
+            if refund(username, cost, reason, transaction_key=fallback_key) is False:
+                raise RuntimeError("refund not confirmed")
+            return "refunded"
+        except Exception as refund_error:
+            print("[points-critical] job insert/refund record both failed submit=%s user=%s cost=%s "
+                  "insert=%s refund=%s record=%s" % (
+                      submission_ref, username, cost, str(error)[:120],
+                      str(refund_error)[:120], str(record_error)[:120]), flush=True)
+            return "untracked"
+    transaction_key = refund_transaction_key(retry_job_id, username)
+    confirmed = refund_once(
+        jdb, retry_job_id, username, cost,
+        lambda u, c: refund(u, c, reason, transaction_key=transaction_key))
+    return "refunded" if confirmed else "queued"
+
+
+def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_kind=""):
+    """一次预扣并原子写入一个或多个任务；失败补偿只维护这一处。"""
+    items = [(int(cost or 0), payload) for cost, payload in items]
+    total = sum(cost for cost, _ in items)
+    submission_ref = uuid.uuid4().hex
+    points_left = deduct(username, total, "job:%s submit:%s" % (
+        reason_kind or kind, submission_ref))
+    now = int(time.time())
+    try:
+        with closing(jdb()) as c:
+            job_ids = []
+            for cost, payload in items:
+                cur = c.execute(
+                    "INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) VALUES(?,?,?,?,?,?,?)",
+                    (kind, username, cost, json.dumps(payload, ensure_ascii=False), now, now, owner),
+                )
+                job_ids.append(cur.lastrowid)
+            c.commit()
+            return job_ids, points_left
+    except Exception as error:
+        state = _compensate_failed_insert(
+            jdb, refund, username, total, kind, submission_ref, error, owner)
+        raise PaidJobInsertError(state, submission_ref) from error
+
+
+def create_paid_job(jdb, deduct, refund, kind, username, cost, payload, owner):
+    job_ids, points_left = create_paid_jobs(
+        jdb, deduct, refund, kind, username, [(cost, payload)], owner)
+    return job_ids[0], points_left

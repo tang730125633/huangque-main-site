@@ -44,6 +44,8 @@ RECHARGE_TIERS = {99: 1000, 199: 2000, 499: 5000}   # 金额(元) -> 点数(含�
 RECHARGE_RATE = 10                                   # 自定义:每元 10 点
 RECHARGE_CUSTOM_MIN = 10
 RECHARGE_CUSTOM_MAX = 5000
+JSAPI_TEST_AMOUNT_YUAN = 0.1
+JSAPI_TEST_POINTS = 1
 
 def recharge_points_for(amount):
     """金额(元) -> 点数。固定档用赠送价；其余按 10 点/元(限 10~5000 元整数)。非法返回 None。
@@ -59,6 +61,22 @@ def recharge_points_for(amount):
     if RECHARGE_CUSTOM_MIN <= yuan <= RECHARGE_CUSTOM_MAX:
         return yuan * RECHARGE_RATE
     return None
+
+def jsapi_recharge_quote(amount):
+    """小程序 JSAPI 下单定价。
+
+    保留 0.10 元 / 1 点的真机支付测试档，其余金额仍严格使用公开充值定价。
+    """
+    try:
+        is_test_amount = int(round(float(amount) * 100)) == 10 and abs(float(amount) - 0.1) < 1e-9
+    except (TypeError, ValueError, OverflowError):
+        is_test_amount = False
+    if is_test_amount:
+        return JSAPI_TEST_AMOUNT_YUAN, JSAPI_TEST_POINTS
+    points = recharge_points_for(amount)
+    if points is None:
+        return None
+    return int(amount), points
 LOGIN_FAILS = {}
 REGISTER_HITS = {}
 REVOKED_TOKENS = set()
@@ -212,9 +230,16 @@ def init_db():
         reason TEXT,
         created_at INTEGER NOT NULL
     )""")
+    audit_cols = {r["name"] for r in c.execute("PRAGMA table_info(points_audit)").fetchall()}
+    if "transaction_key" not in audit_cols:
+        c.execute("ALTER TABLE points_audit ADD COLUMN transaction_key TEXT")
     # 任务扣点/退点接入审计后，这张表按任务量增长（原来只有人工加减点，几乎不涨）。
     # 按用户查流水是后台最常用的路径，没索引会随表全扫。
     c.execute("CREATE INDEX IF NOT EXISTS idx_points_audit_user ON points_audit(username, id DESC)")
+    # 退款键直接落在现有资金流水上：Auth 已提交但响应丢失时，调用方用同一个键重试，
+    # 只能命中原流水，不能再次加点。NULL 不参与冲突，老调用方保持原行为。
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_points_audit_transaction_key "
+              "ON points_audit(transaction_key)")
     c.execute("""CREATE TABLE IF NOT EXISTS friendships(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT NOT NULL,
@@ -1339,12 +1364,12 @@ def get_points_row(username, c=None):
 SYSTEM_ACTOR = "system"   # points_audit.who_admin：非管理员操作（任务扣点/退点）用它，与人工加减点区分
 
 
-def _write_audit(c, who_admin, username, delta, before, after, reason):
+def _write_audit(c, who_admin, username, delta, before, after, reason, transaction_key=None):
     """在【同一个事务里】写审计流水。分开写会出现「扣了点但审计没记」或反过来。"""
     c.execute(
-        "INSERT INTO points_audit(who_admin, username, delta, before_points, after_points, reason, created_at) "
-        "VALUES(?,?,?,?,?,?,?)",
-        (who_admin, username, delta, before, after, (reason or "")[:120], int(time.time())))
+        "INSERT INTO points_audit(who_admin, username, delta, before_points, after_points, reason, created_at, transaction_key) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (who_admin, username, delta, before, after, (reason or "")[:120], int(time.time()), transaction_key))
 
 
 def deduct_points(username, amount, reason=""):
@@ -1387,14 +1412,29 @@ def deduct_points(username, amount, reason=""):
     finally:
         c.close()
 
-def refund_points(username, amount, reason=""):
-    """任务失败/超时后退点。reason 同 deduct_points。"""
+def refund_points(username, amount, reason="", transaction_key=""):
+    """任务失败/超时后退点；稳定 transaction_key 让重试只入账一次。"""
     amount = int(amount or 0)
     if amount < 0:
         raise ValueError("amount must be >= 0")
+    transaction_key = str(transaction_key or "").strip()
+    if len(transaction_key) > 160:
+        raise ValueError("transaction_key too long")
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
+        if transaction_key:
+            prior = c.execute(
+                "SELECT username,delta FROM points_audit WHERE transaction_key=?",
+                (transaction_key,),
+            ).fetchone()
+            if prior:
+                if prior["username"] != username or int(prior["delta"] or 0) != amount:
+                    c.rollback()
+                    return None, "transaction_conflict"
+                row = get_points_row(username, c)
+                c.rollback()
+                return (public_points(row), None) if row else (None, "not_found")
         before_row = get_points_row(username, c)
         if not before_row:
             c.rollback()
@@ -1410,7 +1450,8 @@ def refund_points(username, amount, reason=""):
             c.rollback()
             return None, "not_found"
         if amount:
-            _write_audit(c, SYSTEM_ACTOR, username, amount, before, int(row["points"] or 0), reason)
+            _write_audit(c, SYSTEM_ACTOR, username, amount, before, int(row["points"] or 0), reason,
+                         transaction_key or None)
         c.commit()
         return public_points(row), None
     except Exception:
@@ -1503,7 +1544,7 @@ def list_points_audit(username="", limit=100, actor=""):
     """
     limit = max(1, min(300, int(limit or 100)))
     username = (username or "").strip()
-    sql = """SELECT id, who_admin, username, delta, before_points, after_points, reason, created_at
+    sql = """SELECT id, who_admin, username, delta, before_points, after_points, reason, created_at, transaction_key
              FROM points_audit"""
     where, args = [], []
     if username:
@@ -1590,12 +1631,16 @@ def list_recharge_orders(username="", status="", limit=100):
     finally:
         c.close()
 
-def review_recharge_order(who_admin, order_id, action, reason="", request_id=""):
+def review_recharge_order(
+    who_admin, order_id, action, reason="", request_id="", transaction_id="", pay_channel=""
+):
     who_admin = (who_admin or "").strip()
     order_id = (order_id or "").strip()
     action = (action or "").strip().lower()
     reason = validate_admin_reason(reason)
     encoded_reason = admin_audit_reason(reason, request_id)
+    transaction_id = (transaction_id or "").strip()
+    pay_channel = (pay_channel or "").strip()
     if action not in {"approve", "reject"}:
         return None, "bad_action"
     c = db()
@@ -1608,6 +1653,14 @@ def review_recharge_order(who_admin, order_id, action, reason="", request_id="")
         if order["status"] != "pending":
             c.rollback()
             return public_recharge_order(order), "already_reviewed"
+        if transaction_id:
+            duplicate = c.execute(
+                "SELECT order_id FROM recharge_orders WHERE transaction_id=? AND order_id<>? LIMIT 1",
+                (transaction_id, order_id),
+            ).fetchone()
+            if duplicate:
+                c.rollback()
+                return None, "transaction_in_use"
         now = int(time.time())
         if action == "approve":
             user = c.execute("SELECT id, username, points FROM users WHERE username=?", (order["username"],)).fetchone()
@@ -1627,9 +1680,11 @@ def review_recharge_order(who_admin, order_id, action, reason="", request_id="")
         else:
             status = "rejected"
         c.execute(
-            """UPDATE recharge_orders SET status=?, reviewed_by=?, reviewed_at=?, review_note=?
+            """UPDATE recharge_orders SET status=?, reviewed_by=?, reviewed_at=?, review_note=?,
+                                              transaction_id=?, pay_channel=?
                WHERE order_id=?""",
-            (status, who_admin, now, reason, order_id),
+            (status, who_admin, now, reason, transaction_id or order["transaction_id"],
+             pay_channel or order["pay_channel"], order_id),
         )
         row = c.execute("SELECT * FROM recharge_orders WHERE order_id=?", (order_id,)).fetchone()
         c.commit()
@@ -2163,6 +2218,13 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+    def _send_raw(self, code, body, content_type="text/plain; charset=utf-8"):
+        body = body if isinstance(body, bytes) else str(body).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
     def _body(self):
         self._json_error = False
         try:
@@ -2558,18 +2620,17 @@ class H(BaseHTTPRequestHandler):
             js_code = (d.get("js_code") or "").strip()
             if not js_code:
                 return self._send(400, {"detail": "缺少 js_code"})
-            amount = d.get("amount")                 # 客户端只传金额(元)
-            points = recharge_points_for(amount)     # 点数服务端算,不信客户端
-            if points is None:
+            quote = jsapi_recharge_quote(d.get("amount"))
+            if quote is None:
                 return self._send(400, {"detail": "无效的充值金额(固定档 99/199/499，或自定义 10~5000 元整数)"})
-            amount = int(amount)
+            amount, points = quote
             try:
                 openid = wxpay.jscode2session(js_code)
                 order, err = create_recharge_order(row["username"], amount, points, "微信小程序充值")
                 if err:
                     return self._send(400, {"detail": err})
                 prepay_id = wxpay.create_jsapi(
-                    order["order_id"], "黄雀点数充值 %d点" % points, amount * 100, openid)
+                    order["order_id"], "黄雀点数充值 %d点" % points, int(round(amount * 100)), openid)
                 pay = wxpay.jsapi_pay_params(prepay_id)   # 客户端 wx.requestPayment 参数
                 return self._send(200, {"ok": True, "order": order, "pay": pay})
             except Exception as e:
@@ -2588,6 +2649,8 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"code": "FAIL", "message": "解密失败"})
             if resource.get("trade_state") != "SUCCESS":
                 return self._send(200, {"code": "SUCCESS"})   # 非成功态,确认收到即可,不加点
+            if not wxpay.payment_identity_matches(resource):
+                return self._send(200, {"code": "SUCCESS"})   # AppID/商户号不属于本系统,不加点
             order_id = (resource.get("out_trade_no") or "").strip()
             txn_id = (resource.get("transaction_id") or "").strip()
             paid_total = (resource.get("amount") or {}).get("total")
@@ -2599,8 +2662,12 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"code": "SUCCESS"})   # 金额不符,不加点
             try:
                 # review_recharge_order 自带幂等:重复回调因 status 已 approved 返回 already_reviewed,不重复加点
-                review_recharge_order("wxpay", order_id, "approve", "wxpay txn=%s" % txn_id)
-                set_recharge_transaction(order_id, txn_id, "wxpay")
+                _, err = review_recharge_order(
+                    "wxpay", order_id, "approve", "wxpay txn=%s" % txn_id,
+                    transaction_id=txn_id, pay_channel="wxpay",
+                )
+                if err == "transaction_in_use":
+                    return self._send(200, {"code": "SUCCESS"})  # 同一微信流水不得给两个订单加点
                 return self._send(200, {"code": "SUCCESS"})
             except Exception:
                 return self._send(500, {"code": "FAIL", "message": "处理失败"})   # 抛错让微信重推
@@ -2620,13 +2687,18 @@ class H(BaseHTTPRequestHandler):
             if amount < 0:
                 return self._send(400, {"detail": "amount must be >= 0"})
             reason = str(d.get("reason") or "")   # 形如 job:collect#1354；老调用方不传就留空
+            transaction_key = str(d.get("transaction_key") or "").strip()
+            if len(transaction_key) > 160:
+                return self._send(400, {"detail": "transaction_key too long"})
             try:
                 if p.endswith("/deduct"):
                     points, err = deduct_points(username, amount, reason)
                     if err == "insufficient":
                         return self._send(402, {"detail": "点数不足", "need": amount})
                 else:
-                    points, err = refund_points(username, amount, reason)
+                    points, err = refund_points(username, amount, reason, transaction_key)
+                    if err == "transaction_conflict":
+                        return self._send(409, {"detail": "transaction_key 已用于另一笔退款"})
                 if err == "not_found":
                     return self._send(404, {"detail": "user not found"})
                 return self._send(200, {"ok": True, "points": points["points"], "user": points})

@@ -29,7 +29,7 @@ def reclaim_orphaned_running(
     *, jdb, service_owner, domains, set_terminal, refund_once,
     mark_video_asset_failed, requeue_job, logger=print,
 ):
-    """Resume persisted xAI jobs and fail/refund other running orphans."""
+    """Resume paid video jobs with persisted provider ids; fail/refund others."""
     try:
         with closing(jdb()) as conn:
             rows = conn.execute(
@@ -43,28 +43,53 @@ def reclaim_orphaned_running(
     handled = requeued = failed = 0
     for row in rows:
         request_id = None
+        provider = None
         if row["kind"] == "xiaole_video":
+            provider = "xAI"
             try:
                 request_id = _valid_request_id(
                     domains()[2].get_resumable_xai_request(row["id"])
                 )
-            except Exception:
-                request_id = None
+            except Exception as exc:
+                # 查询失败是“未知”，不是“确认没有上游任务”。后者才允许失败退款；
+                # 否则 Auth/SQLite 短暂抖动会把仍在上游运行的付费视频免费送给用户。
+                logger("[startup] xAI恢复信息查询失败，保留running不退款 job=%s: %s" %
+                       (row["id"], exc), flush=True)
+                continue
+        elif row["kind"] == "sora_video":
+            provider = "Sora"
+            try:
+                resumable = domains()[2].get_resumable_sora_request(row["id"])
+                if resumable and resumable.get("submission_unknown"):
+                    logger("[startup] Sora 提交结果未知，保留 running 待核对 job=%s" %
+                           row["id"], flush=True)
+                    continue
+                if resumable and resumable.get("phase") == "sora_recovery_required":
+                    logger("[startup] Sora 任务需人工核对，保留 running job=%s" %
+                           row["id"], flush=True)
+                    continue
+                request_id = _valid_request_id(
+                    {"request_id": (resumable or {}).get("video_id")}
+                )
+            except Exception as exc:
+                logger("[startup] 查询Sora恢复信息失败，保留 running job=%s: %s" %
+                       (row["id"], str(exc)[:200]), flush=True)
+                continue
 
         if request_id:
             try:
                 won_requeue = requeue_job(row["id"])
             except Exception as exc:
                 logger(
-                    "[startup] 恢复xAI视频任务 CAS 异常 job=%s: %s" %
-                    (row["id"], exc),
+                    "[startup] 恢复%s视频任务 CAS 异常 job=%s: %s" %
+                    (provider or "上游", row["id"], exc),
                     flush=True,
                 )
                 continue
             if won_requeue:
                 logger(
-                    "[startup] 恢复xAI视频任务 job=%s request_id=%s" %
-                    (row["id"], request_id),
+                    "[startup] 恢复%s视频任务 job=%s request_id=%s" %
+                    (provider or "上游", row["id"], request_id),
                     flush=True,
                 )
                 requeued += 1
@@ -73,7 +98,7 @@ def reclaim_orphaned_running(
             # overwrite or refund based on the stale row selected above.
             continue
 
-        error = "服务重启中断，已退点，请重新提交"
+        error = "服务重启中断，退款处理中，请重新提交"
         if set_terminal(row["id"], "error", error=error):
             refund_once(row["id"], row["username"], row["cost"])
             mark_video_asset_failed(row["id"], row["kind"], error)

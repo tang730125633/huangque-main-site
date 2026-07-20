@@ -8,7 +8,7 @@
 1. 终态 CAS：谁先抢到谁定终态，败者不写状态、不做副作用
 2. 认领 CAS：只有 pending 能被接管，防同一 job 跑两遍
 3. 退点幂等：最多退一次
-4. 退点失败必须回滚 refunded 标记，否则用户的点永久拿不回来
+4. 退点失败保持 refunded=2 待确认，scanner 用同一个键继续确认
 """
 import os
 import sqlite3
@@ -31,7 +31,8 @@ class JobsStoreTests(unittest.TestCase):
             c.execute("""CREATE TABLE jobs(
                 id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, username TEXT, cost INTEGER,
                 status TEXT DEFAULT 'pending', payload TEXT, result TEXT, error TEXT,
-                created_at INTEGER, updated_at INTEGER, deleted INTEGER DEFAULT 0, refunded INTEGER DEFAULT 0)""")
+                created_at INTEGER, updated_at INTEGER, deleted INTEGER DEFAULT 0, refunded INTEGER DEFAULT 0,
+                owner TEXT)""")
             c.commit()
         self.refunds = []
 
@@ -76,6 +77,7 @@ class JobsStoreTests(unittest.TestCase):
         self.assertTrue(jobs_store.set_terminal(self._jdb, jid, "error", error="db locked",
                                                 from_states=("pending", "running")))
         self.assertEqual(self._row(jid)["status"], "error")
+        self.assertEqual(self._row(jid)["refunded"], 2)
 
     def test_loser_does_not_overwrite_terminal(self):
         """reaper 先判 error，worker 随后成功 → 结果必须被丢弃。这就是 21 条僵尸记录的成因。"""
@@ -128,16 +130,54 @@ class JobsStoreTests(unittest.TestCase):
         self.assertFalse(jobs_store.refund_once(self._jdb, jid, "u", "abc", self._ok_refund))
         self.assertEqual(self.refunds, [])
 
-    # --- 4. 退点失败要回滚，否则点数永久丢失 ---
-    def test_refund_failure_rolls_back_flag(self):
+    # --- 4. 退点失败保持待确认，恢复后安全重试 ---
+    def test_refund_failure_stays_pending(self):
         jid = self._insert(10)
         jobs_store.set_terminal(self._jdb, jid, "error", error="boom")
         self.assertFalse(jobs_store.refund_once(self._jdb, jid, "u", 10, self._bad_refund))
-        self.assertEqual(self._row(jid)["refunded"], 0, "退点失败却留下 refunded=1 → 点数永久丢失")
+        self.assertEqual(self._row(jid)["refunded"], 2)
         # 恢复后重试应能成功退一次
         self.assertTrue(jobs_store.refund_once(self._jdb, jid, "u", 10, self._ok_refund))
         self.assertEqual(self.refunds, [("u", 10)])
         self.assertEqual(self._row(jid)["refunded"], 1)
+
+    def test_refund_exception_rolls_back_flag_for_retry(self):
+        jid = self._insert(10)
+        jobs_store.set_terminal(self._jdb, jid, "error", error="boom")
+
+        self.assertFalse(jobs_store.refund_once(
+            self._jdb, jid, "u", 10,
+            lambda *_: (_ for _ in ()).throw(ConnectionError("response lost")),
+        ))
+        self.assertEqual(self._row(jid)["refunded"], 2)
+        self.assertTrue(jobs_store.refund_once(self._jdb, jid, "u", 10, self._ok_refund))
+
+    def test_scanner_ignores_ambiguous_historical_error(self):
+        jid = self._insert(10, status="error")
+        self.assertEqual(jobs_store.retry_failed_refunds(
+            self._jdb, lambda *_: self.fail("historical row must not refund")), 0)
+
+    def test_batch_insert_failure_compensates_total_once(self):
+        with closing(self._conn()) as c:
+            c.execute("""CREATE TRIGGER fail_pending BEFORE INSERT ON jobs
+                         WHEN NEW.status='pending' BEGIN SELECT RAISE(FAIL, 'insert failed'); END""")
+            c.commit()
+        refund_calls = []
+
+        def refund(username, amount, reason="", transaction_key=""):
+            refund_calls.append((username, amount, transaction_key))
+            return True
+
+        with self.assertRaises(jobs_store.PaidJobInsertError) as ctx:
+            jobs_store.create_paid_jobs(
+                self._jdb, lambda *_args: 60, refund, "video", "u",
+                [(20, {"n": 1}), (20, {"n": 2})], "content", "video_batch")
+        self.assertEqual(ctx.exception.compensation, "refunded")
+        self.assertEqual(1, len(refund_calls))
+        self.assertEqual(("u", 40), refund_calls[0][:2])
+        with closing(self._conn()) as c:
+            row = c.execute("SELECT status,cost,refunded FROM jobs").fetchone()
+        self.assertEqual(("error", 40, 1), tuple(row))
 
     # --- 端到端：reaper 与 worker 交错，钱只退一次，结果不覆写 ---
     def test_reaper_wins_race_money_is_correct(self):

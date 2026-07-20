@@ -55,6 +55,38 @@ XAI_GROK_MODELS = {"grok-imagine-video", "grok-imagine-video-1.5"}
 XAI_GROK_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
 XAI_GROK_RESOLUTIONS = {"480p", "720p"}
 
+# OpenAI Sora 2 限时 Beta。官方已公告 Videos API 与两个模型将在 2026-09-24 下线，
+# 且没有推荐替代，因此默认关闭；只有测试环境显式设 SORA_VIDEO_ENABLED=1 才收单。
+# 这条能力必须保持独立 kind，不能混进 xiaole_video 的统一 30 点/秒：Pro 1024p/1080p
+# 的官方成本分别是 $0.50/$0.70 每秒，混价会直接亏损，也无法在下线日单独关停。
+SORA_VIDEO_ENABLED = os.environ.get("SORA_VIDEO_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+SORA_VIDEO_SUNSET = "2026-09-24"
+SORA_MODELS = {"sora-2", "sora-2-pro"}
+SORA_SECONDS = {4, 8, 12}  # 上游 create 接口实测只接受 4/8/12 秒。
+SORA_RATIOS = {"9:16", "16:9"}
+SORA_SIZE_MAP = {
+    ("sora-2", "720p", "9:16"): "720x1280",
+    ("sora-2", "720p", "16:9"): "1280x720",
+    ("sora-2-pro", "720p", "9:16"): "720x1280",
+    ("sora-2-pro", "720p", "16:9"): "1280x720",
+    ("sora-2-pro", "1024p", "9:16"): "1024x1792",
+    ("sora-2-pro", "1024p", "16:9"): "1792x1024",
+    ("sora-2-pro", "1080p", "9:16"): "1080x1920",
+    ("sora-2-pro", "1080p", "16:9"): "1920x1080",
+}
+
+
+class SoraSubmissionUnknown(RuntimeError):
+    """OpenAI create may have succeeded, but no provider id was confirmed locally."""
+
+
+def sora_video_is_open(today=None):
+    """双保险：按北京时间在官方下线日零点关单，不依赖服务器本地时区。"""
+    if today is None:
+        today = time.strftime("%Y-%m-%d", time.gmtime(time.time() + 8 * 3600))
+    today = str(today)
+    return bool(SORA_VIDEO_ENABLED and today < SORA_VIDEO_SUNSET)
+
 def _xiaole_build_refs(reference_images):
     # 前端传 dataURL/URL → API 要的 [{type, value}]，最多 XIAOLE_MAX_REF 张。
     # type 合法枚举(实测 422 暴露)：'url' | 'base64' | 'data_url'。
@@ -151,6 +183,52 @@ def validate_xiaole_video_payload(payload):
         "resolution": resolution, "reference_images": refs,
     })
     return cleaned
+
+
+def validate_sora_video_payload(payload):
+    """校验 Sora 限时 Beta 的最小业务契约；只支持非真人文生视频。"""
+    if not sora_video_is_open():
+        raise ValueError("Sora 限时测试通道未开启")
+    if not isinstance(payload, dict):
+        raise ValueError("请求体不是合法 JSON")
+    from . import video_openai
+    if not video_openai.available():
+        raise ValueError("Sora 视频服务未配置")
+    prompt = str(payload.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("请输入视频提示词")
+    if len(prompt) > 2000:
+        raise ValueError("视频提示词不能超过 2000 字")
+    model = str(payload.get("model") or "sora-2").strip().lower()
+    if model not in SORA_MODELS:
+        raise ValueError("Sora 模型不支持：%s" % model)
+    raw_seconds = payload.get("seconds", 4)
+    if isinstance(raw_seconds, bool):
+        raise ValueError("Sora 视频时长仅支持 4、8、12 秒")
+    try:
+        seconds = int(raw_seconds)
+    except (TypeError, ValueError):
+        raise ValueError("Sora 视频时长仅支持 4、8、12 秒")
+    if str(raw_seconds).strip() != str(seconds) or seconds not in SORA_SECONDS:
+        raise ValueError("Sora 视频时长仅支持 4、8、12 秒")
+    ratio = str(payload.get("ratio") or "9:16").strip()
+    if ratio not in SORA_RATIOS:
+        raise ValueError("Sora 画面比例仅支持 9:16、16:9")
+    resolution = str(payload.get("resolution") or "720p").strip().lower()
+    size = SORA_SIZE_MAP.get((model, resolution, ratio))
+    if not size:
+        raise ValueError("%s 不支持分辨率 %s" % (model, resolution))
+    # 当前官方规则拒绝真人、公众人物和含人脸参考图。Beta 先不接 input_reference，
+    # 从服务端白名单上消除前端绕过，而不是只靠页面隐藏。
+    return {
+        "mode": "sora",
+        "prompt": prompt,
+        "model": model,
+        "seconds": seconds,
+        "ratio": ratio,
+        "resolution": resolution,
+        "size": size,
+    }
 
 def _is_valid_data_url(value, allowed_mimes):
     raw = (value or "").strip()
@@ -541,9 +619,11 @@ def record_video_asset(job_id, username, result):
              result.get("status") or "pending", result.get("error"), now, now))
         c.commit()
 
-def update_video_asset_phase(job_id, phase, **fields):
+def update_video_asset_phase(job_id, phase, strict=False, **fields):
     if not job_id:
-        return
+        if strict:
+            raise ValueError("任务缺少 job_id")
+        return False
     now = int(time.time())
     allowed = {
         "mode", "image_file", "audio_file", "reference_video_file", "video_file", "video_url",
@@ -562,18 +642,24 @@ def update_video_asset_phase(job_id, phase, **fields):
             updates[k] = v
     sets = ", ".join("%s=?" % k for k in updates)
     vals = list(updates.values()) + [now, job_id]
+    asset_updated = True
     try:
         with closing(adb()) as c:
-            c.execute("UPDATE video_assets SET %s, updated_at=? WHERE job_id=?" % sets, vals)
+            cur = c.execute("UPDATE video_assets SET %s, updated_at=? WHERE job_id=?" % sets, vals)
             c.commit()
+            if strict and cur.rowcount != 1:
+                raise RuntimeError("视频任务恢复信息没有对应资产行")
     except Exception:
-        pass
+        if strict:
+            raise
+        asset_updated = False
     try:
         with closing(jdb()) as c:
             c.execute("UPDATE jobs SET updated_at=? WHERE id=? AND status='running'", (now, job_id))
             c.commit()
     except Exception:
         pass
+    return asset_updated
 
 def get_resumable_xai_request(job_id):
     if not job_id:
@@ -595,6 +681,53 @@ def get_resumable_xai_request(job_id):
         "phase": phase,
         "status": row["status"],
     }
+
+
+def get_resumable_sora_request(job_id):
+    """读取已持久化的 OpenAI video id；重启后只恢复 GET，绝不重发付费 POST。"""
+    if not job_id:
+        return None
+    with closing(adb()) as c:
+        row = c.execute(
+            """SELECT provider_video_id, model, phase, status, resolution, ratio
+               FROM video_assets WHERE job_id=?""",
+            (job_id,),
+        ).fetchone()
+    if not row:
+        return None
+    phase = str(row["phase"] or "")
+    if not row["provider_video_id"]:
+        if phase in {"sora_submitting", "sora_recovery_required"}:
+            return {"video_id": None, "submission_unknown": True, "phase": phase}
+        return None
+    if not (phase.startswith("sora_") or phase == "downloading"):
+        return None
+    return {
+        "video_id": row["provider_video_id"],
+        "model": row["model"] or "sora-2",
+        "phase": phase,
+        "status": row["status"],
+        "resolution": row["resolution"] or "720p",
+        "ratio": row["ratio"] or "9:16",
+    }
+
+
+def recover_sora_paid_job(job_id, error, requeue=None):
+    """Protect an accepted/unknown paid submission from refund or a second POST."""
+    recovery = get_resumable_sora_request(job_id)
+    if recovery and recovery.get("submission_unknown"):
+        update_video_asset_phase(job_id, "sora_recovery_required", error=str(error)[:300])
+        return True
+    if recovery and recovery.get("video_id"):
+        if recovery.get("phase") == "sora_recovery_required":
+            return True
+        if requeue:
+            if requeue(job_id):
+                update_video_asset_phase(job_id, "sora_retrying", error=str(error)[:300])
+            return True  # CAS 输给另一恢复者也绝不能继续走失败退款。
+        update_video_asset_phase(job_id, "sora_recovery_required", error=str(error)[:300])
+        return True
+    return False
 
 
 def record_video_pending_asset(job_id, username, payload):
@@ -658,6 +791,8 @@ def list_video_assets(username, limit=120):
                     result = {}
                 duration = result.get("duration") or result.get("seconds")
                 if duration is None and item.get("mode") == "tryon":
+                    duration = payload.get("seconds")
+                if duration is None and item.get("mode") == "sora":
                     duration = payload.get("seconds")
                 try:
                     duration = float(duration)
@@ -2533,6 +2668,87 @@ def generate_xiaole_video(model, prompt, reference_images=None, size="720x1280",
         time.sleep(XIAOLE_POLL_INTERVAL)
     raise TimeoutError("视频生成超时")
 
+
+def gen_sora_video(payload):
+    """OpenAI Sora 2 限时 Beta：创建/恢复 → 轮询 → 鉴权下载 → 永久资产入库。"""
+    from . import video_openai
+
+    job_id = payload.get("_job_id")
+    if not job_id:
+        raise ValueError("付费 Sora 任务必须绑定 job_id")
+    model = str(payload.get("model") or "sora-2")
+    prompt = str(payload.get("prompt") or "").strip()
+    seconds = int(payload.get("seconds") or 4)
+    size = str(payload.get("size") or SORA_SIZE_MAP.get(
+        (model, payload.get("resolution") or "720p", payload.get("ratio") or "9:16"),
+        "720x1280",
+    ))
+    ratio = str(payload.get("ratio") or "9:16")
+    resolution = str(payload.get("resolution") or "720p")
+
+    existing = get_resumable_sora_request(job_id)
+    if existing and existing.get("submission_unknown"):
+        raise SoraSubmissionUnknown("Sora 已发起提交但未确认上游任务 ID，需人工核对")
+    if job_id and not existing:
+        update_video_asset_phase(
+            job_id, "sora_submitting", strict=True, mode="sora", text=prompt,
+            model=model, resolution=resolution, ratio=ratio,
+        )
+
+    provider_id_persisted = bool(existing)
+
+    def sora_heartbeat(heartbeat_job_id, phase, **fields):
+        nonlocal provider_id_persisted
+        update_video_asset_phase(
+            heartbeat_job_id, phase,
+            strict=bool(fields.get("provider_video_id")) and not provider_id_persisted,
+            **fields,
+        )
+        provider_id_persisted = provider_id_persisted or bool(fields.get("provider_video_id"))
+
+    if existing:
+        rendered = video_openai.resume(
+            existing["video_id"], existing.get("model") or model, seconds, size,
+            job_id=job_id, heartbeat=sora_heartbeat,
+        )
+    else:
+        rendered = video_openai.generate(
+            model, prompt, seconds, size,
+            job_id=job_id, heartbeat=sora_heartbeat,
+        )
+
+    video_id = str(rendered.get("video_id") or "").strip()
+    if not video_id:
+        raise RuntimeError("Sora 视频已完成但缺少 video_id")
+    if job_id:
+        update_video_asset_phase(
+            job_id, "sora_completed", provider_video_id=video_id,
+            model=rendered.get("model") or model,
+        )
+        update_video_asset_phase(job_id, "sora_downloading", provider_video_id=video_id)
+    video_file = "video/sora_%s.mp4" % uuid.uuid4().hex
+    video_openai.download_content(video_id, _out_path(video_file))
+    video_file = _faststart_video_file(video_file)
+    cover = _extract_first_frame_cover(video_file)
+    actual_seconds = rendered.get("seconds") or seconds
+    try:
+        actual_seconds = int(float(actual_seconds))
+    except (TypeError, ValueError):
+        actual_seconds = seconds
+    result = {
+        "type": "video", "status": "done", "mode": "sora",
+        "model": rendered.get("model") or model,
+        "text": prompt, "prompt": prompt,
+        "ratio": ratio, "resolution": resolution, "size": rendered.get("size") or size,
+        "duration": actual_seconds, "provider_video_id": video_id,
+        "video_file": video_file, "video_url": _file_url(video_file),
+        "image_file": cover,
+        "image_url": public_url(cover, "image/jpeg") if cover else None,
+        "phase": "done", "message": "Sora 视频生成完成",
+        "provider": "openai_sora",
+    }
+    return result
+
 def gen_xiaole_video(payload):
     job_id = payload.get("_job_id")
     channel = (payload.get("channel") or "grok").strip()
@@ -3098,4 +3314,5 @@ def gen_cinematic(payload):
 
 
 HANDLERS = {"video": gen_video, "tryon": gen_tryon, "xiaole_video": gen_xiaole_video,
+            "sora_video": gen_sora_video,
             "avatar": gen_avatar, "cinematic": gen_cinematic}

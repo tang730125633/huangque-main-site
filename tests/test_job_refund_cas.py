@@ -26,11 +26,13 @@ class JobRefundCasTests(unittest.TestCase):
             c.commit()
         # 统计真正退点次数（打桩 points 域）
         self.refunds = []
+        self.refund_keys = []
         outer = self
         class _FakePoints:
             @staticmethod
-            def safe_refund_points(username, amount, reason=""):
+            def refund_points(username, amount, reason="", transaction_key=""):
                 outer.refunds.append((username, amount, reason))
+                outer.refund_keys.append(transaction_key)
         self._orig_domains = self.core._domains
         self.core._domains = lambda: (None, _FakePoints, None)
 
@@ -111,6 +113,90 @@ class JobRefundCasTests(unittest.TestCase):
         self.core._refund_once(jid, "u", 20)
         self.assertEqual(len(self.refunds), 1)
         self.assertEqual(self._row(jid)["refunded"], 1)
+        self.assertEqual(self.refund_keys, ["job-refund:u:%d" % jid])
+
+    def test_failed_refund_scanner_retries_error_rows(self):
+        old_jid = self._insert_status("error", 20)
+        retry = lambda: self.core.jobs_store.retry_failed_refunds(
+            self.core.jdb, self.core._refund_once)
+        self.assertEqual(retry(), 0, "历史 refunded=0 不能在没有确切证据时自动退款")
+        jid = self._insert(20)
+        self.assertTrue(self.core._set_terminal(jid, "error", error="new failure"))
+        failing_points = self.core._domains()[1]
+        self.core._domains = lambda: (None, type("P", (), {
+            "refund_points": staticmethod(lambda *args, **kwargs: (_ for _ in ()).throw(
+                ConnectionError("response lost")))
+        }), None)
+        self.assertFalse(self.core._refund_once(jid, "u", 20))
+        self.assertEqual(self._row(jid)["refunded"], 2)
+        self.core._domains = lambda: (None, failing_points, None)
+        self.assertEqual(retry(), 1)
+        self.assertEqual(self._row(jid)["refunded"], 1)
+        self.assertEqual(retry(), 0)
+        self.assertEqual(self.refund_keys, ["job-refund:u:%d" % jid])
+        self.assertEqual(self._row(old_jid)["refunded"], 0)
+
+    def test_auth_commits_then_response_is_lost_without_double_refund(self):
+        jid = self._insert(20)
+        self.assertTrue(self.core._set_terminal(jid, "error", error="upstream failed"))
+        applied, calls = set(), []
+
+        class _LostFirstResponse:
+            @staticmethod
+            def refund_points(username, amount, reason="", transaction_key=""):
+                calls.append(transaction_key)
+                first = transaction_key not in applied
+                applied.add(transaction_key)
+                if first:
+                    raise ConnectionError("Auth committed but response was lost")
+                return 100
+
+        self.core._domains = lambda: (None, _LostFirstResponse, None)
+        self.assertFalse(self.core._refund_once(jid, "u", 20))
+        self.assertEqual(self._row(jid)["refunded"], 2)
+        self.assertEqual(self.core.jobs_store.retry_failed_refunds(
+            self.core.jdb, self.core._refund_once), 1)
+        self.assertEqual(len(applied), 1, "同一个退款键在 Auth 只能实际入账一次")
+        self.assertEqual(calls, ["job-refund:u:%d" % jid] * 2)
+        self.assertEqual(self._row(jid)["refunded"], 1)
+
+    def test_client_payload_cannot_choose_refund_key(self):
+        jid = self._insert(20)
+        with closing(self.core.jdb()) as c:
+            c.execute("UPDATE jobs SET payload=? WHERE id=?",
+                      ('{"_refund_transaction_key":"attacker-controlled"}', jid))
+            c.commit()
+        self.assertTrue(self.core._set_terminal(jid, "error", error="failed"))
+        self.assertEqual(self.core.jobs_store.retry_failed_refunds(
+            self.core.jdb, self.core._refund_once), 1)
+        self.assertEqual(self.refund_keys, ["job-refund:u:%d" % jid])
+
+    def test_insert_failure_response_loss_queues_same_refund_key(self):
+        seen = []
+        working_points = self.core._domains()[1]
+
+        class _LostResponsePoints:
+            @staticmethod
+            def refund_points(username, amount, reason="", transaction_key=""):
+                seen.append(transaction_key)
+                raise ConnectionError("response lost")
+
+        with closing(self.core.jdb()) as c:
+            c.execute("""CREATE TRIGGER fail_pending BEFORE INSERT ON jobs
+                         WHEN NEW.status='pending' BEGIN SELECT RAISE(FAIL, 'db insert failed'); END""")
+            c.commit()
+        with self.assertRaises(self.core.jobs_store.PaidJobInsertError) as ctx:
+            self.core.jobs_store.create_paid_job(
+                self.core.jdb, lambda *_: 80, _LostResponsePoints.refund_points,
+                "image", "u", 20, {}, "content")
+        self.assertEqual(ctx.exception.compensation, "queued")
+
+        self.core._domains = lambda: (None, working_points, None)
+        self.assertEqual(self.core.jobs_store.retry_failed_refunds(
+            self.core.jdb, self.core._refund_once), 1)
+        self.assertEqual(seen, self.refund_keys)
+        self.assertEqual(1, len(seen))
+        self.assertTrue(seen[0].startswith("job-refund:u:"))
 
     # --- done 的 job 即便误调 _refund_once 也不退（status='error' 保险） ---
     def test_done_job_not_refunded(self):
@@ -153,7 +239,7 @@ class JobRefundCasTests(unittest.TestCase):
                 return {"request_id": "rid-existing"} if job_id == jid else None
 
         self.core._domains = lambda: (None, type("P", (), {
-            "safe_refund_points": staticmethod(lambda *args: None)
+            "refund_points": staticmethod(lambda *args, **kwargs: None)
         }), _FakeVideo)
         n = self.core.reclaim_orphaned_running()
         self.assertEqual(n, 1)
@@ -161,7 +247,7 @@ class JobRefundCasTests(unittest.TestCase):
         self.assertEqual(self._row(jid)["refunded"], 0)
         self.assertEqual(self.refunds, [])
 
-    def test_reclaim_lookup_exception_falls_back_and_refunds_once(self):
+    def test_reclaim_lookup_exception_keeps_running_without_refund(self):
         jid = self._insert(300, kind="xiaole_video")
         points_domain = self.core._domains()[1]
 
@@ -171,12 +257,12 @@ class JobRefundCasTests(unittest.TestCase):
                 raise RuntimeError("lookup unavailable")
 
         self.core._domains = lambda: (None, points_domain, _BrokenVideo)
-        self.assertEqual(self.core.reclaim_orphaned_running(), 1)
-        self.assertEqual(self._row(jid)["status"], "error")
-        self.assertEqual(self._row(jid)["refunded"], 1)
-        self.assertEqual(len(self.refunds), 1)
         self.assertEqual(self.core.reclaim_orphaned_running(), 0)
-        self.assertEqual(len(self.refunds), 1)
+        self.assertEqual(self._row(jid)["status"], "running")
+        self.assertEqual(self._row(jid)["refunded"], 0)
+        self.assertEqual(len(self.refunds), 0)
+        self.assertEqual(self.core.reclaim_orphaned_running(), 0)
+        self.assertEqual(len(self.refunds), 0)
 
     def test_reclaim_lost_requeue_cas_does_not_refund_or_overwrite(self):
         jid = self._insert(300, kind="xiaole_video")
@@ -187,7 +273,7 @@ class JobRefundCasTests(unittest.TestCase):
                 return {"request_id": "rid-racing"}
 
         self.core._domains = lambda: (None, type("P", (), {
-            "safe_refund_points": staticmethod(lambda *args: None)
+            "refund_points": staticmethod(lambda *args, **kwargs: None)
         }), _FakeVideo)
         original_requeue = self.core._requeue_running_job
         self.core._requeue_running_job = lambda job_id: False

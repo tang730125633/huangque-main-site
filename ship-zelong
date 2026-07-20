@@ -1,0 +1,431 @@
+#!/usr/bin/env bash
+# 泽龙个人开发服专用的受控部署工具。默认只做 dry-run；不会自动改动 Git。
+set -euo pipefail
+
+readonly REMOTE="zelong"
+readonly DOMAIN="zelong.huangquechuanmei.com"
+readonly BASE_URL="https://${DOMAIN}"
+readonly BACKUP_ROOT="/home/admin/huangque-deploy-backups"
+readonly STATE_ROOT="/home/admin/huangque-deploy-state"
+readonly UPLOAD_ROOT="/home/admin/.ship-zelong-upload"
+readonly ADSPOWER_BASELINE_SOURCE_COMMIT="fb59e511c16f11edef1617b07fe6f2160c14e78e"
+
+die() { printf '❌ %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+用法：
+  # 1. 必须先 dry-run（会输出 PLAN_ID）
+  ./ship-zelong --commit <40位SHA> --file <白名单文件> [--file ...]
+  ./ship-zelong --commit <实时origin/main的40位SHA> --adspower-baseline
+
+  # 2. 参数完全相同，并携带 PLAN_ID 才会真正部署
+  ./ship-zelong --commit <40位SHA> --file <文件> [--file ...] --apply --plan <PLAN_ID>
+
+  # 回滚也必须先 dry-run，再携带 PLAN_ID 执行
+  ./ship-zelong --rollback <RUN_ID>
+  ./ship-zelong --rollback <RUN_ID> --apply --plan <PLAN_ID>
+
+安全不变量：SSH 只能是 zelong，HTTPS 只能是
+https://zelong.huangquechuanmei.com。本工具不会自动 fetch/pull/commit/push。
+EOF
+}
+
+load_adspower_baseline() {
+  files=(
+    site/workbench/banana.html
+    site/workbench/video.html
+    server/auth_server.py
+    server/wxpay.py
+    server/content_domains/core.py
+    server/content_domains/image.py
+    server/content_domains/video.py
+    site/assets/cloud/virtual-pay-item-200.png
+    server/wechat_virtual_pay.py
+    server/content_domains/miniprogram_security.py
+    deploy/systemd/huangque-content.service.d/hardening.conf
+  )
+}
+
+sha256_file() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    sha256sum "$1" | awk '{print $1}'
+  fi
+}
+
+validate_token() {
+  case "$1" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+}
+
+validate_repo_path() {
+  local path="$1"
+  case "$path" in
+    ''|/*|*..*|*[!A-Za-z0-9._/-]*) return 1 ;;
+  esac
+  case "$path" in
+    *.env|*.db|*.sqlite|*.sqlite3|*.key|*.pem|*/.env*|*/secrets*) return 1 ;;
+  esac
+  case "/$path/" in
+    */.env/*|*/browser_data/*|*/data/*|*.db/*|*.sqlite/*|*.sqlite3/*) return 1 ;;
+  esac
+  return 0
+}
+
+# 输出：顺序|远端目标|受影响服务|是否 daemon-reload。
+map_path() {
+  local path="$1" rest unit
+  validate_repo_path "$path" || return 1
+  case "$path" in
+    server/wxpay.py|server/wechat_virtual_pay.py|server/sync_virtual_pay_goods.py)
+      printf '10|/home/ubuntu/auth-service/%s|auth|0\n' "${path#server/}" ;;
+    server/auth_server.py)
+      printf '30|/home/ubuntu/auth-service/auth_server.py|auth|0\n' ;;
+    server/imggen_api.py)
+      printf '30|/home/ubuntu/content-api/imggen_api.py|imggen|0\n' ;;
+    server/leadgen_api.py)
+      printf '30|/home/ubuntu/content-api/leadgen_api.py|leadgen|0\n' ;;
+    server/tikhub.py|server/func_names.py)
+      printf '10|/home/ubuntu/content-api/%s|content|0\n' "${path#server/}" ;;
+    server/content_domains/*.py)
+      rest="${path#server/content_domains/}"
+      printf '20|/home/ubuntu/content-api/content_domains/%s|content|0\n' "$rest" ;;
+    server/content_api.py)
+      printf '30|/home/ubuntu/content-api/content_api.py|content|0\n' ;;
+    deploy/systemd/huangque-auth.service)
+      printf '35|/etc/systemd/system/huangque-auth.service|auth|1\n' ;;
+    deploy/systemd/huangque-content.service)
+      printf '35|/etc/systemd/system/huangque-content.service|content|1\n' ;;
+    deploy/systemd/huangque-auth.service.d/*.conf|deploy/systemd/huangque-content.service.d/*.conf)
+      unit="${path#deploy/systemd/}"; unit="${unit%%/*}"
+      rest="${path##*/}"
+      case "$unit" in
+        huangque-auth.service.d) printf '35|/etc/systemd/system/%s/%s|auth|1\n' "$unit" "$rest" ;;
+        huangque-content.service.d) printf '35|/etc/systemd/system/%s/%s|content|1\n' "$unit" "$rest" ;;
+        *) return 1 ;;
+      esac ;;
+    site/*.html|site/*/*.html|site/*/*/*.html)
+      printf '50|/var/www/huangquechuanmei/%s|-|0\n' "${path#site/}" ;;
+    site/*)
+      printf '40|/var/www/huangquechuanmei/%s|-|0\n' "${path#site/}" ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_commit() {
+  [[ "$1" =~ ^[0-9a-fA-F]{40}$ ]] || return 1
+  git cat-file -e "$1^{commit}" 2>/dev/null
+}
+
+validate_remote_main() {
+  local requested remote_main
+  requested="$(printf '%s' "$1" | tr 'A-F' 'a-f')"
+  remote_main="$(git ls-remote --exit-code origin refs/heads/main 2>/dev/null | awk 'NR == 1 {print $1}')"
+  test -n "$remote_main" && test "$requested" = "$remote_main"
+}
+
+validate_unchanged_paths() {
+  local source="$1" requested="$2"
+  shift 2
+  git cat-file -e "$source^{commit}" 2>/dev/null || return 1
+  git cat-file -e "$requested^{commit}" 2>/dev/null || return 1
+  git diff --quiet "$source" "$requested" -- "$@"
+}
+
+validate_adspower_baseline_content() {
+  local requested="$1"
+  shift
+  validate_unchanged_paths "$ADSPOWER_BASELINE_SOURCE_COMMIT" "$requested" "$@"
+}
+
+remote_guard() {
+  ssh -o BatchMode=yes -o ConnectTimeout=8 "$REMOTE" bash -s -- "$DOMAIN" <<'REMOTE'
+set -euo pipefail
+domain="$1"
+test "$domain" = "zelong.huangquechuanmei.com"
+sudo nginx -T 2>&1 | grep -E 'server_name[[:space:]]+zelong[.]huangquechuanmei[.]com([[:space:];]|$)' >/dev/null
+test "$(id -un)" = "admin"
+printf '%s|' "$(hostname)"
+sha256sum /etc/machine-id | awk '{print $1}'
+REMOTE
+}
+
+make_manifest() {
+  local commit="$1" stage="$2" out="$3" list="$4" path mapped rank target service reload mode hash
+  shift 4
+  : >"$out"; : >"$list"
+  for path in "$@"; do
+    mapped="$(map_path "$path")" || die "文件不在泽龙部署白名单：$path"
+    git cat-file -e "$commit:$path" 2>/dev/null || die "提交中不存在文件：$path"
+    mode="$(git ls-tree "$commit" -- "$path" | awk '{print $1}')"
+    test "$mode" = "100644" || die "只允许普通文件（拒绝链接/可执行文件）：$path"
+    printf '%s\n' "$path" >>"$list"
+  done
+  LC_ALL=C sort -u "$list" -o "$list"
+  while IFS= read -r path; do
+    git show "$commit:$path" >"$stage/source.tmp"
+    mkdir -p "$stage/$(dirname "$path")"
+    mv "$stage/source.tmp" "$stage/$path"
+    hash="$(sha256_file "$stage/$path")"
+    mapped="$(map_path "$path")"; IFS='|' read -r rank target service reload <<EOF
+$mapped
+EOF
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$rank" "$path" "$target" "$hash" "$service" "$reload" >>"$out"
+  done <"$list"
+  LC_ALL=C sort -t "$(printf '\t')" -k1,1n -k2,2 "$out" -o "$out"
+}
+
+plan_dir() {
+  local dir
+  dir="$(git rev-parse --git-path ship-zelong-plans)"
+  mkdir -p "$dir"
+  printf '%s\n' "$dir"
+}
+
+save_or_check_plan() {
+  local payload="$1" apply="$2" supplied="$3" id dir
+  id="$(sha256_file "$payload")"; dir="$(plan_dir)"
+  if test "$apply" = "0"; then
+    cp "$payload" "$dir/$id.plan"
+    printf '%s\n' "$id"
+    return 0
+  fi
+  test -n "$supplied" || die "真正执行前必须先 dry-run，并传入 --plan PLAN_ID"
+  test "$supplied" = "$id" || die "PLAN_ID 与当前 commit/文件清单不匹配"
+  test -f "$dir/$id.plan" || die "本机没有该 dry-run 记录，请重新 dry-run"
+  cmp -s "$payload" "$dir/$id.plan" || die "dry-run 记录已变化，拒绝执行"
+  printf '%s\n' "$id"
+}
+
+print_manifest() {
+  printf '\n%-7s %-8s %-58s %s\n' '顺序' '服务' '仓库文件' '远端目标'
+  while IFS="$(printf '\t')" read -r rank path target _hash service reload; do
+    printf '%-7s %-8s %-58s %s%s\n' "$rank" "$service" "$path" "$target" "$(test "$reload" = 1 && printf ' [daemon-reload]' || true)"
+  done <"$1"
+}
+
+apply_deploy() {
+  local commit="$1" plan="$2" stage="$3" manifest="$4" list="$5" run upload
+  run="$(date -u +%Y%m%dT%H%M%SZ)-${commit:0:12}-${plan:0:12}"
+  upload="$UPLOAD_ROOT/$run"
+  ssh "$REMOTE" "umask 077; mkdir -p '$upload'"
+  rsync -a --files-from="$list" "$stage/" "$REMOTE:$upload/"
+  rsync -a "$manifest" "$REMOTE:$upload/manifest.tsv"
+  if ! ssh "$REMOTE" bash -s -- "$run" "$commit" "$plan" "$upload" "$DOMAIN" "$BACKUP_ROOT" "$STATE_ROOT" <<'REMOTE'; then
+set -euo pipefail
+run="$1"; commit="$2"; plan="$3"; upload="$4"; domain="$5"; backup_root="$6"; state_root="$7"
+case "$run$commit$plan" in *[!A-Za-z0-9._-]*) exit 2;; esac
+test "$domain" = "zelong.huangquechuanmei.com"
+manifest="$upload/manifest.tsv"; backup="$backup_root/$run"
+test -f "$manifest"
+sudo install -d -o root -g root -m 700 "$backup/files" "$backup/sqlite"
+sudo cp "$manifest" "$backup/manifest.tsv"
+sudo sh -c "printf 'commit=%s\nplan=%s\nrun=%s\ndomain=%s\n' '$commit' '$plan' '$run' '$domain' >'$backup/metadata'"
+need_auth=0; need_content=0; need_imggen=0; need_leadgen=0; need_reload=0
+while IFS="$(printf '\t')" read -r rank path target expected service reload; do
+  case "$target" in
+    /home/ubuntu/auth-service/*|/home/ubuntu/content-api/*|/etc/systemd/system/huangque-auth.service|/etc/systemd/system/huangque-auth.service.d/*|/etc/systemd/system/huangque-content.service|/etc/systemd/system/huangque-content.service.d/*|/var/www/huangquechuanmei/*) ;;
+    *) echo "unsafe target: $target" >&2; exit 2;;
+  esac
+  test "$(sha256sum "$upload/$path" | awk '{print $1}')" = "$expected"
+  if sudo test -e "$target"; then
+    old="$(sudo sha256sum "$target" | awk '{print $1}')"
+    sudo cp -a --parents "$target" "$backup/files"
+    sudo sh -c "printf 'PRESENT\t%s\t%s\n' '$target' '$old' >>'$backup/restore.tsv'"
+  else
+    sudo sh -c "printf 'MISSING\t%s\t-\n' '$target' >>'$backup/restore.tsv'"
+  fi
+  test "$service" = auth && need_auth=1
+  test "$service" = content && need_content=1
+  test "$service" = imggen && need_imggen=1
+  test "$service" = leadgen && need_leadgen=1
+  test "$reload" = 1 && need_reload=1
+done <"$manifest"
+
+# SQLite CLI 的 .backup 使用 online backup API，不拷贝正在写入的 db/wal 文件。
+backup_db() { db="$1"; name="$2"; sudo test ! -f "$db" || sudo sqlite3 "$db" ".backup '$backup/sqlite/$name'"; }
+test "$need_auth" = 0 || backup_db /home/ubuntu/auth-service/users.db users.db
+if test "$need_content$need_imggen$need_leadgen" != 000; then
+  backup_db /home/ubuntu/content-api/content_jobs.db content_jobs.db
+  backup_db /home/ubuntu/content-api/audio_assets.db audio_assets.db
+  backup_db /home/ubuntu/content-api/admin_config.db admin_config.db
+  backup_db /home/ubuntu/content-api/feature_flags.db feature_flags.db
+fi
+
+while IFS="$(printf '\t')" read -r rank path target expected service reload; do
+  dir="$(dirname "$target")"
+  case "$target" in
+    /etc/systemd/*) owner=root; group=root;;
+    /var/www/*) owner=www-data; group=www-data;;
+    *) owner=ubuntu; group=ubuntu;;
+  esac
+  sudo install -d "$dir"
+  sudo install -o "$owner" -g "$group" -m 0644 "$upload/$path" "$target.$run.tmp"
+  sudo mv -f "$target.$run.tmp" "$target"
+  test "$(sudo sha256sum "$target" | awk '{print $1}')" = "$expected"
+done <"$manifest"
+
+if test "$need_auth" = 1; then
+  sudo -u ubuntu bash -c 'cd /home/ubuntu/auth-service && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import auth_server"'
+fi
+if test "$need_content" = 1; then
+  sudo -u ubuntu bash -c 'cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import content_api"'
+fi
+if test "$need_imggen" = 1; then
+  sudo -u ubuntu bash -c 'cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import imggen_api"'
+fi
+if test "$need_leadgen" = 1; then
+  sudo -u ubuntu bash -c 'cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import leadgen_api"'
+fi
+test "$need_reload" = 0 || sudo systemctl daemon-reload
+if test "$need_auth" = 1; then sudo systemctl restart huangque-auth; systemctl is-active --quiet huangque-auth; fi
+if test "$need_imggen" = 1; then sudo systemctl restart huangque-imggen-api; systemctl is-active --quiet huangque-imggen-api; fi
+if test "$need_leadgen" = 1; then sudo systemctl restart huangque-leadgen-api; systemctl is-active --quiet huangque-leadgen-api; fi
+if test "$need_content" = 1; then sudo systemctl restart huangque-content; systemctl is-active --quiet huangque-content; fi
+
+while IFS="$(printf '\t')" read -r rank path target expected service reload; do
+  test "$(sudo sha256sum "$target" | awk '{print $1}')" = "$expected"
+done <"$manifest"
+curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/auth/health" >/dev/null
+curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/health" >/dev/null
+test "$need_imggen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/banana/health" >/dev/null
+test "$need_leadgen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "http://127.0.0.1:8100/api/gen/leadgen/health" >/dev/null
+sudo install -d -o root -g root -m 755 "$state_root"
+manifest_sha="$(sha256sum "$manifest" | awk '{print $1}')"
+sudo sh -c "printf 'commit=%s\nplan=%s\nrun=%s\nmanifest_sha256=%s\n' '$commit' '$plan' '$run' '$manifest_sha' >'$state_root/current'"
+rm -rf "$upload"
+printf '✅ 泽龙开发服部署完成 | RUN_ID=%s | commit=%s\n' "$run" "$commit"
+REMOTE
+    printf '❌ 部署未通过。已停止后续动作，远端回滚点为 %s/%s\n' "$BACKUP_ROOT" "$run" >&2
+    printf '   先检查：./ship-zelong --rollback %s\n' "$run" >&2
+    return 1
+  fi
+  curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "$BASE_URL/api/auth/health" >/dev/null
+  curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "$BASE_URL/api/gen/health" >/dev/null
+}
+
+rollback_payload() {
+  printf 'version=1\naction=rollback\nremote=%s\ndomain=%s\nrun=%s\nidentity=%s\n' "$REMOTE" "$DOMAIN" "$1" "$2" >"$3"
+}
+
+apply_rollback() {
+  local run="$1"
+  ssh "$REMOTE" bash -s -- "$run" "$DOMAIN" "$BACKUP_ROOT" <<'REMOTE'
+set -euo pipefail
+run="$1"; domain="$2"; backup_root="$3"; backup="$backup_root/$run"
+case "$run" in ''|*[!A-Za-z0-9._-]*) exit 2;; esac
+test "$domain" = "zelong.huangquechuanmei.com"
+test -f "$backup/restore.tsv"; test -f "$backup/manifest.tsv"
+# 旧 jobs_store 不认识 refunded=2。存在待确认退款时盲回滚会永久卡单，即使健康检查仍是绿的。
+pending_refunds="$(sudo sqlite3 /home/ubuntu/content-api/content_jobs.db \
+  "SELECT COUNT(*) FROM jobs WHERE status='error' AND refunded=2;")"
+test "$pending_refunds" = 0 || {
+  echo "refuse rollback: $pending_refunds refunds are still pending confirmation" >&2
+  exit 1
+}
+need_auth=0; need_content=0; need_imggen=0; need_leadgen=0; need_reload=0
+while IFS="$(printf '\t')" read -r rank path target expected service reload; do
+  test "$service" = auth && need_auth=1
+  test "$service" = content && need_content=1
+  test "$service" = imggen && need_imggen=1
+  test "$service" = leadgen && need_leadgen=1
+  test "$reload" = 1 && need_reload=1
+done <"$backup/manifest.tsv"
+while IFS="$(printf '\t')" read -r status target expected; do
+  case "$target" in
+    /home/ubuntu/auth-service/*|/home/ubuntu/content-api/*|/etc/systemd/system/huangque-auth.service|/etc/systemd/system/huangque-auth.service.d/*|/etc/systemd/system/huangque-content.service|/etc/systemd/system/huangque-content.service.d/*|/var/www/huangquechuanmei/*) ;;
+    *) exit 2;;
+  esac
+  if test "$status" = PRESENT; then
+    sudo test -f "$backup/files$target"
+    sudo cp -a "$backup/files$target" "$target"
+    test "$(sudo sha256sum "$target" | awk '{print $1}')" = "$expected"
+  elif test "$status" = MISSING; then
+    sudo rm -f "$target"
+  else
+    exit 2
+  fi
+done <"$backup/restore.tsv"
+if test "$need_auth" = 1; then sudo -u ubuntu bash -c 'cd /home/ubuntu/auth-service && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import auth_server"'; fi
+if test "$need_content" = 1; then sudo -u ubuntu bash -c 'cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import content_api"'; fi
+if test "$need_imggen" = 1; then sudo -u ubuntu bash -c 'cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import imggen_api"'; fi
+if test "$need_leadgen" = 1; then sudo -u ubuntu bash -c 'cd /home/ubuntu/content-api && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c "import leadgen_api"'; fi
+test "$need_reload" = 0 || sudo systemctl daemon-reload
+if test "$need_auth" = 1; then sudo systemctl restart huangque-auth; systemctl is-active --quiet huangque-auth; fi
+if test "$need_imggen" = 1; then sudo systemctl restart huangque-imggen-api; systemctl is-active --quiet huangque-imggen-api; fi
+if test "$need_leadgen" = 1; then sudo systemctl restart huangque-leadgen-api; systemctl is-active --quiet huangque-leadgen-api; fi
+if test "$need_content" = 1; then sudo systemctl restart huangque-content; systemctl is-active --quiet huangque-content; fi
+curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/auth/health" >/dev/null
+curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/health" >/dev/null
+test "$need_imggen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "https://$domain/api/gen/banana/health" >/dev/null
+test "$need_leadgen" = 0 || curl -fsS --retry 15 --retry-delay 2 --retry-max-time 35 --retry-connrefused --max-time 5 "http://127.0.0.1:8100/api/gen/leadgen/health" >/dev/null
+printf '✅ 已回滚部署文件 | RUN_ID=%s\n' "$run"
+printf 'ℹ SQLite online backup 保留在 %s/sqlite，未自动覆盖数据库。\n' "$backup"
+REMOTE
+}
+
+main() {
+  local commit="" apply=0 plan="" rollback="" baseline=0 tmp identity plan_id payload
+  local -a files=()
+  while test $# -gt 0; do
+    case "$1" in
+      --commit) test $# -ge 2 || die "--commit 缺少值"; commit="$2"; shift 2;;
+      --file) test $# -ge 2 || die "--file 缺少值"; files+=("$2"); shift 2;;
+      --adspower-baseline) baseline=1; shift;;
+      --apply) apply=1; shift;;
+      --plan) test $# -ge 2 || die "--plan 缺少值"; plan="$2"; shift 2;;
+      --rollback) test $# -ge 2 || die "--rollback 缺少值"; rollback="$2"; shift 2;;
+      -h|--help) usage; return 0;;
+      *) die "未知参数：$1";;
+    esac
+  done
+
+  identity="$(remote_guard)" || die "远端不是锁定的 zelong/测试域名，拒绝继续"
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/ship-zelong.XXXXXX")"
+  trap "rm -rf '$tmp'" EXIT
+
+  if test -n "$rollback"; then
+    validate_token "$rollback" || die "RUN_ID 非法"
+    ssh "$REMOTE" "sudo test -f '$BACKUP_ROOT/$rollback/restore.tsv'" || die "回滚点不存在：$rollback"
+    payload="$tmp/plan"; rollback_payload "$rollback" "$identity" "$payload"
+    plan_id="$(save_or_check_plan "$payload" "$apply" "$plan")"
+    if test "$apply" = 0; then
+      printf '【DRY-RUN】将回滚泽龙开发服文件：%s\nPLAN_ID=%s\n' "$rollback" "$plan_id"
+      printf '注：数据库备份不会自动恢复，避免覆盖新的测试数据。\n'
+    else
+      apply_rollback "$rollback"
+    fi
+    return
+  fi
+
+  validate_commit "$commit" || die "--commit 必须是本机已存在的完整 40 位 commit SHA"
+  validate_remote_main "$commit" || die "--commit 必须等于实时 origin/main；拒绝 stale ref 或未 push 的 commit"
+  if test "$baseline" = 1; then
+    test "${#files[@]}" = 0 || die "--adspower-baseline 禁止与 --file 混用"
+    load_adspower_baseline
+    validate_adspower_baseline_content "$commit" "${files[@]}" || die "AdsPower 的 11 个文件已相对审核来源 $ADSPOWER_BASELINE_SOURCE_COMMIT 发生变化，必须重新审核"
+  fi
+  test "${#files[@]}" -gt 0 || die "至少传入一个 --file"
+  mkdir -p "$tmp/stage"
+  make_manifest "$commit" "$tmp/stage" "$tmp/manifest.tsv" "$tmp/files.txt" "${files[@]}"
+  payload="$tmp/plan"
+  {
+    printf 'version=1\naction=deploy\nremote=%s\ndomain=%s\ncommit=%s\nidentity=%s\n' "$REMOTE" "$DOMAIN" "$commit" "$identity"
+    cat "$tmp/manifest.tsv"
+  } >"$payload"
+  plan_id="$(save_or_check_plan "$payload" "$apply" "$plan")"
+  print_manifest "$tmp/manifest.tsv"
+  if test "$apply" = 0; then
+    printf '\n【DRY-RUN】未上传文件、未备份、未重启。\ncommit=%s\nPLAN_ID=%s\n' "$commit" "$plan_id"
+    printf '真正执行时使用相同参数，另加：--apply --plan %s\n' "$plan_id"
+  else
+    apply_deploy "$commit" "$plan_id" "$tmp/stage" "$tmp/manifest.tsv" "$tmp/files.txt"
+  fi
+}
+
+if test "${SHIP_ZELONG_LIB_ONLY:-0}" != "1"; then
+  main "$@"
+fi
