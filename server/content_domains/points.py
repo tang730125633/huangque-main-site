@@ -79,6 +79,24 @@ def cost_of(kind, body):
         else:
             duration = min(15, int(body.get("duration") or 10))
         return max(30, int(math.ceil(duration)) * 30)
+    if kind == "script_to_video":
+        # 一键成片：口播/种草与 video 业务同价 —— 10 点/秒 × 文案估算秒数【预扣】，
+        # 跑完由 run_job 对 pipeline==talking 按成片真实时长结算多退少不补（2026-07-17 调价，
+        # 此前固定 20 点，长口播稳亏）；剧情走 grok 仍按 COST 表固定价。
+        style = (body.get("style") or "口播").strip()
+        if style == "剧情":
+            return COST.get("script_to_video", 20)
+        from . import video as video_domain
+        lines = [(s.get("line") or "").strip() for s in (body.get("scenes") or []) if isinstance(s, dict)]
+        text = "\n\n".join([l for l in lines if l])
+        return video_domain.video_cost({"text": text})
+    if kind == "breakdown":
+        # 批量拆解按条累进：首条 8 点，每多一条 +4（后端上限 5 条 = 24 点）；单条维持 8 点。
+        urls = body.get("urls")
+        if isinstance(urls, list):
+            n = max(1, min(5, len([u for u in urls if isinstance(u, str) and u.strip()])))
+            return 8 + 4 * (n - 1)
+        return 8
     return COST.get(kind, 0)
 
 class AuthPointsError(Exception):
