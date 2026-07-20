@@ -1607,7 +1607,7 @@ def _heygen_retry_429(fn, what=""):
             time.sleep(delay)
 
 
-# ============ HeyGen 账号级并发闸（削峰用，不是挡并发） ============
+# ============ HeyGen 账号级并发总闸 ============
 # 官方文档（Usage Limits）说 Pay-As-You-Go 的 "Max Concurrent Video Jobs" = 10。
 # 【实测证明这不是硬限制】——2026-07-12 跑 20 路并发（10 口播 + 10 剧情视频同时生成）：
 #     20/20 全部成功出片，零降速（口播平均 114s，而单条基线是 104s）
@@ -1618,12 +1618,12 @@ def _heygen_retry_429(fn, what=""):
 # 「please reduce the RATE to call this api」）。而退避 1.7~2.5 秒重发，一次就全过。
 # 兜住它的是 _heygen_retry_429，不是这个信号量。
 #
-# 那这个信号量还留着干嘛？—— 削峰。它把同时在飞的请求数摊平（21 = 口播10 + 剧情10 + 建形象1），
-# 顺带降低撞 429 的概率，是重试之外的一层保险。真要放开，改 env 即可，不用动代码。
+# 默认 31 = 口播 20 + 剧情 10 + 1 个缓冲，不让共享闸反过来收紧两个 worker 池；
+# 提交突发仍由 _heygen_retry_429 处理。需要紧急收紧账号总并发时可通过 env 下调。
 #
 # 槽只在【生成期间】持有（建视频 → 轮询出片）。上传素材、查 look 状态不占槽。
 # 中转(泽龙)转发的是同一个账号，所以中转路径同样要占槽 —— 不占就等于绕过了闸。
-HEYGEN_MAX_CONCURRENCY = int(os.environ.get("HEYGEN_MAX_CONCURRENCY", "21") or 21)
+HEYGEN_MAX_CONCURRENCY = int(os.environ.get("HEYGEN_MAX_CONCURRENCY", "31") or 31)
 _heygen_gen_sem = threading.BoundedSemaphore(HEYGEN_MAX_CONCURRENCY)
 
 

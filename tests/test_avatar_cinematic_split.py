@@ -106,7 +106,7 @@ class PipelineWiringTests(unittest.TestCase):
 
     def test_building_an_avatar_does_not_take_a_video_slot(self):
         """闸是给【视频提交】削峰的。建形象不是 video job —— 它不吃 HeyGen 的视频并发额度，
-        让它去抢那 21 个槽，只会把视频 worker 饿着。
+        让它去抢那 31 个槽，只会把视频 worker 饿着。
 
         而且它本来也不需要：10 路并发建形象实测 0×429（瓶颈是我们自己的出境隧道，不是 HeyGen）。
         真撞上突发限流，_heygen_retry_429 已经包在建形象的提交上了。
@@ -117,6 +117,12 @@ class PipelineWiringTests(unittest.TestCase):
     def test_cinematic_gets_a_real_pool_now_that_20_way_is_proven(self):
         # 20 路并发实测通过 → 剧情视频不再需要「份额上限」，给满 10 个
         self.assertEqual(core.CINEMATIC_JOB_WORKERS, 10)
+
+    def test_talking_pool_and_backlog_match_capacity_config(self):
+        self.assertEqual(core.TALKING_JOB_WORKERS, 20)
+        self.assertEqual(video.HEYGEN_MAX_CONCURRENCY, 31)
+        self.assertEqual(core.JOB_QUEUE_MAX, 64)
+        self.assertEqual(core._talking_job_queue.maxsize, 64)
 
     def test_every_heygen_generation_path_takes_a_slot(self):
         """漏掉任何一条路径，那条就绕过了闸 —— 包括中转（泽龙转发的是同一个账号）。"""
