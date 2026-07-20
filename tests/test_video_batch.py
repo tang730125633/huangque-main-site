@@ -322,7 +322,7 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
             core.verify = lambda token: {"username": "fang", "must_change": False}
             core.feature_flags.require_enabled = lambda kind: None
             core.MAX_USER_ACTIVE_JOBS = 5
-            core.MAX_USER_ACTIVE_XIAOLE_VIDEO = 3
+            core.MAX_USER_ACTIVE_XIAOLE_VIDEO = 2
             core.MAX_USER_ACTIVE_TRYON = 1
             core.HANDLERS = {"video": lambda body: body, "tryon": lambda body: body, "xiaole_video": lambda body: body}
             video.validate_video_payload = lambda body, username: body
@@ -346,11 +346,10 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                         "seed": [
                             ("xiaole_video", "pending", '{"channel":"omni"}'),
                             ("xiaole_video", "running", '{"channel":"grok"}'),
-                            ("xiaole_video", "pending", '{"channel":"micro"}'),
                         ],
                         "path": "/api/gen/xiaole_video",
-                        "body": {"channel": "omni", "prompt": "商品展示"},
-                        "detail": "当前果肉/豆姐/欧米视频最多同时排队或生成 3 个任务，请等待部分完成后再继续",
+                        "body": {"channel": "micro", "prompt": "商品展示"},
+                        "detail": "当前果肉/豆姐/欧米视频最多同时排队或生成 2 个任务，请等待部分完成后再继续",
                         "code": "xiaole_active_cap",
                     },
                     {
@@ -402,7 +401,7 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
 
                 with urllib.request.urlopen(base + "/api/gen/health", timeout=5) as response:
                     health = json.loads(response.read())
-                self.assertEqual(3, health["max_user_active_xiaole_video"])
+                self.assertEqual(2, health["max_user_active_xiaole_video"])
                 self.assertEqual(1, health["max_user_active_tryon"])
             finally:
                 if server:
