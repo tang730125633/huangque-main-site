@@ -402,6 +402,7 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                 with urllib.request.urlopen(base + "/api/gen/health", timeout=5) as response:
                     health = json.loads(response.read())
                 self.assertEqual(core.JOB_QUEUE_MAX, health["job_queue_max"])
+                self.assertEqual(core.TALKING_JOB_QUEUE_MAX, health["talking_job_queue_max"])
                 self.assertEqual(2, health["max_user_active_xiaole_video"])
                 self.assertEqual(1, health["max_user_active_tryon"])
             finally:
