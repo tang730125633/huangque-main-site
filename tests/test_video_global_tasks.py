@@ -112,6 +112,7 @@ class VideoTaskIntegrationTests(unittest.TestCase):
 
     def test_button_sync_uses_task_store_and_health_caps(self):
         """按钮同步函数从 HQTasks 获取活跃任务数，从 health 获取上限，分家族判断是否超限。"""
+        self.assertIn("var maxActiveXiaoleVideo=2,", VIDEO_HTML)
         self.assertIn("function syncVideoGenerateButtons(){", VIDEO_HTML)
         self.assertIn("var counts=activeVideoTaskCounts();", VIDEO_HTML)
         self.assertIn("counts.xiaole>=maxActiveXiaoleVideo", VIDEO_HTML)
