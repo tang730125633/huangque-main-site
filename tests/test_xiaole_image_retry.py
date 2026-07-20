@@ -34,7 +34,7 @@ RATE_LIMIT_MSG = "当前 API Key 媒体任务过多，请稍后再试"
 
 def _fake_request(calls, post_results, get_results):
     """生成 _xiaole_request 替身：按队列依次返回/抛错，记录调用。"""
-    def fake(method, path, body=None, timeout=90):
+    def fake(method, path, body=None, timeout=90, retry_deadline=None):
         calls.append((method, path))
         queue = post_results if method == "POST" else get_results
         item = queue.pop(0) if queue else POLL_OK
@@ -47,10 +47,16 @@ def _fake_request(calls, post_results, get_results):
 class XiaoleImageRetryTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
+        self._now = 0.0
+
+        def advance(seconds):
+            self._now += max(0.0, float(seconds))
+
         patches = [
             patch.object(image, "XIAOLEVIDEO_API_KEY", "test-key"),
             patch.object(image, "OUT_DIR", Path(self._tmp.name)),
-            patch("time.sleep", lambda _s: None),  # 重试/轮询等待归零，测试不等真时间
+            patch.object(image.time, "sleep", advance),
+            patch.object(image.time, "monotonic", lambda: self._now),
         ]
         for p in patches:
             p.start()
@@ -75,13 +81,31 @@ class XiaoleImageRetryTest(unittest.TestCase):
         self.assertEqual([m for m, _ in calls].count("POST"), 3)
 
     def test_body_code_rate_limit_retried(self):
-        """HTTP 200 但 body code 报「媒体任务过多」同样重试（修复前这种形式完全不重试）。"""
+        """HTTP 200 的 body code=429 即使消息不含限流字样也会重试。"""
         result, calls = self._run([
-            {"code": 429, "message": RATE_LIMIT_MSG},
+            {"code": 429, "message": "busy"},
             CREATE_OK,
         ])
         self.assertEqual(result["provider"], "xiaole")
         self.assertEqual([m for m, _ in calls].count("POST"), 2)
+
+    def test_create_budget_counts_time_spent_inside_request(self):
+        """外层预算按墙钟计时，不会漏掉 _xiaole_request 内部消耗的时间。"""
+        calls = []
+
+        def slow_rate_limit(method, path, body=None, timeout=90, retry_deadline=None):
+            calls.append((method, path))
+            self._now += 120
+            raise RuntimeError("视频接口失败: HTTP 429 busy")
+
+        with patch.object(image, "XIAOLE_IMG_CREATE_MAX_WAIT", 300), \
+             patch.object(image.random, "random", return_value=0.5), \
+             patch.object(image, "_xiaole_request", slow_rate_limit):
+            with self.assertRaisesRegex(ValueError, "限流"):
+                image._gen_image_xiaole_locked("一只猫", "1:1", "high", 1, None)
+
+        self.assertLessEqual([m for m, _ in calls].count("POST"), 2)
+        self.assertLessEqual(self._now, 300)
 
     def test_non_rate_limit_error_not_retried(self):
         """内容审核/参数类错误绝不重试（重发=重复计费），一次即抛。"""

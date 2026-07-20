@@ -61,15 +61,16 @@ XIAOLE_IMG_MAX_CONCURRENCY = max(1, int(os.environ.get("XIAOLE_IMG_MAX_CONCURREN
 # 创建调用限流重试总预算：与 seedream 429 同一逻辑——只有限流能确定任务未创建未计费，
 # 重试绝对安全；其余错误照旧立刻失败退点。300s 退避 + 600s 轮询贴 reaper image 900s 红线，
 # 极端排队会被 reaper 判超时退点（不丢钱只是白等），可接受。
-XIAOLE_IMG_CREATE_MAX_WAIT = int(os.environ.get("XIAOLE_IMG_CREATE_MAX_WAIT", "300") or 300)
+XIAOLE_IMG_CREATE_MAX_WAIT = max(0, int(os.environ.get("XIAOLE_IMG_CREATE_MAX_WAIT", "300") or 300))
 _XIAOLE_IMG_SEM = threading.BoundedSemaphore(XIAOLE_IMG_MAX_CONCURRENCY)
 
-def _xiaole_rate_limited(text):
+def _xiaole_rate_limited(text, code=None):
     """限流判定：HTTP 429、body code 报错、「媒体任务过多」都覆盖。宁可漏判不重试，
     不可误判重试——非限流错误重试可能重复创建=重复计费（同 _seedream_post 的纪律）。"""
     t = str(text or "")
     tl = t.lower()
-    return ("429" in t) or ("过多" in t) or ("限流" in t) or ("too many" in tl) or ("rate limit" in tl)
+    return (str(code).strip() == "429") or ("429" in t) or ("过多" in t) or ("限流" in t) \
+        or ("too many" in tl) or ("rate limit" in tl)
 
 def _clean_b64(value):
     """归一化前端传来的图片 base64：剥离 data: 前缀、去空白/换行、补齐 padding。
@@ -225,25 +226,35 @@ def _gen_image_xiaole_locked(prompt, ratio, quality, count, img):
     # 创建限流重试：_xiaole_request 自带的 5 次 429 退避(~120s)压测证明扛不住整批饱和
     # （上游 Key 熔断持续数分钟），这里在 XIAOLE_IMG_CREATE_MAX_WAIT 预算内继续等。
     # 只重试限流（任务未创建未计费，重发安全）；其余错误直接抛，走失败退点。
-    create, waited = None, 0.0
+    create = None
+    create_started = time.monotonic()
+    create_deadline = create_started + XIAOLE_IMG_CREATE_MAX_WAIT
+    attempts = 0
     while True:
+        if attempts and time.monotonic() >= create_deadline:
+            raise ValueError("果肉渠道繁忙（上游持续限流），请稍后重试")
+        attempts += 1
         try:
-            create = _xiaole_request("POST", "/api/v1/generations", {"model": "gpt-image-2", "input": input_d})
+            create = _xiaole_request(
+                "POST", "/api/v1/generations", {"model": "gpt-image-2", "input": input_d},
+                retry_deadline=create_deadline,
+            )
             if create.get("code") in (200, 0, None):
                 break
             msg = str(create.get("message"))[:200]
-            if not _xiaole_rate_limited(msg):
+            if not _xiaole_rate_limited(msg, create.get("code")):
                 raise ValueError("出图创建失败: %s" % msg)
         except RuntimeError as e:
             if not _xiaole_rate_limited(e):
                 raise
-        if waited >= XIAOLE_IMG_CREATE_MAX_WAIT:
+        elapsed = max(0.0, time.monotonic() - create_started)
+        remaining = max(0.0, create_deadline - time.monotonic())
+        if remaining <= 0:
             raise ValueError("果肉渠道繁忙（上游持续限流），请稍后重试")
-        delay = min(45.0, 10.0 + waited * 0.2) * (0.7 + random.random() * 0.6)  # 渐进退避+抖动，防齐点重试新洪峰
-        delay = min(delay, XIAOLE_IMG_CREATE_MAX_WAIT - waited)
-        waited += delay
-        print("[image] 果肉创建被限流，退避重试 等%.1fs(累计%.0f/%ds)" % (
-            delay, waited, XIAOLE_IMG_CREATE_MAX_WAIT), flush=True)
+        delay = min(45.0, 10.0 + elapsed * 0.2) * (0.7 + random.random() * 0.6)  # 渐进退避+抖动，防齐点重试新洪峰
+        delay = min(delay, remaining)
+        print("[image] 果肉创建被限流，退避重试 等%.1fs(已耗时%.0f/%ds)" % (
+            delay, elapsed, XIAOLE_IMG_CREATE_MAX_WAIT), flush=True)
         time.sleep(delay)
     data = create.get("data") or {}
     rid = data.get("request_id") or data.get("task_id")

@@ -1,5 +1,7 @@
+import io
 import sys
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +13,33 @@ class XiaoleVideoTests(unittest.TestCase):
             sys.path.insert(0, server_dir)
         from content_domains import video
         self.video = video
+
+    def test_xiaole_request_retry_deadline_caps_internal_backoff(self):
+        now = [0.0]
+        calls = []
+
+        def monotonic():
+            return now[0]
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        def rate_limited(_request, timeout):
+            calls.append(timeout)
+            raise urllib.error.HTTPError(
+                "https://example.test", 429, "busy", None, io.BytesIO(b"busy")
+            )
+
+        with patch.object(self.video, "XIAOLEVIDEO_API_KEY", "test-key"), \
+             patch.object(self.video.time, "monotonic", side_effect=monotonic), \
+             patch.object(self.video.time, "sleep", side_effect=sleep), \
+             patch.object(self.video.urllib.request, "urlopen", side_effect=rate_limited):
+            with self.assertRaisesRegex(RuntimeError, "HTTP 429"):
+                self.video._xiaole_request("POST", "/api/v1/generations", {}, retry_deadline=10)
+
+        self.assertEqual(len(calls), 2)
+        self.assertAlmostEqual(now[0], 10)
+        self.assertEqual(calls, [10, 2])
 
     def test_unstable_micro_and_omni_channels_are_rejected(self):
         for channel in ("micro", "omni"):

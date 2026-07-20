@@ -2490,7 +2490,7 @@ def gen_tryon(payload):
         "message": "换装换背景视频生成完成"
     }
 
-def _xiaole_request(method, path, body=None, timeout=90):
+def _xiaole_request(method, path, body=None, timeout=90, retry_deadline=None):
     if not XIAOLEVIDEO_API_KEY:
         raise ValueError("视频生成服务未配置（XIAOLEVIDEO_API_KEY）")
     url = path if path.startswith("http") else (XIAOLEVIDEO_API_BASE + path)
@@ -2501,28 +2501,50 @@ def _xiaole_request(method, path, body=None, timeout=90):
         # 上游 xiaolevideo 要求付费创建请求带 8-128 字符幂等键，缺则 HTTP 400（果肉/豆姐/欧米共用此路）
         headers["Idempotency-Key"] = uuid.uuid4().hex
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    # 429（API Key 媒体任务过多）自动退避重试，扛并发限流
+    # 429（API Key 媒体任务过多）自动退避重试，扛并发限流。图像创建可传入
+    # monotonic 截止时间，避免这里的内层退避突破调用方的总重试预算。
+    last_retry_error = None
     for attempt in range(_xiaole_429_retries + 1):
+        request_timeout = timeout
+        if retry_deadline is not None:
+            remaining = retry_deadline - time.monotonic()
+            if attempt and remaining <= 0:
+                raise last_retry_error
+            request_timeout = min(timeout, max(0.001, remaining))
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with urllib.request.urlopen(req, timeout=request_timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:400]
+            error = RuntimeError("视频接口失败: HTTP %s %s" % (e.code, detail))
             if e.code == 429 and attempt < _xiaole_429_retries:
                 wait = min(45, 8 * (attempt + 1))
-                print("[video] 429 并发限流，%ds 后重试(%d/%d)" % (wait, attempt + 1, _xiaole_429_retries), flush=True)
+                if retry_deadline is not None:
+                    remaining = retry_deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise error
+                    wait = min(wait, remaining)
+                print("[video] 429 并发限流，%.1fs 后重试(%d/%d)" % (wait, attempt + 1, _xiaole_429_retries), flush=True)
+                last_retry_error = error
                 time.sleep(wait)
                 continue
-            raise RuntimeError("视频接口失败: HTTP %s %s" % (e.code, detail))
+            raise error
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             # 瞬时网络抖动(SSL握手超时等)自动重试
+            error = RuntimeError("视频接口网络异常: %s" % str(e)[:120])
             if attempt < _xiaole_429_retries:
                 wait = min(30, 5 * (attempt + 1))
-                print("[video] 网络异常，%ds 后重试(%d/%d): %s" % (wait, attempt + 1, _xiaole_429_retries, str(e)[:80]), flush=True)
+                if retry_deadline is not None:
+                    remaining = retry_deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise error
+                    wait = min(wait, remaining)
+                print("[video] 网络异常，%.1fs 后重试(%d/%d): %s" % (wait, attempt + 1, _xiaole_429_retries, str(e)[:80]), flush=True)
+                last_retry_error = error
                 time.sleep(wait)
                 continue
-            raise RuntimeError("视频接口网络异常: %s" % str(e)[:120])
+            raise error
 
 def _xiaole_pick_video_url(output):
     for v in ((output or {}).get("videos") or []):
