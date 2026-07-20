@@ -26,6 +26,19 @@ class PrivateAssetsTest(unittest.TestCase):
         self.assertEqual(url, "https://signed.example/video")
         self.assertEqual(client.put_object.call_args.kwargs["ACL"], "private")
 
+    def test_cos_delete_uses_prefixed_object_key(self):
+        client = Mock()
+        with patch.object(cos, "enabled", return_value=True), \
+                patch.object(cos, "_client", return_value=client), \
+                patch.object(cos, "_BUCKET", "bucket-1"), \
+                patch.object(cos, "_PREFIX", "huangque"):
+            deleted = cos.delete("audio/voice_preview_test.mp3")
+
+        self.assertTrue(deleted)
+        client.delete_object.assert_called_once_with(
+            Bucket="bucket-1", Key="huangque/audio/voice_preview_test.mp3"
+        )
+
     def test_sensitive_local_file_requires_matching_asset_owner(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = str(Path(tmp) / "assets.db")

@@ -1061,6 +1061,48 @@
     };
     input.onkeydown=function(e){ if(e.key==='Enter') submit.click(); };
   }
+  function openDeleteVoiceModal(slot){
+    var old=document.getElementById('deleteVoiceModal'); if(old) old.remove();
+    var remain=Math.max(0,parseInt(slot.reclone_remaining||0,10)||0);
+    var max=Math.max(0,parseInt(slot.reclone_max||0,10)||0);
+    var wrap=document.createElement('div'); wrap.id='deleteVoiceModal';
+    wrap.style.cssText='position:fixed;inset:0;z-index:11000;display:flex;align-items:center;justify-content:center;padding:22px;background:rgba(3,7,15,.76);backdrop-filter:blur(10px);';
+    var modal=document.createElement('div');
+    modal.setAttribute('role','alertdialog'); modal.setAttribute('aria-modal','true'); modal.setAttribute('aria-labelledby','deleteVoiceTitle');
+    modal.style.cssText='width:min(440px,100%);border:1px solid rgba(244,112,138,.3);border-radius:16px;background:linear-gradient(165deg,rgba(16,24,39,.99),rgba(8,13,24,.99));box-shadow:0 28px 80px rgba(0,0,0,.52);overflow:hidden;';
+    var quotaText=remain>0
+      ? '删除后仍可在这个槽位重新复刻 '+remain+' 次，次数不会重置。'
+      : '该槽位已用完 '+max+' 次重新复刻机会，删除后将不能再次复刻。';
+    modal.innerHTML='<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 20px;border-bottom:1px solid rgba(244,112,138,.16);">'
+      +'<div><div id="deleteVoiceTitle" style="font-size:17px;font-weight:700;color:#f7dce3;">删除个人音色</div><div style="margin-top:5px;font-size:12.5px;color:#94a4bb;">'+escapeHtml(slot.voice_name||'我的复刻音色')+'</div></div>'
+      +'<button type="button" data-close-delete-voice aria-label="关闭" style="width:34px;height:34px;border:none;border-radius:9px;background:rgba(148,164,187,.08);color:#94a4bb;cursor:pointer;font-size:20px;line-height:1;">×</button></div>'
+      +'<div style="padding:20px;display:flex;flex-direction:column;gap:12px;"><div style="font-size:13px;color:#eaf1fa;line-height:1.7;">音色、试听文件和服务商音色将被永久删除，已购买的槽位会保留。</div>'
+      +'<div style="padding:11px 12px;border:1px solid rgba(244,112,138,.2);border-radius:8px;background:rgba(244,112,138,.07);font-size:12.5px;color:#f4a2b3;line-height:1.65;">'+quotaText+'</div>'
+      +'<div id="deleteVoiceNote" style="min-height:19px;font-size:12px;color:#5c6b82;line-height:1.6;">此操作无法撤销。</div></div>'
+      +'<div style="display:flex;justify-content:flex-end;gap:10px;padding:16px 20px;border-top:1px solid rgba(148,164,187,.12);"><button type="button" data-close-delete-voice style="height:38px;padding:0 15px;border:1px solid rgba(148,164,187,.16);border-radius:8px;background:rgba(148,164,187,.05);color:#94a4bb;cursor:pointer;font-family:inherit;">取消</button><button type="button" id="deleteVoiceSubmit" style="height:38px;padding:0 18px;border:1px solid rgba(244,112,138,.38);border-radius:8px;background:rgba(244,112,138,.14);color:#f4708a;font-weight:700;cursor:pointer;font-family:inherit;">确认删除</button></div>';
+    wrap.appendChild(modal); document.body.appendChild(wrap);
+    var submit=wrap.querySelector('#deleteVoiceSubmit'), note=wrap.querySelector('#deleteVoiceNote'), busy=false;
+    function remove(){ document.removeEventListener('keydown',onKey); wrap.remove(); }
+    function close(){ if(!busy) remove(); }
+    function onKey(e){ if(e.key==='Escape') close(); }
+    document.addEventListener('keydown',onKey);
+    wrap.querySelectorAll('[data-close-delete-voice]').forEach(function(b){ b.onclick=close; });
+    wrap.addEventListener('click',function(e){ if(e.target===wrap) close(); });
+    submit.onclick=function(){
+      if(busy) return;
+      busy=true; submit.disabled=true; submit.style.opacity='.7'; submit.style.cursor='wait'; note.style.color='#e7b24c'; note.textContent='正在删除音色...';
+      stopActivePreviewAudio();
+      fetch('/api/gen/audio/voice-delete',{method:'POST',headers:{'Authorization':'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({slot_id:slot.slot_id})})
+        .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+        .then(function(res){
+          if(res.status===401){ busy=false; remove(); HQ.login(); return; }
+          if(!res.data.ok) throw new Error(res.data.detail||'删除失败');
+          busy=false; remove(); renderAudioTab('personal');
+        })
+        .catch(function(err){ busy=false; submit.disabled=false; submit.style.opacity='1'; submit.style.cursor='pointer'; note.style.color='#f4708a'; note.textContent=err.message||'删除失败'; });
+    };
+    setTimeout(function(){ submit.focus(); },0);
+  }
   function slotAssetCard(slot){
     var used=!!slot.voice_id;
     var training=slot.status==='training';
@@ -1070,20 +1112,22 @@
     var recloneMax=Math.max(0,parseInt(slot.reclone_max||0,10)||0);
     var recloneCount=Math.max(0,Math.min(recloneMax,parseInt(slot.reclone_count||0,10)||0));
     var recloneRemain=slot.reclone_remaining==null?Math.max(0,recloneMax-recloneCount):Math.max(0,Math.min(recloneMax,parseInt(slot.reclone_remaining,10)||0));
+    var quotaExhausted=recloneMax>0 && recloneRemain<=0;
+    var canOpenClone=!readonly && !completed && !training && !quotaExhausted;
     var w=document.createElement('div'); w.className='asset-library-card';
     if(slot.slot_id) w.setAttribute('data-slot-id', slot.slot_id);
-    if(!readonly && !completed){ w.tabIndex=0; w.setAttribute('role','button'); }
-    w.style.cssText='position:relative; min-height:154px; box-sizing:border-box; padding:16px; border:1px solid '+(used?'rgba(45,212,191,.42)':(training?'rgba(231,178,76,.28)':'rgba(148,164,187,.14)'))+'; border-radius:16px; background:'+(used?'linear-gradient(165deg, rgba(45,212,191,.1), rgba(16,24,39,.58))':'rgba(16,24,39,.4)')+'; display:flex; flex-direction:column; justify-content:space-between; gap:13px; cursor:'+((readonly||completed)?'default':'pointer')+'; box-shadow:'+(used?'0 18px 42px rgba(45,212,191,.1)':'none')+';';
-    if(!readonly && !completed){
+    if(canOpenClone){ w.tabIndex=0; w.setAttribute('role','button'); }
+    w.style.cssText='position:relative; min-height:154px; box-sizing:border-box; padding:16px; border:1px solid '+(used?'rgba(45,212,191,.42)':(training?'rgba(231,178,76,.28)':'rgba(148,164,187,.14)'))+'; border-radius:16px; background:'+(used?'linear-gradient(165deg, rgba(45,212,191,.1), rgba(16,24,39,.58))':'rgba(16,24,39,.4)')+'; display:flex; flex-direction:column; justify-content:space-between; gap:13px; cursor:'+(canOpenClone?'pointer':'default')+'; box-shadow:'+(used?'0 18px 42px rgba(45,212,191,.1)':'none')+';';
+    if(canOpenClone){
       w.onclick=function(){ openCloneVoiceModal(slot); };
       w.onkeydown=function(e){ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); openCloneVoiceModal(slot); } };
     }
-    var tag=document.createElement('span'); tag.textContent=training?'\u590d\u523b\u4e2d':(failed?'\u590d\u523b\u5931\u8d25':(used?'\u590d\u523b\u5b8c\u6210':'\u53ef\u590d\u523b')); tag.style.cssText='align-self:flex-start; padding:3px 9px; font-size:11px; font-weight:700; border-radius:6px; background:'+(used?'rgba(45,212,191,.16)':'rgba(7,11,19,.62)')+'; color:'+(used?'#2dd4bf':'#e7b24c')+';';
+    var tag=document.createElement('span'); tag.textContent=training?'\u590d\u523b\u4e2d':(failed?'\u590d\u523b\u5931\u8d25':(used?'\u590d\u523b\u5b8c\u6210':(quotaExhausted?'已达复刻上限':'\u53ef\u590d\u523b'))); tag.style.cssText='align-self:flex-start; padding:3px 9px; font-size:11px; font-weight:700; border-radius:6px; background:'+(used?'rgba(45,212,191,.16)':'rgba(7,11,19,.62)')+'; color:'+(used?'#2dd4bf':(quotaExhausted?'#f4708a':'#e7b24c'))+';';
     var title=document.createElement('div');
     title.innerHTML=used
-      ? '<div style="display:flex;align-items:center;gap:9px;padding-right:'+(slot.preview_url?'54px':'0')+';"><span style="width:30px;height:30px;border-radius:50%;background:rgba(45,212,191,.14);color:#2dd4bf;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex:0 0 auto;">VIP</span><div style="min-width:0;"><div style="font-size:14px; color:#eaf1fa; font-weight:800; line-height:1.35; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">'+(slot.voice_name||'\u6211\u7684\u590d\u523b\u97f3\u8272')+'</div><div style="font-size:11.5px; color:#94a4bb; margin-top:4px; line-height:1.4;">\u4e13\u5c5e\u97f3\u8272 / \u53ef\u7528\u4e8e\u6587\u6848\u914d\u97f3</div></div></div>'
-      : '<div style="font-size:13px; color:#eaf1fa; font-weight:700; line-height:1.5;">\u4e2a\u4eba\u97f3\u8272\u69fd\u4f4d</div><div style="font-size:11.5px; color:#94a4bb; margin-top:4px; line-height:1.5;">\u70b9\u51fb\u4e0a\u4f20\u6837\u97f3\u8fdb\u884c\u590d\u523b</div>';
-    var meta=document.createElement('div'); meta.textContent=training?'\u6b63\u5728\u590d\u523b\uff0c\u5b8c\u6210\u540e\u4f1a\u751f\u6210\u8bd5\u542c\u97f3\u9891':(used?'\u5df2\u751f\u6210\u8bd5\u542c\uff0c\u53ef\u5728\u97f3\u9891\u6a21\u5757\u4e2d\u4f7f\u7528':'\u53ef\u7528\u4e8e\u590d\u523b\u4e2a\u4eba\u97f3\u8272'); meta.style.cssText='font-size:11.5px;color:'+(used?'#94a4bb':'#5c6b82')+';line-height:1.5;';
+      ? '<div style="display:flex;align-items:center;gap:9px;padding-right:'+(slot.preview_url?'54px':'0')+';"><span style="width:30px;height:30px;border-radius:50%;background:rgba(45,212,191,.14);color:#2dd4bf;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex:0 0 auto;">VIP</span><div style="min-width:0;"><div style="font-size:14px; color:#eaf1fa; font-weight:800; line-height:1.35; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">'+escapeHtml(slot.voice_name||'\u6211\u7684\u590d\u523b\u97f3\u8272')+'</div><div style="font-size:11.5px; color:#94a4bb; margin-top:4px; line-height:1.4;">\u4e13\u5c5e\u97f3\u8272 / \u53ef\u7528\u4e8e\u6587\u6848\u914d\u97f3</div></div></div>'
+      : '<div style="font-size:13px; color:#eaf1fa; font-weight:700; line-height:1.5;">\u4e2a\u4eba\u97f3\u8272\u69fd\u4f4d</div><div style="font-size:11.5px; color:#94a4bb; margin-top:4px; line-height:1.5;">'+(quotaExhausted?'音色已删除，不能再次复刻':'\u70b9\u51fb\u4e0a\u4f20\u6837\u97f3\u8fdb\u884c\u590d\u523b')+'</div>';
+    var meta=document.createElement('div'); meta.textContent=training?'\u6b63\u5728\u590d\u523b\uff0c\u5b8c\u6210\u540e\u4f1a\u751f\u6210\u8bd5\u542c\u97f3\u9891':(used?'\u5df2\u751f\u6210\u8bd5\u542c\uff0c\u53ef\u5728\u97f3\u9891\u6a21\u5757\u4e2d\u4f7f\u7528':(quotaExhausted?'重新复刻次数已用完':'\u53ef\u7528\u4e8e\u590d\u523b\u4e2a\u4eba\u97f3\u8272')); meta.style.cssText='font-size:11.5px;color:'+(used?'#94a4bb':'#5c6b82')+';line-height:1.5;';
     w.appendChild(tag); w.appendChild(title); w.appendChild(meta);
     if(completed && !readonly){
       var renameBtn=document.createElement('button');
@@ -1096,7 +1140,7 @@
     }
     if(completed && !readonly){
       var actions=document.createElement('div');
-      actions.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:2px;padding-top:12px;border-top:1px solid rgba(148,164,187,.1);';
+      actions.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:2px;padding-top:12px;border-top:1px solid rgba(148,164,187,.1);';
       var remain=document.createElement('div');
       remain.textContent='\u5269\u4f59\u91cd\u65b0\u590d\u523b\u6b21\u6570\uff1a'+recloneRemain+' / '+recloneMax+'\u6b21';
       remain.style.cssText='font-size:11.5px;color:'+(recloneRemain>0?'#94a4bb':'#f4708a')+';line-height:1.4;';
@@ -1106,7 +1150,12 @@
       redo.disabled=recloneRemain<=0;
       redo.style.cssText='height:32px;padding:0 12px;border:1px solid '+(recloneRemain>0?'rgba(45,212,191,.34)':'rgba(148,164,187,.12)')+';border-radius:9px;background:'+(recloneRemain>0?'rgba(45,212,191,.1)':'rgba(148,164,187,.06)')+';color:'+(recloneRemain>0?'#2dd4bf':'#5c6b82')+';font-size:12px;font-weight:700;cursor:'+(recloneRemain>0?'pointer':'not-allowed')+';font-family:inherit;white-space:nowrap;';
       redo.onclick=function(e){ e.preventDefault(); e.stopPropagation(); if(recloneRemain>0) openCloneVoiceModal(slot); };
-      actions.appendChild(remain); actions.appendChild(redo); w.appendChild(actions);
+      var del=document.createElement('button');
+      del.type='button'; del.textContent='删除'; del.title='删除个人音色';
+      del.style.cssText='height:32px;padding:0 11px;border:1px solid rgba(244,112,138,.3);border-radius:9px;background:rgba(244,112,138,.08);color:#f4708a;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap;';
+      del.onclick=function(e){ e.preventDefault(); e.stopPropagation(); openDeleteVoiceModal(slot); };
+      var buttons=document.createElement('div'); buttons.style.cssText='display:flex;align-items:center;gap:7px;margin-left:auto;'; buttons.appendChild(redo); buttons.appendChild(del);
+      actions.appendChild(remain); actions.appendChild(buttons); w.appendChild(actions);
     }
     if(slot.preview_url){
       var playBtn=document.createElement('button');

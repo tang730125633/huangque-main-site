@@ -75,6 +75,14 @@ def object_url(rel_key, private=False):
     return _url(_object_key(rel_key), private=private)
 
 
+def delete(rel_key):
+    """Delete an object by its repository-relative COS key."""
+    if not enabled():
+        raise RuntimeError("COS 未配置")
+    _client().delete_object(Bucket=_BUCKET, Key=_object_key(rel_key))
+    return True
+
+
 def upload(local_path, rel_key, content_type=None, private=False):
     """把本地文件上传到 COS，返回可访问 URL。未启用或失败会抛异常，由调用方回退本地。"""
     if not enabled():

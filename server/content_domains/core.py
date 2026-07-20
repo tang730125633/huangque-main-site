@@ -397,6 +397,7 @@ def init_audio_db():
         _ensure_column(c, "audio_voices", "slot_id", "TEXT")
         _ensure_column(c, "audio_assets", "deleted", "INTEGER DEFAULT 0")
         _ensure_column(c, "audio_voice_slots", "reclone_count", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(c, "audio_voice_slots", "has_cloned", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(c, "audio_voice_slots", "clone_started_at", "INTEGER")
         _ensure_column(c, "audio_voice_slots", "previous_preview_url", "TEXT")
         _ensure_column(c, "audio_voice_slots", "clone_upload_at", "INTEGER")
@@ -406,6 +407,10 @@ def init_audio_db():
         _ensure_column(c, "audio_voice_slots", "clone_baseline_version", "TEXT")
         _ensure_column(c, "audio_voice_slots", "clone_baseline_icl_speaker_id", "TEXT")
         _ensure_column(c, "audio_voice_slots", "clone_baseline_demo_audio", "TEXT")
+        c.execute("""UPDATE audio_voice_slots SET has_cloned=1
+            WHERE COALESCE(has_cloned, 0)=0
+              AND (voice_id IS NOT NULL OR COALESCE(reclone_count, 0)>0
+                   OR clone_started_at IS NOT NULL OR clone_upload_at IS NOT NULL)""")
         _ensure_column(c, "video_assets", "reference_video_file", "TEXT")
         _ensure_column(c, "video_assets", "phase", "TEXT")
         _ensure_column(c, "video_assets", "image_asset_id", "TEXT")

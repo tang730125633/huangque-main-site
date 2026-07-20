@@ -185,7 +185,8 @@ def redeem_audio_voice_slot(username, code):
 
 def list_user_audio_voice_slots(username):
     with closing(adb()) as c:
-        rows = c.execute("""SELECT s.id, s.username, s.user_id, s.slot_id, s.status, s.voice_id, COALESCE(s.reclone_count, 0) AS reclone_count,
+        rows = c.execute("""SELECT s.id, s.username, s.user_id, s.slot_id, s.status, s.voice_id,
+                   COALESCE(s.reclone_count, 0) AS reclone_count,
                    s.created_at, s.updated_at, s.clone_started_at, s.clone_upload_at, s.clone_error,
                    s.clone_upload_speaker_id, s.clone_upload_response,
                    v.display_name AS voice_name, v.preview_file, v.preview_url, v.updated_at AS voice_updated_at
@@ -323,6 +324,42 @@ def finalize_ready_voice(username, slot_id, display_name=None, demo_audio=None, 
         c.commit()
     return {"voice_id": voice_id, "voice_key": voice_key, "display_name": name, "preview_file": preview_file, "preview_url": demo_audio, "status": "ready"}
 
+
+def _voice_preview_key(ref):
+    value = str(ref or "").strip().replace("\\", "/")
+    if value.startswith("/api/gen/file/"):
+        value = value[len("/api/gen/file/"):]
+    value = value.lstrip("/")
+    name = os.path.basename(value)
+    if value != "audio/" + name or not name.startswith("voice_preview_") or not name.endswith(".mp3"):
+        return ""
+    return value
+
+
+def _delete_voice_preview_file(ref, log_prefix):
+    key = _voice_preview_key(ref)
+    if not key:
+        return False, False
+    local_deleted = False
+    remote_deleted = False
+    try:
+        fp = _resolve_out_file(key)
+        if fp and fp.exists():
+            fp.unlink()
+            local_deleted = True
+    except Exception as e:
+        print("[%s] local preview cleanup failed file=%s error=%s" %
+              (log_prefix, os.path.basename(key), str(e)[:160]), flush=True)
+    if cos.enabled():
+        try:
+            cos.delete(key)
+            remote_deleted = True
+        except Exception as e:
+            print("[%s] COS preview cleanup failed key=%s error=%s" %
+                  (log_prefix, key, str(e)[:160]), flush=True)
+    return local_deleted, remote_deleted
+
+
 def clear_voice_preview(username, slot_id):
     username = (username or "").strip()
     slot_id = (slot_id or "").strip()
@@ -339,16 +376,9 @@ def clear_voice_preview(username, slot_id):
             url = r["preview_url"] or ""
             if url.startswith("/api/gen/file/"):
                 refs.append(url[len("/api/gen/file/"):])
-            for ref in refs:
-                name = os.path.basename(str(ref))
-                if name.startswith("voice_preview_") and name.endswith(".mp3"):
-                    fp = _resolve_out_file(ref)
-                    try:
-                        if fp and fp.exists():
-                            fp.unlink()
-                            removed += 1
-                    except Exception as e:
-                        print("[clear_voice_preview] delete failed file=%s error=%s" % (name, str(e)[:200]), flush=True)
+            for ref in set(refs):
+                local_deleted, _ = _delete_voice_preview_file(ref, "clear_voice_preview")
+                removed += int(local_deleted)
         c.execute("""UPDATE audio_voices SET preview_file=NULL, preview_url=NULL, updated_at=?
             WHERE username=? AND slot_id=?""", (int(time.time()), username, slot_id))
         c.commit()
@@ -502,6 +532,7 @@ def validate_clone_vip_payload(username, payload):
         raise CloneVipValidationError(400, "样音不是有效的 base64 音频")
     with closing(adb()) as c:
         slot = c.execute("""SELECT id, status, voice_id, COALESCE(reclone_count, 0) AS reclone_count,
+                COALESCE(has_cloned, 0) AS has_cloned,
                 updated_at, clone_upload_at
             FROM audio_voice_slots
             WHERE username=? AND slot_id=?""", (username, slot_id)).fetchone()
@@ -512,9 +543,9 @@ def validate_clone_vip_payload(username, payload):
         last_at = int(slot["clone_upload_at"] or slot["updated_at"] or 0)
         if last_at and now - last_at < 600:
             raise CloneVipValidationError(409, "音色正在复刻中，请等待完成")
-    is_reclone = slot["status"] == "ready" and bool(slot["voice_id"])
     reclone_count = int(slot["reclone_count"] or 0)
-    if is_reclone and reclone_count >= VOICE_RECLONE_MAX:
+    has_clone_history = bool(slot["has_cloned"] or slot["voice_id"] or reclone_count)
+    if has_clone_history and reclone_count >= VOICE_RECLONE_MAX:
         raise CloneVipValidationError(409, "该槽位已达复刻上限")
     checked = dict(payload)
     checked["slot_id"] = slot_id
@@ -529,34 +560,43 @@ def mark_clone_training(username, slot_id, name):
     now = int(time.time())
     voice_key = "vip_" + re.sub(r"[^a-zA-Z0-9_\\-]", "_", slot_id)
     with closing(adb()) as c:
-        slot = c.execute("""SELECT id, status, voice_id, COALESCE(reclone_count, 0) AS reclone_count, updated_at, clone_upload_at FROM audio_voice_slots
-            WHERE username=? AND slot_id=?""",
-            (username, slot_id)).fetchone()
-        if not slot:
-            raise ValueError("\u97f3\u8272\u69fd\u4f4d\u4e0d\u5b58\u5728\u6216\u4e0d\u5c5e\u4e8e\u5f53\u524d\u8d26\u53f7")
-        if slot["status"] == "training":
-            last_at = int(slot["clone_upload_at"] or slot["updated_at"] or 0)
-            if last_at and now - last_at < 600:
-                raise ValueError("\u97f3\u8272\u6b63\u5728\u590d\u523b\u4e2d\uff0c\u8bf7\u7b49\u5f85\u5b8c\u6210")
-        is_reclone = slot["status"] == "ready" and bool(slot["voice_id"])
-        reclone_count = int(slot["reclone_count"] or 0)
-        if is_reclone and reclone_count >= VOICE_RECLONE_MAX:
-            raise ValueError("该音色已达到最高%d次重新复刻上限" % VOICE_RECLONE_MAX)
-        next_reclone_count = reclone_count + 1 if is_reclone else reclone_count
-        c.execute("""INSERT OR IGNORE INTO audio_voices
-            (username, scope, voice_key, display_name, provider_voice, slot_id, created_at, updated_at)
-            VALUES(?,?,?,?,?,?,?,?)""",
-            (username, "personal", voice_key, name, slot_id, slot_id, now, now))
-        c.execute("""UPDATE audio_voices
-            SET display_name=?, provider_voice=?, slot_id=?, updated_at=?
-            WHERE username=? AND scope='personal' AND voice_key=?""",
-            (name, slot_id, slot_id, now, username, voice_key))
-        r = c.execute("SELECT id FROM audio_voices WHERE username=? AND scope='personal' AND voice_key=?",
-                      (username, voice_key)).fetchone()
-        voice_id = r["id"] if r else None
-        c.execute("""UPDATE audio_voice_slots SET voice_id=?, status='training', reclone_count=?, clone_started_at=?, clone_upload_at=NULL, clone_error=NULL, updated_at=?
-            WHERE username=? AND slot_id=?""", (voice_id, next_reclone_count, now, now, username, slot_id))
-        c.commit()
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            slot = c.execute("""SELECT id, status, voice_id, COALESCE(reclone_count, 0) AS reclone_count,
+                    COALESCE(has_cloned, 0) AS has_cloned, updated_at, clone_upload_at
+                FROM audio_voice_slots WHERE username=? AND slot_id=?""",
+                (username, slot_id)).fetchone()
+            if not slot:
+                raise ValueError("\u97f3\u8272\u69fd\u4f4d\u4e0d\u5b58\u5728\u6216\u4e0d\u5c5e\u4e8e\u5f53\u524d\u8d26\u53f7")
+            if slot["status"] == "training":
+                last_at = int(slot["clone_upload_at"] or slot["updated_at"] or 0)
+                if last_at and now - last_at < 600:
+                    raise ValueError("\u97f3\u8272\u6b63\u5728\u590d\u523b\u4e2d\uff0c\u8bf7\u7b49\u5f85\u5b8c\u6210")
+            reclone_count = int(slot["reclone_count"] or 0)
+            has_clone_history = bool(slot["has_cloned"] or slot["voice_id"] or reclone_count)
+            if has_clone_history and reclone_count >= VOICE_RECLONE_MAX:
+                raise ValueError("该音色已达到最高%d次重新复刻上限" % VOICE_RECLONE_MAX)
+            next_reclone_count = reclone_count + 1 if has_clone_history else reclone_count
+            c.execute("""INSERT OR IGNORE INTO audio_voices
+                (username, scope, voice_key, display_name, provider_voice, slot_id, created_at, updated_at)
+                VALUES(?,?,?,?,?,?,?,?)""",
+                (username, "personal", voice_key, name, slot_id, slot_id, now, now))
+            c.execute("""UPDATE audio_voices
+                SET display_name=?, provider_voice=?, slot_id=?, updated_at=?
+                WHERE username=? AND scope='personal' AND voice_key=?""",
+                (name, slot_id, slot_id, now, username, voice_key))
+            r = c.execute("SELECT id FROM audio_voices WHERE username=? AND scope='personal' AND voice_key=?",
+                          (username, voice_key)).fetchone()
+            voice_id = r["id"] if r else None
+            c.execute("""UPDATE audio_voice_slots
+                SET voice_id=?, status='training', reclone_count=?, has_cloned=1,
+                    clone_started_at=?, clone_upload_at=NULL, clone_error=NULL, updated_at=?
+                WHERE username=? AND slot_id=?""",
+                (voice_id, next_reclone_count, now, now, username, slot_id))
+            c.commit()
+        except Exception:
+            c.rollback()
+            raise
     clear_voice_preview(username, slot_id)
     return {"voice_id": voice_id, "voice_key": voice_key, "display_name": name, "status": "training", "reclone_count": next_reclone_count, "reclone_max": VOICE_RECLONE_MAX, "reclone_remaining": max(0, VOICE_RECLONE_MAX - next_reclone_count)}
 
@@ -642,15 +682,20 @@ def _cosy_backfill_preview_async(voice_id, username, voice_key):
         pf, url = _cosy_clone_preview(voice_id)
         if not url:
             return
+        stored = False
         try:
             with closing(adb()) as c:
-                c.execute("""UPDATE audio_voices SET preview_file=?, preview_url=?, updated_at=?
+                cur = c.execute("""UPDATE audio_voices SET preview_file=?, preview_url=?, updated_at=?
                     WHERE username=? AND scope='personal' AND voice_key=?
+                      AND provider_voice=?
                       AND (preview_url IS NULL OR preview_url='')""",
-                    (pf, url, int(time.time()), username, voice_key))
+                    (pf, url, int(time.time()), username, voice_key, voice_id))
+                stored = cur.rowcount == 1
                 c.commit()
         except Exception as e:
             print("[cosyvoice] 试听回填落库失败: %s" % str(e)[:120], flush=True)
+        if not stored:
+            _delete_voice_preview_file(pf, "cosyvoice_preview_backfill")
     threading.Thread(target=_run, name="cosy-preview-backfill", daemon=True).start()
 
 def _clone_via_cosyvoice(username, slot_id, name, audio_b64):
@@ -662,16 +707,24 @@ def _clone_via_cosyvoice(username, slot_id, name, audio_b64):
     raw = base64.b64decode(audio_b64)
     key = "voice-clone-input/%s_%d.mp3" % (uuid.uuid4().hex, int(time.time()))
     tmp = _out_path("audio/_cvref_%d.mp3" % int(time.time() * 1000))
-    tmp.write_bytes(raw)
+    uploaded = False
     try:
-        cos.upload(str(tmp), key)
+        tmp.write_bytes(raw)
+        cos.upload(str(tmp), key, private=True)
+        uploaded = True
         ref_url = cos.object_url(key, private=True)   # 短时效预签名，阿里同步拉取即可
+        voice_id = cosyvoice.create_voice(ref_url)
     finally:
         try:
             tmp.unlink()
         except Exception:
             pass
-    voice_id = cosyvoice.create_voice(ref_url)
+        if uploaded:
+            try:
+                cos.delete(key)
+            except Exception as e:
+                print("[cosyvoice] reference cleanup failed key=%s error=%s" %
+                      (key, str(e)[:160]), flush=True)
     status, _ = cosyvoice.voice_status(voice_id)
     slot_status = "ready" if status == "OK" else "training"
     now = int(time.time())
@@ -1003,10 +1056,11 @@ def delete_audio_voice(username, slot_id):
     provider_voice = ""
     preview_file = ""
     preview_url = ""
+    reclone_count = 0
     with closing(adb()) as c:
         try:
             c.execute("BEGIN IMMEDIATE")
-            row = c.execute("""SELECT s.status, s.voice_id,
+            row = c.execute("""SELECT s.status, s.voice_id, COALESCE(s.reclone_count, 0) AS reclone_count,
                        v.provider_voice, v.preview_file, v.preview_url
                 FROM audio_voice_slots s
                 LEFT JOIN audio_voices v
@@ -1023,12 +1077,13 @@ def delete_audio_voice(username, slot_id):
             provider_voice = (row["provider_voice"] or "").strip()
             preview_file = (row["preview_file"] or "").strip()
             preview_url = (row["preview_url"] or "").strip()
+            reclone_count = int(row["reclone_count"] or 0)
             c.execute("UPDATE audio_assets SET voice_id=NULL WHERE username=? AND voice_id=?",
                       (username, voice_id))
             c.execute("DELETE FROM audio_voices WHERE id=? AND username=? AND scope='personal'",
                       (voice_id, username))
             c.execute("""UPDATE audio_voice_slots
-                SET status='active', voice_id=NULL, clone_started_at=NULL,
+                SET status='active', voice_id=NULL, has_cloned=1, clone_started_at=NULL,
                     previous_preview_url=NULL, clone_upload_at=NULL, clone_error=NULL,
                     clone_upload_speaker_id=NULL, clone_upload_response=NULL,
                     clone_baseline_version=NULL, clone_baseline_icl_speaker_id=NULL,
@@ -1043,16 +1098,10 @@ def delete_audio_voice(username, slot_id):
     refs = [preview_file]
     if preview_url.startswith("/api/gen/file/"):
         refs.append(preview_url[len("/api/gen/file/"):])
-    for ref in refs:
-        name = os.path.basename(str(ref or ""))
-        if name.startswith("voice_preview_") and name.endswith(".mp3"):
-            try:
-                fp = _resolve_out_file(ref)
-                if fp and fp.exists():
-                    fp.unlink()
-            except Exception as e:
-                print("[delete_audio_voice] preview cleanup failed file=%s error=%s" %
-                      (name, str(e)[:160]), flush=True)
+    preview_deleted = False
+    for ref in set(refs):
+        local_deleted, cos_deleted = _delete_voice_preview_file(ref, "delete_audio_voice")
+        preview_deleted = preview_deleted or local_deleted or cos_deleted
 
     remote_deleted = False
     if provider_voice.startswith(cosyvoice.CLONE_MODEL) and cosyvoice.enabled():
@@ -1068,6 +1117,10 @@ def delete_audio_voice(username, slot_id):
         "status": "active",
         "voice_deleted": True,
         "remote_deleted": remote_deleted,
+        "preview_deleted": preview_deleted,
+        "reclone_count": reclone_count,
+        "reclone_max": VOICE_RECLONE_MAX,
+        "reclone_remaining": max(0, VOICE_RECLONE_MAX - reclone_count),
     }
 
 def list_audio_assets(username, limit=120):

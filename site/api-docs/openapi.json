@@ -784,7 +784,7 @@
         "tags": [
           "配音音色"
         ],
-        "summary": "删除个人音色并保留已购买槽位",
+        "summary": "删除个人音色并保留已购买槽位和重新复刻计数",
         "requestBody": {
           "required": true,
           "content": {
@@ -800,7 +800,7 @@
           }
         },
         "responses": {
-          "200": {"description": "音色已删除，槽位重置为 active"},
+          "200": {"description": "音色及相关资源已删除，槽位重置为 active；重新复刻计数不重置，达到上限后不能再次复刻"},
           "400": {"description": "槽位中没有可删除的音色"},
           "401": {"description": "未登录或 token 无效"},
           "404": {"description": "音色槽位不存在或无权访问"},

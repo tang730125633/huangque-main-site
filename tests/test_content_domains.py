@@ -286,11 +286,12 @@ class ContentDomainTests(unittest.TestCase):
                     c.execute("""CREATE TABLE audio_voice_slots(
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         username TEXT, slot_id TEXT, status TEXT, voice_id INTEGER,
-                        reclone_count INTEGER, updated_at INTEGER, clone_upload_at INTEGER
+                        reclone_count INTEGER, has_cloned INTEGER,
+                        updated_at INTEGER, clone_upload_at INTEGER
                     )""")
                     c.execute("""INSERT INTO audio_voice_slots
-                        (username, slot_id, status, voice_id, reclone_count, updated_at, clone_upload_at)
-                        VALUES('fang','S_demo','ready',7,9,100,100)""")
+                        (username, slot_id, status, voice_id, reclone_count, has_cloned, updated_at, clone_upload_at)
+                        VALUES('fang','S_demo','ready',7,9,1,100,100)""")
                     c.commit()
 
                 before = self._slot_snapshot(test_adb, "fang", "S_demo")
@@ -336,11 +337,12 @@ class ContentDomainTests(unittest.TestCase):
                     c.execute("""CREATE TABLE audio_voice_slots(
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         username TEXT, slot_id TEXT, status TEXT, voice_id INTEGER,
-                        reclone_count INTEGER, updated_at INTEGER, clone_upload_at INTEGER
+                        reclone_count INTEGER, has_cloned INTEGER,
+                        updated_at INTEGER, clone_upload_at INTEGER
                     )""")
                     c.execute("""INSERT INTO audio_voice_slots
-                        (username, slot_id, status, voice_id, reclone_count, updated_at, clone_upload_at)
-                        VALUES('fang','S_demo','active',NULL,0,100,100)""")
+                        (username, slot_id, status, voice_id, reclone_count, has_cloned, updated_at, clone_upload_at)
+                        VALUES('fang','S_demo','active',NULL,0,0,100,100)""")
                     c.commit()
                 payload = audio.validate_clone_vip_payload("fang", {
                     "slot_id": " S_demo ",
