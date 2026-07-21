@@ -563,9 +563,13 @@ def _normalize_characters(characters, *, require_complete=False):
     for index, character in enumerate(characters):
         if not isinstance(character, dict):
             raise ValueError("角色数据无效")
+        if require_complete and "source_type" not in character:
+            raise ValueError("短剧内容缺少字段: source_type")
         source_type = character.get("source_type", "ai_character")
         if not isinstance(source_type, str) or source_type not in {"cinematic_avatar", "ai_character"}:
             raise ValueError("角色数据无效")
+        if require_complete and "voice_settings" not in character:
+            raise ValueError("短剧内容缺少字段: voice_settings")
         voice_settings = character.get("voice_settings", {})
         if not isinstance(voice_settings, dict):
             raise ValueError("角色语音设置必须是对象")

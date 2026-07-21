@@ -253,16 +253,24 @@ class ShortDramaProjectTests(unittest.TestCase):
             edited.pop(field, None)
             return edited
 
-        cases = (
-            ("identity", lambda character: without(character, "identity_text")),
-            ("personality", lambda character: without(character, "personality")),
-            ("appearance prompt", lambda character: without(character, "appearance_prompt")),
-            ("wardrobe prompt", lambda character: without(character, "wardrobe_prompt")),
-            ("empty identity", lambda character: dict(character, identity_text="")),
+        cases = []
+        for field in (
+            "character_key", "name", "identity_text", "personality",
+            "appearance_prompt", "wardrobe_prompt", "source_type",
+        ):
+            cases.extend((
+                ("missing " + field, lambda character, field=field: without(character, field)),
+                ("empty " + field, lambda character, field=field: dict(character, **{field: ""})),
+            ))
+        cases.extend((
+            ("missing voice settings", lambda character: without(character, "voice_settings")),
+            ("voice settings scalar", lambda character: dict(character, voice_settings="fast")),
+            ("voice key container", lambda character: dict(character, voice_key=[])),
+            ("avatar id scalar", lambda character: dict(character, avatar_id=123)),
             ("cinematic avatar id", lambda character: dict(
                 character, source_type="cinematic_avatar", avatar_id=None
             )),
-        )
+        ))
         for name, mutate in cases:
             with self.subTest(name=name):
                 project = self.applied_project()
@@ -273,6 +281,48 @@ class ShortDramaProjectTests(unittest.TestCase):
                         self.db, "alice", project["id"], before["revision"], characters
                     )
                 )
+
+    def test_character_edits_accept_complete_ai_and_cinematic_avatar_contracts(self):
+        project = self.applied_project()
+        characters = [dict(character) for character in project["characters"]]
+        project = short_drama.update_characters(
+            self.db, "alice", project["id"], project["revision"], characters
+        )
+        self.assertEqual("ai_character", project["characters"][0]["source_type"])
+        self.assertIsNone(project["characters"][0]["avatar_id"])
+
+        characters = [dict(character) for character in project["characters"]]
+        characters[0].update({
+            "source_type": "cinematic_avatar", "avatar_id": "cinematic-avatar-1",
+        })
+        project = short_drama.update_characters(
+            self.db, "alice", project["id"], project["revision"], characters
+        )
+        self.assertEqual("cinematic_avatar", project["characters"][0]["source_type"])
+        self.assertEqual("cinematic-avatar-1", project["characters"][0]["avatar_id"])
+
+    def test_apply_plan_keeps_normalized_content_and_duplicate_job_id_atomic(self):
+        plan = valid_editable_plan()
+        project = short_drama.create_project(self.db, "alice", valid_project())
+        project = short_drama.apply_plan(
+            self.db, "alice", project["id"], project["revision"], plan,
+            planning_cost=3, planning_job_id=777,
+        )
+        self.assertEqual(["lin-mo", "su-qing"], [
+            character["character_key"] for character in project["characters"]
+        ])
+        self.assertEqual({"speed": 1}, project["characters"][0]["voice_settings"])
+        self.assertEqual(plan["script"]["hook"], project["script_versions"][0]["hook"])
+        self.assertEqual(["shot-%s" % index for index in range(6)], [
+            shot["shot_key"] for shot in project["shots"]
+        ])
+        before = self._content_snapshot(project["id"])
+        with self.assertRaises(short_drama.AppliedJobConflict):
+            short_drama.apply_plan(
+                self.db, "alice", project["id"], project["revision"], plan,
+                planning_cost=3, planning_job_id=777,
+            )
+        self.assertEqual(before, self._content_snapshot(project["id"]))
 
     def test_content_update_access_dispatch_and_stage_rejections_are_atomic(self):
         cases = (
