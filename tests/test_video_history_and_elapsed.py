@@ -53,7 +53,8 @@ class HistoryIsNotClobberedByTheDraftTests(unittest.TestCase):
         用户会眼睁睁看着自己刚提交的卡片消失一下。"""
         block = HTML.split("function loadVideoHistory")[1].split("function ")[0]
         self.assertIn("if(!videoDrafts.length) renderVideoHistoryState('正在读取生成记录...'", block)
-        self.assertIn("videoHistoryItems=d.items||[]", block)
+        self.assertIn("return requestVideoHistoryItems()", block)
+        self.assertIn("videoHistoryItems=items; renderVideoOutput();", block)
         # 历史拉失败时，也不能把在飞的那条一起弄没
         self.assertIn("if(videoDrafts.length) renderVideoOutput();", block)
 
