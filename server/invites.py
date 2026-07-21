@@ -7,9 +7,13 @@
 import datetime
 import hashlib
 import hmac
+import io
+import json
 import os
 import secrets
 import time
+import zipfile
+from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
 
 
@@ -190,7 +194,8 @@ def validate_code(conn, code, now=None):
                            FROM invite_codes ic
                            JOIN invite_campaigns c ON c.id=ic.campaign_id
                            JOIN users u ON u.id=ic.inviter_user_id
-                           WHERE ic.code=? AND ic.status='active'""", (code,)).fetchone()
+                           WHERE ic.code=? AND ic.status='active'
+                             AND COALESCE(u.account_status,'active')='active'""", (code,)).fetchone()
     if not row:
         raise InviteError("invalid_code", "邀请码无效", 404)
     if row["campaign_status"] != "enabled":
@@ -328,3 +333,273 @@ def referrer(conn, invitee_user_id):
         "risk_status": row["risk_status"],
         "bound_at": row["bound_at"],
     }
+
+
+ADMIN_RELATION_ACTIONS = {"invalidate", "unbind", "restore", "ban", "unban"}
+
+
+def admin_update_config(conn, payload, operator_user_id=None, now=None):
+    """Update the current invite campaign with a small, validated allow-list."""
+    now = int(now or time.time())
+    row = _campaign_row(conn)
+    if not row:
+        raise InviteError("campaign_missing", "邀请活动不存在", 404)
+    name = str(payload.get("name", row["name"]) or "").strip()
+    status = str(payload.get("status", row["status"]) or "").strip()
+    if not name or len(name) > 80:
+        raise InviteError("invalid_name", "活动名称应为 1-80 个字符")
+    if status not in {"enabled", "disabled"}:
+        raise InviteError("invalid_status", "活动状态不正确")
+
+    def optional_ts(key):
+        value = payload.get(key, row[key])
+        if value in (None, ""):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            raise InviteError("invalid_time", "活动时间格式不正确")
+
+    start_at = optional_ts("start_at")
+    end_at = optional_ts("end_at")
+    if start_at is not None and end_at is not None and start_at >= end_at:
+        raise InviteError("invalid_time_range", "结束时间必须晚于开始时间")
+    try:
+        daily_limit = int(payload.get("daily_invite_limit", row["daily_invite_limit"]))
+    except (TypeError, ValueError):
+        raise InviteError("invalid_daily_limit", "每日邀请上限必须是整数")
+    if daily_limit < 1 or daily_limit > 100000:
+        raise InviteError("invalid_daily_limit", "每日邀请上限应为 1-100000")
+    required = 1 if bool(payload.get("code_required", row["code_required"])) else 0
+    before = dict(row)
+    conn.execute("""UPDATE invite_campaigns
+                    SET name=?,status=?,start_at=?,end_at=?,code_required=?,
+                        daily_invite_limit=?,updated_at=? WHERE id=?""", (
+        name, status, start_at, end_at, required, daily_limit, now, row["id"],
+    ))
+    after = dict(conn.execute("SELECT * FROM invite_campaigns WHERE id=?", (row["id"],)).fetchone())
+    if operator_user_id is not None:
+        conn.execute("""INSERT INTO invite_admin_audit(
+            operator_user_id,invite_relation_id,action,reason,before_json,after_json,created_at
+        ) VALUES(?,0,'config_update','',?,?,?)""", (
+            int(operator_user_id), json.dumps(before, ensure_ascii=False),
+            json.dumps(after, ensure_ascii=False), now,
+        ))
+    return after
+
+
+def admin_stats(conn, days=30, now=None):
+    now = int(now or time.time())
+    try:
+        days = max(1, min(int(days or 30), 180))
+    except (TypeError, ValueError):
+        days = 30
+    since = day_start(now) - (days - 1) * 86400
+    totals = conn.execute("""SELECT COUNT(*) AS total,
+        SUM(CASE WHEN status='bound' THEN 1 ELSE 0 END) AS bound,
+        SUM(CASE WHEN status='invalid' THEN 1 ELSE 0 END) AS invalid,
+        SUM(CASE WHEN status='unbound' THEN 1 ELSE 0 END) AS unbound,
+        SUM(CASE WHEN risk_status='review' THEN 1 ELSE 0 END) AS review,
+        SUM(CASE WHEN risk_status='blocked' THEN 1 ELSE 0 END) AS blocked,
+        COUNT(DISTINCT inviter_user_id) AS inviters
+        FROM user_invites""").fetchone()
+    today = conn.execute("SELECT COUNT(*) FROM user_invites WHERE bound_at>=?", (day_start(now),)).fetchone()[0]
+    rows = conn.execute("""SELECT strftime('%Y-%m-%d',bound_at,'unixepoch','localtime') AS day,COUNT(*) AS count
+                           FROM user_invites WHERE bound_at>=? GROUP BY day ORDER BY day""", (since,)).fetchall()
+    series_map = {row["day"]: int(row["count"]) for row in rows}
+    series = []
+    start_date = datetime.datetime.fromtimestamp(since, SHANGHAI).date()
+    for offset in range(days):
+        label = (start_date + datetime.timedelta(days=offset)).isoformat()
+        series.append({"date": label, "count": series_map.get(label, 0)})
+    return {
+        "total": int(totals["total"] or 0), "today": int(today or 0),
+        "bound": int(totals["bound"] or 0), "invalid": int(totals["invalid"] or 0),
+        "unbound": int(totals["unbound"] or 0), "review": int(totals["review"] or 0),
+        "blocked": int(totals["blocked"] or 0), "inviters": int(totals["inviters"] or 0),
+        "days": days, "series": series,
+    }
+
+
+def _admin_relation_where(filters):
+    clauses, params = [], []
+    joins = """ FROM user_invites ui
+        JOIN users inviter ON inviter.id=ui.inviter_user_id
+        JOIN users invitee ON invitee.id=ui.invitee_user_id
+        JOIN invite_campaigns c ON c.id=ui.campaign_id """
+    for key, alias in (("inviter", "inviter"), ("invitee", "invitee")):
+        value = str(filters.get(key) or "").strip()
+        if value:
+            clauses.append(f"({alias}.username LIKE ? OR {alias}.display_name LIKE ? OR {alias}.account_id LIKE ?)")
+            params.extend(["%" + value + "%"] * 3)
+    code = normalize_code(filters.get("code"))
+    if code:
+        clauses.append("ui.invite_code=?"); params.append(code)
+    status = str(filters.get("status") or "").strip()
+    if status:
+        if status not in {"bound", "invalid", "unbound"}:
+            raise InviteError("invalid_status", "关系状态筛选不正确")
+        clauses.append("ui.status=?"); params.append(status)
+    risk = str(filters.get("risk_status") or "").strip()
+    if risk:
+        if risk not in {"normal", "review", "blocked"}:
+            raise InviteError("invalid_risk_status", "风控状态筛选不正确")
+        clauses.append("ui.risk_status=?"); params.append(risk)
+    for key, op in (("start_at", ">="), ("end_at", "<=")):
+        value = filters.get(key)
+        if value not in (None, ""):
+            try:
+                clauses.append("ui.bound_at" + op + "?"); params.append(int(value))
+            except (TypeError, ValueError):
+                raise InviteError("invalid_time", "时间筛选格式不正确")
+    return joins + ((" WHERE " + " AND ".join(clauses)) if clauses else ""), params
+
+
+def admin_relations(conn, filters=None, limit=50, offset=0):
+    filters = filters or {}
+    try:
+        limit = max(1, min(int(limit or 50), 200)); offset = max(0, int(offset or 0))
+    except (TypeError, ValueError):
+        raise InviteError("invalid_pagination", "分页参数不正确")
+    joins, params = _admin_relation_where(filters)
+    total = conn.execute("SELECT COUNT(*)" + joins, params).fetchone()[0]
+    rows = conn.execute("""SELECT ui.*,c.name AS campaign_name,
+        inviter.username AS inviter_username,inviter.display_name AS inviter_name,inviter.account_id AS inviter_account_id,
+        invitee.username AS invitee_username,invitee.display_name AS invitee_name,invitee.account_id AS invitee_account_id,
+        COALESCE(invitee.account_status,'active') AS invitee_account_status
+        """ + joins + " ORDER BY ui.id DESC LIMIT ? OFFSET ?", params + [limit, offset]).fetchall()
+    return {"total": int(total), "limit": limit, "offset": offset, "items": [dict(row) for row in rows]}
+
+
+def admin_relation_action(conn, relation_id, action, reason, operator_user_id, now=None):
+    now = int(now or time.time())
+    action = str(action or "").strip()
+    reason = str(reason or "").strip()
+    if action not in ADMIN_RELATION_ACTIONS:
+        raise InviteError("invalid_action", "不支持的处理动作")
+    if action != "restore" and not reason:
+        raise InviteError("reason_required", "请填写处理原因")
+    row = conn.execute("SELECT * FROM user_invites WHERE id=?", (int(relation_id),)).fetchone()
+    if not row:
+        raise InviteError("relation_not_found", "邀请关系不存在", 404)
+    before = dict(row)
+    if action == "invalidate":
+        conn.execute("UPDATE user_invites SET status='invalid',invalid_reason=?,updated_at=? WHERE id=?", (reason, now, row["id"]))
+    elif action == "unbind":
+        conn.execute("UPDATE user_invites SET status='unbound',invalid_reason=?,updated_at=? WHERE id=?", (reason, now, row["id"]))
+    elif action == "restore":
+        conn.execute("UPDATE user_invites SET status='bound',risk_status='normal',invalid_reason=NULL,updated_at=? WHERE id=?", (now, row["id"]))
+    elif action == "ban":
+        conn.execute("UPDATE user_invites SET risk_status='blocked',invalid_reason=?,updated_at=? WHERE id=?", (reason, now, row["id"]))
+        conn.execute("UPDATE users SET account_status='banned' WHERE id=?", (row["invitee_user_id"],))
+        conn.execute("DELETE FROM tokens WHERE username=(SELECT username FROM users WHERE id=?)", (row["invitee_user_id"],))
+    elif action == "unban":
+        conn.execute("UPDATE user_invites SET risk_status='normal',invalid_reason=NULL,updated_at=? WHERE id=?", (now, row["id"]))
+        conn.execute("UPDATE users SET account_status='active' WHERE id=?", (row["invitee_user_id"],))
+    after = dict(conn.execute("SELECT * FROM user_invites WHERE id=?", (row["id"],)).fetchone())
+    conn.execute("""INSERT INTO invite_admin_audit(
+        operator_user_id,invite_relation_id,action,reason,before_json,after_json,created_at
+    ) VALUES(?,?,?,?,?,?,?)""", (
+        int(operator_user_id), row["id"], action, reason,
+        json.dumps(before, ensure_ascii=False), json.dumps(after, ensure_ascii=False), now,
+    ))
+    return after
+
+
+def admin_audit(conn, limit=100):
+    try:
+        limit = max(1, min(int(limit or 100), 500))
+    except (TypeError, ValueError):
+        limit = 100
+    rows = conn.execute("""SELECT a.id,a.invite_relation_id,a.action,a.reason,a.created_at,
+        u.username AS operator_username,u.display_name AS operator_name
+        FROM invite_admin_audit a LEFT JOIN users u ON u.id=a.operator_user_id
+        ORDER BY a.id DESC LIMIT ?""", (limit,)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _xlsx_col(index):
+    out = ""
+    while index:
+        index, rem = divmod(index - 1, 26)
+        out = chr(65 + rem) + out
+    return out
+
+
+def export_relations_xlsx(conn, filters=None):
+    """Create a dependency-free XLSX report with inline UTF-8 strings."""
+    data = admin_relations(conn, filters or {}, limit=200, offset=0)
+    items = data["items"]
+    # Export must not silently truncate. Fetch all matching rows after a bounded count query.
+    if data["total"] > 200:
+        joins, params = _admin_relation_where(filters or {})
+        rows = conn.execute("""SELECT ui.*,c.name AS campaign_name,
+            inviter.username AS inviter_username,inviter.display_name AS inviter_name,inviter.account_id AS inviter_account_id,
+            invitee.username AS invitee_username,invitee.display_name AS invitee_name,invitee.account_id AS invitee_account_id,
+            COALESCE(invitee.account_status,'active') AS invitee_account_status
+            """ + joins + " ORDER BY ui.id DESC", params).fetchall()
+        items = [dict(row) for row in rows]
+    headers = ["关系ID", "邀请人账号", "邀请人昵称", "邀请人账号ID", "被邀请人账号", "被邀请人昵称",
+               "被邀请人账号ID", "邀请码", "来源", "关系状态", "风控状态", "账号状态", "绑定时间", "处理原因"]
+    rows = [headers]
+    for item in items:
+        bound = datetime.datetime.fromtimestamp(int(item["bound_at"]), SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
+        rows.append([item["id"], item["inviter_username"], item["inviter_name"] or "", item["inviter_account_id"] or "",
+                     item["invitee_username"], item["invitee_name"] or "", item["invitee_account_id"] or "",
+                     item["invite_code"], item["source"], item["status"], item["risk_status"],
+                     item["invitee_account_status"], bound, item["invalid_reason"] or ""])
+    sheet_rows = []
+    for r_idx, values in enumerate(rows, 1):
+        cells = []
+        for c_idx, value in enumerate(values, 1):
+            ref = _xlsx_col(c_idx) + str(r_idx)
+            style = ' s="1"' if r_idx == 1 else ''
+            if isinstance(value, (int, float)):
+                cells.append(f'<c r="{ref}"{style}><v>{value}</v></c>')
+            else:
+                cells.append(f'<c r="{ref}"{style} t="inlineStr"><is><t>{escape(str(value))}</t></is></c>')
+        row_style = ' ht="28" customHeight="1"' if r_idx == 1 else ' ht="22" customHeight="1"'
+        sheet_rows.append(f'<row r="{r_idx}"{row_style}>' + "".join(cells) + "</row>")
+    widths = [10, 18, 18, 16, 18, 18, 16, 12, 14, 12, 12, 12, 22, 28]
+    cols = "".join(f'<col min="{i}" max="{i}" width="{width}" customWidth="1"/>' for i, width in enumerate(widths, 1))
+    last_row = max(1, len(rows))
+    sheet = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' \
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' \
+        '<sheetViews><sheetView showGridLines="0" workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' \
+        '<cols>' + cols + '</cols><sheetData>' + "".join(sheet_rows) + \
+        f'</sheetData><autoFilter ref="A1:N{last_row}"/></worksheet>'
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?>' \
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' \
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' \
+            '<Default Extension="xml" ContentType="application/xml"/>' \
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' \
+            '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' \
+            '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' \
+            '</Types>')
+        zf.writestr("_rels/.rels", '<?xml version="1.0" encoding="UTF-8"?>' \
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' \
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>' \
+            '</Relationships>')
+        zf.writestr("xl/workbook.xml", '<?xml version="1.0" encoding="UTF-8"?>' \
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' \
+            '<sheets><sheet name="邀请关系" sheetId="1" r:id="rId1"/></sheets></workbook>')
+        zf.writestr("xl/_rels/workbook.xml.rels", '<?xml version="1.0" encoding="UTF-8"?>' \
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' \
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' \
+            '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' \
+            '</Relationships>')
+        zf.writestr("xl/styles.xml", '<?xml version="1.0" encoding="UTF-8"?>' \
+            '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' \
+            '<fonts count="2"><font><sz val="11"/><name val="Microsoft YaHei"/></font>' \
+            '<font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Microsoft YaHei"/></font></fonts>' \
+            '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' \
+            '<fill><patternFill patternType="solid"><fgColor rgb="FF176B5B"/><bgColor indexed="64"/></patternFill></fill></fills>' \
+            '<borders count="2"><border/><border><bottom style="thin"><color rgb="FFDDE5E1"/></bottom></border></borders>' \
+            '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' \
+            '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0"><alignment vertical="center"/></xf>' \
+            '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"><alignment vertical="center" wrapText="1"/></xf></cellXfs>' \
+            '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>')
+        zf.writestr("xl/worksheets/sheet1.xml", sheet)
+    return output.getvalue()

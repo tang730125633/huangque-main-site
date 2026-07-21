@@ -629,6 +629,27 @@ def auth_admin_request(path, token, method="GET", payload=None):
         raise err
 
 
+def auth_admin_raw(path, token):
+    if not AUTH_INTERNAL_TOKEN:
+        raise RuntimeError("auth internal token not configured")
+    req = urllib.request.Request(AUTH_BASE + path, headers={
+        "Authorization": "Bearer " + (token or ""),
+        "X-HQ-Internal-Token": AUTH_INTERNAL_TOKEN,
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.read(), r.headers.get("Content-Type"), r.headers.get("Content-Disposition")
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read() or b"{}")
+        except Exception:
+            body = {}
+        err = RuntimeError(body.get("detail") or "auth admin export failed")
+        err.status = e.code
+        err.body = body
+        raise err
+
+
 def auth_error_response(handler, exc):
     status = int(getattr(exc, "status", 502) or 502)
     body = getattr(exc, "body", None) or {"detail": str(exc)[:180]}
@@ -1388,6 +1409,15 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_raw(self, code, body, content_type, disposition=None):
+        self.send_response(code)
+        self.send_header("Content-Type", content_type or "application/octet-stream")
+        if disposition:
+            self.send_header("Content-Disposition", disposition)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _token(self):
         return request_token(self.headers)
 
@@ -1444,6 +1474,24 @@ class H(BaseHTTPRequestHandler):
             suffix = "/api/auth/admin/recharge/orders" + (("?" + q) if q else "")
             try:
                 return self._send(200, auth_admin_request(suffix, self._token()))
+            except Exception as e:
+                return auth_error_response(self, e)
+        if path in {
+            "/api/admin/invite/config", "/api/admin/invite/stats",
+            "/api/admin/invite/relations", "/api/admin/invite/audit",
+        }:
+            q = urllib.parse.urlparse(self.path).query
+            suffix = path.replace("/api/admin/", "/api/auth/admin/", 1) + (("?" + q) if q else "")
+            try:
+                return self._send(200, auth_admin_request(suffix, self._token()))
+            except Exception as e:
+                return auth_error_response(self, e)
+        if path == "/api/admin/invite/export.xlsx":
+            q = urllib.parse.urlparse(self.path).query
+            suffix = path.replace("/api/admin/", "/api/auth/admin/", 1) + (("?" + q) if q else "")
+            try:
+                body, content_type, disposition = auth_admin_raw(suffix, self._token())
+                return self._send_raw(200, body, content_type, disposition)
             except Exception as e:
                 return auth_error_response(self, e)
         if path == "/api/admin/ping":
@@ -1564,7 +1612,33 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": str(e)})
             except Exception as e:
                 return auth_error_response(self, e)
+        if path.startswith("/api/admin/invite/relations/"):
+            suffix = path.replace("/api/admin/", "/api/auth/admin/", 1)
+            try:
+                return self._send(200, auth_admin_request(
+                    suffix, self._token(), method="POST", payload=self._body(),
+                ))
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return auth_error_response(self, e)
         return self._send(404, {"detail": "not found"})
+
+    def do_PUT(self):
+        path = self.path.split("?", 1)[0]
+        if path != "/api/admin/invite/config":
+            return self._send(404, {"detail": "not found"})
+        user = self._admin()
+        if not user:
+            return
+        try:
+            return self._send(200, auth_admin_request(
+                "/api/auth/admin/invite/config", self._token(), method="PUT", payload=self._body(),
+            ))
+        except ValueError as e:
+            return self._send(400, {"detail": str(e)})
+        except Exception as e:
+            return auth_error_response(self, e)
 
     def do_OPTIONS(self):
         self.send_response(204)

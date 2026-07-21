@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # 黄雀 AI · 独立认证服务（零依赖，标准库）
 # 端口 127.0.0.1:8095，nginx 把 /api/auth/ 路由过来。与 leadgen(8090) 完全隔离。
-import sqlite3, hashlib, secrets, json, os, sys, time, urllib.parse, threading
+import datetime, sqlite3, hashlib, secrets, json, os, sys, time, urllib.parse, threading
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -156,6 +156,8 @@ def init_db():
     user_cols = {r["name"] for r in c.execute("PRAGMA table_info(users)").fetchall()}
     if "account_id" not in user_cols:
         c.execute("ALTER TABLE users ADD COLUMN account_id TEXT")
+    if "account_status" not in user_cols:
+        c.execute("ALTER TABLE users ADD COLUMN account_status TEXT NOT NULL DEFAULT 'active'")
     _ensure_all_account_ids(c)
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_account_id ON users(account_id)")
     c.execute("""CREATE TABLE IF NOT EXISTS tokens(
@@ -2110,10 +2112,12 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
-    def _send_raw(self, code, body, content_type="text/plain; charset=utf-8"):
+    def _send_raw(self, code, body, content_type="text/plain; charset=utf-8", extra_headers=None):
         body = body if isinstance(body, bytes) else str(body).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", content_type)
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, value)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -2174,7 +2178,8 @@ class H(BaseHTTPRequestHandler):
             return None
         c = db()
         r = c.execute("""SELECT u.* FROM tokens t JOIN users u ON u.username=t.username
-                         WHERE t.token=? AND (t.expires_at IS NULL OR t.expires_at > ?)""",
+                         WHERE t.token=? AND (t.expires_at IS NULL OR t.expires_at > ?)
+                           AND COALESCE(u.account_status,'active')='active'""",
                       (tok, int(time.time()))).fetchone()
         c.close()
         return r
@@ -2202,6 +2207,38 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        admin_invite_prefix = "/api/auth/admin/invite/relations/"
+        if p.startswith(admin_invite_prefix):
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            parts = p[len(admin_invite_prefix):].strip("/").split("/")
+            if len(parts) != 2:
+                return self._send(404, {"detail": "not found"})
+            try:
+                relation_id = int(parts[0])
+            except (TypeError, ValueError):
+                return self._send(400, {"detail": "关系 ID 不正确"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            c = db()
+            try:
+                relation = invites.admin_relation_action(
+                    c, relation_id, parts[1], d.get("reason"), admin["id"],
+                )
+                c.commit()
+                return self._send(200, {"ok": True, "relation": relation})
+            except invites.InviteError as exc:
+                c.rollback()
+                return self._send(exc.http_status, {"detail": exc.detail, "code": exc.code})
+            except Exception:
+                c.rollback()
+                return self._send(500, {"detail": "邀请关系处理失败"})
+            finally:
+                c.close()
         if p in ("/api/invite/code/rotate", "/api/auth/invite/code/rotate"):
             row = self._user()
             if not row:
@@ -2560,6 +2597,8 @@ class H(BaseHTTPRequestHandler):
             if not row or hash_pw(pw, row["pw_salt"]) != row["pw_hash"]:
                 self._record_login_failure(u)
                 return self._send(401, {"detail": "账号或密码错误"})
+            if row["account_status"] != "active":
+                return self._send(403, {"detail": "账号已被停用，请联系管理员", "code": "account_banned"})
             self._clear_login_failures(u)
             account_id = row["account_id"] or ensure_account_id(u)
             tok = issue_token(u)
@@ -2581,6 +2620,8 @@ class H(BaseHTTPRequestHandler):
             if not row or hash_pw(pw, row["pw_salt"]) != row["pw_hash"]:
                 self._record_login_failure(u)
                 return self._send(401, {"detail": "账号或密码错误"})
+            if row["account_status"] != "active":
+                return self._send(403, {"detail": "账号已被停用，请联系管理员", "code": "account_banned"})
             self._clear_login_failures(u)
             account_id = row["account_id"] or ensure_account_id(u)
             tok = issue_token(u)
@@ -2869,6 +2910,32 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, **data})
         self._send(404, {"detail": "not found"})
 
+    def do_PUT(self):
+        p = self.path.split("?", 1)[0]
+        if p != "/api/auth/admin/invite/config":
+            return self._send(404, {"detail": "not found"})
+        if not self._require_internal():
+            return
+        admin = self._require_admin_user()
+        if not admin:
+            return
+        d = self._body()
+        if self._bad_json():
+            return self._send(400, {"detail": "请求体不是合法 JSON"})
+        c = db()
+        try:
+            config = invites.admin_update_config(c, d, admin["id"])
+            c.commit()
+            return self._send(200, {"ok": True, "config": config})
+        except invites.InviteError as exc:
+            c.rollback()
+            return self._send(exc.http_status, {"detail": exc.detail, "code": exc.code})
+        except Exception:
+            c.rollback()
+            return self._send(500, {"detail": "邀请活动配置保存失败"})
+        finally:
+            c.close()
+
     def do_DELETE(self):
         p = self.path.split("?")[0]
         friend_prefix = "/api/auth/friends/"
@@ -2915,6 +2982,44 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path.split("?")[0]
+        if p.startswith("/api/auth/admin/invite/"):
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            c = db()
+            try:
+                if p == "/api/auth/admin/invite/config":
+                    row = c.execute("SELECT * FROM invite_campaigns ORDER BY id DESC LIMIT 1").fetchone()
+                    return self._send(200, {"ok": True, "config": dict(row) if row else None})
+                if p == "/api/auth/admin/invite/stats":
+                    return self._send(200, {"ok": True, **invites.admin_stats(c, (query.get("days") or ["30"])[0])})
+                filters = {
+                    key: (query.get(key) or [""])[0]
+                    for key in ("inviter", "invitee", "code", "status", "risk_status", "start_at", "end_at")
+                }
+                if p == "/api/auth/admin/invite/relations":
+                    data = invites.admin_relations(
+                        c, filters, (query.get("limit") or ["50"])[0], (query.get("offset") or ["0"])[0],
+                    )
+                    return self._send(200, {"ok": True, **data})
+                if p == "/api/auth/admin/invite/audit":
+                    return self._send(200, {"ok": True, "items": invites.admin_audit(c, (query.get("limit") or ["100"])[0])})
+                if p == "/api/auth/admin/invite/export.xlsx":
+                    body = invites.export_relations_xlsx(c, filters)
+                    filename = "invite-relations-%s.xlsx" % datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+                    return self._send_raw(200, body,
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        {"Content-Disposition": 'attachment; filename="%s"' % filename})
+                return self._send(404, {"detail": "not found"})
+            except invites.InviteError as exc:
+                return self._send(exc.http_status, {"detail": exc.detail, "code": exc.code})
+            except Exception:
+                return self._send(500, {"detail": "邀请管理查询失败"})
+            finally:
+                c.close()
         if p in ("/api/invite/config", "/api/auth/invite/config"):
             c = db()
             try:

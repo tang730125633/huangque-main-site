@@ -74,6 +74,9 @@
     .table-wrap{width:100%;overflow-x:auto;border-radius:8px}
     .truncate{max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .feature-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+    .invite-config{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+    .invite-config label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px}
+    .invite-config .field,.invite-config select{width:100%;min-width:0}
     .feature-card{border:1px solid var(--line);border-radius:8px;background:rgba(32,40,34,.72);padding:14px;display:flex;flex-direction:column;gap:12px;min-height:154px}
     .feature-card.off{border-color:rgba(224,107,100,.28);background:rgba(224,107,100,.06)}
     .feature-card .meta{display:flex;gap:8px;flex-wrap:wrap}
@@ -83,7 +86,7 @@
     details.eplist summary{cursor:pointer;font-size:12px;color:var(--info);user-select:none}
     details.eplist .ep{padding:6px 0 6px 12px;border-left:2px solid var(--line);margin-top:6px}
     details.eplist .ep code{font-size:11px;word-break:break-all}
-    @media (max-width:960px){.shell{padding:20px 14px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid{grid-template-columns:1fr}header{flex-direction:column}.user{width:100%}}
+    @media (max-width:960px){.shell{padding:20px 14px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid,.invite-config{grid-template-columns:1fr}header{flex-direction:column}.user{width:100%}}
   </style>
 </head>
 <body>
@@ -120,6 +123,7 @@
         <button class="tab" data-module-tab="features">功能开关</button>
         <button class="tab" data-module-tab="users">用户管理</button>
         <button class="tab" data-module-tab="recharge">充值审批</button>
+        <button class="tab" data-module-tab="invite">邀请管理</button>
       </div>
 
       <section class="card span8 module-card" data-module="ops">
@@ -186,6 +190,37 @@
           <button id="rechargeRefresh">刷新充值申请</button>
         </div>
         <div id="rechargeBox"></div>
+      </section>
+      <section class="card span12 module-card" data-module="invite" hidden>
+        <div class="section-head">
+          <div><h2>邀请活动配置</h2><div class="hint">控制活动状态、邀请码是否必填、活动时间和单账号每日有效邀请上限。保存会记录管理员审计。</div></div>
+          <button class="primary" id="inviteSave">保存配置</button>
+        </div>
+        <div class="invite-config">
+          <label>活动名称<input class="field" id="inviteCampaignName" maxlength="80"></label>
+          <label>活动状态<select id="inviteCampaignStatus"><option value="enabled">开启</option><option value="disabled">关闭</option></select></label>
+          <label>邀请码规则<select id="inviteCodeRequired"><option value="0">选填</option><option value="1">必填</option></select></label>
+          <label>开始时间<input class="field" id="inviteStartAt" type="datetime-local"></label>
+          <label>结束时间<input class="field" id="inviteEndAt" type="datetime-local"></label>
+          <label>每日有效邀请上限<input class="field" id="inviteDailyLimit" type="number" min="1" max="100000"></label>
+        </div>
+      </section>
+      <section class="card span12 module-card" data-module="invite" hidden>
+        <div class="section-head"><div><h2>平台邀请统计</h2><div class="hint">统计口径与用户邀请中心保持一致。</div></div><span class="muted" id="inviteStatsRange">近 30 天</span></div>
+        <div class="grid" id="inviteStatsBox"></div>
+      </section>
+      <section class="card span12 module-card" data-module="invite" hidden>
+        <div class="section-head"><div><h2>邀请关系</h2><div class="hint">支持按邀请双方、邀请码、关系状态和风控状态筛选。</div></div><div class="actions"><button id="inviteRefresh">刷新</button><button class="primary" id="inviteExport">导出 XLSX</button></div></div>
+        <div class="toolbar">
+          <input class="field" id="inviteInviter" autocomplete="off" placeholder="邀请人账号 / 昵称 / ID">
+          <input class="field" id="inviteInvitee" autocomplete="off" placeholder="被邀请人账号 / 昵称 / ID">
+          <input class="field" id="inviteCode" autocomplete="off" maxlength="6" placeholder="邀请码">
+          <select id="inviteStatus"><option value="">全部关系</option><option value="bound">已绑定</option><option value="invalid">已无效</option><option value="unbound">已解绑</option></select>
+          <select id="inviteRisk"><option value="">全部风控</option><option value="normal">正常</option><option value="review">待复核</option><option value="blocked">已封禁</option></select>
+        </div>
+        <div id="inviteRelationsBox"></div>
+        <h2 style="margin-top:18px">管理员审计</h2>
+        <div id="inviteAuditBox"></div>
       </section>
       <section class="card span12 module-card" data-module="logs" hidden>
         <div class="section-head">
@@ -452,6 +487,79 @@
       .then(function(){toast(action==='approve'?'已确认到账':'已驳回');loadRecharge();loadUsers()})
       .catch(function(e){toast(e.message)});
   }
+  function inviteTimeInput(ts){
+    if(!ts) return '';
+    var d=new Date(Number(ts)*1000), pad=function(v){return String(v).padStart(2,'0')};
+    return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());
+  }
+  function inviteQuery(){
+    var q=[];
+    [['inviter','inviteInviter'],['invitee','inviteInvitee'],['code','inviteCode'],['status','inviteStatus'],['risk_status','inviteRisk']].forEach(function(x){
+      var v=(el(x[1]).value||'').trim(); if(v) q.push(x[0]+'='+encodeURIComponent(v));
+    });
+    q.push('limit=100');
+    return '?'+q.join('&');
+  }
+  function renderInviteConfig(d){
+    var c=d.config||{};
+    el('inviteCampaignName').value=c.name||'';
+    el('inviteCampaignStatus').value=c.status||'disabled';
+    el('inviteCodeRequired').value=String(Number(c.code_required||0));
+    el('inviteStartAt').value=inviteTimeInput(c.start_at);
+    el('inviteEndAt').value=inviteTimeInput(c.end_at);
+    el('inviteDailyLimit').value=c.daily_invite_limit||50;
+  }
+  function renderInviteStats(d){
+    var metrics=[['累计关系',d.total],['今日新增',d.today],['有效绑定',d.bound],['邀请人数',d.inviters],['待复核',d.review],['已封禁',d.blocked],['已无效',d.invalid],['已解绑',d.unbound]];
+    el('inviteStatsRange').textContent='近 '+(d.days||30)+' 天';
+    el('inviteStatsBox').innerHTML=metrics.map(function(x){return '<div class="card metric span3"><div><span>'+x[0]+'</span><b>'+Number(x[1]||0).toLocaleString()+'</b></div></div>'}).join('');
+  }
+  function inviteStatusName(v){return ({bound:'已绑定',invalid:'已无效',unbound:'已解绑',normal:'正常',review:'待复核',blocked:'已封禁',active:'正常',banned:'已停用'})[v]||v}
+  function renderInviteRelations(d){
+    var items=d.items||[];
+    if(!items.length){el('inviteRelationsBox').innerHTML='<div class="empty">暂无符合条件的邀请关系</div>';return}
+    el('inviteRelationsBox').innerHTML='<div class="hint" style="margin-bottom:8px">共 '+Number(d.total||0).toLocaleString()+' 条</div><div class="table-wrap"><table><thead><tr><th>邀请人</th><th>被邀请人</th><th>邀请码 / 来源</th><th>绑定时间</th><th>关系</th><th>风控 / 账号</th><th>处理</th></tr></thead><tbody>'+items.map(function(x){
+      var relation=x.status==='bound'?'<span class="pill ok">已绑定</span>':'<span class="pill warn">'+esc(inviteStatusName(x.status))+'</span>';
+      var risk=x.risk_status==='normal'?'<span class="pill ok">正常</span>':'<span class="pill fail">'+esc(inviteStatusName(x.risk_status))+'</span>';
+      var account=x.invitee_account_status==='banned'?'<span class="pill fail">账号停用</span>':'<span class="pill neutral">账号正常</span>';
+      var actions='<button class="mini" data-invite-act="invalidate" data-id="'+x.id+'">标记无效</button><button class="mini" data-invite-act="unbind" data-id="'+x.id+'">解绑</button>';
+      if(x.status!=='bound') actions+='<button class="mini" data-invite-act="restore" data-id="'+x.id+'">恢复</button>';
+      actions+=x.invitee_account_status==='banned'?'<button class="mini" data-invite-act="unban" data-id="'+x.id+'">解封账号</button>':'<button class="mini danger" data-invite-act="ban" data-id="'+x.id+'">封禁账号</button>';
+      return '<tr><td><b>'+esc(x.inviter_username)+'</b><div class="muted">'+esc(x.inviter_name||'')+' · '+esc(x.inviter_account_id||'')+'</div></td><td><b>'+esc(x.invitee_username)+'</b><div class="muted">'+esc(x.invitee_name||'')+' · '+esc(x.invitee_account_id||'')+'</div></td><td><code>'+esc(x.invite_code)+'</code><div class="muted">'+esc(x.source)+'</div></td><td><code>'+fmtTime(x.bound_at)+'</code></td><td>'+relation+'<div class="muted truncate" title="'+esc(x.invalid_reason||'')+'">'+esc(x.invalid_reason||'')+'</div></td><td>'+risk+' '+account+'</td><td><div class="actions">'+actions+'</div></td></tr>';
+    }).join('')+'</tbody></table></div>';
+    Array.prototype.forEach.call(document.querySelectorAll('[data-invite-act]'),function(btn){btn.onclick=function(){handleInviteAction(btn)}});
+  }
+  function renderInviteAudit(d){
+    var items=d.items||[];
+    if(!items.length){el('inviteAuditBox').innerHTML='<div class="empty">暂无管理员操作记录</div>';return}
+    el('inviteAuditBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>时间</th><th>管理员</th><th>关系 ID</th><th>动作</th><th>原因</th></tr></thead><tbody>'+items.map(function(x){return '<tr><td><code>'+fmtTime(x.created_at)+'</code></td><td>'+esc(x.operator_name||x.operator_username||'-')+'</td><td><code>'+(x.invite_relation_id||'-')+'</code></td><td>'+esc(x.action)+'</td><td>'+esc(x.reason||'-')+'</td></tr>'}).join('')+'</tbody></table></div>';
+  }
+  function loadInvite(){
+    if(!token) return;
+    Promise.all([
+      api('/api/admin/invite/config'),api('/api/admin/invite/stats?days=30'),
+      api('/api/admin/invite/relations'+inviteQuery()),api('/api/admin/invite/audit?limit=80')
+    ]).then(function(all){renderInviteConfig(all[0]);renderInviteStats(all[1]);renderInviteRelations(all[2]);renderInviteAudit(all[3])})
+      .catch(function(e){el('inviteRelationsBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
+  }
+  function saveInviteConfig(){
+    var payload={name:el('inviteCampaignName').value,status:el('inviteCampaignStatus').value,code_required:el('inviteCodeRequired').value==='1',daily_invite_limit:Number(el('inviteDailyLimit').value||0),start_at:el('inviteStartAt').value?Math.floor(new Date(el('inviteStartAt').value).getTime()/1000):null,end_at:el('inviteEndAt').value?Math.floor(new Date(el('inviteEndAt').value).getTime()/1000):null};
+    el('inviteSave').disabled=true;
+    api('/api/admin/invite/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+      .then(function(){toast('邀请活动配置已保存');loadInvite()}).catch(function(e){toast(e.message)}).finally(function(){el('inviteSave').disabled=false});
+  }
+  function handleInviteAction(btn){
+    var action=btn.getAttribute('data-invite-act'), id=btn.getAttribute('data-id');
+    var reason=action==='restore'?'':prompt('请填写处理原因'); if(reason===null) return;
+    btn.disabled=true;
+    api('/api/admin/invite/relations/'+encodeURIComponent(id)+'/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason:reason})})
+      .then(function(){toast('邀请关系已处理');loadInvite()}).catch(function(e){toast(e.message)}).finally(function(){btn.disabled=false});
+  }
+  function exportInvite(){
+    var url='/api/admin/invite/export.xlsx'+inviteQuery().replace('limit=100','');
+    fetch(url,{headers:authHeaders()}).then(function(r){if(!r.ok)return r.json().then(function(d){throw new Error(d.detail||'导出失败')});return r.blob()}).then(function(blob){var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='邀请关系-'+new Date().toISOString().slice(0,10)+'.xlsx';a.click();setTimeout(function(){URL.revokeObjectURL(a.href)},1000)}).catch(function(e){toast(e.message)});
+  }
+
   function renderStats(st){
     var rows=(st.by_kind||[]).map(function(x){
       return '<tr><td><b>'+esc(kindName(x.kind))+'</b><div class="muted">'+esc(x.kind)+'</div></td><td>'+Number(x.total||0).toLocaleString()+'</td><td>'+Number(x.done||0).toLocaleString()+'</td><td>'+Number(x.error||0).toLocaleString()+'</td><td>'+pct(x.success_rate)+'</td><td><div class="bar"><i style="width:'+pct(x.failure_rate)+'"></i></div><span class="muted">'+pct(x.failure_rate)+'</span></td></tr>';
@@ -463,6 +571,7 @@
     Array.prototype.forEach.call(document.querySelectorAll('[data-module-tab]'), function(btn){btn.classList.toggle('active', btn.getAttribute('data-module-tab')===name)});
     Array.prototype.forEach.call(document.querySelectorAll('[data-module]'), function(card){card.hidden=card.getAttribute('data-module')!==name});
     if(name==='logs'){loadReqLogs()}
+    if(name==='invite'){loadInvite()}
   }
   function render(d){
     state.data=d; setUser(d.user||{});
@@ -502,6 +611,12 @@
   el('rechargeRefresh').onclick=loadRecharge;
   el('rechargeStatus').onchange=loadRecharge;
   el('rechargeUser').oninput=function(){clearTimeout(state.rechargeTimer);state.rechargeTimer=setTimeout(loadRecharge,260)};
+  el('inviteSave').onclick=saveInviteConfig;
+  el('inviteRefresh').onclick=loadInvite;
+  el('inviteExport').onclick=exportInvite;
+  ['inviteInviter','inviteInvitee','inviteCode'].forEach(function(id){el(id).oninput=function(){clearTimeout(state.inviteTimer);state.inviteTimer=setTimeout(loadInvite,300)}});
+  el('inviteStatus').onchange=loadInvite;
+  el('inviteRisk').onchange=loadInvite;
   Array.prototype.forEach.call(document.querySelectorAll('[data-module-tab]'), function(btn){
     btn.onclick=function(){switchModule(btn.getAttribute('data-module-tab'))};
   });
