@@ -198,6 +198,23 @@
         </div>
       </section>
 
+      <section class="settings-card">
+        <div class="settings-card-body">
+          <div class="settings-card-head">
+            <div>
+              <div class="settings-card-title">邀请关系</div>
+              <div class="settings-card-note">查看推荐你加入黄雀 AI 的用户。</div>
+            </div>
+            <span id="referrerStatus" class="badge muted">读取中</span>
+          </div>
+          <div class="info-grid">
+            <div class="info-cell"><div class="info-label">推荐人昵称</div><div id="referrerName" class="info-value">--</div></div>
+            <div class="info-cell"><div class="info-label">推荐人账号 ID</div><div id="referrerAccountId" class="info-value mono">--</div></div>
+          </div>
+          <div class="action-row" style="margin-top:14px"><a class="btn primary" href="invite.html">进入邀请中心</a></div>
+        </div>
+      </section>
+
       <section id="friendsPanelCard" class="settings-card" aria-hidden="true">
         <div class="settings-card-body">
           <div class="settings-card-head">
@@ -388,7 +405,7 @@
   </section>
 </div>
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=302ad2ce"></script>
+<script src="cloud-shell.js?v=fd9c93d1"></script>
 <script>
 (function(){
   var $ = function(id){return document.getElementById(id);};
@@ -539,6 +556,25 @@
     if(!$('nicknameForm').hidden) $('nicknameInput').value = name;
     try{localStorage.setItem('hq_user', JSON.stringify(user));}catch(e){}
     loadPreferences();
+  }
+
+  function loadReferrer(){
+    apiFetch('/api/invite/referrer').then(function(res){
+      if(!res) return;
+      if(!res.ok) throw new Error(res.data && res.data.detail || '推荐人读取失败');
+      var referrer=res.data && res.data.referrer;
+      if(!referrer){
+        $('referrerStatus').textContent='无';
+        $('referrerName').textContent='无';
+        $('referrerAccountId').textContent='--';
+        return;
+      }
+      $('referrerStatus').textContent=referrer.status==='bound'?'已绑定':'已处理';
+      $('referrerName').textContent=referrer.name||'黄雀用户';
+      $('referrerAccountId').textContent=referrer.account_id||'--';
+    }).catch(function(){
+      $('referrerStatus').textContent='读取失败';
+    });
   }
 
   function setNicknameEditor(open){
@@ -1143,6 +1179,7 @@
         throw new Error(res.data && res.data.detail || '账号读取失败');
       }
       renderUser(res.data.user);
+      loadReferrer();
       loadFriendState();
       if(window.HQ && typeof window.HQ.refreshPoints === 'function') window.HQ.refreshPoints();
     }).catch(function(e){
