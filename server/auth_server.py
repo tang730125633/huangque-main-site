@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # 黄雀 AI · 独立认证服务（零依赖，标准库）
 # 端口 127.0.0.1:8095，nginx 把 /api/auth/ 路由过来。与 leadgen(8090) 完全隔离。
-import sqlite3, hashlib, secrets, json, os, sys, time, urllib.parse
+import sqlite3, hashlib, secrets, json, os, sys, time, urllib.parse, threading
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -86,6 +86,39 @@ CANVAS_PRESENCE_MAX_BYTES = 4096
 CANVAS_NODE_TYPES = {"text", "image", "reverse", "gen", "video"}
 CANVAS_OPS_RETAINED_BATCHES = 1000
 CANVAS_PRESENCE_WINDOW_SECONDS = 30
+CANVAS_MAX_BOARDS_PER_USER = int(os.environ.get("HQ_CANVAS_MAX_BOARDS_PER_USER", "50"))
+CANVAS_MAX_MEMBERS_PER_BOARD = int(os.environ.get("HQ_CANVAS_MAX_MEMBERS_PER_BOARD", "20"))
+CANVAS_OPS_RATE_WINDOW_SECONDS = int(os.environ.get("HQ_CANVAS_OPS_RATE_WINDOW_SECONDS", "10"))
+CANVAS_OPS_RATE_MAX_PER_WINDOW = int(os.environ.get("HQ_CANVAS_OPS_RATE_MAX_PER_WINDOW", "10"))
+CANVAS_PRESENCE_MIN_INTERVAL_SECONDS = int(os.environ.get("HQ_CANVAS_PRESENCE_MIN_INTERVAL_SECONDS", "3"))
+CANVAS_SYNC_MAX_WAIT_SECONDS = int(os.environ.get("HQ_CANVAS_SYNC_MAX_WAIT_SECONDS", "30"))
+CANVAS_SYNC_WAIT_MAX_CONCURRENT = int(os.environ.get("HQ_CANVAS_SYNC_WAIT_MAX_CONCURRENT", "100"))
+CANVAS_SYNC_WAIT_MAX_PER_USER = int(os.environ.get("HQ_CANVAS_SYNC_WAIT_MAX_PER_USER", "3"))
+# 长轮询等待名额: 全局信号量限制同时在 hold 的请求数(防线程被耗尽),
+# 每用户计数防单账号吃光全局额度; 超额时降级为立即返回(wait=0 行为)
+_CANVAS_SYNC_WAIT_SEMAPHORE = threading.BoundedSemaphore(value=max(1, CANVAS_SYNC_WAIT_MAX_CONCURRENT))
+_CANVAS_SYNC_WAIT_USERS = {}
+_CANVAS_SYNC_WAIT_USERS_LOCK = threading.Lock()
+
+def _canvas_sync_wait_acquire(username):
+    if not _CANVAS_SYNC_WAIT_SEMAPHORE.acquire(blocking=False):
+        return False
+    with _CANVAS_SYNC_WAIT_USERS_LOCK:
+        count = _CANVAS_SYNC_WAIT_USERS.get(username, 0)
+        if count >= CANVAS_SYNC_WAIT_MAX_PER_USER:
+            _CANVAS_SYNC_WAIT_SEMAPHORE.release()
+            return False
+        _CANVAS_SYNC_WAIT_USERS[username] = count + 1
+    return True
+
+def _canvas_sync_wait_release(username):
+    with _CANVAS_SYNC_WAIT_USERS_LOCK:
+        count = _CANVAS_SYNC_WAIT_USERS.get(username, 0)
+        if count <= 1:
+            _CANVAS_SYNC_WAIT_USERS.pop(username, None)
+        else:
+            _CANVAS_SYNC_WAIT_USERS[username] = count - 1
+    _CANVAS_SYNC_WAIT_SEMAPHORE.release()
 
 def db():
     c = sqlite3.connect(DB, timeout=10)
@@ -573,7 +606,8 @@ def list_canvas_members(c, board_id):
 
 def canvas_member_count(c, board_id):
     row = c.execute("SELECT COUNT(*) AS n FROM canvas_members WHERE board_id=?", (board_id,)).fetchone()
-    return int(row["n"] or 0) if row else 0
+    # +1：创建者本人也算成员
+    return (int(row["n"] or 0) if row else 0) + 1
 
 def public_canvas_board(row, role, include_data=False, members_count=None):
     board = {
@@ -605,24 +639,45 @@ def canvas_role_and_board(c, username, board_id):
         return None, row
     return member["role"], row
 
-def list_canvas_boards(username):
+def list_canvas_boards(username, limit=None, offset=0):
     c = db()
     try:
-        items = []
-        owned = c.execute("""SELECT b.*, (SELECT COUNT(*) FROM canvas_members m WHERE m.board_id=b.id) AS members_count
-                             FROM canvas_boards b
-                             WHERE b.owner_username=?""", (username,)).fetchall()
-        shared = c.execute("""SELECT b.*, m.role AS access_role,
-                                     (SELECT COUNT(*) FROM canvas_members cm WHERE cm.board_id=b.id) AS members_count
-                              FROM canvas_members m
-                              JOIN canvas_boards b ON b.id=m.board_id
-                              WHERE m.username=? AND b.owner_username<>?""", (username, username)).fetchall()
-        for row in owned:
-            items.append(public_canvas_board(row, "owner", members_count=row["members_count"]))
-        for row in shared:
-            items.append(public_canvas_board(row, row["access_role"], members_count=row["members_count"]))
-        items.sort(key=lambda item: item["updated_at"], reverse=True)
-        return items, None
+        # 分页下推 SQL：UNION ALL 后在数据库内排序切片，避免全量拉取
+        # 次键 id DESC 保证 updated_at 相同时顺序确定，跨页不重不漏
+        offset = max(int(offset or 0), 0)
+        params = [username, username, username]
+        if limit is not None:
+            limit = max(int(limit), 0)
+            page_clause = " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        elif offset:
+            # SQLite 的 OFFSET 必须搭配 LIMIT；-1 表示不限行数
+            page_clause = " LIMIT -1 OFFSET ?"
+            params.append(offset)
+        else:
+            page_clause = ""
+        rows = c.execute("""SELECT * FROM (
+                                SELECT b.*, 'owner' AS access_role
+                                FROM canvas_boards b
+                                WHERE b.owner_username=?
+                                UNION ALL
+                                SELECT b.*, m.role AS access_role
+                                FROM canvas_members m
+                                JOIN canvas_boards b ON b.id=m.board_id
+                                WHERE m.username=? AND b.owner_username<>?
+                            ) ORDER BY updated_at DESC, id DESC""" + page_clause,
+                         params).fetchall()
+        # 成员数只对当前页逐行算（主键 COUNT），避免全量子查询
+        items = [public_canvas_board(row, row["access_role"],
+                                     members_count=canvas_member_count(c, row["id"]))
+                 for row in rows]
+        total_row = c.execute("""SELECT (SELECT COUNT(*) FROM canvas_boards WHERE owner_username=?)
+                                      + (SELECT COUNT(*) FROM canvas_members m
+                                         JOIN canvas_boards b ON b.id=m.board_id
+                                         WHERE m.username=? AND b.owner_username<>?) AS n""",
+                              (username, username, username)).fetchone()
+        total = int(total_row["n"] or 0) if total_row else 0
+        return items, total, None
     finally:
         c.close()
 
@@ -635,6 +690,10 @@ def create_canvas_board(username, payload):
         return None, err
     c = db()
     try:
+        owned = c.execute("SELECT COUNT(*) AS n FROM canvas_boards WHERE owner_username=?",
+                          (username,)).fetchone()
+        if owned and int(owned["n"] or 0) >= CANVAS_MAX_BOARDS_PER_USER:
+            return None, "too_many_boards"
         now = int(time.time())
         board_id = make_canvas_id(c)
         c.execute("""INSERT INTO canvas_boards(id, owner_username, name, data_json, version, created_at, updated_at)
@@ -696,6 +755,18 @@ def save_canvas_board(username, board_id, payload):
         c.execute("""UPDATE canvas_boards
                      SET name=?, data_json=?, version=version+1, updated_at=?
                      WHERE id=?""", (name, data_json, now, board_id))
+        # 写入检查点批次: 其他协作者 sync 时拿到 board.snapshot 直接覆盖本地,
+        # 不再因版本空洞触发 reset 全量重下
+        snapshot_ops = json.dumps(
+            [{"type": "board.snapshot", "name": name, "data": json.loads(data_json)}],
+            ensure_ascii=False, separators=(",", ":"))
+        c.execute("""INSERT INTO canvas_ops(board_id, version, op_id, client_id, username, ops_json, created_at)
+                     VALUES(?,?,?,?,?,?,?)""",
+                  (board_id, current_version + 1, "save-" + secrets.token_hex(8), "server", username, snapshot_ops, now))
+        c.execute("""DELETE FROM canvas_ops WHERE rowid IN (
+                     SELECT rowid FROM canvas_ops WHERE board_id=?
+                     ORDER BY version DESC LIMIT -1 OFFSET ?
+                   )""", (board_id, CANVAS_OPS_RETAINED_BATCHES))
         fresh = c.execute("SELECT * FROM canvas_boards WHERE id=?", (board_id,)).fetchone()
         board = public_canvas_board(fresh, role, include_data=True, members_count=canvas_member_count(c, board_id))
         board["members"] = list_canvas_members(c, board_id)
@@ -787,6 +858,19 @@ def normalize_canvas_ops_payload(payload):
             if err:
                 return None, err
             normalized.append({"type": kind, "name": name})
+        elif kind == "board.snapshot":
+            # 整体快照(由 /save 写入检查点,也允许客户端通过 /ops 提交):
+            # 收到方直接用 data 覆盖本地画布,避免全量 reset 重下
+            data = op.get("data")
+            if not isinstance(data, dict):
+                return None, "bad_op"
+            packed, err = pack_canvas_data(data)
+            if err:
+                return None, err
+            name, err = normalize_canvas_name(op.get("name"))
+            if err:
+                return None, err
+            normalized.append({"type": kind, "name": name, "data": json.loads(packed)})
         else:
             return None, "bad_op"
     return {"op_id": op_id.strip(), "client_id": client_id.strip(), "base_version": base_version, "ops": normalized}, None
@@ -853,6 +937,14 @@ def apply_canvas_ops_to_snapshot(data, name, ops):
             edges = [item for item in edges if canvas_edge_key(item) != deleted_key]
         elif kind == "board.rename":
             name = op["name"]
+        elif kind == "board.snapshot":
+            incoming = op["data"] if isinstance(op.get("data"), dict) else {}
+            snapshot = dict(incoming)
+            nodes = [dict(item) for item in snapshot.get("nodes", []) if isinstance(item, dict)]
+            edges = [dict(item) for item in snapshot.get("edges", []) if isinstance(item, dict)]
+            node_index = {item.get("id"): item for item in nodes if isinstance(item.get("id"), str) and item["id"]}
+            edge_index = {canvas_edge_key(item): item for item in edges if canvas_edge_key(item) is not None}
+            name = op["name"]
     snapshot["nodes"] = nodes
     snapshot["edges"] = edges
     return snapshot, name
@@ -870,17 +962,22 @@ def public_canvas_batch(row):
         "ops": ops,
     }
 
-def canvas_online_count(c, board_id, now=None):
+def canvas_online_users(c, board_id, now=None):
     now = int(time.time()) if now is None else int(now)
     cutoff = now - CANVAS_PRESENCE_WINDOW_SECONDS
     c.execute("DELETE FROM canvas_presence WHERE board_id=? AND last_seen<?", (board_id, cutoff))
-    row = c.execute("""SELECT COUNT(*) AS n
-                       FROM canvas_presence p
-                       JOIN canvas_boards b ON b.id=p.board_id
-                       LEFT JOIN canvas_members m ON m.board_id=p.board_id AND m.username=p.username
-                       WHERE p.board_id=? AND p.last_seen>=?
-                         AND (p.username=b.owner_username OR m.role='editor')""", (board_id, cutoff)).fetchone()
-    return int(row["n"] or 0) if row else 0
+    rows = c.execute("""SELECT DISTINCT p.username, u.display_name
+                        FROM canvas_presence p
+                        JOIN canvas_boards b ON b.id=p.board_id
+                        JOIN users u ON u.username=p.username
+                        LEFT JOIN canvas_members m ON m.board_id=p.board_id AND m.username=p.username
+                        WHERE p.board_id=? AND p.last_seen>=?
+                          AND (p.username=b.owner_username OR m.role IN ('viewer','editor'))
+                        ORDER BY p.username""", (board_id, cutoff)).fetchall()
+    return [{"username": r["username"], "name": r["display_name"] or r["username"]} for r in rows]
+
+def canvas_online_count(c, board_id, now=None):
+    return len(canvas_online_users(c, board_id, now))
 
 def apply_canvas_ops(username, board_id, payload):
     normalized, err = normalize_canvas_ops_payload(payload)
@@ -914,6 +1011,19 @@ def apply_canvas_ops(username, board_id, payload):
             }
             c.rollback()
             return result, None
+        current_version = int(row["version"] or 1)
+        if normalized["base_version"] != current_version:
+            # 客户端基于过期版本提交：拒绝并告知当前版本，让客户端先 sync 再重试，
+            # 避免后到请求静默覆盖其他协作者已提交的改动。
+            c.rollback()
+            return {"version": current_version}, "conflict"
+        rate_since = int(time.time()) - CANVAS_OPS_RATE_WINDOW_SECONDS
+        recent = c.execute("""SELECT COUNT(*) AS n FROM canvas_ops
+                              WHERE board_id=? AND username=? AND created_at>=?""",
+                           (board_id, username, rate_since)).fetchone()
+        if recent and int(recent["n"] or 0) >= CANVAS_OPS_RATE_MAX_PER_WINDOW:
+            c.rollback()
+            return {"retry_after": CANVAS_OPS_RATE_WINDOW_SECONDS}, "rate_limited"
         try:
             data = json.loads(row["data_json"] or "{}")
         except Exception:
@@ -952,6 +1062,16 @@ def apply_canvas_ops(username, board_id, payload):
     finally:
         c.close()
 
+def canvas_board_version_probe(board_id):
+    # 纯只读版本探测: 普通 SELECT(延迟事务), 不获取 SQLite 写锁,
+    # 供长轮询等待阶段轮询; 画板被删时返回 None
+    c = db()
+    try:
+        row = c.execute("SELECT version FROM canvas_boards WHERE id=?", (board_id,)).fetchone()
+        return int(row["version"]) if row else None
+    finally:
+        c.close()
+
 def sync_canvas_ops(username, board_id, since_version):
     c = db()
     try:
@@ -966,7 +1086,7 @@ def sync_canvas_ops(username, board_id, since_version):
         reset = since_version > current_version or (
             oldest_version is not None and since_version < oldest_version - 1
         )
-        online_count = canvas_online_count(c, board_id)
+        online_users = canvas_online_users(c, board_id)
         batches = []
         if not reset:
             cursor = c.execute("SELECT * FROM canvas_ops WHERE board_id=? AND version>? ORDER BY version ASC LIMIT ?",
@@ -996,7 +1116,8 @@ def sync_canvas_ops(username, board_id, since_version):
             if expected_version != current_version + 1:
                 reset = True
                 batches = []
-        result = {"version": current_version, "role": role, "batches": batches, "reset": reset, "online_count": online_count}
+        result = {"version": current_version, "role": role, "batches": batches, "reset": reset,
+                  "online_count": len(online_users), "online_users": online_users}
         if reset:
             board = public_canvas_board(row, role, include_data=True, members_count=canvas_member_count(c, board_id))
             board["members"] = list_canvas_members(c, board_id)
@@ -1021,11 +1142,23 @@ def record_canvas_presence(username, board_id, payload):
             c.rollback()
             return None, "not_found"
         now = int(time.time())
+        prev = c.execute("SELECT username, last_seen FROM canvas_presence WHERE board_id=? AND client_id=?",
+                         (board_id, client_id.strip())).fetchone()
+        # 仅"同用户+同端+间隔过近"才去重; 其他成员复用同 client_id 时走 upsert,
+        # 把该行 username/last_seen 更新为当前心跳用户, 避免在线身份失真
+        if (prev and prev["username"] == username
+                and now - int(prev["last_seen"] or 0) < CANVAS_PRESENCE_MIN_INTERVAL_SECONDS):
+            # 周期心跳去重: 间隔过近不写库, 直接回当前在线数
+            users = canvas_online_users(c, board_id, now)
+            result = {"online_count": len(users), "online_users": users, "deduped": True}
+            c.commit()
+            return result, None
         c.execute("""INSERT INTO canvas_presence(board_id, client_id, username, last_seen)
                      VALUES(?,?,?,?) ON CONFLICT(board_id, client_id) DO UPDATE SET
                        username=excluded.username, last_seen=excluded.last_seen""",
                   (board_id, client_id.strip(), username, now))
-        result = {"online_count": canvas_online_count(c, board_id, now)}
+        users = canvas_online_users(c, board_id, now)
+        result = {"online_count": len(users), "online_users": users}
         c.commit()
         return result, None
     except Exception:
@@ -1062,6 +1195,14 @@ def add_canvas_member(username, board_id, payload):
         if not are_friends(c, username, target_username):
             c.rollback()
             return None, "not_friend"
+        existing_member = c.execute("SELECT 1 FROM canvas_members WHERE board_id=? AND username=?",
+                                    (board_id, target_username)).fetchone()
+        if not existing_member:
+            cnt = c.execute("SELECT COUNT(*) AS n FROM canvas_members WHERE board_id=?",
+                            (board_id,)).fetchone()
+            if cnt and int(cnt["n"] or 0) >= CANVAS_MAX_MEMBERS_PER_BOARD:
+                c.rollback()
+                return None, "too_many_members"
         now = int(time.time())
         c.execute("""INSERT INTO canvas_members(board_id, username, role, invited_by, created_at)
                      VALUES(?,?,?,?,?)
@@ -1092,6 +1233,27 @@ def remove_canvas_member(username, board_id, member_username):
         members = list_canvas_members(c, board_id)
         c.commit()
         return members, None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+def leave_canvas_board(username, board_id):
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        access, board = canvas_role_and_board(c, username, board_id)
+        if not access:
+            c.rollback()
+            return None, "not_found"
+        if access == "owner":
+            c.rollback()
+            return None, "owner_cannot_leave"
+        c.execute("DELETE FROM canvas_members WHERE board_id=? AND username=?", (board_id, username))
+        c.execute("DELETE FROM canvas_presence WHERE board_id=? AND username=?", (board_id, username))
+        c.commit()
+        return {"ok": True}, None
     except Exception:
         c.rollback()
         raise
@@ -2461,6 +2623,8 @@ class H(BaseHTTPRequestHandler):
                     return self._send(400, {"detail": "画布数据格式不正确"})
                 if err == "too_large":
                     return self._send(413, {"detail": "画布数据过大"})
+                if err == "too_many_boards":
+                    return self._send(429, {"detail": "画布数量已达上限，请先删除不再需要的画布"})
                 if err:
                     return self._send(400, {"detail": err})
                 return self._send(200, {"ok": True, "board": board})
@@ -2512,6 +2676,12 @@ class H(BaseHTTPRequestHandler):
                     return self._send(404, {"detail": "协作画布不存在"})
                 if err == "forbidden":
                     return self._send(403, {"detail": "没有编辑权限"})
+                if err == "conflict":
+                    return self._send(409, {"detail": "画布已被其他成员更新，请先同步",
+                                            "version": (result or {}).get("version")})
+                if err == "rate_limited":
+                    return self._send(429, {"detail": "操作太频繁，请稍候",
+                                            "retry_after": (result or {}).get("retry_after")})
                 if err in {"too_many_ops", "too_large"}:
                     return self._send(413, {"detail": "画布操作数据过大"})
                 if err:
@@ -2562,11 +2732,29 @@ class H(BaseHTTPRequestHandler):
                     return self._send(400, {"detail": "不能邀请自己"})
                 if err == "not_friend":
                     return self._send(403, {"detail": "只能邀请已添加的好友"})
+                if err == "too_many_members":
+                    return self._send(429, {"detail": "画布成员数量已达上限"})
                 if err:
                     return self._send(400, {"detail": err})
                 return self._send(200, {"ok": True, "members": members})
             except Exception:
                 return self._send(500, {"detail": "canvas member update failed"})
+        if p.startswith(canvas_prefix) and p.endswith("/leave"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            board_id = urllib.parse.unquote(p[len(canvas_prefix):-len("/leave")])
+            try:
+                result, err = leave_canvas_board(row["username"], board_id)
+                if err == "not_found":
+                    return self._send(404, {"detail": "协作画布不存在或你不是成员"})
+                if err == "owner_cannot_leave":
+                    return self._send(400, {"detail": "创建者不能退出画布，可以选择删除画布"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, result)
+            except Exception:
+                return self._send(500, {"detail": "canvas leave failed"})
         if p in {"/api/auth/friends/request", "/api/auth/friends/add"}:
             row = self._user()
             if not row:
@@ -2775,11 +2963,22 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/auth/canvas/boards":
             row = self._user()
             if not row: return self._send(401, {"detail": "未登录"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             try:
-                boards, err = list_canvas_boards(row["username"])
+                limit_raw = (q.get("limit") or [""])[0]
+                limit = None if limit_raw == "" else int(limit_raw)
+                offset = int((q.get("offset") or ["0"])[0])
+            except Exception:
+                return self._send(400, {"detail": "bad_pagination"})
+            if offset < 0 or (limit is not None and limit < 1):
+                return self._send(400, {"detail": "bad_pagination"})
+            if limit is not None:
+                limit = min(limit, 100)
+            try:
+                boards, total, err = list_canvas_boards(row["username"], limit=limit, offset=offset)
                 if err:
                     return self._send(400, {"detail": err})
-                return self._send(200, {"ok": True, "boards": boards})
+                return self._send(200, {"ok": True, "boards": boards, "total": total})
             except Exception:
                 return self._send(500, {"detail": "canvas list failed"})
         canvas_prefix = "/api/auth/canvas/boards/"
@@ -2796,12 +2995,47 @@ class H(BaseHTTPRequestHandler):
             if since_version < 1:
                 return self._send(400, {"detail": "bad_since"})
             try:
+                wait_seconds = int((query.get("wait") or ["0"])[0])
+            except Exception:
+                return self._send(400, {"detail": "bad_wait"})
+            if wait_seconds < 0:
+                return self._send(400, {"detail": "bad_wait"})
+            wait_seconds = min(wait_seconds, CANVAS_SYNC_MAX_WAIT_SECONDS)
+            try:
+                # 首次完整同步(含成员校验)。有变化或 wait=0 → 直接返回
                 result, err = sync_canvas_ops(row["username"], board_id, since_version)
                 if err == "not_found":
                     return self._send(404, {"detail": "协作画布不存在"})
                 if err:
                     return self._send(400, {"detail": err})
-                return self._send(200, {"ok": True, **result})
+                changed = (result.get("reset") or result.get("batches")
+                           or int(result.get("version") or 0) != since_version)
+                if changed or wait_seconds <= 0:
+                    return self._send(200, {"ok": True, **result})
+                if not _canvas_sync_wait_acquire(row["username"]):
+                    # 等待名额已满: 降级为立即返回当前状态, 客户端可继续普通轮询
+                    return self._send(200, {"ok": True, **result, "wait_degraded": True})
+                try:
+                    # 等待阶段只做只读版本探测(不拿写锁); 检测到变化或超时才做完整同步
+                    deadline = time.time() + wait_seconds
+                    while time.time() < deadline:
+                        time.sleep(0.5)
+                        probed = canvas_board_version_probe(board_id)
+                        if probed is None or probed != since_version:
+                            result, err = sync_canvas_ops(row["username"], board_id, since_version)
+                            if err == "not_found":
+                                return self._send(404, {"detail": "协作画布不存在"})
+                            if err:
+                                return self._send(400, {"detail": err})
+                            return self._send(200, {"ok": True, **result})
+                    result, err = sync_canvas_ops(row["username"], board_id, since_version)
+                    if err == "not_found":
+                        return self._send(404, {"detail": "协作画布不存在"})
+                    if err:
+                        return self._send(400, {"detail": err})
+                    return self._send(200, {"ok": True, **result})
+                finally:
+                    _canvas_sync_wait_release(row["username"])
             except Exception:
                 return self._send(500, {"detail": "canvas sync failed"})
         if p.startswith(canvas_prefix):

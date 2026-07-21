@@ -1,0 +1,21 @@
+[Unit]
+Description=Huangque Test Collection and Leads API
+After=network.target huangque-test-auth.service huangque-test-egress.service
+Requires=huangque-test-auth.service
+Wants=huangque-test-egress.service
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+WorkingDirectory=/opt/huangque-test-server/server
+EnvironmentFile=/etc/huangque-test/test.env
+EnvironmentFile=/etc/huangque-test/providers.env
+Environment=PYTHONUNBUFFERED=1
+Environment=LEADGEN_API_PORT=8100
+ExecStart=/usr/bin/python3 /opt/huangque-test-server/server/leadgen_api.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
