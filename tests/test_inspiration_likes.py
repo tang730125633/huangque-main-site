@@ -31,6 +31,7 @@ class InspirationLikeBackendTests(unittest.TestCase):
                     setattr(module, key, value)
                 sys.modules[qualified] = module
         self.core = importlib.import_module("content_domains.core")
+        self.likes = importlib.import_module("content_domains.inspiration_likes")
         self.tempdir = tempfile.TemporaryDirectory()
         self.original_db = self.core.AUDIO_DB
         self.core.AUDIO_DB = Path(self.tempdir.name) / "audio.db"
@@ -57,26 +58,26 @@ class InspirationLikeBackendTests(unittest.TestCase):
         for value in (None, "", 0, -1, "abc", 1.5, True):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
-                    self.core._clean_inspiration_id(value)
-        self.assertEqual(self.core._clean_inspiration_id("12"), "12")
+                    self.likes.clean_inspiration_id(value)
+        self.assertEqual(self.likes.clean_inspiration_id("12"), "12")
 
     def test_like_is_idempotent_and_can_be_cancelled(self):
-        first = self.core._set_inspiration_like("alice", 7, True)
-        repeated = self.core._set_inspiration_like("alice", 7, True)
-        cancelled = self.core._set_inspiration_like("alice", 7, False)
+        first = self.likes.set_like(self.core.AUDIO_DB, "alice", 7, True)
+        repeated = self.likes.set_like(self.core.AUDIO_DB, "alice", 7, True)
+        cancelled = self.likes.set_like(self.core.AUDIO_DB, "alice", 7, False)
 
         self.assertEqual(first, {"id": 7, "favorite": True, "count": 1})
         self.assertEqual(repeated, first)
         self.assertEqual(cancelled, {"id": 7, "favorite": False, "count": 0})
 
     def test_summary_returns_global_counts_and_current_users_likes(self):
-        self.core._set_inspiration_like("alice", 1, True)
-        self.core._set_inspiration_like("bob", 1, True)
-        self.core._set_inspiration_like("bob", 2, True)
+        self.likes.set_like(self.core.AUDIO_DB, "alice", 1, True)
+        self.likes.set_like(self.core.AUDIO_DB, "bob", 1, True)
+        self.likes.set_like(self.core.AUDIO_DB, "bob", 2, True)
 
-        self.assertEqual(self.core._inspiration_like_summary(), {"counts": {"1": 2, "2": 1}})
+        self.assertEqual(self.likes.summary(self.core.AUDIO_DB), {"counts": {"1": 2, "2": 1}})
         self.assertEqual(
-            self.core._inspiration_like_summary("alice"),
+            self.likes.summary(self.core.AUDIO_DB, "alice"),
             {"counts": {"1": 2, "2": 1}, "liked": [1]},
         )
 

@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security  # 领域存储模块均无反向依赖
+import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security, inspiration_likes  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -446,7 +446,7 @@ def _ensure_column(c, table, column, spec):
     if column not in cols:
         c.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, spec))
 
-ASSET_MARK_KINDS = {"image", "audio", "video", "avatar", "inspiration"} | assets_store.KINDS  # 新三类的 asset_key 同样用 str(job_id)
+ASSET_MARK_KINDS = {"image", "audio", "video", "avatar"} | assets_store.KINDS  # 新三类的 asset_key 同样用 str(job_id)
 
 def _clean_asset_kind(kind):
     kind = str(kind or "").strip().lower()
@@ -505,55 +505,6 @@ def _upsert_asset_mark(username, kind, key, favorite=None, tags=None):
                   (username, kind, key, fav, json.dumps(tag_list, ensure_ascii=False), now))
         c.commit()
     return {"kind": kind, "key": key, "favorite": bool(fav), "tags": tag_list, "updated_at": now}
-
-def _clean_inspiration_id(value):
-    if isinstance(value, bool) or isinstance(value, float):
-        raise ValueError("灵感案例 ID 必须是正整数")
-    try:
-        inspiration_id = int(str(value).strip())
-    except (TypeError, ValueError):
-        raise ValueError("灵感案例 ID 必须是正整数")
-    if inspiration_id <= 0:
-        raise ValueError("灵感案例 ID 必须是正整数")
-    return str(inspiration_id)
-
-def _inspiration_like_summary(username=None):
-    with closing(adb()) as c:
-        rows = c.execute("""SELECT asset_key, COUNT(*) AS like_count
-                            FROM asset_marks
-                            WHERE asset_kind='inspiration' AND favorite=1
-                            GROUP BY asset_key""").fetchall()
-        counts = {}
-        for row in rows:
-            try:
-                key = _clean_inspiration_id(row["asset_key"])
-            except ValueError:
-                continue
-            counts[key] = int(row["like_count"])
-        result = {"counts": counts}
-        if username:
-            liked_rows = c.execute("""SELECT asset_key FROM asset_marks
-                                      WHERE username=? AND asset_kind='inspiration' AND favorite=1""",
-                                   (username,)).fetchall()
-            liked = []
-            for row in liked_rows:
-                try:
-                    liked.append(int(_clean_inspiration_id(row["asset_key"])))
-                except ValueError:
-                    continue
-            result["liked"] = sorted(liked)
-    return result
-
-def _set_inspiration_like(username, inspiration_id, favorite):
-    key = _clean_inspiration_id(inspiration_id)
-    if not isinstance(favorite, bool):
-        raise ValueError("favorite 必须是布尔值")
-    _upsert_asset_mark(username, "inspiration", key, favorite=favorite)
-    with closing(adb()) as c:
-        row = c.execute("""SELECT COUNT(*) AS like_count FROM asset_marks
-                           WHERE asset_kind='inspiration' AND asset_key=? AND favorite=1""",
-                        (key,)).fetchone()
-    return {"id": int(key), "favorite": favorite, "count": int(row["like_count"])}
 
 def _list_asset_marks(username, kind):
     kind = _clean_asset_kind(kind)
@@ -1212,15 +1163,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
-        if p == "/api/gen/inspiration/like":
-            user = verify(self._token())
-            if not user: return self._send(401, {"detail": "未登录"})
-            body = self._json_body()
-            try:
-                result = _set_inspiration_like(user["username"], body.get("id"), body.get("favorite"))
-                return self._send(200, {"ok": True, **result})
-            except ValueError as e:
-                return self._send(400, {"detail": str(e)[:160]})
+        if p == "/api/gen/inspiration/like": return inspiration_likes.handle_post(self, verify(self._token()), AUDIO_DB)
         if p == "/api/gen/asset/favorite":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
@@ -1527,10 +1470,7 @@ class H(BaseHTTPRequestHandler):
         audio_domain, points_domain, video_domain = _domains()
         if p == "/api/gen/audio/clone-vip":
             return self._method_not_allowed()
-        if p == "/api/gen/inspiration/likes":
-            user = verify(self._token())
-            username = user.get("username") if user else None
-            return self._send(200, _inspiration_like_summary(username))
+        if p == "/api/gen/inspiration/likes": return inspiration_likes.handle_get(self, verify(self._token()), AUDIO_DB)
         if p == "/api/gen/asset/marks":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
