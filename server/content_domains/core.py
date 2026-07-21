@@ -288,7 +288,7 @@ def init_db():
         submission_idempotency.ensure_table(c)
         c.commit()
     feature_flags.init_db()
-    init_audio_db()
+    init_audio_db(); _short_drama_domain().init_db(jdb)
 
 def init_audio_db():
     now = int(time.time())
@@ -626,9 +626,8 @@ def verify(token):
 def _domains():
     from . import audio, points, video
     return audio, points, video
-def _leads_domain():
-    from . import leads
-    return leads
+def _leads_domain(): from . import leads; return leads
+def _short_drama_domain(): from . import short_drama; return short_drama
 def _must_change_password(user):
     return bool(user and user.get("must_change"))
 
@@ -1159,8 +1158,8 @@ class H(BaseHTTPRequestHandler):
             return json.loads(raw)
         except Exception:
             raise ValueError("请求体不是合法 JSON")
-
     def do_POST(self):
+        if _short_drama_domain().dispatch_http(self, "POST", jdb, verify): return  # /api/gen/short-drama/projects /api/gen/short-drama/apply-plan /api/gen/short-drama/confirm
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
         if p == "/api/gen/asset/favorite":
@@ -1465,6 +1464,7 @@ class H(BaseHTTPRequestHandler):
         self._send(404, {"detail": "not found"})
 
     def do_GET(self):
+        if _short_drama_domain().dispatch_http(self, "GET", jdb, verify): return  # /api/gen/short-drama/projects /api/gen/short-drama/project
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
         if p == "/api/gen/audio/clone-vip":
@@ -1698,6 +1698,7 @@ class H(BaseHTTPRequestHandler):
         self._send(404, {"detail": "not found"})
 
     def do_PUT(self):
+        if _short_drama_domain().dispatch_http(self, "PUT", jdb, verify): return  # /api/gen/short-drama/project
         if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
     def do_PATCH(self):

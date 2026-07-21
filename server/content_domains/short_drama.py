@@ -2,7 +2,9 @@
 
 import json
 import time
+import urllib.parse
 import uuid
+from contextlib import closing
 
 
 STAGES = ("draft", "characters_review", "script_review", "storyboard_review", "stills_review")
@@ -17,6 +19,10 @@ SHOT_COUNTS = set(range(6, 11))
 
 
 class RevisionConflict(RuntimeError):
+    pass
+
+
+class AppliedJobConflict(RuntimeError):
     pass
 
 
@@ -582,14 +588,6 @@ def apply_plan(db_factory, username, project_id, revision, plan, planning_cost, 
     conn = _connection(db_factory)
     try:
         conn.execute("BEGIN")
-        applied = conn.execute(
-            "SELECT project_id, username FROM short_drama_applied_jobs WHERE job_id=?", (job_id,)
-        ).fetchone()
-        if applied:
-            if applied == (project_id, username):
-                conn.rollback()
-                return _project_detail(conn, username, project_id)
-            raise ValueError("规划任务已属于其他项目")
         project = conn.execute(
             "SELECT title, target_duration FROM short_drama_projects "
             "WHERE id=? AND username=? AND revision=? AND deleted=0",
@@ -597,6 +595,11 @@ def apply_plan(db_factory, username, project_id, revision, plan, planning_cost, 
         ).fetchone()
         if not project:
             _raise_cas_error(conn, username, project_id)
+        applied = conn.execute(
+            "SELECT project_id, username FROM short_drama_applied_jobs WHERE job_id=?", (job_id,)
+        ).fetchone()
+        if applied:
+            raise AppliedJobConflict("规划任务已经应用过")
         if sum(shot["duration"] for shot in shots) != project[1]:
             raise ValueError("分镜总时长必须等于短剧目标时长")
         conn.execute(
@@ -660,6 +663,17 @@ def confirm_stage(db_factory, username, project_id, revision, current_stage):
     now = int(time.time())
     conn = _connection(db_factory)
     try:
+        project = conn.execute(
+            "SELECT revision, stage FROM short_drama_projects "
+            "WHERE id=? AND username=? AND deleted=0",
+            (project_id, username),
+        ).fetchone()
+        if not project:
+            raise LookupError("短剧项目不存在")
+        if project[0] != revision:
+            raise RevisionConflict("项目已在其他页面更新，请刷新后重试")
+        if project[1] != current_stage:
+            raise ValueError("不能跳过短剧阶段")
         cur = conn.execute(
             "UPDATE short_drama_projects SET stage=?, revision=revision+1, updated_at=? "
             "WHERE id=? AND username=? AND revision=? AND stage=? AND deleted=0",
@@ -674,3 +688,116 @@ def confirm_stage(db_factory, username, project_id, revision, current_stage):
         raise
     finally:
         conn.close()
+
+
+_HTTP_ROUTES = {
+    "GET": {"/api/gen/short-drama/projects", "/api/gen/short-drama/project"},
+    "POST": {
+        "/api/gen/short-drama/projects",
+        "/api/gen/short-drama/apply-plan",
+        "/api/gen/short-drama/confirm",
+    },
+    "PUT": {"/api/gen/short-drama/project"},
+}
+
+
+def _http_error(handler, error):
+    if isinstance(error, LookupError):
+        handler._send(404, {"detail": str(error)[:220]})
+    elif isinstance(error, RevisionConflict):
+        handler._send(409, {"detail": str(error)[:220], "code": "revision_conflict"})
+    elif isinstance(error, AppliedJobConflict):
+        handler._send(409, {"detail": str(error)[:220], "code": "job_already_applied"})
+    else:
+        handler._send(400, {"detail": str(error)[:220]})
+
+
+def _request_object(handler):
+    body = handler._json_body_strict()
+    if not isinstance(body, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+    return body
+
+
+def _project_id_from_query(handler):
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+    project_id = (query.get("id") or [""])[0].strip()
+    if not project_id:
+        raise ValueError("缺少短剧项目 ID")
+    return project_id
+
+
+def _validate_project_request(body, expected_fields):
+    if set(body) != expected_fields:
+        raise ValueError("请求字段不正确")
+    if not isinstance(body.get("project_id"), str) or not body["project_id"].strip():
+        raise ValueError("短剧项目 ID 无效")
+    if type(body.get("revision")) is not int:
+        raise ValueError("项目版本无效")
+
+
+def _planning_job(db_factory, username, job_id):
+    if type(job_id) is not int:
+        raise ValueError("规划任务 ID 无效")
+    with closing(db_factory()) as conn:
+        job = conn.execute(
+            "SELECT id, kind, username, cost, status, result FROM jobs WHERE id=?", (job_id,)
+        ).fetchone()
+    if not job or job["username"] != username:
+        raise LookupError("规划任务不存在")
+    if job["kind"] != "copy" or job["status"] != "done":
+        raise ValueError("规划任务尚未完成")
+    try:
+        result = json.loads(job["result"] or "{}")
+    except (TypeError, ValueError):
+        raise ValueError("规划任务结果无效")
+    if not isinstance(result, dict) or result.get("mode") != "short_drama" or not isinstance(result.get("plan"), dict):
+        raise ValueError("规划任务结果不是短剧规划")
+    return job, result["plan"]
+
+
+def dispatch_http(handler, method, db_factory, verify_token):
+    """Handle the domain's synchronous routes inside core.H; return whether matched."""
+    path = handler.path.split("?", 1)[0]
+    if path not in _HTTP_ROUTES.get(method, ()):
+        return False
+    user = verify_token(handler._token())
+    if not user:
+        handler._send(401, {"detail": "未登录"})
+        return True
+    username = user["username"]
+    try:
+        if method == "GET" and path.endswith("/projects"):
+            handler._send(200, {"items": list_projects(db_factory, username)})
+        elif method == "GET":
+            handler._send(200, get_project(db_factory, username, _project_id_from_query(handler)))
+        elif method == "PUT":
+            project_id = _project_id_from_query(handler)
+            body = _request_object(handler)
+            if "revision" not in body:
+                raise ValueError("缺少项目版本")
+            revision = body.pop("revision")
+            if type(revision) is not int:
+                raise ValueError("项目版本无效")
+            handler._send(200, update_project(db_factory, username, project_id, revision, body))
+        elif path.endswith("/projects"):
+            handler._send(200, create_project(db_factory, username, _request_object(handler)))
+        elif path.endswith("/apply-plan"):
+            body = _request_object(handler)
+            _validate_project_request(body, {"project_id", "revision", "job_id"})
+            job, plan = _planning_job(db_factory, username, body["job_id"])
+            handler._send(200, apply_plan(
+                db_factory, username, body["project_id"], body["revision"], plan,
+                planning_cost=job["cost"], planning_job_id=job["id"],
+            ))
+        else:
+            body = _request_object(handler)
+            _validate_project_request(body, {"project_id", "revision", "stage"})
+            if not isinstance(body["stage"], str):
+                raise ValueError("阶段确认请求无效")
+            handler._send(200, confirm_stage(
+                db_factory, username, body["project_id"], body["revision"], body["stage"]
+            ))
+    except (LookupError, RevisionConflict, AppliedJobConflict, ValueError) as error:
+        _http_error(handler, error)
+    return True
