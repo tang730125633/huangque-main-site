@@ -16,7 +16,7 @@ SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from content_domains import core, short_drama
+from content_domains import core, short_drama, video
 
 
 def valid_project(**changes):
@@ -27,6 +27,43 @@ def valid_project(**changes):
     }
     project.update(changes)
     return project
+
+
+def bound_planning_payload(project, **changes):
+    payload = {
+        "format": "short_drama",
+        "project_id": project["id"],
+        "project_revision": project["revision"],
+        "prompt": project["synopsis"],
+        "dur": "%ss" % project["target_duration"],
+        "ratio": project["ratio"],
+        "shot_count": project["shot_count"],
+        "style": project["visual_style"],
+        "platform": project["target_platform"],
+    }
+    payload.update(changes)
+    return payload
+
+
+def bound_planning_result(project, plan=None, **changes):
+    result = {
+        "type": "copy",
+        "mode": "short_drama",
+        "project_id": project["id"],
+        "project_revision": project["revision"],
+        "settings": {
+            "ratio": project["ratio"],
+            "target_duration": project["target_duration"],
+            "shot_count": project["shot_count"],
+        },
+        "plan": plan or valid_raw_plan(),
+        "prompt": project["synopsis"],
+        "dur": "%ss" % project["target_duration"],
+        "ratio": project["ratio"],
+        "shot_count": project["shot_count"],
+    }
+    result.update(changes)
+    return result
 
 
 def valid_raw_plan():
@@ -286,7 +323,10 @@ class ShortDramaProjectTests(unittest.TestCase):
         project = self.applied_project()
         characters = [dict(character) for character in project["characters"]]
         project = short_drama.update_characters(
-            self.db, "alice", project["id"], project["revision"], characters
+            self.db, "alice", project["id"], project["revision"], characters,
+            avatar_lookup=lambda username, avatar_id: {
+                "username": username, "id": avatar_id, "status": "ready",
+            },
         )
         self.assertEqual("ai_character", project["characters"][0]["source_type"])
         self.assertIsNone(project["characters"][0]["avatar_id"])
@@ -296,7 +336,10 @@ class ShortDramaProjectTests(unittest.TestCase):
             "source_type": "cinematic_avatar", "avatar_id": "cinematic-avatar-1",
         })
         project = short_drama.update_characters(
-            self.db, "alice", project["id"], project["revision"], characters
+            self.db, "alice", project["id"], project["revision"], characters,
+            avatar_lookup=lambda username, avatar_id: {
+                "username": username, "id": avatar_id, "status": "ready",
+            },
         )
         self.assertEqual("cinematic_avatar", project["characters"][0]["source_type"])
         self.assertEqual("cinematic-avatar-1", project["characters"][0]["avatar_id"])
@@ -634,12 +677,35 @@ class ShortDramaProjectTests(unittest.TestCase):
         })
         self._assert_plan_rejected_without_side_effects(project, self._plan(6), 999)
 
+    def test_non_draft_projects_lock_planning_spec_settings_but_allow_budget_changes(self):
+        locked_fields = {
+            "synopsis": "修改后的故事梗概足够长",
+            "ratio": "16:9",
+            "target_duration": 45,
+            "shot_count": 7,
+            "visual_style": "赛博朋克",
+            "target_platform": "视频号",
+        }
+        for field, value in locked_fields.items():
+            with self.subTest(field=field):
+                project = self.applied_project()
+                with self.assertRaisesRegex(ValueError, "策划|阶段|修改"):
+                    short_drama.update_project(
+                        self.db, "alice", project["id"], project["revision"], {field: value}
+                    )
+        project = self.applied_project()
+        updated = short_drama.update_project(
+            self.db, "alice", project["id"], project["revision"], {"point_budget": 2200}
+        )
+        self.assertEqual(2200, updated["point_budget"])
+
 
 class ShortDramaRouteTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.originals = {
             "JOB_DB": core.JOB_DB,
+            "AUDIO_DB": core.AUDIO_DB,
             "verify": core.verify,
             "_domains": core._domains,
             "HANDLERS": core.HANDLERS,
@@ -647,6 +713,7 @@ class ShortDramaRouteTests(unittest.TestCase):
             "init_audio_db": core.init_audio_db,
         }
         core.JOB_DB = str(Path(self.tmp.name) / "content.db")
+        core.AUDIO_DB = str(Path(self.tmp.name) / "audio.db")
         core.verify = lambda token: ({"username": token, "must_change": False} if token else None)
         class FakePoints:
             class AuthPointsError(Exception):
@@ -655,10 +722,12 @@ class ShortDramaRouteTests(unittest.TestCase):
 
             def __init__(self):
                 self.cost_calls = []
+                self.cost_lock_states = []
                 self.deduct_calls = []
 
             def cost_of(self, kind, body):
                 self.cost_calls.append((kind, dict(body)))
+                self.cost_lock_states.append(core._submission_lock.locked())
                 return 7
 
             def deduct_points(self, username, cost, reason):
@@ -669,11 +738,25 @@ class ShortDramaRouteTests(unittest.TestCase):
                 return 100
 
         self.points = FakePoints()
-        core._domains = lambda: (None, self.points, None)
+        core._domains = lambda: (None, self.points, video)
         core.HANDLERS = dict(core.HANDLERS, copy=lambda payload: payload)
         core.feature_flags.init_db = lambda: None
         core.init_audio_db = lambda: None
         core.init_db()
+        with closing(core.adb()) as db:
+            db.execute("""CREATE TABLE avatars(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, name TEXT NOT NULL,
+                image_file TEXT NOT NULL, provider_avatar_id TEXT NOT NULL,
+                provider_avatar_group_id TEXT, status TEXT NOT NULL DEFAULT 'ready',
+                created_at INTEGER, updated_at INTEGER, UNIQUE(username, provider_avatar_id)
+            )""")
+            db.executemany(
+                "INSERT INTO avatars(username,name,image_file,provider_avatar_id,status) VALUES(?,?,?,?,?)",
+                (("alice", "我的形象", "alice.png", "look-alice", "ready"),
+                 ("bob", "他人形象", "bob.png", "look-bob", "ready"),
+                 ("alice", "已删除形象", "deleted.png", "look-deleted", "deleted")),
+            )
+            db.commit()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), core.H)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -684,6 +767,7 @@ class ShortDramaRouteTests(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=2)
         core.JOB_DB = self.originals["JOB_DB"]
+        core.AUDIO_DB = self.originals["AUDIO_DB"]
         core.verify = self.originals["verify"]
         core._domains = self.originals["_domains"]
         core.HANDLERS = self.originals["HANDLERS"]
@@ -706,15 +790,24 @@ class ShortDramaRouteTests(unittest.TestCase):
             return error.code, json.loads(error.read())
 
     def insert_job(self, username="alice", *, kind="copy", status="done", mode="short_drama", cost=3,
-                   result_json=None, plan=None):
+                   result_json=None, plan=None, project=None, payload=None, result_changes=None):
+        if project is not None:
+            payload = payload or bound_planning_payload(project)
+            result_value = bound_planning_result(project, plan=plan)
+            result_value["mode"] = mode
+            result_value.update(result_changes or {})
+        else:
+            payload = payload or {}
+            result_value = {"mode": mode, "plan": plan or valid_raw_plan()}
         result = result_json if result_json is not None else json.dumps(
-            {"mode": mode, "plan": plan or valid_raw_plan()}, ensure_ascii=False
+            result_value, ensure_ascii=False
         )
         with closing(core.jdb()) as db:
             cursor = db.execute(
                 "INSERT INTO jobs(kind,username,cost,status,payload,result,created_at,updated_at,owner) "
                 "VALUES(?,?,?,?,?,?,?,?,?)",
-                (kind, username, cost, status, "{}", result, 1, 1, "content"),
+                (kind, username, cost, status, json.dumps(payload, ensure_ascii=False), result,
+                 1, 1, "content"),
             )
             db.commit()
             return cursor.lastrowid
@@ -724,7 +817,7 @@ class ShortDramaRouteTests(unittest.TestCase):
             "POST", "/api/gen/short-drama/projects", body=valid_project()
         )
         self.assertEqual(200, status)
-        job_id = self.insert_job(plan=valid_editable_plan())
+        job_id = self.insert_job(plan=valid_editable_plan(), project=project)
         status, project = self.request("POST", "/api/gen/short-drama/apply-plan", body={
             "project_id": project["id"], "revision": project["revision"], "job_id": job_id,
         })
@@ -856,6 +949,182 @@ class ShortDramaRouteTests(unittest.TestCase):
         self.assertEqual([("copy", {"format": "short_drama"})], self.points.cost_calls)
         self.assertEqual([], self.points.deduct_calls)
 
+    def test_short_drama_submission_requires_owned_draft_project_and_exact_snapshot_before_cost(self):
+        status, project = self.request("POST", "/api/gen/short-drama/projects", body=valid_project())
+        self.assertEqual(200, status)
+        invalid_payloads = []
+        for missing in ("project_id", "project_revision"):
+            payload = bound_planning_payload(project)
+            payload.pop(missing)
+            invalid_payloads.append(payload)
+        invalid_payloads.extend((
+            bound_planning_payload(project, ratio="16:9"),
+            bound_planning_payload(project, dur="45s"),
+            bound_planning_payload(project, shot_count=7),
+            bound_planning_payload(project, prompt="另一个足够长的故事梗概"),
+        ))
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                status, _ = self.request("POST", "/api/gen/copy", body=payload)
+                self.assertEqual(400, status)
+
+        other_status, _ = self.request(
+            "POST", "/api/gen/copy", username="bob", body=bound_planning_payload(project)
+        )
+        self.assertEqual(404, other_status)
+        self.assertEqual([], self.points.cost_calls)
+        self.assertEqual([], self.points.deduct_calls)
+        with closing(core.jdb()) as db:
+            self.assertEqual(0, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+
+    def test_short_drama_budget_check_is_locked_and_counts_spend_and_outstanding_jobs(self):
+        status, limited = self.request(
+            "POST", "/api/gen/short-drama/projects", body=valid_project(point_budget=6)
+        )
+        self.assertEqual(200, status)
+        status, rejected = self.request(
+            "POST", "/api/gen/copy", body=bound_planning_payload(limited)
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("point_budget_exceeded", rejected["code"])
+        self.assertEqual([True], self.points.cost_lock_states)
+        self.assertEqual([], self.points.deduct_calls)
+        with closing(core.jdb()) as db:
+            self.assertEqual(0, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+
+        self.points.cost_calls.clear()
+        self.points.cost_lock_states.clear()
+        status, unlimited = self.request(
+            "POST", "/api/gen/short-drama/projects", body=valid_project(point_budget=0)
+        )
+        self.assertEqual(200, status)
+        status, accepted = self.request(
+            "POST", "/api/gen/copy", body=bound_planning_payload(unlimited)
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(7, accepted["cost"])
+        self.assertEqual([True], self.points.cost_lock_states)
+
+        status, outstanding = self.request(
+            "POST", "/api/gen/short-drama/projects", body=valid_project(point_budget=10)
+        )
+        self.assertEqual(200, status)
+        self.insert_job(project=outstanding, status="running", cost=7)
+        deductions_before = list(self.points.deduct_calls)
+        with closing(core.jdb()) as db:
+            jobs_before = db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        status, rejected = self.request(
+            "POST", "/api/gen/copy", body=bound_planning_payload(outstanding)
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("point_budget_exceeded", rejected["code"])
+        self.assertEqual(deductions_before, self.points.deduct_calls)
+        with closing(core.jdb()) as db:
+            self.assertEqual(jobs_before, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+
+    def test_paid_planning_job_is_discoverable_after_conflict_and_reapplies_without_new_job(self):
+        status, project = self.request(
+            "POST", "/api/gen/short-drama/projects", body=valid_project()
+        )
+        self.assertEqual(200, status)
+        job_id = self.insert_job(project=project, plan=valid_editable_plan(), cost=7)
+        path = self.project_path(project)
+        status, changed = self.request("PUT", path, body={
+            "revision": project["revision"], "title": "刷新后的标题",
+        })
+        self.assertEqual(200, status)
+
+        status, conflict = self.request("POST", "/api/gen/short-drama/apply-plan", body={
+            "project_id": project["id"], "revision": project["revision"], "job_id": job_id,
+        })
+        self.assertEqual(409, status)
+        self.assertEqual("revision_conflict", conflict["code"])
+        recovery_path = "/api/gen/short-drama/planning-job?" + urllib.parse.urlencode({
+            "project_id": project["id"],
+        })
+        status, recovered = self.request("GET", recovery_path)
+        self.assertEqual(200, status)
+        self.assertEqual(job_id, recovered["job_id"])
+        status, applied = self.request("POST", "/api/gen/short-drama/apply-plan", body={
+            "project_id": project["id"], "revision": changed["revision"], "job_id": job_id,
+        })
+        self.assertEqual(200, status)
+        self.assertEqual("characters_review", applied["stage"])
+        with closing(core.jdb()) as db:
+            self.assertEqual(1, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+
+    def test_apply_rejects_job_project_or_result_snapshot_mismatch_without_mutation(self):
+        mismatch_changes = (
+            {"project_id": "different-project"},
+            {"settings": {"ratio": "16:9", "target_duration": 30, "shot_count": 6}},
+            {"project_revision": 999},
+            {"ratio": "16:9"},
+        )
+        for changes in mismatch_changes:
+            with self.subTest(changes=changes):
+                _, project = self.request(
+                    "POST", "/api/gen/short-drama/projects", body=valid_project()
+                )
+                job_id = self.insert_job(
+                    project=project, plan=valid_editable_plan(), result_changes=changes
+                )
+                status, _ = self.request("POST", "/api/gen/short-drama/apply-plan", body={
+                    "project_id": project["id"], "revision": project["revision"], "job_id": job_id,
+                })
+                self.assertEqual(400, status)
+                status, fetched = self.request("GET", self.project_path(project))
+                self.assertEqual(200, status)
+                self.assertEqual("draft", fetched["stage"])
+                self.assertEqual(0, fetched["spent_points"])
+
+    def test_character_update_rejects_cross_owner_missing_and_deleted_cinematic_avatars(self):
+        for avatar_id in (2, 999, 3):
+            with self.subTest(avatar_id=avatar_id):
+                project = self.applied_project()
+                characters = [dict(character) for character in project["characters"]]
+                characters[0].update({
+                    "source_type": "cinematic_avatar", "avatar_id": str(avatar_id),
+                })
+                status, _ = self.request("PUT", self.project_path(project), body={
+                    "revision": project["revision"], "characters": characters,
+                })
+                self.assertEqual(400, status)
+        project = self.applied_project()
+        characters = [dict(character) for character in project["characters"]]
+        characters[0].update({"source_type": "cinematic_avatar", "avatar_id": "1"})
+        status, saved = self.request("PUT", self.project_path(project), body={
+            "revision": project["revision"], "characters": characters,
+        })
+        self.assertEqual(200, status)
+        self.assertEqual("1", saved["characters"][0]["avatar_id"])
+
+    def test_project_creation_missing_required_settings_returns_http_400(self):
+        for missing in ("ratio", "target_duration", "shot_count"):
+            with self.subTest(missing=missing):
+                body = valid_project()
+                body.pop(missing)
+                status, _ = self.request("POST", "/api/gen/short-drama/projects", body=body)
+                self.assertEqual(400, status)
+
+    def test_cinematic_quote_is_authenticated_free_and_uses_complete_payload(self):
+        payload = {
+            "cine_mode": "open", "avatar_ids": [1], "prompt": "雨中奔跑",
+            "ratio": "9:16", "duration": 5, "resolution": "1080p",
+        }
+        status, _ = self.request(
+            "POST", "/api/gen/cinematic/quote", username=None, body=payload
+        )
+        self.assertEqual(401, status)
+        status, quote = self.request("POST", "/api/gen/cinematic/quote", body=payload)
+        self.assertEqual(200, status)
+        self.assertEqual({"cost": 7}, quote)
+        self.assertEqual([], self.points.deduct_calls)
+        self.assertEqual("cinematic", self.points.cost_calls[-1][0])
+        quoted_payload = self.points.cost_calls[-1][1]
+        self.assertTrue(all(quoted_payload[key] == value for key, value in payload.items()))
+        with closing(core.jdb()) as db:
+            self.assertEqual(0, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+
     def test_invalid_short_drama_copy_payload_is_rejected_before_deduct_or_job_insert(self):
         invalid_changes = (
             {"dur": "31s"},
@@ -942,7 +1211,7 @@ class ShortDramaRouteTests(unittest.TestCase):
 
     def test_apply_plan_uses_only_owned_completed_copy_job_data(self):
         _, project = self.request("POST", "/api/gen/short-drama/projects", body=valid_project())
-        job_id = self.insert_job(cost=3)
+        job_id = self.insert_job(cost=3, project=project)
         status, rejected = self.request("POST", "/api/gen/short-drama/apply-plan", body={
             "project_id": project["id"], "revision": project["revision"], "job_id": job_id,
             "plan": {"shots": []}, "cost": 999,
@@ -961,7 +1230,7 @@ class ShortDramaRouteTests(unittest.TestCase):
         self.assertEqual(409, status)
         self.assertEqual("job_already_applied", duplicate["code"])
 
-        other_job_id = self.insert_job(username="bob")
+        other_job_id = self.insert_job(username="bob", project=project)
         status, _ = self.request("POST", "/api/gen/short-drama/apply-plan", body={
             "project_id": project["id"], "revision": applied["revision"], "job_id": other_job_id,
         })
@@ -977,7 +1246,7 @@ class ShortDramaRouteTests(unittest.TestCase):
         )
         for options in cases:
             with self.subTest(options=options):
-                job_id = self.insert_job(**options)
+                job_id = self.insert_job(project=project, **options)
                 status, _ = self.request("POST", "/api/gen/short-drama/apply-plan", body={
                     "project_id": project["id"], "revision": project["revision"], "job_id": job_id,
                 })
@@ -985,7 +1254,7 @@ class ShortDramaRouteTests(unittest.TestCase):
 
     def test_confirm_route_enforces_owner_and_stage_order(self):
         _, project = self.request("POST", "/api/gen/short-drama/projects", body=valid_project())
-        job_id = self.insert_job()
+        job_id = self.insert_job(project=project)
         _, project = self.request("POST", "/api/gen/short-drama/apply-plan", body={
             "project_id": project["id"], "revision": project["revision"], "job_id": job_id,
         })

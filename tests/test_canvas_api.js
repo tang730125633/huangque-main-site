@@ -241,6 +241,44 @@ async function testExternalAssetHttpErrorAndCleanup() {
   assert.deepEqual(timers.filter((item) => item.cleared).map((item) => item.cleared), [92]);
 }
 
+async function testQuotedPaidSubmissionUsesServerCostAndNeverSubmitsOnFailureOrRejection() {
+  const payload = { cine_mode: 'open', avatar_ids: [1], prompt: '雨中奔跑', ratio: '9:16', duration: 5, resolution: '1080p' };
+  const calls = [];
+  let confirmedCost = null;
+  const client = {
+    json(path, options) {
+      calls.push({ path, options });
+      if (path === '/api/gen/cinematic/quote') return Promise.resolve({ cost: 137 });
+      if (path === '/api/gen/cinematic') return Promise.resolve({ job_id: 91 });
+      throw new Error(`unexpected path ${path}`);
+    },
+  };
+  const accepted = await apiModule.quotePaidSubmission({
+    client, quotePath: '/api/gen/cinematic/quote', submitPath: '/api/gen/cinematic', payload,
+    confirm(cost) { confirmedCost = cost; return true; },
+  });
+  assert.equal(confirmedCost, 137);
+  assert.equal(accepted.job_id, 91);
+  assert.deepEqual(calls.map((call) => call.path), ['/api/gen/cinematic/quote', '/api/gen/cinematic']);
+  assert.deepEqual(calls[0].options.body, payload, 'quote uses the complete eventual paid payload');
+
+  let submitted = false;
+  await assert.rejects(apiModule.quotePaidSubmission({
+    client: { json() { return Promise.reject(new Error('quote unavailable')); } },
+    quotePath: '/quote', submitPath: '/submit', payload,
+    submit() { submitted = true; },
+  }), /quote unavailable/);
+  assert.equal(submitted, false);
+
+  const rejectedCalls = [];
+  const rejected = await apiModule.quotePaidSubmission({
+    client: { json(path) { rejectedCalls.push(path); return Promise.resolve({ cost: 137 }); } },
+    quotePath: '/quote', submitPath: '/submit', payload, confirm() { return false; },
+  });
+  assert.equal(rejected, null);
+  assert.deepEqual(rejectedCalls, ['/quote']);
+}
+
 async function flushPromises() {
   await Promise.resolve();
   await Promise.resolve();
@@ -357,6 +395,7 @@ function testCanvasIntegration() {
     '/api/gen/video/avatars?limit=120',
     '/api/gen/xiaole_video',
     '/api/gen/cinematic',
+    '/api/gen/cinematic/quote',
     '/api/gen/job/',
   ]) assert.ok(app.includes(endpoint), endpoint);
 
@@ -375,13 +414,13 @@ function testCanvasIntegration() {
   assert.ok(videoNodeSource.includes('<button class="nc-go" data-f="run"><span>生成视频</span><span class="nc-video-cost" data-f="videoCost"></span></button>'));
   assert.ok(!videoNodeSource.includes('</button><span class="nc-video-cost"'));
 
-  assert.match(app, /var VIDEO_POINTS_PER_SECOND=30;/);
+  assert.match(app, /quotePaidSubmission/);
   assert.match(app, /function normalizeVideoNodeParams\(params\)/);
   assert.match(app, /params\.channel==='micro'/);
   assert.match(app, /function refreshVideoNodeControls\(node\)/);
   assert.match(app, /function referenceImageDataUrl\(source\)/);
   assert.match(app, /Promise\.all\(videoRefs\.map\(referenceImageDataUrl\)\)/);
-  assert.ok(app.includes("cost.textContent=videoPointCost(node)+'点';"));
+  assert.ok(app.includes("node.params.channel==='cinematic'?'待报价':videoPointCost(node)+'点'"));
   assert.ok(!app.includes("cost.textContent='消耗 '+videoPointCost(node)+' 点';"));
   assert.ok(css.includes('.nc-video-submit .nc-go{ display:flex; align-items:center; justify-content:center; gap:8px; width:100%; min-width:0; }'));
   assert.match(app, /cine_mode:'open'/);
@@ -406,6 +445,7 @@ Promise.resolve()
   .then(testAssetBlob)
   .then(testExternalAssetKeepsPublicFetchSemantics)
   .then(testExternalAssetHttpErrorAndCleanup)
+  .then(testQuotedPaidSubmissionUsesServerCostAndNeverSubmitsOnFailureOrRejection)
   .then(testPollRejectsAndCleansUpAfterDeadline)
   .then(testPollKeepsSuccessfulTerminalResult)
   .then(testPollKeepsFailedTerminalResultAfterDeadline)

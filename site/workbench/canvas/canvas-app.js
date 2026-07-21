@@ -447,7 +447,7 @@
     var cost=node.el.querySelector('[data-f="videoCost"]');
     if(warn) warn.style.display=node.params.channel==='grok'?'block':'none';
     if(avatars) avatars.style.display=node.params.channel==='cinematic'?'block':'none';
-    if(cost) cost.textContent=videoPointCost(node)+'点';
+    if(cost) cost.textContent=node.params.channel==='cinematic'?'待报价':videoPointCost(node)+'点';
     renderVideoAvatarOptions(node);
     if(node.params.channel==='cinematic'&&!videoAvatarsLoaded&&!videoAvatarsPromise) loadVideoAvatars(false).catch(function(){});
   }
@@ -3165,7 +3165,17 @@
       var preparedRefs=videoChannel==='cinematic'?Promise.all(videoRefs.map(referenceImageDataUrl)):Promise.resolve(videoRefs.map(function(img){ return img.indexOf(',')>=0?img.split(',')[1]:img; }));
       return preparedRefs.then(function(referenceImages){
           if(referenceImages.length) payload.reference_images=referenceImages;
-          return apiClient.json(endpoint,{method:'POST',body:payload});
+          if(videoChannel!=='cinematic') return apiClient.json(endpoint,{method:'POST',body:payload});
+          return apiModule.quotePaidSubmission({
+            client:apiClient,quotePath:'/api/gen/cinematic/quote',submitPath:endpoint,payload:payload,
+            onQuote:function(cost){
+              var label=node.el&&node.el.querySelector('[data-f="videoCost"]');
+              if(label) label.textContent=cost+'点';
+            },
+            confirm:function(cost){
+              return typeof window.confirm==='function'&&window.confirm('生成电影化身视频将消耗 '+cost+' 点，确认提交吗？');
+            }
+          });
         })
         .catch(function(error){
           var data=error&&error.data||{};
@@ -3178,6 +3188,10 @@
           throw error;
         })
         .then(function(data){
+          if(data===null){
+            vbtn.disabled=false;setNodeState(node,null,'已取消提交','#5c6b82');updateState('已取消');
+            return {cancelled:true};
+          }
           if(!data.job_id) throw makeRunNodeError(data.detail||'提交失败',{code:data.code});
           return apiModule.poll({
             request:function(){ return apiClient.json('/api/gen/job/'+data.job_id); },
@@ -3193,6 +3207,7 @@
           });
         })
         .then(function(result){ vbtn.disabled=false;
+          if(result&&result.cancelled) return null;
           var url=(result&&(result.video_url||result.source_video_url||result.url||(result.urls&&result.urls[0])))||'';
           if(!url) throw makeRunNodeError('未返回视频地址',{code:'missing_video_url'});
           node.outputs.video=url;

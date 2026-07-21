@@ -156,6 +156,8 @@
     var settings=normalizeSettings(project);
     return {
       format:'short_drama',
+      project_id:project&&project.id,
+      project_revision:project&&project.revision,
       prompt:settings.synopsis||'',
       dur:String(settings.target_duration)+'s',
       ratio:settings.ratio,
@@ -193,6 +195,9 @@
       list:function(){ return apiClient.json('/api/gen/short-drama/projects'); },
       get:function(projectId){ return apiClient.json(projectPath(projectId)); },
       getPlanningQuote:function(){ return apiClient.json('/api/gen/short-drama/planning-quote'); },
+      getRecoverablePlanningJob:function(projectId){
+        return apiClient.json('/api/gen/short-drama/planning-job?project_id='+encodeURIComponent(projectId));
+      },
       create:function(project){ return apiClient.json('/api/gen/short-drama/projects',{method:'POST',body:project}); },
       update:function(projectId,revision,patch){
         return apiClient.json(projectPath(projectId),{method:'PUT',body:Object.assign({},patch||{},{revision:revision})});
@@ -205,8 +210,14 @@
       },
       generatePlan:function(project,hooks){
         hooks=hooks||{};
-        return apiClient.json('/api/gen/copy',{method:'POST',body:planningPayload(project)})
-          .then(function(created){
+        function submitOrRecover(){
+          return apiClient.json('/api/gen/short-drama/planning-job?project_id='+encodeURIComponent(project.id))
+            .then(function(recovered){
+              if(recovered&&recovered.job_id) return recovered;
+              return apiClient.json('/api/gen/copy',{method:'POST',body:planningPayload(project)});
+            });
+        }
+        return submitOrRecover().then(function(created){
             if(!created||!created.job_id) throw jobError(created);
             if(typeof hooks.onCost==='function'&&created.cost!=null) hooks.onCost(Number(created.cost));
             if(typeof hooks.onProgress==='function') hooks.onProgress({status:'pending',percent:20,label:'规划任务已入队'});
@@ -610,17 +621,51 @@
       if(errors.length) return Promise.reject(new Error(errors.join('\n')));
       return savePatch(makeShotsPatch(value),'storyboard_review');
     }
-    function confirm(stage){
+    function currentSectionValue(stage,value){
+      if(value!==undefined) return value;
+      if(host){
+        if(stage==='characters_review') return readCharacters();
+        if(stage==='script_review') return readScript();
+        if(stage==='storyboard_review') return readShots();
+      }
+      if(stage==='characters_review') return project.characters||[];
+      if(stage==='script_review') return (project.script_versions||[]).slice(-1)[0]||{};
+      return project.shots||[];
+    }
+    function sectionPatch(stage,value){
+      if(stage==='characters_review') return makeCharactersPatch(value);
+      if(stage==='script_review') return makeScriptPatch(value);
+      return makeShotsPatch(value);
+    }
+    function currentSectionPatch(stage){
+      if(stage==='characters_review') return makeCharactersPatch(project.characters||[]);
+      if(stage==='script_review') return makeScriptPatch((project.script_versions||[]).slice(-1)[0]||{});
+      return makeShotsPatch(project.shots||[]);
+    }
+    function saveSectionIfChanged(stage,value){
+      var candidate=currentSectionValue(stage,value);
+      if(JSON.stringify(sectionPatch(stage,candidate))===JSON.stringify(currentSectionPatch(stage))){
+        return Promise.resolve(project);
+      }
+      if(stage==='characters_review') return saveCharacters(candidate);
+      if(stage==='script_review') return saveScript(candidate);
+      return saveShots(candidate);
+    }
+    function confirm(stage,value){
       try{
         ensureCanMutate();
         if(project.stage!==stage) throw new Error('confirmation order must match the current stage');
         ensureCanMutate(stage);
       }catch(error){ return Promise.reject(error); }
-      state.busy=true;state.error='';render();
-      return Promise.resolve(client.confirm(project.id,project.revision,stage)).then(function(next){
-        state.activeStage=next.stage;
-        return acceptProject(next,true);
-      }).catch(function(error){ showWorkspaceError(error); throw error; });
+      return saveSectionIfChanged(stage,value).then(function(){
+        if(destroyed) throw new Error('workspace destroyed');
+        if(project.stage!==stage) throw new Error('confirmation order must match the current stage');
+        state.busy=true;state.error='';render();
+        return Promise.resolve(client.confirm(project.id,project.revision,stage));
+      }).then(function(next){
+          state.activeStage=next.stage;
+          return acceptProject(next,true);
+        }).catch(function(error){ showWorkspaceError(error); throw error; });
     }
     function generatePlan(){
       try{

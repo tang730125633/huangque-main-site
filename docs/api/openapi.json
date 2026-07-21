@@ -31,6 +31,7 @@
         "properties": { "id": { "type": "string", "maxLength": 80 }, "character_key": { "type": "string", "maxLength": 80 }, "text": { "type": "string", "maxLength": 4000 } }
       },
       "ShortDramaCharacter": {
+        "description": "cinematic_avatar 的 avatar_id 必须引用当前用户本人拥有、未删除且可用的电影级数字人；ai_character 不要求 avatar_id。",
         "type": "object", "required": ["character_key", "name", "identity_text", "personality", "source_type", "appearance_prompt", "wardrobe_prompt", "voice_settings"],
         "oneOf": [
           { "required": ["source_type"], "properties": { "source_type": { "enum": ["ai_character"] }, "avatar_id": { "type": "string", "nullable": true } } },
@@ -80,17 +81,20 @@
         }
       },
       "ShortDramaPlanningRequest": {
-        "type": "object", "required": ["format", "prompt", "dur", "ratio", "shot_count"], "additionalProperties": false,
+        "type": "object", "required": ["format", "project_id", "project_revision", "prompt", "dur", "ratio", "shot_count"], "additionalProperties": false,
         "properties": {
+          "project_id": { "type": "string", "format": "uuid" }, "project_revision": { "type": "integer", "minimum": 1 },
           "format": { "type": "string", "enum": ["short_drama"] }, "prompt": { "type": "string", "minLength": 1, "maxLength": 4000 },
           "dur": { "type": "string", "enum": ["30s", "45s", "60s"] }, "ratio": { "type": "string", "enum": ["9:16", "16:9"] },
           "shot_count": { "type": "integer", "minimum": 6, "maximum": 10 }, "style": { "type": "string", "maxLength": 80 }, "platform": { "type": "string", "maxLength": 80 }
         }
       },
       "ShortDramaPlanningResult": {
-        "type": "object", "required": ["type", "mode", "plan", "prompt", "dur", "ratio", "shot_count"], "additionalProperties": false,
+        "type": "object", "required": ["type", "mode", "project_id", "project_revision", "settings", "plan", "prompt", "dur", "ratio", "shot_count"], "additionalProperties": false,
         "properties": {
           "type": { "type": "string", "enum": ["copy"] }, "mode": { "type": "string", "enum": ["short_drama"] },
+          "project_id": { "type": "string", "format": "uuid" }, "project_revision": { "type": "integer", "minimum": 1 },
+          "settings": { "type": "object", "required": ["ratio", "target_duration", "shot_count"], "additionalProperties": false, "properties": { "ratio": { "type": "string", "enum": ["9:16", "16:9"] }, "target_duration": { "type": "integer", "enum": [30, 45, 60] }, "shot_count": { "type": "integer", "minimum": 6, "maximum": 10 } } },
           "prompt": { "type": "string" }, "dur": { "type": "string", "enum": ["30s", "45s", "60s"] }, "ratio": { "type": "string", "enum": ["9:16", "16:9"] },
           "shot_count": { "type": "integer", "minimum": 6, "maximum": 10 },
           "plan": {
@@ -161,6 +165,16 @@
         "responses": {
           "200": { "description": "当前服务端报价；本请求不扣点", "content": { "application/json": { "schema": { "type": "object", "required": ["cost"], "additionalProperties": false, "properties": { "cost": { "type": "integer", "minimum": 0 } } } } } },
           "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/api/gen/short-drama/planning-job": {
+      "get": {
+        "tags": ["短剧策划"], "summary": "恢复当前项目尚未应用的短剧策划任务", "description": "Free / no points. 仅返回当前用户本人 draft 项目中，与当前策划参数快照一致且尚未应用的 pending、running 或 done 付费任务，供冲突或刷新后恢复，避免重复扣点。",
+        "parameters": [{ "in": "query", "name": "project_id", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "responses": {
+          "200": { "description": "可恢复任务；没有时 job_id 为 null", "content": { "application/json": { "schema": { "type": "object", "required": ["job_id"], "additionalProperties": false, "properties": { "job_id": { "type": "integer", "nullable": true }, "cost": { "type": "integer", "minimum": 0 }, "status": { "type": "string", "enum": ["pending", "running", "done"] }, "project_revision": { "type": "integer", "minimum": 1 } } } } } },
+          "400": { "description": "缺少或无效的 project_id" }, "401": { "description": "未登录" }, "404": { "description": "项目不存在或不属于当前用户" }
         }
       }
     },
@@ -242,7 +256,7 @@
     },
     "/api/gen/short-drama/apply-plan": {
       "post": {
-        "tags": ["短剧策划"], "summary": "把已完成的短剧策划任务应用到项目", "description": "应用本身不再次扣点；只接受当前用户本人已完成且 mode=short_drama 的 copy job。项目 spent_points 增加该 job 在服务端记录的实际 cost，不能由客户端指定。",
+        "tags": ["短剧策划"], "summary": "把已完成的短剧策划任务应用到项目", "description": "应用本身不再次扣点；只接受当前用户本人已完成且 mode=short_drama 的 copy job。服务端校验 job 输入、结果、project_id、提交时 revision 及策划参数快照的绑定关系；项目 spent_points 增加该 job 在服务端记录的实际 cost，不能由客户端指定。",
         "requestBody": { "required": true, "content": { "application/json": { "schema": {
           "type": "object", "required": ["project_id", "revision", "job_id"], "additionalProperties": false,
           "properties": { "project_id": { "type": "string" }, "revision": { "type": "integer", "minimum": 1 }, "job_id": { "type": "integer", "minimum": 1 } }
@@ -272,6 +286,16 @@
         }
       }
     },
+    "/api/gen/cinematic/quote": {
+      "post": {
+        "tags": ["视频"], "summary": "读取电影级视频完整请求的服务端报价", "description": "Free / no points. 使用与付费 cinematic 提交相同的完整 payload 做认证、归一化和校验，并返回服务端权威 cost；本请求不扣点且不创建任务。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["cine_mode", "avatar_ids", "prompt", "ratio", "duration", "resolution"], "properties": { "cine_mode": { "type": "string" }, "avatar_ids": { "type": "array", "items": { "type": "integer" } }, "prompt": { "type": "string" }, "ratio": { "type": "string" }, "duration": { "type": "integer" }, "resolution": { "type": "string" }, "start_image": { "type": "string" }, "end_image": { "type": "string" }, "reference_images": { "type": "array", "items": { "type": "string" } } } } } } },
+        "responses": {
+          "200": { "description": "当前完整请求的权威报价；未扣点", "content": { "application/json": { "schema": { "type": "object", "required": ["cost"], "additionalProperties": false, "properties": { "cost": { "type": "integer", "minimum": 0 } } } } } },
+          "400": { "description": "完整 payload 无效；未扣点且未创建任务" }, "401": { "description": "未登录；认证先于 JSON 解析" }
+        }
+      }
+    },
     "/api/gen/image": {
       "post": {
         "tags": ["作图"], "summary": "gpt-image 作图(文生图/图生图/局部修改) · 12点",
@@ -291,7 +315,7 @@
     "/api/gen/copy": {
       "post": {
         "tags": ["文案"], "summary": "AI 文案 / 分镜脚本 / 短剧策划 · 按服务端报价",
-        "description": "付费异步任务。短剧客户端先调用认证的 planning-quote，以返回的精确 cost 弹窗确认，确认后才提交 format=short_drama。服务端在扣点和创建任务前同步校验 dur、ratio、shot_count 及其组合；通过校验并受理后，模型输出解析或规划归一化失败属于异步 job error，并按任务失败规则退款。成功时轮询 job 得到 ShortDramaPlanningResult，再由 owner 调用 apply-plan。项目创建、读取、保存和阶段确认均免费。",
+        "description": "付费异步任务。短剧客户端先调用认证的 planning-quote，以返回的精确 cost 弹窗确认，确认后才提交 format=short_drama。服务端在同一提交锁内、扣点和创建任务前，同步校验项目 owner、draft 阶段、精确 revision、策划参数快照以及项目预算；通过校验并受理后，模型输出解析或规划归一化失败属于异步 job error，并按任务失败规则退款。成功时轮询 job 得到绑定项目元数据的 ShortDramaPlanningResult，再由 owner 调用 apply-plan。项目创建、读取、保存和阶段确认均免费。",
         "x-job-result-schema": { "$ref": "#/components/schemas/ShortDramaPlanningResult" },
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "oneOf": [
           {
@@ -307,7 +331,7 @@
         ] } } } },
         "responses": {
           "200": { "description": "已受理；返回 job_id、此次实际扣除的 cost 和 points_left", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } },
-          "400": { "description": "短剧 dur、ratio、shot_count 或组合无效；before deduction，未扣点且未创建任务" }, "401": { "description": "未登录" }, "402": { "description": "点数不足" }
+          "400": { "description": "短剧项目、revision、参数快照或 budget（预算）无效；before deduction，未扣点且未创建任务" }, "401": { "description": "未登录" }, "402": { "description": "点数不足" }
         }
       }
     },

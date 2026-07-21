@@ -23,6 +23,11 @@ def gen_copy(payload):
         )
         plan = short_drama.parse_and_normalize_plan(raw, settings)
         return {"type": "copy", "mode": "short_drama", "plan": plan,
+                "project_id": settings.get("project_id"),
+                "project_revision": settings.get("project_revision"),
+                "settings": {"ratio": settings["ratio"],
+                             "target_duration": settings["target_duration"],
+                             "shot_count": settings["shot_count"]},
                 "prompt": settings["prompt"], "dur": str(settings["target_duration"]) + "s",
                 "ratio": settings["ratio"], "shot_count": settings["shot_count"]}
     # 编导：结构化分镜脚本（返回 scenes 数组）

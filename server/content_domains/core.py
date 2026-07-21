@@ -1159,9 +1159,10 @@ class H(BaseHTTPRequestHandler):
         except Exception:
             raise ValueError("请求体不是合法 JSON")
     def do_POST(self):
-        if _short_drama_domain().dispatch_http(self, "POST", jdb, verify): return  # /api/gen/short-drama/projects /api/gen/short-drama/apply-plan /api/gen/short-drama/confirm
-        p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
+        p = self.path.split("?")[0]
+        if _short_drama_domain().dispatch_http(self, "POST", jdb, verify, getattr(points_domain, "cost_of", None)): return
+        if video_domain.dispatch_cinematic_quote(self, verify, points_domain.cost_of): return
         if p == "/api/gen/asset/favorite":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
@@ -1371,11 +1372,10 @@ class H(BaseHTTPRequestHandler):
                 return self._send(503, {"detail": str(e)})
             try:
                 body = self._json_body_strict() if kind in {"video", "tryon", "sora_video", "cinematic", "avatar"} else self._json_body()
-                request_body = dict(body) if isinstance(body, dict) else body
                 # 微信小程序内容安全：必须在校验、扣点和入队之前完成。违规内容不扣点；
                 # 微信服务异常时不收单，避免网络故障成为绕过审核的通道。
                 miniprogram_security.check_payload(body)
-                if kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama": _short_drama_domain().validate_planning_payload(body)
+                if kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama": body = _short_drama_domain().validate_planning_submission(jdb, user["username"], body)
                 elif kind == "video":
                     body = video_domain.validate_video_payload(body, user["username"])
                 elif kind == "tryon":
@@ -1391,6 +1391,7 @@ class H(BaseHTTPRequestHandler):
                 elif kind == "image":
                     from . import image as image_domain
                     body = image_domain.validate_image_payload(body)
+                request_body = dict(body) if isinstance(body, dict) else body
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
                 idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"} else ""
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
@@ -1398,8 +1399,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": str(e), "code": "content_rejected"})
             except miniprogram_security.SecurityUnavailable as e:
                 return self._send(503, {"detail": str(e), "code": "content_security_unavailable", "retry_after_ms": 5000})
-            except ValueError as e:
-                return self._send(400, {"detail": str(e)[:220]})
+            except (ValueError, LookupError, _short_drama_domain().RevisionConflict) as e: _short_drama_domain()._http_error(self, e); return
             # 正在停机（部署中）→ 不收新活。⚠️ 必须在【扣点之前】。
             # 否则用户被扣了点、任务入了队，进程下一秒就退了 —— 又是一条「服务重启中断」。
             if is_shutting_down():
@@ -1414,11 +1414,13 @@ class H(BaseHTTPRequestHandler):
             # fail-open：熔断器自己出问题一律放行（见 upstream_guard）。
             from . import upstream_guard
             blocked = upstream_guard.exhausted_reason(kind, body)
-            if blocked:
-                return self._send(503, {"detail": blocked, "code": "upstream_exhausted",
-                                        "retry_after_ms": 60000})
-            cost = points_domain.cost_of(kind, body)
+            if blocked: return self._send(503, {"detail": blocked, "code": "upstream_exhausted", "retry_after_ms": 60000})
+            is_short_drama = kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama"
+            cost = None if is_short_drama else points_domain.cost_of(kind, body)
             with _submission_lock:
+                if is_short_drama:
+                    try: body, cost = _short_drama_domain().prepare_paid_planning_submission(jdb, user["username"], body, points_domain.cost_of)
+                    except (LookupError, _short_drama_domain().RevisionConflict, _short_drama_domain().PointBudgetExceeded, ValueError) as e: _short_drama_domain()._http_error(self, e); return
                 idem_state, idem_response = _idempotency_begin(user["username"], p, idem_key, request_body)
                 if idem_state == "replay":
                     return self._send(200, idem_response)
@@ -1463,7 +1465,6 @@ class H(BaseHTTPRequestHandler):
             _idempotency_complete(user["username"], p, idem_key, response)
             return self._send(200, response)
         self._send(404, {"detail": "not found"})
-
     def do_GET(self):
         audio_domain, points_domain, video_domain = _domains()
         if _short_drama_domain().dispatch_http(self, "GET", jdb, verify, getattr(points_domain, "cost_of", None)): return
@@ -1697,7 +1698,6 @@ class H(BaseHTTPRequestHandler):
                                     "sora_video_enabled": bool(video_domain.sora_video_is_open() and OPENAI_KEY and feature_flags.is_enabled("sora_video")),
                                     "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE, "video_cost": VIDEO_COST, "video_batch_max": min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS), "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
-
     def do_PUT(self):
         if _short_drama_domain().dispatch_http(self, "PUT", jdb, verify): return  # /api/gen/short-drama/project
         if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()

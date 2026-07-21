@@ -3214,6 +3214,26 @@ def validate_cinematic_payload(body, username=None):
     return cleaned
 
 
+def dispatch_cinematic_quote(handler, verify, cost_of):
+    """Serve the free quote beside the cinematic payload validator it relies on."""
+    if handler.path.split("?")[0] != "/api/gen/cinematic/quote":
+        return False
+    user = verify(handler._token())
+    if not user:
+        handler._send(401, {"detail": "未登录"}); return True
+    if user.get("must_change"):
+        handler._send(403, {"detail": "请先修改初始密码"}); return True
+    try:
+        cleaned = validate_cinematic_payload(handler._json_body_strict(), user["username"])
+        cost = int(cost_of("cinematic", cleaned))
+        if cost < 0:
+            raise ValueError("电影化身视频报价无效")
+        handler._send(200, {"cost": cost})
+    except ValueError as exc:
+        handler._send(400, {"detail": str(exc)[:220]})
+    return True
+
+
 def gen_cinematic(payload):
     """选 1~3 个自己的形象 + 提示词（+ 可选参考视频）→ HeyGen cinematic_avatar。
 

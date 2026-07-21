@@ -15,6 +15,7 @@ function testOpenApiContract() {
     ['post', '/api/gen/short-drama/apply-plan'],
     ['post', '/api/gen/short-drama/confirm'],
     ['get', '/api/gen/short-drama/planning-quote'],
+    ['get', '/api/gen/short-drama/planning-job'],
   ];
   for (const [method, route] of operations) {
     const operation = spec.paths[route] && spec.paths[route][method];
@@ -49,6 +50,10 @@ function testOpenApiContract() {
   const quote = spec.paths['/api/gen/short-drama/planning-quote'].get;
   assert.equal(quote.responses['200'].content['application/json'].schema.properties.cost.type, 'integer');
   assert.match(quote.description, /free|no points/i);
+  assert.ok(spec.paths['/api/gen/short-drama/planning-job'].get.responses['404']);
+  const cinematicQuote = spec.paths['/api/gen/cinematic/quote'].post;
+  assert.ok(cinematicQuote.responses['400'] && cinematicQuote.responses['401']);
+  assert.match(cinematicQuote.description, /free|no points/i);
 
   const updateSchema = spec.paths['/api/gen/short-drama/project'].put
     .requestBody.content['application/json'].schema;
@@ -72,8 +77,13 @@ function testOpenApiContract() {
   assert.equal(shortDramaVariant.properties.ratio.enum.includes('16:9'), true);
   assert.equal(shortDramaVariant.properties.shot_count.minimum, 6);
   assert.equal(shortDramaVariant.properties.shot_count.maximum, 10);
+  assert.ok(shortDramaVariant.required.includes('project_id'));
+  assert.ok(shortDramaVariant.required.includes('project_revision'));
   const planningResult = spec.components.schemas.ShortDramaPlanningResult;
   assert.ok(planningResult.required.includes('type') && planningResult.required.includes('dur'));
+  for (const field of ['project_id', 'project_revision', 'settings']) {
+    assert.ok(planningResult.required.includes(field), `planning result must bind ${field}`);
+  }
   assert.ok(planningResult.properties.plan.properties.characters.items.properties.key,
     'copy result uses planning character key before persistence');
   assert.ok(planningResult.properties.plan.properties.script.properties.conflict,
@@ -84,6 +94,7 @@ function testOpenApiContract() {
   assert.doesNotMatch(copyOperation.summary + copyOperation.description + copyOperation.responses['200'].description,
     /(?:current|currently|目前|当前)\s*3|3\s*点/i, 'copy pricing must come from the authenticated quote');
   assert.match(copyOperation.responses['400'].description, /before deduction|未扣点/i);
+  assert.match(copyOperation.responses['400'].description, /budget|预算/i);
   assert.match(copyOperation.description, /asynchronous|异步/i,
     'copy documentation distinguishes accepted-job failures from synchronous validation');
   const characterSchema = spec.components.schemas.ShortDramaCharacter;
@@ -92,6 +103,7 @@ function testOpenApiContract() {
     candidate.properties.source_type.enum.includes('cinematic_avatar'));
   assert.ok(cinematicAvatar.required.includes('avatar_id'));
   assert.equal(cinematicAvatar.properties.avatar_id.minLength, 1);
+  assert.match(characterSchema.description || '', /owner|当前用户|本人/i);
   const jobResult = spec.components.schemas.JobStatus.properties.result.oneOf;
   assert.equal(jobResult.some((candidate) => candidate.$ref === '#/components/schemas/ShortDramaPlanningResult'), true);
   const genericJobResult = jobResult.find((candidate) => candidate.type === 'object');
@@ -295,7 +307,8 @@ async function testPureHelpers() {
   assert.equal(shortDrama.normalizeSettings({ shot_count: 11 }).shot_count, 10);
 
   assert.deepEqual(shortDrama.planningPayload(settings), {
-    format: 'short_drama', prompt: settings.synopsis, dur: '45s', ratio: '9:16',
+    format: 'short_drama', project_id: undefined, project_revision: undefined,
+    prompt: settings.synopsis, dur: '45s', ratio: '9:16',
     shot_count: 8, style: settings.visual_style, platform: settings.target_platform,
   });
   assert.equal(shortDrama.stageIndex('storyboard_review'), 3);
@@ -312,6 +325,7 @@ async function testProjectRoutesAndPlanningFlow() {
     json(path, options) {
       calls.push({ path, options });
       if (path === '/api/gen/short-drama/planning-quote') return Promise.resolve({ cost: 7 });
+      if (path.startsWith('/api/gen/short-drama/planning-job?')) return Promise.resolve({ job_id: null });
       if (path === '/api/gen/copy') return Promise.resolve({ job_id: 42, cost: 3 });
       if (path === '/api/gen/job/42') return Promise.resolve({
         status: 'done', result: JSON.stringify({ mode: 'short_drama', plan: { title: '雨夜来客' } }),
@@ -374,10 +388,14 @@ async function testProjectRoutesAndPlanningFlow() {
       options: { method: 'POST', body: { project_id: 'project 1', revision: 7, stage: 'characters_review' } },
     },
     {
+      path: '/api/gen/short-drama/planning-job?project_id=project-1', options: undefined,
+    },
+    {
       path: '/api/gen/copy',
       options: {
         method: 'POST', body: {
-          format: 'short_drama', prompt: '陌生女孩敲开侦探的门', dur: '45s', ratio: '16:9',
+          format: 'short_drama', project_id: 'project-1', project_revision: 7,
+          prompt: '陌生女孩敲开侦探的门', dur: '45s', ratio: '16:9',
           shot_count: 8, style: '电影写实', platform: '抖音',
         },
       },
@@ -390,10 +408,44 @@ async function testProjectRoutesAndPlanningFlow() {
   ]);
 }
 
+async function testPaidPlanningRecoveryReusesJobWithoutAnotherCopyPost() {
+  const calls = [];
+  let revision = 8;
+  const api = {
+    json(path, options) {
+      calls.push({ path, options });
+      if (path === '/api/gen/short-drama/planning-job?project_id=project-1') {
+        return Promise.resolve({ job_id: 77, status: 'done', cost: 11 });
+      }
+      if (path === '/api/gen/job/77') return Promise.resolve({
+        status: 'done', result: JSON.stringify({ mode: 'short_drama', project_id: 'project-1' }),
+      });
+      if (path === '/api/gen/short-drama/apply-plan') {
+        assert.equal(options.body.job_id, 77);
+        assert.equal(options.body.revision, revision);
+        return Promise.resolve({ id: 'project-1', revision: ++revision, stage: 'characters_review' });
+      }
+      if (path === '/api/gen/copy') throw new Error('recovery must not create another paid job');
+      throw new Error(`unexpected recovery route ${path}`);
+    },
+  };
+  const poll = (options) => options.request().then((job) => options.inspect(job).value);
+  const result = await shortDrama.createClient(api, poll).generatePlan({
+    id: 'project-1', revision, synopsis: '刷新后仍可恢复的故事梗概', ratio: '9:16',
+    target_duration: 30, shot_count: 6, visual_style: '电影写实', target_platform: '抖音',
+  });
+  assert.equal(result.revision, 9);
+  assert.equal(calls.filter((call) => call.path === '/api/gen/copy').length, 0);
+  assert.deepEqual(calls.filter((call) => call.path.includes('/apply-plan'))[0].options.body, {
+    project_id: 'project-1', revision: 8, job_id: 77,
+  });
+}
+
 async function testTerminalJobFailureDoesNotApplyPlan() {
   let applyCalled = false;
   const api = {
     json(path) {
+      if (path.startsWith('/api/gen/short-drama/planning-job?')) return Promise.resolve({ job_id: null });
       if (path === '/api/gen/copy') return Promise.resolve({ job_id: 44 });
       if (path === '/api/gen/job/44') return Promise.resolve({
         status: 'failed', error: 'model refused plan', code: 'model_failed',
@@ -427,6 +479,7 @@ async function testPlanningErrorsPropagateWithoutApplying() {
   const copyError = new Error('copy unavailable');
   const copyApi = {
     json(path) {
+      if (path.startsWith('/api/gen/short-drama/planning-job?')) return Promise.resolve({ job_id: null });
       assert.equal(path, '/api/gen/copy');
       return Promise.reject(copyError);
     },
@@ -441,6 +494,7 @@ async function testPlanningErrorsPropagateWithoutApplying() {
   let applyCalled = false;
   const pollApi = {
     json(path) {
+      if (path.startsWith('/api/gen/short-drama/planning-job?')) return Promise.resolve({ job_id: null });
       if (path === '/api/gen/copy') return Promise.resolve({ job_id: 43 });
       applyCalled = true;
       return Promise.resolve({});
@@ -709,6 +763,48 @@ async function testWorkspaceSavesUseExactRevisionedBodiesAndSummaries() {
   assert.equal(summaries.length, 6);
   assert.deepEqual(summaries.at(-1), shortDrama.summarizeProject(workspace.getProject()));
   assert.equal(typeof summaries.at(-1), 'object');
+  workspace.destroy();
+}
+
+async function testConfirmSavesChangedSectionThenUsesReturnedRevisionAndSkipsUnchangedScriptSave() {
+  let project = workspaceProject({ stage: 'characters_review', revision: 7 });
+  const calls = [];
+  const client = {
+    get() { return Promise.resolve(project); },
+    update(id, revision, patch) {
+      calls.push(['update', id, revision, patch]);
+      project = Object.assign({}, project, { revision: revision + 1 });
+      if (patch.characters) project.characters = patch.characters;
+      if (patch.script) project.script_versions = project.script_versions.concat([
+        Object.assign({ version: project.script_versions.length + 1 }, patch.script),
+      ]);
+      return Promise.resolve(project);
+    },
+    confirm(id, revision, stage) {
+      calls.push(['confirm', id, revision, stage]);
+      project = Object.assign({}, project, {
+        revision: revision + 1,
+        stage: stage === 'characters_review' ? 'script_review' : 'storyboard_review',
+      });
+      return Promise.resolve(project);
+    },
+    generatePlan() { throw new Error('unexpected paid generation'); },
+  };
+  const workspace = shortDrama.createWorkspace({ projectId: project.id, client, document: null });
+  await workspace.ready;
+  const changedCharacters = project.characters.map((character, index) => Object.assign(
+    {}, character, index === 0 ? { name: '保存后确认的侦探' } : {},
+  ));
+  await workspace.confirm('characters_review', changedCharacters);
+  const versionsBefore = workspace.getProject().script_versions.length;
+  await workspace.confirm('script_review', workspace.getProject().script_versions.at(-1));
+  assert.deepEqual(calls, [
+    ['update', 'project-1', 7, shortDrama.makeCharactersPatch(changedCharacters)],
+    ['confirm', 'project-1', 8, 'characters_review'],
+    ['confirm', 'project-1', 9, 'script_review'],
+  ]);
+  assert.equal(workspace.getProject().script_versions.length, versionsBefore,
+    'unchanged script confirmation must not append a version');
   workspace.destroy();
 }
 
@@ -1029,10 +1125,14 @@ async function testNoChargeFortyFiveSecondControllerAcceptance() {
       if (route === '/api/gen/short-drama/planning-quote') {
         return Promise.resolve({ cost: 7 });
       }
+      if (route === `/api/gen/short-drama/planning-job?project_id=${encodeURIComponent(persisted.id)}`) {
+        return Promise.resolve({ job_id: null });
+      }
       if (route === '/api/gen/copy') {
         copySubmissions += 1;
         assert.deepEqual(options.body, {
-          format: 'short_drama', prompt: persisted.synopsis, dur: '45s', ratio: '16:9',
+          format: 'short_drama', project_id: persisted.id, project_revision: persisted.revision,
+          prompt: persisted.synopsis, dur: '45s', ratio: '16:9',
           shot_count: 8, style: persisted.visual_style, platform: persisted.target_platform,
         });
         return Promise.resolve({ job_id: 4516, cost: 7, points_left: 93 });
@@ -1161,6 +1261,7 @@ async function main() {
   await testCreateProjectCoordinatorScopeCleanup();
   await testPureHelpers();
   await testProjectRoutesAndPlanningFlow();
+  await testPaidPlanningRecoveryReusesJobWithoutAnotherCopyPost();
   await testPlanningErrorsPropagateWithoutApplying();
   await testPlanningQuoteFailureDoesNotSubmit();
   await testTerminalJobFailureDoesNotApplyPlan();
@@ -1168,6 +1269,7 @@ async function main() {
   testWorkspaceSourceAndRenderContract();
   testWorkspacePureStateAndPayloadHelpers();
   await testWorkspaceSavesUseExactRevisionedBodiesAndSummaries();
+  await testConfirmSavesChangedSectionThenUsesReturnedRevisionAndSkipsUnchangedScriptSave();
   await testWorkspaceLoadRecoveryOwnerIsolationAndDestroy();
   await testCollaborationRoleDowngradeDestroysEditableWorkspaceOnly();
   await testWorkspaceLocksSettingsAndRejectsConcurrentPaidPlanning();

@@ -18,6 +18,9 @@ RATIOS = {"9:16", "16:9"}
 DURATIONS = {30, 45, 60}
 SHOT_COUNTS = set(range(6, 11))
 CONTENT_KEYS = {"characters", "script", "shots"}
+PLANNING_SPEC_FIELDS = {
+    "synopsis", "ratio", "target_duration", "shot_count", "visual_style", "target_platform",
+}
 
 
 class RevisionConflict(RuntimeError):
@@ -25,6 +28,10 @@ class RevisionConflict(RuntimeError):
 
 
 class AppliedJobConflict(RuntimeError):
+    pass
+
+
+class PointBudgetExceeded(ValueError):
     pass
 
 
@@ -38,12 +45,18 @@ def validate_project_payload(payload, partial=False):
         cleaned["synopsis"] = str(cleaned.get("synopsis") or "").strip()[:4000]
         if len(cleaned["synopsis"]) < 8:
             raise ValueError("故事梗概至少需要 8 个字")
+    if not partial and "ratio" not in cleaned:
+        raise ValueError("缺少短剧比例")
     if "ratio" in cleaned:
         if not isinstance(cleaned["ratio"], str) or cleaned["ratio"] not in RATIOS:
             raise ValueError("短剧比例仅支持 9:16、16:9")
+    if not partial and "target_duration" not in cleaned:
+        raise ValueError("缺少短剧目标时长")
     if "target_duration" in cleaned:
         if type(cleaned["target_duration"]) is not int or cleaned["target_duration"] not in DURATIONS:
             raise ValueError("短剧时长仅支持 30、45、60 秒")
+    if not partial and "shot_count" not in cleaned:
+        raise ValueError("缺少短剧分镜数量")
     if "shot_count" in cleaned:
         if type(cleaned["shot_count"]) is not int or cleaned["shot_count"] not in SHOT_COUNTS:
             raise ValueError("分镜数量必须为 6–10 个")
@@ -51,7 +64,8 @@ def validate_project_payload(payload, partial=False):
     if "point_budget" in cleaned:
         if type(cleaned["point_budget"]) is not int:
             raise ValueError("点数预算必须为整数")
-        cleaned["point_budget"] = max(0, cleaned["point_budget"])
+        if cleaned["point_budget"] < 0:
+            raise ValueError("点数预算不能为负数")
     return cleaned
 
 
@@ -178,13 +192,73 @@ def validate_planning_payload(payload):
     if type(shot_count) is not int:
         raise ValueError("分镜数量必须为整数")
     _validate_planning_limits(target_duration, shot_count)
-    return {
+    settings = {
         "prompt": prompt,
         "target_duration": target_duration,
         "ratio": ratio,
         "shot_count": shot_count,
         "style": _text(data.get("style") or "电影写实", 80),
         "platform": _text(data.get("platform") or "抖音", 80),
+    }
+    if "project_id" in data:
+        if not isinstance(data["project_id"], str) or not data["project_id"].strip():
+            raise ValueError("短剧项目 ID 无效")
+        settings["project_id"] = data["project_id"].strip()
+    if "project_revision" in data:
+        if type(data["project_revision"]) is not int or data["project_revision"] < 1:
+            raise ValueError("短剧项目版本无效")
+        settings["project_revision"] = data["project_revision"]
+    return settings
+
+
+def validate_planning_submission(db_factory, username, payload):
+    if not isinstance(payload, dict):
+        raise ValueError("短剧策划请求必须是对象")
+    allowed = {
+        "format", "project_id", "project_revision", "prompt", "dur", "ratio", "shot_count",
+        "style", "platform",
+    }
+    required = {"format", "project_id", "project_revision", "prompt", "dur", "ratio", "shot_count"}
+    if set(payload) - allowed or not required.issubset(payload):
+        raise ValueError("短剧策划请求字段不正确")
+    if payload.get("format") != "short_drama":
+        raise ValueError("短剧策划格式无效")
+    settings = validate_planning_payload(payload)
+    conn = _connection(db_factory)
+    try:
+        row = conn.execute(
+            "SELECT * FROM short_drama_projects WHERE id=? AND username=? AND deleted=0",
+            (settings["project_id"], username),
+        ).fetchone()
+        if not row:
+            raise LookupError("短剧项目不存在")
+        project = dict(row)
+    finally:
+        conn.close()
+    if project["stage"] != "draft":
+        raise ValueError("当前短剧阶段不能重新生成策划")
+    if project["revision"] != settings["project_revision"]:
+        raise RevisionConflict("项目已在其他页面更新，请刷新后重试")
+    expected = {
+        "prompt": project["synopsis"],
+        "target_duration": project["target_duration"],
+        "ratio": project["ratio"],
+        "shot_count": project["shot_count"],
+        "style": project["visual_style"],
+        "platform": project["target_platform"],
+    }
+    if any(settings[key] != value for key, value in expected.items()):
+        raise ValueError("短剧策划设置与项目不一致")
+    return {
+        "format": "short_drama",
+        "project_id": settings["project_id"],
+        "project_revision": settings["project_revision"],
+        "prompt": settings["prompt"],
+        "dur": "%ss" % settings["target_duration"],
+        "ratio": settings["ratio"],
+        "shot_count": settings["shot_count"],
+        "style": settings["style"],
+        "platform": settings["platform"],
     }
 
 
@@ -457,6 +531,153 @@ def get_project(db_factory, username, project_id):
         conn.close()
 
 
+def _planning_metadata(payload, result=None):
+    if not isinstance(payload, dict) or payload.get("format") != "short_drama":
+        raise ValueError("规划任务缺少项目绑定")
+    settings = validate_planning_payload(payload)
+    if "project_id" not in settings or "project_revision" not in settings:
+        raise ValueError("规划任务缺少项目绑定")
+    metadata = {
+        "project_id": settings["project_id"],
+        "project_revision": settings["project_revision"],
+        "prompt": settings["prompt"],
+        "ratio": settings["ratio"],
+        "target_duration": settings["target_duration"],
+        "shot_count": settings["shot_count"],
+        "style": settings["style"],
+        "platform": settings["platform"],
+    }
+    if result is None:
+        return metadata
+    if not isinstance(result, dict) or result.get("mode") != "short_drama":
+        raise ValueError("规划任务结果不是短剧规划")
+    result_settings = result.get("settings")
+    expected_snapshot = {
+        "ratio": metadata["ratio"],
+        "target_duration": metadata["target_duration"],
+        "shot_count": metadata["shot_count"],
+    }
+    if result.get("project_id") != metadata["project_id"]:
+        raise ValueError("规划任务项目绑定不一致")
+    if result.get("project_revision") != metadata["project_revision"]:
+        raise ValueError("规划任务项目版本不一致")
+    if result_settings != expected_snapshot:
+        raise ValueError("规划任务设置快照不一致")
+    if (result.get("prompt") != metadata["prompt"] or
+            result.get("dur") != "%ss" % metadata["target_duration"] or
+            result.get("ratio") != metadata["ratio"] or
+            result.get("shot_count") != metadata["shot_count"]):
+        raise ValueError("规划任务结果元数据不一致")
+    return metadata
+
+
+def _job_payload(row):
+    try:
+        payload = json.loads(row["payload"] or "{}")
+    except (TypeError, ValueError):
+        raise ValueError("规划任务请求无效")
+    if not isinstance(payload, dict):
+        raise ValueError("规划任务请求无效")
+    return payload
+
+
+def check_planning_budget(db_factory, username, project_id, quoted_cost):
+    if type(quoted_cost) is not int or quoted_cost < 0:
+        raise ValueError("短剧策划报价无效")
+    conn = _connection(db_factory)
+    try:
+        project = conn.execute(
+            "SELECT point_budget, spent_points, stage FROM short_drama_projects "
+            "WHERE id=? AND username=? AND deleted=0",
+            (project_id, username),
+        ).fetchone()
+        if not project:
+            raise LookupError("短剧项目不存在")
+        point_budget, spent_points, stage = project
+        if stage != "draft":
+            raise ValueError("当前短剧阶段不能重新生成策划")
+        point_budget = int(point_budget)
+        spent_points = int(spent_points)
+        if point_budget == 0:
+            return
+        applied_ids = {
+            int(row[0]) for row in conn.execute(
+                "SELECT job_id FROM short_drama_applied_jobs WHERE project_id=? AND username=?",
+                (project_id, username),
+            ).fetchall()
+        }
+        outstanding = 0
+        for row in conn.execute(
+            "SELECT id, cost, payload FROM jobs WHERE username=? AND kind='copy' "
+            "AND status IN ('pending','running','done')",
+            (username,),
+        ).fetchall():
+            if int(row[0]) in applied_ids:
+                continue
+            try:
+                payload = json.loads(row[2] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if isinstance(payload, dict) and payload.get("format") == "short_drama" and payload.get("project_id") == project_id:
+                outstanding += max(0, int(row[1] or 0))
+        if spent_points + outstanding + quoted_cost > point_budget:
+            raise PointBudgetExceeded(
+                "短剧点数预算不足：已用 %d 点、待应用 %d 点、本次 %d 点、预算 %d 点" %
+                (spent_points, outstanding, quoted_cost, point_budget)
+            )
+    finally:
+        conn.close()
+
+
+def prepare_paid_planning_submission(db_factory, username, payload, cost_of):
+    """Revalidate the bound request and its budget while core holds its submission lock."""
+    cleaned = validate_planning_submission(db_factory, username, payload)
+    cost = cost_of("copy", cleaned)
+    check_planning_budget(db_factory, username, cleaned["project_id"], cost)
+    return cleaned, cost
+
+
+def find_recoverable_planning_job(db_factory, username, project_id):
+    project = get_project(db_factory, username, project_id)
+    if project["stage"] != "draft":
+        return None
+    conn = _connection(db_factory)
+    try:
+        applied_ids = {
+            int(row[0]) for row in conn.execute(
+                "SELECT job_id FROM short_drama_applied_jobs WHERE project_id=? AND username=?",
+                (project_id, username),
+            ).fetchall()
+        }
+        rows = conn.execute(
+            "SELECT id, cost, status, payload, result FROM jobs "
+            "WHERE username=? AND kind='copy' AND status IN ('pending','running','done') "
+            "ORDER BY id DESC",
+            (username,),
+        ).fetchall()
+        for row in rows:
+            if int(row["id"]) in applied_ids:
+                continue
+            try:
+                payload = json.loads(row["payload"] or "{}")
+                result = json.loads(row["result"] or "{}") if row["status"] == "done" else None
+                metadata = _planning_metadata(payload, result)
+            except (TypeError, ValueError):
+                continue
+            if metadata["project_id"] != project_id:
+                continue
+            if (metadata["ratio"], metadata["target_duration"], metadata["shot_count"]) != (
+                    project["ratio"], project["target_duration"], project["shot_count"]):
+                continue
+            return {
+                "job_id": int(row["id"]), "cost": int(row["cost"] or 0),
+                "status": row["status"], "project_revision": metadata["project_revision"],
+            }
+        return None
+    finally:
+        conn.close()
+
+
 def _raise_cas_error(conn, username, project_id):
     exists = conn.execute(
         "SELECT 1 FROM short_drama_projects WHERE id=? AND username=? AND deleted=0",
@@ -467,7 +688,7 @@ def _raise_cas_error(conn, username, project_id):
     raise RevisionConflict("项目已在其他页面更新，请刷新后重试")
 
 
-def update_project(db_factory, username, project_id, revision, patch):
+def update_project(db_factory, username, project_id, revision, patch, avatar_lookup=None):
     if not isinstance(patch, dict):
         raise ValueError("短剧更新内容必须是对象")
     original_patch = dict(patch)
@@ -478,7 +699,7 @@ def update_project(db_factory, username, project_id, revision, patch):
         key = next(iter(content_keys))
         if key == "characters":
             return update_characters(
-                db_factory, username, project_id, revision, original_patch[key]
+                db_factory, username, project_id, revision, original_patch[key], avatar_lookup
             )
         if key == "script":
             return update_script(db_factory, username, project_id, revision, original_patch[key])
@@ -497,11 +718,13 @@ def update_project(db_factory, username, project_id, revision, patch):
     conn = _connection(db_factory)
     try:
         current = conn.execute(
-            "SELECT title FROM short_drama_projects WHERE id=? AND username=? AND deleted=0",
+            "SELECT title, stage FROM short_drama_projects WHERE id=? AND username=? AND deleted=0",
             (project_id, username),
         ).fetchone()
         if not current:
             raise LookupError("短剧项目不存在")
+        if current[1] != "draft" and set(changes) & PLANNING_SPEC_FIELDS:
+            raise ValueError("策划生成后不能修改会使下游失效的项目设置")
         title = changes.get("title", current[0])
         assignments = ["title=?"]
         values = [title]
@@ -812,7 +1035,22 @@ def _current_content_bundle(project, *, characters=_MISSING, script=_MISSING, sh
     return normalized_characters, normalized_script, normalized_shots
 
 
-def update_characters(db_factory, username, project_id, revision, characters):
+def _validate_owned_avatars(username, characters, avatar_lookup):
+    for character in characters:
+        if character["source_type"] != "cinematic_avatar":
+            continue
+        if not character.get("avatar_id") or not callable(avatar_lookup):
+            raise ValueError("电影化身不存在或不属于当前用户")
+        try:
+            avatar = avatar_lookup(username, character["avatar_id"])
+        except Exception:
+            raise ValueError("电影化身不存在或不属于当前用户")
+        if (not isinstance(avatar, dict) or avatar.get("username") != username or
+                avatar.get("status") == "deleted"):
+            raise ValueError("电影化身不存在或不属于当前用户")
+
+
+def update_characters(db_factory, username, project_id, revision, characters, avatar_lookup=None):
     required_stage = "characters_review"
     conn = _connection(db_factory)
     try:
@@ -821,6 +1059,7 @@ def update_characters(db_factory, username, project_id, revision, characters):
         normalized_characters, _script, normalized_shots = _current_content_bundle(
             project, characters=characters, prune_character_refs=True
         )
+        _validate_owned_avatars(username, normalized_characters, avatar_lookup)
         conn.execute("DELETE FROM short_drama_characters WHERE project_id=?", (project_id,))
         _insert_characters(conn, project_id, normalized_characters)
         for original, shot in zip(project["shots"], normalized_shots):
@@ -887,7 +1126,8 @@ def update_shots(db_factory, username, project_id, revision, shots):
         conn.close()
 
 
-def apply_plan(db_factory, username, project_id, revision, plan, planning_cost, planning_job_id):
+def apply_plan(db_factory, username, project_id, revision, plan, planning_cost, planning_job_id,
+               planning_metadata=None, avatar_lookup=None):
     characters, script, shots = _validate_plan(plan)
     if not isinstance(script["dialogue_lines"], list):
         raise ValueError("剧本台词数据无效")
@@ -901,19 +1141,34 @@ def apply_plan(db_factory, username, project_id, revision, plan, planning_cost, 
     try:
         conn.execute("BEGIN IMMEDIATE")
         project = conn.execute(
-            "SELECT title, target_duration FROM short_drama_projects "
-            "WHERE id=? AND username=? AND revision=? AND deleted=0",
-            (project_id, username, revision),
+            "SELECT title, synopsis, ratio, target_duration, shot_count, visual_style, "
+            "target_platform, revision, stage FROM short_drama_projects "
+            "WHERE id=? AND username=? AND deleted=0",
+            (project_id, username),
         ).fetchone()
         if not project:
-            _raise_cas_error(conn, username, project_id)
+            raise LookupError("短剧项目不存在")
+        if project[7] != revision:
+            raise RevisionConflict("项目已在其他页面更新，请刷新后重试")
         applied = conn.execute(
             "SELECT project_id, username FROM short_drama_applied_jobs WHERE job_id=?", (job_id,)
         ).fetchone()
         if applied:
             raise AppliedJobConflict("规划任务已经应用过")
-        if sum(shot["duration"] for shot in shots) != project[1]:
+        if project[8] != "draft":
+            raise ValueError("当前短剧阶段不能应用策划")
+        if planning_metadata is not None:
+            if planning_metadata.get("project_id") != project_id:
+                raise ValueError("规划任务不属于当前短剧项目")
+            if (planning_metadata.get("ratio"), planning_metadata.get("target_duration"),
+                    planning_metadata.get("shot_count")) != (project[2], project[3], project[4]):
+                raise ValueError("规划任务设置与当前项目不一致")
+            if (planning_metadata.get("prompt"), planning_metadata.get("style"),
+                    planning_metadata.get("platform")) != (project[1], project[5], project[6]):
+                raise ValueError("规划任务需求与当前项目不一致")
+        if sum(shot["duration"] for shot in shots) != project[3]:
             raise ValueError("分镜总时长必须等于短剧目标时长")
+        _validate_owned_avatars(username, characters, avatar_lookup)
         try:
             conn.execute(
                 "INSERT INTO short_drama_applied_jobs (job_id, project_id, username, cost, applied_at) VALUES (?, ?, ?, ?, ?)",
@@ -1014,6 +1269,7 @@ _HTTP_ROUTES = {
     "GET": {
         "/api/gen/short-drama/projects",
         "/api/gen/short-drama/project",
+        "/api/gen/short-drama/planning-job",
         "/api/gen/short-drama/planning-quote",
     },
     "POST": {
@@ -1032,6 +1288,8 @@ def _http_error(handler, error):
         handler._send(409, {"detail": str(error)[:220], "code": "revision_conflict"})
     elif isinstance(error, AppliedJobConflict):
         handler._send(409, {"detail": str(error)[:220], "code": "job_already_applied"})
+    elif isinstance(error, PointBudgetExceeded):
+        handler._send(400, {"detail": str(error)[:220], "code": "point_budget_exceeded"})
     else:
         handler._send(400, {"detail": str(error)[:220]})
 
@@ -1051,6 +1309,14 @@ def _project_id_from_query(handler):
     return project_id
 
 
+def _planning_project_id_from_query(handler):
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(handler.path).query)
+    project_id = (query.get("project_id") or [""])[0].strip()
+    if not project_id:
+        raise ValueError("缺少短剧项目 ID")
+    return project_id
+
+
 def _validate_project_request(body, expected_fields):
     if set(body) != expected_fields:
         raise ValueError("请求字段不正确")
@@ -1060,27 +1326,31 @@ def _validate_project_request(body, expected_fields):
         raise ValueError("项目版本无效")
 
 
-def _planning_job(db_factory, username, job_id):
+def _planning_job(db_factory, username, job_id, project_id):
     if type(job_id) is not int:
         raise ValueError("规划任务 ID 无效")
     with closing(db_factory()) as conn:
         job = conn.execute(
-            "SELECT id, kind, username, cost, status, result FROM jobs WHERE id=?", (job_id,)
+            "SELECT id, kind, username, cost, status, payload, result FROM jobs WHERE id=?", (job_id,)
         ).fetchone()
     if not job or job["username"] != username:
         raise LookupError("规划任务不存在")
     if job["kind"] != "copy" or job["status"] != "done":
         raise ValueError("规划任务尚未完成")
     try:
+        payload = json.loads(job["payload"] or "{}")
         result = json.loads(job["result"] or "{}")
     except (TypeError, ValueError):
         raise ValueError("规划任务结果无效")
     if not isinstance(result, dict) or result.get("mode") != "short_drama" or not isinstance(result.get("plan"), dict):
         raise ValueError("规划任务结果不是短剧规划")
-    return job, result["plan"]
+    metadata = _planning_metadata(payload, result)
+    if metadata["project_id"] != project_id:
+        raise ValueError("规划任务不属于当前短剧项目")
+    return job, result["plan"], metadata
 
 
-def dispatch_http(handler, method, db_factory, verify_token, cost_of=None):
+def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avatar_lookup=None):
     """Handle the domain's synchronous routes inside core.H; return whether matched."""
     path = handler.path.split("?", 1)[0]
     if path not in _HTTP_ROUTES.get(method, ()):
@@ -1090,6 +1360,9 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None):
         handler._send(401, {"detail": "未登录"})
         return True
     username = user["username"]
+    if avatar_lookup is None:
+        from . import video
+        avatar_lookup = video.get_video_avatar
     try:
         if method == "GET" and path.endswith("/planning-quote"):
             if not callable(cost_of):
@@ -1100,6 +1373,11 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None):
             handler._send(200, {"cost": cost})
         elif method == "GET" and path.endswith("/projects"):
             handler._send(200, {"items": list_projects(db_factory, username)})
+        elif method == "GET" and path.endswith("/planning-job"):
+            recovered = find_recoverable_planning_job(
+                db_factory, username, _planning_project_id_from_query(handler)
+            )
+            handler._send(200, recovered or {"job_id": None})
         elif method == "GET":
             handler._send(200, get_project(db_factory, username, _project_id_from_query(handler)))
         elif method == "PUT":
@@ -1110,16 +1388,21 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None):
             revision = body.pop("revision")
             if type(revision) is not int:
                 raise ValueError("项目版本无效")
-            handler._send(200, update_project(db_factory, username, project_id, revision, body))
+            handler._send(200, update_project(
+                db_factory, username, project_id, revision, body, avatar_lookup=avatar_lookup
+            ))
         elif path.endswith("/projects"):
             handler._send(200, create_project(db_factory, username, _request_object(handler)))
         elif path.endswith("/apply-plan"):
             body = _request_object(handler)
             _validate_project_request(body, {"project_id", "revision", "job_id"})
-            job, plan = _planning_job(db_factory, username, body["job_id"])
+            job, plan, metadata = _planning_job(
+                db_factory, username, body["job_id"], body["project_id"]
+            )
             handler._send(200, apply_plan(
                 db_factory, username, body["project_id"], body["revision"], plan,
                 planning_cost=job["cost"], planning_job_id=job["id"],
+                planning_metadata=metadata, avatar_lookup=avatar_lookup,
             ))
         else:
             body = _request_object(handler)
