@@ -444,6 +444,25 @@ class ShortDramaProjectTests(unittest.TestCase):
                     )
                 )
 
+    def test_null_content_sections_are_rejected_atomically_in_their_review_stage(self):
+        cases = (
+            ("characters", ()),
+            ("script", ("characters_review",)),
+            ("shots", ("characters_review", "script_review")),
+        )
+        for section, confirmations in cases:
+            with self.subTest(section=section):
+                project = self.applied_project()
+                for stage in confirmations:
+                    project = short_drama.confirm_stage(
+                        self.db, "alice", project["id"], project["revision"], stage
+                    )
+                self._assert_content_rejected_without_side_effects(
+                    project, lambda before, section=section: short_drama.update_project(
+                        self.db, "alice", project["id"], before["revision"], {section: None}
+                    )
+                )
+
     def test_create_get_and_list_are_owner_scoped(self):
         created = short_drama.create_project(self.db, "alice", {
             "title": "雨夜来客", "synopsis": "陌生女孩敲开侦探的门",
@@ -766,6 +785,27 @@ class ShortDramaRouteTests(unittest.TestCase):
             "characters": project["characters"], "script": project["script_versions"][-1],
         })
         self.assertEqual(400, status)
+
+    def test_review_content_put_rejects_null_sections_without_mutation(self):
+        cases = (
+            ("characters", ()),
+            ("script", ("characters_review",)),
+            ("shots", ("characters_review", "script_review")),
+        )
+        for section, confirmations in cases:
+            with self.subTest(section=section):
+                project = self.applied_project()
+                for stage in confirmations:
+                    project = self.confirm(project, stage)
+                path = self.project_path(project)
+                before = project
+                status, _ = self.request("PUT", path, body={
+                    "revision": before["revision"], section: None,
+                })
+                self.assertEqual(400, status)
+                status, project = self.request("GET", path)
+                self.assertEqual(200, status)
+                self.assertEqual(before, project)
 
     def test_core_declares_all_six_short_drama_routes(self):
         source = Path(core.__file__).read_text(encoding="utf-8")

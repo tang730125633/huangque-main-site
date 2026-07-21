@@ -776,20 +776,21 @@ def _cas_content_update(conn, username, project_id, revision, required_stage):
         _raise_cas_error(conn, username, project_id)
 
 
-def _current_content_bundle(project, *, characters=None, script=None, shots=None,
+def _current_content_bundle(project, *, characters=_MISSING, script=_MISSING, shots=_MISSING,
                             prune_character_refs=False, prune_dialogue_refs=False):
     normalized_characters = _normalize_characters(
-        project["characters"] if characters is None else characters, require_complete=True
+        project["characters"] if characters is _MISSING else characters, require_complete=True
     )
     character_keys = {character["character_key"] for character in normalized_characters}
     current_scripts = project["script_versions"]
     if not current_scripts:
         raise ValueError("短剧项目缺少剧本")
     normalized_script = _normalize_script(
-        current_scripts[-1] if script is None else script, character_keys, require_complete=True
+        current_scripts[-1] if script is _MISSING else script, character_keys,
+        require_complete=True,
     )
     dialogue_ids = {line["id"] for line in normalized_script["dialogue_lines"]}
-    candidate_shots = project["shots"] if shots is None else shots
+    candidate_shots = project["shots"] if shots is _MISSING else shots
     if prune_character_refs or prune_dialogue_refs:
         candidate_shots = [dict(shot) for shot in candidate_shots]
         if prune_character_refs:
