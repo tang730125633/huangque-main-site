@@ -104,7 +104,46 @@
     if(key==='pro' || key.indexOf('banana pro')>=0 || key.indexOf('gemini-3-pro')>=0) return '纳米香蕉 Pro';
     return type==='video' ? '视频引擎' : '图片引擎';
   }
-  var DATA=[], curCat='all';
+  var DATA=[], curCat='all', LIKE_COUNTS={}, LIKED={};
+  function likeTotal(x){ return Math.max(0, Number(x.count)||0) + (LIKE_COUNTS[String(x.id)]||0); }
+  function likeButton(x){
+    var id=String(x.id), liked=!!LIKED[id];
+    return '<button type="button" data-like-id="'+id+'" aria-label="'+(liked?'取消点赞':'点赞')+'" aria-pressed="'+liked+'" style="padding:2px 7px; color:'+(liked?'#f45f7d':'#94a4bb')+'; background:transparent; border:1px solid '+(liked?'rgba(244,95,125,.45)':'transparent')+'; border-radius:7px; cursor:pointer; font:inherit;">&#9829; <span data-like-count="'+id+'">'+likeTotal(x)+'</span></button>';
+  }
+  function syncLikeButtons(id){
+    var liked=!!LIKED[id], count=(LIKE_COUNTS[id]||0), item=DATA.find(function(x){return String(x.id)===id;});
+    document.querySelectorAll('[data-like-id="'+id+'"]').forEach(function(btn){
+      btn.setAttribute('aria-pressed', String(liked));
+      btn.setAttribute('aria-label', liked?'取消点赞':'点赞');
+      btn.style.color=liked?'#f45f7d':'#94a4bb';
+      btn.style.borderColor=liked?'rgba(244,95,125,.45)':'transparent';
+      var n=btn.querySelector('[data-like-count]'); if(n) n.textContent=String((Number(item&&item.count)||0)+count);
+    });
+  }
+  function toggleLike(x,e){
+    e.preventDefault(); e.stopPropagation();
+    var id=String(x.id), next=!LIKED[id];
+    fetch('/api/gen/inspiration/like',{method:'POST',credentials:"same-origin",headers:{'Content-Type':'application/json'},body:JSON.stringify({id:Number(id),favorite:next})}).then(function(r){
+      if(r.status===401){ if(window.HQ&&HQ.login) HQ.login(); return null; }
+      if(!r.ok) return r.json().catch(function(){return {};}).then(function(d){throw new Error(d.detail||'点赞失败');});
+      return r.json();
+    }).then(function(d){
+      if(!d) return;
+      LIKE_COUNTS[id]=Number(d.count)||0;
+      if(d.favorite) LIKED[id]=true; else delete LIKED[id];
+      syncLikeButtons(id);
+    }).catch(function(err){ alert(err.message||'点赞失败，请稍后重试'); });
+  }
+  function bindLikeButton(root,x){
+    var btn=root.querySelector('[data-like-id]');
+    if(btn) btn.onclick=function(e){ toggleLike(x,e); };
+  }
+  function loadLikes(){
+    fetch('/api/gen/inspiration/likes',{credentials:"same-origin",cache:'no-store'}).then(function(r){if(!r.ok) throw new Error('load'); return r.json();}).then(function(d){
+      LIKE_COUNTS=d.counts||{}; LIKED={}; (d.liked||[]).forEach(function(id){LIKED[String(id)]=true;});
+      renderCards();
+    }).catch(function(){ /* 静态基础计数仍可正常展示 */ });
+  }
   function card(x){
     var a=document.createElement('div'); a.className='hv-lift';
     a.style.cssText='position:relative; border:1px solid rgba(148,164,187,.12); border-radius:14px; overflow:hidden; background:rgba(16,24,39,.4); cursor:pointer;';
@@ -117,12 +156,13 @@
       +'<div style="position:absolute; left:0; right:0; bottom:0; padding:26px 12px 11px; background:linear-gradient(transparent,rgba(7,11,19,.9)); transition:opacity .2s;">'
       +'<div style="font-size:13px; font-weight:600; color:#eaf1fa; margin-bottom:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">'+(x.title||'')+'</div>'
       +'<div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">'
-      +'<span style="font-size:11px; color:#94a4bb;">'+(x.category||'')+(x.count?(' · ♥ '+x.count):'')+'</span>'
+      +'<span style="display:flex; align-items:center; gap:4px; font-size:11px; color:#94a4bb;">'+(x.category||'')+' · '+likeButton(x)+'</span>'
       +'<span class="btn-gold" style="padding:5px 12px; font-size:11.5px; font-weight:600; border-radius:8px; white-space:nowrap; opacity:0.95;">做同款</span>'
       +'</div></div>';
     a.onmouseenter = function(){ a.style.boxShadow='0 10px 30px rgba(0,0,0,.35)'; };
     a.onmouseleave = function(){ a.style.boxShadow=''; };
     a.onclick=function(){ openDetail(x); };
+    bindLikeButton(a,x);
     return a;
   }
   var searchInput = document.getElementById('caseSearch');
@@ -204,7 +244,7 @@
       +  '<div style="flex:1.1; min-width:0; background:#05080d; display:flex; align-items:center; justify-content:center;"><img src="'+x.image+'" style="display:block; max-width:100%; max-height:88vh; object-fit:contain;"></div>'
       +  '<div style="flex:1; min-width:280px; display:flex; flex-direction:column; padding:22px; overflow:auto;">'
       +    '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;"><div style="font-size:18px; font-weight:700;">'+(x.title||'创作详情')+'</div><span id="dlgClose" style="cursor:pointer; color:#94a4bb; font-size:24px; line-height:1; padding:0 4px;">&times;</span></div>'
-      +    '<div style="font-size:12px; color:#94a4bb; margin-bottom:16px;">'+(x.category||'')+(badge?(' · '+badge):'')+(x.count?(' · &#9829; '+x.count):'')+'</div>'
+      +    '<div style="display:flex; align-items:center; gap:5px; font-size:12px; color:#94a4bb; margin-bottom:16px;">'+(x.category||'')+(badge?(' · '+badge):'')+' · '+likeButton(x)+'</div>'
       +    '<div style="font-size:13px; font-weight:600; margin-bottom:8px;">创作描述 <span style="font-size:11px; color:#5c6b82; font-weight:400;">(可直接编辑，跟创时用改后的)</span></div>'
       +    '<textarea id="dlgPrompt" style="flex:1; min-height:130px; resize:none; width:100%; box-sizing:border-box; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.16); border-radius:10px; color:#eaf1fa; font-size:13px; line-height:1.7; padding:12px; font-family:inherit; outline:none;"></textarea>'
       +    '<div style="display:flex; gap:8px; margin-top:14px;">'
@@ -218,6 +258,7 @@
       +  '</div>'
       +'</div>';
     var ta=dlgEl.querySelector('#dlgPrompt'); ta.value=x.prompt||'';
+    bindLikeButton(dlgEl,x);
     dlgEl.querySelector('#dlgClose').onclick=closeDlg;
     // 弹窗内粘贴你的图 → 跟创时带去作图页当参考图（把这个灵感风格套到你的图上，图生图）
     try{ sessionStorage.removeItem('hq_followcreate_ref'); }catch(e){}  // 每次开弹窗清掉上次待带的图
@@ -262,7 +303,7 @@
     DATA=shuffle(d||[]);
     var totalEl=document.getElementById('caseTotal');
     if(totalEl) totalEl.textContent=String(DATA.length);
-    syncChips(); renderCards();
+    syncChips(); renderCards(); loadLikes();
   }).catch(function(){ grid.innerHTML='<div style="padding:64px 20px; text-align:center; color:#94a4bb;"><div style="font-size:14px; margin-bottom:8px;">灵感案例加载失败</div><div style="font-size:12px; color:#5c6b82;">请检查网络后刷新页面重试</div></div>'; });
 
   // 分类筛选由 syncChips 动态绑定
