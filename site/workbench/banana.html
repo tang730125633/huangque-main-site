@@ -922,7 +922,22 @@
     }
   };
   // 最近作品：读真实历史（生成即自动入库）
-  function useAsResult(u){ res.src=u+'?t='+Date.now(); lastResultUrl=u; localStorage.setItem('hq_last_result',u); }
+  function loadReferenceFromUrl(url){
+    selectEngine('gpt'); // 继续改是 gpt-image 专属，自动切换引擎并显示参考图区
+    setNote('正在把所选图片载入为参考…','#2dd4bf');
+    var im=new Image();
+    im.onload=function(){
+      try{
+        var ref=imageToRefDataUrl(im);
+        setRef(ref.dataUrl,ref.width,ref.height);
+        pr.scrollIntoView({block:'center'});
+        setNote('已把所选图片设为参考，改下提示词再点生成（图生图）','#2bd576');
+      }catch(err){ setNote('继续改失败（图片跨域，换上传方式）：'+err,'#f4708a'); }
+    };
+    im.crossOrigin='anonymous';
+    im.onerror=function(){ setNote('继续改：图片读取失败','#f4708a'); };
+    im.src=url+(url.indexOf('?')>=0?'&':'?')+'t='+Date.now();
+  }
   function openRecentLightbox(urls,idx){
     if(!urls||!urls.length) return;
     idx=Math.max(0,Math.min(idx||0,urls.length-1));
@@ -957,7 +972,7 @@
     box.onclick=function(e){ e.stopPropagation(); };
     prev.onclick=function(){ show(idx-1); };
     next.onclick=function(){ show(idx+1); };
-    use.onclick=function(){ useAsResult(urls[idx]); closeModal(); };
+    use.onclick=function(){ var url=urls[idx]; closeModal(); loadReferenceFromUrl(url); };
     box.appendChild(close); box.appendChild(prev); box.appendChild(img); box.appendChild(next); box.appendChild(foot);
     wrap.appendChild(box);
     document.addEventListener('keydown',onKey);
@@ -991,11 +1006,7 @@
   var bRegen=actBtn('再生成'), bEdit=actBtn('继续改'), bVideo=actBtn('转视频'), bFeishu=actBtn('发飞书'), bDl=actBtn('下载'), bStore=actBtn('入库');
   if(bRegen) bRegen.onclick=function(){ if(!lastPayload){ setNote('先生成一张，再「再生成」','#f4708a'); return; } submit(lastPayload,'重新生成中',lastEndpoint); };
   if(bEdit) bEdit.onclick=function(){ if(!lastResultUrl){ setNote('先生成一张，再「继续改」','#f4708a'); return; }
-    selectEngine('gpt'); // 继续改是 gpt-image 专属，自动切换引擎并显示参考图区
-    setNote('正在把当前图载入为参考…','#2dd4bf');
-    var im=new Image(); im.onload=function(){ var ref=imageToRefDataUrl(im);
-      try{ setRef(ref.dataUrl,ref.width,ref.height); pr.scrollIntoView({block:'center'}); setNote('已把当前图设为参考，改下提示词再点生成（图生图）','#2bd576'); }catch(err){ setNote('继续改失败（图片跨域，换上传方式）：'+err,'#f4708a'); } };
-    im.crossOrigin='anonymous'; im.onerror=function(){ setNote('继续改：图片读取失败','#f4708a'); }; im.src=lastResultUrl+'?t='+Date.now();
+    loadReferenceFromUrl(lastResultUrl);
   };
   if(bVideo) bVideo.onclick=function(e){
     if(!lastResultUrl) return;
