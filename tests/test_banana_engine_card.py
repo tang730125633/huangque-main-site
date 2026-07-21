@@ -11,11 +11,38 @@
 """
 import re
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BANANA = (ROOT / "site" / "workbench" / "banana.html").read_text(encoding="utf-8")
 SCRIPT = (ROOT / "site" / "workbench" / "script.html").read_text(encoding="utf-8")
+INSPIRATION = (ROOT / "site" / "workbench" / "inspiration.html").read_text(encoding="utf-8")
+
+
+class _VisibleText(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.hidden = 0
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style"):
+            self.hidden += 1
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style") and self.hidden:
+            self.hidden -= 1
+
+    def handle_data(self, data):
+        if not self.hidden:
+            self.parts.append(data)
+
+
+def visible_text(html):
+    parser = _VisibleText()
+    parser.feed(html)
+    return " ".join(parser.parts)
 
 
 class EngineCardTests(unittest.TestCase):
@@ -34,6 +61,18 @@ class EngineCardTests(unittest.TestCase):
         self.assertIn('data-engine-cost="banana"', BANANA)
         self.assertNotIn('data-engine-cost="nb2"', BANANA)
         self.assertNotIn('data-engine-cost="pro"', BANANA)
+
+    def test_public_engine_names_are_branded(self):
+        text = visible_text(BANANA)
+        for name in ("纳米香蕉 2", "纳米香蕉 Pro", "黄雀引擎 2", "黄雀引擎 1 标准", "黄雀引擎 1 Pro"):
+            self.assertIn(name, text)
+        for original in ("Nano Banana", "gpt-image-2", "Seedream"):
+            self.assertNotIn(original, text)
+
+    def test_dynamic_model_names_are_sanitized(self):
+        self.assertIn("function brandedErrorText(value)", BANANA)
+        self.assertIn("function modelBadge(value,type)", INSPIRATION)
+        self.assertNotIn("MODEL_BADGE[x.model]||x.model", INSPIRATION)
 
 
 class VariantRowTests(unittest.TestCase):

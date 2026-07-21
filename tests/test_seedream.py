@@ -214,13 +214,13 @@ class ErrorMappingTests(unittest.TestCase):
     def test_other_errors_keep_code_and_message(self):
         e = self._http(400, {"error": {"code": "InvalidParameter", "message": "size too small"}})
         s = str(image._seedream_error(e))
-        self.assertIn("Seedream 400", s)
+        self.assertIn("黄雀引擎 1 400", s)
         self.assertIn("size too small", s)
 
     def test_unparseable_body_does_not_crash(self):
         import io
         e = urllib.error.HTTPError("u", 500, "err", {}, io.BytesIO(b"<html>"))
-        self.assertIn("Seedream 500", str(image._seedream_error(e)))
+        self.assertIn("黄雀引擎 1 500", str(image._seedream_error(e)))
 
 
 class DispatchTests(unittest.TestCase):

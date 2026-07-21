@@ -57,7 +57,7 @@ SERVICE_OWNER = "imggen"   # 写进 jobs.owner，让 content 的 pending 重排/
 # 闸数的是 jobs 全表 kind='image'，content(gpt/seedream/果肉/泽龙2) 也写这张表，
 # 所以「每人最多 3 个生图在跑」是跨两个服务统一的，不是各算各的 3 个。
 JOB_WORKERS  = max(1, int(os.environ.get("IMGGEN_JOB_WORKERS", "10") or 10))
-JOB_QUEUE_MAX = max(1, int(os.environ.get("IMGGEN_JOB_QUEUE_MAX", "32") or 32))
+JOB_QUEUE_MAX = max(1, int(os.environ.get("IMGGEN_JOB_QUEUE_MAX", "64") or 64))  # 32→64：与 content 对齐，50 齐点不再当场拒
 MAX_USER_RUNNING_IMAGE = max(1, int(os.environ.get("MAX_USER_RUNNING_IMAGE", "3") or 3))   # 与 content 同名同默认值
 MAX_USER_ACTIVE_JOBS = max(1, int(os.environ.get("MAX_USER_ACTIVE_JOBS", "5") or 5))       # pending+running 提交闸，防单用户占满队列
 
@@ -209,7 +209,11 @@ def _normalize_image_ratio(raw, ratio):
 
 # ============ 鍏变韩绠￠亾锛氫换鍔″簱 / 鐐规暟 / 閴存潈 ============
 def jdb():
-    c = sqlite3.connect(JOB_DB, timeout=10); c.row_factory = sqlite3.Row; return c
+    # timeout 10→30 + WAL：与 content 共写同一张 jobs 表，压测级并发下 10s 写锁
+    # 等待不够（INSERT 超时=走补偿路径）。WAL 为库级持久设置，重复 PRAGMA 是 no-op。
+    c = sqlite3.connect(JOB_DB, timeout=30); c.row_factory = sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL")
+    return c
 
 def _auth_points(path, username, amount, reason="", transaction_key=""):
     if not INTERNAL_TOKEN:

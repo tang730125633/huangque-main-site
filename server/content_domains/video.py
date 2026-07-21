@@ -1607,7 +1607,7 @@ def _heygen_retry_429(fn, what=""):
             time.sleep(delay)
 
 
-# ============ HeyGen 账号级并发闸（削峰用，不是挡并发） ============
+# ============ HeyGen 账号级并发总闸 ============
 # 官方文档（Usage Limits）说 Pay-As-You-Go 的 "Max Concurrent Video Jobs" = 10。
 # 【实测证明这不是硬限制】——2026-07-12 跑 20 路并发（10 口播 + 10 剧情视频同时生成）：
 #     20/20 全部成功出片，零降速（口播平均 114s，而单条基线是 104s）
@@ -1618,12 +1618,12 @@ def _heygen_retry_429(fn, what=""):
 # 「please reduce the RATE to call this api」）。而退避 1.7~2.5 秒重发，一次就全过。
 # 兜住它的是 _heygen_retry_429，不是这个信号量。
 #
-# 那这个信号量还留着干嘛？—— 削峰。它把同时在飞的请求数摊平（21 = 口播10 + 剧情10 + 建形象1），
-# 顺带降低撞 429 的概率，是重试之外的一层保险。真要放开，改 env 即可，不用动代码。
+# 默认 31 = 口播 20 + 剧情 10 + 1 个缓冲，不让共享闸反过来收紧两个 worker 池；
+# 提交突发仍由 _heygen_retry_429 处理。需要紧急收紧账号总并发时可通过 env 下调。
 #
 # 槽只在【生成期间】持有（建视频 → 轮询出片）。上传素材、查 look 状态不占槽。
 # 中转(泽龙)转发的是同一个账号，所以中转路径同样要占槽 —— 不占就等于绕过了闸。
-HEYGEN_MAX_CONCURRENCY = int(os.environ.get("HEYGEN_MAX_CONCURRENCY", "21") or 21)
+HEYGEN_MAX_CONCURRENCY = int(os.environ.get("HEYGEN_MAX_CONCURRENCY", "31") or 31)
 _heygen_gen_sem = threading.BoundedSemaphore(HEYGEN_MAX_CONCURRENCY)
 
 
@@ -2490,7 +2490,7 @@ def gen_tryon(payload):
         "message": "换装换背景视频生成完成"
     }
 
-def _xiaole_request(method, path, body=None, timeout=90):
+def _xiaole_request(method, path, body=None, timeout=90, retry_deadline=None):
     if not XIAOLEVIDEO_API_KEY:
         raise ValueError("视频生成服务未配置（XIAOLEVIDEO_API_KEY）")
     url = path if path.startswith("http") else (XIAOLEVIDEO_API_BASE + path)
@@ -2501,28 +2501,50 @@ def _xiaole_request(method, path, body=None, timeout=90):
         # 上游 xiaolevideo 要求付费创建请求带 8-128 字符幂等键，缺则 HTTP 400（果肉/豆姐/欧米共用此路）
         headers["Idempotency-Key"] = uuid.uuid4().hex
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    # 429（API Key 媒体任务过多）自动退避重试，扛并发限流
+    # 429（API Key 媒体任务过多）自动退避重试，扛并发限流。图像创建可传入
+    # monotonic 截止时间，避免这里的内层退避突破调用方的总重试预算。
+    last_retry_error = None
     for attempt in range(_xiaole_429_retries + 1):
+        request_timeout = timeout
+        if retry_deadline is not None:
+            remaining = retry_deadline - time.monotonic()
+            if attempt and remaining <= 0:
+                raise last_retry_error
+            request_timeout = min(timeout, max(0.001, remaining))
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with urllib.request.urlopen(req, timeout=request_timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:400]
+            error = RuntimeError("视频接口失败: HTTP %s %s" % (e.code, detail))
             if e.code == 429 and attempt < _xiaole_429_retries:
                 wait = min(45, 8 * (attempt + 1))
-                print("[video] 429 并发限流，%ds 后重试(%d/%d)" % (wait, attempt + 1, _xiaole_429_retries), flush=True)
+                if retry_deadline is not None:
+                    remaining = retry_deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise error
+                    wait = min(wait, remaining)
+                print("[video] 429 并发限流，%.1fs 后重试(%d/%d)" % (wait, attempt + 1, _xiaole_429_retries), flush=True)
+                last_retry_error = error
                 time.sleep(wait)
                 continue
-            raise RuntimeError("视频接口失败: HTTP %s %s" % (e.code, detail))
+            raise error
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             # 瞬时网络抖动(SSL握手超时等)自动重试
+            error = RuntimeError("视频接口网络异常: %s" % str(e)[:120])
             if attempt < _xiaole_429_retries:
                 wait = min(30, 5 * (attempt + 1))
-                print("[video] 网络异常，%ds 后重试(%d/%d): %s" % (wait, attempt + 1, _xiaole_429_retries, str(e)[:80]), flush=True)
+                if retry_deadline is not None:
+                    remaining = retry_deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise error
+                    wait = min(wait, remaining)
+                print("[video] 网络异常，%.1fs 后重试(%d/%d): %s" % (wait, attempt + 1, _xiaole_429_retries, str(e)[:80]), flush=True)
+                last_retry_error = error
                 time.sleep(wait)
                 continue
-            raise RuntimeError("视频接口网络异常: %s" % str(e)[:120])
+            raise error
 
 def _xiaole_pick_video_url(output):
     for v in ((output or {}).get("videos") or []):
