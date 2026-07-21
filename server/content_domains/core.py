@@ -1300,8 +1300,10 @@ class H(BaseHTTPRequestHandler):
             try:
                 feature_flags.require_enabled("video")
                 request_body = self._json_body_strict()
+                request_body = video_domain.require_portrait_consent(request_body)
                 payloads = video_domain.validate_video_batch_payload(
                     request_body, user["username"], min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS))
+                payloads = [video_domain.review_talking_payload(body, user["username"]) for body in payloads]
                 idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
             except feature_flags.FeatureDisabled as e:
                 return self._send(503, {"detail": str(e)})
@@ -1379,12 +1381,14 @@ class H(BaseHTTPRequestHandler):
                 miniprogram_security.check_payload(body)
                 if kind == "video":
                     body = video_domain.validate_video_payload(body, user["username"])
+                    body = video_domain.review_talking_payload(body, user["username"])
                 elif kind == "tryon":
                     body = video_domain.validate_tryon_payload(body)
                 elif kind == "cinematic":
                     body = video_domain.validate_cinematic_payload(body, user["username"])
                 elif kind == "avatar":
                     body = video_domain.validate_avatar_payload(body)
+                    body = video_domain.review_talking_payload(body, user["username"])
                 elif kind == "xiaole_video":
                     body = video_domain.validate_xiaole_video_payload(body)
                 elif kind == "sora_video":

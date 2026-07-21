@@ -5,7 +5,7 @@ import tempfile
 from .core import (
     AUDIO_OUT_DIR, CINEMATIC_GEN_DEADLINE, HEYGEN_API_BASE, HEYGEN_API_KEY, HEYGEN_POLL_INTERVAL,
     HEYGEN_TIMEOUT, OUT_DIR, VIDEO_GEN_DEADLINE, VIDEO_OUT_DIR, _env_positive_int, _file_url, _out_path, _resolve_out_file,
-    _user_owns_output_file, adb, base64, closing, jdb, json, mimetypes, os, pathlib, public_url,
+    _user_owns_output_file, _post, adb, base64, closing, jdb, json, mimetypes, os, pathlib, public_url,
     re, subprocess, threading, time, urllib, uuid,
 )
 
@@ -18,6 +18,8 @@ VALID_VIDEO_RATIOS = {"9:16", "16:9", "1:1", "4:5", "5:4"}
 VALID_VIDEO_RESOLUTIONS = {"720p", "1080p"}
 VALID_VIDEO_MOTIONS = {"low", "medium", "high"}
 VALID_IMAGE_MIMES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
+PERSON_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+PORTRAIT_CONSENT_VERSION = "2026-07"
 VALID_AUDIO_MIMES = {"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/mp4", "audio/m4a", "audio/x-m4a"}
 VALID_REFERENCE_VIDEO_MIMES = {"video/mp4", "video/quicktime", "video/webm"}
 VIDEO_BATCH_MAX = 5
@@ -247,6 +249,75 @@ def _is_valid_data_url(value, allowed_mimes):
     if allowed_mimes == VALID_IMAGE_MIMES:
         return _image_bytes_look_valid(decoded)
     return bool(decoded)
+
+
+def require_portrait_consent(payload):
+    if not isinstance(payload, dict) or payload.get("portrait_authorized") is not True:
+        raise ValueError("请先确认已获得人物肖像及声音使用授权")
+    cleaned = dict(payload)
+    cleaned["portrait_consent_version"] = PORTRAIT_CONSENT_VERSION
+    cleaned["portrait_consent_at"] = int(time.time())
+    return cleaned
+
+
+def _image_data_bytes(data_url):
+    try:
+        meta, encoded = str(data_url).split(",", 1)
+        mime = meta.split(";", 1)[0].replace("data:", "").lower()
+        raw = base64.b64decode(encoded, validate=True)
+    except Exception:
+        raise ValueError("人物图片无法读取，请重新选择 JPG、PNG 或 WebP")
+    if mime not in VALID_IMAGE_MIMES or not _image_bytes_look_valid(raw):
+        raise ValueError("人物图片格式无效，仅支持 JPG、PNG、WebP")
+    if len(raw) > PERSON_IMAGE_MAX_BYTES:
+        raise ValueError("人物图片不能超过 8MB")
+    return raw
+
+
+def review_person_image(data_url):
+    """Use the configured vision model as a fail-closed single-real-face preflight."""
+    _image_data_bytes(data_url)
+    model = os.environ.get("PERSON_IMAGE_REVIEW_MODEL", "gpt-4o-mini")
+    body = json.dumps({"model": model, "temperature": 0, "max_tokens": 80, "messages": [{"role": "user", "content": [
+        {"type": "text", "text": "只输出JSON：real_person布尔值、face_count整数、face_clear布尔值。判断图片是否为清晰的单个真人正脸；卡通、汽车、动物、风景均不是真人。"},
+        {"type": "image_url", "image_url": {"url": data_url}},
+    ]}]}).encode()
+    path = "/chat/completions" if os.environ.get("OPENAI_BASE", "").rstrip("/").endswith("/v1") else "/v1/chat/completions"
+    try:
+        response = _post(path, body, "application/json", timeout=45)
+        content = (response.get("choices") or [{}])[0].get("message", {}).get("content", "")
+        start, end = content.find("{"), content.rfind("}")
+        verdict = json.loads(content[start:end + 1])
+    except Exception as exc:
+        raise ValueError("人物素材审核服务暂时不可用，请稍后重试") from exc
+    if not verdict.get("real_person"):
+        raise ValueError("请上传清晰的真人照片，汽车、卡通、动物或风景素材不可用")
+    if int(verdict.get("face_count") or 0) != 1:
+        raise ValueError("图片中必须且只能包含一张清晰人脸")
+    if not verdict.get("face_clear"):
+        raise ValueError("人脸不够清晰，请上传正面、光线充足的照片")
+    return True
+
+
+def review_talking_payload(payload, username=None):
+    payload = require_portrait_consent(payload)
+    data_url = str(payload.get("image_data") or "").strip()
+    if data_url:
+        review_person_image(data_url)
+    elif payload.get("avatar_id") and username:
+        avatar = get_video_avatar(username, payload["avatar_id"])
+        fp = _resolve_out_file(avatar.get("image_file"))
+        if not fp:
+            raise ValueError("形象素材不存在，请重新创建")
+        mime = mimetypes.guess_type(str(fp))[0] or "image/jpeg"
+        try:
+            review_person_image("data:%s;base64,%s" % (mime, base64.b64encode(fp.read_bytes()).decode()))
+        except ValueError:
+            with closing(adb()) as c:
+                c.execute("UPDATE avatars SET status='invalid',updated_at=? WHERE id=? AND username=?",
+                          (int(time.time()), avatar["id"], username)); c.commit()
+            raise
+    return payload
 
 
 def _normalize_audio_file_ref(audio_file, username=None):
@@ -859,7 +930,7 @@ def list_video_avatars(username, limit=120):
     with closing(adb()) as c:
         rows = c.execute("""SELECT id, username, name, image_file, provider_avatar_id, provider_avatar_group_id,
                    status, created_at, updated_at
-            FROM avatars WHERE username=? AND status!='deleted' ORDER BY id DESC LIMIT ?""", (username, limit)).fetchall()
+            FROM avatars WHERE username=? AND status='ready' ORDER BY id DESC LIMIT ?""", (username, limit)).fetchall()
     items = []
     for r in rows:
         d = dict(r)
@@ -875,7 +946,7 @@ def get_video_avatar(username, avatar_id):
     with closing(adb()) as c:
         row = c.execute("""SELECT id, username, name, image_file, provider_avatar_id, provider_avatar_group_id,
                    status, created_at, updated_at
-            FROM avatars WHERE id=? AND username=? AND status!='deleted'""", (avatar_id, username)).fetchone()
+            FROM avatars WHERE id=? AND username=? AND status='ready'""", (avatar_id, username)).fetchone()
     if not row:
         raise ValueError("形象不存在")
     return dict(row)

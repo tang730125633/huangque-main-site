@@ -202,6 +202,7 @@ class VideoBatchIntegrationGuardTests(unittest.TestCase):
             "verify": core.verify, "require_enabled": core.feature_flags.require_enabled,
             "queue": core._talking_job_queue, "ids": core._queued_job_ids,
             "max_active": core.MAX_USER_ACTIVE_JOBS,
+            "review_talking": video.review_talking_payload,
         }
         fake = FakePoints()
         server = None
@@ -213,6 +214,7 @@ class VideoBatchIntegrationGuardTests(unittest.TestCase):
             core._talking_job_queue = queue.Queue(maxsize=8)
             core._queued_job_ids = set()
             core.MAX_USER_ACTIVE_JOBS = 3
+            video.review_talking_payload = lambda body, username: body
             try:
                 with closing(sqlite3.connect(core.JOB_DB)) as db:
                     db.execute("""CREATE TABLE jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,username TEXT,cost INTEGER,
@@ -226,7 +228,7 @@ class VideoBatchIntegrationGuardTests(unittest.TestCase):
                 thread.start()
                 url = "http://127.0.0.1:%d/api/gen/video/batch" % server.server_address[1]
                 data = json.dumps({
-                    "mode": "text", "text": "batch", "voice": "voice-demo",
+                    "mode": "text", "text": "batch", "voice": "voice-demo", "portrait_authorized": True,
                     "avatars": [{"image_data": _data_url("http-one")}, {"image_data": _data_url("http-two")}],
                 }).encode("utf-8")
                 request = urllib.request.Request(url, data=data, method="POST", headers={
@@ -269,6 +271,7 @@ class VideoBatchIntegrationGuardTests(unittest.TestCase):
                 core.feature_flags.require_enabled = originals["require_enabled"]
                 core._talking_job_queue, core._queued_job_ids = originals["queue"], originals["ids"]
                 core.MAX_USER_ACTIVE_JOBS = originals["max_active"]
+                video.review_talking_payload = originals["review_talking"]
 
 
 class VideoSingleRouteSubLimitTests(unittest.TestCase):
@@ -313,6 +316,7 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
             "validate_tryon": video.validate_tryon_payload,
             "validate_xiaole": video.validate_xiaole_video_payload,
             "record_pending": video.record_video_pending_asset,
+            "review_talking": video.review_talking_payload,
         }
         fake = FakePoints()
         server = None
@@ -326,6 +330,7 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
             core.MAX_USER_ACTIVE_TRYON = 1
             core.HANDLERS = {"video": lambda body: body, "tryon": lambda body: body, "xiaole_video": lambda body: body}
             video.validate_video_payload = lambda body, username: body
+            video.review_talking_payload = lambda body, username: body
             video.validate_tryon_payload = lambda body: body
             video.validate_xiaole_video_payload = lambda body: body
             try:
@@ -387,7 +392,7 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                 core.enqueue_job = lambda *args: (enqueued.append(args), True)[1]
                 video.record_video_pending_asset = lambda *args: (_ for _ in ()).throw(RuntimeError("asset db locked"))
                 request = urllib.request.Request(base + "/api/gen/video", data=json.dumps({
-                    "mode": "text", "text": "商品口播", "voice": "demo",
+                    "mode": "text", "text": "商品口播", "voice": "demo", "portrait_authorized": True,
                 }).encode("utf-8"), method="POST", headers={
                     "Authorization": "Bearer test", "Content-Type": "application/json",
                 })
@@ -423,6 +428,7 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                 video.validate_tryon_payload = originals["validate_tryon"]
                 video.validate_xiaole_video_payload = originals["validate_xiaole"]
                 video.record_video_pending_asset = originals["record_pending"]
+                video.review_talking_payload = originals["review_talking"]
 
 
 if __name__ == "__main__":
