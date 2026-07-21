@@ -18,6 +18,9 @@
   .lrowg{ display:grid; grid-template-columns:40px minmax(170px,1.3fr) 112px 80px minmax(220px,2fr) 116px 180px 148px 80px; gap:12px; min-width:1320px; }
   /* kwchip base state — JS overrides inline on click */
   .kwchip{ padding:6px 12px; font-size:13px; border-radius:8px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; }
+  .lead-tool{height:32px;padding:0 9px;background:rgba(7,11,19,.5);color:#cdd7e6;border:1px solid rgba(148,164,187,.16);border-radius:8px;font:12px inherit;outline:none;}
+  .lead-detail-backdrop{position:fixed;inset:0;z-index:2000;display:none;align-items:center;justify-content:center;background:rgba(2,5,10,.72);padding:20px;}
+  .lead-detail-card{width:min(620px,100%);max-height:82vh;overflow:auto;padding:22px;border:1px solid rgba(231,178,76,.24);border-radius:16px;background:#101827;box-shadow:0 24px 80px rgba(0,0,0,.45);}
   @media (max-width:1100px){ .gAcq{ grid-template-columns:repeat(2,1fr);} }
   @media (max-width:560px){ .gAcq{ grid-template-columns:1fr;} }
 </style>
@@ -31,6 +34,10 @@
     <div style="margin-bottom:24px;">
       <h1 style="margin:0; font-size:24px; font-weight:700; display:flex; align-items:center; gap:10px;"><img src="../assets/icons/ic_leads.png" alt="" style="width:30px;height:30px;object-fit:contain;flex:none;">关键词获客</h1>
       <p style="margin:8px 0 0; font-size:14px; color:#94a4bb;">关键词进 → 抖音/小红书搜视频、扒评论区、AI 意图过滤 → 真实精准客户名单（含 IP 属地）</p>
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin:-8px 0 18px;color:#94a4bb;font-size:12px;">
+      <span>去重 <b id="kDeduped" class="mono">—</b></span><span>空评论 <b id="kEmpty" class="mono">—</b></span>
+      <span>回复率 <b id="kReplyRate" class="mono">—</b></span><span>口径：总数 = 精准 + 噪音 + 闲聊 + 去重 + 空评论</span>
     </div>
 
     <!-- KPI 概览条 -->
@@ -60,8 +67,13 @@
         <input id="kw" autocomplete="off" readonly onfocus="this.removeAttribute('readonly')" placeholder="输入行业关键词，如 美业获客 / 皮肤管理…（也可直接粘抖音视频/主页链接）" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
       </div>
       <button id="goBtn" class="btn-gold" style="padding:0 24px; height:44px; font-size:14px; font-weight:600; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:none; border-radius:12px; cursor:pointer; font-family:inherit; box-shadow:0 8px 20px -8px rgba(231,178,76,.55);">开始获客</button>
-      <span style="display:inline-flex; align-items:center; gap:4px; padding:4px 10px; font-size:12px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.18); border-radius:8px; font-family:'JetBrains Mono',monospace; white-space:nowrap;">30 点</span>
+      <span id="leadCost" style="display:inline-flex; align-items:center; gap:4px; padding:4px 10px; font-size:12px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.18); border-radius:8px; font-family:'JetBrains Mono',monospace; white-space:nowrap;">预计 11 点</span>
     </div>
+
+    <label style="display:flex;align-items:flex-start;gap:9px;margin:-4px 0 16px;padding:12px 14px;border:1px solid rgba(148,164,187,.12);border-radius:10px;background:rgba(7,11,19,.32);color:#94a4bb;font-size:12px;line-height:1.6;">
+      <input id="complianceConfirm" type="checkbox" style="margin-top:3px;accent-color:#e7b24c;">
+      <span>我确认仅将公开数据用于合法业务联系，遵守源平台规则、采集频率限制和 robots 要求，不进行骚扰营销；妥善保护个人信息并按适用法律处理、删除数据。单次最多 30 个内容、3 页评论，请勿高频重复提交。</span>
+    </label>
 
     <!-- 平台选择 -->
     <div style="display:flex; align-items:flex-start; gap:12px; margin-bottom:16px; flex-wrap:wrap;">
@@ -96,6 +108,15 @@
       </div>
     </div>
 
+    <div id="leadTools" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+      <input id="leadSearch" class="lead-tool" placeholder="搜索昵称、账号、内容" style="min-width:190px;">
+      <select id="platformFilter" class="lead-tool"><option value="">全部平台</option><option value="douyin">抖音</option><option value="xhs">小红书</option><option value="channels">视频号</option></select>
+      <select id="intentFilter" class="lead-tool"><option value="">全部意向</option><option>高意向</option><option>咨询</option><option>价格敏感</option><option>围观</option></select>
+      <input id="regionFilter" class="lead-tool" placeholder="地区筛选" style="width:105px;">
+      <select id="statusFilter" class="lead-tool"><option value="">全部状态</option><option>待跟进</option><option>跟进中</option><option>已加微</option><option>已成交</option><option>无效</option></select>
+      <select id="leadSort" class="lead-tool"><option value="time_desc">评论时间（新到旧）</option><option value="time_asc">评论时间（旧到新）</option><option value="intent_desc">意向分（高到低）</option><option value="likes_desc">点赞数（高到低）</option></select>
+    </div>
+
     <!-- 精准客户名单表 -->
     <div class="leads-table" style="border:1px solid rgba(148,164,187,.1); border-radius:14px; background:linear-gradient(180deg, rgba(16,24,39,.5), rgba(12,18,32,.4)); overflow-x:auto;">
       <div style="display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid rgba(148,164,187,.08);">
@@ -120,6 +141,10 @@
   </div>
 </div></div>
 
+<div id="leadDetail" class="lead-detail-backdrop" role="dialog" aria-modal="true" aria-labelledby="leadDetailTitle">
+  <div class="lead-detail-card"><div style="display:flex;justify-content:space-between;gap:12px;align-items:center;"><h2 id="leadDetailTitle" style="margin:0;font-size:18px;">线索详情</h2><button id="leadDetailClose" class="lead-tool" type="button">关闭</button></div><div id="leadDetailBody" style="margin-top:18px;color:#cdd7e6;font-size:13px;line-height:1.75;"></div></div>
+</div>
+
 <script src="../assets/cloud.js?v=8"></script>
 <script src="cloud-shell.js?v=302ad2ce"></script>
 <script>
@@ -129,6 +154,7 @@
   var rows=document.getElementById('rows'), cntLabel=document.getElementById('cntLabel');
   var dot=document.getElementById('statusDot'), stat=document.getElementById('statusText');
   var kLeads=document.getElementById('kLeads'),kSpam=document.getElementById('kSpam'),kChat=document.getElementById('kChat'),kTotal=document.getElementById('kTotal');
+  var kDeduped=document.getElementById('kDeduped'),kEmpty=document.getElementById('kEmpty'),kReplyRate=document.getElementById('kReplyRate');
   var poll=null, running=false, lastLeads=[];
   var GRAD=['150deg,#9a6a3a,#5a3d22','150deg,#b04a60,#6a2d3d','150deg,#2c8478,#15534a','150deg,#7a5aa8,#3d2d5a','150deg,#3a6a9a,#22405a'];
   var CRM_STATUSES=['待跟进','跟进中','已加微','已成交','无效'];
@@ -136,6 +162,8 @@
 
   function tok(){ return '__cookie__'; }
   function getPlatforms(){ return Array.from(document.querySelectorAll('.plChk:checked')).map(function(el){return el.value;}); }
+  function leadCost(count,pages){ count=Math.max(1,Math.min(30,Number(count)||12)); pages=Math.max(1,Math.min(3,Number(pages)||1)); return 6+Math.floor(count*pages/4); }
+  function updateLeadCost(){ document.getElementById('leadCost').textContent='预计 '+leadCost(20,1)+' 点'; }
   function getChannelsTargets(){
     var el=document.getElementById('chTargets'); if(!el||!el.value.trim()) return [];
     return el.value.split(',').map(function(s){return s.trim();}).filter(Boolean);
@@ -150,6 +178,7 @@
     Object.keys(patch||{}).forEach(function(k){ cur[k]=patch[k]; });
     all[id]=cur; localStorage.setItem('hq_leads_crm', JSON.stringify(all));
     lastLeads=lastLeads.map(function(L){ return L.lead_id===id ? Object.assign({}, L, cur) : L; });
+    kReplyRate.textContent=replyRate(lastLeads)+'%';
     fetch('/api/gen/leads/crm',{
       method:'POST',
       credentials:'include',
@@ -164,7 +193,7 @@
       }).catch(function(){});
   }
   function withCrm(L){
-    var saved=(crmStore()[L.lead_id]||{});
+    var store=crmStore(), saved=(store[L.lead_id]||store[L.legacy_lead_id]||{});
     return Object.assign({}, L, {intent:L.intent||'高意向', intent_score:L.intent_score||0, intent_reason:L.intent_reason||'', follow_status:L.follow_status||'待跟进', follow_note:L.follow_note||''}, saved);
   }
   function optHTML(items, val){
@@ -188,7 +217,12 @@
   }
   function setStatus(t,c){ stat.innerHTML=t; dot.style.background=c||'#5c6b82'; if(c==='#2dd4bf'){dot.style.animation='hq-pulse 2s infinite';}else{dot.style.animation='none';} }
   function num(n){ return (n==null?'—':String(n)).replace(/\B(?=(\d{3})+(?!\d))/g,','); }
-  function setKPIs(r){ kLeads.textContent=num(r.leads_count); kSpam.textContent=num(r.spam); kChat.textContent=num(r.chat); kTotal.textContent=num(r.total); }
+  function replyRate(leads){
+    var valid=(leads||[]).filter(function(L){return L.follow_status!=='无效';});
+    var replied=valid.filter(function(L){return ['跟进中','已加微','已成交'].indexOf(L.follow_status)>=0;}).length;
+    return valid.length ? Math.round(replied*1000/valid.length)/10 : 0;
+  }
+  function setKPIs(r){ kLeads.textContent=num(r.leads_count); kSpam.textContent=num(r.spam); kChat.textContent=num(r.chat); kTotal.textContent=num(r.total); kDeduped.textContent=num(r.deduped||0); kEmpty.textContent=num(r.empty||0); kReplyRate.textContent=replyRate(r.leads||lastLeads)+'%'; }
 
   function platformBadge(p){
     var map={douyin:{t:'抖音',bg:'rgba(232,72,72,.12)',c:'#e84848'},xhs:{t:'小红书',bg:'rgba(255,77,93,.12)',c:'#ff4d5d'},channels:{t:'视频号',bg:'rgba(7,193,96,.12)',c:'#07c160'}};
@@ -226,8 +260,32 @@
       (L.video_url
         ? '<a href="'+esc(L.video_url)+'" target="_blank" rel="noopener" class="hv-gold" style="display:block; font-size:12px; color:#e7b24c; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-decoration:none;">'+esc(src)+'</a>'
         : '<div style="font-size:12px; color:#94a4bb; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">'+esc(src)+'</div>')+
-      actionHTML+
+      '<div style="display:grid;gap:5px;">'+actionHTML+'<button type="button" class="lead-detail lead-tool" data-id="'+leadId+'">查看详情</button></div>'+
     '</div>';
+  }
+  function applyLeadView(){
+    var q=(document.getElementById('leadSearch').value||'').trim().toLowerCase();
+    var platform=document.getElementById('platformFilter').value, intent=document.getElementById('intentFilter').value;
+    var region=(document.getElementById('regionFilter').value||'').trim().toLowerCase(), status=document.getElementById('statusFilter').value;
+    var sort=document.getElementById('leadSort').value;
+    var view=lastLeads.filter(function(L){
+      var hay=[L.nickname,L.user_unique_id,L.content,L.title].join(' ').toLowerCase();
+      return (!q||hay.indexOf(q)>=0)&&(!platform||L.platform===platform)&&(!intent||L.intent===intent)&&(!region||String(L.ip_location||'').toLowerCase().indexOf(region)>=0)&&(!status||L.follow_status===status);
+    }).slice();
+    view.sort(function(a,b){
+      if(sort==='time_asc') return (a.comment_time||0)-(b.comment_time||0);
+      if(sort==='intent_desc') return (b.intent_score||0)-(a.intent_score||0);
+      if(sort==='likes_desc') return (b.like_count||0)-(a.like_count||0);
+      return (b.comment_time||0)-(a.comment_time||0);
+    });
+    rows.innerHTML=view.map(rowHTML).join(''); cntLabel.textContent='（显示 '+view.length+' / '+lastLeads.length+' 条）';
+    kReplyRate.textContent=replyRate(lastLeads)+'%';
+  }
+  function openLeadDetail(id){
+    var L=lastLeads.find(function(item){return item.lead_id===id;}); if(!L) return;
+    var when=L.comment_time?new Date(L.comment_time*1000).toLocaleString():'源平台未提供';
+    document.getElementById('leadDetailBody').innerHTML='<b>'+esc(L.nickname||'匿名')+'</b> · '+platformBadge(L.platform)+'<hr style="border:0;border-top:1px solid rgba(148,164,187,.14);margin:14px 0"><div><b>评论：</b>'+esc(L.content||'')+'</div><div><b>评论时间：</b>'+esc(when)+'</div><div><b>采集时间：</b>'+esc(L.collected_at?new Date(L.collected_at*1000).toLocaleString():'—')+'</div><div><b>来源标识：</b><span class="mono">'+esc(L.source_comment_id||L.source_id||'—')+'</span></div><div><b>地区：</b>'+esc(L.ip_location||'—')+'</div><div><b>意向：</b>'+esc(L.intent||'—')+' · '+esc(L.intent_score||0)+'</div><div><b>跟进：</b>'+esc(L.follow_status||'待跟进')+' '+esc(L.follow_note||'')+'</div>';
+    document.getElementById('leadDetail').style.display='flex';
   }
   function renderLeads(leads, skipRemote){
     lastLeads=(leads||[]).map(withCrm);
@@ -236,8 +294,7 @@
       rows.innerHTML='<div style="padding:54px 20px; text-align:center; color:#94a4bb; font-size:13px;">本次没从评论里过滤到精准客户，换个关键词再试。</div>';
       cntLabel.textContent=''; if(expBtn) expBtn.style.display='none'; return;
     }
-    rows.innerHTML=lastLeads.map(rowHTML).join('');
-    cntLabel.textContent='（共 '+lastLeads.length+' 条）';
+    applyLeadView();
     if(expBtn) expBtn.style.display='inline-flex';
     if(!skipRemote){
       loadRemoteCrm(lastLeads).then(function(changed){ if(changed) renderLeads(lastLeads, true); });
@@ -260,6 +317,7 @@
 
   function start(){
     if(running) return;
+    if(!document.getElementById('complianceConfirm').checked){ setStatus('请先确认平台规则与数据合规要求','#f4708a'); return; }
     var kw=(input.value||'').trim();
     var platforms=getPlatforms();
     if(!platforms.length){ setStatus('请至少选择一个平台','#f4708a'); return; }
@@ -272,7 +330,8 @@
     var t=tok(); if(!t){ HQ.login(); return; }
     busy(true); setStatus('提交任务中…','#2dd4bf');
     rows.innerHTML='<div style="padding:64px 20px; text-align:center; color:#94a4bb;"><div style="width:34px;height:34px;margin:0 auto 16px;border:3px solid rgba(148,164,187,.18);border-top-color:#e7b24c;border-radius:50%;animation:hq-spin .8s linear infinite;"></div><div style="font-size:14px;">正在跑多平台 · 搜视频 → 扒评论 → 意图过滤</div><div style="font-size:12px;margin-top:8px;color:#5c6b82;">约 1-3 分钟，请勿关闭页面</div></div>';
-    var body={keyword:kw, platforms:platforms, count:20, pages:1, channels_targets:chTargets};
+    var body={keyword:kw, platforms:platforms, count:20, pages:1, channels_targets:chTargets,
+      compliance_version:'leads-v1', compliance_accepted_at:Math.floor(Date.now()/1000)};
     var t0=Date.now();
     fetch('/api/gen/leads',{method:'POST',headers:{'Authorization':'Bearer '+t,'Content-Type':'application/json'},body:JSON.stringify(body)})
       .then(function(r){ return r.json().then(function(d){return {s:r.status,d:d};}); })
@@ -326,6 +385,11 @@
     var t=e.target, id=t&&t.getAttribute('data-id');
     if(t.classList.contains('crm-note')) saveCrm(id,{follow_note:t.value});
   });
+  rows.addEventListener('click',function(e){ var b=e.target.closest('.lead-detail'); if(b) openLeadDetail(b.getAttribute('data-id')); });
+  document.getElementById('leadDetailClose').onclick=function(){document.getElementById('leadDetail').style.display='none';};
+  document.getElementById('leadDetail').addEventListener('click',function(e){if(e.target===this)this.style.display='none';});
+  ['leadSearch','regionFilter'].forEach(function(id){document.getElementById(id).addEventListener('input',applyLeadView);});
+  ['platformFilter','intentFilter','statusFilter','leadSort'].forEach(function(id){document.getElementById(id).addEventListener('change',applyLeadView);});
   goBtn.onclick=start;
   input.addEventListener('keydown',function(e){ if(e.key==='Enter') start(); });
   document.querySelectorAll('.kwchip').forEach(function(c){ c.onclick=function(){
@@ -346,6 +410,7 @@
     lbl.onclick=function(){ cb.checked=!cb.checked; sync(); };
     sync();
   });
+  updateLeadCost();
 
   // ===== 历史获客记录（服务端 assets 表持久化，切页/刷新/跑完都能回看，不再丢）=====
   var histSel=document.getElementById('histSel'), histItems=[];

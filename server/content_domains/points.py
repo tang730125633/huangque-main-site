@@ -51,7 +51,8 @@ def cost_of(kind, body):
             return 6
         return 30
     if kind == "leads":
-        return 30   # 获客固定 30 点/次（采集量前端固定 20 视频）；与 leads.html 成本徽章一致，防"消耗点数对不上"
+        from .leads_contract import leads_cost
+        return leads_cost(body.get("count"), body.get("pages"))
     if kind == "image":
         # 质量基价按引擎分档（IMAGE_BASE_COST）。gen_image 里 provider 缺省是 openai，这里保持一致。
         provider = (body.get("provider") or "openai").strip().lower()

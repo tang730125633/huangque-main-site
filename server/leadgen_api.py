@@ -17,6 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub
+from content_domains.leads_contract import classify_comments, leads_cost, validate_compliance
 
 PORT      = int(os.environ.get("LEADGEN_API_PORT", "8100"))
 AUTH_BASE = os.environ.get("AUTH_BASE", "http://127.0.0.1:8095")
@@ -25,6 +26,9 @@ AUTH_DB   = os.environ.get("AUTH_DB", "/home/ubuntu/auth-service/users.db")
 INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")   # 调 auth 内部点数接口用；来自 auth.env
 JOB_DB    = os.environ.get("CONTENT_JOB_DB", "/home/ubuntu/content-api/content_jobs.db")  # 共用 content_api 的任务库
 SERVICE_OWNER = "leadgen"   # 写进 jobs.owner，让 content 的 pending 重排/孤儿回收扫描认出这不是它的活(#511)
+LEADS_SUBMIT_COOLDOWN = max(5, int(os.environ.get("LEADS_SUBMIT_COOLDOWN", "30") or 30))
+_LEADS_SUBMIT_LOCK = threading.Lock()
+_LEADS_SUBMIT_AT = {}
 COS_COLLECT = os.environ.get("COS_COLLECT", "1").strip().lower() not in ("0", "false", "no")  # 采集视频转存 COS 开关
 # 转存预算：线上 23 次转存失败全部是 "The read operation timed out"。原实现 timeout=120 且盲目重试 2 次，
 # 最坏在转存上耗 240s+，把整个 collect 任务顶过 reaper 判死线(当时 360s)→ 判死退点、worker 又写回 done
@@ -322,10 +326,28 @@ def cost_of(kind, body):
     if kind == "collect":
         return 3 + (3 if "transcript" in (body.get("want") or []) else 0)
     if kind == "leads":
-        n = max(1, min(30, int(body.get("count") or 12)))
-        p = max(1, min(3, int(body.get("pages") or 1)))
-        return 6 + (n * p) // 4
+        return leads_cost(body.get("count"), body.get("pages"))
     return 0
+
+
+def lead_submit_retry_after(username):
+    now = int(time.time())
+    memory_last = int(_LEADS_SUBMIT_AT.get(username) or 0)
+    try:
+        with closing(jdb()) as c:
+            row = c.execute("SELECT MAX(created_at) FROM jobs WHERE kind='leads' AND username=?", (username,)).fetchone()
+        last = max(memory_last, int((row or [0])[0] or 0))
+        return max(0, LEADS_SUBMIT_COOLDOWN - (now - last))
+    except Exception:
+        return max(0, LEADS_SUBMIT_COOLDOWN - (now - memory_last))
+
+
+def reserve_lead_submit(username):
+    with _LEADS_SUBMIT_LOCK:
+        retry_after = lead_submit_retry_after(username)
+        if not retry_after:
+            _LEADS_SUBMIT_AT[username] = int(time.time())
+        return retry_after
 
 
 # ============ 采集能力：单条视频/图文 → 视频+文案+口播+评论 ============
@@ -431,6 +453,7 @@ def gen_leads(payload):
                 raw.append({"content": c.get("text"), "user_id": c.get("user_id"), "nickname": c.get("user"),
                             "ip_location": c.get("ip"), "like_count": c.get("likes") or 0,
                             "profile_url": c.get("profile_url"), "platform": platform, "source": title,
+                            "source_id": vid_id, "comment_id": c.get("cid"),
                             "video_url": video_url, "time": c.get("time"), "red_id": c.get("red_id")})
             if not cm.get("has_more"):
                 break
@@ -478,31 +501,24 @@ def gen_leads(payload):
             except tikhub.TikHubError:
                 continue
 
-    leads, spam, chat, seen = [], 0, 0, set()
-    for c in raw:
-        t = (c.get("content") or "").strip()
-        if not t:
-            continue
-        if _is_spam(t):
-            spam += 1; continue
-        if len(re.sub(r"\[[^\]]+\]", "", t).strip()) < 2:
-            chat += 1; continue
-        if _is_high(t):
-            k = (c.get("user_id"), t)
-            if k in seen:
-                continue
-            seen.add(k); leads.append(c)
-        else:
-            chat += 1
-    # 时间优先(抓最近用户)→ 再按评论长度 → 再点赞。新评论不再被埋。
-    leads.sort(key=lambda c: (c.get("time") or 0, len(c.get("content", "")), c.get("like_count", 0)), reverse=True)
-    out_leads = [{"nickname": c.get("nickname"), "user_unique_id": c.get("user_id"),
-                  "ip_location": c.get("ip_location"), "content": c.get("content"),
-                  "title": c.get("source"), "platform": c.get("platform"),
+    from content_domains import leads as leads_domain
+    classified = classify_comments(raw, _is_spam, _is_high, leads_domain._intent_profile)
+    out_leads = [{"lead_id": c.get("lead_id"), "legacy_lead_id": c.get("legacy_lead_id"), "nickname": c.get("nickname"),
+                  "user_unique_id": c.get("user_id"), "ip_location": c.get("ip_location"),
+                  "content": c.get("content"), "title": c.get("source"), "platform": c.get("platform"),
                   "profile_url": c.get("profile_url"), "video_url": c.get("video_url"),
-                  "red_id": c.get("red_id")} for c in leads]
+                  "source_id": c.get("source_id"), "source_comment_id": c.get("source_comment_id"),
+                  "comment_time": c.get("comment_time"), "collected_at": c.get("collected_at"),
+                  "like_count": c.get("like_count") or 0,
+                  "red_id": c.get("red_id"), "intent": c.get("intent"),
+                  "intent_score": c.get("intent_score"), "intent_reason": c.get("intent_reason"),
+                  "follow_status": c.get("follow_status"), "follow_note": c.get("follow_note")} for c in classified["leads"]]
+    if payload.get("_username"):
+        out_leads = leads_domain._merge_saved_crm(payload["_username"], out_leads)
     return {"type": "leads", "keyword": keyword, "platforms": platforms,
-            "leads_count": len(out_leads), "spam": spam, "chat": chat, "total": len(raw),
+            "leads_count": len(out_leads), "spam": classified["spam"], "chat": classified["chat"],
+            "deduped": classified["deduped"], "empty": classified["empty"], "total": classified["total"],
+            "collected_at": classified["collected_at"],
             "leads": out_leads, "url": None, "prompt": keyword}
 
 HANDLERS = {"collect": gen_collect, "leads": gen_leads}
@@ -536,6 +552,7 @@ def run_job(job_id):
                                 (int(time.time()), job_id)); c.commit()
         if claimed.rowcount < 1:
             return  # 已被别的线程接管或已是终态
+        payload["_username"] = r["username"]
         result = HANDLERS[kind](payload)
         if not _set_terminal(job_id, "done", result=result):
             # reaper 已把它判超时并退点：不覆写终态。宁可用户重试，也不能既退点又出结果。
@@ -577,6 +594,14 @@ class H(BaseHTTPRequestHandler):
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             body = self._json_body()
+            if kind == "leads":
+                try:
+                    validate_compliance(body)
+                except ValueError as exc:
+                    return self._send(400, {"detail": str(exc)})
+                retry_after = reserve_lead_submit(user["username"])
+                if retry_after:
+                    return self._send(429, {"detail": "提交过于频繁，请稍后重试", "retry_after": retry_after})
             cost = cost_of(kind, body)
             try:
                 from content_domains import jobs_store

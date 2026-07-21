@@ -5,6 +5,7 @@ import time
 from contextlib import closing
 
 from .core import BASE, _collect_cos_play_url, public_url_from_remote, re, tikhub
+from .leads_contract import classify_comments
 
 LEADS_CRM_DB = str(BASE / "leads_crm.db")
 CRM_STATUSES = {"待跟进", "跟进中", "已加微", "已成交", "无效"}
@@ -81,11 +82,15 @@ def upsert_crm(username, payload):
 def _merge_saved_crm(username, leads):
     if not username or not leads:
         return leads
-    saved = list_crm(username, [x.get("lead_id") for x in leads])
+    saved = list_crm(username, [value for x in leads for value in (x.get("lead_id"), x.get("legacy_lead_id")) if value])
     out = []
     for lead in leads:
         item = dict(lead)
-        item.update(saved.get(item.get("lead_id")) or {})
+        legacy = saved.get(item.get("legacy_lead_id")) or {}
+        current = saved.get(item.get("lead_id")) or {}
+        item.update(legacy)
+        item.update(current)
+        item["lead_id"] = lead.get("lead_id")
         out.append(item)
     return out
 
@@ -212,7 +217,7 @@ def gen_leads(payload):
     targets   = payload.get("channels_targets") or []   # 视频号盯号：sph 短号 / finder username 列表
     raw = []   # 评论汇总（字段对齐 _is_spam/_is_high 过滤）
 
-    def pull(platform, vid_id, title):
+    def pull(platform, vid_id, title, video_url=None):
         for pg in range(pages):
             try:
                 cm = tikhub.comments(platform, vid_id, cursor=(pg * 20 if platform == "douyin" else None), count=20)
@@ -221,7 +226,9 @@ def gen_leads(payload):
             for c in cm["items"]:
                 raw.append({"content": c.get("text"), "user_id": c.get("user_id"), "nickname": c.get("user"),
                             "ip_location": c.get("ip"), "like_count": c.get("likes") or 0,
-                            "profile_url": c.get("profile_url"), "platform": platform, "source": title})
+                            "profile_url": c.get("profile_url"), "platform": platform, "source": title,
+                            "source_id": vid_id, "comment_id": c.get("cid"), "video_url": video_url,
+                            "time": c.get("time"), "red_id": c.get("red_id")})
             if not cm.get("has_more"):
                 break
 
@@ -235,7 +242,7 @@ def gen_leads(payload):
         except tikhub.TikHubError:
             continue
         for v in sr["items"][:nvid]:
-            pull(platform, v["id"], v.get("title"))
+            pull(platform, v["id"], v.get("title"), v.get("url"))
 
     if "channels" in platforms:
         for tgt in targets:
@@ -244,40 +251,29 @@ def gen_leads(payload):
                 if not uname:
                     continue
                 for v in tikhub.ch_user_videos(uname)["items"][:nvid]:
-                    pull("channels", v["id"], v.get("title"))
+                    pull("channels", v["id"], v.get("title"), v.get("url"))
             except tikhub.TikHubError:
                 continue
 
-    leads, spam, chat, deduped, seen = [], 0, 0, 0, set()
-    for c in raw:
-        t = (c.get("content") or "").strip()
-        if not t:
-            continue
-        if _is_spam(t):
-            spam += 1; continue
-        if len(re.sub(r"\[[^\]]+\]", "", t).strip()) < 2:
-            chat += 1; continue
-        if _is_high(t):
-            k = _lead_identity(c)
-            if k in seen:
-                deduped += 1
-                continue
-            seen.add(k); leads.append(c)
-        else:
-            chat += 1
-    leads.sort(key=lambda c: (len(c.get("content", "")), c.get("like_count", 0)), reverse=True)
+    classified = classify_comments(raw, _is_spam, _is_high, _intent_profile)
     out_leads = []
-    for c in leads:
-        profile = _intent_profile(c.get("content"))
-        out_leads.append({"lead_id": _lead_id(c), "nickname": c.get("nickname"), "user_unique_id": c.get("user_id"),
+    for c in classified["leads"]:
+        out_leads.append({"lead_id": c.get("lead_id"), "legacy_lead_id": c.get("legacy_lead_id"),
+                          "nickname": c.get("nickname"), "user_unique_id": c.get("user_id"),
                           "ip_location": c.get("ip_location"), "content": c.get("content"),
                           "title": c.get("source"), "platform": c.get("platform"),
-                          "profile_url": c.get("profile_url"), "intent": profile["intent"],
-                          "intent_score": profile["intent_score"], "intent_reason": profile["intent_reason"],
-                          "follow_status": "待跟进", "follow_note": ""})
+                          "profile_url": c.get("profile_url"), "video_url": c.get("video_url"),
+                          "source_id": c.get("source_id"), "source_comment_id": c.get("source_comment_id"),
+                          "comment_time": c.get("comment_time"), "collected_at": c.get("collected_at"),
+                          "like_count": c.get("like_count") or 0,
+                          "red_id": c.get("red_id"), "intent": c.get("intent"),
+                          "intent_score": c.get("intent_score"), "intent_reason": c.get("intent_reason"),
+                          "follow_status": c.get("follow_status"), "follow_note": c.get("follow_note")})
     out_leads = _merge_saved_crm(username, out_leads)
     return {"type": "leads", "keyword": keyword, "platforms": platforms,
-            "leads_count": len(out_leads), "spam": spam, "chat": chat, "deduped": deduped, "total": len(raw),
+            "leads_count": len(out_leads), "spam": classified["spam"], "chat": classified["chat"],
+            "deduped": classified["deduped"], "empty": classified["empty"], "total": classified["total"],
+            "collected_at": classified["collected_at"],
             "leads": out_leads, "url": None, "prompt": keyword}
 
 HANDLERS = {"collect": gen_collect, "leads": gen_leads}
