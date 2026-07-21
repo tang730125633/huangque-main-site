@@ -24,6 +24,11 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 DEFAULT_DAILY_LIMIT = int(os.environ.get("HQ_INVITE_DAILY_LIMIT", "50"))
 IP_REVIEW_THRESHOLD = int(os.environ.get("HQ_INVITE_IP_REVIEW_THRESHOLD", "3"))
 INVITER_MEMBERSHIP_TIERS = {"experience", "partner", "initiator"}
+MEMBERSHIP_NAMES = {
+    "experience": "体验官",
+    "partner": "合伙人",
+    "initiator": "发起人",
+}
 
 
 class InviteError(Exception):
@@ -339,7 +344,8 @@ def dashboard(conn, inviter_user_id, now=None):
     }
 
 
-def invited_users(conn, inviter_user_id, level=1, limit=10, offset=0):
+def invited_users(conn, inviter_user_id, level=1, limit=10, offset=0, now=None):
+    now = int(now or time.time())
     level = int(level or 1)
     if level not in (1, 2):
         raise ValueError("level must be 1 or 2")
@@ -363,25 +369,37 @@ def invited_users(conn, inviter_user_id, level=1, limit=10, offset=0):
     total = conn.execute("SELECT COUNT(*) " + joins, (int(inviter_user_id),)).fetchone()[0]
     rows = conn.execute("""SELECT ui.id,ui.status,ui.risk_status,ui.bound_at,ui.source,
                                   u.username,u.display_name,u.account_id,u.created_at,
+                                  u.membership_tier,u.membership_expires_at,
                                   parent.username AS parent_username,parent.display_name AS parent_name,
                                   """ + recharge_sql + " AS recharge_total " + joins +
                         " ORDER BY ui.id DESC LIMIT ? OFFSET ?",
                         (int(inviter_user_id), limit, offset)).fetchall()
-    users = [{
-        "id": row["id"],
-        "username": row["username"],
-        "name": row["display_name"] or row["username"],
-        "account_id": row["account_id"] or "",
-        "registered_at": row["created_at"],
-        "bound_at": row["bound_at"],
-        "status": row["status"],
-        "risk_status": row["risk_status"],
-        "source": row["source"],
-        "level": level,
-        "parent_username": row["parent_username"] or "",
-        "parent_name": row["parent_name"] or row["parent_username"] or "",
-        "recharge_total": round(float(row["recharge_total"] or 0), 2),
-    } for row in rows]
+    users = []
+    for row in rows:
+        tier = str(row["membership_tier"] or "")
+        expires_at = int(row["membership_expires_at"] or 0)
+        known_tier = tier in MEMBERSHIP_NAMES
+        membership_active = known_tier and expires_at > now
+        users.append({
+            "id": row["id"],
+            "username": row["username"],
+            "name": row["display_name"] or row["username"],
+            "account_id": row["account_id"] or "",
+            "registered_at": row["created_at"],
+            "bound_at": row["bound_at"],
+            "status": row["status"],
+            "risk_status": row["risk_status"],
+            "source": row["source"],
+            "level": level,
+            "parent_username": row["parent_username"] or "",
+            "parent_name": row["parent_name"] or row["parent_username"] or "",
+            "recharge_total": round(float(row["recharge_total"] or 0), 2),
+            "membership_tier": tier if known_tier else "",
+            "membership_name": MEMBERSHIP_NAMES.get(tier, "非会员"),
+            "membership_active": membership_active,
+            "membership_status": "active" if membership_active else ("expired" if known_tier else "none"),
+            "membership_expires_at": expires_at if known_tier else 0,
+        })
     return {"users": users, "total": int(total), "level": level, "limit": limit, "offset": offset}
 
 
