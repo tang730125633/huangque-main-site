@@ -44,8 +44,20 @@
   function shortDramaNodeOutputs(node){
     return node&&node.type==='shortDrama'?{}:stateApi.cloneSnapshot(node&&node.outputs||{});
   }
+  function destroyShortDramaWorkspace(node){
+    if(!node||!node.shortDramaWorkspace) return;
+    var workspace=node.shortDramaWorkspace;
+    node.shortDramaWorkspace=null;
+    if(workspace.destroy) workspace.destroy();
+  }
+  function destroyAllShortDramaWorkspaces(){
+    Object.keys(nodes).forEach(function(id){ destroyShortDramaWorkspace(nodes[id]); });
+  }
   function refreshShortDramaNode(node){
     if(!node||node.type!=='shortDrama'||!node.el) return;
+    if(node.shortDramaWorkspace&&node.shortDramaWorkspace.projectId!==node.params.project_id){
+      destroyShortDramaWorkspace(node);
+    }
     refreshNodeMeta(node);
     var ratio=node.el.querySelector('[data-f="shortDramaRatio"]');
     var stage=node.el.querySelector('[data-f="shortDramaStage"]');
@@ -108,7 +120,7 @@
         if(!current||current.params.project_id!==projectId) return;
         applyShortDramaSummary(current,summary);
       };
-      if(node.shortDramaWorkspace&&node.shortDramaWorkspace.destroy) node.shortDramaWorkspace.destroy();
+      destroyShortDramaWorkspace(node);
       node.shortDramaWorkspace=shortDramaModule.createWorkspace({
         projectId:projectId,
         apiClient:apiClient,
@@ -1210,6 +1222,7 @@
     setTimeout(function(){ fitView(); scheduleMap(); },40);
   }
   function showBoardHome(){
+    destroyAllShortDramaWorkspaces();
     saveCurrentBoard();
     var wasCollab=currentBoardScope==='collab';
     stopCollabSync();
@@ -1625,6 +1638,7 @@
   function restoreSnapshot(snap){
     if(!snap) return;
     snap=sanitizeShortDramaSnapshot(snap);
+    destroyAllShortDramaWorkspaces();
     restoring=true;
     Object.keys(nodes).forEach(function(id){ if(nodes[id]&&nodes[id].el) nodes[id].el.remove(); });
     nodes={}; edges=stateApi.cloneSnapshot(snap.edges||[]); nid=snap.nid||0; pendingPort=null; dragPort=null; selectedNode=null; selectedNodes={}; selectedEdge=-1; runLabel=snap.runLabel||'就绪';
@@ -2010,6 +2024,7 @@
     if(!ids.length) return;
     pushUndo();
     ids.forEach(function(id){
+      destroyShortDramaWorkspace(nodes[id]);
       if(nodes[id]&&nodes[id].el) nodes[id].el.remove();
       delete nodes[id];
     });
@@ -2828,9 +2843,21 @@
     if(selectionBox) selectionBox.style.display='none';
     if(canvas) canvas.classList.remove('selecting');
   }
-  function delNode(id){ if(!canEditCanvas()) return; if(nodes[id]){ pushUndo(); nodes[id].el.remove(); delete nodes[id]; if(selectedNode===id) selectedNode=null; delete selectedNodes[id]; edges=edges.filter(function(e){ return e.from.node!==id && e.to.node!==id; }); redraw(); refreshAllGenRefs(); updateSelectedRegion(); updateState('已更新'); } }
+  function delNode(id){
+    if(!canEditCanvas()) return;
+    if(nodes[id]){
+      pushUndo();
+      destroyShortDramaWorkspace(nodes[id]);
+      nodes[id].el.remove();delete nodes[id];
+      if(selectedNode===id) selectedNode=null;
+      delete selectedNodes[id];
+      edges=edges.filter(function(e){ return e.from.node!==id && e.to.node!==id; });
+      redraw();refreshAllGenRefs();updateSelectedRegion();updateState('已更新');
+    }
+  }
   function clearCanvas(){
     if(!canEditCanvas()) return;
+    destroyAllShortDramaWorkspaces();
     Object.keys(nodes).forEach(function(id){ if(nodes[id]&&nodes[id].el) nodes[id].el.remove(); });
     nodes={}; edges=[]; pendingPort=null; selectedNode=null; selectedNodes={}; selectedEdge=-1; redraw(); updateSelectedRegion(); updateState('空画布');
   }
@@ -3399,7 +3426,7 @@
     scheduleCollabPoll(0);
     if(!document.hidden) sendCollabPresence();
   });
-  window.addEventListener('beforeunload',stopCollabSync);
+  window.addEventListener('beforeunload',function(){ destroyAllShortDramaWorkspaces();stopCollabSync(); });
   document.addEventListener('keydown',function(e){
     var tag=(e.target&&e.target.tagName||'').toLowerCase();
     var editing=tag==='input'||tag==='textarea'||tag==='select'||!!(e.target&&(e.target.isContentEditable||(e.target.closest&&e.target.closest('[contenteditable="true"]'))));

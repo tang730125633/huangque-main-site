@@ -243,7 +243,7 @@
 
   function isStageEditable(project,stage,canEdit){
     if(!canEdit||!project) return false;
-    if(stage==='settings') return true;
+    if(stage==='settings') return project.stage==='draft';
     return project.stage===stage&&isStageEnabled(project,stage)&&stage!=='stills_review';
   }
 
@@ -392,7 +392,7 @@
   function fieldValue(value){ return escapeHtml(value==null?'':value); }
 
   function renderStageNavigation(project,state){
-    return ['settings','characters_review','script_review','storyboard_review'].map(function(stage){
+    return ['settings','characters_review','script_review','storyboard_review','stills_review'].map(function(stage){
       var enabled=isStageEnabled(project,stage),active=state.activeStage===stage;
       return '<button type="button" class="nc-short-drama-stage'+(active?' is-active':'')+'" data-tab="'+stage+'"'+
         disabledUnless(enabled)+' aria-current="'+(active?'step':'false')+'"><span>'+escapeHtml(STAGE_LABELS[stage])+'</span></button>';
@@ -483,12 +483,20 @@
       (state.error?'<div class="nc-short-drama-error" role="alert"><strong>'+(state.stale?'版本冲突':'操作未完成')+'</strong><p>'+escapeHtml(state.error)+'</p>'+(state.stale?'<button type="button" data-action="reload">刷新项目</button>':'')+'</div>':'')+'</aside>';
   }
 
-  function renderWorkspace(project,state){
-    state=Object.assign({activeStage:project&&project.stage==='draft'?'settings':project&&project.stage||'settings',canEdit:true,busy:false,error:'',stale:false,synopsisSaved:true,planning:{}},state||{});
-    if(!project){
-      return '<div class="nc-short-drama-workspace" role="dialog" aria-modal="true" data-readonly="'+(!state.canEdit)+'"><div class="nc-short-drama-loading">正在加载短剧项目…</div></div>';
+  function renderLoadState(state){
+    state=Object.assign({canEdit:true,busy:false,loadFailed:false,loadStatus:0,error:''},state||{});
+    var ownerOnly=!state.canEdit&&Number(state.loadStatus)===404;
+    if(state.busy&&!state.loadFailed){
+      return '<div class="nc-short-drama-workspace" role="dialog" aria-modal="true" data-readonly="'+(!state.canEdit)+'"><button type="button" class="nc-short-drama-close nc-short-drama-load-close" data-action="close" aria-label="关闭">×</button><div class="nc-short-drama-loading">正在加载短剧项目…</div></div>';
     }
-    if(!isStageEnabled(project,state.activeStage)&&state.activeStage!=='stills_review') state.activeStage=project.stage==='draft'?'settings':project.stage;
+    var message=ownerOnly?'仅项目创建者可查看短剧详情':(state.error||'短剧项目加载失败');
+    return '<div class="nc-short-drama-workspace" role="dialog" aria-modal="true" data-readonly="'+(!state.canEdit)+'"><section class="nc-short-drama-load-state" role="alert"><span class="nc-short-drama-load-mark">!</span><h2>'+(ownerOnly?'无法查看项目':'项目加载失败')+'</h2><p>'+escapeHtml(message)+'</p><div class="nc-short-drama-load-actions"><button type="button" data-action="reload">重试</button><button type="button" data-action="close">关闭</button></div></section></div>';
+  }
+
+  function renderWorkspace(project,state){
+    state=Object.assign({activeStage:project&&project.stage==='draft'?'settings':project&&project.stage||'settings',canEdit:true,busy:false,error:'',stale:false,synopsisSaved:true,planning:{},loadFailed:false,loadStatus:0},state||{});
+    if(!project) return renderLoadState(state);
+    if(!isStageEnabled(project,state.activeStage)) state.activeStage=project.stage==='draft'?'settings':project.stage;
     var center=state.activeStage==='settings'?renderSettingsEditor(project,state):
       state.activeStage==='characters_review'?renderCharactersEditor(project,state):
       state.activeStage==='script_review'?renderScriptEditor(project,state):
@@ -514,6 +522,7 @@
     var doc=Object.prototype.hasOwnProperty.call(options,'document')?options.document:
       (typeof document!=='undefined'?document:null);
     var state={activeStage:'settings',canEdit:canEdit,busy:false,error:'',stale:false,synopsisSaved:false,
+      loadFailed:false,loadStatus:0,destroyed:false,
       scriptVersion:null,planning:{running:false,percent:0,label:'',cost:3}};
 
     function snapshotState(){ return cloneValue(state); }
@@ -522,15 +531,19 @@
       if(host&&!destroyed) host.innerHTML=html;
       return html;
     }
-    function showWorkspaceError(error){
+    function showWorkspaceError(error,loadFailed){
+      if(destroyed) return;
       state.busy=false;state.error=workspaceErrorMessage(error);
       state.stale=!!(error&&(error.status===409||error.code==='revision_conflict'));
+      state.loadFailed=!!loadFailed;
+      state.loadStatus=loadFailed?Number(error&&error.status)||0:0;
       if(state.planning.running){ state.planning.running=false; state.planning.label=state.error; }
       render();
     }
     function acceptProject(next,notify){
+      if(destroyed) throw new Error('workspace destroyed');
       if(!next||typeof next!=='object') throw new Error('短剧项目返回数据无效');
-      project=next;state.busy=false;state.error='';state.stale=false;
+      project=next;state.busy=false;state.error='';state.stale=false;state.loadFailed=false;state.loadStatus=0;
       if(project.stage==='stills_review') state.activeStage='stills_review';
       else if(!isStageEnabled(project,state.activeStage)) state.activeStage=project.stage==='draft'?'settings':project.stage;
       if(notify) onChange(summarizeProject(project));
@@ -538,18 +551,25 @@
       return project;
     }
     function loadProject(){
-      state.busy=true;render();
+      if(destroyed) return Promise.reject(new Error('workspace destroyed'));
+      state.busy=true;state.error='';state.loadFailed=false;state.loadStatus=0;render();
       return Promise.resolve(client.get(options.projectId)).then(function(next){
         state.synopsisSaved=canGeneratePlan(next,true);
         if(next&&next.stage!=='draft') state.activeStage=next.stage;
         return acceptProject(next,false);
-      }).catch(function(error){ showWorkspaceError(error); return null; });
+      }).catch(function(error){
+        if(destroyed) return null;
+        showWorkspaceError(error,true);
+        return null;
+      });
     }
     function ensureCanMutate(stage){
+      if(destroyed) throw new Error('workspace destroyed');
+      if(state.busy) throw new Error('workspace busy');
       if(!canEdit) throw new Error('read-only workspace');
       if(!project) throw new Error('project is not loaded');
       if(state.stale) throw new Error('请先刷新项目版本');
-      if(stage&&stage!=='settings'&&!isStageEditable(project,stage,canEdit)) throw new Error('stage is not editable');
+      if(stage&&!isStageEditable(project,stage,canEdit)) throw new Error('stage is not editable');
     }
     function savePatch(patch,stage){
       try{ ensureCanMutate(stage); }catch(error){ return Promise.reject(error); }
@@ -602,16 +622,19 @@
       state.busy=true;state.error='';state.planning={running:true,percent:15,label:'已提交，正在等待规划任务',cost:3};render();
       return Promise.resolve(client.generatePlan(project,{
         onCost:function(cost){
+          if(destroyed) return;
           state.planning.cost=Number(cost)||3;
           state.planning.label='已确认成本 '+state.planning.cost+' 点，正在生成策划';
           render();
         },
         onProgress:function(progress){
+          if(destroyed) return;
           state.planning.percent=Math.max(state.planning.percent,Math.min(80,Number(progress&&progress.percent)||20));
           state.planning.label=progress&&progress.label||'正在轮询策划进度';
           render();
         }
       })).then(function(applied){
+        if(destroyed) throw new Error('workspace destroyed');
         state.planning.percent=85;state.planning.label='策划已生成，正在刷新项目';
         if(applied&&applied.cost!=null) state.planning.cost=Number(applied.cost)||3;
         render();
@@ -663,6 +686,20 @@
     }
     function runDomAction(promise){ Promise.resolve(promise).catch(function(error){ if(!state.error){ state.error=workspaceErrorMessage(error); render(); } }); }
     function handleClick(event){
+      var jump=findActionTarget(event.target,'data-character-jump',host);
+      if(jump){
+        var characterIndex=Number(jump.getAttribute('data-character-jump'));
+        if(project&&isStageEnabled(project,'characters_review')){
+          state.activeStage='characters_review';render();
+          var characterCard=host&&host.querySelector('[data-character-index="'+characterIndex+'"]');
+          if(characterCard){
+            if(characterCard.scrollIntoView) characterCard.scrollIntoView({block:'center',behavior:'smooth'});
+            var characterField=characterCard.querySelector&&characterCard.querySelector('input,textarea,select');
+            if(characterField&&characterField.focus) characterField.focus();
+          }
+        }
+        return;
+      }
       var tab=findActionTarget(event.target,'data-tab',host);
       if(tab){ var nextTab=tab.getAttribute('data-tab'); if(project&&isStageEnabled(project,nextTab)){ state.activeStage=nextTab;render(); } return; }
       var version=findActionTarget(event.target,'data-script-version',host);
@@ -683,7 +720,9 @@
       }catch(error){ state.error=workspaceErrorMessage(error);render(); }
     }
     function destroy(){
+      if(destroyed) return;
       destroyed=true;
+      state.destroyed=true;state.busy=false;
       if(host&&host.removeEventListener) host.removeEventListener('click',handleClick);
       if(host&&host.parentNode) host.parentNode.removeChild(host);
       host=null;
@@ -727,6 +766,7 @@
     validateShots:validateShots,
     canGeneratePlan:canGeneratePlan,
     workspaceErrorMessage:workspaceErrorMessage,
+    renderLoadState:renderLoadState,
     renderWorkspace:renderWorkspace,
     createWorkspace:createWorkspace
   };

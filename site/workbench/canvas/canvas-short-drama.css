@@ -493,6 +493,42 @@
 .nc-short-drama-complete p:last-child { max-width: 480px; margin: 17px auto 0; color: var(--sd-muted); font-size: 12px; line-height: 1.8; }
 .nc-short-drama-loading { display: grid; place-items: center; height: 100%; color: var(--sd-muted); font-size: 13px; }
 
+.nc-short-drama-load-close {
+  position: absolute;
+  top: 18px;
+  right: 20px;
+  z-index: 1;
+}
+
+.nc-short-drama-load-state {
+  width: min(460px, calc(100% - 36px));
+  margin: auto;
+  padding: 42px;
+  border: 1px solid rgba(23, 32, 51, 0.12);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 20px 70px rgba(34, 40, 52, 0.1);
+  text-align: center;
+}
+
+.nc-short-drama-load-mark {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 16px;
+  border-radius: 50%;
+  color: #9a570b;
+  background: #ffe6b8;
+  font: 700 23px/1 Georgia, serif;
+}
+
+.nc-short-drama-load-state h2 { margin: 0; font: 650 24px/1.3 Georgia, "Songti SC", serif; }
+.nc-short-drama-load-state p { margin: 14px 0 22px; color: var(--sd-muted); font-size: 12px; line-height: 1.7; }
+.nc-short-drama-load-actions { display: flex; justify-content: center; gap: 9px; }
+.nc-short-drama-load-actions button { min-width: 92px; min-height: 38px; border: 1px solid #d8dce3; border-radius: 9px; color: #344054; background: #fff; font-size: 12px; font-weight: 650; }
+.nc-short-drama-load-actions button:first-child { color: #fff; border-color: var(--sd-accent); background: linear-gradient(135deg, #ee9d28, #d8730c); }
+
 [data-theme="dark"] .nc-short-drama-workspace {
   --sd-ink: #edeef1;
   --sd-muted: #9ea5b3;
@@ -507,7 +543,8 @@
 [data-theme="dark"] .nc-short-drama-inspector { background: rgba(31, 33, 39, 0.92); }
 [data-theme="dark"] .nc-short-drama-character-card,
 [data-theme="dark"] .nc-short-drama-shot-card,
-[data-theme="dark"] .nc-short-drama-complete { background: rgba(37, 40, 47, 0.96); border-color: #3c4049; }
+[data-theme="dark"] .nc-short-drama-complete,
+[data-theme="dark"] .nc-short-drama-load-state { background: rgba(37, 40, 47, 0.96); border-color: #3c4049; }
 [data-theme="dark"] .nc-short-drama-workspace input,
 [data-theme="dark"] .nc-short-drama-workspace select,
 [data-theme="dark"] .nc-short-drama-workspace textarea { color: #eceef2; border-color: #454a54; background: #292c33; }
@@ -522,7 +559,19 @@
   .nc-short-drama-topbar { grid-template-columns: 190px 1fr 44px; gap: 8px; padding: 0 14px; }
   .nc-short-drama-stage { min-width: 95px; padding-right: 8px; padding-left: 8px; font-size: 11px; }
   .nc-short-drama-layout { grid-template-columns: 190px minmax(500px, 1fr); }
-  .nc-short-drama-inspector { grid-column: 1 / -1; display: none; }
+  .nc-short-drama-inspector {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: minmax(220px, 0.8fr) minmax(300px, 1.2fr);
+    align-items: start;
+    gap: 14px 24px;
+    max-height: none;
+    border-top: 1px solid rgba(23, 32, 51, 0.1);
+    border-left: 0;
+  }
+  .nc-short-drama-inspector > .nc-short-drama-section-title { grid-column: 1 / -1; margin-bottom: 0; }
+  .nc-short-drama-inspector > .nc-short-drama-cost-card,
+  .nc-short-drama-inspector > dl { grid-row: span 2; }
 }
 
 @media (max-width: 760px) {
@@ -532,6 +581,7 @@
   .nc-short-drama-layout { display: block; overflow: auto; }
   .nc-short-drama-character-rail { display: none; }
   .nc-short-drama-editor { min-height: 100%; overflow: visible; padding: 20px 14px 60px; }
+  .nc-short-drama-inspector { display: block; padding: 20px 14px 40px; }
   .nc-short-drama-form-grid,
   .nc-short-drama-shot-fields { grid-template-columns: 1fr; }
   .nc-short-drama-form-grid label.is-wide,

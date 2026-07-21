@@ -413,6 +413,27 @@ function testWorkspaceSourceAndRenderContract() {
   assert.ok(css.includes('.nc-short-drama-inspector'));
   assert.match(app, /current\.params\.project_id!==projectId[\s\S]*?return/,
     'stale workspace callbacks must not overwrite a relinked scoped node');
+  assert.match(app, /function destroyShortDramaWorkspace\(node\)/);
+  assert.match(app, /function destroyAllShortDramaWorkspaces\(\)/);
+  assert.match(app, /function restoreSnapshot\(snap\)\{[\s\S]*?destroyAllShortDramaWorkspaces\(\)/,
+    'snapshot rebuild destroys open workspaces first');
+  assert.match(app, /function showBoardHome\(\)\{[\s\S]*?destroyAllShortDramaWorkspaces\(\)/,
+    'leaving the board destroys open workspaces');
+  assert.match(app, /function deleteSelectedNodes\(\)\{[\s\S]*?destroyShortDramaWorkspace\(nodes\[id\]\)/,
+    'multi-delete destroys each open workspace');
+  assert.match(app, /function delNode\(id\)\{[\s\S]*?destroyShortDramaWorkspace\(nodes\[id\]\)/,
+    'single delete destroys its open workspace');
+  assert.match(app, /function clearCanvas\(\)\{[\s\S]*?destroyAllShortDramaWorkspaces\(\)/,
+    'clearing the canvas destroys all open workspaces');
+  assert.match(app, /shortDramaWorkspace\.projectId!==node\.params\.project_id[\s\S]*?destroyShortDramaWorkspace\(node\)/,
+    'changing a node project link destroys the stale workspace');
+  assert.match(source, /data-character-jump[\s\S]*?function handleClick[\s\S]*?scrollIntoView[\s\S]*?\.focus\(/,
+    'character rail click scrolls to and focuses the matching character card');
+  const compactCss = css.match(/@media \(max-width: 1080px\) \{[\s\S]*?(?=@media \(max-width: 760px\))/)[0];
+  assert.doesNotMatch(compactCss, /\.nc-short-drama-inspector\s*\{[^}]*display:\s*none/,
+    'responsive layout must not hide planning/status/error controls');
+  assert.match(compactCss, /\.nc-short-drama-inspector\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/,
+    'compact inspector stacks below the editor');
 
   const project = workspaceProject({ stage: 'storyboard_review' });
   const html = shortDrama.renderWorkspace(project, { activeStage: 'storyboard_review', canEdit: true });
@@ -434,6 +455,14 @@ function testWorkspaceSourceAndRenderContract() {
   assert.match(shortDrama.renderWorkspace(workspaceProject({ stage: 'stills_review' }), {
     activeStage: 'stills_review', canEdit: true,
   }), /已完成第一阶段[\s\S]*第二阶段素材制作/);
+  assert.match(shortDrama.renderWorkspace(workspaceProject({ stage: 'stills_review' }), {
+    activeStage: 'settings', canEdit: true,
+  }), /data-tab="stills_review"/,
+  'completion has a navigation tab and can be revisited after viewing prior stages');
+  assert.doesNotMatch(shortDrama.renderWorkspace(workspaceProject({ stage: 'characters_review' }), {
+    activeStage: 'stills_review', canEdit: true,
+  }), /已完成第一阶段/,
+  'completion cannot be opened before the server advances to stills_review');
 }
 
 function testWorkspacePureStateAndPayloadHelpers() {
@@ -444,6 +473,9 @@ function testWorkspacePureStateAndPayloadHelpers() {
   assert.equal(shortDrama.isStageEditable(project, 'characters_review', true), true);
   assert.equal(shortDrama.isStageEditable(project, 'characters_review', false), false);
   assert.equal(shortDrama.isStageEditable(workspaceProject({ stage: 'script_review' }), 'characters_review', true), false);
+  assert.equal(shortDrama.isStageEditable(workspaceProject({ stage: 'draft' }), 'settings', true), true);
+  assert.equal(shortDrama.isStageEditable(workspaceProject({ stage: 'characters_review' }), 'settings', true), false,
+    'project settings are view-only after plan application');
 
   const placeholder = workspaceProject({ stage: 'draft', synopsis: shortDrama.PLACEHOLDER_SYNOPSIS });
   assert.equal(shortDrama.canGeneratePlan(placeholder, true), false);
@@ -475,17 +507,34 @@ function testWorkspacePureStateAndPayloadHelpers() {
   assert.match(shortDrama.validateShots(project.shots.slice(0, 5), project).join(' '), /6–10/);
   assert.match(shortDrama.validateShots(project.shots.map((shot, index) => Object.assign({}, shot,
     index === 0 ? { image_prompt: '' } : {})), project).join(' '), /画面提示词/);
+
+  const ownerOnly = shortDrama.renderLoadState({
+    canEdit: false, busy: false, loadFailed: true, loadStatus: 404, error: 'not found',
+  });
+  assert.ok(ownerOnly.includes('仅项目创建者可查看短剧详情'));
+  assert.match(ownerOnly, /data-action="reload"/);
+  assert.match(ownerOnly, /data-action="close"/);
+  const networkFailure = shortDrama.renderLoadState({
+    canEdit: true, busy: false, loadFailed: true, loadStatus: 0, error: '网络连接失败',
+  });
+  assert.ok(networkFailure.includes('网络连接失败'));
+  assert.match(networkFailure, /data-action="reload"[\s\S]*data-action="close"/);
+  assert.match(shortDrama.renderLoadState({ canEdit: true, busy: true }), /data-action="close"/,
+    'initial loading state is always escapable');
 }
 
 async function testWorkspaceSavesUseExactRevisionedBodiesAndSummaries() {
-  let project = workspaceProject();
+  let project = workspaceProject({ stage: 'draft' });
   const calls = [];
   const summaries = [];
   const client = {
     get(id) { calls.push(['get', id]); return Promise.resolve(project); },
     update(id, revision, patch) {
       calls.push(['update', id, revision, patch]);
-      project = Object.assign({}, project, patch, { revision: revision + 1 });
+      project = Object.assign({}, project, patch, {
+        revision: revision + 1,
+        stage: Object.prototype.hasOwnProperty.call(patch, 'title') ? 'characters_review' : project.stage,
+      });
       if (patch.script) project.script_versions = project.script_versions.concat([Object.assign({ version: 2 }, patch.script)]);
       return Promise.resolve(project);
     },
@@ -529,6 +578,124 @@ async function testWorkspaceSavesUseExactRevisionedBodiesAndSummaries() {
   workspace.destroy();
 }
 
+async function testWorkspaceLoadRecoveryOwnerIsolationAndDestroy() {
+  let loads = 0;
+  let updates = 0;
+  const project = workspaceProject({ stage: 'script_review' });
+  const client = {
+    get() {
+      loads += 1;
+      if (loads === 1) {
+        const error = new Error('not found'); error.status = 404; error.code = 'not_found';
+        return Promise.reject(error);
+      }
+      return Promise.resolve(project);
+    },
+    update() { updates += 1; return Promise.resolve(project); },
+    confirm() { return Promise.resolve(project); },
+    generatePlan() { throw new Error('must not submit'); },
+  };
+  const workspace = shortDrama.createWorkspace({ projectId: project.id, client, document: null, canEdit: false });
+  assert.equal(await workspace.ready, null);
+  assert.equal(workspace.getState().loadFailed, true);
+  assert.equal(workspace.getState().loadStatus, 404);
+  assert.ok(workspace.render().includes('仅项目创建者可查看短剧详情'));
+  assert.match(workspace.render(), /data-action="reload"[\s\S]*data-action="close"/);
+
+  assert.equal((await workspace.reload()).id, project.id, 'retry replaces the load error with the owner-readable project');
+  assert.equal(workspace.getState().loadFailed, false);
+  assert.match(workspace.render(), /data-readonly="true"/);
+  await assert.rejects(workspace.saveSettings(project), /read.only/i);
+  assert.equal(updates, 0);
+
+  workspace.destroy();
+  workspace.destroy();
+  assert.equal(workspace.getState().destroyed, true, 'destroy is idempotent and observable');
+  await assert.rejects(workspace.reload(), /destroyed/i);
+  await assert.rejects(workspace.saveScript(project.script_versions[0]), /destroyed/i);
+
+  let resolveLoad;
+  let summaries = 0;
+  const closing = shortDrama.createWorkspace({
+    projectId: project.id, document: null, canEdit: true,
+    onChange() { summaries += 1; },
+    client: {
+      get() { return new Promise((resolve) => { resolveLoad = resolve; }); },
+      update() { throw new Error('must not update'); }, confirm() { throw new Error('must not confirm'); },
+      generatePlan() { throw new Error('must not submit'); },
+    },
+  });
+  closing.destroy();
+  resolveLoad(project);
+  assert.equal(await closing.ready, null, 'closing during initial load settles without a stale mutation');
+  assert.equal(summaries, 0);
+}
+
+async function testWorkspaceLocksSettingsAndRejectsConcurrentPaidPlanning() {
+  let updates = 0;
+  const lockedProject = workspaceProject({ stage: 'characters_review' });
+  const locked = shortDrama.createWorkspace({
+    projectId: lockedProject.id, document: null, canEdit: true,
+    client: {
+      get() { return Promise.resolve(lockedProject); },
+      update() { updates += 1; return Promise.resolve(lockedProject); },
+      confirm() { return Promise.resolve(lockedProject); },
+      generatePlan() { throw new Error('must not submit'); },
+    },
+  });
+  await locked.ready;
+  assert.equal(locked.selectStage('settings'), true);
+  assert.match(locked.render(), /nc-short-drama-settings-form[\s\S]*data-action="save-settings" disabled/);
+  await assert.rejects(locked.saveSettings(lockedProject), /stage is not editable/i);
+  assert.equal(updates, 0, 'post-plan settings cannot diverge from generated content');
+
+  let submits = 0;
+  let confirmations = 0;
+  let resolvePlan;
+  let draft = workspaceProject({ stage: 'draft' });
+  const planning = shortDrama.createWorkspace({
+    projectId: draft.id, document: null, canEdit: true,
+    confirm() { confirmations += 1; return true; },
+    client: {
+      get() { return Promise.resolve(draft); },
+      update() { throw new Error('unexpected update'); },
+      confirm() { throw new Error('unexpected confirm'); },
+      generatePlan() {
+        submits += 1;
+        return new Promise((resolve) => { resolvePlan = resolve; });
+      },
+    },
+  });
+  await planning.ready;
+  const first = planning.generatePlan();
+  await assert.rejects(planning.generatePlan(), /busy/i);
+  assert.equal(submits, 1, 'overlapping paid calls submit only once');
+  assert.equal(confirmations, 1, 'busy rejection happens before a second paid confirmation');
+  draft = workspaceProject({ stage: 'characters_review', revision: 8, spent_points: 6 });
+  resolvePlan(draft);
+  await first;
+
+  let gets = 0;
+  let resolveLatePlan;
+  let summaries = 0;
+  const closing = shortDrama.createWorkspace({
+    projectId: 'closing-paid', document: null, canEdit: true, confirm: () => true,
+    onChange() { summaries += 1; },
+    client: {
+      get() { gets += 1; return Promise.resolve(workspaceProject({ id: 'closing-paid', stage: 'draft' })); },
+      update() { throw new Error('unexpected update'); }, confirm() { throw new Error('unexpected confirm'); },
+      generatePlan() { return new Promise((resolve) => { resolveLatePlan = resolve; }); },
+    },
+  });
+  await closing.ready;
+  const late = closing.generatePlan();
+  closing.destroy();
+  resolveLatePlan(workspaceProject({ id: 'closing-paid', stage: 'characters_review' }));
+  await assert.rejects(late, /destroyed/i);
+  assert.equal(gets, 1, 'destroyed planning controller does not refresh or apply a late paid result');
+  assert.equal(summaries, 0);
+}
+
 async function testWorkspaceOrderConflictReadonlyAndPlanning() {
   let project = workspaceProject();
   let updates = 0;
@@ -541,7 +708,7 @@ async function testWorkspaceOrderConflictReadonlyAndPlanning() {
     get() { return Promise.resolve(project); },
     update(id, revision, patch) {
       updates += 1;
-      if (patch.title === '冲突') {
+      if (patch.characters && patch.characters[0] && patch.characters[0].name === '冲突') {
         const error = new Error('stale'); error.status = 409; error.code = 'revision_conflict';
         return Promise.reject(error);
       }
@@ -566,7 +733,8 @@ async function testWorkspaceOrderConflictReadonlyAndPlanning() {
   await workspace.ready;
   await assert.rejects(workspace.confirm('script_review'), /current stage|order/i);
   assert.equal(confirms, 0, 'confirmation cannot skip the current stage');
-  await assert.rejects(workspace.saveSettings(Object.assign({}, project, { title: '冲突' })), /stale/);
+  await assert.rejects(workspace.saveCharacters(project.characters.map((character, index) => Object.assign({}, character,
+    index === 0 ? { name: '冲突' } : {}))), /stale/);
   assert.equal(workspace.getState().error, '项目已在其他页面更新，请刷新后重试');
   assert.equal(workspace.getState().stale, true);
 
@@ -628,6 +796,8 @@ async function main() {
   testWorkspaceSourceAndRenderContract();
   testWorkspacePureStateAndPayloadHelpers();
   await testWorkspaceSavesUseExactRevisionedBodiesAndSummaries();
+  await testWorkspaceLoadRecoveryOwnerIsolationAndDestroy();
+  await testWorkspaceLocksSettingsAndRejectsConcurrentPaidPlanning();
   await testWorkspaceOrderConflictReadonlyAndPlanning();
   const workspace = shortDrama.createWorkspace({
     projectId: 'project-1', apiClient: { json() {} }, poll() { return Promise.resolve({}); },
