@@ -1,13 +1,21 @@
 # -*- coding: utf-8 -*-
 import hashlib
+import os
 import sqlite3
+import threading
 import time
 from contextlib import closing
 
-from .core import BASE, _collect_cos_play_url, public_url_from_remote, re, tikhub
+from .core import BASE, _collect_cos_play_url, jdb, public_url_from_remote, re, tikhub
 from .leads_contract import classify_comments
 
 LEADS_CRM_DB = str(BASE / "leads_crm.db")
+try:
+    LEADS_SUBMIT_COOLDOWN = max(1, int(os.environ.get("LEADS_SUBMIT_COOLDOWN", "30") or 30))
+except Exception:
+    LEADS_SUBMIT_COOLDOWN = 30
+_LEADS_SUBMIT_LOCK = threading.Lock()
+_LEADS_SUBMIT_AT = {}
 CRM_STATUSES = {"待跟进", "跟进中", "已加微", "已成交", "无效"}
 CRM_INTENTS = {"高意向", "咨询", "价格敏感", "围观"}
 INTENT_RULES = [
@@ -16,6 +24,26 @@ INTENT_RULES = [
     ("高意向", 76, ("想做", "我也想", "有效果吗", "效果怎么样", "可以瘦吗", "有用吗", "哪家好", "安全吗", "维持多久")),
     ("高意向", 68, ("怎么弄", "怎么做", "怎么操作", "怎么整", "求带", "教一下", "求推荐", "想学")),
 ]
+
+
+def lead_submit_retry_after(username):
+    now = int(time.time())
+    memory_last = int(_LEADS_SUBMIT_AT.get(username) or 0)
+    try:
+        with closing(jdb()) as c:
+            row = c.execute("SELECT MAX(created_at) FROM jobs WHERE kind='leads' AND username=?", (username,)).fetchone()
+        last = max(memory_last, int((row or [0])[0] or 0))
+    except Exception:
+        last = memory_last
+    return max(0, LEADS_SUBMIT_COOLDOWN - (now - last))
+
+
+def reserve_lead_submit(username):
+    with _LEADS_SUBMIT_LOCK:
+        retry_after = lead_submit_retry_after(username)
+        if not retry_after:
+            _LEADS_SUBMIT_AT[username] = int(time.time())
+        return retry_after
 
 def crm_db():
     c = sqlite3.connect(LEADS_CRM_DB, timeout=10)

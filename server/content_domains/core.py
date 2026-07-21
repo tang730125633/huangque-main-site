@@ -201,9 +201,6 @@ JOB_QUEUE_MAX = _env_positive_int("CONTENT_JOB_QUEUE_MAX", 64)  # 32→64：50 �
 TALKING_JOB_QUEUE_MAX = _env_positive_int("CONTENT_TALKING_JOB_QUEUE_MAX", 192)  # 口播独立积压上限，不放大其他任务队列
 _PENDING_RECOVERY_LIMIT = max(JOB_QUEUE_MAX, TALKING_JOB_QUEUE_MAX)
 MAX_USER_ACTIVE_JOBS = _env_positive_int("MAX_USER_ACTIVE_JOBS", 5)                  # 单用户可同时提交(pending+running)的任务上限，超了提交即 429
-LEADS_SUBMIT_COOLDOWN = _env_positive_int("LEADS_SUBMIT_COOLDOWN", 30)
-_LEADS_SUBMIT_LOCK = threading.Lock()
-_LEADS_SUBMIT_AT = {}
 MAX_USER_ACTIVE_XIAOLE_VIDEO = _env_positive_int("MAX_USER_ACTIVE_XIAOLE_VIDEO", 2)  # 单用户果肉/豆姐/欧米视频共享 active 上限：别让单一渠道吃满全部任务位
 MAX_USER_ACTIVE_SORA_VIDEO = _env_positive_int("MAX_USER_ACTIVE_SORA_VIDEO", 1)      # Sora 高价限时 Beta：每用户默认只允许 1 条在飞
 MAX_USER_ACTIVE_TRYON = _env_positive_int("MAX_USER_ACTIVE_TRYON", 1)                # 单用户换装视频 active 上限：最重链路，默认一次只放 1 条
@@ -768,25 +765,6 @@ def _user_active_job_count(username):
                         (username,)).fetchone()
     return int(row["n"] if row else 0)
 
-
-def lead_submit_retry_after(username):
-    now = int(time.time())
-    memory_last = int(_LEADS_SUBMIT_AT.get(username) or 0)
-    try:
-        with closing(jdb()) as c:
-            row = c.execute("SELECT MAX(created_at) FROM jobs WHERE kind='leads' AND username=?", (username,)).fetchone()
-        last = max(memory_last, int((row or [0])[0] or 0))
-    except Exception:
-        last = memory_last
-    return max(0, LEADS_SUBMIT_COOLDOWN - (now - last))
-
-
-def reserve_lead_submit(username):
-    with _LEADS_SUBMIT_LOCK:
-        retry_after = lead_submit_retry_after(username)
-        if not retry_after:
-            _LEADS_SUBMIT_AT[username] = int(time.time())
-        return retry_after
 
 def _user_active_kind_count(username, kind):
     if not username or not kind:
@@ -1428,7 +1406,7 @@ class H(BaseHTTPRequestHandler):
             except ValueError as e:
                 return self._send(400, {"detail": str(e)[:220]})
             if kind == "leads":
-                retry_after = reserve_lead_submit(user["username"])
+                retry_after = _leads_domain().reserve_lead_submit(user["username"])
                 if retry_after:
                     return self._send(429, {"detail": "提交过于频繁，请稍后重试", "retry_after": retry_after})
             # 正在停机（部署中）→ 不收新活。⚠️ 必须在【扣点之前】。

@@ -35,7 +35,8 @@ class LeadsOperationsUiTests(unittest.TestCase):
         self.assertIn("compliance_version", start)
         core = (pathlib.Path(__file__).resolve().parents[1] / "server/content_domains/core.py").read_text(encoding="utf-8")
         self.assertIn("validate_compliance(body)", core)
-        self.assertIn("reserve_lead_submit(user[\"username\"])", core)
+        self.assertIn("_leads_domain().reserve_lead_submit(user[\"username\"])", core)
+        self.assertNotIn("def reserve_lead_submit", core)
 
 
 if __name__ == "__main__":
