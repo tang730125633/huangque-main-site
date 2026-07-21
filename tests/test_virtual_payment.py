@@ -18,6 +18,7 @@ class VirtualPaymentTests(unittest.TestCase):
         "WX_VIRTUAL_PAY_PRODUCTS_JSON",
         "WX_MESSAGE_PUSH_TOKEN",
         "WX_MESSAGE_PUSH_AES_KEY",
+        "HQ_MINIPROGRAM_PAYMENTS_ENABLED",
     )
 
     def setUp(self):
@@ -60,6 +61,61 @@ class VirtualPaymentTests(unittest.TestCase):
             self.auth.wechat_vpay.calc_pay_sig("/xpay/query_order", body, "prod-app-key"),
             expected,
         )
+
+    def test_miniprogram_payment_switch_defaults_on_and_accepts_off_values(self):
+        os.environ.pop("HQ_MINIPROGRAM_PAYMENTS_ENABLED", None)
+        self.assertTrue(self.auth.miniprogram_payments_enabled())
+        for value in ("0", "false", "FALSE", "no", "off"):
+            os.environ["HQ_MINIPROGRAM_PAYMENTS_ENABLED"] = value
+            self.assertFalse(self.auth.miniprogram_payments_enabled())
+
+    def test_disabled_switch_blocks_virtual_order_before_wechat_calls(self):
+        os.environ["HQ_MINIPROGRAM_PAYMENTS_ENABLED"] = "0"
+        with patch.object(self.auth.wechat_vpay, "code_to_session") as code_to_session:
+            result, err = self.auth.create_virtual_pay_order(
+                "buyer", "test_pack", "wx-code"
+            )
+        self.assertIsNone(result)
+        self.assertEqual(err, "payment_disabled")
+        code_to_session.assert_not_called()
+
+    def test_disabled_switch_blocks_both_miniprogram_order_routes(self):
+        os.environ["HQ_MINIPROGRAM_PAYMENTS_ENABLED"] = "0"
+        for path in ("/api/auth/virtual-pay/order", "/api/auth/wxpay/jsapi"):
+            sent = []
+            handler = self.auth.H.__new__(self.auth.H)
+            handler.path = path
+            handler._user = lambda: {"username": "buyer"}
+            handler._send = lambda status, payload, extra_headers=None: sent.append(
+                (status, payload)
+            )
+            handler._body = lambda: self.fail("disabled route must not read request body")
+
+            handler.do_POST()
+
+            self.assertEqual(sent, [(503, {
+                "detail": "小程序支付功能暂时关闭",
+                "code": "payment_disabled",
+            })])
+
+    def test_disabled_switch_hides_virtual_payment_packages(self):
+        os.environ["HQ_MINIPROGRAM_PAYMENTS_ENABLED"] = "0"
+        sent = []
+        handler = self.auth.H.__new__(self.auth.H)
+        handler.path = "/api/auth/virtual-pay/packages"
+        handler._user = lambda: {"username": "buyer"}
+        handler._send = lambda status, payload, extra_headers=None: sent.append(
+            (status, payload)
+        )
+
+        handler.do_GET()
+
+        status, payload = sent[0]
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["enabled"])
+        self.assertFalse(payload["configured"])
+        self.assertEqual(payload["items"], [])
+        self.assertIsNone(payload["custom"])
 
     def test_delivery_notification_includes_pay_signature(self):
         with patch.object(self.auth.wechat_vpay, "access_token", return_value="wx-token"), \
