@@ -1593,7 +1593,7 @@ def list_admin_users(query="", sort="created_at", direction="desc", limit=100):
 
 
 def _write_membership_audit(c, username, before, after, operator, reason, now):
-    c.execute(
+    cur = c.execute(
         """INSERT INTO membership_audit(
                username,before_tier,after_tier,before_expires_at,after_expires_at,operator,reason,created_at
            ) VALUES(?,?,?,?,?,?,?,?)""",
@@ -1608,6 +1608,7 @@ def _write_membership_audit(c, username, before, after, operator, reason, now):
             int(now),
         ),
     )
+    return int(cur.lastrowid)
 
 
 def set_membership_admin(who_admin, username, tier, reason="", now=None):
@@ -1634,7 +1635,14 @@ def set_membership_admin(who_admin, username, tier, reason="", now=None):
         )
         fresh = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
         after = membership_for_row(fresh, now)
-        _write_membership_audit(c, username, before, after, who_admin, reason or "管理员设置会员", now)
+        audit_id = _write_membership_audit(
+            c, username, before, after, who_admin, reason or "管理员设置会员", now,
+        )
+        invites.record_membership_upgrade(
+            c, fresh["id"], before["membership_tier"], after["membership_tier"],
+            "offline_admin", source_order_id="membership-audit:%d" % audit_id,
+            operator=who_admin, now=now,
+        )
         c.commit()
         return public_admin_user(fresh), None
     except Exception:
@@ -1644,7 +1652,7 @@ def set_membership_admin(who_admin, username, tier, reason="", now=None):
         c.close()
 
 
-def _activate_experience_membership(c, username, operator, reason, now):
+def _activate_experience_membership(c, username, operator, reason, now, source_order_id=None):
     row = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
     if not row:
         return None, "user_not_found"
@@ -1658,7 +1666,12 @@ def _activate_experience_membership(c, username, operator, reason, now):
     )
     fresh = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
     after = membership_for_row(fresh, now)
-    _write_membership_audit(c, username, before, after, operator, reason, now)
+    audit_id = _write_membership_audit(c, username, before, after, operator, reason, now)
+    invites.record_membership_upgrade(
+        c, fresh["id"], before["membership_tier"], after["membership_tier"],
+        "online", source_order_id=source_order_id or "membership-audit:%d" % audit_id,
+        operator=operator, now=now,
+    )
     return after, None
 
 def adjust_points_admin(who_admin, username, delta, reason=""):
@@ -1847,7 +1860,7 @@ def review_recharge_order(who_admin, order_id, action, reason="", transaction_id
             if (order["order_type"] or "points") == MEMBERSHIP_ORDER_TYPE:
                 _, membership_err = _activate_experience_membership(
                     c, order["username"], who_admin,
-                    "体验官开通订单: %s" % order_id, now,
+                    "体验官开通订单: %s" % order_id, now, source_order_id=order_id,
                 )
                 if membership_err:
                     c.rollback()
@@ -3323,6 +3336,23 @@ class H(BaseHTTPRequestHandler):
                     c, row["id"],
                     level=(query.get("level") or ["1"])[0],
                     limit=(query.get("limit") or ["10"])[0],
+                    offset=(query.get("offset") or ["0"])[0],
+                )
+                return self._send(200, {"ok": True, **data})
+            except (TypeError, ValueError):
+                return self._send(400, {"detail": "分页参数无效"})
+            finally:
+                c.close()
+        if p in ("/api/invite/reward-points", "/api/auth/invite/reward-points"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            c = db()
+            try:
+                data = invites.reward_points(
+                    c, row["id"],
+                    limit=(query.get("limit") or ["20"])[0],
                     offset=(query.get("offset") or ["0"])[0],
                 )
                 return self._send(200, {"ok": True, **data})

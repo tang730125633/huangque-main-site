@@ -39,6 +39,9 @@ class InvitePagesTests(unittest.TestCase):
         self.assertIn("累计充值", INVITE)
         self.assertIn("会员状态", INVITE)
         self.assertIn("membership_status", INVITE)
+        self.assertIn("/api/invite/reward-points", INVITE)
+        self.assertIn("累计邀请奖励", INVITE)
+        self.assertIn("不能用于网站功能消费", INVITE)
         for member_class in ("member-experience", "member-partner", "member-initiator", "member-expired"):
             self.assertIn(member_class, INVITE)
         for label in ("累计绑定", "今日新增", "有效邀请", "一级直邀", "二级间邀"):
