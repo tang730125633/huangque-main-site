@@ -307,7 +307,7 @@ def _gen_image_xiaole_locked(prompt, ratio, quality, count, img):
             "count": len(files_out), "file": files_out[0], "url": urls[0],
             "files": files_out, "urls": urls, "ratio": ratio, "prompt": prompt}
 
-def _dispatch_gpt(provider, path, body, ct, base, key, proxy):
+def _dispatch_gpt(provider, path, body, ct, base, key, proxy, streaming=False):
     """gpt 家族出图分发。openai(官方) 走出境优先级链 VPS→mihomo→heygen；泽龙系维持原样。"""
     if provider == "zelong2":
         return _post_zelong2(path, body, ct)
@@ -316,9 +316,10 @@ def _dispatch_gpt(provider, path, body, ct, base, key, proxy):
     # provider == "openai"：优先自建出境直连官方，超时/报错降级，最终兜底 heygen(=OPENAI_BASE)。
     # 未配 EGRESS_* 时 egress 链里只剩 heygen 一档，等于改动前的老行为。
     from content_domains import egress
-    return egress.post_json(OPENAI_OFFICIAL_BASE, OPENAI_BASE, path, body,
-                            {"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": ct},
-                            log=lambda m: print(m, flush=True))
+    transport = egress.post_image_json if streaming else egress.post_json
+    return transport(OPENAI_OFFICIAL_BASE, OPENAI_BASE, path, body,
+                     {"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": ct},
+                     log=lambda m: print(m, flush=True))
 
 
 def _seedream_size(ratio, quality, variant="std"):
@@ -530,7 +531,7 @@ def gen_image(payload):
         mode = "inpaint" if mask else "img2img"
     else:
         body = json.dumps({"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": quality, "n": count}).encode()
-        d = _dispatch_gpt(provider, "/v1/images/generations", body, "application/json", base, key, proxy)
+        d = _dispatch_gpt(provider, "/v1/images/generations", body, "application/json", base, key, proxy, streaming=True)
         mode = "text2img"
     files_out, urls = [], []
     for i, item in enumerate(d.get("data") or []):
