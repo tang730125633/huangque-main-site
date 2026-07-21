@@ -299,15 +299,35 @@ def dashboard(conn, inviter_user_id, now=None):
     }
 
 
-def invited_users(conn, inviter_user_id, limit=100, offset=0):
-    limit = max(1, min(int(limit or 100), 200))
+def invited_users(conn, inviter_user_id, level=1, limit=10, offset=0):
+    level = int(level or 1)
+    if level not in (1, 2):
+        raise ValueError("level must be 1 or 2")
+    limit = max(1, min(int(limit or 10), 100))
     offset = max(0, int(offset or 0))
+    recharge_sql = """COALESCE((SELECT SUM(ro.amount) FROM recharge_orders ro
+                                  WHERE ro.username=u.username AND ro.status='approved'),0)
+                      + COALESCE((SELECT SUM(vp.amount_fen) / 100.0 FROM virtual_pay_orders vp
+                                  WHERE vp.username=u.username AND vp.status='credited'),0)"""
+    if level == 1:
+        joins = """FROM user_invites ui JOIN users u ON u.id=ui.invitee_user_id
+                   LEFT JOIN users parent ON parent.id=ui.inviter_user_id
+                   WHERE ui.inviter_user_id=?"""
+    else:
+        joins = """FROM user_invites ui
+                   JOIN user_invites direct ON direct.invitee_user_id=ui.inviter_user_id
+                   JOIN users u ON u.id=ui.invitee_user_id
+                   LEFT JOIN users parent ON parent.id=ui.inviter_user_id
+                   WHERE direct.inviter_user_id=?
+                     AND direct.status='bound' AND direct.risk_status<>'blocked'"""
+    total = conn.execute("SELECT COUNT(*) " + joins, (int(inviter_user_id),)).fetchone()[0]
     rows = conn.execute("""SELECT ui.id,ui.status,ui.risk_status,ui.bound_at,ui.source,
-                                  u.username,u.display_name,u.account_id,u.created_at
-                           FROM user_invites ui JOIN users u ON u.id=ui.invitee_user_id
-                           WHERE ui.inviter_user_id=? ORDER BY ui.id DESC LIMIT ? OFFSET ?""",
+                                  u.username,u.display_name,u.account_id,u.created_at,
+                                  parent.username AS parent_username,parent.display_name AS parent_name,
+                                  """ + recharge_sql + " AS recharge_total " + joins +
+                        " ORDER BY ui.id DESC LIMIT ? OFFSET ?",
                         (int(inviter_user_id), limit, offset)).fetchall()
-    return [{
+    users = [{
         "id": row["id"],
         "username": row["username"],
         "name": row["display_name"] or row["username"],
@@ -317,7 +337,12 @@ def invited_users(conn, inviter_user_id, limit=100, offset=0):
         "status": row["status"],
         "risk_status": row["risk_status"],
         "source": row["source"],
+        "level": level,
+        "parent_username": row["parent_username"] or "",
+        "parent_name": row["parent_name"] or row["parent_username"] or "",
+        "recharge_total": round(float(row["recharge_total"] or 0), 2),
     } for row in rows]
+    return {"users": users, "total": int(total), "level": level, "limit": limit, "offset": offset}
 
 
 def referrer(conn, invitee_user_id):

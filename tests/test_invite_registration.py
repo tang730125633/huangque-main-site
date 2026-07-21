@@ -191,6 +191,42 @@ class InviteRegistrationTests(unittest.TestCase):
         finally:
             c.close()
 
+    def test_invited_users_support_two_levels_pagination_and_recharge_total(self):
+        inviter_code = self._invite_code()
+        for index in range(11):
+            result, err = self.auth.register_account(
+                "direct_%02d" % index, "secret123", invite_code=inviter_code,
+            )
+            self.assertIsNone(err)
+        child_code = self._invite_code("direct_00")
+        child, err = self.auth.register_account("second_user", "secret123", invite_code=child_code)
+        self.assertIsNone(err)
+        now = 1700000000
+        c = self._connect()
+        try:
+            c.execute("""INSERT INTO recharge_orders(order_id,username,amount,points,status,created_at)
+                         VALUES('approved-one','direct_00',99,1000,'approved',?)""", (now,))
+            c.execute("""INSERT INTO recharge_orders(order_id,username,amount,points,status,created_at)
+                         VALUES('pending-one','direct_00',999,9990,'pending',?)""", (now,))
+            c.execute("""INSERT INTO virtual_pay_orders(
+                order_id,username,openid,package_id,product_id,amount_fen,points,env,status,created_at
+            ) VALUES('virtual-one','second_user','openid-test','pkg','product',1250,125,0,'credited',?)""", (now,))
+            c.commit()
+            first_page = self.auth.invites.invited_users(c, self._user_id("inviter"), level=1, limit=10, offset=0)
+            second_page = self.auth.invites.invited_users(c, self._user_id("inviter"), level=1, limit=10, offset=10)
+            self.assertEqual(first_page["total"], 11)
+            self.assertEqual(len(first_page["users"]), 10)
+            self.assertEqual(len(second_page["users"]), 1)
+            direct = next(user for user in first_page["users"] + second_page["users"] if user["username"] == "direct_00")
+            self.assertEqual(direct["recharge_total"], 99.0)
+            indirect = self.auth.invites.invited_users(c, self._user_id("inviter"), level=2, limit=10, offset=0)
+            self.assertEqual(indirect["total"], 1)
+            self.assertEqual(indirect["users"][0]["username"], "second_user")
+            self.assertEqual(indirect["users"][0]["parent_username"], "direct_00")
+            self.assertEqual(indirect["users"][0]["recharge_total"], 12.5)
+        finally:
+            c.close()
+
     def test_http_endpoints_validate_register_and_return_referrer(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
         thread = threading.Thread(target=server.serve_forever, daemon=True)

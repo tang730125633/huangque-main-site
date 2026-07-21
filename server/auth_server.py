@@ -3076,12 +3076,13 @@ class H(BaseHTTPRequestHandler):
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             c = db()
             try:
-                users = invites.invited_users(
+                data = invites.invited_users(
                     c, row["id"],
-                    limit=(query.get("limit") or ["100"])[0],
+                    level=(query.get("level") or ["1"])[0],
+                    limit=(query.get("limit") or ["10"])[0],
                     offset=(query.get("offset") or ["0"])[0],
                 )
-                return self._send(200, {"ok": True, "users": users})
+                return self._send(200, {"ok": True, **data})
             except (TypeError, ValueError):
                 return self._send(400, {"detail": "分页参数无效"})
             finally:
