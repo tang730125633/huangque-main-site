@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security  # 领域存储模块均无反向依赖
+import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security, history  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -1651,15 +1651,7 @@ class H(BaseHTTPRequestHandler):
                                  WHERE username=? AND status='done' AND kind=? AND COALESCE(deleted,0)=0
                                  ORDER BY id DESC LIMIT ?""",
                                  (user["username"], kind, lim)).fetchall()
-            items = []
-            for r in rows:
-                try: res = json.loads(r["result"])
-                except Exception: continue
-                items.append({"job_id": r["id"], "url": res.get("url"), "mode": res.get("mode"),
-                              "prompt": res.get("prompt"), "text": res.get("text"), "ctype": res.get("ctype"),
-                              "voice": res.get("voice"), "speed": res.get("speed"), "pitch": res.get("pitch"),
-                              "volume": res.get("volume"), "emotion": res.get("emotion"),
-                              "created_at": r["created_at"]})
+            items = history.expand_job_results(rows, lim)
             return self._send(200, {"items": items})
         if p == "/api/gen/collect/search":   # 关键词搜（即时，扣 1 点）— 采集页选片用
             user = verify(self._token())
