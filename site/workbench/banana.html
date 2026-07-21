@@ -208,7 +208,7 @@
       <div id="recentGeneratedView" class="result-view" role="tabpanel" aria-labelledby="recentGeneratedTab">
       <div class="result-preview">
         <img id="bResult" src="../assets/meiye_poster.webp" alt="生成结果 · 美业海报" style="display:block; width:100%; aspect-ratio:9/13; object-fit:cover;">
-        <div style="position:absolute; top:12px; right:12px; padding:5px 10px; background:rgba(7,11,19,.55); backdrop-filter:blur(6px); border-radius:8px; font-family:'JetBrains Mono',monospace; font-size:11.5px; color:#e7b24c;">9:16</div>
+        <div id="resultRatio" style="position:absolute; top:12px; right:12px; padding:5px 10px; background:rgba(7,11,19,.55); backdrop-filter:blur(6px); border-radius:8px; font-family:'JetBrains Mono',monospace; font-size:11.5px; color:#e7b24c;">9:16</div>
       </div>
       <div id="actRow" style="display:grid; grid-template-columns:repeat(6,1fr); gap:7px; margin-top:14px;">
         <div class="hv-gold" style="display:flex; flex-direction:column; align-items:center; gap:6px; padding:11px 4px; border:1px solid rgba(148,164,187,.1); border-radius:11px; background:rgba(148,164,187,.03); cursor:pointer; transition:.16s;"><span style="display:flex; width:17px; color:#94a4bb;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.8-3.4L23 10M1 14l4.7 4.4A9 9 0 0 0 20.5 15"/></svg></span><span style="font-size:11px; color:#94a4bb;">再生成</span></div>
@@ -235,7 +235,8 @@
 /* 作图页接后端能力中心 /api/gen/image + /api/gen/banana，点数后端统一扣。 */
 (function(){
   var pr=document.getElementById('bPrompt'), gen=document.getElementById('bGen'),
-      res=document.getElementById('bResult'), note=document.getElementById('bNote');
+      res=document.getElementById('bResult'), note=document.getElementById('bNote'),
+      resultRatio=document.getElementById('resultRatio');
   var collectHandoff=null;
   if(!gen) return;
   var ratio='9:16', engine='banana', quality='hd', count=1, bananaVariant='nb2', seedreamVariant='std';
@@ -602,9 +603,26 @@
       return '该提示词可能被内容审核拒绝，换个说法，或改用纳米香蕉引擎（对人物/中文更宽松）· 已退点';
     return '失败：'+s+' · 已退点';
   }
+  function ratioFromDimensions(width,height){
+    if(!width||!height) return '';
+    var actual=width/height, choices={'9:16':9/16,'1:1':1,'16:9':16/9,'3:4':3/4}, best='', distance=99;
+    Object.keys(choices).forEach(function(value){ var delta=Math.abs(actual-choices[value]); if(delta<distance){distance=delta; best=value;} });
+    return best;
+  }
+  function setResultRatio(value){
+    value=String(value||'').trim();
+    if(!/^(9:16|1:1|16:9|3:4)$/.test(value)) return;
+    if(resultRatio) resultRatio.textContent=value;
+    try{ localStorage.setItem('hq_last_result_ratio',value); }catch(e){}
+  }
+  res.addEventListener('load',function(){
+    var measured=ratioFromDimensions(res.naturalWidth,res.naturalHeight);
+    if(measured) setResultRatio(measured);
+  });
   // 结果展示：单图走 #bResult；多图(数量>1)在下方渲染缩略图条，点选驱动当前图
   function showResult(result){
     var us=(result&&result.urls&&result.urls.length)?result.urls:[result.url];
+    setResultRatio(result&&result.ratio);
     res.src=us[0]+'?t='+Date.now(); lastResultUrl=us[0]; localStorage.setItem('hq_last_result',us[0]);
     renderThumbs(us);
     setResultView('generated');
@@ -976,7 +994,7 @@
   }
   loadHistory();
   // 刷新还原：把上次的结果图放回结果区，刷新后也能直接再生成
-  try{ var lr0=localStorage.getItem('hq_last_result'); if(lr0){ res.src=lr0+'?t='+Date.now(); lastResultUrl=lr0; } }catch(e){}
+  try{ var lr0=localStorage.getItem('hq_last_result'); if(lr0){ setResultRatio(localStorage.getItem('hq_last_result_ratio')); res.src=lr0+'?t='+Date.now(); lastResultUrl=lr0; } }catch(e){}
   // 续传：切回页面时接上所有进行中的任务（后端没中断）。
   // 兼容旧版的单任务 key：老用户浏览器里可能还存着 hq_active_job，读完即迁移。
   try{
