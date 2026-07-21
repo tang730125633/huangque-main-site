@@ -34,7 +34,8 @@ class InvitePagesTests(unittest.TestCase):
         self.assertIn("/api/invite/dashboard", INVITE)
         self.assertIn("/api/invite/users?level=", INVITE)
         self.assertIn("pageSize=10", INVITE)
-        self.assertIn("二级邀请用户", INVITE)
+        self.assertIn('id="levelTwo" type="button" hidden>二级邀请用户', INVITE)
+        self.assertIn('<div class="stat" hidden><div class="stat-label">二级间邀', INVITE)
         self.assertIn("累计充值", INVITE)
         for label in ("累计绑定", "今日新增", "有效邀请", "一级直邀", "二级间邀"):
             self.assertIn(label, INVITE)
