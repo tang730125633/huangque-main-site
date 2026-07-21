@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const apiModule = require('../site/workbench/canvas/canvas-api.js');
@@ -320,6 +321,9 @@ function testCanvasIntegration() {
   const root = path.join(__dirname, '..');
   const html = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas.html'), 'utf8');
   const app = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-app.js'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas.css'), 'utf8');
+  const appStamp = crypto.createHash('md5').update(app.replace(/\r\n/g, '\n')).digest('hex').slice(0, 8);
+  const cssStamp = crypto.createHash('md5').update(css.replace(/\r\n/g, '\n')).digest('hex').slice(0, 8);
   const order = [
     'canvas/canvas-graph.js?v=',
     'canvas/canvas-state.js?v=',
@@ -332,11 +336,14 @@ function testCanvasIntegration() {
 
   assert.ok(order.every((index) => index >= 0), 'all canvas modules must be loaded');
   assert.deepEqual(order, [...order].sort((left, right) => left - right), 'modules, collaboration sync, and app must load in dependency order');
+  assert.ok(html.includes(`canvas/canvas.css?v=${cssStamp}`));
+  assert.ok(html.includes(`canvas/canvas-app.js?v=${appStamp}`));
   assert.match(app, /var apiModule=window\.HQCanvas&&window\.HQCanvas\.api;/);
   assert.match(app, /apiModule\.createClient\(/);
   assert.equal((app.match(/apiModule\.poll\(/g) || []).length, 2, 'image and video jobs share bounded polling');
   assert.equal((app.match(/maxMs:420000/g) || []).length, 1, 'image jobs retain their 420 second limit');
-  assert.equal((app.match(/maxMs:900000/g) || []).length, 1, 'video jobs retain their 900 second limit');
+  assert.equal((app.match(/900000/g) || []).length, 1, 'Grok video jobs retain their 900 second limit');
+  assert.equal((app.match(/1800000/g) || []).length, 1, 'cinematic jobs use the backend 30 minute limit');
   assert.match(app, /error&&error\.code==='timeout'/);
   assert.ok(app.includes("error.message='协作服务响应超时'"), 'collaboration timeout keeps its existing UI message');
   assert.equal((app.match(/\bfetch\(/g) || []).length, 0, 'all direct requests must be behind extracted modules');
@@ -347,9 +354,41 @@ function testCanvasIntegration() {
     '/api/gen/reverse',
     '/api/gen/image',
     '/api/gen/banana',
+    '/api/gen/video/avatars?limit=120',
     '/api/gen/xiaole_video',
+    '/api/gen/cinematic',
     '/api/gen/job/',
   ]) assert.ok(app.includes(endpoint), endpoint);
+
+  const videoStart = app.indexOf("if(type==='video') body=");
+  const videoEnd = app.indexOf("el.innerHTML=", videoStart);
+  const videoNodeSource = app.slice(videoStart, videoEnd);
+  assert.ok(videoStart >= 0 && videoEnd > videoStart, 'video node markup is present');
+  assert.ok(videoNodeSource.includes('电影化身·开放式'));
+  assert.ok(!videoNodeSource.includes('豆姐视频'));
+  assert.ok(videoNodeSource.includes('data-v="9:16"'));
+  assert.ok(videoNodeSource.includes('data-v="16:9"'));
+  assert.ok(!videoNodeSource.includes('data-v="1:1"'));
+  assert.ok(videoNodeSource.includes('data-v="cinematic"'));
+  assert.ok(videoNodeSource.includes('data-f="avatarWrap"'));
+  assert.ok(videoNodeSource.includes('data-f="videoCost"'));
+  assert.ok(videoNodeSource.includes('<button class="nc-go" data-f="run"><span>生成视频</span><span class="nc-video-cost" data-f="videoCost"></span></button>'));
+  assert.ok(!videoNodeSource.includes('</button><span class="nc-video-cost"'));
+
+  assert.match(app, /var VIDEO_POINTS_PER_SECOND=30;/);
+  assert.match(app, /function normalizeVideoNodeParams\(params\)/);
+  assert.match(app, /params\.channel==='micro'/);
+  assert.match(app, /function refreshVideoNodeControls\(node\)/);
+  assert.match(app, /function referenceImageDataUrl\(source\)/);
+  assert.match(app, /Promise\.all\(videoRefs\.map\(referenceImageDataUrl\)\)/);
+  assert.ok(app.includes("cost.textContent=videoPointCost(node)+'点';"));
+  assert.ok(!app.includes("cost.textContent='消耗 '+videoPointCost(node)+' 点';"));
+  assert.ok(css.includes('.nc-video-submit .nc-go{ display:flex; align-items:center; justify-content:center; gap:8px; width:100%; min-width:0; }'));
+  assert.match(app, /cine_mode:'open'/);
+  assert.match(app, /avatar_ids:/);
+  assert.match(app, /resolution:'1080p'/);
+  assert.match(app, /duration:parseInt\(node\.params\.duration,10\)/);
+  assert.ok(app.includes('请先选择至少一个电影化身'));
   assert.equal((app.match(/intervalMs:3000/g) || []).length, 2, 'image and video jobs retain 3000 ms polling');
   for (const state of ['提交中…', '生成中… 已用 ', '提交中...', '生成中，已用 ', '点数不足', '等待队列空位']) {
     assert.ok(app.includes(state), state);
