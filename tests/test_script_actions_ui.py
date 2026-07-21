@@ -25,11 +25,27 @@ class ScriptActionsUiTests(unittest.TestCase):
     def test_history_loads_copy_assets_and_restores_scenes(self):
         self.assertIn("'/api/gen/assets?limit=60&kind=copy'", self.html)
         self.assertIn("historyList.appendChild(historyCard(item))", self.html)
-        self.assertIn("render({scenes:list},heading", self.html)
+        self.assertIn("render({scenes:list,version:m.version||1,industry:m.industry},heading", self.html)
 
     def test_history_controls_are_accessible_buttons(self):
         self.assertIn('id="scHistoryBtn" class="sc-btn" type="button"', self.html)
         self.assertIn("btn.type='button'; btn.className='sc-history-item'", self.html)
+
+    def test_empty_state_replaces_demo_storyboard_and_disables_actions(self):
+        self.assertIn('id="scEmptyState"', self.html)
+        self.assertIn("setActionsEnabled(false)", self.html)
+
+    def test_industry_edit_save_and_regenerate_controls_exist(self):
+        self.assertIn('id="segIndustry"', self.html)
+        self.assertIn('id="scSave"', self.html)
+        self.assertIn('id="scRegenerate"', self.html)
+        self.assertIn("fetch('/api/gen/copy/'+currentJobId", self.html)
+        self.assertIn("payload.parent_job_id=regenerateParent", self.html)
+
+    def test_scenes_render_as_editable_fields(self):
+        self.assertIn('data-scene-field="scene"', self.html)
+        self.assertIn('data-scene-field="line"', self.html)
+        self.assertIn('data-scene-field="dur"', self.html)
 
 
 if __name__ == "__main__":

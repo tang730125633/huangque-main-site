@@ -158,7 +158,8 @@ def _project(kind, result):
     if kind == "copy":
         return (_clip(r.get("prompt")), None, None, {
             "ctype": r.get("ctype"), "mode": r.get("mode"), "platform": r.get("platform"),
-            "style": r.get("style"), "dur": r.get("dur"),
+            "style": r.get("style"), "dur": r.get("dur"), "industry": r.get("industry"),
+            "parent_job_id": r.get("parent_job_id"), "version": r.get("version", 1),
             "text": r.get("text"), "scenes": r.get("scenes"), "body": _copy_body(r),
         })
     if kind == "collect":
@@ -210,6 +211,17 @@ def record_asset(job_id, username, kind, result, stage=None, created_at=None):
              json.dumps(meta, ensure_ascii=False), int(created_at or time.time())))
         c.commit()
         return cur.rowcount >= 1
+
+
+def update_copy_asset(job_id, username, result):
+    """Keep copy history in sync after an owned script result is edited."""
+    _ensure()
+    title, _, _, meta = _project("copy", result)
+    with closing(adb()) as c:
+        cur = c.execute("UPDATE assets SET title=?,meta=? WHERE kind='copy' AND job_id=? AND username=? AND deleted=0",
+                        (title, json.dumps(meta, ensure_ascii=False), int(job_id), username))
+        c.commit()
+        return cur.rowcount == 1
 
 
 def list_assets(username, kind=None, stage=None, limit=60, offset=0):

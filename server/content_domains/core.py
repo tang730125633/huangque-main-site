@@ -18,6 +18,7 @@ from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
 import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security, inspiration_likes, history  # 领域存储模块均无反向依赖
+from .http_utils import api_url as _api_url
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -659,7 +660,7 @@ def _multipart(fields, files):
 
 def _post(path, data, ctype, base=None, key=None, proxy=True, timeout=300):
     """timeout 可由调用方按剩余预算收紧/放宽（如泽龙2号池要压在总死线内）。默认 300 保持原行为。"""
-    req = urllib.request.Request((base or OPENAI_BASE) + path, data=data,
+    req = urllib.request.Request(_api_url(base or OPENAI_BASE, path), data=data,
                                  headers={"Authorization": "Bearer " + (key or OPENAI_KEY), "Content-Type": ctype}, method="POST")
     if proxy:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -668,7 +669,7 @@ def _post(path, data, ctype, base=None, key=None, proxy=True, timeout=300):
         return json.loads(r.read())
 
 def _post_bytes(path, data, ctype):  # 返回原始字节(TTS 拿 mp3 二进制)
-    req = urllib.request.Request(OPENAI_BASE + path, data=data,
+    req = urllib.request.Request(_api_url(OPENAI_BASE, path), data=data,
                                  headers={"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": ctype}, method="POST")
     with urllib.request.urlopen(req, timeout=300) as r:
         return r.read()
@@ -1392,6 +1393,9 @@ class H(BaseHTTPRequestHandler):
                 elif kind == "image":
                     from . import image as image_domain
                     body = image_domain.validate_image_payload(body)
+                elif kind == "copy":
+                    from . import text as text_domain
+                    body = text_domain.validate_copy_submission(body, user["username"], jdb)
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
                 idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "video", "tryon", "xiaole_video", "sora_video", "cinematic"} else ""
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
@@ -1692,6 +1696,10 @@ class H(BaseHTTPRequestHandler):
         self._send(404, {"detail": "not found"})
 
     def do_PUT(self):
+        p = self.path.split("?")[0]
+        if p.startswith("/api/gen/copy/"):
+            from . import text as text_domain
+            return text_domain.handle_update(self, verify(self._token()), jdb, assets_store)
         if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
     def do_PATCH(self):
