@@ -16,7 +16,9 @@
     if(value.ratio!=='9:16'&&value.ratio!=='16:9') value.ratio='9:16';
     if([30,45,60].indexOf(Number(value.target_duration))<0) value.target_duration=30;
     else value.target_duration=Number(value.target_duration);
-    value.shot_count=Math.max(6,Math.min(10,Number(value.shot_count)||6));
+    var shotCount=Number(value.shot_count);
+    if(!isFinite(shotCount)||Math.floor(shotCount)!==shotCount) shotCount=6;
+    value.shot_count=Math.max(6,Math.min(10,shotCount));
     return value;
   }
 
@@ -57,8 +59,9 @@
     return typeof result==='string'?JSON.parse(result):result;
   }
 
-  function createClient(apiClient){
-    if(!apiClient||typeof apiClient.json!=='function'||typeof apiClient.poll!=='function'){
+  function createClient(apiClient,pollFn){
+    pollFn=pollFn||apiClient&&apiClient.poll;
+    if(!apiClient||typeof apiClient.json!=='function'||typeof pollFn!=='function'){
       throw new Error('short drama client requires json and poll methods');
     }
     function applyPlan(projectId,revision,jobId){
@@ -71,7 +74,7 @@
       get:function(projectId){ return apiClient.json(projectPath(projectId)); },
       create:function(project){ return apiClient.json('/api/gen/short-drama/projects',{method:'POST',body:project}); },
       update:function(projectId,revision,patch){
-        return apiClient.json(projectPath(projectId),{method:'PUT',body:Object.assign({revision:revision},patch||{})});
+        return apiClient.json(projectPath(projectId),{method:'PUT',body:Object.assign({},patch||{},{revision:revision})});
       },
       applyPlan:applyPlan,
       confirm:function(projectId,revision,stage){
@@ -83,7 +86,7 @@
         return apiClient.json('/api/gen/copy',{method:'POST',body:planningPayload(project)})
           .then(function(created){
             if(!created||!created.job_id) throw jobError(created);
-            return apiClient.poll({
+            return pollFn({
               request:function(){ return apiClient.json('/api/gen/job/'+created.job_id); },
               intervalMs:3000,
               maxMs:420000,
@@ -102,7 +105,7 @@
     options=options||{};
     return {
       projectId:options.projectId||null,
-      client:createClient(options.apiClient),
+      client:createClient(options.apiClient,options.poll),
       destroy:function(){}
     };
   }

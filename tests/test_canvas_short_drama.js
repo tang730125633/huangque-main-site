@@ -9,6 +9,10 @@ async function testPureHelpers() {
   assert.equal(settings.ratio, '9:16');
   assert.equal(settings.target_duration, 45);
   assert.equal(settings.shot_count, 8);
+  assert.equal(shortDrama.normalizeSettings({ shot_count: 7.5 }).shot_count, 6);
+  assert.equal(shortDrama.normalizeSettings({ shot_count: 'not-a-number' }).shot_count, 6);
+  assert.equal(shortDrama.normalizeSettings({ shot_count: 5 }).shot_count, 6);
+  assert.equal(shortDrama.normalizeSettings({ shot_count: 11 }).shot_count, 10);
 
   assert.deepEqual(shortDrama.planningPayload(settings), {
     format: 'short_drama', prompt: settings.synopsis, dur: '45s', ratio: '9:16',
@@ -34,24 +38,24 @@ async function testProjectRoutesAndPlanningFlow() {
       });
       return Promise.resolve({ items: [] });
     },
-    poll(options) {
-      assert.equal(options.intervalMs, 3000);
-      assert.equal(options.maxMs, 420000);
-      return options.request().then((job) => {
-        assert.deepEqual(options.inspect(job), {
-          done: true,
-          value: { mode: 'short_drama', plan: { title: '雨夜来客' } },
-        });
-        return { mode: 'short_drama', plan: { title: '雨夜来客' } };
-      });
-    },
   };
-  const client = shortDrama.createClient(api);
+  function poll(options) {
+    assert.equal(options.intervalMs, 3000);
+    assert.equal(options.maxMs, 420000);
+    return options.request().then((job) => {
+      assert.deepEqual(options.inspect(job), {
+        done: true,
+        value: { mode: 'short_drama', plan: { title: '雨夜来客' } },
+      });
+      return { mode: 'short_drama', plan: { title: '雨夜来客' } };
+    });
+  }
+  const client = shortDrama.createClient(api, poll);
 
   await client.list();
   await client.get('project 1');
   await client.create({ title: '雨夜来客' });
-  await client.update('project 1', 5, { title: '新标题' });
+  await client.update('project 1', 5, { revision: 99, title: '新标题' });
   await client.applyPlan('project 1', 6, 41);
   await client.confirm('project 1', 7, 'characters_review');
   const applied = await client.generatePlan({
@@ -96,6 +100,39 @@ async function testProjectRoutesAndPlanningFlow() {
   ]);
 }
 
+async function testTerminalJobFailureDoesNotApplyPlan() {
+  let applyCalled = false;
+  const api = {
+    json(path) {
+      if (path === '/api/gen/copy') return Promise.resolve({ job_id: 44 });
+      if (path === '/api/gen/job/44') return Promise.resolve({
+        status: 'failed', error: 'model refused plan', code: 'model_failed',
+      });
+      applyCalled = true;
+      return Promise.resolve({});
+    },
+  };
+  function poll(options) {
+    return options.request().then((job) => {
+      const outcome = options.inspect(job);
+      assert.equal(outcome.error.message, 'model refused plan');
+      return Promise.reject(outcome.error);
+    });
+  }
+  await assert.rejects(
+    shortDrama.createClient(api, poll).generatePlan({ id: 'project-1', revision: 1, synopsis: '故事梗概' }),
+    (error) => error.message === 'model refused plan' && error.code === 'model_failed',
+  );
+  assert.equal(applyCalled, false);
+}
+
+function testMissingPollFailsClearly() {
+  assert.throws(
+    () => shortDrama.createClient({ json() {} }),
+    /requires json and poll methods/,
+  );
+}
+
 async function testPlanningErrorsPropagateWithoutApplying() {
   const copyError = new Error('copy unavailable');
   const copyApi = {
@@ -131,7 +168,11 @@ async function main() {
   await testPureHelpers();
   await testProjectRoutesAndPlanningFlow();
   await testPlanningErrorsPropagateWithoutApplying();
-  const workspace = shortDrama.createWorkspace({ projectId: 'project-1', apiClient: { json() {}, poll() {} } });
+  await testTerminalJobFailureDoesNotApplyPlan();
+  testMissingPollFailsClearly();
+  const workspace = shortDrama.createWorkspace({
+    projectId: 'project-1', apiClient: { json() {} }, poll() { return Promise.resolve({}); },
+  });
   assert.equal(workspace.projectId, 'project-1');
   console.log('canvas short drama: pass');
 }
