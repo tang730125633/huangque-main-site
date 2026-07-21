@@ -64,6 +64,80 @@ class ShortDramaPlanningTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "不存在的台词"):
             short_drama.normalize_plan(raw, {"target_duration": 30, "ratio": "9:16", "shot_count": 6})
 
+    def test_normalize_plan_preserves_optional_character_voice_config(self):
+        raw = valid_raw_plan()
+        raw["characters"][0].update({"voice_key": "narrator", "voice_settings": {"speed": 1.1}})
+
+        plan = short_drama.normalize_plan(raw, {"target_duration": 30, "ratio": "9:16", "shot_count": 6})
+
+        self.assertEqual(plan["characters"][0]["voice_key"], "narrator")
+        self.assertEqual(plan["characters"][0]["voice_settings"], {"speed": 1.1})
+        self.assertIn("voice_key", short_drama.build_plan_prompt({
+            "prompt": "雨夜来客", "target_duration": 30, "ratio": "9:16", "shot_count": 6,
+            "style": "电影写实", "platform": "抖音",
+        }))
+
+    def test_normalize_plan_defaults_and_validates_character_voice_config(self):
+        plan = short_drama.normalize_plan(valid_raw_plan(), {
+            "target_duration": 30, "ratio": "9:16", "shot_count": 6,
+        })
+        self.assertIsNone(plan["characters"][0]["voice_key"])
+        self.assertEqual(plan["characters"][0]["voice_settings"], {})
+
+        for invalid in ([], "voice-settings"):
+            raw = valid_raw_plan()
+            raw["characters"][0]["voice_settings"] = invalid
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                short_drama.normalize_plan(raw, {"target_duration": 30, "ratio": "9:16", "shot_count": 6})
+
+    def test_validate_planning_payload_rejects_impossible_duration_shot_count_pairs(self):
+        for duration, shot_count in ((30, 7), (30, 8), (30, 9), (30, 10), (45, 10)):
+            with self.subTest(duration=duration, shot_count=shot_count), self.assertRaises(ValueError):
+                short_drama.validate_planning_payload({
+                    "prompt": "雨夜来客", "dur": "%ss" % duration, "ratio": "9:16", "shot_count": shot_count,
+                })
+
+    def test_validate_planning_payload_accepts_feasible_duration_shot_count_pairs(self):
+        for duration, shot_count in ((30, 6), (45, 6), (45, 9), (60, 6), (60, 10)):
+            with self.subTest(duration=duration, shot_count=shot_count):
+                settings = short_drama.validate_planning_payload({
+                    "prompt": "雨夜来客", "dur": "%ss" % duration, "ratio": "9:16", "shot_count": shot_count,
+                })
+                self.assertEqual((settings["target_duration"], settings["shot_count"]), (duration, shot_count))
+
+    def test_normalize_plan_rejects_non_string_textual_fields_and_keys(self):
+        mutations = (
+            lambda raw: raw.update({"title": 1}),
+            lambda raw: raw["characters"][0].update({"key": 1}),
+            lambda raw: raw["script"].update({"hook": []}),
+            lambda raw: raw["shots"][0].update({"scene_description": {}}),
+            lambda raw: raw["shots"][0].update({"character_keys": [1]}),
+        )
+        for mutate in mutations:
+            raw = valid_raw_plan()
+            mutate(raw)
+            with self.subTest(mutate=mutate), self.assertRaises(ValueError):
+                short_drama.normalize_plan(raw, {"target_duration": 30, "ratio": "9:16", "shot_count": 6})
+
+    def test_normalize_plan_rejects_non_integer_durations_and_invalid_settings(self):
+        for duration in (True, 5.9, "5"):
+            raw = valid_raw_plan()
+            raw["shots"][0]["duration"] = duration
+            with self.subTest(duration=duration), self.assertRaises(ValueError):
+                short_drama.normalize_plan(raw, {"target_duration": 30, "ratio": "9:16", "shot_count": 6})
+        with self.assertRaises(ValueError):
+            short_drama.normalize_plan(valid_raw_plan(), {
+                "target_duration": 30, "ratio": "1:1", "shot_count": 6,
+            })
+
+    def test_normalize_plan_rejects_duplicate_shot_references(self):
+        for field, values in (("character_keys", ["detective", "detective"]),
+                              ("dialogue_line_ids", ["line-1", "line-1"])):
+            raw = valid_raw_plan()
+            raw["shots"][0][field] = values
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                short_drama.normalize_plan(raw, {"target_duration": 30, "ratio": "9:16", "shot_count": 6})
+
     def test_parse_and_normalize_plan_requires_json_object(self):
         with self.assertRaisesRegex(ValueError, "JSON"):
             short_drama.parse_and_normalize_plan("```json\n{}\n```", {

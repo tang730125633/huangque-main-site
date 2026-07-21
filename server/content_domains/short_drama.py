@@ -162,8 +162,6 @@ def validate_planning_payload(payload):
         target_duration = int(duration_value)
     except (TypeError, ValueError):
         target_duration = 0
-    if target_duration not in DURATIONS:
-        raise ValueError("短剧时长仅支持 30、45、60 秒")
     ratio = _text(data.get("ratio") or "9:16")
     if ratio not in RATIOS:
         raise ValueError("短剧比例仅支持 9:16、16:9")
@@ -171,8 +169,7 @@ def validate_planning_payload(payload):
         shot_count = int(data.get("shot_count") or 6)
     except (TypeError, ValueError):
         shot_count = 0
-    if shot_count not in SHOT_COUNTS:
-        raise ValueError("分镜数量必须为 6-10 个")
+    _validate_planning_limits(target_duration, shot_count)
     return {
         "prompt": prompt,
         "target_duration": target_duration,
@@ -183,12 +180,22 @@ def validate_planning_payload(payload):
     }
 
 
+def _validate_planning_limits(target_duration, shot_count):
+    if target_duration not in DURATIONS:
+        raise ValueError("短剧时长仅支持 30、45、60 秒")
+    if shot_count not in SHOT_COUNTS:
+        raise ValueError("分镜数量必须为 6-10 个")
+    if target_duration % 5 or not 5 * shot_count <= target_duration <= 10 * shot_count:
+        raise ValueError("短剧时长与分镜数量无法组成 5/10 秒分镜")
+
+
 def build_plan_prompt(settings):
     return (
         "为以下短剧需求生成可拍摄的完整规划。只输出一个 JSON 对象，不要解释，不要 markdown 代码块。\n"
         "需求：%s\n平台：%s；画幅：%s；总时长：%s 秒；分镜数：%s；视觉风格：%s。\n"
         "JSON 顶层必须且只能包含 title、logline、characters、script、shots。\n"
-        "characters 是角色数组；每个角色必须包含 key、name、identity、personality、appearance_prompt、wardrobe_prompt。\n"
+        "characters 是角色数组；每个角色必须包含 key、name、identity、personality、appearance_prompt、wardrobe_prompt，"
+        "可选 voice_key、voice_settings。\n"
         "script 必须包含 hook、conflict、turn、ending、dialogue_lines；每条 dialogue_lines 必须包含 id、character_key、text。\n"
         "shots 是 6-10 条分镜数组；每条必须包含 key、duration、scene_description、camera_description、"
         "character_keys、dialogue_line_ids、image_prompt、video_prompt。duration 只能是 5 或 10，"
@@ -200,9 +207,9 @@ def build_plan_prompt(settings):
 
 
 def _required_text(item, key, limit):
-    if key not in item:
+    if key not in item or not isinstance(item[key], str):
         raise ValueError("短剧规划缺少字段: " + key)
-    value = _text(item.get(key), limit)
+    value = _text(item[key], limit)
     if not value:
         raise ValueError("短剧规划字段无效: " + key)
     return value
@@ -211,7 +218,10 @@ def _required_text(item, key, limit):
 def _key_list(value, field):
     if not isinstance(value, list) or any(not isinstance(key, str) or not key.strip() for key in value):
         raise ValueError("短剧规划字段无效: " + field)
-    return [_text(key, 80) for key in value]
+    values = [_text(key, 80) for key in value]
+    if len(set(values)) != len(values):
+        raise ValueError("短剧规划字段不能重复: " + field)
+    return values
 
 
 def normalize_plan(raw, settings):
@@ -222,8 +232,9 @@ def normalize_plan(raw, settings):
         shot_count = int(settings["shot_count"])
     except (KeyError, TypeError, ValueError):
         raise ValueError("短剧规划设置无效")
-    if target_duration not in DURATIONS or shot_count not in SHOT_COUNTS:
+    if settings.get("ratio") not in RATIOS:
         raise ValueError("短剧规划设置无效")
+    _validate_planning_limits(target_duration, shot_count)
     required_top_level = {"title", "logline", "characters", "script", "shots"}
     if set(raw) != required_top_level:
         raise ValueError("短剧规划 JSON 字段不正确")
@@ -242,6 +253,12 @@ def normalize_plan(raw, settings):
         source_type = character.get("source_type", "ai_character")
         if source_type not in {"cinematic_avatar", "ai_character"}:
             raise ValueError("角色数据无效")
+        voice_key = character.get("voice_key")
+        if voice_key is not None and not isinstance(voice_key, str):
+            raise ValueError("角色数据无效")
+        voice_settings = character.get("voice_settings", {})
+        if not isinstance(voice_settings, dict):
+            raise ValueError("角色数据无效")
         identity = _required_text(character, "identity", 2000)
         normalized_characters.append({
             "key": _required_text(character, "key", 80),
@@ -252,6 +269,8 @@ def normalize_plan(raw, settings):
             "appearance_prompt": _required_text(character, "appearance_prompt", 4000),
             "wardrobe_prompt": _required_text(character, "wardrobe_prompt", 4000),
             "source_type": source_type,
+            "voice_key": _text(voice_key, 80) or None,
+            "voice_settings": voice_settings,
         })
     character_keys = [character["key"] for character in normalized_characters]
     if len(set(character_keys)) != len(character_keys):
@@ -294,11 +313,8 @@ def normalize_plan(raw, settings):
     for shot in shots:
         if not isinstance(shot, dict):
             raise ValueError("分镜数据无效")
-        try:
-            duration = int(shot.get("duration"))
-        except (TypeError, ValueError):
-            duration = 0
-        if duration not in {5, 10}:
+        duration = shot.get("duration")
+        if type(duration) is not int or duration not in {5, 10}:
             raise ValueError("分镜时长只能是 5 或 10 秒")
         shot_character_keys = _key_list(shot.get("character_keys"), "character_keys")
         unknown_characters = set(shot_character_keys) - set(character_keys)
