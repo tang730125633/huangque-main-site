@@ -1405,7 +1405,6 @@ class H(BaseHTTPRequestHandler):
             if is_shutting_down():
                 return self._send(503, {"detail": "服务正在更新，请稍等几秒后重试（未扣点）",
                                         "code": "shutting_down", "retry_after_ms": 5000})
-
             # 上游没额度就当场拒 —— ⚠️ 必须在【扣点之前】。
             # 余额哨兵每 10 分钟告警一次，但告警只叫醒我们、拦不住用户：从「余额见底」到
             # 「有人充上钱」这段时间里，用户照样点生成、照样被扣点、照样等几分钟，然后看到
@@ -1416,11 +1415,12 @@ class H(BaseHTTPRequestHandler):
             blocked = upstream_guard.exhausted_reason(kind, body)
             if blocked: return self._send(503, {"detail": blocked, "code": "upstream_exhausted", "retry_after_ms": 60000})
             is_short_drama = kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama"
-            cost = None if is_short_drama else points_domain.cost_of(kind, body)
+            cost = points_domain.cost_of(kind, body) if not is_short_drama else None
             with _submission_lock:
                 if is_short_drama:
-                    try: body, cost = _short_drama_domain().prepare_paid_planning_submission(jdb, user["username"], body, points_domain.cost_of)
+                    try: body, cost, recovered = _short_drama_domain().prepare_paid_planning_submission(jdb, user["username"], body, points_domain.cost_of)
                     except (LookupError, _short_drama_domain().RevisionConflict, _short_drama_domain().PointBudgetExceeded, ValueError) as e: _short_drama_domain()._http_error(self, e); return
+                    if recovered: return self._send(200, recovered)
                 idem_state, idem_response = _idempotency_begin(user["username"], p, idem_key, request_body)
                 if idem_state == "replay":
                     return self._send(200, idem_response)

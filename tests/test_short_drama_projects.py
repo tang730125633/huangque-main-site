@@ -1,3 +1,4 @@
+import base64
 import json
 import sqlite3
 import sys
@@ -10,6 +11,7 @@ import urllib.request
 from contextlib import closing
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 
 SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
@@ -1009,7 +1011,10 @@ class ShortDramaRouteTests(unittest.TestCase):
             "POST", "/api/gen/short-drama/projects", body=valid_project(point_budget=10)
         )
         self.assertEqual(200, status)
-        self.insert_job(project=outstanding, status="running", cost=7)
+        self.insert_job(
+            project=outstanding, status="running", cost=7,
+            payload=bound_planning_payload(outstanding, prompt="先前不同的规划快照"),
+        )
         deductions_before = list(self.points.deduct_calls)
         with closing(core.jdb()) as db:
             jobs_before = db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
@@ -1021,6 +1026,34 @@ class ShortDramaRouteTests(unittest.TestCase):
         self.assertEqual(deductions_before, self.points.deduct_calls)
         with closing(core.jdb()) as db:
             self.assertEqual(jobs_before, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+
+    def test_concurrent_identical_planning_posts_replay_one_paid_job_even_with_unlimited_budget(self):
+        status, project = self.request(
+            "POST", "/api/gen/short-drama/projects", body=valid_project(point_budget=0)
+        )
+        self.assertEqual(200, status)
+        payload = bound_planning_payload(project)
+        start = threading.Barrier(3)
+        outcomes = []
+
+        def submit():
+            start.wait(timeout=3)
+            outcomes.append(self.request("POST", "/api/gen/copy", body=payload))
+
+        threads = [threading.Thread(target=submit) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        start.wait(timeout=3)
+        for thread in threads:
+            thread.join(timeout=5)
+
+        self.assertEqual([200, 200], sorted(status for status, _body in outcomes))
+        self.assertEqual(1, len({body["job_id"] for _status, body in outcomes}))
+        self.assertEqual(1, len(self.points.deduct_calls))
+        with closing(core.jdb()) as db:
+            self.assertEqual(1, db.execute(
+                "SELECT COUNT(*) FROM jobs WHERE username='alice' AND kind='copy'"
+            ).fetchone()[0])
 
     def test_paid_planning_job_is_discoverable_after_conflict_and_reapplies_without_new_job(self):
         status, project = self.request(
@@ -1125,6 +1158,64 @@ class ShortDramaRouteTests(unittest.TestCase):
         with closing(core.jdb()) as db:
             self.assertEqual(0, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
 
+    def test_cinematic_quote_cleans_reference_files_on_success_failure_and_cancel_but_paid_keeps_them(self):
+        output = Path(self.tmp.name) / "content_out"
+        image = "data:image/png;base64," + base64.b64encode(
+            b"\x89PNG\r\n\x1a\n" + b"x" * 32
+        ).decode("ascii")
+        payload = {
+            "cine_mode": "open", "avatar_ids": [1], "prompt": "雨中奔跑",
+            "ratio": "9:16", "duration": 5, "resolution": "1080p",
+            "reference_images": [image],
+        }
+
+        def out_path(relative):
+            path = output / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            return path
+
+        def files():
+            return [path for path in output.rglob("*") if path.is_file()]
+
+        class CancelledHandler:
+            path = "/api/gen/cinematic/quote"
+            def _token(self): return "alice"
+            def _json_body_strict(self): return payload
+            def _send(self, *_args): raise ConnectionAbortedError("client cancelled")
+
+        with patch.object(video, "_out_path", side_effect=out_path):
+            status, _quote = self.request("POST", "/api/gen/cinematic/quote", body=payload)
+            self.assertEqual(200, status)
+            self.assertEqual([], files())
+
+            original_cost_of = self.points.cost_of
+            self.points.cost_of = lambda *_args: (_ for _ in ()).throw(ValueError("quote failed"))
+            try:
+                status, _error = self.request("POST", "/api/gen/cinematic/quote", body=payload)
+            finally:
+                self.points.cost_of = original_cost_of
+            self.assertEqual(400, status)
+            self.assertEqual([], files())
+
+            with self.assertRaises(ConnectionAbortedError):
+                video.dispatch_cinematic_quote(CancelledHandler(), core.verify, original_cost_of)
+            self.assertEqual([], files())
+
+            original_handlers = core.HANDLERS
+            core.HANDLERS = dict(core.HANDLERS, cinematic=lambda value: value)
+            try:
+                with patch.object(video, "record_video_pending_asset"):
+                    status, accepted = self.request("POST", "/api/gen/cinematic", body=payload)
+            finally:
+                core.HANDLERS = original_handlers
+            self.assertEqual(200, status, accepted)
+            with closing(core.jdb()) as db:
+                persisted = json.loads(db.execute(
+                    "SELECT payload FROM jobs WHERE id=?", (accepted["job_id"],)
+                ).fetchone()[0])
+            self.assertEqual(1, len(persisted["reference_image_files"]))
+            self.assertEqual(1, len(files()))
+
     def test_invalid_short_drama_copy_payload_is_rejected_before_deduct_or_job_insert(self):
         invalid_changes = (
             {"dur": "31s"},
@@ -1224,6 +1315,11 @@ class ShortDramaRouteTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("characters_review", applied["stage"])
         self.assertEqual(3, applied["spent_points"])
+        status, stale_duplicate = self.request("POST", "/api/gen/short-drama/apply-plan", body={
+            "project_id": project["id"], "revision": project["revision"], "job_id": job_id,
+        })
+        self.assertEqual(409, status)
+        self.assertEqual("job_already_applied", stale_duplicate["code"])
         status, duplicate = self.request("POST", "/api/gen/short-drama/apply-plan", body={
             "project_id": project["id"], "revision": applied["revision"], "job_id": job_id,
         })

@@ -632,15 +632,21 @@ def check_planning_budget(db_factory, username, project_id, quoted_cost):
 def prepare_paid_planning_submission(db_factory, username, payload, cost_of):
     """Revalidate the bound request and its budget while core holds its submission lock."""
     cleaned = validate_planning_submission(db_factory, username, payload)
+    recovered = find_recoverable_planning_job(
+        db_factory, username, cleaned["project_id"], planning_payload=cleaned
+    )
+    if recovered:
+        return cleaned, None, recovered
     cost = cost_of("copy", cleaned)
     check_planning_budget(db_factory, username, cleaned["project_id"], cost)
-    return cleaned, cost
+    return cleaned, cost, None
 
 
-def find_recoverable_planning_job(db_factory, username, project_id):
+def find_recoverable_planning_job(db_factory, username, project_id, planning_payload=None):
     project = get_project(db_factory, username, project_id)
     if project["stage"] != "draft":
         return None
+    requested = _planning_metadata(planning_payload) if planning_payload is not None else None
     conn = _connection(db_factory)
     try:
         applied_ids = {
@@ -665,6 +671,10 @@ def find_recoverable_planning_job(db_factory, username, project_id):
             except (TypeError, ValueError):
                 continue
             if metadata["project_id"] != project_id:
+                continue
+            if requested is not None and any(
+                    metadata[key] != requested[key]
+                    for key in ("prompt", "ratio", "target_duration", "shot_count", "style", "platform")):
                 continue
             if (metadata["ratio"], metadata["target_duration"], metadata["shot_count"]) != (
                     project["ratio"], project["target_duration"], project["shot_count"]):
@@ -1148,13 +1158,13 @@ def apply_plan(db_factory, username, project_id, revision, plan, planning_cost, 
         ).fetchone()
         if not project:
             raise LookupError("短剧项目不存在")
-        if project[7] != revision:
-            raise RevisionConflict("项目已在其他页面更新，请刷新后重试")
         applied = conn.execute(
             "SELECT project_id, username FROM short_drama_applied_jobs WHERE job_id=?", (job_id,)
         ).fetchone()
         if applied:
             raise AppliedJobConflict("规划任务已经应用过")
+        if project[7] != revision:
+            raise RevisionConflict("项目已在其他页面更新，请刷新后重试")
         if project[8] != "draft":
             raise ValueError("当前短剧阶段不能应用策划")
         if planning_metadata is not None:
