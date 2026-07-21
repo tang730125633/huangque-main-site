@@ -192,6 +192,7 @@
     return {
       list:function(){ return apiClient.json('/api/gen/short-drama/projects'); },
       get:function(projectId){ return apiClient.json(projectPath(projectId)); },
+      getPlanningQuote:function(){ return apiClient.json('/api/gen/short-drama/planning-quote'); },
       create:function(project){ return apiClient.json('/api/gen/short-drama/projects',{method:'POST',body:project}); },
       update:function(projectId,revision,patch){
         return apiClient.json(projectPath(projectId),{method:'PUT',body:Object.assign({},patch||{},{revision:revision})});
@@ -481,10 +482,11 @@
 
   function renderInspector(project,state){
     var planning=state.planning||{},ready=canGeneratePlan(project,state.synopsisSaved)&&state.canEdit&&!state.busy;
+    var costText=planning.cost==null?'待查询':Number(planning.cost)+' 点';
     return '<aside class="nc-short-drama-inspector"><div class="nc-short-drama-section-title">制作控制台</div>'+
-      '<div class="nc-short-drama-cost-card"><span>本次策划成本</span><strong>'+(planning.cost||3)+' <small>点</small></strong><p>仅在确认后提交付费任务。保存和确认不扣点。</p></div>'+
+      '<div class="nc-short-drama-cost-card"><span>本次策划成本</span><strong>'+costText+'</strong><p>提交前查询实时价格并确认。保存和确认不扣点。</p></div>'+
       '<dl><div><dt>当前阶段</dt><dd>'+escapeHtml(STAGE_LABELS[project.stage]||'草稿')+'</dd></div><div><dt>累计已用</dt><dd>'+Number(project.spent_points||0)+' 点</dd></div><div><dt>项目预算</dt><dd>'+Number(project.point_budget||0)+' 点</dd></div><div><dt>交付规格</dt><dd>'+escapeHtml(project.ratio)+' · '+Number(project.target_duration)+'秒 · '+Number(project.shot_count)+'镜</dd></div></dl>'+
-      (project.stage==='draft'?'<button type="button" class="nc-short-drama-plan-button" data-action="generate-plan"'+disabledUnless(ready)+'><span>生成短剧策划（3点）</span><small>'+(ready?'生成角色、剧本和分镜':'请先保存有效故事梗概')+'</small></button>':'')+
+      (project.stage==='draft'?'<button type="button" class="nc-short-drama-plan-button" data-action="generate-plan"'+disabledUnless(ready)+'><span>生成短剧策划（按实时报价）</span><small>'+(ready?'生成角色、剧本和分镜':'请先保存有效故事梗概')+'</small></button>':'')+
       (planning.running?'<div class="nc-short-drama-progress"><div><span style="width:'+Number(planning.percent||0)+'%"></span></div><strong>正在生成策划… '+Number(planning.percent||0)+'%</strong><small>'+escapeHtml(planning.label||'正在等待规划任务')+'</small></div>':'')+
       (state.error?'<div class="nc-short-drama-error" role="alert"><strong>'+(state.stale?'版本冲突':'操作未完成')+'</strong><p>'+escapeHtml(state.error)+'</p>'+(state.stale?'<button type="button" data-action="reload">刷新项目</button>':'')+'</div>':'')+'</aside>';
   }
@@ -529,7 +531,7 @@
       (typeof document!=='undefined'?document:null);
     var state={activeStage:'settings',canEdit:canEdit,busy:false,error:'',stale:false,synopsisSaved:false,
       loadFailed:false,loadStatus:0,destroyed:false,
-      scriptVersion:null,planning:{running:false,percent:0,label:'',cost:3}};
+      scriptVersion:null,planning:{running:false,percent:0,label:'',cost:null}};
 
     function snapshotState(){ return cloneValue(state); }
     function render(){
@@ -625,31 +627,42 @@
         ensureCanMutate('settings');
         if(!canGeneratePlan(project,state.synopsisSaved)) throw new Error('saved synopsis is required; placeholder synopsis cannot be submitted');
       }catch(error){ return Promise.reject(error); }
-      if(!confirmHook('生成短剧策划将消耗 3 点，确认提交吗？')) return Promise.resolve(null);
-      state.busy=true;state.error='';state.planning={running:true,percent:15,label:'已提交，正在等待规划任务',cost:3};render();
-      return Promise.resolve(client.generatePlan(project,{
-        onCost:function(cost){
-          if(destroyed) return;
-          state.planning.cost=Number(cost)||3;
-          state.planning.label='已确认成本 '+state.planning.cost+' 点，正在生成策划';
-          render();
-        },
-        onProgress:function(progress){
-          if(destroyed) return;
-          state.planning.percent=Math.max(state.planning.percent,Math.min(80,Number(progress&&progress.percent)||20));
-          state.planning.label=progress&&progress.label||'正在轮询策划进度';
-          render();
-        }
-      })).then(function(applied){
+      state.busy=true;state.error='';state.planning={running:false,percent:0,label:'正在查询实时价格',cost:null};render();
+      if(typeof client.getPlanningQuote!=='function'){
+        var missingQuote=new Error('short drama client requires planning quote support');
+        showWorkspaceError(missingQuote);return Promise.reject(missingQuote);
+      }
+      return Promise.resolve(client.getPlanningQuote()).then(function(quote){
         if(destroyed) throw new Error('workspace destroyed');
-        state.planning.percent=85;state.planning.label='策划已生成，正在刷新项目';
-        if(applied&&applied.cost!=null) state.planning.cost=Number(applied.cost)||3;
-        render();
-        return typeof client.get==='function'?client.get(project.id):applied;
-      }).then(function(next){
-        state.planning.running=false;state.planning.percent=100;state.planning.label='策划已应用';
-        state.synopsisSaved=true;
-        return acceptProject(next,true);
+        var cost=quote&&quote.cost;
+        if(typeof cost!=='number'||!isFinite(cost)||Math.floor(cost)!==cost||cost<0){
+          throw new Error('短剧策划报价无效，请稍后重试');
+        }
+        state.planning.cost=cost;state.planning.label='实时报价 '+cost+' 点';state.busy=false;render();
+        if(!confirmHook('生成短剧策划将消耗 '+cost+' 点，确认提交吗？')) return null;
+        state.busy=true;state.planning.running=true;state.planning.percent=15;
+        state.planning.label='已按 '+cost+' 点确认，正在提交';render();
+        return Promise.resolve(client.generatePlan(project,{
+          onCost:function(submittedCost){
+            if(destroyed) return;
+            if(typeof submittedCost==='number'&&isFinite(submittedCost)&&submittedCost>=0){
+              state.planning.cost=submittedCost;
+            }
+            state.planning.label='任务已受理，正在生成策划';render();
+          },
+          onProgress:function(progress){
+            if(destroyed) return;
+            state.planning.percent=Math.max(state.planning.percent,Math.min(80,Number(progress&&progress.percent)||20));
+            state.planning.label=progress&&progress.label||'正在轮询策划进度';render();
+          }
+        })).then(function(applied){
+          if(destroyed) throw new Error('workspace destroyed');
+          state.planning.percent=85;state.planning.label='策划已生成，正在刷新项目';render();
+          return typeof client.get==='function'?client.get(project.id):applied;
+        }).then(function(next){
+          state.planning.running=false;state.planning.percent=100;state.planning.label='策划已应用';
+          state.synopsisSaved=true;return acceptProject(next,true);
+        });
       }).catch(function(error){ showWorkspaceError(error); throw error; });
     }
 

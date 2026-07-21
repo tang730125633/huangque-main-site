@@ -642,12 +642,35 @@ class ShortDramaRouteTests(unittest.TestCase):
             "JOB_DB": core.JOB_DB,
             "verify": core.verify,
             "_domains": core._domains,
+            "HANDLERS": core.HANDLERS,
             "feature_init_db": core.feature_flags.init_db,
             "init_audio_db": core.init_audio_db,
         }
         core.JOB_DB = str(Path(self.tmp.name) / "content.db")
         core.verify = lambda token: ({"username": token, "must_change": False} if token else None)
-        core._domains = lambda: (None, None, None)
+        class FakePoints:
+            class AuthPointsError(Exception):
+                status = 402
+                detail = "点数不足"
+
+            def __init__(self):
+                self.cost_calls = []
+                self.deduct_calls = []
+
+            def cost_of(self, kind, body):
+                self.cost_calls.append((kind, dict(body)))
+                return 7
+
+            def deduct_points(self, username, cost, reason):
+                self.deduct_calls.append((username, cost, reason))
+                return 100 - cost
+
+            def refund_points(self, username, cost, reason, transaction_key=None):
+                return 100
+
+        self.points = FakePoints()
+        core._domains = lambda: (None, self.points, None)
+        core.HANDLERS = dict(core.HANDLERS, copy=lambda payload: payload)
         core.feature_flags.init_db = lambda: None
         core.init_audio_db = lambda: None
         core.init_db()
@@ -663,6 +686,7 @@ class ShortDramaRouteTests(unittest.TestCase):
         core.JOB_DB = self.originals["JOB_DB"]
         core.verify = self.originals["verify"]
         core._domains = self.originals["_domains"]
+        core.HANDLERS = self.originals["HANDLERS"]
         core.feature_flags.init_db = self.originals["feature_init_db"]
         core.init_audio_db = self.originals["init_audio_db"]
         self.tmp.cleanup()
@@ -807,17 +831,51 @@ class ShortDramaRouteTests(unittest.TestCase):
                 self.assertEqual(200, status)
                 self.assertEqual(before, project)
 
-    def test_core_declares_all_six_short_drama_routes(self):
-        source = Path(core.__file__).read_text(encoding="utf-8")
+    def test_core_dispatches_all_short_drama_routes_declared_by_domain(self):
+        core_source = Path(core.__file__).read_text(encoding="utf-8")
+        domain_source = Path(short_drama.__file__).read_text(encoding="utf-8")
         for route in (
             "/api/gen/short-drama/projects",
             "/api/gen/short-drama/project",
             "/api/gen/short-drama/apply-plan",
             "/api/gen/short-drama/confirm",
+            "/api/gen/short-drama/planning-quote",
         ):
             with self.subTest(route=route):
-                self.assertIn(route, source)
-        self.assertNotIn('HANDLERS["short-drama"]', source)
+                self.assertIn(route, core_source + domain_source)
+        self.assertIn('_short_drama_domain().dispatch_http', core_source)
+        self.assertNotIn('HANDLERS["short-drama"]', core_source)
+
+    def test_planning_quote_is_authenticated_free_and_uses_copy_price_domain(self):
+        status, _ = self.request("GET", "/api/gen/short-drama/planning-quote", username=None)
+        self.assertEqual(401, status)
+
+        status, quote = self.request("GET", "/api/gen/short-drama/planning-quote")
+        self.assertEqual(200, status)
+        self.assertEqual({"cost": 7}, quote)
+        self.assertEqual([("copy", {"format": "short_drama"})], self.points.cost_calls)
+        self.assertEqual([], self.points.deduct_calls)
+
+    def test_invalid_short_drama_copy_payload_is_rejected_before_deduct_or_job_insert(self):
+        invalid_changes = (
+            {"dur": "31s"},
+            {"ratio": "1:1"},
+            {"shot_count": 5},
+            {"dur": "45s", "shot_count": 10},
+        )
+        for changes in invalid_changes:
+            with self.subTest(changes=changes):
+                body = {
+                    "format": "short_drama", "prompt": "足够长的短剧故事需求",
+                    "dur": "30s", "ratio": "9:16", "shot_count": 6,
+                }
+                body.update(changes)
+                status, _ = self.request("POST", "/api/gen/copy", body=body)
+                self.assertEqual(400, status)
+
+        self.assertEqual([], self.points.deduct_calls)
+        with closing(core.jdb()) as db:
+            self.assertEqual(0, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
 
     def test_project_crud_routes_are_authenticated_and_owner_scoped(self):
         status, _ = self.request("GET", "/api/gen/short-drama/projects", username=None)

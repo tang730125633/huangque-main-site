@@ -14,6 +14,7 @@ function testOpenApiContract() {
     ['put', '/api/gen/short-drama/project'],
     ['post', '/api/gen/short-drama/apply-plan'],
     ['post', '/api/gen/short-drama/confirm'],
+    ['get', '/api/gen/short-drama/planning-quote'],
   ];
   for (const [method, route] of operations) {
     const operation = spec.paths[route] && spec.paths[route][method];
@@ -45,6 +46,9 @@ function testOpenApiContract() {
     'ShortDramaProject', 'ShortDramaCharacter', 'ShortDramaScriptVersion', 'ShortDramaShot',
     'RevisionConflict', 'ShortDramaPlanningRequest', 'ShortDramaPlanningResult',
   ]) assert.ok(spec.components.schemas[name], `OpenAPI must define ${name}`);
+  const quote = spec.paths['/api/gen/short-drama/planning-quote'].get;
+  assert.equal(quote.responses['200'].content['application/json'].schema.properties.cost.type, 'integer');
+  assert.match(quote.description, /free|no points/i);
 
   const updateSchema = spec.paths['/api/gen/short-drama/project'].put
     .requestBody.content['application/json'].schema;
@@ -76,8 +80,22 @@ function testOpenApiContract() {
     'copy result documents normalized planning script fields');
   assert.ok(planningResult.properties.plan.properties.shots.items.properties.key,
     'copy result uses planning shot key before persistence');
-  assert.equal(spec.paths['/api/gen/copy'].post.responses['200'].description.includes('3'), true,
-    'copy planning documents the current 3-point server-reported cost');
+  const copyOperation = spec.paths['/api/gen/copy'].post;
+  assert.doesNotMatch(copyOperation.summary + copyOperation.description + copyOperation.responses['200'].description,
+    /(?:current|currently|目前|当前)\s*3|3\s*点/i, 'copy pricing must come from the authenticated quote');
+  assert.match(copyOperation.responses['400'].description, /before deduction|未扣点/i);
+  assert.match(copyOperation.description, /asynchronous|异步/i,
+    'copy documentation distinguishes accepted-job failures from synchronous validation');
+  const characterSchema = spec.components.schemas.ShortDramaCharacter;
+  assert.equal(characterSchema.oneOf.length, 2);
+  const cinematicAvatar = characterSchema.oneOf.find((candidate) =>
+    candidate.properties.source_type.enum.includes('cinematic_avatar'));
+  assert.ok(cinematicAvatar.required.includes('avatar_id'));
+  assert.equal(cinematicAvatar.properties.avatar_id.minLength, 1);
+  const jobResult = spec.components.schemas.JobStatus.properties.result.oneOf;
+  assert.equal(jobResult.some((candidate) => candidate.$ref === '#/components/schemas/ShortDramaPlanningResult'), true);
+  const genericJobResult = jobResult.find((candidate) => candidate.type === 'object');
+  assert.ok(genericJobResult.not, 'generic job result must exclude the dedicated short-drama shape');
   assert.match(spec.paths['/api/gen/short-drama/projects'].post.description, /free|no points/i);
   assert.match(spec.paths['/api/gen/short-drama/project'].put.description, /free|no points/i);
 }
@@ -293,6 +311,7 @@ async function testProjectRoutesAndPlanningFlow() {
   const api = {
     json(path, options) {
       calls.push({ path, options });
+      if (path === '/api/gen/short-drama/planning-quote') return Promise.resolve({ cost: 7 });
       if (path === '/api/gen/copy') return Promise.resolve({ job_id: 42, cost: 3 });
       if (path === '/api/gen/job/42') return Promise.resolve({
         status: 'done', result: JSON.stringify({ mode: 'short_drama', plan: { title: '雨夜来客' } }),
@@ -316,6 +335,7 @@ async function testProjectRoutesAndPlanningFlow() {
   }
   const client = shortDrama.createClient(api, poll);
 
+  assert.deepEqual(await client.getPlanningQuote(), { cost: 7 });
   await client.list();
   await client.get('project 1');
   await client.create({ title: '雨夜来客' });
@@ -334,6 +354,7 @@ async function testProjectRoutesAndPlanningFlow() {
   assert.deepEqual(planningCosts, [3], 'server-returned cost is exposed before plan application');
   assert.ok(planningProgress.some((progress) => progress.status === 'done'), 'poll status reaches the workspace');
   assert.deepEqual(calls, [
+    { path: '/api/gen/short-drama/planning-quote', options: undefined },
     { path: '/api/gen/short-drama/projects', options: undefined },
     { path: '/api/gen/short-drama/project?id=project%201', options: undefined },
     {
@@ -433,6 +454,26 @@ async function testPlanningErrorsPropagateWithoutApplying() {
   assert.equal(applyCalled, false);
 }
 
+async function testPlanningQuoteFailureDoesNotSubmit() {
+  const quoteError = new Error('quote unavailable');
+  let submitted = false;
+  const project = workspaceProject({ stage: 'draft' });
+  const workspace = shortDrama.createWorkspace({
+    projectId: project.id, document: null, canEdit: true, confirm: () => true,
+    client: {
+      get() { return Promise.resolve(project); },
+      update() { throw new Error('unexpected update'); },
+      confirm() { throw new Error('unexpected confirm'); },
+      getPlanningQuote() { return Promise.reject(quoteError); },
+      generatePlan() { submitted = true; return Promise.resolve(project); },
+    },
+  });
+  await workspace.ready;
+  await assert.rejects(workspace.generatePlan(), (error) => error === quoteError);
+  assert.equal(submitted, false, 'a failed quote must not submit /api/gen/copy');
+  assert.equal(workspace.getState().busy, false);
+}
+
 function workspaceProject(overrides = {}) {
   const characters = [
     {
@@ -477,14 +518,15 @@ function testWorkspaceSourceAndRenderContract() {
   const css = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-short-drama.css'), 'utf8');
   const app = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-app.js'), 'utf8');
   for (const text of [
-    '项目设置', '角色确认', '剧本确认', '分镜确认', '生成短剧策划（3点）',
+    '项目设置', '角色确认', '剧本确认', '分镜确认', '按实时报价',
     '确认角色并继续', '确认剧本并继续', '确认分镜',
     '项目已在其他页面更新，请刷新后重试',
   ]) assert.ok(source.includes(text), `workspace source must include ${text}`);
   for (const endpoint of [
     '/api/gen/short-drama/project', '/api/gen/short-drama/confirm', '/api/gen/copy',
-    '/api/gen/short-drama/apply-plan',
+    '/api/gen/short-drama/apply-plan', '/api/gen/short-drama/planning-quote',
   ]) assert.ok(source.includes(endpoint), `workspace client must use ${endpoint}`);
+  assert.doesNotMatch(source, /3\s*点/, 'workspace must not hard-code the planning price as fact');
   assert.ok(css.includes('.nc-short-drama-workspace'));
   assert.ok(css.includes('.nc-short-drama-character-rail'));
   assert.ok(css.includes('.nc-short-drama-editor'));
@@ -789,6 +831,7 @@ async function testWorkspaceLocksSettingsAndRejectsConcurrentPaidPlanning() {
       get() { return Promise.resolve(draft); },
       update() { throw new Error('unexpected update'); },
       confirm() { throw new Error('unexpected confirm'); },
+      getPlanningQuote() { return Promise.resolve({ cost: 7 }); },
       generatePlan() {
         submits += 1;
         return new Promise((resolve) => { resolvePlan = resolve; });
@@ -798,6 +841,8 @@ async function testWorkspaceLocksSettingsAndRejectsConcurrentPaidPlanning() {
   await planning.ready;
   const first = planning.generatePlan();
   await assert.rejects(planning.generatePlan(), /busy/i);
+  await Promise.resolve();
+  await Promise.resolve();
   assert.equal(submits, 1, 'overlapping paid calls submit only once');
   assert.equal(confirmations, 1, 'busy rejection happens before a second paid confirmation');
   draft = workspaceProject({ stage: 'characters_review', revision: 8, spent_points: 6 });
@@ -813,11 +858,14 @@ async function testWorkspaceLocksSettingsAndRejectsConcurrentPaidPlanning() {
     client: {
       get() { gets += 1; return Promise.resolve(workspaceProject({ id: 'closing-paid', stage: 'draft' })); },
       update() { throw new Error('unexpected update'); }, confirm() { throw new Error('unexpected confirm'); },
+      getPlanningQuote() { return Promise.resolve({ cost: 7 }); },
       generatePlan() { return new Promise((resolve) => { resolveLatePlan = resolve; }); },
     },
   });
   await closing.ready;
   const late = closing.generatePlan();
+  await Promise.resolve();
+  await Promise.resolve();
   closing.destroy();
   resolveLatePlan(workspaceProject({ id: 'closing-paid', stage: 'characters_review' }));
   await assert.rejects(late, /destroyed/i);
@@ -830,6 +878,7 @@ async function testWorkspaceOrderConflictReadonlyAndPlanning() {
   let updates = 0;
   let confirms = 0;
   let planningCalls = 0;
+  let quoteCalls = 0;
   let resolvePlan;
   let allowPaid = false;
   const confirmMessages = [];
@@ -849,6 +898,7 @@ async function testWorkspaceOrderConflictReadonlyAndPlanning() {
       project = Object.assign({}, project, { revision: revision + 1, stage: 'script_review' });
       return Promise.resolve(project);
     },
+    getPlanningQuote() { quoteCalls += 1; return Promise.resolve({ cost: 7 }); },
     generatePlan(received) {
       planningCalls += 1;
       assert.equal(received.synopsis, project.synopsis);
@@ -880,9 +930,13 @@ async function testWorkspaceOrderConflictReadonlyAndPlanning() {
   });
   await planning.ready;
   assert.equal(await planning.generatePlan(), null);
-  assert.equal(planningCalls, 0, 'cancelling the 3-point confirmation submits nothing');
+  assert.equal(quoteCalls, 1, 'planning reads a fresh authenticated quote before confirmation');
+  assert.equal(planningCalls, 0, 'rejecting the quoted price submits nothing');
   allowPaid = true;
   const pending = planning.generatePlan();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(quoteCalls, 2, 'a new paid attempt obtains a new quote');
   assert.equal(planningCalls, 1);
   assert.equal(planning.getState().planning.running, true);
   assert.ok(planning.getState().planning.percent > 0);
@@ -892,13 +946,14 @@ async function testWorkspaceOrderConflictReadonlyAndPlanning() {
   await pending;
   assert.equal(planning.getState().planning.running, false);
   assert.equal(planning.getState().planning.percent, 100);
-  assert.ok(confirmMessages.some((message) => message.includes('3') && message.includes('点')));
+  assert.ok(confirmMessages.some((message) => message.includes('7') && message.includes('点')));
 
   const placeholder = shortDrama.createWorkspace({
     projectId: 'placeholder', document: null, canEdit: true, confirm: () => true,
     client: {
       get() { return Promise.resolve(workspaceProject({ id: 'placeholder', stage: 'draft', synopsis: shortDrama.PLACEHOLDER_SYNOPSIS })); },
       update(id, revision, patch) { return Promise.resolve(workspaceProject(Object.assign({ id, revision: revision + 1, stage: 'draft' }, patch))); },
+      getPlanningQuote() { throw new Error('invalid synopsis must fail before quote'); },
       generatePlan() { planningCalls += 100; return Promise.resolve({}); }, confirm() { return Promise.resolve({}); },
     },
   });
@@ -911,12 +966,12 @@ async function testWorkspaceOrderConflictReadonlyAndPlanning() {
   assert.equal(placeholder.canGeneratePlan(), true, 'a replacement synopsis unlocks planning only after save');
 }
 
-async function testNoChargeFortyFiveSecondAcceptance() {
+async function testNoChargeFortyFiveSecondControllerAcceptance() {
   const clone = (value) => JSON.parse(JSON.stringify(value));
   const planned = workspaceProject({
     revision: 3, stage: 'characters_review', title: '横屏雨夜来客',
     synopsis: '一名侦探在暴雨夜必须用四十五秒识破危险访客的谎言',
-    ratio: '16:9', target_duration: 45, shot_count: 8, spent_points: 3,
+    ratio: '16:9', target_duration: 45, shot_count: 8, spent_points: 7,
   });
   planned.shots = Array.from({ length: 8 }, (_, index) => ({
     id: `shot-id-${index + 1}`, project_id: planned.id, script_version: 1,
@@ -971,13 +1026,16 @@ async function testNoChargeFortyFiveSecondAcceptance() {
         persisted.revision += 1;
         return Promise.resolve(clone(persisted));
       }
+      if (route === '/api/gen/short-drama/planning-quote') {
+        return Promise.resolve({ cost: 7 });
+      }
       if (route === '/api/gen/copy') {
         copySubmissions += 1;
         assert.deepEqual(options.body, {
           format: 'short_drama', prompt: persisted.synopsis, dur: '45s', ratio: '16:9',
           shot_count: 8, style: persisted.visual_style, platform: persisted.target_platform,
         });
-        return Promise.resolve({ job_id: 4516, cost: 3, points_left: 97 });
+        return Promise.resolve({ job_id: 4516, cost: 7, points_left: 93 });
       }
       if (route === '/api/gen/job/4516') {
         jobPolls += 1;
@@ -1046,7 +1104,11 @@ async function testNoChargeFortyFiveSecondAcceptance() {
   await workspace.generatePlan();
   assert.equal(copySubmissions, 1, 'confirmed acceptance submits exactly one intercepted paid planning request');
   assert.equal(jobPolls, 2, 'intercepted job is polled through running and done states');
-  assert.ok(paidPrompts.some((message) => message.includes('3') && message.includes('点')));
+  assert.ok(paidPrompts.some((message) => message.includes('7') && message.includes('点')));
+  const quoteIndex = routeCalls.findIndex(({ route }) => route === '/api/gen/short-drama/planning-quote');
+  const submitIndex = routeCalls.findIndex(({ route }) => route === '/api/gen/copy');
+  assert.ok(quoteIndex >= 0 && quoteIndex < submitIndex, 'quote precedes confirmed copy submission');
+  assert.equal(workspace.getState().planning.cost, 7);
   assert.equal(workspace.getProject().stage, 'characters_review');
   assert.equal(workspace.getProject().shots.length, 8);
   assert.equal(workspace.getProject().shots.reduce((total, shot) => total + shot.duration, 0), 45);
@@ -1066,7 +1128,7 @@ async function testNoChargeFortyFiveSecondAcceptance() {
   await workspace.confirm('storyboard_review');
   assert.equal(workspace.getProject().stage, 'stills_review');
   assert.equal(workspace.getProject().shots.length, 8);
-  assert.equal(workspace.getProject().spent_points, 3, 'free saves and confirmations do not add to planning cost');
+  assert.equal(workspace.getProject().spent_points, 7, 'free saves and confirmations do not add to quoted planning cost');
 
   await workspace.reload();
   assert.equal(workspace.getProject().stage, 'stills_review');
@@ -1100,6 +1162,7 @@ async function main() {
   await testPureHelpers();
   await testProjectRoutesAndPlanningFlow();
   await testPlanningErrorsPropagateWithoutApplying();
+  await testPlanningQuoteFailureDoesNotSubmit();
   await testTerminalJobFailureDoesNotApplyPlan();
   testMissingPollFailsClearly();
   testWorkspaceSourceAndRenderContract();
@@ -1109,7 +1172,7 @@ async function main() {
   await testCollaborationRoleDowngradeDestroysEditableWorkspaceOnly();
   await testWorkspaceLocksSettingsAndRejectsConcurrentPaidPlanning();
   await testWorkspaceOrderConflictReadonlyAndPlanning();
-  await testNoChargeFortyFiveSecondAcceptance();
+  await testNoChargeFortyFiveSecondControllerAcceptance();
   const workspace = shortDrama.createWorkspace({
     projectId: 'project-1', apiClient: { json() {} }, poll() { return Promise.resolve({}); },
   });

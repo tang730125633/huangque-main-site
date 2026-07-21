@@ -1011,7 +1011,11 @@ def confirm_stage(db_factory, username, project_id, revision, current_stage):
 
 
 _HTTP_ROUTES = {
-    "GET": {"/api/gen/short-drama/projects", "/api/gen/short-drama/project"},
+    "GET": {
+        "/api/gen/short-drama/projects",
+        "/api/gen/short-drama/project",
+        "/api/gen/short-drama/planning-quote",
+    },
     "POST": {
         "/api/gen/short-drama/projects",
         "/api/gen/short-drama/apply-plan",
@@ -1076,7 +1080,7 @@ def _planning_job(db_factory, username, job_id):
     return job, result["plan"]
 
 
-def dispatch_http(handler, method, db_factory, verify_token):
+def dispatch_http(handler, method, db_factory, verify_token, cost_of=None):
     """Handle the domain's synchronous routes inside core.H; return whether matched."""
     path = handler.path.split("?", 1)[0]
     if path not in _HTTP_ROUTES.get(method, ()):
@@ -1087,7 +1091,14 @@ def dispatch_http(handler, method, db_factory, verify_token):
         return True
     username = user["username"]
     try:
-        if method == "GET" and path.endswith("/projects"):
+        if method == "GET" and path.endswith("/planning-quote"):
+            if not callable(cost_of):
+                raise ValueError("短剧策划报价暂不可用")
+            cost = int(cost_of("copy", {"format": "short_drama"}))
+            if cost < 0:
+                raise ValueError("短剧策划报价无效")
+            handler._send(200, {"cost": cost})
+        elif method == "GET" and path.endswith("/projects"):
             handler._send(200, {"items": list_projects(db_factory, username)})
         elif method == "GET":
             handler._send(200, get_project(db_factory, username, _project_id_from_query(handler)))

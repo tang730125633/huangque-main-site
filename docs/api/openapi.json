@@ -24,7 +24,7 @@
     },
     "schemas": {
       "JobAccepted": { "type": "object", "description": "异步任务受理", "properties": { "job_id": { "type": "integer" }, "cost": { "type": "integer", "description": "本次扣的点数" }, "points_left": { "type": "integer" } } },
-      "JobStatus": { "type": "object", "properties": { "id": { "type": "integer" }, "kind": { "type": "string" }, "status": { "type": "string", "enum": ["pending", "running", "done", "error"] }, "result": { "description": "成功时结果；短剧 copy job 使用 ShortDramaPlanningResult（传输时也可能是其 JSON 字符串）", "anyOf": [{ "type": "object" }, { "$ref": "#/components/schemas/ShortDramaPlanningResult" }] }, "error": { "type": "string" }, "created_at": { "type": "integer" }, "updated_at": { "type": "integer" } } },
+      "JobStatus": { "type": "object", "properties": { "id": { "type": "integer" }, "kind": { "type": "string" }, "status": { "type": "string", "enum": ["pending", "running", "done", "error"] }, "result": { "description": "成功时结果；mode=short_drama 的 copy job 使用 ShortDramaPlanningResult。其他任务使用不带该 mode 的领域结果对象。", "oneOf": [{ "$ref": "#/components/schemas/ShortDramaPlanningResult" }, { "type": "object", "not": { "required": ["mode"], "properties": { "mode": { "enum": ["short_drama"] } } } }] }, "error": { "type": "string" }, "created_at": { "type": "integer" }, "updated_at": { "type": "integer" } } },
       "User": { "type": "object", "properties": { "username": { "type": "string" }, "name": { "type": "string" }, "points": { "type": "integer" }, "role": { "type": "string" }, "must_change": { "type": "boolean" } } },
       "ShortDramaDialogueLine": {
         "type": "object", "required": ["id", "character_key", "text"], "additionalProperties": false,
@@ -32,6 +32,10 @@
       },
       "ShortDramaCharacter": {
         "type": "object", "required": ["character_key", "name", "identity_text", "personality", "source_type", "appearance_prompt", "wardrobe_prompt", "voice_settings"],
+        "oneOf": [
+          { "required": ["source_type"], "properties": { "source_type": { "enum": ["ai_character"] }, "avatar_id": { "type": "string", "nullable": true } } },
+          { "required": ["source_type", "avatar_id"], "properties": { "source_type": { "enum": ["cinematic_avatar"] }, "avatar_id": { "type": "string", "minLength": 1 } } }
+        ],
         "properties": {
           "id": { "type": "string", "readOnly": true }, "project_id": { "type": "string", "readOnly": true },
           "character_key": { "type": "string", "maxLength": 80 }, "name": { "type": "string", "maxLength": 80 },
@@ -150,6 +154,15 @@
     },
     "/api/auth/me": {
       "get": { "tags": ["认证"], "summary": "当前用户信息 / 点数", "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object", "properties": { "user": { "$ref": "#/components/schemas/User" } } } } } }, "401": { "description": "未登录" } } }
+    },
+    "/api/gen/short-drama/planning-quote": {
+      "get": {
+        "tags": ["短剧策划"], "summary": "读取当前短剧策划价格", "description": "Free / no points. 认证后从服务端点数域实时读取 format=short_drama 的 copy 价格；客户端必须先取得本报价并用精确 cost 请求确认，确认后才可提交付费 copy job。",
+        "responses": {
+          "200": { "description": "当前服务端报价；本请求不扣点", "content": { "application/json": { "schema": { "type": "object", "required": ["cost"], "additionalProperties": false, "properties": { "cost": { "type": "integer", "minimum": 0 } } } } } },
+          "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
     },
     "/api/gen/short-drama/projects": {
       "get": {
@@ -277,8 +290,8 @@
     },
     "/api/gen/copy": {
       "post": {
-        "tags": ["文案"], "summary": "AI 文案 / 分镜脚本 / 短剧策划 · 当前 3点",
-        "description": "付费异步任务。服务端当前 copy 价格为 3 点，但客户端必须以 200 响应的 cost 为准并在提交前确认，不得硬编码扣费。format=short_drama 时按 dur、ratio、shot_count 生成严格规划；轮询 job 后得到 {mode:'short_drama',plan:{...}}，再由 owner 调用 apply-plan。项目创建、读取、保存和阶段确认均免费。",
+        "tags": ["文案"], "summary": "AI 文案 / 分镜脚本 / 短剧策划 · 按服务端报价",
+        "description": "付费异步任务。短剧客户端先调用认证的 planning-quote，以返回的精确 cost 弹窗确认，确认后才提交 format=short_drama。服务端在扣点和创建任务前同步校验 dur、ratio、shot_count 及其组合；通过校验并受理后，模型输出解析或规划归一化失败属于异步 job error，并按任务失败规则退款。成功时轮询 job 得到 ShortDramaPlanningResult，再由 owner 调用 apply-plan。项目创建、读取、保存和阶段确认均免费。",
         "x-job-result-schema": { "$ref": "#/components/schemas/ShortDramaPlanningResult" },
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "oneOf": [
           {
@@ -293,8 +306,8 @@
           { "$ref": "#/components/schemas/ShortDramaPlanningRequest" }
         ] } } } },
         "responses": {
-          "200": { "description": "受理；返回 job_id、服务端报告的当前 cost（目前 3 点）和 points_left", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } },
-          "400": { "description": "短剧时长、画幅、分镜数或组合无效" }, "401": { "description": "未登录" }, "402": { "description": "点数不足" }
+          "200": { "description": "已受理；返回 job_id、此次实际扣除的 cost 和 points_left", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } },
+          "400": { "description": "短剧 dur、ratio、shot_count 或组合无效；before deduction，未扣点且未创建任务" }, "401": { "description": "未登录" }, "402": { "description": "点数不足" }
         }
       }
     },

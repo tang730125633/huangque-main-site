@@ -1375,7 +1375,8 @@ class H(BaseHTTPRequestHandler):
                 # 微信小程序内容安全：必须在校验、扣点和入队之前完成。违规内容不扣点；
                 # 微信服务异常时不收单，避免网络故障成为绕过审核的通道。
                 miniprogram_security.check_payload(body)
-                if kind == "video":
+                if kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama": _short_drama_domain().validate_planning_payload(body)
+                elif kind == "video":
                     body = video_domain.validate_video_payload(body, user["username"])
                 elif kind == "tryon":
                     body = video_domain.validate_tryon_payload(body)
@@ -1464,9 +1465,9 @@ class H(BaseHTTPRequestHandler):
         self._send(404, {"detail": "not found"})
 
     def do_GET(self):
-        if _short_drama_domain().dispatch_http(self, "GET", jdb, verify): return  # /api/gen/short-drama/projects /api/gen/short-drama/project
-        p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
+        if _short_drama_domain().dispatch_http(self, "GET", jdb, verify, getattr(points_domain, "cost_of", None)): return
+        p = self.path.split("?")[0]
         if p == "/api/gen/audio/clone-vip":
             return self._method_not_allowed()
         if p == "/api/gen/asset/marks":
