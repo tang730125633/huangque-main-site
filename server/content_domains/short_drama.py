@@ -646,7 +646,11 @@ def find_recoverable_planning_job(db_factory, username, project_id, planning_pay
     project = get_project(db_factory, username, project_id)
     if project["stage"] != "draft":
         return None
-    requested = _planning_metadata(planning_payload) if planning_payload is not None else None
+    requested = _planning_metadata(planning_payload) if planning_payload is not None else {
+        "prompt": project["synopsis"], "ratio": project["ratio"],
+        "target_duration": project["target_duration"], "shot_count": project["shot_count"],
+        "style": project["visual_style"], "platform": project["target_platform"],
+    }
     conn = _connection(db_factory)
     try:
         applied_ids = {
@@ -672,12 +676,9 @@ def find_recoverable_planning_job(db_factory, username, project_id, planning_pay
                 continue
             if metadata["project_id"] != project_id:
                 continue
-            if requested is not None and any(
+            if any(
                     metadata[key] != requested[key]
                     for key in ("prompt", "ratio", "target_duration", "shot_count", "style", "platform")):
-                continue
-            if (metadata["ratio"], metadata["target_duration"], metadata["shot_count"]) != (
-                    project["ratio"], project["target_duration"], project["shot_count"]):
                 continue
             return {
                 "job_id": int(row["id"]), "cost": int(row["cost"] or 0),
@@ -1360,7 +1361,8 @@ def _planning_job(db_factory, username, job_id, project_id):
     return job, result["plan"], metadata
 
 
-def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avatar_lookup=None):
+def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avatar_lookup=None,
+                  mutation_lock=None):
     """Handle the domain's synchronous routes inside core.H; return whether matched."""
     path = handler.path.split("?", 1)[0]
     if path not in _HTTP_ROUTES.get(method, ()):
@@ -1398,9 +1400,16 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             revision = body.pop("revision")
             if type(revision) is not int:
                 raise ValueError("项目版本无效")
-            handler._send(200, update_project(
-                db_factory, username, project_id, revision, body, avatar_lookup=avatar_lookup
-            ))
+            if mutation_lock is not None and set(body) & PLANNING_SPEC_FIELDS:
+                with mutation_lock:
+                    updated = update_project(
+                        db_factory, username, project_id, revision, body, avatar_lookup=avatar_lookup
+                    )
+            else:
+                updated = update_project(
+                    db_factory, username, project_id, revision, body, avatar_lookup=avatar_lookup
+                )
+            handler._send(200, updated)
         elif path.endswith("/projects"):
             handler._send(200, create_project(db_factory, username, _request_object(handler)))
         elif path.endswith("/apply-plan"):

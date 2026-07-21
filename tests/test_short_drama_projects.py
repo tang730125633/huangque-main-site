@@ -1055,6 +1055,59 @@ class ShortDramaRouteTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM jobs WHERE username='alice' AND kind='copy'"
             ).fetchone()[0])
 
+    def test_planning_settings_put_cannot_enter_paid_submission_critical_section(self):
+        status, project = self.request(
+            "POST", "/api/gen/short-drama/projects", body=valid_project(point_budget=0)
+        )
+        self.assertEqual(200, status)
+        entered_cost = threading.Event()
+        release_cost = threading.Event()
+        put_done = threading.Event()
+        outcomes = {}
+        original_cost_of = self.points.cost_of
+
+        def blocking_cost(kind, body):
+            if kind == "copy" and body.get("format") == "short_drama":
+                entered_cost.set()
+                if not release_cost.wait(timeout=3):
+                    raise AssertionError("test did not release planning cost gate")
+            return original_cost_of(kind, body)
+
+        def submit():
+            outcomes["post"] = self.request(
+                "POST", "/api/gen/copy", body=bound_planning_payload(project)
+            )
+
+        def update():
+            outcomes["put"] = self.request("PUT", self.project_path(project), body={
+                "revision": project["revision"], "synopsis": "锁后更新的全新故事梗概",
+            })
+            put_done.set()
+
+        self.points.cost_of = blocking_cost
+        post_thread = threading.Thread(target=submit)
+        put_thread = threading.Thread(target=update)
+        try:
+            post_thread.start()
+            self.assertTrue(entered_cost.wait(timeout=3))
+            put_thread.start()
+            put_entered_critical_section = put_done.wait(timeout=0.2)
+        finally:
+            release_cost.set()
+            post_thread.join(timeout=5)
+            put_thread.join(timeout=5)
+            self.points.cost_of = original_cost_of
+
+        self.assertFalse(put_entered_critical_section)
+        self.assertEqual(200, outcomes["post"][0])
+        self.assertEqual(200, outcomes["put"][0])
+        with closing(core.jdb()) as db:
+            job_payload = json.loads(db.execute(
+                "SELECT payload FROM jobs WHERE id=?", (outcomes["post"][1]["job_id"],)
+            ).fetchone()[0])
+        self.assertEqual(project["synopsis"], job_payload["prompt"])
+        self.assertEqual("锁后更新的全新故事梗概", outcomes["put"][1]["synopsis"])
+
     def test_paid_planning_job_is_discoverable_after_conflict_and_reapplies_without_new_job(self):
         status, project = self.request(
             "POST", "/api/gen/short-drama/projects", body=valid_project()
@@ -1085,6 +1138,42 @@ class ShortDramaRouteTests(unittest.TestCase):
         self.assertEqual("characters_review", applied["stage"])
         with closing(core.jdb()) as db:
             self.assertEqual(1, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+
+    def test_planning_job_route_rejects_every_current_project_snapshot_drift_then_post_creates_new_job(self):
+        changes = (
+            ("synopsis", "变化后的另一个完整故事梗概"),
+            ("visual_style", "赛博朋克"),
+            ("target_platform", "快手"),
+            ("ratio", "16:9"),
+            ("target_duration", 30),
+            ("shot_count", 7),
+        )
+        for field, value in changes:
+            with self.subTest(field=field):
+                status, project = self.request(
+                    "POST", "/api/gen/short-drama/projects",
+                    body=valid_project(target_duration=45, shot_count=6),
+                )
+                self.assertEqual(200, status)
+                old_job_id = self.insert_job(project=project, status="done", cost=7)
+                status, changed = self.request("PUT", self.project_path(project), body={
+                    "revision": project["revision"], field: value,
+                })
+                self.assertEqual(200, status)
+                recovery_path = "/api/gen/short-drama/planning-job?" + urllib.parse.urlencode({
+                    "project_id": project["id"],
+                })
+                status, recovered = self.request("GET", recovery_path)
+                self.assertEqual(200, status)
+                self.assertEqual({"job_id": None}, recovered)
+                status, accepted = self.request(
+                    "POST", "/api/gen/copy", body=bound_planning_payload(changed)
+                )
+                self.assertEqual(200, status)
+                self.assertNotEqual(old_job_id, accepted["job_id"])
+                with closing(core.jdb()) as db:
+                    db.execute("UPDATE jobs SET status='error' WHERE id=?", (accepted["job_id"],))
+                    db.commit()
 
     def test_apply_rejects_job_project_or_result_snapshot_mismatch_without_mutation(self):
         mismatch_changes = (

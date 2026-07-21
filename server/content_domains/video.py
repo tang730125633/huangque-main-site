@@ -937,7 +937,15 @@ def _save_data_file(data_url, prefix, allowed_ext):
         raise ValueError("文件过大，请压缩后再上传")
     folder = "audio/" if ext in {".mp3", ".wav", ".m4a"} else ("video/" if ext in {".mp4", ".mov", ".webm"} else "")
     fn = "%s%s_%s%s" % (folder, prefix, uuid.uuid4().hex, ext)  # 不可猜键(#185)：上传的真人素材防猜测
-    _out_path(fn).write_bytes(data)
+    path = _out_path(fn)
+    try:
+        path.write_bytes(data)
+    except Exception:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise
     return fn
 
 def _heygen_relay_token():
