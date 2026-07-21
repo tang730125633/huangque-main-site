@@ -39,6 +39,12 @@ RECHARGE_CUSTOM_MAX = 5000
 JSAPI_TEST_AMOUNT_YUAN = 0.1
 JSAPI_TEST_POINTS = 1
 
+def miniprogram_payments_enabled():
+    """Operational kill switch for all mini-program payment order creation."""
+    return os.environ.get("HQ_MINIPROGRAM_PAYMENTS_ENABLED", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
 def recharge_points_for(amount):
     """金额(元) -> 点数。固定档用赠送价；其余按 10 点/元(限 10~5000 元整数)。非法返回 None。
     金额只接受整数元(避免分位歧义与非整点数)；拒绝 NaN/Infinity/超大数/非数字(否则 int/float 抛错致 500)。"""
@@ -1685,6 +1691,8 @@ def public_virtual_pay_custom():
 
 def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=None):
     package_id = (package_id or "").strip()
+    if not miniprogram_payments_enabled():
+        return None, "payment_disabled"
     if not wechat_vpay.is_configured():
         return None, "not_configured"
     product = wechat_vpay.product_by_id(package_id)
@@ -2211,6 +2219,11 @@ class H(BaseHTTPRequestHandler):
             row = self._user()
             if not row:
                 return self._send(401, {"detail": "未登录"})
+            if not miniprogram_payments_enabled():
+                return self._send(503, {
+                    "detail": "小程序支付功能暂时关闭",
+                    "code": "payment_disabled",
+                })
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
@@ -2220,6 +2233,11 @@ class H(BaseHTTPRequestHandler):
                 )
                 if err == "not_configured":
                     return self._send(503, {"detail": "虚拟支付正在配置中，请稍后再试"})
+                if err == "payment_disabled":
+                    return self._send(503, {
+                        "detail": "小程序支付功能暂时关闭",
+                        "code": "payment_disabled",
+                    })
                 if err == "package_not_found":
                     return self._send(404, {"detail": "充值套餐不存在"})
                 if err == "invalid_custom_amount":
@@ -2325,6 +2343,11 @@ class H(BaseHTTPRequestHandler):
             row = self._user()
             if not row:
                 return self._send(401, {"detail": "未登录"})
+            if not miniprogram_payments_enabled():
+                return self._send(503, {
+                    "detail": "小程序支付功能暂时关闭",
+                    "code": "payment_disabled",
+                })
             if wxpay is None or not wxpay.configured():
                 return self._send(503, {"detail": "微信支付未配置"})
             d = self._body()
@@ -2914,12 +2937,14 @@ class H(BaseHTTPRequestHandler):
             if not row:
                 return self._send(401, {"detail": "未登录"})
             try:
+                enabled = miniprogram_payments_enabled()
                 return self._send(200, {
                     "ok": True,
-                    "configured": wechat_vpay.is_configured(),
+                    "enabled": enabled,
+                    "configured": enabled and wechat_vpay.is_configured(),
                     "environment": "production" if wechat_vpay.pay_env() == 0 else "sandbox",
-                    "items": public_virtual_pay_packages(),
-                    "custom": public_virtual_pay_custom(),
+                    "items": public_virtual_pay_packages() if enabled else [],
+                    "custom": public_virtual_pay_custom() if enabled else None,
                 })
             except Exception:
                 return self._send(500, {"detail": "充值套餐读取失败"})
