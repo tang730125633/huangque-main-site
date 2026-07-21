@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """xAI 官方 Grok Imagine Video 异步协议适配。
 
-创建视频是非幂等且可能立即计费：每个任务只选一次出境代理，POST 失败不换线重发。
+创建视频是非幂等且可能立即计费：每个任务只选一次出境代理。仅当上游明确
+返回可重试 HTTP 状态时原通道短退避重试；结果未知的网络失败绝不重发。
 后续 GET 轮询可容忍瞬时网络错误，不会产生第二条付费视频。
 """
 import json
@@ -20,6 +21,8 @@ XAI_VIDEO_TIMEOUT = int(os.environ.get("XAI_VIDEO_TIMEOUT", "1200") or 1200)
 XAI_VIDEO_POLL_INTERVAL = int(os.environ.get("XAI_VIDEO_POLL_INTERVAL", "5") or 5)
 TRANSIENT_HTTP_CODES = {408, 429, 500, 502, 503, 504}
 TRANSIENT_BACKOFF = (5, 10, 20, 30)
+CREATE_RETRY_HTTP_CODES = {429, 500, 502, 503, 504}
+CREATE_RETRY_BACKOFF = (2, 5)
 
 
 class TransientXaiError(RuntimeError):
@@ -138,6 +141,23 @@ def _poll(opener, request_id, model, duration, job_id=None, heartbeat=None, now=
     raise TimeoutError("xAI视频生成超时")
 
 
+def _create(opener, path, payload, sleep=None):
+    """Retry only definite transient HTTP responses from a paid create call.
+
+    Network failures remain single-shot because the provider may have accepted the
+    request before the connection was lost; retrying those could double-charge.
+    """
+    sleep = sleep or time.sleep
+    for attempt in range(len(CREATE_RETRY_BACKOFF) + 1):
+        try:
+            return _request_json(opener, "POST", path, payload, timeout=120)
+        except TransientXaiError as exc:
+            if (exc.status_code not in CREATE_RETRY_HTTP_CODES or
+                    attempt >= len(CREATE_RETRY_BACKOFF)):
+                raise
+            sleep(CREATE_RETRY_BACKOFF[attempt])
+
+
 def resume(request_id, model, duration, job_id=None, heartbeat=None, now=None,
            sleep=None):
     if not str(request_id or "").strip():
@@ -150,7 +170,7 @@ def resume(request_id, model, duration, job_id=None, heartbeat=None, now=None,
 
 def generate(model, prompt, duration, aspect_ratio, resolution, image_url=None,
              job_id=None, heartbeat=None, now=None, sleep=None):
-    """创建一次 xAI 生成任务并轮询到终态。"""
+    """创建 xAI 生成任务并轮询到终态。"""
     opener = _opener()
     payload = {
         "model": model,
@@ -162,8 +182,7 @@ def generate(model, prompt, duration, aspect_ratio, resolution, image_url=None,
     if image_url:
         payload["image"] = {"url": image_url}
 
-    # 红线：非幂等 POST 只发一次，不在此处做网络重试或换代理。
-    created = _request_json(opener, "POST", "/videos/generations", payload, timeout=120)
+    created = _create(opener, "/videos/generations", payload, sleep=sleep)
     request_id = str(created.get("request_id") or "").strip()
     if not request_id:
         raise RuntimeError("xAI视频服务未返回 request_id")
@@ -180,7 +199,7 @@ def edit(model, prompt, video_url, duration, job_id=None, heartbeat=None, now=No
     """创建一次 xAI 视频编辑任务；输出时长和比例由输入视频继承。"""
     opener = _opener()
     payload = {"model": model, "prompt": str(prompt or "").strip(), "video": {"url": video_url}}
-    created = _request_json(opener, "POST", "/videos/edits", payload, timeout=120)
+    created = _create(opener, "/videos/edits", payload, sleep=sleep)
     request_id = str(created.get("request_id") or "").strip()
     if not request_id:
         raise RuntimeError("xAI视频服务未返回 request_id")
