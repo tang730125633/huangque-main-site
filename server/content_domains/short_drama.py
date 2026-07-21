@@ -347,6 +347,8 @@ def _validate_plan(plan):
         })
     if len({item["shot_key"] for item in normalized_shots}) != len(normalized_shots):
         raise ValueError("分镜标识不能重复")
+    if len(normalized_shots) not in SHOT_COUNTS:
+        raise ValueError("分镜数量必须为 6–10 个")
     if not all(isinstance(item["character_keys"], list) and isinstance(item["dialogue_line_ids"], list)
                for item in normalized_shots):
         raise ValueError("分镜关联数据无效")
@@ -381,11 +383,14 @@ def apply_plan(db_factory, username, project_id, revision, plan, planning_cost, 
                 return _project_detail(conn, username, project_id)
             raise ValueError("规划任务已属于其他项目")
         project = conn.execute(
-            "SELECT title FROM short_drama_projects WHERE id=? AND username=? AND revision=? AND deleted=0",
+            "SELECT title, target_duration FROM short_drama_projects "
+            "WHERE id=? AND username=? AND revision=? AND deleted=0",
             (project_id, username, revision),
         ).fetchone()
         if not project:
             _raise_cas_error(conn, username, project_id)
+        if sum(shot["duration"] for shot in shots) != project[1]:
+            raise ValueError("分镜总时长必须等于短剧目标时长")
         conn.execute(
             "INSERT INTO short_drama_applied_jobs (job_id, project_id, username, cost, applied_at) VALUES (?, ?, ?, ?, ?)",
             (job_id, project_id, username, cost, now),
