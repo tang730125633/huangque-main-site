@@ -5,6 +5,7 @@ import os
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.parse
@@ -27,6 +28,7 @@ class InviteRegistrationTests(unittest.TestCase):
         self.auth.REGISTER_HITS.clear()
         self.auth.init_db()
         self.auth.create_user("inviter", "secret123", 10)
+        self._activate_member("inviter")
 
     def tearDown(self):
         if self.old_db is None:
@@ -44,6 +46,19 @@ class InviteRegistrationTests(unittest.TestCase):
         c = self._connect()
         try:
             return c.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()[0]
+        finally:
+            c.close()
+
+    def _activate_member(self, username, tier="experience", expires_at=None):
+        c = self._connect()
+        try:
+            now = int(time.time())
+            c.execute(
+                """UPDATE users SET membership_tier=?,membership_started_at=?,membership_expires_at=?
+                     WHERE username=?""",
+                (tier, now, int(expires_at or now + self.auth.MEMBERSHIP_YEAR_SECONDS), username),
+            )
+            c.commit()
         finally:
             c.close()
 
@@ -75,6 +90,47 @@ class InviteRegistrationTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(len(first), 6)
         self.assertTrue(set(first).issubset(set(self.auth.invites.CODE_ALPHABET)))
+
+    def test_only_active_members_can_create_or_use_invite_codes(self):
+        self.auth.create_user("nonmember", "secret123", 10)
+        c = self._connect()
+        try:
+            with self.assertRaises(self.auth.invites.InviteError) as raised:
+                self.auth.invites.ensure_user_code(c, self._user_id("nonmember"))
+            self.assertEqual(raised.exception.code, "membership_required")
+
+            code = self._invite_code()
+            c.execute(
+                "UPDATE users SET membership_expires_at=? WHERE username='inviter'",
+                (int(time.time()) - 1,),
+            )
+            c.commit()
+            with self.assertRaises(self.auth.invites.InviteError) as expired:
+                self.auth.invites.validate_code(c, code)
+            self.assertEqual(expired.exception.code, "inviter_ineligible")
+            self.assertEqual(
+                c.execute("SELECT COUNT(*) FROM invite_codes WHERE code=?", (code,)).fetchone()[0], 1,
+            )
+            c.close()
+            c = None
+            result, err = self.auth.register_account("expired_invite", "secret123", invite_code=code)
+            self.assertIsNone(result)
+            self.assertEqual(err["code"], "inviter_ineligible")
+            c = self._connect()
+            self.assertFalse(c.execute(
+                "SELECT 1 FROM users WHERE username='expired_invite'"
+            ).fetchone())
+
+            renewed_until = int(time.time()) + self.auth.MEMBERSHIP_YEAR_SECONDS
+            c.execute(
+                "UPDATE users SET membership_expires_at=? WHERE username='inviter'",
+                (renewed_until,),
+            )
+            c.commit()
+            self.assertEqual(self.auth.invites.validate_code(c, code)["code"], code)
+        finally:
+            if c:
+                c.close()
 
     def test_registration_and_binding_commit_together(self):
         code = self._invite_code()
@@ -180,6 +236,7 @@ class InviteRegistrationTests(unittest.TestCase):
         inviter_code = self._invite_code()
         first, err = self.auth.register_account("first", "secret123", invite_code=inviter_code)
         self.assertIsNone(err)
+        self._activate_member("first")
         first_code = self._invite_code("first")
         second, err = self.auth.register_account("second", "secret123", invite_code=first_code)
         self.assertIsNone(err)
@@ -198,6 +255,7 @@ class InviteRegistrationTests(unittest.TestCase):
                 "direct_%02d" % index, "secret123", invite_code=inviter_code,
             )
             self.assertIsNone(err)
+        self._activate_member("direct_00")
         child_code = self._invite_code("direct_00")
         child, err = self.auth.register_account("second_user", "secret123", invite_code=child_code)
         self.assertIsNone(err)

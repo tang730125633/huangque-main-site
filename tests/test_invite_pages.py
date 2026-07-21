@@ -47,7 +47,8 @@ class InvitePagesTests(unittest.TestCase):
     def test_old_reward_claim_is_removed(self):
         self.assertNotIn("邀请好友得点数", DASHBOARD)
         self.assertNotIn("双方各得 100 点数", DASHBOARD)
-        self.assertIn("不包含点数、余额、会员、优惠券、分佣或充值奖励", INVITE)
+        self.assertIn("不直接发放可消费点数、余额、优惠券、分佣或充值奖励", INVITE)
+        self.assertIn("邀请资格仅对有效会员开放", INVITE)
 
     @unittest.skipUnless(shutil.which("node"), "node is required for inline JavaScript parsing")
     def test_inline_javascript_parses(self):

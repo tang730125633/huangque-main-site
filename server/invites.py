@@ -23,6 +23,7 @@ VALID_SOURCES = {"web_link", "web_manual", "miniprogram", "admin"}
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 DEFAULT_DAILY_LIMIT = int(os.environ.get("HQ_INVITE_DAILY_LIMIT", "50"))
 IP_REVIEW_THRESHOLD = int(os.environ.get("HQ_INVITE_IP_REVIEW_THRESHOLD", "3"))
+INVITER_MEMBERSHIP_TIERS = {"experience", "partner", "initiator"}
 
 
 class InviteError(Exception):
@@ -148,8 +149,46 @@ def _new_code(conn):
     raise RuntimeError("invite code exhausted")
 
 
+def inviter_eligibility(conn, user_id, now=None):
+    """返回用户当前是否具备新增邀请关系的资格。"""
+    now = int(now or time.time())
+    row = conn.execute(
+        """SELECT membership_tier,membership_expires_at,account_status
+             FROM users WHERE id=?""",
+        (int(user_id),),
+    ).fetchone()
+    tier = str(row["membership_tier"] or "") if row else ""
+    expires_at = int(row["membership_expires_at"] or 0) if row else 0
+    account_active = bool(row and str(row["account_status"] or "active") == "active")
+    eligible = account_active and tier in INVITER_MEMBERSHIP_TIERS and expires_at > now
+    if not row:
+        reason = "邀请用户不存在"
+    elif not account_active:
+        reason = "账号状态异常，暂时不能邀请新用户"
+    elif tier not in INVITER_MEMBERSHIP_TIERS or expires_at <= now:
+        reason = "只有有效会员可以邀请新用户"
+    else:
+        reason = ""
+    return {
+        "eligible": eligible,
+        "membership_tier": tier if eligible else "",
+        "membership_expires_at": expires_at if eligible else 0,
+        "reason": reason,
+    }
+
+
+def require_inviter_eligibility(conn, user_id, now=None, public=False):
+    eligibility = inviter_eligibility(conn, user_id, now)
+    if eligibility["eligible"]:
+        return eligibility
+    if public:
+        raise InviteError("inviter_ineligible", "该邀请码当前不可用，请更换邀请码", 409)
+    raise InviteError("membership_required", eligibility["reason"], 403)
+
+
 def ensure_user_code(conn, user_id, now=None):
     now = int(now or time.time())
+    require_inviter_eligibility(conn, user_id, now)
     campaign = _active_campaign(conn, now)
     if not campaign:
         raise InviteError("campaign_inactive", "邀请活动当前未开启", 409)
@@ -204,6 +243,7 @@ def validate_code(conn, code, now=None):
         raise InviteError("campaign_not_started", "邀请活动尚未开始", 409)
     if row["end_at"] is not None and int(row["end_at"]) < now:
         raise InviteError("campaign_ended", "邀请活动已结束", 409)
+    require_inviter_eligibility(conn, row["inviter_user_id"], now, public=True)
     return row
 
 

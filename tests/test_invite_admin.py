@@ -5,6 +5,7 @@ import os
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 import urllib.request
 import zipfile
@@ -25,6 +26,12 @@ class InviteAdminTests(unittest.TestCase):
         self.auth.create_user("admin", "secret123", 0, "admin")
         self.auth.create_user("inviter", "secret123")
         c = self.connect()
+        now = int(time.time())
+        c.execute(
+            """UPDATE users SET membership_tier='experience',membership_started_at=?,membership_expires_at=?
+                 WHERE username='inviter'""",
+            (now, now + self.auth.MEMBERSHIP_YEAR_SECONDS),
+        )
         code = self.auth.invites.ensure_user_code(c, self.user_id("inviter", c))["code"]
         c.commit(); c.close()
         result, err = self.auth.register_account("invitee", "secret123", "被邀请用户", code)
