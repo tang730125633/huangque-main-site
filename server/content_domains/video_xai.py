@@ -31,6 +31,14 @@ class TransientXaiError(RuntimeError):
         self.status_code = status_code
 
 
+class XaiCreateUnavailableError(RuntimeError):
+    """A definite pre-creation billing/auth failure that is safe to fall back from."""
+
+
+class XaiCredentialError(RuntimeError):
+    pass
+
+
 def available():
     return bool(XAI_API_KEY)
 
@@ -79,9 +87,9 @@ def _request_json(opener, method, path, body=None, timeout=90):
                 status_code=exc.code,
             )
         if exc.code in (401, 403):
-            raise RuntimeError("xAI鉴权失败: HTTP %s %s" % (exc.code, detail))
+            raise XaiCredentialError("xAI鉴权失败: HTTP %s %s" % (exc.code, detail))
         if exc.code == 402:
-            raise RuntimeError("xAI账户余额不足: %s" % detail)
+            raise XaiCredentialError("xAI账户余额不足: %s" % detail)
         raise RuntimeError("xAI视频接口失败: HTTP %s %s" % (exc.code, detail))
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise TransientXaiError("xAI视频网络异常: %s" % str(exc)[:300])
@@ -182,7 +190,10 @@ def generate(model, prompt, duration, aspect_ratio, resolution, image_url=None,
     if image_url:
         payload["image"] = {"url": image_url}
 
-    created = _create(opener, "/videos/generations", payload, sleep=sleep)
+    try:
+        created = _create(opener, "/videos/generations", payload, sleep=sleep)
+    except (XaiCredentialError, ValueError) as exc:
+        raise XaiCreateUnavailableError(str(exc)) from exc
     request_id = str(created.get("request_id") or "").strip()
     if not request_id:
         raise RuntimeError("xAI视频服务未返回 request_id")

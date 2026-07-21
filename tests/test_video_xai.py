@@ -210,6 +210,28 @@ class XaiVideoTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "余额不足"):
                 video_xai.generate("grok-imagine-video", "demo", 5, "16:9", "480p")
 
+    def test_create_403_is_safe_fallback_error(self):
+        opener = Mock()
+        opener.open.side_effect = _http_error(
+            403, b'{"error":"monthly spending limit reached"}'
+        )
+        with patch.object(video_xai, "XAI_API_KEY", "test-key"), \
+             patch.object(video_xai, "_opener", return_value=opener):
+            with self.assertRaises(video_xai.XaiCreateUnavailableError):
+                video_xai.generate("grok-imagine-video", "demo", 5, "16:9", "480p")
+
+    def test_poll_403_does_not_become_safe_fallback_error(self):
+        opener = Mock()
+        opener.open.side_effect = [
+            _Response({"request_id": "already-billed"}),
+            _http_error(403, b'{"error":"token expired"}'),
+        ]
+        with patch.object(video_xai, "XAI_API_KEY", "test-key"), \
+             patch.object(video_xai, "_opener", return_value=opener):
+            with self.assertRaises(video_xai.XaiCredentialError) as raised:
+                video_xai.generate("grok-imagine-video", "demo", 5, "16:9", "480p")
+        self.assertNotIsInstance(raised.exception, video_xai.XaiCreateUnavailableError)
+
 
 if __name__ == "__main__":
     unittest.main()

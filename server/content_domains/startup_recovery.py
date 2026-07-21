@@ -45,11 +45,16 @@ def reclaim_orphaned_running(
         request_id = None
         provider = None
         if row["kind"] == "xiaole_video":
-            provider = "xAI"
+            provider = "Grok"
             try:
-                request_id = _valid_request_id(
-                    domains()[2].get_resumable_xai_request(row["id"])
-                )
+                video_domain = domains()[2]
+                getter = getattr(video_domain, "get_resumable_grok_request", None)
+                if getter is None:
+                    getter = video_domain.get_resumable_xai_request
+                resumable = getter(row["id"])
+                request_id = _valid_request_id(resumable)
+                if resumable:
+                    provider = "OpenRouter" if resumable.get("provider") == "openrouter" else "xAI"
             except Exception as exc:
                 # 查询失败是“未知”，不是“确认没有上游任务”。后者才允许失败退款；
                 # 否则 Auth/SQLite 短暂抖动会把仍在上游运行的付费视频免费送给用户。

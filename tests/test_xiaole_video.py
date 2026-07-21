@@ -206,6 +206,29 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertEqual(result["duration"], 10)
         generate.assert_called_once()
 
+    def test_grok_uses_openrouter_only_after_safe_xai_create_failure(self):
+        from content_domains import video_xai
+
+        fallback = {
+            "request_id": "or-1", "model": "grok-imagine-video",
+            "source_video_url": "https://cdn.openrouter.ai/demo.mp4",
+            "duration": 10, "provider": "openrouter",
+        }
+        with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"), \
+             patch("content_domains.video_xai.generate",
+                   side_effect=video_xai.XaiCreateUnavailableError("xAI quota")), \
+             patch("content_domains.video_openrouter.available", return_value=True), \
+             patch("content_domains.video_openrouter.generate", return_value=fallback) as generate, \
+             patch.object(self.video, "_download_xiaole_video", return_value="video/grok_or.mp4"), \
+             patch.object(self.video, "_extract_first_frame_cover", return_value=None):
+            result = self.video.gen_xiaole_video({
+                "channel": "grok", "prompt": "cinematic demo", "ratio": "9:16",
+                "duration": 10, "resolution": "720p", "model": "grok-imagine-video",
+            })
+        generate.assert_called_once()
+        self.assertEqual(result["provider_video_id"], "or-1")
+        self.assertEqual(result["video_file"], "video/grok_or.mp4")
+
     def test_existing_xai_provider_id_resumes_without_generate(self):
         resumed = {
             "request_id": "rid-existing", "model": "grok-imagine-video",
@@ -217,8 +240,8 @@ class XiaoleVideoTests(unittest.TestCase):
             "_job_id": 7, "_username": "qilin",
         }
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"), \
-             patch("content_domains.video.get_resumable_xai_request", return_value={
-                 "request_id": "rid-existing", "model": "grok-imagine-video",
+             patch("content_domains.video.get_resumable_grok_request", return_value={
+                 "request_id": "rid-existing", "model": "grok-imagine-video", "provider": "xai",
              }), \
              patch("content_domains.video_xai.resume", return_value=resumed) as resume, \
              patch("content_domains.video_xai.generate") as generate, \
