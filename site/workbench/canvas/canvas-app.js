@@ -63,29 +63,50 @@
     refreshShortDramaNode(node);
     scheduleSave();
   }
+  function shortDramaScopeKey(scope,boardId){
+    return String(scope||'local')+':'+String(boardId||'draft');
+  }
+  function currentShortDramaScopeKey(){
+    return shortDramaScopeKey(currentBoardScope,currentBoardId);
+  }
+  function shortDramaNodeForScope(scopeKey,nodeId){
+    if(!wrap||!wrap.classList.contains('editing')) return null;
+    if(scopeKey!==currentShortDramaScopeKey()) return null;
+    var node=nodes[nodeId];
+    return node&&node.type==='shortDrama'?node:null;
+  }
+  function applyShortDramaOpenPolicy(scopeKey,nodeId){
+    var node=shortDramaNodeForScope(scopeKey,nodeId);
+    var openShortDrama=node&&node.el&&node.el.querySelector('[data-f="openShortDrama"]');
+    if(openShortDrama) openShortDrama.disabled=!shortDramaModule.canOpenNode(node.params,canEditCanvas());
+  }
   var shortDramaProjectCoordinator=shortDramaModule.createProjectCoordinator({
-    getNode:function(nodeId){ var node=nodes[nodeId]; return node&&node.type==='shortDrama'?node:null; },
+    getNode:function(scopeKey,nodeId){ return shortDramaNodeForScope(scopeKey,nodeId); },
     create:function(payload){ return apiClient.json('/api/gen/short-drama/projects',{method:'POST',body:payload}); },
     apply:function(node,project){ applyShortDramaSummary(node,project); }
   });
-  function ensureShortDramaProject(node){
+  function ensureShortDramaProject(node,scopeKey){
     if(!node.params.project_id&&canEditCanvas()) setNodeState(node,'running','正在创建短剧项目…','#2dd4bf');
-    return shortDramaProjectCoordinator.ensure(node.id,shortDramaModule.creationPayload(node.params),canEditCanvas());
+    return shortDramaProjectCoordinator.ensure(scopeKey,node.id,shortDramaModule.creationPayload(node.params),canEditCanvas(),node.params.project_id||null);
   }
   function openShortDramaWorkspace(node){
     if(!shortDramaModule||typeof shortDramaModule.createWorkspace!=='function'){
       setNodeState(node,'error','短剧工作区未加载','#f4708a');
       return Promise.reject(new Error('短剧工作区未加载'));
     }
+    var scopeKey=currentShortDramaScopeKey();
     var nodeId=node.id;
     var button=node.el&&node.el.querySelector('[data-f="openShortDrama"]');
     if(button) button.disabled=true;
-    return ensureShortDramaProject(node).then(function(projectId){
-      node=nodes[nodeId];
-      if(!node||node.type!=='shortDrama') throw new Error('短剧节点已不存在');
+    return ensureShortDramaProject(node,scopeKey).then(function(projectId){
+      node=shortDramaNodeForScope(scopeKey,nodeId);
+      if(!node) return null;
       button=node.el&&node.el.querySelector('[data-f="openShortDrama"]');
       var canEdit=canEditCanvas();
-      var onChange=function(summary){ applyShortDramaSummary(node,summary); };
+      var onChange=function(summary){
+        var current=shortDramaNodeForScope(scopeKey,nodeId);
+        if(current) applyShortDramaSummary(current,summary);
+      };
       if(node.shortDramaWorkspace&&node.shortDramaWorkspace.destroy) node.shortDramaWorkspace.destroy();
       node.shortDramaWorkspace=shortDramaModule.createWorkspace({
         projectId:projectId,
@@ -97,9 +118,10 @@
       setNodeState(node,'done','短剧工作区已打开','#2bd576');
       return node.shortDramaWorkspace;
     }).catch(function(error){
-      setNodeState(node,'error',error&&error.message||'打开短剧工作区失败','#f4708a');
+      var current=shortDramaNodeForScope(scopeKey,nodeId);
+      if(current) setNodeState(current,'error',error&&error.message||'打开短剧工作区失败','#f4708a');
       throw error;
-    }).finally(function(){ if(button) button.disabled=false; });
+    }).finally(function(){ applyShortDramaOpenPolicy(scopeKey,nodeId); });
   }
   function tok(){ return '__cookie__'; }
   function authJson(path, opts){
@@ -1382,6 +1404,7 @@
       if(idx<0) return;
       latest.splice(idx,1);
       if(!setBoards(latest)) return;
+      shortDramaProjectCoordinator.cleanupScope(shortDramaScopeKey('local',id));
       if(currentBoardId===id) showBoardHome();
       else renderBoardHome();
       updateState('画布已删除');

@@ -87,28 +87,62 @@
       throw new Error('short drama project coordinator requires getNode, create, and apply methods');
     }
     var pending=Object.create(null);
-    function ensure(nodeId,payload,canCreate){
+    var completed=Object.create(null);
+    var discardedScopes=Object.create(null);
+    function itemKey(scopeKey,nodeId){ return JSON.stringify([String(scopeKey||''),String(nodeId||'')]); }
+    function linkedProject(node){ return node&&node.params&&node.params.project_id||null; }
+    function scopeHasPending(scopeKey){
+      return Object.keys(pending).some(function(key){ return pending[key].scopeKey===scopeKey; });
+    }
+    function consume(scopeKey,nodeId,entry){
+      var key=itemKey(scopeKey,nodeId), live=options.getNode(scopeKey,nodeId);
+      if(!live) return entry.projectId;
+      var linked=linkedProject(live);
+      if(linked!==entry.expectedProjectId){
+        delete completed[key];
+        return linked||entry.projectId;
+      }
+      options.apply(live,entry.project);
+      delete completed[key];
+      return entry.projectId;
+    }
+    function ensure(scopeKey,nodeId,payload,canCreate,expectedProjectId){
+      scopeKey=String(scopeKey||'');
       nodeId=String(nodeId||'');
-      var current=options.getNode(nodeId);
-      var projectId=current&&current.params&&current.params.project_id;
+      expectedProjectId=expectedProjectId||null;
+      var key=itemKey(scopeKey,nodeId);
+      if(pending[key]) return pending[key].promise;
+      if(completed[key]) return Promise.resolve(consume(scopeKey,nodeId,completed[key]));
+      var current=options.getNode(scopeKey,nodeId);
+      var projectId=linkedProject(current);
       if(projectId) return Promise.resolve(projectId);
-      if(pending[nodeId]) return pending[nodeId];
       if(!canCreate) return Promise.reject(new Error('当前画布为只读，无法创建短剧项目'));
       var request=Promise.resolve().then(function(){ return options.create(payload); }).then(function(project){
         var createdId=project&&(project.id||project.project_id);
         if(!createdId) throw new Error('创建短剧项目失败');
-        var live=options.getNode(nodeId);
-        if(live) options.apply(live,project);
-        return createdId;
+        if(discardedScopes[scopeKey]) return createdId;
+        var entry={scopeKey:scopeKey,nodeId:nodeId,projectId:createdId,expectedProjectId:expectedProjectId,project:project};
+        completed[key]=entry;
+        return consume(scopeKey,nodeId,entry);
       });
-      pending[nodeId]=request;
-      function clear(){ if(pending[nodeId]===request) delete pending[nodeId]; }
+      pending[key]={scopeKey:scopeKey,promise:request};
+      function clear(){
+        if(pending[key]&&pending[key].promise===request) delete pending[key];
+        if(discardedScopes[scopeKey]&&!scopeHasPending(scopeKey)) delete discardedScopes[scopeKey];
+      }
       request.then(clear,clear);
       return request;
     }
+    function cleanupScope(scopeKey){
+      scopeKey=String(scopeKey||'');
+      Object.keys(completed).forEach(function(key){ if(completed[key].scopeKey===scopeKey) delete completed[key]; });
+      if(scopeHasPending(scopeKey)) discardedScopes[scopeKey]=true;
+    }
     return {
       ensure:ensure,
-      hasPending:function(nodeId){ return !!pending[String(nodeId||'')]; }
+      cleanupScope:cleanupScope,
+      hasPending:function(scopeKey,nodeId){ return !!pending[itemKey(scopeKey,nodeId)]; },
+      hasCompleted:function(scopeKey,nodeId){ return !!completed[itemKey(scopeKey,nodeId)]; }
     };
   }
 

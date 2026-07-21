@@ -22,8 +22,14 @@ function testCanvasIntegration() {
   assert.match(app, /projectId:projectId,\s*apiClient:apiClient,\s*poll:apiModule\.poll,\s*canEdit:canEdit,\s*onChange:onChange/);
   assert.ok(app.includes('shortDramaModule.creationPayload(node.params)'));
   assert.ok(app.includes('shortDramaModule.createProjectCoordinator('));
-  assert.match(app, /getNode:function\(nodeId\)\{[\s\S]*?node\.type==='shortDrama'\?node:null;/, 'reconciliation cannot target a reused non-short-drama id');
-  assert.ok(app.includes("if(!node||node.type!=='shortDrama') throw new Error('短剧节点已不存在');"));
+  assert.ok(app.includes("function shortDramaScopeKey(scope,boardId)"));
+  assert.ok(app.includes("var scopeKey=currentShortDramaScopeKey();"));
+  assert.match(app, /getNode:function\(scopeKey,nodeId\)\{[\s\S]*?shortDramaNodeForScope\(scopeKey,nodeId\)/, 'reconciliation is board scoped');
+  assert.match(app, /function shortDramaNodeForScope\(scopeKey,nodeId\)\{[\s\S]*?wrap\.classList\.contains\('editing'\)/, 'board home is never treated as an active scope');
+  assert.match(app, /shortDramaProjectCoordinator\.ensure\(scopeKey,node\.id,[\s\S]*?node\.params\.project_id\|\|null\)/, 'creation captures the expected project link');
+  assert.match(app, /onChange=function\(summary\)\{[\s\S]*?shortDramaNodeForScope\(scopeKey,nodeId\)/, 'workspace changes resolve the current scoped node');
+  assert.ok(app.includes("shortDramaProjectCoordinator.cleanupScope(shortDramaScopeKey('local',id));"));
+  assert.match(app, /finally\(function\(\)\{[\s\S]*?applyShortDramaOpenPolicy\(scopeKey,nodeId\)/, 'settlement reapplies the current scoped readonly policy');
   assert.match(app, /function shortDramaNodeOutputs\(node\)[\s\S]*?return node&&node\.type==='shortDrama'\?\{\}:/);
   assert.match(app, /outputs:shortDramaNodeOutputs\(n\)/, 'canvas snapshots must sanitize short-drama outputs');
   assert.match(app, /if\(type==='shortDrama'&&data\) data=shortDramaModule\.sanitizeNodeData\(data\)/, 'restore and paste must sanitize short-drama node data');
@@ -32,7 +38,7 @@ function testCanvasIntegration() {
   assert.ok(app.includes('snap=sanitizeShortDramaSnapshot(snap);'), 'restore sanitizes before rebuilding nodes');
   assert.ok(app.includes('copy.data=sanitizeShortDramaSnapshot(copy.data);'), 'board duplication sanitizes persisted nodes');
   assert.match(app, /openShortDrama\.disabled=!!readonly&&!\(node&&node\.params\.project_id\)/, 'readonly existing projects remain openable');
-  const ensureSource = app.match(/function ensureShortDramaProject\(node\)\{[\s\S]*?\n  \}/)[0];
+  const ensureSource = app.match(/function ensureShortDramaProject\(node,scopeKey\)\{[\s\S]*?\n  \}/)[0];
   assert.doesNotMatch(ensureSource, /scheduleSave\(/, 'coordinator apply is the single save path');
 
   for (const [asset, source] of [
@@ -79,17 +85,22 @@ function testNodePersistenceHelpers() {
   assert.equal(shortDrama.canOpenNode({ project_id: null }, true), true);
 }
 
-async function testCreateProjectCoordinatorSurvivesRestore() {
+async function testCreateProjectCoordinatorIsBoardScoped() {
   let createCalls = 0;
   let saves = 0;
   let resolveCreate;
-  const oldNode = { id: 'n7', type: 'shortDrama', params: shortDrama.normalizeNodeParams({ title: '旧节点' }), outputs: {} };
-  let currentNode = oldNode;
+  let activeScope = 'local:board-a';
+  const boardAOld = { id: 'n1', type: 'shortDrama', params: shortDrama.normalizeNodeParams({ title: 'A 旧节点' }), outputs: {} };
+  const boardBNode = { id: 'n1', type: 'shortDrama', params: shortDrama.normalizeNodeParams({ title: 'B 节点' }), outputs: {} };
+  const boards = {
+    'local:board-a': { n1: boardAOld },
+    'local:board-b': { n1: boardBNode },
+  };
   const coordinator = shortDrama.createProjectCoordinator({
-    getNode(nodeId) { return currentNode && currentNode.id === nodeId ? currentNode : null; },
+    getNode(scopeKey, nodeId) { return activeScope === scopeKey ? boards[scopeKey] && boards[scopeKey][nodeId] : null; },
     create(payload) {
       createCalls += 1;
-      assert.equal(payload.title, '旧节点');
+      assert.equal(payload.title, 'A 旧节点');
       return new Promise((resolve) => { resolveCreate = resolve; });
     },
     apply(node, project) {
@@ -98,24 +109,34 @@ async function testCreateProjectCoordinatorSurvivesRestore() {
       saves += 1;
     },
   });
-  const payload = shortDrama.creationPayload(oldNode.params);
-  const first = coordinator.ensure('n7', payload, true);
-  currentNode = { id: 'n7', type: 'shortDrama', params: shortDrama.normalizeNodeParams({ title: '恢复节点' }), outputs: { shots: ['secret'] } };
-  const second = coordinator.ensure('n7', payload, true);
-  assert.strictEqual(second, first, 'restored node reuses the stable-id in-flight creation');
+  const payload = shortDrama.creationPayload(boardAOld.params);
+  const first = coordinator.ensure('local:board-a', 'n1', payload, true, null);
+  const duplicate = coordinator.ensure('local:board-a', 'n1', payload, true, null);
+  assert.strictEqual(duplicate, first, 'same board and node reuse the in-flight request');
+  activeScope = 'local:board-b';
   await Promise.resolve();
   assert.equal(createCalls, 1);
-  resolveCreate({ id: 'project-7', title: '服务端标题', ratio: '9:16', target_duration: 30, stage: 'draft' });
-  assert.equal(await first, 'project-7');
-  assert.equal(await second, 'project-7');
-  assert.equal(oldNode.params.project_id, null, 'detached pre-restore object is not mutated');
-  assert.equal(currentNode.params.project_id, 'project-7', 'current restored node receives the project');
-  assert.deepEqual(currentNode.outputs, {});
+  resolveCreate({ id: 'project-a', title: 'A 服务端标题', ratio: '9:16', target_duration: 30, stage: 'draft' });
+  assert.equal(await first, 'project-a');
+  assert.equal(boardBNode.params.project_id, null, 'same node id on board B is untouched');
+  assert.equal(boardAOld.params.project_id, null, 'inactive board A object is not mutated');
+  assert.equal(saves, 0);
+  assert.equal(coordinator.hasPending('local:board-a', 'n1'), false, 'pending entry is cleaned after settlement');
+  assert.equal(coordinator.hasCompleted('local:board-a', 'n1'), true, 'inactive result is retained by board scope');
+
+  const boardARestored = { id: 'n1', type: 'shortDrama', params: shortDrama.normalizeNodeParams({ title: 'A 恢复节点' }), outputs: { shots: ['secret'] } };
+  boards['local:board-a'].n1 = boardARestored;
+  activeScope = 'local:board-a';
+  const consumed = coordinator.ensure('local:board-a', 'n1', shortDrama.creationPayload(boardARestored.params), true, null);
+  assert.equal(await consumed, 'project-a');
+  assert.equal(createCalls, 1, 'reopening board A consumes the retained result without another POST');
+  assert.equal(boardARestored.params.project_id, 'project-a');
+  assert.deepEqual(boardARestored.outputs, {});
   assert.equal(saves, 1);
-  assert.equal(coordinator.hasPending('n7'), false, 'in-flight entry is cleaned after settlement');
+  assert.equal(coordinator.hasCompleted('local:board-a', 'n1'), false, 'completed entry clears after application');
 
   await assert.rejects(
-    coordinator.ensure('n8', shortDrama.creationPayload({ title: '只读节点' }), false),
+    coordinator.ensure('local:board-a', 'n8', shortDrama.creationPayload({ title: '只读节点' }), false, null),
     /只读/,
   );
   assert.equal(createCalls, 1, 'id-less readonly node never creates a project');
@@ -125,8 +146,43 @@ async function testCreateProjectCoordinatorSurvivesRestore() {
     create() { return Promise.reject(new Error('create failed')); },
     apply() { throw new Error('apply must not run'); },
   });
-  await assert.rejects(failed.ensure('n9', shortDrama.creationPayload({ title: '失败节点' }), true), /create failed/);
-  assert.equal(failed.hasPending('n9'), false, 'in-flight entry is also cleaned after rejection');
+  await assert.rejects(failed.ensure('local:board-f', 'n9', shortDrama.creationPayload({ title: '失败节点' }), true, null), /create failed/);
+  assert.equal(failed.hasPending('local:board-f', 'n9'), false, 'in-flight entry is also cleaned after rejection');
+}
+
+async function testCreateProjectCoordinatorPreservesConflictingLink() {
+  let resolveCreate;
+  let applyCalls = 0;
+  const node = { id: 'n1', type: 'shortDrama', params: shortDrama.normalizeNodeParams({ title: '冲突节点' }), outputs: {} };
+  const coordinator = shortDrama.createProjectCoordinator({
+    getNode(scopeKey, nodeId) { return scopeKey === 'collab:board-c' && nodeId === 'n1' ? node : null; },
+    create() { return new Promise((resolve) => { resolveCreate = resolve; }); },
+    apply() { applyCalls += 1; },
+  });
+  const pending = coordinator.ensure('collab:board-c', 'n1', shortDrama.creationPayload(node.params), true, null);
+  await Promise.resolve();
+  node.params.project_id = 'project-from-collaboration';
+  resolveCreate({ id: 'project-from-post', title: '迟到结果' });
+  assert.equal(await pending, 'project-from-collaboration');
+  assert.equal(node.params.project_id, 'project-from-collaboration');
+  assert.equal(applyCalls, 0, 'late POST never overwrites a different project link');
+  assert.equal(coordinator.hasCompleted('collab:board-c', 'n1'), false, 'conflicting retained result is discarded');
+}
+
+async function testCreateProjectCoordinatorScopeCleanup() {
+  let resolveCreate;
+  const coordinator = shortDrama.createProjectCoordinator({
+    getNode() { return null; },
+    create() { return new Promise((resolve) => { resolveCreate = resolve; }); },
+    apply() { throw new Error('deleted scope must never apply'); },
+  });
+  const pending = coordinator.ensure('local:deleted-board', 'n1', shortDrama.creationPayload({ title: '待删除' }), true, null);
+  await Promise.resolve();
+  coordinator.cleanupScope('local:deleted-board');
+  resolveCreate({ id: 'orphaned-project' });
+  assert.equal(await pending, 'orphaned-project');
+  assert.equal(coordinator.hasPending('local:deleted-board', 'n1'), false);
+  assert.equal(coordinator.hasCompleted('local:deleted-board', 'n1'), false, 'deleted scope does not retain a late result');
 }
 
 async function testPureHelpers() {
@@ -295,7 +351,9 @@ async function testPlanningErrorsPropagateWithoutApplying() {
 async function main() {
   testCanvasIntegration();
   testNodePersistenceHelpers();
-  await testCreateProjectCoordinatorSurvivesRestore();
+  await testCreateProjectCoordinatorIsBoardScoped();
+  await testCreateProjectCoordinatorPreservesConflictingLink();
+  await testCreateProjectCoordinatorScopeCleanup();
   await testPureHelpers();
   await testProjectRoutesAndPlanningFlow();
   await testPlanningErrorsPropagateWithoutApplying();
