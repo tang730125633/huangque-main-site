@@ -138,6 +138,42 @@ class ShortDramaPlanningTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 short_drama.normalize_plan(raw, {"target_duration": 30, "ratio": "9:16", "shot_count": 6})
 
+    def test_validate_planning_payload_requires_integer_duration_and_shot_count(self):
+        for field, values in (("dur", (True, 30.9, "30", [], {})),
+                              ("shot_count", (True, 6.0, 6.9, "6", [], {}))):
+            for value in values:
+                payload = {"prompt": "雨夜来客", "dur": 30, "ratio": "9:16", "shot_count": 6}
+                payload[field] = value
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    short_drama.validate_planning_payload(payload)
+
+    def test_normalize_plan_requires_integer_direct_settings(self):
+        for field, values in (("target_duration", (True, 30.0, 30.9, "30", [], {})),
+                              ("shot_count", (True, 6.0, 6.9, "6", [], {}))):
+            for value in values:
+                settings = {"target_duration": 30, "ratio": "9:16", "shot_count": 6}
+                settings[field] = value
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    short_drama.normalize_plan(valid_raw_plan(), settings)
+
+    def test_normalize_plan_rejects_non_string_source_type_cleanly(self):
+        for source_type in ([], {}):
+            raw = valid_raw_plan()
+            raw["characters"][0]["source_type"] = source_type
+            with self.subTest(source_type=source_type), self.assertRaises(ValueError):
+                short_drama.normalize_plan(raw, {"target_duration": 30, "ratio": "9:16", "shot_count": 6})
+
+    def test_validate_planning_payload_accepts_16_by_9_and_rejects_unsupported_values(self):
+        settings = short_drama.validate_planning_payload({
+            "prompt": "雨夜来客", "dur": 30, "ratio": "16:9", "shot_count": 6,
+        })
+        self.assertEqual(settings["ratio"], "16:9")
+        for patch in ({"dur": 20}, {"ratio": "1:1"}):
+            payload = {"prompt": "雨夜来客", "dur": 30, "ratio": "9:16", "shot_count": 6}
+            payload.update(patch)
+            with self.subTest(patch=patch), self.assertRaises(ValueError):
+                short_drama.validate_planning_payload(payload)
+
     def test_parse_and_normalize_plan_requires_json_object(self):
         with self.assertRaisesRegex(ValueError, "JSON"):
             short_drama.parse_and_normalize_plan("```json\n{}\n```", {
@@ -156,7 +192,7 @@ class ShortDramaPlanningTests(unittest.TestCase):
 
     def test_validate_planning_payload_normalizes_request_values(self):
         settings = short_drama.validate_planning_payload({
-            "prompt": " 雨夜来客 ", "dur": "30s", "ratio": "9:16", "shot_count": "6",
+            "prompt": " 雨夜来客 ", "dur": "30s", "ratio": "9:16", "shot_count": 6,
             "style": " 电影写实 ", "platform": " 抖音 ",
         })
 

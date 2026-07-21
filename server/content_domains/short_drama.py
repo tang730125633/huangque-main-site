@@ -155,20 +155,19 @@ def validate_planning_payload(payload):
     prompt = _text(data.get("prompt"), 4000)
     if not prompt:
         raise ValueError("请输入短剧需求")
-    duration_value = _text(data.get("dur") or data.get("target_duration"))
-    if duration_value.lower().endswith("s"):
-        duration_value = duration_value[:-1]
-    try:
-        target_duration = int(duration_value)
-    except (TypeError, ValueError):
+    duration_value = data.get("dur", data.get("target_duration"))
+    if type(duration_value) is int:
+        target_duration = duration_value
+    elif isinstance(duration_value, str) and duration_value.strip().lower() in {"30s", "45s", "60s"}:
+        target_duration = {"30s": 30, "45s": 45, "60s": 60}[duration_value.strip().lower()]
+    else:
         target_duration = 0
     ratio = _text(data.get("ratio") or "9:16")
     if ratio not in RATIOS:
         raise ValueError("短剧比例仅支持 9:16、16:9")
-    try:
-        shot_count = int(data.get("shot_count") or 6)
-    except (TypeError, ValueError):
-        shot_count = 0
+    shot_count = data.get("shot_count", 6)
+    if type(shot_count) is not int:
+        raise ValueError("分镜数量必须为整数")
     _validate_planning_limits(target_duration, shot_count)
     return {
         "prompt": prompt,
@@ -228,11 +227,13 @@ def normalize_plan(raw, settings):
     if not isinstance(raw, dict):
         raise ValueError("短剧规划必须是 JSON 对象")
     try:
-        target_duration = int(settings["target_duration"])
-        shot_count = int(settings["shot_count"])
-    except (KeyError, TypeError, ValueError):
+        target_duration = settings["target_duration"]
+        shot_count = settings["shot_count"]
+    except (KeyError, TypeError):
         raise ValueError("短剧规划设置无效")
-    if settings.get("ratio") not in RATIOS:
+    if type(target_duration) is not int or type(shot_count) is not int:
+        raise ValueError("短剧规划设置无效")
+    if not isinstance(settings.get("ratio"), str) or settings["ratio"] not in RATIOS:
         raise ValueError("短剧规划设置无效")
     _validate_planning_limits(target_duration, shot_count)
     required_top_level = {"title", "logline", "characters", "script", "shots"}
@@ -251,7 +252,7 @@ def normalize_plan(raw, settings):
         if not isinstance(character, dict):
             raise ValueError("角色数据无效")
         source_type = character.get("source_type", "ai_character")
-        if source_type not in {"cinematic_avatar", "ai_character"}:
+        if not isinstance(source_type, str) or source_type not in {"cinematic_avatar", "ai_character"}:
             raise ValueError("角色数据无效")
         voice_key = character.get("voice_key")
         if voice_key is not None and not isinstance(voice_key, str):
