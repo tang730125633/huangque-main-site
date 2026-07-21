@@ -2,13 +2,13 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const html = fs.readFileSync(
-  path.join(__dirname, '..', 'site', 'workbench', 'canvas.html'),
+const css = fs.readFileSync(
+  path.join(__dirname, '..', 'site', 'workbench', 'canvas', 'canvas.css'),
   'utf8'
 );
 
 function pixelValue(selector, property) {
-  const block = html.match(new RegExp(
+  const block = css.match(new RegExp(
     selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\{([^}]*)\\}'
   ));
   assert.ok(block, `missing CSS block: ${selector}`);

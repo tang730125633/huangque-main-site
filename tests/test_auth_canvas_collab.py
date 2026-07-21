@@ -236,7 +236,7 @@ class AuthCanvasCollabTests(unittest.TestCase):
             [{"type": "node.patch", "id": "n2", "fields": {"title": "Edited"}}],
             client_id="editor-tab",
             client=editor_client,
-            base_version=1,
+            base_version=2,
         )
         self.assertEqual(editor_batch["version"], 3)
 
@@ -249,7 +249,7 @@ class AuthCanvasCollabTests(unittest.TestCase):
                 {"type": "edge.patch", "id": edge_key, "fields": {"label": "approved"}},
                 {"type": "board.rename", "name": "Renamed Flow"},
             ],
-            base_version=1,
+            base_version=3,
         )
         self.assertEqual(patched["version"], 4)
 
@@ -311,13 +311,13 @@ class AuthCanvasCollabTests(unittest.TestCase):
                 },
                 {"type": "edge.patch", "id": edge_key, "fields": {"style": {"width": 2}}},
             ],
-            base_version=2,
+            base_version=3,
         )
         self._ops(
             board["id"],
             "delete-output-field",
             [{"type": "node.patch", "id": "n1", "fields": {"outputs": {"image": None}}}],
-            base_version=2,
+            base_version=4,
         )
 
         current = self._get("/api/auth/canvas/boards/%s" % board["id"])["board"]["data"]
@@ -365,15 +365,31 @@ class AuthCanvasCollabTests(unittest.TestCase):
             "owner-v2",
             [{"type": "node.patch", "id": "n1", "fields": {"owner_title": "owner"}}],
         )
+        # 新契约: 过期 base_version → 409 并回当前版本, 不再静默应用
+        with self.assertRaises(urllib.error.HTTPError) as stale:
+            self._ops(
+                board["id"],
+                "editor-stale-v1",
+                [{"type": "node.patch", "id": "n1", "fields": {"editor_x": 42}}],
+                client_id="editor-tab",
+                client=editor_client,
+                base_version=1,
+            )
+        self.assertEqual(stale.exception.code, 409)
+        stale_body = json.loads(stale.exception.read())
+        self.assertEqual(stale_body["version"], 2)
+
+        # 409 后先 sync 再带新版本重试 → 成功
+        synced = self._get("/api/auth/canvas/boards/%s/sync?since=1" % board["id"], editor_client)
+        self.assertFalse(synced["reset"])
         editor_result = self._ops(
             board["id"],
-            "editor-stale-v1",
+            "editor-v3",
             [{"type": "node.patch", "id": "n1", "fields": {"editor_x": 42}}],
             client_id="editor-tab",
             client=editor_client,
-            base_version=1,
+            base_version=synced["version"],
         )
-
         self.assertEqual(editor_result["version"], 3)
         self.assertEqual(editor_result["board"]["version"], 3)
         node = editor_result["board"]["data"]["nodes"][0]
@@ -386,9 +402,10 @@ class AuthCanvasCollabTests(unittest.TestCase):
             [{"type": "node.create", "node": {"id": "n2", "type": "text"}}],
             base_version=3,
         )
+        # 旧 op_id 重放(即使 base_version 过期) → 幂等 200, 版本不再涨
         duplicate = self._ops(
             board["id"],
-            "editor-stale-v1",
+            "editor-v3",
             [{"type": "node.patch", "id": "n1", "fields": {"editor_x": 42}}],
             client_id="editor-tab",
             client=editor_client,
@@ -399,18 +416,23 @@ class AuthCanvasCollabTests(unittest.TestCase):
         self.assertEqual(duplicate["board"]["version"], 4)
         self.assertEqual([item["id"] for item in duplicate["board"]["data"]["nodes"]], ["n1", "n2"])
 
-    def test_sync_resets_after_legacy_save_creates_a_version_gap(self):
+    def test_sync_checkpoint_after_save_avoids_reset(self):
         board = self._create_board()
         self._post(
             "/api/auth/canvas/boards/%s/save" % board["id"],
             {"version": 1, "data": {"nodes": [{"id": "saved", "type": "text"}], "edges": []}},
         )
 
+        # 新契约: /save 写入 board.snapshot 检查点批次, sync 走增量不再 reset
         synced = self._get("/api/auth/canvas/boards/%s/sync?since=1" % board["id"])
-        self.assertTrue(synced["reset"])
-        self.assertEqual(synced["board"]["data"]["nodes"][0]["id"], "saved")
+        self.assertFalse(synced["reset"])
+        self.assertEqual(synced["version"], 2)
+        self.assertEqual(len(synced["batches"]), 1)
+        snapshot = synced["batches"][0]["ops"][0]
+        self.assertEqual(snapshot["type"], "board.snapshot")
+        self.assertEqual(snapshot["data"]["nodes"][0]["id"], "saved")
 
-    def test_delete_wins_over_later_stale_patches(self):
+    def test_stale_patches_after_delete_rejected_with_conflict(self):
         board = self._create_board()
         self._ops(
             board["id"],
@@ -436,22 +458,28 @@ class AuthCanvasCollabTests(unittest.TestCase):
             ],
             base_version=2,
         )
-        self._ops(
-            board["id"],
-            "stale-patches",
-            [
-                {"type": "node.patch", "id": "n2", "fields": {"x": 100}},
-                {"type": "edge.patch", "id": edge_key, "fields": {"label": "revived"}},
-            ],
-            base_version=2,
-        )
+        # 新契约: 基于删除前版本的补丁批次 → 409, 删除结果保持不变
+        with self.assertRaises(urllib.error.HTTPError) as conflict:
+            self._ops(
+                board["id"],
+                "stale-patches",
+                [
+                    {"type": "node.patch", "id": "n2", "fields": {"x": 100}},
+                    {"type": "edge.patch", "id": edge_key, "fields": {"label": "revived"}},
+                ],
+                base_version=2,
+            )
+        self.assertEqual(conflict.exception.code, 409)
 
         current = self._get("/api/auth/canvas/boards/%s" % board["id"])["board"]
+        self.assertEqual(current["version"], 3)
         self.assertEqual([item["id"] for item in current["data"]["nodes"]], ["n1"])
         self.assertEqual(current["data"]["edges"], [])
 
     def test_sync_resets_when_retention_has_dropped_requested_history(self):
         board = self._create_board()
+        # 本用例只验证保留窗口裁剪, 放宽限频常量避免触发限频
+        self.auth.CANVAS_OPS_RATE_MAX_PER_WINDOW = 10 ** 9
         for index in range(1001):
             result, err = self.auth.apply_canvas_ops(
                 "owner",
@@ -459,7 +487,7 @@ class AuthCanvasCollabTests(unittest.TestCase):
                 {
                     "op_id": "retained-%d" % index,
                     "client_id": "retention-tab",
-                    "base_version": 1,
+                    "base_version": index + 1,
                     "ops": [{"type": "board.rename", "name": "Board %d" % index}],
                 },
             )
@@ -650,6 +678,187 @@ class AuthCanvasCollabTests(unittest.TestCase):
             editor_client,
         )
         self.assertEqual(refreshed["online_count"], 1)
+
+    def test_ops_rate_limited_after_window_exceeded(self):
+        board = self._create_board()
+        for index in range(self.auth.CANVAS_OPS_RATE_MAX_PER_WINDOW):
+            self._ops(
+                board["id"],
+                "rate-%d" % index,
+                [{"type": "board.rename", "name": "Rate %d" % index}],
+                base_version=index + 1,
+            )
+        with self.assertRaises(urllib.error.HTTPError) as limited:
+            self._ops(
+                board["id"],
+                "rate-overflow",
+                [{"type": "board.rename", "name": "Overflow"}],
+                base_version=self.auth.CANVAS_OPS_RATE_MAX_PER_WINDOW + 1,
+            )
+        self.assertEqual(limited.exception.code, 429)
+        body = json.loads(limited.exception.read())
+        self.assertIn("retry_after", body)
+
+    def test_presence_dedupes_rapid_heartbeats(self):
+        board = self._create_board()
+        first = self._post(
+            "/api/auth/canvas/boards/%s/presence" % board["id"],
+            {"client_id": "owner-tab"},
+        )
+        self.assertEqual(first["online_count"], 1)
+        self.assertNotIn("deduped", first)
+        second = self._post(
+            "/api/auth/canvas/boards/%s/presence" % board["id"],
+            {"client_id": "owner-tab"},
+        )
+        self.assertTrue(second["deduped"])
+        self.assertEqual(second["online_count"], 1)
+
+    def test_member_limit_blocks_new_invites_but_allows_role_change(self):
+        board = self._create_board()
+        self.auth.CANVAS_MAX_MEMBERS_PER_BOARD = 1
+        self._invite(board, "editor", "editor")
+        self._make_friends("owner", "viewer")
+        with self.assertRaises(urllib.error.HTTPError) as limited:
+            self._post(
+                "/api/auth/canvas/boards/%s/members" % board["id"],
+                {"account_id": self._account_id("viewer"), "role": "viewer"},
+            )
+        self.assertEqual(limited.exception.code, 429)
+        changed = self._post(
+            "/api/auth/canvas/boards/%s/members" % board["id"],
+            {"account_id": self._account_id("editor"), "role": "viewer"},
+        )
+        self.assertTrue(changed["ok"])
+        self.assertEqual(changed["members"][0]["role"], "viewer")
+
+    def test_sync_long_poll_waits_for_changes_and_validates_wait(self):
+        board = self._create_board()
+        started = self.auth.time.time()
+        waited = self._get("/api/auth/canvas/boards/%s/sync?since=1&wait=1" % board["id"])
+        self.assertFalse(waited["reset"])
+        self.assertEqual(waited["batches"], [])
+        self.assertGreaterEqual(self.auth.time.time() - started, 1)
+
+        outcome = {}
+        def long_poll():
+            outcome.update(self._get("/api/auth/canvas/boards/%s/sync?since=1&wait=5" % board["id"]))
+        poller = threading.Thread(target=long_poll)
+        poller.start()
+        self.auth.time.sleep(0.3)
+        self._ops(
+            board["id"],
+            "wake-poller",
+            [{"type": "board.rename", "name": "Wake"}],
+            base_version=1,
+        )
+        poller.join(timeout=6)
+        self.assertFalse(outcome["reset"])
+        self.assertEqual(len(outcome["batches"]), 1)
+        self.assertEqual(outcome["batches"][0]["op_id"], "wake-poller")
+
+        with self.assertRaises(urllib.error.HTTPError) as bad_wait:
+            self._get("/api/auth/canvas/boards/%s/sync?since=1&wait=abc" % board["id"])
+        self.assertEqual(bad_wait.exception.code, 400)
+
+    def test_sync_wait_degrades_when_user_slots_full(self):
+        board = self._create_board()
+        self.auth.CANVAS_SYNC_WAIT_MAX_PER_USER = 0
+        started = self.auth.time.time()
+        degraded = self._get("/api/auth/canvas/boards/%s/sync?since=1&wait=5" % board["id"])
+        self.assertLess(self.auth.time.time() - started, 5)
+        self.assertTrue(degraded["wait_degraded"])
+        self.assertFalse(degraded["reset"])
+        self.assertEqual(degraded["batches"], [])
+
+    def test_presence_cross_user_client_id_is_not_deduped(self):
+        board = self._create_board()
+        self._invite(board, "editor", "editor")
+        editor_client = self._login_client("editor")
+        first = self._post(
+            "/api/auth/canvas/boards/%s/presence" % board["id"],
+            {"client_id": "shared-tab"},
+        )
+        self.assertNotIn("deduped", first)
+        # 另一成员在 3 秒内复用同 client_id: 必须写库而非误判为重复心跳
+        second = self._post(
+            "/api/auth/canvas/boards/%s/presence" % board["id"],
+            {"client_id": "shared-tab"},
+            editor_client,
+        )
+        self.assertNotIn("deduped", second)
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            row = c.execute(
+                "SELECT username FROM canvas_presence WHERE board_id=? AND client_id=?",
+                (board["id"], "shared-tab"),
+            ).fetchone()
+        finally:
+            c.close()
+        self.assertEqual(row[0], "editor")
+        self.assertEqual(second["online_count"], 1)
+
+    def test_member_can_leave_board_but_owner_cannot(self):
+        board = self._create_board()
+        self._invite(board, "editor", "editor")
+        editor_client = self._login_client("editor")
+
+        left = self._post("/api/auth/canvas/boards/%s/leave" % board["id"], {}, editor_client)
+        self.assertTrue(left["ok"])
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            self._get("/api/auth/canvas/boards/%s" % board["id"], editor_client)
+        self.assertEqual(ctx.exception.code, 404)
+        read = self._get("/api/auth/canvas/boards/%s" % board["id"])
+        self.assertEqual(read["board"]["members"], [])
+
+        with self.assertRaises(urllib.error.HTTPError) as owner_ctx:
+            self._post("/api/auth/canvas/boards/%s/leave" % board["id"], {})
+        self.assertEqual(owner_ctx.exception.code, 400)
+
+    def test_presence_reports_online_users(self):
+        board = self._create_board()
+        self._invite(board, "editor", "editor")
+        editor_client = self._login_client("editor")
+        self._post("/api/auth/canvas/boards/%s/presence" % board["id"], {"client_id": "owner-tab"})
+        resp = self._post(
+            "/api/auth/canvas/boards/%s/presence" % board["id"],
+            {"client_id": "editor-tab"},
+            editor_client,
+        )
+        self.assertEqual(resp["online_count"], 2)
+        names = [item["username"] for item in resp["online_users"]]
+        self.assertEqual(names, ["editor", "owner"])
+        synced = self._get("/api/auth/canvas/boards/%s/sync?since=1" % board["id"])
+        self.assertEqual([item["username"] for item in synced["online_users"]], ["editor", "owner"])
+
+    def test_boards_list_pagination(self):
+        for _ in range(3):
+            self._create_board()
+        page = self._get("/api/auth/canvas/boards?limit=2")
+        self.assertEqual(len(page["boards"]), 2)
+        self.assertEqual(page["total"], 3)
+        rest = self._get("/api/auth/canvas/boards?limit=2&offset=2")
+        self.assertEqual(len(rest["boards"]), 1)
+        self.assertEqual(rest["total"], 3)
+        everything = self._get("/api/auth/canvas/boards")
+        self.assertEqual(len(everything["boards"]), 3)
+        self.assertEqual(everything["total"], 3)
+        with self.assertRaises(urllib.error.HTTPError) as bad_limit:
+            self._get("/api/auth/canvas/boards?limit=abc")
+        self.assertEqual(bad_limit.exception.code, 400)
+        with self.assertRaises(urllib.error.HTTPError) as bad_offset:
+            self._get("/api/auth/canvas/boards?offset=-1")
+        self.assertEqual(bad_offset.exception.code, 400)
+        # 稳定排序：三块板同一秒创建（updated_at 相同），
+        # 靠次键 id DESC 保证逐页拉取不重不漏，且与一次拉全的顺序一致
+        paged_ids = []
+        for off in range(3):
+            one = self._get("/api/auth/canvas/boards?limit=1&offset=%d" % off)
+            self.assertEqual(len(one["boards"]), 1)
+            self.assertEqual(one["total"], 3)
+            paged_ids.extend(b["id"] for b in one["boards"])
+        self.assertEqual(len(set(paged_ids)), 3)
+        self.assertEqual(paged_ids, [b["id"] for b in everything["boards"]])
 
 
 if __name__ == "__main__":
