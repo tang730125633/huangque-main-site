@@ -1652,6 +1652,49 @@ def set_membership_admin(who_admin, username, tier, reason="", now=None):
         c.close()
 
 
+def recharge_membership_admin(who_admin, username, tier, reason="", now=None):
+    """后台充值一年会员；同等级续费从现有到期日顺延，升级从当前时间起算。"""
+    username = (username or "").strip()
+    tier = (tier or "").strip()
+    if not username:
+        return None, "missing_username"
+    if tier not in MEMBERSHIP_TIERS:
+        return None, "invalid_tier"
+    now = int(now or time.time())
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+        if not row:
+            c.rollback()
+            return None, "not_found"
+        before = membership_for_row(row, now)
+        same_active_tier = before["membership_active"] and before["membership_tier"] == tier
+        base = max(now, int(row["membership_expires_at"] or 0)) if same_active_tier else now
+        expires_at = base + MEMBERSHIP_YEAR_SECONDS
+        c.execute(
+            "UPDATE users SET membership_tier=?,membership_started_at=?,membership_expires_at=? WHERE username=?",
+            (tier, now, expires_at, username),
+        )
+        fresh = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+        after = membership_for_row(fresh, now)
+        audit_id = _write_membership_audit(
+            c, username, before, after, who_admin, reason or "管理员充值一年会员", now,
+        )
+        invites.record_membership_upgrade(
+            c, fresh["id"], before["membership_tier"], after["membership_tier"],
+            "offline_admin", source_order_id="membership-recharge:%d" % audit_id,
+            operator=who_admin, now=now,
+        )
+        c.commit()
+        return public_admin_user(fresh), None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+
 def _activate_experience_membership(c, username, operator, reason, now, source_order_id=None):
     row = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
     if not row:
@@ -2536,6 +2579,28 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "user": user})
             except Exception:
                 return self._send(500, {"detail": "会员设置失败"})
+        if p == "/api/auth/admin/membership/recharge":
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                user, err = recharge_membership_admin(
+                    admin["username"], d.get("username"), d.get("tier"), d.get("reason") or "",
+                )
+                if err == "not_found":
+                    return self._send(404, {"detail": "用户不存在"})
+                if err == "invalid_tier":
+                    return self._send(400, {"detail": "会员等级无效"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, "user": user})
+            except Exception:
+                return self._send(500, {"detail": "会员充值失败"})
         if p == "/api/auth/admin/recharge/review":
             if not self._require_internal():
                 return

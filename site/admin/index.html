@@ -77,6 +77,8 @@
     .invite-config{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
     .invite-config label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px}
     .invite-config .field,.invite-config select{width:100%;min-width:0}
+    .membership-recharge{display:grid;grid-template-columns:minmax(220px,1fr) minmax(180px,.6fr) minmax(260px,1.4fr) auto;gap:10px;align-items:end;margin:0 0 16px;padding:14px;border:1px solid rgba(240,190,85,.22);border-radius:8px;background:rgba(240,190,85,.055)}
+    .membership-recharge label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px}.membership-recharge .field,.membership-recharge select{width:100%;min-width:0}
     .feature-card{border:1px solid var(--line);border-radius:8px;background:rgba(32,40,34,.72);padding:14px;display:flex;flex-direction:column;gap:12px;min-height:154px}
     .feature-card.off{border-color:rgba(224,107,100,.28);background:rgba(224,107,100,.06)}
     .feature-card .meta{display:flex;gap:8px;flex-wrap:wrap}
@@ -86,7 +88,7 @@
     details.eplist summary{cursor:pointer;font-size:12px;color:var(--info);user-select:none}
     details.eplist .ep{padding:6px 0 6px 12px;border-left:2px solid var(--line);margin-top:6px}
     details.eplist .ep code{font-size:11px;word-break:break-all}
-    @media (max-width:960px){.shell{padding:20px 14px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid,.invite-config{grid-template-columns:1fr}header{flex-direction:column}.user{width:100%}}
+    @media (max-width:960px){.shell{padding:20px 14px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid,.invite-config,.membership-recharge{grid-template-columns:1fr}header{flex-direction:column}.user{width:100%}}
   </style>
 </head>
 <body>
@@ -122,7 +124,7 @@
         <button class="tab" data-module-tab="logs">日志监控</button>
         <button class="tab" data-module-tab="features">功能开关</button>
         <button class="tab" data-module-tab="users">用户管理</button>
-        <button class="tab" data-module-tab="recharge">充值审批</button>
+        <button class="tab" data-module-tab="recharge">充值管理</button>
         <button class="tab" data-module-tab="invite">邀请管理</button>
       </div>
 
@@ -177,9 +179,16 @@
       </section>
       <section class="card span12 module-card" data-module="recharge" hidden>
         <div class="row" style="margin-bottom:12px">
-          <div><h2 style="margin:0">充值审批</h2><div class="hint">体验官订单确认到账后开通一年会员并赠送 1000 点；普通充值只给有效会员加点。</div></div>
+          <div><h2 style="margin:0">充值管理</h2><div class="hint">可由管理员直接充值一年会员，也可审批用户提交的体验官和点数充值订单。</div></div>
           <span class="muted" id="rechargeCount">-</span>
         </div>
+        <div class="membership-recharge" id="membershipRechargePanel">
+          <label>用户账号<input class="field" id="membershipRechargeUser" autocomplete="off" placeholder="输入完整 username"></label>
+          <label>充值会员等级<select id="membershipRechargeTier"><option value="experience">体验官 · 一年</option><option value="partner">合伙人 · 一年</option><option value="initiator">发起人 · 一年</option></select></label>
+          <label>充值原因<input class="field" id="membershipRechargeReason" maxlength="300" value="管理员充值一年会员"></label>
+          <button class="primary" id="membershipRechargeSubmit">确认充值</button>
+        </div>
+        <div class="hint" style="margin:-7px 0 14px">同等级续费从原到期日顺延一年；升级为更高等级时按新等级生效，并自动计算一级邀请奖励积分。奖励积分不会加入网站可用点数。</div>
         <div class="toolbar">
           <select id="rechargeStatus">
             <option value="pending">待审批</option>
@@ -413,12 +422,13 @@
     el('userCount').textContent='当前 '+items.length+' / 总 '+(d.total||0)+' 个账号';
     if(!items.length){el('usersBox').innerHTML='<div class="empty">暂无用户</div>';return}
     el('usersBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>账号</th><th>昵称</th><th>点数</th><th>会员</th><th>角色</th><th>改密</th><th>注册时间</th><th>操作</th></tr></thead><tbody>'+items.map(function(u){
-      return '<tr><td><b>'+esc(u.username)+'</b></td><td><div class="truncate" title="'+esc(u.display_name||'')+'">'+esc(u.display_name||'')+'</div></td><td><code>'+Number(u.points||0).toLocaleString()+'</code></td><td>'+membershipText(u)+'</td><td>'+esc(roleName(u.role))+'</td><td>'+(u.must_change?'<span class="pill warn">需改密</span>':'<span class="pill ok">正常</span>')+'</td><td><code>'+esc(u.created_at||'')+'</code></td><td><div class="actions"><button class="mini" data-act="member" data-user="'+esc(u.username)+'">设置会员</button><button class="mini" data-act="plus" data-user="'+esc(u.username)+'">加点</button><button class="mini danger" data-act="minus" data-user="'+esc(u.username)+'">扣点</button><button class="mini" data-act="audit" data-user="'+esc(u.username)+'">流水</button></div></td></tr>';
+      return '<tr><td><b>'+esc(u.username)+'</b></td><td><div class="truncate" title="'+esc(u.display_name||'')+'">'+esc(u.display_name||'')+'</div></td><td><code>'+Number(u.points||0).toLocaleString()+'</code></td><td>'+membershipText(u)+'</td><td>'+esc(roleName(u.role))+'</td><td>'+(u.must_change?'<span class="pill warn">需改密</span>':'<span class="pill ok">正常</span>')+'</td><td><code>'+esc(u.created_at||'')+'</code></td><td><div class="actions"><button class="mini" data-act="recharge" data-user="'+esc(u.username)+'">充值会员</button><button class="mini" data-act="member" data-user="'+esc(u.username)+'">调整会员</button><button class="mini" data-act="plus" data-user="'+esc(u.username)+'">加点</button><button class="mini danger" data-act="minus" data-user="'+esc(u.username)+'">扣点</button><button class="mini" data-act="audit" data-user="'+esc(u.username)+'">流水</button></div></td></tr>';
     }).join('')+'</tbody></table></div>';
     Array.prototype.forEach.call(document.querySelectorAll('#usersBox button'), function(btn){
       btn.onclick=function(){
         var act=btn.getAttribute('data-act'), username=btn.getAttribute('data-user');
         if(act==='audit') return loadAudit(username);
+        if(act==='recharge') return openMembershipRecharge(username);
         if(act==='member') return setMembership(username);
         adjustPoints(username, act==='minus'?-1:1);
       };
@@ -470,6 +480,23 @@
     api('/api/admin/membership/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,tier:tier,reason:reason})})
       .then(function(){toast(tier?'会员已设置，有效期一年':'会员已取消');loadUsers()})
       .catch(function(e){toast(e.message)});
+  }
+  function openMembershipRecharge(username){
+    el('membershipRechargeUser').value=username||'';
+    switchModule('recharge');
+    el('membershipRechargePanel').scrollIntoView({behavior:'smooth',block:'center'});
+    el('membershipRechargeTier').focus();
+  }
+  function rechargeMembership(){
+    var username=String(el('membershipRechargeUser').value||'').trim();
+    var tier=el('membershipRechargeTier').value;
+    var reason=String(el('membershipRechargeReason').value||'').trim();
+    if(!username){toast('请输入用户账号');return}
+    if(!confirm('确认给 '+username+' 充值一年'+membershipName(tier)+'？')) return;
+    var button=el('membershipRechargeSubmit');button.disabled=true;
+    api('/api/admin/membership/recharge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,tier:tier,reason:reason})})
+      .then(function(d){toast(username+' 已充值 '+membershipName(tier)+'，有效期至 '+fmtTime(d.user&&d.user.membership_expires_at));loadUsers()})
+      .catch(function(e){toast(e.message)}).finally(function(){button.disabled=false});
   }
   function orderStatus(s){
     if(s==='approved') return '<span class="pill ok">已通过</span>';
@@ -628,6 +655,7 @@
   el('reqNoise').onchange=loadReqLogs;
   el('reqSearch').oninput=function(){clearTimeout(state.reqTimer);state.reqTimer=setTimeout(loadReqLogs,300)};
   el('rechargeRefresh').onclick=loadRecharge;
+  el('membershipRechargeSubmit').onclick=rechargeMembership;
   el('rechargeStatus').onchange=loadRecharge;
   el('rechargeUser').oninput=function(){clearTimeout(state.rechargeTimer);state.rechargeTimer=setTimeout(loadRecharge,260)};
   el('inviteSave').onclick=saveInviteConfig;

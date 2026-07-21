@@ -1614,6 +1614,18 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": str(e)})
             except Exception as e:
                 return auth_error_response(self, e)
+        if path == "/api/admin/membership/recharge":
+            try:
+                return self._send(
+                    200,
+                    auth_admin_request(
+                        "/api/auth/admin/membership/recharge", self._token(), method="POST", payload=self._body(),
+                    ),
+                )
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return auth_error_response(self, e)
         if path == "/api/admin/recharge/review":
             try:
                 return self._send(

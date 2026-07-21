@@ -78,6 +78,24 @@ class MembershipSystemTests(unittest.TestCase):
         self.assertIsNone(err)
         self.assertFalse(user["membership_active"])
 
+    def test_admin_membership_recharge_extends_same_tier_by_one_year(self):
+        now = 1800000000
+        first, err = self.auth.recharge_membership_admin(
+            "admin", "buyer", "partner", "首次充值", now=now,
+        )
+        self.assertIsNone(err)
+        first_expiry = now + self.auth.MEMBERSHIP_YEAR_SECONDS
+        self.assertEqual(first["membership_tier"], "partner")
+        self.assertEqual(first["membership_expires_at"], first_expiry)
+
+        renewed, err = self.auth.recharge_membership_admin(
+            "admin", "buyer", "partner", "同级续费", now=now + 10,
+        )
+        self.assertIsNone(err)
+        self.assertEqual(
+            renewed["membership_expires_at"], first_expiry + self.auth.MEMBERSHIP_YEAR_SECONDS,
+        )
+
     def test_expired_membership_is_not_active(self):
         data = self.auth.membership_public("partner", 100, 200, now=201)
         self.assertFalse(data["membership_active"])
@@ -140,6 +158,9 @@ class MembershipSystemTests(unittest.TestCase):
         self.assertIn("membership_experience", recharge)
         self.assertIn("体验官 / 合伙人 / 发起人 / 取消会员", admin)
         self.assertIn("/api/admin/membership/set", admin)
+        self.assertIn("/api/admin/membership/recharge", admin)
+        self.assertIn("充值会员", admin)
+        self.assertIn("同等级续费从原到期日顺延一年", admin)
 
     def test_changed_page_inline_javascript_parses(self):
         for relative in (("site", "workbench", "recharge.html"), ("site", "admin", "index.html")):
