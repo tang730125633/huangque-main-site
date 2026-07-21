@@ -1392,7 +1392,7 @@ class H(BaseHTTPRequestHandler):
                     from . import image as image_domain
                     body = image_domain.validate_image_payload(body)
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
-                idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"} else ""
+                idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "video", "tryon", "xiaole_video", "sora_video", "cinematic"} else ""
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
             except miniprogram_security.ContentRejected as e:
                 return self._send(400, {"detail": str(e), "code": "content_rejected"})

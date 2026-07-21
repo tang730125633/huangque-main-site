@@ -337,10 +337,9 @@
   }
   function setNote(t,c){ note.innerHTML=t; note.style.color=c||'#5c6b82'; }
 
-  // ===== 并行生图：每人最多同时跑 MAX_PARALLEL 个（与后端 MAX_USER_RUNNING_IMAGE 同值）=====
-  // 改动前这里只存一个 hq_active_job，提交即把按钮 pointerEvents 关掉：用户点完「立即生成」
-  // 就再也点不了第二次。后端本来允许每人并行 3 个，是前端把它锁成了 1。
-  var MAX_PARALLEL=3, ACTIVE_KEY='hq_active_jobs';
+  // ===== 生图提交保护：一项完成前不开放第二次付费提交 =====
+  // 仍兼容恢复旧版本遗留的多任务记录，但当前页面只允许一个新任务在飞。
+  var MAX_RESTORED_JOBS=3, ACTIVE_KEY='hq_active_jobs';
   var active={};        // job_id -> {t0, label, iv}
   var stickyUntil=0;    // 成功/失败提示的保护期，别被 4s 一次的进度刷新盖掉
   var submitting=false; // POST 往返期间锁住按钮：此时 active 还没登记，连点会多提交、多扣点
@@ -354,12 +353,9 @@
     else localStorage.removeItem(ACTIVE_KEY);
   }
   function syncGen(){
-    var n=activeCount(), lock=(n>=MAX_PARALLEL)||submitting, full=n>=MAX_PARALLEL;
+    var n=activeCount(), lock=(n>0)||submitting;
     gen.disabled=lock; gen.style.pointerEvents=lock?'none':'auto'; gen.style.opacity=lock?'.55':'1';
-    gen.textContent = full ? ('生成中 '+n+'/'+MAX_PARALLEL+' · 等一个完成')
-                    : submitting ? '提交中…'
-                    : n ? (genLabel()+' · 进行中 '+n)
-                        : genLabel();
+    gen.textContent = submitting ? '提交中…' : n ? ('生成中 '+n+' · 请等待完成') : genLabel();
     // 只在「一张都还没出过」时给结果区打码：第 2、3 个任务在跑时不该把已出的图糊掉
     res.style.filter=(n && !lastResultUrl) ? 'blur(3px) brightness(.6)' : 'none';
     ['tplApply','tplGenerate'].forEach(function(id){var b=document.getElementById(id); if(b) b.disabled=lock;});
@@ -656,19 +652,23 @@
     active[id]={t0:t0, label:(label||'生成中').replace(/（.*$/,''), iv:iv};
     saveActive(); syncGen();
   }
+  function newIdempotencyKey(){
+    if(window.crypto&&crypto.randomUUID) return 'image-'+crypto.randomUUID();
+    return 'image-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,12);
+  }
   function submit(payload, label, endpoint){
     endpoint=endpoint||'/api/gen/image'; lastEndpoint=endpoint;
     if(!payload.prompt){ flash('请先输入提示词','#f4708a'); return; }
     if(submitting) return;
-    if(activeCount()>=MAX_PARALLEL){ flash('最多同时生成 '+MAX_PARALLEL+' 张，等一个完成再提交','#f4708a'); return; }
+    if(activeCount()){ flash('已有任务生成中，请等待完成','#f4708a'); return; }
     lastPayload=payload; submitting=true; syncGen();
     var hint = endpoint==='/api/gen/banana'
                  ? (bananaVariant==='pro' ? '纳米香蕉 Pro 约 1-2 分钟' : '纳米香蕉 2 约 30-90 秒')
              : engine==='seedream' ? (seedreamVariant==='pro' ? '黄雀引擎 1 Pro 约 1.5 分钟' : '黄雀引擎 1 标准约 30-40 秒')
              : '黄雀引擎 2 高清约 1-2 分钟';
     flash(label+' · '+hint,'#2dd4bf');
-    var t0=Date.now();
-    fetch(endpoint,{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    var t0=Date.now(), idemKey=newIdempotencyKey();
+    fetch(endpoint,{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json','Idempotency-Key':idemKey},body:JSON.stringify(payload)})
       .then(function(r){ return r.text().then(function(t){
         var d={};
         try{ d=t?JSON.parse(t):{}; }catch(e){ d={detail:(r.status===413?'图片太大，请压缩后重试':(t||'').replace(/<[^>]+>/g,' ').trim().slice(0,120))}; }
@@ -983,7 +983,7 @@
     var saved=JSON.parse(localStorage.getItem(ACTIVE_KEY)||'[]');
     var legacy=JSON.parse(localStorage.getItem('hq_active_job')||'null');
     if(legacy&&legacy.id){ saved.push(legacy); localStorage.removeItem('hq_active_job'); }
-    saved.slice(0,MAX_PARALLEL).forEach(function(j){ if(j&&j.id) poll(j.id, j.t0||Date.now(), j.label); });
+    saved.slice(0,MAX_RESTORED_JOBS).forEach(function(j){ if(j&&j.id) poll(j.id, j.t0||Date.now(), j.label); });
   }catch(e){}
 
   // 结果区按钮
