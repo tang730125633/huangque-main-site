@@ -104,6 +104,12 @@
     if(key==='pro' || key.indexOf('banana pro')>=0 || key.indexOf('gemini-3-pro')>=0) return '纳米香蕉 Pro';
     return type==='video' ? '视频引擎' : '图片引擎';
   }
+  function watermarkHtml(){
+    return '<span class="inspiration-watermark" aria-hidden="true" style="position:absolute; right:10px; bottom:54px; z-index:2; pointer-events:none; padding:4px 8px; border:1px solid rgba(255,255,255,.42); border-radius:6px; background:rgba(7,11,19,.5); color:rgba(255,255,255,.88); font-size:10px; font-weight:700; letter-spacing:.08em; text-shadow:0 1px 3px rgba(0,0,0,.75); backdrop-filter:blur(3px);">黄雀AI · 灵感样片</span>';
+  }
+  function cleanPrompt(value){
+    return String(value||'').replace(/无文字无水印/g,'无文字').replace(/无水印/g,'').replace(/，{2,}/g,'，').replace(/,\s*,/g,',').trim();
+  }
   var DATA=[], curCat='all', LIKE_COUNTS={}, LIKED={};
   function likeTotal(x){ return Math.max(0, Number(x.count)||0) + (LIKE_COUNTS[String(x.id)]||0); }
   function likeButton(x){
@@ -151,7 +157,7 @@
     var play=isVid?'<div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; opacity:0.9;"><div style="width:46px; height:46px; border-radius:50%; background:rgba(7,11,19,.65); backdrop-filter:blur(4px); border:1px solid rgba(231,178,76,.5); display:flex; align-items:center; justify-content:center; color:#e7b24c;"><svg viewBox="0 0 24 24" fill="currentColor" style="width:18px;height:18px;"><path d="M7 4v16l13-8z"/></svg></div></div>':'';
     var dur=(isVid&&x.duration)?'<span style="position:absolute; right:10px; top:10px; padding:2px 7px; font-size:10px; border-radius:5px; background:rgba(7,11,19,.7); color:#eaf1fa; font-family:\'JetBrains Mono\',monospace;">'+x.duration+'</span>':'';
     a.innerHTML='<img src="'+x.image+'" loading="lazy" style="display:block; width:100%; height:auto; object-fit:cover;">'
-      +play+dur
+      +play+dur+watermarkHtml()
       +'<span style="position:absolute; top:10px; left:10px; padding:3px 9px; font-size:10.5px; font-weight:600; border-radius:6px; background:rgba(7,11,19,.62); color:#e7b24c;">'+badge+'</span>'
       +'<div style="position:absolute; left:0; right:0; bottom:0; padding:26px 12px 11px; background:linear-gradient(transparent,rgba(7,11,19,.9)); transition:opacity .2s;">'
       +'<div style="font-size:13px; font-weight:600; color:#eaf1fa; margin-bottom:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">'+(x.title||'')+'</div>'
@@ -241,7 +247,7 @@
     var jumpLabel=isVid?'🎬 一键跟创（去视频页）':'🎨 一键跟创（去作图）';
     dlgEl.innerHTML=''
       +'<div style="display:flex; max-width:880px; width:100%; max-height:88vh; background:#0d1119; border:1px solid rgba(231,178,76,.2); border-radius:18px; overflow:hidden;">'
-      +  '<div style="flex:1.1; min-width:0; background:#05080d; display:flex; align-items:center; justify-content:center;"><img src="'+x.image+'" style="display:block; max-width:100%; max-height:88vh; object-fit:contain;"></div>'
+      +  '<div style="position:relative; flex:1.1; min-width:0; background:#05080d; display:flex; align-items:center; justify-content:center;"><img src="'+x.image+'" style="display:block; max-width:100%; max-height:88vh; object-fit:contain;">'+watermarkHtml()+'</div>'
       +  '<div style="flex:1; min-width:280px; display:flex; flex-direction:column; padding:22px; overflow:auto;">'
       +    '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;"><div style="font-size:18px; font-weight:700;">'+(x.title||'创作详情')+'</div><span id="dlgClose" style="cursor:pointer; color:#94a4bb; font-size:24px; line-height:1; padding:0 4px;">&times;</span></div>'
       +    '<div style="display:flex; align-items:center; gap:5px; font-size:12px; color:#94a4bb; margin-bottom:16px;">'+(x.category||'')+(badge?(' · '+badge):'')+' · '+likeButton(x)+'</div>'
@@ -257,7 +263,7 @@
       +    (isVid?'<div style="font-size:11px; color:#5c6b82; text-align:center; margin-top:8px;">视频功能完善中，部分能力陆续开放</div>':'')
       +  '</div>'
       +'</div>';
-    var ta=dlgEl.querySelector('#dlgPrompt'); ta.value=x.prompt||'';
+    var ta=dlgEl.querySelector('#dlgPrompt'); ta.value=cleanPrompt(x.prompt||'');
     bindLikeButton(dlgEl,x);
     dlgEl.querySelector('#dlgClose').onclick=closeDlg;
     // 弹窗内粘贴你的图 → 跟创时带去作图页当参考图（把这个灵感风格套到你的图上，图生图）
