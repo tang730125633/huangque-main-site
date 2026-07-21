@@ -10,6 +10,7 @@
     { "name": "认证", "description": "登录 / 用户信息 / 点数(auth 8095)" },
     { "name": "作图", "description": "gpt-image + nano banana(content 8096 / imggen 8101)" },
     { "name": "文案", "description": "AI 文案 / 分镜脚本(content 8096)" },
+    { "name": "短剧策划", "description": "短剧项目、策划应用和阶段确认(content 8096)" },
     { "name": "配音音色", "description": "TTS 配音 + 个人音色克隆(content 8096)" },
     { "name": "视频", "description": "HeyGen 数字人视频(content 8096)" },
     { "name": "采集获客", "description": "内容爬取 + 关键词获客(leadgen 8100)" },
@@ -23,8 +24,108 @@
     },
     "schemas": {
       "JobAccepted": { "type": "object", "description": "异步任务受理", "properties": { "job_id": { "type": "integer" }, "cost": { "type": "integer", "description": "本次扣的点数" }, "points_left": { "type": "integer" } } },
-      "JobStatus": { "type": "object", "properties": { "id": { "type": "integer" }, "kind": { "type": "string" }, "status": { "type": "string", "enum": ["pending", "running", "done", "error"] }, "result": { "type": "object", "description": "成功时结果(结构随 kind 不同)" }, "error": { "type": "string" }, "created_at": { "type": "integer" }, "updated_at": { "type": "integer" } } },
+      "JobStatus": { "type": "object", "properties": { "id": { "type": "integer" }, "kind": { "type": "string" }, "status": { "type": "string", "enum": ["pending", "running", "done", "error"] }, "result": { "description": "成功时结果；短剧 copy job 使用 ShortDramaPlanningResult（传输时也可能是其 JSON 字符串）", "anyOf": [{ "type": "object" }, { "$ref": "#/components/schemas/ShortDramaPlanningResult" }] }, "error": { "type": "string" }, "created_at": { "type": "integer" }, "updated_at": { "type": "integer" } } },
       "User": { "type": "object", "properties": { "username": { "type": "string" }, "name": { "type": "string" }, "points": { "type": "integer" }, "role": { "type": "string" }, "must_change": { "type": "boolean" } } },
+      "ShortDramaDialogueLine": {
+        "type": "object", "required": ["id", "character_key", "text"], "additionalProperties": false,
+        "properties": { "id": { "type": "string", "maxLength": 80 }, "character_key": { "type": "string", "maxLength": 80 }, "text": { "type": "string", "maxLength": 4000 } }
+      },
+      "ShortDramaCharacter": {
+        "type": "object", "required": ["character_key", "name", "identity_text", "personality", "source_type", "appearance_prompt", "wardrobe_prompt", "voice_settings"],
+        "properties": {
+          "id": { "type": "string", "readOnly": true }, "project_id": { "type": "string", "readOnly": true },
+          "character_key": { "type": "string", "maxLength": 80 }, "name": { "type": "string", "maxLength": 80 },
+          "identity_text": { "type": "string", "maxLength": 2000 }, "personality": { "type": "string", "maxLength": 2000 },
+          "source_type": { "type": "string", "enum": ["cinematic_avatar", "ai_character"] }, "avatar_id": { "type": "string", "nullable": true },
+          "appearance_prompt": { "type": "string", "maxLength": 4000 }, "wardrobe_prompt": { "type": "string", "maxLength": 4000 },
+          "voice_key": { "type": "string", "nullable": true, "maxLength": 80 }, "voice_settings": { "type": "object", "additionalProperties": true },
+          "sort_order": { "type": "integer", "readOnly": true }
+        }
+      },
+      "ShortDramaScriptVersion": {
+        "type": "object", "required": ["title", "logline", "hook", "conflict_text", "turn_text", "ending", "dialogue_lines"],
+        "properties": {
+          "id": { "type": "string", "readOnly": true }, "project_id": { "type": "string", "readOnly": true }, "version": { "type": "integer", "readOnly": true, "minimum": 1 },
+          "title": { "type": "string", "maxLength": 80 }, "logline": { "type": "string", "maxLength": 4000 }, "hook": { "type": "string", "maxLength": 4000 },
+          "conflict_text": { "type": "string", "maxLength": 4000 }, "turn_text": { "type": "string", "maxLength": 4000 }, "ending": { "type": "string", "maxLength": 4000 },
+          "dialogue_lines": { "type": "array", "items": { "$ref": "#/components/schemas/ShortDramaDialogueLine" } }, "created_at": { "type": "integer", "readOnly": true }
+        }
+      },
+      "ShortDramaShot": {
+        "type": "object", "required": ["shot_key", "duration", "scene_description", "camera_description", "character_keys", "dialogue_line_ids", "image_prompt", "video_prompt"],
+        "properties": {
+          "id": { "type": "string", "readOnly": true }, "project_id": { "type": "string", "readOnly": true }, "script_version": { "type": "integer", "readOnly": true },
+          "shot_key": { "type": "string", "maxLength": 80 }, "sort_order": { "type": "integer", "readOnly": true }, "duration": { "type": "integer", "enum": [5, 10] },
+          "scene_description": { "type": "string", "maxLength": 4000 }, "camera_description": { "type": "string", "maxLength": 4000 },
+          "character_keys": { "type": "array", "uniqueItems": true, "items": { "type": "string" } }, "dialogue_line_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+          "image_prompt": { "type": "string", "maxLength": 8000 }, "video_prompt": { "type": "string", "maxLength": 8000 }
+        }
+      },
+      "ShortDramaProject": {
+        "type": "object", "required": ["id", "title", "synopsis", "ratio", "target_duration", "shot_count", "visual_style", "target_platform", "point_budget", "spent_points", "stage", "revision", "characters", "script_versions", "shots"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" }, "title": { "type": "string", "maxLength": 80 }, "synopsis": { "type": "string", "minLength": 8, "maxLength": 4000 },
+          "ratio": { "type": "string", "enum": ["9:16", "16:9"] }, "target_duration": { "type": "integer", "enum": [30, 45, 60] }, "shot_count": { "type": "integer", "minimum": 6, "maximum": 10 },
+          "visual_style": { "type": "string", "maxLength": 80, "default": "电影写实" }, "target_platform": { "type": "string", "maxLength": 80, "default": "抖音" },
+          "point_budget": { "type": "integer", "minimum": 0 }, "spent_points": { "type": "integer", "minimum": 0, "readOnly": true },
+          "stage": { "type": "string", "readOnly": true, "enum": ["draft", "characters_review", "script_review", "storyboard_review", "stills_review"] },
+          "revision": { "type": "integer", "readOnly": true, "minimum": 1 }, "created_at": { "type": "integer", "readOnly": true }, "updated_at": { "type": "integer", "readOnly": true },
+          "characters": { "type": "array", "items": { "$ref": "#/components/schemas/ShortDramaCharacter" } },
+          "script_versions": { "type": "array", "items": { "$ref": "#/components/schemas/ShortDramaScriptVersion" } },
+          "shots": { "type": "array", "items": { "$ref": "#/components/schemas/ShortDramaShot" } }
+        }
+      },
+      "ShortDramaPlanningRequest": {
+        "type": "object", "required": ["format", "prompt", "dur", "ratio", "shot_count"], "additionalProperties": false,
+        "properties": {
+          "format": { "type": "string", "enum": ["short_drama"] }, "prompt": { "type": "string", "minLength": 1, "maxLength": 4000 },
+          "dur": { "type": "string", "enum": ["30s", "45s", "60s"] }, "ratio": { "type": "string", "enum": ["9:16", "16:9"] },
+          "shot_count": { "type": "integer", "minimum": 6, "maximum": 10 }, "style": { "type": "string", "maxLength": 80 }, "platform": { "type": "string", "maxLength": 80 }
+        }
+      },
+      "ShortDramaPlanningResult": {
+        "type": "object", "required": ["type", "mode", "plan", "prompt", "dur", "ratio", "shot_count"], "additionalProperties": false,
+        "properties": {
+          "type": { "type": "string", "enum": ["copy"] }, "mode": { "type": "string", "enum": ["short_drama"] },
+          "prompt": { "type": "string" }, "dur": { "type": "string", "enum": ["30s", "45s", "60s"] }, "ratio": { "type": "string", "enum": ["9:16", "16:9"] },
+          "shot_count": { "type": "integer", "minimum": 6, "maximum": 10 },
+          "plan": {
+            "type": "object", "required": ["title", "logline", "characters", "script", "shots"], "additionalProperties": false,
+            "properties": {
+              "title": { "type": "string" }, "logline": { "type": "string" },
+              "characters": { "type": "array", "items": {
+                "type": "object", "required": ["key", "name", "identity", "identity_text", "personality", "appearance_prompt", "wardrobe_prompt", "source_type", "voice_key", "voice_settings"], "additionalProperties": false,
+                "properties": {
+                  "key": { "type": "string" }, "name": { "type": "string" }, "identity": { "type": "string" }, "identity_text": { "type": "string" }, "personality": { "type": "string" },
+                  "appearance_prompt": { "type": "string" }, "wardrobe_prompt": { "type": "string" }, "source_type": { "type": "string", "enum": ["cinematic_avatar", "ai_character"] },
+                  "voice_key": { "type": "string", "nullable": true }, "voice_settings": { "type": "object", "additionalProperties": true }
+                }
+              } },
+              "script": {
+                "type": "object", "required": ["title", "logline", "hook", "conflict", "conflict_text", "turn", "turn_text", "ending", "dialogue_lines"], "additionalProperties": false,
+                "properties": {
+                  "title": { "type": "string" }, "logline": { "type": "string" }, "hook": { "type": "string" }, "conflict": { "type": "string" },
+                  "conflict_text": { "type": "string" }, "turn": { "type": "string" }, "turn_text": { "type": "string" }, "ending": { "type": "string" },
+                  "dialogue_lines": { "type": "array", "items": { "$ref": "#/components/schemas/ShortDramaDialogueLine" } }
+                }
+              },
+              "shots": { "type": "array", "minItems": 6, "maxItems": 10, "items": {
+                "type": "object", "required": ["key", "duration", "scene_description", "camera_description", "character_keys", "dialogue_line_ids", "image_prompt", "video_prompt"], "additionalProperties": false,
+                "properties": {
+                  "key": { "type": "string" }, "duration": { "type": "integer", "enum": [5, 10] }, "scene_description": { "type": "string" }, "camera_description": { "type": "string" },
+                  "character_keys": { "type": "array", "uniqueItems": true, "items": { "type": "string" } }, "dialogue_line_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+                  "image_prompt": { "type": "string" }, "video_prompt": { "type": "string" }
+                }
+              } }
+            }
+          }
+        }
+      },
+      "RevisionConflict": {
+        "type": "object", "required": ["detail", "code"], "properties": {
+          "detail": { "type": "string" }, "code": { "type": "string", "enum": ["revision_conflict", "job_already_applied"] }
+        }
+      },
       "Error": { "type": "object", "properties": { "detail": { "type": "string" } } }
     }
   },
@@ -50,6 +151,114 @@
     "/api/auth/me": {
       "get": { "tags": ["认证"], "summary": "当前用户信息 / 点数", "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object", "properties": { "user": { "$ref": "#/components/schemas/User" } } } } } }, "401": { "description": "未登录" } } }
     },
+    "/api/gen/short-drama/projects": {
+      "get": {
+        "tags": ["短剧策划"], "summary": "列出当前用户的短剧项目", "description": "Free / no points. 仅返回 Bearer 用户本人创建且未删除的项目。",
+        "responses": {
+          "200": { "description": "项目列表", "content": { "application/json": { "schema": { "type": "object", "required": ["items"], "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/ShortDramaProject" } } } } } } },
+          "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      },
+      "post": {
+        "tags": ["短剧策划"], "summary": "创建短剧项目", "description": "Free / no points. 创建 draft 项目；不会创建生成任务。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["title", "synopsis", "ratio", "target_duration", "shot_count"], "additionalProperties": false,
+          "properties": {
+            "title": { "type": "string", "minLength": 1, "maxLength": 80 }, "synopsis": { "type": "string", "minLength": 8, "maxLength": 4000 },
+            "ratio": { "type": "string", "enum": ["9:16", "16:9"] }, "target_duration": { "type": "integer", "enum": [30, 45, 60] },
+            "shot_count": { "type": "integer", "minimum": 6, "maximum": 10 }, "visual_style": { "type": "string", "maxLength": 80, "default": "电影写实" },
+            "target_platform": { "type": "string", "maxLength": 80, "default": "抖音" }, "point_budget": { "type": "integer", "minimum": 0, "default": 0 }
+          }
+        } } } },
+        "responses": {
+          "200": { "description": "已创建", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
+          "400": { "description": "字段、类型或取值无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录；认证先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/api/gen/short-drama/project": {
+      "get": {
+        "tags": ["短剧策划"], "summary": "读取短剧项目详情", "description": "Free / no points. 详情严格按创建者隔离；非创建者与不存在的 ID 均返回相同的 404，不提供 ACL 或共享详情读取。",
+        "parameters": [{ "name": "id", "in": "query", "required": true, "schema": { "type": "string" }, "description": "短剧项目 UUID" }],
+        "responses": {
+          "200": { "description": "项目详情", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
+          "400": { "description": "缺少项目 ID", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "项目不存在或当前用户不是创建者（owner-only）", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      },
+      "put": {
+        "tags": ["短剧策划"], "summary": "保存项目设置或一个审核内容分区", "description": "Free / no points. 所有变体必须带当前 revision。设置仅在 draft 可由前端编辑；内容变体每次严格只允许 characters、script、shots 之一，并依次限定在 characters_review、script_review、storyboard_review 阶段。script 保存会追加新版本。成功后 revision 加 1。",
+        "parameters": [{ "name": "id", "in": "query", "required": true, "schema": { "type": "string" }, "description": "短剧项目 UUID" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "oneOf": [
+          {
+            "type": "object", "required": ["revision"], "additionalProperties": false,
+            "anyOf": [
+              { "required": ["title"] }, { "required": ["synopsis"] }, { "required": ["ratio"] }, { "required": ["target_duration"] },
+              { "required": ["shot_count"] }, { "required": ["visual_style"] }, { "required": ["target_platform"] }, { "required": ["point_budget"] }
+            ],
+            "properties": {
+              "revision": { "type": "integer", "minimum": 1 }, "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+              "synopsis": { "type": "string", "minLength": 8, "maxLength": 4000 }, "ratio": { "type": "string", "enum": ["9:16", "16:9"] },
+              "target_duration": { "type": "integer", "enum": [30, 45, 60] }, "shot_count": { "type": "integer", "minimum": 6, "maximum": 10 },
+              "visual_style": { "type": "string", "maxLength": 80 }, "target_platform": { "type": "string", "maxLength": 80 }, "point_budget": { "type": "integer", "minimum": 0 }
+            }
+          },
+          {
+            "type": "object", "required": ["revision", "characters"], "additionalProperties": false,
+            "properties": { "revision": { "type": "integer", "minimum": 1 }, "characters": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/ShortDramaCharacter" } } }
+          },
+          {
+            "type": "object", "required": ["revision", "script"], "additionalProperties": false,
+            "properties": { "revision": { "type": "integer", "minimum": 1 }, "script": { "$ref": "#/components/schemas/ShortDramaScriptVersion" } }
+          },
+          {
+            "type": "object", "required": ["revision", "shots"], "additionalProperties": false,
+            "properties": { "revision": { "type": "integer", "minimum": 1 }, "shots": { "type": "array", "minItems": 6, "maxItems": 10, "items": { "$ref": "#/components/schemas/ShortDramaShot" } } }
+          }
+        ] } } } },
+        "responses": {
+          "200": { "description": "已保存且 revision 加 1；不扣点", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
+          "400": { "description": "字段无效、混合多个内容分区或当前阶段不可编辑", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录；认证先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "项目不存在或当前用户不是创建者（owner-only）", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "revision_conflict：提交的 revision 已过期，须刷新后重试", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RevisionConflict" } } } }
+        }
+      }
+    },
+    "/api/gen/short-drama/apply-plan": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "把已完成的短剧策划任务应用到项目", "description": "应用本身不再次扣点；只接受当前用户本人已完成且 mode=short_drama 的 copy job。项目 spent_points 增加该 job 在服务端记录的实际 cost，不能由客户端指定。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["project_id", "revision", "job_id"], "additionalProperties": false,
+          "properties": { "project_id": { "type": "string" }, "revision": { "type": "integer", "minimum": 1 }, "job_id": { "type": "integer", "minimum": 1 } }
+        } } } },
+        "responses": {
+          "200": { "description": "策划已应用，进入 characters_review", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
+          "400": { "description": "任务未完成、类型/模式/结果无效或字段不正确", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录；认证先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "项目或 copy job 不存在，或不属于当前用户", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "revision_conflict，或 job_already_applied（同一 job 不能重复应用）", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RevisionConflict" } } } }
+        }
+      }
+    },
+    "/api/gen/short-drama/confirm": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "确认当前短剧审核阶段", "description": "Free / no points. 按 characters_review → script_review → storyboard_review → stills_review 顺序确认；禁止跳级，成功后 revision 加 1。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["project_id", "revision", "stage"], "additionalProperties": false,
+          "properties": { "project_id": { "type": "string" }, "revision": { "type": "integer", "minimum": 1 }, "stage": { "type": "string", "enum": ["characters_review", "script_review", "storyboard_review"] } }
+        } } } },
+        "responses": {
+          "200": { "description": "已进入下一阶段；不扣点", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
+          "400": { "description": "阶段无效或试图跳过当前阶段", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录；认证先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "项目不存在或当前用户不是创建者（owner-only）", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "revision_conflict：提交的 revision 已过期", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RevisionConflict" } } } }
+        }
+      }
+    },
     "/api/gen/image": {
       "post": {
         "tags": ["作图"], "summary": "gpt-image 作图(文生图/图生图/局部修改) · 12点",
@@ -68,10 +277,25 @@
     },
     "/api/gen/copy": {
       "post": {
-        "tags": ["文案"], "summary": "AI 文案 / 分镜脚本 · 3点",
-        "description": "异步。format=script → 返回分镜脚本;否则返回 n 条通用文案。",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["prompt"], "properties": { "prompt": { "type": "string", "description": "文案需求/选题" }, "ctype": { "type": "string", "default": "通用" }, "format": { "type": "string", "description": "填 script 出分镜脚本" }, "style": { "type": "string", "example": "口播", "description": "format=script 时" }, "dur": { "type": "string", "example": "30s", "description": "format=script 时" }, "platform": { "type": "string", "example": "抖音", "description": "format=script 时" }, "n": { "type": "integer", "default": 2, "description": "1-3,通用文案条数" } } } } } },
-        "responses": { "200": { "description": "受理", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } }, "402": { "description": "点数不足" } }
+        "tags": ["文案"], "summary": "AI 文案 / 分镜脚本 / 短剧策划 · 当前 3点",
+        "description": "付费异步任务。服务端当前 copy 价格为 3 点，但客户端必须以 200 响应的 cost 为准并在提交前确认，不得硬编码扣费。format=short_drama 时按 dur、ratio、shot_count 生成严格规划；轮询 job 后得到 {mode:'short_drama',plan:{...}}，再由 owner 调用 apply-plan。项目创建、读取、保存和阶段确认均免费。",
+        "x-job-result-schema": { "$ref": "#/components/schemas/ShortDramaPlanningResult" },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "oneOf": [
+          {
+            "type": "object", "required": ["prompt"],
+            "properties": {
+              "prompt": { "type": "string", "description": "文案需求/选题" }, "ctype": { "type": "string", "default": "通用" },
+              "format": { "type": "string", "not": { "enum": ["short_drama"] }, "description": "script 为普通分镜脚本；省略则为通用文案" },
+              "style": { "type": "string", "example": "口播" }, "dur": { "type": "string", "example": "30s" },
+              "platform": { "type": "string", "example": "抖音" }, "n": { "type": "integer", "minimum": 1, "maximum": 3, "default": 2 }
+            }
+          },
+          { "$ref": "#/components/schemas/ShortDramaPlanningRequest" }
+        ] } } } },
+        "responses": {
+          "200": { "description": "受理；返回 job_id、服务端报告的当前 cost（目前 3 点）和 points_left", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } },
+          "400": { "description": "短剧时长、画幅、分镜数或组合无效" }, "401": { "description": "未登录" }, "402": { "description": "点数不足" }
+        }
       }
     },
     "/api/gen/audio": {
