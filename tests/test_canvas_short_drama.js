@@ -427,6 +427,20 @@ function testWorkspaceSourceAndRenderContract() {
     'clearing the canvas destroys all open workspaces');
   assert.match(app, /shortDramaWorkspace\.projectId!==node\.params\.project_id[\s\S]*?destroyShortDramaWorkspace\(node\)/,
     'changing a node project link destroys the stale workspace');
+  const roleSetterMatch = app.match(/function setCurrentCollabRole\(role\)\{[\s\S]*?\n  \}/);
+  assert.ok(roleSetterMatch, 'canvas app needs an explicit collaboration-role transition boundary');
+  const roleSetter = roleSetterMatch[0];
+  assert.match(roleSetter, /shortDramaModule\.isRoleDowngrade\(previousRole,currentCollabRole\)/);
+  assert.match(roleSetter, /destroyAllShortDramaWorkspaces\(\)/,
+    'editable-to-viewer transition destroys active short-drama workspaces');
+  assert.match(app, /onBoard:function\(board\)\{[\s\S]*?setCurrentCollabRole\(board\.role\)/);
+  assert.match(app, /onRole:function\(role\)\{[\s\S]*?setCurrentCollabRole\(role\)/);
+  assert.match(app, /phase==='save-permanent'[\s\S]*?status===403[\s\S]*?setCurrentCollabRole\('viewer'\)/);
+  assert.match(app, /currentCollabRole=''[\s\S]*?setCurrentCollabRole\(board\.role\|\|'viewer'\)/,
+    'initial viewer open flows through a blank role and is not treated as a downgrade');
+  const readonlySetter = app.match(/function setEditorReadonly\(readonly\)\{[\s\S]*?\n  \}/)[0];
+  assert.doesNotMatch(readonlySetter, /destroyAllShortDramaWorkspaces/,
+    'routine readonly UI refresh must not destroy legitimate viewer workspaces');
   assert.match(source, /data-character-jump[\s\S]*?function handleClick[\s\S]*?scrollIntoView[\s\S]*?\.focus\(/,
     'character rail click scrolls to and focuses the matching character card');
   const compactCss = css.match(/@media \(max-width: 1080px\) \{[\s\S]*?(?=@media \(max-width: 760px\))/)[0];
@@ -625,10 +639,47 @@ async function testWorkspaceLoadRecoveryOwnerIsolationAndDestroy() {
       generatePlan() { throw new Error('must not submit'); },
     },
   });
+  const stateAfterOpen = closing.getState();
   closing.destroy();
+  const stateAfterClose = closing.getState();
+  assert.notDeepEqual(stateAfterClose, stateAfterOpen);
   resolveLoad(project);
   assert.equal(await closing.ready, null, 'closing during initial load settles without a stale mutation');
+  assert.deepEqual(closing.getState(), stateAfterClose,
+    'late GET does not assign synopsis, active stage, or any other controller state after close');
   assert.equal(summaries, 0);
+}
+
+async function testCollaborationRoleDowngradeDestroysEditableWorkspaceOnly() {
+  const project = workspaceProject({ stage: 'draft' });
+  let mutations = 0;
+  const client = {
+    get() { return Promise.resolve(project); },
+    update() { mutations += 1; return Promise.resolve(project); },
+    confirm() { mutations += 1; return Promise.resolve(project); },
+    generatePlan() { mutations += 1; return Promise.resolve(project); },
+  };
+
+  const initialViewer = shortDrama.createWorkspace({
+    projectId: project.id, client, document: null, canEdit: false,
+  });
+  await initialViewer.ready;
+  assert.equal(shortDrama.isRoleDowngrade('', 'viewer'), false);
+  assert.equal(initialViewer.getState().destroyed, false,
+    'an initially read-only viewer keeps the workspace open');
+  assert.match(initialViewer.render(), /data-readonly="true"/);
+
+  const editable = shortDrama.createWorkspace({
+    projectId: project.id, client, document: null, canEdit: true, confirm: () => true,
+  });
+  await editable.ready;
+  assert.equal(shortDrama.isRoleDowngrade('editor', 'viewer'), true);
+  if (shortDrama.isRoleDowngrade('editor', 'viewer')) editable.destroy();
+  assert.equal(editable.getState().destroyed, true);
+  await assert.rejects(editable.saveSettings(project), /destroyed/i);
+  await assert.rejects(editable.confirm('characters_review'), /destroyed/i);
+  await assert.rejects(editable.generatePlan(), /destroyed/i);
+  assert.equal(mutations, 0, 'downgraded editable workspace cannot save, confirm, or submit planning');
 }
 
 async function testWorkspaceLocksSettingsAndRejectsConcurrentPaidPlanning() {
@@ -797,6 +848,7 @@ async function main() {
   testWorkspacePureStateAndPayloadHelpers();
   await testWorkspaceSavesUseExactRevisionedBodiesAndSummaries();
   await testWorkspaceLoadRecoveryOwnerIsolationAndDestroy();
+  await testCollaborationRoleDowngradeDestroysEditableWorkspaceOnly();
   await testWorkspaceLocksSettingsAndRejectsConcurrentPaidPlanning();
   await testWorkspaceOrderConflictReadonlyAndPlanning();
   const workspace = shortDrama.createWorkspace({

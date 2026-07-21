@@ -53,6 +53,12 @@
   function destroyAllShortDramaWorkspaces(){
     Object.keys(nodes).forEach(function(id){ destroyShortDramaWorkspace(nodes[id]); });
   }
+  function setCurrentCollabRole(role){
+    var previousRole=currentCollabRole;
+    currentCollabRole=role||currentCollabRole;
+    if(shortDramaModule.isRoleDowngrade(previousRole,currentCollabRole)) destroyAllShortDramaWorkspaces();
+    return currentCollabRole;
+  }
   function refreshShortDramaNode(node){
     if(!node||node.type!=='shortDrama'||!node.el) return;
     if(node.shortDramaWorkspace&&node.shortDramaWorkspace.projectId!==node.params.project_id){
@@ -747,12 +753,12 @@
       onBoard:function(board){
         currentCollabVersion=Number(board.version)||currentCollabVersion;
         currentCollabName=board.name||currentCollabName;
-        currentCollabRole=board.role||currentCollabRole;
+        if(board.role) setCurrentCollabRole(board.role);
         currentCollabMembers=board.members||currentCollabMembers;
         rememberCollabBoard(board);
       },
       onRole:function(role){
-        currentCollabRole=role||currentCollabRole;
+        setCurrentCollabRole(role);
         setEditorReadonly(!canEditCanvas());
         setSaveState(canEditCanvas()?'saved':'readonly');
       },
@@ -764,7 +770,7 @@
           updateState((err&&err.message)||'协作同步暂时中断，正在重连');
         }else if(phase==='save-permanent'){
           if(err&&err.status===403){
-            currentCollabRole='viewer';
+            setCurrentCollabRole('viewer');
             setEditorReadonly(true);
             setSaveState('readonly');
             updateState('编辑权限已变更为只读');
@@ -1336,7 +1342,7 @@
       currentBoardScope='collab';
       currentBoardId=board.id||id;
       currentCollabVersion=board.version||1;
-      currentCollabRole=board.role||'viewer';
+      setCurrentCollabRole(board.role||'viewer');
       currentCollabName=board.name||'未命名协作画布';
       currentCollabMembers=board.members||[];
       collabBaseSnap=collabSync?collabSync.clone(board.data||emptySnapshot()):stateApi.cloneSnapshot(board.data||emptySnapshot());

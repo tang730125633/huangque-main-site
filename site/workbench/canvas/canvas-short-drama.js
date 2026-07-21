@@ -241,6 +241,12 @@
     return STAGES.indexOf(stage)<=STAGES.indexOf(project.stage);
   }
 
+  function isRoleDowngrade(previousRole,nextRole){
+    var wasEditable=previousRole==='owner'||previousRole==='editor';
+    var remainsEditable=nextRole==='owner'||nextRole==='editor';
+    return wasEditable&&!remainsEditable;
+  }
+
   function isStageEditable(project,stage,canEdit){
     if(!canEdit||!project) return false;
     if(stage==='settings') return project.stage==='draft';
@@ -554,6 +560,7 @@
       if(destroyed) return Promise.reject(new Error('workspace destroyed'));
       state.busy=true;state.error='';state.loadFailed=false;state.loadStatus=0;render();
       return Promise.resolve(client.get(options.projectId)).then(function(next){
+        if(destroyed) return null;
         state.synopsisSaved=canGeneratePlan(next,true);
         if(next&&next.stage!=='draft') state.activeStage=next.stage;
         return acceptProject(next,false);
@@ -756,6 +763,7 @@
     PLACEHOLDER_SYNOPSIS:PLACEHOLDER_SYNOPSIS,
     isStageEnabled:isStageEnabled,
     isStageEditable:isStageEditable,
+    isRoleDowngrade:isRoleDowngrade,
     makeSettingsPatch:makeSettingsPatch,
     makeCharactersPatch:makeCharactersPatch,
     makeScriptPatch:makeScriptPatch,
