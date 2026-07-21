@@ -5,9 +5,14 @@
 
 ## 出境优先级链（`content_domains/egress.py`）
 
-1. **首选** `EGRESS_PROXY` —— 新 VPS Reality 隧道的本地 http 代理（本机 xray-egress）
-2. **备选** `EGRESS_PROXY_FALLBACK` —— 现有 mihomo（法兰克福），如 `http://127.0.0.1:7897`
+1. **首选** `EGRESS_PROXY` —— 本机 xray-egress Reality 隧道（10809，稳定）
+2. **备选** `EGRESS_PROXY_FALLBACK` —— mihomo-new SS 节点（7999，间歇性波动）
 3. **兜底** heygen 中转 —— `GEMINI_BASE` / `OPENAI_BASE`，直连
+
+> **⚠️ 2026-07-21 线上故障复盘**：原配置以 mihomo(7999) 为首选，xray(10809) 为备选。
+> 但 mihomo-new 的 SS 节点 `transferone.agrayfox.top` 间歇性故障（TLS EOF、connection refused、
+> 中途 RST），导致 7/14~7/20 期间生图失败率高达 34%（99/289 任务失败）。
+> **现统一改为 xray(10809) 为首选**，该通道从 7/19 至今零报错。
 
 > 两个 `EGRESS_*` 都不配时，链里只剩 heygen 一档 = 改动前的老行为。**代码合并零风险；
 > 真正切换靠下面的部署。**
@@ -36,21 +41,31 @@ curl -s -o /dev/null -m 20 -x http://127.0.0.1:10809 -w '%{http_code}\n' https:/
 
 ## 二、打开代码里的出境链（content.env）
 
-在 `/home/ubuntu/content-api/content.env` 增加：
+在 `/home/ubuntu/content-api/content.env` 配置：
 
-```
-EGRESS_PROXY=http://127.0.0.1:10809          # 首选：本机 VPS 隧道
-EGRESS_PROXY_FALLBACK=http://127.0.0.1:7897  # 备选：现有 mihomo(法兰克福)
-# EGRESS_TIMEOUT=210                          # 可选，每个代理档超时秒数（默认 210，覆盖 gpt-image-2 ~174s）
-# EGRESS_PRIMARY_TIMEOUT=300                  # 可选，单独放宽首选(VPS)档超时（默认回落到 EGRESS_TIMEOUT）
+```bash
+# 作图出境优先级链: VPS隧道(10809) → mihomo(7999) → heygen兜底
+# ⚠️ 建议 xray(10809) 为首选（稳定），mihomo(7999) 为备选（SS节点间歇波动）
+EGRESS_PROXY=http://127.0.0.1:10809          # 首选：本机 VPS Reality 隧道
+EGRESS_PROXY_FALLBACK=http://127.0.0.1:7999  # 备选：mihomo-new SS 节点
+EGRESS_PRIMARY_TIMEOUT=300                   # 首选超时（300s覆盖gpt-image-2 ~174s）
+# EGRESS_TIMEOUT=210                          # 可选，备选档超时秒数（默认 210）
+# EGRESS_HEYGEN_TIMEOUT=300                   # 可选，兜底档超时（默认 300）
+
+# 进程级代理：也走稳定隧道
+HTTP_PROXY=http://127.0.0.1:10809
+HTTPS_PROXY=http://127.0.0.1:10809
+ALL_PROXY=socks5://127.0.0.1:7999            # xray 只支持 HTTP，SOCKS5 走 mihomo
+http_proxy=http://127.0.0.1:10809            # 小写兜底（部分 Python 库只读小写）
+https_proxy=http://127.0.0.1:10809
 ```
 
 > 超时须满足「首选 + 备选 + 兜底 < 900s」（reaper `image` 宽限），否则会边降级边被误判超时退点。
-> 例：首选 300 + 备选 210(`EGRESS_TIMEOUT`) + 兜底 300(`EGRESS_HEYGEN_TIMEOUT` 默认) = 810s，安全。
+> 例：首选 300 + 备选 210 + 兜底 300 = 810s，安全。
 
 > `GEMINI_BASE` / `OPENAI_BASE`（heygen）**保持不变**，它们是最后兜底档。
 
-然后重启用到的服务（挑在飞任务少的窗口）：
+然后重启用到的服务：
 
 ```bash
 sudo systemctl restart huangque-imggen-api   # nb2 / pro
@@ -59,14 +74,23 @@ sudo systemctl restart huangque-content      # gpt
 
 ## 回滚
 
-删掉 content.env 里那两行 `EGRESS_*` 再重启两个服务，即刻退回全走 heygen 的老行为。
-（隧道服务可留着不影响，代码不读 `EGRESS_*` 就不会用它。）
+```bash
+# 恢复备份
+cp /home/ubuntu/content-api/content.env.bak.egress-fix-* /home/ubuntu/content-api/content.env
+sudo systemctl restart huangque-content huangque-imggen-api
+```
+
+## 监控
+
+部署后关注以下指标：
+- `journalctl -u huangque-content | grep '\[egress\].*via vps.*失败'` → 应为 0
+- `journalctl -u huangque-content | grep 'IncompleteRead\|Remote end closed'` → 应大幅减少
+- 生图成功率 > 85%（当前基线 65.7%）
 
 ## 注意
 
 - **官方 key 用黄雀现有的即可** —— 线上 `GEMINI_API_KEY` / `OPENAI_API_KEY` 实测都是官方有效
   key（heygen 原本也只是拿它们转发），直连官方无需换 key。
-- 隧道长连接（如 gpt-image-2 ~174s）偶发被 RST 掐断属正常，egress 会自动降级到 mihomo/heygen，
-  不影响出图，只是那一张会慢一点。
+- mihomo-new 单 SS 节点仍存在单点风险，后续应加固（多节点 url-test 自动选优）。
 - 高并发瓶颈是**单个官方 key 的限速**（实测 5 并发每条涨到 ~50s），不是隧道；需要更高并发时
-  应多配官方 key 轮询（与 issue 泽龙2 单 key 同类）。
+  应多配官方 key 轮询。
