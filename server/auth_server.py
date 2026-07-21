@@ -17,6 +17,11 @@ try:
 except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 启动
     import wechat_virtual_pay as wechat_vpay
 
+try:
+    from . import invites
+except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 启动
+    import invites
+
 DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
 PORT = 8095
 ITER = 200000
@@ -24,6 +29,10 @@ TOKEN_TTL = int(os.environ.get("HQ_AUTH_TOKEN_TTL", str(30 * 24 * 3600)))
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
 AUTH_COOKIE_SECURE = os.environ.get("HQ_AUTH_COOKIE_SECURE", "1").strip().lower() not in ("0", "false", "no")
 INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
+INVITE_HASH_SECRET = os.environ.get("HQ_INVITE_HASH_SECRET", "") or INTERNAL_TOKEN
+INVITE_PUBLIC_BASE_URL = os.environ.get(
+    "HQ_INVITE_PUBLIC_BASE_URL", "https://huangquechuanmei.com"
+).strip().rstrip("/")
 LOGIN_FAIL_WINDOW = int(os.environ.get("HQ_AUTH_FAIL_WINDOW", "300"))
 LOGIN_FAIL_MAX = int(os.environ.get("HQ_AUTH_FAIL_MAX", "5"))
 REGISTER_WINDOW = int(os.environ.get("HQ_AUTH_REGISTER_WINDOW", "300"))
@@ -277,6 +286,7 @@ def init_db():
     if "wx_openid" not in user_cols:
         c.execute("ALTER TABLE users ADD COLUMN wx_openid TEXT")
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_wx_openid ON users(wx_openid) WHERE wx_openid IS NOT NULL")
+    invites.init_schema(c)
     c.commit(); c.close()
 
 def generate_account_id():
@@ -329,6 +339,60 @@ def create_user(username, password, points=0, role='member'):
     ensure_account_id(username, c)
     c.commit(); c.close()
     print("OK user:", username)
+
+def register_account(username, password, display_name=None, invite_code="", invite_source="web_manual",
+                     client_ip="", device_id=""):
+    """以单一事务创建账号、绑定邀请关系并签发令牌。网站和小程序共用。"""
+    username = str(username or "").strip()
+    password = str(password or "")
+    display_name = str(display_name or username).strip() or username
+    invite_code = invites.normalize_code(invite_code)
+    device_id = str(device_id or "").strip()
+    if not username or not password:
+        return None, {"status": 400, "code": "missing_credentials", "detail": "请填写账号和密码"}
+    if len(username) > 64:
+        return None, {"status": 400, "code": "username_too_long", "detail": "账号最多 64 位"}
+    if len(display_name) > 32:
+        return None, {"status": 400, "code": "display_name_too_long", "detail": "昵称最多 32 个字符"}
+    if any(ch.isspace() for ch in username):
+        return None, {"status": 400, "code": "invalid_username", "detail": "账号不能包含空白字符"}
+    if len(password) < 6:
+        return None, {"status": 400, "code": "password_too_short", "detail": "密码至少 6 位"}
+    if len(invite_code) > 32:
+        return None, {"status": 400, "code": "invalid_code", "detail": "邀请码无效"}
+    if len(device_id) > 256:
+        return None, {"status": 400, "code": "device_id_too_long", "detail": "设备标识过长"}
+    salt = secrets.token_hex(16)
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        account_id = _new_unique_account_id(c)
+        cur = c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change,account_id)
+                           VALUES(?,?,?,?,?,?,0,?)""",
+                        (username, hash_pw(password, salt), salt, display_name,
+                         NEW_USER_TRIAL_POINTS, "member", account_id))
+        relation = invites.bind_registration(
+            c, cur.lastrowid, invite_code, invite_source,
+            client_ip=client_ip, device_id=device_id, hash_secret=INVITE_HASH_SECRET,
+        )
+        token = issue_token(username, c)
+        c.commit()
+        return {
+            "token": token,
+            "user": public_user(username, display_name, NEW_USER_TRIAL_POINTS, account_id=account_id),
+            "invite_bound": bool(relation),
+        }, None
+    except invites.InviteError as exc:
+        c.rollback()
+        return None, {"status": exc.http_status, "code": exc.code, "detail": exc.detail}
+    except sqlite3.IntegrityError:
+        c.rollback()
+        return None, {"status": 409, "code": "username_exists", "detail": "账号已存在"}
+    except Exception:
+        c.rollback()
+        return None, {"status": 500, "code": "register_failed", "detail": "注册失败"}
+    finally:
+        c.close()
 
 def public_user(username, display_name=None, points=0, role='member', must_change=False, account_id=None):
     return {
@@ -2138,6 +2202,29 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        if p in ("/api/invite/code/rotate", "/api/auth/invite/code/rotate"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            if row["role"] != "admin":
+                return self._send(403, {"detail": "邀请码轮换需要管理员权限"})
+            c = db()
+            try:
+                code_row = invites.rotate_user_code(c, row["id"])
+                c.commit()
+                return self._send(200, {
+                    "ok": True,
+                    "code": code_row["code"],
+                    "invite_link": INVITE_PUBLIC_BASE_URL + "/register?invite=" + code_row["code"],
+                })
+            except invites.InviteError as exc:
+                c.rollback()
+                return self._send(exc.http_status, {"detail": exc.detail, "code": exc.code})
+            except Exception:
+                c.rollback()
+                return self._send(500, {"detail": "邀请码轮换失败"})
+            finally:
+                c.close()
         if p == "/api/auth/wechat/message-push":
             if not wechat_vpay.message_push_configured():
                 return self._send(503, {"detail": "message push not configured"})
@@ -2449,35 +2536,18 @@ class H(BaseHTTPRequestHandler):
             name = (d.get("display_name") or u).strip() or u
             if self._register_limited():
                 return self._send(429, {"detail": "注册次数过多，请稍后再试"})
-            if not u or not pw:
-                return self._send(400, {"detail": "请填写账号和密码"})
-            if len(u) > 64:
-                return self._send(400, {"detail": "账号最多 64 位"})
-            if len(name) > 32:
-                return self._send(400, {"detail": "昵称最多 32 个字符"})
-            if any(ch.isspace() for ch in u):
-                return self._send(400, {"detail": "账号不能包含空白字符"})
-            if len(pw) < 6:
-                return self._send(400, {"detail": "密码至少 6 位"})
-            salt = secrets.token_hex(16)
-            c = db()
-            try:
-                account_id = _new_unique_account_id(c)
-                c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change,account_id)
-                             VALUES(?,?,?,?,?,?,0,?)""",
-                          (u, hash_pw(pw, salt), salt, name, NEW_USER_TRIAL_POINTS, "member", account_id))
-                tok = issue_token(u, c)
-                c.commit()
-                self._record_register_hit()
-            except sqlite3.IntegrityError:
-                c.rollback()
-                return self._send(409, {"detail": "账号已存在"})
-            except Exception:
-                c.rollback()
-                return self._send(500, {"detail": "注册失败"})
-            finally:
-                c.close()
-            return self._send(200, {"user": public_user(u, name, NEW_USER_TRIAL_POINTS, account_id=account_id)}, {"Set-Cookie": auth_cookie_header(tok)})
+            source = "web_link" if str(d.get("invite_source") or "") == "web_link" else "web_manual"
+            result, err = register_account(
+                u, pw, name,
+                invite_code=d.get("invite_code"), invite_source=source,
+                client_ip=self._client_ip(), device_id=d.get("device_id"),
+            )
+            if err:
+                return self._send(err["status"], {"detail": err["detail"], "code": err["code"]})
+            self._record_register_hit()
+            return self._send(200, {
+                "user": result["user"], "invite_bound": result["invite_bound"],
+            }, {"Set-Cookie": auth_cookie_header(result["token"])})
         if p == "/api/auth/login":
             d = self._body()
             if self._bad_json():
@@ -2527,35 +2597,18 @@ class H(BaseHTTPRequestHandler):
             name = (d.get("display_name") or u).strip() or u
             if self._register_limited():
                 return self._send(429, {"detail": "注册次数过多，请稍后再试"})
-            if not u or not pw:
-                return self._send(400, {"detail": "请填写账号和密码"})
-            if len(u) > 64:
-                return self._send(400, {"detail": "账号最多 64 位"})
-            if len(name) > 32:
-                return self._send(400, {"detail": "昵称最多 32 个字符"})
-            if any(ch.isspace() for ch in u):
-                return self._send(400, {"detail": "账号不能包含空白字符"})
-            if len(pw) < 6:
-                return self._send(400, {"detail": "密码至少 6 位"})
-            salt = secrets.token_hex(16)
-            c = db()
-            try:
-                account_id = _new_unique_account_id(c)
-                c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change,account_id)
-                             VALUES(?,?,?,?,?,?,0,?)""",
-                          (u, hash_pw(pw, salt), salt, name, NEW_USER_TRIAL_POINTS, "member", account_id))
-                tok = issue_token(u, c)
-                c.commit()
-                self._record_register_hit()
-            except sqlite3.IntegrityError:
-                c.rollback()
-                return self._send(409, {"detail": "账号已存在"})
-            except Exception:
-                c.rollback()
-                return self._send(500, {"detail": "注册失败"})
-            finally:
-                c.close()
-            return self._send(200, {"token": tok, "user": public_user(u, name, NEW_USER_TRIAL_POINTS, account_id=account_id)})
+            result, err = register_account(
+                u, pw, name,
+                invite_code=d.get("invite_code"), invite_source="miniprogram",
+                client_ip=self._client_ip(), device_id=d.get("device_id"),
+            )
+            if err:
+                return self._send(err["status"], {"detail": err["detail"], "code": err["code"]})
+            self._record_register_hit()
+            return self._send(200, {
+                "token": result["token"], "user": result["user"],
+                "invite_bound": result["invite_bound"],
+            })
         if p == "/api/auth/logout":
             clear_cookie = {"Set-Cookie": clear_auth_cookie_header()}
             tok = request_token(self.headers)
@@ -2862,6 +2915,81 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path.split("?")[0]
+        if p in ("/api/invite/config", "/api/auth/invite/config"):
+            c = db()
+            try:
+                return self._send(200, {"ok": True, **invites.campaign_config(c)})
+            finally:
+                c.close()
+        if p in ("/api/invite/validate", "/api/auth/invite/validate"):
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            code = (query.get("code") or [""])[0]
+            c = db()
+            try:
+                row = invites.validate_code(c, code)
+                return self._send(200, {
+                    "ok": True, "code": row["code"], "inviter": invites.public_inviter(row),
+                })
+            except invites.InviteError as exc:
+                return self._send(exc.http_status, {"detail": exc.detail, "code": exc.code})
+            finally:
+                c.close()
+        if p in ("/api/invite/code", "/api/auth/invite/code"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            c = db()
+            try:
+                code_row = invites.ensure_user_code(c, row["id"])
+                c.commit()
+                return self._send(200, {
+                    "ok": True,
+                    "code": code_row["code"],
+                    "invite_link": INVITE_PUBLIC_BASE_URL + "/register?invite=" + code_row["code"],
+                })
+            except invites.InviteError as exc:
+                c.rollback()
+                return self._send(exc.http_status, {"detail": exc.detail, "code": exc.code})
+            except Exception:
+                c.rollback()
+                return self._send(500, {"detail": "邀请码获取失败"})
+            finally:
+                c.close()
+        if p in ("/api/invite/dashboard", "/api/auth/invite/dashboard"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            c = db()
+            try:
+                return self._send(200, {"ok": True, **invites.dashboard(c, row["id"])})
+            finally:
+                c.close()
+        if p in ("/api/invite/users", "/api/auth/invite/users"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            c = db()
+            try:
+                users = invites.invited_users(
+                    c, row["id"],
+                    limit=(query.get("limit") or ["100"])[0],
+                    offset=(query.get("offset") or ["0"])[0],
+                )
+                return self._send(200, {"ok": True, "users": users})
+            except (TypeError, ValueError):
+                return self._send(400, {"detail": "分页参数无效"})
+            finally:
+                c.close()
+        if p in ("/api/invite/referrer", "/api/auth/invite/referrer"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            c = db()
+            try:
+                return self._send(200, {"ok": True, "referrer": invites.referrer(c, row["id"])})
+            finally:
+                c.close()
         if p == "/api/auth/wechat/message-push":
             try:
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
