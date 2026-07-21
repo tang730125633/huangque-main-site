@@ -163,9 +163,9 @@ def validate_banana_payload(body):
     try:
         count = int(body.get("count") or 1)
     except Exception:
-        raise ValueError("count 必须是 1 或 2")
-    if count not in {1, 2}:
-        raise ValueError("count 必须是 1 或 2")
+        raise ValueError("count 必须是 1、2 或 4")
+    if count not in {1, 2, 4}:
+        raise ValueError("count 必须是 1、2 或 4")
     _validate_b64_image(body, "image")
     body["prompt"] = prompt
     body["model"] = mkey

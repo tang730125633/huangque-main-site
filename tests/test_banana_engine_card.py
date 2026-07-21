@@ -128,7 +128,7 @@ class SubmitTests(unittest.TestCase):
 
     def test_engine_max_count_defined_for_banana(self):
         m = re.search(r"var ENGINE_MAXN=\{([^;]+)\};", BANANA).group(1).replace(" ", "")
-        self.assertIn("banana:2", m)
+        self.assertIn("banana:4", m)
 
 
 class DeepLinkCompatTests(unittest.TestCase):

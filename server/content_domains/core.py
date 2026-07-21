@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security, inspiration_likes  # 领域存储模块均无反向依赖
+import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security, inspiration_likes, history  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -1393,7 +1393,7 @@ class H(BaseHTTPRequestHandler):
                     from . import image as image_domain
                     body = image_domain.validate_image_payload(body)
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
-                idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"} else ""
+                idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "video", "tryon", "xiaole_video", "sora_video", "cinematic"} else ""
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
             except miniprogram_security.ContentRejected as e:
                 return self._send(400, {"detail": str(e), "code": "content_rejected"})
@@ -1653,15 +1653,7 @@ class H(BaseHTTPRequestHandler):
                                  WHERE username=? AND status='done' AND kind=? AND COALESCE(deleted,0)=0
                                  ORDER BY id DESC LIMIT ?""",
                                  (user["username"], kind, lim)).fetchall()
-            items = []
-            for r in rows:
-                try: res = json.loads(r["result"])
-                except Exception: continue
-                items.append({"job_id": r["id"], "url": res.get("url"), "mode": res.get("mode"),
-                              "prompt": res.get("prompt"), "text": res.get("text"), "ctype": res.get("ctype"),
-                              "voice": res.get("voice"), "speed": res.get("speed"), "pitch": res.get("pitch"),
-                              "volume": res.get("volume"), "emotion": res.get("emotion"),
-                              "created_at": r["created_at"]})
+            items = history.expand_job_results(rows, lim)
             return self._send(200, {"items": items})
         if p == "/api/gen/collect/search":   # 关键词搜（即时，扣 1 点）— 采集页选片用
             user = verify(self._token())

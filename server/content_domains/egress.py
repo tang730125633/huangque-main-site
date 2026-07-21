@@ -18,6 +18,7 @@ gpt 失败率 40%。改为优先走自建出境直连官方 API，前一档超�
 （如内容审核没出图）由调用方判断——那是官方 API 的决定，换通道也一样，不该白降级。
 """
 import errno
+import http.client
 import json
 import os
 import socket
@@ -190,4 +191,84 @@ def post_json(official_base, heygen_base, path, data, headers, log=None):
                 raise
             if label != "heygen" and log:
                 log("[egress] %s via %s 连接阶段失败(未送达)，降级下一档: %s" % (path, label, str(e)[:120]))
+    raise last if last is not None else RuntimeError("egress: 无可用通道")
+
+
+def _read_image_stream(response, expected=1):
+    """读取 Images API SSE；连接中断时保留已收到的最后一张有效渐进图。"""
+    completed, partial = [], []
+    try:
+        while True:
+            line = response.readline()
+            if not line:
+                break
+            if not line.startswith(b"data:"):
+                continue
+            raw = line[5:].strip()
+            if not raw or raw == b"[DONE]":
+                continue
+            event = json.loads(raw)
+            image = event.get("b64_json") or event.get("partial_image_b64")
+            if not image:
+                continue
+            if str(event.get("type") or "").endswith(".completed"):
+                completed.append(image)
+                if len(completed) >= max(1, int(expected or 1)):
+                    return {"data": [{"b64_json": value} for value in completed]}
+            else:
+                partial.append(image)
+    except (http.client.RemoteDisconnected, http.client.IncompleteRead,
+            urllib.error.URLError, TimeoutError, ConnectionError):
+        if completed:
+            return {"data": [{"b64_json": value} for value in completed], "stream_incomplete": True}
+        if partial:
+            return {"data": [{"b64_json": partial[-1]}], "stream_incomplete": True}
+        raise
+    images = completed or (partial[-1:] if partial else [])
+    if images:
+        result = {"data": [{"b64_json": value} for value in images]}
+        if len(completed) < max(1, int(expected or 1)):
+            result["stream_incomplete"] = True
+        return result
+    raise ValueError("图片流结束但未返回有效图片")
+
+
+def post_image_json(official_base, heygen_base, path, data, headers, log=None):
+    """官方通道使用 SSE 防长生成期间空闲断连；中转兜底保持原 JSON 协议。"""
+    original = json.loads(data)
+    expected = max(1, int(original.get("n") or 1))
+    stream_body = dict(original)
+    stream_body.update({"stream": True, "partial_images": 1})
+    stream_data = json.dumps(stream_body, ensure_ascii=False).encode()
+    last = None
+    for label, base, proxy, timeout in channels(official_base, heygen_base):
+        if not _channel_usable(proxy):
+            last = last or urllib.error.URLError(ConnectionRefusedError("代理 %s 不可达" % proxy))
+            if log:
+                log("[egress] %s 代理不可达，跳过该档（未发出任何请求）" % label)
+            continue
+        is_official = label != "heygen"
+        req_headers = dict(headers)
+        if is_official:
+            req_headers["Accept"] = "text/event-stream"
+        req = urllib.request.Request(base + path, data=stream_data if is_official else data,
+                                     headers=req_headers, method="POST")
+        try:
+            with _opener(proxy).open(req, timeout=timeout) as response:
+                if is_official:
+                    result = _read_image_stream(response, expected)
+                    if result.get("stream_incomplete") and log:
+                        log("[egress] 图片流提前结束，已保留最后一张有效渐进图")
+                    return result
+                return json.loads(response.read())
+        except Exception as error:
+            last = error
+            if not _pre_delivery_failure(error):
+                if log:
+                    log("[egress] %s via %s 失败，且请求可能已送达上游，直接失败退点: %s" %
+                        (path, label, str(error)[:120]))
+                raise
+            if label != "heygen" and log:
+                log("[egress] %s via %s 连接阶段失败(未送达)，降级下一档: %s" %
+                    (path, label, str(error)[:120]))
     raise last if last is not None else RuntimeError("egress: 无可用通道")
