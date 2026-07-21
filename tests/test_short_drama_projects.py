@@ -175,6 +175,75 @@ class ShortDramaProjectTests(unittest.TestCase):
             with self.subTest(patch=patch), self.assertRaises(ValueError):
                 short_drama.create_project(self.db, "alice", dict(base, **patch))
 
+    def test_validation_rejects_coercive_or_container_project_settings(self):
+        cases = (
+            {"ratio": []}, {"ratio": False},
+            {"target_duration": []}, {"target_duration": True},
+            {"target_duration": 30.0}, {"target_duration": "30"},
+            {"shot_count": {}}, {"shot_count": True},
+            {"shot_count": 6.0}, {"shot_count": "6"},
+        )
+        for patch in cases:
+            with self.subTest(create=patch), self.assertRaises(ValueError):
+                short_drama.create_project(self.db, "alice", valid_project(**patch))
+
+        project = short_drama.create_project(self.db, "alice", valid_project())
+        for patch in cases:
+            with self.subTest(update=patch), self.assertRaises(ValueError):
+                short_drama.update_project(
+                    self.db, "alice", project["id"], project["revision"], patch
+                )
+
+    def test_concurrent_apply_plan_returns_one_success_and_one_domain_conflict(self):
+        project = short_drama.create_project(self.db, "alice", valid_project())
+        with closing(self.db()) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+        begin_barrier = threading.Barrier(2)
+        read_barrier = threading.Barrier(2)
+
+        class RacingConnection(sqlite3.Connection):
+            def execute(self, sql, parameters=()):
+                normalized = " ".join(sql.split())
+                cursor = super().execute(sql, parameters)
+                if normalized == "BEGIN IMMEDIATE":
+                    self.serialized = True
+                elif normalized == "BEGIN":
+                    begin_barrier.wait(timeout=3)
+                elif (normalized.startswith(
+                        "SELECT project_id, username FROM short_drama_applied_jobs")
+                      and not getattr(self, "serialized", False)):
+                    read_barrier.wait(timeout=3)
+                return cursor
+
+        def racing_db():
+            return sqlite3.connect(self.path, timeout=5, factory=RacingConnection)
+
+        outcomes = []
+
+        def apply():
+            try:
+                outcomes.append(short_drama.apply_plan(
+                    racing_db, "alice", project["id"], project["revision"],
+                    valid_raw_plan(), planning_cost=3, planning_job_id=501,
+                ))
+            except Exception as error:
+                outcomes.append(error)
+
+        threads = [threading.Thread(target=apply) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=8)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        successes = [result for result in outcomes if isinstance(result, dict)]
+        conflicts = [result for result in outcomes if isinstance(
+            result, (short_drama.AppliedJobConflict, short_drama.RevisionConflict)
+        )]
+        raw_sqlite_errors = [result for result in outcomes if isinstance(result, sqlite3.Error)]
+        self.assertEqual(1, len(successes), outcomes)
+        self.assertEqual(1, len(conflicts), outcomes)
+        self.assertEqual([], raw_sqlite_errors)
+
     def test_apply_plan_rejects_shot_counts_outside_project_limits(self):
         payload = {"title": "短剧", "synopsis": "足够长的故事梗概", "ratio": "9:16",
                    "target_duration": 30, "shot_count": 6, "visual_style": "写实"}
@@ -225,8 +294,10 @@ class ShortDramaRouteTests(unittest.TestCase):
         core.init_audio_db = self.originals["init_audio_db"]
         self.tmp.cleanup()
 
-    def request(self, method, path, username="alice", body=None):
-        data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+    def request(self, method, path, username="alice", body=None, raw_body=None):
+        data = raw_body if raw_body is not None else (
+            None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+        )
         headers = {"Content-Type": "application/json"}
         if username:
             headers["Authorization"] = "Bearer " + username
@@ -237,13 +308,16 @@ class ShortDramaRouteTests(unittest.TestCase):
         except urllib.error.HTTPError as error:
             return error.code, json.loads(error.read())
 
-    def insert_job(self, username="alice", *, kind="copy", status="done", mode="short_drama", cost=3):
-        result = {"mode": mode, "plan": valid_raw_plan()}
+    def insert_job(self, username="alice", *, kind="copy", status="done", mode="short_drama", cost=3,
+                   result_json=None):
+        result = result_json if result_json is not None else json.dumps(
+            {"mode": mode, "plan": valid_raw_plan()}, ensure_ascii=False
+        )
         with closing(core.jdb()) as db:
             cursor = db.execute(
                 "INSERT INTO jobs(kind,username,cost,status,payload,result,created_at,updated_at,owner) "
                 "VALUES(?,?,?,?,?,?,?,?,?)",
-                (kind, username, cost, status, "{}", json.dumps(result, ensure_ascii=False), 1, 1, "content"),
+                (kind, username, cost, status, "{}", result, 1, 1, "content"),
             )
             db.commit()
             return cursor.lastrowid
@@ -290,6 +364,39 @@ class ShortDramaRouteTests(unittest.TestCase):
         self.assertEqual(409, status)
         self.assertEqual("revision_conflict", conflict["code"])
 
+    def test_project_routes_reject_malformed_settings_with_http_400(self):
+        for patch in ({"ratio": []}, {"target_duration": []}, {"target_duration": "30"},
+                      {"shot_count": {}}, {"shot_count": 6.0}):
+            with self.subTest(create=patch):
+                status, _ = self.request(
+                    "POST", "/api/gen/short-drama/projects", body=valid_project(**patch)
+                )
+                self.assertEqual(400, status)
+
+        _, project = self.request("POST", "/api/gen/short-drama/projects", body=valid_project())
+        path = "/api/gen/short-drama/project?" + urllib.parse.urlencode({"id": project["id"]})
+        for patch in ({"ratio": []}, {"target_duration": []}, {"target_duration": 30.0},
+                      {"shot_count": {}}, {"shot_count": "6"}):
+            with self.subTest(update=patch):
+                status, _ = self.request(
+                    "PUT", path, body={"revision": project["revision"], **patch}
+                )
+                self.assertEqual(400, status)
+
+    def test_short_drama_routes_authenticate_before_parsing_malformed_json(self):
+        cases = (
+            ("POST", "/api/gen/short-drama/projects"),
+            ("PUT", "/api/gen/short-drama/project?id=missing"),
+            ("POST", "/api/gen/short-drama/apply-plan"),
+            ("POST", "/api/gen/short-drama/confirm"),
+        )
+        for method, path in cases:
+            with self.subTest(method=method, path=path):
+                status, _ = self.request(
+                    method, path, username=None, raw_body=b"{malformed"
+                )
+                self.assertEqual(401, status)
+
     def test_apply_plan_uses_only_owned_completed_copy_job_data(self):
         _, project = self.request("POST", "/api/gen/short-drama/projects", body=valid_project())
         job_id = self.insert_job(cost=3)
@@ -316,6 +423,22 @@ class ShortDramaRouteTests(unittest.TestCase):
             "project_id": project["id"], "revision": applied["revision"], "job_id": other_job_id,
         })
         self.assertEqual(404, status)
+
+    def test_apply_plan_rejects_untrusted_job_kind_status_mode_and_result(self):
+        _, project = self.request("POST", "/api/gen/short-drama/projects", body=valid_project())
+        cases = (
+            {"kind": "image"},
+            {"status": "running"},
+            {"mode": "copy"},
+            {"result_json": "{malformed"},
+        )
+        for options in cases:
+            with self.subTest(options=options):
+                job_id = self.insert_job(**options)
+                status, _ = self.request("POST", "/api/gen/short-drama/apply-plan", body={
+                    "project_id": project["id"], "revision": project["revision"], "job_id": job_id,
+                })
+                self.assertEqual(400, status)
 
     def test_confirm_route_enforces_owner_and_stage_order(self):
         _, project = self.request("POST", "/api/gen/short-drama/projects", body=valid_project())

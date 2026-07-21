@@ -1,6 +1,7 @@
 """Persistence and optimistic-concurrency helpers for short-drama projects."""
 
 import json
+import sqlite3
 import time
 import urllib.parse
 import uuid
@@ -36,19 +37,20 @@ def validate_project_payload(payload, partial=False):
         cleaned["synopsis"] = str(cleaned.get("synopsis") or "").strip()[:4000]
         if len(cleaned["synopsis"]) < 8:
             raise ValueError("故事梗概至少需要 8 个字")
-    if "ratio" in cleaned and cleaned["ratio"] not in RATIOS:
-        raise ValueError("短剧比例仅支持 9:16、16:9")
+    if "ratio" in cleaned:
+        if not isinstance(cleaned["ratio"], str) or cleaned["ratio"] not in RATIOS:
+            raise ValueError("短剧比例仅支持 9:16、16:9")
     if "target_duration" in cleaned:
-        cleaned["target_duration"] = int(cleaned["target_duration"])
-        if cleaned["target_duration"] not in DURATIONS:
+        if type(cleaned["target_duration"]) is not int or cleaned["target_duration"] not in DURATIONS:
             raise ValueError("短剧时长仅支持 30、45、60 秒")
     if "shot_count" in cleaned:
-        cleaned["shot_count"] = int(cleaned["shot_count"])
-        if cleaned["shot_count"] not in SHOT_COUNTS:
+        if type(cleaned["shot_count"]) is not int or cleaned["shot_count"] not in SHOT_COUNTS:
             raise ValueError("分镜数量必须为 6–10 个")
     cleaned["visual_style"] = str(cleaned.get("visual_style") or "电影写实").strip()[:80]
     if "point_budget" in cleaned:
-        cleaned["point_budget"] = max(0, int(cleaned["point_budget"] or 0))
+        if type(cleaned["point_budget"]) is not int:
+            raise ValueError("点数预算必须为整数")
+        cleaned["point_budget"] = max(0, cleaned["point_budget"])
     return cleaned
 
 
@@ -587,7 +589,7 @@ def apply_plan(db_factory, username, project_id, revision, plan, planning_cost, 
     now = int(time.time())
     conn = _connection(db_factory)
     try:
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE")
         project = conn.execute(
             "SELECT title, target_duration FROM short_drama_projects "
             "WHERE id=? AND username=? AND revision=? AND deleted=0",
@@ -602,10 +604,18 @@ def apply_plan(db_factory, username, project_id, revision, plan, planning_cost, 
             raise AppliedJobConflict("规划任务已经应用过")
         if sum(shot["duration"] for shot in shots) != project[1]:
             raise ValueError("分镜总时长必须等于短剧目标时长")
-        conn.execute(
-            "INSERT INTO short_drama_applied_jobs (job_id, project_id, username, cost, applied_at) VALUES (?, ?, ?, ?, ?)",
-            (job_id, project_id, username, cost, now),
-        )
+        try:
+            conn.execute(
+                "INSERT INTO short_drama_applied_jobs (job_id, project_id, username, cost, applied_at) VALUES (?, ?, ?, ?, ?)",
+                (job_id, project_id, username, cost, now),
+            )
+        except sqlite3.IntegrityError:
+            applied = conn.execute(
+                "SELECT 1 FROM short_drama_applied_jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+            if applied:
+                raise AppliedJobConflict("规划任务已经应用过")
+            raise
         next_version = conn.execute(
             "SELECT COALESCE(MAX(version), 0) + 1 FROM short_drama_scripts WHERE project_id=?", (project_id,)
         ).fetchone()[0]
