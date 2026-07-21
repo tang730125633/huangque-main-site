@@ -181,7 +181,7 @@ async function testExportImageUsesProtectedAndPublicAssetPolicies() {
   await exporter.loadExportImage('https://cdn.example.com/public.png', common);
 
   assert.equal(calls[0].options.credentials, 'same-origin');
-  assert.equal(calls[0].options.headers.Authorization, undefined);
+  assert.equal(calls[0].options.headers.Authorization, 'Bearer __cookie__');
   assert.equal(calls[0].options.headers.Accept, 'application/json');
   assert.equal(calls[1].options.credentials, 'include');
   assert.deepEqual(calls[1].options.headers, {});

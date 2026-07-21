@@ -15,9 +15,7 @@
     var Controller=options.AbortControllerImpl, later=options.setTimeoutImpl||setTimeout, cancel=options.clearTimeoutImpl||clearTimeout;
     function request(path,requestOptions,wantBlob,publicAsset){
       requestOptions=requestOptions||{};
-      var token=tokenProvider();
-      var headers=publicAsset?Object.assign({},requestOptions.headers||{}):Object.assign({'Accept':'application/json'},requestOptions.headers||{});
-      if(!publicAsset&&token&&token!=='__cookie__'&&!Object.prototype.hasOwnProperty.call(headers,'Authorization')) headers.Authorization='Bearer '+token;
+      var headers=publicAsset?Object.assign({},requestOptions.headers||{}):Object.assign({'Accept':'application/json','Authorization':'Bearer '+tokenProvider()},requestOptions.headers||{});
       var body=requestOptions.body, callerSignal=requestOptions.signal, controller=!callerSignal&&Controller?new Controller():null, timer=null;
       if(body!==undefined&&!wantBlob){ headers['Content-Type']='application/json'; body=JSON.stringify(body); }
       if(controller) timer=later(function(){ controller.abort(); },requestOptions.timeout||8000);

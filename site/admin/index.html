@@ -221,47 +221,13 @@
 <script>
 (function(){
   var token = '__cookie__';
-  var ADMIN_REASON_MIN=4, ADMIN_REASON_MAX=120, ADMIN_POINTS_MAX_DELTA=1000;
   var state = {days:7, data:null, userTimer:null, module:'ops'};
   var el = function(id){return document.getElementById(id)};
   function toast(msg){var t=el('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(t._tm); t._tm=setTimeout(function(){t.style.display='none'},2600)}
-  function validateAdminReason(value){
-    var reason=String(value||'').trim();
-    if(reason.length<ADMIN_REASON_MIN||reason.length>ADMIN_REASON_MAX){
-      toast('原因必填，长度须为 '+ADMIN_REASON_MIN+'–'+ADMIN_REASON_MAX+' 个字符');
-      return null;
-    }
-    return reason;
-  }
-  function csrfToken(){
-    var match=(document.cookie||'').match(/(?:^|;\s*)hq_csrf=([^;]*)/);
-    if(!match) return '';
-    try{ return decodeURIComponent(match[1]); }catch(e){ return ''; }
-  }
-  function secureFetch(input,init){
-    var options=Object.assign({},init||{});
-    var target=(input&&typeof input==='object'&&input.url)?input.url:input;
-    var method=String(options.method||(input&&input.method)||'GET').toUpperCase();
-    var headers=new Headers(options.headers!==undefined?options.headers:((input&&input.headers)||{}));
-    var sameOrigin=false;
-    try{ sameOrigin=new URL(target,location.href).origin===location.origin; }catch(e){}
-    var eligible=sameOrigin&&/^(POST|PUT|PATCH|DELETE)$/.test(method)&&!/^Bearer\s/i.test(headers.get('Authorization')||'');
-    if(!eligible) headers.delete('X-CSRF-Token');
-    else if(!headers.has('X-CSRF-Token')){
-      var csrf=csrfToken();
-      if(csrf) headers.set('X-CSRF-Token',csrf);
-    }
-    options.headers=headers;
-    return fetch(input,options);
-  }
-  function authHeaders(extra){
-    var headers=new Headers(extra||{});
-    if(token&&token!=='__cookie__') headers.set('Authorization','Bearer '+token);
-    return headers;
-  }
+  function authHeaders(extra){return Object.assign({'Authorization':'Bearer '+token}, extra||{})}
   function api(path,opt){
     opt=opt||{}; opt.headers=authHeaders(opt.headers);
-    return secureFetch(path,opt).then(function(r){return r.json().catch(function(){return {detail:'响应不是 JSON'}}).then(function(d){if(!r.ok){var e=new Error(d.detail||('HTTP '+r.status)); e.status=r.status; throw e} return d})})
+    return fetch(path,opt).then(function(r){return r.json().catch(function(){return {detail:'响应不是 JSON'}}).then(function(d){if(!r.ok){var e=new Error(d.detail||('HTTP '+r.status)); e.status=r.status; throw e} return d})})
   }
   function pct(v){return Math.round((v||0)*100)+'%'}
   function statusPill(ok, text){return '<span class="pill '+(ok?'ok':'fail')+'">'+text+'</span>'}
@@ -441,14 +407,11 @@
     api('/api/admin/points/audit'+q).then(function(d){renderAudit(d, username)}).catch(function(e){el('auditBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
   }
   function adjustPoints(username, sign){
-    var raw=prompt((sign>0?'给 ':'从 ')+username+(sign>0?' 加多少点？':' 扣多少点？')+'（单次最多 '+ADMIN_POINTS_MAX_DELTA+'）');
+    var raw=prompt((sign>0?'给 ':'从 ')+username+(sign>0?' 加多少点？':' 扣多少点？'));
     if(raw==null) return;
-    var amount=Math.abs(Number(raw));
-    if(!Number.isInteger(amount)||!amount){toast('请输入非 0 整数点数');return}
-    if(amount>ADMIN_POINTS_MAX_DELTA){toast('单次调整不能超过 '+ADMIN_POINTS_MAX_DELTA+' 点');return}
-    var reason=prompt('填写调整原因（'+ADMIN_REASON_MIN+'–'+ADMIN_REASON_MAX+' 个字符，必填）');
-    if(reason==null) return;
-    reason=validateAdminReason(reason);
+    var amount=Math.abs(parseInt(raw,10)||0);
+    if(!amount){toast('请输入非 0 点数');return}
+    var reason=prompt('填写调整原因');
     if(reason==null) return;
     api('/api/admin/points/adjust',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,delta:sign*amount,reason:reason})})
       .then(function(){toast('点数已调整');loadUsers()})
@@ -482,10 +445,8 @@
     api('/api/admin/recharge/orders'+rechargeQuery()).then(renderRecharge).catch(function(e){el('rechargeBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
   }
   function reviewRecharge(orderId, action){
-    var text=(action==='approve'?'填写到账确认原因':'填写驳回原因')+'（'+ADMIN_REASON_MIN+'–'+ADMIN_REASON_MAX+' 个字符，必填）';
+    var text=action==='approve'?'确认该订单已到账并给用户加点？':'填写驳回原因';
     var reason=prompt(text);
-    if(reason==null) return;
-    reason=validateAdminReason(reason);
     if(reason==null) return;
     api('/api/admin/recharge/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({order_id:orderId,action:action,reason:reason})})
       .then(function(){toast(action==='approve'?'已确认到账':'已驳回');loadRecharge();loadUsers()})

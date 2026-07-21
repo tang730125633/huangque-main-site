@@ -14,11 +14,7 @@ class AuthPointsTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.old_db = os.environ.get("HQ_TEST_AUTH_DB")
-        self.old_secret = os.environ.get("HQ_CSRF_SECRET")
-        self.old_allowed_origins = os.environ.get("HQ_ALLOWED_ORIGINS")
         os.environ["HQ_TEST_AUTH_DB"] = os.path.join(self.tmp.name, "users.db")
-        os.environ["HQ_CSRF_SECRET"] = "points-test-csrf-secret"
-        os.environ["HQ_ALLOWED_ORIGINS"] = "https://app.example.test"
 
         import importlib
         import server.auth_server as auth_server
@@ -42,14 +38,6 @@ class AuthPointsTests(unittest.TestCase):
             os.environ.pop("HQ_TEST_AUTH_DB", None)
         else:
             os.environ["HQ_TEST_AUTH_DB"] = self.old_db
-        if self.old_secret is None:
-            os.environ.pop("HQ_CSRF_SECRET", None)
-        else:
-            os.environ["HQ_CSRF_SECRET"] = self.old_secret
-        if self.old_allowed_origins is None:
-            os.environ.pop("HQ_ALLOWED_ORIGINS", None)
-        else:
-            os.environ["HQ_ALLOWED_ORIGINS"] = self.old_allowed_origins
         self.tmp.cleanup()
 
     def test_deduct_is_atomic_and_rejects_insufficient_points(self):
@@ -191,10 +179,7 @@ class AuthPointsTests(unittest.TestCase):
             req = urllib.request.Request(
                 base + "/api/auth/login",
                 data=json.dumps({"username": "cookie_user", "password": "secret123"}).encode(),
-                headers={
-                    "Content-Type": "application/json",
-                    "Origin": "https://app.example.test",
-                },
+                headers={"Content-Type": "application/json"},
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=3) as r:

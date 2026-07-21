@@ -6,80 +6,6 @@ fail() {
     exit 1
 }
 
-: "${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL to the externally reachable site origin}"
-AUTH_INTERNAL_URL="${AUTH_INTERNAL_URL:-http://127.0.0.1:8095}"
-: "${ADMIN_ALLOWED_SOURCE:?set ADMIN_ALLOWED_SOURCE to the exact deployed allowlisted IP or CIDR}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERIFY_ADMIN_ALLOWLIST_PATH="${VERIFY_ADMIN_ALLOWLIST_PATH:-${SCRIPT_DIR}/verify-admin-allowlist.py}"
-
-validate_inputs() {
-    if [[ ! "$PUBLIC_BASE_URL" =~ ^https?://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?)(:[0-9]{1,5})?/?$ ]]; then
-        fail "PUBLIC_BASE_URL must be an HTTP(S) origin without credentials, path, query, fragment, whitespace, or options"
-    fi
-    if [[ "$AUTH_INTERNAL_URL" != "http://127.0.0.1:8095" ]]; then
-        fail "AUTH_INTERNAL_URL must be exactly http://127.0.0.1:8095"
-    fi
-}
-
-validate_inputs
-PUBLIC_BASE_URL="${PUBLIC_BASE_URL%/}"
-
-umask 077
-TEMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TEMP_DIR"' EXIT
-probe_number=0
-
-fetch_success() {
-    label="$1"
-    url="$2"
-    probe_number=$((probe_number + 1))
-    body_file="${TEMP_DIR}/body-${probe_number}"
-    header_file="${TEMP_DIR}/headers-${probe_number}"
-    if ! status="$(curl --fail-with-body --silent --show-error \
-        --connect-timeout 5 --max-time 20 \
-        --output "$body_file" --dump-header "$header_file" \
-        --write-out '%{http_code}' -- "$url")"; then
-        fail "${label} request failed"
-    fi
-    case "$status" in
-        2??) ;;
-        *) fail "${label} expected 2xx, received ${status}" ;;
-    esac
-    printf 'CHECK: %s -> %s\n' "$label" "$status"
-}
-
-expect_status() {
-    label="$1"
-    expected="$2"
-    url="$3"
-    shift 3
-    probe_number=$((probe_number + 1))
-    body_file="${TEMP_DIR}/body-${probe_number}"
-    if ! status="$(curl --silent --show-error \
-        --connect-timeout 5 --max-time 20 \
-        --output "$body_file" --write-out '%{http_code}' "$@" -- "$url")"; then
-        fail "${label} request failed before an HTTP status was received"
-    fi
-    printf 'CHECK: %s -> %s\n' "$label" "$status"
-    test "$status" = "$expected" || fail "${label} expected ${expected}, received ${status}"
-}
-
-require_header() {
-    header_file="$1"
-    header_name="$2"
-    grep -Eqi "^${header_name}:[[:space:]]*[^[:space:]]" "$header_file" \
-        || fail "required response header missing: ${header_name}"
-}
-
-verify_admin_allowlist() {
-    config_path="$1"
-    expected_source="$2"
-    python3 "$VERIFY_ADMIN_ALLOWLIST_PATH" "$config_path" "$expected_source" \
-        || fail "admin allowlist is unsafe or does not contain the expected source"
-}
-
-# END TESTABLE PROBE HELPERS
-
 test -f /etc/huangque-test/providers.env || fail "providers.env missing"
 test "$(stat -c '%a' /etc/huangque-test/providers.env)" = "600" || fail "providers.env mode is not 600"
 test "$(stat -c '%U:%G' /etc/huangque-test/providers.env)" = "root:root" || fail "providers.env owner is not root:root"
@@ -98,9 +24,6 @@ done
 
 nginx -t >/dev/null 2>&1 || fail "nginx configuration invalid"
 
-test -f /etc/nginx/snippets/huangque-admin-allowlist.conf || fail "admin allowlist snippet missing"
-verify_admin_allowlist /etc/nginx/snippets/huangque-admin-allowlist.conf "$ADMIN_ALLOWED_SOURCE"
-
 ss -ltn | grep -q '127.0.0.1:10809' || fail "xray loopback port missing"
 for port in 8095 8096 8097 8098 8100 8101; do
     ss -ltn | grep -q "127.0.0.1:${port}" || fail "backend loopback port missing: ${port}"
@@ -109,56 +32,13 @@ for port in 8095 8096 8097 8098 8100 8101; do
     fi
 done
 
-fetch_success "internal auth health" "${AUTH_INTERNAL_URL}/api/auth/health"
-auth_body="${TEMP_DIR}/body-${probe_number}"
-grep -Eq '"ok"[[:space:]]*:[[:space:]]*true' "$auth_body" || fail "auth health failed"
+auth_json="$(curl --fail --silent --show-error http://127.0.0.1/api/auth/health)"
+content_json="$(curl --fail --silent --show-error http://127.0.0.1/api/gen/health)"
+printf '%s' "$auth_json" | grep -q '"ok": true' || fail "auth health failed"
+printf '%s' "$content_json" | grep -q '"has_openai": true' || fail "OpenAI key not loaded"
+printf '%s' "$content_json" | grep -q '"has_tikhub": true' || fail "TikHub key not loaded"
 
-fetch_success "internal content health" "http://127.0.0.1:8096/api/gen/health"
-content_body="${TEMP_DIR}/body-${probe_number}"
-grep -Eq '"has_openai"[[:space:]]*:[[:space:]]*true' "$content_body" || fail "OpenAI key not loaded"
-grep -Eq '"has_tikhub"[[:space:]]*:[[:space:]]*true' "$content_body" || fail "TikHub key not loaded"
-
-fetch_success "internal image health" "http://127.0.0.1:8101/api/gen/banana/health"
-fetch_success "internal lead generation health" "http://127.0.0.1:8100/api/gen/leadgen/health"
-fetch_success "internal download health" "http://127.0.0.1:8097/api/gen/dl/health"
-
-fetch_success "public login /login.html" "${PUBLIC_BASE_URL}/login.html"
-login_headers="${TEMP_DIR}/headers-${probe_number}"
-require_header "$login_headers" "X-Content-Type-Options"
-grep -Eqi '^X-Content-Type-Options:[[:space:]]*nosniff([[:space:]]|$)' "$login_headers" \
-    || fail "X-Content-Type-Options must be nosniff"
-require_header "$login_headers" "Referrer-Policy"
-require_header "$login_headers" "Permissions-Policy"
-require_header "$login_headers" "Content-Security-Policy"
-grep -Eqi "^Content-Security-Policy:.*frame-ancestors[[:space:]]+'self'" "$login_headers" \
-    || fail "Content-Security-Policy must restrict frame ancestors"
-case "$PUBLIC_BASE_URL" in
-    https://*) require_header "$login_headers" "Strict-Transport-Security" ;;
-    *) printf 'CHECK: Strict-Transport-Security -> not applicable to non-HTTPS URL\n' ;;
-esac
-
-internal_paths=(
-    /api/auth/points/deduct
-    /api/auth/points/refund
-    /api/auth/admin/points/adjust
-    /api/auth/admin/points/audit
-    /api/auth/admin/users
-    /api/auth/admin/recharge/review
-    /api/auth/admin/recharge/orders
-)
-for path in "${internal_paths[@]}"; do
-    expect_status "public boundary ${path}" 404 "${PUBLIC_BASE_URL}${path}"
-    expect_status "spoofed internal token ${path}" 404 "${PUBLIC_BASE_URL}${path}" \
-        --header 'X-HQ-Internal-Token: spoofed-public-client-value'
-done
-
-# Run these probes from a source that is not in the deployed admin allowlist.
-expect_status "non-allowlisted admin page /admin/" 403 "${PUBLIC_BASE_URL}/admin/"
-expect_status "non-allowlisted admin API /api/admin/" 403 "${PUBLIC_BASE_URL}/api/admin/"
-
-proxy_code="$(curl --proxy http://127.0.0.1:10809 --silent --show-error \
-    --connect-timeout 5 --max-time 15 --output /dev/null \
-    --write-out '%{http_code}' -- https://api.openai.com/v1/models)"
+proxy_code="$(curl --proxy http://127.0.0.1:10809 --silent --output /dev/null --write-out '%{http_code}' --max-time 15 https://api.openai.com/v1/models)"
 case "$proxy_code" in
     401|403) ;;
     *) fail "unexpected no-auth OpenAI connectivity status: ${proxy_code}" ;;

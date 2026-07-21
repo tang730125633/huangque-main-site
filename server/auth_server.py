@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # 黄雀 AI · 独立认证服务（零依赖，标准库）
 # 端口 127.0.0.1:8095，nginx 把 /api/auth/ 路由过来。与 leadgen(8090) 完全隔离。
-import sqlite3, hashlib, hmac, secrets, json, os, sys, time, urllib.parse, threading
+import sqlite3, hashlib, secrets, json, os, sys, time, urllib.parse, threading
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -23,15 +23,7 @@ ITER = 200000
 TOKEN_TTL = int(os.environ.get("HQ_AUTH_TOKEN_TTL", str(30 * 24 * 3600)))
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
 AUTH_COOKIE_SECURE = os.environ.get("HQ_AUTH_COOKIE_SECURE", "1").strip().lower() not in ("0", "false", "no")
-CSRF_COOKIE_NAME = "hq_csrf"
-CSRF_SECRET = os.environ.get("HQ_CSRF_SECRET", "").encode("utf-8")
-ALLOWED_ORIGIN_VALUES = tuple(
-    value.strip()
-    for value in os.environ.get("HQ_ALLOWED_ORIGINS", "").split(",")
-    if value.strip()
-)
 INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
-ADMIN_POINTS_MAX_DELTA = int(os.environ.get("HQ_ADMIN_POINTS_MAX_DELTA", "1000"))
 LOGIN_FAIL_WINDOW = int(os.environ.get("HQ_AUTH_FAIL_WINDOW", "300"))
 LOGIN_FAIL_MAX = int(os.environ.get("HQ_AUTH_FAIL_MAX", "5"))
 REGISTER_WINDOW = int(os.environ.get("HQ_AUTH_REGISTER_WINDOW", "300"))
@@ -132,69 +124,6 @@ def db():
     c = sqlite3.connect(DB, timeout=10)
     c.row_factory = sqlite3.Row
     return c
-
-
-def validate_admin_reason(value: object) -> str:
-    if not isinstance(value, str):
-        raise ValueError("reason must be 4 to 120 characters")
-    reason = value.strip()
-    if not 4 <= len(reason) <= 120:
-        raise ValueError("reason must be 4 to 120 characters")
-    return reason
-
-
-def validate_points_delta(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError("delta must be an integer")
-    if value == 0 or abs(value) > ADMIN_POINTS_MAX_DELTA:
-        raise ValueError("delta must be nonzero and within %d" % ADMIN_POINTS_MAX_DELTA)
-    return value
-
-
-def normalize_request_id(value: object) -> str:
-    request_id = value.strip() if isinstance(value, str) else ""
-    if request_id and len(request_id) <= 128 and all(
-        ch.isascii() and (ch.isalnum() or ch in "._:-") for ch in request_id
-    ):
-        return request_id
-    return secrets.token_hex(16)
-
-
-_ADMIN_AUDIT_MARKER = "_hq_admin_audit"
-_ADMIN_AUDIT_VERSION = 1
-
-
-def admin_audit_reason(reason: str, request_id: str) -> str:
-    return json.dumps(
-        {
-            _ADMIN_AUDIT_MARKER: _ADMIN_AUDIT_VERSION,
-            "reason": validate_admin_reason(reason),
-            "request_id": normalize_request_id(request_id),
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-
-
-def public_audit_row(row):
-    item = dict(row)
-    raw = item.get("reason") or ""
-    try:
-        envelope = json.loads(raw)
-    except (TypeError, ValueError):
-        return item
-    if (
-        isinstance(envelope, dict)
-        and set(envelope) == {_ADMIN_AUDIT_MARKER, "reason", "request_id"}
-        and type(envelope[_ADMIN_AUDIT_MARKER]) is int
-        and envelope[_ADMIN_AUDIT_MARKER] == _ADMIN_AUDIT_VERSION
-        and isinstance(envelope["reason"], str)
-        and isinstance(envelope["request_id"], str)
-    ):
-        item["reason"] = envelope["reason"]
-        item["request_id"] = envelope["request_id"]
-    return item
 
 def init_db():
     c = db()
@@ -1493,11 +1422,10 @@ def list_admin_users(query="", sort="created_at", direction="desc", limit=100):
     finally:
         c.close()
 
-def adjust_points_admin(who_admin, username, delta, reason="", request_id=""):
+def adjust_points_admin(who_admin, username, delta, reason=""):
     username = (username or "").strip()
-    delta = validate_points_delta(delta)
-    reason = validate_admin_reason(reason)
-    encoded_reason = admin_audit_reason(reason, request_id)
+    delta = int(delta or 0)
+    reason = (reason or "").strip()[:300]
     if not username:
         return None, "missing_username"
     if delta == 0:
@@ -1519,7 +1447,7 @@ def adjust_points_admin(who_admin, username, delta, reason="", request_id=""):
         c.execute(
             """INSERT INTO points_audit(who_admin, username, delta, before_points, after_points, reason, created_at)
                VALUES(?,?,?,?,?,?,?)""",
-            (who_admin, username, delta, before, after, encoded_reason, now),
+            (who_admin, username, delta, before, after, reason, now),
         )
         c.commit()
         return {
@@ -1563,7 +1491,7 @@ def list_points_audit(username="", limit=100, actor=""):
     c = db()
     try:
         rows = c.execute(sql, args).fetchall()
-        return {"items": [public_audit_row(r) for r in rows]}
+        return {"items": [dict(r) for r in rows]}
     finally:
         c.close()
 
@@ -1631,14 +1559,11 @@ def list_recharge_orders(username="", status="", limit=100):
     finally:
         c.close()
 
-def review_recharge_order(
-    who_admin, order_id, action, reason="", request_id="", transaction_id="", pay_channel=""
-):
+def review_recharge_order(who_admin, order_id, action, reason="", transaction_id="", pay_channel=""):
     who_admin = (who_admin or "").strip()
     order_id = (order_id or "").strip()
     action = (action or "").strip().lower()
-    reason = validate_admin_reason(reason)
-    encoded_reason = admin_audit_reason(reason, request_id)
+    reason = (reason or "").strip()[:300]
     transaction_id = (transaction_id or "").strip()
     pay_channel = (pay_channel or "").strip()
     if action not in {"approve", "reject"}:
@@ -1674,7 +1599,7 @@ def review_recharge_order(
             c.execute(
                 """INSERT INTO points_audit(who_admin, username, delta, before_points, after_points, reason, created_at)
                    VALUES(?,?,?,?,?,?,?)""",
-                (who_admin, order["username"], delta, before, after, encoded_reason, now),
+                (who_admin, order["username"], delta, before, after, "充值审批: %s %s" % (order_id, reason), now),
             )
             status = "approved"
         else:
@@ -2084,68 +2009,11 @@ def cookie_token(header):
     except Exception:
         return ""
 
-def csrf_cookie_value(header):
-    try:
-        jar = cookies.SimpleCookie()
-        jar.load(header or "")
-        morsel = jar.get(CSRF_COOKIE_NAME)
-        return morsel.value.strip() if morsel and morsel.value else ""
-    except Exception:
-        return ""
-
 def request_token(headers):
     token = bearer_token(headers.get("Authorization"))
     if token and token != "__cookie__":
         return token
     return cookie_token(headers.get("Cookie"))
-
-def request_auth_mode(headers):
-    token = bearer_token(headers.get("Authorization"))
-    if token and token != "__cookie__":
-        return "bearer"
-    return "cookie" if cookie_token(headers.get("Cookie")) else ""
-
-def normalized_origin(value, *, allow_path=False):
-    value = (value or "").strip()
-    if not value or value == "null":
-        return None
-    if not allow_path and ("?" in value or "#" in value):
-        return None
-    try:
-        parsed = urllib.parse.urlsplit(value)
-        if parsed.scheme.lower() not in {"http", "https"}:
-            return None
-        if not parsed.hostname or parsed.username is not None or parsed.password is not None:
-            return None
-        if not allow_path and (
-            parsed.path or parsed.query or parsed.fragment
-        ):
-            return None
-        port = parsed.port
-    except (TypeError, ValueError):
-        return None
-    if port is None:
-        port = 443 if parsed.scheme.lower() == "https" else 80
-    return parsed.scheme.lower(), parsed.hostname.lower(), port
-
-def serialized_origin(origin):
-    if origin is None:
-        return "<invalid>"
-    scheme, host, port = origin
-    if ":" in host:
-        host = "[" + host + "]"
-    default_port = 443 if scheme == "https" else 80
-    return "%s://%s%s" % (
-        scheme,
-        host,
-        "" if port == default_port else ":%d" % port,
-    )
-
-ALLOWED_ORIGINS = frozenset(
-    origin
-    for origin in (normalized_origin(value) for value in ALLOWED_ORIGIN_VALUES)
-    if origin is not None
-)
 
 def auth_cookie_header(token):
     parts = [f"{AUTH_COOKIE_NAME}={token}", "Path=/", f"Max-Age={TOKEN_TTL}", "HttpOnly", "SameSite=Lax"]
@@ -2159,62 +2027,14 @@ def clear_auth_cookie_header():
         parts.append("Secure")
     return "; ".join(parts)
 
-def require_csrf_secret():
-    if not CSRF_SECRET:
-        raise RuntimeError("HQ_CSRF_SECRET must be set")
-    return CSRF_SECRET
-
-def csrf_token_for(session_token: str) -> str:
-    if not session_token:
-        raise ValueError("session token must not be empty")
-    return hmac.new(
-        require_csrf_secret(),
-        session_token.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-
-def csrf_cookie_header(session_token: str) -> str:
-    parts = [
-        f"{CSRF_COOKIE_NAME}={csrf_token_for(session_token)}",
-        "Path=/",
-        f"Max-Age={TOKEN_TTL}",
-        "SameSite=Lax",
-    ]
-    if AUTH_COOKIE_SECURE:
-        parts.append("Secure")
-    return "; ".join(parts)
-
-def clear_csrf_cookie_header() -> str:
-    parts = [f"{CSRF_COOKIE_NAME}=", "Path=/", "Max-Age=0", "SameSite=Lax"]
-    if AUTH_COOKIE_SECURE:
-        parts.append("Secure")
-    return "; ".join(parts)
-
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def _send(self, code, obj, extra_headers=None):
         body = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        headers = extra_headers or {}
-        headers = headers.items() if hasattr(headers, "items") else headers
-        for key, value in headers:
+        for key, value in (extra_headers or {}).items():
             self.send_header(key, value)
-        reissue_csrf = getattr(self, "_reissue_csrf", "")
-        if reissue_csrf:
-            try:
-                self.send_header("Set-Cookie", csrf_cookie_header(reissue_csrf))
-            except (RuntimeError, ValueError):
-                pass
-        if getattr(self, "_current_request_id", ""):
-            self.send_header("X-Request-ID", self._current_request_id)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-    def _send_raw(self, code, body, content_type="text/plain; charset=utf-8"):
-        body = body if isinstance(body, bytes) else str(body).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -2285,108 +2105,12 @@ class H(BaseHTTPRequestHandler):
                          WHERE t.token=? AND (t.expires_at IS NULL OR t.expires_at > ?)""",
                       (tok, int(time.time()))).fetchone()
         c.close()
-        if r is not None:
-            self._maybe_reissue_csrf(tok)
         return r
-    def _maybe_reissue_csrf(self, session_token):
-        # CSRF 上线前登录的老会话没有 hq_csrf cookie，写操作会全部 403。
-        # 在已认证的 cookie 会话请求上发现缺失/不匹配时标记补发，
-        # 由 _send 附带 Set-Cookie，浏览器拿到后写操作即恢复（自愈，免重新登录）。
-        if request_auth_mode(self.headers) != "cookie":
-            return
-        try:
-            expected = csrf_token_for(session_token)
-        except (RuntimeError, ValueError):
-            return
-        supplied = csrf_cookie_value(self.headers.get("Cookie"))
-        if supplied:
-            try:
-                if secrets.compare_digest(supplied, expected):
-                    return
-            except TypeError:
-                pass
-        self._reissue_csrf = session_token
     def _internal_auth(self):
         if not INTERNAL_TOKEN:
             return False
         token = self.headers.get("X-HQ-Internal-Token") or ""
         return secrets.compare_digest(token, INTERNAL_TOKEN)
-
-    def _csrf_valid(self, session_token: str) -> bool:
-        supplied = self.headers.get("X-CSRF-Token") or ""
-        if not session_token or not supplied:
-            return False
-        try:
-            expected = csrf_token_for(session_token)
-        except (RuntimeError, ValueError):
-            return False
-        try:
-            return secrets.compare_digest(supplied, expected)
-        except TypeError:
-            return False
-
-    def _uses_bearer_auth(self) -> bool:
-        return request_auth_mode(self.headers) == "bearer"
-
-    def _request_origin_allowed(self) -> bool:
-        origin = self.headers.get("Origin")
-        if origin is not None:
-            candidate = normalized_origin(origin)
-        else:
-            candidate = normalized_origin(self.headers.get("Referer"), allow_path=True)
-        return candidate is not None and candidate in ALLOWED_ORIGINS
-
-    def _reject_mutation(self, path: str, code: int, reason: str) -> bool:
-        source = self.headers.get("Origin")
-        allow_path = False
-        if source is None:
-            source = self.headers.get("Referer") or ""
-            allow_path = True
-        safe_origin = (
-            serialized_origin(normalized_origin(source, allow_path=allow_path))
-            if source
-            else "<missing>"
-        )
-        event = {
-            "request_id": normalize_request_id(self.headers.get("X-Request-ID")),
-            "path": path[:512],
-            "client_ip": self._client_ip()[:128],
-            "origin": safe_origin,
-            "reason": reason,
-        }
-        print(json.dumps(event, ensure_ascii=False), file=sys.stderr, flush=True)
-        detail = "unsupported media type" if code == 415 else "forbidden"
-        self._send(code, {"detail": detail})
-        return False
-
-    def _require_browser_mutation_security(self, path: str) -> bool:
-        if self.command not in {"POST", "PUT", "PATCH", "DELETE"}:
-            return True
-        if path in {"/api/auth/wxpay/notify", "/api/auth/wechat/message-push"}:
-            return True
-
-        content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-        if content_type != "application/json":
-            return self._reject_mutation(path, 415, "content_type")
-
-        if path in {
-            "/api/auth/miniprogram-login",
-            "/api/auth/miniprogram-register",
-        }:
-            return True
-        if path in {"/api/auth/login", "/api/auth/register"}:
-            if self._request_origin_allowed():
-                return True
-            return self._reject_mutation(path, 403, "origin")
-        if self._uses_bearer_auth():
-            return True
-
-        if request_auth_mode(self.headers) == "cookie":
-            if not self._request_origin_allowed():
-                return self._reject_mutation(path, 403, "origin")
-            if not self._csrf_valid(cookie_token(self.headers.get("Cookie"))):
-                return self._reject_mutation(path, 403, "csrf")
-        return True
 
     def _require_internal(self):
         if self._internal_auth():
@@ -2405,10 +2129,7 @@ class H(BaseHTTPRequestHandler):
         return row
 
     def do_POST(self):
-        self._current_request_id = normalize_request_id(self.headers.get("X-Request-ID"))
         p = self.path.split("?")[0]
-        if not self._require_browser_mutation_security(p):
-            return
         if p == "/api/auth/wechat/message-push":
             if not wechat_vpay.message_push_configured():
                 return self._send(503, {"detail": "message push not configured"})
@@ -2438,20 +2159,18 @@ class H(BaseHTTPRequestHandler):
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
-            if not isinstance(d, dict):
-                return self._send(400, {"detail": "request body must be a JSON object"})
             username = (d.get("username") or "").strip()
+            reason = (d.get("reason") or "").strip()
             try:
-                reason = validate_admin_reason(d.get("reason"))
-                delta = validate_points_delta(d.get("delta"))
-            except ValueError as exc:
-                return self._send(400, {"detail": str(exc)})
+                delta = int(d.get("delta") or 0)
+            except Exception:
+                return self._send(400, {"detail": "delta must be an integer"})
             if not username:
                 return self._send(400, {"detail": "missing username"})
+            if delta == 0:
+                return self._send(400, {"detail": "delta cannot be 0"})
             try:
-                result, err = adjust_points_admin(
-                    admin["username"], username, delta, reason, self._current_request_id
-                )
+                result, err = adjust_points_admin(admin["username"], username, delta, reason)
                 if err == "not_found":
                     return self._send(404, {"detail": "user not found"})
                 if err == "insufficient":
@@ -2470,28 +2189,22 @@ class H(BaseHTTPRequestHandler):
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
-            if not isinstance(d, dict):
-                return self._send(400, {"detail": "request body must be a JSON object"})
             try:
-                reason = validate_admin_reason(d.get("reason") or d.get("review_note"))
                 order, err = review_recharge_order(
                     admin["username"],
                     d.get("order_id"),
                     d.get("action"),
-                    reason,
-                    self._current_request_id,
+                    d.get("reason") or d.get("review_note") or "",
                 )
                 if err == "not_found":
                     return self._send(404, {"detail": "order not found"})
                 if err == "user_not_found":
                     return self._send(404, {"detail": "user not found"})
                 if err == "already_reviewed":
-                    return self._send(200, {"ok": True, "order": order, "idempotent": True})
+                    return self._send(409, {"detail": "订单已审批", "order": order})
                 if err:
                     return self._send(400, {"detail": err})
                 return self._send(200, {"ok": True, "order": order})
-            except ValueError as exc:
-                return self._send(400, {"detail": str(exc)})
             except Exception:
                 return self._send(500, {"detail": "recharge review failed"})
         if p == "/api/auth/virtual-pay/order":
@@ -2741,10 +2454,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(500, {"detail": "注册失败"})
             finally:
                 c.close()
-            return self._send(200, {"user": public_user(u, name, NEW_USER_TRIAL_POINTS, account_id=account_id)}, [
-                ("Set-Cookie", auth_cookie_header(tok)),
-                ("Set-Cookie", csrf_cookie_header(tok)),
-            ])
+            return self._send(200, {"user": public_user(u, name, NEW_USER_TRIAL_POINTS, account_id=account_id)}, {"Set-Cookie": auth_cookie_header(tok)})
         if p == "/api/auth/login":
             d = self._body()
             if self._bad_json():
@@ -2763,10 +2473,7 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"user": {
                 "username": u, "name": row["display_name"], "points": row["points"],
                 "role": row["role"], "must_change": bool(row["must_change"]),
-                "account_id": account_id}}, [
-                    ("Set-Cookie", auth_cookie_header(tok)),
-                    ("Set-Cookie", csrf_cookie_header(tok)),
-                ])
+                "account_id": account_id}}, {"Set-Cookie": auth_cookie_header(tok)})
         if p == "/api/auth/miniprogram-login":
             # 小程序 wx.request 不像浏览器那样自动带 httpOnly cookie，专供小程序客户端：
             # token 放响应体让小程序自己存起来，后续走 Authorization: Bearer 请求头（网站登录/注册不受影响，仍只走 cookie）。
@@ -2827,15 +2534,10 @@ class H(BaseHTTPRequestHandler):
                 c.close()
             return self._send(200, {"token": tok, "user": public_user(u, name, NEW_USER_TRIAL_POINTS, account_id=account_id)})
         if p == "/api/auth/logout":
-            clear_cookie = [
-                ("Set-Cookie", clear_auth_cookie_header()),
-                ("Set-Cookie", clear_csrf_cookie_header()),
-            ]
+            clear_cookie = {"Set-Cookie": clear_auth_cookie_header()}
             tok = request_token(self.headers)
             if not tok:
                 return self._send(200, {"ok": True}, clear_cookie)
-            if request_auth_mode(self.headers) == "cookie" and not self._csrf_valid(tok):
-                return self._send(403, {"detail": "forbidden"})
             if not tok:
                 return self._send(401, {"detail": "未登录"})
             if tok in REVOKED_TOKENS:
@@ -3093,8 +2795,6 @@ class H(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         p = self.path.split("?")[0]
-        if not self._require_browser_mutation_security(p):
-            return
         friend_prefix = "/api/auth/friends/"
         canvas_prefix = "/api/auth/canvas/boards/"
         row = self._user()
@@ -3136,18 +2836,6 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 return self._send(500, {"detail": "canvas delete failed"})
         self._send(404, {"detail": "not found"})
-
-    def _unsupported_mutation(self):
-        p = self.path.split("?")[0]
-        if not self._require_browser_mutation_security(p):
-            return
-        self.send_error(501, "Unsupported method (%r)" % self.command)
-
-    def do_PUT(self):
-        self._unsupported_mutation()
-
-    def do_PATCH(self):
-        self._unsupported_mutation()
 
     def do_GET(self):
         p = self.path.split("?")[0]
@@ -3373,7 +3061,6 @@ if __name__ == "__main__":
         role = sys.argv[5] if len(sys.argv) > 5 else 'member'
         create_user(sys.argv[2], sys.argv[3], pts, role)
         sys.exit(0)
-    require_csrf_secret()
     init_db()
     print("huangque-auth on 127.0.0.1:%d" % PORT)
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
