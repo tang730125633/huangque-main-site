@@ -150,6 +150,197 @@ def _text(value, limit=None):
     return text[:limit] if limit else text
 
 
+def validate_planning_payload(payload):
+    data = dict(payload or {})
+    prompt = _text(data.get("prompt"), 4000)
+    if not prompt:
+        raise ValueError("请输入短剧需求")
+    duration_value = _text(data.get("dur") or data.get("target_duration"))
+    if duration_value.lower().endswith("s"):
+        duration_value = duration_value[:-1]
+    try:
+        target_duration = int(duration_value)
+    except (TypeError, ValueError):
+        target_duration = 0
+    if target_duration not in DURATIONS:
+        raise ValueError("短剧时长仅支持 30、45、60 秒")
+    ratio = _text(data.get("ratio") or "9:16")
+    if ratio not in RATIOS:
+        raise ValueError("短剧比例仅支持 9:16、16:9")
+    try:
+        shot_count = int(data.get("shot_count") or 6)
+    except (TypeError, ValueError):
+        shot_count = 0
+    if shot_count not in SHOT_COUNTS:
+        raise ValueError("分镜数量必须为 6-10 个")
+    return {
+        "prompt": prompt,
+        "target_duration": target_duration,
+        "ratio": ratio,
+        "shot_count": shot_count,
+        "style": _text(data.get("style") or "电影写实", 80),
+        "platform": _text(data.get("platform") or "抖音", 80),
+    }
+
+
+def build_plan_prompt(settings):
+    return (
+        "为以下短剧需求生成可拍摄的完整规划。只输出一个 JSON 对象，不要解释，不要 markdown 代码块。\n"
+        "需求：%s\n平台：%s；画幅：%s；总时长：%s 秒；分镜数：%s；视觉风格：%s。\n"
+        "JSON 顶层必须且只能包含 title、logline、characters、script、shots。\n"
+        "characters 是角色数组；每个角色必须包含 key、name、identity、personality、appearance_prompt、wardrobe_prompt。\n"
+        "script 必须包含 hook、conflict、turn、ending、dialogue_lines；每条 dialogue_lines 必须包含 id、character_key、text。\n"
+        "shots 是 6-10 条分镜数组；每条必须包含 key、duration、scene_description、camera_description、"
+        "character_keys、dialogue_line_ids、image_prompt、video_prompt。duration 只能是 5 或 10，"
+        "所有 duration 之和必须恰好为 %s；character_keys 和 dialogue_line_ids 只能引用前述已定义的键。"
+    ) % (
+        settings["prompt"], settings["platform"], settings["ratio"], settings["target_duration"],
+        settings["shot_count"], settings["style"], settings["target_duration"],
+    )
+
+
+def _required_text(item, key, limit):
+    if key not in item:
+        raise ValueError("短剧规划缺少字段: " + key)
+    value = _text(item.get(key), limit)
+    if not value:
+        raise ValueError("短剧规划字段无效: " + key)
+    return value
+
+
+def _key_list(value, field):
+    if not isinstance(value, list) or any(not isinstance(key, str) or not key.strip() for key in value):
+        raise ValueError("短剧规划字段无效: " + field)
+    return [_text(key, 80) for key in value]
+
+
+def normalize_plan(raw, settings):
+    if not isinstance(raw, dict):
+        raise ValueError("短剧规划必须是 JSON 对象")
+    try:
+        target_duration = int(settings["target_duration"])
+        shot_count = int(settings["shot_count"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("短剧规划设置无效")
+    if target_duration not in DURATIONS or shot_count not in SHOT_COUNTS:
+        raise ValueError("短剧规划设置无效")
+    required_top_level = {"title", "logline", "characters", "script", "shots"}
+    if set(raw) != required_top_level:
+        raise ValueError("短剧规划 JSON 字段不正确")
+    title = _required_text(raw, "title", 80)
+    logline = _required_text(raw, "logline", 4000)
+    characters = raw["characters"]
+    script = raw["script"]
+    shots = raw["shots"]
+    if not isinstance(characters, list) or not isinstance(script, dict) or not isinstance(shots, list):
+        raise ValueError("短剧规划数据无效")
+
+    normalized_characters = []
+    for character in characters:
+        if not isinstance(character, dict):
+            raise ValueError("角色数据无效")
+        source_type = character.get("source_type", "ai_character")
+        if source_type not in {"cinematic_avatar", "ai_character"}:
+            raise ValueError("角色数据无效")
+        identity = _required_text(character, "identity", 2000)
+        normalized_characters.append({
+            "key": _required_text(character, "key", 80),
+            "name": _required_text(character, "name", 80),
+            "identity": identity,
+            "identity_text": identity,
+            "personality": _required_text(character, "personality", 2000),
+            "appearance_prompt": _required_text(character, "appearance_prompt", 4000),
+            "wardrobe_prompt": _required_text(character, "wardrobe_prompt", 4000),
+            "source_type": source_type,
+        })
+    character_keys = [character["key"] for character in normalized_characters]
+    if len(set(character_keys)) != len(character_keys):
+        raise ValueError("角色标识不能重复")
+
+    required_script = {"hook", "conflict", "turn", "ending", "dialogue_lines"}
+    if set(script) != required_script or not isinstance(script["dialogue_lines"], list):
+        raise ValueError("剧本数据无效")
+    dialogue_lines = []
+    for line in script["dialogue_lines"]:
+        if not isinstance(line, dict):
+            raise ValueError("台词数据无效")
+        line_id = _required_text(line, "id", 80)
+        character_key = _required_text(line, "character_key", 80)
+        if character_key not in character_keys:
+            raise ValueError("台词引用了不存在的角色")
+        dialogue_lines.append({
+            "id": line_id,
+            "character_key": character_key,
+            "text": _required_text(line, "text", 4000),
+        })
+    dialogue_ids = [line["id"] for line in dialogue_lines]
+    if len(set(dialogue_ids)) != len(dialogue_ids):
+        raise ValueError("台词标识不能重复")
+    normalized_script = {
+        "title": title,
+        "logline": logline,
+        "hook": _required_text(script, "hook", 4000),
+        "conflict": _required_text(script, "conflict", 4000),
+        "turn": _required_text(script, "turn", 4000),
+        "ending": _required_text(script, "ending", 4000),
+        "dialogue_lines": dialogue_lines,
+    }
+    normalized_script["conflict_text"] = normalized_script["conflict"]
+    normalized_script["turn_text"] = normalized_script["turn"]
+
+    if len(shots) not in SHOT_COUNTS or len(shots) != shot_count:
+        raise ValueError("分镜数量必须等于设定数量且为 6-10 个")
+    normalized_shots = []
+    for shot in shots:
+        if not isinstance(shot, dict):
+            raise ValueError("分镜数据无效")
+        try:
+            duration = int(shot.get("duration"))
+        except (TypeError, ValueError):
+            duration = 0
+        if duration not in {5, 10}:
+            raise ValueError("分镜时长只能是 5 或 10 秒")
+        shot_character_keys = _key_list(shot.get("character_keys"), "character_keys")
+        unknown_characters = set(shot_character_keys) - set(character_keys)
+        if unknown_characters:
+            raise ValueError("分镜引用了不存在的角色")
+        dialogue_line_ids = _key_list(shot.get("dialogue_line_ids"), "dialogue_line_ids")
+        unknown_dialogue_ids = set(dialogue_line_ids) - set(dialogue_ids)
+        if unknown_dialogue_ids:
+            raise ValueError("分镜引用了不存在的台词")
+        normalized_shots.append({
+            "key": _required_text(shot, "key", 80),
+            "duration": duration,
+            "scene_description": _required_text(shot, "scene_description", 4000),
+            "camera_description": _required_text(shot, "camera_description", 4000),
+            "character_keys": shot_character_keys,
+            "dialogue_line_ids": dialogue_line_ids,
+            "image_prompt": _required_text(shot, "image_prompt", 8000),
+            "video_prompt": _required_text(shot, "video_prompt", 8000),
+        })
+    shot_keys = [shot["key"] for shot in normalized_shots]
+    if len(set(shot_keys)) != len(shot_keys):
+        raise ValueError("分镜标识不能重复")
+    if sum(shot["duration"] for shot in normalized_shots) != target_duration:
+        raise ValueError("分镜总时长必须等于短剧目标时长")
+
+    return {
+        "title": title,
+        "logline": logline,
+        "characters": normalized_characters,
+        "script": normalized_script,
+        "shots": normalized_shots,
+    }
+
+
+def parse_and_normalize_plan(raw, settings):
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        raise ValueError("短剧规划必须是 JSON")
+    return normalize_plan(parsed, settings)
+
+
 def _dict_rows(conn, query, params):
     cursor = conn.execute(query, params)
     columns = [column[0] for column in cursor.description]
