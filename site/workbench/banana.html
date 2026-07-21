@@ -625,6 +625,7 @@
   var JOB_POLL_TIMEOUT_SEC=900;
   var JOB_POLL_SOFT_RETRY_LIMIT=3;
   var JOB_POLL_HARD_RETRY_LIMIT=15;
+  var MAX_SHUTDOWN_RETRIES=3;
   function poll(id, t0, label){
     var failures=0;
     var iv=setInterval(function(){
@@ -668,13 +669,21 @@
              : '黄雀引擎 2 高清约 1-2 分钟';
     flash(label+' · '+hint,'#2dd4bf');
     var t0=Date.now();
-    fetch(endpoint,{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    function sendSubmit(attempt){
+      fetch(endpoint,{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
       .then(function(r){ return r.text().then(function(t){
         var d={};
         try{ d=t?JSON.parse(t):{}; }catch(e){ d={detail:(r.status===413?'图片太大，请压缩后重试':(t||'').replace(/<[^>]+>/g,' ').trim().slice(0,120))}; }
         return {s:r.status,d:d};
       }); })
       .then(function(x){
+        // shutting_down 在后端扣点/建任务之前返回，只有这条明确响应可以安全自动重试。
+        if(x.s===503 && x.d && x.d.code==='shutting_down' && attempt<MAX_SHUTDOWN_RETRIES){
+          var delay=Math.max(1000,Math.min(10000,parseInt(x.d.retry_after_ms,10)||5000));
+          flash('服务切换中，正在自动重试（'+(attempt+1)+'/'+MAX_SHUTDOWN_RETRIES+'）','#2dd4bf');
+          setTimeout(function(){ sendSubmit(attempt+1); },delay);
+          return;
+        }
         submitting=false;              // 必须在所有分支之前解锁：漏一条路径按钮就永久锁死
         if(x.s===401){ syncGen(); HQ.login(); return; }
         if(x.s===402){ syncGen(); flash('点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a>','#f4708a'); return; }
@@ -684,6 +693,8 @@
         if(!x.d.job_id){ syncGen(); flash('提交失败：'+brandedErrorText((x.d&&x.d.detail)||'未知'),'#f4708a'); return; }
         poll(x.d.job_id, t0, label);   // poll 内部登记 active、存盘、并刷新按钮
       }).catch(function(){ submitting=false; syncGen(); flash('网络错误，请重试','#f4708a'); });
+    }
+    sendSubmit(0);
   }
 
   // ===== 参考图上传 → 图生图 / 局部修改（inpaint，gpt-image 专属）=====
