@@ -17,6 +17,7 @@ NEXT_STAGE = {
 RATIOS = {"9:16", "16:9"}
 DURATIONS = {30, 45, 60}
 SHOT_COUNTS = set(range(6, 11))
+CONTENT_KEYS = {"characters", "script", "shots"}
 
 
 class RevisionConflict(RuntimeError):
@@ -467,7 +468,21 @@ def _raise_cas_error(conn, username, project_id):
 
 
 def update_project(db_factory, username, project_id, revision, patch):
-    original_patch = dict(patch or {})
+    if not isinstance(patch, dict):
+        raise ValueError("短剧更新内容必须是对象")
+    original_patch = dict(patch)
+    content_keys = set(original_patch) & CONTENT_KEYS
+    if content_keys:
+        if len(content_keys) != 1 or len(original_patch) != 1:
+            raise ValueError("每次只能更新一个短剧内容分区")
+        key = next(iter(content_keys))
+        if key == "characters":
+            return update_characters(
+                db_factory, username, project_id, revision, original_patch[key]
+            )
+        if key == "script":
+            return update_script(db_factory, username, project_id, revision, original_patch[key])
+        return update_shots(db_factory, username, project_id, revision, original_patch[key])
     allowed = {"title", "synopsis", "ratio", "target_duration", "shot_count", "visual_style", "target_platform", "point_budget"}
     unknown = set(original_patch) - allowed
     if unknown:
@@ -512,69 +527,359 @@ def update_project(db_factory, username, project_id, revision, patch):
         conn.close()
 
 
-def _validate_plan(plan):
-    if not isinstance(plan, dict):
-        raise ValueError("短剧规划无效")
-    characters = plan.get("characters", [])
-    shots = plan.get("shots", [])
-    script = plan.get("script", plan.get("script_version", {}))
-    if not isinstance(characters, list) or not isinstance(shots, list) or not isinstance(script, dict):
-        raise ValueError("短剧规划无效")
-    normalized_characters = []
+_MISSING = object()
+
+
+def _strict_text(item, names, limit, *, required=False, default=""):
+    value = _MISSING
+    for name in names:
+        if name in item:
+            value = item[name]
+            break
+    if value is _MISSING:
+        if required:
+            raise ValueError("短剧内容缺少字段: " + names[0])
+        return default
+    if not isinstance(value, str):
+        raise ValueError("短剧内容字段无效: " + names[0])
+    value = value.strip()[:limit]
+    if required and not value:
+        raise ValueError("短剧内容字段无效: " + names[0])
+    return value
+
+
+def _optional_key(value, field):
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("短剧内容字段无效: " + field)
+    return value.strip()[:80] or None
+
+
+def _normalize_characters(characters, *, require_complete=False):
+    if not isinstance(characters, list):
+        raise ValueError("角色数据必须是数组")
+    normalized = []
     for index, character in enumerate(characters):
         if not isinstance(character, dict):
             raise ValueError("角色数据无效")
-        character_key = _text(character.get("character_key") or character.get("key"), 80)
-        name = _text(character.get("name"), 80)
         source_type = character.get("source_type", "ai_character")
-        if not character_key or not name or source_type not in {"cinematic_avatar", "ai_character"}:
+        if not isinstance(source_type, str) or source_type not in {"cinematic_avatar", "ai_character"}:
             raise ValueError("角色数据无效")
-        normalized_characters.append({
-            "character_key": character_key, "name": name,
-            "identity_text": _text(character.get("identity_text"), 2000),
-            "personality": _text(character.get("personality"), 2000),
-            "source_type": source_type, "avatar_id": character.get("avatar_id") or None,
-            "appearance_prompt": _text(character.get("appearance_prompt"), 4000),
-            "wardrobe_prompt": _text(character.get("wardrobe_prompt"), 4000),
-            "voice_key": character.get("voice_key") or None,
-            "voice_settings": character.get("voice_settings", {}), "sort_order": index,
+        voice_settings = character.get("voice_settings", {})
+        if not isinstance(voice_settings, dict):
+            raise ValueError("角色语音设置必须是对象")
+        avatar_id = _optional_key(character.get("avatar_id"), "avatar_id")
+        if require_complete and source_type == "cinematic_avatar" and not avatar_id:
+            raise ValueError("电影化身角色必须提供 avatar_id")
+        normalized.append({
+            "character_key": _strict_text(
+                character, ("character_key", "key"), 80, required=True
+            ),
+            "name": _strict_text(character, ("name",), 80, required=True),
+            "identity_text": _strict_text(
+                character, ("identity_text", "identity"), 2000, required=require_complete
+            ),
+            "personality": _strict_text(
+                character, ("personality",), 2000, required=require_complete
+            ),
+            "source_type": source_type,
+            "avatar_id": avatar_id,
+            "appearance_prompt": _strict_text(
+                character, ("appearance_prompt",), 4000, required=require_complete
+            ),
+            "wardrobe_prompt": _strict_text(
+                character, ("wardrobe_prompt",), 4000, required=require_complete
+            ),
+            "voice_key": _optional_key(character.get("voice_key"), "voice_key"),
+            "voice_settings": voice_settings,
+            "sort_order": index,
         })
-    if len({item["character_key"] for item in normalized_characters}) != len(normalized_characters):
+    keys = [item["character_key"] for item in normalized]
+    if len(set(keys)) != len(keys):
         raise ValueError("角色标识不能重复")
-    normalized_shots = []
+    return normalized
+
+
+def _normalize_script(script, character_keys, *, default_title=None, require_complete=True):
+    if not isinstance(script, dict):
+        raise ValueError("剧本数据必须是对象")
+    title = _strict_text(script, ("title",), 80, required=require_complete)
+    if not title:
+        if default_title is None or not isinstance(default_title, str):
+            raise ValueError("剧本标题无效")
+        title = default_title.strip()[:80] or "未命名剧本"
+    dialogue_lines = script.get("dialogue_lines", _MISSING)
+    if dialogue_lines is _MISSING or not isinstance(dialogue_lines, list):
+        raise ValueError("剧本台词数据无效")
+    normalized_lines = []
+    for line in dialogue_lines:
+        if not isinstance(line, dict):
+            raise ValueError("台词数据无效")
+        character_key = _strict_text(line, ("character_key",), 80, required=True)
+        if character_key not in character_keys:
+            raise ValueError("台词引用了不存在的角色")
+        normalized_lines.append({
+            "id": _strict_text(line, ("id",), 80, required=True),
+            "character_key": character_key,
+            "text": _strict_text(line, ("text",), 4000, required=True),
+        })
+    ids = [line["id"] for line in normalized_lines]
+    if len(set(ids)) != len(ids):
+        raise ValueError("台词标识不能重复")
+    required = require_complete
+    return {
+        "title": title,
+        "logline": _strict_text(script, ("logline",), 4000, required=required),
+        "hook": _strict_text(script, ("hook",), 4000, required=required),
+        "conflict_text": _strict_text(
+            script, ("conflict_text", "conflict"), 4000, required=required
+        ),
+        "turn_text": _strict_text(script, ("turn_text", "turn"), 4000, required=required),
+        "ending": _strict_text(script, ("ending",), 4000, required=required),
+        "dialogue_lines": normalized_lines,
+    }
+
+
+def _normalize_shots(shots, character_keys, dialogue_ids, *, expected_count=None,
+                     target_duration=None):
+    if not isinstance(shots, list):
+        raise ValueError("分镜数据必须是数组")
+    if len(shots) not in SHOT_COUNTS or (expected_count is not None and len(shots) != expected_count):
+        raise ValueError("分镜数量必须等于设定数量且为 6–10 个")
+    normalized = []
     for index, shot in enumerate(shots):
         if not isinstance(shot, dict):
             raise ValueError("分镜数据无效")
-        shot_key = _text(shot.get("shot_key") or shot.get("key"), 80)
-        try:
-            duration = int(shot.get("duration"))
-        except (TypeError, ValueError):
-            duration = 0
-        if not shot_key or duration not in {5, 10}:
-            raise ValueError("分镜数据无效")
-        normalized_shots.append({
-            "shot_key": shot_key, "sort_order": index, "duration": duration,
-            "scene_description": _text(shot.get("scene_description"), 4000),
-            "camera_description": _text(shot.get("camera_description"), 4000),
-            "character_keys": shot.get("character_keys", []),
-            "dialogue_line_ids": shot.get("dialogue_line_ids", []),
-            "image_prompt": _text(shot.get("image_prompt"), 8000),
-            "video_prompt": _text(shot.get("video_prompt"), 8000),
+        duration = shot.get("duration")
+        if type(duration) is not int or duration not in {5, 10}:
+            raise ValueError("分镜时长只能是 5 或 10 秒")
+        shot_character_keys = _key_list(shot.get("character_keys"), "character_keys")
+        if set(shot_character_keys) - set(character_keys):
+            raise ValueError("分镜引用了不存在的角色")
+        shot_dialogue_ids = _key_list(shot.get("dialogue_line_ids"), "dialogue_line_ids")
+        if set(shot_dialogue_ids) - set(dialogue_ids):
+            raise ValueError("分镜引用了不存在的台词")
+        normalized.append({
+            "shot_key": _strict_text(shot, ("shot_key", "key"), 80, required=True),
+            "sort_order": index,
+            "duration": duration,
+            "scene_description": _strict_text(
+                shot, ("scene_description",), 4000, required=True
+            ),
+            "camera_description": _strict_text(
+                shot, ("camera_description",), 4000, required=True
+            ),
+            "character_keys": shot_character_keys,
+            "dialogue_line_ids": shot_dialogue_ids,
+            "image_prompt": _strict_text(shot, ("image_prompt",), 8000, required=True),
+            "video_prompt": _strict_text(shot, ("video_prompt",), 8000, required=True),
         })
-    if len({item["shot_key"] for item in normalized_shots}) != len(normalized_shots):
+    keys = [shot["shot_key"] for shot in normalized]
+    if len(set(keys)) != len(keys):
         raise ValueError("分镜标识不能重复")
-    if len(normalized_shots) not in SHOT_COUNTS:
-        raise ValueError("分镜数量必须为 6–10 个")
-    if not all(isinstance(item["character_keys"], list) and isinstance(item["dialogue_line_ids"], list)
-               for item in normalized_shots):
-        raise ValueError("分镜关联数据无效")
-    return normalized_characters, {
-        "title": _text(script.get("title") or plan.get("title") or "未命名剧本", 80),
-        "logline": _text(script.get("logline"), 4000), "hook": _text(script.get("hook"), 4000),
-        "conflict_text": _text(script.get("conflict_text"), 4000),
-        "turn_text": _text(script.get("turn_text"), 4000), "ending": _text(script.get("ending"), 4000),
-        "dialogue_lines": script.get("dialogue_lines", []),
-    }, normalized_shots
+    if target_duration is not None and sum(shot["duration"] for shot in normalized) != target_duration:
+        raise ValueError("分镜总时长必须等于短剧目标时长")
+    return normalized
+
+
+def _validate_plan(plan):
+    if not isinstance(plan, dict):
+        raise ValueError("短剧规划无效")
+    characters = _normalize_characters(plan.get("characters", []))
+    character_keys = {character["character_key"] for character in characters}
+    script = _normalize_script(
+        plan.get("script", plan.get("script_version", {})), character_keys,
+        default_title=plan.get("title") or "未命名剧本", require_complete=False,
+    )
+    dialogue_ids = {line["id"] for line in script["dialogue_lines"]}
+    shots = _normalize_shots(plan.get("shots", []), character_keys, dialogue_ids)
+    return characters, script, shots
+
+
+def _begin_content_update(conn, username, project_id, revision, required_stage):
+    if type(revision) is not int:
+        raise ValueError("revision 必须是整数")
+    conn.execute("BEGIN IMMEDIATE")
+    cursor = conn.execute(
+        "SELECT * FROM short_drama_projects "
+        "WHERE id=? AND username=? AND deleted=0",
+        (project_id, username),
+    )
+    values = cursor.fetchone()
+    if not values:
+        raise LookupError("短剧项目不存在")
+    row = dict(zip((column[0] for column in cursor.description), values))
+    if row["revision"] != revision:
+        raise RevisionConflict("项目已在其他页面更新，请刷新后重试")
+    if row["stage"] != required_stage:
+        raise ValueError("当前阶段不能修改该内容")
+    return row
+
+
+def _insert_characters(conn, project_id, characters):
+    for character in characters:
+        conn.execute(
+            "INSERT INTO short_drama_characters "
+            "(id, project_id, character_key, name, identity_text, personality, source_type, avatar_id, "
+            "appearance_prompt, wardrobe_prompt, voice_key, voice_settings_json, sort_order) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), project_id, character["character_key"], character["name"],
+             character["identity_text"], character["personality"], character["source_type"],
+             character["avatar_id"], character["appearance_prompt"], character["wardrobe_prompt"],
+             character["voice_key"], _json_text(character["voice_settings"], {}),
+             character["sort_order"]),
+        )
+
+
+def _append_script(conn, project_id, script, now):
+    version = conn.execute(
+        "SELECT COALESCE(MAX(version), 0) + 1 FROM short_drama_scripts WHERE project_id=?",
+        (project_id,),
+    ).fetchone()[0]
+    conn.execute(
+        "INSERT INTO short_drama_scripts "
+        "(id, project_id, version, title, logline, hook, conflict_text, turn_text, ending, "
+        "dialogue_lines_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (str(uuid.uuid4()), project_id, version, script["title"], script["logline"],
+         script["hook"], script["conflict_text"], script["turn_text"], script["ending"],
+         _json_text(script["dialogue_lines"], []), now),
+    )
+    return version
+
+
+def _insert_shots(conn, project_id, script_version, shots):
+    for shot in shots:
+        conn.execute(
+            "INSERT INTO short_drama_shots "
+            "(id, project_id, script_version, shot_key, sort_order, duration, scene_description, "
+            "camera_description, character_keys_json, dialogue_line_ids_json, image_prompt, "
+            "video_prompt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), project_id, script_version, shot["shot_key"], shot["sort_order"],
+             shot["duration"], shot["scene_description"], shot["camera_description"],
+             _json_text(shot["character_keys"], []), _json_text(shot["dialogue_line_ids"], []),
+             shot["image_prompt"], shot["video_prompt"]),
+        )
+
+
+def _cas_content_update(conn, username, project_id, revision, required_stage):
+    cur = conn.execute(
+        "UPDATE short_drama_projects SET revision=revision+1, updated_at=? "
+        "WHERE id=? AND username=? AND revision=? AND stage=? AND deleted=0",
+        (int(time.time()), project_id, username, revision, required_stage),
+    )
+    if cur.rowcount != 1:
+        _raise_cas_error(conn, username, project_id)
+
+
+def _current_content_bundle(project, *, characters=None, script=None, shots=None,
+                            prune_character_refs=False, prune_dialogue_refs=False):
+    normalized_characters = _normalize_characters(
+        project["characters"] if characters is None else characters, require_complete=True
+    )
+    character_keys = {character["character_key"] for character in normalized_characters}
+    current_scripts = project["script_versions"]
+    if not current_scripts:
+        raise ValueError("短剧项目缺少剧本")
+    normalized_script = _normalize_script(
+        current_scripts[-1] if script is None else script, character_keys, require_complete=True
+    )
+    dialogue_ids = {line["id"] for line in normalized_script["dialogue_lines"]}
+    candidate_shots = project["shots"] if shots is None else shots
+    if prune_character_refs or prune_dialogue_refs:
+        candidate_shots = [dict(shot) for shot in candidate_shots]
+        if prune_character_refs:
+            for shot in candidate_shots:
+                keys = shot.get("character_keys")
+                if not isinstance(keys, list):
+                    raise ValueError("分镜关联数据无效")
+                shot["character_keys"] = [key for key in keys if key in character_keys]
+        if prune_dialogue_refs:
+            for shot in candidate_shots:
+                ids = shot.get("dialogue_line_ids")
+                if not isinstance(ids, list):
+                    raise ValueError("分镜关联数据无效")
+                shot["dialogue_line_ids"] = [line_id for line_id in ids if line_id in dialogue_ids]
+    normalized_shots = _normalize_shots(
+        candidate_shots, character_keys, dialogue_ids,
+        expected_count=project["shot_count"], target_duration=project["target_duration"],
+    )
+    return normalized_characters, normalized_script, normalized_shots
+
+
+def update_characters(db_factory, username, project_id, revision, characters):
+    required_stage = "characters_review"
+    conn = _connection(db_factory)
+    try:
+        _begin_content_update(conn, username, project_id, revision, required_stage)
+        project = _project_detail(conn, username, project_id)
+        normalized_characters, _script, normalized_shots = _current_content_bundle(
+            project, characters=characters, prune_character_refs=True
+        )
+        conn.execute("DELETE FROM short_drama_characters WHERE project_id=?", (project_id,))
+        _insert_characters(conn, project_id, normalized_characters)
+        for original, shot in zip(project["shots"], normalized_shots):
+            conn.execute(
+                "UPDATE short_drama_shots SET character_keys_json=? WHERE id=? AND project_id=?",
+                (_json_text(shot["character_keys"], []), original["id"], project_id),
+            )
+        _cas_content_update(conn, username, project_id, revision, required_stage)
+        conn.commit()
+        return _project_detail(conn, username, project_id)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def update_script(db_factory, username, project_id, revision, script):
+    required_stage = "script_review"
+    conn = _connection(db_factory)
+    try:
+        _begin_content_update(conn, username, project_id, revision, required_stage)
+        project = _project_detail(conn, username, project_id)
+        _characters, normalized_script, normalized_shots = _current_content_bundle(
+            project, script=script, prune_dialogue_refs=True
+        )
+        now = int(time.time())
+        version = _append_script(conn, project_id, normalized_script, now)
+        for original, shot in zip(project["shots"], normalized_shots):
+            conn.execute(
+                "UPDATE short_drama_shots SET script_version=?, dialogue_line_ids_json=? "
+                "WHERE id=? AND project_id=?",
+                (version, _json_text(shot["dialogue_line_ids"], []), original["id"], project_id),
+            )
+        _cas_content_update(conn, username, project_id, revision, required_stage)
+        conn.commit()
+        return _project_detail(conn, username, project_id)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def update_shots(db_factory, username, project_id, revision, shots):
+    required_stage = "storyboard_review"
+    conn = _connection(db_factory)
+    try:
+        _begin_content_update(conn, username, project_id, revision, required_stage)
+        project = _project_detail(conn, username, project_id)
+        _characters, _script, normalized_shots = _current_content_bundle(
+            project, shots=shots
+        )
+        script_version = project["script_versions"][-1]["version"]
+        conn.execute("DELETE FROM short_drama_shots WHERE project_id=?", (project_id,))
+        _insert_shots(conn, project_id, script_version, normalized_shots)
+        _cas_content_update(conn, username, project_id, revision, required_stage)
+        conn.commit()
+        return _project_detail(conn, username, project_id)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def apply_plan(db_factory, username, project_id, revision, plan, planning_cost, planning_job_id):

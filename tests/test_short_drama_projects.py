@@ -47,11 +47,63 @@ def valid_raw_plan():
     }
 
 
+def valid_editable_plan():
+    characters = [{
+        "character_key": "lin-mo",
+        "name": "林默",
+        "identity_text": "侦探",
+        "personality": "冷静",
+        "source_type": "ai_character",
+        "avatar_id": None,
+        "appearance_prompt": "黑色风衣",
+        "wardrobe_prompt": "深色西装",
+        "voice_key": "calm",
+        "voice_settings": {"speed": 1},
+    }, {
+        "character_key": "su-qing",
+        "name": "苏晴",
+        "identity_text": "记者",
+        "personality": "果断",
+        "source_type": "ai_character",
+        "avatar_id": None,
+        "appearance_prompt": "米色大衣",
+        "wardrobe_prompt": "浅色长裙",
+        "voice_key": None,
+        "voice_settings": {},
+    }]
+    dialogue_lines = [{
+        "id": "line-1", "character_key": "lin-mo", "text": "我们得赶在天亮前。",
+    }, {
+        "id": "line-2", "character_key": "lin-mo", "text": "线索就在门后。",
+    }]
+    return {
+        "title": "第一稿",
+        "characters": characters,
+        "script": {
+            "title": "第一稿", "logline": "两人追查雨夜秘密",
+            "hook": "门外有脚步声", "conflict_text": "线索即将被毁",
+            "turn_text": "同伴隐瞒了真相", "ending": "门终于打开",
+            "dialogue_lines": dialogue_lines,
+        },
+        "shots": [{
+            "shot_key": "shot-%s" % index,
+            "duration": 5,
+            "scene_description": "雨夜门厅",
+            "camera_description": "稳定推轨",
+            "character_keys": [characters[index % 2]["character_key"]],
+            "dialogue_line_ids": [dialogue_lines[index % 2]["id"]],
+            "image_prompt": "潮湿门厅画面",
+            "video_prompt": "人物走向木门",
+        } for index in range(6)],
+    }
+
+
 class ShortDramaProjectTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = str(Path(self.tmp.name) / "content.db")
         self.db = lambda: sqlite3.connect(self.path)
+        self.next_job_id = 600
         short_drama.init_db(self.db)
 
     def tearDown(self):
@@ -89,6 +141,258 @@ class ShortDramaProjectTests(unittest.TestCase):
             ).fetchone())
         finally:
             conn.close()
+
+    def applied_project(self):
+        self.next_job_id += 1
+        project = short_drama.create_project(self.db, "alice", valid_project())
+        return short_drama.apply_plan(
+            self.db, "alice", project["id"], project["revision"],
+            valid_editable_plan(), planning_cost=3, planning_job_id=self.next_job_id,
+        )
+
+    def applied_project_with_two_characters_and_dialogue(self):
+        return self.applied_project()
+
+    def _content_snapshot(self, project_id):
+        project = short_drama.get_project(self.db, "alice", project_id)
+        return {
+            key: project[key]
+            for key in (
+                "revision", "stage", "characters", "script_versions", "shots", "spent_points",
+            )
+        }
+
+    def _assert_content_rejected_without_side_effects(self, project, call, error=ValueError):
+        before = self._content_snapshot(project["id"])
+        with self.assertRaises(error):
+            call(before)
+        self.assertEqual(before, self._content_snapshot(project["id"]))
+
+    def test_content_sections_save_only_in_their_review_stage(self):
+        project = self.applied_project()
+        edited = [dict(project["characters"][0], name="林默（新）")]
+        project = short_drama.update_project(
+            self.db, "alice", project["id"], project["revision"],
+            {"characters": edited},
+        )
+        self.assertEqual(project["revision"], 3)
+        self.assertEqual(project["stage"], "characters_review")
+        self.assertEqual(project["characters"][0]["name"], "林默（新）")
+        self.assertEqual(project, short_drama.get_project(self.db, "alice", project["id"]))
+
+        with self.assertRaisesRegex(ValueError, "当前阶段"):
+            short_drama.update_project(
+                self.db, "alice", project["id"], project["revision"],
+                {"script": dict(project["script_versions"][-1])},
+            )
+
+        project = short_drama.confirm_stage(
+            self.db, "alice", project["id"], project["revision"], "characters_review"
+        )
+        script = dict(project["script_versions"][-1], ending="新的结尾")
+        project = short_drama.update_project(
+            self.db, "alice", project["id"], project["revision"], {"script": script}
+        )
+        self.assertEqual(len(project["script_versions"]), 2)
+        self.assertEqual(project["script_versions"][-1]["ending"], "新的结尾")
+        self.assertTrue(all(
+            shot["script_version"] == project["script_versions"][-1]["version"]
+            for shot in project["shots"]
+        ))
+
+        project = short_drama.confirm_stage(
+            self.db, "alice", project["id"], project["revision"], "script_review"
+        )
+        shots = [dict(shot, scene_description="修改后的场景") for shot in project["shots"]]
+        project = short_drama.update_project(
+            self.db, "alice", project["id"], project["revision"], {"shots": shots}
+        )
+        self.assertEqual(len(project["shots"]), 6)
+        self.assertTrue(all(x["scene_description"] == "修改后的场景" for x in project["shots"]))
+        self.assertEqual(project, short_drama.get_project(self.db, "alice", project["id"]))
+
+    def test_character_and_script_edits_prune_only_invalid_unconfirmed_references(self):
+        project = self.applied_project_with_two_characters_and_dialogue()
+        kept_key = project["characters"][0]["character_key"]
+        expected_character_refs = {
+            shot["shot_key"]: [key for key in shot["character_keys"] if key == kept_key]
+            for shot in project["shots"]
+        }
+        project = short_drama.update_project(
+            self.db, "alice", project["id"], project["revision"],
+            {"characters": [project["characters"][0]]},
+        )
+        self.assertEqual(expected_character_refs, {
+            shot["shot_key"]: shot["character_keys"] for shot in project["shots"]
+        })
+
+        project = short_drama.confirm_stage(
+            self.db, "alice", project["id"], project["revision"], "characters_review"
+        )
+        historical_script = dict(project["script_versions"][-1])
+        script = dict(project["script_versions"][-1])
+        script["dialogue_lines"] = script["dialogue_lines"][:1]
+        valid_dialogue = {line["id"] for line in script["dialogue_lines"]}
+        expected_dialogue_refs = {
+            shot["shot_key"]: [
+                line_id for line_id in shot["dialogue_line_ids"] if line_id in valid_dialogue
+            ]
+            for shot in project["shots"]
+        }
+        project = short_drama.update_script(
+            self.db, "alice", project["id"], project["revision"], script
+        )
+        self.assertEqual(expected_dialogue_refs, {
+            shot["shot_key"]: shot["dialogue_line_ids"] for shot in project["shots"]
+        })
+        self.assertEqual(historical_script, project["script_versions"][0])
+
+    def test_character_edits_require_complete_character_contract_atomically(self):
+        def without(character, field):
+            edited = dict(character)
+            edited.pop(field, None)
+            return edited
+
+        cases = (
+            ("identity", lambda character: without(character, "identity_text")),
+            ("personality", lambda character: without(character, "personality")),
+            ("appearance prompt", lambda character: without(character, "appearance_prompt")),
+            ("wardrobe prompt", lambda character: without(character, "wardrobe_prompt")),
+            ("empty identity", lambda character: dict(character, identity_text="")),
+            ("cinematic avatar id", lambda character: dict(
+                character, source_type="cinematic_avatar", avatar_id=None
+            )),
+        )
+        for name, mutate in cases:
+            with self.subTest(name=name):
+                project = self.applied_project()
+                characters = list(project["characters"])
+                characters[0] = mutate(characters[0])
+                self._assert_content_rejected_without_side_effects(
+                    project, lambda before: short_drama.update_characters(
+                        self.db, "alice", project["id"], before["revision"], characters
+                    )
+                )
+
+    def test_content_update_access_dispatch_and_stage_rejections_are_atomic(self):
+        cases = (
+            ("cross owner", lambda p: short_drama.update_characters(
+                self.db, "bob", p["id"], p["revision"], p["characters"]
+            ), LookupError),
+            ("stale revision", lambda p: short_drama.update_characters(
+                self.db, "alice", p["id"], p["revision"] - 1, p["characters"]
+            ), short_drama.RevisionConflict),
+            ("wrong stage", lambda p: short_drama.update_script(
+                self.db, "alice", p["id"], p["revision"], p["script_versions"][-1]
+            ), ValueError),
+            ("two sections", lambda p: short_drama.update_project(
+                self.db, "alice", p["id"], p["revision"],
+                {"characters": p["characters"], "script": p["script_versions"][-1]},
+            ), ValueError),
+            ("content plus title", lambda p: short_drama.update_project(
+                self.db, "alice", p["id"], p["revision"],
+                {"characters": p["characters"], "title": "混合更新"},
+            ), ValueError),
+            ("non-integer revision", lambda p: short_drama.update_characters(
+                self.db, "alice", p["id"], str(p["revision"]), p["characters"]
+            ), ValueError),
+        )
+        for name, call, error in cases:
+            with self.subTest(name=name):
+                project = self.applied_project()
+                self._assert_content_rejected_without_side_effects(
+                    project, lambda _before: call(project), error
+                )
+
+    def test_malformed_content_and_duplicate_keys_are_rejected_atomically(self):
+        cases = []
+        project = self.applied_project()
+        cases.extend((
+            ("characters section", project, lambda p: short_drama.update_characters(
+                self.db, "alice", p["id"], p["revision"], {"not": "a list"}
+            )),
+            ("character field", project, lambda p: short_drama.update_characters(
+                self.db, "alice", p["id"], p["revision"],
+                [dict(p["characters"][0], name=["not text"])]
+            )),
+            ("character voice settings", project, lambda p: short_drama.update_characters(
+                self.db, "alice", p["id"], p["revision"],
+                [dict(p["characters"][0], voice_settings=[])]
+            )),
+            ("duplicate character key", project, lambda p: short_drama.update_characters(
+                self.db, "alice", p["id"], p["revision"],
+                [p["characters"][0], dict(p["characters"][0], name="重复角色")]
+            )),
+        ))
+        for name, original, call in cases:
+            with self.subTest(name=name):
+                self._assert_content_rejected_without_side_effects(
+                    original, lambda _before: call(short_drama.get_project(
+                        self.db, "alice", original["id"]
+                    ))
+                )
+
+        for name, mutate in (
+            ("script section", lambda _script: []),
+            ("script title", lambda script: dict(script, title={"not": "text"})),
+            ("script dialogue container", lambda script: dict(script, dialogue_lines={})),
+            ("duplicate dialogue id", lambda script: dict(
+                script, dialogue_lines=[script["dialogue_lines"][0], script["dialogue_lines"][0]]
+            )),
+        ):
+            with self.subTest(name=name):
+                project = self.applied_project()
+                project = short_drama.confirm_stage(
+                    self.db, "alice", project["id"], project["revision"], "characters_review"
+                )
+                self._assert_content_rejected_without_side_effects(
+                    project, lambda before: short_drama.update_script(
+                        self.db, "alice", project["id"], before["revision"],
+                        mutate(project["script_versions"][-1]),
+                    )
+                )
+
+    def test_invalid_storyboard_updates_are_rejected_atomically(self):
+        def storyboard_project():
+            project = self.applied_project()
+            project = short_drama.confirm_stage(
+                self.db, "alice", project["id"], project["revision"], "characters_review"
+            )
+            return short_drama.confirm_stage(
+                self.db, "alice", project["id"], project["revision"], "script_review"
+            )
+
+        def replace(shots, index, **changes):
+            edited = list(shots)
+            edited[index] = dict(edited[index], **changes)
+            return edited
+
+        cases = (
+            ("shots section", lambda _shots: {"not": "a list"}),
+            ("shot field", lambda shots: replace(shots, 0, scene_description=[])),
+            ("duplicate shot key", lambda shots: replace(
+                shots, 1, shot_key=shots[0]["shot_key"]
+            )),
+            ("shot count", lambda shots: shots[:-1]),
+            ("duration type", lambda shots: replace(shots, 0, duration="5")),
+            ("duration value", lambda shots: replace(shots, 0, duration=7)),
+            ("duration total", lambda shots: replace(shots, 0, duration=10)),
+            ("character reference", lambda shots: replace(
+                shots, 0, character_keys=["missing-character"]
+            )),
+            ("dialogue reference", lambda shots: replace(
+                shots, 0, dialogue_line_ids=["missing-dialogue"]
+            )),
+        )
+        for name, mutate in cases:
+            with self.subTest(name=name):
+                project = storyboard_project()
+                self._assert_content_rejected_without_side_effects(
+                    project, lambda before: short_drama.update_shots(
+                        self.db, "alice", project["id"], before["revision"],
+                        mutate(project["shots"]),
+                    )
+                )
 
     def test_create_get_and_list_are_owner_scoped(self):
         created = short_drama.create_project(self.db, "alice", {
@@ -309,9 +613,9 @@ class ShortDramaRouteTests(unittest.TestCase):
             return error.code, json.loads(error.read())
 
     def insert_job(self, username="alice", *, kind="copy", status="done", mode="short_drama", cost=3,
-                   result_json=None):
+                   result_json=None, plan=None):
         result = result_json if result_json is not None else json.dumps(
-            {"mode": mode, "plan": valid_raw_plan()}, ensure_ascii=False
+            {"mode": mode, "plan": plan or valid_raw_plan()}, ensure_ascii=False
         )
         with closing(core.jdb()) as db:
             cursor = db.execute(
@@ -321,6 +625,97 @@ class ShortDramaRouteTests(unittest.TestCase):
             )
             db.commit()
             return cursor.lastrowid
+
+    def applied_project(self):
+        status, project = self.request(
+            "POST", "/api/gen/short-drama/projects", body=valid_project()
+        )
+        self.assertEqual(200, status)
+        job_id = self.insert_job(plan=valid_editable_plan())
+        status, project = self.request("POST", "/api/gen/short-drama/apply-plan", body={
+            "project_id": project["id"], "revision": project["revision"], "job_id": job_id,
+        })
+        self.assertEqual(200, status)
+        return project
+
+    def confirm(self, project, stage):
+        status, confirmed = self.request("POST", "/api/gen/short-drama/confirm", body={
+            "project_id": project["id"], "revision": project["revision"], "stage": stage,
+        })
+        self.assertEqual(200, status)
+        return confirmed
+
+    def project_path(self, project):
+        return "/api/gen/short-drama/project?" + urllib.parse.urlencode({"id": project["id"]})
+
+    def test_review_content_puts_persist_without_jobs_or_points(self):
+        project = self.applied_project()
+        with closing(core.jdb()) as db:
+            jobs_before = tuple(db.execute(
+                "SELECT COUNT(*), COALESCE(SUM(cost), 0) FROM jobs"
+            ).fetchone())
+        spent_before = project["spent_points"]
+        path = self.project_path(project)
+
+        characters = [dict(character, name=character["name"] + "（编辑）")
+                      for character in project["characters"]]
+        status, project = self.request("PUT", path, body={
+            "revision": project["revision"], "characters": characters,
+        })
+        self.assertEqual(200, status)
+        self.assertEqual(3, project["revision"])
+
+        project = self.confirm(project, "characters_review")
+        script = dict(project["script_versions"][-1], ending="HTTP 新结尾")
+        status, project = self.request("PUT", path, body={
+            "revision": project["revision"], "script": script,
+        })
+        self.assertEqual(200, status)
+        self.assertEqual(5, project["revision"])
+
+        project = self.confirm(project, "script_review")
+        shots = [dict(shot, scene_description="HTTP 编辑场景") for shot in project["shots"]]
+        status, project = self.request("PUT", path, body={
+            "revision": project["revision"], "shots": shots,
+        })
+        self.assertEqual(200, status)
+        self.assertEqual(7, project["revision"])
+
+        status, fetched = self.request("GET", path)
+        self.assertEqual(200, status)
+        self.assertEqual(project, fetched)
+        self.assertEqual(spent_before, fetched["spent_points"])
+        with closing(core.jdb()) as db:
+            jobs_after = tuple(db.execute(
+                "SELECT COUNT(*), COALESCE(SUM(cost), 0) FROM jobs"
+            ).fetchone())
+        self.assertEqual(jobs_before, jobs_after)
+
+    def test_review_content_put_rejections_follow_http_contract(self):
+        status, _ = self.request(
+            "PUT", "/api/gen/short-drama/project?id=missing",
+            username=None, raw_body=b"{malformed",
+        )
+        self.assertEqual(401, status)
+
+        project = self.applied_project()
+        path = self.project_path(project)
+        status, _ = self.request("PUT", path, body={
+            "revision": project["revision"], "script": project["script_versions"][-1],
+        })
+        self.assertEqual(400, status)
+
+        status, conflict = self.request("PUT", path, body={
+            "revision": project["revision"] - 1, "characters": project["characters"],
+        })
+        self.assertEqual(409, status)
+        self.assertEqual("revision_conflict", conflict["code"])
+
+        status, _ = self.request("PUT", path, body={
+            "revision": project["revision"],
+            "characters": project["characters"], "script": project["script_versions"][-1],
+        })
+        self.assertEqual(400, status)
 
     def test_core_declares_all_six_short_drama_routes(self):
         source = Path(core.__file__).read_text(encoding="utf-8")
