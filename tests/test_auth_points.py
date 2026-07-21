@@ -29,6 +29,10 @@ class AuthPointsTests(unittest.TestCase):
                 "INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change) "
                 "VALUES('fang','h','s','fang',10,'member',0)"
             )
+            c.execute(
+                "UPDATE users SET membership_tier='experience',membership_started_at=1,membership_expires_at=4102444800 "
+                "WHERE username='fang'"
+            )
             c.commit()
         finally:
             c.close()

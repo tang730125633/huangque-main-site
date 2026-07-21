@@ -47,6 +47,15 @@ RECHARGE_CUSTOM_MIN = 10
 RECHARGE_CUSTOM_MAX = 5000
 JSAPI_TEST_AMOUNT_YUAN = 0.1
 JSAPI_TEST_POINTS = 1
+MEMBERSHIP_YEAR_SECONDS = 365 * 24 * 3600
+MEMBERSHIP_TIERS = {
+    "experience": "体验官",
+    "partner": "合伙人",
+    "initiator": "发起人",
+}
+EXPERIENCE_MEMBERSHIP_AMOUNT = 499
+EXPERIENCE_MEMBERSHIP_POINTS = 1000
+MEMBERSHIP_ORDER_TYPE = "membership_experience"
 
 def miniprogram_payments_enabled():
     """Operational kill switch for all mini-program payment order creation."""
@@ -84,6 +93,28 @@ def jsapi_recharge_quote(amount):
     if points is None:
         return None
     return int(amount), points
+
+
+def purchase_quote(amount, product_type="points", jsapi=False):
+    product_type = (product_type or "points").strip()
+    if product_type == MEMBERSHIP_ORDER_TYPE:
+        try:
+            if abs(float(amount) - EXPERIENCE_MEMBERSHIP_AMOUNT) > 1e-9:
+                return None
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return EXPERIENCE_MEMBERSHIP_AMOUNT, EXPERIENCE_MEMBERSHIP_POINTS, MEMBERSHIP_ORDER_TYPE
+    if product_type != "points":
+        return None
+    quote = jsapi_recharge_quote(amount) if jsapi else None
+    if jsapi:
+        if quote is None:
+            return None
+        return quote[0], quote[1], "points"
+    points = recharge_points_for(amount)
+    if points is None:
+        return None
+    return int(amount), points, "points"
 LOGIN_FAILS = {}
 REGISTER_HITS = {}
 REVOKED_TOKENS = set()
@@ -158,6 +189,12 @@ def init_db():
         c.execute("ALTER TABLE users ADD COLUMN account_id TEXT")
     if "account_status" not in user_cols:
         c.execute("ALTER TABLE users ADD COLUMN account_status TEXT NOT NULL DEFAULT 'active'")
+    if "membership_tier" not in user_cols:
+        c.execute("ALTER TABLE users ADD COLUMN membership_tier TEXT NOT NULL DEFAULT ''")
+    if "membership_started_at" not in user_cols:
+        c.execute("ALTER TABLE users ADD COLUMN membership_started_at INTEGER")
+    if "membership_expires_at" not in user_cols:
+        c.execute("ALTER TABLE users ADD COLUMN membership_expires_at INTEGER")
     _ensure_all_account_ids(c)
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_account_id ON users(account_id)")
     c.execute("""CREATE TABLE IF NOT EXISTS tokens(
@@ -284,6 +321,20 @@ def init_db():
         c.execute("ALTER TABLE recharge_orders ADD COLUMN transaction_id TEXT")  # 微信支付流水号
     if "pay_channel" not in rcols:
         c.execute("ALTER TABLE recharge_orders ADD COLUMN pay_channel TEXT")     # wxpay_native / wxpay_jsapi / manual
+    if "order_type" not in rcols:
+        c.execute("ALTER TABLE recharge_orders ADD COLUMN order_type TEXT NOT NULL DEFAULT 'points'")
+    c.execute("""CREATE TABLE IF NOT EXISTS membership_audit(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL,
+        before_tier TEXT NOT NULL DEFAULT '',
+        after_tier TEXT NOT NULL DEFAULT '',
+        before_expires_at INTEGER,
+        after_expires_at INTEGER,
+        operator TEXT NOT NULL,
+        reason TEXT,
+        created_at INTEGER NOT NULL
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_membership_audit_user ON membership_audit(username, id DESC)")
     user_cols = {r["name"] for r in c.execute("PRAGMA table_info(users)").fetchall()}
     if "wx_openid" not in user_cols:
         c.execute("ALTER TABLE users ADD COLUMN wx_openid TEXT")
@@ -396,8 +447,49 @@ def register_account(username, password, display_name=None, invite_code="", invi
     finally:
         c.close()
 
-def public_user(username, display_name=None, points=0, role='member', must_change=False, account_id=None):
+def membership_public(tier="", started_at=None, expires_at=None, now=None):
+    tier = str(tier or "").strip()
+    expires_at = int(expires_at or 0)
+    started_at = int(started_at or 0)
+    active = tier in MEMBERSHIP_TIERS and expires_at > int(now or time.time())
     return {
+        "membership_tier": tier if active else "",
+        "membership_name": MEMBERSHIP_TIERS.get(tier, "") if active else "",
+        "membership_active": active,
+        "membership_started_at": started_at if active else 0,
+        "membership_expires_at": expires_at if active else 0,
+    }
+
+
+def membership_for_row(row, now=None):
+    if not row:
+        return membership_public(now=now)
+    keys = set(row.keys()) if hasattr(row, "keys") else set(row)
+    return membership_public(
+        row["membership_tier"] if "membership_tier" in keys else "",
+        row["membership_started_at"] if "membership_started_at" in keys else None,
+        row["membership_expires_at"] if "membership_expires_at" in keys else None,
+        now,
+    )
+
+
+def user_has_active_membership(username, conn=None, now=None):
+    own = conn is None
+    c = conn or db()
+    try:
+        row = c.execute(
+            "SELECT membership_tier,membership_started_at,membership_expires_at FROM users WHERE username=?",
+            ((username or "").strip(),),
+        ).fetchone()
+        return bool(membership_for_row(row, now)["membership_active"])
+    finally:
+        if own:
+            c.close()
+
+
+def public_user(username, display_name=None, points=0, role='member', must_change=False, account_id=None,
+                membership_tier="", membership_started_at=None, membership_expires_at=None):
+    data = {
         "username": username,
         "name": display_name or username,
         "points": points,
@@ -405,6 +497,8 @@ def public_user(username, display_name=None, points=0, role='member', must_chang
         "must_change": bool(must_change),
         "account_id": account_id or ""
     }
+    data.update(membership_public(membership_tier, membership_started_at, membership_expires_at))
+    return data
 
 def public_points(row):
     return {
@@ -1462,7 +1556,7 @@ def refund_points(username, amount, reason="", transaction_key=""):
         c.close()
 
 def public_admin_user(row):
-    return {
+    data = {
         "id": row["id"],
         "username": row["username"],
         "display_name": row["display_name"] or row["username"],
@@ -1471,14 +1565,17 @@ def public_admin_user(row):
         "must_change": bool(row["must_change"]),
         "created_at": row["created_at"],
     }
+    data.update(membership_for_row(row))
+    return data
 
 def list_admin_users(query="", sort="created_at", direction="desc", limit=100):
-    allowed_sort = {"username", "display_name", "points", "role", "must_change", "created_at"}
+    allowed_sort = {"username", "display_name", "points", "role", "must_change", "created_at", "membership_expires_at"}
     sort = sort if sort in allowed_sort else "created_at"
     direction = "ASC" if str(direction).lower() == "asc" else "DESC"
     limit = max(1, min(300, int(limit or 100)))
     query = (query or "").strip()
-    sql = "SELECT id, username, display_name, points, role, must_change, created_at FROM users"
+    sql = """SELECT id, username, display_name, points, role, must_change, created_at,
+                    membership_tier, membership_started_at, membership_expires_at FROM users"""
     args = []
     if query:
         sql += " WHERE username LIKE ? OR display_name LIKE ?"
@@ -1493,6 +1590,76 @@ def list_admin_users(query="", sort="created_at", direction="desc", limit=100):
         return {"items": [public_admin_user(r) for r in rows], "total": total}
     finally:
         c.close()
+
+
+def _write_membership_audit(c, username, before, after, operator, reason, now):
+    c.execute(
+        """INSERT INTO membership_audit(
+               username,before_tier,after_tier,before_expires_at,after_expires_at,operator,reason,created_at
+           ) VALUES(?,?,?,?,?,?,?,?)""",
+        (
+            username,
+            before["membership_tier"] or "",
+            after["membership_tier"] or "",
+            before["membership_expires_at"] or None,
+            after["membership_expires_at"] or None,
+            (operator or "system")[:80],
+            (reason or "")[:300],
+            int(now),
+        ),
+    )
+
+
+def set_membership_admin(who_admin, username, tier, reason="", now=None):
+    username = (username or "").strip()
+    tier = (tier or "").strip()
+    if not username:
+        return None, "missing_username"
+    if tier not in set(MEMBERSHIP_TIERS) | {""}:
+        return None, "invalid_tier"
+    now = int(now or time.time())
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+        if not row:
+            c.rollback()
+            return None, "not_found"
+        before = membership_for_row(row, now)
+        started_at = now if tier else None
+        expires_at = now + MEMBERSHIP_YEAR_SECONDS if tier else None
+        c.execute(
+            "UPDATE users SET membership_tier=?,membership_started_at=?,membership_expires_at=? WHERE username=?",
+            (tier, started_at, expires_at, username),
+        )
+        fresh = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+        after = membership_for_row(fresh, now)
+        _write_membership_audit(c, username, before, after, who_admin, reason or "管理员设置会员", now)
+        c.commit()
+        return public_admin_user(fresh), None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+
+def _activate_experience_membership(c, username, operator, reason, now):
+    row = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+    if not row:
+        return None, "user_not_found"
+    before = membership_for_row(row, now)
+    base = max(int(now), int(row["membership_expires_at"] or 0))
+    expires_at = base + MEMBERSHIP_YEAR_SECONDS
+    c.execute(
+        """UPDATE users SET membership_tier='experience',membership_started_at=?,membership_expires_at=?
+           WHERE username=?""",
+        (int(now), expires_at, username),
+    )
+    fresh = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+    after = membership_for_row(fresh, now)
+    _write_membership_audit(c, username, before, after, operator, reason, now)
+    return after, None
 
 def adjust_points_admin(who_admin, username, delta, reason=""):
     username = (username or "").strip()
@@ -1579,27 +1746,31 @@ def public_recharge_order(row):
         "reviewed_by": row["reviewed_by"] or "",
         "reviewed_at": row["reviewed_at"],
         "review_note": row["review_note"] or "",
+        "order_type": row["order_type"] or "points",
     }
 
-def create_recharge_order(username, amount, points, note=""):
+def create_recharge_order(username, amount, points, note="", order_type="points"):
     username = (username or "").strip()
     amount = float(amount or 0)
     points = int(points or 0)
     note = (note or "").strip()[:300]
+    order_type = (order_type or "points").strip()
     if not username:
         return None, "missing_username"
     if amount <= 0:
         return None, "amount_invalid"
     if points <= 0:
         return None, "points_invalid"
+    if order_type not in {"points", MEMBERSHIP_ORDER_TYPE}:
+        return None, "order_type_invalid"
     now = int(time.time())
     order_id = "R%d%s" % (now, secrets.token_hex(3).upper())
     c = db()
     try:
         c.execute(
-            """INSERT INTO recharge_orders(order_id, username, amount, points, status, note, created_at)
-               VALUES(?,?,?,?,?,?,?)""",
-            (order_id, username, amount, points, "pending", note, now),
+            """INSERT INTO recharge_orders(order_id, username, amount, points, status, note, created_at, order_type)
+               VALUES(?,?,?,?,?,?,?,?)""",
+            (order_id, username, amount, points, "pending", note, now, order_type),
         )
         c.commit()
         row = c.execute("SELECT * FROM recharge_orders WHERE order_id=?", (order_id,)).fetchone()
@@ -1660,7 +1831,7 @@ def review_recharge_order(who_admin, order_id, action, reason="", transaction_id
                 return None, "transaction_in_use"
         now = int(time.time())
         if action == "approve":
-            user = c.execute("SELECT id, username, points FROM users WHERE username=?", (order["username"],)).fetchone()
+            user = c.execute("SELECT * FROM users WHERE username=?", (order["username"],)).fetchone()
             if not user:
                 c.rollback()
                 return None, "user_not_found"
@@ -1673,6 +1844,14 @@ def review_recharge_order(who_admin, order_id, action, reason="", transaction_id
                    VALUES(?,?,?,?,?,?,?)""",
                 (who_admin, order["username"], delta, before, after, "充值审批: %s %s" % (order_id, reason), now),
             )
+            if (order["order_type"] or "points") == MEMBERSHIP_ORDER_TYPE:
+                _, membership_err = _activate_experience_membership(
+                    c, order["username"], who_admin,
+                    "体验官开通订单: %s" % order_id, now,
+                )
+                if membership_err:
+                    c.rollback()
+                    return None, membership_err
             status = "approved"
         else:
             status = "rejected"
@@ -2205,6 +2384,16 @@ class H(BaseHTTPRequestHandler):
             return None
         return row
 
+    def _require_membership(self, row):
+        if row and membership_for_row(row)["membership_active"]:
+            return True
+        self._send(403, {
+            "detail": "请先开通会员后再使用该功能",
+            "code": "membership_required",
+            "membership_url": "/workbench/recharge",
+        })
+        return False
+
     def do_POST(self):
         p = self.path.split("?")[0]
         admin_invite_prefix = "/api/auth/admin/invite/relations/"
@@ -2312,6 +2501,28 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "adjustment": result})
             except Exception:
                 return self._send(500, {"detail": "points adjust failed"})
+        if p == "/api/auth/admin/membership/set":
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                user, err = set_membership_admin(
+                    admin["username"], d.get("username"), d.get("tier"), d.get("reason") or "",
+                )
+                if err == "not_found":
+                    return self._send(404, {"detail": "用户不存在"})
+                if err == "invalid_tier":
+                    return self._send(400, {"detail": "会员等级无效"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, "user": user})
+            except Exception:
+                return self._send(500, {"detail": "会员设置失败"})
         if p == "/api/auth/admin/recharge/review":
             if not self._require_internal():
                 return
@@ -2348,6 +2559,8 @@ class H(BaseHTTPRequestHandler):
                     "detail": "小程序支付功能暂时关闭",
                     "code": "payment_disabled",
                 })
+            if not self._require_membership(row):
+                return
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
@@ -2426,13 +2639,18 @@ class H(BaseHTTPRequestHandler):
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
-            amount = d.get("amount")
-            points = recharge_points_for(amount)   # 点数服务端算,绝不信客户端(与 wxpay 路由一致)
-            if points is None:
-                return self._send(400, {"detail": "无效的充值金额(固定档 99/199/499，或自定义 10~5000 元整数)"})
-            amount = int(amount)
+            quote = purchase_quote(d.get("amount"), d.get("product_type") or "points")
+            if quote is None:
+                return self._send(400, {"detail": "充值商品或金额无效"})
+            amount, points, order_type = quote
+            if order_type == "points" and not self._require_membership(row):
+                return
+            if order_type == MEMBERSHIP_ORDER_TYPE and membership_for_row(row)["membership_active"]:
+                return self._send(409, {"detail": "当前已有有效会员，无需重复开通"})
             try:
-                order, err = create_recharge_order(row["username"], amount, points, d.get("note") or "")
+                order, err = create_recharge_order(
+                    row["username"], amount, points, d.get("note") or "", order_type,
+                )
                 if err:
                     return self._send(400, {"detail": err})
                 return self._send(200, {"ok": True, "order": order})
@@ -2447,17 +2665,26 @@ class H(BaseHTTPRequestHandler):
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
-            amount = d.get("amount")                 # 客户端只传金额(元)
-            points = recharge_points_for(amount)     # 点数服务端算,不信客户端
-            if points is None:
-                return self._send(400, {"detail": "无效的充值金额(固定档 99/199/499，或自定义 10~5000 元整数)"})
-            amount = int(amount)
+            quote = purchase_quote(d.get("amount"), d.get("product_type") or "points")
+            if quote is None:
+                return self._send(400, {"detail": "充值商品或金额无效"})
+            amount, points, order_type = quote
+            if order_type == "points" and not self._require_membership(row):
+                return
+            if order_type == MEMBERSHIP_ORDER_TYPE and membership_for_row(row)["membership_active"]:
+                return self._send(409, {"detail": "当前已有有效会员，无需重复开通"})
             try:
-                order, err = create_recharge_order(row["username"], amount, points, "微信扫码充值")
+                order, err = create_recharge_order(
+                    row["username"], amount, points,
+                    "微信扫码充值" if order_type == "points" else "微信扫码开通体验官",
+                    order_type,
+                )
                 if err:
                     return self._send(400, {"detail": err})
                 code_url = wxpay.create_native(
-                    order["order_id"], "黄雀点数充值 %d点" % points, amount * 100)
+                    order["order_id"],
+                    "黄雀点数充值 %d点" % points if order_type == "points" else "黄雀体验官会员（一年）",
+                    int(round(amount * 100)))
                 return self._send(200, {"ok": True, "order": order, "code_url": code_url})
             except Exception as e:
                 # 下单失败:订单停留在 pending(等同一个没人审的人工申请),无害
@@ -2480,17 +2707,27 @@ class H(BaseHTTPRequestHandler):
             js_code = (d.get("js_code") or "").strip()
             if not js_code:
                 return self._send(400, {"detail": "缺少 js_code"})
-            quote = jsapi_recharge_quote(d.get("amount"))
+            quote = purchase_quote(d.get("amount"), d.get("product_type") or "points", jsapi=True)
             if quote is None:
-                return self._send(400, {"detail": "无效的充值金额(固定档 99/199/499，或自定义 10~5000 元整数)"})
-            amount, points = quote
+                return self._send(400, {"detail": "充值商品或金额无效"})
+            amount, points, order_type = quote
+            if order_type == "points" and not self._require_membership(row):
+                return
+            if order_type == MEMBERSHIP_ORDER_TYPE and membership_for_row(row)["membership_active"]:
+                return self._send(409, {"detail": "当前已有有效会员，无需重复开通"})
             try:
                 openid = wxpay.jscode2session(js_code)
-                order, err = create_recharge_order(row["username"], amount, points, "微信小程序充值")
+                order, err = create_recharge_order(
+                    row["username"], amount, points,
+                    "微信小程序充值" if order_type == "points" else "微信小程序开通体验官",
+                    order_type,
+                )
                 if err:
                     return self._send(400, {"detail": err})
                 prepay_id = wxpay.create_jsapi(
-                    order["order_id"], "黄雀点数充值 %d点" % points, int(round(amount * 100)), openid)
+                    order["order_id"],
+                    "黄雀点数充值 %d点" % points if order_type == "points" else "黄雀体验官会员（一年）",
+                    int(round(amount * 100)), openid)
                 pay = wxpay.jsapi_pay_params(prepay_id)   # 客户端 wx.requestPayment 参数
                 return self._send(200, {"ok": True, "order": order, "pay": pay})
             except Exception as e:
@@ -2552,6 +2789,11 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": "transaction_key too long"})
             try:
                 if p.endswith("/deduct"):
+                    if not user_has_active_membership(username):
+                        return self._send(403, {
+                            "detail": "请先开通会员后再使用该功能",
+                            "code": "membership_required",
+                        })
                     points, err = deduct_points(username, amount, reason)
                     if err == "insufficient":
                         return self._send(402, {"detail": "点数不足", "need": amount})
@@ -2602,10 +2844,10 @@ class H(BaseHTTPRequestHandler):
             self._clear_login_failures(u)
             account_id = row["account_id"] or ensure_account_id(u)
             tok = issue_token(u)
-            return self._send(200, {"user": {
-                "username": u, "name": row["display_name"], "points": row["points"],
-                "role": row["role"], "must_change": bool(row["must_change"]),
-                "account_id": account_id}}, {"Set-Cookie": auth_cookie_header(tok)})
+            return self._send(200, {"user": public_user(
+                u, row["display_name"], row["points"], row["role"], row["must_change"], account_id,
+                row["membership_tier"], row["membership_started_at"], row["membership_expires_at"],
+            )}, {"Set-Cookie": auth_cookie_header(tok)})
         if p == "/api/auth/miniprogram-login":
             # 小程序 wx.request 不像浏览器那样自动带 httpOnly cookie，专供小程序客户端：
             # token 放响应体让小程序自己存起来，后续走 Authorization: Bearer 请求头（网站登录/注册不受影响，仍只走 cookie）。
@@ -2625,10 +2867,10 @@ class H(BaseHTTPRequestHandler):
             self._clear_login_failures(u)
             account_id = row["account_id"] or ensure_account_id(u)
             tok = issue_token(u)
-            return self._send(200, {"token": tok, "user": {
-                "username": u, "name": row["display_name"], "points": row["points"],
-                "role": row["role"], "must_change": bool(row["must_change"]),
-                "account_id": account_id}})
+            return self._send(200, {"token": tok, "user": public_user(
+                u, row["display_name"], row["points"], row["role"], row["must_change"], account_id,
+                row["membership_tier"], row["membership_started_at"], row["membership_expires_at"],
+            )})
         if p == "/api/auth/miniprogram-register":
             d = self._body()
             if self._bad_json():
@@ -2723,7 +2965,8 @@ class H(BaseHTTPRequestHandler):
                 c.close()
             return self._send(200, {"ok": True, "user": public_user(
                 fresh["username"], fresh["display_name"], fresh["points"], fresh["role"], fresh["must_change"],
-                fresh["account_id"] or ensure_account_id(fresh["username"])
+                fresh["account_id"] or ensure_account_id(fresh["username"]),
+                fresh["membership_tier"], fresh["membership_started_at"], fresh["membership_expires_at"],
             )})
         if p == "/api/auth/canvas/boards":
             row = self._user()
@@ -3170,6 +3413,8 @@ class H(BaseHTTPRequestHandler):
             row = self._user()
             if not row:
                 return self._send(401, {"detail": "未登录"})
+            if not self._require_membership(row):
+                return
             try:
                 enabled = miniprogram_payments_enabled()
                 return self._send(200, {
@@ -3207,10 +3452,10 @@ class H(BaseHTTPRequestHandler):
             row = self._user()
             if not row: return self._send(401, {"detail": "未登录"})
             account_id = row["account_id"] or ensure_account_id(row["username"])
-            return self._send(200, {"user": {
-                "username": row["username"], "name": row["display_name"], "points": row["points"],
-                "role": row["role"], "must_change": bool(row["must_change"]),
-                "account_id": account_id}})
+            return self._send(200, {"user": public_user(
+                row["username"], row["display_name"], row["points"], row["role"], row["must_change"], account_id,
+                row["membership_tier"], row["membership_started_at"], row["membership_expires_at"],
+            )})
         if p == "/api/auth/friends":
             row = self._user()
             if not row: return self._send(401, {"detail": "未登录"})

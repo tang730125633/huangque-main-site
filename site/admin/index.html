@@ -147,7 +147,7 @@
       </section>
       <section class="card span12 module-card" data-module="users" hidden>
         <div class="row" style="margin-bottom:12px">
-          <div><h2 style="margin:0">用户管理</h2><div class="hint">查看账号、点数和改密状态；加减点前请填写明确原因。</div></div>
+          <div><h2 style="margin:0">用户管理</h2><div class="hint">查看账号、会员和点数；体验官、合伙人、发起人有效期均为一年。</div></div>
           <span class="muted" id="userCount">-</span>
         </div>
         <div class="toolbar">
@@ -157,6 +157,7 @@
             <option value="points">按点数</option>
             <option value="username">按账号</option>
             <option value="role">按角色</option>
+            <option value="membership_expires_at">按会员到期时间</option>
           </select>
           <select id="userDir">
             <option value="desc">降序</option>
@@ -176,7 +177,7 @@
       </section>
       <section class="card span12 module-card" data-module="recharge" hidden>
         <div class="row" style="margin-bottom:12px">
-          <div><h2 style="margin:0">充值审批</h2><div class="hint">确认到账会给用户加点，驳回需要写清原因。</div></div>
+          <div><h2 style="margin:0">充值审批</h2><div class="hint">体验官订单确认到账后开通一年会员并赠送 1000 点；普通充值只给有效会员加点。</div></div>
           <span class="muted" id="rechargeCount">-</span>
         </div>
         <div class="toolbar">
@@ -402,17 +403,23 @@
     });
   }
   function roleName(role){return role==='admin'?'管理员':'成员'}
+  function membershipName(tier){return {experience:'体验官',partner:'合伙人',initiator:'发起人'}[tier]||'非会员'}
+  function membershipText(u){
+    if(!u.membership_active) return '<span class="pill fail">非会员</span>';
+    return '<span class="pill ok">'+esc(membershipName(u.membership_tier))+'</span><div class="muted" style="margin-top:5px">至 '+esc(fmtTime(u.membership_expires_at))+'</div>';
+  }
   function renderUsers(d){
     var items=d.items||[];
     el('userCount').textContent='当前 '+items.length+' / 总 '+(d.total||0)+' 个账号';
     if(!items.length){el('usersBox').innerHTML='<div class="empty">暂无用户</div>';return}
-    el('usersBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>账号</th><th>昵称</th><th>点数</th><th>角色</th><th>改密</th><th>注册时间</th><th>操作</th></tr></thead><tbody>'+items.map(function(u){
-      return '<tr><td><b>'+esc(u.username)+'</b></td><td><div class="truncate" title="'+esc(u.display_name||'')+'">'+esc(u.display_name||'')+'</div></td><td><code>'+Number(u.points||0).toLocaleString()+'</code></td><td>'+esc(roleName(u.role))+'</td><td>'+(u.must_change?'<span class="pill warn">需改密</span>':'<span class="pill ok">正常</span>')+'</td><td><code>'+esc(u.created_at||'')+'</code></td><td><div class="actions"><button class="mini" data-act="plus" data-user="'+esc(u.username)+'">加点</button><button class="mini danger" data-act="minus" data-user="'+esc(u.username)+'">扣点</button><button class="mini" data-act="audit" data-user="'+esc(u.username)+'">流水</button></div></td></tr>';
+    el('usersBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>账号</th><th>昵称</th><th>点数</th><th>会员</th><th>角色</th><th>改密</th><th>注册时间</th><th>操作</th></tr></thead><tbody>'+items.map(function(u){
+      return '<tr><td><b>'+esc(u.username)+'</b></td><td><div class="truncate" title="'+esc(u.display_name||'')+'">'+esc(u.display_name||'')+'</div></td><td><code>'+Number(u.points||0).toLocaleString()+'</code></td><td>'+membershipText(u)+'</td><td>'+esc(roleName(u.role))+'</td><td>'+(u.must_change?'<span class="pill warn">需改密</span>':'<span class="pill ok">正常</span>')+'</td><td><code>'+esc(u.created_at||'')+'</code></td><td><div class="actions"><button class="mini" data-act="member" data-user="'+esc(u.username)+'">设置会员</button><button class="mini" data-act="plus" data-user="'+esc(u.username)+'">加点</button><button class="mini danger" data-act="minus" data-user="'+esc(u.username)+'">扣点</button><button class="mini" data-act="audit" data-user="'+esc(u.username)+'">流水</button></div></td></tr>';
     }).join('')+'</tbody></table></div>';
     Array.prototype.forEach.call(document.querySelectorAll('#usersBox button'), function(btn){
       btn.onclick=function(){
         var act=btn.getAttribute('data-act'), username=btn.getAttribute('data-user');
         if(act==='audit') return loadAudit(username);
+        if(act==='member') return setMembership(username);
         adjustPoints(username, act==='minus'?-1:1);
       };
     });
@@ -452,6 +459,18 @@
       .then(function(){toast('点数已调整');loadUsers()})
       .catch(function(e){toast(e.message)});
   }
+  function setMembership(username){
+    var raw=prompt('设置 '+username+' 的会员等级：\n体验官 / 合伙人 / 发起人 / 取消会员');
+    if(raw==null) return;
+    raw=String(raw).trim();
+    var tier={'体验官':'experience','合伙人':'partner','发起人':'initiator','取消会员':'','取消':''}[raw];
+    if(tier===undefined){toast('请输入：体验官、合伙人、发起人或取消会员');return}
+    var reason=prompt('填写设置原因','管理员设置会员');
+    if(reason==null) return;
+    api('/api/admin/membership/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,tier:tier,reason:reason})})
+      .then(function(){toast(tier?'会员已设置，有效期一年':'会员已取消');loadUsers()})
+      .catch(function(e){toast(e.message)});
+  }
   function orderStatus(s){
     if(s==='approved') return '<span class="pill ok">已通过</span>';
     if(s==='rejected') return '<span class="pill fail">已驳回</span>';
@@ -467,9 +486,9 @@
     var items=d.items||[];
     el('rechargeCount').textContent='当前 '+items.length+' 条';
     if(!items.length){el('rechargeBox').innerHTML='<div class="empty">暂无充值申请</div>';return}
-    el('rechargeBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>订单</th><th>用户</th><th>金额</th><th>点数</th><th>状态</th><th>提交时间</th><th>备注</th><th>审核</th></tr></thead><tbody>'+items.map(function(x){
+    el('rechargeBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>订单</th><th>用户</th><th>类型</th><th>金额</th><th>点数</th><th>状态</th><th>提交时间</th><th>备注</th><th>审核</th></tr></thead><tbody>'+items.map(function(x){
       var pending=x.status==='pending';
-      return '<tr><td><code>'+esc(x.order_id)+'</code></td><td><b>'+esc(x.username)+'</b></td><td><code>¥'+Number(x.amount||0).toFixed(2)+'</code></td><td><code>'+Number(x.points||0).toLocaleString()+'</code></td><td>'+orderStatus(x.status)+'</td><td><code>'+fmtTime(x.created_at)+'</code></td><td><div class="truncate" title="'+esc(x.note||x.review_note||'')+'">'+esc(x.note||x.review_note||'')+'</div></td><td><div class="actions">'+(pending?'<button class="mini" data-act="approve" data-id="'+esc(x.order_id)+'">确认到账</button><button class="mini danger" data-act="reject" data-id="'+esc(x.order_id)+'">驳回</button>':'<span class="muted">'+esc(x.reviewed_by||'')+'</span>')+'</div></td></tr>';
+      return '<tr><td><code>'+esc(x.order_id)+'</code></td><td><b>'+esc(x.username)+'</b></td><td>'+(x.order_type==='membership_experience'?'<span class="pill warn">体验官开通</span>':'<span class="pill">点数充值</span>')+'</td><td><code>¥'+Number(x.amount||0).toFixed(2)+'</code></td><td><code>'+Number(x.points||0).toLocaleString()+'</code></td><td>'+orderStatus(x.status)+'</td><td><code>'+fmtTime(x.created_at)+'</code></td><td><div class="truncate" title="'+esc(x.note||x.review_note||'')+'">'+esc(x.note||x.review_note||'')+'</div></td><td><div class="actions">'+(pending?'<button class="mini" data-act="approve" data-id="'+esc(x.order_id)+'">确认到账</button><button class="mini danger" data-act="reject" data-id="'+esc(x.order_id)+'">驳回</button>':'<span class="muted">'+esc(x.reviewed_by||'')+'</span>')+'</div></td></tr>';
     }).join('')+'</tbody></table></div>';
     Array.prototype.forEach.call(document.querySelectorAll('#rechargeBox button'), function(btn){
       btn.onclick=function(){reviewRecharge(btn.getAttribute('data-id'), btn.getAttribute('data-act'))};

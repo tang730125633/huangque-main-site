@@ -16,6 +16,7 @@
   .txrow:hover{ background:rgba(231,178,76,.03); }
   .txscroll{ max-height:368px; overflow:auto; }
   .txhead{ position:sticky; top:0; z-index:2; background:rgba(10,15,26,.96); backdrop-filter:blur(8px); }
+  .membership-offer{position:relative;overflow:hidden;padding:28px;border:1px solid rgba(231,178,76,.38);border-radius:18px;background:linear-gradient(135deg,rgba(231,178,76,.15),rgba(15,21,34,.72));margin-bottom:28px}.membership-offer:after{content:"";position:absolute;width:280px;height:280px;right:-90px;top:-130px;border-radius:50%;background:radial-gradient(circle,rgba(244,205,114,.24),transparent 68%);pointer-events:none}.membership-benefits{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:20px 0}.membership-benefits div{padding:13px 15px;border:1px solid rgba(148,164,187,.13);border-radius:11px;background:rgba(5,10,18,.26);color:#b9c5d5;font-size:13px}.membership-cta{min-width:230px;padding:12px 20px;border:0;border-radius:11px;cursor:pointer;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);font:800 15px inherit}
   @media (max-width:1100px){ .gPkg{ grid-template-columns:repeat(2,1fr);} }
   @media (max-width:620px){ .gPkg{ grid-template-columns:1fr;} .gPay{ grid-template-columns:1fr;} }
 </style>
@@ -26,7 +27,7 @@
 
 <div class="hq-app"><div class="hq-content" data-active="recharge">
   <div>
-    <h1 style="margin:0 0 20px; font-size:27px; font-weight:700; display:flex; align-items:center; gap:11px;"><img src="../assets/icons/ic_recharge.png" alt="" style="width:34px;height:34px;object-fit:contain;flex:none;">点数充值</h1>
+    <h1 style="margin:0 0 20px; font-size:27px; font-weight:700; display:flex; align-items:center; gap:11px;"><img src="../assets/icons/ic_recharge.png" alt="" style="width:34px;height:34px;object-fit:contain;flex:none;">会员与点数</h1>
 
     <!-- 余额卡 -->
     <div class="recharge-summary" style="position:relative; display:flex; align-items:center; gap:30px; padding:24px 28px; border:1px solid rgba(231,178,76,.22); border-radius:18px; background:linear-gradient(120deg, rgba(231,178,76,.1), rgba(20,17,10,.4)); overflow:hidden; margin-bottom:26px; flex-wrap:wrap;">
@@ -35,13 +36,17 @@
         <div style="width:52px; height:52px; border-radius:50%; background:radial-gradient(circle at 35% 30%, #f6d488, #c8902f); flex:none; box-shadow:0 8px 22px -6px rgba(231,178,76,.6);"></div>
         <div><div style="font-size:13px; color:#94a4bb;">剩余点数</div><div id="pointsBalance" style="font-family:'JetBrains Mono',monospace; font-size:48px; font-weight:700; color:#e7b24c; line-height:1; letter-spacing:1px;">--</div></div>
       </div>
-      <div style="position:relative;"><div style="font-size:13px; color:#94a4bb;">本月已消耗</div><div style="font-family:'JetBrains Mono',monospace; font-size:23px; font-weight:700; margin-top:8px; color:#eaf1fa;">1,280</div></div>
-      <div style="position:relative;"><div style="font-size:13px; color:#94a4bb;">本月毛利</div><div style="font-family:'JetBrains Mono',monospace; font-size:23px; font-weight:700; margin-top:8px; color:#2bd576;">¥8,960</div></div>
-      <div style="position:relative;"><div style="font-size:13px; color:#94a4bb;">套餐到期</div><div style="font-family:'JetBrains Mono',monospace; font-size:23px; font-weight:700; margin-top:8px; color:#e7b24c;">2026-12-31</div></div>
+      <div style="position:relative;"><div style="font-size:13px; color:#94a4bb;">会员等级</div><div id="membershipName" style="font-size:23px;font-weight:700;margin-top:8px;color:#eaf1fa;">读取中</div></div>
+      <div style="position:relative;"><div style="font-size:13px; color:#94a4bb;">有效期至</div><div id="membershipExpiry" style="font-family:'JetBrains Mono',monospace; font-size:23px; font-weight:700; margin-top:8px; color:#e7b24c;">--</div></div>
     </div>
 
+    <section id="membershipOffer" class="membership-offer" hidden>
+      <div style="position:relative;z-index:1"><div style="font-size:12px;font-weight:800;letter-spacing:.16em;color:#e7b24c">EXPERIENCE MEMBERSHIP</div><div style="margin-top:10px;font-size:25px;font-weight:800">开通体验官会员</div><div style="margin-top:8px;color:#94a4bb;font-size:13px">非会员无法使用生成能力或充值点数。开通后一年内有效。</div><div class="membership-benefits"><div><b style="color:#f4d27e">一年</b><br>会员有效期</div><div><b style="color:#f4d27e">1000 点</b><br>开通即赠送</div><div><b style="color:#f4d27e">全部功能</b><br>获得使用资格</div></div><button class="membership-cta" data-recharge data-amount="499" data-product="membership_experience">¥499 开通体验官 · 赠 1000 点</button><div style="margin-top:13px;color:#718096;font-size:11px">合伙人、发起人由管理员在后台设置，会员期限同为一年。</div></div>
+    </section>
+
     <!-- 点数套餐 -->
-    <div style="font-size:17px; font-weight:600; margin-bottom:14px;">点数套餐</div>
+    <div id="pointsRechargeArea" hidden>
+    <div style="font-size:17px; font-weight:600; margin-bottom:14px;">会员点数充值</div>
     <div class="gPkg" style="display:grid; gap:16px; margin-bottom:28px;">
       <!-- 99 元 · 1000 点 -->
       <div class="hv-lift recharge-package" style="position:relative; padding:26px 22px; border:1px solid rgba(148,164,187,.14); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); cursor:pointer; text-align:center; transition:.18s;">
@@ -75,6 +80,7 @@
         <div id="customPoints" style="font-size:13px; color:#2dd4bf; margin-bottom:20px;">= 0 点（10 点/元）</div>
         <button data-recharge data-custom="1" style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#2dd4bf; background:rgba(45,212,191,.08); border:1px solid rgba(45,212,191,.25); border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">立即充值</button>
       </div>
+    </div>
     </div>
 
     <!-- 提交信息 -->
@@ -207,6 +213,7 @@
 <script>
 (function(){
   var token='__cookie__';
+  var membershipActive=false;
   var $=function(id){return document.getElementById(id)};
   function setTip(msg,color){var el=$('rechargeTip'); if(el){el.textContent=msg; el.style.color=color||'#94a4bb'}}
   function api(path,opt){
@@ -227,9 +234,15 @@
   }
   function loadMe(){
     api('/api/auth/me').then(function(d){
-      var p=d&&d.user&&d.user.points;
+      var user=(d&&d.user)||{},p=user.points;
+      membershipActive=!!user.membership_active;
       $('pointsBalance').textContent=Number(p||0).toLocaleString();
-    }).catch(function(){ $('pointsBalance').textContent='--' });
+      $('membershipName').textContent=membershipActive?(user.membership_name||'会员'):'非会员';
+      $('membershipExpiry').textContent=membershipActive?new Date(Number(user.membership_expires_at)*1000).toLocaleDateString():'--';
+      $('membershipOffer').hidden=membershipActive;
+      $('pointsRechargeArea').hidden=!membershipActive;
+      setTip(membershipActive?'会员可充值点数并使用全部生成能力。':'请先开通体验官会员，开通后才能使用功能和充值点数。','#94a4bb');
+    }).catch(function(){ $('pointsBalance').textContent='--';$('membershipName').textContent='读取失败' });
   }
   function renderOrders(items){
     var box=$('orderBox');
@@ -243,7 +256,7 @@
           return '<div class="txrow" style="display:grid; grid-template-columns:1.3fr 1fr 1fr 1fr 1.5fr 1.7fr; gap:14px; min-width:760px; padding:14px 22px; align-items:center; border-bottom:1px solid rgba(148,164,187,.05); font-size:13px;">'+
             '<div style="font-family:&quot;JetBrains Mono&quot;,monospace; color:#94a4bb;">'+new Date(Number(x.created_at||0)*1000).toLocaleString()+'</div>'+
             '<div style="font-family:&quot;JetBrains Mono&quot;,monospace; color:#eaf1fa;">¥'+Number(x.amount||0).toFixed(2)+'</div>'+
-            '<div style="font-family:&quot;JetBrains Mono&quot;,monospace; color:#e7b24c;">'+Number(x.points||0).toLocaleString()+'</div>'+
+            '<div style="font-family:&quot;JetBrains Mono&quot;,monospace; color:#e7b24c;">'+(x.order_type==='membership_experience'?'体验官 + '+Number(x.points||0).toLocaleString()+' 点':Number(x.points||0).toLocaleString()+' 点')+'</div>'+
             '<div>'+statusLabel(x.status)+'</div>'+
             '<div style="font-family:&quot;JetBrains Mono&quot;,monospace; color:#5c6b82; font-size:12px;">'+esc(x.order_id)+'</div>'+
             '<div style="color:#94a4bb;">'+esc(x.review_note||x.note||'')+'</div></div>';
@@ -277,7 +290,7 @@
         var o=(d.items||[]).filter(function(x){return x.order_id===orderId})[0];
         if(o&&o.status==='approved'){
           clearInterval(wxpayPoll); wxpayPoll=null;
-          $('wxpayStatus').textContent='支付成功，点数已到账 ✅'; $('wxpayStatus').style.color='#2bd576';
+          $('wxpayStatus').textContent=o.order_type==='membership_experience'?'体验官已开通，1000 点已到账 ✅':'支付成功，点数已到账 ✅'; $('wxpayStatus').style.color='#2bd576';
           loadMe(); loadOrders();
           setTimeout(closeWxpay,1600);
         }
@@ -287,15 +300,15 @@
   // 固定档金额 -> 显示点数(仅前端展示,实际点数以后端为准);自定义按10点/元
   var TIER_POINTS={99:1000,199:2000,499:5000};
   function pointsFor(amount){ return TIER_POINTS[amount] || (amount*10); }
-  function wxpayNative(amount){
+  function wxpayNative(amount,productType){
     setTip('正在生成支付二维码…','#94a4bb');
-    api('/api/auth/wxpay/native',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({amount:amount})})
+    api('/api/auth/wxpay/native',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({amount:amount,product_type:productType||'points'})})
       .then(function(d){
         setTip('','#94a4bb');
         var qr=$('wxpayQr'); qr.innerHTML='';
         new QRCode(qr,{text:d.code_url,width:180,height:180,correctLevel:QRCode.CorrectLevel.M});
         var pts=(d.order&&d.order.points)||pointsFor(amount);
-        $('wxpayAmount').textContent='¥'+Number(amount).toFixed(2)+' · '+pts+' 点';
+        $('wxpayAmount').textContent=productType==='membership_experience'?'¥499 · 体验官一年 · 赠 1000 点':'¥'+Number(amount).toFixed(2)+' · '+pts+' 点';
         $('wxpayStatus').textContent='请用微信扫一扫完成支付'; $('wxpayStatus').style.color='#e7b24c';
         $('wxpayModal').style.display='flex';
         pollPaid(d.order.order_id);
@@ -315,7 +328,8 @@
   }
   function submitOrder(btn){
     if(!token){setTip('请先登录后再充值','#f4708a');return}
-    var amount;
+    var amount,productType=btn.getAttribute('data-product')||'points';
+    if(productType==='points'&&!membershipActive){setTip('请先开通会员后再充值点数','#f4708a');return}
     if(btn.getAttribute('data-custom')){
       amount=readCustomAmount();
       if(!amount){setTip('自定义金额需为 10~5000 元的整数','#f4708a');return}
@@ -323,12 +337,12 @@
       amount=parseInt(btn.getAttribute('data-amount')||'0',10);
       if(!amount){setTip('套餐信息不完整','#f4708a');return}
     }
-    if(payMethod==='wechat'){ wxpayNative(amount); return; }
+    if(payMethod==='wechat'){ wxpayNative(amount,productType); return; }
     // 支付宝暂无自动支付,走人工申请(填备注,管理员确认到账)
     var note=($('rechargeNote')&&$('rechargeNote').value)||'';
     btn.disabled=true;
-    api('/api/auth/recharge/order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({amount:amount,points:pointsFor(amount),note:note})})
-      .then(function(d){setTip('充值申请已提交，订单 '+(d.order&&d.order.order_id||''),'#2bd576'); loadOrders();})
+    api('/api/auth/recharge/order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({amount:amount,product_type:productType,note:note})})
+      .then(function(d){setTip((productType==='membership_experience'?'会员开通申请':'充值申请')+'已提交，订单 '+(d.order&&d.order.order_id||''),'#2bd576'); loadOrders();})
       .catch(function(e){setTip(e.message,'#f4708a')})
       .finally(function(){btn.disabled=false});
   }
