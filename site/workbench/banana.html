@@ -585,7 +585,12 @@
   };
 
   // 共享：提交 → 轮询 → 显示。任务存 localStorage，切走再回来自动续传（后端不中断）
-  var lastPayload=null, lastResultUrl=null, lastEndpoint='/api/gen/image';
+  var lastPayload=null,lastLabel='',lastEndpoint='',lastResultUrl=null;
+  function showUploadRetry(message){
+    setNote((message||'上传失败，请检查网络后重试')+' · <button id="uploadRetryBtn" type="button" style="padding:3px 9px;border:1px solid rgba(244,112,138,.42);border-radius:7px;background:rgba(244,112,138,.1);color:#f4708a;font:inherit;font-size:12px;cursor:pointer;">重新上传</button>','#f4708a');
+    var retry=document.getElementById('uploadRetryBtn');
+    if(retry) retry.onclick=function(){ if(!submitting&&lastPayload) submit(lastPayload,lastLabel,lastEndpoint); };
+  }
   // gpt-image 内容审核拒绝会返回 HTTP 400，原文对用户无意义 → 给可操作提示
   function brandedErrorText(value){
     return String(value||'')
@@ -657,7 +662,7 @@
     saveActive(); syncGen();
   }
   function submit(payload, label, endpoint){
-    endpoint=endpoint||'/api/gen/image'; lastEndpoint=endpoint;
+    endpoint=endpoint||'/api/gen/image'; lastEndpoint=endpoint; lastLabel=label;
     if(!payload.prompt){ flash('请先输入提示词','#f4708a'); return; }
     if(submitting) return;
     if(activeCount()>=MAX_PARALLEL){ flash('最多同时生成 '+MAX_PARALLEL+' 张，等一个完成再提交','#f4708a'); return; }
@@ -668,12 +673,10 @@
              : '黄雀引擎 2 高清约 1-2 分钟';
     flash(label+' · '+hint,'#2dd4bf');
     var t0=Date.now();
-    fetch(endpoint,{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
-      .then(function(r){ return r.text().then(function(t){
-        var d={};
-        try{ d=t?JSON.parse(t):{}; }catch(e){ d={detail:(r.status===413?'图片太大，请压缩后重试':(t||'').replace(/<[^>]+>/g,' ').trim().slice(0,120))}; }
-        return {s:r.status,d:d};
-      }); })
+    var request=payload.image ? requestJsonWithProgress(endpoint,payload,function(pct){
+      setNote('上传素材 '+pct+'% · 请勿关闭页面','#2dd4bf');
+    }) : requestJson(endpoint,payload);
+    request
       .then(function(x){
         submitting=false;              // 必须在所有分支之前解锁：漏一条路径按钮就永久锁死
         if(x.s===401){ syncGen(); HQ.login(); return; }
@@ -683,7 +686,39 @@
         if(x.s===429){ syncGen(); flash(brandedErrorText((x.d&&x.d.detail)||'任务太多，请稍后再试')+' · 点数未扣','#f4708a'); return; }
         if(!x.d.job_id){ syncGen(); flash('提交失败：'+brandedErrorText((x.d&&x.d.detail)||'未知'),'#f4708a'); return; }
         poll(x.d.job_id, t0, label);   // poll 内部登记 active、存盘、并刷新按钮
-      }).catch(function(){ submitting=false; syncGen(); flash('网络错误，请重试','#f4708a'); });
+      }).catch(function(error){
+        submitting=false; syncGen();
+        if(payload.image&&!error.uploadComplete) showUploadRetry('上传中断，素材和参数已保留');
+        else if(payload.image) flash('上传已完成但响应中断，请先到最近作品确认，避免重复扣点','#f4708a');
+        else flash('网络错误，请重试','#f4708a');
+      });
+  }
+
+  function parseJsonResponse(status,text){
+    var d={};
+    try{ d=text?JSON.parse(text):{}; }catch(e){ d={detail:(status===413?'图片太大，请压缩后重试':(text||'').replace(/<[^>]+>/g,' ').trim().slice(0,120))}; }
+    return {s:status,d:d};
+  }
+  function requestJson(endpoint,payload){
+    return fetch(endpoint,{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(payload)})
+      .then(function(r){ return r.text().then(function(t){ return parseJsonResponse(r.status,t); }); });
+  }
+  function requestJsonWithProgress(endpoint,payload,onProgress){
+    return new Promise(function(resolve,reject){
+      var xhr=new XMLHttpRequest(),uploadComplete=false;
+      xhr.open('POST',endpoint,true);
+      xhr.setRequestHeader('Authorization','Bearer '+tok());
+      xhr.setRequestHeader('Content-Type','application/json');
+      xhr.upload.onprogress=function(e){
+        if(e.lengthComputable&&onProgress){ var pct=Math.round(e.loaded/e.total*100); onProgress(pct); }
+      };
+      xhr.upload.onload=function(){ uploadComplete=true; };
+      xhr.onload=function(){ resolve(parseJsonResponse(xhr.status,xhr.responseText||'')); };
+      function fail(message){ var error=new Error(message); error.uploadComplete=uploadComplete; reject(error); }
+      xhr.onerror=function(){ fail('upload failed'); };
+      xhr.onabort=function(){ fail('upload aborted'); };
+      xhr.send(JSON.stringify(payload));
+    });
   }
 
   // ===== 参考图上传 → 图生图 / 局部修改（inpaint，gpt-image 专属）=====
@@ -725,6 +760,11 @@
     var url=URL.createObjectURL(f), im=new Image();
     im.onload=function(){
       var ref=imageToRefDataUrl(im);
+      if(dataUrlBytes(ref.dataUrl)>REF_MAX_BYTES){
+        setNote('图片仍超过 9MB，请压缩或更换图片后重试','#f4708a');
+        try{ URL.revokeObjectURL(url); }catch(e){}
+        return;
+      }
       setRef(ref.dataUrl, ref.width, ref.height);
       try{ URL.revokeObjectURL(url); }catch(e){}
     };
@@ -760,6 +800,7 @@
   }
   function revLoad(f){ if(!f) return; var url=URL.createObjectURL(f), im=new Image();
     im.onload=function(){ var ref=imageToRefDataUrl(im,1024);
+      if(dataUrlBytes(ref.dataUrl)>REF_MAX_BYTES){ revMsg('图片仍超过 9MB，请压缩或更换图片','#f4708a'); try{URL.revokeObjectURL(url);}catch(e){} return; }
       revSet(ref.dataUrl, ref.width, ref.height); try{URL.revokeObjectURL(url);}catch(e){} };
     im.onerror=function(){ revMsg('这张图读取失败，换一张','#f4708a'); }; im.src=url;
   }
