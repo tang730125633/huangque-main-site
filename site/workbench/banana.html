@@ -356,7 +356,7 @@
     var n=activeCount(), lock=(n>0)||submitting;
     gen.disabled=lock; gen.style.pointerEvents=lock?'none':'auto'; gen.style.opacity=lock?'.55':'1';
     gen.textContent = submitting ? '提交中…' : n ? ('生成中 '+n+' · 请等待完成') : genLabel();
-    // 只在「一张都还没出过」时给结果区打码：第 2、3 个任务在跑时不该把已出的图糊掉
+    // 只在「一张都还没出过」时给结果区打码；恢复旧版遗留任务时也不遮住已有结果。
     res.style.filter=(n && !lastResultUrl) ? 'blur(3px) brightness(.6)' : 'none';
     ['tplApply','tplGenerate'].forEach(function(id){var b=document.getElementById(id); if(b) b.disabled=lock;});
   }
