@@ -1162,7 +1162,7 @@ class H(BaseHTTPRequestHandler):
         audio_domain, points_domain, video_domain = _domains()
         p = self.path.split("?")[0]
         if _short_drama_domain().dispatch_http(self, "POST", jdb, verify, getattr(points_domain, "cost_of", None)): return
-        if video_domain.dispatch_cinematic_quote(self, verify, points_domain.cost_of): return
+        if p == "/api/gen/cinematic/quote" and video_domain.dispatch_cinematic_quote(self, verify, points_domain.cost_of): return
         if p == "/api/gen/asset/favorite":
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录"})
