@@ -232,5 +232,15 @@ class ProxyIntegrationTests(unittest.TestCase):
             )
 
 
+class LauncherContractTests(unittest.TestCase):
+    def test_launcher_uses_proxy_when_test_upstream_is_configured(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        launcher = (root / "scripts" / "dev_local.sh").read_text(encoding="utf-8")
+
+        self.assertIn('if [ -n "${HQ_DEV_UPSTREAM:-}" ]', launcher)
+        self.assertIn('dev_proxy.py" --upstream "$HQ_DEV_UPSTREAM"', launcher)
+        self.assertIn("真实测试服务器账号、点数和第三方额度", launcher)
+
+
 if __name__ == "__main__":
     unittest.main()

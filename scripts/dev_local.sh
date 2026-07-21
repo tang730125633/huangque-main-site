@@ -13,6 +13,17 @@ WEB_PORT="${WEB_PORT:-8097}"
 OUT_DIR="${CONTENT_OUT:-/tmp/hq_local_out}"
 mkdir -p "$OUT_DIR"
 
+# 可选：页面走本地代码，所有 /api/* 走固定测试服务器。
+# 该模式使用测试服务器的真实账号、点数、任务和第三方 API 额度。
+if [ -n "${HQ_DEV_UPSTREAM:-}" ]; then
+  echo "▸ 本地页面 + 测试服务器 API → http://127.0.0.1:$WEB_PORT/workbench/"
+  echo "▸ 测试服务器上游：$HQ_DEV_UPSTREAM"
+  echo "⚠ 所有 API 操作使用真实测试服务器账号、点数和第三方额度"
+  exec python3 "$ROOT/scripts/dev_proxy.py" --upstream "$HQ_DEV_UPSTREAM" \
+    --site-root "$ROOT/site" \
+    --port "$WEB_PORT"
+fi
+
 # 可选：加载本地密钥（不进 git）
 ENV_FILE="$ROOT/server/secret.local.env"
 if [ -f "$ENV_FILE" ]; then set -a; . "$ENV_FILE"; set +a; echo "▸ 已加载本地密钥 $ENV_FILE"; else
