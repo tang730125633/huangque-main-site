@@ -1,5 +1,21 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const shortDrama = require('../site/workbench/canvas/canvas-short-drama.js');
+
+function testCanvasIntegration() {
+  const root = path.join(__dirname, '..');
+  const html = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas.html'), 'utf8');
+  const app = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-app.js'), 'utf8');
+
+  assert.ok(html.includes('canvas/canvas-short-drama.css?v='));
+  assert.ok(html.includes('canvas/canvas-short-drama.js?v='));
+  assert.ok(html.indexOf('canvas/canvas-short-drama.js?v=') < html.indexOf('canvas/canvas-app.js?v='));
+  assert.ok(html.includes('data-add="shortDrama"'));
+  assert.match(app, /shortDrama:\s*\{name:'短剧项目'/);
+  assert.ok(app.includes('data-f="openShortDrama"'));
+  assert.ok(app.includes('shortDramaModule.createWorkspace('));
+}
 
 async function testPureHelpers() {
   const settings = shortDrama.normalizeSettings({
@@ -165,6 +181,7 @@ async function testPlanningErrorsPropagateWithoutApplying() {
 }
 
 async function main() {
+  testCanvasIntegration();
   await testPureHelpers();
   await testProjectRoutesAndPlanningFlow();
   await testPlanningErrorsPropagateWithoutApplying();

@@ -1,0 +1,60 @@
+.nc-node-short-drama {
+  width: 280px;
+  border-color: rgba(245, 158, 11, 0.38);
+}
+
+.nc-node-short-drama .nc-body {
+  background: linear-gradient(180deg, rgba(245, 158, 11, 0.08), transparent 72%);
+}
+
+.nc-short-drama-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.nc-short-drama-summary div {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.06);
+}
+
+.nc-short-drama-summary span,
+.nc-short-drama-summary strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nc-short-drama-summary span {
+  margin-bottom: 3px;
+  color: #8a7553;
+  font-size: 11px;
+}
+
+.nc-short-drama-summary strong {
+  color: #5f4313;
+  font-size: 12px;
+}
+
+.nc-short-drama-open {
+  width: 100%;
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+}
+
+.nc-short-drama-open:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+[data-theme="dark"] .nc-short-drama-summary span {
+  color: #d6b77c;
+}
+
+[data-theme="dark"] .nc-short-drama-summary strong {
+  color: #fde7b0;
+}

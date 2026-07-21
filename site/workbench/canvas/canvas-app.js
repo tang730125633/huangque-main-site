@@ -4,6 +4,7 @@
   var stateApi=window.HQCanvas&&window.HQCanvas.state;
   var storageApi=window.HQCanvas&&window.HQCanvas.storage;
   var apiModule=window.HQCanvas&&window.HQCanvas.api;
+  var shortDramaModule=window.HQCanvas&&window.HQCanvas.shortDrama;
   var canvasExporter=window.HQCanvas&&window.HQCanvas.exporter;
   var canvasStorage=storageApi.createStorage({storage:function(){return window.localStorage;}});
   var apiClient=apiModule.createClient({fetchImpl:window.fetch.bind(window),tokenProvider:tok,AbortControllerImpl:window.AbortController,setTimeoutImpl:setTimeout,clearTimeoutImpl:clearTimeout});
@@ -37,6 +38,77 @@
     return value;
   })();
   var collabNodeSeed='node'+(window.crypto&&window.crypto.randomUUID?window.crypto.randomUUID().replace(/-/g,''):Date.now().toString(36)+Math.random().toString(36).slice(2,14));
+  function normalizeShortDramaNodeParams(input){
+    var value=input||{}, duration=Number(value.target_duration);
+    if([30,45,60].indexOf(duration)<0) duration=30;
+    return {
+      project_id:value.project_id||value.id||null,
+      title:String(value.title||'新短剧').slice(0,80),
+      ratio:value.ratio==='16:9'?'16:9':'9:16',
+      target_duration:duration,
+      stage:String(value.stage||'draft'),
+      progress:Math.max(0,Math.min(100,Number(value.progress)||0)),
+      spent_points:Math.max(0,Number(value.spent_points)||0),
+      estimated_points:Math.max(0,Number(value.estimated_points)||0)
+    };
+  }
+  function refreshShortDramaNode(node){
+    if(!node||node.type!=='shortDrama'||!node.el) return;
+    refreshNodeMeta(node);
+    var ratio=node.el.querySelector('[data-f="shortDramaRatio"]');
+    var stage=node.el.querySelector('[data-f="shortDramaStage"]');
+    var progress=node.el.querySelector('[data-f="shortDramaProgress"]');
+    var points=node.el.querySelector('[data-f="shortDramaPoints"]');
+    if(ratio) ratio.textContent=node.params.ratio+' · '+node.params.target_duration+'秒';
+    if(stage) stage.textContent=node.params.stage;
+    if(progress) progress.textContent=node.params.progress+'%';
+    if(points) points.textContent=node.params.spent_points+' / '+node.params.estimated_points+' 点';
+  }
+  function applyShortDramaSummary(node,summary){
+    if(!node||!summary||typeof summary!=='object') return;
+    node.params=normalizeShortDramaNodeParams(Object.assign({},node.params,summary));
+    refreshShortDramaNode(node);
+    scheduleSave();
+  }
+  function ensureShortDramaProject(node){
+    if(node.params.project_id) return Promise.resolve(node.params.project_id);
+    if(!canEditCanvas()) return Promise.reject(new Error('当前画布为只读，无法创建短剧项目'));
+    setNodeState(node,'running','正在创建短剧项目…','#2dd4bf');
+    return apiClient.json('/api/gen/short-drama/projects',{
+      method:'POST',
+      body:{title:node.params.title,synopsis:'请在短剧工作区完善故事梗概',ratio:node.params.ratio,target_duration:node.params.target_duration,shot_count:6}
+    }).then(function(project){
+      if(!project||!(project.id||project.project_id)) throw new Error('创建短剧项目失败');
+      applyShortDramaSummary(node,project);
+      scheduleSave();
+      return node.params.project_id;
+    });
+  }
+  function openShortDramaWorkspace(node){
+    if(!shortDramaModule||typeof shortDramaModule.createWorkspace!=='function'){
+      setNodeState(node,'error','短剧工作区未加载','#f4708a');
+      return Promise.reject(new Error('短剧工作区未加载'));
+    }
+    var button=node.el&&node.el.querySelector('[data-f="openShortDrama"]');
+    if(button) button.disabled=true;
+    return ensureShortDramaProject(node).then(function(projectId){
+      var canEdit=canEditCanvas();
+      var onChange=function(summary){ applyShortDramaSummary(node,summary); };
+      if(node.shortDramaWorkspace&&node.shortDramaWorkspace.destroy) node.shortDramaWorkspace.destroy();
+      node.shortDramaWorkspace=shortDramaModule.createWorkspace({
+        projectId:projectId,
+        apiClient:apiClient,
+        poll:apiModule.poll,
+        canEdit:canEdit,
+        onChange:onChange
+      });
+      setNodeState(node,'done','短剧工作区已打开','#2bd576');
+      return node.shortDramaWorkspace;
+    }).catch(function(error){
+      setNodeState(node,'error',error&&error.message||'打开短剧工作区失败','#f4708a');
+      throw error;
+    }).finally(function(){ if(button) button.disabled=false; });
+  }
   function tok(){ return '__cookie__'; }
   function authJson(path, opts){
     return apiClient.json(path,opts).catch(function(error){
@@ -82,7 +154,8 @@
     image: {name:'图片 · 素材',   color:'#46b4ff', outs:['image']},
     reverse:{name:'提示词反推',   color:'#8a5cf6', ins:['image'], outs:['prompt']},
     gen:   {name:'作图',          color:'#2bd576', ins:['prompt','image'], outs:['image']},
-    video: {name:'生视频',        color:'#f472b6', ins:['prompt','image'], outs:['video']}
+    video: {name:'生视频',        color:'#f472b6', ins:['prompt','image'], outs:['video']},
+    shortDrama:{name:'短剧项目', color:'#f59e0b'}
   };
   function updateState(label){
     if(label) runLabel=label;
@@ -113,7 +186,7 @@
       edges:stateApi.cloneSnapshot(edges),
       nodes:Object.keys(nodes).map(function(k){
         var n=nodes[k];
-        return {id:n.id,type:n.type,x:n.x,y:n.y,collapsed:n.el?n.el.classList.contains('collapsed'):!!n.collapsed,params:stateApi.cloneSnapshot(n.params||{}),outputs:stateApi.cloneSnapshot(n.outputs||{}),image:n.image||null,state:n.el?n.el.getAttribute('data-state')||'':n.state||'',note:n.el?(n.el.querySelector('[data-f="note"]')||{}).textContent||'':n.note||''};
+        return {id:n.id,type:n.type,x:n.x,y:n.y,collapsed:n.el?n.el.classList.contains('collapsed'):!!n.collapsed,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.params||{}),outputs:stateApi.cloneSnapshot(n.outputs||{}),image:n.image||null,state:n.el?n.el.getAttribute('data-state')||'':n.state||'',note:n.el?(n.el.querySelector('[data-f="note"]')||{}).textContent||'':n.note||''};
       })
     };
   }
@@ -1328,6 +1401,7 @@
       if(!n||!TYPE[n.type]) return;
       n.params=Object.assign({engine:'nb2',channel:'grok',ratio:'9:16',duration:'5',quality:'hd',title:'',remark:''},n.params||{});
       if(n.type==='video') n.params=normalizeVideoNodeParams(n.params);
+      if(n.type==='shortDrama') n.params=normalizeShortDramaNodeParams(n.params);
       n.outputs=n.outputs||{};
       n.image=null;
       if(n.outputs.image) delete n.outputs.image;
@@ -1375,7 +1449,7 @@
     return String(s).replace(/[&<>"']/g,function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; });
   }
   function nodeTypeLabel(type){
-    return ({text:'文本',image:'图片',reverse:'反推',gen:'作图',video:'视频'})[type]||type||'节点';
+    return ({text:'文本',image:'图片',reverse:'反推',gen:'作图',video:'视频',shortDrama:'短剧'})[type]||type||'节点';
   }
   function nodeStatusLabel(node){
     var s=node&&node.el&&node.el.getAttribute('data-state');
@@ -1641,7 +1715,8 @@
     if(data&&data.id){ id=data.id; var m=String(id).match(/^n(\d+)$/); if(m) nid=Math.max(nid,parseInt(m[1],10)); }
     var node={ id:id, type:type, x:(x==null?60+((nid*30)%400):x), y:(y==null?50+((nid*40)%300):y), collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',channel:'grok',ratio:'16:9',duration:'5',quality:'hd',title:'',remark:''},(data&&data.params)||{}), outputs:stateApi.cloneSnapshot((data&&data.outputs)||{}), image:(data&&data.image)||null };
     if(type==='video') node.params=normalizeVideoNodeParams(node.params);
-    var el=document.createElement('div'); el.className='nc-node'; el.style.left=node.x+'px'; el.style.top=node.y+'px';
+    if(type==='shortDrama') node.params=normalizeShortDramaNodeParams(node.params);
+    var el=document.createElement('div'); el.className='nc-node'+(type==='shortDrama'?' nc-node-short-drama':''); el.style.left=node.x+'px'; el.style.top=node.y+'px';
     var body='';
     if(type==='text') body='<textarea class="nc-in" data-f="text" rows="3" placeholder="输入提示词，作为下游作图的词…"></textarea>';
     if(type==='image') body='<label class="nc-drop" data-f="drop"><input type="file" accept="image/*" data-f="file" style="display:none">点击上传<br>或按 Ctrl+V 粘贴</label>';
@@ -1659,6 +1734,8 @@
       +'<div class="nc-refbar" data-f="refs"><span>参考图 0 张</span><div class="nc-refthumbs"></div></div>'
       +'<textarea class="nc-in" data-f="text" rows="2" placeholder="视频提示词（也可由上游文本/反推节点连入）"></textarea>'
       +'<div class="nc-video-submit"><button class="nc-go" data-f="run"><span>生成视频</span><span class="nc-video-cost" data-f="videoCost"></span></button></div><div class="nc-video-result" data-f="videoResult"></div>';
+    if(type==='shortDrama') body='<div class="nc-short-drama-summary"><div><span>画幅与时长</span><strong data-f="shortDramaRatio"></strong></div><div><span>当前阶段</span><strong data-f="shortDramaStage"></strong></div><div><span>完成进度</span><strong data-f="shortDramaProgress"></strong></div><div><span>点数</span><strong data-f="shortDramaPoints"></strong></div></div>'
+      +'<button class="nc-go nc-short-drama-open" type="button" data-f="openShortDrama">打开短剧工作区</button>';
     el.innerHTML='<div class="nc-head" data-f="head"><span style="display:flex;align-items:center;gap:7px;min-width:0;"><span class="dot" style="background:'+t.color+'"></span><span class="nc-node-title" data-f="headTitle">'+escapeHtml(node.params.title||t.name)+'</span><span class="nc-remark-mark" data-f="remarkMark" title="有备注">注</span></span><span class="nc-actions"><span class="nc-fold" data-f="fold" title="折叠/展开">−</span><span class="nc-x" data-f="del">×</span></span></div>'
       +'<div class="nc-body">'+body+'<div class="nc-note" data-f="note"></div></div>';
     inner.appendChild(el); node.el=el;
@@ -1706,6 +1783,7 @@
     if(videoResult&&node.outputs.video) renderVideoResult(node,node.outputs.video);
     refreshGenRefs(node);
     refreshVideoNodeControls(node);
+    refreshShortDramaNode(node);
   }
   function inputVals(nodeId, port){
     return edges.filter(function(e){ return e.to.node===nodeId && e.to.port===port; }).map(function(e){
@@ -2088,7 +2166,8 @@
       {key:'图',label:'图片',title:'上传或粘贴素材图',run:function(){ addAt('image',pt); }},
       {key:'反',label:'反推',title:'根据图片生成提示词',run:function(){ addAt('reverse',pt); }},
       {key:'生',label:'作图',title:'根据提示词和参考图生成图片',run:function(){ addAt('gen',pt); }},
-      {key:'视',label:'视频',title:'根据提示词和参考图生成视频',run:function(){ addAt('video',pt); }}
+      {key:'视',label:'视频',title:'根据提示词和参考图生成视频',run:function(){ addAt('video',pt); }},
+      {key:'短',label:'短剧',title:'创建短剧项目',run:function(){ addAt('shortDrama',pt); }}
     ];
   }
   function stopUiEvent(e){
@@ -2603,6 +2682,8 @@
       seg.querySelectorAll('.nc-chip').forEach(function(c){ c.onclick=function(){ if(!canEditCanvas()) return; if(node.params[f]!==c.getAttribute('data-v')) pushUndo(); seg.querySelectorAll('.nc-chip').forEach(function(x){x.classList.remove('on');}); c.classList.add('on'); node.params[f]=c.getAttribute('data-v'); refreshVideoNodeControls(node); scheduleSave(); }; }); });
     var avatarRefresh=el.querySelector('[data-f="avatarRefresh"]');
     if(avatarRefresh) avatarRefresh.onclick=function(e){ e.stopPropagation(); loadVideoAvatars(true).catch(function(){}); };
+    var openShortDrama=el.querySelector('[data-f="openShortDrama"]');
+    if(openShortDrama) openShortDrama.onclick=function(e){ e.stopPropagation(); openShortDramaWorkspace(node).catch(function(){}); };
     // 图片节点上传/粘贴
     var file=el.querySelector('[data-f="file"]'), drop=el.querySelector('[data-f="drop"]');
     if(file){ file.onchange=function(){ if(!canEditCanvas()) return; var label=node._imageActionLabel||'图片已上传'; node._imageActionLabel=''; imgToNode(node, file.files&&file.files[0], label); }; }
