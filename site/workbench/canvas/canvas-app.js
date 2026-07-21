@@ -39,18 +39,10 @@
   })();
   var collabNodeSeed='node'+(window.crypto&&window.crypto.randomUUID?window.crypto.randomUUID().replace(/-/g,''):Date.now().toString(36)+Math.random().toString(36).slice(2,14));
   function normalizeShortDramaNodeParams(input){
-    var value=input||{}, duration=Number(value.target_duration);
-    if([30,45,60].indexOf(duration)<0) duration=30;
-    return {
-      project_id:value.project_id||value.id||null,
-      title:String(value.title||'新短剧').slice(0,80),
-      ratio:value.ratio==='16:9'?'16:9':'9:16',
-      target_duration:duration,
-      stage:String(value.stage||'draft'),
-      progress:Math.max(0,Math.min(100,Number(value.progress)||0)),
-      spent_points:Math.max(0,Number(value.spent_points)||0),
-      estimated_points:Math.max(0,Number(value.estimated_points)||0)
-    };
+    return shortDramaModule.normalizeNodeParams(input);
+  }
+  function shortDramaNodeOutputs(node){
+    return node&&node.type==='shortDrama'?{}:stateApi.cloneSnapshot(node&&node.outputs||{});
   }
   function refreshShortDramaNode(node){
     if(!node||node.type!=='shortDrama'||!node.el) return;
@@ -67,31 +59,31 @@
   function applyShortDramaSummary(node,summary){
     if(!node||!summary||typeof summary!=='object') return;
     node.params=normalizeShortDramaNodeParams(Object.assign({},node.params,summary));
+    node.outputs={};
     refreshShortDramaNode(node);
     scheduleSave();
   }
+  var shortDramaProjectCoordinator=shortDramaModule.createProjectCoordinator({
+    getNode:function(nodeId){ var node=nodes[nodeId]; return node&&node.type==='shortDrama'?node:null; },
+    create:function(payload){ return apiClient.json('/api/gen/short-drama/projects',{method:'POST',body:payload}); },
+    apply:function(node,project){ applyShortDramaSummary(node,project); }
+  });
   function ensureShortDramaProject(node){
-    if(node.params.project_id) return Promise.resolve(node.params.project_id);
-    if(!canEditCanvas()) return Promise.reject(new Error('当前画布为只读，无法创建短剧项目'));
-    setNodeState(node,'running','正在创建短剧项目…','#2dd4bf');
-    return apiClient.json('/api/gen/short-drama/projects',{
-      method:'POST',
-      body:{title:node.params.title,synopsis:'请在短剧工作区完善故事梗概',ratio:node.params.ratio,target_duration:node.params.target_duration,shot_count:6}
-    }).then(function(project){
-      if(!project||!(project.id||project.project_id)) throw new Error('创建短剧项目失败');
-      applyShortDramaSummary(node,project);
-      scheduleSave();
-      return node.params.project_id;
-    });
+    if(!node.params.project_id&&canEditCanvas()) setNodeState(node,'running','正在创建短剧项目…','#2dd4bf');
+    return shortDramaProjectCoordinator.ensure(node.id,shortDramaModule.creationPayload(node.params),canEditCanvas());
   }
   function openShortDramaWorkspace(node){
     if(!shortDramaModule||typeof shortDramaModule.createWorkspace!=='function'){
       setNodeState(node,'error','短剧工作区未加载','#f4708a');
       return Promise.reject(new Error('短剧工作区未加载'));
     }
+    var nodeId=node.id;
     var button=node.el&&node.el.querySelector('[data-f="openShortDrama"]');
     if(button) button.disabled=true;
     return ensureShortDramaProject(node).then(function(projectId){
+      node=nodes[nodeId];
+      if(!node||node.type!=='shortDrama') throw new Error('短剧节点已不存在');
+      button=node.el&&node.el.querySelector('[data-f="openShortDrama"]');
       var canEdit=canEditCanvas();
       var onChange=function(summary){ applyShortDramaSummary(node,summary); };
       if(node.shortDramaWorkspace&&node.shortDramaWorkspace.destroy) node.shortDramaWorkspace.destroy();
@@ -186,7 +178,7 @@
       edges:stateApi.cloneSnapshot(edges),
       nodes:Object.keys(nodes).map(function(k){
         var n=nodes[k];
-        return {id:n.id,type:n.type,x:n.x,y:n.y,collapsed:n.el?n.el.classList.contains('collapsed'):!!n.collapsed,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.params||{}),outputs:stateApi.cloneSnapshot(n.outputs||{}),image:n.image||null,state:n.el?n.el.getAttribute('data-state')||'':n.state||'',note:n.el?(n.el.querySelector('[data-f="note"]')||{}).textContent||'':n.note||''};
+        return {id:n.id,type:n.type,x:n.x,y:n.y,collapsed:n.el?n.el.classList.contains('collapsed'):!!n.collapsed,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.params||{}),outputs:shortDramaNodeOutputs(n),image:n.image||null,state:n.el?n.el.getAttribute('data-state')||'':n.state||'',note:n.el?(n.el.querySelector('[data-f="note"]')||{}).textContent||'':n.note||''};
       })
     };
   }
@@ -818,6 +810,10 @@
       if(el) el.disabled=!!readonly;
     });
     document.querySelectorAll('.nc-node input,.nc-node textarea,.nc-node select,.nc-node button').forEach(function(el){ el.disabled=!!readonly; });
+    document.querySelectorAll('.nc-node [data-f="openShortDrama"]').forEach(function(openShortDrama){
+      var host=openShortDrama.closest('.nc-node'), node=host&&nodes[host.getAttribute('data-node-id')];
+      openShortDrama.disabled=!!readonly&&!(node&&node.params.project_id);
+    });
     document.querySelectorAll('.nc-node [data-f="headTitle"]').forEach(function(el){
       if(readonly){ el.setAttribute('contenteditable','false'); el.removeAttribute('spellcheck'); }
     });
@@ -1367,6 +1363,7 @@
     var list=getBoards(), board=list.find(function(b){ return b.id===id; });
     if(!board) return;
     var copy=stateApi.cloneSnapshot(board);
+    copy.data=sanitizeShortDramaSnapshot(copy.data);
     copy.id=makeBoardId();
     copy.name=cleanBoardName((board.name||'未命名画布')+' 副本')||'未命名画布 副本';
     copy.updatedAt=Date.now();
@@ -1394,14 +1391,24 @@
     var loaded=canvasStorage.loadTemplates();
     return loaded.ok?(loaded.value||[]):[];
   }
-  function sanitizeTemplateSnap(snap){
+  function sanitizeShortDramaSnapshot(snap){
     snap=stateApi.cloneSnapshot(snap||{});
+    snap.nodes=(snap.nodes||[]).map(function(node){
+      return node&&node.type==='shortDrama'?shortDramaModule.sanitizeNodeData(node):node;
+    });
+    return snap;
+  }
+  function sanitizeTemplateSnap(snap){
+    snap=sanitizeShortDramaSnapshot(snap);
     var valid={};
     (snap.nodes||[]).forEach(function(n){
       if(!n||!TYPE[n.type]) return;
       n.params=Object.assign({engine:'nb2',channel:'grok',ratio:'9:16',duration:'5',quality:'hd',title:'',remark:''},n.params||{});
       if(n.type==='video') n.params=normalizeVideoNodeParams(n.params);
-      if(n.type==='shortDrama') n.params=normalizeShortDramaNodeParams(n.params);
+      if(n.type==='shortDrama'){
+        n.params=normalizeShortDramaNodeParams(n.params);
+        n.outputs={};
+      }
       n.outputs=n.outputs||{};
       n.image=null;
       if(n.outputs.image) delete n.outputs.image;
@@ -1568,7 +1575,7 @@
     updateState('正在导出预览...');
     var exportNodes=Object.keys(nodes).map(function(id){
       var node=nodes[id],type=TYPE[node.type]||{};
-      return {id:node.id,type:node.type,x:node.x,y:node.y,width:(node.el&&node.el.offsetWidth)||250,height:(node.el&&node.el.offsetHeight)||160,collapsed:node.el?node.el.classList.contains('collapsed'):!!node.collapsed,params:stateApi.cloneSnapshot(node.params||{}),outputs:stateApi.cloneSnapshot(node.outputs||{}),image:node.image||'',typeName:type.name||'',typeColor:type.color||''};
+      return {id:node.id,type:node.type,x:node.x,y:node.y,width:(node.el&&node.el.offsetWidth)||250,height:(node.el&&node.el.offsetHeight)||160,collapsed:node.el?node.el.classList.contains('collapsed'):!!node.collapsed,params:stateApi.cloneSnapshot(node.params||{}),outputs:shortDramaNodeOutputs(node),image:node.image||'',typeName:type.name||'',typeColor:type.color||''};
     });
     var exportEdges=edges.map(function(edge){
       var from=portCenter(edge.from.node,'out',edge.from.port),to=portCenter(edge.to.node,'in',edge.to.port);
@@ -1593,6 +1600,7 @@
   }
   function restoreSnapshot(snap){
     if(!snap) return;
+    snap=sanitizeShortDramaSnapshot(snap);
     restoring=true;
     Object.keys(nodes).forEach(function(id){ if(nodes[id]&&nodes[id].el) nodes[id].el.remove(); });
     nodes={}; edges=stateApi.cloneSnapshot(snap.edges||[]); nid=snap.nid||0; pendingPort=null; dragPort=null; selectedNode=null; selectedNodes={}; selectedEdge=-1; runLabel=snap.runLabel||'就绪';
@@ -1711,6 +1719,7 @@
 
   // ---------- 建节点 ----------
   function addNode(type, x, y, data){
+    if(type==='shortDrama'&&data) data=shortDramaModule.sanitizeNodeData(data);
     var t=TYPE[type], nextNid=++nid, id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabNodeSeed,nextNid):'n'+nextNid;
     if(data&&data.id){ id=data.id; var m=String(id).match(/^n(\d+)$/); if(m) nid=Math.max(nid,parseInt(m[1],10)); }
     var node={ id:id, type:type, x:(x==null?60+((nid*30)%400):x), y:(y==null?50+((nid*40)%300):y), collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',channel:'grok',ratio:'16:9',duration:'5',quality:'hd',title:'',remark:''},(data&&data.params)||{}), outputs:stateApi.cloneSnapshot((data&&data.outputs)||{}), image:(data&&data.image)||null };
@@ -2014,7 +2023,7 @@
         multi:true,
         nodes:ids.map(function(id){
           var n=nodes[id];
-          return {id:n.id,type:n.type,x:n.x,y:n.y,collapsed:n.collapsed,params:stateApi.cloneSnapshot(n.params||{}),outputs:stateApi.cloneSnapshot(n.outputs||{}),image:n.image||null,note:(n.el.querySelector('[data-f="note"]')||{}).textContent||''};
+          return {id:n.id,type:n.type,x:n.x,y:n.y,collapsed:n.collapsed,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.params||{}),outputs:shortDramaNodeOutputs(n),image:n.image||null,note:(n.el.querySelector('[data-f="note"]')||{}).textContent||''};
         }),
         edges:edges.filter(function(e){ return set[e.from.node]&&set[e.to.node]; }).map(function(e){ return stateApi.cloneSnapshot(e); })
       };
@@ -2022,7 +2031,7 @@
       return;
     }
     var n=nodes[ids[0]];
-    clipNode={type:n.type,params:stateApi.cloneSnapshot(n.params||{}),outputs:stateApi.cloneSnapshot(n.outputs||{}),image:n.image||null,note:(n.el.querySelector('[data-f="note"]')||{}).textContent||''};
+    clipNode={type:n.type,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.params||{}),outputs:shortDramaNodeOutputs(n),image:n.image||null,note:(n.el.querySelector('[data-f="note"]')||{}).textContent||''};
     updateState('已复制节点');
   }
   function pasteNode(){

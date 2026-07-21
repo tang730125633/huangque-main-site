@@ -32,6 +32,86 @@
     ].join(' · ');
   }
 
+  function normalizeNodeParams(input){
+    var value=input||{}, duration=Number(value.target_duration);
+    if([30,45,60].indexOf(duration)<0) duration=30;
+    return {
+      project_id:value.project_id||value.id||null,
+      title:String(value.title||'新短剧').slice(0,80),
+      ratio:value.ratio==='16:9'?'16:9':'9:16',
+      target_duration:duration,
+      stage:String(value.stage||'draft'),
+      progress:Math.max(0,Math.min(100,Number(value.progress)||0)),
+      spent_points:Math.max(0,Number(value.spent_points)||0),
+      estimated_points:Math.max(0,Number(value.estimated_points)||0)
+    };
+  }
+
+  function cloneValue(value){
+    if(Array.isArray(value)) return value.map(cloneValue);
+    if(value&&typeof value==='object'){
+      var copy={};
+      Object.keys(value).forEach(function(key){ copy[key]=cloneValue(value[key]); });
+      return copy;
+    }
+    return value;
+  }
+
+  function sanitizeNodeData(node){
+    var copy=cloneValue(node||{});
+    if(copy.type==='shortDrama'){
+      copy.params=normalizeNodeParams(copy.params);
+      copy.outputs={};
+    }
+    return copy;
+  }
+
+  function creationPayload(params){
+    var summary=normalizeNodeParams(params);
+    return {
+      title:summary.title,
+      synopsis:'请在短剧工作区完善故事梗概',
+      ratio:summary.ratio,
+      target_duration:summary.target_duration,
+      shot_count:6
+    };
+  }
+
+  function canOpenNode(params,canEdit){
+    return !!(params&&params.project_id)||!!canEdit;
+  }
+
+  function createProjectCoordinator(options){
+    options=options||{};
+    if(typeof options.getNode!=='function'||typeof options.create!=='function'||typeof options.apply!=='function'){
+      throw new Error('short drama project coordinator requires getNode, create, and apply methods');
+    }
+    var pending=Object.create(null);
+    function ensure(nodeId,payload,canCreate){
+      nodeId=String(nodeId||'');
+      var current=options.getNode(nodeId);
+      var projectId=current&&current.params&&current.params.project_id;
+      if(projectId) return Promise.resolve(projectId);
+      if(pending[nodeId]) return pending[nodeId];
+      if(!canCreate) return Promise.reject(new Error('当前画布为只读，无法创建短剧项目'));
+      var request=Promise.resolve().then(function(){ return options.create(payload); }).then(function(project){
+        var createdId=project&&(project.id||project.project_id);
+        if(!createdId) throw new Error('创建短剧项目失败');
+        var live=options.getNode(nodeId);
+        if(live) options.apply(live,project);
+        return createdId;
+      });
+      pending[nodeId]=request;
+      function clear(){ if(pending[nodeId]===request) delete pending[nodeId]; }
+      request.then(clear,clear);
+      return request;
+    }
+    return {
+      ensure:ensure,
+      hasPending:function(nodeId){ return !!pending[String(nodeId||'')]; }
+    };
+  }
+
   function planningPayload(project){
     var settings=normalizeSettings(project);
     return {
@@ -112,6 +192,11 @@
 
   return {
     normalizeSettings:normalizeSettings,
+    normalizeNodeParams:normalizeNodeParams,
+    sanitizeNodeData:sanitizeNodeData,
+    creationPayload:creationPayload,
+    canOpenNode:canOpenNode,
+    createProjectCoordinator:createProjectCoordinator,
     stageIndex:stageIndex,
     summarizeProject:summarizeProject,
     planningPayload:planningPayload,
