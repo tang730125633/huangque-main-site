@@ -105,7 +105,8 @@
       var canEdit=canEditCanvas();
       var onChange=function(summary){
         var current=shortDramaNodeForScope(scopeKey,nodeId);
-        if(current) applyShortDramaSummary(current,summary);
+        if(!current||current.params.project_id!==projectId) return;
+        applyShortDramaSummary(current,summary);
       };
       if(node.shortDramaWorkspace&&node.shortDramaWorkspace.destroy) node.shortDramaWorkspace.destroy();
       node.shortDramaWorkspace=shortDramaModule.createWorkspace({

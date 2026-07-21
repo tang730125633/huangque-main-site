@@ -203,17 +203,19 @@ async function testPureHelpers() {
     shot_count: 8, style: settings.visual_style, platform: settings.target_platform,
   });
   assert.equal(shortDrama.stageIndex('storyboard_review'), 3);
-  assert.match(shortDrama.summarizeProject({
+  assert.equal(shortDrama.summarizeProject({
     title: '雨夜来客', ratio: '9:16', target_duration: 45, stage: 'script_review',
-  }), /雨夜来客/);
+  }).title, '雨夜来客');
 }
 
 async function testProjectRoutesAndPlanningFlow() {
   const calls = [];
+  const planningCosts = [];
+  const planningProgress = [];
   const api = {
     json(path, options) {
       calls.push({ path, options });
-      if (path === '/api/gen/copy') return Promise.resolve({ job_id: 42 });
+      if (path === '/api/gen/copy') return Promise.resolve({ job_id: 42, cost: 3 });
       if (path === '/api/gen/job/42') return Promise.resolve({
         status: 'done', result: JSON.stringify({ mode: 'short_drama', plan: { title: '雨夜来客' } }),
       });
@@ -245,9 +247,14 @@ async function testProjectRoutesAndPlanningFlow() {
   const applied = await client.generatePlan({
     id: 'project-1', revision: 7, synopsis: '陌生女孩敲开侦探的门', target_duration: 45,
     ratio: '16:9', shot_count: 8, visual_style: '电影写实', target_platform: '抖音',
+  }, {
+    onCost(cost) { planningCosts.push(cost); },
+    onProgress(progress) { planningProgress.push(progress); },
   });
 
   assert.deepEqual(applied, { id: 'project-1', revision: 8, spent_points: 3 });
+  assert.deepEqual(planningCosts, [3], 'server-returned cost is exposed before plan application');
+  assert.ok(planningProgress.some((progress) => progress.status === 'done'), 'poll status reaches the workspace');
   assert.deepEqual(calls, [
     { path: '/api/gen/short-drama/projects', options: undefined },
     { path: '/api/gen/short-drama/project?id=project%201', options: undefined },
@@ -348,6 +355,265 @@ async function testPlanningErrorsPropagateWithoutApplying() {
   assert.equal(applyCalled, false);
 }
 
+function workspaceProject(overrides = {}) {
+  const characters = [
+    {
+      character_key: 'detective', name: '侦探', identity_text: '私家侦探', personality: '冷静',
+      source_type: 'ai_character', avatar_id: null, appearance_prompt: '年轻女侦探',
+      wardrobe_prompt: '黑色风衣', voice_key: 'calm', voice_settings: { speed: 1 }, sort_order: 0,
+    },
+    {
+      character_key: 'visitor', name: '访客', identity_text: '神秘访客', personality: '紧张',
+      source_type: 'cinematic_avatar', avatar_id: 'avatar-2', appearance_prompt: '湿透的中年人',
+      wardrobe_prompt: '灰色大衣', voice_key: null, voice_settings: {}, sort_order: 1,
+    },
+  ];
+  const dialogue = [
+    { id: 'line-1', character_key: 'visitor', text: '我只有五分钟。' },
+    { id: 'line-2', character_key: 'detective', text: '足够找到真相。' },
+  ];
+  const shots = Array.from({ length: 6 }, (_, index) => ({
+    shot_key: `shot-${index + 1}`, sort_order: index, script_version: 1, duration: 5,
+    scene_description: `雨夜办公室 ${index + 1}`, camera_description: '缓慢推近',
+    character_keys: index % 2 ? ['detective'] : ['visitor'], dialogue_line_ids: [dialogue[index % 2].id],
+    image_prompt: `cinematic rainy office ${index + 1}`, video_prompt: `slow push in ${index + 1}`,
+  }));
+  return Object.assign({
+    id: 'project-1', revision: 7, title: '雨夜来客',
+    synopsis: '陌生访客在雨夜带来一宗危险委托', ratio: '9:16',
+    target_duration: 30, shot_count: 6, visual_style: '电影写实', target_platform: '抖音',
+    point_budget: 30, spent_points: 3, estimated_points: 12, stage: 'characters_review',
+    characters,
+    script_versions: [{
+      version: 1, title: '雨夜来客', logline: '五分钟内找出真相', hook: '门外响起脚步声',
+      conflict_text: '线索即将被毁', turn_text: '访客才是目标', ending: '侦探推开暗门',
+      dialogue_lines: dialogue,
+    }],
+    shots,
+  }, overrides);
+}
+
+function testWorkspaceSourceAndRenderContract() {
+  const root = path.join(__dirname, '..');
+  const source = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-short-drama.js'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-short-drama.css'), 'utf8');
+  const app = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-app.js'), 'utf8');
+  for (const text of [
+    '项目设置', '角色确认', '剧本确认', '分镜确认', '生成短剧策划（3点）',
+    '确认角色并继续', '确认剧本并继续', '确认分镜',
+    '项目已在其他页面更新，请刷新后重试',
+  ]) assert.ok(source.includes(text), `workspace source must include ${text}`);
+  for (const endpoint of [
+    '/api/gen/short-drama/project', '/api/gen/short-drama/confirm', '/api/gen/copy',
+    '/api/gen/short-drama/apply-plan',
+  ]) assert.ok(source.includes(endpoint), `workspace client must use ${endpoint}`);
+  assert.ok(css.includes('.nc-short-drama-workspace'));
+  assert.ok(css.includes('.nc-short-drama-character-rail'));
+  assert.ok(css.includes('.nc-short-drama-editor'));
+  assert.ok(css.includes('.nc-short-drama-inspector'));
+  assert.match(app, /current\.params\.project_id!==projectId[\s\S]*?return/,
+    'stale workspace callbacks must not overwrite a relinked scoped node');
+
+  const project = workspaceProject({ stage: 'storyboard_review' });
+  const html = shortDrama.renderWorkspace(project, { activeStage: 'storyboard_review', canEdit: true });
+  assert.ok(html.includes('nc-short-drama-workspace'));
+  assert.equal((html.match(/class="nc-short-drama-shot-card"/g) || []).length, 6);
+  for (const shot of project.shots) {
+    const marker = `data-shot-key="${shot.shot_key}"`;
+    const start = html.indexOf(marker);
+    assert.notEqual(start, -1);
+    const end = html.indexOf('class="nc-short-drama-shot-card"', start + marker.length);
+    const card = html.slice(start, end < 0 ? html.length : end);
+    assert.match(card, /data-field="duration"/);
+    assert.ok(card.includes('角色'));
+    assert.ok(card.includes('台词摘要'));
+    assert.ok(card.includes('画面提示词'));
+    assert.ok(card.includes('视频提示词'));
+    assert.match(card, /(?:5|10)秒/);
+  }
+  assert.match(shortDrama.renderWorkspace(workspaceProject({ stage: 'stills_review' }), {
+    activeStage: 'stills_review', canEdit: true,
+  }), /已完成第一阶段[\s\S]*第二阶段素材制作/);
+}
+
+function testWorkspacePureStateAndPayloadHelpers() {
+  const project = workspaceProject();
+  assert.equal(shortDrama.isStageEnabled(project, 'settings'), true);
+  assert.equal(shortDrama.isStageEnabled(project, 'characters_review'), true);
+  assert.equal(shortDrama.isStageEnabled(project, 'script_review'), false);
+  assert.equal(shortDrama.isStageEditable(project, 'characters_review', true), true);
+  assert.equal(shortDrama.isStageEditable(project, 'characters_review', false), false);
+  assert.equal(shortDrama.isStageEditable(workspaceProject({ stage: 'script_review' }), 'characters_review', true), false);
+
+  const placeholder = workspaceProject({ stage: 'draft', synopsis: shortDrama.PLACEHOLDER_SYNOPSIS });
+  assert.equal(shortDrama.canGeneratePlan(placeholder, true), false);
+  assert.equal(shortDrama.canGeneratePlan(workspaceProject({ stage: 'draft', synopsis: '太短' }), true), false);
+  assert.equal(shortDrama.canGeneratePlan(workspaceProject({ stage: 'draft' }), true), true);
+  assert.equal(shortDrama.canGeneratePlan(workspaceProject({ stage: 'characters_review' }), true), false);
+
+  assert.deepEqual(shortDrama.makeSettingsPatch(project), {
+    title: project.title, synopsis: project.synopsis, ratio: '9:16', target_duration: 30,
+    shot_count: 6, visual_style: project.visual_style, target_platform: project.target_platform,
+    point_budget: 30,
+  });
+  assert.deepEqual(shortDrama.makeCharactersPatch(project.characters), {
+    characters: project.characters.map((character) => ({
+      character_key: character.character_key, name: character.name, identity_text: character.identity_text,
+      personality: character.personality, source_type: character.source_type, avatar_id: character.avatar_id,
+      appearance_prompt: character.appearance_prompt, wardrobe_prompt: character.wardrobe_prompt,
+      voice_key: character.voice_key, voice_settings: character.voice_settings,
+    })),
+  });
+  assert.deepEqual(shortDrama.makeScriptPatch(project.script_versions[0]).script.dialogue_lines,
+    project.script_versions[0].dialogue_lines);
+  assert.deepEqual(shortDrama.makeShotsPatch(project.shots).shots[0], {
+    shot_key: 'shot-1', duration: 5, scene_description: '雨夜办公室 1', camera_description: '缓慢推近',
+    character_keys: ['visitor'], dialogue_line_ids: ['line-1'],
+    image_prompt: 'cinematic rainy office 1', video_prompt: 'slow push in 1',
+  });
+  assert.deepEqual(shortDrama.validateShots(project.shots, project), []);
+  assert.match(shortDrama.validateShots(project.shots.slice(0, 5), project).join(' '), /6–10/);
+  assert.match(shortDrama.validateShots(project.shots.map((shot, index) => Object.assign({}, shot,
+    index === 0 ? { image_prompt: '' } : {})), project).join(' '), /画面提示词/);
+}
+
+async function testWorkspaceSavesUseExactRevisionedBodiesAndSummaries() {
+  let project = workspaceProject();
+  const calls = [];
+  const summaries = [];
+  const client = {
+    get(id) { calls.push(['get', id]); return Promise.resolve(project); },
+    update(id, revision, patch) {
+      calls.push(['update', id, revision, patch]);
+      project = Object.assign({}, project, patch, { revision: revision + 1 });
+      if (patch.script) project.script_versions = project.script_versions.concat([Object.assign({ version: 2 }, patch.script)]);
+      return Promise.resolve(project);
+    },
+    confirm(id, revision, stage) {
+      calls.push(['confirm', id, revision, stage]);
+      const nextStage = {
+        characters_review: 'script_review', script_review: 'storyboard_review', storyboard_review: 'stills_review',
+      }[stage];
+      project = Object.assign({}, project, { revision: revision + 1, stage: nextStage });
+      return Promise.resolve(project);
+    },
+    generatePlan() { throw new Error('paid planning must not run'); },
+  };
+  const workspace = shortDrama.createWorkspace({
+    projectId: project.id, client, document: null, canEdit: true,
+    onChange(summary) { summaries.push(summary); },
+  });
+  await workspace.ready;
+  const settings = Object.assign({}, project, { title: '新标题' });
+  await workspace.saveSettings(settings);
+  await workspace.saveCharacters(project.characters);
+  const beforeScript = workspace.getProject();
+  await workspace.confirm('characters_review');
+  await workspace.saveScript(beforeScript.script_versions[0]);
+  await workspace.confirm('script_review');
+  await workspace.saveShots(project.shots);
+
+  assert.deepEqual(calls.slice(0, 7), [
+    ['get', 'project-1'],
+    ['update', 'project-1', 7, shortDrama.makeSettingsPatch(settings)],
+    ['update', 'project-1', 8, shortDrama.makeCharactersPatch(project.characters)],
+    ['confirm', 'project-1', 9, 'characters_review'],
+    ['update', 'project-1', 10, shortDrama.makeScriptPatch(beforeScript.script_versions[0])],
+    ['confirm', 'project-1', 11, 'script_review'],
+    ['update', 'project-1', 12, shortDrama.makeShotsPatch(project.shots)],
+  ]);
+  assert.equal(workspace.getProject().script_versions.length, 2, 'script save preserves prior versions');
+  assert.equal(summaries.length, 6);
+  assert.deepEqual(summaries.at(-1), shortDrama.summarizeProject(workspace.getProject()));
+  assert.equal(typeof summaries.at(-1), 'object');
+  workspace.destroy();
+}
+
+async function testWorkspaceOrderConflictReadonlyAndPlanning() {
+  let project = workspaceProject();
+  let updates = 0;
+  let confirms = 0;
+  let planningCalls = 0;
+  let resolvePlan;
+  let allowPaid = false;
+  const confirmMessages = [];
+  const client = {
+    get() { return Promise.resolve(project); },
+    update(id, revision, patch) {
+      updates += 1;
+      if (patch.title === '冲突') {
+        const error = new Error('stale'); error.status = 409; error.code = 'revision_conflict';
+        return Promise.reject(error);
+      }
+      project = Object.assign({}, project, patch, { revision: revision + 1 });
+      return Promise.resolve(project);
+    },
+    confirm(id, revision, stage) {
+      confirms += 1;
+      project = Object.assign({}, project, { revision: revision + 1, stage: 'script_review' });
+      return Promise.resolve(project);
+    },
+    generatePlan(received) {
+      planningCalls += 1;
+      assert.equal(received.synopsis, project.synopsis);
+      return new Promise((resolve) => { resolvePlan = resolve; });
+    },
+  };
+  const workspace = shortDrama.createWorkspace({
+    projectId: project.id, client, document: null, canEdit: true,
+    confirm(message) { confirmMessages.push(message); return allowPaid; },
+  });
+  await workspace.ready;
+  await assert.rejects(workspace.confirm('script_review'), /current stage|order/i);
+  assert.equal(confirms, 0, 'confirmation cannot skip the current stage');
+  await assert.rejects(workspace.saveSettings(Object.assign({}, project, { title: '冲突' })), /stale/);
+  assert.equal(workspace.getState().error, '项目已在其他页面更新，请刷新后重试');
+  assert.equal(workspace.getState().stale, true);
+
+  const readonly = shortDrama.createWorkspace({ projectId: project.id, client, document: null, canEdit: false });
+  await readonly.ready;
+  await assert.rejects(readonly.saveCharacters(project.characters), /read.only/i);
+  assert.equal(updates, 1, 'read-only workspace does not submit an update');
+  assert.match(readonly.render(), /data-readonly="true"/);
+
+  project = workspaceProject({ stage: 'draft' });
+  const planning = shortDrama.createWorkspace({
+    projectId: project.id, client, document: null, canEdit: true,
+    confirm(message) { confirmMessages.push(message); return allowPaid; },
+  });
+  await planning.ready;
+  assert.equal(await planning.generatePlan(), null);
+  assert.equal(planningCalls, 0, 'cancelling the 3-point confirmation submits nothing');
+  allowPaid = true;
+  const pending = planning.generatePlan();
+  assert.equal(planningCalls, 1);
+  assert.equal(planning.getState().planning.running, true);
+  assert.ok(planning.getState().planning.percent > 0);
+  assert.match(planning.render(), /正在生成策划/);
+  project = workspaceProject({ revision: 9, spent_points: 6 });
+  resolvePlan(project);
+  await pending;
+  assert.equal(planning.getState().planning.running, false);
+  assert.equal(planning.getState().planning.percent, 100);
+  assert.ok(confirmMessages.some((message) => message.includes('3') && message.includes('点')));
+
+  const placeholder = shortDrama.createWorkspace({
+    projectId: 'placeholder', document: null, canEdit: true, confirm: () => true,
+    client: {
+      get() { return Promise.resolve(workspaceProject({ id: 'placeholder', stage: 'draft', synopsis: shortDrama.PLACEHOLDER_SYNOPSIS })); },
+      update(id, revision, patch) { return Promise.resolve(workspaceProject(Object.assign({ id, revision: revision + 1, stage: 'draft' }, patch))); },
+      generatePlan() { planningCalls += 100; return Promise.resolve({}); }, confirm() { return Promise.resolve({}); },
+    },
+  });
+  await placeholder.ready;
+  await assert.rejects(placeholder.generatePlan(), /synopsis|placeholder/i);
+  assert.equal(placeholder.canGeneratePlan(), false);
+  await placeholder.saveSettings(Object.assign({}, placeholder.getProject(), {
+    synopsis: '用户已保存的全新故事梗概内容',
+  }));
+  assert.equal(placeholder.canGeneratePlan(), true, 'a replacement synopsis unlocks planning only after save');
+}
+
 async function main() {
   testCanvasIntegration();
   testNodePersistenceHelpers();
@@ -359,6 +625,10 @@ async function main() {
   await testPlanningErrorsPropagateWithoutApplying();
   await testTerminalJobFailureDoesNotApplyPlan();
   testMissingPollFailsClearly();
+  testWorkspaceSourceAndRenderContract();
+  testWorkspacePureStateAndPayloadHelpers();
+  await testWorkspaceSavesUseExactRevisionedBodiesAndSummaries();
+  await testWorkspaceOrderConflictReadonlyAndPlanning();
   const workspace = shortDrama.createWorkspace({
     projectId: 'project-1', apiClient: { json() {} }, poll() { return Promise.resolve({}); },
   });
