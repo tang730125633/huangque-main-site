@@ -739,6 +739,27 @@ def _refund_once(job_id, username, cost, transaction_key=""):
         _domains()[1].refund_points(u, c, "job#%d" % job_id, transaction_key=transaction_key), True)[1])
 
 
+def _fail_job_and_schedule_refund(job_id, error, *, from_states=("running",),
+                                  username=None, cost=None):
+    """Fail one job while preserving the single durable owner of its refund retry."""
+    linked = _short_drama_domain().short_drama_production.fail_linked_job(
+        jdb, job_id, error, from_states=from_states,
+    )
+    if linked is not None:
+        return bool(linked["claimed"])
+    claimed = _set_terminal(job_id, "error", error=error, from_states=from_states)
+    if claimed:
+        if username is None or cost is None:
+            with closing(jdb()) as conn:
+                row = conn.execute(
+                    "SELECT username,cost FROM jobs WHERE id=?", (job_id,),
+                ).fetchone()
+            username = row["username"] if row else username
+            cost = row["cost"] if row else cost
+        _refund_once(job_id, username, cost)
+    return claimed
+
+
 def _pick_job_queue(kind, mode=None):
     # kind缺省(旧调用/测试)保守走慢队列；生图(慢90~450s)走生图池；秒级快任务(音频/文案/采集/名单)走快队列；
     # video(口播 text/audio)走口播池；tryon/xiaole_video/sora_video 走慢池。
@@ -855,10 +876,9 @@ def _global_running_breakdown_count():   # 全局运行中的爆款拆解数（�
     return int(row["n"] if row else 0)
 
 def _reject_pending_job(job_id, username, cost, reason):
-    claimed = _set_terminal(job_id, "error", error=reason, from_states=("pending",))
-    if claimed:
-        _refund_once(job_id, username, cost)
-    return claimed
+    return _fail_job_and_schedule_refund(
+        job_id, reason, from_states=("pending",), username=username, cost=cost,
+    )
 
 def _job_worker_loop(q):
     global _inflight
@@ -1097,10 +1117,12 @@ def run_job(job_id):
                 return
         # 生成失败：CAS 抢 error 终态；抢到才记失败资产。退点走幂等(reaper 若已退则跳过)
         # from_states 含 pending：抢 running 那句自己抛异常时任务还停在 pending，只认 running 会不退点
-        claimed = _set_terminal(job_id, "error", error=str(e), from_states=("pending", "running"))
+        claimed = _fail_job_and_schedule_refund(
+            job_id, str(e), from_states=("pending", "running"),
+            username=username, cost=cost,
+        )
         if claimed:
             _mark_video_asset_failed(job_id, kind, e)
-        _refund_once(job_id, username, cost)  # 幂等：最多退一次
     finally:
         if stop_heartbeat:
             stop_heartbeat()   # ⚠️ 必须停 —— 否则每跑一个任务泄漏一个线程，而且它会一直把已终态的任务刷成「活着」
@@ -1138,8 +1160,9 @@ def reaper():
                     except Exception:
                         continue  # 恢复库读不到时也不能把付费任务误判失败。
                 # CAS 抢 error 终态；抢到(说明 worker 尚未写 done)才退点，退点本身再幂等一层
-                if _set_terminal(r["id"], "error", error="生成超时自动结束，退款处理中"):
-                    _refund_once(r["id"], r["username"], r["cost"])
+                if _fail_job_and_schedule_refund(
+                        r["id"], "生成超时自动结束，退款处理中",
+                        username=r["username"], cost=r["cost"]):
                     _mark_video_asset_failed(r["id"], r["kind"], "生成超时自动结束，退款处理中")
         except Exception:
             pass
@@ -1154,8 +1177,11 @@ def reclaim_orphaned_running():
         jdb=jdb,
         service_owner=SERVICE_OWNER,
         domains=_domains,
-        set_terminal=_set_terminal,
-        refund_once=_refund_once,
+        set_terminal=lambda job_id, status, **kwargs: _fail_job_and_schedule_refund(
+            job_id, kwargs.get("error") or "服务重启中断，退款处理中，请重新提交",
+            from_states=("running",),
+        ) if status == "error" else _set_terminal(job_id, status, **kwargs),
+        refund_once=lambda *_args, **_kwargs: None,
         mark_video_asset_failed=_mark_video_asset_failed,
         requeue_job=_requeue_running_job,
     )
@@ -1447,14 +1473,19 @@ class H(BaseHTTPRequestHandler):
                 if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "video", "tryon", "xiaole_video", "sora_video", "cinematic"} else ""
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
             except miniprogram_security.ContentRejected as e:
-                return self._send(400, {"detail": str(e), "code": "content_rejected"})
+                terminal = is_still_route and bool(locals().get("idem_key"))
+                return self._send(400, {"detail": str(e), "code": "content_rejected",
+                                        **({"operation_terminal": True} if terminal else {})})
             except miniprogram_security.SecurityUnavailable as e:
                 return self._send(503, {"detail": str(e), "code": "content_security_unavailable", "retry_after_ms": 5000})
             except (ValueError, LookupError, PermissionError,
                     _short_drama_domain().RevisionConflict) as e:
                 if still_idem_started:
                     _idempotency_abort(user["username"], p, idem_key)
-                _short_drama_domain()._http_error(self, e)
+                _short_drama_domain()._http_error(
+                    self, e,
+                    operation_terminal=is_still_route and bool(locals().get("idem_key")),
+                )
                 return
             # 正在停机（部署中）→ 不收新活。⚠️ 必须在【扣点之前】。
             # 否则用户被扣了点、任务入了队，进程下一秒就退了 —— 又是一条「服务重启中断」。
@@ -1477,7 +1508,7 @@ class H(BaseHTTPRequestHandler):
                     if recovered: return self._send(200, recovered)
                 if is_still_route and not still_attempt:
                     try: prepared = _short_drama_domain().short_drama_production.prepare_still_submission(jdb, user["username"], request_body, require_quote=True, idempotency_key=idem_key, access=still_access); body = prepared["image_payload"]
-                    except (LookupError, PermissionError, _short_drama_domain().RevisionConflict, _short_drama_domain().PointBudgetExceeded, ValueError) as e: _idempotency_abort(user["username"], p, idem_key); _short_drama_domain()._http_error(self, e); return
+                    except (LookupError, PermissionError, _short_drama_domain().RevisionConflict, _short_drama_domain().PointBudgetExceeded, ValueError) as e: _idempotency_abort(user["username"], p, idem_key); _short_drama_domain()._http_error(self, e, operation_terminal=True); return
                 if is_still_route and still_attempt:
                     if still_attempt["state"] in {"refund_pending", "refunded"}:
                         still_attempt = _short_drama_domain().short_drama_production.reconcile_attempt_refund(jdb, points_domain, still_attempt)
@@ -1524,17 +1555,19 @@ class H(BaseHTTPRequestHandler):
                 if is_still_route and not still_attempt:
                     try: cost = int(prepared["quoted_cost"]); _short_drama_domain().short_drama_production.check_production_budget(jdb, user["username"], prepared["project"]["id"], cost, still_access)
                     except (LookupError, PermissionError, _short_drama_domain().PointBudgetExceeded, ValueError) as e:
-                        _idempotency_abort(user["username"], p, idem_key); _short_drama_domain()._http_error(self, e); return
+                        _idempotency_abort(user["username"], p, idem_key); _short_drama_domain()._http_error(self, e, operation_terminal=True); return
                 limit_hit = None if still_attempt else _user_video_submit_limit(kind, body, user["username"], cost)
                 if limit_hit:
                     _idempotency_abort(user["username"], p, idem_key)
+                    if is_still_route: limit_hit["operation_terminal"] = True
                     return self._send(429, limit_hit)
                 active_jobs = 0 if still_attempt else _user_active_job_count(user["username"])
                 if active_jobs >= MAX_USER_ACTIVE_JOBS:
                     _idempotency_abort(user["username"], p, idem_key)
                     return self._send(429, {"detail": "您有 %d 个任务正在排队/生成，完成后再提交" % active_jobs,
                         "code": "active_job_cap", "active_jobs": active_jobs, "max_active_jobs": MAX_USER_ACTIVE_JOBS,
-                        "retry_after_ms": 4000, "need": cost})
+                        "retry_after_ms": 4000, "need": cost,
+                        **({"operation_terminal": True} if is_still_route else {})})
                 if is_still_route and not still_attempt:
                     try:
                         still_attempt = _short_drama_domain().short_drama_production.accept_charge_attempt(

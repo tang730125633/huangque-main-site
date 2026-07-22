@@ -1168,13 +1168,13 @@ async function testDurableTerminalSubmitFailureClearsPersistedAttempt() {
     setItem(key, value) { values.set(key, value); },
     removeItem(key) { values.delete(key); },
   };
-  let submits = 0;
+  let submits = 0, quotes = 0;
   const workspace = production.createWorkspace({
     projectId: 'project/one', document: null, storage, confirm: () => true,
     idempotencyKey: () => 'terminal-single-key', pollIntervalMs: 0,
     client: { json(path) {
       if (path.startsWith('/api/gen/short-drama/production?')) return sampleState();
-      if (path === '/api/gen/short-drama/asset-quote') return { cost: 7, quote_token: 'terminal-quote' };
+      if (path === '/api/gen/short-drama/asset-quote') { quotes += 1; return { cost: 7, quote_token: 'terminal-quote-'+quotes }; }
       if (path === '/api/gen/short-drama/generate-stills') {
         submits += 1;
         const error = new Error('durable create failure');
@@ -1188,6 +1188,9 @@ async function testDurableTerminalSubmitFailureClearsPersistedAttempt() {
   await assert.rejects(workspace.generateCurrent(), /durable create failure/);
   assert.equal(submits, 1);
   assert.equal(values.size, 0, 'durable terminal response releases the pending operation');
+  await assert.rejects(workspace.generateCurrent(), /durable create failure/);
+  assert.equal(quotes, 2, 'a fresh quote is allowed only after explicit terminal evidence');
+  assert.equal(submits, 2);
   workspace.destroy();
 }
 
@@ -1301,6 +1304,53 @@ async function testMalformedSuccessAndRefundPendingStayOnSamePersistedAttempt() 
   workspace.destroy();
 }
 
+async function testFailedRefundPendingJobStaysPersistedUntilRefundSettles() {
+  const values = new Map();
+  const storage = {
+    getItem(key) { return values.get(key) || null; },
+    setItem(key, value) { values.set(key, value); },
+    removeItem(key) { values.delete(key); },
+  };
+  const state = sampleState();
+  const storageKey = 'hq.short-drama.still.pending:'+state.project_id;
+  values.set(storageKey, JSON.stringify({
+    projectId: state.project_id,
+    body: { project_id: state.project_id, revision: state.revision, shot_id: 'shot-2',
+      prompt: 'same operation', mode: 'retry', count: 2, quote_token: 'persisted-quote' },
+    key: 'refund-pending-key', jobId: 777,
+  }));
+  const pending = clone(state);
+  pending.shots[0].still.job = { job_id: 777, status: 'failed', error: 'provider failed',
+    refunded: false, refund_pending: true };
+  const settled = clone(pending);
+  settled.shots[0].still.job.refunded = true;
+  settled.shots[0].still.job.refund_pending = false;
+  let gets = 0, release;
+  const waitForSettlement = new Promise((resolve) => { release = resolve; });
+  const workspace = production.createWorkspace({
+    projectId: state.project_id, document: null, storage, pollIntervalMs: 0,
+    confirm: () => true,
+    client: { json(path) {
+      if (path.startsWith('/api/gen/short-drama/production?')) {
+        gets += 1;
+        if (gets === 1) return clone(pending);
+        if (gets === 2) return waitForSettlement.then(() => clone(settled));
+        return clone(settled);
+      }
+      throw new Error(`unexpected route ${path}`);
+    } },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(gets, 2, 'known failed+refund_pending job keeps polling the same operation');
+  assert.equal(values.size, 1, 'refund_pending failure must retain its persisted body/key');
+  release();
+  await workspace.ready;
+  assert.equal(values.size, 0, 'confirmed refunded terminal job releases the persisted operation');
+  workspace.selectShot('shot-2');
+  assert.match(workspace.render(), /已退款/);
+  workspace.destroy();
+}
+
 async function main() {
   testNormalizationAndRenderer();
   testResponsiveCssContract();
@@ -1326,6 +1376,7 @@ async function main() {
   await testDurableTerminalSubmitFailureClearsPersistedAttempt();
   await testPendingSingleClearsOnlyForExactDurableOperationEvidence();
   await testMalformedSuccessAndRefundPendingStayOnSamePersistedAttempt();
+  await testFailedRefundPendingJobStaysPersistedUntilRefundSettles();
   console.log('canvas short drama production: pass');
 }
 

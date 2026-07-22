@@ -58,7 +58,9 @@ class ContentDomainTests(unittest.TestCase):
         #   任务库基础设施，+5 行，门禁上调到 1715。
         # 短剧关键帧的跨 Auth/content 崩溃恢复仍只在 core 保留提交锁、入队与 HTTP
         # 编排；持久状态机、quote/关联/补偿细节都在 short_drama_production.py。
-        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1885)
+        # attempt-backed 与通用 job 的失败分流也只保留一个薄编排 helper；原子状态迁移和
+        # still-refund 所有权仍全部位于 short_drama_production.py。
+        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1940)
 
     def test_openai_base_with_v1_is_not_duplicated(self):
         core = importlib.import_module("content_domains.core")

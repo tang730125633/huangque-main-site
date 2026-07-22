@@ -490,6 +490,75 @@ def mark_linked_attempt_failed(db_factory, username, idempotency_key, response):
     return get_charge_attempt(db_factory, username, idempotency_key)
 
 
+def transition_linked_job_refund_pending(conn, job_id, error, *,
+                                         from_states=("pending", "running", "done"),
+                                         response=None):
+    """Claim an attempt-backed job failure and durably hand refund ownership to its attempt.
+
+    The caller owns the transaction.  No Auth call is made here: the attempt sweeper is
+    deliberately the only component allowed to replay ``still-refund:*``.
+    """
+    conn.row_factory = sqlite3.Row
+    if not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='short_drama_charge_attempts'"
+    ).fetchone():
+        return None
+    attempt = conn.execute(
+        "SELECT username,idempotency_key,state FROM short_drama_charge_attempts "
+        "WHERE job_id=? AND state IN ('linked','refund_pending')",
+        (int(job_id),),
+    ).fetchone()
+    if not attempt:
+        return None
+    placeholders = ",".join("?" for _ in from_states)
+    now = int(time.time())
+    message = str(error or "still generation failed")[:300]
+    claimed = conn.execute(
+        "UPDATE jobs SET status='error',error=?,"
+        "refunded=CASE WHEN COALESCE(cost,0)>0 THEN 2 ELSE refunded END,updated_at=? "
+        "WHERE id=? AND status IN (%s)" % placeholders,
+        (message, now, int(job_id), *tuple(from_states)),
+    ).rowcount == 1
+    if not claimed:
+        return {"claimed": False, "attempt_owned": True}
+    terminal = response or {
+        "detail": message, "code": "still_generation_failed",
+        "operation_terminal": True, "_http_status": 500,
+    }
+    conn.execute(
+        "UPDATE short_drama_charge_attempts SET state='refund_pending',terminal_json=?,updated_at=? "
+        "WHERE job_id=? AND state IN ('linked','refund_pending')",
+        (json.dumps(terminal, ensure_ascii=False), now, int(job_id)),
+    )
+    conn.execute(
+        "UPDATE short_drama_production_jobs SET status='failed',error=?,"
+        "refunded=CASE WHEN quoted_cost>0 THEN 2 ELSE refunded END,updated_at=? WHERE job_id=?",
+        (message, now, int(job_id)),
+    )
+    return {"claimed": claimed, "attempt_owned": True}
+
+
+def fail_linked_job(db_factory, job_id, error, *, from_states=("pending", "running", "done"),
+                    response=None):
+    """Atomically persist terminal job state and attempt-owned refund intent."""
+    conn = db_factory()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        result = transition_linked_job_refund_pending(
+            conn, job_id, error, from_states=from_states, response=response,
+        )
+        if result is None:
+            conn.rollback()
+            return None
+        conn.commit()
+        return result
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def mark_attempt_refunded(db_factory, username, idempotency_key):
     conn = db_factory()
     try:
@@ -951,10 +1020,14 @@ def reconcile_jobs(conn, username, project_id):
             conn.execute("RELEASE " + savepoint)
             message = str(error)[:300]
             if has_job_error and has_job_refunded:
-                conn.execute(
-                    "UPDATE jobs SET status='error', error=?, refunded=CASE WHEN cost>0 AND refunded=0 THEN 2 ELSE refunded END WHERE id=?",
-                    (message, job_id),
+                attempt_failure = transition_linked_job_refund_pending(
+                    conn, job_id, message, from_states=("done",),
                 )
+                if attempt_failure is None:
+                    conn.execute(
+                        "UPDATE jobs SET status='error', error=?, refunded=CASE WHEN cost>0 AND refunded=0 THEN 2 ELSE refunded END WHERE id=?",
+                        (message, job_id),
+                    )
                 refund_state = 2 if int(cost or 0) > 0 else 0
             else:
                 refund_state = 0

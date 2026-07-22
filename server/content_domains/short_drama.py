@@ -1522,30 +1522,33 @@ _HTTP_ROUTES = {
 }
 
 
-def _http_error(handler, error):
+def _http_error(handler, error, *, operation_terminal=False):
+    terminal = {"operation_terminal": True} if operation_terminal else {}
     if isinstance(error, ProjectLimitExceeded):
         handler._send(429, {
             "detail": str(error)[:220],
             "code": "short_drama_project_cap",
             "max_projects": error.max_projects,
+            **terminal,
         })
     elif isinstance(error, ProjectHasUnappliedJobs):
         handler._send(409, {
             "detail": str(error)[:220],
             "code": "short_drama_unapplied_paid_job",
+            **terminal,
         })
     elif isinstance(error, LookupError):
-        handler._send(404, {"detail": str(error)[:220]})
+        handler._send(404, {"detail": str(error)[:220], **terminal})
     elif isinstance(error, RevisionConflict):
-        handler._send(409, {"detail": str(error)[:220], "code": "revision_conflict"})
+        handler._send(409, {"detail": str(error)[:220], "code": "revision_conflict", **terminal})
     elif isinstance(error, AppliedJobConflict):
-        handler._send(409, {"detail": str(error)[:220], "code": "job_already_applied"})
+        handler._send(409, {"detail": str(error)[:220], "code": "job_already_applied", **terminal})
     elif isinstance(error, PointBudgetExceeded):
-        handler._send(400, {"detail": str(error)[:220], "code": "point_budget_exceeded"})
+        handler._send(400, {"detail": str(error)[:220], "code": "point_budget_exceeded", **terminal})
     elif isinstance(error, PermissionError):
-        handler._send(403, {"detail": str(error)[:220], "code": "forbidden"})
+        handler._send(403, {"detail": str(error)[:220], "code": "forbidden", **terminal})
     else:
-        handler._send(400, {"detail": str(error)[:220]})
+        handler._send(400, {"detail": str(error)[:220], **terminal})
 
 
 def _request_object(handler):

@@ -71,7 +71,8 @@
       quoted_cost:Math.max(0,number(job.quoted_cost,0)),
       error:text(job.error),
       refunded:!!job.refunded,
-      refund_pending:!!job.refund_pending
+      refund_pending:!!job.refund_pending,
+      operation_terminal:job.operation_terminal===true
     };
   }
 
@@ -367,7 +368,8 @@
         if(!Object.prototype.hasOwnProperty.call(ui.prompts,shot.id)) ui.prompts[shot.id]=shot.image_prompt;
         var guardedJob=submittedGuards[shot.id];
         var terminalFailed=shot.still.job&&shot.still.job.status==='failed'&&
-          guardedJob!==true&&shot.still.job.job_id===guardedJob;
+          guardedJob!==true&&shot.still.job.job_id===guardedJob&&
+          (shot.still.job.refunded||shot.still.job.operation_terminal);
         var exactVersion=shot.still.versions.some(function(version){
           return guardedJob!==true&&version.job_id===guardedJob;
         });
@@ -529,6 +531,8 @@
               }
               var matchingJob=job&&target.jobId!=null&&job.job_id===target.jobId;
               if(matchingJob&&job.status==='failed'){
+                if(job.refund_pending&&!job.refunded) return true;
+                if(!job.refunded&&!job.operation_terminal) return true;
                 target.done=true;target.error=new Error(job.error||'关键帧生成失败');target.error.durable=true;return false;
               }
               if(matchingJob||target.observed){
