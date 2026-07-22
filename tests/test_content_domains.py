@@ -1,12 +1,17 @@
 import importlib
 import base64
+import io
+import json
+import os
 import queue
 import sqlite3
 import sys
 import tempfile
 import unittest
+import urllib.error
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 
 class ContentDomainTests(unittest.TestCase):
@@ -30,6 +35,155 @@ class ContentDomainTests(unittest.TestCase):
         for name in ("image", "copy", "collect", "leads", "audio", "video", "xiaole_video", "sora_video", "breakdown"):
             self.assertIn(name, registry.HANDLERS)
             self.assertTrue(callable(registry.HANDLERS[name]))
+
+    def test_copy_provider_uses_dedicated_config_and_normalizes_v1_url(self):
+        text = importlib.import_module("content_domains.text")
+        self.assertTrue(hasattr(text, "COPY_API_BASE"), "copy provider needs an independent base URL")
+        self.assertTrue(hasattr(text, "COPY_API_KEY"), "copy provider needs an independent API key")
+        requests = []
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps({"choices": [{"message": {"content": "OK"}}]}).encode()
+
+        def open_request(request, timeout=0):
+            requests.append((request, timeout))
+            return Response()
+
+        for base in ("https://copy.example", "https://copy.example/v1", "https://copy.example/v1/"):
+            with self.subTest(base=base), \
+                    patch.object(text, "COPY_API_BASE", base), \
+                    patch.object(text, "COPY_API_KEY", "copy-secret"), \
+                    patch.object(text, "COPY_MODEL", "copy-model"), \
+                    patch.object(text.urllib.request, "urlopen", side_effect=open_request):
+                self.assertEqual("OK", text._chat("system", "user", 0))
+                request, timeout = requests.pop()
+                self.assertEqual("https://copy.example/v1/chat/completions", request.full_url)
+                self.assertEqual("Bearer copy-secret", request.get_header("Authorization"))
+                self.assertEqual(300, timeout)
+                body = json.loads(request.data)
+                self.assertEqual("copy-model", body["model"])
+
+    def test_copy_provider_requires_atomic_dedicated_config(self):
+        core = importlib.import_module("content_domains.core")
+        text = importlib.import_module("content_domains.text")
+        names = ("COPY_API_BASE", "COPY_API_KEY")
+        saved_env = {name: os.environ.get(name) for name in names}
+        saved_openai = (core.OPENAI_BASE, core.OPENAI_KEY)
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"choices":[{"message":{"content":"OK"}}]}'
+
+        def configure(base, key):
+            for name, value in zip(names, (base, key)):
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            return importlib.reload(text)
+
+        try:
+            core.OPENAI_BASE = "https://openai.example/v1"
+            core.OPENAI_KEY = "openai-secret"
+
+            configure(None, None)
+            with patch.object(text.urllib.request, "urlopen", return_value=Response()) as open_request:
+                self.assertEqual("OK", text._chat("system", "user", 0))
+                request = open_request.call_args.args[0]
+                self.assertEqual("https://openai.example/v1/chat/completions", request.full_url)
+                self.assertEqual("Bearer openai-secret", request.get_header("Authorization"))
+
+            configure("https://copy.example", "copy-secret")
+            with patch.object(text.urllib.request, "urlopen", return_value=Response()) as open_request:
+                self.assertEqual("OK", text._chat("system", "user", 0))
+                request = open_request.call_args.args[0]
+                self.assertEqual("https://copy.example/v1/chat/completions", request.full_url)
+                self.assertEqual("Bearer copy-secret", request.get_header("Authorization"))
+
+            for base, key in (("https://copy.example", None), (None, "copy-secret")):
+                with self.subTest(base=base, key=bool(key)):
+                    configure(base, key)
+                    with patch.object(text.urllib.request, "urlopen", return_value=Response()) as open_request:
+                        with self.assertRaisesRegex(RuntimeError, "必须同时配置"):
+                            text._chat("system", "user", 0)
+                        open_request.assert_not_called()
+
+            configure("   ", "\t")
+            with patch.object(text.urllib.request, "urlopen", return_value=Response()) as open_request:
+                try:
+                    result = text._chat("system", "user", 0)
+                except Exception as error:
+                    self.fail("blank dedicated settings must fall back together: %s" % error)
+                self.assertEqual("OK", result)
+                request = open_request.call_args.args[0]
+                self.assertEqual("https://openai.example/v1/chat/completions", request.full_url)
+                self.assertEqual("Bearer openai-secret", request.get_header("Authorization"))
+        finally:
+            core.OPENAI_BASE, core.OPENAI_KEY = saved_openai
+            for name, value in saved_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            importlib.reload(text)
+
+    def test_copy_provider_translates_actionable_http_errors(self):
+        text = importlib.import_module("content_domains.text")
+        self.assertTrue(hasattr(text, "COPY_API_BASE"), "copy provider needs independent error handling")
+        cases = (
+            (401, "文案模型鉴权失败，请检查 COPY_API_KEY"),
+            (404, "文案模型接口或模型不存在，请检查 COPY_API_BASE 和 COPY_MODEL"),
+            (429, "文案模型请求过于频繁，请稍后重试"),
+            (500, "文案模型服务暂时不可用，请稍后重试"),
+        )
+        for status, message in cases:
+            error = urllib.error.HTTPError(
+                "https://copy.example/v1/chat/completions", status, "provider error", {},
+                io.BytesIO(b'{"error":{"message":"provider detail"}}'),
+            )
+            with self.subTest(status=status), \
+                    patch.object(text, "COPY_API_BASE", "https://copy.example"), \
+                    patch.object(text, "COPY_API_KEY", "copy-secret"), \
+                    patch.object(text.urllib.request, "urlopen", side_effect=error):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    text._chat("system", "user", 0)
+
+    def test_copy_provider_fallback_errors_name_openai_configuration(self):
+        text = importlib.import_module("content_domains.text")
+        cases = (
+            (401, "文案模型鉴权失败，请检查 OPENAI_API_KEY"),
+            (404, "文案模型接口或模型不存在，请检查 OPENAI_BASE 和 COPY_MODEL"),
+        )
+        for status, message in cases:
+            error = urllib.error.HTTPError(
+                "https://openai.example/v1/chat/completions", status, "provider error", {},
+                io.BytesIO(b'{"error":{"message":"provider detail"}}'),
+            )
+            with self.subTest(status=status), \
+                    patch.object(text, "COPY_API_BASE", ""), \
+                    patch.object(text, "COPY_API_KEY", ""), \
+                    patch.object(text, "OPENAI_BASE", "https://openai.example"), \
+                    patch.object(text, "OPENAI_KEY", "openai-secret"), \
+                    patch.object(text.urllib.request, "urlopen", side_effect=error):
+                with self.assertRaisesRegex(RuntimeError, message) as raised:
+                    text._chat("system", "user", 0)
+                self.assertNotIn("COPY_API_BASE", str(raised.exception))
+                self.assertNotIn("COPY_API_KEY", str(raised.exception))
 
     def test_core_does_not_own_domain_handlers(self):
         core = importlib.import_module("content_domains.core")
