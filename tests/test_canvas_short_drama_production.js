@@ -351,7 +351,7 @@ async function testDestroyDuringSubmissionNeverCreatesAPollTimer() {
   workspace.selectShot('shot-2');
   const pending = workspace.generateCurrent();
   pending.catch(() => {});
-  for (let index = 0; index < 6 && !resolveSubmit; index += 1) await Promise.resolve();
+  for (let index = 0; index < 20 && !resolveSubmit; index += 1) await Promise.resolve();
   assert.equal(typeof resolveSubmit, 'function', 'test reaches the in-flight submission boundary');
   workspace.destroy();
   resolveSubmit({ job_id: 101, shot_id: 'shot-2' });
@@ -380,7 +380,7 @@ async function testDestroyDuringTimedOutSubmissionNeverRetries() {
   await workspace.ready;
   const pending = workspace.generateCurrent();
   pending.catch(() => {});
-  for (let index = 0; index < 6 && !rejectSubmit; index += 1) await Promise.resolve();
+  for (let index = 0; index < 20 && !rejectSubmit; index += 1) await Promise.resolve();
   workspace.destroy();
   const timeout = new Error('request timed out'); timeout.code = 'timeout';
   rejectSubmit(timeout);
@@ -682,6 +682,209 @@ async function testMalformedJobStatusesAreNeverActive() {
   }
 }
 
+async function testBatchDestroyDuringFirstSubmitStopsLaterPaidWork() {
+  const state = batchState();
+  let resolveFirstSubmit;
+  const submittedShots = [];
+  let productionGets = 0;
+  const timers = [];
+  const workspace = production.createWorkspace({
+    projectId: state.project_id, document: null, confirm: () => true,
+    setTimeoutImpl(fn) { timers.push(fn); return timers.length; },
+    clearTimeoutImpl() {},
+    idempotencyKey(shotId) { return `destroy-key-${shotId}`; },
+    client: { json(path, options = {}) {
+      if (path.startsWith('/api/gen/short-drama/production?')) {
+        productionGets += 1; return clone(state);
+      }
+      if (path === '/api/gen/short-drama/asset-quote') return { cost: 10, count: 2, kind: 'still' };
+      if (path === '/api/gen/short-drama/generate-stills') {
+        submittedShots.push(options.body.shot_id);
+        if (options.body.shot_id === 'shot-2') {
+          return new Promise((resolve) => { resolveFirstSubmit = resolve; });
+        }
+        return { job_id: 404, shot_id: options.body.shot_id };
+      }
+      throw new Error(`unexpected route ${path}`);
+    } },
+  });
+  await workspace.ready;
+  const pending = workspace.generateBatch();
+  pending.catch(() => {});
+  for (let index = 0; index < 20 && !resolveFirstSubmit; index += 1) await Promise.resolve();
+  assert.equal(typeof resolveFirstSubmit, 'function');
+  assert.deepEqual(submittedShots, ['shot-2']);
+  workspace.destroy();
+  resolveFirstSubmit({ job_id: 202, shot_id: 'shot-2' });
+  await assert.rejects(pending, /destroyed/i);
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  assert.deepEqual(submittedShots, ['shot-2'], 'late first response cannot start the next paid shot');
+  assert.equal(productionGets, 1, 'destroyed batch never starts production polling');
+  assert.equal(timers.length, 0, 'destroyed batch leaves no polling timer');
+}
+
+async function testPartialBatchFailureRecoversSubmittedShotsBeforeRetryingEligibleWork() {
+  const initial = batchState();
+  let productionGets = 0;
+  let keyIndex = 0;
+  let confirms = 0;
+  const calls = [];
+  const client = { json(path, options = {}) {
+    calls.push({ path, options: clone(options) });
+    if (path.startsWith('/api/gen/short-drama/production?')) {
+      productionGets += 1;
+      if (productionGets === 1) return clone(initial);
+      const next = clone(initial);
+      const shotA = next.shots.find((shot) => shot.id === 'shot-2');
+      const shotB = next.shots.find((shot) => shot.id === 'shot-4');
+      if (productionGets === 2) {
+        shotA.still.job = { id: 'link-a', job_id: 202, kind: 'still', status: 'running', quoted_cost: 10 };
+      } else {
+        shotA.still.job = null;
+        shotA.still.current_version = 1;
+        shotA.still.versions = [
+          { id: 'a-done', version: 1, job_id: 202, url: '/a.png', prompt: shotA.image_prompt,
+            ratio: '9:16', cost: 10, status: 'done', created_at: 5 },
+        ];
+      }
+      if (productionGets >= 4) {
+        shotB.still.job = null;
+        shotB.still.current_version = 1;
+        shotB.still.versions = [
+          { id: 'b-done', version: 1, job_id: 304, url: '/b.png', prompt: shotB.image_prompt,
+            ratio: '9:16', cost: 20, status: 'done', created_at: 6 },
+        ];
+      }
+      return next;
+    }
+    if (path === '/api/gen/short-drama/asset-quote') {
+      return { cost: options.body.shot_id === 'shot-2' ? 10 : 20, count: 2, kind: 'still' };
+    }
+    if (path === '/api/gen/short-drama/generate-stills') {
+      const shotId = options.body.shot_id;
+      const key = options.headers['Idempotency-Key'];
+      if (shotId === 'shot-2') return { job_id: 202, shot_id: shotId };
+      if (key === 'partial-key-2-shot-4') {
+        const previous = calls.filter((call) => call.path === path &&
+          call.options.headers['Idempotency-Key'] === key).length;
+        const error = new Error(previous === 1 ? 'B timeout' : 'B final failure');
+        if (previous === 1) error.code = 'timeout';
+        throw error;
+      }
+      return { job_id: 304, shot_id: shotId };
+    }
+    throw new Error(`unexpected route ${path}`);
+  } };
+  const workspace = production.createWorkspace({
+    projectId: initial.project_id, client, document: null, pollIntervalMs: 0,
+    idempotencyKey(shotId) { keyIndex += 1; return `partial-key-${keyIndex}-${shotId}`; },
+    confirm(total, quote) {
+      confirms += 1;
+      if (confirms === 1) { assert.equal(total, 30); assert.equal(quote.shot_count, 2); }
+      else { assert.equal(total, 20); assert.deepEqual(quote.shot_ids, ['shot-4']); }
+      return true;
+    },
+  });
+  await workspace.ready;
+  await assert.rejects(workspace.generateBatch(), /B final failure/);
+  assert.equal(workspace.getState().error, 'B final failure', 'primary submit error remains visible');
+  const recoveredA = workspace.getState().shots.find((shot) => shot.id === 'shot-2');
+  assert.equal(recoveredA.still.current_version, 1, 'successful A is reconciled before the batch rejects');
+  assert.equal(productionGets, 3, 'partial failure polls A through running and terminal');
+
+  await workspace.generateBatch();
+  const quoteShots = calls.filter((call) => call.path === '/api/gen/short-drama/asset-quote')
+    .map((call) => call.options.body.shot_id);
+  const submitCalls = calls.filter((call) => call.path === '/api/gen/short-drama/generate-stills');
+  assert.deepEqual(quoteShots, ['shot-2', 'shot-4', 'shot-4'],
+    'the second batch quotes B only, never already completed A');
+  assert.equal(submitCalls.filter((call) => call.options.body.shot_id === 'shot-2').length, 1);
+  assert.deepEqual(submitCalls.filter((call) => call.options.body.shot_id === 'shot-4')
+    .map((call) => call.options.headers['Idempotency-Key']), [
+      'partial-key-2-shot-4', 'partial-key-2-shot-4', 'partial-key-3-shot-4',
+    ]);
+  assert.equal(keyIndex, 3);
+  workspace.destroy();
+}
+
+async function testPollTracksOnlyTheExactSubmittedJobId() {
+  const state = sampleState();
+  let gets = 0;
+  const workspace = production.createWorkspace({
+    projectId: state.project_id, document: null, confirm: () => true, pollIntervalMs: 0,
+    client: { json(path) {
+      if (path.startsWith('/api/gen/short-drama/production?')) {
+        gets += 1;
+        const next = clone(state);
+        const shot = next.shots[0];
+        if (gets === 2) {
+          shot.still.job = { id: 'unrelated', job_id: 400, kind: 'still', status: 'running', quoted_cost: 1 };
+        } else if (gets === 4) {
+          shot.still.job = { id: 'target', job_id: 500, kind: 'still', status: 'running', quoted_cost: 1 };
+        } else {
+          shot.still.job = null;
+        }
+        return next;
+      }
+      if (path === '/api/gen/short-drama/asset-quote') return { cost: 1, count: 2, kind: 'still' };
+      if (path === '/api/gen/short-drama/generate-stills') return { job_id: 500, shot_id: 'shot-2' };
+      throw new Error(`unexpected route ${path}`);
+    } },
+  });
+  await workspace.ready;
+  workspace.selectShot('shot-2');
+  await workspace.generateCurrent();
+  assert.equal(gets, 5,
+    'unrelated active job and its disappearance do not complete the never-observed target job');
+  workspace.destroy();
+}
+
+async function testPartialRecoveryPollFailureKeepsSubmittedGuardAndPrimaryError() {
+  const initial = batchState();
+  let gets = 0;
+  let secondConfirmShots = null;
+  const quoteShots = [];
+  const workspace = production.createWorkspace({
+    projectId: initial.project_id, document: null, pollIntervalMs: 0,
+    idempotencyKey(shotId) { return `guard-${shotId}`; },
+    confirm(_total, quote) {
+      if (quoteShots.length > 2) { secondConfirmShots = quote.shot_ids; return false; }
+      return true;
+    },
+    client: { json(path, options = {}) {
+      if (path.startsWith('/api/gen/short-drama/production?')) {
+        gets += 1;
+        if (gets === 3) throw new Error('recovery poll failed');
+        if (gets === 2) {
+          const active = clone(initial);
+          active.shots.find((shot) => shot.id === 'shot-2').still.job = {
+            id: 'active-a', job_id: 202, kind: 'still', status: 'running', quoted_cost: 10,
+          };
+          return active;
+        }
+        return clone(initial);
+      }
+      if (path === '/api/gen/short-drama/asset-quote') {
+        quoteShots.push(options.body.shot_id);
+        return { cost: options.body.shot_id === 'shot-2' ? 10 : 20, count: 2, kind: 'still' };
+      }
+      if (path === '/api/gen/short-drama/generate-stills') {
+        if (options.body.shot_id === 'shot-2') return { job_id: 202, shot_id: 'shot-2' };
+        throw new Error('primary B failure');
+      }
+      throw new Error(`unexpected route ${path}`);
+    } },
+  });
+  await workspace.ready;
+  await assert.rejects(workspace.generateBatch(), /primary B failure/);
+  assert.equal(workspace.getState().error, 'primary B failure');
+  assert.equal(gets, 4, 'failed poll is followed by one refresh attempt');
+  assert.equal(await workspace.generateBatch(), null);
+  assert.deepEqual(quoteShots, ['shot-2', 'shot-4', 'shot-4']);
+  assert.deepEqual(secondConfirmShots, ['shot-4']);
+  workspace.destroy();
+}
+
 async function main() {
   testNormalizationAndRenderer();
   testResponsiveCssContract();
@@ -694,6 +897,10 @@ async function main() {
   await testTrueBatchQuotesConfirmsSubmitsAndPollsEligibleShots();
   await testSynchronousClientThrowsAreCapturedAcrossControllerBoundaries();
   await testMalformedJobStatusesAreNeverActive();
+  await testBatchDestroyDuringFirstSubmitStopsLaterPaidWork();
+  await testPartialBatchFailureRecoversSubmittedShotsBeforeRetryingEligibleWork();
+  await testPollTracksOnlyTheExactSubmittedJobId();
+  await testPartialRecoveryPollFailureKeepsSubmittedGuardAndPrimaryError();
   console.log('canvas short drama production: pass');
 }
 

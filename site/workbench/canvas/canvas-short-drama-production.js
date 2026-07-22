@@ -211,10 +211,14 @@
 
   function allShotsLocked(state){
     return state.shots.length>0&&state.shots.every(function(shot){
-      if(!shot.still.locked||shot.still.current_version==null) return false;
-      return shot.still.versions.some(function(version){
-        return version.version===shot.still.current_version&&version.status==='done'&&version.ratio===state.ratio;
-      });
+      return shot.still.locked&&shotHasCompletedCurrent(state,shot);
+    });
+  }
+
+  function shotHasCompletedCurrent(state,shot){
+    if(!shot||shot.still.current_version==null) return false;
+    return shot.still.versions.some(function(version){
+      return version.version===shot.still.current_version&&version.status==='done'&&version.ratio===state.ratio;
     });
   }
 
@@ -226,7 +230,8 @@
     var budget=state.point_budget===0?'不限':state.point_budget+' 点';
     var confirmable=writable&&allShotsLocked(state);
     var batchable=writable&&state.shots.some(function(item){
-      return !item.still.locked&&!(item.still.job&&isActiveJobStatus(item.still.job.status));
+      return !item.still.locked&&!shotHasCompletedCurrent(state,item)&&
+        !(item.still.job&&isActiveJobStatus(item.still.job.status));
     });
     return '<aside class="nc-sdp-inspector"><header><span class="nc-sdp-kicker">关键帧生产</span><h2>生成控制台</h2></header>'+
       '<section class="nc-sdp-cost"><span>本次实时报价</span><strong>'+(state.quote==null?'待查询':quote+' 点')+'</strong><small>'+
@@ -271,11 +276,18 @@
     var pollInterval=options.pollIntervalMs==null?1500:Math.max(0,number(options.pollIntervalMs,0));
     var host=options.host||null;
     var serverState=null,destroyed=false,pollTimer=null,pollReject=null,generationPromise=null;
+    var submittedGuards=Object.create(null);
     var ui={selectedShotId:options.selectedShotId,filter:'all',prompts:{},canEdit:options.canEdit!==false,busy:true,stale:false,error:'',quote:null,lastMode:''};
 
     function ensureAlive(){ if(destroyed) throw new Error('workspace destroyed'); }
     function callJson(path,requestOptions){
-      return Promise.resolve().then(function(){ return client.json(path,requestOptions); });
+      return Promise.resolve().then(function(){
+        ensureAlive();
+        return client.json(path,requestOptions);
+      }).then(function(value){
+        ensureAlive();
+        return value;
+      });
     }
     function view(){
       var base=serverState||{project_id:options.projectId,shots:[]};
@@ -296,6 +308,10 @@
       ui.selectedShotId=normalized.selectedShotId;
       normalized.shots.forEach(function(shot){
         if(!Object.prototype.hasOwnProperty.call(ui.prompts,shot.id)) ui.prompts[shot.id]=shot.image_prompt;
+        var guardedJob=submittedGuards[shot.id];
+        var reconciled=shot.still.locked||shotHasCompletedCurrent(normalized,shot)||
+          shot.still.versions.some(function(version){ return guardedJob!==true&&version.job_id===guardedJob; });
+        if(reconciled) delete submittedGuards[shot.id];
       });
       ui.busy=!!keepBusy;ui.stale=false;ui.error='';
       safePaint();
@@ -419,14 +435,19 @@
               var shot=null;
               next.shots.forEach(function(item){ if(item.id===target.shotId) shot=item; });
               var job=shot&&shot.still.job;
-              if(job&&isActiveJobStatus(job.status)){
-                target.observed=true;target.missing=0;return true;
-              }
-              var matchingJob=job&&target.jobId!=null&&job.job_id===target.jobId;
               var matchingVersion=shot&&target.jobId!=null&&shot.still.versions.some(function(version){
                 return version.job_id===target.jobId;
               });
-              if(matchingJob||matchingVersion||target.observed){ target.done=true;return false; }
+              if(matchingVersion){ target.done=true;return false; }
+              var activeJob=job&&isActiveJobStatus(job.status);
+              var matchingActive=activeJob&&(target.jobId==null||job.job_id===target.jobId);
+              if(matchingActive){
+                target.observed=true;target.missing=0;return true;
+              }
+              if(activeJob) return true;
+              var matchingJob=job&&target.jobId!=null&&job.job_id===target.jobId;
+              if(matchingJob||target.observed){ target.done=true;return false; }
+              if(target.jobId!=null) return true;
               target.missing+=1;
               if(target.missing>=2){ target.done=true;return false; }
               return true;
@@ -447,6 +468,19 @@
       });
     }
     function pollShot(shotId,jobId){ return pollShots([{shotId:shotId,jobId:jobId}]); }
+    function clearSubmittedGuards(submitted){
+      (submitted||[]).forEach(function(target){ delete submittedGuards[target.shotId]; });
+    }
+    function recoverPartialBatch(submitted,primaryError){
+      if(!submitted.length) return Promise.reject(primaryError);
+      return pollShots(submitted).then(function(){
+        clearSubmittedGuards(submitted);
+        throw primaryError;
+      },function(){
+        if(destroyed) throw primaryError;
+        return requestState(true).catch(function(){ return null; }).then(function(){ throw primaryError; });
+      });
+    }
     function trackGeneration(action){
       generationPromise=action.then(function(result){ generationPromise=null;return result; },function(error){
         generationPromise=null;throw error;
@@ -482,16 +516,25 @@
       var eligible,bodies;
       try{
         ensureWritable();
-        eligible=view().shots.filter(function(shot){
-          return !shot.still.locked&&!(shot.still.job&&isActiveJobStatus(shot.still.job.status));
+        var normalized=view();
+        eligible=normalized.shots.filter(function(shot){
+          return !shot.still.locked&&!shotHasCompletedCurrent(normalized,shot)&&!submittedGuards[shot.id]&&
+            !(shot.still.job&&isActiveJobStatus(shot.still.job.status));
         });
         if(!eligible.length) return Promise.resolve(null);
         bodies=eligible.map(function(shot){ return stillBodyForShot(shot,'batch'); });
       }catch(error){ return Promise.reject(error); }
       ui.busy=true;ui.error='';ui.lastMode='batch';safePaint();
-      var action=Promise.all(bodies.map(function(body){
-        return callJson(QUOTE_PATH,{method:'POST',body:body});
-      })).then(function(quotes){
+      var quotes=[],quoteChain=Promise.resolve();
+      bodies.forEach(function(body){
+        quoteChain=quoteChain.then(function(){
+          ensureAlive();
+          return callJson(QUOTE_PATH,{method:'POST',body:body}).then(function(quote){
+            ensureAlive();quotes.push(quote);
+          });
+        });
+      });
+      var action=quoteChain.then(function(){
         ensureAlive();
         var total=0;
         quotes.forEach(function(quote){
@@ -516,17 +559,26 @@
           var chain=Promise.resolve(),submitted=[];
           submissions.forEach(function(item){
             chain=chain.then(function(){
+              ensureAlive();
               return submitWithTimeoutRetry(item.body,item.key).then(function(response){
-                submitted.push({
+                ensureAlive();
+                var target={
                   shotId:item.body.shot_id,
                   jobId:response&&response.job_id
-                });
+                };
+                submitted.push(target);
+                submittedGuards[target.shotId]=target.jobId==null?true:target.jobId;
               });
             });
           });
           return chain.then(function(){
             ensureAlive();
-            return pollShots(submitted);
+            return pollShots(submitted).then(function(result){
+              clearSubmittedGuards(submitted);
+              return result;
+            });
+          },function(error){
+            return recoverPartialBatch(submitted,error);
           });
         });
       }).catch(function(error){ handleError(error);throw error; });
