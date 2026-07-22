@@ -136,6 +136,19 @@
     };
   }
 
+  function summarizeProductionState(input){
+    var state=normalizeState(input);
+    return {
+      project_id:state.project_id,
+      revision:state.revision,
+      stage:state.stage,
+      ratio:state.ratio,
+      spent_points:state.spent_points,
+      point_budget:state.point_budget,
+      reserved_points:state.reserved_points
+    };
+  }
+
   function selectedShot(state){
     for(var index=0;index<state.shots.length;index+=1){
       if(state.shots[index].id===state.selectedShotId) return state.shots[index];
@@ -275,12 +288,13 @@
     if(!client||typeof client.json!=='function') throw new Error('production workspace requires a JSON client');
     if(options.projectId==null||options.projectId==='') throw new Error('production workspace requires projectId');
     var confirmHook=typeof options.confirm==='function'?options.confirm:function(){ return false; };
+    var onChange=typeof options.onChange==='function'?options.onChange:function(){};
     var keyFactory=typeof options.idempotencyKey==='function'?options.idempotencyKey:defaultKey;
     var later=options.setTimeoutImpl||setTimeout;
     var cancelLater=options.clearTimeoutImpl||clearTimeout;
     var pollInterval=options.pollIntervalMs==null?1500:Math.max(0,number(options.pollIntervalMs,0));
     var host=options.host||null;
-    var serverState=null,destroyed=false,pollTimer=null,pollReject=null,generationPromise=null;
+    var serverState=null,destroyed=false,pollTimer=null,pollReject=null,generationPromise=null,lastPublishedSummaryKey=null;
     var submittedGuards=Object.create(null);
     var ui={selectedShotId:options.selectedShotId,filter:'all',prompts:{},canEdit:options.canEdit!==false,busy:true,stale:false,error:'',quote:null,lastMode:''};
 
@@ -308,7 +322,7 @@
       return html;
     }
     function safePaint(){ if(!destroyed) paint(); }
-    function accept(next,keepBusy){
+    function accept(next,keepBusy,notify){
       ensureAlive();
       if(!next||typeof next!=='object') throw new Error('production state is invalid');
       serverState=clone(next);
@@ -323,6 +337,12 @@
       });
       ui.busy=!!keepBusy;ui.stale=false;ui.error='';
       safePaint();
+      var summary=summarizeProductionState(serverState),summaryKey=JSON.stringify(summary);
+      if(!notify) lastPublishedSummaryKey=summaryKey;
+      else if(summaryKey!==lastPublishedSummaryKey){
+        lastPublishedSummaryKey=summaryKey;
+        onChange(summary);
+      }
       return normalized;
     }
     function handleError(error){
@@ -332,13 +352,13 @@
       safePaint();
     }
     function statePath(){ return PRODUCTION_PATH+'?project_id='+encodeURIComponent(options.projectId); }
-    function requestState(keepBusy){
-      return callJson(statePath()).then(function(next){ return accept(next,keepBusy); });
+    function requestState(keepBusy,notify){
+      return callJson(statePath()).then(function(next){ return accept(next,keepBusy,notify!==false); });
     }
-    function refresh(){
+    function refresh(notify){
       try{ ensureAlive(); }catch(error){ return Promise.reject(error); }
       ui.busy=true;ui.error='';safePaint();
-      return requestState(false).catch(function(error){ handleError(error); throw error; });
+      return requestState(false,notify!==false).catch(function(error){ handleError(error); throw error; });
     }
     function ensureWritable(){
       ensureAlive();
@@ -353,7 +373,7 @@
       try{ ensureWritable(); }catch(error){ return Promise.reject(error); }
       ui.busy=true;ui.error='';safePaint();
       return callJson(path,{method:'POST',body:body}).then(function(next){
-        return accept(next,false);
+        return accept(next,false,true);
       }).catch(function(error){ handleError(error); throw error; });
     }
     function selectShotById(shotId){
@@ -634,7 +654,7 @@
       host.addEventListener('input',inputHandler);
     }
     safePaint();
-    var ready=refresh().catch(function(){ return null; });
+    var ready=refresh(false).catch(function(){ return null; });
     return {
       projectId:options.projectId,
       ready:ready,

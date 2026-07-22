@@ -7,7 +7,6 @@
   var STAGES=['draft','characters_review','script_review','storyboard_review','stills_review',
     'voice_review','video_review','assembly_review','completed'];
   var PRODUCTION_STAGE_INDEX=STAGES.indexOf('stills_review');
-  var defaultProductionModule=root&&root.HQCanvas&&root.HQCanvas.shortDramaProduction;
   var MAX_CHARACTERS=20,MAX_DIALOGUE_LINES=120;
   var PLACEHOLDER_SYNOPSIS='请在短剧工作区完善故事梗概';
   var STAGE_LABELS={
@@ -580,9 +579,7 @@
   function createWorkspace(options){
     options=options||{};
     var client=options.client||createClient(options.apiClient,options.poll);
-    var project=null,destroyed=false,host=null,productionHost=null,productionWorkspace=null;
-    var productionModule=Object.prototype.hasOwnProperty.call(options,'productionModule')?
-      options.productionModule:defaultProductionModule;
+    var project=null,destroyed=false,host=null,productionHost=null,productionWorkspace=null,loadGeneration=0;
     var canEdit=options.canEdit!==false,onChange=typeof options.onChange==='function'?options.onChange:function(){};
     var confirmHook=typeof options.confirm==='function'?options.confirm:
       (typeof window!=='undefined'&&typeof window.confirm==='function'?window.confirm.bind(window):function(){ return false; });
@@ -608,7 +605,47 @@
       productionWorkspace=null;productionHost=null;
       if(typeof delegated.destroy==='function') delegated.destroy();
     }
-    function activateProductionWorkspace(){
+    function syncProductionFrame(){
+      if(!host||destroyed||!productionWorkspace) return;
+      var brand=host.querySelector('.nc-short-drama-brand strong');
+      var meta=host.querySelector('.nc-short-drama-brand small');
+      var nav=host.querySelector('.nc-short-drama-topbar nav');
+      if(brand) brand.textContent=project&&project.title||'新短剧';
+      if(meta) meta.textContent=(project&&project.id||options.projectId||'')+' · r'+(project&&project.revision||0);
+      if(nav) nav.innerHTML=renderStageNavigation(project,state);
+    }
+    function acceptProductionSummary(summary){
+      if(destroyed||!project||!summary||typeof summary!=='object') return;
+      var summaryProjectId=summary.project_id||summary.id;
+      if(summaryProjectId&&summaryProjectId!==(project.id||project.project_id)) return;
+      var next=Object.assign({},project);
+      ['revision','stage','ratio','spent_points','point_budget','reserved_points'].forEach(function(key){
+        if(Object.prototype.hasOwnProperty.call(summary,key)) next[key]=summary[key];
+      });
+      delete next.progress;
+      project=next;
+      state.activeStage=project.stage;
+      state.busy=false;state.error='';state.stale=false;state.loadFailed=false;state.loadStatus=0;
+      syncProductionFrame();
+      onChange(summarizeProject(project));
+    }
+    function confirmProduction(cost,quote,body){
+      var points=Math.max(0,Number(cost)||0),message;
+      if(Array.isArray(body)||(quote&&quote.kind==='still-batch')){
+        var shotCount=Array.isArray(body)?body.length:Number(quote&&quote.shot_count)||0;
+        message='批量生成 '+shotCount+' 个镜头的关键帧（每个镜头 2 张候选）将消耗 '+points+' 点，确认提交吗？';
+      }else{
+        var shotId=body&&body.shot_id||'当前镜头';
+        var candidateCount=Number(body&&body.count)||Number(quote&&quote.count)||2;
+        message='生成镜头 '+shotId+' 的 '+candidateCount+' 张关键帧候选将消耗 '+points+' 点，确认提交吗？';
+      }
+      return confirmHook(message);
+    }
+    function activateProductionWorkspace(generation){
+      var activationGeneration=generation==null?loadGeneration:generation;
+      if(activationGeneration!==loadGeneration) return Promise.resolve(null);
+      var productionModule=Object.prototype.hasOwnProperty.call(options,'productionModule')?
+        options.productionModule:(root&&root.HQCanvas&&root.HQCanvas.shortDramaProduction);
       if(destroyed) return Promise.reject(new Error('workspace destroyed'));
       if(!productionModule||typeof productionModule.createWorkspace!=='function'){
         return Promise.reject(new Error('短剧生产工作区未加载，请刷新页面重试'));
@@ -631,8 +668,10 @@
           client:productionClient,
           host:productionHost,
           canEdit:canEdit,
-          confirm:confirmHook,
-          onChange:onChange
+          confirm:confirmProduction,
+          onChange:function(summary){
+            if(!destroyed&&activationGeneration===loadGeneration) acceptProductionSummary(summary);
+          }
         });
       }catch(error){
         productionHost=null;
@@ -644,11 +683,11 @@
       }
       productionWorkspace=delegated;
       return Promise.resolve(delegated.ready).then(function(){
-        if(destroyed||productionWorkspace!==delegated) return null;
+        if(destroyed||activationGeneration!==loadGeneration||productionWorkspace!==delegated) return null;
         render();
         return project;
       }).catch(function(error){
-        if(destroyed||productionWorkspace!==delegated) return null;
+        if(destroyed||activationGeneration!==loadGeneration||productionWorkspace!==delegated) return null;
         throw error;
       });
     }
@@ -679,10 +718,11 @@
       if(!isProductionStage(project.stage)) render();
       return project;
     }
-    function acceptAndMaybeDelegate(next,notify){
+    function acceptAndMaybeDelegate(next,notify,generation){
       var accepted=acceptProject(next,notify);
       if(!isProductionStage(accepted.stage)) return Promise.resolve(accepted);
-      return activateProductionWorkspace().catch(function(error){
+      return activateProductionWorkspace(generation).catch(function(error){
+        if(generation!=null&&generation!==loadGeneration) return null;
         if(!notify) throw error;
         showWorkspaceError(error,true);
         return accepted;
@@ -690,15 +730,16 @@
     }
     function loadProject(){
       if(destroyed) return Promise.reject(new Error('workspace destroyed'));
+      var generation=++loadGeneration;
       destroyProductionWorkspace();
       state.busy=true;state.error='';state.loadFailed=false;state.loadStatus=0;render();
       return Promise.resolve(client.get(options.projectId)).then(function(next){
-        if(destroyed) return null;
+        if(destroyed||generation!==loadGeneration) return null;
         state.synopsisSaved=canGeneratePlan(next,true);
         if(next&&next.stage!=='draft') state.activeStage=next.stage;
-        return acceptAndMaybeDelegate(next,false);
+        return acceptAndMaybeDelegate(next,false,generation);
       }).catch(function(error){
-        if(destroyed) return null;
+        if(destroyed||generation!==loadGeneration) return null;
         showWorkspaceError(error,true);
         return null;
       });
@@ -943,6 +984,7 @@
     function destroy(){
       if(destroyed) return;
       destroyed=true;
+      loadGeneration+=1;
       state.destroyed=true;state.busy=false;
       destroyProductionWorkspace();
       if(host&&host.removeEventListener) host.removeEventListener('click',handleClick);

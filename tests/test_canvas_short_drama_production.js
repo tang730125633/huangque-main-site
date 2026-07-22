@@ -329,6 +329,55 @@ async function testRevisionedMutationsStaleRefreshAndDestroy() {
   await assert.rejects(closing.refresh(), /destroyed/i);
 }
 
+async function testOnChangePublishesOnlyProductionSummaryAfterServerUpdates() {
+  let state = terminalState(10);
+  const summaries = [];
+  const client = {
+    json(path, options = {}) {
+      if (path.startsWith('/api/gen/short-drama/production?')) return Promise.resolve(clone(state));
+      if (path === '/api/gen/short-drama/select-asset') {
+        state = clone(state); state.revision += 1;
+        state.shots[0].still.current_version = options.body.version;
+        state.shots[0].still.locked = options.body.lock;
+        return Promise.resolve(clone(state));
+      }
+      if (path === '/api/gen/short-drama/confirm-production-stage') {
+        state = clone(state); state.revision += 1; state.stage = 'voice_review';
+        return Promise.resolve(clone(state));
+      }
+      throw new Error(`unexpected route ${path}`);
+    },
+  };
+  const workspace = production.createWorkspace({
+    projectId: state.project_id, client, document: null,
+    onChange(summary) { summaries.push(clone(summary)); },
+  });
+  await workspace.ready;
+  assert.deepEqual(summaries, [], 'initial recovery load must not schedule a duplicate canvas save');
+  await workspace.refresh();
+  assert.deepEqual(summaries, [], 'an unchanged explicit refresh must not schedule a duplicate canvas save');
+
+  workspace.selectShot('shot-2');
+  await workspace.selectVersion(2, true);
+  await workspace.refresh();
+  assert.equal(summaries.length, 1, 'an unchanged poll or refresh publishes a server summary only once');
+  await workspace.confirmStage();
+
+  assert.equal(summaries.length, 2);
+  assert.equal(summaries[0].stage, 'stills_review');
+  assert.equal(summaries[1].stage, 'voice_review');
+  assert.equal(summaries[1].revision, 12);
+  assert.deepEqual(Object.keys(summaries[1]).sort(), [
+    'point_budget', 'project_id', 'ratio', 'reserved_points', 'revision', 'spent_points', 'stage',
+  ]);
+  for (const summary of summaries) {
+    const encoded = JSON.stringify(summary);
+    assert.doesNotMatch(encoded, /shot|asset|version|job|url|prompt|reference/i,
+      'production summaries must never leak detailed production state into the canvas node');
+  }
+  workspace.destroy();
+}
+
 async function testDestroyDuringSubmissionNeverCreatesAPollTimer() {
   let resolveSubmit;
   const timers = [];
@@ -983,6 +1032,7 @@ async function main() {
   await testQuoteConfirmSubmitOrderAndCancellation();
   await testDeduplicationTimeoutRetryAndPolling();
   await testRevisionedMutationsStaleRefreshAndDestroy();
+  await testOnChangePublishesOnlyProductionSummaryAfterServerUpdates();
   await testDestroyDuringSubmissionNeverCreatesAPollTimer();
   await testDestroyDuringTimedOutSubmissionNeverRetries();
   await testConfirmationRequiresEveryLockedCurrentMatchingDoneVersion();

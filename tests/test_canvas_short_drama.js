@@ -735,8 +735,10 @@ async function testWorkspaceSourceAndRenderContract() {
     },
   };
   const apiClient = { json() { throw new Error('fake production client is inspected, not called'); } };
-  const confirm = () => true;
-  const onChange = () => {};
+  const confirmMessages = [];
+  const confirm = (message) => { confirmMessages.push(message); return true; };
+  const canvasSummaries = [];
+  const onChange = (summary) => { canvasSummaries.push(summary); };
   const stillsWorkspace = shortDrama.createWorkspace({
     projectId: 'project-1', document: null, canEdit: false, productionModule,
     apiClient, confirm, onChange,
@@ -752,8 +754,29 @@ async function testWorkspaceSourceAndRenderContract() {
   assert.equal(delegatedOptions[0].projectId, 'project-1');
   assert.strictEqual(delegatedOptions[0].client, apiClient);
   assert.equal(delegatedOptions[0].canEdit, false);
-  assert.strictEqual(delegatedOptions[0].confirm, confirm);
-  assert.strictEqual(delegatedOptions[0].onChange, onChange);
+  assert.notStrictEqual(delegatedOptions[0].confirm, confirm,
+    'wrapper adapts production quotes into user-facing confirmation messages');
+  await delegatedOptions[0].confirm(24, { cost: 24, count: 2, shot_count: 1 }, {
+    shot_id: 'shot-2', count: 2,
+  });
+  await delegatedOptions[0].confirm(30, { cost: 30, count: 4, shot_count: 2 }, [
+    { shot_id: 'shot-2', count: 2 }, { shot_id: 'shot-4', count: 2 },
+  ]);
+  assert.match(confirmMessages[0], /生成镜头 shot-2 的 2 张关键帧候选将消耗 24 点/);
+  assert.match(confirmMessages[1], /批量生成 2 个镜头的关键帧[\s\S]*将消耗 30 点/);
+  assert.notStrictEqual(delegatedOptions[0].onChange, onChange,
+    'wrapper adapts production summaries before persisting them to the canvas');
+  delegatedOptions[0].onChange({
+    project_id: 'project-1', revision: 9, stage: 'voice_review', ratio: '16:9',
+    spent_points: 24, point_budget: 100, reserved_points: 0,
+    shots: [{ asset: { versions: [{ url: '/secret.png', job: 91 }] } }],
+  });
+  assert.equal(stillsWorkspace.getProject().stage, 'voice_review');
+  assert.deepEqual(canvasSummaries, [{
+    project_id: 'project-1', title: '雨夜来客', ratio: '16:9', target_duration: 30,
+    stage: 'voice_review', progress: 63, spent_points: 24, estimated_points: 12,
+  }]);
+  assert.doesNotMatch(JSON.stringify(canvasSummaries), /shot|asset|version|job|url/i);
   assert.match(stillsWorkspace.render(), /画面确认[\s\S]*data-action="close"[\s\S]*nc-short-drama-production/);
   stillsWorkspace.destroy();
   assert.equal(delegatedDestroyCalls, 1, 'destroy cascades into the production workspace');
@@ -1117,6 +1140,95 @@ async function testWorkspaceLoadRecoveryOwnerIsolationAndDestroy() {
   assert.deepEqual(closing.getState(), stateAfterClose,
     'late GET does not assign synopsis, active stage, or any other controller state after close');
   assert.equal(summaries, 0);
+}
+
+async function testWorkspaceLatestLoadWinsAndStaleFailuresAreIgnored() {
+  function deferredClient() {
+    const pending = [];
+    return {
+      pending,
+      client: {
+        get() {
+          return new Promise((resolve, reject) => { pending.push({ resolve, reject }); });
+        },
+      },
+    };
+  }
+  let delegateCreates = 0;
+  let delegateDestroys = 0;
+  const productionModule = {
+    createWorkspace(options) {
+      delegateCreates += 1;
+      return {
+        projectId: options.projectId, ready: Promise.resolve(),
+        render() { return '<section>production</section>'; },
+        destroy() { delegateDestroys += 1; },
+      };
+    },
+  };
+  const apiClient = { json() { throw new Error('not called by the delegate stub'); } };
+
+  const race = deferredClient();
+  const workspace = shortDrama.createWorkspace({
+    projectId: 'project-1', document: null, client: race.client, apiClient, productionModule,
+  });
+  const firstLoad = workspace.ready;
+  const secondLoad = workspace.reload();
+  assert.equal(race.pending.length, 2);
+  race.pending[1].resolve(workspaceProject({ title: 'B', revision: 20, stage: 'stills_review' }));
+  await secondLoad;
+  assert.equal(workspace.getProject().title, 'B');
+  assert.equal(delegateCreates, 1);
+  race.pending[0].resolve(workspaceProject({ title: 'A', revision: 10, stage: 'stills_review' }));
+  assert.equal(await firstLoad, null, 'an older successful load settles without publishing stale state');
+  assert.equal(workspace.getProject().title, 'B', 'older A cannot overwrite newer B');
+  assert.equal(delegateCreates, 1, 'older A cannot create a replacement delegate');
+  assert.equal(delegateDestroys, 0, 'older A cannot destroy the newer B delegate');
+  workspace.destroy();
+  assert.equal(delegateDestroys, 1);
+
+  const failureRace = deferredClient();
+  const failureWorkspace = shortDrama.createWorkspace({
+    projectId: 'project-1', document: null, client: failureRace.client, apiClient, productionModule,
+  });
+  const staleLoad = failureWorkspace.ready;
+  const newestLoad = failureWorkspace.reload();
+  failureRace.pending[1].resolve(workspaceProject({ title: 'newest', revision: 22, stage: 'stills_review' }));
+  await newestLoad;
+  failureRace.pending[0].reject(Object.assign(new Error('stale failure'), { status: 500 }));
+  assert.equal(await staleLoad, null);
+  assert.equal(failureWorkspace.getProject().title, 'newest');
+  assert.equal(failureWorkspace.getState().error, '', 'a stale failure cannot replace the newest render');
+  failureWorkspace.destroy();
+}
+
+async function testProductionModuleCanBeInstalledAfterInitialLoadFailure() {
+  let delegateCreates = 0;
+  const project = workspaceProject({ stage: 'stills_review' });
+  const options = {
+    projectId: project.id, document: null, productionModule: null,
+    apiClient: { json() { throw new Error('not called by the delegate stub'); } },
+    client: { get() { return Promise.resolve(project); } },
+  };
+  const workspace = shortDrama.createWorkspace(options);
+  assert.equal(await workspace.ready, null, 'a missing production module leaves a recoverable load error');
+  assert.equal(workspace.getState().loadFailed, true);
+
+  options.productionModule = {
+    createWorkspace(delegateOptions) {
+      delegateCreates += 1;
+      return {
+        projectId: delegateOptions.projectId, ready: Promise.resolve(),
+        render() { return '<section>late production module</section>'; },
+        destroy() {},
+      };
+    },
+  };
+  assert.equal((await workspace.reload()).id, project.id);
+  assert.equal(delegateCreates, 1, 'reload resolves the production module again after late installation');
+  assert.equal(workspace.getState().error, '');
+  assert.match(workspace.render(), /late production module/);
+  workspace.destroy();
 }
 
 async function testCollaborationRoleDowngradeDestroysEditableWorkspaceOnly() {
@@ -1577,6 +1689,8 @@ async function main() {
   await testHistoricalScriptVersionCannotBeConfirmedOrResavedAsLatest();
   await testScriptSaveSelectsReturnedLatestVersion();
   await testWorkspaceLoadRecoveryOwnerIsolationAndDestroy();
+  await testWorkspaceLatestLoadWinsAndStaleFailuresAreIgnored();
+  await testProductionModuleCanBeInstalledAfterInitialLoadFailure();
   await testCollaborationRoleDowngradeDestroysEditableWorkspaceOnly();
   await testWorkspaceLocksSettingsAndRejectsConcurrentPaidPlanning();
   await testWorkspaceOrderConflictReadonlyAndPlanning();
