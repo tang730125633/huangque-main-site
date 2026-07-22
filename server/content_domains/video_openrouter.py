@@ -34,6 +34,12 @@ def available():
     return bool(OPENROUTER_API_KEY)
 
 
+def download_headers():
+    if not OPENROUTER_API_KEY:
+        raise ValueError("OpenRouter 视频备用渠道未配置（OPENROUTER_API_KEY）")
+    return {"Authorization": "Bearer " + OPENROUTER_API_KEY}
+
+
 def _opener():
     proxy = egress.preferred_proxy()
     if proxy:
