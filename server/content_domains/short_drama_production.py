@@ -109,7 +109,7 @@ def init_db(db_factory):
         conn.close()
 
 
-def prepare_still_submission(db_factory, username, body):
+def normalize_still_request(body):
     if not isinstance(body, dict) or set(body) != STILL_REQUEST_FIELDS:
         raise ValueError("关键帧请求字段不正确")
     if (not isinstance(body["mode"], str)
@@ -123,6 +123,26 @@ def prepare_still_submission(db_factory, username, body):
         raise ValueError("项目版本无效")
     if not isinstance(body["prompt"], str):
         raise ValueError("关键帧提示词无效")
+    request = dict(body)
+    for field in ("project_id", "shot_id", "prompt"):
+        request[field] = request[field].strip()
+    descriptor = {
+        "kind": "short-drama-still",
+        "project_id": request["project_id"],
+        "revision": request["revision"],
+        "shot_id": request["shot_id"],
+        "prompt": request["prompt"],
+        "mode": request["mode"],
+        "count": request["count"],
+        "provider": "seedream",
+        "variant": "std",
+        "quality": "hd",
+    }
+    return request, descriptor
+
+
+def prepare_still_submission(db_factory, username, body):
+    body, _descriptor = normalize_still_request(body)
 
     conn = db_factory()
     conn.row_factory = sqlite3.Row
@@ -130,7 +150,7 @@ def prepare_still_submission(db_factory, username, body):
         project = conn.execute(
             "SELECT * FROM short_drama_projects "
             "WHERE id=? AND username=? AND deleted=0",
-            (body["project_id"].strip(), username),
+            (body["project_id"], username),
         ).fetchone()
         if not project:
             raise LookupError("短剧项目不存在")
@@ -146,7 +166,7 @@ def prepare_still_submission(db_factory, username, body):
             "LEFT JOIN short_drama_assets a "
             "ON a.project_id=s.project_id AND a.shot_id=s.id AND a.type='still' "
             "WHERE s.id=? AND s.project_id=?",
-            (body["shot_id"].strip(), project["id"]),
+            (body["shot_id"], project["id"]),
         ).fetchone()
         if not shot:
             raise ValueError("关键帧分镜不属于当前项目")
@@ -218,16 +238,18 @@ def prepare_still_quote(db_factory, username, body, cost_of):
 
 
 def record_submitted_job(db_factory, *, username, project_id, shot_id, job_id,
-                         idempotency_key, quoted_cost):
+                         idempotency_key, quoted_cost, connection=None):
     if (type(job_id) is not int or job_id < 1 or type(quoted_cost) is not int
             or quoted_cost < 0 or not isinstance(idempotency_key, str)
             or not idempotency_key):
         raise ValueError("关键帧任务关联参数无效")
-    conn = db_factory()
+    owns_connection = connection is None
+    conn = db_factory() if owns_connection else connection
     conn.row_factory = sqlite3.Row
     try:
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("BEGIN IMMEDIATE")
+        if owns_connection:
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("BEGIN IMMEDIATE")
         project = conn.execute(
             "SELECT stage FROM short_drama_projects "
             "WHERE id=? AND username=? AND deleted=0",
@@ -271,12 +293,21 @@ def record_submitted_job(db_factory, *, username, project_id, shot_id, job_id,
             (str(uuid.uuid4()), username, project_id, shot_id, job_id,
              idempotency_key, quoted_cost, now, now),
         )
-        conn.commit()
+        if owns_connection:
+            conn.commit()
     except Exception:
-        conn.rollback()
+        if owns_connection:
+            conn.rollback()
         raise
     finally:
-        conn.close()
+        if owns_connection:
+            conn.close()
+
+
+def submitted_job_callback(db_factory, **association):
+    return lambda connection, job_id: record_submitted_job(
+        db_factory, job_id=job_id, connection=connection, **association
+    )
 
 
 def ensure_asset_slots(conn, project_id):

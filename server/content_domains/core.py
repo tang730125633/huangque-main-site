@@ -1370,13 +1370,20 @@ class H(BaseHTTPRequestHandler):
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
             try: feature_flags.require_enabled(kind)
             except feature_flags.FeatureDisabled as e: return self._send(503, {"detail": str(e)})
+            still_idem_started = False
             try:
                 body = self._json_body_strict() if is_still_route or kind in {"video", "tryon", "sora_video", "cinematic", "avatar"} else self._json_body()
-                # 微信小程序内容安全：必须在校验、扣点和入队之前完成。违规内容不扣点；
-                # 微信服务异常时不收单，避免网络故障成为绕过审核的通道。
+                if is_still_route:
+                    request_body, still_idem_body = _short_drama_domain().short_drama_production.normalize_still_request(body); idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
+                    if not idem_key: raise ValueError("关键帧提交必须提供 Idempotency-Key")
+                # 微信内容安全必须在校验、扣点和入队前完成；服务异常时不收单。
                 miniprogram_security.check_payload(body)
                 if is_still_route:
-                    request_body = dict(body) if isinstance(body, dict) else body; prepared = _short_drama_domain().short_drama_production.prepare_still_submission(jdb, user["username"], body); body = prepared["image_payload"]
+                    idem_state, idem_response = _idempotency_begin(user["username"], p, idem_key, still_idem_body)
+                    if idem_state == "replay": return self._send(200, idem_response)
+                    if idem_state == "conflict": return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
+                    if idem_state == "processing": return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
+                    still_idem_started = True; prepared = _short_drama_domain().short_drama_production.prepare_still_submission(jdb, user["username"], request_body); body = prepared["image_payload"]
                 elif kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama": body = _short_drama_domain().validate_planning_submission(jdb, user["username"], body)
                 elif kind == "video": body = video_domain.validate_video_payload(body, user["username"])
                 elif kind == "tryon": body = video_domain.validate_tryon_payload(body)
@@ -1389,29 +1396,27 @@ class H(BaseHTTPRequestHandler):
                     body = image_domain.validate_image_payload(body)
                 if not is_still_route: request_body = dict(body) if isinstance(body, dict) else body
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
-                idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "video", "tryon", "xiaole_video", "sora_video", "cinematic"} else ""
-                if is_still_route and not idem_key: raise ValueError("关键帧提交必须提供 Idempotency-Key")
+                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "video", "tryon", "xiaole_video", "sora_video", "cinematic"} else ""
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
             except miniprogram_security.ContentRejected as e:
                 return self._send(400, {"detail": str(e), "code": "content_rejected"})
             except miniprogram_security.SecurityUnavailable as e:
                 return self._send(503, {"detail": str(e), "code": "content_security_unavailable", "retry_after_ms": 5000})
             except (ValueError, LookupError, _short_drama_domain().RevisionConflict) as e:
-                _short_drama_domain()._http_error(self, e); return
+                if still_idem_started:
+                    _idempotency_abort(user["username"], p, idem_key)
+                _short_drama_domain()._http_error(self, e)
+                return
             # 正在停机（部署中）→ 不收新活。⚠️ 必须在【扣点之前】。
             # 否则用户被扣了点、任务入了队，进程下一秒就退了 —— 又是一条「服务重启中断」。
             if is_shutting_down():
-                return self._send(503, {"detail": "服务正在更新，请稍等几秒后重试（未扣点）",
-                                        "code": "shutting_down", "retry_after_ms": 5000})
-            # 上游没额度就当场拒 —— ⚠️ 必须在【扣点之前】。
-            # 余额哨兵每 10 分钟告警一次，但告警只叫醒我们、拦不住用户：从「余额见底」到
-            # 「有人充上钱」这段时间里，用户照样点生成、照样被扣点、照样等几分钟，然后看到
-            # 一句天书（"积分余额不足，请先充值" / "Insufficient credits"）。近 14 天 48 条
-            # 任务是这么死的。这里把它们挡在门外：不扣点、不排队、不让用户等。
-            # fail-open：熔断器自己出问题一律放行（见 upstream_guard）。
+                _idempotency_abort(user["username"], p, idem_key) if still_idem_started else None; return self._send(503, {"detail": "服务正在更新，请稍等几秒后重试（未扣点）", "code": "shutting_down", "retry_after_ms": 5000})
+            # 熔断器 fail-open，检查自身异常不会阻断提交。
             from . import upstream_guard
             blocked = upstream_guard.exhausted_reason(kind, body)
             if blocked:
+                if still_idem_started:
+                    _idempotency_abort(user["username"], p, idem_key)
                 return self._send(503, {"detail": blocked, "code": "upstream_exhausted",
                                         "retry_after_ms": 60000})
             is_short_drama = kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama"
@@ -1423,8 +1428,8 @@ class H(BaseHTTPRequestHandler):
                     if recovered: return self._send(200, recovered)
                 if is_still_route:
                     try: prepared = _short_drama_domain().short_drama_production.prepare_still_submission(jdb, user["username"], request_body); body = prepared["image_payload"]
-                    except (LookupError, _short_drama_domain().RevisionConflict, _short_drama_domain().PointBudgetExceeded, ValueError) as e: _short_drama_domain()._http_error(self, e); return
-                idem_state, idem_response = _idempotency_begin(user["username"], p, idem_key, request_body)
+                    except (LookupError, _short_drama_domain().RevisionConflict, _short_drama_domain().PointBudgetExceeded, ValueError) as e: _idempotency_abort(user["username"], p, idem_key); _short_drama_domain()._http_error(self, e); return
+                if not is_still_route: idem_state, idem_response = _idempotency_begin(user["username"], p, idem_key, request_body)
                 if idem_state == "replay": return self._send(200, idem_response)
                 if idem_state == "conflict": return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
                 if idem_state == "processing": return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
@@ -1443,9 +1448,10 @@ class H(BaseHTTPRequestHandler):
                         "code": "active_job_cap", "active_jobs": active_jobs, "max_active_jobs": MAX_USER_ACTIVE_JOBS,
                         "retry_after_ms": 4000, "need": cost})
                 try:
+                    still_association = _short_drama_domain().short_drama_production.submitted_job_callback(jdb, username=user["username"], project_id=prepared["project"]["id"], shot_id=prepared["shot"]["id"], idempotency_key=idem_key, quoted_cost=cost) if is_still_route else None
                     jid, points_left = jobs_store.create_paid_job(
                         jdb, points_domain.deduct_points, points_domain.refund_points,
-                        kind, user["username"], cost, body, SERVICE_OWNER)
+                        kind, user["username"], cost, body, SERVICE_OWNER, before_commit=still_association)
                 except points_domain.AuthPointsError as e:
                     _idempotency_abort(user["username"], p, idem_key)
                     return self._send(402 if e.status == 402 else 502, {"detail": e.detail, "need": cost})
@@ -1459,9 +1465,6 @@ class H(BaseHTTPRequestHandler):
                     except Exception:
                         _reject_pending_job(jid, user["username"], cost, "视频资产登记失败"); _idempotency_abort(user["username"], p, idem_key)
                         return self._send(500, {"detail": "任务创建失败，退款正在自动处理", "job_id": jid})
-                if is_still_route:
-                    try: _short_drama_domain().short_drama_production.record_submitted_job(jdb, username=user["username"], project_id=prepared["project"]["id"], shot_id=prepared["shot"]["id"], job_id=jid, idempotency_key=idem_key, quoted_cost=cost)
-                    except Exception: _reject_pending_job(jid, user["username"], cost, "关键帧任务关联失败"); _idempotency_abort(user["username"], p, idem_key); return self._send(500, {"detail": "任务创建失败，退款正在自动处理", "job_id": jid})
                 if not enqueue_job(jid, kind, body.get("mode")):
                     _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
                     if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}:

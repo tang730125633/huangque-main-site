@@ -157,6 +157,31 @@ class ShortDramaProductionTests(unittest.TestCase):
             "voice_review", "video_review", "assembly_review", "completed",
         ))
 
+    def test_still_idempotency_descriptor_normalizes_and_binds_server_contract(self):
+        request, descriptor = short_drama_production.normalize_still_request(
+            self._still_request(
+                project_id="  %s  " % self.project["id"],
+                shot_id="  %s  " % self._shot_id(),
+                prompt="  rainy midnight doorway  ",
+            )
+        )
+
+        self.assertEqual(self.project["id"], request["project_id"])
+        self.assertEqual(self._shot_id(), request["shot_id"])
+        self.assertEqual("rainy midnight doorway", request["prompt"])
+        self.assertEqual({
+            "kind": "short-drama-still",
+            "project_id": self.project["id"],
+            "revision": self.project["revision"],
+            "shot_id": self._shot_id(),
+            "prompt": "rainy midnight doorway",
+            "mode": "single",
+            "count": 2,
+            "provider": "seedream",
+            "variant": "std",
+            "quality": "hd",
+        }, descriptor)
+
     def test_ensure_asset_slots_creates_one_still_slot_per_shot(self):
         with closing(self.db()) as conn:
             short_drama_production.ensure_asset_slots(conn, self.project["id"])
@@ -940,6 +965,68 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         self.assertEqual(accepted, replayed)
         self.assertEqual(1, len(self.points.deduct_calls))
         self.assertEqual(1, core._image_job_queue.qsize())
+
+    def test_completed_replay_precedes_changed_project_shutdown_and_upstream(self):
+        path = "/api/gen/short-drama/generate-stills"
+        body = self._body()
+        status, accepted = self.request(
+            path, body=body, idempotency_key="still-early-replay-001"
+        )
+        self.assertEqual(200, status)
+        with closing(core.jdb()) as conn:
+            conn.execute(
+                "UPDATE short_drama_projects "
+                "SET revision=revision+1, stage='completed', point_budget=1 "
+                "WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+        before = (
+            len(self.points.cost_calls), len(self.points.deduct_calls),
+            len(self._jobs()), core._image_job_queue.qsize(),
+        )
+        core._shutting_down.set()
+        upstream_guard.exhausted_reason = lambda *_args: "upstream exhausted"
+        try:
+            replay_status, replayed = self.request(
+                path, body=body, idempotency_key="still-early-replay-001"
+            )
+        finally:
+            core._shutting_down.clear()
+
+        self.assertEqual(200, replay_status)
+        self.assertEqual(accepted, replayed)
+        self.assertEqual(before, (
+            len(self.points.cost_calls), len(self.points.deduct_calls),
+            len(self._jobs()), core._image_job_queue.qsize(),
+        ))
+
+    def test_equivalent_whitespace_replays_but_changed_context_conflicts(self):
+        path = "/api/gen/short-drama/generate-stills"
+        spaced = self._body(
+            project_id="  %s " % self.project["id"],
+            shot_id=" %s  " % self.shot_id,
+            prompt="  rainy midnight doorway  ",
+        )
+        trimmed = self._body(prompt="rainy midnight doorway")
+
+        status, accepted = self.request(
+            path, body=spaced, idempotency_key="still-normalized-001"
+        )
+        replay_status, replayed = self.request(
+            path, body=trimmed, idempotency_key="still-normalized-001"
+        )
+        conflict_status, conflict = self.request(
+            path, body=self._body(mode="retry", prompt="rainy midnight doorway"),
+            idempotency_key="still-normalized-001",
+        )
+
+        self.assertEqual(200, status)
+        self.assertEqual(200, replay_status)
+        self.assertEqual(accepted, replayed)
+        self.assertEqual(409, conflict_status)
+        self.assertEqual("idempotency_conflict", conflict["code"])
+        self.assertEqual(1, len(self.points.deduct_calls))
 
     def test_locked_batch_and_budget_fail_before_deduction(self):
         with closing(core.jdb()) as conn:
