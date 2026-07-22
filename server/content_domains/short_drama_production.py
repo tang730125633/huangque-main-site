@@ -48,6 +48,46 @@ CREATE TABLE IF NOT EXISTS short_drama_production_jobs (
   updated_at INTEGER NOT NULL,
   UNIQUE(username, kind, idempotency_key)
 );
+CREATE TRIGGER IF NOT EXISTS short_drama_assets_project_shot_on_insert
+BEFORE INSERT ON short_drama_assets
+FOR EACH ROW
+WHEN NOT EXISTS (
+  SELECT 1 FROM short_drama_shots
+  WHERE id=NEW.shot_id AND project_id=NEW.project_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'short drama asset shot must belong to project');
+END;
+CREATE TRIGGER IF NOT EXISTS short_drama_assets_project_shot_on_update
+BEFORE UPDATE OF project_id, shot_id ON short_drama_assets
+FOR EACH ROW
+WHEN NOT EXISTS (
+  SELECT 1 FROM short_drama_shots
+  WHERE id=NEW.shot_id AND project_id=NEW.project_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'short drama asset shot must belong to project');
+END;
+CREATE TRIGGER IF NOT EXISTS short_drama_production_jobs_project_shot_on_insert
+BEFORE INSERT ON short_drama_production_jobs
+FOR EACH ROW
+WHEN NOT EXISTS (
+  SELECT 1 FROM short_drama_shots
+  WHERE id=NEW.shot_id AND project_id=NEW.project_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'short drama production job shot must belong to project');
+END;
+CREATE TRIGGER IF NOT EXISTS short_drama_production_jobs_project_shot_on_update
+BEFORE UPDATE OF project_id, shot_id ON short_drama_production_jobs
+FOR EACH ROW
+WHEN NOT EXISTS (
+  SELECT 1 FROM short_drama_shots
+  WHERE id=NEW.shot_id AND project_id=NEW.project_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'short drama production job shot must belong to project');
+END;
 """
 
 

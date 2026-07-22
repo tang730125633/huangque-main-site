@@ -85,6 +85,9 @@ class ShortDramaProductionTests(unittest.TestCase):
         with closing(self.db()) as conn:
             short_drama_production.ensure_asset_slots(conn, self.project["id"])
             short_drama_production.ensure_asset_slots(conn, self.project["id"])
+            conn.commit()
+
+        with closing(self.db()) as conn:
             slots = conn.execute(
                 "SELECT shot_id, type FROM short_drama_assets WHERE project_id=? ORDER BY shot_id",
                 (self.project["id"],),
@@ -92,6 +95,56 @@ class ShortDramaProductionTests(unittest.TestCase):
 
         self.assertEqual(6, len(slots))
         self.assertEqual({"still"}, {slot[1] for slot in slots})
+
+    def test_assets_and_jobs_reject_cross_project_shots_on_insert_and_update(self):
+        other = short_drama.create_project(self.db, "alice", _project_payload())
+        other = short_drama.apply_plan(
+            self.db, "alice", other["id"], other["revision"],
+            _six_shot_plan(), planning_cost=0, planning_job_id=2,
+        )
+        with closing(self.db()) as conn:
+            own_shot_id = conn.execute(
+                "SELECT id FROM short_drama_shots WHERE project_id=? LIMIT 1", (self.project["id"],)
+            ).fetchone()[0]
+            other_shot_id = conn.execute(
+                "SELECT id FROM short_drama_shots WHERE project_id=? LIMIT 1", (other["id"],)
+            ).fetchone()[0]
+
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO short_drama_assets "
+                    "(id, project_id, shot_id, type, created_at, updated_at) VALUES (?, ?, ?, 'still', 1, 1)",
+                    ("cross-asset", self.project["id"], other_shot_id),
+                )
+            conn.execute(
+                "INSERT INTO short_drama_assets "
+                "(id, project_id, shot_id, type, created_at, updated_at) VALUES (?, ?, ?, 'still', 1, 1)",
+                ("owned-asset", self.project["id"], own_shot_id),
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "UPDATE short_drama_assets SET shot_id=? WHERE id=?",
+                    (other_shot_id, "owned-asset"),
+                )
+
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO short_drama_production_jobs "
+                    "(id, username, project_id, shot_id, kind, job_id, idempotency_key, quoted_cost, status, created_at, updated_at) "
+                    "VALUES (?, 'alice', ?, ?, 'still', 10, 'cross-job', 0, 'pending', 1, 1)",
+                    ("cross-job", self.project["id"], other_shot_id),
+                )
+            conn.execute(
+                "INSERT INTO short_drama_production_jobs "
+                "(id, username, project_id, shot_id, kind, job_id, idempotency_key, quoted_cost, status, created_at, updated_at) "
+                "VALUES (?, 'alice', ?, ?, 'still', 11, 'owned-job', 0, 'pending', 1, 1)",
+                ("owned-job", self.project["id"], own_shot_id),
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "UPDATE short_drama_production_jobs SET project_id=? WHERE id=?",
+                    (other["id"], "owned-job"),
+                )
 
 
 if __name__ == "__main__":
