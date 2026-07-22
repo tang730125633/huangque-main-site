@@ -1,69 +1,11 @@
 # -*- coding: utf-8 -*-
-import os
-import urllib.error
-import urllib.request
-
-from .core import COPY_MODEL, OPENAI_BASE, OPENAI_KEY, json
-
-
-COPY_API_BASE = os.environ.get("COPY_API_BASE", "").strip()
-COPY_API_KEY = os.environ.get("COPY_API_KEY", "").strip()
-
-
-def _provider_config():
-    dedicated_base = str(COPY_API_BASE or "").strip()
-    dedicated_key = str(COPY_API_KEY or "").strip()
-    if bool(dedicated_base) != bool(dedicated_key):
-        raise RuntimeError("COPY_API_BASE 与 COPY_API_KEY 必须同时配置，不能只配置其中一项")
-    if dedicated_base:
-        return dedicated_base, dedicated_key, "COPY_API_BASE", "COPY_API_KEY"
-    return (
-        str(OPENAI_BASE or "").strip(), str(OPENAI_KEY or "").strip(),
-        "OPENAI_BASE", "OPENAI_API_KEY",
-    )
-
-
-def _chat_url(base, base_env):
-    base = str(base or "").strip().rstrip("/")
-    if not base:
-        raise RuntimeError("文案模型接口未配置，请检查 %s" % base_env)
-    if base.endswith("/v1"):
-        return base + "/chat/completions"
-    return base + "/v1/chat/completions"
-
-
-def _http_error_message(status, base_env, key_env):
-    if status in (401, 403):
-        return "文案模型鉴权失败，请检查 %s" % key_env
-    if status == 404:
-        return "文案模型接口或模型不存在，请检查 %s 和 COPY_MODEL" % base_env
-    if status == 429:
-        return "文案模型请求过于频繁，请稍后重试"
-    if status >= 500:
-        return "文案模型服务暂时不可用，请稍后重试"
-    return "文案模型请求失败（HTTP %s）" % status
-
-
-def _post_chat(body):
-    base, key, base_env, key_env = _provider_config()
-    if not key:
-        raise RuntimeError("文案模型密钥未配置，请检查 %s" % key_env)
-    request = urllib.request.Request(
-        _chat_url(base, base_env), data=body,
-        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=300) as response:
-            return json.loads(response.read())
-    except urllib.error.HTTPError as error:
-        raise RuntimeError(_http_error_message(error.code, base_env, key_env)) from error
+from .core import COPY_MODEL, _post, json
 
 def _chat(sysmsg, usermsg, temp):
     body = json.dumps({"model": COPY_MODEL,
                        "messages": [{"role": "system", "content": sysmsg}, {"role": "user", "content": usermsg}],
                        "temperature": temp}).encode()
-    d = _post_chat(body)
+    d = _post("/v1/chat/completions", body, "application/json")
     return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
 
 def gen_copy(payload):

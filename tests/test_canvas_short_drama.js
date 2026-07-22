@@ -12,6 +12,7 @@ function testOpenApiContract() {
     ['post', '/api/gen/short-drama/projects'],
     ['get', '/api/gen/short-drama/project'],
     ['put', '/api/gen/short-drama/project'],
+    ['post', '/api/gen/short-drama/project/delete'],
     ['post', '/api/gen/short-drama/apply-plan'],
     ['post', '/api/gen/short-drama/confirm'],
     ['get', '/api/gen/short-drama/planning-quote'],
@@ -31,6 +32,7 @@ function testOpenApiContract() {
   }
   for (const [method, route] of [
     ['put', '/api/gen/short-drama/project'],
+    ['post', '/api/gen/short-drama/project/delete'],
     ['post', '/api/gen/short-drama/apply-plan'],
     ['post', '/api/gen/short-drama/confirm'],
   ]) {
@@ -112,6 +114,17 @@ function testOpenApiContract() {
   assert.ok(genericJobResult.not, 'generic job result must exclude the dedicated short-drama shape');
   assert.match(spec.paths['/api/gen/short-drama/projects'].post.description, /free|no points/i);
   assert.match(spec.paths['/api/gen/short-drama/project'].put.description, /free|no points/i);
+  const listProjects = spec.paths['/api/gen/short-drama/projects'].get;
+  assert.deepEqual(listProjects.parameters.map((parameter) => parameter.name), ['page', 'page_size']);
+  const listSchema = listProjects.responses['200'].content['application/json'].schema;
+  for (const field of ['items', 'page', 'page_size', 'total', 'total_pages']) {
+    assert.ok(listSchema.required.includes(field), `project list requires ${field}`);
+  }
+  assert.ok(spec.paths['/api/gen/short-drama/projects'].post.responses['429'],
+    'project creation documents the per-user cap');
+  assert.match(spec.components.schemas.ShortDramaProject.properties.spent_points.description, /deduct|refund|扣点|退款/i);
+  assert.doesNotMatch(spec.paths['/api/gen/short-drama/apply-plan'].post.description, /spent_points 增加/,
+    'applying a paid plan must not claim to charge or count the job a second time');
 }
 
 function testCanvasIntegration() {

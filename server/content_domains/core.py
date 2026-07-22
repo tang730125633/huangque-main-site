@@ -626,7 +626,9 @@ def verify(token):
 def _domains():
     from . import audio, points, video
     return audio, points, video
-def _leads_domain(): from . import leads; return leads
+def _leads_domain():
+    from . import leads
+    return leads
 def _short_drama_domain(): from . import short_drama; return short_drama
 def _must_change_password(user):
     return bool(user and user.get("must_change"))
@@ -1400,7 +1402,8 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": str(e), "code": "content_rejected"})
             except miniprogram_security.SecurityUnavailable as e:
                 return self._send(503, {"detail": str(e), "code": "content_security_unavailable", "retry_after_ms": 5000})
-            except (ValueError, LookupError, _short_drama_domain().RevisionConflict) as e: _short_drama_domain()._http_error(self, e); return
+            except (ValueError, LookupError, _short_drama_domain().RevisionConflict) as e:
+                _short_drama_domain()._http_error(self, e); return
             # 正在停机（部署中）→ 不收新活。⚠️ 必须在【扣点之前】。
             # 否则用户被扣了点、任务入了队，进程下一秒就退了 —— 又是一条「服务重启中断」。
             if is_shutting_down():
@@ -1414,7 +1417,9 @@ class H(BaseHTTPRequestHandler):
             # fail-open：熔断器自己出问题一律放行（见 upstream_guard）。
             from . import upstream_guard
             blocked = upstream_guard.exhausted_reason(kind, body)
-            if blocked: return self._send(503, {"detail": blocked, "code": "upstream_exhausted", "retry_after_ms": 60000})
+            if blocked:
+                return self._send(503, {"detail": blocked, "code": "upstream_exhausted",
+                                        "retry_after_ms": 60000})
             is_short_drama = kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama"
             cost = points_domain.cost_of(kind, body) if not is_short_drama else None
             with _submission_lock:
