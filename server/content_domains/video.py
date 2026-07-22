@@ -966,7 +966,15 @@ def _save_data_file(data_url, prefix, allowed_ext):
         raise ValueError("文件过大，请压缩后再上传")
     folder = "audio/" if ext in {".mp3", ".wav", ".m4a"} else ("video/" if ext in {".mp4", ".mov", ".webm"} else "")
     fn = "%s%s_%s%s" % (folder, prefix, uuid.uuid4().hex, ext)  # 不可猜键(#185)：上传的真人素材防猜测
-    _out_path(fn).write_bytes(data)
+    path = _out_path(fn)
+    try:
+        path.write_bytes(data)
+    except Exception:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise
     return fn
 
 def _heygen_relay_token():
@@ -3117,7 +3125,7 @@ def _cinematic_duration(raw, reference_video_file=None):
     return max(lo, min(hi, int(secs + 0.999999)))
 
 
-def validate_cinematic_payload(body, username=None):
+def validate_cinematic_payload(body, username=None, temporary_reference_files=None):
     """校验并【落定】payload —— 尤其是时长。
 
     时长必须在这里就变成一个确定的整数秒，不能留 "auto" 带下去：调用链是
@@ -3240,8 +3248,14 @@ def validate_cinematic_payload(body, username=None):
     #   1. 【必须】按成片秒数计费，而扣点发生在 worker 之前 —— 「自适应」要在这里探测出秒数，
     #      否则扣点这一刻不知道该扣多少，只能预扣上限再退差。
     #   2. 顺带：payload 里存路径而不是几十 MB 的 base64，jobs.payload 不再被撑爆。
-    video_files = [f for f in (_save_data_file(v, "motion_ref", [".mp4", ".mov", ".webm"]) for v in videos) if f]
-    image_files = [f for f in (_save_data_file(i, "cine_ref", [".jpg", ".png", ".webp"]) for i in images) if f]
+    def save_reference(value, prefix, extensions):
+        saved = _save_data_file(value, prefix, extensions)
+        if saved and temporary_reference_files is not None:
+            temporary_reference_files.append(saved)
+        return saved
+
+    video_files = [f for f in (save_reference(v, "motion_ref", [".mp4", ".mov", ".webm"]) for v in videos) if f]
+    image_files = [f for f in (save_reference(i, "cine_ref", [".jpg", ".png", ".webp"]) for i in images) if f]
     if video_files:
         _motion_reference_duration(video_files[0])   # 超长（>120s）在这里就明确拒绝
     # 「自适应」跟随第一个参考视频的长度
@@ -3261,6 +3275,40 @@ def validate_cinematic_payload(body, username=None):
     for k in ("reference_video_data", "reference_videos", "reference_images"):
         cleaned.pop(k, None)
     return cleaned
+
+
+def _cleanup_cinematic_reference_files(reference_files):
+    for relative in reference_files:
+        try:
+            _out_path(relative).unlink()
+        except OSError:
+            pass
+
+
+def dispatch_cinematic_quote(handler, verify, cost_of):
+    """Serve the free quote beside the cinematic payload validator it relies on."""
+    if handler.path.split("?")[0] != "/api/gen/cinematic/quote":
+        return False
+    user = verify(handler._token())
+    if not user:
+        handler._send(401, {"detail": "未登录"}); return True
+    if user.get("must_change"):
+        handler._send(403, {"detail": "请先修改初始密码"}); return True
+    temporary_reference_files = []
+    try:
+        cleaned = validate_cinematic_payload(
+            handler._json_body_strict(), user["username"], temporary_reference_files
+        )
+        cost = int(cost_of("cinematic", cleaned))
+        if cost < 0:
+            raise ValueError("电影化身视频报价无效")
+        status, response = 200, {"cost": cost}
+    except ValueError as exc:
+        status, response = 400, {"detail": str(exc)[:220]}
+    finally:
+        _cleanup_cinematic_reference_files(temporary_reference_files)
+    handler._send(status, response)
+    return True
 
 
 def gen_cinematic(payload):

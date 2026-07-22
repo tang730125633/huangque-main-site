@@ -4,6 +4,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from unittest.mock import Mock, patch
 
 
@@ -403,7 +404,7 @@ class SoraStartupRecoveryTests(unittest.TestCase):
             jobs_path = root / "jobs.db"
             assets_path = root / "assets.db"
 
-            with sqlite3.connect(str(jobs_path)) as conn:
+            with closing(sqlite3.connect(str(jobs_path))) as conn, conn:
                 conn.execute(
                     """CREATE TABLE jobs(
                            id INTEGER PRIMARY KEY, username TEXT, cost INTEGER,
@@ -414,7 +415,7 @@ class SoraStartupRecoveryTests(unittest.TestCase):
                     "INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?)",
                     (41, "tester", 120, "sora_video", "running", "content", None, 1),
                 )
-            with sqlite3.connect(str(assets_path)) as conn:
+            with closing(sqlite3.connect(str(assets_path))) as conn, conn:
                 conn.execute(
                     """CREATE TABLE video_assets(
                            job_id INTEGER PRIMARY KEY, provider_video_id TEXT,
@@ -457,8 +458,8 @@ class SoraStartupRecoveryTests(unittest.TestCase):
                     logger=lambda message, flush=False: logs.append(message),
                 )
 
-            self.assertEqual(handled, 1)
-            with sqlite3.connect(str(jobs_path)) as conn:
+            self.assertEqual(handled, 1, logs)
+            with closing(sqlite3.connect(str(jobs_path))) as conn:
                 status, error = conn.execute(
                     "SELECT status,error FROM jobs WHERE id=41"
                 ).fetchone()
