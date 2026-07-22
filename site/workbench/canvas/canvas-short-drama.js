@@ -559,10 +559,18 @@
       if(state.planning.running){ state.planning.running=false; state.planning.label=state.error; }
       render();
     }
+    function latestScriptVersionOf(value){
+      var versions=value&&value.script_versions||[],latest=versions[versions.length-1];
+      return latest&&latest.version!=null?String(latest.version):null;
+    }
     function acceptProject(next,notify){
       if(destroyed) throw new Error('workspace destroyed');
       if(!next||typeof next!=='object') throw new Error('短剧项目返回数据无效');
+      var previousProject=project,previousLatest=latestScriptVersionOf(previousProject);
       project=next;state.busy=false;state.error='';state.stale=false;state.loadFailed=false;state.loadStatus=0;
+      if(!previousProject||previousProject.id!==project.id||previousLatest!==latestScriptVersionOf(project)){
+        state.scriptVersion=null;
+      }
       if(project.stage==='stills_review') state.activeStage='stills_review';
       else if(!isStageEnabled(project,state.activeStage)) state.activeStage=project.stage==='draft'?'settings':project.stage;
       if(notify) onChange(summarizeProject(project));

@@ -849,6 +849,62 @@ async function testHistoricalScriptVersionCannotBeConfirmedOrResavedAsLatest() {
   workspace.destroy();
 }
 
+async function testScriptSaveSelectsReturnedLatestVersion() {
+  const base = workspaceProject({ stage: 'script_review', revision: 9 });
+  let project = Object.assign({}, base, {
+    script_versions: [
+      Object.assign({}, base.script_versions[0], { version: 1, title: '历史版本' }),
+      Object.assign({}, base.script_versions[0], { version: 2, title: '保存前最新版' }),
+    ],
+  });
+  let clickHandler = null;
+  const body = {
+    appendChild(node) { node.parentNode = body; },
+    removeChild(node) { if (node.parentNode === body) node.parentNode = null; },
+  };
+  const host = {
+    innerHTML: '', parentNode: null,
+    addEventListener(type, handler) { if (type === 'click') clickHandler = handler; },
+    removeEventListener() {},
+  };
+  const document = { body, createElement() { return host; } };
+  const client = {
+    get() { return Promise.resolve(project); },
+    update(id, revision, patch) {
+      project = Object.assign({}, project, {
+        revision: revision + 1,
+        script_versions: project.script_versions.concat([
+          Object.assign({ version: 3 }, patch.script),
+        ]),
+      });
+      return Promise.resolve(project);
+    },
+    confirm() { throw new Error('unexpected confirmation'); },
+    generatePlan() { throw new Error('unexpected paid generation'); },
+  };
+  const workspace = shortDrama.createWorkspace({ projectId: project.id, client, document });
+  await workspace.ready;
+  clickHandler({
+    target: {
+      parentNode: host,
+      getAttribute(name) { return name === 'data-script-version' ? '2' : null; },
+    },
+  });
+  assert.equal(workspace.getState().scriptVersion, 2, 'test setup explicitly selects the current latest version');
+
+  await workspace.saveScript(Object.assign({}, project.script_versions[1], { title: '保存后的新版本' }));
+
+  assert.equal(workspace.getState().scriptVersion, null,
+    'a newly returned latest version must clear the stale explicit selection');
+  assert.match(workspace.render(), /data-script-version="3" class="is-active"/,
+    'the newly created latest version must render as active immediately');
+  assert.match(workspace.render(), /data-action="save-script">保存为新版本/,
+    'the save action must be enabled for the returned latest version');
+  assert.match(workspace.render(), /data-confirm-stage="script_review">确认剧本并继续/,
+    'the confirm action must be enabled for the returned latest version');
+  workspace.destroy();
+}
+
 async function testWorkspaceLoadRecoveryOwnerIsolationAndDestroy() {
   let loads = 0;
   let updates = 0;
@@ -1312,6 +1368,7 @@ async function main() {
   await testWorkspaceSavesUseExactRevisionedBodiesAndSummaries();
   await testConfirmSavesChangedSectionThenUsesReturnedRevisionAndSkipsUnchangedScriptSave();
   await testHistoricalScriptVersionCannotBeConfirmedOrResavedAsLatest();
+  await testScriptSaveSelectsReturnedLatestVersion();
   await testWorkspaceLoadRecoveryOwnerIsolationAndDestroy();
   await testCollaborationRoleDowngradeDestroysEditableWorkspaceOnly();
   await testWorkspaceLocksSettingsAndRejectsConcurrentPaidPlanning();
