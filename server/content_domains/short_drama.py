@@ -1426,6 +1426,7 @@ _HTTP_ROUTES = {
     "GET": {
         "/api/gen/short-drama/projects",
         "/api/gen/short-drama/project",
+        "/api/gen/short-drama/production",
         "/api/gen/short-drama/planning-job",
         "/api/gen/short-drama/planning-quote",
     },
@@ -1572,6 +1573,10 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                 db_factory, username, _planning_project_id_from_query(handler)
             )
             handler._send(200, recovered or {"job_id": None})
+        elif method == "GET" and path.endswith("/production"):
+            handler._send(200, short_drama_production.get_production(
+                db_factory, username, _planning_project_id_from_query(handler)
+            ))
         elif method == "GET":
             handler._send(200, get_project(db_factory, username, _project_id_from_query(handler)))
         elif method == "PUT":
