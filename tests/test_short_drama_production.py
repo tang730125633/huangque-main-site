@@ -1,9 +1,14 @@
 import json
+import queue
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
 from contextlib import closing
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -12,7 +17,7 @@ SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from content_domains import short_drama, short_drama_production
+from content_domains import core, short_drama, short_drama_production, upstream_guard, video
 
 
 def _project_payload():
@@ -90,6 +95,18 @@ class ShortDramaProductionTests(unittest.TestCase):
                 "SELECT id FROM short_drama_shots WHERE project_id=? AND sort_order=?",
                 (self.project["id"], sort_order),
             ).fetchone()[0]
+
+    def _still_request(self, **changes):
+        body = {
+            "project_id": self.project["id"],
+            "revision": self.project["revision"],
+            "shot_id": self._shot_id(),
+            "prompt": "rainy midnight doorway, consistent detective character",
+            "mode": "single",
+            "count": 2,
+        }
+        body.update(changes)
+        return body
 
     def _link_job(self, *, shot_order=0, username="alice", link_username="alice",
                   job_kind="image", job_status="done", link_status="pending", cost=60,
@@ -217,6 +234,19 @@ class ShortDramaProductionTests(unittest.TestCase):
                     (job_id,),
                 ).fetchone()[0],
             )
+
+    def test_reconciliation_accounts_completed_still_cost_in_spent_points_once(self):
+        self._link_job(cost=60, quoted_cost=60)
+
+        short_drama_production.get_production(self.db, "alice", self.project["id"])
+        short_drama_production.get_production(self.db, "alice", self.project["id"])
+
+        with closing(self.db()) as conn:
+            spent_points = conn.execute(
+                "SELECT spent_points FROM short_drama_projects WHERE id=?",
+                (self.project["id"],),
+            ).fetchone()[0]
+        self.assertEqual(60, spent_points)
 
     def test_production_state_reports_active_job_and_reserved_points(self):
         job_id = self._link_job(
@@ -546,6 +576,560 @@ class ShortDramaProductionTests(unittest.TestCase):
                     "UPDATE short_drama_production_jobs SET project_id=? WHERE id=?",
                     (other["id"], "owned-job"),
                 )
+
+    def test_still_submission_is_bound_to_owned_project_shot_and_ratio(self):
+        prepared = short_drama_production.prepare_still_submission(
+            self.db, "alice", self._still_request()
+        )
+
+        self.assertEqual(self.project["id"], prepared["project"]["id"])
+        self.assertEqual(self._shot_id(), prepared["shot"]["id"])
+        self.assertEqual({
+            "provider": "seedream",
+            "variant": "std",
+            "quality": "hd",
+            "prompt": "rainy midnight doorway, consistent detective character",
+            "ratio": self.project["ratio"],
+            "count": 2,
+        }, prepared["image_payload"])
+
+    def test_still_submission_accepts_only_the_immutable_request_contract(self):
+        invalid_requests = [
+            self._still_request(count=1),
+            self._still_request(count=3),
+            self._still_request(mode="preview"),
+            self._still_request(mode=[]),
+            self._still_request(provider="openai"),
+            self._still_request(ratio="16:9"),
+            self._still_request(cost=0),
+        ]
+
+        for body in invalid_requests:
+            with self.subTest(body=body), self.assertRaises(ValueError):
+                short_drama_production.prepare_still_submission(
+                    self.db, "alice", body
+                )
+
+    def test_still_submission_requires_owner_exact_revision_stage_and_owned_shot(self):
+        with self.assertRaises(LookupError):
+            short_drama_production.prepare_still_submission(
+                self.db, "mallory", self._still_request()
+            )
+        with self.assertRaises(short_drama.RevisionConflict):
+            short_drama_production.prepare_still_submission(
+                self.db, "alice", self._still_request(
+                    revision=self.project["revision"] - 1
+                )
+            )
+
+        other = short_drama.create_project(self.db, "alice", _project_payload())
+        other = short_drama.apply_plan(
+            self.db, "alice", other["id"], other["revision"],
+            _six_shot_plan(), planning_cost=0, planning_job_id=2,
+        )
+        with closing(self.db()) as conn:
+            foreign_shot = conn.execute(
+                "SELECT id FROM short_drama_shots WHERE project_id=? LIMIT 1",
+                (other["id"],),
+            ).fetchone()[0]
+        with self.assertRaises(ValueError):
+            short_drama_production.prepare_still_submission(
+                self.db, "alice", self._still_request(shot_id=foreign_shot)
+            )
+
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_projects SET stage='voice_review' WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+        with self.assertRaises(ValueError):
+            short_drama_production.prepare_still_submission(
+                self.db, "alice", self._still_request()
+            )
+
+    def test_batch_still_submission_rejects_a_locked_slot(self):
+        with closing(self.db()) as conn:
+            short_drama_production.ensure_asset_slots(conn, self.project["id"])
+            conn.execute(
+                "UPDATE short_drama_assets SET locked=1 "
+                "WHERE project_id=? AND shot_id=? AND type='still'",
+                (self.project["id"], self._shot_id()),
+            )
+            conn.commit()
+
+        with self.assertRaises(ValueError):
+            short_drama_production.prepare_still_submission(
+                self.db, "alice", self._still_request(mode="batch")
+            )
+
+    def test_still_quote_uses_server_payload_and_counts_spent_reserved_and_new_cost(self):
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_projects SET point_budget=100, spent_points=20 WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+        self._link_job(
+            job_status="running", link_status="running", cost=30, quoted_cost=30
+        )
+        quoted_payloads = []
+
+        def cost_of(kind, payload):
+            quoted_payloads.append((kind, dict(payload)))
+            return 51
+
+        with self.assertRaises(short_drama.PointBudgetExceeded):
+            short_drama_production.prepare_still_quote(
+                self.db, "alice", self._still_request(), cost_of
+            )
+
+        self.assertEqual("image", quoted_payloads[0][0])
+        self.assertEqual("seedream", quoted_payloads[0][1]["provider"])
+        self.assertEqual("9:16", quoted_payloads[0][1]["ratio"])
+        self.assertEqual(2, quoted_payloads[0][1]["count"])
+
+    def test_still_quote_returns_realtime_server_cost(self):
+        quote = short_drama_production.prepare_still_quote(
+            self.db, "alice", self._still_request(), lambda kind, payload: 24
+        )
+
+        self.assertEqual({"cost": 24, "count": 2, "kind": "still"}, quote)
+
+    def test_record_submitted_job_binds_pending_owned_image_job(self):
+        with closing(self.db()) as conn:
+            cursor = conn.execute(
+                "INSERT INTO jobs(username, kind, cost, status, payload, result) "
+                "VALUES ('alice', 'image', 24, 'pending', '{}', NULL)"
+            )
+            job_id = cursor.lastrowid
+            conn.commit()
+
+        short_drama_production.record_submitted_job(
+            self.db, username="alice", project_id=self.project["id"],
+            shot_id=self._shot_id(), job_id=job_id,
+            idempotency_key="still-submit-001", quoted_cost=24,
+        )
+
+        with closing(self.db()) as conn:
+            row = conn.execute(
+                "SELECT username, project_id, shot_id, kind, job_id, "
+                "idempotency_key, quoted_cost, status "
+                "FROM short_drama_production_jobs WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+        self.assertEqual((
+            "alice", self.project["id"], self._shot_id(), "still", job_id,
+            "still-submit-001", 24, "pending",
+        ), row)
+
+
+class ShortDramaStillRouteTests(unittest.TestCase):
+    class FakePoints:
+        class AuthPointsError(Exception):
+            status = 402
+            detail = "insufficient points"
+
+        def __init__(self):
+            self.cost = 24
+            self.cost_calls = []
+            self.deduct_calls = []
+            self.refund_calls = []
+
+        def cost_of(self, kind, body):
+            self.cost_calls.append((kind, dict(body)))
+            return self.cost
+
+        def deduct_points(self, username, cost, reason):
+            self.deduct_calls.append((username, cost, reason))
+            return 100 - cost
+
+        def refund_points(self, username, cost, reason, transaction_key=None):
+            self.refund_calls.append((username, cost, reason, transaction_key))
+            return 100
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.originals = {
+            "JOB_DB": core.JOB_DB,
+            "AUDIO_DB": core.AUDIO_DB,
+            "verify": core.verify,
+            "_domains": core._domains,
+            "HANDLERS": core.HANDLERS,
+            "feature_init_db": core.feature_flags.init_db,
+            "feature_require_enabled": core.feature_flags.require_enabled,
+            "init_audio_db": core.init_audio_db,
+            "security": core.miniprogram_security.check_payload,
+            "upstream": upstream_guard.exhausted_reason,
+            "image_queue": core._image_job_queue,
+            "queued_ids": core._queued_job_ids,
+        }
+        core.JOB_DB = str(Path(self.tmp.name) / "content.db")
+        core.AUDIO_DB = str(Path(self.tmp.name) / "audio.db")
+        core.verify = lambda token: (
+            {"username": token, "must_change": token == "locked"} if token else None
+        )
+        self.points = self.FakePoints()
+        core._domains = lambda: (None, self.points, video)
+        core.HANDLERS = dict(core.HANDLERS, image=lambda payload: payload)
+        core.feature_flags.init_db = lambda: None
+        core.feature_flags.require_enabled = lambda kind: None
+        core.init_audio_db = lambda: None
+        self.security_calls = []
+        core.miniprogram_security.check_payload = lambda payload: self.security_calls.append(
+            dict(payload) if isinstance(payload, dict) else payload
+        )
+        self.upstream_calls = []
+        upstream_guard.exhausted_reason = lambda kind, payload: self.upstream_calls.append(
+            (kind, dict(payload))
+        ) or None
+        core._image_job_queue = queue.Queue(maxsize=8)
+        core._queued_job_ids = set()
+        core._shutting_down.clear()
+        core.init_db()
+
+        project = short_drama.create_project(core.jdb, "alice", _project_payload())
+        project = short_drama.apply_plan(
+            core.jdb, "alice", project["id"], project["revision"],
+            _six_shot_plan(), planning_cost=0, planning_job_id=91001,
+        )
+        for stage in ("characters_review", "script_review", "storyboard_review"):
+            project = short_drama.confirm_stage(
+                core.jdb, "alice", project["id"], project["revision"], stage
+            )
+        self.project = project
+        self.shot_id = project["shots"][0]["id"]
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), core.H)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base = "http://127.0.0.1:%d" % self.server.server_address[1]
+
+    def tearDown(self):
+        core._shutting_down.clear()
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        core.JOB_DB = self.originals["JOB_DB"]
+        core.AUDIO_DB = self.originals["AUDIO_DB"]
+        core.verify = self.originals["verify"]
+        core._domains = self.originals["_domains"]
+        core.HANDLERS = self.originals["HANDLERS"]
+        core.feature_flags.init_db = self.originals["feature_init_db"]
+        core.feature_flags.require_enabled = self.originals["feature_require_enabled"]
+        core.init_audio_db = self.originals["init_audio_db"]
+        core.miniprogram_security.check_payload = self.originals["security"]
+        upstream_guard.exhausted_reason = self.originals["upstream"]
+        core._image_job_queue = self.originals["image_queue"]
+        core._queued_job_ids = self.originals["queued_ids"]
+        self.tmp.cleanup()
+
+    def _body(self, **changes):
+        body = {
+            "project_id": self.project["id"],
+            "revision": self.project["revision"],
+            "shot_id": self.shot_id,
+            "prompt": "rainy midnight doorway, consistent detective character",
+            "mode": "single",
+            "count": 2,
+        }
+        body.update(changes)
+        return body
+
+    def request(self, path, *, body=None, username="alice", idempotency_key=None,
+                raw_body=None, method="POST"):
+        data = raw_body if raw_body is not None else json.dumps(
+            body if body is not None else {}, ensure_ascii=False
+        ).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if username:
+            headers["Authorization"] = "Bearer " + username
+        if idempotency_key is not None:
+            headers["Idempotency-Key"] = idempotency_key
+        request = urllib.request.Request(
+            self.base + path, data=data, method=method, headers=headers
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read())
+
+    def _jobs(self):
+        with closing(core.jdb()) as conn:
+            return conn.execute(
+                "SELECT id, username, kind, cost, status, payload, refunded "
+                "FROM jobs ORDER BY id"
+            ).fetchall()
+
+    def _idempotency_count(self):
+        with closing(core.jdb()) as conn:
+            return conn.execute("SELECT COUNT(*) FROM submission_idempotency").fetchone()[0]
+
+    def test_asset_quote_uses_realtime_server_built_image_payload(self):
+        status, quote = self.request(
+            "/api/gen/short-drama/asset-quote", body=self._body()
+        )
+
+        self.assertEqual(200, status)
+        self.assertEqual({"cost": 24, "count": 2, "kind": "still"}, quote)
+        self.assertEqual("image", self.points.cost_calls[0][0])
+        payload = self.points.cost_calls[0][1]
+        self.assertEqual({
+            "provider": "seedream", "variant": "std", "quality": "hd",
+            "prompt": self._body()["prompt"], "ratio": "9:16", "count": 2,
+        }, payload)
+        self.assertEqual([], self.points.deduct_calls)
+
+    def test_generate_stills_requires_idempotency_and_replays_without_double_charge_or_queue(self):
+        path = "/api/gen/short-drama/generate-stills"
+        missing_status, _missing = self.request(path, body=self._body())
+        self.assertEqual(400, missing_status)
+        self.assertEqual([], self.points.deduct_calls)
+        self.assertEqual([], self._jobs())
+
+        status, accepted = self.request(
+            path, body=self._body(), idempotency_key="still-submit-001"
+        )
+        replay_status, replayed = self.request(
+            path, body=self._body(), idempotency_key="still-submit-001"
+        )
+        conflict_status, conflict = self.request(
+            path, body=self._body(prompt="changed prompt"),
+            idempotency_key="still-submit-001",
+        )
+
+        self.assertEqual(200, status)
+        self.assertEqual(accepted, replayed)
+        self.assertEqual(200, replay_status)
+        self.assertEqual(409, conflict_status)
+        self.assertEqual("idempotency_conflict", conflict["code"])
+        self.assertEqual(self.project["id"], accepted["project_id"])
+        self.assertEqual(self.shot_id, accepted["shot_id"])
+        self.assertEqual(24, accepted["cost"])
+        self.assertEqual(1, len(self.points.deduct_calls))
+        self.assertEqual(1, len(self._jobs()))
+        self.assertEqual(1, core._image_job_queue.qsize())
+        with closing(core.jdb()) as conn:
+            association = conn.execute(
+                "SELECT project_id, shot_id, job_id, idempotency_key, quoted_cost "
+                "FROM short_drama_production_jobs"
+            ).fetchone()
+        self.assertEqual((
+            self.project["id"], self.shot_id, accepted["job_id"],
+            "still-submit-001", 24,
+        ), tuple(association))
+
+    def test_idempotent_replay_does_not_reconsume_a_fully_reserved_budget(self):
+        with closing(core.jdb()) as conn:
+            conn.execute(
+                "UPDATE short_drama_projects SET point_budget=24 WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+        path = "/api/gen/short-drama/generate-stills"
+        status, accepted = self.request(
+            path, body=self._body(), idempotency_key="still-budget-replay-001"
+        )
+        replay_status, replayed = self.request(
+            path, body=self._body(), idempotency_key="still-budget-replay-001"
+        )
+
+        self.assertEqual(200, status)
+        self.assertEqual(200, replay_status)
+        self.assertEqual(accepted, replayed)
+        self.assertEqual(1, len(self.points.deduct_calls))
+        self.assertEqual(1, core._image_job_queue.qsize())
+
+    def test_locked_batch_and_budget_fail_before_deduction(self):
+        with closing(core.jdb()) as conn:
+            short_drama_production.ensure_asset_slots(conn, self.project["id"])
+            conn.execute(
+                "UPDATE short_drama_assets SET locked=1 WHERE project_id=? AND shot_id=?",
+                (self.project["id"], self.shot_id),
+            )
+            conn.commit()
+        locked_status, _locked = self.request(
+            "/api/gen/short-drama/generate-stills",
+            body=self._body(mode="batch"), idempotency_key="still-locked-001",
+        )
+        self.assertEqual(400, locked_status)
+        self.assertEqual([], self.points.deduct_calls)
+        self.assertEqual([], self._jobs())
+
+        with closing(core.jdb()) as conn:
+            conn.execute(
+                "UPDATE short_drama_assets SET locked=0 WHERE project_id=? AND shot_id=?",
+                (self.project["id"], self.shot_id),
+            )
+            conn.execute(
+                "UPDATE short_drama_projects SET point_budget=23 WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+        budget_status, budget = self.request(
+            "/api/gen/short-drama/generate-stills", body=self._body(),
+            idempotency_key="still-budget-001",
+        )
+        self.assertEqual(400, budget_status)
+        self.assertEqual("point_budget_exceeded", budget["code"])
+        self.assertEqual([], self.points.deduct_calls)
+        self.assertEqual([], self._jobs())
+        self.assertEqual(0, self._idempotency_count())
+
+    def test_association_failure_refunds_and_aborts_idempotency(self):
+        path = "/api/gen/short-drama/generate-stills"
+        with mock.patch.object(
+            short_drama_production, "record_submitted_job",
+            side_effect=RuntimeError("association failed"),
+        ):
+            status, failed = self.request(
+                path, body=self._body(), idempotency_key="still-assoc-001"
+            )
+
+        self.assertEqual(500, status)
+        self.assertEqual(1, len(self.points.deduct_calls))
+        self.assertEqual(1, len(self.points.refund_calls))
+        self.assertEqual("error", self._jobs()[0]["status"])
+        self.assertEqual(1, self._jobs()[0]["refunded"])
+        self.assertEqual(0, self._idempotency_count())
+
+        retry_status, retried = self.request(
+            path, body=self._body(), idempotency_key="still-assoc-001"
+        )
+        self.assertEqual(200, retry_status)
+        self.assertEqual(self.project["id"], retried["project_id"])
+        self.assertEqual(2, len(self.points.deduct_calls))
+
+    def test_queue_full_refunds_and_aborts_idempotency(self):
+        core._image_job_queue = queue.Queue(maxsize=1)
+        core._image_job_queue.put_nowait(999999)
+        status, failed = self.request(
+            "/api/gen/short-drama/generate-stills", body=self._body(),
+            idempotency_key="still-queue-001",
+        )
+
+        self.assertEqual(429, status)
+        self.assertEqual("queue_full", failed["code"])
+        self.assertEqual(1, len(self.points.deduct_calls))
+        self.assertEqual(1, len(self.points.refund_calls))
+        self.assertEqual("error", self._jobs()[0]["status"])
+        self.assertEqual(1, self._jobs()[0]["refunded"])
+        self.assertEqual(0, self._idempotency_count())
+
+        core._image_job_queue.get_nowait()
+        retry_status, retried = self.request(
+            "/api/gen/short-drama/generate-stills", body=self._body(),
+            idempotency_key="still-queue-001",
+        )
+        self.assertEqual(200, retry_status)
+        self.assertEqual(self.project["id"], retried["project_id"])
+        self.assertEqual(2, len(self.points.deduct_calls))
+        self.assertEqual(1, len(self.points.refund_calls))
+        self.assertEqual(1, core._image_job_queue.qsize())
+
+    def test_auth_content_shutdown_and_upstream_guards_precede_paid_work(self):
+        path = "/api/gen/short-drama/generate-stills"
+        anonymous_status, _ = self.request(
+            path, raw_body=b"{malformed", username=None,
+            idempotency_key="still-guard-001",
+        )
+        locked_status, _ = self.request(
+            path, raw_body=b"{malformed", username="locked",
+            idempotency_key="still-guard-002",
+        )
+        self.assertEqual(401, anonymous_status)
+        self.assertEqual(403, locked_status)
+        self.assertEqual([], self.security_calls)
+
+        core.miniprogram_security.check_payload = mock.Mock(
+            side_effect=core.miniprogram_security.ContentRejected("rejected")
+        )
+        rejected_status, rejected = self.request(
+            path, body=self._body(), idempotency_key="still-guard-003"
+        )
+        self.assertEqual(400, rejected_status)
+        self.assertEqual("content_rejected", rejected["code"])
+        self.assertEqual([], self.points.cost_calls)
+
+        core.miniprogram_security.check_payload = lambda payload: self.security_calls.append(
+            dict(payload)
+        )
+        core._shutting_down.set()
+        shutdown_status, shutdown = self.request(
+            path, body=self._body(), idempotency_key="still-guard-004"
+        )
+        core._shutting_down.clear()
+        self.assertEqual(503, shutdown_status)
+        self.assertEqual("shutting_down", shutdown["code"])
+        self.assertEqual([], self.upstream_calls)
+        self.assertEqual([], self.points.cost_calls)
+
+        upstream_guard.exhausted_reason = lambda kind, payload: "upstream exhausted"
+        upstream_status, upstream = self.request(
+            path, body=self._body(), idempotency_key="still-guard-005"
+        )
+        self.assertEqual(503, upstream_status)
+        self.assertEqual("upstream_exhausted", upstream["code"])
+        self.assertEqual([], self.points.cost_calls)
+        self.assertEqual([], self.points.deduct_calls)
+        self.assertEqual([], self._jobs())
+
+    def test_stage_confirmation_shares_the_paid_submission_lock(self):
+        lock_states = []
+        original = short_drama.confirm_stage
+
+        def confirm(*args, **kwargs):
+            lock_states.append(core._submission_lock.locked())
+            return original(*args, **kwargs)
+
+        with mock.patch.object(short_drama, "confirm_stage", side_effect=confirm):
+            status, _confirmed = self.request(
+                "/api/gen/short-drama/confirm", body={
+                    "project_id": self.project["id"],
+                    "revision": self.project["revision"],
+                    "stage": "stills_review",
+                },
+            )
+
+        self.assertEqual(200, status)
+        self.assertEqual([True], lock_states)
+
+    def test_budget_revision_update_shares_the_paid_submission_lock(self):
+        lock_states = []
+        original = short_drama.update_project
+
+        def update(*args, **kwargs):
+            lock_states.append(core._submission_lock.locked())
+            return original(*args, **kwargs)
+
+        with mock.patch.object(short_drama, "update_project", side_effect=update):
+            status, _updated = self.request(
+                "/api/gen/short-drama/project?id=" + self.project["id"],
+                body={"revision": self.project["revision"], "point_budget": 200},
+                method="PUT",
+            )
+
+        self.assertEqual(200, status)
+        self.assertEqual([True], lock_states)
+
+    def test_title_revision_update_shares_the_paid_submission_lock(self):
+        lock_states = []
+        original = short_drama.update_project
+
+        def update(*args, **kwargs):
+            lock_states.append(core._submission_lock.locked())
+            return original(*args, **kwargs)
+
+        with mock.patch.object(short_drama, "update_project", side_effect=update):
+            status, _updated = self.request(
+                "/api/gen/short-drama/project?id=" + self.project["id"],
+                body={"revision": self.project["revision"], "title": "Renamed project"},
+                method="PUT",
+            )
+
+        self.assertEqual(200, status)
+        self.assertEqual([True], lock_states)
 
 
 if __name__ == "__main__":

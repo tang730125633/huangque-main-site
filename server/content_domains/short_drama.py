@@ -1435,6 +1435,7 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/project/delete",
         "/api/gen/short-drama/apply-plan",
         "/api/gen/short-drama/confirm",
+        "/api/gen/short-drama/asset-quote",
     },
     "PUT": {"/api/gen/short-drama/project"},
 }
@@ -1565,6 +1566,12 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             if cost < 0:
                 raise ValueError("短剧策划报价无效")
             handler._send(200, {"cost": cost})
+        elif method == "POST" and path.endswith("/asset-quote"):
+            if not callable(cost_of):
+                raise ValueError("关键帧报价暂不可用")
+            handler._send(200, short_drama_production.prepare_still_quote(
+                db_factory, username, _request_object(handler), cost_of
+            ))
         elif method == "GET" and path.endswith("/projects"):
             page, page_size = _project_pagination_from_query(handler)
             handler._send(200, list_projects(db_factory, username, page, page_size))
@@ -1587,7 +1594,7 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             revision = body.pop("revision")
             if type(revision) is not int:
                 raise ValueError("项目版本无效")
-            if mutation_lock is not None and set(body) & PLANNING_SPEC_FIELDS:
+            if mutation_lock is not None:
                 with mutation_lock:
                     updated = update_project(
                         db_factory, username, project_id, revision, body, avatar_lookup=avatar_lookup
@@ -1628,9 +1635,16 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             _validate_project_request(body, {"project_id", "revision", "stage"})
             if not isinstance(body["stage"], str):
                 raise ValueError("阶段确认请求无效")
-            handler._send(200, confirm_stage(
-                db_factory, username, body["project_id"], body["revision"], body["stage"]
-            ))
+            if mutation_lock is not None:
+                with mutation_lock:
+                    confirmed = confirm_stage(
+                        db_factory, username, body["project_id"], body["revision"], body["stage"]
+                    )
+            else:
+                confirmed = confirm_stage(
+                    db_factory, username, body["project_id"], body["revision"], body["stage"]
+                )
+            handler._send(200, confirmed)
     except (LookupError, RevisionConflict, AppliedJobConflict, ProjectHasUnappliedJobs,
             ValueError) as error:
         _http_error(handler, error)

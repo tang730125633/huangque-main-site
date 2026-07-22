@@ -11,6 +11,9 @@ JOB_KINDS = {"still"}
 PRODUCTION_STAGES = {
     "stills_review", "voice_review", "video_review", "assembly_review", "completed",
 }
+STILL_REQUEST_FIELDS = {
+    "project_id", "revision", "shot_id", "prompt", "mode", "count",
+}
 
 
 _SCHEMA = """
@@ -106,6 +109,176 @@ def init_db(db_factory):
         conn.close()
 
 
+def prepare_still_submission(db_factory, username, body):
+    if not isinstance(body, dict) or set(body) != STILL_REQUEST_FIELDS:
+        raise ValueError("关键帧请求字段不正确")
+    if (not isinstance(body["mode"], str)
+            or body["mode"] not in {"single", "retry", "batch"}
+            or type(body["count"]) is not int or body["count"] != 2):
+        raise ValueError("关键帧每次必须生成 2 张候选图")
+    if (not isinstance(body["project_id"], str) or not body["project_id"].strip()
+            or not isinstance(body["shot_id"], str) or not body["shot_id"].strip()):
+        raise ValueError("关键帧项目或分镜 ID 无效")
+    if type(body["revision"]) is not int or body["revision"] < 1:
+        raise ValueError("项目版本无效")
+    if not isinstance(body["prompt"], str):
+        raise ValueError("关键帧提示词无效")
+
+    conn = db_factory()
+    conn.row_factory = sqlite3.Row
+    try:
+        project = conn.execute(
+            "SELECT * FROM short_drama_projects "
+            "WHERE id=? AND username=? AND deleted=0",
+            (body["project_id"].strip(), username),
+        ).fetchone()
+        if not project:
+            raise LookupError("短剧项目不存在")
+        project = dict(project)
+        if int(project["revision"]) != body["revision"]:
+            from .short_drama import RevisionConflict
+            raise RevisionConflict("项目已在其他页面更新，请刷新后重试")
+        if project["stage"] != "stills_review":
+            raise ValueError("当前短剧阶段不能生成关键帧")
+        shot = conn.execute(
+            "SELECT s.*, COALESCE(a.locked, 0) AS still_locked "
+            "FROM short_drama_shots s "
+            "LEFT JOIN short_drama_assets a "
+            "ON a.project_id=s.project_id AND a.shot_id=s.id AND a.type='still' "
+            "WHERE s.id=? AND s.project_id=?",
+            (body["shot_id"].strip(), project["id"]),
+        ).fetchone()
+        if not shot:
+            raise ValueError("关键帧分镜不属于当前项目")
+        shot = dict(shot)
+        if body["mode"] == "batch" and bool(shot.pop("still_locked")):
+            raise ValueError("批量生成已跳过锁定的关键帧")
+        shot.pop("still_locked", None)
+    finally:
+        conn.close()
+
+    from . import image as image_domain
+    image_payload = image_domain.validate_image_payload({
+        "provider": "seedream",
+        "variant": "std",
+        "quality": "hd",
+        "prompt": body["prompt"],
+        "ratio": project["ratio"],
+        "count": 2,
+    })
+    return {"project": project, "shot": shot, "image_payload": image_payload}
+
+
+def check_production_budget(db_factory, username, project_id, quoted_cost):
+    if type(quoted_cost) is not int or quoted_cost < 0:
+        raise ValueError("关键帧报价无效")
+    conn = db_factory()
+    try:
+        project = conn.execute(
+            "SELECT point_budget, spent_points, stage FROM short_drama_projects "
+            "WHERE id=? AND username=? AND deleted=0",
+            (project_id, username),
+        ).fetchone()
+        if not project:
+            raise LookupError("短剧项目不存在")
+        point_budget, spent_points, stage = project
+        if stage != "stills_review":
+            raise ValueError("当前短剧阶段不能生成关键帧")
+        point_budget = int(point_budget)
+        if point_budget == 0:
+            return
+        reserved = conn.execute(
+            "SELECT COALESCE(SUM(p.quoted_cost), 0) "
+            "FROM short_drama_production_jobs p "
+            "JOIN jobs j ON j.id=p.job_id AND j.username=p.username AND j.kind='image' "
+            "WHERE p.username=? AND p.project_id=? "
+            "AND p.status IN ('pending','running') "
+            "AND j.status IN ('pending','running','done')",
+            (username, project_id),
+        ).fetchone()[0]
+        reserved = int(reserved or 0)
+        spent_points = int(spent_points)
+        if spent_points + reserved + quoted_cost > point_budget:
+            from .short_drama import PointBudgetExceeded
+            raise PointBudgetExceeded(
+                "短剧点数预算不足：已用 %d 点、已预留 %d 点、本次 %d 点、预算 %d 点" %
+                (spent_points, reserved, quoted_cost, point_budget)
+            )
+    finally:
+        conn.close()
+
+
+def prepare_still_quote(db_factory, username, body, cost_of):
+    prepared = prepare_still_submission(db_factory, username, body)
+    cost = int(cost_of("image", prepared["image_payload"]))
+    if cost < 0:
+        raise ValueError("关键帧报价无效")
+    check_production_budget(db_factory, username, prepared["project"]["id"], cost)
+    return {"cost": cost, "count": 2, "kind": "still"}
+
+
+def record_submitted_job(db_factory, *, username, project_id, shot_id, job_id,
+                         idempotency_key, quoted_cost):
+    if (type(job_id) is not int or job_id < 1 or type(quoted_cost) is not int
+            or quoted_cost < 0 or not isinstance(idempotency_key, str)
+            or not idempotency_key):
+        raise ValueError("关键帧任务关联参数无效")
+    conn = db_factory()
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("BEGIN IMMEDIATE")
+        project = conn.execute(
+            "SELECT stage FROM short_drama_projects "
+            "WHERE id=? AND username=? AND deleted=0",
+            (project_id, username),
+        ).fetchone()
+        if not project:
+            raise LookupError("短剧项目不存在")
+        if project["stage"] != "stills_review":
+            raise ValueError("当前短剧阶段不能生成关键帧")
+        if not conn.execute(
+            "SELECT 1 FROM short_drama_shots WHERE id=? AND project_id=?",
+            (shot_id, project_id),
+        ).fetchone():
+            raise ValueError("关键帧分镜不属于当前项目")
+        job = conn.execute(
+            "SELECT username, kind, cost, status FROM jobs WHERE id=?", (job_id,)
+        ).fetchone()
+        if (not job or job["username"] != username or job["kind"] != "image"
+                or job["status"] != "pending" or int(job["cost"] or 0) != quoted_cost):
+            raise ValueError("关键帧任务不属于当前用户或状态无效")
+        existing = conn.execute(
+            "SELECT p.id, p.project_id, p.shot_id, j.status AS job_status "
+            "FROM short_drama_production_jobs p "
+            "LEFT JOIN jobs j ON j.id=p.job_id AND j.username=p.username "
+            "WHERE p.username=? AND p.kind='still' AND p.idempotency_key=?",
+            (username, idempotency_key),
+        ).fetchone()
+        if existing:
+            if (existing["project_id"] != project_id or existing["shot_id"] != shot_id
+                    or existing["job_status"] not in {"error", "failed"}):
+                raise ValueError("关键帧幂等键已关联其他任务")
+            conn.execute(
+                "DELETE FROM short_drama_production_jobs WHERE id=?", (existing["id"],)
+            )
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO short_drama_production_jobs "
+            "(id, username, project_id, shot_id, kind, job_id, idempotency_key, "
+            "quoted_cost, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 'still', ?, ?, ?, 'pending', ?, ?)",
+            (str(uuid.uuid4()), username, project_id, shot_id, job_id,
+             idempotency_key, quoted_cost, now, now),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def ensure_asset_slots(conn, project_id):
     now = int(time.time())
     shot_ids = conn.execute(
@@ -132,14 +305,15 @@ def _json_object(raw, error_message):
 
 def reconcile_jobs(conn, username, project_id):
     rows = conn.execute(
-        "SELECT p.id, p.shot_id, p.job_id, p.status, j.status, j.cost, j.payload, j.result "
+        "SELECT p.id, p.shot_id, p.job_id, p.status, p.quoted_cost, "
+        "j.status, j.cost, j.payload, j.result "
         "FROM short_drama_production_jobs p "
         "JOIN jobs j ON j.id=p.job_id AND j.username=p.username AND j.kind='image' "
         "WHERE p.username=? AND p.project_id=? ORDER BY p.created_at, p.id",
         (username, project_id),
     ).fetchall()
     now = int(time.time())
-    for (link_id, shot_id, job_id, link_status, job_status, cost,
+    for (link_id, shot_id, job_id, link_status, quoted_cost, job_status, cost,
          payload_json, result_json) in rows:
         status = job_status if job_status in {"pending", "running", "done", "failed"} else "failed"
         conn.execute(
@@ -189,6 +363,11 @@ def reconcile_jobs(conn, username, project_id):
         ).fetchone()
         if int(archived[0]) != 2:
             raise ValueError("关键帧任务必须完整归档 2 张候选图")
+        if link_status in {"pending", "running"}:
+            conn.execute(
+                "UPDATE short_drama_projects SET spent_points=spent_points+? WHERE id=?",
+                (int(quoted_cost or 0), project_id),
+            )
         conn.execute(
             "UPDATE short_drama_assets "
             "SET current_version=COALESCE(current_version, ?), updated_at=? WHERE id=?",
