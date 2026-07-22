@@ -163,6 +163,28 @@ class ContentDomainTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, message):
                     text._chat("system", "user", 0)
 
+    def test_copy_provider_fallback_errors_name_openai_configuration(self):
+        text = importlib.import_module("content_domains.text")
+        cases = (
+            (401, "文案模型鉴权失败，请检查 OPENAI_API_KEY"),
+            (404, "文案模型接口或模型不存在，请检查 OPENAI_BASE 和 COPY_MODEL"),
+        )
+        for status, message in cases:
+            error = urllib.error.HTTPError(
+                "https://openai.example/v1/chat/completions", status, "provider error", {},
+                io.BytesIO(b'{"error":{"message":"provider detail"}}'),
+            )
+            with self.subTest(status=status), \
+                    patch.object(text, "COPY_API_BASE", ""), \
+                    patch.object(text, "COPY_API_KEY", ""), \
+                    patch.object(text, "OPENAI_BASE", "https://openai.example"), \
+                    patch.object(text, "OPENAI_KEY", "openai-secret"), \
+                    patch.object(text.urllib.request, "urlopen", side_effect=error):
+                with self.assertRaisesRegex(RuntimeError, message) as raised:
+                    text._chat("system", "user", 0)
+                self.assertNotIn("COPY_API_BASE", str(raised.exception))
+                self.assertNotIn("COPY_API_KEY", str(raised.exception))
+
     def test_core_does_not_own_domain_handlers(self):
         core = importlib.import_module("content_domains.core")
         for name in ("gen_image", "gen_copy", "gen_collect", "gen_leads", "gen_audio", "gen_video", "gen_breakdown"):
