@@ -1390,6 +1390,12 @@ def apply_plan(db_factory, username, project_id, revision, plan, planning_cost, 
 
 
 def confirm_stage(db_factory, username, project_id, revision, current_stage):
+    if current_stage == "stills_review":
+        return short_drama_production.confirm_stage(db_factory, username, {
+            "project_id": project_id,
+            "revision": revision,
+            "stage": current_stage,
+        })
     if current_stage not in NEXT_STAGE:
         raise ValueError("当前阶段不可确认")
     now = int(time.time())
@@ -1436,6 +1442,8 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/apply-plan",
         "/api/gen/short-drama/confirm",
         "/api/gen/short-drama/asset-quote",
+        "/api/gen/short-drama/select-asset",
+        "/api/gen/short-drama/confirm-production-stage",
     },
     "PUT": {"/api/gen/short-drama/project"},
 }
@@ -1572,6 +1580,26 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             handler._send(200, short_drama_production.prepare_still_quote(
                 db_factory, username, _request_object(handler), cost_of
             ))
+        elif method == "POST" and path.endswith("/select-asset"):
+            body = _request_object(handler)
+            if mutation_lock is not None:
+                with mutation_lock:
+                    selected = short_drama_production.select_asset(
+                        db_factory, username, body
+                    )
+            else:
+                selected = short_drama_production.select_asset(db_factory, username, body)
+            handler._send(200, selected)
+        elif method == "POST" and path.endswith("/confirm-production-stage"):
+            body = _request_object(handler)
+            if mutation_lock is not None:
+                with mutation_lock:
+                    confirmed = short_drama_production.confirm_stage(
+                        db_factory, username, body
+                    )
+            else:
+                confirmed = short_drama_production.confirm_stage(db_factory, username, body)
+            handler._send(200, confirmed)
         elif method == "GET" and path.endswith("/projects"):
             page, page_size = _project_pagination_from_query(handler)
             handler._send(200, list_projects(db_factory, username, page, page_size))

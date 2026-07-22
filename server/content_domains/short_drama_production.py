@@ -488,6 +488,134 @@ def build_production_snapshot(conn, project, username):
     }
 
 
+def select_asset(db_factory, username, body):
+    required_fields = {"project_id", "revision", "asset_id", "version", "lock"}
+    if not isinstance(body, dict) or set(body) != required_fields:
+        raise ValueError("asset selection request fields are invalid")
+    if (type(body["project_id"]) is not str or not body["project_id"].strip()
+            or type(body["asset_id"]) is not str or not body["asset_id"].strip()):
+        raise ValueError("asset selection identifiers are invalid")
+    if (type(body["revision"]) is not int or body["revision"] < 1
+            or type(body["version"]) is not int or body["version"] < 1):
+        raise ValueError("asset version is invalid")
+    if type(body["lock"]) is not bool:
+        raise ValueError("asset lock state is invalid")
+
+    project_id = body["project_id"].strip()
+    asset_id = body["asset_id"].strip()
+    conn = db_factory()
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT p.revision, p.stage "
+            "FROM short_drama_assets a "
+            "JOIN short_drama_projects p ON p.id=a.project_id "
+            "JOIN short_drama_shots s ON s.id=a.shot_id AND s.project_id=a.project_id "
+            "JOIN short_drama_asset_versions v "
+            "ON v.asset_id=a.id AND v.version=? "
+            "WHERE a.id=? AND a.project_id=? AND a.type='still' "
+            "AND p.username=? AND p.deleted=0 AND v.status='done'",
+            (body["version"], asset_id, project_id, username),
+        ).fetchone()
+        if not row:
+            raise LookupError("asset version does not exist")
+        if int(row[0]) != body["revision"]:
+            from .short_drama import RevisionConflict
+            raise RevisionConflict("project was updated; refresh and retry")
+        if row[1] != "stills_review":
+            raise ValueError("assets cannot be selected in the current stage")
+        now = int(time.time())
+        updated = conn.execute(
+            "UPDATE short_drama_assets SET current_version=?, locked=?, updated_at=? "
+            "WHERE id=? AND project_id=? AND type='still'",
+            (body["version"], int(body["lock"]), now, asset_id, project_id),
+        )
+        if updated.rowcount != 1:
+            raise LookupError("asset version does not exist")
+        cur = conn.execute(
+            "UPDATE short_drama_projects SET revision=revision+1, updated_at=? "
+            "WHERE id=? AND username=? AND revision=? "
+            "AND stage='stills_review' AND deleted=0",
+            (now, project_id, username, body["revision"]),
+        )
+        if cur.rowcount != 1:
+            from .short_drama import RevisionConflict
+            raise RevisionConflict("project was updated; refresh and retry")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return get_production(db_factory, username, project_id)
+
+
+def confirm_stage(db_factory, username, body):
+    if not isinstance(body, dict) or set(body) != {"project_id", "revision", "stage"}:
+        raise ValueError("production stage confirmation fields are invalid")
+    if type(body["project_id"]) is not str or not body["project_id"].strip():
+        raise ValueError("project identifier is invalid")
+    if type(body["revision"]) is not int or body["revision"] < 1:
+        raise ValueError("project revision is invalid")
+    if type(body["stage"]) is not str or body["stage"] != "stills_review":
+        raise ValueError("only the stills review stage can be confirmed")
+
+    project_id = body["project_id"].strip()
+    conn = db_factory()
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("BEGIN IMMEDIATE")
+        project = conn.execute(
+            "SELECT revision, stage, ratio FROM short_drama_projects "
+            "WHERE id=? AND username=? AND deleted=0",
+            (project_id, username),
+        ).fetchone()
+        if not project:
+            raise LookupError("short drama project does not exist")
+        if int(project[0]) != body["revision"]:
+            from .short_drama import RevisionConflict
+            raise RevisionConflict("project was updated; refresh and retry")
+        if project[1] != "stills_review":
+            raise ValueError("short drama stages cannot be skipped")
+
+        shot_ids = [row[0] for row in conn.execute(
+            "SELECT id FROM short_drama_shots WHERE project_id=?",
+            (project_id,),
+        ).fetchall()]
+        valid_rows = conn.execute(
+            "SELECT s.id FROM short_drama_shots s "
+            "JOIN short_drama_assets a "
+            "ON a.project_id=s.project_id AND a.shot_id=s.id AND a.type='still' "
+            "JOIN short_drama_asset_versions v "
+            "ON v.asset_id=a.id AND v.version=a.current_version "
+            "WHERE s.project_id=? AND a.locked=1 AND v.status='done' AND v.ratio=?",
+            (project_id, project[2]),
+        ).fetchall()
+        valid_shot_ids = [row[0] for row in valid_rows]
+        if (not shot_ids or len(valid_shot_ids) != len(shot_ids)
+                or set(valid_shot_ids) != set(shot_ids)):
+            raise ValueError("lock one completed current still for every shot first")
+
+        cur = conn.execute(
+            "UPDATE short_drama_projects "
+            "SET stage='voice_review', revision=revision+1, updated_at=? "
+            "WHERE id=? AND username=? AND revision=? "
+            "AND stage='stills_review' AND deleted=0",
+            (int(time.time()), project_id, username, body["revision"]),
+        )
+        if cur.rowcount != 1:
+            from .short_drama import RevisionConflict
+            raise RevisionConflict("project was updated; refresh and retry")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return get_production(db_factory, username, project_id)
+
+
 def get_production(db_factory, username, project_id):
     conn = db_factory()
     conn.row_factory = sqlite3.Row

@@ -138,6 +138,58 @@ class ShortDramaProductionTests(unittest.TestCase):
             conn.commit()
         return job_id
 
+    def _completed_still_versions(self, shot_order=0, *, statuses=("done", "done"),
+                                  ratios=("9:16", "9:16")):
+        with closing(self.db()) as conn:
+            short_drama_production.ensure_asset_slots(conn, self.project["id"])
+            asset_id = conn.execute(
+                "SELECT id FROM short_drama_assets WHERE project_id=? AND shot_id=?",
+                (self.project["id"], self._shot_id(shot_order)),
+            ).fetchone()[0]
+            versions = []
+            for version, (status, ratio) in enumerate(zip(statuses, ratios), 1):
+                item = {
+                    "id": "version-%s-%s" % (shot_order, version),
+                    "version": version,
+                    "url": "https://example.test/%s-%s.png" % (shot_order, version),
+                    "status": status,
+                    "ratio": ratio,
+                }
+                conn.execute(
+                    "INSERT INTO short_drama_asset_versions "
+                    "(id, asset_id, version, job_id, url, prompt, ratio, cost, status, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, 'prompt', ?, 0, ?, 1)",
+                    (item["id"], asset_id, version, 10000 + shot_order * 10 + version,
+                     item["url"], ratio, status),
+                )
+                versions.append(item)
+            conn.execute(
+                "UPDATE short_drama_assets SET current_version=1 WHERE id=?", (asset_id,)
+            )
+            conn.commit()
+        return self.project, asset_id, versions
+
+    def _lock_every_current_still(self):
+        with closing(self.db()) as conn:
+            short_drama_production.ensure_asset_slots(conn, self.project["id"])
+            assets = conn.execute(
+                "SELECT id, shot_id FROM short_drama_assets WHERE project_id=? ORDER BY shot_id",
+                (self.project["id"],),
+            ).fetchall()
+            for index, (asset_id, _shot_id) in enumerate(assets):
+                conn.execute(
+                    "INSERT INTO short_drama_asset_versions "
+                    "(id, asset_id, version, job_id, url, prompt, ratio, cost, status, created_at) "
+                    "VALUES (?, ?, 1, ?, ?, 'prompt', '9:16', 0, 'done', 1)",
+                    ("locked-version-%s" % index, asset_id, 11000 + index,
+                     "https://example.test/locked-%s.png" % index),
+                )
+                conn.execute(
+                    "UPDATE short_drama_assets SET current_version=1, locked=1 WHERE id=?",
+                    (asset_id,),
+                )
+            conn.commit()
+
     def test_init_creates_versioned_production_tables(self):
         with closing(self.db()) as conn:
             names = {row[0] for row in conn.execute(
@@ -552,6 +604,179 @@ class ShortDramaProductionTests(unittest.TestCase):
         self.assertTrue(short_drama.dispatch_http(locked, "GET", self.db, verify))
         self.assertEqual(403, locked.response[0])
 
+    def test_selecting_a_version_preserves_history_and_can_lock(self):
+        project, asset_id, versions = self._completed_still_versions()
+
+        updated = short_drama_production.select_asset(self.db, "alice", {
+            "project_id": project["id"], "revision": project["revision"],
+            "asset_id": asset_id, "version": versions[1]["version"], "lock": True,
+        })
+
+        selected = updated["shots"][0]["still"]
+        self.assertEqual(versions[1]["version"], selected["current_version"])
+        self.assertTrue(selected["locked"])
+        self.assertEqual(2, len(selected["versions"]))
+        self.assertEqual(project["revision"] + 1, updated["revision"])
+        self.assertEqual(0, updated["spent_points"])
+
+    def test_select_asset_has_an_exact_typed_contract(self):
+        project, asset_id, versions = self._completed_still_versions()
+        valid = {
+            "project_id": project["id"], "revision": project["revision"],
+            "asset_id": asset_id, "version": versions[0]["version"], "lock": True,
+        }
+        invalid = [
+            dict(valid, extra=True),
+            {key: value for key, value in valid.items() if key != "asset_id"},
+            dict(valid, project_id=1), dict(valid, asset_id=[]),
+            dict(valid, revision=True), dict(valid, revision=0),
+            dict(valid, version=True), dict(valid, version=0), dict(valid, lock=1),
+        ]
+
+        for body in invalid:
+            with self.subTest(body=body), self.assertRaises(ValueError):
+                short_drama_production.select_asset(self.db, "alice", body)
+
+    def test_select_asset_rejects_non_owned_failed_and_stale_versions(self):
+        project, asset_id, versions = self._completed_still_versions(statuses=("done", "failed"))
+        request = {
+            "project_id": project["id"], "revision": project["revision"],
+            "asset_id": asset_id, "version": versions[1]["version"], "lock": True,
+        }
+        with self.assertRaises(LookupError):
+            short_drama_production.select_asset(self.db, "alice", request)
+        with self.assertRaises(LookupError):
+            short_drama_production.select_asset(
+                self.db, "mallory", dict(request, version=versions[0]["version"])
+            )
+        with self.assertRaises(short_drama.RevisionConflict):
+            short_drama_production.select_asset(
+                self.db, "alice", dict(request, version=versions[0]["version"],
+                                        revision=project["revision"] - 1)
+            )
+
+    def test_regeneration_after_locking_keeps_selection_and_appends_history(self):
+        project, asset_id, versions = self._completed_still_versions()
+        selected = short_drama_production.select_asset(self.db, "alice", {
+            "project_id": project["id"], "revision": project["revision"],
+            "asset_id": asset_id, "version": versions[1]["version"], "lock": True,
+        })
+        self._link_job()
+
+        regenerated = short_drama_production.get_production(
+            self.db, "alice", project["id"]
+        )
+
+        still = regenerated["shots"][0]["still"]
+        self.assertEqual(versions[1]["version"], still["current_version"])
+        self.assertTrue(still["locked"])
+        self.assertEqual([1, 2, 3, 4], [item["version"] for item in still["versions"]])
+        with closing(self.db()) as conn:
+            spent_points = conn.execute(
+                "SELECT spent_points FROM short_drama_projects WHERE id=?",
+                (project["id"],),
+            ).fetchone()[0]
+        self.assertEqual(selected["spent_points"] + 60, spent_points)
+
+    def test_confirm_requires_every_current_shot_to_have_a_locked_still(self):
+        self._completed_still_versions()
+
+        with self.assertRaises(ValueError):
+            short_drama_production.confirm_stage(self.db, "alice", {
+                "project_id": self.project["id"], "revision": self.project["revision"],
+                "stage": "stills_review",
+            })
+
+    def test_confirm_rejects_empty_shots_failed_current_and_wrong_ratio(self):
+        empty = short_drama.create_project(self.db, "alice", _project_payload())
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_projects SET stage='stills_review' WHERE id=?",
+                (empty["id"],),
+            )
+            conn.commit()
+        with self.assertRaises(ValueError):
+            short_drama_production.confirm_stage(self.db, "alice", {
+                "project_id": empty["id"], "revision": empty["revision"],
+                "stage": "stills_review",
+            })
+
+        self._lock_every_current_still()
+        with closing(self.db()) as conn:
+            first_asset = conn.execute(
+                "SELECT id FROM short_drama_assets WHERE project_id=? ORDER BY shot_id LIMIT 1",
+                (self.project["id"],),
+            ).fetchone()[0]
+            conn.execute(
+                "UPDATE short_drama_asset_versions SET status='failed' "
+                "WHERE asset_id=? AND version=1", (first_asset,),
+            )
+            conn.commit()
+        body = {
+            "project_id": self.project["id"], "revision": self.project["revision"],
+            "stage": "stills_review",
+        }
+        with self.assertRaises(ValueError):
+            short_drama_production.confirm_stage(self.db, "alice", body)
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_asset_versions SET status='done', ratio='16:9' "
+                "WHERE asset_id=? AND version=1", (first_asset,),
+            )
+            conn.commit()
+        with self.assertRaises(ValueError):
+            short_drama_production.confirm_stage(self.db, "alice", body)
+
+    def test_confirm_stage_has_exact_contract_owner_revision_and_single_success(self):
+        self._lock_every_current_still()
+        body = {
+            "project_id": self.project["id"], "revision": self.project["revision"],
+            "stage": "stills_review",
+        }
+        invalid = [
+            dict(body, extra=True), dict(body, project_id=1),
+            dict(body, revision=True), dict(body, revision=0),
+            dict(body, stage="voice_review"),
+        ]
+        for request in invalid:
+            with self.subTest(body=request), self.assertRaises(ValueError):
+                short_drama_production.confirm_stage(self.db, "alice", request)
+        with self.assertRaises(LookupError):
+            short_drama_production.confirm_stage(self.db, "mallory", body)
+
+        confirmed = short_drama_production.confirm_stage(self.db, "alice", body)
+        self.assertEqual("voice_review", confirmed["stage"])
+        self.assertEqual(body["revision"] + 1, confirmed["revision"])
+        with self.assertRaises(short_drama.RevisionConflict):
+            short_drama_production.confirm_stage(self.db, "alice", body)
+
+    def test_concurrent_stage_confirmation_succeeds_once(self):
+        self._lock_every_current_still()
+        body = {
+            "project_id": self.project["id"], "revision": self.project["revision"],
+            "stage": "stills_review",
+        }
+        barrier = threading.Barrier(2)
+        results = []
+
+        def confirm():
+            barrier.wait()
+            try:
+                results.append(short_drama_production.confirm_stage(
+                    self.db, "alice", body
+                )["stage"])
+            except Exception as error:
+                results.append(type(error))
+
+        threads = [threading.Thread(target=confirm) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        self.assertEqual(1, results.count("voice_review"))
+        self.assertEqual(1, results.count(short_drama.RevisionConflict))
+
     def test_assets_and_jobs_reject_cross_project_shots_on_insert_and_update(self):
         other = short_drama.create_project(self.db, "alice", _project_payload())
         other = short_drama.apply_plan(
@@ -891,6 +1116,31 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         with closing(core.jdb()) as conn:
             return conn.execute("SELECT COUNT(*) FROM submission_idempotency").fetchone()[0]
 
+    def _lock_every_current_still(self, *, two_versions_for_first=False):
+        with closing(core.jdb()) as conn:
+            short_drama_production.ensure_asset_slots(conn, self.project["id"])
+            assets = conn.execute(
+                "SELECT id, shot_id FROM short_drama_assets WHERE project_id=? ORDER BY shot_id",
+                (self.project["id"],),
+            ).fetchall()
+            for index, (asset_id, shot_id) in enumerate(assets):
+                version_count = 2 if shot_id == self.shot_id and two_versions_for_first else 1
+                for version in range(1, version_count + 1):
+                    conn.execute(
+                        "INSERT INTO short_drama_asset_versions "
+                        "(id, asset_id, version, job_id, url, prompt, ratio, cost, status, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, 'prompt', '9:16', 0, 'done', 1)",
+                        ("route-version-%s-%s" % (index, version), asset_id, version,
+                         12000 + index * 10 + version,
+                         "https://example.test/route-%s-%s.png" % (index, version)),
+                    )
+                conn.execute(
+                    "UPDATE short_drama_assets SET current_version=1, locked=1 WHERE id=?",
+                    (asset_id,),
+                )
+            conn.commit()
+        return next(asset_id for asset_id, shot_id in assets if shot_id == self.shot_id)
+
     def test_asset_quote_uses_realtime_server_built_image_payload(self):
         status, quote = self.request(
             "/api/gen/short-drama/asset-quote", body=self._body()
@@ -905,6 +1155,63 @@ class ShortDramaStillRouteTests(unittest.TestCase):
             "prompt": self._body()["prompt"], "ratio": "9:16", "count": 2,
         }, payload)
         self.assertEqual([], self.points.deduct_calls)
+
+    def test_select_and_confirm_production_routes_do_not_charge_points(self):
+        first_asset = self._lock_every_current_still(two_versions_for_first=True)
+
+        select_status, selected = self.request(
+            "/api/gen/short-drama/select-asset", body={
+                "project_id": self.project["id"], "revision": self.project["revision"],
+                "asset_id": first_asset, "version": 2, "lock": True,
+            },
+        )
+        confirm_status, confirmed = self.request(
+            "/api/gen/short-drama/confirm-production-stage", body={
+                "project_id": self.project["id"], "revision": selected["revision"],
+                "stage": "stills_review",
+            },
+        )
+
+        self.assertEqual(200, select_status)
+        self.assertEqual(2, selected["shots"][0]["still"]["current_version"])
+        self.assertEqual(200, confirm_status)
+        self.assertEqual("voice_review", confirmed["stage"])
+        self.assertEqual([], self.points.deduct_calls)
+        self.assertEqual([], self._jobs())
+
+    def test_production_mutation_routes_apply_auth_and_hide_missing_assets(self):
+        select_path = "/api/gen/short-drama/select-asset"
+        anonymous_status, _ = self.request(
+            select_path, raw_body=b"{malformed", username=None
+        )
+        locked_status, _ = self.request(
+            select_path, raw_body=b"{malformed", username="locked"
+        )
+        missing_status, missing = self.request(select_path, body={
+            "project_id": self.project["id"], "revision": self.project["revision"],
+            "asset_id": "another-users-secret-asset", "version": 1, "lock": True,
+        })
+
+        self.assertEqual(401, anonymous_status)
+        self.assertEqual(403, locked_status)
+        self.assertEqual(404, missing_status)
+        self.assertNotIn("another-users-secret-asset", missing.get("detail", ""))
+        self.assertEqual([], self.points.deduct_calls)
+
+    def test_legacy_stills_confirmation_cannot_bypass_production_gate(self):
+        status, _response = self.request(
+            "/api/gen/short-drama/confirm", body={
+                "project_id": self.project["id"], "revision": self.project["revision"],
+                "stage": "stills_review",
+            },
+        )
+
+        self.assertEqual(400, status)
+        with closing(core.jdb()) as conn:
+            stage = conn.execute(
+                "SELECT stage FROM short_drama_projects WHERE id=?", (self.project["id"],)
+            ).fetchone()[0]
+        self.assertEqual("stills_review", stage)
 
     def test_generate_stills_requires_idempotency_and_replays_without_double_charge_or_queue(self):
         path = "/api/gen/short-drama/generate-stills"
@@ -1163,16 +1470,17 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         self.assertEqual([], self._jobs())
 
     def test_stage_confirmation_shares_the_paid_submission_lock(self):
+        self._lock_every_current_still()
         lock_states = []
-        original = short_drama.confirm_stage
+        original = short_drama_production.confirm_stage
 
         def confirm(*args, **kwargs):
             lock_states.append(core._submission_lock.locked())
             return original(*args, **kwargs)
 
-        with mock.patch.object(short_drama, "confirm_stage", side_effect=confirm):
+        with mock.patch.object(short_drama_production, "confirm_stage", side_effect=confirm):
             status, _confirmed = self.request(
-                "/api/gen/short-drama/confirm", body={
+                "/api/gen/short-drama/confirm-production-stage", body={
                     "project_id": self.project["id"],
                     "revision": self.project["revision"],
                     "stage": "stills_review",
