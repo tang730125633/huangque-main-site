@@ -2,6 +2,7 @@ import importlib
 import base64
 import io
 import json
+import os
 import queue
 import sqlite3
 import sys
@@ -70,6 +71,76 @@ class ContentDomainTests(unittest.TestCase):
                 self.assertEqual(300, timeout)
                 body = json.loads(request.data)
                 self.assertEqual("copy-model", body["model"])
+
+    def test_copy_provider_requires_atomic_dedicated_config(self):
+        core = importlib.import_module("content_domains.core")
+        text = importlib.import_module("content_domains.text")
+        names = ("COPY_API_BASE", "COPY_API_KEY")
+        saved_env = {name: os.environ.get(name) for name in names}
+        saved_openai = (core.OPENAI_BASE, core.OPENAI_KEY)
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"choices":[{"message":{"content":"OK"}}]}'
+
+        def configure(base, key):
+            for name, value in zip(names, (base, key)):
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            return importlib.reload(text)
+
+        try:
+            core.OPENAI_BASE = "https://openai.example/v1"
+            core.OPENAI_KEY = "openai-secret"
+
+            configure(None, None)
+            with patch.object(text.urllib.request, "urlopen", return_value=Response()) as open_request:
+                self.assertEqual("OK", text._chat("system", "user", 0))
+                request = open_request.call_args.args[0]
+                self.assertEqual("https://openai.example/v1/chat/completions", request.full_url)
+                self.assertEqual("Bearer openai-secret", request.get_header("Authorization"))
+
+            configure("https://copy.example", "copy-secret")
+            with patch.object(text.urllib.request, "urlopen", return_value=Response()) as open_request:
+                self.assertEqual("OK", text._chat("system", "user", 0))
+                request = open_request.call_args.args[0]
+                self.assertEqual("https://copy.example/v1/chat/completions", request.full_url)
+                self.assertEqual("Bearer copy-secret", request.get_header("Authorization"))
+
+            for base, key in (("https://copy.example", None), (None, "copy-secret")):
+                with self.subTest(base=base, key=bool(key)):
+                    configure(base, key)
+                    with patch.object(text.urllib.request, "urlopen", return_value=Response()) as open_request:
+                        with self.assertRaisesRegex(RuntimeError, "必须同时配置"):
+                            text._chat("system", "user", 0)
+                        open_request.assert_not_called()
+
+            configure("   ", "\t")
+            with patch.object(text.urllib.request, "urlopen", return_value=Response()) as open_request:
+                try:
+                    result = text._chat("system", "user", 0)
+                except Exception as error:
+                    self.fail("blank dedicated settings must fall back together: %s" % error)
+                self.assertEqual("OK", result)
+                request = open_request.call_args.args[0]
+                self.assertEqual("https://openai.example/v1/chat/completions", request.full_url)
+                self.assertEqual("Bearer openai-secret", request.get_header("Authorization"))
+        finally:
+            core.OPENAI_BASE, core.OPENAI_KEY = saved_openai
+            for name, value in saved_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            importlib.reload(text)
 
     def test_copy_provider_translates_actionable_http_errors(self):
         text = importlib.import_module("content_domains.text")

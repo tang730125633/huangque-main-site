@@ -6,12 +6,22 @@ import urllib.request
 from .core import COPY_MODEL, OPENAI_BASE, OPENAI_KEY, json
 
 
-COPY_API_BASE = os.environ.get("COPY_API_BASE", OPENAI_BASE)
-COPY_API_KEY = os.environ.get("COPY_API_KEY", OPENAI_KEY)
+COPY_API_BASE = os.environ.get("COPY_API_BASE", "").strip()
+COPY_API_KEY = os.environ.get("COPY_API_KEY", "").strip()
 
 
-def _chat_url():
-    base = str(COPY_API_BASE or "").strip().rstrip("/")
+def _provider_config():
+    dedicated_base = str(COPY_API_BASE or "").strip()
+    dedicated_key = str(COPY_API_KEY or "").strip()
+    if bool(dedicated_base) != bool(dedicated_key):
+        raise RuntimeError("COPY_API_BASE 与 COPY_API_KEY 必须同时配置，不能只配置其中一项")
+    if dedicated_base:
+        return dedicated_base, dedicated_key
+    return str(OPENAI_BASE or "").strip(), str(OPENAI_KEY or "").strip()
+
+
+def _chat_url(base):
+    base = str(base or "").strip().rstrip("/")
     if not base:
         raise RuntimeError("文案模型接口未配置，请检查 COPY_API_BASE")
     if base.endswith("/v1"):
@@ -32,11 +42,12 @@ def _http_error_message(status):
 
 
 def _post_chat(body):
-    if not COPY_API_KEY:
-        raise RuntimeError("文案模型密钥未配置，请检查 COPY_API_KEY")
+    base, key = _provider_config()
+    if not key:
+        raise RuntimeError("文案模型密钥未配置，请配置 COPY_API_KEY 或 OPENAI_API_KEY")
     request = urllib.request.Request(
-        _chat_url(), data=body,
-        headers={"Authorization": "Bearer " + COPY_API_KEY, "Content-Type": "application/json"},
+        _chat_url(base), data=body,
+        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
         method="POST",
     )
     try:
