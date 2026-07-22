@@ -61,6 +61,24 @@ function terminalState(revision = 7) {
   return state;
 }
 
+function batchState() {
+  const state = sampleState();
+  state.shots.push(
+    {
+      id: 'shot-3', shot_key: '第三镜', sort_order: 3, duration: 5, image_prompt: '正在生成',
+      still: {
+        asset_id: 'asset-3', current_version: null, locked: false, versions: [],
+        job: { id: 'link-3', job_id: 103, kind: 'still', status: 'running', quoted_cost: 8 },
+      },
+    },
+    {
+      id: 'shot-4', shot_key: '第四镜', sort_order: 4, duration: 5, image_prompt: '雨后天台',
+      still: { asset_id: 'asset-4', current_version: null, locked: false, versions: [], job: null },
+    },
+  );
+  return state;
+}
+
 function testNormalizationAndRenderer() {
   assert.deepEqual(Object.keys(production).sort(), ['createWorkspace', 'normalizeState', 'renderWorkspace']);
 
@@ -77,6 +95,8 @@ function testNormalizationAndRenderer() {
   assert.match(html, /镜头列表[\s\S]*关键帧候选[\s\S]*生成控制台/);
   assert.match(html, /data-filter="all"[\s\S]*data-filter="pending"[\s\S]*data-filter="locked"/);
   assert.match(html, /data-ratio="9:16"/);
+  assert.doesNotMatch(html, /<article[^>]*data-ratio=/, 'ratio belongs to the inner preview, not the card');
+  assert.match(html, /<div class="nc-sdp-preview" data-ratio="9:16">/);
   assert.doesNotMatch(html, /<script>|<img src=x|<b>old/);
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.match(html, /data-version="12"[\s\S]*data-action="lock-version"/);
@@ -97,6 +117,10 @@ function testNormalizationAndRenderer() {
     production.renderWorkspace(sampleState({ stale: true, error: '<stale>' }), {}),
     /&lt;stale&gt;[\s\S]*data-action="refresh"/,
   );
+  const mixedBatchHtml = production.renderWorkspace(batchState(), { selectedShotId: 'shot-1' });
+  assert.match(mixedBatchHtml, /data-action="generate-batch"/);
+  assert.doesNotMatch(mixedBatchHtml, /data-action="generate-batch"[^>]*disabled/,
+    'batch remains available when another unlocked idle shot is eligible');
 }
 
 function testResponsiveCssContract() {
@@ -107,6 +131,10 @@ function testResponsiveCssContract() {
   assert.match(css, /\[data-ratio="9:16"\][^{]*\{[^}]*aspect-ratio:\s*9\s*\/\s*16/s);
   assert.match(css, /\[data-ratio="16:9"\][^{]*\{[^}]*aspect-ratio:\s*16\s*\/\s*9/s);
   assert.match(css, /\.nc-sdp-preview\s+img[^{]*\{[^}]*object-fit:\s*contain/s);
+  assert.doesNotMatch(css, /\.nc-sdp-candidate-grid\s*>\s*\[data-ratio=/,
+    'candidate articles must not receive an aspect ratio');
+  assert.doesNotMatch(css, /\.nc-sdp-candidate\s*\{[^}]*overflow:\s*hidden/s,
+    'candidate articles must not clip their action controls');
   assert.match(css, /@media\s*\(max-width:\s*980px\)[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
   assert.match(css, /@media\s*\(max-width:\s*980px\)[\s\S]*overflow-x:\s*auto/);
 }
@@ -292,7 +320,7 @@ async function testRevisionedMutationsStaleRefreshAndDestroy() {
   await closing.ready;
   closing.selectShot('shot-2');
   const pending = closing.generateCurrent();
-  await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  for (let index = 0; index < 12 && timers.length === 0; index += 1) await Promise.resolve();
   assert.equal(timers.length, 1);
   closing.destroy();
   assert.deepEqual(cleared, [timers[0].id]);
@@ -361,6 +389,299 @@ async function testDestroyDuringTimedOutSubmissionNeverRetries() {
   await assert.rejects(pending, /destroyed/i);
 }
 
+async function testConfirmationRequiresEveryLockedCurrentMatchingDoneVersion() {
+  const variants = [];
+  const unlocked = sampleState();
+  variants.push(unlocked);
+  const missingCurrent = sampleState();
+  missingCurrent.shots[0].still.locked = true;
+  variants.push(missingCurrent);
+  const failedCurrent = terminalState();
+  failedCurrent.shots[0].still.locked = true;
+  failedCurrent.shots[0].still.versions[0].status = 'failed';
+  variants.push(failedCurrent);
+  const wrongRatio = terminalState();
+  wrongRatio.shots[0].still.locked = true;
+  wrongRatio.shots[0].still.versions[0].ratio = '16:9';
+  variants.push(wrongRatio);
+  const missingRatio = terminalState();
+  missingRatio.shots[0].still.locked = true;
+  delete missingRatio.shots[0].still.versions[0].ratio;
+  variants.push(missingRatio);
+  const invalidRatio = terminalState();
+  invalidRatio.shots[0].still.locked = true;
+  invalidRatio.shots[0].still.versions[0].ratio = 'constructor';
+  variants.push(invalidRatio);
+
+  for (const state of variants) {
+    let requests = 0;
+    const workspace = production.createWorkspace({
+      projectId: state.project_id, document: null,
+      client: {
+        json(path) {
+          requests += 1;
+          if (path.startsWith('/api/gen/short-drama/production?')) return Promise.resolve(clone(state));
+          throw new Error(`confirmation must not request ${path}`);
+        },
+      },
+    });
+    await workspace.ready;
+    await assert.rejects(workspace.confirmStage(), /locked|current|completed|关键帧/i);
+    assert.equal(requests, 1, 'invalid confirmation performs no POST');
+    workspace.destroy();
+  }
+}
+
+async function testTrueBatchQuotesConfirmsSubmitsAndPollsEligibleShots() {
+  let state = batchState();
+  const calls = [];
+  const submitAttempts = Object.create(null);
+  let keyIndex = 0;
+  let confirmations = 0;
+  let productionGets = 0;
+  const client = {
+    json(path, options = {}) {
+      calls.push({ path, options: clone(options) });
+      if (path.startsWith('/api/gen/short-drama/production?')) {
+        productionGets += 1;
+        if (productionGets <= 2) return Promise.resolve(clone(state));
+        const next = clone(state);
+        for (const shot of next.shots) {
+          if (!['shot-2', 'shot-4'].includes(shot.id)) continue;
+          if (productionGets === 3) {
+            shot.still.job = {
+              id: `link-${shot.id}`, job_id: shot.id === 'shot-2' ? 202 : 204,
+              kind: 'still', status: 'running', quoted_cost: shot.id === 'shot-2' ? 10 : 20,
+            };
+          } else {
+            const jobId = shot.id === 'shot-2' ? 202 : 204;
+            shot.still.job = null;
+            shot.still.current_version = 1;
+            shot.still.versions = [
+              { id: `${shot.id}-done`, version: 1, job_id: jobId, url: '/done.png', prompt: shot.image_prompt,
+                ratio: '9:16', cost: 10, status: 'done', created_at: 4 },
+            ];
+          }
+        }
+        return Promise.resolve(next);
+      }
+      if (path === '/api/gen/short-drama/asset-quote') {
+        return Promise.resolve({
+          cost: options.body.shot_id === 'shot-2' ? 10 : 20, count: 2, kind: 'still',
+        });
+      }
+      if (path === '/api/gen/short-drama/generate-stills') {
+        const shotId = options.body.shot_id;
+        submitAttempts[shotId] = (submitAttempts[shotId] || 0) + 1;
+        if (shotId === 'shot-2' && submitAttempts[shotId] === 1) {
+          const error = new Error('request timed out'); error.code = 'timeout';
+          return Promise.reject(error);
+        }
+        return Promise.resolve({ job_id: shotId === 'shot-2' ? 202 : 204, shot_id: shotId });
+      }
+      throw new Error(`unexpected route ${path}`);
+    },
+  };
+  const workspace = production.createWorkspace({
+    projectId: state.project_id, client, document: null, pollIntervalMs: 0,
+    idempotencyKey(shotId) { keyIndex += 1; return `batch-key-${keyIndex}-${shotId}`; },
+    confirm(totalCost, quote, bodies) {
+      confirmations += 1;
+      assert.equal(totalCost, 30);
+      assert.equal(quote.cost, 30);
+      assert.equal(quote.shot_count, 2);
+      assert.deepEqual(quote.shot_ids, ['shot-2', 'shot-4']);
+      assert.deepEqual(bodies.map((body) => body.shot_id), ['shot-2', 'shot-4']);
+      return true;
+    },
+  });
+  await workspace.ready;
+  const first = workspace.generateBatch();
+  const second = workspace.generateBatch();
+  assert.equal(first, second, 'double-clicking one batch shares the action');
+  await first;
+
+  const quoteCalls = calls.filter((call) => call.path === '/api/gen/short-drama/asset-quote');
+  const submitCalls = calls.filter((call) => call.path === '/api/gen/short-drama/generate-stills');
+  assert.deepEqual(quoteCalls.map((call) => call.options.body.shot_id), ['shot-2', 'shot-4']);
+  assert.ok(quoteCalls.every((call) => call.options.body.mode === 'batch' && call.options.body.count === 2));
+  assert.deepEqual(submitCalls.map((call) => call.options.body.shot_id), ['shot-2', 'shot-2', 'shot-4']);
+  assert.deepEqual(submitCalls.map((call) => call.options.headers['Idempotency-Key']), [
+    'batch-key-1-shot-2', 'batch-key-1-shot-2', 'batch-key-2-shot-4',
+  ]);
+  assert.equal(confirmations, 1);
+  assert.equal(keyIndex, 2, 'one stable key is created per eligible shot');
+  assert.equal(calls.filter((call) => call.path.startsWith('/api/gen/short-drama/production?')).length, 4,
+    'poll survives one stale missing snapshot, observes running, then waits for every terminal shot');
+  assert.equal(calls.some((call) => call.options.body && ['shot-1', 'shot-3'].includes(call.options.body.shot_id)), false,
+    'locked and active shots are never quoted or submitted');
+  workspace.destroy();
+
+  let cancelledSubmits = 0;
+  let cancelledConfirms = 0;
+  const cancelled = production.createWorkspace({
+    projectId: state.project_id, document: null,
+    confirm(cost, quote) {
+      cancelledConfirms += 1;
+      assert.equal(cost, 30); assert.equal(quote.shot_count, 2);
+      return false;
+    },
+    client: {
+      json(path, options = {}) {
+        if (path.startsWith('/api/gen/short-drama/production?')) return Promise.resolve(clone(state));
+        if (path === '/api/gen/short-drama/asset-quote') {
+          return Promise.resolve({ cost: options.body.shot_id === 'shot-2' ? 10 : 20, count: 2, kind: 'still' });
+        }
+        if (path === '/api/gen/short-drama/generate-stills') cancelledSubmits += 1;
+        return Promise.resolve({});
+      },
+    },
+  });
+  await cancelled.ready;
+  assert.equal(await cancelled.generateBatch(), null);
+  assert.equal(cancelledConfirms, 1);
+  assert.equal(cancelledSubmits, 0);
+  cancelled.destroy();
+
+  const noEligibleState = batchState();
+  noEligibleState.shots.forEach((shot) => {
+    if (!shot.still.job) shot.still.locked = true;
+  });
+  let noEligibleRequests = 0;
+  const noEligible = production.createWorkspace({
+    projectId: noEligibleState.project_id, document: null,
+    client: {
+      json(path) {
+        noEligibleRequests += 1;
+        if (path.startsWith('/api/gen/short-drama/production?')) return Promise.resolve(clone(noEligibleState));
+        throw new Error(`unexpected route ${path}`);
+      },
+    },
+  });
+  await noEligible.ready;
+  assert.equal(await noEligible.generateBatch(), null);
+  assert.equal(noEligibleRequests, 1, 'no eligible shots performs no quote or submit request');
+  noEligible.destroy();
+}
+
+function fakeHost() {
+  const listeners = Object.create(null);
+  const counts = { added: 0, removed: 0 };
+  return {
+    innerHTML: '', counts,
+    addEventListener(type, handler) { listeners[type] = handler; counts.added += 1; },
+    removeEventListener(type, handler) {
+      if (listeners[type] === handler) delete listeners[type];
+      counts.removed += 1;
+    },
+  };
+}
+
+async function testSynchronousClientThrowsAreCapturedAcrossControllerBoundaries() {
+  const timers = [];
+  const host = fakeHost();
+  const initial = production.createWorkspace({
+    projectId: 'project/one', host,
+    setTimeoutImpl(fn) { timers.push(fn); return timers.length; },
+    clearTimeoutImpl() {},
+    client: { json() { throw new Error('<sync init>'); } },
+  });
+  assert.equal(await initial.ready, null, 'synchronous initial GET is captured by ready');
+  assert.equal(initial.getState().busy, false);
+  assert.equal(initial.getState().error, '<sync init>');
+  assert.match(initial.render(), /&lt;sync init&gt;/);
+  initial.destroy();
+  assert.deepEqual(host.counts, { added: 2, removed: 2 });
+  assert.equal(timers.length, 0);
+
+  let refreshGets = 0;
+  const refreshing = production.createWorkspace({
+    projectId: 'project/one', document: null,
+    client: { json(path) {
+      if (path.startsWith('/api/gen/short-drama/production?') && refreshGets++ === 0) return sampleState();
+      throw new Error('<sync refresh>');
+    } },
+  });
+  await refreshing.ready;
+  await assert.rejects(refreshing.refresh(), /sync refresh/);
+  assert.equal(refreshing.getState().busy, false);
+  assert.equal(refreshing.getState().error, '<sync refresh>');
+  refreshing.destroy();
+
+  const mutating = production.createWorkspace({
+    projectId: 'project/one', document: null,
+    client: { json(path) {
+      if (path.startsWith('/api/gen/short-drama/production?')) return sampleState();
+      throw new Error('<sync mutation>');
+    } },
+  });
+  await mutating.ready;
+  await assert.rejects(mutating.selectVersion(11, true), /sync mutation/);
+  assert.equal(mutating.getState().busy, false);
+  assert.equal(mutating.getState().error, '<sync mutation>');
+  mutating.destroy();
+
+  const generating = production.createWorkspace({
+    projectId: 'project/one', document: null, confirm: () => true,
+    client: { json(path) {
+      if (path.startsWith('/api/gen/short-drama/production?')) return sampleState();
+      if (path === '/api/gen/short-drama/asset-quote') throw new Error('<sync generate>');
+      throw new Error(`unexpected route ${path}`);
+    } },
+  });
+  await generating.ready;
+  await assert.rejects(generating.generateCurrent(), /sync generate/);
+  assert.equal(generating.getState().busy, false);
+  assert.equal(generating.getState().error, '<sync generate>');
+  generating.destroy();
+
+  let pollGets = 0;
+  const polling = production.createWorkspace({
+    projectId: 'project/one', document: null, confirm: () => true, pollIntervalMs: 0,
+    client: { json(path) {
+      if (path.startsWith('/api/gen/short-drama/production?')) {
+        pollGets += 1;
+        if (pollGets === 1) return sampleState();
+        throw new Error('<sync poll>');
+      }
+      if (path === '/api/gen/short-drama/asset-quote') return { cost: 24, count: 2, kind: 'still' };
+      if (path === '/api/gen/short-drama/generate-stills') return { job_id: 101, shot_id: 'shot-1' };
+      throw new Error(`unexpected route ${path}`);
+    } },
+  });
+  await polling.ready;
+  await assert.rejects(polling.generateCurrent(), /sync poll/);
+  assert.equal(polling.getState().busy, false);
+  assert.equal(polling.getState().error, '<sync poll>');
+  polling.destroy();
+}
+
+async function testMalformedJobStatusesAreNeverActive() {
+  for (const status of ['constructor', 'toString', '__proto__']) {
+    const state = sampleState();
+    state.shots[1].still.job = {
+      id: `bad-${status}`, job_id: 909, kind: 'still', status, quoted_cost: 1,
+    };
+    const html = production.renderWorkspace(state, { selectedShotId: 'shot-1' });
+    assert.doesNotMatch(html, new RegExp(`data-status="${status}"`));
+
+    let gets = 0;
+    const workspace = production.createWorkspace({
+      projectId: state.project_id, document: null, confirm: () => true, pollIntervalMs: 0,
+      client: { json(path) {
+        if (path.startsWith('/api/gen/short-drama/production?')) { gets += 1; return clone(state); }
+        if (path === '/api/gen/short-drama/asset-quote') return { cost: 1, count: 2, kind: 'still' };
+        if (path === '/api/gen/short-drama/generate-stills') return { job_id: 909, shot_id: 'shot-1' };
+        throw new Error(`unexpected route ${path}`);
+      } },
+    });
+    await workspace.ready;
+    await workspace.generateCurrent();
+    assert.equal(gets, 2, `${status} is terminal rather than an active poll state`);
+    workspace.destroy();
+  }
+}
+
 async function main() {
   testNormalizationAndRenderer();
   testResponsiveCssContract();
@@ -369,6 +690,10 @@ async function main() {
   await testRevisionedMutationsStaleRefreshAndDestroy();
   await testDestroyDuringSubmissionNeverCreatesAPollTimer();
   await testDestroyDuringTimedOutSubmissionNeverRetries();
+  await testConfirmationRequiresEveryLockedCurrentMatchingDoneVersion();
+  await testTrueBatchQuotesConfirmsSubmitsAndPollsEligibleShots();
+  await testSynchronousClientThrowsAreCapturedAcrossControllerBoundaries();
+  await testMalformedJobStatusesAreNeverActive();
   console.log('canvas short drama production: pass');
 }
 

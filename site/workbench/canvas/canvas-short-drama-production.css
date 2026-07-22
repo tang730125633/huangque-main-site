@@ -222,7 +222,7 @@
 
 .nc-sdp-candidate {
   min-width: 0;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid var(--sd-line);
   border-radius: 13px;
   background: var(--sd-paper);
@@ -239,16 +239,15 @@
   max-height: 58vh;
   margin: 0 auto;
   overflow: hidden;
+  border-radius: 12px 12px 0 0;
   background: #111827;
 }
 
-.nc-sdp-preview[data-ratio="9:16"],
-.nc-sdp-candidate-grid > [data-ratio="9:16"] {
+.nc-sdp-preview[data-ratio="9:16"] {
   aspect-ratio: 9 / 16;
 }
 
-.nc-sdp-preview[data-ratio="16:9"],
-.nc-sdp-candidate-grid > [data-ratio="16:9"] {
+.nc-sdp-preview[data-ratio="16:9"] {
   aspect-ratio: 16 / 9;
 }
 

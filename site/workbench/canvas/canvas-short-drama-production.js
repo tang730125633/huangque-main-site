@@ -10,7 +10,8 @@
   var GENERATE_PATH='/api/gen/short-drama/generate-stills';
   var SELECT_PATH='/api/gen/short-drama/select-asset';
   var CONFIRM_PATH='/api/gen/short-drama/confirm-production-stage';
-  var ACTIVE_JOB_STATES={pending:true,running:true};
+
+  function isActiveJobStatus(status){ return status==='pending'||status==='running'; }
 
   function clone(value){
     if(Array.isArray(value)) return value.map(clone);
@@ -50,7 +51,7 @@
       job_id:version.job_id,
       url:text(version.url),
       prompt:text(version.prompt),
-      ratio:version.ratio==='16:9'?'16:9':'9:16',
+      ratio:version.ratio==='16:9'?'16:9':(version.ratio==='9:16'?'9:16':''),
       cost:Math.max(0,number(version.cost,0)),
       status:text(version.status||'failed'),
       created_at:number(version.created_at,0)
@@ -141,7 +142,7 @@
 
   function shotStatus(shot){
     var job=shot.still.job;
-    if(job&&ACTIVE_JOB_STATES[job.status]) return job.status;
+    if(job&&isActiveJobStatus(job.status)) return job.status;
     if(job&&job.status==='failed') return 'failed';
     if(shot.still.locked) return 'locked';
     var current=null;
@@ -185,7 +186,7 @@
   function renderVersionCard(state,shot,version,writable){
     var current=version.version===shot.still.current_version;
     var selectable=writable&&version.status==='done';
-    return '<article class="nc-sdp-candidate'+selected(current)+'" data-version-id="'+escapeHtml(version.id)+'" data-ratio="'+state.ratio+'">'+
+    return '<article class="nc-sdp-candidate'+selected(current)+'" data-version-id="'+escapeHtml(version.id)+'">'+
       '<div class="nc-sdp-preview" data-ratio="'+state.ratio+'">'+
       (version.url?'<img src="'+safeUrl(version.url)+'" alt="'+escapeHtml(shot.shot_key)+' 关键帧版本 '+version.version+'">':'<span>无预览</span>')+'</div>'+
       '<div class="nc-sdp-candidate-meta"><strong>版本 '+version.version+(current?' · 当前':'')+'</strong><small>'+version.cost+' 点 · '+escapeHtml(version.status)+'</small></div>'+
@@ -219,17 +220,22 @@
 
   function renderInspector(state){
     var shot=selectedShot(state),job=shot&&shot.still.job;
+    if(job&&!isActiveJobStatus(job.status)) job=null;
     var writable=state.canEdit&&!state.busy&&!state.stale&&!state.destroyed&&state.stage==='stills_review';
     var quote=state.quote&&typeof state.quote==='object'?number(state.quote.cost,0):number(state.quote,0);
     var budget=state.point_budget===0?'不限':state.point_budget+' 点';
     var confirmable=writable&&allShotsLocked(state);
+    var batchable=writable&&state.shots.some(function(item){
+      return !item.still.locked&&!(item.still.job&&isActiveJobStatus(item.still.job.status));
+    });
     return '<aside class="nc-sdp-inspector"><header><span class="nc-sdp-kicker">关键帧生产</span><h2>生成控制台</h2></header>'+
-      '<section class="nc-sdp-cost"><span>本次实时报价</span><strong>'+(state.quote==null?'待查询':quote+' 点')+'</strong><small>生成前报价并显式确认；取消不会提交。</small></section>'+
+      '<section class="nc-sdp-cost"><span>本次实时报价</span><strong>'+(state.quote==null?'待查询':quote+' 点')+'</strong><small>'+
+      (state.quote&&state.quote.shot_count?state.quote.shot_count+' 个镜头 · ':'')+'生成前报价并显式确认；取消不会提交。</small></section>'+
       '<dl><div><dt>项目预算</dt><dd>'+budget+'</dd></div><div><dt>已花费</dt><dd>'+state.spent_points+' 点</dd></div><div><dt>已预留</dt><dd>'+state.reserved_points+' 点</dd></div><div><dt>当前版本</dt><dd>R'+state.revision+'</dd></div></dl>'+
       (job?'<section class="nc-sdp-progress" data-status="'+escapeHtml(job.status)+'"><strong>'+escapeHtml(job.status==='running'?'正在生成':'等待生成')+'</strong><small>任务 '+escapeHtml(job.job_id)+' · 预留 '+job.quoted_cost+' 点</small></section>':'')+
       (state.error?'<section class="nc-sdp-error" role="alert"><strong>'+(state.stale?'版本冲突':'操作未完成')+'</strong><p>'+escapeHtml(state.error)+'</p>'+(state.stale?'<button type="button" data-action="refresh">刷新最新版本</button>':'')+'</section>':'')+
       '<div class="nc-sdp-generation-actions"><button type="button" class="is-primary" data-action="generate-current"'+disabledUnless(writable)+'>生成当前镜头</button>'+
-      '<button type="button" data-action="retry-current"'+disabledUnless(writable)+'>重试当前镜头</button><button type="button" data-action="generate-batch"'+disabledUnless(writable&&shot&&!shot.still.locked)+'>批量模式生成</button></div>'+
+      '<button type="button" data-action="retry-current"'+disabledUnless(writable)+'>重试当前镜头</button><button type="button" data-action="generate-batch"'+disabledUnless(batchable)+'>批量模式生成</button></div>'+
       '<button type="button" class="nc-sdp-confirm" data-action="confirm-stage"'+disabledUnless(confirmable)+'>确认全部关键帧并进入配音</button>'+
       (!state.canEdit?'<p class="nc-sdp-readonly">当前为只读模式，所有写操作均已禁用。</p>':'')+
       (state.stage!=='stills_review'?'<p class="nc-sdp-readonly">当前阶段不可修改关键帧。</p>':'')+'</aside>';
@@ -268,6 +274,9 @@
     var ui={selectedShotId:options.selectedShotId,filter:'all',prompts:{},canEdit:options.canEdit!==false,busy:true,stale:false,error:'',quote:null,lastMode:''};
 
     function ensureAlive(){ if(destroyed) throw new Error('workspace destroyed'); }
+    function callJson(path,requestOptions){
+      return Promise.resolve().then(function(){ return client.json(path,requestOptions); });
+    }
     function view(){
       var base=serverState||{project_id:options.projectId,shots:[]};
       return normalizeState(base,ui);
@@ -300,7 +309,7 @@
     }
     function statePath(){ return PRODUCTION_PATH+'?project_id='+encodeURIComponent(options.projectId); }
     function requestState(keepBusy){
-      return Promise.resolve(client.json(statePath())).then(function(next){ return accept(next,keepBusy); });
+      return callJson(statePath()).then(function(next){ return accept(next,keepBusy); });
     }
     function refresh(){
       try{ ensureAlive(); }catch(error){ return Promise.reject(error); }
@@ -319,7 +328,7 @@
     function mutation(path,body){
       try{ ensureWritable(); }catch(error){ return Promise.reject(error); }
       ui.busy=true;ui.error='';safePaint();
-      return Promise.resolve(client.json(path,{method:'POST',body:body})).then(function(next){
+      return callJson(path,{method:'POST',body:body}).then(function(next){
         return accept(next,false);
       }).catch(function(error){ handleError(error); throw error; });
     }
@@ -355,12 +364,14 @@
     }
     function confirmStage(){
       try{ ensureWritable(); }catch(error){ return Promise.reject(error); }
+      if(!allShotsLocked(view())){
+        return Promise.reject(new Error('every shot requires a locked current completed matching-ratio still'));
+      }
       return mutation(CONFIRM_PATH,{
         project_id:serverState.project_id,revision:number(serverState.revision,0),stage:'stills_review'
       });
     }
-    function stillBody(mode){
-      var shot=currentShot();
+    function stillBodyForShot(shot,mode){
       if(!shot) throw new Error('no shot selected');
       return {
         project_id:serverState.project_id,
@@ -371,17 +382,25 @@
         count:2
       };
     }
+    function stillBody(mode){ return stillBodyForShot(currentShot(),mode); }
     function submitWithTimeoutRetry(body,key){
       var requestOptions={method:'POST',body:body,headers:{'Idempotency-Key':key}};
-      return Promise.resolve(client.json(GENERATE_PATH,requestOptions)).catch(function(error){
+      return callJson(GENERATE_PATH,requestOptions).catch(function(error){
         if(error&&error.code==='timeout'){
           ensureAlive();
-          return client.json(GENERATE_PATH,requestOptions);
+          return callJson(GENERATE_PATH,requestOptions);
         }
         throw error;
       });
     }
-    function pollShot(shotId){
+    function pollShots(targets){
+      var tracked=(targets||[]).map(function(target){
+        return {
+          shotId:target&&typeof target==='object'?target.shotId:target,
+          jobId:target&&typeof target==='object'?target.jobId:null,
+          observed:false,missing:0,done:false
+        };
+      });
       return new Promise(function(resolve,reject){
         var settled=false;
         function finish(callback,value){
@@ -395,10 +414,24 @@
           pollTimer=null;
           if(destroyed){ finish(reject,new Error('workspace destroyed'));return; }
           requestState(true).then(function(next){
-            var shot=null;
-            next.shots.forEach(function(item){ if(item.id===shotId) shot=item; });
-            var job=shot&&shot.still.job;
-            if(!job||!ACTIVE_JOB_STATES[job.status]){
+            var pending=tracked.some(function(target){
+              if(target.done) return false;
+              var shot=null;
+              next.shots.forEach(function(item){ if(item.id===target.shotId) shot=item; });
+              var job=shot&&shot.still.job;
+              if(job&&isActiveJobStatus(job.status)){
+                target.observed=true;target.missing=0;return true;
+              }
+              var matchingJob=job&&target.jobId!=null&&job.job_id===target.jobId;
+              var matchingVersion=shot&&target.jobId!=null&&shot.still.versions.some(function(version){
+                return version.job_id===target.jobId;
+              });
+              if(matchingJob||matchingVersion||target.observed){ target.done=true;return false; }
+              target.missing+=1;
+              if(target.missing>=2){ target.done=true;return false; }
+              return true;
+            });
+            if(!pending){
               ui.busy=false;safePaint();finish(resolve,next);return;
             }
             schedule();
@@ -413,6 +446,13 @@
         schedule();
       });
     }
+    function pollShot(shotId,jobId){ return pollShots([{shotId:shotId,jobId:jobId}]); }
+    function trackGeneration(action){
+      generationPromise=action.then(function(result){ generationPromise=null;return result; },function(error){
+        generationPromise=null;throw error;
+      });
+      return generationPromise;
+    }
     function generate(mode){
       if(generationPromise) return generationPromise;
       try{
@@ -422,21 +462,75 @@
       var body=stillBody(mode),key=keyFactory();
       if(typeof key!=='string'||!key) return Promise.reject(new Error('idempotency key is invalid'));
       ui.busy=true;ui.error='';ui.lastMode=mode;safePaint();
-      var action=Promise.resolve(client.json(QUOTE_PATH,{method:'POST',body:body})).then(function(quote){
+      var action=callJson(QUOTE_PATH,{method:'POST',body:body}).then(function(quote){
         ensureAlive();
         if(!quote||typeof quote.cost!=='number'||!isFinite(quote.cost)||quote.cost<0) throw new Error('still quote is invalid');
         ui.quote=clone(quote);safePaint();
         return Promise.resolve(confirmHook(quote.cost,clone(quote),clone(body))).then(function(accepted){
           ensureAlive();
           if(!accepted){ ui.busy=false;safePaint();return null; }
-          return submitWithTimeoutRetry(body,key).then(function(){
+          return submitWithTimeoutRetry(body,key).then(function(response){
             ensureAlive();
-            return pollShot(body.shot_id);
+            return pollShot(body.shot_id,response&&response.job_id);
           });
         });
       }).catch(function(error){ handleError(error);throw error; });
-      generationPromise=action.then(function(result){ generationPromise=null;return result; },function(error){ generationPromise=null;throw error; });
-      return generationPromise;
+      return trackGeneration(action);
+    }
+    function generateBatch(){
+      if(generationPromise) return generationPromise;
+      var eligible,bodies;
+      try{
+        ensureWritable();
+        eligible=view().shots.filter(function(shot){
+          return !shot.still.locked&&!(shot.still.job&&isActiveJobStatus(shot.still.job.status));
+        });
+        if(!eligible.length) return Promise.resolve(null);
+        bodies=eligible.map(function(shot){ return stillBodyForShot(shot,'batch'); });
+      }catch(error){ return Promise.reject(error); }
+      ui.busy=true;ui.error='';ui.lastMode='batch';safePaint();
+      var action=Promise.all(bodies.map(function(body){
+        return callJson(QUOTE_PATH,{method:'POST',body:body});
+      })).then(function(quotes){
+        ensureAlive();
+        var total=0;
+        quotes.forEach(function(quote){
+          if(!quote||typeof quote.cost!=='number'||!isFinite(quote.cost)||quote.cost<0){
+            throw new Error('still quote is invalid');
+          }
+          total+=quote.cost;
+        });
+        var aggregate={
+          cost:total,count:bodies.length*2,kind:'still-batch',shot_count:bodies.length,
+          shot_ids:bodies.map(function(body){ return body.shot_id; }),quotes:clone(quotes)
+        };
+        ui.quote=clone(aggregate);safePaint();
+        return Promise.resolve(confirmHook(total,clone(aggregate),clone(bodies))).then(function(accepted){
+          ensureAlive();
+          if(!accepted){ ui.busy=false;safePaint();return null; }
+          var submissions=bodies.map(function(body,index){
+            var key=keyFactory(body.shot_id,index,'batch');
+            if(typeof key!=='string'||!key) throw new Error('idempotency key is invalid');
+            return {body:body,key:key};
+          });
+          var chain=Promise.resolve(),submitted=[];
+          submissions.forEach(function(item){
+            chain=chain.then(function(){
+              return submitWithTimeoutRetry(item.body,item.key).then(function(response){
+                submitted.push({
+                  shotId:item.body.shot_id,
+                  jobId:response&&response.job_id
+                });
+              });
+            });
+          });
+          return chain.then(function(){
+            ensureAlive();
+            return pollShots(submitted);
+          });
+        });
+      }).catch(function(error){ handleError(error);throw error; });
+      return trackGeneration(action);
     }
     function destroy(){
       if(destroyed) return;
@@ -461,7 +555,7 @@
       else if(action==='lock-version') operation=selectVersion(target.getAttribute('data-version'),true);
       else if(action==='generate-current') operation=generate('single');
       else if(action==='retry-current') operation=generate('retry');
-      else if(action==='generate-batch') operation=generate('batch');
+      else if(action==='generate-batch') operation=generateBatch();
       else if(action==='confirm-stage') operation=confirmStage();
       else if(action==='refresh') operation=refresh();
       if(operation&&typeof operation.catch==='function') operation.catch(function(){});
@@ -489,7 +583,7 @@
       setPrompt:setPrompt,
       generateCurrent:function(){ return generate('single'); },
       retryCurrent:function(){ return generate('retry'); },
-      generateBatch:function(){ return generate('batch'); },
+      generateBatch:generateBatch,
       selectVersion:selectVersion,
       selectAsset:selectVersion,
       confirmStage:confirmStage,
