@@ -8,12 +8,21 @@ import urllib.parse
 import uuid
 from contextlib import closing
 
+from . import short_drama_production
 
-STAGES = ("draft", "characters_review", "script_review", "storyboard_review", "stills_review")
+
+STAGES = (
+    "draft", "characters_review", "script_review", "storyboard_review",
+    "stills_review", "voice_review", "video_review", "assembly_review", "completed",
+)
 NEXT_STAGE = {
     "characters_review": "script_review",
     "script_review": "storyboard_review",
     "storyboard_review": "stills_review",
+    "stills_review": "voice_review",
+    "voice_review": "video_review",
+    "video_review": "assembly_review",
+    "assembly_review": "completed",
 }
 RATIOS = {"9:16", "16:9"}
 DURATIONS = {30, 45, 60}
@@ -575,6 +584,7 @@ def init_db(db_factory):
         conn.commit()
     finally:
         conn.close()
+    short_drama_production.init_db(db_factory)
 
 
 def create_project(db_factory, username, payload):
