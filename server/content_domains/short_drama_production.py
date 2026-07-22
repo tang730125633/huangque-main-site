@@ -75,6 +75,29 @@ CREATE TABLE IF NOT EXISTS short_drama_still_quotes (
 );
 CREATE INDEX IF NOT EXISTS idx_short_drama_still_quotes_lookup
   ON short_drama_still_quotes(username, project_id, shot_id, expires_at);
+CREATE TABLE IF NOT EXISTS short_drama_charge_attempts (
+  charge_key TEXT PRIMARY KEY,
+  refund_key TEXT NOT NULL UNIQUE,
+  username TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  project_id TEXT NOT NULL REFERENCES short_drama_projects(id) ON DELETE CASCADE,
+  shot_id TEXT NOT NULL REFERENCES short_drama_shots(id) ON DELETE CASCADE,
+  quote_token TEXT NOT NULL REFERENCES short_drama_still_quotes(token),
+  cost INTEGER NOT NULL CHECK (cost >= 0),
+  image_payload_json TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN
+    ('accepted','charged','linked','refund_pending','refunded','failed')),
+  points_left INTEGER,
+  job_id INTEGER,
+  terminal_json TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(username, endpoint, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_short_drama_charge_attempts_operation
+  ON short_drama_charge_attempts(username, project_id, shot_id, request_hash, state);
 CREATE TRIGGER IF NOT EXISTS short_drama_assets_project_shot_on_insert
 BEFORE INSERT ON short_drama_assets
 FOR EACH ROW
@@ -116,6 +139,10 @@ BEGIN
   SELECT RAISE(ABORT, 'short drama production job shot must belong to project');
 END;
 """
+
+
+class ChargeAttemptInProgress(Exception):
+    pass
 
 
 def init_db(db_factory):
@@ -184,6 +211,272 @@ def _quote_request_hash(descriptor):
     return _descriptor_hash({
         key: value for key, value in descriptor.items() if key != "quote_token"
     })
+
+
+def charge_transaction_keys(username, endpoint, idempotency_key):
+    canonical = json.dumps(
+        [str(username), str(endpoint), str(idempotency_key)],
+        ensure_ascii=False, separators=(",", ":"),
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return "still-charge:" + digest, "still-refund:" + digest
+
+
+def _attempt_dict(row):
+    if not row:
+        return None
+    item = dict(row)
+    try:
+        item["image_payload"] = json.loads(item.pop("image_payload_json"))
+    except (TypeError, ValueError):
+        raise RuntimeError("stored still charge payload is invalid")
+    raw_terminal = item.pop("terminal_json", None)
+    item["terminal_response"] = json.loads(raw_terminal) if raw_terminal else None
+    item["cost"] = int(item["cost"])
+    if item.get("points_left") is not None:
+        item["points_left"] = int(item["points_left"])
+    if item.get("job_id") is not None:
+        item["job_id"] = int(item["job_id"])
+    return item
+
+
+def get_charge_attempt(db_factory, username, idempotency_key):
+    conn = db_factory()
+    conn.row_factory = sqlite3.Row
+    try:
+        return _attempt_dict(conn.execute(
+            "SELECT * FROM short_drama_charge_attempts "
+            "WHERE username=? AND idempotency_key=?",
+            (username, idempotency_key),
+        ).fetchone())
+    finally:
+        conn.close()
+
+
+def accept_charge_attempt(db_factory, *, username, endpoint, idempotency_key, prepared):
+    """Durably accept consent and consume its quote before crossing into Auth."""
+    charge_key, refund_key = charge_transaction_keys(username, endpoint, idempotency_key)
+    project_id = prepared["project"]["id"]
+    shot_id = prepared["shot"]["id"]
+    quote_token = prepared["quote_token"]
+    request_hash = prepared["request_hash"]
+    cost = int(prepared["quoted_cost"])
+    now = int(time.time())
+    conn = db_factory()
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT * FROM short_drama_charge_attempts "
+            "WHERE username=? AND endpoint=? AND idempotency_key=?",
+            (username, endpoint, idempotency_key),
+        ).fetchone()
+        if existing:
+            conn.rollback()
+            return _attempt_dict(existing)
+        unresolved = conn.execute(
+            "SELECT idempotency_key FROM short_drama_charge_attempts "
+            "WHERE username=? AND project_id=? AND shot_id=? AND request_hash=? "
+            "AND state IN ('accepted','charged','refund_pending') LIMIT 1",
+            (username, project_id, shot_id, request_hash),
+        ).fetchone()
+        if unresolved:
+            conn.rollback()
+            raise ChargeAttemptInProgress("same still operation is still reconciling")
+        consumed = conn.execute(
+            "UPDATE short_drama_still_quotes SET consumed_idempotency_key=? "
+            "WHERE token=? AND username=? AND project_id=? AND shot_id=? "
+            "AND request_hash=? AND cost=? AND expires_at>=? "
+            "AND consumed_idempotency_key IS NULL",
+            (idempotency_key, quote_token, username, project_id, shot_id,
+             request_hash, cost, now),
+        )
+        if consumed.rowcount != 1:
+            conn.rollback()
+            raise ValueError("关键帧 quote 已过期、已使用或与请求不匹配")
+        conn.execute(
+            "INSERT INTO short_drama_charge_attempts "
+            "(charge_key,refund_key,username,endpoint,idempotency_key,request_hash,"
+            "project_id,shot_id,quote_token,cost,image_payload_json,state,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,'accepted',?,?)",
+            (charge_key, refund_key, username, endpoint, idempotency_key, request_hash,
+             project_id, shot_id, quote_token, cost,
+             json.dumps(prepared["image_payload"], ensure_ascii=False), now, now),
+        )
+        conn.commit()
+        return get_charge_attempt(db_factory, username, idempotency_key)
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def mark_attempt_charged(db_factory, username, idempotency_key, points_left):
+    conn = db_factory()
+    try:
+        conn.execute(
+            "UPDATE short_drama_charge_attempts SET state='charged',points_left=?,updated_at=? "
+            "WHERE username=? AND idempotency_key=? AND state IN ('accepted','charged')",
+            (int(points_left), int(time.time()), username, idempotency_key),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return get_charge_attempt(db_factory, username, idempotency_key)
+
+
+def mark_attempt_refund_pending(db_factory, username, idempotency_key, response, job_id=None):
+    payload = json.dumps(response, ensure_ascii=False)
+    conn = db_factory()
+    try:
+        conn.execute(
+            "UPDATE short_drama_charge_attempts SET state='refund_pending',terminal_json=?,"
+            "job_id=COALESCE(?,job_id),updated_at=? WHERE username=? AND idempotency_key=? "
+            "AND state IN ('accepted','charged','linked','refund_pending')",
+            (payload, job_id, int(time.time()), username, idempotency_key),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return get_charge_attempt(db_factory, username, idempotency_key)
+
+
+def recover_attempt_response(db_factory, username, idempotency_key):
+    attempt = get_charge_attempt(db_factory, username, idempotency_key)
+    return attempt.get("terminal_response") if attempt else None
+
+
+def reconcile_attempt_refund(db_factory, points_domain, attempt):
+    """Replay the attempt's one stable Auth compensation transaction."""
+    if not attempt or attempt.get("state") not in {"refund_pending", "refunded"}:
+        return attempt
+    if attempt["state"] == "refund_pending":
+        try:
+            points_domain.refund_points(
+                attempt["username"], attempt["cost"], "short-drama still compensation",
+                transaction_key=attempt["refund_key"],
+            )
+        except Exception:
+            return attempt
+        attempt = mark_attempt_refunded(
+            db_factory, attempt["username"], attempt["idempotency_key"],
+        )
+    return attempt
+
+
+def record_attempt_job(db_factory, username, idempotency_key, job_id, *, connection):
+    """Atomically bind the already-authorized attempt, job and replay response."""
+    connection.row_factory = sqlite3.Row
+    attempt = connection.execute(
+        "SELECT * FROM short_drama_charge_attempts WHERE username=? AND idempotency_key=?",
+        (username, idempotency_key),
+    ).fetchone()
+    if not attempt or attempt["state"] not in {"charged", "linked"}:
+        raise ValueError("still charge attempt is not ready for a job")
+    job = connection.execute(
+        "SELECT username,kind,cost,status FROM jobs WHERE id=?", (job_id,),
+    ).fetchone()
+    if (not job or job["username"] != username or job["kind"] != "image"
+            or job["status"] != "pending" or int(job["cost"] or 0) != int(attempt["cost"])):
+        raise ValueError("still job does not match its accepted charge")
+    now = int(time.time())
+    connection.execute(
+        "UPDATE short_drama_still_quotes SET consumed_job_id=? "
+        "WHERE token=? AND username=? AND consumed_idempotency_key=? "
+        "AND (consumed_job_id IS NULL OR consumed_job_id=?)",
+        (job_id, attempt["quote_token"], username, idempotency_key, job_id),
+    )
+    connection.execute(
+        "INSERT INTO short_drama_production_jobs "
+        "(id,username,project_id,shot_id,kind,job_id,idempotency_key,quoted_cost,status,created_at,updated_at) "
+        "VALUES(?,?,?,?, 'still',?,?,?,'pending',?,?)",
+        (str(uuid.uuid4()), username, attempt["project_id"], attempt["shot_id"],
+         job_id, idempotency_key, int(attempt["cost"]), now, now),
+    )
+    response = {
+        "job_id": job_id, "cost": int(attempt["cost"]),
+        "points_left": int(attempt["points_left"]),
+        "project_id": attempt["project_id"], "shot_id": attempt["shot_id"],
+    }
+    connection.execute(
+        "UPDATE short_drama_charge_attempts SET state='linked',job_id=?,terminal_json=?,updated_at=? "
+        "WHERE charge_key=? AND state='charged'",
+        (job_id, json.dumps(response, ensure_ascii=False), now, attempt["charge_key"]),
+    )
+    return response
+
+
+def mark_linked_attempt_failed(db_factory, username, idempotency_key, response):
+    """Atomically make a linked job terminal and persist its refund intent."""
+    now = int(time.time())
+    payload = json.dumps(response, ensure_ascii=False)
+    conn = db_factory()
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        attempt = conn.execute(
+            "SELECT job_id FROM short_drama_charge_attempts "
+            "WHERE username=? AND idempotency_key=?",
+            (username, idempotency_key),
+        ).fetchone()
+        job_id = int(attempt["job_id"]) if attempt and attempt["job_id"] else None
+        if job_id:
+            conn.execute(
+                "UPDATE jobs SET status='error',error=?,refunded=CASE WHEN cost>0 THEN 2 ELSE refunded END,updated_at=? "
+                "WHERE id=? AND status IN ('pending','running')",
+                (str(response.get("detail") or "")[:300], now, job_id),
+            )
+            conn.execute(
+                "UPDATE short_drama_production_jobs SET status='failed',error=?,refunded=2,updated_at=? "
+                "WHERE job_id=?",
+                (str(response.get("detail") or "")[:300], now, job_id),
+            )
+        conn.execute(
+            "UPDATE short_drama_charge_attempts SET state='refund_pending',terminal_json=?,updated_at=? "
+            "WHERE username=? AND idempotency_key=? AND state IN ('linked','refund_pending')",
+            (payload, now, username, idempotency_key),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return get_charge_attempt(db_factory, username, idempotency_key)
+
+
+def mark_attempt_refunded(db_factory, username, idempotency_key):
+    conn = db_factory()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT job_id FROM short_drama_charge_attempts WHERE username=? AND idempotency_key=?",
+            (username, idempotency_key),
+        ).fetchone()
+        job_id = int(row[0]) if row and row[0] else None
+        now = int(time.time())
+        conn.execute(
+            "UPDATE short_drama_charge_attempts SET state='refunded',updated_at=? "
+            "WHERE username=? AND idempotency_key=? AND state IN ('refund_pending','refunded')",
+            (now, username, idempotency_key),
+        )
+        if job_id:
+            conn.execute("UPDATE jobs SET refunded=1,updated_at=? WHERE id=? AND refunded=2",
+                         (now, job_id))
+            conn.execute(
+                "UPDATE short_drama_production_jobs SET refunded=1,updated_at=? WHERE job_id=?",
+                (now, job_id),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return get_charge_attempt(db_factory, username, idempotency_key)
 
 
 def _authorized_project(conn, username, project_id, access=None, *, write=False):

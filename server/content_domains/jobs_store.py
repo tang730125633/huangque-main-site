@@ -240,3 +240,28 @@ def create_paid_job(jdb, deduct, refund, kind, username, cost, payload, owner,
         jdb, deduct, refund, kind, username, [(cost, payload)], owner,
         before_commit=batch_callback, charge_transaction_key=charge_transaction_key)
     return job_ids[0], points_left
+
+
+def create_job_after_charge(jdb, kind, username, cost, payload, owner, before_commit=None):
+    """Insert a job whose durable charge attempt was already reconciled.
+
+    This intentionally has no billing side effect.  Its caller owns the persisted
+    compensation state and must record refund intent before contacting Auth.
+    """
+    now = int(time.time())
+    with closing(jdb()) as connection:
+        try:
+            cursor = connection.execute(
+                "INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (kind, username, int(cost), json.dumps(payload, ensure_ascii=False),
+                 now, now, owner),
+            )
+            job_id = int(cursor.lastrowid)
+            if before_commit is not None:
+                before_commit(connection, job_id)
+            connection.commit()
+            return job_id
+        except Exception:
+            connection.rollback()
+            raise

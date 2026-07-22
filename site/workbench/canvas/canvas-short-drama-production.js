@@ -302,11 +302,34 @@
     var cancelLater=options.clearTimeoutImpl||clearTimeout;
     var pollInterval=options.pollIntervalMs==null?1500:Math.max(0,number(options.pollIntervalMs,0));
     var host=options.host||null;
+    var pendingStorage=options.storage||((typeof sessionStorage!=='undefined'&&sessionStorage)?sessionStorage:null);
+    var pendingStorageKey='hq.short-drama.still.pending:'+String(options.projectId);
     var serverState=null,destroyed=false,pollTimer=null,pollReject=null,generationPromise=null,lastPublishedSummaryKey=null;
     var submittedGuards=Object.create(null);
+    var pendingSingle=null;
     var ui={selectedShotId:options.selectedShotId,filter:'all',prompts:{},canEdit:options.canEdit!==false,busy:true,stale:false,error:'',quote:null,lastMode:''};
 
     function ensureAlive(){ if(destroyed) throw new Error('workspace destroyed'); }
+    function loadPendingSingle(){
+      if(!pendingStorage||typeof pendingStorage.getItem!=='function') return null;
+      try{
+        var parsed=JSON.parse(pendingStorage.getItem(pendingStorageKey)||'null');
+        if(!parsed||parsed.projectId!==String(options.projectId)||!parsed.body||
+          typeof parsed.body.shot_id!=='string'||typeof parsed.key!=='string'||!parsed.key) return null;
+        parsed.jobId=(typeof parsed.jobId==='number'&&isFinite(parsed.jobId)&&parsed.jobId>0)?parsed.jobId:null;
+        return parsed;
+      }catch(_error){ return null; }
+    }
+    function savePendingSingle(){
+      if(!pendingStorage||typeof pendingStorage.setItem!=='function'||!pendingSingle) return;
+      pendingStorage.setItem(pendingStorageKey,JSON.stringify(pendingSingle));
+    }
+    function clearPendingSingle(){
+      pendingSingle=null;
+      if(pendingStorage&&typeof pendingStorage.removeItem==='function') pendingStorage.removeItem(pendingStorageKey);
+    }
+    pendingSingle=loadPendingSingle();
+    if(pendingSingle) submittedGuards[pendingSingle.body.shot_id]=pendingSingle.jobId||true;
     function callJson(path,requestOptions){
       return Promise.resolve().then(function(){
         ensureAlive();
@@ -347,7 +370,11 @@
           (guardedJob===true||shot.still.job.job_id===guardedJob);
         var reconciled=shot.still.locked||shotHasCompletedCurrent(normalized,shot)||
           terminalFailed||shot.still.versions.some(function(version){ return guardedJob!==true&&version.job_id===guardedJob; });
-        if(reconciled) delete submittedGuards[shot.id];
+        if(reconciled){
+          delete submittedGuards[shot.id];
+          if(pendingSingle&&pendingSingle.body.shot_id===shot.id&&
+            (pendingSingle.jobId==null||pendingSingle.jobId===guardedJob)) clearPendingSingle();
+        }
       });
       ui.busy=!!keepBusy;ui.stale=false;ui.error='';
       safePaint();
@@ -451,6 +478,13 @@
         throw error;
       });
     }
+    function ambiguousSubmitError(error){
+      var status=Number(error&&error.status);
+      if(error&&(error.code==='timeout'||error.code==='network_error')) return true;
+      if(status===502||status===503||status===504) return true;
+      if(error&&['still_job_create_failed','queue_full','charge_attempt_in_progress'].indexOf(error.code)>=0) return false;
+      return !isFinite(status)||status<=0;
+    }
     function pollShots(targets){
       var tracked=(targets||[]).map(function(target){
         return {
@@ -496,7 +530,7 @@
               }
               var matchingJob=job&&target.jobId!=null&&job.job_id===target.jobId;
               if(matchingJob&&job.status==='failed'){
-                target.done=true;target.error=new Error(job.error||'关键帧生成失败');return false;
+                target.done=true;target.error=new Error(job.error||'关键帧生成失败');target.error.durable=true;return false;
               }
               if(matchingJob||target.observed){
                 target.done=true;target.error=new Error('关键帧任务结束但没有成功候选图');return false;
@@ -552,6 +586,37 @@
       });
       return generationPromise;
     }
+    function resumePendingSingle(){
+      if(!pendingSingle) return Promise.resolve(null);
+      var attempt=pendingSingle;
+      submittedGuards[attempt.body.shot_id]=attempt.jobId||true;
+      ui.busy=true;ui.error='';safePaint();
+      if(attempt.jobId!=null){
+        return pollShot(attempt.body.shot_id,attempt.jobId).then(function(result){
+          clearPendingSingle();delete submittedGuards[attempt.body.shot_id];safePaint();return result;
+        }).catch(function(error){
+          if(error&&error.durable){ clearPendingSingle();delete submittedGuards[attempt.body.shot_id]; }
+          handleError(error);throw error;
+        });
+      }
+      return submitWithTimeoutRetry(attempt.body,attempt.key).then(function(response){
+        ensureAlive();
+        var jobId=response&&response.job_id;
+        if(typeof jobId!=='number'||!isFinite(jobId)||Math.floor(jobId)!==jobId||jobId<1){
+          var invalid=new Error('successful still submission requires a positive job_id');invalid.durable=true;throw invalid;
+        }
+        attempt.jobId=jobId;pendingSingle=attempt;savePendingSingle();
+        submittedGuards[attempt.body.shot_id]=jobId;safePaint();
+        return pollShot(attempt.body.shot_id,jobId).then(function(result){
+          clearPendingSingle();delete submittedGuards[attempt.body.shot_id];safePaint();return result;
+        });
+      }).catch(function(error){
+        if((error&&error.durable)||!ambiguousSubmitError(error)){
+          clearPendingSingle();delete submittedGuards[attempt.body.shot_id];
+        }
+        handleError(error);throw error;
+      });
+    }
     function generate(mode){
       if(generationPromise) return generationPromise;
       var selected;
@@ -560,6 +625,10 @@
         if(['single','retry','batch'].indexOf(mode)<0) throw new Error('invalid generation mode');
         selected=currentShot();
         if(!selected) throw new Error('no shot selected');
+        if(pendingSingle){
+          if(pendingSingle.body.shot_id!==selected.id) throw new Error('another still submission is awaiting reconciliation');
+          return trackGeneration(resumePendingSingle());
+        }
         if(submittedGuards[selected.id]){
           ui.busy=true;ui.error='';safePaint();
           return trackGeneration(pollShot(selected.id,submittedGuards[selected.id]));
@@ -582,16 +651,9 @@
           ensureAlive();
           if(!accepted){ ui.busy=false;safePaint();return null; }
           var submittedBody=Object.assign({},body,{quote_token:quote.quote_token});
-          return submitWithTimeoutRetry(submittedBody,key).then(function(response){
-            ensureAlive();
-            var jobId=response&&response.job_id;
-            if(typeof jobId!=='number'||!isFinite(jobId)||Math.floor(jobId)!==jobId||jobId<1){
-              throw new Error('successful still submission requires a positive job_id');
-            }
-            submittedGuards[body.shot_id]=jobId;
-            safePaint();
-            return pollShot(body.shot_id,jobId);
-          });
+          pendingSingle={projectId:String(options.projectId),body:clone(submittedBody),key:key,jobId:null};
+          submittedGuards[body.shot_id]=true;savePendingSingle();safePaint();
+          return resumePendingSingle();
         });
       }).catch(function(error){ handleError(error);throw error; });
       return trackGeneration(action);
@@ -712,7 +774,10 @@
       host.addEventListener('input',inputHandler);
     }
     safePaint();
-    var ready=refresh(false).catch(function(){ return null; });
+    var ready=refresh(false).then(function(){
+      if(!pendingSingle) return null;
+      return trackGeneration(resumePendingSingle());
+    }).catch(function(){ return null; });
     return {
       projectId:options.projectId,
       ready:ready,

@@ -484,6 +484,33 @@ def _gen_image_seedream(prompt, ratio, quality, count, img, variant):
             "ratio": ratio, "prompt": prompt}
 
 
+def _trusted_short_drama_continuity(url):
+    """Load only our authenticated local-file form; unsafe/missing input falls back to prompt."""
+    value = str(url or "").strip()
+    prefix = "/api/gen/file/"
+    if not value.startswith(prefix):
+        return None
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+        return None
+    relative = urllib.parse.unquote(parsed.path[len(prefix):])
+    if (not relative or "\\" in relative
+            or any(part in {"", ".", ".."} for part in relative.split("/"))):
+        return None
+    try:
+        root = OUT_DIR.resolve()
+        candidate = (OUT_DIR / relative).resolve()
+        candidate.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    try:
+        if not candidate.is_file() or candidate.stat().st_size > IMAGE_REF_MAX_BYTES:
+            return None
+        return candidate.read_bytes()
+    except OSError:
+        return None
+
+
 def gen_image(payload):
     payload = validate_image_payload(payload)
     prompt = (payload.get("prompt") or "").strip()
@@ -508,7 +535,9 @@ def gen_image(payload):
         if context:
             prompt += "\nTrusted short-drama continuity context:\n" + "\n".join(context)
         if continuity_url and not payload.get("image"):
-            payload["image"] = base64.b64encode(_seedream_fetch(continuity_url)).decode("ascii")
+            local_continuity = _trusted_short_drama_continuity(continuity_url)
+            if local_continuity:
+                payload["image"] = base64.b64encode(local_continuity).decode("ascii")
     payload["prompt"] = prompt
     ratio = payload.get("ratio") or "1:1"
     img   = _clean_b64(payload.get("image"))  # 参考图 → 图生图 / 局部修改；清洗防 padding 错(#6)

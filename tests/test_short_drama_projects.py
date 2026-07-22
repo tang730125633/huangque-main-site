@@ -933,6 +933,7 @@ class ShortDramaRouteTests(unittest.TestCase):
             "HANDLERS": core.HANDLERS,
             "feature_init_db": core.feature_flags.init_db,
             "init_audio_db": core.init_audio_db,
+            "canvas_access": core._short_drama_canvas_access,
         }
         core.JOB_DB = str(Path(self.tmp.name) / "content.db")
         core.AUDIO_DB = str(Path(self.tmp.name) / "audio.db")
@@ -997,15 +998,18 @@ class ShortDramaRouteTests(unittest.TestCase):
         core.HANDLERS = self.originals["HANDLERS"]
         core.feature_flags.init_db = self.originals["feature_init_db"]
         core.init_audio_db = self.originals["init_audio_db"]
+        core._short_drama_canvas_access = self.originals["canvas_access"]
         self.tmp.cleanup()
 
-    def request(self, method, path, username="alice", body=None, raw_body=None):
+    def request(self, method, path, username="alice", body=None, raw_body=None, board_id=None):
         data = raw_body if raw_body is not None else (
             None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
         )
         headers = {"Content-Type": "application/json"}
         if username:
             headers["Authorization"] = "Bearer " + username
+        if board_id:
+            headers["X-Canvas-Board-Id"] = board_id
         request = urllib.request.Request(self.base + path, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=5) as response:
@@ -1057,6 +1061,158 @@ class ShortDramaRouteTests(unittest.TestCase):
 
     def project_path(self, project):
         return "/api/gen/short-drama/project?" + urllib.parse.urlencode({"id": project["id"]})
+
+    def enable_board_roles(self, roles):
+        core._short_drama_canvas_access = lambda handler: ({
+            "board_id": handler.headers.get("X-Canvas-Board-Id"),
+            "role": roles.get(handler._token()),
+        } if roles.get(handler._token()) else None)
+
+    def finish_planning_job(self, job_id, project):
+        with closing(core.jdb()) as db:
+            db.execute(
+                "UPDATE jobs SET status='done', result=? WHERE id=?",
+                (json.dumps(bound_planning_result(
+                    project, plan=valid_editable_plan()), ensure_ascii=False), job_id),
+            )
+            db.commit()
+
+    def test_board_owner_and_editor_can_complete_planning_for_each_others_projects(self):
+        roles = {"owner": "owner", "editor": "editor"}
+        self.enable_board_roles(roles)
+
+        for creator, operator in (("owner", "editor"), ("editor", "owner")):
+            with self.subTest(creator=creator, operator=operator):
+                board_id = "board-%s" % creator
+                status, project = self.request(
+                    "POST", "/api/gen/short-drama/projects", username=creator,
+                    board_id=board_id, body=valid_project(board_id=board_id),
+                )
+                self.assertEqual(200, status)
+
+                status, fetched = self.request(
+                    "GET", self.project_path(project), username=operator, board_id=board_id,
+                )
+                self.assertEqual(200, status)
+                self.assertEqual(creator, fetched["username"])
+
+                status, accepted = self.request(
+                    "POST", "/api/gen/copy", username=operator, board_id=board_id,
+                    body=bound_planning_payload(project),
+                )
+                self.assertEqual(200, status, accepted)
+                self.assertEqual(operator, self.points.deduct_calls[-1][0])
+                self.finish_planning_job(accepted["job_id"], project)
+
+                recovery_path = "/api/gen/short-drama/planning-job?" + urllib.parse.urlencode({
+                    "project_id": project["id"],
+                })
+                status, recovered = self.request(
+                    "GET", recovery_path, username=operator, board_id=board_id,
+                )
+                self.assertEqual(200, status)
+                self.assertEqual(accepted["job_id"], recovered["job_id"])
+
+                status, applied = self.request(
+                    "POST", "/api/gen/short-drama/apply-plan", username=operator,
+                    board_id=board_id, body={
+                        "project_id": project["id"], "revision": project["revision"],
+                        "job_id": accepted["job_id"],
+                    },
+                )
+                self.assertEqual(200, status)
+                status, confirmed = self.request(
+                    "POST", "/api/gen/short-drama/confirm", username=operator,
+                    board_id=board_id, body={
+                        "project_id": project["id"], "revision": applied["revision"],
+                        "stage": "characters_review",
+                    },
+                )
+                self.assertEqual(200, status)
+                self.assertEqual("script_review", confirmed["stage"])
+
+    def test_planning_routes_recheck_viewer_demotion_and_removal(self):
+        roles = {"owner": "owner", "editor": "editor", "viewer": "viewer"}
+        self.enable_board_roles(roles)
+        board_id = "board-access"
+        status, project = self.request(
+            "POST", "/api/gen/short-drama/projects", username="editor", board_id=board_id,
+            body=valid_project(board_id=board_id),
+        )
+        self.assertEqual(200, status)
+        recovery_path = "/api/gen/short-drama/planning-job?" + urllib.parse.urlencode({
+            "project_id": project["id"],
+        })
+
+        viewer_read, _ = self.request(
+            "GET", self.project_path(project), username="viewer", board_id=board_id,
+        )
+        viewer_recovery, _ = self.request(
+            "GET", recovery_path, username="viewer", board_id=board_id,
+        )
+        viewer_submit, _ = self.request(
+            "POST", "/api/gen/copy", username="viewer", board_id=board_id,
+            body=bound_planning_payload(project),
+        )
+        viewer_job = self.insert_job(username="viewer", project=project)
+        viewer_apply, _ = self.request(
+            "POST", "/api/gen/short-drama/apply-plan", username="viewer", board_id=board_id,
+            body={
+                "project_id": project["id"], "revision": project["revision"],
+                "job_id": viewer_job,
+            },
+        )
+        viewer_confirm, _ = self.request(
+            "POST", "/api/gen/short-drama/confirm", username="viewer", board_id=board_id,
+            body={
+                "project_id": project["id"], "revision": project["revision"],
+                "stage": "characters_review",
+            },
+        )
+        self.assertEqual(200, viewer_read)
+        self.assertEqual(200, viewer_recovery)
+        self.assertEqual(403, viewer_submit)
+        self.assertEqual(403, viewer_apply)
+        self.assertEqual(403, viewer_confirm)
+
+        status, accepted = self.request(
+            "POST", "/api/gen/copy", username="editor", board_id=board_id,
+            body=bound_planning_payload(project),
+        )
+        self.assertEqual(200, status)
+        self.finish_planning_job(accepted["job_id"], project)
+        roles["editor"] = "viewer"
+        demoted_submit, _ = self.request(
+            "POST", "/api/gen/copy", username="editor", board_id=board_id,
+            body=bound_planning_payload(project),
+        )
+        demoted_apply, _ = self.request(
+            "POST", "/api/gen/short-drama/apply-plan", username="editor", board_id=board_id,
+            body={
+                "project_id": project["id"], "revision": project["revision"],
+                "job_id": accepted["job_id"],
+            },
+        )
+        demoted_confirm, _ = self.request(
+            "POST", "/api/gen/short-drama/confirm", username="editor", board_id=board_id,
+            body={
+                "project_id": project["id"], "revision": project["revision"],
+                "stage": "characters_review",
+            },
+        )
+        self.assertEqual(403, demoted_submit)
+        self.assertEqual(403, demoted_apply)
+        self.assertEqual(403, demoted_confirm)
+
+        roles.pop("editor")
+        removed_read, _ = self.request(
+            "GET", self.project_path(project), username="editor", board_id=board_id,
+        )
+        removed_recovery, _ = self.request(
+            "GET", recovery_path, username="editor", board_id=board_id,
+        )
+        self.assertEqual(404, removed_read)
+        self.assertEqual(404, removed_recovery)
 
     def test_review_content_puts_persist_without_jobs_or_points(self):
         project = self.applied_project()

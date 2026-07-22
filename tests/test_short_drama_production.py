@@ -17,7 +17,7 @@ SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from content_domains import core, image, short_drama, short_drama_production, submission_idempotency, upstream_guard, video
+from content_domains import core, image, jobs_store, short_drama, short_drama_production, submission_idempotency, upstream_guard, video
 
 
 def _project_payload():
@@ -71,7 +71,7 @@ class ShortDramaProductionTests(unittest.TestCase):
             conn.execute(
                 "CREATE TABLE jobs ("
                 "id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, kind TEXT, cost INTEGER, "
-                "status TEXT, payload TEXT, result TEXT)"
+                "status TEXT DEFAULT 'pending', payload TEXT, result TEXT)"
             )
             conn.commit()
 
@@ -107,6 +107,43 @@ class ShortDramaProductionTests(unittest.TestCase):
         }
         body.update(changes)
         return body
+
+    def _real_auth(self):
+        import auth_server
+        old_db = auth_server.DB
+        auth_server.DB = str(Path(self.tmp.name) / "auth-users.db")
+        self.addCleanup(setattr, auth_server, "DB", old_db)
+        auth_server.init_db()
+        with closing(sqlite3.connect(auth_server.DB)) as conn:
+            conn.execute(
+                "INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change) "
+                "VALUES('alice','h','s','Alice',100,'member',0)"
+            )
+            conn.commit()
+        return auth_server
+
+    def _accepted_attempt(self, key, **body_changes):
+        body = self._still_request(**body_changes)
+        quote = short_drama_production.prepare_still_quote(
+            self.db, "alice", body, lambda _kind, _payload: 24,
+        )
+        prepared = short_drama_production.prepare_still_submission(
+            self.db, "alice", dict(body, quote_token=quote["quote_token"]),
+            require_quote=True, idempotency_key=key,
+        )
+        return short_drama_production.accept_charge_attempt(
+            self.db, username="alice", endpoint="/api/gen/short-drama/generate-stills",
+            idempotency_key=key, prepared=prepared,
+        )
+
+    def _ensure_job_insert_columns(self):
+        with closing(self.db()) as conn:
+            for name, definition in (
+                ("created_at", "INTEGER"), ("updated_at", "INTEGER"), ("owner", "TEXT"),
+            ):
+                try: conn.execute("ALTER TABLE jobs ADD COLUMN %s %s" % (name, definition))
+                except sqlite3.OperationalError: pass
+            conn.commit()
 
     def _link_job(self, *, shot_order=0, username="alice", link_username="alice",
                   job_kind="image", job_status="done", link_status="pending", cost=60,
@@ -206,6 +243,217 @@ class ShortDramaProductionTests(unittest.TestCase):
             }
         self.assertIn("board_id", project_columns)
 
+    def test_charge_attempt_is_durable_and_uses_fixed_length_keys(self):
+        body = self._still_request()
+        quote = short_drama_production.prepare_still_quote(
+            self.db, "alice", body, lambda _kind, _payload: 24,
+        )
+        prepared = short_drama_production.prepare_still_submission(
+            self.db, "alice", dict(body, quote_token=quote["quote_token"]),
+            require_quote=True, idempotency_key="x" * 128,
+        )
+
+        attempt = short_drama_production.accept_charge_attempt(
+            self.db, username="alice", endpoint="/api/gen/short-drama/generate-stills",
+            idempotency_key="x" * 128, prepared=prepared,
+        )
+
+        self.assertRegex(attempt["charge_key"], r"^still-charge:[0-9a-f]{64}$")
+        self.assertRegex(attempt["refund_key"], r"^still-refund:[0-9a-f]{64}$")
+        self.assertLessEqual(len(attempt["charge_key"]), 160)
+        self.assertEqual("accepted", attempt["state"])
+        with closing(self.db()) as conn:
+            consumed = conn.execute(
+                "SELECT consumed_idempotency_key FROM short_drama_still_quotes WHERE token=?",
+                (quote["quote_token"],),
+            ).fetchone()[0]
+        self.assertEqual("x" * 128, consumed)
+
+    def test_accepted_attempt_recovers_after_quote_project_and_acl_drift(self):
+        body = self._still_request()
+        quote = short_drama_production.prepare_still_quote(
+            self.db, "alice", body, lambda _kind, _payload: 24,
+        )
+        prepared = short_drama_production.prepare_still_submission(
+            self.db, "alice", dict(body, quote_token=quote["quote_token"]),
+            require_quote=True, idempotency_key="durable-accepted-001",
+        )
+        accepted = short_drama_production.accept_charge_attempt(
+            self.db, username="alice", endpoint="/api/gen/short-drama/generate-stills",
+            idempotency_key="durable-accepted-001", prepared=prepared,
+        )
+        with closing(self.db()) as conn:
+            conn.execute("UPDATE short_drama_still_quotes SET expires_at=0 WHERE token=?",
+                         (quote["quote_token"],))
+            conn.execute(
+                "UPDATE short_drama_projects SET revision=revision+1,stage='completed',board_id='board-a' WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+
+        recovered = short_drama_production.get_charge_attempt(
+            self.db, "alice", "durable-accepted-001",
+        )
+
+        self.assertEqual(accepted["charge_key"], recovered["charge_key"])
+        self.assertEqual("accepted", recovered["state"])
+        self.assertEqual(24, recovered["cost"])
+        self.assertEqual("seedream", recovered["image_payload"]["provider"])
+
+    def test_different_key_cannot_accept_same_operation_while_ambiguous(self):
+        body = self._still_request()
+        quote1 = short_drama_production.prepare_still_quote(
+            self.db, "alice", body, lambda _kind, _payload: 24,
+        )
+        prepared1 = short_drama_production.prepare_still_submission(
+            self.db, "alice", dict(body, quote_token=quote1["quote_token"]),
+            require_quote=True, idempotency_key="ambiguous-first-001",
+        )
+        short_drama_production.accept_charge_attempt(
+            self.db, username="alice", endpoint="/api/gen/short-drama/generate-stills",
+            idempotency_key="ambiguous-first-001", prepared=prepared1,
+        )
+        quote2 = short_drama_production.prepare_still_quote(
+            self.db, "alice", body, lambda _kind, _payload: 24,
+        )
+        prepared2 = short_drama_production.prepare_still_submission(
+            self.db, "alice", dict(body, quote_token=quote2["quote_token"]),
+            require_quote=True, idempotency_key="ambiguous-second-001",
+        )
+
+        with self.assertRaises(short_drama_production.ChargeAttemptInProgress):
+            short_drama_production.accept_charge_attempt(
+                self.db, username="alice", endpoint="/api/gen/short-drama/generate-stills",
+                idempotency_key="ambiguous-second-001", prepared=prepared2,
+            )
+
+    def test_refund_intent_and_terminal_http_failure_are_durable(self):
+        body = self._still_request()
+        quote = short_drama_production.prepare_still_quote(
+            self.db, "alice", body, lambda _kind, _payload: 24,
+        )
+        prepared = short_drama_production.prepare_still_submission(
+            self.db, "alice", dict(body, quote_token=quote["quote_token"]),
+            require_quote=True, idempotency_key="refund-intent-001",
+        )
+        short_drama_production.accept_charge_attempt(
+            self.db, username="alice", endpoint="/api/gen/short-drama/generate-stills",
+            idempotency_key="refund-intent-001", prepared=prepared,
+        )
+        terminal = {"detail": "queue full", "code": "queue_full", "_http_status": 429}
+
+        pending = short_drama_production.mark_attempt_refund_pending(
+            self.db, "alice", "refund-intent-001", terminal,
+        )
+        replay = short_drama_production.recover_attempt_response(
+            self.db, "alice", "refund-intent-001",
+        )
+
+        self.assertEqual("refund_pending", pending["state"])
+        self.assertEqual(terminal, replay)
+        short_drama_production.mark_attempt_refunded(
+            self.db, "alice", "refund-intent-001",
+        )
+        self.assertEqual(
+            "refunded",
+            short_drama_production.get_charge_attempt(
+                self.db, "alice", "refund-intent-001",
+            )["state"],
+        )
+
+    def test_real_auth_ledger_reconciles_association_and_refund_crash_boundaries(self):
+        auth = self._real_auth()
+        self._ensure_job_insert_columns()
+        attempt = self._accepted_attempt("real-ledger-refund-001")
+        charged, error = auth.deduct_points(
+            "alice", 24, "short-drama still", attempt["charge_key"],
+        )
+        self.assertIsNone(error)
+        short_drama_production.mark_attempt_charged(
+            self.db, "alice", "real-ledger-refund-001", charged["points"],
+        )
+        with self.assertRaisesRegex(RuntimeError, "association failed"):
+            jobs_store.create_job_after_charge(
+                self.db, "image", "alice", 24, {"prompt": "p"}, "content",
+                before_commit=lambda _connection, _job_id: (_ for _ in ()).throw(
+                    RuntimeError("association failed")),
+            )
+        with closing(self.db()) as conn:
+            self.assertEqual(0, conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+
+        terminal = {"detail": "association failed", "_http_status": 500}
+        pending = short_drama_production.mark_attempt_refund_pending(
+            self.db, "alice", "real-ledger-refund-001", terminal,
+        )
+        self.assertEqual("refund_pending", pending["state"],
+                         "refund intent is durable before Auth is called")
+        first, first_error = auth.refund_points(
+            "alice", 24, "short-drama still compensation", pending["refund_key"],
+        )
+        self.assertIsNone(first_error)
+        # Simulate a lost HTTP response by deliberately not marking completion, then replay Auth.
+        replay, replay_error = auth.refund_points(
+            "alice", 24, "short-drama still compensation", pending["refund_key"],
+        )
+        self.assertIsNone(replay_error)
+        self.assertEqual(first["points"], replay["points"])
+        short_drama_production.mark_attempt_refunded(
+            self.db, "alice", "real-ledger-refund-001",
+        )
+        with closing(sqlite3.connect(auth.DB)) as conn:
+            rows = conn.execute(
+                "SELECT reason,delta FROM points_audit WHERE transaction_key=?",
+                (pending["refund_key"],),
+            ).fetchall()
+        self.assertEqual([("short-drama still compensation", 24)], rows)
+        self.assertEqual(100, auth.get_points_row("alice")["points"])
+
+    def test_real_auth_ledger_accepted_recovery_survives_drift_and_http_completion_crash(self):
+        auth = self._real_auth()
+        self._ensure_job_insert_columns()
+        attempt = self._accepted_attempt("real-ledger-linked-001", prompt="durable recovery")
+        first, first_error = auth.deduct_points(
+            "alice", 24, "short-drama still", attempt["charge_key"],
+        )
+        self.assertIsNone(first_error)
+        with closing(self.db()) as conn:
+            conn.execute("UPDATE short_drama_still_quotes SET expires_at=0 WHERE token=?",
+                         (attempt["quote_token"],))
+            conn.execute(
+                "UPDATE short_drama_projects SET revision=revision+1,stage='completed',board_id='removed-board' WHERE id=?",
+                (self.project["id"],),
+            )
+            for name, definition in (
+                ("error", "TEXT"), ("created_at", "INTEGER"), ("updated_at", "INTEGER"),
+                ("owner", "TEXT"), ("refunded", "INTEGER DEFAULT 0"),
+            ):
+                try: conn.execute("ALTER TABLE jobs ADD COLUMN %s %s" % (name, definition))
+                except sqlite3.OperationalError: pass
+            conn.commit()
+        replay, replay_error = auth.deduct_points(
+            "alice", 24, "short-drama still", attempt["charge_key"],
+        )
+        self.assertIsNone(replay_error)
+        self.assertEqual(first["points"], replay["points"])
+        short_drama_production.mark_attempt_charged(
+            self.db, "alice", "real-ledger-linked-001", replay["points"],
+        )
+        job_id = jobs_store.create_job_after_charge(
+            self.db, "image", "alice", 24, attempt["image_payload"], "content",
+            before_commit=lambda connection, jid: short_drama_production.record_attempt_job(
+                self.db, "alice", "real-ledger-linked-001", jid, connection=connection),
+        )
+        recovered = short_drama_production.recover_attempt_response(
+            self.db, "alice", "real-ledger-linked-001",
+        )
+        self.assertEqual(job_id, recovered["job_id"],
+                         "linked response survives crash before HTTP idempotency completion")
+        with closing(sqlite3.connect(auth.DB)) as conn:
+            self.assertEqual(1, conn.execute(
+                "SELECT COUNT(*) FROM points_audit WHERE transaction_key=?",
+                (attempt["charge_key"],),
+            ).fetchone()[0])
+
     def test_board_collaborator_roles_control_production_read_and_write(self):
         with closing(self.db()) as conn:
             conn.execute(
@@ -258,14 +506,17 @@ class ShortDramaProductionTests(unittest.TestCase):
 
     def test_seedream_provider_receives_owned_continuity_image_and_reference_context(self):
         captured = {}
+        local_out = Path(self.tmp.name) / "content_out"
+        local_out.mkdir()
+        (local_out / "owned.png").write_bytes(b"\x89PNG\r\n\x1a\nowned")
         payload = {
             "provider": "seedream", "variant": "std", "quality": "hd",
             "prompt": "rainy doorway", "ratio": "9:16", "count": 2,
             "short_drama_references": [
                 {"type": "character", "id": "character-owned", "name": "Detective Lin",
                  "source_type": "avatar", "source_id": "avatar-owned"},
-                {"type": "continuity", "id": "version-owned", "name": "previous locked still",
-                 "url": "https://example.test/owned.png", "ratio": "9:16"},
+                 {"type": "continuity", "id": "version-owned", "name": "previous locked still",
+                  "url": "/api/gen/file/owned.png", "ratio": "9:16"},
             ],
         }
         def fake_generate(prompt, ratio, quality, count, img, variant):
@@ -276,7 +527,11 @@ class ShortDramaProductionTests(unittest.TestCase):
         def fake_post(path, data, content_type, **kwargs):
             captured["outbound"] = json.loads(data)
             return {"data": [{"url": "https://provider.test/result.png"}]}
-        with mock.patch.object(image, "_seedream_fetch", return_value=b"\x89PNG\r\n\x1a\nowned"), \
+        def fake_fetch(url):
+            self.assertEqual("https://provider.test/result.png", url)
+            return b"\x89PNG\r\n\x1a\nresult"
+        with mock.patch.object(image, "OUT_DIR", local_out), \
+             mock.patch.object(image, "_seedream_fetch", side_effect=fake_fetch), \
              mock.patch.object(image, "_post", side_effect=fake_post), \
              mock.patch.object(image, "_gen_image_seedream", side_effect=fake_generate):
             image.gen_image(payload)
@@ -288,6 +543,39 @@ class ShortDramaProductionTests(unittest.TestCase):
         self.assertEqual(captured["prompt"], captured["outbound"]["prompt"])
         self.assertEqual("data:image/png;base64,iVBORw0KGgpvd25lZA==",
                          captured["outbound"]["image"])
+
+    def test_invalid_or_traversal_local_continuity_uses_prompt_only_fallback(self):
+        local_out = Path(self.tmp.name) / "content_out"
+        local_out.mkdir()
+        captured = []
+        payload = {
+            "provider": "seedream", "variant": "std", "quality": "hd",
+            "prompt": "rainy doorway", "ratio": "9:16", "count": 2,
+            "short_drama_references": [{
+                "type": "continuity", "id": "owned", "name": "previous still",
+                "url": "/api/gen/file/../secret.png", "ratio": "9:16",
+            }],
+        }
+        with mock.patch.object(image, "OUT_DIR", local_out), \
+             mock.patch.object(image, "_seedream_fetch", side_effect=AssertionError("invalid local URL must not be fetched")), \
+             mock.patch.object(image, "_gen_image_seedream",
+                               side_effect=lambda prompt, ratio, quality, count, img, variant:
+                               captured.append((prompt, img)) or {"urls": ["a", "b"], "ratio": ratio}):
+            image.gen_image(payload)
+        self.assertIn("previous still", captured[0][0])
+        self.assertIsNone(captured[0][1])
+
+    def test_cos_disabled_and_upload_failure_keep_trusted_local_file_urls(self):
+        local_out = Path(self.tmp.name) / "content_out"
+        local_out.mkdir()
+        (local_out / "owned.png").write_bytes(b"png")
+        with mock.patch.object(core, "OUT_DIR", local_out), \
+             mock.patch("content_domains.cos.enabled", return_value=False):
+            self.assertEqual("/api/gen/file/owned.png", core.public_url("owned.png", "image/png"))
+        with mock.patch.object(core, "OUT_DIR", local_out), \
+             mock.patch("content_domains.cos.enabled", return_value=True), \
+             mock.patch("content_domains.cos.upload", side_effect=RuntimeError("upload failed")):
+            self.assertEqual("/api/gen/file/owned.png", core.public_url("owned.png", "image/png"))
 
     def test_phase_two_only_allows_stills_confirmation(self):
         for stage in ("voice_review", "video_review", "assembly_review"):
@@ -1323,7 +1611,10 @@ class ShortDramaStillRouteTests(unittest.TestCase):
             self.deduct_calls = []
             self.refund_calls = []
             self.charge_keys = {}
+            self.refund_keys = {}
             self.lose_first_charge_response = False
+            self.lose_first_refund_response = False
+            self.fail_refund_before_commit = False
 
         def cost_of(self, kind, body):
             self.cost_calls.append((kind, dict(body)))
@@ -1347,6 +1638,18 @@ class ShortDramaStillRouteTests(unittest.TestCase):
 
         def refund_points(self, username, cost, reason, transaction_key=None):
             self.refund_calls.append((username, cost, reason, transaction_key))
+            if self.fail_refund_before_commit:
+                self.fail_refund_before_commit = False
+                raise RuntimeError("refund unavailable before commit")
+            if transaction_key in self.refund_keys:
+                if self.refund_keys[transaction_key] != (username, cost):
+                    raise AssertionError("refund key conflict")
+                return 100
+            if transaction_key:
+                self.refund_keys[transaction_key] = (username, cost)
+            if self.lose_first_refund_response:
+                self.lose_first_refund_response = False
+                raise RuntimeError("refund response lost after commit")
             return 100
 
         def get_points(self, username):
@@ -1888,7 +2191,7 @@ class ShortDramaStillRouteTests(unittest.TestCase):
     def test_association_failure_refund_consumes_quote_and_attempt(self):
         path = "/api/gen/short-drama/generate-stills"
         with mock.patch.object(
-            short_drama_production, "record_submitted_job",
+            short_drama_production, "record_attempt_job",
             side_effect=RuntimeError("association failed"),
         ):
             status, failed = self.request(
@@ -1898,8 +2201,13 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         self.assertEqual(500, status)
         self.assertEqual(1, len(self.points.deduct_calls))
         self.assertEqual(1, len(self.points.refund_calls))
-        self.assertEqual("error", self._jobs()[0]["status"])
-        self.assertEqual(1, self._jobs()[0]["refunded"])
+        self.assertEqual([], self._jobs())
+        self.assertEqual(
+            "refunded",
+            short_drama_production.get_charge_attempt(
+                core.jdb, "alice", "still-assoc-001",
+            )["state"],
+        )
         self.assertEqual(1, self._idempotency_count())
 
         retry_status, retried = self.request(
@@ -1950,6 +2258,32 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         self.assertEqual(1, len(self.points.refund_calls))
         self.assertEqual(1, core._image_job_queue.qsize())
 
+    def test_failed_queue_attempt_replays_durable_http_status_after_completion_crash(self):
+        path = "/api/gen/short-drama/generate-stills"
+        core._image_job_queue = queue.Queue(maxsize=1)
+        core._image_job_queue.put_nowait(999999)
+        status, failed = self.request(
+            path, body=self._body(), idempotency_key="still-queue-crash-001",
+        )
+        self.assertEqual(429, status)
+        self.assertEqual("queue_full", failed["code"])
+        with closing(core.jdb()) as conn:
+            conn.execute(
+                "UPDATE submission_idempotency SET response_json=NULL "
+                "WHERE username='alice' AND endpoint=? AND idem_key=?",
+                (path, "still-queue-crash-001"),
+            )
+            conn.commit()
+
+        replay_status, replay = self.request(
+            path, body=self._body(), idempotency_key="still-queue-crash-001",
+        )
+
+        self.assertEqual(429, replay_status)
+        self.assertEqual("queue_full", replay["code"])
+        self.assertEqual(1, len(self.points.charge_keys))
+        self.assertEqual(1, len(self.points.refund_keys))
+
     def test_lost_auth_response_retries_same_charge_once_and_creates_one_job(self):
         self.points.lose_first_charge_response = True
         path = "/api/gen/short-drama/generate-stills"
@@ -1965,6 +2299,100 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         self.assertEqual(1, len(self.points.charge_keys))
         self.assertEqual(1, len(self._jobs()))
         self.assertEqual(1, core._image_job_queue.qsize())
+
+    def test_accepted_lost_auth_attempt_ignores_later_quote_project_and_acl_drift(self):
+        self.points.lose_first_charge_response = True
+        path = "/api/gen/short-drama/generate-stills"
+        body = self._body()
+        first_status, _ = self.request(
+            path, body=body, idempotency_key="still-drift-auth-001"
+        )
+        self.assertEqual(502, first_status)
+        with closing(core.jdb()) as conn:
+            conn.execute("UPDATE short_drama_still_quotes SET expires_at=0")
+            conn.execute(
+                "UPDATE short_drama_projects SET revision=revision+1,stage='completed',board_id='board-later' WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+        core._short_drama_canvas_access = lambda _handler: None
+
+        retry_status, accepted = self.request(
+            path, body=body, idempotency_key="still-drift-auth-001"
+        )
+
+        self.assertEqual(200, retry_status)
+        self.assertGreater(accepted["job_id"], 0)
+        self.assertEqual(1, len(self.points.charge_keys))
+        self.assertEqual(1, len(self._jobs()))
+
+    def test_association_failure_records_refund_intent_before_refund_and_replays_one_refund(self):
+        path = "/api/gen/short-drama/generate-stills"
+        self.points.lose_first_refund_response = True
+        with mock.patch.object(
+            short_drama_production, "record_attempt_job",
+            side_effect=RuntimeError("association failed"),
+        ):
+            first_status, _ = self.request(
+                path, body=self._body(), idempotency_key="still-refund-lost-001"
+            )
+        attempt = short_drama_production.get_charge_attempt(
+            core.jdb, "alice", "still-refund-lost-001",
+        )
+        self.assertEqual(500, first_status)
+        self.assertEqual("refund_pending", attempt["state"])
+        self.assertIsNotNone(attempt["terminal_response"])
+
+        retry_status, retry = self.request(
+            path, body=self._body(), idempotency_key="still-refund-lost-001"
+        )
+
+        self.assertEqual(500, retry_status)
+        self.assertIn("detail", retry)
+        self.assertEqual(1, len(self.points.refund_keys))
+        self.assertEqual(2, len(self.points.refund_calls))
+        self.assertEqual(
+            "refunded",
+            short_drama_production.get_charge_attempt(
+                core.jdb, "alice", "still-refund-lost-001",
+            )["state"],
+        )
+        self.assertEqual([], [j for j in self._jobs() if j["status"] == "pending"])
+
+    def test_refund_unavailable_before_commit_is_retried_with_same_key(self):
+        path = "/api/gen/short-drama/generate-stills"
+        self.points.fail_refund_before_commit = True
+        with mock.patch.object(
+            short_drama_production, "record_attempt_job",
+            side_effect=RuntimeError("association failed"),
+        ):
+            first_status, _ = self.request(
+                path, body=self._body(), idempotency_key="still-refund-before-001"
+            )
+        first_attempt = short_drama_production.get_charge_attempt(
+            core.jdb, "alice", "still-refund-before-001",
+        )
+        self.assertEqual(500, first_status)
+        self.assertEqual("refund_pending", first_attempt["state"])
+
+        retry_status, _ = self.request(
+            path, body=self._body(), idempotency_key="still-refund-before-001"
+        )
+
+        self.assertEqual(500, retry_status)
+        keys = [call[3] for call in self.points.refund_calls]
+        self.assertEqual(2, len(keys))
+        self.assertEqual(1, len(set(keys)))
+
+    def test_max_length_http_idempotency_key_uses_bounded_auth_charge_key(self):
+        status, _ = self.request(
+            "/api/gen/short-drama/generate-stills", body=self._body(),
+            idempotency_key="z" * 128,
+        )
+        self.assertEqual(200, status)
+        transaction_key = self.points.deduct_calls[0][3]
+        self.assertRegex(transaction_key, r"^still-charge:[0-9a-f]{64}$")
+        self.assertLessEqual(len(transaction_key), 160)
 
     def test_retry_recovers_committed_job_when_http_completion_was_lost(self):
         path = "/api/gen/short-drama/generate-stills"

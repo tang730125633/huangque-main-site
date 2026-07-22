@@ -1100,6 +1100,97 @@ async function testSingleSubmitRequiresPositiveJobIdAndPollingOutageDoesNotResub
   invalid.destroy();
 }
 
+async function testAmbiguousSingleSubmitPersistsAcrossClicksAndControllerReload() {
+  const values = new Map();
+  const storage = {
+    getItem(key) { return values.has(key) ? values.get(key) : null; },
+    setItem(key, value) { values.set(key, value); },
+    removeItem(key) { values.delete(key); },
+  };
+  let state = sampleState();
+  let quoteCalls = 0;
+  let keyCalls = 0;
+  const submitKeys = [];
+  let submitCalls = 0;
+  const client = { json(path, options = {}) {
+    if (path.startsWith('/api/gen/short-drama/production?')) {
+      if (submitCalls >= 5) {
+        const done = clone(state);
+        done.shots[1].still.current_version = 1;
+        done.shots[1].still.versions = [{ id: 'v-909', version: 1, job_id: 909,
+          url: '/done.png', prompt: 'city skyline', ratio: '9:16', cost: 7,
+          status: 'done', created_at: 1 }];
+        done.shots[1].still.job = null;
+        return done;
+      }
+      return clone(state);
+    }
+    if (path === '/api/gen/short-drama/asset-quote') {
+      quoteCalls += 1;
+      return { cost: 7, quote_token: 'persisted-quote' };
+    }
+    if (path === '/api/gen/short-drama/generate-stills') {
+      submitCalls += 1;
+      submitKeys.push(options.headers['Idempotency-Key']);
+      if (submitCalls <= 4) { const error = new Error('network response lost'); error.code = 'timeout'; return Promise.reject(error); }
+      return { job_id: 909, shot_id: 'shot-2' };
+    }
+    throw new Error(`unexpected route ${path}`);
+  } };
+  const first = production.createWorkspace({
+    projectId: state.project_id, document: null, client, storage, confirm: () => true,
+    idempotencyKey() { keyCalls += 1; return 'persisted-single-key'; }, pollIntervalMs: 0,
+  });
+  await first.ready;
+  await assert.rejects(first.generateCurrent(), /response lost/);
+  await assert.rejects(first.generateCurrent(), /response lost/);
+  assert.equal(values.size, 1, 'ambiguous attempt remains durable after repeated lost responses');
+  first.destroy();
+
+  const reloaded = production.createWorkspace({
+    projectId: state.project_id, document: null, client, storage, confirm: () => {
+      throw new Error('reload must not ask for consent or quote again');
+    }, idempotencyKey() { keyCalls += 1; return 'new-key-must-not-be-used'; }, pollIntervalMs: 0,
+  });
+  await reloaded.ready;
+
+  assert.equal(quoteCalls, 1);
+  assert.equal(keyCalls, 1);
+  assert.deepEqual(submitKeys, Array(submitKeys.length).fill('persisted-single-key'));
+  assert.equal(values.size, 0, 'exact completed version clears persisted attempt');
+  reloaded.destroy();
+}
+
+async function testDurableTerminalSubmitFailureClearsPersistedAttempt() {
+  const values = new Map();
+  const storage = {
+    getItem(key) { return values.get(key) || null; },
+    setItem(key, value) { values.set(key, value); },
+    removeItem(key) { values.delete(key); },
+  };
+  let submits = 0;
+  const workspace = production.createWorkspace({
+    projectId: 'project/one', document: null, storage, confirm: () => true,
+    idempotencyKey: () => 'terminal-single-key', pollIntervalMs: 0,
+    client: { json(path) {
+      if (path.startsWith('/api/gen/short-drama/production?')) return sampleState();
+      if (path === '/api/gen/short-drama/asset-quote') return { cost: 7, quote_token: 'terminal-quote' };
+      if (path === '/api/gen/short-drama/generate-stills') {
+        submits += 1;
+        const error = new Error('durable create failure');
+        error.status = 500; error.code = 'still_job_create_failed';
+        return Promise.reject(error);
+      }
+      throw new Error(`unexpected route ${path}`);
+    } },
+  });
+  await workspace.ready;
+  await assert.rejects(workspace.generateCurrent(), /durable create failure/);
+  assert.equal(submits, 1);
+  assert.equal(values.size, 0, 'durable terminal response releases the pending operation');
+  workspace.destroy();
+}
+
 async function main() {
   testNormalizationAndRenderer();
   testResponsiveCssContract();
@@ -1121,6 +1212,8 @@ async function main() {
   await testSubmittedGuardsDisableBatchRendererUntilReconciled();
   await testTerminalFailedJobRejectsPollingAndRendersRetryableError();
   await testSingleSubmitRequiresPositiveJobIdAndPollingOutageDoesNotResubmit();
+  await testAmbiguousSingleSubmitPersistsAcrossClicksAndControllerReload();
+  await testDurableTerminalSubmitFailureClearsPersistedAttempt();
   console.log('canvas short drama production: pass');
 }
 

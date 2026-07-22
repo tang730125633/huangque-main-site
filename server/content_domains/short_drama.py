@@ -697,10 +697,11 @@ def list_projects(db_factory, username, page=1, page_size=DEFAULT_PROJECT_PAGE_S
         conn.close()
 
 
-def get_project(db_factory, username, project_id):
+def get_project(db_factory, username, project_id, access=None):
+    owner = _project_username_for_access(db_factory, username, project_id, access)
     conn = _connection(db_factory)
     try:
-        return _project_detail(conn, username, project_id)
+        return _project_detail(conn, owner, project_id)
     finally:
         conn.close()
 
@@ -836,7 +837,7 @@ def prepare_paid_planning_submission(db_factory, username, payload, cost_of, acc
     """Revalidate the bound request and its budget while core holds its submission lock."""
     cleaned = validate_planning_submission(db_factory, username, payload, access)
     recovered = find_recoverable_planning_job(
-        db_factory, username, cleaned["project_id"], planning_payload=cleaned
+        db_factory, username, cleaned["project_id"], planning_payload=cleaned, access=access
     )
     if recovered:
         return cleaned, None, recovered
@@ -845,8 +846,9 @@ def prepare_paid_planning_submission(db_factory, username, payload, cost_of, acc
     return cleaned, cost, None
 
 
-def find_recoverable_planning_job(db_factory, username, project_id, planning_payload=None):
-    project = get_project(db_factory, username, project_id)
+def find_recoverable_planning_job(db_factory, username, project_id, planning_payload=None,
+                                  access=None):
+    project = get_project(db_factory, username, project_id, access)
     if project["stage"] != "draft":
         return None
     requested = _planning_metadata(planning_payload) if planning_payload is not None else {
@@ -1680,10 +1682,8 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                 db_factory, username, page, page_size, access))
         elif method == "GET" and path.endswith("/planning-job"):
             planning_project_id = _planning_project_id_from_query(handler)
-            _project_username_for_access(
-                db_factory, username, planning_project_id, access)
             recovered = find_recoverable_planning_job(
-                db_factory, username, planning_project_id
+                db_factory, username, planning_project_id, access=access
             )
             handler._send(200, recovered or {"job_id": None})
         elif method == "GET" and path.endswith("/production"):
@@ -1692,8 +1692,7 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             ))
         elif method == "GET":
             project_id = _project_id_from_query(handler)
-            owner = _project_username_for_access(db_factory, username, project_id, access)
-            handler._send(200, get_project(db_factory, owner, project_id))
+            handler._send(200, get_project(db_factory, username, project_id, access))
         elif method == "PUT":
             project_id = _project_id_from_query(handler)
             owner = _project_username_for_access(db_factory, username, project_id, access, write=True)

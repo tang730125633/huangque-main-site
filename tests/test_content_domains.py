@@ -56,7 +56,9 @@ class ContentDomainTests(unittest.TestCase):
         # Sora 限时 Beta 只在 core 增加 kind 路由/并发/资产/健康薄接线；API 协议仍在 video_openai.py。
         # jobs 库 WAL+timeout30（堵 50 齐点压测暴露的 INSERT 超时孤儿扣款路径）：jdb() 是 core
         #   任务库基础设施，+5 行，门禁上调到 1715。
-        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1715)
+        # 短剧关键帧的跨 Auth/content 崩溃恢复仍只在 core 保留提交锁、入队与 HTTP
+        # 编排；持久状态机、quote/关联/补偿细节都在 short_drama_production.py。
+        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1885)
 
     def test_openai_base_with_v1_is_not_duplicated(self):
         core = importlib.import_module("content_domains.core")
