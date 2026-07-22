@@ -1178,7 +1178,7 @@ async function testDurableTerminalSubmitFailureClearsPersistedAttempt() {
       if (path === '/api/gen/short-drama/generate-stills') {
         submits += 1;
         const error = new Error('durable create failure');
-        error.status = 500; error.code = 'still_job_create_failed';
+        error.status = 500; error.code = 'still_job_create_failed'; error.data = { operation_terminal: true };
         return Promise.reject(error);
       }
       throw new Error(`unexpected route ${path}`);
@@ -1188,6 +1188,116 @@ async function testDurableTerminalSubmitFailureClearsPersistedAttempt() {
   await assert.rejects(workspace.generateCurrent(), /durable create failure/);
   assert.equal(submits, 1);
   assert.equal(values.size, 0, 'durable terminal response releases the pending operation');
+  workspace.destroy();
+}
+
+async function testPendingSingleClearsOnlyForExactDurableOperationEvidence() {
+  const values = new Map();
+  const storage = {
+    getItem(key) { return values.get(key) || null; },
+    setItem(key, value) { values.set(key, value); },
+    removeItem(key) { values.delete(key); },
+  };
+  const state = sampleState();
+  state.shots[1].still.current_version = 1;
+  state.shots[1].still.locked = true;
+  state.shots[1].still.versions = [{ id: 'old', version: 1, job_id: 41, url: '/old.png',
+    prompt: 'old', ratio: '9:16', cost: 1, status: 'done', created_at: 1 }];
+  values.set('hq.short-drama.still.pending:'+state.project_id, JSON.stringify({
+    projectId: state.project_id,
+    body: { project_id: state.project_id, revision: state.revision, shot_id: 'shot-2',
+      prompt: 'regenerate', mode: 'retry', count: 2, quote_token: 'old-quote' },
+    key: 'exact-correlation-key', jobId: 909,
+  }));
+  let submits = 0;
+  const unrelated = clone(state);
+  unrelated.shots[1].still.job = { job_id: 808, status: 'failed', error: 'other job' };
+  const workspace = production.createWorkspace({
+    projectId: state.project_id, document: null, storage, pollIntervalMs: 0,
+    confirm: () => { throw new Error('must not quote/confirm again'); },
+    client: { json(path, options = {}) {
+      if (path.startsWith('/api/gen/short-drama/production?')) return clone(unrelated);
+      if (path === '/api/gen/short-drama/generate-stills') {
+        submits += 1;
+        assert.equal(options.headers['Idempotency-Key'], 'exact-correlation-key');
+        return { job_id: 909, shot_id: 'shot-2' };
+      }
+      throw new Error(`unexpected route ${path}`);
+    } },
+  });
+  await workspace.ready;
+  assert.equal(submits, 0, 'known job is polled, not replaced by unrelated terminal evidence');
+  assert.equal(values.size, 1, 'old locked/current version and unrelated failure cannot clear pending');
+  workspace.destroy();
+
+  values.set('hq.short-drama.still.pending:'+state.project_id, JSON.stringify({
+    projectId: state.project_id,
+    body: { project_id: state.project_id, revision: state.revision, shot_id: 'shot-2',
+      prompt: 'regenerate', mode: 'retry', count: 2, quote_token: 'old-quote' },
+    key: 'exact-correlation-key', jobId: null,
+  }));
+  const unknown = production.createWorkspace({
+    projectId: state.project_id, document: null, storage, pollIntervalMs: 0,
+    confirm: () => { throw new Error('must not quote/confirm again'); },
+    client: workspaceClient(),
+  });
+  function workspaceClient() {
+    return { json(path, options = {}) {
+      if (path.startsWith('/api/gen/short-drama/production?')) return clone(unrelated);
+      if (path === '/api/gen/short-drama/generate-stills') {
+        submits += 1;
+        assert.equal(options.headers['Idempotency-Key'], 'exact-correlation-key');
+        return { job_id: 909, shot_id: 'shot-2' };
+      }
+      throw new Error(`unexpected route ${path}`);
+    } };
+  }
+  await unknown.ready;
+  assert.equal(submits, 1, 'unknown job resubmits the persisted body/key before polling');
+  assert.equal(values.size, 1, 'unrelated failure cannot clear an unknown persisted operation');
+  unknown.destroy();
+}
+
+async function testMalformedSuccessAndRefundPendingStayOnSamePersistedAttempt() {
+  const values = new Map();
+  const storage = {
+    getItem(key) { return values.get(key) || null; },
+    setItem(key, value) { values.set(key, value); },
+    removeItem(key) { values.delete(key); },
+  };
+  const state = sampleState();
+  let quotes = 0, keys = 0, submits = 0;
+  const seenKeys = [];
+  const workspace = production.createWorkspace({
+    projectId: state.project_id, document: null, storage, pollIntervalMs: 0,
+    confirm: () => true,
+    idempotencyKey() { keys += 1; return 'malformed-stable-key'; },
+    client: { json(path, options = {}) {
+      if (path.startsWith('/api/gen/short-drama/production?')) return clone(state);
+      if (path === '/api/gen/short-drama/asset-quote') { quotes += 1; return { cost: 7, quote_token: 'q' }; }
+      if (path === '/api/gen/short-drama/generate-stills') {
+        submits += 1; seenKeys.push(options.headers['Idempotency-Key']);
+        if (submits <= 2) return { ok: true };
+        const error = new Error(submits === 3 ? 'refund is still reconciling' : 'durable create failure');
+        error.status = submits === 3 ? 503 : 500;
+        error.code = submits === 3 ? 'refund_pending' : 'still_job_create_failed';
+        error.retryable = submits === 3;
+        error.operation_terminal = submits !== 3;
+        return Promise.reject(error);
+      }
+      throw new Error(`unexpected route ${path}`);
+    } },
+  });
+  await workspace.ready;
+  await assert.rejects(workspace.generateCurrent(), /job_id/);
+  await assert.rejects(workspace.generateCurrent(), /job_id/);
+  await assert.rejects(workspace.generateCurrent(), /refund is still reconciling/);
+  assert.equal(quotes, 1);
+  assert.equal(keys, 1);
+  assert.deepEqual(seenKeys, Array(seenKeys.length).fill('malformed-stable-key'));
+  assert.equal(values.size, 1, 'malformed 200 and refund_pending remain durable and retryable');
+  await assert.rejects(workspace.generateCurrent(), /durable create failure/);
+  assert.equal(values.size, 0, 'only the same operation durable terminal response clears it');
   workspace.destroy();
 }
 
@@ -1214,6 +1324,8 @@ async function main() {
   await testSingleSubmitRequiresPositiveJobIdAndPollingOutageDoesNotResubmit();
   await testAmbiguousSingleSubmitPersistsAcrossClicksAndControllerReload();
   await testDurableTerminalSubmitFailureClearsPersistedAttempt();
+  await testPendingSingleClearsOnlyForExactDurableOperationEvidence();
+  await testMalformedSuccessAndRefundPendingStayOnSamePersistedAttempt();
   console.log('canvas short drama production: pass');
 }
 

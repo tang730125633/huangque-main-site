@@ -344,6 +344,22 @@ def mark_attempt_refund_pending(db_factory, username, idempotency_key, response,
     return get_charge_attempt(db_factory, username, idempotency_key)
 
 
+def mark_attempt_failed(db_factory, username, idempotency_key, response):
+    """Persist a definitive no-charge Auth rejection as a replayable terminal result."""
+    payload = json.dumps(response, ensure_ascii=False)
+    conn = db_factory()
+    try:
+        conn.execute(
+            "UPDATE short_drama_charge_attempts SET state='failed',terminal_json=?,updated_at=? "
+            "WHERE username=? AND idempotency_key=? AND state='accepted'",
+            (payload, int(time.time()), username, idempotency_key),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return get_charge_attempt(db_factory, username, idempotency_key)
+
+
 def recover_attempt_response(db_factory, username, idempotency_key):
     attempt = get_charge_attempt(db_factory, username, idempotency_key)
     return attempt.get("terminal_response") if attempt else None
@@ -365,6 +381,32 @@ def reconcile_attempt_refund(db_factory, points_domain, attempt):
             db_factory, attempt["username"], attempt["idempotency_key"],
         )
     return attempt
+
+
+def retry_attempt_refunds(db_factory, points_domain, limit=100):
+    """Sweep attempt-owned compensation, including attempts without a job row."""
+    conn = db_factory()
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT * FROM short_drama_charge_attempts WHERE state='refund_pending' "
+            "ORDER BY updated_at,charge_key LIMIT ?", (max(1, int(limit or 100)),),
+        ).fetchall()
+        attempts = [_attempt_dict(row) for row in rows]
+    finally:
+        conn.close()
+    recovered = 0
+    for attempt in attempts:
+        if reconcile_attempt_refund(db_factory, points_domain, attempt)["state"] == "refunded":
+            recovered += 1
+    return recovered
+
+
+def refund_pending_response():
+    return {
+        "detail": "still generation refund is still being reconciled",
+        "code": "refund_pending", "retryable": True, "retry_after_ms": 1000,
+    }
 
 
 def record_attempt_job(db_factory, username, idempotency_key, job_id, *, connection):
@@ -635,7 +677,15 @@ def check_production_budget(db_factory, username, project_id, quoted_cost, acces
             "AND j.status IN ('pending','running','done')",
             (project_id,),
         ).fetchone()[0]
-        reserved = int(reserved or 0)
+        attempt_reserved = conn.execute(
+            "SELECT COALESCE(SUM(a.cost),0) FROM short_drama_charge_attempts a "
+            "WHERE a.project_id=? AND a.state IN ('accepted','charged','refund_pending') "
+            "AND (a.job_id IS NULL OR (a.state='refund_pending' AND NOT EXISTS ("
+            "SELECT 1 FROM short_drama_production_jobs p WHERE p.job_id=a.job_id "
+            "AND p.status IN ('pending','running'))))",
+            (project_id,),
+        ).fetchone()[0]
+        reserved = int(reserved or 0) + int(attempt_reserved or 0)
         spent_points = int(spent_points)
         if spent_points + reserved + quoted_cost > point_budget:
             from .short_drama import PointBudgetExceeded
@@ -972,6 +1022,15 @@ def build_production_snapshot(conn, project, username):
             latest_job_shots.add(shot_id)
             if job["status"] != "done":
                 latest_jobs[shot_id] = job
+
+    reserved_points += int(conn.execute(
+        "SELECT COALESCE(SUM(a.cost),0) FROM short_drama_charge_attempts a "
+        "WHERE a.project_id=? AND a.state IN ('accepted','charged','refund_pending') "
+        "AND (a.job_id IS NULL OR (a.state='refund_pending' AND NOT EXISTS ("
+        "SELECT 1 FROM short_drama_production_jobs p WHERE p.job_id=a.job_id "
+        "AND p.status IN ('pending','running'))))",
+        (project_id,),
+    ).fetchone()[0] or 0)
 
     shot_items = []
     for shot in shots:

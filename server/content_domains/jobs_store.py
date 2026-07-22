@@ -150,10 +150,19 @@ def refund_once(jdb, job_id, username, cost, refund):
 def retry_failed_refunds(jdb, refund_job, limit=100):
     """轮转补扫明确处于待确认态的退款；历史 refunded=0 永远不自动处理。"""
     with closing(jdb()) as c:
+        import sqlite3
+        c.row_factory = sqlite3.Row
+        has_attempts = bool(c.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='short_drama_charge_attempts'"
+        ).fetchone())
+        attempt_exclusion = (
+            "AND NOT EXISTS (SELECT 1 FROM short_drama_charge_attempts a WHERE a.job_id=jobs.id)"
+            if has_attempts else ""
+        )
         rows = c.execute(
             """SELECT id,username,cost FROM jobs
                WHERE status='error' AND refunded=2 AND COALESCE(cost,0)>0
-               ORDER BY updated_at ASC,id ASC LIMIT ?""",
+               %s ORDER BY updated_at ASC,id ASC LIMIT ?""" % attempt_exclusion,
             (max(1, int(limit or 100)),),
         ).fetchall()
     recovered = 0

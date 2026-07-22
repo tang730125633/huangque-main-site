@@ -408,6 +408,90 @@ class ShortDramaProductionTests(unittest.TestCase):
         self.assertEqual([("short-drama still compensation", 24)], rows)
         self.assertEqual(100, auth.get_points_row("alice")["points"])
 
+    def test_attempt_refund_sweeper_is_the_only_owner_for_linked_job_refund(self):
+        auth = self._real_auth()
+        self._ensure_job_insert_columns()
+        with closing(self.db()) as conn:
+            try: conn.execute("ALTER TABLE jobs ADD COLUMN refunded INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError: pass
+            try: conn.execute("ALTER TABLE jobs ADD COLUMN error TEXT NOT NULL DEFAULT ''")
+            except sqlite3.OperationalError: pass
+            conn.commit()
+        attempt = self._accepted_attempt("single-refund-owner-001")
+        charged, error = auth.deduct_points(
+            "alice", 24, "short-drama still", attempt["charge_key"],
+        )
+        self.assertIsNone(error)
+        short_drama_production.mark_attempt_charged(
+            self.db, "alice", "single-refund-owner-001", charged["points"],
+        )
+        job_id = jobs_store.create_job_after_charge(
+            self.db, "image", "alice", 24, attempt["image_payload"], "content",
+            before_commit=lambda connection, jid: short_drama_production.record_attempt_job(
+                self.db, "alice", "single-refund-owner-001", jid, connection=connection),
+        )
+        pending = short_drama_production.mark_linked_attempt_failed(
+            self.db, "alice", "single-refund-owner-001",
+            {"detail": "queue full", "code": "queue_full", "_http_status": 429},
+        )
+        self.assertEqual(24, short_drama_production.get_production(
+            self.db, "alice", self.project["id"],
+        )["reserved_points"])
+        first, first_error = auth.refund_points(
+            "alice", 24, "short-drama still compensation", pending["refund_key"],
+        )
+        self.assertIsNone(first_error)
+        # Lost Auth response: the attempt remains refund_pending while the generic scanner races.
+        generic_calls = []
+        jobs_store.retry_failed_refunds(
+            self.db, lambda jid, username, cost: generic_calls.append((jid, username, cost)) or True,
+        )
+        self.assertEqual([], generic_calls)
+        recovered = short_drama_production.retry_attempt_refunds(self.db, auth)
+        self.assertEqual(1, recovered)
+        with closing(sqlite3.connect(auth.DB)) as conn:
+            refunds = conn.execute(
+                "SELECT transaction_key,delta FROM points_audit WHERE transaction_key=?",
+                (pending["refund_key"],),
+            ).fetchall()
+        self.assertEqual([(pending["refund_key"], 24)], refunds)
+        self.assertEqual(100, auth.get_points_row("alice")["points"])
+        self.assertEqual(0, short_drama_production.get_production(
+            self.db, "alice", self.project["id"],
+        )["reserved_points"])
+        with closing(self.db()) as conn:
+            self.assertEqual(1, conn.execute(
+                "SELECT refunded FROM jobs WHERE id=?", (job_id,),
+            ).fetchone()[0])
+
+    def test_unlinked_attempt_states_reserve_project_budget_without_double_counting_jobs(self):
+        accepted = self._accepted_attempt("reserve-accepted-001")
+        state = short_drama_production.get_production(
+            self.db, "alice", self.project["id"],
+        )
+        self.assertEqual(24, state["reserved_points"])
+        short_drama_production.mark_attempt_charged(
+            self.db, "alice", "reserve-accepted-001", 76,
+        )
+        state = short_drama_production.get_production(
+            self.db, "alice", self.project["id"],
+        )
+        self.assertEqual(24, state["reserved_points"])
+        self._ensure_job_insert_columns()
+        with closing(self.db()) as conn:
+            try: conn.execute("ALTER TABLE jobs ADD COLUMN refunded INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError: pass
+            conn.commit()
+        jobs_store.create_job_after_charge(
+            self.db, "image", "alice", 24, accepted["image_payload"], "content",
+            before_commit=lambda connection, jid: short_drama_production.record_attempt_job(
+                self.db, "alice", "reserve-accepted-001", jid, connection=connection),
+        )
+        state = short_drama_production.get_production(
+            self.db, "alice", self.project["id"],
+        )
+        self.assertEqual(24, state["reserved_points"], "linked job is counted exactly once")
+
     def test_real_auth_ledger_accepted_recovery_survives_drift_and_http_completion_crash(self):
         auth = self._real_auth()
         self._ensure_job_insert_columns()
@@ -1615,6 +1699,7 @@ class ShortDramaStillRouteTests(unittest.TestCase):
             self.lose_first_charge_response = False
             self.lose_first_refund_response = False
             self.fail_refund_before_commit = False
+            self.reject_next_charge = False
 
         def cost_of(self, kind, body):
             self.cost_calls.append((kind, dict(body)))
@@ -1622,6 +1707,12 @@ class ShortDramaStillRouteTests(unittest.TestCase):
 
         def deduct_points(self, username, cost, reason, transaction_key=""):
             self.deduct_calls.append((username, cost, reason, transaction_key))
+            if self.reject_next_charge:
+                self.reject_next_charge = False
+                error = self.AuthPointsError()
+                error.status = 402
+                error.detail = "insufficient points"
+                raise error
             if transaction_key in self.charge_keys:
                 if self.charge_keys[transaction_key] != (username, cost):
                     raise AssertionError("charge key conflict")
@@ -2300,6 +2391,74 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         self.assertEqual(1, len(self._jobs()))
         self.assertEqual(1, core._image_job_queue.qsize())
 
+    def test_definitive_auth_rejection_is_durable_and_allows_fresh_attempt(self):
+        path = "/api/gen/short-drama/generate-stills"
+        self.points.reject_next_charge = True
+        first_status, first = self.request(
+            path, body=self._body(), idempotency_key="still-insufficient-001",
+        )
+        replay_status, replay = self.request(
+            path, body=self._body(), idempotency_key="still-insufficient-001",
+        )
+        self.assertEqual((402, 402), (first_status, replay_status))
+        self.assertEqual(first, replay)
+        self.assertEqual("failed", short_drama_production.get_charge_attempt(
+            core.jdb, "alice", "still-insufficient-001",
+        )["state"])
+        self.assertEqual(1, len(self.points.deduct_calls))
+        self.quote_cache.clear()
+        fresh_status, fresh = self.request(
+            path, body=self._body(), idempotency_key="still-insufficient-002",
+        )
+        self.assertEqual(200, fresh_status)
+        self.assertGreater(fresh["job_id"], 0)
+
+    def test_ambiguous_attempt_reservation_prevents_project_budget_overrun(self):
+        with closing(core.jdb()) as conn:
+            conn.execute(
+                "UPDATE short_drama_projects SET point_budget=30 WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+        self.points.lose_first_charge_response = True
+        first_status, _ = self.request(
+            "/api/gen/short-drama/generate-stills", body=self._body(),
+            idempotency_key="budget-reserve-first-001",
+        )
+        self.quote_cache.clear()
+        second_status, second = self.request(
+            "/api/gen/short-drama/generate-stills", body=self._body(),
+            idempotency_key="budget-reserve-second-001",
+        )
+        self.assertEqual(502, first_status)
+        self.assertEqual(400, second_status)
+        self.assertEqual("point_budget_exceeded", second["code"])
+        snapshot = short_drama_production.get_production(
+            core.jdb, "alice", self.project["id"],
+        )
+        self.assertEqual(24, snapshot["reserved_points"])
+        self.assertEqual(1, len(self.points.deduct_calls))
+
+    def test_refund_pending_response_is_retryable_until_sweeper_finishes(self):
+        path = "/api/gen/short-drama/generate-stills"
+        self.points.fail_refund_before_commit = True
+        with mock.patch.object(
+            short_drama_production, "record_attempt_job",
+            side_effect=RuntimeError("association failed"),
+        ):
+            status, pending = self.request(
+                path, body=self._body(), idempotency_key="still-pending-refund-001",
+            )
+        self.assertEqual(503, status)
+        self.assertEqual("refund_pending", pending["code"])
+        self.assertTrue(pending["retryable"])
+        self.assertEqual(1, short_drama_production.retry_attempt_refunds(core.jdb, self.points))
+        replay_status, replay = self.request(
+            path, body=self._body(), idempotency_key="still-pending-refund-001",
+        )
+        self.assertEqual(500, replay_status)
+        self.assertNotEqual("refund_pending", replay.get("code"))
+
     def test_accepted_lost_auth_attempt_ignores_later_quote_project_and_acl_drift(self):
         self.points.lose_first_charge_response = True
         path = "/api/gen/short-drama/generate-stills"
@@ -2339,7 +2498,7 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         attempt = short_drama_production.get_charge_attempt(
             core.jdb, "alice", "still-refund-lost-001",
         )
-        self.assertEqual(500, first_status)
+        self.assertEqual(503, first_status)
         self.assertEqual("refund_pending", attempt["state"])
         self.assertIsNotNone(attempt["terminal_response"])
 
@@ -2372,7 +2531,7 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         first_attempt = short_drama_production.get_charge_attempt(
             core.jdb, "alice", "still-refund-before-001",
         )
-        self.assertEqual(500, first_status)
+        self.assertEqual(503, first_status)
         self.assertEqual("refund_pending", first_attempt["state"])
 
         retry_status, _ = self.request(

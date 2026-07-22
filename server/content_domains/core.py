@@ -901,6 +901,8 @@ def _pending_job_scanner():
     while True:
         try:
             _recover_pending_jobs(_PENDING_RECOVERY_LIMIT)
+            _short_drama_domain().short_drama_production.retry_attempt_refunds(
+                jdb, _domains()[1], JOB_QUEUE_MAX)
             jobs_store.retry_failed_refunds(jdb, _refund_once, JOB_QUEUE_MAX)
         except Exception:
             pass
@@ -925,6 +927,11 @@ def start_job_workers():
             threading.Thread(target=_job_worker_loop, args=(q,), name="%s-%d" % (prefix, i + 1), daemon=True).start()
     threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start()
     _recover_pending_jobs(_PENDING_RECOVERY_LIMIT)
+    try:
+        _short_drama_domain().short_drama_production.retry_attempt_refunds(
+            jdb, _domains()[1], JOB_QUEUE_MAX)
+    except Exception:
+        pass
 def drain_and_exit(signum=None, frame=None):
     """SIGTERM → 停止收新任务 → 等在飞的跑完 → 退出。
 
@@ -1474,6 +1481,8 @@ class H(BaseHTTPRequestHandler):
                 if is_still_route and still_attempt:
                     if still_attempt["state"] in {"refund_pending", "refunded"}:
                         still_attempt = _short_drama_domain().short_drama_production.reconcile_attempt_refund(jdb, points_domain, still_attempt)
+                        if still_attempt["state"] == "refund_pending":
+                            return self._send(503, _short_drama_domain().short_drama_production.refund_pending_response())
                         terminal = dict(still_attempt.get("terminal_response") or {
                             "detail": "任务创建失败，退款正在自动重试",
                         })
@@ -1481,6 +1490,14 @@ class H(BaseHTTPRequestHandler):
                         if still_attempt["state"] == "refunded":
                             _idempotency_complete(user["username"], p, idem_key,
                                                   dict(terminal, _http_status=status))
+                        return self._send(status, terminal)
+                    if still_attempt["state"] == "failed":
+                        terminal = dict(still_attempt.get("terminal_response") or {
+                            "detail": "still generation charge was rejected", "_http_status": 402,
+                        })
+                        status = int(terminal.pop("_http_status", 402))
+                        _idempotency_complete(user["username"], p, idem_key,
+                                              dict(terminal, _http_status=status))
                         return self._send(status, terminal)
                     if still_attempt["state"] == "linked":
                         recovered = dict(still_attempt.get("terminal_response") or {})
@@ -1560,7 +1577,18 @@ class H(BaseHTTPRequestHandler):
                             charge_transaction_key=("job-charge:%s:%s:%s" % (user["username"], p, idem_key))
                             if idem_key else "")
                 except points_domain.AuthPointsError as e:
-                    if not (is_still_route and e.status == 502):
+                    if is_still_route and e.status == 402:
+                        rejected = {
+                            "detail": e.detail, "need": cost, "code": "charge_rejected",
+                            "operation_terminal": True, "_http_status": 402,
+                        }
+                        _short_drama_domain().short_drama_production.mark_attempt_failed(
+                            jdb, user["username"], idem_key, rejected)
+                        _idempotency_complete(user["username"], p, idem_key, rejected)
+                        public_rejected = dict(rejected)
+                        public_rejected.pop("_http_status", None)
+                        return self._send(402, public_rejected)
+                    elif not (is_still_route and e.status == 502):
                         _idempotency_abort(user["username"], p, idem_key)
                     return self._send(402 if e.status == 402 else 502, {"detail": e.detail, "need": cost})
                 except jobs_store.PaidJobInsertError as e:
@@ -1580,7 +1608,7 @@ class H(BaseHTTPRequestHandler):
                         raise
                     failed_response = {
                         "detail": "任务创建失败，退款正在自动重试",
-                        "code": "still_job_create_failed",
+                        "code": "still_job_create_failed", "operation_terminal": True,
                     }
                     still_attempt = _short_drama_domain().short_drama_production.mark_attempt_refund_pending(
                         jdb, user["username"], idem_key,
@@ -1590,6 +1618,8 @@ class H(BaseHTTPRequestHandler):
                     if still_attempt["state"] == "refunded":
                         _idempotency_complete(user["username"], p, idem_key,
                                               dict(failed_response, _http_status=500))
+                    else:
+                        return self._send(503, _short_drama_domain().short_drama_production.refund_pending_response())
                     return self._send(500, failed_response)
                 if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}:
                     try: video_domain.record_video_pending_asset(jid, user["username"], body)
@@ -1603,6 +1633,7 @@ class H(BaseHTTPRequestHandler):
                         video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
                     queue_response = {"detail": "任务队列已满，请稍后再试", "code": "queue_full", "retry_after_ms": 4000, "need": cost}
                     if is_still_route:
+                        queue_response["operation_terminal"] = True
                         still_attempt = _short_drama_domain().short_drama_production.mark_linked_attempt_failed(
                             jdb, user["username"], idem_key,
                             dict(queue_response, _http_status=429),
@@ -1611,6 +1642,8 @@ class H(BaseHTTPRequestHandler):
                         if still_attempt["state"] == "refunded":
                             _idempotency_complete(user["username"], p, idem_key,
                                                   dict(queue_response, _http_status=429))
+                        else:
+                            return self._send(503, _short_drama_domain().short_drama_production.refund_pending_response())
                     else:
                         _idempotency_abort(user["username"], p, idem_key)
                     return self._send(429, queue_response)

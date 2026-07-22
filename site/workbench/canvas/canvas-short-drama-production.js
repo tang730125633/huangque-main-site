@@ -367,9 +367,11 @@
         if(!Object.prototype.hasOwnProperty.call(ui.prompts,shot.id)) ui.prompts[shot.id]=shot.image_prompt;
         var guardedJob=submittedGuards[shot.id];
         var terminalFailed=shot.still.job&&shot.still.job.status==='failed'&&
-          (guardedJob===true||shot.still.job.job_id===guardedJob);
-        var reconciled=shot.still.locked||shotHasCompletedCurrent(normalized,shot)||
-          terminalFailed||shot.still.versions.some(function(version){ return guardedJob!==true&&version.job_id===guardedJob; });
+          guardedJob!==true&&shot.still.job.job_id===guardedJob;
+        var exactVersion=shot.still.versions.some(function(version){
+          return guardedJob!==true&&version.job_id===guardedJob;
+        });
+        var reconciled=terminalFailed||exactVersion;
         if(reconciled){
           delete submittedGuards[shot.id];
           if(pendingSingle&&pendingSingle.body.shot_id===shot.id&&
@@ -479,11 +481,8 @@
       });
     }
     function ambiguousSubmitError(error){
-      var status=Number(error&&error.status);
-      if(error&&(error.code==='timeout'||error.code==='network_error')) return true;
-      if(status===502||status===503||status===504) return true;
-      if(error&&['still_job_create_failed','queue_full','charge_attempt_in_progress'].indexOf(error.code)>=0) return false;
-      return !isFinite(status)||status<=0;
+      return !(error&&(error.operation_terminal===true||
+        (error.data&&error.data.operation_terminal===true)));
     }
     function pollShots(targets){
       var tracked=(targets||[]).map(function(target){
@@ -603,7 +602,7 @@
         ensureAlive();
         var jobId=response&&response.job_id;
         if(typeof jobId!=='number'||!isFinite(jobId)||Math.floor(jobId)!==jobId||jobId<1){
-          var invalid=new Error('successful still submission requires a positive job_id');invalid.durable=true;throw invalid;
+          throw new Error('successful still submission requires a positive job_id');
         }
         attempt.jobId=jobId;pendingSingle=attempt;savePendingSingle();
         submittedGuards[attempt.body.shot_id]=jobId;safePaint();
