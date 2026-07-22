@@ -94,7 +94,7 @@ class SinglePersonParamsAreUntouchedTests(unittest.TestCase):
 
     def test_the_locked_params_are_unchanged(self):
         self.assertEqual(video.CINEMATIC_MOTION_RESOLUTION, "1080p")
-        self.assertEqual(video.cinematic_rate("motion"), 30)   # 3 → 10 → 30（kongli 2026-07-15）
+        self.assertEqual(video.cinematic_rate("motion"), 10)
 
     def test_the_prompt_is_still_fixed_and_not_user_supplied(self):
         """不管内容换成什么，它都得是【写死的】—— 客户端传的 prompt 一律不认。"""

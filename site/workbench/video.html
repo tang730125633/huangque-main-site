@@ -300,8 +300,8 @@
               <button id="clearScript" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font-family:inherit;">清空</button>
             </div>
             <div class="textarea-wrap">
-              <textarea id="scriptText" rows="6" maxlength="1200" placeholder="输入要生成口播视频的文案...">姐妹们好呀～仙颜美容本月科技焕肤体验官招募正式开启！首批 20 个名额，0 元体验德国进口冷光嫩肤，做完当天毛孔细腻、肤色透亮肉眼可见。私信回复「焕肤」抢先预约，到店再送一次小气泡深层清洁。</textarea>
-              <span id="charCount" class="mono textarea-count">0 / 1200</span>
+              <textarea id="scriptText" rows="6" maxlength="1000" placeholder="输入要生成口播视频的文案...">姐妹们好呀～仙颜美容本月科技焕肤体验官招募正式开启！首批 20 个名额，0 元体验德国进口冷光嫩肤，做完当天毛孔细腻、肤色透亮肉眼可见。私信回复「焕肤」抢先预约，到店再送一次小气泡深层清洁。</textarea>
+              <span id="charCount" class="mono textarea-count">0 / 1000</span>
             </div>
           </div>
 
@@ -369,7 +369,7 @@
         </div>
       </div>
 
-      <div id="talkingCostSummary" class="talking-cost">10 点/秒 · 按实际时长结算</div>
+      <div id="talkingCostSummary" class="talking-cost">每 30 秒 30 点 · 按实际时长结算</div>
       <button id="generateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:10px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
         生成口播视频
       </button>
@@ -388,14 +388,14 @@
         <div class="line-switch">
           <div class="label">玩法</div>
           <div class="line-tabs" id="cineModeTabs">
-            <button type="button" class="line-tab active" data-cine-mode="motion"><b>动作模仿</b><span>1 个形象 + 1 段参考视频 → 照着它的动作演 · 30 点/秒</span></button>
+            <button type="button" class="line-tab active" data-cine-mode="motion"><b>动作模仿</b><span>1 个形象 + 1 段参考视频 → 照着它的动作演 · 10 点/秒</span></button>
             <!-- 双人动作模仿：页签已下掉。它在线上是 0 成 2 败 —— 被 HeyGen 的内容审核拦的
                  （网页原话 "Your content was flagged by our moderation system"，而 API 一个字
                  都不给）。中文提示词换过，但【一次都没实测】。与其让用户白等十几分钟再看到
                  「生成失败」，先下掉。
                  CINE_MODES 里的 duo 【保留】—— 后端仍然认这个玩法（只是拒绝提交），
                  实测通过后把 CINEMATIC_DUO_ENABLED=1 打开、把这个页签加回来即可，不用重写。 -->
-            <button type="button" class="line-tab" data-cine-mode="open"><b>开放式生成</b><span>最多 3 个形象 + 自己写画面描述 · 30 点/秒</span></button>
+            <button type="button" class="line-tab" data-cine-mode="open"><b>开放式生成</b><span>最多 3 个形象 + 自己写画面描述 · 10 点/秒</span></button>
           </div>
         </div>
 
@@ -567,7 +567,7 @@
         </div>
         <div class="panel" style="margin-top:14px;">
           <div class="faint" style="font-size:12px;margin-bottom:8px;">操作方式</div>
-          <div class="seg" style="grid-template-columns:repeat(2,1fr);"><button class="on" data-grok-operation="generate">生成新视频</button><button data-grok-operation="edit">编辑已有视频</button></div>
+          <div class="seg" style="grid-template-columns:repeat(2,1fr);"><button class="on" data-grok-operation="generate">生成新视频</button><button disabled title="功能维护中">编辑维护中</button></div>
         </div>
         <div class="panel grok-edit-only hidden" style="margin-top:12px;">
           <div class="faint" style="font-size:12px;margin-bottom:8px;">参考视频 <span style="color:#5c6b82;">· MP4，最长 8.7 秒；输出继承原时长和比例，最高 720p</span></div>
@@ -731,7 +731,7 @@
   var videoFunction='talking', mode='text', voiceTab='public', selectedVoice='S_d21F8OR62', activePreview=null, activePreviewBtn=null;
   var imageData='', imagePreview='', audioData='', selectedAssetAudio=null, assetAudiosLoaded=false, selectedResolution='1080p', selectedRatio='9:16', selectedMotion='medium';
   var talkingBatch=false, talkingBatchItems=[], videoCost=20, videoBatchMax=5, talkingBatchSeq=0;
-  var TALKING_RATE=10;   // 口播 10 点/秒（与后端 video.TALKING_RATE_PER_SEC 一致）；按实际输出时长结算，多退少不补
+  var TALKING_BLOCK_SECONDS=30, TALKING_BLOCK_POINTS=30;
   var bgmData='', selectedBgmVolume=0.18;
   var selectedSubtitle='off', selectedSubtitleStyle='white', selectedSubtitlePosition='bottom';  // F4 字幕：默认关闭+底部，不勾选时行为与原来一致
   // 电影化身（HeyGen cinematic）：三个玩法共用一套控件，见 CINE_MODES
@@ -763,9 +763,9 @@
   //   durations  可选时长（只有开放式还用得上）；rate 每秒点数
   // ⚠️ rate 必须和后端 CINEMATIC_RATE_PER_SEC 逐字对齐 —— 对不上就是「界面说 30 点、实际扣 100 点」。
   var CINE_MODES={
-    motion:{label:'动作模仿',    avatars:1, exact:true,  fixed:true,  needRef:true,  durations:['auto'],            rate:30},
+    motion:{label:'动作模仿',    avatars:1, exact:true,  fixed:true,  needRef:true,  durations:['auto'],            rate:10},
     duo:   {label:'双人动作模仿', avatars:2, exact:true,  fixed:true,  needRef:true,  durations:['auto'],            rate:30},
-    open:  {label:'开放式生成',  avatars:3, exact:false, fixed:false, needRef:false, durations:['auto',5,10,12,15],  rate:30}
+    open:  {label:'开放式生成',  avatars:3, exact:false, fixed:false, needRef:false, durations:['auto',5,10,12,15],  rate:10}
   };
   var cineMode='motion';
   var cineRefSeconds=0;   // 参考视频的实际秒数（本地读的），用来预估点数
@@ -1518,7 +1518,7 @@
   function updateCineCount(){
     if($('cineAvatarCount')) $('cineAvatarCount').textContent=cineSelectedAvatarIds.length+' / '+cineCfg().avatars;
     renderCineRefs();          // 形象数一变，参考图的额度就变（两者共用 9 张图的预算）
-    updateCineDurationHint();  // 点数按秒算，三个玩法统一 30 点/秒
+    updateCineDurationHint();
   }
 
   // ===== 参考素材：视频 + 图片，多选，和形象共用媒体预算 =====
@@ -1848,16 +1848,18 @@
     updateVideoCosts();
   }
   // 果肉/豆姐/欧米(xiaole_video) 与 试衣(tryon) 的前端预估价，必须和后端实扣对上。
-  var XIAOLE_RATE=30;   // 与后端 xiaole_video 30 点/秒一致
+  var GROK_RATES={
+    'grok-imagine-video':{'480p':10,'720p':12},
+    'grok-imagine-video-1.5':{'480p':15,'720p':25,'1080p':44}
+  };
+  function grokRate(){return (GROK_RATES[selectedGrokModel]||{})[selectedGrokResolution]||0;}
   function xiaoleCostNote(channel){
     if(channel==='grok' && grokOperation==='edit'){
-      if(!grokEditDuration || grokEditDuration<=0) return '按参考视频时长计费（'+XIAOLE_RATE+' 点/秒，上限 8.7 秒）';
-      var d=Math.max(1,Math.ceil(Math.min(8.7,grokEditDuration)));
-      return '预计 '+(d*XIAOLE_RATE)+' 点（'+XIAOLE_RATE+' 点/秒 × '+d+' 秒）';
+      return '果肉视频编辑维护中';
     }
-    // grok 生成用所选时长；豆姐/欧米固定 10 秒（后端缺省 10）
-    var secs=channel==='grok' ? selectedGrokDuration : 10;
-    return '预计 '+(secs*XIAOLE_RATE)+' 点（'+XIAOLE_RATE+' 点/秒 × '+secs+' 秒）';
+    if(channel!=='grok') return '点数以服务端返回为准';
+    var rate=grokRate(), secs=selectedGrokDuration;
+    return '预计 '+(secs*rate)+' 点（'+rate+' 点/秒 × '+secs+' 秒）';
   }
   var SORA_RATES={
     'sora-2:720p':30,
@@ -2065,10 +2067,10 @@
     if($('sideChecklist')) $('sideChecklist').innerHTML=items.map(function(x){return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 11px;border:1px solid rgba(148,164,187,.1);border-radius:12px;background:rgba(148,164,187,.03);"><span style="font-size:12.5px;color:#cbd5e1;">'+esc(x[0])+'</span><span style="font-size:11.5px;color:#e7b24c;">'+esc(x[1])+'</span></div>';}).join('');
     if($('generateBtn')) $('generateBtn').textContent=talkingBatch?(imageCount?'批量生成 '+imageCount+' 条口播视频':'批量生成口播视频'):'生成口播视频';
     if($('talkingCostSummary')){
-      var perSec=TALKING_RATE+' 点/秒 · 按实际时长结算';
+      var perSec='每 '+TALKING_BLOCK_SECONDS+' 秒 '+TALKING_BLOCK_POINTS+' 点 · 按实际时长结算';
       // text 模式按文案长度估算(4 字/秒，与后端预扣一致)；audio 模式时长要生成后才准，只标单价。
       var estText=(mode==='text' && textReady)
-        ? Math.max(TALKING_RATE, Math.ceil($('scriptText').value.trim().length/4)*TALKING_RATE) : 0;
+        ? Math.max(TALKING_BLOCK_POINTS, Math.ceil(($('scriptText').value.trim().length/4)/TALKING_BLOCK_SECONDS)*TALKING_BLOCK_POINTS) : 0;
       $('talkingCostSummary').textContent=talkingBatch
         ?(perSec+(imageCount?('　·　共 '+imageCount+' 条'):''))
         :(estText?('预计约 '+estText+' 点（'+perSec+'）'):perSec);
@@ -2246,7 +2248,7 @@
   $('bgmFile').onchange=function(){var f=this.files&&this.files[0];if(!f)return;if(f.size>35*1024*1024){toast('BGM 不能超过 35MB');this.value='';return;}readFileData(f).then(function(data){bgmData=data;$('bgmFileName').textContent=f.name;$('bgmClear').classList.remove('hidden');}).catch(function(){toast('BGM 读取失败');});};
   $('bgmClear').onclick=function(){bgmData='';$('bgmFile').value='';$('bgmFileName').textContent='选择 BGM 音频';$('bgmClear').classList.add('hidden');};
   document.querySelectorAll('[data-talking-shape]').forEach(function(b){b.onclick=function(){setTalkingBatchMode(b.dataset.talkingShape==='batch');};});
-  $('scriptText').addEventListener('input',function(){$('charCount').textContent=$('scriptText').value.length+' / 1200';updateChecklist();});
+  $('scriptText').addEventListener('input',function(){$('charCount').textContent=$('scriptText').value.length+' / 1000';updateChecklist();});
   $('clearScript').onclick=function(){$('scriptText').value='';$('scriptText').dispatchEvent(new Event('input'));};
   function bindImageInput(input){
     input.onchange=function(){

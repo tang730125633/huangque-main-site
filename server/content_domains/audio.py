@@ -1006,8 +1006,8 @@ def gen_audio(payload):
     text = (payload.get("text") or payload.get("prompt") or "").strip()
     if not text:
         raise ValueError("配音文案不能为空")
-    if len(text) > 1200:
-        raise ValueError("配音文案过长，请控制在 1200 字以内")
+    if len(text) > 1000:
+        raise ValueError("配音文案过长，请控制在 1000 字以内")
     username = (payload.get("_username") or "").strip()
     raw_voice_key = (payload.get("voice") or "S_d21F8OR62").strip()
     voice_key = raw_voice_key.lower() if raw_voice_key.lower() in set() else raw_voice_key

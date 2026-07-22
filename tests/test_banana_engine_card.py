@@ -94,8 +94,8 @@ class PointsRecalculationTests(unittest.TestCase):
 
     def test_costbase_keeps_distinct_prices(self):
         m = re.search(r"var COSTBASE=\{([^;]+)\};", BANANA).group(1)
-        self.assertIn("nb2:{std:15,hd:25}", m.replace(" ", ""))
-        self.assertIn("pro:{std:25,hd:30}", m.replace(" ", ""))
+        self.assertIn("nb2:{std:18,hd:35}", m.replace(" ", ""))
+        self.assertIn("pro:{std:35,hd:44}", m.replace(" ", ""))
 
     def test_cost_key_resolves_engine_to_variant(self):
         # banana→bananaVariant(nb2/pro)，seedream→'seedream_'+seedreamVariant(std/pro)，其余=引擎名
