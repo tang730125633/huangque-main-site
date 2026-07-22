@@ -478,6 +478,22 @@ def _dict_rows(conn, query, params):
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
+def _charged_planning_points(conn, username, project_id):
+    total = 0
+    rows = _dict_rows(
+        conn,
+        "SELECT cost, payload, refunded FROM jobs WHERE username=? AND kind='copy' "
+        "AND COALESCE(cost,0)>0 AND COALESCE(refunded,0)<>1",
+        (username,),
+    )
+    for row in rows:
+        payload = _json(row["payload"], {})
+        if (isinstance(payload, dict) and payload.get("format") == "short_drama" and
+                payload.get("project_id") == project_id):
+            total += int(row["cost"] or 0)
+    return total
+
+
 def _project_detail(conn, username, project_id):
     projects = _dict_rows(conn,
         "SELECT * FROM short_drama_projects WHERE id=? AND username=? AND deleted=0",
@@ -487,6 +503,7 @@ def _project_detail(conn, username, project_id):
         raise LookupError("短剧项目不存在")
     detail = projects[0]
     detail["revision"] = int(detail["revision"])
+    detail["spent_points"] = _charged_planning_points(conn, username, project_id)
     detail["characters"] = []
     for item in _dict_rows(conn,
         "SELECT * FROM short_drama_characters WHERE project_id=? ORDER BY sort_order, id",
@@ -666,43 +683,23 @@ def check_planning_budget(db_factory, username, project_id, quoted_cost):
     conn = _connection(db_factory)
     try:
         project = conn.execute(
-            "SELECT point_budget, spent_points, stage FROM short_drama_projects "
+            "SELECT point_budget, stage FROM short_drama_projects "
             "WHERE id=? AND username=? AND deleted=0",
             (project_id, username),
         ).fetchone()
         if not project:
             raise LookupError("短剧项目不存在")
-        point_budget, spent_points, stage = project
+        point_budget, stage = project
         if stage != "draft":
             raise ValueError("当前短剧阶段不能重新生成策划")
         point_budget = int(point_budget)
-        spent_points = int(spent_points)
         if point_budget == 0:
             return
-        applied_ids = {
-            int(row[0]) for row in conn.execute(
-                "SELECT job_id FROM short_drama_applied_jobs WHERE project_id=? AND username=?",
-                (project_id, username),
-            ).fetchall()
-        }
-        outstanding = 0
-        for row in conn.execute(
-            "SELECT id, cost, payload FROM jobs WHERE username=? AND kind='copy' "
-            "AND status IN ('pending','running','done')",
-            (username,),
-        ).fetchall():
-            if int(row[0]) in applied_ids:
-                continue
-            try:
-                payload = json.loads(row[2] or "{}")
-            except (TypeError, ValueError):
-                continue
-            if isinstance(payload, dict) and payload.get("format") == "short_drama" and payload.get("project_id") == project_id:
-                outstanding += max(0, int(row[1] or 0))
-        if spent_points + outstanding + quoted_cost > point_budget:
+        spent_points = _charged_planning_points(conn, username, project_id)
+        if spent_points + quoted_cost > point_budget:
             raise PointBudgetExceeded(
-                "短剧点数预算不足：已用 %d 点、待应用 %d 点、本次 %d 点、预算 %d 点" %
-                (spent_points, outstanding, quoted_cost, point_budget)
+                "短剧点数预算不足：已扣 %d 点、本次 %d 点、预算 %d 点" %
+                (spent_points, quoted_cost, point_budget)
             )
     finally:
         conn.close()
@@ -1313,9 +1310,9 @@ def apply_plan(db_factory, username, project_id, revision, plan, planning_cost, 
                  shot["image_prompt"], shot["video_prompt"]),
             )
         cur = conn.execute(
-            "UPDATE short_drama_projects SET stage='characters_review', spent_points=spent_points+?, "
+            "UPDATE short_drama_projects SET stage='characters_review', "
             "revision=revision+1, updated_at=? WHERE id=? AND username=? AND revision=? AND deleted=0",
-            (cost, now, project_id, username, revision),
+            (now, project_id, username, revision),
         )
         if cur.rowcount != 1:
             _raise_cas_error(conn, username, project_id)

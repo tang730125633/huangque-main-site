@@ -145,6 +145,16 @@ class ShortDramaProjectTests(unittest.TestCase):
         self.db = lambda: sqlite3.connect(self.path)
         self.next_job_id = 600
         short_drama.init_db(self.db)
+        conn = self.db()
+        try:
+            conn.execute("""CREATE TABLE jobs(
+                id INTEGER PRIMARY KEY, kind TEXT NOT NULL, username TEXT NOT NULL,
+                cost INTEGER NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL,
+                refunded INTEGER NOT NULL DEFAULT 0
+            )""")
+            conn.commit()
+        finally:
+            conn.close()
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -164,6 +174,19 @@ class ShortDramaProjectTests(unittest.TestCase):
                 "video_prompt": "视频",
             } for index in range(shot_count)],
         }
+
+    def insert_planning_job(self, project, job_id, cost=3, status="pending", refunded=0):
+        conn = self.db()
+        try:
+            conn.execute(
+                "INSERT INTO jobs(id,kind,username,cost,status,payload,refunded) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (job_id, "copy", "alice", cost, status,
+                 json.dumps(bound_planning_payload(project), ensure_ascii=False), refunded),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def _assert_plan_rejected_without_side_effects(self, project, plan, job_id):
         before = short_drama.get_project(self.db, "alice", project["id"])
@@ -268,6 +291,39 @@ class ShortDramaProjectTests(unittest.TestCase):
                 self.db, "alice", project["id"], project["revision"],
                 {"target_duration": 30},
             )
+
+    def test_paid_planning_job_counts_before_apply(self):
+        project = short_drama.create_project(self.db, "alice", valid_project())
+        self.insert_planning_job(project, job_id=41, cost=3, status="pending")
+        fetched = short_drama.get_project(self.db, "alice", project["id"])
+        self.assertEqual(fetched["spent_points"], 3)
+
+    def test_confirmed_refund_is_removed_from_spent_points(self):
+        project = short_drama.create_project(self.db, "alice", valid_project())
+        self.insert_planning_job(project, job_id=42, cost=3, status="running")
+        self.insert_planning_job(
+            project, job_id=43, cost=5, status="error", refunded=1,
+        )
+        fetched = short_drama.get_project(self.db, "alice", project["id"])
+        self.assertEqual(fetched["spent_points"], 3)
+
+    def test_apply_plan_does_not_double_count_paid_job(self):
+        project = short_drama.create_project(self.db, "alice", valid_project())
+        self.insert_planning_job(project, job_id=44, cost=3, status="done")
+        applied = short_drama.apply_plan(
+            self.db, "alice", project["id"], project["revision"],
+            valid_editable_plan(), planning_cost=3, planning_job_id=44,
+        )
+        self.assertEqual(applied["spent_points"], 3)
+        conn = self.db()
+        try:
+            stored = conn.execute(
+                "SELECT spent_points FROM short_drama_projects WHERE id=?",
+                (project["id"],),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(stored, 0)
 
     def test_content_sections_save_only_in_their_review_stage(self):
         project = self.applied_project()
@@ -1263,7 +1319,9 @@ class ShortDramaRouteTests(unittest.TestCase):
                 status, fetched = self.request("GET", self.project_path(project))
                 self.assertEqual(200, status)
                 self.assertEqual("draft", fetched["stage"])
-                self.assertEqual(0, fetched["spent_points"])
+                # The paid job remains unrefunded even though its result cannot be
+                # applied, so the project must show the points already deducted.
+                self.assertEqual(3, fetched["spent_points"])
 
     def test_character_update_rejects_cross_owner_missing_and_deleted_cinematic_avatars(self):
         for avatar_id in (2, 999, 3):
