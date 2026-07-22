@@ -1,11 +1,55 @@
 # -*- coding: utf-8 -*-
-from .core import COPY_MODEL, _post, json
+import os
+import urllib.error
+import urllib.request
+
+from .core import COPY_MODEL, OPENAI_BASE, OPENAI_KEY, json
+
+
+COPY_API_BASE = os.environ.get("COPY_API_BASE", OPENAI_BASE)
+COPY_API_KEY = os.environ.get("COPY_API_KEY", OPENAI_KEY)
+
+
+def _chat_url():
+    base = str(COPY_API_BASE or "").strip().rstrip("/")
+    if not base:
+        raise RuntimeError("文案模型接口未配置，请检查 COPY_API_BASE")
+    if base.endswith("/v1"):
+        return base + "/chat/completions"
+    return base + "/v1/chat/completions"
+
+
+def _http_error_message(status):
+    if status in (401, 403):
+        return "文案模型鉴权失败，请检查 COPY_API_KEY"
+    if status == 404:
+        return "文案模型接口或模型不存在，请检查 COPY_API_BASE 和 COPY_MODEL"
+    if status == 429:
+        return "文案模型请求过于频繁，请稍后重试"
+    if status >= 500:
+        return "文案模型服务暂时不可用，请稍后重试"
+    return "文案模型请求失败（HTTP %s）" % status
+
+
+def _post_chat(body):
+    if not COPY_API_KEY:
+        raise RuntimeError("文案模型密钥未配置，请检查 COPY_API_KEY")
+    request = urllib.request.Request(
+        _chat_url(), data=body,
+        headers={"Authorization": "Bearer " + COPY_API_KEY, "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=300) as response:
+            return json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(_http_error_message(error.code)) from error
 
 def _chat(sysmsg, usermsg, temp):
     body = json.dumps({"model": COPY_MODEL,
                        "messages": [{"role": "system", "content": sysmsg}, {"role": "user", "content": usermsg}],
                        "temperature": temp}).encode()
-    d = _post("/v1/chat/completions", body, "application/json")
+    d = _post_chat(body)
     return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
 
 def gen_copy(payload):
