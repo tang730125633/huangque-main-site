@@ -251,6 +251,24 @@ class ShortDramaProjectTests(unittest.TestCase):
         )
         self.assertEqual(replacement["title"], "替补项目")
 
+    def test_create_project_rejects_impossible_duration_shot_pair(self):
+        with self.assertRaisesRegex(ValueError, "时长与分镜数量不匹配"):
+            short_drama.create_project(
+                self.db, "alice",
+                valid_project(target_duration=30, shot_count=10),
+            )
+
+    def test_partial_settings_update_validates_merged_pair(self):
+        project = short_drama.create_project(
+            self.db, "alice",
+            valid_project(target_duration=45, shot_count=9),
+        )
+        with self.assertRaisesRegex(ValueError, "时长与分镜数量不匹配"):
+            short_drama.update_project(
+                self.db, "alice", project["id"], project["revision"],
+                {"target_duration": 30},
+            )
+
     def test_content_sections_save_only_in_their_review_stage(self):
         project = self.applied_project()
         edited = [dict(project["characters"][0], name="林默（新）")]

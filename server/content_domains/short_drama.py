@@ -89,6 +89,8 @@ def validate_project_payload(payload, partial=False):
     if "shot_count" in cleaned:
         if type(cleaned["shot_count"]) is not int or cleaned["shot_count"] not in SHOT_COUNTS:
             raise ValueError("分镜数量必须为 6–10 个")
+    if not partial:
+        _validate_planning_limits(cleaned["target_duration"], cleaned["shot_count"])
     cleaned["visual_style"] = str(cleaned.get("visual_style") or "电影写实").strip()[:80]
     if "point_budget" in cleaned:
         if type(cleaned["point_budget"]) is not int:
@@ -297,7 +299,7 @@ def _validate_planning_limits(target_duration, shot_count):
     if shot_count not in SHOT_COUNTS:
         raise ValueError("分镜数量必须为 6-10 个")
     if target_duration % 5 or not 5 * shot_count <= target_duration <= 10 * shot_count:
-        raise ValueError("短剧时长与分镜数量无法组成 5/10 秒分镜")
+        raise ValueError("短剧时长与分镜数量不匹配，无法组成 5/10 秒分镜")
 
 
 def build_plan_prompt(settings):
@@ -806,13 +808,19 @@ def update_project(db_factory, username, project_id, revision, patch, avatar_loo
     conn = _connection(db_factory)
     try:
         current = conn.execute(
-            "SELECT title, stage FROM short_drama_projects WHERE id=? AND username=? AND deleted=0",
+            "SELECT title, stage, target_duration, shot_count FROM short_drama_projects "
+            "WHERE id=? AND username=? AND deleted=0",
             (project_id, username),
         ).fetchone()
         if not current:
             raise LookupError("短剧项目不存在")
         if current[1] != "draft" and set(changes) & PLANNING_SPEC_FIELDS:
             raise ValueError("策划生成后不能修改会使下游失效的项目设置")
+        if set(changes) & {"target_duration", "shot_count"}:
+            _validate_planning_limits(
+                changes.get("target_duration", current[2]),
+                changes.get("shot_count", current[3]),
+            )
         title = changes.get("title", current[0])
         assignments = ["title=?"]
         values = [title]
