@@ -678,6 +678,35 @@ def get_resumable_xai_request(job_id):
     return {
         "request_id": row["provider_video_id"],
         "model": row["model"] or "grok-imagine-video",
+        "provider": "xai",
+        "phase": phase,
+        "status": row["status"],
+    }
+
+
+def get_resumable_grok_request(job_id):
+    """Read the persisted provider before resuming a paid Grok video job."""
+    if not job_id:
+        return None
+    with closing(adb()) as c:
+        row = c.execute(
+            """SELECT provider_video_id, model, phase, status
+               FROM video_assets WHERE job_id=?""",
+            (job_id,),
+        ).fetchone()
+    if not row or not row["provider_video_id"]:
+        return None
+    phase = str(row["phase"] or "")
+    if phase.startswith("openrouter_"):
+        provider = "openrouter"
+    elif phase.startswith("xai_") or phase == "downloading":
+        provider = "xai"
+    else:
+        return None
+    return {
+        "request_id": row["provider_video_id"],
+        "model": row["model"] or "grok-imagine-video",
+        "provider": provider,
         "phase": phase,
         "status": row["status"],
     }
@@ -2793,15 +2822,16 @@ def gen_xiaole_video(payload):
         if raw_refs:
             ref_images = [_xiaole_ref_to_url(r) for r in raw_refs]
     label = {"grok": "果肉视频", "micro": "豆姐视频", "omni": "欧米视频"}.get(channel, model)
-    existing = get_resumable_xai_request(job_id) if use_xai else None
+    existing = get_resumable_grok_request(job_id) if use_xai else None
     if job_id and not existing:
         update_video_asset_phase(job_id, "queued", mode=channel, text=prompt, model=model)
     if use_xai:
-        from . import video_xai
+        from . import video_openrouter, video_xai
         operation = payload.get("operation") or "generate"
         reference_video_file = reference_video_url = None
         if existing:
-            xres = video_xai.resume(
+            adapter = video_openrouter if existing.get("provider") == "openrouter" else video_xai
+            xres = adapter.resume(
                 existing["request_id"], existing.get("model") or model,
                 payload.get("duration") or 10,
                 job_id=job_id, heartbeat=update_video_asset_phase,
@@ -2821,17 +2851,29 @@ def gen_xiaole_video(payload):
             image_url = ref_images[0] if ref_images else None
             if image_url and not str(image_url).startswith(("http://", "https://")):
                 raise RuntimeError("xAI官方图生视频需要可公网访问的参考图，COS转存失败")
-            xres = video_xai.generate(
-                model=model, prompt=prompt, image_url=image_url,
-                duration=payload.get("duration") or 10,
-                aspect_ratio=ratio, resolution=payload.get("resolution") or "720p",
-                job_id=job_id, heartbeat=update_video_asset_phase,
-            )
+            try:
+                xres = video_xai.generate(
+                    model=model, prompt=prompt, image_url=image_url,
+                    duration=payload.get("duration") or 10,
+                    aspect_ratio=ratio, resolution=payload.get("resolution") or "720p",
+                    job_id=job_id, heartbeat=update_video_asset_phase,
+                )
+            except video_xai.XaiCreateUnavailableError:
+                if not video_openrouter.available():
+                    raise
+                xres = video_openrouter.generate(
+                    model=model, prompt=prompt, image_urls=ref_images,
+                    duration=payload.get("duration") or 10,
+                    aspect_ratio=ratio, resolution=payload.get("resolution") or "720p",
+                    job_id=job_id, heartbeat=update_video_asset_phase,
+                )
         source_url = xres["source_video_url"]
+        provider = xres.get("provider") or "xai"
         if job_id:
-            update_video_asset_phase(job_id, "downloading", source_video_url=source_url,
+            phase = "openrouter_downloading" if provider == "openrouter" else "downloading"
+            update_video_asset_phase(job_id, phase, source_video_url=source_url,
                                      provider_video_id=xres.get("request_id"), model=xres.get("model") or model)
-        video_file = _download_xiaole_video(source_url, "grok_xai")
+        video_file = _download_xiaole_video(source_url, "grok_" + provider)
         cover = _extract_first_frame_cover(video_file)
         result = {
             "video_file": video_file, "video_url": _file_url(video_file),
