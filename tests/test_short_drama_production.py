@@ -655,6 +655,55 @@ class ShortDramaProductionTests(unittest.TestCase):
                                         revision=project["revision"] - 1)
             )
 
+    def test_select_asset_rejects_wrong_ratio_when_unlocking_without_mutation(self):
+        project, asset_id, versions = self._completed_still_versions(
+            ratios=("9:16", "16:9")
+        )
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_assets SET locked=1 WHERE id=?", (asset_id,)
+            )
+            conn.commit()
+
+        with self.assertRaises(LookupError):
+            short_drama_production.select_asset(self.db, "alice", {
+                "project_id": project["id"], "revision": project["revision"],
+                "asset_id": asset_id, "version": versions[1]["version"], "lock": False,
+            })
+
+        with closing(self.db()) as conn:
+            asset_state = conn.execute(
+                "SELECT current_version, locked FROM short_drama_assets WHERE id=?",
+                (asset_id,),
+            ).fetchone()
+            revision = conn.execute(
+                "SELECT revision FROM short_drama_projects WHERE id=?", (project["id"],)
+            ).fetchone()[0]
+        self.assertEqual((1, 1), asset_state)
+        self.assertEqual(project["revision"], revision)
+
+    def test_select_asset_rejects_wrong_ratio_when_locking_without_mutation(self):
+        project, asset_id, versions = self._completed_still_versions(
+            ratios=("9:16", "16:9")
+        )
+
+        with self.assertRaises(LookupError):
+            short_drama_production.select_asset(self.db, "alice", {
+                "project_id": project["id"], "revision": project["revision"],
+                "asset_id": asset_id, "version": versions[1]["version"], "lock": True,
+            })
+
+        with closing(self.db()) as conn:
+            asset_state = conn.execute(
+                "SELECT current_version, locked FROM short_drama_assets WHERE id=?",
+                (asset_id,),
+            ).fetchone()
+            revision = conn.execute(
+                "SELECT revision FROM short_drama_projects WHERE id=?", (project["id"],)
+            ).fetchone()[0]
+        self.assertEqual((1, 0), asset_state)
+        self.assertEqual(project["revision"], revision)
+
     def test_regeneration_after_locking_keeps_selection_and_appends_history(self):
         project, asset_id, versions = self._completed_still_versions()
         selected = short_drama_production.select_asset(self.db, "alice", {

@@ -515,7 +515,7 @@ def select_asset(db_factory, username, body):
             "JOIN short_drama_asset_versions v "
             "ON v.asset_id=a.id AND v.version=? "
             "WHERE a.id=? AND a.project_id=? AND a.type='still' "
-            "AND p.username=? AND p.deleted=0 AND v.status='done'",
+            "AND p.username=? AND p.deleted=0 AND v.status='done' AND v.ratio=p.ratio",
             (body["version"], asset_id, project_id, username),
         ).fetchone()
         if not row:
