@@ -10,6 +10,7 @@
   var GENERATE_PATH='/api/gen/short-drama/generate-stills';
   var SELECT_PATH='/api/gen/short-drama/select-asset';
   var CONFIRM_PATH='/api/gen/short-drama/confirm-production-stage';
+  var KNOWN_JOB_MISSING_LIMIT=3;
 
   function isActiveJobStatus(status){ return status==='pending'||status==='running'; }
 
@@ -129,7 +130,9 @@
       destroyed:options.destroyed!=null?!!options.destroyed:!!input.destroyed,
       error:text(options.error!=null?options.error:input.error),
       quote:clone(options.quote!=null?options.quote:input.quote),
-      lastMode:text(options.lastMode!=null?options.lastMode:input.lastMode)
+      lastMode:text(options.lastMode!=null?options.lastMode:input.lastMode),
+      submittedShotIds:(Array.isArray(options.submittedShotIds)?options.submittedShotIds:
+        (Array.isArray(input.submittedShotIds)?input.submittedShotIds:[])).slice()
     };
   }
 
@@ -231,6 +234,7 @@
     var confirmable=writable&&allShotsLocked(state);
     var batchable=writable&&state.shots.some(function(item){
       return !item.still.locked&&!shotHasCompletedCurrent(state,item)&&
+        state.submittedShotIds.indexOf(item.id)<0&&
         !(item.still.job&&isActiveJobStatus(item.still.job.status));
     });
     return '<aside class="nc-sdp-inspector"><header><span class="nc-sdp-kicker">关键帧生产</span><h2>生成控制台</h2></header>'+
@@ -243,6 +247,7 @@
       '<button type="button" data-action="retry-current"'+disabledUnless(writable)+'>重试当前镜头</button><button type="button" data-action="generate-batch"'+disabledUnless(batchable)+'>批量模式生成</button></div>'+
       '<button type="button" class="nc-sdp-confirm" data-action="confirm-stage"'+disabledUnless(confirmable)+'>确认全部关键帧并进入配音</button>'+
       (!state.canEdit?'<p class="nc-sdp-readonly">当前为只读模式，所有写操作均已禁用。</p>':'')+
+      (state.submittedShotIds.length?'<p class="nc-sdp-readonly">已提交镜头正在同步生产状态，请稍候。</p>':'')+
       (state.stage!=='stills_review'?'<p class="nc-sdp-readonly">当前阶段不可修改关键帧。</p>':'')+'</aside>';
   }
 
@@ -289,13 +294,16 @@
         return value;
       });
     }
+    function renderOptions(){
+      return Object.assign({},ui,{submittedShotIds:Object.keys(submittedGuards)});
+    }
     function view(){
       var base=serverState||{project_id:options.projectId,shots:[]};
-      return normalizeState(base,ui);
+      return normalizeState(base,renderOptions());
     }
     function paint(){
       ensureAlive();
-      var html=renderWorkspace(serverState||{project_id:options.projectId,shots:[]},ui);
+      var html=renderWorkspace(serverState||{project_id:options.projectId,shots:[]},renderOptions());
       if(host) host.innerHTML=html;
       return html;
     }
@@ -447,7 +455,11 @@
               if(activeJob) return true;
               var matchingJob=job&&target.jobId!=null&&job.job_id===target.jobId;
               if(matchingJob||target.observed){ target.done=true;return false; }
-              if(target.jobId!=null) return true;
+              if(target.jobId!=null){
+                target.missing+=1;
+                if(target.missing>=KNOWN_JOB_MISSING_LIMIT){ target.done=true;return false; }
+                return true;
+              }
               target.missing+=1;
               if(target.missing>=2){ target.done=true;return false; }
               return true;

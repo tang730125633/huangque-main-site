@@ -885,6 +885,98 @@ async function testPartialRecoveryPollFailureKeepsSubmittedGuardAndPrimaryError(
   workspace.destroy();
 }
 
+async function testKnownJobMissingFallbackAndDelayedAppearance() {
+  const state = sampleState();
+  let delayedGets = 0;
+  const delayed = production.createWorkspace({
+    projectId: state.project_id, document: null, confirm: () => true, pollIntervalMs: 0,
+    client: { json(path) {
+      if (path.startsWith('/api/gen/short-drama/production?')) {
+        delayedGets += 1;
+        const next = clone(state);
+        const shot = next.shots[0];
+        if (delayedGets === 4) {
+          shot.still.job = { id: 'late', job_id: 500, kind: 'still', status: 'running', quoted_cost: 1 };
+        } else {
+          shot.still.job = null;
+        }
+        return next;
+      }
+      if (path === '/api/gen/short-drama/asset-quote') return { cost: 1, count: 2, kind: 'still' };
+      if (path === '/api/gen/short-drama/generate-stills') return { job_id: 500, shot_id: 'shot-2' };
+      throw new Error(`unexpected route ${path}`);
+    } },
+  });
+  await delayed.ready;
+  delayed.selectShot('shot-2');
+  await delayed.generateCurrent();
+  assert.equal(delayedGets, 5, 'two missing snapshots do not pre-empt a target that then appears');
+  delayed.destroy();
+
+  const timers = [];
+  let fastGets = 0;
+  const fast = production.createWorkspace({
+    projectId: state.project_id, document: null, confirm: () => true,
+    setTimeoutImpl(fn) { timers.push(fn); return timers.length; },
+    clearTimeoutImpl() {},
+    client: { json(path) {
+      if (path.startsWith('/api/gen/short-drama/production?')) { fastGets += 1; return clone(state); }
+      if (path === '/api/gen/short-drama/asset-quote') return { cost: 1, count: 2, kind: 'still' };
+      if (path === '/api/gen/short-drama/generate-stills') return { job_id: 600, shot_id: 'shot-2' };
+      throw new Error(`unexpected route ${path}`);
+    } },
+  });
+  await fast.ready;
+  fast.selectShot('shot-2');
+  let settled = false;
+  const pending = fast.generateCurrent().then((value) => { settled = true; return value; });
+  pending.catch(() => {});
+  for (let spin = 0; spin < 30 && timers.length === 0; spin += 1) await Promise.resolve();
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    assert.equal(timers.length, 1, `missing poll ${attempt + 1} is scheduled once`);
+    timers.shift()();
+    for (let spin = 0; spin < 30 && !settled && timers.length === 0; spin += 1) await Promise.resolve();
+  }
+  assert.equal(settled, true, 'three consecutive missing snapshots terminate a fast omitted failure');
+  assert.equal(fast.getState().busy, false);
+  assert.equal(timers.length, 0, 'terminal missing fallback leaves no timer');
+  assert.equal(fastGets, 4, 'initial GET plus three bounded missing polls');
+  await pending;
+  fast.destroy();
+}
+
+async function testSubmittedGuardsDisableBatchRendererUntilReconciled() {
+  const pureHtml = production.renderWorkspace(batchState(), {
+    selectedShotId: 'shot-1', submittedShotIds: ['shot-2', 'shot-4'],
+  });
+  assert.match(pureHtml, /data-action="generate-batch"[^>]*disabled/);
+  assert.match(pureHtml, /已提交镜头正在同步生产状态/);
+
+  const state = sampleState();
+  let gets = 0;
+  let quotes = 0;
+  const workspace = production.createWorkspace({
+    projectId: state.project_id, document: null, confirm: () => true, pollIntervalMs: 0,
+    client: { json(path) {
+      if (path.startsWith('/api/gen/short-drama/production?')) {
+        gets += 1;
+        if (gets > 1) throw new Error('poll unavailable');
+        return clone(state);
+      }
+      if (path === '/api/gen/short-drama/asset-quote') { quotes += 1; return { cost: 1, count: 2, kind: 'still' }; }
+      if (path === '/api/gen/short-drama/generate-stills') return { job_id: 700, shot_id: 'shot-2' };
+      throw new Error(`unexpected route ${path}`);
+    } },
+  });
+  await workspace.ready;
+  await assert.rejects(workspace.generateBatch(), /poll unavailable/);
+  assert.match(workspace.render(), /data-action="generate-batch"[^>]*disabled/);
+  assert.match(workspace.render(), /已提交镜头正在同步生产状态/);
+  assert.equal(await workspace.generateBatch(), null, 'guarded shot is not resubmitted from stale state');
+  assert.equal(quotes, 1);
+  workspace.destroy();
+}
+
 async function main() {
   testNormalizationAndRenderer();
   testResponsiveCssContract();
@@ -901,6 +993,8 @@ async function main() {
   await testPartialBatchFailureRecoversSubmittedShotsBeforeRetryingEligibleWork();
   await testPollTracksOnlyTheExactSubmittedJobId();
   await testPartialRecoveryPollFailureKeepsSubmittedGuardAndPrimaryError();
+  await testKnownJobMissingFallbackAndDelayedAppearance();
+  await testSubmittedGuardsDisableBatchRendererUntilReconciled();
   console.log('canvas short drama production: pass');
 }
 
