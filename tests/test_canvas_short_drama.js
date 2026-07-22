@@ -142,11 +142,19 @@ function testCanvasIntegration() {
   const app = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-app.js'), 'utf8');
   const moduleSource = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-short-drama.js'), 'utf8').replace(/\r\n/g, '\n');
   const css = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-short-drama.css'), 'utf8').replace(/\r\n/g, '\n');
+  const productionSource = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-short-drama-production.js'), 'utf8').replace(/\r\n/g, '\n');
+  const productionCss = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-short-drama-production.css'), 'utf8').replace(/\r\n/g, '\n');
+  const ci = fs.readFileSync(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
   const appSource = app.replace(/\r\n/g, '\n');
 
   assert.ok(html.includes('canvas/canvas-short-drama.css?v='));
   assert.ok(html.includes('canvas/canvas-short-drama.js?v='));
+  assert.ok(html.includes('canvas/canvas-short-drama-production.css?v='));
+  assert.ok(html.includes('canvas/canvas-short-drama-production.js?v='));
+  assert.ok(html.indexOf('canvas/canvas-short-drama.css?v=') < html.indexOf('canvas/canvas-short-drama-production.css?v='));
+  assert.ok(html.indexOf('canvas/canvas-short-drama-production.js?v=') < html.indexOf('canvas/canvas-short-drama.js?v='));
   assert.ok(html.indexOf('canvas/canvas-short-drama.js?v=') < html.indexOf('canvas/canvas-app.js?v='));
+  assert.match(ci, /run:\s*node tests\/test_canvas_short_drama_production\.js/);
   assert.equal((html.match(/data-add="shortDrama"/g) || []).length, 2);
   assert.match(app, /shortDrama:\s*\{name:'短剧项目',\s*color:'#[a-f0-9]+'\}/);
   assert.ok(app.includes('data-f="openShortDrama"'));
@@ -179,6 +187,8 @@ function testCanvasIntegration() {
     ['canvas/canvas-app.js', appSource],
     ['canvas/canvas-short-drama.js', moduleSource],
     ['canvas/canvas-short-drama.css', css],
+    ['canvas/canvas-short-drama-production.js', productionSource],
+    ['canvas/canvas-short-drama-production.css', productionCss],
   ]) {
     const stamp = crypto.createHash('md5').update(source).digest('hex').slice(0, 8);
     assert.ok(html.includes(`${asset}?v=${stamp}`), `${asset} cache stamp must be LF MD5`);
@@ -358,6 +368,14 @@ async function testPureHelpers() {
     shot_count: 8, style: settings.visual_style, platform: settings.target_platform,
   });
   assert.equal(shortDrama.stageIndex('storyboard_review'), 3);
+  assert.equal(shortDrama.stageIndex('stills_review'), 4);
+  assert.equal(shortDrama.stageIndex('voice_review'), 5);
+  assert.equal(shortDrama.stageIndex('video_review'), 6);
+  assert.equal(shortDrama.stageIndex('assembly_review'), 7);
+  assert.equal(shortDrama.stageIndex('completed'), 8);
+  assert.equal(shortDrama.summarizeProject({ stage: 'stills_review' }).progress, 50);
+  assert.equal(shortDrama.summarizeProject({ stage: 'voice_review' }).progress, 63);
+  assert.equal(shortDrama.summarizeProject({ stage: 'completed' }).progress, 100);
   assert.equal(shortDrama.summarizeProject({
     title: '雨夜来客', ratio: '9:16', target_duration: 45, stage: 'script_review',
   }).title, '雨夜来客');
@@ -617,7 +635,7 @@ function workspaceProject(overrides = {}) {
   }, overrides);
 }
 
-function testWorkspaceSourceAndRenderContract() {
+async function testWorkspaceSourceAndRenderContract() {
   const root = path.join(__dirname, '..');
   const source = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-short-drama.js'), 'utf8');
   const css = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-short-drama.css'), 'utf8');
@@ -636,6 +654,8 @@ function testWorkspaceSourceAndRenderContract() {
   assert.ok(css.includes('.nc-short-drama-character-rail'));
   assert.ok(css.includes('.nc-short-drama-editor'));
   assert.ok(css.includes('.nc-short-drama-inspector'));
+  assert.match(css, /\.nc-short-drama-production-slot\s*\{[^}]*flex:\s*1[^}]*min-height:\s*0/s,
+    'production slot fills the remaining workspace below the shared topbar');
   assert.match(app, /current\.params\.project_id!==projectId[\s\S]*?return/,
     'stale workspace callbacks must not overwrite a relinked scoped node');
   assert.match(app, /function destroyShortDramaWorkspace\(node\)/);
@@ -692,16 +712,103 @@ function testWorkspaceSourceAndRenderContract() {
     assert.match(card, /(?:5|10)秒/);
   }
   assert.match(shortDrama.renderWorkspace(workspaceProject({ stage: 'stills_review' }), {
-    activeStage: 'stills_review', canEdit: true,
-  }), /已完成第一阶段[\s\S]*第二阶段素材制作/);
-  assert.match(shortDrama.renderWorkspace(workspaceProject({ stage: 'stills_review' }), {
     activeStage: 'settings', canEdit: true,
-  }), /data-tab="stills_review"/,
-  'completion has a navigation tab and can be revisited after viewing prior stages');
+  }), /data-tab="stills_review"[^>]*>[\s\S]*画面确认/,
+  'production has a labelled navigation tab');
   assert.doesNotMatch(shortDrama.renderWorkspace(workspaceProject({ stage: 'characters_review' }), {
     activeStage: 'stills_review', canEdit: true,
-  }), /已完成第一阶段/,
-  'completion cannot be opened before the server advances to stills_review');
+  }), /nc-short-drama-production|data-action="generate-current"/,
+  'production controls cannot be opened before the server advances to stills_review');
+
+  const delegatedOptions = [];
+  let delegatedDestroyCalls = 0;
+  const productionModule = {
+    createWorkspace(options) {
+      delegatedOptions.push(options);
+      return {
+        projectId: options.projectId,
+        ready: Promise.resolve({ stage: 'stills_review' }),
+        render() { return '<section class="nc-short-drama-production">production controls</section>'; },
+        reload() { return Promise.resolve({ stage: 'stills_review' }); },
+        destroy() { delegatedDestroyCalls += 1; },
+      };
+    },
+  };
+  const apiClient = { json() { throw new Error('fake production client is inspected, not called'); } };
+  const confirm = () => true;
+  const onChange = () => {};
+  const stillsWorkspace = shortDrama.createWorkspace({
+    projectId: 'project-1', document: null, canEdit: false, productionModule,
+    apiClient, confirm, onChange,
+    client: {
+      get() { return Promise.resolve(workspaceProject({ stage: 'stills_review' })); },
+      update() { throw new Error('phase-one update must not run'); },
+      confirm() { throw new Error('phase-one confirm must not run'); },
+      generatePlan() { throw new Error('phase-one planning must not run'); },
+    },
+  });
+  await stillsWorkspace.ready;
+  assert.equal(delegatedOptions.length, 1);
+  assert.equal(delegatedOptions[0].projectId, 'project-1');
+  assert.strictEqual(delegatedOptions[0].client, apiClient);
+  assert.equal(delegatedOptions[0].canEdit, false);
+  assert.strictEqual(delegatedOptions[0].confirm, confirm);
+  assert.strictEqual(delegatedOptions[0].onChange, onChange);
+  assert.match(stillsWorkspace.render(), /画面确认[\s\S]*data-action="close"[\s\S]*nc-short-drama-production/);
+  stillsWorkspace.destroy();
+  assert.equal(delegatedDestroyCalls, 1, 'destroy cascades into the production workspace');
+
+  let resolveDelegateReady;
+  let lateDestroyCalls = 0;
+  const closing = shortDrama.createWorkspace({
+    projectId: 'closing-production', document: null, apiClient,
+    productionModule: {
+      createWorkspace() {
+        return {
+          projectId: 'closing-production',
+          ready: new Promise((resolve) => { resolveDelegateReady = resolve; }),
+          render() { return '<section class="nc-short-drama-production">late</section>'; },
+          destroy() { lateDestroyCalls += 1; },
+        };
+      },
+    },
+    client: { get() { return Promise.resolve(workspaceProject({ id: 'closing-production', stage: 'stills_review' })); } },
+  });
+  for (let spin = 0; spin < 10 && !resolveDelegateReady; spin += 1) await Promise.resolve();
+  assert.equal(typeof resolveDelegateReady, 'function', 'test reaches delegated production readiness');
+  closing.destroy();
+  resolveDelegateReady({ stage: 'stills_review' });
+  assert.equal(await closing.ready, null, 'late delegated readiness is ignored after destroy');
+  assert.equal(lateDestroyCalls, 1);
+
+  for (const stage of ['voice_review', 'video_review', 'assembly_review', 'completed']) {
+    const later = shortDrama.createWorkspace({
+      projectId: `project-${stage}`, document: null, productionModule, apiClient,
+      client: { get() { return Promise.resolve(workspaceProject({ id: `project-${stage}`, stage })); } },
+    });
+    await later.ready;
+    assert.equal(delegatedOptions.at(-1).projectId, `project-${stage}`, `${stage} delegates to production`);
+    later.destroy();
+  }
+
+  const planning = shortDrama.createWorkspace({
+    projectId: 'planning', document: null, productionModule, apiClient,
+    client: { get() { return Promise.resolve(workspaceProject({ id: 'planning', stage: 'storyboard_review' })); } },
+  });
+  await planning.ready;
+  assert.equal(delegatedOptions.some((options) => options.projectId === 'planning'), false,
+    'pre-stills projects never instantiate production controls');
+  assert.doesNotMatch(planning.render(), /nc-short-drama-production|data-action="generate-current"/);
+  planning.destroy();
+
+  const missing = shortDrama.createWorkspace({
+    projectId: 'missing-production', document: null, productionModule: null, apiClient,
+    client: { get() { return Promise.resolve(workspaceProject({ id: 'missing-production', stage: 'stills_review' })); } },
+  });
+  assert.equal(await missing.ready, null);
+  assert.match(missing.render(), /生产工作区未加载[\s\S]*data-action="reload"[\s\S]*data-action="close"/,
+    'a missing production module renders a recoverable error instead of crashing');
+  missing.destroy();
 }
 
 function testWorkspacePureStateAndPayloadHelpers() {
@@ -1463,7 +1570,7 @@ async function main() {
   await testPlanningQuoteFailureDoesNotSubmit();
   await testTerminalJobFailureDoesNotApplyPlan();
   testMissingPollFailsClearly();
-  testWorkspaceSourceAndRenderContract();
+  await testWorkspaceSourceAndRenderContract();
   testWorkspacePureStateAndPayloadHelpers();
   await testWorkspaceSavesUseExactRevisionedBodiesAndSummaries();
   await testConfirmSavesChangedSectionThenUsesReturnedRevisionAndSkipsUnchangedScriptSave();

@@ -63,6 +63,9 @@ jobs:
       - name: 测试工作台侧栏
         run: node tests/test_cloud_shell_sidebar.js
 
+      - name: 测试短剧第二阶段工作区
+        run: node tests/test_canvas_short_drama_production.js
+
       - name: 安装设计系统依赖
         working-directory: design-system
         run: npm ci
