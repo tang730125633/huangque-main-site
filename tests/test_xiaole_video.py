@@ -100,6 +100,18 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertEqual(cands[-1][0], url)
         self.assertIsNone(cands[-1][2])
 
+    def test_authenticated_download_header_is_not_forwarded_to_relay(self):
+        import os as _os
+        url = "https://openrouter.ai/api/v1/videos/job/content?index=0"
+        with patch.dict(_os.environ, {"HEYGEN_RELAY_BASE": "https://relay.example"}, clear=False):
+            cands = self.video._xiaole_download_candidates(
+                url, "http://127.0.0.1:10809",
+                origin_headers={"Authorization": "Bearer secret"},
+            )
+        self.assertEqual(cands[0][1]["Authorization"], "Bearer secret")
+        self.assertNotIn("Authorization", cands[1][1])
+        self.assertEqual(cands[-1][1]["Authorization"], "Bearer secret")
+
     def test_gen_xiaole_video_maps_ratio_to_size_and_defaults_unknown_ratio(self):
         calls = []
 
@@ -219,6 +231,7 @@ class XiaoleVideoTests(unittest.TestCase):
                    side_effect=video_xai.XaiCreateUnavailableError("xAI quota")), \
              patch("content_domains.video_openrouter.available", return_value=True), \
              patch("content_domains.video_openrouter.generate", return_value=fallback) as generate, \
+             patch("content_domains.video_openrouter.download_headers", return_value={"Authorization": "Bearer test"}), \
              patch.object(self.video, "_download_xiaole_video", return_value="video/grok_or.mp4"), \
              patch.object(self.video, "_extract_first_frame_cover", return_value=None):
             result = self.video.gen_xiaole_video({

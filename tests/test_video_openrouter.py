@@ -26,6 +26,13 @@ class _Response:
 
 
 class OpenRouterVideoTests(unittest.TestCase):
+    def test_download_headers_use_server_side_key(self):
+        with patch.object(video_openrouter, "OPENROUTER_API_KEY", "test-key"):
+            self.assertEqual(
+                video_openrouter.download_headers(),
+                {"Authorization": "Bearer test-key"},
+            )
+
     def test_generate_maps_model_references_and_result(self):
         responses = [
             _Response({"id": "or-job-1", "status": "pending"}),
