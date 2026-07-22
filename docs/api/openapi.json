@@ -164,7 +164,8 @@
         "tags": ["短剧策划"], "summary": "读取当前短剧策划价格", "description": "Free / no points. 认证后从服务端点数域实时读取 format=short_drama 的 copy 价格；客户端必须先取得本报价并用精确 cost 请求确认，确认后才可提交付费 copy job。",
         "responses": {
           "200": { "description": "当前服务端报价；本请求不扣点", "content": { "application/json": { "schema": { "type": "object", "required": ["cost"], "additionalProperties": false, "properties": { "cost": { "type": "integer", "minimum": 0 } } } } } },
-          "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+          "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "账号必须先修改初始密码", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         }
       }
     },
@@ -174,7 +175,7 @@
         "parameters": [{ "in": "query", "name": "project_id", "required": true, "schema": { "type": "string", "format": "uuid" } }],
         "responses": {
           "200": { "description": "可恢复任务；没有时 job_id 为 null", "content": { "application/json": { "schema": { "type": "object", "required": ["job_id"], "additionalProperties": false, "properties": { "job_id": { "type": "integer", "nullable": true }, "cost": { "type": "integer", "minimum": 0 }, "status": { "type": "string", "enum": ["pending", "running", "done"] }, "project_revision": { "type": "integer", "minimum": 1 } } } } } },
-          "400": { "description": "缺少或无效的 project_id" }, "401": { "description": "未登录" }, "404": { "description": "项目不存在或不属于当前用户" }
+          "400": { "description": "缺少或无效的 project_id" }, "401": { "description": "未登录" }, "403": { "description": "账号必须先修改初始密码" }, "404": { "description": "项目不存在或不属于当前用户" }
         }
       }
     },
@@ -183,7 +184,8 @@
         "tags": ["短剧策划"], "summary": "列出当前用户的短剧项目", "description": "Free / no points. 仅返回 Bearer 用户本人创建且未删除的项目。",
         "responses": {
           "200": { "description": "项目列表", "content": { "application/json": { "schema": { "type": "object", "required": ["items"], "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/ShortDramaProject" } } } } } } },
-          "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+          "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "账号必须先修改初始密码", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         }
       },
       "post": {
@@ -200,7 +202,8 @@
         "responses": {
           "200": { "description": "已创建", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
           "400": { "description": "字段、类型或取值无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "401": { "description": "未登录；认证先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+          "401": { "description": "未登录；认证先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "账号必须先修改初始密码；检查先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         }
       }
     },
@@ -212,6 +215,7 @@
           "200": { "description": "项目详情", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
           "400": { "description": "缺少项目 ID", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "账号必须先修改初始密码", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "404": { "description": "项目不存在或当前用户不是创建者（owner-only）", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         }
       },
@@ -249,6 +253,7 @@
           "200": { "description": "已保存且 revision 加 1；不扣点", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
           "400": { "description": "字段无效、混合多个内容分区或当前阶段不可编辑", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "401": { "description": "未登录；认证先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "账号必须先修改初始密码；检查先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "404": { "description": "项目不存在或当前用户不是创建者（owner-only）", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "409": { "description": "revision_conflict：提交的 revision 已过期，须刷新后重试", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RevisionConflict" } } } }
         }
@@ -265,6 +270,7 @@
           "200": { "description": "策划已应用，进入 characters_review", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
           "400": { "description": "任务未完成、类型/模式/结果无效或字段不正确", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "401": { "description": "未登录；认证先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "账号必须先修改初始密码；检查先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "404": { "description": "项目或 copy job 不存在，或不属于当前用户", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "409": { "description": "revision_conflict，或 job_already_applied（同一 job 不能重复应用）", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RevisionConflict" } } } }
         }
@@ -281,6 +287,7 @@
           "200": { "description": "已进入下一阶段；不扣点", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
           "400": { "description": "阶段无效或试图跳过当前阶段", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "401": { "description": "未登录；认证先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "账号必须先修改初始密码；检查先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "404": { "description": "项目不存在或当前用户不是创建者（owner-only）", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "409": { "description": "revision_conflict：提交的 revision 已过期", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RevisionConflict" } } } }
         }

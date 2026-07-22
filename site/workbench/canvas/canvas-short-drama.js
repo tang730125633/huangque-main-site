@@ -461,7 +461,7 @@
   function renderScriptEditor(project,state){
     var versions=project.script_versions||[],script=selectedScript(project,state),latest=versions[versions.length-1]||{};
     var editable=isStageEditable(project,'script_review',state.canEdit)&&Number(script.version)===Number(latest.version)&&!state.busy;
-    return '<section class="nc-short-drama-panel nc-short-drama-script-form"><header><div><span class="nc-short-drama-kicker">版本化剧本</span><h2>剧本确认</h2></div><div class="nc-short-drama-actions"><button type="button" data-action="save-script"'+disabledUnless(editable)+'>保存为新版本</button><button type="button" class="is-primary" data-confirm-stage="script_review"'+disabledUnless(isStageEditable(project,'script_review',state.canEdit)&&!state.busy)+'>确认剧本并继续</button></div></header>'+
+    return '<section class="nc-short-drama-panel nc-short-drama-script-form"><header><div><span class="nc-short-drama-kicker">版本化剧本</span><h2>剧本确认</h2></div><div class="nc-short-drama-actions"><button type="button" data-action="save-script"'+disabledUnless(editable)+'>保存为新版本</button><button type="button" class="is-primary" data-confirm-stage="script_review"'+disabledUnless(editable)+'>确认剧本并继续</button></div></header>'+
       '<div class="nc-short-drama-version-tabs">'+versions.map(function(version){ return '<button type="button" data-script-version="'+version.version+'" class="'+(version===script?'is-active':'')+'">版本 '+version.version+'</button>'; }).join('')+'</div>'+
       '<div class="nc-short-drama-form-grid"><label>剧本标题<input data-field="title" value="'+fieldValue(script.title)+'"'+disabledUnless(editable)+'></label><label class="is-wide">一句话故事<textarea data-field="logline"'+disabledUnless(editable)+'>'+fieldValue(script.logline)+'</textarea></label>'+
       '<label class="is-wide">Hook<textarea data-field="hook"'+disabledUnless(editable)+'>'+fieldValue(script.hook)+'</textarea></label><label class="is-wide">冲突<textarea data-field="conflict_text"'+disabledUnless(editable)+'>'+fieldValue(script.conflict_text||script.conflict)+'</textarea></label>'+
@@ -611,7 +611,14 @@
       if(errors.length) return Promise.reject(new Error(errors.join('\n')));
       return savePatch(makeCharactersPatch(value),'characters_review');
     }
+    function ensureLatestScriptVersion(value){
+      if(!project) return;
+      var versions=project.script_versions||[],latest=versions[versions.length-1]||{};
+      var requestedVersion=value&&value.version!=null?Number(value.version):Number(selectedScript(project,state).version);
+      if(requestedVersion!==Number(latest.version)) throw new Error('请切换到最新版本后编辑或确认剧本');
+    }
     function saveScript(value){
+      try{ ensureLatestScriptVersion(value); }catch(error){ return Promise.reject(error); }
       var errors=validateScript(value,project);
       if(errors.length) return Promise.reject(new Error(errors.join('\n')));
       return savePatch(makeScriptPatch(value),'script_review');
@@ -656,6 +663,7 @@
         ensureCanMutate();
         if(project.stage!==stage) throw new Error('confirmation order must match the current stage');
         ensureCanMutate(stage);
+        if(stage==='script_review') ensureLatestScriptVersion(value);
       }catch(error){ return Promise.reject(error); }
       return saveSectionIfChanged(stage,value).then(function(){
         if(destroyed) throw new Error('workspace destroyed');

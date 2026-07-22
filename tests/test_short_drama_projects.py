@@ -716,7 +716,9 @@ class ShortDramaRouteTests(unittest.TestCase):
         }
         core.JOB_DB = str(Path(self.tmp.name) / "content.db")
         core.AUDIO_DB = str(Path(self.tmp.name) / "audio.db")
-        core.verify = lambda token: ({"username": token, "must_change": False} if token else None)
+        core.verify = lambda token: (
+            {"username": token, "must_change": token == "locked"} if token else None
+        )
         class FakePoints:
             class AuthPointsError(Exception):
                 status = 402
@@ -1388,6 +1390,36 @@ class ShortDramaRouteTests(unittest.TestCase):
                     method, path, username=None, raw_body=b"{malformed"
                 )
                 self.assertEqual(401, status)
+
+    def test_short_drama_routes_require_initial_password_change_before_dispatch(self):
+        cases = (
+            ("GET", "/api/gen/short-drama/projects", None),
+            ("POST", "/api/gen/short-drama/projects", b"{malformed"),
+            ("GET", "/api/gen/short-drama/project?id=missing", None),
+            ("PUT", "/api/gen/short-drama/project?id=missing", b"{malformed"),
+            ("POST", "/api/gen/short-drama/apply-plan", b"{malformed"),
+            ("POST", "/api/gen/short-drama/confirm", b"{malformed"),
+            ("GET", "/api/gen/short-drama/planning-quote", None),
+            ("GET", "/api/gen/short-drama/planning-job?project_id=missing", None),
+        )
+        for method, path, raw_body in cases:
+            with self.subTest(method=method, path=path):
+                status, response = self.request(
+                    method, path, username="locked", raw_body=raw_body
+                )
+                self.assertEqual(403, status)
+                self.assertIn("修改初始密码", response["detail"])
+
+        self.assertEqual([], self.points.cost_calls)
+        self.assertEqual([], self.points.deduct_calls)
+        with closing(core.jdb()) as db:
+            self.assertEqual(0, db.execute(
+                "SELECT COUNT(*) FROM short_drama_projects"
+            ).fetchone()[0])
+            self.assertEqual(0, db.execute(
+                "SELECT COUNT(*) FROM short_drama_applied_jobs"
+            ).fetchone()[0])
+            self.assertEqual(0, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
 
     def test_apply_plan_uses_only_owned_completed_copy_job_data(self):
         _, project = self.request("POST", "/api/gen/short-drama/projects", body=valid_project())

@@ -21,6 +21,8 @@ function testOpenApiContract() {
     const operation = spec.paths[route] && spec.paths[route][method];
     assert.ok(operation, `OpenAPI must document ${method.toUpperCase()} ${route}`);
     assert.ok(operation.responses['401'], `${method.toUpperCase()} ${route} must document authentication failure`);
+    assert.ok(operation.responses['403'],
+      `${method.toUpperCase()} ${route} must document forced-password-change failure`);
   }
   assert.ok(spec.paths['/api/gen/short-drama/project'].get.responses['404'],
     'project detail must document owner isolation as an indistinguishable not-found response');
@@ -808,6 +810,45 @@ async function testConfirmSavesChangedSectionThenUsesReturnedRevisionAndSkipsUnc
   workspace.destroy();
 }
 
+async function testHistoricalScriptVersionCannotBeConfirmedOrResavedAsLatest() {
+  const base = workspaceProject({ stage: 'script_review', revision: 9 });
+  let project = Object.assign({}, base, {
+    script_versions: [
+      Object.assign({}, base.script_versions[0], { version: 1, title: '历史版本' }),
+      Object.assign({}, base.script_versions[0], { version: 2, title: '最新版本' }),
+    ],
+  });
+  let updates = 0;
+  let confirmations = 0;
+  const client = {
+    get() { return Promise.resolve(project); },
+    update() { updates += 1; return Promise.resolve(project); },
+    confirm() { confirmations += 1; return Promise.resolve(project); },
+    generatePlan() { throw new Error('unexpected paid generation'); },
+  };
+  const workspace = shortDrama.createWorkspace({ projectId: project.id, client, document: null });
+  await workspace.ready;
+
+  await assert.rejects(
+    workspace.saveScript(project.script_versions[0]),
+    /最新版本/,
+  );
+  await assert.rejects(
+    workspace.confirm('script_review', project.script_versions[0]),
+    /最新版本/,
+  );
+  assert.equal(updates, 0, 'historical script confirmation must not create a new latest version');
+  assert.equal(confirmations, 0, 'historical script confirmation must not advance the stage');
+  assert.equal(workspace.getProject().script_versions.length, 2);
+
+  const historicalHtml = shortDrama.renderWorkspace(project, {
+    activeStage: 'script_review', canEdit: true, busy: false, scriptVersion: 1, planning: {},
+  });
+  assert.match(historicalHtml, /data-confirm-stage="script_review" disabled/,
+    'historical script versions must render the confirm action disabled');
+  workspace.destroy();
+}
+
 async function testWorkspaceLoadRecoveryOwnerIsolationAndDestroy() {
   let loads = 0;
   let updates = 0;
@@ -1270,6 +1311,7 @@ async function main() {
   testWorkspacePureStateAndPayloadHelpers();
   await testWorkspaceSavesUseExactRevisionedBodiesAndSummaries();
   await testConfirmSavesChangedSectionThenUsesReturnedRevisionAndSkipsUnchangedScriptSave();
+  await testHistoricalScriptVersionCannotBeConfirmedOrResavedAsLatest();
   await testWorkspaceLoadRecoveryOwnerIsolationAndDestroy();
   await testCollaborationRoleDowngradeDestroysEditableWorkspaceOnly();
   await testWorkspaceLocksSettingsAndRejectsConcurrentPaidPlanning();

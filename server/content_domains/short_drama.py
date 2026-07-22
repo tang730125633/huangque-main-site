@@ -1371,6 +1371,9 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
     if not user:
         handler._send(401, {"detail": "未登录"})
         return True
+    if user.get("must_change"):
+        handler._send(403, {"detail": "请先修改初始密码后再使用"})
+        return True
     username = user["username"]
     if avatar_lookup is None:
         from . import video
