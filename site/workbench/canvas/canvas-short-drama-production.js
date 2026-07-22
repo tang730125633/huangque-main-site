@@ -1,0 +1,505 @@
+(function(root,factory){
+  var api=factory();
+  if(typeof module==='object'&&module.exports) module.exports=api;
+  if(root){ root.HQCanvas=root.HQCanvas||{}; root.HQCanvas.shortDramaProduction=api; }
+})(typeof globalThis!=='undefined'?globalThis:this,function(){
+  'use strict';
+
+  var PRODUCTION_PATH='/api/gen/short-drama/production';
+  var QUOTE_PATH='/api/gen/short-drama/asset-quote';
+  var GENERATE_PATH='/api/gen/short-drama/generate-stills';
+  var SELECT_PATH='/api/gen/short-drama/select-asset';
+  var CONFIRM_PATH='/api/gen/short-drama/confirm-production-stage';
+  var ACTIVE_JOB_STATES={pending:true,running:true};
+
+  function clone(value){
+    if(Array.isArray(value)) return value.map(clone);
+    if(value&&typeof value==='object'){
+      var copy={};
+      Object.keys(value).forEach(function(key){ copy[key]=clone(value[key]); });
+      return copy;
+    }
+    return value;
+  }
+
+  function text(value){ return String(value==null?'':value); }
+  function number(value,fallback){
+    var result=Number(value);
+    return isFinite(result)?result:(fallback==null?0:fallback);
+  }
+  function escapeHtml(value){
+    return text(value).replace(/[&<>"']/g,function(character){
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[character];
+    });
+  }
+  function safeUrl(value){
+    var url=text(value).trim();
+    if(!url) return '';
+    if(/^(?:https?:|blob:|\/|\.\/|\.\.\/)/i.test(url)) return escapeHtml(url);
+    return '#';
+  }
+  function disabledUnless(enabled){ return enabled?'':' disabled'; }
+  function checked(value){ return value?' checked':''; }
+  function selected(value){ return value?' is-selected':''; }
+
+  function normalizeVersion(version){
+    version=version&&typeof version==='object'?version:{};
+    return {
+      id:version.id,
+      version:number(version.version,0),
+      job_id:version.job_id,
+      url:text(version.url),
+      prompt:text(version.prompt),
+      ratio:version.ratio==='16:9'?'16:9':'9:16',
+      cost:Math.max(0,number(version.cost,0)),
+      status:text(version.status||'failed'),
+      created_at:number(version.created_at,0)
+    };
+  }
+
+  function normalizeJob(job){
+    if(!job||typeof job!=='object') return null;
+    return {
+      id:job.id,
+      job_id:job.job_id,
+      kind:text(job.kind||'still'),
+      status:text(job.status||'pending'),
+      quoted_cost:Math.max(0,number(job.quoted_cost,0))
+    };
+  }
+
+  function normalizeShot(shot,index){
+    shot=shot&&typeof shot==='object'?shot:{};
+    var still=shot.still&&typeof shot.still==='object'?shot.still:{};
+    var references=Array.isArray(shot.references)?shot.references.map(function(item){
+      if(item&&typeof item==='object') return {id:item.id,name:text(item.name||item.label),url:text(item.url)};
+      return text(item);
+    }):[];
+    return {
+      id:shot.id,
+      shot_key:text(shot.shot_key||('镜头 '+(index+1))),
+      sort_order:number(shot.sort_order,index),
+      duration:Math.max(0,number(shot.duration,0)),
+      image_prompt:text(shot.image_prompt),
+      references:references,
+      still:{
+        asset_id:still.asset_id,
+        current_version:still.current_version==null?null:number(still.current_version,0),
+        locked:!!still.locked,
+        versions:(Array.isArray(still.versions)?still.versions:[]).map(normalizeVersion),
+        job:normalizeJob(still.job)
+      },
+      _order:index
+    };
+  }
+
+  function normalizeState(input,options){
+    input=input&&typeof input==='object'?input:{};
+    options=options&&typeof options==='object'?options:{};
+    var shots=(Array.isArray(input.shots)?input.shots:[]).map(normalizeShot);
+    shots.sort(function(left,right){
+      return left.sort_order-right.sort_order||left._order-right._order;
+    });
+    shots.forEach(function(shot){ delete shot._order; });
+    var requested=Object.prototype.hasOwnProperty.call(options,'selectedShotId')?
+      options.selectedShotId:input.selectedShotId;
+    var found=shots.some(function(shot){ return shot.id===requested; });
+    var promptSource=options.prompts||input.prompts||{};
+    var prompts={};
+    shots.forEach(function(shot){
+      prompts[shot.id]=Object.prototype.hasOwnProperty.call(promptSource,shot.id)?
+        text(promptSource[shot.id]):shot.image_prompt;
+    });
+    return {
+      project_id:input.project_id,
+      revision:Math.max(0,number(input.revision,0)),
+      stage:text(input.stage||''),
+      ratio:input.ratio==='16:9'?'16:9':'9:16',
+      point_budget:Math.max(0,number(input.point_budget,0)),
+      spent_points:Math.max(0,number(input.spent_points,0)),
+      reserved_points:Math.max(0,number(input.reserved_points,0)),
+      shots:shots,
+      selectedShotId:found?requested:(shots[0]?shots[0].id:null),
+      filter:text(options.filter!=null?options.filter:(input.filter||'all')),
+      prompts:prompts,
+      canEdit:options.canEdit!=null?options.canEdit!==false:input.canEdit!==false,
+      busy:options.busy!=null?!!options.busy:!!input.busy,
+      stale:options.stale!=null?!!options.stale:!!input.stale,
+      destroyed:options.destroyed!=null?!!options.destroyed:!!input.destroyed,
+      error:text(options.error!=null?options.error:input.error),
+      quote:clone(options.quote!=null?options.quote:input.quote),
+      lastMode:text(options.lastMode!=null?options.lastMode:input.lastMode)
+    };
+  }
+
+  function selectedShot(state){
+    for(var index=0;index<state.shots.length;index+=1){
+      if(state.shots[index].id===state.selectedShotId) return state.shots[index];
+    }
+    return state.shots[0]||null;
+  }
+
+  function shotStatus(shot){
+    var job=shot.still.job;
+    if(job&&ACTIVE_JOB_STATES[job.status]) return job.status;
+    if(job&&job.status==='failed') return 'failed';
+    if(shot.still.locked) return 'locked';
+    var current=null;
+    shot.still.versions.forEach(function(version){
+      if(version.version===shot.still.current_version) current=version;
+    });
+    if(current&&current.status==='done') return 'done';
+    if(shot.still.versions.some(function(version){ return version.status==='failed'; })) return 'failed';
+    return 'pending';
+  }
+
+  function renderFilters(state){
+    var filters=[['all','全部'],['pending','待生成'],['running','生成中'],['done','待锁定'],['failed','失败'],['locked','已锁定']];
+    return '<div class="nc-sdp-filters" role="group" aria-label="镜头状态筛选">'+filters.map(function(item){
+      return '<button type="button" data-filter="'+item[0]+'" class="'+(state.filter===item[0]?'is-active':'')+'">'+item[1]+'</button>';
+    }).join('')+'</div>';
+  }
+
+  function renderShotRail(state){
+    var visible=state.shots.filter(function(shot){ return state.filter==='all'||shotStatus(shot)===state.filter; });
+    return '<aside class="nc-sdp-shot-rail"><header><span class="nc-sdp-kicker">分镜生产</span><h2>镜头列表</h2></header>'+renderFilters(state)+
+      '<div class="nc-sdp-shot-list">'+(visible.length?visible.map(function(shot,index){
+        var status=shotStatus(shot);
+        return '<button type="button" class="nc-sdp-shot-card'+selected(shot.id===state.selectedShotId)+'" data-action="select-shot" data-shot-id="'+escapeHtml(shot.id)+'">'+
+          '<span class="nc-sdp-shot-index">#'+String(shot.sort_order+1).padStart(2,'0')+'</span><strong>'+escapeHtml(shot.shot_key)+'</strong><small>'+shot.duration+' 秒</small><i data-status="'+status+'">'+
+          ({pending:'待生成',running:'生成中',done:'待锁定',failed:'失败',locked:'已锁定'})[status]+'</i></button>';
+      }).join(''):'<p class="nc-sdp-empty">没有符合筛选条件的镜头</p>')+'</div></aside>';
+  }
+
+  function renderReferences(shot){
+    if(!shot.references.length) return '<p class="nc-sdp-empty">暂无参考素材，生成将使用已确认的角色与分镜上下文。</p>';
+    return '<ul class="nc-sdp-reference-list">'+shot.references.map(function(reference){
+      if(reference&&typeof reference==='object'){
+        return '<li><span>'+escapeHtml(reference.name||reference.id||'参考素材')+'</span>'+
+          (reference.url?'<a href="'+safeUrl(reference.url)+'" target="_blank" rel="noopener">查看</a>':'')+'</li>';
+      }
+      return '<li>'+escapeHtml(reference)+'</li>';
+    }).join('')+'</ul>';
+  }
+
+  function renderVersionCard(state,shot,version,writable){
+    var current=version.version===shot.still.current_version;
+    var selectable=writable&&version.status==='done';
+    return '<article class="nc-sdp-candidate'+selected(current)+'" data-version-id="'+escapeHtml(version.id)+'" data-ratio="'+state.ratio+'">'+
+      '<div class="nc-sdp-preview" data-ratio="'+state.ratio+'">'+
+      (version.url?'<img src="'+safeUrl(version.url)+'" alt="'+escapeHtml(shot.shot_key)+' 关键帧版本 '+version.version+'">':'<span>无预览</span>')+'</div>'+
+      '<div class="nc-sdp-candidate-meta"><strong>版本 '+version.version+(current?' · 当前':'')+'</strong><small>'+version.cost+' 点 · '+escapeHtml(version.status)+'</small></div>'+
+      '<div class="nc-sdp-candidate-actions"><button type="button" data-action="select-version" data-version="'+version.version+'"'+disabledUnless(selectable&&!current)+'>选择</button>'+
+      '<button type="button" data-action="lock-version" data-version="'+version.version+'"'+disabledUnless(selectable)+'>选择并锁定</button></div></article>';
+  }
+
+  function renderEditor(state){
+    var shot=selectedShot(state);
+    if(!shot) return '<main class="nc-sdp-editor"><section class="nc-sdp-empty-state"><h2>暂无镜头</h2><p>请先返回分镜阶段创建镜头。</p></section></main>';
+    var writable=state.canEdit&&!state.busy&&!state.stale&&!state.destroyed&&state.stage==='stills_review';
+    var versions=shot.still.versions;
+    var candidates=versions.slice(Math.max(0,versions.length-2));
+    return '<main class="nc-sdp-editor"><header class="nc-sdp-editor-header"><div><span class="nc-sdp-kicker">'+escapeHtml(shot.shot_key)+'</span><h2>关键帧候选</h2></div><span class="nc-sdp-ratio">'+state.ratio+'</span></header>'+
+      '<section class="nc-sdp-panel"><label class="nc-sdp-prompt">画面提示词<textarea data-field="prompt"'+disabledUnless(writable)+'>'+escapeHtml(state.prompts[shot.id])+'</textarea></label></section>'+
+      '<section class="nc-sdp-panel"><h3>参考素材</h3>'+renderReferences(shot)+'</section>'+
+      '<section class="nc-sdp-candidate-grid">'+(candidates.length?candidates.map(function(version){ return renderVersionCard(state,shot,version,writable); }).join(''):'<div class="nc-sdp-empty" data-ratio="'+state.ratio+'">尚未生成关键帧候选</div>')+'</section>'+
+      '<section class="nc-sdp-panel nc-sdp-history"><h3>历史版本</h3>'+(versions.length?'<ol>'+versions.map(function(version){
+        return '<li><span>V'+version.version+'</span><strong>'+escapeHtml(version.prompt||'无提示词')+'</strong><small>'+escapeHtml(version.id)+' · '+escapeHtml(version.status)+'</small></li>';
+      }).join('')+'</ol>':'<p class="nc-sdp-empty">暂无历史版本</p>')+'</section></main>';
+  }
+
+  function allShotsLocked(state){
+    return state.shots.length>0&&state.shots.every(function(shot){
+      if(!shot.still.locked||shot.still.current_version==null) return false;
+      return shot.still.versions.some(function(version){
+        return version.version===shot.still.current_version&&version.status==='done'&&version.ratio===state.ratio;
+      });
+    });
+  }
+
+  function renderInspector(state){
+    var shot=selectedShot(state),job=shot&&shot.still.job;
+    var writable=state.canEdit&&!state.busy&&!state.stale&&!state.destroyed&&state.stage==='stills_review';
+    var quote=state.quote&&typeof state.quote==='object'?number(state.quote.cost,0):number(state.quote,0);
+    var budget=state.point_budget===0?'不限':state.point_budget+' 点';
+    var confirmable=writable&&allShotsLocked(state);
+    return '<aside class="nc-sdp-inspector"><header><span class="nc-sdp-kicker">关键帧生产</span><h2>生成控制台</h2></header>'+
+      '<section class="nc-sdp-cost"><span>本次实时报价</span><strong>'+(state.quote==null?'待查询':quote+' 点')+'</strong><small>生成前报价并显式确认；取消不会提交。</small></section>'+
+      '<dl><div><dt>项目预算</dt><dd>'+budget+'</dd></div><div><dt>已花费</dt><dd>'+state.spent_points+' 点</dd></div><div><dt>已预留</dt><dd>'+state.reserved_points+' 点</dd></div><div><dt>当前版本</dt><dd>R'+state.revision+'</dd></div></dl>'+
+      (job?'<section class="nc-sdp-progress" data-status="'+escapeHtml(job.status)+'"><strong>'+escapeHtml(job.status==='running'?'正在生成':'等待生成')+'</strong><small>任务 '+escapeHtml(job.job_id)+' · 预留 '+job.quoted_cost+' 点</small></section>':'')+
+      (state.error?'<section class="nc-sdp-error" role="alert"><strong>'+(state.stale?'版本冲突':'操作未完成')+'</strong><p>'+escapeHtml(state.error)+'</p>'+(state.stale?'<button type="button" data-action="refresh">刷新最新版本</button>':'')+'</section>':'')+
+      '<div class="nc-sdp-generation-actions"><button type="button" class="is-primary" data-action="generate-current"'+disabledUnless(writable)+'>生成当前镜头</button>'+
+      '<button type="button" data-action="retry-current"'+disabledUnless(writable)+'>重试当前镜头</button><button type="button" data-action="generate-batch"'+disabledUnless(writable&&shot&&!shot.still.locked)+'>批量模式生成</button></div>'+
+      '<button type="button" class="nc-sdp-confirm" data-action="confirm-stage"'+disabledUnless(confirmable)+'>确认全部关键帧并进入配音</button>'+
+      (!state.canEdit?'<p class="nc-sdp-readonly">当前为只读模式，所有写操作均已禁用。</p>':'')+
+      (state.stage!=='stills_review'?'<p class="nc-sdp-readonly">当前阶段不可修改关键帧。</p>':'')+'</aside>';
+  }
+
+  function renderWorkspace(input,options){
+    var state=normalizeState(input,options);
+    return '<div class="nc-short-drama-production" data-readonly="'+(!state.canEdit)+'" data-busy="'+state.busy+'" data-stale="'+state.stale+'">'+
+      renderShotRail(state)+renderEditor(state)+renderInspector(state)+'</div>';
+  }
+
+  function defaultKey(){
+    var cryptoObject=typeof globalThis!=='undefined'&&globalThis.crypto;
+    if(cryptoObject&&typeof cryptoObject.randomUUID==='function') return cryptoObject.randomUUID();
+    return 'still-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
+  }
+
+  function errorMessage(error){
+    if(!error) return '操作失败，请稍后重试';
+    if(error.data&&error.data.detail) return text(error.data.detail);
+    return text(error.detail||error.message||error);
+  }
+
+  function createWorkspace(options){
+    options=options||{};
+    var client=options.client;
+    if(!client||typeof client.json!=='function') throw new Error('production workspace requires a JSON client');
+    if(options.projectId==null||options.projectId==='') throw new Error('production workspace requires projectId');
+    var confirmHook=typeof options.confirm==='function'?options.confirm:function(){ return false; };
+    var keyFactory=typeof options.idempotencyKey==='function'?options.idempotencyKey:defaultKey;
+    var later=options.setTimeoutImpl||setTimeout;
+    var cancelLater=options.clearTimeoutImpl||clearTimeout;
+    var pollInterval=options.pollIntervalMs==null?1500:Math.max(0,number(options.pollIntervalMs,0));
+    var host=options.host||null;
+    var serverState=null,destroyed=false,pollTimer=null,pollReject=null,generationPromise=null;
+    var ui={selectedShotId:options.selectedShotId,filter:'all',prompts:{},canEdit:options.canEdit!==false,busy:true,stale:false,error:'',quote:null,lastMode:''};
+
+    function ensureAlive(){ if(destroyed) throw new Error('workspace destroyed'); }
+    function view(){
+      var base=serverState||{project_id:options.projectId,shots:[]};
+      return normalizeState(base,ui);
+    }
+    function paint(){
+      ensureAlive();
+      var html=renderWorkspace(serverState||{project_id:options.projectId,shots:[]},ui);
+      if(host) host.innerHTML=html;
+      return html;
+    }
+    function safePaint(){ if(!destroyed) paint(); }
+    function accept(next,keepBusy){
+      ensureAlive();
+      if(!next||typeof next!=='object') throw new Error('production state is invalid');
+      serverState=clone(next);
+      var normalized=normalizeState(serverState,{selectedShotId:ui.selectedShotId,prompts:ui.prompts});
+      ui.selectedShotId=normalized.selectedShotId;
+      normalized.shots.forEach(function(shot){
+        if(!Object.prototype.hasOwnProperty.call(ui.prompts,shot.id)) ui.prompts[shot.id]=shot.image_prompt;
+      });
+      ui.busy=!!keepBusy;ui.stale=false;ui.error='';
+      safePaint();
+      return normalized;
+    }
+    function handleError(error){
+      if(destroyed) return;
+      ui.busy=false;ui.error=errorMessage(error);
+      if(error&&(Number(error.status)===409||error.code==='revision_conflict')) ui.stale=true;
+      safePaint();
+    }
+    function statePath(){ return PRODUCTION_PATH+'?project_id='+encodeURIComponent(options.projectId); }
+    function requestState(keepBusy){
+      return Promise.resolve(client.json(statePath())).then(function(next){ return accept(next,keepBusy); });
+    }
+    function refresh(){
+      try{ ensureAlive(); }catch(error){ return Promise.reject(error); }
+      ui.busy=true;ui.error='';safePaint();
+      return requestState(false).catch(function(error){ handleError(error); throw error; });
+    }
+    function ensureWritable(){
+      ensureAlive();
+      if(!serverState) throw new Error('production state is not loaded');
+      if(ui.stale) throw new Error('workspace is stale; refresh before writing');
+      if(!ui.canEdit) throw new Error('read-only workspace');
+      if(serverState.stage!=='stills_review') throw new Error('current stage is not stills_review');
+      if(ui.busy) throw new Error('workspace busy');
+    }
+    function currentShot(){ return selectedShot(view()); }
+    function mutation(path,body){
+      try{ ensureWritable(); }catch(error){ return Promise.reject(error); }
+      ui.busy=true;ui.error='';safePaint();
+      return Promise.resolve(client.json(path,{method:'POST',body:body})).then(function(next){
+        return accept(next,false);
+      }).catch(function(error){ handleError(error); throw error; });
+    }
+    function selectShotById(shotId){
+      ensureAlive();
+      var normalized=view();
+      if(!normalized.shots.some(function(shot){ return shot.id===shotId; })) return false;
+      ui.selectedShotId=shotId;safePaint();return true;
+    }
+    function setFilter(filter){
+      ensureAlive();
+      if(['all','pending','running','done','failed','locked'].indexOf(filter)<0) return false;
+      ui.filter=filter;safePaint();return true;
+    }
+    function setPrompt(prompt){
+      ensureAlive();
+      var shot=currentShot();
+      if(!shot) return false;
+      ui.prompts[shot.id]=text(prompt);safePaint();return true;
+    }
+    function selectVersion(version,lock){
+      var shot;
+      try{ ensureWritable();shot=currentShot(); }catch(error){ return Promise.reject(error); }
+      if(!shot) return Promise.reject(new Error('no shot selected'));
+      var requested=number(version,0);
+      if(!shot.still.versions.some(function(item){ return item.version===requested&&item.status==='done'; })){
+        return Promise.reject(new Error('asset version is unavailable'));
+      }
+      return mutation(SELECT_PATH,{
+        project_id:serverState.project_id,revision:number(serverState.revision,0),
+        asset_id:shot.still.asset_id,version:requested,lock:!!lock
+      });
+    }
+    function confirmStage(){
+      try{ ensureWritable(); }catch(error){ return Promise.reject(error); }
+      return mutation(CONFIRM_PATH,{
+        project_id:serverState.project_id,revision:number(serverState.revision,0),stage:'stills_review'
+      });
+    }
+    function stillBody(mode){
+      var shot=currentShot();
+      if(!shot) throw new Error('no shot selected');
+      return {
+        project_id:serverState.project_id,
+        revision:number(serverState.revision,0),
+        shot_id:shot.id,
+        prompt:text(Object.prototype.hasOwnProperty.call(ui.prompts,shot.id)?ui.prompts[shot.id]:shot.image_prompt).trim(),
+        mode:mode,
+        count:2
+      };
+    }
+    function submitWithTimeoutRetry(body,key){
+      var requestOptions={method:'POST',body:body,headers:{'Idempotency-Key':key}};
+      return Promise.resolve(client.json(GENERATE_PATH,requestOptions)).catch(function(error){
+        if(error&&error.code==='timeout'){
+          ensureAlive();
+          return client.json(GENERATE_PATH,requestOptions);
+        }
+        throw error;
+      });
+    }
+    function pollShot(shotId){
+      return new Promise(function(resolve,reject){
+        var settled=false;
+        function finish(callback,value){
+          if(settled) return;
+          settled=true;
+          if(pollTimer!=null){ cancelLater(pollTimer);pollTimer=null; }
+          if(pollReject===reject) pollReject=null;
+          callback(value);
+        }
+        function tick(){
+          pollTimer=null;
+          if(destroyed){ finish(reject,new Error('workspace destroyed'));return; }
+          requestState(true).then(function(next){
+            var shot=null;
+            next.shots.forEach(function(item){ if(item.id===shotId) shot=item; });
+            var job=shot&&shot.still.job;
+            if(!job||!ACTIVE_JOB_STATES[job.status]){
+              ui.busy=false;safePaint();finish(resolve,next);return;
+            }
+            schedule();
+          },function(error){ handleError(error);finish(reject,error); });
+        }
+        function schedule(){
+          if(destroyed){ finish(reject,new Error('workspace destroyed'));return; }
+          if(pollInterval===0) Promise.resolve().then(tick);
+          else pollTimer=later(tick,pollInterval);
+        }
+        pollReject=reject;
+        schedule();
+      });
+    }
+    function generate(mode){
+      if(generationPromise) return generationPromise;
+      try{
+        ensureWritable();
+        if(['single','retry','batch'].indexOf(mode)<0) throw new Error('invalid generation mode');
+      }catch(error){ return Promise.reject(error); }
+      var body=stillBody(mode),key=keyFactory();
+      if(typeof key!=='string'||!key) return Promise.reject(new Error('idempotency key is invalid'));
+      ui.busy=true;ui.error='';ui.lastMode=mode;safePaint();
+      var action=Promise.resolve(client.json(QUOTE_PATH,{method:'POST',body:body})).then(function(quote){
+        ensureAlive();
+        if(!quote||typeof quote.cost!=='number'||!isFinite(quote.cost)||quote.cost<0) throw new Error('still quote is invalid');
+        ui.quote=clone(quote);safePaint();
+        return Promise.resolve(confirmHook(quote.cost,clone(quote),clone(body))).then(function(accepted){
+          ensureAlive();
+          if(!accepted){ ui.busy=false;safePaint();return null; }
+          return submitWithTimeoutRetry(body,key).then(function(){
+            ensureAlive();
+            return pollShot(body.shot_id);
+          });
+        });
+      }).catch(function(error){ handleError(error);throw error; });
+      generationPromise=action.then(function(result){ generationPromise=null;return result; },function(error){ generationPromise=null;throw error; });
+      return generationPromise;
+    }
+    function destroy(){
+      if(destroyed) return;
+      destroyed=true;ui.destroyed=true;ui.busy=false;
+      if(pollTimer!=null){ cancelLater(pollTimer);pollTimer=null; }
+      if(pollReject){ var reject=pollReject;pollReject=null;reject(new Error('workspace destroyed')); }
+      if(host&&clickHandler&&typeof host.removeEventListener==='function') host.removeEventListener('click',clickHandler);
+      if(host&&inputHandler&&typeof host.removeEventListener==='function') host.removeEventListener('input',inputHandler);
+    }
+    function actionTarget(node,attribute){
+      while(node&&node!==host){ if(node.getAttribute&&node.getAttribute(attribute)!=null) return node;node=node.parentNode; }
+      return null;
+    }
+    function clickHandler(event){
+      var filterTarget=actionTarget(event.target,'data-filter');
+      if(filterTarget){ setFilter(filterTarget.getAttribute('data-filter'));return; }
+      var target=actionTarget(event.target,'data-action');
+      if(!target) return;
+      var action=target.getAttribute('data-action'),operation=null;
+      if(action==='select-shot'){ selectShotById(target.getAttribute('data-shot-id'));return; }
+      if(action==='select-version') operation=selectVersion(target.getAttribute('data-version'),false);
+      else if(action==='lock-version') operation=selectVersion(target.getAttribute('data-version'),true);
+      else if(action==='generate-current') operation=generate('single');
+      else if(action==='retry-current') operation=generate('retry');
+      else if(action==='generate-batch') operation=generate('batch');
+      else if(action==='confirm-stage') operation=confirmStage();
+      else if(action==='refresh') operation=refresh();
+      if(operation&&typeof operation.catch==='function') operation.catch(function(){});
+    }
+    function inputHandler(event){
+      var target=actionTarget(event.target,'data-field');
+      if(target&&target.getAttribute('data-field')==='prompt') setPrompt(target.value);
+    }
+
+    if(host&&typeof host.addEventListener==='function'){
+      host.addEventListener('click',clickHandler);
+      host.addEventListener('input',inputHandler);
+    }
+    safePaint();
+    var ready=refresh().catch(function(){ return null; });
+    return {
+      projectId:options.projectId,
+      ready:ready,
+      render:paint,
+      refresh:refresh,
+      reload:refresh,
+      getState:function(){ ensureAlive();return clone(view()); },
+      selectShot:selectShotById,
+      setFilter:setFilter,
+      setPrompt:setPrompt,
+      generateCurrent:function(){ return generate('single'); },
+      retryCurrent:function(){ return generate('retry'); },
+      generateBatch:function(){ return generate('batch'); },
+      selectVersion:selectVersion,
+      selectAsset:selectVersion,
+      confirmStage:confirmStage,
+      destroy:destroy
+    };
+  }
+
+  return {
+    normalizeState:normalizeState,
+    renderWorkspace:renderWorkspace,
+    createWorkspace:createWorkspace
+  };
+});
