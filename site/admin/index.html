@@ -232,6 +232,16 @@
         <h2 style="margin-top:18px">管理员审计</h2>
         <div id="inviteAuditBox"></div>
       </section>
+      <section class="card span12 module-card" data-module="invite" hidden>
+        <div class="section-head"><div><h2>邀请奖励台账</h2><div class="hint">奖励积分与网站可用点数相互独立。作废或恢复只调整奖励台账，必须填写原因并二次确认。</div></div><span class="muted" id="inviteRewardSummary">-</span></div>
+        <div class="toolbar">
+          <input class="field" id="rewardInviter" autocomplete="off" placeholder="邀请人账号 / 昵称">
+          <input class="field" id="rewardInvitee" autocomplete="off" placeholder="被邀请人账号 / 昵称">
+          <select id="rewardStatus"><option value="">全部奖励</option><option value="recorded">有效</option><option value="voided">已作废</option></select>
+          <button id="rewardRefresh">刷新奖励台账</button>
+        </div>
+        <div id="inviteRewardBox"></div>
+      </section>
       <section class="card span12 module-card" data-module="logs" hidden>
         <div class="section-head">
           <div><h2>调用与请求日志</h2><div class="hint">任务记录（用户/功能/耗时/点数）与 nginx 后端请求按时间混排成一条时间线。HTTP 行的用户来自任务号反查，登录等请求网关日志不含身份、显示 -。</div></div>
@@ -266,7 +276,7 @@
 <script>
 (function(){
   var token = '__cookie__';
-  var state = {days:7, data:null, userTimer:null, module:'ops'};
+  var state = {days:7, data:null, userTimer:null, module:'ops', membershipRequestId:''};
   var el = function(id){return document.getElementById(id)};
   function toast(msg){var t=el('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(t._tm); t._tm=setTimeout(function(){t.style.display='none'},2600)}
   function authHeaders(extra){return Object.assign({'Authorization':'Bearer '+token}, extra||{})}
@@ -492,11 +502,14 @@
     var tier=el('membershipRechargeTier').value;
     var reason=String(el('membershipRechargeReason').value||'').trim();
     if(!username){toast('请输入用户账号');return}
-    if(!confirm('确认给 '+username+' 充值一年'+membershipName(tier)+'？')) return;
     var button=el('membershipRechargeSubmit');button.disabled=true;
-    api('/api/admin/membership/recharge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,tier:tier,reason:reason})})
-      .then(function(d){toast(username+' 已充值 '+membershipName(tier)+'，有效期至 '+fmtTime(d.user&&d.user.membership_expires_at));loadUsers()})
-      .catch(function(e){toast(e.message)}).finally(function(){button.disabled=false});
+    var requestId=state.membershipRequestId||(window.crypto&&crypto.randomUUID?crypto.randomUUID():'membership-'+Date.now()+'-'+Math.random().toString(16).slice(2));
+    state.membershipRequestId=requestId;
+    api('/api/admin/membership/recharge/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,tier:tier})})
+      .then(function(d){var p=d.preview||{},r=p.reward||{};var inviter=r.has_inviter?('\n一级邀请人：'+(r.inviter_name||r.inviter_username)+'（'+(r.inviter_tier_name||'')+'）\n本次新增邀请奖励：'+Number(r.reward_points||0)+' 积分'):'\n一级邀请人：无';var message='高风险操作二次确认\n\n账号：'+username+'\n当前会员：'+(p.current_name||'非会员')+'\n当前到期：'+fmtTime(p.current_expires_at)+'\n目标会员：'+(p.target_name||membershipName(tier))+'\n充值后到期：'+fmtTime(p.target_expires_at)+inviter+'\n\n奖励积分不会加入网站可用点数。\n确认执行本次会员充值？';if(!confirm(message))throw new Error('__cancel__');return api('/api/admin/membership/recharge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,tier:tier,reason:reason,request_id:requestId})})})
+      .then(function(d){state.membershipRequestId='';toast(d.user&&d.user.membership_recharge_duplicate?'重复请求已拦截，会员期限未再次增加':username+' 已充值 '+membershipName(tier)+'，有效期至 '+fmtTime(d.user&&d.user.membership_expires_at));loadUsers();loadInvite()})
+      .catch(function(e){if(e.message!=='__cancel__')toast(e.message)})
+      .finally(function(){button.disabled=false});
   }
   function orderStatus(s){
     if(s==='approved') return '<span class="pill ok">已通过</span>';
@@ -580,12 +593,15 @@
     if(!items.length){el('inviteAuditBox').innerHTML='<div class="empty">暂无管理员操作记录</div>';return}
     el('inviteAuditBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>时间</th><th>管理员</th><th>关系 ID</th><th>动作</th><th>原因</th></tr></thead><tbody>'+items.map(function(x){return '<tr><td><code>'+fmtTime(x.created_at)+'</code></td><td>'+esc(x.operator_name||x.operator_username||'-')+'</td><td><code>'+(x.invite_relation_id||'-')+'</code></td><td>'+esc(x.action)+'</td><td>'+esc(x.reason||'-')+'</td></tr>'}).join('')+'</tbody></table></div>';
   }
+  function rewardQuery(){var q=['limit=100'];var a=(el('rewardInviter').value||'').trim(),b=(el('rewardInvitee').value||'').trim(),s=el('rewardStatus').value;if(a)q.push('inviter='+encodeURIComponent(a));if(b)q.push('invitee='+encodeURIComponent(b));if(s)q.push('status='+encodeURIComponent(s));return '?'+q.join('&')}
+  function renderInviteRewards(d){var items=d.items||[];el('inviteRewardSummary').textContent='有效 '+Number(d.recorded_points||0).toLocaleString()+' · 已作废 '+Number(d.voided_points||0).toLocaleString()+' · 共 '+Number(d.total||0)+' 条';if(!items.length){el('inviteRewardBox').innerHTML='<div class="empty">暂无奖励台账记录</div>';return}el('inviteRewardBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>ID</th><th>邀请人</th><th>被邀请人</th><th>等级</th><th>奖励积分</th><th>状态</th><th>时间 / 原因</th><th>操作</th></tr></thead><tbody>'+items.map(function(x){var action=x.status==='recorded'?'void':'restore',label=x.status==='recorded'?'作废':'恢复';return '<tr><td><code>'+x.id+'</code></td><td><b>'+esc(x.inviter_username)+'</b><div class="muted">'+esc(x.inviter_level_name||'')+'</div></td><td><b>'+esc(x.invitee_username)+'</b><div class="muted">'+esc(x.invitee_level_name||'')+'</div></td><td>'+esc(x.inviter_level_name||'')+' → '+esc(x.invitee_level_name||'')+'</td><td><code>'+Number(x.reward_points||0).toLocaleString()+'</code></td><td>'+(x.status==='recorded'?'<span class="pill ok">有效</span>':'<span class="pill fail">已作废</span>')+'</td><td><code>'+fmtTime(x.created_at)+'</code><div class="muted">'+esc(x.void_reason||'')+'</div></td><td><button class="mini '+(action==='void'?'danger':'')+'" data-reward-act="'+action+'" data-id="'+x.id+'" data-user="'+esc(x.inviter_username)+'" data-points="'+Number(x.reward_points||0)+'">'+label+'</button></td></tr>'}).join('')+'</tbody></table></div>';Array.prototype.forEach.call(document.querySelectorAll('[data-reward-act]'),function(btn){btn.onclick=function(){handleRewardAction(btn)}})}
+  function handleRewardAction(btn){var action=btn.getAttribute('data-reward-act'),id=btn.getAttribute('data-id'),points=btn.getAttribute('data-points'),user=btn.getAttribute('data-user');var reason=prompt('高风险操作：将'+(action==='void'?'作废':'恢复')+'奖励台账 #'+id+'（邀请人 '+user+'，'+points+' 积分）。\n请输入操作原因：');if(reason===null)return;reason=String(reason).trim();if(!reason){toast('必须填写操作原因');return}if(!confirm('请再次确认：'+(action==='void'?'作废':'恢复')+'奖励台账 #'+id+'？\n本操作不会修改网站可用点数。'))return;btn.disabled=true;api('/api/admin/invite/reward-points/'+id+'/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason:reason})}).then(function(){toast('奖励台账已'+(action==='void'?'作废':'恢复'));loadInvite()}).catch(function(e){toast(e.message)}).finally(function(){btn.disabled=false})}
   function loadInvite(){
     if(!token) return;
     Promise.all([
       api('/api/admin/invite/config'),api('/api/admin/invite/stats?days=30'),
-      api('/api/admin/invite/relations'+inviteQuery()),api('/api/admin/invite/audit?limit=80')
-    ]).then(function(all){renderInviteConfig(all[0]);renderInviteStats(all[1]);renderInviteRelations(all[2]);renderInviteAudit(all[3])})
+      api('/api/admin/invite/relations'+inviteQuery()),api('/api/admin/invite/audit?limit=80'),api('/api/admin/invite/reward-points'+rewardQuery())
+    ]).then(function(all){renderInviteConfig(all[0]);renderInviteStats(all[1]);renderInviteRelations(all[2]);renderInviteAudit(all[3]);renderInviteRewards(all[4])})
       .catch(function(e){el('inviteRelationsBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
   }
   function saveInviteConfig(){
@@ -660,10 +676,12 @@
   el('rechargeUser').oninput=function(){clearTimeout(state.rechargeTimer);state.rechargeTimer=setTimeout(loadRecharge,260)};
   el('inviteSave').onclick=saveInviteConfig;
   el('inviteRefresh').onclick=loadInvite;
+  el('rewardRefresh').onclick=loadInvite;
   el('inviteExport').onclick=exportInvite;
   ['inviteInviter','inviteInvitee','inviteCode'].forEach(function(id){el(id).oninput=function(){clearTimeout(state.inviteTimer);state.inviteTimer=setTimeout(loadInvite,300)}});
   el('inviteStatus').onchange=loadInvite;
   el('inviteRisk').onchange=loadInvite;
+  ['rewardInviter','rewardInvitee'].forEach(function(id){el(id).oninput=function(){clearTimeout(state.rewardTimer);state.rewardTimer=setTimeout(loadInvite,300)}});el('rewardStatus').onchange=loadInvite;
   Array.prototype.forEach.call(document.querySelectorAll('[data-module-tab]'), function(btn){
     btn.onclick=function(){switchModule(btn.getAttribute('data-module-tab'))};
   });

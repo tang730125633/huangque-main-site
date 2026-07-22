@@ -81,7 +81,7 @@ class MembershipSystemTests(unittest.TestCase):
     def test_admin_membership_recharge_extends_same_tier_by_one_year(self):
         now = 1800000000
         first, err = self.auth.recharge_membership_admin(
-            "admin", "buyer", "partner", "首次充值", now=now,
+            "admin", "buyer", "partner", "首次充值", request_id="recharge-first", now=now,
         )
         self.assertIsNone(err)
         first_expiry = now + self.auth.MEMBERSHIP_YEAR_SECONDS
@@ -89,12 +89,24 @@ class MembershipSystemTests(unittest.TestCase):
         self.assertEqual(first["membership_expires_at"], first_expiry)
 
         renewed, err = self.auth.recharge_membership_admin(
-            "admin", "buyer", "partner", "同级续费", now=now + 10,
+            "admin", "buyer", "partner", "同级续费", request_id="recharge-renew", now=now + 10,
         )
         self.assertIsNone(err)
         self.assertEqual(
             renewed["membership_expires_at"], first_expiry + self.auth.MEMBERSHIP_YEAR_SECONDS,
         )
+
+        duplicate, err = self.auth.recharge_membership_admin(
+            "admin", "buyer", "partner", "网络重试", request_id="recharge-renew", now=now + 20,
+        )
+        self.assertIsNone(err)
+        self.assertTrue(duplicate["membership_recharge_duplicate"])
+        self.assertEqual(duplicate["membership_expires_at"], renewed["membership_expires_at"])
+        c = self.auth.db()
+        try:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM membership_recharge_records").fetchone()[0], 2)
+        finally:
+            c.close()
 
     def test_expired_membership_is_not_active(self):
         data = self.auth.membership_public("partner", 100, 200, now=201)
@@ -159,6 +171,8 @@ class MembershipSystemTests(unittest.TestCase):
         self.assertIn("体验官 / 合伙人 / 发起人 / 取消会员", admin)
         self.assertIn("/api/admin/membership/set", admin)
         self.assertIn("/api/admin/membership/recharge", admin)
+        self.assertIn("/api/admin/membership/recharge/preview", admin)
+        self.assertIn("membership_recharge_duplicate", admin)
         self.assertIn("充值会员", admin)
         self.assertIn("同等级续费从原到期日顺延一年", admin)
 

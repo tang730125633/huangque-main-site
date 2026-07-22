@@ -106,6 +106,51 @@ class InviteRewardTests(unittest.TestCase):
         finally:
             c.close()
 
+    def test_invited_user_cannot_exceed_direct_inviter_tier(self):
+        code = self._invite_code()
+        _, err = self.auth.register_account("limited", "secret123", invite_code=code)
+        self.assertIsNone(err)
+        user, err = self.auth.set_membership_admin(
+            "admin", "limited", "partner", "允许同级", now=self.now + 1,
+        )
+        self.assertIsNone(err)
+        self.assertEqual(user["membership_tier"], "partner")
+        with self.assertRaises(self.auth.invites.InviteError) as caught:
+            self.auth.set_membership_admin(
+                "admin", "limited", "initiator", "不允许越级", now=self.now + 2,
+            )
+        self.assertEqual(caught.exception.code, "invite_membership_limit")
+
+    def test_admin_reward_ledger_can_void_and_restore_without_changing_user_points(self):
+        code = self._invite_code()
+        created, err = self.auth.register_account("ledger-user", "secret123", invite_code=code)
+        self.assertIsNone(err)
+        before_points = created["user"]["points"]
+        _, err = self.auth.set_membership_admin(
+            "admin", "ledger-user", "experience", "生成奖励", now=self.now + 1,
+        )
+        self.assertIsNone(err)
+        c = self._connect()
+        try:
+            ledger = self.auth.invites.admin_reward_points(c)
+            self.assertEqual(ledger["recorded_points"], 240)
+            reward_id = ledger["items"][0]["id"]
+            self.auth.invites.admin_reward_action(c, reward_id, "void", "测试作废", "admin", self.now + 2)
+            c.commit()
+            ledger = self.auth.invites.admin_reward_points(c)
+            self.assertEqual(ledger["recorded_points"], 0)
+            self.assertEqual(ledger["voided_points"], 240)
+            self.auth.invites.admin_reward_action(c, reward_id, "restore", "测试恢复", "admin", self.now + 3)
+            c.commit()
+            ledger = self.auth.invites.admin_reward_points(c)
+            self.assertEqual(ledger["recorded_points"], 240)
+            self.assertEqual(
+                c.execute("SELECT points FROM users WHERE username='ledger-user'").fetchone()[0],
+                before_points,
+            )
+        finally:
+            c.close()
+
 
 if __name__ == "__main__":
     unittest.main()

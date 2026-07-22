@@ -223,6 +223,18 @@ def init_db():
     # 只能命中原流水，不能再次加点。NULL 不参与冲突，老调用方保持原行为。
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_points_audit_transaction_key "
               "ON points_audit(transaction_key)")
+    c.execute("""CREATE TABLE IF NOT EXISTS membership_recharge_records(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id TEXT NOT NULL UNIQUE,
+        username TEXT NOT NULL,
+        tier TEXT NOT NULL,
+        before_expires_at INTEGER,
+        after_expires_at INTEGER NOT NULL,
+        operator TEXT NOT NULL,
+        reason TEXT,
+        created_at INTEGER NOT NULL
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_membership_recharge_user ON membership_recharge_records(username,id DESC)")
     c.execute("""CREATE TABLE IF NOT EXISTS friendships(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT NOT NULL,
@@ -1626,6 +1638,8 @@ def set_membership_admin(who_admin, username, tier, reason="", now=None):
         if not row:
             c.rollback()
             return None, "not_found"
+        if tier:
+            invites.invited_membership_limit(c, row["id"], tier)
         before = membership_for_row(row, now)
         started_at = now if tier else None
         expires_at = now + MEMBERSHIP_YEAR_SECONDS if tier else None
@@ -1652,8 +1666,7 @@ def set_membership_admin(who_admin, username, tier, reason="", now=None):
         c.close()
 
 
-def recharge_membership_admin(who_admin, username, tier, reason="", now=None):
-    """后台充值一年会员；同等级续费从现有到期日顺延，升级从当前时间起算。"""
+def membership_recharge_preview(username, tier, now=None):
     username = (username or "").strip()
     tier = (tier or "").strip()
     if not username:
@@ -1663,11 +1676,61 @@ def recharge_membership_admin(who_admin, username, tier, reason="", now=None):
     now = int(now or time.time())
     c = db()
     try:
+        row = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+        if not row:
+            return None, "not_found"
+        before = membership_for_row(row, now)
+        invites.invited_membership_limit(c, row["id"], tier)
+        same_active_tier = before["membership_active"] and before["membership_tier"] == tier
+        base = max(now, int(row["membership_expires_at"] or 0)) if same_active_tier else now
+        reward = invites.reward_upgrade_preview(c, row["id"], tier, now=now)
+        return {
+            "username": username,
+            "current_tier": before["membership_tier"],
+            "current_name": before["membership_name"],
+            "current_expires_at": before["membership_expires_at"],
+            "target_tier": tier,
+            "target_name": MEMBERSHIP_NAMES.get(tier, tier),
+            "target_expires_at": base + MEMBERSHIP_YEAR_SECONDS,
+            "reward": reward,
+        }, None
+    finally:
+        c.close()
+
+
+def recharge_membership_admin(who_admin, username, tier, reason="", request_id="", now=None):
+    """后台充值一年会员；同等级续费从现有到期日顺延，升级从当前时间起算。"""
+    username = (username or "").strip()
+    tier = (tier or "").strip()
+    if not username:
+        return None, "missing_username"
+    if tier not in MEMBERSHIP_TIERS:
+        return None, "invalid_tier"
+    request_id = (request_id or "").strip()[:120]
+    if not request_id:
+        return None, "missing_request_id"
+    now = int(now or time.time())
+    c = db()
+    try:
         c.execute("BEGIN IMMEDIATE")
+        existing = c.execute(
+            "SELECT * FROM membership_recharge_records WHERE request_id=?", (request_id,)
+        ).fetchone()
+        if existing:
+            if existing["username"] != username or existing["tier"] != tier:
+                c.rollback()
+                return None, "request_id_conflict"
+            fresh = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+            c.commit()
+            result = public_admin_user(fresh)
+            result["membership_recharge_duplicate"] = True
+            result["membership_recharge_request_id"] = request_id
+            return result, None
         row = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
         if not row:
             c.rollback()
             return None, "not_found"
+        invites.invited_membership_limit(c, row["id"], tier)
         before = membership_for_row(row, now)
         same_active_tier = before["membership_active"] and before["membership_tier"] == tier
         base = max(now, int(row["membership_expires_at"] or 0)) if same_active_tier else now
@@ -1683,11 +1746,21 @@ def recharge_membership_admin(who_admin, username, tier, reason="", now=None):
         )
         invites.record_membership_upgrade(
             c, fresh["id"], before["membership_tier"], after["membership_tier"],
-            "offline_admin", source_order_id="membership-recharge:%d" % audit_id,
+            "offline_admin", source_order_id="membership-recharge:%s" % request_id,
             operator=who_admin, now=now,
         )
+        c.execute(
+            """INSERT INTO membership_recharge_records(
+                request_id,username,tier,before_expires_at,after_expires_at,operator,reason,created_at
+            ) VALUES(?,?,?,?,?,?,?,?)""",
+            (request_id, username, tier, before["membership_expires_at"], expires_at,
+             who_admin, (reason or "管理员充值一年会员")[:300], now),
+        )
         c.commit()
-        return public_admin_user(fresh), None
+        result = public_admin_user(fresh)
+        result["membership_recharge_duplicate"] = False
+        result["membership_recharge_request_id"] = request_id
+        return result, None
     except Exception:
         c.rollback()
         raise
@@ -2452,6 +2525,38 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        reward_prefix = "/api/auth/admin/invite/reward-points/"
+        if p.startswith(reward_prefix):
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            parts = p[len(reward_prefix):].strip("/").split("/")
+            if len(parts) != 2:
+                return self._send(404, {"detail": "not found"})
+            try:
+                reward_id = int(parts[0])
+            except (TypeError, ValueError):
+                return self._send(400, {"detail": "奖励记录 ID 不正确"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            c = db()
+            try:
+                reward = invites.admin_reward_action(
+                    c, reward_id, parts[1], d.get("reason"), admin["username"],
+                )
+                c.commit()
+                return self._send(200, {"ok": True, "reward": reward})
+            except invites.InviteError as exc:
+                c.rollback()
+                return self._send(exc.http_status, {"detail": exc.detail, "code": exc.code})
+            except Exception:
+                c.rollback()
+                return self._send(500, {"detail": "奖励台账操作失败"})
+            finally:
+                c.close()
         admin_invite_prefix = "/api/auth/admin/invite/relations/"
         if p.startswith(admin_invite_prefix):
             if not self._require_internal():
@@ -2577,8 +2682,32 @@ class H(BaseHTTPRequestHandler):
                 if err:
                     return self._send(400, {"detail": err})
                 return self._send(200, {"ok": True, "user": user})
+            except invites.InviteError as exc:
+                return self._send(exc.http_status, {"detail": exc.detail, "code": exc.code})
             except Exception:
                 return self._send(500, {"detail": "会员设置失败"})
+        if p == "/api/auth/admin/membership/recharge/preview":
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                preview, err = membership_recharge_preview(d.get("username"), d.get("tier"))
+                if err == "not_found":
+                    return self._send(404, {"detail": "用户不存在"})
+                if err == "invalid_tier":
+                    return self._send(400, {"detail": "会员等级无效"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, "preview": preview})
+            except invites.InviteError as exc:
+                return self._send(exc.http_status, {"detail": exc.detail, "code": exc.code})
+            except Exception:
+                return self._send(500, {"detail": "会员充值预览失败"})
         if p == "/api/auth/admin/membership/recharge":
             if not self._require_internal():
                 return
@@ -2591,14 +2720,21 @@ class H(BaseHTTPRequestHandler):
             try:
                 user, err = recharge_membership_admin(
                     admin["username"], d.get("username"), d.get("tier"), d.get("reason") or "",
+                    d.get("request_id") or "",
                 )
                 if err == "not_found":
                     return self._send(404, {"detail": "用户不存在"})
                 if err == "invalid_tier":
                     return self._send(400, {"detail": "会员等级无效"})
+                if err == "missing_request_id":
+                    return self._send(400, {"detail": "缺少充值请求编号"})
+                if err == "request_id_conflict":
+                    return self._send(409, {"detail": "充值请求编号与原请求不一致"})
                 if err:
                     return self._send(400, {"detail": err})
                 return self._send(200, {"ok": True, "user": user})
+            except invites.InviteError as exc:
+                return self._send(exc.http_status, {"detail": exc.detail, "code": exc.code})
             except Exception:
                 return self._send(500, {"detail": "会员充值失败"})
         if p == "/api/auth/admin/recharge/review":
@@ -3328,6 +3464,13 @@ class H(BaseHTTPRequestHandler):
                     return self._send(200, {"ok": True, **data})
                 if p == "/api/auth/admin/invite/audit":
                     return self._send(200, {"ok": True, "items": invites.admin_audit(c, (query.get("limit") or ["100"])[0])})
+                if p == "/api/auth/admin/invite/reward-points":
+                    reward_filters = {key: (query.get(key) or [""])[0] for key in ("inviter", "invitee", "status")}
+                    data = invites.admin_reward_points(
+                        c, reward_filters, (query.get("limit") or ["100"])[0],
+                        (query.get("offset") or ["0"])[0],
+                    )
+                    return self._send(200, {"ok": True, **data})
                 if p == "/api/auth/admin/invite/export.xlsx":
                     body = invites.export_relations_xlsx(c, filters)
                     filename = "invite-relations-%s.xlsx" % datetime.datetime.now().strftime("%Y%m%d-%H%M%S")

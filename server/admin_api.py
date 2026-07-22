@@ -1479,6 +1479,7 @@ class H(BaseHTTPRequestHandler):
         if path in {
             "/api/admin/invite/config", "/api/admin/invite/stats",
             "/api/admin/invite/relations", "/api/admin/invite/audit",
+            "/api/admin/invite/reward-points",
         }:
             q = urllib.parse.urlparse(self.path).query
             suffix = path.replace("/api/admin/", "/api/auth/admin/", 1) + (("?" + q) if q else "")
@@ -1626,6 +1627,18 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": str(e)})
             except Exception as e:
                 return auth_error_response(self, e)
+        if path == "/api/admin/membership/recharge/preview":
+            try:
+                return self._send(
+                    200,
+                    auth_admin_request(
+                        "/api/auth/admin/membership/recharge/preview", self._token(), method="POST", payload=self._body(),
+                    ),
+                )
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return auth_error_response(self, e)
         if path == "/api/admin/recharge/review":
             try:
                 return self._send(
@@ -1637,6 +1650,16 @@ class H(BaseHTTPRequestHandler):
             except Exception as e:
                 return auth_error_response(self, e)
         if path.startswith("/api/admin/invite/relations/"):
+            suffix = path.replace("/api/admin/", "/api/auth/admin/", 1)
+            try:
+                return self._send(200, auth_admin_request(
+                    suffix, self._token(), method="POST", payload=self._body(),
+                ))
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return auth_error_response(self, e)
+        if path.startswith("/api/admin/invite/reward-points/"):
             suffix = path.replace("/api/admin/", "/api/auth/admin/", 1)
             try:
                 return self._send(200, auth_admin_request(
