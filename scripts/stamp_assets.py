@@ -70,6 +70,8 @@ ASSETS = (
     Asset("canvas/canvas-api.js", required=False),
     Asset("canvas/canvas-export.js", required=False),
     Asset("canvas/canvas-app.js", required=False),
+    Asset("canvas/canvas-short-drama.js", required=False),
+    Asset("canvas/canvas-short-drama.css", required=False),
 )
 
 
