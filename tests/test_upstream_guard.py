@@ -144,10 +144,10 @@ class ItRunsBeforeTheDeductionTests(unittest.TestCase):
     """⚠️ 拦在扣点【之后】等于没拦 —— 用户照样先看到点数掉了。"""
 
     def test_the_guard_is_wired_before_cost_of_and_deduct(self):
-        block = CORE_SRC.split("if p.startswith(\"/api/gen/\") and p[9:] in HANDLERS:")[1][:8000]
+        block = CORE_SRC.split("if p.startswith(\"/api/gen/\") and p[9:] in HANDLERS:")[1].split("    def do_GET(self):")[0]
         i_guard = block.index("upstream_guard.exhausted_reason")
         i_cost = block.index("points_domain.cost_of")
-        i_deduct = block.index("deduct_points")
+        i_deduct = block.index("points_domain.deduct_points")
         self.assertLess(i_guard, i_cost, "熔断必须在算点数之前")
         self.assertLess(i_guard, i_deduct, "熔断必须在扣点之前")
 

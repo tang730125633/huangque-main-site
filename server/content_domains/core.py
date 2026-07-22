@@ -740,13 +740,14 @@ def _refund_once(job_id, username, cost, transaction_key=""):
 
 
 def _fail_job_and_schedule_refund(job_id, error, *, from_states=("running",),
-                                  username=None, cost=None):
+                                  username=None, cost=None, kind=None):
     """Fail one job while preserving the single durable owner of its refund retry."""
-    linked = _short_drama_domain().short_drama_production.fail_linked_job(
-        jdb, job_id, error, from_states=from_states,
-    )
-    if linked is not None:
-        return bool(linked["claimed"])
+    if kind is None or kind == "image":
+        linked = _short_drama_domain().short_drama_production.fail_linked_job(
+            jdb, job_id, error, from_states=from_states,
+        )
+        if linked is not None:
+            return bool(linked["claimed"])
     claimed = _set_terminal(job_id, "error", error=error, from_states=from_states)
     if claimed:
         if username is None or cost is None:
@@ -1119,7 +1120,7 @@ def run_job(job_id):
         # from_states 含 pending：抢 running 那句自己抛异常时任务还停在 pending，只认 running 会不退点
         claimed = _fail_job_and_schedule_refund(
             job_id, str(e), from_states=("pending", "running"),
-            username=username, cost=cost,
+            username=username, cost=cost, kind=kind,
         )
         if claimed:
             _mark_video_asset_failed(job_id, kind, e)
@@ -1162,7 +1163,7 @@ def reaper():
                 # CAS 抢 error 终态；抢到(说明 worker 尚未写 done)才退点，退点本身再幂等一层
                 if _fail_job_and_schedule_refund(
                         r["id"], "生成超时自动结束，退款处理中",
-                        username=r["username"], cost=r["cost"]):
+                        username=r["username"], cost=r["cost"], kind=r["kind"]):
                     _mark_video_asset_failed(r["id"], r["kind"], "生成超时自动结束，退款处理中")
         except Exception:
             pass
