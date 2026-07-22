@@ -489,6 +489,27 @@ def gen_image(payload):
     prompt = (payload.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("提示词不能为空")
+    references = payload.get("short_drama_references")
+    if isinstance(references, list):
+        context = []
+        continuity_url = ""
+        for reference in references:
+            if not isinstance(reference, dict):
+                continue
+            ref_type = str(reference.get("type") or "")
+            name = str(reference.get("name") or "").strip()
+            if ref_type == "character" and name:
+                context.append("character appearance: " + name)
+            elif ref_type == "continuity":
+                if name:
+                    context.append("visual continuity: " + name)
+                if not continuity_url:
+                    continuity_url = str(reference.get("url") or "").strip()
+        if context:
+            prompt += "\nTrusted short-drama continuity context:\n" + "\n".join(context)
+        if continuity_url and not payload.get("image"):
+            payload["image"] = base64.b64encode(_seedream_fetch(continuity_url)).decode("ascii")
+    payload["prompt"] = prompt
     ratio = payload.get("ratio") or "1:1"
     img   = _clean_b64(payload.get("image"))  # 参考图 → 图生图 / 局部修改；清洗防 padding 错(#6)
     mask  = _clean_b64(payload.get("mask"))   # 蒙版(透明处=要重绘的区域) → 局部修改

@@ -1062,6 +1062,44 @@ async function testTerminalFailedJobRejectsPollingAndRendersRetryableError() {
   workspace.destroy();
 }
 
+async function testSingleSubmitRequiresPositiveJobIdAndPollingOutageDoesNotResubmit() {
+  const state = sampleState();
+  let submits = 0;
+  let gets = 0;
+  const workspace = production.createWorkspace({
+    projectId: state.project_id, document: null, confirm: () => true, pollIntervalMs: 0,
+    idempotencyKey: () => 'single-stable-key',
+    client: { json(path) {
+      if (path.startsWith('/api/gen/short-drama/production?')) {
+        gets += 1;
+        if (gets > 1) throw new Error('poll unavailable');
+        return clone(state);
+      }
+      if (path === '/api/gen/short-drama/asset-quote') return { cost: 1, quote_token: 'single-quote' };
+      if (path === '/api/gen/short-drama/generate-stills') { submits += 1; return { job_id: 808, shot_id: 'shot-2' }; }
+      throw new Error(`unexpected route ${path}`);
+    } },
+  });
+  await workspace.ready;
+  await assert.rejects(workspace.generateCurrent(), /poll unavailable/);
+  await assert.rejects(workspace.generateCurrent(), /poll unavailable/);
+  assert.equal(submits, 1, 'polling outage must never cause a second paid submit');
+  workspace.destroy();
+
+  const invalid = production.createWorkspace({
+    projectId: state.project_id, document: null, confirm: () => true, pollIntervalMs: 0,
+    client: { json(path) {
+      if (path.startsWith('/api/gen/short-drama/production?')) return clone(state);
+      if (path === '/api/gen/short-drama/asset-quote') return { cost: 1, quote_token: 'bad-quote' };
+      if (path === '/api/gen/short-drama/generate-stills') return { job_id: null, shot_id: 'shot-2' };
+      throw new Error(`unexpected route ${path}`);
+    } },
+  });
+  await invalid.ready;
+  await assert.rejects(invalid.generateCurrent(), /job_id/);
+  invalid.destroy();
+}
+
 async function main() {
   testNormalizationAndRenderer();
   testResponsiveCssContract();
@@ -1082,6 +1120,7 @@ async function main() {
   await testKnownJobMissingFallbackAndDelayedAppearance();
   await testSubmittedGuardsDisableBatchRendererUntilReconciled();
   await testTerminalFailedJobRejectsPollingAndRendersRetryableError();
+  await testSingleSubmitRequiresPositiveJobIdAndPollingOutageDoesNotResubmit();
   console.log('canvas short drama production: pass');
 }
 

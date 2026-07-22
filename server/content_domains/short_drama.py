@@ -263,7 +263,7 @@ def validate_planning_payload(payload):
     return settings
 
 
-def validate_planning_submission(db_factory, username, payload):
+def validate_planning_submission(db_factory, username, payload, access=None):
     if not isinstance(payload, dict):
         raise ValueError("短剧策划请求必须是对象")
     allowed = {
@@ -276,11 +276,13 @@ def validate_planning_submission(db_factory, username, payload):
     if payload.get("format") != "short_drama":
         raise ValueError("短剧策划格式无效")
     settings = validate_planning_payload(payload)
+    owner = _project_username_for_access(
+        db_factory, username, settings["project_id"], access, write=True)
     conn = _connection(db_factory)
     try:
         row = conn.execute(
             "SELECT * FROM short_drama_projects WHERE id=? AND username=? AND deleted=0",
-            (settings["project_id"], username),
+            (settings["project_id"], owner),
         ).fetchone()
         if not row:
             raise LookupError("短剧项目不存在")
@@ -595,8 +597,39 @@ def init_db(db_factory):
     short_drama_production.init_db(db_factory)
 
 
-def create_project(db_factory, username, payload):
+def _project_username_for_access(db_factory, username, project_id, access=None, write=False):
+    conn = _connection(db_factory)
+    try:
+        row = conn.execute(
+            "SELECT username, board_id FROM short_drama_projects WHERE id=? AND deleted=0",
+            (project_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise LookupError("short drama project does not exist")
+    owner, board_id = row[0], row[1]
+    if not board_id:
+        if owner != username:
+            raise LookupError("short drama project does not exist")
+        return owner
+    access = access if isinstance(access, dict) else {}
+    role = str(access.get("role") or "").lower()
+    if str(access.get("board_id") or "") != board_id or role not in {"owner", "editor", "viewer"}:
+        raise LookupError("short drama project does not exist")
+    if write and role not in {"owner", "editor"}:
+        raise PermissionError("current board role is read-only")
+    return owner
+
+
+def create_project(db_factory, username, payload, access=None):
     data = validate_project_payload(payload)
+    board_id = data.get("board_id")
+    if board_id:
+        access = access if isinstance(access, dict) else {}
+        if (str(access.get("board_id") or "") != board_id
+                or str(access.get("role") or "").lower() not in {"owner", "editor"}):
+            raise PermissionError("current board role cannot create this project")
     now = int(time.time())
     project_id = str(uuid.uuid4())
     conn = _connection(db_factory)
@@ -627,28 +660,34 @@ def create_project(db_factory, username, payload):
         conn.close()
 
 
-def list_projects(db_factory, username, page=1, page_size=DEFAULT_PROJECT_PAGE_SIZE):
+def list_projects(db_factory, username, page=1, page_size=DEFAULT_PROJECT_PAGE_SIZE,
+                  access=None):
     page = _validate_page(page, 1)
     page_size = _validate_page(page_size, DEFAULT_PROJECT_PAGE_SIZE, MAX_PROJECT_PAGE_SIZE)
     conn = _connection(db_factory)
     try:
+        access = access if isinstance(access, dict) else {}
+        board_id = str(access.get("board_id") or "")
+        role = str(access.get("role") or "").lower()
+        if board_id and role in {"owner", "editor", "viewer"}:
+            where = "board_id=? AND deleted=0"
+            params = (board_id,)
+        else:
+            where = "username=? AND board_id IS NULL AND deleted=0"
+            params = (username,)
         total = int(conn.execute(
-            "SELECT COUNT(*) FROM short_drama_projects WHERE username=? AND deleted=0",
-            (username,),
+            "SELECT COUNT(*) FROM short_drama_projects WHERE " + where,
+            params,
         ).fetchone()[0])
-        rows = _dict_rows(conn,
-            "SELECT * FROM short_drama_projects WHERE username=? AND deleted=0 "
-            "ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
-            (username, page_size, (page - 1) * page_size),
-        )
-        totals = _charged_planning_points_by_project(
-            conn, username, {row["id"] for row in rows}
-        )
-        for row in rows:
-            row["revision"] = int(row["revision"])
-            row["spent_points"] = totals.get(row["id"], 0)
+        rows = conn.execute(
+            "SELECT id, username FROM short_drama_projects WHERE " + where +
+            " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
+            params + (page_size, (page - 1) * page_size),
+        ).fetchall()
+        items = [_project_detail(conn, owner, project_id)
+                 for (project_id, owner) in rows]
         return {
-            "items": rows,
+            "items": items,
             "page": page,
             "page_size": page_size,
             "total": total,
@@ -743,15 +782,17 @@ def _job_payload(row):
     return payload
 
 
-def check_planning_budget(db_factory, username, project_id, quoted_cost):
+def check_planning_budget(db_factory, username, project_id, quoted_cost, access=None):
     if type(quoted_cost) is not int or quoted_cost < 0:
         raise ValueError("短剧策划报价无效")
+    owner = _project_username_for_access(
+        db_factory, username, project_id, access, write=True)
     conn = _connection(db_factory)
     try:
         project = conn.execute(
             "SELECT point_budget, stage FROM short_drama_projects "
             "WHERE id=? AND username=? AND deleted=0",
-            (project_id, username),
+            (project_id, owner),
         ).fetchone()
         if not project:
             raise LookupError("短剧项目不存在")
@@ -762,7 +803,27 @@ def check_planning_budget(db_factory, username, project_id, quoted_cost):
         if point_budget == 0:
             return
         spent_points = _charged_planning_points(conn, username, project_id)
-        if spent_points + quoted_cost > point_budget:
+        applied_ids = {
+            int(row[0]) for row in conn.execute(
+                "SELECT job_id FROM short_drama_applied_jobs WHERE project_id=?",
+                (project_id,),
+            ).fetchall()
+        }
+        outstanding = 0
+        for row in conn.execute(
+            "SELECT id, cost, payload FROM jobs WHERE username=? AND kind='copy' "
+            "AND status IN ('pending','running','done')",
+            (username,),
+        ).fetchall():
+            if int(row[0]) in applied_ids:
+                continue
+            try:
+                payload = json.loads(row[2] or "{}")
+            except (TypeError, ValueError):
+                continue
+            if isinstance(payload, dict) and payload.get("format") == "short_drama" and payload.get("project_id") == project_id:
+                outstanding += max(0, int(row[1] or 0))
+        if spent_points + outstanding + quoted_cost > point_budget:
             raise PointBudgetExceeded(
                 "短剧点数预算不足：已扣 %d 点、本次 %d 点、预算 %d 点" %
                 (spent_points, quoted_cost, point_budget)
@@ -771,16 +832,16 @@ def check_planning_budget(db_factory, username, project_id, quoted_cost):
         conn.close()
 
 
-def prepare_paid_planning_submission(db_factory, username, payload, cost_of):
+def prepare_paid_planning_submission(db_factory, username, payload, cost_of, access=None):
     """Revalidate the bound request and its budget while core holds its submission lock."""
-    cleaned = validate_planning_submission(db_factory, username, payload)
+    cleaned = validate_planning_submission(db_factory, username, payload, access)
     recovered = find_recoverable_planning_job(
         db_factory, username, cleaned["project_id"], planning_payload=cleaned
     )
     if recovered:
         return cleaned, None, recovered
     cost = cost_of("copy", cleaned)
-    check_planning_budget(db_factory, username, cleaned["project_id"], cost)
+    check_planning_budget(db_factory, username, cleaned["project_id"], cost, access)
     return cleaned, cost, None
 
 
@@ -1615,10 +1676,14 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             handler._send(200, confirmed)
         elif method == "GET" and path.endswith("/projects"):
             page, page_size = _project_pagination_from_query(handler)
-            handler._send(200, list_projects(db_factory, username, page, page_size))
+            handler._send(200, list_projects(
+                db_factory, username, page, page_size, access))
         elif method == "GET" and path.endswith("/planning-job"):
+            planning_project_id = _planning_project_id_from_query(handler)
+            _project_username_for_access(
+                db_factory, username, planning_project_id, access)
             recovered = find_recoverable_planning_job(
-                db_factory, username, _planning_project_id_from_query(handler)
+                db_factory, username, planning_project_id
             )
             handler._send(200, recovered or {"job_id": None})
         elif method == "GET" and path.endswith("/production"):
@@ -1626,9 +1691,12 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                 db_factory, username, _planning_project_id_from_query(handler), access
             ))
         elif method == "GET":
-            handler._send(200, get_project(db_factory, username, _project_id_from_query(handler)))
+            project_id = _project_id_from_query(handler)
+            owner = _project_username_for_access(db_factory, username, project_id, access)
+            handler._send(200, get_project(db_factory, owner, project_id))
         elif method == "PUT":
             project_id = _project_id_from_query(handler)
+            owner = _project_username_for_access(db_factory, username, project_id, access, write=True)
             body = _request_object(handler)
             if "revision" not in body:
                 raise ValueError("缺少项目版本")
@@ -1638,11 +1706,11 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             if mutation_lock is not None:
                 with mutation_lock:
                     updated = update_project(
-                        db_factory, username, project_id, revision, body, avatar_lookup=avatar_lookup
+                        db_factory, owner, project_id, revision, body, avatar_lookup=avatar_lookup
                     )
             else:
                 updated = update_project(
-                    db_factory, username, project_id, revision, body, avatar_lookup=avatar_lookup
+                    db_factory, owner, project_id, revision, body, avatar_lookup=avatar_lookup
                 )
             handler._send(200, updated)
         elif path.endswith("/project/delete"):
@@ -1659,31 +1727,35 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                 )
             handler._send(200, deleted)
         elif path.endswith("/projects"):
-            handler._send(200, create_project(db_factory, username, _request_object(handler)))
+            handler._send(200, create_project(db_factory, username, _request_object(handler), access))
         elif path.endswith("/apply-plan"):
             body = _request_object(handler)
             _validate_project_request(body, {"project_id", "revision", "job_id"})
+            owner = _project_username_for_access(
+                db_factory, username, body["project_id"], access, write=True)
             job, plan, metadata = _planning_job(
                 db_factory, username, body["job_id"], body["project_id"]
             )
             handler._send(200, apply_plan(
-                db_factory, username, body["project_id"], body["revision"], plan,
+                db_factory, owner, body["project_id"], body["revision"], plan,
                 planning_cost=job["cost"], planning_job_id=job["id"],
                 planning_metadata=metadata, avatar_lookup=avatar_lookup,
             ))
         else:
             body = _request_object(handler)
             _validate_project_request(body, {"project_id", "revision", "stage"})
+            owner = _project_username_for_access(
+                db_factory, username, body["project_id"], access, write=True)
             if not isinstance(body["stage"], str):
                 raise ValueError("阶段确认请求无效")
             if mutation_lock is not None:
                 with mutation_lock:
                     confirmed = confirm_stage(
-                        db_factory, username, body["project_id"], body["revision"], body["stage"]
+                        db_factory, owner, body["project_id"], body["revision"], body["stage"]
                     )
             else:
                 confirmed = confirm_stage(
-                    db_factory, username, body["project_id"], body["revision"], body["stage"]
+                    db_factory, owner, body["project_id"], body["revision"], body["stage"]
                 )
             handler._send(200, confirmed)
     except (LookupError, RevisionConflict, AppliedJobConflict, ProjectHasUnappliedJobs,

@@ -156,7 +156,7 @@ def get_points(username):
     except Exception:
         return 0
 
-def deduct_points(username, amount, reason=""):
+def deduct_points(username, amount, reason="", transaction_key=""):
     """预扣点。reason 落 points_audit，供对账。
 
     注意：三个服务都是「先扣点、后 INSERT jobs 行」，所以扣点这一刻还没有 job_id，
@@ -167,8 +167,10 @@ def deduct_points(username, amount, reason=""):
     amount = int(amount or 0)
     if amount <= 0:
         return get_points(username)
-    res = _auth_points_request("/api/auth/points/deduct",
-                               {"username": username, "amount": amount, "reason": reason})
+    payload = {"username": username, "amount": amount, "reason": reason}
+    if transaction_key:
+        payload["transaction_key"] = str(transaction_key)
+    res = _auth_points_request("/api/auth/points/deduct", payload)
     return int(res.get("points") or 0)
 
 def refund_points(username, amount, reason="", transaction_key=""):

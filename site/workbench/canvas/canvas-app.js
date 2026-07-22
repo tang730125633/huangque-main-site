@@ -98,7 +98,10 @@
   }
   var shortDramaProjectCoordinator=shortDramaModule.createProjectCoordinator({
     getNode:function(scopeKey,nodeId){ return shortDramaNodeForScope(scopeKey,nodeId); },
-    create:function(payload){ return apiClient.json('/api/gen/short-drama/projects',{method:'POST',body:payload}); },
+    create:function(payload){
+      var headers=currentBoardScope==='collab'?{'X-Canvas-Board-Id':String(currentBoardId)}:{};
+      return apiClient.json('/api/gen/short-drama/projects',{method:'POST',body:payload,headers:headers});
+    },
     apply:function(node,project){ applyShortDramaSummary(node,project); }
   });
   function ensureShortDramaProject(node,scopeKey){

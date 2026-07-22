@@ -486,7 +486,14 @@
               if(matchingActive){
                 target.observed=true;target.missing=0;return true;
               }
-              if(activeJob) return true;
+              if(activeJob){
+                if(target.jobId==null) return true;
+                target.missing+=1;
+                if(target.missing>=KNOWN_JOB_MISSING_LIMIT){
+                  target.done=true;target.error=new Error('exact still job disappeared without durable success evidence');return false;
+                }
+                return true;
+              }
               var matchingJob=job&&target.jobId!=null&&job.job_id===target.jobId;
               if(matchingJob&&job.status==='failed'){
                 target.done=true;target.error=new Error(job.error||'关键帧生成失败');return false;
@@ -547,9 +554,21 @@
     }
     function generate(mode){
       if(generationPromise) return generationPromise;
+      var selected;
       try{
         ensureWritable();
         if(['single','retry','batch'].indexOf(mode)<0) throw new Error('invalid generation mode');
+        selected=currentShot();
+        if(!selected) throw new Error('no shot selected');
+        if(submittedGuards[selected.id]){
+          ui.busy=true;ui.error='';safePaint();
+          return trackGeneration(pollShot(selected.id,submittedGuards[selected.id]));
+        }
+        if(selected.still.job&&isActiveJobStatus(selected.still.job.status)){
+          submittedGuards[selected.id]=selected.still.job.job_id;
+          ui.busy=true;ui.error='';safePaint();
+          return trackGeneration(pollShot(selected.id,selected.still.job.job_id));
+        }
       }catch(error){ return Promise.reject(error); }
       var body=stillBody(mode),key=keyFactory();
       if(typeof key!=='string'||!key) return Promise.reject(new Error('idempotency key is invalid'));
@@ -565,7 +584,13 @@
           var submittedBody=Object.assign({},body,{quote_token:quote.quote_token});
           return submitWithTimeoutRetry(submittedBody,key).then(function(response){
             ensureAlive();
-            return pollShot(body.shot_id,response&&response.job_id);
+            var jobId=response&&response.job_id;
+            if(typeof jobId!=='number'||!isFinite(jobId)||Math.floor(jobId)!==jobId||jobId<1){
+              throw new Error('successful still submission requires a positive job_id');
+            }
+            submittedGuards[body.shot_id]=jobId;
+            safePaint();
+            return pollShot(body.shot_id,jobId);
           });
         });
       }).catch(function(error){ handleError(error);throw error; });
@@ -623,9 +648,13 @@
               ensureAlive();
               return submitWithTimeoutRetry(item.body,item.key).then(function(response){
                 ensureAlive();
+                var responseJobId=response&&response.job_id;
+                if(typeof responseJobId!=='number'||!isFinite(responseJobId)||Math.floor(responseJobId)!==responseJobId||responseJobId<1){
+                  throw new Error('successful still submission requires a positive job_id');
+                }
                 var target={
                   shotId:item.body.shot_id,
-                  jobId:response&&response.job_id
+                  jobId:responseJobId
                 };
                 submitted.push(target);
                 submittedGuards[target.shotId]=target.jobId==null?true:target.jobId;

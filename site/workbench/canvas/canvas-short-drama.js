@@ -196,29 +196,35 @@
     return typeof result==='string'?JSON.parse(result):result;
   }
 
-  function createClient(apiClient,pollFn){
+  function createClient(apiClient,pollFn,boardId){
     pollFn=pollFn||apiClient&&apiClient.poll;
     if(!apiClient||typeof apiClient.json!=='function'||typeof pollFn!=='function'){
       throw new Error('short drama client requires json and poll methods');
     }
+    function json(path,requestOptions){
+      if(!boardId&&!requestOptions) return apiClient.json(path);
+      var scoped=requestOptions?Object.assign({},requestOptions):{};
+      if(boardId) scoped.headers=Object.assign({},scoped.headers||{}, {'X-Canvas-Board-Id':String(boardId)});
+      return apiClient.json(path,scoped);
+    }
     function applyPlan(projectId,revision,jobId){
-      return apiClient.json('/api/gen/short-drama/apply-plan',{
+      return json('/api/gen/short-drama/apply-plan',{
         method:'POST',body:{project_id:projectId,revision:revision,job_id:jobId}
       });
     }
     return {
       list:function(page,pageSize){
         page=page==null?1:Number(page);pageSize=pageSize==null?20:Number(pageSize);
-        return apiClient.json('/api/gen/short-drama/projects?page='+encodeURIComponent(page)+'&page_size='+encodeURIComponent(pageSize));
+        return json('/api/gen/short-drama/projects?page='+encodeURIComponent(page)+'&page_size='+encodeURIComponent(pageSize));
       },
-      get:function(projectId){ return apiClient.json(projectPath(projectId)); },
-      getPlanningQuote:function(){ return apiClient.json('/api/gen/short-drama/planning-quote'); },
+      get:function(projectId){ return json(projectPath(projectId)); },
+      getPlanningQuote:function(){ return json('/api/gen/short-drama/planning-quote'); },
       getRecoverablePlanningJob:function(projectId){
-        return apiClient.json('/api/gen/short-drama/planning-job?project_id='+encodeURIComponent(projectId));
+        return json('/api/gen/short-drama/planning-job?project_id='+encodeURIComponent(projectId));
       },
-      create:function(project){ return apiClient.json('/api/gen/short-drama/projects',{method:'POST',body:project}); },
+      create:function(project){ return json('/api/gen/short-drama/projects',{method:'POST',body:project}); },
       update:function(projectId,revision,patch){
-        return apiClient.json(projectPath(projectId),{method:'PUT',body:Object.assign({},patch||{},{revision:revision})});
+        return json(projectPath(projectId),{method:'PUT',body:Object.assign({},patch||{},{revision:revision})});
       },
       delete:function(projectId,revision){
         return apiClient.json('/api/gen/short-drama/project/delete',{
@@ -227,17 +233,17 @@
       },
       applyPlan:applyPlan,
       confirm:function(projectId,revision,stage){
-        return apiClient.json('/api/gen/short-drama/confirm',{
+        return json('/api/gen/short-drama/confirm',{
           method:'POST',body:{project_id:projectId,revision:revision,stage:stage}
         });
       },
       generatePlan:function(project,hooks){
         hooks=hooks||{};
         function submitOrRecover(){
-          return apiClient.json('/api/gen/short-drama/planning-job?project_id='+encodeURIComponent(project.id))
+          return json('/api/gen/short-drama/planning-job?project_id='+encodeURIComponent(project.id))
             .then(function(recovered){
               if(recovered&&recovered.job_id) return recovered;
-              return apiClient.json('/api/gen/copy',{method:'POST',body:planningPayload(project)});
+              return json('/api/gen/copy',{method:'POST',body:planningPayload(project)});
             });
         }
         return submitOrRecover().then(function(created){
@@ -245,7 +251,7 @@
             if(typeof hooks.onCost==='function'&&created.cost!=null) hooks.onCost(Number(created.cost));
             if(typeof hooks.onProgress==='function') hooks.onProgress({status:'pending',percent:20,label:'规划任务已入队'});
             return pollFn({
-              request:function(){ return apiClient.json('/api/gen/job/'+created.job_id); },
+              request:function(){ return json('/api/gen/job/'+created.job_id); },
               intervalMs:3000,
               maxMs:420000,
               inspect:function(job){
@@ -578,7 +584,7 @@
 
   function createWorkspace(options){
     options=options||{};
-    var client=options.client||createClient(options.apiClient,options.poll);
+    var client=options.client||createClient(options.apiClient,options.poll,options.boardId);
     var project=null,destroyed=false,host=null,productionHost=null,productionWorkspace=null,loadGeneration=0;
     var canEdit=options.canEdit!==false,onChange=typeof options.onChange==='function'?options.onChange:function(){};
     var confirmHook=typeof options.confirm==='function'?options.confirm:

@@ -17,7 +17,7 @@ SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from content_domains import core, short_drama, short_drama_production, submission_idempotency, upstream_guard, video
+from content_domains import core, image, short_drama, short_drama_production, submission_idempotency, upstream_guard, video
 
 
 def _project_payload():
@@ -232,6 +232,10 @@ class ShortDramaProductionTests(unittest.TestCase):
             self.db, "editor", self._still_request(), access=editor
         )
         self.assertEqual(self._shot_id(), prepared["shot"]["id"])
+        with self.assertRaises(LookupError):
+            short_drama_production.get_production(
+                self.db, "alice", self.project["id"], access=None
+            )
 
         for denied in (
             {"board_id": "board-a", "role": None},
@@ -251,6 +255,39 @@ class ShortDramaProductionTests(unittest.TestCase):
         self.assertEqual(short_drama.STAGES[-4:], (
             "voice_review", "video_review", "assembly_review", "completed",
         ))
+
+    def test_seedream_provider_receives_owned_continuity_image_and_reference_context(self):
+        captured = {}
+        payload = {
+            "provider": "seedream", "variant": "std", "quality": "hd",
+            "prompt": "rainy doorway", "ratio": "9:16", "count": 2,
+            "short_drama_references": [
+                {"type": "character", "id": "character-owned", "name": "Detective Lin",
+                 "source_type": "avatar", "source_id": "avatar-owned"},
+                {"type": "continuity", "id": "version-owned", "name": "previous locked still",
+                 "url": "https://example.test/owned.png", "ratio": "9:16"},
+            ],
+        }
+        def fake_generate(prompt, ratio, quality, count, img, variant):
+            captured.update(prompt=prompt, ratio=ratio, quality=quality, count=count,
+                            img=img, variant=variant)
+            image._seedream_one("seedream-model", prompt, "1152x2048", img)
+            return {"urls": ["a", "b"], "ratio": ratio}
+        def fake_post(path, data, content_type, **kwargs):
+            captured["outbound"] = json.loads(data)
+            return {"data": [{"url": "https://provider.test/result.png"}]}
+        with mock.patch.object(image, "_seedream_fetch", return_value=b"\x89PNG\r\n\x1a\nowned"), \
+             mock.patch.object(image, "_post", side_effect=fake_post), \
+             mock.patch.object(image, "_gen_image_seedream", side_effect=fake_generate):
+            image.gen_image(payload)
+        self.assertIn("Detective Lin", captured["prompt"])
+        self.assertIn("previous locked still", captured["prompt"])
+        self.assertEqual("9:16", captured["ratio"])
+        self.assertEqual(2, captured["count"])
+        self.assertEqual("iVBORw0KGgpvd25lZA==", captured["img"])
+        self.assertEqual(captured["prompt"], captured["outbound"]["prompt"])
+        self.assertEqual("data:image/png;base64,iVBORw0KGgpvd25lZA==",
+                         captured["outbound"]["image"])
 
     def test_phase_two_only_allows_stills_confirmation(self):
         for stage in ("voice_review", "video_review", "assembly_review"):
@@ -1233,6 +1270,19 @@ class ShortDramaProductionTests(unittest.TestCase):
         self.assertTrue(job["refunded"])
         self.assertEqual(0, state["reserved_points"])
 
+    def test_latest_same_timestamp_job_uses_monotonic_job_id(self):
+        old_id = self._link_job(job_status="failed", link_status="failed")
+        new_id = self._link_job(job_status="running", link_status="running")
+        self.assertGreater(new_id, old_id)
+        with closing(self.db()) as conn:
+            conn.execute("UPDATE short_drama_production_jobs SET id='zzz-old' WHERE job_id=?", (old_id,))
+            conn.execute("UPDATE short_drama_production_jobs SET id='aaa-new' WHERE job_id=?", (new_id,))
+            conn.commit()
+        state = short_drama_production.get_production(
+            self.db, "alice", self.project["id"]
+        )
+        self.assertEqual(new_id, state["shots"][0]["still"]["job"]["job_id"])
+
     def test_record_submitted_job_binds_pending_owned_image_job(self):
         with closing(self.db()) as conn:
             cursor = conn.execute(
@@ -1272,18 +1322,35 @@ class ShortDramaStillRouteTests(unittest.TestCase):
             self.cost_calls = []
             self.deduct_calls = []
             self.refund_calls = []
+            self.charge_keys = {}
+            self.lose_first_charge_response = False
 
         def cost_of(self, kind, body):
             self.cost_calls.append((kind, dict(body)))
             return self.cost
 
-        def deduct_points(self, username, cost, reason):
-            self.deduct_calls.append((username, cost, reason))
+        def deduct_points(self, username, cost, reason, transaction_key=""):
+            self.deduct_calls.append((username, cost, reason, transaction_key))
+            if transaction_key in self.charge_keys:
+                if self.charge_keys[transaction_key] != (username, cost):
+                    raise AssertionError("charge key conflict")
+                return 100 - cost
+            if transaction_key:
+                self.charge_keys[transaction_key] = (username, cost)
+            if self.lose_first_charge_response:
+                self.lose_first_charge_response = False
+                error = self.AuthPointsError()
+                error.status = 502
+                error.detail = "response lost after commit"
+                raise error
             return 100 - cost
 
         def refund_points(self, username, cost, reason, transaction_key=None):
             self.refund_calls.append((username, cost, reason, transaction_key))
             return 100
+
+        def get_points(self, username):
+            return 100 - sum(cost for (_user, cost) in self.charge_keys.values())
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1513,6 +1580,39 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         self.assertEqual(403, demoted)
         self.assertEqual(404, removed)
         self.assertEqual(404, wrong_board)
+
+    def test_first_stage_routes_enforce_current_board_role_and_creation_scope(self):
+        roles = {"owner": "owner", "editor": "editor", "viewer": "viewer"}
+        core._short_drama_canvas_access = lambda handler: ({
+            "board_id": handler.headers.get("X-Canvas-Board-Id"),
+            "role": roles.get(handler._token()),
+        } if roles.get(handler._token()) else None)
+        payload = dict(_project_payload(), board_id="board-a")
+        created_status, created = self.request(
+            "/api/gen/short-drama/projects", body=payload, username="editor",
+            board_id="board-a", with_quote=False,
+        )
+        self.assertEqual(200, created_status)
+        project_path = "/api/gen/short-drama/project?id=" + created["id"]
+        owner_read, _ = self.request(project_path, username="owner", method="GET",
+                                     raw_body=b"", board_id="board-a")
+        viewer_read, _ = self.request(project_path, username="viewer", method="GET",
+                                      raw_body=b"", board_id="board-a")
+        viewer_write, _ = self.request(project_path, username="viewer", method="PUT",
+            board_id="board-a", body={"revision": created["revision"], "title": "blocked"},
+            with_quote=False)
+        spoofed, _ = self.request(
+            "/api/gen/short-drama/projects", body=dict(payload, board_id="board-b"),
+            username="editor", board_id="board-a", with_quote=False,
+        )
+        self.assertEqual(200, owner_read)
+        self.assertEqual(200, viewer_read)
+        self.assertEqual(403, viewer_write)
+        self.assertEqual(403, spoofed)
+        roles.pop("editor")
+        removed, _ = self.request(project_path, username="editor", method="GET",
+                                  raw_body=b"", board_id="board-a")
+        self.assertEqual(404, removed)
 
     def test_select_and_confirm_production_routes_do_not_charge_points(self):
         first_asset = self._lock_every_current_still(two_versions_for_first=True)
@@ -1785,7 +1885,7 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         self.assertEqual([], self._jobs())
         self.assertEqual(0, self._idempotency_count())
 
-    def test_association_failure_refunds_and_aborts_idempotency(self):
+    def test_association_failure_refund_consumes_quote_and_attempt(self):
         path = "/api/gen/short-drama/generate-stills"
         with mock.patch.object(
             short_drama_production, "record_submitted_job",
@@ -1800,16 +1900,23 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         self.assertEqual(1, len(self.points.refund_calls))
         self.assertEqual("error", self._jobs()[0]["status"])
         self.assertEqual(1, self._jobs()[0]["refunded"])
-        self.assertEqual(0, self._idempotency_count())
+        self.assertEqual(1, self._idempotency_count())
 
         retry_status, retried = self.request(
             path, body=self._body(), idempotency_key="still-assoc-001"
         )
-        self.assertEqual(200, retry_status)
-        self.assertEqual(self.project["id"], retried["project_id"])
+        self.assertEqual(500, retry_status)
+        self.assertIn("detail", retried)
+        self.assertEqual(1, len(self.points.deduct_calls))
+        self.quote_cache.clear()
+        fresh_status, fresh = self.request(
+            path, body=self._body(), idempotency_key="still-assoc-002"
+        )
+        self.assertEqual(200, fresh_status)
+        self.assertEqual(self.project["id"], fresh["project_id"])
         self.assertEqual(2, len(self.points.deduct_calls))
 
-    def test_queue_full_refunds_and_aborts_idempotency(self):
+    def test_queue_full_refund_consumes_quote_and_requires_fresh_attempt(self):
         core._image_job_queue = queue.Queue(maxsize=1)
         core._image_job_queue.put_nowait(999999)
         status, failed = self.request(
@@ -1823,17 +1930,62 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         self.assertEqual(1, len(self.points.refund_calls))
         self.assertEqual("error", self._jobs()[0]["status"])
         self.assertEqual(1, self._jobs()[0]["refunded"])
-        self.assertEqual(0, self._idempotency_count())
+        self.assertEqual(1, self._idempotency_count())
 
         core._image_job_queue.get_nowait()
         retry_status, retried = self.request(
             "/api/gen/short-drama/generate-stills", body=self._body(),
             idempotency_key="still-queue-001",
         )
-        self.assertEqual(200, retry_status)
-        self.assertEqual(self.project["id"], retried["project_id"])
+        self.assertEqual(429, retry_status)
+        self.assertEqual("queue_full", retried["code"])
+        self.quote_cache.clear()
+        fresh_status, fresh = self.request(
+            "/api/gen/short-drama/generate-stills", body=self._body(),
+            idempotency_key="still-queue-002",
+        )
+        self.assertEqual(200, fresh_status)
+        self.assertEqual(self.project["id"], fresh["project_id"])
         self.assertEqual(2, len(self.points.deduct_calls))
         self.assertEqual(1, len(self.points.refund_calls))
+        self.assertEqual(1, core._image_job_queue.qsize())
+
+    def test_lost_auth_response_retries_same_charge_once_and_creates_one_job(self):
+        self.points.lose_first_charge_response = True
+        path = "/api/gen/short-drama/generate-stills"
+        first_status, _ = self.request(
+            path, body=self._body(), idempotency_key="still-lost-auth-001"
+        )
+        retry_status, accepted = self.request(
+            path, body=self._body(), idempotency_key="still-lost-auth-001"
+        )
+        self.assertEqual(502, first_status)
+        self.assertEqual(200, retry_status)
+        self.assertGreater(accepted["job_id"], 0)
+        self.assertEqual(1, len(self.points.charge_keys))
+        self.assertEqual(1, len(self._jobs()))
+        self.assertEqual(1, core._image_job_queue.qsize())
+
+    def test_retry_recovers_committed_job_when_http_completion_was_lost(self):
+        path = "/api/gen/short-drama/generate-stills"
+        status, accepted = self.request(
+            path, body=self._body(), idempotency_key="still-lost-http-001"
+        )
+        self.assertEqual(200, status)
+        with closing(core.jdb()) as conn:
+            conn.execute(
+                "UPDATE submission_idempotency SET response_json=NULL "
+                "WHERE username='alice' AND endpoint=? AND idem_key=?",
+                (path, "still-lost-http-001"),
+            )
+            conn.commit()
+        retry_status, recovered = self.request(
+            path, body=self._body(), idempotency_key="still-lost-http-001"
+        )
+        self.assertEqual(200, retry_status)
+        self.assertEqual(accepted["job_id"], recovered["job_id"])
+        self.assertEqual(1, len(self.points.charge_keys))
+        self.assertEqual(1, len(self._jobs()))
         self.assertEqual(1, core._image_job_queue.qsize())
 
     def test_auth_content_shutdown_and_upstream_guards_precede_paid_work(self):

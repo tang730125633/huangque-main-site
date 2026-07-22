@@ -192,14 +192,16 @@ def _authorized_project(conn, username, project_id, access=None, *, write=False)
     ).fetchone()
     if not project:
         raise LookupError("短剧项目不存在")
-    if project["username"] == username:
+    if not project["board_id"]:
+        if project["username"] != username:
+            raise LookupError("short drama project does not exist")
         return dict(project)
     access = access if isinstance(access, dict) else {}
     board_id = str(access.get("board_id") or "").strip()
     role = str(access.get("role") or "").strip().lower()
-    if not project["board_id"] or board_id != project["board_id"] or role not in {"editor", "viewer"}:
+    if board_id != project["board_id"] or role not in {"owner", "editor", "viewer"}:
         raise LookupError("短剧项目不存在")
-    if write and role != "editor":
+    if write and role not in {"owner", "editor"}:
         raise PermissionError("当前协作角色没有编辑权限")
     return dict(project)
 
@@ -431,21 +433,7 @@ def record_submitted_job(db_factory, *, username, project_id, shot_id, job_id,
                  request_hash, quoted_cost, now),
             )
             if consumed.rowcount != 1:
-                reusable = conn.execute(
-                    "SELECT q.consumed_job_id FROM short_drama_still_quotes q "
-                    "JOIN jobs j ON j.id=q.consumed_job_id "
-                    "WHERE q.token=? AND q.username=? AND q.project_id=? AND q.shot_id=? "
-                    "AND q.request_hash=? AND q.cost=? AND q.expires_at>=? "
-                    "AND q.consumed_idempotency_key=? AND j.status IN ('error','failed')",
-                    (quote_token, username, project_id, shot_id, request_hash,
-                     quoted_cost, now, idempotency_key),
-                ).fetchone()
-                if not reusable:
-                    raise ValueError("关键帧 quote 已过期、已使用或与请求不匹配")
-                conn.execute(
-                    "UPDATE short_drama_still_quotes SET consumed_job_id=? WHERE token=?",
-                    (job_id, quote_token),
-                )
+                raise ValueError("关键帧 quote 已过期、已使用或与请求不匹配")
         conn.execute(
             "INSERT INTO short_drama_production_jobs "
             "(id, username, project_id, shot_id, kind, job_id, idempotency_key, "
@@ -469,6 +457,42 @@ def submitted_job_callback(db_factory, **association):
     return lambda connection, job_id: record_submitted_job(
         db_factory, job_id=job_id, connection=connection, **association
     )
+
+
+def recover_submitted_response(db_factory, username, idempotency_key):
+    """Recover an accepted job after a crash before the HTTP claim was completed."""
+    conn = db_factory()
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT p.project_id, p.shot_id, p.job_id, p.quoted_cost "
+            "FROM short_drama_production_jobs p "
+            "JOIN jobs j ON j.id=p.job_id AND j.username=p.username AND j.kind='image' "
+            "WHERE p.username=? AND p.kind='still' AND p.idempotency_key=?",
+            (username, idempotency_key),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "job_id": int(row["job_id"]), "cost": int(row["quoted_cost"]),
+            "project_id": row["project_id"], "shot_id": row["shot_id"],
+        }
+    finally:
+        conn.close()
+
+
+def consume_failed_quote(db_factory, username, quote_token, idempotency_key):
+    """Permanently consume a quote whose charge attempt reached compensation."""
+    conn = db_factory()
+    try:
+        conn.execute(
+            "UPDATE short_drama_still_quotes SET consumed_idempotency_key=? "
+            "WHERE token=? AND username=? AND consumed_idempotency_key IS NULL",
+            (idempotency_key, quote_token, username),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def ensure_asset_slots(conn, project_id):
@@ -642,7 +666,7 @@ def build_production_snapshot(conn, project, username):
         "FROM short_drama_production_jobs p "
         "JOIN jobs j ON j.id=p.job_id AND j.username=p.username AND j.kind='image' "
         "WHERE p.project_id=? "
-        "ORDER BY p.created_at DESC, p.id DESC",
+        "ORDER BY p.job_id DESC",
         (project_id,),
     ):
         if job["status"] in {"pending", "running"}:
