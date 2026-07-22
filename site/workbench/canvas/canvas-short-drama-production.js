@@ -61,12 +61,17 @@
 
   function normalizeJob(job){
     if(!job||typeof job!=='object') return null;
+    var status=text(job.status||'pending');
+    if(['pending','running','done','failed'].indexOf(status)<0) return null;
     return {
       id:job.id,
       job_id:job.job_id,
       kind:text(job.kind||'still'),
-      status:text(job.status||'pending'),
-      quoted_cost:Math.max(0,number(job.quoted_cost,0))
+      status:status,
+      quoted_cost:Math.max(0,number(job.quoted_cost,0)),
+      error:text(job.error),
+      refunded:!!job.refunded,
+      refund_pending:!!job.refund_pending
     };
   }
 
@@ -240,7 +245,6 @@
 
   function renderInspector(state){
     var shot=selectedShot(state),job=shot&&shot.still.job;
-    if(job&&!isActiveJobStatus(job.status)) job=null;
     var writable=state.canEdit&&!state.busy&&!state.stale&&!state.destroyed&&state.stage==='stills_review';
     var quote=state.quote&&typeof state.quote==='object'?number(state.quote.cost,0):number(state.quote,0);
     var budget=state.point_budget===0?'不限':state.point_budget+' 点';
@@ -254,7 +258,11 @@
       '<section class="nc-sdp-cost"><span>本次实时报价</span><strong>'+(state.quote==null?'待查询':quote+' 点')+'</strong><small>'+
       (state.quote&&state.quote.shot_count?state.quote.shot_count+' 个镜头 · ':'')+'生成前报价并显式确认；取消不会提交。</small></section>'+
       '<dl><div><dt>项目预算</dt><dd>'+budget+'</dd></div><div><dt>已花费</dt><dd>'+state.spent_points+' 点</dd></div><div><dt>已预留</dt><dd>'+state.reserved_points+' 点</dd></div><div><dt>当前版本</dt><dd>R'+state.revision+'</dd></div></dl>'+
-      (job?'<section class="nc-sdp-progress" data-status="'+escapeHtml(job.status)+'"><strong>'+escapeHtml(job.status==='running'?'正在生成':'等待生成')+'</strong><small>任务 '+escapeHtml(job.job_id)+' · 预留 '+job.quoted_cost+' 点</small></section>':'')+
+      (job?'<section class="nc-sdp-progress" data-status="'+escapeHtml(job.status)+'"><strong>'+escapeHtml(
+        job.status==='running'?'正在生成':job.status==='pending'?'等待生成':job.status==='failed'?'生成失败':'生成完成'
+      )+'</strong><small>任务 '+escapeHtml(job.job_id)+' · '+(job.status==='failed'?
+        escapeHtml(job.error||'生成失败')+' · '+(job.refunded?'已退款':job.refund_pending?'退款确认中':'请联系客服核对退款'):
+        '预留 '+job.quoted_cost+' 点')+'</small></section>':'')+
       (state.error?'<section class="nc-sdp-error" role="alert"><strong>'+(state.stale?'版本冲突':'操作未完成')+'</strong><p>'+escapeHtml(state.error)+'</p>'+(state.stale?'<button type="button" data-action="refresh">刷新最新版本</button>':'')+'</section>':'')+
       '<div class="nc-sdp-generation-actions"><button type="button" class="is-primary" data-action="generate-current"'+disabledUnless(writable)+'>生成当前镜头</button>'+
       '<button type="button" data-action="retry-current"'+disabledUnless(writable)+'>重试当前镜头</button><button type="button" data-action="generate-batch"'+disabledUnless(batchable)+'>批量模式生成</button></div>'+
@@ -302,7 +310,11 @@
     function callJson(path,requestOptions){
       return Promise.resolve().then(function(){
         ensureAlive();
-        return client.json(path,requestOptions);
+        var scoped=requestOptions?Object.assign({},requestOptions):{};
+        if(options.boardId){
+          scoped.headers=Object.assign({},scoped.headers||{}, {'X-Canvas-Board-Id':String(options.boardId)});
+        }
+        return client.json(path,scoped);
       }).then(function(value){
         ensureAlive();
         return value;
@@ -331,8 +343,10 @@
       normalized.shots.forEach(function(shot){
         if(!Object.prototype.hasOwnProperty.call(ui.prompts,shot.id)) ui.prompts[shot.id]=shot.image_prompt;
         var guardedJob=submittedGuards[shot.id];
+        var terminalFailed=shot.still.job&&shot.still.job.status==='failed'&&
+          (guardedJob===true||shot.still.job.job_id===guardedJob);
         var reconciled=shot.still.locked||shotHasCompletedCurrent(normalized,shot)||
-          shot.still.versions.some(function(version){ return guardedJob!==true&&version.job_id===guardedJob; });
+          terminalFailed||shot.still.versions.some(function(version){ return guardedJob!==true&&version.job_id===guardedJob; });
         if(reconciled) delete submittedGuards[shot.id];
       });
       ui.busy=!!keepBusy;ui.stale=false;ui.error='';
@@ -442,7 +456,7 @@
         return {
           shotId:target&&typeof target==='object'?target.shotId:target,
           jobId:target&&typeof target==='object'?target.jobId:null,
-          observed:false,missing:0,done:false
+          observed:false,missing:0,done:false,error:null
         };
       });
       return new Promise(function(resolve,reject){
@@ -474,10 +488,17 @@
               }
               if(activeJob) return true;
               var matchingJob=job&&target.jobId!=null&&job.job_id===target.jobId;
-              if(matchingJob||target.observed){ target.done=true;return false; }
+              if(matchingJob&&job.status==='failed'){
+                target.done=true;target.error=new Error(job.error||'关键帧生成失败');return false;
+              }
+              if(matchingJob||target.observed){
+                target.done=true;target.error=new Error('关键帧任务结束但没有成功候选图');return false;
+              }
               if(target.jobId!=null){
                 target.missing+=1;
-                if(target.missing>=KNOWN_JOB_MISSING_LIMIT){ target.done=true;return false; }
+                if(target.missing>=KNOWN_JOB_MISSING_LIMIT){
+                  target.done=true;target.error=new Error('关键帧任务状态缺失且没有成功候选图');return false;
+                }
                 return true;
               }
               target.missing+=1;
@@ -485,7 +506,11 @@
               return true;
             });
             if(!pending){
-              ui.busy=false;safePaint();finish(resolve,next);return;
+              var failed=null;
+              tracked.some(function(target){ if(target.error){ failed=target.error;return true; } return false; });
+              ui.busy=false;
+              if(failed){ handleError(failed);finish(reject,failed);return; }
+              safePaint();finish(resolve,next);return;
             }
             schedule();
           },function(error){ handleError(error);finish(reject,error); });
@@ -502,6 +527,7 @@
     function pollShot(shotId,jobId){ return pollShots([{shotId:shotId,jobId:jobId}]); }
     function clearSubmittedGuards(submitted){
       (submitted||[]).forEach(function(target){ delete submittedGuards[target.shotId]; });
+      safePaint();
     }
     function recoverPartialBatch(submitted,primaryError){
       if(!submitted.length) return Promise.reject(primaryError);
@@ -530,12 +556,14 @@
       ui.busy=true;ui.error='';ui.lastMode=mode;safePaint();
       var action=callJson(QUOTE_PATH,{method:'POST',body:body}).then(function(quote){
         ensureAlive();
-        if(!quote||typeof quote.cost!=='number'||!isFinite(quote.cost)||quote.cost<0) throw new Error('still quote is invalid');
+        if(!quote||typeof quote.cost!=='number'||!isFinite(quote.cost)||quote.cost<0||
+          typeof quote.quote_token!=='string'||!quote.quote_token) throw new Error('still quote is invalid');
         ui.quote=clone(quote);safePaint();
         return Promise.resolve(confirmHook(quote.cost,clone(quote),clone(body))).then(function(accepted){
           ensureAlive();
           if(!accepted){ ui.busy=false;safePaint();return null; }
-          return submitWithTimeoutRetry(body,key).then(function(response){
+          var submittedBody=Object.assign({},body,{quote_token:quote.quote_token});
+          return submitWithTimeoutRetry(submittedBody,key).then(function(response){
             ensureAlive();
             return pollShot(body.shot_id,response&&response.job_id);
           });
@@ -570,7 +598,8 @@
         ensureAlive();
         var total=0;
         quotes.forEach(function(quote){
-          if(!quote||typeof quote.cost!=='number'||!isFinite(quote.cost)||quote.cost<0){
+          if(!quote||typeof quote.cost!=='number'||!isFinite(quote.cost)||quote.cost<0||
+            typeof quote.quote_token!=='string'||!quote.quote_token){
             throw new Error('still quote is invalid');
           }
           total+=quote.cost;
@@ -586,7 +615,7 @@
           var submissions=bodies.map(function(body,index){
             var key=keyFactory(body.shot_id,index,'batch');
             if(typeof key!=='string'||!key) throw new Error('idempotency key is invalid');
-            return {body:body,key:key};
+            return {body:Object.assign({},body,{quote_token:quotes[index].quote_token}),key:key};
           });
           var chain=Promise.resolve(),submitted=[];
           submissions.forEach(function(item){

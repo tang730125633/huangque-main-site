@@ -618,6 +618,29 @@ def verify(token):
             _verify_cache[token] = (now + VERIFY_CACHE_TTL, dict(user))
     return dict(user)
 
+def _short_drama_canvas_access(handler):
+    board_id = str(handler.headers.get("X-Canvas-Board-Id") or "").strip()
+    if not board_id:
+        return None
+    token = handler._token()
+    if not token:
+        return None
+    try:
+        req = urllib.request.Request(
+            AUTH_BASE + "/api/auth/canvas/boards/" + urllib.parse.quote(board_id, safe=""),
+            headers={"Authorization": "Bearer " + token},
+        )
+        with urllib.request.urlopen(req, timeout=6) as response:
+            board = json.loads(response.read()).get("board")
+    except Exception:
+        return None
+    if not isinstance(board, dict) or str(board.get("id") or "") != board_id:
+        return None
+    role = str(board.get("role") or "").strip().lower()
+    if role not in {"owner", "editor", "viewer"}:
+        return None
+    return {"board_id": board_id, "role": role}
+
 def _domains():
     from . import audio, points, video
     return audio, points, video
@@ -1160,7 +1183,8 @@ class H(BaseHTTPRequestHandler):
         audio_domain, points_domain, video_domain = _domains()
         if _short_drama_domain().dispatch_http(
                 self, "POST", jdb, verify, getattr(points_domain, "cost_of", None),
-                mutation_lock=_submission_lock): return
+                mutation_lock=_submission_lock,
+                canvas_access_resolver=_short_drama_canvas_access): return
         if p == "/api/gen/inspiration/like": return inspiration_likes.handle_post(self, verify(self._token()), AUDIO_DB)
         if p == "/api/gen/asset/favorite":
             user = verify(self._token())
@@ -1371,10 +1395,11 @@ class H(BaseHTTPRequestHandler):
             try: feature_flags.require_enabled(kind)
             except feature_flags.FeatureDisabled as e: return self._send(503, {"detail": str(e)})
             still_idem_started = False
+            still_access = _short_drama_canvas_access(self) if is_still_route else None
             try:
                 body = self._json_body_strict() if is_still_route or kind in {"video", "tryon", "sora_video", "cinematic", "avatar"} else self._json_body()
                 if is_still_route:
-                    request_body, still_idem_body = _short_drama_domain().short_drama_production.normalize_still_request(body); idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
+                    request_body, still_idem_body = _short_drama_domain().short_drama_production.normalize_still_request(body, require_quote=True); idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
                     if not idem_key: raise ValueError("关键帧提交必须提供 Idempotency-Key")
                 # 微信内容安全必须在校验、扣点和入队前完成；服务异常时不收单。
                 miniprogram_security.check_payload(body)
@@ -1383,7 +1408,7 @@ class H(BaseHTTPRequestHandler):
                     if idem_state == "replay": return self._send(200, idem_response)
                     if idem_state == "conflict": return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
                     if idem_state == "processing": return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
-                    still_idem_started = True; prepared = _short_drama_domain().short_drama_production.prepare_still_submission(jdb, user["username"], request_body); body = prepared["image_payload"]
+                    still_idem_started = True; prepared = _short_drama_domain().short_drama_production.prepare_still_submission(jdb, user["username"], request_body, require_quote=True, idempotency_key=idem_key, access=still_access); body = prepared["image_payload"]
                 elif kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama": body = _short_drama_domain().validate_planning_submission(jdb, user["username"], body)
                 elif kind == "video": body = video_domain.validate_video_payload(body, user["username"])
                 elif kind == "tryon": body = video_domain.validate_tryon_payload(body)
@@ -1402,7 +1427,8 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": str(e), "code": "content_rejected"})
             except miniprogram_security.SecurityUnavailable as e:
                 return self._send(503, {"detail": str(e), "code": "content_security_unavailable", "retry_after_ms": 5000})
-            except (ValueError, LookupError, _short_drama_domain().RevisionConflict) as e:
+            except (ValueError, LookupError, PermissionError,
+                    _short_drama_domain().RevisionConflict) as e:
                 if still_idem_started:
                     _idempotency_abort(user["username"], p, idem_key)
                 _short_drama_domain()._http_error(self, e)
@@ -1427,15 +1453,15 @@ class H(BaseHTTPRequestHandler):
                     except (LookupError, _short_drama_domain().RevisionConflict, _short_drama_domain().PointBudgetExceeded, ValueError) as e: _short_drama_domain()._http_error(self, e); return
                     if recovered: return self._send(200, recovered)
                 if is_still_route:
-                    try: prepared = _short_drama_domain().short_drama_production.prepare_still_submission(jdb, user["username"], request_body); body = prepared["image_payload"]
-                    except (LookupError, _short_drama_domain().RevisionConflict, _short_drama_domain().PointBudgetExceeded, ValueError) as e: _idempotency_abort(user["username"], p, idem_key); _short_drama_domain()._http_error(self, e); return
+                    try: prepared = _short_drama_domain().short_drama_production.prepare_still_submission(jdb, user["username"], request_body, require_quote=True, idempotency_key=idem_key, access=still_access); body = prepared["image_payload"]
+                    except (LookupError, PermissionError, _short_drama_domain().RevisionConflict, _short_drama_domain().PointBudgetExceeded, ValueError) as e: _idempotency_abort(user["username"], p, idem_key); _short_drama_domain()._http_error(self, e); return
                 if not is_still_route: idem_state, idem_response = _idempotency_begin(user["username"], p, idem_key, request_body)
                 if idem_state == "replay": return self._send(200, idem_response)
                 if idem_state == "conflict": return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
                 if idem_state == "processing": return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
                 if is_still_route:
-                    try: cost = int(points_domain.cost_of("image", body)); _short_drama_domain().short_drama_production.check_production_budget(jdb, user["username"], prepared["project"]["id"], cost)
-                    except (LookupError, _short_drama_domain().PointBudgetExceeded, ValueError) as e:
+                    try: cost = int(prepared["quoted_cost"]); _short_drama_domain().short_drama_production.check_production_budget(jdb, user["username"], prepared["project"]["id"], cost, still_access)
+                    except (LookupError, PermissionError, _short_drama_domain().PointBudgetExceeded, ValueError) as e:
                         _idempotency_abort(user["username"], p, idem_key); _short_drama_domain()._http_error(self, e); return
                 limit_hit = _user_video_submit_limit(kind, body, user["username"], cost)
                 if limit_hit:
@@ -1448,7 +1474,7 @@ class H(BaseHTTPRequestHandler):
                         "code": "active_job_cap", "active_jobs": active_jobs, "max_active_jobs": MAX_USER_ACTIVE_JOBS,
                         "retry_after_ms": 4000, "need": cost})
                 try:
-                    still_association = _short_drama_domain().short_drama_production.submitted_job_callback(jdb, username=user["username"], project_id=prepared["project"]["id"], shot_id=prepared["shot"]["id"], idempotency_key=idem_key, quoted_cost=cost) if is_still_route else None
+                    still_association = _short_drama_domain().short_drama_production.submitted_job_callback(jdb, username=user["username"], project_id=prepared["project"]["id"], shot_id=prepared["shot"]["id"], idempotency_key=idem_key, quoted_cost=cost, quote_token=prepared["quote_token"], request_hash=prepared["request_hash"], access=still_access) if is_still_route else None
                     jid, points_left = jobs_store.create_paid_job(
                         jdb, points_domain.deduct_points, points_domain.refund_points,
                         kind, user["username"], cost, body, SERVICE_OWNER, before_commit=still_association)
@@ -1479,7 +1505,7 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
-        if _short_drama_domain().dispatch_http(self, "GET", jdb, verify, getattr(points_domain, "cost_of", None)): return
+        if _short_drama_domain().dispatch_http(self, "GET", jdb, verify, getattr(points_domain, "cost_of", None), canvas_access_resolver=_short_drama_canvas_access): return
         if p == "/api/gen/audio/clone-vip":
             return self._method_not_allowed()
         if p == "/api/gen/inspiration/likes": return inspiration_likes.handle_get(self, verify(self._token()), AUDIO_DB)
@@ -1703,7 +1729,7 @@ class H(BaseHTTPRequestHandler):
                                     "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE, "video_cost": VIDEO_COST, "video_batch_max": min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS), "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
     def do_PUT(self):
-        if _short_drama_domain().dispatch_http(self, "PUT", jdb, verify, mutation_lock=_submission_lock): return  # /api/gen/short-drama/project
+        if _short_drama_domain().dispatch_http(self, "PUT", jdb, verify, mutation_lock=_submission_lock, canvas_access_resolver=_short_drama_canvas_access): return  # /api/gen/short-drama/project
         if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
     def do_PATCH(self):

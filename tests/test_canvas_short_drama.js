@@ -154,12 +154,16 @@ function testCanvasIntegration() {
   assert.ok(html.indexOf('canvas/canvas-short-drama.css?v=') < html.indexOf('canvas/canvas-short-drama-production.css?v='));
   assert.ok(html.indexOf('canvas/canvas-short-drama-production.js?v=') < html.indexOf('canvas/canvas-short-drama.js?v='));
   assert.ok(html.indexOf('canvas/canvas-short-drama.js?v=') < html.indexOf('canvas/canvas-app.js?v='));
-  assert.match(ci, /run:\s*node tests\/test_canvas_short_drama_production\.js/);
+  for (const command of [
+    'node tests/test_canvas_api.js',
+    'node tests/test_canvas_short_drama.js',
+    'node tests/test_canvas_short_drama_production.js',
+  ]) assert.ok(ci.includes(command), `CI must run ${command}`);
   assert.equal((html.match(/data-add="shortDrama"/g) || []).length, 2);
   assert.match(app, /shortDrama:\s*\{name:'短剧项目',\s*color:'#[a-f0-9]+'\}/);
   assert.ok(app.includes('data-f="openShortDrama"'));
   assert.ok(app.includes('shortDramaModule.createWorkspace('));
-  assert.match(app, /projectId:projectId,\s*apiClient:apiClient,\s*poll:apiModule\.poll,\s*canEdit:canEdit,\s*onChange:onChange/);
+  assert.match(app, /projectId:projectId,\s*apiClient:apiClient,\s*poll:apiModule\.poll,\s*boardId:currentBoardScope==='collab'\?currentBoardId:null,\s*canEdit:canEdit,\s*onChange:onChange/);
   assert.match(app, /onDelete:function\(\)\{[\s\S]*?delete nodes\[nodeId\]/,
     'deleting a short drama project removes its bound canvas node');
   assert.ok(app.includes('shortDramaModule.creationPayload(node.params)'));
@@ -683,6 +687,10 @@ async function testWorkspaceSourceAndRenderContract() {
   assert.match(app, /phase==='save-permanent'[\s\S]*?status===403[\s\S]*?setCurrentCollabRole\('viewer'\)/);
   assert.match(app, /currentCollabRole=''[\s\S]*?setCurrentCollabRole\(board\.role\|\|'viewer'\)/,
     'initial viewer open flows through a blank role and is not treated as a downgrade');
+  assert.match(app, /payload\.board_id=currentBoardId/,
+    'collaborative short-drama projects are server-associated with their board');
+  assert.match(app, /boardId:currentBoardScope==='collab'\?currentBoardId:null/,
+    'production API receives the trusted collaboration scope identifier');
   const readonlySetter = app.match(/function setEditorReadonly\(readonly\)\{[\s\S]*?\n  \}/)[0];
   assert.doesNotMatch(readonlySetter, /destroyAllShortDramaWorkspaces/,
     'routine readonly UI refresh must not destroy legitimate viewer workspaces');

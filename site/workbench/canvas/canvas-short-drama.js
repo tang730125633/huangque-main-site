@@ -665,6 +665,7 @@
       try{
         delegated=productionModule.createWorkspace({
           projectId:options.projectId,
+          boardId:options.boardId,
           client:productionClient,
           host:productionHost,
           canEdit:canEdit,

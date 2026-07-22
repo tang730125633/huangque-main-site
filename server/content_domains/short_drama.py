@@ -113,6 +113,10 @@ def validate_project_payload(payload, partial=False):
             raise ValueError("点数预算必须为整数")
         if cleaned["point_budget"] < 0:
             raise ValueError("点数预算不能为负数")
+    if "board_id" in cleaned:
+        if cleaned["board_id"] is not None and not isinstance(cleaned["board_id"], str):
+            raise ValueError("画布 ID 无效")
+        cleaned["board_id"] = _text(cleaned.get("board_id"), 128) or None
     return cleaned
 
 
@@ -120,6 +124,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS short_drama_projects (
   id TEXT PRIMARY KEY,
   username TEXT NOT NULL,
+  board_id TEXT,
   title TEXT NOT NULL,
   synopsis TEXT NOT NULL,
   ratio TEXT NOT NULL CHECK (ratio IN ('9:16','16:9')),
@@ -581,6 +586,9 @@ def init_db(db_factory):
     conn = _connection(db_factory)
     try:
         conn.executescript(_SCHEMA)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(short_drama_projects)")}
+        if "board_id" not in columns:
+            conn.execute("ALTER TABLE short_drama_projects ADD COLUMN board_id TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -603,10 +611,10 @@ def create_project(db_factory, username, payload):
             raise ProjectLimitExceeded(max_projects)
         conn.execute(
             "INSERT INTO short_drama_projects "
-            "(id, username, title, synopsis, ratio, target_duration, shot_count, visual_style, "
+            "(id, username, board_id, title, synopsis, ratio, target_duration, shot_count, visual_style, "
             "target_platform, point_budget, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (project_id, username, data["title"], data["synopsis"], data["ratio"],
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (project_id, username, data.get("board_id"), data["title"], data["synopsis"], data["ratio"],
              data["target_duration"], data["shot_count"], data["visual_style"],
              _text(data.get("target_platform") or "抖音", 80), data.get("point_budget", 0), now, now),
         )
@@ -1396,6 +1404,8 @@ def confirm_stage(db_factory, username, project_id, revision, current_stage):
             "revision": revision,
             "stage": current_stage,
         })
+    if current_stage in short_drama_production.PRODUCTION_STAGES:
+        raise ValueError("当前批次只允许确认关键帧阶段")
     if current_stage not in NEXT_STAGE:
         raise ValueError("当前阶段不可确认")
     now = int(time.time())
@@ -1469,6 +1479,8 @@ def _http_error(handler, error):
         handler._send(409, {"detail": str(error)[:220], "code": "job_already_applied"})
     elif isinstance(error, PointBudgetExceeded):
         handler._send(400, {"detail": str(error)[:220], "code": "point_budget_exceeded"})
+    elif isinstance(error, PermissionError):
+        handler._send(403, {"detail": str(error)[:220], "code": "forbidden"})
     else:
         handler._send(400, {"detail": str(error)[:220]})
 
@@ -1550,7 +1562,7 @@ def _planning_job(db_factory, username, job_id, project_id):
 
 
 def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avatar_lookup=None,
-                  mutation_lock=None):
+                  mutation_lock=None, canvas_access_resolver=None):
     """Handle the domain's synchronous routes inside core.H; return whether matched."""
     path = handler.path.split("?", 1)[0]
     if path not in _HTTP_ROUTES.get(method, ()):
@@ -1563,6 +1575,7 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
         handler._send(403, {"detail": "请先修改初始密码后再使用"})
         return True
     username = user["username"]
+    access = canvas_access_resolver(handler) if callable(canvas_access_resolver) else None
     if avatar_lookup is None:
         from . import video
         avatar_lookup = video.get_video_avatar
@@ -1578,27 +1591,27 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             if not callable(cost_of):
                 raise ValueError("关键帧报价暂不可用")
             handler._send(200, short_drama_production.prepare_still_quote(
-                db_factory, username, _request_object(handler), cost_of
+                db_factory, username, _request_object(handler), cost_of, access
             ))
         elif method == "POST" and path.endswith("/select-asset"):
             body = _request_object(handler)
             if mutation_lock is not None:
                 with mutation_lock:
                     selected = short_drama_production.select_asset(
-                        db_factory, username, body
+                        db_factory, username, body, access
                     )
             else:
-                selected = short_drama_production.select_asset(db_factory, username, body)
+                selected = short_drama_production.select_asset(db_factory, username, body, access)
             handler._send(200, selected)
         elif method == "POST" and path.endswith("/confirm-production-stage"):
             body = _request_object(handler)
             if mutation_lock is not None:
                 with mutation_lock:
                     confirmed = short_drama_production.confirm_stage(
-                        db_factory, username, body
+                        db_factory, username, body, access
                     )
             else:
-                confirmed = short_drama_production.confirm_stage(db_factory, username, body)
+                confirmed = short_drama_production.confirm_stage(db_factory, username, body, access)
             handler._send(200, confirmed)
         elif method == "GET" and path.endswith("/projects"):
             page, page_size = _project_pagination_from_query(handler)
@@ -1610,7 +1623,7 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             handler._send(200, recovered or {"job_id": None})
         elif method == "GET" and path.endswith("/production"):
             handler._send(200, short_drama_production.get_production(
-                db_factory, username, _planning_project_id_from_query(handler)
+                db_factory, username, _planning_project_id_from_query(handler), access
             ))
         elif method == "GET":
             handler._send(200, get_project(db_factory, username, _project_id_from_query(handler)))
@@ -1674,6 +1687,6 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                 )
             handler._send(200, confirmed)
     except (LookupError, RevisionConflict, AppliedJobConflict, ProjectHasUnappliedJobs,
-            ValueError) as error:
+            PermissionError, ValueError) as error:
         _http_error(handler, error)
     return True

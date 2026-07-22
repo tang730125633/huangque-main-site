@@ -146,7 +146,9 @@ async function testQuoteConfirmSubmitOrderAndCancellation() {
     json(path, options = {}) {
       calls.push({ path, options: clone(options) });
       if (path.startsWith('/api/gen/short-drama/production?')) return Promise.resolve(clone(state));
-      if (path === '/api/gen/short-drama/asset-quote') return Promise.resolve({ cost: 24, count: 2, kind: 'still' });
+      if (path === '/api/gen/short-drama/asset-quote') return Promise.resolve({
+        cost: 24, count: 2, kind: 'still', quote_token: 'quote-101', expires_at: 9999999999,
+      });
       if (path === '/api/gen/short-drama/generate-stills') {
         state = terminalState();
         return Promise.resolve({ job_id: 101, cost: 24, project_id: 'project/one', shot_id: 'shot-2' });
@@ -175,7 +177,7 @@ async function testQuoteConfirmSubmitOrderAndCancellation() {
     project_id: 'project/one', revision: 7, shot_id: 'shot-2',
     prompt: '雨夜门口', mode: 'single', count: 2,
   });
-  assert.deepEqual(submit.options.body, quoteBody);
+  assert.deepEqual(submit.options.body, Object.assign({}, quoteBody, { quote_token: 'quote-101' }));
   assert.equal(submit.options.headers['Idempotency-Key'], 'still-action-1');
   workspace.destroy();
 
@@ -186,7 +188,7 @@ async function testQuoteConfirmSubmitOrderAndCancellation() {
     client: {
       json(path) {
         if (path.startsWith('/api/gen/short-drama/production?')) return Promise.resolve(sampleState());
-        if (path === '/api/gen/short-drama/asset-quote') return Promise.resolve({ cost: 24, count: 2, kind: 'still' });
+        if (path === '/api/gen/short-drama/asset-quote') return Promise.resolve({ cost: 24, count: 2, kind: 'still', quote_token: 'quote-cancel' });
         if (path === '/api/gen/short-drama/generate-stills') submissions += 1;
         return Promise.resolve({});
       },
@@ -214,7 +216,7 @@ async function testDeduplicationTimeoutRetryAndPolling() {
         }
         return Promise.resolve(terminalState());
       }
-      if (path === '/api/gen/short-drama/asset-quote') return Promise.resolve({ cost: 24, count: 2, kind: 'still' });
+      if (path === '/api/gen/short-drama/asset-quote') return Promise.resolve({ cost: 24, count: 2, kind: 'still', quote_token: 'quote-dedupe' });
       if (path === '/api/gen/short-drama/generate-stills') {
         submits += 1;
         keys.push(options.headers['Idempotency-Key']);
@@ -311,7 +313,7 @@ async function testRevisionedMutationsStaleRefreshAndDestroy() {
     client: {
       json(path) {
         if (path.startsWith('/api/gen/short-drama/production?')) return Promise.resolve(sampleState());
-        if (path === '/api/gen/short-drama/asset-quote') return Promise.resolve({ cost: 24, count: 2, kind: 'still' });
+        if (path === '/api/gen/short-drama/asset-quote') return Promise.resolve({ cost: 24, count: 2, kind: 'still', quote_token: 'quote-stale' });
         if (path === '/api/gen/short-drama/generate-stills') return Promise.resolve({ job_id: 101, shot_id: 'shot-2' });
         throw new Error(`unexpected route ${path}`);
       },
@@ -388,7 +390,7 @@ async function testDestroyDuringSubmissionNeverCreatesAPollTimer() {
     client: {
       json(path) {
         if (path.startsWith('/api/gen/short-drama/production?')) return Promise.resolve(sampleState());
-        if (path === '/api/gen/short-drama/asset-quote') return Promise.resolve({ cost: 24, count: 2, kind: 'still' });
+        if (path === '/api/gen/short-drama/asset-quote') return Promise.resolve({ cost: 24, count: 2, kind: 'still', quote_token: 'quote-destroy' });
         if (path === '/api/gen/short-drama/generate-stills') {
           return new Promise((resolve) => { resolveSubmit = resolve; });
         }
@@ -417,7 +419,7 @@ async function testDestroyDuringTimedOutSubmissionNeverRetries() {
     client: {
       json(path) {
         if (path.startsWith('/api/gen/short-drama/production?')) return Promise.resolve(sampleState());
-        if (path === '/api/gen/short-drama/asset-quote') return Promise.resolve({ cost: 24, count: 2, kind: 'still' });
+        if (path === '/api/gen/short-drama/asset-quote') return Promise.resolve({ cost: 24, count: 2, kind: 'still', quote_token: 'quote-timeout' });
         if (path === '/api/gen/short-drama/generate-stills') {
           submissions += 1;
           return new Promise((_resolve, reject) => { rejectSubmit = reject; });
@@ -517,6 +519,7 @@ async function testTrueBatchQuotesConfirmsSubmitsAndPollsEligibleShots() {
       if (path === '/api/gen/short-drama/asset-quote') {
         return Promise.resolve({
           cost: options.body.shot_id === 'shot-2' ? 10 : 20, count: 2, kind: 'still',
+          quote_token: 'quote-batch-'+options.body.shot_id,
         });
       }
       if (path === '/api/gen/short-drama/generate-stills') {
@@ -579,7 +582,7 @@ async function testTrueBatchQuotesConfirmsSubmitsAndPollsEligibleShots() {
       json(path, options = {}) {
         if (path.startsWith('/api/gen/short-drama/production?')) return Promise.resolve(clone(state));
         if (path === '/api/gen/short-drama/asset-quote') {
-          return Promise.resolve({ cost: options.body.shot_id === 'shot-2' ? 10 : 20, count: 2, kind: 'still' });
+          return Promise.resolve({ cost: options.body.shot_id === 'shot-2' ? 10 : 20, count: 2, kind: 'still', quote_token: 'quote-'+options.body.shot_id });
         }
         if (path === '/api/gen/short-drama/generate-stills') cancelledSubmits += 1;
         return Promise.resolve({});
@@ -693,7 +696,7 @@ async function testSynchronousClientThrowsAreCapturedAcrossControllerBoundaries(
         if (pollGets === 1) return sampleState();
         throw new Error('<sync poll>');
       }
-      if (path === '/api/gen/short-drama/asset-quote') return { cost: 24, count: 2, kind: 'still' };
+      if (path === '/api/gen/short-drama/asset-quote') return { cost: 24, count: 2, kind: 'still', quote_token: 'quote-sync' };
       if (path === '/api/gen/short-drama/generate-stills') return { job_id: 101, shot_id: 'shot-1' };
       throw new Error(`unexpected route ${path}`);
     } },
@@ -719,14 +722,14 @@ async function testMalformedJobStatusesAreNeverActive() {
       projectId: state.project_id, document: null, confirm: () => true, pollIntervalMs: 0,
       client: { json(path) {
         if (path.startsWith('/api/gen/short-drama/production?')) { gets += 1; return clone(state); }
-        if (path === '/api/gen/short-drama/asset-quote') return { cost: 1, count: 2, kind: 'still' };
+        if (path === '/api/gen/short-drama/asset-quote') return { cost: 1, count: 2, kind: 'still', quote_token: 'quote-status' };
         if (path === '/api/gen/short-drama/generate-stills') return { job_id: 909, shot_id: 'shot-1' };
         throw new Error(`unexpected route ${path}`);
       } },
     });
     await workspace.ready;
-    await workspace.generateCurrent();
-    assert.equal(gets, 2, `${status} is terminal rather than an active poll state`);
+    await assert.rejects(workspace.generateCurrent(), /没有成功候选图/);
+    assert.equal(gets, 4, `${status} is ignored and bounded missing-job polling rejects`);
     workspace.destroy();
   }
 }
@@ -746,7 +749,7 @@ async function testBatchDestroyDuringFirstSubmitStopsLaterPaidWork() {
       if (path.startsWith('/api/gen/short-drama/production?')) {
         productionGets += 1; return clone(state);
       }
-      if (path === '/api/gen/short-drama/asset-quote') return { cost: 10, count: 2, kind: 'still' };
+      if (path === '/api/gen/short-drama/asset-quote') return { cost: 10, count: 2, kind: 'still', quote_token: 'quote-stop' };
       if (path === '/api/gen/short-drama/generate-stills') {
         submittedShots.push(options.body.shot_id);
         if (options.body.shot_id === 'shot-2') {
@@ -807,7 +810,7 @@ async function testPartialBatchFailureRecoversSubmittedShotsBeforeRetryingEligib
       return next;
     }
     if (path === '/api/gen/short-drama/asset-quote') {
-      return { cost: options.body.shot_id === 'shot-2' ? 10 : 20, count: 2, kind: 'still' };
+      return { cost: options.body.shot_id === 'shot-2' ? 10 : 20, count: 2, kind: 'still', quote_token: 'quote-partial-'+options.body.shot_id };
     }
     if (path === '/api/gen/short-drama/generate-stills') {
       const shotId = options.body.shot_id;
@@ -875,14 +878,14 @@ async function testPollTracksOnlyTheExactSubmittedJobId() {
         }
         return next;
       }
-      if (path === '/api/gen/short-drama/asset-quote') return { cost: 1, count: 2, kind: 'still' };
+      if (path === '/api/gen/short-drama/asset-quote') return { cost: 1, count: 2, kind: 'still', quote_token: 'quote-target' };
       if (path === '/api/gen/short-drama/generate-stills') return { job_id: 500, shot_id: 'shot-2' };
       throw new Error(`unexpected route ${path}`);
     } },
   });
   await workspace.ready;
   workspace.selectShot('shot-2');
-  await workspace.generateCurrent();
+  await assert.rejects(workspace.generateCurrent(), /没有成功候选图/);
   assert.equal(gets, 5,
     'unrelated active job and its disappearance do not complete the never-observed target job');
   workspace.destroy();
@@ -915,7 +918,7 @@ async function testPartialRecoveryPollFailureKeepsSubmittedGuardAndPrimaryError(
       }
       if (path === '/api/gen/short-drama/asset-quote') {
         quoteShots.push(options.body.shot_id);
-        return { cost: options.body.shot_id === 'shot-2' ? 10 : 20, count: 2, kind: 'still' };
+        return { cost: options.body.shot_id === 'shot-2' ? 10 : 20, count: 2, kind: 'still', quote_token: 'quote-guard-'+options.body.shot_id };
       }
       if (path === '/api/gen/short-drama/generate-stills') {
         if (options.body.shot_id === 'shot-2') return { job_id: 202, shot_id: 'shot-2' };
@@ -951,14 +954,14 @@ async function testKnownJobMissingFallbackAndDelayedAppearance() {
         }
         return next;
       }
-      if (path === '/api/gen/short-drama/asset-quote') return { cost: 1, count: 2, kind: 'still' };
+      if (path === '/api/gen/short-drama/asset-quote') return { cost: 1, count: 2, kind: 'still', quote_token: 'quote-late' };
       if (path === '/api/gen/short-drama/generate-stills') return { job_id: 500, shot_id: 'shot-2' };
       throw new Error(`unexpected route ${path}`);
     } },
   });
   await delayed.ready;
   delayed.selectShot('shot-2');
-  await delayed.generateCurrent();
+  await assert.rejects(delayed.generateCurrent(), /没有成功候选图/);
   assert.equal(delayedGets, 5, 'two missing snapshots do not pre-empt a target that then appears');
   delayed.destroy();
 
@@ -970,7 +973,7 @@ async function testKnownJobMissingFallbackAndDelayedAppearance() {
     clearTimeoutImpl() {},
     client: { json(path) {
       if (path.startsWith('/api/gen/short-drama/production?')) { fastGets += 1; return clone(state); }
-      if (path === '/api/gen/short-drama/asset-quote') return { cost: 1, count: 2, kind: 'still' };
+      if (path === '/api/gen/short-drama/asset-quote') return { cost: 1, count: 2, kind: 'still', quote_token: 'quote-missing' };
       if (path === '/api/gen/short-drama/generate-stills') return { job_id: 600, shot_id: 'shot-2' };
       throw new Error(`unexpected route ${path}`);
     } },
@@ -978,7 +981,10 @@ async function testKnownJobMissingFallbackAndDelayedAppearance() {
   await fast.ready;
   fast.selectShot('shot-2');
   let settled = false;
-  const pending = fast.generateCurrent().then((value) => { settled = true; return value; });
+  const pending = fast.generateCurrent().then(
+    (value) => { settled = true; return value; },
+    (error) => { settled = true; throw error; },
+  );
   pending.catch(() => {});
   for (let spin = 0; spin < 30 && timers.length === 0; spin += 1) await Promise.resolve();
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -990,7 +996,7 @@ async function testKnownJobMissingFallbackAndDelayedAppearance() {
   assert.equal(fast.getState().busy, false);
   assert.equal(timers.length, 0, 'terminal missing fallback leaves no timer');
   assert.equal(fastGets, 4, 'initial GET plus three bounded missing polls');
-  await pending;
+  await assert.rejects(pending, /状态缺失且没有成功候选图/);
   fast.destroy();
 }
 
@@ -1012,7 +1018,7 @@ async function testSubmittedGuardsDisableBatchRendererUntilReconciled() {
         if (gets > 1) throw new Error('poll unavailable');
         return clone(state);
       }
-      if (path === '/api/gen/short-drama/asset-quote') { quotes += 1; return { cost: 1, count: 2, kind: 'still' }; }
+      if (path === '/api/gen/short-drama/asset-quote') { quotes += 1; return { cost: 1, count: 2, kind: 'still', quote_token: 'quote-render' }; }
       if (path === '/api/gen/short-drama/generate-stills') return { job_id: 700, shot_id: 'shot-2' };
       throw new Error(`unexpected route ${path}`);
     } },
@@ -1023,6 +1029,36 @@ async function testSubmittedGuardsDisableBatchRendererUntilReconciled() {
   assert.match(workspace.render(), /已提交镜头正在同步生产状态/);
   assert.equal(await workspace.generateBatch(), null, 'guarded shot is not resubmitted from stale state');
   assert.equal(quotes, 1);
+  workspace.destroy();
+}
+
+async function testTerminalFailedJobRejectsPollingAndRendersRetryableError() {
+  let state = sampleState();
+  const workspace = production.createWorkspace({
+    projectId: state.project_id, document: null, confirm: () => true, pollIntervalMs: 0,
+    client: { json(path) {
+      if (path.startsWith('/api/gen/short-drama/production?')) return clone(state);
+      if (path === '/api/gen/short-drama/asset-quote') {
+        return { cost: 7, count: 2, kind: 'still', quote_token: 'quote-failed' };
+      }
+      if (path === '/api/gen/short-drama/generate-stills') {
+        state.shots[0].still.job = {
+          id: 'failed-link', job_id: 777, kind: 'still', status: 'failed', quoted_cost: 7,
+          error: 'upstream rejected', refunded: true, refund_pending: false,
+        };
+        return { job_id: 777, shot_id: 'shot-1' };
+      }
+      throw new Error(`unexpected route ${path}`);
+    } },
+  });
+  await workspace.ready;
+  workspace.selectShot('shot-2');
+  await assert.rejects(workspace.generateCurrent(), /upstream rejected/);
+  const html = workspace.render();
+  assert.match(html, /upstream rejected/);
+  assert.match(html, /已退款/);
+  assert.match(html, /data-action="retry-current"/);
+  assert.equal(workspace.getState().busy, false);
   workspace.destroy();
 }
 
@@ -1045,6 +1081,7 @@ async function main() {
   await testPartialRecoveryPollFailureKeepsSubmittedGuardAndPrimaryError();
   await testKnownJobMissingFallbackAndDelayedAppearance();
   await testSubmittedGuardsDisableBatchRendererUntilReconciled();
+  await testTerminalFailedJobRejectsPollingAndRendersRetryableError();
   console.log('canvas short drama production: pass');
 }
 

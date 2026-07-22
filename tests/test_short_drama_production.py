@@ -17,7 +17,7 @@ SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from content_domains import core, short_drama, short_drama_production, upstream_guard, video
+from content_domains import core, short_drama, short_drama_production, submission_idempotency, upstream_guard, video
 
 
 def _project_payload():
@@ -200,6 +200,49 @@ class ShortDramaProductionTests(unittest.TestCase):
             "short_drama_asset_versions",
             "short_drama_production_jobs",
         }.issubset(names))
+        with closing(self.db()) as conn:
+            project_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(short_drama_projects)")
+            }
+        self.assertIn("board_id", project_columns)
+
+    def test_board_collaborator_roles_control_production_read_and_write(self):
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_projects SET board_id='board-a' WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+        editor = {"board_id": "board-a", "role": "editor"}
+        viewer = {"board_id": "board-a", "role": "viewer"}
+
+        state = short_drama_production.get_production(
+            self.db, "editor", self.project["id"], access=editor
+        )
+        self.assertEqual(self.project["id"], state["project_id"])
+        viewer_state = short_drama_production.get_production(
+            self.db, "viewer", self.project["id"], access=viewer
+        )
+        self.assertEqual(self.project["id"], viewer_state["project_id"])
+        with self.assertRaises(PermissionError):
+            short_drama_production.prepare_still_submission(
+                self.db, "viewer", self._still_request(), access=viewer
+            )
+        prepared = short_drama_production.prepare_still_submission(
+            self.db, "editor", self._still_request(), access=editor
+        )
+        self.assertEqual(self._shot_id(), prepared["shot"]["id"])
+
+        for denied in (
+            {"board_id": "board-a", "role": None},
+            {"board_id": "board-b", "role": "editor"},
+            {"board_id": "board-a", "role": "viewer"},
+        ):
+            with self.subTest(access=denied):
+                with self.assertRaises((LookupError, PermissionError)):
+                    short_drama_production.prepare_still_submission(
+                        self.db, "removed", self._still_request(), access=denied
+                    )
 
     def test_stage_sequence_keeps_existing_stills_projects_eligible(self):
         self.assertEqual(self.project["stage"], "stills_review")
@@ -208,6 +251,52 @@ class ShortDramaProductionTests(unittest.TestCase):
         self.assertEqual(short_drama.STAGES[-4:], (
             "voice_review", "video_review", "assembly_review", "completed",
         ))
+
+    def test_phase_two_only_allows_stills_confirmation(self):
+        for stage in ("voice_review", "video_review", "assembly_review"):
+            with self.subTest(stage=stage), closing(self.db()) as conn:
+                conn.execute(
+                    "UPDATE short_drama_projects SET stage=?, revision=50 WHERE id=?",
+                    (stage, self.project["id"]),
+                )
+                conn.commit()
+            with self.assertRaisesRegex(ValueError, "当前批次"):
+                short_drama.confirm_stage(
+                    self.db, "alice", self.project["id"], 50, stage
+                )
+            with closing(self.db()) as conn:
+                self.assertEqual(stage, conn.execute(
+                    "SELECT stage FROM short_drama_projects WHERE id=?",
+                    (self.project["id"],),
+                ).fetchone()[0])
+
+    def test_idempotency_claim_is_atomic_for_concurrent_identical_retries(self):
+        def row_db():
+            conn = sqlite3.connect(self.path, timeout=5)
+            conn.row_factory = sqlite3.Row
+            return conn
+        barrier = threading.Barrier(8)
+        results = []
+        errors = []
+
+        def claim():
+            try:
+                barrier.wait()
+                results.append(submission_idempotency.begin(
+                    row_db, "alice", "/same", "concurrent-key", {"a": 1}
+                )[0])
+            except Exception as error:
+                errors.append(error)
+
+        workers = [threading.Thread(target=claim) for _ in range(8)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+
+        self.assertEqual([], errors)
+        self.assertEqual(1, results.count("new"))
+        self.assertEqual(7, results.count("processing"))
 
     def test_still_idempotency_descriptor_normalizes_and_binds_server_contract(self):
         request, descriptor = short_drama_production.normalize_still_request(
@@ -341,6 +430,9 @@ class ShortDramaProductionTests(unittest.TestCase):
             "kind": "still",
             "status": "running",
             "quoted_cost": 40,
+            "error": "",
+            "refunded": False,
+            "refund_pending": False,
         }, state["shots"][0]["still"]["job"])
 
     def test_reconciliation_preserves_locked_current_version(self):
@@ -377,29 +469,29 @@ class ShortDramaProductionTests(unittest.TestCase):
         self.assertEqual(1, still["current_version"])
         self.assertEqual([1, 2, 3], [item["version"] for item in still["versions"]])
 
-    def test_reconciliation_rejects_untrusted_result_and_rolls_back_all_changes(self):
+    def test_reconciliation_isolates_untrusted_result_and_marks_failed(self):
         job_id = self._link_job(result=[])
 
-        with self.assertRaises(ValueError):
-            short_drama_production.get_production(
-                self.db, "alice", self.project["id"]
-            )
+        state = short_drama_production.get_production(
+            self.db, "alice", self.project["id"]
+        )
 
         with closing(self.db()) as conn:
             self.assertEqual(
-                0,
+                6,
                 conn.execute(
                     "SELECT COUNT(*) FROM short_drama_assets WHERE project_id=?",
                     (self.project["id"],),
                 ).fetchone()[0],
             )
             self.assertEqual(
-                "pending",
+                "failed",
                 conn.execute(
                     "SELECT status FROM short_drama_production_jobs WHERE job_id=?",
                     (job_id,),
                 ).fetchone()[0],
             )
+        self.assertEqual("failed", state["shots"][0]["still"]["job"]["status"])
 
     def test_reconciliation_does_not_import_another_users_job_result(self):
         self._link_job(username="mallory", link_username="alice")
@@ -485,20 +577,21 @@ class ShortDramaProductionTests(unittest.TestCase):
     def test_reconciliation_rejects_a_ratio_mismatch(self):
         self._link_job(payload={"prompt": "night", "ratio": "16:9"})
 
-        with self.assertRaises(ValueError):
-            short_drama_production.get_production(
-                self.db, "alice", self.project["id"]
-            )
+        state = short_drama_production.get_production(
+            self.db, "alice", self.project["id"]
+        )
+        self.assertEqual("failed", state["shots"][0]["still"]["job"]["status"])
+        self.assertIn("比例", state["shots"][0]["still"]["job"]["error"])
 
     def test_reconciliation_requires_exactly_two_candidate_urls(self):
         self._link_job(result={
             "urls": ["https://example.test/only.png"], "ratio": "9:16",
         })
 
-        with self.assertRaises(ValueError):
-            short_drama_production.get_production(
-                self.db, "alice", self.project["id"]
-            )
+        state = short_drama_production.get_production(
+            self.db, "alice", self.project["id"]
+        )
+        self.assertEqual("failed", state["shots"][0]["still"]["job"]["status"])
 
     def test_reconciliation_rejects_duplicate_candidate_urls_without_partial_archive(self):
         duplicate_url = "https://example.test/duplicate.png"
@@ -506,17 +599,17 @@ class ShortDramaProductionTests(unittest.TestCase):
             "urls": [duplicate_url, duplicate_url], "ratio": "9:16",
         })
 
-        with self.assertRaises(ValueError):
-            short_drama_production.get_production(
-                self.db, "alice", self.project["id"]
-            )
+        state = short_drama_production.get_production(
+            self.db, "alice", self.project["id"]
+        )
+        self.assertEqual("failed", state["shots"][0]["still"]["job"]["status"])
 
         with closing(self.db()) as conn:
             self.assertEqual(0, conn.execute(
                 "SELECT COUNT(*) FROM short_drama_asset_versions"
             ).fetchone()[0])
             self.assertEqual(
-                "pending",
+                "failed",
                 conn.execute(
                     "SELECT status FROM short_drama_production_jobs WHERE job_id=?",
                     (job_id,),
@@ -540,10 +633,10 @@ class ShortDramaProductionTests(unittest.TestCase):
             )
             conn.commit()
 
-        with self.assertRaises(ValueError):
-            short_drama_production.get_production(
-                self.db, "alice", self.project["id"]
-            )
+        state = short_drama_production.get_production(
+            self.db, "alice", self.project["id"]
+        )
+        self.assertEqual("failed", state["shots"][0]["still"]["job"]["status"])
 
         with closing(self.db()) as conn:
             self.assertEqual(1, conn.execute(
@@ -552,7 +645,7 @@ class ShortDramaProductionTests(unittest.TestCase):
                 (asset_id, job_id),
             ).fetchone()[0])
             self.assertEqual(
-                "pending",
+                "failed",
                 conn.execute(
                     "SELECT status FROM short_drama_production_jobs WHERE job_id=?",
                     (job_id,),
@@ -567,7 +660,7 @@ class ShortDramaProductionTests(unittest.TestCase):
         )
 
         self.assertEqual(0, state["reserved_points"])
-        self.assertIsNone(state["shots"][0]["still"]["job"])
+        self.assertEqual("failed", state["shots"][0]["still"]["job"]["status"])
         with closing(self.db()) as conn:
             self.assertEqual(
                 "failed",
@@ -890,6 +983,7 @@ class ShortDramaProductionTests(unittest.TestCase):
             "prompt": "rainy midnight doorway, consistent detective character",
             "ratio": self.project["ratio"],
             "count": 2,
+            "short_drama_references": [],
         }, prepared["image_payload"])
 
     def test_still_submission_accepts_only_the_immutable_request_contract(self):
@@ -993,7 +1087,151 @@ class ShortDramaProductionTests(unittest.TestCase):
             self.db, "alice", self._still_request(), lambda kind, payload: 24
         )
 
-        self.assertEqual({"cost": 24, "count": 2, "kind": "still"}, quote)
+        self.assertEqual(24, quote["cost"])
+        self.assertEqual(2, quote["count"])
+        self.assertEqual("still", quote["kind"])
+        self.assertRegex(quote["quote_token"], r"^[0-9a-f]{32}$")
+        self.assertGreater(quote["expires_at"], int(__import__("time").time()))
+
+    def test_still_submission_requires_a_matching_unexpired_user_quote(self):
+        body = self._still_request()
+        with self.assertRaisesRegex(ValueError, "quote"):
+            short_drama_production.prepare_still_submission(
+                self.db, "alice", body, require_quote=True,
+                idempotency_key="quote-bind-001",
+            )
+
+        quote = short_drama_production.prepare_still_quote(
+            self.db, "alice", body, lambda _kind, _payload: 24,
+        )
+        submitted = dict(body, quote_token=quote["quote_token"])
+        prepared = short_drama_production.prepare_still_submission(
+            self.db, "alice", submitted, require_quote=True,
+            idempotency_key="quote-bind-001",
+        )
+        self.assertEqual(24, prepared["quoted_cost"])
+        self.assertEqual(quote["quote_token"], prepared["quote_token"])
+
+        with self.assertRaises(LookupError):
+            short_drama_production.prepare_still_submission(
+                self.db, "mallory", submitted, require_quote=True,
+                idempotency_key="quote-bind-002",
+            )
+        with self.assertRaisesRegex(ValueError, "quote"):
+            short_drama_production.prepare_still_submission(
+                self.db, "alice", dict(submitted, prompt="altered"),
+                require_quote=True, idempotency_key="quote-bind-003",
+            )
+
+    def test_server_derives_owned_character_and_locked_continuity_references(self):
+        with closing(self.db()) as conn:
+            conn.execute(
+                "INSERT INTO short_drama_characters "
+                "(id, project_id, character_key, name, source_type, avatar_id, sort_order) "
+                "VALUES ('character-owned', ?, 'detective', '侦探', 'cinematic_avatar', 'avatar-owned', 0)",
+                (self.project["id"],),
+            )
+            target_id = self._shot_id(1)
+            conn.execute(
+                "UPDATE short_drama_shots SET character_keys_json='[\"detective\"]' WHERE id=?",
+                (target_id,),
+            )
+            short_drama_production.ensure_asset_slots(conn, self.project["id"])
+            previous_asset = conn.execute(
+                "SELECT id FROM short_drama_assets WHERE project_id=? AND shot_id=?",
+                (self.project["id"], self._shot_id(0)),
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO short_drama_asset_versions "
+                "(id, asset_id, version, job_id, url, prompt, ratio, cost, status, created_at) "
+                "VALUES ('continuity-owned', ?, 1, 9001, 'https://example.test/locked.png', "
+                "'locked', '9:16', 0, 'done', 1)",
+                (previous_asset,),
+            )
+            conn.execute(
+                "UPDATE short_drama_assets SET current_version=1, locked=1 WHERE id=?",
+                (previous_asset,),
+            )
+            conn.commit()
+
+        prepared = short_drama_production.prepare_still_submission(
+            self.db, "alice", self._still_request(shot_id=target_id)
+        )
+        references = prepared["shot"]["references"]
+        self.assertEqual(["character", "continuity"], [item["type"] for item in references])
+        self.assertEqual("character-owned", references[0]["id"])
+        self.assertEqual("avatar-owned", references[0]["source_id"])
+        self.assertEqual("continuity-owned", references[1]["id"])
+        self.assertEqual("https://example.test/locked.png", references[1]["url"])
+        self.assertEqual(references, prepared["image_payload"]["short_drama_references"])
+
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_asset_versions SET ratio='16:9' WHERE id='continuity-owned'"
+            )
+            conn.commit()
+        with self.assertRaisesRegex(ValueError, "比例"):
+            short_drama_production.prepare_still_submission(
+                self.db, "alice", self._still_request(shot_id=target_id)
+            )
+
+    def test_first_reconciled_snapshot_has_fresh_financial_totals(self):
+        self._link_job(cost=60, quoted_cost=60)
+
+        state = short_drama_production.get_production(
+            self.db, "alice", self.project["id"]
+        )
+
+        self.assertEqual(60, state["spent_points"])
+        self.assertEqual(0, state["reserved_points"])
+
+    def test_malformed_done_job_isolated_and_visible_while_other_job_reconciles(self):
+        with closing(self.db()) as conn:
+            conn.execute("ALTER TABLE jobs ADD COLUMN error TEXT")
+            conn.execute("ALTER TABLE jobs ADD COLUMN refunded INTEGER NOT NULL DEFAULT 0")
+            conn.commit()
+        bad_id = self._link_job(
+            shot_order=0, result={"urls": ["only-one"], "ratio": "9:16"}
+        )
+        good_id = self._link_job(shot_order=1)
+
+        first = short_drama_production.get_production(
+            self.db, "alice", self.project["id"]
+        )
+        second = short_drama_production.get_production(
+            self.db, "alice", self.project["id"]
+        )
+
+        bad = first["shots"][0]["still"]["job"]
+        self.assertEqual(bad_id, bad["job_id"])
+        self.assertEqual("failed", bad["status"])
+        self.assertFalse(bad["refunded"])
+        self.assertTrue(bad["refund_pending"])
+        self.assertIn("2", bad["error"])
+        self.assertEqual(good_id, first["shots"][1]["still"]["versions"][0]["job_id"])
+        self.assertEqual(first, second)
+
+    def test_snapshot_keeps_latest_terminal_failure_visible(self):
+        failed_id = self._link_job(
+            job_status="failed", link_status="pending", quoted_cost=17,
+        )
+        with closing(self.db()) as conn:
+            conn.execute("ALTER TABLE jobs ADD COLUMN error TEXT")
+            conn.execute("ALTER TABLE jobs ADD COLUMN refunded INTEGER NOT NULL DEFAULT 0")
+            conn.execute(
+                "UPDATE jobs SET error='upstream rejected', refunded=1 WHERE id=?",
+                (failed_id,),
+            )
+            conn.commit()
+
+        state = short_drama_production.get_production(
+            self.db, "alice", self.project["id"]
+        )
+        job = state["shots"][0]["still"]["job"]
+        self.assertEqual("failed", job["status"])
+        self.assertEqual("upstream rejected", job["error"])
+        self.assertTrue(job["refunded"])
+        self.assertEqual(0, state["reserved_points"])
 
     def test_record_submitted_job_binds_pending_owned_image_job(self):
         with closing(self.db()) as conn:
@@ -1062,6 +1300,7 @@ class ShortDramaStillRouteTests(unittest.TestCase):
             "upstream": upstream_guard.exhausted_reason,
             "image_queue": core._image_job_queue,
             "queued_ids": core._queued_job_ids,
+            "canvas_access": core._short_drama_canvas_access,
         }
         core.JOB_DB = str(Path(self.tmp.name) / "content.db")
         core.AUDIO_DB = str(Path(self.tmp.name) / "audio.db")
@@ -1098,6 +1337,7 @@ class ShortDramaStillRouteTests(unittest.TestCase):
             )
         self.project = project
         self.shot_id = project["shots"][0]["id"]
+        self.quote_cache = {}
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), core.H)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -1121,6 +1361,7 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         upstream_guard.exhausted_reason = self.originals["upstream"]
         core._image_job_queue = self.originals["image_queue"]
         core._queued_job_ids = self.originals["queued_ids"]
+        core._short_drama_canvas_access = self.originals["canvas_access"]
         self.tmp.cleanup()
 
     def _body(self, **changes):
@@ -1136,7 +1377,21 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         return body
 
     def request(self, path, *, body=None, username="alice", idempotency_key=None,
-                raw_body=None, method="POST"):
+                raw_body=None, method="POST", with_quote=True, board_id=None):
+        if (with_quote and path == "/api/gen/short-drama/generate-stills"
+                and isinstance(body, dict) and "quote_token" not in body):
+            normalized, descriptor = short_drama_production.normalize_still_request(body)
+            cache_key = (username, json.dumps(descriptor, sort_keys=True, ensure_ascii=False))
+            quote = self.quote_cache.get(cache_key)
+            if quote is None:
+                quote_status, quote = self.request(
+                    "/api/gen/short-drama/asset-quote", body=normalized,
+                    username=username, with_quote=False,
+                )
+                if quote_status != 200:
+                    return quote_status, quote
+                self.quote_cache[cache_key] = quote
+            body = dict(normalized, quote_token=quote["quote_token"])
         data = raw_body if raw_body is not None else json.dumps(
             body if body is not None else {}, ensure_ascii=False
         ).encode("utf-8")
@@ -1145,6 +1400,8 @@ class ShortDramaStillRouteTests(unittest.TestCase):
             headers["Authorization"] = "Bearer " + username
         if idempotency_key is not None:
             headers["Idempotency-Key"] = idempotency_key
+        if board_id is not None:
+            headers["X-Canvas-Board-Id"] = board_id
         request = urllib.request.Request(
             self.base + path, data=data, method=method, headers=headers
         )
@@ -1196,14 +1453,66 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         )
 
         self.assertEqual(200, status)
-        self.assertEqual({"cost": 24, "count": 2, "kind": "still"}, quote)
+        self.assertEqual(24, quote["cost"])
+        self.assertEqual(2, quote["count"])
+        self.assertEqual("still", quote["kind"])
+        self.assertRegex(quote["quote_token"], r"^[0-9a-f]{32}$")
         self.assertEqual("image", self.points.cost_calls[0][0])
         payload = self.points.cost_calls[0][1]
         self.assertEqual({
             "provider": "seedream", "variant": "std", "quality": "hd",
             "prompt": self._body()["prompt"], "ratio": "9:16", "count": 2,
+            "short_drama_references": [],
         }, payload)
         self.assertEqual([], self.points.deduct_calls)
+
+    def test_routes_recheck_editor_viewer_demotion_and_removal_permissions(self):
+        with closing(core.jdb()) as conn:
+            conn.execute(
+                "UPDATE short_drama_projects SET board_id='board-a' WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+        roles = {"editor": "editor", "viewer": "viewer"}
+
+        def access(handler):
+            username = handler._token()
+            board_id = handler.headers.get("X-Canvas-Board-Id")
+            role = roles.get(username)
+            return {"board_id": board_id, "role": role} if role else None
+
+        core._short_drama_canvas_access = access
+        get_path = "/api/gen/short-drama/production?project_id=" + self.project["id"]
+        viewer_read, _ = self.request(
+            get_path, username="viewer", method="GET", raw_body=b"", board_id="board-a"
+        )
+        viewer_quote, _ = self.request(
+            "/api/gen/short-drama/asset-quote", body=self._body(),
+            username="viewer", board_id="board-a", with_quote=False,
+        )
+        editor_quote, _ = self.request(
+            "/api/gen/short-drama/asset-quote", body=self._body(),
+            username="editor", board_id="board-a", with_quote=False,
+        )
+        self.assertEqual(200, viewer_read)
+        self.assertEqual(403, viewer_quote)
+        self.assertEqual(200, editor_quote)
+
+        roles["editor"] = "viewer"
+        demoted, _ = self.request(
+            "/api/gen/short-drama/asset-quote", body=self._body(),
+            username="editor", board_id="board-a", with_quote=False,
+        )
+        roles.pop("editor")
+        removed, _ = self.request(
+            get_path, username="editor", method="GET", raw_body=b"", board_id="board-a"
+        )
+        wrong_board, _ = self.request(
+            get_path, username="viewer", method="GET", raw_body=b"", board_id="board-b"
+        )
+        self.assertEqual(403, demoted)
+        self.assertEqual(404, removed)
+        self.assertEqual(404, wrong_board)
 
     def test_select_and_confirm_production_routes_do_not_charge_points(self):
         first_asset = self._lock_every_current_still(two_versions_for_first=True)
@@ -1264,6 +1573,11 @@ class ShortDramaStillRouteTests(unittest.TestCase):
 
     def test_generate_stills_requires_idempotency_and_replays_without_double_charge_or_queue(self):
         path = "/api/gen/short-drama/generate-stills"
+        no_quote_status, _no_quote = self.request(
+            path, body=self._body(), idempotency_key="still-no-quote-001",
+            with_quote=False,
+        )
+        self.assertEqual(400, no_quote_status)
         missing_status, _missing = self.request(path, body=self._body())
         self.assertEqual(400, missing_status)
         self.assertEqual([], self.points.deduct_calls)
@@ -1300,6 +1614,57 @@ class ShortDramaStillRouteTests(unittest.TestCase):
             self.project["id"], self.shot_id, accepted["job_id"],
             "still-submit-001", 24,
         ), tuple(association))
+
+    def test_submission_charges_exact_quote_and_consumes_it_atomically(self):
+        body = self._body()
+        quote_status, quote = self.request(
+            "/api/gen/short-drama/asset-quote", body=body, with_quote=False,
+        )
+        self.assertEqual(200, quote_status)
+        self.points.cost = 99
+        submitted = dict(body, quote_token=quote["quote_token"])
+
+        status, accepted = self.request(
+            "/api/gen/short-drama/generate-stills", body=submitted,
+            idempotency_key="quote-exact-001", with_quote=False,
+        )
+        replay_status, replayed = self.request(
+            "/api/gen/short-drama/generate-stills", body=submitted,
+            idempotency_key="quote-exact-001", with_quote=False,
+        )
+        reused_status, _reused = self.request(
+            "/api/gen/short-drama/generate-stills", body=submitted,
+            idempotency_key="quote-exact-002", with_quote=False,
+        )
+
+        self.assertEqual(200, status)
+        self.assertEqual(24, accepted["cost"])
+        self.assertEqual(accepted, replayed)
+        self.assertEqual(200, replay_status)
+        self.assertEqual(400, reused_status)
+        self.assertEqual([24], [item[1] for item in self.points.deduct_calls])
+        self.assertEqual(1, len(self._jobs()))
+
+    def test_expired_quote_is_rejected_before_deduction(self):
+        body = self._body()
+        _, quote = self.request(
+            "/api/gen/short-drama/asset-quote", body=body, with_quote=False,
+        )
+        with closing(core.jdb()) as conn:
+            conn.execute(
+                "UPDATE short_drama_still_quotes SET expires_at=0 WHERE token=?",
+                (quote["quote_token"],),
+            )
+            conn.commit()
+
+        status, _response = self.request(
+            "/api/gen/short-drama/generate-stills",
+            body=dict(body, quote_token=quote["quote_token"]),
+            idempotency_key="quote-expired-001", with_quote=False,
+        )
+        self.assertEqual(400, status)
+        self.assertEqual([], self.points.deduct_calls)
+        self.assertEqual([], self._jobs())
 
     def test_idempotent_replay_does_not_reconsume_a_fully_reserved_budget(self):
         with closing(core.jdb()) as conn:
@@ -1493,7 +1858,7 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         )
         self.assertEqual(400, rejected_status)
         self.assertEqual("content_rejected", rejected["code"])
-        self.assertEqual([], self.points.cost_calls)
+        self.assertEqual(1, len(self.points.cost_calls))
 
         core.miniprogram_security.check_payload = lambda payload: self.security_calls.append(
             dict(payload)
@@ -1506,7 +1871,7 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         self.assertEqual(503, shutdown_status)
         self.assertEqual("shutting_down", shutdown["code"])
         self.assertEqual([], self.upstream_calls)
-        self.assertEqual([], self.points.cost_calls)
+        self.assertEqual(1, len(self.points.cost_calls))
 
         upstream_guard.exhausted_reason = lambda kind, payload: "upstream exhausted"
         upstream_status, upstream = self.request(
@@ -1514,7 +1879,7 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         )
         self.assertEqual(503, upstream_status)
         self.assertEqual("upstream_exhausted", upstream["code"])
-        self.assertEqual([], self.points.cost_calls)
+        self.assertEqual(1, len(self.points.cost_calls))
         self.assertEqual([], self.points.deduct_calls)
         self.assertEqual([], self._jobs())
 
