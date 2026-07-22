@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -206,6 +207,49 @@ class ShortDramaProjectTests(unittest.TestCase):
         with self.assertRaises(error):
             call(before)
         self.assertEqual(before, self._content_snapshot(project["id"]))
+
+    def test_create_project_rejects_fifty_first_active_project(self):
+        for index in range(50):
+            short_drama.create_project(
+                self.db, "alice", valid_project(title="短剧%02d" % index)
+            )
+        with self.assertRaises(short_drama.ProjectLimitExceeded):
+            short_drama.create_project(
+                self.db, "alice", valid_project(title="第51个")
+            )
+
+    def test_list_projects_returns_stable_page_metadata(self):
+        for index in range(23):
+            short_drama.create_project(
+                self.db, "alice", valid_project(title="短剧%02d" % index)
+            )
+        result = short_drama.list_projects(
+            self.db, "alice", page=2, page_size=20
+        )
+        self.assertEqual(
+            (result["page"], result["page_size"], result["total"]),
+            (2, 20, 23),
+        )
+        self.assertEqual(result["total_pages"], 2)
+        self.assertEqual(len(result["items"]), 3)
+
+    def test_soft_delete_hides_project_and_releases_capacity(self):
+        projects = [
+            short_drama.create_project(
+                self.db, "alice", valid_project(title="短剧%02d" % index)
+            )
+            for index in range(50)
+        ]
+        deleted = short_drama.delete_project(
+            self.db, "alice", projects[0]["id"], projects[0]["revision"]
+        )
+        self.assertTrue(deleted["deleted"])
+        with self.assertRaises(LookupError):
+            short_drama.get_project(self.db, "alice", projects[0]["id"])
+        replacement = short_drama.create_project(
+            self.db, "alice", valid_project(title="替补项目")
+        )
+        self.assertEqual(replacement["title"], "替补项目")
 
     def test_content_sections_save_only_in_their_review_stage(self):
         project = self.applied_project()
@@ -516,7 +560,9 @@ class ShortDramaProjectTests(unittest.TestCase):
         })
         self.assertEqual(created["revision"], 1)
         self.assertEqual(short_drama.get_project(self.db, "alice", created["id"])["title"], "雨夜来客")
-        self.assertEqual(len(short_drama.list_projects(self.db, "alice")), 1)
+        listed = short_drama.list_projects(self.db, "alice")
+        self.assertEqual(listed["total"], 1)
+        self.assertEqual(len(listed["items"]), 1)
         with self.assertRaises(LookupError):
             short_drama.get_project(self.db, "bob", created["id"])
 
@@ -1357,6 +1403,57 @@ class ShortDramaRouteTests(unittest.TestCase):
         )
         self.assertEqual(409, status)
         self.assertEqual("revision_conflict", conflict["code"])
+
+    def test_project_routes_enforce_pagination_limit_and_soft_delete(self):
+        for query in ("page=0", "page=", "page=abc", "page_size=0", "page_size=51"):
+            with self.subTest(query=query):
+                status, _ = self.request(
+                    "GET", "/api/gen/short-drama/projects?" + query
+                )
+                self.assertEqual(400, status)
+
+        with patch.dict(os.environ, {"HQ_SHORT_DRAMA_MAX_PROJECTS_PER_USER": "1"}):
+            status, created = self.request(
+                "POST", "/api/gen/short-drama/projects", body=valid_project()
+            )
+            self.assertEqual(200, status)
+            status, limited = self.request(
+                "POST", "/api/gen/short-drama/projects",
+                body=valid_project(title="超过上限"),
+            )
+            self.assertEqual(429, status)
+            self.assertEqual("short_drama_project_cap", limited["code"])
+            self.assertEqual(1, limited["max_projects"])
+
+            delete_body = {
+                "project_id": created["id"], "revision": created["revision"],
+            }
+            status, _ = self.request(
+                "POST", "/api/gen/short-drama/project/delete",
+                username="bob", body=delete_body,
+            )
+            self.assertEqual(404, status)
+            status, conflict = self.request(
+                "POST", "/api/gen/short-drama/project/delete",
+                body={"project_id": created["id"], "revision": created["revision"] + 1},
+            )
+            self.assertEqual(409, status)
+            self.assertEqual("revision_conflict", conflict["code"])
+            status, deleted = self.request(
+                "POST", "/api/gen/short-drama/project/delete", body=delete_body,
+            )
+            self.assertEqual(200, status)
+            self.assertTrue(deleted["deleted"])
+            status, listed = self.request("GET", "/api/gen/short-drama/projects")
+            self.assertEqual(200, status)
+            self.assertEqual(0, listed["total"])
+
+            status, replacement = self.request(
+                "POST", "/api/gen/short-drama/projects",
+                body=valid_project(title="释放名额后的项目"),
+            )
+            self.assertEqual(200, status)
+            self.assertEqual("释放名额后的项目", replacement["title"])
 
     def test_project_routes_reject_malformed_settings_with_http_400(self):
         for patch in ({"ratio": []}, {"target_duration": []}, {"target_duration": "30"},

@@ -1,6 +1,7 @@
 """Persistence and optimistic-concurrency helpers for short-drama projects."""
 
 import json
+import os
 import sqlite3
 import time
 import urllib.parse
@@ -17,6 +18,9 @@ NEXT_STAGE = {
 RATIOS = {"9:16", "16:9"}
 DURATIONS = {30, 45, 60}
 SHOT_COUNTS = set(range(6, 11))
+DEFAULT_MAX_PROJECTS_PER_USER = 50
+DEFAULT_PROJECT_PAGE_SIZE = 20
+MAX_PROJECT_PAGE_SIZE = 50
 CONTENT_KEYS = {"characters", "script", "shots"}
 PLANNING_SPEC_FIELDS = {
     "synopsis", "ratio", "target_duration", "shot_count", "visual_style", "target_platform",
@@ -33,6 +37,31 @@ class AppliedJobConflict(RuntimeError):
 
 class PointBudgetExceeded(ValueError):
     pass
+
+
+class ProjectLimitExceeded(ValueError):
+    def __init__(self, max_projects):
+        super().__init__("短剧项目数量已达上限")
+        self.max_projects = max_projects
+
+
+def _max_projects_per_user():
+    try:
+        value = int(os.getenv(
+            "HQ_SHORT_DRAMA_MAX_PROJECTS_PER_USER",
+            str(DEFAULT_MAX_PROJECTS_PER_USER),
+        ))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_PROJECTS_PER_USER
+    return value if value > 0 else DEFAULT_MAX_PROJECTS_PER_USER
+
+
+def _validate_page(value, default, maximum=None):
+    if value is None:
+        return default
+    if type(value) is not int or value < 1 or (maximum is not None and value > maximum):
+        raise ValueError("分页参数无效")
+    return value
 
 
 def validate_project_payload(payload, partial=False):
@@ -496,6 +525,14 @@ def create_project(db_factory, username, payload):
     project_id = str(uuid.uuid4())
     conn = _connection(db_factory)
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        max_projects = _max_projects_per_user()
+        active_projects = conn.execute(
+            "SELECT COUNT(*) FROM short_drama_projects WHERE username=? AND deleted=0",
+            (username,),
+        ).fetchone()[0]
+        if active_projects >= max_projects:
+            raise ProjectLimitExceeded(max_projects)
         conn.execute(
             "INSERT INTO short_drama_projects "
             "(id, username, title, synopsis, ratio, target_duration, shot_count, visual_style, "
@@ -507,18 +544,34 @@ def create_project(db_factory, username, payload):
         )
         conn.commit()
         return _project_detail(conn, username, project_id)
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
 
-def list_projects(db_factory, username):
+def list_projects(db_factory, username, page=1, page_size=DEFAULT_PROJECT_PAGE_SIZE):
+    page = _validate_page(page, 1)
+    page_size = _validate_page(page_size, DEFAULT_PROJECT_PAGE_SIZE, MAX_PROJECT_PAGE_SIZE)
     conn = _connection(db_factory)
     try:
-        ids = conn.execute(
-            "SELECT id FROM short_drama_projects WHERE username=? AND deleted=0 ORDER BY updated_at DESC, id DESC",
+        total = int(conn.execute(
+            "SELECT COUNT(*) FROM short_drama_projects WHERE username=? AND deleted=0",
             (username,),
+        ).fetchone()[0])
+        ids = conn.execute(
+            "SELECT id FROM short_drama_projects WHERE username=? AND deleted=0 "
+            "ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
+            (username, page_size, (page - 1) * page_size),
         ).fetchall()
-        return [_project_detail(conn, username, project_id) for (project_id,) in ids]
+        return {
+            "items": [_project_detail(conn, username, project_id) for (project_id,) in ids],
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": (total + page_size - 1) // page_size,
+        }
     finally:
         conn.close()
 
@@ -527,6 +580,30 @@ def get_project(db_factory, username, project_id):
     conn = _connection(db_factory)
     try:
         return _project_detail(conn, username, project_id)
+    finally:
+        conn.close()
+
+
+def delete_project(db_factory, username, project_id, revision):
+    if not isinstance(project_id, str) or not project_id.strip():
+        raise ValueError("短剧项目 ID 无效")
+    if type(revision) is not int:
+        raise ValueError("项目版本无效")
+    now = int(time.time())
+    conn = _connection(db_factory)
+    try:
+        cur = conn.execute(
+            "UPDATE short_drama_projects SET deleted=1, revision=revision+1, updated_at=? "
+            "WHERE id=? AND username=? AND revision=? AND deleted=0",
+            (now, project_id.strip(), username, revision),
+        )
+        if cur.rowcount != 1:
+            _raise_cas_error(conn, username, project_id.strip())
+        conn.commit()
+        return {"id": project_id.strip(), "revision": revision + 1, "deleted": True}
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -1285,6 +1362,7 @@ _HTTP_ROUTES = {
     },
     "POST": {
         "/api/gen/short-drama/projects",
+        "/api/gen/short-drama/project/delete",
         "/api/gen/short-drama/apply-plan",
         "/api/gen/short-drama/confirm",
     },
@@ -1293,7 +1371,13 @@ _HTTP_ROUTES = {
 
 
 def _http_error(handler, error):
-    if isinstance(error, LookupError):
+    if isinstance(error, ProjectLimitExceeded):
+        handler._send(429, {
+            "detail": str(error)[:220],
+            "code": "short_drama_project_cap",
+            "max_projects": error.max_projects,
+        })
+    elif isinstance(error, LookupError):
         handler._send(404, {"detail": str(error)[:220]})
     elif isinstance(error, RevisionConflict):
         handler._send(409, {"detail": str(error)[:220], "code": "revision_conflict"})
@@ -1326,6 +1410,26 @@ def _planning_project_id_from_query(handler):
     if not project_id:
         raise ValueError("缺少短剧项目 ID")
     return project_id
+
+
+def _project_pagination_from_query(handler):
+    query = urllib.parse.parse_qs(
+        urllib.parse.urlparse(handler.path).query, keep_blank_values=True
+    )
+
+    def parse(name, default, maximum=None):
+        values = query.get(name)
+        if not values:
+            return default
+        raw = values[0]
+        if not raw or not raw.isdigit():
+            raise ValueError("分页参数无效")
+        return _validate_page(int(raw), default, maximum)
+
+    return (
+        parse("page", 1),
+        parse("page_size", DEFAULT_PROJECT_PAGE_SIZE, MAX_PROJECT_PAGE_SIZE),
+    )
 
 
 def _validate_project_request(body, expected_fields):
@@ -1387,7 +1491,8 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                 raise ValueError("短剧策划报价无效")
             handler._send(200, {"cost": cost})
         elif method == "GET" and path.endswith("/projects"):
-            handler._send(200, {"items": list_projects(db_factory, username)})
+            page, page_size = _project_pagination_from_query(handler)
+            handler._send(200, list_projects(db_factory, username, page, page_size))
         elif method == "GET" and path.endswith("/planning-job"):
             recovered = find_recoverable_planning_job(
                 db_factory, username, _planning_project_id_from_query(handler)
@@ -1413,6 +1518,12 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                     db_factory, username, project_id, revision, body, avatar_lookup=avatar_lookup
                 )
             handler._send(200, updated)
+        elif path.endswith("/project/delete"):
+            body = _request_object(handler)
+            _validate_project_request(body, {"project_id", "revision"})
+            handler._send(200, delete_project(
+                db_factory, username, body["project_id"], body["revision"]
+            ))
         elif path.endswith("/projects"):
             handler._send(200, create_project(db_factory, username, _request_object(handler)))
         elif path.endswith("/apply-plan"):
