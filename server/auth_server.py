@@ -28,11 +28,11 @@ LOGIN_FAIL_WINDOW = int(os.environ.get("HQ_AUTH_FAIL_WINDOW", "300"))
 LOGIN_FAIL_MAX = int(os.environ.get("HQ_AUTH_FAIL_MAX", "5"))
 REGISTER_WINDOW = int(os.environ.get("HQ_AUTH_REGISTER_WINDOW", "300"))
 REGISTER_MAX = int(os.environ.get("HQ_AUTH_REGISTER_MAX", "5"))
-NEW_USER_TRIAL_POINTS = int(os.environ.get("HQ_AUTH_TRIAL_POINTS", "16"))  # 新注册赠送试用点数(约2次标准清晰度作图)
+NEW_USER_TRIAL_POINTS = int(os.environ.get("HQ_AUTH_TRIAL_POINTS", "0"))  # 新注册默认不赠送点数
 # 充值定价：客户端只传金额(元)，点数一律服务端算，绝不信客户端传的点数——
 # 否则用户能花 1 元买百万点。与 recharge.html / 小程序 recharge.js 保持一致。
-# 固定档含赠送(略高于 10 点/元)；自定义严格 10 点/元、限 10~5000 元整。
-RECHARGE_TIERS = {99: 1000, 199: 2000, 499: 5000}   # 金额(元) -> 点数(含赠送)
+# 固定档与自定义均按 10 点/元；自定义限 10~5000 元整。
+RECHARGE_TIERS = {100: 1000, 200: 2000, 500: 5000}  # 金额(元) -> 点数
 RECHARGE_RATE = 10                                   # 自定义:每元 10 点
 RECHARGE_CUSTOM_MIN = 10
 RECHARGE_CUSTOM_MAX = 5000
@@ -2305,7 +2305,7 @@ class H(BaseHTTPRequestHandler):
             amount = d.get("amount")
             points = recharge_points_for(amount)   # 点数服务端算,绝不信客户端(与 wxpay 路由一致)
             if points is None:
-                return self._send(400, {"detail": "无效的充值金额(固定档 99/199/499，或自定义 10~5000 元整数)"})
+                return self._send(400, {"detail": "无效的充值金额(固定档 100/200/500，或自定义 10~5000 元整数)"})
             amount = int(amount)
             try:
                 order, err = create_recharge_order(row["username"], amount, points, d.get("note") or "")
@@ -2326,7 +2326,7 @@ class H(BaseHTTPRequestHandler):
             amount = d.get("amount")                 # 客户端只传金额(元)
             points = recharge_points_for(amount)     # 点数服务端算,不信客户端
             if points is None:
-                return self._send(400, {"detail": "无效的充值金额(固定档 99/199/499，或自定义 10~5000 元整数)"})
+                return self._send(400, {"detail": "无效的充值金额(固定档 100/200/500，或自定义 10~5000 元整数)"})
             amount = int(amount)
             try:
                 order, err = create_recharge_order(row["username"], amount, points, "微信扫码充值")
@@ -2358,7 +2358,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": "缺少 js_code"})
             quote = jsapi_recharge_quote(d.get("amount"))
             if quote is None:
-                return self._send(400, {"detail": "无效的充值金额(固定档 99/199/499，或自定义 10~5000 元整数)"})
+                return self._send(400, {"detail": "无效的充值金额(固定档 100/200/500，或自定义 10~5000 元整数)"})
             amount, points = quote
             try:
                 openid = wxpay.jscode2session(js_code)

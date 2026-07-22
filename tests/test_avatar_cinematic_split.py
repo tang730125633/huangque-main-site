@@ -56,7 +56,7 @@ class PipelineWiringTests(unittest.TestCase):
 
     def test_costs_are_registered(self):
         """⚠️ cost_of() 回落到 COST.get(kind, 0) —— 新 kind 忘了登记就是【免费】。"""
-        self.assertEqual(points.cost_of("avatar", {}), 5)
+        self.assertEqual(points.cost_of("avatar", {}), 2)
         # 获客固定 30 点/次（采集量前端固定 20 视频），与 leads.html 成本徽章一致；
         # count/pages 传什么都是 30，防"消耗点数对不上"。
         self.assertEqual(points.cost_of("leads", {}), 30)

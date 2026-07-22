@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""口播(video kind)按秒计费 + 跑完结算（kongli 2026-07-15）。
+"""口播(video kind)按 30 秒阶梯计费 + 跑完结算。
 
-口播成片时长 ≈ 音频时长，10 点/秒 × 输出时长。扣点时机：
+口播成片时长 ≈ 音频时长，每 30 秒 30 点。扣点时机：
 - audio 模式：ffprobe 上传/引用音频，扣点前拿到精确时长 → 扣准，无需结算。
 - text 模式：TTS 在 job 里才跑，扣点时按文本长度【偏保守】估算预扣，跑完由 run_job 按成片
   真实时长（HeyGen 返回的 duration）结算 —— **多退少不补**，绝不二次扣点。
@@ -16,26 +16,27 @@ from content_domains import points, video
 
 
 class TalkingPerSecondTests(unittest.TestCase):
-    def test_rate_is_ten(self):
-        self.assertEqual(video.TALKING_RATE_PER_SEC, 10)
+    def test_billing_block_is_30_seconds_for_30_points(self):
+        self.assertEqual(video.TALKING_BLOCK_SECONDS, 30)
+        self.assertEqual(video.TALKING_BLOCK_POINTS, 30)
 
     def test_text_mode_estimates_from_length(self):
-        # 4 字/秒（偏保守，估长→预扣偏高→跑完退差）：45 字 → 11.25s → ceil 12 → 120 点
-        self.assertEqual(points.cost_of("video", {"mode": "text", "text": "一" * 45}), 120)
+        self.assertEqual(points.cost_of("video", {"mode": "text", "text": "一" * 45}), 30)
+        self.assertEqual(points.cost_of("video", {"mode": "text", "text": "一" * 121}), 60)
 
     def test_text_mode_is_at_least_one_second(self):
-        self.assertEqual(points.cost_of("video", {"mode": "text", "text": "嗨"}), 10)
+        self.assertEqual(points.cost_of("video", {"mode": "text", "text": "嗨"}), 30)
 
     def test_audio_mode_falls_back_when_unprobeable(self):
-        # 探不到音频时长 → 兜底 10s → 100 点（真实时长在跑完由结算修正）
-        self.assertEqual(points.cost_of("video", {"mode": "audio"}), 100)
+        self.assertEqual(points.cost_of("video", {"mode": "audio"}), 30)
 
 
 class TalkingSettleTests(unittest.TestCase):
-    def test_actual_cost_is_ten_per_output_second(self):
-        self.assertEqual(video.talking_actual_cost({"duration": 8}), 80)      # 8 × 10
-        self.assertEqual(video.talking_actual_cost({"duration": 7.2}), 80)    # 向上取整 8 → 80
-        self.assertEqual(video.talking_actual_cost({"seconds": 3}), 30)       # 也认 seconds
+    def test_actual_cost_uses_30_second_blocks(self):
+        self.assertEqual(video.talking_actual_cost({"duration": 8}), 30)
+        self.assertEqual(video.talking_actual_cost({"duration": 30}), 30)
+        self.assertEqual(video.talking_actual_cost({"duration": 30.1}), 60)
+        self.assertEqual(video.talking_actual_cost({"seconds": 60.1}), 90)
 
     def test_actual_cost_none_when_duration_missing(self):
         """拿不到成片时长 → 不结算，保留预扣（宁可不退，也不乱退）。"""
@@ -61,9 +62,10 @@ class TalkingFrontendTests(unittest.TestCase):
 
     def test_frontend_rate_matches_backend(self):
         import re
-        m = re.search(r"var TALKING_RATE=(\d+)", self.VIDEO_HTML)
-        self.assertTrue(m, "video.html 里没有 TALKING_RATE")
-        self.assertEqual(int(m.group(1)), video.TALKING_RATE_PER_SEC, "前端口播单价与后端 TALKING_RATE_PER_SEC 不一致")
+        seconds = re.search(r"TALKING_BLOCK_SECONDS=(\d+)", self.VIDEO_HTML)
+        points = re.search(r"TALKING_BLOCK_POINTS=(\d+)", self.VIDEO_HTML)
+        self.assertEqual(int(seconds.group(1)), video.TALKING_BLOCK_SECONDS)
+        self.assertEqual(int(points.group(1)), video.TALKING_BLOCK_POINTS)
 
     def test_frontend_shows_settle_wording_and_drops_old_flat_price(self):
         self.assertIn("按实际时长结算", self.VIDEO_HTML)

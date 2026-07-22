@@ -136,6 +136,8 @@ def validate_xiaole_video_payload(payload):
         raise ValueError("请输入视频提示词")
     cleaned["channel"] = channel
     cleaned["prompt"] = prompt
+    if channel == "grok" and str(cleaned.get("operation") or "generate").strip().lower() == "edit":
+        raise ValueError("果肉视频编辑维护中")
     if channel != "grok" or GROK_VIDEO_PROVIDER == "xiaole":
         return cleaned
 
@@ -144,15 +146,7 @@ def validate_xiaole_video_payload(payload):
         raise ValueError("果肉视频操作类型不支持：%s" % operation)
     cleaned["operation"] = operation
     if operation == "edit":
-        source = str(cleaned.get("reference_video_data") or "").strip()
-        if not _is_valid_data_url(source, {"video/mp4"}):
-            raise ValueError("请上传有效的 MP4 参考视频")
-        duration = _probe_data_video_duration(source)
-        if duration <= 0 or duration > 8.7:
-            raise ValueError("xAI 官方视频编辑仅支持不超过 8.7 秒的参考视频")
-        cleaned.update({"model": "grok-imagine-video", "reference_video_data": source,
-                        "source_duration": duration, "reference_images": []})
-        return cleaned
+        raise ValueError("果肉视频编辑维护中")
 
     model = str(cleaned.get("model") or "grok-imagine-video").strip()
     if model not in XAI_GROK_MODELS:
@@ -2985,13 +2979,12 @@ CINEMATIC_MOTION_RESOLUTION = "1080p"
 # 每秒点数。HeyGen 那边是扁平价（$7/条，与时长无关），我们按时长卖 —— 这是产品定价，不是成本。
 # ⚠️ 改这里等于改价：cost_of() 直接乘这个数。
 #
-# 三个玩法统一 30 点/秒（kongli 2026-07-15 调价；此前 10，更早 motion 3/duo 5/open 5）。
-# HeyGen 对三者收一样的钱，这里不分档。保留 per-mode 的表结构和 env 覆盖，以后想再分档不用改代码。
+# 已确认玩法 motion/open 统一 10 点/秒；未开放的 duo 保持原价。
 
 CINEMATIC_RATE_PER_SEC = {
-    "motion": _env_positive_int("CINEMATIC_RATE_MOTION", 30),   # 单人动作模仿
+    "motion": _env_positive_int("CINEMATIC_RATE_MOTION", 10),   # 单人动作模仿
     "duo":    _env_positive_int("CINEMATIC_RATE_DUO", 30),      # 双人动作模仿
-    "open":   _env_positive_int("CINEMATIC_RATE_OPEN", 30),     # 开放式生成
+    "open":   _env_positive_int("CINEMATIC_RATE_OPEN", 10),     # 开放式生成
 }
 CINEMATIC_RATE_FALLBACK = 30   # 玩法认不出来时按最贵的收，绝不按最便宜的（更不能按 0）
 
@@ -3000,12 +2993,13 @@ def cinematic_rate(cine_mode):
     return CINEMATIC_RATE_PER_SEC.get(cine_mode, CINEMATIC_RATE_FALLBACK)
 
 
-# ===== 口播(video kind)按秒计费：10 点/秒 × 输出时长（kongli 2026-07-15）=====
+# ===== 口播(video kind)按 30 秒阶梯计费：每档 30 点 =====
 # 口播成片时长 ≈ 音频时长。扣点时机不同：
 #   audio 模式：上传/引用音频，扣点前 ffprobe 就能拿到精确时长 → 扣准，跑完无需结算。
 #   text 模式：TTS 在 job 里才跑，扣点那刻不知道语音多长 → 按文本长度【偏保守】估算预扣，
 #              跑完再按成片真实时长结算（core.run_job 里调 talking_actual_cost，多退少不补）。
-TALKING_RATE_PER_SEC = _env_positive_int("TALKING_RATE_PER_SEC", 10)
+TALKING_BLOCK_SECONDS = _env_positive_int("TALKING_BLOCK_SECONDS", 30)
+TALKING_BLOCK_POINTS = _env_positive_int("TALKING_BLOCK_POINTS", 30)
 # 中文口播语速估算：偏保守取 4 字/秒（估长一点→预扣偏高→跑完退差，避免系统性少扣）。
 TALKING_CHARS_PER_SEC = float(os.environ.get("TALKING_CHARS_PER_SEC", "4") or 4)
 TALKING_FALLBACK_SEC = 10.0   # 音频探不到时长时的兜底估算秒数
@@ -3039,19 +3033,22 @@ def _talking_estimate_seconds(body):
 
 
 def video_cost(body):
-    """口播扣点前的预扣(hold)：10 点/秒 × 估算/精确输出秒数。text 模式偏估、跑完结算。"""
+    """口播预扣：每 30 秒 30 点。text 模式按文本偏保守估算，跑完按成片结算。"""
     secs = _talking_estimate_seconds(body)
-    return max(TALKING_RATE_PER_SEC, int(math.ceil(secs)) * TALKING_RATE_PER_SEC)
+    return max(TALKING_BLOCK_POINTS, int(math.ceil(secs / TALKING_BLOCK_SECONDS)) * TALKING_BLOCK_POINTS)
 
 
 def talking_actual_cost(result):
-    """口播成片后的真实点数 = 10 点/秒 × 成片真实秒数（HeyGen 返回的 duration）。
+    """口播成片后的真实点数 = 每 30 秒 30 点（HeyGen 返回的 duration）。
     拿不到时长返回 None（不结算，保留预扣）。"""
     secs = (result or {}).get("duration") or (result or {}).get("seconds")
     if not secs:
         return None
     try:
-        return max(TALKING_RATE_PER_SEC, int(math.ceil(float(secs))) * TALKING_RATE_PER_SEC)
+        value = float(secs)
+        if value <= 0:
+            return None
+        return max(TALKING_BLOCK_POINTS, int(math.ceil(value / TALKING_BLOCK_SECONDS)) * TALKING_BLOCK_POINTS)
     except (TypeError, ValueError):
         return None
 

@@ -157,21 +157,18 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertEqual(body["ratio"], "2:3")
         self.assertEqual(body["duration"], 15)
 
-    def test_validate_official_edit_verifies_server_side_duration(self):
-        source = "data:video/mp4;base64,AAAA"
-        with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"), \
-             patch.object(self.video, "_probe_data_video_duration", return_value=8.6):
-            body = self.video.validate_xiaole_video_payload({"channel": "grok", "operation": "edit",
-                                                              "prompt": "change person", "reference_video_data": source})
-        self.assertEqual(body["source_duration"], 8.6)
-        self.assertEqual(body["model"], "grok-imagine-video")
+    def test_validate_official_edit_is_under_maintenance(self):
+        with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"):
+            with self.assertRaisesRegex(ValueError, "编辑维护中"):
+                self.video.validate_xiaole_video_payload({"channel": "grok", "operation": "edit",
+                                                          "prompt": "change person"})
 
-    def test_validate_official_edit_rejects_over_8_7_seconds(self):
+    def test_validate_official_edit_rejects_before_media_processing(self):
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"), \
-             patch.object(self.video, "_probe_data_video_duration", return_value=8.71):
-            with self.assertRaisesRegex(ValueError, "8.7"):
-                self.video.validate_xiaole_video_payload({"channel": "grok", "operation": "edit", "prompt": "demo",
-                                                          "reference_video_data": "data:video/mp4;base64,AAAA"})
+             patch.object(self.video, "_probe_data_video_duration") as probe:
+            with self.assertRaisesRegex(ValueError, "编辑维护中"):
+                self.video.validate_xiaole_video_payload({"channel": "grok", "operation": "edit", "prompt": "demo"})
+        probe.assert_not_called()
 
     def test_validate_official_grok_rejects_over_max_references(self):
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"):

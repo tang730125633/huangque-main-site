@@ -91,7 +91,7 @@
       <td><b>生成配音</b><br><code>/api/gen/audio</code></td>
       <td><span class="tag gold">POST</span></td>
       <td>提交 TTS 异步任务。公共音色走 OpenAI TTS；个人复刻音色 <code>S_*</code> 走豆包 TTS。</td>
-      <td><code>text</code> 最多 1200 字<br><code>voice</code>：<code>dapeng</code>/<code>zelong</code>/<code>paul</code> 或 <code>vip_S_xxx</code><br><code>speed</code> 0.5-2.0，<code>pitch</code> -12-12，<code>volume</code> -50-100</td>
+      <td><code>text</code> 最多 1000 字<br><code>voice</code>：<code>dapeng</code>/<code>zelong</code>/<code>paul</code> 或 <code>vip_S_xxx</code><br><code>speed</code> 0.5-2.0，<code>pitch</code> -12-12，<code>volume</code> -50-100</td>
       <td>返回 <code>job_id</code>，轮询 <code>GET /api/gen/job/{id}</code>。完成后 result 内有 <code>url</code>，并写入配音资产。</td>
     </tr>
     <tr>

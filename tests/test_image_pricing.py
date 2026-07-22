@@ -106,28 +106,31 @@ class GptPricingTests(unittest.TestCase):
 class CostOfTests(unittest.TestCase):
     def test_gpt_uses_new_tiers(self):
         self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "std", "count": 1}), 20)
-        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 1}), 30)
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 1}), 35)
 
     def test_missing_provider_defaults_to_openai(self):
         """gen_image 的 provider 缺省就是 openai，扣点必须跟着走同一档。"""
-        self.assertEqual(points.cost_of("image", {"quality": "hd", "count": 1}), 30)
+        self.assertEqual(points.cost_of("image", {"quality": "hd", "count": 1}), 35)
 
     def test_other_engines_unchanged(self):
-        for p in ("seedream", "xiaole", "zelong", "zelong2"):
+        for p in ("seedream", "zelong", "zelong2"):
             self.assertEqual(points.cost_of("image", {"provider": p, "quality": "std", "count": 1}), 8, p)
             self.assertEqual(points.cost_of("image", {"provider": p, "quality": "hd", "count": 1}), 12, p)
+        self.assertEqual(points.cost_of("image", {"provider": "xiaole", "quality": "std", "count": 1}), 12)
+        self.assertEqual(points.cost_of("image", {"provider": "xiaole", "quality": "hd", "count": 1}), 16)
 
     def test_unknown_provider_falls_back_to_default(self):
         self.assertEqual(points.cost_of("image", {"provider": "brand-new", "quality": "hd", "count": 1}), 12)
 
     def test_count_multiplies_and_caps_match_generator(self):
-        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 4}), 30 * 4)
-        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 9}), 30 * 4)
-        for p in ("seedream", "xiaole", "zelong", "zelong2"):
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 4}), 35 * 4)
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 9}), 35 * 4)
+        for p in ("seedream", "zelong", "zelong2"):
             self.assertEqual(points.cost_of("image", {"provider": p, "quality": "hd", "count": 9}), 12 * 2, p)
+        self.assertEqual(points.cost_of("image", {"provider": "xiaole", "quality": "hd", "count": 9}), 16 * 2)
 
     def test_mask_forces_single_image(self):
-        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 4, "mask": "x"}), 30)
+        self.assertEqual(points.cost_of("image", {"provider": "openai", "quality": "hd", "count": 4, "mask": "x"}), 35)
 
 
 class FrontendBackendSyncTests(unittest.TestCase):
@@ -165,8 +168,8 @@ class FrontendBackendSyncTests(unittest.TestCase):
         self.assertEqual(points.SEEDREAM_VARIANT_COST["pro"], {"std": 15, "hd": 20})
 
     def test_gpt_price_updated_on_both_sides(self):
-        self.assertEqual(self._frontend_costbase()["gpt"], {"std": 20, "hd": 30})
-        self.assertEqual(points.IMAGE_BASE_COST["openai"], {"std": 20, "hd": 30})
+        self.assertEqual(self._frontend_costbase()["gpt"], {"std": 20, "hd": 35})
+        self.assertEqual(points.IMAGE_BASE_COST["openai"], {"std": 20, "hd": 35})
 
     def _imggen_basecost(self):
         # Nano Banana(nb2/pro) 的实扣在 imggen_api.py（独立服务），不在 points.py。
@@ -187,8 +190,8 @@ class FrontendBackendSyncTests(unittest.TestCase):
 
     def test_banana_prices_are_the_new_values(self):
         be = self._imggen_basecost()
-        self.assertEqual(be["nb2"], {"std": 15, "hd": 25})
-        self.assertEqual(be["pro"], {"std": 25, "hd": 30})
+        self.assertEqual(be["nb2"], {"std": 18, "hd": 35})
+        self.assertEqual(be["pro"], {"std": 35, "hd": 44})
 
 
 if __name__ == "__main__":

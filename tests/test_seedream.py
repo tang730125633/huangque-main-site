@@ -380,7 +380,8 @@ class CostConsistencyTests(unittest.TestCase):
         """回归守卫：gen_image 封 2 张，cost_of 曾按 4 张扣点。"""
         for provider in ("zelong", "zelong2", "xiaole"):
             body = {"provider": provider, "quality": "hd", "count": 4}
-            self.assertEqual(points.cost_of("image", body), 12 * 2, provider)
+            expected = points.IMAGE_BASE_COST[provider]["hd"] * 2
+            self.assertEqual(points.cost_of("image", body), expected, provider)
 
     def test_gpt_still_allows_four(self):
         """守的是「gpt 数量上限仍为 4」，不是它的单价（单价见 test_image_pricing.py）。

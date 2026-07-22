@@ -8,35 +8,35 @@ from content_domains import points, video
 
 
 class XiaolePointsTests(unittest.TestCase):
-    """果肉视频统一 30 点/秒 × 时长（kongli 2026-07-15）。
+    """果肉视频按模型、分辨率和时长计价；参考图不额外收点。"""
 
-    此前是按 xAI 官方成本×汇率×缓冲动态算（model/resolution/reference_images 都影响价），
-    现在改成扁平 30 点/秒 —— 这些因素不再进价格。生成走 duration(上限 15s)，编辑走
-    source_duration(上限 8.7s)，缺失兜底 10s。
-    """
+    def test_generation_price_matrix(self):
+        cases = [
+            ("grok-imagine-video", "480p", 10),
+            ("grok-imagine-video", "720p", 12),
+            ("grok-imagine-video-1.5", "480p", 15),
+            ("grok-imagine-video-1.5", "720p", 25),
+            ("grok-imagine-video-1.5", "1080p", 44),
+        ]
+        for model, resolution, rate in cases:
+            self.assertEqual(points.cost_of("xiaole_video", {
+                "model": model, "resolution": resolution, "duration": 5,
+            }), rate * 5)
 
-    def test_generation_is_thirty_per_second(self):
-        self.assertEqual(points.cost_of("xiaole_video", {"duration": 5}), 150)    # 5 × 30
-        self.assertEqual(points.cost_of("xiaole_video", {"duration": 10}), 300)   # 10 × 30
+    def test_edit_is_under_maintenance(self):
+        with self.assertRaisesRegex(ValueError, "编辑维护中"):
+            points.cost_of("xiaole_video", {"operation": "edit", "source_duration": 3.0})
 
-    def test_edit_uses_source_duration_ceil(self):
-        # 编辑走 source_duration，上限 8.7s，向上取整：8.7 → 9 → 270
-        self.assertEqual(points.cost_of("xiaole_video", {"operation": "edit", "source_duration": 8.7}), 270)
-        self.assertEqual(points.cost_of("xiaole_video", {"operation": "edit", "source_duration": 3.0}), 90)
-
-    def test_model_resolution_images_no_longer_matter(self):
-        base = points.cost_of("xiaole_video", {"duration": 10})
-        for extra in ({"model": "grok-imagine-video-1.5", "resolution": "1080p"},
-                      {"reference_images": ["data:image/jpeg;base64,x"]},
-                      {"channel": "micro"}):
-            self.assertEqual(points.cost_of("xiaole_video", dict(extra, duration=10)), base,
-                             "%s 不该再影响果肉价" % list(extra))
+    def test_reference_images_do_not_change_price(self):
+        body = {"model": "grok-imagine-video-1.5", "resolution": "1080p", "duration": 10}
+        base = points.cost_of("xiaole_video", body)
+        self.assertEqual(points.cost_of("xiaole_video", dict(body, reference_images=["data:image/jpeg;base64,x"])), base)
 
     def test_duration_is_capped_at_15(self):
-        self.assertEqual(points.cost_of("xiaole_video", {"duration": 999}), 15 * 30)
+        self.assertEqual(points.cost_of("xiaole_video", {"duration": 999}), 15 * 12)
 
     def test_default_duration_when_missing(self):
-        self.assertEqual(points.cost_of("xiaole_video", {}), 10 * 30)   # 缺 duration 兜底 10s
+        self.assertEqual(points.cost_of("xiaole_video", {}), 10 * 12)
 
     def test_submit_path_and_validator_stay_wired_together(self):
         core_src = (Path(video.__file__).with_name("core.py")).read_text(encoding="utf-8")

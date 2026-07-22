@@ -73,8 +73,8 @@
         <button id="clearText" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font-family:inherit;">清空</button>
       </div>
       <div style="border:1px solid rgba(148,164,187,.16);background:rgba(7,11,19,.5);border-radius:12px;padding:14px 15px;">
-        <textarea id="ttsText" rows="5" maxlength="1200" placeholder="输入要配音的文案，支持口播稿、广告语、门店通知..." style="width:100%;resize:none;background:transparent;border:none;outline:none;color:#eaf1fa;font-size:13.5px;line-height:1.75;font-family:inherit;">仙颜美容温馨提醒：本周末科技焕肤体验官名额仅剩 8 席，到店即享冷光嫩肤和小气泡清洁双重护理。预约请回复门店姑娘，我们在仙颜等你变美。</textarea>
-        <div class="aud-row" style="justify-content:flex-end;font-size:11.5px;color:#5c6b82;margin-top:8px;"><span id="charCount" class="mono">0 / 1200</span></div>
+        <textarea id="ttsText" rows="5" maxlength="1000" placeholder="输入要配音的文案，支持口播稿、广告语、门店通知..." style="width:100%;resize:none;background:transparent;border:none;outline:none;color:#eaf1fa;font-size:13.5px;line-height:1.75;font-family:inherit;">仙颜美容温馨提醒：本周末科技焕肤体验官名额仅剩 8 席，到店即享冷光嫩肤和小气泡清洁双重护理。预约请回复门店姑娘，我们在仙颜等你变美。</textarea>
+        <div class="aud-row" style="justify-content:flex-end;font-size:11.5px;color:#5c6b82;margin-top:8px;"><span id="charCount" class="mono">0 / 1000</span></div>
       </div>
 
       <div class="aud-row" style="margin:22px 0 0;">
@@ -228,7 +228,7 @@
   document.querySelectorAll('[data-step]').forEach(function(b){b.onclick=function(){var k=b.dataset.step, dir=b.dataset.dir==='+'?1:-1;if(k==='speed')params.speed=Math.max(0.5,Math.min(2.0,Math.round((params.speed+dir*.1)*10)/10));if(k==='pitch')params.pitch=Math.max(-12,Math.min(12,params.pitch+dir));if(k==='volume')params.volume=Math.max(-50,Math.min(100,params.volume+dir*10));updateParams();};});
   document.querySelectorAll('.info').forEach(function(b){b.onclick=function(e){e.stopPropagation();document.querySelectorAll('.info.show').forEach(function(x){if(x!==b)x.classList.remove('show');});b.classList.add('show');};b.onmouseleave=function(){b.classList.remove('show');};});
   document.querySelectorAll('[data-voice-tab]').forEach(function(b){b.onclick=function(){voiceTab=b.dataset.voiceTab;document.querySelectorAll('[data-voice-tab]').forEach(function(x){x.classList.toggle('on',x===b);});stopPreview();renderVoices();};});
-  el('ttsText').addEventListener('input',function(){el('charCount').textContent=el('ttsText').value.length+' / 1200';});
+  el('ttsText').addEventListener('input',function(){el('charCount').textContent=el('ttsText').value.length+' / 1000';});
   el('clearText').onclick=function(){el('ttsText').value='';el('ttsText').dispatchEvent(new Event('input'));};
   function setBusy(on){el('generateBtn').disabled=on;el('generateBtn').style.opacity=on?'.72':'1';el('generateBtn').style.cursor=on?'wait':'pointer';}
   function audioNetworkMessage(error,phase){
@@ -271,7 +271,7 @@
   el('resultAudio').onpause=function(){el('mainPlay').textContent='▶';};
   try{
     var q=new URLSearchParams(location.search), pp=q.get('prompt');
-    if(pp){el('ttsText').value=pp.slice(0,1200);toast(q.get('prefill')==='asset'?'已带入原配音参数，请确认后生成':'已带入编导口播文案');}
+    if(pp){el('ttsText').value=pp.slice(0,1000);toast(q.get('prefill')==='asset'?'已带入原配音参数，请确认后生成':'已带入编导口播文案');}
     var pv=q.get('voice'); if(pv) selectedVoice=pv;
     var qs=q.get('speed'), qt=q.get('pitch'), qvol=q.get('volume');
     var ps=Number(qs), pt=Number(qt), pvol=Number(qvol);

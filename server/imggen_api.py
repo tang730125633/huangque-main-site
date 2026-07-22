@@ -120,7 +120,7 @@ def _public_url(rel, content_type=None):
 
 MODELS = {"nb2": "gemini-3.1-flash-image", "pro": "gemini-3-pro-image"}
 # 璐ㄩ噺鍩轰环(鏈€缁堢偣鏁?鍩轰环脳鏁伴噺) + 娓呮櫚搴︹啋imageSize(鎸?model 鍒嗘。锛屽ぇ鍐橩)
-BASE_COST   = {"nb2": {"std": 15, "hd": 25}, "pro": {"std": 25, "hd": 30}}
+BASE_COST   = {"nb2": {"std": 18, "hd": 35}, "pro": {"std": 35, "hd": 44}}
 IMAGE_SIZES = {"nb2": {"std": "1K", "hd": "2K"}, "pro": {"std": "2K", "hd": "4K"}}
 RATIOS = {"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"}
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -623,7 +623,7 @@ def _selftest():
     b3 = _build_banana_body("x", "1:1", None, "4K")
     assert b3["generationConfig"]["imageConfig"]["imageSize"] == "4K", b3
     assert IMAGE_SIZES["pro"]["hd"] == "4K" and IMAGE_SIZES["nb2"]["std"] == "1K"
-    assert BASE_COST["pro"]["hd"] == 26 and BASE_COST["nb2"]["std"] == 10
+    assert BASE_COST["pro"]["hd"] == 44 and BASE_COST["nb2"]["std"] == 18
     if Image is not None:
         buf = io.BytesIO()
         Image.new("RGB", (1, 1), (255, 255, 255)).save(buf, format="PNG")

@@ -307,7 +307,7 @@
   // ⚠ 必须与后端逐字一致（有回归测试守着）：nb2/pro/gpt 对 points.IMAGE_BASE_COST，
   //    seedream_std/seedream_pro 对 points.SEEDREAM_VARIANT_COST。否则前端显示和实际扣点对不上。
   // gpt 按官方 $30/M image output token 实测折算(1点=0.1元)：标准≈¥0.30~0.37，高清=4倍≈¥1.20~1.50。
-  var COSTBASE={nb2:{std:15,hd:25}, pro:{std:25,hd:30}, gpt:{std:20,hd:30}, seedream_std:{std:8,hd:12}, seedream_pro:{std:15,hd:20}, xiaole:{std:8,hd:12}, zelong2:{std:8,hd:12}};
+  var COSTBASE={nb2:{std:18,hd:35}, pro:{std:35,hd:44}, gpt:{std:20,hd:35}, seedream_std:{std:8,hd:12}, seedream_pro:{std:15,hd:20}, xiaole:{std:12,hd:16}, zelong2:{std:8,hd:12}};
   // 数量上限(中转/循环慢→低)。必须与后端 points.cost_of 的 cap 一致，否则按 N 扣点却只出 cap 张。
   var ENGINE_MAXN={banana:4, gpt:4, seedream:2, xiaole:2, zelong2:2};
   var COUNT_OPTIONS=[1,2,4];
