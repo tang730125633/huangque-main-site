@@ -134,7 +134,7 @@ def reconcile_jobs(conn, username, project_id):
     rows = conn.execute(
         "SELECT p.id, p.shot_id, p.job_id, p.status, j.status, j.cost, j.payload, j.result "
         "FROM short_drama_production_jobs p "
-        "JOIN jobs j ON j.id=p.job_id AND j.username=p.username "
+        "JOIN jobs j ON j.id=p.job_id AND j.username=p.username AND j.kind='image' "
         "WHERE p.username=? AND p.project_id=? ORDER BY p.created_at, p.id",
         (username, project_id),
     ).fetchall()
@@ -158,7 +158,8 @@ def reconcile_jobs(conn, username, project_id):
             raise ValueError("关键帧任务比例与项目不一致")
         urls = result.get("urls") or ([result.get("url")] if result.get("url") else [])
         if (not isinstance(urls, list) or len(urls) != 2
-                or any(not isinstance(url, str) or not url for url in urls)):
+                or any(not isinstance(url, str) or not url for url in urls)
+                or len(set(urls)) != 2):
             raise ValueError("关键帧任务必须返回 2 张候选图")
         prompt = payload.get("prompt") or ""
         if not isinstance(prompt, str):
@@ -181,10 +182,17 @@ def reconcile_jobs(conn, username, project_id):
                 (str(uuid.uuid4()), asset_id, next_version + offset, job_id, url,
                  prompt, project_ratio, int(cost or 0), now),
             )
+        archived = conn.execute(
+            "SELECT COUNT(*), MIN(version) FROM short_drama_asset_versions "
+            "WHERE asset_id=? AND job_id=?",
+            (asset_id, job_id),
+        ).fetchone()
+        if int(archived[0]) != 2:
+            raise ValueError("关键帧任务必须完整归档 2 张候选图")
         conn.execute(
             "UPDATE short_drama_assets "
             "SET current_version=COALESCE(current_version, ?), updated_at=? WHERE id=?",
-            (next_version, now, asset_id),
+            (int(archived[1]), now, asset_id),
         )
 
 
@@ -229,7 +237,7 @@ def build_production_snapshot(conn, project, username):
         conn,
         "SELECT p.id, p.shot_id, p.job_id, p.kind, p.status, p.quoted_cost "
         "FROM short_drama_production_jobs p "
-        "JOIN jobs j ON j.id=p.job_id AND j.username=p.username "
+        "JOIN jobs j ON j.id=p.job_id AND j.username=p.username AND j.kind='image' "
         "WHERE p.username=? AND p.project_id=? "
         "AND p.status IN ('pending','running') "
         "ORDER BY p.created_at DESC, p.id DESC",
@@ -284,8 +292,9 @@ def get_production(db_factory, username, project_id):
             raise ValueError("短剧项目尚未进入素材制作")
         ensure_asset_slots(conn, project_id)
         reconcile_jobs(conn, username, project_id)
+        snapshot = build_production_snapshot(conn, dict(project), username)
         conn.commit()
-        return build_production_snapshot(conn, dict(project), username)
+        return snapshot
     except Exception:
         conn.rollback()
         raise

@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest import mock
 
 
 SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
@@ -91,7 +92,7 @@ class ShortDramaProductionTests(unittest.TestCase):
             ).fetchone()[0]
 
     def _link_job(self, *, shot_order=0, username="alice", link_username="alice",
-                  job_status="done", link_status="pending", cost=60,
+                  job_kind="image", job_status="done", link_status="pending", cost=60,
                   quoted_cost=60, payload=None, result=None):
         payload = payload if payload is not None else {
             "prompt": "cinematic night scene", "ratio": "9:16",
@@ -103,8 +104,9 @@ class ShortDramaProductionTests(unittest.TestCase):
         with closing(self.db()) as conn:
             cursor = conn.execute(
                 "INSERT INTO jobs(username, kind, cost, status, payload, result) "
-                "VALUES (?, 'image', ?, ?, ?, ?)",
-                (username, cost, job_status, json.dumps(payload), json.dumps(result)),
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (username, job_kind, cost, job_status,
+                 json.dumps(payload), json.dumps(result)),
             )
             job_id = cursor.lastrowid
             conn.execute(
@@ -301,6 +303,32 @@ class ShortDramaProductionTests(unittest.TestCase):
 
         self.assertEqual([], state["shots"][0]["still"]["versions"])
 
+    def test_reconciliation_does_not_import_non_image_job_results(self):
+        for shot_order, job_kind in enumerate(("copy", "audio", "video")):
+            self._link_job(shot_order=shot_order, job_kind=job_kind)
+
+        state = short_drama_production.get_production(
+            self.db, "alice", self.project["id"]
+        )
+
+        self.assertTrue(all(
+            item["still"]["versions"] == [] for item in state["shots"][:3]
+        ))
+
+    def test_production_state_excludes_non_image_active_jobs_and_reservations(self):
+        for shot_order, job_kind in enumerate(("copy", "audio", "video")):
+            self._link_job(
+                shot_order=shot_order, job_kind=job_kind,
+                job_status="running", quoted_cost=40 + shot_order,
+            )
+
+        state = short_drama_production.get_production(
+            self.db, "alice", self.project["id"]
+        )
+
+        self.assertEqual(0, state["reserved_points"])
+        self.assertTrue(all(item["still"]["job"] is None for item in state["shots"][:3]))
+
     def test_production_state_accepts_a_db_factory_with_row_objects(self):
         def row_db():
             conn = sqlite3.connect(self.path)
@@ -312,6 +340,34 @@ class ShortDramaProductionTests(unittest.TestCase):
         )
 
         self.assertEqual(6, len(state["shots"]))
+
+    def test_production_state_rolls_back_reconciliation_when_snapshot_build_fails(self):
+        job_id = self._link_job()
+
+        with mock.patch.object(
+            short_drama_production, "build_production_snapshot",
+            side_effect=RuntimeError("snapshot failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "snapshot failed"):
+                short_drama_production.get_production(
+                    self.db, "alice", self.project["id"]
+                )
+
+        with closing(self.db()) as conn:
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_assets WHERE project_id=?",
+                (self.project["id"],),
+            ).fetchone()[0])
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_asset_versions"
+            ).fetchone()[0])
+            self.assertEqual(
+                "pending",
+                conn.execute(
+                    "SELECT status FROM short_drama_production_jobs WHERE job_id=?",
+                    (job_id,),
+                ).fetchone()[0],
+            )
 
     def test_production_state_rejects_a_project_before_production(self):
         draft = short_drama.create_project(self.db, "alice", _project_payload())
@@ -335,6 +391,65 @@ class ShortDramaProductionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             short_drama_production.get_production(
                 self.db, "alice", self.project["id"]
+            )
+
+    def test_reconciliation_rejects_duplicate_candidate_urls_without_partial_archive(self):
+        duplicate_url = "https://example.test/duplicate.png"
+        job_id = self._link_job(result={
+            "urls": [duplicate_url, duplicate_url], "ratio": "9:16",
+        })
+
+        with self.assertRaises(ValueError):
+            short_drama_production.get_production(
+                self.db, "alice", self.project["id"]
+            )
+
+        with closing(self.db()) as conn:
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_asset_versions"
+            ).fetchone()[0])
+            self.assertEqual(
+                "pending",
+                conn.execute(
+                    "SELECT status FROM short_drama_production_jobs WHERE job_id=?",
+                    (job_id,),
+                ).fetchone()[0],
+            )
+
+    def test_reconciliation_requires_exactly_two_archived_versions_for_asset_job(self):
+        job_id = self._link_job()
+        with closing(self.db()) as conn:
+            short_drama_production.ensure_asset_slots(conn, self.project["id"])
+            asset_id = conn.execute(
+                "SELECT id FROM short_drama_assets WHERE project_id=? AND shot_id=?",
+                (self.project["id"], self._shot_id()),
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO short_drama_asset_versions "
+                "(id, asset_id, version, job_id, url, prompt, ratio, cost, status, created_at) "
+                "VALUES ('unexpected-third', ?, 1, ?, 'https://example.test/stale.png', "
+                "'stale', '9:16', 1, 'done', 1)",
+                (asset_id, job_id),
+            )
+            conn.commit()
+
+        with self.assertRaises(ValueError):
+            short_drama_production.get_production(
+                self.db, "alice", self.project["id"]
+            )
+
+        with closing(self.db()) as conn:
+            self.assertEqual(1, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_asset_versions "
+                "WHERE asset_id=? AND job_id=?",
+                (asset_id, job_id),
+            ).fetchone()[0])
+            self.assertEqual(
+                "pending",
+                conn.execute(
+                    "SELECT status FROM short_drama_production_jobs WHERE job_id=?",
+                    (job_id,),
+                ).fetchone()[0],
             )
 
     def test_reconciliation_archives_an_unknown_job_status_as_failed(self):
