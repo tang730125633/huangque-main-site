@@ -22,8 +22,6 @@
   var localFullscreen=false;
   var selectedNode=null, selectedNodes={}, selectedEdge=-1, clipNode=null, zoom=1;
   var RUN_ALL_REMOTE_LIMIT=2, RUN_ALL_RETRY_MS=4000, runAllBatch=null, runAllRetryTimer=null;
-  var VIDEO_POINTS_PER_SECOND=30;
-  var videoAvatars=[], videoAvatarsLoaded=false, videoAvatarsPromise=null, videoAvatarsError='';
   var activeSidePanel='', accountAssetsLoaded=false, accountAssets=[], accountAssetsPromise=null;
   var currentBoardId=null, boardMode='mine', boardLastSeenUpdatedAt=0, boardConflict=false;
   var currentBoardScope='local', currentCollabVersion=0, currentCollabRole='', currentCollabName='', currentCollabMembers=[];
@@ -166,18 +164,6 @@
     if(!u||u.indexOf('/api/gen/file/')!==0) return Promise.resolve(u);
     return apiClient.asset(u+(u.indexOf('?')>=0?'&':'?')+'_='+Date.now())
       .then(function(blob){ return URL.createObjectURL(blob); });
-  }
-  function referenceImageDataUrl(source){
-    source=String(source||'');
-    if(source.indexOf('data:image/')===0) return Promise.resolve(source);
-    return apiClient.asset(source).then(function(blob){
-      return new Promise(function(resolve,reject){
-        var reader=new FileReader();
-        reader.onload=function(){ resolve(String(reader.result||'')); };
-        reader.onerror=function(){ reject(new Error('参考图片读取失败')); };
-        reader.readAsDataURL(blob);
-      });
-    });
   }
   function renderVideoResult(node,url){
     if(!node||!node.el||!url) return;
@@ -373,95 +359,10 @@
     err.retryAfterMs=meta.retryAfterMs||0;
     return err;
   }
-  function normalizeVideoNodeParams(params){
-    params=params||{};
-    if(params.channel==='micro') params.channel='cinematic';
-    if(params.channel!=='grok'&&params.channel!=='cinematic') params.channel='grok';
-    if(params.ratio!=='9:16'&&params.ratio!=='16:9') params.ratio='16:9';
-    if(params.duration!=='5'&&params.duration!=='10') params.duration='5';
-    var seen={};
-    params.avatar_ids=(Array.isArray(params.avatar_ids)?params.avatar_ids:[]).map(function(id){ return String(id); }).filter(function(id){
-      if(!/^\d+$/.test(id)||seen[id]) return false;
-      seen[id]=true;
-      return true;
-    }).slice(0,3);
-    return params;
-  }
-  function videoPointCost(node){
-    var duration=parseInt(node&&node.params&&node.params.duration,10)||5;
-    return duration*VIDEO_POINTS_PER_SECOND;
-  }
-  function renderVideoAvatarOptions(node){
-    if(!node||node.type!=='video'||!node.el) return;
-    var list=node.el.querySelector('[data-f="avatarList"]');
-    var count=node.el.querySelector('[data-f="avatarCount"]');
-    if(!list) return;
-    node.params=normalizeVideoNodeParams(node.params);
-    if(videoAvatarsLoaded){
-      var valid={};
-      videoAvatars.forEach(function(a){ valid[String(a.id)]=true; });
-      var kept=node.params.avatar_ids.filter(function(id){ return !!valid[String(id)]; });
-      if(kept.length!==node.params.avatar_ids.length){ node.params.avatar_ids=kept; scheduleSave(); }
-    }
-    if(count) count.textContent=node.params.avatar_ids.length+' / 3';
-    list.innerHTML='';
-    if(videoAvatarsPromise){ list.innerHTML='<span class="nc-avatar-empty">正在读取形象...</span>'; return; }
-    if(videoAvatarsError){ list.innerHTML='<span class="nc-avatar-empty error">'+escapeHtml(videoAvatarsError)+'</span>'; return; }
-    if(!videoAvatarsLoaded){ list.innerHTML='<span class="nc-avatar-empty">等待读取形象</span>'; return; }
-    if(!videoAvatars.length){ list.innerHTML='<span class="nc-avatar-empty">暂无形象，请先到视频模块创建</span>'; return; }
-    videoAvatars.forEach(function(avatar){
-      var id=String(avatar.id), selected=node.params.avatar_ids.indexOf(id)>=0;
-      var button=document.createElement('button');
-      button.type='button';
-      button.className='nc-avatar-choice'+(selected?' on':'');
-      button.setAttribute('data-avatar-id',id);
-      button.textContent=avatar.name||('形象 '+id);
-      button.onclick=function(e){
-        e.stopPropagation();
-        if(!canEditCanvas()) return;
-        var before=snapshot(), ids=node.params.avatar_ids.slice(), index=ids.indexOf(id);
-        if(index>=0) ids.splice(index,1);
-        else if(ids.length>=3){ noteOf(node,'电影化身最多选择 3 个','#f0b95a'); return; }
-        else ids.push(id);
-        pushUndo(before);
-        node.params.avatar_ids=ids;
-        renderVideoAvatarOptions(node);
-        scheduleSave();
-      };
-      list.appendChild(button);
-    });
-  }
-  function loadVideoAvatars(force){
-    if(videoAvatarsPromise) return videoAvatarsPromise;
-    if(videoAvatarsLoaded&&!force) return Promise.resolve(videoAvatars);
-    videoAvatarsError='';
-    videoAvatarsPromise=apiClient.json('/api/gen/video/avatars?limit=120').then(function(data){
-      videoAvatars=(data&&data.items)||[];
-      videoAvatarsLoaded=true;
-      return videoAvatars;
-    }).catch(function(error){
-      videoAvatars=[];
-      videoAvatarsLoaded=true;
-      videoAvatarsError=(error&&error.message)||'形象列表读取失败';
-      throw error;
-    }).finally(function(){
-      videoAvatarsPromise=null;
-      Object.keys(nodes).forEach(function(id){ if(nodes[id].type==='video') renderVideoAvatarOptions(nodes[id]); });
-    });
-    Object.keys(nodes).forEach(function(id){ if(nodes[id].type==='video') renderVideoAvatarOptions(nodes[id]); });
-    return videoAvatarsPromise;
-  }
-  function refreshVideoNodeControls(node){
-    if(!node||node.type!=='video'||!node.el) return;
-    node.params=normalizeVideoNodeParams(node.params);
+  function refreshVideoNodeHint(node){
+    if(!node || node.type!=='video' || !node.el) return;
     var warn=node.el.querySelector('[data-f="videoWarn"]');
-    var avatars=node.el.querySelector('[data-f="avatarWrap"]');
-    var cost=node.el.querySelector('[data-f="videoCost"]');
-    if(warn) warn.style.display=node.params.channel==='grok'?'block':'none';
-    if(avatars) avatars.style.display=node.params.channel==='cinematic'?'block':'none';
-    if(cost) cost.textContent=node.params.channel==='cinematic'?'待报价':videoPointCost(node)+'点';
-    renderVideoAvatarOptions(node);
-    if(node.params.channel==='cinematic'&&!videoAvatarsLoaded&&!videoAvatarsPromise) loadVideoAvatars(false).catch(function(){});
+    if(warn) warn.style.display=((node.params.channel||'grok')==='grok')?'block':'none';
   }
   function normalizeVideoNodeError(node, err){
     var msg=String((err&&err.message)||err||'生成失败');
@@ -1459,7 +1360,6 @@
     (snap.nodes||[]).forEach(function(n){
       if(!n||!TYPE[n.type]) return;
       n.params=Object.assign({engine:'nb2',channel:'grok',ratio:'9:16',duration:'5',quality:'hd',title:'',remark:''},n.params||{});
-      if(n.type==='video') n.params=normalizeVideoNodeParams(n.params);
       if(n.type==='shortDrama'){
         n.params=normalizeShortDramaNodeParams(n.params);
         n.outputs={};
@@ -1779,7 +1679,6 @@
     var t=TYPE[type], nextNid=++nid, id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabNodeSeed,nextNid):'n'+nextNid;
     if(data&&data.id){ id=data.id; var m=String(id).match(/^n(\d+)$/); if(m) nid=Math.max(nid,parseInt(m[1],10)); }
     var node={ id:id, type:type, x:(x==null?60+((nid*30)%400):x), y:(y==null?50+((nid*40)%300):y), collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',channel:'grok',ratio:'16:9',duration:'5',quality:'hd',title:'',remark:''},(data&&data.params)||{}), outputs:stateApi.cloneSnapshot((data&&data.outputs)||{}), image:(data&&data.image)||null };
-    if(type==='video') node.params=normalizeVideoNodeParams(node.params);
     if(type==='shortDrama') node.params=normalizeShortDramaNodeParams(node.params);
     var el=document.createElement('div'); el.className='nc-node'+(type==='shortDrama'?' nc-node-short-drama':''); el.style.left=node.x+'px'; el.style.top=node.y+'px';
     var body='';
@@ -1791,14 +1690,13 @@
       +'<div class="nc-refbar" data-f="refs"><span>参考图 0 张</span><div class="nc-refthumbs"></div></div>'
       +'<textarea class="nc-in" data-f="text" rows="2" placeholder="提示词（也可由上游文本/反推节点连入）"></textarea>'
       +'<button class="nc-go" data-f="run">生成图片</button><div class="nc-drop" data-f="result" style="display:none;"></div>';
-    if(type==='video') body='<div class="nc-lab">模型</div><div class="nc-seg" data-f="channel"><span class="nc-chip on" data-v="grok">果肉视频</span><span class="nc-chip" data-v="cinematic">电影化身·开放式</span></div>'
-      +'<div class="nc-seg" data-f="ratio"><span class="nc-chip" data-v="9:16">9:16</span><span class="nc-chip on" data-v="16:9">16:9</span></div>'
+    if(type==='video') body='<div class="nc-lab">模型</div><div class="nc-seg" data-f="channel"><span class="nc-chip on" data-v="grok">果肉视频</span><span class="nc-chip" data-v="micro">豆姐视频</span></div>'
+      +'<div class="nc-seg" data-f="ratio"><span class="nc-chip" data-v="9:16">9:16</span><span class="nc-chip on" data-v="16:9">16:9</span><span class="nc-chip" data-v="1:1">1:1</span></div>'
       +'<div data-f="videoWarn" style="margin-top:8px; font-size:12px; line-height:1.55; color:#b5892f;">果肉视频当前优先建议 16:9（横屏），其余比例暂时大概率失败</div>'
       +'<div class="nc-seg" data-f="duration"><span class="nc-chip on" data-v="5">5s</span><span class="nc-chip" data-v="10">10s</span></div>'
-      +'<div class="nc-video-avatars" data-f="avatarWrap" style="display:none;"><div class="nc-avatar-head"><span>选择电影化身</span><span data-f="avatarCount">0 / 3</span><button type="button" data-f="avatarRefresh">刷新</button></div><div class="nc-avatar-list" data-f="avatarList"></div></div>'
       +'<div class="nc-refbar" data-f="refs"><span>参考图 0 张</span><div class="nc-refthumbs"></div></div>'
       +'<textarea class="nc-in" data-f="text" rows="2" placeholder="视频提示词（也可由上游文本/反推节点连入）"></textarea>'
-      +'<div class="nc-video-submit"><button class="nc-go" data-f="run"><span>生成视频</span><span class="nc-video-cost" data-f="videoCost"></span></button></div><div class="nc-video-result" data-f="videoResult"></div>';
+      +'<button class="nc-go" data-f="run">生成视频</button><div class="nc-video-result" data-f="videoResult"></div>';
     if(type==='shortDrama') body='<div class="nc-short-drama-summary"><div><span>画幅与时长</span><strong data-f="shortDramaRatio"></strong></div><div><span>当前阶段</span><strong data-f="shortDramaStage"></strong></div><div><span>完成进度</span><strong data-f="shortDramaProgress"></strong></div><div><span>点数</span><strong data-f="shortDramaPoints"></strong></div></div>'
       +'<button class="nc-go nc-short-drama-open" type="button" data-f="openShortDrama">打开短剧工作区</button>';
     el.innerHTML='<div class="nc-head" data-f="head"><span style="display:flex;align-items:center;gap:7px;min-width:0;"><span class="dot" style="background:'+t.color+'"></span><span class="nc-node-title" data-f="headTitle">'+escapeHtml(node.params.title||t.name)+'</span><span class="nc-remark-mark" data-f="remarkMark" title="有备注">注</span></span><span class="nc-actions"><span class="nc-fold" data-f="fold" title="折叠/展开">−</span><span class="nc-x" data-f="del">×</span></span></div>'
@@ -1847,7 +1745,7 @@
     var videoResult=el.querySelector('[data-f="videoResult"]');
     if(videoResult&&node.outputs.video) renderVideoResult(node,node.outputs.video);
     refreshGenRefs(node);
-    refreshVideoNodeControls(node);
+    refreshVideoNodeHint(node);
     refreshShortDramaNode(node);
   }
   function inputVals(nodeId, port){
@@ -2745,9 +2643,7 @@
       out.oninput=function(){ if(!canEditCanvas()) return; node.outputs.prompt=out.value; scheduleSave(); };
     }
     el.querySelectorAll('.nc-seg').forEach(function(seg){ var f=seg.getAttribute('data-f');
-      seg.querySelectorAll('.nc-chip').forEach(function(c){ c.onclick=function(){ if(!canEditCanvas()) return; if(node.params[f]!==c.getAttribute('data-v')) pushUndo(); seg.querySelectorAll('.nc-chip').forEach(function(x){x.classList.remove('on');}); c.classList.add('on'); node.params[f]=c.getAttribute('data-v'); refreshVideoNodeControls(node); scheduleSave(); }; }); });
-    var avatarRefresh=el.querySelector('[data-f="avatarRefresh"]');
-    if(avatarRefresh) avatarRefresh.onclick=function(e){ e.stopPropagation(); loadVideoAvatars(true).catch(function(){}); };
+      seg.querySelectorAll('.nc-chip').forEach(function(c){ c.onclick=function(){ if(!canEditCanvas()) return; if(node.params[f]!==c.getAttribute('data-v')) pushUndo(); seg.querySelectorAll('.nc-chip').forEach(function(x){x.classList.remove('on');}); c.classList.add('on'); node.params[f]=c.getAttribute('data-v'); refreshVideoNodeHint(node); scheduleSave(); }; }); });
     var openShortDrama=el.querySelector('[data-f="openShortDrama"]');
     if(openShortDrama) openShortDrama.onclick=function(e){ e.stopPropagation(); openShortDramaWorkspace(node).catch(function(){}); };
     // 图片节点上传/粘贴
@@ -3154,41 +3050,16 @@
         });
     }
     if(node.type==='video'){
-      node.params=normalizeVideoNodeParams(node.params);
       var videoPrompt=inputVal(id,'prompt')||node.params.text||'';
       if(!videoPrompt.trim()){ setNodeState(node,'error','需要视频提示词（自己填或从上游连入）','#f4708a'); updateState('缺少提示词'); return Promise.reject('无词'); }
       var videoRefs=refImagesForNode(node).slice(0,4);
       var videoChannel=node.params.channel||'grok';
-      if(videoChannel==='cinematic'&&!node.params.avatar_ids.length){
-        setNodeState(node,'error','请先选择至少一个电影化身','#f4708a');
-        updateState('缺少电影化身');
-        return Promise.reject('缺少电影化身');
-      }
-      var endpoint, payload;
-      if(videoChannel==='cinematic'){
-        endpoint='/api/gen/cinematic';
-        payload={cine_mode:'open',avatar_ids:node.params.avatar_ids.map(function(avatarId){ return parseInt(avatarId,10); }),prompt:videoPrompt.trim(),ratio:node.params.ratio,duration:parseInt(node.params.duration,10),resolution:'1080p'};
-      }else{
-        endpoint='/api/gen/xiaole_video';
-        payload={channel:'grok',prompt:videoPrompt.trim(),ratio:node.params.ratio,duration:parseInt(node.params.duration,10)};
-      }
+      var payload={channel:videoChannel,prompt:videoPrompt.trim()};
+      if(videoChannel==='grok') payload.ratio=node.params.ratio||'16:9';
+      if(videoRefs.length) payload.reference_images=videoRefs.map(function(img){ return img.indexOf(',')>=0?img.split(',')[1]:img; });
       var vbtn=node.el.querySelector('[data-f="run"]');
       vbtn.disabled=true; setNodeState(node,'running','提交中...','#2dd4bf'); updateState('运行中');
-      var preparedRefs=videoChannel==='cinematic'?Promise.all(videoRefs.map(referenceImageDataUrl)):Promise.resolve(videoRefs.map(function(img){ return img.indexOf(',')>=0?img.split(',')[1]:img; }));
-      return preparedRefs.then(function(referenceImages){
-          if(referenceImages.length) payload.reference_images=referenceImages;
-          if(videoChannel!=='cinematic') return apiClient.json(endpoint,{method:'POST',body:payload});
-          return apiModule.quotePaidSubmission({
-            client:apiClient,quotePath:'/api/gen/cinematic/quote',submitPath:endpoint,payload:payload,
-            onQuote:function(cost){
-              var label=node.el&&node.el.querySelector('[data-f="videoCost"]');
-              if(label) label.textContent=cost+'点';
-            },
-            confirm:function(cost){
-              return typeof window.confirm==='function'&&window.confirm('生成电影化身视频将消耗 '+cost+' 点，确认提交吗？');
-            }
-          });
-        })
+      return apiClient.json('/api/gen/xiaole_video',{method:'POST',body:payload})
         .catch(function(error){
           var data=error&&error.data||{};
           if(error&&error.status===402) throw makeRunNodeError('点数不足',{code:'insufficient_points'});
@@ -3200,15 +3071,11 @@
           throw error;
         })
         .then(function(data){
-          if(data===null){
-            vbtn.disabled=false;setNodeState(node,null,'已取消提交','#5c6b82');updateState('已取消');
-            return {cancelled:true};
-          }
           if(!data.job_id) throw makeRunNodeError(data.detail||'提交失败',{code:data.code});
           return apiModule.poll({
             request:function(){ return apiClient.json('/api/gen/job/'+data.job_id); },
             intervalMs:3000,
-            maxMs:videoChannel==='cinematic'?1800000:900000,
+            maxMs:900000,
             inspect:function(d){
               if(d.status==='done') return {done:true,value:typeof d.result==='string'?JSON.parse(d.result):d.result};
               if(d.status==='error'||d.status==='failed') return {error:makeRunNodeError(d.error||'生成失败',{code:d.code||'job_failed'})};
@@ -3219,7 +3086,6 @@
           });
         })
         .then(function(result){ vbtn.disabled=false;
-          if(result&&result.cancelled) return null;
           var url=(result&&(result.video_url||result.source_video_url||result.url||(result.urls&&result.urls[0])))||'';
           if(!url) throw makeRunNodeError('未返回视频地址',{code:'missing_video_url'});
           node.outputs.video=url;

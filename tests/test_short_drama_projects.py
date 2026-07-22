@@ -1,4 +1,3 @@
-import base64
 import json
 import os
 import sqlite3
@@ -256,6 +255,18 @@ class ShortDramaProjectTests(unittest.TestCase):
         self.assertEqual(result["total_pages"], 2)
         self.assertEqual(len(result["items"]), 3)
 
+    def test_list_projects_returns_summaries_and_aggregates_charged_points(self):
+        project = short_drama.create_project(self.db, "alice", valid_project())
+        self.insert_planning_job(project, job_id=39, cost=3, status="pending")
+        self.insert_planning_job(project, job_id=40, cost=5, status="done")
+
+        item = short_drama.list_projects(self.db, "alice")["items"][0]
+
+        self.assertEqual(8, item["spent_points"])
+        self.assertEqual(project["id"], item["id"])
+        for detail_key in ("characters", "script_versions", "shots"):
+            self.assertNotIn(detail_key, item)
+
     def test_soft_delete_hides_project_and_releases_capacity(self):
         projects = [
             short_drama.create_project(
@@ -273,6 +284,40 @@ class ShortDramaProjectTests(unittest.TestCase):
             self.db, "alice", valid_project(title="替补项目")
         )
         self.assertEqual(replacement["title"], "替补项目")
+
+    def test_delete_rejects_unapplied_charged_job_but_allows_refunded_job(self):
+        project = short_drama.create_project(self.db, "alice", valid_project())
+        self.insert_planning_job(project, job_id=41, cost=3, status="running")
+
+        with self.assertRaises(short_drama.ProjectHasUnappliedJobs):
+            short_drama.delete_project(
+                self.db, "alice", project["id"], project["revision"]
+            )
+        self.assertEqual(project["id"], short_drama.get_project(
+            self.db, "alice", project["id"]
+        )["id"])
+
+        with closing(self.db()) as conn:
+            conn.execute("UPDATE jobs SET refunded=1 WHERE id=41")
+            conn.commit()
+        deleted = short_drama.delete_project(
+            self.db, "alice", project["id"], project["revision"]
+        )
+        self.assertTrue(deleted["deleted"])
+
+    def test_delete_allows_charged_job_after_it_is_applied(self):
+        project = short_drama.create_project(self.db, "alice", valid_project())
+        self.insert_planning_job(project, job_id=42, cost=3, status="done")
+        project = short_drama.apply_plan(
+            self.db, "alice", project["id"], project["revision"],
+            valid_editable_plan(), planning_cost=3, planning_job_id=42,
+        )
+
+        deleted = short_drama.delete_project(
+            self.db, "alice", project["id"], project["revision"]
+        )
+
+        self.assertTrue(deleted["deleted"])
 
     def test_create_project_rejects_impossible_duration_shot_pair(self):
         with self.assertRaisesRegex(ValueError, "时长与分镜数量不匹配"):
@@ -625,6 +670,61 @@ class ShortDramaProjectTests(unittest.TestCase):
                         self.db, "alice", project["id"], before["revision"], {section: None}
                     )
                 )
+
+    def test_character_and_dialogue_limits_are_enforced_atomically(self):
+        project = self.applied_project()
+        characters = []
+        for index in range(short_drama.MAX_CHARACTERS_PER_PROJECT + 1):
+            character = dict(project["characters"][0])
+            character.update({
+                "character_key": "character-%s" % index,
+                "name": "角色%s" % index,
+                "source_type": "ai_character",
+                "avatar_id": None,
+            })
+            characters.append(character)
+        self._assert_content_rejected_without_side_effects(
+            project, lambda before: short_drama.update_characters(
+                self.db, "alice", project["id"], before["revision"], characters
+            )
+        )
+
+        project = short_drama.confirm_stage(
+            self.db, "alice", project["id"], project["revision"], "characters_review"
+        )
+        script = dict(project["script_versions"][-1])
+        script["dialogue_lines"] = [{
+            "id": "line-%s" % index,
+            "character_key": project["characters"][0]["character_key"],
+            "text": "台词%s" % index,
+        } for index in range(short_drama.MAX_DIALOGUE_LINES_PER_SCRIPT + 1)]
+        self._assert_content_rejected_without_side_effects(
+            project, lambda before: short_drama.update_script(
+                self.db, "alice", project["id"], before["revision"], script
+            )
+        )
+
+    def test_script_version_limit_prevents_unbounded_history(self):
+        project = self.applied_project()
+        project = short_drama.confirm_stage(
+            self.db, "alice", project["id"], project["revision"], "characters_review"
+        )
+        for index in range(1, short_drama.MAX_SCRIPT_VERSIONS_PER_PROJECT):
+            script = dict(project["script_versions"][-1], title="版本%s" % (index + 1))
+            project = short_drama.update_script(
+                self.db, "alice", project["id"], project["revision"], script
+            )
+        self.assertEqual(
+            short_drama.MAX_SCRIPT_VERSIONS_PER_PROJECT,
+            len(project["script_versions"]),
+        )
+
+        script = dict(project["script_versions"][-1], title="超过上限")
+        self._assert_content_rejected_without_side_effects(
+            project, lambda before: short_drama.update_script(
+                self.db, "alice", project["id"], before["revision"], script
+            )
+        )
 
     def test_create_get_and_list_are_owner_scoped(self):
         created = short_drama.create_project(self.db, "alice", {
@@ -1352,83 +1452,6 @@ class ShortDramaRouteTests(unittest.TestCase):
                 status, _ = self.request("POST", "/api/gen/short-drama/projects", body=body)
                 self.assertEqual(400, status)
 
-    def test_cinematic_quote_is_authenticated_free_and_uses_complete_payload(self):
-        payload = {
-            "cine_mode": "open", "avatar_ids": [1], "prompt": "雨中奔跑",
-            "ratio": "9:16", "duration": 5, "resolution": "1080p",
-        }
-        status, _ = self.request(
-            "POST", "/api/gen/cinematic/quote", username=None, body=payload
-        )
-        self.assertEqual(401, status)
-        status, quote = self.request("POST", "/api/gen/cinematic/quote", body=payload)
-        self.assertEqual(200, status)
-        self.assertEqual({"cost": 7}, quote)
-        self.assertEqual([], self.points.deduct_calls)
-        self.assertEqual("cinematic", self.points.cost_calls[-1][0])
-        quoted_payload = self.points.cost_calls[-1][1]
-        self.assertTrue(all(quoted_payload[key] == value for key, value in payload.items()))
-        with closing(core.jdb()) as db:
-            self.assertEqual(0, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
-
-    def test_cinematic_quote_cleans_reference_files_on_success_failure_and_cancel_but_paid_keeps_them(self):
-        output = Path(self.tmp.name) / "content_out"
-        image = "data:image/png;base64," + base64.b64encode(
-            b"\x89PNG\r\n\x1a\n" + b"x" * 32
-        ).decode("ascii")
-        payload = {
-            "cine_mode": "open", "avatar_ids": [1], "prompt": "雨中奔跑",
-            "ratio": "9:16", "duration": 5, "resolution": "1080p",
-            "reference_images": [image],
-        }
-
-        def out_path(relative):
-            path = output / relative
-            path.parent.mkdir(parents=True, exist_ok=True)
-            return path
-
-        def files():
-            return [path for path in output.rglob("*") if path.is_file()]
-
-        class CancelledHandler:
-            path = "/api/gen/cinematic/quote"
-            def _token(self): return "alice"
-            def _json_body_strict(self): return payload
-            def _send(self, *_args): raise ConnectionAbortedError("client cancelled")
-
-        with patch.object(video, "_out_path", side_effect=out_path):
-            status, _quote = self.request("POST", "/api/gen/cinematic/quote", body=payload)
-            self.assertEqual(200, status)
-            self.assertEqual([], files())
-
-            original_cost_of = self.points.cost_of
-            self.points.cost_of = lambda *_args: (_ for _ in ()).throw(ValueError("quote failed"))
-            try:
-                status, _error = self.request("POST", "/api/gen/cinematic/quote", body=payload)
-            finally:
-                self.points.cost_of = original_cost_of
-            self.assertEqual(400, status)
-            self.assertEqual([], files())
-
-            with self.assertRaises(ConnectionAbortedError):
-                video.dispatch_cinematic_quote(CancelledHandler(), core.verify, original_cost_of)
-            self.assertEqual([], files())
-
-            original_handlers = core.HANDLERS
-            core.HANDLERS = dict(core.HANDLERS, cinematic=lambda value: value)
-            try:
-                with patch.object(video, "record_video_pending_asset"):
-                    status, accepted = self.request("POST", "/api/gen/cinematic", body=payload)
-            finally:
-                core.HANDLERS = original_handlers
-            self.assertEqual(200, status, accepted)
-            with closing(core.jdb()) as db:
-                persisted = json.loads(db.execute(
-                    "SELECT payload FROM jobs WHERE id=?", (accepted["job_id"],)
-                ).fetchone()[0])
-            self.assertEqual(1, len(persisted["reference_image_files"]))
-            self.assertEqual(1, len(files()))
-
     def test_invalid_short_drama_copy_payload_is_rejected_before_deduct_or_job_insert(self):
         invalid_changes = (
             {"dur": "31s"},
@@ -1530,6 +1553,38 @@ class ShortDramaRouteTests(unittest.TestCase):
             )
             self.assertEqual(200, status)
             self.assertEqual("释放名额后的项目", replacement["title"])
+
+    def test_delete_route_serializes_with_submission_and_blocks_unapplied_paid_job(self):
+        status, project = self.request(
+            "POST", "/api/gen/short-drama/projects", body=valid_project()
+        )
+        self.assertEqual(200, status)
+        job_id = self.insert_job(status="running", project=project)
+        lock_states = []
+        original_delete = short_drama.delete_project
+
+        def observed_delete(*args, **kwargs):
+            lock_states.append(core._submission_lock.locked())
+            return original_delete(*args, **kwargs)
+
+        with patch.object(short_drama, "delete_project", side_effect=observed_delete):
+            status, blocked = self.request(
+                "POST", "/api/gen/short-drama/project/delete",
+                body={"project_id": project["id"], "revision": project["revision"]},
+            )
+        self.assertEqual(409, status)
+        self.assertEqual("short_drama_unapplied_paid_job", blocked["code"])
+        self.assertEqual([True], lock_states)
+
+        with closing(core.jdb()) as db:
+            db.execute("UPDATE jobs SET refunded=1 WHERE id=?", (job_id,))
+            db.commit()
+        status, deleted = self.request(
+            "POST", "/api/gen/short-drama/project/delete",
+            body={"project_id": project["id"], "revision": project["revision"]},
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(deleted["deleted"])
 
     def test_project_routes_reject_malformed_settings_with_http_400(self):
         for patch in ({"ratio": []}, {"target_duration": []}, {"target_duration": "30"},

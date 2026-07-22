@@ -25,9 +25,10 @@
 - 每个用户最多保留 50 个未删除短剧项目，配置项为 `HQ_SHORT_DRAMA_MAX_PROJECTS_PER_USER`，默认值 50；配置非法时采用默认值。
 - 创建项目时在同一数据库写事务内统计 `deleted=0` 的项目数。达到上限返回 HTTP 429，错误码 `short_drama_project_cap`，响应包含 `max_projects`。
 - 项目列表接口使用 `page` 和 `page_size`，默认分别为 1 和 20；`page_size` 最大为 50。非法、布尔值、零或负数返回 HTTP 400。
-- 列表返回 `items`、`page`、`page_size`、`total` 和 `total_pages`。查询只读取当前用户且 `deleted=0` 的项目，并按 `updated_at DESC, id DESC` 稳定排序。
-- 删除使用 `POST /api/gen/short-drama/project/delete`，请求体包含 `project_id` 和 `revision`。后端按用户、版本号和未删除状态执行软删除，并递增版本号；重复删除按不存在处理，不暴露其他用户的项目。
+- 列表返回 `items`、`page`、`page_size`、`total` 和 `total_pages`。`items` 只包含项目摘要，不加载角色、剧本版本和分镜；扣点按当前页项目一次聚合。查询只读取当前用户且 `deleted=0` 的项目，并按 `updated_at DESC, id DESC` 稳定排序。
+- 删除使用 `POST /api/gen/short-drama/project/delete`，请求体包含 `project_id` 和 `revision`。后端按用户、版本号和未删除状态执行软删除，并递增版本号；重复删除按不存在处理，不暴露其他用户的项目。存在已扣点但尚未应用或退款的策划任务时返回 `short_drama_unapplied_paid_job`，禁止删除。
 - 软删除后项目不再出现在列表、详情、恢复任务和更新接口中，并立即释放一个项目名额。关联任务和内容保留用于账务审计，不执行物理级联删除。
+- 每个项目最多 20 个角色、每版剧本最多 120 条台词、最多保留 20 个剧本版本；前后端执行同一上限。
 
 ## 时长与镜头组合约束
 
@@ -50,7 +51,7 @@
 
 - 所有接口复用主站鉴权和浏览器变更安全校验；项目查询与修改始终绑定当前用户名。
 - 创建上限检查和插入在 `BEGIN IMMEDIATE` 事务内完成，避免并发请求绕过上限。
-- 修改和删除使用 `revision` 乐观锁；冲突返回 HTTP 409。
+- 修改和删除使用 `revision` 乐观锁；冲突返回 HTTP 409。删除与付费策划提交共用提交锁，并在数据库写事务内检查未应用付费任务，避免生成出已扣点的孤立任务。
 - 策划提交继续使用 Idempotency-Key、付费任务原子创建、队列失败退款和恢复逻辑。
 - 请求体字段采用白名单，未知字段、类型强制转换和跨用户资源引用均拒绝。
 
@@ -61,13 +62,10 @@
 - `server/content_domains/short_drama.py`
 - `server/content_domains/core.py`
 - `server/content_domains/text.py`
-- `server/content_domains/video.py`（仅短剧所需的电影感引用契约）
 - `site/workbench/canvas.html`
-- `site/workbench/canvas/canvas-api.js`
 - `site/workbench/canvas/canvas-app.js`
 - `site/workbench/canvas/canvas-short-drama.js`
 - `site/workbench/canvas/canvas-short-drama.css`
-- `site/workbench/canvas/canvas.css`
 - `scripts/stamp_assets.py`
 - `docs/api/openapi.json`
 - 与上述短剧行为直接对应的 `tests/` 文件

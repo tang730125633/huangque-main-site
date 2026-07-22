@@ -21,6 +21,9 @@ SHOT_COUNTS = set(range(6, 11))
 DEFAULT_MAX_PROJECTS_PER_USER = 50
 DEFAULT_PROJECT_PAGE_SIZE = 20
 MAX_PROJECT_PAGE_SIZE = 50
+MAX_CHARACTERS_PER_PROJECT = 20
+MAX_DIALOGUE_LINES_PER_SCRIPT = 120
+MAX_SCRIPT_VERSIONS_PER_PROJECT = 20
 CONTENT_KEYS = {"characters", "script", "shots"}
 PLANNING_SPEC_FIELDS = {
     "synopsis", "ratio", "target_duration", "shot_count", "visual_style", "target_platform",
@@ -43,6 +46,10 @@ class ProjectLimitExceeded(ValueError):
     def __init__(self, max_projects):
         super().__init__("短剧项目数量已达上限")
         self.max_projects = max_projects
+
+
+class ProjectHasUnappliedJobs(RuntimeError):
+    pass
 
 
 def _max_projects_per_user():
@@ -360,6 +367,8 @@ def normalize_plan(raw, settings):
     shots = raw["shots"]
     if not isinstance(characters, list) or not isinstance(script, dict) or not isinstance(shots, list):
         raise ValueError("短剧规划数据无效")
+    if len(characters) > MAX_CHARACTERS_PER_PROJECT:
+        raise ValueError("短剧角色数量不能超过 %d 个" % MAX_CHARACTERS_PER_PROJECT)
 
     normalized_characters = []
     for character in characters:
@@ -394,6 +403,8 @@ def normalize_plan(raw, settings):
     required_script = {"hook", "conflict", "turn", "ending", "dialogue_lines"}
     if set(script) != required_script or not isinstance(script["dialogue_lines"], list):
         raise ValueError("剧本数据无效")
+    if len(script["dialogue_lines"]) > MAX_DIALOGUE_LINES_PER_SCRIPT:
+        raise ValueError("剧本台词数量不能超过 %d 条" % MAX_DIALOGUE_LINES_PER_SCRIPT)
     dialogue_lines = []
     for line in script["dialogue_lines"]:
         if not isinstance(line, dict):
@@ -478,8 +489,9 @@ def _dict_rows(conn, query, params):
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
-def _charged_planning_points(conn, username, project_id):
-    total = 0
+def _charged_planning_points_by_project(conn, username, project_ids=None):
+    wanted = set(project_ids) if project_ids is not None else None
+    totals = {}
     rows = _dict_rows(
         conn,
         "SELECT cost, payload, refunded FROM jobs WHERE username=? AND kind='copy' "
@@ -488,10 +500,37 @@ def _charged_planning_points(conn, username, project_id):
     )
     for row in rows:
         payload = _json(row["payload"], {})
+        project_id = payload.get("project_id") if isinstance(payload, dict) else None
+        if (isinstance(payload, dict) and payload.get("format") == "short_drama" and project_id and
+                (wanted is None or project_id in wanted)):
+            totals[project_id] = totals.get(project_id, 0) + int(row["cost"] or 0)
+    return totals
+
+
+def _charged_planning_points(conn, username, project_id):
+    return _charged_planning_points_by_project(conn, username, {project_id}).get(project_id, 0)
+
+
+def _has_unapplied_charged_job(conn, username, project_id):
+    applied_ids = {
+        int(row[0]) for row in conn.execute(
+            "SELECT job_id FROM short_drama_applied_jobs WHERE project_id=? AND username=?",
+            (project_id, username),
+        ).fetchall()
+    }
+    rows = conn.execute(
+        "SELECT id, payload FROM jobs WHERE username=? AND kind='copy' "
+        "AND COALESCE(cost,0)>0 AND COALESCE(refunded,0)<>1",
+        (username,),
+    ).fetchall()
+    for job_id, raw_payload in rows:
+        if int(job_id) in applied_ids:
+            continue
+        payload = _json(raw_payload, {})
         if (isinstance(payload, dict) and payload.get("format") == "short_drama" and
                 payload.get("project_id") == project_id):
-            total += int(row["cost"] or 0)
-    return total
+            return True
+    return False
 
 
 def _project_detail(conn, username, project_id):
@@ -579,13 +618,19 @@ def list_projects(db_factory, username, page=1, page_size=DEFAULT_PROJECT_PAGE_S
             "SELECT COUNT(*) FROM short_drama_projects WHERE username=? AND deleted=0",
             (username,),
         ).fetchone()[0])
-        ids = conn.execute(
-            "SELECT id FROM short_drama_projects WHERE username=? AND deleted=0 "
+        rows = _dict_rows(conn,
+            "SELECT * FROM short_drama_projects WHERE username=? AND deleted=0 "
             "ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
             (username, page_size, (page - 1) * page_size),
-        ).fetchall()
+        )
+        totals = _charged_planning_points_by_project(
+            conn, username, {row["id"] for row in rows}
+        )
+        for row in rows:
+            row["revision"] = int(row["revision"])
+            row["spent_points"] = totals.get(row["id"], 0)
         return {
-            "items": [_project_detail(conn, username, project_id) for (project_id,) in ids],
+            "items": rows,
             "page": page,
             "page_size": page_size,
             "total": total,
@@ -611,6 +656,9 @@ def delete_project(db_factory, username, project_id, revision):
     now = int(time.time())
     conn = _connection(db_factory)
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        if _has_unapplied_charged_job(conn, username, project_id.strip()):
+            raise ProjectHasUnappliedJobs("项目存在已扣点且尚未应用或退款的策划任务")
         cur = conn.execute(
             "UPDATE short_drama_projects SET deleted=1, revision=revision+1, updated_at=? "
             "WHERE id=? AND username=? AND revision=? AND deleted=0",
@@ -875,6 +923,8 @@ def _optional_key(value, field):
 def _normalize_characters(characters, *, require_complete=False):
     if not isinstance(characters, list):
         raise ValueError("角色数据必须是数组")
+    if len(characters) > MAX_CHARACTERS_PER_PROJECT:
+        raise ValueError("短剧角色数量不能超过 %d 个" % MAX_CHARACTERS_PER_PROJECT)
     normalized = []
     for index, character in enumerate(characters):
         if not isinstance(character, dict):
@@ -932,6 +982,8 @@ def _normalize_script(script, character_keys, *, default_title=None, require_com
     dialogue_lines = script.get("dialogue_lines", _MISSING)
     if dialogue_lines is _MISSING or not isinstance(dialogue_lines, list):
         raise ValueError("剧本台词数据无效")
+    if len(dialogue_lines) > MAX_DIALOGUE_LINES_PER_SCRIPT:
+        raise ValueError("剧本台词数量不能超过 %d 条" % MAX_DIALOGUE_LINES_PER_SCRIPT)
     normalized_lines = []
     for line in dialogue_lines:
         if not isinstance(line, dict):
@@ -1176,6 +1228,8 @@ def update_script(db_factory, username, project_id, revision, script):
     try:
         _begin_content_update(conn, username, project_id, revision, required_stage)
         project = _project_detail(conn, username, project_id)
+        if len(project["script_versions"]) >= MAX_SCRIPT_VERSIONS_PER_PROJECT:
+            raise ValueError("剧本版本数量已达上限，请确认当前版本后继续")
         _characters, normalized_script, normalized_shots = _current_content_bundle(
             project, script=script, prune_dialogue_refs=True
         )
@@ -1382,6 +1436,11 @@ def _http_error(handler, error):
             "code": "short_drama_project_cap",
             "max_projects": error.max_projects,
         })
+    elif isinstance(error, ProjectHasUnappliedJobs):
+        handler._send(409, {
+            "detail": str(error)[:220],
+            "code": "short_drama_unapplied_paid_job",
+        })
     elif isinstance(error, LookupError):
         handler._send(404, {"detail": str(error)[:220]})
     elif isinstance(error, RevisionConflict):
@@ -1526,9 +1585,16 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
         elif path.endswith("/project/delete"):
             body = _request_object(handler)
             _validate_project_request(body, {"project_id", "revision"})
-            handler._send(200, delete_project(
-                db_factory, username, body["project_id"], body["revision"]
-            ))
+            if mutation_lock is not None:
+                with mutation_lock:
+                    deleted = delete_project(
+                        db_factory, username, body["project_id"], body["revision"]
+                    )
+            else:
+                deleted = delete_project(
+                    db_factory, username, body["project_id"], body["revision"]
+                )
+            handler._send(200, deleted)
         elif path.endswith("/projects"):
             handler._send(200, create_project(db_factory, username, _request_object(handler)))
         elif path.endswith("/apply-plan"):
@@ -1550,6 +1616,7 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             handler._send(200, confirm_stage(
                 db_factory, username, body["project_id"], body["revision"], body["stage"]
             ))
-    except (LookupError, RevisionConflict, AppliedJobConflict, ValueError) as error:
+    except (LookupError, RevisionConflict, AppliedJobConflict, ProjectHasUnappliedJobs,
+            ValueError) as error:
         _http_error(handler, error)
     return True

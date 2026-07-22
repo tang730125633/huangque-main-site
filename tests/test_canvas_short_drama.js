@@ -32,7 +32,6 @@ function testOpenApiContract() {
   }
   for (const [method, route] of [
     ['put', '/api/gen/short-drama/project'],
-    ['post', '/api/gen/short-drama/project/delete'],
     ['post', '/api/gen/short-drama/apply-plan'],
     ['post', '/api/gen/short-drama/confirm'],
   ]) {
@@ -43,22 +42,32 @@ function testOpenApiContract() {
       `${method.toUpperCase()} ${route} must document optimistic-concurrency conflict`,
     );
   }
+  assert.equal(
+    spec.paths['/api/gen/short-drama/project/delete'].post.responses['409']
+      .content['application/json'].schema.$ref,
+    '#/components/schemas/ShortDramaDeleteConflict',
+  );
   const applyConflict = spec.paths['/api/gen/short-drama/apply-plan'].post.responses['409'];
   assert.match(applyConflict.description, /job_already_applied/,
     'apply-plan conflict must document duplicate job application');
 
   for (const name of [
-    'ShortDramaProject', 'ShortDramaCharacter', 'ShortDramaScriptVersion', 'ShortDramaShot',
-    'RevisionConflict', 'ShortDramaPlanningRequest', 'ShortDramaPlanningResult',
+    'ShortDramaProject', 'ShortDramaProjectSummary', 'ShortDramaCharacter',
+    'ShortDramaScriptVersion', 'ShortDramaShot', 'RevisionConflict',
+    'ShortDramaDeleteConflict', 'ShortDramaPlanningRequest', 'ShortDramaPlanningResult',
   ]) assert.ok(spec.components.schemas[name], `OpenAPI must define ${name}`);
+  assert.equal(
+    spec.paths['/api/gen/short-drama/projects'].get.responses['200']
+      .content['application/json'].schema.properties.items.items.$ref,
+    '#/components/schemas/ShortDramaProjectSummary',
+  );
+  assert.equal(spec.components.schemas.ShortDramaProject.properties.characters.maxItems, 20);
+  assert.equal(spec.components.schemas.ShortDramaProject.properties.script_versions.maxItems, 20);
+  assert.equal(spec.components.schemas.ShortDramaScriptVersion.properties.dialogue_lines.maxItems, 120);
   const quote = spec.paths['/api/gen/short-drama/planning-quote'].get;
   assert.equal(quote.responses['200'].content['application/json'].schema.properties.cost.type, 'integer');
   assert.match(quote.description, /free|no points/i);
   assert.ok(spec.paths['/api/gen/short-drama/planning-job'].get.responses['404']);
-  const cinematicQuote = spec.paths['/api/gen/cinematic/quote'].post;
-  assert.ok(cinematicQuote.responses['400'] && cinematicQuote.responses['401']);
-  assert.match(cinematicQuote.description, /free|no points/i);
-
   const updateSchema = spec.paths['/api/gen/short-drama/project'].put
     .requestBody.content['application/json'].schema;
   assert.equal(updateSchema.oneOf.length, 4, 'PUT project must document settings plus three content variants');
@@ -326,6 +335,22 @@ async function testPureHelpers() {
   assert.deepEqual(shortDrama.validShotCounts(30), [6]);
   assert.deepEqual(shortDrama.validShotCounts(45), [6, 7, 8, 9]);
   assert.deepEqual(shortDrama.validShotCounts(60), [6, 7, 8, 9, 10]);
+  assert.ok(shortDrama.validateSettings({
+    title: '短剧', synopsis: '这是足够长的故事梗概', ratio: '9:16',
+    target_duration: 30, shot_count: 7, visual_style: '写实', target_platform: '抖音',
+  }).some((message) => message.includes('不匹配')));
+
+  const project = workspaceProject();
+  const tooManyCharacters = Array.from({ length: 21 }, (_, index) => ({
+    ...project.characters[0], character_key: `character-${index}`, name: `角色${index}`,
+  }));
+  assert.ok(shortDrama.validateCharacters(tooManyCharacters).some((message) => message.includes('20')));
+  const tooManyLines = Array.from({ length: 121 }, (_, index) => ({
+    id: `line-${index}`, character_key: project.characters[0].character_key, text: `台词${index}`,
+  }));
+  assert.ok(shortDrama.validateScript({
+    ...project.script_versions[0], dialogue_lines: tooManyLines,
+  }, project).some((message) => message.includes('120')));
 
   assert.deepEqual(shortDrama.planningPayload(settings), {
     format: 'short_drama', project_id: undefined, project_revision: undefined,
@@ -1375,7 +1400,7 @@ async function testNoChargeFortyFiveSecondControllerAcceptance() {
 
 async function testWorkspaceDeletesProjectWithRevision() {
   const project = {
-    id: 'project-delete', revision: 4, stage: 'draft', title: '待删除短剧',
+    id: 'project-delete', revision: 4, stage: 'characters_review', title: '待删除短剧',
     synopsis: '这是一个准备删除的短剧项目', ratio: '9:16', target_duration: 30,
     shot_count: 6, visual_style: '电影写实', target_platform: '抖音',
     characters: [], script_versions: [], shots: [],
@@ -1396,11 +1421,32 @@ async function testWorkspaceDeletesProjectWithRevision() {
     onDelete(result) { removed = result; },
   });
   await workspace.ready;
+  assert.equal(workspace.selectStage('settings'), true);
+  assert.match(workspace.render(), /data-action="delete-project">删除项目<\/button>/,
+    'owners can delete after planning while no mutation is active');
   const result = await workspace.deleteProject();
   assert.deepEqual(deleted, { projectId: 'project-delete', revision: 4 });
   assert.deepEqual(result, { id: 'project-delete', revision: 5, deleted: true });
   assert.deepEqual(removed, result);
   workspace.destroy();
+
+  const blocked = shortDrama.createWorkspace({
+    projectId: project.id, document: null,
+    client: {
+      get() { return Promise.resolve(project); },
+      delete() {
+        const error = new Error('项目存在尚未处理的付费策划任务');
+        error.status = 409; error.code = 'short_drama_unapplied_paid_job';
+        return Promise.reject(error);
+      },
+    },
+    confirmDelete() { return true; },
+  });
+  await blocked.ready;
+  await assert.rejects(blocked.deleteProject(), /尚未处理/);
+  assert.equal(blocked.getState().stale, false, 'non-revision 409 does not force a stale reload state');
+  assert.equal(blocked.getState().error, '项目存在尚未处理的付费策划任务');
+  blocked.destroy();
 }
 
 async function main() {

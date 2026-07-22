@@ -68,26 +68,5 @@
       timer=repeat(tick,intervalMs);
     });
   }
-  function quotePaidSubmission(options){
-    options=options||{};
-    var client=options.client;
-    if(!client||typeof client.json!=='function'||!options.quotePath||!options.submitPath){
-      return Promise.reject(new Error('quoted submission requires client and routes'));
-    }
-    var payload=options.payload||{};
-    return Promise.resolve(client.json(options.quotePath,{method:'POST',body:payload})).then(function(quote){
-      var cost=quote&&quote.cost;
-      if(typeof cost!=='number'||!isFinite(cost)||Math.floor(cost)!==cost||cost<0){
-        throw new Error('服务端报价无效，请稍后重试');
-      }
-      if(typeof options.onQuote==='function') options.onQuote(cost,quote);
-      var accepted=typeof options.confirm==='function'?options.confirm(cost,quote):false;
-      return Promise.resolve(accepted).then(function(ok){
-        if(!ok) return null;
-        if(typeof options.submit==='function') return options.submit(cost,quote);
-        return client.json(options.submitPath,{method:'POST',body:payload});
-      });
-    });
-  }
-  return {createClient:createClient,apiError:apiError,poll:poll,quotePaidSubmission:quotePaidSubmission};
+  return {createClient:createClient,apiError:apiError,poll:poll};
 });

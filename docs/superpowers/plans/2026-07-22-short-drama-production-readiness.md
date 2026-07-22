@@ -26,11 +26,9 @@
 - Create: `server/content_domains/short_drama.py`
 - Modify: `server/content_domains/core.py`
 - Modify: `server/content_domains/text.py`
-- Modify: `server/content_domains/video.py`
 - Create: `tests/test_short_drama_planning.py`
 - Create: `tests/test_short_drama_projects.py`
 - Modify: `tests/test_content_domains.py`
-- Modify: `tests/test_cinematic_references.py`
 - Modify: `tests/test_sora_video.py`
 
 **Interfaces:**
@@ -39,7 +37,7 @@
 
 - [x] **Step 1: 只导入既有短剧测试并保持生产代码未改**
 
-从 `codex/sync-test-server-main-20260722` 提取两个短剧测试文件，以及共享测试中仅含 `short_drama`、`cinematic reference` 和短剧 Sora 契约的测试方法；不得整体覆盖主站共享测试文件。
+从 `codex/sync-test-server-main-20260722` 提取两个短剧测试文件，以及共享测试中仅含 `short_drama` 契约的测试方法；不得整体覆盖主站共享测试文件。
 
 - [x] **Step 2: 运行测试并确认 RED**
 
@@ -75,7 +73,7 @@ _short_drama_domain().init_db(jdb)
 Run:
 
 ```powershell
-python -m unittest tests.test_short_drama_planning tests.test_short_drama_projects tests.test_content_domains tests.test_cinematic_references tests.test_sora_video -v
+python -m unittest tests.test_short_drama_planning tests.test_short_drama_projects -v
 ```
 
 Expected: 全部通过，0 failures，0 errors。
@@ -83,7 +81,7 @@ Expected: 全部通过，0 failures，0 errors。
 - [x] **Step 5: 提交基础后端**
 
 ```powershell
-git add server/content_domains/short_drama.py server/content_domains/core.py server/content_domains/text.py server/content_domains/video.py tests/test_short_drama_planning.py tests/test_short_drama_projects.py tests/test_content_domains.py tests/test_cinematic_references.py tests/test_sora_video.py
+git add server/content_domains/short_drama.py server/content_domains/core.py server/content_domains/text.py tests/test_short_drama_planning.py tests/test_short_drama_projects.py
 git commit -m "feat: add short drama planning backend"
 ```
 
@@ -309,11 +307,9 @@ git commit -m "fix: report charged short drama planning points"
 
 **Files:**
 - Modify: `site/workbench/canvas.html`
-- Modify: `site/workbench/canvas/canvas-api.js`
 - Modify: `site/workbench/canvas/canvas-app.js`
 - Create: `site/workbench/canvas/canvas-short-drama.js`
 - Create: `site/workbench/canvas/canvas-short-drama.css`
-- Modify: `site/workbench/canvas/canvas.css`
 - Modify: `scripts/stamp_assets.py`
 - Modify: `tests/test_canvas_api.js`
 - Create: `tests/test_canvas_short_drama.js`
@@ -379,7 +375,7 @@ Expected: 所有测试通过，资源版本戳检查返回 `cache stamps OK`。
 - [x] **Step 5: 提交画布功能**
 
 ```powershell
-git add site/workbench/canvas.html site/workbench/canvas/canvas-api.js site/workbench/canvas/canvas-app.js site/workbench/canvas/canvas-short-drama.js site/workbench/canvas/canvas-short-drama.css site/workbench/canvas/canvas.css scripts/stamp_assets.py tests/test_canvas_api.js tests/test_canvas_short_drama.js tests/test_canvas_asset_extraction.py
+git add site/workbench/canvas.html site/workbench/canvas/canvas-app.js site/workbench/canvas/canvas-short-drama.js site/workbench/canvas/canvas-short-drama.css scripts/stamp_assets.py tests/test_canvas_short_drama.js
 git commit -m "feat: add bounded short drama canvas workspace"
 ```
 
@@ -400,7 +396,7 @@ git commit -m "feat: add bounded short drama canvas workspace"
 - [x] **Step 2: 运行重点验证**
 
 ```powershell
-python -m unittest tests.test_short_drama_planning tests.test_short_drama_projects tests.test_content_domains tests.test_canvas_asset_extraction tests.test_cinematic_references tests.test_sora_video -v
+python -m unittest tests.test_short_drama_planning tests.test_short_drama_projects tests.test_canvas_asset_extraction -v
 node tests/test_canvas_api.js
 node tests/test_canvas_short_drama.js
 node tests/test_cloud_shell_sidebar.js

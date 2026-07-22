@@ -5,6 +5,7 @@
 })(typeof window!=='undefined'?window:null,function(){
   'use strict';
   var STAGES=['draft','characters_review','script_review','storyboard_review','stills_review'];
+  var MAX_CHARACTERS=20,MAX_DIALOGUE_LINES=120;
   var PLACEHOLDER_SYNOPSIS='请在短剧工作区完善故事梗概';
   var STAGE_LABELS={
     settings:'项目设置',characters_review:'角色确认',script_review:'剧本确认',
@@ -345,6 +346,9 @@
     if(patch.shot_count<6||patch.shot_count>10||Math.floor(patch.shot_count)!==patch.shot_count){
       errors.push('分镜数量必须为 6–10 个');
     }
+    if(validShotCounts(patch.target_duration).indexOf(patch.shot_count)<0){
+      errors.push('目标时长与分镜数量不匹配');
+    }
     if(!patch.visual_style) errors.push('请输入视觉风格');
     if(!patch.target_platform) errors.push('请输入目标平台');
     return errors;
@@ -352,6 +356,7 @@
 
   function validateCharacters(characters){
     var errors=[],seen=Object.create(null);
+    if((characters||[]).length>MAX_CHARACTERS) errors.push('短剧角色数量不能超过 '+MAX_CHARACTERS+' 个');
     makeCharactersPatch(characters).characters.forEach(function(character,index){
       var label='角色 '+(index+1)+'：';
       ['character_key','name','identity_text','personality','appearance_prompt','wardrobe_prompt'].forEach(function(field){
@@ -369,6 +374,9 @@
 
   function validateScript(script,project){
     var value=makeScriptPatch(script).script,errors=[];
+    if(value.dialogue_lines.length>MAX_DIALOGUE_LINES){
+      errors.push('剧本台词数量不能超过 '+MAX_DIALOGUE_LINES+' 条');
+    }
     ['title','logline','hook','conflict_text','turn_text','ending'].forEach(function(field){
       if(!value[field]) errors.push('剧本缺少 '+field);
     });
@@ -416,7 +424,7 @@
   }
 
   function workspaceErrorMessage(error){
-    if(error&&(error.status===409||error.code==='revision_conflict')){
+    if(error&&error.code==='revision_conflict'){
       return '项目已在其他页面更新，请刷新后重试';
     }
     return error&&error.message||'短剧工作区操作失败';
@@ -445,10 +453,11 @@
 
   function renderSettingsEditor(project,state){
     var editable=isStageEditable(project,'settings',state.canEdit)&&!state.busy;
+    var deletable=state.canEdit&&!state.busy;
     var shotOptions=validShotCounts(project.target_duration).map(function(count){
       return '<option value="'+count+'"'+selected(project.shot_count,count)+'>'+count+' 镜</option>';
     }).join('');
-    return '<section class="nc-short-drama-panel nc-short-drama-settings-form"><header><div><span class="nc-short-drama-kicker">免费编辑</span><h2>项目设置</h2></div><div class="nc-short-drama-actions"><button type="button" class="is-danger" data-action="delete-project"'+disabledUnless(editable)+'>删除项目</button><button type="button" data-action="save-settings"'+disabledUnless(editable)+'>保存设置</button></div></header>'+
+    return '<section class="nc-short-drama-panel nc-short-drama-settings-form"><header><div><span class="nc-short-drama-kicker">免费编辑</span><h2>项目设置</h2></div><div class="nc-short-drama-actions"><button type="button" class="is-danger" data-action="delete-project"'+disabledUnless(deletable)+'>删除项目</button><button type="button" data-action="save-settings"'+disabledUnless(editable)+'>保存设置</button></div></header>'+
       '<div class="nc-short-drama-form-grid"><label>短剧名称<input data-field="title" value="'+fieldValue(project.title)+'"'+disabledUnless(editable)+'></label>'+
       '<label class="is-wide">故事梗概<textarea data-field="synopsis" rows="7"'+disabledUnless(editable)+'>'+fieldValue(project.synopsis)+'</textarea><small>至少 8 个字；保存后才能生成策划。</small></label>'+
       '<label>画面比例<select data-field="ratio"'+disabledUnless(editable)+'><option'+selected(project.ratio,'9:16')+'>9:16</option><option'+selected(project.ratio,'16:9')+'>16:9</option></select></label>'+
@@ -573,7 +582,7 @@
     function showWorkspaceError(error,loadFailed){
       if(destroyed) return;
       state.busy=false;state.error=workspaceErrorMessage(error);
-      state.stale=!!(error&&(error.status===409||error.code==='revision_conflict'));
+      state.stale=!!(error&&error.code==='revision_conflict');
       state.loadFailed=!!loadFailed;
       state.loadStatus=loadFailed?Number(error&&error.status)||0:0;
       if(state.planning.running){ state.planning.running=false; state.planning.label=state.error; }

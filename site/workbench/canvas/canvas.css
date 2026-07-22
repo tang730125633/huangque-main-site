@@ -176,18 +176,6 @@
   .nc-chip.on{ color:#e7b24c; background:rgba(231,178,76,.1); border-color:rgba(231,178,76,.32); }
   .nc-go{ width:100%; padding:8px; font-size:12.5px; font-weight:700; color:#1a1206; background:linear-gradient(135deg,#f1c768,#e5ae43); border:none; border-radius:8px; cursor:pointer; font-family:inherit; user-select:none; -webkit-user-select:none; }
   .nc-go:disabled{ opacity:.6; cursor:wait; }
-  .nc-video-submit{ display:flex; align-items:center; gap:9px; }
-  .nc-video-submit .nc-go{ display:flex; align-items:center; justify-content:center; gap:8px; width:100%; min-width:0; }
-  .nc-video-cost{ flex:none; color:rgba(26,18,6,.7); font-size:11px; font-weight:700; white-space:nowrap; }
-  .nc-video-avatars{ padding:7px; border:1px solid rgba(244,114,182,.18); border-radius:8px; background:rgba(244,114,182,.045); }
-  .nc-avatar-head{ display:flex; align-items:center; gap:7px; margin-bottom:6px; color:#94a4bb; font-size:10.5px; }
-  .nc-avatar-head span:first-child{ flex:1; }
-  .nc-avatar-head button{ padding:2px 6px; border:1px solid rgba(148,164,187,.14); border-radius:5px; background:rgba(148,164,187,.06); color:#94a4bb; font:inherit; cursor:pointer; }
-  .nc-avatar-list{ display:flex; gap:5px; max-height:68px; overflow:auto; flex-wrap:wrap; }
-  .nc-avatar-choice{ max-width:100%; padding:4px 7px; overflow:hidden; border:1px solid rgba(148,164,187,.13); border-radius:6px; background:rgba(6,10,17,.45); color:#94a4bb; font:inherit; font-size:10.5px; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
-  .nc-avatar-choice.on{ border-color:rgba(231,178,76,.45); background:rgba(231,178,76,.12); color:#e7b24c; }
-  .nc-avatar-empty{ color:#6f8198; font-size:10.5px; line-height:1.5; }
-  .nc-avatar-empty.error{ color:#f4708a; }
   .nc-note{ font-size:10.5px; color:#5c6b82; min-height:15px; line-height:1.45; }
   .nc-refbar{ display:flex; align-items:center; gap:6px; min-height:26px; padding:5px 6px; border:1px solid rgba(70,180,255,.14); border-radius:8px; background:rgba(70,180,255,.05); color:#6f8198; font-size:10.5px; }
   .nc-refbar.has-ref{ color:#cbd6e4; border-color:rgba(70,180,255,.25); }

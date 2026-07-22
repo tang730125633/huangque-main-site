@@ -1163,8 +1163,9 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
-        if _short_drama_domain().dispatch_http(self, "POST", jdb, verify, getattr(points_domain, "cost_of", None)): return
-        if p == "/api/gen/cinematic/quote" and video_domain.dispatch_cinematic_quote(self, verify, points_domain.cost_of): return
+        if _short_drama_domain().dispatch_http(
+                self, "POST", jdb, verify, getattr(points_domain, "cost_of", None),
+                mutation_lock=_submission_lock): return
         if p == "/api/gen/inspiration/like": return inspiration_likes.handle_post(self, verify(self._token()), AUDIO_DB)
         if p == "/api/gen/asset/favorite":
             user = verify(self._token())
