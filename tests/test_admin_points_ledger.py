@@ -1,0 +1,52 @@
+from pathlib import Path
+import unittest
+
+
+class AdminPointsLedgerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.html = (
+            Path(__file__).resolve().parents[1] / "site" / "admin" / "index.html"
+        ).read_text(encoding="utf-8")
+
+    def test_has_dedicated_points_module_and_filters(self):
+        self.assertIn('data-module-tab="points"', self.html)
+        self.assertIn('data-module="points"', self.html)
+        self.assertIn('id="pointsUser"', self.html)
+        self.assertIn('id="pointsActor"', self.html)
+        self.assertIn('id="pointsDirection"', self.html)
+        self.assertNotIn('id="auditActor"', self.html)
+
+    def test_user_action_opens_filtered_points_module(self):
+        self.assertIn("if(act==='audit') return openPoints(username);", self.html)
+        self.assertIn("el('pointsUser').value=username||'';", self.html)
+        self.assertIn("switchModule('points');", self.html)
+
+    def test_query_includes_source_direction_and_username(self):
+        self.assertIn(
+            "'?limit=120&actor='+encodeURIComponent(el('pointsActor').value||'')",
+            self.html,
+        )
+        self.assertIn(
+            "'&direction='+encodeURIComponent(el('pointsDirection').value||'')",
+            self.html,
+        )
+        self.assertIn(
+            "'&username='+encodeURIComponent((el('pointsUser').value||'').trim())",
+            self.html,
+        )
+
+    def test_renders_summary_and_transaction_key(self):
+        for element_id in (
+            "pointsTotal",
+            "pointsCredits",
+            "pointsDebits",
+            "pointsNet",
+        ):
+            self.assertIn(f'id="{element_id}"', self.html)
+        self.assertIn("x.who_admin==='system'?'任务':x.who_admin", self.html)
+        self.assertIn("x.transaction_key||'-'", self.html)
+
+
+if __name__ == "__main__":
+    unittest.main()
