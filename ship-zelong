@@ -223,6 +223,7 @@ manifest="$upload/manifest.tsv"; backup="$backup_root/$run"
 test -f "$manifest"
 sudo install -d -o root -g root -m 700 "$backup/files" "$backup/sqlite"
 sudo cp "$manifest" "$backup/manifest.tsv"
+sudo chmod 0644 "$backup/manifest.tsv"
 sudo sh -c "printf 'commit=%s\nplan=%s\nrun=%s\ndomain=%s\n' '$commit' '$plan' '$run' '$domain' >'$backup/metadata'"
 need_auth=0; need_content=0; need_imggen=0; need_leadgen=0; need_reload=0
 while IFS="$(printf '\t')" read -r rank path target expected service reload; do

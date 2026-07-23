@@ -196,6 +196,7 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
 
     def test_online_sqlite_backup_and_missing_markers(self):
         self.assertIn('sqlite3 "$db" ".backup', SRC)
+        self.assertIn('chmod 0644 "$backup/manifest.tsv"', SRC)
         self.assertIn("PRESENT\\t%s", SRC)
         self.assertIn("MISSING\\t%s", SRC)
         self.assertIn("--parents", SRC)
