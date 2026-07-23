@@ -226,10 +226,38 @@ def check_clone_status(username, slot_id):
                    clone_baseline_version, clone_baseline_icl_speaker_id, clone_baseline_demo_audio
             FROM audio_voice_slots
             WHERE username=? AND slot_id=?""", (username, slot_id)).fetchone()
-        voice = c.execute("""SELECT display_name, preview_url FROM audio_voices
-            WHERE username=? AND slot_id=? ORDER BY id DESC LIMIT 1""", (username, slot_id)).fetchone()
+        voice = c.execute("""SELECT display_name, provider_voice, preview_url FROM audio_voices
+            WHERE id=? AND username=? AND slot_id=?""",
+            (slot["voice_id"] if slot else -1, username, slot_id)).fetchone()
     if not slot:
         raise ValueError("\u97f3\u8272\u69fd\u4f4d\u4e0d\u5b58\u5728\u6216\u4e0d\u5c5e\u4e8e\u5f53\u524d\u8d26\u53f7")
+    if (slot["status"] == "training" and slot["voice_id"] and voice
+            and str(voice["provider_voice"] or "").startswith(cosyvoice.CLONE_MODEL)
+            and voice["preview_url"]):
+        now = int(time.time())
+        with closing(adb()) as c:
+            cur = c.execute("""UPDATE audio_voice_slots SET status='ready', updated_at=?
+                WHERE id=? AND username=? AND slot_id=? AND status='training' AND voice_id=?
+                  AND EXISTS (
+                    SELECT 1 FROM audio_voices v
+                    WHERE v.id=audio_voice_slots.voice_id AND v.scope='personal'
+                      AND v.username=? AND v.slot_id=? AND v.provider_voice=?
+                      AND v.preview_url=?
+                  )""", (now, slot["id"], username, slot_id, slot["voice_id"],
+                           username, slot_id, voice["provider_voice"], voice["preview_url"]))
+            c.commit()
+        if cur.rowcount == 1:
+            return {"status": "ready", "preview_url": voice["preview_url"]}
+        with closing(adb()) as c:
+            current = c.execute("""SELECT s.status, s.clone_error, v.preview_url
+                FROM audio_voice_slots s LEFT JOIN audio_voices v ON v.id=s.voice_id
+                WHERE s.username=? AND s.slot_id=?""", (username, slot_id)).fetchone()
+        result = {"status": (current["status"] if current else "training") or "training"}
+        if current and current["preview_url"]:
+            result["preview_url"] = current["preview_url"]
+        if current and current["clone_error"]:
+            result["clone_error"] = current["clone_error"]
+        return result
     if not cosyvoice.enabled():
         return {"status": "failed", "clone_error": "声音复刻服务暂不可用"}
     # CosyVoice\uff1aprovider_voice \u662f CosyVoice voice_id \u5c31\u67e5\u5b83\u7684 list_voice \u72b6\u6001\uff0c\u4e0d\u78b0\u8c46\u5305\u3002
@@ -425,17 +453,27 @@ def _cosy_clone_preview(voice_id):
 
 def _cosy_backfill_preview_async(voice_id, username, voice_key):
     """复刻返回后【异步】生成试听并回填，不拖慢音色「就绪」。synth 对就绪窗口重试(#602)，
-    成功就 UPDATE 该音色行的 preview(仅当其仍为空，避免覆盖已回填/后续重刻)。"""
+    成功就 UPDATE 该音色行的 preview 并同步槽位 ready。provider_voice 必须仍匹配本次
+    复刻，避免旧异步任务覆盖随后发起的新复刻。"""
     def _run():
         pf, url = _cosy_clone_preview(voice_id)
         if not url:
             return
         try:
             with closing(adb()) as c:
-                c.execute("""UPDATE audio_voices SET preview_file=?, preview_url=?, updated_at=?
+                now = int(time.time())
+                cur = c.execute("""UPDATE audio_voices SET preview_file=?, preview_url=?, updated_at=?
                     WHERE username=? AND scope='personal' AND voice_key=?
+                      AND provider_voice=?
                       AND (preview_url IS NULL OR preview_url='')""",
-                    (pf, url, int(time.time()), username, voice_key))
+                    (pf, url, now, username, voice_key, voice_id))
+                if cur.rowcount:
+                    c.execute("""UPDATE audio_voice_slots SET status='ready', updated_at=?
+                        WHERE username=? AND status='training' AND voice_id IN (
+                            SELECT id FROM audio_voices
+                            WHERE username=? AND scope='personal' AND voice_key=?
+                              AND provider_voice=?
+                        )""", (now, username, username, voice_key, voice_id))
                 c.commit()
         except Exception as e:
             print("[cosyvoice] 试听回填落库失败: %s" % str(e)[:120], flush=True)
