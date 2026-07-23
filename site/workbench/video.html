@@ -1341,16 +1341,45 @@
     }
     box.appendChild(state);
   }
+  function requestVideoHistoryItems(){
+    return fetch(fresh('/api/gen/video/assets?limit=30'),{cache:'no-store',headers:{Authorization:'Bearer '+token,'Cache-Control':'no-cache'}})
+      .then(function(r){return r.ok?r.json():Promise.reject(new Error('生成记录加载失败'));})
+      .then(function(d){return d.items||[];});
+  }
   function loadVideoHistory(){
     // 有在飞草稿时不要把「正在读取…」糊上去 —— 那会让用户眼睁睁看着自己刚提交的卡片消失一下
     if(!videoDrafts.length) renderVideoHistoryState('正在读取生成记录...',false);
-    fetch(fresh('/api/gen/video/assets?limit=30'),{cache:'no-store',headers:{Authorization:'Bearer '+token,'Cache-Control':'no-cache'}})
-      .then(function(r){return r.ok?r.json():Promise.reject();})
-      .then(function(d){ videoHistoryItems=d.items||[]; renderVideoOutput(); })
+    return requestVideoHistoryItems()
+      .then(function(items){ videoHistoryItems=items; renderVideoOutput(); })
       .catch(function(){
         if(videoDrafts.length) renderVideoOutput();   // 历史拉不动，至少别把在飞的那条也弄没了
         else renderVideoHistoryState('生成记录加载失败',true);
       });
+  }
+  function refreshCompletedVideoAsset(jobId,attempt){
+    // jobs 先写 done，video_assets 随后入库。固定延迟拉一次会撞上竞态，把刚完成的下载卡片
+    // 覆盖成空历史；保留 jobs 返回的临时卡片，直到资产端点确实返回可下载 URL 再替换。
+    attempt=Number(attempt)||0;
+    return requestVideoHistoryItems().then(function(items){
+      var target=items.find(function(item){
+        var jid=item&&item.job_id!=null?item.job_id:item&&item.id;
+        return String(jid)==String(jobId);
+      });
+      if(target && target.video_url){
+        videoHistoryItems=items;
+        renderVideoOutput();
+        return true;
+      }
+      if(attempt<7){
+        setTimeout(function(){refreshCompletedVideoAsset(jobId,attempt+1);},Math.min(400*(attempt+1),1600));
+      }
+      return false;
+    }).catch(function(){
+      if(attempt<7){
+        setTimeout(function(){refreshCompletedVideoAsset(jobId,attempt+1);},Math.min(400*(attempt+1),1600));
+      }
+      return false;
+    });
   }
   function selectMotionAvatar(id){
     selectedMotionAvatarId=id||null;
@@ -2420,12 +2449,12 @@
           resumedVideoTaskId='';
           setBusy(false);
           currentVideoDraft=null;
-          // 成品先插到历史最前面（别等 800ms 后那次拉取，中间会闪一下），草稿同时收掉。
-          // 800ms 后的 loadVideoHistory 会用服务端的版本覆盖它 —— 那才是权威的。
+          // 成品先插到历史最前面，草稿同时收掉。资产入库晚于 jobs.done，下面会自动重试
+          // 权威资产接口；重试期间保留这张可下载卡片，不能再用固定延迟把它覆盖掉。
           videoHistoryItems.unshift(Object.assign(
             {created_at:Math.floor(Date.now()/1000), job_id:String(id)}, result));
           renderVideoDrafts([]);
-          setTimeout(loadVideoHistory,800);
+          refreshCompletedVideoAsset(id,0);
           setVideoStatus('任务已创建，已保存到视频资产');
           if(result.subtitle_error){toast('字幕生成失败，已保留无字幕视频');}
           resumeNextTrackedVideoTask();
