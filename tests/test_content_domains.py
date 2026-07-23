@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest import mock
 
 
 class ContentDomainTests(unittest.TestCase):
@@ -56,6 +57,33 @@ class ContentDomainTests(unittest.TestCase):
         # jobs 库 WAL+timeout30（堵 50 齐点压测暴露的 INSERT 超时孤儿扣款路径）：jdb() 是 core
         #   任务库基础设施，+5 行，门禁上调到 1715。
         self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1715)
+
+    def test_openai_base_with_v1_is_not_duplicated(self):
+        core = importlib.import_module("content_domains.core")
+        urls = []
+        self.assertEqual(
+            core._api_url("https://api.openai.com", "/v1/chat/completions"),
+            "https://api.openai.com/v1/chat/completions",
+        )
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def read(self): return b"{}"
+
+        def open_url(request, **_):
+            urls.append(request.full_url)
+            return Response()
+
+        with mock.patch.object(core, "OPENAI_BASE", "https://sg.example/openai/v1/"), \
+             mock.patch.object(core.urllib.request, "urlopen", side_effect=open_url):
+            core._post("/v1/chat/completions", b"{}", "application/json")
+            core._post_bytes("/v1/audio/speech", b"{}", "application/json")
+
+        self.assertEqual(urls, [
+            "https://sg.example/openai/v1/chat/completions",
+            "https://sg.example/openai/v1/audio/speech",
+        ])
 
     def test_content_api_reclaims_orphans_on_startup(self):
         # 防回归：孤儿回收必须挂在真入口 content_api.main（服务走 content_api.py，
