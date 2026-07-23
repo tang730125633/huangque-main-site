@@ -1,62 +1,62 @@
-# PR #19 Review Closure Implementation Plan
+# PR #19 审核闭环实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **供执行代理使用：** 必须使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，逐项实施本计划。所有步骤均使用复选框（`- [ ]`）跟踪状态。
 
-**Goal:** Close every PR #19 review concern, record all nine real browser acceptance results, and convert the existing pull request from Draft to Ready with green CI.
+**目标：** 关闭 PR #19 的全部审核问题，记录 9 项真实浏览器验收结果，并在 CI 全绿后将现有 PR 从 Draft 转为 Ready。
 
-**Architecture:** Extend the existing voice schema initializer with deterministic integrity-trigger migrations, centralize still-to-voice eligibility in one server-generated handoff decision, and make both the mutation and frontend consume that decision. Keep PR 3-A read-only, align the OpenAPI anti-enumeration contract, and validate the finished branch with an isolated browser fixture before updating the existing PR.
+**架构：** 在现有配音数据库初始化器中加入确定性的完整性触发器迁移；由服务端集中生成从关键帧阶段进入配音阶段的唯一交接判定，并让写操作与前端共同消费该判定。PR 3-A 继续保持只读，同时统一 OpenAPI 的防枚举语义；更新现有 PR 前，使用隔离的浏览器验收夹具验证最终分支。
 
-**Tech Stack:** Python 3.12 standard library, SQLite, browser JavaScript UMD modules, CSS, Node.js 22 contract tests, Python `unittest`, Git/GitHub CLI.
+**技术栈：** Python 3.12 标准库、SQLite、浏览器 JavaScript UMD 模块、CSS、Node.js 22 契约测试、Python `unittest`、Git/GitHub CLI。
 
-## Global Constraints
+## 全局约束
 
-- Work only on `codex/short-drama-phase3-voice-spec`; update PR #19 instead of creating another PR.
-- Rebase latest `origin/main` before implementation, then rerun every gate after the rebase.
-- PR 3-A remains read-only: no TTS submission, point deduction endpoint, subtitle/timeline mutation, shot locking, voice version generation, or `voice_review -> video_review` progression.
-- Preserve Phase 2 still billing, idempotency, reconciliation, recovery, refund, and single-winner confirmation behavior.
-- Database triggers enforce internal identity consistency; authentication and canvas roles remain service-layer responsibilities.
-- Project-level missing and unauthorized reads both return 404; 403 is limited to account-level restrictions.
-- Browser acceptance uses synthetic local data only; never commit databases, tokens, cookies, passwords, screenshots containing secrets, or generated media.
-- Use explicit `git add` commands listing the files named by each task; never use `git add -A`.
-- Do not merge, deploy, restart services, or modify any server through SSH.
-
----
-
-## File Map
-
-### Create
-
-- `tests/fixtures/short_drama_voice_acceptance.py` — deterministic synthetic six-shot acceptance fixture builder used only by local test setup.
-- `tests/test_short_drama_voice_acceptance.py` — fixture isolation, identities, roles, narrator/silent coverage, and cleanup tests.
-
-### Modify
-
-- `server/content_domains/short_drama_voice.py` — migrate and strengthen snapshot, quote, job, attempt, and version identity triggers.
-- `server/content_domains/short_drama_production.py` — canonical handoff decision and transaction-side recheck.
-- `site/workbench/canvas/canvas-short-drama-production.js` — normalize/render/consume server handoff blockers.
-- `docs/api/openapi.json` — production blocker fields and corrected voice 403/404 descriptions.
-- `tests/test_short_drama_voice.py` — trigger migration and reverse-update coverage.
-- `tests/test_short_drama_production.py` — canonical blocker, reconciliation, rollback, and concurrency coverage.
-- `tests/test_canvas_short_drama_production.js` — frontend server-blocker behavior.
-- `tests/test_canvas_short_drama.js` — OpenAPI contract assertions.
-- `site/workbench/canvas.html` — only when asset stamps change after frontend edits.
+- 仅在 `codex/short-drama-phase3-voice-spec` 上工作；更新 PR #19，不新建其他 PR。
+- 实施前先 rebase 到最新 `origin/main`，rebase 后重新执行全部质量门禁。
+- PR 3-A 继续保持只读：不得提交 TTS 任务、增加扣点接口、修改字幕/时间线、锁定镜头、生成配音版本，或推进 `voice_review -> video_review`。
+- 保持 Phase 2 关键帧计费、幂等、对账、恢复、退款及单一胜出确认行为不变。
+- 数据库触发器负责内部身份一致性；鉴权和画布角色校验仍由服务层负责。
+- 项目不存在和无权访问均返回 404；403 只用于账户级限制。
+- 浏览器验收只使用本地合成数据；不得提交数据库、令牌、Cookie、密码、包含敏感信息的截图或生成媒体。
+- 每个任务必须使用明确列出文件的 `git add` 命令；禁止使用 `git add -A`。
+- 不合并、不部署、不重启服务，也不通过 SSH 修改任何服务器。
 
 ---
 
-### Task 1: Rebase PR #19 onto latest `origin/main` and establish the baseline
+## 文件清单
 
-**Files:**
+### 新建
 
-- Verify only; resolve rebase conflicts only in files already owned by PR #19.
+- `tests/fixtures/short_drama_voice_acceptance.py` — 确定性的六镜头合成验收夹具构建器，仅用于本地测试环境。
+- `tests/test_short_drama_voice_acceptance.py` — 覆盖夹具隔离、身份、角色、旁白/静音场景及清理行为。
 
-**Interfaces:**
+### 修改
 
-- Consumes: current branch `codex/short-drama-phase3-voice-spec` and remote `origin/main`.
-- Produces: rebased local branch with a clean working tree and passing pre-change baseline.
+- `server/content_domains/short_drama_voice.py` — 迁移并强化快照、报价、任务、扣点尝试和版本的身份一致性触发器。
+- `server/content_domains/short_drama_production.py` — 实现标准交接判定及事务内复核。
+- `site/workbench/canvas/canvas-short-drama-production.js` — 规范化、渲染并消费服务端交接阻塞项。
+- `docs/api/openapi.json` — 增加制作交接阻塞字段并修正配音接口 403/404 描述。
+- `tests/test_short_drama_voice.py` — 覆盖触发器迁移及反向更新约束。
+- `tests/test_short_drama_production.py` — 覆盖标准阻塞项、对账、回滚和并发。
+- `tests/test_canvas_short_drama_production.js` — 覆盖前端对服务端阻塞项的处理。
+- `tests/test_canvas_short_drama.js` — OpenAPI 契约断言。
+- `site/workbench/canvas.html` — 仅在前端修改导致资源戳变化时更新。
 
-- [ ] **Step 1: Confirm environment, identity, branch, and clean state**
+---
 
-Run:
+### 任务 1：将 PR #19 rebase 到最新 `origin/main` 并建立基线
+
+**文件：**
+
+- 本任务仅验证；如有 rebase 冲突，只处理 PR #19 已涉及的文件。
+
+**接口：**
+
+- 输入：当前分支 `codex/short-drama-phase3-voice-spec` 与远端 `origin/main`。
+- 输出：已完成 rebase、工作区干净且变更前基线通过的本地分支。
+
+- [ ] **步骤 1：确认环境、Git 身份、分支及工作区状态**
+
+执行：
 
 ```powershell
 python --version
@@ -69,23 +69,23 @@ git status --short --branch
 git branch --show-current
 ```
 
-Expected:
+预期：
 
-- Python reports 3.12.x.
-- Node reports 22.x. If Node 22 is unavailable, stop and install/select it before continuing.
-- Git identity is `kongli` / `kong74007@gmail.com`.
-- Branch is `codex/short-drama-phase3-voice-spec` and the worktree is clean.
+- Python 输出 3.12.x。
+- Node 输出 22.x；若 Node 22 不可用，必须先停止并安装或切换到该版本。
+- Git 身份为 `kongli` / `kong74007@gmail.com`。
+- 当前分支为 `codex/short-drama-phase3-voice-spec`，且工作区干净。
 
-- [ ] **Step 2: Fetch and rebase latest main**
+- [ ] **步骤 2：拉取并 rebase 到最新 main**
 
-Run:
+执行：
 
 ```powershell
 git fetch origin --prune
 git rebase origin/main
 ```
 
-If a conflict occurs, edit only the conflicting PR #19 files, then stage exactly the paths Git still marks unresolved and continue:
+如发生冲突，只编辑 PR #19 范围内的冲突文件，然后精确暂存 Git 仍标记为未解决的路径并继续：
 
 ```powershell
 $conflictedPaths = git diff --name-only --diff-filter=U
@@ -93,11 +93,11 @@ git add -- $conflictedPaths
 git rebase --continue
 ```
 
-Expected: rebase exits successfully and `git merge-base HEAD origin/main` equals `git rev-parse origin/main`.
+预期：rebase 成功结束，且 `git merge-base HEAD origin/main` 与 `git rev-parse origin/main` 输出相同。
 
-- [ ] **Step 3: Run the pre-change baseline gates**
+- [ ] **步骤 3：执行变更前基线门禁**
 
-Run:
+执行：
 
 ```powershell
 python scripts/stamp_assets.py --check
@@ -111,11 +111,11 @@ node tests/test_canvas_short_drama_voice.js
 git diff --check origin/main...HEAD
 ```
 
-Expected: every command exits 0. Record any Windows-only environment failure separately and rerun the identical command in an approved environment; do not treat an environment failure as a passing gate.
+预期：所有命令退出码均为 0。仅由 Windows 环境导致的失败需单独记录，并在获准环境中执行完全相同的命令；不得把环境失败视为门禁通过。
 
-- [ ] **Step 4: Record the rebased baseline**
+- [ ] **步骤 4：记录 rebase 后的基线**
 
-Run:
+执行：
 
 ```powershell
 git status --short --branch
@@ -123,25 +123,25 @@ git log --oneline origin/main..HEAD
 git diff --stat origin/main...HEAD
 ```
 
-Expected: the worktree is clean and contains only PR #19 commits/files. No new commit is created for this task.
+预期：工作区干净，只包含 PR #19 的提交和文件；本任务不创建新提交。
 
 ---
 
-### Task 2: Close voice ledger reverse-update and identity constraints
+### 任务 2：补齐配音账本反向更新与身份一致性约束
 
-**Files:**
+**文件：**
 
-- Modify: `server/content_domains/short_drama_voice.py:51-318`
-- Modify: `tests/test_short_drama_voice.py:220-490`
+- 修改：`server/content_domains/short_drama_voice.py:51-318`
+- 修改：`tests/test_short_drama_voice.py:220-490`
 
-**Interfaces:**
+**接口：**
 
-- Consumes: `short_drama_voice.init_db(db_factory) -> None` and the six existing voice tables.
-- Produces: idempotent canonical trigger migration that protects snapshot, quote, job, attempt, and version identities while permitting a valid editor billing actor.
+- 输入：`short_drama_voice.init_db(db_factory) -> None` 及现有六张配音表。
+- 输出：幂等的标准触发器迁移，保护快照、报价、任务、扣点尝试及版本的身份一致性，同时允许合法编辑者作为计费主体。
 
-- [ ] **Step 1: Write failing migration and reverse-update tests**
+- [ ] **步骤 1：编写会失败的迁移及反向更新测试**
 
-Add tests with these exact public behaviors:
+新增测试，精确覆盖以下外部行为：
 
 ```python
 def test_init_replaces_all_legacy_voice_identity_triggers(self):
@@ -179,21 +179,21 @@ def test_voice_version_job_must_belong_to_the_same_line(self):
         )
 ```
 
-Extend `_insert_editor_voice_ledger()` so quote, job, and attempt share the editor actor and valid project/shot/line/job identities. Add inverse cases for actor, project, line, shot, quote token, old job ID, and consumed job ID.
+扩展 `_insert_editor_voice_ledger()`，使报价、任务和扣点尝试共享编辑者主体以及合法的项目/镜头/台词/任务身份。补充 actor、project、line、shot、quote token、旧 job ID 与 consumed job ID 的反向错误用例。
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [ ] **步骤 2：运行测试并确认处于 RED 状态**
 
-Run:
+执行：
 
 ```powershell
 python -m unittest tests.test_short_drama_voice.ShortDramaVoiceSchemaTests -v
 ```
 
-Expected: the new tests fail because reverse quote/job/snapshot updates and version-to-line mismatches are currently accepted.
+预期：新测试失败，因为当前仍允许报价/任务/快照的反向更新以及版本与台词不一致。
 
-- [ ] **Step 3: Add deterministic trigger replacement and invariant guards**
+- [ ] **步骤 3：加入确定性的触发器替换及不变量保护**
 
-In `short_drama_voice.py`, extend the trigger reset block to include every canonical identity trigger:
+在 `short_drama_voice.py` 中扩展触发器重置逻辑，纳入全部标准身份触发器：
 
 ```python
 _VOICE_TRIGGER_NAMES = (
@@ -219,9 +219,9 @@ def _replace_voice_triggers(conn):
     conn.executescript(_TRIGGER_SCHEMA)
 ```
 
-Call `_replace_voice_triggers(conn)` after table/index creation and before commit.
+在建表/建索引之后、提交事务之前调用 `_replace_voice_triggers(conn)`。
 
-Use `BEFORE UPDATE OF` guards to reject changes when linked rows exist. The quote reverse guard must enforce:
+使用 `BEFORE UPDATE OF` 保护，在存在关联记录时拒绝变更。报价反向保护必须保证：
 
 ```sql
 SELECT CASE WHEN EXISTS (
@@ -238,7 +238,7 @@ SELECT CASE WHEN EXISTS (
 ) THEN RAISE(ABORT, 'voice quote identity is referenced') END;
 ```
 
-The version INSERT/UPDATE guard must enforce:
+版本 INSERT/UPDATE 保护必须保证：
 
 ```sql
 SELECT CASE WHEN NOT EXISTS (
@@ -249,11 +249,11 @@ SELECT CASE WHEN NOT EXISTS (
 ) THEN RAISE(ABORT, 'voice version job does not belong to line') END;
 ```
 
-Freeze voice-shot and voice-line source identity with `BEFORE UPDATE OF` triggers that abort when any protected `OLD` value differs from `NEW`.
+使用 `BEFORE UPDATE OF` 触发器冻结配音镜头和配音台词的来源身份；任何受保护字段的 `OLD` 与 `NEW` 不同时立即中止。
 
-- [ ] **Step 4: Run focused and compatibility tests**
+- [ ] **步骤 4：运行专项测试与兼容性测试**
 
-Run:
+执行：
 
 ```powershell
 python -m unittest tests.test_short_drama_voice.ShortDramaVoiceSchemaTests -v
@@ -261,9 +261,9 @@ python -m unittest tests.test_short_drama_voice tests.test_short_drama_projects 
 git diff --check
 ```
 
-Expected: all tests pass; editor actor inserts remain valid; every mismatch and reverse update is rejected.
+预期：全部测试通过；编辑者主体写入仍然合法；所有身份不一致和反向更新均被拒绝。
 
-- [ ] **Step 5: Commit the ledger migration**
+- [ ] **步骤 5：提交账本迁移**
 
 ```powershell
 git add server/content_domains/short_drama_voice.py tests/test_short_drama_voice.py
@@ -272,23 +272,23 @@ git commit -m "fix: close short drama voice ledger identities"
 
 ---
 
-### Task 3: Produce one canonical server handoff decision
+### 任务 3：生成唯一的服务端交接判定
 
-**Files:**
+**文件：**
 
-- Modify: `server/content_domains/short_drama_production.py:1048-1167,1235-1302`
-- Modify: `tests/test_short_drama_production.py:1550-1785,3180-3230`
+- 修改：`server/content_domains/short_drama_production.py:1048-1167,1235-1302`
+- 修改：`tests/test_short_drama_production.py:1550-1785,3180-3230`
 
-**Interfaces:**
+**接口：**
 
-- Produces: `build_phase_two_handoff(conn, project_id, ratio) -> dict`.
-- Returned shape: `{"blocked": bool, "blockers": list[dict]}`.
-- Adds production read fields: `handoff_blocked: bool`, `handoff_blockers: list[dict]`.
-- `confirm_stage` consumes the same builder inside its transaction after reconciliation.
+- 输出：`build_phase_two_handoff(conn, project_id, ratio) -> dict`。
+- 返回结构：`{"blocked": bool, "blockers": list[dict]}`。
+- 制作态读取接口新增：`handoff_blocked: bool`、`handoff_blockers: list[dict]`。
+- `confirm_stage` 在事务内完成对账后调用同一个构建函数。
 
-- [ ] **Step 1: Write failing canonical-blocker tests**
+- [ ] **步骤 1：编写会失败的标准阻塞项测试**
 
-Add:
+新增：
 
 ```python
 def test_snapshot_reports_old_running_job_hidden_by_new_done_job(self):
@@ -317,21 +317,21 @@ def test_confirm_uses_the_same_handoff_decision_as_snapshot(self):
         )
 ```
 
-Retain and extend the existing tests for late terminal success, durable refund intent, snapshot rollback, prepared-before-handoff acceptance, and concurrent confirmation.
+保留并扩展已有测试，覆盖延迟终态成功、持久化退款意图、快照回滚、交接前已准备完成以及并发确认。
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [ ] **步骤 2：运行测试并确认处于 RED 状态**
 
-Run:
+执行：
 
 ```powershell
 python -m unittest tests.test_short_drama_production.ShortDramaProductionTests -v
 ```
 
-Expected: the new snapshot assertions fail because the response does not yet contain `handoff_blocked` or all historical blockers.
+预期：新的快照断言失败，因为响应尚未包含 `handoff_blocked` 或完整历史阻塞项。
 
-- [ ] **Step 3: Replace the single-message helper with a structured decision**
+- [ ] **步骤 3：用结构化判定替换单消息辅助函数**
 
-Implement:
+实现：
 
 ```python
 _HANDOFF_ORDER = {
@@ -361,7 +361,7 @@ def build_phase_two_handoff(conn, project_id, ratio):
     return {"blocked": bool(blockers), "blockers": blockers}
 ```
 
-Use exact Chinese messages that are safe to show to an end user:
+使用以下可直接展示给终端用户的中文文案：
 
 ```python
 _HANDOFF_MESSAGES = {
@@ -373,7 +373,7 @@ _HANDOFF_MESSAGES = {
 }
 ```
 
-`build_production_snapshot` adds:
+`build_production_snapshot` 增加：
 
 ```python
 handoff = build_phase_two_handoff(conn, project_id, project["ratio"])
@@ -384,9 +384,9 @@ return {
 }
 ```
 
-- [ ] **Step 4: Make `confirm_stage` consume the structured decision**
+- [ ] **步骤 4：让 `confirm_stage` 消费结构化判定**
 
-After `reconcile_jobs` and before snapshot/CAS:
+在 `reconcile_jobs` 之后、快照/CAS 之前：
 
 ```python
 handoff = build_phase_two_handoff(conn, project_id, project["ratio"])
@@ -399,11 +399,11 @@ else:
     # existing CAS update
 ```
 
-Keep the existing deliberate commit-before-reject path for a durable refund intent; all ordinary exceptions continue to roll back.
+保留“持久化退款意图后再拒绝”的既有特殊提交路径；其他普通异常仍必须回滚。
 
-- [ ] **Step 5: Run handoff and Phase 2 regression tests**
+- [ ] **步骤 5：运行交接及 Phase 2 回归测试**
 
-Run:
+执行：
 
 ```powershell
 python -m unittest tests.test_short_drama_production.ShortDramaProductionTests -v
@@ -411,9 +411,9 @@ python -m unittest tests.test_short_drama_production -v
 git diff --check
 ```
 
-Expected: the canonical blocker tests, reconciliation/refund recovery tests, and concurrent confirmation tests all pass.
+预期：标准阻塞项、对账/退款恢复及并发确认测试全部通过。
 
-- [ ] **Step 6: Commit the server decision model**
+- [ ] **步骤 6：提交服务端判定模型**
 
 ```powershell
 git add server/content_domains/short_drama_production.py tests/test_short_drama_production.py
@@ -422,22 +422,22 @@ git commit -m "fix: expose short drama handoff blockers"
 
 ---
 
-### Task 4: Make the production frontend consume server blockers
+### 任务 4：让制作前端消费服务端阻塞项
 
-**Files:**
+**文件：**
 
-- Modify: `site/workbench/canvas/canvas-short-drama-production.js:110-155,234-274,455-462`
-- Modify: `tests/test_canvas_short_drama_production.js:1-510`
-- Modify: `site/workbench/canvas.html` through the asset stamper.
+- 修改：`site/workbench/canvas/canvas-short-drama-production.js:110-155,234-274,455-462`
+- 修改：`tests/test_canvas_short_drama_production.js:1-510`
+- 通过资源戳脚本修改：`site/workbench/canvas.html`。
 
-**Interfaces:**
+**接口：**
 
-- Consumes: `handoff_blocked` and `handoff_blockers` from Task 3.
-- Produces normalized `state.handoff_blocked` and `state.handoff_blockers`.
+- 输入：任务 3 提供的 `handoff_blocked` 与 `handoff_blockers`。
+- 输出：规范化后的 `state.handoff_blocked` 与 `state.handoff_blockers`。
 
-- [ ] **Step 1: Add failing normalization, rendering, and mutation tests**
+- [ ] **步骤 1：新增会失败的规范化、渲染及写操作测试**
 
-Add:
+新增：
 
 ```javascript
 const blocked = normalizeState({
@@ -454,21 +454,21 @@ assert.ok(blockedHtml.includes('关键帧任务仍在运行中'));
 assert.ok(/data-action="confirm-stage" disabled/.test(blockedHtml));
 ```
 
-Add an async workspace test that calls `confirmStage()` with `handoff_blocked=true` and asserts no `POST /confirm` request was recorded, including the old-running/new-done fixture from Task 3.
+新增异步工作区测试：在 `handoff_blocked=true` 时调用 `confirmStage()`，断言没有记录到 `POST /confirm` 请求；测试数据需包含任务 3 的“旧任务运行中、最新任务已完成”场景。
 
-- [ ] **Step 2: Run and verify RED**
+- [ ] **步骤 2：运行测试并确认处于 RED 状态**
 
-Run:
+执行：
 
 ```powershell
 node tests/test_canvas_short_drama_production.js
 ```
 
-Expected: assertions fail because the normalized state drops the blocker fields and confirmation still depends on `shot.still.job`.
+预期：断言失败，因为当前规范化状态会丢弃阻塞字段，且确认逻辑仍依赖 `shot.still.job`。
 
-- [ ] **Step 3: Normalize and escape blockers**
+- [ ] **步骤 3：规范化并转义阻塞项**
 
-Add:
+新增：
 
 ```javascript
 function normalizeBlockers(items){
@@ -483,18 +483,18 @@ function normalizeBlockers(items){
 }
 ```
 
-In `normalizeState`:
+在 `normalizeState` 中：
 
 ```javascript
 handoff_blocked:!!input.handoff_blocked,
 handoff_blockers:normalizeBlockers(input.handoff_blockers),
 ```
 
-Render each message through `escapeHtml` in an alert/list inside the inspector.
+在检查器的提示框/列表中，通过 `escapeHtml` 渲染每条消息。
 
-- [ ] **Step 4: Replace frontend inference with the server decision**
+- [ ] **步骤 4：用服务端判定替换前端推断**
 
-Change the confirmation predicate and mutation guard:
+修改确认条件及写操作保护：
 
 ```javascript
 var confirmable=writable&&allShotsLocked(state)&&!state.handoff_blocked;
@@ -521,9 +521,9 @@ function confirmStage(){
 }
 ```
 
-- [ ] **Step 5: Run frontend tests and update stamps**
+- [ ] **步骤 5：运行前端测试并更新资源戳**
 
-Run:
+执行：
 
 ```powershell
 node tests/test_canvas_short_drama_production.js
@@ -533,9 +533,9 @@ python scripts/stamp_assets.py
 python scripts/stamp_assets.py --check
 ```
 
-Expected: all commands pass and `canvas.html` contains the new production JS hash.
+预期：所有命令通过，且 `canvas.html` 包含新的制作模块 JS 哈希。
 
-- [ ] **Step 6: Commit frontend blocker handling**
+- [ ] **步骤 6：提交前端阻塞项处理**
 
 ```powershell
 git add site/workbench/canvas/canvas-short-drama-production.js site/workbench/canvas.html tests/test_canvas_short_drama_production.js
@@ -544,21 +544,21 @@ git commit -m "fix: honor server handoff blockers in canvas"
 
 ---
 
-### Task 5: Align OpenAPI blocker and authorization semantics
+### 任务 5：统一 OpenAPI 阻塞字段与鉴权语义
 
-**Files:**
+**文件：**
 
-- Modify: `docs/api/openapi.json:175-285`
-- Modify: `tests/test_canvas_short_drama.js:1-90`
+- 修改：`docs/api/openapi.json:175-285`
+- 修改：`tests/test_canvas_short_drama.js:1-90`
 
-**Interfaces:**
+**接口：**
 
-- Documents Task 3 production fields.
-- Defines voice 403 as account-level restriction and 404 as missing-or-undiscoverable project.
+- 文档化任务 3 新增的制作态字段。
+- 将配音接口 403 定义为账户级限制，将 404 定义为项目不存在或对调用者不可发现。
 
-- [ ] **Step 1: Add failing contract assertions**
+- [ ] **步骤 1：新增会失败的契约断言**
 
-Add:
+新增：
 
 ```javascript
 const productionSchema = spec.paths['/api/gen/short-drama/production'].get
@@ -577,17 +577,17 @@ assert.doesNotMatch(voiceResponses['403'].description, /项目权限/);
 assert.match(voiceResponses['404'].description, /不存在|无权发现/);
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [ ] **步骤 2：运行测试并确认处于 RED 状态**
 
 ```powershell
 node tests/test_canvas_short_drama.js
 ```
 
-Expected: blocker-schema and 403/404 description assertions fail.
+预期：阻塞字段 schema 以及 403/404 描述断言失败。
 
-- [ ] **Step 3: Update the OpenAPI schema**
+- [ ] **步骤 3：更新 OpenAPI schema**
 
-Add the required production properties:
+增加以下必需的制作态属性：
 
 ```json
 "handoff_blocked": {"type": "boolean"},
@@ -614,16 +614,16 @@ Add the required production properties:
 }
 ```
 
-Set descriptions exactly:
+将描述精确设置为：
 
 ```json
 "403": {"description": "必须修改初始密码，或账号没有画布基础访问能力"},
 "404": {"description": "项目不存在，或当前用户无权发现该项目"}
 ```
 
-- [ ] **Step 4: Validate JSON and contracts**
+- [ ] **步骤 4：验证 JSON 与契约**
 
-Run:
+执行：
 
 ```powershell
 python -m json.tool docs/api/openapi.json $null
@@ -632,9 +632,9 @@ python scripts/ci_validate.py
 git diff --check
 ```
 
-Expected: all commands exit 0.
+预期：所有命令退出码均为 0。
 
-- [ ] **Step 5: Commit the API contract**
+- [ ] **步骤 5：提交 API 契约**
 
 ```powershell
 git add docs/api/openapi.json tests/test_canvas_short_drama.js
@@ -643,23 +643,23 @@ git commit -m "docs: align short drama handoff contract"
 
 ---
 
-### Task 6: Add an isolated browser acceptance fixture and execute all nine checks
+### 任务 6：新增隔离的浏览器验收夹具并执行 9 项检查
 
-**Files:**
+**文件：**
 
-- Create: `tests/fixtures/short_drama_voice_acceptance.py`
-- Create: `tests/test_short_drama_voice_acceptance.py`
-- Modify only if required by fixture injection: `scripts/dev_local.sh`
+- 新建：`tests/fixtures/short_drama_voice_acceptance.py`
+- 新建：`tests/test_short_drama_voice_acceptance.py`
+- 仅在注入夹具确有需要时修改：`scripts/dev_local.sh`
 
-**Interfaces:**
+**接口：**
 
-- Produces: `build_acceptance_fixture(content_db, auth_db) -> dict`.
-- Returned keys: `project_id`, `board_id`, `owner`, `viewer`, `unauthorized`, `voice_line_ids`.
-- Fixture databases live under a generated temporary directory and are deleted after acceptance.
+- 输出：`build_acceptance_fixture(content_db, auth_db) -> dict`。
+- 返回键：`project_id`、`board_id`、`owner`、`viewer`、`unauthorized`、`voice_line_ids`。
+- 夹具数据库存放在动态创建的临时目录中，验收结束后删除。
 
-- [ ] **Step 1: Write failing fixture-isolation tests**
+- [ ] **步骤 1：编写会失败的夹具隔离测试**
 
-Create tests that assert:
+创建测试并断言：
 
 ```python
 def test_fixture_builds_six_shot_voice_review_project_with_three_roles(self):
@@ -680,28 +680,28 @@ def test_fixture_paths_must_be_explicit_temporary_paths(self):
         build_acceptance_fixture(Path("server/content_jobs.db"), self.auth_db)
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [ ] **步骤 2：运行测试并确认处于 RED 状态**
 
 ```powershell
 python -m unittest tests.test_short_drama_voice_acceptance -v
 ```
 
-Expected: import fails because the fixture builder does not exist.
+预期：导入失败，因为夹具构建器尚不存在。
 
-- [ ] **Step 3: Implement the synthetic fixture builder**
+- [ ] **步骤 3：实现合成验收夹具构建器**
 
-The builder must:
+构建器必须：
 
-1. reject paths inside tracked `server/`, `data/`, and repository database locations;
-2. initialize auth/content schemas using existing initializers;
-3. insert synthetic owner/viewer/unauthorized identities using random per-run passwords;
-4. insert a board with owner and viewer membership;
-5. insert one six-shot project and confirmed planning records;
-6. call `ensure_voice_workspace` to create stable voice-line IDs;
-7. set the project to `voice_review` without creating paid jobs or generated media;
-8. return IDs/roles but never print password hashes, tokens, or cookies.
+1. 拒绝使用受版本控制的 `server/`、`data/` 目录及仓库数据库路径；
+2. 使用现有初始化器创建鉴权与内容数据库 schema；
+3. 插入合成的 owner/viewer/unauthorized 身份，每次运行使用随机密码；
+4. 插入一个包含 owner 和 viewer 成员关系的画布；
+5. 插入一个六镜头项目及已确认的规划记录；
+6. 调用 `ensure_voice_workspace` 创建稳定的配音台词 ID；
+7. 将项目设为 `voice_review`，但不创建付费任务或生成媒体；
+8. 返回 ID/角色，但绝不输出密码哈希、令牌或 Cookie。
 
-Use deterministic fixture labels:
+使用确定性的夹具标签：
 
 ```python
 SHOT_KEYS = tuple("shot-%d" % index for index in range(1, 7))
@@ -709,72 +709,72 @@ NARRATOR_KEY = "narrator"
 SILENT_SHOT_KEY = "shot-6"
 ```
 
-- [ ] **Step 4: Run fixture tests**
+- [ ] **步骤 4：运行夹具测试**
 
 ```powershell
 python -m unittest tests.test_short_drama_voice_acceptance -v
 ```
 
-Expected: all tests pass and temporary directories are removed during teardown.
+预期：所有测试通过，临时目录在 teardown 阶段被删除。
 
-- [ ] **Step 5: Start the isolated local services**
+- [ ] **步骤 5：启动隔离的本地服务**
 
-Create a task-local temporary directory and point the local auth/content services to the fixture databases using their supported environment/config arguments. Start hidden/background processes only; do not use production database paths.
+创建任务专用临时目录，并通过本地鉴权/内容服务支持的环境变量或配置参数指向夹具数据库。服务只能以隐藏后台进程启动，不得使用生产数据库路径。
 
-Have the fixture command write its actual generated values to `.superpowers/sdd/pr19-browser-acceptance.md` in this exact shape:
+让夹具命令把实际生成值按以下固定格式写入 `.superpowers/sdd/pr19-browser-acceptance.md`：
 
 ```markdown
-# PR #19 Browser Acceptance
+# PR #19 浏览器验收
 
-- Project ID: value emitted by `build_acceptance_fixture`
-- Board ID: value emitted by `build_acceptance_fixture`
-- Owner: generated synthetic owner username
-- Viewer: generated synthetic viewer username
-- Unauthorized: generated synthetic unauthorized username
+- 项目 ID：`build_acceptance_fixture` 实际输出值
+- 画布 ID：`build_acceptance_fixture` 实际输出值
+- Owner：生成的合成 owner 用户名
+- Viewer：生成的合成 viewer 用户名
+- Unauthorized：生成的合成 unauthorized 用户名
 ```
 
-Replace each descriptive value with the command's actual runtime value before the file is used as evidence; the evidence file is ignored and never committed.
+将上述说明值替换为命令运行时的实际值后，方可将文件作为验收证据；该证据文件必须被忽略且永不提交。
 
-- [ ] **Step 6: Execute and record the nine Chrome checks**
+- [ ] **步骤 6：执行并记录 9 项 Chrome 检查**
 
-Open `http://127.0.0.1:8097/workbench/canvas.html` and record PASS/FAIL for:
+打开 `http://127.0.0.1:8097/workbench/canvas.html`，逐项记录 PASS/FAIL：
 
-1. voice workspace replaces still workspace;
-2. six shots appear in storyboard order;
-3. dialogue, character, voice key, speed, pitch, and volume match the fixture;
-4. narrator displays the narration badge;
-5. silent shot displays the silent state;
-6. generate/save/lock/advance controls are absent or disabled;
-7. refresh preserves every recorded voice-line ID and source snapshot text;
-8. viewer can read and receives no write controls;
-9. unauthorized user receives the same external 404 behavior as a missing project.
+1. 配音工作区已替换关键帧工作区；
+2. 六个镜头按分镜顺序显示；
+3. 台词、角色、音色 key、语速、音调和音量与夹具一致；
+4. 旁白镜头显示旁白标识；
+5. 静音镜头显示静音状态；
+6. 生成、保存、锁定和推进控件不存在或已禁用；
+7. 刷新后每条配音台词 ID 及来源快照文本保持不变；
+8. viewer 可读取，但看不到任何写操作控件；
+9. unauthorized 用户与项目不存在时得到相同的外部 404 行为。
 
-If any item fails, stop Ready conversion, capture the exact failure, implement a focused regression test/fix on the same branch, rerun affected automated suites, and repeat all nine browser checks.
+如任一项失败，立即停止转为 Ready；记录精确失败现象，在同一分支增加针对性回归测试并修复，重新运行受影响的自动化测试，然后重新执行全部 9 项浏览器检查。
 
-- [ ] **Step 7: Commit only reusable fixture code**
+- [ ] **步骤 7：只提交可复用的夹具代码**
 
 ```powershell
 git add tests/fixtures/short_drama_voice_acceptance.py tests/test_short_drama_voice_acceptance.py
 git commit -m "test: add short drama voice acceptance fixture"
 ```
 
-Do not add `.superpowers/sdd/pr19-browser-acceptance.md`, temporary databases, screenshots with credentials, or generated media.
+不得暂存 `.superpowers/sdd/pr19-browser-acceptance.md`、临时数据库、包含凭据的截图或生成媒体。
 
 ---
 
-### Task 7: Run final gates, update PR #19, convert to Ready, and watch CI
+### 任务 7：执行最终门禁、更新 PR #19、转为 Ready 并监控 CI
 
-**Files:**
+**文件：**
 
-- Verify all PR files.
-- Update remote PR #19 metadata only; do not create another PR.
+- 验证 PR 涉及的全部文件。
+- 只更新远端 PR #19 的元数据，不新建其他 PR。
 
-**Interfaces:**
+**接口：**
 
-- Consumes: passing Tasks 1-6 and browser evidence.
-- Produces: Ready PR #19 with current branch, complete body, and green GitHub CI.
+- 输入：已通过的任务 1-6 及浏览器验收证据。
+- 输出：使用当前分支、描述完整、GitHub CI 全绿且状态为 Ready 的 PR #19。
 
-- [ ] **Step 1: Run cache, static, compilation, and syntax gates**
+- [ ] **步骤 1：执行缓存、静态检查、编译及语法门禁**
 
 ```powershell
 python scripts/stamp_assets.py
@@ -788,9 +788,9 @@ node --check site/workbench/canvas/canvas-short-drama-voice.js
 git diff --check
 ```
 
-Expected: every command exits 0. Commit any stamper-produced tracked HTML changes explicitly with the task that changed the stamped asset.
+预期：所有命令退出码均为 0。资源戳脚本产生的受控 HTML 变更，必须与引发资源戳变化的任务一起明确提交。
 
-- [ ] **Step 2: Run related and full test suites**
+- [ ] **步骤 2：运行相关测试及完整测试集**
 
 ```powershell
 python -m unittest tests.test_short_drama_voice tests.test_short_drama_voice_acceptance tests.test_short_drama_projects tests.test_short_drama_planning tests.test_short_drama_production -v
@@ -801,9 +801,9 @@ node tests/test_canvas_short_drama_voice.js
 python -m unittest discover -s tests -v
 ```
 
-Expected: every suite passes. Record exact counts and any documented Windows environment exception; CI must still pass on Linux.
+预期：所有测试集通过。记录准确的测试数量及已说明的 Windows 环境例外；Linux CI 仍必须通过。
 
-- [ ] **Step 3: Perform final scope and sensitive-data checks**
+- [ ] **步骤 3：执行最终范围与敏感数据检查**
 
 ```powershell
 git diff --check origin/main...HEAD
@@ -813,98 +813,98 @@ git status --short
 git log --oneline origin/main..HEAD
 ```
 
-Inspect the file list and reject any `.env`, `.db`, `content_out/`, `browser_data/`, `data/`, token, cookie, password, user-data, or unrelated file.
+检查文件清单，拒绝任何 `.env`、`.db`、`content_out/`、`browser_data/`、`data/`、令牌、Cookie、密码、用户数据或无关文件。
 
-Expected: clean worktree and task-only files.
+预期：工作区干净，变更文件仅属于本任务范围。
 
-- [ ] **Step 4: Push the rebased branch safely**
+- [ ] **步骤 4：安全推送 rebase 后的分支**
 
-Because Task 1 rebased an already-published branch, run:
+由于任务 1 对已发布分支执行了 rebase，运行：
 
 ```powershell
 git push --force-with-lease origin codex/short-drama-phase3-voice-spec
 ```
 
-Expected: remote PR #19 head equals local HEAD. Never use plain `--force`.
+预期：远端 PR #19 的 head 与本地 HEAD 一致。严禁使用普通 `--force`。
 
-- [ ] **Step 5: Update PR #19 body**
+- [ ] **步骤 5：更新 PR #19 描述**
 
-Replace the previous “nine checks remain” section with a table containing:
+将原“9 项检查待执行”段落替换为包含以下内容的表格：
 
 ```markdown
-## Browser acceptance
+## 浏览器验收
 
-| # | Check | Result |
+| # | 检查项 | 结果 |
 |---|---|---|
-| 1 | Voice workspace selected | PASS |
-| 2 | Six-shot order | PASS |
-| 3 | Dialogue/voice settings | PASS |
-| 4 | Narration badge | PASS |
-| 5 | Silent shot | PASS |
-| 6 | Read-only controls | PASS |
-| 7 | Refresh stability | PASS |
-| 8 | Viewer read-only access | PASS |
-| 9 | Unauthorized isolation | PASS |
+| 1 | 已进入配音工作区 | PASS |
+| 2 | 六镜头顺序正确 | PASS |
+| 3 | 台词与音色参数正确 | PASS |
+| 4 | 旁白标识正确 | PASS |
+| 5 | 静音镜头状态正确 | PASS |
+| 6 | 写操作控件只读或隐藏 | PASS |
+| 7 | 刷新后数据稳定 | PASS |
+| 8 | Viewer 只读访问正确 | PASS |
+| 9 | 未授权访问隔离正确 | PASS |
 ```
 
-Also include actual project ID, board ID, role names, exact automated commands/counts, file scope, task lock, and explicit no-deploy/no-merge statements. Do not include passwords or tokens.
+同时写明实际项目 ID、画布 ID、角色名称、准确的自动化命令/数量、文件范围、任务锁定，以及明确的“不部署/不合并”声明。不得包含密码或令牌。
 
-- [ ] **Step 6: Convert the existing PR to Ready**
+- [ ] **步骤 6：将现有 PR 转为 Ready**
 
-Run:
+执行：
 
 ```powershell
 gh pr ready 19 --repo LU-003/huangque-test-server
 gh pr view 19 --repo LU-003/huangque-test-server --json isDraft,mergeable,mergeStateStatus,url
 ```
 
-Expected: `isDraft=false`; PR URL remains `https://github.com/LU-003/huangque-test-server/pull/19`.
+预期：`isDraft=false`；PR 地址仍为 `https://github.com/LU-003/huangque-test-server/pull/19`。
 
-- [ ] **Step 7: Watch GitHub CI**
+- [ ] **步骤 7：监控 GitHub CI**
 
-Run:
+执行：
 
 ```powershell
 gh pr checks 19 --repo LU-003/huangque-test-server --watch
 gh pr checks 19 --repo LU-003/huangque-test-server
 ```
 
-Expected: all required checks pass. If a check fails, resolve the most recent failed run ID and inspect its failed logs:
+预期：所有必需检查通过。如有检查失败，获取最近一次失败运行的 ID 并查看失败日志：
 
 ```powershell
 $failedRunId = gh run list --repo LU-003/huangque-test-server --branch codex/short-drama-phase3-voice-spec --status failure --limit 1 --json databaseId --jq '.[0].databaseId'
 gh run view $failedRunId --repo LU-003/huangque-test-server --log-failed
 ```
 
-Fix only the concrete failure, rerun its local command, commit/push to the same branch, and watch the same PR again.
+只修复已确认的具体失败；重新执行对应本地命令，提交并推送到同一分支，然后继续监控同一个 PR。
 
-- [ ] **Step 8: Final handoff**
+- [ ] **步骤 8：最终交付说明**
 
-Report:
+报告以下信息：
 
 ```text
-Branch:
-Commits:
-PR URL:
-PR status:
-CI status:
-Changed files:
-Browser acceptance project/board:
-Nine-check result:
-Validation result:
-Deployed: no
-Services restarted: no
-Remaining risks:
+分支：
+提交：
+PR 地址：
+PR 状态：
+CI 状态：
+变更文件：
+浏览器验收项目/画布：
+9 项检查结果：
+验证结果：
+已部署：否
+已重启服务：否
+剩余风险：
 ```
 
-Do not merge PR #19. Merge remains the user's/reviewer's explicit action.
+不得合并 PR #19；合并仍需由用户或审核者明确执行。
 
 ---
 
-## Plan Self-Review
+## 计划自检
 
-- Spec coverage: Tasks 2-5 close every database, handoff, frontend, and OpenAPI design requirement; Task 6 supplies the missing real-browser evidence; Tasks 1 and 7 enforce the approved PR workflow.
-- Type consistency: `build_phase_two_handoff` returns `blocked/blockers`; the production API exposes `handoff_blocked/handoff_blockers`; frontend normalization consumes those exact names.
-- Transaction consistency: reconciliation and blocker calculation remain inside `confirm_stage`'s existing `BEGIN IMMEDIATE`; only the durable refund-intent path intentionally commits before rejection.
-- Scope: no Phase 3-B write route, TTS, timeline mutation, stage advancement, merge, or deployment is included.
-- Content scan: the plan contains no unresolved implementation decisions or placeholder commands; runtime-generated acceptance values are written by the fixture command before evidence review.
+- 规格覆盖：任务 2-5 覆盖数据库、交接、前端及 OpenAPI 的全部设计要求；任务 6 补充缺失的真实浏览器证据；任务 1 和任务 7 落实已确认的 PR 流程。
+- 类型一致性：`build_phase_two_handoff` 返回 `blocked/blockers`；制作接口暴露 `handoff_blocked/handoff_blockers`；前端规范化逻辑消费完全相同的字段名。
+- 事务一致性：对账及阻塞项计算仍位于 `confirm_stage` 现有的 `BEGIN IMMEDIATE` 事务中；只有需要持久化退款意图的路径会刻意先提交再拒绝。
+- 范围：不包含 Phase 3-B 写接口、TTS、时间线修改、阶段推进、合并或部署。
+- 内容扫描：计划中没有未决实现决策或占位命令；运行时生成的验收值会由夹具命令写入，之后再审核证据。
