@@ -903,6 +903,8 @@ def _job_worker_loop(q):
             q.task_done()
 
 def _recover_pending_jobs(limit=None):
+    if is_shutting_down():
+        return 0
     limit = int(limit or JOB_QUEUE_MAX)
     with closing(jdb()) as c:
         rows = c.execute("SELECT id, kind, payload FROM jobs WHERE status='pending' AND COALESCE(owner,?)=? ORDER BY id ASC LIMIT ?",
@@ -1488,10 +1490,13 @@ class H(BaseHTTPRequestHandler):
                     operation_terminal=is_still_route and bool(locals().get("idem_key")),
                 )
                 return
-            # 正在停机（部署中）→ 不收新活。⚠️ 必须在【扣点之前】。
-            # 否则用户被扣了点、任务入了队，进程下一秒就退了 —— 又是一条「服务重启中断」。
-            if is_shutting_down() and not still_attempt:
-                _idempotency_abort(user["username"], p, idem_key) if still_idem_started else None; return self._send(503, {"detail": "服务正在更新，请稍等几秒后重试（未扣点）", "code": "shutting_down", "retry_after_ms": 5000})
+            # 停机时仅放行终态/退款恢复和 linked 回放；accepted/charged 必须保留状态等待重试。
+            shutdown_safe_attempt = still_attempt and still_attempt.get("state") in {"refund_pending", "refunded", "failed", "linked"}
+            if is_shutting_down():
+                if not shutdown_safe_attempt:
+                    if still_idem_started and not still_attempt: _idempotency_abort(user["username"], p, idem_key)
+                    detail = "服务正在更新，请稍等几秒后重试" if still_attempt else "服务正在更新，请稍等几秒后重试（未扣点）"
+                    return self._send(503, {"detail": detail, "code": "shutting_down", "retry_after_ms": 5000})
             # 熔断器 fail-open，检查自身异常不会阻断提交。
             from . import upstream_guard
             blocked = upstream_guard.exhausted_reason(kind, body)
@@ -1503,6 +1508,11 @@ class H(BaseHTTPRequestHandler):
             is_short_drama = kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama"
             cost = points_domain.cost_of(kind, body) if not is_short_drama and not is_still_route else None
             with _submission_lock:
+                if (is_still_route and is_shutting_down()
+                        and (not still_attempt or still_attempt.get("state") in {"accepted", "charged"})):
+                    if still_idem_started and not still_attempt: _idempotency_abort(user["username"], p, idem_key)
+                    detail = "服务正在更新，请稍等几秒后重试" if still_attempt else "服务正在更新，请稍等几秒后重试（未扣点）"
+                    return self._send(503, {"detail": detail, "code": "shutting_down", "retry_after_ms": 5000})
                 if is_short_drama:
                     try: body, cost, recovered = _short_drama_domain().prepare_paid_planning_submission(jdb, user["username"], body, points_domain.cost_of, _short_drama_canvas_access(self))
                     except (LookupError, _short_drama_domain().RevisionConflict, _short_drama_domain().PointBudgetExceeded, ValueError) as e: _short_drama_domain()._http_error(self, e); return
@@ -1538,7 +1548,8 @@ class H(BaseHTTPRequestHandler):
                             job_row = connection.execute(
                                 "SELECT status FROM jobs WHERE id=?", (jid,)
                             ).fetchone()
-                        if job_row and job_row["status"] == "pending":
+                        if (job_row and job_row["status"] == "pending"
+                                and not is_shutting_down()):
                             enqueue_job(jid, "image", still_attempt["image_payload"].get("mode"))
                         _idempotency_complete(user["username"], p, idem_key, recovered)
                         return self._send(200, recovered)
@@ -1583,6 +1594,7 @@ class H(BaseHTTPRequestHandler):
                 try:
                     still_association = _short_drama_domain().short_drama_production.submitted_job_callback(jdb, username=user["username"], project_id=prepared["project"]["id"], shot_id=prepared["shot"]["id"], idempotency_key=idem_key, quoted_cost=cost, quote_token=prepared["quote_token"], request_hash=prepared["request_hash"], access=still_access) if is_still_route and prepared else None
                     if is_still_route:
+                        if is_shutting_down(): return self._send(503, {"detail": "服务正在更新，请稍等几秒后重试", "code": "shutting_down", "retry_after_ms": 5000})
                         if still_attempt["state"] == "accepted":
                             points_left = points_domain.deduct_points(
                                 user["username"], still_attempt["cost"], "short-drama still",
@@ -1593,6 +1605,7 @@ class H(BaseHTTPRequestHandler):
                             )
                         else:
                             points_left = int(still_attempt["points_left"])
+                        if is_shutting_down(): return self._send(503, {"detail": "服务正在更新，请稍等几秒后重试", "code": "shutting_down", "retry_after_ms": 5000})
                         body = still_attempt["image_payload"]
                         cost = int(still_attempt["cost"])
                         still_association = lambda connection, job_id: _short_drama_domain().short_drama_production.record_attempt_job(
@@ -1660,7 +1673,7 @@ class H(BaseHTTPRequestHandler):
                     except Exception:
                         _reject_pending_job(jid, user["username"], cost, "视频资产登记失败"); _idempotency_abort(user["username"], p, idem_key)
                         return self._send(500, {"detail": "任务创建失败，退款正在自动处理", "job_id": jid})
-                if not enqueue_job(jid, kind, body.get("mode")):
+                if not (is_still_route and is_shutting_down()) and not enqueue_job(jid, kind, body.get("mode")):
                     if not is_still_route:
                         _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
                     if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}:

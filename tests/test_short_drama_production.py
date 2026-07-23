@@ -2491,6 +2491,159 @@ class ShortDramaStillRouteTests(unittest.TestCase):
             len(self._jobs()), core._image_job_queue.qsize(),
         ))
 
+    def test_shutdown_does_not_resume_an_accepted_still_charge_attempt(self):
+        path = "/api/gen/short-drama/generate-stills"
+        body = self._body()
+        self.points.lose_first_charge_response = True
+        first_status, _ = self.request(
+            path, body=body, idempotency_key="still-shutdown-accepted-001",
+        )
+        self.assertEqual(502, first_status)
+        self.assertEqual(
+            "accepted",
+            short_drama_production.get_charge_attempt(
+                core.jdb, "alice", "still-shutdown-accepted-001",
+            )["state"],
+        )
+        before_deducts = len(self.points.deduct_calls)
+
+        core._shutting_down.set()
+        try:
+            retry_status, retry = self.request(
+                path, body=body, idempotency_key="still-shutdown-accepted-001",
+            )
+        finally:
+            core._shutting_down.clear()
+
+        self.assertEqual(503, retry_status)
+        self.assertEqual("shutting_down", retry["code"])
+        self.assertNotIn("未扣点", retry["detail"])
+        self.assertEqual(before_deducts, len(self.points.deduct_calls))
+        self.assertEqual([], self._jobs())
+        self.assertEqual(0, core._image_job_queue.qsize())
+        self.assertEqual(
+            "accepted",
+            short_drama_production.get_charge_attempt(
+                core.jdb, "alice", "still-shutdown-accepted-001",
+            )["state"],
+        )
+        recovered_status, recovered = self.request(
+            path, body=body, idempotency_key="still-shutdown-accepted-001",
+        )
+        self.assertEqual(200, recovered_status)
+        self.assertGreater(recovered["job_id"], 0)
+        self.assertEqual(1, len(self.points.charge_keys))
+        self.assertEqual(1, len(self._jobs()))
+        self.assertEqual(1, core._image_job_queue.qsize())
+
+    def test_shutdown_does_not_create_a_job_for_a_charged_still_attempt(self):
+        path = "/api/gen/short-drama/generate-stills"
+        body = self._body()
+        self.points.lose_first_charge_response = True
+        first_status, _ = self.request(
+            path, body=body, idempotency_key="still-shutdown-charged-001",
+        )
+        self.assertEqual(502, first_status)
+        short_drama_production.mark_attempt_charged(
+            core.jdb, "alice", "still-shutdown-charged-001",
+            self.points.get_points("alice"),
+        )
+
+        core._shutting_down.set()
+        try:
+            retry_status, retry = self.request(
+                path, body=body, idempotency_key="still-shutdown-charged-001",
+            )
+        finally:
+            core._shutting_down.clear()
+
+        self.assertEqual(503, retry_status)
+        self.assertEqual("shutting_down", retry["code"])
+        self.assertNotIn("未扣点", retry["detail"])
+        self.assertEqual(1, len(self.points.deduct_calls))
+        self.assertEqual([], self._jobs())
+        self.assertEqual(0, core._image_job_queue.qsize())
+        self.assertEqual(
+            "charged",
+            short_drama_production.get_charge_attempt(
+                core.jdb, "alice", "still-shutdown-charged-001",
+            )["state"],
+        )
+        recovered_status, recovered = self.request(
+            path, body=body, idempotency_key="still-shutdown-charged-001",
+        )
+        self.assertEqual(200, recovered_status)
+        self.assertGreater(recovered["job_id"], 0)
+        self.assertEqual(1, len(self.points.deduct_calls))
+        self.assertEqual(1, len(self._jobs()))
+        self.assertEqual(1, core._image_job_queue.qsize())
+
+    def test_shutdown_replays_a_linked_still_without_reenqueuing_it(self):
+        path = "/api/gen/short-drama/generate-stills"
+        body = self._body()
+        status, accepted = self.request(
+            path, body=body, idempotency_key="still-shutdown-linked-001",
+        )
+        self.assertEqual(200, status)
+        core._image_job_queue = queue.Queue(maxsize=8)
+        core._queued_job_ids = set()
+        with closing(core.jdb()) as conn:
+            conn.execute(
+                "UPDATE submission_idempotency SET response_json=NULL "
+                "WHERE username='alice' AND endpoint=? AND idem_key=?",
+                (path, "still-shutdown-linked-001"),
+            )
+            conn.commit()
+
+        core._shutting_down.set()
+        try:
+            self.assertEqual(0, core._recover_pending_jobs())
+            self.assertEqual(0, core._image_job_queue.qsize())
+            replay_status, replay = self.request(
+                path, body=body, idempotency_key="still-shutdown-linked-001",
+            )
+        finally:
+            core._shutting_down.clear()
+
+        self.assertEqual(200, replay_status)
+        self.assertEqual(accepted, replay)
+        self.assertEqual(0, core._image_job_queue.qsize())
+        core._recover_pending_jobs()
+        self.assertEqual(1, core._image_job_queue.qsize())
+
+    def test_shutdown_allows_an_existing_refund_to_reconcile(self):
+        path = "/api/gen/short-drama/generate-stills"
+        body = self._body()
+        self.points.fail_refund_before_commit = True
+        with mock.patch.object(
+            short_drama_production, "record_attempt_job",
+            side_effect=RuntimeError("association failed"),
+        ):
+            first_status, first = self.request(
+                path, body=body, idempotency_key="still-shutdown-refund-001",
+            )
+        self.assertEqual(503, first_status)
+        self.assertEqual("refund_pending", first["code"])
+
+        core._shutting_down.set()
+        try:
+            replay_status, replay = self.request(
+                path, body=body, idempotency_key="still-shutdown-refund-001",
+            )
+        finally:
+            core._shutting_down.clear()
+
+        self.assertEqual(500, replay_status)
+        self.assertIn("detail", replay)
+        self.assertEqual(
+            "refunded",
+            short_drama_production.get_charge_attempt(
+                core.jdb, "alice", "still-shutdown-refund-001",
+            )["state"],
+        )
+        self.assertEqual(1, len(self.points.refund_keys))
+        self.assertEqual(0, core._image_job_queue.qsize())
+
     def test_equivalent_whitespace_replays_but_changed_context_conflicts(self):
         path = "/api/gen/short-drama/generate-stills"
         spaced = self._body(
