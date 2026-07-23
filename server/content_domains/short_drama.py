@@ -508,10 +508,12 @@ def _dict_rows(conn, query, params):
 def _charged_planning_points_by_project(conn, username, project_ids=None):
     wanted = set(project_ids) if project_ids is not None else None
     totals = {}
+    job_columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    refund_filter = " AND COALESCE(refunded,0)<>1" if "refunded" in job_columns else ""
     rows = _dict_rows(
         conn,
-        "SELECT cost, payload, refunded FROM jobs WHERE username=? AND kind='copy' "
-        "AND COALESCE(cost,0)>0 AND COALESCE(refunded,0)<>1",
+        "SELECT cost, payload FROM jobs WHERE username=? AND kind='copy' "
+        "AND COALESCE(cost,0)>0" + refund_filter,
         (username,),
     )
     for row in rows:
@@ -679,15 +681,18 @@ def list_projects(db_factory, username, page=1, page_size=DEFAULT_PROJECT_PAGE_S
             "SELECT COUNT(*) FROM short_drama_projects WHERE " + where,
             params,
         ).fetchone()[0])
-        rows = conn.execute(
-            "SELECT id, username FROM short_drama_projects WHERE " + where +
+        rows = _dict_rows(
+            conn,
+            "SELECT * FROM short_drama_projects WHERE " + where +
             " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
             params + (page_size, (page - 1) * page_size),
-        ).fetchall()
-        items = [_project_detail(conn, owner, project_id)
-                 for (project_id, owner) in rows]
+        )
+        for row in rows:
+            row["revision"] = int(row["revision"])
+            row["spent_points"] = _charged_planning_points(
+                conn, row["username"], row["id"])
         return {
-            "items": items,
+            "items": rows,
             "page": page,
             "page_size": page_size,
             "total": total,

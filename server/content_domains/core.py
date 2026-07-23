@@ -1219,9 +1219,8 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
-        if _short_drama_domain().dispatch_http(
-                self, "POST", jdb, verify, getattr(points_domain, "cost_of", None),
-                mutation_lock=_submission_lock,
+        if _short_drama_domain().dispatch_http(self, "POST", jdb, verify,
+                getattr(points_domain, "cost_of", None), mutation_lock=_submission_lock,
                 canvas_access_resolver=_short_drama_canvas_access): return
         if p == "/api/gen/inspiration/like": return inspiration_likes.handle_post(self, verify(self._token()), AUDIO_DB)
         if p == "/api/gen/asset/favorite":
@@ -1481,14 +1480,11 @@ class H(BaseHTTPRequestHandler):
                                         **({"operation_terminal": True} if terminal else {})})
             except miniprogram_security.SecurityUnavailable as e:
                 return self._send(503, {"detail": str(e), "code": "content_security_unavailable", "retry_after_ms": 5000})
-            except (ValueError, LookupError, PermissionError,
-                    _short_drama_domain().RevisionConflict) as e:
+            except (ValueError, LookupError, PermissionError, _short_drama_domain().RevisionConflict) as e:
                 if still_idem_started:
                     _idempotency_abort(user["username"], p, idem_key)
-                _short_drama_domain()._http_error(
-                    self, e,
-                    operation_terminal=is_still_route and bool(locals().get("idem_key")),
-                )
+                _short_drama_domain()._http_error(self, e,
+                    operation_terminal=is_still_route and bool(locals().get("idem_key")))
                 return
             # 停机时仅放行终态/退款恢复和 linked 回放；accepted/charged 必须保留状态等待重试。
             shutdown_safe_attempt = still_attempt and still_attempt.get("state") in {"refund_pending", "refunded", "failed", "linked"}
@@ -1501,10 +1497,8 @@ class H(BaseHTTPRequestHandler):
             from . import upstream_guard
             blocked = upstream_guard.exhausted_reason(kind, body)
             if blocked and not still_attempt:
-                if still_idem_started:
-                    _idempotency_abort(user["username"], p, idem_key)
-                return self._send(503, {"detail": blocked, "code": "upstream_exhausted",
-                                        "retry_after_ms": 60000})
+                if still_idem_started: _idempotency_abort(user["username"], p, idem_key)
+                return self._send(503, {"detail": blocked, "code": "upstream_exhausted", "retry_after_ms": 60000})
             is_short_drama = kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama"
             cost = points_domain.cost_of(kind, body) if not is_short_drama and not is_still_route else None
             with _submission_lock:
