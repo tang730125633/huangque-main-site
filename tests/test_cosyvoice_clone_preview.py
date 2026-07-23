@@ -41,6 +41,8 @@ class ClonePreviewTests(unittest.TestCase):
         helper = SRC[SRC.index("def _cosy_backfill_preview_async"):]
         helper = helper[:helper.index("def ensure_audio_voice")]
         self.assertIn("preview_url IS NULL OR preview_url=''", helper)
+        self.assertIn("provider_voice=?", helper)
+        self.assertIn("UPDATE audio_voice_slots SET status='ready'", helper)
         self.assertIn("threading.Thread", helper)                  # 后台线程，不阻塞复刻
 
 
