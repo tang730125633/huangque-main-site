@@ -78,6 +78,14 @@ class ShortDramaVoiceSnapshotTests(unittest.TestCase):
         self.path = str(Path(self.tmp.name) / "content.db")
         self.db = lambda: sqlite3.connect(self.path)
         short_drama.init_db(self.db)
+        with closing(self.db()) as conn:
+            conn.execute("""CREATE TABLE jobs(
+                id INTEGER PRIMARY KEY, kind TEXT, username TEXT, cost INTEGER,
+                status TEXT DEFAULT 'pending', payload TEXT, result TEXT, error TEXT,
+                created_at INTEGER, updated_at INTEGER, deleted INTEGER DEFAULT 0,
+                refunded INTEGER DEFAULT 0, owner TEXT
+            )""")
+            conn.commit()
         payload = {
             "title": "Night", "synopsis": "A detective hears a midnight knock.",
             "ratio": "9:16", "target_duration": 30, "shot_count": 6,

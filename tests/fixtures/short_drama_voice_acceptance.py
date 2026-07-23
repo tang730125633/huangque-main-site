@@ -126,6 +126,14 @@ def build_acceptance_fixture(content_db, auth_db):
 
     db_factory = lambda: sqlite3.connect(content_db)
     short_drama.init_db(db_factory)
+    with closing(db_factory()) as conn:
+        conn.execute("""CREATE TABLE jobs(
+            id INTEGER PRIMARY KEY, kind TEXT, username TEXT, cost INTEGER,
+            status TEXT DEFAULT 'pending', payload TEXT, result TEXT, error TEXT,
+            created_at INTEGER, updated_at INTEGER, deleted INTEGER DEFAULT 0,
+            refunded INTEGER DEFAULT 0, owner TEXT
+        )""")
+        conn.commit()
     project = short_drama.create_project(db_factory, owner, {
         "title": "PR19 浏览器验收", "synopsis": "仅使用合成数据的配音工作区验收。",
         "ratio": "9:16", "target_duration": 30, "shot_count": 6,
