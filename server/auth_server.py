@@ -1471,13 +1471,14 @@ def adjust_points_admin(who_admin, username, delta, reason=""):
     finally:
         c.close()
 
-def list_points_audit(username="", limit=100, actor=""):
+def list_points_audit(username="", limit=100, actor="", direction=""):
     """actor='admin' 只看人工加减点/充值审批，'system' 只看任务扣退点，''(默认) 全看。
 
     任务流水接入后，条数远多于人工操作，不过滤的话后台第一页会被任务刷屏。
     """
     limit = max(1, min(300, int(limit or 100)))
     username = (username or "").strip()
+    direction = (direction or "").strip()
     sql = """SELECT id, who_admin, username, delta, before_points, after_points, reason, created_at, transaction_key
              FROM points_audit"""
     where, args = [], []
@@ -1490,14 +1491,23 @@ def list_points_audit(username="", limit=100, actor=""):
     elif actor == "system":
         where.append("who_admin=?")
         args.append(SYSTEM_ACTOR)
-    if where:
-        sql += " WHERE " + " AND ".join(where)
+    if direction == "debit":
+        where.append("delta<0")
+    elif direction == "credit":
+        where.append("delta>0")
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    sql += where_sql
     sql += " ORDER BY id DESC LIMIT ?"
-    args.append(limit)
+    summary_sql = """SELECT COUNT(*) AS total,
+                            COALESCE(SUM(CASE WHEN delta>0 THEN delta ELSE 0 END), 0) AS credits,
+                            COALESCE(SUM(CASE WHEN delta<0 THEN -delta ELSE 0 END), 0) AS debits,
+                            COALESCE(SUM(delta), 0) AS net
+                     FROM points_audit""" + where_sql
     c = db()
     try:
-        rows = c.execute(sql, args).fetchall()
-        return {"items": [dict(r) for r in rows]}
+        summary = dict(c.execute(summary_sql, args).fetchone())
+        rows = c.execute(sql, args + [limit]).fetchall()
+        return {"items": [dict(r) for r in rows], "total": summary["total"], "summary": summary}
     finally:
         c.close()
 
@@ -2898,6 +2908,7 @@ class H(BaseHTTPRequestHandler):
                     username=(q.get("username") or [""])[0],
                     limit=(q.get("limit") or ["100"])[0],
                     actor=(q.get("actor") or [""])[0],
+                    direction=(q.get("direction") or [""])[0],
                 )
                 return self._send(200, {"ok": True, **data})
             except Exception:
