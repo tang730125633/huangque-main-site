@@ -226,19 +226,38 @@ def check_clone_status(username, slot_id):
                    clone_baseline_version, clone_baseline_icl_speaker_id, clone_baseline_demo_audio
             FROM audio_voice_slots
             WHERE username=? AND slot_id=?""", (username, slot_id)).fetchone()
-        voice = c.execute("""SELECT display_name, preview_url FROM audio_voices
-            WHERE username=? AND slot_id=? ORDER BY id DESC LIMIT 1""", (username, slot_id)).fetchone()
+        voice = c.execute("""SELECT display_name, provider_voice, preview_url FROM audio_voices
+            WHERE id=? AND username=? AND slot_id=?""",
+            (slot["voice_id"] if slot else -1, username, slot_id)).fetchone()
     if not slot:
         raise ValueError("\u97f3\u8272\u69fd\u4f4d\u4e0d\u5b58\u5728\u6216\u4e0d\u5c5e\u4e8e\u5f53\u524d\u8d26\u53f7")
     if (slot["status"] == "training" and slot["voice_id"] and voice
+            and str(voice["provider_voice"] or "").startswith(cosyvoice.CLONE_MODEL)
             and voice["preview_url"]):
         now = int(time.time())
         with closing(adb()) as c:
-            c.execute("""UPDATE audio_voice_slots SET status='ready', updated_at=?
-                WHERE username=? AND slot_id=? AND status='training'""",
-                      (now, username, slot_id))
+            cur = c.execute("""UPDATE audio_voice_slots SET status='ready', updated_at=?
+                WHERE id=? AND username=? AND slot_id=? AND status='training' AND voice_id=?
+                  AND EXISTS (
+                    SELECT 1 FROM audio_voices v
+                    WHERE v.id=audio_voice_slots.voice_id AND v.scope='personal'
+                      AND v.username=? AND v.slot_id=? AND v.provider_voice=?
+                      AND v.preview_url=?
+                  )""", (now, slot["id"], username, slot_id, slot["voice_id"],
+                           username, slot_id, voice["provider_voice"], voice["preview_url"]))
             c.commit()
-        return {"status": "ready", "preview_url": voice["preview_url"]}
+        if cur.rowcount == 1:
+            return {"status": "ready", "preview_url": voice["preview_url"]}
+        with closing(adb()) as c:
+            current = c.execute("""SELECT s.status, s.clone_error, v.preview_url
+                FROM audio_voice_slots s LEFT JOIN audio_voices v ON v.id=s.voice_id
+                WHERE s.username=? AND s.slot_id=?""", (username, slot_id)).fetchone()
+        result = {"status": (current["status"] if current else "training") or "training"}
+        if current and current["preview_url"]:
+            result["preview_url"] = current["preview_url"]
+        if current and current["clone_error"]:
+            result["clone_error"] = current["clone_error"]
+        return result
     if not cosyvoice.enabled():
         return {"status": "failed", "clone_error": "声音复刻服务暂不可用"}
     # CosyVoice\uff1aprovider_voice \u662f CosyVoice voice_id \u5c31\u67e5\u5b83\u7684 list_voice \u72b6\u6001\uff0c\u4e0d\u78b0\u8c46\u5305\u3002

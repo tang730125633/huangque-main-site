@@ -12,7 +12,7 @@ from content_domains import audio, core
 
 class AudioListTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.tmp = tempfile.TemporaryDirectory()
         self.db = str(Path(self.tmp.name) / "audio.db")
         conn = sqlite3.connect(self.db)
         try:
@@ -66,6 +66,58 @@ class AudioListTest(unittest.TestCase):
                 "SELECT status FROM audio_voice_slots WHERE id=1"
             ).fetchone()[0]
         self.assertEqual(status, "ready")
+
+    def test_clone_status_ignores_retired_or_stale_preview_rows(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("""UPDATE audio_voices
+                SET provider_voice='S_legacy', preview_url='https://preview.example/legacy.mp3'
+                WHERE id=1""")
+            conn.execute("""INSERT INTO audio_voices VALUES(
+                3,'personal','alice','vip_old','旧音色',
+                'cosyvoice-v3.5-plus-bailian-stale',NULL,
+                'https://preview.example/stale.mp3','S_test',1,1)""")
+
+        with patch.object(audio.cosyvoice, "enabled", return_value=False):
+            result = audio.check_clone_status("alice", "S_test")
+
+        self.assertEqual(result["status"], "failed")
+        with sqlite3.connect(self.db) as conn:
+            status = conn.execute(
+                "SELECT status FROM audio_voice_slots WHERE id=1"
+            ).fetchone()[0]
+        self.assertEqual(status, "training")
+
+    def test_clone_status_does_not_mark_new_reclone_ready_from_old_snapshot(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("""UPDATE audio_voices
+                SET provider_voice='cosyvoice-v3.5-plus-bailian-old',
+                    preview_url='https://preview.example/old.mp3'
+                WHERE id=1""")
+
+        calls = 0
+
+        def racing_adb():
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                with sqlite3.connect(self.db) as conn:
+                    conn.execute("""UPDATE audio_voices
+                        SET provider_voice='S_test', preview_url=NULL WHERE id=1""")
+                    conn.execute("""UPDATE audio_voice_slots
+                        SET status='training' WHERE id=1""")
+            conn = sqlite3.connect(self.db)
+            conn.row_factory = sqlite3.Row
+            return conn
+
+        with patch.object(audio, "adb", side_effect=racing_adb):
+            result = audio.check_clone_status("alice", "S_test")
+
+        self.assertEqual(result["status"], "training")
+        with sqlite3.connect(self.db) as conn:
+            status = conn.execute(
+                "SELECT status FROM audio_voice_slots WHERE id=1"
+            ).fetchone()[0]
+        self.assertEqual(status, "training")
 
     def test_voice_list_returns_db_before_background_warmup(self):
         audio._preview_warm_running = False
