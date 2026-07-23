@@ -46,11 +46,14 @@ class CinematicResultShapeTests(unittest.TestCase):
              patch.object(video, "_heygen_poll_video", return_value={"video_url": "https://x/y.mp4", "duration": 10}), \
              patch.object(video, "_download_video_file_direct", return_value="video/out.mp4"), \
              patch.object(video, "_extract_first_frame_cover", return_value=None), \
+             patch.object(video, "public_url", return_value="https://cos.example/video/out.mp4") as publish, \
              patch.object(video, "_file_url", side_effect=lambda v: "/api/gen/file/" + str(v)):
-            return video.gen_cinematic({
+            result = video.gen_cinematic({
                 "_username": "kongli", "_job_id": 1, "avatar_ids": [1], "prompt": "海边跳舞",
                 "resolution": "720p", "ratio": "9:16", "duration": 10,
             })
+            publish.assert_called_once_with("video/out.mp4", "video/mp4", private=True)
+            return result
 
     def test_result_carries_the_terminal_status(self):
         """漏了 status，record_video_asset 会写成 "pending"，资产行永远停在非终态 ——
@@ -65,6 +68,9 @@ class CinematicResultShapeTests(unittest.TestCase):
     def test_result_carries_the_video_file(self):
         # video_file 为空 → 资产卡片没有可播的片子
         self.assertEqual(self._run()["video_file"], "video/out.mp4")
+
+    def test_result_uses_the_cos_video_url(self):
+        self.assertEqual(self._run()["video_url"], "https://cos.example/video/out.mp4")
 
     def test_result_carries_text_for_the_asset_card(self):
         # video_assets 的文案列叫 text（不是 prompt），前端卡片读的也是 text
