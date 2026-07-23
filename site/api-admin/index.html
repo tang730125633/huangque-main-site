@@ -79,7 +79,7 @@
   <h2><span class="dot"></span>五、配音 / 声音复刻（TTS）</h2>
   <table>
     <tr><th>渠道</th><th>用途</th><th>base_url</th><th>认证</th><th>key 存放（打码）</th><th>状态</th></tr>
-    <tr><td><b>豆包/火山 mega_tts</b></td><td>配音 + 个人音色克隆（站内音频 8096 在用）</td><td><code>openspeech.bytedance.com/api/v1/tts</code> · <code>/mega_tts</code></td><td class="tag">X-Api-App-Id + X-Api-Access-Key</td><td>服务器 <code>DOUBAO_*</code> · 本地 <code>secret.huoshan_tts.env</code>(HS_*)</td><td class="st-ok">●</td></tr>
+    <tr><td><b>阿里百炼 CosyVoice</b></td><td>配音 + 个人音色克隆</td><td><code>dashscope.aliyuncs.com</code></td><td class="tag">Bearer</td><td>服务器 <code>DASHSCOPE_API_KEY</code></td><td class="st-ok">●</td></tr>
     <tr><td><b>ElevenLabs</b></td><td>配音 / 声音克隆(IVC·PVC)</td><td><code>api.elevenlabs.io</code></td><td class="tag">xi-api-key</td><td>本地 <code>secret.elevenlabs.env</code> → <code>ELEVEN_KEY</code></td><td class="st-todo">●</td></tr>
     <tr><td><b>IndexTTS2</b></td><td>情绪声克隆（自托管，跑云 GPU）</td><td>云 GPU（见第七节）</td><td class="tag gray">SSH 到 GPU 跑</td><td>AutoDL RTX5090</td><td class="st-todo">●</td></tr>
   </table>
@@ -118,26 +118,26 @@
     <tr>
       <td><b>兑换槽位</b><br><code>/api/gen/audio/redeem-slot</code></td>
       <td><span class="tag gold">POST</span></td>
-      <td>输入兑换码，从槽位池分配一个未使用的豆包复刻槽位。</td>
+      <td>输入兑换码，从槽位池分配一个未使用的复刻槽位。</td>
       <td><code>code</code> 兑换码</td>
       <td>返回分配后的槽位记录。槽位 id 只用于后端流程，前端不直接展示给用户。</td>
     </tr>
     <tr>
       <td><b>VIP 复刻上传</b><br><code>/api/gen/audio/clone-vip</code></td>
       <td><span class="tag gold">POST</span></td>
-      <td>用槽位 id + 用户上传样音发起豆包声音复刻。后端立即标记 training，并在后台上传豆包。</td>
+      <td>用槽位 id + 用户上传样音发起 CosyVoice 声音复刻。</td>
       <td><code>slot_id</code>，<code>name</code>，<code>audio</code> base64，<code>audio_format</code> 如 wav/mp3</td>
       <td>返回 training。前端继续轮询 <code>/api/gen/audio/clone-status</code>，等待复刻完成并生成试听音频。</td>
     </tr>
     <tr>
       <td><b>查询复刻状态</b><br><code>/api/gen/audio/clone-status</code></td>
       <td><span class="tag">GET</span></td>
-      <td>查询豆包复刻状态。豆包返回本次新结果后，后端再用测试文案生成试听音频，并更新卡片状态。</td>
+      <td>查询 CosyVoice 复刻状态，并更新音色卡片状态。</td>
       <td><code>slot_id</code></td>
       <td><code>status=ready</code> 且有 <code>preview_url</code> 才代表完整流程结束；<code>failed</code> 时看 <code>clone_error</code>。</td>
     </tr>
   </table>
-  <div class="note">完整流程：前端拿音色/槽位 → 生成配音时提交 <code>/api/gen/audio</code> → 轮询任务 → 文件进 <code>content_out</code>，资产进 <code>audio_assets.db</code>。复刻流程：兑换槽位 → 上传样音 → 等豆包训练成功 → 生成测试音频 → 更新 <code>audio_voices.preview_url</code> 和槽位状态。</div>
+  <div class="note">完整流程：前端拿音色/槽位 → 生成配音时提交 <code>/api/gen/audio</code> → 轮询任务 → 文件进 <code>content_out</code>，资产进 <code>audio_assets.db</code>。复刻流程：开通槽位 → 上传样音 → 等 CosyVoice 训练成功 → 生成测试音频 → 更新 <code>audio_voices.preview_url</code> 和槽位状态。</div>
 
   <h2><span class="dot"></span>六、数字人</h2>
   <table>

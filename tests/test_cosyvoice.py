@@ -11,6 +11,7 @@
 import importlib
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest.mock import patch
 
@@ -155,6 +156,20 @@ class AudioVoiceMappingTests(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 self.audio._cosy_voice_for(old)
             self.assertIn("重新复刻", str(ctx.exception))
+
+    def test_current_public_voice_never_falls_back_without_cosyvoice(self):
+        with unittest.mock.patch.object(self.audio.cosyvoice, "enabled", return_value=False):
+            with unittest.mock.patch.object(
+                self.audio, "resolve_audio_provider_voice", return_value="S_d21F8OR62"
+            ):
+                with self.assertRaises(ValueError) as ctx:
+                    self.audio.gen_audio({
+                        "text": "测试",
+                        "voice": "S_d21F8OR62",
+                        "_username": "fang",
+                    })
+        self.assertIn("暂不可用", str(ctx.exception))
+        self.assertFalse(hasattr(self.audio, "generate_doubao_preview"))
 
 
 if __name__ == "__main__":
