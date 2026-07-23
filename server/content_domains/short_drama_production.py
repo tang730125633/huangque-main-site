@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS short_drama_asset_versions (
   version INTEGER NOT NULL,
   job_id INTEGER NOT NULL,
   url TEXT NOT NULL,
+  file TEXT NOT NULL DEFAULT '',
   prompt TEXT NOT NULL,
   ratio TEXT NOT NULL CHECK (ratio IN ('9:16','16:9')),
   cost INTEGER NOT NULL DEFAULT 0 CHECK (cost >= 0),
@@ -156,6 +157,14 @@ def init_db(db_factory):
             conn.execute("ALTER TABLE short_drama_production_jobs ADD COLUMN error TEXT NOT NULL DEFAULT ''")
         if "refunded" not in columns:
             conn.execute("ALTER TABLE short_drama_production_jobs ADD COLUMN refunded INTEGER NOT NULL DEFAULT 0")
+        version_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(short_drama_asset_versions)")
+        }
+        if "file" not in version_columns:
+            conn.execute(
+                "ALTER TABLE short_drama_asset_versions "
+                "ADD COLUMN file TEXT NOT NULL DEFAULT ''"
+            )
         conn.commit()
     finally:
         conn.close()
@@ -610,7 +619,7 @@ def _authorized_project(conn, username, project_id, access=None, *, write=False)
     return dict(project)
 
 
-def _project_references(conn, project, shot):
+def _project_references(conn, project, shot, *, include_internal=False):
     try:
         character_keys = json.loads(shot.get("character_keys_json") or "[]")
     except (TypeError, ValueError):
@@ -633,7 +642,7 @@ def _project_references(conn, project, shot):
                 "source_type": row["source_type"], "source_id": row["avatar_id"] or "",
             })
     previous = conn.execute(
-        "SELECT v.id, v.url, v.ratio, s.shot_key FROM short_drama_shots current "
+        "SELECT v.id, v.url, v.file, v.ratio, s.shot_key FROM short_drama_shots current "
         "JOIN short_drama_shots s ON s.project_id=current.project_id "
         "AND s.sort_order<current.sort_order "
         "JOIN short_drama_assets a ON a.project_id=s.project_id AND a.shot_id=s.id "
@@ -646,11 +655,14 @@ def _project_references(conn, project, shot):
     if previous:
         if previous["ratio"] != project["ratio"]:
             raise ValueError("上一镜头连续性参考比例与项目不一致")
-        references.append({
+        continuity = {
             "type": "continuity", "id": previous["id"],
             "name": "上一镜头 %s 已锁定关键帧" % previous["shot_key"],
             "url": previous["url"], "ratio": previous["ratio"],
-        })
+        }
+        if include_internal and previous["file"]:
+            continuity["file"] = previous["file"]
+        references.append(continuity)
     return references
 
 
@@ -683,7 +695,7 @@ def prepare_still_submission(db_factory, username, body, *, require_quote=False,
         if body["mode"] == "batch" and bool(shot.pop("still_locked")):
             raise ValueError("批量生成已跳过锁定的关键帧")
         shot.pop("still_locked", None)
-        references = _project_references(conn, project, shot)
+        references = _project_references(conn, project, shot, include_internal=True)
         quoted_cost = None
         if require_quote:
             quote = conn.execute(
@@ -931,6 +943,21 @@ def _json_object(raw, error_message):
     return value
 
 
+def _trusted_result_files(result, urls):
+    candidates = result.get("files")
+    if not isinstance(candidates, list):
+        candidates = []
+    if not candidates and result.get("file"):
+        candidates = [result["file"]]
+    from . import image as image_domain
+    return [
+        image_domain._trusted_short_drama_file(
+            candidates[index] if index < len(candidates) else ""
+        ) or image_domain._trusted_short_drama_file(url, file_url=True)
+        for index, url in enumerate(urls)
+    ]
+
+
 def reconcile_jobs(conn, username, project_id):
     job_columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)")}
     has_job_error = "error" in job_columns
@@ -973,6 +1000,7 @@ def reconcile_jobs(conn, username, project_id):
                     or any(not isinstance(url, str) or not url for url in urls)
                     or len(set(urls)) != 2):
                 raise ValueError("关键帧任务必须返回 2 张候选图")
+            local_files = _trusted_result_files(result, urls)
             prompt = payload.get("prompt") or ""
             if not isinstance(prompt, str):
                 raise ValueError("关键帧任务参数无效")
@@ -994,10 +1022,18 @@ def reconcile_jobs(conn, username, project_id):
                 for offset, url in enumerate(urls):
                     conn.execute(
                         "INSERT OR IGNORE INTO short_drama_asset_versions "
-                        "(id, asset_id, version, job_id, url, prompt, ratio, cost, status, created_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'done', ?)",
+                        "(id, asset_id, version, job_id, url, file, prompt, ratio, cost, status, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'done', ?)",
                         (str(uuid.uuid4()), asset_id, next_version + offset, job_id, url,
+                         local_files[offset],
                          prompt, project_ratio, int(cost or 0), now),
+                    )
+            for url, local_file in zip(urls, local_files):
+                if local_file:
+                    conn.execute(
+                        "UPDATE short_drama_asset_versions SET file=? "
+                        "WHERE asset_id=? AND job_id=? AND url=? AND file=''",
+                        (local_file, asset_id, job_id, url),
                     )
             archived = conn.execute(
                 "SELECT COUNT(*), MIN(version) FROM short_drama_asset_versions WHERE asset_id=? AND job_id=?",

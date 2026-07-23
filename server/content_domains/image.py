@@ -484,29 +484,47 @@ def _gen_image_seedream(prompt, ratio, quality, count, img, variant):
             "ratio": ratio, "prompt": prompt}
 
 
-def _trusted_short_drama_continuity(url):
-    """Load only our authenticated local-file form; unsafe/missing input falls back to prompt."""
-    value = str(url or "").strip()
-    prefix = "/api/gen/file/"
-    if not value.startswith(prefix):
-        return None
+def _trusted_short_drama_file(value, *, file_url=False):
+    value = str(value or "").strip()
     parsed = urllib.parse.urlsplit(value)
     if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
-        return None
-    relative = urllib.parse.unquote(parsed.path[len(prefix):])
+        return ""
+    if file_url:
+        prefix = "/api/gen/file/"
+        if not parsed.path.startswith(prefix):
+            return ""
+        relative = urllib.parse.unquote(parsed.path[len(prefix):])
+    else:
+        if parsed.path.startswith("/"):
+            return ""
+        relative = urllib.parse.unquote(parsed.path)
     if (not relative or "\\" in relative
             or any(part in {"", ".", ".."} for part in relative.split("/"))):
-        return None
+        return ""
     try:
         root = OUT_DIR.resolve()
         candidate = (OUT_DIR / relative).resolve()
         candidate.relative_to(root)
     except (OSError, ValueError):
-        return None
+        return ""
     try:
         if not candidate.is_file() or candidate.stat().st_size > IMAGE_REF_MAX_BYTES:
-            return None
-        return candidate.read_bytes()
+            return ""
+        return candidate.relative_to(root).as_posix()
+    except OSError:
+        return ""
+
+
+def _trusted_short_drama_continuity(url="", local_file=""):
+    """Load only a validated local result; unsafe/missing input falls back to prompt."""
+    relative = (
+        _trusted_short_drama_file(local_file)
+        or _trusted_short_drama_file(url, file_url=True)
+    )
+    if not relative:
+        return None
+    try:
+        return (OUT_DIR.resolve() / relative).read_bytes()
     except OSError:
         return None
 
@@ -519,7 +537,7 @@ def gen_image(payload):
     references = payload.get("short_drama_references")
     if isinstance(references, list):
         context = []
-        continuity_url = ""
+        continuity = None
         for reference in references:
             if not isinstance(reference, dict):
                 continue
@@ -530,12 +548,14 @@ def gen_image(payload):
             elif ref_type == "continuity":
                 if name:
                     context.append("visual continuity: " + name)
-                if not continuity_url:
-                    continuity_url = str(reference.get("url") or "").strip()
+                if continuity is None:
+                    continuity = reference
         if context:
             prompt += "\nTrusted short-drama continuity context:\n" + "\n".join(context)
-        if continuity_url and not payload.get("image"):
-            local_continuity = _trusted_short_drama_continuity(continuity_url)
+        if continuity is not None and not payload.get("image"):
+            local_continuity = _trusted_short_drama_continuity(
+                continuity.get("url"), continuity.get("file")
+            )
             if local_continuity:
                 payload["image"] = base64.b64encode(local_continuity).decode("ascii")
     payload["prompt"] = prompt

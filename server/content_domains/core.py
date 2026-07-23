@@ -1555,7 +1555,7 @@ class H(BaseHTTPRequestHandler):
                         _idempotency_complete(user["username"], p, idem_key, recovered)
                         return self._send(200, recovered)
                 if not is_still_route: idem_state, idem_response = _idempotency_begin(user["username"], p, idem_key, request_body)
-                if idem_state == "replay": return self._send(200, idem_response)
+                if idem_state == "replay": replay = dict(idem_response or {}); return self._send(int(replay.pop("_http_status", 200)), replay)
                 if idem_state == "conflict": return self._send(409, {"detail": "同一个 Idempotency-Key 不能用于不同请求", "code": "idempotency_conflict"})
                 if idem_state == "processing" and not is_still_route: return self._send(409, {"detail": "相同请求正在受理，请稍后查询", "code": "idempotency_in_progress", "retry_after_ms": 1000})
                 if is_still_route and not still_attempt:
@@ -1642,7 +1642,7 @@ class H(BaseHTTPRequestHandler):
                         _idempotency_complete(user["username"], p, idem_key,
                                               dict(failed_response, _http_status=500))
                     else:
-                        _idempotency_abort(user["username"], p, idem_key)
+                        _idempotency_complete(user["username"], p, idem_key, dict(failed_response, _http_status=500))
                     return self._send(500, failed_response)
                 except Exception:
                     if not is_still_route:
@@ -1665,8 +1665,8 @@ class H(BaseHTTPRequestHandler):
                 if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}:
                     try: video_domain.record_video_pending_asset(jid, user["username"], body)
                     except Exception:
-                        _reject_pending_job(jid, user["username"], cost, "视频资产登记失败"); _idempotency_abort(user["username"], p, idem_key)
-                        return self._send(500, {"detail": "任务创建失败，退款正在自动处理", "job_id": jid})
+                        failed_response = {"detail": "任务创建失败，退款正在自动处理", "job_id": jid}; _reject_pending_job(jid, user["username"], cost, "视频资产登记失败"); _idempotency_complete(user["username"], p, idem_key, dict(failed_response, _http_status=500))
+                        return self._send(500, failed_response)
                 if not (is_still_route and is_shutting_down()) and not enqueue_job(jid, kind, body.get("mode")):
                     if not is_still_route:
                         _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
@@ -1686,7 +1686,7 @@ class H(BaseHTTPRequestHandler):
                         else:
                             return self._send(503, _short_drama_domain().short_drama_production.refund_pending_response())
                     else:
-                        _idempotency_abort(user["username"], p, idem_key)
+                        _idempotency_complete(user["username"], p, idem_key, dict(queue_response, _http_status=429))
                     return self._send(429, queue_response)
             response = {"job_id": jid, "cost": cost, "points_left": points_left}
             if is_still_route:

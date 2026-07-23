@@ -449,7 +449,7 @@
   function renderStageNavigation(project,state){
     return ['settings'].concat(STAGES.slice(1)).map(function(stage){
       var enabled=isStageEnabled(project,stage),active=state.activeStage===stage;
-      if(isProductionStage(project.stage)) enabled=stage===project.stage;
+      if(isProductionStage(stage)) enabled=stage===project.stage;
       return '<button type="button" class="nc-short-drama-stage'+(active?' is-active':'')+'" data-tab="'+stage+'"'+
         disabledUnless(enabled)+' aria-current="'+(active?'step':'false')+'"><span>'+escapeHtml(STAGE_LABELS[stage])+'</span></button>';
     }).join('');
@@ -940,6 +940,19 @@
           image_prompt:valueFrom(card,'image_prompt'),video_prompt:valueFrom(card,'video_prompt')};
       });
     }
+    function selectWorkspaceStage(stage){
+      if(!project||!isStageEnabled(project,stage)) return false;
+      if(isProductionStage(stage)){
+        if(stage!==project.stage) return false;
+        state.activeStage=stage;
+        if(productionWorkspace) render();
+        else activateProductionWorkspace().catch(function(error){ showWorkspaceError(error,true); });
+        return true;
+      }
+      destroyProductionWorkspace();
+      state.activeStage=stage;render();
+      return true;
+    }
     function runDomAction(promise){ Promise.resolve(promise).catch(function(error){ if(!state.error){ state.error=workspaceErrorMessage(error); render(); } }); }
     function handleClick(event){
       var jump=findActionTarget(event.target,'data-character-jump',host);
@@ -957,7 +970,7 @@
         return;
       }
       var tab=findActionTarget(event.target,'data-tab',host);
-      if(tab){ var nextTab=tab.getAttribute('data-tab'); if(project&&isStageEnabled(project,nextTab)){ state.activeStage=nextTab;render(); } return; }
+      if(tab){ selectWorkspaceStage(tab.getAttribute('data-tab'));return; }
       var version=findActionTarget(event.target,'data-script-version',host);
       if(version){ state.scriptVersion=Number(version.getAttribute('data-script-version'));render();return; }
       var confirmButton=findActionTarget(event.target,'data-confirm-stage',host);
@@ -1011,7 +1024,7 @@
     return {
       projectId:options.projectId||null,client:client,ready:ready,destroy:destroy,render:render,
       getProject:function(){ return cloneValue(project); },getState:snapshotState,
-      selectStage:function(stage){ if(project&&isStageEnabled(project,stage)){ state.activeStage=stage;render();return true; } return false; },
+      selectStage:selectWorkspaceStage,
       reload:reloadWorkspace,saveSettings:saveSettings,saveCharacters:saveCharacters,saveScript:saveScript,
       saveShots:saveShots,deleteProject:deleteProject,confirm:confirm,generatePlan:generatePlan,
       canGeneratePlan:function(){ return canGeneratePlan(project,state.synopsisSaved); }

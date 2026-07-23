@@ -390,6 +390,51 @@ class ShortDramaProductionTests(unittest.TestCase):
             }
         self.assertIn("board_id", project_columns)
 
+    def test_init_migrates_legacy_asset_versions_with_local_file_column(self):
+        legacy_path = str(Path(self.tmp.name) / "legacy.db")
+        legacy_db = lambda: sqlite3.connect(legacy_path)
+        with closing(legacy_db()) as conn:
+            conn.executescript("""
+                CREATE TABLE short_drama_projects (id TEXT PRIMARY KEY);
+                CREATE TABLE short_drama_shots (
+                  id TEXT PRIMARY KEY,
+                  project_id TEXT NOT NULL
+                );
+                CREATE TABLE short_drama_asset_versions (
+                  id TEXT PRIMARY KEY,
+                  asset_id TEXT NOT NULL,
+                  version INTEGER NOT NULL,
+                  job_id INTEGER NOT NULL,
+                  url TEXT NOT NULL,
+                  prompt TEXT NOT NULL,
+                  ratio TEXT NOT NULL,
+                  cost INTEGER NOT NULL DEFAULT 0,
+                  status TEXT NOT NULL,
+                  created_at INTEGER NOT NULL
+                );
+            """)
+            conn.commit()
+
+        short_drama_production.init_db(legacy_db)
+
+        with closing(legacy_db()) as conn:
+            columns = {
+                row[1] for row in conn.execute(
+                    "PRAGMA table_info(short_drama_asset_versions)"
+                )
+            }
+            conn.execute(
+                "INSERT INTO short_drama_asset_versions "
+                "(id,asset_id,version,job_id,url,prompt,ratio,cost,status,created_at) "
+                "VALUES('legacy','asset',1,1,'https://cos.test/legacy.png',"
+                "'prompt','9:16',0,'done',1)"
+            )
+            local_file = conn.execute(
+                "SELECT file FROM short_drama_asset_versions WHERE id='legacy'"
+            ).fetchone()[0]
+        self.assertIn("file", columns)
+        self.assertEqual("", local_file)
+
     def test_charge_attempt_is_durable_and_uses_fixed_length_keys(self):
         body = self._still_request()
         quote = short_drama_production.prepare_still_quote(
@@ -785,7 +830,8 @@ class ShortDramaProductionTests(unittest.TestCase):
                 {"type": "character", "id": "character-owned", "name": "Detective Lin",
                  "source_type": "avatar", "source_id": "avatar-owned"},
                  {"type": "continuity", "id": "version-owned", "name": "previous locked still",
-                  "url": "/api/gen/file/owned.png", "ratio": "9:16"},
+                  "url": "https://cos.test/owned.png", "file": "owned.png",
+                  "ratio": "9:16"},
             ],
         }
         def fake_generate(prompt, ratio, quality, count, img, variant):
@@ -816,23 +862,37 @@ class ShortDramaProductionTests(unittest.TestCase):
     def test_invalid_or_traversal_local_continuity_uses_prompt_only_fallback(self):
         local_out = Path(self.tmp.name) / "content_out"
         local_out.mkdir()
+        outside = Path(self.tmp.name) / "secret.png"
+        outside.write_bytes(b"\x89PNG\r\n\x1a\nsecret")
+        (local_out / "outside-link.png").symlink_to(outside)
+        (local_out / "large.png").write_bytes(b"\x89PNG\r\n\x1a\nlarge")
         captured = []
-        payload = {
-            "provider": "seedream", "variant": "std", "quality": "hd",
-            "prompt": "rainy doorway", "ratio": "9:16", "count": 2,
-            "short_drama_references": [{
-                "type": "continuity", "id": "owned", "name": "previous still",
-                "url": "/api/gen/file/../secret.png", "ratio": "9:16",
-            }],
-        }
+        unsafe_references = (
+            {"file": "../secret.png", "url": "https://external.test/secret.png"},
+            {"file": str(outside), "url": "/api/gen/file/../secret.png"},
+            {"file": "outside-link.png", "url": "https://external.test/link.png"},
+            {"file": "large.png", "url": "https://external.test/large.png"},
+        )
         with mock.patch.object(image, "OUT_DIR", local_out), \
-             mock.patch.object(image, "_seedream_fetch", side_effect=AssertionError("invalid local URL must not be fetched")), \
-             mock.patch.object(image, "_gen_image_seedream",
-                               side_effect=lambda prompt, ratio, quality, count, img, variant:
-                               captured.append((prompt, img)) or {"urls": ["a", "b"], "ratio": ratio}):
-            image.gen_image(payload)
-        self.assertIn("previous still", captured[0][0])
-        self.assertIsNone(captured[0][1])
+             mock.patch.object(image, "IMAGE_REF_MAX_BYTES", 8), \
+             mock.patch.object(
+                 image, "_gen_image_seedream",
+                 side_effect=lambda prompt, ratio, quality, count, img, variant:
+                 captured.append((prompt, img)) or {"urls": ["a", "b"], "ratio": ratio},
+             ):
+            for reference in unsafe_references:
+                image.gen_image({
+                    "provider": "seedream", "variant": "std", "quality": "hd",
+                    "prompt": "rainy doorway", "ratio": "9:16", "count": 2,
+                    "short_drama_references": [dict(
+                        reference, type="continuity", id="owned",
+                        name="previous still", ratio="9:16",
+                    )],
+                })
+        self.assertEqual(4, len(captured))
+        for prompt, local_image in captured:
+            self.assertIn("previous still", prompt)
+            self.assertIsNone(local_image)
 
     def test_cos_disabled_and_upload_failure_keep_trusted_local_file_urls(self):
         local_out = Path(self.tmp.name) / "content_out"
@@ -1779,6 +1839,96 @@ class ShortDramaProductionTests(unittest.TestCase):
         self.assertEqual(60, state["spent_points"])
         self.assertEqual(0, state["reserved_points"])
 
+    def test_reconciliation_archives_local_file_keys_without_exposing_them(self):
+        local_out = Path(self.tmp.name) / "content_out"
+        local_out.mkdir(exist_ok=True)
+        for name in ("candidate-one.png", "candidate-two.png"):
+            (local_out / name).write_bytes(b"\x89PNG\r\n\x1a\n" + name.encode())
+        job_id = self._link_job(result={
+            "urls": [
+                "https://cos.test/candidate-one.png",
+                "https://cos.test/candidate-two.png",
+            ],
+            "files": ["candidate-one.png", "candidate-two.png"],
+            "ratio": "9:16",
+        })
+
+        with mock.patch.object(image, "OUT_DIR", local_out):
+            state = short_drama_production.get_production(
+                self.db, "alice", self.project["id"]
+            )
+
+        with closing(self.db()) as conn:
+            files = [
+                row[0] for row in conn.execute(
+                    "SELECT file FROM short_drama_asset_versions "
+                    "WHERE job_id=? ORDER BY version",
+                    (job_id,),
+                )
+            ]
+        self.assertEqual(["candidate-one.png", "candidate-two.png"], files)
+        self.assertTrue(state["shots"][0]["still"]["versions"])
+        for version in state["shots"][0]["still"]["versions"]:
+            self.assertNotIn("file", version)
+
+    def test_reconciliation_backfills_local_files_for_existing_cos_archive(self):
+        local_out = Path(self.tmp.name) / "content_out"
+        local_out.mkdir(exist_ok=True)
+        for name in ("legacy-one.png", "legacy-two.png"):
+            (local_out / name).write_bytes(b"\x89PNG\r\n\x1a\n" + name.encode())
+        urls = [
+            "https://cos.test/legacy-one.png",
+            "https://cos.test/legacy-two.png",
+        ]
+        job_id = self._link_job(result={
+            "urls": urls,
+            "files": ["legacy-one.png", "legacy-two.png"],
+            "ratio": "9:16",
+        })
+        with closing(self.db()) as conn:
+            short_drama_production.ensure_asset_slots(conn, self.project["id"])
+            asset_id = conn.execute(
+                "SELECT id FROM short_drama_assets WHERE project_id=? AND shot_id=?",
+                (self.project["id"], self._shot_id()),
+            ).fetchone()[0]
+            for version, url in enumerate(urls, 1):
+                conn.execute(
+                    "INSERT INTO short_drama_asset_versions "
+                    "(id,asset_id,version,job_id,url,prompt,ratio,cost,status,created_at) "
+                    "VALUES(?,?,?,?,?,'legacy','9:16',24,'done',1)",
+                    ("legacy-version-%s" % version, asset_id, version, job_id, url),
+                )
+            conn.commit()
+
+        with mock.patch.object(image, "OUT_DIR", local_out):
+            short_drama_production.get_production(
+                self.db, "alice", self.project["id"]
+            )
+        with closing(self.db()) as conn:
+            files = [
+                row[0] for row in conn.execute(
+                    "SELECT file FROM short_drama_asset_versions "
+                    "WHERE job_id=? ORDER BY version",
+                    (job_id,),
+                )
+            ]
+            conn.execute(
+                "UPDATE short_drama_assets SET locked=1 WHERE id=?", (asset_id,)
+            )
+            conn.commit()
+        self.assertEqual(["legacy-one.png", "legacy-two.png"], files)
+
+        public_state = short_drama_production.get_production(
+            self.db, "alice", self.project["id"]
+        )
+        public_continuity = public_state["shots"][1]["references"][0]
+        self.assertNotIn("file", public_continuity)
+        prepared = short_drama_production.prepare_still_submission(
+            self.db, "alice", self._still_request(shot_id=self._shot_id(1))
+        )
+        internal_continuity = prepared["image_payload"]["short_drama_references"][0]
+        self.assertEqual("legacy-one.png", internal_continuity["file"])
+
     def test_malformed_done_job_isolated_and_visible_while_other_job_reconciles(self):
         with closing(self.db()) as conn:
             conn.execute("ALTER TABLE jobs ADD COLUMN error TEXT")
@@ -2383,6 +2533,77 @@ class ShortDramaStillRouteTests(unittest.TestCase):
             self.project["id"], self.shot_id, accepted["job_id"],
             "still-submit-001", 24,
         ), tuple(association))
+
+    def test_generic_insert_failure_replays_500_without_creating_again(self):
+        path = "/api/gen/image"
+        body = {
+            "provider": "seedream", "prompt": "rainy doorway",
+            "ratio": "9:16", "count": 1,
+        }
+        failure = jobs_store.PaidJobInsertError("refunded", "generic-insert-001")
+        with mock.patch.object(
+            jobs_store, "create_paid_job", side_effect=failure
+        ) as create_paid_job:
+            first_status, first = self.request(
+                path, body=body, idempotency_key="generic-insert-failure-001"
+            )
+            replay_status, replay = self.request(
+                path, body=body, idempotency_key="generic-insert-failure-001"
+            )
+
+        self.assertEqual((500, 500), (first_status, replay_status))
+        self.assertEqual(first, replay)
+        self.assertNotIn("_http_status", replay)
+        self.assertEqual(1, create_paid_job.call_count)
+
+    def test_generic_queue_refund_replays_429_without_free_retry(self):
+        path = "/api/gen/image"
+        body = {
+            "provider": "seedream", "prompt": "rainy doorway",
+            "ratio": "9:16", "count": 1,
+        }
+        core._image_job_queue = queue.Queue(maxsize=1)
+        core._image_job_queue.put_nowait(999999)
+
+        first_status, first = self.request(
+            path, body=body, idempotency_key="generic-queue-failure-001"
+        )
+        core._image_job_queue.get_nowait()
+        replay_status, replay = self.request(
+            path, body=body, idempotency_key="generic-queue-failure-001"
+        )
+
+        self.assertEqual((429, 429), (first_status, replay_status))
+        self.assertEqual(first, replay)
+        self.assertEqual(1, len(self.points.deduct_calls))
+        self.assertEqual(1, len(self.points.refund_calls))
+        self.assertEqual(1, len(self._jobs()))
+        self.assertEqual(0, core._image_job_queue.qsize())
+
+    def test_generic_asset_failure_replays_500_without_free_retry(self):
+        path = "/api/gen/video"
+        body = {"prompt": "rainy doorway"}
+        core.HANDLERS["video"] = lambda payload: payload
+        with mock.patch.object(
+            video, "validate_video_payload",
+            side_effect=lambda payload, _username: dict(payload),
+        ), mock.patch.object(
+            video, "record_video_pending_asset",
+            side_effect=RuntimeError("asset write failed"),
+        ) as record_asset:
+            first_status, first = self.request(
+                path, body=body, idempotency_key="generic-asset-failure-001"
+            )
+            replay_status, replay = self.request(
+                path, body=body, idempotency_key="generic-asset-failure-001"
+            )
+
+        self.assertEqual((500, 500), (first_status, replay_status))
+        self.assertEqual(first, replay)
+        self.assertEqual(1, len(self.points.deduct_calls))
+        self.assertEqual(1, len(self.points.refund_calls))
+        self.assertEqual(1, len(self._jobs()))
+        self.assertEqual(1, record_asset.call_count)
 
     def test_submission_charges_exact_quote_and_consumes_it_atomically(self):
         body = self._body()

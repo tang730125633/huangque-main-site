@@ -18,7 +18,7 @@ SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from content_domains import core, short_drama, video
+from content_domains import core, short_drama, short_drama_production, video
 
 
 def valid_project(**changes):
@@ -318,6 +318,111 @@ class ShortDramaProjectTests(unittest.TestCase):
         )
 
         self.assertTrue(deleted["deleted"])
+
+    def test_delete_blocks_collaborator_production_job_until_completed(self):
+        project = self.applied_project()
+        self.next_job_id += 1
+        with closing(self.db()) as conn:
+            short_drama_production.ensure_asset_slots(conn, project["id"])
+            conn.execute(
+                "INSERT INTO jobs(id,kind,username,cost,status,payload,refunded) "
+                "VALUES(?,'image','bob',24,'error','{}',1)",
+                (self.next_job_id,),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_production_jobs "
+                "(id,username,project_id,shot_id,kind,job_id,idempotency_key,"
+                "quoted_cost,status,created_at,updated_at) "
+                "VALUES(?,'bob',?,?,'still',?,'collaborator-still',24,'pending',1,1)",
+                ("collaborator-link", project["id"], project["shots"][0]["id"],
+                 self.next_job_id),
+            )
+            conn.commit()
+
+        with self.assertRaises(short_drama.ProjectHasUnappliedJobs):
+            short_drama.delete_project(
+                self.db, "alice", project["id"], project["revision"]
+            )
+
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_production_jobs SET status='done' "
+                "WHERE id='collaborator-link'"
+            )
+            conn.commit()
+        self.assertTrue(short_drama.delete_project(
+            self.db, "alice", project["id"], project["revision"]
+        )["deleted"])
+
+    def test_delete_blocks_orphan_production_link_until_reconciled(self):
+        project = self.applied_project()
+        with closing(self.db()) as conn:
+            conn.execute(
+                "INSERT INTO short_drama_production_jobs "
+                "(id,username,project_id,shot_id,kind,job_id,idempotency_key,"
+                "quoted_cost,status,created_at,updated_at) "
+                "VALUES('orphan-link','bob',?,?,'still',999999,"
+                "'orphan-still',24,'running',1,1)",
+                (project["id"], project["shots"][0]["id"]),
+            )
+            conn.commit()
+
+        with self.assertRaises(short_drama.ProjectHasUnappliedJobs):
+            short_drama.delete_project(
+                self.db, "alice", project["id"], project["revision"]
+            )
+
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_production_jobs SET status='failed' "
+                "WHERE id='orphan-link'"
+            )
+            conn.commit()
+        self.assertTrue(short_drama.delete_project(
+            self.db, "alice", project["id"], project["revision"]
+        )["deleted"])
+
+    def test_delete_blocks_unsettled_charge_attempts_until_refunded(self):
+        for index, state in enumerate(("accepted", "charged", "refund_pending")):
+            with self.subTest(state=state):
+                project = self.applied_project()
+                shot_id = project["shots"][0]["id"]
+                token = "delete-quote-%s" % index
+                with closing(self.db()) as conn:
+                    conn.execute(
+                        "INSERT INTO short_drama_still_quotes "
+                        "(token,username,project_id,shot_id,request_hash,cost,"
+                        "expires_at,created_at) VALUES(?,'bob',?,?,?,24,9999999999,1)",
+                        (token, project["id"], shot_id, "hash-%s" % index),
+                    )
+                    conn.execute(
+                        "INSERT INTO short_drama_charge_attempts "
+                        "(charge_key,refund_key,username,endpoint,idempotency_key,"
+                        "request_hash,project_id,shot_id,quote_token,cost,"
+                        "image_payload_json,state,created_at,updated_at) "
+                        "VALUES(?,?,'bob','/api/gen/short-drama/generate-stills',"
+                        "?,?,?,?,?,24,'{}',?,1,1)",
+                        ("charge-%s" % index, "refund-%s" % index,
+                         "delete-attempt-%s" % index, "hash-%s" % index,
+                         project["id"], shot_id, token, state),
+                    )
+                    conn.commit()
+
+                with self.assertRaises(short_drama.ProjectHasUnappliedJobs):
+                    short_drama.delete_project(
+                        self.db, "alice", project["id"], project["revision"]
+                    )
+
+                with closing(self.db()) as conn:
+                    conn.execute(
+                        "UPDATE short_drama_charge_attempts SET state='refunded' "
+                        "WHERE charge_key=?",
+                        ("charge-%s" % index,),
+                    )
+                    conn.commit()
+                self.assertTrue(short_drama.delete_project(
+                    self.db, "alice", project["id"], project["revision"]
+                )["deleted"])
 
     def test_create_project_rejects_impossible_duration_shot_pair(self):
         with self.assertRaisesRegex(ValueError, "时长与分镜数量不匹配"):

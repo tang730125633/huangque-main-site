@@ -530,6 +530,23 @@ def _charged_planning_points(conn, username, project_id):
 
 
 def _has_unapplied_charged_job(conn, username, project_id):
+    if conn.execute(
+            "SELECT 1 FROM short_drama_production_jobs p "
+            "JOIN short_drama_projects project "
+            "ON project.id=p.project_id AND project.username=? AND project.deleted=0 "
+            "WHERE p.project_id=? AND p.status IN ('pending','running') LIMIT 1",
+            (username, project_id),
+    ).fetchone():
+        return True
+    if conn.execute(
+            "SELECT 1 FROM short_drama_charge_attempts a "
+            "JOIN short_drama_projects project "
+            "ON project.id=a.project_id AND project.username=? AND project.deleted=0 "
+            "WHERE a.project_id=? "
+            "AND a.state IN ('accepted','charged','refund_pending') LIMIT 1",
+            (username, project_id),
+    ).fetchone():
+        return True
     applied_ids = {
         int(row[0]) for row in conn.execute(
             "SELECT job_id FROM short_drama_applied_jobs WHERE project_id=? AND username=?",
@@ -721,7 +738,7 @@ def delete_project(db_factory, username, project_id, revision):
     try:
         conn.execute("BEGIN IMMEDIATE")
         if _has_unapplied_charged_job(conn, username, project_id.strip()):
-            raise ProjectHasUnappliedJobs("项目存在已扣点且尚未应用或退款的策划任务")
+            raise ProjectHasUnappliedJobs("项目存在尚未结束或退款的付费任务")
         cur = conn.execute(
             "UPDATE short_drama_projects SET deleted=1, revision=revision+1, updated_at=? "
             "WHERE id=? AND username=? AND revision=? AND deleted=0",

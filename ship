@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# ship — 黄雀一键上线：pull → commit → push → 部署 → 重启 → 验证
+# ship — 黄雀一键上线：校验 clean main → 部署 → 重启 → 验证
 #
 # 用法：  ./ship "提交说明" 文件1 [文件2 ...]
 #   后端：./ship "修获客超时" server/leadgen_api.py
 #   前端：./ship "改采集页文案" site/workbench/collect.html
 #   多个：./ship "联调获客" server/leadgen_api.py site/workbench/collect.html
 #
-# 全程在 git 里：自动备份 + 完整历史 + 一条命令回滚。绝不在服务器上直接改。
+# 只发布已经合并到实时 origin/main 的干净提交。绝不在服务器上直接改。
 
 # 密钥与主机可用环境变量覆盖：原来写死了某台开发机的路径和 ssh 别名，
 # 换一台机器（如 Windows/Git Bash）就跑不起来，只能手工 scp —— 那正是 ship 要杜绝的。
@@ -26,9 +26,6 @@ case "$SERVICE_WAIT_SECONDS" in
 esac
 
 [ $# -lt 2 ] && { echo "用法: ./ship \"提交说明\" 文件1 [文件2 ...]"; exit 1; }
-
-$SSHC -o BatchMode=yes -o ConnectTimeout=8 "$REMOTE" true 2>/dev/null || {
-  echo "❌ 连不上 $REMOTE。设 HQ_REMOTE=user@host（和 HQ_SSH_KEY=私钥路径）再试。"; exit 1; }
 
 # 传文件：有 rsync 就用 rsync；没有（Windows/Git Bash 自带 ssh 但没 rsync）就
 # scp 到 /tmp 再 sudo 安装到位。必须保留原属主 —— 直接 sudo install 会把
@@ -63,19 +60,26 @@ push_dir(){
 }
 MSG="$1"; shift
 
-# 1. 先拉最新（治"覆盖别人的活"）
-echo "==> 1/5 git pull --rebase（先同步对方的改动）"
-git pull --rebase || { echo "❌ pull 有冲突，先解决再 ship"; exit 1; }
+# 1. 发布源必须是已合并、无本地改动的实时 main。ship 不再代替 PR 流程提交或推送。
+echo "==> 1/5 校验发布源（clean main == 实时 origin/main）"
+BRANCH="$(git branch --show-current 2>/dev/null)" || { echo "❌ 无法读取当前分支"; exit 1; }
+[ "$BRANCH" = "main" ] || { echo "❌ 只允许从本地 main 发布（当前: ${BRANCH:-detached}）"; exit 1; }
+WORKTREE_STATUS="$(git status --porcelain --untracked-files=all)" || { echo "❌ 无法检查工作区"; exit 1; }
+[ -z "$WORKTREE_STATUS" ] || { echo "❌ 工作区有改动，拒绝发布；请先通过 PR 合并到 main"; exit 1; }
+HEAD_SHA="$(git rev-parse HEAD 2>/dev/null)" || { echo "❌ 无法读取本地 HEAD"; exit 1; }
+REMOTE_MAIN="$(git ls-remote --exit-code origin refs/heads/main 2>/dev/null)" \
+  || { echo "❌ 无法读取实时 origin/main"; exit 1; }
+REMOTE_MAIN="${REMOTE_MAIN%%[[:space:]]*}"
+[ -n "$REMOTE_MAIN" ] && [ "$HEAD_SHA" = "$REMOTE_MAIN" ] \
+  || { echo "❌ 本地 main 不是实时 origin/main，拒绝发布"; exit 1; }
+git ls-files --error-unmatch -- "$@" >/dev/null 2>&1 \
+  || { echo "❌ 仅允许发布当前 main 中 Git 跟踪的文件"; exit 1; }
 
-# 2. commit + push（进 git = 自动有备份）
-echo "==> 2/5 commit + push"
-git add "$@" || { echo "❌ 文件路径有误"; exit 1; }
-if git diff --cached --quiet; then
-  echo "  （这些文件没改动，跳过提交）"
-else
-  git commit -m "$MSG" || exit 1
-fi
-git push || { echo "❌ push 失败（先 pull？）"; exit 1; }
+$SSHC -o BatchMode=yes -o ConnectTimeout=8 "$REMOTE" true 2>/dev/null || {
+  echo "❌ 连不上 $REMOTE。设 HQ_REMOTE=user@host（和 HQ_SSH_KEY=私钥路径）再试。"; exit 1; }
+
+echo "==> 2/5 发布源已锁定（不提交、不推送）"
+printf "  ✓ main@%.7s | %s\n" "$HEAD_SHA" "$MSG"
 
 # 3. 部署每个文件到对应位置 + 记下要重启的服务
 echo "==> 3/5 部署到服务器"
@@ -84,6 +88,7 @@ DEPLOYED=""
 NEED_RELOAD=0   # 部署过 systemd 单元/drop-in 时置 1，重启前必须 daemon-reload，否则改动不生效
 CONTENT_DOMAINS_SYNCED=0
 add_svc(){ for s in $1; do case " $RESTART " in *" $s "*) ;; *) RESTART="$RESTART $s";; esac; done; }
+add_deployed(){ case " $DEPLOYED " in *" $1 "*) ;; *) DEPLOYED="$DEPLOYED $1";; esac; }
 
 show_service_diagnostics(){
   local services="${1:-${RESTART:-huangque-content}}" s
@@ -182,8 +187,6 @@ for f in "$@"; do
              dest=/etc/systemd/system/
              svc="${unit%.service}"; NEED_RELOAD=1 ;;
     deploy/systemd/*.example) echo "  ⏭ $f 只是示例，不部署"; continue ;;
-    site/admin/*)          dest="$WWW/admin/"; svc="" ;;
-    site/workbench/*)      dest="$WWW/workbench/"; svc="" ;;
     site/*)  rel="${f#site/}"
              case "$rel" in */*) dest="$WWW/${rel%/*}/" ;; *) dest="$WWW/" ;; esac
              svc="" ;;
@@ -197,14 +200,19 @@ for f in "$@"; do
   fi
   push_file "$f" "$dest" \
     && echo "  ✓ $f → $dest" || { echo "  ❌ $f 部署失败"; exit 1; }
-  DEPLOYED="$DEPLOYED $f"
+  add_deployed "$f"
   case "$f" in
     server/content_api.py|server/content_domains/*)
       if [ "$CONTENT_DOMAINS_SYNCED" = "0" ] && [ -d server/content_domains ]; then
+        CONTENT_DOMAIN_FILES="$(git ls-files server/content_domains)" \
+          || { echo "  ❌ 无法读取 content_domains Git 文件清单"; exit 1; }
+        [ -n "$CONTENT_DOMAIN_FILES" ] \
+          || { echo "  ❌ content_domains Git 文件清单为空"; exit 1; }
         $SSHC "$REMOTE" "sudo mkdir -p /home/ubuntu/content-api/content_domains" || { echo "  ❌ content_domains 目录创建失败"; exit 1; }
         push_dir server/content_domains/ /home/ubuntu/content-api/content_domains/ \
           && echo "  ✓ server/content_domains/ → /home/ubuntu/content-api/content_domains/（整目录同步）" \
           || { echo "  ❌ content_domains 整目录部署失败"; exit 1; }
+        for tracked in $CONTENT_DOMAIN_FILES; do add_deployed "$tracked"; done
         CONTENT_DOMAINS_SYNCED=1
       fi
       ;;
@@ -275,4 +283,4 @@ case "$HEALTH_CODE" in
 esac
 SHA=$(git rev-parse --short HEAD)
 echo "✅ 上线完成 | 本次提交 $SHA"
-echo "   ↩ 要回滚这次：  git revert $SHA --no-edit && ./ship \"回滚 $SHA\" $*"
+echo "   ↩ 要回滚这次：为 $SHA 创建 revert PR，合并到 main 后再用 ship 发布同一文件清单"

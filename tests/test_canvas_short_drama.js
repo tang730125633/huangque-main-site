@@ -842,6 +842,40 @@ async function testWorkspaceSourceAndRenderContract() {
   missing.destroy();
 }
 
+async function testProductionWorkspaceCanReturnToPhaseOneReview() {
+  const project = workspaceProject({ stage: 'stills_review' });
+  let creates = 0;
+  let destroys = 0;
+  const workspace = shortDrama.createWorkspace({
+    projectId: project.id, document: null,
+    apiClient: { json() { throw new Error('delegate stub does not call the API'); } },
+    productionModule: {
+      createWorkspace() {
+        creates += 1;
+        return {
+          projectId: project.id, ready: Promise.resolve(),
+          render() { return '<section class="nc-short-drama-production">production</section>'; },
+          destroy() { destroys += 1; },
+        };
+      },
+    },
+    client: { get() { return Promise.resolve(project); } },
+  });
+  await workspace.ready;
+  assert.equal(creates, 1);
+  assert.equal(workspace.selectStage('storyboard_review'), true);
+  assert.match(workspace.render(), /分镜确认[\s\S]*data-field="image_prompt"/);
+  assert.doesNotMatch(workspace.render(), /class="nc-short-drama-production"/);
+  assert.equal(destroys, 1);
+
+  assert.equal(workspace.selectStage('stills_review'), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(creates, 2);
+  assert.match(workspace.render(), /class="nc-short-drama-production"/);
+  workspace.destroy();
+  assert.equal(destroys, 2);
+}
+
 function testWorkspacePureStateAndPayloadHelpers() {
   const project = workspaceProject();
   assert.equal(shortDrama.isStageEnabled(project, 'settings'), true);
@@ -1691,6 +1725,7 @@ async function main() {
   await testTerminalJobFailureDoesNotApplyPlan();
   testMissingPollFailsClearly();
   await testWorkspaceSourceAndRenderContract();
+  await testProductionWorkspaceCanReturnToPhaseOneReview();
   testWorkspacePureStateAndPayloadHelpers();
   await testWorkspaceSavesUseExactRevisionedBodiesAndSummaries();
   await testConfirmSavesChangedSectionThenUsesReturnedRevisionAndSkipsUnchangedScriptSave();

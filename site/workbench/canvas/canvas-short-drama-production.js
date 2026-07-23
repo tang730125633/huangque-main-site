@@ -11,6 +11,7 @@
   var SELECT_PATH='/api/gen/short-drama/select-asset';
   var CONFIRM_PATH='/api/gen/short-drama/confirm-production-stage';
   var KNOWN_JOB_MISSING_LIMIT=3;
+  var BATCH_WAVE_SIZE=5;
 
   function isActiveJobStatus(status){ return status==='pending'||status==='running'; }
 
@@ -221,14 +222,11 @@
     if(!shot) return '<main class="nc-sdp-editor"><section class="nc-sdp-empty-state"><h2>暂无镜头</h2><p>请先返回分镜阶段创建镜头。</p></section></main>';
     var writable=state.canEdit&&!state.busy&&!state.stale&&!state.destroyed&&state.stage==='stills_review';
     var versions=shot.still.versions;
-    var candidates=versions.slice(Math.max(0,versions.length-2));
+    var candidates=versions.slice().reverse();
     return '<main class="nc-sdp-editor"><header class="nc-sdp-editor-header"><div><span class="nc-sdp-kicker">'+escapeHtml(shot.shot_key)+'</span><h2>关键帧候选</h2></div><span class="nc-sdp-ratio">'+state.ratio+'</span></header>'+
       '<section class="nc-sdp-panel"><label class="nc-sdp-prompt">画面提示词<textarea data-field="prompt"'+disabledUnless(writable)+'>'+escapeHtml(state.prompts[shot.id])+'</textarea></label></section>'+
       '<section class="nc-sdp-panel"><h3>参考素材</h3>'+renderReferences(shot)+'</section>'+
-      '<section class="nc-sdp-candidate-grid">'+(candidates.length?candidates.map(function(version){ return renderVersionCard(state,shot,version,writable); }).join(''):'<div class="nc-sdp-empty" data-ratio="'+state.ratio+'">尚未生成关键帧候选</div>')+'</section>'+
-      '<section class="nc-sdp-panel nc-sdp-history"><h3>历史版本</h3>'+(versions.length?'<ol>'+versions.map(function(version){
-        return '<li><span>V'+version.version+'</span><strong>'+escapeHtml(version.prompt||'无提示词')+'</strong><small>'+escapeHtml(version.id)+' · '+escapeHtml(version.status)+'</small></li>';
-      }).join('')+'</ol>':'<p class="nc-sdp-empty">暂无历史版本</p>')+'</section></main>';
+      '<section class="nc-sdp-candidate-grid">'+(candidates.length?candidates.map(function(version){ return renderVersionCard(state,shot,version,writable); }).join(''):'<div class="nc-sdp-empty" data-ratio="'+state.ratio+'">尚未生成关键帧候选</div>')+'</section></main>';
   }
 
   function allShotsLocked(state){
@@ -305,9 +303,10 @@
     var host=options.host||null;
     var pendingStorage=options.storage||((typeof sessionStorage!=='undefined'&&sessionStorage)?sessionStorage:null);
     var pendingStorageKey='hq.short-drama.still.pending:'+String(options.projectId);
+    var pendingBatchStorageKey='hq.short-drama.still.batch.pending:'+String(options.projectId);
     var serverState=null,destroyed=false,pollTimer=null,pollReject=null,generationPromise=null,lastPublishedSummaryKey=null;
     var submittedGuards=Object.create(null);
-    var pendingSingle=null;
+    var pendingSingle=null,pendingBatch=[];
     var ui={selectedShotId:options.selectedShotId,filter:'all',prompts:{},canEdit:options.canEdit!==false,busy:true,stale:false,error:'',quote:null,lastMode:''};
 
     function ensureAlive(){ if(destroyed) throw new Error('workspace destroyed'); }
@@ -329,8 +328,57 @@
       pendingSingle=null;
       if(pendingStorage&&typeof pendingStorage.removeItem==='function') pendingStorage.removeItem(pendingStorageKey);
     }
+    function loadPendingBatch(){
+      if(!pendingStorage||typeof pendingStorage.getItem!=='function') return [];
+      try{
+        var parsed=JSON.parse(pendingStorage.getItem(pendingBatchStorageKey)||'[]');
+        if(!Array.isArray(parsed)) return [];
+        return parsed.filter(function(attempt){
+          return attempt&&attempt.projectId===String(options.projectId)&&attempt.body&&
+            typeof attempt.body.shot_id==='string'&&typeof attempt.body.quote_token==='string'&&
+            typeof attempt.key==='string'&&!!attempt.key;
+        }).map(function(attempt){
+          attempt.jobId=(typeof attempt.jobId==='number'&&isFinite(attempt.jobId)&&attempt.jobId>0)?
+            attempt.jobId:null;
+          attempt.cost=Math.max(0,number(attempt.cost,0));
+          attempt.expiresAt=Math.max(0,number(attempt.expiresAt,0));
+          attempt.started=attempt.started===true;
+          return attempt;
+        });
+      }catch(_error){ return []; }
+    }
+    function savePendingBatch(){
+      if(!pendingStorage) return;
+      if(!pendingBatch.length){
+        if(typeof pendingStorage.removeItem==='function') pendingStorage.removeItem(pendingBatchStorageKey);
+        return;
+      }
+      if(typeof pendingStorage.setItem==='function'){
+        pendingStorage.setItem(pendingBatchStorageKey,JSON.stringify(pendingBatch));
+      }
+    }
+    function removePendingBatchAttempts(attempts){
+      var removing=(attempts||[]).map(function(attempt){ return attempt.body.shot_id; });
+      pendingBatch=pendingBatch.filter(function(attempt){
+        if(removing.indexOf(attempt.body.shot_id)<0) return true;
+        if(!pendingSingle||pendingSingle.body.shot_id!==attempt.body.shot_id){
+          delete submittedGuards[attempt.body.shot_id];
+        }
+        return false;
+      });
+      savePendingBatch();
+    }
+    function discardUnstartedBatch(){
+      removePendingBatchAttempts(pendingBatch.filter(function(attempt){
+        return attempt.jobId==null&&attempt.started!==true;
+      }));
+    }
     pendingSingle=loadPendingSingle();
     if(pendingSingle) submittedGuards[pendingSingle.body.shot_id]=pendingSingle.jobId||true;
+    pendingBatch=loadPendingBatch();
+    pendingBatch.forEach(function(attempt){
+      submittedGuards[attempt.body.shot_id]=attempt.jobId||true;
+    });
     function callJson(path,requestOptions){
       return Promise.resolve().then(function(){
         ensureAlive();
@@ -363,6 +411,7 @@
       if(!next||typeof next!=='object') throw new Error('production state is invalid');
       serverState=clone(next);
       var normalized=normalizeState(serverState,{selectedShotId:ui.selectedShotId,prompts:ui.prompts});
+      var reconciledBatch=[];
       ui.selectedShotId=normalized.selectedShotId;
       normalized.shots.forEach(function(shot){
         if(!Object.prototype.hasOwnProperty.call(ui.prompts,shot.id)) ui.prompts[shot.id]=shot.image_prompt;
@@ -378,8 +427,14 @@
           delete submittedGuards[shot.id];
           if(pendingSingle&&pendingSingle.body.shot_id===shot.id&&
             (pendingSingle.jobId==null||pendingSingle.jobId===guardedJob)) clearPendingSingle();
+          pendingBatch.forEach(function(attempt){
+            if(attempt.body.shot_id===shot.id&&attempt.jobId===guardedJob){
+              reconciledBatch.push(attempt);
+            }
+          });
         }
       });
+      if(reconciledBatch.length) removePendingBatchAttempts(reconciledBatch);
       ui.busy=!!keepBusy;ui.stale=false;ui.error='';
       safePaint();
       var summary=summarizeProductionState(serverState),summaryKey=JSON.stringify(summary);
@@ -432,11 +487,13 @@
       if(['all','pending','running','done','failed','locked'].indexOf(filter)<0) return false;
       ui.filter=filter;safePaint();return true;
     }
-    function setPrompt(prompt){
+    function setPrompt(prompt,repaint){
       ensureAlive();
       var shot=currentShot();
       if(!shot) return false;
-      ui.prompts[shot.id]=text(prompt);safePaint();return true;
+      ui.prompts[shot.id]=text(prompt);
+      if(repaint!==false) safePaint();
+      return true;
     }
     function selectVersion(version,lock){
       var shot;
@@ -485,6 +542,25 @@
     function ambiguousSubmitError(error){
       return !(error&&(error.operation_terminal===true||
         (error.data&&error.data.operation_terminal===true)));
+    }
+    function requireStillQuote(quote){
+      if(!quote||typeof quote.cost!=='number'||!isFinite(quote.cost)||quote.cost<0||
+        typeof quote.quote_token!=='string'||!quote.quote_token){
+        throw new Error('still quote is invalid');
+      }
+      return quote;
+    }
+    function assertProjectBudget(state,cost){
+      if(!state.point_budget) return;
+      if(state.spent_points+state.reserved_points+cost<=state.point_budget) return;
+      var error=new Error('短剧点数预算不足：请降低批量镜头数或调整项目预算');
+      error.code='point_budget_exceeded';
+      throw error;
+    }
+    function baseStillBody(body){
+      var copy=Object.assign({},body);
+      delete copy.quote_token;
+      return copy;
     }
     function pollShots(targets){
       var tracked=(targets||[]).map(function(target){
@@ -569,20 +645,6 @@
       });
     }
     function pollShot(shotId,jobId){ return pollShots([{shotId:shotId,jobId:jobId}]); }
-    function clearSubmittedGuards(submitted){
-      (submitted||[]).forEach(function(target){ delete submittedGuards[target.shotId]; });
-      safePaint();
-    }
-    function recoverPartialBatch(submitted,primaryError){
-      if(!submitted.length) return Promise.reject(primaryError);
-      return pollShots(submitted).then(function(){
-        clearSubmittedGuards(submitted);
-        throw primaryError;
-      },function(){
-        if(destroyed) throw primaryError;
-        return requestState(true).catch(function(){ return null; }).then(function(){ throw primaryError; });
-      });
-    }
     function trackGeneration(action){
       generationPromise=action.then(function(result){ generationPromise=null;return result; },function(error){
         generationPromise=null;throw error;
@@ -628,6 +690,7 @@
         if(['single','retry','batch'].indexOf(mode)<0) throw new Error('invalid generation mode');
         selected=currentShot();
         if(!selected) throw new Error('no shot selected');
+        if(pendingBatch.length) throw new Error('a still batch is awaiting reconciliation');
         if(pendingSingle){
           if(pendingSingle.body.shot_id!==selected.id) throw new Error('another still submission is awaiting reconciliation');
           return trackGeneration(resumePendingSingle());
@@ -647,8 +710,7 @@
       ui.busy=true;ui.error='';ui.lastMode=mode;safePaint();
       var action=callJson(QUOTE_PATH,{method:'POST',body:body}).then(function(quote){
         ensureAlive();
-        if(!quote||typeof quote.cost!=='number'||!isFinite(quote.cost)||quote.cost<0||
-          typeof quote.quote_token!=='string'||!quote.quote_token) throw new Error('still quote is invalid');
+        requireStillQuote(quote);
         ui.quote=clone(quote);safePaint();
         return Promise.resolve(confirmHook(quote.cost,clone(quote),clone(body))).then(function(accepted){
           ensureAlive();
@@ -661,11 +723,151 @@
       }).catch(function(error){ handleError(error);throw error; });
       return trackGeneration(action);
     }
+    function refreshPendingBatchQuotes(){
+      var threshold=Math.floor(Date.now()/1000)+15;
+      var chain=Promise.resolve();
+      pendingBatch.slice().forEach(function(attempt){
+        if(attempt.jobId!=null||attempt.started||attempt.expiresAt>threshold) return;
+        chain=chain.then(function(){
+          return callJson(QUOTE_PATH,{method:'POST',body:baseStillBody(attempt.body)}).then(function(quote){
+            requireStillQuote(quote);
+            if(quote.cost!==attempt.cost){
+              discardUnstartedBatch();
+              var changed=new Error('批量报价已变化，请重新确认后提交');
+              changed.code='batch_quote_changed';
+              throw changed;
+            }
+            attempt.body.quote_token=quote.quote_token;
+            attempt.expiresAt=Math.max(0,number(
+              quote.expires_at,Math.floor(Date.now()/1000)+300));
+            savePendingBatch();
+          });
+        });
+      });
+      return chain;
+    }
+    function preparePendingBatch(){
+      var latest;
+      return requestState(true,false).then(function(next){
+        latest=next;
+        var unstarted=pendingBatch.filter(function(attempt){
+          return attempt.jobId==null&&!attempt.started;
+        });
+        if(!unstarted.length) return latest;
+        if(unstarted.some(function(attempt){
+          return number(attempt.body.revision,0)!==latest.revision;
+        })){
+          var stale=new Error('项目状态已变化，请重新批量报价');
+          stale.status=409;stale.code='revision_conflict';
+          throw stale;
+        }
+        var staleAttempts=unstarted.filter(function(attempt){
+          var shot=latest.shots.find(function(item){ return item.id===attempt.body.shot_id; });
+          return !shot||shot.still.locked||shotHasCompletedCurrent(latest,shot)||
+            (shot.still.job&&isActiveJobStatus(shot.still.job.status));
+        });
+        if(staleAttempts.length) removePendingBatchAttempts(staleAttempts);
+        return refreshPendingBatchQuotes();
+      }).then(function(){
+        assertProjectBudget(latest,pendingBatch.reduce(function(total,attempt){
+          return total+(attempt.jobId==null&&!attempt.started?attempt.cost:0);
+        },0));
+      }).catch(function(error){
+        if(error&&(Number(error.status)===409||error.code==='revision_conflict'||
+          error.code==='point_budget_exceeded')){
+          discardUnstartedBatch();
+        }
+        throw error;
+      }).then(function(){
+        return latest;
+      });
+    }
+    function resumePendingBatch(){
+      if(!pendingBatch.length) return Promise.resolve(null);
+      ui.busy=true;ui.error='';safePaint();
+      var latest=null;
+      function nextWave(){
+        ensureAlive();
+        if(!pendingBatch.length){
+          ui.busy=false;safePaint();
+          return Promise.resolve(latest||view());
+        }
+        ui.busy=true;safePaint();
+        var preparation=preparePendingBatch();
+        return preparation.then(function(prepared){
+          latest=prepared;
+          if(!pendingBatch.length) return nextWave();
+          var wave=pendingBatch.slice(0,BATCH_WAVE_SIZE);
+          var submitted=[];
+          var chain=Promise.resolve();
+          wave.forEach(function(attempt){
+            chain=chain.then(function(){
+              ensureAlive();
+              if(attempt.jobId!=null){
+                submitted.push({shotId:attempt.body.shot_id,jobId:attempt.jobId});
+                return null;
+              }
+              attempt.started=true;
+              submittedGuards[attempt.body.shot_id]=true;
+              savePendingBatch();safePaint();
+              return submitWithTimeoutRetry(attempt.body,attempt.key).then(function(response){
+                ensureAlive();
+                var responseJobId=response&&response.job_id;
+                if(typeof responseJobId!=='number'||!isFinite(responseJobId)||
+                  Math.floor(responseJobId)!==responseJobId||responseJobId<1){
+                  throw new Error('successful still submission requires a positive job_id');
+                }
+                attempt.jobId=responseJobId;
+                submittedGuards[attempt.body.shot_id]=responseJobId;
+                savePendingBatch();
+                submitted.push({shotId:attempt.body.shot_id,jobId:responseJobId});
+              }).catch(function(error){
+                if(!ambiguousSubmitError(error)){
+                  if(error.code==='active_job_cap'){
+                    attempt.started=false;
+                    savePendingBatch();
+                  }else{
+                    removePendingBatchAttempts([attempt]);
+                    discardUnstartedBatch();
+                  }
+                }
+                throw error;
+              });
+            });
+          });
+          return chain.then(function(){
+            return pollShots(submitted).then(function(result){
+              latest=result;
+              removePendingBatchAttempts(wave);
+              return nextWave();
+            });
+          },function(primaryError){
+            if(!submitted.length) throw primaryError;
+            return pollShots(submitted).then(function(result){
+              latest=result;
+              if(primaryError.code==='active_job_cap') return nextWave();
+              throw primaryError;
+            },function(){
+              if(destroyed) throw primaryError;
+              return requestState(true,false).catch(function(){ return null; }).then(function(){
+                throw primaryError;
+              });
+            });
+          });
+        });
+      }
+      return nextWave().catch(function(error){
+        handleError(error);
+        throw error;
+      });
+    }
     function generateBatch(){
       if(generationPromise) return generationPromise;
       var eligible,bodies;
       try{
         ensureWritable();
+        if(pendingSingle) throw new Error('a single still submission is awaiting reconciliation');
+        if(pendingBatch.length) return trackGeneration(resumePendingBatch());
         var normalized=view();
         eligible=normalized.shots.filter(function(shot){
           return !shot.still.locked&&!shotHasCompletedCurrent(normalized,shot)&&!submittedGuards[shot.id]&&
@@ -680,60 +882,43 @@
         quoteChain=quoteChain.then(function(){
           ensureAlive();
           return callJson(QUOTE_PATH,{method:'POST',body:body}).then(function(quote){
-            ensureAlive();quotes.push(quote);
+            ensureAlive();quotes.push(requireStillQuote(quote));
           });
         });
       });
       var action=quoteChain.then(function(){
         ensureAlive();
-        var total=0;
-        quotes.forEach(function(quote){
-          if(!quote||typeof quote.cost!=='number'||!isFinite(quote.cost)||quote.cost<0||
-            typeof quote.quote_token!=='string'||!quote.quote_token){
-            throw new Error('still quote is invalid');
+        var total=quotes.reduce(function(sum,quote){ return sum+quote.cost; },0);
+        return requestState(true,false).then(function(latest){
+          if(bodies.some(function(body){ return number(body.revision,0)!==latest.revision; })){
+            var stale=new Error('项目状态已变化，请重新批量报价');
+            stale.status=409;stale.code='revision_conflict';
+            throw stale;
           }
-          total+=quote.cost;
-        });
-        var aggregate={
-          cost:total,count:bodies.length*2,kind:'still-batch',shot_count:bodies.length,
-          shot_ids:bodies.map(function(body){ return body.shot_id; }),quotes:clone(quotes)
-        };
-        ui.quote=clone(aggregate);safePaint();
-        return Promise.resolve(confirmHook(total,clone(aggregate),clone(bodies))).then(function(accepted){
-          ensureAlive();
-          if(!accepted){ ui.busy=false;safePaint();return null; }
-          var submissions=bodies.map(function(body,index){
-            var key=keyFactory(body.shot_id,index,'batch');
-            if(typeof key!=='string'||!key) throw new Error('idempotency key is invalid');
-            return {body:Object.assign({},body,{quote_token:quotes[index].quote_token}),key:key};
-          });
-          var chain=Promise.resolve(),submitted=[];
-          submissions.forEach(function(item){
-            chain=chain.then(function(){
-              ensureAlive();
-              return submitWithTimeoutRetry(item.body,item.key).then(function(response){
-                ensureAlive();
-                var responseJobId=response&&response.job_id;
-                if(typeof responseJobId!=='number'||!isFinite(responseJobId)||Math.floor(responseJobId)!==responseJobId||responseJobId<1){
-                  throw new Error('successful still submission requires a positive job_id');
-                }
-                var target={
-                  shotId:item.body.shot_id,
-                  jobId:responseJobId
-                };
-                submitted.push(target);
-                submittedGuards[target.shotId]=target.jobId==null?true:target.jobId;
-              });
-            });
-          });
-          return chain.then(function(){
+          assertProjectBudget(latest,total);
+          var aggregate={
+            cost:total,count:bodies.length*2,kind:'still-batch',shot_count:bodies.length,
+            shot_ids:bodies.map(function(body){ return body.shot_id; }),quotes:clone(quotes)
+          };
+          ui.quote=clone(aggregate);safePaint();
+          return Promise.resolve(confirmHook(total,clone(aggregate),clone(bodies))).then(function(accepted){
             ensureAlive();
-            return pollShots(submitted).then(function(result){
-              clearSubmittedGuards(submitted);
-              return result;
+            if(!accepted){ ui.busy=false;safePaint();return null; }
+            pendingBatch=bodies.map(function(body,index){
+              var key=keyFactory(body.shot_id,index,'batch');
+              if(typeof key!=='string'||!key) throw new Error('idempotency key is invalid');
+              submittedGuards[body.shot_id]=true;
+              return {
+                projectId:String(options.projectId),
+                body:Object.assign({},body,{quote_token:quotes[index].quote_token}),
+                key:key,jobId:null,cost:quotes[index].cost,
+                expiresAt:Math.max(0,number(
+                  quotes[index].expires_at,Math.floor(Date.now()/1000)+300)),
+                started:false
+              };
             });
-          },function(error){
-            return recoverPartialBatch(submitted,error);
+            savePendingBatch();safePaint();
+            return resumePendingBatch();
           });
         });
       }).catch(function(error){ handleError(error);throw error; });
@@ -769,7 +954,7 @@
     }
     function inputHandler(event){
       var target=actionTarget(event.target,'data-field');
-      if(target&&target.getAttribute('data-field')==='prompt') setPrompt(target.value);
+      if(target&&target.getAttribute('data-field')==='prompt') setPrompt(target.value,false);
     }
 
     if(host&&typeof host.addEventListener==='function'){
@@ -778,8 +963,9 @@
     }
     safePaint();
     var ready=refresh(false).then(function(){
-      if(!pendingSingle) return null;
-      return trackGeneration(resumePendingSingle());
+      if(pendingSingle) return trackGeneration(resumePendingSingle());
+      if(pendingBatch.length) return trackGeneration(resumePendingBatch());
+      return null;
     }).catch(function(){ return null; });
     return {
       projectId:options.projectId,
