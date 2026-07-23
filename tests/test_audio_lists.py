@@ -31,7 +31,7 @@ class AudioListTest(unittest.TestCase):
                 INSERT INTO audio_voices VALUES(
                     1,'personal','alice','vip','我的音色','S_test',NULL,NULL,'S_test',1,1);
                 INSERT INTO audio_voices VALUES(
-                    2,'public','','public','公共音色','S_public',NULL,NULL,NULL,1,1);
+                    2,'public','','S_d21F8OR62','公共音色','S_d21F8OR62',NULL,NULL,NULL,1,1);
             """)
         finally:
             conn.close()
@@ -58,6 +58,36 @@ class AudioListTest(unittest.TestCase):
         self.assertEqual(len(items), 2)
         thread.assert_called_once()
         thread.return_value.start.assert_called_once()
+
+    def test_public_voice_migration_invalidates_old_preview_once(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("""UPDATE audio_voices
+                SET preview_file='audio/old.mp3', preview_url='https://old.example/preview.mp3'
+                WHERE id=2""")
+
+        self.assertEqual(audio._migrate_public_voice_presets(), 1)
+        self.assertEqual(audio._migrate_public_voice_presets(), 0)
+
+        with sqlite3.connect(self.db) as conn:
+            row = conn.execute("""SELECT provider_voice, preview_file, preview_url
+                FROM audio_voices WHERE id=2""").fetchone()
+        self.assertEqual(row, ("longwan", None, None))
+
+    def test_ready_cosyvoice_slot_repair_is_strict_and_idempotent(self):
+        with sqlite3.connect(self.db) as conn:
+            conn.execute("""UPDATE audio_voices
+                SET provider_voice='cosyvoice-v3.5-plus-bailian-test',
+                    preview_url='https://preview.example/test.mp3'
+                WHERE id=1""")
+
+        self.assertEqual(audio._repair_ready_cosyvoice_slots(), 1)
+        self.assertEqual(audio._repair_ready_cosyvoice_slots(), 0)
+
+        with sqlite3.connect(self.db) as conn:
+            status = conn.execute(
+                "SELECT status FROM audio_voice_slots WHERE id=1"
+            ).fetchone()[0]
+        self.assertEqual(status, "ready")
 
 
 if __name__ == "__main__":

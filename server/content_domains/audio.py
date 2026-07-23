@@ -596,8 +596,42 @@ def _cleanup_alloy_placeholder_voices():
     except Exception as e:
         print("[audio] alloy 占位清理失败: %s" % str(e)[:120], flush=True)
 
+def _migrate_public_voice_presets():
+    """切换公共音色到 CosyVoice，并让旧供应商生成的试听只失效一次。"""
+    now = int(time.time())
+    changed = 0
+    with closing(adb()) as c:
+        for legacy_voice, preset_voice in cosyvoice.PUBLIC_VOICE_PRESETS.items():
+            changed += c.execute("""UPDATE audio_voices
+                SET provider_voice=?, preview_file=NULL, preview_url=NULL, updated_at=?
+                WHERE scope='public' AND username='' AND voice_key=? AND provider_voice=?""",
+                (preset_voice, now, legacy_voice, legacy_voice)).rowcount
+        c.commit()
+    if changed:
+        print("[audio] 公共音色已切换 CosyVoice，旧试听缓存失效 %d 条" % changed, flush=True)
+    return changed
+
+def _repair_ready_cosyvoice_slots():
+    """试听已生成即代表音色可用；把历史遗留的 training 状态幂等落成 ready。"""
+    with closing(adb()) as c:
+        changed = c.execute("""UPDATE audio_voice_slots
+            SET status='ready', updated_at=?
+            WHERE status='training' AND EXISTS (
+                SELECT 1 FROM audio_voices v
+                WHERE v.id=audio_voice_slots.voice_id
+                  AND v.scope='personal'
+                  AND v.provider_voice LIKE 'cosyvoice-%'
+                  AND COALESCE(v.preview_url, '')<>''
+            )""", (int(time.time()),)).rowcount
+        c.commit()
+    if changed:
+        print("[audio] 修正已就绪 CosyVoice 槽位 %d 条" % changed, flush=True)
+    return changed
+
 def backfill_audio_assets():
     _cleanup_alloy_placeholder_voices()   # #604: 先清存量占位，再重放(ensure 已不再重建)
+    _migrate_public_voice_presets()
+    _repair_ready_cosyvoice_slots()
     try:
         with closing(jdb()) as c:
             rows = c.execute("""SELECT id, username, result FROM jobs
@@ -771,7 +805,7 @@ def gen_audio(payload):
         return {"type": "audio", "file": fn, "url": public_url(fn, "audio/mpeg"), "voice": voice_key,
                 "speed": speed, "pitch": pitch, "volume": volume, "text": text, "prompt": text}
 
-    if str(voice).startswith("S_") or str(voice).startswith("vip_"):
+    if voice_key.startswith(("S_", "vip_")) or str(voice).startswith("cosyvoice-"):
         raise ValueError("声音服务暂不可用，请稍后重试")
 
     instructions = "中文短视频口播配音，语气自然，吐字清晰，节奏适合美业/本地生活转化。"

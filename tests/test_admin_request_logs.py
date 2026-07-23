@@ -249,6 +249,28 @@ class KeyPingTests(unittest.TestCase):
                 self.assertFalse(out["ok"], key)
                 self.assertTrue(out.get("error"), key)
 
+    def test_cosyvoice_ping_validates_the_key(self):
+        import unittest.mock as mock
+
+        with mock.patch.object(admin_api, "_env_value", return_value="test-key"), \
+                mock.patch.object(
+                    admin_api, "_ping_upstream", return_value={"ok": True}
+                ) as ping:
+            self.assertTrue(admin_api._key_ping_cosyvoice()["ok"])
+        ping.assert_called_once_with(
+            "POST",
+            "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization",
+            headers={
+                "Authorization": "Bearer test-key",
+                "Content-Type": "application/json",
+            },
+            body={
+                "model": "voice-enrollment",
+                "input": {"action": "list_voice", "page_index": 0, "page_size": 1},
+            },
+            proxied=False,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

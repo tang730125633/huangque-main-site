@@ -137,7 +137,7 @@ def git_path_to_runtime(git_path):
         # 然后报「N 个文件校验通过」—— 一个虚假的确认，比不校验更糟。
         rel = git_path[len('deploy/systemd/'):]
         if rel.endswith('.example'):
-            return None          # 示例文件不落地（doubao.conf 含明文密钥，真值只在服务器上）
+            return None          # 示例模板不落地，真值只在服务器受保护的 env 文件中
         return os.path.join(SYSTEMD_DIR, rel)
     return None
 

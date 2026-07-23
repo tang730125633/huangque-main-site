@@ -869,7 +869,16 @@ def _key_ping_cosyvoice():
     key = _env_value(["DASHSCOPE_API_KEY"])
     if not key:
         return {"ok": False, "error": "密钥未配置", "mode": "auth"}
-    return _reach_ping("https://dashscope.aliyuncs.com")
+    return _ping_upstream(
+        "POST",
+        "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization",
+        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+        body={
+            "model": "voice-enrollment",
+            "input": {"action": "list_voice", "page_index": 0, "page_size": 1},
+        },
+        proxied=False,
+    )
 
 
 def _key_ping_cos():

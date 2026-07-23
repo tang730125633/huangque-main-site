@@ -30,5 +30,20 @@ class DoubaoAudioRetiredTests(unittest.TestCase):
         self.assertNotIn('"key": "doubao"', admin)
         self.assertNotIn("openspeech.bytedance.com", admin)
 
+    def test_current_operations_docs_use_cosyvoice(self):
+        paths = (
+            "README.md",
+            "deploy/生产环境清单与还原手册.md",
+            "docs/密钥分服务隔离与轮换流程-20260706.md",
+            "docs/后端架构与API.md",
+            "site/api-admin/index.html",
+        )
+        for path in paths:
+            text = (ROOT / path).read_text(encoding="utf-8")
+            with self.subTest(path=path):
+                self.assertNotIn("providers-doubao.env", text)
+                self.assertNotIn("配音豆包", text)
+                self.assertNotIn("走豆包 TTS", text)
+
 if __name__ == "__main__":
     unittest.main()
