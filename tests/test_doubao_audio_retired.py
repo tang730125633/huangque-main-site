@@ -44,6 +44,14 @@ class DoubaoAudioRetiredTests(unittest.TestCase):
                 self.assertNotIn("providers-doubao.env", text)
                 self.assertNotIn("配音豆包", text)
                 self.assertNotIn("走豆包 TTS", text)
+        self.assertNotIn(
+            "COS/豆包",
+            (ROOT / "README.md").read_text(encoding="utf-8"),
+        )
+        self.assertNotIn(
+            "DOUBAO_TOKEN",
+            (ROOT / "site/api-admin/index.html").read_text(encoding="utf-8"),
+        )
 
 if __name__ == "__main__":
     unittest.main()

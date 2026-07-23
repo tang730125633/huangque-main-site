@@ -805,7 +805,7 @@ def gen_audio(payload):
         return {"type": "audio", "file": fn, "url": public_url(fn, "audio/mpeg"), "voice": voice_key,
                 "speed": speed, "pitch": pitch, "volume": volume, "text": text, "prompt": text}
 
-    if voice_key.startswith(("S_", "vip_")) or str(voice).startswith("cosyvoice-"):
+    if voice_key.startswith(("S_", "vip_")) or str(voice).startswith(("S_", "vip_", "cosyvoice-")):
         raise ValueError("声音服务暂不可用，请稍后重试")
 
     instructions = "中文短视频口播配音，语气自然，吐字清晰，节奏适合美业/本地生活转化。"
