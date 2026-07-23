@@ -1081,24 +1081,78 @@ def reconcile_jobs(conn, username, project_id):
             )
 
 
-def _phase_two_handoff_blocker(conn, project_id):
-    active_job = conn.execute(
-        "SELECT 1 FROM short_drama_production_jobs "
-        "WHERE project_id=? AND (status IN ('pending','running') OR refunded=2) "
-        "LIMIT 1",
-        (project_id,),
-    ).fetchone()
-    if active_job:
-        return "关键帧生产任务或退款仍在处理中，请等待账本收口后重试"
-    unresolved_attempt = conn.execute(
-        "SELECT 1 FROM short_drama_charge_attempts "
+_HANDOFF_ORDER = {
+    "missing_locked_still": 0,
+    "active_job": 1,
+    "refund_pending": 2,
+    "charge_attempt_pending": 3,
+    "ledger_inconsistent": 4,
+}
+
+_HANDOFF_MESSAGES = {
+    "missing_locked_still": "请先为每个镜头锁定一张有效关键帧",
+    "active_job": "仍有关键帧生成任务处理中，请等待完成",
+    "refund_pending": "仍有关键帧退款待确认，请等待账本收口",
+    "charge_attempt_pending": "仍有关键帧扣点记录处理中，请稍后重试",
+    "ledger_inconsistent": "关键帧账本关联异常，请刷新后重试",
+}
+
+
+def _blocker(code, shot_id=None):
+    item = {"code": code, "message": _HANDOFF_MESSAGES[code]}
+    if shot_id:
+        item["shot_id"] = shot_id
+    return item
+
+
+def build_phase_two_handoff(conn, project_id, ratio):
+    blockers = []
+    shot_rows = conn.execute(
+        "SELECT s.id FROM short_drama_shots s WHERE s.project_id=? "
+        "AND NOT EXISTS (SELECT 1 FROM short_drama_assets a "
+        "JOIN short_drama_asset_versions v "
+        "ON v.asset_id=a.id AND v.version=a.current_version "
+        "WHERE a.project_id=s.project_id AND a.shot_id=s.id AND a.type='still' "
+        "AND a.locked=1 AND v.status='done' AND v.ratio=?) "
+        "ORDER BY s.sort_order,s.id",
+        (project_id, ratio),
+    ).fetchall()
+    if not conn.execute(
+        "SELECT 1 FROM short_drama_shots WHERE project_id=? LIMIT 1", (project_id,),
+    ).fetchone():
+        blockers.append(_blocker("missing_locked_still"))
+    blockers.extend(_blocker("missing_locked_still", row[0]) for row in shot_rows)
+
+    for row in conn.execute(
+        "SELECT shot_id,status,refunded FROM short_drama_production_jobs "
+        "WHERE project_id=? ORDER BY shot_id,job_id", (project_id,),
+    ).fetchall():
+        if row[1] in {"pending", "running"}:
+            blockers.append(_blocker("active_job", row[0]))
+        if int(row[2] or 0) == 2:
+            blockers.append(_blocker("refund_pending", row[0]))
+
+    for row in conn.execute(
+        "SELECT shot_id,state FROM short_drama_charge_attempts "
         "WHERE project_id=? AND state IN ('accepted','charged','refund_pending') "
-        "LIMIT 1",
+        "ORDER BY shot_id,created_at,charge_key", (project_id,),
+    ).fetchall():
+        code = "refund_pending" if row[1] == "refund_pending" else "charge_attempt_pending"
+        blockers.append(_blocker(code, row[0]))
+
+    for row in conn.execute(
+        "SELECT p.shot_id FROM short_drama_production_jobs p "
+        "LEFT JOIN jobs j ON j.id=p.job_id AND j.username=p.username AND j.kind='image' "
+        "WHERE p.project_id=? AND j.id IS NULL ORDER BY p.shot_id,p.job_id",
         (project_id,),
-    ).fetchone()
-    if unresolved_attempt:
-        return "关键帧扣点或退款账本仍在处理中，请等待收口后重试"
-    return None
+    ).fetchall():
+        blockers.append(_blocker("ledger_inconsistent", row[0]))
+
+    unique = {(item["code"], item.get("shot_id")): item for item in blockers}
+    blockers = sorted(unique.values(), key=lambda item: (
+        _HANDOFF_ORDER[item["code"]], item.get("shot_id", ""), item["message"],
+    ))
+    return {"blocked": bool(blockers), "blockers": blockers}
 
 
 def _query_dicts(conn, query, params=()):
@@ -1191,6 +1245,7 @@ def build_production_snapshot(conn, project, username):
                 "job": latest_jobs.get(shot["id"]),
             },
         })
+    handoff = build_phase_two_handoff(conn, project_id, project["ratio"])
     return {
         "project_id": project_id,
         "revision": int(project["revision"]),
@@ -1199,6 +1254,8 @@ def build_production_snapshot(conn, project, username):
         "point_budget": int(project["point_budget"]),
         "spent_points": int(project["spent_points"]),
         "reserved_points": reserved_points,
+        "handoff_blocked": handoff["blocked"],
+        "handoff_blockers": handoff["blockers"],
         "shots": shot_items,
     }
 
@@ -1292,27 +1349,11 @@ def confirm_stage(db_factory, username, body, access=None):
         if project["stage"] != "stills_review":
             raise ValueError("short drama stages cannot be skipped")
 
-        shot_ids = [row[0] for row in conn.execute(
-            "SELECT id FROM short_drama_shots WHERE project_id=?",
-            (project_id,),
-        ).fetchall()]
-        valid_rows = conn.execute(
-            "SELECT s.id FROM short_drama_shots s "
-            "JOIN short_drama_assets a "
-            "ON a.project_id=s.project_id AND a.shot_id=s.id AND a.type='still' "
-            "JOIN short_drama_asset_versions v "
-            "ON v.asset_id=a.id AND v.version=a.current_version "
-            "WHERE s.project_id=? AND a.locked=1 AND v.status='done' AND v.ratio=?",
-            (project_id, project["ratio"]),
-        ).fetchall()
-        valid_shot_ids = [row[0] for row in valid_rows]
-        if (not shot_ids or len(valid_shot_ids) != len(shot_ids)
-                or set(valid_shot_ids) != set(shot_ids)):
-            raise ValueError("lock one completed current still for every shot first")
-
         reconcile_jobs(conn, username, project_id)
-        blocked_message = _phase_two_handoff_blocker(conn, project_id)
-        if blocked_message is None:
+        handoff = build_phase_two_handoff(conn, project_id, project["ratio"])
+        if handoff["blocked"]:
+            blocked_message = handoff["blockers"][0]["message"]
+        else:
             short_drama_voice.ensure_voice_workspace(
                 conn, project_id, allowed_stages={"stills_review"}
             )

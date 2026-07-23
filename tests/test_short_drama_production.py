@@ -1477,6 +1477,14 @@ class ShortDramaProductionTests(unittest.TestCase):
     def test_confirm_requires_every_current_shot_to_have_a_locked_still(self):
         self._completed_still_versions()
 
+        snapshot = short_drama_production.get_production(
+            self.db, "alice", self.project["id"],
+        )
+        self.assertTrue(snapshot["handoff_blocked"])
+        self.assertEqual(
+            "missing_locked_still", snapshot["handoff_blockers"][0]["code"],
+        )
+
         with self.assertRaises(ValueError):
             short_drama_production.confirm_stage(self.db, "alice", {
                 "project_id": self.project["id"], "revision": self.project["revision"],
@@ -1627,7 +1635,15 @@ class ShortDramaProductionTests(unittest.TestCase):
             "stage": "stills_review",
         }
 
-        with self.assertRaisesRegex(ValueError, "任务|账本|处理中"):
+        snapshot = short_drama_production.get_production(
+            self.db, "alice", self.project["id"],
+        )
+        self.assertTrue(snapshot["handoff_blocked"])
+        self.assertEqual("active_job", snapshot["handoff_blockers"][0]["code"])
+
+        with self.assertRaisesRegex(
+            ValueError, snapshot["handoff_blockers"][0]["message"],
+        ):
             short_drama_production.confirm_stage(self.db, "alice", body)
 
         with closing(self.db()) as conn:
@@ -1653,6 +1669,23 @@ class ShortDramaProductionTests(unittest.TestCase):
         confirmed = short_drama_production.confirm_stage(self.db, "alice", body)
         self.assertEqual("voice_review", confirmed["stage"])
 
+    def test_snapshot_reports_old_running_job_hidden_by_new_done_job(self):
+        self._lock_every_current_still()
+        self._link_job(
+            shot_order=0, job_status="running", link_status="running",
+        )
+        self._link_job(shot_order=0, job_status="done", link_status="pending")
+
+        snapshot = short_drama_production.get_production(
+            self.db, "alice", self.project["id"],
+        )
+
+        self.assertTrue(snapshot["handoff_blocked"])
+        self.assertIn(
+            "active_job",
+            [item["code"] for item in snapshot["handoff_blockers"]],
+        )
+
     def _assert_unresolved_charge_attempt_blocks_handoff(self, state):
         self._lock_every_current_still()
         body = {
@@ -1672,6 +1705,18 @@ class ShortDramaProductionTests(unittest.TestCase):
                 {"detail": "refund pending", "code": "refund_pending"},
             )
         self.assertEqual(state, attempt["state"])
+
+        snapshot = short_drama_production.get_production(
+            self.db, "alice", self.project["id"],
+        )
+        expected_code = (
+            "refund_pending" if state == "refund_pending"
+            else "charge_attempt_pending"
+        )
+        self.assertIn(
+            expected_code,
+            [item["code"] for item in snapshot["handoff_blockers"]],
+        )
 
         with self.assertRaisesRegex(ValueError, "扣点|退款|账本|处理中"):
             short_drama_production.confirm_stage(self.db, "alice", body)
