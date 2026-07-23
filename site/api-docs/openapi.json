@@ -231,9 +231,9 @@
         "tags": [
           "认证"
         ],
-        "summary": "注册新账号(创建用户并返回 token)",
+        "summary": "注册新账号",
         "security": [],
-        "description": "用于前端登录页的“注册新账号”功能。提交账号、密码和可选昵称后，后端会创建普通用户账号，并立即签发登录 token。\n\n规则：username 必填，最长 64 位，不能包含空白字符；password 必填，至少 6 位；display_name 可选，不传时默认等于 username，最多 32 个字符。\n\n安全策略：注册接口按 IP 限流，默认 5 分钟最多 5 次成功注册，超过返回 429。\n\n默认账户属性：points=0，role=member，must_change=false。\n\n注册成功后前端可直接保存 token，并继续调用 /api/auth/me 或跳转工作台。",
+        "description": "用于前端登录页的“注册新账号”功能。提交账号、密码、可选昵称和可选邀请码后，后端会在同一事务中创建普通用户账号、保存直接邀请关系并签发登录会话。\n\n规则：username 必填，最长 64 位，不能包含空白字符；password 必填，至少 6 位；display_name 可选，不传时默认等于 username，最多 32 个字符；invite_code 始终可选。\n\n安全策略：注册接口按 IP 限流，默认 5 分钟最多 5 次尝试，成功或失败都会计数，超过返回 429。\n\n默认账户属性：points=16，role=member，must_change=false。\n\n网站注册成功后通过 HttpOnly Cookie 保持登录，不在响应体暴露 token。",
         "requestBody": {
           "required": true,
           "content": {
@@ -259,6 +259,23 @@
                     "type": "string",
                     "maxLength": 32,
                     "example": "测试用户"
+                  },
+                  "invite_code": {
+                    "type": "string",
+                    "maxLength": 32,
+                    "description": "可选邀请码；不传或空值时正常注册但不绑定邀请关系"
+                  },
+                  "invite_source": {
+                    "type": "string",
+                    "enum": [
+                      "web_link"
+                    ],
+                    "description": "从邀请链接进入时传 web_link；其他值按手动注册处理"
+                  },
+                  "device_id": {
+                    "type": "string",
+                    "maxLength": 256,
+                    "description": "可选设备标识；服务端只保存 HMAC，不保存原值"
                   }
                 }
               }
@@ -273,9 +290,6 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "token": {
-                      "type": "string"
-                    },
                     "user": {
                       "$ref": "#/components/schemas/User"
                     }
@@ -306,6 +320,56 @@
           },
           "429": {
             "description": "注册次数过多，请稍后再试",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/invite/code": {
+      "get": {
+        "tags": [
+          "认证"
+        ],
+        "summary": "获取当前用户的稳定邀请码",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "只返回邀请码和邀请链接，不返回下级账号、会员或财务信息",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "code",
+                    "invite_link"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "minLength": 6,
+                      "maxLength": 6
+                    },
+                    "invite_link": {
+                      "type": "string",
+                      "format": "uri"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未登录",
             "content": {
               "application/json": {
                 "schema": {
