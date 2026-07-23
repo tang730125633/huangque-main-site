@@ -56,7 +56,7 @@
   function normalizeState(input,voices,options){
     input=input&&typeof input==='object'?input:{};
     options=options&&typeof options==='object'?options:{};
-    var catalog=voiceItems(voices),voiceMap={};
+    var catalog=voiceItems(voices),voiceMap=Object.create(null);
     catalog.forEach(function(item){ voiceMap[item.voice_key]=item; });
     var shots=(Array.isArray(input.shots)?input.shots:[]).map(function(shot,index){
       shot=shot&&typeof shot==='object'?shot:{};
@@ -84,9 +84,14 @@
     return state.shots.find(function(shot){ return shot.id===state.selectedShotId; })||null;
   }
   function shotStatusLabel(status){
-    return ({
-      pending:'待配音',silent:'静音',ready:'待核对',done:'已完成',failed:'失败'
-    })[status]||'状态未知';
+    switch(status){
+      case 'pending': return '待配音';
+      case 'silent': return '静音';
+      case 'ready': return '待核对';
+      case 'done': return '已完成';
+      case 'failed': return '失败';
+      default: return '状态未知';
+    }
   }
   function renderWorkspace(input,options){
     options=options||{};
@@ -101,7 +106,9 @@
     }).join('');
     var lines=shot?shot.lines.map(function(line){
       return '<article class="nc-sdv-line"><header><strong>'+
-        escapeHtml(line.character_name)+'</strong><span>'+escapeHtml(line.voice_name)+
+        escapeHtml(line.character_name)+'</strong>'+
+        (line.line_type==='narration'?'<span class="nc-sdv-line-type">旁白/叙述</span>':'')+
+        '<span>'+escapeHtml(line.voice_name)+
         '</span></header><label>发音文本<textarea disabled>'+
         escapeHtml(line.speech_text)+'</textarea></label><label>字幕文本<textarea disabled>'+
         escapeHtml(line.subtitle_text)+'</textarea></label><div class="nc-sdv-params">'+

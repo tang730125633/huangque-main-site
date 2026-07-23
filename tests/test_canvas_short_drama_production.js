@@ -473,6 +473,13 @@ async function testConfirmationRequiresEveryLockedCurrentMatchingDoneVersion() {
   invalidRatio.shots[0].still.locked = true;
   invalidRatio.shots[0].still.versions[0].ratio = 'constructor';
   variants.push(invalidRatio);
+  const activeJob = terminalState();
+  activeJob.shots[0].still.locked = true;
+  activeJob.shots[0].still.job = {
+    id: 'active-handoff', job_id: 999, kind: 'still',
+    status: 'running', quoted_cost: 12,
+  };
+  variants.push(activeJob);
 
   for (const state of variants) {
     let requests = 0;

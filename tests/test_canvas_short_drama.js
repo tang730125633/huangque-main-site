@@ -18,6 +18,7 @@ function testOpenApiContract() {
     ['post', '/api/gen/short-drama/confirm'],
     ['get', '/api/gen/short-drama/planning-quote'],
     ['get', '/api/gen/short-drama/planning-job'],
+    ['get', '/api/gen/short-drama/voice'],
   ];
   for (const [method, route] of operations) {
     const operation = spec.paths[route] && spec.paths[route][method];
@@ -69,6 +70,32 @@ function testOpenApiContract() {
   assert.equal(quote.responses['200'].content['application/json'].schema.properties.cost.type, 'integer');
   assert.match(quote.description, /free|no points/i);
   assert.ok(spec.paths['/api/gen/short-drama/planning-job'].get.responses['404']);
+  const voiceOperation = spec.paths['/api/gen/short-drama/voice'].get;
+  assert.deepEqual(voiceOperation.security, [{ bearerAuth: [] }]);
+  const voiceProjectId = voiceOperation.parameters.find((parameter) =>
+    parameter.name === 'project_id' && parameter.in === 'query');
+  assert.ok(voiceProjectId && voiceProjectId.required,
+    'voice workspace requires the project_id query parameter');
+  for (const status of ['400', '401', '403', '404']) {
+    assert.ok(voiceOperation.responses[status],
+      `voice workspace must document ${status}`);
+  }
+  const voiceSchema = voiceOperation.responses['200']
+    .content['application/json'].schema;
+  const voiceShot = voiceSchema.properties.shots.items;
+  for (const field of [
+    'id', 'shot_key', 'sort_order', 'duration', 'locked',
+    'timeline_revision', 'status', 'lines',
+  ]) assert.ok(voiceShot.required.includes(field),
+    `voice shot must require ${field}`);
+  const voiceLine = voiceShot.properties.lines.items;
+  for (const field of [
+    'id', 'dialogue_line_id', 'line_type', 'sort_order', 'character_key',
+    'character_name', 'source_text', 'speech_text', 'subtitle_text',
+    'subtitle_visible', 'voice_key', 'speed', 'pitch', 'volume',
+    'current_version', 'start_ms', 'end_ms', 'input_hash', 'versions', 'job',
+  ]) assert.ok(voiceLine.required.includes(field),
+    `voice line must require ${field}`);
   const updateSchema = spec.paths['/api/gen/short-drama/project'].put
     .requestBody.content['application/json'].schema;
   assert.equal(updateSchema.oneOf.length, 4, 'PUT project must document settings plus three content variants');

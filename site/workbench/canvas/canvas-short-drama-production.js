@@ -231,7 +231,8 @@
 
   function allShotsLocked(state){
     return state.shots.length>0&&state.shots.every(function(shot){
-      return shot.still.locked&&shotHasCompletedCurrent(state,shot);
+      return shot.still.locked&&shotHasCompletedCurrent(state,shot)&&
+        !(shot.still.job&&isActiveJobStatus(shot.still.job.status));
     });
   }
 

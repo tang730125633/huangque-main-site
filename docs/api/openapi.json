@@ -230,15 +230,47 @@
                   "type": "array",
                   "items": {
                     "type": "object",
-                    "required": ["id", "shot_key", "sort_order", "duration", "locked", "status", "lines"],
+                    "required": ["id", "shot_key", "sort_order", "duration", "locked", "timeline_revision", "status", "lines"],
                     "properties": {
                       "id": {"type": "string"},
                       "shot_key": {"type": "string"},
                       "sort_order": {"type": "integer"},
                       "duration": {"type": "integer", "enum": [5, 10]},
                       "locked": {"type": "boolean"},
+                      "timeline_revision": {"type": "integer", "minimum": 1},
                       "status": {"type": "string", "enum": ["silent", "pending"]},
-                      "lines": {"type": "array", "items": {"type": "object"}}
+                      "lines": {"type": "array", "items": {
+                        "type": "object",
+                        "required": [
+                          "id", "dialogue_line_id", "line_type", "sort_order",
+                          "character_key", "character_name", "source_text", "speech_text",
+                          "subtitle_text", "subtitle_visible", "voice_key", "speed", "pitch",
+                          "volume", "current_version", "start_ms", "end_ms", "input_hash",
+                          "versions", "job"
+                        ],
+                        "properties": {
+                          "id": {"type": "string"},
+                          "dialogue_line_id": {"type": "string", "nullable": true},
+                          "line_type": {"type": "string", "enum": ["dialogue", "narration"]},
+                          "sort_order": {"type": "integer", "minimum": 0},
+                          "character_key": {"type": "string"},
+                          "character_name": {"type": "string"},
+                          "source_text": {"type": "string"},
+                          "speech_text": {"type": "string"},
+                          "subtitle_text": {"type": "string"},
+                          "subtitle_visible": {"type": "boolean"},
+                          "voice_key": {"type": "string"},
+                          "speed": {"type": "number", "minimum": 0.5, "maximum": 2.0},
+                          "pitch": {"type": "integer", "minimum": -12, "maximum": 12},
+                          "volume": {"type": "integer", "minimum": -50, "maximum": 100},
+                          "current_version": {"type": "integer", "minimum": 1, "nullable": true},
+                          "start_ms": {"type": "integer", "minimum": 0, "nullable": true},
+                          "end_ms": {"type": "integer", "minimum": 1, "nullable": true},
+                          "input_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+                          "versions": {"type": "array", "items": {"type": "object"}},
+                          "job": {"type": "object", "nullable": true}
+                        }
+                      }}
                     }
                   }
                 }

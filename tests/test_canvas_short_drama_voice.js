@@ -163,6 +163,43 @@ function testRendererEscapesAttributesErrorsAndVoiceFallbacks() {
   assert.doesNotMatch(html, /<script>|<img|<svg|<iframe|<em>|onfocus="boom/);
 }
 
+function testPrototypeNamedVoiceAndStatusKeysUseNormalFallbacks() {
+  for (const key of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    const state = snapshot({
+      shots: [{
+        id: `shot-${key}`, shot_key: `镜头 ${key}`, sort_order: 0, duration: 1,
+        status: key, lines: [{
+          id: `line-${key}`, sort_order: 0, character_key: 'detective',
+          character_name: '侦探', speech_text: '台词', subtitle_text: '字幕',
+          voice_key: key, speed: 1, pitch: 0, volume: 0,
+        }],
+      }],
+    });
+    const normalized = voice.normalizeState(state, [], {});
+    assert.equal(normalized.shots[0].lines[0].voice_name, key,
+      `${key} must use the unknown-catalog voice fallback`);
+    const html = voice.renderWorkspace(state, { voices: [] });
+    assert.match(html, /状态未知/,
+      `${key} must use the unknown status fallback`);
+    assert.doesNotMatch(html, /function Object|native code/,
+      `${key} must not resolve through Object.prototype`);
+  }
+}
+
+function testNarrationRendersAnExplicitEscapedBadge() {
+  const state = snapshot();
+  state.shots[0].lines[1].character_name = '画外讲述者<script>';
+  state.shots[0].lines[1].subtitle_text = '<b>夜幕降临。</b>';
+  const html = voice.renderWorkspace(state, { voices });
+
+  assert.equal((html.match(/旁白\/叙述/g) || []).length, 1,
+    'only the narration line renders the explicit narration badge');
+  assert.match(html, /class="nc-sdv-line-type"[^>]*>旁白\/叙述<\/span>/);
+  assert.match(html, /画外讲述者&lt;script&gt;/);
+  assert.match(html, /&lt;b&gt;夜幕降临。&lt;\/b&gt;/);
+  assert.doesNotMatch(html, /<script>|<b>/);
+}
+
 function testBrowserUmdExport() {
   const filename = path.join(
     __dirname, '../site/workbench/canvas/canvas-short-drama-voice.js'
@@ -337,6 +374,8 @@ async function main() {
   testNormalizeRenderAndReadonlyContract();
   testRendererDistinguishesLoadingErrorEmptyPendingAndSilent();
   testRendererEscapesAttributesErrorsAndVoiceFallbacks();
+  testPrototypeNamedVoiceAndStatusKeysUseNormalFallbacks();
+  testNarrationRendersAnExplicitEscapedBadge();
   testBrowserUmdExport();
   await testWorkspaceLoadsResourcesWithBoardHeaderAndExposesState();
   await testLatestReloadWinsOverOlderSuccessAndError();

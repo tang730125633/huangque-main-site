@@ -167,7 +167,13 @@ FOR EACH ROW WHEN NEW.source_text IS NOT OLD.source_text
 BEGIN
   SELECT RAISE(ABORT, 'voice line source text is immutable');
 END;
-CREATE TRIGGER IF NOT EXISTS short_drama_voice_jobs_project_guard
+DROP TRIGGER IF EXISTS short_drama_voice_jobs_project_guard;
+DROP TRIGGER IF EXISTS short_drama_voice_jobs_project_update_guard;
+DROP TRIGGER IF EXISTS short_drama_voice_quotes_project_guard;
+DROP TRIGGER IF EXISTS short_drama_voice_quotes_project_update_guard;
+DROP TRIGGER IF EXISTS short_drama_voice_charge_attempts_project_guard;
+DROP TRIGGER IF EXISTS short_drama_voice_charge_attempts_project_update_guard;
+CREATE TRIGGER short_drama_voice_jobs_project_guard
 BEFORE INSERT ON short_drama_voice_jobs
 FOR EACH ROW WHEN NOT EXISTS (
   SELECT 1 FROM short_drama_projects AS project
@@ -176,13 +182,26 @@ FOR EACH ROW WHEN NOT EXISTS (
   JOIN short_drama_voice_lines AS line
     ON line.id=NEW.voice_line_id AND line.project_id=NEW.project_id
     AND line.shot_id=NEW.shot_id
-  WHERE project.id=NEW.project_id AND project.username=NEW.username
+  WHERE project.id=NEW.project_id
+    AND NOT EXISTS (
+      SELECT 1 FROM short_drama_voice_quotes AS quote
+      WHERE quote.consumed_job_id=NEW.job_id
+        AND (quote.username<>NEW.username OR quote.project_id<>NEW.project_id
+          OR quote.voice_line_id<>NEW.voice_line_id)
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM short_drama_voice_charge_attempts AS attempt
+      WHERE attempt.job_id=NEW.job_id
+        AND (attempt.username<>NEW.username OR attempt.project_id<>NEW.project_id
+          OR attempt.shot_id<>NEW.shot_id OR attempt.voice_line_id<>NEW.voice_line_id)
+    )
 )
 BEGIN
-  SELECT RAISE(ABORT, 'voice job references must belong to project owner');
+  SELECT RAISE(ABORT, 'voice job references must share one project and actor');
 END;
-CREATE TRIGGER IF NOT EXISTS short_drama_voice_jobs_project_update_guard
-BEFORE UPDATE OF username, project_id, shot_id, voice_line_id ON short_drama_voice_jobs
+CREATE TRIGGER short_drama_voice_jobs_project_update_guard
+BEFORE UPDATE OF username, project_id, shot_id, voice_line_id, job_id
+ON short_drama_voice_jobs
 FOR EACH ROW WHEN NOT EXISTS (
   SELECT 1 FROM short_drama_projects AS project
   JOIN short_drama_shots AS shot
@@ -190,34 +209,57 @@ FOR EACH ROW WHEN NOT EXISTS (
   JOIN short_drama_voice_lines AS line
     ON line.id=NEW.voice_line_id AND line.project_id=NEW.project_id
     AND line.shot_id=NEW.shot_id
-  WHERE project.id=NEW.project_id AND project.username=NEW.username
+  WHERE project.id=NEW.project_id
+    AND NOT EXISTS (
+      SELECT 1 FROM short_drama_voice_quotes AS quote
+      WHERE quote.consumed_job_id=NEW.job_id
+        AND (quote.username<>NEW.username OR quote.project_id<>NEW.project_id
+          OR quote.voice_line_id<>NEW.voice_line_id)
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM short_drama_voice_charge_attempts AS attempt
+      WHERE attempt.job_id=NEW.job_id
+        AND (attempt.username<>NEW.username OR attempt.project_id<>NEW.project_id
+          OR attempt.shot_id<>NEW.shot_id OR attempt.voice_line_id<>NEW.voice_line_id)
+    )
 )
 BEGIN
-  SELECT RAISE(ABORT, 'voice job references must belong to project owner');
+  SELECT RAISE(ABORT, 'voice job references must share one project and actor');
 END;
-CREATE TRIGGER IF NOT EXISTS short_drama_voice_quotes_project_guard
+CREATE TRIGGER short_drama_voice_quotes_project_guard
 BEFORE INSERT ON short_drama_voice_quotes
 FOR EACH ROW WHEN NOT EXISTS (
   SELECT 1 FROM short_drama_projects AS project
   JOIN short_drama_voice_lines AS line
     ON line.id=NEW.voice_line_id AND line.project_id=NEW.project_id
-  WHERE project.id=NEW.project_id AND project.username=NEW.username
+  WHERE project.id=NEW.project_id
+    AND (NEW.consumed_job_id IS NULL OR EXISTS (
+      SELECT 1 FROM short_drama_voice_jobs AS job
+      WHERE job.job_id=NEW.consumed_job_id AND job.username=NEW.username
+        AND job.project_id=NEW.project_id AND job.voice_line_id=NEW.voice_line_id
+    ))
 )
 BEGIN
-  SELECT RAISE(ABORT, 'voice quote line must belong to project owner');
+  SELECT RAISE(ABORT, 'voice quote references must share one project and actor');
 END;
-CREATE TRIGGER IF NOT EXISTS short_drama_voice_quotes_project_update_guard
-BEFORE UPDATE OF username, project_id, voice_line_id ON short_drama_voice_quotes
+CREATE TRIGGER short_drama_voice_quotes_project_update_guard
+BEFORE UPDATE OF username, project_id, voice_line_id, consumed_job_id
+ON short_drama_voice_quotes
 FOR EACH ROW WHEN NOT EXISTS (
   SELECT 1 FROM short_drama_projects AS project
   JOIN short_drama_voice_lines AS line
     ON line.id=NEW.voice_line_id AND line.project_id=NEW.project_id
-  WHERE project.id=NEW.project_id AND project.username=NEW.username
+  WHERE project.id=NEW.project_id
+    AND (NEW.consumed_job_id IS NULL OR EXISTS (
+      SELECT 1 FROM short_drama_voice_jobs AS job
+      WHERE job.job_id=NEW.consumed_job_id AND job.username=NEW.username
+        AND job.project_id=NEW.project_id AND job.voice_line_id=NEW.voice_line_id
+    ))
 )
 BEGIN
-  SELECT RAISE(ABORT, 'voice quote line must belong to project owner');
+  SELECT RAISE(ABORT, 'voice quote references must share one project and actor');
 END;
-CREATE TRIGGER IF NOT EXISTS short_drama_voice_charge_attempts_project_guard
+CREATE TRIGGER short_drama_voice_charge_attempts_project_guard
 BEFORE INSERT ON short_drama_voice_charge_attempts
 FOR EACH ROW WHEN NOT EXISTS (
   SELECT 1 FROM short_drama_projects AS project
@@ -229,13 +271,19 @@ FOR EACH ROW WHEN NOT EXISTS (
   JOIN short_drama_voice_quotes AS quote
     ON quote.token=NEW.quote_token AND quote.username=NEW.username
     AND quote.project_id=NEW.project_id AND quote.voice_line_id=NEW.voice_line_id
-  WHERE project.id=NEW.project_id AND project.username=NEW.username
+  WHERE project.id=NEW.project_id
+    AND (NEW.job_id IS NULL OR EXISTS (
+      SELECT 1 FROM short_drama_voice_jobs AS job
+      WHERE job.job_id=NEW.job_id AND job.username=NEW.username
+        AND job.project_id=NEW.project_id AND job.shot_id=NEW.shot_id
+        AND job.voice_line_id=NEW.voice_line_id
+    ))
 )
 BEGIN
-  SELECT RAISE(ABORT, 'voice charge references must belong to project owner');
+  SELECT RAISE(ABORT, 'voice charge references must share one project and actor');
 END;
-CREATE TRIGGER IF NOT EXISTS short_drama_voice_charge_attempts_project_update_guard
-BEFORE UPDATE OF username, project_id, shot_id, voice_line_id, quote_token
+CREATE TRIGGER short_drama_voice_charge_attempts_project_update_guard
+BEFORE UPDATE OF username, project_id, shot_id, voice_line_id, quote_token, job_id
 ON short_drama_voice_charge_attempts
 FOR EACH ROW WHEN NOT EXISTS (
   SELECT 1 FROM short_drama_projects AS project
@@ -247,10 +295,16 @@ FOR EACH ROW WHEN NOT EXISTS (
   JOIN short_drama_voice_quotes AS quote
     ON quote.token=NEW.quote_token AND quote.username=NEW.username
     AND quote.project_id=NEW.project_id AND quote.voice_line_id=NEW.voice_line_id
-  WHERE project.id=NEW.project_id AND project.username=NEW.username
+  WHERE project.id=NEW.project_id
+    AND (NEW.job_id IS NULL OR EXISTS (
+      SELECT 1 FROM short_drama_voice_jobs AS job
+      WHERE job.job_id=NEW.job_id AND job.username=NEW.username
+        AND job.project_id=NEW.project_id AND job.shot_id=NEW.shot_id
+        AND job.voice_line_id=NEW.voice_line_id
+    ))
 )
 BEGIN
-  SELECT RAISE(ABORT, 'voice charge references must belong to project owner');
+  SELECT RAISE(ABORT, 'voice charge references must share one project and actor');
 END;
 """
 

@@ -237,34 +237,60 @@ class ShortDramaVoiceSchemaTests(unittest.TestCase):
             tuple(line.values()),
         )
 
-    def _insert_quote(self, conn, token, username, project_id, voice_line_id):
+    def _insert_quote(self, conn, token, username, project_id, voice_line_id,
+                      consumed_job_id=None):
         conn.execute(
             "INSERT INTO short_drama_voice_quotes "
-            "(token,username,project_id,voice_line_id,request_hash,cost,expires_at,created_at) "
-            "VALUES (?,?,?,?, 'hash',0,10,1)",
-            (token, username, project_id, voice_line_id),
+            "(token,username,project_id,voice_line_id,request_hash,cost,expires_at,"
+            "consumed_job_id,created_at) VALUES (?,?,?,?, 'hash',0,10,?,1)",
+            (token, username, project_id, voice_line_id, consumed_job_id),
         )
 
-    def _insert_job(self, conn, job_id, username, project_id, shot_id, voice_line_id):
+    def _insert_job(self, conn, job_id, username, project_id, shot_id, voice_line_id,
+                    job_number=100):
         conn.execute(
             "INSERT INTO short_drama_voice_jobs "
             "(id,username,project_id,shot_id,voice_line_id,job_id,idempotency_key,"
             "quoted_cost,status,created_at,updated_at) "
             "VALUES (?,?,?,?,?,?,?,0,'pending',1,1)",
-            (job_id, username, project_id, shot_id, voice_line_id, 100, job_id),
+            (job_id, username, project_id, shot_id, voice_line_id, job_number, job_id),
         )
 
     def _insert_charge(self, conn, charge_key, username, project_id, shot_id,
-                       voice_line_id, quote_token):
+                       voice_line_id, quote_token, job_id=None):
         conn.execute(
             "INSERT INTO short_drama_voice_charge_attempts "
             "(charge_key,refund_key,username,endpoint,idempotency_key,request_hash,"
             "project_id,shot_id,voice_line_id,quote_token,cost,audio_payload_json,state,"
-            "created_at,updated_at) "
-            "VALUES (?,?,?,'voice',?,'hash',?,?,?,?,0,'{}','accepted',1,1)",
+            "job_id,created_at,updated_at) "
+            "VALUES (?,?,?,'voice',?,'hash',?,?,?,?,0,'{}','accepted',?,1,1)",
             (charge_key, charge_key + "-refund", username, charge_key, project_id,
-             shot_id, voice_line_id, quote_token),
+             shot_id, voice_line_id, quote_token, job_id),
         )
+
+    def _install_legacy_owner_actor_triggers(self, conn):
+        definitions = (
+            ("short_drama_voice_jobs_project_guard", "short_drama_voice_jobs", "INSERT"),
+            ("short_drama_voice_jobs_project_update_guard", "short_drama_voice_jobs",
+             "UPDATE OF username, project_id, shot_id, voice_line_id"),
+            ("short_drama_voice_quotes_project_guard", "short_drama_voice_quotes", "INSERT"),
+            ("short_drama_voice_quotes_project_update_guard", "short_drama_voice_quotes",
+             "UPDATE OF username, project_id, voice_line_id, consumed_job_id"),
+            ("short_drama_voice_charge_attempts_project_guard",
+             "short_drama_voice_charge_attempts", "INSERT"),
+            ("short_drama_voice_charge_attempts_project_update_guard",
+             "short_drama_voice_charge_attempts",
+             "UPDATE OF username, project_id, shot_id, voice_line_id, quote_token, job_id"),
+        )
+        for name, table, event in definitions:
+            conn.execute("DROP TRIGGER IF EXISTS %s" % name)
+            conn.execute(
+                "CREATE TRIGGER %s BEFORE %s ON %s FOR EACH ROW "
+                "WHEN NOT EXISTS (SELECT 1 FROM short_drama_projects "
+                "WHERE id=NEW.project_id AND username=NEW.username) "
+                "BEGIN SELECT RAISE(ABORT, 'legacy owner restriction'); END"
+                % (name, event, table)
+            )
 
     def test_init_creates_all_voice_tables_and_is_idempotent(self):
         short_drama.init_db(self.db)
@@ -343,7 +369,7 @@ class ShortDramaVoiceSchemaTests(unittest.TestCase):
                     "'done',1)"
                 )
 
-    def test_jobs_quotes_and_charge_attempts_reject_cross_project_links_on_insert_and_update(self):
+    def test_jobs_quotes_and_charge_attempts_allow_editor_actor_and_reject_mismatches(self):
         short_drama.init_db(self.db)
         with closing(self.db()) as conn:
             self._insert_project(conn, "p1", "alice")
@@ -354,16 +380,12 @@ class ShortDramaVoiceSchemaTests(unittest.TestCase):
             self._insert_voice_line(conn, "line-2", "p2", "s2")
             with self.assertRaises(sqlite3.IntegrityError):
                 self._insert_job(conn, "job-cross-project", "alice", "p2", "s1", "line-1")
-            with self.assertRaises(sqlite3.IntegrityError):
-                self._insert_job(conn, "job-cross-user", "bob", "p1", "s1", "line-1")
             self._insert_job(conn, "job-1", "alice", "p1", "s1", "line-1")
             with self.assertRaises(sqlite3.IntegrityError):
                 conn.execute("UPDATE short_drama_voice_jobs SET project_id='p2' WHERE id='job-1'")
 
             with self.assertRaises(sqlite3.IntegrityError):
                 self._insert_quote(conn, "quote-cross-project", "alice", "p2", "line-1")
-            with self.assertRaises(sqlite3.IntegrityError):
-                self._insert_quote(conn, "quote-cross-user", "bob", "p1", "line-1")
             self._insert_quote(conn, "quote-1", "alice", "p1", "line-1")
             with self.assertRaises(sqlite3.IntegrityError):
                 conn.execute("UPDATE short_drama_voice_quotes SET project_id='p2' WHERE token='quote-1'")
@@ -379,5 +401,78 @@ class ShortDramaVoiceSchemaTests(unittest.TestCase):
                     "WHERE charge_key='charge-1'"
                 )
 
+            self._insert_quote(conn, "quote-editor", "editor", "p1", "line-1")
+            self._insert_job(
+                conn, "job-editor", "editor", "p1", "s1", "line-1", job_number=101,
+            )
+            self._insert_charge(
+                conn, "charge-editor", "editor", "p1", "s1", "line-1",
+                "quote-editor", job_id=101,
+            )
+            conn.execute(
+                "UPDATE short_drama_voice_quotes SET consumed_job_id=101 "
+                "WHERE token='quote-editor'"
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                self._insert_charge(
+                    conn, "charge-actor-mismatch", "alice", "p1", "s1", "line-1",
+                    "quote-editor", job_id=101,
+                )
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "UPDATE short_drama_voice_jobs SET username='alice' "
+                    "WHERE id='job-editor'"
+                )
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "UPDATE short_drama_voice_quotes SET project_id='p2' "
+                    "WHERE token='quote-editor'"
+                )
+
             with self.assertRaises(sqlite3.IntegrityError):
                 conn.execute("UPDATE short_drama_voice_lines SET project_id='p2' WHERE id='line-1'")
+
+    def test_init_migrates_legacy_owner_actor_triggers_idempotently(self):
+        short_drama.init_db(self.db)
+        with closing(self.db()) as conn:
+            self._insert_project(conn, "p1", "alice")
+            self._insert_shot(conn, "s1", "p1")
+            self._insert_voice_line(conn, "line-1", "p1", "s1")
+            self._install_legacy_owner_actor_triggers(conn)
+            conn.commit()
+
+        short_drama_voice.init_db(self.db)
+        short_drama_voice.init_db(self.db)
+
+        trigger_names = {
+            "short_drama_voice_jobs_project_guard",
+            "short_drama_voice_jobs_project_update_guard",
+            "short_drama_voice_quotes_project_guard",
+            "short_drama_voice_quotes_project_update_guard",
+            "short_drama_voice_charge_attempts_project_guard",
+            "short_drama_voice_charge_attempts_project_update_guard",
+        }
+        with closing(self.db()) as conn:
+            definitions = dict(conn.execute(
+                "SELECT name,sql FROM sqlite_master WHERE type='trigger' "
+                "AND name IN (%s)" % ",".join("?" for _ in trigger_names),
+                tuple(sorted(trigger_names)),
+            ).fetchall())
+            self.assertEqual(trigger_names, set(definitions))
+            self.assertTrue(all(
+                "legacy owner restriction" not in (sql or "")
+                and "project.username=NEW.username" not in (sql or "").replace(" ", "")
+                for sql in definitions.values()
+            ))
+            self._insert_quote(conn, "quote-editor", "editor", "p1", "line-1")
+            self._insert_job(
+                conn, "job-editor", "editor", "p1", "s1", "line-1", job_number=101,
+            )
+            self._insert_charge(
+                conn, "charge-editor", "editor", "p1", "s1", "line-1",
+                "quote-editor", job_id=101,
+            )
+            conn.execute(
+                "UPDATE short_drama_voice_quotes SET consumed_job_id=101 "
+                "WHERE token='quote-editor'"
+            )

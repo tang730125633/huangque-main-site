@@ -1563,11 +1563,264 @@ class ShortDramaProductionTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(6, shot_count)
 
-    def test_snapshot_failure_rolls_back_stage_confirmation(self):
+    def test_confirm_reconciles_late_success_before_creating_voice_snapshot(self):
         self._lock_every_current_still()
+        job_id = self._link_job(cost=60, quoted_cost=60)
+        observed = {}
+        original = short_drama_production.short_drama_voice.ensure_voice_workspace
+
+        def inspect_reconciled_ledger(conn, project_id, allowed_stages=None):
+            observed["spent_points"] = conn.execute(
+                "SELECT spent_points FROM short_drama_projects WHERE id=?",
+                (project_id,),
+            ).fetchone()[0]
+            observed["archive_count"] = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_asset_versions WHERE job_id=?",
+                (job_id,),
+            ).fetchone()[0]
+            return original(conn, project_id, allowed_stages=allowed_stages)
+
         with mock.patch(
             "content_domains.short_drama_voice.ensure_voice_workspace",
-            side_effect=RuntimeError("snapshot failed"),
+            side_effect=inspect_reconciled_ledger,
+        ):
+            confirmed = short_drama_production.confirm_stage(
+                self.db, "alice", {
+                    "project_id": self.project["id"],
+                    "revision": self.project["revision"],
+                    "stage": "stills_review",
+                },
+            )
+
+        self.assertEqual("voice_review", confirmed["stage"])
+        self.assertEqual({"spent_points": 60, "archive_count": 2}, observed)
+        with closing(self.db()) as conn:
+            self.assertEqual(
+                (60, 2, "done"),
+                (
+                    conn.execute(
+                        "SELECT spent_points FROM short_drama_projects WHERE id=?",
+                        (self.project["id"],),
+                    ).fetchone()[0],
+                    conn.execute(
+                        "SELECT COUNT(*) FROM short_drama_asset_versions WHERE job_id=?",
+                        (job_id,),
+                    ).fetchone()[0],
+                    conn.execute(
+                        "SELECT status FROM short_drama_production_jobs WHERE job_id=?",
+                        (job_id,),
+                    ).fetchone()[0],
+                ),
+            )
+
+    def test_confirm_rejects_pending_and_running_production_jobs(self):
+        self._lock_every_current_still()
+        pending_job = self._link_job(
+            shot_order=0, job_status="pending", link_status="pending",
+        )
+        running_job = self._link_job(
+            shot_order=1, job_status="running", link_status="pending",
+        )
+        body = {
+            "project_id": self.project["id"],
+            "revision": self.project["revision"],
+            "stage": "stills_review",
+        }
+
+        with self.assertRaisesRegex(ValueError, "任务|账本|处理中"):
+            short_drama_production.confirm_stage(self.db, "alice", body)
+
+        with closing(self.db()) as conn:
+            self.assertEqual(
+                ("stills_review", 0),
+                (
+                    conn.execute(
+                        "SELECT stage FROM short_drama_projects WHERE id=?",
+                        (self.project["id"],),
+                    ).fetchone()[0],
+                    conn.execute(
+                        "SELECT COUNT(*) FROM short_drama_voice_shots WHERE project_id=?",
+                        (self.project["id"],),
+                    ).fetchone()[0],
+                ),
+            )
+            conn.execute(
+                "UPDATE jobs SET status='failed' WHERE id IN (?,?)",
+                (pending_job, running_job),
+            )
+            conn.commit()
+
+        confirmed = short_drama_production.confirm_stage(self.db, "alice", body)
+        self.assertEqual("voice_review", confirmed["stage"])
+
+    def _assert_unresolved_charge_attempt_blocks_handoff(self, state):
+        self._lock_every_current_still()
+        body = {
+            "project_id": self.project["id"],
+            "revision": self.project["revision"],
+            "stage": "stills_review",
+        }
+        key = "handoff-attempt-%s" % state
+        attempt = self._accepted_attempt(key)
+        if state in {"charged", "refund_pending"}:
+            attempt = short_drama_production.mark_attempt_charged(
+                self.db, "alice", key, 76,
+            )
+        if state == "refund_pending":
+            attempt = short_drama_production.mark_attempt_refund_pending(
+                self.db, "alice", key,
+                {"detail": "refund pending", "code": "refund_pending"},
+            )
+        self.assertEqual(state, attempt["state"])
+
+        with self.assertRaisesRegex(ValueError, "扣点|退款|账本|处理中"):
+            short_drama_production.confirm_stage(self.db, "alice", body)
+
+        with closing(self.db()) as conn:
+            self.assertEqual(
+                ("stills_review", 0),
+                (
+                    conn.execute(
+                        "SELECT stage FROM short_drama_projects WHERE id=?",
+                        (self.project["id"],),
+                    ).fetchone()[0],
+                    conn.execute(
+                        "SELECT COUNT(*) FROM short_drama_voice_shots WHERE project_id=?",
+                        (self.project["id"],),
+                    ).fetchone()[0],
+                ),
+            )
+
+        if state == "accepted":
+            short_drama_production.mark_attempt_failed(
+                self.db, "alice", key,
+                {"detail": "not charged", "operation_terminal": True},
+            )
+        else:
+            if state == "charged":
+                short_drama_production.mark_attempt_refund_pending(
+                    self.db, "alice", key,
+                    {"detail": "refund pending", "code": "refund_pending"},
+                )
+            short_drama_production.mark_attempt_refunded(self.db, "alice", key)
+
+        confirmed = short_drama_production.confirm_stage(self.db, "alice", body)
+        self.assertEqual("voice_review", confirmed["stage"])
+
+    def test_confirm_rejects_accepted_charge_attempt(self):
+        self._assert_unresolved_charge_attempt_blocks_handoff("accepted")
+
+    def test_confirm_rejects_charged_charge_attempt(self):
+        self._assert_unresolved_charge_attempt_blocks_handoff("charged")
+
+    def test_confirm_rejects_refund_pending_charge_attempt(self):
+        self._assert_unresolved_charge_attempt_blocks_handoff("refund_pending")
+
+    def test_confirm_persists_bad_result_refund_intent_before_rejecting_handoff(self):
+        self._lock_every_current_still()
+        auth, job_id, attempt = self._linked_real_ledger_job(
+            "handoff-malformed-result", status="done",
+        )
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE jobs SET result=? WHERE id=?",
+                (json.dumps({"urls": ["only-one"], "ratio": "9:16"}), job_id),
+            )
+            conn.commit()
+        body = {
+            "project_id": self.project["id"],
+            "revision": self.project["revision"],
+            "stage": "stills_review",
+        }
+
+        with self.assertRaisesRegex(ValueError, "扣点|退款|账本|处理中"):
+            short_drama_production.confirm_stage(self.db, "alice", body)
+
+        pending = short_drama_production.get_charge_attempt(
+            self.db, "alice", attempt["idempotency_key"],
+        )
+        self.assertEqual("refund_pending", pending["state"])
+        self.assertEqual(76, auth.get_points_row("alice")["points"])
+        with closing(self.db()) as conn:
+            self.assertEqual(
+                ("stills_review", 0, "failed", 2),
+                (
+                    conn.execute(
+                        "SELECT stage FROM short_drama_projects WHERE id=?",
+                        (self.project["id"],),
+                    ).fetchone()[0],
+                    conn.execute(
+                        "SELECT COUNT(*) FROM short_drama_voice_shots WHERE project_id=?",
+                        (self.project["id"],),
+                    ).fetchone()[0],
+                    conn.execute(
+                        "SELECT status FROM short_drama_production_jobs WHERE job_id=?",
+                        (job_id,),
+                    ).fetchone()[0],
+                    conn.execute(
+                        "SELECT refunded FROM short_drama_production_jobs WHERE job_id=?",
+                        (job_id,),
+                    ).fetchone()[0],
+                ),
+            )
+
+        self.assertEqual(1, short_drama_production.retry_attempt_refunds(self.db, auth))
+        confirmed = short_drama_production.confirm_stage(self.db, "alice", body)
+        self.assertEqual("voice_review", confirmed["stage"])
+        self.assertEqual(100, auth.get_points_row("alice")["points"])
+
+    def test_charge_acceptance_rechecks_stage_after_a_prepared_request(self):
+        request = self._still_request()
+        quote = short_drama_production.prepare_still_quote(
+            self.db, "alice", request, lambda _kind, _payload: 24,
+        )
+        prepared = short_drama_production.prepare_still_submission(
+            self.db, "alice", dict(request, quote_token=quote["quote_token"]),
+            require_quote=True, idempotency_key="prepared-before-handoff",
+        )
+        self._lock_every_current_still()
+        short_drama_production.confirm_stage(self.db, "alice", {
+            "project_id": self.project["id"],
+            "revision": self.project["revision"],
+            "stage": "stills_review",
+        })
+
+        with self.assertRaisesRegex(ValueError, "阶段|关键帧"):
+            short_drama_production.accept_charge_attempt(
+                self.db, username="alice",
+                endpoint="/api/gen/short-drama/generate-stills",
+                idempotency_key="prepared-before-handoff", prepared=prepared,
+            )
+
+        with closing(self.db()) as conn:
+            self.assertIsNone(conn.execute(
+                "SELECT consumed_idempotency_key FROM short_drama_still_quotes WHERE token=?",
+                (quote["quote_token"],),
+            ).fetchone()[0])
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_charge_attempts "
+                "WHERE idempotency_key='prepared-before-handoff'"
+            ).fetchone()[0])
+
+    def test_snapshot_failure_rolls_back_stage_confirmation(self):
+        self._lock_every_current_still()
+        job_id = self._link_job(cost=60, quoted_cost=60)
+        observed = {}
+
+        def fail_after_reconciliation(conn, project_id, allowed_stages=None):
+            observed["spent_points"] = conn.execute(
+                "SELECT spent_points FROM short_drama_projects WHERE id=?",
+                (project_id,),
+            ).fetchone()[0]
+            observed["archive_count"] = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_asset_versions WHERE job_id=?",
+                (job_id,),
+            ).fetchone()[0]
+            raise RuntimeError("snapshot failed")
+
+        with mock.patch(
+            "content_domains.short_drama_voice.ensure_voice_workspace",
+            side_effect=fail_after_reconciliation,
         ):
             with self.assertRaisesRegex(RuntimeError, "snapshot failed"):
                 short_drama_production.confirm_stage(
@@ -1577,15 +1830,49 @@ class ShortDramaProductionTests(unittest.TestCase):
                         "stage": "stills_review",
                     },
                 )
+        self.assertEqual({"spent_points": 60, "archive_count": 2}, observed)
         with closing(self.db()) as conn:
-            stage = conn.execute(
-                "SELECT stage FROM short_drama_projects WHERE id=?",
+            self.assertEqual(
+                ("stills_review", 0, 0, "pending"),
+                (
+                    conn.execute(
+                        "SELECT stage FROM short_drama_projects WHERE id=?",
+                        (self.project["id"],),
+                    ).fetchone()[0],
+                    conn.execute(
+                        "SELECT spent_points FROM short_drama_projects WHERE id=?",
+                        (self.project["id"],),
+                    ).fetchone()[0],
+                    conn.execute(
+                        "SELECT COUNT(*) FROM short_drama_asset_versions WHERE job_id=?",
+                        (job_id,),
+                    ).fetchone()[0],
+                    conn.execute(
+                        "SELECT status FROM short_drama_production_jobs WHERE job_id=?",
+                        (job_id,),
+                    ).fetchone()[0],
+                ),
+            )
+
+        confirmed = short_drama_production.confirm_stage(self.db, "alice", {
+            "project_id": self.project["id"],
+            "revision": self.project["revision"],
+            "stage": "stills_review",
+        })
+        self.assertEqual("voice_review", confirmed["stage"])
+        with closing(self.db()) as conn:
+            self.assertEqual(60, conn.execute(
+                "SELECT spent_points FROM short_drama_projects WHERE id=?",
                 (self.project["id"],),
-            ).fetchone()[0]
-        self.assertEqual("stills_review", stage)
+            ).fetchone()[0])
+            self.assertEqual(2, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_asset_versions WHERE job_id=?",
+                (job_id,),
+            ).fetchone()[0])
 
     def test_concurrent_stage_confirmation_succeeds_once(self):
         self._lock_every_current_still()
+        job_id = self._link_job(cost=60, quoted_cost=60)
         body = {
             "project_id": self.project["id"], "revision": self.project["revision"],
             "stage": "stills_review",
@@ -1610,6 +1897,15 @@ class ShortDramaProductionTests(unittest.TestCase):
 
         self.assertEqual(1, results.count("voice_review"))
         self.assertEqual(1, results.count(short_drama.RevisionConflict))
+        with closing(self.db()) as conn:
+            self.assertEqual(60, conn.execute(
+                "SELECT spent_points FROM short_drama_projects WHERE id=?",
+                (self.project["id"],),
+            ).fetchone()[0])
+            self.assertEqual(2, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_asset_versions WHERE job_id=?",
+                (job_id,),
+            ).fetchone()[0])
 
     def test_assets_and_jobs_reject_cross_project_shots_on_insert_and_update(self):
         other = short_drama.create_project(self.db, "alice", _project_payload())

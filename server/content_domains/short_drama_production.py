@@ -286,6 +286,12 @@ def accept_charge_attempt(db_factory, *, username, endpoint, idempotency_key, pr
         if existing:
             conn.rollback()
             return _attempt_dict(existing)
+        project = conn.execute(
+            "SELECT stage FROM short_drama_projects WHERE id=? AND deleted=0",
+            (project_id,),
+        ).fetchone()
+        if not project or project["stage"] != "stills_review":
+            raise ValueError("当前短剧阶段不能接受关键帧扣点")
         unresolved = conn.execute(
             "SELECT idempotency_key FROM short_drama_charge_attempts "
             "WHERE username=? AND project_id=? AND shot_id=? AND request_hash=? "
@@ -1075,6 +1081,26 @@ def reconcile_jobs(conn, username, project_id):
             )
 
 
+def _phase_two_handoff_blocker(conn, project_id):
+    active_job = conn.execute(
+        "SELECT 1 FROM short_drama_production_jobs "
+        "WHERE project_id=? AND (status IN ('pending','running') OR refunded=2) "
+        "LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    if active_job:
+        return "关键帧生产任务或退款仍在处理中，请等待账本收口后重试"
+    unresolved_attempt = conn.execute(
+        "SELECT 1 FROM short_drama_charge_attempts "
+        "WHERE project_id=? AND state IN ('accepted','charged','refund_pending') "
+        "LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    if unresolved_attempt:
+        return "关键帧扣点或退款账本仍在处理中，请等待收口后重试"
+    return None
+
+
 def _query_dicts(conn, query, params=()):
     cursor = conn.execute(query, params)
     columns = [column[0] for column in cursor.description]
@@ -1253,6 +1279,7 @@ def confirm_stage(db_factory, username, body, access=None):
         raise ValueError("only the stills review stage can be confirmed")
 
     project_id = body["project_id"].strip()
+    blocked_message = None
     conn = db_factory()
     try:
         conn.row_factory = sqlite3.Row
@@ -1283,26 +1310,31 @@ def confirm_stage(db_factory, username, body, access=None):
                 or set(valid_shot_ids) != set(shot_ids)):
             raise ValueError("lock one completed current still for every shot first")
 
-        short_drama_voice.ensure_voice_workspace(
-            conn, project_id, allowed_stages={"stills_review"}
-        )
+        reconcile_jobs(conn, username, project_id)
+        blocked_message = _phase_two_handoff_blocker(conn, project_id)
+        if blocked_message is None:
+            short_drama_voice.ensure_voice_workspace(
+                conn, project_id, allowed_stages={"stills_review"}
+            )
 
-        cur = conn.execute(
-            "UPDATE short_drama_projects "
-            "SET stage='voice_review', revision=revision+1, updated_at=? "
-            "WHERE id=? AND revision=? "
-            "AND stage='stills_review' AND deleted=0",
-            (int(time.time()), project_id, body["revision"]),
-        )
-        if cur.rowcount != 1:
-            from .short_drama import RevisionConflict
-            raise RevisionConflict("project was updated; refresh and retry")
+            cur = conn.execute(
+                "UPDATE short_drama_projects "
+                "SET stage='voice_review', revision=revision+1, updated_at=? "
+                "WHERE id=? AND revision=? "
+                "AND stage='stills_review' AND deleted=0",
+                (int(time.time()), project_id, body["revision"]),
+            )
+            if cur.rowcount != 1:
+                from .short_drama import RevisionConflict
+                raise RevisionConflict("project was updated; refresh and retry")
         conn.commit()
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+    if blocked_message is not None:
+        raise ValueError(blocked_message)
     return get_production(db_factory, username, project_id, access=access)
 
 
