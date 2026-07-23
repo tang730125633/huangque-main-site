@@ -2888,13 +2888,17 @@ def gen_xiaole_video(payload):
     else:
         result = generate_xiaole_video(model, prompt, reference_images=ref_images, size=size, job_id=job_id, prefix=channel,
                                        duration=XIAOLE_CHANNEL_DURATION.get(channel))
+    video_file = result.get("video_file")
+    # 成片与封面一样在任务完成时转存 COS，避免把仅支持鉴权读取的本地
+    # /api/gen/file/ 链接写进资产记录。public_url 内部会在 COS 不可用时安全回退。
+    video_url = public_url(video_file, "video/mp4", private=True) if video_file else result.get("video_url")
     return {
         "type": "video", "status": "done", "mode": channel, "model": result.get("model") or model, "text": prompt,
         "operation": payload.get("operation") or "generate",
         "ratio": ratio, "resolution": payload.get("resolution") if use_xai and payload.get("operation") != "edit" else None,
         "duration": result.get("duration") or (payload.get("duration") if use_xai else None),
         "provider_video_id": result.get("request_id"),
-        "video_file": result.get("video_file"), "video_url": result.get("video_url"),
+        "video_file": video_file, "video_url": video_url,
         "source_video_url": result.get("source_video_url"),
         "reference_video_file": result.get("reference_video_file"),
         "reference_video_url": result.get("reference_video_url"),
@@ -3359,13 +3363,16 @@ def gen_cinematic(payload):
             raise HeyGenBilledError("剧情视频已提交 HeyGen(video_id=%s，已扣费)，后续失败: %s"
                                     % (video_id, str(e)[:180])) from e
 
+    # 成片在入库前转存 COS；上传失败时 public_url 会回退本地鉴权链接，
+    # 不因对象存储故障把已经完成的 HeyGen 任务标记为失败。
+    video_url = public_url(video_file, "video/mp4", private=True)
     ret = {
         # ⚠️ status/mode/type 一个都不能少 —— record_video_asset 从 result 里取它们写进
         # video_assets，而前端读的是那张表。漏了 status，它会写成 "pending"，
         # UPSERT 的 COALESCE 又挡不住非 NULL 值，资产行就永远停在 running，
         # 用户看到的就是「一直显示生成中」——哪怕 jobs 表早就 done 了。
         "type": "video", "status": "done", "mode": "cinematic",
-        "video_id": video_id, "video_file": video_file, "video_url": _file_url(video_file),
+        "video_id": video_id, "video_file": video_file, "video_url": video_url,
         "reference_video_file": reference_video_file,
         "avatar_ids": payload["avatar_ids"],
         "avatar_names": [a.get("name") for a in avatars],
