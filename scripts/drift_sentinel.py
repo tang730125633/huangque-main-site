@@ -60,6 +60,7 @@ BACKEND_RUNTIME = {
     'server/func_names.py': '/home/ubuntu/content-api/func_names.py',
     'server/dl_service.py': '/home/ubuntu/dl-service/dl_service.py',
     'server/admin_api.py': '/home/ubuntu/content-api/admin_api.py',
+    'scripts/hq_bitable_sync_server.py': '/home/ubuntu/hq_bitable_sync_server.py',
     'scripts/drift_sentinel.py': '/home/ubuntu/hq-drift/drift_sentinel.py',
 }
 
