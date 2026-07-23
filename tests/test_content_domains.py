@@ -61,6 +61,10 @@ class ContentDomainTests(unittest.TestCase):
     def test_openai_base_with_v1_is_not_duplicated(self):
         core = importlib.import_module("content_domains.core")
         urls = []
+        self.assertEqual(
+            core._api_url("https://api.openai.com", "/v1/chat/completions"),
+            "https://api.openai.com/v1/chat/completions",
+        )
 
         class Response:
             def __enter__(self): return self
