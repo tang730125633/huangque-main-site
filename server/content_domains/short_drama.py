@@ -8,7 +8,7 @@ import urllib.parse
 import uuid
 from contextlib import closing
 
-from . import short_drama_production
+from . import short_drama_production, short_drama_voice
 
 
 STAGES = (
@@ -614,6 +614,7 @@ def init_db(db_factory):
     finally:
         conn.close()
     short_drama_production.init_db(db_factory)
+    short_drama_voice.init_db(db_factory)
 
 
 def _project_username_for_access(db_factory, username, project_id, access=None, write=False):
