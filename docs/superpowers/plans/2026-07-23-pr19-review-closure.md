@@ -6,7 +6,7 @@
 
 **架构：** 在现有配音数据库初始化器中加入确定性的完整性触发器迁移；由服务端集中生成从关键帧阶段进入配音阶段的唯一交接判定，并让写操作与前端共同消费该判定。PR 3-A 继续保持只读，同时统一 OpenAPI 的防枚举语义；更新现有 PR 前，使用隔离的浏览器验收夹具验证最终分支。
 
-**技术栈：** Python 3.12 标准库、SQLite、浏览器 JavaScript UMD 模块、CSS、Node.js 22 契约测试、Python `unittest`、Git/GitHub CLI。
+**技术栈：** Python 3.12 标准库、SQLite、浏览器 JavaScript UMD 模块、CSS、Node.js 24.18.0 契约测试（用户已确认沿用本机版本）、Python `unittest`、Git/GitHub CLI。
 
 ## 全局约束
 
@@ -72,7 +72,7 @@ git branch --show-current
 预期：
 
 - Python 输出 3.12.x。
-- Node 输出 22.x；若 Node 22 不可用，必须先停止并安装或切换到该版本。
+- Node 输出 24.18.0；该版本由用户明确确认沿用，不下载或切换 Node 22。
 - Git 身份为 `kongli` / `kong74007@gmail.com`。
 - 当前分支为 `codex/short-drama-phase3-voice-spec`，且工作区干净。
 
