@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest import mock
 
 
 class ContentDomainTests(unittest.TestCase):
@@ -21,13 +22,13 @@ class ContentDomainTests(unittest.TestCase):
         # （avatar/cinematic 是把动作模仿拆成「建形象 / 生成剧情视频」两步时加的）
         self.assertEqual(
             sorted(content_api.HANDLERS),
-            ["audio", "avatar", "breakdown", "cinematic", "collect", "copy", "image", "leads", "tryon", "video", "xiaole_video"],
+            ["audio", "avatar", "breakdown", "cinematic", "collect", "copy", "image", "leads", "sora_video", "tryon", "video", "xiaole_video"],
         )
         self.assertIs(content_api.HANDLERS, content_api.registry.HANDLERS)
 
     def test_domains_export_expected_handlers(self):
         registry = importlib.import_module("content_domains.registry")
-        for name in ("image", "copy", "collect", "leads", "audio", "video", "xiaole_video", "breakdown"):
+        for name in ("image", "copy", "collect", "leads", "audio", "video", "xiaole_video", "sora_video", "breakdown"):
             self.assertIn(name, registry.HANDLERS)
             self.assertTrue(callable(registry.HANDLERS[name]))
 
@@ -52,7 +53,41 @@ class ContentDomainTests(unittest.TestCase):
         #   下载+ffmpeg+ASR+多模态 domain 逻辑全在 breakdown.py，故门禁上调到 1665。
         # 口播按秒结算：run_job 抢到 done 后按成片真实时长结算多退（thin 计费生命周期胶水，
         #   真实点数计算 talking_actual_cost 在 video.py），门禁上调到 1675。
-        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1675)
+        # Sora 限时 Beta 只在 core 增加 kind 路由/并发/资产/健康薄接线；API 协议仍在 video_openai.py。
+        # jobs 库 WAL+timeout30（堵 50 齐点压测暴露的 INSERT 超时孤儿扣款路径）：jdb() 是 core
+        #   任务库基础设施，+5 行，门禁上调到 1715。
+        # 短剧关键帧的跨 Auth/content 崩溃恢复仍只在 core 保留提交锁、入队与 HTTP
+        # 编排；持久状态机、quote/关联/补偿细节都在 short_drama_production.py。
+        # attempt-backed 与通用 job 的失败分流也只保留一个薄编排 helper；原子状态迁移和
+        # still-refund 所有权仍全部位于 short_drama_production.py。
+        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1940)
+
+    def test_openai_base_with_v1_is_not_duplicated(self):
+        core = importlib.import_module("content_domains.core")
+        urls = []
+        self.assertEqual(
+            core._api_url("https://api.openai.com", "/v1/chat/completions"),
+            "https://api.openai.com/v1/chat/completions",
+        )
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def read(self): return b"{}"
+
+        def open_url(request, **_):
+            urls.append(request.full_url)
+            return Response()
+
+        with mock.patch.object(core, "OPENAI_BASE", "https://sg.example/openai/v1/"), \
+             mock.patch.object(core.urllib.request, "urlopen", side_effect=open_url):
+            core._post("/v1/chat/completions", b"{}", "application/json")
+            core._post_bytes("/v1/audio/speech", b"{}", "application/json")
+
+        self.assertEqual(urls, [
+            "https://sg.example/openai/v1/chat/completions",
+            "https://sg.example/openai/v1/audio/speech",
+        ])
 
     def test_content_api_reclaims_orphans_on_startup(self):
         # 防回归：孤儿回收必须挂在真入口 content_api.main（服务走 content_api.py，
@@ -202,6 +237,10 @@ class ContentDomainTests(unittest.TestCase):
                 self.refunds = []
 
             def safe_refund_points(self, username, cost, reason=""):
+                self.refunds.append((username, cost, reason))
+                return 0
+
+            def refund_points(self, username, cost, reason="", transaction_key=""):
                 self.refunds.append((username, cost, reason))
                 return 0
 

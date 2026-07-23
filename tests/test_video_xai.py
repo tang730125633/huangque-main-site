@@ -80,6 +80,43 @@ class XaiVideoTests(unittest.TestCase):
         ]
         self.assertEqual(len(create_calls), 1)
 
+    def test_create_retries_definite_503_response(self):
+        opener = Mock()
+        opener.open.side_effect = [
+            _http_error(503),
+            _Response({"request_id": "rid-after-retry"}),
+            _Response({"status": "done", "video": {
+                "url": "https://vidgen.x.ai/retried.mp4", "duration": 5,
+            }}),
+        ]
+        clock = iter([0, 0, 1])
+        sleeps = []
+        with patch.object(video_xai, "XAI_API_KEY", "test-key"), \
+             patch.object(video_xai, "_opener", return_value=opener):
+            result = video_xai.generate(
+                "grok-imagine-video", "demo", 5, "9:16", "720p",
+                now=lambda: next(clock), sleep=sleeps.append,
+            )
+        self.assertEqual(result["request_id"], "rid-after-retry")
+        self.assertEqual(sleeps, [2])
+        create_calls = [
+            call for call in opener.open.call_args_list
+            if call.args[0].get_method() == "POST"
+        ]
+        self.assertEqual(len(create_calls), 2)
+
+    def test_create_does_not_retry_definite_400_response(self):
+        opener = Mock()
+        opener.open.side_effect = _http_error(400)
+        with patch.object(video_xai, "XAI_API_KEY", "test-key"), \
+             patch.object(video_xai, "_opener", return_value=opener):
+            with self.assertRaisesRegex(RuntimeError, "HTTP 400"):
+                video_xai.generate(
+                    "grok-imagine-video", "demo", 5, "9:16", "720p",
+                    sleep=lambda _: None,
+                )
+        self.assertEqual(opener.open.call_count, 1)
+
     def test_resume_polls_existing_id_without_post(self):
         opener = Mock()
         opener.open.return_value = _Response({"status": "done", "video": {
@@ -172,6 +209,28 @@ class XaiVideoTests(unittest.TestCase):
              patch.object(video_xai, "_opener", return_value=opener):
             with self.assertRaisesRegex(RuntimeError, "余额不足"):
                 video_xai.generate("grok-imagine-video", "demo", 5, "16:9", "480p")
+
+    def test_create_403_is_safe_fallback_error(self):
+        opener = Mock()
+        opener.open.side_effect = _http_error(
+            403, b'{"error":"monthly spending limit reached"}'
+        )
+        with patch.object(video_xai, "XAI_API_KEY", "test-key"), \
+             patch.object(video_xai, "_opener", return_value=opener):
+            with self.assertRaises(video_xai.XaiCreateUnavailableError):
+                video_xai.generate("grok-imagine-video", "demo", 5, "16:9", "480p")
+
+    def test_poll_403_does_not_become_safe_fallback_error(self):
+        opener = Mock()
+        opener.open.side_effect = [
+            _Response({"request_id": "already-billed"}),
+            _http_error(403, b'{"error":"token expired"}'),
+        ]
+        with patch.object(video_xai, "XAI_API_KEY", "test-key"), \
+             patch.object(video_xai, "_opener", return_value=opener):
+            with self.assertRaises(video_xai.XaiCredentialError) as raised:
+                video_xai.generate("grok-imagine-video", "demo", 5, "16:9", "480p")
+        self.assertNotIsInstance(raised.exception, video_xai.XaiCreateUnavailableError)
 
 
 if __name__ == "__main__":

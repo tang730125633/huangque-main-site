@@ -32,16 +32,19 @@ class ImggenJobCasTests(unittest.TestCase):
             c.execute("""CREATE TABLE jobs(
                 id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, username TEXT, cost INTEGER,
                 status TEXT DEFAULT 'pending', payload TEXT, result TEXT, error TEXT,
-                created_at INTEGER, updated_at INTEGER, deleted INTEGER DEFAULT 0, refunded INTEGER DEFAULT 0)""")
+                created_at INTEGER, updated_at INTEGER, deleted INTEGER DEFAULT 0, refunded INTEGER DEFAULT 0,
+                owner TEXT)""")
             c.commit()
         # 打桩 refund_points（不打 auth 服务），统计真正退点次数
         self.refunds = []
         self._orig_refund = self.m.refund_points
-        self.m.refund_points = lambda username, amount, reason="": (self.refunds.append((username, amount, reason)), (200, {}))[1]
+        self._orig_deduct = self.m.deduct_points
+        self.m.refund_points = lambda username, amount, reason="", transaction_key="": (self.refunds.append((username, amount, reason)), (200, {}))[1]
 
     def tearDown(self):
         self.m.JOB_DB = self._orig_jobdb
         self.m.refund_points = self._orig_refund
+        self.m.deduct_points = self._orig_deduct
         self.tmp.cleanup()
 
     def _insert(self, cost=14, status="running"):
@@ -60,6 +63,17 @@ class ImggenJobCasTests(unittest.TestCase):
     def _reaper_step(self, jid, cost=14):
         if self.m._set_terminal(jid, "error", error="生成超时自动结束，已退点"):
             self.m._refund_once(jid, "u", cost)
+
+    def test_paid_job_creation_uses_common_safe_path(self):
+        from content_domains import jobs_store
+        self.m.deduct_points = lambda *_args, **_kwargs: (200, {"points": 86})
+        jid, points_left = jobs_store.create_paid_job(
+            self.m.jdb, self.m._deduct_paid_job, self.m._refund_via_auth,
+            "image", "u", 14, {"prompt": "x"}, "imggen")
+        self.assertEqual(86, points_left)
+        with closing(self.m.jdb()) as c:
+            row = c.execute("SELECT status,cost,owner FROM jobs WHERE id=?", (jid,)).fetchone()
+        self.assertEqual(("pending", 14, "imggen"), tuple(row))
 
     def test_reaper_wins_then_worker_success_cannot_overwrite(self):
         jid = self._insert(14)
@@ -113,14 +127,14 @@ class ImggenJobCasTests(unittest.TestCase):
         jid = self._insert(14, status="pending")
         self.assertFalse(self.m._set_terminal(jid, "done", result={"x": 1}))
 
-    # --- 回归：退点失败必须回滚 refunded，否则点数永久丢失（imggen 没有直写兜底）---
-    def test_refund_failure_rolls_back_refunded_flag(self):
+    # --- 回归：退点失败保持待确认，恢复后可重试（imggen 没有直写兜底）---
+    def test_refund_failure_stays_pending(self):
         jid = self._insert(14)
         self.assertTrue(self.m._set_terminal(jid, "error", error="boom"))
-        self.m.refund_points = lambda u, a, reason="": (503, {"detail": "auth 重启中"})
+        self.m.refund_points = lambda u, a, reason="", transaction_key="": (503, {"detail": "auth 重启中"})
         self.m._refund_once(jid, "u", 14)
-        self.assertEqual(self._row(jid)["refunded"], 0, "退点失败却留下 refunded=1，点数永久丢失")
-        self.m.refund_points = lambda u, a, reason="": (self.refunds.append((u, a, reason)), (200, {}))[1]
+        self.assertEqual(self._row(jid)["refunded"], 2)
+        self.m.refund_points = lambda u, a, reason="", transaction_key="": (self.refunds.append((u, a, reason)), (200, {}))[1]
         self.m._refund_once(jid, "u", 14)
         self.assertEqual(len(self.refunds), 1)
 

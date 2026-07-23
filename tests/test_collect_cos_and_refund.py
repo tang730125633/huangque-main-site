@@ -319,8 +319,9 @@ class RefundAuditTests(unittest.TestCase):
         self.lg._add_points_direct = self._orig_direct
 
     def _auth(self, status, data=None):
-        def _f(path, u, a, reason=""):
-            self.auth_calls.append((path, u, a, reason))
+        def _f(path, u, a, reason="", transaction_key=""):
+            call = (path, u, a, reason, transaction_key) if transaction_key else (path, u, a, reason)
+            self.auth_calls.append(call)
             return status, (data or {})
         self.lg._auth_points = _f
 
@@ -364,6 +365,14 @@ class RefundAuditTests(unittest.TestCase):
         self._auth(403, {"detail": "forbidden"})
         self.assertTrue(self.lg.add_points("u", 6))
         self.assertEqual(self.direct_calls, [("u", 6)])
+
+    def test_keyed_refund_never_direct_writes_after_lost_response(self):
+        self._auth(500, {"detail": "response lost"})
+        self.assertFalse(self.lg.add_points("u", 6, "job#42", "job-refund:42"))
+        self.assertEqual(self.auth_calls, [
+            ("/api/auth/points/refund", "u", 6, "job#42", "job-refund:42")
+        ])
+        self.assertEqual(self.direct_calls, [])
 
     def test_auth_points_without_token_short_circuits(self):
         token, self.lg.INTERNAL_TOKEN = self.lg.INTERNAL_TOKEN, ""

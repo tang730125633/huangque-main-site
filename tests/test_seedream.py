@@ -214,13 +214,13 @@ class ErrorMappingTests(unittest.TestCase):
     def test_other_errors_keep_code_and_message(self):
         e = self._http(400, {"error": {"code": "InvalidParameter", "message": "size too small"}})
         s = str(image._seedream_error(e))
-        self.assertIn("Seedream 400", s)
+        self.assertIn("黄雀引擎 1 400", s)
         self.assertIn("size too small", s)
 
     def test_unparseable_body_does_not_crash(self):
         import io
         e = urllib.error.HTTPError("u", 500, "err", {}, io.BytesIO(b"<html>"))
-        self.assertIn("Seedream 500", str(image._seedream_error(e)))
+        self.assertIn("黄雀引擎 1 500", str(image._seedream_error(e)))
 
 
 class DispatchTests(unittest.TestCase):
@@ -380,7 +380,8 @@ class CostConsistencyTests(unittest.TestCase):
         """回归守卫：gen_image 封 2 张，cost_of 曾按 4 张扣点。"""
         for provider in ("zelong", "zelong2", "xiaole"):
             body = {"provider": provider, "quality": "hd", "count": 4}
-            self.assertEqual(points.cost_of("image", body), 12 * 2, provider)
+            expected = points.IMAGE_BASE_COST[provider]["hd"] * 2
+            self.assertEqual(points.cost_of("image", body), expected, provider)
 
     def test_gpt_still_allows_four(self):
         """守的是「gpt 数量上限仍为 4」，不是它的单价（单价见 test_image_pricing.py）。

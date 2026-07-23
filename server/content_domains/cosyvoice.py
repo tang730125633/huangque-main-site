@@ -82,11 +82,19 @@ def create_voice(audio_url, prefix=None):
 
 def voice_status(voice_id):
     """返回 (status, 原始条目)。status 为 OK / 训练中 / 不存在('')。"""
-    d = _http("list_voice")
-    for v in (d.get("output") or {}).get("voice_list") or []:
-        if v.get("voice_id") == voice_id:
-            return str(v.get("status") or ""), v
-    return "", None
+    page_index = 0
+    while True:
+        d = _http("list_voice", {"page_index": page_index, "page_size": 100})
+        output = d.get("output") or {}
+        voices = output.get("voice_list") or []
+        for v in voices:
+            if v.get("voice_id") == voice_id:
+                return str(v.get("status") or ""), v
+        page_size = int(output.get("page_size") or len(voices) or 100)
+        total_count = int(output.get("total_count") or len(voices))
+        if not voices or (page_index + 1) * page_size >= total_count:
+            return "", None
+        page_index += 1
 
 
 def delete_voice(voice_id):

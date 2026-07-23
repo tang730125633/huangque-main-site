@@ -110,8 +110,8 @@ SERVICES = [
 
 # 服务器实际在用的全部外部 API（来源:content.env/runninghub.env 变量盘点 2026-07-09）
 KEY_GROUPS = [
-    {"key": "openai", "name": "OpenAI 生图 gpt-image(经泽龙中转)", "env": ["OPENAI_API_KEY"]},
-    {"key": "gemini", "name": "Gemini 生图 nano banana", "env": ["GEMINI_API_KEY"]},
+    {"key": "openai", "name": "黄雀引擎 2 生图（经泽龙中转）", "env": ["OPENAI_API_KEY"]},
+    {"key": "gemini", "name": "纳米香蕉生图", "env": ["GEMINI_API_KEY"]},
     {"key": "zelong", "name": "泽龙生图渠道1(小乐AI)", "env": ["ZELONG_KEY"]},
     {"key": "zelong2", "name": "泽龙生图渠道2(zelong.vip)", "env": ["ZELONG2_KEY"]},
     {"key": "heygen", "name": "HeyGen 数字人视频(直连)", "env": ["HEYGEN_API_KEY"]},
@@ -119,7 +119,7 @@ KEY_GROUPS = [
     {"key": "xiaolevideo", "name": "小乐视频生成", "env": ["XIAOLEVIDEO_API_KEY"]},
     {"key": "runninghub", "name": "RunningHub 换装/动作模仿(线路一)", "env": ["RUNNINGHUB_API_KEY", "RUNNINGHUB_KEY"]},
     {"key": "wavespeed", "name": "WaveSpeed 换装(线路二)", "env": ["WAVESPEED_API_KEY"]},
-    {"key": "doubao", "name": "豆包语音 TTS/声音克隆", "env": ["DOUBAO_APP_ID", "DOUBAO_ACCESS_TOKEN", "DOUBAO_APPID", "DOUBAO_TOKEN"]},
+    {"key": "cosyvoice", "name": "阿里百炼 CosyVoice 配音/声音克隆", "env": ["DASHSCOPE_API_KEY"]},
     {"key": "tikhub", "name": "TikHub 抖音数据", "env": ["TIKHUB_KEY", "TIKHUB_API_KEY"]},
     {"key": "cos", "name": "腾讯云 COS 存储", "env": ["COS_SECRET_ID", "COS_SECRET_KEY", "COS_REGION", "COS_BUCKET"]},
 ]
@@ -223,13 +223,13 @@ ENDPOINT_CATALOG = json.loads(r"""
   {
    "m": "POST",
    "p": "/v1/images/generations",
-   "d": "gpt-image-2 文生图",
+   "d": "黄雀引擎 2 文生图",
    "fee": true
   },
   {
    "m": "POST",
    "p": "/v1/images/edits",
-   "d": "gpt-image-2 图生图/局部修改",
+   "d": "黄雀引擎 2 图生图/局部修改",
    "fee": true
   },
   {
@@ -249,7 +249,7 @@ ENDPOINT_CATALOG = json.loads(r"""
   {
    "m": "POST",
    "p": "/api/v1/generations",
-   "d": "gpt-image-2 文生图/图生图 创建生成任务",
+   "d": "黄雀引擎 2 文生图/图生图 创建生成任务",
    "fee": true
   },
   {
@@ -275,13 +275,13 @@ ENDPOINT_CATALOG = json.loads(r"""
   {
    "m": "POST",
    "p": "/v1/images/generations",
-   "d": "gpt-image-2 文生图",
+   "d": "黄雀引擎 2 文生图",
    "fee": true
   },
   {
    "m": "POST",
    "p": "/v1/images/edits",
-   "d": "gpt-image-2 图生图/局部修改",
+   "d": "黄雀引擎 2 图生图/局部修改",
    "fee": true
   }
  ],
@@ -289,13 +289,13 @@ ENDPOINT_CATALOG = json.loads(r"""
   {
    "m": "POST",
    "p": "/image-pool/v1/images/generations",
-   "d": "gpt-image-2 文生图",
+   "d": "黄雀引擎 2 文生图",
    "fee": true
   },
   {
    "m": "POST",
    "p": "/image-pool/v1/images/edits",
-   "d": "gpt-image-2 图生图/局部修改",
+   "d": "黄雀引擎 2 图生图/局部修改",
    "fee": true
   }
  ],
@@ -303,7 +303,7 @@ ENDPOINT_CATALOG = json.loads(r"""
   {
    "m": "POST",
    "p": "/v1beta/models/gemini-3.1-flash-image:generateContent",
-   "d": "Nano Banana 2 作图",
+   "d": "纳米香蕉 2 作图",
    "fee": true
   }
  ],
@@ -337,7 +337,7 @@ ENDPOINT_CATALOG = json.loads(r"""
   {
    "m": "POST",
    "p": "/videos",
-   "d": "数字人口播视频生成，泽龙中转路径",
+   "d": "数字化 IP 视频生成，泽龙中转路径",
    "fee": true
   },
   {
@@ -379,13 +379,13 @@ ENDPOINT_CATALOG = json.loads(r"""
   {
    "m": "POST",
    "p": "/v1/asset",
-   "d": "口播直连：上传豆包合成的 mp3 音频换 asset_id",
+   "d": "口播直连：上传已合成的 mp3 音频换 asset_id",
    "fee": false
   },
   {
    "m": "POST",
    "p": "/v2/video/generate",
-   "d": "口播直连：talking_photo + 音频 asset 生成数字人口播视",
+   "d": "口播直连：talking_photo + 音频 asset 生成数字化 IP 视频",
    "fee": true
   },
   {
@@ -459,24 +459,18 @@ ENDPOINT_CATALOG = json.loads(r"""
    "fee": false
   }
  ],
- "doubao": [
+ "cosyvoice": [
   {
-   "m": "POST",
-   "p": "/api/v3/tts/unidirectional/sse",
-   "d": "豆包大模型 TTS 单向流式语音合成",
+   "m": "WS",
+   "p": "/api-ws/v1/inference",
+   "d": "CosyVoice 公共及个人音色语音合成",
    "fee": true
   },
   {
    "m": "POST",
-   "p": "/api/v1/mega_tts/audio/upload",
-   "d": "豆包 VIP 声音克隆——上传样音启动音色复刻训练",
+   "p": "/api/v1/services/audio/tts/customization",
+   "d": "CosyVoice 创建、查询和删除复刻音色",
    "fee": true
-  },
-  {
-   "m": "POST",
-   "p": "/api/v1/mega_tts/status",
-   "d": "查询豆包声音克隆训练状态",
-   "fee": false
   }
  ]
 }
@@ -674,7 +668,7 @@ def key_status():
                     found.append({"env": env_name, "source": src["name"]})
                     break
         configured = len(found) == len(item["env"])
-        if item["key"] in {"runninghub", "tikhub", "doubao", "heygen_relay"}:
+        if item["key"] in {"runninghub", "tikhub", "heygen_relay"}:
             configured = bool(found)
         items.append(
             {
@@ -871,8 +865,20 @@ def _key_ping_wavespeed():
     )
 
 
-def _key_ping_doubao():
-    return _reach_ping("https://openspeech.bytedance.com")
+def _key_ping_cosyvoice():
+    key = _env_value(["DASHSCOPE_API_KEY"])
+    if not key:
+        return {"ok": False, "error": "密钥未配置", "mode": "auth"}
+    return _ping_upstream(
+        "POST",
+        "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization",
+        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+        body={
+            "model": "voice-enrollment",
+            "input": {"action": "list_voice", "page_index": 0, "page_size": 1},
+        },
+        proxied=False,
+    )
 
 
 def _key_ping_cos():
@@ -898,7 +904,7 @@ KEY_PINGS = {
     "xiaolevideo": _key_ping_xiaolevideo,
     "runninghub": _key_ping_runninghub,
     "wavespeed": _key_ping_wavespeed,
-    "doubao": _key_ping_doubao,
+    "cosyvoice": _key_ping_cosyvoice,
     "tikhub": _key_ping_tikhub,
     "cos": _key_ping_cos,
 }

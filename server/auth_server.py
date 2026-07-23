@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # 黄雀 AI · 独立认证服务（零依赖，标准库）
 # 端口 127.0.0.1:8095，nginx 把 /api/auth/ 路由过来。与 leadgen(8090) 完全隔离。
-import sqlite3, hashlib, secrets, json, os, sys, time, urllib.parse
+import sqlite3, hashlib, secrets, json, os, sys, time, urllib.parse, threading
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -17,6 +17,11 @@ try:
 except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 启动
     import wechat_virtual_pay as wechat_vpay
 
+try:
+    from . import invites
+except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 启动
+    import invites
+
 DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
 PORT = 8095
 ITER = 200000
@@ -24,20 +29,30 @@ TOKEN_TTL = int(os.environ.get("HQ_AUTH_TOKEN_TTL", str(30 * 24 * 3600)))
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
 AUTH_COOKIE_SECURE = os.environ.get("HQ_AUTH_COOKIE_SECURE", "1").strip().lower() not in ("0", "false", "no")
 INTERNAL_TOKEN = os.environ.get("HQ_INTERNAL_TOKEN", "")
+INVITE_HASH_SECRET = os.environ.get("HQ_INVITE_HASH_SECRET", "")
+INVITE_PUBLIC_BASE_URL = os.environ.get(
+    "HQ_INVITE_PUBLIC_BASE_URL", "https://huangquechuanmei.com"
+).strip().rstrip("/")
 LOGIN_FAIL_WINDOW = int(os.environ.get("HQ_AUTH_FAIL_WINDOW", "300"))
 LOGIN_FAIL_MAX = int(os.environ.get("HQ_AUTH_FAIL_MAX", "5"))
 REGISTER_WINDOW = int(os.environ.get("HQ_AUTH_REGISTER_WINDOW", "300"))
 REGISTER_MAX = int(os.environ.get("HQ_AUTH_REGISTER_MAX", "5"))
-NEW_USER_TRIAL_POINTS = int(os.environ.get("HQ_AUTH_TRIAL_POINTS", "16"))  # 新注册赠送试用点数(约2次标准清晰度作图)
+NEW_USER_TRIAL_POINTS = int(os.environ.get("HQ_AUTH_TRIAL_POINTS", "16"))  # 暂时保留新用户注册赠送 16 点
 # 充值定价：客户端只传金额(元)，点数一律服务端算，绝不信客户端传的点数——
 # 否则用户能花 1 元买百万点。与 recharge.html / 小程序 recharge.js 保持一致。
-# 固定档含赠送(略高于 10 点/元)；自定义严格 10 点/元、限 10~5000 元整。
-RECHARGE_TIERS = {99: 1000, 199: 2000, 499: 5000}   # 金额(元) -> 点数(含赠送)
+# 固定档与自定义均按 10 点/元；自定义限 10~5000 元整。
+RECHARGE_TIERS = {100: 1000, 200: 2000, 500: 5000}  # 金额(元) -> 点数
 RECHARGE_RATE = 10                                   # 自定义:每元 10 点
 RECHARGE_CUSTOM_MIN = 10
 RECHARGE_CUSTOM_MAX = 5000
 JSAPI_TEST_AMOUNT_YUAN = 0.1
 JSAPI_TEST_POINTS = 1
+
+def miniprogram_payments_enabled():
+    """Operational kill switch for all mini-program payment order creation."""
+    return os.environ.get("HQ_MINIPROGRAM_PAYMENTS_ENABLED", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
 
 def recharge_points_for(amount):
     """金额(元) -> 点数。固定档用赠送价；其余按 10 点/元(限 10~5000 元整数)。非法返回 None。
@@ -71,6 +86,7 @@ def jsapi_recharge_quote(amount):
     return int(amount), points
 LOGIN_FAILS = {}
 REGISTER_HITS = {}
+REGISTER_HITS_LOCK = threading.Lock()
 REVOKED_TOKENS = set()
 ACCOUNT_ID_LENGTH = 8
 ACCOUNT_ID_PREFIX = "HQ"
@@ -86,6 +102,39 @@ CANVAS_PRESENCE_MAX_BYTES = 4096
 CANVAS_NODE_TYPES = {"text", "image", "reverse", "gen", "video"}
 CANVAS_OPS_RETAINED_BATCHES = 1000
 CANVAS_PRESENCE_WINDOW_SECONDS = 30
+CANVAS_MAX_BOARDS_PER_USER = int(os.environ.get("HQ_CANVAS_MAX_BOARDS_PER_USER", "50"))
+CANVAS_MAX_MEMBERS_PER_BOARD = int(os.environ.get("HQ_CANVAS_MAX_MEMBERS_PER_BOARD", "20"))
+CANVAS_OPS_RATE_WINDOW_SECONDS = int(os.environ.get("HQ_CANVAS_OPS_RATE_WINDOW_SECONDS", "10"))
+CANVAS_OPS_RATE_MAX_PER_WINDOW = int(os.environ.get("HQ_CANVAS_OPS_RATE_MAX_PER_WINDOW", "10"))
+CANVAS_PRESENCE_MIN_INTERVAL_SECONDS = int(os.environ.get("HQ_CANVAS_PRESENCE_MIN_INTERVAL_SECONDS", "3"))
+CANVAS_SYNC_MAX_WAIT_SECONDS = int(os.environ.get("HQ_CANVAS_SYNC_MAX_WAIT_SECONDS", "30"))
+CANVAS_SYNC_WAIT_MAX_CONCURRENT = int(os.environ.get("HQ_CANVAS_SYNC_WAIT_MAX_CONCURRENT", "100"))
+CANVAS_SYNC_WAIT_MAX_PER_USER = int(os.environ.get("HQ_CANVAS_SYNC_WAIT_MAX_PER_USER", "3"))
+# 长轮询等待名额: 全局信号量限制同时在 hold 的请求数(防线程被耗尽),
+# 每用户计数防单账号吃光全局额度; 超额时降级为立即返回(wait=0 行为)
+_CANVAS_SYNC_WAIT_SEMAPHORE = threading.BoundedSemaphore(value=max(1, CANVAS_SYNC_WAIT_MAX_CONCURRENT))
+_CANVAS_SYNC_WAIT_USERS = {}
+_CANVAS_SYNC_WAIT_USERS_LOCK = threading.Lock()
+
+def _canvas_sync_wait_acquire(username):
+    if not _CANVAS_SYNC_WAIT_SEMAPHORE.acquire(blocking=False):
+        return False
+    with _CANVAS_SYNC_WAIT_USERS_LOCK:
+        count = _CANVAS_SYNC_WAIT_USERS.get(username, 0)
+        if count >= CANVAS_SYNC_WAIT_MAX_PER_USER:
+            _CANVAS_SYNC_WAIT_SEMAPHORE.release()
+            return False
+        _CANVAS_SYNC_WAIT_USERS[username] = count + 1
+    return True
+
+def _canvas_sync_wait_release(username):
+    with _CANVAS_SYNC_WAIT_USERS_LOCK:
+        count = _CANVAS_SYNC_WAIT_USERS.get(username, 0)
+        if count <= 1:
+            _CANVAS_SYNC_WAIT_USERS.pop(username, None)
+        else:
+            _CANVAS_SYNC_WAIT_USERS[username] = count - 1
+    _CANVAS_SYNC_WAIT_SEMAPHORE.release()
 
 def db():
     c = sqlite3.connect(DB, timeout=10)
@@ -126,9 +175,16 @@ def init_db():
         reason TEXT,
         created_at INTEGER NOT NULL
     )""")
+    audit_cols = {r["name"] for r in c.execute("PRAGMA table_info(points_audit)").fetchall()}
+    if "transaction_key" not in audit_cols:
+        c.execute("ALTER TABLE points_audit ADD COLUMN transaction_key TEXT")
     # 任务扣点/退点接入审计后，这张表按任务量增长（原来只有人工加减点，几乎不涨）。
     # 按用户查流水是后台最常用的路径，没索引会随表全扫。
     c.execute("CREATE INDEX IF NOT EXISTS idx_points_audit_user ON points_audit(username, id DESC)")
+    # 退款键直接落在现有资金流水上：Auth 已提交但响应丢失时，调用方用同一个键重试，
+    # 只能命中原流水，不能再次加点。NULL 不参与冲突，老调用方保持原行为。
+    c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_points_audit_transaction_key "
+              "ON points_audit(transaction_key)")
     c.execute("""CREATE TABLE IF NOT EXISTS friendships(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT NOT NULL,
@@ -231,6 +287,7 @@ def init_db():
     if "wx_openid" not in user_cols:
         c.execute("ALTER TABLE users ADD COLUMN wx_openid TEXT")
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_wx_openid ON users(wx_openid) WHERE wx_openid IS NOT NULL")
+    invites.init_schema(c)
     c.commit(); c.close()
 
 def generate_account_id():
@@ -283,6 +340,64 @@ def create_user(username, password, points=0, role='member'):
     ensure_account_id(username, c)
     c.commit(); c.close()
     print("OK user:", username)
+
+def register_account(username, password, display_name=None, invite_code="", invite_source="web_manual",
+                     client_ip="", device_id=""):
+    """在一个事务中创建账号、保存直接邀请关系并签发令牌。"""
+    username = str(username or "").strip()
+    password = str(password or "")
+    display_name = str(display_name or username).strip() or username
+    invite_code = invites.normalize_code(invite_code)
+    device_id = str(device_id or "").strip()
+    if not username or not password:
+        return None, {"status": 400, "code": "missing_credentials", "detail": "请填写账号和密码"}
+    if len(username) > 64:
+        return None, {"status": 400, "code": "username_too_long", "detail": "账号最多 64 位"}
+    if len(display_name) > 32:
+        return None, {"status": 400, "code": "display_name_too_long", "detail": "昵称最多 32 个字符"}
+    if any(ch.isspace() for ch in username):
+        return None, {"status": 400, "code": "invalid_username", "detail": "账号不能包含空白字符"}
+    if len(password) < 6:
+        return None, {"status": 400, "code": "password_too_short", "detail": "密码至少 6 位"}
+    if len(invite_code) > 32:
+        return None, {"status": 400, "code": "invalid_code", "detail": "邀请码无效"}
+    if len(device_id) > 256:
+        return None, {"status": 400, "code": "device_id_too_long", "detail": "设备标识过长"}
+
+    salt = secrets.token_hex(16)
+    password_hash = hash_pw(password, salt)  # 慢哈希必须在取得 SQLite 写锁之前完成
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        account_id = _new_unique_account_id(c)
+        cur = c.execute("""INSERT INTO users(
+            username,pw_hash,pw_salt,display_name,points,role,must_change,account_id
+        ) VALUES(?,?,?,?,?,?,0,?)""", (
+            username, password_hash, salt, display_name, NEW_USER_TRIAL_POINTS, "member", account_id,
+        ))
+        invites.bind_registration(
+            c, cur.lastrowid, invite_code, invite_source,
+            client_ip=client_ip, device_id=device_id, hash_secret=INVITE_HASH_SECRET,
+        )
+        token = issue_token(username, c)
+        c.commit()
+        return {
+            "token": token,
+            "user": public_user(
+                username, display_name, NEW_USER_TRIAL_POINTS, account_id=account_id,
+            ),
+        }, None
+    except invites.InviteError as exc:
+        c.rollback()
+        return None, {"status": exc.http_status, "code": exc.code, "detail": exc.detail}
+    except sqlite3.IntegrityError:
+        c.rollback()
+        return None, {"status": 409, "code": "username_exists", "detail": "账号已存在"}
+    except Exception:
+        c.rollback()
+        return None, {"status": 500, "code": "register_failed", "detail": "注册失败"}
+    finally:
+        c.close()
 
 def public_user(username, display_name=None, points=0, role='member', must_change=False, account_id=None):
     return {
@@ -566,7 +681,8 @@ def list_canvas_members(c, board_id):
 
 def canvas_member_count(c, board_id):
     row = c.execute("SELECT COUNT(*) AS n FROM canvas_members WHERE board_id=?", (board_id,)).fetchone()
-    return int(row["n"] or 0) if row else 0
+    # +1：创建者本人也算成员
+    return (int(row["n"] or 0) if row else 0) + 1
 
 def public_canvas_board(row, role, include_data=False, members_count=None):
     board = {
@@ -598,24 +714,45 @@ def canvas_role_and_board(c, username, board_id):
         return None, row
     return member["role"], row
 
-def list_canvas_boards(username):
+def list_canvas_boards(username, limit=None, offset=0):
     c = db()
     try:
-        items = []
-        owned = c.execute("""SELECT b.*, (SELECT COUNT(*) FROM canvas_members m WHERE m.board_id=b.id) AS members_count
-                             FROM canvas_boards b
-                             WHERE b.owner_username=?""", (username,)).fetchall()
-        shared = c.execute("""SELECT b.*, m.role AS access_role,
-                                     (SELECT COUNT(*) FROM canvas_members cm WHERE cm.board_id=b.id) AS members_count
-                              FROM canvas_members m
-                              JOIN canvas_boards b ON b.id=m.board_id
-                              WHERE m.username=? AND b.owner_username<>?""", (username, username)).fetchall()
-        for row in owned:
-            items.append(public_canvas_board(row, "owner", members_count=row["members_count"]))
-        for row in shared:
-            items.append(public_canvas_board(row, row["access_role"], members_count=row["members_count"]))
-        items.sort(key=lambda item: item["updated_at"], reverse=True)
-        return items, None
+        # 分页下推 SQL：UNION ALL 后在数据库内排序切片，避免全量拉取
+        # 次键 id DESC 保证 updated_at 相同时顺序确定，跨页不重不漏
+        offset = max(int(offset or 0), 0)
+        params = [username, username, username]
+        if limit is not None:
+            limit = max(int(limit), 0)
+            page_clause = " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        elif offset:
+            # SQLite 的 OFFSET 必须搭配 LIMIT；-1 表示不限行数
+            page_clause = " LIMIT -1 OFFSET ?"
+            params.append(offset)
+        else:
+            page_clause = ""
+        rows = c.execute("""SELECT * FROM (
+                                SELECT b.*, 'owner' AS access_role
+                                FROM canvas_boards b
+                                WHERE b.owner_username=?
+                                UNION ALL
+                                SELECT b.*, m.role AS access_role
+                                FROM canvas_members m
+                                JOIN canvas_boards b ON b.id=m.board_id
+                                WHERE m.username=? AND b.owner_username<>?
+                            ) ORDER BY updated_at DESC, id DESC""" + page_clause,
+                         params).fetchall()
+        # 成员数只对当前页逐行算（主键 COUNT），避免全量子查询
+        items = [public_canvas_board(row, row["access_role"],
+                                     members_count=canvas_member_count(c, row["id"]))
+                 for row in rows]
+        total_row = c.execute("""SELECT (SELECT COUNT(*) FROM canvas_boards WHERE owner_username=?)
+                                      + (SELECT COUNT(*) FROM canvas_members m
+                                         JOIN canvas_boards b ON b.id=m.board_id
+                                         WHERE m.username=? AND b.owner_username<>?) AS n""",
+                              (username, username, username)).fetchone()
+        total = int(total_row["n"] or 0) if total_row else 0
+        return items, total, None
     finally:
         c.close()
 
@@ -628,6 +765,10 @@ def create_canvas_board(username, payload):
         return None, err
     c = db()
     try:
+        owned = c.execute("SELECT COUNT(*) AS n FROM canvas_boards WHERE owner_username=?",
+                          (username,)).fetchone()
+        if owned and int(owned["n"] or 0) >= CANVAS_MAX_BOARDS_PER_USER:
+            return None, "too_many_boards"
         now = int(time.time())
         board_id = make_canvas_id(c)
         c.execute("""INSERT INTO canvas_boards(id, owner_username, name, data_json, version, created_at, updated_at)
@@ -689,6 +830,18 @@ def save_canvas_board(username, board_id, payload):
         c.execute("""UPDATE canvas_boards
                      SET name=?, data_json=?, version=version+1, updated_at=?
                      WHERE id=?""", (name, data_json, now, board_id))
+        # 写入检查点批次: 其他协作者 sync 时拿到 board.snapshot 直接覆盖本地,
+        # 不再因版本空洞触发 reset 全量重下
+        snapshot_ops = json.dumps(
+            [{"type": "board.snapshot", "name": name, "data": json.loads(data_json)}],
+            ensure_ascii=False, separators=(",", ":"))
+        c.execute("""INSERT INTO canvas_ops(board_id, version, op_id, client_id, username, ops_json, created_at)
+                     VALUES(?,?,?,?,?,?,?)""",
+                  (board_id, current_version + 1, "save-" + secrets.token_hex(8), "server", username, snapshot_ops, now))
+        c.execute("""DELETE FROM canvas_ops WHERE rowid IN (
+                     SELECT rowid FROM canvas_ops WHERE board_id=?
+                     ORDER BY version DESC LIMIT -1 OFFSET ?
+                   )""", (board_id, CANVAS_OPS_RETAINED_BATCHES))
         fresh = c.execute("SELECT * FROM canvas_boards WHERE id=?", (board_id,)).fetchone()
         board = public_canvas_board(fresh, role, include_data=True, members_count=canvas_member_count(c, board_id))
         board["members"] = list_canvas_members(c, board_id)
@@ -780,6 +933,19 @@ def normalize_canvas_ops_payload(payload):
             if err:
                 return None, err
             normalized.append({"type": kind, "name": name})
+        elif kind == "board.snapshot":
+            # 整体快照(由 /save 写入检查点,也允许客户端通过 /ops 提交):
+            # 收到方直接用 data 覆盖本地画布,避免全量 reset 重下
+            data = op.get("data")
+            if not isinstance(data, dict):
+                return None, "bad_op"
+            packed, err = pack_canvas_data(data)
+            if err:
+                return None, err
+            name, err = normalize_canvas_name(op.get("name"))
+            if err:
+                return None, err
+            normalized.append({"type": kind, "name": name, "data": json.loads(packed)})
         else:
             return None, "bad_op"
     return {"op_id": op_id.strip(), "client_id": client_id.strip(), "base_version": base_version, "ops": normalized}, None
@@ -846,6 +1012,14 @@ def apply_canvas_ops_to_snapshot(data, name, ops):
             edges = [item for item in edges if canvas_edge_key(item) != deleted_key]
         elif kind == "board.rename":
             name = op["name"]
+        elif kind == "board.snapshot":
+            incoming = op["data"] if isinstance(op.get("data"), dict) else {}
+            snapshot = dict(incoming)
+            nodes = [dict(item) for item in snapshot.get("nodes", []) if isinstance(item, dict)]
+            edges = [dict(item) for item in snapshot.get("edges", []) if isinstance(item, dict)]
+            node_index = {item.get("id"): item for item in nodes if isinstance(item.get("id"), str) and item["id"]}
+            edge_index = {canvas_edge_key(item): item for item in edges if canvas_edge_key(item) is not None}
+            name = op["name"]
     snapshot["nodes"] = nodes
     snapshot["edges"] = edges
     return snapshot, name
@@ -863,17 +1037,22 @@ def public_canvas_batch(row):
         "ops": ops,
     }
 
-def canvas_online_count(c, board_id, now=None):
+def canvas_online_users(c, board_id, now=None):
     now = int(time.time()) if now is None else int(now)
     cutoff = now - CANVAS_PRESENCE_WINDOW_SECONDS
     c.execute("DELETE FROM canvas_presence WHERE board_id=? AND last_seen<?", (board_id, cutoff))
-    row = c.execute("""SELECT COUNT(*) AS n
-                       FROM canvas_presence p
-                       JOIN canvas_boards b ON b.id=p.board_id
-                       LEFT JOIN canvas_members m ON m.board_id=p.board_id AND m.username=p.username
-                       WHERE p.board_id=? AND p.last_seen>=?
-                         AND (p.username=b.owner_username OR m.role='editor')""", (board_id, cutoff)).fetchone()
-    return int(row["n"] or 0) if row else 0
+    rows = c.execute("""SELECT DISTINCT p.username, u.display_name
+                        FROM canvas_presence p
+                        JOIN canvas_boards b ON b.id=p.board_id
+                        JOIN users u ON u.username=p.username
+                        LEFT JOIN canvas_members m ON m.board_id=p.board_id AND m.username=p.username
+                        WHERE p.board_id=? AND p.last_seen>=?
+                          AND (p.username=b.owner_username OR m.role IN ('viewer','editor'))
+                        ORDER BY p.username""", (board_id, cutoff)).fetchall()
+    return [{"username": r["username"], "name": r["display_name"] or r["username"]} for r in rows]
+
+def canvas_online_count(c, board_id, now=None):
+    return len(canvas_online_users(c, board_id, now))
 
 def apply_canvas_ops(username, board_id, payload):
     normalized, err = normalize_canvas_ops_payload(payload)
@@ -907,6 +1086,19 @@ def apply_canvas_ops(username, board_id, payload):
             }
             c.rollback()
             return result, None
+        current_version = int(row["version"] or 1)
+        if normalized["base_version"] != current_version:
+            # 客户端基于过期版本提交：拒绝并告知当前版本，让客户端先 sync 再重试，
+            # 避免后到请求静默覆盖其他协作者已提交的改动。
+            c.rollback()
+            return {"version": current_version}, "conflict"
+        rate_since = int(time.time()) - CANVAS_OPS_RATE_WINDOW_SECONDS
+        recent = c.execute("""SELECT COUNT(*) AS n FROM canvas_ops
+                              WHERE board_id=? AND username=? AND created_at>=?""",
+                           (board_id, username, rate_since)).fetchone()
+        if recent and int(recent["n"] or 0) >= CANVAS_OPS_RATE_MAX_PER_WINDOW:
+            c.rollback()
+            return {"retry_after": CANVAS_OPS_RATE_WINDOW_SECONDS}, "rate_limited"
         try:
             data = json.loads(row["data_json"] or "{}")
         except Exception:
@@ -945,6 +1137,16 @@ def apply_canvas_ops(username, board_id, payload):
     finally:
         c.close()
 
+def canvas_board_version_probe(board_id):
+    # 纯只读版本探测: 普通 SELECT(延迟事务), 不获取 SQLite 写锁,
+    # 供长轮询等待阶段轮询; 画板被删时返回 None
+    c = db()
+    try:
+        row = c.execute("SELECT version FROM canvas_boards WHERE id=?", (board_id,)).fetchone()
+        return int(row["version"]) if row else None
+    finally:
+        c.close()
+
 def sync_canvas_ops(username, board_id, since_version):
     c = db()
     try:
@@ -959,7 +1161,7 @@ def sync_canvas_ops(username, board_id, since_version):
         reset = since_version > current_version or (
             oldest_version is not None and since_version < oldest_version - 1
         )
-        online_count = canvas_online_count(c, board_id)
+        online_users = canvas_online_users(c, board_id)
         batches = []
         if not reset:
             cursor = c.execute("SELECT * FROM canvas_ops WHERE board_id=? AND version>? ORDER BY version ASC LIMIT ?",
@@ -989,7 +1191,8 @@ def sync_canvas_ops(username, board_id, since_version):
             if expected_version != current_version + 1:
                 reset = True
                 batches = []
-        result = {"version": current_version, "role": role, "batches": batches, "reset": reset, "online_count": online_count}
+        result = {"version": current_version, "role": role, "batches": batches, "reset": reset,
+                  "online_count": len(online_users), "online_users": online_users}
         if reset:
             board = public_canvas_board(row, role, include_data=True, members_count=canvas_member_count(c, board_id))
             board["members"] = list_canvas_members(c, board_id)
@@ -1014,11 +1217,23 @@ def record_canvas_presence(username, board_id, payload):
             c.rollback()
             return None, "not_found"
         now = int(time.time())
+        prev = c.execute("SELECT username, last_seen FROM canvas_presence WHERE board_id=? AND client_id=?",
+                         (board_id, client_id.strip())).fetchone()
+        # 仅"同用户+同端+间隔过近"才去重; 其他成员复用同 client_id 时走 upsert,
+        # 把该行 username/last_seen 更新为当前心跳用户, 避免在线身份失真
+        if (prev and prev["username"] == username
+                and now - int(prev["last_seen"] or 0) < CANVAS_PRESENCE_MIN_INTERVAL_SECONDS):
+            # 周期心跳去重: 间隔过近不写库, 直接回当前在线数
+            users = canvas_online_users(c, board_id, now)
+            result = {"online_count": len(users), "online_users": users, "deduped": True}
+            c.commit()
+            return result, None
         c.execute("""INSERT INTO canvas_presence(board_id, client_id, username, last_seen)
                      VALUES(?,?,?,?) ON CONFLICT(board_id, client_id) DO UPDATE SET
                        username=excluded.username, last_seen=excluded.last_seen""",
                   (board_id, client_id.strip(), username, now))
-        result = {"online_count": canvas_online_count(c, board_id, now)}
+        users = canvas_online_users(c, board_id, now)
+        result = {"online_count": len(users), "online_users": users}
         c.commit()
         return result, None
     except Exception:
@@ -1055,6 +1270,14 @@ def add_canvas_member(username, board_id, payload):
         if not are_friends(c, username, target_username):
             c.rollback()
             return None, "not_friend"
+        existing_member = c.execute("SELECT 1 FROM canvas_members WHERE board_id=? AND username=?",
+                                    (board_id, target_username)).fetchone()
+        if not existing_member:
+            cnt = c.execute("SELECT COUNT(*) AS n FROM canvas_members WHERE board_id=?",
+                            (board_id,)).fetchone()
+            if cnt and int(cnt["n"] or 0) >= CANVAS_MAX_MEMBERS_PER_BOARD:
+                c.rollback()
+                return None, "too_many_members"
         now = int(time.time())
         c.execute("""INSERT INTO canvas_members(board_id, username, role, invited_by, created_at)
                      VALUES(?,?,?,?,?)
@@ -1085,6 +1308,27 @@ def remove_canvas_member(username, board_id, member_username):
         members = list_canvas_members(c, board_id)
         c.commit()
         return members, None
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+def leave_canvas_board(username, board_id):
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        access, board = canvas_role_and_board(c, username, board_id)
+        if not access:
+            c.rollback()
+            return None, "not_found"
+        if access == "owner":
+            c.rollback()
+            return None, "owner_cannot_leave"
+        c.execute("DELETE FROM canvas_members WHERE board_id=? AND username=?", (board_id, username))
+        c.execute("DELETE FROM canvas_presence WHERE board_id=? AND username=?", (board_id, username))
+        c.commit()
+        return {"ok": True}, None
     except Exception:
         c.rollback()
         raise
@@ -1124,15 +1368,15 @@ def get_points_row(username, c=None):
 SYSTEM_ACTOR = "system"   # points_audit.who_admin：非管理员操作（任务扣点/退点）用它，与人工加减点区分
 
 
-def _write_audit(c, who_admin, username, delta, before, after, reason):
+def _write_audit(c, who_admin, username, delta, before, after, reason, transaction_key=None):
     """在【同一个事务里】写审计流水。分开写会出现「扣了点但审计没记」或反过来。"""
     c.execute(
-        "INSERT INTO points_audit(who_admin, username, delta, before_points, after_points, reason, created_at) "
-        "VALUES(?,?,?,?,?,?,?)",
-        (who_admin, username, delta, before, after, (reason or "")[:120], int(time.time())))
+        "INSERT INTO points_audit(who_admin, username, delta, before_points, after_points, reason, created_at, transaction_key) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (who_admin, username, delta, before, after, (reason or "")[:120], int(time.time()), transaction_key))
 
 
-def deduct_points(username, amount, reason=""):
+def deduct_points(username, amount, reason="", transaction_key=""):
     """任务提交时预扣点。reason 形如 'job:collect#1354'，由调用方传入。
 
     在补上审计之前，points_audit 只记录管理员加减点和充值审批 —— 任务扣点/退点完全隐形，
@@ -1142,9 +1386,24 @@ def deduct_points(username, amount, reason=""):
     amount = int(amount or 0)
     if amount < 0:
         raise ValueError("amount must be >= 0")
+    transaction_key = str(transaction_key or "").strip()
+    if len(transaction_key) > 160:
+        raise ValueError("transaction_key too long")
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
+        if transaction_key:
+            prior = c.execute(
+                "SELECT username,delta FROM points_audit WHERE transaction_key=?",
+                (transaction_key,),
+            ).fetchone()
+            if prior:
+                if prior["username"] != username or int(prior["delta"] or 0) != -amount:
+                    c.rollback()
+                    return None, "transaction_conflict"
+                row = get_points_row(username, c)
+                c.rollback()
+                return (public_points(row), None) if row else (None, "not_found")
         before_row = get_points_row(username, c)
         if not before_row:
             c.rollback()
@@ -1163,7 +1422,8 @@ def deduct_points(username, amount, reason=""):
             c.rollback()
             return None, "not_found"
         if amount:
-            _write_audit(c, SYSTEM_ACTOR, username, -amount, before, int(row["points"] or 0), reason)
+            _write_audit(c, SYSTEM_ACTOR, username, -amount, before, int(row["points"] or 0), reason,
+                         transaction_key or None)
         c.commit()
         return public_points(row), None
     except Exception:
@@ -1172,14 +1432,29 @@ def deduct_points(username, amount, reason=""):
     finally:
         c.close()
 
-def refund_points(username, amount, reason=""):
-    """任务失败/超时后退点。reason 同 deduct_points。"""
+def refund_points(username, amount, reason="", transaction_key=""):
+    """任务失败/超时后退点；稳定 transaction_key 让重试只入账一次。"""
     amount = int(amount or 0)
     if amount < 0:
         raise ValueError("amount must be >= 0")
+    transaction_key = str(transaction_key or "").strip()
+    if len(transaction_key) > 160:
+        raise ValueError("transaction_key too long")
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
+        if transaction_key:
+            prior = c.execute(
+                "SELECT username,delta FROM points_audit WHERE transaction_key=?",
+                (transaction_key,),
+            ).fetchone()
+            if prior:
+                if prior["username"] != username or int(prior["delta"] or 0) != amount:
+                    c.rollback()
+                    return None, "transaction_conflict"
+                row = get_points_row(username, c)
+                c.rollback()
+                return (public_points(row), None) if row else (None, "not_found")
         before_row = get_points_row(username, c)
         if not before_row:
             c.rollback()
@@ -1195,7 +1470,8 @@ def refund_points(username, amount, reason=""):
             c.rollback()
             return None, "not_found"
         if amount:
-            _write_audit(c, SYSTEM_ACTOR, username, amount, before, int(row["points"] or 0), reason)
+            _write_audit(c, SYSTEM_ACTOR, username, amount, before, int(row["points"] or 0), reason,
+                         transaction_key or None)
         c.commit()
         return public_points(row), None
     except Exception:
@@ -1280,14 +1556,15 @@ def adjust_points_admin(who_admin, username, delta, reason=""):
     finally:
         c.close()
 
-def list_points_audit(username="", limit=100, actor=""):
+def list_points_audit(username="", limit=100, actor="", direction=""):
     """actor='admin' 只看人工加减点/充值审批，'system' 只看任务扣退点，''(默认) 全看。
 
     任务流水接入后，条数远多于人工操作，不过滤的话后台第一页会被任务刷屏。
     """
     limit = max(1, min(300, int(limit or 100)))
     username = (username or "").strip()
-    sql = """SELECT id, who_admin, username, delta, before_points, after_points, reason, created_at
+    direction = (direction or "").strip()
+    sql = """SELECT id, who_admin, username, delta, before_points, after_points, reason, created_at, transaction_key
              FROM points_audit"""
     where, args = [], []
     if username:
@@ -1299,14 +1576,23 @@ def list_points_audit(username="", limit=100, actor=""):
     elif actor == "system":
         where.append("who_admin=?")
         args.append(SYSTEM_ACTOR)
-    if where:
-        sql += " WHERE " + " AND ".join(where)
+    if direction == "debit":
+        where.append("delta<0")
+    elif direction == "credit":
+        where.append("delta>0")
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    sql += where_sql
     sql += " ORDER BY id DESC LIMIT ?"
-    args.append(limit)
+    summary_sql = """SELECT COUNT(*) AS total,
+                            COALESCE(SUM(CASE WHEN delta>0 THEN delta ELSE 0 END), 0) AS credits,
+                            COALESCE(SUM(CASE WHEN delta<0 THEN -delta ELSE 0 END), 0) AS debits,
+                            COALESCE(SUM(delta), 0) AS net
+                     FROM points_audit""" + where_sql
     c = db()
     try:
-        rows = c.execute(sql, args).fetchall()
-        return {"items": [dict(r) for r in rows]}
+        summary = dict(c.execute(summary_sql, args).fetchone())
+        rows = c.execute(sql, args + [limit]).fetchall()
+        return {"items": [dict(r) for r in rows], "total": summary["total"], "summary": summary}
     finally:
         c.close()
 
@@ -1500,6 +1786,8 @@ def public_virtual_pay_custom():
 
 def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=None):
     package_id = (package_id or "").strip()
+    if not miniprogram_payments_enabled():
+        return None, "payment_disabled"
     if not wechat_vpay.is_configured():
         return None, "not_configured"
     product = wechat_vpay.product_by_id(package_id)
@@ -1901,16 +2189,16 @@ class H(BaseHTTPRequestHandler):
         LOGIN_FAILS[key].append(now)
     def _clear_login_failures(self, username):
         LOGIN_FAILS.pop(self._rate_key(username), None)
-    def _register_limited(self):
+    def _consume_register_attempt(self):
         now = time.time()
         key = self._client_ip()
-        REGISTER_HITS[key] = [t for t in REGISTER_HITS.get(key, []) if now - t < REGISTER_WINDOW]
-        return len(REGISTER_HITS[key]) >= REGISTER_MAX
-    def _record_register_hit(self):
-        now = time.time()
-        key = self._client_ip()
-        REGISTER_HITS[key] = [t for t in REGISTER_HITS.get(key, []) if now - t < REGISTER_WINDOW]
-        REGISTER_HITS[key].append(now)
+        with REGISTER_HITS_LOCK:
+            hits = [t for t in REGISTER_HITS.get(key, []) if now - t < REGISTER_WINDOW]
+            REGISTER_HITS[key] = hits
+            if len(hits) >= REGISTER_MAX:
+                return False
+            hits.append(now)
+            return True
     def _user(self):
         tok = request_token(self.headers)
         if not tok:
@@ -2026,6 +2314,11 @@ class H(BaseHTTPRequestHandler):
             row = self._user()
             if not row:
                 return self._send(401, {"detail": "未登录"})
+            if not miniprogram_payments_enabled():
+                return self._send(503, {
+                    "detail": "小程序支付功能暂时关闭",
+                    "code": "payment_disabled",
+                })
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
@@ -2035,6 +2328,11 @@ class H(BaseHTTPRequestHandler):
                 )
                 if err == "not_configured":
                     return self._send(503, {"detail": "虚拟支付正在配置中，请稍后再试"})
+                if err == "payment_disabled":
+                    return self._send(503, {
+                        "detail": "小程序支付功能暂时关闭",
+                        "code": "payment_disabled",
+                    })
                 if err == "package_not_found":
                     return self._send(404, {"detail": "充值套餐不存在"})
                 if err == "invalid_custom_amount":
@@ -2102,7 +2400,7 @@ class H(BaseHTTPRequestHandler):
             amount = d.get("amount")
             points = recharge_points_for(amount)   # 点数服务端算,绝不信客户端(与 wxpay 路由一致)
             if points is None:
-                return self._send(400, {"detail": "无效的充值金额(固定档 99/199/499，或自定义 10~5000 元整数)"})
+                return self._send(400, {"detail": "无效的充值金额(固定档 100/200/500，或自定义 10~5000 元整数)"})
             amount = int(amount)
             try:
                 order, err = create_recharge_order(row["username"], amount, points, d.get("note") or "")
@@ -2123,7 +2421,7 @@ class H(BaseHTTPRequestHandler):
             amount = d.get("amount")                 # 客户端只传金额(元)
             points = recharge_points_for(amount)     # 点数服务端算,不信客户端
             if points is None:
-                return self._send(400, {"detail": "无效的充值金额(固定档 99/199/499，或自定义 10~5000 元整数)"})
+                return self._send(400, {"detail": "无效的充值金额(固定档 100/200/500，或自定义 10~5000 元整数)"})
             amount = int(amount)
             try:
                 order, err = create_recharge_order(row["username"], amount, points, "微信扫码充值")
@@ -2140,6 +2438,11 @@ class H(BaseHTTPRequestHandler):
             row = self._user()
             if not row:
                 return self._send(401, {"detail": "未登录"})
+            if not miniprogram_payments_enabled():
+                return self._send(503, {
+                    "detail": "小程序支付功能暂时关闭",
+                    "code": "payment_disabled",
+                })
             if wxpay is None or not wxpay.configured():
                 return self._send(503, {"detail": "微信支付未配置"})
             d = self._body()
@@ -2150,7 +2453,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": "缺少 js_code"})
             quote = jsapi_recharge_quote(d.get("amount"))
             if quote is None:
-                return self._send(400, {"detail": "无效的充值金额(固定档 99/199/499，或自定义 10~5000 元整数)"})
+                return self._send(400, {"detail": "无效的充值金额(固定档 100/200/500，或自定义 10~5000 元整数)"})
             amount, points = quote
             try:
                 openid = wxpay.jscode2session(js_code)
@@ -2215,56 +2518,45 @@ class H(BaseHTTPRequestHandler):
             if amount < 0:
                 return self._send(400, {"detail": "amount must be >= 0"})
             reason = str(d.get("reason") or "")   # 形如 job:collect#1354；老调用方不传就留空
+            transaction_key = str(d.get("transaction_key") or "").strip()
+            if len(transaction_key) > 160:
+                return self._send(400, {"detail": "transaction_key too long"})
             try:
                 if p.endswith("/deduct"):
-                    points, err = deduct_points(username, amount, reason)
+                    points, err = deduct_points(username, amount, reason, transaction_key)
+                    if err == "transaction_conflict":
+                        return self._send(409, {"detail": "transaction_key conflict"})
                     if err == "insufficient":
                         return self._send(402, {"detail": "点数不足", "need": amount})
                 else:
-                    points, err = refund_points(username, amount, reason)
+                    points, err = refund_points(username, amount, reason, transaction_key)
+                    if err == "transaction_conflict":
+                        return self._send(409, {"detail": "transaction_key 已用于另一笔退款"})
                 if err == "not_found":
                     return self._send(404, {"detail": "user not found"})
                 return self._send(200, {"ok": True, "points": points["points"], "user": points})
             except Exception:
                 return self._send(500, {"detail": "points update failed"})
         if p == "/api/auth/register":
+            if not self._consume_register_attempt():
+                return self._send(429, {"detail": "注册次数过多，请稍后再试"})
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
             u = (d.get("username") or "").strip()
             pw = d.get("password") or ""
             name = (d.get("display_name") or u).strip() or u
-            if self._register_limited():
-                return self._send(429, {"detail": "注册次数过多，请稍后再试"})
-            if not u or not pw:
-                return self._send(400, {"detail": "请填写账号和密码"})
-            if len(u) > 64:
-                return self._send(400, {"detail": "账号最多 64 位"})
-            if len(name) > 32:
-                return self._send(400, {"detail": "昵称最多 32 个字符"})
-            if any(ch.isspace() for ch in u):
-                return self._send(400, {"detail": "账号不能包含空白字符"})
-            if len(pw) < 6:
-                return self._send(400, {"detail": "密码至少 6 位"})
-            salt = secrets.token_hex(16)
-            c = db()
-            try:
-                account_id = _new_unique_account_id(c)
-                c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change,account_id)
-                             VALUES(?,?,?,?,?,?,0,?)""",
-                          (u, hash_pw(pw, salt), salt, name, NEW_USER_TRIAL_POINTS, "member", account_id))
-                tok = issue_token(u, c)
-                c.commit()
-                self._record_register_hit()
-            except sqlite3.IntegrityError:
-                c.rollback()
-                return self._send(409, {"detail": "账号已存在"})
-            except Exception:
-                c.rollback()
-                return self._send(500, {"detail": "注册失败"})
-            finally:
-                c.close()
-            return self._send(200, {"user": public_user(u, name, NEW_USER_TRIAL_POINTS, account_id=account_id)}, {"Set-Cookie": auth_cookie_header(tok)})
+            source = "web_link" if str(d.get("invite_source") or "") == "web_link" else "web_manual"
+            result, err = register_account(
+                u, pw, name, invite_code=d.get("invite_code"), invite_source=source,
+                client_ip=self._client_ip(), device_id=d.get("device_id"),
+            )
+            if err:
+                return self._send(err["status"], {"detail": err["detail"], "code": err["code"]})
+            return self._send(
+                200, {"user": result["user"]},
+                {"Set-Cookie": auth_cookie_header(result["token"])},
+            )
         if p == "/api/auth/login":
             d = self._body()
             if self._bad_json():
@@ -2306,43 +2598,21 @@ class H(BaseHTTPRequestHandler):
                 "role": row["role"], "must_change": bool(row["must_change"]),
                 "account_id": account_id}})
         if p == "/api/auth/miniprogram-register":
+            if not self._consume_register_attempt():
+                return self._send(429, {"detail": "注册次数过多，请稍后再试"})
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
             u = (d.get("username") or "").strip()
             pw = d.get("password") or ""
             name = (d.get("display_name") or u).strip() or u
-            if self._register_limited():
-                return self._send(429, {"detail": "注册次数过多，请稍后再试"})
-            if not u or not pw:
-                return self._send(400, {"detail": "请填写账号和密码"})
-            if len(u) > 64:
-                return self._send(400, {"detail": "账号最多 64 位"})
-            if len(name) > 32:
-                return self._send(400, {"detail": "昵称最多 32 个字符"})
-            if any(ch.isspace() for ch in u):
-                return self._send(400, {"detail": "账号不能包含空白字符"})
-            if len(pw) < 6:
-                return self._send(400, {"detail": "密码至少 6 位"})
-            salt = secrets.token_hex(16)
-            c = db()
-            try:
-                account_id = _new_unique_account_id(c)
-                c.execute("""INSERT INTO users(username,pw_hash,pw_salt,display_name,points,role,must_change,account_id)
-                             VALUES(?,?,?,?,?,?,0,?)""",
-                          (u, hash_pw(pw, salt), salt, name, NEW_USER_TRIAL_POINTS, "member", account_id))
-                tok = issue_token(u, c)
-                c.commit()
-                self._record_register_hit()
-            except sqlite3.IntegrityError:
-                c.rollback()
-                return self._send(409, {"detail": "账号已存在"})
-            except Exception:
-                c.rollback()
-                return self._send(500, {"detail": "注册失败"})
-            finally:
-                c.close()
-            return self._send(200, {"token": tok, "user": public_user(u, name, NEW_USER_TRIAL_POINTS, account_id=account_id)})
+            result, err = register_account(
+                u, pw, name, invite_code=d.get("invite_code"), invite_source="miniprogram",
+                client_ip=self._client_ip(), device_id=d.get("device_id"),
+            )
+            if err:
+                return self._send(err["status"], {"detail": err["detail"], "code": err["code"]})
+            return self._send(200, {"token": result["token"], "user": result["user"]})
         if p == "/api/auth/logout":
             clear_cookie = {"Set-Cookie": clear_auth_cookie_header()}
             tok = request_token(self.headers)
@@ -2433,6 +2703,8 @@ class H(BaseHTTPRequestHandler):
                     return self._send(400, {"detail": "画布数据格式不正确"})
                 if err == "too_large":
                     return self._send(413, {"detail": "画布数据过大"})
+                if err == "too_many_boards":
+                    return self._send(429, {"detail": "画布数量已达上限，请先删除不再需要的画布"})
                 if err:
                     return self._send(400, {"detail": err})
                 return self._send(200, {"ok": True, "board": board})
@@ -2484,6 +2756,12 @@ class H(BaseHTTPRequestHandler):
                     return self._send(404, {"detail": "协作画布不存在"})
                 if err == "forbidden":
                     return self._send(403, {"detail": "没有编辑权限"})
+                if err == "conflict":
+                    return self._send(409, {"detail": "画布已被其他成员更新，请先同步",
+                                            "version": (result or {}).get("version")})
+                if err == "rate_limited":
+                    return self._send(429, {"detail": "操作太频繁，请稍候",
+                                            "retry_after": (result or {}).get("retry_after")})
                 if err in {"too_many_ops", "too_large"}:
                     return self._send(413, {"detail": "画布操作数据过大"})
                 if err:
@@ -2534,11 +2812,29 @@ class H(BaseHTTPRequestHandler):
                     return self._send(400, {"detail": "不能邀请自己"})
                 if err == "not_friend":
                     return self._send(403, {"detail": "只能邀请已添加的好友"})
+                if err == "too_many_members":
+                    return self._send(429, {"detail": "画布成员数量已达上限"})
                 if err:
                     return self._send(400, {"detail": err})
                 return self._send(200, {"ok": True, "members": members})
             except Exception:
                 return self._send(500, {"detail": "canvas member update failed"})
+        if p.startswith(canvas_prefix) and p.endswith("/leave"):
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            board_id = urllib.parse.unquote(p[len(canvas_prefix):-len("/leave")])
+            try:
+                result, err = leave_canvas_board(row["username"], board_id)
+                if err == "not_found":
+                    return self._send(404, {"detail": "协作画布不存在或你不是成员"})
+                if err == "owner_cannot_leave":
+                    return self._send(400, {"detail": "创建者不能退出画布，可以选择删除画布"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, result)
+            except Exception:
+                return self._send(500, {"detail": "canvas leave failed"})
         if p in {"/api/auth/friends/request", "/api/auth/friends/add"}:
             row = self._user()
             if not row:
@@ -2623,6 +2919,27 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path.split("?")[0]
+        if p == "/api/auth/invite/code":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            c = db()
+            try:
+                c.execute("BEGIN IMMEDIATE")
+                code_row = invites.ensure_user_code(c, row["id"])
+                c.commit()
+                return self._send(200, {
+                    "code": code_row["code"],
+                    "invite_link": INVITE_PUBLIC_BASE_URL + "/login.html?invite=" + code_row["code"],
+                })
+            except invites.InviteError as exc:
+                c.rollback()
+                return self._send(exc.http_status, {"detail": exc.detail, "code": exc.code})
+            except Exception:
+                c.rollback()
+                return self._send(500, {"detail": "邀请码获取失败"})
+            finally:
+                c.close()
         if p == "/api/auth/wechat/message-push":
             try:
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -2659,6 +2976,7 @@ class H(BaseHTTPRequestHandler):
                     username=(q.get("username") or [""])[0],
                     limit=(q.get("limit") or ["100"])[0],
                     actor=(q.get("actor") or [""])[0],
+                    direction=(q.get("direction") or [""])[0],
                 )
                 return self._send(200, {"ok": True, **data})
             except Exception:
@@ -2698,12 +3016,14 @@ class H(BaseHTTPRequestHandler):
             if not row:
                 return self._send(401, {"detail": "未登录"})
             try:
+                enabled = miniprogram_payments_enabled()
                 return self._send(200, {
                     "ok": True,
-                    "configured": wechat_vpay.is_configured(),
+                    "enabled": enabled,
+                    "configured": enabled and wechat_vpay.is_configured(),
                     "environment": "production" if wechat_vpay.pay_env() == 0 else "sandbox",
-                    "items": public_virtual_pay_packages(),
-                    "custom": public_virtual_pay_custom(),
+                    "items": public_virtual_pay_packages() if enabled else [],
+                    "custom": public_virtual_pay_custom() if enabled else None,
                 })
             except Exception:
                 return self._send(500, {"detail": "充值套餐读取失败"})
@@ -2747,11 +3067,22 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/auth/canvas/boards":
             row = self._user()
             if not row: return self._send(401, {"detail": "未登录"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             try:
-                boards, err = list_canvas_boards(row["username"])
+                limit_raw = (q.get("limit") or [""])[0]
+                limit = None if limit_raw == "" else int(limit_raw)
+                offset = int((q.get("offset") or ["0"])[0])
+            except Exception:
+                return self._send(400, {"detail": "bad_pagination"})
+            if offset < 0 or (limit is not None and limit < 1):
+                return self._send(400, {"detail": "bad_pagination"})
+            if limit is not None:
+                limit = min(limit, 100)
+            try:
+                boards, total, err = list_canvas_boards(row["username"], limit=limit, offset=offset)
                 if err:
                     return self._send(400, {"detail": err})
-                return self._send(200, {"ok": True, "boards": boards})
+                return self._send(200, {"ok": True, "boards": boards, "total": total})
             except Exception:
                 return self._send(500, {"detail": "canvas list failed"})
         canvas_prefix = "/api/auth/canvas/boards/"
@@ -2768,12 +3099,47 @@ class H(BaseHTTPRequestHandler):
             if since_version < 1:
                 return self._send(400, {"detail": "bad_since"})
             try:
+                wait_seconds = int((query.get("wait") or ["0"])[0])
+            except Exception:
+                return self._send(400, {"detail": "bad_wait"})
+            if wait_seconds < 0:
+                return self._send(400, {"detail": "bad_wait"})
+            wait_seconds = min(wait_seconds, CANVAS_SYNC_MAX_WAIT_SECONDS)
+            try:
+                # 首次完整同步(含成员校验)。有变化或 wait=0 → 直接返回
                 result, err = sync_canvas_ops(row["username"], board_id, since_version)
                 if err == "not_found":
                     return self._send(404, {"detail": "协作画布不存在"})
                 if err:
                     return self._send(400, {"detail": err})
-                return self._send(200, {"ok": True, **result})
+                changed = (result.get("reset") or result.get("batches")
+                           or int(result.get("version") or 0) != since_version)
+                if changed or wait_seconds <= 0:
+                    return self._send(200, {"ok": True, **result})
+                if not _canvas_sync_wait_acquire(row["username"]):
+                    # 等待名额已满: 降级为立即返回当前状态, 客户端可继续普通轮询
+                    return self._send(200, {"ok": True, **result, "wait_degraded": True})
+                try:
+                    # 等待阶段只做只读版本探测(不拿写锁); 检测到变化或超时才做完整同步
+                    deadline = time.time() + wait_seconds
+                    while time.time() < deadline:
+                        time.sleep(0.5)
+                        probed = canvas_board_version_probe(board_id)
+                        if probed is None or probed != since_version:
+                            result, err = sync_canvas_ops(row["username"], board_id, since_version)
+                            if err == "not_found":
+                                return self._send(404, {"detail": "协作画布不存在"})
+                            if err:
+                                return self._send(400, {"detail": err})
+                            return self._send(200, {"ok": True, **result})
+                    result, err = sync_canvas_ops(row["username"], board_id, since_version)
+                    if err == "not_found":
+                        return self._send(404, {"detail": "协作画布不存在"})
+                    if err:
+                        return self._send(400, {"detail": err})
+                    return self._send(200, {"ok": True, **result})
+                finally:
+                    _canvas_sync_wait_release(row["username"])
             except Exception:
                 return self._send(500, {"detail": "canvas sync failed"})
         if p.startswith(canvas_prefix):

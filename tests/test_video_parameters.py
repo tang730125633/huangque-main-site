@@ -117,14 +117,11 @@ class VideoParameterUiTests(unittest.TestCase):
         self.assertNotIn("seconds:6", VIDEO_HTML)
 
     def test_xiaole_and_tryon_show_cost_and_match_backend(self):
-        """果肉/豆姐/欧米(30 点/秒) 与 试衣(25/40) 都要在前端显示预估价，且与后端实扣对上。"""
-        import re
+        """果肉分档价格与试衣价格都要在前端显示，且与后端实扣对上。"""
         from content_domains import points
-        # 前端 XIAOLE_RATE 必须与后端 xiaole_video 单价一致
-        m = re.search(r"var XIAOLE_RATE=(\d+)", VIDEO_HTML)
-        self.assertTrue(m, "video.html 没有 XIAOLE_RATE")
-        self.assertEqual(int(m.group(1)), points.cost_of("xiaole_video", {"duration": 1}),
-                         "前端果肉单价与后端 30 点/秒不一致")
+        self.assertIn("'grok-imagine-video':{'480p':10,'720p':12}", VIDEO_HTML)
+        self.assertIn("'grok-imagine-video-1.5':{'480p':15,'720p':25,'1080p':44}", VIDEO_HTML)
+        self.assertEqual(points.cost_of("xiaole_video", {"duration": 1, "resolution": "480p"}), 10)
         # 四个成本提示元素都在
         for eid in ("grokCostNote", "microCostNote", "omniCostNote", "tryonCostNote"):
             self.assertIn('id="%s"' % eid, VIDEO_HTML, eid)

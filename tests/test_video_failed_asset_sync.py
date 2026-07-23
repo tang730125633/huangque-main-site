@@ -36,12 +36,13 @@ class FailedAssetSyncTests(unittest.TestCase):
         self.assertIn("update_video_asset_phase(job_id, \"failed\", status=\"failed\"", block)
         self.assertNotIn("video_domain.record_video_asset", block)   # 实际调用不能是 record_video_asset
         # 只对视频类 kind 生效
-        self.assertIn('kind not in {"video", "tryon", "xiaole_video", "cinematic"}', block)
+        self.assertIn('kind not in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}', block)
 
     def test_run_job_error_branch_syncs_via_helper(self):
         """失败分支不再 record_video_asset(dict(payload))——那正是 mode=None 抛 NOT NULL 的地方。"""
-        err = CORE[CORE.index("claimed = _set_terminal(job_id, \"error\""):]
-        err = err[:err.index("_refund_once(job_id")]
+        run_job = CORE[CORE.index("def run_job("):CORE.index("# ============ 超时清道夫")]
+        err = run_job[run_job.index("claimed = _fail_job_and_schedule_refund("):]
+        err = err[:err.index("finally:")]
         self.assertIn("_mark_video_asset_failed(job_id, kind, e)", err)
         self.assertNotIn("record_video_asset", err)
         self.assertNotIn("failed = dict(payload)", err)

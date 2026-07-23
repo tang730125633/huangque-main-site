@@ -73,8 +73,8 @@
         <button id="clearText" style="border:0;background:transparent;color:#94a4bb;cursor:pointer;font-family:inherit;">清空</button>
       </div>
       <div style="border:1px solid rgba(148,164,187,.16);background:rgba(7,11,19,.5);border-radius:12px;padding:14px 15px;">
-        <textarea id="ttsText" rows="5" maxlength="1200" placeholder="输入要配音的文案，支持口播稿、广告语、门店通知..." style="width:100%;resize:none;background:transparent;border:none;outline:none;color:#eaf1fa;font-size:13.5px;line-height:1.75;font-family:inherit;">仙颜美容温馨提醒：本周末科技焕肤体验官名额仅剩 8 席，到店即享冷光嫩肤和小气泡清洁双重护理。预约请回复门店姑娘，我们在仙颜等你变美。</textarea>
-        <div class="aud-row" style="justify-content:flex-end;font-size:11.5px;color:#5c6b82;margin-top:8px;"><span id="charCount" class="mono">0 / 1200</span></div>
+        <textarea id="ttsText" rows="5" maxlength="1000" placeholder="输入要配音的文案，支持口播稿、广告语、门店通知..." style="width:100%;resize:none;background:transparent;border:none;outline:none;color:#eaf1fa;font-size:13.5px;line-height:1.75;font-family:inherit;">仙颜美容温馨提醒：本周末科技焕肤体验官名额仅剩 8 席，到店即享冷光嫩肤和小气泡清洁双重护理。预约请回复门店姑娘，我们在仙颜等你变美。</textarea>
+        <div class="aud-row" style="justify-content:flex-end;font-size:11.5px;color:#5c6b82;margin-top:8px;"><span id="charCount" class="mono">0 / 1000</span></div>
       </div>
 
       <div class="aud-row" style="margin:22px 0 0;">
@@ -228,16 +228,23 @@
   document.querySelectorAll('[data-step]').forEach(function(b){b.onclick=function(){var k=b.dataset.step, dir=b.dataset.dir==='+'?1:-1;if(k==='speed')params.speed=Math.max(0.5,Math.min(2.0,Math.round((params.speed+dir*.1)*10)/10));if(k==='pitch')params.pitch=Math.max(-12,Math.min(12,params.pitch+dir));if(k==='volume')params.volume=Math.max(-50,Math.min(100,params.volume+dir*10));updateParams();};});
   document.querySelectorAll('.info').forEach(function(b){b.onclick=function(e){e.stopPropagation();document.querySelectorAll('.info.show').forEach(function(x){if(x!==b)x.classList.remove('show');});b.classList.add('show');};b.onmouseleave=function(){b.classList.remove('show');};});
   document.querySelectorAll('[data-voice-tab]').forEach(function(b){b.onclick=function(){voiceTab=b.dataset.voiceTab;document.querySelectorAll('[data-voice-tab]').forEach(function(x){x.classList.toggle('on',x===b);});stopPreview();renderVoices();};});
-  el('ttsText').addEventListener('input',function(){el('charCount').textContent=el('ttsText').value.length+' / 1200';});
+  el('ttsText').addEventListener('input',function(){el('charCount').textContent=el('ttsText').value.length+' / 1000';});
   el('clearText').onclick=function(){el('ttsText').value='';el('ttsText').dispatchEvent(new Event('input'));};
   function setBusy(on){el('generateBtn').disabled=on;el('generateBtn').style.opacity=on?'.72':'1';el('generateBtn').style.cursor=on?'wait':'pointer';}
+  function audioNetworkMessage(error,phase){
+    var raw=String((error&&error.message)||error||''), isNetwork=/failed to fetch|networkerror|load failed|network request failed|fetch failed/i.test(raw);
+    if(!isNetwork) return raw||(phase==='poll'?'生成失败':'提交失败');
+    if(phase==='poll') return '网络连接异常，任务可能仍在后台生成，请恢复网络后稍后查看最近音频。';
+    if(typeof navigator!=='undefined'&&navigator.onLine===false) return '网络已断开，任务未提交。恢复网络后请再次点击生成。';
+    return '网络连接异常，请先查看最近音频；确认没有新任务后再重试，避免重复扣点。';
+  }
   function generate(){
     var text=el('ttsText').value.trim(); if(!text){toast('请先输入配音文案');return;}
     setBusy(true); el('statusText').textContent='正在提交配音任务...';
     fetch('/api/gen/audio',{method:'POST',headers:{Authorization:'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({text:text,voice:selectedVoice,speed:params.speed,pitch:params.pitch,volume:params.volume})})
       .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
       .then(function(res){if(res.status===401){location.href='../login.html?redirect=workbench/audio';return;}if(!res.data.job_id)throw new Error(res.data.detail||'提交失败');pollJob(res.data.job_id,0);})
-      .catch(function(e){setBusy(false);el('statusText').textContent=e.message||'提交失败';toast(el('statusText').textContent);});
+      .catch(function(e){setBusy(false);var message=audioNetworkMessage(e,'submit');el('statusText').textContent=message;toast(message);});
   }
   function pollJob(id,n){
     el('statusText').textContent='正在生成配音...';
@@ -245,7 +252,7 @@
       if(d.status==='done' && d.result){setBusy(false);setResult(d.result.url,d.result.text||'配音结果',true);el('statusText').textContent='生成完成，已自动入库为配音资产';loadRecent();return;}
       if(d.status==='error'||d.status==='failed'){throw new Error(d.error||'生成失败');}
       if(n<90)setTimeout(function(){pollJob(id,n+1);},2000);else throw new Error('生成超时，请稍后到资产页查看');
-    }).catch(function(e){setBusy(false);el('statusText').textContent=e.message||'生成失败';toast(el('statusText').textContent);});
+    }).catch(function(e){setBusy(false);var message=audioNetworkMessage(e,'poll');el('statusText').textContent=message;toast(message);});
   }
   function setResult(url,title,play){
     currentAudioUrl=url||''; var a=el('resultAudio'); el('resultTitle').textContent=title||'配音结果'; el('resultSub').textContent=currentAudioUrl?'已生成，可试听或下载':'暂无音频';
@@ -264,7 +271,7 @@
   el('resultAudio').onpause=function(){el('mainPlay').textContent='▶';};
   try{
     var q=new URLSearchParams(location.search), pp=q.get('prompt');
-    if(pp){el('ttsText').value=pp.slice(0,1200);toast(q.get('prefill')==='asset'?'已带入原配音参数，请确认后生成':'已带入编导口播文案');}
+    if(pp){el('ttsText').value=pp.slice(0,1000);toast(q.get('prefill')==='asset'?'已带入原配音参数，请确认后生成':'已带入编导口播文案');}
     var pv=q.get('voice'); if(pv) selectedVoice=pv;
     var qs=q.get('speed'), qt=q.get('pitch'), qvol=q.get('volume');
     var ps=Number(qs), pt=Number(qt), pvol=Number(qvol);

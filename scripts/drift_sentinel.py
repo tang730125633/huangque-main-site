@@ -48,6 +48,7 @@ GIT_REF = os.environ.get('HQ_DRIFT_REF', 'origin/main')
 
 BACKEND_RUNTIME = {
     'server/auth_server.py': '/home/ubuntu/auth-service/auth_server.py',
+    'server/invites.py': '/home/ubuntu/auth-service/invites.py',
     'server/wxpay.py': '/home/ubuntu/auth-service/wxpay.py',
     'server/wechat_virtual_pay.py': '/home/ubuntu/auth-service/wechat_virtual_pay.py',
     'server/sync_virtual_pay_goods.py': '/home/ubuntu/auth-service/sync_virtual_pay_goods.py',
@@ -136,7 +137,7 @@ def git_path_to_runtime(git_path):
         # 然后报「N 个文件校验通过」—— 一个虚假的确认，比不校验更糟。
         rel = git_path[len('deploy/systemd/'):]
         if rel.endswith('.example'):
-            return None          # 示例文件不落地（doubao.conf 含明文密钥，真值只在服务器上）
+            return None          # 示例模板不落地，真值只在服务器受保护的 env 文件中
         return os.path.join(SYSTEMD_DIR, rel)
     return None
 

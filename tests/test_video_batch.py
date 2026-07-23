@@ -181,6 +181,7 @@ class VideoBatchIntegrationGuardTests(unittest.TestCase):
 
             def __init__(self):
                 self.deductions = []
+                self.refunds = []
 
             def cost_of(self, kind, body):
                 return 20
@@ -190,6 +191,10 @@ class VideoBatchIntegrationGuardTests(unittest.TestCase):
                 return 100 - cost
 
             def safe_refund_points(self, username, cost, reason):
+                return 100
+
+            def refund_points(self, username, cost, reason, transaction_key=""):
+                self.refunds.append((username, cost, reason, transaction_key))
                 return 100
 
         originals = {
@@ -232,7 +237,8 @@ class VideoBatchIntegrationGuardTests(unittest.TestCase):
                     accepted = json.loads(response.read())
                 self.assertEqual(2, accepted["count"])
                 self.assertEqual(40, accepted["cost"])
-                self.assertEqual([("fang", 40, "job:video_batch")], fake.deductions)
+                self.assertEqual(("fang", 40), fake.deductions[0][:2])
+                self.assertTrue(fake.deductions[0][2].startswith("job:video_batch submit:"))
                 with closing(core.jdb()) as db:
                     rows = db.execute("SELECT status,cost,payload FROM jobs ORDER BY id").fetchall()
                 self.assertEqual(["pending", "pending"], [row["status"] for row in rows])
@@ -242,7 +248,7 @@ class VideoBatchIntegrationGuardTests(unittest.TestCase):
                 with urllib.request.urlopen(request, timeout=5) as response:
                     replayed = json.loads(response.read())
                 self.assertEqual(accepted, replayed)
-                self.assertEqual([("fang", 40, "job:video_batch")], fake.deductions)
+                self.assertEqual(1, len(fake.deductions))
                 with closing(core.jdb()) as db:
                     self.assertEqual(2, db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
 
@@ -289,6 +295,9 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
             def safe_refund_points(self, username, cost, reason):
                 return 100
 
+            def refund_points(self, username, cost, reason, transaction_key=""):
+                return 100
+
         originals = {
             "JOB_DB": core.JOB_DB,
             "AUDIO_DB": core.AUDIO_DB,
@@ -299,9 +308,11 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
             "max_xiaole": core.MAX_USER_ACTIVE_XIAOLE_VIDEO,
             "max_tryon": core.MAX_USER_ACTIVE_TRYON,
             "handlers": core.HANDLERS,
+            "enqueue": core.enqueue_job,
             "validate_video": video.validate_video_payload,
             "validate_tryon": video.validate_tryon_payload,
             "validate_xiaole": video.validate_xiaole_video_payload,
+            "record_pending": video.record_video_pending_asset,
         }
         fake = FakePoints()
         server = None
@@ -311,7 +322,7 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
             core.verify = lambda token: {"username": "fang", "must_change": False}
             core.feature_flags.require_enabled = lambda kind: None
             core.MAX_USER_ACTIVE_JOBS = 5
-            core.MAX_USER_ACTIVE_XIAOLE_VIDEO = 3
+            core.MAX_USER_ACTIVE_XIAOLE_VIDEO = 2
             core.MAX_USER_ACTIVE_TRYON = 1
             core.HANDLERS = {"video": lambda body: body, "tryon": lambda body: body, "xiaole_video": lambda body: body}
             video.validate_video_payload = lambda body, username: body
@@ -321,7 +332,7 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                 with closing(sqlite3.connect(core.JOB_DB)) as db:
                     db.execute("""CREATE TABLE jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,username TEXT,cost INTEGER,
                         status TEXT DEFAULT 'pending',payload TEXT,result TEXT,error TEXT,created_at INTEGER,updated_at INTEGER,
-                        deleted INTEGER DEFAULT 0, refunded INTEGER DEFAULT 0)""")
+                        deleted INTEGER DEFAULT 0, refunded INTEGER DEFAULT 0, owner TEXT)""")
                     db.commit()
                 core.init_audio_db()
                 core._domains = lambda: (None, fake, video)
@@ -335,11 +346,10 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                         "seed": [
                             ("xiaole_video", "pending", '{"channel":"omni"}'),
                             ("xiaole_video", "running", '{"channel":"grok"}'),
-                            ("xiaole_video", "pending", '{"channel":"micro"}'),
                         ],
                         "path": "/api/gen/xiaole_video",
-                        "body": {"channel": "omni", "prompt": "商品展示"},
-                        "detail": "当前果肉/豆姐/欧米视频最多同时排队或生成 3 个任务，请等待部分完成后再继续",
+                        "body": {"channel": "micro", "prompt": "商品展示"},
+                        "detail": "当前果肉/豆姐/欧米视频最多同时排队或生成 2 个任务，请等待部分完成后再继续",
                         "code": "xiaole_active_cap",
                     },
                     {
@@ -373,9 +383,27 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                         self.assertEqual(case["code"], payload["code"])
                         self.assertEqual(before, fake.deductions)
 
+                enqueued = []
+                core.enqueue_job = lambda *args: (enqueued.append(args), True)[1]
+                video.record_video_pending_asset = lambda *args: (_ for _ in ()).throw(RuntimeError("asset db locked"))
+                request = urllib.request.Request(base + "/api/gen/video", data=json.dumps({
+                    "mode": "text", "text": "商品口播", "voice": "demo",
+                }).encode("utf-8"), method="POST", headers={
+                    "Authorization": "Bearer test", "Content-Type": "application/json",
+                })
+                with self.assertRaises(urllib.error.HTTPError) as failed:
+                    urllib.request.urlopen(request, timeout=5)
+                self.assertEqual(500, failed.exception.code)
+                with closing(core.jdb()) as db:
+                    row = db.execute("SELECT status,refunded FROM jobs ORDER BY id DESC LIMIT 1").fetchone()
+                self.assertEqual(("error", 1), (row["status"], row["refunded"]))
+                self.assertEqual([], enqueued, "资产登记失败的付费任务绝不能继续入队")
+
                 with urllib.request.urlopen(base + "/api/gen/health", timeout=5) as response:
                     health = json.loads(response.read())
-                self.assertEqual(3, health["max_user_active_xiaole_video"])
+                self.assertEqual(core.JOB_QUEUE_MAX, health["job_queue_max"])
+                self.assertEqual(core.TALKING_JOB_QUEUE_MAX, health["talking_job_queue_max"])
+                self.assertEqual(2, health["max_user_active_xiaole_video"])
                 self.assertEqual(1, health["max_user_active_tryon"])
             finally:
                 if server:
@@ -390,9 +418,11 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                 core.MAX_USER_ACTIVE_XIAOLE_VIDEO = originals["max_xiaole"]
                 core.MAX_USER_ACTIVE_TRYON = originals["max_tryon"]
                 core.HANDLERS = originals["handlers"]
+                core.enqueue_job = originals["enqueue"]
                 video.validate_video_payload = originals["validate_video"]
                 video.validate_tryon_payload = originals["validate_tryon"]
                 video.validate_xiaole_video_payload = originals["validate_xiaole"]
+                video.record_video_pending_asset = originals["record_pending"]
 
 
 if __name__ == "__main__":

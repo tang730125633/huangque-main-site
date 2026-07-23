@@ -1,5 +1,7 @@
+import io
 import sys
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +13,33 @@ class XiaoleVideoTests(unittest.TestCase):
             sys.path.insert(0, server_dir)
         from content_domains import video
         self.video = video
+
+    def test_xiaole_request_retry_deadline_caps_internal_backoff(self):
+        now = [0.0]
+        calls = []
+
+        def monotonic():
+            return now[0]
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        def rate_limited(_request, timeout):
+            calls.append(timeout)
+            raise urllib.error.HTTPError(
+                "https://example.test", 429, "busy", None, io.BytesIO(b"busy")
+            )
+
+        with patch.object(self.video, "XIAOLEVIDEO_API_KEY", "test-key"), \
+             patch.object(self.video.time, "monotonic", side_effect=monotonic), \
+             patch.object(self.video.time, "sleep", side_effect=sleep), \
+             patch.object(self.video.urllib.request, "urlopen", side_effect=rate_limited):
+            with self.assertRaisesRegex(RuntimeError, "HTTP 429"):
+                self.video._xiaole_request("POST", "/api/v1/generations", {}, retry_deadline=10)
+
+        self.assertEqual(len(calls), 2)
+        self.assertAlmostEqual(now[0], 10)
+        self.assertEqual(calls, [10, 2])
 
     def test_unstable_micro_and_omni_channels_are_rejected(self):
         for channel in ("micro", "omni"):
@@ -71,6 +100,18 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertEqual(cands[-1][0], url)
         self.assertIsNone(cands[-1][2])
 
+    def test_authenticated_download_header_is_not_forwarded_to_relay(self):
+        import os as _os
+        url = "https://openrouter.ai/api/v1/videos/job/content?index=0"
+        with patch.dict(_os.environ, {"HEYGEN_RELAY_BASE": "https://relay.example"}, clear=False):
+            cands = self.video._xiaole_download_candidates(
+                url, "http://127.0.0.1:10809",
+                origin_headers={"Authorization": "Bearer secret"},
+            )
+        self.assertEqual(cands[0][1]["Authorization"], "Bearer secret")
+        self.assertNotIn("Authorization", cands[1][1])
+        self.assertEqual(cands[-1][1]["Authorization"], "Bearer secret")
+
     def test_gen_xiaole_video_maps_ratio_to_size_and_defaults_unknown_ratio(self):
         calls = []
 
@@ -116,21 +157,18 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertEqual(body["ratio"], "2:3")
         self.assertEqual(body["duration"], 15)
 
-    def test_validate_official_edit_verifies_server_side_duration(self):
-        source = "data:video/mp4;base64,AAAA"
-        with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"), \
-             patch.object(self.video, "_probe_data_video_duration", return_value=8.6):
-            body = self.video.validate_xiaole_video_payload({"channel": "grok", "operation": "edit",
-                                                              "prompt": "change person", "reference_video_data": source})
-        self.assertEqual(body["source_duration"], 8.6)
-        self.assertEqual(body["model"], "grok-imagine-video")
+    def test_validate_official_edit_is_under_maintenance(self):
+        with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"):
+            with self.assertRaisesRegex(ValueError, "编辑维护中"):
+                self.video.validate_xiaole_video_payload({"channel": "grok", "operation": "edit",
+                                                          "prompt": "change person"})
 
-    def test_validate_official_edit_rejects_over_8_7_seconds(self):
+    def test_validate_official_edit_rejects_before_media_processing(self):
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"), \
-             patch.object(self.video, "_probe_data_video_duration", return_value=8.71):
-            with self.assertRaisesRegex(ValueError, "8.7"):
-                self.video.validate_xiaole_video_payload({"channel": "grok", "operation": "edit", "prompt": "demo",
-                                                          "reference_video_data": "data:video/mp4;base64,AAAA"})
+             patch.object(self.video, "_probe_data_video_duration") as probe:
+            with self.assertRaisesRegex(ValueError, "编辑维护中"):
+                self.video.validate_xiaole_video_payload({"channel": "grok", "operation": "edit", "prompt": "demo"})
+        probe.assert_not_called()
 
     def test_validate_official_grok_rejects_over_max_references(self):
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"):
@@ -166,16 +204,45 @@ class XiaoleVideoTests(unittest.TestCase):
              patch("content_domains.video_xai.generate", return_value=fake) as generate, \
              patch.object(self.video, "_download_xiaole_video", return_value="video/grok_xai_demo.mp4"), \
              patch.object(self.video, "_extract_first_frame_cover", return_value="video/grok_xai_demo_cover.jpg"), \
-             patch.object(self.video, "public_url", return_value="https://cos.example/cover.jpg"):
+             patch.object(self.video, "public_url", side_effect=[
+                 "https://cos.example/cover.jpg",
+                 "https://cos.example/video/grok_xai_demo.mp4",
+             ]) as publish:
             result = self.video.gen_xiaole_video({
                 "channel": "grok", "prompt": "cinematic demo", "ratio": "9:16",
                 "duration": 10, "resolution": "720p", "model": "grok-imagine-video",
             })
         self.assertEqual(result["video_file"], "video/grok_xai_demo.mp4")
+        self.assertEqual(result["video_url"], "https://cos.example/video/grok_xai_demo.mp4")
         self.assertEqual(result["provider_video_id"], "xai-1")
         self.assertEqual(result["model"], "grok-imagine-video")
         self.assertEqual(result["duration"], 10)
+        publish.assert_any_call("video/grok_xai_demo.mp4", "video/mp4", private=True)
         generate.assert_called_once()
+
+    def test_grok_uses_openrouter_only_after_safe_xai_create_failure(self):
+        from content_domains import video_xai
+
+        fallback = {
+            "request_id": "or-1", "model": "grok-imagine-video",
+            "source_video_url": "https://cdn.openrouter.ai/demo.mp4",
+            "duration": 10, "provider": "openrouter",
+        }
+        with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"), \
+             patch("content_domains.video_xai.generate",
+                   side_effect=video_xai.XaiCreateUnavailableError("xAI quota")), \
+             patch("content_domains.video_openrouter.available", return_value=True), \
+             patch("content_domains.video_openrouter.generate", return_value=fallback) as generate, \
+             patch("content_domains.video_openrouter.download_headers", return_value={"Authorization": "Bearer test"}), \
+             patch.object(self.video, "_download_xiaole_video", return_value="video/grok_or.mp4"), \
+             patch.object(self.video, "_extract_first_frame_cover", return_value=None):
+            result = self.video.gen_xiaole_video({
+                "channel": "grok", "prompt": "cinematic demo", "ratio": "9:16",
+                "duration": 10, "resolution": "720p", "model": "grok-imagine-video",
+            })
+        generate.assert_called_once()
+        self.assertEqual(result["provider_video_id"], "or-1")
+        self.assertEqual(result["video_file"], "video/grok_or.mp4")
 
     def test_existing_xai_provider_id_resumes_without_generate(self):
         resumed = {
@@ -188,8 +255,8 @@ class XiaoleVideoTests(unittest.TestCase):
             "_job_id": 7, "_username": "qilin",
         }
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"), \
-             patch("content_domains.video.get_resumable_xai_request", return_value={
-                 "request_id": "rid-existing", "model": "grok-imagine-video",
+             patch("content_domains.video.get_resumable_grok_request", return_value={
+                 "request_id": "rid-existing", "model": "grok-imagine-video", "provider": "xai",
              }), \
              patch("content_domains.video_xai.resume", return_value=resumed) as resume, \
              patch("content_domains.video_xai.generate") as generate, \
@@ -207,7 +274,11 @@ class XiaoleVideoTests(unittest.TestCase):
                 "source_video_url": "https://vidgen.x.ai/edit.mp4", "duration": 6.2}
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"), \
              patch.object(self.video, "_save_data_file", return_value="video/source.mp4"), \
-             patch.object(self.video, "public_url", side_effect=["https://cos.example/source.mp4", "https://cos.example/cover.jpg"]), \
+             patch.object(self.video, "public_url", side_effect=[
+                 "https://cos.example/source.mp4",
+                 "https://cos.example/cover.jpg",
+                 "https://cos.example/edit.mp4",
+             ]), \
              patch.object(self.video, "_file_url", return_value="/api/files/video/source.mp4"), \
              patch("content_domains.video_xai.edit", return_value=fake) as edit, \
              patch.object(self.video, "_download_xiaole_video", return_value="video/edit.mp4"), \

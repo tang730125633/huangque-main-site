@@ -14,11 +14,11 @@
 | **采集获客** | 8100 | Tang | `server/leadgen_api.py` | 采集 collect · 获客 leads · 关键词搜 |
 | **视频下载** | 8097 | Tang | `server/dl_service.py` | 无水印视频下载代理 |
 | **作图(nano banana)** | 8101 | Tang | `server/imggen_api.py` | Gemini 出图(NB2/NB Pro)·走 mihomo 代理出墙 |
-| **内容生成 + 公共核心** | 8096 | 共用 | `server/content_api.py` | 作图 image · 文案 copy · 配音 audio(豆包) · 任务轮询 · 资产/历史 · 文件服务 |
+| **内容生成 + 公共核心** | 8096 | 共用 | `server/content_api.py` | 作图 image · 文案 copy · 配音 audio(CosyVoice) · 任务轮询 · 资产/历史 · 文件服务 |
 | **登录鉴权** | 8095 | 共用 | `auth_server.py` | 登录 · 点数 |
 | (旧)抖音获客 | 8090 | — | leadgen(legacy) | 历史遗留，逐步下线 |
 
-> **音频/豆包** 目前还在 8096 里（同事的活）；建议同事也拆成独立服务 `8098`，并把代码 push 进 git。在那之前，因 Tang 的采集/获客/下载已搬出，**同事改 8096 也伤不到 Tang**。
+> **音频/CosyVoice** 目前还在 8096 里（同事的活）；建议后续按实际运维收益评估是否拆成独立服务 `8098`。
 
 ### 共享基础设施（所有服务共用，不重复造）
 - **任务库** `content_jobs.db`（在 `/home/ubuntu/content-api/`）：所有异步任务(collect/leads/image/copy/audio)都写这一个库 → 前端轮询 `/api/gen/job/{id}` 和「资产/历史」由 8096 统一读。
@@ -85,7 +85,7 @@ location ^~ /api/auth/               → 8095  (登录)
 - `GET /api/gen/file/{name}`（取生成文件；真人视频/参考图/个人音色试听需 Bearer 且校验归属）
 - `GET /api/gen/health` → `{caps:[...]}`（看 8096 当前装了哪些能力）
 
-> 豆包音色克隆相关接口在 8096（同事维护），细节问同事 / 待其补文档。
+> CosyVoice 音色克隆相关接口在 8096，接口清单见运营后台「站内音频模块接口」。
 
 ---
 

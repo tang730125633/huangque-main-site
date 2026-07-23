@@ -97,10 +97,11 @@ class NoNewJobsWhileDrainingTests(unittest.TestCase):
     def test_submits_are_rejected_before_the_deduction(self):
         """⚠️ 拦在扣点之后等于没拦：用户被扣了点、任务入了队，进程下一秒就退了 ——
         又是一条「服务重启中断」。"""
-        block = CORE_SRC.split('if p.startswith("/api/gen/") and p[9:] in HANDLERS:')[1][:8000]
+        block = CORE_SRC.split('if p.startswith("/api/gen/") and p[9:] in HANDLERS:')[1]
+        block = block.split("\n    def do_GET", 1)[0]
         i_guard = block.index("if is_shutting_down():")
         i_cost = block.index("points_domain.cost_of")
-        i_deduct = block.index("deduct_points")
+        i_deduct = block.index("points_domain.deduct_points")
         self.assertLess(i_guard, i_cost, "停机拦截必须在算点数之前")
         self.assertLess(i_guard, i_deduct, "停机拦截必须在扣点之前")
 

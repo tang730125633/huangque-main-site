@@ -195,8 +195,8 @@ class JobPayloadTests(unittest.TestCase):
         truncated = '{"mode": "text", "prompt": "' + "x" * 5000
         data = admin_api._job_payload(truncated)
         self.assertEqual(data.get("mode"), "text")
-        # 名字对齐产品里的叫法：视频页那个功能页签就叫「数字人口播」
-        self.assertEqual(admin_api.call_func_name("video", data), "数字人口播 · 文案")
+        # 名字对齐产品里的叫法：视频页那个功能页签就叫「数字化 IP」
+        self.assertEqual(admin_api.call_func_name("video", data), "数字化 IP · 文案")
         # 完整 JSON 走正常解析
         self.assertEqual(admin_api._job_payload('{"model": "nb2"}'), {"model": "nb2"})
         self.assertEqual(admin_api._job_payload(None), {})
@@ -232,7 +232,7 @@ class KeyPingTests(unittest.TestCase):
             set(admin_api.KEY_PINGS),
             {
                 "openai", "gemini", "zelong", "zelong2", "heygen", "heygen_relay",
-                "xiaolevideo", "runninghub", "wavespeed", "doubao", "tikhub", "cos",
+                "xiaolevideo", "runninghub", "wavespeed", "cosyvoice", "tikhub", "cos",
             },
         )
 
@@ -243,11 +243,33 @@ class KeyPingTests(unittest.TestCase):
         with mock.patch.object(admin_api, "_env_value", return_value=""), mock.patch.object(
             admin_api, "_ping_upstream", side_effect=AssertionError("不该发起网络请求")
         ):
-            # doubao/xiaolevideo 是纯连通性拨测(有默认地址),无密钥也会真发请求,不在此列
-            for key in ["openai", "gemini", "zelong", "zelong2", "heygen", "heygen_relay", "tikhub", "runninghub", "cos"]:
+            # xiaolevideo 是纯连通性拨测(有默认地址),无密钥也会真发请求,不在此列
+            for key in ["openai", "gemini", "zelong", "zelong2", "heygen", "heygen_relay", "tikhub", "runninghub", "cosyvoice", "cos"]:
                 out = admin_api.KEY_PINGS[key]()
                 self.assertFalse(out["ok"], key)
                 self.assertTrue(out.get("error"), key)
+
+    def test_cosyvoice_ping_validates_the_key(self):
+        import unittest.mock as mock
+
+        with mock.patch.object(admin_api, "_env_value", return_value="test-key"), \
+                mock.patch.object(
+                    admin_api, "_ping_upstream", return_value={"ok": True}
+                ) as ping:
+            self.assertTrue(admin_api._key_ping_cosyvoice()["ok"])
+        ping.assert_called_once_with(
+            "POST",
+            "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization",
+            headers={
+                "Authorization": "Bearer test-key",
+                "Content-Type": "application/json",
+            },
+            body={
+                "model": "voice-enrollment",
+                "input": {"action": "list_voice", "page_index": 0, "page_size": 1},
+            },
+            proxied=False,
+        )
 
 
 if __name__ == "__main__":

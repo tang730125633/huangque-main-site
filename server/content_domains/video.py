@@ -55,6 +55,38 @@ XAI_GROK_MODELS = {"grok-imagine-video", "grok-imagine-video-1.5"}
 XAI_GROK_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
 XAI_GROK_RESOLUTIONS = {"480p", "720p"}
 
+# OpenAI Sora 2 限时 Beta。官方已公告 Videos API 与两个模型将在 2026-09-24 下线，
+# 且没有推荐替代，因此默认关闭；只有测试环境显式设 SORA_VIDEO_ENABLED=1 才收单。
+# 这条能力必须保持独立 kind，不能混进 xiaole_video 的统一 30 点/秒：Pro 1024p/1080p
+# 的官方成本分别是 $0.50/$0.70 每秒，混价会直接亏损，也无法在下线日单独关停。
+SORA_VIDEO_ENABLED = os.environ.get("SORA_VIDEO_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+SORA_VIDEO_SUNSET = "2026-09-24"
+SORA_MODELS = {"sora-2", "sora-2-pro"}
+SORA_SECONDS = {4, 8, 12}  # 上游 create 接口实测只接受 4/8/12 秒。
+SORA_RATIOS = {"9:16", "16:9"}
+SORA_SIZE_MAP = {
+    ("sora-2", "720p", "9:16"): "720x1280",
+    ("sora-2", "720p", "16:9"): "1280x720",
+    ("sora-2-pro", "720p", "9:16"): "720x1280",
+    ("sora-2-pro", "720p", "16:9"): "1280x720",
+    ("sora-2-pro", "1024p", "9:16"): "1024x1792",
+    ("sora-2-pro", "1024p", "16:9"): "1792x1024",
+    ("sora-2-pro", "1080p", "9:16"): "1080x1920",
+    ("sora-2-pro", "1080p", "16:9"): "1920x1080",
+}
+
+
+class SoraSubmissionUnknown(RuntimeError):
+    """OpenAI create may have succeeded, but no provider id was confirmed locally."""
+
+
+def sora_video_is_open(today=None):
+    """双保险：按北京时间在官方下线日零点关单，不依赖服务器本地时区。"""
+    if today is None:
+        today = time.strftime("%Y-%m-%d", time.gmtime(time.time() + 8 * 3600))
+    today = str(today)
+    return bool(SORA_VIDEO_ENABLED and today < SORA_VIDEO_SUNSET)
+
 def _xiaole_build_refs(reference_images):
     # 前端传 dataURL/URL → API 要的 [{type, value}]，最多 XIAOLE_MAX_REF 张。
     # type 合法枚举(实测 422 暴露)：'url' | 'base64' | 'data_url'。
@@ -104,6 +136,8 @@ def validate_xiaole_video_payload(payload):
         raise ValueError("请输入视频提示词")
     cleaned["channel"] = channel
     cleaned["prompt"] = prompt
+    if channel == "grok" and str(cleaned.get("operation") or "generate").strip().lower() == "edit":
+        raise ValueError("果肉视频编辑维护中")
     if channel != "grok" or GROK_VIDEO_PROVIDER == "xiaole":
         return cleaned
 
@@ -112,15 +146,7 @@ def validate_xiaole_video_payload(payload):
         raise ValueError("果肉视频操作类型不支持：%s" % operation)
     cleaned["operation"] = operation
     if operation == "edit":
-        source = str(cleaned.get("reference_video_data") or "").strip()
-        if not _is_valid_data_url(source, {"video/mp4"}):
-            raise ValueError("请上传有效的 MP4 参考视频")
-        duration = _probe_data_video_duration(source)
-        if duration <= 0 or duration > 8.7:
-            raise ValueError("xAI 官方视频编辑仅支持不超过 8.7 秒的参考视频")
-        cleaned.update({"model": "grok-imagine-video", "reference_video_data": source,
-                        "source_duration": duration, "reference_images": []})
-        return cleaned
+        raise ValueError("果肉视频编辑维护中")
 
     model = str(cleaned.get("model") or "grok-imagine-video").strip()
     if model not in XAI_GROK_MODELS:
@@ -151,6 +177,52 @@ def validate_xiaole_video_payload(payload):
         "resolution": resolution, "reference_images": refs,
     })
     return cleaned
+
+
+def validate_sora_video_payload(payload):
+    """校验 Sora 限时 Beta 的最小业务契约；只支持非真人文生视频。"""
+    if not sora_video_is_open():
+        raise ValueError("Sora 限时测试通道未开启")
+    if not isinstance(payload, dict):
+        raise ValueError("请求体不是合法 JSON")
+    from . import video_openai
+    if not video_openai.available():
+        raise ValueError("Sora 视频服务未配置")
+    prompt = str(payload.get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("请输入视频提示词")
+    if len(prompt) > 2000:
+        raise ValueError("视频提示词不能超过 2000 字")
+    model = str(payload.get("model") or "sora-2").strip().lower()
+    if model not in SORA_MODELS:
+        raise ValueError("Sora 模型不支持：%s" % model)
+    raw_seconds = payload.get("seconds", 4)
+    if isinstance(raw_seconds, bool):
+        raise ValueError("Sora 视频时长仅支持 4、8、12 秒")
+    try:
+        seconds = int(raw_seconds)
+    except (TypeError, ValueError):
+        raise ValueError("Sora 视频时长仅支持 4、8、12 秒")
+    if str(raw_seconds).strip() != str(seconds) or seconds not in SORA_SECONDS:
+        raise ValueError("Sora 视频时长仅支持 4、8、12 秒")
+    ratio = str(payload.get("ratio") or "9:16").strip()
+    if ratio not in SORA_RATIOS:
+        raise ValueError("Sora 画面比例仅支持 9:16、16:9")
+    resolution = str(payload.get("resolution") or "720p").strip().lower()
+    size = SORA_SIZE_MAP.get((model, resolution, ratio))
+    if not size:
+        raise ValueError("%s 不支持分辨率 %s" % (model, resolution))
+    # 当前官方规则拒绝真人、公众人物和含人脸参考图。Beta 先不接 input_reference，
+    # 从服务端白名单上消除前端绕过，而不是只靠页面隐藏。
+    return {
+        "mode": "sora",
+        "prompt": prompt,
+        "model": model,
+        "seconds": seconds,
+        "ratio": ratio,
+        "resolution": resolution,
+        "size": size,
+    }
 
 def _is_valid_data_url(value, allowed_mimes):
     raw = (value or "").strip()
@@ -541,9 +613,11 @@ def record_video_asset(job_id, username, result):
              result.get("status") or "pending", result.get("error"), now, now))
         c.commit()
 
-def update_video_asset_phase(job_id, phase, **fields):
+def update_video_asset_phase(job_id, phase, strict=False, **fields):
     if not job_id:
-        return
+        if strict:
+            raise ValueError("任务缺少 job_id")
+        return False
     now = int(time.time())
     allowed = {
         "mode", "image_file", "audio_file", "reference_video_file", "video_file", "video_url",
@@ -562,18 +636,24 @@ def update_video_asset_phase(job_id, phase, **fields):
             updates[k] = v
     sets = ", ".join("%s=?" % k for k in updates)
     vals = list(updates.values()) + [now, job_id]
+    asset_updated = True
     try:
         with closing(adb()) as c:
-            c.execute("UPDATE video_assets SET %s, updated_at=? WHERE job_id=?" % sets, vals)
+            cur = c.execute("UPDATE video_assets SET %s, updated_at=? WHERE job_id=?" % sets, vals)
             c.commit()
+            if strict and cur.rowcount != 1:
+                raise RuntimeError("视频任务恢复信息没有对应资产行")
     except Exception:
-        pass
+        if strict:
+            raise
+        asset_updated = False
     try:
         with closing(jdb()) as c:
             c.execute("UPDATE jobs SET updated_at=? WHERE id=? AND status='running'", (now, job_id))
             c.commit()
     except Exception:
         pass
+    return asset_updated
 
 def get_resumable_xai_request(job_id):
     if not job_id:
@@ -592,9 +672,85 @@ def get_resumable_xai_request(job_id):
     return {
         "request_id": row["provider_video_id"],
         "model": row["model"] or "grok-imagine-video",
+        "provider": "xai",
         "phase": phase,
         "status": row["status"],
     }
+
+
+def get_resumable_grok_request(job_id):
+    """Read the persisted provider before resuming a paid Grok video job."""
+    if not job_id:
+        return None
+    with closing(adb()) as c:
+        row = c.execute(
+            """SELECT provider_video_id, model, phase, status
+               FROM video_assets WHERE job_id=?""",
+            (job_id,),
+        ).fetchone()
+    if not row or not row["provider_video_id"]:
+        return None
+    phase = str(row["phase"] or "")
+    if phase.startswith("openrouter_"):
+        provider = "openrouter"
+    elif phase.startswith("xai_") or phase == "downloading":
+        provider = "xai"
+    else:
+        return None
+    return {
+        "request_id": row["provider_video_id"],
+        "model": row["model"] or "grok-imagine-video",
+        "provider": provider,
+        "phase": phase,
+        "status": row["status"],
+    }
+
+
+def get_resumable_sora_request(job_id):
+    """读取已持久化的 OpenAI video id；重启后只恢复 GET，绝不重发付费 POST。"""
+    if not job_id:
+        return None
+    with closing(adb()) as c:
+        row = c.execute(
+            """SELECT provider_video_id, model, phase, status, resolution, ratio
+               FROM video_assets WHERE job_id=?""",
+            (job_id,),
+        ).fetchone()
+    if not row:
+        return None
+    phase = str(row["phase"] or "")
+    if not row["provider_video_id"]:
+        if phase in {"sora_submitting", "sora_recovery_required"}:
+            return {"video_id": None, "submission_unknown": True, "phase": phase}
+        return None
+    if not (phase.startswith("sora_") or phase == "downloading"):
+        return None
+    return {
+        "video_id": row["provider_video_id"],
+        "model": row["model"] or "sora-2",
+        "phase": phase,
+        "status": row["status"],
+        "resolution": row["resolution"] or "720p",
+        "ratio": row["ratio"] or "9:16",
+    }
+
+
+def recover_sora_paid_job(job_id, error, requeue=None):
+    """Protect an accepted/unknown paid submission from refund or a second POST."""
+    recovery = get_resumable_sora_request(job_id)
+    if recovery and recovery.get("submission_unknown"):
+        update_video_asset_phase(job_id, "sora_recovery_required", error=str(error)[:300])
+        return True
+    if recovery and recovery.get("video_id"):
+        if recovery.get("phase") == "sora_recovery_required":
+            return True
+        if requeue:
+            if requeue(job_id):
+                update_video_asset_phase(job_id, "sora_retrying", error=str(error)[:300])
+            return True  # CAS 输给另一恢复者也绝不能继续走失败退款。
+        update_video_asset_phase(job_id, "sora_recovery_required", error=str(error)[:300])
+        return True
+    return False
 
 
 def record_video_pending_asset(job_id, username, payload):
@@ -658,6 +814,8 @@ def list_video_assets(username, limit=120):
                     result = {}
                 duration = result.get("duration") or result.get("seconds")
                 if duration is None and item.get("mode") == "tryon":
+                    duration = payload.get("seconds")
+                if duration is None and item.get("mode") == "sora":
                     duration = payload.get("seconds")
                 try:
                     duration = float(duration)
@@ -1472,7 +1630,7 @@ def _heygen_retry_429(fn, what=""):
             time.sleep(delay)
 
 
-# ============ HeyGen 账号级并发闸（削峰用，不是挡并发） ============
+# ============ HeyGen 账号级并发总闸 ============
 # 官方文档（Usage Limits）说 Pay-As-You-Go 的 "Max Concurrent Video Jobs" = 10。
 # 【实测证明这不是硬限制】——2026-07-12 跑 20 路并发（10 口播 + 10 剧情视频同时生成）：
 #     20/20 全部成功出片，零降速（口播平均 114s，而单条基线是 104s）
@@ -1483,12 +1641,12 @@ def _heygen_retry_429(fn, what=""):
 # 「please reduce the RATE to call this api」）。而退避 1.7~2.5 秒重发，一次就全过。
 # 兜住它的是 _heygen_retry_429，不是这个信号量。
 #
-# 那这个信号量还留着干嘛？—— 削峰。它把同时在飞的请求数摊平（21 = 口播10 + 剧情10 + 建形象1），
-# 顺带降低撞 429 的概率，是重试之外的一层保险。真要放开，改 env 即可，不用动代码。
+# 默认 31 = 口播 20 + 剧情 10 + 1 个缓冲，不让共享闸反过来收紧两个 worker 池；
+# 提交突发仍由 _heygen_retry_429 处理。需要紧急收紧账号总并发时可通过 env 下调。
 #
 # 槽只在【生成期间】持有（建视频 → 轮询出片）。上传素材、查 look 状态不占槽。
 # 中转(泽龙)转发的是同一个账号，所以中转路径同样要占槽 —— 不占就等于绕过了闸。
-HEYGEN_MAX_CONCURRENCY = int(os.environ.get("HEYGEN_MAX_CONCURRENCY", "21") or 21)
+HEYGEN_MAX_CONCURRENCY = int(os.environ.get("HEYGEN_MAX_CONCURRENCY", "31") or 31)
 _heygen_gen_sem = threading.BoundedSemaphore(HEYGEN_MAX_CONCURRENCY)
 
 
@@ -2355,7 +2513,7 @@ def gen_tryon(payload):
         "message": "换装换背景视频生成完成"
     }
 
-def _xiaole_request(method, path, body=None, timeout=90):
+def _xiaole_request(method, path, body=None, timeout=90, retry_deadline=None):
     if not XIAOLEVIDEO_API_KEY:
         raise ValueError("视频生成服务未配置（XIAOLEVIDEO_API_KEY）")
     url = path if path.startswith("http") else (XIAOLEVIDEO_API_BASE + path)
@@ -2366,28 +2524,50 @@ def _xiaole_request(method, path, body=None, timeout=90):
         # 上游 xiaolevideo 要求付费创建请求带 8-128 字符幂等键，缺则 HTTP 400（果肉/豆姐/欧米共用此路）
         headers["Idempotency-Key"] = uuid.uuid4().hex
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    # 429（API Key 媒体任务过多）自动退避重试，扛并发限流
+    # 429（API Key 媒体任务过多）自动退避重试，扛并发限流。图像创建可传入
+    # monotonic 截止时间，避免这里的内层退避突破调用方的总重试预算。
+    last_retry_error = None
     for attempt in range(_xiaole_429_retries + 1):
+        request_timeout = timeout
+        if retry_deadline is not None:
+            remaining = retry_deadline - time.monotonic()
+            if attempt and remaining <= 0:
+                raise last_retry_error
+            request_timeout = min(timeout, max(0.001, remaining))
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with urllib.request.urlopen(req, timeout=request_timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:400]
+            error = RuntimeError("视频接口失败: HTTP %s %s" % (e.code, detail))
             if e.code == 429 and attempt < _xiaole_429_retries:
                 wait = min(45, 8 * (attempt + 1))
-                print("[video] 429 并发限流，%ds 后重试(%d/%d)" % (wait, attempt + 1, _xiaole_429_retries), flush=True)
+                if retry_deadline is not None:
+                    remaining = retry_deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise error
+                    wait = min(wait, remaining)
+                print("[video] 429 并发限流，%.1fs 后重试(%d/%d)" % (wait, attempt + 1, _xiaole_429_retries), flush=True)
+                last_retry_error = error
                 time.sleep(wait)
                 continue
-            raise RuntimeError("视频接口失败: HTTP %s %s" % (e.code, detail))
+            raise error
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             # 瞬时网络抖动(SSL握手超时等)自动重试
+            error = RuntimeError("视频接口网络异常: %s" % str(e)[:120])
             if attempt < _xiaole_429_retries:
                 wait = min(30, 5 * (attempt + 1))
-                print("[video] 网络异常，%ds 后重试(%d/%d): %s" % (wait, attempt + 1, _xiaole_429_retries, str(e)[:80]), flush=True)
+                if retry_deadline is not None:
+                    remaining = retry_deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise error
+                    wait = min(wait, remaining)
+                print("[video] 网络异常，%.1fs 后重试(%d/%d): %s" % (wait, attempt + 1, _xiaole_429_retries, str(e)[:80]), flush=True)
+                last_retry_error = error
                 time.sleep(wait)
                 continue
-            raise RuntimeError("视频接口网络异常: %s" % str(e)[:120])
+            raise error
 
 def _xiaole_pick_video_url(output):
     for v in ((output or {}).get("videos") or []):
@@ -2399,7 +2579,7 @@ def _xiaole_pick_video_url(output):
             return v
     return None
 
-def _xiaole_download_candidates(url, tunnel_proxy):
+def _xiaole_download_candidates(url, tunnel_proxy, origin_headers=None):
     """成片下载候选链(GET 幂等，可自由多档尝试，不像出图 POST 有重复计费顾虑)。顺序：
       ① 原始 URL 走 egress 快隧道(Reality VPS/mihomo)—— tunnel_proxy 非空才加，避开拥塞的 heygen 中转
       ② heygen 法兰克福 /cdn/ 中转 —— 兜底(拥塞时慢到分钟级)，走进程默认(NO_PROXY 含 zelong.vip → 直连中转)
@@ -2407,6 +2587,7 @@ def _xiaole_download_candidates(url, tunnel_proxy):
     返回 [(fetch_url, headers, proxy_or_None), ...]；proxy 非空则该档强制走此代理，None 则用进程默认 urlopen。
     未配隧道(tunnel_proxy 为空)时链退化为 [heygen, 直连]，等于改动前老行为。"""
     plain_headers = {"User-Agent": "huangque-content/1.0"}
+    plain_headers.update(origin_headers or {})
     parts = urllib.parse.urlsplit(url)
     host = (parts.hostname or "").lower()
     candidates = []
@@ -2417,7 +2598,8 @@ def _xiaole_download_candidates(url, tunnel_proxy):
         fetch = "%s/cdn/%s/%s" % (relay, host, parts.path.lstrip("/"))
         if parts.query:
             fetch += "?" + parts.query
-        headers = dict(plain_headers)
+        # Never forward an upstream bearer token to the relay.
+        headers = {"User-Agent": "huangque-content/1.0"}
         token = os.environ.get("HEYGEN_RELAY_TOKEN", "").strip()
         if token:
             headers["X-Relay-Token"] = token
@@ -2426,12 +2608,14 @@ def _xiaole_download_candidates(url, tunnel_proxy):
     return candidates
 
 
-def _download_xiaole_video(url, prefix="xiaole"):
+def _download_xiaole_video(url, prefix="xiaole", origin_headers=None):
     # 视频 CDN 多在海外(如 vidgen.x.ai)，国内直连不通。成片下载是 GET(幂等)，故可多档尝试：
     # 优先走 egress 快隧道，避开拥塞到分钟级的 heygen 法兰克福老中转(实测 xAI 2 分钟出片、
     # 走老中转下载却要 11~19 分钟，甚至卡死被 reaper 判超时退点)。中转仅作兜底。
     from . import egress
-    candidates = _xiaole_download_candidates(url, egress.preferred_proxy())
+    candidates = _xiaole_download_candidates(
+        url, egress.preferred_proxy(), origin_headers=origin_headers
+    )
     # 下载中断(IncompleteRead/网络抖动)自动重试；前一档耗尽后换下一档
     data = None
     last_err = None
@@ -2533,6 +2717,87 @@ def generate_xiaole_video(model, prompt, reference_images=None, size="720x1280",
         time.sleep(XIAOLE_POLL_INTERVAL)
     raise TimeoutError("视频生成超时")
 
+
+def gen_sora_video(payload):
+    """OpenAI Sora 2 限时 Beta：创建/恢复 → 轮询 → 鉴权下载 → 永久资产入库。"""
+    from . import video_openai
+
+    job_id = payload.get("_job_id")
+    if not job_id:
+        raise ValueError("付费 Sora 任务必须绑定 job_id")
+    model = str(payload.get("model") or "sora-2")
+    prompt = str(payload.get("prompt") or "").strip()
+    seconds = int(payload.get("seconds") or 4)
+    size = str(payload.get("size") or SORA_SIZE_MAP.get(
+        (model, payload.get("resolution") or "720p", payload.get("ratio") or "9:16"),
+        "720x1280",
+    ))
+    ratio = str(payload.get("ratio") or "9:16")
+    resolution = str(payload.get("resolution") or "720p")
+
+    existing = get_resumable_sora_request(job_id)
+    if existing and existing.get("submission_unknown"):
+        raise SoraSubmissionUnknown("Sora 已发起提交但未确认上游任务 ID，需人工核对")
+    if job_id and not existing:
+        update_video_asset_phase(
+            job_id, "sora_submitting", strict=True, mode="sora", text=prompt,
+            model=model, resolution=resolution, ratio=ratio,
+        )
+
+    provider_id_persisted = bool(existing)
+
+    def sora_heartbeat(heartbeat_job_id, phase, **fields):
+        nonlocal provider_id_persisted
+        update_video_asset_phase(
+            heartbeat_job_id, phase,
+            strict=bool(fields.get("provider_video_id")) and not provider_id_persisted,
+            **fields,
+        )
+        provider_id_persisted = provider_id_persisted or bool(fields.get("provider_video_id"))
+
+    if existing:
+        rendered = video_openai.resume(
+            existing["video_id"], existing.get("model") or model, seconds, size,
+            job_id=job_id, heartbeat=sora_heartbeat,
+        )
+    else:
+        rendered = video_openai.generate(
+            model, prompt, seconds, size,
+            job_id=job_id, heartbeat=sora_heartbeat,
+        )
+
+    video_id = str(rendered.get("video_id") or "").strip()
+    if not video_id:
+        raise RuntimeError("Sora 视频已完成但缺少 video_id")
+    if job_id:
+        update_video_asset_phase(
+            job_id, "sora_completed", provider_video_id=video_id,
+            model=rendered.get("model") or model,
+        )
+        update_video_asset_phase(job_id, "sora_downloading", provider_video_id=video_id)
+    video_file = "video/sora_%s.mp4" % uuid.uuid4().hex
+    video_openai.download_content(video_id, _out_path(video_file))
+    video_file = _faststart_video_file(video_file)
+    cover = _extract_first_frame_cover(video_file)
+    actual_seconds = rendered.get("seconds") or seconds
+    try:
+        actual_seconds = int(float(actual_seconds))
+    except (TypeError, ValueError):
+        actual_seconds = seconds
+    result = {
+        "type": "video", "status": "done", "mode": "sora",
+        "model": rendered.get("model") or model,
+        "text": prompt, "prompt": prompt,
+        "ratio": ratio, "resolution": resolution, "size": rendered.get("size") or size,
+        "duration": actual_seconds, "provider_video_id": video_id,
+        "video_file": video_file, "video_url": _file_url(video_file),
+        "image_file": cover,
+        "image_url": public_url(cover, "image/jpeg") if cover else None,
+        "phase": "done", "message": "Sora 视频生成完成",
+        "provider": "openai_sora",
+    }
+    return result
+
 def gen_xiaole_video(payload):
     job_id = payload.get("_job_id")
     channel = (payload.get("channel") or "grok").strip()
@@ -2555,15 +2820,16 @@ def gen_xiaole_video(payload):
         if raw_refs:
             ref_images = [_xiaole_ref_to_url(r) for r in raw_refs]
     label = {"grok": "果肉视频", "micro": "豆姐视频", "omni": "欧米视频"}.get(channel, model)
-    existing = get_resumable_xai_request(job_id) if use_xai else None
+    existing = get_resumable_grok_request(job_id) if use_xai else None
     if job_id and not existing:
         update_video_asset_phase(job_id, "queued", mode=channel, text=prompt, model=model)
     if use_xai:
-        from . import video_xai
+        from . import video_openrouter, video_xai
         operation = payload.get("operation") or "generate"
         reference_video_file = reference_video_url = None
         if existing:
-            xres = video_xai.resume(
+            adapter = video_openrouter if existing.get("provider") == "openrouter" else video_xai
+            xres = adapter.resume(
                 existing["request_id"], existing.get("model") or model,
                 payload.get("duration") or 10,
                 job_id=job_id, heartbeat=update_video_asset_phase,
@@ -2583,17 +2849,32 @@ def gen_xiaole_video(payload):
             image_url = ref_images[0] if ref_images else None
             if image_url and not str(image_url).startswith(("http://", "https://")):
                 raise RuntimeError("xAI官方图生视频需要可公网访问的参考图，COS转存失败")
-            xres = video_xai.generate(
-                model=model, prompt=prompt, image_url=image_url,
-                duration=payload.get("duration") or 10,
-                aspect_ratio=ratio, resolution=payload.get("resolution") or "720p",
-                job_id=job_id, heartbeat=update_video_asset_phase,
-            )
+            try:
+                xres = video_xai.generate(
+                    model=model, prompt=prompt, image_url=image_url,
+                    duration=payload.get("duration") or 10,
+                    aspect_ratio=ratio, resolution=payload.get("resolution") or "720p",
+                    job_id=job_id, heartbeat=update_video_asset_phase,
+                )
+            except video_xai.XaiCreateUnavailableError:
+                if not video_openrouter.available():
+                    raise
+                xres = video_openrouter.generate(
+                    model=model, prompt=prompt, image_urls=ref_images,
+                    duration=payload.get("duration") or 10,
+                    aspect_ratio=ratio, resolution=payload.get("resolution") or "720p",
+                    job_id=job_id, heartbeat=update_video_asset_phase,
+                )
         source_url = xres["source_video_url"]
+        provider = xres.get("provider") or "xai"
         if job_id:
-            update_video_asset_phase(job_id, "downloading", source_video_url=source_url,
+            phase = "openrouter_downloading" if provider == "openrouter" else "downloading"
+            update_video_asset_phase(job_id, phase, source_video_url=source_url,
                                      provider_video_id=xres.get("request_id"), model=xres.get("model") or model)
-        video_file = _download_xiaole_video(source_url, "grok_xai")
+        origin_headers = video_openrouter.download_headers() if provider == "openrouter" else None
+        video_file = _download_xiaole_video(
+            source_url, "grok_" + provider, origin_headers=origin_headers
+        )
         cover = _extract_first_frame_cover(video_file)
         result = {
             "video_file": video_file, "video_url": _file_url(video_file),
@@ -2607,13 +2888,17 @@ def gen_xiaole_video(payload):
     else:
         result = generate_xiaole_video(model, prompt, reference_images=ref_images, size=size, job_id=job_id, prefix=channel,
                                        duration=XIAOLE_CHANNEL_DURATION.get(channel))
+    video_file = result.get("video_file")
+    # 成片与封面一样在任务完成时转存 COS，避免把仅支持鉴权读取的本地
+    # /api/gen/file/ 链接写进资产记录。public_url 内部会在 COS 不可用时安全回退。
+    video_url = public_url(video_file, "video/mp4", private=True) if video_file else result.get("video_url")
     return {
         "type": "video", "status": "done", "mode": channel, "model": result.get("model") or model, "text": prompt,
         "operation": payload.get("operation") or "generate",
         "ratio": ratio, "resolution": payload.get("resolution") if use_xai and payload.get("operation") != "edit" else None,
         "duration": result.get("duration") or (payload.get("duration") if use_xai else None),
         "provider_video_id": result.get("request_id"),
-        "video_file": result.get("video_file"), "video_url": result.get("video_url"),
+        "video_file": video_file, "video_url": video_url,
         "source_video_url": result.get("source_video_url"),
         "reference_video_file": result.get("reference_video_file"),
         "reference_video_url": result.get("reference_video_url"),
@@ -2698,13 +2983,12 @@ CINEMATIC_MOTION_RESOLUTION = "1080p"
 # 每秒点数。HeyGen 那边是扁平价（$7/条，与时长无关），我们按时长卖 —— 这是产品定价，不是成本。
 # ⚠️ 改这里等于改价：cost_of() 直接乘这个数。
 #
-# 三个玩法统一 30 点/秒（kongli 2026-07-15 调价；此前 10，更早 motion 3/duo 5/open 5）。
-# HeyGen 对三者收一样的钱，这里不分档。保留 per-mode 的表结构和 env 覆盖，以后想再分档不用改代码。
+# 已确认玩法 motion/open 统一 10 点/秒；未开放的 duo 保持原价。
 
 CINEMATIC_RATE_PER_SEC = {
-    "motion": _env_positive_int("CINEMATIC_RATE_MOTION", 30),   # 单人动作模仿
+    "motion": _env_positive_int("CINEMATIC_RATE_MOTION", 10),   # 单人动作模仿
     "duo":    _env_positive_int("CINEMATIC_RATE_DUO", 30),      # 双人动作模仿
-    "open":   _env_positive_int("CINEMATIC_RATE_OPEN", 30),     # 开放式生成
+    "open":   _env_positive_int("CINEMATIC_RATE_OPEN", 10),     # 开放式生成
 }
 CINEMATIC_RATE_FALLBACK = 30   # 玩法认不出来时按最贵的收，绝不按最便宜的（更不能按 0）
 
@@ -2713,12 +2997,13 @@ def cinematic_rate(cine_mode):
     return CINEMATIC_RATE_PER_SEC.get(cine_mode, CINEMATIC_RATE_FALLBACK)
 
 
-# ===== 口播(video kind)按秒计费：10 点/秒 × 输出时长（kongli 2026-07-15）=====
+# ===== 口播(video kind)按 30 秒阶梯计费：每档 30 点 =====
 # 口播成片时长 ≈ 音频时长。扣点时机不同：
 #   audio 模式：上传/引用音频，扣点前 ffprobe 就能拿到精确时长 → 扣准，跑完无需结算。
 #   text 模式：TTS 在 job 里才跑，扣点那刻不知道语音多长 → 按文本长度【偏保守】估算预扣，
 #              跑完再按成片真实时长结算（core.run_job 里调 talking_actual_cost，多退少不补）。
-TALKING_RATE_PER_SEC = _env_positive_int("TALKING_RATE_PER_SEC", 10)
+TALKING_BLOCK_SECONDS = _env_positive_int("TALKING_BLOCK_SECONDS", 30)
+TALKING_BLOCK_POINTS = _env_positive_int("TALKING_BLOCK_POINTS", 30)
 # 中文口播语速估算：偏保守取 4 字/秒（估长一点→预扣偏高→跑完退差，避免系统性少扣）。
 TALKING_CHARS_PER_SEC = float(os.environ.get("TALKING_CHARS_PER_SEC", "4") or 4)
 TALKING_FALLBACK_SEC = 10.0   # 音频探不到时长时的兜底估算秒数
@@ -2752,19 +3037,22 @@ def _talking_estimate_seconds(body):
 
 
 def video_cost(body):
-    """口播扣点前的预扣(hold)：10 点/秒 × 估算/精确输出秒数。text 模式偏估、跑完结算。"""
+    """口播预扣：每 30 秒 30 点。text 模式按文本偏保守估算，跑完按成片结算。"""
     secs = _talking_estimate_seconds(body)
-    return max(TALKING_RATE_PER_SEC, int(math.ceil(secs)) * TALKING_RATE_PER_SEC)
+    return max(TALKING_BLOCK_POINTS, int(math.ceil(secs / TALKING_BLOCK_SECONDS)) * TALKING_BLOCK_POINTS)
 
 
 def talking_actual_cost(result):
-    """口播成片后的真实点数 = 10 点/秒 × 成片真实秒数（HeyGen 返回的 duration）。
+    """口播成片后的真实点数 = 每 30 秒 30 点（HeyGen 返回的 duration）。
     拿不到时长返回 None（不结算，保留预扣）。"""
     secs = (result or {}).get("duration") or (result or {}).get("seconds")
     if not secs:
         return None
     try:
-        return max(TALKING_RATE_PER_SEC, int(math.ceil(float(secs))) * TALKING_RATE_PER_SEC)
+        value = float(secs)
+        if value <= 0:
+            return None
+        return max(TALKING_BLOCK_POINTS, int(math.ceil(value / TALKING_BLOCK_SECONDS)) * TALKING_BLOCK_POINTS)
     except (TypeError, ValueError):
         return None
 
@@ -3075,13 +3363,16 @@ def gen_cinematic(payload):
             raise HeyGenBilledError("剧情视频已提交 HeyGen(video_id=%s，已扣费)，后续失败: %s"
                                     % (video_id, str(e)[:180])) from e
 
+    # 成片在入库前转存 COS；上传失败时 public_url 会回退本地鉴权链接，
+    # 不因对象存储故障把已经完成的 HeyGen 任务标记为失败。
+    video_url = public_url(video_file, "video/mp4", private=True)
     ret = {
         # ⚠️ status/mode/type 一个都不能少 —— record_video_asset 从 result 里取它们写进
         # video_assets，而前端读的是那张表。漏了 status，它会写成 "pending"，
         # UPSERT 的 COALESCE 又挡不住非 NULL 值，资产行就永远停在 running，
         # 用户看到的就是「一直显示生成中」——哪怕 jobs 表早就 done 了。
         "type": "video", "status": "done", "mode": "cinematic",
-        "video_id": video_id, "video_file": video_file, "video_url": _file_url(video_file),
+        "video_id": video_id, "video_file": video_file, "video_url": video_url,
         "reference_video_file": reference_video_file,
         "avatar_ids": payload["avatar_ids"],
         "avatar_names": [a.get("name") for a in avatars],
@@ -3098,4 +3389,5 @@ def gen_cinematic(payload):
 
 
 HANDLERS = {"video": gen_video, "tryon": gen_tryon, "xiaole_video": gen_xiaole_video,
+            "sora_video": gen_sora_video,
             "avatar": gen_avatar, "cinematic": gen_cinematic}

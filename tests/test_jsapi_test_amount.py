@@ -15,8 +15,8 @@ class JsapiTestAmountTests(unittest.TestCase):
     def test_any_user_can_use_ten_cent_test_tier(self):
         self.assertEqual(auth_server.jsapi_recharge_quote(0.1), (0.1, 1))
 
-    def test_regular_tiers_are_unchanged(self):
-        self.assertEqual(auth_server.jsapi_recharge_quote(99), (99, 1000))
+    def test_regular_tiers_use_ten_points_per_yuan(self):
+        self.assertEqual(auth_server.jsapi_recharge_quote(100), (100, 1000))
         self.assertEqual(auth_server.jsapi_recharge_quote(10), (10, 100))
 
 

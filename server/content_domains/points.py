@@ -14,8 +14,8 @@ from .core import AUTH_BASE, AUTH_INTERNAL_TOKEN, COST, closing, jdb, json, urll
 #   ⚠ 已知缺口：1:1 高清 + 图生图 还要 +1024 image input token($8/M)，实为 ¥1.554 ≈ 16 点。
 # 其余引擎沿用原 8/12，待逐个测准后再调（Seedream 实际成本仅 2~6 点，偏高）。
 IMAGE_BASE_COST = {
-    "openai":   {"std": 20, "hd": 30},
-    "xiaole":   {"std": 8, "hd": 12},
+    "openai":   {"std": 20, "hd": 35},
+    "xiaole":   {"std": 12, "hd": 16},
     "zelong":   {"std": 8, "hd": 12},
     "zelong2":  {"std": 8, "hd": 12},
 }
@@ -25,6 +25,16 @@ _IMAGE_DEFAULT_COST = {"std": 8, "hd": 12}
 SEEDREAM_VARIANT_COST = {
     "std": {"std": 8,  "hd": 12},   # 5.0 标准
     "pro": {"std": 15, "hd": 20},   # 5.0 Pro
+}
+
+# Sora 2 限时 Beta 售价（点/秒）。官方标准价分别为 $0.10 / $0.30 / $0.50 / $0.70
+# 每秒；按 7.1 汇率与 1 元=10 点，裸成本约 7.1 / 21.3 / 35.5 / 49.7 点/秒。
+# 这里延续现有 Grok 30 点/秒约 4.2x 的安全垫，覆盖失败、存储、运维与汇率波动。
+SORA_VIDEO_RATE = {
+    ("sora-2", "720p"): 30,
+    ("sora-2-pro", "720p"): 90,
+    ("sora-2-pro", "1024p"): 150,
+    ("sora-2-pro", "1080p"): 210,
 }
 # 数量上限必须与 image.gen_image 里的 cap 逐字一致，否则按 N 扣点却只出 cap 张 = 超收。
 _IMAGE_CAP_2 = {"zelong", "zelong2", "xiaole", "seedream"}
@@ -56,13 +66,13 @@ def cost_of(kind, body):
         cnt = 1 if body.get("mask") else max(1, min(cap, int(body.get("count") or 1)))
         return base * cnt  # 质量基价 × 数量
     if kind == "cinematic":
-        # 电影化身：按成片秒数计费（单人动作模仿/开放式 3 点/秒，双人动作模仿 5 点/秒）。
+        # 电影化身按成片秒数计费；各玩法价格由 video.CINEMATIC_RATE_PER_SEC 管理。
         # 秒数在 validate_cinematic_payload 里已经落定成整数（「自适应」在那里就探测过参考视频），
         # 所以这里不存在「还不知道多长」的情况 —— 一次扣准，不需要预扣退差。
         from . import video as video_domain
         return video_domain.cinematic_cost(body)
     if kind == "video":
-        # 口播 10 点/秒 × 输出时长。这里算的是【预扣 hold】：audio 模式 ffprobe 拿精确时长扣准；
+        # 口播每 30 秒一档、每档 30 点。这里算的是【预扣 hold】：audio 模式 ffprobe 拿精确时长扣准；
         # text 模式 TTS 还没跑，按文本长度偏保守估算预扣，跑完由 run_job 按成片真实时长结算多退。
         from . import video as video_domain
         return video_domain.video_cost(body)
@@ -72,13 +82,34 @@ def cost_of(kind, body):
         return 40 if (has_clothes and has_bg) else 25  # 两段(换装+换背景)40/单段25
         # TODO: 上线前与 kongli 确认点数
     if kind == "xiaole_video":
-        # 果肉视频统一 30 点/秒 × 时长（kongli 2026-07-15）。此前是按 xAI 官方成本×汇率动态算/回滚线扁平 30。
-        # 编辑走 source_duration(上限 8.7s)，生成走 duration(上限 15s)；认不出时长兜底 10s。
+        # 果肉生成按模型与分辨率分别定价；参考图不额外收取用户点数。
         if body.get("operation") == "edit":
-            duration = min(8.7, float(body.get("source_duration") or 0.1))
-        else:
-            duration = min(15, int(body.get("duration") or 10))
-        return max(30, int(math.ceil(duration)) * 30)
+            raise ValueError("果肉视频编辑维护中")
+        duration = min(15, max(1, int(body.get("duration") or 10)))
+        if str(body.get("channel") or "grok").lower() != "grok":
+            return duration * 30  # 未定价且当前停用的豆姐/欧米保留原价
+        model = str(body.get("model") or "grok-imagine-video")
+        resolution = str(body.get("resolution") or "720p").lower()
+        rates = {
+            "grok-imagine-video": {"480p": 10, "720p": 12},
+            "grok-imagine-video-1.5": {"480p": 15, "720p": 25, "1080p": 44},
+        }
+        rate = (rates.get(model) or rates["grok-imagine-video"]).get(resolution)
+        if rate is None:
+            raise ValueError("%s 不支持分辨率 %s" % (model, resolution))
+        return duration * rate
+    if kind == "sora_video":
+        model = str(body.get("model") or "sora-2").strip().lower()
+        resolution = str(body.get("resolution") or "720p").strip().lower()
+        # 未知组合用最高档兜底；正常请求会在 validate_sora_video_payload 先被拒绝，
+        # 这里的目标是即使未来接线漏校验，也绝不能回落成 0 点免费送高价 Pro。
+        rate = SORA_VIDEO_RATE.get((model, resolution), max(SORA_VIDEO_RATE.values()))
+        try:
+            seconds = int(body.get("seconds") or 4)
+        except (TypeError, ValueError):
+            seconds = 4
+        seconds = max(4, min(12, seconds))
+        return rate * seconds
     return COST.get(kind, 0)
 
 class AuthPointsError(Exception):
@@ -125,7 +156,7 @@ def get_points(username):
     except Exception:
         return 0
 
-def deduct_points(username, amount, reason=""):
+def deduct_points(username, amount, reason="", transaction_key=""):
     """预扣点。reason 落 points_audit，供对账。
 
     注意：三个服务都是「先扣点、后 INSERT jobs 行」，所以扣点这一刻还没有 job_id，
@@ -136,16 +167,21 @@ def deduct_points(username, amount, reason=""):
     amount = int(amount or 0)
     if amount <= 0:
         return get_points(username)
-    res = _auth_points_request("/api/auth/points/deduct",
-                               {"username": username, "amount": amount, "reason": reason})
+    payload = {"username": username, "amount": amount, "reason": reason}
+    if transaction_key:
+        payload["transaction_key"] = str(transaction_key)
+    res = _auth_points_request("/api/auth/points/deduct", payload)
     return int(res.get("points") or 0)
 
-def refund_points(username, amount, reason=""):
+def refund_points(username, amount, reason="", transaction_key=""):
     amount = int(amount or 0)
     if amount <= 0:
         return get_points(username)
+    payload = {"username": username, "amount": amount, "reason": reason}
+    if transaction_key:
+        payload["transaction_key"] = str(transaction_key)
     res = _auth_points_request("/api/auth/points/refund",
-                               {"username": username, "amount": amount, "reason": reason})
+                               payload)
     return int(res.get("points") or 0)
 
 def safe_refund_points(username, amount, reason=""):
@@ -219,7 +255,7 @@ def history(username, days=30, kind="", page=1, page_size=20):
     items = []
     for row in rows:
         payload = _job_payload(row["payload"])
-        refunded = bool(row["refunded"])
+        refunded = int(row["refunded"] or 0) == 1
         cost = int(row["cost"] or 0)
         items.append({
             "task_id": row["id"],

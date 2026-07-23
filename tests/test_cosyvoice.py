@@ -11,6 +11,7 @@
 import importlib
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest.mock import patch
 
@@ -86,6 +87,24 @@ class HttpShapeTests(unittest.TestCase):
             self.assertEqual(cosyvoice.voice_status("v2")[0], "pending")
             self.assertEqual(cosyvoice.voice_status("nope")[0], "")
 
+    def test_voice_status_reads_later_pages(self):
+        pages = [
+            {"output": {"page_size": 1, "total_count": 2, "voice_list": [
+                {"voice_id": "v1", "status": "OK"}]}},
+            {"output": {"page_size": 1, "total_count": 2, "voice_list": [
+                {"voice_id": "v2", "status": "OK"}]}},
+        ]
+        calls = []
+
+        def fake_http(action, extra=None, timeout=40):
+            calls.append((action, extra))
+            return pages[extra["page_index"]]
+
+        with patch.object(cosyvoice, "_http", fake_http):
+            self.assertEqual(cosyvoice.voice_status("v2")[0], "OK")
+        self.assertEqual([call[1]["page_index"] for call in calls], [0, 1])
+        self.assertTrue(all(call[1]["page_size"] == 100 for call in calls))
+
 
 class WebSocketFramingTests(unittest.TestCase):
     """手写 WebSocket 帧编解码的正确性（RFC 6455）——协议错了合成拿不到音频。"""
@@ -155,6 +174,54 @@ class AudioVoiceMappingTests(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 self.audio._cosy_voice_for(old)
             self.assertIn("重新复刻", str(ctx.exception))
+
+    def test_current_public_voice_never_falls_back_without_cosyvoice(self):
+        with unittest.mock.patch.object(self.audio.cosyvoice, "enabled", return_value=False), \
+                unittest.mock.patch.object(
+                    self.audio, "resolve_audio_provider_voice", return_value="longwan"
+                ), unittest.mock.patch.object(
+                    self.audio, "_post_bytes", side_effect=AssertionError("不应回落 OpenAI")
+                ):
+                with self.assertRaises(ValueError) as ctx:
+                    self.audio.gen_audio({
+                        "text": "测试",
+                        "voice": "S_d21F8OR62",
+                        "_username": "fang",
+                    })
+        self.assertIn("暂不可用", str(ctx.exception))
+        self.assertFalse(hasattr(self.audio, "generate_doubao_preview"))
+
+    def test_current_personal_voice_never_falls_back_without_cosyvoice(self):
+        with unittest.mock.patch.object(self.audio.cosyvoice, "enabled", return_value=False), \
+                unittest.mock.patch.object(
+                    self.audio,
+                    "resolve_audio_provider_voice",
+                    return_value="cosyvoice-v3.5-plus-bailian-abc",
+                ), unittest.mock.patch.object(
+                    self.audio, "_post_bytes", side_effect=AssertionError("不应回落 OpenAI")
+                ):
+            with self.assertRaises(ValueError) as ctx:
+                self.audio.gen_audio({
+                    "text": "测试",
+                    "voice": "vip_slot_1",
+                    "_username": "fang",
+                })
+        self.assertIn("暂不可用", str(ctx.exception))
+
+    def test_legacy_provider_voice_never_falls_back_without_cosyvoice(self):
+        with unittest.mock.patch.object(self.audio.cosyvoice, "enabled", return_value=False), \
+                unittest.mock.patch.object(
+                    self.audio, "resolve_audio_provider_voice", return_value="S_legacy_personal"
+                ), unittest.mock.patch.object(
+                    self.audio, "_post_bytes", side_effect=AssertionError("不应回落 OpenAI")
+                ):
+            with self.assertRaises(ValueError) as ctx:
+                self.audio.gen_audio({
+                    "text": "测试",
+                    "voice": "custom_historical_key",
+                    "_username": "fang",
+                })
+        self.assertIn("暂不可用", str(ctx.exception))
 
 
 if __name__ == "__main__":

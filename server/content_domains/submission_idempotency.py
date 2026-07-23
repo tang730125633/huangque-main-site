@@ -28,18 +28,22 @@ def begin(db_factory, username, endpoint, key, body):
     digest, now = _request_hash(body), int(time.time())
     with closing(db_factory()) as connection:
         ensure_table(connection)
-        row = connection.execute(
-            "SELECT request_hash,response_json FROM submission_idempotency WHERE username=? AND endpoint=? AND idem_key=?",
-            (username, endpoint, key)).fetchone()
-        if row:
-            if row["request_hash"] != digest:
-                return "conflict", None
-            return ("replay", json.loads(row["response_json"])) if row["response_json"] else ("processing", None)
-        connection.execute(
-            "INSERT INTO submission_idempotency(username,endpoint,idem_key,request_hash,created_at,updated_at) VALUES(?,?,?,?,?,?)",
-            (username, endpoint, key, digest, now, now))
+        inserted = connection.execute(
+            "INSERT OR IGNORE INTO submission_idempotency"
+            "(username,endpoint,idem_key,request_hash,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+            (username, endpoint, key, digest, now, now)).rowcount
         connection.commit()
-    return "new", None
+        if inserted == 1:
+            return "new", None
+        row = connection.execute(
+            "SELECT request_hash,response_json FROM submission_idempotency "
+            "WHERE username=? AND endpoint=? AND idem_key=?",
+            (username, endpoint, key)).fetchone()
+        if not row:
+            raise RuntimeError("idempotency claim disappeared")
+        if row["request_hash"] != digest:
+            return "conflict", None
+        return ("replay", json.loads(row["response_json"])) if row["response_json"] else ("processing", None)
 
 def complete(db_factory, username, endpoint, key, response):
     if key:

@@ -45,15 +45,15 @@
     <tr><td><b>登录鉴权</b></td><td><code>8095</code></td><td><code>auth_server.py</code></td><td>登录/点数 · <code>/api/auth/login</code> <code>/me</code></td><td class="st-ok">●</td></tr>
     <tr><td><b>采集获客</b></td><td><code>8100</code></td><td><code>leadgen_api.py</code></td><td><code>/api/gen/collect</code> <code>/collect/search</code> <code>/leads</code></td><td class="st-ok">●</td></tr>
     <tr><td><b>下载</b></td><td><code>8097</code></td><td><code>dl_service.py</code></td><td><code>/api/gen/dl</code></td><td class="st-ok">●</td></tr>
-    <tr><td><b>作图</b></td><td><code>8101</code></td><td><code>imggen_api.py</code></td><td><code>/api/gen/banana</code>（nano banana）</td><td class="st-ok">●</td></tr>
+    <tr><td><b>作图</b></td><td><code>8101</code></td><td><code>imggen_api.py</code></td><td><code>/api/gen/banana</code>（纳米香蕉）</td><td class="st-ok">●</td></tr>
     <tr><td><b>内容+公共核心</b></td><td><code>8096</code></td><td><code>content_api.py</code></td><td>gpt-image/文案/配音/任务轮询/历史/文件</td><td class="st-ok">●</td></tr>
   </table>
 
   <h2><span class="dot"></span>二、生图渠道</h2>
   <table>
     <tr><th>渠道</th><th>模型/用途</th><th>base_url</th><th>认证</th><th>key 存放（打码）</th><th>状态</th></tr>
-    <tr><td><b>nano banana</b></td><td>Gemini 图像 NB2/Pro</td><td><code>generativelanguage.googleapis.com</code></td><td class="tag">x-goog-api-key</td><td>服务器 <code>content.env</code> → <code>GEMINI_API_KEY</code></td><td class="st-ok">●</td></tr>
-    <tr><td><b>gpt-image-2</b></td><td>OpenAI 出图（写实/改图）</td><td><code>api.openai.com/v1</code> 或 XiaoLe 中转</td><td class="tag gold">Bearer</td><td><code>content.env</code> → <code>OPENAI_API_KEY</code> · 备 <code>XIAOLE_KEY</code></td><td class="st-ok">●</td></tr>
+    <tr><td><b>纳米香蕉</b></td><td>纳米香蕉 2 / Pro</td><td><code>generativelanguage.googleapis.com</code></td><td class="tag">x-goog-api-key</td><td>服务器 <code>content.env</code> → <code>GEMINI_API_KEY</code></td><td class="st-ok">●</td></tr>
+    <tr><td><b>黄雀引擎 2</b></td><td>写实出图与局部修改</td><td><code>api.openai.com/v1</code> 或 XiaoLe 中转</td><td class="tag gold">Bearer</td><td><code>content.env</code> → <code>OPENAI_API_KEY</code> · 备 <code>XIAOLE_KEY</code></td><td class="st-ok">●</td></tr>
     <tr><td><b>ComfyUI Cloud</b></td><td>Flux 等工作流出图</td><td><code>cloud.comfy.org/api</code></td><td class="tag gold">Bearer</td><td>本地 <code>secret.comfy_cloud.env</code></td><td class="st-todo">●</td></tr>
     <tr><td><b>Flux</b></td><td>生图模型（走 ComfyUI / 中转）</td><td>见 ComfyUI / 中转站</td><td class="tag gray">随渠道</td><td>同上</td><td class="st-todo">●</td></tr>
   </table>
@@ -61,16 +61,16 @@
   <h2><span class="dot"></span>三、生视频渠道</h2>
   <table>
     <tr><th>渠道</th><th>模型/用途</th><th>base_url</th><th>认证</th><th>key 存放（打码）</th><th>状态</th></tr>
-    <tr><td><b>Seedance（火山 Ark）</b></td><td>字节 Seedance 文/图生视频</td><td><code>ark.cn-beijing.volces.com/api/v3</code></td><td class="tag gold">Bearer（Ark key）</td><td>本地 <code>secret.env</code> / 服务器 <code>DOUBAO_TOKEN</code></td><td class="st-todo">●</td></tr>
+    <tr><td><b>小乐视频（豆姐 Seedance）</b></td><td>Seedance 2.0 Fast 文/图生视频（micro 当前停用）</td><td><code>api.xiaolevideo.cn</code></td><td class="tag gold">Bearer</td><td>服务器 <code>content.env</code> → <code>XIAOLEVIDEO_API_KEY</code></td><td class="st-warn">● 停用</td></tr>
     <tr><td><b>Grok i2v</b></td><td>xAI Grok 图生视频</td><td>x.ai / 中转</td><td class="tag gray">Bearer</td><td><span class="st-warn">待补：grok key 存放位置</span></td><td class="st-warn">●</td></tr>
-    <tr><td><b>Sora</b></td><td>OpenAI 视频（走中转）</td><td>中转站</td><td class="tag gray">随中转</td><td><span class="st-warn">待补</span></td><td class="st-warn">●</td></tr>
+    <tr><td><b>Sora 2 限时 Beta</b></td><td>OpenAI Sora 2 / Pro 文生视频（官方 2026-09-24 下线）</td><td><code>OPENAI_BASE</code> → <code>/v1/videos</code></td><td class="tag gold">Bearer</td><td><code>content.env</code> → <code>OPENAI_API_KEY</code>；另需 <code>SORA_VIDEO_ENABLED=1</code></td><td class="st-warn">●</td></tr>
   </table>
 
   <h2><span class="dot"></span>四、LLM / 对话 / 中转站</h2>
   <table>
     <tr><th>渠道</th><th>用途</th><th>base_url</th><th>认证</th><th>key 存放（打码）</th><th>状态</th></tr>
     <tr><td><b>泽龙中转</b></td><td>多模型聚合中转</td><td><code>api.zelong.vip</code></td><td class="tag gold">Bearer（OpenAI 兼容）</td><td>本地 <code>secret.zelong.env</code> → <code>ZKEY</code>/<code>ZURL</code></td><td class="st-todo">●</td></tr>
-    <tr><td><b>XiaoLe 中转</b></td><td>gpt-image-2 / GPT 多模态</td><td><code>api.xiaoleai.team</code></td><td class="tag gold">Bearer</td><td>本地 <code>secret.xiaole.env</code> → <code>XIAOLE_KEY</code></td><td class="st-todo">●</td></tr>
+    <tr><td><b>XiaoLe 中转</b></td><td>黄雀引擎 2 / 多模态</td><td><code>api.xiaoleai.team</code></td><td class="tag gold">Bearer</td><td>本地 <code>secret.xiaole.env</code> → <code>XIAOLE_KEY</code></td><td class="st-todo">●</td></tr>
     <tr><td><b>ZDC 中转</b></td><td>备用中转</td><td><code>ZDC_URL</code></td><td class="tag gold">Bearer</td><td>本地 <code>secret.env</code> → <code>ZDC_KEY</code>/<code>ZDC_URL</code></td><td class="st-todo">●</td></tr>
     <tr><td><b>AutoDL-Anthropic</b></td><td>Claude 中转</td><td><code>www.autodl.art/api/v1/anthropic</code></td><td class="tag gold">Bearer</td><td>本地 <code>secret.autodl_partner.env</code></td><td class="st-todo">●</td></tr>
     <tr><td><b>DeepSeek</b></td><td>对话/推理</td><td><code>api.deepseek.com</code></td><td class="tag gold">Bearer</td><td><span class="st-warn">待补：DeepSeek key 存放位置</span></td><td class="st-warn">●</td></tr>
@@ -79,7 +79,7 @@
   <h2><span class="dot"></span>五、配音 / 声音复刻（TTS）</h2>
   <table>
     <tr><th>渠道</th><th>用途</th><th>base_url</th><th>认证</th><th>key 存放（打码）</th><th>状态</th></tr>
-    <tr><td><b>豆包/火山 mega_tts</b></td><td>配音 + 个人音色克隆（站内音频 8096 在用）</td><td><code>openspeech.bytedance.com/api/v1/tts</code> · <code>/mega_tts</code></td><td class="tag">X-Api-App-Id + X-Api-Access-Key</td><td>服务器 <code>DOUBAO_*</code> · 本地 <code>secret.huoshan_tts.env</code>(HS_*)</td><td class="st-ok">●</td></tr>
+    <tr><td><b>阿里百炼 CosyVoice</b></td><td>配音 + 个人音色克隆</td><td><code>dashscope.aliyuncs.com</code></td><td class="tag">Bearer</td><td>服务器 <code>DASHSCOPE_API_KEY</code></td><td class="st-ok">●</td></tr>
     <tr><td><b>ElevenLabs</b></td><td>配音 / 声音克隆(IVC·PVC)</td><td><code>api.elevenlabs.io</code></td><td class="tag">xi-api-key</td><td>本地 <code>secret.elevenlabs.env</code> → <code>ELEVEN_KEY</code></td><td class="st-todo">●</td></tr>
     <tr><td><b>IndexTTS2</b></td><td>情绪声克隆（自托管，跑云 GPU）</td><td>云 GPU（见第七节）</td><td class="tag gray">SSH 到 GPU 跑</td><td>AutoDL RTX5090</td><td class="st-todo">●</td></tr>
   </table>
@@ -90,8 +90,8 @@
     <tr>
       <td><b>生成配音</b><br><code>/api/gen/audio</code></td>
       <td><span class="tag gold">POST</span></td>
-      <td>提交 TTS 异步任务。公共音色走 OpenAI TTS；个人复刻音色 <code>S_*</code> 走豆包 TTS。</td>
-      <td><code>text</code> 最多 1200 字<br><code>voice</code>：<code>dapeng</code>/<code>zelong</code>/<code>paul</code> 或 <code>vip_S_xxx</code><br><code>speed</code> 0.5-2.0，<code>pitch</code> -12-12，<code>volume</code> -50-100</td>
+      <td>提交 TTS 异步任务。当前公共音色和个人复刻音色统一走 CosyVoice。</td>
+      <td><code>text</code> 最多 1000 字<br><code>voice</code>：公共 <code>S_*</code> 或个人 <code>vip_*</code><br><code>speed</code> 0.5-2.0，<code>pitch</code> -12-12，<code>volume</code> -50-100</td>
       <td>返回 <code>job_id</code>，轮询 <code>GET /api/gen/job/{id}</code>。完成后 result 内有 <code>url</code>，并写入配音资产。</td>
     </tr>
     <tr>
@@ -118,26 +118,26 @@
     <tr>
       <td><b>兑换槽位</b><br><code>/api/gen/audio/redeem-slot</code></td>
       <td><span class="tag gold">POST</span></td>
-      <td>输入兑换码，从槽位池分配一个未使用的豆包复刻槽位。</td>
+      <td>输入兑换码，从槽位池分配一个未使用的复刻槽位。</td>
       <td><code>code</code> 兑换码</td>
       <td>返回分配后的槽位记录。槽位 id 只用于后端流程，前端不直接展示给用户。</td>
     </tr>
     <tr>
       <td><b>VIP 复刻上传</b><br><code>/api/gen/audio/clone-vip</code></td>
       <td><span class="tag gold">POST</span></td>
-      <td>用槽位 id + 用户上传样音发起豆包声音复刻。后端立即标记 training，并在后台上传豆包。</td>
+      <td>用槽位 id + 用户上传样音发起 CosyVoice 声音复刻。</td>
       <td><code>slot_id</code>，<code>name</code>，<code>audio</code> base64，<code>audio_format</code> 如 wav/mp3</td>
       <td>返回 training。前端继续轮询 <code>/api/gen/audio/clone-status</code>，等待复刻完成并生成试听音频。</td>
     </tr>
     <tr>
       <td><b>查询复刻状态</b><br><code>/api/gen/audio/clone-status</code></td>
       <td><span class="tag">GET</span></td>
-      <td>查询豆包复刻状态。豆包返回本次新结果后，后端再用测试文案生成试听音频，并更新卡片状态。</td>
+      <td>查询 CosyVoice 复刻状态，并更新音色卡片状态。</td>
       <td><code>slot_id</code></td>
       <td><code>status=ready</code> 且有 <code>preview_url</code> 才代表完整流程结束；<code>failed</code> 时看 <code>clone_error</code>。</td>
     </tr>
   </table>
-  <div class="note">完整流程：前端拿音色/槽位 → 生成配音时提交 <code>/api/gen/audio</code> → 轮询任务 → 文件进 <code>content_out</code>，资产进 <code>audio_assets.db</code>。复刻流程：兑换槽位 → 上传样音 → 等豆包训练成功 → 生成测试音频 → 更新 <code>audio_voices.preview_url</code> 和槽位状态。</div>
+  <div class="note">完整流程：前端拿音色/槽位 → 生成配音时提交 <code>/api/gen/audio</code> → 轮询任务 → 文件进 <code>content_out</code>，资产进 <code>audio_assets.db</code>。复刻流程：开通槽位 → 上传样音 → 等 CosyVoice 训练成功 → 生成测试音频 → 更新 <code>audio_voices.preview_url</code> 和槽位状态。</div>
 
   <h2><span class="dot"></span>六、数字人</h2>
   <table>
