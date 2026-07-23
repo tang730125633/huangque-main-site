@@ -12,7 +12,8 @@ import pathlib
 import unittest
 
 
-SHIP = pathlib.Path(__file__).resolve().parents[1] / "ship"
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+SHIP = ROOT / "ship"
 SRC = SHIP.read_text(encoding="utf-8")
 
 
@@ -23,6 +24,17 @@ def _idx(needle):
 
 
 class SmokeImportTests(unittest.TestCase):
+    def test_invite_module_is_deployed_with_auth(self):
+        self.assertIn("server/auth_server.py|server/invites.py|server/wxpay.py", SRC)
+        self.assertIn(
+            "'server/invites.py': '/home/ubuntu/auth-service/invites.py'",
+            (ROOT / "scripts/drift_sentinel.py").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            '"$R"/server/invites.py',
+            (ROOT / "deploy/setup-dev-server.sh").read_text(encoding="utf-8"),
+        )
+
     def test_defined_and_called_per_service(self):
         self.assertIn("smoke_import(){", SRC)
         self.assertRegex(SRC, r"for s in \$RESTART; do smoke_import")
