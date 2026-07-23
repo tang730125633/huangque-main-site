@@ -204,15 +204,20 @@ class XiaoleVideoTests(unittest.TestCase):
              patch("content_domains.video_xai.generate", return_value=fake) as generate, \
              patch.object(self.video, "_download_xiaole_video", return_value="video/grok_xai_demo.mp4"), \
              patch.object(self.video, "_extract_first_frame_cover", return_value="video/grok_xai_demo_cover.jpg"), \
-             patch.object(self.video, "public_url", return_value="https://cos.example/cover.jpg"):
+             patch.object(self.video, "public_url", side_effect=[
+                 "https://cos.example/cover.jpg",
+                 "https://cos.example/video/grok_xai_demo.mp4",
+             ]) as publish:
             result = self.video.gen_xiaole_video({
                 "channel": "grok", "prompt": "cinematic demo", "ratio": "9:16",
                 "duration": 10, "resolution": "720p", "model": "grok-imagine-video",
             })
         self.assertEqual(result["video_file"], "video/grok_xai_demo.mp4")
+        self.assertEqual(result["video_url"], "https://cos.example/video/grok_xai_demo.mp4")
         self.assertEqual(result["provider_video_id"], "xai-1")
         self.assertEqual(result["model"], "grok-imagine-video")
         self.assertEqual(result["duration"], 10)
+        publish.assert_any_call("video/grok_xai_demo.mp4", "video/mp4", private=True)
         generate.assert_called_once()
 
     def test_grok_uses_openrouter_only_after_safe_xai_create_failure(self):
@@ -269,7 +274,11 @@ class XiaoleVideoTests(unittest.TestCase):
                 "source_video_url": "https://vidgen.x.ai/edit.mp4", "duration": 6.2}
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"), \
              patch.object(self.video, "_save_data_file", return_value="video/source.mp4"), \
-             patch.object(self.video, "public_url", side_effect=["https://cos.example/source.mp4", "https://cos.example/cover.jpg"]), \
+             patch.object(self.video, "public_url", side_effect=[
+                 "https://cos.example/source.mp4",
+                 "https://cos.example/cover.jpg",
+                 "https://cos.example/edit.mp4",
+             ]), \
              patch.object(self.video, "_file_url", return_value="/api/files/video/source.mp4"), \
              patch("content_domains.video_xai.edit", return_value=fake) as edit, \
              patch.object(self.video, "_download_xiaole_video", return_value="video/edit.mp4"), \
