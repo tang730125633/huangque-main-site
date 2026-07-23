@@ -68,6 +68,7 @@ jobs:
           node tests/test_canvas_api.js
           node tests/test_canvas_short_drama.js
           node tests/test_canvas_short_drama_production.js
+          node tests/test_canvas_short_drama_voice.js
 
       - name: 安装设计系统依赖
         working-directory: design-system

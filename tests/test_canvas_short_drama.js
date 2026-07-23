@@ -144,6 +144,14 @@ function testCanvasIntegration() {
   const css = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-short-drama.css'), 'utf8').replace(/\r\n/g, '\n');
   const productionSource = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-short-drama-production.js'), 'utf8').replace(/\r\n/g, '\n');
   const productionCss = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas', 'canvas-short-drama-production.css'), 'utf8').replace(/\r\n/g, '\n');
+  const voiceSource = fs.readFileSync(
+    path.join(root, 'site', 'workbench', 'canvas', 'canvas-short-drama-voice.js'),
+    'utf8'
+  ).replace(/\r\n/g, '\n');
+  const voiceCss = fs.readFileSync(
+    path.join(root, 'site', 'workbench', 'canvas', 'canvas-short-drama-voice.css'),
+    'utf8'
+  ).replace(/\r\n/g, '\n');
   const ci = fs.readFileSync(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
   const appSource = app.replace(/\r\n/g, '\n');
 
@@ -151,13 +159,17 @@ function testCanvasIntegration() {
   assert.ok(html.includes('canvas/canvas-short-drama.js?v='));
   assert.ok(html.includes('canvas/canvas-short-drama-production.css?v='));
   assert.ok(html.includes('canvas/canvas-short-drama-production.js?v='));
+  assert.ok(html.includes('canvas/canvas-short-drama-voice.css?v='));
+  assert.ok(html.includes('canvas/canvas-short-drama-voice.js?v='));
   assert.ok(html.indexOf('canvas/canvas-short-drama.css?v=') < html.indexOf('canvas/canvas-short-drama-production.css?v='));
   assert.ok(html.indexOf('canvas/canvas-short-drama-production.js?v=') < html.indexOf('canvas/canvas-short-drama.js?v='));
+  assert.ok(html.indexOf('canvas/canvas-short-drama-voice.js?v=') < html.indexOf('canvas/canvas-short-drama.js?v='));
   assert.ok(html.indexOf('canvas/canvas-short-drama.js?v=') < html.indexOf('canvas/canvas-app.js?v='));
   for (const command of [
     'node tests/test_canvas_api.js',
     'node tests/test_canvas_short_drama.js',
     'node tests/test_canvas_short_drama_production.js',
+    'node tests/test_canvas_short_drama_voice.js',
   ]) assert.ok(ci.includes(command), `CI must run ${command}`);
   assert.equal((html.match(/data-add="shortDrama"/g) || []).length, 2);
   assert.match(app, /shortDrama:\s*\{name:'短剧项目',\s*color:'#[a-f0-9]+'\}/);
@@ -193,6 +205,8 @@ function testCanvasIntegration() {
     ['canvas/canvas-short-drama.css', css],
     ['canvas/canvas-short-drama-production.js', productionSource],
     ['canvas/canvas-short-drama-production.css', productionCss],
+    ['canvas/canvas-short-drama-voice.js', voiceSource],
+    ['canvas/canvas-short-drama-voice.css', voiceCss],
   ]) {
     const stamp = crypto.createHash('md5').update(source).digest('hex').slice(0, 8);
     assert.ok(html.includes(`${asset}?v=${stamp}`), `${asset} cache stamp must be LF MD5`);
@@ -728,10 +742,13 @@ async function testWorkspaceSourceAndRenderContract() {
   }), /nc-short-drama-production|data-action="generate-current"/,
   'production controls cannot be opened before the server advances to stills_review');
 
+  const stillCalls = [];
+  const voiceCalls = [];
   const delegatedOptions = [];
   let delegatedDestroyCalls = 0;
-  const productionModule = {
+  const stillModule = {
     createWorkspace(options) {
+      stillCalls.push(options.projectId);
       delegatedOptions.push(options);
       return {
         projectId: options.projectId,
@@ -742,16 +759,27 @@ async function testWorkspaceSourceAndRenderContract() {
       };
     },
   };
+  const voiceModule = {
+    createWorkspace(options) {
+      voiceCalls.push(options.projectId);
+      return {
+        ready: Promise.resolve(),
+        render() { return '<section>voice workspace</section>'; },
+        reload() { return Promise.resolve(); },
+        destroy() {},
+      };
+    },
+  };
   const apiClient = { json() { throw new Error('fake production client is inspected, not called'); } };
   const confirmMessages = [];
   const confirm = (message) => { confirmMessages.push(message); return true; };
   const canvasSummaries = [];
   const onChange = (summary) => { canvasSummaries.push(summary); };
   const stillsWorkspace = shortDrama.createWorkspace({
-    projectId: 'project-1', document: null, canEdit: false, productionModule,
-    apiClient, confirm, onChange,
+    projectId: 'project-stills', document: null, canEdit: false,
+    productionModule: stillModule, voiceModule, apiClient, confirm, onChange,
     client: {
-      get() { return Promise.resolve(workspaceProject({ stage: 'stills_review' })); },
+      get() { return Promise.resolve(workspaceProject({ id: 'project-stills', stage: 'stills_review' })); },
       update() { throw new Error('phase-one update must not run'); },
       confirm() { throw new Error('phase-one confirm must not run'); },
       generatePlan() { throw new Error('phase-one planning must not run'); },
@@ -759,7 +787,7 @@ async function testWorkspaceSourceAndRenderContract() {
   });
   await stillsWorkspace.ready;
   assert.equal(delegatedOptions.length, 1);
-  assert.equal(delegatedOptions[0].projectId, 'project-1');
+  assert.equal(delegatedOptions[0].projectId, 'project-stills');
   assert.strictEqual(delegatedOptions[0].client, apiClient);
   assert.equal(delegatedOptions[0].canEdit, false);
   assert.notStrictEqual(delegatedOptions[0].confirm, confirm,
@@ -775,19 +803,29 @@ async function testWorkspaceSourceAndRenderContract() {
   assert.notStrictEqual(delegatedOptions[0].onChange, onChange,
     'wrapper adapts production summaries before persisting them to the canvas');
   delegatedOptions[0].onChange({
-    project_id: 'project-1', revision: 9, stage: 'voice_review', ratio: '16:9',
+    project_id: 'project-stills', revision: 9, stage: 'voice_review', ratio: '16:9',
     spent_points: 24, point_budget: 100, reserved_points: 0,
     shots: [{ asset: { versions: [{ url: '/secret.png', job: 91 }] } }],
   });
   assert.equal(stillsWorkspace.getProject().stage, 'voice_review');
   assert.deepEqual(canvasSummaries, [{
-    project_id: 'project-1', title: '雨夜来客', ratio: '16:9', target_duration: 30,
+    project_id: 'project-stills', title: '雨夜来客', ratio: '16:9', target_duration: 30,
     stage: 'voice_review', progress: 63, spent_points: 24, estimated_points: 12,
   }]);
   assert.doesNotMatch(JSON.stringify(canvasSummaries), /shot|asset|version|job|url/i);
   assert.match(stillsWorkspace.render(), /画面确认[\s\S]*data-action="close"[\s\S]*nc-short-drama-production/);
   stillsWorkspace.destroy();
   assert.equal(delegatedDestroyCalls, 1, 'destroy cascades into the production workspace');
+
+  const voiceWorkspace = shortDrama.createWorkspace({
+    projectId: 'project-voice', document: null,
+    productionModule: stillModule, voiceModule, apiClient,
+    client: { get() { return Promise.resolve(workspaceProject({ id: 'project-voice', stage: 'voice_review' })); } },
+  });
+  await voiceWorkspace.ready;
+  assert.deepEqual(stillCalls, ['project-stills']);
+  assert.deepEqual(voiceCalls, ['project-voice']);
+  voiceWorkspace.destroy();
 
   let resolveDelegateReady;
   let lateDestroyCalls = 0;
@@ -812,9 +850,9 @@ async function testWorkspaceSourceAndRenderContract() {
   assert.equal(await closing.ready, null, 'late delegated readiness is ignored after destroy');
   assert.equal(lateDestroyCalls, 1);
 
-  for (const stage of ['voice_review', 'video_review', 'assembly_review', 'completed']) {
+  for (const stage of ['video_review', 'assembly_review', 'completed']) {
     const later = shortDrama.createWorkspace({
-      projectId: `project-${stage}`, document: null, productionModule, apiClient,
+      projectId: `project-${stage}`, document: null, productionModule: stillModule, voiceModule, apiClient,
       client: { get() { return Promise.resolve(workspaceProject({ id: `project-${stage}`, stage })); } },
     });
     await later.ready;
@@ -823,7 +861,7 @@ async function testWorkspaceSourceAndRenderContract() {
   }
 
   const planning = shortDrama.createWorkspace({
-    projectId: 'planning', document: null, productionModule, apiClient,
+    projectId: 'planning', document: null, productionModule: stillModule, voiceModule, apiClient,
     client: { get() { return Promise.resolve(workspaceProject({ id: 'planning', stage: 'storyboard_review' })); } },
   });
   await planning.ready;

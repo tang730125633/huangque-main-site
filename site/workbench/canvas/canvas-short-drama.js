@@ -650,8 +650,13 @@
     function activateProductionWorkspace(generation){
       var activationGeneration=generation==null?loadGeneration:generation;
       if(activationGeneration!==loadGeneration) return Promise.resolve(null);
-      var productionModule=Object.prototype.hasOwnProperty.call(options,'productionModule')?
-        options.productionModule:(root&&root.HQCanvas&&root.HQCanvas.shortDramaProduction);
+      var isVoiceStage=project&&project.stage==='voice_review';
+      var moduleOption=isVoiceStage?'voiceModule':'productionModule';
+      var defaultModule=isVoiceStage?
+        (root&&root.HQCanvas&&root.HQCanvas.shortDramaVoice):
+        (root&&root.HQCanvas&&root.HQCanvas.shortDramaProduction);
+      var productionModule=Object.prototype.hasOwnProperty.call(options,moduleOption)?
+        options[moduleOption]:defaultModule;
       if(destroyed) return Promise.reject(new Error('workspace destroyed'));
       if(!productionModule||typeof productionModule.createWorkspace!=='function'){
         return Promise.reject(new Error('短剧生产工作区未加载，请刷新页面重试'));
