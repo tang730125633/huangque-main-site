@@ -1,10 +1,6 @@
 """Voice-line snapshots and read models for short-drama production."""
 
-import hashlib
-import json
 import sqlite3
-import time
-import uuid
 
 
 VOICE_STAGES = {
@@ -37,8 +33,12 @@ CREATE TABLE IF NOT EXISTS short_drama_voice_lines (
   pitch INTEGER NOT NULL DEFAULT 0 CHECK (pitch >= -12 AND pitch <= 12),
   volume INTEGER NOT NULL DEFAULT 0 CHECK (volume >= -50 AND volume <= 100),
   current_version INTEGER,
-  start_ms INTEGER CHECK (start_ms IS NULL OR start_ms >= 0),
-  end_ms INTEGER CHECK (end_ms IS NULL OR end_ms > 0),
+  start_ms INTEGER CHECK (
+    start_ms IS NULL OR (typeof(start_ms)='integer' AND start_ms >= 0)
+  ),
+  end_ms INTEGER CHECK (
+    end_ms IS NULL OR (typeof(end_ms)='integer' AND end_ms > 0)
+  ),
   input_hash TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
@@ -51,7 +51,9 @@ CREATE TABLE IF NOT EXISTS short_drama_voice_versions (
   job_id INTEGER NOT NULL UNIQUE,
   audio_file TEXT NOT NULL DEFAULT '',
   audio_url TEXT NOT NULL DEFAULT '',
-  duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms > 0),
+  duration_ms INTEGER CHECK (
+    duration_ms IS NULL OR (typeof(duration_ms)='integer' AND duration_ms > 0)
+  ),
   speech_text TEXT NOT NULL,
   voice_key TEXT NOT NULL,
   settings_json TEXT NOT NULL,
@@ -128,6 +130,15 @@ FOR EACH ROW WHEN NOT EXISTS (
 BEGIN
   SELECT RAISE(ABORT, 'voice shot must belong to project');
 END;
+CREATE TRIGGER IF NOT EXISTS short_drama_voice_shots_project_update_guard
+BEFORE UPDATE OF shot_id, project_id ON short_drama_voice_shots
+FOR EACH ROW WHEN NOT EXISTS (
+  SELECT 1 FROM short_drama_shots
+  WHERE id=NEW.shot_id AND project_id=NEW.project_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'voice shot must belong to project');
+END;
 CREATE TRIGGER IF NOT EXISTS short_drama_voice_lines_project_guard
 BEFORE INSERT ON short_drama_voice_lines
 FOR EACH ROW WHEN NOT EXISTS (
@@ -136,6 +147,106 @@ FOR EACH ROW WHEN NOT EXISTS (
 )
 BEGIN
   SELECT RAISE(ABORT, 'voice line shot must belong to project');
+END;
+CREATE TRIGGER IF NOT EXISTS short_drama_voice_lines_project_update_guard
+BEFORE UPDATE OF project_id, shot_id ON short_drama_voice_lines
+FOR EACH ROW WHEN NOT EXISTS (
+  SELECT 1 FROM short_drama_shots
+  WHERE id=NEW.shot_id AND project_id=NEW.project_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'voice line shot must belong to project');
+END;
+CREATE TRIGGER IF NOT EXISTS short_drama_voice_lines_source_text_immutable
+BEFORE UPDATE OF source_text ON short_drama_voice_lines
+FOR EACH ROW WHEN NEW.source_text IS NOT OLD.source_text
+BEGIN
+  SELECT RAISE(ABORT, 'voice line source text is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS short_drama_voice_jobs_project_guard
+BEFORE INSERT ON short_drama_voice_jobs
+FOR EACH ROW WHEN NOT EXISTS (
+  SELECT 1 FROM short_drama_projects AS project
+  JOIN short_drama_shots AS shot
+    ON shot.id=NEW.shot_id AND shot.project_id=NEW.project_id
+  JOIN short_drama_voice_lines AS line
+    ON line.id=NEW.voice_line_id AND line.project_id=NEW.project_id
+    AND line.shot_id=NEW.shot_id
+  WHERE project.id=NEW.project_id AND project.username=NEW.username
+)
+BEGIN
+  SELECT RAISE(ABORT, 'voice job references must belong to project owner');
+END;
+CREATE TRIGGER IF NOT EXISTS short_drama_voice_jobs_project_update_guard
+BEFORE UPDATE OF username, project_id, shot_id, voice_line_id ON short_drama_voice_jobs
+FOR EACH ROW WHEN NOT EXISTS (
+  SELECT 1 FROM short_drama_projects AS project
+  JOIN short_drama_shots AS shot
+    ON shot.id=NEW.shot_id AND shot.project_id=NEW.project_id
+  JOIN short_drama_voice_lines AS line
+    ON line.id=NEW.voice_line_id AND line.project_id=NEW.project_id
+    AND line.shot_id=NEW.shot_id
+  WHERE project.id=NEW.project_id AND project.username=NEW.username
+)
+BEGIN
+  SELECT RAISE(ABORT, 'voice job references must belong to project owner');
+END;
+CREATE TRIGGER IF NOT EXISTS short_drama_voice_quotes_project_guard
+BEFORE INSERT ON short_drama_voice_quotes
+FOR EACH ROW WHEN NOT EXISTS (
+  SELECT 1 FROM short_drama_projects AS project
+  JOIN short_drama_voice_lines AS line
+    ON line.id=NEW.voice_line_id AND line.project_id=NEW.project_id
+  WHERE project.id=NEW.project_id AND project.username=NEW.username
+)
+BEGIN
+  SELECT RAISE(ABORT, 'voice quote line must belong to project owner');
+END;
+CREATE TRIGGER IF NOT EXISTS short_drama_voice_quotes_project_update_guard
+BEFORE UPDATE OF username, project_id, voice_line_id ON short_drama_voice_quotes
+FOR EACH ROW WHEN NOT EXISTS (
+  SELECT 1 FROM short_drama_projects AS project
+  JOIN short_drama_voice_lines AS line
+    ON line.id=NEW.voice_line_id AND line.project_id=NEW.project_id
+  WHERE project.id=NEW.project_id AND project.username=NEW.username
+)
+BEGIN
+  SELECT RAISE(ABORT, 'voice quote line must belong to project owner');
+END;
+CREATE TRIGGER IF NOT EXISTS short_drama_voice_charge_attempts_project_guard
+BEFORE INSERT ON short_drama_voice_charge_attempts
+FOR EACH ROW WHEN NOT EXISTS (
+  SELECT 1 FROM short_drama_projects AS project
+  JOIN short_drama_shots AS shot
+    ON shot.id=NEW.shot_id AND shot.project_id=NEW.project_id
+  JOIN short_drama_voice_lines AS line
+    ON line.id=NEW.voice_line_id AND line.project_id=NEW.project_id
+    AND line.shot_id=NEW.shot_id
+  JOIN short_drama_voice_quotes AS quote
+    ON quote.token=NEW.quote_token AND quote.username=NEW.username
+    AND quote.project_id=NEW.project_id AND quote.voice_line_id=NEW.voice_line_id
+  WHERE project.id=NEW.project_id AND project.username=NEW.username
+)
+BEGIN
+  SELECT RAISE(ABORT, 'voice charge references must belong to project owner');
+END;
+CREATE TRIGGER IF NOT EXISTS short_drama_voice_charge_attempts_project_update_guard
+BEFORE UPDATE OF username, project_id, shot_id, voice_line_id, quote_token
+ON short_drama_voice_charge_attempts
+FOR EACH ROW WHEN NOT EXISTS (
+  SELECT 1 FROM short_drama_projects AS project
+  JOIN short_drama_shots AS shot
+    ON shot.id=NEW.shot_id AND shot.project_id=NEW.project_id
+  JOIN short_drama_voice_lines AS line
+    ON line.id=NEW.voice_line_id AND line.project_id=NEW.project_id
+    AND line.shot_id=NEW.shot_id
+  JOIN short_drama_voice_quotes AS quote
+    ON quote.token=NEW.quote_token AND quote.username=NEW.username
+    AND quote.project_id=NEW.project_id AND quote.voice_line_id=NEW.voice_line_id
+  WHERE project.id=NEW.project_id AND project.username=NEW.username
+)
+BEGIN
+  SELECT RAISE(ABORT, 'voice charge references must belong to project owner');
 END;
 """
 
