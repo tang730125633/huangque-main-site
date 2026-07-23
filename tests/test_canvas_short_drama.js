@@ -238,6 +238,8 @@ function testCanvasIntegration() {
   assert.ok(app.includes('snap=sanitizeShortDramaSnapshot(snap);'), 'restore sanitizes before rebuilding nodes');
   assert.ok(app.includes('copy.data=sanitizeShortDramaSnapshot(copy.data);'), 'board duplication sanitizes persisted nodes');
   assert.match(app, /openShortDrama\.disabled=!!readonly&&!\(node&&node\.params\.project_id\)/, 'readonly existing projects remain openable');
+  assert.match(app, /nodeAriaDisabled\(node,readonly\)[\s\S]*?shortDramaModule\.canOpenNode\(node\.params,false\)/,
+    'readonly linked short-drama nodes must not expose disabled ARIA semantics');
   const ensureSource = app.match(/function ensureShortDramaProject\(node,scopeKey\)\{[\s\S]*?\n  \}/)[0];
   assert.doesNotMatch(ensureSource, /scheduleSave\(/, 'coordinator apply is the single save path');
 

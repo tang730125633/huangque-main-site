@@ -765,6 +765,10 @@
     if(!ops.length&&!extraOps.length){ setSaveState('saved'); return; }
     collabController.save(snap,extraOps);
   }
+  function nodeAriaDisabled(node,readonly){
+    if(!readonly) return false;
+    return !(node&&node.type==='shortDrama'&&shortDramaModule.canOpenNode(node.params,false));
+  }
   function setEditorReadonly(readonly){
     document.querySelectorAll('.nc-add,#ncRunAll,#ncTplSave,#ncTplLoad,#ncTplDelete,#ncTplImport,#ncPaste,#ncLayout,#ncClear,#ncResetDemo,#ncUndo,#ncRedo,#ncFsAdd,#ncFsUndo,#ncFsRedo,#ncFsRun,#ncFsTplMenu,#ncFsMore').forEach(function(el){
       if(el) el.disabled=!!readonly;
@@ -777,7 +781,11 @@
     document.querySelectorAll('.nc-node [data-f="headTitle"]').forEach(function(el){
       if(readonly){ el.setAttribute('contenteditable','false'); el.removeAttribute('spellcheck'); }
     });
-    document.querySelectorAll('.nc-node,.nc-port,.nc-drop').forEach(function(el){ el.setAttribute('aria-disabled',readonly?'true':'false'); });
+    document.querySelectorAll('.nc-node').forEach(function(el){
+      var node=nodes[el.getAttribute('data-node-id')];
+      el.setAttribute('aria-disabled',nodeAriaDisabled(node,readonly)?'true':'false');
+    });
+    document.querySelectorAll('.nc-port,.nc-drop').forEach(function(el){ el.setAttribute('aria-disabled',readonly?'true':'false'); });
   }
   function migrateDraftToBoards(){
     if(getBoards().length) return;
