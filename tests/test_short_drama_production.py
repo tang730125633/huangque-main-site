@@ -1546,6 +1546,44 @@ class ShortDramaProductionTests(unittest.TestCase):
         with self.assertRaises(short_drama.RevisionConflict):
             short_drama_production.confirm_stage(self.db, "alice", body)
 
+    def test_confirm_stills_creates_voice_snapshot_in_the_same_transaction(self):
+        self._lock_every_current_still()
+        confirmed = short_drama_production.confirm_stage(
+            self.db, "alice", {
+                "project_id": self.project["id"],
+                "revision": self.project["revision"],
+                "stage": "stills_review",
+            },
+        )
+        self.assertEqual("voice_review", confirmed["stage"])
+        with closing(self.db()) as conn:
+            shot_count = conn.execute(
+                "SELECT COUNT(*) FROM short_drama_voice_shots WHERE project_id=?",
+                (self.project["id"],),
+            ).fetchone()[0]
+        self.assertEqual(6, shot_count)
+
+    def test_snapshot_failure_rolls_back_stage_confirmation(self):
+        self._lock_every_current_still()
+        with mock.patch(
+            "content_domains.short_drama_voice.ensure_voice_workspace",
+            side_effect=RuntimeError("snapshot failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "snapshot failed"):
+                short_drama_production.confirm_stage(
+                    self.db, "alice", {
+                        "project_id": self.project["id"],
+                        "revision": self.project["revision"],
+                        "stage": "stills_review",
+                    },
+                )
+        with closing(self.db()) as conn:
+            stage = conn.execute(
+                "SELECT stage FROM short_drama_projects WHERE id=?",
+                (self.project["id"],),
+            ).fetchone()[0]
+        self.assertEqual("stills_review", stage)
+
     def test_concurrent_stage_confirmation_succeeds_once(self):
         self._lock_every_current_still()
         body = {

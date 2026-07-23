@@ -196,6 +196,62 @@
         }
       }
     },
+    "/api/gen/short-drama/voice": {
+      "get": {
+        "tags": ["短剧"],
+        "summary": "读取短剧配音字幕工作区",
+        "description": "只读且不扣点；首次读取历史 voice_review 项目时幂等建立配音快照。",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{
+          "name": "project_id",
+          "in": "query",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        }],
+        "responses": {
+          "200": {
+            "description": "配音字幕工作区快照",
+            "content": {"application/json": {"schema": {
+              "type": "object",
+              "required": [
+                "project_id", "revision", "stage", "ratio", "target_duration",
+                "point_budget", "spent_points", "reserved_points", "shots"
+              ],
+              "properties": {
+                "project_id": {"type": "string"},
+                "revision": {"type": "integer", "minimum": 1},
+                "stage": {"type": "string", "enum": ["voice_review", "video_review", "assembly_review", "completed"]},
+                "ratio": {"type": "string", "enum": ["9:16", "16:9"]},
+                "target_duration": {"type": "integer", "enum": [30, 45, 60]},
+                "point_budget": {"type": "integer", "minimum": 0},
+                "spent_points": {"type": "integer", "minimum": 0},
+                "reserved_points": {"type": "integer", "minimum": 0},
+                "shots": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["id", "shot_key", "sort_order", "duration", "locked", "status", "lines"],
+                    "properties": {
+                      "id": {"type": "string"},
+                      "shot_key": {"type": "string"},
+                      "sort_order": {"type": "integer"},
+                      "duration": {"type": "integer", "enum": [5, 10]},
+                      "locked": {"type": "boolean"},
+                      "status": {"type": "string", "enum": ["silent", "pending"]},
+                      "lines": {"type": "array", "items": {"type": "object"}}
+                    }
+                  }
+                }
+              }
+            }}}
+          },
+          "400": {"description": "项目尚未进入配音阶段", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "401": {"description": "未登录", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "403": {"description": "必须修改初始密码或无画布读取权限", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "项目不存在或当前用户无权读取", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
     "/api/gen/short-drama/projects": {
       "get": {
         "tags": ["短剧策划"], "summary": "列出当前用户的短剧项目", "description": "Free / no points. 仅返回 Bearer 用户本人创建且未删除的项目。",

@@ -59,6 +59,19 @@ def voice_plan():
     }
 
 
+class GetHandler:
+    def __init__(self, path, token="alice"):
+        self.path = path
+        self.token = token
+        self.response = None
+
+    def _token(self):
+        return self.token
+
+    def _send(self, status, payload):
+        self.response = (status, payload)
+
+
 class ShortDramaVoiceSnapshotTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -130,6 +143,45 @@ class ShortDramaVoiceSnapshotTests(unittest.TestCase):
         self.assertEqual(line_id, second["shots"][0]["lines"][0]["id"])
         self.assertEqual("谁在那里？", second["shots"][0]["lines"][0]["source_text"])
         self.assertEqual("custom", second["shots"][0]["lines"][0]["speech_text"])
+
+    def test_voice_get_route_requires_auth_and_returns_owned_snapshot(self):
+        handler = GetHandler(
+            "/api/gen/short-drama/voice?project_id=" + self.project["id"]
+        )
+        handled = short_drama.dispatch_http(
+            handler, "GET", self.db,
+            lambda token: {"username": token, "must_change": False} if token else None,
+        )
+        self.assertTrue(handled)
+        self.assertEqual(200, handler.response[0])
+        self.assertEqual(self.project["id"], handler.response[1]["project_id"])
+
+        anonymous = GetHandler(handler.path, token="")
+        short_drama.dispatch_http(anonymous, "GET", self.db, lambda _token: None)
+        self.assertEqual(401, anonymous.response[0])
+
+        other = GetHandler(handler.path, token="mallory")
+        short_drama.dispatch_http(
+            other, "GET", self.db,
+            lambda token: {"username": token, "must_change": False},
+        )
+        self.assertEqual(404, other.response[0])
+
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_projects SET board_id='board-a' WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+        viewer = GetHandler(handler.path, token="viewer")
+        short_drama.dispatch_http(
+            viewer, "GET", self.db,
+            lambda token: {"username": token, "must_change": False},
+            canvas_access_resolver=lambda _handler: {
+                "board_id": "board-a", "role": "viewer",
+            },
+        )
+        self.assertEqual(200, viewer.response[0])
 
 
 class ShortDramaVoiceSchemaTests(unittest.TestCase):

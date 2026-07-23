@@ -6,6 +6,8 @@ import sqlite3
 import time
 import uuid
 
+from . import short_drama_voice
+
 
 ASSET_TYPES = {"still"}
 JOB_KINDS = {"still"}
@@ -1280,6 +1282,10 @@ def confirm_stage(db_factory, username, body, access=None):
         if (not shot_ids or len(valid_shot_ids) != len(shot_ids)
                 or set(valid_shot_ids) != set(shot_ids)):
             raise ValueError("lock one completed current still for every shot first")
+
+        short_drama_voice.ensure_voice_workspace(
+            conn, project_id, allowed_stages={"stills_review"}
+        )
 
         cur = conn.execute(
             "UPDATE short_drama_projects "
