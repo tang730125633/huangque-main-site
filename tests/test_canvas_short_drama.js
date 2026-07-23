@@ -91,6 +91,15 @@ function testOpenApiContract() {
     productionSchema.properties.handoff_blockers.items.required,
     ['code', 'message'],
   );
+  assert.equal(spec.openapi, '3.0.3');
+  const blockerShotId = productionSchema.properties.handoff_blockers
+    .items.properties.shot_id;
+  assert.equal(blockerShotId.type, 'string');
+  assert.equal(Object.hasOwn(blockerShotId, 'nullable'), false);
+  assert.equal(
+    productionSchema.properties.handoff_blockers.items.required.includes('shot_id'),
+    false,
+  );
   assert.match(voiceOperation.responses['403'].description, /密码|画布基础访问/);
   assert.doesNotMatch(voiceOperation.responses['403'].description, /项目权限/);
   assert.match(voiceOperation.responses['404'].description, /不存在|无权发现/);

@@ -233,7 +233,7 @@
                       "missing_locked_still", "active_job", "refund_pending",
                       "charge_attempt_pending", "ledger_inconsistent"
                     ]},
-                    "shot_id": {"type": ["string", "null"]},
+                    "shot_id": {"type": "string"},
                     "message": {"type": "string"}
                   }
                 }
