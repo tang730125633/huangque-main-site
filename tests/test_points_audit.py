@@ -126,6 +126,33 @@ class PointsAuditTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(self.auth.list_points_audit(username="ghost")["items"], [])
 
+    def test_list_filters_direction_and_summarizes_full_result(self):
+        self.auth.deduct_points("fang", 3, "job:collect")
+        self.auth.refund_points("fang", 1, "job#1")
+        self.auth.adjust_points_admin("boss", "fang", 5, "manual credit")
+
+        all_rows = self.auth.list_points_audit(username="fang", limit=1)
+        self.assertEqual(len(all_rows["items"]), 1)
+        self.assertEqual(all_rows["total"], 3)
+        self.assertEqual(
+            all_rows["summary"],
+            {"total": 3, "credits": 6, "debits": 3, "net": 3},
+        )
+
+        debits = self.auth.list_points_audit(username="fang", direction="debit")
+        self.assertEqual([row["delta"] for row in debits["items"]], [-3])
+        self.assertEqual(
+            debits["summary"],
+            {"total": 1, "credits": 0, "debits": 3, "net": -3},
+        )
+
+        credits = self.auth.list_points_audit(username="fang", direction="credit")
+        self.assertEqual([row["delta"] for row in credits["items"]], [5, 1])
+        self.assertEqual(
+            credits["summary"],
+            {"total": 2, "credits": 6, "debits": 0, "net": 6},
+        )
+
     def test_deduct_then_refund_nets_to_zero_and_pairs_by_job(self):
         """对账场景：一次任务的扣与退能配对，净额为 0。"""
         self.auth.deduct_points("fang", 4, "job:collect")

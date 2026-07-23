@@ -83,7 +83,12 @@
     details.eplist summary{cursor:pointer;font-size:12px;color:var(--info);user-select:none}
     details.eplist .ep{padding:6px 0 6px 12px;border-left:2px solid var(--line);margin-top:6px}
     details.eplist .ep code{font-size:11px;word-break:break-all}
-    @media (max-width:960px){.shell{padding:20px 14px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid{grid-template-columns:1fr}header{flex-direction:column}.user{width:100%}}
+    .ledger-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin:4px 0 14px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+    .ledger-stat{padding:13px 14px;border-right:1px solid var(--line)}
+    .ledger-stat:last-child{border-right:0}
+    .ledger-stat span{display:block;color:var(--muted);font-size:12px}
+    .ledger-stat b{display:block;margin-top:4px;font-size:22px;font-variant-numeric:tabular-nums}
+    @media (max-width:960px){.shell{padding:20px 14px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid{grid-template-columns:1fr}.ledger-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ledger-stat:nth-child(2){border-right:0}.ledger-stat:nth-child(-n+2){border-bottom:1px solid var(--line)}header{flex-direction:column}.user{width:100%}}
   </style>
 </head>
 <body>
@@ -119,6 +124,7 @@
         <button class="tab" data-module-tab="logs">日志监控</button>
         <button class="tab" data-module-tab="features">功能开关</button>
         <button class="tab" data-module-tab="users">用户管理</button>
+        <button class="tab" data-module-tab="points">点数流水</button>
         <button class="tab" data-module-tab="recharge">充值审批</button>
       </div>
 
@@ -161,14 +167,33 @@
           <button id="userRefresh">刷新用户</button>
         </div>
         <div id="usersBox"></div>
-        <h2 style="margin-top:18px">点数流水
-          <select id="auditActor" style="margin-left:10px;font-size:13px;vertical-align:middle">
-            <option value="admin">人工加减点</option>
+      </section>
+      <section class="card span12 module-card" data-module="points" hidden>
+        <div class="section-head">
+          <div><h2>点数流水</h2><div class="hint">查看任务扣点、失败退款、人工加减点和充值入账记录。</div></div>
+          <span class="muted" id="pointsCount">-</span>
+        </div>
+        <div class="toolbar">
+          <input class="field" id="pointsUser" placeholder="输入完整用户账号">
+          <select id="pointsActor">
+            <option value="">全部来源</option>
+            <option value="admin">人工操作</option>
             <option value="system">任务扣退点</option>
-            <option value="">全部</option>
           </select>
-        </h2>
-        <div id="auditBox"></div>
+          <select id="pointsDirection">
+            <option value="">全部方向</option>
+            <option value="debit">支出</option>
+            <option value="credit">收入 / 退款</option>
+          </select>
+          <button id="pointsRefresh">查询流水</button>
+        </div>
+        <div class="ledger-summary">
+          <div class="ledger-stat"><span>流水笔数</span><b id="pointsTotal">-</b></div>
+          <div class="ledger-stat"><span>收入 / 退款</span><b id="pointsCredits">-</b></div>
+          <div class="ledger-stat"><span>支出</span><b id="pointsDebits">-</b></div>
+          <div class="ledger-stat"><span>净变化</span><b id="pointsNet">-</b></div>
+        </div>
+        <div id="pointsBox"></div>
       </section>
       <section class="card span12 module-card" data-module="recharge" hidden>
         <div class="row" style="margin-bottom:12px">
@@ -377,18 +402,25 @@
     Array.prototype.forEach.call(document.querySelectorAll('#usersBox button'), function(btn){
       btn.onclick=function(){
         var act=btn.getAttribute('data-act'), username=btn.getAttribute('data-user');
-        if(act==='audit') return loadAudit(username);
+        if(act==='audit') return openPoints(username);
         adjustPoints(username, act==='minus'?-1:1);
       };
     });
   }
-  function renderAudit(d, username){
+  function renderPoints(d){
     var items=d.items||[];
-    var title=username?(' · '+username):'';
-    if(!items.length){el('auditBox').innerHTML='<div class="empty">暂无点数流水'+esc(title)+'</div>';return}
-    el('auditBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>时间</th><th>管理员</th><th>用户</th><th>变化</th><th>前</th><th>后</th><th>原因</th></tr></thead><tbody>'+items.map(function(x){
+    var summary=d.summary||{};
+    var signed=function(value){value=Number(value||0);return (value>0?'+':'')+value.toLocaleString()};
+    el('pointsCount').textContent='显示 '+items.length+' / 共 '+Number(d.total||0).toLocaleString()+' 笔';
+    el('pointsTotal').textContent=Number(summary.total||0).toLocaleString();
+    el('pointsCredits').textContent='+'+Number(summary.credits||0).toLocaleString();
+    el('pointsDebits').textContent='-'+Number(summary.debits||0).toLocaleString();
+    el('pointsNet').textContent=signed(summary.net);
+    if(!items.length){el('pointsBox').innerHTML='<div class="empty">暂无符合条件的点数流水</div>';return}
+    el('pointsBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>时间</th><th>来源</th><th>用户</th><th>变化</th><th>前</th><th>后</th><th>原因</th><th>交易键</th></tr></thead><tbody>'+items.map(function(x){
       var delta=Number(x.delta||0);
-      return '<tr><td><code>'+fmtTime(x.created_at)+'</code></td><td>'+esc(x.who_admin)+'</td><td><b>'+esc(x.username)+'</b></td><td><span class="pill '+(delta>=0?'ok':'fail')+'">'+(delta>0?'+':'')+delta+'</span></td><td><code>'+Number(x.before_points||0).toLocaleString()+'</code></td><td><code>'+Number(x.after_points||0).toLocaleString()+'</code></td><td><div class="truncate" title="'+esc(x.reason||'')+'">'+esc(x.reason||'')+'</div></td></tr>';
+      var source=x.who_admin==='system'?'任务':x.who_admin;
+      return '<tr><td><code>'+fmtTime(x.created_at)+'</code></td><td>'+esc(source)+'</td><td><b>'+esc(x.username)+'</b></td><td><span class="pill '+(delta>=0?'ok':'fail')+'">'+(delta>0?'+':'')+delta+'</span></td><td><code>'+Number(x.before_points||0).toLocaleString()+'</code></td><td><code>'+Number(x.after_points||0).toLocaleString()+'</code></td><td><div class="truncate" title="'+esc(x.reason||'')+'">'+esc(x.reason||'')+'</div></td><td><code>'+esc(x.transaction_key||'-')+'</code></td></tr>';
     }).join('')+'</tbody></table></div>';
   }
   function userQuery(){
@@ -397,14 +429,17 @@
   function loadUsers(){
     if(!token) return;
     api('/api/admin/users'+userQuery()).then(renderUsers).catch(function(e){el('usersBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
-    loadAudit();
   }
-  function loadAudit(username){
-    // 默认只看人工加减点：任务扣退点条数是它的几百倍，混在一起第一页就看不到管理员操作了。
-    var actor=(el('auditActor')||{}).value;
-    if(actor===undefined) actor='admin';
-    var q='?limit=80&actor='+encodeURIComponent(actor)+(username?'&username='+encodeURIComponent(username):'');
-    api('/api/admin/points/audit'+q).then(function(d){renderAudit(d, username)}).catch(function(e){el('auditBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
+  function loadPoints(){
+    if(!token) return;
+    var q='?limit=120&actor='+encodeURIComponent(el('pointsActor').value||'')+
+      '&direction='+encodeURIComponent(el('pointsDirection').value||'')+
+      '&username='+encodeURIComponent((el('pointsUser').value||'').trim());
+    api('/api/admin/points/audit'+q).then(renderPoints).catch(function(e){el('pointsBox').innerHTML='<div class="error">'+esc(e.message)+'</div>'});
+  }
+  function openPoints(username){
+    el('pointsUser').value=username||'';
+    switchModule('points');
   }
   function adjustPoints(username, sign){
     var raw=prompt((sign>0?'给 ':'从 ')+username+(sign>0?' 加多少点？':' 扣多少点？'));
@@ -463,6 +498,7 @@
     Array.prototype.forEach.call(document.querySelectorAll('[data-module-tab]'), function(btn){btn.classList.toggle('active', btn.getAttribute('data-module-tab')===name)});
     Array.prototype.forEach.call(document.querySelectorAll('[data-module]'), function(card){card.hidden=card.getAttribute('data-module')!==name});
     if(name==='logs'){loadReqLogs()}
+    if(name==='points'){loadPoints()}
   }
   function render(d){
     state.data=d; setUser(d.user||{});
@@ -490,10 +526,13 @@
   el('days7').onclick=function(){state.days=7;load()};
   el('days30').onclick=function(){state.days=30;load()};
   el('userRefresh').onclick=loadUsers;
-  el('auditActor').onchange=function(){loadAudit()};
   el('userSort').onchange=loadUsers;
   el('userDir').onchange=loadUsers;
   el('userSearch').oninput=function(){clearTimeout(state.userTimer);state.userTimer=setTimeout(loadUsers,260)};
+  el('pointsRefresh').onclick=loadPoints;
+  el('pointsActor').onchange=loadPoints;
+  el('pointsDirection').onchange=loadPoints;
+  el('pointsUser').onkeydown=function(e){if(e.key==='Enter') loadPoints()};
   el('reqRefresh').onclick=loadReqLogs;
   el('reqSource').onchange=loadReqLogs;
   el('reqStatus').onchange=loadReqLogs;
