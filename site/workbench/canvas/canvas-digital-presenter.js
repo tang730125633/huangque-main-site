@@ -66,6 +66,68 @@
     return !!rank[previous]&&!!rank[next]&&rank[next]<rank[previous];
   }
 
+  function createEntryRegistrar(addEntry){
+    if(typeof addEntry!=='function') throw new Error('digital presenter entry registrar requires addEntry');
+    var registered=false;
+    return {register:function(capability){
+      if(registered||!canRegisterEntry(capability)) return false;
+      addEntry();registered=true;return true;
+    },isRegistered:function(){return registered;}};
+  }
+
+  function createWorkspaceLifecycle(){
+    var entries=Object.create(null);
+    function key(scope,nodeId){ return JSON.stringify([String(scope||''),String(nodeId||'')]); }
+    function destroy(itemKey){
+      var workspace=entries[itemKey];
+      if(!workspace) return false;
+      delete entries[itemKey];
+      if(workspace.destroy) workspace.destroy();
+      return true;
+    }
+    function destroyScope(scope){
+      scope=String(scope||'');
+      Object.keys(entries).forEach(function(itemKey){
+        var parsed=JSON.parse(itemKey);
+        if(parsed[0]===scope) destroy(itemKey);
+      });
+    }
+    function destroyAll(){ Object.keys(entries).forEach(destroy); }
+    return {
+      attach:function(scope,nodeId,workspace){
+        var itemKey=key(scope,nodeId);
+        if(entries[itemKey]&&entries[itemKey]!==workspace) destroy(itemKey);
+        entries[itemKey]=workspace;return workspace;
+      },
+      removeNode:function(scope,nodeId){ return destroy(key(scope,nodeId)); },
+      removeWorkspace:function(workspace){
+        var found=Object.keys(entries).find(function(itemKey){return entries[itemKey]===workspace;});
+        return found?destroy(found):false;
+      },
+      restoreScope:destroyScope,
+      switchScope:destroyScope,
+      roleChanged:function(previous,next){ if(isRoleDowngrade(previous,next)) destroyAll(); },
+      destroyAll:destroyAll,
+      size:function(){return Object.keys(entries).length;}
+    };
+  }
+
+  function observeWorkspaceReady(workspace,options){
+    options=options||{};
+    if(!workspace||!workspace.ready||typeof workspace.ready.then!=='function'){
+      return Promise.reject(new Error('digital presenter workspace requires ready promise'));
+    }
+    function active(){ return typeof options.isActive!=='function'||options.isActive(); }
+    return Promise.resolve(workspace.ready).then(function(){
+      if(!active()) return null;
+      if(typeof options.onReady==='function') options.onReady(workspace);
+      return workspace;
+    },function(error){
+      if(active()&&typeof options.onError==='function') options.onError(error);
+      return null;
+    });
+  }
+
   function createProjectCoordinator(options){
     options=options||{};
     if(typeof options.getNode!=='function'||typeof options.create!=='function'||typeof options.apply!=='function'){
@@ -150,7 +212,7 @@
     function ensureAlive(){ if(destroyed) throw new Error('workspace destroyed'); }
     function render(){
       if(loading) return '<div class="nc-digital-presenter-workspace"><p>正在加载项目…</p></div>';
-      if(error) return '<div class="nc-digital-presenter-workspace"><p>'+escapeHtml(error)+'</p></div>';
+      if(error) return '<div class="nc-digital-presenter-workspace"><header><strong>项目加载失败</strong><button type="button" data-action="close">×</button></header><p>'+escapeHtml(error)+'</p></div>';
       var current=project||{};
       return '<div class="nc-digital-presenter-workspace" data-readonly="'+(!options.canEdit)+'">'+
         '<header><div><small>项目设置</small><h2>'+escapeHtml(current.title||'数字人口播')+'</h2></div><button type="button" data-action="close">×</button></header>'+
@@ -203,6 +265,8 @@
     normalizeNodeParams:normalizeNodeParams,summarizeProject:summarizeProject,
     sanitizeNodeData:sanitizeNodeData,copyNodeData:copyNodeData,creationPayload:creationPayload,
     canRegisterEntry:canRegisterEntry,canOpenNode:canOpenNode,isRoleDowngrade:isRoleDowngrade,
-    createProjectCoordinator:createProjectCoordinator,createClient:createClient,createWorkspace:createWorkspace
+    createEntryRegistrar:createEntryRegistrar,createWorkspaceLifecycle:createWorkspaceLifecycle,
+    observeWorkspaceReady:observeWorkspaceReady,createProjectCoordinator:createProjectCoordinator,
+    createClient:createClient,createWorkspace:createWorkspace
   };
 });

@@ -31,6 +31,7 @@
   var VIDEO_POINTS_PER_SECOND=30;
   var videoAvatars=[], videoAvatarsLoaded=false, videoAvatarsPromise=null, videoAvatarsError='';
   var digitalPresenterEntryEnabled=false;
+  var digitalPresenterWorkspaceLifecycle=digitalPresenterModule.createWorkspaceLifecycle();
   var currentBoardId=null, boardMode='mine', boardLastSeenUpdatedAt=0, boardConflict=false;
   var currentBoardScope='local', currentCollabVersion=0, currentCollabRole='', currentCollabName='', currentCollabMembers=[];
   var collabBoards=[], collabLoaded=false, collabLoading=false, collabError='', collabErrorHint='', collabCreating=false, collabSaving=false, collabQueuedSnap=null;
@@ -63,7 +64,10 @@
     var previousRole=currentCollabRole;
     currentCollabRole=role||currentCollabRole;
     if(shortDramaModule.isRoleDowngrade(previousRole,currentCollabRole)) destroyAllShortDramaWorkspaces();
-    if(digitalPresenterModule.isRoleDowngrade(previousRole,currentCollabRole)) destroyAllDigitalPresenterWorkspaces();
+    if(digitalPresenterModule.isRoleDowngrade(previousRole,currentCollabRole)){
+      digitalPresenterWorkspaceLifecycle.roleChanged(previousRole,currentCollabRole);
+      clearDigitalPresenterWorkspaceRefs();
+    }
     return currentCollabRole;
   }
   function refreshShortDramaNode(node){
@@ -172,10 +176,13 @@
     if(!node||!node.digitalPresenterWorkspace) return;
     var workspace=node.digitalPresenterWorkspace;
     node.digitalPresenterWorkspace=null;
-    if(workspace.destroy) workspace.destroy();
+    if(!digitalPresenterWorkspaceLifecycle.removeWorkspace(workspace)&&workspace.destroy) workspace.destroy();
+  }
+  function clearDigitalPresenterWorkspaceRefs(){
+    Object.keys(nodes).forEach(function(id){ if(nodes[id]) nodes[id].digitalPresenterWorkspace=null; });
   }
   function destroyAllDigitalPresenterWorkspaces(){
-    Object.keys(nodes).forEach(function(id){ destroyDigitalPresenterWorkspace(nodes[id]); });
+    digitalPresenterWorkspaceLifecycle.destroyAll();clearDigitalPresenterWorkspaceRefs();
   }
   function digitalPresenterNodeForScope(scopeKey,nodeId){
     if(!wrap||!wrap.classList.contains('editing')) return null;
@@ -225,19 +232,33 @@
     return ensureDigitalPresenterProject(node,scopeKey).then(function(projectId){
       node=digitalPresenterNodeForScope(scopeKey,nodeId);if(!node) return null;
       destroyDigitalPresenterWorkspace(node);
-      node.digitalPresenterWorkspace=digitalPresenterModule.createWorkspace({
+      var workspace=digitalPresenterModule.createWorkspace({
         projectId:projectId,apiClient:apiClient,boardId:currentBoardId,
         canEdit:canEditCanvas(),onChange:function(summary){
           var current=digitalPresenterNodeForScope(scopeKey,nodeId);
           if(current&&current.params.project_id===projectId) applyDigitalPresenterSummary(current,summary);
         }
       });
-      setNodeState(node,'done','数字人口播工作区已打开','#2bd576');
-      return node.digitalPresenterWorkspace;
+      node.digitalPresenterWorkspace=workspace;
+      digitalPresenterWorkspaceLifecycle.attach(scopeKey,nodeId,workspace);
+      return digitalPresenterModule.observeWorkspaceReady(workspace,{
+        isActive:function(){
+          var current=digitalPresenterNodeForScope(scopeKey,nodeId);
+          return !!current&&current.digitalPresenterWorkspace===workspace;
+        },
+        onReady:function(){
+          var current=digitalPresenterNodeForScope(scopeKey,nodeId);
+          if(current) setNodeState(current,'done','数字人口播工作区已打开','#2bd576');
+        },
+        onError:function(error){
+          var current=digitalPresenterNodeForScope(scopeKey,nodeId);
+          if(current) setNodeState(current,'error',error&&error.message||'打开数字人口播工作区失败','#f4708a');
+        }
+      });
     }).catch(function(error){
       var current=digitalPresenterNodeForScope(scopeKey,nodeId);
       if(current) setNodeState(current,'error',error&&error.message||'打开数字人口播工作区失败','#f4708a');
-      throw error;
+      return null;
     }).finally(function(){ applyDigitalPresenterOpenPolicy(scopeKey,nodeId); });
   }
   function tok(){ return '__cookie__'; }
@@ -1255,7 +1276,8 @@
   }
   function showBoardHome(){
     destroyAllShortDramaWorkspaces();
-    destroyAllDigitalPresenterWorkspaces();
+    digitalPresenterWorkspaceLifecycle.switchScope(currentShortDramaScopeKey());
+    clearDigitalPresenterWorkspaceRefs();
     saveCurrentBoard();
     var wasCollab=currentBoardScope==='collab';
     stopCollabSync();
@@ -2023,7 +2045,8 @@
     if(!snap) return;
     snap=sanitizeShortDramaSnapshot(snap);
     destroyAllShortDramaWorkspaces();
-    destroyAllDigitalPresenterWorkspaces();
+    digitalPresenterWorkspaceLifecycle.restoreScope(currentShortDramaScopeKey());
+    clearDigitalPresenterWorkspaceRefs();
     restoring=true;
     Object.keys(nodes).forEach(function(id){ if(nodes[id]&&nodes[id].el) nodes[id].el.remove(); });
     nodes={}; edges=stateApi.cloneSnapshot(snap.edges||[]); nid=snap.nid||0; pendingPort=null; dragPort=null; selectedNode=null; selectedNodes={}; selectedEdge=-1; runLabel=snap.runLabel||'就绪';
@@ -4022,8 +4045,7 @@
       pushUndo();addNode(type);updateState('已添加');
     };
   }
-  function registerDigitalPresenterEntry(capability){
-    if(!digitalPresenterModule.canRegisterEntry(capability)||digitalPresenterEntryEnabled) return false;
+  function addDigitalPresenterEntry(){
     digitalPresenterEntryEnabled=true;
     [document.querySelector('.nc-group[aria-label="添加节点"]'),document.querySelector('.nc-empty-card')].forEach(function(host){
       if(!host) return;
@@ -4031,8 +4053,9 @@
       button.setAttribute('data-add','digitalPresenter');button.title='创建数字人口播项目';button.textContent='+ 数字人口播';
       bindCanvasAddButton(button);host.appendChild(button);
     });
-    return true;
   }
+  var digitalPresenterEntryRegistrar=digitalPresenterModule.createEntryRegistrar(addDigitalPresenterEntry);
+  function registerDigitalPresenterEntry(capability){ return digitalPresenterEntryRegistrar.register(capability); }
   document.querySelectorAll('.nc-add').forEach(bindCanvasAddButton);
   apiClient.json('/api/gen/digital-presenter/capability').then(registerDigitalPresenterEntry).catch(function(){});
   document.getElementById('ncClear').onclick=function(){ if(!canEditCanvas()) return; if(Object.keys(nodes).length){ pushUndo(); clearCanvas(); } };

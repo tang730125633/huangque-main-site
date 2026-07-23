@@ -106,6 +106,128 @@ async function testPhaseOneWorkspaceOnlyLoadsAndSavesSettings() {
   await assert.rejects(workspace.saveSettings({ title: '关闭后' }), /destroyed/i);
 }
 
+async function captureUnhandled(run) {
+  const errors = [];
+  const listener = (error) => { errors.push(error); };
+  process.on('unhandledRejection', listener);
+  try {
+    await run();
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    process.removeListener('unhandledRejection', listener);
+  }
+  return errors;
+}
+
+function createFakeDocument() {
+  const body = {
+    children: [],
+    appendChild(node) { node.parentNode = this; this.children.push(node); },
+    removeChild(node) { this.children = this.children.filter((item) => item !== node); node.parentNode = null; },
+  };
+  return {
+    body,
+    createElement() {
+      return {
+        className: '', innerHTML: '', parentNode: null, handlers: {},
+        addEventListener(type, handler) { this.handlers[type] = handler; },
+      };
+    },
+  };
+}
+
+async function testRejectedProjectLoadIsContainedAndErrorCanClose() {
+  let errorCalls = 0;
+  const unhandled = await captureUnhandled(async () => {
+    const document = createFakeDocument();
+    const workspace = presenter.createWorkspace({
+      projectId: 'missing', document, canEdit: true,
+      client: { get() { return Promise.reject(new Error('project unavailable')); } },
+    });
+    const opened = await presenter.observeWorkspaceReady(workspace, {
+      isActive() { return true; },
+      onReady() { assert.fail('rejected load must not be marked opened'); },
+      onError(error) { errorCalls += 1; assert.match(error.message, /project unavailable/); },
+    });
+    assert.equal(opened, null);
+    assert.match(workspace.render(), /project unavailable/);
+    assert.match(workspace.render(), /data-action="close"/);
+    const host = document.body.children[0];
+    host.handlers.click({ target: { getAttribute(name) { return name === 'data-action' ? 'close' : null; } } });
+    assert.equal(document.body.children.length, 0, 'error close action removes the overlay');
+  });
+  assert.equal(errorCalls, 1);
+  assert.deepEqual(unhandled, []);
+}
+
+async function testDestroyDuringReadyIsContainedAsInactive() {
+  let rejectLoad;
+  let opened = 0;
+  let failed = 0;
+  const unhandled = await captureUnhandled(async () => {
+    const workspace = presenter.createWorkspace({
+      projectId: 'slow', document: null, canEdit: false,
+      client: { get() { return new Promise((_resolve, reject) => { rejectLoad = reject; }); } },
+    });
+    let active = true;
+    const observed = presenter.observeWorkspaceReady(workspace, {
+      isActive() { return active; },
+      onReady() { opened += 1; },
+      onError() { failed += 1; },
+    });
+    active = false;
+    workspace.destroy();
+    rejectLoad(new Error('late failure'));
+    assert.equal(await observed, null);
+  });
+  assert.equal(opened, 0);
+  assert.equal(failed, 0, 'inactive workspace does not overwrite downgraded/switched UI');
+  assert.deepEqual(unhandled, []);
+}
+
+async function testOpenedStateWaitsForWorkspaceReady() {
+  let resolveLoad;
+  let opened = 0;
+  const workspace = presenter.createWorkspace({
+    projectId: 'slow-success', document: null, canEdit: true,
+    client: { get() { return new Promise((resolve) => { resolveLoad = resolve; }); } },
+  });
+  const observed = presenter.observeWorkspaceReady(workspace, {
+    isActive() { return true; },
+    onReady() { opened += 1; },
+    onError(error) { throw error; },
+  });
+  await Promise.resolve();
+  assert.equal(opened, 0);
+  resolveLoad({ id: 'slow-success', title: 'Ready', ratio: '9:16', target_duration: 30, revision: 1 });
+  assert.strictEqual(await observed, workspace);
+  assert.equal(opened, 1);
+  workspace.destroy();
+}
+
+function testEntryRegistrationAndLifecycleBehaviorsExecute() {
+  let entries = 0;
+  const entry = presenter.createEntryRegistrar(() => { entries += 1; });
+  assert.equal(entry.register({ enabled: false }), false);
+  assert.equal(entry.register({ enabled: true }), true);
+  assert.equal(entry.register({ enabled: true }), false);
+  assert.equal(entries, 1);
+
+  const lifecycle = presenter.createWorkspaceLifecycle();
+  const destroyed = [];
+  const workspace = (name) => ({ destroy() { destroyed.push(name); } });
+  lifecycle.attach('local:a', 'restored', workspace('restore'));
+  lifecycle.restoreScope('local:a');
+  lifecycle.attach('collab:a', 'deleted', workspace('delete'));
+  lifecycle.removeNode('collab:a', 'deleted');
+  lifecycle.attach('collab:a', 'switched', workspace('switch'));
+  lifecycle.switchScope('collab:a');
+  lifecycle.attach('collab:b', 'downgraded', workspace('downgrade'));
+  lifecycle.roleChanged('editor', 'viewer');
+  assert.deepEqual(destroyed, ['restore', 'delete', 'switch', 'downgrade']);
+  assert.equal(lifecycle.size(), 0);
+}
+
 function testCanvasIntegration() {
   const root = path.join(__dirname, '..');
   const html = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas.html'), 'utf8');
@@ -120,8 +242,10 @@ function testCanvasIntegration() {
     'disabled-by-default entry is not statically registered');
   assert.match(app, /digitalPresenter:\s*\{name:'数字人口播'/);
   assert.ok(app.includes('/api/gen/digital-presenter/capability'));
-  assert.ok(app.includes('digitalPresenterModule.canRegisterEntry'));
   assert.ok(app.includes('digitalPresenterModule.createProjectCoordinator'));
+  assert.ok(app.includes('digitalPresenterModule.createEntryRegistrar'));
+  assert.ok(app.includes('digitalPresenterModule.createWorkspaceLifecycle'));
+  assert.ok(app.includes('digitalPresenterModule.observeWorkspaceReady'));
   assert.ok(app.includes('digitalPresenterModule.copyNodeData'));
   assert.ok(app.includes('digitalPresenterModule.createWorkspace'));
   assert.ok(app.includes('data-f="openDigitalPresenter"'));
@@ -141,6 +265,10 @@ async function main() {
   testNodePersistenceAndCopyHelpers();
   await testCreateProjectCoordinatorIsScopeSafe();
   await testPhaseOneWorkspaceOnlyLoadsAndSavesSettings();
+  await testRejectedProjectLoadIsContainedAndErrorCanClose();
+  await testDestroyDuringReadyIsContainedAsInactive();
+  await testOpenedStateWaitsForWorkspaceReady();
+  testEntryRegistrationAndLifecycleBehaviorsExecute();
   testCanvasIntegration();
   console.log('canvas digital presenter: pass');
 }
