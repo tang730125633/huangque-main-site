@@ -208,6 +208,21 @@ class AudioVoiceMappingTests(unittest.TestCase):
                 })
         self.assertIn("暂不可用", str(ctx.exception))
 
+    def test_legacy_provider_voice_never_falls_back_without_cosyvoice(self):
+        with unittest.mock.patch.object(self.audio.cosyvoice, "enabled", return_value=False), \
+                unittest.mock.patch.object(
+                    self.audio, "resolve_audio_provider_voice", return_value="S_legacy_personal"
+                ), unittest.mock.patch.object(
+                    self.audio, "_post_bytes", side_effect=AssertionError("不应回落 OpenAI")
+                ):
+            with self.assertRaises(ValueError) as ctx:
+                self.audio.gen_audio({
+                    "text": "测试",
+                    "voice": "custom_historical_key",
+                    "_username": "fang",
+                })
+        self.assertIn("暂不可用", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
