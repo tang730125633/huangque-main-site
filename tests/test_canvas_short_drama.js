@@ -905,6 +905,44 @@ async function testWorkspaceSourceAndRenderContract() {
   switching.destroy();
   assert.equal(switchVoiceDestroys, 1);
 
+  let synchronousVoiceDestroys = 0;
+  let synchronousProductionCreates = 0;
+  let synchronousProductionDestroys = 0;
+  const synchronous = shortDrama.createWorkspace({
+    projectId: 'synchronous-project', document: null, apiClient,
+    productionModule: {
+      createWorkspace() {
+        synchronousProductionCreates += 1;
+        return {
+          ready: Promise.resolve(),
+          render() { return '<section>synchronous production fallback</section>'; },
+          reload() { return Promise.resolve(); },
+          destroy() { synchronousProductionDestroys += 1; },
+        };
+      },
+    },
+    voiceModule: {
+      createWorkspace(options) {
+        options.onChange({ project_id: 'synchronous-project', stage: 'video_review', revision: 12 });
+        return {
+          ready: Promise.resolve(),
+          render() { return '<section>synchronous voice workspace</section>'; },
+          reload() { return Promise.resolve(); },
+          destroy() { synchronousVoiceDestroys += 1; },
+        };
+      },
+    },
+    client: { get() { return Promise.resolve(workspaceProject({ id: 'synchronous-project', stage: 'voice_review' })); } },
+  });
+  await synchronous.ready;
+  assert.equal(synchronous.getProject().stage, 'video_review',
+    'a construction-time voice summary is applied after the delegate is installed');
+  assert.equal(synchronousVoiceDestroys, 1);
+  assert.equal(synchronousProductionCreates, 1);
+  assert.match(synchronous.render(), /synchronous production fallback/);
+  synchronous.destroy();
+  assert.equal(synchronousProductionDestroys, 1);
+
   let resolveDelegateReady;
   let lateDestroyCalls = 0;
   const closing = shortDrama.createWorkspace({

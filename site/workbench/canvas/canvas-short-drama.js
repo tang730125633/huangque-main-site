@@ -684,7 +684,7 @@
         host.innerHTML=renderProductionFrame(project,state,'');
         productionHost=host.querySelector('[data-production-host]');
       }
-      var delegated;
+      var delegated,pendingSummaries=[];
       try{
         delegated=productionModule.createWorkspace({
           projectId:options.projectId,
@@ -694,8 +694,11 @@
           canEdit:canEdit,
           confirm:confirmProduction,
           onChange:function(summary){
-            if(destroyed||activationGeneration!==loadGeneration||delegateGeneration!==productionGeneration||
-              productionWorkspace!==delegated) return Promise.resolve(null);
+            if(destroyed||activationGeneration!==loadGeneration||delegateGeneration!==productionGeneration){
+              return Promise.resolve(null);
+            }
+            if(!delegated){ pendingSummaries.push(summary);return Promise.resolve(null); }
+            if(productionWorkspace!==delegated) return Promise.resolve(null);
             return acceptProductionSummary(summary,activationGeneration);
           }
         });
@@ -708,11 +711,29 @@
         return Promise.reject(new Error('短剧生产工作区接口无效，请刷新页面重试'));
       }
       productionWorkspace=delegated;
-      return Promise.resolve(delegated.ready).then(function(){
+      var readyResult=Promise.resolve(delegated.ready).then(function(){
+        return {ok:true};
+      },function(error){
+        return {ok:false,error:error};
+      });
+      var pending=Promise.resolve(project);
+      pendingSummaries.forEach(function(summary){
+        pending=pending.then(function(){
+          if(destroyed||activationGeneration!==loadGeneration||delegateGeneration!==productionGeneration||
+            productionWorkspace!==delegated) return null;
+          return acceptProductionSummary(summary,activationGeneration);
+        });
+      });
+      return pending.then(function(){
         if(destroyed||activationGeneration!==loadGeneration||delegateGeneration!==productionGeneration||
           productionWorkspace!==delegated) return null;
-        render();
-        return project;
+        return readyResult.then(function(result){
+          if(destroyed||activationGeneration!==loadGeneration||delegateGeneration!==productionGeneration||
+            productionWorkspace!==delegated) return null;
+          if(!result.ok) throw result.error;
+          render();
+          return project;
+        });
       }).catch(function(error){
         if(destroyed||activationGeneration!==loadGeneration||delegateGeneration!==productionGeneration||
           productionWorkspace!==delegated) return null;
