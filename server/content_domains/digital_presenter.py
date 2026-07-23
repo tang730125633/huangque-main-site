@@ -56,6 +56,8 @@ def validate_route_policies():
             raise ValueError("invalid digital presenter route policy")
         if method == "GET" and policy != "read":
             raise ValueError("GET route must be read-only")
+        if method in _MUTATING_METHODS and policy == "read":
+            raise ValueError("mutating route cannot be read-only")
     return True
 
 

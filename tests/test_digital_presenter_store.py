@@ -121,6 +121,41 @@ class DigitalPresenterStoreTests(unittest.TestCase):
                 self.db, self.editor_access, project["id"], 1, {"title": "旧页覆盖"}
             )
 
+    def test_asset_binding_fields_are_rejected_by_generic_create(self):
+        restricted = {
+            "avatar_asset_id": "avatar-owned",
+            "background_asset_id": "background-owned",
+            "background_mode": "separate",
+        }
+        for field, value in restricted.items():
+            with self.subTest(operation="create", field=field):
+                with self.assertRaises(ValueError):
+                    self._project(**{field: value})
+        with closing(self.db()) as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM digital_presenter_projects"
+            ).fetchone()[0]
+        self.assertEqual(0, count)
+
+    def test_asset_binding_fields_are_rejected_by_generic_update(self):
+        restricted = {
+            "avatar_asset_id": "avatar-owned",
+            "background_asset_id": "background-owned",
+            "background_mode": "separate",
+        }
+        project = self._project()
+        for field, value in restricted.items():
+            with self.subTest(operation="update", field=field):
+                with self.assertRaises(ValueError):
+                    self.store.update_project(
+                        self.db, self.owner_access, project["id"], 1, {field: value}
+                    )
+        unchanged = self.store.get_project(self.db, self.owner_access, project["id"])
+        self.assertEqual(1, unchanged["revision"])
+        self.assertIsNone(unchanged["avatar_asset_id"])
+        self.assertIsNone(unchanged["background_asset_id"])
+        self.assertEqual("source", unchanged["background_mode"])
+
     def test_invalid_fields_and_values_do_not_change_revision(self):
         project = self._project()
         invalid_patches = (

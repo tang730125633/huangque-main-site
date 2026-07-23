@@ -17,9 +17,6 @@ EDITABLE_FIELDS = {
     "ratio",
     "resolution",
     "voice_key",
-    "avatar_asset_id",
-    "background_asset_id",
-    "background_mode",
     "target_duration",
 }
 

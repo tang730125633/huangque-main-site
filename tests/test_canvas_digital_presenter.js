@@ -228,6 +228,30 @@ function testEntryRegistrationAndLifecycleBehaviorsExecute() {
   assert.equal(lifecycle.size(), 0);
 }
 
+function testNodeCreationPolicyGuardsEveryEntry() {
+  let context = { canEdit: true, scope: 'local', entryEnabled: true };
+  const policy = presenter.createNodeCreationPolicy({ context: () => context });
+  const created = [];
+  for (const entry of ['context-menu', 'fullscreen-menu']) {
+    assert.equal(policy.canCreate('digitalPresenter'), false, `${entry} hidden on local canvas`);
+  }
+  for (const entry of ['addAt', 'top-button']) {
+    assert.equal(policy.run('digitalPresenter', () => created.push(entry)), false);
+  }
+  assert.deepEqual(created, []);
+
+  context = { canEdit: true, scope: 'collab', entryEnabled: false };
+  assert.equal(policy.canCreate('digitalPresenter'), false, 'capability remains required');
+  context = { canEdit: true, scope: 'collab', entryEnabled: true };
+  for (const entry of ['context-menu', 'fullscreen-menu']) {
+    assert.equal(policy.canCreate('digitalPresenter'), true, `${entry} visible on collaborative canvas`);
+  }
+  for (const entry of ['addAt', 'top-button']) {
+    assert.equal(policy.run('digitalPresenter', () => created.push(entry)), true);
+  }
+  assert.deepEqual(created, ['addAt', 'top-button']);
+}
+
 function testCanvasIntegration() {
   const root = path.join(__dirname, '..');
   const html = fs.readFileSync(path.join(root, 'site', 'workbench', 'canvas.html'), 'utf8');
@@ -246,6 +270,9 @@ function testCanvasIntegration() {
   assert.ok(app.includes('digitalPresenterModule.createEntryRegistrar'));
   assert.ok(app.includes('digitalPresenterModule.createWorkspaceLifecycle'));
   assert.ok(app.includes('digitalPresenterModule.observeWorkspaceReady'));
+  assert.ok(app.includes('digitalPresenterModule.createNodeCreationPolicy'));
+  assert.ok(app.includes('nodeCreationPolicy.canCreate'));
+  assert.ok((app.match(/nodeCreationPolicy\.run/g) || []).length >= 2);
   assert.ok(app.includes('digitalPresenterModule.copyNodeData'));
   assert.ok(app.includes('digitalPresenterModule.createWorkspace'));
   assert.ok(app.includes('data-f="openDigitalPresenter"'));
@@ -269,6 +296,7 @@ async function main() {
   await testDestroyDuringReadyIsContainedAsInactive();
   await testOpenedStateWaitsForWorkspaceReady();
   testEntryRegistrationAndLifecycleBehaviorsExecute();
+  testNodeCreationPolicyGuardsEveryEntry();
   testCanvasIntegration();
   console.log('canvas digital presenter: pass');
 }

@@ -180,6 +180,18 @@ class DigitalPresenterRoutePolicyTests(unittest.TestCase):
         self.assertEqual(expected, digital_presenter.ROUTE_POLICIES)
         digital_presenter.validate_route_policies()
 
+    def test_mutating_methods_cannot_be_registered_as_read(self):
+        routes = (
+            ("POST", "/api/gen/digital-presenter/projects"),
+            ("PUT", "/api/gen/digital-presenter/project"),
+            ("DELETE", "/api/gen/digital-presenter/project"),
+        )
+        for route in routes:
+            with self.subTest(method=route[0]):
+                with patch.dict(digital_presenter.ROUTE_POLICIES, {route: "read"}):
+                    with self.assertRaises(ValueError):
+                        digital_presenter.validate_route_policies()
+
     def test_unregistered_mutation_route_fails_closed(self):
         with self.assertRaises(digital_presenter.UnregisteredWriteRoute):
             digital_presenter.route_policy(
@@ -334,6 +346,49 @@ class DigitalPresenterProjectApiTests(unittest.TestCase):
         )
         self.assertEqual(403, status)
         self.assertEqual("forbidden", body.get("code"))
+
+    def test_generic_project_create_api_rejects_asset_binding_fields(self):
+        restricted = {
+            "avatar_asset_id": "avatar-owned",
+            "background_asset_id": "background-owned",
+            "background_mode": "separate",
+        }
+        for field, value in restricted.items():
+            with self.subTest(operation="create", field=field):
+                status, body = self.request(
+                    "POST", "/api/gen/digital-presenter/projects", {field: value}
+                )
+                self.assertEqual(400, status)
+                self.assertEqual("invalid_request", body.get("code"))
+        with closing(sqlite3.connect(core.JOB_DB)) as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM digital_presenter_projects"
+            ).fetchone()[0]
+        self.assertEqual(0, count)
+
+    def test_generic_project_update_api_rejects_asset_binding_fields(self):
+        restricted = {
+            "avatar_asset_id": "avatar-owned",
+            "background_asset_id": "background-owned",
+            "background_mode": "separate",
+        }
+        project = self.create()
+        for field, value in restricted.items():
+            with self.subTest(operation="update", field=field):
+                status, body = self.request(
+                    "PUT", "/api/gen/digital-presenter/project",
+                    {"project_id": project["id"], "revision": 1, field: value},
+                )
+                self.assertEqual(400, status)
+                self.assertEqual("invalid_request", body.get("code"))
+        status, unchanged = self.request(
+            "GET", "/api/gen/digital-presenter/project?id=" + project["id"]
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(1, unchanged["revision"])
+        self.assertIsNone(unchanged["avatar_asset_id"])
+        self.assertIsNone(unchanged["background_asset_id"])
+        self.assertEqual("source", unchanged["background_mode"])
 
     def test_cross_board_invalid_field_stale_revision_and_delete_matrix(self):
         project = self.create()

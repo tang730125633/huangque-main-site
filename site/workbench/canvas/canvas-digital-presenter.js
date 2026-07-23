@@ -75,6 +75,26 @@
     },isRegistered:function(){return registered;}};
   }
 
+  function createNodeCreationPolicy(options){
+    options=options||{};
+    if(typeof options.context!=='function') throw new Error('node creation policy requires context');
+    function canCreate(type){
+      var context=options.context()||{};
+      if(!context.canEdit) return false;
+      if(type==='digitalPresenter'){
+        return context.entryEnabled===true&&context.scope==='collab';
+      }
+      return true;
+    }
+    return {
+      canCreate:canCreate,
+      run:function(type,create){
+        if(!canCreate(type)) return false;
+        create();return true;
+      }
+    };
+  }
+
   function createWorkspaceLifecycle(){
     var entries=Object.create(null);
     function key(scope,nodeId){ return JSON.stringify([String(scope||''),String(nodeId||'')]); }
@@ -265,7 +285,8 @@
     normalizeNodeParams:normalizeNodeParams,summarizeProject:summarizeProject,
     sanitizeNodeData:sanitizeNodeData,copyNodeData:copyNodeData,creationPayload:creationPayload,
     canRegisterEntry:canRegisterEntry,canOpenNode:canOpenNode,isRoleDowngrade:isRoleDowngrade,
-    createEntryRegistrar:createEntryRegistrar,createWorkspaceLifecycle:createWorkspaceLifecycle,
+    createEntryRegistrar:createEntryRegistrar,createNodeCreationPolicy:createNodeCreationPolicy,
+    createWorkspaceLifecycle:createWorkspaceLifecycle,
     observeWorkspaceReady:observeWorkspaceReady,createProjectCoordinator:createProjectCoordinator,
     createClient:createClient,createWorkspace:createWorkspace
   };

@@ -34,6 +34,9 @@
   var digitalPresenterWorkspaceLifecycle=digitalPresenterModule.createWorkspaceLifecycle();
   var currentBoardId=null, boardMode='mine', boardLastSeenUpdatedAt=0, boardConflict=false;
   var currentBoardScope='local', currentCollabVersion=0, currentCollabRole='', currentCollabName='', currentCollabMembers=[];
+  var nodeCreationPolicy=digitalPresenterModule.createNodeCreationPolicy({context:function(){
+    return {canEdit:canEditCanvas(),scope:currentBoardScope,entryEnabled:digitalPresenterEntryEnabled};
+  }});
   var collabBoards=[], collabLoaded=false, collabLoading=false, collabError='', collabErrorHint='', collabCreating=false, collabSaving=false, collabQueuedSnap=null;
   var collabSync=window.HQCanvasCollabSync||null, collabController=null, collabBaseSnap=null, collabPollTimer=null, collabPresenceTimer=null, collabRetryCount=0;
   var collabSyncGeneration=0, collabPendingBatch=null;
@@ -2835,7 +2838,7 @@
       {icon:'video',label:'视频生成',title:'根据提示词和参考图生成视频',run:function(){ addAt('video',pt); }},
       {icon:'drama',label:'短剧生产',title:'创建短剧项目',run:function(){ addAt('shortDrama',pt); }}
     ];
-    if(digitalPresenterEntryEnabled) items.push({key:'播',label:'数字人口播',title:'创建数字人口播项目',run:function(){ addAt('digitalPresenter',pt); }});
+    if(nodeCreationPolicy.canCreate('digitalPresenter')) items.push({key:'播',label:'数字人口播',title:'创建数字人口播项目',run:function(){ addAt('digitalPresenter',pt); }});
     return items;
   }
   function showAddNodeMenu(pt,x,y,anchor){
@@ -2971,11 +2974,13 @@
     addAssetAt(asset,pt);
   });
   function addAt(type,pt){
-    if(!canEditCanvas()) return;
-    pushUndo();
-    var node=addNode(type,pt.x,pt.y);
-    selectNode(node);
-    updateState('已添加');
+    var node=null;
+    nodeCreationPolicy.run(type,function(){
+      pushUndo();
+      node=addNode(type,pt.x,pt.y);
+      selectNode(node);
+      updateState('已添加');
+    });
     return node;
   }
   function uploadImageAt(pt){
@@ -4037,12 +4042,13 @@
   function bindCanvasAddButton(button){
     if(!button) return;
     button.onclick=function(){
-      if(!canEditCanvas()) return;
       var type=button.getAttribute('data-add');
-      if(type==='digitalPresenter'&&currentBoardScope!=='collab'){
-        updateState('数字人口播项目请在协作画布中创建');return;
+      var created=nodeCreationPolicy.run(type,function(){
+        pushUndo();addNode(type);updateState('已添加');
+      });
+      if(!created&&type==='digitalPresenter'&&currentBoardScope!=='collab'){
+        updateState('数字人口播项目请在协作画布中创建');
       }
-      pushUndo();addNode(type);updateState('已添加');
     };
   }
   function addDigitalPresenterEntry(){
