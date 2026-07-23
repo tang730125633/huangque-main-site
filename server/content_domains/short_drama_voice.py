@@ -296,6 +296,15 @@ FOR EACH ROW WHEN NOT EXISTS (
     AND (NEW.job_id IS NULL OR quote.consumed_job_id IS NULL
       OR quote.consumed_job_id IS NEW.job_id)
   WHERE project.id=NEW.project_id
+    AND NOT EXISTS (
+      SELECT 1 FROM short_drama_voice_charge_attempts AS existing
+      WHERE (existing.charge_key=NEW.charge_key
+          OR existing.refund_key=NEW.refund_key
+          OR (existing.username=NEW.username AND existing.endpoint=NEW.endpoint
+            AND existing.idempotency_key=NEW.idempotency_key))
+        AND existing.job_id IS NOT NULL
+        AND NEW.job_id IS NOT existing.job_id
+    )
     AND (NEW.job_id IS NULL OR EXISTS (
       SELECT 1 FROM short_drama_voice_jobs AS job
       WHERE job.job_id=NEW.job_id AND job.username=NEW.username

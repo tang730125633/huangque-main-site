@@ -268,6 +268,18 @@ class ShortDramaVoiceSchemaTests(unittest.TestCase):
              shot_id, voice_line_id, quote_token, job_id),
         )
 
+    def _replace_charge(self, conn, charge_key, refund_key, idempotency_key,
+                        project_id, shot_id, voice_line_id, quote_token, job_id):
+        conn.execute(
+            "INSERT OR REPLACE INTO short_drama_voice_charge_attempts "
+            "(charge_key,refund_key,username,endpoint,idempotency_key,request_hash,"
+            "project_id,shot_id,voice_line_id,quote_token,cost,audio_payload_json,state,"
+            "job_id,created_at,updated_at) "
+            "VALUES (?,?,'editor','voice',?,'hash',?,?,?,?,0,'{}','accepted',?,1,1)",
+            (charge_key, refund_key, idempotency_key, project_id, shot_id,
+             voice_line_id, quote_token, job_id),
+        )
+
     def _install_legacy_owner_actor_triggers(self, conn):
         definitions = (
             ("short_drama_voice_jobs_project_guard", "short_drama_voice_jobs", "INSERT"),
@@ -402,6 +414,11 @@ class ShortDramaVoiceSchemaTests(unittest.TestCase):
             )
             with self.assertRaises(sqlite3.IntegrityError):
                 conn.execute(
+                    "UPDATE short_drama_voice_charge_attempts SET job_id=NULL "
+                    "WHERE charge_key='charge-1'"
+                )
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
                     "UPDATE short_drama_voice_charge_attempts SET job_id=202 "
                     "WHERE charge_key='charge-1'"
                 )
@@ -448,6 +465,59 @@ class ShortDramaVoiceSchemaTests(unittest.TestCase):
                 "UPDATE short_drama_voice_charge_attempts SET job_id=101 "
                 "WHERE charge_key='charge-1'"
             )
+
+    def test_charge_attempt_replace_cannot_change_bound_job(self):
+        short_drama.init_db(self.db)
+        conflict_values = {
+            "primary": lambda charge: (
+                charge, charge + "-replacement-refund", charge + "-replacement-idem",
+            ),
+            "refund": lambda charge: (
+                charge + "-replacement", charge + "-refund", charge + "-replacement-idem",
+            ),
+            "idempotency": lambda charge: (
+                charge + "-replacement", charge + "-replacement-refund", charge,
+            ),
+        }
+        with closing(self.db()) as conn:
+            for index, (suffix, replacement) in enumerate(conflict_values.items()):
+                with self.subTest(conflict=suffix):
+                    project_id = "p-" + suffix
+                    shot_id = "s-" + suffix
+                    line_id = "line-" + suffix
+                    quote_token = "quote-" + suffix
+                    charge_key = "charge-" + suffix
+                    first_job_id = 101 + index * 1000
+                    second_job_id = 202 + index * 1000
+                    self._insert_project(conn, project_id, "alice")
+                    self._insert_shot(conn, shot_id, project_id)
+                    self._insert_voice_line(conn, line_id, project_id, shot_id)
+                    self._insert_quote(
+                        conn, quote_token, "editor", project_id, line_id,
+                    )
+                    self._insert_job(
+                        conn, "job-101-" + suffix, "editor", project_id,
+                        shot_id, line_id, job_number=first_job_id,
+                    )
+                    self._insert_job(
+                        conn, "job-202-" + suffix, "editor", project_id,
+                        shot_id, line_id, job_number=second_job_id,
+                    )
+                    self._insert_charge(
+                        conn, charge_key, "editor", project_id, shot_id,
+                        line_id, quote_token, job_id=first_job_id,
+                    )
+                    new_charge, new_refund, new_idempotency = replacement(charge_key)
+                    with self.assertRaises(sqlite3.IntegrityError):
+                        self._replace_charge(
+                            conn, new_charge, new_refund, new_idempotency,
+                            project_id, shot_id, line_id, quote_token, second_job_id,
+                        )
+                    self.assertEqual(first_job_id, conn.execute(
+                        "SELECT job_id FROM short_drama_voice_charge_attempts "
+                        "WHERE charge_key=?",
+                        (charge_key,),
+                    ).fetchone()[0])
 
     def test_voice_snapshot_source_identity_is_immutable(self):
         short_drama.init_db(self.db)
