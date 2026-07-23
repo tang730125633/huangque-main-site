@@ -153,7 +153,7 @@
           <span class="muted" id="userCount">-</span>
         </div>
         <div class="toolbar">
-          <input class="field" id="userSearch" autocomplete="off" placeholder="搜索 username / 昵称">
+          <input class="field" id="userSearch" type="search" name="hq_admin_user_filter" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="搜索用户" placeholder="搜索账号 / 昵称">
           <select id="userSort">
             <option value="created_at">按注册时间</option>
             <option value="points">按点数</option>
@@ -174,7 +174,7 @@
           <span class="muted" id="pointsCount">-</span>
         </div>
         <div class="toolbar">
-          <input class="field" id="pointsUser" placeholder="输入完整用户账号">
+          <input class="field" id="pointsUser" type="search" name="hq_admin_points_filter" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="按账号筛选点数流水" placeholder="按完整账号筛选流水">
           <select id="pointsActor">
             <option value="">全部来源</option>
             <option value="admin">人工操作</option>
@@ -207,7 +207,7 @@
             <option value="approved">已通过</option>
             <option value="rejected">已驳回</option>
           </select>
-          <input class="field" id="rechargeUser" autocomplete="off" placeholder="按用户筛选">
+          <input class="field" id="rechargeUser" type="search" name="hq_admin_recharge_filter" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="按账号筛选充值申请" placeholder="按账号筛选">
           <button id="rechargeRefresh">刷新充值申请</button>
         </div>
         <div id="rechargeBox"></div>
@@ -229,7 +229,7 @@
             <option value="fail">失败</option>
             <option value="running">进行中</option>
           </select>
-          <input class="field" id="reqSearch" autocomplete="off" placeholder="搜索路径 / 用户 / 功能">
+          <input class="field" id="reqSearch" type="search" name="hq_admin_request_search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="搜索请求日志" placeholder="搜索路径 / 用户 / 功能">
           <label class="switch"><input type="checkbox" id="reqNoise"> 显示轮询噪音</label>
           <button id="reqRefresh">刷新日志</button>
         </div>
