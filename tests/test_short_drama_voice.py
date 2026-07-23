@@ -292,6 +292,106 @@ class ShortDramaVoiceSchemaTests(unittest.TestCase):
                 % (name, event, table)
             )
 
+    def _voice_trigger_definitions(self, conn):
+        return dict(conn.execute(
+            "SELECT name,sql FROM sqlite_master WHERE type='trigger' "
+            "AND name LIKE 'short_drama_voice_%'"
+        ).fetchall())
+
+    def _insert_editor_voice_ledger(self, conn):
+        self._insert_project(conn, "p1", "alice")
+        self._insert_project(conn, "p2", "bob")
+        self._insert_shot(conn, "s1", "p1")
+        self._insert_shot(conn, "s2", "p2")
+        self._insert_voice_line(
+            conn, "line-1", "p1", "s1", character_key="hero",
+        )
+        self._insert_quote(conn, "quote-editor", "editor", "p1", "line-1")
+        self._insert_job(
+            conn, "voice-job-editor", "editor", "p1", "s1", "line-1",
+            job_number=101,
+        )
+        self._insert_charge(
+            conn, "charge-editor", "editor", "p1", "s1", "line-1",
+            "quote-editor", job_id=101,
+        )
+        conn.execute(
+            "UPDATE short_drama_voice_quotes SET consumed_job_id=101 "
+            "WHERE token='quote-editor'"
+        )
+
+    def _insert_second_voice_line_and_job(self, conn):
+        self._insert_voice_line(conn, "line-2", "p1", "s1", sort_order=1)
+        self._insert_job(
+            conn, "voice-job-second", "editor", "p1", "s1", "line-2",
+            job_number=202,
+        )
+
+    def test_init_replaces_all_legacy_voice_identity_triggers(self):
+        short_drama.init_db(self.db)
+        with closing(self.db()) as conn:
+            self._insert_project(conn, "p1", "alice")
+            self._insert_shot(conn, "s1", "p1")
+            self._insert_voice_line(conn, "line-1", "p1", "s1")
+            self._install_legacy_owner_actor_triggers(conn)
+            conn.commit()
+
+        short_drama_voice.init_db(self.db)
+        short_drama_voice.init_db(self.db)
+
+        with closing(self.db()) as conn:
+            definitions = self._voice_trigger_definitions(conn)
+        self.assertIn("short_drama_voice_versions_line_job_guard", definitions)
+        self.assertIn("short_drama_voice_versions_line_job_update_guard", definitions)
+        self.assertNotIn(
+            "project.username=NEW.username",
+            "\n".join(definitions.values()).replace(" ", ""),
+        )
+
+    def test_referenced_quote_identity_cannot_be_updated(self):
+        short_drama.init_db(self.db)
+        with closing(self.db()) as conn:
+            self._insert_editor_voice_ledger(conn)
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "UPDATE short_drama_voice_quotes SET token='quote-renamed' "
+                    "WHERE token='quote-editor'"
+                )
+
+    def test_linked_job_identity_cannot_orphan_old_references(self):
+        short_drama.init_db(self.db)
+        with closing(self.db()) as conn:
+            self._insert_editor_voice_ledger(conn)
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "UPDATE short_drama_voice_jobs SET job_id=202 "
+                    "WHERE id='voice-job-editor'"
+                )
+
+    def test_voice_snapshot_source_identity_is_immutable(self):
+        short_drama.init_db(self.db)
+        with closing(self.db()) as conn:
+            self._insert_editor_voice_ledger(conn)
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "UPDATE short_drama_voice_lines SET character_key='other' "
+                    "WHERE id='line-1'"
+                )
+
+    def test_voice_version_job_must_belong_to_the_same_line(self):
+        short_drama.init_db(self.db)
+        with closing(self.db()) as conn:
+            self._insert_editor_voice_ledger(conn)
+            self._insert_second_voice_line_and_job(conn)
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO short_drama_voice_versions "
+                    "(id,voice_line_id,version,job_id,speech_text,voice_key,"
+                    "settings_json,input_hash,cost,status,created_at) "
+                    "VALUES ('bad-version','line-1',1,202,'text','voice','{}',"
+                    "'hash',0,'done',1)"
+                )
+
     def test_init_creates_all_voice_tables_and_is_idempotent(self):
         short_drama.init_db(self.db)
         short_drama.init_db(self.db)

@@ -125,6 +125,9 @@ CREATE INDEX IF NOT EXISTS idx_short_drama_voice_jobs_project
   ON short_drama_voice_jobs(username, project_id, status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_short_drama_voice_quotes_lookup
   ON short_drama_voice_quotes(username, project_id, voice_line_id, expires_at);
+"""
+
+_TRIGGER_SCHEMA = """
 CREATE TRIGGER IF NOT EXISTS short_drama_voice_shots_project_guard
 BEFORE INSERT ON short_drama_voice_shots
 FOR EACH ROW WHEN NOT EXISTS (
@@ -136,12 +139,10 @@ BEGIN
 END;
 CREATE TRIGGER IF NOT EXISTS short_drama_voice_shots_project_update_guard
 BEFORE UPDATE OF shot_id, project_id ON short_drama_voice_shots
-FOR EACH ROW WHEN NOT EXISTS (
-  SELECT 1 FROM short_drama_shots
-  WHERE id=NEW.shot_id AND project_id=NEW.project_id
-)
+FOR EACH ROW WHEN NEW.shot_id IS NOT OLD.shot_id
+  OR NEW.project_id IS NOT OLD.project_id
 BEGIN
-  SELECT RAISE(ABORT, 'voice shot must belong to project');
+  SELECT RAISE(ABORT, 'voice shot source identity is immutable');
 END;
 CREATE TRIGGER IF NOT EXISTS short_drama_voice_lines_project_guard
 BEFORE INSERT ON short_drama_voice_lines
@@ -154,25 +155,22 @@ BEGIN
 END;
 CREATE TRIGGER IF NOT EXISTS short_drama_voice_lines_project_update_guard
 BEFORE UPDATE OF project_id, shot_id ON short_drama_voice_lines
-FOR EACH ROW WHEN NOT EXISTS (
-  SELECT 1 FROM short_drama_shots
-  WHERE id=NEW.shot_id AND project_id=NEW.project_id
-)
+FOR EACH ROW WHEN NEW.project_id IS NOT OLD.project_id
+  OR NEW.shot_id IS NOT OLD.shot_id
 BEGIN
-  SELECT RAISE(ABORT, 'voice line shot must belong to project');
+  SELECT RAISE(ABORT, 'voice line source identity is immutable');
 END;
 CREATE TRIGGER IF NOT EXISTS short_drama_voice_lines_source_text_immutable
-BEFORE UPDATE OF source_text ON short_drama_voice_lines
-FOR EACH ROW WHEN NEW.source_text IS NOT OLD.source_text
+BEFORE UPDATE OF dialogue_line_id, line_type, sort_order, character_key, source_text
+ON short_drama_voice_lines
+FOR EACH ROW WHEN NEW.dialogue_line_id IS NOT OLD.dialogue_line_id
+  OR NEW.line_type IS NOT OLD.line_type
+  OR NEW.sort_order IS NOT OLD.sort_order
+  OR NEW.character_key IS NOT OLD.character_key
+  OR NEW.source_text IS NOT OLD.source_text
 BEGIN
-  SELECT RAISE(ABORT, 'voice line source text is immutable');
+  SELECT RAISE(ABORT, 'voice line source identity is immutable');
 END;
-DROP TRIGGER IF EXISTS short_drama_voice_jobs_project_guard;
-DROP TRIGGER IF EXISTS short_drama_voice_jobs_project_update_guard;
-DROP TRIGGER IF EXISTS short_drama_voice_quotes_project_guard;
-DROP TRIGGER IF EXISTS short_drama_voice_quotes_project_update_guard;
-DROP TRIGGER IF EXISTS short_drama_voice_charge_attempts_project_guard;
-DROP TRIGGER IF EXISTS short_drama_voice_charge_attempts_project_update_guard;
 CREATE TRIGGER short_drama_voice_jobs_project_guard
 BEFORE INSERT ON short_drama_voice_jobs
 FOR EACH ROW WHEN NOT EXISTS (
@@ -202,29 +200,45 @@ END;
 CREATE TRIGGER short_drama_voice_jobs_project_update_guard
 BEFORE UPDATE OF username, project_id, shot_id, voice_line_id, job_id
 ON short_drama_voice_jobs
-FOR EACH ROW WHEN NOT EXISTS (
-  SELECT 1 FROM short_drama_projects AS project
-  JOIN short_drama_shots AS shot
-    ON shot.id=NEW.shot_id AND shot.project_id=NEW.project_id
-  JOIN short_drama_voice_lines AS line
-    ON line.id=NEW.voice_line_id AND line.project_id=NEW.project_id
-    AND line.shot_id=NEW.shot_id
-  WHERE project.id=NEW.project_id
-    AND NOT EXISTS (
-      SELECT 1 FROM short_drama_voice_quotes AS quote
-      WHERE quote.consumed_job_id=NEW.job_id
-        AND (quote.username<>NEW.username OR quote.project_id<>NEW.project_id
-          OR quote.voice_line_id<>NEW.voice_line_id)
-    )
-    AND NOT EXISTS (
-      SELECT 1 FROM short_drama_voice_charge_attempts AS attempt
-      WHERE attempt.job_id=NEW.job_id
-        AND (attempt.username<>NEW.username OR attempt.project_id<>NEW.project_id
-          OR attempt.shot_id<>NEW.shot_id OR attempt.voice_line_id<>NEW.voice_line_id)
-    )
-)
+FOR EACH ROW
 BEGIN
-  SELECT RAISE(ABORT, 'voice job references must share one project and actor');
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM short_drama_projects AS project
+    JOIN short_drama_shots AS shot
+      ON shot.id=NEW.shot_id AND shot.project_id=NEW.project_id
+    JOIN short_drama_voice_lines AS line
+      ON line.id=NEW.voice_line_id AND line.project_id=NEW.project_id
+      AND line.shot_id=NEW.shot_id
+    WHERE project.id=NEW.project_id
+      AND NOT EXISTS (
+        SELECT 1 FROM short_drama_voice_quotes AS quote
+        WHERE quote.consumed_job_id=NEW.job_id
+          AND (quote.username<>NEW.username OR quote.project_id<>NEW.project_id
+            OR quote.voice_line_id<>NEW.voice_line_id)
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM short_drama_voice_charge_attempts AS attempt
+        WHERE attempt.job_id=NEW.job_id
+          AND (attempt.username<>NEW.username OR attempt.project_id<>NEW.project_id
+            OR attempt.shot_id<>NEW.shot_id OR attempt.voice_line_id<>NEW.voice_line_id)
+      )
+  ) THEN RAISE(ABORT, 'voice job references must share one project and actor') END;
+  SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM short_drama_voice_quotes AS quote
+    WHERE quote.consumed_job_id=OLD.job_id
+      AND (NEW.job_id IS NOT OLD.job_id OR quote.username<>NEW.username
+        OR quote.project_id<>NEW.project_id OR quote.voice_line_id<>NEW.voice_line_id)
+  ) OR EXISTS (
+    SELECT 1 FROM short_drama_voice_charge_attempts AS attempt
+    WHERE attempt.job_id=OLD.job_id
+      AND (NEW.job_id IS NOT OLD.job_id OR attempt.username<>NEW.username
+        OR attempt.project_id<>NEW.project_id OR attempt.shot_id<>NEW.shot_id
+        OR attempt.voice_line_id<>NEW.voice_line_id)
+  ) OR EXISTS (
+    SELECT 1 FROM short_drama_voice_versions AS version
+    WHERE version.job_id=OLD.job_id
+      AND (NEW.job_id IS NOT OLD.job_id OR version.voice_line_id<>NEW.voice_line_id)
+  ) THEN RAISE(ABORT, 'voice job identity is referenced') END;
 END;
 CREATE TRIGGER short_drama_voice_quotes_project_guard
 BEFORE INSERT ON short_drama_voice_quotes
@@ -243,21 +257,29 @@ BEGIN
   SELECT RAISE(ABORT, 'voice quote references must share one project and actor');
 END;
 CREATE TRIGGER short_drama_voice_quotes_project_update_guard
-BEFORE UPDATE OF username, project_id, voice_line_id, consumed_job_id
+BEFORE UPDATE OF token, username, project_id, voice_line_id, consumed_job_id
 ON short_drama_voice_quotes
-FOR EACH ROW WHEN NOT EXISTS (
-  SELECT 1 FROM short_drama_projects AS project
-  JOIN short_drama_voice_lines AS line
-    ON line.id=NEW.voice_line_id AND line.project_id=NEW.project_id
-  WHERE project.id=NEW.project_id
-    AND (NEW.consumed_job_id IS NULL OR EXISTS (
-      SELECT 1 FROM short_drama_voice_jobs AS job
-      WHERE job.job_id=NEW.consumed_job_id AND job.username=NEW.username
-        AND job.project_id=NEW.project_id AND job.voice_line_id=NEW.voice_line_id
-    ))
-)
+FOR EACH ROW
 BEGIN
-  SELECT RAISE(ABORT, 'voice quote references must share one project and actor');
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM short_drama_projects AS project
+    JOIN short_drama_voice_lines AS line
+      ON line.id=NEW.voice_line_id AND line.project_id=NEW.project_id
+    WHERE project.id=NEW.project_id
+      AND (NEW.consumed_job_id IS NULL OR EXISTS (
+        SELECT 1 FROM short_drama_voice_jobs AS job
+        WHERE job.job_id=NEW.consumed_job_id AND job.username=NEW.username
+          AND job.project_id=NEW.project_id AND job.voice_line_id=NEW.voice_line_id
+      ))
+  ) THEN RAISE(ABORT, 'voice quote references must share one project and actor') END;
+  SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM short_drama_voice_charge_attempts AS attempt
+    WHERE attempt.quote_token=OLD.token
+      AND (NEW.token IS NOT OLD.token OR attempt.username<>NEW.username
+        OR attempt.project_id<>NEW.project_id
+        OR attempt.voice_line_id<>NEW.voice_line_id
+        OR attempt.job_id IS NOT NEW.consumed_job_id)
+  ) THEN RAISE(ABORT, 'voice quote identity is referenced') END;
 END;
 CREATE TRIGGER short_drama_voice_charge_attempts_project_guard
 BEFORE INSERT ON short_drama_voice_charge_attempts
@@ -306,7 +328,48 @@ FOR EACH ROW WHEN NOT EXISTS (
 BEGIN
   SELECT RAISE(ABORT, 'voice charge references must share one project and actor');
 END;
+CREATE TRIGGER short_drama_voice_versions_line_job_guard
+BEFORE INSERT ON short_drama_voice_versions
+FOR EACH ROW WHEN NOT EXISTS (
+  SELECT 1 FROM short_drama_voice_jobs AS job
+  WHERE job.job_id=NEW.job_id AND job.voice_line_id=NEW.voice_line_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'voice version job does not belong to line');
+END;
+CREATE TRIGGER short_drama_voice_versions_line_job_update_guard
+BEFORE UPDATE OF voice_line_id, job_id ON short_drama_voice_versions
+FOR EACH ROW WHEN NOT EXISTS (
+  SELECT 1 FROM short_drama_voice_jobs AS job
+  WHERE job.job_id=NEW.job_id AND job.voice_line_id=NEW.voice_line_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'voice version job does not belong to line');
+END;
 """
+
+
+_VOICE_TRIGGER_NAMES = (
+    "short_drama_voice_shots_project_guard",
+    "short_drama_voice_shots_project_update_guard",
+    "short_drama_voice_lines_project_guard",
+    "short_drama_voice_lines_project_update_guard",
+    "short_drama_voice_lines_source_text_immutable",
+    "short_drama_voice_jobs_project_guard",
+    "short_drama_voice_jobs_project_update_guard",
+    "short_drama_voice_quotes_project_guard",
+    "short_drama_voice_quotes_project_update_guard",
+    "short_drama_voice_charge_attempts_project_guard",
+    "short_drama_voice_charge_attempts_project_update_guard",
+    "short_drama_voice_versions_line_job_guard",
+    "short_drama_voice_versions_line_job_update_guard",
+)
+
+
+def _replace_voice_triggers(conn):
+    for name in _VOICE_TRIGGER_NAMES:
+        conn.execute("DROP TRIGGER IF EXISTS %s" % name)
+    conn.executescript(_TRIGGER_SCHEMA)
 
 
 def init_db(db_factory):
@@ -314,6 +377,7 @@ def init_db(db_factory):
     try:
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(_SCHEMA)
+        _replace_voice_triggers(conn)
         conn.commit()
     finally:
         conn.close()
