@@ -189,6 +189,8 @@
 (function(){
   "use strict";
   var phone=true, remember=false, registering=false;
+  var inviteValue=(new URLSearchParams(location.search).get("invite")||"").trim().toUpperCase();
+  var inviteCode=inviteValue.length<=32?inviteValue:"";
   var tabPhone=document.getElementById("tabPhone"), tabPwd=document.getElementById("tabPwd");
   var rowPhone=document.getElementById("rowPhone"), rowPwd=document.getElementById("rowPwd");
   var rowDisplayName=document.getElementById("rowDisplayName"), rowConfirmPwd=document.getElementById("rowConfirmPwd");
@@ -247,10 +249,12 @@
     if(displayName.length>32){ setMsg("昵称最多 32 个字符","err"); return; }
     if(password.length<6){ setMsg("密码至少 6 位","err"); return; }
     if(password!==confirmPassword){ setMsg("两次输入的密码不一致","err"); return; }
+    var payload={username:username,password:password,display_name:displayName};
+    if(inviteCode){ payload.invite_code=inviteCode; payload.invite_source="web_link"; }
     btn.disabled=true; btn.style.opacity=".7"; setMsg("注册中…");
     fetch("/api/auth/register",{
       method:"POST", credentials:"same-origin", headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({username:username,password:password,display_name:displayName})
+      body:JSON.stringify(payload)
     }).then(function(r){
       if(r.status===404){ throw new Error("__nobackend__"); }
       return r.json().then(function(d){ return {ok:r.ok,d:d}; });
@@ -296,6 +300,7 @@
   btn.onclick=doLogin;
   teamLogin.onclick=doLogin;
   registerToggle.onclick=function(){ setRegisterMode(!registering); };
+  if(inviteCode) setRegisterMode(true);
   [["username","code","password"]].forEach(function(){});
   ["username","code","password","displayName","confirmPassword"].forEach(function(id){
     var el=document.getElementById(id); if(el) el.addEventListener("keydown",function(e){ if(e.key==="Enter") doLogin(); });

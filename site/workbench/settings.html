@@ -344,6 +344,23 @@
         </div>
       </section>
 
+      <section id="inviteShareCard" class="settings-card">
+        <div class="settings-card-body">
+          <div class="settings-card-head">
+            <div>
+              <div class="settings-card-title">邀请好友</div>
+              <div class="settings-card-note">获取你的邀请码和专属邀请链接。</div>
+            </div>
+            <button id="loadInviteBtn" class="btn primary" type="button">获取邀请链接</button>
+          </div>
+          <div id="inviteShareDetails" class="info-grid" hidden>
+            <div class="info-cell"><div class="info-label">邀请码</div><div id="inviteCode" class="info-value mono">--</div></div>
+            <div class="info-cell"><div class="info-label">邀请链接</div><div class="info-value-row"><div id="inviteLink" class="info-value" style="font-size:12px">--</div><button id="copyInviteLinkBtn" class="btn info-copy-btn" type="button" disabled>复制</button></div></div>
+          </div>
+          <div id="inviteShareStatus" class="settings-card-note" aria-live="polite"></div>
+        </div>
+      </section>
+
       </div>
     </div>
   </main>
@@ -642,6 +659,35 @@
     if(!id || id==='--'){ toast('账号 ID 暂未生成'); return; }
     copyText(id).then(function(){ toast('账号 ID 已复制'); })
       .catch(function(){ toast('复制失败，请手动选择账号 ID'); });
+  });
+
+  function loadInviteShare(){
+    var btn=$('loadInviteBtn'), status=$('inviteShareStatus');
+    setBusy(btn,true,'获取中');
+    status.textContent='';
+    apiFetch('/api/auth/invite/code').then(function(res){
+      if(!res) return;
+      var code=typeof res.data.code==='string'?res.data.code.trim().toUpperCase():'';
+      var link=typeof res.data.invite_link==='string'?res.data.invite_link.trim():'';
+      if(!res.ok||!code||code.length>32||!link||link.length>2048) throw new Error(res.data.detail||'邀请链接获取失败');
+      $('inviteCode').textContent=code;
+      $('inviteLink').textContent=link;
+      $('inviteShareDetails').hidden=false;
+      $('copyInviteLinkBtn').disabled=false;
+      btn.textContent='刷新';
+    }).catch(function(err){
+      status.textContent=err.message||'邀请链接获取失败';
+    }).finally(function(){
+      setBusy(btn,false,btn.textContent==='刷新'?'刷新':'获取邀请链接');
+    });
+  }
+
+  $('loadInviteBtn').addEventListener('click',loadInviteShare);
+  $('copyInviteLinkBtn').addEventListener('click',function(){
+    var link=$('inviteLink').textContent.trim();
+    if(!link||link==='--') return;
+    copyText(link).then(function(){toast('邀请链接已复制');})
+      .catch(function(){toast('复制失败，请手动选择邀请链接');});
   });
 
   function friendPanel(){
