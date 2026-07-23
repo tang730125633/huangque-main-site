@@ -175,6 +175,7 @@ for f in "$@"; do
     server/imggen_api.py)  dest=/home/ubuntu/content-api/;  svc=huangque-imggen-api ;;
     server/dl_service.py)  dest=/home/ubuntu/dl-service/;   svc=huangque-dl ;;
     server/tikhub.py)      dest=/home/ubuntu/content-api/;  svc="huangque-leadgen-api huangque-content huangque-imggen-api" ;;
+    scripts/hq_bitable_sync_server.py) dest=/home/ubuntu/; svc="" ;;
     scripts/drift_sentinel.py) dest=/home/ubuntu/hq-drift/; svc="" ;;
     # systemd 单元与 drop-in。原来不在映射表里，只能手工 scp + daemon-reload —— 漏一步就出事：
     # leadgen 曾因单元没加载 auth.env 而拿不到 HQ_INTERNAL_TOKEN，退点全部静默回退直写。
