@@ -6,6 +6,7 @@
   var apiModule=window.HQCanvas&&window.HQCanvas.api;
   var agentModule=window.HQCanvas&&window.HQCanvas.agent;
   var shortDramaModule=window.HQCanvas&&window.HQCanvas.shortDrama;
+  var digitalPresenterModule=window.HQCanvas&&window.HQCanvas.digitalPresenter;
   var canvasExporter=window.HQCanvas&&window.HQCanvas.exporter;
   var canvasStorage=storageApi.createStorage({storage:function(){return window.localStorage;}});
   var apiClient=apiModule.createClient({fetchImpl:window.fetch.bind(window),tokenProvider:tok,AbortControllerImpl:window.AbortController,setTimeoutImpl:setTimeout,clearTimeoutImpl:clearTimeout});
@@ -27,6 +28,9 @@
   var activeSidePanel='', accountAssetsLoaded=false, accountAssets=[], accountAssetsPromise=null, dragAsset=null;
   var agentSessions={};
   var agentIP12Context=null, agentIP12Loaded=false, agentIP12Loading=false, agentIP12Error='';
+  var VIDEO_POINTS_PER_SECOND=30;
+  var videoAvatars=[], videoAvatarsLoaded=false, videoAvatarsPromise=null, videoAvatarsError='';
+  var digitalPresenterEntryEnabled=false;
   var currentBoardId=null, boardMode='mine', boardLastSeenUpdatedAt=0, boardConflict=false;
   var currentBoardScope='local', currentCollabVersion=0, currentCollabRole='', currentCollabName='', currentCollabMembers=[];
   var collabBoards=[], collabLoaded=false, collabLoading=false, collabError='', collabErrorHint='', collabCreating=false, collabSaving=false, collabQueuedSnap=null;
@@ -44,7 +48,7 @@
     return shortDramaModule.normalizeNodeParams(input);
   }
   function shortDramaNodeOutputs(node){
-    return node&&node.type==='shortDrama'?{}:stateApi.cloneSnapshot(node&&node.outputs||{});
+    return node&&node.type==='shortDrama'?{}:node&&node.type==='digitalPresenter'?{}:stateApi.cloneSnapshot(node&&node.outputs||{});
   }
   function destroyShortDramaWorkspace(node){
     if(!node||!node.shortDramaWorkspace) return;
@@ -59,6 +63,7 @@
     var previousRole=currentCollabRole;
     currentCollabRole=role||currentCollabRole;
     if(shortDramaModule.isRoleDowngrade(previousRole,currentCollabRole)) destroyAllShortDramaWorkspaces();
+    if(digitalPresenterModule.isRoleDowngrade(previousRole,currentCollabRole)) destroyAllDigitalPresenterWorkspaces();
     return currentCollabRole;
   }
   function refreshShortDramaNode(node){
@@ -162,6 +167,79 @@
       throw error;
     }).finally(function(){ applyShortDramaOpenPolicy(scopeKey,nodeId); });
   }
+  function normalizeDigitalPresenterNodeParams(input){ return digitalPresenterModule.normalizeNodeParams(input); }
+  function destroyDigitalPresenterWorkspace(node){
+    if(!node||!node.digitalPresenterWorkspace) return;
+    var workspace=node.digitalPresenterWorkspace;
+    node.digitalPresenterWorkspace=null;
+    if(workspace.destroy) workspace.destroy();
+  }
+  function destroyAllDigitalPresenterWorkspaces(){
+    Object.keys(nodes).forEach(function(id){ destroyDigitalPresenterWorkspace(nodes[id]); });
+  }
+  function digitalPresenterNodeForScope(scopeKey,nodeId){
+    if(!wrap||!wrap.classList.contains('editing')) return null;
+    if(scopeKey!==currentShortDramaScopeKey()) return null;
+    var node=nodes[nodeId];
+    return node&&node.type==='digitalPresenter'?node:null;
+  }
+  function refreshDigitalPresenterNode(node){
+    if(!node||node.type!=='digitalPresenter'||!node.el) return;
+    if(node.digitalPresenterWorkspace&&node.digitalPresenterWorkspace.projectId!==node.params.project_id) destroyDigitalPresenterWorkspace(node);
+    refreshNodeMeta(node);
+    var ratio=node.el.querySelector('[data-f="digitalPresenterRatio"]');
+    var stage=node.el.querySelector('[data-f="digitalPresenterStage"]');
+    var progress=node.el.querySelector('[data-f="digitalPresenterProgress"]');
+    var points=node.el.querySelector('[data-f="digitalPresenterPoints"]');
+    if(ratio) ratio.textContent=node.params.ratio+' · '+node.params.target_duration+'秒';
+    if(stage) stage.textContent=node.params.stage;
+    if(progress) progress.textContent=node.params.progress+'%';
+    if(points) points.textContent=node.params.spent_points+' / '+node.params.estimated_points+' 点';
+  }
+  function applyDigitalPresenterSummary(node,summary){
+    if(!node||!summary||typeof summary!=='object') return;
+    node.params=normalizeDigitalPresenterNodeParams(Object.assign({},node.params,summary));
+    node.outputs={};refreshDigitalPresenterNode(node);scheduleSave();
+  }
+  var digitalPresenterProjectCoordinator=digitalPresenterModule.createProjectCoordinator({
+    getNode:function(scopeKey,nodeId){ return digitalPresenterNodeForScope(scopeKey,nodeId); },
+    create:function(payload){
+      var headers=currentBoardId?{'X-Canvas-Board-Id':String(currentBoardId)}:{};
+      return apiClient.json('/api/gen/digital-presenter/projects',{method:'POST',body:payload,headers:headers});
+    },
+    apply:function(node,project){ applyDigitalPresenterSummary(node,project); }
+  });
+  function applyDigitalPresenterOpenPolicy(scopeKey,nodeId){
+    var node=digitalPresenterNodeForScope(scopeKey,nodeId);
+    var button=node&&node.el&&node.el.querySelector('[data-f="openDigitalPresenter"]');
+    if(button) button.disabled=!digitalPresenterModule.canOpenNode(node.params,canEditCanvas()&&currentBoardScope==='collab');
+  }
+  function ensureDigitalPresenterProject(node,scopeKey){
+    var canCreate=canEditCanvas()&&currentBoardScope==='collab'&&!!currentBoardId;
+    if(!node.params.project_id&&canCreate) setNodeState(node,'running','正在创建数字人口播项目…','#2dd4bf');
+    return digitalPresenterProjectCoordinator.ensure(scopeKey,node.id,digitalPresenterModule.creationPayload(node.params),canCreate,node.params.project_id||null);
+  }
+  function openDigitalPresenterWorkspace(node){
+    var scopeKey=currentShortDramaScopeKey(),nodeId=node.id;
+    if(!digitalPresenterModule||typeof digitalPresenterModule.createWorkspace!=='function') return Promise.reject(new Error('数字人口播工作区未加载'));
+    return ensureDigitalPresenterProject(node,scopeKey).then(function(projectId){
+      node=digitalPresenterNodeForScope(scopeKey,nodeId);if(!node) return null;
+      destroyDigitalPresenterWorkspace(node);
+      node.digitalPresenterWorkspace=digitalPresenterModule.createWorkspace({
+        projectId:projectId,apiClient:apiClient,boardId:currentBoardId,
+        canEdit:canEditCanvas(),onChange:function(summary){
+          var current=digitalPresenterNodeForScope(scopeKey,nodeId);
+          if(current&&current.params.project_id===projectId) applyDigitalPresenterSummary(current,summary);
+        }
+      });
+      setNodeState(node,'done','数字人口播工作区已打开','#2bd576');
+      return node.digitalPresenterWorkspace;
+    }).catch(function(error){
+      var current=digitalPresenterNodeForScope(scopeKey,nodeId);
+      if(current) setNodeState(current,'error',error&&error.message||'打开数字人口播工作区失败','#f4708a');
+      throw error;
+    }).finally(function(){ applyDigitalPresenterOpenPolicy(scopeKey,nodeId); });
+  }
   function tok(){ return '__cookie__'; }
   function authJson(path, opts){
     return apiClient.json(path,opts).catch(function(error){
@@ -197,7 +275,8 @@
     gen:   {name:'作图',          color:'#2bd576', ins:['prompt','image'], outs:['image']},
     video: {name:'生视频',        color:'#f472b6', ins:['prompt','image'], outs:['video']},
     videoAsset:{name:'视频 · 素材',color:'#f472b6', outs:['video']},
-    shortDrama:{name:'短剧项目', color:'#f59e0b'}
+    shortDrama:{name:'短剧项目', color:'#f59e0b'},
+    digitalPresenter:{name:'数字人口播', color:'#e7b24c'}
   };
   function syncRunAllDisabled(){
     var disabled=!canEditCanvas()||runAllExecutableNodes().length===0||!!runAllBatch;
@@ -236,7 +315,7 @@
       edges:stateApi.cloneSnapshot(edges),
       nodes:Object.keys(nodes).map(function(k){
         var n=nodes[k];
-        return {id:n.id,type:n.type,x:n.x,y:n.y,width:n.width||null,height:n.height||null,collapsed:n.el?n.el.classList.contains('collapsed'):!!n.collapsed,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.params||{}),outputs:shortDramaNodeOutputs(n),image:n.image||null,state:n.el?n.el.getAttribute('data-state')||'':n.state||'',note:n.el?(n.el.querySelector('[data-f="note"]')||{}).textContent||'':n.note||''};
+        return {id:n.id,type:n.type,x:n.x,y:n.y,width:n.width||null,height:n.height||null,collapsed:n.el?n.el.classList.contains('collapsed'):!!n.collapsed,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.type==='digitalPresenter'?normalizeDigitalPresenterNodeParams(n.params):n.params||{}),outputs:shortDramaNodeOutputs(n),image:n.image||null,state:n.el?n.el.getAttribute('data-state')||'':n.state||'',note:n.el?(n.el.querySelector('[data-f="note"]')||{}).textContent||'':n.note||''};
       })
     };
   }
@@ -792,6 +871,10 @@
       var host=openShortDrama.closest('.nc-node'), node=host&&nodes[host.getAttribute('data-node-id')];
       openShortDrama.disabled=!!readonly&&!(node&&node.params.project_id);
     });
+    document.querySelectorAll('.nc-node [data-f="openDigitalPresenter"]').forEach(function(button){
+      var host=button.closest('.nc-node'), node=host&&nodes[host.getAttribute('data-node-id')];
+      button.disabled=!!readonly&&!(node&&node.params.project_id);
+    });
     document.querySelectorAll('.nc-node [data-f="headTitle"]').forEach(function(el){
       if(readonly){ el.setAttribute('contenteditable','false'); el.removeAttribute('spellcheck'); }
     });
@@ -1172,6 +1255,7 @@
   }
   function showBoardHome(){
     destroyAllShortDramaWorkspaces();
+    destroyAllDigitalPresenterWorkspaces();
     saveCurrentBoard();
     var wasCollab=currentBoardScope==='collab';
     stopCollabSync();
@@ -1350,6 +1434,7 @@
     if(!board) return;
     var copy=stateApi.cloneSnapshot(board);
     copy.data=sanitizeShortDramaSnapshot(copy.data);
+    copy.data.nodes=(copy.data.nodes||[]).map(function(node){ return node&&node.type==='digitalPresenter'?digitalPresenterModule.copyNodeData(node):node; });
     copy.id=makeBoardId();
     copy.name=cleanBoardName((board.name||'未命名画布')+' 副本')||'未命名画布 副本';
     copy.updatedAt=Date.now();
@@ -1369,6 +1454,7 @@
       latest.splice(idx,1);
       if(!setBoards(latest)) return;
       shortDramaProjectCoordinator.cleanupScope(shortDramaScopeKey('local',id));
+      digitalPresenterProjectCoordinator.cleanupScope(shortDramaScopeKey('local',id));
       if(currentBoardId===id) showBoardHome();
       else renderBoardHome();
       updateState('画布已删除');
@@ -1381,7 +1467,7 @@
   function sanitizeShortDramaSnapshot(snap){
     snap=stateApi.cloneSnapshot(snap||{});
     snap.nodes=(snap.nodes||[]).map(function(node){
-      return node&&node.type==='shortDrama'?shortDramaModule.sanitizeNodeData(node):node;
+      return node&&node.type==='shortDrama'?shortDramaModule.sanitizeNodeData(node):node&&node.type==='digitalPresenter'?stateApi.sanitizeNodeData(node,{digitalPresenter:digitalPresenterModule.sanitizeNodeData}):node;
     });
     return snap;
   }
@@ -1393,6 +1479,11 @@
       n.params=Object.assign({engine:'nb2',channel:'grok',ratio:'9:16',duration:'5',quality:'hd',title:'',remark:''},n.params||{});
       if(n.type==='shortDrama'){
         n.params=normalizeShortDramaNodeParams(n.params);
+        n.outputs={};
+      }
+      if(n.type==='digitalPresenter'){
+        var presenterCopy=digitalPresenterModule.copyNodeData(n);
+        n.params=normalizeDigitalPresenterNodeParams(presenterCopy.params);
         n.outputs={};
       }
       n.outputs=n.outputs||{};
@@ -1442,7 +1533,7 @@
     return String(s).replace(/[&<>"']/g,function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; });
   }
   function nodeTypeLabel(type){
-    return ({text:'文本',image:'图片',reverse:'反推',gen:'作图',video:'视频',videoAsset:'视频素材',shortDrama:'短剧'})[type]||type||'节点';
+    return ({text:'文本',image:'图片',reverse:'反推',gen:'作图',video:'视频',videoAsset:'视频素材',shortDrama:'短剧',digitalPresenter:'数字人口播'})[type]||type||'节点';
   }
   function nodeStatusLabel(node){
     var s=node&&node.el&&node.el.getAttribute('data-state');
@@ -1932,6 +2023,7 @@
     if(!snap) return;
     snap=sanitizeShortDramaSnapshot(snap);
     destroyAllShortDramaWorkspaces();
+    destroyAllDigitalPresenterWorkspaces();
     restoring=true;
     Object.keys(nodes).forEach(function(id){ if(nodes[id]&&nodes[id].el) nodes[id].el.remove(); });
     nodes={}; edges=stateApi.cloneSnapshot(snap.edges||[]); nid=snap.nid||0; pendingPort=null; dragPort=null; selectedNode=null; selectedNodes={}; selectedEdge=-1; runLabel=snap.runLabel||'就绪';
@@ -2052,12 +2144,14 @@
   // ---------- 建节点 ----------
   function addNode(type, x, y, data){
     if(type==='shortDrama'&&data) data=shortDramaModule.sanitizeNodeData(data);
+    if(type==='digitalPresenter'&&data) data=stateApi.sanitizeNodeData(data,{digitalPresenter:digitalPresenterModule.sanitizeNodeData});
     var t=TYPE[type], nextNid=++nid, id=currentBoardScope==='collab'&&collabSync?collabSync.makeNodeId(collabNodeSeed,nextNid):'n'+nextNid;
     if(data&&data.id){ id=data.id; var m=String(id).match(/^n(\d+)$/); if(m) nid=Math.max(nid,parseInt(m[1],10)); }
     var fallback=x==null||y==null?viewportNodePoint():null;
     var node={ id:id, type:type, x:(x==null?fallback.x:x), y:(y==null?fallback.y:y), width:Number(data&&data.width)||0, height:Number(data&&data.height)||0, collapsed:!!(data&&data.collapsed), params:Object.assign({engine:'nb2',channel:'grok',ratio:'16:9',duration:'5',quality:'hd',title:'',remark:''},(data&&data.params)||{}), outputs:stateApi.cloneSnapshot((data&&data.outputs)||{}), image:(data&&data.image)||null };
     if(type==='shortDrama') node.params=normalizeShortDramaNodeParams(node.params);
-    var el=document.createElement('div'); el.className='nc-node'+(type==='shortDrama'?' nc-node-short-drama':''); el.style.left=node.x+'px'; el.style.top=node.y+'px';
+    if(type==='digitalPresenter') node.params=normalizeDigitalPresenterNodeParams(node.params);
+    var el=document.createElement('div'); el.className='nc-node'+(type==='shortDrama'?' nc-node-short-drama':type==='digitalPresenter'?' nc-node-digital-presenter':''); el.style.left=node.x+'px'; el.style.top=node.y+'px';
     var body='';
     if(type==='text') body='<textarea class="nc-in" data-f="text" rows="3" placeholder="输入提示词，作为下游作图的词…"></textarea>';
     if(type==='image') body='<label class="nc-drop" data-f="drop"><input type="file" accept="image/*" data-f="file" style="display:none">点击上传<br>或按 Ctrl+V 粘贴</label>';
@@ -2077,6 +2171,8 @@
     if(type==='videoAsset') body='<div class="nc-video-result" data-f="videoResult"></div>';
     if(type==='shortDrama') body='<div class="nc-short-drama-summary"><div><span>画幅与时长</span><strong data-f="shortDramaRatio"></strong></div><div><span>当前阶段</span><strong data-f="shortDramaStage"></strong></div><div><span>完成进度</span><strong data-f="shortDramaProgress"></strong></div><div><span>点数</span><strong data-f="shortDramaPoints"></strong></div></div>'
       +'<button class="nc-go nc-short-drama-open" type="button" data-f="openShortDrama">打开短剧工作区</button>';
+    if(type==='digitalPresenter') body='<div class="nc-digital-presenter-summary"><div><span>画幅与时长</span><strong data-f="digitalPresenterRatio"></strong></div><div><span>当前阶段</span><strong data-f="digitalPresenterStage"></strong></div><div><span>完成进度</span><strong data-f="digitalPresenterProgress"></strong></div><div><span>点数</span><strong data-f="digitalPresenterPoints"></strong></div></div>'
+      +'<button class="nc-go" type="button" data-f="openDigitalPresenter">打开数字人口播工作区</button>';
     el.innerHTML='<div class="nc-head" data-f="head"><span style="display:flex;align-items:center;gap:7px;min-width:0;"><span class="dot" style="background:'+t.color+'"></span><span class="nc-node-title" data-f="headTitle">'+escapeHtml(node.params.title||t.name)+'</span><span class="nc-remark-mark" data-f="remarkMark" title="有备注">注</span></span><span class="nc-actions"><span class="nc-fold" data-f="fold" title="折叠/展开">−</span><span class="nc-x" data-f="del">×</span></span></div>'
       +'<div class="nc-body">'+body+'<div class="nc-note" data-f="note"></div></div>';
     ['n','ne','e','se','s','sw','w','nw'].forEach(function(direction){ var handle=document.createElement('button'); handle.type='button'; handle.className='nc-resize-handle nc-resize-'+direction; handle.setAttribute('data-resize',direction); handle.setAttribute('aria-label','调整节点大小'); el.appendChild(handle); });
@@ -2127,6 +2223,7 @@
     refreshGenRefs(node);
     refreshVideoNodeHint(node);
     refreshShortDramaNode(node);
+    refreshDigitalPresenterNode(node);
   }
   function inputVals(nodeId, port){
     return edges.filter(function(e){ return e.to.node===nodeId && e.to.port===port; }).map(function(e){
@@ -2328,6 +2425,7 @@
     pushUndo();
     ids.forEach(function(id){
       destroyShortDramaWorkspace(nodes[id]);
+      destroyDigitalPresenterWorkspace(nodes[id]);
       if(nodes[id]&&nodes[id].el) nodes[id].el.remove();
       delete nodes[id];
     });
@@ -2365,7 +2463,7 @@
         multi:true,
         nodes:ids.map(function(id){
           var n=nodes[id];
-          return {id:n.id,type:n.type,x:n.x,y:n.y,collapsed:n.collapsed,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.params||{}),outputs:shortDramaNodeOutputs(n),image:n.image||null,note:(n.el.querySelector('[data-f="note"]')||{}).textContent||''};
+          return {id:n.id,type:n.type,x:n.x,y:n.y,collapsed:n.collapsed,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.type==='digitalPresenter'?digitalPresenterModule.copyNodeData(n).params:n.params||{}),outputs:shortDramaNodeOutputs(n),image:n.image||null,note:(n.el.querySelector('[data-f="note"]')||{}).textContent||''};
         }),
         edges:edges.filter(function(e){ return set[e.from.node]&&set[e.to.node]; }).map(function(e){ return stateApi.cloneSnapshot(e); })
       };
@@ -2373,7 +2471,7 @@
       return;
     }
     var n=nodes[ids[0]];
-    clipNode={type:n.type,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.params||{}),outputs:shortDramaNodeOutputs(n),image:n.image||null,note:(n.el.querySelector('[data-f="note"]')||{}).textContent||''};
+    clipNode={type:n.type,params:stateApi.cloneSnapshot(n.type==='shortDrama'?normalizeShortDramaNodeParams(n.params):n.type==='digitalPresenter'?digitalPresenterModule.copyNodeData(n).params:n.params||{}),outputs:shortDramaNodeOutputs(n),image:n.image||null,note:(n.el.querySelector('[data-f="note"]')||{}).textContent||''};
     updateState('已复制节点');
   }
   function pasteNode(){
@@ -2706,7 +2804,7 @@
     showMenu(items,r.left,r.top-10,{anchor:'above',focus:true});
   }
   function addNodeMenuItems(pt){
-    return [
+    var items=[
       {icon:'text',label:'文本',title:'添加文本提示词节点',run:function(){ addAt('text',pt); }},
       {icon:'image',label:'图片',title:'上传或粘贴素材图',run:function(){ addAt('image',pt); }},
       {icon:'reverse',label:'图片反推',title:'根据图片生成提示词',run:function(){ addAt('reverse',pt); }},
@@ -2714,6 +2812,8 @@
       {icon:'video',label:'视频生成',title:'根据提示词和参考图生成视频',run:function(){ addAt('video',pt); }},
       {icon:'drama',label:'短剧生产',title:'创建短剧项目',run:function(){ addAt('shortDrama',pt); }}
     ];
+    if(digitalPresenterEntryEnabled) items.push({key:'播',label:'数字人口播',title:'创建数字人口播项目',run:function(){ addAt('digitalPresenter',pt); }});
+    return items;
   }
   function showAddNodeMenu(pt,x,y,anchor){
     var items=[{kind:'title',label:'添加节点'}].concat(addNodeMenuItems(pt),[
@@ -3323,6 +3423,8 @@
       seg.querySelectorAll('.nc-chip').forEach(function(c){ c.onclick=function(){ if(!canEditCanvas()) return; if(node.params[f]!==c.getAttribute('data-v')) pushUndo(); seg.querySelectorAll('.nc-chip').forEach(function(x){x.classList.remove('on');}); c.classList.add('on'); node.params[f]=c.getAttribute('data-v'); refreshVideoNodeHint(node); scheduleSave(); }; }); });
     var openShortDrama=el.querySelector('[data-f="openShortDrama"]');
     if(openShortDrama) openShortDrama.onclick=function(e){ e.stopPropagation(); openShortDramaWorkspace(node).catch(function(){}); };
+    var openDigitalPresenter=el.querySelector('[data-f="openDigitalPresenter"]');
+    if(openDigitalPresenter) openDigitalPresenter.onclick=function(e){ e.stopPropagation(); openDigitalPresenterWorkspace(node).catch(function(){}); };
     // 图片节点上传/粘贴
     var file=el.querySelector('[data-f="file"]'), drop=el.querySelector('[data-f="drop"]');
     if(file){ file.onchange=function(){ if(!canEditCanvas()) return; var label=node._imageActionLabel||'图片已上传'; node._imageActionLabel=''; imgToNode(node, file.files&&file.files[0], label); }; }
@@ -3443,6 +3545,7 @@
     if(nodes[id]){
       pushUndo();
       destroyShortDramaWorkspace(nodes[id]);
+      destroyDigitalPresenterWorkspace(nodes[id]);
       nodes[id].el.remove();delete nodes[id];
       if(selectedNode===id) selectedNode=null;
       delete selectedNodes[id];
@@ -3453,6 +3556,7 @@
   function clearCanvas(){
     if(!canEditCanvas()) return;
     destroyAllShortDramaWorkspaces();
+    destroyAllDigitalPresenterWorkspaces();
     Object.keys(nodes).forEach(function(id){ if(nodes[id]&&nodes[id].el) nodes[id].el.remove(); });
     nodes={}; edges=[]; pendingPort=null; selectedNode=null; selectedNodes={}; selectedEdge=-1; redraw(); updateSelectedRegion(); updateState('空画布');
   }
@@ -3907,7 +4011,30 @@
   if(runAllBtn) runAllBtn.onclick=startRunAllBatch;
 
   // ---------- 顶部添加 ----------
-  document.querySelectorAll('.nc-add').forEach(function(b){ b.onclick=function(){ if(!canEditCanvas()) return; pushUndo(); addNode(b.getAttribute('data-add')); updateState('已添加'); }; });
+  function bindCanvasAddButton(button){
+    if(!button) return;
+    button.onclick=function(){
+      if(!canEditCanvas()) return;
+      var type=button.getAttribute('data-add');
+      if(type==='digitalPresenter'&&currentBoardScope!=='collab'){
+        updateState('数字人口播项目请在协作画布中创建');return;
+      }
+      pushUndo();addNode(type);updateState('已添加');
+    };
+  }
+  function registerDigitalPresenterEntry(capability){
+    if(!digitalPresenterModule.canRegisterEntry(capability)||digitalPresenterEntryEnabled) return false;
+    digitalPresenterEntryEnabled=true;
+    [document.querySelector('.nc-group[aria-label="添加节点"]'),document.querySelector('.nc-empty-card')].forEach(function(host){
+      if(!host) return;
+      var button=document.createElement('button');button.type='button';button.className='nc-add';
+      button.setAttribute('data-add','digitalPresenter');button.title='创建数字人口播项目';button.textContent='+ 数字人口播';
+      bindCanvasAddButton(button);host.appendChild(button);
+    });
+    return true;
+  }
+  document.querySelectorAll('.nc-add').forEach(bindCanvasAddButton);
+  apiClient.json('/api/gen/digital-presenter/capability').then(registerDigitalPresenterEntry).catch(function(){});
   document.getElementById('ncClear').onclick=function(){ if(!canEditCanvas()) return; if(Object.keys(nodes).length){ pushUndo(); clearCanvas(); } };
   if(cleanupStorageBtn) cleanupStorageBtn.onclick=function(){ cleanupLocalSpace(); };
   document.getElementById('ncResetDemo').onclick=function(){ if(!canEditCanvas()) return; pushUndo(); resetDemo(); };
@@ -4024,7 +4151,7 @@
     scheduleCollabPoll(0);
     if(!document.hidden) sendCollabPresence();
   });
-  window.addEventListener('beforeunload',function(){ destroyAllShortDramaWorkspaces();stopCollabSync(); });
+  window.addEventListener('beforeunload',function(){ destroyAllShortDramaWorkspaces();destroyAllDigitalPresenterWorkspaces();stopCollabSync(); });
   document.addEventListener('keydown',function(e){
     var tag=(e.target&&e.target.tagName||'').toLowerCase();
     var editing=tag==='input'||tag==='textarea'||tag==='select'||!!(e.target&&(e.target.isContentEditable||(e.target.closest&&e.target.closest('[contenteditable="true"]'))));
