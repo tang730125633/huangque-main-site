@@ -28,7 +28,7 @@ LOGIN_FAIL_WINDOW = int(os.environ.get("HQ_AUTH_FAIL_WINDOW", "300"))
 LOGIN_FAIL_MAX = int(os.environ.get("HQ_AUTH_FAIL_MAX", "5"))
 REGISTER_WINDOW = int(os.environ.get("HQ_AUTH_REGISTER_WINDOW", "300"))
 REGISTER_MAX = int(os.environ.get("HQ_AUTH_REGISTER_MAX", "5"))
-NEW_USER_TRIAL_POINTS = int(os.environ.get("HQ_AUTH_TRIAL_POINTS", "0"))  # 新注册默认不赠送点数
+NEW_USER_TRIAL_POINTS = int(os.environ.get("HQ_AUTH_TRIAL_POINTS", "16"))  # 暂时保留新用户注册赠送 16 点
 # 充值定价：客户端只传金额(元)，点数一律服务端算，绝不信客户端传的点数——
 # 否则用户能花 1 元买百万点。与 recharge.html / 小程序 recharge.js 保持一致。
 # 固定档与自定义均按 10 点/元；自定义限 10~5000 元整。
