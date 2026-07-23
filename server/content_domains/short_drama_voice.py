@@ -1,6 +1,10 @@
 """Voice-line snapshots and read models for short-drama production."""
 
+import hashlib
+import json
 import sqlite3
+import time
+import uuid
 
 
 VOICE_STAGES = {
@@ -257,5 +261,237 @@ def init_db(db_factory):
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(_SCHEMA)
         conn.commit()
+    finally:
+        conn.close()
+
+
+def _json_value(raw, fallback):
+    try:
+        value = json.loads(raw or "")
+    except (TypeError, ValueError):
+        return fallback
+    return value
+
+
+def _number(value, default, minimum, maximum, integer=False):
+    if isinstance(value, bool):
+        return default
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    result = max(minimum, min(maximum, result))
+    return int(round(result)) if integer else round(result, 1)
+
+
+def normalized_voice_settings(raw):
+    value = raw if isinstance(raw, dict) else {}
+    return {
+        "speed": _number(value.get("speed"), 1.0, 0.5, 2.0),
+        "pitch": _number(value.get("pitch"), 0, -12, 12, integer=True),
+        "volume": _number(value.get("volume"), 0, -50, 100, integer=True),
+    }
+
+
+def voice_input_hash(speech_text, voice_key, speed, pitch, volume):
+    descriptor = {
+        "speech_text": str(speech_text),
+        "voice_key": str(voice_key),
+        "speed": float(speed),
+        "pitch": int(pitch),
+        "volume": int(volume),
+    }
+    encoded = json.dumps(
+        descriptor, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def ensure_voice_workspace(conn, project_id, allowed_stages=None):
+    conn.row_factory = sqlite3.Row
+    project = conn.execute(
+        "SELECT * FROM short_drama_projects WHERE id=? AND deleted=0",
+        (project_id,),
+    ).fetchone()
+    if not project:
+        raise LookupError("短剧项目不存在")
+    allowed = set(allowed_stages or VOICE_STAGES)
+    if project["stage"] not in allowed:
+        raise ValueError("短剧项目尚未进入配音阶段")
+    existing = conn.execute(
+        "SELECT 1 FROM short_drama_voice_shots WHERE project_id=? LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    if existing:
+        return
+    script = conn.execute(
+        "SELECT dialogue_lines_json FROM short_drama_scripts "
+        "WHERE project_id=? ORDER BY version DESC LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    if not script:
+        raise ValueError("短剧项目缺少已确认剧本")
+    dialogue_items = _json_value(script["dialogue_lines_json"], [])
+    dialogue = {
+        item.get("id"): item for item in dialogue_items
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+    characters = {
+        row["character_key"]: row for row in conn.execute(
+            "SELECT * FROM short_drama_characters WHERE project_id=?",
+            (project_id,),
+        )
+    }
+    shots = conn.execute(
+        "SELECT * FROM short_drama_shots WHERE project_id=? "
+        "ORDER BY sort_order,id",
+        (project_id,),
+    ).fetchall()
+    if not shots:
+        raise ValueError("短剧项目缺少已确认分镜")
+    now = int(time.time())
+    for shot in shots:
+        conn.execute(
+            "INSERT INTO short_drama_voice_shots "
+            "(shot_id,project_id,locked,timeline_revision,created_at,updated_at) "
+            "VALUES (?,?,0,1,?,?)",
+            (shot["id"], project_id, now, now),
+        )
+        line_ids = _json_value(shot["dialogue_line_ids_json"], [])
+        for sort_order, dialogue_line_id in enumerate(line_ids):
+            source = dialogue.get(dialogue_line_id)
+            if not source:
+                raise ValueError("分镜引用了不存在的台词")
+            character_key = str(source.get("character_key") or "")
+            character = characters.get(character_key)
+            if not character:
+                raise ValueError("台词引用了不存在的角色")
+            settings = normalized_voice_settings(
+                _json_value(character["voice_settings_json"], {})
+            )
+            speech_text = str(source.get("text") or "").strip()
+            if not speech_text:
+                raise ValueError("配音台词不能为空")
+            voice_key = str(character["voice_key"] or "").strip()
+            input_hash = voice_input_hash(
+                speech_text, voice_key, settings["speed"],
+                settings["pitch"], settings["volume"],
+            )
+            conn.execute(
+                "INSERT INTO short_drama_voice_lines "
+                "(id,project_id,shot_id,dialogue_line_id,line_type,sort_order,"
+                "character_key,source_text,speech_text,subtitle_text,"
+                "subtitle_visible,voice_key,speed,pitch,volume,current_version,"
+                "start_ms,end_ms,input_hash,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,NULL,NULL,NULL,?,?,?)",
+                (
+                    str(uuid.uuid4()), project_id, shot["id"], dialogue_line_id,
+                    "narration" if character_key == "narrator" else "dialogue",
+                    sort_order, character_key, speech_text, speech_text, speech_text,
+                    voice_key, settings["speed"], settings["pitch"],
+                    settings["volume"], input_hash, now, now,
+                ),
+            )
+
+
+def _line_snapshot(row, character_name):
+    return {
+        "id": row["id"],
+        "dialogue_line_id": row["dialogue_line_id"],
+        "line_type": row["line_type"],
+        "sort_order": row["sort_order"],
+        "character_key": row["character_key"],
+        "character_name": character_name,
+        "source_text": row["source_text"],
+        "speech_text": row["speech_text"],
+        "subtitle_text": row["subtitle_text"],
+        "subtitle_visible": bool(row["subtitle_visible"]),
+        "voice_key": row["voice_key"],
+        "speed": row["speed"],
+        "pitch": row["pitch"],
+        "volume": row["volume"],
+        "current_version": row["current_version"],
+        "start_ms": row["start_ms"],
+        "end_ms": row["end_ms"],
+        "input_hash": row["input_hash"],
+        "versions": [],
+        "job": None,
+    }
+
+
+def build_voice_snapshot(conn, project):
+    conn.row_factory = sqlite3.Row
+    characters = {
+        row["character_key"]: row["name"] for row in conn.execute(
+            "SELECT character_key,name FROM short_drama_characters WHERE project_id=?",
+            (project["id"],),
+        )
+    }
+    voice_shots = {
+        row["shot_id"]: row for row in conn.execute(
+            "SELECT * FROM short_drama_voice_shots WHERE project_id=?",
+            (project["id"],),
+        )
+    }
+    lines = {}
+    for row in conn.execute(
+        "SELECT * FROM short_drama_voice_lines WHERE project_id=? "
+        "ORDER BY shot_id,sort_order",
+        (project["id"],),
+    ):
+        lines.setdefault(row["shot_id"], []).append(
+            _line_snapshot(row, characters.get(row["character_key"], row["character_key"]))
+        )
+    shots = []
+    for shot in conn.execute(
+        "SELECT id,shot_key,sort_order,duration FROM short_drama_shots "
+        "WHERE project_id=? ORDER BY sort_order,id",
+        (project["id"],),
+    ):
+        shot_lines = lines.get(shot["id"], [])
+        state = voice_shots[shot["id"]]
+        shots.append({
+            "id": shot["id"],
+            "shot_key": shot["shot_key"],
+            "sort_order": shot["sort_order"],
+            "duration": shot["duration"],
+            "locked": bool(state["locked"]),
+            "timeline_revision": state["timeline_revision"],
+            "status": "silent" if not shot_lines else "pending",
+            "lines": shot_lines,
+        })
+    return {
+        "project_id": project["id"],
+        "revision": project["revision"],
+        "stage": project["stage"],
+        "ratio": project["ratio"],
+        "target_duration": project["target_duration"],
+        "point_budget": project["point_budget"],
+        "spent_points": project["spent_points"],
+        "reserved_points": 0,
+        "shots": shots,
+    }
+
+
+def get_voice_workspace(db_factory, username, project_id):
+    conn = db_factory()
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("BEGIN IMMEDIATE")
+        project = conn.execute(
+            "SELECT * FROM short_drama_projects "
+            "WHERE id=? AND username=? AND deleted=0",
+            (project_id, username),
+        ).fetchone()
+        if not project:
+            raise LookupError("短剧项目不存在")
+        ensure_voice_workspace(conn, project_id)
+        snapshot = build_voice_snapshot(conn, project)
+        conn.commit()
+        return snapshot
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()

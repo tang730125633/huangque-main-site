@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import sys
 import tempfile
@@ -11,6 +12,124 @@ if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
 from content_domains import short_drama, short_drama_voice
+
+
+def voice_plan():
+    dialogue = [
+        {"id": "line-1", "character_key": "detective", "text": "谁在那里？"},
+        {"id": "line-2", "character_key": "narrator", "text": "门外没有回答。"},
+    ]
+    characters = [
+        {
+            "character_key": "detective", "name": "林探长",
+            "identity_text": "detective", "personality": "calm",
+            "source_type": "ai_character", "avatar_id": None,
+            "appearance_prompt": "coat", "wardrobe_prompt": "dark coat",
+            "voice_key": "longwan",
+            "voice_settings": {"speed": 1.2, "pitch": 1, "volume": 4},
+            "sort_order": 0,
+        },
+        {
+            "character_key": "narrator", "name": "旁白",
+            "identity_text": "narrator", "personality": "steady",
+            "source_type": "ai_character", "avatar_id": None,
+            "appearance_prompt": "voice only", "wardrobe_prompt": "none",
+            "voice_key": "longcheng", "voice_settings": {},
+            "sort_order": 1,
+        },
+    ]
+    shots = []
+    for index in range(6):
+        shots.append({
+            "shot_key": "shot-%d" % (index + 1), "sort_order": index,
+            "duration": 5, "scene_description": "scene",
+            "camera_description": "camera",
+            "character_keys": ["detective", "narrator"] if index == 0 else [],
+            "dialogue_line_ids": ["line-1", "line-2"] if index == 0 else [],
+            "image_prompt": "image", "video_prompt": "video",
+        })
+    return {
+        "characters": characters,
+        "script": {
+            "title": "Night", "logline": "visitor", "hook": "knock",
+            "conflict_text": "silence", "turn_text": "empty",
+            "ending": "door opens", "dialogue_lines": dialogue,
+        },
+        "shots": shots,
+    }
+
+
+class ShortDramaVoiceSnapshotTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = str(Path(self.tmp.name) / "content.db")
+        self.db = lambda: sqlite3.connect(self.path)
+        short_drama.init_db(self.db)
+        payload = {
+            "title": "Night", "synopsis": "A detective hears a midnight knock.",
+            "ratio": "9:16", "target_duration": 30, "shot_count": 6,
+        }
+        project = short_drama.create_project(self.db, "alice", payload)
+        self.project = short_drama.apply_plan(
+            self.db, "alice", project["id"], project["revision"],
+            voice_plan(), planning_cost=0, planning_job_id=501,
+        )
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_projects SET stage='voice_review' WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_lazy_snapshot_maps_dialogue_narration_defaults_and_silent_shots(self):
+        snapshot = short_drama_voice.get_voice_workspace(
+            self.db, "alice", self.project["id"]
+        )
+        self.assertEqual("voice_review", snapshot["stage"])
+        self.assertEqual(6, len(snapshot["shots"]))
+        first = snapshot["shots"][0]
+        self.assertEqual(["dialogue", "narration"], [
+            line["line_type"] for line in first["lines"]
+        ])
+        self.assertEqual(["谁在那里？", "门外没有回答。"], [
+            line["source_text"] for line in first["lines"]
+        ])
+        self.assertEqual("longwan", first["lines"][0]["voice_key"])
+        self.assertEqual(1.2, first["lines"][0]["speed"])
+        self.assertEqual("pending", first["status"])
+        self.assertTrue(all(shot["status"] == "silent" for shot in snapshot["shots"][1:]))
+
+    def test_snapshot_is_idempotent_and_does_not_resync_source_changes(self):
+        first = short_drama_voice.get_voice_workspace(
+            self.db, "alice", self.project["id"]
+        )
+        line_id = first["shots"][0]["lines"][0]["id"]
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_voice_lines SET speech_text='custom' WHERE id=?",
+                (line_id,),
+            )
+            script = conn.execute(
+                "SELECT id,dialogue_lines_json FROM short_drama_scripts "
+                "WHERE project_id=? ORDER BY version DESC LIMIT 1",
+                (self.project["id"],),
+            ).fetchone()
+            lines = json.loads(script[1])
+            lines[0]["text"] = "changed upstream"
+            conn.execute(
+                "UPDATE short_drama_scripts SET dialogue_lines_json=? WHERE id=?",
+                (json.dumps(lines, ensure_ascii=False), script[0]),
+            )
+            conn.commit()
+        second = short_drama_voice.get_voice_workspace(
+            self.db, "alice", self.project["id"]
+        )
+        self.assertEqual(line_id, second["shots"][0]["lines"][0]["id"])
+        self.assertEqual("谁在那里？", second["shots"][0]["lines"][0]["source_text"])
+        self.assertEqual("custom", second["shots"][0]["lines"][0]["speech_text"])
 
 
 class ShortDramaVoiceSchemaTests(unittest.TestCase):
