@@ -82,6 +82,18 @@ function testOpenApiContract() {
   }
   const voiceSchema = voiceOperation.responses['200']
     .content['application/json'].schema;
+  const productionSchema = spec.paths['/api/gen/short-drama/production'].get
+    .responses['200'].content['application/json'].schema;
+  assert.ok(productionSchema.required.includes('handoff_blocked'));
+  assert.ok(productionSchema.required.includes('handoff_blockers'));
+  assert.equal(productionSchema.properties.handoff_blocked.type, 'boolean');
+  assert.deepEqual(
+    productionSchema.properties.handoff_blockers.items.required,
+    ['code', 'message'],
+  );
+  assert.match(voiceOperation.responses['403'].description, /密码|画布基础访问/);
+  assert.doesNotMatch(voiceOperation.responses['403'].description, /项目权限/);
+  assert.match(voiceOperation.responses['404'].description, /不存在|无权发现/);
   const voiceShot = voiceSchema.properties.shots.items;
   for (const field of [
     'id', 'shot_key', 'sort_order', 'duration', 'locked',

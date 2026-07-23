@@ -196,6 +196,58 @@
         }
       }
     },
+    "/api/gen/short-drama/production": {
+      "get": {
+        "tags": ["短剧"],
+        "summary": "读取短剧关键帧制作工作区",
+        "description": "读取并对账关键帧制作快照，同时返回进入配音阶段的服务端标准阻塞判定。",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{
+          "name": "project_id", "in": "query", "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        }],
+        "responses": {
+          "200": {"description": "关键帧制作工作区快照", "content": {"application/json": {"schema": {
+            "type": "object",
+            "required": [
+              "project_id", "revision", "stage", "ratio", "point_budget",
+              "spent_points", "reserved_points", "handoff_blocked",
+              "handoff_blockers", "shots"
+            ],
+            "properties": {
+              "project_id": {"type": "string"},
+              "revision": {"type": "integer", "minimum": 1},
+              "stage": {"type": "string"},
+              "ratio": {"type": "string", "enum": ["9:16", "16:9"]},
+              "point_budget": {"type": "integer", "minimum": 0},
+              "spent_points": {"type": "integer", "minimum": 0},
+              "reserved_points": {"type": "integer", "minimum": 0},
+              "handoff_blocked": {"type": "boolean"},
+              "handoff_blockers": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["code", "message"],
+                  "properties": {
+                    "code": {"type": "string", "enum": [
+                      "missing_locked_still", "active_job", "refund_pending",
+                      "charge_attempt_pending", "ledger_inconsistent"
+                    ]},
+                    "shot_id": {"type": ["string", "null"]},
+                    "message": {"type": "string"}
+                  }
+                }
+              },
+              "shots": {"type": "array", "items": {"type": "object"}}
+            }
+          }}}},
+          "400": {"description": "缺少 project_id，或项目尚未进入制作阶段"},
+          "401": {"description": "未登录"},
+          "403": {"description": "必须修改初始密码，或账号没有画布基础访问能力"},
+          "404": {"description": "项目不存在，或当前用户无权发现该项目"}
+        }
+      }
+    },
     "/api/gen/short-drama/voice": {
       "get": {
         "tags": ["短剧"],
@@ -279,8 +331,8 @@
           },
           "400": {"description": "项目尚未进入配音阶段", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
           "401": {"description": "未登录", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
-          "403": {"description": "必须修改初始密码或无画布读取权限", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
-          "404": {"description": "项目不存在或当前用户无权读取", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+          "403": {"description": "必须修改初始密码，或账号没有画布基础访问能力", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "项目不存在，或当前用户无权发现该项目", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
         }
       }
     },
