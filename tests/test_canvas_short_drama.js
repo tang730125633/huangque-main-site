@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const shortDrama = require('../site/workbench/canvas/canvas-short-drama.js');
 
 function testOpenApiContract() {
@@ -162,7 +163,9 @@ function testCanvasIntegration() {
   assert.ok(html.includes('canvas/canvas-short-drama-voice.css?v='));
   assert.ok(html.includes('canvas/canvas-short-drama-voice.js?v='));
   assert.ok(html.indexOf('canvas/canvas-short-drama.css?v=') < html.indexOf('canvas/canvas-short-drama-production.css?v='));
+  assert.ok(html.indexOf('canvas/canvas-short-drama-production.css?v=') < html.indexOf('canvas/canvas-short-drama-voice.css?v='));
   assert.ok(html.indexOf('canvas/canvas-short-drama-production.js?v=') < html.indexOf('canvas/canvas-short-drama.js?v='));
+  assert.ok(html.indexOf('canvas/canvas-short-drama-production.js?v=') < html.indexOf('canvas/canvas-short-drama-voice.js?v='));
   assert.ok(html.indexOf('canvas/canvas-short-drama-voice.js?v=') < html.indexOf('canvas/canvas-short-drama.js?v='));
   assert.ok(html.indexOf('canvas/canvas-short-drama.js?v=') < html.indexOf('canvas/canvas-app.js?v='));
   for (const command of [
@@ -745,7 +748,9 @@ async function testWorkspaceSourceAndRenderContract() {
   const stillCalls = [];
   const voiceCalls = [];
   const delegatedOptions = [];
-  let delegatedDestroyCalls = 0;
+  const voiceOptions = [];
+  let stillDestroyCalls = 0;
+  let voiceDestroyCalls = 0;
   const stillModule = {
     createWorkspace(options) {
       stillCalls.push(options.projectId);
@@ -755,18 +760,19 @@ async function testWorkspaceSourceAndRenderContract() {
         ready: Promise.resolve({ stage: 'stills_review' }),
         render() { return '<section class="nc-short-drama-production">production controls</section>'; },
         reload() { return Promise.resolve({ stage: 'stills_review' }); },
-        destroy() { delegatedDestroyCalls += 1; },
+        destroy() { stillDestroyCalls += 1; },
       };
     },
   };
   const voiceModule = {
     createWorkspace(options) {
       voiceCalls.push(options.projectId);
+      voiceOptions.push(options);
       return {
         ready: Promise.resolve(),
-        render() { return '<section>voice workspace</section>'; },
+        render() { return '<section class="voice-workspace">voice workspace</section>'; },
         reload() { return Promise.resolve(); },
-        destroy() {},
+        destroy() { voiceDestroyCalls += 1; },
       };
     },
   };
@@ -775,8 +781,19 @@ async function testWorkspaceSourceAndRenderContract() {
   const confirm = (message) => { confirmMessages.push(message); return true; };
   const canvasSummaries = [];
   const onChange = (summary) => { canvasSummaries.push(summary); };
+  const productionHost = { kind: 'production-host' };
+  const body = {
+    appendChild(node) { node.parentNode = body; },
+    removeChild(node) { if (node.parentNode === body) node.parentNode = null; },
+  };
+  const host = {
+    innerHTML: '', parentNode: null,
+    addEventListener() {}, removeEventListener() {},
+    querySelector(selector) { return selector === '[data-production-host]' ? productionHost : null; },
+  };
+  const document = { body, createElement() { return host; } };
   const stillsWorkspace = shortDrama.createWorkspace({
-    projectId: 'project-stills', document: null, canEdit: false,
+    projectId: 'project-stills', boardId: 'board-voice', document, canEdit: false,
     productionModule: stillModule, voiceModule, apiClient, confirm, onChange,
     client: {
       get() { return Promise.resolve(workspaceProject({ id: 'project-stills', stage: 'stills_review' })); },
@@ -802,20 +819,35 @@ async function testWorkspaceSourceAndRenderContract() {
   assert.match(confirmMessages[1], /批量生成 2 个镜头的关键帧[\s\S]*将消耗 30 点/);
   assert.notStrictEqual(delegatedOptions[0].onChange, onChange,
     'wrapper adapts production summaries before persisting them to the canvas');
-  delegatedOptions[0].onChange({
+  const voiceSummary = {
     project_id: 'project-stills', revision: 9, stage: 'voice_review', ratio: '16:9',
     spent_points: 24, point_budget: 100, reserved_points: 0,
     shots: [{ asset: { versions: [{ url: '/secret.png', job: 91 }] } }],
-  });
+  };
+  await delegatedOptions[0].onChange(voiceSummary);
   assert.equal(stillsWorkspace.getProject().stage, 'voice_review');
   assert.deepEqual(canvasSummaries, [{
     project_id: 'project-stills', title: '雨夜来客', ratio: '16:9', target_duration: 30,
     stage: 'voice_review', progress: 63, spent_points: 24, estimated_points: 12,
   }]);
   assert.doesNotMatch(JSON.stringify(canvasSummaries), /shot|asset|version|job|url/i);
-  assert.match(stillsWorkspace.render(), /画面确认[\s\S]*data-action="close"[\s\S]*nc-short-drama-production/);
+  assert.equal(stillDestroyCalls, 1, 'advancing to voice destroys the still workspace exactly once');
+  assert.deepEqual(voiceCalls, ['project-stills']);
+  assert.equal(voiceOptions.length, 1);
+  assert.equal(voiceOptions[0].projectId, 'project-stills');
+  assert.equal(voiceOptions[0].boardId, 'board-voice');
+  assert.strictEqual(voiceOptions[0].client, apiClient);
+  assert.strictEqual(voiceOptions[0].host, productionHost);
+  assert.equal(confirmMessages.length, 2, 'voice workspace does not invoke the still confirmation adapter');
+  assert.match(stillsWorkspace.render(), /配音字幕[\s\S]*data-action="close"[\s\S]*voice-workspace/);
+
+  await delegatedOptions[0].onChange(voiceSummary);
+  await voiceOptions[0].onChange(voiceSummary);
+  assert.equal(stillDestroyCalls, 1, 'repeated summaries do not destroy another still workspace');
+  assert.equal(voiceCalls.length, 1, 'repeated summaries do not recreate the voice workspace');
   stillsWorkspace.destroy();
-  assert.equal(delegatedDestroyCalls, 1, 'destroy cascades into the production workspace');
+  assert.equal(stillDestroyCalls, 1);
+  assert.equal(voiceDestroyCalls, 1, 'destroy cascades into the active voice workspace');
 
   const voiceWorkspace = shortDrama.createWorkspace({
     projectId: 'project-voice', document: null,
@@ -824,8 +856,54 @@ async function testWorkspaceSourceAndRenderContract() {
   });
   await voiceWorkspace.ready;
   assert.deepEqual(stillCalls, ['project-stills']);
-  assert.deepEqual(voiceCalls, ['project-voice']);
+  assert.deepEqual(voiceCalls, ['project-stills', 'project-voice']);
   voiceWorkspace.destroy();
+  assert.equal(voiceDestroyCalls, 2);
+
+  let resolveSwitchStillReady;
+  let switchStillOptions;
+  let switchStillDestroys = 0;
+  let switchVoiceCreates = 0;
+  let switchVoiceDestroys = 0;
+  const switching = shortDrama.createWorkspace({
+    projectId: 'switching-project', document: null, apiClient,
+    productionModule: {
+      createWorkspace(options) {
+        switchStillOptions = options;
+        return {
+          ready: new Promise((resolve) => { resolveSwitchStillReady = resolve; }),
+          render() { return '<section>late still workspace</section>'; },
+          reload() { return Promise.resolve(); },
+          destroy() { switchStillDestroys += 1; },
+        };
+      },
+    },
+    voiceModule: {
+      createWorkspace() {
+        switchVoiceCreates += 1;
+        return {
+          ready: Promise.resolve(),
+          render() { return '<section>switched voice workspace</section>'; },
+          reload() { return Promise.resolve(); },
+          destroy() { switchVoiceDestroys += 1; },
+        };
+      },
+    },
+    client: { get() { return Promise.resolve(workspaceProject({ id: 'switching-project', stage: 'stills_review' })); } },
+  });
+  for (let spin = 0; spin < 10 && !switchStillOptions; spin += 1) await Promise.resolve();
+  const switchingReady = switching.ready;
+  await switchStillOptions.onChange({ project_id: 'switching-project', stage: 'voice_review', revision: 10 });
+  assert.equal(switchStillDestroys, 1);
+  assert.equal(switchVoiceCreates, 1);
+  resolveSwitchStillReady({ stage: 'stills_review' });
+  assert.equal(await switchingReady, null, 'late still readiness cannot remount over voice');
+  await switchStillOptions.onChange({ project_id: 'switching-project', stage: 'stills_review', revision: 8 });
+  assert.equal(switchVoiceCreates, 1, 'late callbacks from the destroyed still workspace are ignored');
+  assert.equal(switching.getProject().stage, 'voice_review');
+  assert.match(switching.render(), /switched voice workspace/);
+  switching.destroy();
+  assert.equal(switchVoiceDestroys, 1);
 
   let resolveDelegateReady;
   let lateDestroyCalls = 0;
@@ -912,6 +990,48 @@ async function testProductionWorkspaceCanReturnToPhaseOneReview() {
   assert.match(workspace.render(), /class="nc-short-drama-production"/);
   workspace.destroy();
   assert.equal(destroys, 2);
+}
+
+async function testBrowserGlobalProductionModuleFallbacks() {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'site', 'workbench', 'canvas', 'canvas-short-drama.js'),
+    'utf8'
+  );
+  const stillCalls = [];
+  const voiceCalls = [];
+  function fallbackModule(calls, label) {
+    return {
+      createWorkspace(options) {
+        calls.push(options.projectId);
+        return {
+          ready: Promise.resolve(),
+          render() { return `<section>${label}</section>`; },
+          reload() { return Promise.resolve(); },
+          destroy() {},
+        };
+      },
+    };
+  }
+  const window = { HQCanvas: {
+    shortDramaProduction: fallbackModule(stillCalls, 'global still'),
+    shortDramaVoice: fallbackModule(voiceCalls, 'global voice'),
+  } };
+  vm.runInNewContext(source, { window }, { filename: 'canvas-short-drama.js' });
+  const browserShortDrama = window.HQCanvas.shortDrama;
+  const apiClient = { json() { throw new Error('global fallback stub does not call API'); } };
+  const stills = browserShortDrama.createWorkspace({
+    projectId: 'global-stills', document: null, apiClient,
+    client: { get() { return Promise.resolve(workspaceProject({ id: 'global-stills', stage: 'stills_review' })); } },
+  });
+  const voice = browserShortDrama.createWorkspace({
+    projectId: 'global-voice', document: null, apiClient,
+    client: { get() { return Promise.resolve(workspaceProject({ id: 'global-voice', stage: 'voice_review' })); } },
+  });
+  await Promise.all([stills.ready, voice.ready]);
+  assert.deepEqual(stillCalls, ['global-stills']);
+  assert.deepEqual(voiceCalls, ['global-voice']);
+  stills.destroy();
+  voice.destroy();
 }
 
 function testWorkspacePureStateAndPayloadHelpers() {
@@ -1764,6 +1884,7 @@ async function main() {
   testMissingPollFailsClearly();
   await testWorkspaceSourceAndRenderContract();
   await testProductionWorkspaceCanReturnToPhaseOneReview();
+  await testBrowserGlobalProductionModuleFallbacks();
   testWorkspacePureStateAndPayloadHelpers();
   await testWorkspaceSavesUseExactRevisionedBodiesAndSummaries();
   await testConfirmSavesChangedSectionThenUsesReturnedRevisionAndSkipsUnchangedScriptSave();
