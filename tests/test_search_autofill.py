@@ -48,6 +48,27 @@ class SearchAutofillTests(TestCase):
                 self.assertNotIn("readonly", field)
                 self.assertNotIn("onfocus", field)
 
+    def test_shared_auth_fields_are_isolated_in_a_real_form(self):
+        shell = (ROOT / "site/workbench/cloud-shell.js").read_text(encoding="utf-8")
+        form_start = shell.index("'<form id=\"hqLoginForm\">'+")
+        form_end = shell.index("'</form>'+")
+
+        for field_id in ("hqU", "hqC", "hqP", "hqP2", "hqD"):
+            with self.subTest(field=field_id):
+                self.assertLess(form_start, shell.index(f'id="{field_id}"'))
+                self.assertLess(shell.index(f'id="{field_id}"'), form_end)
+
+        self.assertIn('id="hqU" name="username" type="text" autocomplete="username"', shell)
+        self.assertIn('id="hqC" name="one-time-code" type="text" inputmode="numeric" autocomplete="one-time-code"', shell)
+        self.assertIn('id="hqP" name="password" type="password" autocomplete="current-password"', shell)
+        self.assertIn('id="hqP2" name="password_confirm" type="password" autocomplete="new-password"', shell)
+        self.assertIn("document.getElementById('hqLoginForm').onsubmit=function(e){ e.preventDefault();", shell)
+        self.assertIn("p.setAttribute('autocomplete','new-password')", shell)
+        self.assertIn("p.setAttribute('autocomplete','current-password')", shell)
+        self.assertIn("if(c) c.disabled=!_hqPhone", shell)
+        self.assertIn("if(p) p.disabled=_hqPhone", shell)
+        self.assertIn("if(p2) p2.disabled=true", shell)
+
 
 if __name__ == "__main__":
     main()
