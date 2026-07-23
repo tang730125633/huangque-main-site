@@ -1376,7 +1376,7 @@ def _write_audit(c, who_admin, username, delta, before, after, reason, transacti
         (who_admin, username, delta, before, after, (reason or "")[:120], int(time.time()), transaction_key))
 
 
-def deduct_points(username, amount, reason=""):
+def deduct_points(username, amount, reason="", transaction_key=""):
     """任务提交时预扣点。reason 形如 'job:collect#1354'，由调用方传入。
 
     在补上审计之前，points_audit 只记录管理员加减点和充值审批 —— 任务扣点/退点完全隐形，
@@ -1386,9 +1386,24 @@ def deduct_points(username, amount, reason=""):
     amount = int(amount or 0)
     if amount < 0:
         raise ValueError("amount must be >= 0")
+    transaction_key = str(transaction_key or "").strip()
+    if len(transaction_key) > 160:
+        raise ValueError("transaction_key too long")
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
+        if transaction_key:
+            prior = c.execute(
+                "SELECT username,delta FROM points_audit WHERE transaction_key=?",
+                (transaction_key,),
+            ).fetchone()
+            if prior:
+                if prior["username"] != username or int(prior["delta"] or 0) != -amount:
+                    c.rollback()
+                    return None, "transaction_conflict"
+                row = get_points_row(username, c)
+                c.rollback()
+                return (public_points(row), None) if row else (None, "not_found")
         before_row = get_points_row(username, c)
         if not before_row:
             c.rollback()
@@ -1407,7 +1422,8 @@ def deduct_points(username, amount, reason=""):
             c.rollback()
             return None, "not_found"
         if amount:
-            _write_audit(c, SYSTEM_ACTOR, username, -amount, before, int(row["points"] or 0), reason)
+            _write_audit(c, SYSTEM_ACTOR, username, -amount, before, int(row["points"] or 0), reason,
+                         transaction_key or None)
         c.commit()
         return public_points(row), None
     except Exception:
@@ -2507,7 +2523,9 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": "transaction_key too long"})
             try:
                 if p.endswith("/deduct"):
-                    points, err = deduct_points(username, amount, reason)
+                    points, err = deduct_points(username, amount, reason, transaction_key)
+                    if err == "transaction_conflict":
+                        return self._send(409, {"detail": "transaction_key conflict"})
                     if err == "insufficient":
                         return self._send(402, {"detail": "点数不足", "need": amount})
                 else:

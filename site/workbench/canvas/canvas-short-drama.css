@@ -85,6 +85,12 @@
   font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
+.nc-short-drama-production-slot {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .nc-short-drama-topbar {
   min-height: 74px;
   display: grid;

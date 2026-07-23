@@ -71,6 +71,26 @@ class AuthPointsTests(unittest.TestCase):
         finally:
             c.close()
 
+    def test_deduct_transaction_key_is_idempotent(self):
+        first, first_err = self.auth.deduct_points("fang", 5, "job:image submit:x", "job-charge:x")
+        replay, replay_err = self.auth.deduct_points("fang", 5, "job:image submit:x", "job-charge:x")
+        self.assertIsNone(first_err)
+        self.assertIsNone(replay_err)
+        self.assertEqual(first["points"], 5)
+        self.assertEqual(replay["points"], 5)
+        c = self.auth.db()
+        try:
+            self.assertEqual(c.execute(
+                "SELECT COUNT(*) FROM points_audit WHERE transaction_key='job-charge:x'"
+            ).fetchone()[0], 1)
+        finally:
+            c.close()
+
+    def test_deduct_transaction_key_rejects_different_amount(self):
+        self.auth.deduct_points("fang", 5, "job:image submit:x", "job-charge:x")
+        points, err = self.auth.deduct_points("fang", 4, "job:image submit:y", "job-charge:x")
+        self.assertIsNone(points)
+        self.assertEqual(err, "transaction_conflict")
     def test_refund_transaction_key_rejects_different_amount(self):
         self.auth.refund_points("fang", 5, "job#42", "job-refund:42")
         points, err = self.auth.refund_points("fang", 6, "job#43", "job-refund:42")

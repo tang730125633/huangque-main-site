@@ -1,18 +1,23 @@
 (function(root,factory){
-  var api=factory();
+  var api=factory(root);
   if(typeof module==='object'&&module.exports) module.exports=api;
   if(root){ root.HQCanvas=root.HQCanvas||{}; root.HQCanvas.shortDrama=api; }
-})(typeof window!=='undefined'?window:null,function(){
+})(typeof window!=='undefined'?window:null,function(root){
   'use strict';
-  var STAGES=['draft','characters_review','script_review','storyboard_review','stills_review'];
+  var STAGES=['draft','characters_review','script_review','storyboard_review','stills_review',
+    'voice_review','video_review','assembly_review','completed'];
+  var PRODUCTION_STAGE_INDEX=STAGES.indexOf('stills_review');
   var MAX_CHARACTERS=20,MAX_DIALOGUE_LINES=120;
   var PLACEHOLDER_SYNOPSIS='请在短剧工作区完善故事梗概';
   var STAGE_LABELS={
     settings:'项目设置',characters_review:'角色确认',script_review:'剧本确认',
-    storyboard_review:'分镜确认',stills_review:'完成'
+    storyboard_review:'分镜确认',stills_review:'画面确认',voice_review:'配音字幕',
+    video_review:'视频确认',assembly_review:'成片确认',completed:'已交付'
   };
 
   function stageIndex(stage){ return Math.max(0,STAGES.indexOf(stage)); }
+  function stageProgress(stage){ return Math.round(stageIndex(stage)*100/(STAGES.length-1)); }
+  function isProductionStage(stage){ return STAGES.indexOf(stage)>=PRODUCTION_STAGE_INDEX; }
 
   function validShotCounts(duration){
     duration=Number(duration);
@@ -43,7 +48,7 @@
       project_id:project.id||project.project_id||null,
       title:project.title||'新短剧',ratio:project.ratio||'9:16',
       target_duration:project.target_duration||30,stage:project.stage||'draft',
-      progress:project.progress==null?stageIndex(project.stage)*25:project.progress,
+      progress:project.progress==null?stageProgress(project.stage):project.progress,
       spent_points:project.spent_points||0,estimated_points:project.estimated_points||0
     });
   }
@@ -191,29 +196,35 @@
     return typeof result==='string'?JSON.parse(result):result;
   }
 
-  function createClient(apiClient,pollFn){
+  function createClient(apiClient,pollFn,boardId){
     pollFn=pollFn||apiClient&&apiClient.poll;
     if(!apiClient||typeof apiClient.json!=='function'||typeof pollFn!=='function'){
       throw new Error('short drama client requires json and poll methods');
     }
+    function json(path,requestOptions){
+      if(!boardId&&!requestOptions) return apiClient.json(path);
+      var scoped=requestOptions?Object.assign({},requestOptions):{};
+      if(boardId) scoped.headers=Object.assign({},scoped.headers||{}, {'X-Canvas-Board-Id':String(boardId)});
+      return apiClient.json(path,scoped);
+    }
     function applyPlan(projectId,revision,jobId){
-      return apiClient.json('/api/gen/short-drama/apply-plan',{
+      return json('/api/gen/short-drama/apply-plan',{
         method:'POST',body:{project_id:projectId,revision:revision,job_id:jobId}
       });
     }
     return {
       list:function(page,pageSize){
         page=page==null?1:Number(page);pageSize=pageSize==null?20:Number(pageSize);
-        return apiClient.json('/api/gen/short-drama/projects?page='+encodeURIComponent(page)+'&page_size='+encodeURIComponent(pageSize));
+        return json('/api/gen/short-drama/projects?page='+encodeURIComponent(page)+'&page_size='+encodeURIComponent(pageSize));
       },
-      get:function(projectId){ return apiClient.json(projectPath(projectId)); },
-      getPlanningQuote:function(){ return apiClient.json('/api/gen/short-drama/planning-quote'); },
+      get:function(projectId){ return json(projectPath(projectId)); },
+      getPlanningQuote:function(){ return json('/api/gen/short-drama/planning-quote'); },
       getRecoverablePlanningJob:function(projectId){
-        return apiClient.json('/api/gen/short-drama/planning-job?project_id='+encodeURIComponent(projectId));
+        return json('/api/gen/short-drama/planning-job?project_id='+encodeURIComponent(projectId));
       },
-      create:function(project){ return apiClient.json('/api/gen/short-drama/projects',{method:'POST',body:project}); },
+      create:function(project){ return json('/api/gen/short-drama/projects',{method:'POST',body:project}); },
       update:function(projectId,revision,patch){
-        return apiClient.json(projectPath(projectId),{method:'PUT',body:Object.assign({},patch||{},{revision:revision})});
+        return json(projectPath(projectId),{method:'PUT',body:Object.assign({},patch||{},{revision:revision})});
       },
       delete:function(projectId,revision){
         return apiClient.json('/api/gen/short-drama/project/delete',{
@@ -222,17 +233,17 @@
       },
       applyPlan:applyPlan,
       confirm:function(projectId,revision,stage){
-        return apiClient.json('/api/gen/short-drama/confirm',{
+        return json('/api/gen/short-drama/confirm',{
           method:'POST',body:{project_id:projectId,revision:revision,stage:stage}
         });
       },
       generatePlan:function(project,hooks){
         hooks=hooks||{};
         function submitOrRecover(){
-          return apiClient.json('/api/gen/short-drama/planning-job?project_id='+encodeURIComponent(project.id))
+          return json('/api/gen/short-drama/planning-job?project_id='+encodeURIComponent(project.id))
             .then(function(recovered){
               if(recovered&&recovered.job_id) return recovered;
-              return apiClient.json('/api/gen/copy',{method:'POST',body:planningPayload(project)});
+              return json('/api/gen/copy',{method:'POST',body:planningPayload(project)});
             });
         }
         return submitOrRecover().then(function(created){
@@ -240,7 +251,7 @@
             if(typeof hooks.onCost==='function'&&created.cost!=null) hooks.onCost(Number(created.cost));
             if(typeof hooks.onProgress==='function') hooks.onProgress({status:'pending',percent:20,label:'规划任务已入队'});
             return pollFn({
-              request:function(){ return apiClient.json('/api/gen/job/'+created.job_id); },
+              request:function(){ return json('/api/gen/job/'+created.job_id); },
               intervalMs:3000,
               maxMs:420000,
               inspect:function(job){
@@ -280,7 +291,8 @@
   function isStageEditable(project,stage,canEdit){
     if(!canEdit||!project) return false;
     if(stage==='settings') return project.stage==='draft';
-    return project.stage===stage&&isStageEnabled(project,stage)&&stage!=='stills_review';
+    return ['characters_review','script_review','storyboard_review'].indexOf(stage)>=0&&
+      project.stage===stage&&isStageEnabled(project,stage);
   }
 
   function cleanText(value){ return String(value==null?'':value).trim(); }
@@ -435,8 +447,9 @@
   function fieldValue(value){ return escapeHtml(value==null?'':value); }
 
   function renderStageNavigation(project,state){
-    return ['settings','characters_review','script_review','storyboard_review','stills_review'].map(function(stage){
+    return ['settings'].concat(STAGES.slice(1)).map(function(stage){
       var enabled=isStageEnabled(project,stage),active=state.activeStage===stage;
+      if(isProductionStage(stage)) enabled=stage===project.stage;
       return '<button type="button" class="nc-short-drama-stage'+(active?' is-active':'')+'" data-tab="'+stage+'"'+
         disabledUnless(enabled)+' aria-current="'+(active?'step':'false')+'"><span>'+escapeHtml(STAGE_LABELS[stage])+'</span></button>';
     }).join('');
@@ -516,8 +529,18 @@
       }).join('')+'</div></section>';
   }
 
-  function renderCompletionPanel(){
-    return '<section class="nc-short-drama-complete"><span class="nc-short-drama-complete-mark">✓</span><p class="nc-short-drama-kicker">策划已锁定</p><h2>已完成第一阶段</h2><p>项目已准备好进入第二阶段素材制作。本工作区不提供尚未上线的静帧或视频控件。</p></section>';
+  function renderProductionUnavailablePanel(){
+    return '<section class="nc-short-drama-complete"><span class="nc-short-drama-complete-mark">!</span><p class="nc-short-drama-kicker">生产阶段</p><h2>生产工作区未加载</h2><p>请刷新页面重试；若问题持续，请联系管理员检查画布资源。</p><div class="nc-short-drama-load-actions"><button type="button" data-action="reload">重试</button><button type="button" data-action="close">关闭</button></div></section>';
+  }
+
+  function renderWorkspaceTopbar(project,state){
+    return '<header class="nc-short-drama-topbar"><div class="nc-short-drama-brand"><span>HQ</span><div><strong>'+escapeHtml(project.title)+'</strong><small>'+escapeHtml(project.id)+' · R'+Number(project.revision||0)+'</small></div></div><nav>'+renderStageNavigation(project,state)+'</nav><button type="button" class="nc-short-drama-close" data-action="close" aria-label="关闭">×</button></header>';
+  }
+
+  function renderProductionFrame(project,state,content){
+    return '<div class="nc-short-drama-workspace nc-short-drama-production-workspace" role="dialog" aria-modal="true" aria-label="短剧生产工作区" data-readonly="'+(!state.canEdit)+'">'+renderWorkspaceTopbar(project,state)+
+      (!state.canEdit?'<div class="nc-short-drama-readonly">当前画布为只读模式，所有生产写操作均已禁用。</div>':'')+
+      '<div class="nc-short-drama-production-slot" data-production-host>'+content+'</div></div>';
   }
 
   function renderInspector(project,state){
@@ -548,9 +571,8 @@
     var center=state.activeStage==='settings'?renderSettingsEditor(project,state):
       state.activeStage==='characters_review'?renderCharactersEditor(project,state):
       state.activeStage==='script_review'?renderScriptEditor(project,state):
-      state.activeStage==='storyboard_review'?renderStoryboardEditor(project,state):renderCompletionPanel();
-    if(project.stage==='stills_review'&&state.activeStage==='stills_review') center=renderCompletionPanel();
-    return '<div class="nc-short-drama-workspace" role="dialog" aria-modal="true" aria-label="短剧策划工作区" data-readonly="'+(!state.canEdit)+'"><header class="nc-short-drama-topbar"><div class="nc-short-drama-brand"><span>HQ</span><div><strong>'+escapeHtml(project.title)+'</strong><small>'+escapeHtml(project.id)+' · R'+Number(project.revision||0)+'</small></div></div><nav>'+renderStageNavigation(project,state)+'</nav><button type="button" class="nc-short-drama-close" data-action="close" aria-label="关闭">×</button></header>'+
+      state.activeStage==='storyboard_review'?renderStoryboardEditor(project,state):renderProductionUnavailablePanel();
+    return '<div class="nc-short-drama-workspace" role="dialog" aria-modal="true" aria-label="短剧策划工作区" data-readonly="'+(!state.canEdit)+'">'+renderWorkspaceTopbar(project,state)+
       (!state.canEdit?'<div class="nc-short-drama-readonly">当前画布为只读模式，可查看已完成内容，不能保存或确认。</div>':'')+
       '<div class="nc-short-drama-layout">'+renderCharacterRail(project)+'<main class="nc-short-drama-editor">'+center+'</main>'+renderInspector(project,state)+'</div></div>';
   }
@@ -562,8 +584,8 @@
 
   function createWorkspace(options){
     options=options||{};
-    var client=options.client||createClient(options.apiClient,options.poll);
-    var project=null,destroyed=false,host=null;
+    var client=options.client||createClient(options.apiClient,options.poll,options.boardId);
+    var project=null,destroyed=false,host=null,productionHost=null,productionWorkspace=null,loadGeneration=0;
     var canEdit=options.canEdit!==false,onChange=typeof options.onChange==='function'?options.onChange:function(){};
     var confirmHook=typeof options.confirm==='function'?options.confirm:
       (typeof window!=='undefined'&&typeof window.confirm==='function'?window.confirm.bind(window):function(){ return false; });
@@ -575,9 +597,106 @@
 
     function snapshotState(){ return cloneValue(state); }
     function render(){
+      if(productionWorkspace){
+        var productionContent=productionWorkspace.render();
+        return renderProductionFrame(project,state,productionContent);
+      }
       var html=renderWorkspace(project,state);
       if(host&&!destroyed) host.innerHTML=html;
       return html;
+    }
+    function destroyProductionWorkspace(){
+      if(!productionWorkspace) return;
+      var delegated=productionWorkspace;
+      productionWorkspace=null;productionHost=null;
+      if(typeof delegated.destroy==='function') delegated.destroy();
+    }
+    function syncProductionFrame(){
+      if(!host||destroyed||!productionWorkspace) return;
+      var brand=host.querySelector('.nc-short-drama-brand strong');
+      var meta=host.querySelector('.nc-short-drama-brand small');
+      var nav=host.querySelector('.nc-short-drama-topbar nav');
+      if(brand) brand.textContent=project&&project.title||'新短剧';
+      if(meta) meta.textContent=(project&&project.id||options.projectId||'')+' · r'+(project&&project.revision||0);
+      if(nav) nav.innerHTML=renderStageNavigation(project,state);
+    }
+    function acceptProductionSummary(summary){
+      if(destroyed||!project||!summary||typeof summary!=='object') return;
+      var summaryProjectId=summary.project_id||summary.id;
+      if(summaryProjectId&&summaryProjectId!==(project.id||project.project_id)) return;
+      var next=Object.assign({},project);
+      ['revision','stage','ratio','spent_points','point_budget','reserved_points'].forEach(function(key){
+        if(Object.prototype.hasOwnProperty.call(summary,key)) next[key]=summary[key];
+      });
+      delete next.progress;
+      project=next;
+      state.activeStage=project.stage;
+      state.busy=false;state.error='';state.stale=false;state.loadFailed=false;state.loadStatus=0;
+      syncProductionFrame();
+      onChange(summarizeProject(project));
+    }
+    function confirmProduction(cost,quote,body){
+      var points=Math.max(0,Number(cost)||0),message;
+      if(Array.isArray(body)||(quote&&quote.kind==='still-batch')){
+        var shotCount=Array.isArray(body)?body.length:Number(quote&&quote.shot_count)||0;
+        message='批量生成 '+shotCount+' 个镜头的关键帧（每个镜头 2 张候选）将消耗 '+points+' 点，确认提交吗？';
+      }else{
+        var shotId=body&&body.shot_id||'当前镜头';
+        var candidateCount=Number(body&&body.count)||Number(quote&&quote.count)||2;
+        message='生成镜头 '+shotId+' 的 '+candidateCount+' 张关键帧候选将消耗 '+points+' 点，确认提交吗？';
+      }
+      return confirmHook(message);
+    }
+    function activateProductionWorkspace(generation){
+      var activationGeneration=generation==null?loadGeneration:generation;
+      if(activationGeneration!==loadGeneration) return Promise.resolve(null);
+      var productionModule=Object.prototype.hasOwnProperty.call(options,'productionModule')?
+        options.productionModule:(root&&root.HQCanvas&&root.HQCanvas.shortDramaProduction);
+      if(destroyed) return Promise.reject(new Error('workspace destroyed'));
+      if(!productionModule||typeof productionModule.createWorkspace!=='function'){
+        return Promise.reject(new Error('短剧生产工作区未加载，请刷新页面重试'));
+      }
+      var productionClient=options.apiClient&&typeof options.apiClient.json==='function'?
+        options.apiClient:(client&&typeof client.json==='function'?client:null);
+      if(!productionClient){
+        return Promise.reject(new Error('短剧生产工作区缺少已认证 API 客户端，请刷新页面重试'));
+      }
+      destroyProductionWorkspace();
+      state.activeStage=project.stage;
+      if(host&&!destroyed){
+        host.innerHTML=renderProductionFrame(project,state,'');
+        productionHost=host.querySelector('[data-production-host]');
+      }
+      var delegated;
+      try{
+        delegated=productionModule.createWorkspace({
+          projectId:options.projectId,
+          boardId:options.boardId,
+          client:productionClient,
+          host:productionHost,
+          canEdit:canEdit,
+          confirm:confirmProduction,
+          onChange:function(summary){
+            if(!destroyed&&activationGeneration===loadGeneration) acceptProductionSummary(summary);
+          }
+        });
+      }catch(error){
+        productionHost=null;
+        return Promise.reject(error);
+      }
+      if(!delegated||typeof delegated.render!=='function'||typeof delegated.destroy!=='function'){
+        productionHost=null;
+        return Promise.reject(new Error('短剧生产工作区接口无效，请刷新页面重试'));
+      }
+      productionWorkspace=delegated;
+      return Promise.resolve(delegated.ready).then(function(){
+        if(destroyed||activationGeneration!==loadGeneration||productionWorkspace!==delegated) return null;
+        render();
+        return project;
+      }).catch(function(error){
+        if(destroyed||activationGeneration!==loadGeneration||productionWorkspace!==delegated) return null;
+        throw error;
+      });
     }
     function showWorkspaceError(error,loadFailed){
       if(destroyed) return;
@@ -600,22 +719,34 @@
       if(!previousProject||previousProject.id!==project.id||previousLatest!==latestScriptVersionOf(project)){
         state.scriptVersion=null;
       }
-      if(project.stage==='stills_review') state.activeStage='stills_review';
+      if(isProductionStage(project.stage)) state.activeStage=project.stage;
       else if(!isStageEnabled(project,state.activeStage)) state.activeStage=project.stage==='draft'?'settings':project.stage;
       if(notify) onChange(summarizeProject(project));
-      render();
+      if(!isProductionStage(project.stage)) render();
       return project;
+    }
+    function acceptAndMaybeDelegate(next,notify,generation){
+      var accepted=acceptProject(next,notify);
+      if(!isProductionStage(accepted.stage)) return Promise.resolve(accepted);
+      return activateProductionWorkspace(generation).catch(function(error){
+        if(generation!=null&&generation!==loadGeneration) return null;
+        if(!notify) throw error;
+        showWorkspaceError(error,true);
+        return accepted;
+      });
     }
     function loadProject(){
       if(destroyed) return Promise.reject(new Error('workspace destroyed'));
+      var generation=++loadGeneration;
+      destroyProductionWorkspace();
       state.busy=true;state.error='';state.loadFailed=false;state.loadStatus=0;render();
       return Promise.resolve(client.get(options.projectId)).then(function(next){
-        if(destroyed) return null;
+        if(destroyed||generation!==loadGeneration) return null;
         state.synopsisSaved=canGeneratePlan(next,true);
         if(next&&next.stage!=='draft') state.activeStage=next.stage;
-        return acceptProject(next,false);
+        return acceptAndMaybeDelegate(next,false,generation);
       }).catch(function(error){
-        if(destroyed) return null;
+        if(destroyed||generation!==loadGeneration) return null;
         showWorkspaceError(error,true);
         return null;
       });
@@ -724,7 +855,7 @@
         return Promise.resolve(client.confirm(project.id,project.revision,stage));
       }).then(function(next){
           state.activeStage=next.stage;
-          return acceptProject(next,true);
+          return acceptAndMaybeDelegate(next,true);
         }).catch(function(error){ showWorkspaceError(error); throw error; });
     }
     function generatePlan(){
@@ -809,6 +940,19 @@
           image_prompt:valueFrom(card,'image_prompt'),video_prompt:valueFrom(card,'video_prompt')};
       });
     }
+    function selectWorkspaceStage(stage){
+      if(!project||!isStageEnabled(project,stage)) return false;
+      if(isProductionStage(stage)){
+        if(stage!==project.stage) return false;
+        state.activeStage=stage;
+        if(productionWorkspace) render();
+        else activateProductionWorkspace().catch(function(error){ showWorkspaceError(error,true); });
+        return true;
+      }
+      destroyProductionWorkspace();
+      state.activeStage=stage;render();
+      return true;
+    }
     function runDomAction(promise){ Promise.resolve(promise).catch(function(error){ if(!state.error){ state.error=workspaceErrorMessage(error); render(); } }); }
     function handleClick(event){
       var jump=findActionTarget(event.target,'data-character-jump',host);
@@ -826,7 +970,7 @@
         return;
       }
       var tab=findActionTarget(event.target,'data-tab',host);
-      if(tab){ var nextTab=tab.getAttribute('data-tab'); if(project&&isStageEnabled(project,nextTab)){ state.activeStage=nextTab;render(); } return; }
+      if(tab){ selectWorkspaceStage(tab.getAttribute('data-tab'));return; }
       var version=findActionTarget(event.target,'data-script-version',host);
       if(version){ state.scriptVersion=Number(version.getAttribute('data-script-version'));render();return; }
       var confirmButton=findActionTarget(event.target,'data-confirm-stage',host);
@@ -860,7 +1004,9 @@
     function destroy(){
       if(destroyed) return;
       destroyed=true;
+      loadGeneration+=1;
       state.destroyed=true;state.busy=false;
+      destroyProductionWorkspace();
       if(host&&host.removeEventListener) host.removeEventListener('click',handleClick);
       if(host&&host.removeEventListener) host.removeEventListener('change',handleChange);
       if(host&&host.parentNode) host.parentNode.removeChild(host);
@@ -871,11 +1017,15 @@
       host.addEventListener('click',handleClick);host.addEventListener('change',handleChange);doc.body.appendChild(host);render();
     }
     var ready=loadProject();
+    function reloadWorkspace(){
+      if(productionWorkspace&&typeof productionWorkspace.reload==='function') return productionWorkspace.reload();
+      return loadProject();
+    }
     return {
       projectId:options.projectId||null,client:client,ready:ready,destroy:destroy,render:render,
       getProject:function(){ return cloneValue(project); },getState:snapshotState,
-      selectStage:function(stage){ if(project&&isStageEnabled(project,stage)){ state.activeStage=stage;render();return true; } return false; },
-      reload:loadProject,saveSettings:saveSettings,saveCharacters:saveCharacters,saveScript:saveScript,
+      selectStage:selectWorkspaceStage,
+      reload:reloadWorkspace,saveSettings:saveSettings,saveCharacters:saveCharacters,saveScript:saveScript,
       saveShots:saveShots,deleteProject:deleteProject,confirm:confirm,generatePlan:generatePlan,
       canGeneratePlan:function(){ return canGeneratePlan(project,state.synopsisSaved); }
     };

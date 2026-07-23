@@ -98,12 +98,17 @@
   }
   var shortDramaProjectCoordinator=shortDramaModule.createProjectCoordinator({
     getNode:function(scopeKey,nodeId){ return shortDramaNodeForScope(scopeKey,nodeId); },
-    create:function(payload){ return apiClient.json('/api/gen/short-drama/projects',{method:'POST',body:payload}); },
+    create:function(payload){
+      var headers=currentBoardScope==='collab'?{'X-Canvas-Board-Id':String(currentBoardId)}:{};
+      return apiClient.json('/api/gen/short-drama/projects',{method:'POST',body:payload,headers:headers});
+    },
     apply:function(node,project){ applyShortDramaSummary(node,project); }
   });
   function ensureShortDramaProject(node,scopeKey){
     if(!node.params.project_id&&canEditCanvas()) setNodeState(node,'running','正在创建短剧项目…','#2dd4bf');
-    return shortDramaProjectCoordinator.ensure(scopeKey,node.id,shortDramaModule.creationPayload(node.params),canEditCanvas(),node.params.project_id||null);
+    var payload=shortDramaModule.creationPayload(node.params);
+    if(currentBoardScope==='collab') payload.board_id=currentBoardId;
+    return shortDramaProjectCoordinator.ensure(scopeKey,node.id,payload,canEditCanvas(),node.params.project_id||null);
   }
   function openShortDramaWorkspace(node){
     if(!shortDramaModule||typeof shortDramaModule.createWorkspace!=='function'){
@@ -129,6 +134,7 @@
         projectId:projectId,
         apiClient:apiClient,
         poll:apiModule.poll,
+        boardId:currentBoardScope==='collab'?currentBoardId:null,
         canEdit:canEdit,
         onChange:onChange,
         onDelete:function(){

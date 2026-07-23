@@ -150,10 +150,19 @@ def refund_once(jdb, job_id, username, cost, refund):
 def retry_failed_refunds(jdb, refund_job, limit=100):
     """轮转补扫明确处于待确认态的退款；历史 refunded=0 永远不自动处理。"""
     with closing(jdb()) as c:
+        import sqlite3
+        c.row_factory = sqlite3.Row
+        has_attempts = bool(c.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='short_drama_charge_attempts'"
+        ).fetchone())
+        attempt_exclusion = (
+            "AND NOT EXISTS (SELECT 1 FROM short_drama_charge_attempts a WHERE a.job_id=jobs.id)"
+            if has_attempts else ""
+        )
         rows = c.execute(
             """SELECT id,username,cost FROM jobs
                WHERE status='error' AND refunded=2 AND COALESCE(cost,0)>0
-               ORDER BY updated_at ASC,id ASC LIMIT ?""",
+               %s ORDER BY updated_at ASC,id ASC LIMIT ?""" % attempt_exclusion,
             (max(1, int(limit or 100)),),
         ).fetchall()
     recovered = 0
@@ -198,32 +207,70 @@ def _compensate_failed_insert(jdb, refund, username, cost, kind, submission_ref,
     return "refunded" if confirmed else "queued"
 
 
-def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_kind=""):
+def create_paid_jobs(jdb, deduct, refund, kind, username, items, owner, reason_kind="",
+                     before_commit=None, charge_transaction_key=""):
     """一次预扣并原子写入一个或多个任务；失败补偿只维护这一处。"""
     items = [(int(cost or 0), payload) for cost, payload in items]
     total = sum(cost for cost, _ in items)
     submission_ref = uuid.uuid4().hex
-    points_left = deduct(username, total, "job:%s submit:%s" % (
-        reason_kind or kind, submission_ref))
+    reason = "job:%s submit:%s" % (reason_kind or kind, submission_ref)
+    points_left = (deduct(username, total, reason, charge_transaction_key)
+                   if charge_transaction_key else deduct(username, total, reason))
     now = int(time.time())
     try:
         with closing(jdb()) as c:
-            job_ids = []
-            for cost, payload in items:
-                cur = c.execute(
-                    "INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) VALUES(?,?,?,?,?,?,?)",
-                    (kind, username, cost, json.dumps(payload, ensure_ascii=False), now, now, owner),
-                )
-                job_ids.append(cur.lastrowid)
-            c.commit()
-            return job_ids, points_left
+            try:
+                job_ids = []
+                for cost, payload in items:
+                    cur = c.execute(
+                        "INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) VALUES(?,?,?,?,?,?,?)",
+                        (kind, username, cost, json.dumps(payload, ensure_ascii=False), now, now, owner),
+                    )
+                    job_ids.append(cur.lastrowid)
+                if before_commit is not None:
+                    before_commit(c, tuple(job_ids))
+                c.commit()
+                return job_ids, points_left
+            except Exception:
+                c.rollback()
+                raise
     except Exception as error:
         state = _compensate_failed_insert(
             jdb, refund, username, total, kind, submission_ref, error, owner)
         raise PaidJobInsertError(state, submission_ref) from error
 
 
-def create_paid_job(jdb, deduct, refund, kind, username, cost, payload, owner):
+def create_paid_job(jdb, deduct, refund, kind, username, cost, payload, owner,
+                    before_commit=None, charge_transaction_key=""):
+    batch_callback = None
+    if before_commit is not None:
+        batch_callback = lambda connection, job_ids: before_commit(connection, job_ids[0])
     job_ids, points_left = create_paid_jobs(
-        jdb, deduct, refund, kind, username, [(cost, payload)], owner)
+        jdb, deduct, refund, kind, username, [(cost, payload)], owner,
+        before_commit=batch_callback, charge_transaction_key=charge_transaction_key)
     return job_ids[0], points_left
+
+
+def create_job_after_charge(jdb, kind, username, cost, payload, owner, before_commit=None):
+    """Insert a job whose durable charge attempt was already reconciled.
+
+    This intentionally has no billing side effect.  Its caller owns the persisted
+    compensation state and must record refund intent before contacting Auth.
+    """
+    now = int(time.time())
+    with closing(jdb()) as connection:
+        try:
+            cursor = connection.execute(
+                "INSERT INTO jobs(kind,username,cost,payload,created_at,updated_at,owner) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (kind, username, int(cost), json.dumps(payload, ensure_ascii=False),
+                 now, now, owner),
+            )
+            job_id = int(cursor.lastrowid)
+            if before_commit is not None:
+                before_commit(connection, job_id)
+            connection.commit()
+            return job_id
+        except Exception:
+            connection.rollback()
+            raise

@@ -179,6 +179,65 @@ class JobsStoreTests(unittest.TestCase):
             row = c.execute("SELECT status,cost,refunded FROM jobs").fetchone()
         self.assertEqual(("error", 40, 1), tuple(row))
 
+    def test_paid_job_before_commit_is_atomic_and_pending_is_invisible(self):
+        with closing(self._conn()) as c:
+            c.execute("CREATE TABLE job_links(job_id INTEGER PRIMARY KEY)")
+            c.commit()
+        visible_during_callback = []
+
+        def associate(connection, job_id):
+            with closing(self._conn()) as observer:
+                visible_during_callback.append(bool(observer.execute(
+                    "SELECT 1 FROM jobs WHERE id=?", (job_id,)
+                ).fetchone()))
+            connection.execute("INSERT INTO job_links(job_id) VALUES(?)", (job_id,))
+
+        job_id, points_left = jobs_store.create_paid_job(
+            self._jdb, lambda *_args: 90, lambda *_args, **_kwargs: True,
+            "image", "u", 10, {"prompt": "still"}, "content",
+            before_commit=associate,
+        )
+
+        self.assertEqual([False], visible_during_callback)
+        self.assertEqual(90, points_left)
+        with closing(self._conn()) as c:
+            self.assertEqual("pending", c.execute(
+                "SELECT status FROM jobs WHERE id=?", (job_id,)
+            ).fetchone()[0])
+            self.assertEqual(job_id, c.execute(
+                "SELECT job_id FROM job_links"
+            ).fetchone()[0])
+
+    def test_paid_job_before_commit_failure_rolls_back_job_and_association(self):
+        with closing(self._conn()) as c:
+            c.execute("CREATE TABLE job_links(job_id INTEGER PRIMARY KEY)")
+            c.commit()
+        refunds = []
+
+        def refund(username, amount, reason="", transaction_key=""):
+            refunds.append((username, amount, transaction_key))
+            return True
+
+        def fail_association(connection, job_id):
+            connection.execute("INSERT INTO job_links(job_id) VALUES(?)", (job_id,))
+            raise RuntimeError("association failed")
+
+        with self.assertRaises(jobs_store.PaidJobInsertError) as ctx:
+            jobs_store.create_paid_job(
+                self._jdb, lambda *_args: 90, refund,
+                "image", "u", 10, {"prompt": "still"}, "content",
+                before_commit=fail_association,
+            )
+
+        self.assertEqual("refunded", ctx.exception.compensation)
+        self.assertEqual(1, len(refunds))
+        self.assertEqual(("u", 10), refunds[0][:2])
+        with closing(self._conn()) as c:
+            self.assertEqual(0, c.execute("SELECT COUNT(*) FROM job_links").fetchone()[0])
+            self.assertEqual(0, c.execute(
+                "SELECT COUNT(*) FROM jobs WHERE status='pending'"
+            ).fetchone()[0])
+
     # --- 端到端：reaper 与 worker 交错，钱只退一次，结果不覆写 ---
     def test_reaper_wins_race_money_is_correct(self):
         jid = self._insert(10)

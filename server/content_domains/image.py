@@ -484,11 +484,81 @@ def _gen_image_seedream(prompt, ratio, quality, count, img, variant):
             "ratio": ratio, "prompt": prompt}
 
 
+def _trusted_short_drama_file(value, *, file_url=False):
+    value = str(value or "").strip()
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+        return ""
+    if file_url:
+        prefix = "/api/gen/file/"
+        if not parsed.path.startswith(prefix):
+            return ""
+        relative = urllib.parse.unquote(parsed.path[len(prefix):])
+    else:
+        if parsed.path.startswith("/"):
+            return ""
+        relative = urllib.parse.unquote(parsed.path)
+    if (not relative or "\\" in relative
+            or any(part in {"", ".", ".."} for part in relative.split("/"))):
+        return ""
+    try:
+        root = OUT_DIR.resolve()
+        candidate = (OUT_DIR / relative).resolve()
+        candidate.relative_to(root)
+    except (OSError, ValueError):
+        return ""
+    try:
+        if not candidate.is_file() or candidate.stat().st_size > IMAGE_REF_MAX_BYTES:
+            return ""
+        return candidate.relative_to(root).as_posix()
+    except OSError:
+        return ""
+
+
+def _trusted_short_drama_continuity(url="", local_file=""):
+    """Load only a validated local result; unsafe/missing input falls back to prompt."""
+    relative = (
+        _trusted_short_drama_file(local_file)
+        or _trusted_short_drama_file(url, file_url=True)
+    )
+    if not relative:
+        return None
+    try:
+        return (OUT_DIR.resolve() / relative).read_bytes()
+    except OSError:
+        return None
+
+
 def gen_image(payload):
     payload = validate_image_payload(payload)
     prompt = (payload.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("提示词不能为空")
+    references = payload.get("short_drama_references")
+    if isinstance(references, list):
+        context = []
+        continuity = None
+        for reference in references:
+            if not isinstance(reference, dict):
+                continue
+            ref_type = str(reference.get("type") or "")
+            name = str(reference.get("name") or "").strip()
+            if ref_type == "character" and name:
+                context.append("character appearance: " + name)
+            elif ref_type == "continuity":
+                if name:
+                    context.append("visual continuity: " + name)
+                if continuity is None:
+                    continuity = reference
+        if context:
+            prompt += "\nTrusted short-drama continuity context:\n" + "\n".join(context)
+        if continuity is not None and not payload.get("image"):
+            local_continuity = _trusted_short_drama_continuity(
+                continuity.get("url"), continuity.get("file")
+            )
+            if local_continuity:
+                payload["image"] = base64.b64encode(local_continuity).decode("ascii")
+    payload["prompt"] = prompt
     ratio = payload.get("ratio") or "1:1"
     img   = _clean_b64(payload.get("image"))  # 参考图 → 图生图 / 局部修改；清洗防 padding 错(#6)
     mask  = _clean_b64(payload.get("mask"))   # 蒙版(透明处=要重绘的区域) → 局部修改
