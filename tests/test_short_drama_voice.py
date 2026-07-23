@@ -368,6 +368,87 @@ class ShortDramaVoiceSchemaTests(unittest.TestCase):
                     "WHERE id='voice-job-editor'"
                 )
 
+    def test_charge_attempt_job_can_bind_once_but_cannot_rebind(self):
+        short_drama.init_db(self.db)
+        with closing(self.db()) as conn:
+            self._insert_project(conn, "p1", "alice")
+            self._insert_shot(conn, "s1", "p1")
+            self._insert_voice_line(conn, "line-1", "p1", "s1")
+            self._insert_quote(conn, "quote-1", "editor", "p1", "line-1")
+            self._insert_job(
+                conn, "job-101", "editor", "p1", "s1", "line-1",
+                job_number=101,
+            )
+            self._insert_job(
+                conn, "job-202", "editor", "p1", "s1", "line-1",
+                job_number=202,
+            )
+            self._insert_charge(
+                conn, "charge-1", "editor", "p1", "s1", "line-1",
+                "quote-1",
+            )
+
+            conn.execute(
+                "UPDATE short_drama_voice_charge_attempts SET job_id=101 "
+                "WHERE charge_key='charge-1'"
+            )
+            conn.execute(
+                "UPDATE short_drama_voice_quotes SET consumed_job_id=101 "
+                "WHERE token='quote-1'"
+            )
+            conn.execute(
+                "UPDATE short_drama_voice_charge_attempts SET job_id=101 "
+                "WHERE charge_key='charge-1'"
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "UPDATE short_drama_voice_charge_attempts SET job_id=202 "
+                    "WHERE charge_key='charge-1'"
+                )
+            self.assertEqual(101, conn.execute(
+                "SELECT job_id FROM short_drama_voice_charge_attempts "
+                "WHERE charge_key='charge-1'"
+            ).fetchone()[0])
+
+    def test_charge_attempt_job_must_match_consumed_quote(self):
+        short_drama.init_db(self.db)
+        with closing(self.db()) as conn:
+            self._insert_project(conn, "p1", "alice")
+            self._insert_shot(conn, "s1", "p1")
+            self._insert_voice_line(conn, "line-1", "p1", "s1")
+            self._insert_quote(conn, "quote-1", "editor", "p1", "line-1")
+            self._insert_job(
+                conn, "job-101", "editor", "p1", "s1", "line-1",
+                job_number=101,
+            )
+            self._insert_job(
+                conn, "job-202", "editor", "p1", "s1", "line-1",
+                job_number=202,
+            )
+            conn.execute(
+                "UPDATE short_drama_voice_quotes SET consumed_job_id=101 "
+                "WHERE token='quote-1'"
+            )
+
+            with self.assertRaises(sqlite3.IntegrityError):
+                self._insert_charge(
+                    conn, "charge-wrong-insert", "editor", "p1", "s1",
+                    "line-1", "quote-1", job_id=202,
+                )
+            self._insert_charge(
+                conn, "charge-1", "editor", "p1", "s1", "line-1",
+                "quote-1",
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "UPDATE short_drama_voice_charge_attempts SET job_id=202 "
+                    "WHERE charge_key='charge-1'"
+                )
+            conn.execute(
+                "UPDATE short_drama_voice_charge_attempts SET job_id=101 "
+                "WHERE charge_key='charge-1'"
+            )
+
     def test_voice_snapshot_source_identity_is_immutable(self):
         short_drama.init_db(self.db)
         with closing(self.db()) as conn:

@@ -293,6 +293,8 @@ FOR EACH ROW WHEN NOT EXISTS (
   JOIN short_drama_voice_quotes AS quote
     ON quote.token=NEW.quote_token AND quote.username=NEW.username
     AND quote.project_id=NEW.project_id AND quote.voice_line_id=NEW.voice_line_id
+    AND (NEW.job_id IS NULL OR quote.consumed_job_id IS NULL
+      OR quote.consumed_job_id IS NEW.job_id)
   WHERE project.id=NEW.project_id
     AND (NEW.job_id IS NULL OR EXISTS (
       SELECT 1 FROM short_drama_voice_jobs AS job
@@ -317,7 +319,10 @@ FOR EACH ROW WHEN NOT EXISTS (
   JOIN short_drama_voice_quotes AS quote
     ON quote.token=NEW.quote_token AND quote.username=NEW.username
     AND quote.project_id=NEW.project_id AND quote.voice_line_id=NEW.voice_line_id
+    AND (NEW.job_id IS NULL OR quote.consumed_job_id IS NULL
+      OR quote.consumed_job_id IS NEW.job_id)
   WHERE project.id=NEW.project_id
+    AND (OLD.job_id IS NULL OR NEW.job_id IS OLD.job_id)
     AND (NEW.job_id IS NULL OR EXISTS (
       SELECT 1 FROM short_drama_voice_jobs AS job
       WHERE job.job_id=NEW.job_id AND job.username=NEW.username
