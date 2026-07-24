@@ -260,26 +260,26 @@ def check_clone_status(username, slot_id):
         return result
     if not cosyvoice.enabled():
         return {"status": "failed", "clone_error": "声音复刻服务暂不可用"}
-    # CosyVoice\uff1aprovider_voice \u662f CosyVoice voice_id \u5c31\u67e5\u5b83\u7684 list_voice \u72b6\u6001\uff0c\u4e0d\u78b0\u8c46\u5305\u3002
-    if cosyvoice.enabled():
-        with closing(adb()) as c:
-            pv = c.execute("""SELECT provider_voice FROM audio_voices WHERE username=? AND slot_id=?
-                ORDER BY id DESC LIMIT 1""", (username, slot_id)).fetchone()
-        provider_voice = (pv["provider_voice"] if pv else "") or ""
-        if provider_voice.startswith(cosyvoice.CLONE_MODEL):
-            if slot["status"] == "failed":
-                return {"status": "failed", "clone_error": slot["clone_error"] or "\u590d\u523b\u5931\u8d25"}
-            try:
-                cv_status, _ = cosyvoice.voice_status(provider_voice)
-            except Exception:
-                return {"status": slot["status"] or "training"}
-            new_status = "ready" if cv_status == "OK" else ("failed" if cv_status not in ("", "OK") and "ing" not in cv_status.lower() else "training")
-            if new_status != slot["status"]:
-                with closing(adb()) as c:
-                    c.execute("UPDATE audio_voice_slots SET status=?, updated_at=? WHERE username=? AND slot_id=?",
-                              (new_status, int(time.time()), username, slot_id))
-                    c.commit()
-            return {"status": new_status, "cosy_status": cv_status}
+    # CosyVoice: provider_voice is replaced with the real voice id by the
+    # background clone. Until then mark_clone_training intentionally stores the
+    # slot id as a placeholder, so polling must keep reporting "training".
+    provider_voice = (voice["provider_voice"] if voice else "") or ""
+    if provider_voice.startswith(cosyvoice.CLONE_MODEL):
+        if slot["status"] == "failed":
+            return {"status": "failed", "clone_error": slot["clone_error"] or "\u590d\u523b\u5931\u8d25"}
+        try:
+            cv_status, _ = cosyvoice.voice_status(provider_voice)
+        except Exception:
+            return {"status": slot["status"] or "training"}
+        new_status = "ready" if cv_status == "OK" else ("failed" if cv_status not in ("", "OK") and "ing" not in cv_status.lower() else "training")
+        if new_status != slot["status"]:
+            with closing(adb()) as c:
+                c.execute("UPDATE audio_voice_slots SET status=?, updated_at=? WHERE username=? AND slot_id=?",
+                          (new_status, int(time.time()), username, slot_id))
+                c.commit()
+        return {"status": new_status, "cosy_status": cv_status}
+    if slot["status"] == "training":
+        return {"status": "training"}
     return {"status": "failed", "clone_error": "该音色来自已停用渠道，请重新复刻"}
 
 ALLOWED_CLONE_AUDIO_FORMATS = {"mp3", "wav", "m4a", "aac", "ogg"}
