@@ -52,6 +52,9 @@ GROK_VIDEO_PROVIDER = os.environ.get("GROK_VIDEO_PROVIDER", "xai").strip().lower
 XAI_GROK_MODELS = {"grok-imagine-video", "grok-imagine-video-1.5"}
 XAI_GROK_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
 XAI_GROK_RESOLUTIONS = {"480p", "720p"}
+SEEDANCE_UPSCALE_ENABLED = os.environ.get(
+    "SEEDANCE_UPSCALE_ENABLED", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 
 # OpenAI Sora 2 限时 Beta。官方已公告 Videos API 与两个模型将在 2026-09-24 下线，
 # 且没有推荐替代，因此默认关闭；只有测试环境显式设 SORA_VIDEO_ENABLED=1 才收单。
@@ -71,6 +74,14 @@ SORA_SIZE_MAP = {
     ("sora-2-pro", "1024p", "16:9"): "1792x1024",
     ("sora-2-pro", "1080p", "9:16"): "1080x1920",
     ("sora-2-pro", "1080p", "16:9"): "1920x1080",
+}
+SEEDANCE_1080_SIZE_MAP = {
+    "21:9": (2520, 1080),
+    "16:9": (1920, 1080),
+    "4:3": (1440, 1080),
+    "1:1": (1080, 1080),
+    "3:4": (1080, 1440),
+    "9:16": (1080, 1920),
 }
 
 
@@ -98,6 +109,11 @@ def omni_video_is_open():
 def seedance_video_is_open():
     from . import video_seedance
     return video_seedance.available()
+
+
+def seedance_upscale_is_open():
+    from . import cos, wavespeed
+    return SEEDANCE_UPSCALE_ENABLED and wavespeed.available() and cos.enabled()
 
 
 def _xiaole_build_refs(reference_images):
@@ -197,6 +213,15 @@ def validate_xiaole_video_payload(payload):
         duration = cleaned.get("duration", 5)
         resolution = str(cleaned.get("resolution") or "720p").strip().lower()
         generate_audio = cleaned.get("generate_audio", True)
+        upscale = cleaned.get("upscale", False)
+        if not isinstance(upscale, bool):
+            raise ValueError("Seedance AI 超清选项必须为布尔值")
+        if upscale:
+            if resolution != "480p":
+                raise ValueError("Seedance AI 超清必须先生成 480p")
+            if not seedance_upscale_is_open():
+                raise ValueError("Seedance AI 超清服务暂未配置")
+        cleaned.pop("upscale_prediction_id", None)
         if len(refs) > 9:
             raise ValueError("Seedance 最多支持 9 张参考图")
         for item in refs:
@@ -214,6 +239,7 @@ def validate_xiaole_video_payload(payload):
             "duration": int(duration),
             "resolution": resolution,
             "generate_audio": generate_audio,
+            "upscale": upscale,
             "reference_images": refs,
         })
         return cleaned
@@ -403,6 +429,55 @@ def _faststart_video_file(rel):
         print("[video] ffmpeg missing, skip faststart for %s" % raw, flush=True)
     except Exception as e:
         print("[video] faststart skipped for %s: %s" % (raw, str(e)[:160]), flush=True)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+    return rel
+
+
+def _normalize_seedance_upscale_video(rel, ratio):
+    """把 SeedVR2 成片收敛到标准 1080p 尺寸；音轨稍后从 Seedance 原片合回。"""
+    src = _resolve_out_file(rel)
+    if not src:
+        raise RuntimeError("AI 超清成片文件不存在")
+    tmp = src.with_name(src.stem + ".1080.tmp.mp4")
+    size = SEEDANCE_1080_SIZE_MAP.get(str(ratio or "").strip())
+    if size:
+        width, height = size
+        video_filter = (
+            "scale=w=%d:h=%d:force_original_aspect_ratio=decrease,"
+            "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1"
+            % (width, height, width, height)
+        )
+    else:
+        video_filter = (
+            "scale=w='if(gte(iw,ih),-2,1080)':"
+            "h='if(gte(iw,ih),1080,-2)',setsar=1"
+        )
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(src), "-map", "0:v:0", "-an",
+                "-vf", video_filter,
+                "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+                "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(tmp),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            timeout=1800,
+        )
+        if not tmp.is_file() or tmp.stat().st_size <= 0:
+            raise RuntimeError("标准化产物为空")
+        tmp.replace(src)
+    except FileNotFoundError as exc:
+        raise RuntimeError("服务器未安装 ffmpeg，无法完成 AI 超清标准化") from exc
+    except Exception as exc:
+        raise RuntimeError("AI 超清成片标准化失败: %s" % str(exc)[:160]) from exc
     finally:
         try:
             if tmp.exists():
@@ -738,6 +813,39 @@ def update_video_asset_phase(job_id, phase, strict=False, **fields):
         pass
     return asset_updated
 
+
+def _persist_seedance_upscale_prediction(job_id, prediction_id):
+    """把第二次付费提交的 ID 写回原 job payload；不改公共数据库结构。"""
+    prediction_id = str(prediction_id or "").strip()
+    if not job_id or not prediction_id:
+        raise ValueError("AI 超清任务缺少本地 job_id 或 prediction id")
+    now = int(time.time())
+    with closing(jdb()) as c:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute(
+            "SELECT payload,status FROM jobs WHERE id=?", (job_id,)
+        ).fetchone()
+        if not row or row["status"] != "running":
+            raise RuntimeError("AI 超清任务已不在运行状态")
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        existing = str(payload.get("upscale_prediction_id") or "").strip()
+        if existing and existing != prediction_id:
+            raise RuntimeError("AI 超清任务编号冲突，已停止自动恢复")
+        payload["upscale_prediction_id"] = prediction_id
+        cur = c.execute(
+            "UPDATE jobs SET payload=?,updated_at=? WHERE id=? AND status='running'",
+            (json.dumps(payload, ensure_ascii=False), now, job_id),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError("AI 超清任务编号未能持久化")
+        c.commit()
+    return prediction_id
+
 def get_resumable_xai_request(job_id):
     if not job_id:
         return None
@@ -774,6 +882,30 @@ def get_resumable_grok_request(job_id):
     if not row:
         return None
     phase = str(row["phase"] or "")
+    upscale_prediction_id = ""
+    if phase.startswith("seedance_upscale_"):
+        with closing(jdb()) as c:
+            job = c.execute(
+                "SELECT payload FROM jobs WHERE id=?", (job_id,)
+            ).fetchone()
+        try:
+            job_payload = json.loads((job or {})["payload"] or "{}")
+        except Exception:
+            job_payload = {}
+        if isinstance(job_payload, dict):
+            upscale_prediction_id = str(
+                job_payload.get("upscale_prediction_id") or ""
+            ).strip()
+        if phase in {
+            "seedance_upscale_submitting",
+            "seedance_upscale_recovery_required",
+        } and not upscale_prediction_id:
+            return {
+                "request_id": None,
+                "submission_unknown": True,
+                "provider": "seedance",
+                "phase": phase,
+            }
     if not row["provider_video_id"]:
         if phase.startswith("seedance_") and phase in {
                 "seedance_submitting", "seedance_recovery_required"}:
@@ -806,6 +938,7 @@ def get_resumable_grok_request(job_id):
         "status": row["status"],
         "resolution": row["resolution"],
         "ratio": row["ratio"],
+        "upscale_prediction_id": upscale_prediction_id or None,
     }
 
 
@@ -901,17 +1034,57 @@ def recover_paid_video_error(job_id, kind, payload, error, requeue=None,
     channel = str((payload or {}).get("channel") or "").lower()
     if kind != "xiaole_video" or channel not in {"micro", "omni"}:
         return False
-    from . import video_gemini_omni, video_seedance
+    from . import video_gemini_omni, video_seedance, wavespeed
     if isinstance(error, (
             video_gemini_omni.GeminiOmniRejected,
             video_gemini_omni.GeminiOmniProviderFailed,
             video_seedance.SeedanceRejected,
             video_seedance.SeedanceProviderFailed,
+            wavespeed.WaveSpeedRejected,
+            wavespeed.WaveSpeedProviderFailed,
     )):
         return False
+    if channel == "micro" and bool((payload or {}).get("upscale")):
+        recovery = get_resumable_grok_request(job_id)
+        upscale_id = str(
+            (payload or {}).get("upscale_prediction_id") or ""
+        ).strip()
+        if isinstance(error, wavespeed.WaveSpeedCreateOutcomeUnknown) or (
+            recovery
+            and recovery.get("phase") in {
+                "seedance_upscale_submitting",
+                "seedance_upscale_recovery_required",
+            }
+            and not upscale_id
+        ):
+            update_video_asset_phase(
+                job_id,
+                "seedance_upscale_recovery_required",
+                error=str(error)[:300],
+            )
+            return True
+        if upscale_id and requeue and (
+            force_requeue
+            or isinstance(error, (wavespeed.WaveSpeedTransientRead, TimeoutError))
+        ):
+            if requeue(job_id):
+                update_video_asset_phase(
+                    job_id,
+                    "seedance_upscale_retrying",
+                    error=str(error)[:300],
+                )
+            return True
+        if upscale_id:
+            update_video_asset_phase(
+                job_id,
+                "seedance_upscale_recovery_required",
+                error=str(error)[:300],
+            )
+            return True
     retry = requeue if force_requeue or isinstance(error, (
         video_gemini_omni.GeminiOmniTransientRead,
         video_seedance.TransientSeedanceError,
+        wavespeed.WaveSpeedTransientRead,
         TimeoutError,
     )) else None
     return recover_official_video_paid_job(job_id, error, retry)
@@ -992,6 +1165,17 @@ def list_video_assets(username, limit=120):
                     audio_choice = payload.get("generate_audio")
                 if isinstance(audio_choice, bool):
                     item["generate_audio"] = audio_choice
+                upscale = result.get("upscale")
+                if not isinstance(upscale, bool):
+                    upscale = payload.get("upscale")
+                if isinstance(upscale, bool):
+                    item["upscale"] = upscale
+                if result.get("source_resolution") or payload.get("resolution"):
+                    item["source_resolution"] = (
+                        result.get("source_resolution") or payload.get("resolution")
+                    )
+                if result.get("upscale_provider"):
+                    item["upscale_provider"] = result["upscale_provider"]
                 if str(payload.get("line") or "") in {"1", "2"}:
                     item["line"] = str(payload["line"])
                 for key in ("batch_id", "batch_label", "batch_index", "batch_size"):
@@ -1424,6 +1608,44 @@ def _mux_original_audio(video_file, audio_rel):
             pass
         return video_file          # ⚠️ 回退：宁可无声，也不能因为配音失败就把成片丢了
     print("[motion] 已合入参考视频的原声", flush=True)
+    return out_rel
+
+
+def _mux_seedance_upscale_audio(video_file, audio_rel):
+    """合回 Seedance 原声；短音轨补静音，最终时长始终由超分画面决定。"""
+    video_fp = _resolve_out_file(video_file)
+    audio_fp = _resolve_out_file(audio_rel)
+    if not video_fp or not audio_fp:
+        return video_file
+    out_rel = "video/seedance_upscale_snd_%s.mp4" % uuid.uuid4().hex
+    out_fp = _out_path(out_rel)
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(video_fp), "-i", str(audio_fp),
+                "-filter_complex", "[1:a:0]apad[a]",
+                "-map", "0:v:0", "-map", "[a]",
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                "-shortest", "-movflags", "+faststart", str(out_fp),
+            ],
+            check=True,
+            timeout=180,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if not out_fp.is_file() or out_fp.stat().st_size <= 0:
+            raise RuntimeError("产物为空")
+    except Exception as exc:
+        print(
+            "[seedance-upscale] 合入原声失败: %s" % str(exc)[:110],
+            flush=True,
+        )
+        try:
+            out_fp.unlink()
+        except Exception:
+            pass
+        return video_file
     return out_rel
 
 
@@ -2777,11 +2999,26 @@ def _xiaole_download_candidates(url, tunnel_proxy, origin_headers=None):
     return candidates
 
 
-def _download_xiaole_video(url, prefix="xiaole", origin_headers=None):
+def _is_public_http_url(url):
+    from . import wavespeed
+    return wavespeed._public_http_url_state(url) == "ok"
+
+
+class _PublicVideoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _is_public_http_url(newurl):
+            raise urllib.error.URLError("视频下载重定向到非公网地址")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _download_xiaole_video(
+        url, prefix="xiaole", origin_headers=None, public_only=False):
     # 视频 CDN 多在海外(如 vidgen.x.ai)，国内直连不通。成片下载是 GET(幂等)，故可多档尝试：
     # 优先走 egress 快隧道，避开拥塞到分钟级的 heygen 法兰克福老中转(实测 xAI 2 分钟出片、
     # 走老中转下载却要 11~19 分钟，甚至卡死被 reaper 判超时退点)。中转仅作兜底。
     from . import egress
+    if public_only and not _is_public_http_url(url):
+        raise RuntimeError("视频下载地址不是公网 HTTP(S) URL")
     candidates = _xiaole_download_candidates(
         url, egress.preferred_proxy(), origin_headers=origin_headers
     )
@@ -2791,7 +3028,17 @@ def _download_xiaole_video(url, prefix="xiaole", origin_headers=None):
     for fetch_url, headers, proxy in candidates:
         if data is not None:
             break
-        opener_open = egress._opener(proxy).open if proxy else urllib.request.urlopen
+        if public_only:
+            proxy_handler = urllib.request.ProxyHandler(
+                {"http": proxy, "https": proxy} if proxy else None
+            )
+            opener_open = urllib.request.build_opener(
+                proxy_handler, _PublicVideoRedirect()
+            ).open
+        else:
+            opener_open = (
+                egress._opener(proxy).open if proxy else urllib.request.urlopen
+            )
         for attempt in range(_xiaole_dl_retries):
             try:
                 req = urllib.request.Request(fetch_url, headers=headers)
@@ -3080,7 +3327,7 @@ def gen_xiaole_video(payload):
             "reference_video_url": reference_video_url,
         }
     elif channel == "micro":
-        from . import video_seedance
+        from . import video_seedance, wavespeed
 
         provider_id_persisted = bool(existing and existing.get("request_id"))
 
@@ -3126,7 +3373,96 @@ def gen_xiaole_video(payload):
             if str(exc).startswith("视频下载失败"):
                 raise video_seedance.TransientSeedanceError(str(exc)) from exc
             raise
+        upscale = payload.get("upscale") is True
+        upscale_id = str(payload.get("upscale_prediction_id") or "").strip()
+        upscale_source_url = None
+        upscale_cleanup = []
+        if upscale:
+            upscale_cleanup.append(video_file)
+            source_audio = (
+                _extract_reference_audio(video_file) if generate_audio else None
+            )
+            if source_audio:
+                upscale_cleanup.append(source_audio)
+            upscale_input_url = None
+            if not upscale_id:
+                try:
+                    upscale_input_url = wavespeed._material_url(
+                        video_file, private=True
+                    )
+                except Exception as exc:
+                    raise wavespeed.WaveSpeedTransientRead(
+                        "AI 超清素材转存失败，请稍后恢复"
+                    ) from exc
+                if not str(upscale_input_url).startswith(("http://", "https://")):
+                    raise wavespeed.WaveSpeedTransientRead(
+                        "AI 超清素材转存失败，请稍后恢复"
+                    )
+                update_video_asset_phase(
+                    job_id, "seedance_upscale_submitting", strict=True
+                )
+
+            def persist_upscale_id(prediction_id):
+                nonlocal upscale_id
+                _persist_seedance_upscale_prediction(job_id, prediction_id)
+                payload["upscale_prediction_id"] = prediction_id
+                upscale_id = prediction_id
+                update_video_asset_phase(
+                    job_id, "seedance_upscale_running", strict=True
+                )
+
+            def upscale_heartbeat(heartbeat_job_id, phase):
+                update_video_asset_phase(heartbeat_job_id, phase)
+
+            upscaled = wavespeed.run_seedvr2(
+                video_url=upscale_input_url,
+                prediction_id=upscale_id,
+                job_id=job_id,
+                on_submitted=persist_upscale_id,
+                heartbeat=upscale_heartbeat,
+            )
+            upscale_id = upscaled["prediction_id"]
+            upscale_source_url = upscaled["source_video_url"]
+            update_video_asset_phase(
+                job_id, "seedance_upscale_downloading"
+            )
+            try:
+                video_file = _download_xiaole_video(
+                    upscale_source_url, "seedance_upscale", public_only=True
+                )
+            except RuntimeError as exc:
+                if str(exc).startswith("视频下载失败"):
+                    raise wavespeed.WaveSpeedTransientRead(str(exc)) from exc
+                raise
+            update_video_asset_phase(
+                job_id, "seedance_upscale_normalizing"
+            )
+            try:
+                video_file = _normalize_seedance_upscale_video(
+                    video_file, rendered.get("ratio") or ratio
+                )
+            except RuntimeError as exc:
+                raise wavespeed.WaveSpeedProviderFailed(str(exc)) from exc
+            if source_audio:
+                upscale_cleanup.append(video_file)
+                with_audio = _mux_seedance_upscale_audio(
+                    video_file, source_audio
+                )
+                if with_audio == video_file:
+                    raise wavespeed.WaveSpeedProviderFailed(
+                        "AI 超清成片恢复原声失败"
+                    )
+                video_file = with_audio
         cover = _extract_first_frame_cover(video_file)
+        for intermediate in upscale_cleanup:
+            if intermediate == video_file:
+                continue
+            intermediate_file = _resolve_out_file(intermediate)
+            if intermediate_file:
+                try:
+                    intermediate_file.unlink()
+                except OSError:
+                    pass
         result = {
             "video_file": video_file,
             "video_url": _file_url(video_file),
@@ -3134,11 +3470,19 @@ def gen_xiaole_video(payload):
             "model": rendered.get("model") or model,
             "request_id": rendered.get("request_id"),
             "duration": rendered.get("duration") or duration,
-            "resolution": rendered.get("resolution") or resolution,
+            "resolution": "1080p" if upscale else (
+                rendered.get("resolution") or resolution
+            ),
+            "source_resolution": resolution,
             "ratio": rendered.get("ratio") or ratio,
             "generate_audio": rendered.get("generate_audio"),
             "completion_tokens": rendered.get("completion_tokens"),
-            "provider": "volcengine_seedance",
+            "provider": (
+                "volcengine_seedance+wavespeed_seedvr2"
+                if upscale else "volcengine_seedance"
+            ),
+            "upscale": upscale,
+            "upscale_provider": "wavespeed_seedvr2" if upscale else None,
             "image_file": cover,
             "image_url": public_url(cover, "image/jpeg") if cover else None,
         }
@@ -3227,6 +3571,9 @@ def gen_xiaole_video(payload):
         "provider": result.get("provider"),
         "generate_audio": result.get("generate_audio"),
         "completion_tokens": result.get("completion_tokens"),
+        "source_resolution": result.get("source_resolution"),
+        "upscale": result.get("upscale"),
+        "upscale_provider": result.get("upscale_provider"),
         "phase": "done", "message": "%s生成完成" % label,
     }
 
