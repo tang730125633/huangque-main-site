@@ -146,7 +146,7 @@ class RequestLogUserTests(unittest.TestCase):
         self.assertEqual(poll["user"], "tang")
         # 「视频 · 小乐」是旧名字 —— 它把果肉/豆姐/欧米三个渠道混成了一个。
         # 现在按 payload.channel 分开；这条 fixture 的 payload 里没有 channel，回落到总称。
-        self.assertEqual(poll["func"], "果肉/豆姐/欧米视频 · 轮询")
+        self.assertEqual(poll["func"], "果肉/Seedance/Omni 视频 · 轮询")
         # 任务库里没有的任务号
         self.assertEqual(items["/api/gen/job/9999"]["user"], "-")
         self.assertEqual(items["/api/gen/job/9999"]["func"], "任务轮询")

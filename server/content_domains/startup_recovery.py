@@ -52,13 +52,33 @@ def reclaim_orphaned_running(
                 if getter is None:
                     getter = video_domain.get_resumable_xai_request
                 resumable = getter(row["id"])
+                if resumable and resumable.get("submission_unknown"):
+                    logger(
+                        "[startup] %s 提交结果未知，保留 running 待核对 job=%s"
+                        % (str(resumable.get("provider") or "官方视频"), row["id"]),
+                        flush=True,
+                    )
+                    continue
+                if resumable and str(resumable.get("phase") or "").endswith(
+                        "_recovery_required"):
+                    logger(
+                        "[startup] %s 任务需人工核对，保留 running job=%s"
+                        % (str(resumable.get("provider") or "官方视频"), row["id"]),
+                        flush=True,
+                    )
+                    continue
                 request_id = _valid_request_id(resumable)
                 if resumable:
-                    provider = "OpenRouter" if resumable.get("provider") == "openrouter" else "xAI"
+                    provider = {
+                        "openrouter": "OpenRouter",
+                        "xai": "xAI",
+                        "seedance": "Seedance",
+                        "omni": "Omni",
+                    }.get(resumable.get("provider"), "Grok")
             except Exception as exc:
                 # 查询失败是“未知”，不是“确认没有上游任务”。后者才允许失败退款；
                 # 否则 Auth/SQLite 短暂抖动会把仍在上游运行的付费视频免费送给用户。
-                logger("[startup] xAI恢复信息查询失败，保留running不退款 job=%s: %s" %
+                logger("[startup] 视频恢复信息查询失败，保留running不退款 job=%s: %s" %
                        (row["id"], exc), flush=True)
                 continue
         elif row["kind"] == "sora_video":

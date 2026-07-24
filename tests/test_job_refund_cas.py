@@ -247,6 +247,43 @@ class JobRefundCasTests(unittest.TestCase):
         self.assertEqual(self._row(jid)["refunded"], 0)
         self.assertEqual(self.refunds, [])
 
+    def test_reclaim_requeues_known_omni_id_without_refund(self):
+        jid = self._insert(90, kind="xiaole_video")
+
+        class _FakeVideo:
+            @staticmethod
+            def get_resumable_grok_request(job_id):
+                return {
+                    "request_id": "v1-existing", "provider": "omni",
+                    "phase": "omni_file_processing",
+                } if job_id == jid else None
+
+        self.core._domains = lambda: (None, type("P", (), {
+            "refund_points": staticmethod(lambda *args, **kwargs: None)
+        }), _FakeVideo)
+        self.assertEqual(self.core.reclaim_orphaned_running(), 1)
+        self.assertEqual(self._row(jid)["status"], "pending")
+        self.assertEqual(self._row(jid)["refunded"], 0)
+        self.assertEqual(self.refunds, [])
+
+    def test_reclaim_keeps_unknown_official_submission_running(self):
+        jid = self._insert(90, kind="xiaole_video")
+        points_domain = self.core._domains()[1]
+
+        class _FakeVideo:
+            @staticmethod
+            def get_resumable_grok_request(job_id):
+                return {
+                    "request_id": None, "provider": "omni",
+                    "phase": "omni_submitting", "submission_unknown": True,
+                }
+
+        self.core._domains = lambda: (None, points_domain, _FakeVideo)
+        self.assertEqual(self.core.reclaim_orphaned_running(), 0)
+        self.assertEqual(self._row(jid)["status"], "running")
+        self.assertEqual(self._row(jid)["refunded"], 0)
+        self.assertEqual(self.refunds, [])
+
     def test_reclaim_lookup_exception_keeps_running_without_refund(self):
         jid = self._insert(300, kind="xiaole_video")
         points_domain = self.core._domains()[1]
