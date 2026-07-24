@@ -210,12 +210,16 @@
 </div>
 <script src="qrcode.min.js?v=1"></script>
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=5aaa931f"></script>
+<script src="cloud-shell.js?v=df4e00db"></script>
 <script>
 (function(){
   var token='__cookie__';
   var membershipActive=false;
   var membershipRequired=false;
+  function membershipDisplayName(user){
+    if(!user||!user.membership_active) return '非会员';
+    return user.membership_name||({experience:'体验官',partner:'合伙人',initiator:'发起人'}[user.membership_tier])||'会员等级待同步';
+  }
   var membershipDiscountBps=10000;
   var $=function(id){return document.getElementById(id)};
   function setTip(msg,color){var el=$('rechargeTip'); if(el){el.textContent=msg; el.style.color=color||'#94a4bb'}}
@@ -258,7 +262,7 @@
       membershipActive=!!user.membership_active;
       membershipRequired=!!d.membership_enforcement_enabled;
       $('pointsBalance').textContent=Number(p||0).toLocaleString();
-      $('membershipName').textContent=membershipActive?(user.membership_name||'会员'):'非会员';
+      $('membershipName').textContent=membershipDisplayName(user);
       $('membershipExpiry').textContent=membershipActive?new Date(Number(user.membership_expires_at)*1000).toLocaleDateString():'--';
       $('membershipOffer').hidden=membershipActive;
       $('pointsRechargeArea').hidden=membershipRequired&&!membershipActive;
