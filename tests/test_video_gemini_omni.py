@@ -87,6 +87,29 @@ class GeminiOmniTests(unittest.TestCase):
         self.assertTrue(result["duration_is_measured"])
         self.assertEqual(result["interaction_id"], "v1_demo")
 
+    def test_generate_uses_configured_gemini_gateway(self):
+        payload = {
+            "id": "v1_gateway",
+            "status": "completed",
+            "steps": [{
+                "type": "model_output",
+                "content": [{
+                    "type": "video",
+                    "mime_type": "video/mp4",
+                    "data": base64.b64encode(b"fake-mp4").decode(),
+                }],
+            }],
+        }
+        with patch.object(self.omni, "API_BASE", "https://gateway.example/gemini"), \
+             patch.object(self.omni, "_opener"), \
+             patch.object(self.omni, "_request_json", return_value=payload) as request, \
+             patch.object(self.omni, "_probe_duration", return_value=3):
+            self.omni.generate("demo", duration=3, delivery="inline")
+        self.assertEqual(
+            request.call_args.args[2],
+            "https://gateway.example/gemini/v1beta/interactions",
+        )
+
     def test_generate_polls_and_downloads_uri(self):
         uri = (
             "https://generativelanguage.googleapis.com/v1beta/"
@@ -199,6 +222,18 @@ class GeminiOmniTests(unittest.TestCase):
     def test_rejects_non_google_download_uri(self):
         with self.assertRaisesRegex(RuntimeError, "非官方视频地址"):
             self.omni._file_name("https://attacker.example/files/steal:download")
+
+    def test_official_file_download_uses_configured_gateway(self):
+        uri = (
+            "https://generativelanguage.googleapis.com/v1beta/"
+            "files/file-1:download?alt=media"
+        )
+        with patch.object(self.omni, "API_BASE", "https://gateway.example/gemini"):
+            self.assertEqual(
+                self.omni._file_request_url(uri),
+                "https://gateway.example/gemini/v1beta/"
+                "files/file-1:download?alt=media",
+            )
 
     def test_poll_file_retries_only_get(self):
         uri = (
