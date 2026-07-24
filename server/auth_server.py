@@ -35,8 +35,10 @@ INVITE_PUBLIC_BASE_URL = os.environ.get(
 ).strip().rstrip("/")
 LOGIN_FAIL_WINDOW = int(os.environ.get("HQ_AUTH_FAIL_WINDOW", "300"))
 LOGIN_FAIL_MAX = int(os.environ.get("HQ_AUTH_FAIL_MAX", "5"))
-REGISTER_WINDOW = int(os.environ.get("HQ_AUTH_REGISTER_WINDOW", "300"))
-REGISTER_MAX = int(os.environ.get("HQ_AUTH_REGISTER_MAX", "5"))
+REGISTER_WINDOW = int(os.environ.get("HQ_AUTH_REGISTER_WINDOW", "120"))
+REGISTER_MAX = int(os.environ.get("HQ_AUTH_REGISTER_MAX", "10"))
+REGISTER_IP_WINDOW = int(os.environ.get("HQ_AUTH_REGISTER_IP_WINDOW", "60"))
+REGISTER_IP_MAX = int(os.environ.get("HQ_AUTH_REGISTER_IP_MAX", "20"))
 NEW_USER_TRIAL_POINTS = int(os.environ.get("HQ_AUTH_TRIAL_POINTS", "16"))  # 暂时保留新用户注册赠送 16 点
 # 充值定价：客户端只传金额(元)，点数一律服务端算，绝不信客户端传的点数——
 # 否则用户能花 1 元买百万点。与 recharge.html / 小程序 recharge.js 保持一致。
@@ -2677,15 +2679,32 @@ class H(BaseHTTPRequestHandler):
         LOGIN_FAILS[key].append(now)
     def _clear_login_failures(self, username):
         LOGIN_FAILS.pop(self._rate_key(username), None)
-    def _consume_register_attempt(self):
+    def _register_rate_key(self, device_id=""):
+        device_id = str(device_id or "").strip()[:256]
+        device_key = (
+            hashlib.sha256(device_id.encode("utf-8")).hexdigest()[:24]
+            if device_id else "missing-device"
+        )
+        return self._client_ip() + "|" + device_key
+    def _consume_register_attempt(self, device_id=""):
         now = time.time()
-        key = self._client_ip()
+        device_key = self._register_rate_key(device_id)
+        ip_key = "ip|" + self._client_ip()
         with REGISTER_HITS_LOCK:
-            hits = [t for t in REGISTER_HITS.get(key, []) if now - t < REGISTER_WINDOW]
-            REGISTER_HITS[key] = hits
-            if len(hits) >= REGISTER_MAX:
+            device_hits = [
+                t for t in REGISTER_HITS.get(device_key, [])
+                if now - t < REGISTER_WINDOW
+            ]
+            ip_hits = [
+                t for t in REGISTER_HITS.get(ip_key, [])
+                if now - t < REGISTER_IP_WINDOW
+            ]
+            REGISTER_HITS[device_key] = device_hits
+            REGISTER_HITS[ip_key] = ip_hits
+            if len(device_hits) >= REGISTER_MAX or len(ip_hits) >= REGISTER_IP_MAX:
                 return False
-            hits.append(now)
+            device_hits.append(now)
+            ip_hits.append(now)
             return True
     def _user(self):
         tok = request_token(self.headers)
@@ -3252,11 +3271,11 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 return self._send(500, {"detail": "points update failed"})
         if p == "/api/auth/register":
-            if not self._consume_register_attempt():
-                return self._send(429, {"detail": "注册次数过多，请稍后再试"})
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
+            if not self._consume_register_attempt(d.get("device_id")):
+                return self._send(429, {"detail": "注册次数过多，请稍后再试"})
             u = (d.get("username") or "").strip()
             pw = d.get("password") or ""
             name = (d.get("display_name") or u).strip() or u
@@ -3316,11 +3335,11 @@ class H(BaseHTTPRequestHandler):
                 row["membership_tier"], row["membership_started_at"], row["membership_expires_at"],
             )})
         if p == "/api/auth/miniprogram-register":
-            if not self._consume_register_attempt():
-                return self._send(429, {"detail": "注册次数过多，请稍后再试"})
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
+            if not self._consume_register_attempt(d.get("device_id")):
+                return self._send(429, {"detail": "注册次数过多，请稍后再试"})
             u = (d.get("username") or "").strip()
             pw = d.get("password") or ""
             name = (d.get("display_name") or u).strip() or u
