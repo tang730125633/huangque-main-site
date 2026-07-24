@@ -61,6 +61,26 @@ class SeedanceUpscaleTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "暂未配置"):
                 video.validate_xiaole_video_payload(self._body())
 
+    def test_standard_1080p_crops_to_fill_without_black_bars(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "upscaled.mp4"
+            source.write_bytes(b"input")
+            commands = []
+
+            def fake_run(command, **_kwargs):
+                commands.append(command)
+                Path(command[-1]).write_bytes(b"output")
+
+            with patch.object(video, "_resolve_out_file", return_value=source), \
+                 patch.object(video.subprocess, "run", side_effect=fake_run):
+                video._normalize_seedance_upscale_video(
+                    "video/upscaled.mp4", "16:9")
+
+        video_filter = commands[0][commands[0].index("-vf") + 1]
+        self.assertIn("force_original_aspect_ratio=increase", video_filter)
+        self.assertIn("crop=1920:1080", video_filter)
+        self.assertNotIn("pad=", video_filter)
+
     def test_wavespeed_submit_once_and_resume_only_gets(self):
         completed = {
             "data": {

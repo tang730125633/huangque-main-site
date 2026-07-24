@@ -448,8 +448,8 @@ def _normalize_seedance_upscale_video(rel, ratio):
     if size:
         width, height = size
         video_filter = (
-            "scale=w=%d:h=%d:force_original_aspect_ratio=decrease,"
-            "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1"
+            "scale=w=%d:h=%d:force_original_aspect_ratio=increase,"
+            "crop=%d:%d:(iw-ow)/2:(ih-oh)/2,setsar=1"
             % (width, height, width, height)
         )
     else:
