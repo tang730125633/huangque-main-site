@@ -87,7 +87,8 @@ def cost_of(kind, body):
             raise ValueError("果肉视频编辑维护中")
         duration = min(15, max(1, int(body.get("duration") or 10)))
         if str(body.get("channel") or "grok").lower() != "grok":
-            return duration * 30  # 未定价且当前停用的豆姐/欧米保留原价
+            # 泽龙测试期官方 Omni / Seedance 统一 30 点/秒；生产功能旗默认关闭。
+            return duration * 30
         model = str(body.get("model") or "grok-imagine-video")
         resolution = str(body.get("resolution") or "720p").lower()
         rates = {

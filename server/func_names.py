@@ -11,8 +11,8 @@
                                 data-function="cinematic" → 电影化身
                                 data-function="tryon"     → 换装换背景
                                 data-function="grok"      → 果肉视频生成
-                                data-function="micro"     → 豆姐视频生成
-                                data-function="omni"      → 欧米视频生成
+                                data-function="micro"     → Seedance 视频
+                                data-function="omni"      → Omni 视频
     site/workbench/banana.html  data-engine="gpt"         → 黄雀引擎 2
                                 data-engine="seedream"    → 黄雀引擎 1 标准 / 黄雀引擎 1 Pro
                                 data-engine="xiaole"      → 果肉生图
@@ -43,7 +43,7 @@
 """
 
 # 视频页的三个第三方渠道。名字取自 data-function 的标签。
-XIAOLE_CHANNELS = {"grok": "果肉视频生成", "micro": "豆姐视频生成", "omni": "欧米视频生成"}
+XIAOLE_CHANNELS = {"grok": "果肉视频生成", "micro": "Seedance 视频", "omni": "Omni 视频"}
 
 # 电影化身的三个玩法（#601）。老任务的 payload 里没有 cine_mode，回落到「电影化身」。
 CINEMATIC_MODES = {"motion": "动作模仿", "duo": "双人动作模仿", "open": "开放式生成"}
@@ -126,7 +126,7 @@ def func_name(kind, payload=None):
 
     if kind == "xiaole_video":
         return XIAOLE_CHANNELS.get(str(payload.get("channel") or "").strip().lower(),
-                                   "果肉/豆姐/欧米视频")
+                                   "果肉/Seedance/Omni 视频")
 
     if kind == "tryon":
         # 换装【仍然】有线路之分（线路一 RunningHub / 线路二 WaveSpeed），前端也还给用户选。
@@ -155,7 +155,7 @@ PATH_FUNCS = [
     ("/api/gen/video/avatar-", "数字人形象 · 改名/删除"),
     ("/api/gen/video/batch", "数字化 IP · 批量提交"),
     ("/api/gen/sora_video", "Sora 2 限时测试 · 提交"),
-    ("/api/gen/xiaole_video", "果肉/豆姐/欧米视频 · 提交"),
+    ("/api/gen/xiaole_video", "果肉/Seedance/Omni 视频 · 提交"),
     ("/api/gen/cinematic", "电影化身 · 提交"),
     ("/api/gen/avatar", "创建数字人形象 · 提交"),
     ("/api/gen/image", "作图 · 提交"),

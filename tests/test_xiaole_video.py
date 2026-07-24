@@ -1,9 +1,10 @@
 import io
 import sys
+import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 class XiaoleVideoTests(unittest.TestCase):
@@ -41,19 +42,59 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertAlmostEqual(now[0], 10)
         self.assertEqual(calls, [10, 2])
 
-    def test_unstable_micro_and_omni_channels_are_rejected(self):
-        for channel in ("micro", "omni"):
-            with self.subTest(channel=channel):
-                with self.assertRaisesRegex(ValueError, "渠道维护中"):
-                    self.video.validate_xiaole_video_payload({"channel": channel, "prompt": "demo"})
-                with self.assertRaisesRegex(ValueError, "渠道维护中"):
-                    self.video.gen_xiaole_video({"channel": channel, "prompt": "demo"})
+    def test_official_micro_and_omni_parameters_are_validated_before_charge(self):
+        from content_domains import feature_flags, video_gemini_omni, video_seedance
+        with patch.object(feature_flags, "is_enabled", return_value=True), \
+                patch.object(video_gemini_omni, "available", return_value=True), \
+                patch.object(video_seedance, "available", return_value=True):
+            omni = self.video.validate_xiaole_video_payload({
+                "channel": "omni", "prompt": "product shot",
+                "model": "gemini-omni-flash-preview", "ratio": "16:9",
+                "duration": 3, "resolution": "720p",
+            })
+            seedance = self.video.validate_xiaole_video_payload({
+                "channel": "micro", "prompt": "paper bird",
+                "model": "doubao-seedance-2-0-260128", "ratio": "adaptive",
+                "duration": 4, "resolution": "480p", "generate_audio": True,
+            })
+        self.assertEqual(omni["duration"], 3)
+        self.assertEqual(seedance["resolution"], "480p")
 
-    def test_unstable_channel_tabs_are_hidden(self):
+    def test_official_channels_default_closed_and_tabs_follow_health(self):
+        from content_domains import feature_flags
+        with patch.object(feature_flags, "_cached_rows", return_value={}):
+            self.assertFalse(feature_flags.is_enabled("omni_video"))
+            self.assertFalse(feature_flags.is_enabled("seedance_video"))
         html = (Path(__file__).resolve().parents[1] / "site" / "workbench" / "video.html").read_text()
-        self.assertIn('class="function-tab hidden" type="button" data-function="micro"', html)
         self.assertIn('class="function-tab hidden" type="button" data-function="omni"', html)
-        self.assertIn("if(ch!=='grok') ch='grok';", html)
+        self.assertIn('class="function-tab hidden" type="button" data-function="micro"', html)
+        self.assertLess(
+            html.index('data-function="sora"'),
+            html.index('data-function="omni"'),
+        )
+        self.assertLess(
+            html.index('data-function="omni"'),
+            html.index('data-function="micro"'),
+        )
+        self.assertIn("omniAvailable=d.omni_video_enabled===true", html)
+        self.assertIn("seedanceAvailable=d.seedance_video_enabled===true", html)
+        self.assertIn("['grok','micro','omni'].indexOf(ch)<0", html)
+        self.assertIn("gemini-omni-flash-preview", html)
+        self.assertIn("doubao-seedance-2-0-260128", html)
+        self.assertIn("doubao-seedance-2-0-fast-260128", html)
+        for seconds in range(3, 11):
+            self.assertIn('data-omni-duration="%d"' % seconds, html)
+        for seconds in range(4, 16):
+            self.assertIn('data-seedance-duration="%d"' % seconds, html)
+        self.assertIn("headers['Idempotency-Key']=requestKey", html)
+        self.assertIn("OFFICIAL_VIDEO_BLOCK_STORAGE", html)
+        self.assertIn("retry.blocked&&!retry.body", html)
+        self.assertIn("if(!saveOfficialVideoRetry(channel))", html)
+        self.assertIn("videoHealthReady.then(applyInspirationPrefill)", html)
+        self.assertIn("targetMode==='omni'", html)
+        self.assertIn("targetMode==='micro'", html)
+        self.assertIn("setupXiaoleRefPanel('omni', omniRefData, 3)", html)
+        self.assertIn("setupXiaoleRefPanel('micro', microRefData, 9)", html)
 
     def test_generate_xiaole_video_sends_size_without_aspect_ratio(self):
         calls = []
@@ -258,6 +299,169 @@ class XiaoleVideoTests(unittest.TestCase):
         resume.assert_called_once()
         self.assertNotIn("queued", [call.args[1] for call in update.call_args_list])
         self.assertEqual(result["provider_video_id"], "rid-existing")
+
+    def test_seedance_official_never_calls_old_xiaole_supplier(self):
+        fake = {
+            "request_id": "cgt-1",
+            "model": "doubao-seedance-2-0-260128",
+            "source_video_url": "https://cdn.example/seedance.mp4",
+            "duration": 4,
+            "resolution": "480p",
+            "ratio": "9:16",
+            "generate_audio": True,
+        }
+        with patch("content_domains.video_seedance.generate", return_value=fake) as generate, \
+             patch.object(self.video, "_xiaole_request") as old_supplier, \
+             patch.object(self.video, "_download_xiaole_video", return_value="video/seedance.mp4"), \
+             patch.object(self.video, "_extract_first_frame_cover", return_value=None), \
+             patch.object(self.video, "public_url", return_value="https://cos.example/seedance.mp4"):
+            result = self.video.gen_xiaole_video({
+                "channel": "micro", "prompt": "paper bird",
+                "model": "doubao-seedance-2-0-260128",
+                "duration": 4, "ratio": "9:16", "resolution": "480p",
+                "generate_audio": True,
+            })
+        old_supplier.assert_not_called()
+        generate.assert_called_once()
+        self.assertEqual(result["provider_video_id"], "cgt-1")
+        self.assertEqual(result["provider"], "volcengine_seedance")
+
+    def test_seedance_final_refs_are_validated_before_submitting_phase(self):
+        bad_ref = "data:image/png;base64,cG5n"
+        with patch.object(self.video, "_xiaole_ref_to_url", return_value=bad_ref), \
+             patch.object(self.video, "get_resumable_grok_request", return_value=None), \
+             patch.object(self.video, "update_video_asset_phase") as phase, \
+             patch("content_domains.video_seedance.generate") as generate:
+            with self.assertRaisesRegex(ValueError, "公网 URL"):
+                self.video.gen_xiaole_video({
+                    "_job_id": 7, "channel": "micro", "prompt": "paper bird",
+                    "model": "doubao-seedance-2-0-260128",
+                    "duration": 4, "ratio": "9:16", "resolution": "480p",
+                    "generate_audio": True, "reference_images": [bad_ref],
+                })
+        phase.assert_not_called()
+        generate.assert_not_called()
+
+    def test_seedance_download_exhaustion_stays_resumable(self):
+        from content_domains import video_seedance
+        rendered = {
+            "request_id": "cgt-download",
+            "model": "doubao-seedance-2-0-260128",
+            "source_video_url": "https://cdn.example/seedance.mp4",
+            "duration": 4, "resolution": "480p", "ratio": "9:16",
+            "generate_audio": True,
+        }
+        with patch.object(self.video, "get_resumable_grok_request", return_value={
+            "request_id": "cgt-download", "provider": "seedance",
+            "phase": "seedance_succeeded", "model": rendered["model"],
+        }), patch("content_domains.video_seedance.resume", return_value=rendered), \
+             patch.object(self.video, "_download_xiaole_video",
+                          side_effect=RuntimeError("视频下载失败: timeout")), \
+             patch.object(self.video, "update_video_asset_phase"):
+            with self.assertRaises(video_seedance.TransientSeedanceError):
+                self.video.gen_xiaole_video({
+                    "_job_id": 8, "channel": "micro", "prompt": "paper bird",
+                    "model": rendered["model"], "duration": 4,
+                    "ratio": "9:16", "resolution": "480p",
+                    "generate_audio": True,
+                })
+
+    def test_omni_official_writes_bytes_without_old_supplier(self):
+        fake = {
+            "request_id": "v1-omni",
+            "model": "gemini-omni-flash-preview",
+            "source_video_url": "https://generativelanguage.googleapis.com/v1beta/files/f:download",
+            "video_bytes": b"\x00\x00\x00\x18ftypmp42",
+            "duration": 3,
+            "resolution": "720p",
+            "aspect_ratio": "16:9",
+            "provider": "google_gemini_omni",
+        }
+        with tempfile.TemporaryDirectory() as td, \
+             patch("content_domains.video_gemini_omni.generate", return_value=fake) as generate, \
+             patch.object(self.video, "_xiaole_request") as old_supplier, \
+             patch.object(self.video, "_out_path",
+                          side_effect=lambda rel: Path(td) / rel), \
+             patch.object(self.video, "_faststart_video_file", side_effect=lambda rel: rel), \
+             patch.object(self.video, "_extract_first_frame_cover", return_value=None), \
+             patch.object(self.video, "public_url", return_value="https://cos.example/omni.mp4"):
+            result = self.video.gen_xiaole_video({
+                "channel": "omni", "prompt": "product shot",
+                "model": "gemini-omni-flash-preview",
+                "duration": 3, "ratio": "16:9", "resolution": "720p",
+            })
+        old_supplier.assert_not_called()
+        generate.assert_called_once()
+        self.assertEqual(result["provider_video_id"], "v1-omni")
+        self.assertEqual(result["provider"], "google_gemini_omni")
+
+    def test_unknown_official_submission_is_held_without_refund_or_resubmit(self):
+        with patch.object(self.video, "get_resumable_grok_request", return_value={
+            "request_id": None, "provider": "omni",
+            "submission_unknown": True, "phase": "omni_submitting",
+        }), patch.object(self.video, "update_video_asset_phase") as update:
+            self.assertTrue(
+                self.video.recover_official_video_paid_job(7, "response lost")
+            )
+        update.assert_called_once_with(
+            7, "omni_recovery_required", error="response lost"
+        )
+
+    def test_omni_file_phase_remains_resumable(self):
+        class Connection:
+            def execute(self, *_args):
+                return self
+
+            def fetchone(self):
+                return {
+                    "provider_video_id": "v1-file", "model": "gemini-omni-flash-preview",
+                    "phase": "omni_file_processing", "status": "running",
+                    "resolution": "720p", "ratio": "16:9",
+                }
+
+            def close(self):
+                pass
+
+        with patch.object(self.video, "adb", return_value=Connection()):
+            resumed = self.video.get_resumable_grok_request(9)
+        self.assertEqual(resumed["provider"], "omni")
+        self.assertEqual(resumed["request_id"], "v1-file")
+
+    def test_core_unknown_omni_create_never_refunds(self):
+        from content_domains import core, video_gemini_omni
+
+        class Connection:
+            def execute(self, *_args):
+                return self
+
+            def fetchone(self):
+                return {
+                    "id": 7, "kind": "xiaole_video", "username": "u",
+                    "cost": 90, "payload": '{"channel":"omni"}',
+                    "status": "pending",
+                }
+
+            def close(self):
+                pass
+
+        recover = Mock(return_value=True)
+        terminal = Mock(return_value=True)
+        refund = Mock()
+        with patch.object(self.video, "recover_official_video_paid_job", recover), \
+             patch.object(core, "jdb", return_value=Connection()), \
+             patch.object(core.jobs_store, "claim_running", return_value=True), \
+             patch.object(core, "_start_job_heartbeat", return_value=Mock()), \
+             patch.object(core, "HANDLERS", {
+                 "xiaole_video": Mock(side_effect=video_gemini_omni.GeminiOmniCreateOutcomeUnknown("lost")),
+             }), \
+             patch.object(core, "_domains", return_value=(None, None, self.video)), \
+             patch.object(core, "_set_terminal", terminal), \
+             patch.object(core, "_refund_once", refund), \
+             patch.object(core, "_mark_video_asset_failed"):
+            core.run_job(7)
+        recover.assert_called_once()
+        terminal.assert_not_called()
+        refund.assert_not_called()
 
     def test_gen_grok_official_edit_uploads_source_and_preserves_contract(self):
         fake = {"request_id": "edit-1", "model": "grok-imagine-video",
