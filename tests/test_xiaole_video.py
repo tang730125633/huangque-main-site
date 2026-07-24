@@ -142,6 +142,16 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertEqual(cands[-1][0], url)
         self.assertIsNone(cands[-1][2])
 
+    def test_public_output_can_prefer_direct_download(self):
+        import os as _os
+        url = "https://cdn.example/output/video.mp4"
+        with patch.dict(_os.environ, {"HEYGEN_RELAY_BASE": "https://heygen.zelong.vip"}, clear=False):
+            cands = self.video._xiaole_download_candidates(
+                url, "", direct_first=True)
+        self.assertEqual(cands[0], (
+            url, {"User-Agent": "huangque-content/1.0"}, None))
+        self.assertIn("heygen.zelong.vip/cdn/", cands[1][0])
+
     def test_authenticated_download_header_is_not_forwarded_to_relay(self):
         import os as _os
         url = "https://openrouter.ai/api/v1/videos/job/content?index=0"
