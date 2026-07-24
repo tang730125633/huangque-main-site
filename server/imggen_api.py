@@ -564,7 +564,7 @@ class H(BaseHTTPRequestHandler):
                         jdb, _deduct_paid_job, _refund_via_auth, "image", user["username"],
                         cost, body, SERVICE_OWNER)
                 except jobs_store.PaidJobDeductError as e:
-                    return self._send(402 if e.status == 402 else 500,
+                    return self._send(e.status if e.status in (402, 403) else 500,
                                       {"detail": e.detail, "need": cost})
                 except jobs_store.PaidJobInsertError as e:
                     return self._send(500, {"detail": {"refunded": "任务创建失败，点数已退回",
@@ -591,8 +591,8 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": "图片太大，请压缩后再试"})
             cost = REVERSE_COST
             deduct_status, deduct_data = deduct_points(user["username"], cost, "reverse")
-            if deduct_status == 402:
-                return self._send(402, {"detail": "点数不足", "need": cost})
+            if deduct_status in (402, 403):
+                return self._send(deduct_status, {"detail": (deduct_data or {}).get("detail") or "点数不足", "need": cost})
             if deduct_status != 200:
                 return self._send(500, {"detail": (deduct_data or {}).get("detail") or "点数扣除失败"})
             points_left = (deduct_data.get("points") if isinstance(deduct_data, dict) else None)
