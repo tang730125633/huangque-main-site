@@ -49,6 +49,10 @@ class AdminPointsLedgerTests(unittest.TestCase):
 
     def test_internal_reason_codes_are_rendered_as_chinese_actions(self):
         self.assertIn("function pointReasonText(item)", self.html)
+        self.assertIn("raw.match(/^job:([a-z0-9_]+)(?:\\s|$)/)", self.html)
+        self.assertIn("if(/^job#\\d+(?:\\s|$)/.test(raw))", self.html)
+        self.assertIn("if(raw==='reverse')", self.html)
+        self.assertIn("if(raw==='reverse:refund')", self.html)
         self.assertIn("任务失败退款", self.html)
         self.assertIn("任务扣点", self.html)
         self.assertIn("购买音色复刻槽位", self.html)
