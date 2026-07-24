@@ -4,7 +4,7 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from tests.fixtures.short_drama_voice_acceptance import build_acceptance_fixture
+from fixtures.short_drama_voice_acceptance import build_acceptance_fixture
 
 
 class ShortDramaVoiceAcceptanceFixtureTests(unittest.TestCase):
