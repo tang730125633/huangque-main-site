@@ -60,7 +60,8 @@ def reclaim_orphaned_running(
                     )
                     continue
                 if resumable and str(resumable.get("phase") or "").endswith(
-                        "_recovery_required"):
+                        "_recovery_required") and not resumable.get(
+                            "upscale_prediction_id"):
                     logger(
                         "[startup] %s 任务需人工核对，保留 running job=%s"
                         % (str(resumable.get("provider") or "官方视频"), row["id"]),
