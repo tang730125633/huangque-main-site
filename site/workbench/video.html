@@ -738,8 +738,9 @@
         </div>
         <div class="panel" style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:14px;">
           <div>
-            <div class="faint" style="font-size:12px;margin-bottom:8px;">分辨率</div>
-            <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-seedance-resolution="480p">480p</button><button class="on" data-seedance-resolution="720p">720p</button><button data-seedance-resolution="1080p">1080p</button></div>
+            <div class="faint" style="font-size:12px;margin-bottom:8px;">成片清晰度</div>
+            <div class="seg" style="grid-template-columns:repeat(4,1fr);"><button data-seedance-resolution="480p" data-seedance-upscale="false">480p</button><button class="on" data-seedance-resolution="720p" data-seedance-upscale="false">720p</button><button data-seedance-resolution="480p" data-seedance-upscale="true" title="先生成 480p，再用 SeedVR2 超清并标准化为 1080p">AI 超清 1080p</button><button data-seedance-resolution="1080p" data-seedance-upscale="false">原生 1080p</button></div>
+            <div id="seedanceQualityHint" class="faint" style="font-size:11px;margin-top:7px;">当前选择：原生 720p</div>
           </div>
           <div>
             <div class="faint" style="font-size:12px;margin-bottom:8px;">声音</div>
@@ -844,8 +845,8 @@
   var soraRetryKey='', soraRetryBody='';
   var selectedOmniRatio='16:9', selectedOmniDuration=5;
   var selectedSeedanceModel='doubao-seedance-2-0-260128', selectedSeedanceRatio='adaptive';
-  var selectedSeedanceDuration=5, selectedSeedanceResolution='720p', selectedSeedanceAudio=true;
-  var omniAvailable=false, seedanceAvailable=false, officialVideoHealthKnown=false;
+  var selectedSeedanceDuration=5, selectedSeedanceResolution='720p', selectedSeedanceUpscale=false, selectedSeedanceAudio=true;
+  var omniAvailable=false, seedanceAvailable=false, seedanceUpscaleAvailable=false, officialVideoHealthKnown=false;
   var OFFICIAL_VIDEO_RETRY_STORAGE={omni:'hq_omni_pending_submit',micro:'hq_seedance_pending_submit'};
   var OFFICIAL_VIDEO_BLOCK_STORAGE={omni:'hq_omni_pending_block',micro:'hq_seedance_pending_block'};
   var officialVideoRetry={omni:{key:'',body:'',blocked:false},micro:{key:'',body:'',blocked:false}};
@@ -1013,6 +1014,8 @@
         mode:task.mode||'',
         model:task.model||'',
         resolution:task.resolution||'',
+        source_resolution:task.source_resolution||'',
+        upscale:task.upscale===true,
         duration:task.duration||'',
         text:task.label||'视频任务',
         ratio:task.ratio||'—',
@@ -1226,6 +1229,12 @@
     if(m==='micro'||m==='omni') return '按提交时长';
     return statusLabel(x&&x.status);
   }
+  function videoQualityTag(x){
+    var mode=String((x&&x.mode)||(x&&x.channel)||'').toLowerCase();
+    if(mode!=='micro') return '';
+    if(x&&x.upscale===true) return 'AI 超清 1080p';
+    return x&&x.resolution?('原生 '+x.resolution):'';
+  }
   function phaseInfo(phase,status){
     var st=String(status||'').toLowerCase();
     var ph=String(phase||'').toLowerCase();
@@ -1271,7 +1280,13 @@
       seedance_succeeded:{label:'Seedance 已完成',step:4,percent:88,eta:'准备下载成品'},
       seedance_downloading:{label:'下载 Seedance 成品',step:5,percent:94,eta:'即将完成'},
       seedance_retrying:{label:'恢复 Seedance 查询',step:3,percent:48,eta:'不会重复提交'},
-      seedance_recovery_required:{label:'Seedance 需人工核对',step:2,percent:35,eta:'请勿重复提交'}
+      seedance_recovery_required:{label:'Seedance 需人工核对',step:2,percent:35,eta:'请勿重复提交'},
+      seedance_upscale_submitting:{label:'提交 AI 超清',step:4,percent:89,eta:'正在确认超分任务'},
+      seedance_upscale_running:{label:'AI 超清处理中',step:4,percent:92,eta:'预计还需 2-4 分钟'},
+      seedance_upscale_retrying:{label:'恢复 AI 超清查询',step:4,percent:92,eta:'不会重复提交'},
+      seedance_upscale_downloading:{label:'下载 AI 超清成片',step:5,percent:96,eta:'即将完成'},
+      seedance_upscale_normalizing:{label:'标准化 1080p',step:5,percent:98,eta:'正在校准画幅与编码'},
+      seedance_upscale_recovery_required:{label:'AI 超清需人工核对',step:4,percent:90,eta:'请勿重复提交'}
     };
     return map[ph] || {label:statusLabel(st)||'生成中',step:1,percent:12,eta:'正在处理'};
   }
@@ -1335,11 +1350,13 @@
         ?'<div class="blur-bg" data-bg-src="'+esc(image)+'"></div><img class="video-poster" data-asset-src="'+esc(image)+'" alt=""><button class="history-play" type="button" title="播放视频"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>'
         :'<div class="blur-bg" style="background:url(&quot;'+esc(image)+'&quot;) center/cover"></div><div class="output-overlay"><div class="output-info">i</div><div>'+esc(statusLabel(x.status))+'</div></div>';
       var duration=videoDurationTag(x);
+      var quality=videoQualityTag(x);
       var progress=(!x.video_url && (x.phase || x.status==='processing' || x.status==='running'))?progressMarkup(phaseInfo(x.phase,x.status)):'';
       card.innerHTML=head
         +'<p class="history-text">'+esc(x.text||'视频生成记录')+'</p>'
         +'<div class="history-tags"><span class="history-tag">'+esc(videoModeTag(x))+'</span>'
         +(x.batch_label?'<span class="history-tag">'+esc(x.batch_label)+'</span>':'')
+        +(quality?'<span class="history-tag">'+esc(quality)+'</span>':'')
         +'<span class="history-tag">'+esc(x.ratio||'9:16')+'</span><span class="history-tag">'+esc(duration)+'</span></div>'
         +progress
         +'<div class="history-stage"><div class="history-preview">'+preview+'</div></div>'
@@ -1960,7 +1977,8 @@
     if(channel==='grok' && grokOperation==='edit'){
       return '果肉视频编辑维护中';
     }
-    if(channel==='micro') return '预计 '+(selectedSeedanceDuration*30)+' 点（30 点/秒 × '+selectedSeedanceDuration+' 秒）· 失败自动退点';
+    if(channel==='micro') return '预计 '+(selectedSeedanceDuration*30)+' 点（30 点/秒 × '+selectedSeedanceDuration+' 秒）'
+      +(selectedSeedanceUpscale?' · AI 超清测试期暂不加点，预计多等 2-4 分钟':'')+' · 失败自动退点';
     if(channel==='omni') return '预计 '+(selectedOmniDuration*30)+' 点（30 点/秒 × '+selectedOmniDuration+' 秒）· 失败自动退点';
     var rate=grokRate(), secs=selectedGrokDuration;
     return '预计 '+(secs*rate)+' 点（'+rate+' 点/秒 × '+secs+' 秒）';
@@ -1984,12 +2002,20 @@
   }
   function updateOfficialVideoControls(){
     var fast=selectedSeedanceModel==='doubao-seedance-2-0-fast-260128';
-    if(fast&&selectedSeedanceResolution==='1080p') selectedSeedanceResolution='720p';
+    if(fast&&selectedSeedanceResolution==='1080p'&&!selectedSeedanceUpscale) selectedSeedanceResolution='720p';
+    if(officialVideoHealthKnown&&selectedSeedanceUpscale&&!seedanceUpscaleAvailable){
+      selectedSeedanceUpscale=false;selectedSeedanceResolution='720p';
+    }
     document.querySelectorAll('[data-seedance-model]').forEach(function(b){b.classList.toggle('on',b.dataset.seedanceModel===selectedSeedanceModel);});
     document.querySelectorAll('[data-seedance-resolution]').forEach(function(b){
-      b.disabled=fast&&b.dataset.seedanceResolution==='1080p';
-      b.classList.toggle('on',b.dataset.seedanceResolution===selectedSeedanceResolution);
+      var isUpscale=b.dataset.seedanceUpscale==='true';
+      b.disabled=(fast&&b.dataset.seedanceResolution==='1080p'&&!isUpscale)
+        ||(isUpscale&&officialVideoHealthKnown&&!seedanceUpscaleAvailable);
+      b.classList.toggle('on',b.dataset.seedanceResolution===selectedSeedanceResolution&&isUpscale===selectedSeedanceUpscale);
     });
+    if($('seedanceQualityHint')) $('seedanceQualityHint').textContent=selectedSeedanceUpscale
+      ?('当前选择：Seedance 480p → SeedVR2 AI 超清 → 标准 1080p（'+(selectedSeedanceAudio?'恢复原声':'保持无声')+'）')
+      :('当前选择：原生 '+selectedSeedanceResolution);
     document.querySelectorAll('[data-seedance-ratio]').forEach(function(b){b.classList.toggle('on',b.dataset.seedanceRatio===selectedSeedanceRatio);});
     document.querySelectorAll('[data-seedance-duration]').forEach(function(b){b.classList.toggle('on',Number(b.dataset.seedanceDuration)===selectedSeedanceDuration);});
     document.querySelectorAll('[data-seedance-audio]').forEach(function(b){b.classList.toggle('on',(b.dataset.seedanceAudio==='true')===selectedSeedanceAudio);});
@@ -2109,7 +2135,9 @@
       soraHealthKnown=true;
       omniAvailable=d.omni_video_enabled===true;
       seedanceAvailable=d.seedance_video_enabled===true;
+      seedanceUpscaleAvailable=d.seedance_upscale_enabled===true;
       officialVideoHealthKnown=true;
+      updateOfficialVideoControls();
       [['omni',omniAvailable],['micro',seedanceAvailable]].forEach(function(pair){
         var tab=document.querySelector('[data-function="'+pair[0]+'"]');
         if(tab){tab.classList.toggle('hidden',!pair[1]);tab.setAttribute('aria-hidden',pair[1]?'false':'true');}
@@ -2127,8 +2155,8 @@
       syncVideoGenerateButtons();
     }).catch(function(){
       soraAvailable=false;soraHealthKnown=true;
-      omniAvailable=false;seedanceAvailable=false;officialVideoHealthKnown=true;
-      syncVideoGenerateButtons();updateChecklist();
+      omniAvailable=false;seedanceAvailable=false;seedanceUpscaleAvailable=false;officialVideoHealthKnown=true;
+      updateOfficialVideoControls();syncVideoGenerateButtons();updateChecklist();
     });
   }
   function updateMode(next){
@@ -2791,6 +2819,7 @@
         selectedSeedanceRatio=['adaptive','21:9','16:9','4:3','1:1','3:4','9:16'].indexOf(payload.ratio)>=0?payload.ratio:'adaptive';
         selectedSeedanceDuration=Math.max(4,Math.min(15,Number(payload.duration)||5));
         selectedSeedanceResolution=['480p','720p','1080p'].indexOf(payload.resolution)>=0?payload.resolution:'720p';
+        selectedSeedanceUpscale=payload.upscale===true&&selectedSeedanceResolution==='480p';
         selectedSeedanceAudio=payload.generate_audio!==false;
         microRefData=(payload.reference_images||[]).slice(0,9);
         if($('microPrompt'))$('microPrompt').value=String(payload.prompt);
@@ -2828,7 +2857,7 @@
     }else{
       xlPayload.model=selectedSeedanceModel;xlPayload.ratio=selectedSeedanceRatio;
       xlPayload.duration=selectedSeedanceDuration;xlPayload.resolution=selectedSeedanceResolution;
-      xlPayload.generate_audio=selectedSeedanceAudio;
+      xlPayload.generate_audio=selectedSeedanceAudio;xlPayload.upscale=selectedSeedanceUpscale;
     }
     if(!editing && _refArr && _refArr.length){ xlPayload.reference_images=_refArr; }  // 图生视频参考图
     var official=channel==='micro'||channel==='omni';
@@ -2851,10 +2880,12 @@
     setBusy(true);
     if(statusEl) statusEl.textContent='正在提交'+label+'任务，请勿重复点击...';
     var fixedDuration=channel==='grok'?(editing?grokEditDuration:selectedGrokDuration):(channel==='omni'?selectedOmniDuration:selectedSeedanceDuration);
-    var resolution=channel==='grok'?selectedGrokResolution:(channel==='omni'?'720p':selectedSeedanceResolution);
+    var sourceResolution=channel==='micro'?selectedSeedanceResolution:null;
+    var resolution=channel==='grok'?selectedGrokResolution:(channel==='omni'?'720p':(selectedSeedanceUpscale?'1080p':selectedSeedanceResolution));
     var currentModel=channel==='grok'?selectedGrokModel:(channel==='omni'?'gemini-omni-flash-preview':selectedSeedanceModel);
     currentVideoDraft={mode:channel,text:prompt,ratio:ratio,motion:label,duration:fixedDuration,
       resolution:resolution,model:currentModel,generate_audio:channel==='micro'?selectedSeedanceAudio:null,
+      source_resolution:sourceResolution,upscale:channel==='micro'&&selectedSeedanceUpscale,
       status:'processing',phase:channel==='omni'?'omni_submitting':(channel==='micro'?'seedance_submitting':'queued'),created_at:Math.floor(Date.now()/1000)};
     renderVideoDrafts([currentVideoDraft]);
     var headers={Authorization:'Bearer '+token,'Content-Type':'application/json'};
@@ -2875,7 +2906,7 @@
         if(official)clearOfficialVideoRetry(channel);
         if(statusEl) statusEl.textContent=label+'任务已提交'+(res.data.cost!=null?' · '+res.data.cost+'点':'')+'，生成中...';
         setTimeout(loadVideoHistory,700);
-        trackVideoJob(res.data.job_id,{status:'queued',phase:channel==='omni'?'omni_queued':(channel==='micro'?'seedance_queued':'queued'),label:label,mode:channel,modeLabel:label,ratio:ratio,model:currentModel,resolution:resolution,duration:fixedDuration,generate_audio:channel==='micro'?selectedSeedanceAudio:null});
+        trackVideoJob(res.data.job_id,{status:'queued',phase:channel==='omni'?'omni_queued':(channel==='micro'?'seedance_queued':'queued'),label:label,mode:channel,modeLabel:label,ratio:ratio,model:currentModel,resolution:resolution,source_resolution:sourceResolution,upscale:channel==='micro'&&selectedSeedanceUpscale,duration:fixedDuration,generate_audio:channel==='micro'?selectedSeedanceAudio:null});
         setSubmitLock('xiaole',false);
         pollJob(res.data.job_id,0);
       })
@@ -2986,7 +3017,7 @@
   document.querySelectorAll('[data-seedance-model]').forEach(function(b){b.onclick=function(){selectedSeedanceModel=b.dataset.seedanceModel;updateOfficialVideoControls();};});
   document.querySelectorAll('[data-seedance-ratio]').forEach(function(b){b.onclick=function(){selectedSeedanceRatio=b.dataset.seedanceRatio;updateOfficialVideoControls();};});
   document.querySelectorAll('[data-seedance-duration]').forEach(function(b){b.onclick=function(){selectedSeedanceDuration=Number(b.dataset.seedanceDuration);updateOfficialVideoControls();};});
-  document.querySelectorAll('[data-seedance-resolution]').forEach(function(b){b.onclick=function(){if(b.disabled)return;selectedSeedanceResolution=b.dataset.seedanceResolution;updateOfficialVideoControls();};});
+  document.querySelectorAll('[data-seedance-resolution]').forEach(function(b){b.onclick=function(){if(b.disabled)return;selectedSeedanceResolution=b.dataset.seedanceResolution;selectedSeedanceUpscale=b.dataset.seedanceUpscale==='true';updateOfficialVideoControls();};});
   document.querySelectorAll('[data-seedance-audio]').forEach(function(b){b.onclick=function(){selectedSeedanceAudio=b.dataset.seedanceAudio==='true';updateOfficialVideoControls();};});
   if($('soraPrompt')) $('soraPrompt').oninput=function(){if($('soraPromptCount'))$('soraPromptCount').textContent=String($('soraPrompt').value||'').length+' / 2000';};
   restoreSoraRetry();
@@ -3187,7 +3218,8 @@
           var smb=d.model&&document.querySelector('[data-seedance-model="'+String(d.model).replace(/"/g,'\\"')+'"]');if(smb)smb.click();
           var srb=d.ratio&&document.querySelector('[data-seedance-ratio="'+String(d.ratio).replace(/"/g,'\\"')+'"]');if(srb)srb.click();
           var sdb=d.duration&&document.querySelector('[data-seedance-duration="'+String(Math.round(Number(d.duration)))+'"]');if(sdb)sdb.click();
-          var sres=d.resolution&&document.querySelector('[data-seedance-resolution="'+String(d.resolution).replace(/"/g,'\\"')+'"]');if(sres&&!sres.disabled)sres.click();
+          var prefillResolution=d.upscale===true?(d.source_resolution||'480p'):d.resolution;
+          var sres=prefillResolution&&document.querySelector('[data-seedance-resolution="'+String(prefillResolution).replace(/"/g,'\\"')+'"][data-seedance-upscale="'+(d.upscale===true?'true':'false')+'"]');if(sres&&!sres.disabled)sres.click();
           if(typeof d.generate_audio==='boolean') selectedSeedanceAudio=d.generate_audio;
           updateOfficialVideoControls();
         }

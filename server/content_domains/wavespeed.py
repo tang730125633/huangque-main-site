@@ -8,10 +8,13 @@ WaveSpeed 只收公网 URL 素材，故先把本地素材转存 COS 拿直链再
 """
 
 import json
+import ipaddress
 import os
+import socket
 import time
 import uuid
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from . import cos
@@ -25,14 +28,76 @@ WAVESPEED_KEY = os.environ.get("WAVESPEED_API_KEY", "")
 WAVESPEED_PROXY = (os.environ.get("WAVESPEED_PROXY") or "").strip()
 WS_API = "https://api.wavespeed.ai/api/v3"
 WS_TRYON = "/wavespeed-ai/ai-virtual-outfit-tryon"
+WS_SEEDVR2 = "/wavespeed-ai/seedvr2/video"
 WS_POLL_INTERVAL = int(os.environ.get("WAVESPEED_POLL_INTERVAL", "5"))
 # 单任务最长等待(秒)。跟 content 的 VIDEO_GEN_DEADLINE 走 —— 全站视频生成统一 15 分钟死线。
 # 动作模仿实测生成 392~511s，原来的 600s 贴得太近，撞上一次抖动就误判失败。
 WS_DEADLINE = int(os.environ.get("WAVESPEED_DEADLINE", "") or VIDEO_GEN_DEADLINE)
+TRANSIENT_HTTP_CODES = {408, 429, 500, 502, 503, 504}
+
+
+class WaveSpeedCreateOutcomeUnknown(RuntimeError):
+    """付费 POST 可能已被接受；没有 prediction id 时不得自动重发。"""
+
+
+class WaveSpeedRejected(RuntimeError):
+    """付费 POST 被明确拒绝，没有创建 prediction。"""
+
+
+class WaveSpeedTransientRead(RuntimeError):
+    """已有 prediction id 的幂等 GET 暂时失败。"""
+
+
+class WaveSpeedQueryUnavailable(RuntimeError):
+    """查询被拒或任务暂不可见；不能据此认定已付费 prediction 失败。"""
+
+
+class WaveSpeedProviderFailed(RuntimeError):
+    """已有 prediction id，但供应商返回明确失败终态。"""
 
 
 def available():
     return bool(WAVESPEED_KEY)
+
+
+def _safe_text(value, limit=200):
+    text = str(value or "")
+    if WAVESPEED_KEY:
+        text = text.replace(WAVESPEED_KEY, "***")
+    return text[:limit]
+
+
+def _public_http_url_state(url):
+    parsed = urllib.parse.urlsplit(str(url or ""))
+    host = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not host
+        or host == "localhost"
+        or host.endswith(".localhost")
+    ):
+        return "blocked"
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        return "blocked"
+    try:
+        addresses = {
+            item[4][0]
+            for item in socket.getaddrinfo(
+                host, port, type=socket.SOCK_STREAM
+            )
+        }
+    except OSError:
+        return "unresolved"
+    if not addresses:
+        return "unresolved"
+    try:
+        if any(not ipaddress.ip_address(address).is_global for address in addresses):
+            return "blocked"
+    except ValueError:
+        return "blocked"
+    return "ok"
 
 
 def _phase(job_id, phase):
@@ -60,7 +125,7 @@ def _opener():
     return urllib.request.build_opener()
 
 
-def _ws_req(method, url, body=None, timeout=60):
+def _ws_req(method, url, body=None, timeout=60, classify_paid=False):
     headers = {"Authorization": "Bearer " + WAVESPEED_KEY}
     data = None
     if body is not None:
@@ -69,13 +134,46 @@ def _ws_req(method, url, body=None, timeout=60):
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with _opener().open(req, timeout=timeout) as r:
-            return json.loads(r.read() or b"{}")
+            raw = r.read()
     except urllib.error.HTTPError as e:
         detail = (e.read() or b"").decode("utf-8", "replace")[:300]
+        if WAVESPEED_KEY:
+            detail = detail.replace(WAVESPEED_KEY, "***")
+        if classify_paid and method == "POST":
+            error = WaveSpeedCreateOutcomeUnknown if e.code in TRANSIENT_HTTP_CODES - {429} else WaveSpeedRejected
+            raise error("WaveSpeed超分提交失败: HTTP %s %s" % (e.code, detail)) from e
+        if classify_paid and method == "GET" and e.code in TRANSIENT_HTTP_CODES:
+            raise WaveSpeedTransientRead(
+                "WaveSpeed超分查询失败: HTTP %s %s" % (e.code, detail)
+            ) from e
+        if classify_paid and method == "GET":
+            raise WaveSpeedQueryUnavailable(
+                "WaveSpeed超分查询被拒绝: HTTP %s %s" % (e.code, detail)
+            ) from e
         raise RuntimeError("WaveSpeed接口失败: HTTP %s %s" % (e.code, detail)) from e
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        if classify_paid and method == "POST":
+            raise WaveSpeedCreateOutcomeUnknown(
+                "WaveSpeed超分提交结果未知，请勿重复提交: %s" % str(e)[:180]
+            ) from e
+        if classify_paid and method == "GET":
+            raise WaveSpeedTransientRead(
+                "WaveSpeed超分查询网络异常: %s" % str(e)[:180]
+            ) from e
+        raise
+    try:
+        return json.loads(raw or b"{}")
+    except (UnicodeError, ValueError) as e:
+        if classify_paid and method == "POST":
+            raise WaveSpeedCreateOutcomeUnknown(
+                "WaveSpeed超分提交结果未知：返回内容无法解析"
+            ) from e
+        if classify_paid and method == "GET":
+            raise WaveSpeedTransientRead("WaveSpeed超分查询返回无效 JSON") from e
+        raise
 
 
-def _material_url(local_rel):
+def _material_url(local_rel, private=False):
     """本地素材(相对路径) → 转存 COS 拿公网直链喂 WaveSpeed。COS 未启用则无法走线路二。"""
     fp = _resolve_out_file(local_rel)
     if not fp:
@@ -84,8 +182,7 @@ def _material_url(local_rel):
         raise RuntimeError("线路二(WaveSpeed)需要 COS 存素材直链，当前未启用 COS")
     suffix = os.path.splitext(str(fp))[1] or ".bin"
     key = "wavespeed-input/%s%s" % (uuid.uuid4().hex, suffix)  # 不可猜键
-    cos.upload(str(fp), key)
-    return cos.object_url(key)
+    return cos.upload(str(fp), key, private=private)
 
 
 def _run_and_wait(model_path, body, job_id=None):
@@ -111,6 +208,119 @@ def _run_and_wait(model_path, body, job_id=None):
         if status in ("failed", "error"):
             raise RuntimeError("WaveSpeed生成失败: %s" % str(res.get("error") or "")[:200])
     raise TimeoutError("WaveSpeed生成超时")
+
+
+def run_seedvr2(
+    video_url=None,
+    prediction_id=None,
+    job_id=None,
+    on_submitted=None,
+    heartbeat=None,
+    now=None,
+    sleep=None,
+):
+    """创建一次或恢复同一条 SeedVR2 prediction；恢复路径永不 POST。"""
+    if not WAVESPEED_KEY:
+        raise ValueError("WaveSpeed 超分未配置（WAVESPEED_API_KEY）")
+    now = now or time.time
+    sleep = sleep or time.sleep
+    pid = str(prediction_id or "").strip()
+    if not pid:
+        video_url = str(video_url or "").strip()
+        if not video_url.startswith(("http://", "https://")):
+            raise ValueError("WaveSpeed 超分输入必须是公网视频 URL")
+        response = _ws_req(
+            "POST",
+            WS_API + WS_SEEDVR2,
+            {"video": video_url, "target_resolution": "1080p"},
+            timeout=120,
+            classify_paid=True,
+        )
+        if not isinstance(response, dict):
+            raise WaveSpeedCreateOutcomeUnknown(
+                "WaveSpeed超分提交结果未知：返回格式异常"
+            )
+        try:
+            response_code = int(response.get("code"))
+        except (TypeError, ValueError):
+            response_code = None
+        if response_code != 200:
+            error = (
+                WaveSpeedRejected
+                if (
+                    response_code is not None
+                    and 400 <= response_code < 500
+                    and response_code != 408
+                )
+                else WaveSpeedCreateOutcomeUnknown
+            )
+            raise error(
+                "WaveSpeed超分提交失败: %s"
+                % _safe_text(response.get("message") or response.get("error"))
+            )
+        pid = str((response.get("data") or {}).get("id") or "").strip()
+        if not pid:
+            raise WaveSpeedCreateOutcomeUnknown(
+                "WaveSpeed超分提交结果未知：未返回 prediction id"
+            )
+        if on_submitted:
+            on_submitted(pid)
+
+    poll_url = (
+        WS_API + "/predictions/%s/result"
+        % urllib.parse.quote(pid, safe="")
+    )
+    deadline = now() + WS_DEADLINE
+    while now() < deadline:
+        if heartbeat:
+            heartbeat(job_id, "seedance_upscale_running")
+        response = _ws_req(
+            "GET", poll_url, timeout=60, classify_paid=True
+        )
+        if not isinstance(response, dict):
+            raise WaveSpeedTransientRead("WaveSpeed超分查询返回格式异常")
+        try:
+            response_code = int(response.get("code", 200))
+        except (TypeError, ValueError):
+            response_code = None
+        if response_code not in (None, 200):
+            error = (
+                WaveSpeedTransientRead
+                if response_code in TRANSIENT_HTTP_CODES
+                else WaveSpeedQueryUnavailable
+            )
+            raise error(
+                "WaveSpeed超分查询失败: %s"
+                % _safe_text(response.get("message") or response.get("error"))
+            )
+        data = response.get("data") or {}
+        status = str(data.get("status") or "").strip().lower()
+        if status == "completed":
+            outputs = data.get("outputs") or []
+            output = outputs[0] if outputs else ""
+            if isinstance(output, dict):
+                output = output.get("url") or output.get("video") or ""
+            output = str(output or "").strip()
+            output_state = _public_http_url_state(output)
+            if output_state == "unresolved":
+                raise WaveSpeedQueryUnavailable(
+                    "WaveSpeed超分成片地址暂时无法解析"
+                )
+            if output_state != "ok":
+                raise WaveSpeedProviderFailed("WaveSpeed超分完成但未返回成片")
+            return {"prediction_id": pid, "source_video_url": output}
+        if status in {"failed", "error", "cancelled", "canceled"}:
+            raise WaveSpeedProviderFailed(
+                "WaveSpeed超分失败: %s" % _safe_text(data.get("error"))
+            )
+        if status and status not in {
+            "created", "pending", "queued", "processing", "running",
+        }:
+            raise WaveSpeedProviderFailed(
+                "WaveSpeed超分返回未知状态: " + status
+            )
+        sleep(WS_POLL_INTERVAL)
+    raise TimeoutError("WaveSpeed超分生成超时")
 
 
 def _download_to_lib(url, prefix):
