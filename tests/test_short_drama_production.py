@@ -17,7 +17,7 @@ SERVER_DIR = str(Path(__file__).resolve().parents[1] / "server")
 if SERVER_DIR not in sys.path:
     sys.path.insert(0, SERVER_DIR)
 
-from content_domains import core, image, jobs_store, short_drama, short_drama_production, submission_idempotency, upstream_guard, video
+from content_domains import core, image, jobs_store, short_drama, short_drama_production, short_drama_voice, submission_idempotency, upstream_guard, video
 
 
 def _project_payload():
@@ -2694,7 +2694,7 @@ class ShortDramaStillRouteTests(unittest.TestCase):
                 "FROM jobs ORDER BY id"
             ).fetchall()
 
-    def test_voice_quote_submit_and_idempotent_replay_use_one_charge_and_job(self):
+    def _voice_submission_body(self):
         with closing(core.jdb()) as conn:
             conn.execute(
                 "INSERT INTO short_drama_characters "
@@ -2757,6 +2757,10 @@ class ShortDramaStillRouteTests(unittest.TestCase):
             **item,
             "quote_token": quote["items"][0]["quote_token"],
         }
+        return submitted
+
+    def test_voice_quote_submit_and_idempotent_replay_use_one_charge_and_job(self):
+        submitted = self._voice_submission_body()
         first_status, first = self.request(
             "/api/gen/short-drama/generate-voice", body=submitted,
             with_quote=False, idempotency_key="voice-route-submit-001",
@@ -2781,6 +2785,58 @@ class ShortDramaStillRouteTests(unittest.TestCase):
             self.assertEqual("linked", conn.execute(
                 "SELECT state FROM short_drama_voice_charge_attempts"
             ).fetchone()[0])
+
+    def test_voice_accepted_attempt_recovers_before_later_acl_stage_and_voice_drift(self):
+        submitted = self._voice_submission_body()
+        self.points.lose_first_charge_response = True
+        first_status, first = self.request(
+            "/api/gen/short-drama/generate-voice", body=submitted,
+            with_quote=False, idempotency_key="voice-route-drift-001",
+        )
+        self.assertEqual(502, first_status)
+        self.assertEqual(
+            "accepted",
+            short_drama_voice.get_voice_attempt(
+                core.jdb, "alice", "voice-route-drift-001",
+            )["state"],
+        )
+        with closing(core.jdb()) as conn:
+            conn.execute(
+                "UPDATE short_drama_voice_quotes SET expires_at=0 "
+                "WHERE token=?",
+                (submitted["quote_token"],),
+            )
+            conn.execute(
+                "UPDATE short_drama_projects "
+                "SET revision=revision+1,stage='completed',board_id='board-later' "
+                "WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+        core._short_drama_canvas_access = lambda _handler: {
+            "board_id": "board-later", "role": "viewer",
+        }
+        self.audio.resolve_audio_provider_voice = mock.Mock(
+            side_effect=ValueError("voice removed"),
+        )
+
+        retry_status, recovered = self.request(
+            "/api/gen/short-drama/generate-voice", body=submitted,
+            with_quote=False, idempotency_key="voice-route-drift-001",
+            board_id="board-later",
+        )
+
+        self.assertEqual(200, retry_status)
+        self.assertGreater(recovered["job_id"], 0)
+        self.assertEqual(1, len(self.points.charge_keys))
+        self.assertEqual(1, len(self._jobs()))
+        self.audio.resolve_audio_provider_voice.assert_not_called()
+        self.assertEqual(
+            "linked",
+            short_drama_voice.get_voice_attempt(
+                core.jdb, "alice", "voice-route-drift-001",
+            )["state"],
+        )
 
     def _idempotency_count(self):
         with closing(core.jdb()) as conn:

@@ -806,6 +806,49 @@ def _attempt_dict(row):
     return value
 
 
+def recover_voice_submission(db_factory, actor_username, payload, idempotency_key):
+    """Return an immutable persisted operation before consulting mutable project state."""
+    request = normalize_generate_request(payload)
+    key = str(idempotency_key or "").strip()
+    if not key:
+        raise ValueError("配音生成必须提供 Idempotency-Key")
+    with closing(db_factory()) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT attempts.*,projects.username AS owner_username "
+            "FROM short_drama_voice_charge_attempts AS attempts "
+            "LEFT JOIN short_drama_projects AS projects "
+            "ON projects.id=attempts.project_id "
+            "WHERE attempts.username=? AND attempts.endpoint=? "
+            "AND attempts.idempotency_key=?",
+            (actor_username, VOICE_ENDPOINT, key),
+        ).fetchone()
+        if not row:
+            return None
+        attempt = _attempt_dict(row)
+        audio_payload = attempt.get("audio_payload") or {}
+        descriptor = {
+            "project_id": request["project_id"],
+            "revision": request["revision"],
+            "line_id": request["line_id"],
+            "speech_text": str(audio_payload.get("text") or ""),
+            "voice_key": request["voice_key"],
+            "speed": request["speed"],
+            "pitch": request["pitch"],
+            "volume": request["volume"],
+        }
+        if (
+            attempt["project_id"] != request["project_id"]
+            or attempt["voice_line_id"] != request["line_id"]
+            or attempt["quote_token"] != request["quote_token"]
+            or attempt["request_hash"] != _request_hash(descriptor)
+        ):
+            raise VoiceQuoteConsumed(
+                "同一个 Idempotency-Key 不能用于不同请求"
+            )
+        return attempt
+
+
 def get_voice_attempt(db_factory, actor_username, idempotency_key):
     with closing(db_factory()) as conn:
         conn.row_factory = sqlite3.Row

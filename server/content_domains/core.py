@@ -1248,7 +1248,6 @@ class H(BaseHTTPRequestHandler):
             if _must_change_password(user):
                 return self._send(403, {"detail": "请先修改初始密码"})
             try:
-                feature_flags.require_enabled("audio")
                 request_body = self._json_body_strict()
                 normalized = _short_drama_domain().short_drama_voice.normalize_generate_request(
                     request_body
@@ -1256,53 +1255,75 @@ class H(BaseHTTPRequestHandler):
                 idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
                 if not idem_key:
                     raise ValueError("配音生成必须提供 Idempotency-Key")
-                miniprogram_security.check_payload(request_body)
-                access = _short_drama_canvas_access(self)
-                owner = _short_drama_domain()._project_username_for_access(
-                    jdb, user["username"], normalized["project_id"], access, write=True
+                known_attempt = (
+                    _short_drama_domain().short_drama_voice.recover_voice_submission(
+                        jdb, user["username"], request_body, idem_key
+                    )
                 )
-                audio_domain.resolve_audio_provider_voice(
-                    user["username"], normalized["voice_key"]
-                )
-            except feature_flags.FeatureDisabled as error:
-                return self._send(503, {"detail": str(error)})
-            except miniprogram_security.ContentRejected as error:
-                return self._send(400, {
-                    "detail": str(error), "code": "content_rejected",
-                    "operation_terminal": True,
-                })
-            except miniprogram_security.SecurityUnavailable as error:
-                return self._send(503, {
-                    "detail": str(error), "code": "content_security_unavailable",
-                    "retry_after_ms": 5000,
-                })
-            except (LookupError, PermissionError, ValueError,
+                owner = known_attempt.get("owner_username") if known_attempt else None
+            except (_short_drama_domain().short_drama_voice.VoiceQuoteConsumed,
+                    _short_drama_domain().short_drama_voice.VoiceChargeInProgress,
+                    LookupError, PermissionError, ValueError,
                     _short_drama_domain().RevisionConflict) as error:
                 _short_drama_domain()._http_error(self, error, operation_terminal=True)
                 return
-            with _submission_lock:
-                known_attempt = (
-                    _short_drama_domain().short_drama_voice.get_voice_attempt(
-                        jdb, user["username"], idem_key
-                    )
-                )
-                if not known_attempt:
-                    active_jobs = _user_active_job_count(user["username"])
-                    if active_jobs >= MAX_USER_ACTIVE_JOBS:
-                        return self._send(429, {
-                            "detail": "您有 %d 个任务正在排队/生成，完成后再提交" %
-                                      active_jobs,
-                            "code": "active_job_cap",
-                            "active_jobs": active_jobs,
-                            "max_active_jobs": MAX_USER_ACTIVE_JOBS,
-                            "retry_after_ms": 4000,
-                        })
+            if not known_attempt:
                 try:
-                    attempt, replay = (
-                        _short_drama_domain().short_drama_voice.prepare_voice_submission(
-                            jdb, user["username"], owner, request_body, idem_key
+                    feature_flags.require_enabled("audio")
+                    miniprogram_security.check_payload(request_body)
+                    access = _short_drama_canvas_access(self)
+                    owner = _short_drama_domain()._project_username_for_access(
+                        jdb, user["username"], normalized["project_id"], access, write=True
+                    )
+                    audio_domain.resolve_audio_provider_voice(
+                        user["username"], normalized["voice_key"]
+                    )
+                except feature_flags.FeatureDisabled as error:
+                    return self._send(503, {"detail": str(error)})
+                except miniprogram_security.ContentRejected as error:
+                    return self._send(400, {
+                        "detail": str(error), "code": "content_rejected",
+                        "operation_terminal": True,
+                    })
+                except miniprogram_security.SecurityUnavailable as error:
+                    return self._send(503, {
+                        "detail": str(error), "code": "content_security_unavailable",
+                        "retry_after_ms": 5000,
+                    })
+                except (LookupError, PermissionError, ValueError,
+                        _short_drama_domain().RevisionConflict) as error:
+                    _short_drama_domain()._http_error(
+                        self, error, operation_terminal=True
+                    )
+                    return
+            with _submission_lock:
+                try:
+                    attempt = (
+                        _short_drama_domain().short_drama_voice
+                        .recover_voice_submission(
+                            jdb, user["username"], request_body, idem_key
                         )
                     )
+                    replay = attempt is not None
+                    if replay:
+                        owner = attempt.get("owner_username")
+                    else:
+                        active_jobs = _user_active_job_count(user["username"])
+                        if active_jobs >= MAX_USER_ACTIVE_JOBS:
+                            return self._send(429, {
+                                "detail": "您有 %d 个任务正在排队/生成，完成后再提交" %
+                                          active_jobs,
+                                "code": "active_job_cap",
+                                "active_jobs": active_jobs,
+                                "max_active_jobs": MAX_USER_ACTIVE_JOBS,
+                                "retry_after_ms": 4000,
+                            })
+                        attempt, replay = (
+                            _short_drama_domain().short_drama_voice
+                            .prepare_voice_submission(
+                                jdb, user["username"], owner, request_body, idem_key
+                            )
+                        )
                 except (_short_drama_domain().short_drama_voice.VoiceQuoteConsumed,
                         _short_drama_domain().short_drama_voice.VoiceChargeInProgress,
                         LookupError, PermissionError, ValueError,

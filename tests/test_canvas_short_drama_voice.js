@@ -55,6 +55,15 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+function fakeStorage() {
+  const values = new Map();
+  return {
+    getItem(key) { return values.has(key) ? values.get(key) : null; },
+    setItem(key, value) { values.set(key, String(value)); },
+    removeItem(key) { values.delete(key); },
+  };
+}
+
 function fakeHost() {
   const listeners = new Map();
   const added = [];
@@ -488,6 +497,77 @@ async function testPreviewStopsPreviousAudioAndReadonlyRejectsWrites() {
   assert.equal(players[1].pauses, 1);
 }
 
+async function testAmbiguousVoiceSubmissionSurvivesTwoFailuresAndWorkspaceReload() {
+  const storage = fakeStorage();
+  const calls = [];
+  let quoteCalls = 0;
+  let submitCalls = 0;
+  let confirmations = 0;
+  const client = {
+    json(route, options = {}) {
+      calls.push({ route, options });
+      if (route.startsWith('/api/gen/short-drama/voice?')) {
+        return Promise.resolve(snapshot());
+      }
+      if (route === '/api/gen/audio/voices') {
+        return Promise.resolve({ items: voices });
+      }
+      if (route === '/api/gen/short-drama/voice-quote') {
+        quoteCalls += 1;
+        return Promise.resolve({
+          project_id: 'project-1', revision: 8, total_cost: 10,
+          items: [{ line_id: 'voice-1', quote_token: 'durable-quote-1', cost: 10 }],
+        });
+      }
+      if (route === '/api/gen/short-drama/generate-voice') {
+        submitCalls += 1;
+        if (submitCalls === 1) {
+          const timeout = new Error('timeout');
+          timeout.code = 'timeout';
+          return Promise.reject(timeout);
+        }
+        if (submitCalls === 2) {
+          const unavailable = new Error('auth service unavailable');
+          unavailable.status = 502;
+          return Promise.reject(unavailable);
+        }
+        return Promise.resolve({ job_id: 902, cost: 10, points_left: 90 });
+      }
+      throw new Error(`unexpected route ${route}`);
+    },
+  };
+  const firstWorkspace = voice.createWorkspace({
+    projectId: 'project-1', client, storage, document: null,
+    pollInterval: 60000,
+    confirm() { confirmations += 1; return true; },
+  });
+  await firstWorkspace.ready;
+  const firstResult = await firstWorkspace.generateLine('voice-1');
+  assert.equal(firstResult.results[0].ok, false);
+  firstWorkspace.destroy();
+
+  const secondWorkspace = voice.createWorkspace({
+    projectId: 'project-1', client, storage, document: null,
+    pollInterval: 60000,
+    confirm() { confirmations += 1; return true; },
+  });
+  await secondWorkspace.ready;
+  const recovered = await secondWorkspace.generateLine('voice-1');
+  assert.equal(recovered.results[0].ok, true);
+  secondWorkspace.destroy();
+
+  const submits = calls.filter((call) =>
+    call.route === '/api/gen/short-drama/generate-voice');
+  assert.equal(submits.length, 3);
+  assert.equal(quoteCalls, 1, 'manual retry must not request a new quote');
+  assert.equal(confirmations, 1, 'persisted confirmed operation must not reconfirm');
+  assert.equal(new Set(submits.map((call) =>
+    call.options.headers['Idempotency-Key'])).size, 1);
+  assert.equal(new Set(submits.map((call) =>
+    call.options.body.quote_token)).size, 1);
+  assert.deepEqual(submits[0].options.body, submits[2].options.body);
+}
+
 async function main() {
   testNormalizeRenderAndReadonlyContract();
   testRendererDistinguishesLoadingErrorEmptyPendingAndSilent();
@@ -502,6 +582,7 @@ async function main() {
   await testDestroyInvalidatesPendingRequestsWithoutHostOrStateMutation();
   await testQuoteConfirmGenerateReloadAndVersionSelection();
   await testPreviewStopsPreviousAudioAndReadonlyRejectsWrites();
+  await testAmbiguousVoiceSubmissionSurvivesTwoFailuresAndWorkspaceReload();
   const css = fs.readFileSync(path.join(
     __dirname, '../site/workbench/canvas/canvas-short-drama-voice.css'
   ), 'utf8');

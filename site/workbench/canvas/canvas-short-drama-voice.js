@@ -56,7 +56,8 @@
     });
     var job=line.job&&typeof line.job==='object'?{
       job_id:number(line.job.job_id,0),status:text(line.job.status),
-      error:text(line.job.error),refunded:number(line.job.refunded,0)
+      error:text(line.job.error),refunded:number(line.job.refunded,0),
+      idempotency_key:text(line.job.idempotency_key)
     }:null;
     return {
       id:line.id,sort_order:number(line.sort_order,index),
@@ -240,6 +241,44 @@
     var destroyed=false,snapshot=null,voices=[],host=options.host||null,requestGeneration=0;
     var pollTimer=null,activeAudio=null,generationBusy=false;
     var ui={busy:true,error:'',operationError:'',selectedShotId:options.selectedShotId};
+    var storage=options.storage;
+    if(!storage&&typeof globalThis!=='undefined'){
+      try{ storage=globalThis.localStorage; }catch(_storageError){ storage=null; }
+    }
+    var pendingStorageKey='hq-short-drama-voice-pending:'+text(options.projectId);
+    var pendingSubmissions=Object.create(null);
+    function loadPendingSubmissions(){
+      if(!storage||typeof storage.getItem!=='function') return;
+      try{
+        var parsed=JSON.parse(storage.getItem(pendingStorageKey)||'{}');
+        Object.keys(parsed||{}).forEach(function(lineId){
+          var record=parsed[lineId];
+          if(record&&record.line_id===lineId&&
+              record.payload&&record.payload.project_id===options.projectId&&
+              text(record.idempotency_key)){
+            pendingSubmissions[lineId]={
+              line_id:lineId,payload:clone(record.payload),
+              idempotency_key:text(record.idempotency_key)
+            };
+          }
+        });
+      }catch(_pendingError){ pendingSubmissions=Object.create(null); }
+    }
+    function persistPendingSubmissions(){
+      if(!storage||typeof storage.setItem!=='function') return;
+      try{
+        if(Object.keys(pendingSubmissions).length){
+          storage.setItem(pendingStorageKey,JSON.stringify(pendingSubmissions));
+        }else if(typeof storage.removeItem==='function'){
+          storage.removeItem(pendingStorageKey);
+        }
+      }catch(_pendingError){}
+    }
+    function clearPendingSubmission(lineId){
+      delete pendingSubmissions[lineId];
+      persistPendingSubmissions();
+    }
+    loadPendingSubmissions();
     function callJson(path,requestOptions){
       return Promise.resolve().then(function(){
         if(destroyed) return null;
@@ -325,20 +364,47 @@
       return Promise.resolve(typeof globalConfirm==='function'?
         globalConfirm('生成 '+items.length+' 条配音将消耗 '+quote.total_cost+' 点，确认提交吗？'):true);
     }
+    function ambiguousSubmissionError(error){
+      var status=number(error&&error.status,0);
+      if(!error||error.operation_terminal===true||
+          error.data&&error.data.operation_terminal===true) return false;
+      return error.code==='timeout'||error.code==='network_error'||status===0||
+        status===408||status===429||status>=500;
+    }
+    function submitPendingSubmission(record,retryOnce){
+      var requestOptions={
+        method:'POST',body:clone(record.payload),
+        headers:{'Idempotency-Key':record.idempotency_key}
+      };
+      return callJson(GENERATE_PATH,requestOptions).catch(function(error){
+        if(retryOnce&&ambiguousSubmissionError(error)){
+          return callJson(GENERATE_PATH,requestOptions);
+        }
+        throw error;
+      }).then(function(result){
+        clearPendingSubmission(record.line_id);
+        return result;
+      },function(error){
+        if(!ambiguousSubmissionError(error)){
+          clearPendingSubmission(record.line_id);
+        }
+        throw error;
+      });
+    }
     function submitQuoteItem(item,line){
-      var payload={
+      var record={
+        line_id:line.id,
+        payload:{
         project_id:snapshot.project_id,revision:number(snapshot.revision,0),
         line_id:line.id,voice_key:text(line.voice_key),
         speed:number(line.speed,1),pitch:number(line.pitch,0),volume:number(line.volume,0),
         quote_token:item.quote_token
+        },
+        idempotency_key:requestKey(line.id)
       };
-      var requestOptions={
-        method:'POST',body:payload,headers:{'Idempotency-Key':requestKey(line.id)}
-      };
-      return callJson(GENERATE_PATH,requestOptions).catch(function(error){
-        if(error&&error.code==='timeout') return callJson(GENERATE_PATH,requestOptions);
-        throw error;
-      });
+      pendingSubmissions[line.id]=record;
+      persistPendingSubmissions();
+      return submitPendingSubmission(record,true);
     }
     function mapConcurrent(entries,limit,worker){
       var cursor=0,results=[];
@@ -362,6 +428,20 @@
       if(!lines.length) return Promise.reject(new Error('没有需要生成的台词'));
       var items=lines.map(editableItem);
       generationBusy=true;ui.operationError='';render();
+      var pending=lines.map(function(line){
+        return pendingSubmissions[line.id]||null;
+      }).filter(Boolean);
+      if(pending.length){
+        return mapConcurrent(pending,3,function(record){
+          return submitPendingSubmission(record,false);
+        }).then(function(results){
+          return reload(true).then(function(){
+            return {cancelled:false,quote:null,results:results,recovered:true};
+          });
+        }).finally(function(){
+          generationBusy=false;render();
+        });
+      }
       return callJson(QUOTE_PATH,{
         method:'POST',body:{
           project_id:snapshot.project_id,revision:number(snapshot.revision,0),items:items
@@ -495,7 +575,15 @@
         callJson(VOICES_PATH)
       ]).then(function(results){
         if(destroyed||generation!==requestGeneration) return null;
-        snapshot=results[0];voices=voiceItems(results[1]);ui.busy=false;render();schedulePoll();
+        snapshot=results[0];voices=voiceItems(results[1]);
+        allLines().forEach(function(line){
+          var pending=pendingSubmissions[line.id];
+          if(pending&&line.job&&
+              line.job.idempotency_key===pending.idempotency_key){
+            clearPendingSubmission(line.id);
+          }
+        });
+        ui.busy=false;render();schedulePoll();
         return snapshot;
       }).catch(function(error){
         if(destroyed||generation!==requestGeneration) return null;
