@@ -1679,26 +1679,34 @@ def public_admin_user(row):
     data.update(membership_for_row(row))
     return data
 
-def list_admin_users(query="", sort="created_at", direction="desc", limit=100):
+def list_admin_users(query="", sort="created_at", direction="desc", limit=100, offset=0):
     allowed_sort = {"username", "display_name", "points", "role", "must_change", "created_at", "membership_expires_at"}
     sort = sort if sort in allowed_sort else "created_at"
     direction = "ASC" if str(direction).lower() == "asc" else "DESC"
     limit = max(1, min(300, int(limit or 100)))
+    offset = max(0, int(offset or 0))
     query = (query or "").strip()
-    sql = """SELECT id, username, display_name, points, role, must_change, created_at,
-                    membership_tier, membership_started_at, membership_expires_at FROM users"""
+    select_sql = """SELECT id, username, display_name, points, role, must_change, created_at,
+                           membership_tier, membership_started_at, membership_expires_at FROM users"""
+    count_sql = "SELECT COUNT(*) AS n FROM users"
     args = []
+    where_sql = ""
     if query:
-        sql += " WHERE username LIKE ? OR display_name LIKE ?"
+        where_sql = " WHERE username LIKE ? OR display_name LIKE ?"
         like = "%" + query + "%"
         args.extend([like, like])
-    sql += " ORDER BY %s %s LIMIT ?" % (sort, direction)
-    args.append(limit)
+    sql = select_sql + where_sql
+    sql += " ORDER BY %s %s, id %s LIMIT ? OFFSET ?" % (sort, direction, direction)
     c = db()
     try:
-        rows = c.execute(sql, args).fetchall()
-        total = c.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
-        return {"items": [public_admin_user(r) for r in rows], "total": total}
+        rows = c.execute(sql, args + [limit, offset]).fetchall()
+        total = c.execute(count_sql + where_sql, args).fetchone()["n"]
+        return {
+            "items": [public_admin_user(r) for r in rows],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
     finally:
         c.close()
 
@@ -3849,6 +3857,7 @@ class H(BaseHTTPRequestHandler):
                     sort=(q.get("sort") or ["created_at"])[0],
                     direction=(q.get("dir") or ["desc"])[0],
                     limit=(q.get("limit") or ["100"])[0],
+                    offset=(q.get("offset") or ["0"])[0],
                 )
                 return self._send(200, {"ok": True, **data})
             except Exception:

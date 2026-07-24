@@ -47,6 +47,25 @@ class AdminPointsLedgerTests(unittest.TestCase):
         self.assertIn("x.who_admin==='system'?'任务':x.who_admin", self.html)
         self.assertIn("x.transaction_key||'-'", self.html)
 
+    def test_internal_reason_codes_are_rendered_as_chinese_actions(self):
+        self.assertIn("function pointReasonText(item)", self.html)
+        self.assertIn("任务失败退款", self.html)
+        self.assertIn("任务扣点", self.html)
+        self.assertIn("购买音色复刻槽位", self.html)
+        self.assertIn("音色槽位购买退款", self.html)
+        self.assertIn("抖音内容搜索", self.html)
+        self.assertIn("抖音内容搜索退款", self.html)
+        self.assertIn("esc(pointReasonText(x))", self.html)
+
+    def test_users_and_logs_use_twenty_item_pages(self):
+        self.assertIn("userPage:1, userPageSize:20", self.html)
+        self.assertIn("reqPage:1, reqPageSize:20", self.html)
+        self.assertIn("<th>ID</th><th>账号</th>", self.html)
+        self.assertIn("data-user-page", self.html)
+        self.assertIn("data-req-page", self.html)
+        self.assertIn("'&limit='+state.userPageSize+'&offset='", self.html)
+        self.assertIn("'?limit='+state.reqPageSize+'&offset='", self.html)
+
 
 if __name__ == "__main__":
     unittest.main()
