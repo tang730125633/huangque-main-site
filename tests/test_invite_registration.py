@@ -24,8 +24,10 @@ class InviteRegistrationTests(unittest.TestCase):
         self.auth.AUTH_COOKIE_SECURE = False
         self.auth.INVITE_HASH_SECRET = "test-invite-secret"
         self.auth.INVITE_PUBLIC_BASE_URL = "https://fang.example.test"
-        self.auth.REGISTER_MAX = 5
-        self.auth.REGISTER_WINDOW = 300
+        self.auth.REGISTER_MAX = 10
+        self.auth.REGISTER_WINDOW = 120
+        self.auth.REGISTER_IP_MAX = 20
+        self.auth.REGISTER_IP_WINDOW = 60
         self.auth.REGISTER_HITS.clear()
         self.auth.init_db()
         self.auth.create_user("inviter", "secret123", 10)
@@ -300,14 +302,15 @@ class InviteRegistrationTests(unittest.TestCase):
             )[0],
             400,
         )
-        before_block = list(self.auth.REGISTER_HITS["203.0.113.20"])
+        key = "203.0.113.20|missing-device"
+        before_block = list(self.auth.REGISTER_HITS[key])
         status, _, _ = self._request(
             "/api/auth/register",
             {"username": "blocked", "password": "secret123"},
             ip_header,
         )
         self.assertEqual(status, 429)
-        self.assertEqual(self.auth.REGISTER_HITS["203.0.113.20"], before_block)
+        self.assertEqual(self.auth.REGISTER_HITS[key], before_block)
         conn = self._connect()
         try:
             self.assertFalse(
@@ -343,6 +346,61 @@ class InviteRegistrationTests(unittest.TestCase):
             thread.join(timeout=10)
         self.assertEqual(statuses.count(200), 1)
         self.assertEqual(statuses.count(429), 5)
+
+    def test_same_ip_different_devices_have_independent_registration_limits(self):
+        self.auth.REGISTER_MAX = 1
+        headers = {"X-Real-IP": "203.0.113.22"}
+
+        first = self._request(
+            "/api/auth/register",
+            {"username": "device_a_1", "password": "secret123", "device_id": "device-a"},
+            headers,
+        )
+        blocked = self._request(
+            "/api/auth/miniprogram-register",
+            {"username": "device_a_2", "password": "secret123", "device_id": "device-a"},
+            headers,
+        )
+        other_device = self._request(
+            "/api/auth/register",
+            {"username": "device_b_1", "password": "secret123", "device_id": "device-b"},
+            headers,
+        )
+
+        self.assertEqual(first[0], 200)
+        self.assertEqual(blocked[0], 429)
+        self.assertEqual(other_device[0], 200)
+
+    def test_same_ip_all_devices_share_twenty_attempts_per_minute(self):
+        self.auth.REGISTER_MAX = 100
+        self.auth.REGISTER_IP_MAX = 2
+        headers = {"X-Real-IP": "203.0.113.23"}
+
+        first = self._request(
+            "/api/auth/register",
+            {"username": "shared_ip_1", "password": "secret123", "device_id": "device-1"},
+            headers,
+        )
+        second = self._request(
+            "/api/auth/register",
+            {"username": "shared_ip_2", "password": "secret123", "device_id": "device-2"},
+            headers,
+        )
+        blocked = self._request(
+            "/api/auth/register",
+            {"username": "shared_ip_3", "password": "secret123", "device_id": "device-3"},
+            headers,
+        )
+
+        self.assertEqual(first[0], 200)
+        self.assertEqual(second[0], 200)
+        self.assertEqual(blocked[0], 429)
+
+    def test_registration_rate_limit_defaults_to_ten_attempts_per_two_minutes(self):
+        self.assertEqual(self.auth.REGISTER_MAX, 10)
+        self.assertEqual(self.auth.REGISTER_WINDOW, 120)
+        self.assertEqual(self.auth.REGISTER_IP_MAX, 20)
+        self.assertEqual(self.auth.REGISTER_IP_WINDOW, 60)
 
     def test_code_endpoint_requires_login_and_first_issue_is_concurrently_stable(self):
         self.assertEqual(self._request("/api/auth/invite/code")[0], 401)
