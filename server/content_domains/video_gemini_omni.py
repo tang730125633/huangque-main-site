@@ -19,7 +19,12 @@ from . import egress
 
 
 MODEL = "gemini-omni-flash-preview"
-API_BASE = "https://generativelanguage.googleapis.com"
+OFFICIAL_API_BASE = "https://generativelanguage.googleapis.com"
+API_BASE = (
+    os.environ.get("GEMINI_OMNI_BASE", "").strip()
+    or os.environ.get("GEMINI_BASE", "").strip()
+    or OFFICIAL_API_BASE
+).rstrip("/")
 API_REVISION = "2026-05-20"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 TIMEOUT = max(60, int(os.environ.get("GEMINI_OMNI_TIMEOUT", "600") or 600))
@@ -267,13 +272,31 @@ def _extract_video(response):
 
 def _file_name(uri):
     parsed = urllib.parse.urlsplit(uri)
-    official = urllib.parse.urlsplit(API_BASE)
-    if parsed.scheme.lower() != "https" or parsed.netloc.lower() != official.netloc.lower():
+    trusted_hosts = {
+        urllib.parse.urlsplit(OFFICIAL_API_BASE).netloc.lower(),
+        urllib.parse.urlsplit(API_BASE).netloc.lower(),
+    }
+    if parsed.scheme.lower() != "https" or parsed.netloc.lower() not in trusted_hosts:
         raise RuntimeError("Gemini Omni 返回了非官方视频地址，已拒绝下载")
     match = re.search(r"/(files/[^/:?]+)", parsed.path)
     if not match:
         raise RuntimeError("Gemini Omni 返回的视频文件地址无效")
     return match.group(1)
+
+
+def _file_request_url(uri):
+    _file_name(uri)
+    parsed = urllib.parse.urlsplit(uri)
+    base = urllib.parse.urlsplit(API_BASE)
+    if parsed.netloc.lower() == base.netloc.lower():
+        return uri
+    return urllib.parse.urlunsplit((
+        base.scheme,
+        base.netloc,
+        base.path.rstrip("/") + parsed.path,
+        parsed.query,
+        "",
+    ))
 
 
 def _poll_file(opener, uri, now=None, sleep=None, heartbeat=None,
@@ -328,14 +351,14 @@ def _read_limited(response):
 
 
 def _download_uri(opener, uri, sleep=None):
-    _file_name(uri)  # 下载前先锁定为 Google 官方地址，避免携带 API Key 请求任意域名。
+    request_url = _file_request_url(uri)
     sleep = sleep or time.sleep
     last = None
     for attempt, delay in enumerate((0, 2, 5, 10)):
         if delay:
             sleep(delay)
         try:
-            with _request(opener, "GET", uri, timeout=300) as response:
+            with _request(opener, "GET", request_url, timeout=300) as response:
                 return _read_limited(response)
         except GeminiOmniTransientRead as exc:
             last = exc
