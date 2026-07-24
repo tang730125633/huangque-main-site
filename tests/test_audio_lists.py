@@ -1,3 +1,4 @@
+import gc
 import sqlite3
 import sys
 import tempfile
@@ -42,6 +43,7 @@ class AudioListTest(unittest.TestCase):
 
     def tearDown(self):
         self.db_patch.stop()
+        gc.collect()
         self.tmp.cleanup()
 
     def test_slot_list_does_not_query_external_clone_status(self):
@@ -66,6 +68,19 @@ class AudioListTest(unittest.TestCase):
                 "SELECT status FROM audio_voice_slots WHERE id=1"
             ).fetchone()[0]
         self.assertEqual(status, "ready")
+
+    def test_clone_status_keeps_training_during_provider_handoff(self):
+        with patch.object(audio.cosyvoice, "enabled", return_value=True), \
+                patch.object(audio.cosyvoice, "voice_status",
+                             side_effect=AssertionError("placeholder is not a provider voice")):
+            result = audio.check_clone_status("alice", "S_test")
+
+        self.assertEqual(result, {"status": "training"})
+        with sqlite3.connect(self.db) as conn:
+            status = conn.execute(
+                "SELECT status FROM audio_voice_slots WHERE id=1"
+            ).fetchone()[0]
+        self.assertEqual(status, "training")
 
     def test_clone_status_ignores_retired_or_stale_preview_rows(self):
         with sqlite3.connect(self.db) as conn:
