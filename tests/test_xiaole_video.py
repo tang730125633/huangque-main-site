@@ -445,18 +445,16 @@ class XiaoleVideoTests(unittest.TestCase):
                 pass
 
         recover = Mock(return_value=True)
-        domain = type("Domain", (), {
-            "recover_official_video_paid_job": staticmethod(recover),
-        })
         terminal = Mock(return_value=True)
         refund = Mock()
-        with patch.object(core, "jdb", return_value=Connection()), \
+        with patch.object(self.video, "recover_official_video_paid_job", recover), \
+             patch.object(core, "jdb", return_value=Connection()), \
              patch.object(core.jobs_store, "claim_running", return_value=True), \
              patch.object(core, "_start_job_heartbeat", return_value=Mock()), \
              patch.object(core, "HANDLERS", {
                  "xiaole_video": Mock(side_effect=video_gemini_omni.GeminiOmniCreateOutcomeUnknown("lost")),
              }), \
-             patch.object(core, "_domains", return_value=(None, None, domain)), \
+             patch.object(core, "_domains", return_value=(None, None, self.video)), \
              patch.object(core, "_set_terminal", terminal), \
              patch.object(core, "_refund_once", refund), \
              patch.object(core, "_mark_video_asset_failed"):

@@ -882,6 +882,40 @@ def recover_sora_paid_job(job_id, error, requeue=None):
     return False
 
 
+def recover_paid_video_error(job_id, kind, payload, error, requeue=None,
+                             force_requeue=False):
+    """Classify paid video failures here so core only owns lifecycle wiring."""
+    if kind == "sora_video":
+        from . import video_openai
+        if isinstance(error, (
+                video_openai.CreateRejected,
+                video_openai.ProviderVideoFailed,
+        )):
+            return False
+        retry = requeue if force_requeue or isinstance(
+            error, video_openai.TransientOpenAIError
+        ) else None
+        return recover_sora_paid_job(job_id, error, retry)
+
+    channel = str((payload or {}).get("channel") or "").lower()
+    if kind != "xiaole_video" or channel not in {"micro", "omni"}:
+        return False
+    from . import video_gemini_omni, video_seedance
+    if isinstance(error, (
+            video_gemini_omni.GeminiOmniRejected,
+            video_gemini_omni.GeminiOmniProviderFailed,
+            video_seedance.SeedanceRejected,
+            video_seedance.SeedanceProviderFailed,
+    )):
+        return False
+    retry = requeue if force_requeue or isinstance(error, (
+        video_gemini_omni.GeminiOmniTransientRead,
+        video_seedance.TransientSeedanceError,
+        TimeoutError,
+    )) else None
+    return recover_official_video_paid_job(job_id, error, retry)
+
+
 def record_video_pending_asset(job_id, username, payload):
     # 换装/换背景(tryon)与常规视频共用 video_assets 表；tryon 没有 mode/voice 等字段，兜底为空即可
     is_tryon = bool(payload.get("person_video_data") or payload.get("person_image_data")
