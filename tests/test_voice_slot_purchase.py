@@ -214,6 +214,20 @@ class VoiceSlotFrontendTest(unittest.TestCase):
         for stale in ("/api/gen/audio/redeem-slot", "slotCodeInput", "确认兑换", "请输入兑换码"):
             self.assertNotIn(stale, self.html)
 
+    def test_active_clone_conflict_resumes_status_polling(self):
+        self.assertIn(
+            "res.status===409 && detail.indexOf('\\u97f3\\u8272\\u6b63\\u5728\\u590d\\u523b\\u4e2d",
+            self.html,
+        )
+        self.assertIn("\\u6b63\\u5728\\u7ee7\\u7eed\\u67e5\\u8be2\\u8fdb\\u5ea6", self.html)
+        self.assertIn("pollCloneReady(slot.slot_id, note, 0, close, slot);", self.html)
+
+    def test_reclone_ui_has_no_usage_limit(self):
+        self.assertIn("var recloneCount=Math.max(0, parseInt(slot.reclone_count||0,10)||0);", self.html)
+        self.assertIn("\\u5df2\\u91cd\\u65b0\\u590d\\u523b", self.html)
+        self.assertNotIn("recloneRemain", self.html)
+        self.assertNotIn("\\u4e0d\\u652f\\u6301\\u91cd\\u65b0\\u590d\\u523b", self.html)
+
     def test_inline_javascript_parses(self):
         scripts = re.findall(r"<script(?:\s[^>]*)?>([\s\S]*?)</script>", self.html)
         self.assertTrue(scripts)

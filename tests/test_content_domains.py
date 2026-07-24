@@ -342,14 +342,58 @@ class ContentDomainTests(unittest.TestCase):
                         self.assertEqual(before, self._slot_snapshot(test_adb, "fang", "S_demo"))
 
                 with closing(test_adb()) as c:
-                    c.execute("UPDATE audio_voice_slots SET reclone_count=10 WHERE username='fang' AND slot_id='S_demo'")
+                    c.execute("UPDATE audio_voice_slots SET reclone_count=25 WHERE username='fang' AND slot_id='S_demo'")
                     c.commit()
-                before_limit = self._slot_snapshot(test_adb, "fang", "S_demo")
-                with self.assertRaises(audio.CloneVipValidationError) as cm:
-                    audio.validate_clone_vip_payload("fang", {"slot_id": "S_demo", "audio": base64.b64encode(b'audio').decode(), "audio_format": "wav"})
-                self.assertEqual(cm.exception.status, 409)
-                self.assertIn("复刻上限", cm.exception.detail)
-                self.assertEqual(before_limit, self._slot_snapshot(test_adb, "fang", "S_demo"))
+                before_unlimited = self._slot_snapshot(test_adb, "fang", "S_demo")
+                checked = audio.validate_clone_vip_payload(
+                    "fang",
+                    {"slot_id": "S_demo", "audio": base64.b64encode(b'audio').decode(), "audio_format": "wav"},
+                )
+                self.assertEqual("S_demo", checked["slot_id"])
+                self.assertEqual(before_unlimited, self._slot_snapshot(test_adb, "fang", "S_demo"))
+            finally:
+                audio.adb = original_adb
+
+    def test_mark_clone_training_allows_unlimited_reclones(self):
+        audio = importlib.import_module("content_domains.audio")
+        original_adb = audio.adb
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "audio.db"
+
+            def test_adb():
+                c = sqlite3.connect(db_path)
+                c.row_factory = sqlite3.Row
+                return c
+
+            audio.adb = test_adb
+            try:
+                with closing(test_adb()) as c:
+                    c.execute("""CREATE TABLE audio_voice_slots(
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        username TEXT, slot_id TEXT, status TEXT, voice_id INTEGER,
+                        reclone_count INTEGER, clone_started_at INTEGER,
+                        updated_at INTEGER, clone_upload_at INTEGER, clone_error TEXT
+                    )""")
+                    c.execute("""CREATE TABLE audio_voices(
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        username TEXT, scope TEXT, voice_key TEXT, display_name TEXT,
+                        provider_voice TEXT, slot_id TEXT, created_at INTEGER, updated_at INTEGER,
+                        UNIQUE(username, scope, voice_key)
+                    )""")
+                    c.execute("""INSERT INTO audio_voice_slots
+                        (username, slot_id, status, voice_id, reclone_count, updated_at, clone_upload_at)
+                        VALUES('fang','S_demo','ready',7,25,100,100)""")
+                    c.commit()
+
+                with mock.patch.object(audio, "clear_voice_preview", return_value=0):
+                    result = audio.mark_clone_training("fang", "S_demo", "不限次数")
+
+                self.assertEqual(26, result["reclone_count"])
+                self.assertNotIn("reclone_remaining", result)
+                with closing(test_adb()) as c:
+                    row = c.execute("""SELECT status, reclone_count
+                        FROM audio_voice_slots WHERE username='fang' AND slot_id='S_demo'""").fetchone()
+                self.assertEqual(("training", 26), tuple(row))
             finally:
                 audio.adb = original_adb
 

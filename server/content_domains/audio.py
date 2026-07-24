@@ -260,26 +260,26 @@ def check_clone_status(username, slot_id):
         return result
     if not cosyvoice.enabled():
         return {"status": "failed", "clone_error": "声音复刻服务暂不可用"}
-    # CosyVoice\uff1aprovider_voice \u662f CosyVoice voice_id \u5c31\u67e5\u5b83\u7684 list_voice \u72b6\u6001\uff0c\u4e0d\u78b0\u8c46\u5305\u3002
-    if cosyvoice.enabled():
-        with closing(adb()) as c:
-            pv = c.execute("""SELECT provider_voice FROM audio_voices WHERE username=? AND slot_id=?
-                ORDER BY id DESC LIMIT 1""", (username, slot_id)).fetchone()
-        provider_voice = (pv["provider_voice"] if pv else "") or ""
-        if provider_voice.startswith(cosyvoice.CLONE_MODEL):
-            if slot["status"] == "failed":
-                return {"status": "failed", "clone_error": slot["clone_error"] or "\u590d\u523b\u5931\u8d25"}
-            try:
-                cv_status, _ = cosyvoice.voice_status(provider_voice)
-            except Exception:
-                return {"status": slot["status"] or "training"}
-            new_status = "ready" if cv_status == "OK" else ("failed" if cv_status not in ("", "OK") and "ing" not in cv_status.lower() else "training")
-            if new_status != slot["status"]:
-                with closing(adb()) as c:
-                    c.execute("UPDATE audio_voice_slots SET status=?, updated_at=? WHERE username=? AND slot_id=?",
-                              (new_status, int(time.time()), username, slot_id))
-                    c.commit()
-            return {"status": new_status, "cosy_status": cv_status}
+    # CosyVoice: provider_voice is replaced with the real voice id by the
+    # background clone. Until then mark_clone_training intentionally stores the
+    # slot id as a placeholder, so polling must keep reporting "training".
+    provider_voice = (voice["provider_voice"] if voice else "") or ""
+    if provider_voice.startswith(cosyvoice.CLONE_MODEL):
+        if slot["status"] == "failed":
+            return {"status": "failed", "clone_error": slot["clone_error"] or "\u590d\u523b\u5931\u8d25"}
+        try:
+            cv_status, _ = cosyvoice.voice_status(provider_voice)
+        except Exception:
+            return {"status": slot["status"] or "training"}
+        new_status = "ready" if cv_status == "OK" else ("failed" if cv_status not in ("", "OK") and "ing" not in cv_status.lower() else "training")
+        if new_status != slot["status"]:
+            with closing(adb()) as c:
+                c.execute("UPDATE audio_voice_slots SET status=?, updated_at=? WHERE username=? AND slot_id=?",
+                          (new_status, int(time.time()), username, slot_id))
+                c.commit()
+        return {"status": new_status, "cosy_status": cv_status}
+    if slot["status"] == "training":
+        return {"status": "training"}
     return {"status": "failed", "clone_error": "该音色来自已停用渠道，请重新复刻"}
 
 ALLOWED_CLONE_AUDIO_FORMATS = {"mp3", "wav", "m4a", "aac", "ogg"}
@@ -328,10 +328,6 @@ def validate_clone_vip_payload(username, payload):
         last_at = int(slot["clone_upload_at"] or slot["updated_at"] or 0)
         if last_at and now - last_at < 600:
             raise CloneVipValidationError(409, "音色正在复刻中，请等待完成")
-    is_reclone = slot["status"] == "ready" and bool(slot["voice_id"])
-    reclone_count = int(slot["reclone_count"] or 0)
-    if is_reclone and reclone_count >= 10:
-        raise CloneVipValidationError(409, "该槽位已达复刻上限")
     checked = dict(payload)
     checked["slot_id"] = slot_id
     checked["audio"] = audio_b64
@@ -356,8 +352,6 @@ def mark_clone_training(username, slot_id, name):
                 raise ValueError("\u97f3\u8272\u6b63\u5728\u590d\u523b\u4e2d\uff0c\u8bf7\u7b49\u5f85\u5b8c\u6210")
         is_reclone = slot["status"] == "ready" and bool(slot["voice_id"])
         reclone_count = int(slot["reclone_count"] or 0)
-        if is_reclone and reclone_count >= 10:
-            raise ValueError("\u8be5\u97f3\u8272\u5df2\u8fbe\u5230\u6700\u9ad810\u6b21\u91cd\u65b0\u590d\u523b\u4e0a\u9650")
         next_reclone_count = reclone_count + 1 if is_reclone else reclone_count
         c.execute("""INSERT OR IGNORE INTO audio_voices
             (username, scope, voice_key, display_name, provider_voice, slot_id, created_at, updated_at)
@@ -374,7 +368,7 @@ def mark_clone_training(username, slot_id, name):
             WHERE username=? AND slot_id=?""", (voice_id, next_reclone_count, now, now, username, slot_id))
         c.commit()
     clear_voice_preview(username, slot_id)
-    return {"voice_id": voice_id, "voice_key": voice_key, "display_name": name, "status": "training", "reclone_count": next_reclone_count, "reclone_remaining": max(0, 10 - next_reclone_count)}
+    return {"voice_id": voice_id, "voice_key": voice_key, "display_name": name, "status": "training", "reclone_count": next_reclone_count}
 
 def clone_vip_voice_background(username, payload):
     try:

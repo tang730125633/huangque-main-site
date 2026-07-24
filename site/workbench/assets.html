@@ -1067,8 +1067,7 @@
     var failed=slot.status==='failed';
     var readonly=!!slot.readonly;
     var completed=used && !training && !failed;
-    var recloneCount=Math.max(0, Math.min(10, parseInt(slot.reclone_count||0,10)||0));
-    var recloneRemain=Math.max(0, 10-recloneCount);
+    var recloneCount=Math.max(0, parseInt(slot.reclone_count||0,10)||0);
     var w=document.createElement('div'); w.className='asset-library-card';
     if(slot.slot_id) w.setAttribute('data-slot-id', slot.slot_id);
     if(!readonly && !completed){ w.tabIndex=0; w.setAttribute('role','button'); }
@@ -1097,14 +1096,13 @@
       var actions=document.createElement('div');
       actions.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:2px;padding-top:12px;border-top:1px solid rgba(148,164,187,.1);';
       var remain=document.createElement('div');
-      remain.textContent='\u5269\u4f59\u91cd\u65b0\u590d\u523b\u6b21\u6570\uff1a'+recloneRemain+'\u6b21';
-      remain.style.cssText='font-size:11.5px;color:'+(recloneRemain>0?'#94a4bb':'#f4708a')+';line-height:1.4;';
+      remain.textContent='\u5df2\u91cd\u65b0\u590d\u523b\uff1a'+recloneCount+'\u6b21';
+      remain.style.cssText='font-size:11.5px;color:#94a4bb;line-height:1.4;';
       var redo=document.createElement('button');
       redo.type='button';
-      redo.textContent=recloneRemain>0?'\u91cd\u65b0\u590d\u523b':'\u4e0d\u652f\u6301\u91cd\u65b0\u590d\u523b';
-      redo.disabled=recloneRemain<=0;
-      redo.style.cssText='height:32px;padding:0 12px;border:1px solid '+(recloneRemain>0?'rgba(45,212,191,.34)':'rgba(148,164,187,.12)')+';border-radius:9px;background:'+(recloneRemain>0?'rgba(45,212,191,.1)':'rgba(148,164,187,.06)')+';color:'+(recloneRemain>0?'#2dd4bf':'#5c6b82')+';font-size:12px;font-weight:700;cursor:'+(recloneRemain>0?'pointer':'not-allowed')+';font-family:inherit;white-space:nowrap;';
-      redo.onclick=function(e){ e.preventDefault(); e.stopPropagation(); if(recloneRemain>0) openCloneVoiceModal(slot); };
+      redo.textContent='\u91cd\u65b0\u590d\u523b';
+      redo.style.cssText='height:32px;padding:0 12px;border:1px solid rgba(45,212,191,.34);border-radius:9px;background:rgba(45,212,191,.1);color:#2dd4bf;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap;';
+      redo.onclick=function(e){ e.preventDefault(); e.stopPropagation(); openCloneVoiceModal(slot); };
       actions.appendChild(remain); actions.appendChild(redo); w.appendChild(actions);
     }
     if(slot.preview_url){
@@ -1426,6 +1424,15 @@
           .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
           .then(function(res){
             if(res.status===401){ HQ.login(); return; }
+            var detail=String((res.data&&res.data.detail)||'');
+            if(res.status===409 && detail.indexOf('\u97f3\u8272\u6b63\u5728\u590d\u523b\u4e2d\uff0c\u8bf7\u7b49\u5f85\u5b8c\u6210')>=0){
+              note.style.color='#e7b24c';
+              note.textContent='\u68c0\u6d4b\u5230\u8be5\u69fd\u4f4d\u5df2\u6709\u590d\u523b\u4efb\u52a1\uff0c\u6b63\u5728\u7ee7\u7eed\u67e5\u8be2\u8fdb\u5ea6...';
+              stopActivePreviewAudio();
+              renderAudioTab('personal');
+              pollCloneReady(slot.slot_id, note, 0, close, slot);
+              return;
+            }
             if(!res.data.ok){ throw new Error(res.data.detail||'VIP\u590d\u523b\u5931\u8d25'); }
             note.style.color='#e7b24c';
             note.textContent='VIP\u590d\u523b\u5df2\u63d0\u4ea4\uff0c\u6b63\u5728\u7b49\u5f85\u8bd5\u542c\u97f3\u9891...';
