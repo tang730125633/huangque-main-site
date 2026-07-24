@@ -102,6 +102,17 @@
     };
   }
 
+  function normalizeBlockers(input){
+    return (Array.isArray(input)?input:[]).map(function(item){
+      item=item&&typeof item==='object'?item:{};
+      return {
+        code:text(item.code),
+        message:text(item.message),
+        shot_id:item.shot_id==null?null:text(item.shot_id)
+      };
+    }).filter(function(item){ return item.code&&item.message; });
+  }
+
   function normalizeState(input,options){
     input=input&&typeof input==='object'?input:{};
     options=options&&typeof options==='object'?options:{};
@@ -127,6 +138,8 @@
       point_budget:Math.max(0,number(input.point_budget,0)),
       spent_points:Math.max(0,number(input.spent_points,0)),
       reserved_points:Math.max(0,number(input.reserved_points,0)),
+      handoff_blocked:!!input.handoff_blocked,
+      handoff_blockers:normalizeBlockers(input.handoff_blockers),
       shots:shots,
       selectedShotId:found?requested:(shots[0]?shots[0].id:null),
       filter:text(options.filter!=null?options.filter:(input.filter||'all')),
@@ -231,7 +244,8 @@
 
   function allShotsLocked(state){
     return state.shots.length>0&&state.shots.every(function(shot){
-      return shot.still.locked&&shotHasCompletedCurrent(state,shot);
+      return shot.still.locked&&shotHasCompletedCurrent(state,shot)&&
+        !(shot.still.job&&isActiveJobStatus(shot.still.job.status));
     });
   }
 
@@ -247,7 +261,7 @@
     var writable=state.canEdit&&!state.busy&&!state.stale&&!state.destroyed&&state.stage==='stills_review';
     var quote=state.quote&&typeof state.quote==='object'?number(state.quote.cost,0):number(state.quote,0);
     var budget=state.point_budget===0?'不限':state.point_budget+' 点';
-    var confirmable=writable&&allShotsLocked(state);
+    var confirmable=writable&&!state.handoff_blocked&&allShotsLocked(state);
     var batchable=writable&&state.shots.some(function(item){
       return !item.still.locked&&!shotHasCompletedCurrent(state,item)&&
         state.submittedShotIds.indexOf(item.id)<0&&
@@ -262,6 +276,7 @@
       )+'</strong><small>任务 '+escapeHtml(job.job_id)+' · '+(job.status==='failed'?
         escapeHtml(job.error||'生成失败')+' · '+(job.refunded?'已退款':job.refund_pending?'退款确认中':'请联系客服核对退款'):
         '预留 '+job.quoted_cost+' 点')+'</small></section>':'')+
+      (state.handoff_blockers.length?'<section class="nc-sdp-error" role="alert"><strong>暂时无法进入配音</strong><ul>'+state.handoff_blockers.map(function(item){ return '<li>'+escapeHtml(item.message)+'</li>'; }).join('')+'</ul></section>':'')+
       (state.error?'<section class="nc-sdp-error" role="alert"><strong>'+(state.stale?'版本冲突':'操作未完成')+'</strong><p>'+escapeHtml(state.error)+'</p>'+(state.stale?'<button type="button" data-action="refresh">刷新最新版本</button>':'')+'</section>':'')+
       '<div class="nc-sdp-generation-actions"><button type="button" class="is-primary" data-action="generate-current"'+disabledUnless(writable)+'>生成当前镜头</button>'+
       '<button type="button" data-action="retry-current"'+disabledUnless(writable)+'>重试当前镜头</button><button type="button" data-action="generate-batch"'+disabledUnless(batchable)+'>批量模式生成</button></div>'+
@@ -510,7 +525,13 @@
     }
     function confirmStage(){
       try{ ensureWritable(); }catch(error){ return Promise.reject(error); }
-      if(!allShotsLocked(view())){
+      var current=view();
+      if(current.handoff_blocked){
+        return Promise.reject(new Error(
+          current.handoff_blockers[0]&&current.handoff_blockers[0].message||'当前无法进入配音阶段'
+        ));
+      }
+      if(!allShotsLocked(current)){
         return Promise.reject(new Error('every shot requires a locked current completed matching-ratio still'));
       }
       return mutation(CONFIRM_PATH,{

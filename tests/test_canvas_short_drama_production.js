@@ -16,6 +16,8 @@ function sampleState(overrides = {}) {
     point_budget: 100,
     spent_points: 24,
     reserved_points: 12,
+    handoff_blocked: false,
+    handoff_blockers: [],
     shots: [
       {
         id: 'shot-2', shot_key: '第二镜', sort_order: 2, duration: 5,
@@ -127,6 +129,18 @@ function testNormalizationAndRenderer() {
     production.renderWorkspace(sampleState({ stale: true, error: '<stale>' }), {}),
     /&lt;stale&gt;[\s\S]*data-action="refresh"/,
   );
+  const blockedState = terminalState();
+  blockedState.shots[0].still.locked = true;
+  blockedState.handoff_blocked = true;
+  blockedState.handoff_blockers = [
+    { code: 'active_job', shot_id: 'shot-2', message: '<关键帧任务运行中>' },
+  ];
+  const blocked = production.normalizeState(blockedState);
+  assert.equal(blocked.handoff_blocked, true);
+  assert.deepEqual(blocked.handoff_blockers.map((item) => item.code), ['active_job']);
+  const blockedHtml = production.renderWorkspace(blockedState);
+  assert.match(blockedHtml, /&lt;关键帧任务运行中&gt;/);
+  assert.match(blockedHtml, /data-action="confirm-stage"[^>]*disabled/);
   const mixedBatchHtml = production.renderWorkspace(batchState(), { selectedShotId: 'shot-1' });
   assert.match(mixedBatchHtml, /data-action="generate-batch"/);
   assert.doesNotMatch(mixedBatchHtml, /data-action="generate-batch"[^>]*disabled/,
@@ -473,6 +487,13 @@ async function testConfirmationRequiresEveryLockedCurrentMatchingDoneVersion() {
   invalidRatio.shots[0].still.locked = true;
   invalidRatio.shots[0].still.versions[0].ratio = 'constructor';
   variants.push(invalidRatio);
+  const activeJob = terminalState();
+  activeJob.shots[0].still.locked = true;
+  activeJob.shots[0].still.job = {
+    id: 'active-handoff', job_id: 999, kind: 'still',
+    status: 'running', quoted_cost: 12,
+  };
+  variants.push(activeJob);
 
   for (const state of variants) {
     let requests = 0;
@@ -491,6 +512,28 @@ async function testConfirmationRequiresEveryLockedCurrentMatchingDoneVersion() {
     assert.equal(requests, 1, 'invalid confirmation performs no POST');
     workspace.destroy();
   }
+
+  const blocked = terminalState();
+  blocked.shots[0].still.locked = true;
+  blocked.handoff_blocked = true;
+  blocked.handoff_blockers = [
+    { code: 'active_job', shot_id: 'shot-2', message: '关键帧任务仍在运行中' },
+  ];
+  let blockedRequests = 0;
+  const blockedWorkspace = production.createWorkspace({
+    projectId: blocked.project_id, document: null,
+    client: {
+      json(path) {
+        blockedRequests += 1;
+        if (path.startsWith('/api/gen/short-drama/production?')) return Promise.resolve(clone(blocked));
+        throw new Error(`blocked confirmation must not request ${path}`);
+      },
+    },
+  });
+  await blockedWorkspace.ready;
+  await assert.rejects(blockedWorkspace.confirmStage(), /关键帧任务仍在运行中/);
+  assert.equal(blockedRequests, 1, 'server blocker prevents confirmation POST');
+  blockedWorkspace.destroy();
 }
 
 async function testTrueBatchQuotesConfirmsSubmitsAndPollsEligibleShots() {
