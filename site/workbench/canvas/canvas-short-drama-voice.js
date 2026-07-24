@@ -1,0 +1,229 @@
+(function(root,factory){
+  var api=factory();
+  if(typeof module==='object'&&module.exports) module.exports=api;
+  if(root){ root.HQCanvas=root.HQCanvas||{}; root.HQCanvas.shortDramaVoice=api; }
+})(typeof globalThis!=='undefined'?globalThis:this,function(){
+  'use strict';
+  var VOICE_PATH='/api/gen/short-drama/voice';
+  var VOICES_PATH='/api/gen/audio/voices';
+
+  function text(value){ return String(value==null?'':value); }
+  function number(value,fallback){
+    var result=Number(value);
+    return isFinite(result)?result:(fallback==null?0:fallback);
+  }
+  function clone(value){
+    if(Array.isArray(value)) return value.map(clone);
+    if(value&&typeof value==='object'){
+      var copy={};
+      Object.keys(value).forEach(function(key){ copy[key]=clone(value[key]); });
+      return copy;
+    }
+    return value;
+  }
+  function escapeHtml(value){
+    return text(value).replace(/[&<>"']/g,function(character){
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[character];
+    });
+  }
+  function voiceItems(input){
+    var items=Array.isArray(input)?input:(input&&Array.isArray(input.items)?input.items:[]);
+    return items.map(function(item){
+      return {
+        voice_key:text(item.voice_key),
+        display_name:text(item.display_name||item.voice_key||'未命名音色'),
+        preview_url:text(item.preview_url)
+      };
+    });
+  }
+  function normalizeLine(line,index,voiceMap){
+    line=line&&typeof line==='object'?line:{};
+    var voiceKey=text(line.voice_key);
+    return {
+      id:line.id,sort_order:number(line.sort_order,index),
+      line_type:line.character_key==='narrator'?'narration':'dialogue',
+      character_key:text(line.character_key),
+      character_name:text(line.character_name||line.character_key),
+      source_text:text(line.source_text),speech_text:text(line.speech_text),
+      subtitle_text:text(line.subtitle_text),
+      subtitle_visible:line.subtitle_visible!==false,
+      voice_key:voiceKey,
+      voice_name:voiceMap[voiceKey]?voiceMap[voiceKey].display_name:(voiceKey||'未选择音色'),
+      speed:number(line.speed,1),pitch:number(line.pitch,0),volume:number(line.volume,0),
+      current_version:line.current_version,start_ms:line.start_ms,end_ms:line.end_ms
+    };
+  }
+  function normalizeState(input,voices,options){
+    input=input&&typeof input==='object'?input:{};
+    options=options&&typeof options==='object'?options:{};
+    var catalog=voiceItems(voices),voiceMap=Object.create(null);
+    catalog.forEach(function(item){ voiceMap[item.voice_key]=item; });
+    var shots=(Array.isArray(input.shots)?input.shots:[]).map(function(shot,index){
+      shot=shot&&typeof shot==='object'?shot:{};
+      return {
+        id:shot.id,shot_key:text(shot.shot_key||('镜头 '+(index+1))),
+        sort_order:number(shot.sort_order,index),duration:number(shot.duration,0),
+        locked:!!shot.locked,status:text(shot.status||'pending'),
+        lines:(Array.isArray(shot.lines)?shot.lines:[]).map(function(line,lineIndex){
+          return normalizeLine(line,lineIndex,voiceMap);
+        })
+      };
+    }).sort(function(left,right){ return left.sort_order-right.sort_order; });
+    var selected=options.selectedShotId||input.selectedShotId;
+    if(!shots.some(function(shot){ return shot.id===selected; })) selected=shots[0]&&shots[0].id;
+    return {
+      project_id:input.project_id,revision:number(input.revision,0),
+      stage:text(input.stage||'voice_review'),ratio:text(input.ratio||'9:16'),
+      point_budget:number(input.point_budget,0),spent_points:number(input.spent_points,0),
+      reserved_points:number(input.reserved_points,0),shots:shots,voices:catalog,
+      selectedShotId:selected,busy:!!options.busy,error:text(options.error),
+      destroyed:!!options.destroyed
+    };
+  }
+  function selectedShot(state){
+    return state.shots.find(function(shot){ return shot.id===state.selectedShotId; })||null;
+  }
+  function shotStatusLabel(status){
+    switch(status){
+      case 'pending': return '待配音';
+      case 'silent': return '静音';
+      case 'ready': return '待核对';
+      case 'done': return '已完成';
+      case 'failed': return '失败';
+      default: return '状态未知';
+    }
+  }
+  function renderWorkspace(input,options){
+    options=options||{};
+    var state=normalizeState(input,options.voices,options);
+    var shot=selectedShot(state);
+    var rail=state.shots.map(function(item){
+      return '<button type="button" class="nc-sdv-shot'+
+        (item.id===state.selectedShotId?' is-selected':'')+
+        '" data-shot-id="'+escapeHtml(item.id)+'"><strong>'+escapeHtml(item.shot_key)+
+        '</strong><small>'+item.duration+' 秒 · '+item.lines.length+' 句 · '+
+        shotStatusLabel(item.status)+'</small></button>';
+    }).join('');
+    var lines=shot?shot.lines.map(function(line){
+      return '<article class="nc-sdv-line"><header><strong>'+
+        escapeHtml(line.character_name)+'</strong>'+
+        (line.line_type==='narration'?'<span class="nc-sdv-line-type">旁白/叙述</span>':'')+
+        '<span>'+escapeHtml(line.voice_name)+
+        '</span></header><label>发音文本<textarea disabled>'+
+        escapeHtml(line.speech_text)+'</textarea></label><label>字幕文本<textarea disabled>'+
+        escapeHtml(line.subtitle_text)+'</textarea></label><div class="nc-sdv-params">'+
+        '<span>语速 '+line.speed+'</span><span>音调 '+line.pitch+
+        '</span><span>音量 '+line.volume+'</span></div>'+
+        '<button type="button" data-action="generate-line" disabled>生成配音</button></article>';
+    }).join(''):'';
+    var editorBody;
+    if(state.error){
+      editorBody='<section class="nc-sdv-empty" data-state="error" role="alert">'+
+        '<strong>配音数据加载失败</strong><p>'+escapeHtml(state.error)+'</p></section>';
+    }else if(state.busy){
+      editorBody='<section class="nc-sdv-empty" data-state="loading">正在加载配音数据…</section>';
+    }else if(!shot){
+      editorBody='<section class="nc-sdv-empty" data-state="empty">暂无镜头，请先完成分镜。</section>';
+    }else if(shot.lines.length){
+      editorBody=lines+'<section class="nc-sdv-timeline">字幕时间轴将在配音生成后显示。</section>';
+    }else if(shot.status==='silent'){
+      editorBody='<section class="nc-sdv-empty" data-state="silent">当前镜头为静音镜头，没有台词。</section>'+
+        '<section class="nc-sdv-timeline">静音镜头无需生成配音。</section>';
+    }else{
+      editorBody='<section class="nc-sdv-empty" data-state="pending">当前镜头台词尚未就绪。</section>';
+    }
+    return '<div class="nc-short-drama-voice" data-busy="'+state.busy+'">'+
+      '<aside class="nc-sdv-rail"><header><span>配音字幕</span><h2>镜头列表</h2></header>'+
+      rail+'</aside><main class="nc-sdv-editor"><header><span>逐句资产</span>'+
+      '<h2>台词与字幕</h2></header>'+editorBody+'</main>'+
+      '<aside class="nc-sdv-inspector"><header><span>只读基础阶段</span>'+
+      '<h2>配音控制台</h2></header><dl><div><dt>项目预算</dt><dd>'+
+      state.point_budget+' 点</dd></div><div><dt>累计已用</dt><dd>'+
+      state.spent_points+' 点</dd></div></dl>'+
+      '<button type="button" data-action="generate-shot" disabled>生成当前镜头</button>'+
+      '<button type="button" data-action="save-timeline" disabled>保存字幕时间轴</button>'+
+      '<p>本批次仅开放数据核对和音色映射，付费生成将在下一批次验收。</p>'+
+      '</aside></div>';
+  }
+  function createWorkspace(options){
+    options=options||{};
+    if(!options.client||typeof options.client.json!=='function') throw new Error('voice workspace requires a JSON client');
+    if(!options.projectId) throw new Error('voice workspace requires projectId');
+    var client=options.client;
+    var destroyed=false,snapshot=null,voices=[],host=options.host||null,requestGeneration=0;
+    var ui={busy:true,error:'',selectedShotId:options.selectedShotId};
+    function callJson(path,requestOptions){
+      return Promise.resolve().then(function(){
+        if(destroyed) return null;
+        var scoped=requestOptions?Object.assign({},requestOptions):{};
+        if(options.boardId){
+          scoped.headers=Object.assign({},scoped.headers||{}, {
+            'X-Canvas-Board-Id':String(options.boardId)
+          });
+        }
+        return client.json(path,scoped);
+      });
+    }
+    function render(){
+      var html=renderWorkspace(snapshot||{}, {
+        voices:voices,busy:destroyed?false:ui.busy,error:ui.error,
+        selectedShotId:ui.selectedShotId,destroyed:destroyed
+      });
+      if(host&&!destroyed) host.innerHTML=html;
+      return html;
+    }
+    function selectShot(shotId){
+      if(destroyed||!snapshot||!Array.isArray(snapshot.shots)) return false;
+      var exists=snapshot.shots.some(function(shot){ return shot.id===shotId; });
+      if(!exists) return false;
+      ui.selectedShotId=shotId;render();return true;
+    }
+    function onClick(event){
+      var node=event&&event.target;
+      while(node&&node!==host){
+        if(node.getAttribute&&node.getAttribute('data-shot-id')!=null){
+          selectShot(node.getAttribute('data-shot-id'));return;
+        }
+        node=node.parentNode;
+      }
+    }
+    if(host&&typeof host.addEventListener==='function') host.addEventListener('click',onClick);
+    function reload(){
+      if(destroyed) return Promise.resolve(null);
+      var generation=++requestGeneration;
+      ui.busy=true;ui.error='';render();
+      return Promise.all([
+        callJson(VOICE_PATH+'?project_id='+encodeURIComponent(options.projectId)),
+        callJson(VOICES_PATH)
+      ]).then(function(results){
+        if(destroyed||generation!==requestGeneration) return null;
+        snapshot=results[0];voices=voiceItems(results[1]);ui.busy=false;render();
+        return snapshot;
+      }).catch(function(error){
+        if(destroyed||generation!==requestGeneration) return null;
+        ui.busy=false;ui.error=text(error&&error.message||error);render();
+        return null;
+      });
+    }
+    var ready=reload();
+    return {
+      projectId:options.projectId,ready:ready,render:render,reload:reload,
+      selectShot:selectShot,
+      getState:function(){
+        return clone(normalizeState(snapshot||{},voices,{
+          busy:destroyed?false:ui.busy,error:ui.error,
+          selectedShotId:ui.selectedShotId,destroyed:destroyed
+        }));
+      },
+      destroy:function(){
+        if(host&&typeof host.removeEventListener==='function') host.removeEventListener('click',onClick);
+        destroyed=true;requestGeneration+=1;ui.busy=false;ui.error='';host=null;snapshot=null;voices=[];
+      }
+    };
+  }
+  return {
+    normalizeState:normalizeState,
+    renderWorkspace:renderWorkspace,
+    createWorkspace:createWorkspace
+  };
+});

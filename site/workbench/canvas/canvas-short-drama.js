@@ -585,7 +585,8 @@
   function createWorkspace(options){
     options=options||{};
     var client=options.client||createClient(options.apiClient,options.poll,options.boardId);
-    var project=null,destroyed=false,host=null,productionHost=null,productionWorkspace=null,loadGeneration=0;
+    var project=null,destroyed=false,host=null,productionHost=null,productionWorkspace=null,
+      loadGeneration=0,productionGeneration=0;
     var canEdit=options.canEdit!==false,onChange=typeof options.onChange==='function'?options.onChange:function(){};
     var confirmHook=typeof options.confirm==='function'?options.confirm:
       (typeof window!=='undefined'&&typeof window.confirm==='function'?window.confirm.bind(window):function(){ return false; });
@@ -606,6 +607,7 @@
       return html;
     }
     function destroyProductionWorkspace(){
+      productionGeneration+=1;
       if(!productionWorkspace) return;
       var delegated=productionWorkspace;
       productionWorkspace=null;productionHost=null;
@@ -620,20 +622,29 @@
       if(meta) meta.textContent=(project&&project.id||options.projectId||'')+' · r'+(project&&project.revision||0);
       if(nav) nav.innerHTML=renderStageNavigation(project,state);
     }
-    function acceptProductionSummary(summary){
+    function acceptProductionSummary(summary,generation){
       if(destroyed||!project||!summary||typeof summary!=='object') return;
       var summaryProjectId=summary.project_id||summary.id;
       if(summaryProjectId&&summaryProjectId!==(project.id||project.project_id)) return;
+      var wasVoiceStage=project.stage==='voice_review';
       var next=Object.assign({},project);
       ['revision','stage','ratio','spent_points','point_budget','reserved_points'].forEach(function(key){
         if(Object.prototype.hasOwnProperty.call(summary,key)) next[key]=summary[key];
       });
       delete next.progress;
       project=next;
+      var isVoiceStage=project.stage==='voice_review';
       state.activeStage=project.stage;
       state.busy=false;state.error='';state.stale=false;state.loadFailed=false;state.loadStatus=0;
-      syncProductionFrame();
+      if(wasVoiceStage===isVoiceStage) syncProductionFrame();
       onChange(summarizeProject(project));
+      if(wasVoiceStage===isVoiceStage) return Promise.resolve(project);
+      if(destroyed||generation!==loadGeneration) return Promise.resolve(null);
+      return activateProductionWorkspace(generation).catch(function(error){
+        if(destroyed||generation!==loadGeneration) return null;
+        showWorkspaceError(error,true);
+        return null;
+      });
     }
     function confirmProduction(cost,quote,body){
       var points=Math.max(0,Number(cost)||0),message;
@@ -650,8 +661,13 @@
     function activateProductionWorkspace(generation){
       var activationGeneration=generation==null?loadGeneration:generation;
       if(activationGeneration!==loadGeneration) return Promise.resolve(null);
-      var productionModule=Object.prototype.hasOwnProperty.call(options,'productionModule')?
-        options.productionModule:(root&&root.HQCanvas&&root.HQCanvas.shortDramaProduction);
+      var isVoiceStage=project&&project.stage==='voice_review';
+      var moduleOption=isVoiceStage?'voiceModule':'productionModule';
+      var defaultModule=isVoiceStage?
+        (root&&root.HQCanvas&&root.HQCanvas.shortDramaVoice):
+        (root&&root.HQCanvas&&root.HQCanvas.shortDramaProduction);
+      var productionModule=Object.prototype.hasOwnProperty.call(options,moduleOption)?
+        options[moduleOption]:defaultModule;
       if(destroyed) return Promise.reject(new Error('workspace destroyed'));
       if(!productionModule||typeof productionModule.createWorkspace!=='function'){
         return Promise.reject(new Error('短剧生产工作区未加载，请刷新页面重试'));
@@ -662,12 +678,13 @@
         return Promise.reject(new Error('短剧生产工作区缺少已认证 API 客户端，请刷新页面重试'));
       }
       destroyProductionWorkspace();
+      var delegateGeneration=productionGeneration;
       state.activeStage=project.stage;
       if(host&&!destroyed){
         host.innerHTML=renderProductionFrame(project,state,'');
         productionHost=host.querySelector('[data-production-host]');
       }
-      var delegated;
+      var delegated,pendingSummaries=[];
       try{
         delegated=productionModule.createWorkspace({
           projectId:options.projectId,
@@ -677,7 +694,12 @@
           canEdit:canEdit,
           confirm:confirmProduction,
           onChange:function(summary){
-            if(!destroyed&&activationGeneration===loadGeneration) acceptProductionSummary(summary);
+            if(destroyed||activationGeneration!==loadGeneration||delegateGeneration!==productionGeneration){
+              return Promise.resolve(null);
+            }
+            if(!delegated){ pendingSummaries.push(summary);return Promise.resolve(null); }
+            if(productionWorkspace!==delegated) return Promise.resolve(null);
+            return acceptProductionSummary(summary,activationGeneration);
           }
         });
       }catch(error){
@@ -689,12 +711,32 @@
         return Promise.reject(new Error('短剧生产工作区接口无效，请刷新页面重试'));
       }
       productionWorkspace=delegated;
-      return Promise.resolve(delegated.ready).then(function(){
-        if(destroyed||activationGeneration!==loadGeneration||productionWorkspace!==delegated) return null;
-        render();
-        return project;
+      var readyResult=Promise.resolve(delegated.ready).then(function(){
+        return {ok:true};
+      },function(error){
+        return {ok:false,error:error};
+      });
+      var pending=Promise.resolve(project);
+      pendingSummaries.forEach(function(summary){
+        pending=pending.then(function(){
+          if(destroyed||activationGeneration!==loadGeneration||delegateGeneration!==productionGeneration||
+            productionWorkspace!==delegated) return null;
+          return acceptProductionSummary(summary,activationGeneration);
+        });
+      });
+      return pending.then(function(){
+        if(destroyed||activationGeneration!==loadGeneration||delegateGeneration!==productionGeneration||
+          productionWorkspace!==delegated) return null;
+        return readyResult.then(function(result){
+          if(destroyed||activationGeneration!==loadGeneration||delegateGeneration!==productionGeneration||
+            productionWorkspace!==delegated) return null;
+          if(!result.ok) throw result.error;
+          render();
+          return project;
+        });
       }).catch(function(error){
-        if(destroyed||activationGeneration!==loadGeneration||productionWorkspace!==delegated) return null;
+        if(destroyed||activationGeneration!==loadGeneration||delegateGeneration!==productionGeneration||
+          productionWorkspace!==delegated) return null;
         throw error;
       });
     }

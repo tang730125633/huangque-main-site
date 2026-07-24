@@ -74,6 +74,8 @@ ASSETS = (
     Asset("canvas/canvas-short-drama.css", required=False),
     Asset("canvas/canvas-short-drama-production.js", required=False),
     Asset("canvas/canvas-short-drama-production.css", required=False),
+    Asset("canvas/canvas-short-drama-voice.js", required=False),
+    Asset("canvas/canvas-short-drama-voice.css", required=False),
 )
 
 
