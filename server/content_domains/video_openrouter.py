@@ -168,27 +168,18 @@ def generate(model, prompt, duration, aspect_ratio, resolution, image_urls=None,
     openrouter_model = OPENROUTER_MODEL_MAP.get(model)
     if not openrouter_model:
         raise ValueError("OpenRouter 不支持果肉视频模型：%s" % model)
-    duration = int(duration)
-    refs = [str(url).strip() for url in (image_urls or []) if str(url).strip()]
-    if model == "grok-imagine-video-1.5":
-        if len(refs) != 1:
-            raise ValueError("Grok Video 1.5 仅支持1张首帧图")
-        if duration < 1 or duration > 15:
-            raise ValueError("Grok Video 1.5 视频时长必须是1-15秒整数")
-    else:
-        max_duration = 10 if refs else 15
-        if duration < 1 or duration > max_duration:
-            raise ValueError("Grok Imagine Video 视频时长必须是1-%d秒整数" % max_duration)
     payload = {
         "model": openrouter_model,
         "prompt": str(prompt or "").strip(),
-        "duration": duration,
+        "duration": int(duration),
         "resolution": resolution,
     }
+    refs = [str(url).strip() for url in (image_urls or []) if str(url).strip()]
     if model == "grok-imagine-video-1.5":
-        payload["frame_images"] = [{
-            "type": "image_url", "image_url": {"url": refs[0]}, "frame_type": "first_frame",
-        }]
+        if refs:
+            payload["frame_images"] = [{
+                "type": "image_url", "image_url": {"url": refs[0]}, "frame_type": "first_frame",
+            }]
     else:
         payload["aspect_ratio"] = aspect_ratio
         if refs:
