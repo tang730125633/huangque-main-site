@@ -582,7 +582,7 @@
           <div id="grokExamples" style="display:flex;flex-wrap:wrap;gap:7px;margin-top:10px;"></div>
         </div>
         <div class="panel grok-generate-only" style="margin-top:12px;">
-          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，官方图生视频最多 7 张</span></div>
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span id="grokRefHint" style="color:#5c6b82;">· 可选，通用版最多 7 张</span></div>
           <div id="grokRefGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;">
             <label id="grokRefAdd" style="position:relative;display:flex;align-items:center;justify-content:center;min-height:74px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;background:rgba(7,11,19,.4);cursor:pointer;">
               <input id="grokRefFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
@@ -2368,6 +2368,12 @@
       if(!is15 && selectedGrokResolution==='1080p'){
         var p=document.querySelector('[data-grok-resolution="720p"]'); if(p)p.click();
       }
+      var hint=$('grokRefHint'); if(hint)hint.textContent=is15?'· 必选，仅支持 1 张首帧图':'· 可选，通用版最多 7 张';
+      if(is15 && grokRefData.length>1){
+        grokRefData.splice(1);
+        refreshGrokRefs();
+        toast('Grok Video 1.5 仅保留第1张首帧图');
+      }
     }
     if(b.dataset.motion) selectedMotion=b.dataset.motion;
     if(b.dataset.bgmVolume) selectedBgmVolume=Number(b.dataset.bgmVolume);
@@ -2807,8 +2813,8 @@
     if(editing && !grokEditVideoData){toast('请先上传不超过 8.7 秒的 MP4 参考视频');return;}
     var ratio=channel==='grok'?(editing?null:selectedGrokRatio):(channel==='omni'?selectedOmniRatio:selectedSeedanceRatio);
     var _refArr=channel==='grok'?grokRefData:(channel==='micro'?microRefData:(channel==='omni'?omniRefData:null));
-    if(channel==='grok' && !editing && selectedGrokModel==='grok-imagine-video-1.5' && !(_refArr&&_refArr.length)){
-      toast('Grok Video 1.5 仅支持图生视频，请先上传参考图'); return;
+    if(channel==='grok' && !editing && selectedGrokModel==='grok-imagine-video-1.5' && (!_refArr||_refArr.length!==1)){
+      toast('Grok Video 1.5 必须上传且只能上传1张首帧图'); return;
     }
     var xlPayload={channel:channel,prompt:prompt};
     if(channel==='grok'){
@@ -2989,6 +2995,8 @@
   // ---- 果肉(Grok)官方面板：基础图生视频接口单图输入 ----
   var GROK_REF_MAX=7;
   var grokRefData=[];
+  var refreshGrokRefs=function(){};
+  function grokRefLimit(){return selectedGrokModel==='grok-imagine-video-1.5'?1:GROK_REF_MAX;}
   var microRefData=[], omniRefData=[];
   restoreOfficialVideoRetries();
   (function setupGrokPanel(){
@@ -3034,14 +3042,16 @@
         box.appendChild(img); box.appendChild(x);
         grid.insertBefore(box, addTile);
       });
-      addTile.style.display = grokRefData.length>=GROK_REF_MAX ? 'none' : '';
+      addTile.style.display = grokRefData.length>=grokRefLimit() ? 'none' : '';
     }
+    refreshGrokRefs=renderGrokRefs;
     function addGrokRefFile(f){
       if(!f) return;
-      if(grokRefData.length>=GROK_REF_MAX){ toast('最多上传'+GROK_REF_MAX+'张参考图'); return; }
+      var limit=grokRefLimit();
+      if(grokRefData.length>=limit){ toast(selectedGrokModel==='grok-imagine-video-1.5'?'Grok Video 1.5 仅支持1张首帧图':'最多上传'+limit+'张参考图'); return; }
       if(f.size>8*1024*1024){ toast('参考图太大，请压到 8MB 内'); return; }
       var rd=new FileReader();
-      rd.onload=function(){ grokRefData.push(rd.result); renderGrokRefs(); toast('参考图已添加('+grokRefData.length+'/'+GROK_REF_MAX+')'); };
+      rd.onload=function(){ grokRefData.push(rd.result); renderGrokRefs(); toast('参考图已添加('+grokRefData.length+'/'+limit+')'); };
       rd.readAsDataURL(f);
     }
     if(inp){ inp.onchange=function(){ addGrokRefFile(inp.files&&inp.files[0]); inp.value=''; }; }

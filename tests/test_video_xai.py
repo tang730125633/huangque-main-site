@@ -117,6 +117,52 @@ class XaiVideoTests(unittest.TestCase):
                 )
         self.assertEqual(opener.open.call_count, 1)
 
+    def test_standard_model_accepts_image_duration_15(self):
+        opener = Mock()
+        opener.open.side_effect = [
+            _Response({"request_id": "rid-text-15"}),
+            _Response({"status": "done", "video": {
+                "url": "https://vidgen.x.ai/text15.mp4", "duration": 15,
+            }}),
+        ]
+        clock = iter([0, 0, 1])
+        with patch.object(video_xai, "XAI_API_KEY", "test-key"), \
+             patch.object(video_xai, "_opener", return_value=opener):
+            video_xai.generate(
+                "grok-imagine-video", "demo", 15, "16:9", "720p",
+                image_url="https://cos.example/reference.jpg",
+                now=lambda: next(clock), sleep=lambda _: None,
+            )
+        payload = json.loads(opener.open.call_args_list[0].args[0].data)
+        self.assertEqual(payload["duration"], 15)
+        self.assertEqual(payload["aspect_ratio"], "16:9")
+        self.assertEqual(payload["image"], {"url": "https://cos.example/reference.jpg"})
+
+    def test_version_15_requires_image_and_preserves_aspect_ratio(self):
+        with self.assertRaisesRegex(ValueError, "仅支持1张首帧图"):
+            video_xai.generate(
+                "grok-imagine-video-1.5", "demo", 10, "16:9", "720p",
+            )
+
+        opener = Mock()
+        opener.open.side_effect = [
+            _Response({"request_id": "rid-15"}),
+            _Response({"status": "done", "video": {
+                "url": "https://vidgen.x.ai/v15.mp4", "duration": 15,
+            }}),
+        ]
+        clock = iter([0, 0, 1])
+        with patch.object(video_xai, "XAI_API_KEY", "test-key"), \
+             patch.object(video_xai, "_opener", return_value=opener):
+            video_xai.generate(
+                "grok-imagine-video-1.5", "demo", 15, "16:9", "1080p",
+                image_url="https://cos.example/first.jpg",
+                now=lambda: next(clock), sleep=lambda _: None,
+            )
+        payload = json.loads(opener.open.call_args_list[0].args[0].data)
+        self.assertEqual(payload["aspect_ratio"], "16:9")
+        self.assertEqual(payload["image"], {"url": "https://cos.example/first.jpg"})
+
     def test_resume_polls_existing_id_without_post(self):
         opener = Mock()
         opener.open.return_value = _Response({"status": "done", "video": {
