@@ -117,7 +117,7 @@ class XaiVideoTests(unittest.TestCase):
                 )
         self.assertEqual(opener.open.call_count, 1)
 
-    def test_standard_model_accepts_duration_15(self):
+    def test_standard_model_accepts_image_duration_15(self):
         opener = Mock()
         opener.open.side_effect = [
             _Response({"request_id": "rid-text-15"}),
@@ -130,12 +130,15 @@ class XaiVideoTests(unittest.TestCase):
              patch.object(video_xai, "_opener", return_value=opener):
             video_xai.generate(
                 "grok-imagine-video", "demo", 15, "16:9", "720p",
+                image_url="https://cos.example/reference.jpg",
                 now=lambda: next(clock), sleep=lambda _: None,
             )
         payload = json.loads(opener.open.call_args_list[0].args[0].data)
         self.assertEqual(payload["duration"], 15)
+        self.assertEqual(payload["aspect_ratio"], "16:9")
+        self.assertEqual(payload["image"], {"url": "https://cos.example/reference.jpg"})
 
-    def test_version_15_requires_image_and_omits_aspect_ratio(self):
+    def test_version_15_requires_image_and_preserves_aspect_ratio(self):
         with self.assertRaisesRegex(ValueError, "仅支持1张首帧图"):
             video_xai.generate(
                 "grok-imagine-video-1.5", "demo", 10, "16:9", "720p",
@@ -157,7 +160,7 @@ class XaiVideoTests(unittest.TestCase):
                 now=lambda: next(clock), sleep=lambda _: None,
             )
         payload = json.loads(opener.open.call_args_list[0].args[0].data)
-        self.assertNotIn("aspect_ratio", payload)
+        self.assertEqual(payload["aspect_ratio"], "16:9")
         self.assertEqual(payload["image"], {"url": "https://cos.example/first.jpg"})
 
     def test_resume_polls_existing_id_without_post(self):

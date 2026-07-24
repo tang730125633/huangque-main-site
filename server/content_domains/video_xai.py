@@ -192,10 +192,9 @@ def generate(model, prompt, duration, aspect_ratio, resolution, image_url=None,
         "model": model,
         "prompt": str(prompt or "").strip(),
         "duration": duration,
+        "aspect_ratio": aspect_ratio,
         "resolution": resolution,
     }
-    if model != "grok-imagine-video-1.5":
-        payload["aspect_ratio"] = aspect_ratio
     if image_url:
         payload["image"] = {"url": image_url}
 
