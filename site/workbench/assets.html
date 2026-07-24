@@ -1426,6 +1426,15 @@
           .then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
           .then(function(res){
             if(res.status===401){ HQ.login(); return; }
+            var detail=String((res.data&&res.data.detail)||'');
+            if(res.status===409 && detail.indexOf('\u97f3\u8272\u6b63\u5728\u590d\u523b\u4e2d\uff0c\u8bf7\u7b49\u5f85\u5b8c\u6210')>=0){
+              note.style.color='#e7b24c';
+              note.textContent='\u68c0\u6d4b\u5230\u8be5\u69fd\u4f4d\u5df2\u6709\u590d\u523b\u4efb\u52a1\uff0c\u6b63\u5728\u7ee7\u7eed\u67e5\u8be2\u8fdb\u5ea6...';
+              stopActivePreviewAudio();
+              renderAudioTab('personal');
+              pollCloneReady(slot.slot_id, note, 0, close, slot);
+              return;
+            }
             if(!res.data.ok){ throw new Error(res.data.detail||'VIP\u590d\u523b\u5931\u8d25'); }
             note.style.color='#e7b24c';
             note.textContent='VIP\u590d\u523b\u5df2\u63d0\u4ea4\uff0c\u6b63\u5728\u7b49\u5f85\u8bd5\u542c\u97f3\u9891...';
