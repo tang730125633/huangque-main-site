@@ -2970,7 +2970,8 @@ def _xiaole_pick_video_url(output):
             return v
     return None
 
-def _xiaole_download_candidates(url, tunnel_proxy, origin_headers=None):
+def _xiaole_download_candidates(
+        url, tunnel_proxy, origin_headers=None, direct_first=False):
     """成片下载候选链(GET 幂等，可自由多档尝试，不像出图 POST 有重复计费顾虑)。顺序：
       ① 原始 URL 走 egress 快隧道(Reality VPS/mihomo)—— tunnel_proxy 非空才加，避开拥塞的 heygen 中转
       ② heygen 法兰克福 /cdn/ 中转 —— 兜底(拥塞时慢到分钟级)，走进程默认(NO_PROXY 含 zelong.vip → 直连中转)
@@ -2995,7 +2996,11 @@ def _xiaole_download_candidates(url, tunnel_proxy, origin_headers=None):
         if token:
             headers["X-Relay-Token"] = token
         candidates.append((fetch, headers, None))
-    candidates.append((url, dict(plain_headers), None))
+    direct = (url, dict(plain_headers), None)
+    if direct_first:
+        candidates.insert(0, direct)
+    else:
+        candidates.append(direct)
     return candidates
 
 
@@ -3020,7 +3025,8 @@ def _download_xiaole_video(
     if public_only and not _is_public_http_url(url):
         raise RuntimeError("视频下载地址不是公网 HTTP(S) URL")
     candidates = _xiaole_download_candidates(
-        url, egress.preferred_proxy(), origin_headers=origin_headers
+        url, egress.preferred_proxy(), origin_headers=origin_headers,
+        direct_first=public_only,
     )
     # 下载中断(IncompleteRead/网络抖动)自动重试；前一档耗尽后换下一档
     data = None
