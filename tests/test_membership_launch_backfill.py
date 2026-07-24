@@ -1,3 +1,4 @@
+import csv
 import importlib.util
 import sqlite3
 import tempfile
@@ -56,6 +57,12 @@ class MembershipLaunchBackfillTests(unittest.TestCase):
                 status TEXT NOT NULL,
                 created_at INTEGER NOT NULL
             );
+            CREATE TABLE membership_voice_slot_entitlements(
+                username TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                source_order_id TEXT,
+                created_at INTEGER NOT NULL
+            );
             """
         )
         conn.executemany(
@@ -85,11 +92,36 @@ class MembershipLaunchBackfillTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_dry_run_selects_only_eligible_non_members_without_writing(self):
-        result = MIGRATION.run(self.db, now="2026-07-25T12:00:00+08:00")
+    def write_manifest(self, approved):
+        path = Path(self.tmp.name) / "approved.csv"
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(
+                stream, fieldnames=("username", "created_at", "reason", "approved")
+            )
+            writer.writeheader()
+            for username in approved:
+                writer.writerow({
+                    "username": username,
+                    "created_at": "2026-07-20 12:00:00",
+                    "reason": "manual_confirmed",
+                    "approved": "yes",
+                })
+        return path
+
+    def test_discovery_outputs_auditable_candidates_without_writing(self):
+        output = Path(self.tmp.name) / "candidates.csv"
+        result = MIGRATION.run(
+            self.db, now="2026-07-25T12:00:00+08:00", discovery_out=output,
+        )
         self.assertEqual(result["matched"], 2)
         self.assertEqual(result["updated"], 0)
         self.assertEqual(result["skipped_existing_members"], 1)
+        text = output.read_text(encoding="utf-8-sig")
+        self.assertIn("username,created_at,reason,approved", text)
+        self.assertIn("before_noted", text)
+        self.assertIn("approved_recharge_with_note", text)
+        self.assertIn("since_cutoff", text)
+        self.assertIn("registered_since_2026-07-21", text)
         conn = sqlite3.connect(self.db)
         try:
             self.assertEqual(
@@ -101,12 +133,18 @@ class MembershipLaunchBackfillTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_apply_is_backed_up_idempotent_and_does_not_change_points_or_rewards(self):
-        now = "2026-07-25T12:00:00+08:00"
+    def test_apply_uses_only_explicit_manifest_and_grants_slot_entitlement(self):
+        manifest = self.write_manifest(["before_noted"])
+        digest = MIGRATION.manifest_sha256(manifest)
         result = MIGRATION.run(
-            self.db, now=now, apply=True, confirm=MIGRATION.CONFIRM_TEXT,
+            self.db,
+            now="2026-07-25T12:00:00+08:00",
+            apply=True,
+            confirm=MIGRATION.CONFIRM_TEXT,
+            manifest=manifest,
+            expected_manifest_sha256=digest,
         )
-        self.assertEqual(result["updated"], 2)
+        self.assertEqual(result["updated"], 1)
         self.assertTrue(Path(result["backup"]).is_file())
         conn = sqlite3.connect(self.db)
         try:
@@ -115,31 +153,54 @@ class MembershipLaunchBackfillTests(unittest.TestCase):
             ).fetchall()
             self.assertEqual([row[1] for row in rows], [11, 22, 33, 44, 55])
             self.assertEqual(rows[1][2], "experience")
-            self.assertEqual(rows[2][2], "experience")
+            self.assertEqual(rows[2][2], "", "名单外候选用户不得升级")
             self.assertEqual(rows[0][2], "")
             self.assertEqual(rows[3][2], "")
             self.assertEqual(rows[4][2], "partner")
             self.assertEqual(
-                conn.execute("SELECT COUNT(*) FROM membership_audit").fetchone()[0], 2
+                conn.execute("SELECT COUNT(*) FROM membership_audit").fetchone()[0], 1
             )
             self.assertEqual(
                 conn.execute(
                     "SELECT COUNT(*) FROM membership_upgrade_records "
                     "WHERE source='launch_backfill'"
                 ).fetchone()[0],
-                2,
+                1,
+            )
+            self.assertEqual(
+                conn.execute(
+                    "SELECT username,source FROM membership_voice_slot_entitlements"
+                ).fetchall(),
+                [("before_noted", "launch_backfill")],
             )
         finally:
             conn.close()
 
-        # 第二次预览不再把已迁移用户列为候选，也不会延长会员期限。
-        rerun = MIGRATION.run(self.db, now="2026-07-26T12:00:00+08:00")
+        rerun = MIGRATION.run(
+            self.db,
+            now="2026-07-26T12:00:00+08:00",
+            manifest=manifest,
+        )
         self.assertEqual(rerun["matched"], 0)
-        self.assertEqual(rerun["skipped_existing_members"], 3)
+        self.assertEqual(rerun["skipped_existing_members"], 1)
 
-    def test_apply_requires_explicit_confirmation(self):
+    def test_apply_requires_manifest_hash_and_explicit_confirmation(self):
+        manifest = self.write_manifest(["before_noted"])
+        digest = MIGRATION.manifest_sha256(manifest)
+        with self.assertRaisesRegex(RuntimeError, "manifest"):
+            MIGRATION.run(
+                self.db, apply=True, confirm=MIGRATION.CONFIRM_TEXT,
+            )
         with self.assertRaisesRegex(RuntimeError, "confirm"):
-            MIGRATION.run(self.db, apply=True, confirm="")
+            MIGRATION.run(
+                self.db, apply=True, confirm="",
+                manifest=manifest, expected_manifest_sha256=digest,
+            )
+        with self.assertRaisesRegex(RuntimeError, "SHA256"):
+            MIGRATION.run(
+                self.db, apply=True, confirm=MIGRATION.CONFIRM_TEXT,
+                manifest=manifest, expected_manifest_sha256="0" * 64,
+            )
 
 
 if __name__ == "__main__":

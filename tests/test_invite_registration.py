@@ -15,6 +15,8 @@ from unittest.mock import patch
 class InviteRegistrationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.old_enforcement = os.environ.get("HQ_MEMBERSHIP_ENFORCEMENT_ENABLED")
+        os.environ.pop("HQ_MEMBERSHIP_ENFORCEMENT_ENABLED", None)
         import server.auth_server as auth_server
 
         self.auth = importlib.reload(auth_server)
@@ -48,6 +50,10 @@ class InviteRegistrationTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.server_thread.join(timeout=3)
+        if self.old_enforcement is None:
+            os.environ.pop("HQ_MEMBERSHIP_ENFORCEMENT_ENABLED", None)
+        else:
+            os.environ["HQ_MEMBERSHIP_ENFORCEMENT_ENABLED"] = self.old_enforcement
         self.tmp.cleanup()
 
     def _connect(self):
@@ -188,6 +194,34 @@ class InviteRegistrationTests(unittest.TestCase):
             self.assertEqual(source, "miniprogram")
         finally:
             conn.close()
+
+    def test_membership_invite_gate_is_controlled_by_default_off_switch(self):
+        code = self._invite_code()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """UPDATE users SET membership_tier='',
+                                    membership_started_at=NULL,
+                                    membership_expires_at=NULL
+                   WHERE username='inviter'"""
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        status, _, _ = self._request("/api/auth/invite/validate?code=" + code)
+        self.assertEqual(status, 200)
+        status, body, _ = self._request(
+            "/api/auth/register",
+            {"username": "switch_off_user", "password": "secret123", "invite_code": code},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(body["invite_bound"])
+
+        os.environ["HQ_MEMBERSHIP_ENFORCEMENT_ENABLED"] = "1"
+        status, body, _ = self._request("/api/auth/invite/validate?code=" + code)
+        self.assertEqual(status, 409)
+        self.assertEqual(body["code"], "inviter_ineligible")
 
     def test_invalid_code_rolls_back_user_relation_and_token(self):
         result, err = self.auth.register_account(

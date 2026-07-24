@@ -198,7 +198,7 @@ def _new_code(conn):
     raise RuntimeError("invite code exhausted")
 
 
-def inviter_eligibility(conn, user_id, now=None):
+def inviter_eligibility(conn, user_id, now=None, enforce_membership=True):
     """返回用户当前是否具备新增邀请关系的资格。"""
     now = int(now or time.time())
     row = conn.execute(
@@ -209,25 +209,26 @@ def inviter_eligibility(conn, user_id, now=None):
     tier = str(row["membership_tier"] or "") if row else ""
     expires_at = int(row["membership_expires_at"] or 0) if row else 0
     account_active = bool(row and str(row["account_status"] or "active") == "active")
-    eligible = account_active and tier in INVITER_MEMBERSHIP_TIERS and expires_at > now
+    has_membership = tier in INVITER_MEMBERSHIP_TIERS and expires_at > now
+    eligible = account_active and (has_membership or not enforce_membership)
     if not row:
         reason = "邀请用户不存在"
     elif not account_active:
         reason = "账号状态异常，暂时不能邀请新用户"
-    elif tier not in INVITER_MEMBERSHIP_TIERS or expires_at <= now:
+    elif enforce_membership and not has_membership:
         reason = "只有有效会员可以邀请新用户"
     else:
         reason = ""
     return {
         "eligible": eligible,
-        "membership_tier": tier if eligible else "",
-        "membership_expires_at": expires_at if eligible else 0,
+        "membership_tier": tier if has_membership else "",
+        "membership_expires_at": expires_at if has_membership else 0,
         "reason": reason,
     }
 
 
-def require_inviter_eligibility(conn, user_id, now=None, public=False):
-    eligibility = inviter_eligibility(conn, user_id, now)
+def require_inviter_eligibility(conn, user_id, now=None, public=False, enforce_membership=True):
+    eligibility = inviter_eligibility(conn, user_id, now, enforce_membership)
     if eligibility["eligible"]:
         return eligibility
     if public:
@@ -493,9 +494,9 @@ def admin_reward_action(conn, reward_id, action, reason, operator, now=None):
     return dict(conn.execute("SELECT * FROM invite_reward_point_records WHERE id=?", (reward_id,)).fetchone())
 
 
-def ensure_user_code(conn, user_id, now=None):
+def ensure_user_code(conn, user_id, now=None, enforce_membership=True):
     now = int(now or time.time())
-    require_inviter_eligibility(conn, user_id, now)
+    require_inviter_eligibility(conn, user_id, now, enforce_membership=enforce_membership)
     campaign = _active_campaign(conn, now)
     if not campaign:
         raise InviteError("campaign_inactive", "邀请活动当前未开启", 409)
@@ -511,7 +512,7 @@ def ensure_user_code(conn, user_id, now=None):
     return conn.execute("SELECT * FROM invite_codes WHERE code=?", (code,)).fetchone()
 
 
-def rotate_user_code(conn, user_id, now=None):
+def rotate_user_code(conn, user_id, now=None, enforce_membership=True):
     now = int(now or time.time())
     campaign = _active_campaign(conn, now)
     if not campaign:
@@ -520,7 +521,7 @@ def rotate_user_code(conn, user_id, now=None):
         "UPDATE invite_codes SET status='disabled' WHERE campaign_id=? AND inviter_user_id=? AND status='active'",
         (campaign["id"], int(user_id)),
     )
-    return ensure_user_code(conn, user_id, now)
+    return ensure_user_code(conn, user_id, now, enforce_membership)
 
 
 def _masked_account(account_id):
@@ -530,7 +531,7 @@ def _masked_account(account_id):
     return value[:2] + "****" + value[-2:]
 
 
-def validate_code(conn, code, now=None):
+def validate_code(conn, code, now=None, enforce_membership=True):
     code = normalize_code(code)
     if len(code) != CODE_LENGTH or any(ch not in CODE_ALPHABET for ch in code):
         raise InviteError("invalid_code", "邀请码无效", 404)
@@ -550,7 +551,10 @@ def validate_code(conn, code, now=None):
         raise InviteError("campaign_not_started", "邀请活动尚未开始", 409)
     if row["end_at"] is not None and int(row["end_at"]) < now:
         raise InviteError("campaign_ended", "邀请活动已结束", 409)
-    require_inviter_eligibility(conn, row["inviter_user_id"], now, public=True)
+    require_inviter_eligibility(
+        conn, row["inviter_user_id"], now, public=True,
+        enforce_membership=enforce_membership,
+    )
     return row
 
 
@@ -568,7 +572,8 @@ def _privacy_hash(raw_value, secret):
     return hmac.new(secret.encode("utf-8"), value.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def bind_registration(conn, invitee_user_id, invite_code, source, client_ip="", device_id="", hash_secret="", now=None):
+def bind_registration(conn, invitee_user_id, invite_code, source, client_ip="", device_id="",
+                      hash_secret="", now=None, enforce_membership=True):
     now = int(now or time.time())
     config = campaign_config(conn, now)
     code = normalize_code(invite_code)
@@ -580,7 +585,7 @@ def bind_registration(conn, invitee_user_id, invite_code, source, client_ip="", 
         if config.get("code_required"):
             raise InviteError("code_required", "请输入邀请码", 400)
         return None
-    invite = validate_code(conn, code, now)
+    invite = validate_code(conn, code, now, enforce_membership)
     invitee_user_id = int(invitee_user_id)
     if int(invite["inviter_user_id"]) == invitee_user_id:
         raise InviteError("self_invite", "不能使用自己的邀请码", 409)

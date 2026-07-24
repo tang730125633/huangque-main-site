@@ -12,6 +12,7 @@ INTERNAL_AUTH_PATHS = (
     "/api/auth/points",
     "/api/auth/points/deduct",
     "/api/auth/points/refund",
+    "/api/auth/membership/voice-slot-entitlement",
     "/api/auth/admin/points/adjust",
     "/api/auth/admin/points/audit",
     "/api/auth/admin/users",

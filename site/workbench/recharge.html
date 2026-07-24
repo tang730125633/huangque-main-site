@@ -46,19 +46,20 @@
 
     <!-- 点数套餐 -->
     <div id="pointsRechargeArea" hidden>
-    <div style="font-size:17px; font-weight:600; margin-bottom:14px;">会员点数充值</div>
+    <div style="font-size:17px; font-weight:600; margin-bottom:6px;">会员点数充值</div>
+    <div id="membershipDiscountHint" style="font-size:12px;color:#e7b24c;margin-bottom:14px;">价格读取中，以后端报价为准</div>
     <div class="gPkg" style="display:grid; gap:16px; margin-bottom:28px;">
       <!-- 100 元 · 1000 点 -->
       <div class="hv-lift recharge-package" style="position:relative; padding:26px 22px; border:1px solid rgba(148,164,187,.14); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); cursor:pointer; text-align:center; transition:.18s;">
         <div style="font-family:'JetBrains Mono',monospace; font-size:34px; font-weight:700; margin-top:6px;">1000 <span style="font-size:16px; color:#94a4bb; font-family:inherit;">点</span></div>
-        <div style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#eaf1fa; margin:18px 0 14px;">¥100</div>
+        <div data-price-for="100" style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#eaf1fa; margin:18px 0 14px;">¥100</div>
         <div style="font-size:13px; color:#94a4bb; margin-bottom:20px;">适合首次体验</div>
         <button data-recharge data-amount="100" style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#eaf1fa; background:rgba(148,164,187,.07); border:1px solid rgba(148,164,187,.16); border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">立即充值</button>
       </div>
       <!-- 200 元 · 2000 点 -->
       <div class="hv-lift recharge-package" style="position:relative; padding:26px 22px; border:1px solid rgba(148,164,187,.14); border-radius:16px; background:linear-gradient(165deg, rgba(16,24,39,.6), rgba(12,18,32,.45)); cursor:pointer; text-align:center; transition:.18s;">
         <div style="font-family:'JetBrains Mono',monospace; font-size:34px; font-weight:700; margin-top:6px;">2000 <span style="font-size:16px; color:#94a4bb; font-family:inherit;">点</span></div>
-        <div style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#eaf1fa; margin:18px 0 14px;">¥200</div>
+        <div data-price-for="200" style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#eaf1fa; margin:18px 0 14px;">¥200</div>
         <div style="font-size:13px; color:#94a4bb; margin-bottom:20px;">1 元 = 10 点</div>
         <button data-recharge data-amount="200" style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#eaf1fa; background:rgba(148,164,187,.07); border:1px solid rgba(148,164,187,.16); border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">立即充值</button>
       </div>
@@ -66,7 +67,7 @@
       <div class="hv-lift recharge-package recommended" style="position:relative; padding:26px 22px; border:1px solid rgba(231,178,76,.5); border-radius:16px; background:linear-gradient(165deg, rgba(231,178,76,.08), rgba(20,17,10,.4)); cursor:pointer; text-align:center; transition:.18s;">
         <div style="position:absolute; top:0; right:0; padding:5px 13px; font-size:11px; font-weight:600; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border-radius:0 16px 0 12px;">推荐</div>
         <div style="font-family:'JetBrains Mono',monospace; font-size:34px; font-weight:700; margin-top:6px;">5000 <span style="font-size:16px; color:#94a4bb; font-family:inherit;">点</span></div>
-        <div style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#e7b24c; margin:18px 0 14px;">¥500</div>
+        <div data-price-for="500" style="font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:#e7b24c; margin:18px 0 14px;">¥500</div>
         <div style="font-size:13px; color:#94a4bb; margin-bottom:20px;">1 元 = 10 点</div>
         <button data-recharge data-amount="500" style="width:100%; padding:11px; font-size:14px; font-weight:600; color:#1a1206; background:linear-gradient(135deg,#f4cd72,#e7b24c); border:1px solid transparent; border-radius:11px; cursor:pointer; font-family:inherit; transition:.16s;">立即充值</button>
       </div>
@@ -214,6 +215,8 @@
 (function(){
   var token='__cookie__';
   var membershipActive=false;
+  var membershipRequired=false;
+  var membershipDiscountBps=10000;
   var $=function(id){return document.getElementById(id)};
   function setTip(msg,color){var el=$('rechargeTip'); if(el){el.textContent=msg; el.style.color=color||'#94a4bb'}}
   function api(path,opt){
@@ -232,16 +235,35 @@
     if(s==='rejected') return '<span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(244,112,138,.12); color:#f4708a;">已驳回</span>';
     return '<span style="padding:3px 9px; font-size:11.5px; border-radius:6px; background:rgba(231,178,76,.12); color:#e7b24c;">待确认</span>';
   }
+  function loadPackages(){
+    api('/api/auth/recharge/packages').then(function(d){
+      membershipDiscountBps=Number(d.discount_bps||10000);
+      $('membershipDiscountHint').textContent=(d.discount_label||'原价')+' · 页面仅展示，订单金额以后端报价为准';
+      (d.items||[]).forEach(function(item){
+        var el=document.querySelector('[data-price-for="'+item.list_amount+'"]');
+        if(!el)return;
+        var pay=Number(item.pay_amount||0);
+        el.textContent='¥'+pay.toFixed(pay%1?2:0);
+        if(Number(item.discount_bps||d.discount_bps||10000)<10000){
+          el.title='原价 ¥'+Number(item.list_amount).toFixed(0);
+        }
+      });
+    }).catch(function(e){
+      $('membershipDiscountHint').textContent=e.message||'价格读取失败';
+    });
+  }
   function loadMe(){
     api('/api/auth/me').then(function(d){
       var user=(d&&d.user)||{},p=user.points;
       membershipActive=!!user.membership_active;
+      membershipRequired=!!d.membership_enforcement_enabled;
       $('pointsBalance').textContent=Number(p||0).toLocaleString();
       $('membershipName').textContent=membershipActive?(user.membership_name||'会员'):'非会员';
       $('membershipExpiry').textContent=membershipActive?new Date(Number(user.membership_expires_at)*1000).toLocaleDateString():'--';
       $('membershipOffer').hidden=membershipActive;
-      $('pointsRechargeArea').hidden=!membershipActive;
-      setTip(membershipActive?'会员可充值点数并使用全部生成能力。':'请先开通体验官会员，开通后才能使用功能和充值点数。','#94a4bb');
+      $('pointsRechargeArea').hidden=membershipRequired&&!membershipActive;
+      setTip(membershipActive?'会员可充值点数并使用全部生成能力。':(membershipRequired?'请先开通体验官会员，开通后才能使用功能和充值点数。':'会员系统准备中，当前功能与点数充值保持开放。'),'#94a4bb');
+      if(!$('pointsRechargeArea').hidden)loadPackages();
     }).catch(function(){ $('pointsBalance').textContent='--';$('membershipName').textContent='读取失败' });
   }
   function renderOrders(items){
@@ -308,7 +330,7 @@
         var qr=$('wxpayQr'); qr.innerHTML='';
         new QRCode(qr,{text:d.code_url,width:180,height:180,correctLevel:QRCode.CorrectLevel.M});
         var pts=(d.order&&d.order.points)||pointsFor(amount);
-        $('wxpayAmount').textContent=productType==='membership_experience'?'¥499 · 体验官一年 · 赠 1000 点':'¥'+Number(amount).toFixed(2)+' · '+pts+' 点';
+        $('wxpayAmount').textContent=productType==='membership_experience'?'¥499 · 体验官一年 · 赠 1000 点':'¥'+Number((d.order&&d.order.amount)||amount).toFixed(2)+' · '+pts+' 点';
         $('wxpayStatus').textContent='请用微信扫一扫完成支付'; $('wxpayStatus').style.color='#e7b24c';
         $('wxpayModal').style.display='flex';
         pollPaid(d.order.order_id);
@@ -323,13 +345,14 @@
   if($('customAmount')){
     $('customAmount').addEventListener('input',function(){
       var v=readCustomAmount();
-      $('customPoints').textContent = v ? ('= '+(v*10)+' 点（10 点/元）') : '请输入 10~5000 元';
+      var pay=v*membershipDiscountBps/10000;
+      $('customPoints').textContent = v ? ('获得 '+(v*10)+' 点 · 应付 ¥'+pay.toFixed(pay%1?2:0)) : '请输入 10~5000 元';
     });
   }
   function submitOrder(btn){
     if(!token){setTip('请先登录后再充值','#f4708a');return}
     var amount,productType=btn.getAttribute('data-product')||'points';
-    if(productType==='points'&&!membershipActive){setTip('请先开通会员后再充值点数','#f4708a');return}
+    if(productType==='points'&&membershipRequired&&!membershipActive){setTip('请先开通会员后再充值点数','#f4708a');return}
     if(btn.getAttribute('data-custom')){
       amount=readCustomAmount();
       if(!amount){setTip('自定义金额需为 10~5000 元的整数','#f4708a');return}

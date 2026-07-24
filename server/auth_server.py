@@ -56,12 +56,43 @@ MEMBERSHIP_TIERS = {
 EXPERIENCE_MEMBERSHIP_AMOUNT = 499
 EXPERIENCE_MEMBERSHIP_POINTS = 1000
 MEMBERSHIP_ORDER_TYPE = "membership_experience"
+MEMBERSHIP_DISCOUNT_BPS = {
+    "experience": 10000,
+    "partner": 7500,
+    "initiator": 5500,
+}
+MEMBERSHIP_ENFORCEMENT_ENV = "HQ_MEMBERSHIP_ENFORCEMENT_ENABLED"
 
 def miniprogram_payments_enabled():
     """Operational kill switch for all mini-program payment order creation."""
     return os.environ.get("HQ_MINIPROGRAM_PAYMENTS_ENABLED", "1").strip().lower() not in (
         "0", "false", "no", "off",
     )
+
+def membership_enforcement_enabled():
+    """会员强校验上线开关。
+
+    默认关闭，允许先部署结构、核对并迁移存量名单，再显式开启。
+    """
+    return os.environ.get(MEMBERSHIP_ENFORCEMENT_ENV, "0").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def membership_discount_bps(tier):
+    return MEMBERSHIP_DISCOUNT_BPS.get(str(tier or "").strip(), 10000)
+
+
+def discounted_amount_fen(list_amount_yuan, tier):
+    """按会员等级计算应付分数，使用整数计算避免浮点金额漂移。"""
+    try:
+        list_fen = int(round(float(list_amount_yuan) * 100))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if list_fen <= 0:
+        return None
+    return (list_fen * membership_discount_bps(tier) + 5000) // 10000
+
 
 def recharge_points_for(amount):
     """金额(元) -> 点数。固定档用赠送价；其余按 10 点/元(限 10~5000 元整数)。非法返回 None。
@@ -78,7 +109,7 @@ def recharge_points_for(amount):
         return yuan * RECHARGE_RATE
     return None
 
-def jsapi_recharge_quote(amount):
+def jsapi_recharge_quote(amount, membership_tier=""):
     """小程序 JSAPI 下单定价。
 
     保留 0.10 元 / 1 点的真机支付测试档，其余金额仍严格使用公开充值定价。
@@ -92,10 +123,11 @@ def jsapi_recharge_quote(amount):
     points = recharge_points_for(amount)
     if points is None:
         return None
-    return int(amount), points
+    amount_fen = discounted_amount_fen(int(amount), membership_tier)
+    return amount_fen / 100.0, points
 
 
-def purchase_quote(amount, product_type="points", jsapi=False):
+def purchase_quote(amount, product_type="points", jsapi=False, membership_tier=""):
     product_type = (product_type or "points").strip()
     if product_type == MEMBERSHIP_ORDER_TYPE:
         try:
@@ -106,7 +138,7 @@ def purchase_quote(amount, product_type="points", jsapi=False):
         return EXPERIENCE_MEMBERSHIP_AMOUNT, EXPERIENCE_MEMBERSHIP_POINTS, MEMBERSHIP_ORDER_TYPE
     if product_type != "points":
         return None
-    quote = jsapi_recharge_quote(amount) if jsapi else None
+    quote = jsapi_recharge_quote(amount, membership_tier) if jsapi else None
     if jsapi:
         if quote is None:
             return None
@@ -114,7 +146,30 @@ def purchase_quote(amount, product_type="points", jsapi=False):
     points = recharge_points_for(amount)
     if points is None:
         return None
-    return int(amount), points, "points"
+    amount_fen = discounted_amount_fen(int(amount), membership_tier)
+    return amount_fen / 100.0, points, "points"
+
+
+def public_recharge_packages(membership_tier):
+    discount_bps = membership_discount_bps(membership_tier)
+    return {
+        "membership_tier": str(membership_tier or ""),
+        "discount_bps": discount_bps,
+        "discount_label": {
+            10000: "原价",
+            7500: "7.5折",
+            5500: "5.5折",
+        }.get(discount_bps, "原价"),
+        "items": [
+            {
+                "list_amount": amount,
+                "pay_amount_fen": discounted_amount_fen(amount, membership_tier),
+                "pay_amount": discounted_amount_fen(amount, membership_tier) / 100.0,
+                "points": points,
+            }
+            for amount, points in sorted(RECHARGE_TIERS.items())
+        ],
+    }
 LOGIN_FAILS = {}
 REGISTER_HITS = {}
 REGISTER_HITS_LOCK = threading.Lock()
@@ -236,6 +291,12 @@ def init_db():
         created_at INTEGER NOT NULL
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_membership_recharge_user ON membership_recharge_records(username,id DESC)")
+    c.execute("""CREATE TABLE IF NOT EXISTS membership_voice_slot_entitlements(
+        username TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        source_order_id TEXT,
+        created_at INTEGER NOT NULL
+    )""")
     c.execute("""CREATE TABLE IF NOT EXISTS friendships(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT NOT NULL,
@@ -336,6 +397,19 @@ def init_db():
         c.execute("ALTER TABLE recharge_orders ADD COLUMN pay_channel TEXT")     # wxpay_native / wxpay_jsapi / manual
     if "order_type" not in rcols:
         c.execute("ALTER TABLE recharge_orders ADD COLUMN order_type TEXT NOT NULL DEFAULT 'points'")
+    if "list_amount" not in rcols:
+        c.execute("ALTER TABLE recharge_orders ADD COLUMN list_amount REAL")
+    if "pricing_tier" not in rcols:
+        c.execute("ALTER TABLE recharge_orders ADD COLUMN pricing_tier TEXT NOT NULL DEFAULT ''")
+    if "discount_bps" not in rcols:
+        c.execute("ALTER TABLE recharge_orders ADD COLUMN discount_bps INTEGER NOT NULL DEFAULT 10000")
+    vcols = {r["name"] for r in c.execute("PRAGMA table_info(virtual_pay_orders)").fetchall()}
+    if "list_amount_fen" not in vcols:
+        c.execute("ALTER TABLE virtual_pay_orders ADD COLUMN list_amount_fen INTEGER")
+    if "pricing_tier" not in vcols:
+        c.execute("ALTER TABLE virtual_pay_orders ADD COLUMN pricing_tier TEXT NOT NULL DEFAULT ''")
+    if "discount_bps" not in vcols:
+        c.execute("ALTER TABLE virtual_pay_orders ADD COLUMN discount_bps INTEGER NOT NULL DEFAULT 10000")
     c.execute("""CREATE TABLE IF NOT EXISTS membership_audit(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT NOT NULL,
@@ -443,6 +517,7 @@ def register_account(username, password, display_name=None, invite_code="", invi
         relation = invites.bind_registration(
             c, cur.lastrowid, invite_code, invite_source,
             client_ip=client_ip, device_id=device_id, hash_secret=INVITE_HASH_SECRET,
+            enforce_membership=membership_enforcement_enabled(),
         )
         token = issue_token(username, c)
         c.commit()
@@ -1645,6 +1720,50 @@ def _write_membership_audit(c, username, before, after, operator, reason, now):
     return int(cur.lastrowid)
 
 
+def _grant_membership_voice_slot_entitlement(c, username, source, source_order_id, now):
+    """在会员事务内写入一次性免费槽位权益。
+
+    内容服务使用确定性槽位 ID 落地，失败时可安全重试；续费和重复回调不会
+    产生第二条权益，也不会发生点数扣除。
+    """
+    c.execute(
+        """INSERT OR IGNORE INTO membership_voice_slot_entitlements(
+               username,source,source_order_id,created_at
+           ) VALUES(?,?,?,?)""",
+        (
+            (username or "").strip(),
+            (source or "membership")[:40],
+            (source_order_id or "")[:160] or None,
+            int(now),
+        ),
+    )
+
+
+def membership_voice_slot_entitlement(username, now=None):
+    username = (username or "").strip()
+    if not username:
+        return {"eligible": False, "username": ""}
+    c = db()
+    try:
+        row = c.execute(
+            """SELECT e.username,e.source,e.source_order_id,e.created_at,
+                      u.membership_tier,u.membership_started_at,u.membership_expires_at
+                 FROM membership_voice_slot_entitlements e
+                 JOIN users u ON u.username=e.username
+                WHERE e.username=?""",
+            (username,),
+        ).fetchone()
+        active = membership_for_row(row, now) if row else membership_public(now=now)
+        return {
+            "eligible": bool(row and active["membership_active"]),
+            "username": username,
+            "source": row["source"] if row else "",
+            "source_order_id": (row["source_order_id"] or "") if row else "",
+        }
+    finally:
+        c.close()
+
+
 def set_membership_admin(who_admin, username, tier, reason="", now=None):
     username = (username or "").strip()
     tier = (tier or "").strip()
@@ -1669,6 +1788,10 @@ def set_membership_admin(who_admin, username, tier, reason="", now=None):
             "UPDATE users SET membership_tier=?,membership_started_at=?,membership_expires_at=? WHERE username=?",
             (tier, started_at, expires_at, username),
         )
+        if tier:
+            _grant_membership_voice_slot_entitlement(
+                c, username, "admin_set", "membership-admin:%s:%d" % (username, now), now,
+            )
         fresh = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
         after = membership_for_row(fresh, now)
         audit_id = _write_membership_audit(
@@ -1712,7 +1835,7 @@ def membership_recharge_preview(username, tier, now=None):
             "current_name": before["membership_name"],
             "current_expires_at": before["membership_expires_at"],
             "target_tier": tier,
-            "target_name": MEMBERSHIP_NAMES.get(tier, tier),
+            "target_name": MEMBERSHIP_TIERS.get(tier, tier),
             "target_expires_at": base + MEMBERSHIP_YEAR_SECONDS,
             "reward": reward,
         }, None
@@ -1761,6 +1884,9 @@ def recharge_membership_admin(who_admin, username, tier, reason="", request_id="
             "UPDATE users SET membership_tier=?,membership_started_at=?,membership_expires_at=? WHERE username=?",
             (tier, now, expires_at, username),
         )
+        _grant_membership_voice_slot_entitlement(
+            c, username, "admin_recharge", "membership-recharge:%s" % request_id, now,
+        )
         fresh = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
         after = membership_for_row(fresh, now)
         audit_id = _write_membership_audit(
@@ -1801,6 +1927,9 @@ def _activate_experience_membership(c, username, operator, reason, now, source_o
         """UPDATE users SET membership_tier='experience',membership_started_at=?,membership_expires_at=?
            WHERE username=?""",
         (int(now), expires_at, username),
+    )
+    _grant_membership_voice_slot_entitlement(
+        c, username, "online", source_order_id or "membership-online:%s:%d" % (username, now), now,
     )
     fresh = c.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
     after = membership_for_row(fresh, now)
@@ -1908,9 +2037,13 @@ def public_recharge_order(row):
         "reviewed_at": row["reviewed_at"],
         "review_note": row["review_note"] or "",
         "order_type": row["order_type"] or "points",
+        "list_amount": row["list_amount"] if "list_amount" in row.keys() and row["list_amount"] is not None else row["amount"],
+        "pricing_tier": row["pricing_tier"] if "pricing_tier" in row.keys() else "",
+        "discount_bps": int(row["discount_bps"] or 10000) if "discount_bps" in row.keys() else 10000,
     }
 
-def create_recharge_order(username, amount, points, note="", order_type="points"):
+def create_recharge_order(username, amount, points, note="", order_type="points",
+                          list_amount=None, pricing_tier="", discount_bps=None):
     username = (username or "").strip()
     amount = float(amount or 0)
     points = int(points or 0)
@@ -1924,14 +2057,24 @@ def create_recharge_order(username, amount, points, note="", order_type="points"
         return None, "points_invalid"
     if order_type not in {"points", MEMBERSHIP_ORDER_TYPE}:
         return None, "order_type_invalid"
+    list_amount = float(amount if list_amount is None else list_amount)
+    if list_amount <= 0:
+        return None, "list_amount_invalid"
+    pricing_tier = str(pricing_tier or "").strip()
+    discount_bps = int(discount_bps or membership_discount_bps(pricing_tier))
     now = int(time.time())
     order_id = "R%d%s" % (now, secrets.token_hex(3).upper())
     c = db()
     try:
         c.execute(
-            """INSERT INTO recharge_orders(order_id, username, amount, points, status, note, created_at, order_type)
-               VALUES(?,?,?,?,?,?,?,?)""",
-            (order_id, username, amount, points, "pending", note, now, order_type),
+            """INSERT INTO recharge_orders(
+                   order_id,username,amount,points,status,note,created_at,order_type,
+                   list_amount,pricing_tier,discount_bps
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                order_id, username, amount, points, "pending", note, now, order_type,
+                list_amount, pricing_tier, discount_bps,
+            ),
         )
         c.commit()
         row = c.execute("SELECT * FROM recharge_orders WHERE order_id=?", (order_id,)).fetchone()
@@ -2064,34 +2207,46 @@ def public_virtual_pay_order(row):
         "credited_at": row["credited_at"],
         "delivered_at": row["delivered_at"],
         "last_error": row["last_error"] or "",
+        "list_amount_fen": row["list_amount_fen"] if "list_amount_fen" in row.keys() else row["amount_fen"],
+        "pricing_tier": row["pricing_tier"] if "pricing_tier" in row.keys() else "",
+        "discount_bps": int(row["discount_bps"] or 10000) if "discount_bps" in row.keys() else 10000,
     }
 
 
-def public_virtual_pay_packages():
+def public_virtual_pay_packages(membership_tier=""):
     items = []
+    discount_bps = membership_discount_bps(membership_tier)
     for item in wechat_vpay.products():
         if item.get("custom_amount"):
             continue
+        pay_fen = (int(item["price_fen"]) * discount_bps + 5000) // 10000
         items.append({
             "id": item["id"],
             "title": item["title"],
-            "price_fen": item["price_fen"],
-            "price_yuan": "%.2f" % (item["price_fen"] / 100.0),
+            "list_price_fen": item["price_fen"],
+            "price_fen": pay_fen,
+            "price_yuan": "%.2f" % (pay_fen / 100.0),
             "points": item["points"],
             "recommended": item["recommended"],
+            "membership_tier": str(membership_tier or ""),
+            "discount_bps": discount_bps,
         })
     return items
 
 
-def public_virtual_pay_custom():
+def public_virtual_pay_custom(membership_tier=""):
     item = wechat_vpay.custom_product()
     if not item:
         return None
+    discount_bps = membership_discount_bps(membership_tier)
     return {
         "package_id": item["id"],
         "min_amount_yuan": wechat_vpay.CUSTOM_MIN_AMOUNT_YUAN,
         "max_amount_yuan": wechat_vpay.CUSTOM_MAX_AMOUNT_YUAN,
         "points_per_yuan": item["points"],
+        "price_fen_per_list_yuan": (int(item["price_fen"]) * discount_bps + 5000) // 10000,
+        "membership_tier": str(membership_tier or ""),
+        "discount_bps": discount_bps,
     }
 
 
@@ -2104,8 +2259,25 @@ def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=N
     product = wechat_vpay.product_by_id(package_id)
     if not product:
         return None, "package_not_found"
+    c = db()
     try:
-        purchase = wechat_vpay.purchase_for(product, custom_amount_yuan)
+        pricing_user = c.execute(
+            """SELECT username,membership_tier,membership_started_at,membership_expires_at
+                 FROM users WHERE username=?""",
+            (username,),
+        ).fetchone()
+    finally:
+        c.close()
+    if not pricing_user:
+        return None, "user_not_found"
+    pricing_tier = membership_for_row(pricing_user)["membership_tier"]
+    discount_bps = membership_discount_bps(pricing_tier)
+    priced_product = dict(product)
+    priced_product["price_fen"] = (
+        int(product["price_fen"]) * discount_bps + 5000
+    ) // 10000
+    try:
+        purchase = wechat_vpay.purchase_for(priced_product, custom_amount_yuan)
     except wechat_vpay.VirtualPayError as exc:
         if exc.code == "invalid_custom_amount":
             return None, exc.code
@@ -2114,7 +2286,8 @@ def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=N
     openid = session["openid"]
     now = int(time.time())
     order_id = "HQ%s%s" % (time.strftime("%y%m%d%H%M%S", time.localtime(now)), secrets.token_hex(5).upper())
-    payment = wechat_vpay.payment_params(product, order_id, session["session_key"], purchase)
+    payment = wechat_vpay.payment_params(priced_product, order_id, session["session_key"], purchase)
+    list_amount_fen = int(product["price_fen"]) * int(purchase["quantity"])
 
     c = db()
     try:
@@ -2134,10 +2307,12 @@ def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=N
             c.execute("UPDATE users SET wx_openid=? WHERE username=?", (openid, username))
         c.execute(
             """INSERT INTO virtual_pay_orders(
-                 order_id,username,openid,package_id,product_id,amount_fen,points,env,status,created_at
-               ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                 order_id,username,openid,package_id,product_id,amount_fen,points,env,status,created_at,
+                 list_amount_fen,pricing_tier,discount_bps
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (order_id, username, openid, package_id, product["product_id"], purchase["amount_fen"],
-             purchase["points"], wechat_vpay.pay_env(), "created", now),
+             purchase["points"], wechat_vpay.pay_env(), "created", now,
+             list_amount_fen, pricing_tier, discount_bps),
         )
         row = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (order_id,)).fetchone()
         c.commit()
@@ -2546,6 +2721,8 @@ class H(BaseHTTPRequestHandler):
         return row
 
     def _require_membership(self, row):
+        if not membership_enforcement_enabled():
+            return True
         if row and membership_for_row(row)["membership_active"]:
             return True
         self._send(403, {
@@ -2629,7 +2806,9 @@ class H(BaseHTTPRequestHandler):
                 return self._send(403, {"detail": "邀请码轮换需要管理员权限"})
             c = db()
             try:
-                code_row = invites.rotate_user_code(c, row["id"])
+                code_row = invites.rotate_user_code(
+                    c, row["id"], enforce_membership=membership_enforcement_enabled(),
+                )
                 c.commit()
                 return self._send(200, {
                     "ok": True,
@@ -2885,7 +3064,11 @@ class H(BaseHTTPRequestHandler):
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
-            quote = purchase_quote(d.get("amount"), d.get("product_type") or "points")
+            pricing_tier = membership_for_row(row)["membership_tier"]
+            quote = purchase_quote(
+                d.get("amount"), d.get("product_type") or "points",
+                membership_tier=pricing_tier,
+            )
             if quote is None:
                 return self._send(400, {"detail": "充值商品或金额无效"})
             amount, points, order_type = quote
@@ -2896,6 +3079,8 @@ class H(BaseHTTPRequestHandler):
             try:
                 order, err = create_recharge_order(
                     row["username"], amount, points, d.get("note") or "", order_type,
+                    list_amount=d.get("amount"), pricing_tier=pricing_tier,
+                    discount_bps=membership_discount_bps(pricing_tier) if order_type == "points" else 10000,
                 )
                 if err:
                     return self._send(400, {"detail": err})
@@ -2911,7 +3096,11 @@ class H(BaseHTTPRequestHandler):
             d = self._body()
             if self._bad_json():
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
-            quote = purchase_quote(d.get("amount"), d.get("product_type") or "points")
+            pricing_tier = membership_for_row(row)["membership_tier"]
+            quote = purchase_quote(
+                d.get("amount"), d.get("product_type") or "points",
+                membership_tier=pricing_tier,
+            )
             if quote is None:
                 return self._send(400, {"detail": "充值商品或金额无效"})
             amount, points, order_type = quote
@@ -2924,6 +3113,8 @@ class H(BaseHTTPRequestHandler):
                     row["username"], amount, points,
                     "微信扫码充值" if order_type == "points" else "微信扫码开通体验官",
                     order_type,
+                    list_amount=d.get("amount"), pricing_tier=pricing_tier,
+                    discount_bps=membership_discount_bps(pricing_tier) if order_type == "points" else 10000,
                 )
                 if err:
                     return self._send(400, {"detail": err})
@@ -2953,7 +3144,11 @@ class H(BaseHTTPRequestHandler):
             js_code = (d.get("js_code") or "").strip()
             if not js_code:
                 return self._send(400, {"detail": "缺少 js_code"})
-            quote = purchase_quote(d.get("amount"), d.get("product_type") or "points", jsapi=True)
+            pricing_tier = membership_for_row(row)["membership_tier"]
+            quote = purchase_quote(
+                d.get("amount"), d.get("product_type") or "points", jsapi=True,
+                membership_tier=pricing_tier,
+            )
             if quote is None:
                 return self._send(400, {"detail": "充值商品或金额无效"})
             amount, points, order_type = quote
@@ -2967,6 +3162,8 @@ class H(BaseHTTPRequestHandler):
                     row["username"], amount, points,
                     "微信小程序充值" if order_type == "points" else "微信小程序开通体验官",
                     order_type,
+                    list_amount=d.get("amount"), pricing_tier=pricing_tier,
+                    discount_bps=membership_discount_bps(pricing_tier) if order_type == "points" else 10000,
                 )
                 if err:
                     return self._send(400, {"detail": err})
@@ -3035,7 +3232,7 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": "transaction_key too long"})
             try:
                 if p.endswith("/deduct"):
-                    if not user_has_active_membership(username):
+                    if membership_enforcement_enabled() and not user_has_active_membership(username):
                         return self._send(403, {
                             "detail": "请先开通会员后再使用该功能",
                             "code": "membership_required",
@@ -3526,7 +3723,9 @@ class H(BaseHTTPRequestHandler):
             code = (query.get("code") or [""])[0]
             c = db()
             try:
-                row = invites.validate_code(c, code)
+                row = invites.validate_code(
+                    c, code, enforce_membership=membership_enforcement_enabled(),
+                )
                 return self._send(200, {
                     "ok": True, "code": row["code"], "inviter": invites.public_inviter(row),
                 })
@@ -3541,7 +3740,9 @@ class H(BaseHTTPRequestHandler):
             c = db()
             try:
                 c.execute("BEGIN IMMEDIATE")
-                code_row = invites.ensure_user_code(c, row["id"])
+                code_row = invites.ensure_user_code(
+                    c, row["id"], enforce_membership=membership_enforcement_enabled(),
+                )
                 c.commit()
                 return self._send(200, {
                     "ok": True,
@@ -3680,6 +3881,14 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, **data})
             except Exception:
                 return self._send(500, {"detail": "充值申请查询失败"})
+        if p == "/api/auth/recharge/packages":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            if not self._require_membership(row):
+                return
+            tier = membership_for_row(row)["membership_tier"]
+            return self._send(200, {"ok": True, **public_recharge_packages(tier)})
         if p == "/api/auth/virtual-pay/packages":
             row = self._user()
             if not row:
@@ -3688,13 +3897,16 @@ class H(BaseHTTPRequestHandler):
                 return
             try:
                 enabled = miniprogram_payments_enabled()
+                tier = membership_for_row(row)["membership_tier"]
                 return self._send(200, {
                     "ok": True,
                     "enabled": enabled,
                     "configured": enabled and wechat_vpay.is_configured(),
                     "environment": "production" if wechat_vpay.pay_env() == 0 else "sandbox",
-                    "items": public_virtual_pay_packages() if enabled else [],
-                    "custom": public_virtual_pay_custom() if enabled else None,
+                    "membership_tier": tier,
+                    "discount_bps": membership_discount_bps(tier),
+                    "items": public_virtual_pay_packages(tier) if enabled else [],
+                    "custom": public_virtual_pay_custom(tier) if enabled else None,
                 })
             except Exception:
                 return self._send(500, {"detail": "充值套餐读取失败"})
@@ -3708,6 +3920,17 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "items": items})
             except Exception:
                 return self._send(500, {"detail": "支付订单查询失败"})
+        if p == "/api/auth/membership/voice-slot-entitlement":
+            if not self._require_internal():
+                return
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            username = (q.get("username", [""])[0] or "").strip()
+            if not username:
+                return self._send(400, {"detail": "missing username"})
+            return self._send(200, {
+                "ok": True,
+                "entitlement": membership_voice_slot_entitlement(username),
+            })
         if p == "/api/auth/points":
             if not self._require_internal():
                 return
@@ -3723,10 +3946,13 @@ class H(BaseHTTPRequestHandler):
             row = self._user()
             if not row: return self._send(401, {"detail": "未登录"})
             account_id = row["account_id"] or ensure_account_id(row["username"])
-            return self._send(200, {"user": public_user(
+            return self._send(200, {
+                "user": public_user(
                 row["username"], row["display_name"], row["points"], row["role"], row["must_change"], account_id,
                 row["membership_tier"], row["membership_started_at"], row["membership_expires_at"],
-            )})
+                ),
+                "membership_enforcement_enabled": membership_enforcement_enabled(),
+            })
         if p == "/api/auth/friends":
             row = self._user()
             if not row: return self._send(401, {"detail": "未登录"})

@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +23,9 @@ class MembershipSystemTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.old_db = os.environ.get("HQ_TEST_AUTH_DB")
+        self.old_enforcement = os.environ.get("HQ_MEMBERSHIP_ENFORCEMENT_ENABLED")
         os.environ["HQ_TEST_AUTH_DB"] = os.path.join(self.tmp.name, "users.db")
+        os.environ.pop("HQ_MEMBERSHIP_ENFORCEMENT_ENABLED", None)
         import server.auth_server as auth_server
 
         self.auth = importlib.reload(auth_server)
@@ -38,6 +41,10 @@ class MembershipSystemTests(unittest.TestCase):
             os.environ.pop("HQ_TEST_AUTH_DB", None)
         else:
             os.environ["HQ_TEST_AUTH_DB"] = self.old_db
+        if self.old_enforcement is None:
+            os.environ.pop("HQ_MEMBERSHIP_ENFORCEMENT_ENABLED", None)
+        else:
+            os.environ["HQ_MEMBERSHIP_ENFORCEMENT_ENABLED"] = self.old_enforcement
         self.tmp.cleanup()
 
     def _row(self, username):
@@ -66,6 +73,16 @@ class MembershipSystemTests(unittest.TestCase):
         self.assertEqual(row["membership_tier"], "experience")
         self.assertGreaterEqual(row["membership_expires_at"], before + self.auth.MEMBERSHIP_YEAR_SECONDS)
         self.assertLessEqual(row["membership_expires_at"], int(time.time()) + self.auth.MEMBERSHIP_YEAR_SECONDS)
+        c = self.auth.db()
+        try:
+            self.assertEqual(
+                c.execute(
+                    "SELECT username,source FROM membership_voice_slot_entitlements"
+                ).fetchall()[0]["username"],
+                "buyer",
+            )
+        finally:
+            c.close()
 
     def test_admin_can_set_each_one_year_tier_and_cancel(self):
         now = 1800000000
@@ -77,6 +94,16 @@ class MembershipSystemTests(unittest.TestCase):
         user, err = self.auth.set_membership_admin("admin", "buyer", "", "取消", now=now)
         self.assertIsNone(err)
         self.assertFalse(user["membership_active"])
+        c = self.auth.db()
+        try:
+            self.assertEqual(
+                c.execute(
+                    "SELECT COUNT(*) FROM membership_voice_slot_entitlements WHERE username='buyer'"
+                ).fetchone()[0],
+                1,
+            )
+        finally:
+            c.close()
 
     def test_admin_membership_recharge_extends_same_tier_by_one_year(self):
         now = 1800000000
@@ -105,8 +132,116 @@ class MembershipSystemTests(unittest.TestCase):
         c = self.auth.db()
         try:
             self.assertEqual(c.execute("SELECT COUNT(*) FROM membership_recharge_records").fetchone()[0], 2)
+            self.assertEqual(
+                c.execute(
+                    "SELECT COUNT(*) FROM membership_voice_slot_entitlements WHERE username='buyer'"
+                ).fetchone()[0],
+                1,
+            )
         finally:
             c.close()
+
+    def test_membership_and_slot_entitlement_rollback_together(self):
+        with patch.object(
+            self.auth,
+            "_grant_membership_voice_slot_entitlement",
+            side_effect=RuntimeError("entitlement write failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "entitlement"):
+                self.auth.set_membership_admin(
+                    "admin", "buyer", "partner", "transaction test", now=1800000000,
+                )
+        row = self._row("buyer")
+        self.assertEqual(row["membership_tier"], "")
+        c = self.auth.db()
+        try:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM membership_audit").fetchone()[0], 0)
+            self.assertEqual(
+                c.execute("SELECT COUNT(*) FROM membership_voice_slot_entitlements").fetchone()[0],
+                0,
+            )
+        finally:
+            c.close()
+
+    def test_three_membership_tiers_quote_all_three_fixed_packages(self):
+        expected = {
+            "experience": {100: 100, 200: 200, 500: 500},
+            "partner": {100: 75, 200: 150, 500: 375},
+            "initiator": {100: 55, 200: 110, 500: 275},
+        }
+        for tier, prices in expected.items():
+            for list_amount, pay_amount in prices.items():
+                with self.subTest(tier=tier, list_amount=list_amount):
+                    self.assertEqual(
+                        self.auth.purchase_quote(
+                            list_amount, "points", membership_tier=tier,
+                        ),
+                        (pay_amount, list_amount * 10, "points"),
+                    )
+
+    def test_discounted_wxpay_callback_amount_mismatch_never_credits(self):
+        now = int(time.time())
+        c = self.auth.db()
+        try:
+            c.execute(
+                """UPDATE users
+                      SET membership_tier='partner',membership_started_at=?,membership_expires_at=?
+                    WHERE username='buyer'""",
+                (now, now + self.auth.MEMBERSHIP_YEAR_SECONDS),
+            )
+            c.commit()
+        finally:
+            c.close()
+        amount, points, _ = self.auth.purchase_quote(
+            100, "points", membership_tier="partner",
+        )
+        order, err = self.auth.create_recharge_order(
+            "buyer", amount, points, "partner discounted", "points",
+            list_amount=100, pricing_tier="partner", discount_bps=7500,
+        )
+        self.assertIsNone(err)
+
+        class FakeWxPay:
+            @staticmethod
+            def configured():
+                return True
+
+            @staticmethod
+            def verify_notify(headers, raw):
+                return True
+
+            @staticmethod
+            def decrypt_resource(resource):
+                return {
+                    "trade_state": "SUCCESS",
+                    "out_trade_no": order["order_id"],
+                    "transaction_id": "wx-wrong-amount",
+                    "amount": {"total": 10000},
+                }
+
+            @staticmethod
+            def payment_identity_matches(resource):
+                return True
+
+        self.auth.wxpay = FakeWxPay()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = urllib.request.Request(
+                "http://127.0.0.1:%d/api/auth/wxpay/notify" % server.server_address[1],
+                data=b'{"resource":{}}',
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=3) as response:
+                self.assertEqual(response.status, 200)
+            self.assertEqual(self._row("buyer")["points"], 20)
+            self.assertEqual(self.auth.get_recharge_order(order["order_id"])["status"], "pending")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
 
     def test_expired_membership_is_not_active(self):
         data = self.auth.membership_public("partner", 100, 200, now=201)
@@ -114,6 +249,7 @@ class MembershipSystemTests(unittest.TestCase):
         self.assertEqual(data["membership_tier"], "")
 
     def test_http_blocks_nonmember_deduct_and_point_recharge_but_allows_membership_order(self):
+        os.environ["HQ_MEMBERSHIP_ENFORCEMENT_ENABLED"] = "1"
         server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -157,6 +293,76 @@ class MembershipSystemTests(unittest.TestCase):
                 data = json.loads(response.read())
             self.assertEqual(data["order"]["points"], 1000)
             self.assertEqual(data["order"]["order_type"], "membership_experience")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+    def test_enforcement_defaults_off_for_web_miniprogram_and_generation_paths(self):
+        self.assertFalse(self.auth.membership_enforcement_enabled())
+
+        class FakeWxPay:
+            @staticmethod
+            def configured():
+                return True
+
+            @staticmethod
+            def jscode2session(code):
+                return "openid-buyer"
+
+            @staticmethod
+            def create_jsapi(order_id, description, amount_fen, openid):
+                return "prepay-test"
+
+            @staticmethod
+            def jsapi_pay_params(prepay_id):
+                return {"prepay_id": prepay_id}
+
+        self.auth.wxpay = FakeWxPay()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = "http://127.0.0.1:%d" % server.server_address[1]
+        jar = http.cookiejar.CookieJar()
+        client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        try:
+            login = urllib.request.Request(
+                base + "/api/auth/login",
+                data=json.dumps({"username": "buyer", "password": "secret123"}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            client.open(login, timeout=3).close()
+
+            def post(path, payload, headers=None):
+                request = urllib.request.Request(
+                    base + path,
+                    data=json.dumps(payload).encode(),
+                    headers={"Content-Type": "application/json", **(headers or {})},
+                    method="POST",
+                )
+                with client.open(request, timeout=3) as response:
+                    return response.status, json.loads(response.read())
+
+            self.assertEqual(
+                post("/api/auth/recharge/order", {"amount": 100, "product_type": "points"})[0],
+                200,
+            )
+            self.assertEqual(
+                post(
+                    "/api/auth/wxpay/jsapi",
+                    {"amount": 100, "product_type": "points", "js_code": "code"},
+                )[0],
+                200,
+            )
+            self.assertEqual(
+                post(
+                    "/api/auth/points/deduct",
+                    {"username": "buyer", "amount": 1},
+                    {"X-HQ-Internal-Token": "membership-test-token"},
+                )[0],
+                200,
+            )
         finally:
             server.shutdown()
             server.server_close()

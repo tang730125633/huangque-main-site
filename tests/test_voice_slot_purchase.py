@@ -60,9 +60,14 @@ class VoiceSlotPurchaseTest(unittest.TestCase):
         self.db = str(pathlib.Path(self.tmp.name) / "audio.db")
         self.db_patch = patch.object(core, "AUDIO_DB", self.db)
         self.db_patch.start()
+        self.entitlement_patch = patch.object(
+            audio, "_membership_voice_slot_entitlement", return_value=False,
+        )
+        self.entitlement_patch.start()
         core.init_audio_db()
 
     def tearDown(self):
+        self.entitlement_patch.stop()
         self.db_patch.stop()
         self.tmp.cleanup()
 
@@ -84,6 +89,69 @@ class VoiceSlotPurchaseTest(unittest.TestCase):
         rows = self._slot_rows()
         self.assertEqual(1, len(rows))
         self.assertEqual(("alice", 7, result["slot_id"], "active"), tuple(rows[0]))
+
+    def test_member_free_slot_is_idempotent_and_never_deducts_points(self):
+        points = FakePoints(balance=125)
+        with patch.object(audio, "points_domain", points), \
+                patch.object(audio, "get_user_id", return_value=7), \
+                patch.object(audio, "_membership_voice_slot_entitlement", return_value=True):
+            first = audio.ensure_membership_voice_slot("alice")
+            second = audio.ensure_membership_voice_slot("alice")
+
+        self.assertTrue(first["created"])
+        self.assertFalse(second["created"])
+        self.assertEqual(first["cost"], 0)
+        self.assertEqual([], points.deductions)
+        self.assertEqual(1, len(self._slot_rows()))
+        self.assertRegex(first["slot_id"], r"^member_[0-9a-f]{24}$")
+
+    def test_member_with_existing_slot_does_not_receive_duplicate(self):
+        with closing(core.adb()) as conn:
+            conn.execute(
+                """INSERT INTO audio_voice_slots(
+                       username,user_id,slot_id,status,created_at,updated_at
+                   ) VALUES(?,?,?,?,?,?)""",
+                ("alice", 7, "slot_existing", "ready", 1, 1),
+            )
+            conn.commit()
+        with patch.object(audio, "_membership_voice_slot_entitlement", return_value=True), \
+                patch.object(audio, "get_user_id", return_value=7):
+            result = audio.ensure_membership_voice_slot("alice")
+        self.assertFalse(result["created"])
+        self.assertEqual(1, len(self._slot_rows()))
+
+    def test_free_slot_insert_failure_never_falls_through_to_paid_purchase(self):
+        broken_db = pathlib.Path(self.tmp.name) / "free-broken.db"
+        with closing(sqlite3.connect(broken_db)) as conn:
+            conn.execute("CREATE TABLE audio_voice_slots(username TEXT)")
+            conn.commit()
+
+        def broken_adb():
+            conn = sqlite3.connect(broken_db)
+            conn.row_factory = sqlite3.Row
+            return conn
+
+        points = FakePoints(balance=125)
+        with patch.object(audio, "adb", broken_adb), \
+                patch.object(audio, "points_domain", points), \
+                patch.object(audio, "get_user_id", return_value=7), \
+                patch.object(audio, "_membership_voice_slot_entitlement", return_value=True):
+            with self.assertRaises(sqlite3.OperationalError):
+                audio.purchase_audio_voice_slot("alice")
+        self.assertEqual([], points.deductions)
+        self.assertEqual(125, points.balance)
+
+    def test_entitlement_lookup_failure_never_charges_points(self):
+        points = FakePoints(balance=125)
+        with patch.object(audio, "points_domain", points), \
+                patch.object(
+                    audio, "_membership_voice_slot_entitlement",
+                    side_effect=RuntimeError("auth unavailable"),
+                ):
+            with self.assertRaisesRegex(RuntimeError, "auth unavailable"):
+                audio.purchase_audio_voice_slot("alice")
+        self.assertEqual([], points.deductions)
+        self.assertEqual(125, points.balance)
 
     def test_sixth_slot_is_rejected_before_deduct(self):
         with closing(core.adb()) as conn:
