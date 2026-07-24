@@ -104,6 +104,7 @@ class VirtualPaymentTests(unittest.TestCase):
         handler = self.auth.H.__new__(self.auth.H)
         handler.path = "/api/auth/virtual-pay/packages"
         handler._user = lambda: {"username": "buyer"}
+        handler._require_membership = lambda row: True
         handler._send = lambda status, payload, extra_headers=None: sent.append(
             (status, payload)
         )

@@ -295,8 +295,8 @@ def add_points(username, delta, reason="", transaction_key=""):
         status, data = refund_points(username, delta, reason, transaction_key)
     else:
         status, data = deduct_points(username, -delta, reason)
-        if status == 402:
-            return False   # 点数不足：auth 的原子校验已经拒绝，不要再直写
+        if status in (402, 403):
+            return False   # 点数不足或无有效会员：业务拒绝，绝不能回退直写绕过
     if status == 200:
         return True
     # 稳定退款键说明这是一笔可重试的任务退款。Auth 可能已提交、只丢了 HTTP 响应；
@@ -586,7 +586,7 @@ class H(BaseHTTPRequestHandler):
                         u, c, reason, transaction_key),
                     kind, user["username"], cost, body, SERVICE_OWNER)
             except jobs_store.PaidJobDeductError as e:
-                return self._send(402 if e.status == 402 else 502,
+                return self._send(e.status if e.status in (402, 403) else 502,
                                   {"detail": e.detail, "need": cost})
             except jobs_store.PaidJobInsertError as e:
                 return self._send(500, {"detail": {"refunded": "任务创建失败，点数已退回",
