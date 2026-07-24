@@ -185,8 +185,8 @@ def generate(model, prompt, duration, aspect_ratio, resolution, image_url=None,
             raise ValueError("Grok Video 1.5 仅支持1张首帧图")
         if duration < 1 or duration > 15:
             raise ValueError("Grok Video 1.5 视频时长必须是1-15秒整数")
-    elif duration < 1 or duration > 10:
-        raise ValueError("Grok Imagine Video 视频时长必须是1-10秒整数")
+    elif duration < 1 or duration > 15:
+        raise ValueError("Grok Imagine Video 视频时长必须是1-15秒整数")
     opener = _opener()
     payload = {
         "model": model,

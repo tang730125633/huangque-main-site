@@ -81,12 +81,30 @@ class OpenRouterVideoTests(unittest.TestCase):
         self.assertEqual(payload["frame_images"][0]["frame_type"], "first_frame")
         self.assertNotIn("aspect_ratio", payload)
 
-    def test_standard_model_rejects_duration_over_10_before_create(self):
+    def test_standard_model_rejects_reference_duration_over_10_before_create(self):
         with self.assertRaisesRegex(ValueError, "1-10秒"):
             video_openrouter.generate(
                 "grok-imagine-video", "demo", 15, "16:9", "720p",
                 image_urls=["https://cos.example/ref.jpg"],
             )
+
+    def test_standard_model_accepts_text_only_duration_15(self):
+        responses = [
+            _Response({"id": "or-text-15"}),
+            _Response({"status": "completed", "unsigned_urls": ["https://cdn.example/text15.mp4"]}),
+        ]
+        clock = iter([0, 0, 1])
+        opener = Mock()
+        opener.open.side_effect = responses
+        with patch.object(video_openrouter, "OPENROUTER_API_KEY", "test-key"), \
+             patch.object(video_openrouter, "_opener", return_value=opener):
+            video_openrouter.generate(
+                "grok-imagine-video", "demo", 15, "16:9", "720p",
+                now=lambda: next(clock), sleep=lambda _: None,
+            )
+        payload = json.loads(opener.open.call_args_list[0].args[0].data)
+        self.assertEqual(payload["duration"], 15)
+        self.assertNotIn("input_references", payload)
 
     def test_version_15_requires_exactly_one_first_frame(self):
         for refs in ([], ["https://cos.example/one.jpg", "https://cos.example/two.jpg"]):

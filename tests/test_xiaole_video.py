@@ -157,12 +157,21 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertEqual(body["ratio"], "2:3")
         self.assertEqual(body["duration"], 10)
 
-    def test_validate_official_grok_rejects_duration_over_10(self):
+    def test_validate_official_grok_accepts_text_only_duration_15(self):
+        with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"):
+            body = self.video.validate_xiaole_video_payload({
+                "channel": "grok", "prompt": "cinematic demo",
+                "duration": 15, "model": "grok-imagine-video",
+            })
+        self.assertEqual(body["duration"], 15)
+
+    def test_validate_official_grok_rejects_reference_duration_over_10(self):
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"):
             with self.assertRaisesRegex(ValueError, "1-10秒"):
                 self.video.validate_xiaole_video_payload({
                     "channel": "grok", "prompt": "cinematic demo",
                     "duration": 15, "model": "grok-imagine-video",
+                    "reference_images": ["https://a/ref.jpg"],
                 })
 
     def test_validate_video_15_accepts_one_first_frame(self):

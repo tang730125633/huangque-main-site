@@ -133,8 +133,9 @@ class VideoParameterUiTests(unittest.TestCase):
 
     def test_grok_duration_and_reference_controls_match_model_capabilities(self):
         self.assertIn('id="grok15Btn"', VIDEO_HTML)
-        self.assertIn("d15.disabled=!is15", VIDEO_HTML)
-        self.assertIn("selectedGrokDuration>10", VIDEO_HTML)
+        self.assertIn("referenceLimited=selectedGrokModel==='grok-imagine-video' && grokRefData.length>0", VIDEO_HTML)
+        self.assertIn("d15.disabled=referenceLimited", VIDEO_HTML)
+        self.assertIn("通用版带参考图最长支持10秒", VIDEO_HTML)
         self.assertIn(
             "function grokRefLimit(){return selectedGrokModel==='grok-imagine-video-1.5'?1:GROK_REF_MAX;}",
             VIDEO_HTML,

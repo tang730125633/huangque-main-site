@@ -167,7 +167,7 @@ def validate_xiaole_video_payload(payload):
         duration = int(cleaned.get("duration") or 10)
     except (TypeError, ValueError):
         raise ValueError("果肉视频时长必须是整数")
-    max_duration = 15 if model == "grok-imagine-video-1.5" else 10
+    max_duration = 10 if model == "grok-imagine-video" and refs else 15
     if duration < 1 or duration > max_duration:
         raise ValueError("%s 视频时长必须是1-%d秒整数" % (model, max_duration))
     resolution = str(cleaned.get("resolution") or "720p").strip().lower()
