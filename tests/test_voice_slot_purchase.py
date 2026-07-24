@@ -222,6 +222,12 @@ class VoiceSlotFrontendTest(unittest.TestCase):
         self.assertIn("\\u6b63\\u5728\\u7ee7\\u7eed\\u67e5\\u8be2\\u8fdb\\u5ea6", self.html)
         self.assertIn("pollCloneReady(slot.slot_id, note, 0, close, slot);", self.html)
 
+    def test_reclone_ui_has_no_usage_limit(self):
+        self.assertIn("var recloneCount=Math.max(0, parseInt(slot.reclone_count||0,10)||0);", self.html)
+        self.assertIn("\\u5df2\\u91cd\\u65b0\\u590d\\u523b", self.html)
+        self.assertNotIn("recloneRemain", self.html)
+        self.assertNotIn("\\u4e0d\\u652f\\u6301\\u91cd\\u65b0\\u590d\\u523b", self.html)
+
     def test_inline_javascript_parses(self):
         scripts = re.findall(r"<script(?:\s[^>]*)?>([\s\S]*?)</script>", self.html)
         self.assertTrue(scripts)
