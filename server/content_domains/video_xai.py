@@ -179,14 +179,23 @@ def resume(request_id, model, duration, job_id=None, heartbeat=None, now=None,
 def generate(model, prompt, duration, aspect_ratio, resolution, image_url=None,
              job_id=None, heartbeat=None, now=None, sleep=None):
     """创建 xAI 生成任务并轮询到终态。"""
+    duration = int(duration)
+    if model == "grok-imagine-video-1.5":
+        if not str(image_url or "").strip():
+            raise ValueError("Grok Video 1.5 仅支持1张首帧图")
+        if duration < 1 or duration > 15:
+            raise ValueError("Grok Video 1.5 视频时长必须是1-15秒整数")
+    elif duration < 1 or duration > 10:
+        raise ValueError("Grok Imagine Video 视频时长必须是1-10秒整数")
     opener = _opener()
     payload = {
         "model": model,
         "prompt": str(prompt or "").strip(),
-        "duration": int(duration),
-        "aspect_ratio": aspect_ratio,
+        "duration": duration,
         "resolution": resolution,
     }
+    if model != "grok-imagine-video-1.5":
+        payload["aspect_ratio"] = aspect_ratio
     if image_url:
         payload["image"] = {"url": image_url}
 

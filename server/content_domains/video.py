@@ -155,19 +155,21 @@ def validate_xiaole_video_payload(payload):
     if not isinstance(refs, list):
         raise ValueError("reference_images 必须是数组")
     refs = [str(x or "").strip() for x in refs if str(x or "").strip()]
-    if len(refs) > XIAOLE_MAX_REF:
+    if model == "grok-imagine-video-1.5":
+        if len(refs) != 1:
+            raise ValueError("Grok Video 1.5 仅支持1张首帧图")
+    elif len(refs) > XIAOLE_MAX_REF:
         raise ValueError("xAI官方图生视频最多支持%d张参考图" % XIAOLE_MAX_REF)
-    if model == "grok-imagine-video-1.5" and not refs:
-        raise ValueError("Grok Video 1.5 仅支持图生视频，请先上传参考图")
     ratio = str(cleaned.get("ratio") or "16:9").strip()
     if ratio not in XAI_GROK_RATIOS:
         raise ValueError("果肉官方比例仅支持 " + "、".join(sorted(XAI_GROK_RATIOS)))
     try:
         duration = int(cleaned.get("duration") or 10)
     except (TypeError, ValueError):
-        raise ValueError("果肉视频时长必须是1-15秒整数")
-    if duration < 1 or duration > 15:
-        raise ValueError("果肉视频时长必须是1-15秒整数")
+        raise ValueError("果肉视频时长必须是整数")
+    max_duration = 15 if model == "grok-imagine-video-1.5" else 10
+    if duration < 1 or duration > max_duration:
+        raise ValueError("%s 视频时长必须是1-%d秒整数" % (model, max_duration))
     resolution = str(cleaned.get("resolution") or "720p").strip().lower()
     allowed_resolutions = XAI_GROK_RESOLUTIONS | ({"1080p"} if model == "grok-imagine-video-1.5" else set())
     if resolution not in allowed_resolutions:

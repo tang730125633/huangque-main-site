@@ -81,6 +81,22 @@ class OpenRouterVideoTests(unittest.TestCase):
         self.assertEqual(payload["frame_images"][0]["frame_type"], "first_frame")
         self.assertNotIn("aspect_ratio", payload)
 
+    def test_standard_model_rejects_duration_over_10_before_create(self):
+        with self.assertRaisesRegex(ValueError, "1-10秒"):
+            video_openrouter.generate(
+                "grok-imagine-video", "demo", 15, "16:9", "720p",
+                image_urls=["https://cos.example/ref.jpg"],
+            )
+
+    def test_version_15_requires_exactly_one_first_frame(self):
+        for refs in ([], ["https://cos.example/one.jpg", "https://cos.example/two.jpg"]):
+            with self.subTest(refs=len(refs)):
+                with self.assertRaisesRegex(ValueError, "仅支持1张首帧图"):
+                    video_openrouter.generate(
+                        "grok-imagine-video-1.5", "demo", 10, "16:9", "720p",
+                        image_urls=refs,
+                    )
+
     def test_resume_only_polls_existing_job(self):
         clock = iter([0, 0, 1])
         opener = Mock()

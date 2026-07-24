@@ -152,10 +152,28 @@ class XiaoleVideoTests(unittest.TestCase):
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"):
             body = self.video.validate_xiaole_video_payload({
                 "channel": "grok", "prompt": "cinematic demo", "ratio": "2:3",
-                "duration": 15, "resolution": "720p", "model": "grok-imagine-video",
+                "duration": 10, "resolution": "720p", "model": "grok-imagine-video",
             })
         self.assertEqual(body["ratio"], "2:3")
+        self.assertEqual(body["duration"], 10)
+
+    def test_validate_official_grok_rejects_duration_over_10(self):
+        with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"):
+            with self.assertRaisesRegex(ValueError, "1-10秒"):
+                self.video.validate_xiaole_video_payload({
+                    "channel": "grok", "prompt": "cinematic demo",
+                    "duration": 15, "model": "grok-imagine-video",
+                })
+
+    def test_validate_video_15_accepts_one_first_frame(self):
+        with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"):
+            body = self.video.validate_xiaole_video_payload({
+                "channel": "grok", "prompt": "cinematic demo",
+                "duration": 15, "model": "grok-imagine-video-1.5",
+                "reference_images": ["https://a/first.jpg"],
+            })
         self.assertEqual(body["duration"], 15)
+        self.assertEqual(body["reference_images"], ["https://a/first.jpg"])
 
     def test_validate_official_edit_is_under_maintenance(self):
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"):
@@ -187,9 +205,18 @@ class XiaoleVideoTests(unittest.TestCase):
             })
             self.assertEqual(len(cleaned["reference_images"]), 3)
 
+    def test_validate_video_15_rejects_multiple_first_frames(self):
+        with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"):
+            with self.assertRaisesRegex(ValueError, "仅支持1张首帧图"):
+                self.video.validate_xiaole_video_payload({
+                    "channel": "grok", "prompt": "cinematic demo",
+                    "model": "grok-imagine-video-1.5",
+                    "reference_images": ["https://a/1.jpg", "https://a/2.jpg"],
+                })
+
     def test_validate_video_15_requires_reference(self):
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"):
-            with self.assertRaisesRegex(ValueError, "仅支持图生视频"):
+            with self.assertRaisesRegex(ValueError, "仅支持1张首帧图"):
                 self.video.validate_xiaole_video_payload({
                     "channel": "grok", "prompt": "cinematic demo",
                     "model": "grok-imagine-video-1.5",

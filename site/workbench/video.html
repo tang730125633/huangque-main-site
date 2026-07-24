@@ -582,7 +582,7 @@
           <div id="grokExamples" style="display:flex;flex-wrap:wrap;gap:7px;margin-top:10px;"></div>
         </div>
         <div class="panel grok-generate-only" style="margin-top:12px;">
-          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，官方图生视频最多 7 张</span></div>
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span id="grokRefHint" style="color:#5c6b82;">· 可选，通用版最多 7 张</span></div>
           <div id="grokRefGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;">
             <label id="grokRefAdd" style="position:relative;display:flex;align-items:center;justify-content:center;min-height:74px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;background:rgba(7,11,19,.4);cursor:pointer;">
               <input id="grokRefFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
@@ -594,12 +594,12 @@
           <div class="faint" style="font-size:12px;margin-bottom:8px;">官方模型</div>
           <div class="seg" style="grid-template-columns:repeat(2,1fr);"><button class="on" data-grok-model="grok-imagine-video">通用版 · 文生/图生</button><button data-grok-model="grok-imagine-video-1.5">1.5 · 高质量图生</button></div>
         </div>
-        <div class="panel grok-generate-only" style="margin-top:12px;">
+        <div id="grokRatioPanel" class="panel grok-generate-only" style="margin-top:12px;">
           <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例 <span style="color:#5c6b82;">· xAI 官方支持</span></div>
           <div class="seg" style="grid-template-columns:repeat(4,1fr);"><button data-grok-ratio="9:16">9:16</button><button class="on" data-grok-ratio="16:9">16:9</button><button data-grok-ratio="1:1">1:1</button><button data-grok-ratio="4:3">4:3</button><button data-grok-ratio="3:4">3:4</button><button data-grok-ratio="3:2">3:2</button><button data-grok-ratio="2:3">2:3</button></div>
         </div>
         <div class="panel grok-generate-only" style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-          <div><div class="faint" style="font-size:12px;margin-bottom:8px;">生成时长</div><div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-grok-duration="5">5秒</button><button class="on" data-grok-duration="10">10秒</button><button data-grok-duration="15">15秒</button></div></div>
+          <div><div class="faint" style="font-size:12px;margin-bottom:8px;">生成时长</div><div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-grok-duration="5">5秒</button><button class="on" data-grok-duration="10">10秒</button><button id="grok15Btn" data-grok-duration="15" disabled title="仅 Grok Video 1.5 支持15秒">15秒</button></div></div>
           <div><div class="faint" style="font-size:12px;margin-bottom:8px;">分辨率</div><div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-grok-resolution="480p">480p</button><button class="on" data-grok-resolution="720p">720p</button><button id="grok1080Btn" class="hidden" data-grok-resolution="1080p">1080p</button></div></div>
         </div>
         <button id="grokGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:18px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
@@ -2266,6 +2266,18 @@
       if(!is15 && selectedGrokResolution==='1080p'){
         var p=document.querySelector('[data-grok-resolution="720p"]'); if(p)p.click();
       }
+      var d15=$('grok15Btn');
+      if(d15){d15.disabled=!is15;d15.title=is15?'':'仅 Grok Video 1.5 支持15秒';}
+      if(!is15 && selectedGrokDuration>10){
+        var d10=document.querySelector('[data-grok-duration="10"]'); if(d10)d10.click();
+      }
+      var ratioPanel=$('grokRatioPanel'); if(ratioPanel)ratioPanel.classList.toggle('hidden',is15);
+      var hint=$('grokRefHint'); if(hint)hint.textContent=is15?'· 必选，仅支持 1 张首帧图':'· 可选，通用版最多 7 张';
+      if(is15 && grokRefData.length>1){
+        grokRefData.splice(1);
+        refreshGrokRefs();
+        toast('Grok Video 1.5 仅保留第1张首帧图');
+      }
     }
     if(b.dataset.motion) selectedMotion=b.dataset.motion;
     if(b.dataset.bgmVolume) selectedBgmVolume=Number(b.dataset.bgmVolume);
@@ -2626,8 +2638,8 @@
     if(editing && !grokEditVideoData){toast('请先上传不超过 8.7 秒的 MP4 参考视频');return;}
     var ratio=channel==='grok'?(editing?null:selectedGrokRatio):'9:16';
     var _refArr=channel==='grok'?grokRefData:(channel==='micro'?microRefData:(channel==='omni'?omniRefData:null));
-    if(channel==='grok' && !editing && selectedGrokModel==='grok-imagine-video-1.5' && !(_refArr&&_refArr.length)){
-      toast('Grok Video 1.5 仅支持图生视频，请先上传参考图'); return;
+    if(channel==='grok' && !editing && selectedGrokModel==='grok-imagine-video-1.5' && (!_refArr||_refArr.length!==1)){
+      toast('Grok Video 1.5 必须上传且只能上传1张首帧图'); return;
     }
     setSubmitLock('xiaole',true);
     setBusy(true);
@@ -2767,6 +2779,8 @@
   // ---- 果肉(Grok)官方面板：基础图生视频接口单图输入 ----
   var GROK_REF_MAX=7;
   var grokRefData=[];
+  var refreshGrokRefs=function(){};
+  function grokRefLimit(){return selectedGrokModel==='grok-imagine-video-1.5'?1:GROK_REF_MAX;}
   var microRefData=[], omniRefData=[];
   (function setupGrokPanel(){
     var editInput=$('grokEditFile');
@@ -2811,14 +2825,16 @@
         box.appendChild(img); box.appendChild(x);
         grid.insertBefore(box, addTile);
       });
-      addTile.style.display = grokRefData.length>=GROK_REF_MAX ? 'none' : '';
+      addTile.style.display = grokRefData.length>=grokRefLimit() ? 'none' : '';
     }
+    refreshGrokRefs=renderGrokRefs;
     function addGrokRefFile(f){
       if(!f) return;
-      if(grokRefData.length>=GROK_REF_MAX){ toast('最多上传'+GROK_REF_MAX+'张参考图'); return; }
+      var limit=grokRefLimit();
+      if(grokRefData.length>=limit){ toast(selectedGrokModel==='grok-imagine-video-1.5'?'Grok Video 1.5 仅支持1张首帧图':'最多上传'+limit+'张参考图'); return; }
       if(f.size>8*1024*1024){ toast('参考图太大，请压到 8MB 内'); return; }
       var rd=new FileReader();
-      rd.onload=function(){ grokRefData.push(rd.result); renderGrokRefs(); toast('参考图已添加('+grokRefData.length+'/'+GROK_REF_MAX+')'); };
+      rd.onload=function(){ grokRefData.push(rd.result); renderGrokRefs(); toast('参考图已添加('+grokRefData.length+'/'+limit+')'); };
       rd.readAsDataURL(f);
     }
     if(inp){ inp.onchange=function(){ addGrokRefFile(inp.files&&inp.files[0]); inp.value=''; }; }
