@@ -13,7 +13,7 @@
   * video motion(198)           → 「视频 · 动作模仿 · 线路一(HeyGen)」。线路概念在去线路化
                                   (#594)时就删了，motion 现在只走 WaveSpeed —— 这不是过时，
                                   是【错的】：它根本不走 HeyGen
-  * xiaole_video(394)           → 果肉/豆姐/欧米三个渠道混成一个「视频 · 小乐」
+  * xiaole_video(394)           → 果肉/Seedance/Omni 三个渠道混成一个「视频 · 小乐」
   * image seedream/xiaole(65)   → 分不出引擎，都叫「作图」
 
 换装的线路一/线路二【是真的还在】（前端还给用户选），那个标签不动。
@@ -78,8 +78,8 @@ class NewKindsAreNamedTests(unittest.TestCase):
     def test_the_three_xiaole_channels_are_told_apart(self):
         """394 条任务混成一个「视频 · 小乐」，运营根本看不出谁在跑哪个渠道。"""
         self.assertEqual(F.func_name("xiaole_video", {"channel": "grok"}), "果肉视频生成")
-        self.assertEqual(F.func_name("xiaole_video", {"channel": "micro"}), "豆姐视频生成")
-        self.assertEqual(F.func_name("xiaole_video", {"channel": "omni"}), "欧米视频生成")
+        self.assertEqual(F.func_name("xiaole_video", {"channel": "micro"}), "Seedance 视频")
+        self.assertEqual(F.func_name("xiaole_video", {"channel": "omni"}), "Omni 视频")
 
     def test_image_engines_are_told_apart(self):
         self.assertEqual(F.func_name("image", {"provider": "seedream"}), "作图 · 黄雀引擎 1 标准")

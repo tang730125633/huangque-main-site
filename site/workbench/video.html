@@ -247,8 +247,8 @@
         <button class="function-tab" type="button" data-function="tryon">换装换背景</button>
         <button class="function-tab" type="button" data-function="grok">果肉视频生成</button>
         <button class="function-tab" type="button" data-function="sora">Sora 2</button>
-        <button class="function-tab hidden" type="button" data-function="micro" aria-hidden="true">豆姐视频生成</button>
-        <button class="function-tab hidden" type="button" data-function="omni" aria-hidden="true">欧米视频生成</button>
+        <button class="function-tab hidden" type="button" data-function="omni" aria-hidden="true">Omni 视频</button>
+        <button class="function-tab hidden" type="button" data-function="micro" aria-hidden="true">Seedance 视频</button>
       </div>
 
       <div id="bgmPanel" class="panel" style="margin-top:14px;">
@@ -653,48 +653,26 @@
         <div id="soraStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:8px;">正在检查 Sora 测试通道...</div>
       </div>
 
-      <div id="microPanel" class="function-panel motion-panel hidden">
-        <div class="row">
-          <div>
-            <div class="label">豆姐视频生成</div>
-            <div class="muted" style="font-size:12px;margin-top:6px;">Seedance 2.0 Fast · 输入提示词生成，或上传参考图做图生视频</div>
-          </div>
-          <span class="faint" style="font-size:11.5px;">文生 / 图生视频</span>
-        </div>
-        <div class="panel" style="margin-top:14px;">
-          <div class="faint" style="font-size:12px;margin-bottom:8px;">视频提示词</div>
-          <textarea id="microPrompt" rows="4" placeholder="例如：夏日海边，模特穿着白色连衣裙迎风走来，逆光唯美，慢镜头" style="width:100%;min-height:110px;resize:vertical;background:rgba(7,11,19,.5);border:1px solid rgba(148,164,187,.16);border-radius:12px;color:#eaf1fa;padding:12px 14px;font:inherit;font-size:14px;"></textarea>
-        </div>
-        <div class="panel" style="margin-top:12px;">
-          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，传人物照片做图生视频（真人照片→动起来，最多 4 张；也可直接在提示词框 Ctrl/⌘V 粘贴）</span></div>
-          <div id="microRefGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;">
-            <label id="microRefAdd" style="position:relative;display:flex;align-items:center;justify-content:center;min-height:74px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;background:rgba(7,11,19,.4);cursor:pointer;">
-              <input id="microRefFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-              <span style="font-size:20px;color:#94a4bb;">＋</span>
-            </label>
-          </div>
-        </div>
-        <button id="microGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:18px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
-          生成豆姐视频
-        </button>
-        <div id="microCostNote" class="talking-cost" style="margin-top:9px;"></div>
-        <div id="microStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:8px;">Seedance 2.0 Fast · 生成后自动保存到视频资产</div>
-      </div>
-
       <div id="omniPanel" class="function-panel motion-panel hidden">
         <div class="row">
           <div>
-            <div class="label">欧米视频生成</div>
-            <div class="muted" style="font-size:12px;margin-top:6px;">Omni Fast · 约 100 秒快出片，输入提示词生成，或上传参考图做图生视频</div>
+            <div class="label">Omni 视频 <span class="pill-fixed" style="margin-left:7px;">Preview</span></div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">Google Gemini Omni Flash 官方接入 · 文生 / 图生 / 多参考图视频</div>
           </div>
-          <span class="faint" style="font-size:11.5px;">文生 / 图生视频</span>
+          <span class="faint" style="font-size:11.5px;">生成失败自动退点</span>
+        </div>
+        <div class="cine-notice">
+          <b>官方规格</b>
+          <span>· 固定 720p / 24 FPS，生成原生音轨</span>
+          <span>· 支持 16:9、9:16 与 3–10 秒</span>
+          <span>· 最多 3 张参考图；成片带不可见 SynthID 标识</span>
         </div>
         <div class="panel" style="margin-top:14px;">
-          <div class="faint" style="font-size:12px;margin-bottom:8px;">视频提示词 <span style="color:#e7b24c;">· 文字直接要「真人写实」会被上游内容审核拦；要做真人请走下方「参考图」图生视频</span></div>
-          <textarea id="omniPrompt" rows="4" placeholder="例如：护肤精华瓶在水花中缓缓旋转，晶莹剔透，柔光微距，高级广告质感" style="width:100%;min-height:110px;resize:vertical;background:rgba(7,11,19,.5);border:1px solid rgba(148,164,187,.16);border-radius:12px;color:#eaf1fa;padding:12px 14px;font:inherit;font-size:14px;"></textarea>
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">视频提示词 <span style="color:#5c6b82;">· 可描述镜头、动作、节奏与声音</span></div>
+          <textarea id="omniPrompt" rows="4" maxlength="2000" placeholder="例如：琥珀色精华瓶置于石台上，金色晨光缓慢扫过瓶身，镜头平稳向前推进，柔和环境音，高级护肤广告质感" style="width:100%;min-height:110px;resize:vertical;background:rgba(7,11,19,.5);border:1px solid rgba(148,164,187,.16);border-radius:12px;color:#eaf1fa;padding:12px 14px;font:inherit;font-size:14px;"></textarea>
         </div>
         <div class="panel" style="margin-top:12px;">
-          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，传人物照片做图生视频（真人图生不被拦，最多 5 张；也可直接在提示词框 Ctrl/⌘V 粘贴）</span></div>
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，最多 3 张；也可在提示词框 Ctrl/⌘V 粘贴</span></div>
           <div id="omniRefGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;">
             <label id="omniRefAdd" style="position:relative;display:flex;align-items:center;justify-content:center;min-height:74px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;background:rgba(7,11,19,.4);cursor:pointer;">
               <input id="omniRefFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
@@ -702,11 +680,77 @@
             </label>
           </div>
         </div>
+        <div class="panel" style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+          <div>
+            <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
+            <div class="seg" style="grid-template-columns:repeat(2,1fr);"><button data-omni-ratio="9:16">9:16</button><button class="on" data-omni-ratio="16:9">16:9</button></div>
+          </div>
+          <div>
+            <div class="faint" style="font-size:12px;margin-bottom:8px;">生成时长</div>
+            <div class="seg" style="grid-template-columns:repeat(4,1fr);"><button data-omni-duration="3">3秒</button><button data-omni-duration="4">4秒</button><button class="on" data-omni-duration="5">5秒</button><button data-omni-duration="6">6秒</button><button data-omni-duration="7">7秒</button><button data-omni-duration="8">8秒</button><button data-omni-duration="9">9秒</button><button data-omni-duration="10">10秒</button></div>
+          </div>
+        </div>
         <button id="omniGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:18px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
-          生成欧米视频
+          生成 Omni 视频
         </button>
         <div id="omniCostNote" class="talking-cost" style="margin-top:9px;"></div>
-        <div id="omniStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:8px;">Omni Fast · 生成后自动保存到视频资产</div>
+        <div id="omniStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:8px;">正在检查 Omni 官方通道...</div>
+      </div>
+
+      <div id="microPanel" class="function-panel motion-panel hidden">
+        <div class="row">
+          <div>
+            <div class="label">Seedance 视频</div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">火山方舟 Seedance 2.0 官方接入 · 文生 / 图生视频</div>
+          </div>
+          <span class="faint" style="font-size:11.5px;">生成失败自动退点</span>
+        </div>
+        <div class="cine-notice">
+          <b>提交前请确认</b>
+          <span>· Standard 支持 480p / 720p / 1080p；Fast 支持 480p / 720p</span>
+          <span>· 支持 4–15 秒、多个画面比例与有声 / 无声输出</span>
+          <span>· 上传真人素材前，请确认已取得本人肖像和素材授权</span>
+        </div>
+        <div class="panel" style="margin-top:14px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">视频提示词</div>
+          <textarea id="microPrompt" rows="4" maxlength="2000" placeholder="例如：一只纸艺小鸟从桌面起飞，镜头缓慢跟随，暖色晨光，轻柔纸张摩擦声，无文字无标识" style="width:100%;min-height:110px;resize:vertical;background:rgba(7,11,19,.5);border:1px solid rgba(148,164,187,.16);border-radius:12px;color:#eaf1fa;padding:12px 14px;font:inherit;font-size:14px;"></textarea>
+        </div>
+        <div class="panel" style="margin-top:12px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">参考图 <span style="color:#5c6b82;">· 可选，最多 9 张；也可在提示词框 Ctrl/⌘V 粘贴</span></div>
+          <div id="microRefGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;">
+            <label id="microRefAdd" style="position:relative;display:flex;align-items:center;justify-content:center;min-height:74px;border:1px dashed rgba(148,164,187,.28);border-radius:12px;background:rgba(7,11,19,.4);cursor:pointer;">
+              <input id="microRefFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+              <span style="font-size:20px;color:#94a4bb;">＋</span>
+            </label>
+          </div>
+        </div>
+        <div class="panel" style="margin-top:12px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">官方模型</div>
+          <div class="seg" style="grid-template-columns:repeat(2,1fr);"><button class="on" data-seedance-model="doubao-seedance-2-0-260128">Seedance 2.0 · 标准</button><button data-seedance-model="doubao-seedance-2-0-fast-260128">Seedance 2.0 · Fast</button></div>
+        </div>
+        <div class="panel" style="margin-top:12px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">画面比例</div>
+          <div class="seg" style="grid-template-columns:repeat(4,1fr);"><button class="on" data-seedance-ratio="adaptive">自适应</button><button data-seedance-ratio="21:9">21:9</button><button data-seedance-ratio="16:9">16:9</button><button data-seedance-ratio="4:3">4:3</button><button data-seedance-ratio="1:1">1:1</button><button data-seedance-ratio="3:4">3:4</button><button data-seedance-ratio="9:16">9:16</button></div>
+        </div>
+        <div class="panel" style="margin-top:12px;">
+          <div class="faint" style="font-size:12px;margin-bottom:8px;">生成时长</div>
+          <div class="seg" style="grid-template-columns:repeat(6,1fr);"><button data-seedance-duration="4">4秒</button><button class="on" data-seedance-duration="5">5秒</button><button data-seedance-duration="6">6秒</button><button data-seedance-duration="7">7秒</button><button data-seedance-duration="8">8秒</button><button data-seedance-duration="9">9秒</button><button data-seedance-duration="10">10秒</button><button data-seedance-duration="11">11秒</button><button data-seedance-duration="12">12秒</button><button data-seedance-duration="13">13秒</button><button data-seedance-duration="14">14秒</button><button data-seedance-duration="15">15秒</button></div>
+        </div>
+        <div class="panel" style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+          <div>
+            <div class="faint" style="font-size:12px;margin-bottom:8px;">分辨率</div>
+            <div class="seg" style="grid-template-columns:repeat(3,1fr);"><button data-seedance-resolution="480p">480p</button><button class="on" data-seedance-resolution="720p">720p</button><button data-seedance-resolution="1080p">1080p</button></div>
+          </div>
+          <div>
+            <div class="faint" style="font-size:12px;margin-bottom:8px;">声音</div>
+            <div class="seg" style="grid-template-columns:repeat(2,1fr);"><button class="on" data-seedance-audio="true">生成声音</button><button data-seedance-audio="false">无声</button></div>
+          </div>
+        </div>
+        <button id="microGenerateBtn" class="hv-lift" style="width:100%;height:54px;margin-top:18px;display:flex;align-items:center;justify-content:center;gap:10px;font-size:16px;font-weight:800;color:#1a1206;background:linear-gradient(135deg,#f4cd72,#e7b24c);border:none;border-radius:14px;cursor:pointer;box-shadow:0 14px 34px -12px rgba(231,178,76,.7);font-family:inherit;">
+          生成 Seedance 视频
+        </button>
+        <div id="microCostNote" class="talking-cost" style="margin-top:9px;"></div>
+        <div id="microStatus" class="faint" style="text-align:center;font-size:11.5px;margin-top:8px;">正在检查 Seedance 官方通道...</div>
       </div>
     </section>
 
@@ -798,6 +842,13 @@
   var soraAvailable=false, soraHealthKnown=false, maxActiveSoraVideo=1;
   var SORA_RETRY_STORAGE='hq_sora_pending_submit';
   var soraRetryKey='', soraRetryBody='';
+  var selectedOmniRatio='16:9', selectedOmniDuration=5;
+  var selectedSeedanceModel='doubao-seedance-2-0-260128', selectedSeedanceRatio='adaptive';
+  var selectedSeedanceDuration=5, selectedSeedanceResolution='720p', selectedSeedanceAudio=true;
+  var omniAvailable=false, seedanceAvailable=false, officialVideoHealthKnown=false;
+  var OFFICIAL_VIDEO_RETRY_STORAGE={omni:'hq_omni_pending_submit',micro:'hq_seedance_pending_submit'};
+  var OFFICIAL_VIDEO_BLOCK_STORAGE={omni:'hq_omni_pending_block',micro:'hq_seedance_pending_block'};
+  var officialVideoRetry={omni:{key:'',body:'',blocked:false},micro:{key:'',body:'',blocked:false}};
   // 换装的第一个上传框在两条线路收的东西不同：线路一收换装视频，线路二收人物照片。
   // 必须各存各的变量 —— 共用一个的话，线路一传了视频再切到线路二，视频会被当人物照发出去（#537）。
   var tryonVideoData='', tryonPersonImageData='', tryonClothesData='', tryonBackgroundData='', selectedTryonLine='2', selectedTryonSeconds=6;
@@ -1132,10 +1183,13 @@
     renderVoices();
     return true;
   }
-  function setVideoStatus(msg){
+  function setVideoStatus(msg,targetMode){
     if($('statusText')) $('statusText').textContent=msg;
     if($('tryonStatus')) $('tryonStatus').textContent=msg;
     if($('soraStatus')) $('soraStatus').textContent=msg;
+    targetMode=String(targetMode||(currentVideoDraft&&currentVideoDraft.mode)||'').toLowerCase();
+    if(targetMode==='omni'&&$('omniStatus')) $('omniStatus').textContent=msg;
+    if(targetMode==='micro'&&$('microStatus')) $('microStatus').textContent=msg;
   }
   function motionLabel(v){return v==='high'?'高':(v==='medium'?'中等':'低');}
   function normalizeVideoAsset(x){
@@ -1156,8 +1210,8 @@
     if(m==='motion') return '影视级模仿';
     if(m==='tryon') return '换装换背景';
     if(m==='grok') return '果肉视频';
-    if(m==='micro') return '豆姐视频';
-    if(m==='omni') return '欧米视频';
+    if(m==='micro') return 'Seedance 视频';
+    if(m==='omni') return 'Omni 视频';
     if(m==='sora') return String(x&&x.model||'').toLowerCase()==='sora-2-pro'?'Sora 2 Pro':'Sora 2';
     return motionLabel((x&&x.motion)||'medium');
   }
@@ -1167,9 +1221,9 @@
     var m=String((x&&x.mode)||(x&&x.channel)||'').toLowerCase();
     if(m==='motion') return '跟随参考';
     if(m==='tryon') return '按提交时长';
-    if(m==='omni') return '10秒';
     if(m==='sora') return '按提交时长';
-    if(m==='grok'||m==='micro') return '平台默认';
+    if(m==='grok') return '平台默认';
+    if(m==='micro'||m==='omni') return '按提交时长';
     return statusLabel(x&&x.status);
   }
   function phaseInfo(phase,status){
@@ -1203,7 +1257,21 @@
       sora_retrying:{label:'Sora 状态重试',step:3,percent:48,eta:'正在恢复查询'},
       sora_completed:{label:'Sora 已完成',step:4,percent:88,eta:'准备下载成品'},
       sora_downloading:{label:'下载 Sora 成品',step:5,percent:94,eta:'即将完成'},
-      sora_recovery_required:{label:'需要人工核对',step:2,percent:35,eta:'请联系管理员，勿重复提交'}
+      sora_recovery_required:{label:'需要人工核对',step:2,percent:35,eta:'请联系管理员，勿重复提交'},
+      omni_submitting:{label:'提交 Omni',step:1,percent:12,eta:'正在确认官方任务'},
+      omni_queued:{label:'Omni 排队中',step:2,percent:26,eta:'等待生成'},
+      omni_in_progress:{label:'Omni 生成中',step:4,percent:72,eta:'正在渲染视频'},
+      omni_completed:{label:'Omni 已完成',step:4,percent:88,eta:'准备下载成品'},
+      omni_downloading:{label:'下载 Omni 成品',step:5,percent:94,eta:'即将完成'},
+      omni_retrying:{label:'恢复 Omni 查询',step:3,percent:48,eta:'不会重复提交'},
+      omni_recovery_required:{label:'Omni 需人工核对',step:2,percent:35,eta:'请勿重复提交'},
+      seedance_submitting:{label:'提交 Seedance',step:1,percent:12,eta:'正在确认官方任务'},
+      seedance_queued:{label:'Seedance 排队中',step:2,percent:26,eta:'等待生成'},
+      seedance_running:{label:'Seedance 生成中',step:4,percent:72,eta:'正在渲染视频'},
+      seedance_succeeded:{label:'Seedance 已完成',step:4,percent:88,eta:'准备下载成品'},
+      seedance_downloading:{label:'下载 Seedance 成品',step:5,percent:94,eta:'即将完成'},
+      seedance_retrying:{label:'恢复 Seedance 查询',step:3,percent:48,eta:'不会重复提交'},
+      seedance_recovery_required:{label:'Seedance 需人工核对',step:2,percent:35,eta:'请勿重复提交'}
     };
     return map[ph] || {label:statusLabel(st)||'生成中',step:1,percent:12,eta:'正在处理'};
   }
@@ -1861,10 +1929,16 @@
                     :(videoSubmitLocks.cinematic?'电影化身提交中，请稍候':''));
     applyButtonState('tryonGenerateBtn', !!tryonState.enable && !videoSubmitLocks.tryon && !tryonCapReached, !tryonState.enable?tryonState.text:(tryonCapReached?('当前换装视频最多同时排队或生成 '+maxActiveTryon+' 个任务，请等待任务完成后再继续'):(videoSubmitLocks.tryon?'换装任务提交中，请稍候':'')));
     var xiaoleEnabled=!videoSubmitLocks.xiaole && !xiaoleCapReached;
-    var xiaoleTitle=xiaoleCapReached?('当前果肉/豆姐/欧米视频最多同时排队或生成 '+maxActiveXiaoleVideo+' 个任务，请等待部分完成后再继续'):(videoSubmitLocks.xiaole?'视频任务提交中，请稍候':'');
+    var xiaoleTitle=xiaoleCapReached?('当前果肉/Seedance/Omni 视频最多同时排队或生成 '+maxActiveXiaoleVideo+' 个任务，请等待部分完成后再继续'):(videoSubmitLocks.xiaole?'视频任务提交中，请稍候':'');
     applyButtonState('grokGenerateBtn', xiaoleEnabled, xiaoleTitle);
-    applyButtonState('microGenerateBtn', xiaoleEnabled, xiaoleTitle);
-    applyButtonState('omniGenerateBtn', xiaoleEnabled, xiaoleTitle);
+    applyButtonState('microGenerateBtn', xiaoleEnabled&&seedanceAvailable,
+      !seedanceAvailable?(officialVideoHealthKnown?'Seedance 测试通道暂未开放':'正在检查 Seedance 官方通道'):xiaoleTitle);
+    applyButtonState('omniGenerateBtn', xiaoleEnabled&&omniAvailable,
+      !omniAvailable?(officialVideoHealthKnown?'Omni 测试通道暂未开放':'正在检查 Omni 官方通道'):xiaoleTitle);
+    if($('microStatus')&&officialVideoHealthKnown&&!seedanceAvailable) $('microStatus').textContent='Seedance 测试通道暂未开放';
+    if($('omniStatus')&&officialVideoHealthKnown&&!omniAvailable) $('omniStatus').textContent='Omni 测试通道暂未开放';
+    if($('microStatus')&&seedanceAvailable&&$('microStatus').textContent==='正在检查 Seedance 官方通道...') $('microStatus').textContent='官方通道已开启 · 生成后自动保存到视频资产';
+    if($('omniStatus')&&omniAvailable&&$('omniStatus').textContent==='正在检查 Omni 官方通道...') $('omniStatus').textContent='官方通道已开启 · 生成后自动保存到视频资产';
     var soraCapReached=counts.sora>=maxActiveSoraVideo;
     var soraEnabled=soraAvailable && !videoSubmitLocks.sora && !soraCapReached;
     var soraTitle=!soraAvailable
@@ -1876,7 +1950,7 @@
     if($('soraStatus') && soraAvailable && $('soraStatus').textContent==='正在检查 Sora 测试通道...') $('soraStatus').textContent='测试通道已开启 · 生成后自动保存到视频资产';
     updateVideoCosts();
   }
-  // 果肉/豆姐/欧米(xiaole_video) 与 试衣(tryon) 的前端预估价，必须和后端实扣对上。
+  // 果肉/Seedance/Omni(xiaole_video) 与 试衣(tryon) 的前端预估价，必须和后端实扣对上。
   var GROK_RATES={
     'grok-imagine-video':{'480p':10,'720p':12},
     'grok-imagine-video-1.5':{'480p':15,'720p':25,'1080p':44}
@@ -1886,7 +1960,8 @@
     if(channel==='grok' && grokOperation==='edit'){
       return '果肉视频编辑维护中';
     }
-    if(channel!=='grok') return '点数以服务端返回为准';
+    if(channel==='micro') return '预计 '+(selectedSeedanceDuration*30)+' 点（30 点/秒 × '+selectedSeedanceDuration+' 秒）· 失败自动退点';
+    if(channel==='omni') return '预计 '+(selectedOmniDuration*30)+' 点（30 点/秒 × '+selectedOmniDuration+' 秒）· 失败自动退点';
     var rate=grokRate(), secs=selectedGrokDuration;
     return '预计 '+(secs*rate)+' 点（'+rate+' 点/秒 × '+secs+' 秒）';
   }
@@ -1905,6 +1980,21 @@
       b.disabled=!pro && b.dataset.soraResolution!=='720p';
       b.classList.toggle('on',b.dataset.soraResolution===selectedSoraResolution);
     });
+    updateVideoCosts();
+  }
+  function updateOfficialVideoControls(){
+    var fast=selectedSeedanceModel==='doubao-seedance-2-0-fast-260128';
+    if(fast&&selectedSeedanceResolution==='1080p') selectedSeedanceResolution='720p';
+    document.querySelectorAll('[data-seedance-model]').forEach(function(b){b.classList.toggle('on',b.dataset.seedanceModel===selectedSeedanceModel);});
+    document.querySelectorAll('[data-seedance-resolution]').forEach(function(b){
+      b.disabled=fast&&b.dataset.seedanceResolution==='1080p';
+      b.classList.toggle('on',b.dataset.seedanceResolution===selectedSeedanceResolution);
+    });
+    document.querySelectorAll('[data-seedance-ratio]').forEach(function(b){b.classList.toggle('on',b.dataset.seedanceRatio===selectedSeedanceRatio);});
+    document.querySelectorAll('[data-seedance-duration]').forEach(function(b){b.classList.toggle('on',Number(b.dataset.seedanceDuration)===selectedSeedanceDuration);});
+    document.querySelectorAll('[data-seedance-audio]').forEach(function(b){b.classList.toggle('on',(b.dataset.seedanceAudio==='true')===selectedSeedanceAudio);});
+    document.querySelectorAll('[data-omni-ratio]').forEach(function(b){b.classList.toggle('on',b.dataset.omniRatio===selectedOmniRatio);});
+    document.querySelectorAll('[data-omni-duration]').forEach(function(b){b.classList.toggle('on',Number(b.dataset.omniDuration)===selectedOmniDuration);});
     updateVideoCosts();
   }
   function updateVideoCosts(){
@@ -2010,13 +2100,21 @@
     updateChecklist();
   }
   function loadTalkingLimits(){
-    fetch(fresh('/api/gen/health'),{cache:'no-store'}).then(function(r){return r.ok?r.json():Promise.reject();}).then(function(d){
+    return fetch(fresh('/api/gen/health'),{cache:'no-store'}).then(function(r){return r.ok?r.json():Promise.reject();}).then(function(d){
       var cost=Number(d.video_cost),limit=Number(d.video_batch_max);
       var xiaoleCap=Number(d.max_user_active_xiaole_video), tryonCap=Number(d.max_user_active_tryon);
       var cineCap=Number(d.max_user_active_cinematic);
       var soraCap=Number(d.max_user_active_sora_video);
       soraAvailable=d.sora_video_enabled===true;
       soraHealthKnown=true;
+      omniAvailable=d.omni_video_enabled===true;
+      seedanceAvailable=d.seedance_video_enabled===true;
+      officialVideoHealthKnown=true;
+      [['omni',omniAvailable],['micro',seedanceAvailable]].forEach(function(pair){
+        var tab=document.querySelector('[data-function="'+pair[0]+'"]');
+        if(tab){tab.classList.toggle('hidden',!pair[1]);tab.setAttribute('aria-hidden',pair[1]?'false':'true');}
+      });
+      if((videoFunction==='omni'&&!omniAvailable)||(videoFunction==='micro'&&!seedanceAvailable)) updateFunction('talking');
       if(isFinite(cost)&&cost>0) videoCost=Math.round(cost);
       if(isFinite(limit)&&limit>0) videoBatchMax=Math.min(5,Math.round(limit));
       if(isFinite(xiaoleCap)&&xiaoleCap>0) maxActiveXiaoleVideo=Math.round(xiaoleCap);
@@ -2027,7 +2125,11 @@
       if(batchBtn){batchBtn.disabled=videoBatchMax<2;batchBtn.title=videoBatchMax<2?'当前任务上限不支持批量出片':'';}
       renderTalkingBatchImages();
       syncVideoGenerateButtons();
-    }).catch(function(){soraAvailable=false;soraHealthKnown=true;updateChecklist();});
+    }).catch(function(){
+      soraAvailable=false;soraHealthKnown=true;
+      omniAvailable=false;seedanceAvailable=false;officialVideoHealthKnown=true;
+      syncVideoGenerateButtons();updateChecklist();
+    });
   }
   function updateMode(next){
     mode=next;
@@ -2071,11 +2173,11 @@
       $('modeSummary').textContent='Sora 2 / Pro：输入画面描述，生成非真人高质量视频';
       if($('modeName')) $('modeName').textContent='Sora 2';
     }else if(videoFunction==='micro'){
-      $('modeSummary').textContent='豆姐视频（Seedance 2.0 Fast）：输入提示词，或上传参考图做图生视频';
-      if($('modeName')) $('modeName').textContent='豆姐视频';
+      $('modeSummary').textContent='Seedance 2.0 官方视频：选择模型、比例、时长、分辨率和声音生成';
+      if($('modeName')) $('modeName').textContent='Seedance 视频';
     }else if(videoFunction==='omni'){
-      $('modeSummary').textContent='欧米视频（Omni Fast）：约100秒快出片，输入提示词或上传参考图生成';
-      if($('modeName')) $('modeName').textContent='欧米视频';
+      $('modeSummary').textContent='Gemini Omni Flash 官方视频：720p 有声，支持 3–10 秒与参考图';
+      if($('modeName')) $('modeName').textContent='Omni 视频';
     }else{
       updateMode(mode);
     }
@@ -2450,6 +2552,7 @@
       .then(function(d){
         if(d.status==='done' && d.result){
           var result=typeof d.result==='string'?JSON.parse(d.result):d.result;
+          var finishedMode=String((currentVideoDraft&&currentVideoDraft.mode)||result.mode||'');
           result.phase='done';
           trackVideoJob(id,{status:'done',phase:'done'});
           resumedVideoTaskId='';
@@ -2461,7 +2564,7 @@
             {created_at:Math.floor(Date.now()/1000), job_id:String(id)}, result));
           renderVideoDrafts([]);
           refreshCompletedVideoAsset(id,0);
-          setVideoStatus('任务已创建，已保存到视频资产');
+          setVideoStatus('任务已创建，已保存到视频资产',finishedMode);
           if(result.subtitle_error){toast('字幕生成失败，已保留无字幕视频');}
           resumeNextTrackedVideoTask();
           return;
@@ -2620,57 +2723,171 @@
       });
     }).catch(function(e){setSubmitLock('talking',false);setBusy(false);if(currentVideoDraft){currentVideoDraft.status='error';renderVideoDrafts([currentVideoDraft]);}toast(e.message||'配音资产读取失败');});
   };
-  // 果肉(Grok)/豆姐(Seedance) 统一视频生成 → /api/gen/xiaole_video
+  function officialVideoRetryState(channel){
+    var state=officialVideoRetry[channel];
+    if(!state || state.key) return state;
+    try{
+      var saved=JSON.parse(sessionStorage.getItem(OFFICIAL_VIDEO_RETRY_STORAGE[channel])||'null');
+      if(saved&&/^[A-Za-z0-9._:-]{8,128}$/.test(saved.key||'')&&saved.body){
+        state.key=saved.key;state.body=saved.body;
+      }
+    }catch(e){}
+    if(!state.key){
+      try{
+        var blocked=JSON.parse(localStorage.getItem(OFFICIAL_VIDEO_BLOCK_STORAGE[channel])||'null');
+        if(blocked&&/^[A-Za-z0-9._:-]{8,128}$/.test(blocked.key||'')){
+          state.key=blocked.key;state.blocked=true;
+        }
+      }catch(e){}
+    }
+    return state;
+  }
+  function saveOfficialVideoRetry(channel){
+    var state=officialVideoRetry[channel];
+    try{
+      sessionStorage.setItem(OFFICIAL_VIDEO_RETRY_STORAGE[channel],JSON.stringify(state));
+      localStorage.removeItem(OFFICIAL_VIDEO_BLOCK_STORAGE[channel]);
+      state.blocked=false;
+      return true;
+    }catch(e){
+      try{
+        localStorage.setItem(OFFICIAL_VIDEO_BLOCK_STORAGE[channel],JSON.stringify({key:state.key,blocked:true,created_at:Date.now()}));
+        state.blocked=true;
+        return true;
+      }catch(ignore){}
+    }
+    return false;
+  }
+  function clearOfficialVideoRetry(channel){
+    officialVideoRetry[channel]={key:'',body:'',blocked:false};
+    try{sessionStorage.removeItem(OFFICIAL_VIDEO_RETRY_STORAGE[channel]);}catch(e){}
+    try{localStorage.removeItem(OFFICIAL_VIDEO_BLOCK_STORAGE[channel]);}catch(e){}
+  }
+  function newVideoIdempotencyKey(prefix){
+    var random=(window.crypto&&window.crypto.randomUUID)
+      ?window.crypto.randomUUID()
+      :(Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2));
+    return prefix+'-web-'+Date.now().toString(36)+'-'+random;
+  }
+  function restoreOfficialVideoRetries(){
+    ['omni','micro'].forEach(function(channel){
+      var state=officialVideoRetryState(channel),payload=null;
+      if(state&&state.blocked&&!state.body){
+        var blockedStatus=$(channel+'Status');
+        if(blockedStatus) blockedStatus.textContent='上一笔大素材提交结果待核对；请先到任务列表确认，不能重复提交';
+        return;
+      }
+      if(!state||!state.body)return;
+      try{payload=JSON.parse(state.body);}catch(e){clearOfficialVideoRetry(channel);return;}
+      if(!payload||!payload.prompt){clearOfficialVideoRetry(channel);return;}
+      if(channel==='omni'){
+        selectedOmniRatio=payload.ratio==='9:16'?'9:16':'16:9';
+        selectedOmniDuration=Math.max(3,Math.min(10,Number(payload.duration)||5));
+        omniRefData=(payload.reference_images||[]).slice(0,3);
+        if($('omniPrompt'))$('omniPrompt').value=String(payload.prompt);
+        if($('omniStatus'))$('omniStatus').textContent='检测到一笔结果未确认的提交；保持当前参数重试会复用原请求编号';
+      }else{
+        selectedSeedanceModel=payload.model==='doubao-seedance-2-0-fast-260128'?payload.model:'doubao-seedance-2-0-260128';
+        selectedSeedanceRatio=['adaptive','21:9','16:9','4:3','1:1','3:4','9:16'].indexOf(payload.ratio)>=0?payload.ratio:'adaptive';
+        selectedSeedanceDuration=Math.max(4,Math.min(15,Number(payload.duration)||5));
+        selectedSeedanceResolution=['480p','720p','1080p'].indexOf(payload.resolution)>=0?payload.resolution:'720p';
+        selectedSeedanceAudio=payload.generate_audio!==false;
+        microRefData=(payload.reference_images||[]).slice(0,9);
+        if($('microPrompt'))$('microPrompt').value=String(payload.prompt);
+        if($('microStatus'))$('microStatus').textContent='检测到一笔结果未确认的提交；保持当前参数重试会复用原请求编号';
+      }
+    });
+    updateOfficialVideoControls();
+  }
+  // 共用现有 xiaole_video 任务外壳；micro / omni 在后端只走官方 API。
   function submitXiaole(channel){
     if(!token){ location.href='../login.html?redirect=workbench/video'; return; }
+    if(channel==='omni'&&!omniAvailable){toast(officialVideoHealthKnown?'Omni 测试通道暂未开放':'正在检查 Omni 官方通道');return;}
+    if(channel==='micro'&&!seedanceAvailable){toast(officialVideoHealthKnown?'Seedance 测试通道暂未开放':'正在检查 Seedance 官方通道');return;}
     var promptEl=$(channel+'Prompt');
     var statusEl=$(channel+'Status');
-    var label=({grok:'果肉视频',micro:'豆姐视频',omni:'欧米视频'})[channel]||channel;
+    var label=({grok:'果肉视频',micro:'Seedance 视频',omni:'Omni 视频'})[channel]||channel;
     var prompt=((promptEl||{}).value||'').trim();
     if(!prompt){ toast('请输入视频提示词'); if(promptEl) promptEl.focus(); return; }
     var editing=channel==='grok' && grokOperation==='edit';
     if(editing && !grokEditVideoData){toast('请先上传不超过 8.7 秒的 MP4 参考视频');return;}
-    var ratio=channel==='grok'?(editing?null:selectedGrokRatio):'9:16';
+    var ratio=channel==='grok'?(editing?null:selectedGrokRatio):(channel==='omni'?selectedOmniRatio:selectedSeedanceRatio);
     var _refArr=channel==='grok'?grokRefData:(channel==='micro'?microRefData:(channel==='omni'?omniRefData:null));
     if(channel==='grok' && !editing && selectedGrokModel==='grok-imagine-video-1.5' && (!_refArr||_refArr.length!==1)){
       toast('Grok Video 1.5 必须上传且只能上传1张首帧图'); return;
     }
-    setSubmitLock('xiaole',true);
-    setBusy(true);
-    if(statusEl) statusEl.textContent='正在提交'+label+'任务...';
-    var fixedDuration=channel==='grok'?(editing?grokEditDuration:selectedGrokDuration):((channel==='omni'||(_refArr&&_refArr.length))?10:null);
-    currentVideoDraft={mode:channel,text:prompt,ratio:ratio,motion:label,duration:fixedDuration,
-      resolution:channel==='grok'?selectedGrokResolution:null,model:channel==='grok'?selectedGrokModel:null,
-      status:'processing',phase:'queued',created_at:Math.floor(Date.now()/1000)};
-    renderVideoDrafts([currentVideoDraft]);
     var xlPayload={channel:channel,prompt:prompt};
     if(channel==='grok'){
       xlPayload.operation=grokOperation;
       if(editing){xlPayload.reference_video_data=grokEditVideoData;xlPayload.source_duration=grokEditDuration;xlPayload.model='grok-imagine-video';}
       else {xlPayload.ratio=selectedGrokRatio; xlPayload.duration=selectedGrokDuration;
         xlPayload.resolution=selectedGrokResolution; xlPayload.model=selectedGrokModel;}
+    }else if(channel==='omni'){
+      xlPayload.model='gemini-omni-flash-preview';xlPayload.ratio=selectedOmniRatio;
+      xlPayload.duration=selectedOmniDuration;xlPayload.resolution='720p';
+    }else{
+      xlPayload.model=selectedSeedanceModel;xlPayload.ratio=selectedSeedanceRatio;
+      xlPayload.duration=selectedSeedanceDuration;xlPayload.resolution=selectedSeedanceResolution;
+      xlPayload.generate_audio=selectedSeedanceAudio;
     }
     if(!editing && _refArr && _refArr.length){ xlPayload.reference_images=_refArr; }  // 图生视频参考图
+    var official=channel==='micro'||channel==='omni';
+    var body=JSON.stringify(xlPayload),requestKey='';
+    if(official){
+      var retry=officialVideoRetryState(channel);
+      if(retry.blocked&&!retry.body){toast('上一笔提交结果待核对，请先到任务列表确认，不能重复提交');return;}
+      if(retry.key&&retry.body!==body){toast('上一笔提交结果尚未确认，请保持原参数重试');return;}
+      if(!retry.key){
+        retry.key=newVideoIdempotencyKey(channel);retry.body=body;
+        if(!saveOfficialVideoRetry(channel)){
+          clearOfficialVideoRetry(channel);
+          toast('浏览器无法保存防重复编号，本次未提交；请释放浏览器存储后重试');
+          return;
+        }
+      }
+      requestKey=retry.key;
+    }
+    setSubmitLock('xiaole',true);
+    setBusy(true);
+    if(statusEl) statusEl.textContent='正在提交'+label+'任务，请勿重复点击...';
+    var fixedDuration=channel==='grok'?(editing?grokEditDuration:selectedGrokDuration):(channel==='omni'?selectedOmniDuration:selectedSeedanceDuration);
+    var resolution=channel==='grok'?selectedGrokResolution:(channel==='omni'?'720p':selectedSeedanceResolution);
+    var currentModel=channel==='grok'?selectedGrokModel:(channel==='omni'?'gemini-omni-flash-preview':selectedSeedanceModel);
+    currentVideoDraft={mode:channel,text:prompt,ratio:ratio,motion:label,duration:fixedDuration,
+      resolution:resolution,model:currentModel,generate_audio:channel==='micro'?selectedSeedanceAudio:null,
+      status:'processing',phase:channel==='omni'?'omni_submitting':(channel==='micro'?'seedance_submitting':'queued'),created_at:Math.floor(Date.now()/1000)};
+    renderVideoDrafts([currentVideoDraft]);
+    var headers={Authorization:'Bearer '+token,'Content-Type':'application/json'};
+    if(official)headers['Idempotency-Key']=requestKey;
     fetch('/api/gen/xiaole_video',{
       method:'POST',
-      headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-      body:JSON.stringify(xlPayload)
-    }).then(function(r){return r.json().then(function(d){return {status:r.status,data:d};});})
+      headers:headers,
+      body:body
+    }).then(function(r){return r.json().catch(function(){return {};}).then(function(d){return {status:r.status,data:d};});})
       .then(function(res){
-        if(res.status===401){setSubmitLock('xiaole',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
-        if(!res.data.job_id) throw new Error(res.data.detail||'提交失败');
+        if(res.status===401){if(official)clearOfficialVideoRetry(channel);setSubmitLock('xiaole',false);setBusy(false);location.href='../login.html?redirect=workbench/video';return;}
+        if(!res.data.job_id){
+          var err=new Error(res.data.detail||'提交失败');
+          err.httpStatus=res.status;err.errorCode=res.data.code||'';
+          err.uncertain=res.status>=200&&res.status<300;
+          throw err;
+        }
+        if(official)clearOfficialVideoRetry(channel);
         if(statusEl) statusEl.textContent=label+'任务已提交'+(res.data.cost!=null?' · '+res.data.cost+'点':'')+'，生成中...';
         setTimeout(loadVideoHistory,700);
-        trackVideoJob(res.data.job_id,{status:'queued',label:label,mode:channel,modeLabel:label,ratio:ratio});
+        trackVideoJob(res.data.job_id,{status:'queued',phase:channel==='omni'?'omni_queued':(channel==='micro'?'seedance_queued':'queued'),label:label,mode:channel,modeLabel:label,ratio:ratio,model:currentModel,resolution:resolution,duration:fixedDuration,generate_audio:channel==='micro'?selectedSeedanceAudio:null});
         setSubmitLock('xiaole',false);
         pollJob(res.data.job_id,0);
       })
       .catch(function(e){
         setSubmitLock('xiaole',false);
         setBusy(false);
-        if(currentVideoDraft){currentVideoDraft.status='error';renderVideoDrafts([currentVideoDraft]);}
-        if(statusEl) statusEl.textContent=e.message||'提交失败';
-        toast(e.message||'提交失败');
+        var uncertain=official&&(e.uncertain||!e.httpStatus||e.httpStatus>=500||(e.httpStatus===409&&e.errorCode==='idempotency_in_progress'));
+        if(official){if(uncertain)saveOfficialVideoRetry(channel);else clearOfficialVideoRetry(channel);}
+        if(currentVideoDraft){currentVideoDraft.status=uncertain?'processing':'error';renderVideoDrafts([currentVideoDraft]);}
+        var message=uncertain?'提交结果暂未确认；请保持参数不变后重试，系统会复用同一请求编号':(e.message||'提交失败');
+        if(statusEl) statusEl.textContent=message;
+        toast(message);
       });
   }
   function saveSoraRetry(){
@@ -2705,10 +2922,7 @@
     if($('soraStatus')) $('soraStatus').textContent='检测到一笔结果未确认的提交；保持当前参数重试会复用原请求编号';
   }
   function newSoraIdempotencyKey(){
-    var random=(window.crypto&&window.crypto.randomUUID)
-      ?window.crypto.randomUUID()
-      :(Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2));
-    return 'sora-web-'+Date.now().toString(36)+'-'+random;
+    return newVideoIdempotencyKey('sora');
   }
   function submitSora(){
     if(!token){location.href='../login.html?redirect=workbench/video';return;}
@@ -2767,15 +2981,24 @@
   document.querySelectorAll('[data-sora-ratio]').forEach(function(b){b.onclick=function(){selectedSoraRatio=b.dataset.soraRatio;document.querySelectorAll('[data-sora-ratio]').forEach(function(x){x.classList.toggle('on',x===b);});};});
   document.querySelectorAll('[data-sora-seconds]').forEach(function(b){b.onclick=function(){selectedSoraSeconds=Number(b.dataset.soraSeconds);document.querySelectorAll('[data-sora-seconds]').forEach(function(x){x.classList.toggle('on',x===b);});updateVideoCosts();};});
   document.querySelectorAll('[data-sora-resolution]').forEach(function(b){b.onclick=function(){if(b.disabled)return;selectedSoraResolution=b.dataset.soraResolution;updateSoraControls();};});
+  document.querySelectorAll('[data-omni-ratio]').forEach(function(b){b.onclick=function(){selectedOmniRatio=b.dataset.omniRatio;updateOfficialVideoControls();};});
+  document.querySelectorAll('[data-omni-duration]').forEach(function(b){b.onclick=function(){selectedOmniDuration=Number(b.dataset.omniDuration);updateOfficialVideoControls();};});
+  document.querySelectorAll('[data-seedance-model]').forEach(function(b){b.onclick=function(){selectedSeedanceModel=b.dataset.seedanceModel;updateOfficialVideoControls();};});
+  document.querySelectorAll('[data-seedance-ratio]').forEach(function(b){b.onclick=function(){selectedSeedanceRatio=b.dataset.seedanceRatio;updateOfficialVideoControls();};});
+  document.querySelectorAll('[data-seedance-duration]').forEach(function(b){b.onclick=function(){selectedSeedanceDuration=Number(b.dataset.seedanceDuration);updateOfficialVideoControls();};});
+  document.querySelectorAll('[data-seedance-resolution]').forEach(function(b){b.onclick=function(){if(b.disabled)return;selectedSeedanceResolution=b.dataset.seedanceResolution;updateOfficialVideoControls();};});
+  document.querySelectorAll('[data-seedance-audio]').forEach(function(b){b.onclick=function(){selectedSeedanceAudio=b.dataset.seedanceAudio==='true';updateOfficialVideoControls();};});
   if($('soraPrompt')) $('soraPrompt').oninput=function(){if($('soraPromptCount'))$('soraPromptCount').textContent=String($('soraPrompt').value||'').length+' / 2000';};
   restoreSoraRetry();
   updateSoraControls();
+  updateOfficialVideoControls();
   // ---- 果肉(Grok)官方面板：基础图生视频接口单图输入 ----
   var GROK_REF_MAX=7;
   var grokRefData=[];
   var refreshGrokRefs=function(){};
   function grokRefLimit(){return selectedGrokModel==='grok-imagine-video-1.5'?1:GROK_REF_MAX;}
   var microRefData=[], omniRefData=[];
+  restoreOfficialVideoRetries();
   (function setupGrokPanel(){
     var editInput=$('grokEditFile');
     if(editInput) editInput.onchange=function(){
@@ -2846,7 +3069,7 @@
     if($('grokPrompt')) $('grokPrompt').addEventListener('paste', grokPasteHandler);
     if(grid) grid.addEventListener('paste', grokPasteHandler);
   })();
-  // 豆姐/欧米 参考图面板(图生视频)：一套逻辑复用，各存各的 refData；支持点击上传/粘贴
+  // Seedance/Omni 参考图面板(图生视频)：一套逻辑复用，各存各的 refData；支持点击上传/粘贴
   function setupXiaoleRefPanel(ch, refArr, maxN){
     var grid=$(ch+'RefGrid'), addTile=$(ch+'RefAdd'), inp=$(ch+'RefFile'), promptEl=$(ch+'Prompt');
     if(!grid||!addTile) return;
@@ -2872,13 +3095,14 @@
     function paste(e){ var items=(e.clipboardData&&e.clipboardData.items)||[]; for(var i=0;i<items.length;i++){ if(items[i].type&&items[i].type.indexOf('image/')===0){ var f=items[i].getAsFile(); if(f){ e.preventDefault(); addFile(f); } return; } } }
     if(promptEl) promptEl.addEventListener('paste', paste);
     grid.addEventListener('paste', paste);
+    render();
   }
-  setupXiaoleRefPanel('micro', microRefData, 4);  // seedance-2.0-fast 参考图上限4
-  setupXiaoleRefPanel('omni', omniRefData, 5);    // omni-fast 参考图上限5
+  setupXiaoleRefPanel('micro', microRefData, 9);
+  setupXiaoleRefPanel('omni', omniRefData, 3);
   if($('refreshAvatarBtn')) $('refreshAvatarBtn').onclick=function(){loadMotionAvatars(true);};
   bindVideoTaskSync();
   $('scriptText').dispatchEvent(new Event('input'));
-  loadTalkingLimits();
+  var videoHealthReady=loadTalkingLimits();
   updateFunction('talking');
   syncVideoGenerateButtons();
   // F7 联动：资产页视频「重生成」跳转过来时，读 localStorage 预填(一次性)
@@ -2949,15 +3173,25 @@
       if(d.ratio) clickDataButton('ratio',d.ratio);
       if(d.motion) clickDataButton('motion',d.motion);
       _prefillVoice=d.voice_key||d.voice||d.provider_voice||d.voice_name||'';
-      if(m==='grok'||m==='micro'){
+      if(m==='grok'||m==='micro'||m==='omni'){
         updateFunction(m);
         if(m==='grok'){
           if(d.ratio) clickGrokRatio(d.ratio);
           var mb=d.model&&document.querySelector('[data-grok-model="'+String(d.model).replace(/"/g,'\\"')+'"]'); if(mb)mb.click();
           var db=d.duration&&document.querySelector('[data-grok-duration="'+String(Math.round(Number(d.duration)))+'"]'); if(db)db.click();
           var rb=d.resolution&&document.querySelector('[data-grok-resolution="'+String(d.resolution).replace(/"/g,'\\"')+'"]'); if(rb&&!rb.classList.contains('hidden'))rb.click();
+        }else if(m==='omni'){
+          var orb=d.ratio&&document.querySelector('[data-omni-ratio="'+String(d.ratio).replace(/"/g,'\\"')+'"]');if(orb)orb.click();
+          var odb=d.duration&&document.querySelector('[data-omni-duration="'+String(Math.round(Number(d.duration)))+'"]');if(odb)odb.click();
+        }else{
+          var smb=d.model&&document.querySelector('[data-seedance-model="'+String(d.model).replace(/"/g,'\\"')+'"]');if(smb)smb.click();
+          var srb=d.ratio&&document.querySelector('[data-seedance-ratio="'+String(d.ratio).replace(/"/g,'\\"')+'"]');if(srb)srb.click();
+          var sdb=d.duration&&document.querySelector('[data-seedance-duration="'+String(Math.round(Number(d.duration)))+'"]');if(sdb)sdb.click();
+          var sres=d.resolution&&document.querySelector('[data-seedance-resolution="'+String(d.resolution).replace(/"/g,'\\"')+'"]');if(sres&&!sres.disabled)sres.click();
+          if(typeof d.generate_audio==='boolean') selectedSeedanceAudio=d.generate_audio;
+          updateOfficialVideoControls();
         }
-        var ta=m==='grok'?$('grokPrompt'):$('microPrompt');
+        var ta=m==='grok'?$('grokPrompt'):(m==='omni'?$('omniPrompt'):$('microPrompt'));
         if(ta){ta.value=d.prompt||d.text||'';ta.focus();}
         if(typeof toast==='function') toast('已切到原视频模式并带入提示词');
         return;
@@ -3000,21 +3234,22 @@
   function _applyPrefillVoice(){
     if(_prefillVoice && applyTemplateVoice(_prefillVoice)) _prefillVoice='';
   }
-  // 灵感页「一键跟创（视频）」：?prompt= 预填到果肉/豆姐渠道并切到对应 tab
+  // 灵感页「一键跟创（视频）」：?prompt= 预填到果肉/Seedance/Omni 渠道并切到对应 tab
   function applyInspirationPrefill(){
     try{
       var q=new URLSearchParams(location.search);
       var pp=q.get('prompt'); if(!pp) return;
       var ch=(q.get('channel')||'grok').trim();
-      if(ch!=='grok') ch='grok';
+      if(['grok','micro','omni'].indexOf(ch)<0) ch='grok';
+      if((ch==='omni'&&!omniAvailable)||(ch==='micro'&&!seedanceAvailable)) ch='grok';
       updateFunction(ch);
-      var ta=(ch==='grok')?$('grokPrompt'):$('microPrompt');
+      var ta=(ch==='grok')?$('grokPrompt'):(ch==='omni'?$('omniPrompt'):$('microPrompt'));
       if(ta){ ta.value=pp; ta.focus(); }
       if(typeof toast==='function') toast('已带入灵感提示词，可直接生成');
     }catch(e){}
   }
   applyAssetPrefill();
-  applyInspirationPrefill();
+  videoHealthReady.then(applyInspirationPrefill);
   loadVoices();
   loadVideoHistory();
   resumeTrackedVideoTask();

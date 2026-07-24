@@ -644,7 +644,9 @@
         reference_video_url:x.reference_video_url||(x.reference_video_file?('/api/gen/file/'+x.reference_video_file):''),
         background_url:x.background_url||(x.background_file?('/api/gen/file/'+x.background_file):''),
         tryon_mode:x.tryon_mode||'',
-        model:x.model||''
+        model:x.model||'',
+        duration:x.duration||x.requested_duration||'',
+        generate_audio:typeof x.generate_audio==='boolean'?x.generate_audio:undefined
       };
       localStorage.setItem('hq_video_prefill', JSON.stringify(prefill));
       location.href='video.html?prefill=asset';

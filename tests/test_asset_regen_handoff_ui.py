@@ -5,6 +5,8 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ASSETS = (ROOT / "site" / "workbench" / "assets.html").read_text(encoding="utf-8")
 AUDIO = (ROOT / "site" / "workbench" / "audio.html").read_text(encoding="utf-8")
+VIDEO = (ROOT / "site" / "workbench" / "video.html").read_text(encoding="utf-8")
+VIDEO_BACKEND = (ROOT / "server" / "content_domains" / "video.py").read_text(encoding="utf-8")
 
 
 class AssetRegenHandoffUiTests(unittest.TestCase):
@@ -29,6 +31,14 @@ class AssetRegenHandoffUiTests(unittest.TestCase):
         self.assertIn("params.speed=Math.max(.5,Math.min(2", AUDIO)
         self.assertIn("params.pitch=Math.max(-12,Math.min(12", AUDIO)
         self.assertIn("params.volume=Math.max(-50,Math.min(100", AUDIO)
+
+    def test_official_video_regen_preserves_billing_parameters(self):
+        self.assertIn("duration:x.duration||x.requested_duration||''", ASSETS)
+        self.assertIn("generate_audio:typeof x.generate_audio==='boolean'", ASSETS)
+        self.assertIn("typeof d.generate_audio==='boolean'", VIDEO)
+        self.assertIn("[data-omni-duration=", VIDEO)
+        self.assertIn("[data-seedance-duration=", VIDEO)
+        self.assertIn('item["generate_audio"] = audio_choice', VIDEO_BACKEND)
 
 
 if __name__ == "__main__":
