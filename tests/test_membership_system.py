@@ -399,6 +399,9 @@ class MembershipSystemTests(unittest.TestCase):
         self.assertIn("membership_recharge_duplicate", admin)
         self.assertIn("充值会员", admin)
         self.assertIn("同等级续费从原到期日顺延一年", admin)
+        self.assertIn("function membershipDisplayName(user)", recharge)
+        self.assertIn("experience:'体验官',partner:'合伙人',initiator:'发起人'", recharge)
+        self.assertNotIn("user.membership_name||'会员'", recharge)
 
     def test_changed_page_inline_javascript_parses(self):
         for relative in (("site", "workbench", "recharge.html"), ("site", "admin", "index.html")):
