@@ -248,6 +248,24 @@ class MembershipSystemTests(unittest.TestCase):
         self.assertFalse(data["membership_active"])
         self.assertEqual(data["membership_tier"], "")
 
+    def test_admin_user_list_has_stable_offset_pagination_and_filtered_total(self):
+        for username in ("page_alpha", "page_beta", "page_gamma"):
+            self.auth.create_user(username, "secret123", 0, "member")
+
+        first = self.auth.list_admin_users(
+            query="page_", sort="username", direction="asc", limit=2, offset=0,
+        )
+        second = self.auth.list_admin_users(
+            query="page_", sort="username", direction="asc", limit=2, offset=2,
+        )
+
+        self.assertEqual(first["total"], 3)
+        self.assertEqual(first["limit"], 2)
+        self.assertEqual(first["offset"], 0)
+        self.assertEqual([item["username"] for item in first["items"]], ["page_alpha", "page_beta"])
+        self.assertEqual([item["username"] for item in second["items"]], ["page_gamma"])
+        self.assertTrue(all(item["id"] > 0 for item in first["items"] + second["items"]))
+
     def test_http_blocks_nonmember_deduct_and_point_recharge_but_allows_membership_order(self):
         os.environ["HQ_MEMBERSHIP_ENFORCEMENT_ENABLED"] = "1"
         server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)

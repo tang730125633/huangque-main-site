@@ -1045,22 +1045,24 @@ def request_logs(limit=200, status="", q="", include_noise=False):
     return out
 
 
-def activity_logs(days=7, limit=200, category="", q="", source="", include_noise=False):
+def activity_logs(days=7, limit=200, category="", q="", source="", include_noise=False, offset=0):
     """任务记录(jobs 库) + HTTP 请求(nginx) 合并成一条时间线，最新在前。
 
     category: '' | ok | fail | running（统一语义：任务 done/error/排队中 ↔ HTTP <400/>=400）
     source:   '' | job | http
     """
-    limit = max(1, min(int(limit or 200), 500))
+    limit = max(1, min(int(limit or 200), 100))
+    offset = max(0, int(offset or 0))
     q = str(q or "").strip()
     category = str(category or "").strip()
     source = str(source or "").strip()
     merged, message = [], None
+    source_limit = 500
 
     if source in ("", "http") and category != "running":
         # 成功/失败下推到采集层，避免"失败行被截断挤掉"
         entries, message = _collect_request_entries(
-            limit, status=category if category in ("ok", "fail") else "", include_noise=include_noise
+            source_limit, status=category if category in ("ok", "fail") else "", include_noise=include_noise
         )
         for key, it in entries:
             cat = "ok" if it["status"] < 400 else "fail"
@@ -1085,7 +1087,7 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
             )
 
     if source in ("", "job"):
-        for j in call_logs(days, limit)["items"]:
+        for j in call_logs(days, source_limit)["items"]:
             t = time.localtime(j["created_at"]) if j["created_at"] else None
             key = (t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec) if t else (0, 0, 0, 0, 0, 0)
             cat = "ok" if j["status"] == "done" else ("fail" if j["status"] == "error" else "running")
@@ -1109,16 +1111,22 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
                 )
             )
 
-    items = []
+    matching = []
     for key, it in sorted(merged, key=lambda x: x[0], reverse=True):
         if category and it["cat"] != category:
             continue
         if q and q not in it["path"] and q not in (it["user"] or "") and q not in (it["func"] or ""):
             continue
-        items.append(it)
-        if len(items) >= limit:
-            break
-    out = {"items": items, "limit": limit, "days": days}
+        matching.append(it)
+    total = len(matching)
+    items = matching[offset:offset + limit]
+    out = {
+        "items": items,
+        "limit": limit,
+        "offset": offset,
+        "total": total,
+        "days": days,
+    }
     if message and source != "job":
         out["message"] = message
     return out
@@ -1542,6 +1550,7 @@ class H(BaseHTTPRequestHandler):
                         (q.get("q") or [""])[0],
                         (q.get("source") or [""])[0],
                         (q.get("noise") or ["0"])[0] in ("1", "true"),
+                        (q.get("offset") or ["0"])[0],
                     ),
                 )
             except Exception as e:

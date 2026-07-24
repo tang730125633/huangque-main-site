@@ -72,6 +72,9 @@
     .dot.fail{background:var(--error);box-shadow:0 0 0 3px rgba(224,107,100,.12)}
     .dot.warn{background:var(--warn);box-shadow:0 0 0 3px rgba(217,155,53,.12)}
     .table-wrap{width:100%;overflow-x:auto;border-radius:8px}
+    .pager{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding-top:14px}
+    .pager-info{min-width:180px;text-align:center;color:var(--muted);font-size:12px}
+    .pager button{min-width:72px}
     .truncate{max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .feature-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
     .invite-config{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
@@ -301,7 +304,10 @@
 <script>
 (function(){
   var token = '__cookie__';
-  var state = {days:7, data:null, userTimer:null, module:'ops', membershipRequestId:''};
+  var state = {
+    days:7, data:null, userTimer:null, module:'ops', membershipRequestId:'',
+    userPage:1, userPageSize:20, reqPage:1, reqPageSize:20
+  };
   var el = function(id){return document.getElementById(id)};
   function toast(msg){var t=el('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(t._tm); t._tm=setTimeout(function(){t.style.display='none'},2600)}
   function authHeaders(extra){return Object.assign({'Authorization':'Bearer '+token}, extra||{})}
@@ -387,7 +393,9 @@
   }
   function renderActivity(d){
     var items=d.items||[];
-    el('reqCount').textContent=items.length+' 条（最新在前）';
+    var total=Number(d.total||0),pages=Math.max(1,Math.ceil(total/state.reqPageSize));
+    if(state.reqPage>pages){state.reqPage=pages;return loadReqLogs()}
+    el('reqCount').textContent='第 '+state.reqPage+' / '+pages+' 页 · 共 '+total+' 条';
     if(!items.length){el('reqBox').innerHTML='<div class="empty">'+esc(d.message||'没有匹配的日志')+'</div>';return}
     el('reqBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>时间</th><th>类型</th><th>用户</th><th>功能</th><th>状态</th><th>耗时</th><th>点数</th><th>路径</th><th>来源 IP</th></tr></thead><tbody>'+items.map(function(x){
       var isJob=x.source==='job';
@@ -399,10 +407,13 @@
       var pathCell=x.path?'<div class="truncate" style="max-width:300px" title="'+esc(x.path)+'"><code>'+esc(x.path)+'</code></div>':'<span class="muted">-</span>';
       var ipCell=x.ip?'<code title="'+esc(x.ua||'')+'">'+esc(x.ip)+'</code>':'<span class="muted">-</span>';
       return '<tr><td><code>'+esc(x.time)+'</code></td><td>'+type+'</td><td>'+user+'</td><td>'+(x.func?esc(x.func):'<span class="muted">-</span>')+'</td><td>'+st+'</td><td><code>'+(isJob?esc(fmtDuration(x.duration_sec)):'-')+'</code></td><td class="right"><code>'+(x.cost!=null?Number(x.cost).toLocaleString():'-')+'</code></td><td>'+pathCell+'</td><td>'+ipCell+'</td></tr>';
-    }).join('')+'</tbody></table></div>';
+    }).join('')+'</tbody></table></div><div class="pager"><button data-req-page="-1" '+(state.reqPage<=1?'disabled':'')+'>上一页</button><span class="pager-info">第 '+state.reqPage+' / '+pages+' 页 · 每页 '+state.reqPageSize+' 条</span><button data-req-page="1" '+(state.reqPage>=pages?'disabled':'')+'>下一页</button></div>';
+    Array.prototype.forEach.call(el('reqBox').querySelectorAll('[data-req-page]'),function(btn){
+      btn.onclick=function(){state.reqPage+=Number(btn.getAttribute('data-req-page'));loadReqLogs()};
+    });
   }
   function loadReqLogs(){
-    var q='?limit=200&days='+encodeURIComponent(state.days)
+    var q='?limit='+state.reqPageSize+'&offset='+((state.reqPage-1)*state.reqPageSize)+'&days='+encodeURIComponent(state.days)
       +'&source='+encodeURIComponent(el('reqSource').value||'')
       +'&status='+encodeURIComponent(el('reqStatus').value||'')
       +'&q='+encodeURIComponent(el('reqSearch').value||'')
@@ -454,12 +465,14 @@
   }
   function renderUsers(d){
     var items=d.items||[];
-    el('userCount').textContent='当前 '+items.length+' / 总 '+(d.total||0)+' 个账号';
+    var total=Number(d.total||0),pages=Math.max(1,Math.ceil(total/state.userPageSize));
+    if(state.userPage>pages){state.userPage=pages;return loadUsers()}
+    el('userCount').textContent='第 '+state.userPage+' / '+pages+' 页 · 共 '+total+' 个账号';
     if(!items.length){el('usersBox').innerHTML='<div class="empty">暂无用户</div>';return}
-    el('usersBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>账号</th><th>昵称</th><th>点数</th><th>会员</th><th>角色</th><th>改密</th><th>注册时间</th><th>操作</th></tr></thead><tbody>'+items.map(function(u){
-      return '<tr><td><b>'+esc(u.username)+'</b></td><td><div class="truncate" title="'+esc(u.display_name||'')+'">'+esc(u.display_name||'')+'</div></td><td><code>'+Number(u.points||0).toLocaleString()+'</code></td><td>'+membershipText(u)+'</td><td>'+esc(roleName(u.role))+'</td><td>'+(u.must_change?'<span class="pill warn">需改密</span>':'<span class="pill ok">正常</span>')+'</td><td><code>'+esc(u.created_at||'')+'</code></td><td><div class="actions"><button class="mini" data-act="recharge" data-user="'+esc(u.username)+'">充值会员</button><button class="mini" data-act="member" data-user="'+esc(u.username)+'">调整会员</button><button class="mini" data-act="plus" data-user="'+esc(u.username)+'">加点</button><button class="mini danger" data-act="minus" data-user="'+esc(u.username)+'">扣点</button><button class="mini" data-act="audit" data-user="'+esc(u.username)+'">流水</button></div></td></tr>';
-    }).join('')+'</tbody></table></div>';
-    Array.prototype.forEach.call(document.querySelectorAll('#usersBox button'), function(btn){
+    el('usersBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>ID</th><th>账号</th><th>昵称</th><th>点数</th><th>会员</th><th>角色</th><th>改密</th><th>注册时间</th><th>操作</th></tr></thead><tbody>'+items.map(function(u){
+      return '<tr><td><code>#'+esc(u.id)+'</code></td><td><b>'+esc(u.username)+'</b></td><td><div class="truncate" title="'+esc(u.display_name||'')+'">'+esc(u.display_name||'')+'</div></td><td><code>'+Number(u.points||0).toLocaleString()+'</code></td><td>'+membershipText(u)+'</td><td>'+esc(roleName(u.role))+'</td><td>'+(u.must_change?'<span class="pill warn">需改密</span>':'<span class="pill ok">正常</span>')+'</td><td><code>'+esc(u.created_at||'')+'</code></td><td><div class="actions"><button class="mini" data-act="recharge" data-user="'+esc(u.username)+'">充值会员</button><button class="mini" data-act="member" data-user="'+esc(u.username)+'">调整会员</button><button class="mini" data-act="plus" data-user="'+esc(u.username)+'">加点</button><button class="mini danger" data-act="minus" data-user="'+esc(u.username)+'">扣点</button><button class="mini" data-act="audit" data-user="'+esc(u.username)+'">流水</button></div></td></tr>';
+    }).join('')+'</tbody></table></div><div class="pager"><button data-user-page="-1" '+(state.userPage<=1?'disabled':'')+'>上一页</button><span class="pager-info">第 '+state.userPage+' / '+pages+' 页 · 每页 '+state.userPageSize+' 个</span><button data-user-page="1" '+(state.userPage>=pages?'disabled':'')+'>下一页</button></div>';
+    Array.prototype.forEach.call(document.querySelectorAll('#usersBox button[data-act]'), function(btn){
       btn.onclick=function(){
         var act=btn.getAttribute('data-act'), username=btn.getAttribute('data-user');
         if(act==='audit') return openPoints(username);
@@ -468,6 +481,26 @@
         adjustPoints(username, act==='minus'?-1:1);
       };
     });
+    Array.prototype.forEach.call(el('usersBox').querySelectorAll('[data-user-page]'),function(btn){
+      btn.onclick=function(){state.userPage+=Number(btn.getAttribute('data-user-page'));loadUsers()};
+    });
+  }
+  function pointReasonText(item){
+    var raw=String(item.reason||'').trim();
+    var job=raw.match(/^job:([a-z0-9_]+)$/);
+    var names={
+      cinematic:'开放式电影化生成',image:'图片生成',xiaole_video:'AI 视频生成',
+      video:'数字人口播',avatar:'创建数字化 IP',collect:'内容采集',
+      tryon:'换装换背景',audio:'配音生成',copy:'文案生成',
+      leads:'获客分析',video_batch:'批量视频生成'
+    };
+    if(job){
+      var action=Number(item.delta||0)>0?'任务失败退款':'任务扣点';
+      return action+' · '+(names[job[1]]||job[1]);
+    }
+    if(raw==='voice_slot') return Number(item.delta||0)>0?'音色槽位购买退款':'购买音色复刻槽位';
+    if(raw==='search:douyin') return Number(item.delta||0)>0?'抖音内容搜索退款':'抖音内容搜索';
+    return raw||'未填写原因';
   }
   function renderPoints(d){
     var items=d.items||[];
@@ -482,11 +515,11 @@
     el('pointsBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>时间</th><th>来源</th><th>用户</th><th>变化</th><th>前</th><th>后</th><th>原因</th><th>交易键</th></tr></thead><tbody>'+items.map(function(x){
       var delta=Number(x.delta||0);
       var source=x.who_admin==='system'?'任务':x.who_admin;
-      return '<tr><td><code>'+fmtTime(x.created_at)+'</code></td><td>'+esc(source)+'</td><td><b>'+esc(x.username)+'</b></td><td><span class="pill '+(delta>=0?'ok':'fail')+'">'+(delta>0?'+':'')+delta+'</span></td><td><code>'+Number(x.before_points||0).toLocaleString()+'</code></td><td><code>'+Number(x.after_points||0).toLocaleString()+'</code></td><td><div class="truncate" title="'+esc(x.reason||'')+'">'+esc(x.reason||'')+'</div></td><td><code>'+esc(x.transaction_key||'-')+'</code></td></tr>';
+      return '<tr><td><code>'+fmtTime(x.created_at)+'</code></td><td>'+esc(source)+'</td><td><b>'+esc(x.username)+'</b></td><td><span class="pill '+(delta>=0?'ok':'fail')+'">'+(delta>0?'+':'')+delta+'</span></td><td><code>'+Number(x.before_points||0).toLocaleString()+'</code></td><td><code>'+Number(x.after_points||0).toLocaleString()+'</code></td><td><div class="truncate" title="'+esc(x.reason||'')+'">'+esc(pointReasonText(x))+'</div></td><td><code>'+esc(x.transaction_key||'-')+'</code></td></tr>';
     }).join('')+'</tbody></table></div>';
   }
   function userQuery(){
-    return '?q='+encodeURIComponent(el('userSearch').value||'')+'&sort='+encodeURIComponent(el('userSort').value||'created_at')+'&dir='+encodeURIComponent(el('userDir').value||'desc')+'&limit=120';
+    return '?q='+encodeURIComponent(el('userSearch').value||'')+'&sort='+encodeURIComponent(el('userSort').value||'created_at')+'&dir='+encodeURIComponent(el('userDir').value||'desc')+'&limit='+state.userPageSize+'&offset='+((state.userPage-1)*state.userPageSize);
   }
   function loadUsers(){
     if(!token) return;
@@ -697,18 +730,18 @@
   el('days7').onclick=function(){state.days=7;load()};
   el('days30').onclick=function(){state.days=30;load()};
   el('userRefresh').onclick=loadUsers;
-  el('userSort').onchange=loadUsers;
-  el('userDir').onchange=loadUsers;
-  el('userSearch').oninput=function(){clearTimeout(state.userTimer);state.userTimer=setTimeout(loadUsers,260)};
+  el('userSort').onchange=function(){state.userPage=1;loadUsers()};
+  el('userDir').onchange=function(){state.userPage=1;loadUsers()};
+  el('userSearch').oninput=function(){clearTimeout(state.userTimer);state.userTimer=setTimeout(function(){state.userPage=1;loadUsers()},260)};
   el('pointsRefresh').onclick=loadPoints;
   el('pointsActor').onchange=loadPoints;
   el('pointsDirection').onchange=loadPoints;
   el('pointsUser').onkeydown=function(e){if(e.key==='Enter') loadPoints()};
   el('reqRefresh').onclick=loadReqLogs;
-  el('reqSource').onchange=loadReqLogs;
-  el('reqStatus').onchange=loadReqLogs;
-  el('reqNoise').onchange=loadReqLogs;
-  el('reqSearch').oninput=function(){clearTimeout(state.reqTimer);state.reqTimer=setTimeout(loadReqLogs,300)};
+  el('reqSource').onchange=function(){state.reqPage=1;loadReqLogs()};
+  el('reqStatus').onchange=function(){state.reqPage=1;loadReqLogs()};
+  el('reqNoise').onchange=function(){state.reqPage=1;loadReqLogs()};
+  el('reqSearch').oninput=function(){clearTimeout(state.reqTimer);state.reqTimer=setTimeout(function(){state.reqPage=1;loadReqLogs()},300)};
   el('rechargeRefresh').onclick=loadRecharge;
   el('membershipRechargeSubmit').onclick=rechargeMembership;
   el('rechargeStatus').onchange=loadRecharge;

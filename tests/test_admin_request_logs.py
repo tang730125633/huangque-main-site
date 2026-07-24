@@ -188,6 +188,15 @@ class RequestLogUserTests(unittest.TestCase):
         fails = admin_api.activity_logs(category="fail", limit=2, source="http")["items"]
         self.assertTrue(any(x["status_text"] == "404" for x in fails))
 
+    def test_activity_pagination_returns_stable_pages_and_total(self):
+        all_items = admin_api.activity_logs(limit=100)["items"]
+        first = admin_api.activity_logs(limit=2, offset=0)
+        second = admin_api.activity_logs(limit=2, offset=2)
+        self.assertEqual(first["items"] + second["items"], all_items[:4])
+        self.assertEqual(first["total"], len(all_items))
+        self.assertEqual(first["offset"], 0)
+        self.assertEqual(second["offset"], 2)
+
 
 class JobPayloadTests(unittest.TestCase):
     def test_truncated_payload_still_names_func(self):
