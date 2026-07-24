@@ -552,6 +552,28 @@ class ShortDramaVoiceSnapshotTests(unittest.TestCase):
             [(line["start_ms"], line["end_ms"]) for line in shot["lines"]],
         )
 
+    def test_save_voice_timeline_accepts_non_overlapping_reverse_time_order(self):
+        snapshot = self._complete_first_voice_shot()
+        saved = short_drama_voice.save_voice_timeline(
+            self.db,
+            "alice",
+            self._timeline_body(
+                snapshot,
+                starts=(2000, 0),
+                ends=(3000, 1200),
+            ),
+        )
+        shot = saved["shots"][0]
+        self.assertTrue(shot["lockable"])
+        self.assertNotIn(
+            "audio_overlap",
+            [item["code"] for item in shot["lock_blockers"]],
+        )
+        self.assertNotIn(
+            "subtitle_overlap",
+            [item["code"] for item in shot["lock_blockers"]],
+        )
+
     def test_save_voice_timeline_rejects_incomplete_overlap_and_overflow(self):
         snapshot = self._complete_first_voice_shot()
         valid = self._timeline_body(snapshot)
@@ -561,8 +583,14 @@ class ShortDramaVoiceSnapshotTests(unittest.TestCase):
             "audio_overlap": self._timeline_body(
                 snapshot, starts=(0, 900), ends=(800, 2100),
             ),
+            "reverse_audio_overlap": self._timeline_body(
+                snapshot, starts=(1000, 0), ends=(1800, 900),
+            ),
             "subtitle_overlap": self._timeline_body(
                 snapshot, starts=(0, 1050), ends=(1100, 2250),
+            ),
+            "reverse_subtitle_overlap": self._timeline_body(
+                snapshot, starts=(1500, 0), ends=(2500, 1600),
             ),
             "duration_overflow": self._timeline_body(
                 snapshot, starts=(0, 4000), ends=(1000, 4900),

@@ -1491,6 +1491,10 @@ def _timeline_blockers(shot):
                     blockers, "timeline_invalid", shot_id, line_id
                 )
             subtitle_intervals.append((start_ms, end_ms, line_id))
+    audio_intervals.sort(key=lambda interval: (interval[0], interval[1], interval[2]))
+    subtitle_intervals.sort(
+        key=lambda interval: (interval[0], interval[1], interval[2])
+    )
     for previous, current in zip(audio_intervals, audio_intervals[1:]):
         if current[0] < previous[1]:
             _append_unique_blocker(
