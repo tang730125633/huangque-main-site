@@ -2398,6 +2398,13 @@ class ShortDramaProductionTests(unittest.TestCase):
 
 
 class ShortDramaStillRouteTests(unittest.TestCase):
+    class FakeAudio:
+        @staticmethod
+        def resolve_audio_provider_voice(_username, voice_key):
+            if not voice_key:
+                raise ValueError("missing voice")
+            return voice_key
+
     class FakePoints:
         class AuthPointsError(Exception):
             status = 402
@@ -2474,6 +2481,7 @@ class ShortDramaStillRouteTests(unittest.TestCase):
             "security": core.miniprogram_security.check_payload,
             "upstream": upstream_guard.exhausted_reason,
             "image_queue": core._image_job_queue,
+            "fast_queue": core._fast_job_queue,
             "queued_ids": core._queued_job_ids,
             "canvas_access": core._short_drama_canvas_access,
         }
@@ -2483,7 +2491,8 @@ class ShortDramaStillRouteTests(unittest.TestCase):
             {"username": token, "must_change": token == "locked"} if token else None
         )
         self.points = self.FakePoints()
-        core._domains = lambda: (None, self.points, video)
+        self.audio = self.FakeAudio()
+        core._domains = lambda: (self.audio, self.points, video)
         core.HANDLERS = dict(core.HANDLERS, image=lambda payload: payload)
         core.feature_flags.init_db = lambda: None
         core.feature_flags.require_enabled = lambda kind: None
@@ -2497,6 +2506,7 @@ class ShortDramaStillRouteTests(unittest.TestCase):
             (kind, dict(payload))
         ) or None
         core._image_job_queue = queue.Queue(maxsize=8)
+        core._fast_job_queue = queue.Queue(maxsize=8)
         core._queued_job_ids = set()
         core._shutting_down.clear()
         core.init_db()
@@ -2535,6 +2545,7 @@ class ShortDramaStillRouteTests(unittest.TestCase):
         core.miniprogram_security.check_payload = self.originals["security"]
         upstream_guard.exhausted_reason = self.originals["upstream"]
         core._image_job_queue = self.originals["image_queue"]
+        core._fast_job_queue = self.originals["fast_queue"]
         core._queued_job_ids = self.originals["queued_ids"]
         core._short_drama_canvas_access = self.originals["canvas_access"]
         self.tmp.cleanup()
@@ -2682,6 +2693,94 @@ class ShortDramaStillRouteTests(unittest.TestCase):
                 "SELECT id, username, kind, cost, status, payload, refunded "
                 "FROM jobs ORDER BY id"
             ).fetchall()
+
+    def test_voice_quote_submit_and_idempotent_replay_use_one_charge_and_job(self):
+        with closing(core.jdb()) as conn:
+            conn.execute(
+                "INSERT INTO short_drama_characters "
+                "(id,project_id,character_key,name,identity_text,personality,"
+                "source_type,appearance_prompt,wardrobe_prompt,voice_key,"
+                "voice_settings_json,sort_order) "
+                "VALUES ('voice-route-character',?,'hero','主角','','',"
+                "'ai_character','','','longwan','{}',0)",
+                (self.project["id"],),
+            )
+            conn.execute(
+                "UPDATE short_drama_scripts SET dialogue_lines_json=? "
+                "WHERE project_id=?",
+                (
+                    json.dumps([{
+                        "id": "voice-route-line",
+                        "character_key": "hero", "text": "你好，欢迎来到黄雀。",
+                    }], ensure_ascii=False),
+                    self.project["id"],
+                ),
+            )
+            conn.execute(
+                "UPDATE short_drama_shots "
+                "SET character_keys_json='[\"hero\"]',"
+                "dialogue_line_ids_json='[\"voice-route-line\"]' "
+                "WHERE id=?",
+                (self.shot_id,),
+            )
+            conn.execute(
+                "UPDATE short_drama_projects SET stage='voice_review' WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+        snapshot = core._short_drama_domain().short_drama_voice.get_voice_workspace(
+            core.jdb, "alice", self.project["id"]
+        )
+        line = next(
+            line for shot in snapshot["shots"] for line in shot["lines"]
+        )
+        item = {
+            "line_id": line["id"], "voice_key": line["voice_key"],
+            "speed": line["speed"], "pitch": line["pitch"], "volume": line["volume"],
+        }
+        quote_status, quote = self.request(
+            "/api/gen/short-drama/voice-quote",
+            body={
+                "project_id": self.project["id"],
+                "revision": snapshot["revision"], "items": [item],
+            },
+            with_quote=False,
+        )
+        self.assertEqual(200, quote_status)
+        self.assertEqual(self.points.cost, quote["total_cost"])
+        self.assertEqual(100, quote["points_left"])
+        self.assertTrue(quote["can_submit"])
+        self.assertEqual([], self.points.deduct_calls)
+        submitted = {
+            "project_id": self.project["id"],
+            "revision": snapshot["revision"],
+            **item,
+            "quote_token": quote["items"][0]["quote_token"],
+        }
+        first_status, first = self.request(
+            "/api/gen/short-drama/generate-voice", body=submitted,
+            with_quote=False, idempotency_key="voice-route-submit-001",
+        )
+        replay_status, replay = self.request(
+            "/api/gen/short-drama/generate-voice", body=submitted,
+            with_quote=False, idempotency_key="voice-route-submit-001",
+        )
+        self.assertEqual(200, first_status)
+        self.assertEqual(200, replay_status)
+        self.assertFalse(first["replayed"])
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(first["job_id"], replay["job_id"])
+        self.assertEqual(1, len(self.points.deduct_calls))
+        jobs = self._jobs()
+        self.assertEqual(1, len(jobs))
+        self.assertEqual("audio", jobs[0]["kind"])
+        with closing(core.jdb()) as conn:
+            self.assertEqual(1, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_voice_jobs"
+            ).fetchone()[0])
+            self.assertEqual("linked", conn.execute(
+                "SELECT state FROM short_drama_voice_charge_attempts"
+            ).fetchone()[0])
 
     def _idempotency_count(self):
         with closing(core.jdb()) as conn:

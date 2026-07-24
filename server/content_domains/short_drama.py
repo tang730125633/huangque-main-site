@@ -505,6 +505,10 @@ def _dict_rows(conn, query, params):
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
+def _table_columns(conn, table):
+    return {row[1] for row in conn.execute("PRAGMA table_info(%s)" % table).fetchall()}
+
+
 def _charged_planning_points_by_project(conn, username, project_ids=None):
     wanted = set(project_ids) if project_ids is not None else None
     totals = {}
@@ -529,6 +533,105 @@ def _charged_planning_points(conn, username, project_id):
     return _charged_planning_points_by_project(conn, username, {project_id}).get(project_id, 0)
 
 
+def _project_point_usage(conn, project_id):
+    """Return one project-scoped ledger across planning and production charges."""
+    project = conn.execute(
+        "SELECT spent_points FROM short_drama_projects WHERE id=?", (project_id,)
+    ).fetchone()
+    legacy_spent = int(project[0] or 0) if project else 0
+    actual = 0
+    reserved = 0
+    has_activity = False
+
+    job_columns = _table_columns(conn, "jobs")
+    if job_columns:
+        refunded_expr = "COALESCE(refunded,0)" if "refunded" in job_columns else "0"
+        for row in conn.execute(
+                "SELECT cost,payload," + refunded_expr + " FROM jobs WHERE kind='copy'"
+        ).fetchall():
+            payload = _json(row[1], {})
+            if (not isinstance(payload, dict) or payload.get("format") != "short_drama"
+                    or payload.get("project_id") != project_id):
+                continue
+            has_activity = True
+            if int(row[2] or 0) != 1:
+                actual += max(0, int(row[0] or 0))
+
+    linked_job_ids = set()
+    production_columns = _table_columns(conn, "short_drama_production_jobs")
+    if production_columns:
+        production_refunded = (
+            "COALESCE(p.refunded,0)" if "refunded" in production_columns else "0"
+        )
+        if job_columns:
+            job_refunded = "COALESCE(j.refunded,0)" if "refunded" in job_columns else "0"
+            rows = conn.execute(
+                "SELECT p.job_id,p.quoted_cost," + production_refunded + ","
+                "j.id,j.cost," + job_refunded + " "
+                "FROM short_drama_production_jobs p "
+                "LEFT JOIN jobs j ON j.id=p.job_id WHERE p.project_id=?",
+                (project_id,),
+            ).fetchall()
+        else:
+            rows = [tuple(row) + (None, None, 0) for row in conn.execute(
+                "SELECT p.job_id,p.quoted_cost," + production_refunded + " "
+                "FROM short_drama_production_jobs p WHERE p.project_id=?",
+                (project_id,),
+            ).fetchall()]
+        for job_id, quoted_cost, link_refunded, found_job_id, cost, job_refunded in rows:
+            has_activity = True
+            if job_id is not None:
+                linked_job_ids.add(int(job_id))
+            if found_job_id is not None:
+                if int(job_refunded or 0) != 1:
+                    actual += max(0, int(cost or 0))
+            elif int(link_refunded or 0) != 1:
+                # Older ledgers can retain the project link after the global job is gone.
+                actual += max(0, int(quoted_cost or 0))
+
+    attempt_columns = _table_columns(conn, "short_drama_charge_attempts")
+    if attempt_columns:
+        for state, cost, job_id in conn.execute(
+                "SELECT state,cost,job_id FROM short_drama_charge_attempts WHERE project_id=?",
+                (project_id,),
+        ).fetchall():
+            has_activity = True
+            if job_id is not None and int(job_id) in linked_job_ids:
+                continue
+            if state == "accepted":
+                reserved += max(0, int(cost or 0))
+            elif state in {"charged", "linked", "refund_pending"}:
+                actual += max(0, int(cost or 0))
+
+    voice_attempt_columns = _table_columns(conn, "short_drama_voice_charge_attempts")
+    if voice_attempt_columns:
+        for state, cost, job_id in conn.execute(
+                "SELECT state,cost,job_id FROM short_drama_voice_charge_attempts "
+                "WHERE project_id=?",
+                (project_id,),
+        ).fetchall():
+            has_activity = True
+            if state == "accepted":
+                reserved += max(0, int(cost or 0))
+                continue
+            if state in {"charged", "linked", "done", "refund_pending"}:
+                if job_id is not None and job_columns:
+                    job = conn.execute(
+                        "SELECT cost,COALESCE(refunded,0) FROM jobs WHERE id=?",
+                        (job_id,),
+                    ).fetchone()
+                    if job:
+                        if int(job[1] or 0) != 1:
+                            actual += max(0, int(job[0] or 0))
+                        continue
+                if state not in {"refunded"}:
+                    actual += max(0, int(cost or 0))
+
+    if not has_activity:
+        actual = legacy_spent
+    return {"spent_points": actual, "reserved_points": reserved}
+
+
 def _has_unapplied_charged_job(conn, username, project_id):
     if conn.execute(
             "SELECT 1 FROM short_drama_production_jobs p "
@@ -544,6 +647,15 @@ def _has_unapplied_charged_job(conn, username, project_id):
             "ON project.id=a.project_id AND project.username=? AND project.deleted=0 "
             "WHERE a.project_id=? "
             "AND a.state IN ('accepted','charged','refund_pending') LIMIT 1",
+            (username, project_id),
+    ).fetchone():
+        return True
+    if _table_columns(conn, "short_drama_voice_charge_attempts") and conn.execute(
+            "SELECT 1 FROM short_drama_voice_charge_attempts a "
+            "JOIN short_drama_projects project "
+            "ON project.id=a.project_id AND project.username=? AND project.deleted=0 "
+            "WHERE a.project_id=? "
+            "AND a.state IN ('accepted','charged','linked','refund_pending') LIMIT 1",
             (username, project_id),
     ).fetchone():
         return True
@@ -1541,7 +1653,9 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/apply-plan",
         "/api/gen/short-drama/confirm",
         "/api/gen/short-drama/asset-quote",
+        "/api/gen/short-drama/voice-quote",
         "/api/gen/short-drama/select-asset",
+        "/api/gen/short-drama/select-voice-version",
         "/api/gen/short-drama/confirm-production-stage",
     },
     "PUT": {"/api/gen/short-drama/project"},
@@ -1569,6 +1683,14 @@ def _http_error(handler, error, *, operation_terminal=False):
         handler._send(409, {"detail": str(error)[:220], "code": "revision_conflict", **terminal})
     elif isinstance(error, AppliedJobConflict):
         handler._send(409, {"detail": str(error)[:220], "code": "job_already_applied", **terminal})
+    elif isinstance(error, short_drama_voice.VoiceQuoteConsumed):
+        handler._send(409, {
+            "detail": str(error)[:220], "code": "idempotency_conflict", **terminal,
+        })
+    elif isinstance(error, short_drama_voice.VoiceChargeInProgress):
+        handler._send(409, {
+            "detail": str(error)[:220], "code": "charge_attempt_in_progress", **terminal,
+        })
     elif isinstance(error, PointBudgetExceeded):
         handler._send(400, {"detail": str(error)[:220], "code": "point_budget_exceeded", **terminal})
     elif isinstance(error, PermissionError):
@@ -1654,7 +1776,8 @@ def _planning_job(db_factory, username, job_id, project_id):
 
 
 def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avatar_lookup=None,
-                  mutation_lock=None, canvas_access_resolver=None):
+                  mutation_lock=None, canvas_access_resolver=None, voice_validator=None,
+                  points_getter=None):
     """Handle the domain's synchronous routes inside core.H; return whether matched."""
     path = handler.path.split("?", 1)[0]
     if path not in _HTTP_ROUTES.get(method, ()):
@@ -1685,6 +1808,22 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             handler._send(200, short_drama_production.prepare_still_quote(
                 db_factory, username, _request_object(handler), cost_of, access
             ))
+        elif method == "POST" and path.endswith("/voice-quote"):
+            body = _request_object(handler)
+            owner = _project_username_for_access(
+                db_factory, username, str(body.get("project_id") or ""),
+                access, write=True,
+            )
+            quote = short_drama_voice.prepare_voice_quote(
+                db_factory, username, owner, body, cost_of, voice_validator
+            )
+            if callable(points_getter):
+                quote["points_left"] = max(0, int(points_getter(username)))
+                quote["can_submit"] = (
+                    quote["can_submit"] and
+                    quote["points_left"] >= quote["total_cost"]
+                )
+            handler._send(200, quote)
         elif method == "POST" and path.endswith("/select-asset"):
             body = _request_object(handler)
             if mutation_lock is not None:
@@ -1694,6 +1833,22 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                     )
             else:
                 selected = short_drama_production.select_asset(db_factory, username, body, access)
+            handler._send(200, selected)
+        elif method == "POST" and path.endswith("/select-voice-version"):
+            body = _request_object(handler)
+            owner = _project_username_for_access(
+                db_factory, username, str(body.get("project_id") or ""),
+                access, write=True,
+            )
+            if mutation_lock is not None:
+                with mutation_lock:
+                    selected = short_drama_voice.select_voice_version(
+                        db_factory, owner, body
+                    )
+            else:
+                selected = short_drama_voice.select_voice_version(
+                    db_factory, owner, body
+                )
             handler._send(200, selected)
         elif method == "POST" and path.endswith("/confirm-production-stage"):
             body = _request_object(handler)
@@ -1809,6 +1964,7 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                 )
             handler._send(200, confirmed)
     except (LookupError, RevisionConflict, AppliedJobConflict, ProjectHasUnappliedJobs,
-            PermissionError, ValueError) as error:
+            PermissionError, ValueError, short_drama_voice.VoiceQuoteConsumed,
+            short_drama_voice.VoiceChargeInProgress) as error:
         _http_error(handler, error)
     return True

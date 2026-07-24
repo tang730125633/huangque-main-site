@@ -5,57 +5,22 @@
     "version": "2.0.0",
     "description": "黄雀主站全部自有后端接口(认证/作图/文案/配音/视频/采集获客/下载/任务)。\n\n**认证**:除登录和健康检查外,均需 `Authorization: Bearer <token>`(登录拿)。点右上 Authorize 填 token 即可 Try it。\n\n**异步任务**:作图/文案/配音/视频/采集/获客 都返回 `job_id`,再轮询 `GET /api/gen/job/{id}` 取结果。\n\n**点数**:生成类接口预扣点数(见各接口说明),任务失败自动退点;点数不足返回 402。\n\n外部 TikHub 接口见另一份 spec(右上切换)。"
   },
-  "servers": [
-    {
-      "url": "https://huangquechuanmei.com",
-      "description": "线上(nginx 按路径路由到各后端)"
-    }
-  ],
+  "servers": [{ "url": "https://huangquechuanmei.com", "description": "线上(nginx 按路径路由到各后端)" }],
   "tags": [
-    {
-      "name": "认证",
-      "description": "登录 / 用户信息 / 点数(auth 8095)"
-    },
-    {
-      "name": "作图",
-      "description": "黄雀引擎 + 纳米香蕉（content 8096 / imggen 8101）"
-    },
-    {
-      "name": "文案",
-      "description": "AI 文案 / 分镜脚本(content 8096)"
-    },
-    {
-      "name": "配音音色",
-      "description": "TTS 配音 + 个人音色克隆(content 8096)"
-    },
-    {
-      "name": "视频",
-      "description": "HeyGen 数字人视频(content 8096)"
-    },
-    {
-      "name": "采集获客",
-      "description": "内容爬取 + 关键词获客(leadgen 8100)"
-    },
-    {
-      "name": "下载",
-      "description": "无水印视频下载(dl 8097)"
-    },
-    {
-      "name": "任务/历史/文件",
-      "description": "异步任务轮询、生成历史、文件下载"
-    },
-    {
-      "name": "健康",
-      "description": "各服务健康检查"
-    }
+    { "name": "认证", "description": "登录 / 用户信息 / 点数(auth 8095)" },
+    { "name": "作图", "description": "gpt-image + nano banana(content 8096 / imggen 8101)" },
+    { "name": "文案", "description": "AI 文案 / 分镜脚本(content 8096)" },
+    { "name": "短剧策划", "description": "短剧项目、策划应用和阶段确认(content 8096)" },
+    { "name": "配音音色", "description": "TTS 配音 + 个人音色克隆(content 8096)" },
+    { "name": "视频", "description": "HeyGen 数字人视频(content 8096)" },
+    { "name": "采集获客", "description": "内容爬取 + 关键词获客(leadgen 8100)" },
+    { "name": "下载", "description": "无水印视频下载(dl 8097)" },
+    { "name": "任务/历史/文件", "description": "异步任务轮询、生成历史、文件下载" },
+    { "name": "健康", "description": "各服务健康检查" }
   ],
   "components": {
     "securitySchemes": {
-      "bearerAuth": {
-        "type": "http",
-        "scheme": "bearer",
-        "description": "登录 /api/auth/login 拿到的 token"
-      }
+      "bearerAuth": { "type": "http", "scheme": "bearer", "description": "登录 /api/auth/login 拿到的 token" }
     },
     "schemas": {
       "ShortDramaAssemblyBlocker": {"type":"object","required":["code","message"],"additionalProperties":false,"properties":{"code":{"type":"string","enum":["missing_locked_voice_shot","missing_locked_video_shot","active_composition_job","preview_missing","final_missing"]},"message":{"type":"string"},"shot_id":{"type":"string"}}},
@@ -63,1477 +28,712 @@
       "ShortDramaAssemblyWorkspace": {"type":"object","required":["project_id","revision","stage","ratio","target_duration","assembly_revision","config","current_preview_version","current_final_version","preview_locked","implementation_status","rendering_enabled","shots","versions","active_job","readiness","actions","blockers"],"additionalProperties":false,"properties":{"project_id":{"type":"string"},"revision":{"type":"integer","minimum":1},"stage":{"type":"string","enum":["assembly_review","completed"]},"ratio":{"type":"string","enum":["9:16","16:9"]},"target_duration":{"type":"integer","enum":[30,45,60]},"assembly_revision":{"type":"integer","minimum":1},"config":{"type":"object","required":["subtitle","bgm","profiles"],"additionalProperties":false,"properties":{"subtitle":{"type":"object","required":["enabled","preset","position"],"additionalProperties":false,"properties":{"enabled":{"type":"boolean"},"preset":{"type":"string","enum":["white_outline"]},"position":{"type":"string","enum":["bottom","top"]}}},"bgm":{"type":"object","required":["asset_id","volume","fade_in_ms","fade_out_ms"],"additionalProperties":false,"properties":{"asset_id":{"type":"string","nullable":true},"volume":{"type":"number","minimum":0,"maximum":1},"fade_in_ms":{"type":"integer","minimum":0},"fade_out_ms":{"type":"integer","minimum":0}}},"profiles":{"type":"object","required":["preview","final"],"additionalProperties":false,"properties":{"preview":{"type":"string","enum":["short_drama_preview_v1"]},"final":{"type":"string","enum":["short_drama_final_v1"]}}}}},"current_preview_version":{"type":"integer","minimum":1,"nullable":true},"current_final_version":{"type":"integer","minimum":1,"nullable":true},"preview_locked":{"type":"boolean"},"implementation_status":{"type":"string","enum":["contract_only"]},"rendering_enabled":{"type":"boolean","enum":[false]},"shots":{"type":"array","items":{"$ref":"#/components/schemas/ShortDramaAssemblyShot"}},"versions":{"type":"array","items":{"$ref":"#/components/schemas/ShortDramaCompositionVersion"}},"active_job":{"$ref":"#/components/schemas/ShortDramaCompositionJob"},"readiness":{"type":"object","required":["ready","blockers"],"additionalProperties":false,"properties":{"ready":{"type":"boolean"},"blockers":{"type":"array","items":{"$ref":"#/components/schemas/ShortDramaAssemblyBlocker"}}}},"actions":{"type":"object","required":["can_save_config","can_preview","can_lock_preview","can_export","can_confirm"],"additionalProperties":false,"properties":{"can_save_config":{"type":"boolean","enum":[false]},"can_preview":{"type":"boolean","enum":[false]},"can_lock_preview":{"type":"boolean","enum":[false]},"can_export":{"type":"boolean","enum":[false]},"can_confirm":{"type":"boolean","enum":[false]}}},"blockers":{"type":"array","items":{"$ref":"#/components/schemas/ShortDramaAssemblyBlocker"}}}},
       "ShortDramaCompositionJob": {"type":"object","nullable":true,"required":["job_id","kind","status","phase","progress","error_code","error_message","attempt_count","created_at","updated_at","finished_at"],"additionalProperties":false,"properties":{"job_id":{"type":"string"},"kind":{"type":"string","enum":["preview","final"]},"status":{"type":"string","enum":["queued","running","succeeded","failed"]},"phase":{"type":"string"},"progress":{"type":"integer","minimum":0,"maximum":100},"error_code":{"type":"string"},"error_message":{"type":"string"},"attempt_count":{"type":"integer","minimum":0},"created_at":{"type":"integer"},"updated_at":{"type":"integer"},"finished_at":{"type":"integer","nullable":true}}},
       "ShortDramaCompositionVersion": {"type":"object","required":["id","kind","version","job_id","input_hash","config","url","duration_ms","width","height","fps","video_codec","audio_codec","status","global_video_asset_id","created_at"],"additionalProperties":false,"properties":{"id":{"type":"string"},"kind":{"type":"string","enum":["preview","final"]},"version":{"type":"integer","minimum":1},"job_id":{"type":"string"},"input_hash":{"type":"string"},"config":{"type":"object"},"url":{"type":"string","format":"uri-reference"},"duration_ms":{"type":"integer","minimum":1,"nullable":true},"width":{"type":"integer","minimum":1,"nullable":true},"height":{"type":"integer","minimum":1,"nullable":true},"fps":{"type":"number","exclusiveMinimum":true,"minimum":0,"nullable":true},"video_codec":{"type":"string"},"audio_codec":{"type":"string"},"status":{"type":"string","enum":["rendering","succeeded","failed","stale"]},"global_video_asset_id":{"type":"integer","minimum":1,"nullable":true},"created_at":{"type":"integer"}}},
-      "JobAccepted": {
-        "type": "object",
-        "description": "异步任务受理",
+      "JobAccepted": { "type": "object", "description": "异步任务受理", "properties": { "job_id": { "type": "integer" }, "cost": { "type": "integer", "description": "本次扣的点数" }, "points_left": { "type": "integer" } } },
+      "JobStatus": { "type": "object", "properties": { "id": { "type": "integer" }, "kind": { "type": "string" }, "status": { "type": "string", "enum": ["pending", "running", "done", "error"] }, "result": { "description": "成功时结果；mode=short_drama 的 copy job 使用 ShortDramaPlanningResult。其他任务使用不带该 mode 的领域结果对象。", "oneOf": [{ "$ref": "#/components/schemas/ShortDramaPlanningResult" }, { "type": "object", "not": { "required": ["mode"], "properties": { "mode": { "enum": ["short_drama"] } } } }] }, "error": { "type": "string" }, "created_at": { "type": "integer" }, "updated_at": { "type": "integer" } } },
+      "User": { "type": "object", "properties": { "username": { "type": "string" }, "name": { "type": "string" }, "points": { "type": "integer" }, "role": { "type": "string" }, "must_change": { "type": "boolean" } } },
+      "ShortDramaDialogueLine": {
+        "type": "object", "required": ["id", "character_key", "text"], "additionalProperties": false,
+        "properties": { "id": { "type": "string", "maxLength": 80 }, "character_key": { "type": "string", "maxLength": 80 }, "text": { "type": "string", "maxLength": 4000 } }
+      },
+      "ShortDramaCharacter": {
+        "description": "cinematic_avatar 的 avatar_id 必须引用当前用户本人拥有、未删除且可用的电影级数字人；ai_character 不要求 avatar_id。",
+        "type": "object", "required": ["character_key", "name", "identity_text", "personality", "source_type", "appearance_prompt", "wardrobe_prompt", "voice_settings"],
+        "oneOf": [
+          { "required": ["source_type"], "properties": { "source_type": { "enum": ["ai_character"] }, "avatar_id": { "type": "string", "nullable": true } } },
+          { "required": ["source_type", "avatar_id"], "properties": { "source_type": { "enum": ["cinematic_avatar"] }, "avatar_id": { "type": "string", "minLength": 1 } } }
+        ],
         "properties": {
-          "job_id": {
-            "type": "integer"
-          },
-          "cost": {
-            "type": "integer",
-            "description": "本次扣的点数"
-          },
-          "points_left": {
-            "type": "integer"
+          "id": { "type": "string", "readOnly": true }, "project_id": { "type": "string", "readOnly": true },
+          "character_key": { "type": "string", "maxLength": 80 }, "name": { "type": "string", "maxLength": 80 },
+          "identity_text": { "type": "string", "maxLength": 2000 }, "personality": { "type": "string", "maxLength": 2000 },
+          "source_type": { "type": "string", "enum": ["cinematic_avatar", "ai_character"] }, "avatar_id": { "type": "string", "nullable": true },
+          "appearance_prompt": { "type": "string", "maxLength": 4000 }, "wardrobe_prompt": { "type": "string", "maxLength": 4000 },
+          "voice_key": { "type": "string", "nullable": true, "maxLength": 80 }, "voice_settings": { "type": "object", "additionalProperties": true },
+          "sort_order": { "type": "integer", "readOnly": true }
+        }
+      },
+      "ShortDramaScriptVersion": {
+        "type": "object", "required": ["title", "logline", "hook", "conflict_text", "turn_text", "ending", "dialogue_lines"],
+        "properties": {
+          "id": { "type": "string", "readOnly": true }, "project_id": { "type": "string", "readOnly": true }, "version": { "type": "integer", "readOnly": true, "minimum": 1 },
+          "title": { "type": "string", "maxLength": 80 }, "logline": { "type": "string", "maxLength": 4000 }, "hook": { "type": "string", "maxLength": 4000 },
+          "conflict_text": { "type": "string", "maxLength": 4000 }, "turn_text": { "type": "string", "maxLength": 4000 }, "ending": { "type": "string", "maxLength": 4000 },
+          "dialogue_lines": { "type": "array", "maxItems": 120, "items": { "$ref": "#/components/schemas/ShortDramaDialogueLine" } }, "created_at": { "type": "integer", "readOnly": true }
+        }
+      },
+      "ShortDramaShot": {
+        "type": "object", "required": ["shot_key", "duration", "scene_description", "camera_description", "character_keys", "dialogue_line_ids", "image_prompt", "video_prompt"],
+        "properties": {
+          "id": { "type": "string", "readOnly": true }, "project_id": { "type": "string", "readOnly": true }, "script_version": { "type": "integer", "readOnly": true },
+          "shot_key": { "type": "string", "maxLength": 80 }, "sort_order": { "type": "integer", "readOnly": true }, "duration": { "type": "integer", "enum": [5, 10] },
+          "scene_description": { "type": "string", "maxLength": 4000 }, "camera_description": { "type": "string", "maxLength": 4000 },
+          "character_keys": { "type": "array", "uniqueItems": true, "items": { "type": "string" } }, "dialogue_line_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+          "image_prompt": { "type": "string", "maxLength": 8000 }, "video_prompt": { "type": "string", "maxLength": 8000 }
+        }
+      },
+      "ShortDramaProject": {
+        "type": "object", "required": ["id", "title", "synopsis", "ratio", "target_duration", "shot_count", "visual_style", "target_platform", "point_budget", "spent_points", "stage", "revision", "characters", "script_versions", "shots"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" }, "title": { "type": "string", "maxLength": 80 }, "synopsis": { "type": "string", "minLength": 8, "maxLength": 4000 },
+          "ratio": { "type": "string", "enum": ["9:16", "16:9"] }, "target_duration": { "type": "integer", "enum": [30, 45, 60] }, "shot_count": { "type": "integer", "minimum": 6, "maximum": 10 },
+          "visual_style": { "type": "string", "maxLength": 80, "default": "电影写实" }, "target_platform": { "type": "string", "maxLength": 80, "default": "抖音" },
+          "point_budget": { "type": "integer", "minimum": 0 }, "spent_points": { "type": "integer", "minimum": 0, "readOnly": true, "description": "当前项目已实际扣除且尚未确认退款的策划任务点数；任务入队扣点后立即计入，refunded=1 后移除。" },
+          "stage": { "type": "string", "readOnly": true, "enum": ["draft", "characters_review", "script_review", "storyboard_review", "stills_review"] },
+          "revision": { "type": "integer", "readOnly": true, "minimum": 1 }, "created_at": { "type": "integer", "readOnly": true }, "updated_at": { "type": "integer", "readOnly": true },
+          "characters": { "type": "array", "maxItems": 20, "items": { "$ref": "#/components/schemas/ShortDramaCharacter" } },
+          "script_versions": { "type": "array", "maxItems": 20, "items": { "$ref": "#/components/schemas/ShortDramaScriptVersion" } },
+          "shots": { "type": "array", "items": { "$ref": "#/components/schemas/ShortDramaShot" } }
+        }
+      },
+      "ShortDramaProjectSummary": {
+        "type": "object", "description": "项目列表使用的轻量摘要，不包含角色、剧本版本和分镜详情。",
+        "required": ["id", "title", "synopsis", "ratio", "target_duration", "shot_count", "visual_style", "target_platform", "point_budget", "spent_points", "stage", "revision", "created_at", "updated_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" }, "title": { "type": "string" }, "synopsis": { "type": "string" },
+          "ratio": { "type": "string", "enum": ["9:16", "16:9"] }, "target_duration": { "type": "integer", "enum": [30, 45, 60] }, "shot_count": { "type": "integer", "minimum": 6, "maximum": 10 },
+          "visual_style": { "type": "string" }, "target_platform": { "type": "string" }, "point_budget": { "type": "integer", "minimum": 0 }, "spent_points": { "type": "integer", "minimum": 0 },
+          "stage": { "type": "string", "enum": ["draft", "characters_review", "script_review", "storyboard_review", "stills_review"] }, "revision": { "type": "integer", "minimum": 1 },
+          "created_at": { "type": "integer" }, "updated_at": { "type": "integer" }
+        }
+      },
+      "ShortDramaPlanningRequest": {
+        "type": "object", "required": ["format", "project_id", "project_revision", "prompt", "dur", "ratio", "shot_count"], "additionalProperties": false,
+        "properties": {
+          "project_id": { "type": "string", "format": "uuid" }, "project_revision": { "type": "integer", "minimum": 1 },
+          "format": { "type": "string", "enum": ["short_drama"] }, "prompt": { "type": "string", "minLength": 1, "maxLength": 4000 },
+          "dur": { "type": "string", "enum": ["30s", "45s", "60s"] }, "ratio": { "type": "string", "enum": ["9:16", "16:9"] },
+          "shot_count": { "type": "integer", "minimum": 6, "maximum": 10 }, "style": { "type": "string", "maxLength": 80 }, "platform": { "type": "string", "maxLength": 80 }
+        }
+      },
+      "ShortDramaPlanningResult": {
+        "type": "object", "required": ["type", "mode", "project_id", "project_revision", "settings", "plan", "prompt", "dur", "ratio", "shot_count"], "additionalProperties": false,
+        "properties": {
+          "type": { "type": "string", "enum": ["copy"] }, "mode": { "type": "string", "enum": ["short_drama"] },
+          "project_id": { "type": "string", "format": "uuid" }, "project_revision": { "type": "integer", "minimum": 1 },
+          "settings": { "type": "object", "required": ["ratio", "target_duration", "shot_count"], "additionalProperties": false, "properties": { "ratio": { "type": "string", "enum": ["9:16", "16:9"] }, "target_duration": { "type": "integer", "enum": [30, 45, 60] }, "shot_count": { "type": "integer", "minimum": 6, "maximum": 10 } } },
+          "prompt": { "type": "string" }, "dur": { "type": "string", "enum": ["30s", "45s", "60s"] }, "ratio": { "type": "string", "enum": ["9:16", "16:9"] },
+          "shot_count": { "type": "integer", "minimum": 6, "maximum": 10 },
+          "plan": {
+            "type": "object", "required": ["title", "logline", "characters", "script", "shots"], "additionalProperties": false,
+            "properties": {
+              "title": { "type": "string" }, "logline": { "type": "string" },
+              "characters": { "type": "array", "maxItems": 20, "items": {
+                "type": "object", "required": ["key", "name", "identity", "identity_text", "personality", "appearance_prompt", "wardrobe_prompt", "source_type", "voice_key", "voice_settings"], "additionalProperties": false,
+                "properties": {
+                  "key": { "type": "string" }, "name": { "type": "string" }, "identity": { "type": "string" }, "identity_text": { "type": "string" }, "personality": { "type": "string" },
+                  "appearance_prompt": { "type": "string" }, "wardrobe_prompt": { "type": "string" }, "source_type": { "type": "string", "enum": ["cinematic_avatar", "ai_character"] },
+                  "voice_key": { "type": "string", "nullable": true }, "voice_settings": { "type": "object", "additionalProperties": true }
+                }
+              } },
+              "script": {
+                "type": "object", "required": ["title", "logline", "hook", "conflict", "conflict_text", "turn", "turn_text", "ending", "dialogue_lines"], "additionalProperties": false,
+                "properties": {
+                  "title": { "type": "string" }, "logline": { "type": "string" }, "hook": { "type": "string" }, "conflict": { "type": "string" },
+                  "conflict_text": { "type": "string" }, "turn": { "type": "string" }, "turn_text": { "type": "string" }, "ending": { "type": "string" },
+                  "dialogue_lines": { "type": "array", "maxItems": 120, "items": { "$ref": "#/components/schemas/ShortDramaDialogueLine" } }
+                }
+              },
+              "shots": { "type": "array", "minItems": 6, "maxItems": 10, "items": {
+                "type": "object", "required": ["key", "duration", "scene_description", "camera_description", "character_keys", "dialogue_line_ids", "image_prompt", "video_prompt"], "additionalProperties": false,
+                "properties": {
+                  "key": { "type": "string" }, "duration": { "type": "integer", "enum": [5, 10] }, "scene_description": { "type": "string" }, "camera_description": { "type": "string" },
+                  "character_keys": { "type": "array", "uniqueItems": true, "items": { "type": "string" } }, "dialogue_line_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+                  "image_prompt": { "type": "string" }, "video_prompt": { "type": "string" }
+                }
+              } }
+            }
           }
         }
       },
-      "JobStatus": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "integer"
-          },
-          "kind": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "pending",
-              "running",
-              "done",
-              "error"
-            ]
-          },
-          "result": {
-            "type": "object",
-            "description": "成功时结果(结构随 kind 不同)"
-          },
-          "error": {
-            "type": "string"
-          },
-          "created_at": {
-            "type": "integer"
-          },
-          "updated_at": {
-            "type": "integer"
-          }
+      "RevisionConflict": {
+        "type": "object", "required": ["detail", "code"], "properties": {
+          "detail": { "type": "string" }, "code": { "type": "string", "enum": ["revision_conflict", "job_already_applied"] }
         }
       },
-      "User": {
-        "type": "object",
-        "properties": {
-          "username": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "points": {
-            "type": "integer"
-          },
-          "role": {
-            "type": "string"
-          },
-          "must_change": {
-            "type": "boolean"
-          }
-        }
+      "ShortDramaDeleteConflict": {
+        "oneOf": [
+          { "$ref": "#/components/schemas/RevisionConflict" },
+          { "type": "object", "required": ["detail", "code"], "additionalProperties": false, "properties": { "detail": { "type": "string" }, "code": { "type": "string", "enum": ["short_drama_unapplied_paid_job"] } } }
+        ]
       },
-      "Error": {
-        "type": "object",
-        "properties": {
-          "detail": {
-            "type": "string"
-          }
-        }
-      }
+      "Error": { "type": "object", "properties": { "detail": { "type": "string" } } }
     }
   },
-  "security": [
-    {
-      "bearerAuth": []
-    }
-  ],
+  "security": [{ "bearerAuth": [] }],
   "paths": {
     "/api/gen/short-drama/assembly": {"get":{"tags":["短剧"],"summary":"读取短剧 D-0 合成与导出工作区","description":"只读且不扣点。D-0 建立项目级合成、版本和任务的数据契约，并逐镜头返回 C-2 锁定状态与 C-3 视频版本阻塞状态；本阶段不执行 FFmpeg，也不允许保存配置、生成预览、正式导出或推进 completed。本地项目仅创建者可读；共享项目需携带匹配的 X-Canvas-Board-Id，owner/editor/viewer 可读。","security":[{"bearerAuth":[]}],"parameters":[{"name":"X-Canvas-Board-Id","in":"header","required":false,"description":"Optional for a local short-drama project. Required for a shared short-drama project and must equal its board_id; owner/editor/viewer may read and owner/editor may write.","schema":{"type":"string","minLength":1,"maxLength":128}},{"name":"project_id","in":"query","required":true,"schema":{"type":"string","minLength":1}}],"responses":{"200":{"description":"D-0 合成与导出只读工作区快照","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ShortDramaAssemblyWorkspace"}}}},"400":{"description":"缺少 project_id，或项目尚未进入 assembly_review/completed","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Error"}}}},"401":{"description":"未登录","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Error"}}}},"403":{"description":"必须修改初始密码，或账号没有画布基础访问能力","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Error"}}}},"404":{"description":"项目不存在，或当前用户无权发现该项目","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Error"}}}}}}},
     "/api/auth/login": {
       "post": {
-        "tags": [
-          "认证"
-        ],
-        "summary": "登录(拿 token)",
-        "security": [],
-        "description": "账号密码登录。成功后返回 Bearer token，前端保存后用于调用需要登录的接口。\n\n安全策略：新签发 token 默认 30 天过期；登录失败会按 IP+账号做 5 分钟窗口限流，连续失败 5 次后暂时返回 429。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "username",
-                  "password"
-                ],
-                "properties": {
-                  "username": {
-                    "type": "string",
-                    "example": "fang"
-                  },
-                  "password": {
-                    "type": "string"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "token": {
-                      "type": "string"
-                    },
-                    "user": {
-                      "$ref": "#/components/schemas/User"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "请求体不是合法 JSON",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "账号或密码错误",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "登录失败次数过多，请稍后再试",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/auth/register": {
-      "post": {
-        "tags": [
-          "认证"
-        ],
-        "summary": "注册新账号",
-        "security": [],
-        "description": "用于前端登录页的“注册新账号”功能。提交账号、密码、可选昵称和可选邀请码后，后端会在同一事务中创建普通用户账号、保存直接邀请关系并签发登录会话。\n\n规则：username 必填，最长 64 位，不能包含空白字符；password 必填，至少 6 位；display_name 可选，不传时默认等于 username，最多 32 个字符；invite_code 始终可选。\n\n安全策略：注册接口按 IP 限流，默认 5 分钟最多 5 次尝试，成功或失败都会计数，超过返回 429。\n\n默认账户属性：points=16，role=member，must_change=false。\n\n网站注册成功后通过 HttpOnly Cookie 保持登录，不在响应体暴露 token。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "username",
-                  "password"
-                ],
-                "properties": {
-                  "username": {
-                    "type": "string",
-                    "maxLength": 64,
-                    "example": "test001"
-                  },
-                  "password": {
-                    "type": "string",
-                    "minLength": 6,
-                    "example": "12345678"
-                  },
-                  "display_name": {
-                    "type": "string",
-                    "maxLength": 32,
-                    "example": "测试用户"
-                  },
-                  "invite_code": {
-                    "type": "string",
-                    "maxLength": 32,
-                    "description": "可选邀请码；不传或空值时正常注册但不绑定邀请关系"
-                  },
-                  "invite_source": {
-                    "type": "string",
-                    "enum": [
-                      "web_link"
-                    ],
-                    "description": "从邀请链接进入时传 web_link；其他值按手动注册处理"
-                  },
-                  "device_id": {
-                    "type": "string",
-                    "maxLength": 256,
-                    "description": "可选设备标识；服务端只保存 HMAC，不保存原值"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "注册成功",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "user": {
-                      "$ref": "#/components/schemas/User"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "参数不合法：账号/密码缺失、账号过长、账号含空白字符、昵称超过 32 字符或密码少于 6 位",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "账号已存在：username 与现有用户重复",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "注册次数过多，请稍后再试",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/auth/invite/code": {
-      "get": {
-        "tags": [
-          "认证"
-        ],
-        "summary": "获取当前用户的稳定邀请码",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "只返回邀请码和邀请链接，不返回下级账号、会员或财务信息",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "code",
-                    "invite_link"
-                  ],
-                  "properties": {
-                    "code": {
-                      "type": "string",
-                      "minLength": 6,
-                      "maxLength": 6
-                    },
-                    "invite_link": {
-                      "type": "string",
-                      "format": "uri"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "未登录",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
+        "tags": ["认证"], "summary": "登录(拿 token)", "security": [],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["username", "password"], "properties": { "username": { "type": "string", "example": "fang" }, "password": { "type": "string" } } } } } },
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object", "properties": { "token": { "type": "string" }, "user": { "$ref": "#/components/schemas/User" } } } } } }, "401": { "description": "账号或密码错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } }
       }
     },
     "/api/auth/logout": {
-      "post": {
-        "tags": [
-          "认证"
-        ],
-        "summary": "登出(撤销 token)",
-        "description": "撤销当前 Bearer token。有效 token 首次登出返回 200；同一个 token 在本服务进程内重复登出仍返回 200，便于前端幂等处理；无 token、错误认证格式或从未存在的 token 返回 401。",
-        "responses": {
-          "200": {
-            "description": "OK"
-          },
-          "401": {
-            "description": "未登录 / token 无效",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
+      "post": { "tags": ["认证"], "summary": "登出(撤销 token)", "responses": { "200": { "description": "OK" } } }
     },
     "/api/auth/change_password": {
       "post": {
-        "tags": [
-          "认证"
-        ],
-        "summary": "改密码(需当前密码，成功后旧 token 全部失效)",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "old_password",
-                  "new_password"
-                ],
-                "properties": {
-                  "old_password": {
-                    "type": "string",
-                    "description": "当前密码"
-                  },
-                  "new_password": {
-                    "type": "string",
-                    "description": "至少 6 位"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "OK，当前用户所有已签发 token 失效，需要重新登录"
-          },
-          "400": {
-            "description": "当前密码错误 / 新密码太短"
-          },
-          "401": {
-            "description": "未登录"
-          }
-        }
+        "tags": ["认证"], "summary": "改密码(需当前密码，成功后旧 token 全部失效)",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["old_password", "new_password"], "properties": { "old_password": { "type": "string", "description": "当前密码" }, "new_password": { "type": "string", "description": "至少 6 位" } } } } } },
+        "responses": { "200": { "description": "OK，当前用户所有已签发 token 失效，需要重新登录" }, "400": { "description": "当前密码错误 / 新密码太短" }, "401": { "description": "未登录" } }
       }
     },
     "/api/auth/me": {
+      "get": { "tags": ["认证"], "summary": "当前用户信息 / 点数", "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object", "properties": { "user": { "$ref": "#/components/schemas/User" } } } } } }, "401": { "description": "未登录" } } }
+    },
+    "/api/gen/short-drama/planning-quote": {
       "get": {
-        "tags": [
-          "认证"
-        ],
-        "summary": "当前用户信息 / 点数",
+        "tags": ["短剧策划"], "summary": "读取当前短剧策划价格", "description": "Free / no points. 认证后从服务端点数域实时读取 format=short_drama 的 copy 价格；客户端必须先取得本报价并用精确 cost 请求确认，确认后才可提交付费 copy job。",
+        "responses": {
+          "200": { "description": "当前服务端报价；本请求不扣点", "content": { "application/json": { "schema": { "type": "object", "required": ["cost"], "additionalProperties": false, "properties": { "cost": { "type": "integer", "minimum": 0 } } } } } },
+          "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "账号必须先修改初始密码", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/api/gen/short-drama/planning-job": {
+      "get": {
+        "tags": ["短剧策划"], "summary": "恢复当前项目尚未应用的短剧策划任务", "description": "Free / no points. 仅返回当前用户本人 draft 项目中，与当前策划参数快照一致且尚未应用的 pending、running 或 done 付费任务，供冲突或刷新后恢复，避免重复扣点。",
+        "parameters": [{ "in": "query", "name": "project_id", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+        "responses": {
+          "200": { "description": "可恢复任务；没有时 job_id 为 null", "content": { "application/json": { "schema": { "type": "object", "required": ["job_id"], "additionalProperties": false, "properties": { "job_id": { "type": "integer", "nullable": true }, "cost": { "type": "integer", "minimum": 0 }, "status": { "type": "string", "enum": ["pending", "running", "done"] }, "project_revision": { "type": "integer", "minimum": 1 } } } } } },
+          "400": { "description": "缺少或无效的 project_id" }, "401": { "description": "未登录" }, "403": { "description": "账号必须先修改初始密码" }, "404": { "description": "项目不存在或不属于当前用户" }
+        }
+      }
+    },
+    "/api/gen/short-drama/production": {
+      "get": {
+        "tags": ["短剧"],
+        "summary": "读取短剧关键帧制作工作区",
+        "description": "读取并对账关键帧制作快照，同时返回进入配音阶段的服务端标准阻塞判定。",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{
+          "name": "project_id", "in": "query", "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        }],
+        "responses": {
+          "200": {"description": "关键帧制作工作区快照", "content": {"application/json": {"schema": {
+            "type": "object",
+            "required": [
+              "project_id", "revision", "stage", "ratio", "point_budget",
+              "spent_points", "reserved_points", "handoff_blocked",
+              "handoff_blockers", "shots"
+            ],
+            "properties": {
+              "project_id": {"type": "string"},
+              "revision": {"type": "integer", "minimum": 1},
+              "stage": {"type": "string"},
+              "ratio": {"type": "string", "enum": ["9:16", "16:9"]},
+              "point_budget": {"type": "integer", "minimum": 0},
+              "spent_points": {"type": "integer", "minimum": 0},
+              "reserved_points": {"type": "integer", "minimum": 0},
+              "handoff_blocked": {"type": "boolean"},
+              "handoff_blockers": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["code", "message"],
+                  "properties": {
+                    "code": {"type": "string", "enum": [
+                      "missing_locked_still", "active_job", "refund_pending",
+                      "charge_attempt_pending", "ledger_inconsistent"
+                    ]},
+                    "shot_id": {"type": "string"},
+                    "message": {"type": "string"}
+                  }
+                }
+              },
+              "shots": {"type": "array", "items": {"type": "object"}}
+            }
+          }}}},
+          "400": {"description": "缺少 project_id，或项目尚未进入制作阶段"},
+          "401": {"description": "未登录"},
+          "403": {"description": "必须修改初始密码，或账号没有画布基础访问能力"},
+          "404": {"description": "项目不存在，或当前用户无权发现该项目"}
+        }
+      }
+    },
+    "/api/gen/short-drama/voice": {
+      "get": {
+        "tags": ["短剧"],
+        "summary": "读取短剧配音字幕工作区",
+        "description": "只读且不扣点；首次读取历史 voice_review 项目时幂等建立配音快照。",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{
+          "name": "project_id",
+          "in": "query",
+          "required": true,
+          "schema": {"type": "string", "minLength": 1}
+        }],
         "responses": {
           "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "user": {
-                      "$ref": "#/components/schemas/User"
+            "description": "配音字幕工作区快照",
+            "content": {"application/json": {"schema": {
+              "type": "object",
+              "required": [
+                "project_id", "revision", "stage", "ratio", "target_duration",
+                "point_budget", "spent_points", "reserved_points", "shots"
+              ],
+              "properties": {
+                "project_id": {"type": "string"},
+                "revision": {"type": "integer", "minimum": 1},
+                "stage": {"type": "string", "enum": ["voice_review", "video_review", "assembly_review", "completed"]},
+                "ratio": {"type": "string", "enum": ["9:16", "16:9"]},
+                "target_duration": {"type": "integer", "enum": [30, 45, 60]},
+                "point_budget": {"type": "integer", "minimum": 0},
+                "spent_points": {"type": "integer", "minimum": 0},
+                "reserved_points": {"type": "integer", "minimum": 0},
+                "shots": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["id", "shot_key", "sort_order", "duration", "locked", "timeline_revision", "status", "lines"],
+                    "properties": {
+                      "id": {"type": "string"},
+                      "shot_key": {"type": "string"},
+                      "sort_order": {"type": "integer"},
+                      "duration": {"type": "integer", "enum": [5, 10]},
+                      "locked": {"type": "boolean"},
+                      "timeline_revision": {"type": "integer", "minimum": 1},
+                      "status": {"type": "string", "enum": ["silent", "pending", "ready", "failed"]},
+                      "lines": {"type": "array", "items": {
+                        "type": "object",
+                        "required": [
+                          "id", "dialogue_line_id", "line_type", "sort_order",
+                          "character_key", "character_name", "source_text", "speech_text",
+                          "subtitle_text", "subtitle_visible", "voice_key", "speed", "pitch",
+                          "volume", "current_version", "start_ms", "end_ms", "input_hash",
+                          "versions", "job"
+                        ],
+                        "properties": {
+                          "id": {"type": "string"},
+                          "dialogue_line_id": {"type": "string", "nullable": true},
+                          "line_type": {"type": "string", "enum": ["dialogue", "narration"]},
+                          "sort_order": {"type": "integer", "minimum": 0},
+                          "character_key": {"type": "string"},
+                          "character_name": {"type": "string"},
+                          "source_text": {"type": "string"},
+                          "speech_text": {"type": "string"},
+                          "subtitle_text": {"type": "string"},
+                          "subtitle_visible": {"type": "boolean"},
+                          "voice_key": {"type": "string"},
+                          "speed": {"type": "number", "minimum": 0.5, "maximum": 2.0},
+                          "pitch": {"type": "integer", "minimum": -12, "maximum": 12},
+                          "volume": {"type": "integer", "minimum": -50, "maximum": 100},
+                          "current_version": {"type": "integer", "minimum": 1, "nullable": true},
+                          "start_ms": {"type": "integer", "minimum": 0, "nullable": true},
+                          "end_ms": {"type": "integer", "minimum": 1, "nullable": true},
+                          "input_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+                          "versions": {"type": "array", "items": {"type": "object"}},
+                          "job": {"type": "object", "nullable": true}
+                        }
+                      }}
                     }
                   }
                 }
               }
+            }}}
+          },
+          "400": {"description": "项目尚未进入配音阶段", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "401": {"description": "未登录", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "403": {"description": "必须修改初始密码，或账号没有画布基础访问能力", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "项目不存在，或当前用户无权发现该项目", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/gen/short-drama/voice-quote": {
+      "post": {
+        "tags": ["短剧"],
+        "summary": "询价一条或多条短剧配音",
+        "description": "Free / no points. 仅 voice_review 可用；按服务端音频价格逐句报价，报价 300 秒有效。询价不扣点、不创建任务。共享画布 owner/editor 可写，viewer 返回 403。",
+        "parameters": [{"$ref": "#/components/parameters/XCanvasBoardId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "type": "object", "required": ["project_id", "revision", "items"], "additionalProperties": false,
+          "properties": {
+            "project_id": {"type": "string", "minLength": 1},
+            "revision": {"type": "integer", "minimum": 1},
+            "items": {"type": "array", "minItems": 1, "maxItems": 50, "items": {
+              "type": "object", "required": ["line_id", "voice_key", "speed", "pitch", "volume"], "additionalProperties": false,
+              "properties": {
+                "line_id": {"type": "string", "minLength": 1},
+                "voice_key": {"type": "string", "minLength": 1, "maxLength": 160},
+                "speed": {"type": "number", "minimum": 0.5, "maximum": 2},
+                "pitch": {"type": "integer", "minimum": -12, "maximum": 12},
+                "volume": {"type": "integer", "minimum": -50, "maximum": 100}
+              }
+            }}
+          }
+        }}}},
+        "responses": {
+          "200": {"description": "逐句报价、总价、项目预算占用和 300 秒有效凭证；未扣点"},
+          "400": {"description": "字段、阶段、音色、预算或报价无效；未扣点"},
+          "401": {"description": "未登录"},
+          "403": {"description": "必须修改初始密码，或共享画布为 viewer/无写权限"},
+          "404": {"description": "项目或台词不存在，或当前用户无权发现"},
+          "409": {"description": "revision_conflict"}
+        }
+      }
+    },
+    "/api/gen/short-drama/generate-voice": {
+      "post": {
+        "tags": ["短剧"],
+        "summary": "提交单条短剧配音生成任务",
+        "description": "付费异步任务。必须携带未过期且与规范化输入完全匹配的 quote_token 和 Idempotency-Key。每句独立扣点、任务、版本和退款；同键同请求重放原任务，同键不同请求返回 409。失败由通用任务账本幂等退款。",
+        "parameters": [
+          {"$ref": "#/components/parameters/XCanvasBoardId"},
+          {"$ref": "#/components/parameters/IdempotencyKeyRequired"}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "type": "object", "required": ["project_id", "revision", "line_id", "voice_key", "speed", "pitch", "volume", "quote_token"], "additionalProperties": false,
+          "properties": {
+            "project_id": {"type": "string", "minLength": 1},
+            "revision": {"type": "integer", "minimum": 1},
+            "line_id": {"type": "string", "minLength": 1},
+            "voice_key": {"type": "string", "minLength": 1, "maxLength": 160},
+            "speed": {"type": "number", "minimum": 0.5, "maximum": 2},
+            "pitch": {"type": "integer", "minimum": -12, "maximum": 12},
+            "volume": {"type": "integer", "minimum": -50, "maximum": 100},
+            "quote_token": {"type": "string", "pattern": "^[0-9a-f]{32}$"}
+          }
+        }}}},
+        "responses": {
+          "200": {"description": "任务已受理或幂等重放；返回 project_id、line_id、job_id、cost、points_left、replayed"},
+          "400": {"description": "字段、内容安全、报价、阶段、音色、revision 或项目预算无效"},
+          "401": {"description": "未登录"},
+          "402": {"description": "账户点数不足；未创建任务"},
+          "403": {"description": "必须修改初始密码，或共享画布为 viewer/无写权限"},
+          "404": {"description": "项目、台词或询价不存在，或当前用户无权发现"},
+          "409": {"description": "idempotency_conflict、charge_attempt_in_progress、revision_conflict 或已终止操作"},
+          "429": {"description": "任务队列已满；已扣点任务自动退款"},
+          "503": {"description": "服务更新、内容安全不可用或退款正在重试"}
+        }
+      }
+    },
+    "/api/gen/short-drama/select-voice-version": {
+      "post": {
+        "tags": ["短剧"],
+        "summary": "免费选择兼容的历史配音版本",
+        "description": "Free / no points. 只能选择当前项目、当前台词下状态为 done 且 input_hash 与当前输入一致的版本。成功后项目 revision 加 1。",
+        "parameters": [{"$ref": "#/components/parameters/XCanvasBoardId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "type": "object", "required": ["project_id", "revision", "line_id", "version"], "additionalProperties": false,
+          "properties": {
+            "project_id": {"type": "string", "minLength": 1},
+            "revision": {"type": "integer", "minimum": 1},
+            "line_id": {"type": "string", "minLength": 1},
+            "version": {"type": "integer", "minimum": 1}
+          }
+        }}}},
+        "responses": {
+          "200": {"description": "返回 project_id、line_id、current_version 和新 revision；不扣点"},
+          "400": {"description": "版本失败、元数据未完成、输入不兼容或当前阶段不可写"},
+          "401": {"description": "未登录"},
+          "403": {"description": "必须修改初始密码，或共享画布为 viewer/无写权限"},
+          "404": {"description": "项目、台词或版本不存在，或当前用户无权发现"},
+          "409": {"description": "revision_conflict"}
+        }
+      }
+    },
+    "/api/gen/short-drama/projects": {
+      "get": {
+        "tags": ["短剧策划"], "summary": "列出当前用户的短剧项目", "description": "Free / no points. 仅返回 Bearer 用户本人创建且未删除的项目。",
+        "parameters": [
+          { "name": "page", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "default": 1 } },
+          { "name": "page_size", "in": "query", "required": false, "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 } }
+        ],
+        "responses": {
+          "200": { "description": "分页项目摘要列表", "content": { "application/json": { "schema": { "type": "object", "required": ["items", "page", "page_size", "total", "total_pages"], "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/ShortDramaProjectSummary" } }, "page": { "type": "integer", "minimum": 1 }, "page_size": { "type": "integer", "minimum": 1, "maximum": 50 }, "total": { "type": "integer", "minimum": 0 }, "total_pages": { "type": "integer", "minimum": 0 } } } } } },
+          "400": { "description": "分页参数无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "账号必须先修改初始密码", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      },
+      "post": {
+        "tags": ["短剧策划"], "summary": "创建短剧项目", "description": "Free / no points. 创建 draft 项目；不会创建生成任务。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["title", "synopsis", "ratio", "target_duration", "shot_count"], "additionalProperties": false,
+          "properties": {
+            "title": { "type": "string", "minLength": 1, "maxLength": 80 }, "synopsis": { "type": "string", "minLength": 8, "maxLength": 4000 },
+            "ratio": { "type": "string", "enum": ["9:16", "16:9"] }, "target_duration": { "type": "integer", "enum": [30, 45, 60] },
+            "shot_count": { "type": "integer", "minimum": 6, "maximum": 10 }, "visual_style": { "type": "string", "maxLength": 80, "default": "电影写实" },
+            "target_platform": { "type": "string", "maxLength": 80, "default": "抖音" }, "point_budget": { "type": "integer", "minimum": 0, "default": 0 }
+          }
+        } } } },
+        "responses": {
+          "200": { "description": "已创建", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
+          "400": { "description": "字段、类型或取值无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录；认证先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "账号必须先修改初始密码；检查先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "429": { "description": "short_drama_project_cap：当前用户未删除项目数已达到默认 50 个的生产上限", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/api/gen/short-drama/project": {
+      "get": {
+        "tags": ["短剧策划"], "summary": "读取短剧项目详情", "description": "Free / no points. 详情严格按创建者隔离；非创建者与不存在的 ID 均返回相同的 404，不提供 ACL 或共享详情读取。",
+        "parameters": [{ "name": "id", "in": "query", "required": true, "schema": { "type": "string" }, "description": "短剧项目 UUID" }],
+        "responses": {
+          "200": { "description": "项目详情", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
+          "400": { "description": "缺少项目 ID", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "账号必须先修改初始密码", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "项目不存在或当前用户不是创建者（owner-only）", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      },
+      "put": {
+        "tags": ["短剧策划"], "summary": "保存项目设置或一个审核内容分区", "description": "Free / no points. 所有变体必须带当前 revision。设置仅在 draft 可由前端编辑；内容变体每次严格只允许 characters、script、shots 之一，并依次限定在 characters_review、script_review、storyboard_review 阶段。script 保存会追加新版本。成功后 revision 加 1。",
+        "parameters": [{ "name": "id", "in": "query", "required": true, "schema": { "type": "string" }, "description": "短剧项目 UUID" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "oneOf": [
+          {
+            "type": "object", "required": ["revision"], "additionalProperties": false,
+            "anyOf": [
+              { "required": ["title"] }, { "required": ["synopsis"] }, { "required": ["ratio"] }, { "required": ["target_duration"] },
+              { "required": ["shot_count"] }, { "required": ["visual_style"] }, { "required": ["target_platform"] }, { "required": ["point_budget"] }
+            ],
+            "properties": {
+              "revision": { "type": "integer", "minimum": 1 }, "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+              "synopsis": { "type": "string", "minLength": 8, "maxLength": 4000 }, "ratio": { "type": "string", "enum": ["9:16", "16:9"] },
+              "target_duration": { "type": "integer", "enum": [30, 45, 60] }, "shot_count": { "type": "integer", "minimum": 6, "maximum": 10 },
+              "visual_style": { "type": "string", "maxLength": 80 }, "target_platform": { "type": "string", "maxLength": 80 }, "point_budget": { "type": "integer", "minimum": 0 }
             }
           },
-          "401": {
-            "description": "未登录"
+          {
+            "type": "object", "required": ["revision", "characters"], "additionalProperties": false,
+            "properties": { "revision": { "type": "integer", "minimum": 1 }, "characters": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "$ref": "#/components/schemas/ShortDramaCharacter" } } }
+          },
+          {
+            "type": "object", "required": ["revision", "script"], "additionalProperties": false,
+            "properties": { "revision": { "type": "integer", "minimum": 1 }, "script": { "$ref": "#/components/schemas/ShortDramaScriptVersion" } }
+          },
+          {
+            "type": "object", "required": ["revision", "shots"], "additionalProperties": false,
+            "properties": { "revision": { "type": "integer", "minimum": 1 }, "shots": { "type": "array", "minItems": 6, "maxItems": 10, "items": { "$ref": "#/components/schemas/ShortDramaShot" } } }
           }
+        ] } } } },
+        "responses": {
+          "200": { "description": "已保存且 revision 加 1；不扣点", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
+          "400": { "description": "字段无效、混合多个内容分区或当前阶段不可编辑", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录；认证先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "账号必须先修改初始密码；检查先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "项目不存在或当前用户不是创建者（owner-only）", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "revision_conflict：提交的 revision 已过期，须刷新后重试", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RevisionConflict" } } } }
+        }
+      }
+    },
+    "/api/gen/short-drama/project/delete": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "软删除短剧项目", "description": "Free / no points. 仅创建者可按当前 revision 软删除项目；删除后项目不再出现在列表或详情中，并释放一个项目名额。关联内容和付费任务保留用于审计。若项目仍有已扣点但尚未应用或退款的策划任务，删除会被拒绝。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["project_id", "revision"], "additionalProperties": false,
+          "properties": { "project_id": { "type": "string" }, "revision": { "type": "integer", "minimum": 1 } }
+        } } } },
+        "responses": {
+          "200": { "description": "项目已软删除", "content": { "application/json": { "schema": { "type": "object", "required": ["id", "revision", "deleted"], "properties": { "id": { "type": "string" }, "revision": { "type": "integer" }, "deleted": { "type": "boolean", "const": true } } } } } },
+          "400": { "description": "请求字段或类型无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录；认证先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "账号必须先修改初始密码；检查先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "项目不存在、已删除或当前用户不是创建者", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "revision_conflict：提交的 revision 已过期；或 short_drama_unapplied_paid_job：存在尚未应用或退款的已扣点策划任务", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaDeleteConflict" } } } }
+        }
+      }
+    },
+    "/api/gen/short-drama/apply-plan": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "把已完成的短剧策划任务应用到项目", "description": "应用本身不再次扣点，也不重复累计任务 cost；spent_points 在策划任务实际扣点入队时已经展示。只接受当前用户本人已完成且 mode=short_drama 的 copy job。服务端校验 job 输入、结果、project_id、提交时 revision 及策划参数快照的绑定关系。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["project_id", "revision", "job_id"], "additionalProperties": false,
+          "properties": { "project_id": { "type": "string" }, "revision": { "type": "integer", "minimum": 1 }, "job_id": { "type": "integer", "minimum": 1 } }
+        } } } },
+        "responses": {
+          "200": { "description": "策划已应用，进入 characters_review", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
+          "400": { "description": "任务未完成、类型/模式/结果无效或字段不正确", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录；认证先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "账号必须先修改初始密码；检查先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "项目或 copy job 不存在，或不属于当前用户", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "revision_conflict，或 job_already_applied（同一 job 不能重复应用）", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RevisionConflict" } } } }
+        }
+      }
+    },
+    "/api/gen/short-drama/confirm": {
+      "post": {
+        "tags": ["短剧策划"], "summary": "确认当前短剧审核阶段", "description": "Free / no points. 按 characters_review → script_review → storyboard_review → stills_review 顺序确认；禁止跳级，成功后 revision 加 1。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["project_id", "revision", "stage"], "additionalProperties": false,
+          "properties": { "project_id": { "type": "string" }, "revision": { "type": "integer", "minimum": 1 }, "stage": { "type": "string", "enum": ["characters_review", "script_review", "storyboard_review"] } }
+        } } } },
+        "responses": {
+          "200": { "description": "已进入下一阶段；不扣点", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
+          "400": { "description": "阶段无效或试图跳过当前阶段", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "未登录；认证先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "账号必须先修改初始密码；检查先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "项目不存在或当前用户不是创建者（owner-only）", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "409": { "description": "revision_conflict：提交的 revision 已过期", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RevisionConflict" } } } }
         }
       }
     },
     "/api/gen/image": {
       "post": {
-        "tags": [
-          "作图"
-        ],
-        "summary": "gpt-image 作图(文生图/图生图/局部修改) · 12点",
+        "tags": ["作图"], "summary": "gpt-image 作图(文生图/图生图/局部修改) · 12点",
         "description": "异步,返回 job_id。带 image 进图生图;再带 mask 进局部修改。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "prompt"
-                ],
-                "properties": {
-                  "prompt": {
-                    "type": "string",
-                    "maxLength": 2000
-                  },
-                  "provider": {
-                    "type": "string",
-                    "enum": [
-                      "openai",
-                      "zelong"
-                    ],
-                    "default": "openai",
-                    "description": "openai 失败时后端会自动 fallback 到 zelong"
-                  },
-                  "ratio": {
-                    "type": "string",
-                    "enum": [
-                      "1:1",
-                      "9:16",
-                      "16:9",
-                      "3:4"
-                    ],
-                    "default": "1:1",
-                    "description": "3:4 对应 900x1200"
-                  },
-                  "image": {
-                    "type": "string",
-                    "description": "base64(无 data: 前缀),参考图→图生图"
-                  },
-                  "mask": {
-                    "type": "string",
-                    "description": "base64 蒙版→局部修改"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "受理",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobAccepted"
-                }
-              }
-            }
-          },
-          "402": {
-            "description": "点数不足"
-          }
-        }
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["prompt"], "properties": { "prompt": { "type": "string" }, "ratio": { "type": "string", "enum": ["1:1", "9:16", "16:9", "3:4"], "default": "1:1" }, "image": { "type": "string", "description": "base64(无 data: 前缀),参考图→图生图" }, "mask": { "type": "string", "description": "base64 蒙版→局部修改" } } } } } },
+        "responses": { "200": { "description": "受理", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } }, "402": { "description": "点数不足" } }
       }
     },
     "/api/gen/banana": {
       "post": {
-        "tags": [
-          "作图"
-        ],
-        "summary": "纳米香蕉作图（纳米香蕉 2 标准15点/高清25点；Pro 标准25点/高清30点）",
-        "description": "异步返回 job_id。带 image 进图生图。提交前会校验 prompt/model/ratio/quality/count/image，参数错误直接 400，不扣点。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "prompt"
-                ],
-                "properties": {
-                  "prompt": {
-                    "type": "string",
-                    "maxLength": 2000
-                  },
-                  "model": {
-                    "type": "string",
-                    "enum": [
-                      "nb2",
-                      "pro"
-                    ],
-                    "default": "nb2",
-                    "description": "nb2=纳米香蕉 2，pro=纳米香蕉 Pro"
-                  },
-                  "ratio": {
-                    "type": "string",
-                    "default": "1:1",
-                    "description": "1:1 / 2:3 / 3:2 / 3:4 / 4:3 / 4:5 / 5:4 / 9:16 / 16:9 / 21:9"
-                  },
-                  "image": {
-                    "type": "string",
-                    "description": "base64 参考图，可带 data:image/...;base64, 前缀；传错会返回 400"
-                  },
-                  "quality": {
-                    "type": "string",
-                    "enum": [
-                      "std",
-                      "hd"
-                    ],
-                    "default": "std",
-                    "description": "std=标准清晰度；hd=高清。默认 std；纳米香蕉 2 标准15点/高清25点，纳米香蕉 Pro 标准25点/高清30点"
-                  },
-                  "count": {
-                    "type": "integer",
-                    "enum": [
-                      1,
-                      2
-                    ],
-                    "default": 1,
-                    "description": "生成张数，只支持 1 或 2；按张扣点"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "受理",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobAccepted"
-                }
-              }
-            }
-          },
-          "402": {
-            "description": "点数不足"
-          },
-          "400": {
-            "description": "参数错误，例如 prompt 为空、model/ratio/quality/count 不支持、image 不是合法 base64"
-          },
-          "401": {
-            "description": "未登录或 token 过期"
-          }
-        }
+        "tags": ["作图"], "summary": "nano banana 作图(NB2 10点 / Pro 18点)",
+        "description": "异步,返回 job_id。带 image 进图生图。Pro=最强中文/4K。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["prompt"], "properties": { "prompt": { "type": "string" }, "model": { "type": "string", "enum": ["nb2", "pro"], "default": "nb2", "description": "nb2=gemini-3.1-flash-image,pro=gemini-3-pro-image" }, "ratio": { "type": "string", "default": "1:1", "description": "1:1 / 2:3 / 3:2 / 3:4 / 4:3 / 4:5 / 5:4 / 9:16 / 16:9 / 21:9" }, "image": { "type": "string", "description": "base64 参考图(可选)" } } } } } },
+        "responses": { "200": { "description": "受理", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } }, "402": { "description": "点数不足" } }
       }
     },
     "/api/gen/copy": {
       "post": {
-        "tags": [
-          "文案"
-        ],
-        "summary": "AI 文案 / 分镜脚本 · 3点",
-        "description": "异步。format=script → 返回分镜脚本;否则返回 n 条通用文案。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "prompt"
-                ],
-                "properties": {
-                  "prompt": {
-                    "type": "string",
-                    "description": "文案需求/选题"
-                  },
-                  "ctype": {
-                    "type": "string",
-                    "default": "通用"
-                  },
-                  "format": {
-                    "type": "string",
-                    "description": "填 script 出分镜脚本"
-                  },
-                  "style": {
-                    "type": "string",
-                    "example": "口播",
-                    "description": "format=script 时"
-                  },
-                  "dur": {
-                    "type": "string",
-                    "example": "30s",
-                    "description": "format=script 时"
-                  },
-                  "platform": {
-                    "type": "string",
-                    "example": "抖音",
-                    "description": "format=script 时"
-                  },
-                  "n": {
-                    "type": "integer",
-                    "default": 2,
-                    "description": "1-3,通用文案条数"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "受理",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobAccepted"
-                }
-              }
+        "tags": ["文案"], "summary": "AI 文案 / 分镜脚本 / 短剧策划 · 按服务端报价",
+        "description": "付费异步任务。短剧客户端先调用认证的 planning-quote，以返回的精确 cost 弹窗确认，确认后才提交 format=short_drama。服务端在同一提交锁内、扣点和创建任务前，同步校验项目 owner、draft 阶段、精确 revision、策划参数快照以及项目预算；通过校验并受理后，模型输出解析或规划归一化失败属于异步 job error，并按任务失败规则退款。成功时轮询 job 得到绑定项目元数据的 ShortDramaPlanningResult，再由 owner 调用 apply-plan。项目创建、读取、保存和阶段确认均免费。",
+        "x-job-result-schema": { "$ref": "#/components/schemas/ShortDramaPlanningResult" },
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "oneOf": [
+          {
+            "type": "object", "required": ["prompt"],
+            "properties": {
+              "prompt": { "type": "string", "description": "文案需求/选题" }, "ctype": { "type": "string", "default": "通用" },
+              "format": { "type": "string", "not": { "enum": ["short_drama"] }, "description": "script 为普通分镜脚本；省略则为通用文案" },
+              "style": { "type": "string", "example": "口播" }, "dur": { "type": "string", "example": "30s" },
+              "platform": { "type": "string", "example": "抖音" }, "n": { "type": "integer", "minimum": 1, "maximum": 3, "default": 2 }
             }
           },
-          "402": {
-            "description": "点数不足"
-          }
+          { "$ref": "#/components/schemas/ShortDramaPlanningRequest" }
+        ] } } } },
+        "responses": {
+          "200": { "description": "已受理；返回 job_id、此次实际扣除的 cost 和 points_left", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } },
+          "400": { "description": "短剧项目、revision、参数快照或 budget（预算）无效；before deduction，未扣点且未创建任务" }, "401": { "description": "未登录" }, "402": { "description": "点数不足" }
         }
       }
     },
     "/api/gen/audio": {
       "post": {
-        "tags": [
-          "配音音色"
-        ],
-        "summary": "TTS 配音 · 4点",
+        "tags": ["配音音色"], "summary": "TTS 配音 · 4点",
         "description": "异步。voice 可填预设(dapeng/zelong/paul)或个人 VIP 音色 key。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "text"
-                ],
-                "properties": {
-                  "text": {
-                    "type": "string",
-                    "description": "配音文案(最长1200字)"
-                  },
-                  "voice": {
-                    "type": "string",
-                    "default": "dapeng"
-                  },
-                  "speed": {
-                    "type": "number",
-                    "default": 1.0,
-                    "description": "0.5-2.0"
-                  },
-                  "pitch": {
-                    "type": "number",
-                    "default": 0,
-                    "description": "-12~12"
-                  },
-                  "volume": {
-                    "type": "number",
-                    "default": 0,
-                    "description": "-50~100"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "受理",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobAccepted"
-                }
-              }
-            }
-          },
-          "402": {
-            "description": "点数不足"
-          }
-        }
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["text"], "properties": { "text": { "type": "string", "description": "配音文案(最长1200字)" }, "voice": { "type": "string", "default": "dapeng" }, "speed": { "type": "number", "default": 1.0, "description": "0.5-2.0" }, "pitch": { "type": "number", "default": 0, "description": "-12~12" }, "volume": { "type": "number", "default": 0, "description": "-50~100" } } } } } },
+        "responses": { "200": { "description": "受理", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } }, "402": { "description": "点数不足" } }
       }
     },
     "/api/gen/audio/voices": {
-      "get": {
-        "tags": [
-          "配音音色"
-        ],
-        "summary": "可用音色列表(公开预设+个人VIP)",
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
+      "get": { "tags": ["配音音色"], "summary": "可用音色列表(公开预设+个人VIP)", "responses": { "200": { "description": "OK" } } }
     },
     "/api/gen/audio/assets": {
-      "get": {
-        "tags": [
-          "配音音色"
-        ],
-        "summary": "个人历史音频资产",
-        "parameters": [
-          {
-            "name": "limit",
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "default": 120
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
+      "get": { "tags": ["配音音色"], "summary": "个人历史音频资产", "parameters": [{ "name": "limit", "in": "query", "schema": { "type": "integer", "default": 120 } }], "responses": { "200": { "description": "OK" } } }
     },
     "/api/gen/audio/slots": {
-      "get": {
-        "tags": [
-          "配音音色"
-        ],
-        "summary": "音色克隆槽位 + 训练状态",
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
+      "get": { "tags": ["配音音色"], "summary": "音色克隆槽位 + 训练状态", "responses": { "200": { "description": "OK" } } }
     },
     "/api/gen/audio/clone-status": {
-      "get": {
-        "tags": [
-          "配音音色"
-        ],
-        "summary": "查音色克隆训练状态",
-        "parameters": [
-          {
-            "name": "slot_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK · status=training/ready/failed"
-          },
-          "400": {
-            "description": "缺少 slot_id 或参数错误"
-          },
-          "401": {
-            "description": "未登录或 token 无效"
-          },
-          "404": {
-            "description": "音色槽位不存在或无权访问"
-          },
-          "405": {
-            "description": "Method Not Allowed"
-          }
-        }
-      }
+      "get": { "tags": ["配音音色"], "summary": "查音色克隆训练状态", "parameters": [{ "name": "slot_id", "in": "query", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "OK · status=training/ready/failed" } } }
     },
     "/api/gen/audio/redeem-slot": {
-      "post": {
-        "tags": [
-          "配音音色"
-        ],
-        "summary": "兑换码领取音色克隆槽位",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "code"
-                ],
-                "properties": {
-                  "code": {
-                    "type": "string"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
+      "post": { "tags": ["配音音色"], "summary": "兑换码领取音色克隆槽位", "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["code"], "properties": { "code": { "type": "string" } } } } } }, "responses": { "200": { "description": "OK" } } }
     },
     "/api/gen/audio/clone-vip": {
       "post": {
-        "tags": [
-          "配音音色"
-        ],
-        "summary": "上传样音 → 触发音色克隆训练",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "slot_id",
-                  "audio"
-                ],
-                "properties": {
-                  "slot_id": {
-                    "type": "string"
-                  },
-                  "name": {
-                    "type": "string",
-                    "default": "我的VIP复制音色"
-                  },
-                  "audio": {
-                    "type": "string",
-                    "description": "base64 样本音频"
-                  },
-                  "audio_format": {
-                    "type": "string",
-                    "default": "mp3",
-                    "description": "mp3/wav/m4a/aac/ogg"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "OK · 返回 voice(status=training,后续轮询 clone-status)"
-          }
-        }
+        "tags": ["配音音色"], "summary": "上传样音 → 触发音色克隆训练",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["slot_id", "audio"], "properties": { "slot_id": { "type": "string" }, "name": { "type": "string", "default": "我的VIP复制音色" }, "audio": { "type": "string", "description": "base64 样本音频" }, "audio_format": { "type": "string", "default": "mp3", "description": "mp3/wav/m4a/aac/ogg" } } } } } },
+        "responses": { "200": { "description": "OK · 返回 voice(status=training,后续轮询 clone-status)" } }
       }
     },
     "/api/gen/video": {
       "post": {
-        "tags": [
-          "视频"
-        ],
-        "summary": "HeyGen 数字人视频(图+音→视频) · 默认20点",
-        "description": "异步。提交前校验参数,校验失败直接 400,不创建任务。mode=text: 人物形象 + text + voice 必填; mode=audio: 人物形象 + audio_data 必填。人物形象用 image_data 或本人 avatar_id 二选一。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "anyOf": [
-                  {
-                    "required": ["image_data"]
-                  },
-                  {
-                    "required": ["avatar_id"]
-                  }
-                ],
-                "properties": {
-                  "mode": {
-                    "type": "string",
-                    "enum": [
-                      "text",
-                      "audio"
-                    ],
-                    "default": "text"
-                  },
-                  "image_data": {
-                    "type": "string",
-                    "description": "data:image/png;base64,... 人物形象图"
-                  },
-                  "avatar_id": {
-                    "type": "integer",
-                    "description": "本人已保存的形象 ID，与 image_data 二选一"
-                  },
-                  "text": {
-                    "type": "string",
-                    "description": "mode=text 必填"
-                  },
-                  "voice": {
-                    "type": "string",
-                    "description": "mode=text 必填"
-                  },
-                  "audio_data": {
-                    "type": "string",
-                    "description": "mode=audio 必填,data:audio/mp3;base64,..."
-                  },
-                  "speed": {
-                    "type": "number",
-                    "default": 1.0
-                  },
-                  "pitch": {
-                    "type": "number",
-                    "default": 0
-                  },
-                  "volume": {
-                    "type": "number",
-                    "default": 0
-                  },
-                  "resolution": {
-                    "type": "string",
-                    "enum": [
-                      "720p",
-                      "1080p"
-                    ],
-                    "default": "1080p"
-                  },
-                  "ratio": {
-                    "type": "string",
-                    "enum": [
-                      "9:16",
-                      "16:9",
-                      "1:1",
-                      "4:5",
-                      "5:4"
-                    ],
-                    "default": "9:16"
-                  },
-                  "motion": {
-                    "type": "string",
-                    "enum": [
-                      "low",
-                      "medium",
-                      "high"
-                    ],
-                    "default": "medium"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "受理",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobAccepted"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "参数错误：非法 JSON、缺少 image_data、mode 不支持、mode=text 缺 text/voice、mode=audio 缺 audio_data、素材不是合法图片/音频、resolution/ratio/motion 不支持",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "未登录或 token 无效",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "402": {
-            "description": "点数不足",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "502": {
-            "description": "HeyGen / TTS 等上游视频服务失败",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
+        "tags": ["视频"], "summary": "HeyGen 数字人视频(图+音→视频)",
+        "description": "异步。mode=text:文案+音色生配音;mode=audio:直接导入音频。image_data 与本人 avatar_id 二选一。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "anyOf": [{ "required": ["image_data"] }, { "required": ["avatar_id"] }], "properties": { "mode": { "type": "string", "enum": ["text", "audio"], "default": "text" }, "image_data": { "type": "string", "description": "data:image/png;base64,... 人物形象图" }, "avatar_id": { "type": "integer", "description": "本人已保存的形象 ID" }, "text": { "type": "string", "description": "mode=text 必填" }, "voice": { "type": "string", "description": "mode=text 必填" }, "audio_data": { "type": "string", "description": "mode=audio 必填,data:audio/mp3;base64,..." }, "speed": { "type": "number", "default": 1.0 }, "pitch": { "type": "number", "default": 0 }, "volume": { "type": "number", "default": 0 }, "resolution": { "type": "string", "enum": ["720p", "1080p"], "default": "1080p" }, "ratio": { "type": "string", "enum": ["9:16", "16:9", "1:1", "4:5", "5:4"], "default": "9:16" }, "motion": { "type": "string", "enum": ["low", "medium", "high"], "default": "medium" } } } } } },
+        "responses": { "200": { "description": "受理", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } } }
       }
     },
     "/api/gen/video/batch": {
       "post": {
-        "tags": [
-          "视频"
-        ],
-        "summary": "一份文案 × 2-5 个形象批量生成口播视频",
-        "description": "批量原子受理。每个形象创建独立 video 任务，独立排队、跟踪和失败退点。avatars 每项使用 image_data 或本人 avatar_id 二选一；整批受单用户 active job 上限约束。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": ["text", "voice", "avatars"],
-                "properties": {
-                  "mode": {"type": "string", "enum": ["text"], "default": "text"},
-                  "text": {"type": "string", "description": "所有形象共用的口播文案"},
-                  "voice": {"type": "string", "description": "所有形象共用的音色"},
-                  "avatars": {
-                    "type": "array",
-                    "minItems": 2,
-                    "maxItems": 5,
-                    "items": {
-                      "type": "object",
-                      "anyOf": [{"required": ["image_data"]}, {"required": ["avatar_id"]}],
-                      "properties": {
-                        "image_data": {"type": "string", "description": "data:image/... 新上传形象"},
-                        "avatar_id": {"type": "integer", "description": "本人已保存的形象 ID"},
-                        "label": {"type": "string", "maxLength": 60}
-                      }
-                    }
-                  },
-                  "resolution": {"type": "string", "enum": ["720p", "1080p"], "default": "1080p"},
-                  "ratio": {"type": "string", "enum": ["9:16", "16:9", "1:1", "4:5", "5:4"], "default": "9:16"},
-                  "motion": {"type": "string", "enum": ["low", "medium", "high"], "default": "medium"},
-                  "subtitle": {"type": "boolean", "default": false},
-                  "subtitle_style": {"type": "string", "enum": ["white", "variety", "bar"], "default": "white"},
-                  "subtitle_position": {"type": "string", "enum": ["top", "upper", "center", "lower", "bottom"], "default": "bottom"}
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {"description": "整批受理，返回 batch_id/job_ids/jobs/count/cost/cost_per_job/points_left"},
-          "400": {"description": "形象数量、归属、素材或公共参数不合法"},
-          "401": {"description": "未登录或 token 无效"},
-          "402": {"description": "点数不足"},
-          "429": {"description": "剩余任务位或队列容量不足，整批不受理"},
-          "503": {"description": "视频功能已停用"}
-        }
+        "tags": ["视频"], "summary": "一份文案 × 2-5 个形象批量生成口播视频",
+        "description": "批量原子受理。每个形象创建独立 video 任务并独立失败退点；avatars 每项用 image_data 或本人 avatar_id 二选一。受单用户 active job 上限约束。",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["text", "voice", "avatars"], "properties": { "mode": { "type": "string", "enum": ["text"], "default": "text" }, "text": { "type": "string" }, "voice": { "type": "string" }, "avatars": { "type": "array", "minItems": 2, "maxItems": 5, "items": { "type": "object", "properties": { "image_data": { "type": "string" }, "avatar_id": { "type": "integer" }, "label": { "type": "string" } } } }, "resolution": { "type": "string", "enum": ["720p", "1080p"], "default": "1080p" }, "ratio": { "type": "string", "enum": ["9:16", "16:9", "1:1", "4:5", "5:4"], "default": "9:16" }, "motion": { "type": "string", "enum": ["low", "medium", "high"], "default": "medium" }, "subtitle": { "type": "boolean", "default": false } } } } } },
+        "responses": { "200": { "description": "整批受理，返回 batch_id/job_ids/count/cost/points_left" }, "400": { "description": "形象数量、素材或公共参数不合法" }, "402": { "description": "点数不足" }, "429": { "description": "剩余任务位或队列容量不足，整批不受理" } }
       }
     },
     "/api/gen/video/assets": {
-      "get": {
-        "tags": [
-          "视频"
-        ],
-        "summary": "个人历史视频资产",
-        "parameters": [
-          {
-            "name": "limit",
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "default": 120
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
+      "get": { "tags": ["视频"], "summary": "个人历史视频资产", "parameters": [{ "name": "limit", "in": "query", "schema": { "type": "integer", "default": 120 } }], "responses": { "200": { "description": "OK" } } }
     },
     "/api/gen/collect": {
       "post": {
-        "tags": [
-          "采集获客"
-        ],
-        "summary": "单条视频/笔记采集(文案+评论+口播) · 3点起",
+        "tags": ["采集获客"], "summary": "单条视频/笔记采集(文案+评论+口播) · 3点起",
         "description": "异步。url 与 id 二选一。want 含 transcript 时 +3 点。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "platform": {
-                    "type": "string",
-                    "enum": [
-                      "douyin",
-                      "xiaohongshu",
-                      "channels"
-                    ],
-                    "default": "douyin"
-                  },
-                  "url": {
-                    "type": "string",
-                    "description": "视频链接(与 id 二选一)"
-                  },
-                  "id": {
-                    "type": "string"
-                  },
-                  "note_type": {
-                    "type": "string",
-                    "default": "video"
-                  },
-                  "want": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    },
-                    "default": [
-                      "copy",
-                      "comments"
-                    ],
-                    "description": "copy/comments/transcript"
-                  },
-                  "comment_count": {
-                    "type": "integer",
-                    "default": 20
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "受理",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobAccepted"
-                }
-              }
-            }
-          },
-          "402": {
-            "description": "点数不足"
-          }
-        }
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "platform": { "type": "string", "enum": ["douyin", "xiaohongshu", "channels"], "default": "douyin" }, "url": { "type": "string", "description": "视频链接(与 id 二选一)" }, "id": { "type": "string" }, "note_type": { "type": "string", "default": "video" }, "want": { "type": "array", "items": { "type": "string" }, "default": ["copy", "comments"], "description": "copy/comments/transcript" }, "comment_count": { "type": "integer", "default": 20 } } } } } },
+        "responses": { "200": { "description": "受理", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } }, "402": { "description": "点数不足" } }
       }
     },
     "/api/gen/leads": {
       "post": {
-        "tags": [
-          "采集获客"
-        ],
-        "summary": "关键词获客(搜视频→扒评论→意图过滤→名单) · 6点起",
+        "tags": ["采集获客"], "summary": "关键词获客(搜视频→扒评论→意图过滤→名单) · 6点起",
         "description": "异步。点数 = 6 + count×pages/4。视频号用 channels_targets 传 sph号/finder号/视频链接。",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "keyword"
-                ],
-                "properties": {
-                  "keyword": {
-                    "type": "string",
-                    "example": "美业获客"
-                  },
-                  "platforms": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    },
-                    "default": [
-                      "douyin"
-                    ],
-                    "description": "douyin/xiaohongshu/channels"
-                  },
-                  "count": {
-                    "type": "integer",
-                    "default": 12,
-                    "description": "每平台视频数 1-30"
-                  },
-                  "pages": {
-                    "type": "integer",
-                    "default": 2,
-                    "description": "每视频评论页数 1-3"
-                  },
-                  "channels_targets": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    },
-                    "description": "视频号目标:sph号/finder号/视频链接(仅 channels)"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "受理",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobAccepted"
-                }
-              }
-            }
-          },
-          "402": {
-            "description": "点数不足"
-          }
-        }
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["keyword"], "properties": { "keyword": { "type": "string", "example": "美业获客" }, "platforms": { "type": "array", "items": { "type": "string" }, "default": ["douyin"], "description": "douyin/xiaohongshu/channels" }, "count": { "type": "integer", "default": 12, "description": "每平台视频数 1-30" }, "pages": { "type": "integer", "default": 2, "description": "每视频评论页数 1-3" }, "channels_targets": { "type": "array", "items": { "type": "string" }, "description": "视频号目标:sph号/finder号/视频链接(仅 channels)" } } } } } },
+        "responses": { "200": { "description": "受理", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobAccepted" } } } }, "402": { "description": "点数不足" } }
       }
     },
     "/api/gen/collect/search": {
       "get": {
-        "tags": [
-          "采集获客"
-        ],
-        "summary": "即时搜视频(选片用,同步) · 1点",
+        "tags": ["采集获客"], "summary": "即时搜视频(选片用,同步) · 1点",
         "parameters": [
-          {
-            "name": "keyword",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "platform",
-            "in": "query",
-            "schema": {
-              "type": "string",
-              "default": "douyin"
-            }
-          },
-          {
-            "name": "page",
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "default": 1
-            }
-          }
+          { "name": "keyword", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "platform", "in": "query", "schema": { "type": "string", "default": "douyin" } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } }
         ],
-        "responses": {
-          "200": {
-            "description": "OK · {items, cost, points_left}"
-          },
-          "402": {
-            "description": "点数不足"
-          }
-        }
+        "responses": { "200": { "description": "OK · {items, cost, points_left}" }, "402": { "description": "点数不足" } }
       }
     },
     "/api/gen/dl": {
       "get": {
-        "tags": [
-          "下载"
-        ],
-        "summary": "无水印视频下载代理(流式 mp4)",
+        "tags": ["下载"], "summary": "无水印视频下载代理(流式 mp4)",
         "description": "需要 Bearer 登录态；url 必须是白名单 CDN 域名(防 SSRF)。",
         "parameters": [
-          {
-            "name": "url",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "视频 CDN 链接"
-          },
-          {
-            "name": "name",
-            "in": "query",
-            "schema": {
-              "type": "string",
-              "default": "video"
-            }
-          }
+          { "name": "url", "in": "query", "required": true, "schema": { "type": "string" }, "description": "视频 CDN 链接" },
+          { "name": "name", "in": "query", "schema": { "type": "string", "default": "video" } }
         ],
-        "responses": {
-          "200": {
-            "description": "video/mp4 二进制流"
-          },
-          "400": {
-            "description": "不支持的下载地址"
-          },
-          "401": {
-            "description": "未登录"
-          },
-          "502": {
-            "description": "下载失败(地址可能过期)"
-          }
-        }
+        "responses": { "200": { "description": "video/mp4 二进制流" }, "401": { "description": "未登录" }, "400": { "description": "不支持的下载地址" }, "502": { "description": "下载失败(地址可能过期)" } }
       }
     },
     "/api/gen/job/{id}": {
       "get": {
-        "tags": [
-          "任务/历史/文件"
-        ],
-        "summary": "轮询异步任务结果",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JobStatus"
-                }
-              }
-            }
-          }
-        }
+        "tags": ["任务/历史/文件"], "summary": "轮询异步任务结果", "security": [],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/JobStatus" } } } } }
       }
     },
     "/api/gen/history": {
       "get": {
-        "tags": [
-          "任务/历史/文件"
-        ],
-        "summary": "本人生成历史",
+        "tags": ["任务/历史/文件"], "summary": "本人生成历史",
         "parameters": [
-          {
-            "name": "kind",
-            "in": "query",
-            "schema": {
-              "type": "string",
-              "enum": [
-                "image",
-                "copy",
-                "audio",
-                "video",
-                "collect",
-                "leads"
-              ],
-              "default": "image"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "default": 60
-            }
-          }
+          { "name": "kind", "in": "query", "schema": { "type": "string", "enum": ["image", "copy", "audio", "video", "collect", "leads"], "default": "image" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 60 } }
         ],
-        "responses": {
-          "200": {
-            "description": "OK · {items:[...]}"
-          }
-        }
+        "responses": { "200": { "description": "OK · {items:[...]}" } }
       }
     },
     "/api/gen/file/{name}": {
       "get": {
-        "tags": [
-          "任务/历史/文件"
-        ],
-        "summary": "下载生成的图片/音频/视频文件",
-        "security": [],
+        "tags": ["任务/历史/文件"], "summary": "下载生成的图片/音频/视频文件", "security": [],
         "description": "普通公开产物可直接读取；真人视频、参考图、个人音色试听等敏感文件必须携带 Bearer 登录态且只能由所属用户读取。",
-        "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "文件相对路径"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "文件二进制流"
-          },
-          "404": {
-            "description": "不存在"
-          }
-        }
+        "parameters": [{ "name": "name", "in": "path", "required": true, "schema": { "type": "string" }, "description": "文件相对路径" }],
+        "responses": { "200": { "description": "文件二进制流" }, "404": { "description": "不存在" } }
       }
     },
     "/api/auth/health": {
-      "get": {
-        "tags": [
-          "健康"
-        ],
-        "summary": "auth 服务健康(8095)",
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        }
-      }
+      "get": { "tags": ["健康"], "summary": "auth 服务健康(8095)", "security": [], "responses": { "200": { "description": "OK" } } }
     },
     "/api/gen/health": {
-      "get": {
-        "tags": [
-          "健康"
-        ],
-        "summary": "content 服务健康 + 能力清单(8096)",
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "OK · caps/has_openai/has_tikhub"
-          }
-        }
-      }
+      "get": { "tags": ["健康"], "summary": "content 服务健康 + 能力清单(8096)", "security": [], "responses": { "200": { "description": "OK · caps/has_openai/has_tikhub" } } }
     },
     "/api/gen/leadgen/health": {
-      "get": {
-        "tags": [
-          "健康"
-        ],
-        "summary": "leadgen 服务健康(8100)",
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "OK · caps=[collect,leads]"
-          }
-        }
-      }
+      "get": { "tags": ["健康"], "summary": "leadgen 服务健康(8100)", "security": [], "responses": { "200": { "description": "OK · caps=[collect,leads]" } } }
     },
     "/api/gen/banana/health": {
-      "get": {
-        "tags": [
-          "健康"
-        ],
-        "summary": "imggen 服务健康(8101)",
-        "security": [],
-        "responses": {
-          "200": {
-            "description": "OK · models/has_key"
-          }
-        }
-      }
+      "get": { "tags": ["健康"], "summary": "imggen 服务健康(8101)", "security": [], "responses": { "200": { "description": "OK · models/has_key" } } }
     }
   }
 }

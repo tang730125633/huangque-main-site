@@ -109,9 +109,16 @@ function testNormalizeRenderAndReadonlyContract() {
   assert.doesNotMatch(html, /<script>|<b>/);
   assert.match(html, /林&lt;script&gt;探长/);
   assert.match(html, /&lt;b&gt;谁在那里？&lt;\/b&gt;/);
-  assert.match(html, /data-action="generate-line"[^>]*disabled/);
+  assert.match(html, /data-action="generate-line"[^>]*>生成配音/);
+  assert.doesNotMatch(html, /data-action="generate-line"[^>]*disabled/);
   assert.match(html, /data-action="save-timeline"[^>]*disabled/);
+  assert.match(html, /data-action="generate-shot"/);
+  assert.match(html, /data-action="generate-all"/);
   assert.doesNotMatch(html, /data-action="(?:lock|confirm|advance)/);
+
+  const readonly = voice.renderWorkspace(snapshot(), { voices, canEdit: false });
+  assert.match(readonly, /data-action="generate-line"[^>]*disabled/);
+  assert.match(readonly, /data-action="generate-shot"[^>]*disabled/);
 }
 
 function testRendererDistinguishesLoadingErrorEmptyPendingAndSilent() {
@@ -324,14 +331,16 @@ async function testHostSelectionAndHandlerRemoval() {
     } },
   });
   await workspace.ready;
-  assert.equal(host.added.length, 1);
+  assert.equal(host.added.length, 3);
   assert.equal(host.dispatchShot('shot-2'), true);
   assert.equal(workspace.getState().selectedShotId, 'shot-2');
   assert.match(host.innerHTML, /当前镜头为静音镜头/);
   workspace.destroy();
-  assert.equal(host.removed.length, 1);
+  assert.equal(host.removed.length, 3);
   assert.equal(host.removed[0].type, 'click');
   assert.equal(host.removed[0].handler, host.added[0].handler);
+  assert.equal(host.removed[1].type, 'change');
+  assert.equal(host.removed[2].type, 'play');
   const htmlAfterDestroy = host.innerHTML;
   assert.equal(host.dispatchShot('shot-1'), false);
   assert.equal(host.innerHTML, htmlAfterDestroy);
@@ -367,7 +376,116 @@ async function testDestroyInvalidatesPendingRequestsWithoutHostOrStateMutation()
   assert.deepEqual(workspace.getState(), destroyedState);
   assert.equal(host.innerHTML, loadingHtml);
   assert.doesNotMatch(host.innerHTML, /late-project|迟到音色/);
-  assert.equal(host.removed.length, 1);
+  assert.equal(host.removed.length, 3);
+}
+
+async function testQuoteConfirmGenerateReloadAndVersionSelection() {
+  const calls = [];
+  let voiceLoads = 0;
+  let submitAttempts = 0;
+  const after = snapshot();
+  after.shots[0].lines[0].job = {
+    job_id: 901, status: 'pending', error: '', refunded: 0,
+  };
+  const client = {
+    json(route, options = {}) {
+      calls.push({ route, options });
+      if (route.startsWith('/api/gen/short-drama/voice?')) {
+        voiceLoads += 1;
+        return Promise.resolve(voiceLoads > 1 ? after : snapshot());
+      }
+      if (route === '/api/gen/audio/voices') return Promise.resolve({ items: voices });
+      if (route === '/api/gen/short-drama/voice-quote') {
+        return Promise.resolve({
+          project_id: 'project-1', revision: 8, total_cost: 10,
+          items: [{ line_id: 'voice-1', quote_token: 'quote-1', cost: 10 }],
+        });
+      }
+      if (route === '/api/gen/short-drama/generate-voice') {
+        submitAttempts += 1;
+        if (submitAttempts === 1) {
+          const timeout = new Error('timeout');
+          timeout.code = 'timeout';
+          return Promise.reject(timeout);
+        }
+        return Promise.resolve({ job_id: 901, cost: 10, points_left: 90 });
+      }
+      if (route === '/api/gen/short-drama/select-voice-version') {
+        return Promise.resolve({ project_id: 'project-1', line_id: 'voice-1',
+          current_version: 1, revision: 9 });
+      }
+      throw new Error(`unexpected route ${route}`);
+    },
+  };
+  const confirmations = [];
+  const workspace = voice.createWorkspace({
+    projectId: 'project-1', client, document: null, pollInterval: 60000,
+    confirm(cost, quote, items) {
+      confirmations.push({ cost, quote, items });
+      return true;
+    },
+  });
+  await workspace.ready;
+  const generated = await workspace.generateLine('voice-1');
+  assert.equal(generated.cancelled, false);
+  assert.equal(confirmations.length, 1);
+  assert.equal(confirmations[0].cost, 10);
+  assert.equal(confirmations[0].quote.kind, 'voice');
+  const quoteCall = calls.find((call) =>
+    call.route === '/api/gen/short-drama/voice-quote');
+  assert.deepEqual(quoteCall.options.body.items, [{
+    line_id: 'voice-1', voice_key: 'longwan', speed: 1.2, pitch: 1, volume: 4,
+  }]);
+  const submit = calls.find((call) =>
+    call.route === '/api/gen/short-drama/generate-voice');
+  assert.match(submit.options.headers['Idempotency-Key'], /^sdv-/);
+  assert.equal(submit.options.body.quote_token, 'quote-1');
+  const submits = calls.filter((call) =>
+    call.route === '/api/gen/short-drama/generate-voice');
+  assert.equal(submits.length, 2);
+  assert.equal(submits[0].options.headers['Idempotency-Key'],
+    submits[1].options.headers['Idempotency-Key'],
+    'an ambiguous timeout retries the exact same paid operation');
+  assert.equal(workspace.getState().shots[0].lines[0].job.status, 'pending');
+
+  after.shots[0].lines[0].versions = [{
+    version: 1, status: 'done', audio_url: '/voice-1.mp3',
+    duration_ms: 1200, cost: 10, voice_key: 'longwan',
+    input_hash: after.shots[0].lines[0].input_hash,
+  }];
+  after.shots[0].lines[0].current_version = 1;
+  after.shots[0].lines[0].job = { job_id: 901, status: 'done', error: '', refunded: 0 };
+  const selected = await workspace.selectVersion('voice-1', 1);
+  assert.equal(selected.revision, 9);
+  assert.ok(calls.some((call) =>
+    call.route === '/api/gen/short-drama/select-voice-version'));
+  workspace.destroy();
+}
+
+async function testPreviewStopsPreviousAudioAndReadonlyRejectsWrites() {
+  const players = [];
+  const workspace = voice.createWorkspace({
+    projectId: 'project-1', canEdit: false, document: null,
+    client: { json(route) {
+      if (route.startsWith('/api/gen/short-drama/voice?')) return Promise.resolve(snapshot());
+      return Promise.resolve({ items: voices });
+    } },
+    audioFactory(url) {
+      const player = { url, pauses: 0, plays: 0,
+        play() { this.plays += 1; return Promise.resolve(); },
+        pause() { this.pauses += 1; } };
+      players.push(player);
+      return player;
+    },
+  });
+  await workspace.ready;
+  assert.equal(workspace.preview('/one.mp3'), true);
+  assert.equal(workspace.preview('/two.mp3'), true);
+  assert.equal(players[0].pauses, 1);
+  assert.equal(players[1].plays, 1);
+  await assert.rejects(workspace.generateLine('voice-1'), /只读权限/);
+  workspace.destroy();
+  assert.equal(players[1].pauses, 1);
 }
 
 async function main() {
@@ -382,6 +500,8 @@ async function main() {
   await testLoadErrorRendersOnlyEscapedErrorState();
   await testHostSelectionAndHandlerRemoval();
   await testDestroyInvalidatesPendingRequestsWithoutHostOrStateMutation();
+  await testQuoteConfirmGenerateReloadAndVersionSelection();
+  await testPreviewStopsPreviousAudioAndReadonlyRejectsWrites();
   const css = fs.readFileSync(path.join(
     __dirname, '../site/workbench/canvas/canvas-short-drama-voice.css'
   ), 'utf8');

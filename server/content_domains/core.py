@@ -926,6 +926,8 @@ def _pending_job_scanner():
             _recover_pending_jobs(_PENDING_RECOVERY_LIMIT)
             _short_drama_domain().short_drama_production.retry_attempt_refunds(
                 jdb, _domains()[1], JOB_QUEUE_MAX)
+            _short_drama_domain().short_drama_voice.retry_voice_attempt_refunds(
+                jdb, _domains()[1], JOB_QUEUE_MAX)
             jobs_store.retry_failed_refunds(jdb, _refund_once, JOB_QUEUE_MAX)
         except Exception:
             pass
@@ -952,6 +954,8 @@ def start_job_workers():
     _recover_pending_jobs(_PENDING_RECOVERY_LIMIT)
     try:
         _short_drama_domain().short_drama_production.retry_attempt_refunds(
+            jdb, _domains()[1], JOB_QUEUE_MAX)
+        _short_drama_domain().short_drama_voice.retry_voice_attempt_refunds(
             jdb, _domains()[1], JOB_QUEUE_MAX)
     except Exception:
         pass
@@ -1219,7 +1223,10 @@ class H(BaseHTTPRequestHandler):
         audio_domain, points_domain, video_domain = _domains()
         if _short_drama_domain().dispatch_http(self, "POST", jdb, verify,
                 getattr(points_domain, "cost_of", None), mutation_lock=_submission_lock,
-                canvas_access_resolver=_short_drama_canvas_access): return
+                canvas_access_resolver=_short_drama_canvas_access,
+                voice_validator=lambda username, voice_key:
+                    audio_domain.resolve_audio_provider_voice(username, voice_key),
+                points_getter=getattr(points_domain, "get_points", None)): return
         if p in {"/api/gen/digital-ip/diagnose", "/api/gen/digital-ip/guide"}:
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
@@ -1234,6 +1241,195 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": str(e)[:220]})
             except Exception:
                 return self._send(502, {"detail": "数字化 IP AI 服务暂时不可用，请稍后重试"})
+        if p == "/api/gen/short-drama/generate-voice":
+            user = verify(self._token())
+            if not user:
+                return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user):
+                return self._send(403, {"detail": "请先修改初始密码"})
+            try:
+                feature_flags.require_enabled("audio")
+                request_body = self._json_body_strict()
+                normalized = _short_drama_domain().short_drama_voice.normalize_generate_request(
+                    request_body
+                )
+                idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
+                if not idem_key:
+                    raise ValueError("配音生成必须提供 Idempotency-Key")
+                miniprogram_security.check_payload(request_body)
+                access = _short_drama_canvas_access(self)
+                owner = _short_drama_domain()._project_username_for_access(
+                    jdb, user["username"], normalized["project_id"], access, write=True
+                )
+                audio_domain.resolve_audio_provider_voice(
+                    user["username"], normalized["voice_key"]
+                )
+            except feature_flags.FeatureDisabled as error:
+                return self._send(503, {"detail": str(error)})
+            except miniprogram_security.ContentRejected as error:
+                return self._send(400, {
+                    "detail": str(error), "code": "content_rejected",
+                    "operation_terminal": True,
+                })
+            except miniprogram_security.SecurityUnavailable as error:
+                return self._send(503, {
+                    "detail": str(error), "code": "content_security_unavailable",
+                    "retry_after_ms": 5000,
+                })
+            except (LookupError, PermissionError, ValueError,
+                    _short_drama_domain().RevisionConflict) as error:
+                _short_drama_domain()._http_error(self, error, operation_terminal=True)
+                return
+            with _submission_lock:
+                known_attempt = (
+                    _short_drama_domain().short_drama_voice.get_voice_attempt(
+                        jdb, user["username"], idem_key
+                    )
+                )
+                if not known_attempt:
+                    active_jobs = _user_active_job_count(user["username"])
+                    if active_jobs >= MAX_USER_ACTIVE_JOBS:
+                        return self._send(429, {
+                            "detail": "您有 %d 个任务正在排队/生成，完成后再提交" %
+                                      active_jobs,
+                            "code": "active_job_cap",
+                            "active_jobs": active_jobs,
+                            "max_active_jobs": MAX_USER_ACTIVE_JOBS,
+                            "retry_after_ms": 4000,
+                        })
+                try:
+                    attempt, replay = (
+                        _short_drama_domain().short_drama_voice.prepare_voice_submission(
+                            jdb, user["username"], owner, request_body, idem_key
+                        )
+                    )
+                except (_short_drama_domain().short_drama_voice.VoiceQuoteConsumed,
+                        _short_drama_domain().short_drama_voice.VoiceChargeInProgress,
+                        LookupError, PermissionError, ValueError,
+                        _short_drama_domain().RevisionConflict) as error:
+                    _short_drama_domain()._http_error(
+                        self, error, operation_terminal=True
+                    )
+                    return
+                if replay and attempt.get("job_id"):
+                    try:
+                        _short_drama_domain().short_drama_voice.get_voice_workspace(
+                            jdb, owner, attempt["project_id"]
+                        )
+                        attempt = (
+                            _short_drama_domain().short_drama_voice.get_voice_attempt(
+                                jdb, user["username"], idem_key
+                            )
+                        )
+                    except Exception:
+                        pass
+                if replay and attempt["state"] in {"linked", "done"}:
+                    return self._send(200, {
+                        "project_id": attempt["project_id"],
+                        "line_id": attempt["voice_line_id"],
+                        "job_id": int(attempt["job_id"]),
+                        "cost": int(attempt["cost"]),
+                        "points_left": attempt["points_left"],
+                        "replayed": True,
+                    })
+                if replay and attempt["state"] in {"refund_pending", "refunded", "failed"}:
+                    terminal = dict(attempt.get("terminal_response") or {
+                        "detail": "本次配音生成未受理，请重新询价",
+                    })
+                    status = 503 if attempt["state"] == "refund_pending" else 409
+                    terminal.setdefault("code", "voice_refund_pending"
+                                        if status == 503 else "voice_operation_terminal")
+                    terminal["operation_terminal"] = True
+                    return self._send(status, terminal)
+                if is_shutting_down():
+                    return self._send(503, {
+                        "detail": "服务正在更新，请稍等几秒后重试（未重复扣点）",
+                        "code": "shutting_down", "retry_after_ms": 5000,
+                    })
+                try:
+                    if attempt["state"] == "accepted":
+                        points_left = points_domain.deduct_points(
+                            user["username"], int(attempt["cost"]),
+                            "short-drama voice",
+                            transaction_key=attempt["charge_key"],
+                        )
+                        attempt = (
+                            _short_drama_domain().short_drama_voice
+                            .mark_voice_attempt_charged(
+                                jdb, user["username"], idem_key, points_left
+                            )
+                        )
+                    else:
+                        points_left = int(attempt["points_left"])
+                    jid = jobs_store.create_job_after_charge(
+                        jdb, "audio", user["username"], int(attempt["cost"]),
+                        attempt["audio_payload"], SERVICE_OWNER,
+                        before_commit=lambda connection, job_id:
+                            _short_drama_domain().short_drama_voice.bind_voice_job(
+                                jdb, user["username"], idem_key, connection, job_id
+                            ),
+                    )
+                    attempt = _short_drama_domain().short_drama_voice.get_voice_attempt(
+                        jdb, user["username"], idem_key
+                    )
+                except points_domain.AuthPointsError as error:
+                    if error.status == 402:
+                        _short_drama_domain().short_drama_voice.mark_voice_attempt_failed(
+                            jdb, user["username"], idem_key,
+                            {"detail": error.detail, "code": "charge_rejected"},
+                        )
+                    return self._send(
+                        402 if error.status == 402 else 502,
+                        {"detail": error.detail, "need": int(attempt["cost"])},
+                    )
+                except Exception:
+                    terminal = {
+                        "detail": "配音任务创建失败，退款正在自动处理",
+                        "code": "voice_job_create_failed",
+                        "operation_terminal": True,
+                    }
+                    attempt = (
+                        _short_drama_domain().short_drama_voice
+                        .mark_voice_attempt_refund_pending(
+                            jdb, user["username"], idem_key, terminal
+                        )
+                    )
+                    try:
+                        points_domain.refund_points(
+                            user["username"], int(attempt["cost"]),
+                            "short-drama voice:create-failed",
+                            transaction_key=attempt["refund_key"],
+                        )
+                        _short_drama_domain().short_drama_voice.mark_voice_attempt_refunded(
+                            jdb, user["username"], idem_key
+                        )
+                        return self._send(500, terminal)
+                    except Exception:
+                        return self._send(503, {
+                            "detail": "配音任务创建失败，退款正在自动重试",
+                            "code": "voice_refund_pending",
+                            "retry_after_ms": 5000,
+                        })
+                if not enqueue_job(jid, "audio"):
+                    _reject_pending_job(
+                        jid, user["username"], int(attempt["cost"]),
+                        "任务队列已满，请稍后再试",
+                    )
+                    return self._send(429, {
+                        "detail": "任务队列已满，请重新询价后重试",
+                        "code": "queue_full", "operation_terminal": True,
+                        "retry_after_ms": 4000,
+                    })
+                return self._send(200, {
+                    "project_id": attempt["project_id"],
+                    "line_id": attempt["voice_line_id"],
+                    "job_id": jid,
+                    "cost": int(attempt["cost"]),
+                    "points_left": points_left,
+                    "replayed": False,
+                })
+        if p == "/api/gen/cinematic/quote" and video_domain.dispatch_cinematic_quote(
+                self, verify, points_domain.cost_of): return
         if p == "/api/gen/inspiration/like": return inspiration_likes.handle_post(self, verify(self._token()), AUDIO_DB)
         if p == "/api/gen/asset/favorite":
             user = verify(self._token())

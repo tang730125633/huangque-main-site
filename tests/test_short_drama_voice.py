@@ -60,9 +60,10 @@ def voice_plan():
 
 
 class GetHandler:
-    def __init__(self, path, token="alice"):
+    def __init__(self, path, token="alice", body=None):
         self.path = path
         self.token = token
+        self.body = body
         self.response = None
 
     def _token(self):
@@ -70,6 +71,9 @@ class GetHandler:
 
     def _send(self, status, payload):
         self.response = (status, payload)
+
+    def _json_body_strict(self):
+        return self.body
 
 
 class ShortDramaVoiceSnapshotTests(unittest.TestCase):
@@ -190,6 +194,269 @@ class ShortDramaVoiceSnapshotTests(unittest.TestCase):
             },
         )
         self.assertEqual(200, viewer.response[0])
+
+    def _voice_quote(self):
+        snapshot = short_drama_voice.get_voice_workspace(
+            self.db, "alice", self.project["id"]
+        )
+        line = snapshot["shots"][0]["lines"][0]
+        quote = short_drama_voice.prepare_voice_quote(
+            self.db, "alice", "alice", {
+                "project_id": self.project["id"],
+                "revision": snapshot["revision"],
+                "items": [{
+                    "line_id": line["id"], "voice_key": "longwan",
+                    "speed": 1.1, "pitch": 2, "volume": 3,
+                }],
+            },
+            lambda kind, _payload: 10 if kind == "audio" else 0,
+            lambda username, voice_key: self.assertEqual(
+                ("alice", "longwan"), (username, voice_key)
+            ),
+        )
+        return snapshot, line, quote
+
+    def test_voice_quote_is_free_and_binds_normalized_input(self):
+        snapshot, line, quote = self._voice_quote()
+        self.assertEqual(10, quote["total_cost"])
+        self.assertEqual(line["id"], quote["items"][0]["line_id"])
+        self.assertEqual(1.1, quote["items"][0]["input"]["speed"])
+        with closing(self.db()) as conn:
+            self.assertEqual(1, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_voice_quotes"
+            ).fetchone()[0])
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_voice_jobs"
+            ).fetchone()[0])
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_voice_charge_attempts"
+            ).fetchone()[0])
+        self.assertEqual(snapshot["revision"], quote["revision"])
+
+    def test_voice_quote_route_allows_editor_and_rejects_viewer(self):
+        snapshot = short_drama_voice.get_voice_workspace(
+            self.db, "alice", self.project["id"]
+        )
+        line = snapshot["shots"][0]["lines"][0]
+        body = {
+            "project_id": self.project["id"], "revision": snapshot["revision"],
+            "items": [{
+                "line_id": line["id"], "voice_key": "longwan",
+                "speed": 1.0, "pitch": 0, "volume": 0,
+            }],
+        }
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_projects SET board_id='board-a' WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+        roles = {"editor": "editor", "viewer": "viewer"}
+
+        def access(handler):
+            return {"board_id": "board-a", "role": roles[handler.token]}
+
+        editor = GetHandler(
+            "/api/gen/short-drama/voice-quote", token="editor", body=body
+        )
+        short_drama.dispatch_http(
+            editor, "POST", self.db,
+            lambda token: {"username": token, "must_change": False},
+            cost_of=lambda _kind, _payload: 10,
+            canvas_access_resolver=access,
+            voice_validator=lambda _username, _voice_key: True,
+        )
+        self.assertEqual(200, editor.response[0])
+        viewer = GetHandler(
+            "/api/gen/short-drama/voice-quote", token="viewer", body=body
+        )
+        short_drama.dispatch_http(
+            viewer, "POST", self.db,
+            lambda token: {"username": token, "must_change": False},
+            cost_of=lambda _kind, _payload: 10,
+            canvas_access_resolver=access,
+        )
+        self.assertEqual(403, viewer.response[0])
+
+    def test_submission_is_idempotent_and_rejects_request_rebinding(self):
+        snapshot, line, quote = self._voice_quote()
+        request = {
+            "project_id": self.project["id"],
+            "revision": snapshot["revision"],
+            "line_id": line["id"], "voice_key": "longwan",
+            "speed": 1.1, "pitch": 2, "volume": 3,
+            "quote_token": quote["items"][0]["quote_token"],
+        }
+        first, replay = short_drama_voice.prepare_voice_submission(
+            self.db, "alice", "alice", request, "voice-submit-001"
+        )
+        self.assertFalse(replay)
+        self.assertEqual("accepted", first["state"])
+        second, replay = short_drama_voice.prepare_voice_submission(
+            self.db, "alice", "alice", request, "voice-submit-001"
+        )
+        self.assertTrue(replay)
+        self.assertEqual(first["charge_key"], second["charge_key"])
+        changed = dict(request, volume=4)
+        with self.assertRaises(short_drama_voice.VoiceQuoteConsumed):
+            short_drama_voice.prepare_voice_submission(
+                self.db, "alice", "alice", changed, "voice-submit-001"
+            )
+
+    def test_expired_quote_is_rejected_before_charge_attempt(self):
+        snapshot, line, quote = self._voice_quote()
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_voice_quotes SET expires_at=0 WHERE token=?",
+                (quote["items"][0]["quote_token"],),
+            )
+            conn.commit()
+        with self.assertRaisesRegex(ValueError, "已过期"):
+            short_drama_voice.prepare_voice_submission(
+                self.db, "alice", "alice", {
+                    "project_id": self.project["id"],
+                    "revision": snapshot["revision"],
+                    "line_id": line["id"], "voice_key": "longwan",
+                    "speed": 1.1, "pitch": 2, "volume": 3,
+                    "quote_token": quote["items"][0]["quote_token"],
+                }, "voice-expired-001",
+            )
+        with closing(self.db()) as conn:
+            self.assertEqual(0, conn.execute(
+                "SELECT COUNT(*) FROM short_drama_voice_charge_attempts"
+            ).fetchone()[0])
+
+    def test_direct_refund_pending_is_recovered_once(self):
+        snapshot, line, quote = self._voice_quote()
+        request = {
+            "project_id": self.project["id"],
+            "revision": snapshot["revision"],
+            "line_id": line["id"], "voice_key": "longwan",
+            "speed": 1.1, "pitch": 2, "volume": 3,
+            "quote_token": quote["items"][0]["quote_token"],
+        }
+        short_drama_voice.prepare_voice_submission(
+            self.db, "alice", "alice", request, "voice-refund-001"
+        )
+        short_drama_voice.mark_voice_attempt_charged(
+            self.db, "alice", "voice-refund-001", 90
+        )
+        short_drama_voice.mark_voice_attempt_refund_pending(
+            self.db, "alice", "voice-refund-001", {"detail": "insert failed"}
+        )
+        calls = []
+
+        class Points:
+            @staticmethod
+            def refund_points(username, cost, reason, transaction_key=""):
+                calls.append((username, cost, reason, transaction_key))
+
+        self.assertEqual(1, short_drama_voice.retry_voice_attempt_refunds(
+            self.db, Points, 10
+        ))
+        self.assertEqual(0, short_drama_voice.retry_voice_attempt_refunds(
+            self.db, Points, 10
+        ))
+        self.assertEqual(1, len(calls))
+        self.assertEqual("refunded", short_drama_voice.get_voice_attempt(
+            self.db, "alice", "voice-refund-001"
+        )["state"])
+
+    def test_done_job_creates_version_and_select_is_free_revisioned_write(self):
+        snapshot, line, quote = self._voice_quote()
+        request = {
+            "project_id": self.project["id"],
+            "revision": snapshot["revision"],
+            "line_id": line["id"], "voice_key": "longwan",
+            "speed": 1.1, "pitch": 2, "volume": 3,
+            "quote_token": quote["items"][0]["quote_token"],
+        }
+        short_drama_voice.prepare_voice_submission(
+            self.db, "alice", "alice", request, "voice-submit-002"
+        )
+        short_drama_voice.mark_voice_attempt_charged(
+            self.db, "alice", "voice-submit-002", 90
+        )
+        with closing(self.db()) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute(
+                "CREATE TABLE jobs(id INTEGER PRIMARY KEY,kind TEXT,username TEXT,"
+                "cost INTEGER,status TEXT,payload TEXT,result TEXT,error TEXT,"
+                "refunded INTEGER DEFAULT 0)"
+            )
+            conn.execute(
+                "INSERT INTO jobs VALUES "
+                "(101,'audio','alice',10,'done','{}',?,'',0)",
+                (json.dumps({
+                    "file": "audio/one.mp3", "url": "/api/gen/file/audio/one.mp3",
+                    "duration_ms": 1234,
+                }),),
+            )
+            short_drama_voice.bind_voice_job(
+                self.db, "alice", "voice-submit-002", conn, 101
+            )
+            conn.commit()
+            short_drama_voice.reconcile_voice_jobs(conn, self.project["id"])
+            conn.commit()
+        current = short_drama_voice.get_voice_workspace(
+            self.db, "alice", self.project["id"]
+        )
+        completed = current["shots"][0]["lines"][0]
+        self.assertEqual(1, completed["current_version"])
+        self.assertEqual("done", completed["versions"][0]["status"])
+        self.assertEqual(1234, completed["versions"][0]["duration_ms"])
+        selected = short_drama_voice.select_voice_version(
+            self.db, "alice", {
+                "project_id": self.project["id"],
+                "revision": current["revision"],
+                "line_id": line["id"], "version": 1,
+            },
+        )
+        self.assertEqual(current["revision"] + 1, selected["revision"])
+
+    def test_failed_job_keeps_failed_version_and_refund_state(self):
+        snapshot, line, quote = self._voice_quote()
+        request = {
+            "project_id": self.project["id"],
+            "revision": snapshot["revision"],
+            "line_id": line["id"], "voice_key": "longwan",
+            "speed": 1.1, "pitch": 2, "volume": 3,
+            "quote_token": quote["items"][0]["quote_token"],
+        }
+        short_drama_voice.prepare_voice_submission(
+            self.db, "alice", "alice", request, "voice-submit-003"
+        )
+        short_drama_voice.mark_voice_attempt_charged(
+            self.db, "alice", "voice-submit-003", 90
+        )
+        with closing(self.db()) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute(
+                "CREATE TABLE jobs(id INTEGER PRIMARY KEY,kind TEXT,username TEXT,"
+                "cost INTEGER,status TEXT,payload TEXT,result TEXT,error TEXT,"
+                "refunded INTEGER DEFAULT 0)"
+            )
+            conn.execute(
+                "INSERT INTO jobs VALUES "
+                "(102,'audio','alice',10,'error','{}','{}','provider failed',1)"
+            )
+            short_drama_voice.bind_voice_job(
+                self.db, "alice", "voice-submit-003", conn, 102
+            )
+            conn.commit()
+            short_drama_voice.reconcile_voice_jobs(conn, self.project["id"])
+            conn.commit()
+        failed = short_drama_voice.get_voice_workspace(
+            self.db, "alice", self.project["id"]
+        )["shots"][0]["lines"][0]
+        self.assertIsNone(failed["current_version"])
+        self.assertEqual("failed", failed["job"]["status"])
+        self.assertEqual(1, failed["job"]["refunded"])
+        self.assertEqual("failed", failed["versions"][0]["status"])
+        self.assertEqual("provider failed", failed["versions"][0]["error"])
+        self.assertEqual("refunded", short_drama_voice.get_voice_attempt(
+            self.db, "alice", "voice-submit-003"
+        )["state"])
 
 
 class ShortDramaVoiceSchemaTests(unittest.TestCase):
