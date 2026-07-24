@@ -9,6 +9,9 @@
   var QUOTE_PATH='/api/gen/short-drama/voice-quote';
   var GENERATE_PATH='/api/gen/short-drama/generate-voice';
   var SELECT_VERSION_PATH='/api/gen/short-drama/select-voice-version';
+  var SAVE_TIMELINE_PATH='/api/gen/short-drama/save-voice-timeline';
+  var SET_LOCK_PATH='/api/gen/short-drama/set-voice-shot-lock';
+  var CONFIRM_PATH='/api/gen/short-drama/confirm';
   var POLL_INTERVAL=1800;
 
   function text(value){ return String(value==null?'':value); }
@@ -71,6 +74,8 @@
       voice_name:voiceMap[voiceKey]?voiceMap[voiceKey].display_name:(voiceKey||'未选择音色'),
       speed:number(line.speed,1),pitch:number(line.pitch,0),volume:number(line.volume,0),
       current_version:line.current_version,start_ms:line.start_ms,end_ms:line.end_ms,
+      suggested_start_ms:line.suggested_start_ms,
+      suggested_end_ms:line.suggested_end_ms,
       input_hash:text(line.input_hash),versions:versions,job:job
     };
   }
@@ -85,6 +90,9 @@
         id:shot.id,shot_key:text(shot.shot_key||('镜头 '+(index+1))),
         sort_order:number(shot.sort_order,index),duration:number(shot.duration,0),
         locked:!!shot.locked,status:text(shot.status||'pending'),
+        timeline_revision:number(shot.timeline_revision,1),
+        lockable:shot.lockable===true,
+        lock_blockers:(Array.isArray(shot.lock_blockers)?shot.lock_blockers:[]).map(clone),
         lines:(Array.isArray(shot.lines)?shot.lines:[]).map(function(line,lineIndex){
           return normalizeLine(line,lineIndex,voiceMap);
         })
@@ -100,7 +108,18 @@
       selectedShotId:selected,busy:!!options.busy,error:text(options.error),
       destroyed:!!options.destroyed,canEdit:options.canEdit!==false,
       operationBusy:!!options.operationBusy,
-      operationError:text(options.operationError)
+      operationError:text(options.operationError),
+      timelineDirty:!!options.timelineDirty,
+      timelinePlaying:!!options.timelinePlaying,
+      timelineCursorMs:number(options.timelineCursorMs,0),
+      playingLineId:text(options.playingLineId),
+      conflictFrozen:!!options.conflictFrozen,
+      unlocked_shot_count:number(input.unlocked_shot_count,shots.filter(function(shot){
+        return !shot.locked;
+      }).length),
+      handoff_blocked:input.handoff_blocked!==false,
+      handoff_blockers:(Array.isArray(input.handoff_blockers)?
+        input.handoff_blockers:[]).map(clone)
     };
   }
   function selectedShot(state){
@@ -147,21 +166,44 @@
     if(version.audio_url) return version.audio_url;
     return version.audio_file?'/api/gen/file/'+version.audio_file.replace(/^\/+/,''):'';
   }
+  function formatMs(value){
+    return value==null?'--':(number(value,0)/1000).toFixed(2)+'s';
+  }
+  function blockerText(items){
+    var seen=Object.create(null);
+    return (items||[]).map(function(item){
+      return text(item.message||item.code);
+    }).filter(function(message){
+      if(!message||seen[message]) return false;
+      seen[message]=true;
+      return true;
+    }).join('；');
+  }
   function renderWorkspace(input,options){
     options=options||{};
     var state=normalizeState(input,options.voices,options);
     var shot=selectedShot(state);
+    var timelineWritable=!!(shot&&state.canEdit&&state.stage==='voice_review'&&
+      !shot.locked&&!state.operationBusy&&!state.conflictFrozen);
+    var blockedLines=Object.create(null);
+    (shot&&shot.lock_blockers||[]).forEach(function(item){
+      if(item.line_id) blockedLines[item.line_id]=true;
+    });
     var rail=state.shots.map(function(item){
       return '<button type="button" class="nc-sdv-shot'+
         (item.id===state.selectedShotId?' is-selected':'')+
+        (item.locked?' is-locked':'')+
         '" data-shot-id="'+escapeHtml(item.id)+'"><strong>'+escapeHtml(item.shot_key)+
         '</strong><small>'+item.duration+' 秒 · '+item.lines.length+' 句 · '+
-        shotStatusLabel(item.status)+'</small></button>';
+        shotStatusLabel(item.status)+(item.locked?' · 已锁定':'')+'</small></button>';
     }).join('');
     var lines=shot?shot.lines.map(function(line){
       var active=currentVersion(line),busy=line.job&&
         ['pending','running','metadata_pending'].indexOf(line.job.status)>=0;
-      var disabled=state.canEdit&&!state.operationBusy?'':' disabled';
+      var voiceWritable=state.canEdit&&state.stage==='voice_review'&&!shot.locked&&
+        !state.operationBusy&&!state.conflictFrozen;
+      var disabled=voiceWritable?'':' disabled';
+      var timelineDisabled=timelineWritable?'':' disabled';
       var history=line.versions.map(function(version){
         var url=audioUrl(version);
         return '<li><span>V'+version.version+' · '+escapeHtml(version.status)+
@@ -172,16 +214,29 @@
           (version.status==='done'&&version.input_hash===line.input_hash?
             '<button type="button" data-action="select-version" data-line-id="'+
             escapeHtml(line.id)+'" data-version="'+version.version+'"'+
-            (state.canEdit?'':' disabled')+'>设为当前</button>':'')+
+            (voiceWritable?'':' disabled')+'>设为当前</button>':'')+
           '</li>';
       }).join('');
-      return '<article class="nc-sdv-line"><header><strong>'+
+      return '<article class="nc-sdv-line'+
+        (blockedLines[line.id]?' has-conflict':'')+
+        (state.playingLineId===line.id?' is-playing':'')+
+        '"><header><strong>'+
         escapeHtml(line.character_name)+'</strong>'+
         (line.line_type==='narration'?'<span class="nc-sdv-line-type">旁白/叙述</span>':'')+
         '<span class="nc-sdv-status">'+escapeHtml(lineStatus(line))+
         '</span></header><label>发音文本<textarea disabled>'+
-        escapeHtml(line.speech_text)+'</textarea></label><label>字幕文本<textarea disabled>'+
-        escapeHtml(line.subtitle_text)+'</textarea></label>'+
+        escapeHtml(line.speech_text)+'</textarea></label><label>字幕文本<textarea '+
+        'data-field="subtitle_text" data-line-id="'+escapeHtml(line.id)+'"'+
+        timelineDisabled+'>'+escapeHtml(line.subtitle_text)+'</textarea></label>'+
+        '<div class="nc-sdv-subtitle-controls"><label><input type="checkbox" '+
+        'data-field="subtitle_visible" data-line-id="'+escapeHtml(line.id)+'"'+
+        (line.subtitle_visible?' checked':'')+timelineDisabled+'> 显示字幕</label>'+
+        '<label>开始(ms)<input type="number" min="0" step="50" '+
+        'data-field="start_ms" data-line-id="'+escapeHtml(line.id)+'" value="'+
+        (line.start_ms==null?'':line.start_ms)+'"'+timelineDisabled+'></label>'+
+        '<label>结束(ms)<input type="number" min="1" step="50" '+
+        'data-field="end_ms" data-line-id="'+escapeHtml(line.id)+'" value="'+
+        (line.end_ms==null?'':line.end_ms)+'"'+timelineDisabled+'></label></div>'+
         '<div class="nc-sdv-params"><label>音色<select data-field="voice_key" data-line-id="'+
         escapeHtml(line.id)+'"'+disabled+'>'+optionHtml(state.voices,line.voice_key)+'</select></label>'+
         '<label>语速<input data-field="speed" data-line-id="'+escapeHtml(line.id)+
@@ -192,10 +247,13 @@
         '" type="number" min="-50" max="100" step="1" value="'+line.volume+'"'+disabled+'></label></div>'+
         '<div class="nc-sdv-actions"><button type="button" data-action="preview-voice" data-line-id="'+
         escapeHtml(line.id)+'">试听音色</button><button type="button" data-action="generate-line" data-line-id="'+
-        escapeHtml(line.id)+'"'+(busy||!state.canEdit||state.operationBusy?' disabled':'')+'>'+
+        escapeHtml(line.id)+'"'+(busy||!voiceWritable?' disabled':'')+'>'+
         (line.job&&line.job.status==='failed'?'重新生成':'生成配音')+'</button></div>'+
         (active&&audioUrl(active)?'<audio controls preload="none" src="'+escapeHtml(audioUrl(active))+
           '" data-current-audio="'+escapeHtml(line.id)+'"></audio>':'')+
+        '<p class="nc-sdv-time-note">字幕 '+formatMs(line.start_ms)+' - '+
+        formatMs(line.end_ms)+(active&&active.duration_ms?
+          ' · 音频 '+formatMs(active.duration_ms):'')+'</p>'+
         (line.job&&line.job.status==='failed'?'<p class="nc-sdv-error">'+
           escapeHtml(line.job.error||'配音生成失败')+'</p>':'')+
         (history?'<details class="nc-sdv-history"><summary>历史版本（'+line.versions.length+
@@ -210,7 +268,30 @@
     }else if(!shot){
       editorBody='<section class="nc-sdv-empty" data-state="empty">暂无镜头，请先完成分镜。</section>';
     }else if(shot.lines.length){
-      editorBody=lines+'<section class="nc-sdv-timeline">字幕时间轴将在配音生成后显示。</section>';
+      var durationMs=shot.duration*1000;
+      var blocks=shot.lines.map(function(line){
+        if(line.start_ms==null||line.end_ms==null) return '';
+        var left=Math.max(0,Math.min(100,line.start_ms/durationMs*100));
+        var width=Math.max(1,Math.min(100-left,(line.end_ms-line.start_ms)/durationMs*100));
+        return '<button type="button" class="nc-sdv-timeline-block'+
+          (blockedLines[line.id]?' has-conflict':'')+
+          (state.playingLineId===line.id?' is-playing':'')+
+          '" style="left:'+left+'%;width:'+width+'%" data-line-id="'+
+          escapeHtml(line.id)+'" title="'+escapeHtml(line.subtitle_text)+'">'+
+          '<i data-resize-edge="start" aria-hidden="true"></i>'+
+          escapeHtml(line.character_name)+
+          '<i data-resize-edge="end" aria-hidden="true"></i></button>';
+      }).join('');
+      var cursor=Math.max(0,Math.min(100,state.timelineCursorMs/durationMs*100));
+      editorBody=lines+'<section class="nc-sdv-timeline"><header><strong>镜头时间轴</strong>'+
+        '<span>'+formatMs(state.timelineCursorMs)+' / '+formatMs(durationMs)+'</span></header>'+
+        '<div class="nc-sdv-timeline-track">'+blocks+
+        '<i class="nc-sdv-playhead" style="left:'+cursor+'%"></i></div>'+
+        '<div class="nc-sdv-timeline-actions"><button type="button" data-action="play-shot">'+
+        (state.timelinePlaying?'暂停':'连续试听')+'</button>'+
+        '<button type="button" data-action="replay-shot">重播</button>'+
+        '<button type="button" data-action="restore-auto-timeline"'+
+        (timelineWritable?'':' disabled')+'>恢复自动排布</button></div></section>';
     }else if(shot.status==='silent'){
       editorBody='<section class="nc-sdv-empty" data-state="silent">当前镜头为静音镜头，没有台词。</section>'+
         '<section class="nc-sdv-timeline">静音镜头无需生成配音。</section>';
@@ -221,16 +302,36 @@
       '<aside class="nc-sdv-rail"><header><span>配音字幕</span><h2>镜头列表</h2></header>'+
       rail+'</aside><main class="nc-sdv-editor"><header><span>逐句资产</span>'+
       '<h2>台词与字幕</h2></header>'+editorBody+'</main>'+
-      '<aside class="nc-sdv-inspector"><header><span>C-1 配音生成</span>'+
-      '<h2>配音控制台</h2></header><dl><div><dt>项目预算</dt><dd>'+
+      '<aside class="nc-sdv-inspector"><header><span>C-2 字幕验收</span>'+
+      '<h2>验收控制台</h2></header><dl><div><dt>项目预算</dt><dd>'+
       state.point_budget+' 点</dd></div><div><dt>累计已用</dt><dd>'+
       state.spent_points+' 点</dd></div><div><dt>处理中</dt><dd>'+
-      state.reserved_points+' 点</dd></div></dl>'+
-      '<button type="button" data-action="generate-shot"'+(state.canEdit&&!state.operationBusy?'':' disabled')+'>生成当前镜头未完成台词</button>'+
-      '<button type="button" data-action="generate-all"'+(state.canEdit&&!state.operationBusy?'':' disabled')+'>生成全剧未完成台词</button>'+
-      '<button type="button" data-action="save-timeline" disabled>保存字幕时间轴</button>'+
+      state.reserved_points+' 点</dd></div>'+
+      '<div><dt>未锁定镜头</dt><dd>'+state.unlocked_shot_count+'</dd></div></dl>'+
+      '<button type="button" data-action="generate-shot"'+
+      (shot&&state.canEdit&&state.stage==='voice_review'&&!shot.locked&&!state.operationBusy?'':' disabled')+
+      '>生成当前镜头未完成台词</button>'+
+      '<button type="button" data-action="generate-all"'+
+      (state.canEdit&&state.stage==='voice_review'&&!state.operationBusy?'':' disabled')+
+      '>生成全剧未完成台词</button>'+
+      '<button type="button" data-action="save-timeline"'+
+      (timelineWritable&&state.timelineDirty?'':' disabled')+'>保存字幕时间轴</button>'+
+      '<button type="button" data-action="set-shot-lock" data-lock="'+
+      (shot&&shot.locked?'false':'true')+'"'+
+      (shot&&state.canEdit&&state.stage==='voice_review'&&!state.operationBusy&&
+        (shot.locked||shot.lockable)&&!state.timelineDirty&&!state.conflictFrozen?'':' disabled')+
+      '>'+(shot&&shot.locked?'解锁当前镜头':'锁定当前镜头')+'</button>'+
+      '<button type="button" data-action="confirm-voice-stage"'+
+      (state.canEdit&&state.stage==='voice_review'&&!state.handoff_blocked&&
+        !state.operationBusy&&!state.timelineDirty&&!state.conflictFrozen?'':' disabled')+
+      '>进入视频生成阶段</button>'+
+      (shot&&shot.lock_blockers.length?'<div class="nc-sdv-blockers"><strong>当前镜头阻塞</strong><p>'+
+        escapeHtml(blockerText(shot.lock_blockers))+'</p></div>':'')+
+      (state.handoff_blockers.length?'<div class="nc-sdv-blockers"><strong>阶段推进阻塞</strong><p>'+
+        escapeHtml(blockerText(state.handoff_blockers))+'</p></div>':'')+
+      (state.conflictFrozen?'<p class="nc-sdv-error">检测到版本冲突，请刷新工作区后继续。</p>':'')+
       (state.operationError?'<p class="nc-sdv-error" role="alert">'+escapeHtml(state.operationError)+'</p>':'')+
-      '<p>询价免费；确认后逐句扣点。失败任务会自动退款，重试需要重新询价。</p>'+
+      '<p>时间轴保存、锁定和阶段推进均不扣点；服务端校验结果为准。</p>'+
       '</aside></div>';
   }
   function createWorkspace(options){
@@ -241,6 +342,10 @@
     var destroyed=false,snapshot=null,voices=[],host=options.host||null,requestGeneration=0;
     var pollTimer=null,activeAudio=null,generationBusy=false;
     var ui={busy:true,error:'',operationError:'',selectedShotId:options.selectedShotId};
+    var timelineDrafts=Object.create(null),conflictFrozen=false;
+    var timelinePlaying=false,timelineCursorMs=0,playingLineId='';
+    var timelinePlayers=[],timelineTimers=[],timelineClockTimer=null;
+    var timelineDrag=null;
     var storage=options.storage;
     if(!storage&&typeof globalThis!=='undefined'){
       try{ storage=globalThis.localStorage; }catch(_storageError){ storage=null; }
@@ -292,18 +397,44 @@
       });
     }
     function render(){
-      var html=renderWorkspace(snapshot||{}, {
+      var html=renderWorkspace(viewSnapshot(), {
         voices:voices,busy:destroyed?false:ui.busy,error:ui.error,
         selectedShotId:ui.selectedShotId,destroyed:destroyed,canEdit:options.canEdit,
-        operationBusy:generationBusy,operationError:ui.operationError
+        operationBusy:generationBusy,operationError:ui.operationError,
+        timelineDirty:!!timelineDrafts[ui.selectedShotId],
+        timelinePlaying:timelinePlaying,timelineCursorMs:timelineCursorMs,
+        playingLineId:playingLineId,conflictFrozen:conflictFrozen
       });
       if(host&&!destroyed) host.innerHTML=html;
       return html;
+    }
+    function viewSnapshot(){
+      var current=clone(snapshot||{});
+      (current.shots||[]).forEach(function(shot){
+        var draft=timelineDrafts[shot.id];
+        if(!draft) return;
+        (shot.lines||[]).forEach(function(line){
+          if(draft[line.id]) Object.assign(line,clone(draft[line.id]));
+        });
+      });
+      return current;
+    }
+    function confirmDiscard(){
+      if(typeof options.confirmDiscard==='function'){
+        return options.confirmDiscard(ui.selectedShotId);
+      }
+      var ask=typeof globalThis!=='undefined'&&globalThis.confirm;
+      return typeof ask==='function'?ask('当前镜头有未保存的字幕时间轴，放弃修改吗？'):true;
     }
     function selectShot(shotId){
       if(destroyed||!snapshot||!Array.isArray(snapshot.shots)) return false;
       var exists=snapshot.shots.some(function(shot){ return shot.id===shotId; });
       if(!exists) return false;
+      if(shotId!==ui.selectedShotId&&timelineDrafts[ui.selectedShotId]){
+        if(!confirmDiscard()) return false;
+        delete timelineDrafts[ui.selectedShotId];
+      }
+      stopShotPlayback();
       ui.selectedShotId=shotId;render();return true;
     }
     function allLines(){
@@ -315,6 +446,70 @@
     }
     function findLine(lineId){
       return allLines().find(function(line){ return line.id===lineId; })||null;
+    }
+    function currentShotRaw(){
+      return (snapshot&&snapshot.shots||[]).find(function(shot){
+        return shot.id===ui.selectedShotId;
+      })||null;
+    }
+    function draftForShot(shot){
+      if(!shot) return null;
+      if(!timelineDrafts[shot.id]){
+        var draft=Object.create(null);
+        (shot.lines||[]).forEach(function(line){
+          draft[line.id]={
+            subtitle_text:text(line.subtitle_text),
+            subtitle_visible:line.subtitle_visible!==false,
+            start_ms:line.start_ms,
+            end_ms:line.end_ms
+          };
+        });
+        timelineDrafts[shot.id]=draft;
+      }
+      return timelineDrafts[shot.id];
+    }
+    function updateTimelineLine(lineId,patch){
+      requireWritable();
+      var shot=currentShotRaw(),line=shot&&(shot.lines||[]).find(function(item){
+        return item.id===lineId;
+      });
+      if(!line||shot.locked||snapshot.stage!=='voice_review'||conflictFrozen){
+        throw new Error('当前镜头不能修改字幕时间轴');
+      }
+      patch=patch||{};
+      var allowed=['subtitle_text','subtitle_visible','start_ms','end_ms'];
+      if(Object.keys(patch).some(function(key){ return allowed.indexOf(key)<0; })){
+        throw new Error('字幕时间轴字段无效');
+      }
+      var draft=draftForShot(shot)[lineId];
+      if(Object.prototype.hasOwnProperty.call(patch,'subtitle_text')){
+        draft.subtitle_text=text(patch.subtitle_text);
+      }
+      if(Object.prototype.hasOwnProperty.call(patch,'subtitle_visible')){
+        draft.subtitle_visible=!!patch.subtitle_visible;
+      }
+      ['start_ms','end_ms'].forEach(function(key){
+        if(Object.prototype.hasOwnProperty.call(patch,key)){
+          draft[key]=patch[key]==null?null:Math.round(number(patch[key],0)/50)*50;
+        }
+      });
+      render();
+      return clone(draft);
+    }
+    function restoreAutoTimeline(){
+      requireWritable();
+      var shot=currentShotRaw();
+      if(!shot||shot.locked||snapshot.stage!=='voice_review'||conflictFrozen){
+        throw new Error('当前镜头不能恢复自动时间轴');
+      }
+      var draft=draftForShot(shot);
+      (shot.lines||[]).forEach(function(line){
+        if(line.suggested_start_ms==null||line.suggested_end_ms==null) return;
+        draft[line.id].start_ms=line.suggested_start_ms;
+        draft[line.id].end_ms=line.suggested_end_ms;
+      });
+      render();
+      return clone(draft);
     }
     function editableItem(line){
       return {
@@ -339,6 +534,22 @@
     }
     function requireWritable(){
       if(options.canEdit===false) throw new Error('当前为只读权限，不能生成或切换配音');
+    }
+    function shotForLine(lineId){
+      return (snapshot&&snapshot.shots||[]).find(function(shot){
+        return (shot.lines||[]).some(function(line){ return line.id===lineId; });
+      })||null;
+    }
+    function requireVoiceWritable(lines){
+      requireWritable();
+      if(!snapshot||snapshot.stage!=='voice_review'){
+        throw new Error('当前短剧阶段不能生成或切换配音');
+      }
+      if(ui.conflictFrozen) throw new Error('数据版本已冲突，请刷新后重试');
+      (lines||[]).forEach(function(line){
+        var shot=line&&shotForLine(line.id);
+        if(shot&&shot.locked) throw new Error('已锁定镜头不能修改配音');
+      });
     }
     function confirmQuote(quote,items){
       if(!quote||!Array.isArray(quote.items)||number(quote.total_cost,-1)<0){
@@ -422,9 +633,9 @@
       return Promise.all(workers).then(function(){ return results; });
     }
     function generateLines(lines){
-      try{ requireWritable(); }catch(error){ return Promise.reject(error); }
-      if(generationBusy) return Promise.reject(new Error('配音请求正在处理中，请勿重复提交'));
       lines=(lines||[]).filter(Boolean);
+      try{ requireVoiceWritable(lines); }catch(error){ return Promise.reject(error); }
+      if(generationBusy) return Promise.reject(new Error('配音请求正在处理中，请勿重复提交'));
       if(!lines.length) return Promise.reject(new Error('没有需要生成的台词'));
       var items=lines.map(editableItem);
       generationBusy=true;ui.operationError='';render();
@@ -472,8 +683,147 @@
       return generateLines(shot?(snapshot.shots.find(function(item){ return item.id===shot.id; }).lines||[]).filter(unfinished):[]);
     }
     function generateAll(){ return generateLines(allLines().filter(unfinished)); }
-    function selectVersion(lineId,version){
+    function timelineBody(shot){
+      var draft=timelineDrafts[shot.id]||draftForShot(shot);
+      return {
+        project_id:snapshot.project_id,revision:number(snapshot.revision,0),
+        shot_id:shot.id,timeline_revision:number(shot.timeline_revision,1),
+        items:(shot.lines||[]).map(function(line){
+          var item=draft[line.id];
+          return {
+            line_id:line.id,subtitle_text:text(item.subtitle_text),
+            subtitle_visible:item.subtitle_visible!==false,
+            start_ms:number(item.start_ms,0),end_ms:number(item.end_ms,0)
+          };
+        })
+      };
+    }
+    function timelineMatches(body){
+      var shot=(snapshot&&snapshot.shots||[]).find(function(item){
+        return item.id===body.shot_id;
+      });
+      if(!shot) return false;
+      return body.items.every(function(expected){
+        var line=(shot.lines||[]).find(function(item){
+          return item.id===expected.line_id;
+        });
+        return !!line&&text(line.subtitle_text)===text(expected.subtitle_text)&&
+          (line.subtitle_visible!==false)===(expected.subtitle_visible!==false)&&
+          number(line.start_ms,-1)===expected.start_ms&&
+          number(line.end_ms,-1)===expected.end_ms;
+      });
+    }
+    function revisionConflict(error){
+      return !!(error&&(error.code==='revision_conflict'||
+        error.data&&error.data.code==='revision_conflict'));
+    }
+    function ambiguousFreeWrite(error){
+      var status=number(error&&error.status,0);
+      return !!(error&&(error.code==='timeout'||error.code==='network_error'||
+        status===0||status===408||status>=500));
+    }
+    function acceptSnapshot(result,shotId,notify){
+      if(result&&Array.isArray(result.shots)) snapshot=result;
+      if(shotId) delete timelineDrafts[shotId];
+      conflictFrozen=false;ui.operationError='';render();schedulePoll();
+      if(notify&&typeof options.onChange==='function'){
+        return Promise.resolve(options.onChange({
+          project_id:snapshot.project_id,
+          revision:number(snapshot.revision,0),
+          stage:snapshot.stage,
+          spent_points:number(snapshot.spent_points,0),
+          point_budget:number(snapshot.point_budget,0),
+          reserved_points:number(snapshot.reserved_points,0)
+        })).then(function(){ return snapshot; });
+      }
+      return snapshot;
+    }
+    function mutationFailure(error){
+      if(revisionConflict(error)) conflictFrozen=true;
+      ui.operationError=text(error&&error.message||error);
+      render();
+      throw error;
+    }
+    function saveTimeline(){
       try{ requireWritable(); }catch(error){ return Promise.reject(error); }
+      var shot=currentShotRaw();
+      if(!shot||!timelineDrafts[shot.id]) {
+        return Promise.reject(new Error('当前镜头没有待保存的字幕时间轴'));
+      }
+      if(generationBusy) return Promise.reject(new Error('操作正在处理中'));
+      var body=timelineBody(shot);
+      generationBusy=true;ui.operationError='';render();
+      return callJson(SAVE_TIMELINE_PATH,{method:'POST',body:body}).then(function(result){
+        return acceptSnapshot(result,shot.id,true);
+      }).catch(function(error){
+        if(!ambiguousFreeWrite(error)) return mutationFailure(error);
+        return reload(true).then(function(){
+          if(timelineMatches(body)) return acceptSnapshot(snapshot,shot.id,true);
+          var latest=currentShotRaw();
+          if(!latest) throw error;
+          body.revision=number(snapshot.revision,0);
+          body.timeline_revision=number(latest.timeline_revision,1);
+          return callJson(SAVE_TIMELINE_PATH,{method:'POST',body:body}).then(function(result){
+            return acceptSnapshot(result,shot.id,true);
+          });
+        }).catch(mutationFailure);
+      }).finally(function(){ generationBusy=false;render(); });
+    }
+    function setShotLock(lock){
+      try{ requireWritable(); }catch(error){ return Promise.reject(error); }
+      var shot=currentShotRaw();
+      if(!shot) return Promise.reject(new Error('当前镜头不存在'));
+      if(timelineDrafts[shot.id]) {
+        return Promise.reject(new Error('请先保存或放弃字幕时间轴修改'));
+      }
+      var body={
+        project_id:snapshot.project_id,revision:number(snapshot.revision,0),
+        shot_id:shot.id,timeline_revision:number(shot.timeline_revision,1),
+        lock:!!lock
+      };
+      generationBusy=true;ui.operationError='';render();
+      return callJson(SET_LOCK_PATH,{method:'POST',body:body}).then(function(result){
+        return acceptSnapshot(result,null,true);
+      }).catch(function(error){
+        if(!ambiguousFreeWrite(error)) return mutationFailure(error);
+        return reload(true).then(function(){
+          var latest=currentShotRaw();
+          if(latest&&latest.locked===body.lock) return acceptSnapshot(snapshot,null,true);
+          if(!latest) throw error;
+          body.revision=number(snapshot.revision,0);
+          body.timeline_revision=number(latest.timeline_revision,1);
+          return callJson(SET_LOCK_PATH,{method:'POST',body:body}).then(function(result){
+            return acceptSnapshot(result,null,true);
+          });
+        }).catch(mutationFailure);
+      }).finally(function(){ generationBusy=false;render(); });
+    }
+    function confirmVoiceStage(){
+      try{ requireWritable(); }catch(error){ return Promise.reject(error); }
+      if(Object.keys(timelineDrafts).length){
+        return Promise.reject(new Error('请先保存或放弃字幕时间轴修改'));
+      }
+      var body={
+        project_id:snapshot.project_id,revision:number(snapshot.revision,0),
+        stage:'voice_review'
+      };
+      generationBusy=true;ui.operationError='';render();
+      return callJson(CONFIRM_PATH,{method:'POST',body:body}).then(function(result){
+        return acceptSnapshot(result,null,true);
+      }).catch(function(error){
+        if(!ambiguousFreeWrite(error)) return mutationFailure(error);
+        return reload(true).then(function(){
+          if(snapshot&&snapshot.stage==='video_review') return acceptSnapshot(snapshot,null,true);
+          body.revision=number(snapshot&&snapshot.revision,0);
+          return callJson(CONFIRM_PATH,{method:'POST',body:body}).then(function(result){
+            return acceptSnapshot(result,null,true);
+          });
+        }).catch(mutationFailure);
+      }).finally(function(){ generationBusy=false;render(); });
+    }
+    function selectVersion(lineId,version){
+      var line=findLine(lineId);
+      try{ requireVoiceWritable(line?[line]:[]); }catch(error){ return Promise.reject(error); }
       return callJson(SELECT_VERSION_PATH,{
         method:'POST',body:{
           project_id:snapshot.project_id,revision:number(snapshot.revision,0),
@@ -492,6 +842,91 @@
       if(activeAudio&&typeof activeAudio.pause==='function') activeAudio.pause();
       activeAudio=null;
     }
+    function clearTimelineTimers(){
+      timelineTimers.forEach(function(timer){
+        if(typeof clearTimeout==='function') clearTimeout(timer);
+      });
+      timelineTimers=[];
+      if(timelineClockTimer!=null&&typeof clearInterval==='function'){
+        clearInterval(timelineClockTimer);
+      }
+      timelineClockTimer=null;
+    }
+    function stopShotPlayback(){
+      clearTimelineTimers();
+      timelinePlayers.forEach(function(player){
+        if(player&&typeof player.pause==='function') player.pause();
+      });
+      timelinePlayers=[];timelinePlaying=false;playingLineId='';
+      timelineCursorMs=0;
+    }
+    function pauseShotPlayback(){
+      clearTimelineTimers();
+      timelinePlayers.forEach(function(player){
+        if(player&&typeof player.pause==='function') player.pause();
+      });
+      timelinePlaying=false;playingLineId='';render();
+      return false;
+    }
+    function updatePlayingLine(shot){
+      playingLineId='';
+      (shot.lines||[]).some(function(line){
+        var version=currentVersion(normalizeLine(line,0,Object.create(null)));
+        var duration=number(version&&version.duration_ms,0);
+        if(line.start_ms!=null&&timelineCursorMs>=line.start_ms&&
+            timelineCursorMs<line.start_ms+duration){
+          playingLineId=line.id;return true;
+        }
+        return false;
+      });
+    }
+    function playShot(){
+      if(timelinePlaying) return pauseShotPlayback();
+      var shot=currentShotRaw();
+      if(!shot||!(shot.lines||[]).length) return false;
+      stopAudio();stopShotPlayback();
+      var factory=options.audioFactory||
+        (typeof Audio==='function'?function(source){ return new Audio(source); }:null);
+      if(!factory) return false;
+      var started=(options.now||Date.now)();
+      timelinePlaying=true;
+      (shot.lines||[]).forEach(function(line){
+        var version=currentVersion(normalizeLine(line,0,Object.create(null)));
+        var url=audioUrl(version);
+        if(!url||line.start_ms==null) return;
+        var player=factory(url);
+        timelinePlayers.push(player);
+        var delay=Math.max(0,line.start_ms-timelineCursorMs);
+        var timer=setTimeout(function(){
+          if(!timelinePlaying||destroyed) return;
+          if(typeof player.play==='function'){
+            var result=player.play();
+            if(result&&typeof result.catch==='function') result.catch(function(){});
+          }
+        },delay);
+        timelineTimers.push(timer);
+      });
+      updatePlayingLine(shot);render();
+      timelineClockTimer=setInterval(function(){
+        if(!timelinePlaying||destroyed) return;
+        timelineCursorMs=Math.min(
+          shot.duration*1000,timelineCursorMs+((options.now||Date.now)()-started)
+        );
+        started=(options.now||Date.now)();
+        updatePlayingLine(shot);
+        if(timelineCursorMs>=shot.duration*1000){
+          pauseShotPlayback();
+        }else{
+          render();
+        }
+      },100);
+      return true;
+    }
+    function replayShot(){
+      stopShotPlayback();
+      timelineCursorMs=0;
+      return playShot();
+    }
     function stopNativeAudio(except){
       if(!host||typeof host.querySelectorAll!=='function') return;
       Array.prototype.forEach.call(host.querySelectorAll('audio'),function(audio){
@@ -499,7 +934,7 @@
       });
     }
     function preview(url){
-      stopAudio();stopNativeAudio(null);
+      stopShotPlayback();stopAudio();stopNativeAudio(null);
       if(!url) return false;
       var factory=options.audioFactory||
         (typeof Audio==='function'?function(source){ return new Audio(source); }:null);
@@ -527,6 +962,16 @@
           if(action==='generate-line') task=generateLine(lineId);
           else if(action==='generate-shot') task=generateShot();
           else if(action==='generate-all') task=generateAll();
+          else if(action==='save-timeline') task=saveTimeline();
+          else if(action==='set-shot-lock') task=setShotLock(
+            node.getAttribute('data-lock')==='true'
+          );
+          else if(action==='confirm-voice-stage') task=confirmVoiceStage();
+          else if(action==='restore-auto-timeline'){
+            try{ restoreAutoTimeline(); }catch(error){ ui.operationError=error.message;render(); }
+          }
+          else if(action==='play-shot') playShot();
+          else if(action==='replay-shot') replayShot();
           else if(action==='select-version') task=selectVersion(lineId,node.getAttribute('data-version'));
           else if(action==='preview-version') preview(node.getAttribute('data-audio-url'));
           else if(action==='preview-voice') previewVoice(lineId);
@@ -543,11 +988,67 @@
       var node=event&&event.target;
       if(!node||!node.getAttribute) return;
       var field=node.getAttribute('data-field'),line=findLine(node.getAttribute('data-line-id'));
-      if(!line||['voice_key','speed','pitch','volume'].indexOf(field)<0) return;
+      if(!line) return;
+      if(['subtitle_text','subtitle_visible','start_ms','end_ms'].indexOf(field)>=0){
+        var patch={};
+        patch[field]=field==='subtitle_visible'?!!node.checked:
+          (field==='subtitle_text'?text(node.value):number(node.value,0));
+        try{ updateTimelineLine(line.id,patch); }
+        catch(error){ ui.operationError=text(error.message||error);render(); }
+        return;
+      }
+      if(['voice_key','speed','pitch','volume'].indexOf(field)<0) return;
       line[field]=field==='voice_key'?text(node.value):number(node.value,line[field]);
     }
+    function onPointerDown(event){
+      var node=event&&event.target,edge='';
+      if(node&&node.getAttribute) edge=text(node.getAttribute('data-resize-edge'));
+      while(node&&node!==host&&
+          !(text(node.className).indexOf('nc-sdv-timeline-block')>=0)){
+        node=node.parentNode;
+      }
+      if(!node||node===host||!node.getAttribute) return;
+      var shot=currentShotRaw(),lineId=node.getAttribute('data-line-id');
+      var line=viewSnapshot().shots.find(function(item){
+        return shot&&item.id===shot.id;
+      });
+      line=line&&(line.lines||[]).find(function(item){ return item.id===lineId; });
+      var track=node.parentNode,rect=track&&track.getBoundingClientRect&&
+        track.getBoundingClientRect();
+      if(!shot||!line||shot.locked||snapshot.stage!=='voice_review'||
+          !rect||!rect.width) return;
+      timelineDrag={
+        lineId:lineId,edge:edge||'move',clientX:number(event.clientX,0),
+        start_ms:number(line.start_ms,0),end_ms:number(line.end_ms,0),
+        width:rect.width,duration:shot.duration*1000
+      };
+      if(event.preventDefault) event.preventDefault();
+    }
+    function onPointerMove(event){
+      if(!timelineDrag) return;
+      var drag=timelineDrag;
+      var delta=Math.round(
+        ((number(event.clientX,drag.clientX)-drag.clientX)/drag.width*drag.duration)/50
+      )*50;
+      var start=drag.start_ms,end=drag.end_ms;
+      if(drag.edge==='start'){
+        start=Math.max(0,Math.min(end-50,start+delta));
+      }else if(drag.edge==='end'){
+        end=Math.min(drag.duration,Math.max(start+50,end+delta));
+      }else{
+        var length=end-start;
+        start=Math.max(0,Math.min(drag.duration-length,start+delta));
+        end=start+length;
+      }
+      updateTimelineLine(drag.lineId,{start_ms:start,end_ms:end});
+      if(event.preventDefault) event.preventDefault();
+    }
+    function onPointerUp(){ timelineDrag=null; }
     if(host&&typeof host.addEventListener==='function') host.addEventListener('click',onClick);
     if(host&&typeof host.addEventListener==='function') host.addEventListener('change',onChange);
+    if(host&&typeof host.addEventListener==='function') host.addEventListener('pointerdown',onPointerDown);
+    if(host&&typeof host.addEventListener==='function') host.addEventListener('pointermove',onPointerMove);
+    if(host&&typeof host.addEventListener==='function') host.addEventListener('pointerup',onPointerUp);
     function onNativePlay(event){ stopAudio();stopNativeAudio(event&&event.target); }
     if(host&&typeof host.addEventListener==='function') host.addEventListener('play',onNativePlay,true);
     function clearPoll(){
@@ -575,7 +1076,16 @@
         callJson(VOICES_PATH)
       ]).then(function(results){
         if(destroyed||generation!==requestGeneration) return null;
+        if(!silent&&conflictFrozen){
+          timelineDrafts=Object.create(null);
+          conflictFrozen=false;
+        }
         snapshot=results[0];voices=voiceItems(results[1]);
+        if(!(snapshot.shots||[]).some(function(shot){
+          return shot.id===ui.selectedShotId;
+        })){
+          ui.selectedShotId=snapshot.shots&&snapshot.shots[0]&&snapshot.shots[0].id;
+        }
         allLines().forEach(function(line){
           var pending=pendingSubmissions[line.id];
           if(pending&&line.job&&
@@ -599,18 +1109,28 @@
       projectId:options.projectId,ready:ready,render:render,reload:reload,
       selectShot:selectShot,generateLine:generateLine,generateShot:generateShot,
       generateAll:generateAll,selectVersion:selectVersion,preview:preview,
+      updateTimelineLine:updateTimelineLine,restoreAutoTimeline:restoreAutoTimeline,
+      saveTimeline:saveTimeline,setShotLock:setShotLock,
+      confirmVoiceStage:confirmVoiceStage,playShot:playShot,
+      pauseShot:pauseShotPlayback,replayShot:replayShot,
       getState:function(){
-        return clone(normalizeState(snapshot||{},voices,{
+        return clone(normalizeState(viewSnapshot(),voices,{
           busy:destroyed?false:ui.busy,error:ui.error,
           selectedShotId:ui.selectedShotId,destroyed:destroyed,canEdit:options.canEdit,
-          operationBusy:generationBusy,operationError:ui.operationError
+          operationBusy:generationBusy,operationError:ui.operationError,
+          timelineDirty:!!timelineDrafts[ui.selectedShotId],
+          timelinePlaying:timelinePlaying,timelineCursorMs:timelineCursorMs,
+          playingLineId:playingLineId,conflictFrozen:conflictFrozen
         }));
       },
       destroy:function(){
         if(host&&typeof host.removeEventListener==='function') host.removeEventListener('click',onClick);
         if(host&&typeof host.removeEventListener==='function') host.removeEventListener('change',onChange);
+        if(host&&typeof host.removeEventListener==='function') host.removeEventListener('pointerdown',onPointerDown);
+        if(host&&typeof host.removeEventListener==='function') host.removeEventListener('pointermove',onPointerMove);
+        if(host&&typeof host.removeEventListener==='function') host.removeEventListener('pointerup',onPointerUp);
         if(host&&typeof host.removeEventListener==='function') host.removeEventListener('play',onNativePlay,true);
-        clearPoll();stopAudio();stopNativeAudio(null);
+        clearPoll();stopShotPlayback();stopAudio();stopNativeAudio(null);
         destroyed=true;requestGeneration+=1;ui.busy=false;ui.error='';ui.operationError='';host=null;snapshot=null;voices=[];
       }
     };

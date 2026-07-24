@@ -1603,6 +1603,12 @@ def confirm_stage(db_factory, username, project_id, revision, current_stage):
             "revision": revision,
             "stage": current_stage,
         })
+    if current_stage == "voice_review":
+        return short_drama_voice.confirm_voice_stage(db_factory, username, {
+            "project_id": project_id,
+            "revision": revision,
+            "stage": current_stage,
+        })
     if current_stage in short_drama_production.PRODUCTION_STAGES:
         raise ValueError("当前批次只允许确认关键帧阶段")
     if current_stage not in NEXT_STAGE:
@@ -1654,6 +1660,8 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/confirm",
         "/api/gen/short-drama/asset-quote",
         "/api/gen/short-drama/voice-quote",
+        "/api/gen/short-drama/save-voice-timeline",
+        "/api/gen/short-drama/set-voice-shot-lock",
         "/api/gen/short-drama/select-asset",
         "/api/gen/short-drama/select-voice-version",
         "/api/gen/short-drama/confirm-production-stage",
@@ -1850,6 +1858,38 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                     db_factory, owner, body
                 )
             handler._send(200, selected)
+        elif method == "POST" and path.endswith("/save-voice-timeline"):
+            body = _request_object(handler)
+            owner = _project_username_for_access(
+                db_factory, username, str(body.get("project_id") or ""),
+                access, write=True,
+            )
+            if mutation_lock is not None:
+                with mutation_lock:
+                    saved = short_drama_voice.save_voice_timeline(
+                        db_factory, owner, body
+                    )
+            else:
+                saved = short_drama_voice.save_voice_timeline(
+                    db_factory, owner, body
+                )
+            handler._send(200, saved)
+        elif method == "POST" and path.endswith("/set-voice-shot-lock"):
+            body = _request_object(handler)
+            owner = _project_username_for_access(
+                db_factory, username, str(body.get("project_id") or ""),
+                access, write=True,
+            )
+            if mutation_lock is not None:
+                with mutation_lock:
+                    locked = short_drama_voice.set_voice_shot_lock(
+                        db_factory, owner, body
+                    )
+            else:
+                locked = short_drama_voice.set_voice_shot_lock(
+                    db_factory, owner, body
+                )
+            handler._send(200, locked)
         elif method == "POST" and path.endswith("/confirm-production-stage"):
             body = _request_object(handler)
             if mutation_lock is not None:

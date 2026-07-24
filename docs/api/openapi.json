@@ -273,7 +273,8 @@
               "type": "object",
               "required": [
                 "project_id", "revision", "stage", "ratio", "target_duration",
-                "point_budget", "spent_points", "reserved_points", "shots"
+                "point_budget", "spent_points", "reserved_points",
+                "unlocked_shot_count", "handoff_blocked", "handoff_blockers", "shots"
               ],
               "properties": {
                 "project_id": {"type": "string"},
@@ -284,11 +285,23 @@
                 "point_budget": {"type": "integer", "minimum": 0},
                 "spent_points": {"type": "integer", "minimum": 0},
                 "reserved_points": {"type": "integer", "minimum": 0},
+                "unlocked_shot_count": {"type": "integer", "minimum": 0},
+                "handoff_blocked": {"type": "boolean"},
+                "handoff_blockers": {"type": "array", "items": {
+                  "type": "object",
+                  "required": ["code", "message"],
+                  "properties": {
+                    "code": {"type": "string"},
+                    "message": {"type": "string"},
+                    "shot_id": {"type": "string"},
+                    "line_id": {"type": "string"}
+                  }
+                }},
                 "shots": {
                   "type": "array",
                   "items": {
                     "type": "object",
-                    "required": ["id", "shot_key", "sort_order", "duration", "locked", "timeline_revision", "status", "lines"],
+                    "required": ["id", "shot_key", "sort_order", "duration", "locked", "timeline_revision", "status", "lockable", "lock_blockers", "lines"],
                     "properties": {
                       "id": {"type": "string"},
                       "shot_key": {"type": "string"},
@@ -296,14 +309,26 @@
                       "duration": {"type": "integer", "enum": [5, 10]},
                       "locked": {"type": "boolean"},
                       "timeline_revision": {"type": "integer", "minimum": 1},
-                      "status": {"type": "string", "enum": ["silent", "pending", "ready", "failed"]},
+                      "status": {"type": "string", "enum": ["silent", "pending", "ready", "done", "failed"]},
+                      "lockable": {"type": "boolean"},
+                      "lock_blockers": {"type": "array", "items": {
+                        "type": "object",
+                        "required": ["code", "message"],
+                        "properties": {
+                          "code": {"type": "string"},
+                          "message": {"type": "string"},
+                          "shot_id": {"type": "string"},
+                          "line_id": {"type": "string"}
+                        }
+                      }},
                       "lines": {"type": "array", "items": {
                         "type": "object",
                         "required": [
                           "id", "dialogue_line_id", "line_type", "sort_order",
                           "character_key", "character_name", "source_text", "speech_text",
                           "subtitle_text", "subtitle_visible", "voice_key", "speed", "pitch",
-                          "volume", "current_version", "start_ms", "end_ms", "input_hash",
+                          "volume", "current_version", "start_ms", "end_ms",
+                          "suggested_start_ms", "suggested_end_ms", "input_hash",
                           "versions", "job"
                         ],
                         "properties": {
@@ -324,6 +349,8 @@
                           "current_version": {"type": "integer", "minimum": 1, "nullable": true},
                           "start_ms": {"type": "integer", "minimum": 0, "nullable": true},
                           "end_ms": {"type": "integer", "minimum": 1, "nullable": true},
+                          "suggested_start_ms": {"type": "integer", "minimum": 0, "nullable": true},
+                          "suggested_end_ms": {"type": "integer", "minimum": 1, "nullable": true},
                           "input_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
                           "versions": {"type": "array", "items": {"type": "object"}},
                           "job": {"type": "object", "nullable": true}
@@ -431,6 +458,73 @@
           "401": {"description": "未登录"},
           "403": {"description": "必须修改初始密码，或共享画布为 viewer/无写权限"},
           "404": {"description": "项目、台词或版本不存在，或当前用户无权发现"},
+          "409": {"description": "revision_conflict"}
+        }
+      }
+    },
+    "/api/gen/short-drama/save-voice-timeline": {
+      "post": {
+        "tags": ["短剧"],
+        "summary": "保存单个镜头的完整字幕时间轴",
+        "description": "Free / no points. 仅 voice_review 可写；一次提交镜头全部台词，使用项目 revision 与 timeline_revision 双 CAS，并由服务端重新校验版本、整数毫秒、边界、音频重叠和可见字幕重叠。",
+        "parameters": [{"$ref": "#/components/parameters/XCanvasBoardId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "type": "object",
+          "required": ["project_id", "revision", "shot_id", "timeline_revision", "items"],
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {"type": "string", "minLength": 1},
+            "revision": {"type": "integer", "minimum": 1},
+            "shot_id": {"type": "string", "minLength": 1},
+            "timeline_revision": {"type": "integer", "minimum": 1},
+            "items": {"type": "array", "items": {
+              "type": "object",
+              "required": ["line_id", "subtitle_text", "subtitle_visible", "start_ms", "end_ms"],
+              "additionalProperties": false,
+              "properties": {
+                "line_id": {"type": "string", "minLength": 1},
+                "subtitle_text": {"type": "string", "maxLength": 2000},
+                "subtitle_visible": {"type": "boolean"},
+                "start_ms": {"type": "integer", "minimum": 0},
+                "end_ms": {"type": "integer", "minimum": 1}
+              }
+            }}
+          }
+        }}}},
+        "responses": {
+          "200": {"description": "返回保存后的完整配音字幕工作区快照；项目 revision 与镜头 timeline_revision 均加一"},
+          "400": {"description": "字段、阶段、版本、边界、重叠或完整性校验失败"},
+          "401": {"description": "未登录"},
+          "403": {"description": "Viewer 或无画布写权限"},
+          "404": {"description": "项目、镜头或台词不存在"},
+          "409": {"description": "revision_conflict"}
+        }
+      }
+    },
+    "/api/gen/short-drama/set-voice-shot-lock": {
+      "post": {
+        "tags": ["短剧"],
+        "summary": "锁定或解锁配音字幕镜头",
+        "description": "Free / no points. 锁定前服务端重新计算 current version、权威时长、时间轴、活动任务、退款及扣点尝试；voice_review 可解锁，进入 video_review 后只读。",
+        "parameters": [{"$ref": "#/components/parameters/XCanvasBoardId"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+          "type": "object",
+          "required": ["project_id", "revision", "shot_id", "timeline_revision", "lock"],
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {"type": "string", "minLength": 1},
+            "revision": {"type": "integer", "minimum": 1},
+            "shot_id": {"type": "string", "minLength": 1},
+            "timeline_revision": {"type": "integer", "minimum": 1},
+            "lock": {"type": "boolean"}
+          }
+        }}}},
+        "responses": {
+          "200": {"description": "返回锁定状态变更后的完整配音字幕工作区快照；项目 revision 加一"},
+          "400": {"description": "阶段错误或存在服务端权威锁定阻塞"},
+          "401": {"description": "未登录"},
+          "403": {"description": "Viewer 或无画布写权限"},
+          "404": {"description": "项目或镜头不存在"},
           "409": {"description": "revision_conflict"}
         }
       }
@@ -557,13 +651,14 @@
     },
     "/api/gen/short-drama/confirm": {
       "post": {
-        "tags": ["短剧策划"], "summary": "确认当前短剧审核阶段", "description": "Free / no points. 按 characters_review → script_review → storyboard_review → stills_review 顺序确认；禁止跳级，成功后 revision 加 1。",
+        "tags": ["短剧策划"], "summary": "确认当前短剧审核阶段", "description": "Free / no points. 本地项目仅创建者可写；共享项目需携带匹配的 X-Canvas-Board-Id，owner/editor 可写，viewer 返回 403。策划阶段按顺序推进；voice_review 仅在全部配音镜头锁定且服务端权威校验通过后进入 video_review。禁止跳级，成功后 revision 加 1。",
+        "parameters": [{ "$ref": "#/components/parameters/XCanvasBoardId" }],
         "requestBody": { "required": true, "content": { "application/json": { "schema": {
           "type": "object", "required": ["project_id", "revision", "stage"], "additionalProperties": false,
-          "properties": { "project_id": { "type": "string" }, "revision": { "type": "integer", "minimum": 1 }, "stage": { "type": "string", "enum": ["characters_review", "script_review", "storyboard_review"] } }
+          "properties": { "project_id": { "type": "string" }, "revision": { "type": "integer", "minimum": 1 }, "stage": { "type": "string", "enum": ["characters_review", "script_review", "storyboard_review", "voice_review"] } }
         } } } },
         "responses": {
-          "200": { "description": "已进入下一阶段；不扣点", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShortDramaProject" } } } },
+          "200": { "description": "已进入下一阶段；voice_review 返回配音字幕工作区快照，其余阶段返回项目详情；不扣点", "content": { "application/json": { "schema": { "oneOf": [{ "$ref": "#/components/schemas/ShortDramaProject" }, { "type": "object" }] } } } },
           "400": { "description": "阶段无效或试图跳过当前阶段", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "401": { "description": "未登录；认证先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "403": { "description": "账号必须先修改初始密码；检查先于 JSON 解析", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },

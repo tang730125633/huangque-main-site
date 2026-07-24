@@ -906,15 +906,19 @@ class ShortDramaProductionTests(unittest.TestCase):
              mock.patch("content_domains.cos.upload", side_effect=RuntimeError("upload failed")):
             self.assertEqual("/api/gen/file/owned.png", core.public_url("owned.png", "image/png"))
 
-    def test_phase_two_only_allows_stills_confirmation(self):
-        for stage in ("voice_review", "video_review", "assembly_review"):
+    def test_phase_two_rejects_unready_or_unsupported_confirmation(self):
+        for stage, message in (
+            ("voice_review", "仍有镜头尚未锁定"),
+            ("video_review", "当前批次"),
+            ("assembly_review", "当前批次"),
+        ):
             with self.subTest(stage=stage), closing(self.db()) as conn:
                 conn.execute(
                     "UPDATE short_drama_projects SET stage=?, revision=50 WHERE id=?",
                     (stage, self.project["id"]),
                 )
                 conn.commit()
-            with self.assertRaisesRegex(ValueError, "当前批次"):
+            with self.assertRaisesRegex(ValueError, message):
                 short_drama.confirm_stage(
                     self.db, "alice", self.project["id"], 50, stage
                 )

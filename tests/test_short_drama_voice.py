@@ -458,6 +458,304 @@ class ShortDramaVoiceSnapshotTests(unittest.TestCase):
             self.db, "alice", "voice-submit-003"
         )["state"])
 
+    def _complete_first_voice_shot(self, durations=(1000, 1200)):
+        snapshot = short_drama_voice.get_voice_workspace(
+            self.db, "alice", self.project["id"]
+        )
+        lines = snapshot["shots"][0]["lines"]
+        with closing(self.db()) as conn:
+            for index, (line, duration) in enumerate(zip(lines, durations), 1):
+                job_id = 700 + index
+                conn.execute(
+                    "INSERT INTO short_drama_voice_jobs "
+                    "(id,username,project_id,shot_id,voice_line_id,job_id,"
+                    "idempotency_key,quoted_cost,status,created_at,updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?, 'done',1,1)",
+                    (
+                        "timeline-job-%d" % index, "alice", self.project["id"],
+                        snapshot["shots"][0]["id"], line["id"], job_id,
+                        "timeline-idem-%d" % index, 0,
+                    ),
+                )
+                conn.execute(
+                    "INSERT INTO short_drama_voice_versions "
+                    "(id,voice_line_id,version,job_id,audio_file,audio_url,"
+                    "duration_ms,speech_text,voice_key,settings_json,input_hash,"
+                    "cost,status,created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,0,'done',1)",
+                    (
+                        "timeline-version-%d" % index, line["id"], 1, job_id,
+                        "audio/%d.mp3" % index, "/api/gen/file/audio/%d.mp3" % index,
+                        duration, line["speech_text"], line["voice_key"], "{}",
+                        line["input_hash"],
+                    ),
+                )
+                conn.execute(
+                    "UPDATE short_drama_voice_lines SET current_version=1 "
+                    "WHERE id=?",
+                    (line["id"],),
+                )
+            conn.commit()
+        return short_drama_voice.get_voice_workspace(
+            self.db, "alice", self.project["id"]
+        )
+
+    @staticmethod
+    def _timeline_body(snapshot, starts=(0, 1150), ends=(1000, 2350)):
+        shot = snapshot["shots"][0]
+        return {
+            "project_id": snapshot["project_id"],
+            "revision": snapshot["revision"],
+            "shot_id": shot["id"],
+            "timeline_revision": shot["timeline_revision"],
+            "items": [{
+                "line_id": line["id"],
+                "subtitle_text": line["subtitle_text"],
+                "subtitle_visible": line["subtitle_visible"],
+                "start_ms": starts[index],
+                "end_ms": ends[index],
+            } for index, line in enumerate(shot["lines"])],
+        }
+
+    def test_snapshot_exposes_authoritative_timeline_suggestion_and_blockers(self):
+        snapshot = self._complete_first_voice_shot()
+        shot = snapshot["shots"][0]
+        self.assertEqual([
+            (0, 1000), (1150, 2350),
+        ], [
+            (line["suggested_start_ms"], line["suggested_end_ms"])
+            for line in shot["lines"]
+        ])
+        self.assertFalse(shot["lockable"])
+        self.assertEqual(
+            ["timeline_missing"],
+            [item["code"] for item in shot["lock_blockers"]],
+        )
+        self.assertTrue(snapshot["handoff_blocked"])
+        self.assertEqual(6, snapshot["unlocked_shot_count"])
+
+    def test_save_voice_timeline_updates_both_revisions_atomically(self):
+        snapshot = self._complete_first_voice_shot()
+        saved = short_drama_voice.save_voice_timeline(
+            self.db, "alice", self._timeline_body(snapshot),
+        )
+        shot = saved["shots"][0]
+        self.assertEqual(snapshot["revision"] + 1, saved["revision"])
+        self.assertEqual(
+            snapshot["shots"][0]["timeline_revision"] + 1,
+            shot["timeline_revision"],
+        )
+        self.assertTrue(shot["lockable"])
+        self.assertEqual([], shot["lock_blockers"])
+        self.assertEqual(
+            [(0, 1000), (1150, 2350)],
+            [(line["start_ms"], line["end_ms"]) for line in shot["lines"]],
+        )
+
+    def test_save_voice_timeline_rejects_incomplete_overlap_and_overflow(self):
+        snapshot = self._complete_first_voice_shot()
+        valid = self._timeline_body(snapshot)
+        invalid = {
+            "missing": dict(valid, items=valid["items"][:1]),
+            "duplicate": dict(valid, items=[valid["items"][0], valid["items"][0]]),
+            "audio_overlap": self._timeline_body(
+                snapshot, starts=(0, 900), ends=(800, 2100),
+            ),
+            "subtitle_overlap": self._timeline_body(
+                snapshot, starts=(0, 1050), ends=(1100, 2250),
+            ),
+            "duration_overflow": self._timeline_body(
+                snapshot, starts=(0, 4000), ends=(1000, 4900),
+            ),
+        }
+        for name, payload in invalid.items():
+            with self.subTest(case=name):
+                with self.assertRaises(ValueError):
+                    short_drama_voice.save_voice_timeline(
+                        self.db, "alice", payload,
+                    )
+        current = short_drama_voice.get_voice_workspace(
+            self.db, "alice", self.project["id"]
+        )
+        self.assertEqual(snapshot["revision"], current["revision"])
+        self.assertTrue(all(
+            line["start_ms"] is None for line in current["shots"][0]["lines"]
+        ))
+
+    def test_lock_unlock_and_voice_handoff_are_server_authoritative(self):
+        snapshot = self._complete_first_voice_shot()
+        snapshot = short_drama_voice.save_voice_timeline(
+            self.db, "alice", self._timeline_body(snapshot),
+        )
+        first = snapshot["shots"][0]
+        snapshot = short_drama_voice.set_voice_shot_lock(
+            self.db, "alice", {
+                "project_id": snapshot["project_id"],
+                "revision": snapshot["revision"],
+                "shot_id": first["id"],
+                "timeline_revision": first["timeline_revision"],
+                "lock": True,
+            },
+        )
+        for shot in snapshot["shots"][1:]:
+            self.assertEqual("silent", shot["status"])
+            snapshot = short_drama_voice.set_voice_shot_lock(
+                self.db, "alice", {
+                    "project_id": snapshot["project_id"],
+                    "revision": snapshot["revision"],
+                    "shot_id": shot["id"],
+                    "timeline_revision": shot["timeline_revision"],
+                    "lock": True,
+                },
+            )
+        self.assertFalse(snapshot["handoff_blocked"])
+        confirmed = short_drama.confirm_stage(
+            self.db, "alice", snapshot["project_id"],
+            snapshot["revision"], "voice_review",
+        )
+        self.assertEqual("video_review", confirmed["stage"])
+        self.assertEqual(snapshot["revision"] + 1, confirmed["revision"])
+        with self.assertRaises(ValueError):
+            short_drama_voice.set_voice_shot_lock(
+                self.db, "alice", {
+                    "project_id": confirmed["project_id"],
+                    "revision": confirmed["revision"],
+                    "shot_id": confirmed["shots"][0]["id"],
+                    "timeline_revision": confirmed["shots"][0]["timeline_revision"],
+                    "lock": False,
+                },
+            )
+
+    def test_lock_rejects_stale_timeline_revision_and_unsettled_charge(self):
+        snapshot = self._complete_first_voice_shot()
+        snapshot = short_drama_voice.save_voice_timeline(
+            self.db, "alice", self._timeline_body(snapshot),
+        )
+        shot = snapshot["shots"][0]
+        with self.assertRaises(short_drama.RevisionConflict):
+            short_drama_voice.set_voice_shot_lock(
+                self.db, "alice", {
+                    "project_id": snapshot["project_id"],
+                    "revision": snapshot["revision"],
+                    "shot_id": shot["id"],
+                    "timeline_revision": shot["timeline_revision"] - 1,
+                    "lock": True,
+                },
+            )
+        line = shot["lines"][0]
+        with closing(self.db()) as conn:
+            conn.execute(
+                "INSERT INTO short_drama_voice_quotes "
+                "(token,username,project_id,voice_line_id,request_hash,cost,"
+                "expires_at,created_at) VALUES "
+                "('timeline-quote','alice',?,?, 'hash',0,9999999999,1)",
+                (snapshot["project_id"], line["id"]),
+            )
+            conn.execute(
+                "INSERT INTO short_drama_voice_charge_attempts "
+                "(charge_key,refund_key,username,endpoint,idempotency_key,"
+                "request_hash,project_id,shot_id,voice_line_id,quote_token,cost,"
+                "audio_payload_json,state,created_at,updated_at) VALUES "
+                "('timeline-charge','timeline-refund','alice',?,'timeline-pending',"
+                "'hash',?,?,?,'timeline-quote',0,'{}','accepted',1,1)",
+                (
+                    short_drama_voice.VOICE_ENDPOINT, snapshot["project_id"],
+                    shot["id"], line["id"],
+                ),
+            )
+            conn.commit()
+        blocked = short_drama_voice.get_voice_workspace(
+            self.db, "alice", self.project["id"]
+        )
+        self.assertIn(
+            "charge_attempt_pending",
+            [item["code"] for item in blocked["shots"][0]["lock_blockers"]],
+        )
+        with self.assertRaises(ValueError):
+            short_drama_voice.set_voice_shot_lock(
+                self.db, "alice", {
+                    "project_id": blocked["project_id"],
+                    "revision": blocked["revision"],
+                    "shot_id": blocked["shots"][0]["id"],
+                    "timeline_revision": blocked["shots"][0]["timeline_revision"],
+                    "lock": True,
+                },
+            )
+
+    def test_timeline_routes_allow_editor_and_reject_viewer(self):
+        snapshot = self._complete_first_voice_shot()
+        body = self._timeline_body(snapshot)
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_projects SET board_id='board-c2' WHERE id=?",
+                (self.project["id"],),
+            )
+            conn.commit()
+        roles = {"editor": "editor", "viewer": "viewer"}
+
+        def access(handler):
+            return {"board_id": "board-c2", "role": roles[handler.token]}
+
+        viewer = GetHandler(
+            "/api/gen/short-drama/save-voice-timeline",
+            token="viewer", body=body,
+        )
+        short_drama.dispatch_http(
+            viewer, "POST", self.db,
+            lambda token: {"username": token, "must_change": False},
+            canvas_access_resolver=access,
+        )
+        self.assertEqual(403, viewer.response[0])
+
+        editor = GetHandler(
+            "/api/gen/short-drama/save-voice-timeline",
+            token="editor", body=body,
+        )
+        short_drama.dispatch_http(
+            editor, "POST", self.db,
+            lambda token: {"username": token, "must_change": False},
+            canvas_access_resolver=access,
+        )
+        self.assertEqual(200, editor.response[0])
+        self.assertEqual(snapshot["revision"] + 1, editor.response[1]["revision"])
+
+    def test_locked_shot_rejects_new_quote_and_version_selection(self):
+        snapshot = self._complete_first_voice_shot()
+        snapshot = short_drama_voice.save_voice_timeline(
+            self.db, "alice", self._timeline_body(snapshot),
+        )
+        shot = snapshot["shots"][0]
+        snapshot = short_drama_voice.set_voice_shot_lock(
+            self.db, "alice", {
+                "project_id": snapshot["project_id"],
+                "revision": snapshot["revision"],
+                "shot_id": shot["id"],
+                "timeline_revision": shot["timeline_revision"],
+                "lock": True,
+            },
+        )
+        line = snapshot["shots"][0]["lines"][0]
+        with self.assertRaises(ValueError):
+            short_drama_voice.prepare_voice_quote(
+                self.db, "alice", "alice", {
+                    "project_id": snapshot["project_id"],
+                    "revision": snapshot["revision"],
+                    "items": [{
+                        "line_id": line["id"], "voice_key": line["voice_key"],
+                        "speed": line["speed"], "pitch": line["pitch"],
+                        "volume": line["volume"],
+                    }],
+                }, lambda _kind, _payload: 10,
+            )
+        with self.assertRaises(ValueError):
+            short_drama_voice.select_voice_version(
+                self.db, "alice", {
+                    "project_id": snapshot["project_id"],
+                    "revision": snapshot["revision"],
+                    "line_id": line["id"], "version": 1,
+                },
+            )
+
 
 class ShortDramaVoiceSchemaTests(unittest.TestCase):
     def setUp(self):

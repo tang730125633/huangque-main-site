@@ -15,6 +15,8 @@ VOICE_WRITE_STAGE = "voice_review"
 VOICE_QUOTE_TTL_SECONDS = 300
 VOICE_QUOTE_MAX_LINES = 50
 VOICE_ENDPOINT = "/api/gen/short-drama/generate-voice"
+VOICE_SUBTITLE_MAX_LENGTH = 2000
+VOICE_TIMELINE_GAP_MS = 150
 
 
 class VoiceQuoteConsumed(RuntimeError):
@@ -23,6 +25,22 @@ class VoiceQuoteConsumed(RuntimeError):
 
 class VoiceChargeInProgress(RuntimeError):
     pass
+
+
+_BLOCKER_MESSAGES = {
+    "missing_current_version": "存在尚未生成成功配音的台词",
+    "stale_current_version": "当前配音版本与台词或音色参数不一致",
+    "metadata_pending": "音频时长仍在解析，请稍后刷新",
+    "timeline_missing": "字幕时间轴尚未保存",
+    "timeline_invalid": "字幕时间值不完整或顺序无效",
+    "subtitle_overlap": "可见字幕时间区间发生重叠",
+    "audio_overlap": "配音播放时间发生重叠",
+    "duration_overflow": "配音或字幕超过镜头时长",
+    "active_job": "当前镜头仍有配音任务处理中",
+    "refund_pending": "当前镜头仍有退款处理中",
+    "charge_attempt_pending": "当前镜头仍有未结算的扣点尝试",
+    "missing_locked_voice_shot": "仍有镜头尚未锁定",
+}
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS short_drama_voice_shots (
@@ -592,6 +610,12 @@ def prepare_voice_quote(db_factory, actor_username, owner_username, payload, cos
             ).fetchone()
             if not line:
                 raise LookupError("配音台词不存在")
+            if conn.execute(
+                "SELECT locked FROM short_drama_voice_shots "
+                "WHERE shot_id=? AND project_id=?",
+                (line["shot_id"], project["id"]),
+            ).fetchone()[0]:
+                raise ValueError("已锁定镜头不能重新生成配音")
             if not str(line["speech_text"] or "").strip():
                 raise ValueError("配音台词不能为空")
             if callable(voice_validator):
@@ -684,6 +708,12 @@ def prepare_voice_submission(db_factory, actor_username, owner_username, payload
         ).fetchone()
         if not line:
             raise LookupError("配音台词不存在")
+        if conn.execute(
+            "SELECT locked FROM short_drama_voice_shots "
+            "WHERE shot_id=? AND project_id=?",
+            (line["shot_id"], project["id"]),
+        ).fetchone()[0]:
+            raise ValueError("已锁定镜头不能重新生成配音")
         descriptor = _quote_descriptor(project["id"], request["revision"], line, request)
         request_hash = _request_hash(descriptor)
         existing = conn.execute(
@@ -1079,6 +1109,11 @@ def reconcile_voice_jobs(conn, project_id):
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs'"
     ).fetchone():
         return
+    job_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()
+    }
+    if not {"id", "status", "result", "error", "refunded"}.issubset(job_columns):
+        return
     rows = conn.execute(
         "SELECT voice.*,job.status AS generic_status,job.result,job.error AS generic_error,"
         "COALESCE(job.refunded,0) AS generic_refunded "
@@ -1287,6 +1322,12 @@ def select_voice_version(db_factory, owner_username, payload):
             "SELECT * FROM short_drama_voice_lines WHERE id=? AND project_id=?",
             (line_id, project_id),
         ).fetchone()
+        if line and conn.execute(
+            "SELECT locked FROM short_drama_voice_shots "
+            "WHERE shot_id=? AND project_id=?",
+            (line["shot_id"], project_id),
+        ).fetchone()[0]:
+            raise ValueError("已锁定镜头不能选择配音版本")
         version = conn.execute(
             "SELECT * FROM short_drama_voice_versions "
             "WHERE voice_line_id=? AND version=?",
@@ -1344,6 +1385,151 @@ def _line_snapshot(row, character_name):
         "versions": [],
         "job": None,
     }
+
+
+def _blocker(code, shot_id=None, line_id=None):
+    item = {"code": code, "message": _BLOCKER_MESSAGES[code]}
+    if shot_id is not None:
+        item["shot_id"] = shot_id
+    if line_id is not None:
+        item["line_id"] = line_id
+    return item
+
+
+def _current_version(line):
+    current = line.get("current_version")
+    return next(
+        (item for item in line.get("versions", [])
+         if item.get("version") == current),
+        None,
+    )
+
+
+def _append_unique_blocker(blockers, code, shot_id=None, line_id=None):
+    identity = (code, shot_id, line_id)
+    if any(
+        (item["code"], item.get("shot_id"), item.get("line_id")) == identity
+        for item in blockers
+    ):
+        return
+    blockers.append(_blocker(code, shot_id, line_id))
+
+
+def _timeline_suggestions(lines):
+    cursor = 0
+    suggestions = {}
+    for line in sorted(lines, key=lambda item: (item["sort_order"], item["id"])):
+        version = _current_version(line)
+        duration = version.get("duration_ms") if version else None
+        if (
+            not version or version.get("status") != "done"
+            or version.get("input_hash") != line.get("input_hash")
+            or type(duration) is not int or duration <= 0
+        ):
+            suggestions[line["id"]] = (None, None)
+            continue
+        suggestions[line["id"]] = (cursor, cursor + duration)
+        cursor += duration + VOICE_TIMELINE_GAP_MS
+    return suggestions
+
+
+def _timeline_blockers(shot):
+    blockers = []
+    shot_id = shot["id"]
+    duration_limit = int(shot["duration"]) * 1000
+    lines = sorted(
+        shot.get("lines", []),
+        key=lambda item: (item["sort_order"], item["id"]),
+    )
+    audio_intervals = []
+    subtitle_intervals = []
+    for line in lines:
+        line_id = line["id"]
+        version = _current_version(line)
+        if not version or version.get("status") == "failed":
+            _append_unique_blocker(
+                blockers, "missing_current_version", shot_id, line_id
+            )
+            continue
+        if version.get("status") == "metadata_pending":
+            _append_unique_blocker(
+                blockers, "metadata_pending", shot_id, line_id
+            )
+            continue
+        if version.get("input_hash") != line.get("input_hash"):
+            _append_unique_blocker(
+                blockers, "stale_current_version", shot_id, line_id
+            )
+            continue
+        duration = version.get("duration_ms")
+        if type(duration) is not int or duration <= 0:
+            _append_unique_blocker(
+                blockers, "metadata_pending", shot_id, line_id
+            )
+            continue
+        start_ms = line.get("start_ms")
+        end_ms = line.get("end_ms")
+        if start_ms is None or end_ms is None:
+            _append_unique_blocker(blockers, "timeline_missing", shot_id)
+            continue
+        if (
+            type(start_ms) is not int or type(end_ms) is not int
+            or start_ms < 0 or end_ms <= start_ms
+        ):
+            _append_unique_blocker(
+                blockers, "timeline_invalid", shot_id, line_id
+            )
+            continue
+        if end_ms > duration_limit or start_ms + duration > duration_limit:
+            _append_unique_blocker(
+                blockers, "duration_overflow", shot_id, line_id
+            )
+        audio_intervals.append((start_ms, start_ms + duration, line_id))
+        if line.get("subtitle_visible"):
+            if not str(line.get("subtitle_text") or "").strip():
+                _append_unique_blocker(
+                    blockers, "timeline_invalid", shot_id, line_id
+                )
+            subtitle_intervals.append((start_ms, end_ms, line_id))
+    for previous, current in zip(audio_intervals, audio_intervals[1:]):
+        if current[0] < previous[1]:
+            _append_unique_blocker(
+                blockers, "audio_overlap", shot_id, current[2]
+            )
+    for previous, current in zip(subtitle_intervals, subtitle_intervals[1:]):
+        if current[0] < previous[1]:
+            _append_unique_blocker(
+                blockers, "subtitle_overlap", shot_id, current[2]
+            )
+    return blockers
+
+
+def _operational_blockers(conn, shot):
+    blockers = []
+    shot_id = shot["id"]
+    active = conn.execute(
+        "SELECT 1 FROM short_drama_voice_jobs "
+        "WHERE project_id=? AND shot_id=? "
+        "AND status IN ('pending','running','metadata_pending') LIMIT 1",
+        (shot["project_id"], shot_id),
+    ).fetchone()
+    if active:
+        _append_unique_blocker(blockers, "active_job", shot_id)
+    states = {
+        row[0] for row in conn.execute(
+            "SELECT state FROM short_drama_voice_charge_attempts "
+            "WHERE project_id=? AND shot_id=? "
+            "AND state IN ('accepted','charged','refund_pending')",
+            (shot["project_id"], shot_id),
+        )
+    }
+    if "refund_pending" in states:
+        _append_unique_blocker(blockers, "refund_pending", shot_id)
+    if states & {"accepted", "charged"}:
+        _append_unique_blocker(
+            blockers, "charge_attempt_pending", shot_id
+        )
+    return blockers
 
 
 def build_voice_snapshot(conn, project):
@@ -1418,6 +1604,7 @@ def build_voice_snapshot(conn, project):
             shot_status = "pending"
         shots.append({
             "id": shot["id"],
+            "project_id": project["id"],
             "shot_key": shot["shot_key"],
             "sort_order": shot["sort_order"],
             "duration": shot["duration"],
@@ -1426,6 +1613,40 @@ def build_voice_snapshot(conn, project):
             "status": shot_status,
             "lines": shot_lines,
         })
+        current_shot = shots[-1]
+        suggestions = _timeline_suggestions(shot_lines)
+        for line in shot_lines:
+            suggested = suggestions[line["id"]]
+            line["suggested_start_ms"] = suggested[0]
+            line["suggested_end_ms"] = suggested[1]
+        blockers = (
+            [] if not shot_lines else _timeline_blockers(current_shot)
+        )
+        blockers.extend(_operational_blockers(conn, current_shot))
+        if current_shot["locked"] and blockers:
+            conn.execute(
+                "UPDATE short_drama_voice_shots SET locked=0,updated_at=? "
+                "WHERE shot_id=? AND locked=1",
+                (int(time.time()), shot["id"]),
+            )
+            current_shot["locked"] = False
+        current_shot["lock_blockers"] = blockers
+        current_shot["lockable"] = not blockers
+        if current_shot["locked"]:
+            current_shot["status"] = "done"
+    handoff_blockers = []
+    for shot in shots:
+        if not shot["locked"]:
+            handoff_blockers.append(
+                _blocker("missing_locked_voice_shot", shot["id"])
+            )
+        for blocker in shot["lock_blockers"]:
+            _append_unique_blocker(
+                handoff_blockers, blocker["code"],
+                blocker.get("shot_id"), blocker.get("line_id"),
+            )
+    for shot in shots:
+        shot.pop("project_id", None)
     return {
         "project_id": project["id"],
         "revision": project["revision"],
@@ -1436,7 +1657,290 @@ def build_voice_snapshot(conn, project):
         "spent_points": project["spent_points"],
         "reserved_points": 0,
         "shots": shots,
+        "unlocked_shot_count": sum(not shot["locked"] for shot in shots),
+        "handoff_blocked": bool(handoff_blockers),
+        "handoff_blockers": handoff_blockers,
     }
+
+
+def _timeline_request(payload):
+    if not isinstance(payload, dict) or set(payload) != {
+        "project_id", "revision", "shot_id", "timeline_revision", "items",
+    }:
+        raise ValueError("字幕时间轴请求字段不正确")
+    project_id = str(payload.get("project_id") or "").strip()
+    shot_id = str(payload.get("shot_id") or "").strip()
+    revision = payload.get("revision")
+    timeline_revision = payload.get("timeline_revision")
+    items = payload.get("items")
+    if (
+        not project_id or not shot_id
+        or type(revision) is not int or revision < 1
+        or type(timeline_revision) is not int or timeline_revision < 1
+        or not isinstance(items, list)
+    ):
+        raise ValueError("字幕时间轴请求无效")
+    normalized = []
+    for item in items:
+        if not isinstance(item, dict) or set(item) != {
+            "line_id", "subtitle_text", "subtitle_visible",
+            "start_ms", "end_ms",
+        }:
+            raise ValueError("字幕时间轴条目字段不正确")
+        line_id = str(item.get("line_id") or "").strip()
+        subtitle_text = item.get("subtitle_text")
+        subtitle_visible = item.get("subtitle_visible")
+        start_ms = item.get("start_ms")
+        end_ms = item.get("end_ms")
+        if (
+            not line_id or not isinstance(subtitle_text, str)
+            or len(subtitle_text) > VOICE_SUBTITLE_MAX_LENGTH
+            or type(subtitle_visible) is not bool
+            or type(start_ms) is not int or type(end_ms) is not int
+            or start_ms < 0 or end_ms <= start_ms
+        ):
+            raise ValueError("字幕时间轴条目无效")
+        subtitle_text = subtitle_text.strip()
+        if subtitle_visible and not subtitle_text:
+            raise ValueError("显示字幕时字幕文本不能为空")
+        normalized.append({
+            "line_id": line_id,
+            "subtitle_text": subtitle_text,
+            "subtitle_visible": subtitle_visible,
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+        })
+    return {
+        "project_id": project_id,
+        "revision": revision,
+        "shot_id": shot_id,
+        "timeline_revision": timeline_revision,
+        "items": normalized,
+    }
+
+
+def _voice_project_for_write(conn, owner_username, project_id, revision):
+    conn.row_factory = sqlite3.Row
+    project = conn.execute(
+        "SELECT * FROM short_drama_projects "
+        "WHERE id=? AND username=? AND deleted=0",
+        (project_id, owner_username),
+    ).fetchone()
+    if not project:
+        raise LookupError("短剧项目不存在")
+    if project["stage"] != VOICE_WRITE_STAGE:
+        raise ValueError("当前短剧阶段不能修改配音字幕")
+    if int(project["revision"]) != revision:
+        from .short_drama import RevisionConflict
+        raise RevisionConflict("项目已在其他页面更新，请刷新后重试")
+    ensure_voice_workspace(conn, project_id, {VOICE_WRITE_STAGE})
+    reconcile_voice_jobs(conn, project_id)
+    return project
+
+
+def _voice_shot(snapshot, shot_id):
+    shot = next(
+        (item for item in snapshot.get("shots", []) if item["id"] == shot_id),
+        None,
+    )
+    if not shot:
+        raise LookupError("短剧镜头不存在")
+    return shot
+
+
+def save_voice_timeline(db_factory, owner_username, payload):
+    request = _timeline_request(payload)
+    conn = db_factory()
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("BEGIN IMMEDIATE")
+        project = _voice_project_for_write(
+            conn, owner_username, request["project_id"], request["revision"]
+        )
+        snapshot = build_voice_snapshot(conn, project)
+        shot = _voice_shot(snapshot, request["shot_id"])
+        if shot["locked"]:
+            raise ValueError("已锁定镜头不能修改字幕时间轴")
+        if int(shot["timeline_revision"]) != request["timeline_revision"]:
+            from .short_drama import RevisionConflict
+            raise RevisionConflict("镜头时间轴已更新，请刷新后重试")
+        expected = {line["id"] for line in shot["lines"]}
+        provided = [item["line_id"] for item in request["items"]]
+        if len(provided) != len(set(provided)) or set(provided) != expected:
+            raise ValueError("必须一次提交当前镜头的全部且不重复台词")
+        updates = {item["line_id"]: item for item in request["items"]}
+        for line in shot["lines"]:
+            line.update(updates[line["id"]])
+        blockers = _timeline_blockers(shot)
+        if blockers:
+            raise ValueError(blockers[0]["message"])
+        now = int(time.time())
+        for item in request["items"]:
+            conn.execute(
+                "UPDATE short_drama_voice_lines SET subtitle_text=?,"
+                "subtitle_visible=?,start_ms=?,end_ms=?,updated_at=? "
+                "WHERE id=? AND project_id=? AND shot_id=?",
+                (
+                    item["subtitle_text"], int(item["subtitle_visible"]),
+                    item["start_ms"], item["end_ms"], now, item["line_id"],
+                    request["project_id"], request["shot_id"],
+                ),
+            )
+        shot_update = conn.execute(
+            "UPDATE short_drama_voice_shots "
+            "SET timeline_revision=timeline_revision+1,updated_at=? "
+            "WHERE shot_id=? AND project_id=? AND timeline_revision=? AND locked=0",
+            (
+                now, request["shot_id"], request["project_id"],
+                request["timeline_revision"],
+            ),
+        )
+        project_update = conn.execute(
+            "UPDATE short_drama_projects SET revision=revision+1,updated_at=? "
+            "WHERE id=? AND username=? AND revision=? AND stage=? AND deleted=0",
+            (
+                now, request["project_id"], owner_username,
+                request["revision"], VOICE_WRITE_STAGE,
+            ),
+        )
+        if shot_update.rowcount != 1 or project_update.rowcount != 1:
+            from .short_drama import RevisionConflict
+            raise RevisionConflict("字幕时间轴已在其他页面更新，请刷新后重试")
+        project = conn.execute(
+            "SELECT * FROM short_drama_projects WHERE id=?",
+            (request["project_id"],),
+        ).fetchone()
+        result = build_voice_snapshot(conn, project)
+        conn.commit()
+        return result
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _lock_request(payload):
+    if not isinstance(payload, dict) or set(payload) != {
+        "project_id", "revision", "shot_id", "timeline_revision", "lock",
+    }:
+        raise ValueError("镜头锁定请求字段不正确")
+    project_id = str(payload.get("project_id") or "").strip()
+    shot_id = str(payload.get("shot_id") or "").strip()
+    if (
+        not project_id or not shot_id
+        or type(payload.get("revision")) is not int
+        or type(payload.get("timeline_revision")) is not int
+        or type(payload.get("lock")) is not bool
+    ):
+        raise ValueError("镜头锁定请求无效")
+    return {
+        "project_id": project_id,
+        "revision": payload["revision"],
+        "shot_id": shot_id,
+        "timeline_revision": payload["timeline_revision"],
+        "lock": payload["lock"],
+    }
+
+
+def set_voice_shot_lock(db_factory, owner_username, payload):
+    request = _lock_request(payload)
+    conn = db_factory()
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("BEGIN IMMEDIATE")
+        project = _voice_project_for_write(
+            conn, owner_username, request["project_id"], request["revision"]
+        )
+        snapshot = build_voice_snapshot(conn, project)
+        shot = _voice_shot(snapshot, request["shot_id"])
+        if int(shot["timeline_revision"]) != request["timeline_revision"]:
+            from .short_drama import RevisionConflict
+            raise RevisionConflict("镜头时间轴已更新，请刷新后重试")
+        if request["lock"] and shot["lock_blockers"]:
+            raise ValueError(shot["lock_blockers"][0]["message"])
+        now = int(time.time())
+        shot_update = conn.execute(
+            "UPDATE short_drama_voice_shots SET locked=?,updated_at=? "
+            "WHERE shot_id=? AND project_id=? AND timeline_revision=?",
+            (
+                int(request["lock"]), now, request["shot_id"],
+                request["project_id"], request["timeline_revision"],
+            ),
+        )
+        project_update = conn.execute(
+            "UPDATE short_drama_projects SET revision=revision+1,updated_at=? "
+            "WHERE id=? AND username=? AND revision=? AND stage=? AND deleted=0",
+            (
+                now, request["project_id"], owner_username,
+                request["revision"], VOICE_WRITE_STAGE,
+            ),
+        )
+        if shot_update.rowcount != 1 or project_update.rowcount != 1:
+            from .short_drama import RevisionConflict
+            raise RevisionConflict("镜头或项目已更新，请刷新后重试")
+        project = conn.execute(
+            "SELECT * FROM short_drama_projects WHERE id=?",
+            (request["project_id"],),
+        ).fetchone()
+        result = build_voice_snapshot(conn, project)
+        conn.commit()
+        return result
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def confirm_voice_stage(db_factory, owner_username, payload):
+    if not isinstance(payload, dict) or set(payload) != {
+        "project_id", "revision", "stage",
+    }:
+        raise ValueError("配音阶段确认请求字段不正确")
+    project_id = str(payload.get("project_id") or "").strip()
+    revision = payload.get("revision")
+    if (
+        not project_id or type(revision) is not int
+        or payload.get("stage") != VOICE_WRITE_STAGE
+    ):
+        raise ValueError("配音阶段确认请求无效")
+    conn = db_factory()
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("BEGIN IMMEDIATE")
+        project = _voice_project_for_write(
+            conn, owner_username, project_id, revision
+        )
+        snapshot = build_voice_snapshot(conn, project)
+        if snapshot["handoff_blocked"]:
+            raise ValueError(snapshot["handoff_blockers"][0]["message"])
+        now = int(time.time())
+        updated = conn.execute(
+            "UPDATE short_drama_projects "
+            "SET stage='video_review',revision=revision+1,updated_at=? "
+            "WHERE id=? AND username=? AND revision=? "
+            "AND stage=? AND deleted=0",
+            (now, project_id, owner_username, revision, VOICE_WRITE_STAGE),
+        )
+        if updated.rowcount != 1:
+            from .short_drama import RevisionConflict
+            raise RevisionConflict("项目已更新，请刷新后重试")
+        project = conn.execute(
+            "SELECT * FROM short_drama_projects WHERE id=?",
+            (project_id,),
+        ).fetchone()
+        result = build_voice_snapshot(conn, project)
+        conn.commit()
+        return result
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_voice_workspace(db_factory, username, project_id):
