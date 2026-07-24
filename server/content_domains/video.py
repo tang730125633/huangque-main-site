@@ -2851,22 +2851,12 @@ def gen_xiaole_video(payload):
             image_url = ref_images[0] if ref_images else None
             if image_url and not str(image_url).startswith(("http://", "https://")):
                 raise RuntimeError("xAI官方图生视频需要可公网访问的参考图，COS转存失败")
-            try:
-                xres = video_xai.generate(
-                    model=model, prompt=prompt, image_url=image_url,
-                    duration=payload.get("duration") or 10,
-                    aspect_ratio=ratio, resolution=payload.get("resolution") or "720p",
-                    job_id=job_id, heartbeat=update_video_asset_phase,
-                )
-            except video_xai.XaiCreateUnavailableError:
-                if not video_openrouter.available():
-                    raise
-                xres = video_openrouter.generate(
-                    model=model, prompt=prompt, image_urls=ref_images,
-                    duration=payload.get("duration") or 10,
-                    aspect_ratio=ratio, resolution=payload.get("resolution") or "720p",
-                    job_id=job_id, heartbeat=update_video_asset_phase,
-                )
+            xres = video_xai.generate(
+                model=model, prompt=prompt, image_url=image_url,
+                duration=payload.get("duration") or 10,
+                aspect_ratio=ratio, resolution=payload.get("resolution") or "720p",
+                job_id=job_id, heartbeat=update_video_asset_phase,
+            )
         source_url = xres["source_video_url"]
         provider = xres.get("provider") or "xai"
         if job_id:
