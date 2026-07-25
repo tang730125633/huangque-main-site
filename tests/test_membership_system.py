@@ -247,6 +247,35 @@ class MembershipSystemTests(unittest.TestCase):
         data = self.auth.membership_public("partner", 100, 200, now=201)
         self.assertFalse(data["membership_active"])
         self.assertEqual(data["membership_tier"], "")
+        self.assertEqual(data["membership_status"], "expired")
+        self.assertEqual(data["membership_last_tier"], "partner")
+        self.assertEqual(data["membership_last_name"], "合伙人")
+        self.assertEqual(data["membership_last_expires_at"], 200)
+        self.assertEqual(data["points_purchase_discount_bps"], 10000)
+        self.assertEqual(data["points_purchase_discount_label"], "")
+
+    def test_active_membership_exposes_server_owned_purchase_discount(self):
+        expected = {
+            "experience": (10000, "原价"),
+            "partner": (7500, "7.5折"),
+            "initiator": (5500, "5.5折"),
+        }
+        for tier, (discount_bps, discount_label) in expected.items():
+            with self.subTest(tier=tier):
+                data = self.auth.membership_public(tier, 100, 300, now=200)
+                self.assertTrue(data["membership_active"])
+                self.assertEqual(data["membership_status"], "active")
+                self.assertEqual(data["membership_last_tier"], tier)
+                self.assertEqual(data["points_purchase_discount_bps"], discount_bps)
+                self.assertEqual(data["points_purchase_discount_label"], discount_label)
+
+    def test_nonmember_has_explicit_none_status_without_discount(self):
+        data = self.auth.membership_public(now=200)
+        self.assertFalse(data["membership_active"])
+        self.assertEqual(data["membership_status"], "none")
+        self.assertEqual(data["membership_last_tier"], "")
+        self.assertEqual(data["points_purchase_discount_bps"], 10000)
+        self.assertEqual(data["points_purchase_discount_label"], "")
 
     def test_admin_user_list_has_stable_offset_pagination_and_filtered_total(self):
         for username in ("page_alpha", "page_beta", "page_gamma"):
