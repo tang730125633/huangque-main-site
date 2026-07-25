@@ -879,6 +879,15 @@ def get_resumable_grok_request(job_id):
                FROM video_assets WHERE job_id=?""",
             (job_id,),
         ).fetchone()
+        recovery_error = None
+        try:
+            error_row = c.execute(
+                "SELECT error FROM video_assets WHERE job_id=?", (job_id,)
+            ).fetchone()
+            recovery_error = error_row["error"] if error_row else None
+        except Exception:
+            # 兼容旧测试库/旧资产库没有 error 列的情况。
+            pass
     if not row:
         return None
     phase = str(row["phase"] or "")
@@ -938,6 +947,7 @@ def get_resumable_grok_request(job_id):
         "status": row["status"],
         "resolution": row["resolution"],
         "ratio": row["ratio"],
+        "error": recovery_error,
         "upscale_prediction_id": upscale_prediction_id or None,
     }
 
@@ -955,6 +965,10 @@ def recover_official_video_paid_job(job_id, error, requeue=None):
         return True
     if recovery.get("request_id"):
         if recovery.get("phase") == provider + "_recovery_required":
+            # ponytail: only the adapter's stable HTTP-400 marker is terminal; keep other
+            # recovery-required jobs held so an unknown paid submission is never duplicated.
+            if provider == "omni" and "Gemini Omni 查询无法继续：HTTP 400" in str(recovery.get("error") or ""):
+                return False
             return True
         if requeue:
             if requeue(job_id):
