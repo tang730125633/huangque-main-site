@@ -8,6 +8,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LOGIN = (ROOT / "site" / "login.html").read_text(encoding="utf-8")
+REGISTER = (ROOT / "site" / "register.html").read_text(encoding="utf-8")
+INVITE = (ROOT / "site" / "workbench" / "invite.html").read_text(encoding="utf-8")
 SETTINGS = (ROOT / "site" / "workbench" / "settings.html").read_text(encoding="utf-8")
 OPENAPI = json.loads((ROOT / "site" / "api-docs" / "openapi.json").read_text(encoding="utf-8"))
 
@@ -49,22 +51,27 @@ class InvitePagesTests(unittest.TestCase):
         for forbidden in ("username", "account_id", "recharge", "membership"):
             self.assertNotIn(forbidden, invite_ui)
 
-    def test_legacy_or_second_level_invite_routes_are_absent(self):
-        pages = LOGIN + SETTINGS
-        self.assertNotIn("/api/invite/", pages)
-        self.assertNotIn("level=2", pages)
+    def test_invite_center_uses_paginated_direct_users_and_hides_second_level(self):
+        self.assertIn("/api/invite/users?level=", INVITE)
+        self.assertIn("pageSize=10", INVITE)
+        self.assertIn('id="levelTwo" type="button" hidden', INVITE)
+        self.assertIn("二级邀请暂不展示", INVITE)
 
-    def test_public_api_documents_optional_invite_without_sensitive_lists(self):
+    def test_public_api_documents_optional_registration_invite(self):
         register = OPENAPI["paths"]["/api/auth/register"]["post"]
         properties = register["requestBody"]["content"]["application/json"]["schema"]["properties"]
         self.assertIn("invite_code", properties)
         self.assertNotIn("invite_code", register["requestBody"]["content"]["application/json"]["schema"]["required"])
         self.assertIn("/api/auth/invite/code", OPENAPI["paths"])
-        self.assertNotIn("/api/auth/invite/users", OPENAPI["paths"])
 
     @unittest.skipUnless(shutil.which("node"), "node is required for inline JavaScript parsing")
     def test_inline_javascript_parses(self):
-        for path, html in (("login.html", LOGIN), ("settings.html", SETTINGS)):
+        for path, html in (
+            ("login.html", LOGIN),
+            ("register.html", REGISTER),
+            ("invite.html", INVITE),
+            ("settings.html", SETTINGS),
+        ):
             scripts = inline_scripts(html)
             self.assertTrue(scripts, path)
             for script in scripts:

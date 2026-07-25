@@ -822,7 +822,7 @@ def _user_video_submit_limit(kind, body, username, cost):
     if kind == "xiaole_video":
         active = _user_active_kind_count(username, "xiaole_video")
         if active >= MAX_USER_ACTIVE_XIAOLE_VIDEO:
-            return {"detail": "当前果肉/豆姐/欧米视频最多同时排队或生成 %d 个任务，请等待部分完成后再继续" % MAX_USER_ACTIVE_XIAOLE_VIDEO,
+            return {"detail": "当前果肉/Seedance/Omni 视频最多同时排队或生成 %d 个任务，请等待部分完成后再继续" % MAX_USER_ACTIVE_XIAOLE_VIDEO,
                     "code": "xiaole_active_cap", "active_jobs": active, "max_active_jobs": MAX_USER_ACTIVE_XIAOLE_VIDEO,
                     "retry_after_ms": 4000, "need": cost}
     elif kind == "sora_video":
@@ -1100,22 +1100,14 @@ def run_job(job_id):
         except Exception:
             pass
     except Exception as e:
-        if kind == "sora_video":
+        if kind in {"sora_video", "xiaole_video"}:
             try:
-                from . import video_openai
-                video_domain = _domains()[2]
-                confirmed_failure = isinstance(
-                    e, (video_openai.CreateRejected, video_openai.ProviderVideoFailed)
-                )
-                if not confirmed_failure:
-                    requeue = _requeue_running_job if isinstance(
-                        e, video_openai.TransientOpenAIError
-                    ) else None
-                    if video_domain.recover_sora_paid_job(job_id, e, requeue):
-                        return
+                if _domains()[2].recover_paid_video_error(
+                        job_id, kind, payload, e, _requeue_running_job):
+                    return
             except Exception as recovery_error:
                 # 恢复锚点暂时读不到时不能误退款或重发付费 POST；保留 running 供重启核对。
-                print("[sora] 恢复信息暂不可读，保留 job#%s: %s" %
+                print("[video-recovery] 恢复信息暂不可读，保留 job#%s: %s" %
                       (job_id, str(recovery_error)[:160]), flush=True)
                 return
         # 生成失败：CAS 抢 error 终态；抢到才记失败资产。退点走幂等(reaper 若已退则跳过)
@@ -1155,25 +1147,31 @@ def reaper():
                     grace = VIDEO_REAPER_GRACE
                 if grace and r["updated_at"] >= now - grace:
                     continue
-                if r["kind"] == "sora_video":
+                try:
+                    stuck_payload = json.loads(r["payload"] or "{}")
+                except Exception:
+                    stuck_payload = {}
+                if r["kind"] in {"sora_video", "xiaole_video"}:
                     try:
-                        if _domains()[2].recover_sora_paid_job(
-                                r["id"], "本地 worker 中断，正在恢复查询", _requeue_running_job):
-                            continue
+                        video_domain = _domains()[2]
+                        if video_domain.recover_paid_video_error(r["id"], r["kind"], stuck_payload,
+                                "本地 worker 中断，正在恢复查询", _requeue_running_job, force_requeue=True):
+                            if not video_domain.recovery_hold_expired(r["id"], r["kind"], now - int(r["updated_at"] or now), grace):
+                                continue
+                            print("[video-recovery] job#%s recovery window expired; ending" % r["id"], flush=True)
                     except Exception:
                         continue  # 恢复库读不到时也不能把付费任务误判失败。
                 # CAS 抢 error 终态；抢到(说明 worker 尚未写 done)才退点，退点本身再幂等一层
                 if _fail_job_and_schedule_refund(
-                        r["id"], "生成超时自动结束，退款处理中",
+                        r["id"], "付费视频恢复超时自动结束，退款处理中，请重新提交",
                         username=r["username"], cost=r["cost"], kind=r["kind"]):
-                    _mark_video_asset_failed(r["id"], r["kind"], "生成超时自动结束，退款处理中")
+                    _mark_video_asset_failed(r["id"], r["kind"], "付费视频恢复超时自动结束，退款处理中，请重新提交")
         except Exception:
             pass
         time.sleep(60)
 
 def _requeue_running_job(job_id):
     return startup_recovery.requeue_running_job(jdb, job_id)
-
 
 def reclaim_orphaned_running():
     return startup_recovery.reclaim_orphaned_running(
@@ -1222,6 +1220,19 @@ class H(BaseHTTPRequestHandler):
         if _short_drama_domain().dispatch_http(self, "POST", jdb, verify,
                 getattr(points_domain, "cost_of", None), mutation_lock=_submission_lock,
                 canvas_access_resolver=_short_drama_canvas_access): return
+        if p == "/api/gen/digital-ip/diagnose":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            from . import digital_ip
+            try:
+                return self._send(200, digital_ip.diagnose(self._json_body_strict(), user["username"]))
+            except digital_ip.DigitalIPError as e:
+                return self._send(e.status, {"detail": str(e)})
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)[:220]})
+            except Exception:
+                return self._send(502, {"detail": "AI 分析服务暂时不可用，请稍后重试"})
         if p == "/api/gen/inspiration/like": return inspiration_likes.handle_post(self, verify(self._token()), AUDIO_DB)
         if p == "/api/gen/asset/favorite":
             user = verify(self._token())
@@ -1291,7 +1302,7 @@ class H(BaseHTTPRequestHandler):
             except feature_flags.FeatureDisabled as e: return self._send(503, {"detail": str(e)})
             except audio_domain.VoiceSlotError as e: return self._send(e.status, {"detail": str(e)})
             except points_domain.AuthPointsError as e:
-                return self._send(402 if e.status == 402 else 502, {"detail": e.detail, "need": audio_domain.VOICE_SLOT_COST})
+                return self._send(e.status if e.status in (402, 403) else 502, {"detail": e.detail, "need": audio_domain.VOICE_SLOT_COST})
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/audio/redeem-slot":
@@ -1394,7 +1405,7 @@ class H(BaseHTTPRequestHandler):
                         video_domain.record_video_pending_asset(jid, user["username"], body)
                 except points_domain.AuthPointsError as e:
                     _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(402 if e.status == 402 else 502, {"detail": e.detail, "need": total})
+                    return self._send(e.status if e.status in (402, 403) else 502, {"detail": e.detail, "need": total})
                 except jobs_store.PaidJobInsertError as e:
                     _idempotency_abort(user["username"], p, idem_key)
                     return self._send(500, {"detail": {"refunded": "批量任务创建失败，点数已退回",
@@ -1474,6 +1485,7 @@ class H(BaseHTTPRequestHandler):
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
                 if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "video", "tryon", "xiaole_video", "sora_video", "cinematic"} else ""
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
+                if kind == "xiaole_video" and str(body.get("channel") or "").lower() in {"micro", "omni"} and not idem_key: raise ValueError("官方视频提交必须提供 Idempotency-Key")
             except miniprogram_security.ContentRejected as e:
                 terminal = is_still_route and bool(locals().get("idem_key"))
                 return self._send(400, {"detail": str(e), "code": "content_rejected",
@@ -1631,7 +1643,7 @@ class H(BaseHTTPRequestHandler):
                         return self._send(402, public_rejected)
                     elif not (is_still_route and e.status == 502):
                         _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(402 if e.status == 402 else 502, {"detail": e.detail, "need": cost})
+                    return self._send(e.status if e.status in (402, 403) else 502, {"detail": e.detail, "need": cost})
                 except jobs_store.PaidJobInsertError as e:
                     failed_response = {"detail": {"refunded": "任务创建失败，点数已退回",
                         "queued": "任务创建失败，退款正在自动重试"}.get(e.compensation, "任务创建失败，退款需人工核对"),
@@ -1905,7 +1917,7 @@ class H(BaseHTTPRequestHandler):
             try:
                 points_left = points_domain.deduct_points(user["username"], 1, "search:" + platform)
             except points_domain.AuthPointsError as e:
-                code = 402 if e.status == 402 else 502
+                code = e.status if e.status in (402, 403) else 502
                 return self._send(code, {"detail": e.detail, "need": 1})
             try:
                 r = tikhub.search(platform, keyword, page=page, video_only=False)  # 含图文
@@ -1921,6 +1933,7 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "service": "huangque-content", "caps": list(HANDLERS), "job_workers": JOB_WORKERS, "fast_job_workers": FAST_JOB_WORKERS, "talking_job_workers": TALKING_JOB_WORKERS, "image_job_workers": IMAGE_JOB_WORKERS, "job_queue_max": JOB_QUEUE_MAX, "talking_job_queue_max": TALKING_JOB_QUEUE_MAX,
                                     "max_user_active_jobs": MAX_USER_ACTIVE_JOBS, "max_user_active_xiaole_video": MAX_USER_ACTIVE_XIAOLE_VIDEO, "max_user_active_sora_video": MAX_USER_ACTIVE_SORA_VIDEO, "max_user_active_tryon": MAX_USER_ACTIVE_TRYON, "max_user_active_cinematic": MAX_USER_ACTIVE_CINEMATIC,
                                     "sora_video_enabled": bool(video_domain.sora_video_is_open() and OPENAI_KEY and feature_flags.is_enabled("sora_video")),
+                                    "omni_video_enabled": bool(video_domain.omni_video_is_open() and feature_flags.is_enabled("omni_video")), "seedance_video_enabled": bool(video_domain.seedance_video_is_open() and feature_flags.is_enabled("seedance_video")), "seedance_upscale_enabled": bool(video_domain.seedance_upscale_is_open() and feature_flags.is_enabled("seedance_video")),
                                     "max_user_running_talking": MAX_USER_RUNNING_TALKING, "max_user_running_image": MAX_USER_RUNNING_IMAGE, "video_cost": VIDEO_COST, "video_batch_max": min(video_domain.VIDEO_BATCH_MAX, MAX_USER_ACTIVE_JOBS), "has_openai": bool(OPENAI_KEY), "has_tikhub": bool(tikhub.KEY), "tikhub_base": tikhub.BASE})
         self._send(404, {"detail": "not found"})
     def do_PUT(self):

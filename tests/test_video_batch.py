@@ -349,7 +349,7 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                         ],
                         "path": "/api/gen/xiaole_video",
                         "body": {"channel": "micro", "prompt": "商品展示"},
-                        "detail": "当前果肉/豆姐/欧米视频最多同时排队或生成 2 个任务，请等待部分完成后再继续",
+                        "detail": "当前果肉/Seedance/Omni 视频最多同时排队或生成 2 个任务，请等待部分完成后再继续",
                         "code": "xiaole_active_cap",
                     },
                     {
@@ -374,6 +374,7 @@ class VideoSingleRouteSubLimitTests(unittest.TestCase):
                         before = list(fake.deductions)
                         req = urllib.request.Request(base + case["path"], data=json.dumps(case["body"]).encode("utf-8"), method="POST", headers={
                             "Authorization": "Bearer test", "Content-Type": "application/json",
+                            "Idempotency-Key": "video-cap-" + case["path"].rsplit("/", 1)[-1],
                         })
                         with self.assertRaises(urllib.error.HTTPError) as rejected:
                             urllib.request.urlopen(req, timeout=5)

@@ -71,6 +71,13 @@ test('compact mode hides the logout overlay but keeps expanded logout', () => {
   assert.doesNotMatch(shell, /\.hq-aside-compact button\.hq-user-logout\{display:flex!important/);
 });
 
+test('signed-in users display their concrete membership tier', () => {
+  assert.match(shell, /function membershipRoleName\(user\)/);
+  assert.match(shell, /experience:'体验官',partner:'合伙人',initiator:'发起人'/);
+  assert.match(shell, /var role=membershipRoleName\(u\)/);
+  assert.doesNotMatch(shell, /\?'管理员':'会员'/);
+});
+
 test('generation routes alone use the flush workspace shell', () => {
   const usesFlushWorkspace = readUsesFlushWorkspace();
   for (const route of ['banana', 'video', 'audio']) assert.equal(usesFlushWorkspace(route), true, route);

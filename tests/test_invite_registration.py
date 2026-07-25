@@ -4,6 +4,7 @@ import os
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -14,6 +15,8 @@ from unittest.mock import patch
 class InviteRegistrationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.old_enforcement = os.environ.get("HQ_MEMBERSHIP_ENFORCEMENT_ENABLED")
+        os.environ.pop("HQ_MEMBERSHIP_ENFORCEMENT_ENABLED", None)
         import server.auth_server as auth_server
 
         self.auth = importlib.reload(auth_server)
@@ -21,11 +24,25 @@ class InviteRegistrationTests(unittest.TestCase):
         self.auth.AUTH_COOKIE_SECURE = False
         self.auth.INVITE_HASH_SECRET = "test-invite-secret"
         self.auth.INVITE_PUBLIC_BASE_URL = "https://fang.example.test"
-        self.auth.REGISTER_MAX = 5
-        self.auth.REGISTER_WINDOW = 300
+        self.auth.REGISTER_MAX = 10
+        self.auth.REGISTER_WINDOW = 120
+        self.auth.REGISTER_IP_MAX = 20
+        self.auth.REGISTER_IP_WINDOW = 60
         self.auth.REGISTER_HITS.clear()
         self.auth.init_db()
         self.auth.create_user("inviter", "secret123", 10)
+        now = int(time.time())
+        conn = sqlite3.connect(self.auth.DB)
+        conn.execute(
+            """UPDATE users
+                  SET membership_tier='experience',
+                      membership_started_at=?,
+                      membership_expires_at=?
+                WHERE username='inviter'""",
+            (now, now + self.auth.MEMBERSHIP_YEAR_SECONDS),
+        )
+        conn.commit()
+        conn.close()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self.auth.H)
         self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.server_thread.start()
@@ -35,6 +52,10 @@ class InviteRegistrationTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.server_thread.join(timeout=3)
+        if self.old_enforcement is None:
+            os.environ.pop("HQ_MEMBERSHIP_ENFORCEMENT_ENABLED", None)
+        else:
+            os.environ["HQ_MEMBERSHIP_ENFORCEMENT_ENABLED"] = self.old_enforcement
         self.tmp.cleanup()
 
     def _connect(self):
@@ -78,7 +99,7 @@ class InviteRegistrationTests(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read()), exc.headers
 
-    def test_only_core_schema_is_created_and_invite_stays_optional(self):
+    def test_full_membership_schema_is_created_and_invite_requirement_is_configurable(self):
         conn = self._connect()
         try:
             tables = {
@@ -86,13 +107,23 @@ class InviteRegistrationTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 )
             }
-            self.assertTrue({"invite_campaigns", "invite_codes", "user_invites"} <= tables)
-            self.assertNotIn("invite_admin_audit", tables)
+            self.assertTrue({
+                "invite_campaigns", "invite_codes", "user_invites",
+                "invite_admin_audit", "membership_upgrade_records",
+                "invite_reward_point_records",
+            } <= tables)
             conn.execute("UPDATE invite_campaigns SET code_required=1")
             conn.commit()
         finally:
             conn.close()
 
+        result, err = self.auth.register_account("legacy", "secret123")
+        self.assertIsNone(result)
+        self.assertEqual(err["code"], "code_required")
+        conn = self._connect()
+        conn.execute("UPDATE invite_campaigns SET code_required=0")
+        conn.commit()
+        conn.close()
         result, err = self.auth.register_account("legacy", "secret123")
         self.assertIsNone(err)
         self.assertEqual(result["user"]["points"], 16)
@@ -118,7 +149,8 @@ class InviteRegistrationTests(unittest.TestCase):
             {"X-Real-IP": "203.0.113.10"},
         )
         self.assertEqual(status, 200)
-        self.assertEqual(set(body), {"user"})
+        self.assertEqual(set(body), {"user", "invite_bound"})
+        self.assertTrue(body["invite_bound"])
         self.assertEqual(body["user"]["points"], 16)
         self.assertNotIn("invite", body["user"])
         self.assertIn("HttpOnly", headers.get("Set-Cookie") or "")
@@ -151,7 +183,8 @@ class InviteRegistrationTests(unittest.TestCase):
             {"X-Real-IP": "203.0.113.11"},
         )
         self.assertEqual(status, 200)
-        self.assertEqual(set(body), {"token", "user"})
+        self.assertEqual(set(body), {"token", "user", "invite_bound"})
+        self.assertTrue(body["invite_bound"])
         self.assertEqual(body["user"]["points"], 16)
         self.assertNotIn("invite", body["user"])
         conn = self._connect()
@@ -163,6 +196,34 @@ class InviteRegistrationTests(unittest.TestCase):
             self.assertEqual(source, "miniprogram")
         finally:
             conn.close()
+
+    def test_membership_invite_gate_is_controlled_by_default_off_switch(self):
+        code = self._invite_code()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """UPDATE users SET membership_tier='',
+                                    membership_started_at=NULL,
+                                    membership_expires_at=NULL
+                   WHERE username='inviter'"""
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        status, _, _ = self._request("/api/auth/invite/validate?code=" + code)
+        self.assertEqual(status, 200)
+        status, body, _ = self._request(
+            "/api/auth/register",
+            {"username": "switch_off_user", "password": "secret123", "invite_code": code},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(body["invite_bound"])
+
+        os.environ["HQ_MEMBERSHIP_ENFORCEMENT_ENABLED"] = "1"
+        status, body, _ = self._request("/api/auth/invite/validate?code=" + code)
+        self.assertEqual(status, 409)
+        self.assertEqual(body["code"], "inviter_ineligible")
 
     def test_invalid_code_rolls_back_user_relation_and_token(self):
         result, err = self.auth.register_account(
@@ -241,14 +302,15 @@ class InviteRegistrationTests(unittest.TestCase):
             )[0],
             400,
         )
-        before_block = list(self.auth.REGISTER_HITS["203.0.113.20"])
+        key = "203.0.113.20|missing-device"
+        before_block = list(self.auth.REGISTER_HITS[key])
         status, _, _ = self._request(
             "/api/auth/register",
             {"username": "blocked", "password": "secret123"},
             ip_header,
         )
         self.assertEqual(status, 429)
-        self.assertEqual(self.auth.REGISTER_HITS["203.0.113.20"], before_block)
+        self.assertEqual(self.auth.REGISTER_HITS[key], before_block)
         conn = self._connect()
         try:
             self.assertFalse(
@@ -285,11 +347,66 @@ class InviteRegistrationTests(unittest.TestCase):
         self.assertEqual(statuses.count(200), 1)
         self.assertEqual(statuses.count(429), 5)
 
+    def test_same_ip_different_devices_have_independent_registration_limits(self):
+        self.auth.REGISTER_MAX = 1
+        headers = {"X-Real-IP": "203.0.113.22"}
+
+        first = self._request(
+            "/api/auth/register",
+            {"username": "device_a_1", "password": "secret123", "device_id": "device-a"},
+            headers,
+        )
+        blocked = self._request(
+            "/api/auth/miniprogram-register",
+            {"username": "device_a_2", "password": "secret123", "device_id": "device-a"},
+            headers,
+        )
+        other_device = self._request(
+            "/api/auth/register",
+            {"username": "device_b_1", "password": "secret123", "device_id": "device-b"},
+            headers,
+        )
+
+        self.assertEqual(first[0], 200)
+        self.assertEqual(blocked[0], 429)
+        self.assertEqual(other_device[0], 200)
+
+    def test_same_ip_all_devices_share_twenty_attempts_per_minute(self):
+        self.auth.REGISTER_MAX = 100
+        self.auth.REGISTER_IP_MAX = 2
+        headers = {"X-Real-IP": "203.0.113.23"}
+
+        first = self._request(
+            "/api/auth/register",
+            {"username": "shared_ip_1", "password": "secret123", "device_id": "device-1"},
+            headers,
+        )
+        second = self._request(
+            "/api/auth/register",
+            {"username": "shared_ip_2", "password": "secret123", "device_id": "device-2"},
+            headers,
+        )
+        blocked = self._request(
+            "/api/auth/register",
+            {"username": "shared_ip_3", "password": "secret123", "device_id": "device-3"},
+            headers,
+        )
+
+        self.assertEqual(first[0], 200)
+        self.assertEqual(second[0], 200)
+        self.assertEqual(blocked[0], 429)
+
+    def test_registration_rate_limit_defaults_to_ten_attempts_per_two_minutes(self):
+        self.assertEqual(self.auth.REGISTER_MAX, 10)
+        self.assertEqual(self.auth.REGISTER_WINDOW, 120)
+        self.assertEqual(self.auth.REGISTER_IP_MAX, 20)
+        self.assertEqual(self.auth.REGISTER_IP_WINDOW, 60)
+
     def test_code_endpoint_requires_login_and_first_issue_is_concurrently_stable(self):
         self.assertEqual(self._request("/api/auth/invite/code")[0], 401)
         token = self.auth.issue_token("inviter")
         headers = {"Authorization": "Bearer " + token}
-        self.assertEqual(self._request("/api/invite/code", headers=headers)[0], 404)
+        self.assertEqual(self._request("/api/invite/code", headers=headers)[0], 200)
         barrier = threading.Barrier(5)
         responses = []
         response_lock = threading.Lock()
@@ -310,10 +427,10 @@ class InviteRegistrationTests(unittest.TestCase):
         codes = {body["code"] for _, body in responses}
         self.assertEqual(len(codes), 1)
         for _, body in responses:
-            self.assertEqual(set(body), {"code", "invite_link"})
+            self.assertEqual(set(body), {"ok", "code", "invite_link"})
             self.assertEqual(
                 body["invite_link"],
-                "https://fang.example.test/login.html?invite=" + body["code"],
+                "https://fang.example.test/register?invite=" + body["code"],
             )
         conn = self._connect()
         try:

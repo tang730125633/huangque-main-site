@@ -623,6 +623,27 @@ def auth_admin_request(path, token, method="GET", payload=None):
         raise err
 
 
+def auth_admin_raw(path, token):
+    if not AUTH_INTERNAL_TOKEN:
+        raise RuntimeError("auth internal token not configured")
+    req = urllib.request.Request(AUTH_BASE + path, headers={
+        "Authorization": "Bearer " + (token or ""),
+        "X-HQ-Internal-Token": AUTH_INTERNAL_TOKEN,
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.read(), r.headers.get("Content-Type"), r.headers.get("Content-Disposition")
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read() or b"{}")
+        except Exception:
+            body = {}
+        err = RuntimeError(body.get("detail") or "auth admin export failed")
+        err.status = e.code
+        err.body = body
+        raise err
+
+
 def auth_error_response(handler, exc):
     status = int(getattr(exc, "status", 502) or 502)
     body = getattr(exc, "body", None) or {"detail": str(exc)[:180]}
@@ -1024,22 +1045,24 @@ def request_logs(limit=200, status="", q="", include_noise=False):
     return out
 
 
-def activity_logs(days=7, limit=200, category="", q="", source="", include_noise=False):
+def activity_logs(days=7, limit=200, category="", q="", source="", include_noise=False, offset=0):
     """任务记录(jobs 库) + HTTP 请求(nginx) 合并成一条时间线，最新在前。
 
     category: '' | ok | fail | running（统一语义：任务 done/error/排队中 ↔ HTTP <400/>=400）
     source:   '' | job | http
     """
-    limit = max(1, min(int(limit or 200), 500))
+    limit = max(1, min(int(limit or 200), 100))
+    offset = max(0, int(offset or 0))
     q = str(q or "").strip()
     category = str(category or "").strip()
     source = str(source or "").strip()
     merged, message = [], None
+    source_limit = 500
 
     if source in ("", "http") and category != "running":
         # 成功/失败下推到采集层，避免"失败行被截断挤掉"
         entries, message = _collect_request_entries(
-            limit, status=category if category in ("ok", "fail") else "", include_noise=include_noise
+            source_limit, status=category if category in ("ok", "fail") else "", include_noise=include_noise
         )
         for key, it in entries:
             cat = "ok" if it["status"] < 400 else "fail"
@@ -1064,7 +1087,7 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
             )
 
     if source in ("", "job"):
-        for j in call_logs(days, limit)["items"]:
+        for j in call_logs(days, source_limit)["items"]:
             t = time.localtime(j["created_at"]) if j["created_at"] else None
             key = (t.tm_year, t.tm_mon, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec) if t else (0, 0, 0, 0, 0, 0)
             cat = "ok" if j["status"] == "done" else ("fail" if j["status"] == "error" else "running")
@@ -1088,16 +1111,22 @@ def activity_logs(days=7, limit=200, category="", q="", source="", include_noise
                 )
             )
 
-    items = []
+    matching = []
     for key, it in sorted(merged, key=lambda x: x[0], reverse=True):
         if category and it["cat"] != category:
             continue
         if q and q not in it["path"] and q not in (it["user"] or "") and q not in (it["func"] or ""):
             continue
-        items.append(it)
-        if len(items) >= limit:
-            break
-    out = {"items": items, "limit": limit, "days": days}
+        matching.append(it)
+    total = len(matching)
+    items = matching[offset:offset + limit]
+    out = {
+        "items": items,
+        "limit": limit,
+        "offset": offset,
+        "total": total,
+        "days": days,
+    }
     if message and source != "job":
         out["message"] = message
     return out
@@ -1394,6 +1423,15 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_raw(self, code, body, content_type, disposition=None):
+        self.send_response(code)
+        self.send_header("Content-Type", content_type or "application/octet-stream")
+        if disposition:
+            self.send_header("Content-Disposition", disposition)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _token(self):
         return request_token(self.headers)
 
@@ -1452,6 +1490,25 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, auth_admin_request(suffix, self._token()))
             except Exception as e:
                 return auth_error_response(self, e)
+        if path in {
+            "/api/admin/invite/config", "/api/admin/invite/stats",
+            "/api/admin/invite/relations", "/api/admin/invite/audit",
+            "/api/admin/invite/reward-points",
+        }:
+            q = urllib.parse.urlparse(self.path).query
+            suffix = path.replace("/api/admin/", "/api/auth/admin/", 1) + (("?" + q) if q else "")
+            try:
+                return self._send(200, auth_admin_request(suffix, self._token()))
+            except Exception as e:
+                return auth_error_response(self, e)
+        if path == "/api/admin/invite/export.xlsx":
+            q = urllib.parse.urlparse(self.path).query
+            suffix = path.replace("/api/admin/", "/api/auth/admin/", 1) + (("?" + q) if q else "")
+            try:
+                body, content_type, disposition = auth_admin_raw(suffix, self._token())
+                return self._send_raw(200, body, content_type, disposition)
+            except Exception as e:
+                return auth_error_response(self, e)
         if path == "/api/admin/ping":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             svc_key = (q.get("service") or [""])[0].strip()
@@ -1493,6 +1550,7 @@ class H(BaseHTTPRequestHandler):
                         (q.get("q") or [""])[0],
                         (q.get("source") or [""])[0],
                         (q.get("noise") or ["0"])[0] in ("1", "true"),
+                        (q.get("offset") or ["0"])[0],
                     ),
                 )
             except Exception as e:
@@ -1560,6 +1618,42 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": str(e)})
             except Exception as e:
                 return auth_error_response(self, e)
+        if path == "/api/admin/membership/set":
+            try:
+                return self._send(
+                    200,
+                    auth_admin_request(
+                        "/api/auth/admin/membership/set", self._token(), method="POST", payload=self._body(),
+                    ),
+                )
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return auth_error_response(self, e)
+        if path == "/api/admin/membership/recharge":
+            try:
+                return self._send(
+                    200,
+                    auth_admin_request(
+                        "/api/auth/admin/membership/recharge", self._token(), method="POST", payload=self._body(),
+                    ),
+                )
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return auth_error_response(self, e)
+        if path == "/api/admin/membership/recharge/preview":
+            try:
+                return self._send(
+                    200,
+                    auth_admin_request(
+                        "/api/auth/admin/membership/recharge/preview", self._token(), method="POST", payload=self._body(),
+                    ),
+                )
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return auth_error_response(self, e)
         if path == "/api/admin/recharge/review":
             try:
                 return self._send(
@@ -1570,7 +1664,43 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": str(e)})
             except Exception as e:
                 return auth_error_response(self, e)
+        if path.startswith("/api/admin/invite/relations/"):
+            suffix = path.replace("/api/admin/", "/api/auth/admin/", 1)
+            try:
+                return self._send(200, auth_admin_request(
+                    suffix, self._token(), method="POST", payload=self._body(),
+                ))
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return auth_error_response(self, e)
+        if path.startswith("/api/admin/invite/reward-points/"):
+            suffix = path.replace("/api/admin/", "/api/auth/admin/", 1)
+            try:
+                return self._send(200, auth_admin_request(
+                    suffix, self._token(), method="POST", payload=self._body(),
+                ))
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return auth_error_response(self, e)
         return self._send(404, {"detail": "not found"})
+
+    def do_PUT(self):
+        path = self.path.split("?", 1)[0]
+        if path != "/api/admin/invite/config":
+            return self._send(404, {"detail": "not found"})
+        user = self._admin()
+        if not user:
+            return
+        try:
+            return self._send(200, auth_admin_request(
+                "/api/auth/admin/invite/config", self._token(), method="PUT", payload=self._body(),
+            ))
+        except ValueError as e:
+            return self._send(400, {"detail": str(e)})
+        except Exception as e:
+            return auth_error_response(self, e)
 
     def do_OPTIONS(self):
         self.send_response(204)

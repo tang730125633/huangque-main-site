@@ -19,6 +19,7 @@ class VirtualPaymentTests(unittest.TestCase):
         "WX_MESSAGE_PUSH_TOKEN",
         "WX_MESSAGE_PUSH_AES_KEY",
         "HQ_MINIPROGRAM_PAYMENTS_ENABLED",
+        "HQ_MEMBERSHIP_ENFORCEMENT_ENABLED",
     )
 
     def setUp(self):
@@ -104,6 +105,7 @@ class VirtualPaymentTests(unittest.TestCase):
         handler = self.auth.H.__new__(self.auth.H)
         handler.path = "/api/auth/virtual-pay/packages"
         handler._user = lambda: {"username": "buyer"}
+        handler._require_membership = lambda row: True
         handler._send = lambda status, payload, extra_headers=None: sent.append(
             (status, payload)
         )
@@ -299,7 +301,78 @@ class VirtualPaymentTests(unittest.TestCase):
             "min_amount_yuan": 1,
             "max_amount_yuan": 5000,
             "points_per_yuan": 10,
+            "price_fen_per_list_yuan": 100,
+            "membership_tier": "",
+            "discount_bps": 10000,
         })
+
+    def test_three_membership_tiers_price_three_virtual_packages_on_server(self):
+        products = [
+            {
+                "id": "points_1000",
+                "product_id": "hq_points_1000",
+                "title": "1000 points",
+                "price_fen": 10000,
+                "points": 1000,
+            },
+            {
+                "id": "points_2000",
+                "product_id": "hq_points_2000",
+                "title": "2000 points",
+                "price_fen": 20000,
+                "points": 2000,
+            },
+            {
+                "id": "points_5000",
+                "product_id": "hq_points_5000",
+                "title": "5000 points",
+                "price_fen": 50000,
+                "points": 5000,
+            },
+        ]
+        os.environ["WX_VIRTUAL_PAY_PRODUCTS_JSON"] = json.dumps(products)
+        expected = {
+            "experience": [10000, 20000, 50000],
+            "partner": [7500, 15000, 37500],
+            "initiator": [5500, 11000, 27500],
+        }
+        now = 1800000000
+        for tier, prices in expected.items():
+            username = "buyer_" + tier
+            self.auth.create_user(username, "secret123", 0)
+            c = sqlite3.connect(self.auth.DB)
+            try:
+                c.execute(
+                    """UPDATE users
+                          SET membership_tier=?,membership_started_at=?,membership_expires_at=?
+                        WHERE username=?""",
+                    (tier, now, now + self.auth.MEMBERSHIP_YEAR_SECONDS, username),
+                )
+                c.commit()
+            finally:
+                c.close()
+
+            quotes = self.auth.public_virtual_pay_packages(tier)
+            self.assertEqual([item["price_fen"] for item in quotes], prices)
+            for product, expected_fen in zip(products, prices):
+                with self.subTest(tier=tier, package=product["id"]):
+                    with patch.object(
+                        self.auth.wechat_vpay,
+                        "code_to_session",
+                        return_value={
+                            "openid": "openid-" + tier,
+                            "session_key": "session-key",
+                        },
+                    ):
+                        result, err = self.auth.create_virtual_pay_order(
+                            username, product["id"], "wx-code",
+                        )
+                    self.assertIsNone(err)
+                    self.assertEqual(result["order"]["amount_fen"], expected_fen)
+                    self.assertEqual(result["order"]["points"], product["points"])
+                    self.assertEqual(result["order"]["pricing_tier"], tier)
+                    sign_data = json.loads(result["payment"]["signData"])
+                    self.assertEqual(sign_data["goodsPrice"], expected_fen)
 
     def test_secure_message_push_round_trip_and_signature_check(self):
         message = {

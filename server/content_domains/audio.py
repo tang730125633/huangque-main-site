@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import hashlib
+
 from .core import (
     TTS_MODEL,
     _ensure_column, _file_url, _out_path, _post_bytes, _resolve_out_file,
@@ -45,10 +47,58 @@ def count_user_audio_voice_slots(username):
         return _valid_voice_slot_count(conn, username)
 
 
+def _membership_voice_slot_entitlement(username):
+    q = urllib.parse.quote(str(username or ""), safe="")
+    res = _auth_points_request(
+        "/api/auth/membership/voice-slot-entitlement?username=" + q,
+        method="GET",
+    )
+    return bool((res.get("entitlement") or {}).get("eligible"))
+
+
+def ensure_membership_voice_slot(username):
+    """幂等落地会员免费槽位；失败不扣点，下次读取或购买时自动重试。"""
+    username = (username or "").strip()
+    if not username or not _membership_voice_slot_entitlement(username):
+        return None
+    user_id = get_user_id(username)
+    slot_id = "member_" + hashlib.sha256(username.encode("utf-8")).hexdigest()[:24]
+    now = int(time.time())
+    with _voice_slot_purchase_lock:
+        with closing(adb()) as conn:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                if _valid_voice_slot_count(conn, username) > 0:
+                    conn.commit()
+                    return {"created": False, "slot_id": None, "status": "existing", "cost": 0}
+                conn.execute(
+                    """INSERT OR IGNORE INTO audio_voice_slots(
+                           username,user_id,slot_id,status,created_at,updated_at
+                       ) VALUES(?,?,?,?,?,?)""",
+                    (username, user_id, slot_id, "active", now, now),
+                )
+                created = bool(conn.execute("SELECT changes()").fetchone()[0])
+                conn.commit()
+                return {
+                    "created": created,
+                    "slot_id": slot_id,
+                    "status": "active",
+                    "cost": 0,
+                }
+            except Exception:
+                conn.rollback()
+                raise
+
+
 def purchase_audio_voice_slot(username):
     username = (username or "").strip()
     if not username:
         raise ValueError("missing username")
+
+    free_slot = ensure_membership_voice_slot(username)
+    if free_slot and free_slot.get("created"):
+        free_slot["points_left"] = None
+        return free_slot
 
     with _voice_slot_purchase_lock:
         if count_user_audio_voice_slots(username) >= VOICE_SLOT_MAX_PER_USER:
@@ -170,6 +220,11 @@ def redeem_audio_voice_slot(username, code):
         return {"slot_id": slot_id, "username": username, "user_id": user_id, "status": "active"}
 
 def list_user_audio_voice_slots(username):
+    try:
+        ensure_membership_voice_slot(username)
+    except Exception:
+        # 权益仍保留在 auth 数据库，下一次读取会继续尝试；不影响已有槽位展示。
+        pass
     with closing(adb()) as c:
         rows = c.execute("""SELECT s.id, s.username, s.user_id, s.slot_id, s.status, s.voice_id, COALESCE(s.reclone_count, 0) AS reclone_count,
                    s.created_at, s.updated_at, s.clone_started_at, s.clone_upload_at, s.clone_error,

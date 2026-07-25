@@ -131,6 +131,15 @@ class VideoParameterUiTests(unittest.TestCase):
         self.assertEqual(points.cost_of("tryon", {"clothes_data": "x", "background_data": "y"}), 40)
         self.assertEqual(points.cost_of("tryon", {"clothes_data": "x"}), 25)
 
+    def test_grok_duration_and_reference_controls_match_model_capabilities(self):
+        self.assertNotIn('id="grok15Btn"', VIDEO_HTML)
+        self.assertNotIn("通用版带参考图最长支持10秒", VIDEO_HTML)
+        self.assertIn(
+            "function grokRefLimit(){return selectedGrokModel==='grok-imagine-video-1.5'?1:GROK_REF_MAX;}",
+            VIDEO_HTML,
+        )
+        self.assertIn("Grok Video 1.5 必须上传且只能上传1张首帧图", VIDEO_HTML)
+
     def test_hidden_output_shadow_ui_is_removed(self):
         for stale_id in ("outputThumb", "outputMotion", "outputRatio", "outputDuration", "outputPreview"):
             self.assertNotIn('id="%s"' % stale_id, VIDEO_HTML)

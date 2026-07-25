@@ -111,7 +111,7 @@
     {k:'dashboard',l:'今日',i:'home', admin:true}, {k:'inspiration',l:'灵感设计',i:'sparkles'},
     {k:'leads',l:'平台获客',i:'search'}, {k:'collect',l:'内容爬取',i:'link'}, {k:'banana',l:'图片生成',i:'image'},
     {k:'video',l:'视频生成',i:'video'}, {k:'audio',l:'音频生成',i:'mic'}, {k:'script',l:'文案编导',i:'edit'},
-    {k:'canvas',l:'无限画布',i:'layers'}, {k:'assets',l:'我的资产',i:'folder'},
+    {k:'canvas',l:'无限画布',i:'layers'}, {k:'assets',l:'我的资产',i:'folder'}, {k:'invite',l:'邀请中心',i:'users'},
     {k:'cost',l:'成本',i:'coins', admin:true}, {k:'tutorials',l:'教程视频',i:'play'}, {k:'settings',l:'通用设置',i:'gear'}
   ];
 
@@ -762,6 +762,11 @@
 
   // ===== 用户登录态显示（左下侧栏卡 + 右上注册/登录）=====
   function currentUser(){ try{ return JSON.parse(localStorage.getItem('hq_user')||'null'); }catch(e){ return null; } }
+  function membershipRoleName(user){
+    if(user&&user.role==='admin') return '管理员';
+    if(!user||!user.membership_active) return '非会员';
+    return user.membership_name||({experience:'体验官',partner:'合伙人',initiator:'发起人'}[user.membership_tier])||'会员等级待同步';
+  }
   function accountStorageKey(prefix,user){ return prefix+':'+(user&&user.username?user.username:'guest'); }
   function readAccountJson(prefix,user){
     try{ var value=JSON.parse(localStorage.getItem(accountStorageKey(prefix,user))||'{}'); return value&&typeof value==='object'?value:{}; }catch(e){ return {}; }
@@ -779,7 +784,7 @@
     if(inn){
       var name=profile.nickname||(u&&(u.name||u.nickname||u.username))||'我的账号', ch=(String(name).trim()[0]||'我').toUpperCase();
       var safeName=escapeHtml(name), safeCh=escapeHtml(ch);
-      var role=(u&&u.role==='admin')?'管理员':'会员';
+      var role=membershipRoleName(u);
       if(card) card.innerHTML='<div class="hq-user-row" title="'+safeName+'" style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-radius:10px;">'+
         '<div style="width:34px;height:34px;border-radius:50%;flex:none;background:'+av+';box-shadow:inset 0 1px 0 rgba(255,255,255,.45), inset 0 -2px 4px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;color:#1a1206;font-size:13px;font-weight:600;">'+safeCh+'</div>'+
         '<div class="hq-user-copy" style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+safeName+'</div><div style="font-size:11px;color:#e7b24c;">'+role+'</div></div>'+

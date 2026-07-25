@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>邀请注册 · 黄雀 AI</title>
+<link rel="icon" href="assets/cloud/logo-bird.png">
+<link rel="stylesheet" href="assets/fonts/hq-fonts.css">
+<style>
+  *{box-sizing:border-box}html,body{min-height:100%;margin:0}body{font-family:"Noto Sans SC",system-ui,sans-serif;color:#edf2f9;background:#080d16}
+  body:before{content:"";position:fixed;inset:0;pointer-events:none;background:radial-gradient(circle at 14% 12%,rgba(231,178,76,.13),transparent 31%),radial-gradient(circle at 88% 90%,rgba(77,116,255,.12),transparent 34%),linear-gradient(rgba(148,164,187,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(148,164,187,.025) 1px,transparent 1px);background-size:auto,auto,42px 42px,42px 42px}
+  a{color:inherit;text-decoration:none}.page{position:relative;min-height:100vh;display:grid;grid-template-columns:minmax(320px,.86fr) minmax(460px,1.14fr)}
+  .story{display:flex;flex-direction:column;justify-content:space-between;padding:48px clamp(34px,6vw,88px);border-right:1px solid rgba(148,164,187,.1);background:linear-gradient(155deg,rgba(19,28,44,.84),rgba(8,13,22,.7))}
+  .brand{display:flex;align-items:center;gap:12px;font-size:18px;font-weight:800}.brand img{width:38px;height:38px;object-fit:contain}.eyebrow{margin-top:80px;color:#e7b24c;font-size:12px;font-weight:800;letter-spacing:.22em;text-transform:uppercase}
+  h1{max-width:560px;margin:18px 0 16px;font-size:clamp(34px,4.4vw,64px);line-height:1.12;letter-spacing:-.04em}.lead{max-width:540px;color:#94a4bb;font-size:15px;line-height:1.9}.feature-list{display:grid;gap:13px;margin-top:34px}.feature{display:flex;align-items:center;gap:12px;color:#cad4e2;font-size:13px}.feature i{width:7px;height:7px;border-radius:50%;background:#e7b24c;box-shadow:0 0 16px rgba(231,178,76,.7)}
+  .fine{color:#55647a;font-size:11px;line-height:1.7}.form-side{display:flex;align-items:center;justify-content:center;padding:42px 22px}.card{width:min(500px,100%);padding:34px;border:1px solid rgba(148,164,187,.14);border-radius:24px;background:linear-gradient(165deg,rgba(18,26,40,.94),rgba(10,15,25,.94));box-shadow:0 34px 90px rgba(0,0,0,.38)}
+  .card h2{margin:0;font-size:26px}.sub{margin:8px 0 24px;color:#8190a6;font-size:13px}.inviter{display:none;align-items:center;gap:12px;margin-bottom:16px;padding:13px;border:1px solid rgba(231,178,76,.23);border-radius:13px;background:rgba(231,178,76,.07)}.inviter.on{display:flex}.avatar{display:grid;place-items:center;width:38px;height:38px;border-radius:50%;font-weight:900;color:#161006;background:linear-gradient(135deg,#f7d889,#dba13a)}.inviter-main{min-width:0}.inviter-title{font-size:13px;font-weight:700}.inviter-meta{margin-top:3px;color:#8492a7;font:11px "JetBrains Mono",monospace}
+  form{display:grid;gap:13px}.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{display:grid;gap:7px}.field span{color:#9aa9bd;font-size:12px;font-weight:600}.input{width:100%;height:48px;padding:0 14px;border:1px solid rgba(148,164,187,.14);border-radius:12px;outline:0;color:#edf2f9;background:rgba(4,8,15,.48);font:14px inherit;transition:.16s}.input:focus{border-color:rgba(231,178,76,.58);box-shadow:0 0 0 3px rgba(231,178,76,.1)}.input[readonly]{color:#e7b24c;background:rgba(231,178,76,.05)}
+  .invite-note{min-height:18px;color:#75849a;font-size:11px;line-height:1.6}.invite-note.ok{color:#38d6b0}.invite-note.err,.message.err{color:#f4708a}.submit{height:50px;margin-top:6px;border:0;border-radius:13px;cursor:pointer;color:#201703;background:linear-gradient(135deg,#f7d889,#e7b24c);box-shadow:0 15px 34px -16px rgba(231,178,76,.7);font:800 15px inherit}.submit:disabled{cursor:not-allowed;opacity:.52}.message{min-height:20px;text-align:center;color:#94a4bb;font-size:12px}.login-link{text-align:center;color:#8190a6;font-size:12px}.login-link a{color:#e7b24c;font-weight:700}
+  @media(max-width:900px){.page{grid-template-columns:1fr}.story{min-height:auto;padding:28px 22px 34px;border-right:0;border-bottom:1px solid rgba(148,164,187,.1)}.eyebrow{margin-top:48px}h1{font-size:38px}.feature-list,.fine{display:none}.form-side{padding:24px 14px 46px}.card{padding:25px 20px}}
+  @media(max-width:520px){.row{grid-template-columns:1fr}.card{border-radius:18px}}
+</style>
+</head>
+<body>
+<main class="page">
+  <section class="story">
+    <div>
+      <a class="brand" href="/"><img src="assets/cloud/logo-mark.png" alt=""><span>黄雀 AI</span></a>
+      <div class="eyebrow">Invitation</div>
+      <h1>与优秀的创作者<br>一起高效生产内容</h1>
+      <p class="lead">通过好友邀请加入黄雀 AI 工作台，使用图片、视频、配音和文案工具完成完整内容生产。</p>
+      <div class="feature-list"><div class="feature"><i></i>邀请码只用于建立推荐关系</div><div class="feature"><i></i>注册不会产生奖励、分佣或额外扣费</div><div class="feature"><i></i>邀请关系注册成功后不可自行修改</div></div>
+    </div>
+    <div class="fine">黄雀 AI · 智能内容生产工作台</div>
+  </section>
+  <section class="form-side">
+    <div class="card">
+      <h2>创建账号</h2>
+      <p class="sub" id="activityText">正在读取邀请活动…</p>
+      <div class="inviter" id="inviterCard"><div class="avatar" id="inviterAvatar">邀</div><div class="inviter-main"><div class="inviter-title" id="inviterName">好友邀请你加入</div><div class="inviter-meta" id="inviterAccount"></div></div></div>
+      <form id="registerForm" novalidate>
+        <label class="field"><span>账号</span><input class="input" id="username" maxlength="64" autocomplete="username" placeholder="请输入账号"></label>
+        <label class="field"><span>昵称（可选）</span><input class="input" id="displayName" maxlength="32" autocomplete="nickname" placeholder="用于工作台展示"></label>
+        <div class="row"><label class="field"><span>密码</span><input class="input" id="password" type="password" minlength="6" autocomplete="new-password" placeholder="至少 6 位"></label><label class="field"><span>确认密码</span><input class="input" id="confirmPassword" type="password" minlength="6" autocomplete="new-password" placeholder="再次输入密码"></label></div>
+        <label class="field" id="inviteField"><span id="inviteLabel">邀请码（选填）</span><input class="input" id="inviteCode" maxlength="6" autocomplete="off" spellcheck="false" placeholder="6 位数字或大写字母"><small class="invite-note" id="inviteNote">可以不填写邀请码直接注册</small></label>
+        <button class="submit" id="submitBtn" type="submit">注册并进入工作台</button>
+        <div class="message" id="message" aria-live="polite"></div>
+      </form>
+      <div class="login-link">已有账号？<a href="login.html">返回登录</a></div>
+    </div>
+  </section>
+</main>
+<script>
+(function(){
+  var form=document.getElementById('registerForm'), codeInput=document.getElementById('inviteCode');
+  var note=document.getElementById('inviteNote'), message=document.getElementById('message'), submit=document.getElementById('submitBtn');
+  var config={enabled:false,code_required:false}, linkCode='', linkCodeValid=false, validating=0;
+  function text(id,value){document.getElementById(id).textContent=value||'';}
+  function normalizeCode(value){return String(value||'').trim().toUpperCase().replace(/[^23456789ABCDEFGHJKMNPQRSTUVWXYZ]/g,'').slice(0,6);}
+  function setMessage(value,error){message.textContent=value||'';message.className='message'+(error?' err':'');}
+  function setInviteNote(value,tone){note.textContent=value||'';note.className='invite-note'+(tone?' '+tone:'');}
+  function deviceId(){
+    var key='hq_invite_device_v1', value='';
+    try{value=localStorage.getItem(key)||'';}catch(e){}
+    if(value) return value;
+    var bytes=new Uint8Array(16); if(window.crypto&&crypto.getRandomValues) crypto.getRandomValues(bytes);
+    value=Array.prototype.map.call(bytes,function(x){return x.toString(16).padStart(2,'0');}).join('')||String(Date.now())+Math.random();
+    try{localStorage.setItem(key,value);}catch(e){}
+    return value;
+  }
+  function showInviter(data){
+    var inviter=data&&data.inviter||{}, name=inviter.name||'好友';
+    document.getElementById('inviterCard').classList.add('on');
+    text('inviterName',name+' 邀请你加入');text('inviterAccount','账号 ID '+(inviter.account_id||'--'));text('inviterAvatar',name.charAt(0)||'邀');
+  }
+  function validateCode(value,fromLink){
+    var code=normalizeCode(value);codeInput.value=code;linkCodeValid=false;
+    if(!code){setInviteNote(config.code_required?'当前活动必须填写邀请码':'可以不填写邀请码直接注册',config.code_required?'err':'');return Promise.resolve(false);}
+    if(code.length!==6){setInviteNote('邀请码需要 6 位','err');return Promise.resolve(false);}
+    var seq=++validating;setInviteNote('正在验证邀请码…','');
+    return fetch('/api/invite/validate?code='+encodeURIComponent(code),{cache:'no-store'}).then(function(r){return r.json().catch(function(){return {};}).then(function(d){return {ok:r.ok,data:d};});}).then(function(res){
+      if(seq!==validating)return false;
+      if(!res.ok)throw new Error(res.data.detail||'邀请码无效');
+      setInviteNote('邀请码有效','ok');showInviter(res.data);linkCodeValid=!!fromLink;
+      if(fromLink){codeInput.readOnly=true;linkCode=code;}
+      return true;
+    }).catch(function(err){
+      if(seq!==validating)return false;
+      document.getElementById('inviterCard').classList.remove('on');codeInput.readOnly=false;linkCodeValid=false;
+      setInviteNote(err.message||'邀请码验证失败','err');return false;
+    });
+  }
+  function loadConfig(){
+    return fetch('/api/invite/config',{cache:'no-store'}).then(function(r){return r.json().then(function(d){return {ok:r.ok,data:d};});}).then(function(res){
+      if(!res.ok)throw new Error(res.data.detail||'活动读取失败');config=res.data;
+      text('activityText',config.enabled?'填写信息完成注册':'当前邀请活动未开启，仍可正常注册');
+      text('inviteLabel','邀请码'+(config.code_required?'（必填）':'（选填）'));
+      var raw=new URLSearchParams(location.search).get('invite')||'';linkCode=normalizeCode(raw);
+      if(!config.enabled&&!linkCode)document.getElementById('inviteField').style.display='none';
+      if(linkCode)return validateCode(linkCode,true);
+      setInviteNote(config.code_required?'当前活动必须填写邀请码':'可以不填写邀请码直接注册',config.code_required?'err':'');
+    }).catch(function(){text('activityText','注册服务可用，邀请配置暂时无法读取');});
+  }
+  codeInput.addEventListener('input',function(){if(!this.readOnly){this.value=normalizeCode(this.value);document.getElementById('inviterCard').classList.remove('on');linkCodeValid=false;}});
+  codeInput.addEventListener('blur',function(){if(!this.readOnly&&this.value)validateCode(this.value,false);});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();setMessage('');
+    var username=document.getElementById('username').value.trim(), name=document.getElementById('displayName').value.trim();
+    var password=document.getElementById('password').value, confirm=document.getElementById('confirmPassword').value, code=normalizeCode(codeInput.value);
+    if(!username||!password)return setMessage('请填写账号和密码',true);
+    if(password.length<6)return setMessage('密码至少 6 位',true);
+    if(password!==confirm)return setMessage('两次输入的密码不一致',true);
+    if(config.code_required&&!code)return setMessage('当前活动必须填写邀请码',true);
+    var ensure=code?validateCode(code,code===linkCode&&linkCodeValid):Promise.resolve(true);
+    submit.disabled=true;submit.textContent='正在注册…';
+    ensure.then(function(ok){
+      if(code&&!ok)throw new Error('请填写有效的邀请码');
+      return fetch('/api/auth/register',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,password:password,display_name:name,invite_code:code,invite_source:(code===linkCode?'web_link':'web_manual'),device_id:deviceId()})});
+    }).then(function(r){return r.json().catch(function(){return {};}).then(function(d){return {ok:r.ok,status:r.status,data:d};});}).then(function(res){
+      if(!res.ok)throw new Error(res.data.detail||'注册失败，请重试');
+      try{localStorage.setItem('hq_user',JSON.stringify(res.data.user||{}));}catch(e){}
+      setMessage(res.data.invite_bound?'注册成功，已绑定邀请关系':'注册成功',false);submit.textContent='注册成功';
+      setTimeout(function(){location.href='workbench/inspiration';},650);
+    }).catch(function(err){submit.disabled=false;submit.textContent='注册并进入工作台';setMessage(err.message||'注册失败，请重试',true);});
+  });
+  loadConfig();
+})();
+</script>
+</body>
+</html>
