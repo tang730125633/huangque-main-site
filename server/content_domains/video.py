@@ -395,16 +395,20 @@ def _probe_data_video_duration(data_url):
                 os.unlink(path)
             except OSError:
                 pass
-def _image_bytes_look_valid(raw):
+def _detect_image_ext(raw):
     if not raw:
-        return False
+        return None
     if raw.startswith(b"\x89PNG\r\n\x1a\n"):
-        return True
+        return ".png"
     if raw.startswith(b"\xff\xd8\xff"):
-        return True
+        return ".jpg"
     if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
-        return True
-    return False
+        return ".webp"
+    return None
+
+
+def _image_bytes_look_valid(raw):
+    return _detect_image_ext(raw) is not None
 
 def _faststart_video_file(rel):
     raw = str(rel or "").strip()
@@ -1328,6 +1332,17 @@ def _save_data_file(data_url, prefix, allowed_ext):
         data = base64.b64decode(raw, validate=True)
     except Exception:
         raise ValueError("文件内容解析失败")
+    image_exts = {".jpg", ".jpeg", ".png", ".webp"}
+    if ext in image_exts:
+        detected_ext = _detect_image_ext(data)
+        if not detected_ext:
+            raise ValueError("图片内容无法识别")
+        if detected_ext not in allowed_ext:
+            if detected_ext == ".jpg" and ".jpeg" in allowed_ext:
+                detected_ext = ".jpeg"
+            else:
+                raise ValueError("不支持的图片格式")
+        ext = detected_ext
     max_size = (250 if ext in {".mp4", ".mov", ".webm"} else 35) * 1024 * 1024
     if len(data) > max_size:
         raise ValueError("文件过大，请压缩后再上传")
@@ -1387,11 +1402,15 @@ def _heygen_upload_asset(file_path, direct=False):
     path = pathlib.Path(file_path)
     if not path.is_file():
         raise ValueError("视频素材文件不存在")
-    mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+    payload = path.read_bytes()
+    image_mimes = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+    mime = image_mimes.get(_detect_image_ext(payload))
+    if not mime:
+        mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
     if direct:
         # HeyGen 素材上传端点收「raw 文件字节 + 文件 mime」(同口播直连 #405 的 /v1/asset)；
         # 发 multipart/form-data 会被 HeyGen 判 "Content type not supported application/octet-stream" 400。
-        d = _heygen_direct_req("POST", _HEYGEN_DIRECT_UPLOAD + "/v1/asset", path.read_bytes(), mime, timeout=240)
+        d = _heygen_direct_req("POST", _HEYGEN_DIRECT_UPLOAD + "/v1/asset", payload, mime, timeout=240)
         node = d.get("data") or {}
         asset_id = str(node.get("asset_id") or node.get("id") or "").strip()
         if not asset_id:
@@ -1405,7 +1424,7 @@ def _heygen_upload_asset(file_path, direct=False):
         'Content-Disposition: form-data; name="file"; filename="%s"\r\n'
         "Content-Type: %s\r\n\r\n"
     ) % (boundary, path.name.replace('"', ''), mime)
-    body = head.encode() + path.read_bytes() + ("\r\n--%s--\r\n" % boundary).encode()
+    body = head.encode() + payload + ("\r\n--%s--\r\n" % boundary).encode()
     data = _heygen_request_json("POST", "/assets", body, {
         "Content-Type": "multipart/form-data; boundary=%s" % boundary,
         "Content-Length": str(len(body)),
@@ -1444,8 +1463,16 @@ HEYGEN_IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
 def _ensure_heygen_image_jpg(image_path):
     # HeyGen 素材接口只收 jpg/png；webp 等格式原样上传必然 400（invalid_parameter）
     path = pathlib.Path(image_path)
-    if path.suffix.lower() in HEYGEN_IMAGE_EXTS:
+    try:
+        actual_ext = _detect_image_ext(path.read_bytes())
+    except OSError:
+        actual_ext = None
+    if actual_ext in HEYGEN_IMAGE_EXTS and path.suffix.lower() == actual_ext:
         return path
+    if actual_ext in HEYGEN_IMAGE_EXTS:
+        out = path.parent / ("heygen_img_%d%s" % (int(time.time() * 1000), actual_ext))
+        out.write_bytes(path.read_bytes())
+        return out
     out = path.parent / ("heygen_img_%d.jpg" % int(time.time() * 1000))
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
