@@ -2767,6 +2767,7 @@ class H(BaseHTTPRequestHandler):
             "detail": "请先开通会员后再使用该功能",
             "code": "membership_required",
             "membership_url": "/workbench/recharge",
+            "membership_enforcement_enabled": True,
         })
         return False
 
@@ -3274,6 +3275,7 @@ class H(BaseHTTPRequestHandler):
                         return self._send(403, {
                             "detail": "请先开通会员后再使用该功能",
                             "code": "membership_required",
+                            "membership_enforcement_enabled": True,
                         })
                     points, err = deduct_points(username, amount, reason, transaction_key)
                     if err == "transaction_conflict":
