@@ -1,0 +1,895 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>黄雀 · 美业老板数字化 IP 十二模块</title>
+  <style>
+    :root{
+      --bg:#06111f;
+      --panel:#fbf7ef;
+      --panel-2:#f2ebdf;
+      --line:#d8cfc0;
+      --line-soft:#e7dfd2;
+      --text:#0a1b2d;
+      --muted:#69717d;
+      --gold:#d8ae55;
+      --gold-soft:#f0d99d;
+      --teal:#168b80;
+      --teal-soft:#d9eee9;
+      --paper:#f4eedf;
+      --ink:#0a1b2d;
+      --danger:#ff8a76;
+      --radius:16px;
+      --shadow:0 20px 55px rgba(5,16,29,.12);
+      font-family:"PingFang SC","Microsoft YaHei",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text)}
+    body{background:var(--bg)}
+    button,textarea{font:inherit}
+    button{cursor:pointer}
+    .app{min-height:100vh;display:grid;grid-template-columns:290px minmax(560px,1fr) 360px;background:var(--paper)}
+    .sidebar{
+      position:sticky;top:0;height:100vh;padding:28px 22px 22px;border-right:1px solid rgba(216,174,85,.2);
+      background:#071525;color:#f5efe4;display:flex;flex-direction:column;z-index:4
+    }
+    .brand{display:flex;align-items:center;gap:13px;padding:0 6px 28px;border-bottom:1px solid rgba(216,174,85,.25);margin-bottom:16px}
+    .brand-mark{
+      width:48px;height:48px;border-radius:50% 50% 50% 14px;display:grid;place-items:center;color:#06111f;
+      font-family:Georgia,"Songti SC",serif;font-size:19px;font-weight:900;transform:rotate(-7deg);
+      background:linear-gradient(145deg,#f2d68d,#c99637);box-shadow:0 12px 30px rgba(216,174,85,.18)
+    }
+    .brand b{display:block;font-family:Georgia,"Songti SC",serif;font-size:18px;letter-spacing:.04em;color:#e8c46e}
+    .brand small{display:block;color:#8f9bad;margin-top:4px;font-size:11px}
+    .privacy{
+      margin:0 4px 14px;padding:11px 12px;border:1px solid rgba(46,157,137,.22);border-radius:12px;
+      background:rgba(46,157,137,.07);color:#91bcb2;font-size:11px;line-height:1.55
+    }
+    .privacy i{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--teal);margin-right:7px}
+    .module-scroll{overflow:auto;padding-right:3px;flex:1;scrollbar-width:none}
+    .module-scroll::-webkit-scrollbar{display:none}
+    .phase-label{padding:16px 9px 8px;color:#8c7340;font-size:10px;letter-spacing:.16em;font-weight:800}
+    .module-btn{
+      width:100%;border:1px solid transparent;background:transparent;color:#9aa5b5;border-radius:10px;
+      padding:10px 9px;margin:2px 0;display:grid;grid-template-columns:36px 1fr auto;gap:10px;align-items:center;text-align:left
+    }
+    .module-btn:hover{background:rgba(255,255,255,.04);color:#f4e6bf}
+    .module-btn.active{background:linear-gradient(100deg,#efd487,#d6a84c);border-color:#f4d785;color:#0a1929;box-shadow:0 10px 28px rgba(0,0,0,.16)}
+    .module-btn.done{color:#c6d6d1}
+    .module-no{
+      width:34px;height:34px;border:1px solid #5d6878;border-radius:50%;display:grid;place-items:center;
+      color:#aab3bf;font-family:Georgia,serif;font-size:12px;font-weight:800
+    }
+    .module-btn.active .module-no{border-color:#1a2635;color:#0a1929;background:rgba(255,255,255,.18)}
+    .module-btn.done .module-no{border-color:rgba(72,215,176,.4);color:var(--teal);background:var(--teal-soft)}
+    .module-copy b{display:block;font-size:13px;margin-bottom:3px;font-weight:600}
+    .module-copy small{font-size:10px;color:#708094}
+    .module-btn.active .module-copy small,.module-btn.active .module-state{color:#5e4a24}
+    .module-state{font-size:10px;color:#69768a}
+    .module-btn.done .module-state{color:var(--teal)}
+    .side-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding-top:16px}
+    .soft-btn{border:1px solid #2a3a4d;background:#0b1a2b;color:#aeb9c8;border-radius:10px;padding:10px 8px;font-size:12px}
+    .soft-btn:hover{border-color:#a17d38;color:#eed591}
+
+    .main{min-width:0;padding:0 0 54px;background:var(--paper)}
+    .topbar{
+      min-height:78px;display:flex;align-items:center;justify-content:space-between;gap:24px;margin:0;
+      padding:0 42px;background:#071525;border-bottom:1px solid rgba(216,174,85,.18)
+    }
+    .crumb{font-family:Georgia,"Songti SC",serif;font-size:15px;color:#e9e0cf;letter-spacing:.08em}
+    .crumb b{color:var(--gold);letter-spacing:.1em}
+    .overall{display:flex;align-items:center;gap:12px;min-width:310px}
+    .overall span{font-size:11px;color:#a8b3c2;white-space:nowrap}
+    .progress{height:5px;background:#1a2a3c;border-radius:999px;overflow:hidden;flex:1}
+    .progress i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--gold),#e7cf90);border-radius:inherit;transition:width .25s ease}
+    .hero{
+      position:relative;overflow:hidden;border:0;border-radius:0;padding:44px 46px 18px;margin:0;
+      background:
+        radial-gradient(circle at 83% 20%,rgba(216,174,85,.11),transparent 30%),
+        linear-gradient(180deg,#fbf8f1,var(--paper));box-shadow:none
+    }
+    .hero:after{content:"";position:absolute;width:160px;height:1px;left:46px;bottom:0;background:linear-gradient(90deg,var(--gold),transparent)}
+    .eyebrow{display:flex;align-items:center;gap:10px;color:#997331;font-size:11px;font-weight:800;letter-spacing:.17em}
+    .eyebrow i{width:25px;height:1px;background:var(--gold)}
+    .hero h1{font-family:Georgia,"Songti SC","STSong",serif;font-size:48px;line-height:1.1;margin:14px 0 12px;letter-spacing:.01em;color:#07182a}
+    .hero p{margin:0;color:#68717b;font-size:13px;line-height:1.75;max-width:760px}
+    .hero-meta{display:flex;gap:9px;margin-top:18px;flex-wrap:wrap}
+    .badge{border:1px solid #d8cfc0;border-radius:999px;padding:7px 11px;color:#69717d;font-size:11px;background:rgba(255,255,255,.5)}
+    .badge.gold{border-color:#d5b66e;color:#74551e;background:#f7eccf}
+    .badge.industry{border-color:#9fcfc7;color:#0e6b63;background:#e2f1ed}
+
+    .step-card{margin:0 34px;border:1px solid #dfd6c8;border-radius:18px;background:rgba(255,255,255,.55);overflow:hidden;box-shadow:0 18px 55px rgba(35,31,24,.08)}
+    .step-head{display:grid;grid-template-columns:1fr auto;gap:20px;padding:22px 28px;border-bottom:1px solid var(--line-soft)}
+    .step-kicker{color:var(--teal);font-size:10px;font-weight:800;letter-spacing:.14em}
+    .step-head h2{font-family:Georgia,"Songti SC",serif;font-size:25px;margin:8px 0 7px;color:#102338}
+    .step-head p{margin:0;color:#727781;font-size:12px;line-height:1.65}
+    .module-progress{text-align:right;min-width:150px}
+    .module-progress strong{display:block;font-family:Georgia,serif;font-size:19px;color:#a47725}
+    .module-progress small{color:var(--muted);font-size:10px}
+    .mini-progress{height:4px;background:#e2d9cc;border-radius:99px;margin-top:9px;overflow:hidden}
+    .mini-progress i{display:block;height:100%;background:var(--teal);transition:width .25s}
+    .step-body{padding:26px 28px 28px}
+    .why{
+      display:grid;grid-template-columns:35px 1fr;gap:12px;padding:14px 15px;border-radius:12px;
+      background:#f5eee1;border:1px solid #e1d7c7;margin-bottom:22px
+    }
+    .why-mark{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:#f1d99b;color:#77551d;font-family:Georgia,serif;font-weight:900}
+    .why b{display:block;font-size:12px;margin:1px 0 4px}
+    .why span{color:#737984;font-size:12px;line-height:1.55}
+    .answer-label{font-size:12px;font-weight:700;display:block;margin:0 0 9px}
+    .answer{
+      display:block;width:100%;min-height:230px;resize:vertical;border:1px solid #d4c9b8;border-radius:9px;
+      background:rgba(255,255,255,.58);color:#102033;padding:18px 20px;line-height:1.75;outline:none
+    }
+    .answer::placeholder{color:#aea99f}
+    .answer:focus{border-color:var(--teal);box-shadow:0 0 0 3px rgba(22,139,128,.09)}
+    .helper{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:10px 0 20px;color:#8a8984;font-size:11px}
+    .example-btn{border:0;background:transparent;color:var(--teal);padding:3px 0;font-weight:700}
+    .example-btn:hover{text-decoration:underline}
+    .suggestions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px;margin-bottom:20px}
+    .suggestion{
+      position:relative;border:1px solid #d8cfc0;border-radius:12px;background:rgba(255,255,255,.54);color:#344153;
+      text-align:left;padding:15px;min-height:94px;line-height:1.55;font-size:12px;transition:.16s
+    }
+    .suggestion:hover{border-color:#a79168;transform:translateY(-1px)}
+    .suggestion.selected{border-color:var(--teal);background:#e5f1ed;color:#0c544f}
+    .suggestion i{
+      position:absolute;right:10px;top:10px;width:17px;height:17px;border:1px solid #4b586a;border-radius:50%
+    }
+    .suggestion.selected i{border-color:var(--teal);box-shadow:inset 0 0 0 4px #e5f1ed;background:var(--teal)}
+    .suggestion b{display:block;color:#162639;font-size:12px;margin-bottom:6px;padding-right:16px}
+    .review-list{display:grid;gap:10px;margin-bottom:20px}
+    .review-item{
+      display:grid;grid-template-columns:32px 1fr;gap:12px;padding:13px 14px;border:1px solid #ddd4c7;
+      border-radius:12px;background:rgba(255,255,255,.54)
+    }
+    .review-item em{
+      width:30px;height:30px;border-radius:9px;display:grid;place-items:center;background:var(--teal-soft);
+      color:var(--teal);font-style:normal;font-size:11px;font-weight:800
+    }
+    .review-item b{display:block;font-size:12px;margin-bottom:4px;color:#15283b}
+    .review-item span{color:var(--muted);font-size:12px;line-height:1.55}
+    .note-box{
+      border-left:3px solid var(--teal);background:#e6f1ed;padding:12px 14px;
+      color:#436c68;font-size:12px;line-height:1.6;margin-bottom:20px
+    }
+    .step-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:5px}
+    .action-group{display:flex;gap:9px}
+    .nav-btn{border:1px solid #cfc4b4;border-radius:9px;padding:12px 19px;background:rgba(255,255,255,.45);color:#53606d}
+    .nav-btn:hover{border-color:#9b8c74}
+    .nav-btn.primary{min-width:150px;border-color:#167f75;background:linear-gradient(135deg,#168f84,#0d726a);color:#fff8e9;font-weight:800;box-shadow:0 10px 25px rgba(22,139,128,.17)}
+    .nav-btn:disabled{opacity:.35;cursor:not-allowed}
+    .save-state{color:#8a877f;font-size:11px}
+    .handoff{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:18px 34px 0}
+    .handoff-card{border:1px solid #ddd4c7;background:rgba(255,255,255,.35);border-radius:13px;padding:16px}
+    .handoff-card span{font-size:10px;color:#95702e;letter-spacing:.1em}
+    .handoff-card b{display:block;font-size:13px;margin:7px 0 5px;color:#14273a}
+    .handoff-card p{margin:0;color:#7d7e7e;font-size:11px;line-height:1.5}
+
+    .memory{
+      position:sticky;top:0;height:100vh;border-left:1px solid rgba(216,174,85,.24);background:#081726;
+      padding:28px 24px;overflow:auto;color:#f4eee2
+    }
+    .memory-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:17px}
+    .memory-head b{font-family:Georgia,"Songti SC",serif;font-size:17px;color:#e7bd60}
+    .live{font-size:9px;border:1px solid rgba(46,157,137,.35);border-radius:999px;padding:5px 8px;color:#74c2b3;background:rgba(46,157,137,.08)}
+    .ip-card{
+      border:1px solid rgba(216,174,85,.38);border-radius:13px;padding:18px;margin-bottom:14px;
+      background:linear-gradient(155deg,rgba(216,174,85,.08),rgba(255,255,255,.015))
+    }
+    .ip-symbol{
+      width:45px;height:45px;border:1px solid rgba(232,189,85,.45);border-radius:14px;display:grid;place-items:center;
+      color:var(--gold);font-family:Georgia,serif;font-weight:700;margin-bottom:13px
+    }
+    .ip-card h3{font-size:16px;margin:0 0 6px;color:#f5ead0}
+    .ip-card p{margin:0;color:#8f9bac;font-size:11px;line-height:1.55}
+    .memory-section{border:1px solid #26384a;border-radius:13px;background:#0b1b2c;padding:15px;margin-top:12px}
+    .memory-title{display:flex;justify-content:space-between;gap:8px;margin-bottom:10px}
+    .memory-title b{font-size:12px}
+    .memory-title span{font-size:10px;color:#637085}
+    .phase-row{display:grid;grid-template-columns:25px 1fr auto;gap:9px;align-items:center;padding:8px 0;border-top:1px solid #1d3042}
+    .phase-row:first-of-type{border-top:0}
+    .phase-row i{width:24px;height:24px;border-radius:8px;display:grid;place-items:center;background:#161f2b;color:#78869a;font-style:normal;font-size:10px}
+    .phase-row b{font-size:11px;color:#d5dce4}
+    .phase-row small{font-size:9px;color:#657286}
+    .memory-item{padding:10px 0;border-top:1px solid #1d3042}
+    .memory-item:first-of-type{border-top:0}
+    .memory-item b{display:block;color:#e7bd60;font-size:11px;margin-bottom:4px}
+    .memory-item p{margin:0;color:#8592a4;font-size:10px;line-height:1.5;word-break:break-word}
+    .empty-memory{color:#677487;font-size:11px;line-height:1.7}
+    .memory-rule{margin-top:14px;padding:13px;border-radius:11px;background:#f3ead8;color:var(--ink);border-left:3px solid var(--gold)}
+    .memory-rule b{display:block;font-family:Georgia,"Songti SC",serif;font-size:14px;margin-bottom:5px}
+    .memory-rule p{margin:0;font-size:10px;line-height:1.55;color:#59606b}
+    .ai-button{
+      width:100%;border:1px solid #d9ae55;border-radius:10px;padding:11px 13px;margin-bottom:9px;
+      background:linear-gradient(135deg,#e5be67,#b8862f);color:#152230;font-weight:800;text-align:center
+    }
+    .ai-button:disabled{opacity:.55;cursor:wait}
+    .ai-status{margin:0;color:#8795a7;font-size:10px;line-height:1.55}
+    .ai-summary{margin:12px 0 0;color:#d9e0e7;font-size:11px;line-height:1.65}
+    .ai-label{margin:12px 0 6px;color:#e7bd60;font-size:10px;letter-spacing:.08em}
+    .ai-list{margin:0;padding-left:16px;color:#9eabb9;font-size:10px;line-height:1.6}
+    .ai-pain{border-top:1px solid #1d3042;padding:8px 0;color:#9eabb9;font-size:10px;line-height:1.5}
+    .ai-pain b{display:block;color:#d5dce4;margin-bottom:2px}
+    .ai-candidate{border:1px solid #26384a;border-radius:10px;padding:10px;margin-top:8px;background:#091726}
+    .ai-candidate.recommended{border-color:#b98935;background:rgba(216,174,85,.06)}
+    .ai-candidate.selected{box-shadow:inset 3px 0 #39a99c}
+    .ai-candidate b{display:block;color:#f1dfb7;font-size:11px;margin-bottom:4px}
+    .ai-candidate p{margin:0;color:#8f9cad;font-size:10px;line-height:1.55}
+    .ai-candidate button{border:1px solid #385068;border-radius:8px;background:#10263a;color:#b8c7d5;font-size:10px;padding:7px 9px;margin-top:8px}
+    .ai-follow-up{margin-top:10px;border-left:2px solid #39a99c;padding:8px 10px;background:#0d2235;color:#a7b7c5;font-size:10px;line-height:1.55}
+
+    .modal{position:fixed;inset:0;background:rgba(2,4,8,.76);display:none;align-items:center;justify-content:center;padding:24px;z-index:20}
+    .modal.open{display:flex}
+    .guide{width:min(720px,100%);max-height:88vh;overflow:auto;background:var(--paper);color:var(--ink);border-radius:24px;padding:28px;box-shadow:0 35px 100px rgba(0,0,0,.5)}
+    .guide-top{display:flex;justify-content:space-between;gap:20px}
+    .guide h2{font-family:Georgia,"Songti SC",serif;font-size:27px;margin:0 0 8px}
+    .guide p{color:#606874;line-height:1.7;font-size:13px}
+    .close{width:35px;height:35px;border:1px solid #d5d0c5;border-radius:50%;background:transparent;color:#333}
+    .guide-steps{display:grid;grid-template-columns:repeat(2,1fr);gap:11px;margin-top:18px}
+    .guide-step{border:1px solid #d8d2c6;border-radius:15px;padding:14px;background:#faf7f0}
+    .guide-step b{display:block;font-size:13px;margin-bottom:5px}
+    .guide-step span{color:#6b7179;font-size:11px;line-height:1.55}
+    .guide-note{margin-top:16px;border-left:3px solid #c99731;padding:10px 13px;background:#f7efd9;font-size:12px;line-height:1.6}
+    .toast{position:fixed;left:50%;bottom:28px;transform:translate(-50%,20px);opacity:0;pointer-events:none;z-index:30;background:#f5efdF;color:#222a34;border-radius:999px;padding:11px 17px;font-size:12px;box-shadow:0 15px 50px rgba(0,0,0,.35);transition:.2s}
+    .toast.show{opacity:1;transform:translate(-50%,0)}
+    .fatal{display:none;margin:15px;padding:15px;background:#3b1616;border:1px solid var(--danger);border-radius:12px;color:#ffd1c9}
+
+    @media(max-width:1180px){
+      .app{grid-template-columns:260px 1fr}
+      .memory{position:static;height:auto;grid-column:2;padding:24px;border-left:0;background:#081726}
+      .suggestions{grid-template-columns:1fr}
+    }
+    @media(max-width:760px){
+      .app{display:block}
+      .sidebar{position:static;height:auto;padding:14px;border-right:0;border-bottom:1px solid rgba(216,174,85,.25)}
+      .brand{padding:0 2px 12px;margin-bottom:9px}
+      .brand-mark{width:38px;height:38px;font-size:15px}
+      .privacy{display:none}
+      .module-scroll{display:flex;gap:8px;max-height:none;overflow-x:auto;padding:2px 0 7px}
+      .phase-label{display:none}
+      .module-btn{min-width:168px;margin:0;padding:8px;grid-template-columns:32px 1fr}
+      .module-no{width:30px;height:30px}
+      .module-state{display:none}
+      .module-copy small{display:none}
+      .side-actions{padding-top:4px}
+      .main{padding:0 0 45px}
+      .memory{padding:22px 14px 30px}
+      .topbar{min-height:92px;padding:16px 22px;align-items:flex-start;flex-direction:column;gap:11px}
+      .overall{min-width:100%;width:100%}
+      .hero{padding:32px 22px 17px}
+      .hero h1{font-size:38px}
+      .step-card{margin:0 14px}
+      .handoff{margin:16px 14px 0}
+      .step-head{grid-template-columns:1fr}
+      .module-progress{text-align:left}
+      .handoff,.guide-steps{grid-template-columns:1fr}
+      .step-actions{align-items:flex-start;flex-direction:column}
+      .action-group{width:100%}
+      .nav-btn{flex:1}
+    }
+  </style>
+</head>
+<body>
+  <div id="fatal" class="fatal"></div>
+  <div class="app" id="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">雀</div>
+        <div><b>黄雀</b><small>数字化 IP 操作系统</small></div>
+      </div>
+      <div class="privacy"><i></i>泽龙 AI 试点 · 仅点击分析时调用 OpenAI，不扣黄雀点数；当前回答会发送给 AI 分析。</div>
+      <div id="moduleList" class="module-scroll"></div>
+      <div class="side-actions">
+        <button class="soft-btn" id="guideBtn" type="button">使用说明</button>
+        <button class="soft-btn" id="resetBtn" type="button">重置演示</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div class="crumb"><b>数字化 IP</b>　/　初始化</div>
+        <div class="overall">
+          <span id="overallText">总进度 0 / 54</span>
+          <div class="progress"><i id="overallBar"></i></div>
+          <span id="percentText">0%</span>
+        </div>
+      </div>
+
+      <section class="hero">
+        <div class="eyebrow"><i></i><span id="phaseName">IP 底座</span></div>
+        <h1 id="moduleTitle">模块 1 · 定位诊断</h1>
+        <p id="moduleDesc"></p>
+        <div class="hero-meta">
+          <span class="badge gold" id="moduleCount">模块 1 / 12</span>
+          <span class="badge" id="stepCount">模块内步骤 1 / 5</span>
+          <span class="badge industry">行业预设 · 美业门店老板</span>
+          <span class="badge">所有关键结论都由你确认</span>
+        </div>
+      </section>
+
+      <section class="step-card">
+        <header class="step-head">
+          <div>
+            <div class="step-kicker" id="stepKicker">STEP 01</div>
+            <h2 id="stepTitle"></h2>
+            <p id="stepInstruction"></p>
+          </div>
+          <div class="module-progress">
+            <strong id="moduleStepText">01 / 05</strong>
+            <small>当前模块内部进度</small>
+            <div class="mini-progress"><i id="moduleBar"></i></div>
+          </div>
+        </header>
+        <div class="step-body">
+          <div class="why">
+            <div class="why-mark">?</div>
+            <div><b>为什么现在做这一步</b><span id="stepWhy"></span></div>
+          </div>
+          <div id="interaction"></div>
+          <div class="note-box">体验提示：填写后可点击右侧“AI 分析本步”。AI 只给建议；你点击“确认并继续”后，结果才写进数字化 IP 档案。</div>
+          <div class="step-actions">
+            <span class="save-state" id="saveState">浏览器会自动保存本页内容</span>
+            <div class="action-group">
+              <button class="nav-btn" id="backBtn" type="button">上一步</button>
+              <button class="nav-btn primary" id="nextBtn" type="button">确认并继续</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="handoff">
+        <article class="handoff-card"><span>MODULES 01–04</span><b>形成 IP 底座</b><p>定位、人设、价值和故事被确认后，形成第一版长期档案。</p></article>
+        <article class="handoff-card"><span>MODULES 05–08</span><b>进入内容生产</b><p>选题、文案、形象与脚本将连接黄雀编导、图片和视频能力。</p></article>
+        <article class="handoff-card"><span>MODULES 09–12</span><b>进入运营增长</b><p>发布、私域、销售和商业反馈重新回到 IP 档案。</p></article>
+      </section>
+    </main>
+
+    <aside class="memory">
+      <div class="memory-head"><b>正在形成的 IP 档案</b><span class="live">OPENAI · STRUCTURED</span></div>
+      <section class="ip-card">
+        <div class="ip-symbol">IP</div>
+        <h3 id="ipName">尚未命名的数字化 IP</h3>
+        <p id="ipSummary">每次确认都会成为后续内容和视频共同读取的项目记忆。</p>
+      </section>
+      <section class="memory-section" aria-live="polite">
+        <div class="memory-title"><b>本步 AI 诊断</b><span id="aiModel">等待调用</span></div>
+        <button class="ai-button" id="analyzeBtn" type="button">AI 分析本步</button>
+        <p class="ai-status" id="aiStatus">填写当前问题后，由你主动发起分析。</p>
+        <div id="aiResult"></div>
+      </section>
+      <section class="memory-section">
+        <div class="memory-title"><b>三阶段进度</b><span id="doneModulesText">0 / 12 完成</span></div>
+        <div id="phaseProgress"></div>
+      </section>
+      <section class="memory-section">
+        <div class="memory-title"><b>已确认的模块结果</b><span>用户确认</span></div>
+        <div id="memoryItems"></div>
+      </section>
+      <div class="memory-rule">
+        <b>AI 建议不是最终人设。</b>
+        <p>模型可以提炼、比较和推荐；只有你的确认，才会写进数字化 IP 的长期档案。</p>
+      </div>
+    </aside>
+  </div>
+
+  <div class="modal" id="guideModal" role="dialog" aria-modal="true" aria-labelledby="guideTitle">
+    <div class="guide">
+      <div class="guide-top">
+        <div><h2 id="guideTitle">如何体验十二模块</h2><p>当前版本预设为美业门店老板，围绕获客、成交、复购、团队和老板 IP 展开 12 个模块、54 个确认步骤。</p></div>
+        <button class="close" id="closeGuide" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="guide-steps">
+        <div class="guide-step"><b>1. 从门店经营底图开始</b><span>先填写门店规模、经营年限、当前痛点、优势能力和目标顾客。</span></div>
+        <div class="guide-step"><b>2. 使用示例加速体验</b><span>不想现在填写资料时，点击“带入示例”即可继续。</span></div>
+        <div class="guide-step"><b>3. 确认 AI 候选</b><span>遇到候选方案时先选择，再点击“确认并继续”。</span></div>
+        <div class="guide-step"><b>4. 查看右侧长期档案</b><span>完成模块后，确认结果会沉淀到 IP 档案中。</span></div>
+        <div class="guide-step"><b>5. 随时切换模块预览</b><span>左侧 12 个模块都可打开，适合快速检查完整产品生命周期。</span></div>
+        <div class="guide-step"><b>6. 刷新后继续</b><span>体验数据保存在浏览器本地；点击“重置演示”可以清空。</span></div>
+      </div>
+      <div class="guide-note">当前是泽龙站点的美业 AI 试点：右侧会调用 OpenAI Structured Outputs 返回固定结构的诊断。AI 推荐与用户确认分开保存，尚未写入黄雀正式数字 IP 项目库，也不会扣黄雀点数。</div>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const MODULES = [
+      {
+        id:1,phase:"IP 底座",name:"定位诊断",desc:"从门店经历、经营结果和顾客痛点中，找到美业老板可验证、可持续的定位。",
+        output:"已确认定位方案",
+        steps:[
+          {title:"采集门店经营底图",instruction:"先理解真实门店和老板本人，不急着生成一句漂亮口号。",why:"美业老板的定位必须来自经营经历、真实结果、顾客问题和本人优势的交集。",type:"input",label:"请写下门店类型与规模、经营年限、当前最大痛点、最拿手的能力，以及最想吸引的顾客",sample:"门店：二线城市皮肤管理店，2 家门店、18 名员工，经营 7 年。\n当前痛点：平台流量越来越贵，到店率不稳定；咨询师会推项目但不会建立长期信任，老客复购下降。\n最拿手：问题肌判断、服务流程设计、老客关系维护和员工带教。\n本人特点：愿意讲真实经营，不端着，也不制造容貌焦虑。\n目标顾客：28–45 岁、重视长期改善但害怕被强推项目的女性。"},
+          {title:"提炼 3–5 个经营关键词",instruction:"从门店事实中提炼最稳定、最有证据的关键词。",why:"关键词是后续三套老板 IP 定位共同的事实底座。",type:"multi",options:["问题肌管理","门店增长","老客复购","员工带教","真实经营"],sampleChoice:["问题肌管理","老客复购","真实经营"]},
+          {title:"生成三套差异化定位",instruction:"比较专业、经营和陪伴三种切入角度，而不是让 AI 直接替你决定。",why:"同一家门店可以形成完全不同的老板 IP，必须先比较再确认。",type:"select",options:["问题肌管理主理人｜不卖焦虑，讲清皮肤长期改善","美业门店复购教练｜让服务从一次成交变成长期关系","七年美业老板复盘者｜公开讲获客、员工和经营真问题"],sampleChoice:"问题肌管理主理人｜不卖焦虑，讲清皮肤长期改善"},
+          {title:"比较市场机会与风险",instruction:"检查每套定位能吸引谁、解决什么痛点，以及可能造成的误解。",why:"定位不仅要有传播感，还必须与门店真实交付一致。",type:"review",preview:["问题肌主理人：专业信任强；风险是内容容易只剩知识科普。","复购教练：老板人群商业承接清晰；风险是需要真实经营数据和案例。","经营复盘者：故事和同行共鸣强；风险是不能只输出抱怨和焦虑。"]},
+          {title:"推荐首选并由用户确认",instruction:"系统给出推荐理由，你可以采用、组合或自定义。",why:"只有老板亲自确认的定位，才能写入后续内容和视频共同读取的 IP 档案。",type:"select",options:["采用：问题肌管理主理人","组合：问题肌主理人 + 七年门店经营复盘","自定义：保留关键词，重新命名我的老板 IP"],sampleChoice:"组合：问题肌主理人 + 七年门店经营复盘"}
+        ]
+      },
+      {
+        id:2,phase:"IP 底座",name:"人设塑造",desc:"把真实人格、价值观和未来目标转化为可信、长期可持续的公开形象。",
+        output:"已确认人设画像",
+        steps:[
+          {title:"补充经营原则与三年目标",instruction:"复用模块 1 的门店经历，只询问尚未覆盖的价值观。",why:"可信的美业老板人设必须来自真实服务原则和长期经营方向。",type:"input",label:"你最不能妥协的服务原则是什么？未来三年希望顾客和同行怎样评价你？",sample:"原则：不制造容貌焦虑，不为了成交给顾客叠加不需要的项目；所有方案先讲适用边界和真实预期。\n未来三年：让顾客想到问题肌长期管理时先想到我，也让同行知道门店可以不靠强推和低价竞争活下来。"},
+          {title:"确认人格与价值关键词",instruction:"从老板真实行为中提炼，而不是堆砌完美形容词。",why:"关键词会控制以后口播、镜头、员工表达和门店品牌行为。",type:"multi",options:["真诚克制","专业耐心","敢讲经营真话","尊重顾客边界","长期主义"],sampleChoice:["真诚克制","敢讲经营真话","长期主义"]},
+          {title:"生成三套人设画像",instruction:"比较专业、同行和经营者三种人格重心。",why:"老板应该主动选择自己愿意长期坚持的公开角色。",type:"select",options:["专业主理人｜用判断和案例建立信任","门店同行姐姐｜不端着，陪顾客和老板拆真实问题","清醒经营者｜公开反对强推、低价战和容貌焦虑"],sampleChoice:"门店同行姐姐｜不端着，陪顾客和老板拆真实问题"},
+          {title:"比较传播优势与风险",instruction:"检查每套人设的信任来源与表演成本。",why:"好人设必须真实、可持续，也不能让门店老板被角色绑架。",type:"review",preview:["专业主理人：顾客信任强；风险是距离感和科普同质化。","同行姐姐：亲近、适合口播；风险是专业高度需要案例支撑。","清醒经营者：立场鲜明；风险是不能把内容做成行业抱怨。"]},
+          {title:"确认最终人设",instruction:"采用、组合或自定义后，形成第一版美业老板人设。",why:"后续所有 AI 表达和门店内容都必须读取这份已确认人设。",type:"select",options:["采用：门店同行姐姐","组合：专业主理人 + 门店同行姐姐","自定义：保留真实经营感，但弱化“专家”标签"],sampleChoice:"组合：专业主理人 + 门店同行姐姐"}
+        ]
+      },
+      {
+        id:3,phase:"IP 底座",name:"价值主张",desc:"说明这个 IP 为谁解决什么问题，并明确能够兑现的变化与能力边界。",
+        output:"已确认价值主张",
+        steps:[
+          {title:"补齐专业领域和顾客结果",instruction:"把能力翻译成顾客和门店能够感受到的变化。",why:"价值主张不是“我技术很好”，而是顾客为什么信任你、门店为什么选择你。",type:"input",label:"你最擅长解决哪类顾客问题？希望顾客如何介绍你？你最想改变行业里的什么现象？",sample:"领域：敏感肌和痘肌的长期管理。\n第一印象：她不会一上来推套餐，而是先把皮肤问题和预期讲清楚。\n长期影响：让更多顾客不再被容貌焦虑和短期营销绑架，让美业门店靠专业与复购增长。"},
+          {title:"提炼价值关键词",instruction:"确认顾客痛点、独特方法和结果边界。",why:"后续选题、咨询和服务都要回到这些价值关键词。",type:"multi",options:["先诊断再推荐","长期皮肤管理","真实案例","不制造焦虑","复购来自信任"],sampleChoice:["先诊断再推荐","不制造焦虑","复购来自信任"]},
+          {title:"生成三条价值主张",instruction:"每条主张包含一句话金句、优势和适用边界。",why:"用对比找到最能代表门店长期承诺的表达。",type:"select",options:["不急着卖项目，先帮你看懂自己的皮肤。","一次成交不是终点，真正的改善来自长期管理。","不制造容貌焦虑，只提供有边界的专业建议。"],sampleChoice:"不急着卖项目，先帮你看懂自己的皮肤。"},
+          {title:"横向比较三条主张",instruction:"从顾客记忆、专业可信、门店承接和长期扩展比较。",why:"一句金句不能只追求传播，还必须指导真实服务。",type:"review",preview:["“先看懂皮肤”：顾客理解成本低，适合咨询入口。","“长期管理”：复购承接清晰，适合会员体系。","“不制造焦虑”：立场鲜明，但必须用专业判断支撑。"]},
+          {title:"确认首选价值主张",instruction:"选择主张，并允许保留一条辅助表达。",why:"确认后，它会成为内容、咨询和项目设计的判断标准。",type:"select",options:["主张：先看懂皮肤，再决定做什么","主张：专业服务带来长期复购","组合：不制造焦虑 + 长期管理"],sampleChoice:"组合：不制造焦虑 + 长期管理"}
+        ]
+      },
+      {
+        id:4,phase:"IP 底座",name:"故事资产",desc:"把挫折、成长和愿景整理为可追溯、可复用的信任资产。",
+        output:"核心故事资产清单",
+        steps:[
+          {title:"补充门店转折和共鸣点",instruction:"从模块 1 的经营经历继续深挖，不重复从头询问。",why:"故事不是履历，而是顾客和同行为什么会相信这位老板的证据。",type:"input",label:"哪次门店低谷或顾客事件真正改变了你的经营方式？它证明了你什么？",sample:"门店第二年我做过一次低价拓客，三天来了很多人，但员工忙乱、顾客体验差，最后几乎没有复购。那次之后我停止追求虚假到店数，重新设计咨询、服务和回访流程。它让我相信：真正的增长不是把人拉进店，而是让顾客愿意再回来。"},
+          {title:"提炼关键故事节点",instruction:"从经历中找到冲突、选择、结果和新认知。",why:"清晰节点能够被复用为口播、长文和门店案例。",type:"multi",options:["低价拓客失败","员工集体焦虑","顾客拒绝强推","重做服务流程","复购开始回升"],sampleChoice:["低价拓客失败","重做服务流程","复购开始回升"]},
+          {title:"划分三类故事",instruction:"将素材放入挫折型、成长型和愿景型。",why:"不同内容场景需要不同情绪和传播目的。",type:"review",preview:["挫折型：低价活动到店很多，却没有留下顾客。","成长型：从追流量转向咨询、服务和回访。","愿景型：让门店不靠强推，也能获得顾客长期信任。"]},
+          {title:"生成故事资产卡",instruction:"为每个故事形成名称、梗概、情绪点和传播场景。",why:"结构化故事卡才能被后续内容系统准确调用。",type:"review",preview:["《那场热闹却失败的拓客活动》｜兴奋到清醒｜品牌故事/口播","《顾客为什么没有回来》｜自责到改变｜案例视频/员工培训","《不靠强推的美业门店》｜责任与愿景｜主页简介/长文"]},
+          {title:"确认核心故事",instruction:"选择最能支撑当前定位的一段真实门店故事。",why:"主故事将成为第一批内容和老板个人介绍的信任入口。",type:"select",options:["核心故事：《那场热闹却失败的拓客活动》","核心故事：《顾客为什么没有回来》","组合：低价拓客失败 + 重做服务流程"],sampleChoice:"组合：低价拓客失败 + 重做服务流程"}
+        ]
+      },
+      {
+        id:5,phase:"内容生产",name:"内容选题",desc:"从受众问题、IP 价值和故事资产生成可持续的内容选题库。",
+        output:"已确认内容选题库",
+        steps:[
+          {title:"提炼顾客与门店高频问题",instruction:"读取目标顾客和已确认档案，找到顾客、员工和老板反复遇到的问题。",why:"美业选题应该回应真实到店、成交和复购问题，而不是只追热点。",type:"input",label:"顾客、员工和你自己最近最常卡在哪三个问题？近期内容希望带来什么结果？",sample:"顾客常问：为什么做了项目还是反复？会不会被强推套餐？\n员工常卡：咨询时只会讲价格，不会讲长期方案。\n老板最痛：平台流量越来越贵，活动到店后复购很低。\n近期目标：通过老板 IP 获得 30 个高意向咨询，并让老客重新理解长期管理价值。"},
+          {title:"生成不少于 15 个具体选题",instruction:"覆盖顾客教育、门店经营、真实故事、争议观点和案例。",why:"先建立足够宽的美业选题池，再做分类和优先级。",type:"multi",options:["顾客不是嫌贵，是没听懂价值","为什么低价拓客留不住人","皮肤管理不是项目堆叠","咨询师越推销顾客越防备","老客不复购真正怪谁","美业老板为什么一定要出镜","员工离职带走顾客怎么办","平台流量越来越贵怎么破","第一次咨询最不该问什么","问题肌改善为什么会反复","门店朋友圈别只发促销","三种制造容貌焦虑的话术","真实顾客方案怎样讲边界","从一次成交到长期管理","一家店不靠低价活下来的过程"],sampleChoice:["为什么低价拓客留不住人","老客不复购真正怪谁","美业老板为什么一定要出镜"]},
+          {title:"形成分类选题库",instruction:"把选题按顾客问题、经营目标和平台分类。",why:"分类后才能形成长期内容支柱和稳定发布节奏。",type:"review",preview:["顾客教育：问题肌、项目边界、长期管理。","门店经营：获客、到店、咨询、复购和员工。","故事型：老板低谷、顾客转折、团队成长。","争议型：反对强推、低价战和容貌焦虑。","案例型：真实顾客与真实经营改变。"]},
+          {title:"确认三个重点选题",instruction:"结合当前经营目标选择第一批最值得生产的内容。",why:"选题库可以很大，但第一批只做最接近顾客痛点的三条。",type:"multi",options:["为什么低价拓客留不住人","老客不复购真正怪谁","美业老板为什么一定要出镜","顾客不是嫌贵，是没听懂价值","咨询师越推销顾客越防备"],sampleChoice:["为什么低价拓客留不住人","老客不复购真正怪谁","美业老板为什么一定要出镜"]}
+        ]
+      },
+      {
+        id:6,phase:"内容生产",name:"文案口播",desc:"围绕已确认选题生成多种表达方案，并由用户批准最终口播版本。",
+        output:"已批准口播文案",
+        steps:[
+          {title:"生成 A/B/C 三种口播文案",instruction:"同一美业痛点分别尝试共情型、观点型和门店故事型。",why:"表达风格不同，顾客信任和老板人设感受也会不同。",type:"select",options:["A 共情型｜我知道很多美业老板不是不努力，而是每天都在为下一批顾客从哪里来发愁……","B 观点型｜低价拓客最可怕的，不是利润低，而是你根本不知道顾客为什么没有再回来。","C 故事型｜我做过一次三天爆满的活动，店里很热闹，但一个月后我才发现，几乎没人复购。"],sampleChoice:"C 故事型｜我做过一次三天爆满的活动，店里很热闹，但一个月后我才发现，几乎没人复购。"},
+          {title:"优化口播节奏与字幕点",instruction:"检查前三秒、情绪递进、短句、停顿和 3–4 个字幕重点。",why:"好观点不等于好口播，必须适合美业老板真实出镜。",type:"review",preview:["前三秒：那次活动三天爆满，但一个月后几乎没人回来。","字幕点 1：到店不等于留下。","字幕点 2：第一次咨询决定信任。","字幕点 3：回访不是群发促销。","结尾：说说你店里最难解决的是获客、成交还是复购。"]},
+          {title:"确认最终文案版本",instruction:"选择最符合人设和传播目标的一版，允许继续编辑。",why:"只有批准版本才能进入编导和视频生产。",type:"select",options:["批准故事型版本","故事开场 + 干货中段","保留观点，重新生成更克制的结尾"],sampleChoice:"故事开场 + 干货中段"}
+        ]
+      },
+      {
+        id:7,phase:"内容生产",name:"IP 形象设计",desc:"确认可长期使用的外观、灯光、镜头、场景、表情和声音规范。",
+        output:"已确认视觉与镜头档案",
+        steps:[
+          {title:"采集五类形象信息",instruction:"理解老板真实气质、门店审美、最怕被误解的样子和常见出镜场景。",why:"美业视觉不能只追求精致，还要让顾客感到可信、可接近。",type:"input",label:"请描述你的气质、门店风格、最怕被误解的样子、三年关键词和主要出镜场景",sample:"气质：专业、温柔但不讨好。\n门店风格：米白和木色，安静、干净。\n最怕被误解：只会卖套餐、制造焦虑的老板。\n三年关键词：专业、真实、长期陪伴。\n场景：门店咨询区口播、顾客案例复盘、员工晨会和老板经营分享。"},
+          {title:"生成三套差异化形象方案",instruction:"每套包含服装、灯光、机位、门店背景、表情和声调。",why:"视觉选择也需要比较，而不是由模型直接定稿。",type:"select",options:["专业主理人｜门店咨询区、柔和侧光、半身平视","温暖同行姐姐｜米白空间、自然光、近景交流感","清醒美业老板｜深色背景、真实经营现场、直接表达"],sampleChoice:"专业主理人｜门店咨询区、柔和侧光、半身平视"},
+          {title:"确认长期形象规范",instruction:"选择主方案，并确定不能随意变化的视觉要素。",why:"确认档案将共同约束头像、封面、数字人和门店视频模板。",type:"select",options:["采用专业主理人","专业主理人 + 温暖同行辅助场景","暂不确认，先上传本人和门店照片再分析"],sampleChoice:"专业主理人 + 温暖同行辅助场景"}
+        ]
+      },
+      {
+        id:8,phase:"内容生产",name:"脚本分镜",desc:"把已批准文案转化为可拍摄、可生成、可进入批量视频的镜头计划。",
+        output:"已批准脚本与分镜",
+        steps:[
+          {title:"确认视频五项参数",instruction:"明确美业主题、顾客或同行受众、风格、时长和业务目的。",why:"脚本必须服务一个具体的信任或经营目标，不能只追求画面丰富。",type:"input",label:"请填写主题、目标受众、表达风格、时长和视频目的",sample:"主题：为什么低价拓客留不住顾客。\n受众：正在为流量和复购焦虑的美业门店老板。\n风格：真实门店故事 + 三个经营判断。\n时长：60 秒。\n目的：建立老板 IP 信任，获得门店经营诊断咨询。"},
+          {title:"生成三套不同风格脚本",instruction:"每套包含钩子、中段、结尾、分镜和口播。",why:"先比较生产复杂度和传播优势，再决定采用哪套。",type:"select",options:["单人口播｜4 镜头｜最快生产","案例纪录｜6 镜头｜信任感最强","图文解释｜8 镜头｜信息密度最高"],sampleChoice:"案例纪录｜6 镜头｜信任感最强"},
+          {title:"比较传播优势与风险",instruction:"评估真实度、节奏、素材成本和批量复制难度。",why:"脚本不仅要好看，还要适合当前生产能力。",type:"review",preview:["单人口播：生产快；风险是视觉单一。","案例纪录：信任强；风险是需要真实素材。","图文解释：信息清晰；风险是制作成本高、容易像课程。"]},
+          {title:"确认最终脚本和分镜",instruction:"选择方案，并明确进入黄雀现有能力的方式。",why:"批准后才能创建图片、数字人或批量视频任务。",type:"select",options:["批准案例纪录版","先用单人口播做首版验证","案例开场 + 口播主体的混合版"],sampleChoice:"案例开场 + 口播主体的混合版"}
+        ]
+      },
+      {
+        id:9,phase:"运营增长",name:"私域矩阵",desc:"设计从公域认识、私域承接到长期触达的合规运营路径。",
+        output:"已确认私域矩阵方案",
+        steps:[
+          {title:"采集私域五类信息",instruction:"明确顾客、核心项目、现有内容、承接渠道和复购目标。",why:"平台不是越多越好，关键是公域顾客怎样合规进入长期服务。",type:"input",label:"请填写目标顾客、核心项目、现有内容、私域渠道和本月经营目标",sample:"目标顾客：28–45 岁敏感肌和痘肌女性。\n核心服务：皮肤诊断 + 90 天长期管理。\n现有内容：老板口播、真实案例和居家护理清单。\n私域：个人微信 + 企业微信 + 老客群。\n目标：每月新增 30 个高意向咨询，老客复购率提升 15%。"},
+          {title:"设计引流与欢迎路径",instruction:"规划公域入口、欢迎内容和第一次咨询。",why:"顾客第一次进入私域的体验决定她会不会把你当专业主理人。",type:"review",preview:["短视频问题 → 私信领取《问题肌自查清单》。","欢迎消息 → 先问困扰、持续时间和做过的项目，不急着报价。","首批内容 → 一个真实案例、一份护理建议、一次老板公开答疑。"]},
+          {title:"确认矩阵账号角色",instruction:"明确老板号、门店号和顾问号各自承担什么责任。",why:"角色清楚可以避免所有账号只发促销。",type:"select",options:["轻量：老板 IP 主号 + 企业微信承接","标准：老板号 + 门店案例号 + 顾问承接号","第一版只做老板主号，不扩矩阵"],sampleChoice:"轻量：老板 IP 主号 + 企业微信承接"},
+          {title:"制定内容与转化节奏",instruction:"确定每日、每周动作和顾客主动咨询后的承接条件。",why:"私域价值来自稳定信任，不是临时群发活动。",type:"review",preview:["每日：回答一个顾客真实问题或分享服务现场。","每周：一次案例复盘 + 一次老板答疑。","触发：顾客主动描述问题后，再邀请到店诊断，不群发强推套餐。"]},
+          {title:"确认第一执行重点",instruction:"从完整方案中选择最先验证的一条路径。",why:"先跑通一条获客到复购链，再考虑扩大矩阵。",type:"select",options:["老板口播 → 自查清单 → 到店诊断","真实案例 → 顾客答疑 → 90 天管理方案","暂不引流，先积累 10 条高质量内容"],sampleChoice:"老板口播 → 自查清单 → 到店诊断"}
+        ]
+      },
+      {
+        id:10,phase:"运营增长",name:"朋友圈运营",desc:"用专业证明、真实日常和适度转化建立长期信任。",
+        output:"已确认朋友圈运营计划",
+        steps:[
+          {title:"确认身份、项目、顾客和目标",instruction:"优先复用档案，只补充朋友圈承担的门店经营目标。",why:"朋友圈必须和老板公开 IP、门店服务保持一致。",type:"input",label:"你希望朋友圈让顾客形成什么印象？本月最想承接什么项目或关系？",sample:"印象：真实、专业、不强推，能看见老板每天怎样服务顾客和带团队。\n承接：敏感肌 90 天管理、老客复购和顾客转介绍。"},
+          {title:"建立五类内容结构",instruction:"配置专业、故事、证明、日常和转化内容。",why:"只有促销会透支信任，只有科普也不会产生到店行动。",type:"review",preview:["专业价值：皮肤判断、护理边界和常见误区。","故事共鸣：顾客困扰、老板低谷和员工成长。","社交证明：真实反馈与阶段变化，避免夸大疗效。","情感链接：门店现场、学习和老板价值观。","转化引导：诊断、答疑、体验和长期管理说明。"]},
+          {title:"形成七天运营节奏",instruction:"让五类内容在一周内自然分布。",why:"节奏比连续促销更能建立美业长期信任。",type:"review",preview:["周一：皮肤误区｜周二：真实案例｜周三：门店工作现场","周四：顾客问题｜周五：老板经营复盘｜周六：生活与价值观","周日：本周总结 + 下周到店答疑名额"]},
+          {title:"生成文案骨架和配图建议",instruction:"为每类内容准备可复用结构。",why:"骨架降低持续创作成本，但必须保留真实顾客和门店细节。",type:"review",preview:["案例骨架：困扰 → 判断 → 方案 → 阶段变化 → 适用边界。","观点骨架：美业反常识 → 真实经历 → 给顾客或同行的建议。","配图：真实门店、老板和服务细节优先，少用廉价促销海报。"]},
+          {title:"确认 30 天发力重点",instruction:"选择本月最重要的内容比例和业务目标。",why:"运营计划必须服从当前 IP 阶段，而不是平均用力。",type:"select",options:["案例与方法 60%｜建立专业信任","真实故事 50%｜先建立人格连接","方法 40% + 案例 40% + 服务 20%"],sampleChoice:"方法 40% + 案例 40% + 服务 20%"}
+        ]
+      },
+      {
+        id:11,phase:"运营增长",name:"销售与反馈",desc:"把咨询、异议和成交原话变成下一轮内容与产品优化依据。",
+        output:"已确认销售与反馈机制",
+        steps:[
+          {title:"采集项目、顾客、渠道和困境",instruction:"明确门店真实咨询与成交路径，而不是直接生成逼单话术。",why:"销售策略必须建立在顾客问题、专业判断和服务边界上。",type:"input",label:"请填写核心项目、目标顾客、咨询渠道、当前成交困境和目标",sample:"项目：敏感肌 90 天长期管理。\n顾客：反复敏感、做过多个项目但效果不稳定的女性。\n渠道：老板短视频 + 微信咨询 + 到店诊断。\n困境：顾客问完价格就消失，咨询师容易急着推套餐。\n目标：提高有效咨询到店率和首次诊断后的方案接受率。"},
+          {title:"设计完整销售流程",instruction:"从触达、信任、需求、价值、异议、成交到售后。",why:"不能只优化最后一句话，必须看顾客完整体验。",type:"review",preview:["触达：内容回应真实皮肤问题。","信任：老板立场、案例和专业边界。","需求：确认困扰、经历和预期，不先报价。","价值：讲清诊断、阶段方案和长期管理。","异议：价格、时间、曾被强推和效果担忧。","成交：顾客理解方案后自主决定。","售后：记录变化、回访并收集真实反馈。"]},
+          {title:"生成各环节话术候选",instruction:"话术用于帮助顾客理解，不替代专业判断，也不用于逼单。",why:"老板确认后才能使用，禁止自动向顾客发送。",type:"review",preview:["需求：你现在最困扰的是反复、敏感，还是做了很多项目仍不稳定？","价值：我们先完成诊断，再决定你是否需要项目，不适合的我会直接说明。","异议：你可以先理解方案和边界，不需要今天立刻决定。"]},
+          {title:"建立反馈记录机制",instruction:"定义需要回收的顾客原话、异议、成交和未到店原因。",why:"反馈必须回到 IP 档案和内容计划，系统才会持续成长。",type:"input",label:"你准备每周记录哪些顾客与员工反馈？由谁复盘？",sample:"记录评论问题、微信咨询原话、未到店原因、价格异议、成交原因、阶段效果反馈和员工咨询卡点；每周五由老板、店长和咨询负责人共同复盘。"},
+          {title:"确认下一轮优化重点",instruction:"选择最值得反哺定位、内容或门店服务的一项变化。",why:"反馈不是看板终点，而是下一轮内容和经营动作的起点。",type:"select",options:["把首次诊断流程讲得更具体","增加顾客害怕强推的真实内容","减少促销内容，增加服务过程与边界","先收集两周未到店原因再调整"],sampleChoice:"增加顾客害怕强推的真实内容"}
+        ]
+      },
+      {
+        id:12,phase:"运营增长",name:"公众号商业化",desc:"把长期内容、信任和服务承接形成可持续的商业闭环。",
+        output:"已确认公众号商业化方案",
+        steps:[
+          {title:"确认人设、项目、读者和目标",instruction:"读取前面档案，只补充公众号在美业老板 IP 中的主要功能。",why:"公众号不是另一个促销号，而是长期案例和专业信任资产中心。",type:"input",label:"公众号主要服务顾客还是美业同行？承担什么功能？希望实现什么目标？",sample:"读者：重视长期皮肤管理的顾客，以及关注真实经营的美业门店老板。\n功能：沉淀顾客教育、真实案例、老板经营复盘和服务边界。\n目标：形成长期搜索资产，每月带来 10 个高质量到店诊断或经营咨询。"},
+          {title:"设计四类文章结构",instruction:"配置专业价值、顾客故事、经营观点和服务承接文章。",why:"栏目结构能让长期内容既稳定又不变成促销合集。",type:"review",preview:["专业文章：皮肤判断、项目边界和护理清单。","故事文章：顾客转折、员工成长和门店低谷。","观点文章：反对强推、低价战和容貌焦虑。","转化文章：诊断流程、适合谁、不适合谁和真实服务说明。"]},
+          {title:"生成写作建议",instruction:"为每类文章确定标题、正文和结尾结构。",why:"可复用结构能降低长文生产成本并保持人设一致。",type:"review",preview:["标题：具体人群 + 真实问题 + 明确判断。","正文：场景 → 冲突 → 方法 → 案例 → 边界。","结尾：给下一步，不夸大、不强推。"]},
+          {title:"确认公众号运营节奏",instruction:"建议每周 2–3 篇，并和短视频、朋友圈复用同一内容卡。",why:"同一 IP 项目应该一份内容多端表达，而不是重复从零创作。",type:"review",preview:["周二：方法长文｜周四：案例复盘｜周日：观点或服务说明","短视频负责触达，公众号负责深度，私域负责继续对话。"]},
+          {title:"确认商业化路径",instruction:"选择免费价值、信任、到店诊断或同行服务的承接路径。",why:"商业化必须和门店真实可交付价值一致。",type:"select",options:["专业长文 → 自查清单 → 到店诊断 → 长期管理","真实案例 → 老板公开答疑 → 到店体验","经营复盘 → 美业老板小课 → 门店陪跑","先做长期内容资产，暂不设置付费承接"],sampleChoice:"专业长文 → 自查清单 → 到店诊断 → 长期管理"}
+        ]
+      }
+    ];
+
+    const STORAGE_KEY = "huangque-ip12-beauty-ai-pilot-v3";
+    const API_URL = "/api/gen/digital-ip/diagnose";
+    const totalSteps = MODULES.reduce((sum,module)=>sum+module.steps.length,0);
+    const initialState = {moduleIndex:0,stepIndex:0,answers:{},completedModules:[],profile:{},analyses:{}};
+    let state = loadState();
+    let selectedChoice = null;
+    let toastTimer = null;
+
+    const $ = id => document.getElementById(id);
+    const phaseGroups = [
+      {name:"01 · IP 底座",range:[1,4]},
+      {name:"02 · 内容生产",range:[5,8]},
+      {name:"03 · 运营增长",range:[9,12]}
+    ];
+
+    function loadState(){
+      try{
+        const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+        return saved && typeof saved==="object" ? {...initialState,...saved,analyses:saved.analyses||{}} : structuredClone(initialState);
+      }catch(_){ return structuredClone(initialState); }
+    }
+    function persist(){
+      localStorage.setItem(STORAGE_KEY,JSON.stringify(state));
+      $("saveState").textContent="已自动保存 · 刷新后可以继续";
+    }
+    function keyFor(mi=state.moduleIndex,si=state.stepIndex){ return `${mi}-${si}`; }
+    function escapeHtml(value){
+      return String(value??"").replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));
+    }
+    function confirmedStepCount(){
+      return Object.values(state.answers).filter(answer=>answer?.confirmed).length;
+    }
+    function showToast(message){
+      $("toast").textContent=message;
+      $("toast").classList.add("show");
+      clearTimeout(toastTimer);
+      toastTimer=setTimeout(()=>$("toast").classList.remove("show"),1800);
+    }
+    function phaseFor(moduleId){ return moduleId<=4?0:moduleId<=8?1:2; }
+    function isModuleDone(id){ return state.completedModules.includes(id); }
+
+    function renderModules(){
+      const groups = [
+        {label:"01 · IP 底座",modules:MODULES.slice(0,4)},
+        {label:"02 · 内容生产",modules:MODULES.slice(4,8)},
+        {label:"03 · 运营增长",modules:MODULES.slice(8,12)}
+      ];
+      $("moduleList").innerHTML=groups.map(group=>
+        `<div class="phase-label">${group.label}</div>`+
+        group.modules.map(module=>{
+          const index=module.id-1;
+          const active=index===state.moduleIndex;
+          const done=isModuleDone(module.id);
+          return `<button class="module-btn ${active?"active":""} ${done?"done":""}" type="button" data-module="${index}">
+            <span class="module-no">${String(module.id).padStart(2,"0")}</span>
+            <span class="module-copy"><b>${escapeHtml(module.name)}</b><small>${module.steps.length} 个内部步骤</small></span>
+            <span class="module-state">${done?"已确认":active?"进行中":"可预览"}</span>
+          </button>`;
+        }).join("")
+      ).join("");
+      document.querySelectorAll("[data-module]").forEach(btn=>{
+        btn.addEventListener("click",()=>{
+          saveDraft();
+          state.moduleIndex=Number(btn.dataset.module);
+          state.stepIndex=0;
+          persist();
+          render();
+          window.scrollTo({top:0,behavior:"smooth"});
+        });
+      });
+    }
+
+    function renderInteraction(step){
+      const answer=state.answers[keyFor()]||{};
+      selectedChoice=answer.choice??(step.type==="multi"?[]:null);
+      let html="";
+      if(step.type==="input"){
+        html=`<label class="answer-label" for="answer">${escapeHtml(step.label)}</label>
+          <textarea class="answer" id="answer" placeholder="先写最接近真实的一版，不需要追求完美。">${escapeHtml(answer.text||"")}</textarea>
+          <div class="helper"><span>回答越具体，后续候选越准确。</span><button class="example-btn" id="exampleBtn" type="button">带入示例</button></div>`;
+      }else if(step.type==="select"||step.type==="multi"){
+        html=`<label class="answer-label">${step.type==="multi"?"可以选择多项":"请选择一项作为当前确认"}</label>
+          <div class="suggestions">${step.options.map((option,index)=>{
+            const selected=Array.isArray(selectedChoice)?selectedChoice.includes(option):selectedChoice===option;
+            return `<button class="suggestion ${selected?"selected":""}" type="button" data-choice="${index}"><i></i><b>${String(index+1).padStart(2,"0")}</b>${escapeHtml(option)}</button>`;
+          }).join("")}</div>
+          <div class="helper"><span>${step.type==="multi"?"可多选，确认后形成当前步骤结果。":"你可以先选择系统示例，再继续下一步。"}</span><button class="example-btn" id="exampleBtn" type="button">选择推荐示例</button></div>`;
+      }else{
+        html=`<label class="answer-label">系统根据前面资料形成的体验结果</label>
+          <div class="review-list">${step.preview.map((item,index)=>`<div class="review-item"><em>${String(index+1).padStart(2,"0")}</em><div><b>建议 ${index+1}</b><span>${escapeHtml(item)}</span></div></div>`).join("")}</div>
+          <div class="helper"><span>正式版会展示来源、修订号和重新生成入口。</span><button class="example-btn" id="exampleBtn" type="button">确认已阅读</button></div>`;
+      }
+      $("interaction").innerHTML=html;
+
+      const exampleBtn=$("exampleBtn");
+      if(exampleBtn){
+        exampleBtn.addEventListener("click",()=>{
+          if(step.type==="input"){
+            $("answer").value=step.sample;
+            $("answer").focus();
+          }else if(step.type==="multi"){
+            selectedChoice=[...(step.sampleChoice||[])];
+            saveDraft();
+            renderInteraction(step);
+          }else if(step.type==="select"){
+            selectedChoice=step.sampleChoice;
+            saveDraft();
+            renderInteraction(step);
+          }else{
+            state.answers[keyFor()]={...(state.answers[keyFor()]||{}),reviewed:true};
+            persist();
+            showToast("已标记为阅读");
+          }
+        });
+      }
+      document.querySelectorAll("[data-choice]").forEach(btn=>{
+        btn.addEventListener("click",()=>{
+          const choice=step.options[Number(btn.dataset.choice)];
+          if(step.type==="multi"){
+            const list=Array.isArray(selectedChoice)?[...selectedChoice]:[];
+            const index=list.indexOf(choice);
+            if(index>=0)list.splice(index,1);else list.push(choice);
+            selectedChoice=list;
+          }else{
+            selectedChoice=choice;
+          }
+          saveDraft();
+          renderInteraction(step);
+        });
+      });
+    }
+
+    function saveDraft(){
+      const module=MODULES[state.moduleIndex];
+      const step=module.steps[state.stepIndex];
+      if(!step)return;
+      const current=state.answers[keyFor()]||{};
+      const textarea=document.getElementById("answer");
+      state.answers[keyFor()]={...current,text:textarea?textarea.value.trim():current.text||"",choice:selectedChoice};
+      persist();
+    }
+
+    function confirmCurrent(){
+      saveDraft();
+      const module=MODULES[state.moduleIndex];
+      const step=module.steps[state.stepIndex];
+      const answer=state.answers[keyFor()]||{};
+      if(step.type==="input"&&!answer.text){
+        showToast("请先填写回答，或点击“带入示例”");
+        return;
+      }
+      if((step.type==="select"||step.type==="multi")&&(!answer.choice||(Array.isArray(answer.choice)&&!answer.choice.length))){
+        showToast("请先选择一项，或使用推荐示例");
+        return;
+      }
+      state.answers[keyFor()]={...answer,confirmed:true};
+      if(state.stepIndex===module.steps.length-1){
+        if(!state.completedModules.includes(module.id))state.completedModules.push(module.id);
+        const summary=Array.isArray(answer.choice)?answer.choice.join("、"):answer.choice||answer.text||module.output;
+        state.profile[module.id]={title:module.name,output:module.output,summary:String(summary).slice(0,180)};
+        if(state.moduleIndex<MODULES.length-1){
+          state.moduleIndex++;
+          state.stepIndex=0;
+          showToast(`模块 ${module.id} 已确认，进入模块 ${module.id+1}`);
+        }else{
+          showToast("十二模块体验完成");
+        }
+      }else{
+        state.stepIndex++;
+        showToast("本步骤已确认");
+      }
+      persist();
+      render();
+      window.scrollTo({top:0,behavior:"smooth"});
+    }
+
+    function goBack(){
+      saveDraft();
+      if(state.stepIndex>0){
+        state.stepIndex--;
+      }else if(state.moduleIndex>0){
+        state.moduleIndex--;
+        state.stepIndex=MODULES[state.moduleIndex].steps.length-1;
+      }
+      persist();
+      render();
+      window.scrollTo({top:0,behavior:"smooth"});
+    }
+
+    function answerText(step,answer){
+      if(step.type==="input")return answer.text||"";
+      if(step.type==="select")return answer.choice||"";
+      if(step.type==="multi")return Array.isArray(answer.choice)?answer.choice.join("、"):"";
+      return step.preview.join("\n");
+    }
+
+    function confirmedContext(){
+      return Object.entries(state.answers).filter(([,answer])=>answer?.confirmed).slice(-12).map(([key,answer])=>{
+        const [moduleIndex,stepIndex]=key.split("-").map(Number);
+        const module=MODULES[moduleIndex];
+        const step=module?.steps[stepIndex];
+        return step?{module:module.name,step:step.title,answer:answerText(step,answer).slice(0,1200)}:null;
+      }).filter(Boolean);
+    }
+
+    async function analyzeCurrent(){
+      saveDraft();
+      const module=MODULES[state.moduleIndex];
+      const step=module.steps[state.stepIndex];
+      const answer=state.answers[keyFor()]||{};
+      const text=answerText(step,answer).trim();
+      if(!text){
+        showToast("请先填写回答，或带入示例");
+        return;
+      }
+      const button=$("analyzeBtn");
+      button.disabled=true;
+      button.textContent="AI 正在分析…";
+      $("aiStatus").textContent="正在从美业获客、到店、成交、复购、团队与老板 IP 链路分析。";
+      try{
+        const response=await fetch(API_URL,{
+          method:"POST",
+          credentials:"include",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({module:module.name,step:step.title,answer:text,confirmed_context:confirmedContext()})
+        });
+        if(response.status===401){
+          window.location.href=`/login.html?next=${encodeURIComponent(location.pathname)}`;
+          return;
+        }
+        const result=await response.json().catch(()=>({}));
+        if(!response.ok||!result.ok)throw new Error(result.detail||result.error||"AI 分析暂时不可用");
+        state.analyses[keyFor()]={analysis:result.analysis,model:result.model,usage:result.usage||{},at:new Date().toISOString()};
+        persist();
+        renderAI();
+      }catch(error){
+        $("aiStatus").textContent=error.message||"AI 分析暂时不可用，请稍后重试。";
+      }finally{
+        button.disabled=false;
+        button.textContent="重新分析本步";
+      }
+    }
+
+    function renderAI(){
+      const saved=state.analyses[keyFor()];
+      const button=$("analyzeBtn");
+      if(!saved){
+        $("aiModel").textContent="等待调用";
+        $("aiStatus").textContent="填写当前问题后，由你主动发起分析。";
+        $("aiResult").innerHTML="";
+        button.textContent="AI 分析本步";
+        return;
+      }
+      const analysis=saved.analysis||{};
+      const current=state.answers[keyFor()]||{};
+      $("aiModel").textContent=saved.model||"OpenAI";
+      $("aiStatus").textContent=`结构化诊断已返回${saved.usage?.total_tokens?` · ${saved.usage.total_tokens} tokens`:""}。`;
+      const facts=(analysis.confirmed_facts||[]).map(item=>`<li>${escapeHtml(item)}</li>`).join("");
+      const pains=(analysis.business_pains||[]).map(item=>`<div class="ai-pain"><b>${escapeHtml(item.label)}</b>${escapeHtml(item.evidence)} · ${escapeHtml(item.impact)}</div>`).join("");
+      const candidates=(analysis.positioning_candidates||[]).map((item,index)=>{
+        const recommended=index===analysis.recommended_index;
+        const selected=current.aiChoice===index;
+        return `<article class="ai-candidate ${recommended?"recommended":""} ${selected?"selected":""}">
+          <b>${recommended?"AI 推荐 · ":""}${escapeHtml(item.title)}</b>
+          <p>${escapeHtml(item.one_liner)}</p>
+          <button type="button" data-ai-choice="${index}">${selected?"已选择，等待你确认":"选择此候选"}</button>
+        </article>`;
+      }).join("");
+      $("aiResult").innerHTML=`<p class="ai-summary">${escapeHtml(analysis.summary||"")}</p>
+        ${facts?`<div class="ai-label">已确认事实</div><ul class="ai-list">${facts}</ul>`:""}
+        ${pains?`<div class="ai-label">经营痛点</div>${pains}`:""}
+        ${candidates?`<div class="ai-label">人设候选</div>${candidates}`:""}
+        ${analysis.follow_up_question?`<div class="ai-follow-up"><b>还需要你补充</b><br>${escapeHtml(analysis.follow_up_question)}</div>`:""}`;
+      document.querySelectorAll("[data-ai-choice]").forEach(candidate=>{
+        candidate.addEventListener("click",()=>{
+          state.answers[keyFor()]={...(state.answers[keyFor()]||{}),aiChoice:Number(candidate.dataset.aiChoice)};
+          persist();
+          renderAI();
+          showToast("已选择 AI 候选，仍需你确认当前步骤");
+        });
+      });
+    }
+
+    function renderMemory(){
+      const completed=state.completedModules.length;
+      $("doneModulesText").textContent=`${completed} / 12 完成`;
+      $("phaseProgress").innerHTML=phaseGroups.map((phase,index)=>{
+        const count=state.completedModules.filter(id=>id>=phase.range[0]&&id<=phase.range[1]).length;
+        return `<div class="phase-row"><i>${index+1}</i><b>${phase.name}</b><small>${count} / 4</small></div>`;
+      }).join("");
+      const items=Object.entries(state.profile).sort((a,b)=>Number(a[0])-Number(b[0]));
+      $("memoryItems").innerHTML=items.length?items.map(([,item])=>
+        `<div class="memory-item"><b>${escapeHtml(item.title)} · ${escapeHtml(item.output)}</b><p>${escapeHtml(item.summary)}</p></div>`
+      ).join(""):`<p class="empty-memory">还没有已确认结果。完成任意模块的最后一步后，结果会显示在这里。</p>`;
+      const first=state.profile[1];
+      $("ipName").textContent=first?"正在成长的数字化 IP":"尚未命名的数字化 IP";
+      $("ipSummary").textContent=first?first.summary:"每次确认都会成为后续内容和视频共同读取的项目记忆。";
+    }
+
+    function render(){
+      const module=MODULES[state.moduleIndex];
+      if(!module){
+        state=structuredClone(initialState);
+        persist();
+        return render();
+      }
+      const step=module.steps[state.stepIndex]||module.steps[0];
+      if(!module.steps[state.stepIndex])state.stepIndex=0;
+      const overall=confirmedStepCount();
+      const percent=Math.round(overall/totalSteps*100);
+      $("phaseName").textContent=module.phase;
+      $("moduleTitle").textContent=module.name;
+      $("moduleDesc").textContent=module.desc;
+      $("moduleCount").textContent=`模块 ${module.id} / 12`;
+      $("stepCount").textContent=`模块内步骤 ${state.stepIndex+1} / ${module.steps.length}`;
+      $("stepKicker").textContent=`MODULE ${String(module.id).padStart(2,"0")} · STEP ${String(state.stepIndex+1).padStart(2,"0")}`;
+      $("stepTitle").textContent=step.title;
+      $("stepInstruction").textContent=step.instruction;
+      $("stepWhy").textContent=step.why;
+      $("moduleStepText").textContent=`${String(state.stepIndex+1).padStart(2,"0")} / ${String(module.steps.length).padStart(2,"0")}`;
+      $("moduleBar").style.width=`${(state.stepIndex+1)/module.steps.length*100}%`;
+      $("overallText").textContent=`总进度 ${overall} / ${totalSteps}`;
+      $("overallBar").style.width=`${percent}%`;
+      $("percentText").textContent=`${percent}%`;
+      $("backBtn").disabled=state.moduleIndex===0&&state.stepIndex===0;
+      $("nextBtn").textContent=state.stepIndex===module.steps.length-1?(module.id===12?"完成十二模块体验":"确认并完成模块"):"确认并继续";
+      renderModules();
+      renderInteraction(step);
+      renderMemory();
+      renderAI();
+    }
+
+    function selfCheck(){
+      const errors=[];
+      if(MODULES.length!==12)errors.push(`模块数量应为 12，实际为 ${MODULES.length}`);
+      if(totalSteps!==54)errors.push(`步骤数量应为 54，实际为 ${totalSteps}`);
+      if(MODULES.some(module=>!module.name||!module.steps.length))errors.push("存在缺少名称或步骤的模块");
+      console.assert(errors.length===0,errors.join("; "));
+      if(errors.length){
+        $("fatal").style.display="block";
+        $("fatal").textContent="原型数据校验失败："+errors.join("；");
+        $("app").style.display="none";
+      }
+    }
+
+    $("nextBtn").addEventListener("click",confirmCurrent);
+    $("backBtn").addEventListener("click",goBack);
+    $("analyzeBtn").addEventListener("click",analyzeCurrent);
+    $("guideBtn").addEventListener("click",()=>$("guideModal").classList.add("open"));
+    $("closeGuide").addEventListener("click",()=>$("guideModal").classList.remove("open"));
+    $("guideModal").addEventListener("click",event=>{if(event.target===$("guideModal"))$("guideModal").classList.remove("open")});
+    $("resetBtn").addEventListener("click",()=>{
+      if(confirm("只清除当前浏览器中的体验数据，确定重置吗？")){
+        localStorage.removeItem(STORAGE_KEY);
+        state=structuredClone(initialState);
+        selectedChoice=null;
+        render();
+        showToast("演示数据已重置");
+      }
+    });
+    window.addEventListener("beforeunload",saveDraft);
+    selfCheck();
+    render();
+    if(!localStorage.getItem("huangque-ip12-beauty-guide-seen-v2")){
+      $("guideModal").classList.add("open");
+      localStorage.setItem("huangque-ip12-beauty-guide-seen-v2","1");
+    }
+  </script>
+</body>
+</html>

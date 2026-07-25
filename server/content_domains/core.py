@@ -1220,6 +1220,19 @@ class H(BaseHTTPRequestHandler):
         if _short_drama_domain().dispatch_http(self, "POST", jdb, verify,
                 getattr(points_domain, "cost_of", None), mutation_lock=_submission_lock,
                 canvas_access_resolver=_short_drama_canvas_access): return
+        if p == "/api/gen/digital-ip/diagnose":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            from . import digital_ip
+            try:
+                return self._send(200, digital_ip.diagnose(self._json_body_strict(), user["username"]))
+            except digital_ip.DigitalIPError as e:
+                return self._send(e.status, {"detail": str(e)})
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)[:220]})
+            except Exception:
+                return self._send(502, {"detail": "AI 分析服务暂时不可用，请稍后重试"})
         if p == "/api/gen/inspiration/like": return inspiration_likes.handle_post(self, verify(self._token()), AUDIO_DB)
         if p == "/api/gen/asset/favorite":
             user = verify(self._token())
