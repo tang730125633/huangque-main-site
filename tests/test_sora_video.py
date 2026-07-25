@@ -397,6 +397,42 @@ class SoraStartupRecoveryTests(unittest.TestCase):
         terminal.assert_not_called()
         recover.assert_called_once()
 
+    def test_reaper_expires_stale_recovery_hold(self):
+        class StopLoop(Exception):
+            pass
+
+        class Rows:
+            def execute(self, *_args):
+                return self
+
+            def fetchall(self):
+                return [{"id": 10, "username": "u", "cost": 120,
+                         "kind": "sora_video", "payload": "{}", "updated_at": 1}]
+
+            def close(self):
+                pass
+
+        recover = Mock(return_value=True)
+        recovery = Mock(return_value={
+            "video_id": None, "submission_unknown": True,
+            "phase": "sora_recovery_required",
+        })
+        fail = Mock(return_value=True)
+        with patch.object(video, "recover_paid_video_error", recover), \
+             patch.object(video, "get_resumable_sora_request", recovery), \
+             patch.object(core, "jdb", return_value=Rows()), \
+             patch.object(core, "_domains", return_value=(None, None, video)), \
+             patch.object(core, "_fail_job_and_schedule_refund", fail), \
+             patch.object(core, "_mark_video_asset_failed"), \
+             patch.object(core.time, "time", return_value=5000), \
+             patch.object(core.time, "sleep", side_effect=StopLoop):
+            with self.assertRaises(StopLoop):
+                core.reaper()
+        recover.assert_called_once()
+        recovery.assert_called_once_with(10)
+        fail.assert_called_once()
+        self.assertIn("恢复超时", fail.call_args.args[1])
+
     def test_persisted_video_id_requeues_without_refund(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

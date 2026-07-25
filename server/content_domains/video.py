@@ -983,6 +983,12 @@ def recover_official_video_paid_job(job_id, error, requeue=None):
     return False
 
 
+def recovery_hold_expired(job_id, kind, age, grace):
+    getter = get_resumable_sora_request if kind == "sora_video" else get_resumable_grok_request
+    recovery = getter(job_id)
+    return bool(recovery and str(recovery.get("phase") or "").endswith("_recovery_required") and age >= grace)
+
+
 def get_resumable_sora_request(job_id):
     """读取已持久化的 OpenAI video id；重启后只恢复 GET，绝不重发付费 POST。"""
     if not job_id:
