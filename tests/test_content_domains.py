@@ -60,7 +60,8 @@ class ContentDomainTests(unittest.TestCase):
         # 编排；持久状态机、quote/关联/补偿细节都在 short_drama_production.py。
         # attempt-backed 与通用 job 的失败分流也只保留一个薄编排 helper；原子状态迁移和
         # still-refund 所有权仍全部位于 short_drama_production.py。
-        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1940)
+        # Digital IP Structured Outputs 仅在 core 保留鉴权与 HTTP 状态薄接线，分析逻辑独立在 digital_ip.py。
+        self.assertLess(len(core_path.read_text(encoding="utf-8").splitlines()), 1960)
 
     def test_openai_base_with_v1_is_not_duplicated(self):
         core = importlib.import_module("content_domains.core")
