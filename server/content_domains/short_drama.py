@@ -8,7 +8,7 @@ import urllib.parse
 import uuid
 from contextlib import closing
 
-from . import short_drama_production, short_drama_voice
+from . import short_drama_assembly, short_drama_production, short_drama_voice
 
 
 STAGES = (
@@ -615,6 +615,7 @@ def init_db(db_factory):
         conn.close()
     short_drama_production.init_db(db_factory)
     short_drama_voice.init_db(db_factory)
+    short_drama_assembly.init_db(db_factory)
 
 
 def _project_username_for_access(db_factory, username, project_id, access=None, write=False):
@@ -1530,6 +1531,7 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/project",
         "/api/gen/short-drama/production",
         "/api/gen/short-drama/voice",
+        "/api/gen/short-drama/assembly",
         "/api/gen/short-drama/planning-job",
         "/api/gen/short-drama/planning-quote",
     },
@@ -1725,6 +1727,17 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             handler._send(
                 200,
                 short_drama_voice.get_voice_workspace(
+                    db_factory, owner, project_id
+                ),
+            )
+        elif method == "GET" and path.endswith("/assembly"):
+            project_id = _planning_project_id_from_query(handler)
+            owner = _project_username_for_access(
+                db_factory, username, project_id, access, write=False
+            )
+            handler._send(
+                200,
+                short_drama_assembly.get_assembly_workspace(
                     db_factory, owner, project_id
                 ),
             )
