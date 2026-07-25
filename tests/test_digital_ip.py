@@ -50,9 +50,27 @@ def _analysis():
     }
 
 
+def _guide_reply():
+    return {
+        "intent": "fill_help",
+        "reply": "先别追求完整，告诉我门店开了几年、最头疼哪件事就可以。",
+        "follow_up_questions": ["门店经营几年了？", "现在最难的是获客、成交还是复购？"],
+        "suggested_answer": "我的门店经营了 7 年，现在最头疼的是老客复购下降。",
+        "recommended_actions": [
+            {"type": "fill_answer", "label": "带入回答草稿", "value": "我的门店经营了 7 年。"},
+            {"type": "run_diagnosis", "label": "检查后做本步诊断", "value": ""},
+        ],
+        "needs_diagnosis": False,
+        "uncertainty_note": "还缺少门店规模。",
+    }
+
+
 class DigitalIPTests(unittest.TestCase):
     def setUp(self):
         digital_ip._recent_requests.clear()
+        digital_ip._guide_recent_requests.clear()
+        digital_ip._guide_daily_requests.clear()
+        digital_ip._guide_cache.clear()
 
     def test_diagnose_uses_responses_structured_outputs(self):
         captured = {}
@@ -117,7 +135,77 @@ class DigitalIPTests(unittest.TestCase):
         with self.assertRaises(digital_ip.DigitalIPRateLimited):
             digital_ip._check_rate_limit("owner")
 
+    def test_guide_bounds_context_and_returns_allowlisted_actions(self):
+        captured = {}
+
+        def fake_post(path, body, content_type, timeout):
+            captured.update(path=path, body=json.loads(body), timeout=timeout)
+            return {
+                "model": "gpt-5.6-terra",
+                "output": [{
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": json.dumps(_guide_reply(), ensure_ascii=False)}],
+                }],
+                "usage": {"input_tokens": 200, "output_tokens": 300, "total_tokens": 500},
+            }
+
+        with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), \
+                mock.patch.object(digital_ip, "_post", side_effect=fake_post):
+            result = digital_ip.guide({
+                "module": "定位诊断",
+                "step": "采集门店经营底图",
+                "step_instruction": "描述门店经营情况",
+                "step_why": "建立真实底图",
+                "current_answer": "美" * 2000,
+                "ip_summary": "经营资料" * 300,
+                "next_step": "识别核心经营痛点",
+                "message": "我不知道怎么填",
+                "recent_turns": [
+                    {"role": "user", "content": "第 1 轮"},
+                    {"role": "assistant", "content": "第 2 轮"},
+                    {"role": "user", "content": "第 3 轮"},
+                    {"role": "assistant", "content": "第 4 轮"},
+                ],
+            }, "beauty-owner")
+
+        sent = json.loads(captured["body"]["input"])
+        self.assertEqual(captured["path"], "/v1/responses")
+        self.assertEqual(captured["body"]["model"], "gpt-5.6-terra")
+        self.assertLessEqual(captured["body"]["max_output_tokens"], 800)
+        self.assertFalse(captured["body"]["store"])
+        self.assertEqual(len(sent["recent_turns"]), 3)
+        self.assertEqual(len(sent["current_answer"]), 1200)
+        self.assertEqual(len(sent["ip_summary"]), 800)
+        self.assertNotIn("beauty-owner", json.dumps(captured["body"], ensure_ascii=False))
+        self.assertEqual(result["guide"]["recommended_actions"][0]["type"], "fill_answer")
+        self.assertTrue(result["guide_only"])
+        self.assertFalse(result["user_confirmed"])
+
+    def test_guide_cache_avoids_a_second_model_call(self):
+        response = {
+            "model": "gpt-5.6-terra",
+            "output": [{
+                "type": "message",
+                "content": [{"type": "output_text", "text": json.dumps(_guide_reply(), ensure_ascii=False)}],
+            }],
+        }
+        payload = {
+            "module": "定位诊断",
+            "step": "经营底图",
+            "message": "请用简单的话问我",
+        }
+        with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), \
+                mock.patch.object(digital_ip, "_post", return_value=response) as post:
+            self.assertFalse(digital_ip.guide(payload, "owner")["cached"])
+            self.assertTrue(digital_ip.guide(payload, "owner")["cached"])
+        self.assertEqual(post.call_count, 1)
+
+    def test_guide_rate_limit_blocks_fourth_uncached_request(self):
+        for _ in range(3):
+            digital_ip._check_guide_rate_limit("owner")
+        with self.assertRaises(digital_ip.DigitalIPRateLimited):
+            digital_ip._check_guide_rate_limit("owner")
+
 
 if __name__ == "__main__":
     unittest.main()
-
