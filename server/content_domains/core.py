@@ -1153,25 +1153,25 @@ def reaper():
                     stuck_payload = {}
                 if r["kind"] in {"sora_video", "xiaole_video"}:
                     try:
-                        if _domains()[2].recover_paid_video_error(
-                                r["id"], r["kind"], stuck_payload,
-                                "本地 worker 中断，正在恢复查询",
-                                _requeue_running_job, force_requeue=True):
-                            continue
+                        video_domain = _domains()[2]
+                        if video_domain.recover_paid_video_error(r["id"], r["kind"], stuck_payload,
+                                "本地 worker 中断，正在恢复查询", _requeue_running_job, force_requeue=True):
+                            if not video_domain.recovery_hold_expired(r["id"], r["kind"], now - int(r["updated_at"] or now), grace):
+                                continue
+                            print("[video-recovery] job#%s recovery window expired; ending" % r["id"], flush=True)
                     except Exception:
                         continue  # 恢复库读不到时也不能把付费任务误判失败。
                 # CAS 抢 error 终态；抢到(说明 worker 尚未写 done)才退点，退点本身再幂等一层
                 if _fail_job_and_schedule_refund(
-                        r["id"], "生成超时自动结束，退款处理中",
+                        r["id"], "付费视频恢复超时自动结束，退款处理中，请重新提交",
                         username=r["username"], cost=r["cost"], kind=r["kind"]):
-                    _mark_video_asset_failed(r["id"], r["kind"], "生成超时自动结束，退款处理中")
+                    _mark_video_asset_failed(r["id"], r["kind"], "付费视频恢复超时自动结束，退款处理中，请重新提交")
         except Exception:
             pass
         time.sleep(60)
 
 def _requeue_running_job(job_id):
     return startup_recovery.requeue_running_job(jdb, job_id)
-
 
 def reclaim_orphaned_running():
     return startup_recovery.reclaim_orphaned_running(
