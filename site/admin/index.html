@@ -487,7 +487,7 @@
   }
   function pointReasonText(item){
     var raw=String(item.reason||'').trim();
-    var job=raw.match(/^job:([a-z0-9_]+)$/);
+    var job=raw.match(/^job:([a-z0-9_]+)(?:\s|$)/);
     var names={
       cinematic:'开放式电影化生成',image:'图片生成',xiaole_video:'AI 视频生成',
       video:'数字人口播',avatar:'创建数字化 IP',collect:'内容采集',
@@ -498,6 +498,10 @@
       var action=Number(item.delta||0)>0?'任务失败退款':'任务扣点';
       return action+' · '+(names[job[1]]||job[1]);
     }
+    if(/^job#\d+\s+口播结算$/.test(raw)) return '数字人口播费用结算退款';
+    if(/^job#\d+(?:\s|$)/.test(raw)) return '任务失败退款';
+    if(raw==='reverse') return '图片提示词反推';
+    if(raw==='reverse:refund') return '图片提示词反推失败退款';
     if(raw==='voice_slot') return Number(item.delta||0)>0?'音色槽位购买退款':'购买音色复刻槽位';
     if(raw==='search:douyin') return Number(item.delta||0)>0?'抖音内容搜索退款':'抖音内容搜索';
     return raw||'未填写原因';
