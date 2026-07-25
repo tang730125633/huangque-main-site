@@ -103,14 +103,13 @@ class DispatchPathTests(unittest.TestCase):
         直接取决于参考视频。换了新出境节点（~1.5 MB/s）、上传超时也放宽到 600s 之后，
         压缩省的那点时间不值得拿画质去换。
 
-        改成【只剥音轨】：-c:v copy 只重封装，画面一帧不动，实测省 58% 的上传量
-        （HeyGen 的 cinematic_avatar 只看画面，根本不用参考视频的声音）。
-        详见 test_motion_audio.py。
+        开放式生成现在原样上传参考视频，不再处理音频；动作模仿仍只剥音轨，
+        两条路径都不做有损重编码。详见 test_motion_audio.py。
         """
         gen = self.src.split("def gen_cinematic")[1].split(chr(10) + "def ")[0]
         code = chr(10).join(ln for ln in gen.splitlines() if not ln.lstrip().startswith("#"))
         self.assertNotIn("_shrink_motion_reference(", code, "还在压缩 —— 画质有损")
-        self.assertIn("_strip_audio(", code)
+        self.assertIn("_prepare_cinematic_reference_videos(", code)
 
     def test_heygen_path_does_not_shrink_twice(self):
         # 分发前已经压过，HeyGen 上传处不该再压一遍（白烧一次 ffmpeg）
