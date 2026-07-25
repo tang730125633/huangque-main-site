@@ -622,11 +622,23 @@
       if(meta) meta.textContent=(project&&project.id||options.projectId||'')+' · r'+(project&&project.revision||0);
       if(nav) nav.innerHTML=renderStageNavigation(project,state);
     }
+    function dedicatedVoiceModule(){
+      return Object.prototype.hasOwnProperty.call(options,'voiceModule')?
+        options.voiceModule:(root&&root.HQCanvas&&root.HQCanvas.shortDramaVoice);
+    }
+    function dedicatedAssemblyModule(){
+      return Object.prototype.hasOwnProperty.call(options,'assemblyModule')?
+        options.assemblyModule:(root&&root.HQCanvas&&root.HQCanvas.shortDramaAssembly);
+    }
+    function isAssemblyProjectStage(stage){
+      return stage==='assembly_review'||stage==='completed';
+    }
     function acceptProductionSummary(summary,generation){
       if(destroyed||!project||!summary||typeof summary!=='object') return;
       var summaryProjectId=summary.project_id||summary.id;
       if(summaryProjectId&&summaryProjectId!==(project.id||project.project_id)) return;
       var wasVoiceStage=project.stage==='voice_review';
+      var wasAssemblyStage=isAssemblyProjectStage(project.stage);
       var next=Object.assign({},project);
       ['revision','stage','ratio','spent_points','point_budget','reserved_points'].forEach(function(key){
         if(Object.prototype.hasOwnProperty.call(summary,key)) next[key]=summary[key];
@@ -634,11 +646,22 @@
       delete next.progress;
       project=next;
       var isVoiceStage=project.stage==='voice_review';
+      var isAssemblyStage=isAssemblyProjectStage(project.stage);
+      var voiceModule=dedicatedVoiceModule();
+      var assemblyModule=dedicatedAssemblyModule();
+      var shouldSwitch=(
+        wasVoiceStage!==isVoiceStage||
+        wasAssemblyStage!==isAssemblyStage
+      )&&!!(
+        (isVoiceStage&&voiceModule&&typeof voiceModule.createWorkspace==='function')||
+        (isAssemblyStage&&assemblyModule&&typeof assemblyModule.createWorkspace==='function')||
+        (!isVoiceStage&&!isAssemblyStage)
+      );
       state.activeStage=project.stage;
       state.busy=false;state.error='';state.stale=false;state.loadFailed=false;state.loadStatus=0;
-      if(wasVoiceStage===isVoiceStage) syncProductionFrame();
+      if(!shouldSwitch) syncProductionFrame();
       onChange(summarizeProject(project));
-      if(wasVoiceStage===isVoiceStage) return Promise.resolve(project);
+      if(!shouldSwitch) return Promise.resolve(project);
       if(destroyed||generation!==loadGeneration) return Promise.resolve(null);
       return activateProductionWorkspace(generation).catch(function(error){
         if(destroyed||generation!==loadGeneration) return null;
@@ -662,10 +685,16 @@
       var activationGeneration=generation==null?loadGeneration:generation;
       if(activationGeneration!==loadGeneration) return Promise.resolve(null);
       var isVoiceStage=project&&project.stage==='voice_review';
-      var moduleOption=isVoiceStage?'voiceModule':'productionModule';
+      var isAssemblyStage=project&&isAssemblyProjectStage(project.stage);
+      var moduleOption=isVoiceStage?'voiceModule':
+        (isAssemblyStage?'assemblyModule':'productionModule');
+      var legacyProductionModule=Object.prototype.hasOwnProperty.call(options,'productionModule')?
+        options.productionModule:(root&&root.HQCanvas&&root.HQCanvas.shortDramaProduction);
       var defaultModule=isVoiceStage?
-        (root&&root.HQCanvas&&root.HQCanvas.shortDramaVoice):
-        (root&&root.HQCanvas&&root.HQCanvas.shortDramaProduction);
+        (dedicatedVoiceModule()||legacyProductionModule):
+        (isAssemblyStage?
+          (dedicatedAssemblyModule()||legacyProductionModule):
+          legacyProductionModule);
       var productionModule=Object.prototype.hasOwnProperty.call(options,moduleOption)?
         options[moduleOption]:defaultModule;
       if(destroyed) return Promise.reject(new Error('workspace destroyed'));
@@ -691,7 +720,7 @@
           boardId:options.boardId,
           client:productionClient,
           host:productionHost,
-          canEdit:canEdit,
+          canEdit:canEdit&&project.stage!=='completed',
           confirm:confirmProduction,
           onChange:function(summary){
             if(destroyed||activationGeneration!==loadGeneration||delegateGeneration!==productionGeneration){

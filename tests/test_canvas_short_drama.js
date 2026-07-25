@@ -797,10 +797,13 @@ async function testWorkspaceSourceAndRenderContract() {
 
   const stillCalls = [];
   const voiceCalls = [];
+  const assemblyCalls = [];
   const delegatedOptions = [];
   const voiceOptions = [];
+  const assemblyOptions = [];
   let stillDestroyCalls = 0;
   let voiceDestroyCalls = 0;
+  let assemblyDestroyCalls = 0;
   const stillModule = {
     createWorkspace(options) {
       stillCalls.push(options.projectId);
@@ -823,6 +826,18 @@ async function testWorkspaceSourceAndRenderContract() {
         render() { return '<section class="voice-workspace">voice workspace</section>'; },
         reload() { return Promise.resolve(); },
         destroy() { voiceDestroyCalls += 1; },
+      };
+    },
+  };
+  const assemblyModule = {
+    createWorkspace(options) {
+      assemblyCalls.push(options.projectId);
+      assemblyOptions.push(options);
+      return {
+        ready: Promise.resolve(),
+        render() { return '<section class="assembly-workspace">assembly workspace</section>'; },
+        reload() { return Promise.resolve(); },
+        destroy() { assemblyDestroyCalls += 1; },
       };
     },
   };
@@ -1018,13 +1033,28 @@ async function testWorkspaceSourceAndRenderContract() {
 
   for (const stage of ['video_review', 'assembly_review', 'completed']) {
     const later = shortDrama.createWorkspace({
-      projectId: `project-${stage}`, document: null, productionModule: stillModule, voiceModule, apiClient,
+      projectId: `project-${stage}`, document: null,
+      productionModule: stillModule, voiceModule, assemblyModule, apiClient,
+      canEdit: true,
       client: { get() { return Promise.resolve(workspaceProject({ id: `project-${stage}`, stage })); } },
     });
     await later.ready;
-    assert.equal(delegatedOptions.at(-1).projectId, `project-${stage}`, `${stage} delegates to production`);
+    if (stage === 'video_review') {
+      assert.equal(delegatedOptions.at(-1).projectId, `project-${stage}`,
+        'video_review delegates to production');
+    } else {
+      assert.equal(assemblyOptions.at(-1).projectId, `project-${stage}`,
+        `${stage} delegates to assembly`);
+      assert.equal(
+        assemblyOptions.at(-1).canEdit,
+        stage !== 'completed',
+        'completed assembly workspace is always read-only',
+      );
+    }
     later.destroy();
   }
+  assert.deepEqual(assemblyCalls, ['project-assembly_review', 'project-completed']);
+  assert.equal(assemblyDestroyCalls, 2);
 
   const planning = shortDrama.createWorkspace({
     projectId: 'planning', document: null, productionModule: stillModule, voiceModule, apiClient,
