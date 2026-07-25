@@ -27,7 +27,7 @@
     *{box-sizing:border-box}
     html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text)}
     body{background:var(--bg)}
-    button,textarea{font:inherit}
+    button,textarea,input{font:inherit}
     button{cursor:pointer}
     .app{min-height:100vh;display:grid;grid-template-columns:290px minmax(560px,1fr) 360px;background:var(--paper)}
     .sidebar{
@@ -219,6 +219,34 @@
     .ai-candidate p{margin:0;color:#8f9cad;font-size:10px;line-height:1.55}
     .ai-candidate button{border:1px solid #385068;border-radius:8px;background:#10263a;color:#b8c7d5;font-size:10px;padding:7px 9px;margin-top:8px}
     .ai-follow-up{margin-top:10px;border-left:2px solid #39a99c;padding:8px 10px;background:#0d2235;color:#a7b7c5;font-size:10px;line-height:1.55}
+    .coach-card{border:1px solid rgba(216,174,85,.42);border-radius:15px;padding:15px;background:linear-gradient(145deg,rgba(216,174,85,.09),rgba(22,139,128,.05))}
+    .coach-head{display:grid;grid-template-columns:42px 1fr auto;gap:10px;align-items:center}
+    .coach-pet{
+      position:relative;width:42px;height:42px;border:1px solid rgba(231,189,96,.58);border-radius:52% 52% 48% 18%;
+      display:grid;place-items:center;background:linear-gradient(145deg,#efd487,#b98531);color:#091827;
+      font-family:Georgia,"Songti SC",serif;font-weight:900;transform:rotate(-5deg);box-shadow:0 8px 20px rgba(0,0,0,.2)
+    }
+    .coach-pet:after{content:"";position:absolute;right:3px;bottom:3px;width:8px;height:8px;border:2px solid #0b1b2c;border-radius:50%;background:#43c2ae}
+    .coach-head b{display:block;color:#f1dfb7;font-size:12px;margin-bottom:3px}
+    .coach-head p{margin:0;color:#8290a2;font-size:9px;line-height:1.45}
+    .coach-model{font-size:9px;color:#65b8aa}
+    .coach-messages{display:grid;gap:8px;margin-top:12px;max-height:220px;overflow:auto}
+    .coach-bubble{border-radius:10px;padding:9px 10px;font-size:10px;line-height:1.6;white-space:pre-wrap}
+    .coach-bubble.assistant{background:#10263a;color:#c8d3dc;border-left:2px solid #d7aa50}
+    .coach-bubble.user{margin-left:22px;background:#17352f;color:#cce6df}
+    .coach-quick,.coach-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+    .coach-chip,.coach-action{
+      border:1px solid #344b61;border-radius:999px;background:#0c2032;color:#aebdca;padding:6px 8px;font-size:9px;text-align:left
+    }
+    .coach-action{border-color:#866d39;color:#e6ca8d}
+    .coach-answer{margin-top:8px;padding:9px;border:1px dashed #3c665f;border-radius:9px;background:#0b211f;color:#a9c9c2;font-size:10px;line-height:1.55}
+    .coach-form{display:grid;grid-template-columns:1fr auto;gap:7px;margin-top:10px}
+    .coach-input{min-width:0;border:1px solid #31465b;border-radius:9px;background:#071522;color:#d9e2e9;padding:9px 10px;outline:none;font-size:10px}
+    .coach-input:focus{border-color:#4aa89b}
+    .coach-send{border:0;border-radius:9px;background:#d5a94e;color:#102030;padding:8px 11px;font-weight:800;font-size:10px}
+    .coach-send:disabled{opacity:.5;cursor:wait}
+    .coach-status{margin:7px 0 0;color:#68778b;font-size:9px;line-height:1.45}
+    .coach-float{display:none}
 
     .modal{position:fixed;inset:0;background:rgba(2,4,8,.76);display:none;align-items:center;justify-content:center;padding:24px;z-index:20}
     .modal.open{display:flex}
@@ -268,6 +296,11 @@
       .step-actions{align-items:flex-start;flex-direction:column}
       .action-group{width:100%}
       .nav-btn{flex:1}
+      .coach-float{
+        display:grid;position:fixed;right:17px;bottom:18px;z-index:12;width:50px;height:50px;border:1px solid #f0cf7c;
+        border-radius:52% 52% 48% 18%;place-items:center;background:linear-gradient(145deg,#efd487,#b98531);
+        color:#0b1928;font-family:Georgia,"Songti SC",serif;font-weight:900;box-shadow:0 14px 35px rgba(0,0,0,.36)
+      }
     }
   </style>
 </head>
@@ -279,7 +312,7 @@
         <div class="brand-mark">雀</div>
         <div><b>黄雀</b><small>数字化 IP 操作系统</small></div>
       </div>
-      <div class="privacy"><i></i>泽龙 AI 试点 · 仅点击分析时调用 OpenAI，不扣黄雀点数；当前回答会发送给 AI 分析。</div>
+      <div class="privacy"><i></i>泽龙 AI 试点 · 仅点击小黄雀或诊断时调用 OpenAI，不扣黄雀点数；当前步骤内容会发送给 AI。</div>
       <div id="moduleList" class="module-scroll"></div>
       <div class="side-actions">
         <button class="soft-btn" id="guideBtn" type="button">使用说明</button>
@@ -353,6 +386,28 @@
         <h3 id="ipName">尚未命名的数字化 IP</h3>
         <p id="ipSummary">每次确认都会成为后续内容和视频共同读取的项目记忆。</p>
       </section>
+      <section class="coach-card" id="coachCard" aria-live="polite">
+        <div class="coach-head">
+          <div class="coach-pet" aria-hidden="true">雀</div>
+          <div><b>小黄雀 · IP 成长教练</b><p>只陪你完成当前步骤，不替你做诊断和确认。</p></div>
+          <span class="coach-model" id="guideModel">待命</span>
+        </div>
+        <div class="coach-messages" id="coachMessages"></div>
+        <div class="coach-quick" id="coachQuick">
+          <button class="coach-chip" type="button" data-guide-prompt="我不知道这道题怎么填">我不知道怎么填</button>
+          <button class="coach-chip" type="button" data-guide-prompt="请用更简单的话问我">用简单的话问我</button>
+          <button class="coach-chip" type="button" data-guide-prompt="给我一个贴近美业门店老板的例子">给我一个美业案例</button>
+          <button class="coach-chip" type="button" data-guide-prompt="帮我整理当前回答，但不要替我确认">帮我整理回答</button>
+          <button class="coach-chip" type="button" data-guide-prompt="告诉我完成本题后下一步做什么">告诉我下一步</button>
+          <button class="coach-chip" type="button" data-guide-prompt="检查当前回答是否足够完整">检查是否完整</button>
+        </div>
+        <div class="coach-form">
+          <input class="coach-input" id="coachInput" maxlength="1200" placeholder="也可以直接问小黄雀…">
+          <button class="coach-send" id="coachSend" type="button">发送</button>
+        </div>
+        <p class="coach-status" id="coachStatus">不会监听输入；只有你点击后才调用 AI。</p>
+        <div class="coach-actions" id="coachActions"></div>
+      </section>
       <section class="memory-section" aria-live="polite">
         <div class="memory-title"><b>本步 AI 诊断</b><span id="aiModel">等待调用</span></div>
         <button class="ai-button" id="analyzeBtn" type="button">AI 分析本步</button>
@@ -373,6 +428,7 @@
       </div>
     </aside>
   </div>
+  <button class="coach-float" id="coachFloat" type="button" aria-label="打开小黄雀 IP 成长教练">雀</button>
 
   <div class="modal" id="guideModal" role="dialog" aria-modal="true" aria-labelledby="guideTitle">
     <div class="guide">
@@ -525,8 +581,9 @@
 
     const STORAGE_KEY = "huangque-ip12-beauty-ai-pilot-v3";
     const API_URL = "/api/gen/digital-ip/diagnose";
+    const GUIDE_API_URL = "/api/gen/digital-ip/guide";
     const totalSteps = MODULES.reduce((sum,module)=>sum+module.steps.length,0);
-    const initialState = {moduleIndex:0,stepIndex:0,answers:{},completedModules:[],profile:{},analyses:{}};
+    const initialState = {moduleIndex:0,stepIndex:0,answers:{},completedModules:[],profile:{},analyses:{},guideTurns:[]};
     let state = loadState();
     let selectedChoice = null;
     let toastTimer = null;
@@ -541,7 +598,9 @@
     function loadState(){
       try{
         const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-        return saved && typeof saved==="object" ? {...initialState,...saved,analyses:saved.analyses||{}} : structuredClone(initialState);
+        return saved && typeof saved==="object"
+          ? {...initialState,...saved,analyses:saved.analyses||{},guideTurns:saved.guideTurns||[]}
+          : structuredClone(initialState);
       }catch(_){ return structuredClone(initialState); }
     }
     function persist(){
@@ -728,6 +787,131 @@
       }).filter(Boolean);
     }
 
+    function currentIPSummary(){
+      return Object.values(state.profile).map(item=>`${item.title}：${item.summary}`).join("\n").slice(0,800);
+    }
+
+    function nextStepTitle(){
+      const module=MODULES[state.moduleIndex];
+      if(state.stepIndex<module.steps.length-1)return module.steps[state.stepIndex+1].title;
+      return MODULES[state.moduleIndex+1]?.steps[0]?.title||"完成十二模块并查看数字化 IP 档案";
+    }
+
+    function latestGuideReply(){
+      return [...state.guideTurns].reverse().find(turn=>turn.role==="assistant")||{};
+    }
+
+    function renderCoach(){
+      const turns=state.guideTurns.slice(-6);
+      $("coachMessages").innerHTML=turns.length?turns.map(turn=>
+        `<div class="coach-bubble ${turn.role==="user"?"user":"assistant"}">${escapeHtml(turn.content)}${
+          turn.role==="assistant"&&turn.suggested_answer
+            ? `<div class="coach-answer"><b>可编辑的回答草稿</b><br>${escapeHtml(turn.suggested_answer)}</div>`
+            : ""
+        }</div>`
+      ).join(""):`<div class="coach-bubble assistant">我会守在这里。看不懂问题、想不起例子，或者不知道下一步做什么，都可以点下面的入口问我。</div>`;
+      const latest=latestGuideReply();
+      $("guideModel").textContent=latest.model||"待命";
+      $("coachActions").innerHTML=[
+        ...(latest.follow_up_questions||[]).map((question,index)=>
+          `<button class="coach-chip" type="button" data-guide-question="${index}">${escapeHtml(question)}</button>`
+        ),
+        ...(latest.actions||[]).map((action,index)=>
+          `<button class="coach-action" type="button" data-guide-action="${index}">${escapeHtml(action.label)}</button>`
+        )
+      ].join("");
+      $("coachMessages").scrollTop=$("coachMessages").scrollHeight;
+    }
+
+    async function askGuide(rawMessage){
+      saveDraft();
+      const message=String(rawMessage||$("coachInput").value||"").trim();
+      if(!message){
+        showToast("先告诉小黄雀你哪里不清楚");
+        return;
+      }
+      const module=MODULES[state.moduleIndex];
+      const step=module.steps[state.stepIndex];
+      const answer=state.answers[keyFor()]||{};
+      const priorTurns=state.guideTurns.slice(-3).map(turn=>({role:turn.role,content:turn.content}));
+      const button=$("coachSend");
+      button.disabled=true;
+      $("coachStatus").textContent="小黄雀正在理解当前步骤…";
+      try{
+        const response=await fetch(GUIDE_API_URL,{
+          method:"POST",
+          credentials:"include",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({
+            module:module.name,
+            step:step.title,
+            step_instruction:step.instruction,
+            step_why:step.why,
+            current_answer:answerText(step,answer),
+            ip_summary:currentIPSummary(),
+            next_step:nextStepTitle(),
+            message,
+            recent_turns:priorTurns
+          })
+        });
+        if(response.status===401){
+          window.location.href=`/login.html?next=${encodeURIComponent(location.pathname)}`;
+          return;
+        }
+        const result=await response.json().catch(()=>({}));
+        if(!response.ok||!result.ok)throw new Error(result.detail||"小黄雀暂时无法回复");
+        const guide=result.guide||{};
+        state.guideTurns=[...state.guideTurns,
+          {role:"user",content:message},
+          {
+            role:"assistant",
+            content:guide.reply||"我们继续完成当前步骤。",
+            suggested_answer:guide.suggested_answer||"",
+            follow_up_questions:guide.follow_up_questions||[],
+            actions:guide.recommended_actions||[],
+            model:result.cached?"已缓存":(result.model||"OpenAI")
+          }
+        ].slice(-6);
+        persist();
+        $("coachInput").value="";
+        $("coachStatus").textContent=`已约束为当前步骤${result.usage?.total_tokens?` · ${result.usage.total_tokens} tokens`:""}。`;
+        renderCoach();
+      }catch(error){
+        $("coachStatus").textContent=error.message||"小黄雀暂时无法回复，请稍后重试。";
+      }finally{
+        button.disabled=false;
+      }
+    }
+
+    function runGuideAction(index){
+      const latest=latestGuideReply();
+      const action=(latest.actions||[])[index];
+      if(!action)return;
+      if(action.type==="fill_answer"){
+        const answer=$("answer");
+        if(!answer){
+          showToast("当前不是文字填写题，请使用页面选项");
+          return;
+        }
+        answer.value=action.value||latest.suggested_answer||"";
+        answer.focus();
+        saveDraft();
+        showToast("已带入草稿，确认前仍可修改");
+      }else if(action.type==="show_example"){
+        $("exampleBtn")?.click();
+      }else if(action.type==="continue_chat"){
+        $("coachInput").value=action.value||"";
+        $("coachInput").focus();
+      }else if(action.type==="run_diagnosis"){
+        $("analyzeBtn").scrollIntoView({behavior:"smooth",block:"center"});
+        $("analyzeBtn").focus();
+        showToast("请检查回答后，再由你点击 AI 诊断");
+      }else if(action.type==="open_step"){
+        document.querySelector(".step-card").scrollIntoView({behavior:"smooth",block:"start"});
+        showToast(action.value==="next"?"确认当前步骤后即可进入下一步":"已回到当前步骤");
+      }
+    }
+
     async function analyzeCurrent(){
       saveDraft();
       const module=MODULES[state.moduleIndex];
@@ -853,6 +1037,7 @@
       renderInteraction(step);
       renderMemory();
       renderAI();
+      renderCoach();
     }
 
     function selfCheck(){
@@ -871,6 +1056,25 @@
     $("nextBtn").addEventListener("click",confirmCurrent);
     $("backBtn").addEventListener("click",goBack);
     $("analyzeBtn").addEventListener("click",analyzeCurrent);
+    $("coachSend").addEventListener("click",()=>askGuide());
+    $("coachInput").addEventListener("keydown",event=>{
+      if(event.key==="Enter"&&!event.isComposing){
+        event.preventDefault();
+        askGuide();
+      }
+    });
+    $("coachCard").addEventListener("click",event=>{
+      const prompt=event.target.closest("[data-guide-prompt]");
+      if(prompt)return askGuide(prompt.dataset.guidePrompt);
+      const question=event.target.closest("[data-guide-question]");
+      if(question){
+        const value=(latestGuideReply().follow_up_questions||[])[Number(question.dataset.guideQuestion)];
+        if(value)return askGuide(value);
+      }
+      const action=event.target.closest("[data-guide-action]");
+      if(action)runGuideAction(Number(action.dataset.guideAction));
+    });
+    $("coachFloat").addEventListener("click",()=>$("coachCard").scrollIntoView({behavior:"smooth",block:"start"}));
     $("guideBtn").addEventListener("click",()=>$("guideModal").classList.add("open"));
     $("closeGuide").addEventListener("click",()=>$("guideModal").classList.remove("open"));
     $("guideModal").addEventListener("click",event=>{if(event.target===$("guideModal"))$("guideModal").classList.remove("open")});
