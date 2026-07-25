@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1200" height="420" viewBox="0 0 1200 420"
+     role="img" aria-labelledby="title desc">
+  <title id="title">黄雀 AI 创智</title>
+  <desc id="desc">黄雀主站把发现客户需求、AI 内容生产和运营交付连接成一条工作流。</desc>
+
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#E7B24C"/>
+      <stop offset="1" stop-color="#F4CD72"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="420" rx="24" fill="#08080A"/>
+  <path d="M0 358 C250 326 420 438 660 356 C840 294 930 110 1200 60"
+        fill="none" stroke="#E7B24C" stroke-opacity=".12" stroke-width="2"/>
+  <path d="M0 378 C270 344 430 452 674 374 C860 314 952 132 1200 82"
+        fill="none" stroke="#E7B24C" stroke-opacity=".06" stroke-width="1"/>
+
+  <g id="title-block" transform="translate(64 58)"
+     font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif">
+    <text x="0" y="0" fill="#E7B24C" font-size="18" font-weight="700"
+          letter-spacing="3">HUANGQUE / MAIN SITE</text>
+    <text x="0" y="94" fill="#F5F1E8" font-size="72" font-weight="800"
+          letter-spacing="-2">黄雀 AI 创智</text>
+    <text x="0" y="146" fill="#C9C2B4" font-size="28" font-weight="500">
+      评论区获客 × AI 内容生产
+    </text>
+    <text x="0" y="184" fill="#C9C2B4" font-size="28" font-weight="500">
+      一站式运营交付工作台
+    </text>
+
+    <g transform="translate(0 238)"
+       font-family="ui-monospace, SFMono-Regular, Menlo, monospace"
+       font-size="16" font-weight="600" letter-spacing="1">
+      <rect width="178" height="42" rx="6" fill="#111317" stroke="#2E323A"/>
+      <circle cx="20" cy="21" r="5" fill="#2DD4BF"/>
+      <text x="36" y="27" fill="#AAB2BF">PRIVATE REPO</text>
+
+      <rect x="194" width="196" height="42" rx="6" fill="#111317" stroke="#2E323A"/>
+      <circle cx="214" cy="21" r="5" fill="#E7B24C"/>
+      <text x="230" y="27" fill="#AAB2BF">PRODUCTION</text>
+    </g>
+  </g>
+
+  <g id="workflow" transform="translate(704 54)"
+     font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif">
+    <path d="M16 46 L16 284" fill="none" stroke="url(#gold)" stroke-width="3"/>
+
+    <g transform="translate(0 0)">
+      <circle cx="16" cy="46" r="9" fill="#08080A" stroke="#F4CD72" stroke-width="4"/>
+      <rect x="44" y="0" width="408" height="92" rx="10"
+            fill="#111317" stroke="#2E323A"/>
+      <text x="68" y="34" fill="#E7B24C" font-size="18" font-weight="700">01</text>
+      <text x="112" y="36" fill="#F5F1E8" font-size="25" font-weight="750">发现需求</text>
+      <text x="68" y="68" fill="#929AA8" font-size="18">关键词 · 评论 · 意图</text>
+    </g>
+
+    <g transform="translate(0 118)">
+      <circle cx="16" cy="46" r="9" fill="#08080A" stroke="#F4CD72" stroke-width="4"/>
+      <rect x="44" y="0" width="408" height="92" rx="10"
+            fill="#111317" stroke="#2E323A"/>
+      <text x="68" y="34" fill="#E7B24C" font-size="18" font-weight="700">02</text>
+      <text x="112" y="36" fill="#F5F1E8" font-size="25" font-weight="750">生产内容</text>
+      <text x="68" y="68" fill="#929AA8" font-size="18">文案 · 图像 · 音频 · 视频</text>
+    </g>
+
+    <g transform="translate(0 236)">
+      <circle cx="16" cy="46" r="9" fill="#08080A" stroke="#2DD4BF" stroke-width="4"/>
+      <rect x="44" y="0" width="408" height="92" rx="10"
+            fill="#111317" stroke="#2E323A"/>
+      <text x="68" y="34" fill="#2DD4BF" font-size="18" font-weight="700">03</text>
+      <text x="112" y="36" fill="#F5F1E8" font-size="25" font-weight="750">运营交付</text>
+      <text x="68" y="68" fill="#929AA8" font-size="18">资产 · 点数 · 健康度</text>
+    </g>
+
+  </g>
+</svg>
