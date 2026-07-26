@@ -153,7 +153,7 @@ class VirtualPaymentTests(unittest.TestCase):
         self.assertIn("pay_sig=", url)
         self.assertEqual(json.loads(body), {"order_id": "HQ1", "env": 0})
 
-    def test_create_order_returns_only_client_payment_fields_and_binds_openid(self):
+    def test_create_order_returns_only_client_payment_fields_without_binding_openid(self):
         with patch.object(
             self.auth.wechat_vpay,
             "code_to_session",
@@ -170,7 +170,9 @@ class VirtualPaymentTests(unittest.TestCase):
 
         c = sqlite3.connect(self.auth.DB)
         try:
-            self.assertEqual(c.execute("SELECT wx_openid FROM users WHERE username='buyer'").fetchone()[0], "openid-buyer")
+            self.assertIsNone(c.execute(
+                "SELECT wx_openid FROM users WHERE username='buyer'"
+            ).fetchone()[0])
         finally:
             c.close()
 
@@ -447,7 +449,7 @@ class VirtualPaymentTests(unittest.TestCase):
         self.assertEqual(err, "membership_order_exists")
         code_to_session.assert_not_called()
 
-    def test_create_order_reports_existing_wechat_binding_owner(self):
+    def test_create_order_allows_wechat_payer_used_by_another_account(self):
         self.auth.create_user("owner", "secret123", 0)
         c = sqlite3.connect(self.auth.DB)
         try:
@@ -463,14 +465,43 @@ class VirtualPaymentTests(unittest.TestCase):
         ):
             result, err = self.auth.create_virtual_pay_order("buyer", "test_pack", "wx-code")
 
-        self.assertIsNone(result)
-        self.assertEqual(err, "openid_in_use:owner")
+        self.assertIsNone(err)
         c = sqlite3.connect(self.auth.DB)
         try:
             self.assertIsNone(c.execute(
                 "SELECT wx_openid FROM users WHERE username='buyer'"
             ).fetchone()[0])
-            self.assertEqual(c.execute("SELECT COUNT(*) FROM virtual_pay_orders").fetchone()[0], 0)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM virtual_pay_orders").fetchone()[0], 1)
+            self.assertEqual(c.execute(
+                "SELECT openid FROM virtual_pay_orders"
+            ).fetchone()[0], "openid-owner")
+        finally:
+            c.close()
+
+    def test_create_order_allows_account_with_a_different_legacy_wechat_binding(self):
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            c.execute(
+                "UPDATE users SET wx_openid=? WHERE username=?",
+                ("openid-legacy", "buyer"),
+            )
+            c.commit()
+        finally:
+            c.close()
+
+        with patch.object(
+            self.auth.wechat_vpay,
+            "code_to_session",
+            return_value={"openid": "openid-current", "session_key": "session-key"},
+        ):
+            result, err = self.auth.create_virtual_pay_order("buyer", "test_pack", "wx-code")
+
+        self.assertIsNone(err)
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            self.assertEqual(c.execute(
+                "SELECT openid FROM virtual_pay_orders"
+            ).fetchone()[0], "openid-current")
         finally:
             c.close()
 
