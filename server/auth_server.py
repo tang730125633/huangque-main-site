@@ -2437,7 +2437,7 @@ def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=N
     try:
         c.execute("BEGIN IMMEDIATE")
         user = c.execute(
-            """SELECT username,wx_openid,membership_tier,membership_started_at,membership_expires_at
+            """SELECT username,membership_tier,membership_started_at,membership_expires_at
                  FROM users WHERE username=?""",
             (username,),
         ).fetchone()
@@ -2451,15 +2451,6 @@ def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=N
             if _existing_membership_order(c, username):
                 c.rollback()
                 return None, "membership_order_exists"
-        owner = c.execute("SELECT username FROM users WHERE wx_openid=?", (openid,)).fetchone()
-        if owner and owner["username"] != username:
-            c.rollback()
-            return None, "openid_in_use:%s" % owner["username"]
-        if user["wx_openid"] and user["wx_openid"] != openid:
-            c.rollback()
-            return None, "openid_mismatch"
-        if not user["wx_openid"]:
-            c.execute("UPDATE users SET wx_openid=? WHERE username=?", (openid, username))
         c.execute(
             """INSERT INTO virtual_pay_orders(
                  order_id,username,openid,package_id,product_id,amount_fen,points,env,status,created_at,
