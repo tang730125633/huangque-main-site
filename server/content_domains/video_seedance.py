@@ -7,6 +7,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import provider_keys
+
 
 ARK_API_KEY = os.environ.get("ARK_API_KEY", "").strip()
 ARK_BASE = os.environ.get(
@@ -29,7 +31,7 @@ RESOLUTIONS = {
     SEEDANCE_MODEL: {"480p", "720p", "1080p"},
     SEEDANCE_FAST_MODEL: {"480p", "720p"},
 }
-TRANSIENT_HTTP_CODES = {408, 429, 500, 502, 503, 504}
+TRANSIENT_HTTP_CODES = {408, 429} | set(range(500, 600))
 TRANSIENT_BACKOFF = (5, 10, 20, 30)
 
 
@@ -41,6 +43,10 @@ class SeedanceRejected(RuntimeError):
     """创建请求被官方明确拒绝，没有可恢复的 task id。"""
 
 
+class SeedanceCredentialRejected(SeedanceRejected):
+    """当前密钥在任务创建前被明确拒绝，可安全尝试下一条线路。"""
+
+
 class SeedanceProviderFailed(RuntimeError):
     """已取得 task id，但官方返回明确失败终态。"""
 
@@ -50,7 +56,7 @@ class TransientSeedanceError(RuntimeError):
 
 
 def available():
-    return bool(ARK_API_KEY)
+    return provider_keys.has_candidate("seedance")
 
 
 def _opener():
@@ -58,16 +64,17 @@ def _opener():
     return urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
-def _safe_text(value, limit=500):
+def _safe_text(value, limit=500, api_key=None):
     text = str(value or "")
-    if ARK_API_KEY:
-        text = text.replace(ARK_API_KEY, "***")
+    for secret in (api_key, ARK_API_KEY):
+        if secret:
+            text = text.replace(secret, "***")
     return text[:limit]
 
 
-def _payload_detail(payload):
+def _payload_detail(payload, api_key=None):
     if not isinstance(payload, dict):
-        return _safe_text(payload)
+        return _safe_text(payload, api_key=api_key)
     detail = payload.get("error") or payload.get("message") or payload.get("detail")
     if isinstance(detail, dict):
         detail = (
@@ -76,15 +83,15 @@ def _payload_detail(payload):
             or detail.get("code")
             or detail
         )
-    return _safe_text(detail or payload)
+    return _safe_text(detail or payload, api_key=api_key)
 
 
-def _error_detail(exc):
+def _error_detail(exc, api_key=None):
     try:
         raw = exc.read().decode("utf-8", "replace")[:2000]
-        return _payload_detail(json.loads(raw or "{}"))
+        return _payload_detail(json.loads(raw or "{}"), api_key)
     except Exception:
-        return _safe_text(exc)
+        return _safe_text(exc, api_key=api_key)
 
 
 def _human_error(code, detail):
@@ -119,12 +126,13 @@ def _human_error(code, detail):
     return "Seedance 官方视频接口失败: HTTP %s %s" % (code, text)
 
 
-def _request_json(opener, method, path, body=None, timeout=90):
-    if not ARK_API_KEY:
+def _request_json(opener, method, path, body=None, timeout=90, api_key=None):
+    api_key = ARK_API_KEY if api_key is None else str(api_key).strip()
+    if not api_key:
         raise ValueError("Seedance 官方视频未配置（ARK_API_KEY）")
     url = ARK_BASE + "/" + str(path or "").lstrip("/")
     headers = {
-        "Authorization": "Bearer " + ARK_API_KEY,
+        "Authorization": "Bearer " + api_key,
         "Accept": "application/json",
         "User-Agent": "huangque-content/1.0",
     }
@@ -139,7 +147,7 @@ def _request_json(opener, method, path, body=None, timeout=90):
         with opener.open(request, timeout=timeout) as response:
             raw = response.read()
     except urllib.error.HTTPError as exc:
-        detail = _error_detail(exc)
+        detail = _error_detail(exc, api_key)
         if method == "POST" and exc.code in TRANSIENT_HTTP_CODES - {429}:
             raise CreateOutcomeUnknown(
                 "Seedance 提交结果未知，请勿重复提交: HTTP %s %s"
@@ -148,10 +156,16 @@ def _request_json(opener, method, path, body=None, timeout=90):
         if method == "GET" and exc.code in TRANSIENT_HTTP_CODES:
             raise TransientSeedanceError(_human_error(exc.code, detail)) from exc
         if method == "POST":
+            if exc.code in {401, 402, 403, 429}:
+                raise SeedanceCredentialRejected(
+                    _human_error(exc.code, detail)
+                ) from exc
             raise SeedanceRejected(_human_error(exc.code, detail)) from exc
         raise RuntimeError(_human_error(exc.code, detail)) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        message = "Seedance 官方视频网络异常: %s" % _safe_text(exc, 300)
+        message = "Seedance 官方视频网络异常: %s" % _safe_text(
+            exc, 300, api_key
+        )
         if method == "POST":
             raise CreateOutcomeUnknown(
                 "Seedance 提交结果未知，请勿重复提交: " + message
@@ -246,6 +260,8 @@ def _poll(
     heartbeat=None,
     now=None,
     sleep=None,
+    api_key=None,
+    provider_key_id=None,
 ):
     now = now or time.time
     sleep = sleep or time.sleep
@@ -261,6 +277,7 @@ def _poll(
                 "/contents/generations/tasks/"
                 + urllib.parse.quote(str(task_id), safe=""),
                 timeout=60,
+                api_key=api_key,
             )
             transient_attempt = 0
             last_transient = None
@@ -271,8 +288,9 @@ def _poll(
                     job_id,
                     "seedance_retrying",
                     provider_video_id=task_id,
+                    provider_key_id=provider_key_id,
                     model=model,
-                    error=_safe_text(exc, 300),
+                    error=_safe_text(exc, 300, api_key),
                 )
             delay = TRANSIENT_BACKOFF[
                 min(transient_attempt, len(TRANSIENT_BACKOFF) - 1)
@@ -289,6 +307,7 @@ def _poll(
                 job_id,
                 "seedance_" + (status or "unknown"),
                 provider_video_id=task_id,
+                provider_key_id=provider_key_id,
                 model=str(payload.get("model") or model),
                 error="",
             )
@@ -351,6 +370,8 @@ def generate(
     heartbeat=None,
     now=None,
     sleep=None,
+    api_key=None,
+    provider_key_id=None,
 ):
     """只创建一次付费任务；取得 id 后才进入可安全重试的 GET 轮询。"""
     payload = _build_payload(
@@ -370,6 +391,7 @@ def generate(
             "/contents/generations/tasks",
             payload,
             timeout=120,
+            api_key=api_key,
         )
     except CreateOutcomeUnknown:
         raise
@@ -385,6 +407,7 @@ def generate(
             job_id,
             "seedance_" + str(created.get("status") or "queued").lower(),
             provider_video_id=task_id,
+            provider_key_id=provider_key_id,
             model=model,
             error="",
         )
@@ -400,6 +423,8 @@ def generate(
         heartbeat=heartbeat,
         now=now,
         sleep=sleep,
+        api_key=api_key,
+        provider_key_id=provider_key_id,
     )
 
 
@@ -414,6 +439,8 @@ def resume(
     heartbeat=None,
     now=None,
     sleep=None,
+    api_key=None,
+    provider_key_id=None,
 ):
     """仅查询已有任务，不会发起新的生成。"""
     task_id = str(task_id or "").strip()
@@ -431,4 +458,6 @@ def resume(
         heartbeat=heartbeat,
         now=now,
         sleep=sleep,
+        api_key=api_key,
+        provider_key_id=provider_key_id,
     )

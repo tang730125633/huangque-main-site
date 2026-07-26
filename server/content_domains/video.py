@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import math
+import sqlite3
 import tempfile
 
 from .core import (
@@ -12,6 +13,7 @@ from .core import (
 import random   # 429 退避重试的抖动：不加抖动，同一批 worker 退避后又会撞在一起
 
 from .audio import gen_audio
+from . import provider_keys
 
 VALID_VIDEO_MODES = {"text", "audio"}
 VALID_VIDEO_RATIOS = {"9:16", "16:9", "1:1", "4:5", "5:4"}
@@ -91,6 +93,50 @@ class SoraSubmissionUnknown(RuntimeError):
 
 class OfficialVideoSubmissionUnknown(RuntimeError):
     """Official Omni/Seedance create may have succeeded without a confirmed id."""
+
+
+def _set_provider_key_health(key_id, ok, error=""):
+    try:
+        provider_keys.set_health(key_id, ok, error=error)
+    except Exception as exc:
+        print(
+            "[provider-keys] 健康状态写入失败 id=%s: %s"
+            % (key_id, str(exc)[:120]),
+            flush=True,
+        )
+
+
+def _create_with_provider_key(provider, job_id, phase, credential_error, create):
+    candidates = provider_keys.candidates(provider)
+    if not candidates:
+        raise ValueError("%s 视频没有可用的 API 密钥" % provider)
+    last_error = None
+    for candidate in candidates:
+        update_video_asset_phase(
+            job_id,
+            phase,
+            strict=True,
+            provider_key_id=candidate["id"],
+        )
+        try:
+            result = create(candidate)
+        except credential_error as exc:
+            last_error = exc
+            _set_provider_key_health(candidate["id"], False, str(exc)[:180])
+            continue
+        _set_provider_key_health(candidate["id"], True)
+        if isinstance(result, dict):
+            result.setdefault("provider_key_id", candidate["id"])
+        return result, candidate
+    raise last_error or RuntimeError("%s 视频没有可用的 API 密钥" % provider)
+
+
+def _bound_provider_key(provider, key_id):
+    # 旧任务没有 provider_key_id；必须继续使用原环境变量，不能误切新池。
+    candidates = provider_keys.candidates(provider, preferred_id=key_id or "env")
+    if not candidates:
+        raise provider_keys.KeyStoreUnavailable("任务绑定的 API 密钥不可用")
+    return candidates[0]
 
 
 def sora_video_is_open(today=None):
@@ -732,9 +778,9 @@ def record_video_asset(job_id, username, result):
         c.execute("""INSERT INTO video_assets
             (job_id, username, mode, image_file, audio_file, reference_video_file, video_file, video_url, text, voice_key,
              resolution, ratio, motion, phase, image_asset_id, audio_asset_id, reference_asset_id, provider_video_id,
-             provider_avatar_id, provider_avatar_group_id, source_video_url, background_file, tryon_mode, model,
+             provider_key_id, provider_avatar_id, provider_avatar_group_id, source_video_url, background_file, tryon_mode, model,
              status, error, created_at, updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(job_id) DO UPDATE SET
                 mode=COALESCE(excluded.mode, video_assets.mode),
                 image_file=COALESCE(excluded.image_file, video_assets.image_file),
@@ -752,6 +798,7 @@ def record_video_asset(job_id, username, result):
                 audio_asset_id=COALESCE(excluded.audio_asset_id, video_assets.audio_asset_id),
                 reference_asset_id=COALESCE(excluded.reference_asset_id, video_assets.reference_asset_id),
                 provider_video_id=COALESCE(excluded.provider_video_id, video_assets.provider_video_id),
+                provider_key_id=COALESCE(excluded.provider_key_id, video_assets.provider_key_id),
                 provider_avatar_id=COALESCE(excluded.provider_avatar_id, video_assets.provider_avatar_id),
                 provider_avatar_group_id=COALESCE(excluded.provider_avatar_group_id, video_assets.provider_avatar_group_id),
                 source_video_url=COALESCE(excluded.source_video_url, video_assets.source_video_url),
@@ -765,7 +812,8 @@ def record_video_asset(job_id, username, result):
              result.get("reference_video_file"), result.get("video_file"), result.get("video_url"), result.get("text"), result.get("voice"),
              result.get("resolution"), result.get("ratio"), result.get("motion"), result.get("phase"),
              result.get("image_asset_id"), result.get("audio_asset_id"), result.get("reference_asset_id"),
-             result.get("provider_video_id") or result.get("video_id"), result.get("provider_avatar_id") or result.get("avatar_item_id"),
+             result.get("provider_video_id") or result.get("video_id"), result.get("provider_key_id"),
+             result.get("provider_avatar_id") or result.get("avatar_item_id"),
              result.get("provider_avatar_group_id") or result.get("avatar_group_id"), result.get("source_video_url"),
              result.get("background_file"), result.get("tryon_mode"), result.get("model"),
              result.get("status") or "pending", result.get("error"), now, now))
@@ -781,6 +829,7 @@ def update_video_asset_phase(job_id, phase, strict=False, **fields):
         "mode", "image_file", "audio_file", "reference_video_file", "video_file", "video_url",
         "text", "voice_key", "resolution", "ratio", "motion", "image_asset_id",
         "audio_asset_id", "reference_asset_id", "provider_video_id", "provider_avatar_id",
+        "provider_key_id",
         "provider_avatar_group_id", "source_video_url", "background_file", "tryon_mode",
         "model", "status", "error"
     }
@@ -874,11 +923,20 @@ def get_resumable_grok_request(job_id):
     if not job_id:
         return None
     with closing(adb()) as c:
-        row = c.execute(
-            """SELECT provider_video_id, model, phase, status, resolution, ratio
-               FROM video_assets WHERE job_id=?""",
-            (job_id,),
-        ).fetchone()
+        try:
+            row = c.execute(
+                """SELECT provider_video_id, provider_key_id, model, phase, status, resolution, ratio
+                   FROM video_assets WHERE job_id=?""",
+                (job_id,),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such column: provider_key_id" not in str(exc):
+                raise
+            row = c.execute(
+                """SELECT provider_video_id, model, phase, status, resolution, ratio
+                   FROM video_assets WHERE job_id=?""",
+                (job_id,),
+            ).fetchone()
         recovery_error = None
         try:
             error_row = c.execute(
@@ -890,6 +948,11 @@ def get_resumable_grok_request(job_id):
             pass
     if not row:
         return None
+    provider_key_id = (
+        row["provider_key_id"]
+        if "provider_key_id" in row.keys()
+        else None
+    )
     phase = str(row["phase"] or "")
     upscale_prediction_id = ""
     if phase.startswith("seedance_upscale_"):
@@ -941,6 +1004,7 @@ def get_resumable_grok_request(job_id):
         return None
     return {
         "request_id": row["provider_video_id"],
+        "provider_key_id": provider_key_id,
         "model": row["model"],
         "provider": provider,
         "phase": phase,
@@ -986,7 +1050,12 @@ def recover_official_video_paid_job(job_id, error, requeue=None):
 def recovery_hold_expired(job_id, kind, age, grace):
     getter = get_resumable_sora_request if kind == "sora_video" else get_resumable_grok_request
     recovery = getter(job_id)
-    return bool(recovery and str(recovery.get("phase") or "").endswith("_recovery_required") and age >= grace)
+    return bool(
+        recovery
+        and not recovery.get("submission_unknown")
+        and str(recovery.get("phase") or "").endswith("_recovery_required")
+        and age >= grace
+    )
 
 
 def get_resumable_sora_request(job_id):
@@ -994,13 +1063,27 @@ def get_resumable_sora_request(job_id):
     if not job_id:
         return None
     with closing(adb()) as c:
-        row = c.execute(
-            """SELECT provider_video_id, model, phase, status, resolution, ratio
-               FROM video_assets WHERE job_id=?""",
-            (job_id,),
-        ).fetchone()
+        try:
+            row = c.execute(
+                """SELECT provider_video_id, provider_key_id, model, phase, status, resolution, ratio
+                   FROM video_assets WHERE job_id=?""",
+                (job_id,),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such column: provider_key_id" not in str(exc):
+                raise
+            row = c.execute(
+                """SELECT provider_video_id, model, phase, status, resolution, ratio
+                   FROM video_assets WHERE job_id=?""",
+                (job_id,),
+            ).fetchone()
     if not row:
         return None
+    provider_key_id = (
+        row["provider_key_id"]
+        if "provider_key_id" in row.keys()
+        else None
+    )
     phase = str(row["phase"] or "")
     if not row["provider_video_id"]:
         if phase in {"sora_submitting", "sora_recovery_required"}:
@@ -1010,6 +1093,7 @@ def get_resumable_sora_request(job_id):
         return None
     return {
         "video_id": row["provider_video_id"],
+        "provider_key_id": provider_key_id,
         "model": row["model"] or "sora-2",
         "phase": phase,
         "status": row["status"],
@@ -3198,14 +3282,26 @@ def gen_sora_video(payload):
         provider_id_persisted = provider_id_persisted or bool(fields.get("provider_video_id"))
 
     if existing:
+        candidate = _bound_provider_key(
+            "sora", existing.get("provider_key_id")
+        )
         rendered = video_openai.resume(
             existing["video_id"], existing.get("model") or model, seconds, size,
             job_id=job_id, heartbeat=sora_heartbeat,
+            api_key=candidate["secret"], provider_key_id=candidate["id"],
         )
     else:
-        rendered = video_openai.generate(
-            model, prompt, seconds, size,
-            job_id=job_id, heartbeat=sora_heartbeat,
+        rendered, candidate = _create_with_provider_key(
+            "sora",
+            job_id,
+            "sora_submitting",
+            video_openai.CredentialRejected,
+            lambda selected: video_openai.generate(
+                model, prompt, seconds, size,
+                job_id=job_id, heartbeat=sora_heartbeat,
+                api_key=selected["secret"],
+                provider_key_id=selected["id"],
+            ),
         )
 
     video_id = str(rendered.get("video_id") or "").strip()
@@ -3214,11 +3310,14 @@ def gen_sora_video(payload):
     if job_id:
         update_video_asset_phase(
             job_id, "sora_completed", provider_video_id=video_id,
+            provider_key_id=candidate["id"],
             model=rendered.get("model") or model,
         )
         update_video_asset_phase(job_id, "sora_downloading", provider_video_id=video_id)
     video_file = "video/sora_%s.mp4" % uuid.uuid4().hex
-    video_openai.download_content(video_id, _out_path(video_file))
+    video_openai.download_content(
+        video_id, _out_path(video_file), api_key=candidate["secret"]
+    )
     video_file = _faststart_video_file(video_file)
     cover = _extract_first_frame_cover(video_file)
     actual_seconds = rendered.get("seconds") or seconds
@@ -3373,17 +3472,30 @@ def gen_xiaole_video(payload):
         resolution = str(payload.get("resolution") or "720p")
         generate_audio = payload.get("generate_audio", True)
         if existing:
+            candidate = _bound_provider_key(
+                "seedance", existing.get("provider_key_id")
+            )
             rendered = video_seedance.resume(
                 existing["request_id"], existing.get("model") or model,
                 duration, ratio, resolution, generate_audio,
                 job_id=job_id, heartbeat=seedance_heartbeat,
+                api_key=candidate["secret"],
+                provider_key_id=candidate["id"],
             )
         else:
-            rendered = video_seedance.generate(
-                model=model, prompt=prompt, duration=duration, ratio=ratio,
-                resolution=resolution, generate_audio=generate_audio,
-                reference_images=ref_images,
-                job_id=job_id, heartbeat=seedance_heartbeat,
+            rendered, candidate = _create_with_provider_key(
+                "seedance",
+                job_id,
+                "seedance_submitting",
+                video_seedance.SeedanceCredentialRejected,
+                lambda selected: video_seedance.generate(
+                    model=model, prompt=prompt, duration=duration, ratio=ratio,
+                    resolution=resolution, generate_audio=generate_audio,
+                    reference_images=ref_images,
+                    job_id=job_id, heartbeat=seedance_heartbeat,
+                    api_key=selected["secret"],
+                    provider_key_id=selected["id"],
+                ),
             )
         source_url = rendered["source_video_url"]
         if job_id:
@@ -3391,6 +3503,7 @@ def gen_xiaole_video(payload):
                 job_id, "seedance_downloading",
                 source_video_url=source_url,
                 provider_video_id=rendered.get("request_id"),
+                provider_key_id=candidate["id"],
                 model=rendered.get("model") or model,
             )
         try:
@@ -3531,21 +3644,35 @@ def gen_xiaole_video(payload):
 
         duration = int(payload.get("duration") or 5)
         if existing:
+            candidate = _bound_provider_key(
+                "omni", existing.get("provider_key_id")
+            )
             rendered = video_gemini_omni.resume(
                 existing["request_id"], duration, ratio,
                 job_id=job_id, heartbeat=omni_heartbeat,
+                api_key=candidate["secret"],
+                provider_key_id=candidate["id"],
             )
         else:
-            rendered = video_gemini_omni.generate(
-                prompt, reference_images=ref_images, aspect_ratio=ratio,
-                duration=duration, delivery="uri",
-                job_id=job_id, heartbeat=omni_heartbeat,
+            rendered, candidate = _create_with_provider_key(
+                "omni",
+                job_id,
+                "omni_submitting",
+                video_gemini_omni.GeminiOmniCredentialRejected,
+                lambda selected: video_gemini_omni.generate(
+                    prompt, reference_images=ref_images, aspect_ratio=ratio,
+                    duration=duration, delivery="uri",
+                    job_id=job_id, heartbeat=omni_heartbeat,
+                    api_key=selected["secret"],
+                    provider_key_id=selected["id"],
+                ),
             )
         provider_id = rendered.get("request_id")
         if job_id:
             update_video_asset_phase(
                 job_id, "omni_downloading",
                 provider_video_id=provider_id,
+                provider_key_id=candidate["id"],
                 source_video_url=rendered.get("source_video_url"),
                 model=rendered.get("model") or model,
             )

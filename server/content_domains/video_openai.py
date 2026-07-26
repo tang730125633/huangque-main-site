@@ -14,6 +14,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import provider_keys
+
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_BASE = os.environ.get("OPENAI_BASE", "https://api.openai.com").rstrip("/")
@@ -40,6 +42,10 @@ class CreateRejected(RuntimeError):
     """OpenAI explicitly rejected the create request before accepting a job."""
 
 
+class CredentialRejected(CreateRejected):
+    """The selected key was definitively rejected before a job was accepted."""
+
+
 class ProviderVideoFailed(RuntimeError):
     """OpenAI reported a terminal failure for an accepted video job."""
 
@@ -62,7 +68,7 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def available():
-    return bool(OPENAI_API_KEY)
+    return provider_keys.has_candidate("sora")
 
 
 def _api_base():
@@ -91,26 +97,38 @@ def _payload_detail(payload):
     return str(detail or payload)[:500]
 
 
-def _error_detail(exc):
+def _redact(value, api_key=None):
+    text = str(value or "")
+    for secret in (api_key, OPENAI_API_KEY):
+        if secret:
+            text = text.replace(secret, "[已隐藏]")
+    return text[:500]
+
+
+def _error_detail(exc, api_key=None):
     try:
         raw = exc.read().decode("utf-8", "replace")[:2000]
-        return _payload_detail(json.loads(raw or "{}"))
+        return _redact(_payload_detail(json.loads(raw or "{}")), api_key)
     except Exception:
-        return str(exc)[:500]
+        return _redact(exc, api_key)
 
 
-def _raise_http_error(exc, method):
-    detail = _error_detail(exc)
+def _raise_http_error(exc, method, api_key=None):
+    detail = _error_detail(exc, api_key)
     rejected = CreateRejected if method == "POST" else RuntimeError
     if exc.code in (401, 403):
+        rejected = CredentialRejected if method == "POST" else RuntimeError
         raise rejected(
             "OpenAI 视频鉴权失败: HTTP %s %s" % (exc.code, detail)
         ) from exc
     if exc.code == 402:
+        rejected = CredentialRejected if method == "POST" else RuntimeError
         raise rejected("OpenAI 视频账户余额不足: %s" % detail) from exc
     if exc.code == 429:
         if method == "POST":
-            raise CreateRejected("OpenAI 视频请求被限流: HTTP 429 %s" % detail) from exc
+            raise CredentialRejected(
+                "OpenAI 视频请求被限流: HTTP 429 %s" % detail
+            ) from exc
         raise TransientOpenAIError(
             "OpenAI 视频请求被限流: HTTP 429 %s" % detail,
         ) from exc
@@ -123,22 +141,23 @@ def _raise_http_error(exc, method):
     ) from exc
 
 
-def _open(opener, request, timeout):
+def _open(opener, request, timeout, api_key=None):
     try:
         return opener.open(request, timeout=timeout)
     except urllib.error.HTTPError as exc:
-        _raise_http_error(exc, request.get_method())
+        _raise_http_error(exc, request.get_method(), api_key)
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise TransientOpenAIError(
             "OpenAI 视频网络异常: %s" % str(exc)[:300]
         ) from exc
 
 
-def _request_json(opener, method, path, body=None, timeout=90):
-    if not OPENAI_API_KEY:
+def _request_json(opener, method, path, body=None, timeout=90, api_key=None):
+    api_key = OPENAI_API_KEY if api_key is None else str(api_key).strip()
+    if not api_key:
         raise ValueError("OpenAI 视频未配置（OPENAI_API_KEY）")
     request_headers = {
-        "Authorization": "Bearer " + OPENAI_API_KEY,
+        "Authorization": "Bearer " + api_key,
         "Accept": "application/json",
         "User-Agent": "huangque-content/1.0",
     }
@@ -149,7 +168,7 @@ def _request_json(opener, method, path, body=None, timeout=90):
     request = urllib.request.Request(
         _api_url(path), data=data, headers=request_headers, method=method
     )
-    response = _open(opener, request, timeout)
+    response = _open(opener, request, timeout, api_key)
     with response:
         try:
             raw = response.read()
@@ -187,7 +206,7 @@ def _result(payload, video_id, model, status, seconds, size):
 
 
 def _poll(opener, video_id, model, seconds, size, job_id=None, heartbeat=None,
-          now=None, sleep=None):
+          now=None, sleep=None, api_key=None, provider_key_id=None):
     """Poll an existing video id.  This path never submits a POST."""
     video_id = _required(video_id, " video_id")
     model = _required(model, " model")
@@ -206,6 +225,7 @@ def _poll(opener, video_id, model, seconds, size, job_id=None, heartbeat=None,
                 "GET",
                 "/videos/" + urllib.parse.quote(video_id, safe=""),
                 timeout=60,
+                api_key=api_key,
             )
             last_transient = None
             transient_attempt = 0
@@ -216,6 +236,7 @@ def _poll(opener, video_id, model, seconds, size, job_id=None, heartbeat=None,
                     job_id,
                     "sora_retrying",
                     provider_video_id=video_id,
+                    provider_key_id=provider_key_id,
                     model=model,
                     error=str(exc)[:300],
                 )
@@ -234,6 +255,7 @@ def _poll(opener, video_id, model, seconds, size, job_id=None, heartbeat=None,
                 job_id,
                 "sora_" + (status or "unknown"),
                 provider_video_id=video_id,
+                provider_key_id=provider_key_id,
                 model=str(payload.get("model") or model),
                 error="",
             )
@@ -252,7 +274,7 @@ def _poll(opener, video_id, model, seconds, size, job_id=None, heartbeat=None,
 
 
 def generate(model, prompt, seconds, size, job_id=None, heartbeat=None,
-             now=None, sleep=None):
+             now=None, sleep=None, api_key=None, provider_key_id=None):
     """Submit exactly one Sora job, persist its id, then poll to completion."""
     model = _required(model, " model")
     prompt = _required(prompt, " prompt")
@@ -266,6 +288,7 @@ def generate(model, prompt, seconds, size, job_id=None, heartbeat=None,
             "/videos",
             {"model": model, "prompt": prompt, "seconds": seconds, "size": size},
             timeout=120,
+            api_key=api_key,
         )
     except CreateRejected:
         raise
@@ -282,6 +305,7 @@ def generate(model, prompt, seconds, size, job_id=None, heartbeat=None,
             job_id,
             "sora_" + str(created.get("status") or "queued").strip().lower(),
             provider_video_id=video_id,
+            provider_key_id=provider_key_id,
             model=str(created.get("model") or model),
             error="",
         )
@@ -295,11 +319,13 @@ def generate(model, prompt, seconds, size, job_id=None, heartbeat=None,
         heartbeat=heartbeat,
         now=now,
         sleep=sleep,
+        api_key=api_key,
+        provider_key_id=provider_key_id,
     )
 
 
 def resume(video_id, model, seconds, size, job_id=None, heartbeat=None,
-           now=None, sleep=None):
+           now=None, sleep=None, api_key=None, provider_key_id=None):
     """Resume a paid OpenAI video job using GET requests only."""
     return _poll(
         _opener(),
@@ -311,6 +337,8 @@ def resume(video_id, model, seconds, size, job_id=None, heartbeat=None,
         heartbeat=heartbeat,
         now=now,
         sleep=sleep,
+        api_key=api_key,
+        provider_key_id=provider_key_id,
     )
 
 
@@ -322,9 +350,9 @@ def _content_length(headers):
         return None
 
 
-def _download_once(opener, request, destination, limit):
+def _download_once(opener, request, destination, limit, api_key=None):
     """Run one authenticated GET attempt without touching a good destination."""
-    response = _open(opener, request, timeout=300)
+    response = _open(opener, request, timeout=300, api_key=api_key)
     temp_path = None
     try:
         with response:
@@ -376,13 +404,14 @@ def _download_once(opener, request, destination, limit):
                 pass
 
 
-def download_content(video_id, destination, max_bytes=None):
+def download_content(video_id, destination, max_bytes=None, api_key=None):
     """Stream an authenticated MP4 download and atomically replace destination.
 
     The provider task is already complete, so retrying this bounded sequence of
     GET requests is safe.  Creation POSTs never occur on this code path.
     """
-    if not OPENAI_API_KEY:
+    api_key = OPENAI_API_KEY if api_key is None else str(api_key).strip()
+    if not api_key:
         raise ValueError("OpenAI 视频未配置（OPENAI_API_KEY）")
     video_id = _required(video_id, " video_id")
     destination = pathlib.Path(destination)
@@ -393,7 +422,7 @@ def download_content(video_id, destination, max_bytes=None):
     request = urllib.request.Request(
         _api_url("/videos/%s/content" % urllib.parse.quote(video_id, safe="")),
         headers={
-            "Authorization": "Bearer " + OPENAI_API_KEY,
+            "Authorization": "Bearer " + api_key,
             "Accept": "video/mp4,application/octet-stream",
             "User-Agent": "huangque-content/1.0",
         },
@@ -402,7 +431,7 @@ def download_content(video_id, destination, max_bytes=None):
     opener = _opener()
     for attempt in range(len(DOWNLOAD_TRANSIENT_BACKOFF) + 1):
         try:
-            return _download_once(opener, request, destination, limit)
+            return _download_once(opener, request, destination, limit, api_key)
         except TransientOpenAIError as exc:
             if attempt >= len(DOWNLOAD_TRANSIENT_BACKOFF):
                 raise TransientOpenAIError(

@@ -264,7 +264,7 @@ class SoraHandlerTests(unittest.TestCase):
                 fp.parent.mkdir(parents=True, exist_ok=True)
                 return fp
 
-            def download(video_id, destination, max_bytes=None):
+            def download(video_id, destination, max_bytes=None, **_kwargs):
                 calls.append(("download", video_id, pathlib.Path(destination).name))
                 pathlib.Path(destination).write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"0" * 32)
                 return pathlib.Path(destination)
@@ -278,6 +278,10 @@ class SoraHandlerTests(unittest.TestCase):
                     patch.object(video, "_file_url", side_effect=lambda rel: "/api/gen/file/" + rel), \
                     patch.object(video, "update_video_asset_phase", side_effect=heartbeat), \
                     patch.object(video, "get_resumable_sora_request", return_value=None), \
+                    patch.object(video.provider_keys, "candidates", return_value=[
+                        {"id": "key_test", "secret": "secret_test"}
+                    ]), \
+                    patch.object(video.provider_keys, "set_health"), \
                     patch.object(video_openai, "generate", return_value={
                         "video_id": "video_123", "model": "sora-2-pro",
                         "status": "completed", "seconds": "4", "size": "1024x1792",
@@ -312,7 +316,7 @@ class SoraHandlerTests(unittest.TestCase):
                 fp.parent.mkdir(parents=True, exist_ok=True)
                 return fp
 
-            def download(_video_id, destination, max_bytes=None):
+            def download(_video_id, destination, max_bytes=None, **_kwargs):
                 pathlib.Path(destination).write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"0" * 32)
                 return pathlib.Path(destination)
 
@@ -323,8 +327,11 @@ class SoraHandlerTests(unittest.TestCase):
                     patch.object(video, "update_video_asset_phase"), \
                     patch.object(video, "get_resumable_sora_request", return_value={
                         "video_id": "video_existing", "model": "sora-2", "seconds": 4,
-                        "size": "720x1280",
+                        "size": "720x1280", "provider_key_id": "key_existing",
                     }), \
+                    patch.object(video.provider_keys, "candidates", return_value=[
+                        {"id": "key_existing", "secret": "secret_existing"}
+                    ]), \
                     patch.object(video_openai, "generate") as generate, \
                     patch.object(video_openai, "resume", return_value={
                         "video_id": "video_existing", "model": "sora-2",
@@ -397,7 +404,7 @@ class SoraStartupRecoveryTests(unittest.TestCase):
         terminal.assert_not_called()
         recover.assert_called_once()
 
-    def test_reaper_expires_stale_recovery_hold(self):
+    def test_reaper_expires_stale_recovery_hold_with_known_provider_id(self):
         class StopLoop(Exception):
             pass
 
@@ -414,7 +421,7 @@ class SoraStartupRecoveryTests(unittest.TestCase):
 
         recover = Mock(return_value=True)
         recovery = Mock(return_value={
-            "video_id": None, "submission_unknown": True,
+            "video_id": "video-paid", "submission_unknown": False,
             "phase": "sora_recovery_required",
         })
         fail = Mock(return_value=True)
@@ -454,13 +461,13 @@ class SoraStartupRecoveryTests(unittest.TestCase):
                 conn.execute(
                     """CREATE TABLE video_assets(
                            job_id INTEGER PRIMARY KEY, provider_video_id TEXT,
-                           model TEXT, phase TEXT, status TEXT, resolution TEXT,
+                           provider_key_id TEXT, model TEXT, phase TEXT, status TEXT, resolution TEXT,
                            ratio TEXT, error TEXT, updated_at INTEGER)"""
                 )
                 conn.execute(
-                    "INSERT INTO video_assets VALUES(?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO video_assets VALUES(?,?,?,?,?,?,?,?,?,?)",
                     (
-                        41, "video_persisted", "sora-2", "sora_in_progress",
+                        41, "video_persisted", "env", "sora-2", "sora_in_progress",
                         "running", "720p", "9:16", None, 1,
                     ),
                 )

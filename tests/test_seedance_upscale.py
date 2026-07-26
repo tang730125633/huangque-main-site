@@ -314,6 +314,10 @@ class SeedanceUpscaleTests(unittest.TestCase):
 
         payload = self._body(_job_id=7, _username="tester")
         with patch.object(video, "get_resumable_grok_request", return_value=None), \
+             patch.object(video.provider_keys, "candidates", return_value=[
+                 {"id": "seedance-key", "secret": "test-key"}
+             ]), \
+             patch.object(video.provider_keys, "set_health"), \
              patch.object(video, "update_video_asset_phase") as phase, \
              patch.object(video_seedance, "generate", return_value=rendered), \
              patch.object(
@@ -405,6 +409,10 @@ class SeedanceUpscaleTests(unittest.TestCase):
             _job_id=7, _username="tester", generate_audio=False
         )
         with patch.object(video, "get_resumable_grok_request", return_value=None), \
+             patch.object(video.provider_keys, "candidates", return_value=[
+                 {"id": "seedance-key", "secret": "test-key"}
+             ]), \
+             patch.object(video.provider_keys, "set_health"), \
              patch.object(video, "update_video_asset_phase"), \
              patch.object(video_seedance, "generate", return_value=rendered), \
              patch.object(

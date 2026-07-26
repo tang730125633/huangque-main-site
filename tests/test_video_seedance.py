@@ -141,6 +141,18 @@ class SeedanceVideoTests(unittest.TestCase):
                 video_seedance.generate(prompt="demo")
         self.assertEqual(opener.open.call_count, 1)
 
+    def test_all_submit_5xx_are_unknown_and_not_retried(self):
+        for code in (501, 599):
+            with self.subTest(code=code):
+                opener = Mock()
+                opener.open.side_effect = _http_error(code, "temporary")
+                with patch.object(
+                    video_seedance, "ARK_API_KEY", "test-key"
+                ), patch.object(video_seedance, "_opener", return_value=opener):
+                    with self.assertRaises(video_seedance.CreateOutcomeUnknown):
+                        video_seedance.generate(prompt="demo")
+                self.assertEqual(opener.open.call_count, 1)
+
     def test_transient_poll_retries_get_without_second_post(self):
         opener = Mock()
         opener.open.side_effect = [
