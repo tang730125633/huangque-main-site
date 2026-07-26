@@ -1474,7 +1474,9 @@ class H(BaseHTTPRequestHandler):
                             jdb, user["username"], request_body, require_quote=True,
                             idempotency_key=idem_key, access=still_access)
                         body = prepared["image_payload"]
-                elif kind == "copy" and isinstance(body, dict) and body.get("format") == "short_drama": body = _short_drama_domain().validate_planning_submission(jdb, user["username"], body, _short_drama_canvas_access(self))
+                elif kind == "copy":
+                    from . import text as text_domain; body = text_domain.validate_copy_payload(body)
+                    if body.get("format") == "short_drama": body = _short_drama_domain().validate_planning_submission(jdb, user["username"], body, _short_drama_canvas_access(self))
                 elif kind == "video": body = video_domain.validate_video_payload(body, user["username"])
                 elif kind == "tryon": body = video_domain.validate_tryon_payload(body)
                 elif kind == "cinematic": body = video_domain.validate_cinematic_payload(body, user["username"])
