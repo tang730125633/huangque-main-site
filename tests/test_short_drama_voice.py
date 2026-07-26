@@ -843,6 +843,15 @@ class ShortDramaVoiceSnapshotTests(unittest.TestCase):
                     "line_id": line["id"], "version": 1,
                 },
             )
+    def test_native_audio_locks_every_shot_and_enters_video_stage(self):
+        result = short_drama_voice.confirm_native_audio(
+            self.db, "alice", self.project["id"], self.project["revision"]
+        )
+        self.assertEqual("video_review", result["stage"])
+        self.assertEqual(self.project["revision"] + 1, result["revision"])
+        self.assertTrue(all(shot["locked"] for shot in result["shots"]))
+        self.assertTrue(all(shot["audio_mode"] == "native" for shot in result["shots"]))
+        self.assertTrue(all(shot["status"] == "native" for shot in result["shots"]))
 
 
 class ShortDramaVoiceSchemaTests(unittest.TestCase):
