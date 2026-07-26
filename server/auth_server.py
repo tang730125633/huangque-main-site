@@ -85,6 +85,14 @@ def membership_discount_bps(tier):
     return MEMBERSHIP_DISCOUNT_BPS.get(str(tier or "").strip(), 10000)
 
 
+def membership_discount_label(tier):
+    return {
+        10000: "原价",
+        7500: "7.5折",
+        5500: "5.5折",
+    }.get(membership_discount_bps(tier), "原价")
+
+
 def discounted_amount_fen(list_amount_yuan, tier):
     """按会员等级计算应付分数，使用整数计算避免浮点金额漂移。"""
     try:
@@ -157,11 +165,7 @@ def public_recharge_packages(membership_tier):
     return {
         "membership_tier": str(membership_tier or ""),
         "discount_bps": discount_bps,
-        "discount_label": {
-            10000: "原价",
-            7500: "7.5折",
-            5500: "5.5折",
-        }.get(discount_bps, "原价"),
+        "discount_label": membership_discount_label(membership_tier),
         "items": [
             {
                 "list_amount": amount,
@@ -546,13 +550,20 @@ def membership_public(tier="", started_at=None, expires_at=None, now=None):
     tier = str(tier or "").strip()
     expires_at = int(expires_at or 0)
     started_at = int(started_at or 0)
-    active = tier in MEMBERSHIP_TIERS and expires_at > int(now or time.time())
+    known_tier = tier in MEMBERSHIP_TIERS
+    active = known_tier and expires_at > int(now or time.time())
     return {
         "membership_tier": tier if active else "",
         "membership_name": MEMBERSHIP_TIERS.get(tier, "") if active else "",
         "membership_active": active,
         "membership_started_at": started_at if active else 0,
         "membership_expires_at": expires_at if active else 0,
+        "membership_status": "active" if active else ("expired" if known_tier else "none"),
+        "membership_last_tier": tier if known_tier else "",
+        "membership_last_name": MEMBERSHIP_TIERS.get(tier, "") if known_tier else "",
+        "membership_last_expires_at": expires_at if known_tier else 0,
+        "points_purchase_discount_bps": membership_discount_bps(tier) if active else 10000,
+        "points_purchase_discount_label": membership_discount_label(tier) if active else "",
     }
 
 
@@ -2205,6 +2216,36 @@ def set_recharge_transaction(order_id, transaction_id, pay_channel):
     finally:
         c.close()
 
+def reconcile_wxpay_recharge(order_row, payment, actor="wxpay-query"):
+    """校验微信支付结果并幂等到账；notify 与主动查单共用同一条安全边界。"""
+    if not order_row:
+        return None, "not_found"
+    if (order_row["status"] or "") == "approved":
+        return public_recharge_order(order_row), None
+    if (order_row["status"] or "") != "pending":
+        return public_recharge_order(order_row), "not_pending"
+    if not isinstance(payment, dict) or payment.get("trade_state") != "SUCCESS":
+        return public_recharge_order(order_row), "payment_pending"
+    if not wxpay.payment_identity_matches(payment):
+        return None, "identity_mismatch"
+    order_id = (payment.get("out_trade_no") or "").strip()
+    if order_id != order_row["order_id"]:
+        return None, "order_mismatch"
+    paid_total = (payment.get("amount") or {}).get("total")
+    if paid_total != int(round(float(order_row["amount"]) * 100)):
+        return None, "amount_mismatch"
+    transaction_id = (payment.get("transaction_id") or "").strip()
+    if not transaction_id:
+        return None, "missing_transaction_id"
+    order, err = review_recharge_order(
+        actor, order_id, "approve", "%s txn=%s" % (actor, transaction_id),
+        transaction_id=transaction_id, pay_channel="wxpay",
+    )
+    if err == "already_reviewed":
+        fresh = get_recharge_order(order_id)
+        return public_recharge_order(fresh), None
+    return order, err
+
 def public_virtual_pay_order(row):
     return {
         "order_id": row["order_id"],
@@ -2756,6 +2797,7 @@ class H(BaseHTTPRequestHandler):
             "detail": "请先开通会员后再使用该功能",
             "code": "membership_required",
             "membership_url": "/workbench/recharge",
+            "membership_enforcement_enabled": True,
         })
         return False
 
@@ -3202,6 +3244,39 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "order": order, "pay": pay})
             except Exception as e:
                 return self._send(502, {"detail": "微信下单失败", "error": str(e)[:200]})
+        if p == "/api/auth/wxpay/reconcile":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            if wxpay is None or not wxpay.configured():
+                return self._send(503, {"detail": "微信支付未配置"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            order_id = (d.get("order_id") or "").strip()
+            order_row = get_recharge_order(order_id)
+            if not order_row or order_row["username"] != row["username"]:
+                return self._send(404, {"detail": "订单不存在"})
+            if order_row["status"] == "approved":
+                return self._send(200, {"ok": True, "order": public_recharge_order(order_row)})
+            if order_row["status"] != "pending":
+                return self._send(409, {
+                    "detail": "订单已关闭", "code": "order_closed",
+                    "order": public_recharge_order(order_row),
+                })
+            try:
+                payment = wxpay.query_transaction(order_id)
+                order, err = reconcile_wxpay_recharge(order_row, payment)
+                if err == "payment_pending":
+                    return self._send(409, {
+                        "detail": "微信订单尚未支付成功", "code": "payment_pending",
+                        "order": order,
+                    })
+                if err:
+                    return self._send(409, {"detail": "微信订单校验失败", "code": err})
+                return self._send(200, {"ok": True, "order": order})
+            except Exception:
+                return self._send(502, {"detail": "微信订单查询失败", "code": "query_failed"})
         if p == "/api/auth/wxpay/notify":
             # 微信服务器回调:不带登录态/内部 token,靠 V3 签名验真。必须读原始字节验签。
             n = int(self.headers.get("Content-Length") or 0)
@@ -3214,27 +3289,18 @@ class H(BaseHTTPRequestHandler):
                 resource = wxpay.decrypt_resource(json.loads(raw or b"{}")["resource"])
             except Exception:
                 return self._send(400, {"code": "FAIL", "message": "解密失败"})
-            if resource.get("trade_state") != "SUCCESS":
-                return self._send(200, {"code": "SUCCESS"})   # 非成功态,确认收到即可,不加点
-            if not wxpay.payment_identity_matches(resource):
-                return self._send(200, {"code": "SUCCESS"})   # AppID/商户号不属于本系统,不加点
             order_id = (resource.get("out_trade_no") or "").strip()
-            txn_id = (resource.get("transaction_id") or "").strip()
-            paid_total = (resource.get("amount") or {}).get("total")
             order_row = get_recharge_order(order_id)
             if not order_row:
                 return self._send(200, {"code": "SUCCESS"})   # 未知订单,回200止重推,不加点
-            # 金额核对(防篡改):实付分数须等于订单金额*100
-            if paid_total != int(round(float(order_row["amount"]) * 100)):
-                return self._send(200, {"code": "SUCCESS"})   # 金额不符,不加点
             try:
-                # review_recharge_order 自带幂等:重复回调因 status 已 approved 返回 already_reviewed,不重复加点
-                _, err = review_recharge_order(
-                    "wxpay", order_id, "approve", "wxpay txn=%s" % txn_id,
-                    transaction_id=txn_id, pay_channel="wxpay",
-                )
-                if err == "transaction_in_use":
-                    return self._send(200, {"code": "SUCCESS"})  # 同一微信流水不得给两个订单加点
+                _, err = reconcile_wxpay_recharge(order_row, resource, actor="wxpay")
+                if err in {
+                    "payment_pending", "identity_mismatch", "order_mismatch",
+                    "amount_mismatch", "missing_transaction_id", "transaction_in_use",
+                    "not_pending",
+                }:
+                    return self._send(200, {"code": "SUCCESS"})
                 return self._send(200, {"code": "SUCCESS"})
             except Exception:
                 return self._send(500, {"code": "FAIL", "message": "处理失败"})   # 抛错让微信重推
@@ -3263,6 +3329,7 @@ class H(BaseHTTPRequestHandler):
                         return self._send(403, {
                             "detail": "请先开通会员后再使用该功能",
                             "code": "membership_required",
+                            "membership_enforcement_enabled": True,
                         })
                     points, err = deduct_points(username, amount, reason, transaction_key)
                     if err == "transaction_conflict":

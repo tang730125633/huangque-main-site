@@ -1309,7 +1309,7 @@ class H(BaseHTTPRequestHandler):
             except feature_flags.FeatureDisabled as e: return self._send(503, {"detail": str(e)})
             except audio_domain.VoiceSlotError as e: return self._send(e.status, {"detail": str(e)})
             except points_domain.AuthPointsError as e:
-                return self._send(e.status if e.status in (402, 403) else 502, {"detail": e.detail, "need": audio_domain.VOICE_SLOT_COST})
+                return self._send(e.status if e.status in (402, 403) else 502, points_domain.public_error_body(e, audio_domain.VOICE_SLOT_COST))
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/audio/redeem-slot":
@@ -1412,7 +1412,7 @@ class H(BaseHTTPRequestHandler):
                         video_domain.record_video_pending_asset(jid, user["username"], body)
                 except points_domain.AuthPointsError as e:
                     _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(e.status if e.status in (402, 403) else 502, {"detail": e.detail, "need": total})
+                    return self._send(e.status if e.status in (402, 403) else 502, points_domain.public_error_body(e, total))
                 except jobs_store.PaidJobInsertError as e:
                     _idempotency_abort(user["username"], p, idem_key)
                     return self._send(500, {"detail": {"refunded": "批量任务创建失败，点数已退回",
@@ -1650,7 +1650,7 @@ class H(BaseHTTPRequestHandler):
                         return self._send(402, public_rejected)
                     elif not (is_still_route and e.status == 502):
                         _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(e.status if e.status in (402, 403) else 502, {"detail": e.detail, "need": cost})
+                    return self._send(e.status if e.status in (402, 403) else 502, points_domain.public_error_body(e, cost))
                 except jobs_store.PaidJobInsertError as e:
                     failed_response = {"detail": {"refunded": "任务创建失败，点数已退回",
                         "queued": "任务创建失败，退款正在自动重试"}.get(e.compensation, "任务创建失败，退款需人工核对"),
@@ -1925,7 +1925,7 @@ class H(BaseHTTPRequestHandler):
                 points_left = points_domain.deduct_points(user["username"], 1, "search:" + platform)
             except points_domain.AuthPointsError as e:
                 code = e.status if e.status in (402, 403) else 502
-                return self._send(code, {"detail": e.detail, "need": 1})
+                return self._send(code, points_domain.public_error_body(e, 1))
             try:
                 r = tikhub.search(platform, keyword, page=page, video_only=False)  # 含图文
             except tikhub.TikHubError as e:

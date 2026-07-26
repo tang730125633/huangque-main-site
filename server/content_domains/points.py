@@ -120,6 +120,18 @@ class AuthPointsError(Exception):
         self.detail = detail
         self.data = data or {}
 
+
+def public_error_body(error, need=None):
+    body = {"detail": getattr(error, "detail", str(error))}
+    source = getattr(error, "data", {}) or {}
+    for key in ("code", "membership_url", "membership_enforcement_enabled"):
+        if source.get(key) is not None:
+            body[key] = source[key]
+    if need is not None and getattr(error, "status", 0) == 402:
+        body["need"] = need
+    return body
+
+
 def _auth_points_request(path, payload=None, method="POST"):
     if not AUTH_INTERNAL_TOKEN:
         raise AuthPointsError(500, "未配置内部点数接口密钥")

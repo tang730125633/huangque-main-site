@@ -2430,6 +2430,17 @@ class ShortDramaStillRouteTests(unittest.TestCase):
             self.cost_calls.append((kind, dict(body)))
             return self.cost
 
+        @staticmethod
+        def public_error_body(error, need=None):
+            body = {"detail": error.detail}
+            if need is not None:
+                body["need"] = need
+            for key in ("code", "membership_url", "membership_enforcement_enabled"):
+                value = getattr(error, key, None)
+                if value is not None:
+                    body[key] = value
+            return body
+
         def deduct_points(self, username, cost, reason, transaction_key=""):
             self.deduct_calls.append((username, cost, reason, transaction_key))
             if self.reject_next_charge:
