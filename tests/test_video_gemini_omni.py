@@ -169,20 +169,25 @@ class GeminiOmniTests(unittest.TestCase):
         self.assertNotIn("super-secret-key", str(raised.exception))
         self.assertIn("禁止自动重发", str(raised.exception))
 
-    def test_create_5xx_is_unknown_and_not_refundable_rejection(self):
-        opener = Mock()
-        opener.open.side_effect = urllib.error.HTTPError(
-            "https://generativelanguage.googleapis.com/v1beta/interactions",
-            503, "unavailable", {}, io.BytesIO(b'{"error":{"message":"busy"}}'),
-        )
-        with patch.object(self.omni, "GEMINI_API_KEY", "test-key"):
-            with self.assertRaises(self.omni.GeminiOmniCreateOutcomeUnknown):
-                self.omni._request_json(
-                    opener, "POST",
+    def test_all_create_5xx_are_unknown_and_not_refundable_rejection(self):
+        for code in (501, 503, 599):
+            with self.subTest(code=code):
+                opener = Mock()
+                opener.open.side_effect = urllib.error.HTTPError(
                     "https://generativelanguage.googleapis.com/v1beta/interactions",
-                    {"model": self.omni.MODEL},
+                    code, "unavailable", {},
+                    io.BytesIO(b'{"error":{"message":"busy"}}'),
                 )
-        self.assertEqual(opener.open.call_count, 1)
+                with patch.object(self.omni, "GEMINI_API_KEY", "test-key"):
+                    with self.assertRaises(
+                        self.omni.GeminiOmniCreateOutcomeUnknown
+                    ):
+                        self.omni._request_json(
+                            opener, "POST",
+                            "https://generativelanguage.googleapis.com/v1beta/interactions",
+                            {"model": self.omni.MODEL},
+                        )
+                self.assertEqual(opener.open.call_count, 1)
 
     def test_http_errors_are_human_readable_and_redacted(self):
         body = json.dumps({"error": {"message": "bad super-secret-key"}}).encode()

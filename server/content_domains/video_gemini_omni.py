@@ -15,7 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import egress
+from . import egress, provider_keys
 
 
 MODEL = "gemini-omni-flash-preview"
@@ -38,7 +38,7 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_REFERENCE_IMAGES = 3
 RATIOS = {"9:16", "16:9"}
 IMAGE_MIMES = {"image/jpeg", "image/png", "image/webp"}
-TRANSIENT_GET_CODES = {408, 429, 500, 502, 503, 504}
+TRANSIENT_GET_CODES = {408, 429} | set(range(500, 600))
 
 
 class GeminiOmniCreateOutcomeUnknown(RuntimeError):
@@ -47,6 +47,10 @@ class GeminiOmniCreateOutcomeUnknown(RuntimeError):
 
 class GeminiOmniRejected(RuntimeError):
     """Google 明确拒绝了请求，没有可恢复的上游任务。"""
+
+
+class GeminiOmniCredentialRejected(GeminiOmniRejected):
+    """当前密钥在任务创建前被明确拒绝，可安全尝试下一条线路。"""
 
 
 class GeminiOmniProviderFailed(RuntimeError):
@@ -74,7 +78,7 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def available():
-    return bool(GEMINI_API_KEY)
+    return provider_keys.has_candidate("omni")
 
 
 def _opener():
@@ -87,22 +91,23 @@ def _opener():
     return urllib.request.build_opener(*handlers)
 
 
-def _redact(value):
+def _redact(value, api_key=None):
     text = str(value or "")
-    if GEMINI_API_KEY:
-        text = text.replace(GEMINI_API_KEY, "[已隐藏]")
+    for secret in (api_key, GEMINI_API_KEY):
+        if secret:
+            text = text.replace(secret, "[已隐藏]")
     return re.sub(r"(?i)(key=|x-goog-api-key[\"'=:\s]+)[^&\s\",}]+", r"\1[已隐藏]", text)[:500]
 
 
-def _error_detail(exc):
+def _error_detail(exc, api_key=None):
     try:
-        return _redact(exc.read().decode("utf-8", "replace"))
+        return _redact(exc.read().decode("utf-8", "replace"), api_key)
     except Exception:
-        return _redact(exc)
+        return _redact(exc, api_key)
 
 
-def _raise_http_error(exc, method):
-    detail = _error_detail(exc)
+def _raise_http_error(exc, method, api_key=None):
+    detail = _error_detail(exc, api_key)
     if method == "GET" and exc.code in TRANSIENT_GET_CODES:
         raise GeminiOmniTransientRead(
             "Gemini Omni 查询暂时失败：HTTP %s %s" % (exc.code, detail)
@@ -112,7 +117,7 @@ def _raise_http_error(exc, method):
         raise RuntimeError(
             "Gemini Omni 查询无法继续：HTTP %s %s" % (exc.code, detail)
         ) from exc
-    if method == "POST" and exc.code in {408, 500, 502, 503, 504}:
+    if method == "POST" and (exc.code == 408 or 500 <= exc.code <= 599):
         raise GeminiOmniCreateOutcomeUnknown(
             "Gemini Omni 提交结果未知：HTTP %s %s；已禁止自动重发"
             % (exc.code, detail)
@@ -127,17 +132,23 @@ def _raise_http_error(exc, method):
         message = "Gemini Omni 官方服务暂时不可用"
     else:
         message = "Gemini Omni 官方接口失败（HTTP %s）" % exc.code
-    raise GeminiOmniRejected("%s：%s" % (message, detail)) from exc
+    rejected = (
+        GeminiOmniCredentialRejected
+        if method == "POST" and exc.code in {401, 402, 403, 429}
+        else GeminiOmniRejected
+    )
+    raise rejected("%s：%s" % (message, detail)) from exc
 
 
-def _request(opener, method, url, body=None, timeout=90):
-    if not GEMINI_API_KEY:
+def _request(opener, method, url, body=None, timeout=90, api_key=None):
+    api_key = GEMINI_API_KEY if api_key is None else str(api_key).strip()
+    if not api_key:
         raise ValueError("Gemini Omni 未配置（GEMINI_API_KEY）")
     headers = {
         "Accept": "application/json",
         "Api-Revision": API_REVISION,
         "User-Agent": "huangque-content/1.0",
-        "x-goog-api-key": GEMINI_API_KEY,
+        "x-goog-api-key": api_key,
     }
     data = None
     if body is not None:
@@ -147,9 +158,9 @@ def _request(opener, method, url, body=None, timeout=90):
     try:
         return opener.open(request, timeout=timeout)
     except urllib.error.HTTPError as exc:
-        _raise_http_error(exc, method)
+        _raise_http_error(exc, method, api_key)
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        message = "Gemini Omni 网络异常：%s" % _redact(exc)
+        message = "Gemini Omni 网络异常：%s" % _redact(exc, api_key)
         if method == "POST":
             raise GeminiOmniCreateOutcomeUnknown(
                 message + "；提交结果未知，已禁止自动重发"
@@ -157,8 +168,8 @@ def _request(opener, method, url, body=None, timeout=90):
         raise GeminiOmniTransientRead(message) from exc
 
 
-def _request_json(opener, method, url, body=None, timeout=90):
-    with _request(opener, method, url, body, timeout) as response:
+def _request_json(opener, method, url, body=None, timeout=90, api_key=None):
+    with _request(opener, method, url, body, timeout, api_key) as response:
         raw = response.read()
     try:
         value = json.loads(raw.decode("utf-8", "replace") or "{}")
@@ -300,7 +311,8 @@ def _file_request_url(uri):
 
 
 def _poll_file(opener, uri, now=None, sleep=None, heartbeat=None,
-               job_id=None, interaction_id=None):
+               job_id=None, interaction_id=None, api_key=None,
+               provider_key_id=None):
     now, sleep = now or time.monotonic, sleep or time.sleep
     name = _file_name(uri)
     status_url = API_BASE + "/v1beta/" + name
@@ -308,7 +320,9 @@ def _poll_file(opener, uri, now=None, sleep=None, heartbeat=None,
     last_error = None
     while now() < deadline:
         try:
-            info = _request_json(opener, "GET", status_url, timeout=60)
+            info = _request_json(
+                opener, "GET", status_url, timeout=60, api_key=api_key
+            )
             last_error = None
         except GeminiOmniTransientRead as exc:
             last_error = exc
@@ -317,13 +331,17 @@ def _poll_file(opener, uri, now=None, sleep=None, heartbeat=None,
         state = str(info.get("state") or "").upper()
         if heartbeat:
             heartbeat(job_id, "omni_file_" + (state.lower() or "processing"),
-                      provider_video_id=interaction_id, model=MODEL)
+                      provider_video_id=interaction_id,
+                      provider_key_id=provider_key_id, model=MODEL)
         if state == "ACTIVE":
             return
         if state == "FAILED":
             raise GeminiOmniProviderFailed(
                 "Gemini Omni 视频处理失败：%s"
-                % _redact(info.get("error") or info.get("message") or state)
+                % _redact(
+                    info.get("error") or info.get("message") or state,
+                    api_key,
+                )
             )
         sleep(POLL_INTERVAL)
     if last_error:
@@ -350,7 +368,7 @@ def _read_limited(response):
     return data
 
 
-def _download_uri(opener, uri, sleep=None):
+def _download_uri(opener, uri, sleep=None, api_key=None):
     request_url = _file_request_url(uri)
     sleep = sleep or time.sleep
     last = None
@@ -358,7 +376,9 @@ def _download_uri(opener, uri, sleep=None):
         if delay:
             sleep(delay)
         try:
-            with _request(opener, "GET", request_url, timeout=300) as response:
+            with _request(
+                opener, "GET", request_url, timeout=300, api_key=api_key
+            ) as response:
                 return _read_limited(response)
         except GeminiOmniTransientRead as exc:
             last = exc
@@ -395,7 +415,8 @@ def _probe_duration(data):
 
 
 def _poll_interaction(opener, interaction_id, initial=None, now=None, sleep=None,
-                      heartbeat=None, job_id=None):
+                      heartbeat=None, job_id=None, api_key=None,
+                      provider_key_id=None):
     """只用 GET 恢复后台任务；取得 id 后绝不再次创建。"""
     now, sleep = now or time.monotonic, sleep or time.sleep
     deadline = now() + TIMEOUT
@@ -407,7 +428,9 @@ def _poll_interaction(opener, interaction_id, initial=None, now=None, sleep=None
     while now() < deadline:
         if current is None:
             try:
-                current = _request_json(opener, "GET", url, timeout=60)
+                current = _request_json(
+                    opener, "GET", url, timeout=60, api_key=api_key
+                )
                 last_error = None
             except GeminiOmniTransientRead as exc:
                 last_error = exc
@@ -423,6 +446,7 @@ def _poll_interaction(opener, interaction_id, initial=None, now=None, sleep=None
                 job_id,
                 "omni_" + (status or "in_progress"),
                 provider_video_id=interaction_id,
+                provider_key_id=provider_key_id,
                 model=MODEL,
             )
         if status == "completed":
@@ -433,11 +457,11 @@ def _poll_interaction(opener, interaction_id, initial=None, now=None, sleep=None
         }:
             detail = current.get("error") or current.get("message") or status
             raise GeminiOmniProviderFailed(
-                "Gemini Omni 视频生成失败：%s" % _redact(detail)
+                "Gemini Omni 视频生成失败：%s" % _redact(detail, api_key)
             )
         if status not in {"", "queued", "in_progress"}:
             raise GeminiOmniProviderFailed(
-                "Gemini Omni 返回未知任务状态：%s" % _redact(status)
+                "Gemini Omni 返回未知任务状态：%s" % _redact(status, api_key)
             )
         sleep(POLL_INTERVAL)
         current = None
@@ -448,12 +472,16 @@ def _poll_interaction(opener, interaction_id, initial=None, now=None, sleep=None
 
 def _finish_response(opener, response, interaction_id, duration,
                      aspect_ratio, job_id=None, heartbeat=None,
-                     now=None, sleep=None):
+                     now=None, sleep=None, api_key=None,
+                     provider_key_id=None):
     item = _extract_video(response)
     uri = str(item.get("uri") or "").strip()
     if uri:
-        _poll_file(opener, uri, now, sleep, heartbeat, job_id, interaction_id)
-        video = _download_uri(opener, uri, sleep)
+        _poll_file(
+            opener, uri, now, sleep, heartbeat, job_id, interaction_id,
+            api_key, provider_key_id,
+        )
+        video = _download_uri(opener, uri, sleep, api_key)
     else:
         video = _decode_inline(item)
     actual_duration = _probe_duration(video)
@@ -470,16 +498,19 @@ def _finish_response(opener, response, interaction_id, duration,
         "requested_duration": int(duration),
         "duration": actual_duration or int(duration),
         "duration_is_measured": actual_duration is not None,
+        "provider_key_id": provider_key_id,
     }
 
 
 def generate(prompt, reference_images=None, aspect_ratio="16:9", duration=6,
-             delivery="uri", job_id=None, heartbeat=None, now=None, sleep=None):
+             delivery="uri", job_id=None, heartbeat=None, now=None, sleep=None,
+             api_key=None, provider_key_id=None):
     """生成一次官方 Omni 视频并返回成片字节；付费 POST 永不自动重试。"""
     body = build_request(prompt, reference_images, aspect_ratio, duration, delivery)
     opener = _opener()
     response = _request_json(
-        opener, "POST", API_BASE + "/v1beta/interactions", body, timeout=TIMEOUT
+        opener, "POST", API_BASE + "/v1beta/interactions", body,
+        timeout=TIMEOUT, api_key=api_key,
     )
     interaction_id = str(response.get("id") or "").strip()
     if not interaction_id:
@@ -487,16 +518,18 @@ def generate(prompt, reference_images=None, aspect_ratio="16:9", duration=6,
             "Gemini Omni 提交结果未知，未返回 interaction id；已禁止自动重发"
         )
     completed = _poll_interaction(
-        opener, interaction_id, response, now, sleep, heartbeat, job_id
+        opener, interaction_id, response, now, sleep, heartbeat, job_id,
+        api_key, provider_key_id,
     )
     return _finish_response(
         opener, completed, interaction_id, duration, aspect_ratio,
-        job_id, heartbeat, now, sleep,
+        job_id, heartbeat, now, sleep, api_key, provider_key_id,
     )
 
 
 def resume(interaction_id, duration=6, aspect_ratio="16:9", job_id=None,
-           heartbeat=None, now=None, sleep=None):
+           heartbeat=None, now=None, sleep=None, api_key=None,
+           provider_key_id=None):
     """恢复已持久化的后台任务，只执行幂等 GET。"""
     interaction_id = str(interaction_id or "").strip()
     if not interaction_id:
@@ -505,9 +538,10 @@ def resume(interaction_id, duration=6, aspect_ratio="16:9", job_id=None,
         raise ValueError("Gemini Omni 比例仅支持 9:16、16:9")
     opener = _opener()
     completed = _poll_interaction(
-        opener, interaction_id, None, now, sleep, heartbeat, job_id
+        opener, interaction_id, None, now, sleep, heartbeat, job_id,
+        api_key, provider_key_id,
     )
     return _finish_response(
         opener, completed, interaction_id, duration, aspect_ratio,
-        job_id, heartbeat, now, sleep,
+        job_id, heartbeat, now, sleep, api_key, provider_key_id,
     )

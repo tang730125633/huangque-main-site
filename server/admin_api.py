@@ -25,9 +25,13 @@ import urllib.parse
 import urllib.request
 
 try:
-    from content_domains import feature_flags
+    from content_domains import feature_flags, provider_keys
 except ImportError:
-    feature_flags = None
+    try:
+        from .content_domains import feature_flags, provider_keys
+    except ImportError:
+        feature_flags = None
+        provider_keys = None
 
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
 
@@ -581,6 +585,8 @@ def init_db():
         c.commit()
     if feature_flags is not None:
         feature_flags.init_db()
+    if provider_keys is not None:
+        provider_keys.init_db()
 
 
 def verify(token):
@@ -929,6 +935,159 @@ KEY_PINGS = {
     "tikhub": _key_ping_tikhub,
     "cos": _key_ping_cos,
 }
+
+PROVIDER_KEY_NAMES = {
+    "sora": "OpenAI Sora",
+    "seedance": "火山 Seedance",
+    "omni": "Gemini Omni",
+}
+
+
+def probe_provider_secret(provider, secret):
+    """Validate a candidate key with a non-generating authenticated GET."""
+    provider = str(provider or "").strip().lower()
+    secret = str(secret or "").strip()
+    if provider not in PROVIDER_KEY_NAMES:
+        raise ValueError("不支持的视频渠道")
+    if len(secret) < 8:
+        raise ValueError("API 密钥格式无效")
+    if provider == "sora":
+        base = (_env_value(["OPENAI_BASE"]) or "https://api.openai.com").rstrip("/")
+        url = base + "/videos?limit=1" if base.endswith("/v1") else base + "/v1/videos?limit=1"
+        return _ping_upstream(
+            "GET", url, headers={"Authorization": "Bearer " + secret},
+            proxied="api.openai.com" in base,
+        )
+    if provider == "seedance":
+        base = (
+            _env_value(["ARK_BASE"])
+            or "https://ark.cn-beijing.volces.com/api/v3"
+        ).rstrip("/")
+        return _ping_upstream(
+            "GET",
+            base + "/contents/generations/tasks?page_num=1&page_size=1",
+            headers={"Authorization": "Bearer " + secret},
+            proxied=False,
+        )
+    base = (
+        _env_value(["GEMINI_OMNI_BASE", "GEMINI_BASE"])
+        or "https://generativelanguage.googleapis.com"
+    ).rstrip("/")
+    return _ping_upstream(
+        "GET",
+        base + "/v1beta/models/gemini-omni-flash-preview",
+        headers={"x-goog-api-key": secret},
+        proxied="googleapis.com" in base,
+    )
+
+
+def provider_key_list():
+    if provider_keys is None:
+        return {"configured": False, "items": [], "detail": "密钥池模块不可用"}
+    try:
+        items = provider_keys.list_public()
+        return {
+            "configured": provider_keys.vault_ready(),
+            "items": items,
+        }
+    except Exception as exc:
+        return {"configured": False, "items": [], "detail": str(exc)[:180]}
+
+
+def _admin_audit(actor, action, target, detail):
+    now = int(time.time())
+    with closing(db()) as conn:
+        conn.execute(
+            "INSERT INTO admin_audit(actor, action, target, detail, created_at) VALUES(?,?,?,?,?)",
+            (
+                str(actor or "admin")[:80],
+                str(action)[:80],
+                str(target)[:120],
+                json.dumps(detail or {}, ensure_ascii=False),
+                now,
+            ),
+        )
+        conn.commit()
+
+
+def add_provider_key(actor, body):
+    if provider_keys is None:
+        raise RuntimeError("密钥池模块不可用")
+    provider = str(body.get("provider") or "").strip().lower()
+    label = str(body.get("label") or "").strip()
+    secret = str(body.get("secret") or "").strip()
+    probe = probe_provider_secret(provider, secret)
+    if not probe.get("ok"):
+        status = probe.get("http_status")
+        suffix = "（HTTP %s）" % status if status else ""
+        raise ValueError("API 检测未通过，请更换有效密钥%s" % suffix)
+    item = provider_keys.add_key(provider, label, secret, actor, health=probe)
+    _admin_audit(
+        actor,
+        "provider_key.add",
+        item["id"],
+        {
+            "provider": item["provider"],
+            "label": item["label"],
+            "last4": item["last4"],
+            "latency_ms": probe.get("latency_ms"),
+        },
+    )
+    return {"ok": True, "item": item, "probe": probe}
+
+
+def test_provider_key(actor, body):
+    if provider_keys is None:
+        raise RuntimeError("密钥池模块不可用")
+    key_id = str(body.get("id") or "").strip()
+    provider = str(body.get("provider") or "").strip().lower()
+    if not key_id:
+        raise ValueError("缺少 API 密钥编号")
+    if key_id != "env":
+        item = provider_keys.public_key(key_id)
+        provider = item["provider"]
+    candidates = provider_keys.candidates(provider, preferred_id=key_id)
+    if not candidates:
+        raise ValueError("API 密钥不存在")
+    probe = probe_provider_secret(provider, candidates[0]["secret"])
+    if key_id != "env":
+        provider_keys.set_health(
+            key_id,
+            bool(probe.get("ok")),
+            probe.get("latency_ms"),
+            probe.get("error") or ("HTTP %s" % probe.get("http_status") if probe.get("http_status") else ""),
+        )
+    _admin_audit(
+        actor,
+        "provider_key.test",
+        key_id,
+        {
+            "provider": provider,
+            "ok": bool(probe.get("ok")),
+            "http_status": probe.get("http_status"),
+            "latency_ms": probe.get("latency_ms"),
+        },
+    )
+    return {"ok": bool(probe.get("ok")), "probe": probe}
+
+
+def delete_provider_key(actor, body):
+    if provider_keys is None:
+        raise RuntimeError("密钥池模块不可用")
+    key_id = str(body.get("id") or "").strip()
+    item = provider_keys.public_key(key_id)
+    provider_keys.retire_key(key_id)
+    _admin_audit(
+        actor,
+        "provider_key.retire",
+        key_id,
+        {
+            "provider": item["provider"],
+            "label": item["label"],
+            "last4": item["last4"],
+        },
+    )
+    return {"ok": True}
 
 
 def _sanitize_path(raw):
@@ -1465,6 +1624,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": service_status()})
         if path == "/api/admin/keys":
             return self._send(200, {"items": key_status()})
+        if path == "/api/admin/provider-keys":
+            return self._send(200, provider_key_list())
         if path == "/api/admin/channels":
             return self._send(200, {"items": load_channels()})
         if path == "/api/admin/features":
@@ -1578,6 +1739,7 @@ class H(BaseHTTPRequestHandler):
                     "user": {"username": user.get("username"), "name": user.get("name"), "role": user.get("role")},
                     "services": services,
                     "keys": key_status(),
+                    "provider_keys": provider_key_list(),
                     "channels": load_channels(),
                     "features": load_features(services),
                     "stats": job_stats(days),
@@ -1592,6 +1754,29 @@ class H(BaseHTTPRequestHandler):
         user = self._admin()
         if not user:
             return
+        if path in {
+            "/api/admin/provider-keys/add",
+            "/api/admin/provider-keys/test",
+            "/api/admin/provider-keys/delete",
+        }:
+            actor = user.get("username") or "admin"
+            try:
+                body = self._body()
+                if path.endswith("/add"):
+                    result = add_provider_key(actor, body)
+                elif path.endswith("/test"):
+                    result = test_provider_key(actor, body)
+                else:
+                    result = delete_provider_key(actor, body)
+                return self._send(200, result)
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except Exception as exc:
+                if provider_keys is not None and isinstance(
+                    exc, provider_keys.KeyStoreUnavailable
+                ):
+                    return self._send(503, {"detail": str(exc)})
+                return self._send(500, {"detail": str(exc)[:180] or "操作失败"})
         if path == "/api/admin/channel":
             try:
                 item = save_channel(user.get("username") or "admin", self._body())

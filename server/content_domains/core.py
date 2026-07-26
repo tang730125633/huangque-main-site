@@ -363,6 +363,7 @@ def init_audio_db():
             audio_asset_id TEXT,
             reference_asset_id TEXT,
             provider_video_id TEXT,
+            provider_key_id TEXT,
             provider_avatar_id TEXT,
             provider_avatar_group_id TEXT,
             source_video_url TEXT,
@@ -414,6 +415,7 @@ def init_audio_db():
         _ensure_column(c, "video_assets", "audio_asset_id", "TEXT")
         _ensure_column(c, "video_assets", "reference_asset_id", "TEXT")
         _ensure_column(c, "video_assets", "provider_video_id", "TEXT")
+        _ensure_column(c, "video_assets", "provider_key_id", "TEXT")
         _ensure_column(c, "video_assets", "provider_avatar_id", "TEXT")
         _ensure_column(c, "video_assets", "provider_avatar_group_id", "TEXT")
         _ensure_column(c, "video_assets", "source_video_url", "TEXT")

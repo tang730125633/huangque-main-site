@@ -358,12 +358,18 @@ class XiaoleVideoTests(unittest.TestCase):
             "generate_audio": True,
         }
         with patch("content_domains.video_seedance.generate", return_value=fake) as generate, \
+             patch.object(self.video, "get_resumable_grok_request", return_value=None), \
+             patch.object(self.video.provider_keys, "candidates", return_value=[
+                 {"id": "seedance-key", "secret": "secret"}
+             ]), \
+             patch.object(self.video.provider_keys, "set_health"), \
+             patch.object(self.video, "update_video_asset_phase"), \
              patch.object(self.video, "_xiaole_request") as old_supplier, \
              patch.object(self.video, "_download_xiaole_video", return_value="video/seedance.mp4"), \
              patch.object(self.video, "_extract_first_frame_cover", return_value=None), \
              patch.object(self.video, "public_url", return_value="https://cos.example/seedance.mp4"):
             result = self.video.gen_xiaole_video({
-                "channel": "micro", "prompt": "paper bird",
+                "_job_id": 7, "channel": "micro", "prompt": "paper bird",
                 "model": "doubao-seedance-2-0-260128",
                 "duration": 4, "ratio": "9:16", "resolution": "480p",
                 "generate_audio": True,
@@ -401,7 +407,11 @@ class XiaoleVideoTests(unittest.TestCase):
         with patch.object(self.video, "get_resumable_grok_request", return_value={
             "request_id": "cgt-download", "provider": "seedance",
             "phase": "seedance_succeeded", "model": rendered["model"],
+            "provider_key_id": "seedance-key",
         }), patch("content_domains.video_seedance.resume", return_value=rendered), \
+             patch.object(self.video.provider_keys, "candidates", return_value=[
+                 {"id": "seedance-key", "secret": "secret"}
+             ]), \
              patch.object(self.video, "_download_xiaole_video",
                           side_effect=RuntimeError("视频下载失败: timeout")), \
              patch.object(self.video, "update_video_asset_phase"):
@@ -426,6 +436,12 @@ class XiaoleVideoTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as td, \
              patch("content_domains.video_gemini_omni.generate", return_value=fake) as generate, \
+             patch.object(self.video, "get_resumable_grok_request", return_value=None), \
+             patch.object(self.video.provider_keys, "candidates", return_value=[
+                 {"id": "omni-key", "secret": "secret"}
+             ]), \
+             patch.object(self.video.provider_keys, "set_health"), \
+             patch.object(self.video, "update_video_asset_phase"), \
              patch.object(self.video, "_xiaole_request") as old_supplier, \
              patch.object(self.video, "_out_path",
                           side_effect=lambda rel: Path(td) / rel), \
@@ -433,7 +449,7 @@ class XiaoleVideoTests(unittest.TestCase):
              patch.object(self.video, "_extract_first_frame_cover", return_value=None), \
              patch.object(self.video, "public_url", return_value="https://cos.example/omni.mp4"):
             result = self.video.gen_xiaole_video({
-                "channel": "omni", "prompt": "product shot",
+                "_job_id": 8, "channel": "omni", "prompt": "product shot",
                 "model": "gemini-omni-flash-preview",
                 "duration": 3, "ratio": "16:9", "resolution": "720p",
             })
@@ -453,6 +469,22 @@ class XiaoleVideoTests(unittest.TestCase):
         update.assert_called_once_with(
             7, "omni_recovery_required", error="response lost"
         )
+
+    def test_unknown_official_submission_hold_never_expires_to_refund(self):
+        for provider in ("seedance", "omni"):
+            with self.subTest(provider=provider), patch.object(
+                self.video,
+                "get_resumable_grok_request",
+                return_value={
+                    "request_id": None,
+                    "provider": provider,
+                    "submission_unknown": True,
+                    "phase": provider + "_recovery_required",
+                },
+            ):
+                self.assertFalse(
+                    self.video.recovery_hold_expired(7, "xiaole_video", 99999, 1)
+                )
 
     def test_omni_file_phase_remains_resumable(self):
         class Connection:
