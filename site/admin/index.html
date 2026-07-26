@@ -96,7 +96,11 @@
     .ledger-stat:last-child{border-right:0}
     .ledger-stat span{display:block;color:var(--muted);font-size:12px}
     .ledger-stat b{display:block;margin-top:4px;font-size:22px;font-variant-numeric:tabular-nums}
-    @media (max-width:960px){.shell{padding:20px 14px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid,.invite-config,.membership-recharge{grid-template-columns:1fr}.ledger-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ledger-stat:nth-child(2){border-right:0}.ledger-stat:nth-child(-n+2){border-bottom:1px solid var(--line)}header{flex-direction:column}.user{width:100%}}
+    .user-detail{margin:0 0 14px;padding:14px;border:1px solid rgba(240,190,85,.3);border-radius:8px;background:rgba(240,190,85,.045)}
+    .detail-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0}
+    .detail-block{min-width:0;padding:12px;border:1px solid var(--line);border-radius:8px;background:rgba(17,22,19,.72)}
+    .detail-block h3{margin:0 0 8px;font-size:13px}.detail-block .table-wrap{max-height:280px;overflow:auto}
+    @media (max-width:960px){.shell{padding:20px 14px}.span3,.span4,.span6,.span8{grid-column:span 12}.channels,.feature-grid,.invite-config,.membership-recharge,.detail-grid{grid-template-columns:1fr}.ledger-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ledger-stat:nth-child(2){border-right:0}.ledger-stat:nth-child(-n+2){border-bottom:1px solid var(--line)}header{flex-direction:column}.user{width:100%}}
   </style>
 </head>
 <body>
@@ -189,6 +193,7 @@
           </select>
           <button id="userRefresh">刷新用户</button>
         </div>
+        <div id="userDetailBox" class="user-detail" hidden></div>
         <div id="usersBox"></div>
       </section>
       <section class="card span12 module-card" data-module="points" hidden>
@@ -319,7 +324,7 @@
   var token = '__cookie__';
   var state = {
     days:7, data:null, userTimer:null, module:'ops', membershipRequestId:'',
-    userPage:1, userPageSize:20, reqPage:1, reqPageSize:20
+    userPage:1, userPageSize:20, reqPage:1, reqPageSize:20, detailUser:'', noticeSending:false
   };
   var el = function(id){return document.getElementById(id)};
   function toast(msg){var t=el('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(t._tm); t._tm=setTimeout(function(){t.style.display='none'},2600)}
@@ -523,6 +528,44 @@
     if(!u.membership_active) return '<span class="pill fail">非会员</span>';
     return '<span class="pill ok">'+esc(membershipName(u.membership_tier))+'</span><div class="muted" style="margin-top:5px">至 '+esc(fmtTime(u.membership_expires_at))+'</div>';
   }
+  function money(fen){return '¥'+(Number(fen||0)/100).toFixed(2)}
+  function insightTable(title,items){
+    var rows=(items||[]).map(function(x){return '<tr><td><b>'+esc(x.name)+'</b></td><td>'+Number(x.total||0).toLocaleString()+'</td><td>'+Number(x.done||0).toLocaleString()+'</td><td>'+Number(x.error||0).toLocaleString()+'</td><td>'+pct(x.success_rate)+'</td></tr>'}).join('');
+    return '<div class="detail-block"><h3>'+esc(title)+'</h3>'+(rows?'<div class="table-wrap"><table><thead><tr><th>名称</th><th>总量</th><th>成功</th><th>失败</th><th>成功率</th></tr></thead><tbody>'+rows+'</tbody></table></div>':'<div class="muted">暂无记录</div>')+'</div>';
+  }
+  function paymentStatusName(s){return ({approved:'已入账',pending:'待处理',rejected:'已拒绝',created:'待支付',credited:'已生效',failed:'失败',refunded:'已退款',refund_review:'退款待核对'})[s]||s}
+  function renderUserDetail(d){
+    var u=d.user||{},t=d.tasks||{},p=d.payments||{},ledger=d.ledger||{},box=el('userDetailBox');
+    var taskRows=(t.recent||[]).map(function(x){return '<tr><td><code>#'+esc(x.id)+'</code></td><td>'+esc(x.func)+'</td><td>'+esc(x.channel)+'</td><td><div class="truncate" title="'+esc(x.model)+'">'+esc(x.model)+'</div></td><td>'+jobStatusPill(x.status)+'</td><td>'+Number(x.cost||0).toLocaleString()+'</td><td>'+esc(fmtTime(x.created_at))+'</td></tr>'}).join('');
+    var orderRows=(p.recent||[]).map(function(x){return '<tr><td>'+esc(x.source)+'</td><td><code>'+esc(x.order_id)+'</code></td><td>'+money(x.amount_fen)+'</td><td>'+esc(x.order_type==='membership_experience'?'499 会员':'点数')+'</td><td>'+esc(paymentStatusName(x.status))+'</td><td>'+Number(x.points||0).toLocaleString()+'</td><td>'+esc(fmtTime(x.created_at))+'</td><td><div class="truncate" title="'+esc(x.detail||'')+'">'+esc(x.detail||'-')+'</div></td></tr>'}).join('');
+    var ledgerRows=(ledger.items||[]).slice(0,10).map(function(x){var delta=Number(x.delta||0);return '<tr><td>'+esc(fmtTime(x.created_at))+'</td><td>'+(delta>0?'+':'')+delta.toLocaleString()+'</td><td>'+esc(pointReasonText(x))+'</td><td>'+esc(x.who_admin==='system'?'任务':x.who_admin)+'</td></tr>'}).join('');
+    box.hidden=false;
+    box.innerHTML='<div class="row"><div><h2 style="margin:0">'+esc(u.display_name||u.username)+' <code>'+esc(u.username)+'</code></h2><div class="hint">注册于 '+esc(u.created_at||'-')+' · '+esc(roleName(u.role))+' · '+esc(membershipName(u.membership_tier))+' · 当前 '+Number(u.points||0).toLocaleString()+' 点</div></div><div class="actions"><button class="mini" id="detailRefresh">刷新</button><button class="mini" id="detailNotice">发通知</button><button class="mini" id="detailPoints">查看流水</button><button class="mini" id="detailClose">关闭</button></div></div>'+
+      '<div class="ledger-summary"><div class="ledger-stat"><span>累计任务</span><b>'+Number(t.total||0).toLocaleString()+'</b></div><div class="ledger-stat"><span>成功</span><b>'+Number(t.done||0).toLocaleString()+'</b></div><div class="ledger-stat"><span>失败</span><b>'+Number(t.error||0).toLocaleString()+'</b></div><div class="ledger-stat"><span>已结束成功率</span><b>'+pct(t.success_rate)+'</b><span>另有 '+Number(t.running||0)+' 个进行中</span></div></div>'+
+      '<div class="detail-grid">'+insightTable('按功能',t.by_function)+insightTable('按渠道',t.by_channel)+insightTable('按模型',t.by_model)+'</div>'+
+      '<div class="detail-block" style="margin-bottom:12px"><h3>最近任务</h3>'+(taskRows?'<div class="table-wrap"><table><thead><tr><th>任务</th><th>功能</th><th>渠道</th><th>模型</th><th>状态</th><th>点数</th><th>时间</th></tr></thead><tbody>'+taskRows+'</tbody></table></div>':'<div class="muted">暂无任务</div>')+'</div>'+
+      '<div class="ledger-summary"><div class="ledger-stat"><span>支付订单</span><b>'+Number(p.order_count||0).toLocaleString()+'</b></div><div class="ledger-stat"><span>已生效订单</span><b>'+Number(p.paid_order_count||0).toLocaleString()+'</b></div><div class="ledger-stat"><span>累计实付</span><b>'+money(p.paid_amount_fen)+'</b></div><div class="ledger-stat"><span>待处理 / 异常</span><b>'+Number(p.pending_count||0)+' / '+Number(p.abnormal_count||0)+'</b></div></div>'+
+      '<div class="detail-block" style="margin-bottom:12px"><h3>最近支付</h3>'+(orderRows?'<div class="table-wrap"><table><thead><tr><th>来源</th><th>订单</th><th>金额</th><th>类型</th><th>状态</th><th>点数</th><th>时间</th><th>备注</th></tr></thead><tbody>'+orderRows+'</tbody></table></div>':'<div class="muted">暂无支付记录</div>')+'</div>'+
+      '<div class="detail-block"><h3>最近点数变化</h3>'+(ledgerRows?'<div class="table-wrap"><table><thead><tr><th>时间</th><th>变化</th><th>原因</th><th>来源</th></tr></thead><tbody>'+ledgerRows+'</tbody></table></div>':'<div class="muted">暂无点数流水</div>')+'</div>';
+    el('detailClose').onclick=function(){box.hidden=true;state.detailUser=''};
+    el('detailRefresh').onclick=function(){openUserDetail(u.username)};
+    el('detailNotice').onclick=function(){sendUserNotification(u.username)};
+    el('detailPoints').onclick=function(){openPoints(u.username)};
+  }
+  function openUserDetail(username){
+    state.detailUser=username;var box=el('userDetailBox');box.hidden=false;box.innerHTML='<div class="muted">正在读取 '+esc(username)+' 的任务与付费信息...</div>';box.scrollIntoView({behavior:'smooth',block:'start'});
+    api('/api/admin/users/detail?username='+encodeURIComponent(username)).then(function(d){if(state.detailUser===username)renderUserDetail(d)}).catch(function(e){if(state.detailUser===username)box.innerHTML='<div class="error">'+esc(e.message)+'</div>'});
+  }
+  function sendUserNotification(username){
+    if(state.noticeSending){toast('通知正在发送，请稍候');return}
+    var title=prompt('发送给 '+username+' 的通知标题','黄雀通知');if(title==null)return;title=String(title).trim();
+    if(!title||title.length>80){toast('标题需为 1-80 个字符');return}
+    var detail=prompt('通知内容（最多 1000 字）');if(detail==null)return;detail=String(detail).trim();
+    if(!detail||detail.length>1000){toast('通知内容需为 1-1000 个字符');return}
+    if(!confirm('确认向 '+username+' 发送这条站内通知？'))return;
+    state.noticeSending=true;
+    api('/api/admin/users/notification',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,title:title,detail:detail})}).then(function(){toast('通知已发送')}).catch(function(e){toast(e.message)}).finally(function(){state.noticeSending=false});
+  }
   function renderUsers(d){
     var items=d.items||[];
     var total=Number(d.total||0),pages=Math.max(1,Math.ceil(total/state.userPageSize));
@@ -530,11 +573,13 @@
     el('userCount').textContent='第 '+state.userPage+' / '+pages+' 页 · 共 '+total+' 个账号';
     if(!items.length){el('usersBox').innerHTML='<div class="empty">暂无用户</div>';return}
     el('usersBox').innerHTML='<div class="table-wrap"><table><thead><tr><th>ID</th><th>账号</th><th>昵称</th><th>点数</th><th>会员</th><th>角色</th><th>改密</th><th>注册时间</th><th>操作</th></tr></thead><tbody>'+items.map(function(u){
-      return '<tr><td><code>#'+esc(u.id)+'</code></td><td><b>'+esc(u.username)+'</b></td><td><div class="truncate" title="'+esc(u.display_name||'')+'">'+esc(u.display_name||'')+'</div></td><td><code>'+Number(u.points||0).toLocaleString()+'</code></td><td>'+membershipText(u)+'</td><td>'+esc(roleName(u.role))+'</td><td>'+(u.must_change?'<span class="pill warn">需改密</span>':'<span class="pill ok">正常</span>')+'</td><td><code>'+esc(u.created_at||'')+'</code></td><td><div class="actions"><button class="mini" data-act="recharge" data-user="'+esc(u.username)+'">充值会员</button><button class="mini" data-act="member" data-user="'+esc(u.username)+'">调整会员</button><button class="mini" data-act="plus" data-user="'+esc(u.username)+'">加点</button><button class="mini danger" data-act="minus" data-user="'+esc(u.username)+'">扣点</button><button class="mini" data-act="audit" data-user="'+esc(u.username)+'">流水</button></div></td></tr>';
+      return '<tr><td><code>#'+esc(u.id)+'</code></td><td><b>'+esc(u.username)+'</b></td><td><div class="truncate" title="'+esc(u.display_name||'')+'">'+esc(u.display_name||'')+'</div></td><td><code>'+Number(u.points||0).toLocaleString()+'</code></td><td>'+membershipText(u)+'</td><td>'+esc(roleName(u.role))+'</td><td>'+(u.must_change?'<span class="pill warn">需改密</span>':'<span class="pill ok">正常</span>')+'</td><td><code>'+esc(u.created_at||'')+'</code></td><td><div class="actions"><button class="mini" data-act="detail" data-user="'+esc(u.username)+'">详情</button><button class="mini" data-act="notice" data-user="'+esc(u.username)+'">通知</button><button class="mini" data-act="recharge" data-user="'+esc(u.username)+'">充值会员</button><button class="mini" data-act="member" data-user="'+esc(u.username)+'">调整会员</button><button class="mini" data-act="plus" data-user="'+esc(u.username)+'">加点</button><button class="mini danger" data-act="minus" data-user="'+esc(u.username)+'">扣点</button><button class="mini" data-act="audit" data-user="'+esc(u.username)+'">流水</button></div></td></tr>';
     }).join('')+'</tbody></table></div><div class="pager"><button data-user-page="-1" '+(state.userPage<=1?'disabled':'')+'>上一页</button><span class="pager-info">第 '+state.userPage+' / '+pages+' 页 · 每页 '+state.userPageSize+' 个</span><button data-user-page="1" '+(state.userPage>=pages?'disabled':'')+'>下一页</button></div>';
     Array.prototype.forEach.call(document.querySelectorAll('#usersBox button[data-act]'), function(btn){
       btn.onclick=function(){
         var act=btn.getAttribute('data-act'), username=btn.getAttribute('data-user');
+        if(act==='detail') return openUserDetail(username);
+        if(act==='notice') return sendUserNotification(username);
         if(act==='audit') return openPoints(username);
         if(act==='recharge') return openMembershipRecharge(username);
         if(act==='member') return setMembership(username);
