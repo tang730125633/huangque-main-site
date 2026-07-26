@@ -38,7 +38,7 @@ STAGES = {MATERIAL, WORK, DELIVERY}
 # 纯粹的死写：每次出图多一次 SQLite 写入，soft_delete 对它生效却影响不到 UI 看到的数据。
 # 要把 image 也收进来，得先让前端图片分类改读 /api/gen/assets 并把 meta 摊平，
 # 那是一次独立的迁移，不该顺手夹带。
-KIND_STAGE = {"copy": WORK, "collect": MATERIAL, "leads": DELIVERY}
+KIND_STAGE = {"copy": WORK, "collect": MATERIAL, "leads": DELIVERY, "breakdown": WORK}
 KINDS = set(KIND_STAGE)
 
 _initialized = False
@@ -148,6 +148,24 @@ def _lead_details(items):
     return out
 
 
+def _project_breakdown_item(result):
+    r = result or {}
+    return {
+        "type": r.get("type") or "breakdown",
+        "source_type": r.get("source_type"),
+        "source_url": r.get("source_url"),
+        "source_title": r.get("source_title"),
+        "source_platform": r.get("source_platform"),
+        "duration": r.get("duration"),
+        "sections": r.get("sections"),
+        "scenes": r.get("scenes"),
+        "analysis": r.get("analysis"),
+        "prompt": r.get("prompt"),
+        "frame_thumbnails": r.get("frame_thumbnails") or [],
+    }
+
+
+
 def _project(kind, result):
     """把各 kind 形状各异的 result 投影成 (title, file, url, meta)。
 
@@ -189,6 +207,19 @@ def _project(kind, result):
             "chat": r.get("chat"), "total": r.get("total"),
             "leads": _lead_details(r.get("leads")),
         })
+    if kind == "breakdown":
+        if r.get("type") == "breakdown_batch":
+            results = [_project_breakdown_item(item) for item in (r.get("results") or []) if isinstance(item, dict)]
+            first = results[0] if results else {}
+            title = _clip((first or {}).get("source_title")) or "批量视频拆解"
+            return (title, None, (first or {}).get("source_url"), {
+                "type": "breakdown_batch",
+                "results": results,
+                "errors": r.get("errors") or [],
+                "total": r.get("total"),
+            })
+        item = _project_breakdown_item(r)
+        return (_clip(r.get("source_title")), None, r.get("source_url"), item)
     return (None, None, None, {})
 
 
@@ -232,8 +263,37 @@ def list_assets(username, kind=None, stage=None, limit=60, offset=0):
             d["meta"] = json.loads(d.get("meta") or "{}")
         except Exception:
             d["meta"] = {}
+        d["meta"] = _slim_meta_for_list(d["meta"])
         out.append(d)
     return out
+
+
+def _slim_meta_for_list(meta):
+    """列表视图瘦身：关键帧缩略图每条只保留 1 张（原是 ≤4 张 base64，批量资产 5×4 张，
+    limit=60 时响应可到数 MB），同时给 frame_count 让前端知道原来有几帧。"""
+    if not isinstance(meta, dict):
+        return meta
+    thumbs = meta.get("frame_thumbnails") or []
+    if len(thumbs) > 1:
+        meta = dict(meta)
+        meta["frame_thumbnails"] = thumbs[:1]
+        meta["frame_count"] = len(thumbs)
+    results = meta.get("results")
+    if isinstance(results, list):
+        slimmed = []
+        changed = False
+        for b in results:
+            if isinstance(b, dict) and len(b.get("frame_thumbnails") or []) > 1:
+                orig = len(b.get("frame_thumbnails") or [])
+                b = dict(b)
+                b["frame_thumbnails"] = (b.get("frame_thumbnails") or [])[:1]
+                b["frame_count"] = orig
+                changed = True
+            slimmed.append(b)
+        if changed:
+            meta = dict(meta)
+            meta["results"] = slimmed
+    return meta
 
 
 def list_assets_response(username, query):

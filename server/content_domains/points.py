@@ -111,7 +111,60 @@ def cost_of(kind, body):
             seconds = 4
         seconds = max(4, min(12, seconds))
         return rate * seconds
+    if kind == "script_to_video":
+        style = (body.get("style") or "口播").strip()
+        if style == "剧情":
+            try:
+                duration = min(15, int(float(body.get("duration") or 10)))
+            except (TypeError, ValueError):
+                duration = 10
+            return max(30, int(math.ceil(duration)) * 30)
+        from . import video as video_domain
+        lines = [(s.get("line") or "").strip() for s in (body.get("scenes") or []) if isinstance(s, dict)]
+        talking = video_domain.video_cost({"text": "\n\n".join(line for line in lines if line)})
+        generated = max(0, min(8, int(body.get("material_generate_count") or 0)))
+        images = generated * cost_of("image", {
+            "provider": "openai", "quality": "standard", "count": 1,
+        })
+        body["cost_breakdown"] = {
+            "talking": talking,
+            "material_images": images,
+            "material_generate_count": generated,
+            "material_reused_count": max(0, len(body.get("material_plan") or []) - generated),
+            "total": talking + images,
+        }
+        return talking + images
+    if kind == "breakdown":
+        urls = body.get("urls")
+        if isinstance(urls, list):
+            count = max(1, min(5, len([url for url in urls if isinstance(url, str) and url.strip()])))
+            return 20 * count
+        return 20
     return COST.get(kind, 0)
+
+
+def breakdown_batch_refund(cost, total, failed):
+    try:
+        cost, total, failed = int(cost or 0), int(total or 0), int(failed or 0)
+    except (TypeError, ValueError):
+        return 0
+    if cost <= 0 or total <= 0 or failed <= 0:
+        return 0
+    failed = min(failed, total)
+    return cost if failed >= total else min(cost, 20 * failed)
+
+
+def settle_breakdown_batch(username, cost, result, job_id):
+    try:
+        if (result or {}).get("type") != "breakdown_batch":
+            return
+        refund = breakdown_batch_refund(
+            cost, (result or {}).get("total"), len((result or {}).get("errors") or []))
+        if refund:
+            safe_refund_points(username, refund, "job#%d 批量拆解失败退点" % job_id)
+    except Exception:
+        pass
+
 
 class AuthPointsError(Exception):
     def __init__(self, status, detail, data=None):
