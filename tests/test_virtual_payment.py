@@ -372,7 +372,11 @@ class VirtualPaymentTests(unittest.TestCase):
                     self.assertEqual(result["order"]["points"], product["points"])
                     self.assertEqual(result["order"]["pricing_tier"], tier)
                     sign_data = json.loads(result["payment"]["signData"])
-                    self.assertEqual(sign_data["goodsPrice"], expected_fen)
+                    self.assertEqual(sign_data["goodsPrice"], product["price_fen"])
+                    if expected_fen == product["price_fen"]:
+                        self.assertNotIn("activitySellingPrice", sign_data)
+                    else:
+                        self.assertEqual(sign_data["activitySellingPrice"], expected_fen)
 
     def test_secure_message_push_round_trip_and_signature_check(self):
         message = {

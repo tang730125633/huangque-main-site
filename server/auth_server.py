@@ -2337,7 +2337,7 @@ def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=N
     openid = session["openid"]
     now = int(time.time())
     order_id = "HQ%s%s" % (time.strftime("%y%m%d%H%M%S", time.localtime(now)), secrets.token_hex(5).upper())
-    payment = wechat_vpay.payment_params(priced_product, order_id, session["session_key"], purchase)
+    payment = wechat_vpay.payment_params(product, order_id, session["session_key"], purchase)
     list_amount_fen = int(product["price_fen"]) * int(purchase["quantity"])
 
     c = db()

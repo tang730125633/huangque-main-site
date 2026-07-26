@@ -419,16 +419,21 @@ def access_token():
 def payment_params(product, order_id, session_key, purchase=None):
     env = pay_env()
     purchase = purchase or purchase_for(product)
+    quantity = int(purchase["quantity"])
+    goods_price = int(product["price_fen"])
+    selling_price = int(purchase["amount_fen"]) // quantity
     sign_obj = {
         "offerId": offer_id(),
-        "buyQuantity": int(purchase["quantity"]),
+        "buyQuantity": quantity,
         "env": env,
         "currencyType": "CNY",
         "productId": product["product_id"],
-        "goodsPrice": int(product["price_fen"]),
+        "goodsPrice": goods_price,
         "outTradeNo": order_id,
         "attach": "points:" + str(purchase["points"]),
     }
+    if selling_price < goods_price:
+        sign_obj["activitySellingPrice"] = selling_price
     sign_data = compact_json(sign_obj)
     return {
         "mode": "short_series_goods",
