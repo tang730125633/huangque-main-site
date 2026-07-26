@@ -76,6 +76,9 @@ REVERSE_INSTRUCTION = ("你是资深美业广告视觉分析师。仔细看这�
     "约 60-120 字，直接输出这条提示词本身，不要任何解释、前后缀或引号。")
 # 反推并发闸：同步调 Gemini 会占住 HTTP 线程，限并发防打爆上游/线程池（可 env 覆盖）
 _reverse_sem = threading.BoundedSemaphore(max(1, int(os.environ.get("REVERSE_MAX_CONCURRENCY", "2") or "2")))
+_prompt_optimize_sem = threading.BoundedSemaphore(2)
+_prompt_optimize_lock = threading.Lock()
+_prompt_optimize_recent = {}
 
 # ============ COS 出图存储（可选，与 content_api 共用同一个 content.env 的 COS_* 环境变量）============
 # 配置齐全且文件存在 → 上传 COS 返回直链；未配置/失败 → 回退本地 /api/gen/file/，零影响。密钥仅走环境变量。
@@ -514,6 +517,43 @@ def gen_reverse(image):
     return text[:600]
 
 
+def gen_prompt_optimize(prompt, kind):
+    instruction = (
+        "你是中文 AI %s提示词编辑。把用户给出的关键词整理为一条可直接生成的中文提示词。"
+        "保留用户明确的主体、品牌、文字与限制；补足构图、场景、光线、质感。"
+        "%s不要解释、不要标题、不要 Markdown，只输出可编辑的提示词，控制在 80 到 220 字。\n用户关键词：%s"
+        % ("视频" if kind == "video" else "图片", "视频需补充自然镜头运动与节奏；" if kind == "video" else "", prompt)
+    )
+    body = json.dumps({
+        "contents": [{"parts": [{"text": instruction}]}],
+        "generationConfig": {"responseModalities": ["TEXT"], "temperature": 0.5,
+                             "maxOutputTokens": 600, "thinkingConfig": {"thinkingBudget": 0}},
+    }).encode()
+    req = urllib.request.Request(
+        GEMINI_BASE + "/v1beta/models/" + REVERSE_MODEL + ":generateContent",
+        data=body, headers={"Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=45) as r:
+            data = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        raise ValueError("Gemini %s: %s" % (e.code, e.read()[:160].decode("u8", "ignore")))
+    parts = (data.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
+    text = " ".join(part.get("text", "") for part in parts if part.get("text")).strip().strip('"“”')
+    if not text:
+        raise ValueError("优化失败：" + str((data.get("error") or {}).get("message") or data)[:140])
+    return text[:1000]
+
+
+def _check_prompt_optimize_rate(username):
+    now = time.time()
+    with _prompt_optimize_lock:
+        recent = [stamp for stamp in _prompt_optimize_recent.get(username, []) if now - stamp < 60]
+        if len(recent) >= 10:
+            raise ValueError("提示词优化过于频繁，请稍后再试")
+        recent.append(now)
+        _prompt_optimize_recent[username] = recent
+
+
 # ============ HTTP ============
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -582,6 +622,20 @@ class H(BaseHTTPRequestHandler):
             if user.get("must_change"):
                 return self._send(403, {"detail": "请先修改初始密码后再使用"})
             body = self._json_body()
+            if body.get("action") == "optimize":
+                prompt = (body.get("prompt") or "").strip()
+                kind = (body.get("kind") or "image").strip().lower()
+                if not prompt: return self._send(400, {"detail": "请先输入关键词或提示词"})
+                if len(prompt) > 2000: return self._send(400, {"detail": "提示词不能超过 2000 字"})
+                if kind not in {"image", "video"}: return self._send(400, {"detail": "kind 仅支持 image 或 video"})
+                if not GEMINI_KEY: return self._send(503, {"detail": "提示词优化暂未配置"})
+                try:
+                    _check_prompt_optimize_rate(user["username"])
+                    with _prompt_optimize_sem:
+                        prompt = gen_prompt_optimize(prompt, kind)
+                    return self._send(200, {"prompt": prompt, "model": REVERSE_MODEL})
+                except ValueError as e:
+                    return self._send(429 if "频繁" in str(e) else 502, {"detail": str(e)[:180]})
             image = (body.get("image") or "").strip()
             if image.startswith("data:") and "," in image:
                 image = image.split(",", 1)[1]  # 去掉 data URL 前缀，只留 base64
