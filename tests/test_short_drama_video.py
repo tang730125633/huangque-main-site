@@ -1,3 +1,4 @@
+import base64
 import json
 import sqlite3
 import tempfile
@@ -18,7 +19,7 @@ SERVER = ROOT / "server"
 if str(SERVER) not in sys.path:
     sys.path.insert(0, str(SERVER))
 
-from content_domains import core, short_drama, short_drama_video, short_drama_voice, upstream_guard, video
+from content_domains import core, short_drama, short_drama_video, short_drama_voice, upstream_guard, video, video_gemini_omni
 
 
 def project_payload():
@@ -127,6 +128,27 @@ class ShortDramaVideoTests(unittest.TestCase):
             "upscale": True,
             "generate_audio": True,
         }
+
+    def test_omni_reference_is_inlined_as_bounded_jpeg(self):
+        source = Path(self.tempdir.name) / "locked-still.png"
+        source.write_bytes(b"source-image")
+        from content_domains import miniprogram_security
+        with mock.patch.object(video, "_resolve_out_file", return_value=source), \
+             mock.patch.object(
+                 miniprogram_security, "_prepare_image_for_security",
+                 return_value=(b"bounded-jpeg", "image/jpeg"),
+             ):
+            reference = short_drama_video._omni_inline_reference("locked-still.png")
+
+        self.assertTrue(reference.startswith("data:image/jpeg;base64,"))
+        raw = base64.b64decode(reference.split(",", 1)[1])
+        self.assertLessEqual(len(raw), video_gemini_omni.MAX_IMAGE_BYTES)
+        request = video_gemini_omni.build_request(
+            "自然走动", [reference], "9:16", 10, delivery="uri"
+        )
+        self.assertEqual(
+            "image_to_video", request["generation_config"]["video_config"]["task"]
+        )
 
     @staticmethod
     def validated(payload):
