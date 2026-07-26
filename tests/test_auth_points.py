@@ -1,6 +1,7 @@
 import os
 import json
 import sqlite3
+import sys
 import tempfile
 import threading
 import urllib.error
@@ -8,6 +9,12 @@ import urllib.request
 import unittest
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch
+from pathlib import Path
+
+
+SERVER = str(Path(__file__).resolve().parents[1] / "server")
+if SERVER not in sys.path:
+    sys.path.insert(0, SERVER)
 
 
 class AuthPointsTests(unittest.TestCase):
@@ -58,6 +65,27 @@ class AuthPointsTests(unittest.TestCase):
         points, err = self.auth.refund_points("fang", 5)
         self.assertIsNone(err)
         self.assertEqual(points["points"], 15)
+
+    def test_public_points_error_preserves_membership_contract(self):
+        from content_domains import points
+
+        error = points.AuthPointsError(403, "请先开通会员", {
+            "code": "membership_required",
+            "membership_url": "/workbench/recharge",
+            "membership_enforcement_enabled": True,
+        })
+        self.assertEqual(points.public_error_body(error, 60), {
+            "detail": "请先开通会员",
+            "code": "membership_required",
+            "membership_url": "/workbench/recharge",
+            "membership_enforcement_enabled": True,
+        })
+
+        insufficient = points.AuthPointsError(402, "点数不足", {"need": 99})
+        self.assertEqual(
+            points.public_error_body(insufficient, 60),
+            {"detail": "点数不足", "need": 60},
+        )
 
     def test_refund_transaction_key_is_idempotent(self):
         first, first_err = self.auth.refund_points("fang", 5, "job#42", "job-refund:42")

@@ -85,6 +85,14 @@ def membership_discount_bps(tier):
     return MEMBERSHIP_DISCOUNT_BPS.get(str(tier or "").strip(), 10000)
 
 
+def membership_discount_label(tier):
+    return {
+        10000: "原价",
+        7500: "7.5折",
+        5500: "5.5折",
+    }.get(membership_discount_bps(tier), "原价")
+
+
 def discounted_amount_fen(list_amount_yuan, tier):
     """按会员等级计算应付分数，使用整数计算避免浮点金额漂移。"""
     try:
@@ -157,11 +165,7 @@ def public_recharge_packages(membership_tier):
     return {
         "membership_tier": str(membership_tier or ""),
         "discount_bps": discount_bps,
-        "discount_label": {
-            10000: "原价",
-            7500: "7.5折",
-            5500: "5.5折",
-        }.get(discount_bps, "原价"),
+        "discount_label": membership_discount_label(membership_tier),
         "items": [
             {
                 "list_amount": amount,
@@ -546,13 +550,20 @@ def membership_public(tier="", started_at=None, expires_at=None, now=None):
     tier = str(tier or "").strip()
     expires_at = int(expires_at or 0)
     started_at = int(started_at or 0)
-    active = tier in MEMBERSHIP_TIERS and expires_at > int(now or time.time())
+    known_tier = tier in MEMBERSHIP_TIERS
+    active = known_tier and expires_at > int(now or time.time())
     return {
         "membership_tier": tier if active else "",
         "membership_name": MEMBERSHIP_TIERS.get(tier, "") if active else "",
         "membership_active": active,
         "membership_started_at": started_at if active else 0,
         "membership_expires_at": expires_at if active else 0,
+        "membership_status": "active" if active else ("expired" if known_tier else "none"),
+        "membership_last_tier": tier if known_tier else "",
+        "membership_last_name": MEMBERSHIP_TIERS.get(tier, "") if known_tier else "",
+        "membership_last_expires_at": expires_at if known_tier else 0,
+        "points_purchase_discount_bps": membership_discount_bps(tier) if active else 10000,
+        "points_purchase_discount_label": membership_discount_label(tier) if active else "",
     }
 
 
@@ -2756,6 +2767,7 @@ class H(BaseHTTPRequestHandler):
             "detail": "请先开通会员后再使用该功能",
             "code": "membership_required",
             "membership_url": "/workbench/recharge",
+            "membership_enforcement_enabled": True,
         })
         return False
 
@@ -3263,6 +3275,7 @@ class H(BaseHTTPRequestHandler):
                         return self._send(403, {
                             "detail": "请先开通会员后再使用该功能",
                             "code": "membership_required",
+                            "membership_enforcement_enabled": True,
                         })
                     points, err = deduct_points(username, amount, reason, transaction_key)
                     if err == "transaction_conflict":
