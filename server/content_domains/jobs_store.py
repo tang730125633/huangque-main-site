@@ -146,6 +146,17 @@ def set_done_with_video_outbox(jdb, job_id, username, kind, result=None, from_st
         return cur.rowcount >= 1
 
 
+def set_terminal_with_video_outbox(jdb, job_id, status, result=None, error=None, from_states=("running",)):
+    if status != "done":
+        return set_terminal(jdb, job_id, status, result, error, from_states)
+    with closing(jdb()) as c:
+        row = c.execute("SELECT username,kind FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if not row:
+        return set_terminal(jdb, job_id, status, result, error, from_states)
+    return set_done_with_video_outbox(
+        jdb, job_id, row["username"], row["kind"], result, from_states)
+
+
 def claim_running(jdb, job_id):
     """CAS 认领：只有 pending 才能被本次执行接管。返回是否抢到。
 

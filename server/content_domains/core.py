@@ -734,7 +734,7 @@ def is_shutting_down():
 
 # CAS 抢终态 / 退点幂等：实现在 content_domains/jobs_store.py，三个共写 jobs 表的服务共用一份。
 def _set_terminal(job_id, status, result=None, error=None, from_states=("running",)):
-    return jobs_store.set_terminal(jdb, job_id, status, result, error, from_states)
+    return jobs_store.set_terminal_with_video_outbox(jdb, job_id, status, result, error, from_states)
 def _refund_once(job_id, username, cost, transaction_key=""):
     transaction_key = transaction_key or jobs_store.refund_transaction_key(job_id, username)
     return jobs_store.refund_once(jdb, job_id, username, cost, lambda u, c: (
@@ -1084,7 +1084,7 @@ def run_job(job_id):
             payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
         result = HANDLERS[kind](payload)
         # 先 CAS 抢 done 终态：仅当仍是 running 才写 done，防 reaper 已判 error 又被无条件覆盖(既出片又退点)
-        if not jobs_store.set_done_with_video_outbox(jdb, job_id, username, kind, result=result):
+        if not _set_terminal(job_id, "done", result=result):
             return  # 已被 reaper 接管为 error+退点：放弃成功副作用(不入库、不覆盖状态)
         # 口播按成片真实时长结算：预扣(cost)是 hold，跑完多退少不补。只在抢到 done 后调 —— done CAS
         # 互斥 + reaper/reclaim 不碰 done → 每 job 至多结算一次，不重复退。结算失败不影响出片。
