@@ -609,6 +609,43 @@ class VirtualPaymentTests(unittest.TestCase):
         finally:
             c.close()
 
+    def test_background_reconcile_routes_created_membership_order_through_confirm(self):
+        with patch.object(
+            self.auth.wechat_vpay,
+            "code_to_session",
+            return_value={"openid": "openid-buyer", "session_key": "session-key"},
+        ):
+            result, err = self.auth.create_virtual_pay_order(
+                "buyer", "membership_experience", "wx-code"
+            )
+        self.assertIsNone(err)
+        order_id = result["order"]["order_id"]
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            c.execute(
+                "UPDATE virtual_pay_orders SET created_at=created_at-? WHERE order_id=?",
+                (self.auth.VIRTUAL_PAY_RECONCILE_MIN_AGE_SECONDS, order_id),
+            )
+            c.commit()
+        finally:
+            c.close()
+
+        with patch.object(
+            self.auth,
+            "confirm_virtual_pay_order",
+            return_value=({"status": "credited"}, None),
+        ) as confirm:
+            stats = self.auth.reconcile_created_virtual_pay_orders()
+
+        confirm.assert_called_once_with("buyer", order_id)
+        self.assertEqual(stats, {
+            "checked": 1,
+            "credited": 1,
+            "terminal": 0,
+            "pending": 0,
+            "errors": 0,
+        })
+
     def test_membership_refund_is_held_for_manual_review(self):
         now = 1800000000
         with patch.object(
