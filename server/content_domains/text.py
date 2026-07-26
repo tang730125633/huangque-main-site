@@ -1,11 +1,23 @@
 # -*- coding: utf-8 -*-
-from .core import COPY_MODEL, _post, json
+from .core import COPY_API_KEY, COPY_API_STYLE, COPY_BASE, COPY_MODEL, _post, json
 
 def _chat(sysmsg, usermsg, temp):
+    if COPY_API_STYLE == "responses":
+        body = json.dumps({"model": COPY_MODEL, "instructions": sysmsg, "input": usermsg,
+                           "stream": False}).encode()
+        d = _post("/v1/responses", body, "application/json", base=COPY_BASE, key=COPY_API_KEY)
+        return "".join(
+            str(part.get("text") or "")
+            for item in (d.get("output") or [])
+            for part in (item.get("content") or [])
+            if part.get("type") == "output_text"
+        ).strip()
+    if COPY_API_STYLE != "chat_completions":
+        raise ValueError("COPY_API_STYLE 仅支持 chat_completions 或 responses")
     body = json.dumps({"model": COPY_MODEL,
                        "messages": [{"role": "system", "content": sysmsg}, {"role": "user", "content": usermsg}],
                        "temperature": temp}).encode()
-    d = _post("/v1/chat/completions", body, "application/json")
+    d = _post("/v1/chat/completions", body, "application/json", base=COPY_BASE, key=COPY_API_KEY)
     return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
 
 def gen_copy(payload):

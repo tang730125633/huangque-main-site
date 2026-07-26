@@ -15,11 +15,15 @@
        high 恒为 medium 的 4.00 倍 → ¥1.20 ~ ¥1.50
    取最贵档定价避免倒挂：标准 4 点、高清 15 点（原来高清只收 12 点，1:1 与 3:4 是亏的）。
 """
+import base64
 import importlib
+import json
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
@@ -33,15 +37,51 @@ image_domain = importlib.import_module("content_domains.image")
 FRONTEND_RATIOS = ["1:1", "9:16", "16:9", "3:4"]
 
 
-class ChannelShutdownTests(unittest.TestCase):
-    def test_zelong2_is_rejected_before_points_are_deducted(self):
-        with self.assertRaisesRegex(ValueError, "泽龙2生图渠道维护中"):
-            image_domain.validate_image_payload({"provider": "zelong2", "prompt": "demo"})
-        with self.assertRaisesRegex(ValueError, "泽龙2生图渠道维护中"):
-            image_domain.gen_image({"provider": "zelong2", "prompt": "demo"})
+class ZelongDedicatedChannelTests(unittest.TestCase):
+    def test_zelong2_stays_closed_without_dedicated_model(self):
+        with mock.patch.object(image_domain, "ZELONG2_IMAGE_MODEL", ""):
+            with self.assertRaisesRegex(ValueError, "渠道未配置"):
+                image_domain.validate_image_payload({"provider": "zelong2", "prompt": "demo"})
+
+    def test_zelong2_only_accepts_verified_scope(self):
+        valid = {"provider": "zelong2", "prompt": "demo", "ratio": "1:1", "quality": "std", "count": 1}
+        with mock.patch.object(image_domain, "ZELONG2_IMAGE_MODEL", "zelong-cpa-gpt-image-2"):
+            self.assertEqual(image_domain.validate_image_payload(valid)["count"], 1)
+            for change in ({"image": "bad"}, {"mask": "bad"}, {"ratio": "9:16"},
+                           {"quality": "hd"}, {"count": 2}):
+                with self.subTest(change=change), self.assertRaisesRegex(ValueError, "首期仅支持"):
+                    image_domain.validate_image_payload(dict(valid, **change))
+
+    def test_zelong2_uses_dedicated_generation_contract(self):
+        captured = {}
+
+        def dispatch(provider, path, body, ctype, base, key, proxy, streaming=False):
+            captured.update(provider=provider, path=path, body=json.loads(body), ctype=ctype,
+                            base=base, key=key, proxy=proxy, streaming=streaming)
+            return {"data": [{"b64_json": base64.b64encode(b"\x89PNG\r\n\x1a\n").decode()}]}
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.multiple(image_domain, ZELONG2_IMAGE_MODEL="zelong-cpa-gpt-image-2",
+                                 ZELONG2_KEY="test-key", ZELONG2_BASE="https://api.zelong.vip",
+                                 OUT_DIR=Path(tmp)), \
+             mock.patch.dict(image_domain.os.environ, {"ZELONG2_KEYS": "", "ZELONG2_BASES": ""}), \
+             mock.patch.object(image_domain, "_dispatch_gpt", side_effect=dispatch), \
+             mock.patch.object(image_domain, "public_url", return_value="/generated.png"):
+            result = image_domain.gen_image({"provider": "zelong2", "prompt": "demo",
+                                             "ratio": "1:1", "quality": "std", "count": 1})
+
+        self.assertEqual(captured["path"], "/v1/images/generations")
+        self.assertEqual(captured["base"], "https://api.zelong.vip")
+        self.assertEqual(captured["key"], "test-key")
+        self.assertEqual(captured["body"], {"model": "zelong-cpa-gpt-image-2", "prompt": "demo",
+                                             "image_size": "1K", "aspect_ratio": "1:1", "n": 1,
+                                             "response_format": "b64_json"})
+        self.assertTrue(captured["streaming"])
+        self.assertEqual(result["count"], 1)
 
     def test_zelong2_card_is_hidden(self):
         self.assertRegex(BANANA, r'data-engine="zelong2"[^>]*aria-hidden="true"[^>]*display:none')
+        self.assertNotIn("ZELONG2_KEY", BANANA)
 
 
 def _wh(size):

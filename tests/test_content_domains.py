@@ -1,5 +1,6 @@
 import importlib
 import base64
+import json
 import queue
 import sqlite3
 import sys
@@ -31,6 +32,41 @@ class ContentDomainTests(unittest.TestCase):
         for name in ("image", "copy", "collect", "leads", "audio", "video", "xiaole_video", "sora_video", "breakdown"):
             self.assertIn(name, registry.HANDLERS)
             self.assertTrue(callable(registry.HANDLERS[name]))
+
+    def test_copy_can_use_responses_without_changing_global_openai(self):
+        text = importlib.import_module("content_domains.text")
+        calls = []
+
+        def post(path, body, ctype, **kwargs):
+            calls.append((path, json.loads(body), ctype, kwargs))
+            return {"output": [{"content": [{"type": "output_text", "text": " OK "}]}]}
+
+        with mock.patch.multiple(text, COPY_API_STYLE="responses", COPY_BASE="https://api.zelong.vip",
+                                 COPY_API_KEY="test-key", COPY_MODEL="zelong-cpa-gpt-5.4"), \
+             mock.patch.object(text, "_post", side_effect=post):
+            self.assertEqual(text._chat("system", "user", 0.9), "OK")
+
+        path, body, ctype, kwargs = calls[0]
+        self.assertEqual(path, "/v1/responses")
+        self.assertEqual(body, {"model": "zelong-cpa-gpt-5.4", "instructions": "system", "input": "user",
+                                "stream": False})
+        self.assertEqual((ctype, kwargs), ("application/json", {"base": "https://api.zelong.vip", "key": "test-key"}))
+
+    def test_copy_default_style_keeps_chat_completions(self):
+        text = importlib.import_module("content_domains.text")
+        calls = []
+
+        def post(path, body, ctype, **kwargs):
+            calls.append((path, json.loads(body)))
+            return {"choices": [{"message": {"content": "legacy"}}]}
+
+        with mock.patch.multiple(text, COPY_API_STYLE="chat_completions", COPY_BASE="https://api.openai.com",
+                                 COPY_API_KEY="test-key", COPY_MODEL="gpt-4o"), \
+             mock.patch.object(text, "_post", side_effect=post):
+            self.assertEqual(text._chat("system", "user", 0.4), "legacy")
+
+        self.assertEqual(calls[0][0], "/v1/chat/completions")
+        self.assertEqual([message["role"] for message in calls[0][1]["messages"]], ["system", "user"])
 
     def test_core_does_not_own_domain_handlers(self):
         core = importlib.import_module("content_domains.core")
