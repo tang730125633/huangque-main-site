@@ -1238,8 +1238,6 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": str(e)[:220]})
             except Exception:
                 return self._send(502, {"detail": "数字化 IP AI 服务暂时不可用，请稍后重试"})
-        if p == "/api/gen/cinematic/quote" and video_domain.dispatch_cinematic_quote(
-                self, verify, points_domain.cost_of): return
         if p == "/api/gen/inspiration/like": return inspiration_likes.handle_post(self, verify(self._token()), AUDIO_DB)
         if p == "/api/gen/asset/favorite":
             user = verify(self._token())

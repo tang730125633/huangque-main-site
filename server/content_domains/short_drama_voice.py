@@ -726,6 +726,15 @@ def prepare_voice_submission(db_factory, actor_username, owner_username, payload
                 raise VoiceQuoteConsumed("同一个 Idempotency-Key 不能用于不同请求")
             conn.commit()
             return _attempt_dict(existing), True
+        if conn.execute(
+            "SELECT 1 FROM short_drama_voice_charge_attempts AS attempt "
+            "LEFT JOIN short_drama_voice_jobs AS job ON job.job_id=attempt.job_id "
+            "WHERE attempt.project_id=? AND attempt.voice_line_id=? "
+            "AND (attempt.state IN ('accepted','charged','linked','refund_pending') "
+            "OR job.status IN ('pending','running','metadata_pending')) LIMIT 1",
+            (project["id"], line["id"]),
+        ).fetchone():
+            raise VoiceChargeInProgress("该台词已有配音任务正在处理")
         quote = conn.execute(
             "SELECT * FROM short_drama_voice_quotes "
             "WHERE token=? AND username=? AND project_id=? AND voice_line_id=?",
@@ -1651,6 +1660,8 @@ def build_voice_snapshot(conn, project):
             )
     for shot in shots:
         shot.pop("project_id", None)
+    from .short_drama import _project_point_usage
+    usage = _project_point_usage(conn, project["id"])
     return {
         "project_id": project["id"],
         "revision": project["revision"],
@@ -1658,8 +1669,8 @@ def build_voice_snapshot(conn, project):
         "ratio": project["ratio"],
         "target_duration": project["target_duration"],
         "point_budget": project["point_budget"],
-        "spent_points": project["spent_points"],
-        "reserved_points": 0,
+        "spent_points": usage["spent_points"],
+        "reserved_points": usage["reserved_points"],
         "shots": shots,
         "unlocked_shot_count": sum(not shot["locked"] for shot in shots),
         "handoff_blocked": bool(handoff_blockers),

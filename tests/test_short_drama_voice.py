@@ -303,6 +303,73 @@ class ShortDramaVoiceSnapshotTests(unittest.TestCase):
                 self.db, "alice", "alice", changed, "voice-submit-001"
             )
 
+    def test_same_line_rejects_a_second_active_submission_across_actors(self):
+        snapshot, line, first_quote = self._voice_quote()
+        second_quote = short_drama_voice.prepare_voice_quote(
+            self.db, "editor", "alice", {
+                "project_id": self.project["id"],
+                "revision": snapshot["revision"],
+                "items": [{
+                    "line_id": line["id"], "voice_key": "longwan",
+                    "speed": 1.1, "pitch": 2, "volume": 3,
+                }],
+            },
+            lambda _kind, _payload: 10,
+        )
+        request = {
+            "project_id": self.project["id"], "revision": snapshot["revision"],
+            "line_id": line["id"], "voice_key": "longwan",
+            "speed": 1.1, "pitch": 2, "volume": 3,
+            "quote_token": first_quote["items"][0]["quote_token"],
+        }
+        short_drama_voice.prepare_voice_submission(
+            self.db, "alice", "alice", request, "voice-active-owner"
+        )
+        request["quote_token"] = second_quote["items"][0]["quote_token"]
+        with self.assertRaises(short_drama_voice.VoiceChargeInProgress):
+            short_drama_voice.prepare_voice_submission(
+                self.db, "editor", "alice", request, "voice-active-editor"
+            )
+
+    def test_snapshot_uses_voice_ledger_for_reserved_spent_and_refunded_points(self):
+        snapshot, line, quote = self._voice_quote()
+        request = {
+            "project_id": self.project["id"], "revision": snapshot["revision"],
+            "line_id": line["id"], "voice_key": "longwan",
+            "speed": 1.1, "pitch": 2, "volume": 3,
+            "quote_token": quote["items"][0]["quote_token"],
+        }
+        short_drama_voice.prepare_voice_submission(
+            self.db, "alice", "alice", request, "voice-usage"
+        )
+        current = short_drama_voice.get_voice_workspace(
+            self.db, "alice", self.project["id"]
+        )
+        self.assertEqual((0, 10), (current["spent_points"], current["reserved_points"]))
+        short_drama_voice.mark_voice_attempt_charged(
+            self.db, "alice", "voice-usage", 90
+        )
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_voice_charge_attempts SET state='done' "
+                "WHERE idempotency_key='voice-usage'"
+            )
+            conn.commit()
+        current = short_drama_voice.get_voice_workspace(
+            self.db, "alice", self.project["id"]
+        )
+        self.assertEqual((10, 0), (current["spent_points"], current["reserved_points"]))
+        with closing(self.db()) as conn:
+            conn.execute(
+                "UPDATE short_drama_voice_charge_attempts SET state='refunded' "
+                "WHERE idempotency_key='voice-usage'"
+            )
+            conn.commit()
+        current = short_drama_voice.get_voice_workspace(
+            self.db, "alice", self.project["id"]
+        )
+        self.assertEqual((0, 0), (current["spent_points"], current["reserved_points"]))
+
     def test_expired_quote_is_rejected_before_charge_attempt(self):
         snapshot, line, quote = self._voice_quote()
         with closing(self.db()) as conn:
