@@ -5,6 +5,7 @@ import hashlib
 import json
 import mimetypes
 import sqlite3
+import subprocess
 import time
 import uuid
 from contextlib import closing
@@ -189,19 +190,27 @@ def _locked_still(conn, project_id, shot_id):
 
 
 def _omni_inline_reference(file_name):
-    from . import miniprogram_security, video as video_domain, video_gemini_omni
+    from . import video as video_domain, video_gemini_omni
     path = video_domain._resolve_out_file(str(file_name or ""))
     if not path:
         raise ValueError("Omni 关键帧本地文件不存在")
     try:
-        raw, content_type = miniprogram_security._prepare_image_for_security(
-            path.read_bytes(), mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        )
-    except (OSError, miniprogram_security.ContentRejected,
-            miniprogram_security.SecurityUnavailable) as error:
-        raise ValueError("Omni 关键帧无法转换为 JPEG") from error
-    if content_type not in video_gemini_omni.IMAGE_MIMES:
-        raise ValueError("Omni 关键帧必须是 JPEG、PNG 或 WebP")
+        raw = path.read_bytes()
+    except OSError as error:
+        raise ValueError("Omni 关键帧本地文件无法读取") from error
+    content_type = mimetypes.guess_type(path.name)[0] or ""
+    if (not raw or len(raw) > video_gemini_omni.MAX_IMAGE_BYTES
+            or content_type not in video_gemini_omni.IMAGE_MIMES):
+        try:
+            converted = subprocess.run([
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(path),
+                "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg",
+                "-q:v", "3", "pipe:1",
+            ], check=True, timeout=120, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except (FileNotFoundError, subprocess.CalledProcessError,
+                subprocess.TimeoutExpired, OSError) as error:
+            raise ValueError("Omni 关键帧无法转换为 JPEG") from error
+        raw, content_type = converted.stdout, "image/jpeg"
     if not raw or len(raw) > video_gemini_omni.MAX_IMAGE_BYTES:
         raise ValueError("Omni 关键帧压缩后仍超过 8MB")
     return "data:%s;base64,%s" % (
