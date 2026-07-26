@@ -2305,13 +2305,53 @@ def public_virtual_pay_custom(membership_tier=""):
     }
 
 
-def _has_existing_membership_order(c, username):
+def _existing_membership_order(c, username):
     return c.execute(
-        """SELECT 1 FROM virtual_pay_orders
+        """SELECT * FROM virtual_pay_orders
              WHERE username=? AND order_type=? AND status NOT IN ('failed','refunded')
-             LIMIT 1""",
+             ORDER BY created_at DESC LIMIT 1""",
         (username, MEMBERSHIP_ORDER_TYPE),
-    ).fetchone() is not None
+    ).fetchone()
+
+
+def _refresh_unpaid_membership_order(row):
+    if not row or row["status"] != "created":
+        return bool(row)
+    try:
+        result = wechat_vpay.query_order(row["openid"], row["order_id"], row["env"])
+    except Exception:
+        return True
+    wx_order = result.get("order") or {}
+    if wx_order.get("order_id") and wx_order.get("order_id") != row["order_id"]:
+        return True
+    if wx_order.get("status") is None:
+        return True
+    try:
+        wx_status = int(wx_order["status"])
+    except (TypeError, ValueError):
+        return True
+    if wx_status not in (0, 5, 6, 8):
+        return True
+    next_status = "refunded" if wx_status in (5, 8) else "failed"
+    detail = "微信未支付订单已关闭" if wx_status in (0, 6) else "微信订单已退款"
+    c = db()
+    try:
+        cursor = c.execute(
+            """UPDATE virtual_pay_orders SET status=?,last_error=?,raw_order_json=?
+                 WHERE order_id=? AND status='created'""",
+            (next_status, detail, json.dumps(wx_order, ensure_ascii=False), row["order_id"]),
+        )
+        c.commit()
+        return cursor.rowcount == 0
+    finally:
+        c.close()
+
+
+def _virtual_order_is_terminal(row):
+    status = row["status"]
+    return status in ("refunded", "refund_review") or (
+        (row["order_type"] or "points") == MEMBERSHIP_ORDER_TYPE and status == "failed"
+    )
 
 
 def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=None):
@@ -2341,10 +2381,11 @@ def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=N
             return None, "membership_already_active"
         c = db()
         try:
-            if _has_existing_membership_order(c, username):
-                return None, "membership_order_exists"
+            existing_order = _existing_membership_order(c, username)
         finally:
             c.close()
+        if existing_order and _refresh_unpaid_membership_order(existing_order):
+            return None, "membership_order_exists"
         pricing_tier = ""
         discount_bps = 10000
     else:
@@ -2384,7 +2425,7 @@ def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=N
             if membership_for_row(user)["membership_active"]:
                 c.rollback()
                 return None, "membership_already_active"
-            if _has_existing_membership_order(c, username):
+            if _existing_membership_order(c, username):
                 c.rollback()
                 return None, "membership_order_exists"
         owner = c.execute("SELECT username FROM users WHERE wx_openid=?", (openid,)).fetchone()
@@ -2454,7 +2495,7 @@ def confirm_virtual_pay_order(username, order_id):
             _mark_delivery(row["order_id"], row["env"])
             c = db(); row = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (order_id,)).fetchone(); c.close()
         return public_virtual_pay_order(row), None
-    if row["status"] in ("refunded", "refund_review"):
+    if _virtual_order_is_terminal(row):
         return public_virtual_pay_order(row), None
 
     result = wechat_vpay.query_order(row["openid"], row["order_id"], row["env"])
@@ -2483,7 +2524,7 @@ def confirm_virtual_pay_order(username, order_id):
         if not fresh:
             c.rollback()
             return None, "not_found"
-        if fresh["status"] in ("refunded", "refund_review"):
+        if _virtual_order_is_terminal(fresh):
             c.rollback()
             return public_virtual_pay_order(fresh), None
         if fresh["status"] != "credited":
@@ -2670,7 +2711,7 @@ def process_virtual_pay_message(message):
         return {"errcode": 0, "errmsg": "ok", "order": order or {}}
     if event == "xpay_goods_deliver_notify":
         row = _virtual_pay_event_order(message)
-        if row and row["status"] not in ("credited", "refunded", "refund_review"):
+        if row and row["status"] != "credited" and not _virtual_order_is_terminal(row):
             _, err = confirm_virtual_pay_order(row["username"], row["order_id"])
             if err not in (None, "pending"):
                 raise RuntimeError("虚拟支付发货通知处理失败: " + err)

@@ -233,6 +233,10 @@ class VirtualPaymentTests(unittest.TestCase):
 
         with patch.object(
             self.auth.wechat_vpay,
+            "query_order",
+            return_value={"order": {"order_id": first["order"]["order_id"], "status": 1}},
+        ) as query_order, patch.object(
+            self.auth.wechat_vpay,
             "code_to_session",
             return_value={"openid": "openid-buyer", "session_key": "session-key"},
         ) as code_to_session:
@@ -242,6 +246,7 @@ class VirtualPaymentTests(unittest.TestCase):
 
         self.assertIsNone(second)
         self.assertEqual(second_err, "membership_order_exists")
+        query_order.assert_called_once()
         code_to_session.assert_not_called()
         c = sqlite3.connect(self.auth.DB)
         try:
@@ -251,6 +256,96 @@ class VirtualPaymentTests(unittest.TestCase):
                          WHERE username='buyer' AND order_type='membership_experience'"""
                 ).fetchone()[0],
                 1,
+            )
+        finally:
+            c.close()
+
+    def test_wechat_closed_membership_order_is_retired_before_retry(self):
+        with patch.object(
+            self.auth.wechat_vpay,
+            "code_to_session",
+            return_value={"openid": "openid-buyer", "session_key": "session-key"},
+        ):
+            first, first_err = self.auth.create_virtual_pay_order(
+                "buyer", "membership_experience", "wx-code"
+            )
+        self.assertIsNone(first_err)
+        first_order_id = first["order"]["order_id"]
+
+        with patch.object(
+            self.auth.wechat_vpay,
+            "query_order",
+            return_value={"order": {"order_id": first_order_id, "status": 6}},
+        ), patch.object(
+            self.auth.wechat_vpay,
+            "code_to_session",
+            return_value={"openid": "openid-buyer", "session_key": "session-key"},
+        ):
+            second, second_err = self.auth.create_virtual_pay_order(
+                "buyer", "membership_experience", "wx-code"
+            )
+
+        self.assertIsNone(second_err)
+        self.assertNotEqual(second["order"]["order_id"], first_order_id)
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            first_status, first_error = c.execute(
+                "SELECT status,last_error FROM virtual_pay_orders WHERE order_id=?",
+                (first_order_id,),
+            ).fetchone()
+            self.assertEqual(first_status, "failed")
+            self.assertIn("已关闭", first_error)
+            self.assertEqual(
+                c.execute(
+                    """SELECT COUNT(*) FROM virtual_pay_orders
+                         WHERE username='buyer' AND order_type='membership_experience'"""
+                ).fetchone()[0],
+                2,
+            )
+        finally:
+            c.close()
+
+    def test_incomplete_wechat_query_never_closes_membership_order(self):
+        with patch.object(
+            self.auth.wechat_vpay,
+            "code_to_session",
+            return_value={"openid": "openid-buyer", "session_key": "session-key"},
+        ):
+            first, first_err = self.auth.create_virtual_pay_order(
+                "buyer", "membership_experience", "wx-code"
+            )
+        self.assertIsNone(first_err)
+
+        with patch.object(
+            self.auth.wechat_vpay,
+            "query_order",
+            side_effect=({"order": {}}, {"order": {"status": "unknown"}}),
+        ) as query_order, patch.object(
+            self.auth.wechat_vpay,
+            "code_to_session",
+            return_value={"openid": "openid-buyer", "session_key": "session-key"},
+        ) as code_to_session:
+            attempts = [
+                self.auth.create_virtual_pay_order(
+                    "buyer", "membership_experience", "wx-code"
+                )
+                for _ in range(2)
+            ]
+
+        self.assertEqual(
+            attempts,
+            [(None, "membership_order_exists"), (None, "membership_order_exists")],
+        )
+        self.assertEqual(query_order.call_count, 2)
+        code_to_session.assert_not_called()
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            self.assertEqual(
+                c.execute(
+                    "SELECT status FROM virtual_pay_orders WHERE order_id=?",
+                    (first["order"]["order_id"],),
+                ).fetchone()[0],
+                "created",
             )
         finally:
             c.close()
@@ -479,6 +574,40 @@ class VirtualPaymentTests(unittest.TestCase):
             self.assertEqual(tier, "experience")
         finally:
             c.close()
+
+    def test_failed_membership_order_never_recovers_from_late_callbacks(self):
+        with patch.object(
+            self.auth.wechat_vpay,
+            "code_to_session",
+            return_value={"openid": "openid-buyer", "session_key": "session-key"},
+        ):
+            result, err = self.auth.create_virtual_pay_order(
+                "buyer", "membership_experience", "wx-code"
+            )
+        self.assertIsNone(err)
+        order_id = result["order"]["order_id"]
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            c.execute(
+                "UPDATE virtual_pay_orders SET status='failed',last_error='订单已关闭' WHERE order_id=?",
+                (order_id,),
+            )
+            c.commit()
+        finally:
+            c.close()
+
+        with patch.object(self.auth.wechat_vpay, "query_order") as query_order:
+            confirmed, confirm_err = self.auth.confirm_virtual_pay_order("buyer", order_id)
+            delivered = self.auth.process_virtual_pay_message({
+                "Event": "xpay_goods_deliver_notify",
+                "order_id": order_id,
+            })
+
+        self.assertIsNone(confirm_err)
+        self.assertEqual(confirmed["status"], "failed")
+        self.assertEqual(delivered["errcode"], 0)
+        query_order.assert_not_called()
+        self.assertEqual(self.auth.get_points_row("buyer")["points"], 5)
 
     def test_amount_mismatch_never_credits_points(self):
         with patch.object(
