@@ -73,6 +73,14 @@ def request_token(headers):
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
+    def _health(self):
+        body = b'{"ok":true,"service":"huangque-dl"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _err(self, code, msg):
         b = ('{"detail":"%s"}' % msg).encode()
         self.send_response(code)
@@ -123,6 +131,8 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         pr = urllib.parse.urlparse(self.path)
+        if pr.path == "/api/gen/dl/health":
+            return self._health()
         if pr.path != "/api/gen/dl":
             return self._err(404, "not found")
         token = request_token(self.headers)
