@@ -101,6 +101,63 @@ def set_terminal(jdb, job_id, status, result=None, error=None, from_states=("run
         return cur.rowcount >= 1
 
 
+VIDEO_NOTIFICATION_KINDS = {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}
+
+
+def ensure_video_notification_outbox(jdb):
+    with closing(jdb()) as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS video_notification_outbox(
+            job_id INTEGER PRIMARY KEY,
+            username TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            lease_until INTEGER NOT NULL DEFAULT 0,
+            next_retry_at INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            sent_at INTEGER
+        )""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_video_notify_ready ON video_notification_outbox(status,next_retry_at,job_id)")
+        c.commit()
+
+
+def set_done_with_video_outbox(jdb, job_id, username, kind, result=None, from_states=("running",)):
+    """Atomically win jobs.done and enqueue only supported video notifications."""
+    if kind not in VIDEO_NOTIFICATION_KINDS:
+        return set_terminal(jdb, job_id, "done", result=result, from_states=from_states)
+    ensure_video_notification_outbox(jdb)
+    now = int(time.time())
+    holes = ",".join("?" * len(from_states))
+    with closing(jdb()) as c:
+        c.execute("BEGIN IMMEDIATE")
+        cur = c.execute(
+            "UPDATE jobs SET status='done', result=?, updated_at=? WHERE id=? AND status IN (%s)" % holes,
+            (json.dumps(result, ensure_ascii=False), now, job_id) + tuple(from_states),
+        )
+        if cur.rowcount:
+            c.execute(
+                """INSERT OR IGNORE INTO video_notification_outbox(
+                   job_id,username,kind,status,created_at,updated_at)
+                   VALUES(?,?,?,'pending',?,?)""",
+                (int(job_id), str(username or ""), str(kind), now, now),
+            )
+        c.commit()
+        return cur.rowcount >= 1
+
+
+def set_terminal_with_video_outbox(jdb, job_id, status, result=None, error=None, from_states=("running",)):
+    if status != "done":
+        return set_terminal(jdb, job_id, status, result, error, from_states)
+    with closing(jdb()) as c:
+        row = c.execute("SELECT username,kind FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if not row:
+        return set_terminal(jdb, job_id, status, result, error, from_states)
+    return set_done_with_video_outbox(
+        jdb, job_id, row["username"], row["kind"], result, from_states)
+
+
 def claim_running(jdb, job_id):
     """CAS 认领：只有 pending 才能被本次执行接管。返回是否抢到。
 

@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security, inspiration_likes, history  # 领域存储模块均无反向依赖
+import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security, inspiration_likes, history, notifications  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -283,7 +283,7 @@ def init_db():
         submission_idempotency.ensure_table(c)
         c.commit()
     feature_flags.init_db()
-    init_audio_db(); _short_drama_domain().init_db(jdb)
+    init_audio_db(); _short_drama_domain().init_db(jdb); jobs_store.ensure_video_notification_outbox(jdb)
 
 def init_audio_db():
     now = int(time.time())
@@ -734,7 +734,7 @@ def is_shutting_down():
 
 # CAS 抢终态 / 退点幂等：实现在 content_domains/jobs_store.py，三个共写 jobs 表的服务共用一份。
 def _set_terminal(job_id, status, result=None, error=None, from_states=("running",)):
-    return jobs_store.set_terminal(jdb, job_id, status, result, error, from_states)
+    return jobs_store.set_terminal_with_video_outbox(jdb, job_id, status, result, error, from_states)
 def _refund_once(job_id, username, cost, transaction_key=""):
     transaction_key = transaction_key or jobs_store.refund_transaction_key(job_id, username)
     return jobs_store.refund_once(jdb, job_id, username, cost, lambda u, c: (
@@ -952,7 +952,7 @@ def start_job_workers():
                              (AVATAR_JOB_WORKERS, _avatar_job_queue, "content-avatar-worker")):
         for i in range(count):
             threading.Thread(target=_job_worker_loop, args=(q,), name="%s-%d" % (prefix, i + 1), daemon=True).start()
-    threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start()
+    threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start(); threading.Thread(target=notifications.scanner, args=(jdb,), name="content-video-notify", daemon=True).start()
     _recover_pending_jobs(_PENDING_RECOVERY_LIMIT)
     try:
         _short_drama_domain().short_drama_production.retry_attempt_refunds(
