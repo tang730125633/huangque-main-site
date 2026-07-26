@@ -602,6 +602,11 @@ def _xai_proxy_url():
     return egress.preferred_proxy(PROXY_URL) if egress is not None else PROXY_URL
 
 
+def _heygen_proxy_url():
+    """Use the same dedicated egress route as direct HeyGen video requests."""
+    return egress.heygen_proxy() if egress is not None else PROXY_URL
+
+
 def db():
     ADMIN_DB.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(ADMIN_DB), timeout=10)
@@ -927,7 +932,8 @@ def _key_ping_heygen():
     if not key:
         return {"ok": False, "error": "密钥未配置"}
     return _ping_upstream(
-        "GET", "https://api.heygen.com/v2/user/remaining_quota", headers={"X-Api-Key": key}, proxied=True
+        "GET", "https://api.heygen.com/v2/user/remaining_quota",
+        headers={"X-Api-Key": key}, proxy_url=_heygen_proxy_url(),
     )
 
 
@@ -1066,7 +1072,8 @@ PROVIDER_KEY_NAMES = {
 
 
 def _probe_is_credential_rejection(probe):
-    return int((probe or {}).get("http_status") or 0) in {401, 403}
+    # 403 也可能只是模型/功能未开通；探针拿不到足够错误细节时宁可保留 Key。
+    return int((probe or {}).get("http_status") or 0) == 401
 
 
 def probe_provider_secret(provider, secret):

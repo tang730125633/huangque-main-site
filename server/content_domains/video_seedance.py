@@ -2,6 +2,7 @@
 """火山方舟官方 Seedance 2.0 异步视频适配器。"""
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -68,7 +69,7 @@ def _safe_text(value, limit=500, api_key=None):
     text = str(value or "")
     for secret in (api_key, ARK_API_KEY):
         if secret:
-            text = text.replace(secret, "***")
+            text = re.sub(re.escape(secret), "***", text, flags=re.IGNORECASE)
     return text[:limit]
 
 
@@ -94,17 +95,29 @@ def _error_detail(exc, api_key=None):
         return _safe_text(exc, api_key=api_key)
 
 
-def _human_error(code, detail):
-    text = _safe_text(detail)
+def _credential_rejected(code, detail):
+    """Only explicit auth failures may quarantine a pooled API key."""
+    text = _safe_text(detail).lower()
+    if code == 401:
+        return True
+    if code != 403:
+        return False
+    return any(phrase in text for phrase in (
+        "invalid api key", "invalid_api_key", "api key invalid",
+        "invalid credential", "authentication failed", "signature invalid",
+    ))
+
+
+def _human_error(code, detail, api_key=None):
+    text = _safe_text(detail, api_key=api_key)
     low = text.lower()
-    if code in (401, 403) or any(
-        word in low for word in ("invalid api key", "authentication", "unauthorized")
-    ):
-        return "Seedance 官方视频鉴权失败，请检查 ARK_API_KEY"
+    summary = "（上游摘要：%s）" % text if text else ""
+    if _credential_rejected(code, text):
+        return "Seedance 官方视频鉴权失败，请检查 ARK_API_KEY" + summary
     if code == 402 or any(
         word in low for word in ("insufficient", "balance", "arrears", "余额", "欠费")
     ):
-        return "Seedance 官方视频账户余额不足，请先充值"
+        return "Seedance 官方视频账户余额不足，请先充值" + summary
     if any(
         word in low
         for word in (
@@ -115,14 +128,14 @@ def _human_error(code, detail):
             "敏感",
         )
     ):
-        return "Seedance 内容未通过安全审核，请调整提示词或参考图"
+        return "Seedance 内容未通过安全审核，请调整提示词或参考图" + summary
     if code == 429 or any(word in low for word in ("rate limit", "too many", "限流")):
-        return "Seedance 官方视频并发繁忙，请稍后重试"
+        return "Seedance 官方视频并发繁忙，请稍后重试" + summary
     if any(
         word in low
         for word in ("modelnotfound", "permission", "not activated", "未开通", "无权限")
     ):
-        return "Seedance 官方模型未开通或当前账号无权限"
+        return "Seedance 官方模型未开通或当前账号无权限" + summary
     return "Seedance 官方视频接口失败: HTTP %s %s" % (code, text)
 
 
@@ -154,14 +167,14 @@ def _request_json(opener, method, path, body=None, timeout=90, api_key=None):
                 % (exc.code, detail)
             ) from exc
         if method == "GET" and exc.code in TRANSIENT_HTTP_CODES:
-            raise TransientSeedanceError(_human_error(exc.code, detail)) from exc
+            raise TransientSeedanceError(_human_error(exc.code, detail, api_key)) from exc
         if method == "POST":
-            if exc.code in {401, 402, 403, 429}:
+            if _credential_rejected(exc.code, detail):
                 raise SeedanceCredentialRejected(
-                    _human_error(exc.code, detail)
+                    _human_error(exc.code, detail, api_key)
                 ) from exc
-            raise SeedanceRejected(_human_error(exc.code, detail)) from exc
-        raise RuntimeError(_human_error(exc.code, detail)) from exc
+            raise SeedanceRejected(_human_error(exc.code, detail, api_key)) from exc
+        raise RuntimeError(_human_error(exc.code, detail, api_key)) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         message = "Seedance 官方视频网络异常: %s" % _safe_text(
             exc, 300, api_key
@@ -340,8 +353,8 @@ def _poll(
                 ),
             }
         if status in {"failed", "expired", "cancelled", "canceled"}:
-            detail = _payload_detail(payload)
-            message = _human_error(400, detail)
+            detail = _payload_detail(payload, api_key)
+            message = _human_error(400, detail, api_key)
             if message.startswith("Seedance 官方视频接口失败"):
                 message = "Seedance 视频生成失败: " + detail
             raise SeedanceProviderFailed(message)
@@ -353,7 +366,7 @@ def _poll(
 
     if last_transient:
         raise TimeoutError(
-            "Seedance 视频查询超时: " + _safe_text(last_transient, 240)
+            "Seedance 视频查询超时: " + _safe_text(last_transient, 240, api_key)
         )
     raise TimeoutError("Seedance 视频生成超时")
 
