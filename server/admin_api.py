@@ -1507,7 +1507,7 @@ def job_stats(days=7):
     }
 
 
-_PAYLOAD_FIELD_RE = re.compile(r'"(model|provider|mode|keyword|url|line)"\s*:\s*"([^"]*)"')
+_PAYLOAD_FIELD_RE = re.compile(r'"(model|provider|channel|mode|keyword|url|line)"\s*:\s*"([^"]*)"')
 
 
 def _job_payload(raw):
@@ -1568,6 +1568,77 @@ def call_logs(days=7, limit=200):
             }
         )
     return {"days": days, "limit": limit, "items": items}
+
+
+def user_job_insights(username):
+    username = str(username or "").strip()
+    if not username:
+        raise ValueError("缺少用户账号")
+    if len(username) > 64:
+        raise ValueError("用户账号过长")
+    empty = {
+        "total": 0, "done": 0, "error": 0, "running": 0, "other": 0,
+        "success_rate": 0, "by_function": [], "by_channel": [],
+        "by_model": [], "recent": [],
+    }
+    if not JOB_DB.exists():
+        return empty
+    with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as c:
+        c.row_factory = sqlite3.Row
+        rows = c.execute(
+            """SELECT id,kind,cost,status,substr(payload,1,4096) AS payload,created_at
+               FROM jobs WHERE username=? ORDER BY created_at DESC,id DESC""",
+            (username,),
+        ).fetchall()
+
+    summary = dict(empty)
+    groups = {"by_function": {}, "by_channel": {}, "by_model": {}}
+
+    def add_group(group, name, status):
+        item = group.setdefault(name or "未记录", {
+            "name": name or "未记录", "total": 0, "done": 0, "error": 0,
+        })
+        item["total"] += 1
+        if status in {"done", "error"}:
+            item[status] += 1
+
+    for row in rows:
+        status = str(row["status"] or "unknown").lower()
+        bucket = status if status in {"done", "error"} else (
+            "running" if status in {"pending", "queued", "running"} else "other"
+        )
+        summary["total"] += 1
+        summary[bucket] += 1
+        payload = _job_payload(row["payload"])
+        kind = row["kind"] or "unknown"
+        channel = payload.get("channel") or payload.get("provider")
+        if not channel and payload.get("line"):
+            channel = "线路 " + str(payload["line"])
+        add_group(groups["by_function"], call_func_name(kind, payload), bucket)
+        add_group(groups["by_channel"], str(channel or "未记录"), bucket)
+        add_group(groups["by_model"], str(payload.get("model") or "未记录"), bucket)
+        if len(summary["recent"]) < 20:
+            created_at = int(row["created_at"] or 0)
+            summary["recent"].append({
+                "id": int(row["id"]),
+                "func": call_func_name(kind, payload),
+                "channel": str(channel or "未记录"),
+                "model": str(payload.get("model") or "未记录"),
+                "status": status,
+                "cost": int(row["cost"] or 0),
+                "created_at": created_at,
+            })
+    settled = summary["done"] + summary["error"]
+    summary["success_rate"] = round(
+        summary["done"] / settled, 4,
+    ) if settled else 0
+    for key, values in groups.items():
+        items = list(values.values())
+        for item in items:
+            settled = item["done"] + item["error"]
+            item["success_rate"] = round(item["done"] / settled, 4) if settled else 0
+        summary[key] = sorted(items, key=lambda item: (-item["total"], item["name"]))[:30]
+    return summary
 
 
 class H(BaseHTTPRequestHandler):
@@ -1635,6 +1706,22 @@ class H(BaseHTTPRequestHandler):
             suffix = "/api/auth/admin/users" + (("?" + q) if q else "")
             try:
                 return self._send(200, auth_admin_request(suffix, self._token()))
+            except Exception as e:
+                return auth_error_response(self, e)
+        if path == "/api/admin/users/detail":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            username = (q.get("username") or [""])[0].strip()
+            if not username:
+                return self._send(400, {"detail": "缺少用户账号"})
+            try:
+                data = auth_admin_request(
+                    "/api/auth/admin/user-insights?username=" + urllib.parse.quote(username),
+                    self._token(),
+                )
+                data["tasks"] = user_job_insights(username)
+                return self._send(200, data)
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
             except Exception as e:
                 return auth_error_response(self, e)
         if path == "/api/admin/points/audit":
@@ -1799,6 +1886,27 @@ class H(BaseHTTPRequestHandler):
                     200,
                     auth_admin_request("/api/auth/admin/points/adjust", self._token(), method="POST", payload=self._body()),
                 )
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return auth_error_response(self, e)
+        if path == "/api/admin/users/notification":
+            try:
+                body = self._body()
+                result = auth_admin_request(
+                    "/api/auth/admin/notifications", self._token(), method="POST", payload=body,
+                )
+                try:
+                    _admin_audit(
+                        user.get("username") or "admin", "user_notification",
+                        str(body.get("username") or ""), {
+                            "title": str(body.get("title") or "")[:80],
+                            "detail_chars": len(str(body.get("detail") or "")),
+                        },
+                    )
+                except Exception as audit_error:
+                    print("admin notification audit failed:", type(audit_error).__name__)
+                return self._send(200, result)
             except ValueError as e:
                 return self._send(400, {"detail": str(e)})
             except Exception as e:

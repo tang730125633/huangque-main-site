@@ -285,6 +285,16 @@ def init_db():
     # 只能命中原流水，不能再次加点。NULL 不参与冲突，老调用方保持原行为。
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_points_audit_transaction_key "
               "ON points_audit(transaction_key)")
+    c.execute("""CREATE TABLE IF NOT EXISTS user_notifications(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'system',
+        title TEXT NOT NULL,
+        detail TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_user_notifications_user ON user_notifications(username,id DESC)")
     c.execute("""CREATE TABLE IF NOT EXISTS membership_recharge_records(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         request_id TEXT NOT NULL UNIQUE,
@@ -1725,6 +1735,146 @@ def list_admin_users(query="", sort="created_at", direction="desc", limit=100, o
         c.close()
 
 
+def public_user_notification(row):
+    return {
+        "id": int(row["id"]),
+        "kind": row["kind"] or "system",
+        "title": row["title"],
+        "detail": row["detail"],
+        "created_at": int(row["created_at"] or 0),
+    }
+
+
+def create_user_notification(username, title, detail, created_by):
+    username = str(username or "").strip()
+    title = str(title or "").strip()
+    detail = str(detail or "").strip()
+    if not username:
+        return None, "missing_username"
+    if not title:
+        return None, "missing_title"
+    if len(title) > 80:
+        return None, "title_too_long"
+    if not detail:
+        return None, "missing_detail"
+    if len(detail) > 1000:
+        return None, "detail_too_long"
+    c = db()
+    try:
+        if not c.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
+            return None, "not_found"
+        now = int(time.time())
+        cur = c.execute(
+            """INSERT INTO user_notifications(username,kind,title,detail,created_by,created_at)
+               VALUES(?,?,?,?,?,?)""",
+            (username, "system", title, detail, str(created_by or "admin")[:80], now),
+        )
+        row = c.execute("SELECT * FROM user_notifications WHERE id=?", (cur.lastrowid,)).fetchone()
+        c.commit()
+        return public_user_notification(row), None
+    finally:
+        c.close()
+
+
+def list_user_notifications(username, limit=50):
+    limit = max(1, min(100, int(limit or 50)))
+    c = db()
+    try:
+        rows = c.execute(
+            """SELECT id,kind,title,detail,created_at FROM user_notifications
+               WHERE username=? ORDER BY id DESC LIMIT ?""",
+            (str(username or "").strip(), limit),
+        ).fetchall()
+        return [public_user_notification(row) for row in rows]
+    finally:
+        c.close()
+
+
+def admin_user_insights(username):
+    username = str(username or "").strip()
+    if not username:
+        return None
+    c = db()
+    try:
+        user = c.execute(
+            """SELECT id,username,display_name,points,role,must_change,created_at,
+                      membership_tier,membership_started_at,membership_expires_at
+               FROM users WHERE username=?""",
+            (username,),
+        ).fetchone()
+        if not user:
+            return None
+        manual = c.execute(
+            "SELECT * FROM recharge_orders WHERE username=? ORDER BY created_at DESC,order_id DESC",
+            (username,),
+        ).fetchall()
+        virtual = c.execute(
+            "SELECT * FROM virtual_pay_orders WHERE username=? ORDER BY created_at DESC,order_id DESC",
+            (username,),
+        ).fetchall()
+    finally:
+        c.close()
+
+    recent = []
+    paid_orders = 0
+    paid_amount_fen = 0
+    pending = 0
+    abnormal = 0
+    for row in manual:
+        status = row["status"] or "unknown"
+        amount_fen = int(round(float(row["amount"] or 0) * 100))
+        if status == "approved":
+            paid_orders += 1
+            paid_amount_fen += amount_fen
+        elif status == "pending":
+            pending += 1
+        else:
+            abnormal += 1
+        recent.append({
+            "source": "主站充值",
+            "order_id": row["order_id"],
+            "amount_fen": amount_fen,
+            "points": int(row["points"] or 0),
+            "status": status,
+            "order_type": row["order_type"] or "points",
+            "created_at": int(row["created_at"] or 0),
+            "detail": row["review_note"] or row["note"] or "",
+        })
+    for row in virtual:
+        status = row["status"] or "unknown"
+        amount_fen = int(row["amount_fen"] or 0)
+        if status == "credited":
+            paid_orders += 1
+            paid_amount_fen += amount_fen
+        elif status == "created":
+            pending += 1
+        else:
+            abnormal += 1
+        recent.append({
+            "source": "微信小程序",
+            "order_id": row["order_id"],
+            "amount_fen": amount_fen,
+            "points": int(row["points"] or 0),
+            "status": status,
+            "order_type": row["order_type"] or "points",
+            "created_at": int(row["created_at"] or 0),
+            "detail": row["last_error"] or "",
+        })
+    recent.sort(key=lambda item: (item["created_at"], item["order_id"]), reverse=True)
+    return {
+        "user": public_admin_user(user),
+        "payments": {
+            "order_count": len(manual) + len(virtual),
+            "paid_order_count": paid_orders,
+            "paid_amount_fen": paid_amount_fen,
+            "pending_count": pending,
+            "abnormal_count": abnormal,
+            "recent": recent[:20],
+        },
+        "ledger": list_points_audit(username=username, limit=20),
+    }
+
+
 def _write_membership_audit(c, username, before, after, operator, reason, now):
     cur = c.execute(
         """INSERT INTO membership_audit(
@@ -3042,6 +3192,30 @@ class H(BaseHTTPRequestHandler):
                 return self._send(403, {"detail": str(exc)})
             except Exception:
                 return self._send(500, {"detail": "message push failed"})
+        if p == "/api/auth/admin/notifications":
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            notice, err = create_user_notification(
+                d.get("username"), d.get("title"), d.get("detail"), admin["username"],
+            )
+            messages = {
+                "missing_username": "缺少用户账号",
+                "missing_title": "通知标题不能为空",
+                "title_too_long": "通知标题最多 80 个字符",
+                "missing_detail": "通知内容不能为空",
+                "detail_too_long": "通知内容最多 1000 个字符",
+            }
+            if err == "not_found":
+                return self._send(404, {"detail": "用户不存在"})
+            if err:
+                return self._send(400, {"detail": messages.get(err, err)})
+            return self._send(200, {"ok": True, "notification": notice})
         if p == "/api/auth/admin/points/adjust":
             if not self._require_internal():
                 return
@@ -4066,6 +4240,20 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, **data})
             except Exception:
                 return self._send(500, {"detail": "users query failed"})
+        if p == "/api/auth/admin/user-insights":
+            if not self._require_internal():
+                return
+            admin = self._require_admin_user()
+            if not admin:
+                return
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                data = admin_user_insights((q.get("username") or [""])[0])
+                if not data:
+                    return self._send(404, {"detail": "用户不存在"})
+                return self._send(200, {"ok": True, **data})
+            except Exception:
+                return self._send(500, {"detail": "用户详情查询失败"})
         if p == "/api/auth/admin/points/audit":
             if not self._require_internal():
                 return
@@ -4152,6 +4340,20 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "items": items})
             except Exception:
                 return self._send(500, {"detail": "支付订单查询失败"})
+        if p == "/api/auth/notifications":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                items = list_user_notifications(
+                    row["username"], (q.get("limit") or ["50"])[0],
+                )
+                return self._send(200, {"ok": True, "items": items})
+            except (TypeError, ValueError):
+                return self._send(400, {"detail": "分页参数无效"})
+            except Exception:
+                return self._send(500, {"detail": "通知读取失败"})
         if p == "/api/auth/membership/voice-slot-entitlement":
             if not self._require_internal():
                 return
