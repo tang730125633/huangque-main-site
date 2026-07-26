@@ -380,13 +380,9 @@ class ShortDramaVoiceSnapshotTests(unittest.TestCase):
         with closing(self.db()) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute(
-                "CREATE TABLE jobs(id INTEGER PRIMARY KEY,kind TEXT,username TEXT,"
-                "cost INTEGER,status TEXT,payload TEXT,result TEXT,error TEXT,"
-                "refunded INTEGER DEFAULT 0)"
-            )
-            conn.execute(
-                "INSERT INTO jobs VALUES "
-                "(101,'audio','alice',10,'done','{}',?,'',0)",
+                "INSERT INTO jobs("
+                "id,kind,username,cost,status,payload,result,error,refunded"
+                ") VALUES (101,'audio','alice',10,'done','{}',?,'',0)",
                 (json.dumps({
                     "file": "audio/one.mp3", "url": "/api/gen/file/audio/one.mp3",
                     "duration_ms": 1234,
@@ -432,12 +428,9 @@ class ShortDramaVoiceSnapshotTests(unittest.TestCase):
         with closing(self.db()) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute(
-                "CREATE TABLE jobs(id INTEGER PRIMARY KEY,kind TEXT,username TEXT,"
-                "cost INTEGER,status TEXT,payload TEXT,result TEXT,error TEXT,"
-                "refunded INTEGER DEFAULT 0)"
-            )
-            conn.execute(
-                "INSERT INTO jobs VALUES "
+                "INSERT INTO jobs("
+                "id,kind,username,cost,status,payload,result,error,refunded"
+                ") VALUES "
                 "(102,'audio','alice',10,'error','{}','{}','provider failed',1)"
             )
             short_drama_voice.bind_voice_job(
