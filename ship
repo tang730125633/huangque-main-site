@@ -192,7 +192,7 @@ for f in "$@"; do
     # systemd 单元与 drop-in。原来不在映射表里，只能手工 scp + daemon-reload —— 漏一步就出事：
     # leadgen 曾因单元没加载 auth.env 而拿不到 HQ_INTERNAL_TOKEN，退点全部静默回退直写。
     deploy/systemd/*.service.d/*.conf)
-             unit="${f#deploy/systemd/}"; unit="${unit%%/*}"          # huangque-xxx.service
+             unit="${f#deploy/systemd/}"; unit="${unit%%.d/*}"        # huangque-xxx.service
              dest="/etc/systemd/system/${unit}.d/"
              svc="${unit%.service}"; NEED_RELOAD=1 ;;
     deploy/systemd/*.service)
