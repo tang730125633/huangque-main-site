@@ -125,7 +125,7 @@ class ItDoesNotPunishTheInnocentTests(unittest.TestCase):
     def test_the_granularity_is_the_user_facing_function(self):
         """熔断粒度 = 用户看到的功能名，和运营后台的日志/统计用同一份映射（func_names）。"""
         self.assertEqual(guard._func_key("xiaole_video", {"channel": "micro"}), "Seedance 视频")
-        self.assertEqual(guard._func_key("image", {"provider": "zelong2"}), "作图 · 泽龙2生图")
+        self.assertEqual(guard._func_key("image", {"provider": "zelong2"}), "作图 · 泽龙专用生图")
 
 
 class FailOpenTests(unittest.TestCase):
