@@ -305,6 +305,65 @@ class VirtualPaymentTests(unittest.TestCase):
         finally:
             c.close()
 
+    def test_paid_membership_order_is_fulfilled_when_user_retries_purchase(self):
+        now = 1800000000
+        with patch.object(
+            self.auth.wechat_vpay,
+            "code_to_session",
+            return_value={"openid": "openid-buyer", "session_key": "session-key"},
+        ), patch("server.auth_server.time.time", return_value=now):
+            first, first_err = self.auth.create_virtual_pay_order(
+                "buyer", "membership_experience", "wx-code"
+            )
+        self.assertIsNone(first_err)
+        order_id = first["order"]["order_id"]
+        wx_order = {
+            "order_id": order_id,
+            "status": 2,
+            "order_fee": 49900,
+            "paid_time": now,
+            "wx_order_id": "wx-recovered-membership",
+            "wxpay_order_id": "wxpay-recovered-membership",
+        }
+
+        with patch.object(
+            self.auth.wechat_vpay, "query_order", return_value={"order": wx_order}
+        ) as query_order, patch.object(
+            self.auth.wechat_vpay, "notify_provide_goods", return_value={}
+        ), patch.object(
+            self.auth.wechat_vpay,
+            "code_to_session",
+            return_value={"openid": "openid-buyer", "session_key": "session-key"},
+        ) as code_to_session, patch("server.auth_server.time.time", return_value=now):
+            second, second_err = self.auth.create_virtual_pay_order(
+                "buyer", "membership_experience", "wx-code"
+            )
+
+        self.assertIsNone(second)
+        self.assertEqual(second_err, "membership_already_active")
+        query_order.assert_called_once()
+        code_to_session.assert_not_called()
+        self.assertEqual(self.auth.get_points_row("buyer")["points"], 1005)
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            status = c.execute(
+                "SELECT status FROM virtual_pay_orders WHERE order_id=?", (order_id,)
+            ).fetchone()[0]
+            tier = c.execute(
+                "SELECT membership_tier FROM users WHERE username='buyer'"
+            ).fetchone()[0]
+            self.assertEqual(status, "credited")
+            self.assertEqual(tier, "experience")
+            self.assertEqual(
+                c.execute(
+                    """SELECT COUNT(*) FROM virtual_pay_orders
+                         WHERE username='buyer' AND order_type='membership_experience'"""
+                ).fetchone()[0],
+                1,
+            )
+        finally:
+            c.close()
+
     def test_incomplete_wechat_query_never_closes_membership_order(self):
         with patch.object(
             self.auth.wechat_vpay,
@@ -607,6 +666,39 @@ class VirtualPaymentTests(unittest.TestCase):
         self.assertEqual(confirmed["status"], "failed")
         self.assertEqual(delivered["errcode"], 0)
         query_order.assert_not_called()
+        self.assertEqual(self.auth.get_points_row("buyer")["points"], 5)
+
+    def test_membership_refund_failure_blocks_another_purchase(self):
+        with patch.object(
+            self.auth.wechat_vpay,
+            "code_to_session",
+            return_value={"openid": "openid-buyer", "session_key": "session-key"},
+        ):
+            result, err = self.auth.create_virtual_pay_order(
+                "buyer", "membership_experience", "wx-code"
+            )
+        self.assertIsNone(err)
+        order_id = result["order"]["order_id"]
+
+        with patch.object(self.auth.wechat_vpay, "query_order", return_value={
+            "order": {"order_id": order_id, "status": 7, "order_fee": 49900}
+        }):
+            confirmed, confirm_err = self.auth.confirm_virtual_pay_order("buyer", order_id)
+
+        self.assertEqual(confirm_err, "not_paid")
+        self.assertEqual(confirmed["status"], "refund_review")
+        with patch.object(
+            self.auth.wechat_vpay,
+            "code_to_session",
+            return_value={"openid": "openid-buyer", "session_key": "session-key"},
+        ) as code_to_session:
+            second, second_err = self.auth.create_virtual_pay_order(
+                "buyer", "membership_experience", "wx-code"
+            )
+
+        self.assertIsNone(second)
+        self.assertEqual(second_err, "membership_order_exists")
+        code_to_session.assert_not_called()
         self.assertEqual(self.auth.get_points_row("buyer")["points"], 5)
 
     def test_amount_mismatch_never_credits_points(self):

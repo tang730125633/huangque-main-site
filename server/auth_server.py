@@ -2316,22 +2316,41 @@ def _existing_membership_order(c, username):
 
 def _refresh_unpaid_membership_order(row):
     if not row or row["status"] != "created":
-        return bool(row)
+        return "blocked" if row else "none"
     try:
         result = wechat_vpay.query_order(row["openid"], row["order_id"], row["env"])
     except Exception:
-        return True
+        return "blocked"
     wx_order = result.get("order") or {}
     if wx_order.get("order_id") and wx_order.get("order_id") != row["order_id"]:
-        return True
+        return "blocked"
     if wx_order.get("status") is None:
-        return True
+        return "blocked"
     try:
         wx_status = int(wx_order["status"])
     except (TypeError, ValueError):
-        return True
+        return "blocked"
+    if wx_status in (2, 3, 4):
+        confirmed, err = confirm_virtual_pay_order(
+            row["username"], row["order_id"], verified_wx_order=wx_order
+        )
+        if not err and confirmed and confirmed["status"] == "credited":
+            return "activated"
+        return "blocked"
+    if wx_status == 7:
+        c = db()
+        try:
+            c.execute(
+                """UPDATE virtual_pay_orders SET status='refund_review',last_error=?,raw_order_json=?
+                     WHERE order_id=? AND status='created'""",
+                ("微信订单退款失败，需人工核对", json.dumps(wx_order, ensure_ascii=False), row["order_id"]),
+            )
+            c.commit()
+        finally:
+            c.close()
+        return "blocked"
     if wx_status not in (0, 5, 6, 8):
-        return True
+        return "blocked"
     next_status = "refunded" if wx_status in (5, 8) else "failed"
     detail = "微信未支付订单已关闭" if wx_status in (0, 6) else "微信订单已退款"
     c = db()
@@ -2342,7 +2361,7 @@ def _refresh_unpaid_membership_order(row):
             (next_status, detail, json.dumps(wx_order, ensure_ascii=False), row["order_id"]),
         )
         c.commit()
-        return cursor.rowcount == 0
+        return "blocked" if cursor.rowcount == 0 else "retired"
     finally:
         c.close()
 
@@ -2384,8 +2403,12 @@ def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=N
             existing_order = _existing_membership_order(c, username)
         finally:
             c.close()
-        if existing_order and _refresh_unpaid_membership_order(existing_order):
-            return None, "membership_order_exists"
+        if existing_order:
+            refresh_result = _refresh_unpaid_membership_order(existing_order)
+            if refresh_result == "activated":
+                return None, "membership_already_active"
+            if refresh_result == "blocked":
+                return None, "membership_order_exists"
         pricing_tier = ""
         discount_bps = 10000
     else:
@@ -2481,7 +2504,7 @@ def _mark_delivery(order_id, env):
     return True
 
 
-def confirm_virtual_pay_order(username, order_id):
+def confirm_virtual_pay_order(username, order_id, verified_wx_order=None):
     order_id = (order_id or "").strip()
     c = db()
     row = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=? AND username=?", (order_id, username)).fetchone()
@@ -2498,18 +2521,30 @@ def confirm_virtual_pay_order(username, order_id):
     if _virtual_order_is_terminal(row):
         return public_virtual_pay_order(row), None
 
-    result = wechat_vpay.query_order(row["openid"], row["order_id"], row["env"])
-    wx_order = result.get("order") or {}
+    if verified_wx_order is None:
+        result = wechat_vpay.query_order(row["openid"], row["order_id"], row["env"])
+        wx_order = result.get("order") or {}
+    else:
+        wx_order = verified_wx_order
     wx_status = int(wx_order.get("status") or 0)
-    if wx_status in (0, 1):
+    if wx_status == 1:
         c = db()
         c.execute("UPDATE virtual_pay_orders SET last_error='' WHERE order_id=?", (order_id,))
         c.commit(); row = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (order_id,)).fetchone(); c.close()
         return public_virtual_pay_order(row), "pending"
     if wx_status not in (2, 3, 4):
+        next_status = "failed"
+        error_detail = "微信订单状态异常: %s" % wx_status
+        if (row["order_type"] or "points") == MEMBERSHIP_ORDER_TYPE:
+            if wx_status in (5, 8):
+                next_status = "refunded"
+                error_detail = "微信订单已退款"
+            elif wx_status == 7:
+                next_status = "refund_review"
+                error_detail = "微信订单退款失败，需人工核对"
         c = db()
-        c.execute("UPDATE virtual_pay_orders SET status='failed',last_error=? WHERE order_id=?",
-                  (("微信订单状态异常: %s" % wx_status), order_id))
+        c.execute("UPDATE virtual_pay_orders SET status=?,last_error=? WHERE order_id=?",
+                  (next_status, error_detail, order_id))
         c.commit(); row = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (order_id,)).fetchone(); c.close()
         return public_virtual_pay_order(row), "not_paid"
     if wx_order.get("order_id") and wx_order.get("order_id") != order_id:
