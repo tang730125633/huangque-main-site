@@ -80,6 +80,12 @@ REMOTE_MAIN="${REMOTE_MAIN%%[[:space:]]*}"
   || { echo "❌ 本地 main 不是实时 origin/main，拒绝发布"; exit 1; }
 git ls-files --error-unmatch -- "$@" >/dev/null 2>&1 \
   || { echo "❌ 仅允许发布当前 main 中 Git 跟踪的文件"; exit 1; }
+if [ "$EXACT_CONTENT_DOMAINS" = "1" ]; then
+  for target in "$@"; do
+    [ "$target" != "server/content_api.py" ] \
+      || { echo "❌ file-only 模式不能发布 server/content_api.py（会触发 content_domains 整目录同步）"; exit 1; }
+  done
+fi
 
 $SSHC -o BatchMode=yes -o ConnectTimeout=8 "$REMOTE" true 2>/dev/null || {
   echo "❌ 连不上 $REMOTE。设 HQ_REMOTE=user@host（和 HQ_SSH_KEY=私钥路径）再试。"; exit 1; }

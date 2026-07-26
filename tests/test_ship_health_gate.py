@@ -239,6 +239,16 @@ exit 0
         self.assertIn("只允许覆盖已存在", result.stdout)
         self.assertNotIn("上线完成", result.stdout)
 
+    def test_exact_content_domains_refuses_content_api(self):
+        result = self._run_ship(
+            target=["server/content_api.py", "server/content_domains/core.py"],
+            exact_content_domains=True,
+            FAKE_CURL_CODE="200",
+        )
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("不能发布 server/content_api.py", result.stdout)
+        self.assertNotIn("发布源已锁定", result.stdout)
+
     def test_canvas_module_directory_keeps_its_relative_deployment_path(self):
         canvas_files = [
             str(path.relative_to(ROOT))
