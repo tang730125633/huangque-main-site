@@ -218,6 +218,81 @@ class VirtualPaymentTests(unittest.TestCase):
         self.assertEqual(err, "membership_already_active")
         code_to_session.assert_not_called()
 
+    def test_user_cannot_create_a_second_open_membership_order(self):
+        with patch.object(
+            self.auth.wechat_vpay,
+            "code_to_session",
+            return_value={"openid": "openid-buyer", "session_key": "session-key"},
+        ):
+            first, first_err = self.auth.create_virtual_pay_order(
+                "buyer", "membership_experience", "wx-code"
+            )
+
+        self.assertIsNone(first_err)
+        self.assertEqual(first["order"]["status"], "created")
+
+        with patch.object(
+            self.auth.wechat_vpay,
+            "code_to_session",
+            return_value={"openid": "openid-buyer", "session_key": "session-key"},
+        ) as code_to_session:
+            second, second_err = self.auth.create_virtual_pay_order(
+                "buyer", "membership_experience", "wx-code"
+            )
+
+        self.assertIsNone(second)
+        self.assertEqual(second_err, "membership_order_exists")
+        code_to_session.assert_not_called()
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            self.assertEqual(
+                c.execute(
+                    """SELECT COUNT(*) FROM virtual_pay_orders
+                         WHERE username='buyer' AND order_type='membership_experience'"""
+                ).fetchone()[0],
+                1,
+            )
+        finally:
+            c.close()
+
+    def test_expired_paid_membership_order_cannot_be_renewed(self):
+        now = 1800000000
+        c = sqlite3.connect(self.auth.DB)
+        try:
+            c.execute(
+                """INSERT INTO virtual_pay_orders(
+                     order_id,username,openid,package_id,product_id,amount_fen,points,env,status,
+                     created_at,list_amount_fen,pricing_tier,discount_bps,order_type
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    "HQ-OLD-MEMBERSHIP", "buyer", "openid-buyer", "membership_experience",
+                    "hq_member_exp_1y", 49900, 1000, 0, "credited", now - 100,
+                    49900, "", 10000, "membership_experience",
+                ),
+            )
+            c.execute(
+                """UPDATE users SET wx_openid=?,membership_tier='experience',
+                          membership_started_at=?,membership_expires_at=?
+                     WHERE username='buyer'""",
+                ("openid-buyer", now - 200, now - 1),
+            )
+            c.commit()
+        finally:
+            c.close()
+
+        with patch("server.auth_server.time.time", return_value=now), patch.object(
+            self.auth.wechat_vpay,
+            "code_to_session",
+            return_value={"openid": "openid-buyer", "session_key": "session-key"},
+        ) as code_to_session:
+            result, err = self.auth.create_virtual_pay_order(
+                "buyer", "membership_experience", "wx-code"
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(err, "membership_order_exists")
+        code_to_session.assert_not_called()
+
     def test_create_order_reports_existing_wechat_binding_owner(self):
         self.auth.create_user("owner", "secret123", 0)
         c = sqlite3.connect(self.auth.DB)
@@ -382,6 +457,19 @@ class VirtualPaymentTests(unittest.TestCase):
 
         self.assertEqual(response["errcode"], 0)
         self.assertEqual(response["order"]["status"], "refund_review")
+        self.assertEqual(self.auth.get_points_row("buyer")["points"], 1005)
+
+        with patch.object(self.auth.wechat_vpay, "query_order") as query_order:
+            confirmed, confirm_err = self.auth.confirm_virtual_pay_order("buyer", order_id)
+            delivery_response = self.auth.process_virtual_pay_message({
+                "Event": "xpay_goods_deliver_notify",
+                "pay_order_id": "wx-membership-refund",
+            })
+
+        self.assertIsNone(confirm_err)
+        self.assertEqual(confirmed["status"], "refund_review")
+        self.assertEqual(delivery_response["errcode"], 0)
+        query_order.assert_not_called()
         self.assertEqual(self.auth.get_points_row("buyer")["points"], 1005)
         c = sqlite3.connect(self.auth.DB)
         try:

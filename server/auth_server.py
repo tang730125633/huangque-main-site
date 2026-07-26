@@ -2305,6 +2305,15 @@ def public_virtual_pay_custom(membership_tier=""):
     }
 
 
+def _has_existing_membership_order(c, username):
+    return c.execute(
+        """SELECT 1 FROM virtual_pay_orders
+             WHERE username=? AND order_type=? AND status NOT IN ('failed','refunded')
+             LIMIT 1""",
+        (username, MEMBERSHIP_ORDER_TYPE),
+    ).fetchone() is not None
+
+
 def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=None):
     package_id = (package_id or "").strip()
     if not miniprogram_payments_enabled():
@@ -2330,6 +2339,12 @@ def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=N
     if order_type == MEMBERSHIP_ORDER_TYPE:
         if membership["membership_active"]:
             return None, "membership_already_active"
+        c = db()
+        try:
+            if _has_existing_membership_order(c, username):
+                return None, "membership_order_exists"
+        finally:
+            c.close()
         pricing_tier = ""
         discount_bps = 10000
     else:
@@ -2357,10 +2372,21 @@ def create_virtual_pay_order(username, package_id, wx_code, custom_amount_yuan=N
     c = db()
     try:
         c.execute("BEGIN IMMEDIATE")
-        user = c.execute("SELECT username,wx_openid FROM users WHERE username=?", (username,)).fetchone()
+        user = c.execute(
+            """SELECT username,wx_openid,membership_tier,membership_started_at,membership_expires_at
+                 FROM users WHERE username=?""",
+            (username,),
+        ).fetchone()
         if not user:
             c.rollback()
             return None, "user_not_found"
+        if order_type == MEMBERSHIP_ORDER_TYPE:
+            if membership_for_row(user)["membership_active"]:
+                c.rollback()
+                return None, "membership_already_active"
+            if _has_existing_membership_order(c, username):
+                c.rollback()
+                return None, "membership_order_exists"
         owner = c.execute("SELECT username FROM users WHERE wx_openid=?", (openid,)).fetchone()
         if owner and owner["username"] != username:
             c.rollback()
@@ -2428,6 +2454,8 @@ def confirm_virtual_pay_order(username, order_id):
             _mark_delivery(row["order_id"], row["env"])
             c = db(); row = c.execute("SELECT * FROM virtual_pay_orders WHERE order_id=?", (order_id,)).fetchone(); c.close()
         return public_virtual_pay_order(row), None
+    if row["status"] in ("refunded", "refund_review"):
+        return public_virtual_pay_order(row), None
 
     result = wechat_vpay.query_order(row["openid"], row["order_id"], row["env"])
     wx_order = result.get("order") or {}
@@ -2455,6 +2483,9 @@ def confirm_virtual_pay_order(username, order_id):
         if not fresh:
             c.rollback()
             return None, "not_found"
+        if fresh["status"] in ("refunded", "refund_review"):
+            c.rollback()
+            return public_virtual_pay_order(fresh), None
         if fresh["status"] != "credited":
             user = c.execute("SELECT points FROM users WHERE username=?", (username,)).fetchone()
             if not user:
@@ -2639,7 +2670,7 @@ def process_virtual_pay_message(message):
         return {"errcode": 0, "errmsg": "ok", "order": order or {}}
     if event == "xpay_goods_deliver_notify":
         row = _virtual_pay_event_order(message)
-        if row and row["status"] not in ("credited", "refunded"):
+        if row and row["status"] not in ("credited", "refunded", "refund_review"):
             _, err = confirm_virtual_pay_order(row["username"], row["order_id"])
             if err not in (None, "pending"):
                 raise RuntimeError("虚拟支付发货通知处理失败: " + err)
@@ -3105,6 +3136,11 @@ class H(BaseHTTPRequestHandler):
                     return self._send(403, {"detail": "请先开通会员", "code": err})
                 if err == "membership_already_active":
                     return self._send(409, {"detail": "当前会员仍在有效期内", "code": err})
+                if err == "membership_order_exists":
+                    return self._send(409, {
+                        "detail": "已存在体验官订单，暂不支持续费或重复购买",
+                        "code": err,
+                    })
                 if err == "invalid_custom_amount":
                     return self._send(400, {"detail": "自定义充值金额须为1~5000元整数"})
                 if isinstance(err, str) and err.startswith("openid_in_use:"):
