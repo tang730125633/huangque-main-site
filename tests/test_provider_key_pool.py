@@ -4,7 +4,9 @@ import os
 import pathlib
 import sqlite3
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, patch
 
 
@@ -35,6 +37,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
                 "OPENAI_API_KEY": "",
                 "ARK_API_KEY": "",
                 "GEMINI_API_KEY": "",
+                "XAI_API_KEY": "",
             },
             clear=False,
         )
@@ -171,6 +174,51 @@ class ProviderKeyPoolTests(unittest.TestCase):
         self.assertEqual(result["item"]["last4"], "7788")
         self.assertNotIn("secret", str(result))
 
+    def test_xai_keys_rotate_by_least_use_and_can_be_revealed_with_audit(self):
+        first = self.add("xai", "xai-provider-secret-1111")
+        second = provider_keys.add_key(
+            "xai", "线路 2", "xai-provider-secret-2222", "tang1",
+            {"ok": True},
+        )
+        self.assertEqual(provider_keys.claim_candidate("xai")["id"], first["id"])
+        self.assertEqual(provider_keys.claim_candidate("xai")["id"], second["id"])
+
+        revealed = admin_api.reveal_provider_key("tang1", {"id": first["id"]})
+        self.assertEqual(revealed["secret"], "xai-provider-secret-1111")
+        public = admin_api.provider_key_list()
+        self.assertNotIn("secret", str(public))
+        with sqlite3.connect(self.db_path) as conn:
+            action = conn.execute(
+                "SELECT action FROM admin_audit ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0]
+        self.assertEqual(action, "provider_key.reveal")
+
+    def test_concurrent_claims_split_between_two_keys(self):
+        first = self.add("xai", "xai-provider-secret-1111")
+        second = provider_keys.add_key(
+            "xai", "线路 2", "xai-provider-secret-2222", "tang1", {"ok": True}
+        )
+        barrier = threading.Barrier(2)
+
+        def claim():
+            barrier.wait()
+            return provider_keys.claim_candidate("xai")["id"]
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            claimed = list(pool.map(lambda _index: claim(), range(2)))
+        self.assertEqual(set(claimed), {first["id"], second["id"]})
+
+    def test_rename_and_audit_roll_back_together(self):
+        item = self.add("xai", "xai-provider-secret-1111")
+        with patch.object(
+            admin_api, "_admin_audit", side_effect=sqlite3.OperationalError("full")
+        ):
+            with self.assertRaises(sqlite3.OperationalError):
+                admin_api.rename_provider_key(
+                    "tang1", {"id": item["id"], "label": "新线路名"}
+                )
+        self.assertEqual(provider_keys.public_key(item["id"])["label"], "线路 1")
+
     def test_rotation_only_handles_definitive_credential_rejection(self):
         class CredentialRejected(RuntimeError):
             pass
@@ -187,7 +235,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
                 raise CredentialRejected("401")
             return {"video_id": "video-ok"}
 
-        with patch.object(provider_keys, "candidates", return_value=selected), \
+        with patch.object(provider_keys, "claim_candidate", side_effect=selected), \
                 patch.object(provider_keys, "set_health") as health, \
                 patch.object(video, "update_video_asset_phase") as persist:
             result, key = video._create_with_provider_key(
@@ -209,7 +257,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
             {"id": "key-2", "secret": "two"},
         ]
         create = Mock(side_effect=TimeoutError("outcome unknown"))
-        with patch.object(provider_keys, "candidates", return_value=selected), \
+        with patch.object(provider_keys, "claim_candidate", return_value=selected[0]), \
                 patch.object(provider_keys, "set_health"), \
                 patch.object(video, "update_video_asset_phase"):
             with self.assertRaisesRegex(TimeoutError, "outcome unknown"):
@@ -220,7 +268,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
 
     def test_health_metadata_failure_never_changes_paid_result(self):
         selected = [{"id": "key-1", "secret": "one"}]
-        with patch.object(provider_keys, "candidates", return_value=selected), \
+        with patch.object(provider_keys, "claim_candidate", return_value=selected[0]), \
                 patch.object(
                     provider_keys, "set_health", side_effect=RuntimeError("db busy")
                 ), \
@@ -261,6 +309,21 @@ class ProviderKeyPoolTests(unittest.TestCase):
         with patch.object(video, "adb", side_effect=connect):
             item = video.get_resumable_sora_request(9)
         self.assertEqual(item["provider_key_id"], "key-9")
+
+    def test_admin_console_exposes_real_pool_controls_and_auto_refresh(self):
+        html = (ROOT / "site" / "admin" / "index.html").read_text()
+        for text in (
+            "每 30 秒刷新", "果肉视频（xAI 官方）", "查看 20 秒",
+            "data-provider-key-rename", "data-provider-key-replace",
+            "data-provider-key-delete",
+            "按最少使用次数自动轮询",
+        ):
+            self.assertIn(text, html)
+        self.assertIn("setInterval(function()", html)
+        self.assertIn("!state.poolActions", html)
+        self.assertIn("requestPoolEpoch!==state.poolEpoch", html)
+        self.assertIn("state.refreshPending", html)
+        self.assertNotIn("渠道开关 / 配置", html)
 
 
 if __name__ == "__main__":
