@@ -39,6 +39,8 @@ EGRESS_TIMEOUT = int(os.environ.get("EGRESS_TIMEOUT", "210") or 210)
 # 需压在 reaper image 900s 宽限内：如首选 300 + mihomo 210 + heygen 300 = 810s，安全。
 EGRESS_PRIMARY_TIMEOUT = int(os.environ.get("EGRESS_PRIMARY_TIMEOUT", str(EGRESS_TIMEOUT)) or EGRESS_TIMEOUT)
 HEYGEN_TIMEOUT = int(os.environ.get("EGRESS_HEYGEN_TIMEOUT", "300") or 300)
+HEYGEN_DIRECT_PROXY = os.environ.get("HEYGEN_DIRECT_PROXY", "").strip()
+HEYGEN_PROXY_FALLBACK = (EGRESS_FALLBACK or os.environ.get("HTTPS_PROXY") or "http://127.0.0.1:7897").strip()
 
 # 直连 opener：ProxyHandler({}) 显式清空，绕过 content.env 里进程级的 HTTP(S)_PROXY，
 # 保证 heygen 兜底那一档确实直连、不会误走进 mihomo。
@@ -96,6 +98,11 @@ def preferred_proxy(fallback=""):
     if tunnel_alive():
         return EGRESS_PRIMARY
     return (fallback or EGRESS_FALLBACK or "").strip()
+
+
+def heygen_proxy():
+    """HeyGen 直连与后台检测共用的专属出境选择。"""
+    return HEYGEN_DIRECT_PROXY or preferred_proxy(HEYGEN_PROXY_FALLBACK)
 
 
 def _channel_usable(proxy):

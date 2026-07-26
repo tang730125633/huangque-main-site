@@ -267,6 +267,55 @@ class KeyPingTests(unittest.TestCase):
             proxy_url=proxy,
         )
 
+    def test_provider_probe_only_quarantines_definite_401(self):
+        self.assertTrue(admin_api._probe_is_credential_rejection({"http_status": 401}))
+        self.assertFalse(admin_api._probe_is_credential_rejection({"http_status": 403}))
+        self.assertFalse(admin_api._probe_is_credential_rejection({"http_status": 402}))
+
+    def test_provider_key_test_keeps_key_on_ambiguous_403(self):
+        import unittest.mock as mock
+
+        pool = mock.Mock()
+        pool.public_key.return_value = {"provider": "seedance"}
+        pool.candidates.return_value = [{"secret": "seedance-secret"}]
+        with mock.patch.object(admin_api, "provider_keys", pool), \
+                mock.patch.object(admin_api, "probe_provider_secret", return_value={
+                    "ok": False, "http_status": 403, "error": "HTTP 403"
+                }), mock.patch.object(admin_api, "_admin_audit"):
+            result = admin_api.test_provider_key("admin", {"id": "key-1"})
+        self.assertFalse(result["ok"])
+        pool.set_health.assert_not_called()
+
+    def test_provider_key_test_quarantines_definite_401(self):
+        import unittest.mock as mock
+
+        pool = mock.Mock()
+        pool.public_key.return_value = {"provider": "seedance"}
+        pool.candidates.return_value = [{"secret": "seedance-secret"}]
+        with mock.patch.object(admin_api, "provider_keys", pool), \
+                mock.patch.object(admin_api, "probe_provider_secret", return_value={
+                    "ok": False, "http_status": 401, "error": "HTTP 401", "latency_ms": 10
+                }), mock.patch.object(admin_api, "_admin_audit"):
+            result = admin_api.test_provider_key("admin", {"id": "key-1"})
+        self.assertFalse(result["ok"])
+        pool.set_health.assert_called_once_with("key-1", False, 10, "HTTP 401")
+
+    def test_heygen_ping_uses_dedicated_video_egress(self):
+        import unittest.mock as mock
+
+        proxy = "http://heygen-only:10809"
+        with mock.patch.object(admin_api, "_env_value", return_value="test-key"), \
+                mock.patch.object(admin_api.egress, "heygen_proxy", return_value=proxy) as preferred, \
+                mock.patch.object(admin_api, "_ping_upstream", return_value={"ok": True}) as ping:
+            self.assertTrue(admin_api._key_ping_heygen()["ok"])
+        preferred.assert_called_once_with()
+        ping.assert_called_once_with(
+            "GET",
+            "https://api.heygen.com/v2/user/remaining_quota",
+            headers={"X-Api-Key": "test-key"},
+            proxy_url=proxy,
+        )
+
     def test_ping_without_key_configured_fails_fast(self):
         # 不联网：未配置密钥/地址时应直接返回错误而不发请求
         import unittest.mock as mock
