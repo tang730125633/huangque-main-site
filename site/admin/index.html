@@ -72,16 +72,17 @@
     .dot.fail{background:var(--error);box-shadow:0 0 0 3px rgba(224,107,100,.12)}
     .dot.warn{background:var(--warn);box-shadow:0 0 0 3px rgba(217,155,53,.12)}
     .table-wrap{width:100%;overflow-x:auto;border-radius:8px}
-    .channel-table{min-width:1080px}
+    .channel-table{min-width:1240px}
     .channel-table td{vertical-align:top}
     .channel-title{min-width:150px}
     .channel-title b{display:block;font-size:14px}
-    .key-value{display:inline-block;min-width:150px;padding:5px 8px;border:1px solid var(--line);border-radius:5px;background:#111613;word-break:break-all}
+    .channel-category{display:inline-flex;margin-top:6px;color:var(--gold);font-size:11px;font-weight:800}
+    .feature-map{margin-top:7px;color:var(--muted);font-size:12px;line-height:1.65}
+    .key-value{display:inline-block;min-width:150px;padding:5px 8px;border:1px solid var(--line);border-radius:5px;background:#111613;white-space:pre-wrap;word-break:break-all}
     .key-meta{margin-top:5px;color:var(--muted);font-size:12px}
     .pool-editor{margin:0 0 14px;padding:14px;border:1px solid rgba(240,190,85,.35);border-radius:8px;background:rgba(240,190,85,.055)}
     .pool-editor[hidden]{display:none}
     .pool-editor .toolbar{margin:10px 0 0}
-    .group-row td{padding-top:16px;background:rgba(32,40,34,.56);color:var(--gold);font-weight:800}
     .ops-note{padding:10px 12px;border:1px solid rgba(110,168,255,.2);border-radius:7px;background:rgba(110,168,255,.055);color:var(--muted);font-size:12px}
     .pager{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding-top:14px}
     .pager-info{min-width:180px;text-align:center;color:var(--muted);font-size:12px}
@@ -160,21 +161,21 @@
       </section>
       <section class="card span12 module-card" data-module="ops">
         <div class="section-head">
-          <div><h2>渠道与 API 线路</h2><div class="hint">视频渠道支持多 Key 轮询、检测、查看、编辑和停用；其他上游仍由服务器托管。</div></div>
-          <div class="actions"><span class="muted" id="providerKeyState">-</span><button class="primary" id="providerKeyOpen">新增 API</button></div>
+          <div><h2>渠道与 API 线路</h2><div class="hint">按真实 API 提供方统一展示，并标明前端功能对应关系；号池渠道支持多 Key 轮询。</div></div>
+          <div class="actions"><span class="muted" id="providerKeyState">-</span><button class="primary" id="providerKeyOpen">新增号池 Key</button></div>
         </div>
         <div class="pool-editor" id="providerKeyEditor" hidden>
-          <b id="providerKeyEditorTitle">新增视频 API</b>
+          <b id="providerKeyEditorTitle">新增 API Key</b>
           <div class="hint">先做免费鉴权检测，通过后加密保存。更换密钥请先新增新 Key，检测正常后再停用旧 Key。</div>
           <div class="toolbar">
-            <select id="providerKeyProvider"><option value="xai">果肉视频（xAI 官方）</option><option value="sora">OpenAI Sora</option><option value="seedance">火山 Seedance</option><option value="omni">Gemini Omni</option></select>
+            <select id="providerKeyProvider"><option value="xai">xAI API · 果肉视频</option><option value="sora">OpenAI API · Sora 2</option><option value="seedance">火山方舟 API · Seedance</option><option value="omni">Google Gemini API · Omni</option></select>
             <input class="field" id="providerKeyLabel" maxlength="60" autocomplete="off" placeholder="线路名称，例如：线路 2">
             <input class="field" id="providerKeySecret" type="password" maxlength="4096" autocomplete="new-password" aria-label="API 密钥" placeholder="输入 API 密钥">
             <button class="primary" id="providerKeyAdd">检测并新增</button>
             <button id="providerKeyCancel">取消</button>
           </div>
         </div>
-        <div class="ops-note" style="margin-bottom:12px">安全说明：完整 Key 默认隐藏；管理员点击「查看 20 秒」后短暂显示并记入审计。服务器托管的环境变量只允许检测，避免网页误改导致服务整体中断。</div>
+        <div class="ops-note" style="margin-bottom:12px">安全说明：完整 Key 默认隐藏；管理员点击「查看 5 秒」后，按钮会在 5 秒内变成「复制」，随后自动清除。每次查看都会写入审计记录。</div>
         <div id="channelKeyBox"></div>
       </section>
       <section class="card span12 module-card" data-module="features" hidden>
@@ -406,25 +407,42 @@
       };
     });
   }
-  function providerName(provider){
-    return {xai:'果肉视频（xAI 官方）',sora:'OpenAI Sora',seedance:'火山 Seedance',omni:'Gemini Omni'}[provider]||provider;
-  }
   function endpointList(k){
     var eps=k.endpoints||[];
     return eps.length?'<details class="eplist"><summary>接口清单（'+eps.length+'）</summary>'+eps.map(function(e){return '<div class="ep"><code>'+esc(e.m)+' '+esc(e.p)+'</code><div class="muted">'+esc(e.d)+(e.fee?' · 计费':' · 免费')+'</div></div>'}).join('')+'</details>':'';
   }
+  function channelIdentity(k){
+    var features=(k.features||[]).map(function(x){return '<div>'+esc(x)+'</div>'}).join('');
+    return '<div class="channel-title"><b>'+esc(k.name)+'</b><span class="channel-category">'+esc(k.category||'API 服务')+'</span><div class="feature-map">'+features+'</div>'+endpointList(k)+'</div>';
+  }
   function openProviderEditor(provider,label){
     if(provider)el('providerKeyProvider').value=provider;
-    el('providerKeyEditorTitle').textContent=label?'更换 API Key（先新增，成功后再停用旧线路）':'新增视频 API';
+    el('providerKeyEditorTitle').textContent=label?'更换 API Key（先新增，成功后再停用旧线路）':'新增 API Key';
     if(label)el('providerKeyLabel').value=label+'（新）';
     el('providerKeyEditor').hidden=false;
     el('providerKeyLabel').focus();
   }
   function closeProviderEditor(){
     el('providerKeyEditor').hidden=true;
-    el('providerKeyEditorTitle').textContent='新增视频 API';
+    el('providerKeyEditorTitle').textContent='新增 API Key';
     el('providerKeyLabel').value='';
     el('providerKeySecret').value='';
+  }
+  function copySecret(text){
+    text=String(text||'');
+    var fallback=function(){var t=document.createElement('textarea');t.value=text;t.style.position='fixed';t.style.opacity='0';document.body.appendChild(t);t.select();var ok=document.execCommand('copy');t.remove();return ok?Promise.resolve():Promise.reject(new Error('复制失败'))};
+    var work=navigator.clipboard&&window.isSecureContext?navigator.clipboard.writeText(text):fallback();
+    work.then(function(){toast('已复制，5 秒后页面会自动隐藏')}).catch(function(){toast('复制失败，请手动选择 Key')});
+  }
+  function startSecretWindow(btn,node,secret,masked,seconds,done){
+    var left=Math.max(1,Number(seconds)||5);
+    btn._secret=String(secret||'');node.textContent=btn._secret;btn.disabled=false;btn.textContent='复制（'+left+'）';
+    clearInterval(btn._secretTimer);
+    btn._secretTimer=setInterval(function(){
+      left-=1;
+      if(left>0){btn.textContent='复制（'+left+'）';return}
+      clearInterval(btn._secretTimer);btn._secretTimer=null;btn._secret='';node.textContent=masked;btn.textContent='查看 5 秒';done();
+    },1000);
   }
   function beginPoolAction(){
     state.poolActions+=1;state.poolEpoch+=1;
@@ -434,14 +452,12 @@
     };
   }
   function renderChannelConsole(envItems,data){
-    data=data||{};var items=data.items||[],providers=['xai','sora','seedance','omni'],rows=[];
+    data=data||{};var items=data.items||[],rows=[];
     el('providerKeyState').textContent=data.configured?'保险箱已启用':'保险箱未配置';
-    rows.push('<tr class="group-row"><td colspan="5">视频生成号池 · 按最少使用次数自动轮询，异常线路自动跳过</td></tr>');
-    providers.forEach(function(provider){
-      var own=items.filter(function(k){return k.provider===provider});
-      if(!own.length){
-        rows.push('<tr><td class="channel-title"><b>'+esc(providerName(provider))+'</b><span class="muted">尚无线路</span></td><td><span class="pill fail">未配置</span></td><td>-</td><td>-</td><td><button class="mini primary" data-provider-key-open="'+provider+'">新增 API</button></td></tr>');
-        return;
+    (envItems||[]).forEach(function(meta){
+      var provider=meta.pool_provider,own=provider?items.filter(function(k){return k.provider===provider}):[];
+      if(provider&&!own.length){
+        rows.push('<tr><td>'+channelIdentity(meta)+'</td><td><span class="pill fail">未配置</span></td><td><span class="muted">暂无可用线路</span></td><td><span class="pill fail">不可调用</span></td><td><button class="mini primary" data-provider-key-open="'+esc(provider)+'">新增 API</button></td></tr>');
       }
       own.forEach(function(k){
         var healthy=k.health_status==='healthy',unhealthy=k.health_status==='unhealthy';
@@ -449,17 +465,16 @@
         var checked=k.last_checked_at?fmtTime(k.last_checked_at)+(k.last_latency_ms==null?'':' · '+Number(k.last_latency_ms)+'ms'):'尚未检测';
         var current=(k.current?'<span class="pill ok">最近使用</span> ':'')+(k.next_in_rotation?'<span class="pill warn">下次首选</span>':'');
         if(!current)current='<span class="muted">等待轮询</span>';
-        var managed=k.managed?'<button class="mini" data-provider-key-reveal="'+esc(k.id)+'" data-last4="'+esc(k.last4)+'">查看 20 秒</button><button class="mini" data-provider-key-rename="'+esc(k.id)+'" data-label="'+esc(k.label)+'">改名</button><button class="mini" data-provider-key-replace="'+esc(k.provider)+'" data-label="'+esc(k.label)+'">更换 Key</button><button class="mini danger" data-provider-key-delete="'+esc(k.id)+'">删除</button>':'<span class="pill neutral">服务器兼容线路</span>';
-        rows.push('<tr><td class="channel-title"><b>'+esc(providerName(provider))+'</b><span class="muted">'+esc(k.label)+'</span></td><td><code class="key-value" data-key-value="'+esc(k.id)+'">••••'+esc(k.last4)+'</code><div class="key-meta">'+(k.managed?'加密保险箱':'服务器环境变量')+'</div></td><td>'+current+'<div class="key-meta">累计调用 '+Number(k.use_count||0).toLocaleString()+(k.last_used_at?' · '+esc(fmtTime(k.last_used_at)):'')+'</div></td><td>'+health+'<div class="key-meta">'+esc(checked)+'</div>'+(k.last_error?'<div class="key-meta" style="color:var(--error)">'+esc(k.last_error)+'</div>':'')+'</td><td><div class="actions"><button class="mini" data-provider-key-test="'+esc(k.id)+'" data-provider="'+esc(provider)+'">测试</button>'+managed+'<button class="mini" data-provider-key-open="'+esc(provider)+'">新增 API</button></div></td></tr>');
+        var managed=k.managed?'<button class="mini" data-provider-key-reveal="'+esc(k.id)+'" data-last4="'+esc(k.last4)+'">查看 5 秒</button><button class="mini" data-provider-key-replace="'+esc(k.provider)+'" data-label="'+esc(k.label)+'">更换 Key</button><button class="mini danger" data-provider-key-delete="'+esc(k.id)+'">删除</button>':'<span class="pill neutral">服务器兼容线路</span>';
+        rows.push('<tr><td>'+channelIdentity(meta)+'<div class="key-meta">线路：'+esc(k.label)+'</div></td><td><code class="key-value" data-key-value="'+esc(k.id)+'">••••'+esc(k.last4)+'</code><div class="key-meta">'+(k.managed?'加密保险箱':'服务器环境变量')+'</div></td><td>'+current+'<div class="key-meta">累计调用 '+Number(k.use_count||0).toLocaleString()+(k.last_used_at?' · '+esc(fmtTime(k.last_used_at)):'')+'</div></td><td>'+health+'<div class="key-meta">'+esc(checked)+'</div>'+(k.last_error?'<div class="key-meta" style="color:var(--error)">'+esc(k.last_error)+'</div>':'')+'</td><td><div class="actions"><button class="mini" data-provider-key-test="'+esc(k.id)+'" data-provider="'+esc(provider)+'">测试</button>'+managed+'<button class="mini" data-provider-key-open="'+esc(provider)+'">新增 API</button></div></td></tr>');
       });
+      if(provider)return;
+      var src=(meta.sources||[]).map(function(s){return '<code>'+esc(s.env)+'</code>'}).join('、')||'未检测到变量';
+      var test=meta.pingable?'<button class="mini" data-ping-key="'+esc(meta.key)+'">测试</button> <span data-ping-out="key:'+esc(meta.key)+'"></span>':'<span class="muted">需服务器签名检测</span>';
+      var reveal=meta.configured?'<button class="mini" data-server-key-reveal="'+esc(meta.key)+'" data-last4="'+esc(meta.last4)+'">查看 5 秒</button>':'';
+      rows.push('<tr><td>'+channelIdentity(meta)+'</td><td><code class="key-value" data-server-key-value="'+esc(meta.key)+'">'+(meta.last4?'••••'+esc(meta.last4):'未配置')+'</code><div class="key-meta">'+src+'</div></td><td>'+(meta.configured?'<span class="pill ok">服务器环境变量</span>':'<span class="pill fail">缺失</span>')+'</td><td>'+statusPill(meta.configured,meta.configured?'已配置 · 不参与号池轮询':'未配置')+'</td><td><div class="actions">'+test+reveal+'</div></td></tr>');
     });
-    rows.push('<tr class="group-row"><td colspan="5">其他上游 · 服务器托管，只允许查看状态与检测</td></tr>');
-    (envItems||[]).filter(function(k){return !(k.key==='xai'&&items.some(function(x){return x.provider==='xai'}))}).forEach(function(k){
-      var src=(k.sources||[]).map(function(s){return '<code>'+esc(s.env)+'</code>'}).join('、')||'未检测到变量';
-      var test=k.pingable?'<button class="mini" data-ping-key="'+esc(k.key)+'">测试</button> <span data-ping-out="key:'+esc(k.key)+'"></span>':'<span class="muted">需服务器签名检测</span>';
-      rows.push('<tr><td class="channel-title"><b>'+esc(k.name)+'</b>'+endpointList(k)+'</td><td><code class="key-value">'+(k.last4?'••••'+esc(k.last4):'未配置')+'</code><div class="key-meta">'+src+'</div></td><td>'+(k.configured?'<span class="pill ok">服务器运行中</span>':'<span class="pill fail">缺失</span>')+'</td><td>'+statusPill(k.configured,k.configured?'已配置':'未配置')+'</td><td>'+test+'</td></tr>');
-    });
-    el('channelKeyBox').innerHTML='<div class="table-wrap"><table class="channel-table"><thead><tr><th>渠道名称</th><th>API Key（默认脱敏）</th><th>当前线路</th><th>健康与轮询</th><th>操作</th></tr></thead><tbody>'+rows.join('')+'</tbody></table></div>';
+    el('channelKeyBox').innerHTML='<div class="table-wrap"><table class="channel-table"><thead><tr><th>API 提供方 / 前端功能</th><th>API Key（默认脱敏）</th><th>实际使用</th><th>健康 / 轮询</th><th>操作</th></tr></thead><tbody>'+rows.join('')+'</tbody></table></div>';
     bindPing('channelKeyBox','data-ping-key','key','key');
     Array.prototype.forEach.call(el('channelKeyBox').querySelectorAll('[data-provider-key-open]'),function(btn){btn.onclick=function(){openProviderEditor(btn.getAttribute('data-provider-key-open'))}});
     Array.prototype.forEach.call(el('channelKeyBox').querySelectorAll('[data-provider-key-test]'),function(btn){
@@ -473,21 +488,22 @@
     });
     Array.prototype.forEach.call(el('channelKeyBox').querySelectorAll('[data-provider-key-reveal]'),function(btn){
       btn.onclick=function(){
-        if(!confirm('完整 API Key 将在当前页面显示 20 秒，并记录管理员查看审计。继续吗？'))return;
+        if(btn._secret){copySecret(btn._secret);return}
+        if(!confirm('完整 API Key 将在当前页面显示 5 秒，并记录管理员查看审计。继续吗？'))return;
         btn.disabled=true;var done=beginPoolAction();
         api('/api/admin/provider-keys/reveal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:btn.getAttribute('data-provider-key-reveal')})})
-          .then(function(d){var node=el('channelKeyBox').querySelector('[data-key-value="'+btn.getAttribute('data-provider-key-reveal')+'"]');if(!node){btn.disabled=false;done();return}node.textContent=d.secret;setTimeout(function(){node.textContent='••••'+btn.getAttribute('data-last4');d.secret='';btn.disabled=false;done()},Number(d.expires_in||20)*1000)})
+          .then(function(d){var node=el('channelKeyBox').querySelector('[data-key-value="'+btn.getAttribute('data-provider-key-reveal')+'"]');if(!node){btn.disabled=false;done();return}startSecretWindow(btn,node,d.secret,'••••'+btn.getAttribute('data-last4'),d.expires_in,done);d.secret=''})
           .catch(function(e){toast(e.message);btn.disabled=false;done()});
       };
     });
-    Array.prototype.forEach.call(el('channelKeyBox').querySelectorAll('[data-provider-key-rename]'),function(btn){
+    Array.prototype.forEach.call(el('channelKeyBox').querySelectorAll('[data-server-key-reveal]'),function(btn){
       btn.onclick=function(){
-        var label=prompt('线路名称',btn.getAttribute('data-label')||'');if(label===null)return;label=String(label).trim();if(!label){toast('线路名称不能为空');return}
+        if(btn._secret){copySecret(btn._secret);return}
+        if(!confirm('服务器当前使用的完整 Key 将显示 5 秒，并记录管理员查看审计。继续吗？'))return;
         btn.disabled=true;var done=beginPoolAction();
-        api('/api/admin/provider-keys/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:btn.getAttribute('data-provider-key-rename'),label:label})})
-          .then(function(){toast('线路名称已更新')})
-          .catch(function(e){toast(e.message)})
-          .finally(function(){btn.disabled=false;done()});
+        api('/api/admin/server-keys/reveal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:btn.getAttribute('data-server-key-reveal')})})
+          .then(function(d){var node=el('channelKeyBox').querySelector('[data-server-key-value="'+btn.getAttribute('data-server-key-reveal')+'"]');if(!node){btn.disabled=false;done();return}var secret=(d.secrets||[]).map(function(x){return x.env+'='+x.secret}).join('\n');startSecretWindow(btn,node,secret,'••••'+btn.getAttribute('data-last4'),d.expires_in,done);(d.secrets||[]).forEach(function(x){x.secret=''})})
+          .catch(function(e){toast(e.message);btn.disabled=false;done()});
       };
     });
     Array.prototype.forEach.call(el('channelKeyBox').querySelectorAll('[data-provider-key-replace]'),function(btn){
