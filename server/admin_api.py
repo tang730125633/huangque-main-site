@@ -114,6 +114,7 @@ SERVICES = [
 
 # 服务器实际在用的全部外部 API（来源:content.env/runninghub.env 变量盘点 2026-07-09）
 KEY_GROUPS = [
+    {"key": "xai", "name": "果肉视频（xAI 官方）", "env": ["XAI_API_KEY"]},
     {"key": "openai", "name": "黄雀引擎 2 生图（经泽龙中转）", "env": ["OPENAI_API_KEY"]},
     {"key": "gemini", "name": "纳米香蕉生图", "env": ["GEMINI_API_KEY"]},
     {"key": "zelong", "name": "泽龙生图渠道1(小乐AI)", "env": ["ZELONG_KEY"]},
@@ -479,6 +480,11 @@ ENDPOINT_CATALOG = json.loads(r"""
  ]
 }
 """)
+ENDPOINT_CATALOG["xai"] = [
+    {"m": "POST", "p": "/v1/videos/generations", "d": "果肉视频生成", "fee": True},
+    {"m": "POST", "p": "/v1/videos/edits", "d": "果肉视频编辑", "fee": True},
+    {"m": "GET", "p": "/v1/videos/{request_id}", "d": "查询果肉视频状态", "fee": False},
+]
 
 CHANNELS = {
     item["key"]: {
@@ -688,11 +694,14 @@ def key_status():
     items = []
     for item in KEY_GROUPS:
         found = []
+        last4 = ""
         for env_name in item["env"]:
             for src in sources:
                 value = (src["values"].get(env_name) or "").strip()
                 if value:
                     found.append({"env": env_name, "source": src["name"]})
+                    if not last4:
+                        last4 = value[-4:]
                     break
         configured = len(found) == len(item["env"])
         if item["key"] in {"runninghub", "tikhub", "heygen_relay"}:
@@ -704,6 +713,8 @@ def key_status():
                 "configured": configured,
                 "required_env": item["env"],
                 "sources": found,
+                "last4": last4,
+                "management": "server_env",
                 "pingable": item["key"] in KEY_PINGS,
                 "endpoints": ENDPOINT_CATALOG.get(item["key"], []),
             }
@@ -807,6 +818,18 @@ def _key_ping_openai():
         base + "/v1/models",
         headers={"Authorization": "Bearer " + key},
         proxied="api.openai.com" in base,
+    )
+
+
+def _key_ping_xai():
+    key = _env_value(["XAI_API_KEY"])
+    if not key:
+        return {"ok": False, "error": "密钥未配置"}
+    base = (_env_value(["XAI_API_BASE"]) or "https://api.x.ai/v1").rstrip("/")
+    return _ping_upstream(
+        "GET", base + "/models",
+        headers={"Authorization": "Bearer " + key},
+        proxied="api.x.ai" in base,
     )
 
 
@@ -922,6 +945,7 @@ def _key_ping_cos():
 
 # auth=真调上游验证密钥有效; reach=签名类/未知协议渠道,只测连通与延迟
 KEY_PINGS = {
+    "xai": _key_ping_xai,
     "openai": _key_ping_openai,
     "gemini": _key_ping_gemini,
     "zelong": _key_ping_zelong,
@@ -937,6 +961,7 @@ KEY_PINGS = {
 }
 
 PROVIDER_KEY_NAMES = {
+    "xai": "果肉视频",
     "sora": "OpenAI Sora",
     "seedance": "火山 Seedance",
     "omni": "Gemini Omni",
@@ -951,6 +976,13 @@ def probe_provider_secret(provider, secret):
         raise ValueError("不支持的视频渠道")
     if len(secret) < 8:
         raise ValueError("API 密钥格式无效")
+    if provider == "xai":
+        base = (_env_value(["XAI_API_BASE"]) or "https://api.x.ai/v1").rstrip("/")
+        return _ping_upstream(
+            "GET", base + "/models",
+            headers={"Authorization": "Bearer " + secret},
+            proxied="api.x.ai" in base,
+        )
     if provider == "sora":
         base = (_env_value(["OPENAI_BASE"]) or "https://api.openai.com").rstrip("/")
         url = base + "/videos?limit=1" if base.endswith("/v1") else base + "/v1/videos?limit=1"
@@ -994,20 +1026,27 @@ def provider_key_list():
         return {"configured": False, "items": [], "detail": str(exc)[:180]}
 
 
-def _admin_audit(actor, action, target, detail):
+def _admin_audit(actor, action, target, detail, conn=None):
     now = int(time.time())
-    with closing(db()) as conn:
+    values = (
+        str(actor or "admin")[:80],
+        str(action)[:80],
+        str(target)[:120],
+        json.dumps(detail or {}, ensure_ascii=False),
+        now,
+    )
+    if conn is not None:
         conn.execute(
             "INSERT INTO admin_audit(actor, action, target, detail, created_at) VALUES(?,?,?,?,?)",
-            (
-                str(actor or "admin")[:80],
-                str(action)[:80],
-                str(target)[:120],
-                json.dumps(detail or {}, ensure_ascii=False),
-                now,
-            ),
+            values,
         )
-        conn.commit()
+        return
+    with closing(db()) as audit_conn:
+        audit_conn.execute(
+            "INSERT INTO admin_audit(actor, action, target, detail, created_at) VALUES(?,?,?,?,?)",
+            values,
+        )
+        audit_conn.commit()
 
 
 def add_provider_key(actor, body):
@@ -1088,6 +1127,47 @@ def delete_provider_key(actor, body):
         },
     )
     return {"ok": True}
+
+
+def reveal_provider_key(actor, body):
+    if provider_keys is None:
+        raise RuntimeError("密钥池模块不可用")
+    key_id = str(body.get("id") or "").strip()
+    item = provider_keys.public_key(key_id)
+    secret = provider_keys.reveal_key(key_id)
+    _admin_audit(
+        actor,
+        "provider_key.reveal",
+        key_id,
+        {
+            "provider": item["provider"],
+            "label": item["label"],
+            "last4": item["last4"],
+        },
+    )
+    return {"ok": True, "id": key_id, "secret": secret, "expires_in": 20}
+
+
+def rename_provider_key(actor, body):
+    if provider_keys is None:
+        raise RuntimeError("密钥池模块不可用")
+    key_id = str(body.get("id") or "").strip()
+    with closing(db()) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        item = provider_keys.rename_key(key_id, body.get("label"), conn=conn)
+        _admin_audit(
+            actor,
+            "provider_key.rename",
+            key_id,
+            {
+                "provider": item["provider"],
+                "label": item["label"],
+                "last4": item["last4"],
+            },
+            conn=conn,
+        )
+        conn.commit()
+    return {"ok": True, "item": item}
 
 
 def _sanitize_path(raw):
@@ -1649,6 +1729,7 @@ class H(BaseHTTPRequestHandler):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1845,6 +1926,8 @@ class H(BaseHTTPRequestHandler):
             "/api/admin/provider-keys/add",
             "/api/admin/provider-keys/test",
             "/api/admin/provider-keys/delete",
+            "/api/admin/provider-keys/reveal",
+            "/api/admin/provider-keys/rename",
         }:
             actor = user.get("username") or "admin"
             try:
@@ -1853,6 +1936,10 @@ class H(BaseHTTPRequestHandler):
                     result = add_provider_key(actor, body)
                 elif path.endswith("/test"):
                     result = test_provider_key(actor, body)
+                elif path.endswith("/reveal"):
+                    result = reveal_provider_key(actor, body)
+                elif path.endswith("/rename"):
+                    result = rename_provider_key(actor, body)
                 else:
                     result = delete_provider_key(actor, body)
                 return self._send(200, result)

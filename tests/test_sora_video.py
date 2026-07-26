@@ -278,9 +278,9 @@ class SoraHandlerTests(unittest.TestCase):
                     patch.object(video, "_file_url", side_effect=lambda rel: "/api/gen/file/" + rel), \
                     patch.object(video, "update_video_asset_phase", side_effect=heartbeat), \
                     patch.object(video, "get_resumable_sora_request", return_value=None), \
-                    patch.object(video.provider_keys, "candidates", return_value=[
-                        {"id": "key_test", "secret": "secret_test"}
-                    ]), \
+                    patch.object(video.provider_keys, "claim_candidate", return_value={
+                        "id": "key_test", "secret": "secret_test"
+                    }), \
                     patch.object(video.provider_keys, "set_health"), \
                     patch.object(video_openai, "generate", return_value={
                         "video_id": "video_123", "model": "sora-2-pro",

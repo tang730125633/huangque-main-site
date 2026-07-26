@@ -1,4 +1,5 @@
 import io
+import json
 import sys
 import tempfile
 import unittest
@@ -289,6 +290,10 @@ class XiaoleVideoTests(unittest.TestCase):
             "source_video_url": "https://vidgen.x.ai/demo.mp4", "duration": 10,
         }
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"), \
+             patch.object(self.video.provider_keys, "claim_candidate", return_value={
+                 "id": "xai-key", "secret": "secret"
+             }), \
+             patch.object(self.video.provider_keys, "set_health"), \
              patch("content_domains.video_xai.generate", return_value=fake) as generate, \
              patch.object(self.video, "_download_xiaole_video", return_value="video/grok_xai_demo.mp4"), \
              patch.object(self.video, "_extract_first_frame_cover", return_value="video/grok_xai_demo_cover.jpg"), \
@@ -312,6 +317,10 @@ class XiaoleVideoTests(unittest.TestCase):
         from content_domains import video_xai
 
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"), \
+             patch.object(self.video.provider_keys, "claim_candidate", side_effect=[
+                 {"id": "xai-key", "secret": "secret"}, None
+             ]), \
+             patch.object(self.video.provider_keys, "set_health"), \
              patch("content_domains.video_xai.generate",
                    side_effect=video_xai.XaiCreateUnavailableError("xAI quota")), \
              patch("content_domains.video_openrouter.generate") as generate:
@@ -333,6 +342,9 @@ class XiaoleVideoTests(unittest.TestCase):
             "_job_id": 7, "_username": "qilin",
         }
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"), \
+             patch.object(self.video.provider_keys, "candidates", return_value=[
+                 {"id": "xai-key", "secret": "secret"}
+             ]), \
              patch("content_domains.video.get_resumable_grok_request", return_value={
                  "request_id": "rid-existing", "model": "grok-imagine-video", "provider": "xai",
              }), \
@@ -359,9 +371,9 @@ class XiaoleVideoTests(unittest.TestCase):
         }
         with patch("content_domains.video_seedance.generate", return_value=fake) as generate, \
              patch.object(self.video, "get_resumable_grok_request", return_value=None), \
-             patch.object(self.video.provider_keys, "candidates", return_value=[
-                 {"id": "seedance-key", "secret": "secret"}
-             ]), \
+             patch.object(self.video.provider_keys, "claim_candidate", return_value={
+                 "id": "seedance-key", "secret": "secret"
+             }), \
              patch.object(self.video.provider_keys, "set_health"), \
              patch.object(self.video, "update_video_asset_phase"), \
              patch.object(self.video, "_xiaole_request") as old_supplier, \
@@ -437,9 +449,9 @@ class XiaoleVideoTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td, \
              patch("content_domains.video_gemini_omni.generate", return_value=fake) as generate, \
              patch.object(self.video, "get_resumable_grok_request", return_value=None), \
-             patch.object(self.video.provider_keys, "candidates", return_value=[
-                 {"id": "omni-key", "secret": "secret"}
-             ]), \
+             patch.object(self.video.provider_keys, "claim_candidate", return_value={
+                 "id": "omni-key", "secret": "secret"
+             }), \
              patch.object(self.video.provider_keys, "set_health"), \
              patch.object(self.video, "update_video_asset_phase"), \
              patch.object(self.video, "_xiaole_request") as old_supplier, \
@@ -459,19 +471,23 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertEqual(result["provider"], "google_gemini_omni")
 
     def test_unknown_official_submission_is_held_without_refund_or_resubmit(self):
-        with patch.object(self.video, "get_resumable_grok_request", return_value={
-            "request_id": None, "provider": "omni",
-            "submission_unknown": True, "phase": "omni_submitting",
-        }), patch.object(self.video, "update_video_asset_phase") as update:
-            self.assertTrue(
-                self.video.recover_official_video_paid_job(7, "response lost")
-            )
-        update.assert_called_once_with(
-            7, "omni_recovery_required", error="response lost"
-        )
+        for provider in ("xai", "seedance", "omni"):
+            with self.subTest(provider=provider), patch.object(
+                self.video, "get_resumable_grok_request", return_value={
+                    "request_id": None, "provider": provider,
+                    "submission_unknown": True,
+                    "phase": provider + "_submitting",
+                },
+            ), patch.object(self.video, "update_video_asset_phase") as update:
+                self.assertTrue(
+                    self.video.recover_official_video_paid_job(7, "response lost")
+                )
+                update.assert_called_once_with(
+                    7, provider + "_recovery_required", error="response lost"
+                )
 
     def test_unknown_official_submission_hold_never_expires_to_refund(self):
-        for provider in ("seedance", "omni"):
+        for provider in ("xai", "seedance", "omni"):
             with self.subTest(provider=provider), patch.object(
                 self.video,
                 "get_resumable_grok_request",
@@ -506,46 +522,67 @@ class XiaoleVideoTests(unittest.TestCase):
         self.assertEqual(resumed["provider"], "omni")
         self.assertEqual(resumed["request_id"], "v1-file")
 
-    def test_core_unknown_omni_create_never_refunds(self):
+    def test_core_unknown_official_create_never_refunds(self):
         from content_domains import core, video_gemini_omni
 
-        class Connection:
-            def execute(self, *_args):
-                return self
+        for channel, error in (
+            ("omni", video_gemini_omni.GeminiOmniCreateOutcomeUnknown("lost")),
+            ("grok", json.JSONDecodeError("bad response", "x", 0)),
+        ):
+            class Connection:
+                def execute(self, *_args):
+                    return self
 
-            def fetchone(self):
-                return {
-                    "id": 7, "kind": "xiaole_video", "username": "u",
-                    "cost": 90, "payload": '{"channel":"omni"}',
-                    "status": "pending",
-                }
+                def fetchone(self):
+                    return {
+                        "id": 7, "kind": "xiaole_video", "username": "u",
+                        "cost": 90,
+                        "payload": json.dumps({"channel": channel}),
+                        "status": "pending",
+                    }
 
-            def close(self):
-                pass
+                def close(self):
+                    pass
 
-        recover = Mock(return_value=True)
-        terminal = Mock(return_value=True)
-        refund = Mock()
-        with patch.object(self.video, "recover_official_video_paid_job", recover), \
-             patch.object(core, "jdb", return_value=Connection()), \
-             patch.object(core.jobs_store, "claim_running", return_value=True), \
-             patch.object(core, "_start_job_heartbeat", return_value=Mock()), \
-             patch.object(core, "HANDLERS", {
-                 "xiaole_video": Mock(side_effect=video_gemini_omni.GeminiOmniCreateOutcomeUnknown("lost")),
-             }), \
-             patch.object(core, "_domains", return_value=(None, None, self.video)), \
-             patch.object(core, "_set_terminal", terminal), \
-             patch.object(core, "_refund_once", refund), \
-             patch.object(core, "_mark_video_asset_failed"):
-            core.run_job(7)
-        recover.assert_called_once()
-        terminal.assert_not_called()
-        refund.assert_not_called()
+            recover = Mock(return_value=True)
+            terminal = Mock(return_value=True)
+            refund = Mock()
+            with self.subTest(channel=channel), \
+                 patch.object(self.video, "recover_official_video_paid_job", recover), \
+                 patch.object(core, "jdb", return_value=Connection()), \
+                 patch.object(core.jobs_store, "claim_running", return_value=True), \
+                 patch.object(core, "_start_job_heartbeat", return_value=Mock()), \
+                 patch.object(core, "HANDLERS", {
+                     "xiaole_video": Mock(side_effect=error),
+                 }), \
+                 patch.object(core, "_domains", return_value=(None, None, self.video)), \
+                 patch.object(core, "_set_terminal", terminal), \
+                 patch.object(core, "_refund_once", refund), \
+                 patch.object(core, "_mark_video_asset_failed"):
+                core.run_job(7)
+            recover.assert_called_once()
+            terminal.assert_not_called()
+            refund.assert_not_called()
+
+    def test_definite_xai_create_rejection_is_not_held(self):
+        from content_domains import video_xai
+
+        with patch.object(self.video, "recover_official_video_paid_job") as recover:
+            held = self.video.recover_paid_video_error(
+                7, "xiaole_video", {"channel": "grok"},
+                video_xai.XaiCreateRejected("HTTP 400"),
+            )
+        self.assertFalse(held)
+        recover.assert_not_called()
 
     def test_gen_grok_official_edit_uploads_source_and_preserves_contract(self):
         fake = {"request_id": "edit-1", "model": "grok-imagine-video",
                 "source_video_url": "https://vidgen.x.ai/edit.mp4", "duration": 6.2}
         with patch.object(self.video, "GROK_VIDEO_PROVIDER", "xai"), \
+             patch.object(self.video.provider_keys, "claim_candidate", return_value={
+                 "id": "xai-key", "secret": "secret"
+             }), \
+             patch.object(self.video.provider_keys, "set_health"), \
              patch.object(self.video, "_save_data_file", return_value="video/source.mp4"), \
              patch.object(self.video, "public_url", side_effect=[
                  "https://cos.example/source.mp4",

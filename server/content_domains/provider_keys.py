@@ -13,8 +13,9 @@ from pathlib import Path
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
-PROVIDERS = {"sora", "seedance", "omni"}
+PROVIDERS = {"xai", "sora", "seedance", "omni"}
 ENV_KEYS = {
+    "xai": "XAI_API_KEY",
     "sora": "OPENAI_API_KEY",
     "seedance": "ARK_API_KEY",
     "omni": "GEMINI_API_KEY",
@@ -72,14 +73,34 @@ def init_db():
                 last_checked_at INTEGER,
                 last_latency_ms INTEGER,
                 last_error TEXT,
+                use_count INTEGER NOT NULL DEFAULT 0,
+                last_used_at INTEGER,
                 created_by TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             )"""
         )
+        columns = {
+            row["name"] for row in conn.execute(
+                "PRAGMA table_info(provider_api_keys)"
+            ).fetchall()
+        }
+        if "use_count" not in columns:
+            conn.execute(
+                "ALTER TABLE provider_api_keys "
+                "ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if "last_used_at" not in columns:
+            conn.execute(
+                "ALTER TABLE provider_api_keys ADD COLUMN last_used_at INTEGER"
+            )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS provider_api_keys_active "
             "ON provider_api_keys(provider,state,health_status,priority,id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS provider_api_keys_rotation "
+            "ON provider_api_keys(provider,state,health_status,use_count,priority,id)"
         )
         conn.commit()
     _snapshot_legacy_env_keys()
@@ -264,6 +285,8 @@ def _public(row):
         "last_checked_at": row["last_checked_at"],
         "last_latency_ms": row["last_latency_ms"],
         "last_error": row["last_error"] or "",
+        "use_count": int(row["use_count"] or 0),
+        "last_used_at": row["last_used_at"],
         "managed": True,
     }
 
@@ -308,10 +331,37 @@ def list_public():
                     "last_checked_at": None,
                     "last_latency_ms": None,
                     "last_error": "",
+                    "use_count": 0,
+                    "last_used_at": None,
                     "managed": False,
                 }
             )
-    return sorted(items, key=lambda item: (item["provider"], item["priority"], item["id"]))
+    for provider in PROVIDERS:
+        active = [
+            item for item in items
+            if item["provider"] == provider
+            and item["state"] == "active"
+            and item["health_status"] != "unhealthy"
+        ]
+        if not active:
+            continue
+        next_item = min(
+            active,
+            key=lambda item: (item["use_count"], item["priority"], item["id"]),
+        )
+        used = [item for item in active if item.get("last_used_at")]
+        current = max(
+            used,
+            key=lambda item: (item["last_used_at"], item["id"]),
+        ) if used else next_item
+        next_item["next_in_rotation"] = True
+        current["current"] = True
+    return sorted(
+        items,
+        key=lambda item: (
+            item["provider"], item["use_count"], item["priority"], item["id"]
+        ),
+    )
 
 
 def candidates(provider, preferred_id=None):
@@ -335,7 +385,7 @@ def candidates(provider, preferred_id=None):
             rows = conn.execute(
                 """SELECT * FROM provider_api_keys
                    WHERE provider=? AND state='active' AND health_status!='unhealthy'
-                   ORDER BY priority,id""",
+                   ORDER BY use_count,priority,id""",
                 (provider,),
             ).fetchall()
         total = conn.execute(
@@ -344,16 +394,7 @@ def candidates(provider, preferred_id=None):
     if preferred_id and str(preferred_id) != "env" and not rows:
         raise KeyStoreUnavailable("任务绑定的 API 密钥已不存在")
     if rows and not preferred_id:
-        now = time.monotonic()
-        with _RUNTIME_HEALTH_LOCK:
-            expired = [
-                key_id for key_id, until in _RUNTIME_UNHEALTHY_UNTIL.items()
-                if until <= now
-            ]
-            for key_id in expired:
-                _RUNTIME_UNHEALTHY_UNTIL.pop(key_id, None)
-            blocked = set(_RUNTIME_UNHEALTHY_UNTIL)
-        rows = [row for row in rows if row["id"] not in blocked]
+        rows = [row for row in rows if row["id"] not in _runtime_blocked_ids()]
     if rows:
         return [
             {"id": row["id"], "provider": provider, "secret": _decrypt(row)}
@@ -372,6 +413,94 @@ def has_candidate(provider):
         return bool(candidates(provider))
     except KeyStoreUnavailable:
         return False
+
+
+def _runtime_blocked_ids():
+    now = time.monotonic()
+    with _RUNTIME_HEALTH_LOCK:
+        expired = [
+            key_id for key_id, until in _RUNTIME_UNHEALTHY_UNTIL.items()
+            if until <= now
+        ]
+        for key_id in expired:
+            _RUNTIME_UNHEALTHY_UNTIL.pop(key_id, None)
+        return set(_RUNTIME_UNHEALTHY_UNTIL)
+
+
+def claim_candidate(provider):
+    """Atomically claim the least-used healthy key for one upstream attempt."""
+    provider = _provider(provider)
+    init_db()
+    blocked = _runtime_blocked_ids()
+    now = int(time.time())
+    with closing(_connect()) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            """SELECT * FROM provider_api_keys
+               WHERE provider=? AND state='active' AND health_status!='unhealthy'
+               ORDER BY use_count,priority,id""",
+            (provider,),
+        ).fetchall()
+        row = next((item for item in rows if item["id"] not in blocked), None)
+        total = conn.execute(
+            "SELECT COUNT(*) FROM provider_api_keys WHERE provider=?", (provider,)
+        ).fetchone()[0]
+        if not row:
+            conn.rollback()
+            value = str(os.environ.get(ENV_KEYS[provider]) or "").strip()
+            if not total and value:
+                raise KeyStoreUnavailable("视频密钥保险箱未配置，已停止新付费任务")
+            return None
+        secret = _decrypt(row)
+        conn.execute(
+            """UPDATE provider_api_keys
+               SET use_count=use_count+1,last_used_at=? WHERE id=?""",
+            (now, row["id"]),
+        )
+        conn.commit()
+    return {"id": row["id"], "provider": provider, "secret": secret}
+
+
+def reveal_key(key_id):
+    init_db()
+    with closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT * FROM provider_api_keys WHERE id=? AND state!='retired'",
+            (str(key_id),),
+        ).fetchone()
+    if not row:
+        raise ValueError("API 密钥不存在")
+    return _decrypt(row)
+
+
+def rename_key(key_id, label, conn=None):
+    label = str(label or "").strip()[:60]
+    if not label:
+        raise ValueError("线路名称不能为空")
+    now = int(time.time())
+    owns_connection = conn is None
+    conn = conn or _connect()
+    try:
+        cur = conn.execute(
+            """UPDATE provider_api_keys SET label=?,updated_at=?
+               WHERE id=? AND state!='retired'""",
+            (label, now, str(key_id)),
+        )
+        if cur.rowcount != 1:
+            raise ValueError("API 密钥不存在")
+        row = conn.execute(
+            "SELECT * FROM provider_api_keys WHERE id=?", (str(key_id),)
+        ).fetchone()
+        if owns_connection:
+            conn.commit()
+        return _public(row)
+    except Exception:
+        if owns_connection:
+            conn.rollback()
+        raise
+    finally:
+        if owns_connection:
+            conn.close()
 
 
 def set_health(key_id, ok, latency_ms=None, error=""):

@@ -25,6 +25,11 @@ class _Response:
         return self.body
 
 
+class _RawResponse(_Response):
+    def __init__(self, body):
+        self.body = body
+
+
 def _http_error(code, body=b'{}'):
     return urllib.error.HTTPError(
         "https://api.x.ai/v1/videos/rid-1", code, "error", {}, io.BytesIO(body)
@@ -244,6 +249,29 @@ class XaiVideoTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "网络异常"):
                 video_xai.generate("grok-imagine-video", "demo", 5, "16:9", "480p")
         self.assertEqual(opener.open.call_count, 1)
+
+    def test_success_with_invalid_json_is_unknown_and_never_retried(self):
+        for operation in ("generate", "edit"):
+            with self.subTest(operation=operation):
+                opener = Mock()
+                opener.open.return_value = _RawResponse(b"not-json")
+                with patch.object(video_xai, "XAI_API_KEY", "test-key"), \
+                     patch.object(video_xai, "_opener", return_value=opener):
+                    with self.assertRaises(json.JSONDecodeError) as raised:
+                        if operation == "generate":
+                            video_xai.generate(
+                                "grok-imagine-video", "demo", 5,
+                                "16:9", "480p",
+                            )
+                        else:
+                            video_xai.edit(
+                                "grok-imagine-video", "demo",
+                                "https://cos.example/source.mp4", 5,
+                            )
+                self.assertNotIsInstance(
+                    raised.exception, video_xai.XaiCreateUnavailableError
+                )
+                self.assertEqual(opener.open.call_count, 1)
 
     def test_http_402_has_actionable_message(self):
         opener = Mock()
