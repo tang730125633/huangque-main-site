@@ -18,6 +18,11 @@ except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 
     import wechat_virtual_pay as wechat_vpay
 
 try:
+    from . import wechat_subscribe
+except ImportError:
+    import wechat_subscribe
+
+try:
     from . import invites
 except ImportError:  # 生产环境以脚本方式从 /home/ubuntu/auth-service 启动
     import invites
@@ -298,6 +303,36 @@ def init_db():
         created_at INTEGER NOT NULL
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_user_notifications_user ON user_notifications(username,id DESC)")
+    c.execute("""CREATE TABLE IF NOT EXISTS wechat_subscription_grants(
+        username TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        template_id TEXT NOT NULL,
+        openid TEXT NOT NULL,
+        remaining INTEGER NOT NULL DEFAULT 0,
+        last_choice TEXT NOT NULL DEFAULT '',
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(username,event_type,template_id)
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS wechat_subscription_outbox(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        business_id TEXT NOT NULL,
+        job_id INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        template_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        lease_until INTEGER NOT NULL DEFAULT 0,
+        next_retry_at INTEGER NOT NULL DEFAULT 0,
+        payload_json TEXT NOT NULL,
+        last_error TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        sent_at INTEGER,
+        UNIQUE(username,event_type,business_id)
+    )""")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_wechat_sub_ready ON wechat_subscription_outbox(status,next_retry_at,id)")
     c.execute("""CREATE TABLE IF NOT EXISTS membership_recharge_records(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         request_id TEXT NOT NULL UNIQUE,
@@ -467,6 +502,235 @@ def _ensure_all_account_ids(c):
     rows = c.execute("SELECT username FROM users WHERE account_id IS NULL OR account_id=''").fetchall()
     for row in rows:
         c.execute("UPDATE users SET account_id=? WHERE username=?", (_new_unique_account_id(c), row["username"]))
+
+
+VIDEO_SUBSCRIPTION_KINDS = {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}
+def _video_subscription_title(kind):
+    return {
+        "video": "视频作品已完成",
+        "tryon": "视频换装已完成",
+        "xiaole_video": "视频作品已完成",
+        "sora_video": "视频作品已完成",
+        "cinematic": "剧情视频已完成",
+    }.get(str(kind or "").strip().lower(), "视频作品已完成")
+
+
+def subscription_status(username):
+    config = wechat_subscribe.public_config()
+    c = db()
+    try:
+        row = c.execute(
+            """SELECT remaining,last_choice FROM wechat_subscription_grants
+               WHERE username=? AND event_type=? AND template_id=?""",
+            (username, wechat_subscribe.EVENT_TYPE, config["template_id"]),
+        ).fetchone()
+    finally:
+        c.close()
+    event = {
+        "template_id": config["template_id"],
+        "label": config["label"],
+        "remaining": int(row["remaining"] or 0) if row else 0,
+        "last_choice": row["last_choice"] if row else "",
+    }
+    return {
+        "configured": bool(config["configured"]),
+        "events": [{"event_type": wechat_subscribe.EVENT_TYPE, **event}],
+    }
+
+
+def _subscription_openid(wx_code):
+    if not str(wx_code or "").strip():
+        return None, "missing_wx_code"
+    session = wechat_vpay.code_to_session(str(wx_code).strip())
+    openid = str(session.get("openid") or "").strip()
+    if not openid:
+        return None, "missing_openid"
+    return openid, None
+
+
+def record_subscription_choices(username, choices, wx_code):
+    if not wechat_subscribe.configured() or not isinstance(choices, dict):
+        return None, "not_configured" if not wechat_subscribe.configured() else "bad_choices"
+    choice = str(choices.get(wechat_subscribe.EVENT_TYPE) or "").strip().lower()
+    if choice not in {"accept", "reject", "ban", "filter"} or len(choices) != 1:
+        return None, "bad_choices"
+    openid, err = _subscription_openid(wx_code)
+    if err:
+        return None, err
+    now = int(time.time())
+    template_id = wechat_subscribe.template_id()
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        c.execute(
+            """INSERT INTO wechat_subscription_grants(
+                   username,event_type,template_id,openid,remaining,last_choice,updated_at)
+               VALUES(?,?,?,?,?,?,?)
+               ON CONFLICT(username,event_type,template_id) DO UPDATE SET
+                   openid=excluded.openid,
+                   remaining=wechat_subscription_grants.remaining+excluded.remaining,
+                   last_choice=excluded.last_choice,updated_at=excluded.updated_at""",
+            (username, wechat_subscribe.EVENT_TYPE, template_id, openid,
+             1 if choice == "accept" else 0, choice, now),
+        )
+        c.commit()
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+    return {"openid_bound": bool(openid), **subscription_status(username)}, None
+
+
+def enqueue_video_subscription(username, job_id, kind):
+    kind = str(kind or "").strip().lower()
+    if kind not in VIDEO_SUBSCRIPTION_KINDS:
+        return {"status": "ignored"}
+    now = int(time.time())
+    config = wechat_subscribe.public_config()
+    business_id = "job:%s" % str(job_id)
+    payload = {"title": _video_subscription_title(kind), "time": time.strftime("%Y-%m-%d %H:%M", time.localtime(now)), "tip": "视频已生成，可前往资产库查看"}
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        if c.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone() is None:
+            c.rollback()
+            return {"status": "unknown_user"}
+        existing = c.execute(
+            "SELECT status FROM wechat_subscription_outbox WHERE username=? AND event_type=? AND business_id=?",
+            (username, wechat_subscribe.EVENT_TYPE, business_id),
+        ).fetchone()
+        if existing:
+            c.rollback()
+            return {"status": "duplicate", "delivery_status": existing["status"]}
+        status = "pending" if config["configured"] else "dropped"
+        c.execute(
+            """INSERT INTO wechat_subscription_outbox(
+                   username,event_type,business_id,job_id,kind,template_id,status,payload_json,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (username, wechat_subscribe.EVENT_TYPE, business_id, int(job_id), kind, config["template_id"], status,
+             json.dumps(payload, ensure_ascii=False), now, now),
+        )
+        c.commit()
+        return {"status": "accepted", "delivery_status": status}
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+
+def _claim_video_subscription():
+    now = int(time.time())
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        # A crashed sender already consumed one local grant. Restore it before
+        # retrying the durable row; a rare duplicate is safer than a lost notice.
+        stale = c.execute(
+            """SELECT id,username,event_type,template_id
+               FROM wechat_subscription_outbox
+               WHERE status='sending' AND lease_until<?""",
+            (now,),
+        ).fetchall()
+        for item in stale:
+            c.execute(
+                """UPDATE wechat_subscription_grants SET remaining=remaining+1,updated_at=?
+                   WHERE username=? AND event_type=? AND template_id=?""",
+                (now, item["username"], item["event_type"], item["template_id"]),
+            )
+            c.execute(
+                """UPDATE wechat_subscription_outbox
+                   SET status='failed',lease_until=0,next_retry_at=?,
+                       last_error='sender lease expired',updated_at=?
+                   WHERE id=? AND status='sending'""",
+                (now, now, item["id"]),
+            )
+        c.execute("UPDATE wechat_subscription_outbox SET status='pending' WHERE status='failed' AND next_retry_at<=?", (now,))
+        row = c.execute(
+            """SELECT * FROM wechat_subscription_outbox
+               WHERE status='pending' AND next_retry_at<=?
+               ORDER BY id LIMIT 1""", (now,)
+        ).fetchone()
+        if not row:
+            c.commit()
+            return None
+        config = wechat_subscribe.public_config()
+        if not config["configured"]:
+            c.execute("UPDATE wechat_subscription_outbox SET status='dropped',updated_at=? WHERE id=?", (now, row["id"]))
+            c.commit()
+            return None
+        grant = c.execute(
+            """SELECT remaining,openid FROM wechat_subscription_grants
+               WHERE username=? AND event_type=? AND template_id=?""",
+            (row["username"], row["event_type"], row["template_id"]),
+        ).fetchone()
+        if not grant or not grant["openid"] or int(grant["remaining"] or 0) < 1:
+            c.execute("UPDATE wechat_subscription_outbox SET status='dropped',updated_at=? WHERE id=?", (now, row["id"]))
+            c.commit()
+            return None
+        c.execute(
+            """UPDATE wechat_subscription_grants SET remaining=remaining-1,updated_at=?
+               WHERE username=? AND event_type=? AND template_id=? AND remaining>0""",
+            (now, row["username"], row["event_type"], row["template_id"]),
+        )
+        c.execute(
+            """UPDATE wechat_subscription_outbox
+               SET status='sending',lease_until=?,attempts=attempts+1,updated_at=? WHERE id=?""",
+            (now + 60, now, row["id"]),
+        )
+        c.commit()
+        result = {key: row[key] for key in row.keys()}
+        result["openid"] = grant["openid"]
+        result["attempts"] = int(result["attempts"] or 0) + 1
+        return result
+    finally:
+        c.close()
+
+
+def _finish_video_subscription(row, status, error="", restore_grant=False):
+    now = int(time.time())
+    c = db()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        delay = min(3600, 2 ** min(int(row.get("attempts") or 0), 10))
+        cur = c.execute(
+            """UPDATE wechat_subscription_outbox SET status=?,lease_until=0,next_retry_at=?,
+               last_error=?,updated_at=?,sent_at=? WHERE id=? AND status='sending'""",
+            (status, now + delay if status == "failed" else 0, str(error)[:300], now,
+             now if status == "sent" else None, row["id"]),
+        )
+        if cur.rowcount and restore_grant:
+            c.execute(
+                """UPDATE wechat_subscription_grants SET remaining=remaining+1,updated_at=?
+                   WHERE username=? AND event_type=? AND template_id=?""",
+                (now, row["username"], row["event_type"], row["template_id"]),
+            )
+        c.commit()
+    finally:
+        c.close()
+
+
+def _video_subscription_worker():
+    while True:
+        row = _claim_video_subscription()
+        if not row:
+            time.sleep(5)
+            continue
+        try:
+            payload = json.loads(row["payload_json"])
+            wechat_subscribe.send(
+                row["openid"], payload["title"], payload["time"], payload["tip"], row["template_id"],
+            )
+        except Exception as exc:
+            code = str(getattr(exc, "code", "send_failed"))
+            terminal = code in {"40003", "43101"}
+            _finish_video_subscription(
+                row, "dropped" if terminal else "failed", str(exc),
+                restore_grant=not terminal,
+            )
+        else:
+            _finish_video_subscription(row, "sent")
 
 def ensure_account_id(username, c=None):
     own = c is None
@@ -3131,6 +3395,40 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         p = self.path.split("?")[0]
+        if p == "/api/auth/subscription/choices":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            try:
+                result, err = record_subscription_choices(row["username"], d.get("choices"), d.get("wx_code"))
+                if err == "not_configured":
+                    return self._send(503, {"detail": "订阅消息模板未配置"})
+                if err:
+                    return self._send(400, {"detail": err})
+                return self._send(200, {"ok": True, **result})
+            except Exception:
+                return self._send(502, {"detail": "订阅授权保存失败，请稍后重试"})
+        if p == "/api/auth/internal/subscription/video-complete":
+            if not self._require_internal():
+                return
+            d = self._body()
+            if self._bad_json():
+                return self._send(400, {"detail": "请求体不是合法 JSON"})
+            username = str(d.get("username") or "").strip()
+            try:
+                job_id = int(d.get("job_id") or 0)
+            except (TypeError, ValueError):
+                job_id = 0
+            kind = str(d.get("kind") or "").strip()
+            if not username or job_id <= 0 or kind not in VIDEO_SUBSCRIPTION_KINDS:
+                return self._send(400, {"detail": "missing or invalid video event"})
+            result = enqueue_video_subscription(username, job_id, kind)
+            if result["status"] == "unknown_user":
+                return self._send(200, {"ok": True, "status": "ignored"})
+            return self._send(200, {"ok": True, **result})
         reward_prefix = "/api/auth/admin/invite/reward-points/"
         if p.startswith(reward_prefix):
             if not self._require_internal():
@@ -4120,6 +4418,14 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path.split("?")[0]
+        if p == "/api/auth/subscription/status":
+            row = self._user()
+            if not row:
+                return self._send(401, {"detail": "未登录"})
+            try:
+                return self._send(200, {"ok": True, **subscription_status(row["username"])})
+            except Exception:
+                return self._send(500, {"detail": "订阅状态读取失败"})
         if p.startswith("/api/auth/admin/invite/"):
             if not self._require_internal():
                 return
@@ -4548,6 +4854,11 @@ if __name__ == "__main__":
     threading.Thread(
         target=_virtual_pay_reconcile_loop,
         name="virtual-pay-reconcile",
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=_video_subscription_worker,
+        name="video-subscription-outbox",
         daemon=True,
     ).start()
     print("huangque-auth on 127.0.0.1:%d" % PORT)
