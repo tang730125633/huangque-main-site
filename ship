@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ship — 黄雀一键上线：校验 clean main → 部署 → 重启 → 验证
 #
-# 用法：  ./ship "提交说明" 文件1 [文件2 ...]
+# 用法：  ./ship [--exact-content-domains] "提交说明" 文件1 [文件2 ...]
 #   后端：./ship "修获客超时" server/leadgen_api.py
 #   前端：./ship "改采集页文案" site/workbench/collect.html
 #   多个：./ship "联调获客" server/leadgen_api.py site/workbench/collect.html
@@ -25,7 +25,13 @@ case "$SERVICE_WAIT_SECONDS" in
   0) echo "❌ HQ_SERVICE_WAIT_SECONDS 必须大于 0"; exit 1 ;;
 esac
 
-[ $# -lt 2 ] && { echo "用法: ./ship \"提交说明\" 文件1 [文件2 ...]"; exit 1; }
+EXACT_CONTENT_DOMAINS=0
+if [ "${1:-}" = "--exact-content-domains" ]; then
+  EXACT_CONTENT_DOMAINS=1
+  shift
+fi
+
+[ $# -lt 2 ] && { echo "用法: ./ship [--exact-content-domains] \"提交说明\" 文件1 [文件2 ...]"; exit 1; }
 
 # 传文件：有 rsync 就用 rsync；没有（Windows/Git Bash 自带 ssh 但没 rsync）就
 # scp 到 /tmp 再 sudo 安装到位。必须保留原属主 —— 直接 sudo install 会把
@@ -199,12 +205,23 @@ for f in "$@"; do
   if [ "$f" = "scripts/drift_sentinel.py" ]; then
     $SSHC "$REMOTE" "mkdir -p /home/ubuntu/hq-drift" || { echo "  ❌ hq-drift 目录创建失败"; exit 1; }
   fi
+  if [ "$EXACT_CONTENT_DOMAINS" = "1" ]; then
+    case "$f" in
+      server/content_domains/*)
+        remote_file="${dest%/}/$(basename "$f")"
+        $SSHC "$REMOTE" "test -f '$remote_file'" \
+          || { echo "  ❌ file-only 模式只允许覆盖已存在的 content domain：$f"; exit 1; }
+        ;;
+    esac
+  fi
   push_file "$f" "$dest" \
     && echo "  ✓ $f → $dest" || { echo "  ❌ $f 部署失败"; exit 1; }
   add_deployed "$f"
   case "$f" in
     server/content_api.py|server/content_domains/*)
-      if [ "$CONTENT_DOMAINS_SYNCED" = "0" ] && [ -d server/content_domains ]; then
+      if [ "$EXACT_CONTENT_DOMAINS" = "1" ] && [ "$f" != "server/content_api.py" ]; then
+        echo "  ✓ file-only 模式：$f 不触发 content_domains 整目录同步"
+      elif [ "$CONTENT_DOMAINS_SYNCED" = "0" ] && [ -d server/content_domains ]; then
         CONTENT_DOMAIN_FILES="$(git ls-files server/content_domains)" \
           || { echo "  ❌ 无法读取 content_domains Git 文件清单"; exit 1; }
         [ -n "$CONTENT_DOMAIN_FILES" ] \
