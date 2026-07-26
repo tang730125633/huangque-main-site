@@ -7,7 +7,7 @@ import time
 import urllib.error
 
 from .core import (
-    OPENAI_BASE, OPENAI_KEY, OUT_DIR, SIZES, ZELONG2_BASE, ZELONG2_KEY,
+    OPENAI_BASE, OPENAI_KEY, OUT_DIR, SIZES, ZELONG2_BASE, ZELONG2_IMAGE_MODEL, ZELONG2_KEY,
     ZELONG_BASE, ZELONG_KEY, _NOPROXY, _multipart, _post,
     base64, json, public_url, urllib, uuid,
 )
@@ -179,14 +179,29 @@ def validate_image_payload(payload):
         raise ValueError("\u8bf7\u6c42\u4f53\u5fc5\u987b\u662f JSON \u5bf9\u8c61")
     body = dict(payload)
     provider = str(body.get("provider") or "openai").strip().lower()
-    if provider == "zelong2":
-        raise ValueError("泽龙2生图渠道维护中，请使用 Seedream 或果肉生图")
     prompt = (body.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("\u63d0\u793a\u8bcd\u4e0d\u80fd\u4e3a\u7a7a")
     if len(prompt) > IMAGE_PROMPT_MAX_CHARS:
         raise ValueError("\u63d0\u793a\u8bcd\u4e0d\u80fd\u8d85\u8fc7 %d \u5b57" % IMAGE_PROMPT_MAX_CHARS)
     body["prompt"] = prompt
+    try:
+        count = int(body.get("count") or 1)
+    except Exception:
+        raise ValueError("count \u5fc5\u987b\u662f\u6b63\u6574\u6570")
+    body["count"] = max(1, min(IMAGE_MAX_COUNT, count))
+    if provider == "zelong2":
+        if ZELONG2_IMAGE_MODEL != "zelong-cpa-gpt-image-2":
+            raise ValueError("泽龙专用生图渠道未配置")
+        if body.get("image") or body.get("mask"):
+            raise ValueError("泽龙专用生图首期仅支持文生图")
+        if (body.get("ratio") or "1:1") != "1:1":
+            raise ValueError("泽龙专用生图首期仅支持 1:1 方图")
+        if (body.get("quality") or "std") != "std":
+            raise ValueError("泽龙专用生图首期仅支持标准质量")
+        if body["count"] != 1:
+            raise ValueError("泽龙专用生图首期仅支持单张生成")
+        body["ratio"], body["quality"] = "1:1", "std"
     # 魔数校验放在扣点前：base64 能解码但不是图片时，Ark 回的是 HTTP 500
     # 「service encountered an unexpected internal error」，用户会以为是我们的故障，
     # 而且那时点已经扣了（要等失败退点）。在这里拦住，所有引擎都受益且不扣点。
@@ -198,13 +213,6 @@ def validate_image_payload(payload):
         body["mask"], raw = _decode_image_b64(body.get("mask"), "mask")
         if raw and not _image_bytes_look_valid(raw):
             raise ValueError("蒙版格式不支持，请使用 PNG")
-    # count \u5fc5\u987b\u5939\u4f4f\u4e0a\u9650\uff1acost_of \u6309 count \u6263\u70b9\uff0ccount=100 \u5c31\u4f1a\u6263\u7206\u70b9\u3002
-    # \u5404\u5f15\u64ce\u81ea\u5df1\u8fd8\u6709 MAX_N\uff08seedream 2 / gpt 4\uff09\uff0c\u8fd9\u91cc\u53ea\u6321\u79bb\u8c31\u503c\u3002
-    try:
-        count = int(body.get("count") or 1)
-    except Exception:
-        raise ValueError("count \u5fc5\u987b\u662f\u6b63\u6574\u6570")
-    body["count"] = max(1, min(IMAGE_MAX_COUNT, count))
     return body
 
 def _gen_image_xiaole(prompt, ratio, quality, count, img):
@@ -564,8 +572,6 @@ def gen_image(payload):
     mask  = _clean_b64(payload.get("mask"))   # 蒙版(透明处=要重绘的区域) → 局部修改
     quality = "high" if (payload.get("quality") or "hd") == "hd" else "medium"  # 标准=medium/高清=high
     provider = (payload.get("provider") or "openai").strip().lower()
-    if provider == "zelong2":
-        raise ValueError("泽龙2生图渠道维护中，请使用 Seedream 或果肉生图")
     if provider == "xiaole":
         count = 1 if mask else max(1, min(2, int(payload.get("count") or 1)))
         return _gen_image_xiaole(prompt, ratio, quality, count, img)
@@ -592,7 +598,14 @@ def gen_image(payload):
         base, key, proxy = OPENAI_BASE, OPENAI_KEY, True
     cap = 2 if provider in {"zelong", "zelong2"} else 4      # 中转出图慢，数量上限低
     count = 1 if mask else max(1, min(cap, int(payload.get("count") or 1)))  # 局部修改只出 1 张
-    if img:
+    if provider == "zelong2":
+        body = json.dumps({"model": ZELONG2_IMAGE_MODEL, "prompt": prompt,
+                           "image_size": "1K", "aspect_ratio": "1:1", "n": 1,
+                           "response_format": "b64_json"}).encode()
+        d = _dispatch_gpt(provider, "/v1/images/generations", body, "application/json",
+                          base, key, proxy, streaming=True)
+        mode = "text2img"
+    elif img:
         files = [("image", "in.png", base64.b64decode(img))]
         if mask:
             files.append(("mask", "mask.png", base64.b64decode(mask)))
