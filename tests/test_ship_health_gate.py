@@ -174,6 +174,24 @@ exit 0
         self.assertIn("未进入 active", result.stdout)
         self.assertNotIn("上线完成", result.stdout)
 
+    def test_systemd_dropin_targets_owning_service(self):
+        rsync_log = Path(self.tmp.name) / "rsync.log"
+        ssh_log = Path(self.tmp.name) / "ssh.log"
+        result = self._run_ship(
+            target="deploy/systemd/huangque-content.service.d/points.conf",
+            FAKE_CURL_CODE="200",
+            FAKE_RSYNC_LOG=str(rsync_log),
+            FAKE_SSH_LOG=str(ssh_log),
+        )
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "fake-server:/etc/systemd/system/huangque-content.service.d/",
+            rsync_log.read_text(encoding="utf-8"),
+        )
+        ssh = ssh_log.read_text(encoding="utf-8")
+        self.assertRegex(ssh, r"sudo systemctl restart\s+huangque-content(?:\s|$)")
+        self.assertNotIn("huangque-content.service.d.service", ssh)
+
     def test_content_domain_change_syncs_and_verifies_all_tracked_domains(self):
         domain_files = subprocess.check_output(
             ["git", "ls-files", "server/content_domains"],
