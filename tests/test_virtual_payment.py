@@ -63,6 +63,18 @@ class VirtualPaymentTests(unittest.TestCase):
             expected,
         )
 
+    def test_default_virtual_goods_match_current_wechat_published_prices(self):
+        os.environ.pop("WX_VIRTUAL_PAY_PRODUCTS_JSON", None)
+        products = self.auth.wechat_vpay.products()
+        self.assertEqual(
+            [(item["product_id"], item["price_fen"]) for item in products[:3]],
+            [
+                ("hq_points_1000", 9900),
+                ("hq_points_2000", 19900),
+                ("hq_points_5000", 49900),
+            ],
+        )
+
     def test_miniprogram_payment_switch_defaults_on_and_accepts_off_values(self):
         os.environ.pop("HQ_MINIPROGRAM_PAYMENTS_ENABLED", None)
         self.assertTrue(self.auth.miniprogram_payments_enabled())
@@ -372,7 +384,11 @@ class VirtualPaymentTests(unittest.TestCase):
                     self.assertEqual(result["order"]["points"], product["points"])
                     self.assertEqual(result["order"]["pricing_tier"], tier)
                     sign_data = json.loads(result["payment"]["signData"])
-                    self.assertEqual(sign_data["goodsPrice"], expected_fen)
+                    self.assertEqual(sign_data["goodsPrice"], product["price_fen"])
+                    if expected_fen == product["price_fen"]:
+                        self.assertNotIn("activitySellingPrice", sign_data)
+                    else:
+                        self.assertEqual(sign_data["activitySellingPrice"], expected_fen)
 
     def test_secure_message_push_round_trip_and_signature_check(self):
         message = {

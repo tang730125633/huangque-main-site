@@ -31,7 +31,7 @@ DEFAULT_PRODUCTS = (
         "id": "points_1000",
         "product_id": "hq_points_1000",
         "title": "1000 点",
-        "price_fen": 10000,
+        "price_fen": 9900,
         "points": 1000,
         "recommended": False,
     },
@@ -39,7 +39,7 @@ DEFAULT_PRODUCTS = (
         "id": "points_2000",
         "product_id": "hq_points_2000",
         "title": "2000 点",
-        "price_fen": 20000,
+        "price_fen": 19900,
         "points": 2000,
         "recommended": False,
     },
@@ -47,7 +47,7 @@ DEFAULT_PRODUCTS = (
         "id": "points_5000",
         "product_id": "hq_points_5000",
         "title": "5000 点",
-        "price_fen": 50000,
+        "price_fen": 49900,
         "points": 5000,
         "recommended": True,
     },
@@ -419,16 +419,21 @@ def access_token():
 def payment_params(product, order_id, session_key, purchase=None):
     env = pay_env()
     purchase = purchase or purchase_for(product)
+    quantity = int(purchase["quantity"])
+    goods_price = int(product["price_fen"])
+    selling_price = int(purchase["amount_fen"]) // quantity
     sign_obj = {
         "offerId": offer_id(),
-        "buyQuantity": int(purchase["quantity"]),
+        "buyQuantity": quantity,
         "env": env,
         "currencyType": "CNY",
         "productId": product["product_id"],
-        "goodsPrice": int(product["price_fen"]),
+        "goodsPrice": goods_price,
         "outTradeNo": order_id,
         "attach": "points:" + str(purchase["points"]),
     }
+    if selling_price < goods_price:
+        sign_obj["activitySellingPrice"] = selling_price
     sign_data = compact_json(sign_obj)
     return {
         "mode": "short_series_goods",
