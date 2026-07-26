@@ -16,7 +16,7 @@
     site/workbench/banana.html  data-engine="gpt"         → 黄雀引擎 2
                                 data-engine="seedream"    → 黄雀引擎 1 标准 / 黄雀引擎 1 Pro
                                 data-engine="xiaole"      → 果肉生图
-                                data-engine="zelong2"     → 泽龙2生图
+                                data-engine="zelong2"     → 泽龙专用生图
                                 data-engine="banana"      → 纳米香蕉 2 / 纳米香蕉 Pro
     各功能页的 <title>          → AI 配音 / 编导 · 文案脚本 / 内容爬取 / 获客
 
@@ -69,7 +69,7 @@ def _image_engine(payload):
         banana   → 走 /api/gen/banana，发 model=nb2|pro
 
     zelong（不带 2）是老号池，界面上已经没有入口了，但库里还有存量任务 —— 单独留一个名字，
-    别和「泽龙2生图」混成一个。
+    别和「泽龙专用生图」混成一个。
     """
     model = str(payload.get("model") or "").strip().lower()
     if model == "nb2":
@@ -84,7 +84,7 @@ def _image_engine(payload):
     if provider == "xiaole":
         return "果肉生图"
     if provider == "zelong2":
-        return "泽龙2生图"
+        return "泽龙专用生图"
     if provider == "zelong":
         return "泽龙"          # 老号池，界面已无入口，存量任务还在
     return ""

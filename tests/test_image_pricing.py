@@ -79,8 +79,14 @@ class ZelongDedicatedChannelTests(unittest.TestCase):
         self.assertTrue(captured["streaming"])
         self.assertEqual(result["count"], 1)
 
-    def test_zelong2_card_is_hidden(self):
-        self.assertRegex(BANANA, r'data-engine="zelong2"[^>]*aria-hidden="true"[^>]*display:none')
+    def test_zelong2_card_is_visible_and_scoped(self):
+        tag = re.search(r'<div data-engine="zelong2"[^>]*>', BANANA).group(0)
+        self.assertNotIn("aria-hidden", tag)
+        self.assertNotIn("display:none", tag)
+        self.assertIn("泽龙专用生图", BANANA)
+        self.assertIn("当前支持纯文生图、1K 方图、标准清晰度、单张生成", BANANA)
+        self.assertIn("zelong2:1", BANANA)
+        self.assertIn("var usesRef=!!refImg && engine!=='zelong2'", BANANA)
         self.assertNotIn("ZELONG2_KEY", BANANA)
 
 
