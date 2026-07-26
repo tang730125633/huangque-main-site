@@ -8,7 +8,12 @@ import urllib.parse
 import uuid
 from contextlib import closing
 
-from . import short_drama_assembly, short_drama_production, short_drama_voice
+from . import (
+    short_drama_assembly,
+    short_drama_production,
+    short_drama_video,
+    short_drama_voice,
+)
 
 
 STAGES = (
@@ -727,6 +732,7 @@ def init_db(db_factory):
         conn.close()
     short_drama_production.init_db(db_factory)
     short_drama_voice.init_db(db_factory)
+    short_drama_video.init_db(db_factory)
     short_drama_assembly.init_db(db_factory)
 
 
@@ -1649,6 +1655,7 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/project",
         "/api/gen/short-drama/production",
         "/api/gen/short-drama/voice",
+        "/api/gen/short-drama/video",
         "/api/gen/short-drama/assembly",
         "/api/gen/short-drama/planning-job",
         "/api/gen/short-drama/planning-quote",
@@ -1661,11 +1668,18 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/asset-quote",
         "/api/gen/short-drama/voice-quote",
         "/api/gen/short-drama/generate-voice",
+        "/api/gen/short-drama/generate-video",
         "/api/gen/short-drama/save-voice-timeline",
         "/api/gen/short-drama/set-voice-shot-lock",
-        "/api/gen/short-drama/select-asset",
         "/api/gen/short-drama/select-voice-version",
+        "/api/gen/short-drama/video-quote",
+        "/api/gen/short-drama/select-asset",
+        "/api/gen/short-drama/select-video",
         "/api/gen/short-drama/confirm-production-stage",
+        "/api/gen/short-drama/use-native-audio",
+        "/api/gen/short-drama/confirm-video-stage",
+        "/api/gen/short-drama/render-final",
+        "/api/gen/short-drama/confirm-assembly",
     },
     "PUT": {"/api/gen/short-drama/project"},
 }
@@ -2050,6 +2064,13 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                 handler, db_factory, verify_token, canvas_access_resolver,
                 *generation_dependencies,
             )
+        elif method == "POST" and path.endswith("/generate-video"):
+            if not generation_dependencies:
+                raise ValueError("短剧视频生成暂不可用")
+            short_drama_video.handle_generate(
+                handler, db_factory, username, access,
+                generation_dependencies[1], generation_dependencies[2],
+            )
         elif method == "POST" and path.endswith("/voice-quote"):
             body = _request_object(handler)
             owner = _project_username_for_access(
@@ -2066,6 +2087,12 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                     quote["points_left"] >= quote["total_cost"]
                 )
             handler._send(200, quote)
+        elif method == "POST" and path.endswith("/video-quote"):
+            if not callable(cost_of):
+                raise ValueError("短剧视频报价暂不可用")
+            handler._send(200, short_drama_video.prepare_quote(
+                db_factory, username, _request_object(handler), cost_of, access
+            ))
         elif method == "POST" and path.endswith("/select-asset"):
             body = _request_object(handler)
             if mutation_lock is not None:
@@ -2124,6 +2151,18 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                     db_factory, owner, body
                 )
             handler._send(200, locked)
+        elif method == "POST" and path.endswith("/select-video"):
+            body = _request_object(handler)
+            if mutation_lock is not None:
+                with mutation_lock:
+                    selected = short_drama_video.select_version(
+                        db_factory, username, body, access
+                    )
+            else:
+                selected = short_drama_video.select_version(
+                    db_factory, username, body, access
+                )
+            handler._send(200, selected)
         elif method == "POST" and path.endswith("/confirm-production-stage"):
             body = _request_object(handler)
             if mutation_lock is not None:
@@ -2133,6 +2172,57 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                     )
             else:
                 confirmed = short_drama_production.confirm_stage(db_factory, username, body, access)
+            handler._send(200, confirmed)
+        elif method == "POST" and path.endswith("/use-native-audio"):
+            body = _request_object(handler)
+            _validate_project_request(body, {"project_id", "revision"})
+            owner = _project_username_for_access(
+                db_factory, username, body["project_id"], access, write=True
+            )
+            if mutation_lock is not None:
+                with mutation_lock:
+                    confirmed = short_drama_voice.confirm_native_audio(
+                        db_factory, owner, body["project_id"], body["revision"]
+                    )
+            else:
+                confirmed = short_drama_voice.confirm_native_audio(
+                    db_factory, owner, body["project_id"], body["revision"]
+                )
+            handler._send(200, confirmed)
+        elif method == "POST" and path.endswith("/confirm-video-stage"):
+            body = _request_object(handler)
+            if mutation_lock is not None:
+                with mutation_lock:
+                    confirmed = short_drama_video.confirm_stage(
+                        db_factory, username, body, access
+                    )
+            else:
+                confirmed = short_drama_video.confirm_stage(
+                    db_factory, username, body, access
+                )
+            handler._send(200, confirmed)
+        elif method == "POST" and path.endswith("/render-final"):
+            body = _request_object(handler)
+            _validate_project_request(
+                body, {"project_id", "revision", "idempotency_key"}
+            )
+            owner = _project_username_for_access(
+                db_factory, username, body["project_id"], access, write=True
+            )
+            rendered = short_drama_assembly.start_final_render(
+                db_factory, owner, body["project_id"], body["revision"],
+                body["idempotency_key"],
+            )
+            handler._send(200, rendered)
+        elif method == "POST" and path.endswith("/confirm-assembly"):
+            body = _request_object(handler)
+            _validate_project_request(body, {"project_id", "revision"})
+            owner = _project_username_for_access(
+                db_factory, username, body["project_id"], access, write=True
+            )
+            confirmed = short_drama_assembly.confirm_completed(
+                db_factory, owner, body["project_id"], body["revision"]
+            )
             handler._send(200, confirmed)
         elif method == "GET" and path.endswith("/projects"):
             page, page_size = _project_pagination_from_query(handler)
@@ -2156,6 +2246,17 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             handler._send(
                 200,
                 short_drama_voice.get_voice_workspace(
+                    db_factory, owner, project_id
+                ),
+            )
+        elif method == "GET" and path.endswith("/video"):
+            project_id = _planning_project_id_from_query(handler)
+            owner = _project_username_for_access(
+                db_factory, username, project_id, access, write=False
+            )
+            handler._send(
+                200,
+                short_drama_video.get_workspace(
                     db_factory, owner, project_id
                 ),
             )

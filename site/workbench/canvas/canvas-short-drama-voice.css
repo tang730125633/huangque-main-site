@@ -178,6 +178,12 @@
 .nc-sdv-inspector dl div { display: flex; justify-content: space-between; }
 .nc-sdv-inspector button:disabled,
 .nc-sdv-line button:disabled { cursor: not-allowed; opacity: .48; }
+.nc-sdv-inspector button.is-primary {
+  border-color: var(--sdv-accent);
+  color: #fff;
+  background: var(--sdv-accent);
+  text-align: center;
+}
 @media (max-width: 980px) {
   .nc-short-drama-voice {
     grid-template-columns: 220px minmax(0, 1fr);

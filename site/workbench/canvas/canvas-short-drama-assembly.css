@@ -15,6 +15,8 @@
 .nc-sda-status{display:inline-flex;margin-top:10px;padding:3px 8px;border-radius:999px;background:#fff1dc;color:#8a5b17;font-size:11px}
 .nc-sda-shot.is-ready .nc-sda-status{background:#e4f4eb;color:#286447}
 .nc-sda-preview{display:flex;flex-direction:column}
+.nc-sda-preview>video{display:block;width:100%;max-height:520px;margin-top:18px;border-radius:16px;background:#101722}
+.nc-sda-media-meta{margin-top:8px;color:#687384;font-size:12px}
 .nc-sda-player-placeholder{display:flex;flex:1;min-height:340px;margin-top:18px;padding:32px;align-items:center;justify-content:center;flex-direction:column;border:1px dashed #c4cad3;border-radius:16px;background:linear-gradient(145deg,#1d2735,#101722);color:#fff;text-align:center}
 .nc-sda-player-placeholder span{max-width:360px;margin-top:8px;color:#aeb8c8;font-size:13px}
 .nc-sda-play-icon{display:grid;width:58px;height:58px;margin-bottom:18px;place-items:center;border:1px solid rgba(255,255,255,.3);border-radius:50%;background:rgba(255,255,255,.08)}
@@ -34,6 +36,9 @@
 .nc-sda-actions button,.nc-sda-state button{padding:10px 12px;border:1px solid #ccd2da;border-radius:9px;background:#fff;color:#283344}
 .nc-sda-actions button.is-primary{border-color:#b08a39;background:#b08a39;color:#fff}
 .nc-sda-actions button:disabled{cursor:not-allowed;opacity:.48}
+.nc-sda-progress{display:grid;gap:8px;margin:18px 0;padding:13px;border-radius:12px;background:#eef2ff;color:#4338ca}
+.nc-sda-progress>div{display:flex;justify-content:space-between}.nc-sda-progress progress{width:100%;accent-color:#6d5dfc}
+.nc-sda-error{padding:11px;border-radius:10px;background:#fff0ee;color:#a33b32;font-size:12px}
 .nc-sda-contract-note{margin:13px 0 0;color:#7a8492;font-size:11px;line-height:1.55}
 .nc-sda-state{display:flex;min-height:420px;padding:30px;align-items:center;justify-content:center;flex-direction:column;gap:8px;color:#687384;text-align:center}
 .nc-sda-state strong{color:#243044;font-size:18px}

@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS short_drama_voice_shots (
   shot_id TEXT PRIMARY KEY REFERENCES short_drama_shots(id) ON DELETE CASCADE,
   project_id TEXT NOT NULL REFERENCES short_drama_projects(id) ON DELETE CASCADE,
   locked INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),
+  audio_mode TEXT NOT NULL DEFAULT 'voiceover'
+    CHECK (audio_mode IN ('voiceover','native')),
   timeline_revision INTEGER NOT NULL DEFAULT 1 CHECK (timeline_revision >= 1),
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -422,6 +424,17 @@ def init_db(db_factory):
     try:
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(_SCHEMA)
+        columns = {
+            row[1] for row in conn.execute(
+                "PRAGMA table_info(short_drama_voice_shots)"
+            )
+        }
+        if "audio_mode" not in columns:
+            conn.execute(
+                "ALTER TABLE short_drama_voice_shots ADD COLUMN audio_mode "
+                "TEXT NOT NULL DEFAULT 'voiceover' "
+                "CHECK (audio_mode IN ('voiceover','native'))"
+            )
         _replace_voice_triggers(conn)
         conn.commit()
     finally:
@@ -1622,8 +1635,9 @@ def build_voice_snapshot(conn, project):
             "sort_order": shot["sort_order"],
             "duration": shot["duration"],
             "locked": bool(state["locked"]),
+            "audio_mode": state["audio_mode"],
             "timeline_revision": state["timeline_revision"],
-            "status": shot_status,
+            "status": "native" if state["audio_mode"] == "native" else shot_status,
             "lines": shot_lines,
         })
         current_shot = shots[-1]
@@ -1632,10 +1646,10 @@ def build_voice_snapshot(conn, project):
             suggested = suggestions[line["id"]]
             line["suggested_start_ms"] = suggested[0]
             line["suggested_end_ms"] = suggested[1]
-        blockers = (
-            [] if not shot_lines else _timeline_blockers(current_shot)
-        )
-        blockers.extend(_operational_blockers(conn, current_shot))
+        blockers = []
+        if current_shot["audio_mode"] != "native":
+            blockers = [] if not shot_lines else _timeline_blockers(current_shot)
+            blockers.extend(_operational_blockers(conn, current_shot))
         if current_shot["locked"] and blockers:
             conn.execute(
                 "UPDATE short_drama_voice_shots SET locked=0,updated_at=? "
@@ -1645,7 +1659,7 @@ def build_voice_snapshot(conn, project):
             current_shot["locked"] = False
         current_shot["lock_blockers"] = blockers
         current_shot["lockable"] = not blockers
-        if current_shot["locked"]:
+        if current_shot["locked"] and current_shot["audio_mode"] != "native":
             current_shot["status"] = "done"
     handoff_blockers = []
     for shot in shots:
@@ -1976,6 +1990,58 @@ def get_voice_workspace(db_factory, username, project_id):
         snapshot = build_voice_snapshot(conn, project)
         conn.commit()
         return snapshot
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def confirm_native_audio(db_factory, username, project_id, revision):
+    """Use each generated clip's own soundtrack for the first production slice."""
+    if not isinstance(project_id, str) or not project_id.strip():
+        raise ValueError("短剧项目不能为空")
+    if type(revision) is not int or revision < 1:
+        raise ValueError("短剧项目版本无效")
+    conn = db_factory()
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("BEGIN IMMEDIATE")
+        project = conn.execute(
+            "SELECT * FROM short_drama_projects "
+            "WHERE id=? AND username=? AND deleted=0",
+            (project_id.strip(), username),
+        ).fetchone()
+        if not project:
+            raise LookupError("短剧项目不存在")
+        if int(project["revision"]) != revision:
+            from .short_drama import RevisionConflict
+            raise RevisionConflict("项目已更新，请刷新后重试")
+        if project["stage"] != "voice_review":
+            raise ValueError("短剧项目尚未进入配音阶段")
+        ensure_voice_workspace(conn, project["id"], allowed_stages={"voice_review"})
+        now = int(time.time())
+        conn.execute(
+            "UPDATE short_drama_voice_shots "
+            "SET locked=1,audio_mode='native',updated_at=? WHERE project_id=?",
+            (now, project["id"]),
+        )
+        updated = conn.execute(
+            "UPDATE short_drama_projects "
+            "SET stage='video_review',revision=revision+1,updated_at=? "
+            "WHERE id=? AND revision=? AND stage='voice_review'",
+            (now, project["id"], revision),
+        )
+        if updated.rowcount != 1:
+            from .short_drama import RevisionConflict
+            raise RevisionConflict("项目已更新，请刷新后重试")
+        project = conn.execute(
+            "SELECT * FROM short_drama_projects WHERE id=?", (project["id"],)
+        ).fetchone()
+        result = build_voice_snapshot(conn, project)
+        conn.commit()
+        return result
     except Exception:
         conn.rollback()
         raise

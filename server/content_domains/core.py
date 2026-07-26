@@ -181,7 +181,7 @@ def _user_owns_output_file(username, rel):
         row = c.execute("""SELECT 1 FROM audio_voices
             WHERE username=? AND scope='personal' AND preview_file=? LIMIT 1""",
             (username, rel)).fetchone()
-        return bool(row)
+        return bool(row) or _short_drama_domain().short_drama_assembly.user_owns_output_file(jdb, username, rel)
 
 # ---- 能力定义：成本(点数) + 处理函数 ----
 def _env_positive_int(name, default):

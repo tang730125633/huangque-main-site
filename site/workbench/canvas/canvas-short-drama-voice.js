@@ -12,6 +12,7 @@
   var SAVE_TIMELINE_PATH='/api/gen/short-drama/save-voice-timeline';
   var SET_LOCK_PATH='/api/gen/short-drama/set-voice-shot-lock';
   var CONFIRM_PATH='/api/gen/short-drama/confirm';
+  var NATIVE_AUDIO_PATH='/api/gen/short-drama/use-native-audio';
   var POLL_INTERVAL=1800;
 
   function text(value){ return String(value==null?'':value); }
@@ -131,6 +132,7 @@
       case 'silent': return '静音';
       case 'ready': return '待核对';
       case 'done': return '已完成';
+      case 'native': return '使用视频原声';
       case 'failed': return '失败';
       default: return '状态未知';
     }
@@ -331,7 +333,11 @@
         escapeHtml(blockerText(state.handoff_blockers))+'</p></div>':'')+
       (state.conflictFrozen?'<p class="nc-sdv-error">检测到版本冲突，请刷新工作区后继续。</p>':'')+
       (state.operationError?'<p class="nc-sdv-error" role="alert">'+escapeHtml(state.operationError)+'</p>':'')+
-      '<p>时间轴保存、锁定和阶段推进均不扣点；服务端校验结果为准。</p>'+
+      '<button type="button" class="is-primary" data-action="use-native-audio"'+
+      ((state.canEdit&&state.stage==='voice_review'&&!state.operationBusy&&
+        !state.timelineDirty&&!state.conflictFrozen)?'':' disabled')+
+      '>先用视频原声继续</button>'+
+      '<p>配音、原声切换和阶段推进均以服务端校验结果为准。</p>'+
       '</aside></div>';
   }
   function createWorkspace(options){
@@ -821,6 +827,36 @@
         }).catch(mutationFailure);
       }).finally(function(){ generationBusy=false;render(); });
     }
+    function useNativeAudio(){
+      try{ requireWritable(); }catch(error){ return Promise.reject(error); }
+      if(!snapshot||snapshot.stage!=='voice_review'||generationBusy){
+        return Promise.reject(new Error('当前不能确认视频原声'));
+      }
+      if(Object.keys(timelineDrafts).length){
+        return Promise.reject(new Error('请先保存或放弃字幕时间轴修改'));
+      }
+      var body={
+        project_id:snapshot.project_id,
+        revision:number(snapshot.revision,0)
+      };
+      var confirmation=typeof options.confirm==='function'?
+        options.confirm(0,{kind:'native-audio'},body):true;
+      return Promise.resolve(confirmation).then(function(confirmed){
+        if(confirmed===false) return null;
+        generationBusy=true;ui.operationError='';render();
+        return callJson(NATIVE_AUDIO_PATH,{method:'POST',body:body}).then(function(result){
+          return acceptSnapshot(result,null,true);
+        }).catch(function(error){
+          if(!ambiguousFreeWrite(error)) return mutationFailure(error);
+          return reload(true).then(function(){
+            if(snapshot&&snapshot.stage==='video_review'){
+              return acceptSnapshot(snapshot,null,true);
+            }
+            throw error;
+          }).catch(mutationFailure);
+        }).finally(function(){ generationBusy=false;render(); });
+      });
+    }
     function selectVersion(lineId,version){
       var line=findLine(lineId);
       try{ requireVoiceWritable(line?[line]:[]); }catch(error){ return Promise.reject(error); }
@@ -967,6 +1003,7 @@
             node.getAttribute('data-lock')==='true'
           );
           else if(action==='confirm-voice-stage') task=confirmVoiceStage();
+          else if(action==='use-native-audio') task=useNativeAudio();
           else if(action==='restore-auto-timeline'){
             try{ restoreAutoTimeline(); }catch(error){ ui.operationError=error.message;render(); }
           }
@@ -1111,7 +1148,8 @@
       generateAll:generateAll,selectVersion:selectVersion,preview:preview,
       updateTimelineLine:updateTimelineLine,restoreAutoTimeline:restoreAutoTimeline,
       saveTimeline:saveTimeline,setShotLock:setShotLock,
-      confirmVoiceStage:confirmVoiceStage,playShot:playShot,
+      confirmVoiceStage:confirmVoiceStage,useNativeAudio:useNativeAudio,
+      playShot:playShot,
       pauseShot:pauseShotPlayback,replayShot:replayShot,
       getState:function(){
         return clone(normalizeState(viewSnapshot(),voices,{
