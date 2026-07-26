@@ -671,7 +671,13 @@
     }
     function confirmProduction(cost,quote,body){
       var points=Math.max(0,Number(cost)||0),message;
-      if(Array.isArray(body)||(quote&&quote.kind==='still-batch')){
+      if(quote&&quote.kind==='voice'){
+        var lineCount=Number(quote.line_count)||(Array.isArray(body)?body.length:1);
+        message='生成 '+lineCount+' 条配音将消耗 '+points+
+          ' 点'+(typeof quote.points_left==='number'?'（账户余额 '+quote.points_left+' 点）':'')+
+          (typeof quote.budget_left==='number'?'，项目可用预算 '+quote.budget_left+' 点':'')+
+          '。每条台词独立生成，失败会自动退款；确认提交吗？';
+      }else if(Array.isArray(body)||(quote&&quote.kind==='still-batch')){
         var shotCount=Array.isArray(body)?body.length:Number(quote&&quote.shot_count)||0;
         message='批量生成 '+shotCount+' 个镜头的关键帧（每个镜头 2 张候选）将消耗 '+points+' 点，确认提交吗？';
       }else{

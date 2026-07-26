@@ -46,6 +46,7 @@
   border-color: var(--sdv-accent);
   background: color-mix(in srgb, var(--sdv-accent) 8%, var(--sdv-paper));
 }
+.nc-sdv-shot.is-locked { border-color: #12b76a; }
 .nc-sdv-line,
 .nc-sdv-empty,
 .nc-sdv-timeline {
@@ -56,6 +57,9 @@
   background: var(--sdv-paper);
 }
 .nc-sdv-line header { display: flex; justify-content: space-between; gap: 12px; }
+.nc-sdv-line.has-conflict { border-color: #f04438; box-shadow: 0 0 0 2px #fee4e2; }
+.nc-sdv-line.is-playing { border-color: var(--sdv-accent); box-shadow: 0 0 0 2px #ede9fe; }
+.nc-sdv-status { color: var(--sdv-muted); font-size: 13px; }
 .nc-sdv-line-type {
   padding: 2px 7px;
   border-radius: 999px;
@@ -73,7 +77,104 @@
   color: inherit;
   background: #fafafa;
 }
-.nc-sdv-params { display: flex; gap: 12px; margin: 10px 0; color: var(--sdv-muted); }
+.nc-sdv-subtitle-controls {
+  display: grid;
+  grid-template-columns: minmax(120px, .8fr) minmax(110px, 1fr) minmax(110px, 1fr);
+  gap: 10px;
+  margin-top: 10px;
+  color: var(--sdv-muted);
+}
+.nc-sdv-subtitle-controls label { margin: 0; }
+.nc-sdv-subtitle-controls input[type="number"] {
+  width: 100%;
+  min-height: 38px;
+  padding: 7px 9px;
+  border: 1px solid var(--sdv-line);
+  border-radius: 8px;
+  background: #fff;
+}
+.nc-sdv-time-note { margin: 8px 0 0; color: var(--sdv-muted); font-size: 12px; }
+.nc-sdv-params {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.5fr) repeat(3, minmax(74px, .6fr));
+  gap: 10px;
+  margin: 10px 0;
+  color: var(--sdv-muted);
+}
+.nc-sdv-params label { margin: 0; }
+.nc-sdv-params select,
+.nc-sdv-params input {
+  width: 100%;
+  min-height: 38px;
+  padding: 7px 9px;
+  border: 1px solid var(--sdv-line);
+  border-radius: 8px;
+  background: #fff;
+}
+.nc-sdv-actions { display: flex; gap: 8px; }
+.nc-sdv-actions button { text-align: center; cursor: pointer; }
+.nc-sdv-line audio { width: 100%; margin-top: 8px; }
+.nc-sdv-timeline header,
+.nc-sdv-timeline-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.nc-sdv-timeline-track {
+  position: relative;
+  height: 68px;
+  margin: 14px 0;
+  border-radius: 10px;
+  overflow: hidden;
+  background:
+    repeating-linear-gradient(90deg, #f2f4f7 0, #f2f4f7 calc(10% - 1px), #d0d5dd 10%);
+}
+.nc-sdv-timeline-block {
+  position: absolute;
+  top: 14px;
+  height: 40px;
+  min-width: 28px;
+  overflow: hidden;
+  padding: 7px 9px;
+  border: 1px solid #c4b5fd;
+  border-radius: 8px;
+  color: #4c1d95;
+  background: #ede9fe;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: grab;
+}
+.nc-sdv-timeline-block > i[data-resize-edge] {
+  position: absolute;
+  inset-block: 0;
+  width: 7px;
+  cursor: ew-resize;
+}
+.nc-sdv-timeline-block > i[data-resize-edge="start"] { left: 0; }
+.nc-sdv-timeline-block > i[data-resize-edge="end"] { right: 0; }
+.nc-sdv-timeline-block.has-conflict { border-color: #f04438; color: #b42318; background: #fee4e2; }
+.nc-sdv-timeline-block.is-playing { border-color: #7f56d9; color: #fff; background: #7f56d9; }
+.nc-sdv-playhead {
+  position: absolute;
+  z-index: 3;
+  inset: 0 auto 0 0;
+  width: 2px;
+  background: #f04438;
+  pointer-events: none;
+}
+.nc-sdv-timeline-actions { justify-content: flex-start; }
+.nc-sdv-timeline-actions button { width: auto; margin: 0; }
+.nc-sdv-blockers {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid #fecdca;
+  border-radius: 10px;
+  color: #b42318;
+  background: #fffbfa;
+}
+.nc-sdv-blockers p { margin: 6px 0 0; }
+.nc-sdv-error { color: #b42318; }
+.nc-sdv-history { margin-top: 10px; color: var(--sdv-muted); }
+.nc-sdv-history ul { display: grid; gap: 8px; padding: 8px 0 0; list-style: none; }
+.nc-sdv-history li { display: flex; align-items: center; gap: 8px; }
+.nc-sdv-history li span { flex: 1; }
+.nc-sdv-history li button { width: auto; margin: 0; padding: 6px 9px; }
 .nc-sdv-inspector dl div { display: flex; justify-content: space-between; }
 .nc-sdv-inspector button:disabled,
 .nc-sdv-line button:disabled { cursor: not-allowed; opacity: .48; }
@@ -89,4 +190,6 @@
   .nc-sdv-rail,
   .nc-sdv-editor,
   .nc-sdv-inspector { overflow: visible; border: 0; border-bottom: 1px solid var(--sdv-line); }
+  .nc-sdv-params { grid-template-columns: 1fr 1fr; }
+  .nc-sdv-subtitle-controls { grid-template-columns: 1fr; }
 }

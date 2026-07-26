@@ -926,6 +926,8 @@ def _pending_job_scanner():
             _recover_pending_jobs(_PENDING_RECOVERY_LIMIT)
             _short_drama_domain().short_drama_production.retry_attempt_refunds(
                 jdb, _domains()[1], JOB_QUEUE_MAX)
+            _short_drama_domain().short_drama_voice.retry_voice_attempt_refunds(
+                jdb, _domains()[1], JOB_QUEUE_MAX)
             jobs_store.retry_failed_refunds(jdb, _refund_once, JOB_QUEUE_MAX)
         except Exception:
             pass
@@ -952,6 +954,8 @@ def start_job_workers():
     _recover_pending_jobs(_PENDING_RECOVERY_LIMIT)
     try:
         _short_drama_domain().short_drama_production.retry_attempt_refunds(
+            jdb, _domains()[1], JOB_QUEUE_MAX)
+        _short_drama_domain().short_drama_voice.retry_voice_attempt_refunds(
             jdb, _domains()[1], JOB_QUEUE_MAX)
     except Exception:
         pass
@@ -1217,9 +1221,9 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
-        if _short_drama_domain().dispatch_http(self, "POST", jdb, verify,
-                getattr(points_domain, "cost_of", None), mutation_lock=_submission_lock,
-                canvas_access_resolver=_short_drama_canvas_access): return
+        if _short_drama_domain().dispatch_http(self, "POST", jdb, verify, getattr(points_domain, "cost_of", None), mutation_lock=_submission_lock, canvas_access_resolver=_short_drama_canvas_access,
+                points_getter=getattr(points_domain, "get_points", None), voice_validator=lambda username, voice_key:
+                audio_domain.resolve_audio_provider_voice(username, voice_key), generation_dependencies=(audio_domain, points_domain, globals())): return
         if p in {"/api/gen/digital-ip/diagnose", "/api/gen/digital-ip/guide"}:
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})

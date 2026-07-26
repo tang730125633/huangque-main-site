@@ -841,6 +841,35 @@ VOICE_MAP = {
 }
 SPEED_MAP = {"slow": 0.88, "normal": 1.0, "fast": 1.12, "偏慢": 0.88, "正常": 1.0, "偏快": 1.12}
 
+
+def _audio_duration_ms(file_name):
+    """Return authoritative ffprobe duration, or None for metadata recovery."""
+    try:
+        path = _out_path(file_name)
+        proc = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+            ],
+            check=True, timeout=30, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True,
+        )
+        duration_ms = int(round(float(proc.stdout.strip()) * 1000))
+        return duration_ms if duration_ms > 0 else None
+    except (OSError, subprocess.SubprocessError, TypeError, ValueError):
+        return None
+
+
+def _audio_result(file_name, voice_key, speed, pitch, volume, text):
+    return {
+        "type": "audio", "file": file_name,
+        "url": public_url(file_name, "audio/mpeg"),
+        "voice": voice_key, "speed": speed, "pitch": pitch, "volume": volume,
+        "text": text, "prompt": text,
+        "duration_ms": _audio_duration_ms(file_name),
+    }
+
+
 def _cosy_voice_for(provider_voice):
     """把库里的 provider_voice 翻成 CosyVoice 能用的 voice：
       * 4 个公共音色的豆包码(S_xxx) → 对应预置(longwan...)
@@ -889,8 +918,7 @@ def gen_audio(payload):
                                    volume=max(0, min(100, 50 + volume // 2)))
         fn = "audio/aud_%d.mp3" % int(time.time() * 1000)   # 非敏感命名 → 可走 COS 公开直链
         _out_path(fn).write_bytes(cv_audio)
-        return {"type": "audio", "file": fn, "url": public_url(fn, "audio/mpeg"), "voice": voice_key,
-                "speed": speed, "pitch": pitch, "volume": volume, "text": text, "prompt": text}
+        return _audio_result(fn, voice_key, speed, pitch, volume, text)
 
     if voice_key.startswith(("S_", "vip_")) or str(voice).startswith(("S_", "vip_", "cosyvoice-")):
         raise ValueError("声音服务暂不可用，请稍后重试")
@@ -903,7 +931,6 @@ def gen_audio(payload):
     data = _post_bytes("/v1/audio/speech", body, "application/json")
     fn = "audio/aud_%d.mp3" % int(time.time() * 1000)
     _out_path(fn).write_bytes(data)
-    return {"type": "audio", "file": fn, "url": public_url(fn, "audio/mpeg"), "voice": voice_key,
-            "speed": speed, "pitch": pitch, "volume": volume, "text": text, "prompt": text}
+    return _audio_result(fn, voice_key, speed, pitch, volume, text)
 
 HANDLERS = {"audio": gen_audio}
