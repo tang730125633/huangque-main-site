@@ -473,36 +473,6 @@ def reveal_key(key_id):
     return _decrypt(row)
 
 
-def rename_key(key_id, label, conn=None):
-    label = str(label or "").strip()[:60]
-    if not label:
-        raise ValueError("线路名称不能为空")
-    now = int(time.time())
-    owns_connection = conn is None
-    conn = conn or _connect()
-    try:
-        cur = conn.execute(
-            """UPDATE provider_api_keys SET label=?,updated_at=?
-               WHERE id=? AND state!='retired'""",
-            (label, now, str(key_id)),
-        )
-        if cur.rowcount != 1:
-            raise ValueError("API 密钥不存在")
-        row = conn.execute(
-            "SELECT * FROM provider_api_keys WHERE id=?", (str(key_id),)
-        ).fetchone()
-        if owns_connection:
-            conn.commit()
-        return _public(row)
-    except Exception:
-        if owns_connection:
-            conn.rollback()
-        raise
-    finally:
-        if owns_connection:
-            conn.close()
-
-
 def set_health(key_id, ok, latency_ms=None, error=""):
     if str(key_id) == "env":
         return None

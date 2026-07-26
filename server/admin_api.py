@@ -113,22 +113,58 @@ SERVICES = [
     },
 ]
 
-# 服务器实际在用的全部外部 API（来源:content.env/runninghub.env 变量盘点 2026-07-09）
+# 服务器实际在用的全部外部 API。
+# 名称按真实 API 提供方统一；features 负责映射用户在前端看到的功能名。
 KEY_GROUPS = [
-    {"key": "xai", "name": "果肉视频（xAI 官方）", "env": ["XAI_API_KEY"]},
-    {"key": "openai", "name": "黄雀引擎 2 生图（经泽龙中转）", "env": ["OPENAI_API_KEY"]},
-    {"key": "gemini", "name": "纳米香蕉生图", "env": ["GEMINI_API_KEY"]},
-    {"key": "zelong", "name": "泽龙生图渠道1(小乐AI)", "env": ["ZELONG_KEY"]},
-    {"key": "zelong2", "name": "泽龙生图渠道2(zelong.vip)", "env": ["ZELONG2_KEY"]},
-    {"key": "heygen", "name": "HeyGen 数字人视频(直连)", "env": ["HEYGEN_API_KEY"]},
-    {"key": "heygen_relay", "name": "HeyGen 中转(泽龙 relay)", "env": ["HEYGEN_RELAY_TOKEN"]},
-    {"key": "xiaolevideo", "name": "小乐视频生成", "env": ["XIAOLEVIDEO_API_KEY"]},
-    {"key": "runninghub", "name": "RunningHub 换装/动作模仿(线路一)", "env": ["RUNNINGHUB_API_KEY", "RUNNINGHUB_KEY"]},
-    {"key": "wavespeed", "name": "WaveSpeed 换装(线路二)", "env": ["WAVESPEED_API_KEY"]},
-    {"key": "cosyvoice", "name": "阿里百炼 CosyVoice 配音/声音克隆", "env": ["DASHSCOPE_API_KEY"]},
-    {"key": "tikhub", "name": "TikHub 抖音数据", "env": ["TIKHUB_KEY", "TIKHUB_API_KEY"]},
-    {"key": "cos", "name": "腾讯云 COS 存储", "env": ["COS_SECRET_ID", "COS_SECRET_KEY", "COS_REGION", "COS_BUCKET"]},
+    {"key": "xai", "name": "xAI API", "category": "视频生成",
+     "features": ["视频模块 → 果肉视频生成"], "env_features": [],
+     "pool_features": ["视频模块 → 果肉视频生成"],
+     "pool_base_env": ["XAI_API_BASE"], "pool_base_default": "https://api.x.ai/v1",
+     "env": ["XAI_API_KEY"], "pool_provider": "xai"},
+    {"key": "openai", "name": "OpenAI API", "category": "图片生成 / 视频生成",
+     "features": ["图片生成 → 黄雀引擎 2", "视频模块 → Sora 2"],
+     "env_features": ["图片生成 → 黄雀引擎 2"], "pool_features": ["视频模块 → Sora 2"],
+     "env_base_env": ["OPENAI_OFFICIAL_BASE"], "env_base_default": "https://api.openai.com",
+     "pool_base_env": ["OPENAI_BASE"], "pool_base_default": "https://api.openai.com",
+     "env": ["OPENAI_API_KEY"], "pool_provider": "sora"},
+    {"key": "gemini", "name": "Google Gemini API", "category": "图片生成 / 视频生成",
+     "features": ["图片生成 → 纳米香蕉", "视频模块 → Omni 视频"],
+     "env_features": ["图片生成 → 纳米香蕉"], "pool_features": ["视频模块 → Omni 视频"],
+     "env_base_env": ["GEMINI_OFFICIAL_BASE"], "env_base_default": "https://generativelanguage.googleapis.com",
+     "pool_base_env": ["GEMINI_OMNI_BASE", "GEMINI_BASE"], "pool_base_default": "https://generativelanguage.googleapis.com",
+     "env": ["GEMINI_API_KEY"], "pool_provider": "omni"},
+    {"key": "seedance", "name": "火山方舟 API", "category": "图片生成 / 视频生成",
+     "features": ["图片生成 → 黄雀引擎 1（Seedream）", "视频模块 → Seedance 视频"],
+     "env_features": ["图片生成 → 黄雀引擎 1（Seedream）"], "pool_features": ["视频模块 → Seedance 视频"],
+     "env_base_env": ["ARK_BASE"], "env_base_default": "https://ark.cn-beijing.volces.com/api/v3",
+     "pool_base_env": ["ARK_BASE"], "pool_base_default": "https://ark.cn-beijing.volces.com/api/v3",
+     "env": ["ARK_API_KEY"], "pool_provider": "seedance"},
+    {"key": "zelong", "name": "小乐 AI API", "category": "图片生成",
+     "features": ["图片生成 → 黄雀引擎 2 备用线路"], "env": ["ZELONG_KEY"]},
+    {"key": "zelong2", "name": "泽龙 API", "category": "图片生成",
+     "features": ["图片生成 → 泽龙 2 备用线路（维护中）"], "env": ["ZELONG2_KEY"]},
+    {"key": "heygen", "name": "HeyGen API", "category": "数字化 IP / 视频生成",
+     "features": ["视频模块 → 电影化身", "视频模块 → 数字人口播", "我的资产 → 数字人形象"],
+     "env_base_env": ["HEYGEN_API_BASE"], "env_base_default": "https://api.heygen.com/v3",
+     "env": ["HEYGEN_API_KEY"]},
+    {"key": "heygen_relay", "name": "HeyGen 中转 API", "category": "数字化 IP / 视频生成",
+     "features": ["电影化身 / 数字人口播 → 中转与下载兜底"],
+     "env_base_env": ["HEYGEN_RELAY_BASE"], "env_base_default": "",
+     "env": ["HEYGEN_RELAY_TOKEN"]},
+    {"key": "xiaolevideo", "name": "小乐视频 API", "category": "图片生成 / 视频生成",
+     "features": ["图片生成 → 果肉生图", "视频模块 → 历史兼容线路"], "env": ["XIAOLEVIDEO_API_KEY"]},
+    {"key": "runninghub", "name": "RunningHub API", "category": "视频处理",
+     "features": ["视频模块 → 换装换背景 · 线路一"], "env": ["RUNNINGHUB_API_KEY", "RUNNINGHUB_KEY"]},
+    {"key": "wavespeed", "name": "WaveSpeed API", "category": "视频处理",
+     "features": ["视频模块 → 换装换背景 · 线路二", "视频模块 → Seedance AI 超清"], "env": ["WAVESPEED_API_KEY"]},
+    {"key": "cosyvoice", "name": "阿里百炼 API", "category": "音频生成",
+     "features": ["AI 配音 → 公共音色", "AI 配音 → 声音克隆"], "env": ["DASHSCOPE_API_KEY"]},
+    {"key": "tikhub", "name": "TikHub API", "category": "内容采集 / 获客",
+     "features": ["内容采集 → 抖音 / 小红书 / 视频号", "获客分析 → 评论与线索"], "env": ["TIKHUB_KEY", "TIKHUB_API_KEY"]},
+    {"key": "cos", "name": "腾讯云 COS", "category": "基础设施",
+     "features": ["我的资产 → 生成结果存储", "视频模块 → 参考素材与成片存储"], "env": ["COS_SECRET_ID", "COS_SECRET_KEY", "COS_REGION", "COS_BUCKET"]},
 ]
+KEY_GROUP_MAP = {item["key"]: item for item in KEY_GROUPS}
 
 # 各渠道实际在用的业务接口清单(2026-07-09 全代码扫描产出,展示用;fee=调用计费)
 ENDPOINT_CATALOG = json.loads(r"""
@@ -695,20 +731,52 @@ def env_sources():
     return sources
 
 
+def _key_group_values(item, sources=None):
+    sources = env_sources() if sources is None else sources
+    found = []
+    for env_name in item["env"]:
+        for src in sources:
+            value = (src["values"].get(env_name) or "").strip()
+            if value:
+                found.append(
+                    {"env": env_name, "source": src["name"], "value": value}
+                )
+                break
+    return found
+
+
+def _key_group_base_host(item, prefix, sources):
+    value = ""
+    for env_name in item.get(prefix + "_base_env", []):
+        for src in sources:
+            value = (src["values"].get(env_name) or "").strip()
+            if value:
+                break
+        if value:
+            break
+    value = value or str(item.get(prefix + "_base_default") or "").strip()
+    if not value:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(
+            value if "://" in value else "https://" + value
+        )
+        host = parsed.hostname or ""
+        return host + ((":" + str(parsed.port)) if parsed.port else "")
+    except (TypeError, ValueError):
+        return ""
+
+
 def key_status():
     sources = env_sources()
     items = []
     for item in KEY_GROUPS:
-        found = []
-        last4 = ""
-        for env_name in item["env"]:
-            for src in sources:
-                value = (src["values"].get(env_name) or "").strip()
-                if value:
-                    found.append({"env": env_name, "source": src["name"]})
-                    if not last4:
-                        last4 = value[-4:]
-                    break
+        values = _key_group_values(item, sources)
+        found = [
+            {"env": value["env"], "source": value["source"]}
+            for value in values
+        ]
+        last4 = values[0]["value"][-4:] if values else ""
         configured = len(found) == len(item["env"])
         if item["key"] in {"runninghub", "tikhub", "heygen_relay"}:
             configured = bool(found)
@@ -716,6 +784,13 @@ def key_status():
             {
                 "key": item["key"],
                 "name": item["name"],
+                "category": item["category"],
+                "features": list(item["features"]),
+                "env_features": list(item.get("env_features", item["features"])),
+                "pool_features": list(item.get("pool_features", [])),
+                "env_base_host": _key_group_base_host(item, "env", sources),
+                "pool_base_host": _key_group_base_host(item, "pool", sources),
+                "pool_provider": item.get("pool_provider"),
                 "configured": configured,
                 "required_env": item["env"],
                 "sources": found,
@@ -890,6 +965,13 @@ def _key_ping_gemini():
     )
 
 
+def _key_ping_seedance():
+    key = _env_value(["ARK_API_KEY"])
+    if not key:
+        return {"ok": False, "error": "密钥未配置", "mode": "auth"}
+    return probe_provider_secret("seedance", key)
+
+
 def _openai_compat_ping(key_names, base_names, default_base):
     key = _env_value(key_names)
     if not key:
@@ -962,6 +1044,7 @@ KEY_PINGS = {
     "xai": _key_ping_xai,
     "openai": _key_ping_openai,
     "gemini": _key_ping_gemini,
+    "seedance": _key_ping_seedance,
     "zelong": _key_ping_zelong,
     "zelong2": _key_ping_zelong2,
     "heygen": _key_ping_heygen,
@@ -980,6 +1063,10 @@ PROVIDER_KEY_NAMES = {
     "seedance": "火山 Seedance",
     "omni": "Gemini Omni",
 }
+
+
+def _probe_is_credential_rejection(probe):
+    return int((probe or {}).get("http_status") or 0) in {401, 403}
 
 
 def probe_provider_secret(provider, secret):
@@ -1104,12 +1191,13 @@ def test_provider_key(actor, body):
         raise ValueError("API 密钥不存在")
     probe = probe_provider_secret(provider, candidates[0]["secret"])
     if key_id != "env":
-        provider_keys.set_health(
-            key_id,
-            bool(probe.get("ok")),
-            probe.get("latency_ms"),
-            probe.get("error") or ("HTTP %s" % probe.get("http_status") if probe.get("http_status") else ""),
-        )
+        if probe.get("ok") or _probe_is_credential_rejection(probe):
+            provider_keys.set_health(
+                key_id,
+                bool(probe.get("ok")),
+                probe.get("latency_ms"),
+                probe.get("error") or ("HTTP %s" % probe.get("http_status") if probe.get("http_status") else ""),
+            )
     _admin_audit(
         actor,
         "provider_key.test",
@@ -1159,29 +1247,35 @@ def reveal_provider_key(actor, body):
             "last4": item["last4"],
         },
     )
-    return {"ok": True, "id": key_id, "secret": secret, "expires_in": 20}
+    return {"ok": True, "id": key_id, "secret": secret, "expires_in": 5}
 
 
-def rename_provider_key(actor, body):
-    if provider_keys is None:
-        raise RuntimeError("密钥池模块不可用")
-    key_id = str(body.get("id") or "").strip()
-    with closing(db()) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        item = provider_keys.rename_key(key_id, body.get("label"), conn=conn)
-        _admin_audit(
-            actor,
-            "provider_key.rename",
-            key_id,
-            {
-                "provider": item["provider"],
-                "label": item["label"],
-                "last4": item["last4"],
-            },
-            conn=conn,
-        )
-        conn.commit()
-    return {"ok": True, "item": item}
+def reveal_server_key(actor, body):
+    channel = str(body.get("channel") or body.get("key") or "").strip().lower()
+    item = KEY_GROUP_MAP.get(channel)
+    if not item:
+        raise ValueError("API 渠道不存在")
+    values = _key_group_values(item)
+    if not values:
+        raise ValueError("该 API 渠道尚未配置密钥")
+    _admin_audit(
+        actor,
+        "server_key.reveal",
+        channel,
+        {
+            "env": [value["env"] for value in values],
+            "last4": [value["value"][-4:] for value in values],
+        },
+    )
+    return {
+        "ok": True,
+        "key": channel,
+        "secrets": [
+            {"env": value["env"], "secret": value["value"]}
+            for value in values
+        ],
+        "expires_in": 5,
+    }
 
 
 def _sanitize_path(raw):
@@ -1936,12 +2030,21 @@ class H(BaseHTTPRequestHandler):
         user = self._admin()
         if not user:
             return
+        if path == "/api/admin/server-keys/reveal":
+            try:
+                result = reveal_server_key(
+                    user.get("username") or "admin", self._body()
+                )
+                return self._send(200, result)
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except Exception as exc:
+                return self._send(500, {"detail": str(exc)[:180] or "操作失败"})
         if path in {
             "/api/admin/provider-keys/add",
             "/api/admin/provider-keys/test",
             "/api/admin/provider-keys/delete",
             "/api/admin/provider-keys/reveal",
-            "/api/admin/provider-keys/rename",
         }:
             actor = user.get("username") or "admin"
             try:
@@ -1952,8 +2055,6 @@ class H(BaseHTTPRequestHandler):
                     result = test_provider_key(actor, body)
                 elif path.endswith("/reveal"):
                     result = reveal_provider_key(actor, body)
-                elif path.endswith("/rename"):
-                    result = rename_provider_key(actor, body)
                 else:
                     result = delete_provider_key(actor, body)
                 return self._send(200, result)

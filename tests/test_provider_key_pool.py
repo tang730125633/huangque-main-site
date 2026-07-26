@@ -185,6 +185,7 @@ class ProviderKeyPoolTests(unittest.TestCase):
 
         revealed = admin_api.reveal_provider_key("tang1", {"id": first["id"]})
         self.assertEqual(revealed["secret"], "xai-provider-secret-1111")
+        self.assertEqual(revealed["expires_in"], 5)
         public = admin_api.provider_key_list()
         self.assertNotIn("secret", str(public))
         with sqlite3.connect(self.db_path) as conn:
@@ -208,16 +209,66 @@ class ProviderKeyPoolTests(unittest.TestCase):
             claimed = list(pool.map(lambda _index: claim(), range(2)))
         self.assertEqual(set(claimed), {first["id"], second["id"]})
 
-    def test_rename_and_audit_roll_back_together(self):
-        item = self.add("xai", "xai-provider-secret-1111")
-        with patch.object(
-            admin_api, "_admin_audit", side_effect=sqlite3.OperationalError("full")
+    def test_server_key_reveal_is_short_lived_and_audited(self):
+        with patch.dict(os.environ, {"HEYGEN_API_KEY": "heygen-secret-7788"}):
+            result = admin_api.reveal_server_key(
+                "tang1", {"channel": "heygen"}
+            )
+            public_status = admin_api.key_status()
+        self.assertEqual(result["expires_in"], 5)
+        self.assertEqual(
+            result["secrets"],
+            [{"env": "HEYGEN_API_KEY", "secret": "heygen-secret-7788"}],
+        )
+        with sqlite3.connect(self.db_path) as conn:
+            action, detail = conn.execute(
+                "SELECT action,detail FROM admin_audit ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(action, "server_key.reveal")
+        self.assertNotIn("heygen-secret-7788", detail)
+        self.assertNotIn("heygen-secret-7788", str(public_status))
+
+    def test_key_catalog_maps_api_providers_to_frontend_features(self):
+        with patch.dict(
+            os.environ,
+            {"GEMINI_OMNI_BASE": "https://sg.huangquechuanmei.com/google"},
         ):
-            with self.assertRaises(sqlite3.OperationalError):
-                admin_api.rename_provider_key(
-                    "tang1", {"id": item["id"], "label": "新线路名"}
-                )
-        self.assertEqual(provider_keys.public_key(item["id"])["label"], "线路 1")
+            rows = {item["key"]: item for item in admin_api.key_status()}
+        self.assertEqual(rows["gemini"]["name"], "Google Gemini API")
+        self.assertIn("图片生成 → 纳米香蕉", rows["gemini"]["features"])
+        self.assertIn("视频模块 → Omni 视频", rows["gemini"]["features"])
+        self.assertEqual(rows["gemini"]["env_features"], ["图片生成 → 纳米香蕉"])
+        self.assertEqual(rows["gemini"]["pool_features"], ["视频模块 → Omni 视频"])
+        self.assertEqual(rows["gemini"]["pool_base_host"], "sg.huangquechuanmei.com")
+        self.assertIn("视频模块 → 电影化身", rows["heygen"]["features"])
+        self.assertEqual(rows["seedance"]["pool_provider"], "seedance")
+
+    def test_transient_manual_probe_does_not_quarantine_key(self):
+        item = self.add()
+        with patch.object(
+            admin_api,
+            "probe_provider_secret",
+            return_value={"ok": False, "http_status": 503, "latency_ms": 9},
+        ), patch.object(provider_keys, "set_health") as health:
+            result = admin_api.test_provider_key(
+                "tang1", {"provider": "sora", "id": item["id"]}
+            )
+        self.assertFalse(result["ok"])
+        health.assert_not_called()
+        self.assertEqual(provider_keys.candidates("sora")[0]["id"], item["id"])
+
+    def test_auth_rejection_quarantines_key(self):
+        item = self.add()
+        with patch.object(
+            admin_api,
+            "probe_provider_secret",
+            return_value={"ok": False, "http_status": 401, "latency_ms": 9},
+        ):
+            result = admin_api.test_provider_key(
+                "tang1", {"provider": "sora", "id": item["id"]}
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(provider_keys.candidates("sora"), [])
 
     def test_rotation_only_handles_definitive_credential_rejection(self):
         class CredentialRejected(RuntimeError):
@@ -313,13 +364,25 @@ class ProviderKeyPoolTests(unittest.TestCase):
     def test_admin_console_exposes_real_pool_controls_and_auto_refresh(self):
         html = (ROOT / "site" / "admin" / "index.html").read_text()
         for text in (
-            "每 30 秒刷新", "果肉视频（xAI 官方）", "查看 20 秒",
-            "data-provider-key-rename", "data-provider-key-replace",
+            "每 30 秒刷新", "xAI API · 果肉视频", "查看 5 秒",
+            "data-provider-key-replace", "data-server-key-reveal",
             "data-provider-key-delete",
-            "按最少使用次数自动轮询",
+            "前端功能对应关系", "navigator.clipboard",
         ):
             self.assertIn(text, html)
-        self.assertIn("setInterval(function()", html)
+        self.assertNotIn("data-provider-key-rename", html)
+        self.assertNotIn("/api/admin/provider-keys/rename", html)
+        self.assertNotIn("其他上游", html)
+        self.assertIn("Date.now()+ttl", html)
+        self.assertIn("Math.min(5", html)
+        self.assertIn("clearSecretWindows", html)
+        self.assertIn("pagehide", html)
+        self.assertIn("pageshow", html)
+        self.assertIn("服务器环境变量（图片）", html)
+        self.assertIn("加密号池（视频）", html)
+        self.assertIn("env_base_host", html)
+        self.assertIn("pool_base_host", html)
+        self.assertNotIn("left-=1", html)
         self.assertIn("!state.poolActions", html)
         self.assertIn("requestPoolEpoch!==state.poolEpoch", html)
         self.assertIn("state.refreshPending", html)
