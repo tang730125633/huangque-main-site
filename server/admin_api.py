@@ -117,21 +117,40 @@ SERVICES = [
 # 名称按真实 API 提供方统一；features 负责映射用户在前端看到的功能名。
 KEY_GROUPS = [
     {"key": "xai", "name": "xAI API", "category": "视频生成",
-     "features": ["视频模块 → 果肉视频生成"], "env": ["XAI_API_KEY"], "pool_provider": "xai"},
+     "features": ["视频模块 → 果肉视频生成"], "env_features": [],
+     "pool_features": ["视频模块 → 果肉视频生成"],
+     "pool_base_env": ["XAI_API_BASE"], "pool_base_default": "https://api.x.ai/v1",
+     "env": ["XAI_API_KEY"], "pool_provider": "xai"},
     {"key": "openai", "name": "OpenAI API", "category": "图片生成 / 视频生成",
-     "features": ["图片生成 → 黄雀引擎 2", "视频模块 → Sora 2"], "env": ["OPENAI_API_KEY"], "pool_provider": "sora"},
+     "features": ["图片生成 → 黄雀引擎 2", "视频模块 → Sora 2"],
+     "env_features": ["图片生成 → 黄雀引擎 2"], "pool_features": ["视频模块 → Sora 2"],
+     "env_base_env": ["OPENAI_OFFICIAL_BASE"], "env_base_default": "https://api.openai.com",
+     "pool_base_env": ["OPENAI_BASE"], "pool_base_default": "https://api.openai.com",
+     "env": ["OPENAI_API_KEY"], "pool_provider": "sora"},
     {"key": "gemini", "name": "Google Gemini API", "category": "图片生成 / 视频生成",
-     "features": ["图片生成 → 纳米香蕉", "视频模块 → Omni 视频"], "env": ["GEMINI_API_KEY"], "pool_provider": "omni"},
+     "features": ["图片生成 → 纳米香蕉", "视频模块 → Omni 视频"],
+     "env_features": ["图片生成 → 纳米香蕉"], "pool_features": ["视频模块 → Omni 视频"],
+     "env_base_env": ["GEMINI_OFFICIAL_BASE"], "env_base_default": "https://generativelanguage.googleapis.com",
+     "pool_base_env": ["GEMINI_OMNI_BASE", "GEMINI_BASE"], "pool_base_default": "https://generativelanguage.googleapis.com",
+     "env": ["GEMINI_API_KEY"], "pool_provider": "omni"},
     {"key": "seedance", "name": "火山方舟 API", "category": "图片生成 / 视频生成",
-     "features": ["图片生成 → 黄雀引擎 1（Seedream）", "视频模块 → Seedance 视频"], "env": ["ARK_API_KEY"], "pool_provider": "seedance"},
+     "features": ["图片生成 → 黄雀引擎 1（Seedream）", "视频模块 → Seedance 视频"],
+     "env_features": ["图片生成 → 黄雀引擎 1（Seedream）"], "pool_features": ["视频模块 → Seedance 视频"],
+     "env_base_env": ["ARK_BASE"], "env_base_default": "https://ark.cn-beijing.volces.com/api/v3",
+     "pool_base_env": ["ARK_BASE"], "pool_base_default": "https://ark.cn-beijing.volces.com/api/v3",
+     "env": ["ARK_API_KEY"], "pool_provider": "seedance"},
     {"key": "zelong", "name": "小乐 AI API", "category": "图片生成",
      "features": ["图片生成 → 黄雀引擎 2 备用线路"], "env": ["ZELONG_KEY"]},
     {"key": "zelong2", "name": "泽龙 API", "category": "图片生成",
      "features": ["图片生成 → 泽龙 2 备用线路（维护中）"], "env": ["ZELONG2_KEY"]},
     {"key": "heygen", "name": "HeyGen API", "category": "数字化 IP / 视频生成",
-     "features": ["视频模块 → 电影化身", "视频模块 → 数字人口播", "我的资产 → 数字人形象"], "env": ["HEYGEN_API_KEY"]},
+     "features": ["视频模块 → 电影化身", "视频模块 → 数字人口播", "我的资产 → 数字人形象"],
+     "env_base_env": ["HEYGEN_API_BASE"], "env_base_default": "https://api.heygen.com/v3",
+     "env": ["HEYGEN_API_KEY"]},
     {"key": "heygen_relay", "name": "HeyGen 中转 API", "category": "数字化 IP / 视频生成",
-     "features": ["电影化身 / 数字人口播 → 中转与下载兜底"], "env": ["HEYGEN_RELAY_TOKEN"]},
+     "features": ["电影化身 / 数字人口播 → 中转与下载兜底"],
+     "env_base_env": ["HEYGEN_RELAY_BASE"], "env_base_default": "",
+     "env": ["HEYGEN_RELAY_TOKEN"]},
     {"key": "xiaolevideo", "name": "小乐视频 API", "category": "图片生成 / 视频生成",
      "features": ["图片生成 → 果肉生图", "视频模块 → 历史兼容线路"], "env": ["XIAOLEVIDEO_API_KEY"]},
     {"key": "runninghub", "name": "RunningHub API", "category": "视频处理",
@@ -726,6 +745,28 @@ def _key_group_values(item, sources=None):
     return found
 
 
+def _key_group_base_host(item, prefix, sources):
+    value = ""
+    for env_name in item.get(prefix + "_base_env", []):
+        for src in sources:
+            value = (src["values"].get(env_name) or "").strip()
+            if value:
+                break
+        if value:
+            break
+    value = value or str(item.get(prefix + "_base_default") or "").strip()
+    if not value:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(
+            value if "://" in value else "https://" + value
+        )
+        host = parsed.hostname or ""
+        return host + ((":" + str(parsed.port)) if parsed.port else "")
+    except (TypeError, ValueError):
+        return ""
+
+
 def key_status():
     sources = env_sources()
     items = []
@@ -745,6 +786,10 @@ def key_status():
                 "name": item["name"],
                 "category": item["category"],
                 "features": list(item["features"]),
+                "env_features": list(item.get("env_features", item["features"])),
+                "pool_features": list(item.get("pool_features", [])),
+                "env_base_host": _key_group_base_host(item, "env", sources),
+                "pool_base_host": _key_group_base_host(item, "pool", sources),
                 "pool_provider": item.get("pool_provider"),
                 "configured": configured,
                 "required_env": item["env"],
@@ -1020,6 +1065,10 @@ PROVIDER_KEY_NAMES = {
 }
 
 
+def _probe_is_credential_rejection(probe):
+    return int((probe or {}).get("http_status") or 0) in {401, 403}
+
+
 def probe_provider_secret(provider, secret):
     """Validate a candidate key with a non-generating authenticated GET."""
     provider = str(provider or "").strip().lower()
@@ -1142,12 +1191,13 @@ def test_provider_key(actor, body):
         raise ValueError("API 密钥不存在")
     probe = probe_provider_secret(provider, candidates[0]["secret"])
     if key_id != "env":
-        provider_keys.set_health(
-            key_id,
-            bool(probe.get("ok")),
-            probe.get("latency_ms"),
-            probe.get("error") or ("HTTP %s" % probe.get("http_status") if probe.get("http_status") else ""),
-        )
+        if probe.get("ok") or _probe_is_credential_rejection(probe):
+            provider_keys.set_health(
+                key_id,
+                bool(probe.get("ok")),
+                probe.get("latency_ms"),
+                probe.get("error") or ("HTTP %s" % probe.get("http_status") if probe.get("http_status") else ""),
+            )
     _admin_audit(
         actor,
         "provider_key.test",

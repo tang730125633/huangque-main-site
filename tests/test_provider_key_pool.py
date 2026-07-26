@@ -229,12 +229,46 @@ class ProviderKeyPoolTests(unittest.TestCase):
         self.assertNotIn("heygen-secret-7788", str(public_status))
 
     def test_key_catalog_maps_api_providers_to_frontend_features(self):
-        rows = {item["key"]: item for item in admin_api.key_status()}
+        with patch.dict(
+            os.environ,
+            {"GEMINI_OMNI_BASE": "https://sg.huangquechuanmei.com/google"},
+        ):
+            rows = {item["key"]: item for item in admin_api.key_status()}
         self.assertEqual(rows["gemini"]["name"], "Google Gemini API")
         self.assertIn("图片生成 → 纳米香蕉", rows["gemini"]["features"])
         self.assertIn("视频模块 → Omni 视频", rows["gemini"]["features"])
+        self.assertEqual(rows["gemini"]["env_features"], ["图片生成 → 纳米香蕉"])
+        self.assertEqual(rows["gemini"]["pool_features"], ["视频模块 → Omni 视频"])
+        self.assertEqual(rows["gemini"]["pool_base_host"], "sg.huangquechuanmei.com")
         self.assertIn("视频模块 → 电影化身", rows["heygen"]["features"])
         self.assertEqual(rows["seedance"]["pool_provider"], "seedance")
+
+    def test_transient_manual_probe_does_not_quarantine_key(self):
+        item = self.add()
+        with patch.object(
+            admin_api,
+            "probe_provider_secret",
+            return_value={"ok": False, "http_status": 503, "latency_ms": 9},
+        ), patch.object(provider_keys, "set_health") as health:
+            result = admin_api.test_provider_key(
+                "tang1", {"provider": "sora", "id": item["id"]}
+            )
+        self.assertFalse(result["ok"])
+        health.assert_not_called()
+        self.assertEqual(provider_keys.candidates("sora")[0]["id"], item["id"])
+
+    def test_auth_rejection_quarantines_key(self):
+        item = self.add()
+        with patch.object(
+            admin_api,
+            "probe_provider_secret",
+            return_value={"ok": False, "http_status": 401, "latency_ms": 9},
+        ):
+            result = admin_api.test_provider_key(
+                "tang1", {"provider": "sora", "id": item["id"]}
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(provider_keys.candidates("sora"), [])
 
     def test_rotation_only_handles_definitive_credential_rejection(self):
         class CredentialRejected(RuntimeError):
@@ -339,7 +373,16 @@ class ProviderKeyPoolTests(unittest.TestCase):
         self.assertNotIn("data-provider-key-rename", html)
         self.assertNotIn("/api/admin/provider-keys/rename", html)
         self.assertNotIn("其他上游", html)
-        self.assertIn("setInterval(function()", html)
+        self.assertIn("Date.now()+ttl", html)
+        self.assertIn("Math.min(5", html)
+        self.assertIn("clearSecretWindows", html)
+        self.assertIn("pagehide", html)
+        self.assertIn("pageshow", html)
+        self.assertIn("服务器环境变量（图片）", html)
+        self.assertIn("加密号池（视频）", html)
+        self.assertIn("env_base_host", html)
+        self.assertIn("pool_base_host", html)
+        self.assertNotIn("left-=1", html)
         self.assertIn("!state.poolActions", html)
         self.assertIn("requestPoolEpoch!==state.poolEpoch", html)
         self.assertIn("state.refreshPending", html)

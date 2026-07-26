@@ -340,6 +340,7 @@
     autoRefresh:true, overviewLoading:false, refreshTimer:null, poolActions:0,
     poolEpoch:0, refreshPending:false
   };
+  var secretWindows = [];
   var el = function(id){return document.getElementById(id)};
   function toast(msg){var t=el('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(t._tm); t._tm=setTimeout(function(){t.style.display='none'},2600)}
   function authHeaders(extra){return Object.assign({'Authorization':'Bearer '+token}, extra||{})}
@@ -411,9 +412,10 @@
     var eps=k.endpoints||[];
     return eps.length?'<details class="eplist"><summary>接口清单（'+eps.length+'）</summary>'+eps.map(function(e){return '<div class="ep"><code>'+esc(e.m)+' '+esc(e.p)+'</code><div class="muted">'+esc(e.d)+(e.fee?' · 计费':' · 免费')+'</div></div>'}).join('')+'</details>':'';
   }
-  function channelIdentity(k){
-    var features=(k.features||[]).map(function(x){return '<div>'+esc(x)+'</div>'}).join('');
-    return '<div class="channel-title"><b>'+esc(k.name)+'</b><span class="channel-category">'+esc(k.category||'API 服务')+'</span><div class="feature-map">'+features+'</div>'+endpointList(k)+'</div>';
+  function channelIdentity(k,features,scope,baseHost){
+    features=(features||k.features||[]).map(function(x){return '<div>'+esc(x)+'</div>'}).join('');
+    var base=baseHost?'<div class="key-meta">实际 Base Host：<code>'+esc(baseHost)+'</code></div>':'';
+    return '<div class="channel-title"><b>'+esc(k.name)+'</b><span class="channel-category">'+esc(scope||k.category||'API 服务')+'</span><div class="feature-map">'+features+'</div>'+base+endpointList(k)+'</div>';
   }
   function openProviderEditor(provider,label){
     if(provider)el('providerKeyProvider').value=provider;
@@ -434,15 +436,26 @@
     var work=navigator.clipboard&&window.isSecureContext?navigator.clipboard.writeText(text):fallback();
     work.then(function(){toast('已复制，5 秒后页面会自动隐藏')}).catch(function(){toast('复制失败，请手动选择 Key')});
   }
+  function closeSecretWindow(win){
+    if(!win||win.closed)return;
+    win.closed=true;clearInterval(win.timer);
+    win.btn._secret='';win.btn._secretExpiresAt=0;win.btn._secretWindow=null;
+    win.node.textContent=win.masked;win.btn.disabled=false;win.btn.textContent='查看 5 秒';
+    var i=secretWindows.indexOf(win);if(i>=0)secretWindows.splice(i,1);
+    win.done();
+  }
+  function clearSecretWindows(){secretWindows.slice().forEach(closeSecretWindow)}
   function startSecretWindow(btn,node,secret,masked,seconds,done){
-    var left=Math.max(1,Number(seconds)||5);
-    btn._secret=String(secret||'');node.textContent=btn._secret;btn.disabled=false;btn.textContent='复制（'+left+'）';
-    clearInterval(btn._secretTimer);
-    btn._secretTimer=setInterval(function(){
-      left-=1;
-      if(left>0){btn.textContent='复制（'+left+'）';return}
-      clearInterval(btn._secretTimer);btn._secretTimer=null;btn._secret='';node.textContent=masked;btn.textContent='查看 5 秒';done();
-    },1000);
+    var ttl=Math.min(5,Math.max(1,Number(seconds)||5))*1000,expiresAt=Date.now()+ttl;
+    var win={btn:btn,node:node,masked:masked,done:done,closed:false,timer:null};
+    btn._secret=String(secret||'');btn._secretExpiresAt=expiresAt;btn._secretWindow=win;
+    node.textContent=btn._secret;btn.disabled=false;secretWindows.push(win);
+    var tick=function(){
+      var left=Math.ceil((expiresAt-Date.now())/1000);
+      if(left<=0||document.hidden){closeSecretWindow(win);return}
+      btn.textContent='复制（'+left+'）';
+    };
+    win.timer=setInterval(tick,250);tick();
   }
   function beginPoolAction(){
     state.poolActions+=1;state.poolEpoch+=1;
@@ -452,12 +465,21 @@
     };
   }
   function renderChannelConsole(envItems,data){
-    data=data||{};var items=data.items||[],rows=[];
+    clearSecretWindows();data=data||{};var items=data.items||[],rows=[];
     el('providerKeyState').textContent=data.configured?'保险箱已启用':'保险箱未配置';
+    function serverRow(meta,features,scope,baseHost){
+      var src=(meta.sources||[]).map(function(s){return '<code>'+esc(s.env)+'</code>'}).join('、')||'未检测到变量';
+      var test=meta.pingable?'<button class="mini" data-ping-key="'+esc(meta.key)+'">测试</button> <span data-ping-out="key:'+esc(meta.key)+'"></span>':'<span class="muted">需服务器签名检测</span>';
+      var reveal=meta.configured?'<button class="mini" data-server-key-reveal="'+esc(meta.key)+'" data-last4="'+esc(meta.last4)+'">查看 5 秒</button>':'';
+      var label=scope==='图片 / 直连'?'服务器环境变量（图片）':'服务器环境变量（直连）';
+      return '<tr><td>'+channelIdentity(meta,features,scope,baseHost)+'</td><td><code class="key-value" data-server-key-value="'+esc(meta.key)+'">'+(meta.last4?'••••'+esc(meta.last4):'未配置')+'</code><div class="key-meta">'+src+'</div></td><td>'+(meta.configured?'<span class="pill ok">'+label+'</span>':'<span class="pill fail">缺失</span>')+'</td><td>'+statusPill(meta.configured,meta.configured?'已配置 · 不参与加密号池轮询':'未配置')+'</td><td><div class="actions">'+test+reveal+'</div></td></tr>';
+    }
     (envItems||[]).forEach(function(meta){
       var provider=meta.pool_provider,own=provider?items.filter(function(k){return k.provider===provider}):[];
+      var envFeatures=meta.env_features||meta.features||[],poolFeatures=meta.pool_features||meta.features||[];
+      if(provider&&envFeatures.length)rows.push(serverRow(meta,envFeatures,'图片 / 直连',meta.env_base_host));
       if(provider&&!own.length){
-        rows.push('<tr><td>'+channelIdentity(meta)+'</td><td><span class="pill fail">未配置</span></td><td><span class="muted">暂无可用线路</span></td><td><span class="pill fail">不可调用</span></td><td><button class="mini primary" data-provider-key-open="'+esc(provider)+'">新增 API</button></td></tr>');
+        rows.push('<tr><td>'+channelIdentity(meta,poolFeatures,'视频 / 加密号池',meta.pool_base_host)+'</td><td><span class="pill fail">未配置</span></td><td><span class="muted">暂无可用线路</span></td><td><span class="pill fail">不可调用</span></td><td><button class="mini primary" data-provider-key-open="'+esc(provider)+'">新增 API</button></td></tr>');
       }
       own.forEach(function(k){
         var healthy=k.health_status==='healthy',unhealthy=k.health_status==='unhealthy';
@@ -466,13 +488,10 @@
         var current=(k.current?'<span class="pill ok">最近使用</span> ':'')+(k.next_in_rotation?'<span class="pill warn">下次首选</span>':'');
         if(!current)current='<span class="muted">等待轮询</span>';
         var managed=k.managed?'<button class="mini" data-provider-key-reveal="'+esc(k.id)+'" data-last4="'+esc(k.last4)+'">查看 5 秒</button><button class="mini" data-provider-key-replace="'+esc(k.provider)+'" data-label="'+esc(k.label)+'">更换 Key</button><button class="mini danger" data-provider-key-delete="'+esc(k.id)+'">删除</button>':'<span class="pill neutral">服务器兼容线路</span>';
-        rows.push('<tr><td>'+channelIdentity(meta)+'<div class="key-meta">线路：'+esc(k.label)+'</div></td><td><code class="key-value" data-key-value="'+esc(k.id)+'">••••'+esc(k.last4)+'</code><div class="key-meta">'+(k.managed?'加密保险箱':'服务器环境变量')+'</div></td><td>'+current+'<div class="key-meta">累计调用 '+Number(k.use_count||0).toLocaleString()+(k.last_used_at?' · '+esc(fmtTime(k.last_used_at)):'')+'</div></td><td>'+health+'<div class="key-meta">'+esc(checked)+'</div>'+(k.last_error?'<div class="key-meta" style="color:var(--error)">'+esc(k.last_error)+'</div>':'')+'</td><td><div class="actions"><button class="mini" data-provider-key-test="'+esc(k.id)+'" data-provider="'+esc(provider)+'">测试</button>'+managed+'<button class="mini" data-provider-key-open="'+esc(provider)+'">新增 API</button></div></td></tr>');
+        rows.push('<tr><td>'+channelIdentity(meta,poolFeatures,'视频 / 加密号池',meta.pool_base_host)+'<div class="key-meta">线路：'+esc(k.label)+'</div></td><td><code class="key-value" data-key-value="'+esc(k.id)+'">••••'+esc(k.last4)+'</code><div class="key-meta">'+(k.managed?'加密号池（视频）':'服务器兼容线路')+'</div></td><td>'+current+'<div class="key-meta">累计调用 '+Number(k.use_count||0).toLocaleString()+(k.last_used_at?' · '+esc(fmtTime(k.last_used_at)):'')+'</div></td><td>'+health+'<div class="key-meta">'+esc(checked)+'</div>'+(k.last_error?'<div class="key-meta" style="color:var(--error)">'+esc(k.last_error)+'</div>':'')+'</td><td><div class="actions"><button class="mini" data-provider-key-test="'+esc(k.id)+'" data-provider="'+esc(provider)+'">测试</button>'+managed+'<button class="mini" data-provider-key-open="'+esc(provider)+'">新增 API</button></div></td></tr>');
       });
       if(provider)return;
-      var src=(meta.sources||[]).map(function(s){return '<code>'+esc(s.env)+'</code>'}).join('、')||'未检测到变量';
-      var test=meta.pingable?'<button class="mini" data-ping-key="'+esc(meta.key)+'">测试</button> <span data-ping-out="key:'+esc(meta.key)+'"></span>':'<span class="muted">需服务器签名检测</span>';
-      var reveal=meta.configured?'<button class="mini" data-server-key-reveal="'+esc(meta.key)+'" data-last4="'+esc(meta.last4)+'">查看 5 秒</button>':'';
-      rows.push('<tr><td>'+channelIdentity(meta)+'</td><td><code class="key-value" data-server-key-value="'+esc(meta.key)+'">'+(meta.last4?'••••'+esc(meta.last4):'未配置')+'</code><div class="key-meta">'+src+'</div></td><td>'+(meta.configured?'<span class="pill ok">服务器环境变量</span>':'<span class="pill fail">缺失</span>')+'</td><td>'+statusPill(meta.configured,meta.configured?'已配置 · 不参与号池轮询':'未配置')+'</td><td><div class="actions">'+test+reveal+'</div></td></tr>');
+      rows.push(serverRow(meta,envFeatures,meta.category,meta.env_base_host));
     });
     el('channelKeyBox').innerHTML='<div class="table-wrap"><table class="channel-table"><thead><tr><th>API 提供方 / 前端功能</th><th>API Key（默认脱敏）</th><th>实际使用</th><th>健康 / 轮询</th><th>操作</th></tr></thead><tbody>'+rows.join('')+'</tbody></table></div>';
     bindPing('channelKeyBox','data-ping-key','key','key');
@@ -488,7 +507,8 @@
     });
     Array.prototype.forEach.call(el('channelKeyBox').querySelectorAll('[data-provider-key-reveal]'),function(btn){
       btn.onclick=function(){
-        if(btn._secret){copySecret(btn._secret);return}
+        if(btn._secret&&Date.now()<Number(btn._secretExpiresAt||0)){copySecret(btn._secret);return}
+        if(btn._secretWindow)closeSecretWindow(btn._secretWindow);
         if(!confirm('完整 API Key 将在当前页面显示 5 秒，并记录管理员查看审计。继续吗？'))return;
         btn.disabled=true;var done=beginPoolAction();
         api('/api/admin/provider-keys/reveal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:btn.getAttribute('data-provider-key-reveal')})})
@@ -498,7 +518,8 @@
     });
     Array.prototype.forEach.call(el('channelKeyBox').querySelectorAll('[data-server-key-reveal]'),function(btn){
       btn.onclick=function(){
-        if(btn._secret){copySecret(btn._secret);return}
+        if(btn._secret&&Date.now()<Number(btn._secretExpiresAt||0)){copySecret(btn._secret);return}
+        if(btn._secretWindow)closeSecretWindow(btn._secretWindow);
         if(!confirm('服务器当前使用的完整 Key 将显示 5 秒，并记录管理员查看审计。继续吗？'))return;
         btn.disabled=true;var done=beginPoolAction();
         api('/api/admin/server-keys/reveal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:btn.getAttribute('data-server-key-reveal')})})
@@ -947,7 +968,10 @@
   Array.prototype.forEach.call(document.querySelectorAll('[data-module-tab]'), function(btn){
     btn.onclick=function(){switchModule(btn.getAttribute('data-module-tab'))};
   });
-  document.addEventListener('visibilitychange',function(){if(!document.hidden&&state.autoRefresh&&state.module==='ops'&&!state.poolActions)load(true)});
+  document.addEventListener('visibilitychange',function(){if(document.hidden){clearSecretWindows();return}if(state.autoRefresh&&state.module==='ops'&&!state.poolActions)load(true)});
+  window.addEventListener('pagehide',clearSecretWindows);
+  window.addEventListener('pageshow',clearSecretWindows);
+  document.addEventListener('freeze',clearSecretWindows);
   updateAutoRefresh();startAutoRefresh();load(false);
 })();
 </script>
