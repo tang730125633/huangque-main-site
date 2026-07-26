@@ -146,18 +146,18 @@
       <div style="margin-top:22px; display:flex; flex-direction:column; gap:14px;">
         <div style="display:flex; align-items:center; gap:11px; padding:0 15px; height:48px; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px;">
           <span style="display:flex; width:17px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span>
-          <input id="username" placeholder="请输入手机号 / 账号" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
+          <input id="username" maxlength="64" placeholder="请输入手机号 / 账号" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
         </div>
         <div id="rowPhone" style="display:flex; gap:10px;">
           <div style="flex:1; display:flex; align-items:center; gap:11px; padding:0 15px; height:48px; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px;">
             <span style="display:flex; width:17px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/></svg></span>
-            <input id="code" placeholder="请输入验证码" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
+            <input id="code" maxlength="6" placeholder="请输入验证码" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
           </div>
           <button type="button" id="getCode" style="flex:none; padding:0 15px; height:48px; white-space:nowrap; font-size:13px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.28); border-radius:12px; cursor:pointer; font-family:inherit; transition:.18s;">获取验证码</button>
         </div>
         <div id="rowPwd" style="display:none; align-items:center; gap:11px; padding:0 15px; height:48px; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px;">
           <span style="display:flex; width:17px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></span>
-          <input id="password" type="password" placeholder="请输入密码" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
+          <input id="password" type="password" maxlength="128" placeholder="请输入密码" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
         </div>
         <div id="rowDisplayName" style="display:none; align-items:center; gap:11px; padding:0 15px; height:48px; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px;">
           <span style="display:flex; width:17px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg></span>
@@ -165,7 +165,7 @@
         </div>
         <div id="rowConfirmPwd" style="display:none; align-items:center; gap:11px; padding:0 15px; height:48px; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px;">
           <span style="display:flex; width:17px; color:#5c6b82;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
-          <input id="confirmPassword" type="password" placeholder="请再次输入密码" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
+          <input id="confirmPassword" type="password" maxlength="128" placeholder="请再次输入密码" style="flex:1; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:14px; font-family:inherit;">
         </div>
       </div>
       <div style="display:flex; align-items:center; justify-content:space-between; margin-top:18px;">

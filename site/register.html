@@ -41,7 +41,7 @@
       <form id="registerForm" novalidate>
         <label class="field"><span>账号</span><input class="input" id="username" maxlength="64" autocomplete="username" placeholder="请输入账号"></label>
         <label class="field"><span>昵称（可选）</span><input class="input" id="displayName" maxlength="32" autocomplete="nickname" placeholder="用于工作台展示"></label>
-        <div class="row"><label class="field"><span>密码</span><input class="input" id="password" type="password" minlength="6" autocomplete="new-password" placeholder="至少 6 位"></label><label class="field"><span>确认密码</span><input class="input" id="confirmPassword" type="password" minlength="6" autocomplete="new-password" placeholder="再次输入密码"></label></div>
+        <div class="row"><label class="field"><span>密码</span><input class="input" id="password" type="password" minlength="6" maxlength="128" autocomplete="new-password" placeholder="6–128 位"></label><label class="field"><span>确认密码</span><input class="input" id="confirmPassword" type="password" minlength="6" maxlength="128" autocomplete="new-password" placeholder="再次输入密码"></label></div>
         <label class="field" id="inviteField"><span id="inviteLabel">邀请码（选填）</span><input class="input" id="inviteCode" maxlength="6" autocomplete="off" spellcheck="false" placeholder="6 位数字或大写字母"><small class="invite-note" id="inviteNote">可以不填写邀请码直接注册</small></label>
         <button class="submit" id="submitBtn" type="submit">注册并进入工作台</button>
         <div class="message" id="message" aria-live="polite"></div>
