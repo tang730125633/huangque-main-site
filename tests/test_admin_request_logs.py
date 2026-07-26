@@ -245,6 +245,28 @@ class KeyPingTests(unittest.TestCase):
             },
         )
 
+    def test_xai_provider_probe_uses_video_egress_route(self):
+        import unittest.mock as mock
+
+        proxy = "http://127.0.0.1:10809"
+        with mock.patch.object(
+            admin_api.egress, "preferred_proxy", return_value=proxy
+        ) as preferred, mock.patch.object(
+            admin_api, "_ping_upstream", return_value={"ok": True}
+        ) as ping:
+            self.assertTrue(
+                admin_api.probe_provider_secret(
+                    "xai", "xai-provider-secret"
+                )["ok"]
+            )
+        preferred.assert_called_once_with(admin_api.PROXY_URL)
+        ping.assert_called_once_with(
+            "GET",
+            "https://api.x.ai/v1/models",
+            headers={"Authorization": "Bearer xai-provider-secret"},
+            proxy_url=proxy,
+        )
+
     def test_ping_without_key_configured_fails_fast(self):
         # 不联网：未配置密钥/地址时应直接返回错误而不发请求
         import unittest.mock as mock

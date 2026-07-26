@@ -25,11 +25,12 @@ import urllib.parse
 import urllib.request
 
 try:
-    from content_domains import feature_flags, provider_keys
+    from content_domains import egress, feature_flags, provider_keys
 except ImportError:
     try:
-        from .content_domains import feature_flags, provider_keys
+        from .content_domains import egress, feature_flags, provider_keys
     except ImportError:
+        egress = None
         feature_flags = None
         provider_keys = None
 
@@ -560,6 +561,11 @@ PROXY_OPENER = (
 )
 
 
+def _xai_proxy_url():
+    """Use the same egress route as paid xAI video requests."""
+    return egress.preferred_proxy(PROXY_URL) if egress is not None else PROXY_URL
+
+
 def db():
     ADMIN_DB.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(ADMIN_DB), timeout=10)
@@ -760,9 +766,17 @@ def _find_balance(detail, depth=0):
     return None
 
 
-def _ping_upstream(method, url, headers=None, body=None, proxied=False, timeout=12):
+def _ping_upstream(method, url, headers=None, body=None, proxied=False, timeout=12,
+                   proxy_url=None):
     """真实调一次上游 API。只返回状态码/耗时/错误摘要，绝不含密钥。"""
-    opener = PROXY_OPENER if proxied else DIRECT_OPENER
+    if proxy_url is None:
+        opener = PROXY_OPENER if proxied else DIRECT_OPENER
+    elif proxy_url:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+        )
+    else:
+        opener = DIRECT_OPENER
     data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
     headers = dict(headers or {})
     # Python-urllib 默认 UA 会被 TikHub 等家的 Cloudflare 拦成 403
@@ -829,7 +843,7 @@ def _key_ping_xai():
     return _ping_upstream(
         "GET", base + "/models",
         headers={"Authorization": "Bearer " + key},
-        proxied="api.x.ai" in base,
+        proxy_url=_xai_proxy_url() if "api.x.ai" in base else "",
     )
 
 
@@ -981,7 +995,7 @@ def probe_provider_secret(provider, secret):
         return _ping_upstream(
             "GET", base + "/models",
             headers={"Authorization": "Bearer " + secret},
-            proxied="api.x.ai" in base,
+            proxy_url=_xai_proxy_url() if "api.x.ai" in base else "",
         )
     if provider == "sora":
         base = (_env_value(["OPENAI_BASE"]) or "https://api.openai.com").rstrip("/")
