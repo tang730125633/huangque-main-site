@@ -127,6 +127,7 @@ def set_done_with_video_outbox(jdb, job_id, username, kind, result=None, from_st
     """Atomically win jobs.done and enqueue only supported video notifications."""
     if kind not in VIDEO_NOTIFICATION_KINDS:
         return set_terminal(jdb, job_id, "done", result=result, from_states=from_states)
+    ensure_video_notification_outbox(jdb)
     now = int(time.time())
     holes = ",".join("?" * len(from_states))
     with closing(jdb()) as c:
