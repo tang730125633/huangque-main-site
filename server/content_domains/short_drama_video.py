@@ -1,5 +1,6 @@
 """Video versions and review state for short-drama shots."""
 
+import base64
 import hashlib
 import json
 import mimetypes
@@ -187,22 +188,47 @@ def _locked_still(conn, project_id, shot_id):
     return row
 
 
+def _omni_inline_reference(file_name):
+    from . import miniprogram_security, video as video_domain, video_gemini_omni
+    path = video_domain._resolve_out_file(str(file_name or ""))
+    if not path:
+        raise ValueError("Omni 关键帧本地文件不存在")
+    try:
+        raw, content_type = miniprogram_security._prepare_image_for_security(
+            path.read_bytes(), mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        )
+    except (OSError, miniprogram_security.ContentRejected,
+            miniprogram_security.SecurityUnavailable) as error:
+        raise ValueError("Omni 关键帧无法转换为 JPEG") from error
+    if content_type not in video_gemini_omni.IMAGE_MIMES:
+        raise ValueError("Omni 关键帧必须是 JPEG、PNG 或 WebP")
+    if not raw or len(raw) > video_gemini_omni.MAX_IMAGE_BYTES:
+        raise ValueError("Omni 关键帧压缩后仍超过 8MB")
+    return "data:%s;base64,%s" % (
+        content_type, base64.b64encode(raw).decode("ascii")
+    )
+
+
 def _provider_payload(conn, project, shot, request):
     still = _locked_still(conn, project["id"], shot["id"])
-    reference = str(still["url"] or "").strip()
-    if not reference.startswith(("https://", "http://")):
-        from . import video as video_domain
-        content_type = mimetypes.guess_type(str(still["file"] or ""))[0] or "image/jpeg"
-        reference = video_domain.public_url(still["file"], content_type)
-    if not str(reference).startswith(("https://", "http://")):
-        raise ValueError("关键帧尚未转存到可供视频模型读取的安全地址")
+    if request["channel"] == "omni":
+        references = [_omni_inline_reference(still["file"])]
+    else:
+        reference = str(still["url"] or "").strip()
+        if not reference.startswith(("https://", "http://")):
+            from . import video as video_domain
+            content_type = mimetypes.guess_type(str(still["file"] or ""))[0] or "image/jpeg"
+            reference = video_domain.public_url(still["file"], content_type)
+        if not str(reference).startswith(("https://", "http://")):
+            raise ValueError("关键帧尚未转存到可供视频模型读取的安全地址")
+        references = [reference]
     payload = {
         "channel": request["channel"],
         "prompt": request["prompt"],
         "ratio": project["ratio"],
         "duration": int(shot["duration"]),
         "resolution": request["resolution"],
-        "reference_images": [reference],
+        "reference_images": references,
         "generate_audio": request["generate_audio"],
         "upscale": request["upscale"],
     }
