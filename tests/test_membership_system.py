@@ -84,6 +84,68 @@ class MembershipSystemTests(unittest.TestCase):
         finally:
             c.close()
 
+    def test_reconcile_queries_wechat_and_idempotently_activates_membership(self):
+        order, err = self.auth.create_recharge_order(
+            "buyer", 499, 1000, "体验官", "membership_experience",
+        )
+        self.assertIsNone(err)
+
+        class FakeWxPay:
+            @staticmethod
+            def payment_identity_matches(payment):
+                return payment.get("appid") == "app" and payment.get("mchid") == "merchant"
+
+        self.auth.wxpay = FakeWxPay()
+        payment = {
+            "trade_state": "SUCCESS",
+            "appid": "app",
+            "mchid": "merchant",
+            "out_trade_no": order["order_id"],
+            "transaction_id": "wx-membership-499",
+            "amount": {"total": 49900},
+        }
+        approved, err = self.auth.reconcile_wxpay_recharge(
+            self.auth.get_recharge_order(order["order_id"]), payment,
+        )
+        self.assertIsNone(err)
+        self.assertEqual(approved["status"], "approved")
+        self.assertEqual(self._row("buyer")["membership_tier"], "experience")
+        self.assertEqual(self._row("buyer")["points"], 1020)
+
+        duplicate, err = self.auth.reconcile_wxpay_recharge(
+            self.auth.get_recharge_order(order["order_id"]), payment,
+        )
+        self.assertIsNone(err)
+        self.assertEqual(duplicate["status"], "approved")
+        self.assertEqual(self._row("buyer")["points"], 1020)
+
+    def test_reconcile_rejects_wrong_amount_without_activating_membership(self):
+        order, err = self.auth.create_recharge_order(
+            "buyer", 499, 1000, "体验官", "membership_experience",
+        )
+        self.assertIsNone(err)
+
+        class FakeWxPay:
+            @staticmethod
+            def payment_identity_matches(payment):
+                return True
+
+        self.auth.wxpay = FakeWxPay()
+        payment = {
+            "trade_state": "SUCCESS",
+            "out_trade_no": order["order_id"],
+            "transaction_id": "wx-wrong-499",
+            "amount": {"total": 100},
+        }
+        result, err = self.auth.reconcile_wxpay_recharge(
+            self.auth.get_recharge_order(order["order_id"]), payment,
+        )
+        self.assertIsNone(result)
+        self.assertEqual(err, "amount_mismatch")
+        self.assertEqual(self.auth.get_recharge_order(order["order_id"])["status"], "pending")
+        self.assertEqual(self._row("buyer")["membership_tier"], "")
+        self.assertEqual(self._row("buyer")["points"], 20)
+
     def test_admin_can_set_each_one_year_tier_and_cancel(self):
         now = 1800000000
         for tier in ("experience", "partner", "initiator"):

@@ -173,6 +173,18 @@ class AuthPointsTests(unittest.TestCase):
                 "appid": "wx-huangque", "mchid": "merchant-other",
             }))
 
+    def test_wechat_query_uses_out_trade_no_and_merchant(self):
+        import server.wxpay as wxpay
+
+        payment = {"trade_state": "SUCCESS", "out_trade_no": "R/499"}
+        with patch.object(wxpay, "_config", return_value={"mchid": "merchant-huangque"}), \
+                patch.object(wxpay, "_request", return_value=(200, payment)) as request:
+            self.assertEqual(wxpay.query_transaction("R/499"), payment)
+        request.assert_called_once_with(
+            "GET",
+            "/v3/pay/transactions/out-trade-no/R%2F499?mchid=merchant-huangque",
+        )
+
     def test_concurrent_deduct_never_overdraws(self):
         results = []
         lock = threading.Lock()

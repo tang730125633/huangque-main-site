@@ -8,6 +8,7 @@ AES-256-GCM 解密 notify，其余走标准库。商户凭证全部走环境变�
   configured()          -> bool          是否已配齐(未配时下单/回调路由回 503,不影响服务启动)
   create_native(...)    -> code_url       Native 扫码下单,返回二维码内容
   create_jsapi(...)     -> {prepay_id..}  小程序 JSAPI 下单(需 openid;登录流程未接前先备着)
+  query_transaction(...) -> dict          按商户订单号主动查询微信支付结果
   verify_notify(...)    -> bool           验 notify 签名(公钥模式)
   decrypt_resource(...) -> dict           解密 notify 的 resource
 
@@ -164,6 +165,20 @@ def create_jsapi(out_trade_no, description, total_fen, openid):
     if status == 200 and data.get("prepay_id"):
         return data["prepay_id"]
     raise RuntimeError("JSAPI 下单失败: HTTP %s %s"
+                       % (status, json.dumps(data, ensure_ascii=False)[:300]))
+
+
+def query_transaction(out_trade_no):
+    """按商户订单号查询微信支付结果，用于回调延迟时安全补单。"""
+    c = _config()
+    path = "/v3/pay/transactions/out-trade-no/%s?mchid=%s" % (
+        urllib.parse.quote(str(out_trade_no or ""), safe=""),
+        urllib.parse.quote(c["mchid"], safe=""),
+    )
+    status, data = _request("GET", path)
+    if status == 200 and isinstance(data, dict):
+        return data
+    raise RuntimeError("微信订单查询失败: HTTP %s %s"
                        % (status, json.dumps(data, ensure_ascii=False)[:300]))
 
 
