@@ -117,6 +117,6 @@ Run: `node --test tests/*.test.js`
 
 Run: `git diff --check` and inspect `git diff --stat` in both repositories.
 
-- [ ] **Step 4: Commit, push, and open draft PRs**
+- [x] **Step 4: Commit, push, and open draft PRs**
 
 主站和小程序分别提交到各自分支，PR 描述注明需要配套合并且未部署。
