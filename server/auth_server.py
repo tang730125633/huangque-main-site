@@ -64,6 +64,9 @@ MEMBERSHIP_DISCOUNT_BPS = {
     "initiator": 5500,
 }
 MEMBERSHIP_ENFORCEMENT_ENV = "HQ_MEMBERSHIP_ENFORCEMENT_ENABLED"
+VIRTUAL_PAY_RECONCILE_INTERVAL_SECONDS = 60
+VIRTUAL_PAY_RECONCILE_BATCH = 100
+VIRTUAL_PAY_RECONCILE_MIN_AGE_SECONDS = 10
 
 def miniprogram_payments_enabled():
     """Operational kill switch for all mini-program payment order creation."""
@@ -2755,6 +2758,51 @@ def list_virtual_pay_orders(username, limit=20):
         c.close()
 
 
+def reconcile_created_virtual_pay_orders(limit=VIRTUAL_PAY_RECONCILE_BATCH):
+    """周期查单兜底：即使微信回调丢失、用户也没有重进页面，仍会自动发货。"""
+    limit = max(1, min(VIRTUAL_PAY_RECONCILE_BATCH, int(limit or VIRTUAL_PAY_RECONCILE_BATCH)))
+    c = db()
+    try:
+        rows = c.execute(
+            """SELECT username,order_id FROM virtual_pay_orders
+               WHERE status='created' AND created_at<=?
+               ORDER BY created_at,order_id LIMIT ?""",
+            (int(time.time()) - VIRTUAL_PAY_RECONCILE_MIN_AGE_SECONDS, limit),
+        ).fetchall()
+    finally:
+        c.close()
+
+    stats = {"checked": 0, "credited": 0, "terminal": 0, "pending": 0, "errors": 0}
+    for row in rows:
+        stats["checked"] += 1
+        try:
+            order, err = confirm_virtual_pay_order(row["username"], row["order_id"])
+            status = (order or {}).get("status")
+            if status == "credited":
+                stats["credited"] += 1
+            elif status == "created" or err == "pending":
+                stats["pending"] += 1
+            elif status:
+                stats["terminal"] += 1
+            else:
+                stats["errors"] += 1
+        except Exception:
+            stats["errors"] += 1
+    return stats
+
+
+def _virtual_pay_reconcile_loop():
+    while True:
+        try:
+            if wechat_vpay.is_configured():
+                stats = reconcile_created_virtual_pay_orders()
+                if stats["credited"] or stats["terminal"] or stats["errors"]:
+                    print("[virtual-pay-reconcile] %s" % json.dumps(stats, sort_keys=True), flush=True)
+        except Exception as exc:
+            print("[virtual-pay-reconcile] loop error: %s" % type(exc).__name__, file=sys.stderr, flush=True)
+        time.sleep(VIRTUAL_PAY_RECONCILE_INTERVAL_SECONDS)
+
+
 def _virtual_pay_event_payload(message):
     if not isinstance(message, dict):
         return {}
@@ -4497,5 +4545,10 @@ if __name__ == "__main__":
         create_user(sys.argv[2], sys.argv[3], pts, role)
         sys.exit(0)
     init_db()
+    threading.Thread(
+        target=_virtual_pay_reconcile_loop,
+        name="virtual-pay-reconcile",
+        daemon=True,
+    ).start()
     print("huangque-auth on 127.0.0.1:%d" % PORT)
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
