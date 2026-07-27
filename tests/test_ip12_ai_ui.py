@@ -22,6 +22,19 @@ class IP12AIUITests(unittest.TestCase):
         self.assertIn("keepalive:true", html)
         self.assertNotIn('window.addEventListener("beforeunload",saveDraft)', html)
 
+    def test_recovered_local_draft_is_synced_without_waiting_for_another_edit(self):
+        html = PAGE.read_text(encoding="utf-8")
+        self.assertIn("const remote=project.state?.questionnaire_state, draft=localDraft(), restoreLocal=shouldRestoreLocal(draft);", html)
+        self.assertIn("if(restoreLocal)queueProjectSave();", html)
+        load_project = html[html.index("async function loadProject"):html.index("function keyFor")]
+        self.assertLess(load_project.index("render();"), load_project.index("if(restoreLocal)queueProjectSave();"))
+
+    def test_editing_stale_analysis_returns_the_stale_state_for_the_notice(self):
+        html = PAGE.read_text(encoding="utf-8")
+        save_draft = html[html.index("function saveDraft()"):html.index("async function confirmCurrent")]
+        self.assertIn("return stale;", save_draft)
+        self.assertIn('if(stale){ showToast("回答已修改，请重新分析并确认"); }', html)
+
     def test_editing_a_confirmed_answer_requires_reconfirmation(self):
         html = PAGE.read_text(encoding="utf-8")
 
@@ -111,7 +124,7 @@ class IP12AIUITests(unittest.TestCase):
         self.assertIn("type:mime", html)
         self.assertIn("data_url:`data:${mime};base64,${base64}`", html)
         self.assertIn("profile:state.profile", html)
-        self.assertIn("state=shouldRestoreLocal(draft)?draft.state:remote&&typeof remote===\"object\"?{...initialState,...remote,analyses:{}", html)
+        self.assertIn("state=restoreLocal?draft.state:remote&&typeof remote===\"object\"?{...initialState,...remote,analyses:{}", html)
         self.assertIn("async function flushProjectSave()", html)
         self.assertGreaterEqual(html.count("await flushProjectSave();"), 2)
         self.assertIn('`${STORAGE_KEY}:${project.id}`', html)

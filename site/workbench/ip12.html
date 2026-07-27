@@ -702,9 +702,9 @@
           response=await fetch(PROJECTS_URL,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({title:"未命名数字 IP"})});
           result=await response.json(); if(!response.ok)throw new Error(result.detail||"项目创建失败"); project=result.project;
         }
-        const remote=project.state?.questionnaire_state, draft=localDraft();
-        state=shouldRestoreLocal(draft)?draft.state:remote&&typeof remote==="object"?{...initialState,...remote,analyses:{},guideTurns:remote.guideTurns||[]}:loadState();
-        $("projectTitle").value=shouldRestoreLocal(draft)&&draft.title?draft.title:project.title||"";
+        const remote=project.state?.questionnaire_state, draft=localDraft(), restoreLocal=shouldRestoreLocal(draft);
+        state=restoreLocal?draft.state:remote&&typeof remote==="object"?{...initialState,...remote,analyses:{},guideTurns:remote.guideTurns||[]}:loadState();
+        $("projectTitle").value=restoreLocal&&draft.title?draft.title:project.title||"";
         const target=entryStep();
         if(target){ state.moduleIndex=target.moduleIndex; state.stepIndex=target.stepIndex; }
         state.analyses={};
@@ -713,6 +713,7 @@
         const analysisKey=Number.isInteger(input.module_index)&&Number.isInteger(input.step_index)?`${input.module_index}-${input.step_index}`:keyFor();
         if(analysis)state.analyses[analysisKey]={analysis,model:project.last_analysis.model||"OpenAI",usage:{}};
         persistLocal(); render();
+        if(restoreLocal)queueProjectSave();
         $("projectStatus").textContent=`${projectStatusText()} · 已恢复 · 跨端可继续`;
       }catch(_){ state=structuredClone(initialState); render(); $("projectStatus").textContent="网络不可用，未加载账号档案"; }
     }
@@ -810,7 +811,7 @@
       const textarea=$("answer");
       if(textarea)textarea.addEventListener("input",()=>{
         const stale=saveDraft();
-        if(stale){ renderAI(); showToast("回答已修改，请重新分析并确认"); }
+        if(stale){ showToast("回答已修改，请重新分析并确认"); }
       });
 
       const exampleBtn=$("exampleBtn");
@@ -866,6 +867,7 @@
       const stale=invalidateStaleAnalysis(value)||changed;
       persist();
       if(stale)renderAI();
+      return stale;
     }
 
     async function confirmCurrent(){
