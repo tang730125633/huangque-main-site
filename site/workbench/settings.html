@@ -394,9 +394,9 @@
     </div>
     <div class="settings-modal-body">
       <form id="passwordForm" class="settings-form">
-        <label class="field"><span>当前密码</span><input id="oldPassword" type="password" autocomplete="current-password" minlength="6" placeholder="输入当前登录密码"></label>
-        <label class="field"><span>新密码</span><input id="newPassword" type="password" autocomplete="new-password" minlength="6" placeholder="输入 6 位以上新密码"></label>
-        <label class="field"><span>确认新密码</span><input id="confirmPassword" type="password" autocomplete="new-password" minlength="6" placeholder="再次输入新密码"></label>
+        <label class="field"><span>当前密码</span><input id="oldPassword" type="password" autocomplete="current-password" minlength="6" maxlength="128" placeholder="输入当前登录密码"></label>
+        <label class="field"><span>新密码</span><input id="newPassword" type="password" autocomplete="new-password" minlength="6" maxlength="128" placeholder="输入 6–128 位新密码"></label>
+        <label class="field"><span>确认新密码</span><input id="confirmPassword" type="password" autocomplete="new-password" minlength="6" maxlength="128" placeholder="再次输入新密码"></label>
         <div id="passwordNote" class="settings-card-note" aria-live="polite">改密成功会退出当前登录状态，请用新密码重新登录。</div>
         <div class="action-row"><button id="passwordSubmit" class="btn primary" type="submit">保存新密码</button></div>
       </form>
@@ -422,7 +422,7 @@
   </section>
 </div>
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=6b065299"></script>
+<script src="cloud-shell.js?v=e836823b"></script>
 <script>
 (function(){
   var $ = function(id){return document.getElementById(id);};

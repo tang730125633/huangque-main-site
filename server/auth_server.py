@@ -44,6 +44,8 @@ REGISTER_WINDOW = int(os.environ.get("HQ_AUTH_REGISTER_WINDOW", "120"))
 REGISTER_MAX = int(os.environ.get("HQ_AUTH_REGISTER_MAX", "10"))
 REGISTER_IP_WINDOW = int(os.environ.get("HQ_AUTH_REGISTER_IP_WINDOW", "60"))
 REGISTER_IP_MAX = int(os.environ.get("HQ_AUTH_REGISTER_IP_MAX", "20"))
+USERNAME_MAX_LENGTH = 64
+PASSWORD_MAX_LENGTH = 128
 NEW_USER_TRIAL_POINTS = int(os.environ.get("HQ_AUTH_TRIAL_POINTS", "16"))  # 暂时保留新用户注册赠送 16 点
 # 充值定价：客户端只传金额(元)，点数一律服务端算，绝不信客户端传的点数——
 # 否则用户能花 1 元买百万点。与 recharge.html / 小程序 recharge.js 保持一致。
@@ -752,6 +754,13 @@ def ensure_account_id(username, c=None):
 def hash_pw(password, salt):
     return hashlib.pbkdf2_hmac('sha256', password.encode(), bytes.fromhex(salt), ITER).hex()
 
+def credential_length_error(username, password):
+    if len(username) > USERNAME_MAX_LENGTH:
+        return {"code": "username_too_long", "detail": "账号最多 64 位"}
+    if len(password) > PASSWORD_MAX_LENGTH:
+        return {"code": "password_too_long", "detail": "密码最多 128 位"}
+    return None
+
 def create_user(username, password, points=0, role='member'):
     init_db()
     salt = secrets.token_hex(16)
@@ -776,8 +785,9 @@ def register_account(username, password, display_name=None, invite_code="", invi
     device_id = str(device_id or "").strip()
     if not username or not password:
         return None, {"status": 400, "code": "missing_credentials", "detail": "请填写账号和密码"}
-    if len(username) > 64:
-        return None, {"status": 400, "code": "username_too_long", "detail": "账号最多 64 位"}
+    length_error = credential_length_error(username, password)
+    if length_error:
+        return None, {"status": 400, **length_error}
     if len(display_name) > 32:
         return None, {"status": 400, "code": "display_name_too_long", "detail": "昵称最多 32 个字符"}
     if any(ch.isspace() for ch in username):
@@ -4028,6 +4038,9 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
             u = (d.get("username") or "").strip()
             pw = d.get("password") or ""
+            length_error = credential_length_error(u, pw)
+            if length_error:
+                return self._send(400, length_error)
             if self._login_limited(u):
                 return self._send(429, {"detail": "登录失败次数过多，请稍后再试"})
             c = db(); row = c.execute("SELECT * FROM users WHERE username=?", (u,)).fetchone(); c.close()
@@ -4051,6 +4064,9 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"detail": "请求体不是合法 JSON"})
             u = (d.get("username") or "").strip()
             pw = d.get("password") or ""
+            length_error = credential_length_error(u, pw)
+            if length_error:
+                return self._send(400, length_error)
             if self._login_limited(u):
                 return self._send(429, {"detail": "登录失败次数过多，请稍后再试"})
             c = db(); row = c.execute("SELECT * FROM users WHERE username=?", (u,)).fetchone(); c.close()
@@ -4113,6 +4129,8 @@ class H(BaseHTTPRequestHandler):
             newp = d.get("new_password") or ""
             if not oldp: return self._send(400, {"detail": "请填写当前密码"})
             if len(newp) < 6: return self._send(400, {"detail": "新密码至少 6 位"})
+            if len(oldp) > PASSWORD_MAX_LENGTH or len(newp) > PASSWORD_MAX_LENGTH:
+                return self._send(400, {"detail": "密码最多 128 位", "code": "password_too_long"})
             salt = secrets.token_hex(16)
             c = db()
             try:

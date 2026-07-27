@@ -170,6 +170,17 @@ class InviteRegistrationTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_registration_rejects_oversized_credentials_before_hashing(self):
+        for username, password, code in (
+            ("u" * 65, "secret123", "username_too_long"),
+            ("user", "p" * 129, "password_too_long"),
+        ):
+            with self.subTest(code=code), patch.object(self.auth, "hash_pw") as hash_pw:
+                result, err = self.auth.register_account(username, password)
+                self.assertIsNone(result)
+                self.assertEqual(err["code"], code)
+                hash_pw.assert_not_called()
+
     def test_miniprogram_registration_returns_only_token_and_user(self):
         code = self._invite_code()
         status, body, _ = self._request(
