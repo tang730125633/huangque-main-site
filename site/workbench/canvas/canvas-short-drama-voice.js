@@ -181,14 +181,123 @@
       return true;
     }).join('；');
   }
+  function timelineBlocker(code,message,shot,line,details){
+    return Object.assign({
+      code:code,message:message,shot_id:shot&&shot.id,line_id:line&&line.id
+    },details||{});
+  }
+  function recommendedSpeed(line,duration,available){
+    if(!line||duration<=0||available<=0) return null;
+    var current=number(line.speed,1);
+    if(current<0.5||current>2) return null;
+    var result=Math.ceil((current*duration/available*1.03)*20)/20;
+    return result>=0.5&&result<=2?Number(result.toFixed(2)):null;
+  }
+  function analyzeShotTiming(shot){
+    var result={blockers:[],byLine:Object.create(null)};
+    if(!shot) return result;
+    var limit=Math.max(0,number(shot.duration,0)*1000);
+    var audio=[],subtitles=[];
+    (shot.lines||[]).slice().sort(function(left,right){
+      return number(left.sort_order,0)-number(right.sort_order,0)||
+        text(left.id).localeCompare(text(right.id));
+    }).forEach(function(line){
+      var version=currentVersion(line),timing={
+        shotDurationMs:limit,audioDurationMs:number(version&&version.duration_ms,0),
+        audioEndMs:null,subtitleEndMs:null,audioOverflowMs:0,
+        subtitleOverflowMs:0,overflowMs:0,recommendedSpeed:null,
+        settingsPending:false
+      };
+      result.byLine[line.id]=timing;
+      if(!version||version.status==='failed'){
+        result.blockers.push(timelineBlocker(
+          'missing_current_version','存在尚未生成成功配音的台词',shot,line
+        ));return;
+      }
+      if(version.status==='metadata_pending'||timing.audioDurationMs<=0){
+        result.blockers.push(timelineBlocker(
+          'metadata_pending','音频时长仍在解析，请稍后刷新',shot,line
+        ));return;
+      }
+      var settings=version.settings||{};
+      timing.settingsPending=number(settings.speed,1)!==number(line.speed,1)||
+        number(settings.pitch,0)!==number(line.pitch,0)||
+        number(settings.volume,0)!==number(line.volume,0)||
+        text(version.voice_key)!==text(line.voice_key);
+      if(timing.settingsPending){
+        result.blockers.push(timelineBlocker(
+          'stale_current_version',
+          '当前配音版本与音色参数不一致，请重新生成配音',shot,line
+        ));
+      }
+      if(line.start_ms==null||line.end_ms==null){
+        result.blockers.push(timelineBlocker(
+          'timeline_missing','字幕时间轴尚未保存',shot,line
+        ));return;
+      }
+      var start=number(line.start_ms,-1),end=number(line.end_ms,-1);
+      if(start<0||end<=start){
+        result.blockers.push(timelineBlocker(
+          'timeline_invalid','字幕时间值不完整或顺序无效',shot,line
+        ));return;
+      }
+      timing.audioEndMs=start+timing.audioDurationMs;
+      timing.subtitleEndMs=end;
+      timing.audioOverflowMs=Math.max(0,timing.audioEndMs-limit);
+      timing.subtitleOverflowMs=Math.max(0,end-limit);
+      timing.overflowMs=Math.max(timing.audioOverflowMs,timing.subtitleOverflowMs);
+      if(timing.overflowMs>0){
+        if(timing.audioOverflowMs>0){
+          timing.recommendedSpeed=recommendedSpeed(
+            line,timing.audioDurationMs,limit-start
+          );
+        }
+        result.blockers.push(timelineBlocker(
+          'duration_overflow','配音或字幕超过镜头时长',shot,line,{
+            overflow_ms:timing.overflowMs,
+            audio_end_ms:timing.audioEndMs,
+            subtitle_end_ms:timing.subtitleEndMs,
+            audio_overflow_ms:timing.audioOverflowMs,
+            subtitle_overflow_ms:timing.subtitleOverflowMs,
+            recommended_speed:timing.recommendedSpeed
+          }
+        ));
+      }
+      audio.push([start,timing.audioEndMs,line]);
+      if(line.subtitle_visible!==false){
+        if(!text(line.subtitle_text).trim()){
+          result.blockers.push(timelineBlocker(
+            'timeline_invalid','可见字幕文本不能为空',shot,line
+          ));
+        }
+        subtitles.push([start,end,line]);
+      }
+    });
+    function overlaps(intervals,code,message){
+      intervals.sort(function(left,right){ return left[0]-right[0]||left[1]-right[1]; });
+      for(var index=1;index<intervals.length;index+=1){
+        if(intervals[index][0]<intervals[index-1][1]){
+          result.blockers.push(timelineBlocker(
+            code,message,shot,intervals[index][2]
+          ));
+        }
+      }
+    }
+    overlaps(audio,'audio_overlap','配音播放时间发生重叠');
+    overlaps(subtitles,'subtitle_overlap','可见字幕时间区间发生重叠');
+    return result;
+  }
   function renderWorkspace(input,options){
     options=options||{};
     var state=normalizeState(input,options.voices,options);
     var shot=selectedShot(state);
     var timelineWritable=!!(shot&&state.canEdit&&state.stage==='voice_review'&&
       !shot.locked&&!state.operationBusy&&!state.conflictFrozen);
+    var timingAnalysis=analyzeShotTiming(shot);
+    var visibleBlockers=state.timelineDirty?
+      timingAnalysis.blockers:(shot&&shot.lock_blockers||[]);
     var blockedLines=Object.create(null);
-    (shot&&shot.lock_blockers||[]).forEach(function(item){
+    visibleBlockers.forEach(function(item){
       if(item.line_id) blockedLines[item.line_id]=true;
     });
     var rail=state.shots.map(function(item){
@@ -202,6 +311,7 @@
     var lines=shot?shot.lines.map(function(line){
       var active=currentVersion(line),busy=line.job&&
         ['pending','running','metadata_pending'].indexOf(line.job.status)>=0;
+      var timing=timingAnalysis.byLine[line.id]||{};
       var voiceWritable=state.canEdit&&state.stage==='voice_review'&&!shot.locked&&
         !state.operationBusy&&!state.conflictFrozen;
       var disabled=voiceWritable?'':' disabled';
@@ -219,6 +329,30 @@
             (voiceWritable?'':' disabled')+'>设为当前</button>':'')+
           '</li>';
       }).join('');
+      var recommendation='';
+      if(timing.settingsPending){
+        recommendation='<p class="nc-sdv-timing is-warning">'+
+          '配音参数已修改，请重新生成后再保存时间轴。</p>';
+      }else if(timing.audioOverflowMs>0){
+        recommendation='<div class="nc-sdv-timing is-error"><strong>音频超出镜头 '+
+          formatMs(timing.audioOverflowMs)+'</strong><span>音频结束于 '+
+          formatMs(timing.audioEndMs)+'，镜头结束于 '+formatMs(timing.shotDurationMs)+
+          '。</span>'+(timing.recommendedSpeed?
+            '<button type="button" data-action="apply-recommended-speed" data-line-id="'+
+            escapeHtml(line.id)+'" data-speed="'+timing.recommendedSpeed+'">采用推荐语速 '+
+            timing.recommendedSpeed.toFixed(2)+'</button>':
+            '<span>当前台词无法仅靠允许范围内的语速压缩，请缩短文案或增加镜头时长。</span>')+
+          (timing.subtitleOverflowMs>0?'<span>字幕结束时间也超过镜头，请同时调整字幕。</span>':'')+
+          '</div>';
+      }else if(timing.subtitleOverflowMs>0){
+        recommendation='<div class="nc-sdv-timing is-error"><strong>字幕超出镜头 '+
+          formatMs(timing.subtitleOverflowMs)+'</strong><span>字幕结束于 '+
+          formatMs(timing.subtitleEndMs)+'，镜头结束于 '+formatMs(timing.shotDurationMs)+
+          '。请调整字幕结束时间。</span></div>';
+      }else if(timing.audioEndMs!=null){
+        recommendation='<p class="nc-sdv-timing is-valid">时长校验通过 · 音频结束于 '+
+          formatMs(timing.audioEndMs)+'</p>';
+      }
       return '<article class="nc-sdv-line'+
         (blockedLines[line.id]?' has-conflict':'')+
         (state.playingLineId===line.id?' is-playing':'')+
@@ -255,7 +389,7 @@
           '" data-current-audio="'+escapeHtml(line.id)+'"></audio>':'')+
         '<p class="nc-sdv-time-note">字幕 '+formatMs(line.start_ms)+' - '+
         formatMs(line.end_ms)+(active&&active.duration_ms?
-          ' · 音频 '+formatMs(active.duration_ms):'')+'</p>'+
+          ' · 音频 '+formatMs(active.duration_ms):'')+'</p>'+recommendation+
         (line.job&&line.job.status==='failed'?'<p class="nc-sdv-error">'+
           escapeHtml(line.job.error||'配音生成失败')+'</p>':'')+
         (history?'<details class="nc-sdv-history"><summary>历史版本（'+line.versions.length+
@@ -317,7 +451,8 @@
       (state.canEdit&&state.stage==='voice_review'&&!state.operationBusy?'':' disabled')+
       '>生成全剧未完成台词</button>'+
       '<button type="button" data-action="save-timeline"'+
-      (timelineWritable&&state.timelineDirty?'':' disabled')+'>保存字幕时间轴</button>'+
+      (timelineWritable&&state.timelineDirty&&!timingAnalysis.blockers.length?'':' disabled')+
+      '>保存字幕时间轴</button>'+
       '<button type="button" data-action="set-shot-lock" data-lock="'+
       (shot&&shot.locked?'false':'true')+'"'+
       (shot&&state.canEdit&&state.stage==='voice_review'&&!state.operationBusy&&
@@ -327,8 +462,9 @@
       (state.canEdit&&state.stage==='voice_review'&&!state.handoff_blocked&&
         !state.operationBusy&&!state.timelineDirty&&!state.conflictFrozen?'':' disabled')+
       '>进入视频生成阶段</button>'+
-      (shot&&shot.lock_blockers.length?'<div class="nc-sdv-blockers"><strong>当前镜头阻塞</strong><p>'+
-        escapeHtml(blockerText(shot.lock_blockers))+'</p></div>':'')+
+      (visibleBlockers.length?'<div class="nc-sdv-blockers"><strong>'+
+        (state.timelineDirty?'当前修改尚未保存':'当前镜头阻塞')+'</strong><p>'+
+        escapeHtml(blockerText(visibleBlockers))+'</p></div>':'')+
       (state.handoff_blockers.length?'<div class="nc-sdv-blockers"><strong>阶段推进阻塞</strong><p>'+
         escapeHtml(blockerText(state.handoff_blockers))+'</p></div>':'')+
       (state.conflictFrozen?'<p class="nc-sdv-error">检测到版本冲突，请刷新工作区后继续。</p>':'')+
@@ -509,13 +645,34 @@
         throw new Error('当前镜头不能恢复自动时间轴');
       }
       var draft=draftForShot(shot);
-      (shot.lines||[]).forEach(function(line){
-        if(line.suggested_start_ms==null||line.suggested_end_ms==null) return;
-        draft[line.id].start_ms=line.suggested_start_ms;
-        draft[line.id].end_ms=line.suggested_end_ms;
+      var ordered=(shot.lines||[]).slice().sort(function(left,right){
+        return number(left.sort_order,0)-number(right.sort_order,0)||
+          text(left.id).localeCompare(text(right.id));
+      });
+      var durations=ordered.map(function(line){
+        var version=currentVersion(normalizeLine(line,0,Object.create(null)));
+        return number(version&&version.duration_ms,0);
+      });
+      var cursor=0;
+      ordered.forEach(function(line,index){
+        var duration=durations[index];
+        if(duration<=0) return;
+        draft[line.id].start_ms=cursor;
+        draft[line.id].end_ms=cursor+duration;
+        cursor+=duration+150;
       });
       render();
       return clone(draft);
+    }
+    function applyRecommendedSpeed(lineId,speed){
+      requireWritable();
+      var line=findLine(lineId),value=Math.ceil(number(speed,0)*20)/20;
+      if(!line||value<0.5||value>2){
+        throw new Error('推荐语速无效，请缩短文案或增加镜头时长');
+      }
+      line.speed=Number(value.toFixed(2));
+      render();
+      return line.speed;
     }
     function editableItem(line){
       return {
@@ -758,6 +915,13 @@
       }
       if(generationBusy) return Promise.reject(new Error('操作正在处理中'));
       var body=timelineBody(shot);
+      var draftShot=(viewSnapshot().shots||[]).find(function(item){
+        return item.id===shot.id;
+      });
+      var blockers=analyzeShotTiming(draftShot).blockers;
+      if(blockers.length){
+        return Promise.reject(new Error(blockers[0].message));
+      }
       generationBusy=true;ui.operationError='';render();
       return callJson(SAVE_TIMELINE_PATH,{method:'POST',body:body}).then(function(result){
         return acceptSnapshot(result,shot.id,true);
@@ -1007,6 +1171,11 @@
           else if(action==='restore-auto-timeline'){
             try{ restoreAutoTimeline(); }catch(error){ ui.operationError=error.message;render(); }
           }
+          else if(action==='apply-recommended-speed'){
+            try{
+              applyRecommendedSpeed(lineId,node.getAttribute('data-speed'));
+            }catch(error){ ui.operationError=error.message;render(); }
+          }
           else if(action==='play-shot') playShot();
           else if(action==='replay-shot') replayShot();
           else if(action==='select-version') task=selectVersion(lineId,node.getAttribute('data-version'));
@@ -1147,6 +1316,7 @@
       selectShot:selectShot,generateLine:generateLine,generateShot:generateShot,
       generateAll:generateAll,selectVersion:selectVersion,preview:preview,
       updateTimelineLine:updateTimelineLine,restoreAutoTimeline:restoreAutoTimeline,
+      applyRecommendedSpeed:applyRecommendedSpeed,
       saveTimeline:saveTimeline,setShotLock:setShotLock,
       confirmVoiceStage:confirmVoiceStage,useNativeAudio:useNativeAudio,
       playShot:playShot,

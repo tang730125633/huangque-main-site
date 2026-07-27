@@ -497,7 +497,30 @@
           "401": {"description": "未登录"},
           "403": {"description": "Viewer 或无画布写权限"},
           "404": {"description": "项目、镜头或台词不存在"},
-          "409": {"description": "revision_conflict"}
+          "409": {"description": "revision_conflict"},
+          "422": {
+            "description": "时间轴语义校验失败；超时时返回音频结束位置、超出毫秒数和可用的推荐语速",
+            "content": {"application/json": {"schema": {
+              "type": "object",
+              "required": ["detail", "code", "message"],
+              "properties": {
+                "detail": {"type": "string"},
+                "code": {"type": "string", "enum": ["timeline_missing", "timeline_invalid", "duration_overflow", "audio_overlap", "subtitle_overlap", "metadata_pending", "missing_current_version", "stale_current_version"]},
+                "message": {"type": "string"},
+                "shot_id": {"type": "string"},
+                "line_id": {"type": "string"},
+                "shot_duration_ms": {"type": "integer"},
+                "audio_duration_ms": {"type": "integer"},
+                "audio_start_ms": {"type": "integer"},
+                "audio_end_ms": {"type": "integer"},
+                "subtitle_end_ms": {"type": "integer"},
+                "audio_overflow_ms": {"type": "integer"},
+                "subtitle_overflow_ms": {"type": "integer"},
+                "overflow_ms": {"type": "integer"},
+                "recommended_speed": {"type": "number", "minimum": 0.5, "maximum": 2, "nullable": true}
+              }
+            }}}
+          }
         }
       }
     },

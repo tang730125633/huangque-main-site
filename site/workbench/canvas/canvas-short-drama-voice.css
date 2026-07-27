@@ -94,6 +94,38 @@
   background: #fff;
 }
 .nc-sdv-time-note { margin: 8px 0 0; color: var(--sdv-muted); font-size: 12px; }
+.nc-sdv-timing {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 9px 11px;
+  border: 1px solid #d0d5dd;
+  border-radius: 9px;
+  font-size: 12px;
+}
+.nc-sdv-timing strong { font-size: 13px; }
+.nc-sdv-timing button {
+  width: auto;
+  margin: 0 0 0 auto;
+  padding: 6px 10px;
+}
+.nc-sdv-timing.is-valid {
+  color: #067647;
+  border-color: #abefc6;
+  background: #ecfdf3;
+}
+.nc-sdv-timing.is-warning {
+  color: #93370d;
+  border-color: #fedf89;
+  background: #fffaeb;
+}
+.nc-sdv-timing.is-error {
+  color: #b42318;
+  border-color: #fecdca;
+  background: #fffbfa;
+}
 .nc-sdv-params {
   display: grid;
   grid-template-columns: minmax(150px, 1.5fr) repeat(3, minmax(74px, .6fr));

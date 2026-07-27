@@ -189,6 +189,69 @@ function testRendererDistinguishesLoadingErrorEmptyPendingAndSilent() {
   assert.match(silent, /data-state="silent"[\s\S]*当前镜头为静音镜头/);
 }
 
+function testDraftTimingShowsOverflowAndRecommendedSpeedBeforeSave() {
+  const state = c2Snapshot();
+  const shot = state.shots[0];
+  shot.lines = [shot.lines[0]];
+  const line = shot.lines[0];
+  line.speed = 1;
+  line.start_ms = 300;
+  line.end_ms = 4850;
+  line.versions[0].duration_ms = 5150;
+  line.versions[0].settings.speed = 1;
+  const html = voice.renderWorkspace(state, {
+    voices, selectedShotId: shot.id, timelineDirty: true,
+  });
+  assert.match(html, /音频超出镜头 0\.45s/);
+  assert.match(html, /音频结束于 5\.45s/);
+  assert.match(html, /采用推荐语速 1\.15/);
+  assert.match(html, /当前修改尚未保存[\s\S]*配音或字幕超过镜头时长/);
+  assert.match(html, /data-action="save-timeline"[^>]*disabled/);
+}
+
+function testDraftSettingsChangesBlockTimelineSave() {
+  [
+    line => { line.speed += 0.1; },
+    line => { line.pitch += 1; },
+    line => { line.volume += 1; },
+    line => { line.voice_key = line.voice_key === 'longwan'?'longcheng':'longwan'; },
+  ].forEach(change => {
+    const state = c2Snapshot();
+    const shot = state.shots[0];
+    shot.lines = [shot.lines[0]];
+    const line = shot.lines[0];
+    line.start_ms = 0;
+    line.end_ms = 1000;
+    line.versions[0].duration_ms = 1000;
+    change(line);
+    const html = voice.renderWorkspace(state, {
+      voices, selectedShotId: shot.id, timelineDirty: true,
+    });
+    assert.match(html, /配音参数已修改，请重新生成后再保存时间轴/);
+    assert.match(html, /当前配音版本与音色参数不一致，请重新生成配音/);
+    assert.match(html, /data-action="save-timeline"[^>]*disabled/);
+  });
+}
+
+function testSubtitleOnlyOverflowDoesNotRecommendVoiceSpeed() {
+  const state = c2Snapshot();
+  const shot = state.shots[0];
+  shot.lines = [shot.lines[0]];
+  const line = shot.lines[0];
+  line.start_ms = 0;
+  line.end_ms = 5200;
+  line.speed = 0.5;
+  line.versions[0].duration_ms = 1000;
+  line.versions[0].settings.speed = 0.5;
+  const html = voice.renderWorkspace(state, {
+    voices, selectedShotId: shot.id, timelineDirty: true,
+  });
+  assert.match(html, /字幕超出镜头 0\.20s/);
+  assert.match(html, /请调整字幕结束时间/);
+  assert.doesNotMatch(html, /data-action="apply-recommended-speed"/);
+  assert.match(html, /data-action="save-timeline"[^>]*disabled/);
+}
+
 function testRendererEscapesAttributesErrorsAndVoiceFallbacks() {
   const malicious = snapshot({
     shots: [{
@@ -758,6 +821,9 @@ async function testC2ShotPlaybackStopsOnSelectionAndDestroy() {
 async function main() {
   testNormalizeRenderAndReadonlyContract();
   testRendererDistinguishesLoadingErrorEmptyPendingAndSilent();
+  testDraftTimingShowsOverflowAndRecommendedSpeedBeforeSave();
+  testDraftSettingsChangesBlockTimelineSave();
+  testSubtitleOnlyOverflowDoesNotRecommendVoiceSpeed();
   testRendererEscapesAttributesErrorsAndVoiceFallbacks();
   testPrototypeNamedVoiceAndStatusKeysUseNormalFallbacks();
   testNarrationRendersAnExplicitEscapedBadge();
@@ -777,6 +843,7 @@ async function main() {
     __dirname, '../site/workbench/canvas/canvas-short-drama-voice.css'
   ), 'utf8');
   assert.match(css, /grid-template-columns:\s*260px\s+minmax\(0,\s*1fr\)\s+300px/);
+  assert.match(css, /\.nc-sdv-timing\.is-error/);
   console.log('canvas short drama voice: pass');
 }
 

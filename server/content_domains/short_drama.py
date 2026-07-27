@@ -1714,6 +1714,27 @@ def _http_error(handler, error, *, operation_terminal=False):
         handler._send(409, {
             "detail": str(error)[:220], "code": "charge_attempt_in_progress", **terminal,
         })
+    elif isinstance(error, short_drama_voice.VoiceTimelineValidationError):
+        blocker = dict(error.blocker)
+        blocker["detail"] = str(error)[:220]
+        blocker.update(terminal)
+        handler._send(422, blocker)
+    elif isinstance(error, short_drama_video.VideoQuoteConsumed):
+        handler._send(409, {
+            "detail": str(error)[:220], "code": "idempotency_conflict", **terminal,
+        })
+    elif isinstance(error, short_drama_video.VideoChargeInProgress):
+        handler._send(409, {
+            "detail": str(error)[:220], "code": "charge_attempt_in_progress", **terminal,
+        })
+    elif isinstance(error, short_drama_video.VideoCastConflict):
+        handler._send(409, {
+            "detail": str(error)[:220], "code": error.code, **terminal,
+        })
+    elif isinstance(error, short_drama_video.VideoBlocked):
+        handler._send(400, {
+            "detail": str(error)[:220], "code": error.code, **terminal,
+        })
     elif isinstance(error, PointBudgetExceeded):
         handler._send(400, {"detail": str(error)[:220], "code": "point_budget_exceeded", **terminal})
     elif isinstance(error, PermissionError):
