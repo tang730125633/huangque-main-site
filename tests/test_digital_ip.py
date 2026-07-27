@@ -249,6 +249,8 @@ class DigitalIPTests(unittest.TestCase):
                 })
             self.assertEqual(len(result["analysis"]["positioning_candidates"]), 3)
             self.assertEqual(result["project"]["status"], "candidate_ready")
+            self.assertEqual(json.loads(post.call_args.args[1])["max_output_tokens"], 25000)
+            self.assertEqual(json.loads(post.call_args.args[1])["text"]["verbosity"], "low")
             content = json.loads(post.call_args.args[1])["input"][0]["content"]
             self.assertEqual(next(item for item in content if item["type"] == "input_image")["detail"], "high")
             with closing(digital_ip._project_db()) as conn:
