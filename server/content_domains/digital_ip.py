@@ -923,8 +923,14 @@ def _project_state_answer(row, module_index, step_index):
 
 def _answer_content(value):
     if not isinstance(value, dict):
-        return value
-    return {key: item for key, item in value.items() if key not in {"confirmed", "confirmedValue", "skipped"}}
+        return str(value or "").strip()
+    text = str(value.get("text") or "").strip()
+    if text:
+        return {"text": text}
+    choice = value.get("choice")
+    if isinstance(choice, list):
+        return {"choice": [str(item).strip() for item in choice]}
+    return {"choice": str(choice or "").strip()}
 
 
 def _confirmed_answers_snapshot(state):

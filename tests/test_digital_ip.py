@@ -143,6 +143,28 @@ class DigitalIPTests(unittest.TestCase):
                 "answer": "美" * 6001,
             })
 
+    def test_answer_snapshot_ignores_client_metadata_but_detects_text_or_choice_changes(self):
+        analysis_input = {"module_index": 1, "step_index": 1}
+        previous = {"questionnaire_state": {"answers": {"1-1": {
+            "text": "经营 7 年", "confirmed": False,
+        }}}}
+        metadata_only = {"questionnaire_state": {"answers": {"1-1": {
+            "text": "经营 7 年", "confirmed": True, "confirmedValue": "经营 7 年",
+            "aiChoice": 2, "reviewed": True,
+        }}}}
+        self.assertFalse(digital_ip._confirmed_answers_changed(previous, metadata_only, analysis_input))
+        changed_text = {"questionnaire_state": {"answers": {"1-1": {
+            "text": "经营 8 年", "confirmed": True,
+        }}}}
+        self.assertTrue(digital_ip._confirmed_answers_changed(previous, changed_text, analysis_input))
+        confirmed_choice = {"questionnaire_state": {"answers": {"1-1": {
+            "choice": ["复购"], "confirmed": True,
+        }}}}
+        changed_choice = {"questionnaire_state": {"answers": {"1-1": {
+            "choice": ["获客"], "confirmed": True,
+        }}}}
+        self.assertTrue(digital_ip._confirmed_answers_changed(confirmed_choice, changed_choice, analysis_input))
+
     def test_refusal_is_not_treated_as_schema_output(self):
         with self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "暂时无法分析"):
             digital_ip._extract_output({
@@ -305,6 +327,7 @@ class DigitalIPTests(unittest.TestCase):
                 "revision": confirmed["project"]["revision"],
                 "state": {"questionnaire_state": {"answers": {"1-1": {
                     "text": "经营 7 年", "confirmed": True, "confirmedValue": "经营 7 年",
+                    "aiChoice": 1, "reviewed": True,
                 }}}},
             })
             self.assertEqual(preserved["status"], "confirmed")
