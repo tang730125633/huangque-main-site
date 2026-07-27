@@ -303,7 +303,9 @@ class DigitalIPTests(unittest.TestCase):
             self.assertNotIn("被篡改的回答", confirmed_json)
             preserved = digital_ip.patch_project("owner", project["id"], {
                 "revision": confirmed["project"]["revision"],
-                "state": {"questionnaire_state": {"answers": {"1-1": {"text": "经营 7 年", "confirmed": True}}}},
+                "state": {"questionnaire_state": {"answers": {"1-1": {
+                    "text": "经营 7 年", "confirmed": True, "confirmedValue": "经营 7 年",
+                }}}},
             })
             self.assertEqual(preserved["status"], "confirmed")
             self.assertEqual(preserved["confirmed_profile"]["title"], analysis_data["positioning_candidates"][1]["title"])

@@ -924,7 +924,7 @@ def _project_state_answer(row, module_index, step_index):
 def _answer_content(value):
     if not isinstance(value, dict):
         return value
-    return {key: item for key, item in value.items() if key not in {"confirmed", "skipped"}}
+    return {key: item for key, item in value.items() if key not in {"confirmed", "confirmedValue", "skipped"}}
 
 
 def _confirmed_answers_snapshot(state):
