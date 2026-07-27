@@ -263,6 +263,21 @@ def init_db(db_factory):
     assembly_artifacts.init_db(db_factory)
 
 
+def user_owns_output_file(db_factory, username, file_name):
+    """Preserve the authenticated local-file ownership check used by core."""
+    try:
+        with closing(db_factory()) as conn:
+            return bool(conn.execute(
+                "SELECT 1 FROM short_drama_composition_versions v "
+                "JOIN short_drama_projects p ON p.id=v.project_id "
+                "WHERE p.username=? AND p.deleted=0 AND v.status='succeeded' "
+                "AND v.file=? LIMIT 1",
+                (username, file_name),
+            ).fetchone())
+    except Exception:
+        return False
+
+
 def _json_value(value, default):
     try:
         parsed = json.loads(value)
