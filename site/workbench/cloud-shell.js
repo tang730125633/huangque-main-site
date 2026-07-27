@@ -482,6 +482,31 @@
     }
     return noticePage(x.kind);
   }
+  function ip12ProgressNotices(payload){
+    var projects=(payload&&payload.items)||[];
+    var notices=[];
+    projects.forEach(function(project){
+      var questionnaire=project&&project.state&&project.state.questionnaire_state;
+      var answers=questionnaire&&questionnaire.answers;
+      if(!project||!project.id||!answers||typeof answers!=='object') return;
+      var keys=Object.keys(answers).filter(function(key){return /^(\d+)-(\d+)$/.test(key);});
+      var progressed=keys.filter(function(key){var answer=answers[key];return answer&&(answer.confirmed||answer.skipped);}).length;
+      var skipped=keys.filter(function(key){return answers[key]&&answers[key].skipped;}).sort(function(a,b){
+        var aa=a.split('-').map(Number), bb=b.split('-').map(Number); return aa[0]-bb[0]||aa[1]-bb[1];
+      });
+      if(progressed>=54&&!skipped.length) return;
+      var target=skipped.length?skipped[0]:String(Number(questionnaire.moduleIndex)||0)+'-'+String(Number(questionnaire.stepIndex)||0);
+      var indexes=target.split('-').map(Number), moduleIndex=indexes[0], stepIndex=indexes[1];
+      notices.push({
+        id:'ip12-progress-'+project.id+'-'+progressed+'-'+skipped.length,kind:'system',title:skipped.length?'IP12 有 '+skipped.length+' 项待补':'继续完善 IP12',
+        detail:(project.title||'数字化 IP')+' · 首轮进度 '+progressed+'/54'+(skipped.length?'，补齐后方案会更准确。':'，继续完成即可解锁定制方案。'),
+        time:Number(project.updated_at||project.created_at||0)*1000,
+        href:'ip12.html?project='+encodeURIComponent(project.id)+'&module='+encodeURIComponent(moduleIndex+1)+'&step='+encodeURIComponent(stepIndex+1),
+        action:skipped.length?'去回补':'继续填写',tone:'info'
+      });
+    });
+    return notices;
+  }
   function buildNotices(data){
     var read=readNoticeIds(), items=[];
     var stored=readAccountJson('hq_preferences_v1',currentUser()), prefs=stored.notifications||{};
@@ -503,6 +528,7 @@
       }
     });
     if(enabled('systemNotices',true)){
+      (data&&data.ip12_skips||[]).forEach(function(x){ items.push(x); });
       (data&&data.system_notices||[]).forEach(function(x){
         items.push({id:'server-notice-'+x.id,kind:'system',title:x.title||'系统通知',detail:x.detail||'',time:Number(x.created_at||0)*1000});
       });
@@ -587,9 +613,11 @@
       fetch('/api/gen/points/history?days=30&page=1&page_size=20',{credentials:'same-origin',cache:'no-store',headers:authHeaders()})
         .then(function(r){ if(r.status===401) return {items:[]}; return r.ok?r.json():Promise.reject(new Error('读取任务通知失败')); }).catch(function(){return {items:[]};}),
       fetch('/api/auth/notifications?limit=50',{credentials:'same-origin',cache:'no-store',headers:authHeaders()})
-        .then(function(r){ if(r.status===401) return {items:[]}; return r.ok?r.json():Promise.reject(new Error('读取系统通知失败')); }).catch(function(){return {items:[]};})
+        .then(function(r){ if(r.status===401) return {items:[]}; return r.ok?r.json():Promise.reject(new Error('读取系统通知失败')); }).catch(function(){return {items:[]};}),
+      fetch('/api/gen/digital-ip/projects',{credentials:'same-origin',cache:'no-store',headers:authHeaders()})
+        .then(function(r){ if(r.status===401) return {items:[]}; return r.ok?r.json():Promise.reject(new Error('读取 IP12 提醒失败')); }).catch(function(){return {items:[]};})
     ])
-      .then(function(all){ var d=all[0]||{}; d.system_notices=(all[1]&&all[1].items)||[]; _noticeState.items=buildNotices(d); renderNotices(); })
+      .then(function(all){ var d=all[0]||{}; d.system_notices=(all[1]&&all[1].items)||[]; d.ip12_skips=ip12ProgressNotices(all[2]); _noticeState.items=buildNotices(d); renderNotices(); })
       .catch(function(){ _noticeState.items=buildNotices({items:[]}); renderNotices(); })
       .finally(function(){ _noticeState.loading=false; });
   }

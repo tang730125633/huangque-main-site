@@ -379,6 +379,7 @@
             <span class="save-state" id="saveState">浏览器会自动保存本页内容</span>
             <div class="action-group">
               <button class="nav-btn" id="backBtn" type="button">上一步</button>
+              <button class="nav-btn" id="skipBtn" type="button">跳过，稍后回补</button>
               <button class="nav-btn primary" id="nextBtn" type="button">确认并继续</button>
             </div>
           </div>
@@ -430,6 +431,14 @@
       <section class="memory-section">
         <div class="memory-title"><b>三阶段进度</b><span id="doneModulesText">0 / 12 完成</span></div>
         <div id="phaseProgress"></div>
+      </section>
+      <section class="memory-section">
+        <div class="memory-title"><b>待补步骤</b><span id="skippedCount">0 项</span></div>
+        <div id="skippedItems"></div>
+      </section>
+      <section class="memory-section">
+        <div class="memory-title"><b>AI 产品方案</b><span>完成首轮后解锁</span></div>
+        <div id="reportUnlock"></div>
       </section>
       <section class="memory-section">
         <div class="memory-title"><b>已确认的模块结果</b><span>用户确认</span></div>
@@ -615,6 +624,12 @@
     ];
 
     function projectStorageKey(){ return project?.id?`${STORAGE_KEY}:${project.id}`:""; }
+    function entryStep(){
+      const query=new URLSearchParams(location.search);
+      const module=Number(query.get("module")), step=Number(query.get("step"));
+      if(!Number.isInteger(module)||!Number.isInteger(step)||module<1||module>MODULES.length||step<1||step>MODULES[module-1].steps.length)return null;
+      return {moduleIndex:module-1,stepIndex:step-1};
+    }
     function loadState(){
       try{
         const key=projectStorageKey();
@@ -670,11 +685,13 @@
     }
     async function loadProject(){
       try{
-        let response=await fetch(PROJECTS_URL,{credentials:"include",cache:"no-store"});
-        if(response.status===401){ window.location.href=`/login.html?next=${encodeURIComponent(location.pathname)}`; return; }
+        const requestedProject=new URLSearchParams(location.search).get("project");
+        let response=await fetch(requestedProject?`${PROJECTS_URL}/${encodeURIComponent(requestedProject)}`:PROJECTS_URL,{credentials:"include",cache:"no-store"});
+        if(response.status===401){ window.location.href=`/login.html?next=${encodeURIComponent(location.pathname+location.search)}`; return; }
         let result=await response.json();
         if(!response.ok)throw new Error(result.detail||"项目读取失败");
-        if(result.items&&result.items.length){ project=result.items[0]; }
+        if(requestedProject){ project=result.project; }
+        else if(result.items&&result.items.length){ project=result.items[0]; }
         else{
           response=await fetch(PROJECTS_URL,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({title:"未命名数字 IP"})});
           result=await response.json(); if(!response.ok)throw new Error(result.detail||"项目创建失败"); project=result.project;
@@ -682,6 +699,8 @@
         $("projectTitle").value=project.title||"";
         const remote=project.state?.questionnaire_state;
         state=remote&&typeof remote==="object"?{...initialState,...remote,analyses:{},guideTurns:remote.guideTurns||[]}:loadState();
+        const target=entryStep();
+        if(target){ state.moduleIndex=target.moduleIndex; state.stepIndex=target.stepIndex; }
         state.analyses={};
         const analysis=project.last_analysis?.analysis;
         const input=project.last_analysis?.input||{};
@@ -705,6 +724,17 @@
     function confirmedStepCount(){
       return Object.values(state.answers).filter(answer=>answer?.confirmed).length;
     }
+    function skippedSteps(){
+      return Object.entries(state.answers).filter(([,answer])=>answer?.skipped).map(([key,answer])=>{
+        const [moduleIndex,stepIndex]=key.split("-").map(Number);
+        const module=MODULES[moduleIndex], step=module?.steps[stepIndex];
+        return step?{moduleIndex,stepIndex,module,step,answer}:null;
+      }).filter(Boolean);
+    }
+    function progressedStepCount(){ return confirmedStepCount()+skippedSteps().length; }
+    function moduleSkippedCount(moduleIndex){
+      return skippedSteps().filter(item=>item.moduleIndex===moduleIndex).length;
+    }
     function showToast(message){
       $("toast").textContent=message;
       $("toast").classList.add("show");
@@ -726,10 +756,11 @@
           const index=module.id-1;
           const active=index===state.moduleIndex;
           const done=isModuleDone(module.id);
+          const skipped=moduleSkippedCount(index);
           return `<button class="module-btn ${active?"active":""} ${done?"done":""}" type="button" data-module="${index}">
             <span class="module-no">${String(module.id).padStart(2,"0")}</span>
             <span class="module-copy"><b>${escapeHtml(module.name)}</b><small>${module.steps.length} 个内部步骤</small></span>
-            <span class="module-state">${done?"已确认":active?"进行中":"可预览"}</span>
+            <span class="module-state">${done?(skipped?`${skipped} 项待补`:"已确认"):active?"进行中":"可预览"}</span>
           </button>`;
         }).join("")
       ).join("");
@@ -749,19 +780,20 @@
       const answer=state.answers[keyFor()]||{};
       selectedChoice=answer.choice??(step.type==="multi"?[]:null);
       let html="";
+      if(answer.skipped)html=`<div class="note-box">此步骤已跳过，尚未进入已确认档案。填写后点击“确认并继续”即可回补。</div>`;
       if(step.type==="input"){
-        html=`<label class="answer-label" for="answer">${escapeHtml(step.label)}</label>
+        html+=`<label class="answer-label" for="answer">${escapeHtml(step.label)}</label>
           <textarea class="answer" id="answer" placeholder="先写最接近真实的一版，不需要追求完美。">${escapeHtml(answer.text||"")}</textarea>
           <div class="helper"><span>回答越具体，后续候选越准确。</span><button class="example-btn" id="exampleBtn" type="button">带入示例</button></div>`;
       }else if(step.type==="select"||step.type==="multi"){
-        html=`<label class="answer-label">${step.type==="multi"?"可以选择多项":"请选择一项作为当前确认"}</label>
+        html+=`<label class="answer-label">${step.type==="multi"?"可以选择多项":"请选择一项作为当前确认"}</label>
           <div class="suggestions">${step.options.map((option,index)=>{
             const selected=Array.isArray(selectedChoice)?selectedChoice.includes(option):selectedChoice===option;
             return `<button class="suggestion ${selected?"selected":""}" type="button" data-choice="${index}"><i></i><b>${String(index+1).padStart(2,"0")}</b>${escapeHtml(option)}</button>`;
           }).join("")}</div>
           <div class="helper"><span>${step.type==="multi"?"可多选，确认后形成当前步骤结果。":"你可以先选择系统示例，再继续下一步。"}</span><button class="example-btn" id="exampleBtn" type="button">选择推荐示例</button></div>`;
       }else{
-        html=`<label class="answer-label">系统根据前面资料形成的阶段结果</label>
+        html+=`<label class="answer-label">系统根据前面资料形成的阶段结果</label>
           <div class="review-list">${step.preview.map((item,index)=>`<div class="review-item"><em>${String(index+1).padStart(2,"0")}</em><div><b>建议 ${index+1}</b><span>${escapeHtml(item)}</span></div></div>`).join("")}</div>
           <div class="helper"><span>AI 分析结果会展示来源证据，并在用户确认后进入档案。</span><button class="example-btn" id="exampleBtn" type="button">确认已阅读</button></div>`;
       }
@@ -842,21 +874,41 @@
         try{ await confirmCandidate(answer.aiChoice); }
         catch(error){ showToast(error.message||"确认候选失败"); return; }
       }
-      state.answers[keyFor()]={...answer,confirmed:true};
+      state.answers[keyFor()]={...answer,confirmed:true,skipped:false};
+      advanceCurrent(false);
+    }
+
+    function skipCurrent(){
+      saveDraft();
+      const answer=state.answers[keyFor()]||{};
+      const {aiChoice,...draft}=answer;
+      state.answers[keyFor()]={...draft,confirmed:false,skipped:true};
+      delete state.analyses[keyFor()];
+      advanceCurrent(true);
+    }
+
+    function advanceCurrent(skipped){
+      const module=MODULES[state.moduleIndex];
+      const answer=state.answers[keyFor()]||{};
       if(state.stepIndex===module.steps.length-1){
         if(!state.completedModules.includes(module.id))state.completedModules.push(module.id);
-        const summary=Array.isArray(answer.choice)?answer.choice.join("、"):answer.choice||answer.text||module.output;
-        state.profile[module.id]={title:module.name,output:module.output,summary:String(summary).slice(0,180)};
+        if(skipped){
+          delete state.profile[module.id];
+        }else{
+          const summary=Array.isArray(answer.choice)?answer.choice.join("、"):answer.choice||answer.text||module.output;
+          state.profile[module.id]={title:module.name,output:module.output,summary:String(summary).slice(0,180)};
+        }
         if(state.moduleIndex<MODULES.length-1){
           state.moduleIndex++;
           state.stepIndex=0;
-          showToast(`模块 ${module.id} 已确认，进入模块 ${module.id+1}`);
+          showToast(skipped?`已跳过本步，可随时回补；进入模块 ${module.id+1}`:`模块 ${module.id} 已确认，进入模块 ${module.id+1}`);
         }else{
-          showToast("十二模块已完成");
+          const waiting=skippedSteps().length;
+          showToast(waiting?`首轮已走完，还有 ${waiting} 项待补`:`十二模块已完整完成`);
         }
       }else{
         state.stepIndex++;
-        showToast("本步骤已确认");
+        showToast(skipped?"已跳过本步，可随时回补":"本步骤已确认");
       }
       persist();
       render();
@@ -960,7 +1012,7 @@
           })
         });
         if(response.status===401){
-          window.location.href=`/login.html?next=${encodeURIComponent(location.pathname)}`;
+          window.location.href=`/login.html?next=${encodeURIComponent(location.pathname+location.search)}`;
           return;
         }
         const result=await response.json().catch(()=>({}));
@@ -1061,7 +1113,7 @@
           body:JSON.stringify({revision:project.revision,module_index:state.moduleIndex,step_index:state.stepIndex,answer:text,context:{current_module:module.name,current_step:step.title,confirmed_context:confirmedContext()},files,consent:true})
         });
         if(response.status===401){
-          window.location.href=`/login.html?next=${encodeURIComponent(location.pathname)}`;
+          window.location.href=`/login.html?next=${encodeURIComponent(location.pathname+location.search)}`;
           return;
         }
         const result=await response.json().catch(()=>({}));
@@ -1139,11 +1191,37 @@
 
     function renderMemory(){
       const completed=state.completedModules.length;
-      $("doneModulesText").textContent=`${completed} / 12 完成`;
+      const skipped=skippedSteps();
+      const progressed=progressedStepCount(), confirmed=confirmedStepCount();
+      $("doneModulesText").textContent=confirmed===totalSteps?"完整档案 · 54 / 54":progressed===totalSteps?`首轮已走完 · ${skipped.length} 待补`:`${completed} / 12 已走完 · ${skipped.length} 待补`;
       $("phaseProgress").innerHTML=phaseGroups.map((phase,index)=>{
         const count=state.completedModules.filter(id=>id>=phase.range[0]&&id<=phase.range[1]).length;
-        return `<div class="phase-row"><i>${index+1}</i><b>${phase.name}</b><small>${count} / 4</small></div>`;
+        const phaseSkipped=skipped.filter(item=>item.module.id>=phase.range[0]&&item.module.id<=phase.range[1]).length;
+        return `<div class="phase-row"><i>${index+1}</i><b>${phase.name}</b><small>${count} / 4${phaseSkipped?` · ${phaseSkipped} 待补`:""}</small></div>`;
       }).join("");
+      $("skippedCount").textContent=`${skipped.length} 项`;
+      $("skippedItems").innerHTML=skipped.length?skipped.map(item=>
+        `<button class="coach-action" type="button" data-resume-module="${item.moduleIndex}" data-resume-step="${item.stepIndex}">模块 ${item.module.id} · ${escapeHtml(item.step.title)} · 去回补</button>`
+      ).join(""):`<p class="empty-memory">暂无待补步骤。</p>`;
+      const remaining=totalSteps-progressed;
+      $("reportUnlock").innerHTML=progressed===totalSteps&&project?.id
+        ?`<button class="coach-action" id="openReportBtn" type="button">${skipped.length?"生成首轮产品方案（含资料缺口）":"生成完整产品方案"}</button><p class="empty-memory">生成前会再次征得同意；方案只匹配黄雀现有产品，不会自动生成、发布或扣费。</p>`
+        :`<p class="empty-memory">还需确认或跳过 ${remaining} 步，完成首轮后即可生成行业痛点与黄雀产品匹配方案。</p>`;
+      $("openReportBtn")?.addEventListener("click",async event=>{
+        event.currentTarget.disabled=true;
+        try{
+          await flushProjectSave();
+          location.href=`ip12-report.html?project=${encodeURIComponent(project.id)}`;
+        }catch(error){
+          event.currentTarget.disabled=false;
+          showToast(error.message||"项目保存失败，请稍后重试");
+        }
+      });
+      document.querySelectorAll("[data-resume-module]").forEach(button=>button.addEventListener("click",()=>{
+        state.moduleIndex=Number(button.dataset.resumeModule);
+        state.stepIndex=Number(button.dataset.resumeStep);
+        persist(); render(); window.scrollTo({top:0,behavior:"smooth"});
+      }));
       const items=Object.entries(state.profile).sort((a,b)=>Number(a[0])-Number(b[0]));
       $("memoryItems").innerHTML=items.length?items.map(([,item])=>
         `<div class="memory-item"><b>${escapeHtml(item.title)} · ${escapeHtml(item.output)}</b><p>${escapeHtml(item.summary)}</p></div>`
@@ -1162,7 +1240,9 @@
       }
       const step=module.steps[state.stepIndex]||module.steps[0];
       if(!module.steps[state.stepIndex])state.stepIndex=0;
-      const overall=confirmedStepCount();
+      const confirmed=confirmedStepCount();
+      const skipped=skippedSteps().length;
+      const overall=progressedStepCount();
       const percent=Math.round(overall/totalSteps*100);
       $("phaseName").textContent=module.phase;
       $("moduleTitle").textContent=module.name;
@@ -1175,10 +1255,11 @@
       $("stepWhy").textContent=step.why;
       $("moduleStepText").textContent=`${String(state.stepIndex+1).padStart(2,"0")} / ${String(module.steps.length).padStart(2,"0")}`;
       $("moduleBar").style.width=`${(state.stepIndex+1)/module.steps.length*100}%`;
-      $("overallText").textContent=`总进度 ${overall} / ${totalSteps}`;
+      $("overallText").textContent=`总进度 ${overall} / ${totalSteps} · 已确认 ${confirmed} · 待补 ${skipped}`;
       $("overallBar").style.width=`${percent}%`;
       $("percentText").textContent=`${percent}%`;
       $("backBtn").disabled=state.moduleIndex===0&&state.stepIndex===0;
+      $("skipBtn").textContent="跳过，稍后回补";
       $("nextBtn").textContent=state.stepIndex===module.steps.length-1?(module.id===12?"完成十二模块":"确认并完成模块"):"确认并继续";
       renderModules();
       renderInteraction(step);
@@ -1202,6 +1283,7 @@
 
     $("nextBtn").addEventListener("click",confirmCurrent);
     $("backBtn").addEventListener("click",goBack);
+    $("skipBtn").addEventListener("click",skipCurrent);
     $("analyzeBtn").addEventListener("click",analyzeCurrent);
     $("projectTitle").addEventListener("change",queueProjectSave);
     $("projectFiles").addEventListener("change",()=>{const files=[...$("projectFiles").files]; $("fileStatus").textContent=files.length?`已选择 ${files.length} 份资料；请勾选同意后由你主动分析。`:"未选择资料；可只分析当前回答。";});

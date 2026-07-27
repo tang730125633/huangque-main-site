@@ -10,15 +10,22 @@
 <script src="theme-init.js?v=11eb385e"></script>
 <style>
   body{ overflow:hidden; }
-  .capRow{ grid-template-columns:repeat(5,1fr); }
+  .capRow{ grid-template-columns:repeat(4,1fr); }
+  .ip12-hero{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:center;overflow:hidden;margin-bottom:16px;padding:26px 30px;border:1px solid rgba(244,112,138,.34);border-radius:20px;background:radial-gradient(circle at 86% 18%,rgba(244,112,138,.24),transparent 31%),radial-gradient(circle at 64% 110%,rgba(138,92,246,.24),transparent 40%),linear-gradient(125deg,#211327,#101827 62%,#171322);color:#eaf1fa;box-shadow:0 16px 38px rgba(0,0,0,.2)}
+  .ip12-hero:before{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(105deg,transparent 26%,rgba(255,255,255,.06) 50%,transparent 74%);transform:translateX(-52%)}
+  .ip12-hero:hover{transform:translateY(-2px);box-shadow:0 22px 50px rgba(0,0,0,.3)}
+  .ip12-kicker{display:inline-flex;padding:5px 10px;border:1px solid rgba(255,182,215,.32);border-radius:999px;background:rgba(244,112,138,.12);color:#ffc5e0;font-size:11px;font-weight:700;letter-spacing:.08em}
+  .ip12-title{margin-top:11px;font-size:27px;font-weight:800;letter-spacing:.02em}
+  .ip12-copy{max-width:700px;margin-top:8px;color:#c2c8d6;font-size:14px;line-height:1.65}
+  .ip12-metrics{display:flex;flex-wrap:wrap;gap:12px 20px;margin-top:16px;color:#d7dceb;font-size:12px}.ip12-metrics b{color:#fff;font-size:18px}.ip12-cta{position:relative;z-index:1;display:flex;align-items:center;justify-content:center;min-width:138px;padding:14px 18px;border-radius:12px;background:linear-gradient(135deg,#ef5f9d,#a05cff);box-shadow:0 9px 22px rgba(192,78,172,.3);font-size:14px;font-weight:750}
   .masonry{ column-count:3; column-gap:16px; }
   .masonry > *{ break-inside:avoid; margin-bottom:16px; border-radius:14px; overflow:hidden; transition:transform .15s, box-shadow .15s; }
   .masonry > *:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.3); }
   .masonry img { transition: transform .3s; }
   .masonry > *:hover img { transform: scale(1.03); }
   .tutGrid{ grid-template-columns:repeat(3,1fr); }
-  @media (max-width:1200px){ .capRow{ grid-template-columns:repeat(3,1fr);} .masonry{ column-count:2;} .tutGrid{ grid-template-columns:repeat(2,1fr);} }
-  @media (max-width:760px){ .capRow{ grid-template-columns:1fr 1fr;} .masonry{ column-count:1;} .tutGrid{ grid-template-columns:1fr;} }
+  @media (max-width:1200px){ .capRow{ grid-template-columns:repeat(2,1fr);} .masonry{ column-count:2;} .tutGrid{ grid-template-columns:repeat(2,1fr);} }
+  @media (max-width:760px){ .ip12-hero{grid-template-columns:1fr;gap:18px;padding:22px}.ip12-title{font-size:23px}.ip12-cta{justify-self:start}.capRow{ grid-template-columns:1fr 1fr;} .masonry{ column-count:1;} .tutGrid{ grid-template-columns:1fr;} }
   .chip{ cursor:pointer; transition:.15s; padding:1px 2px; }
   .chip:hover{ color:#e7b24c !important; }
   .inspiration-tab{color:#94a4bb;transition:.15s}
@@ -34,15 +41,21 @@
 
 <div class="hq-app"><div class="hq-content" data-active="inspiration">
 
+  <a href="ip12.html" class="ip12-hero hv-lift" aria-label="进入数字化 IP 定制方案">
+    <div style="position:relative;z-index:1;min-width:0;">
+      <span class="ip12-kicker">DIGITAL IP · 定制方案</span>
+      <div class="ip12-title">把行业痛点，变成可持续的数字化 IP</div>
+      <div class="ip12-copy">从门店经营底图与行业痛点出发，完成定位诊断、价值主张与内容资产，再沉淀为可执行的图片、视频行动计划。</div>
+      <div class="ip12-metrics"><span><b>12</b> 个成长模块</span><span><b>54</b> 个经营步骤</span><span>先确认方案，再带入创作</span></div>
+    </div>
+    <span class="ip12-cta">开始制作 · 定制方案&nbsp; →</span>
+  </a>
+
   <!-- 顶部能力卡 -->
   <div class="capRow" style="display:grid; gap:14px; margin-bottom:24px;">
     <a href="banana.html" class="hv-lift" style="position:relative; overflow:hidden; padding:18px; border:1px solid rgba(231,178,76,.18); border-radius:16px; background:linear-gradient(150deg, rgba(231,178,76,.12), rgba(20,17,10,.5)); display:block;">
       <div style="display:flex; align-items:center; gap:10px;"><div style="width:46px; height:46px; display:flex; align-items:center; justify-content:center; border-radius:12px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08);"><img src="../assets/icons/ic_banana.png" alt="" style="width:38px; height:38px; object-fit:contain;"></div><div style="font-size:15px; font-weight:700;">AI 作图</div></div>
       <div style="font-size:12px; color:#94a4bb; margin-top:10px;">黄雀引擎 2 · 专业级图片生成</div>
-    </a>
-    <a href="ip12.html" class="hv-lift" style="position:relative; overflow:hidden; padding:18px; border:1px solid rgba(244,112,138,.18); border-radius:16px; background:linear-gradient(150deg, rgba(244,112,138,.1), rgba(20,12,15,.5)); display:block;">
-      <div style="display:flex; align-items:center; gap:10px;"><div style="width:46px; height:46px; display:flex; align-items:center; justify-content:center; border-radius:12px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08);"><img src="../assets/icons/ic_video.png" alt="" style="width:38px; height:38px; object-fit:contain;"></div><div style="font-size:15px; font-weight:700;">IP12 成长档案</div></div>
-      <div style="font-size:12px; color:#94a4bb; margin-top:10px;">定位到行动计划 · 开始制作</div>
     </a>
     <a href="audio.html" class="hv-lift" style="position:relative; overflow:hidden; padding:18px; border:1px solid rgba(45,212,191,.18); border-radius:16px; background:linear-gradient(150deg, rgba(45,212,191,.1), rgba(10,18,17,.5)); display:block;">
       <div style="display:flex; align-items:center; gap:10px;"><div style="width:46px; height:46px; display:flex; align-items:center; justify-content:center; border-radius:12px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08);"><img src="../assets/icons/ic_audio.png" alt="" style="width:38px; height:38px; object-fit:contain;"></div><div style="font-size:15px; font-weight:700;">AI 配音</div></div>

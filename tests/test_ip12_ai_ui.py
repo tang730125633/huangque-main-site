@@ -11,6 +11,43 @@ CORE = Path(__file__).resolve().parents[1] / "server" / "content_domains" / "cor
 
 
 class IP12AIUITests(unittest.TestCase):
+    def test_skipped_steps_are_persisted_without_ai_or_profile_and_can_be_resumed(self):
+        html = PAGE.read_text(encoding="utf-8")
+
+        self.assertIn('id="skipBtn"', html)
+        self.assertIn("function skipCurrent()", html)
+        self.assertIn("confirmed:false,skipped:true", html)
+        self.assertIn("confirmed:true,skipped:false", html)
+        self.assertIn("delete state.analyses[keyFor()];", html)
+        self.assertIn("delete state.profile[module.id];", html)
+        self.assertIn("function progressedStepCount(){ return confirmedStepCount()+skippedSteps().length; }", html)
+        self.assertIn('confirmed===totalSteps?"完整档案 · 54 / 54"', html)
+        self.assertIn("首轮已走完", html)
+        self.assertIn('id="skippedItems"', html)
+        self.assertIn('id="reportUnlock"', html)
+        self.assertIn("progressed===totalSteps&&project?.id", html)
+        self.assertIn("ip12-report.html?project=", html)
+        self.assertIn('id="openReportBtn"', html)
+        report_source = html[html.index('$("openReportBtn")'):html.index('document.querySelectorAll("[data-resume-module]")')]
+        self.assertIn("await flushProjectSave()", report_source)
+        self.assertLess(report_source.index("await flushProjectSave()"), report_source.index("location.href=`ip12-report.html"))
+        self.assertIn("data-resume-module=", html)
+        self.assertIn("data-resume-step=", html)
+
+        skip_source = html[html.index("function skipCurrent()"):html.index("function advanceCurrent(")]
+        self.assertNotIn("analyzeCurrent", skip_source)
+        self.assertNotIn("confirmCandidate", skip_source)
+        self.assertNotIn("fetch(", skip_source)
+
+    def test_project_module_step_query_can_open_a_skipped_step(self):
+        html = PAGE.read_text(encoding="utf-8")
+
+        self.assertIn("new URLSearchParams(location.search)", html)
+        self.assertIn('get("project")', html)
+        self.assertIn("function entryStep()", html)
+        self.assertIn("return {moduleIndex:module-1,stepIndex:step-1};", html)
+        self.assertIn("const target=entryStep();", html)
+
     def test_ai_is_explicit_structured_and_keeps_confirmation_separate(self):
         html = PAGE.read_text(encoding="utf-8")
         self.assertIn("/api/gen/digital-ip/diagnose", html)
