@@ -265,8 +265,15 @@ class DigitalIPTests(unittest.TestCase):
                 confirmed_json = conn.execute("SELECT confirmed_json FROM digital_ip_projects").fetchone()[0]
             self.assertIn("经营 7 年", confirmed_json)
             self.assertNotIn("被篡改的回答", confirmed_json)
+            skipped = digital_ip.patch_project("owner", project["id"], {
+                "revision": confirmed["project"]["revision"],
+                "state": {"questionnaire_state": {"answers": {"1-1": {"text": "经营 7 年", "confirmed": False, "skipped": True}}}},
+            })
+            self.assertEqual(skipped["status"], "draft")
+            self.assertNotIn("last_analysis", skipped)
+            self.assertNotIn("confirmed_profile", skipped)
             next_draft = digital_ip.patch_project("owner", project["id"], {
-                "revision": confirmed["project"]["revision"], "state": {"questionnaire_state": {"answers": {"0-0": {"text": "更新后的经营资料"}}}},
+                "revision": skipped["revision"], "state": {"questionnaire_state": {"answers": {"0-0": {"text": "更新后的经营资料"}}}},
             })
             with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), mock.patch.object(digital_ip, "_post", return_value=response):
                 newer = digital_ip.analyze_project("owner", project["id"], {
@@ -276,7 +283,7 @@ class DigitalIPTests(unittest.TestCase):
             changed = digital_ip.patch_project("owner", project["id"], {
                 "revision": newer["project"]["revision"], "state": {"questionnaire_state": {"answers": {"0-0": {"text": "分析后又修改的回答"}}}},
             })
-            with self.assertRaisesRegex(digital_ip.DigitalIPRevisionConflict, "重新分析"):
+            with self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "有效分析"):
                 digital_ip.confirm_project("owner", project["id"], {"revision": changed["revision"], "candidate_index": 0})
 
     def test_project_validation_failure_does_not_change_revision(self):
