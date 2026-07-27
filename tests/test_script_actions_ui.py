@@ -194,9 +194,31 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertTrue(self.html.count("网络不稳定，正在重试") >= 3)
 
     def test_breakdown_and_image_submissions_are_idempotent(self):
-        self.assertIn("'Idempotency-Key':breakdownKey", self.html)
-        self.assertIn("'Idempotency-Key':imageKey", self.html)
+        self.assertIn("'Idempotency-Key':breakdownPending.key", self.html)
+        self.assertIn("'Idempotency-Key':imagePending.key", self.html)
         self.assertIn('"script_to_video", "breakdown"}', self.core)
+        self.assertIn("sessionStorage.setItem(storageKey", self.html)
+        self.assertIn("saved&&saved.body===body&&saved.key", self.html)
+        self.assertIn("code==='idempotency_in_progress'", self.html)
+        self.assertIn("if(x.s<500) _confirmSubmission", self.html)
+
+    def test_lost_submission_response_reuses_pending_key(self):
+        self.assertIn("var _pendingSubmissionMemory={}", self.html)
+        self.assertIn("var storageKey='hq_pending_submit_'+scope", self.html)
+        self.assertIn("saved&&saved.body===body&&saved.key", self.html)
+        self.assertIn("return {storageKey:storageKey,body:body,key:saved.key}", self.html)
+        self.assertIn("fetch('/api/gen/breakdown'", self.html)
+        self.assertIn("body:breakdownPending.body", self.html)
+        self.assertIn("body:imagePending.body", self.html)
+        # Network catches intentionally do not confirm/clear the pending key.
+        self.assertNotIn(
+            ".catch(function(){ _confirmSubmission(breakdownPending)",
+            self.html,
+        )
+        self.assertNotIn(
+            ".catch(function(){ _confirmSubmission(imagePending)",
+            self.html,
+        )
 
     def test_breakdown_handles_gateway_html_and_can_resume_polling(self):
         self.assertIn("function _readApiResponse(response)", self.html)

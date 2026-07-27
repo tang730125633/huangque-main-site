@@ -401,6 +401,34 @@
       +'<button type="button" class="sc-btn" data-resume-breakdown="'+escAttr(String(jobId))+'">继续查询</button>'
       +'<a class="sc-btn" href="assets.html">查看资产库</a></div></div>';
   }
+  var _pendingSubmissionMemory={};
+  function _pendingSubmission(scope,payload){
+    var storageKey='hq_pending_submit_'+scope;
+    var body=JSON.stringify(payload||{});
+    var saved=null;
+    try{ saved=JSON.parse(sessionStorage.getItem(storageKey)||'null'); }
+    catch(e){ saved=_pendingSubmissionMemory[storageKey]||null; }
+    if(saved&&saved.body===body&&saved.key){
+      return {storageKey:storageKey,body:body,key:saved.key};
+    }
+    var pending={
+      body:body,
+      key:scope+'-'+Date.now()+'-'+Math.random().toString(36).slice(2)
+    };
+    _pendingSubmissionMemory[storageKey]=pending;
+    try{ sessionStorage.setItem(storageKey,JSON.stringify(pending)); }catch(e){}
+    return {storageKey:storageKey,body:body,key:pending.key};
+  }
+  function _confirmSubmission(pending){
+    if(!pending) return;
+    delete _pendingSubmissionMemory[pending.storageKey];
+    try{
+      var saved=JSON.parse(sessionStorage.getItem(pending.storageKey)||'null');
+      if(saved&&saved.body===pending.body&&saved.key===pending.key){
+        sessionStorage.removeItem(pending.storageKey);
+      }
+    }catch(e){}
+  }
   function currentTheme(){ return window.HQTheme ? window.HQTheme.get() : ((document.documentElement.getAttribute('data-theme')==='light')?'light':'dark'); }
   function renderThemeToggle(theme){
     [themeLightBtn, themeDarkBtn].forEach(function(btn){
@@ -1117,13 +1145,22 @@
     var pollCount=0, lastPhase='downloading', pollErrors=0;
     var maxPolls=isBatch?(100*lines.length):120;  // 批量按条数放宽：每条最长约90s，5条≈450s+，避免后端还在跑前端先报超时
     var reqBody=isBatch?{urls:lines,mode:'scenes'}:{url:lines[0],mode:submitMode};
-    var breakdownKey='script-breakdown-'+Date.now()+'-'+Math.random().toString(36).slice(2);
-    fetch('/api/gen/breakdown',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json','Idempotency-Key':breakdownKey},body:JSON.stringify(reqBody)})
+    var breakdownPending=_pendingSubmission('script-breakdown',reqBody);
+    fetch('/api/gen/breakdown',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json','Idempotency-Key':breakdownPending.key},body:breakdownPending.body})
       .then(_readApiResponse)
       .then(function(x){
-        if(x.s===401){ resetBdBtn(); if(window.HQ) HQ.login(); return; }
-        if(x.s===402){ resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
-        if(!x.d.job_id){ resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+((x.d&&x.d.detail)||'未知')+'</div>'; return; }
+        if(x.s===401){ _confirmSubmission(breakdownPending); resetBdBtn(); if(window.HQ) HQ.login(); return; }
+        if(x.s===402){ _confirmSubmission(breakdownPending); resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
+        if(!x.d.job_id){
+          resetBdBtn();
+          if(x.d&&x.d.code==='idempotency_in_progress'){
+            scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4a460;">请求已受理，点击“开始”可使用同一凭证继续确认，不会重复扣点</div>';
+            return;
+          }
+          if(x.s<500) _confirmSubmission(breakdownPending);
+          scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+esc((x.d&&x.d.detail)||'未知')+'</div>'; return;
+        }
+        _confirmSubmission(breakdownPending);
         var MAX_POLL_ERRORS=10, iv=null;
         function showRecovery(message){
           resetBdBtn();
@@ -1608,13 +1645,23 @@
     _setGenerateBusy(btn,true);
     scenes.innerHTML='<div style="padding:34px;text-align:center;color:#e7b24c;font-size:13px;">🎨 正在生成图片…</div>';
     var pollCount=0, pollErrors=0;
-    var imageKey='script-image-'+Date.now()+'-'+Math.random().toString(36).slice(2);
-    fetch('/api/gen/image',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json','Idempotency-Key':imageKey},body:JSON.stringify({prompt:prompt,ratio:'9:16',quality:'standard'})})
+    var imagePayload={prompt:prompt,ratio:'9:16',quality:'standard'};
+    var imagePending=_pendingSubmission('script-image',imagePayload);
+    fetch('/api/gen/image',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json','Idempotency-Key':imagePending.key},body:imagePending.body})
       .then(_readApiResponse)
       .then(function(x){
-        if(x.s===401){ _setGenerateBusy(btn,false); if(window.HQ) HQ.login(); return; }
-        if(x.s===402){ _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
-        if(!x.d.job_id){ _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+((x.d&&x.d.detail)||'未知')+'</div>'; return; }
+        if(x.s===401){ _confirmSubmission(imagePending); _setGenerateBusy(btn,false); if(window.HQ) HQ.login(); return; }
+        if(x.s===402){ _confirmSubmission(imagePending); _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
+        if(!x.d.job_id){
+          _setGenerateBusy(btn,false);
+          if(x.d&&x.d.code==='idempotency_in_progress'){
+            scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4a460;">请求已受理，再次点击将使用同一凭证继续确认，不会重复扣点</div>';
+            return;
+          }
+          if(x.s<500) _confirmSubmission(imagePending);
+          scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+esc((x.d&&x.d.detail)||'未知')+'</div>'; return;
+        }
+        _confirmSubmission(imagePending);
         var iv=setInterval(function(){
           pollCount++;
           fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){

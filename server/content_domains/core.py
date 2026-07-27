@@ -885,10 +885,18 @@ def _global_running_breakdown_count():   # 全局运行中的爆款拆解数（�
     return int(row["n"] if row else 0)
 
 
-def _optional_points_call(name, *args):
-    """Call a points capability only when the loaded module version provides it."""
-    callback = getattr(_domains()[1], name, None)
-    return callback(*args) if callback else None
+def _prepare_breakdown_refund(points_domain, username, cost, result, job_id):
+    """Prepare partial refunds, or fail safely during a mixed-version deploy."""
+    if (result or {}).get("type") != "breakdown_batch":
+        return False
+    if not ((result or {}).get("errors") or []):
+        return False
+    callback = getattr(points_domain, "prepare_breakdown_batch_refund", None)
+    if callback:
+        return callback(username, cost, result, job_id)
+    raise RuntimeError(
+        "批量拆解退款组件版本不一致，本次任务已转为失败并自动退回全部点数"
+    )
 
 
 def _reject_pending_job(job_id, username, cost, reason):
@@ -1104,12 +1112,12 @@ def run_job(job_id):
         result = HANDLERS[kind](payload)
         breakdown_refund_prepared = False
         if kind == "breakdown":
-            breakdown_refund_prepared = _optional_points_call(
-                "prepare_breakdown_batch_refund", username, cost, result, job_id)
+            breakdown_refund_prepared = _prepare_breakdown_refund(
+                _domains()[1], username, cost, result, job_id)
         # 先 CAS 抢 done 终态：仅当仍是 running 才写 done，防 reaper 已判 error 又被无条件覆盖(既出片又退点)
         if not _set_terminal(job_id, "done", result=result):
             if breakdown_refund_prepared:
-                _optional_points_call("cancel_breakdown_refund", job_id)
+                _domains()[1].cancel_breakdown_refund(job_id)
             return  # 已被 reaper 接管为 error+退点：放弃成功副作用(不入库、不覆盖状态)
         # 口播按成片真实时长结算：预扣(cost)是 hold，跑完多退少不补。只在抢到 done 后调 —— done CAS
         # 互斥 + reaper/reclaim 不碰 done → 每 job 至多结算一次，不重复退。结算失败不影响出片。
@@ -1123,7 +1131,8 @@ def run_job(job_id):
             except Exception:
                 pass
         if kind == "breakdown":
-            _optional_points_call("reconcile_breakdown_refund", job_id)
+            if breakdown_refund_prepared:
+                _domains()[1].reconcile_breakdown_refund(job_id)
         # 已确认拿到 done 终态；入库是次要副作用，失败也不改状态、不退点
         try:
             audio_domain, _, video_domain = _domains()
