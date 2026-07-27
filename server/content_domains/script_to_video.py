@@ -318,6 +318,7 @@ def _gen_drama(username, scenes, payload):
         "prompt": "、".join(descs) + "。连贯运镜，电影质感，竖屏",
         "ratio": payload.get("ratio") or "9:16",
         "duration": payload.get("duration") or 10,
+        "model": payload.get("model") or "grok-imagine-video",
         "resolution": payload.get("resolution") or "720p",
     })
     result.update({"type": "script_to_video", "scene_count": len(scenes), "pipeline": "grok"})

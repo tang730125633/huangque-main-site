@@ -46,6 +46,8 @@ class ScriptToVideoTests(unittest.TestCase):
         })
 
         self.assertEqual(calls["payload"]["channel"], "grok")
+        self.assertEqual(calls["payload"]["model"], "grok-imagine-video")
+        self.assertEqual(calls["payload"]["resolution"], "720p")
         self.assertEqual(calls["payload"]["_username"], "fang")
         self.assertIn("女生走进门店", calls["payload"]["prompt"])
         self.assertIn("电影质感", calls["payload"]["prompt"])

@@ -44,20 +44,32 @@ class CostOfTests(unittest.TestCase):
         })
 
     def test_script_to_video_drama_aligns_with_xiaole_per_second(self):
-        """剧情与 xiaole_video 同价：30 点/秒 × 时长（默认 10s，上限 15s），不再固定 20 点"""
+        """剧情复用 Grok 1.0 720p 的统一价格：12 点/秒。"""
         self.assertEqual(
-            self.points.cost_of("script_to_video", {"scenes": [{"scene": "画面", "line": ""}], "style": "剧情"}), 300)
+            self.points.cost_of("script_to_video", {"scenes": [{"scene": "画面", "line": ""}], "style": "剧情"}), 120)
         self.assertEqual(
-            self.points.cost_of("script_to_video", {"scenes": [{"scene": "画面"}], "style": "剧情", "duration": 3}), 90)
+            self.points.cost_of("script_to_video", {"scenes": [{"scene": "画面"}], "style": "剧情", "duration": 3}), 36)
         self.assertEqual(
-            self.points.cost_of("script_to_video", {"scenes": [{"scene": "画面"}], "style": "剧情", "duration": 15}), 450)
+            self.points.cost_of("script_to_video", {"scenes": [{"scene": "画面"}], "style": "剧情", "duration": 15}), 180)
         self.assertEqual(
-            self.points.cost_of("script_to_video", {"scenes": [{"scene": "画面"}], "style": "剧情", "duration": 99}), 450)
+            self.points.cost_of("script_to_video", {"scenes": [{"scene": "画面"}], "style": "剧情", "duration": 99}), 180)
 
     def test_script_to_video_drama_bad_duration_falls_back_to_10s(self):
         """时长字段非法时按默认 10s 计价，不允许 cost_of 抛异常打穿提交链路"""
         self.assertEqual(
-            self.points.cost_of("script_to_video", {"scenes": [{"scene": "画面"}], "style": "剧情", "duration": "abc"}), 300)
+            self.points.cost_of("script_to_video", {"scenes": [{"scene": "画面"}], "style": "剧情", "duration": "abc"}), 120)
+
+    def test_script_to_video_drama_forwards_model_pricing(self):
+        self.assertEqual(
+            self.points.cost_of("script_to_video", {
+                "scenes": [{"scene": "画面"}], "style": "剧情", "duration": 10,
+                "model": "grok-imagine-video-1.5", "resolution": "1080p",
+            }),
+            self.points.cost_of("xiaole_video", {
+                "channel": "grok", "duration": 10,
+                "model": "grok-imagine-video-1.5", "resolution": "1080p",
+            }),
+        )
 
     def test_breakdown_batch_refund_rules(self):
         """批量拆解退点：全灭全退；部分失败每条退 20；无失败/无费用/坏参数不退"""

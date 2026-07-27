@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """爆款拆解：竞品视频链接 → 下载 → 抽帧 → ASR → GPT-4o 多模态 → 分镜脚本"""
-import os, json, time, base64, tempfile, subprocess, shutil
+import os, json, time, base64, tempfile, subprocess, shutil, mimetypes
 from contextlib import closing
 
 from .core import OPENAI_BASE, OPENAI_KEY, jdb
@@ -10,9 +10,134 @@ from . import egress
 _UNSUPPORTED_PLATFORMS = {"channels", "weixin", "wechat"}
 
 
+def handle_local_upload(handler, user):
+    """Validate a raw local-media upload, charge once, and enqueue a breakdown job."""
+    from . import core
+    _, points_domain, _ = core._domains()
+    try:
+        core.feature_flags.require_enabled("breakdown")
+    except core.feature_flags.FeatureDisabled as exc:
+        return handler._send(503, {"detail": str(exc)})
+    if core.is_shutting_down():
+        return handler._send(503, {
+            "detail": "服务正在更新，请稍后重试", "code": "shutting_down",
+            "retry_after_ms": 5000,
+        })
+
+    query = core.urllib.parse.parse_qs(core.urllib.parse.urlparse(handler.path).query)
+    media_type = str((query.get("media_type") or [""])[0]).strip().lower()
+    allowed = {
+        "image": {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"},
+        "video": {"video/mp4": ".mp4", "video/quicktime": ".mov", "video/webm": ".webm"},
+    }
+    content_type = str(handler.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    if media_type not in allowed or content_type not in allowed[media_type]:
+        return handler._send(415, {"detail": "仅支持 JPG/PNG/WEBP 图片或 MP4/MOV/WEBM 视频"})
+    try:
+        content_length = int(handler.headers.get("Content-Length") or 0)
+    except (TypeError, ValueError):
+        content_length = 0
+    maximum = 20 * 1024 * 1024 if media_type == "image" else 200 * 1024 * 1024
+    if content_length <= 0 or content_length > maximum:
+        return handler._send(413, {"detail": "图片最大 20MB，视频最大 200MB"})
+    active_jobs = core._user_active_job_count(user["username"])
+    if active_jobs >= core.MAX_USER_ACTIVE_JOBS:
+        return handler._send(429, {
+            "detail": "当前生成任务较多，请完成后再提交", "code": "active_job_cap",
+            "active_jobs": active_jobs, "max_active_jobs": core.MAX_USER_ACTIVE_JOBS,
+            "retry_after_ms": 4000,
+        })
+
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+                prefix="breakdown_", suffix=allowed[media_type][content_type], delete=False) as uploaded:
+            temp_path = uploaded.name
+            remaining = content_length
+            while remaining:
+                chunk = handler.rfile.read(min(65536, remaining))
+                if not chunk:
+                    raise ValueError("上传文件读取不完整")
+                uploaded.write(chunk)
+                remaining -= len(chunk)
+        with open(temp_path, "rb") as uploaded:
+            signature = uploaded.read(16)
+        valid_signature = {
+            "image/jpeg": signature.startswith(b"\xff\xd8\xff"),
+            "image/png": signature.startswith(b"\x89PNG\r\n\x1a\n"),
+            "image/webp": signature.startswith(b"RIFF") and signature[8:12] == b"WEBP",
+            "video/mp4": len(signature) >= 12 and signature[4:8] == b"ftyp",
+            "video/quicktime": len(signature) >= 12 and signature[4:8] == b"ftyp",
+            "video/webm": signature.startswith(b"\x1a\x45\xdf\xa3"),
+        }[content_type]
+        if not valid_signature:
+            raise ValueError("文件内容与声明格式不一致")
+        body = {"local_path": temp_path, "media_type": media_type, "mode": "reverse_prompt"}
+        cost = points_domain.cost_of("breakdown", body)
+        with core._submission_lock:
+            job_id, points_left = core.jobs_store.create_paid_job(
+                core.jdb, points_domain.deduct_points, points_domain.refund_points,
+                "breakdown", user["username"], cost, body, core.SERVICE_OWNER,
+            )
+            if not core.enqueue_job(job_id, "breakdown", "reverse_prompt"):
+                core._reject_pending_job(job_id, user["username"], cost, "任务队列已满，请稍后再试")
+                try: os.unlink(temp_path)
+                except Exception: pass
+                return handler._send(429, {
+                    "detail": "任务队列已满，请稍后再试", "code": "queue_full",
+                    "retry_after_ms": 4000,
+                })
+        return handler._send(200, {"job_id": job_id, "cost": cost, "points_left": points_left})
+    except points_domain.AuthPointsError as exc:
+        _remove_upload(temp_path)
+        return handler._send(
+            exc.status if exc.status in (402, 403) else 502,
+            points_domain.public_error_body(exc, 20),
+        )
+    except core.jobs_store.PaidJobInsertError as exc:
+        _remove_upload(temp_path)
+        return handler._send(500, {
+            "detail": "任务创建失败，点数已退回", "submission_ref": exc.submission_ref,
+        })
+    except Exception as exc:
+        _remove_upload(temp_path)
+        return handler._send(400, {"detail": str(exc)[:180]})
+
+
+def _remove_upload(path):
+    if path:
+        try: os.unlink(path)
+        except Exception: pass
+
+
 def gen_breakdown(payload):
     """下载视频 → 抽帧 → ASR → GPT-4o 多模态分析 → 分镜拆解。
     由 run_job 调用，走标准 job 生命周期（扣点/退点/reaper 全自动）。"""
+    local_path = str(payload.get("local_path") or "").strip()
+    if local_path:
+        return _do_local_reverse(payload, local_path)
+
+    urls = payload.get("urls")
+    if isinstance(urls, list):
+        cleaned = [str(url).strip() for url in urls if str(url).strip()][:5]
+        if not cleaned:
+            raise ValueError("请至少提供一个视频链接")
+        results, errors = [], []
+        for index, item_url in enumerate(cleaned, 1):
+            _heartbeat(payload.get("_job_id"), "batch_%d_%d" % (index, len(cleaned)))
+            try:
+                item_payload = dict(payload, url=item_url)
+                item_payload.pop("urls", None)
+                results.append(gen_breakdown(item_payload))
+            except Exception as exc:
+                errors.append({"url": item_url, "detail": str(exc)[:200]})
+        return {
+            "type": "breakdown_batch",
+            "total": len(cleaned),
+            "results": results,
+            "errors": errors,
+        }
+
     url = (payload.get("url") or "").strip()
     if not url:
         raise ValueError("请粘贴抖音/小红书/视频号链接")
@@ -63,6 +188,9 @@ def _do_breakdown(payload, info, url):
 
         _heartbeat(job_id, "analyzing")
         platform = info.get("platform", "")
+        if payload.get("mode") == "reverse_prompt":
+            return _reverse_from_frames(payload, frames, url, title, platform, duration)
+
         usermsg = (
             "视频标题：" + str(title) + "\n"
             "时长：" + str(duration) + "s\n"
@@ -101,6 +229,77 @@ def _do_breakdown(payload, info, url):
         if frame_dir:
             try: shutil.rmtree(frame_dir)
             except: pass
+
+
+def _reverse_from_frames(payload, frames, source_url="", title="", platform="", duration=0):
+    raw = _chat_multimodal(
+        "你是黄雀传媒资深视频生成提示词专家。根据参考画面反推出可用于视频生成模型的中文提示词。"
+        "只输出 JSON，不要解释或 markdown。",
+        (
+            "请综合参考画面的主体、环境、构图、镜头运动、光线、色彩、节奏和风格，"
+            "输出 JSON：{\"prompt\":\"一段完整、可直接用于视频生成的中文提示词\"}。"
+        ),
+        frames,
+    )
+    start, end = raw.find("{"), raw.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("提示词反推结果解析失败，请重试")
+    prompt = str((json.loads(raw[start:end + 1]) or {}).get("prompt") or "").strip()
+    if not prompt:
+        raise ValueError("提示词反推结果为空，请重试")
+    return {
+        "type": "breakdown_reverse",
+        "source_url": source_url,
+        "source_title": title,
+        "source_platform": platform,
+        "duration": duration,
+        "prompt": prompt,
+        "frame_thumbnails": [],
+    }
+
+
+def _do_local_reverse(payload, local_path):
+    media_type = str(payload.get("media_type") or "").strip().lower()
+    job_id = payload.get("_job_id")
+    path = os.path.abspath(local_path)
+    if media_type not in {"image", "video"}:
+        raise ValueError("不支持的本地素材类型")
+    if not os.path.isfile(path):
+        raise ValueError("上传文件不存在或已过期")
+    frame_dir = None
+    try:
+        _heartbeat(job_id, "extracting_frames")
+        if media_type == "image":
+            frames = [path]
+            duration = 0
+        else:
+            duration = _probe_duration(path)
+            if duration > 120.05:
+                raise ValueError("视频最长支持 2 分钟")
+            frame_dir, frames = _extract_frames(path, 8, duration or 30)
+        _heartbeat(job_id, "analyzing")
+        return _reverse_from_frames(
+            payload, frames, "", os.path.basename(path), "local", duration,
+        )
+    finally:
+        if frame_dir:
+            try: shutil.rmtree(frame_dir)
+            except Exception: pass
+        try: os.unlink(path)
+        except Exception: pass
+
+
+def _probe_duration(path):
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            check=True, timeout=20, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True,
+        )
+        return max(0.0, float((proc.stdout or "0").strip() or 0))
+    except Exception:
+        raise ValueError("无法读取视频时长，请上传有效的视频文件")
 
 
 # ============ 辅助函数 ============
@@ -180,9 +379,12 @@ def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7):
     for path in image_paths:
         with open(path, "rb") as f:
             b64 = base64.b64encode(f.read()).decode()
+        media_type = mimetypes.guess_type(path)[0] or "image/jpeg"
+        if media_type not in {"image/jpeg", "image/png", "image/webp"}:
+            media_type = "image/jpeg"
         content.append({
             "type": "image_url",
-            "image_url": {"url": "data:image/jpeg;base64," + b64, "detail": "low"}
+            "image_url": {"url": "data:" + media_type + ";base64," + b64, "detail": "low"}
         })
 
     body = {

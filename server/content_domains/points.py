@@ -118,7 +118,12 @@ def cost_of(kind, body):
                 duration = min(15, int(float(body.get("duration") or 10)))
             except (TypeError, ValueError):
                 duration = 10
-            return max(30, int(math.ceil(duration)) * 30)
+            return cost_of("xiaole_video", {
+                "channel": "grok",
+                "model": body.get("model") or "grok-imagine-video",
+                "resolution": body.get("resolution") or "720p",
+                "duration": max(1, int(math.ceil(duration))),
+            })
         from . import video as video_domain
         lines = [(s.get("line") or "").strip() for s in (body.get("scenes") or []) if isinstance(s, dict)]
         talking = video_domain.video_cost({"text": "\n\n".join(line for line in lines if line)})
