@@ -13,7 +13,11 @@ from .core import (
 import random   # 429 退避重试的抖动：不加抖动，同一批 worker 退避后又会撞在一起
 
 from .audio import gen_audio
-from . import provider_keys, short_drama_media_sanitize
+from . import (
+    provider_keys,
+    short_drama_media_sanitize,
+    short_drama_visual_gate,
+)
 
 VALID_VIDEO_MODES = {"text", "audio"}
 VALID_VIDEO_RATIOS = {"9:16", "16:9", "1:1", "4:5", "5:4"}
@@ -4229,35 +4233,50 @@ def gen_cinematic(payload):
             info = _heygen_poll_video(video_id, direct=True, deadline_s=HEYGEN_MOTION_DEADLINE)
             update_video_asset_phase(job_id, "downloading_video", source_video_url=info.get("video_url"))
             video_file = _download_video_file_direct(info["video_url"], "cinematic")
-            raw_video_file = video_file
-            source_media_report = None
-            if visual_only:
-                relative = pathlib.PurePosixPath(str(video_file).replace("\\", "/"))
-                silent_relative = relative.with_name(
-                    relative.stem + "_silent" + relative.suffix
-                )
-                source_path = _resolve_out_file(video_file)
-                if source_path is None:
-                    raise short_drama_media_sanitize.MediaSanitizeError(
-                        "missing_source_file", "供应商视频文件不存在"
-                    )
-                sanitized = short_drama_media_sanitize.sanitize_visual_source(
-                    source_path,
-                    _out_path(silent_relative.as_posix()),
-                )
-                video_file = silent_relative.as_posix()
-                source_media_report = {
-                    "source": sanitized["source_report"],
-                    "silent": sanitized["silent_report"],
-                }
-            # 把参考视频的原声合回成片（HeyGen 的成片本身是无声的）。
-            # 合失败就保留无声成片 —— 宁可无声，也不能因为配音失败把片子丢了。
-            if source_audio:
-                video_file = _mux_original_audio(video_file, source_audio)
-            cover = _extract_first_frame_cover(video_file)   # 封面从【最终】成片抽
         except Exception as e:
             raise HeyGenBilledError("剧情视频已提交 HeyGen(video_id=%s，已扣费)，后续失败: %s"
                                     % (video_id, str(e)[:180])) from e
+
+    # Provider concurrency ends after download.  Media normalization, ASR and
+    # multimodal inspection have their own resource controls and must not hold
+    # a scarce HeyGen generation slot.
+    try:
+        raw_video_file = video_file
+        source_media_report = None
+        visual_gate_report = None
+        if visual_only:
+            relative = pathlib.PurePosixPath(str(video_file).replace("\\", "/"))
+            silent_relative = relative.with_name(
+                relative.stem + "_silent" + relative.suffix
+            )
+            source_path = _resolve_out_file(video_file)
+            if source_path is None:
+                raise short_drama_media_sanitize.MediaSanitizeError(
+                    "missing_source_file", "供应商视频文件不存在"
+                )
+            silent_path = _out_path(silent_relative.as_posix())
+            sanitized = short_drama_media_sanitize.sanitize_visual_source(
+                source_path, silent_path,
+            )
+            video_file = silent_relative.as_posix()
+            source_media_report = {
+                "source": sanitized["source_report"],
+                "silent": sanitized["silent_report"],
+            }
+            visual_gate_report = short_drama_visual_gate.inspect_visual_source(
+                source_path,
+                pathlib.Path(sanitized.get("silent_file") or silent_path),
+                source_media_report,
+                short_drama_metadata.get("visual_spec") or {},
+            )
+        # 把参考视频的原声合回成片（HeyGen 的成片本身是无声的）。
+        # 合失败就保留无声成片 —— 宁可无声，也不能因为配音失败把片子丢了。
+        if source_audio:
+            video_file = _mux_original_audio(video_file, source_audio)
+        cover = _extract_first_frame_cover(video_file)   # 封面从【最终】成片抽
+    except Exception as e:
+        raise HeyGenBilledError("剧情视频已提交 HeyGen(video_id=%s，已扣费)，后续失败: %s"
+                                % (video_id, str(e)[:180])) from e
 
     # 成片在入库前转存 COS；上传失败时 public_url 会回退本地鉴权链接，
     # 不因对象存储故障把已经完成的 HeyGen 任务标记为失败。
@@ -4289,6 +4308,8 @@ def gen_cinematic(payload):
             "compiled_prompt_hash": short_drama_metadata.get(
                 "compiled_prompt_hash"
             ),
+            "visual_spec_hash": short_drama_metadata.get("visual_spec_hash"),
+            "visual_gate_report": visual_gate_report,
         })
     if cover:
         ret["image_file"] = cover
