@@ -861,8 +861,8 @@ def _project_analysis(clean, username):
     request = {
         "model": MODEL, "instructions": INSTRUCTIONS + "\n必须逐条标明资料来源 file_name 和位置 location；无附件时 file_name 写“用户当前回答”，无法精确定位写“未定位”，绝不编造页码。必须补齐资料来源证据、缺口/冲突和可执行的图片、视频计划；不得自动生成图片或视频。",
         "input": [{"role": "user", "content": content}], "reasoning": {"effort": REASONING_EFFORT},
-        "text": {"verbosity": "medium", "format": {"type": "json_schema", "name": "digital_ip_project_analysis", "strict": True, "schema": PROJECT_ANALYSIS_SCHEMA}},
-        "max_output_tokens": 3200, "store": False,
+        "text": {"verbosity": "low", "format": {"type": "json_schema", "name": "digital_ip_project_analysis", "strict": True, "schema": PROJECT_ANALYSIS_SCHEMA}},
+        "max_output_tokens": 25000, "store": False,
         "safety_identifier": hashlib.sha256(username.encode()).hexdigest()[:32],
     }
     try:
