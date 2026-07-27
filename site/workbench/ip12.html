@@ -871,11 +871,12 @@
       const current=state.answers[keyFor()]||{};
       const textarea=document.getElementById("answer");
       const value=step.type==="review"?step.preview.join("\n"):textarea?textarea.value.trim():current.text||"";
-      const changed=current.confirmed&&current.confirmedValue!==value;
-      const {confirmedValue,...draft}=current;
-      state.answers[keyFor()]=changed?{...draft,text:value,choice:selectedChoice,confirmed:false}:{...current,text:value,choice:selectedChoice};
+      const next={...current,text:value,choice:selectedChoice};
+      const changed=confirmedAnswerChanged(step,current,next);
+      const {confirmedValue,...draft}=next;
+      state.answers[keyFor()]=changed?{...draft,confirmed:false}:next;
       if(changed)delete state.profile[module.id];
-      const stale=invalidateStaleAnalysis(value)||changed;
+      const stale=invalidateStaleAnalysis(answerText(step,next))||changed;
       persist();
       if(stale)renderAI();
       return stale;
@@ -957,6 +958,10 @@
       if(step.type==="select")return answer.choice||"";
       if(step.type==="multi")return Array.isArray(answer.choice)?answer.choice.join("、"):"";
       return step.preview.join("\n");
+    }
+
+    function confirmedAnswerChanged(step,current,next){
+      return current.confirmed&&current.confirmedValue!==answerText(step,next);
     }
 
     function confirmedContext(){

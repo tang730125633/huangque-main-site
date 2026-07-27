@@ -709,7 +709,7 @@ def _extract_guide_output(response):
 
 def diagnose(payload, username):
     if not OPENAI_KEY:
-        raise DigitalIPError("泽龙服务端尚未配置 OpenAI")
+        raise DigitalIPError("AI 分析服务尚未配置")
     clean = validate_payload(payload)
     rate_stamp = _check_rate_limit(username)
     user_input = {
@@ -760,7 +760,6 @@ def diagnose(payload, username):
     return {
         "ok": True,
         "analysis": analysis,
-        "model": str(response.get("model") or MODEL),
         "usage": response.get("usage") or {},
         "ai_recommendation": True,
         "user_confirmed": False,
@@ -769,7 +768,7 @@ def diagnose(payload, username):
 
 def guide(payload, username):
     if not OPENAI_KEY:
-        raise DigitalIPError("泽龙服务端尚未配置 OpenAI")
+        raise DigitalIPError("AI 分析服务尚未配置")
     clean = validate_guide_payload(payload)
     now = time.time()
     # ponytail: 试点流量小，按请求清理过期内存缓存；多实例时再换共享 TTL 缓存。
@@ -830,7 +829,6 @@ def guide(payload, username):
     result = {
         "ok": True,
         "guide": guide_reply,
-        "model": str(response.get("model") or GUIDE_MODEL),
         "usage": response.get("usage") or {},
         "cached": False,
         "guide_only": True,
@@ -849,10 +847,25 @@ class DigitalIPRevisionConflict(DigitalIPError):
     status = 409
 
 
+def _secure_project_db_files(db_path):
+    path = pathlib.Path(db_path)
+    try:
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        os.close(descriptor)
+        for candidate in (path, pathlib.Path(str(path) + "-wal"), pathlib.Path(str(path) + "-shm")):
+            try:
+                os.chmod(candidate, 0o600)
+            except FileNotFoundError:
+                pass
+    except OSError as exc:
+        raise DigitalIPError("无法收紧项目档案数据库权限") from exc
+
+
 def _project_db():
     if not PROJECT_DB.parent.exists():
         PROJECT_DB.parent.mkdir(parents=True, mode=0o700)
     db_path = str(PROJECT_DB)
+    _secure_project_db_files(PROJECT_DB)
     conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
     if db_path not in _project_db_initialized:
@@ -866,12 +879,12 @@ def _project_db():
                     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)""")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_digital_ip_projects_owner_updated ON digital_ip_projects(username, updated_at DESC)")
                 conn.commit()
-                try:
-                    os.chmod(PROJECT_DB, 0o600)
-                except OSError as exc:
-                    conn.close()
-                    raise DigitalIPError("无法收紧项目档案数据库权限") from exc
                 _project_db_initialized.add(db_path)
+    try:
+        _secure_project_db_files(PROJECT_DB)
+    except DigitalIPError:
+        conn.close()
+        raise
     return conn
 
 
@@ -895,7 +908,8 @@ def _project_public(row):
     confirmed = _json_object(row["confirmed_json"])
     project["status"] = "confirmed" if (analysis and confirmed and analysis.get("analysis_id") == confirmed.get("analysis_id")) else "candidate_ready" if analysis else "draft"
     if analysis:
-        project["last_analysis"] = analysis
+        project["last_analysis"] = dict(analysis)
+        project["last_analysis"].pop("model", None)
     if confirmed:
         project["confirmed_profile"] = confirmed.get("profile")
         project["confirmed_plans"] = confirmed.get("plans")
@@ -1011,7 +1025,7 @@ def _clean_project_title(value):
 
 def _contains_data_url(value):
     if isinstance(value, str):
-        return value.strip().lower().startswith("data:")
+        return bool(re.search(r"(?:^|[^a-z0-9+.-])data:[^,\s\"'<>]*,", value, flags=re.I))
     if isinstance(value, dict):
         return any(_contains_data_url(item) for item in value.values())
     if isinstance(value, list):
@@ -1258,7 +1272,7 @@ def _extract_project_output(response):
 
 def _project_analysis(clean, username):
     if not OPENAI_KEY:
-        raise DigitalIPError("服务端尚未配置 OpenAI")
+        raise DigitalIPError("AI 分析服务尚未配置")
     rate_stamp = _check_rate_limit(username)
     try:
         daily_key = _check_project_daily_limit(username)
@@ -1294,6 +1308,8 @@ def _project_analysis(clean, username):
         raise DigitalIPError("AI 分析服务暂时不可用，请稍后重试") from exc
     try:
         analysis = _extract_project_output(response)
+        if _contains_data_url(analysis):
+            raise DigitalIPError("AI 返回结果包含不可保存的文件内容，请重试")
     except DigitalIPError:
         _release_rate_limit(username, rate_stamp)
         _release_project_daily_limit(daily_key)
@@ -1319,7 +1335,7 @@ def _analyze_project(username, project_id, clean):
         if cursor.rowcount != 1:
             raise DigitalIPRevisionConflict("项目已在另一端更新，请刷新后重试")
         updated = conn.execute("SELECT * FROM digital_ip_projects WHERE id=? AND username=?", (project_id, username)).fetchone()
-    return {"project": _project_public(updated), "analysis": analysis, "model": model, "usage": usage, "ok": True}
+    return {"project": _project_public(updated), "analysis": analysis, "usage": usage, "ok": True}
 
 
 def analyze_project(username, project_id, payload):
@@ -1495,7 +1511,7 @@ def _validate_report(report, source):
 
 def _generate_report_content(source, username, project_title):
     if not OPENAI_KEY:
-        raise DigitalIPError("服务端尚未配置 OpenAI")
+        raise DigitalIPError("AI 分析服务尚未配置")
     rate_stamp, daily_key = _check_report_rate_limit(username)
     prompt = {
         "project_title": project_title,
@@ -1568,14 +1584,16 @@ def _generate_report(username, project_id, revision):
         if cursor.rowcount != 1:
             raise DigitalIPRevisionConflict("项目已在另一端更新，请刷新后重试")
         updated = conn.execute("SELECT * FROM digital_ip_projects WHERE id=? AND username=?", (project_id, username)).fetchone()
-    return {"ok": True, "project": _project_public(updated), "report": envelope, "stale": False}
+    public_report = dict(envelope)
+    public_report.pop("model", None)
+    return {"ok": True, "project": _project_public(updated), "report": public_report, "stale": False}
 
 
 def generate_report(username, project_id, payload):
     if not isinstance(payload, dict):
         raise DigitalIPValidationError("请求体必须是 JSON 对象")
     if payload.get("consent") is not True:
-        raise DigitalIPValidationError("请先明确同意将已保存的 IP12 回答发送给 OpenAI 生成报告")
+        raise DigitalIPValidationError("请先明确同意将已保存的 IP12 回答发送给 AI 分析服务生成报告")
     revision = _revision(payload.get("revision"))
     return _run_project_inflight(
         "report", username, project_id, revision,
@@ -1588,9 +1606,11 @@ def get_report(username, project_id):
     report = _json_object(row["state_json"]).get(REPORT_STATE_KEY)
     if not isinstance(report, dict) or not isinstance(report.get("content"), dict):
         raise DigitalIPNotFound("报告尚未生成")
+    public_report = dict(report)
+    public_report.pop("model", None)
     return {
         "project": {"id": row["id"], "title": row["title"], "revision": int(row["revision"])},
-        "report": report,
+        "report": public_report,
         "stale": int(row["revision"]) != report.get("project_revision"),
     }
 

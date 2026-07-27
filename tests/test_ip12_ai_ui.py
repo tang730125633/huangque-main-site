@@ -39,9 +39,29 @@ class IP12AIUITests(unittest.TestCase):
         html = PAGE.read_text(encoding="utf-8")
 
         self.assertIn("confirmedValue:answerText(step,answer)", html)
-        self.assertIn("const changed=current.confirmed&&current.confirmedValue!==value;", html)
+        self.assertIn("const changed=confirmedAnswerChanged(step,current,next);", html)
         self.assertIn("confirmed:false", html)
         self.assertIn("if(changed)delete state.profile[module.id];", html)
+
+    def test_confirmed_choice_survives_navigation_but_real_choice_change_relocks(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        html = PAGE.read_text(encoding="utf-8")
+        functions = "\n".join(
+            re.search(rf"function {name}\(.*?\n    \}}", html, re.S).group(0)
+            for name in ("answerText", "confirmedAnswerChanged")
+        )
+        script = functions + """
+const select={type:'select'}, multi={type:'multi'};
+console.log(JSON.stringify([
+  confirmedAnswerChanged(select,{confirmed:true,confirmedValue:'获客'},{choice:'获客'}),
+  confirmedAnswerChanged(select,{confirmed:true,confirmedValue:'获客'},{choice:'复购'}),
+  confirmedAnswerChanged(multi,{confirmed:true,confirmedValue:'获客、复购'},{choice:['获客','复购']}),
+  confirmedAnswerChanged(multi,{confirmed:true,confirmedValue:'获客、复购'},{choice:['复购']})
+]));
+"""
+        got = json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(got, [False, True, False, True])
 
     def test_all_ai_requests_require_the_existing_explicit_consent(self):
         html = PAGE.read_text(encoding="utf-8")

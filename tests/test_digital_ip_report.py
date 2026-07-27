@@ -141,8 +141,11 @@ class DigitalIPReportTests(unittest.TestCase):
             self.assertEqual(len(prompt["skipped_steps"]), 53)
             self.assertEqual({item["id"] for item in prompt["product_catalog"]}, digital_ip.PRODUCT_IDS)
             self.assertFalse(result["stale"])
+            self.assertNotIn("model", result["report"])
             self.assertEqual(result["report"]["progress"], {"total": 54, "confirmed": 1, "skipped": 53, "unresolved": 0})
-            self.assertEqual(digital_ip.get_report("owner", project["id"])["report"]["report_id"], result["report"]["report_id"])
+            loaded_report = digital_ip.get_report("owner", project["id"])["report"]
+            self.assertNotIn("model", loaded_report)
+            self.assertEqual(loaded_report["report_id"], result["report"]["report_id"])
             with self.assertRaises(digital_ip.DigitalIPNotFound):
                 digital_ip.get_report("other", project["id"])
 

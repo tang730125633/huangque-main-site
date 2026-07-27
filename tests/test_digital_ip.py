@@ -130,6 +130,7 @@ class DigitalIPTests(unittest.TestCase):
         self.assertEqual(captured["body"]["model"], "gpt-5.6-sol")
         self.assertNotIn("beauty-owner", json.dumps(captured["body"], ensure_ascii=False))
         self.assertEqual(result["analysis"]["recommended_index"], 0)
+        self.assertNotIn("model", result)
         self.assertTrue(result["ai_recommendation"])
         self.assertFalse(result["user_confirmed"])
 
@@ -226,6 +227,7 @@ class DigitalIPTests(unittest.TestCase):
         self.assertEqual(len(sent["ip_summary"]), 800)
         self.assertNotIn("beauty-owner", json.dumps(captured["body"], ensure_ascii=False))
         self.assertEqual(result["guide"]["recommended_actions"][0]["type"], "fill_answer")
+        self.assertNotIn("model", result)
         self.assertTrue(result["guide_only"])
         self.assertFalse(result["user_confirmed"])
 
@@ -306,6 +308,8 @@ class DigitalIPTests(unittest.TestCase):
                     "answer": "经营 7 年", "files": [{"name": "me.png", "type": "image/png", "data_url": "data:image/png;base64," + encoded}], "consent": True,
                 })
             self.assertEqual(len(result["analysis"]["positioning_candidates"]), 3)
+            self.assertNotIn("model", result)
+            self.assertNotIn("model", result["project"]["last_analysis"])
             self.assertEqual(result["project"]["status"], "candidate_ready")
             self.assertEqual(json.loads(post.call_args.args[1])["max_output_tokens"], 25000)
             self.assertEqual(json.loads(post.call_args.args[1])["text"]["verbosity"], "low")
@@ -444,6 +448,44 @@ class DigitalIPTests(unittest.TestCase):
             with mock.patch.object(digital_ip, "PROJECT_DB", path), closing(digital_ip._project_db()):
                 pass
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_project_db_wal_and_shared_memory_are_private(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ip.db"
+            with mock.patch.object(digital_ip, "PROJECT_DB", path), closing(digital_ip._project_db()) as conn:
+                conn.execute("INSERT INTO digital_ip_projects(id,username,title,created_at,updated_at) VALUES('1','u','t',1,1)")
+                conn.commit()
+                for candidate in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
+                    self.assertTrue(candidate.exists())
+                    self.assertEqual(candidate.stat().st_mode & 0o777, 0o600)
+
+    def test_model_echoed_data_urls_are_not_persisted(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(digital_ip, "PROJECT_DB", Path(directory) / "ip.db"):
+            project = digital_ip.create_project("owner", {})
+            project = digital_ip.patch_project("owner", project["id"], {
+                "revision": project["revision"], "state": {"questionnaire_state": {"answers": {"0-0": {"text": "经营 7 年"}}}},
+            })
+            for leaked in (
+                "data:image/png;base64,c2VjcmV0",
+                "data:text/plain,secret",
+                "data:image/png;charset=utf-8;base64,c2VjcmV0",
+            ):
+                with self.subTest(leaked=leaked):
+                    analysis = _project_analysis()
+                    analysis["summary"] = "模型回显 " + leaked
+                    response = {"model": "internal-model", "output": [{"type": "message", "content": [
+                        {"type": "output_text", "text": json.dumps(analysis, ensure_ascii=False)},
+                    ]}]}
+                    with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), \
+                            mock.patch.object(digital_ip, "_post", return_value=response), \
+                            self.assertRaisesRegex(digital_ip.DigitalIPError, "不可保存"):
+                        digital_ip.analyze_project("owner", project["id"], {
+                            "revision": project["revision"], "module_index": 0, "step_index": 0,
+                            "answer": "经营 7 年", "consent": True,
+                        })
+                    self.assertEqual(digital_ip.get_project("owner", project["id"])["revision"], project["revision"])
+                    self.assertNotIn("owner", digital_ip._recent_requests)
+                    self.assertFalse(digital_ip._project_daily_requests)
 
     def test_project_table_initializes_concurrently_without_touching_jobs(self):
         with tempfile.TemporaryDirectory() as directory:
