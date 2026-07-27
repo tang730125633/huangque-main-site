@@ -81,7 +81,17 @@ def send(openid, title, completed_at, tip="视频已生成，可前往资产库�
         "lang": "zh_CN",
         "data": build_data(title, completed_at, tip),
     }
-    result = _post_json(API_URL + "?" + urllib.parse.urlencode({"access_token": wechat_vpay.access_token()}), payload)
+    def request_with_token(token):
+        return _post_json(
+            API_URL + "?" + urllib.parse.urlencode({"access_token": token}),
+            payload,
+        )
+
+    token = wechat_vpay.access_token()
+    result = request_with_token(token)
+    if int(result.get("errcode") or 0) in wechat_vpay.TOKEN_INVALID_CODES:
+        wechat_vpay.invalidate_access_token(token)
+        result = request_with_token(wechat_vpay.access_token())
     errcode = int(result.get("errcode") or 0)
     if errcode:
         raise SubscribeMessageError(result.get("errmsg") or "订阅消息发送失败", str(errcode), result)
