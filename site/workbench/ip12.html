@@ -121,7 +121,7 @@
     .why span{color:#737984;font-size:12px;line-height:1.55}
     .answer-label{font-size:12px;font-weight:700;display:block;margin:0 0 9px}
     .answer{
-      display:block;width:100%;min-height:230px;resize:vertical;border:1px solid #d4c9b8;border-radius:9px;
+      display:block;width:100%;min-height:120px;resize:vertical;border:1px solid #d4c9b8;border-radius:9px;
       background:rgba(255,255,255,.58);color:#102033;padding:18px 20px;line-height:1.75;outline:none
     }
     .answer::placeholder{color:#aea99f}
@@ -233,7 +233,7 @@
     .ai-candidate p{margin:0;color:#8f9cad;font-size:10px;line-height:1.55}
     .ai-candidate button{border:1px solid #385068;border-radius:8px;background:#10263a;color:#b8c7d5;font-size:10px;padding:7px 9px;margin-top:8px}
     .ai-follow-up{margin-top:10px;border-left:2px solid #39a99c;padding:8px 10px;background:#0d2235;color:#a7b7c5;font-size:10px;line-height:1.55}
-    .coach-card{border:1px solid rgba(216,174,85,.42);border-radius:15px;padding:15px;background:linear-gradient(145deg,rgba(216,174,85,.09),rgba(22,139,128,.05))}
+    .coach-card{margin-bottom:18px;border:1px solid rgba(216,174,85,.42);border-radius:15px;padding:18px;background:#071525;color:#f4eee2;box-shadow:0 18px 45px rgba(5,16,29,.16)}
     .coach-head{display:grid;grid-template-columns:42px 1fr auto;gap:10px;align-items:center}
     .coach-pet{
       position:relative;width:42px;height:42px;border:1px solid rgba(231,189,96,.58);border-radius:52% 52% 48% 18%;
@@ -241,30 +241,33 @@
       font-family:Georgia,"Songti SC",serif;font-weight:900;transform:rotate(-5deg);box-shadow:0 8px 20px rgba(0,0,0,.2)
     }
     .coach-pet:after{content:"";position:absolute;right:3px;bottom:3px;width:8px;height:8px;border:2px solid #0b1b2c;border-radius:50%;background:#43c2ae}
-    .coach-head b{display:block;color:#f1dfb7;font-size:12px;margin-bottom:3px}
-    .coach-head p{margin:0;color:#8290a2;font-size:9px;line-height:1.45}
+    .coach-head b{display:block;color:#f1dfb7;font-size:14px;margin-bottom:3px}
+    .coach-head p{margin:0;color:#8290a2;font-size:11px;line-height:1.45}
     .coach-model{font-size:9px;color:#65b8aa}
-    .coach-messages{display:grid;gap:8px;margin-top:12px;max-height:220px;overflow:auto}
-    .coach-bubble{border-radius:10px;padding:9px 10px;font-size:10px;line-height:1.6;white-space:pre-wrap}
+    .coach-messages{display:grid;align-content:start;gap:10px;margin-top:14px;min-height:250px;max-height:440px;overflow:auto;padding:14px;border:1px solid #1c3044;border-radius:12px;background:#050d18}
+    .coach-bubble{width:fit-content;max-width:88%;border-radius:12px;padding:11px 13px;font-size:13px;line-height:1.65;white-space:pre-wrap}
     .coach-bubble.assistant{background:#10263a;color:#c8d3dc;border-left:2px solid #d7aa50}
     .coach-welcome{animation:coachWelcome .28s ease-out}
     @keyframes coachWelcome{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:translateX(0)}}
     @media(prefers-reduced-motion:reduce){.coach-welcome{animation:coachWelcomeFade .2s ease-out}@keyframes coachWelcomeFade{from{opacity:0}to{opacity:1}}}
-    .coach-bubble.user{margin-left:22px;background:#17352f;color:#cce6df}
+    .coach-bubble.user{margin-left:auto;background:#17352f;color:#cce6df}
     .coach-quick,.coach-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
     .coach-chip,.coach-action{
-      border:1px solid #344b61;border-radius:999px;background:#0c2032;color:#aebdca;padding:6px 8px;font-size:9px;text-align:left
+      border:1px solid #344b61;border-radius:999px;background:#0c2032;color:#aebdca;padding:7px 10px;font-size:11px;text-align:left
     }
     .coach-action{border-color:#866d39;color:#e6ca8d}
     .coach-answer{margin-top:8px;padding:9px;border:1px dashed #3c665f;border-radius:9px;background:#0b211f;color:#a9c9c2;font-size:10px;line-height:1.55}
-    .coach-form{display:grid;grid-template-columns:1fr auto;gap:7px;margin-top:10px}
-    .coach-input{min-width:0;border:1px solid #31465b;border-radius:9px;background:#071522;color:#d9e2e9;padding:9px 10px;outline:none;font-size:10px}
+    .coach-consent{display:flex;align-items:flex-start;gap:8px;margin-top:12px;color:#aeb9c8;font-size:11px;line-height:1.55}
+    .coach-form{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:10px}
+    .coach-input{min-width:0;border:1px solid #31465b;border-radius:9px;background:#071522;color:#d9e2e9;padding:12px 13px;outline:none;font-size:13px}
     .coach-input:focus{border-color:#4aa89b}
-    .coach-send{border:0;border-radius:9px;background:#d5a94e;color:#102030;padding:8px 11px;font-weight:800;font-size:10px}
+    .coach-send{border:0;border-radius:9px;background:#d5a94e;color:#102030;padding:10px 17px;font-weight:800;font-size:12px}
     .coach-send:disabled{opacity:.5;cursor:wait}
-    .coach-status{margin:7px 0 0;color:#68778b;font-size:9px;line-height:1.45}
-    .coach-float{display:none}
-
+    .coach-status{margin:7px 0 0;color:#68778b;font-size:10px;line-height:1.45}
+    .answer-draft{margin:0 0 18px;border:1px solid #d8cfc0;border-radius:12px;background:rgba(255,255,255,.42)}
+    .answer-draft summary{padding:13px 15px;color:#53606d;font-size:12px;font-weight:700;cursor:pointer}
+    .answer-draft .answer{margin:0 15px 14px;width:calc(100% - 30px)}
+    .answer-draft .helper{margin:0 15px 14px}
     .modal{position:fixed;inset:0;background:rgba(2,4,8,.76);display:none;align-items:center;justify-content:center;padding:24px;z-index:20}
     .modal.open{display:flex}
     .guide{width:min(720px,100%);max-height:88vh;overflow:auto;background:var(--paper);color:var(--ink);border-radius:24px;padding:28px;box-shadow:0 35px 100px rgba(0,0,0,.5)}
@@ -313,11 +316,7 @@
       .step-actions{align-items:flex-start;flex-direction:column}
       .action-group{width:100%}
       .nav-btn{flex:1}
-      .coach-float{
-        display:grid;position:fixed;right:17px;bottom:18px;z-index:12;width:50px;height:50px;border:1px solid #f0cf7c;
-        border-radius:52% 52% 48% 18%;place-items:center;background:linear-gradient(145deg,#efd487,#b98531);
-        color:#0b1928;font-family:Georgia,"Songti SC",serif;font-weight:900;box-shadow:0 14px 35px rgba(0,0,0,.36)
-      }
+      .coach-messages{min-height:220px;max-height:52vh}
     }
   </style>
 </head>
@@ -384,14 +383,36 @@
             <div class="why-mark">?</div>
             <div><b>为什么现在做这一步</b><span id="stepWhy"></span></div>
           </div>
+          <section class="coach-card" id="coachCard" aria-live="polite">
+            <div class="coach-head">
+              <div class="coach-pet" aria-hidden="true">雀</div>
+              <div><b>小黄雀 · IP 成长教练</b><p>AI 会结合当前模块和你的回答动态提问，一次只问一个问题。</p></div>
+              <span class="coach-model" id="guideModel">待命</span>
+            </div>
+            <div class="coach-messages" id="coachMessages"></div>
+            <div class="coach-quick" id="coachQuick">
+              <button class="coach-action" type="button" data-guide-prompt="请开始问我吧。一次只问一个问题。">让 AI 问第一题</button>
+              <button class="coach-chip" type="button" data-guide-prompt="我不知道怎么开始，请用一个简单问题引导我">我不知道怎么开始</button>
+              <button class="coach-chip" type="button" data-guide-prompt="请用更简单的话问我">用简单的话问我</button>
+              <button class="coach-chip" type="button" data-guide-prompt="请根据我的行业和经历，给我一个贴近实际的例子">给我一个贴近我的例子</button>
+              <button class="coach-chip" type="button" data-guide-prompt="帮我整理当前回答，但不要替我确认">帮我整理回答</button>
+              <button class="coach-chip" type="button" data-guide-prompt="检查当前回答是否足够完整">检查是否完整</button>
+            </div>
+            <label class="coach-consent"><input id="aiConsent" type="checkbox">我明确同意：仅在我主动发送或分析时，将当前对话、回答及所选资料发送给 AI 分析服务；原始文件不会保存到项目档案。</label>
+            <div class="coach-form">
+              <input class="coach-input" id="coachInput" maxlength="1200" placeholder="像聊天一样说说你的经历、想法或现在最卡的地方…">
+              <button class="coach-send" id="coachSend" type="button">发送</button>
+            </div>
+            <p class="coach-status" id="coachStatus">不会监听输入；只有你点击发送后才调用 AI。</p>
+            <div class="coach-actions" id="coachActions"></div>
+          </section>
           <div id="interaction"></div>
           <div style="margin:16px 0; padding:12px; border:1px dashed #36506d; border-radius:10px;">
             <label for="projectFiles"><b>补充资料（可选）</b> · 最多 6 份、单份最多 8 MiB、总计 20 MiB</label>
             <input id="projectFiles" type="file" multiple accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.webp" style="display:block; margin-top:8px; max-width:100%;">
             <p id="fileStatus" class="ai-status">支持 PDF、Office、表格、文本与 PNG/JPEG/WebP。PPT/Word 内嵌图表建议先导出为 PDF。</p>
-            <label style="display:flex; gap:8px; align-items:flex-start; font-size:13px;"><input id="aiConsent" type="checkbox">我明确同意仅在本次 AI 教练或分析中将当前回答及所选资料发送给 AI 分析服务；原始文件不会保存到项目档案。</label>
           </div>
-          <div class="note-box">填写提示：填写后可点击右侧“AI 分析本步”。AI 只给建议；你点击“确认并继续”后，结果才写进数字化 IP 档案。</div>
+          <div class="note-box">AI 的提问和整理只形成建议草稿；只有你把草稿带入、检查并点击“确认并继续”，内容才写进数字化 IP 档案。</div>
           <div class="step-actions">
             <span class="save-state" id="saveState">浏览器会自动保存本页内容</span>
             <div class="action-group">
@@ -417,28 +438,6 @@
         <div class="ip-symbol">IP</div>
         <h3 id="ipName">尚未命名的数字化 IP</h3>
         <p id="ipSummary">每次确认都会成为后续内容和视频共同读取的项目记忆。</p>
-      </section>
-      <section class="coach-card" id="coachCard" aria-live="polite">
-        <div class="coach-head">
-          <div class="coach-pet" aria-hidden="true">雀</div>
-          <div><b>小黄雀 · IP 成长教练</b><p>只陪你完成当前步骤，不替你做诊断和确认。</p></div>
-          <span class="coach-model" id="guideModel">待命</span>
-        </div>
-        <div class="coach-messages" id="coachMessages"></div>
-        <div class="coach-quick" id="coachQuick">
-          <button class="coach-chip" type="button" data-guide-prompt="我不知道这道题怎么填">我不知道怎么填</button>
-          <button class="coach-chip" type="button" data-guide-prompt="请用更简单的话问我">用简单的话问我</button>
-          <button class="coach-chip" type="button" data-guide-prompt="请根据我的行业和经历，给我一个贴近实际的例子">给我一个贴近我的例子</button>
-          <button class="coach-chip" type="button" data-guide-prompt="帮我整理当前回答，但不要替我确认">帮我整理回答</button>
-          <button class="coach-chip" type="button" data-guide-prompt="告诉我完成本题后下一步做什么">告诉我下一步</button>
-          <button class="coach-chip" type="button" data-guide-prompt="检查当前回答是否足够完整">检查是否完整</button>
-        </div>
-        <div class="coach-form">
-          <input class="coach-input" id="coachInput" maxlength="1200" placeholder="也可以直接问小黄雀…">
-          <button class="coach-send" id="coachSend" type="button">发送</button>
-        </div>
-        <p class="coach-status" id="coachStatus">不会监听输入；只有你点击后才调用 AI。</p>
-        <div class="coach-actions" id="coachActions"></div>
       </section>
       <section class="memory-section" aria-live="polite">
         <div class="memory-title"><b>本步 AI 诊断</b><span id="aiModel">等待调用</span></div>
@@ -468,8 +467,6 @@
       </div>
     </aside>
   </div>
-  <button class="coach-float" id="coachFloat" type="button" aria-label="打开小黄雀 IP 成长教练">雀</button>
-
   <div class="modal" id="guideModal" role="dialog" aria-modal="true" aria-labelledby="guideTitle">
     <div class="guide">
       <div class="guide-top">
@@ -602,7 +599,7 @@
     let projectSaving = false;
     let projectSavePending = false;
     const COACH_WELCOME_MESSAGES = [
-      "我会陪你从当前这一步开始。想不起例子时，可以点下面的入口。",
+      "你好，我是小黄雀。勾选同意后点“让 AI 问第一题”，我会结合当前模块动态提问。",
       "先说真实经历、能力和目标，答案不必一次写得完美。",
       "每次 AI 分析只给建议，是否确认始终由你决定。",
       "完成这一题后，我会帮你看清下一步该补什么。"
@@ -792,9 +789,11 @@
       let html="";
       if(answer.skipped)html=`<div class="note-box">此步骤已跳过，尚未进入已确认档案。填写后点击“确认并继续”即可回补。</div>`;
       if(step.type==="input"){
-        html+=`<label class="answer-label" for="answer">${escapeHtml(step.label)}</label>
-          <textarea class="answer" id="answer" placeholder="${step.conversation?"我是___，目前在做___，希望通过 IP 实现___，现在最卡在___。":"先写最接近真实的一版，不需要追求完美。"}">${escapeHtml(answer.text||"")}</textarea>
-          <div class="helper"><span>${step.conversation?"先说几句就可以，小黄雀会一次只追问一个问题。":"回答越具体，后续候选越准确。"}</span><div>${step.conversation?'<button class="example-btn" id="continueChatBtn" type="button">让小黄雀接着问</button> ':""}<button class="example-btn" id="exampleBtn" type="button">带入示例</button></div></div>`;
+        html+=`<details class="answer-draft" ${answer.text?"open":""}>
+          <summary>本步确认稿 · 对话后可带入，也可以直接填写</summary>
+          <textarea class="answer" id="answer" aria-label="本步确认稿" placeholder="AI 整理出的草稿会带入这里；你也可以直接写自己的版本。">${escapeHtml(answer.text||"")}</textarea>
+          <div class="helper"><span>这里不是固定问卷；请检查内容后再确认。</span><button class="example-btn" id="exampleBtn" type="button">带入一个示例草稿</button></div>
+        </details>`;
       }else if(step.type==="select"||step.type==="multi"){
         html+=`<label class="answer-label">${step.type==="multi"?"可以选择多项":"请选择一项作为当前确认"}</label>
           <div class="suggestions">${step.options.map((option,index)=>{
@@ -836,12 +835,6 @@
           }
         });
       }
-      const continueChatBtn=$("continueChatBtn");
-      if(continueChatBtn)continueChatBtn.addEventListener("click",()=>{
-        if(!$("answer").value.trim()){ showToast("先随便说几句，再让小黄雀追问"); $("answer").focus(); return; }
-        scrollIntoView($("coachCard"),"center");
-        askGuide("请根据我当前的介绍，只追问一个最有价值的问题，帮助我继续说下去。");
-      });
       document.querySelectorAll("[data-choice]").forEach(btn=>{
         btn.addEventListener("click",()=>{
           const choice=step.options[Number(btn.dataset.choice)];
@@ -994,8 +987,13 @@
       return MODULES.find((candidate,index)=>index>state.moduleIndex&&candidate.availability!=="coming_soon")?.steps[0]?.title||"完成当前开放模块并查看数字化 IP 方案";
     }
 
+    function currentGuideTurns(){
+      const stepKey=keyFor();
+      return state.guideTurns.filter(turn=>turn.stepKey===stepKey).slice(-6);
+    }
+
     function latestGuideReply(){
-      return [...state.guideTurns].reverse().find(turn=>turn.role==="assistant")||{};
+      return [...currentGuideTurns()].reverse().find(turn=>turn.role==="assistant")||{};
     }
 
     function stopCoachWelcomeRotation(){
@@ -1004,16 +1002,16 @@
 
     function startCoachWelcomeRotation(){
       stopCoachWelcomeRotation();
-      if(document.hidden||state.guideTurns.length)return;
+      if(document.hidden||currentGuideTurns().length)return;
       coachWelcomeTimer=setInterval(()=>{
-        if(document.hidden||state.guideTurns.length){ stopCoachWelcomeRotation(); return; }
+        if(document.hidden||currentGuideTurns().length){ stopCoachWelcomeRotation(); return; }
         coachWelcomeIndex=(coachWelcomeIndex+1)%COACH_WELCOME_MESSAGES.length;
         renderCoach();
       },4200);
     }
 
     function renderCoach(){
-      const turns=state.guideTurns.slice(-6);
+      const turns=currentGuideTurns();
       $("coachMessages").innerHTML=turns.length?turns.map((turn,index)=>
         `<div class="coach-bubble ${turn.role==="user"?"user":"assistant"}">${escapeHtml(turn.content)}${
           turn.role==="assistant"&&turn.suggested_answer
@@ -1047,7 +1045,8 @@
       const module=MODULES[state.moduleIndex];
       const step=module.steps[state.stepIndex];
       const answer=state.answers[keyFor()]||{};
-      const priorTurns=state.guideTurns.slice(-6).map(turn=>({role:turn.role,content:turn.content}));
+      const stepKey=keyFor();
+      const priorTurns=currentGuideTurns().map(turn=>({role:turn.role,content:turn.content}));
       const button=$("coachSend");
       button.disabled=true;
       $("coachStatus").textContent="小黄雀正在理解当前步骤…";
@@ -1077,23 +1076,24 @@
         if(!response.ok||!result.ok)throw new Error(result.detail||"小黄雀暂时无法回复");
         const guide=result.guide||{};
         state.guideTurns=[...state.guideTurns,
-          {role:"user",content:message},
+          {role:"user",content:message,stepKey},
           {
             role:"assistant",
             content:guide.reply||"我们继续完成当前步骤。",
             suggested_answer:guide.suggested_answer||"",
             follow_up_questions:guide.follow_up_questions||[],
             actions:guide.recommended_actions||[],
-            model:result.cached?"已缓存":(result.model||"AI 分析服务")
+            model:result.cached?"已缓存":(result.model||"AI 分析服务"),
+            stepKey
           }
-        ].slice(-6);
+        ].slice(-72);
         persist();
         $("coachInput").value="";
         $("coachStatus").textContent=`已约束为当前步骤${result.usage?.total_tokens?` · ${result.usage.total_tokens} tokens`:""}。`;
         renderCoach();
       }catch(error){
         $("coachStatus").textContent=error.message||"小黄雀暂时无法回复，请稍后重试。";
-        if(!state.guideTurns.length)renderCoach();
+        if(!currentGuideTurns().length)renderCoach();
       }finally{
         button.disabled=false;
       }
@@ -1105,6 +1105,7 @@
       const draft=String(value||"").trim();
       if(!draft){ showToast("当前没有可带入的回答草稿"); return; }
       answer.value=draft;
+      answer.closest("details")?.setAttribute("open","");
       answer.focus();
       saveDraft();
       showToast("已带入草稿，确认前仍可修改");
@@ -1382,7 +1383,7 @@
     });
     $("coachCard").addEventListener("click",event=>{
       const draft=event.target.closest("[data-guide-use-draft]");
-      if(draft)return applyGuideDraft(state.guideTurns.slice(-6)[Number(draft.dataset.guideUseDraft)]?.suggested_answer);
+      if(draft)return applyGuideDraft(currentGuideTurns()[Number(draft.dataset.guideUseDraft)]?.suggested_answer);
       const prompt=event.target.closest("[data-guide-prompt]");
       if(prompt)return askGuide(prompt.dataset.guidePrompt);
       const question=event.target.closest("[data-guide-question]");
@@ -1404,11 +1405,10 @@
       const target=event.target.closest("[data-foundation-target]");
       if(target)foundationHandoff(target.dataset.foundationTarget);
     });
-    $("coachFloat").addEventListener("click",()=>scrollIntoView($("coachCard")));
     $("guideBtn").addEventListener("click",()=>$("guideModal").classList.add("open"));
     $("closeGuide").addEventListener("click",()=>$("guideModal").classList.remove("open"));
     $("guideModal").addEventListener("click",event=>{if(event.target===$("guideModal"))$("guideModal").classList.remove("open")});
-    document.addEventListener("visibilitychange",()=>{if(document.hidden)stopCoachWelcomeRotation();else if(!state.guideTurns.length)renderCoach()});
+    document.addEventListener("visibilitychange",()=>{if(document.hidden)stopCoachWelcomeRotation();else if(!currentGuideTurns().length)renderCoach()});
     $("resetBtn").addEventListener("click",()=>{
       if(confirm("只清除当前浏览器中的离线缓存；云端项目不会删除，确定重置吗？")){
         const key=projectStorageKey(); if(key)localStorage.removeItem(key);
@@ -1434,6 +1434,6 @@
       localStorage.setItem("huangque-ip12-guide-seen-v3","1");
     }
   </script>
-  <script src="cloud-shell.js?v=0bb36799"></script>
+  <script src="cloud-shell.js?v=642453c4"></script>
 </body>
 </html>

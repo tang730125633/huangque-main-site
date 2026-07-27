@@ -33,16 +33,30 @@ class IP12ReportUITests(unittest.TestCase):
         load_source = html[html.index("async function load()"):html.index('consent.addEventListener')]
         self.assertNotIn('method:"POST"', load_source)
 
-    def test_print_is_native_pdf_capable_without_file_claim(self):
+    def test_pdf_download_uses_the_owned_same_origin_url_and_keeps_print_fallback(self):
         html = self.html
         self.assertIn("@page{size:A4", html)
         self.assertIn("@media print", html)
         self.assertIn("window.print()", html)
         self.assertIn("打印 / 保存为 PDF", html)
-        self.assertIn("不声称已生成 PDF", html)
+        self.assertIn('id="downloadBtn" href="#" hidden>下载 PDF</a>', html)
+        self.assertIn("function sameOriginPdfUrl(value)", html)
+        self.assertIn("currentEnvelope.pdf_url", html)
+        self.assertIn("downloadBtn.hidden=!pdfUrl", html)
+        self.assertIn("downloadBtn.href=pdfUrl||\"#\"", html)
+        self.assertIn("url.origin===location.origin", html)
+        self.assertIn("url.pathname===expected", html)
+        self.assertIn("/report.pdf`;", html)
+        self.assertIn("可下载服务器生成的私有 PDF", html)
         self.assertIn("不提供 Word/DOCX 文件", html)
-        self.assertNotIn("下载 PDF", html)
         self.assertNotIn("生成 DOCX", html)
+
+    def test_report_gate_and_progress_default_use_current_34_open_steps(self):
+        html = self.html
+        self.assertIn("当前开放的 34 步全部确认或跳过后即可生成", html)
+        self.assertIn("共 ${progress.total||34}", html)
+        self.assertNotIn("全部 54 步确认或跳过后即可生成", html)
+        self.assertNotIn("progress.total||54", html)
 
     def test_dynamic_report_content_is_rendered_as_text(self):
         html = self.html

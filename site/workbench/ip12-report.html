@@ -27,7 +27,8 @@
       <div class="toolbar">
         <button class="btn" id="refreshBtn" type="button">刷新报告</button>
         <button class="btn" id="regenerateBtn" type="button" hidden>重新生成</button>
-        <button class="btn primary" id="printBtn" type="button" hidden>打印 / 保存为 PDF</button>
+        <a class="btn primary" id="downloadBtn" href="#" hidden>下载 PDF</a>
+        <button class="btn" id="printBtn" type="button" hidden>打印 / 保存为 PDF</button>
       </div>
     </header>
     <p class="status" id="status" role="status"></p>
@@ -37,7 +38,7 @@
         <div class="evidence-route" aria-label="报告推导路径"><span><b>01</b>真实资料</span><i></i><span><b>02</b>痛点诊断</span><i></i><span><b>03</b>产品行动</span></div>
         <p class="eyebrow">黄雀数字化 IP · 证据型方案</p>
         <h1 id="gateTitle">让每一条建议，都能追溯到你的真实资料</h1>
-        <p class="gate-lead">全部 54 步确认或跳过后即可生成。报告会把已确认事实、行业痛点与黄雀产品行动逐层对应；资料缺口会明确标出，不会由 AI 擅自补写。</p>
+        <p class="gate-lead">当前开放的 34 步全部确认或跳过后即可生成。报告会把已确认事实、行业痛点与黄雀产品行动逐层对应；资料缺口会明确标出，不会由 AI 擅自补写。</p>
         <label class="consent">
           <input id="consent" type="checkbox">
           <span>我同意将本项目中<strong>已经保存的 IP12 回答</strong>发送给 AI 分析服务，用于生成本次报告。我知道跳过的步骤只会作为资料缺口，不会被当成事实。</span>
@@ -67,7 +68,7 @@
         <div class="meta" id="meta"></div>
       </header>
       <div class="content" id="sections"></div>
-      <footer class="footer-note">本页可使用浏览器“打印 / 保存为 PDF”。本站不声称已生成 PDF，也不提供 Word/DOCX 文件。</footer>
+      <footer class="footer-note">可下载服务器生成的私有 PDF；也可使用浏览器“打印 / 保存为 PDF”。本站不提供 Word/DOCX 文件。</footer>
     </article>
   </main>
   <script>
@@ -79,7 +80,7 @@
       workflow_canvas:{name:"创作画布",url:"canvas.html"}
     };
     const PRODUCT_HANDOFF_KEY="hq_ip12_product_handoff_v1",PRODUCT_HANDOFF_TARGETS=new Set(["image_studio","script_studio","video_studio"]);
-    const $=id=>document.getElementById(id),status=$("status"),gate=$("gate"),report=$("report"),consent=$("consent"),generateBtn=$("generateBtn");
+    const $=id=>document.getElementById(id),status=$("status"),gate=$("gate"),report=$("report"),consent=$("consent"),generateBtn=$("generateBtn"),downloadBtn=$("downloadBtn");
     let project=null,currentEnvelope=null;
     function node(tag,className,text){const el=document.createElement(tag);if(className)el.className=className;if(text!==undefined)el.textContent=String(text);return el}
     function showStatus(message,error=false){status.textContent=message;status.className="status show"+(error?" error":"")}
@@ -89,6 +90,7 @@
     function section(number,title,lead){const wrap=node("section","section"),head=node("div","section-head");head.append(node("span","num",number));const copy=node("div");copy.append(node("h2","",title),node("p","section-lead",lead));head.append(copy);wrap.append(head);return wrap}
     function empty(text){return node("p","empty",text)}
     function renderList(items){const list=node("ol","steps");(items||[]).forEach(item=>list.append(node("li","",item)));return list}
+    function sameOriginPdfUrl(value){try{const url=new URL(String(value||""),location.origin),expected=`/api/gen/digital-ip/projects/${encodeURIComponent(projectId)}/report.pdf`;return url.origin===location.origin&&url.pathname===expected?url.pathname+url.search:""}catch(_){return ""}}
     function productLink(productId,known,match,stale){
       const handoff=PRODUCT_HANDOFF_TARGETS.has(productId),link=node("a","",handoff?`带入${known.name}`:known.name);
       link.href=known.url+(handoff?"?prefill=ip12":"");
@@ -110,8 +112,8 @@
       });
       return link;
     }
-    function render(payload){currentEnvelope=payload.report;const content=currentEnvelope.content||{};gate.classList.remove("show");report.classList.add("show");$("printBtn").hidden=false;$("regenerateBtn").hidden=false;$("reportTitle").textContent=content.title||"IP12 产品方案报告";$("summary").textContent=content.executive_summary||"";
-      const meta=$("meta");meta.replaceChildren();const progress=currentEnvelope.progress||{};[project?.title||payload.project?.title||"IP12 项目",`确认 ${progress.confirmed||0} · 跳过 ${progress.skipped||0} · 共 ${progress.total||54}`,new Date((currentEnvelope.generated_at||0)*1000).toLocaleString("zh-CN")].forEach(value=>meta.append(node("span","pill",value)));
+    function render(payload){currentEnvelope=payload.report;const content=currentEnvelope.content||{};gate.classList.remove("show");report.classList.add("show");$("printBtn").hidden=false;$("regenerateBtn").hidden=false;const pdfUrl=sameOriginPdfUrl(currentEnvelope.pdf_url);downloadBtn.hidden=!pdfUrl;downloadBtn.href=pdfUrl||"#";$("reportTitle").textContent=content.title||"IP12 产品方案报告";$("summary").textContent=content.executive_summary||"";
+      const meta=$("meta");meta.replaceChildren();const progress=currentEnvelope.progress||{};[project?.title||payload.project?.title||"IP12 项目",`确认 ${progress.confirmed||0} · 跳过 ${progress.skipped||0} · 共 ${progress.total||34}`,new Date((currentEnvelope.generated_at||0)*1000).toLocaleString("zh-CN")].forEach(value=>meta.append(node("span","pill",value)));
       $("stale").classList.toggle("show",!!payload.stale);const root=$("sections");root.replaceChildren();
       const evidenceSection=section("01","事实依据","报告中的痛点、指标与建议只能追溯到这些已确认回答。"),evidenceGrid=node("div","grid");(content.evidence||[]).forEach(item=>{const card=node("article","card"),source=item.source_name&&item.source_location?`${item.source_name} · ${item.source_location}`:item.source_ref;card.append(node("span","tag",item.evidence_id),node("h3","",item.claim),node("p","",`“${item.source_excerpt}”`),node("p","evidence",`来源：${source}`));evidenceGrid.append(card)});evidenceSection.append(evidenceGrid.childElementCount?evidenceGrid:empty("当前没有足够的已确认事实可列为证据。"));root.append(evidenceSection);
       const painSection=section("02","行业痛点与匹配产品","没有直接能力匹配时，报告不会为了推荐而推荐。"),painGrid=node("div","grid");(content.industry_pains||[]).forEach(item=>{const card=node("article","card");card.append(node("h3","",item.pain),node("p","",item.why_it_matters));(item.evidence_ids||[]).forEach(id=>card.append(node("span","tag",id)));(item.product_matches||[]).forEach(match=>{const known=PRODUCTS[match.product_id];if(!known)return;const box=node("div","product"),handoff=PRODUCT_HANDOFF_TARGETS.has(match.product_id),stale=!!payload.stale;box.append(productLink(match.product_id,known,match,stale),node("p","product-hint",handoff?(stale?"报告已过期，请重新生成后再带入":"点击后只预填待编辑内容，不会自动生成、扣点或发布"):"可点击跳转使用我们的网站功能"),node("p","",match.fit_reason),renderList(match.execution_steps));card.append(box)});painGrid.append(card)});painSection.append(painGrid.childElementCount?painGrid:empty("现有已确认资料不足以形成有证据的行业痛点或产品推荐。"));root.append(painSection);
@@ -120,12 +122,12 @@
       const gapSection=section("05","材料缺口","跳过的步骤只会形成缺口，不会被模型补写成事实。"),gapGrid=node("div","grid");(content.material_gaps||[]).forEach(item=>{const card=node("article","card");card.append(node("span","tag",item.blocking?"阻塞项":"可后补"),node("h3","",item.gap),node("p","",item.why_needed),node("p","evidence",`补充方式：${item.how_to_collect}`));gapGrid.append(card)});gapSection.append(gapGrid.childElementCount?gapGrid:empty("报告未识别到额外材料缺口。"));root.append(gapSection);
       const note=section("06","使用边界","请在执行前再次核对事实、页面能力和业务条件。");note.append(node("p","disclaimer",content.disclaimer||"报告仅供规划参考，不构成经营效果保证。"));root.append(note)
     }
-    async function load(){clearStatus();if(!projectId){showStatus("链接缺少 project 参数，请从 IP12 项目进入报告页。",true);return}try{const projectResponse=await fetch(API,{credentials:"include",cache:"no-store"});if(!auth(projectResponse))return;project=(await json(projectResponse)).project;const response=await fetch(API+"/report",{credentials:"include",cache:"no-store"});if(!auth(response))return;if(response.status===404){gate.classList.add("show");report.classList.remove("show");$("printBtn").hidden=true;return}render(await json(response))}catch(error){if(error.status===404){gate.classList.add("show");return}showStatus(error.message,true)}}
+    async function load(){clearStatus();if(!projectId){showStatus("链接缺少 project 参数，请从 IP12 项目进入报告页。",true);return}try{const projectResponse=await fetch(API,{credentials:"include",cache:"no-store"});if(!auth(projectResponse))return;project=(await json(projectResponse)).project;const response=await fetch(API+"/report",{credentials:"include",cache:"no-store"});if(!auth(response))return;if(response.status===404){gate.classList.add("show");report.classList.remove("show");$("printBtn").hidden=true;downloadBtn.hidden=true;downloadBtn.href="#";return}render(await json(response))}catch(error){if(error.status===404){gate.classList.add("show");return}showStatus(error.message,true)}}
     consent.addEventListener("change",()=>{generateBtn.disabled=!consent.checked});
     generateBtn.addEventListener("click",async()=>{if(!consent.checked||!project)return;generateBtn.disabled=true;generateBtn.textContent="正在生成…";showStatus("正在根据已保存回答生成报告，请不要重复提交。");try{const response=await fetch(API+"/report",{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({revision:project.revision,consent:true})});if(!auth(response))return;const payload=await json(response);project=payload.project;clearStatus();render(payload)}catch(error){if(error.status===403&&error.data?.membership_url){showStatus(error.message+"。请先前往会员页面开通。",true)}else if(error.status===409){showStatus("项目已更新，请刷新后再生成报告。",true)}else{showStatus(error.message,true)}}finally{generateBtn.textContent="同意并生成报告";generateBtn.disabled=!consent.checked}});
     $("regenerateBtn").addEventListener("click",()=>{consent.checked=false;generateBtn.disabled=true;gate.classList.add("show");gate.scrollIntoView({block:"start"})});
     $("printBtn").addEventListener("click",()=>window.print());$("refreshBtn").addEventListener("click",load);load();
   </script>
-  <script src="cloud-shell.js?v=0bb36799"></script>
+  <script src="cloud-shell.js?v=642453c4"></script>
 </body>
 </html>
