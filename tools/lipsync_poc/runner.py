@@ -1,39 +1,34 @@
-"""Provider-neutral PoC orchestration with atomic, redacted reports."""
+"""Provider-neutral PoC orchestration with recoverable, redacted state."""
 
-import json
-import os
+import hashlib
 import time
-from pathlib import Path
 
 from .adapters.base import ProviderStatus, TERMINAL_STATUSES
 from .metrics.media_probe import probe_media
 from .metrics.quality import empty_human_review, media_contract_metrics
+from .paths import artifact_paths
 from .redaction import redact
+from .state import STATE_VERSION, atomic_json, load_json
 
 
-REPORT_VERSION = "1.0"
+REPORT_VERSION = "1.1"
 
 
 class PocRunError(RuntimeError):
     def __init__(self, code, message, report=None):
-        super().__init__(message)
-        self.code = code
-        self.report = report or {}
+        safe_message = str(redact(str(message)))
+        super().__init__(safe_message)
+        self.code = str(code)
+        self.report = redact(report or {})
 
 
-def _atomic_json(path, payload):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".part")
-    try:
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
-        os.replace(temporary, path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
+def _request_id(provider, input_hash):
+    source = f"{provider}:{input_hash}".encode("utf-8")
+    return hashlib.sha256(source).hexdigest()
+
+
+def _status_value(status):
+    return status.value if isinstance(status, ProviderStatus) else str(status)
 
 
 class PocRunner:
@@ -43,92 +38,416 @@ class PocRunner:
         probe=probe_media,
         clock=time.monotonic,
         sleep=time.sleep,
+        wall_clock=time.time,
     ):
         self.provider = provider
         self.probe = probe
         self.clock = clock
         self.sleep = sleep
+        self.wall_clock = wall_clock
 
-    def _wait(self, job, timeout_seconds, poll_seconds):
+    def _write_state(self, path, state, **updates):
+        current = dict(state or {})
+        current.update(updates)
+        current["state_version"] = STATE_VERSION
+        current["updated_at"] = int(self.wall_clock())
+        atomic_json(path, current)
+        return current
+
+    def _wait(self, job, timeout_seconds, poll_seconds, on_status):
         deadline = self.clock() + timeout_seconds
         current = job
+        on_status(current)
         while current.status not in TERMINAL_STATUSES:
             if self.clock() >= deadline:
                 raise PocRunError("provider_timeout", "provider job timed out")
             self.sleep(poll_seconds)
             current = self.provider.get_job(current.job_id)
+            on_status(current)
         return current
 
-    def run(self, sample, output_dir, timeout_seconds=300, poll_seconds=2):
+    def _human_review(self, report_path):
+        try:
+            existing = load_json(report_path)
+        except (OSError, ValueError):
+            existing = None
+        if isinstance(existing, dict) and isinstance(
+            existing.get("human_review"), dict
+        ):
+            return existing["human_review"]
+        return empty_human_review()
+
+    def _validate_recovery_state(self, state, sample, provider):
+        if not state:
+            raise PocRunError(
+                "recovery_state_missing",
+                "no persisted provider job is available",
+            )
+        if state.get("provider") != provider:
+            raise PocRunError(
+                "recovery_provider_mismatch",
+                "persisted job belongs to another provider",
+            )
+        if state.get("sample_id") != sample.sample_id:
+            raise PocRunError(
+                "recovery_sample_mismatch",
+                "persisted job belongs to another sample",
+            )
+        if state.get("input_hash") != sample.input_hash:
+            raise PocRunError(
+                "recovery_input_mismatch",
+                "persisted job input hash does not match current sample",
+            )
+        if not state.get("provider_job_id"):
+            raise PocRunError(
+                "ambiguous_submission",
+                "submission state has no provider job id; resolve billing "
+                "before creating another job",
+            )
+
+    def _normalize_error(self, error):
+        if isinstance(error, PocRunError):
+            return redact({
+                "code": error.code,
+                "message": str(error),
+                "retryable": error.code in {
+                    "provider_timeout",
+                    "provider_poll_failed",
+                },
+            })
+        try:
+            normalized = self.provider.normalize_error(error)
+        except Exception:
+            normalized = {
+                "code": "provider_error",
+                "message": "provider error normalization failed",
+                "retryable": False,
+            }
+        if not isinstance(normalized, dict):
+            normalized = {
+                "code": "provider_error",
+                "message": "provider operation failed",
+                "retryable": False,
+            }
+        return redact(dict(normalized))
+
+    def _cancel_timeout(self, job_id, capabilities):
+        if not job_id:
+            return {"attempted": False, "reason": "job_id_missing"}
+        if not capabilities.supports_cancel:
+            return {"attempted": False, "reason": "cancel_unsupported"}
+        try:
+            canceled = self.provider.cancel_job(job_id)
+            return {
+                "attempted": True,
+                "succeeded": True,
+                "provider_status": _status_value(canceled.status),
+            }
+        except Exception as error:
+            return {
+                "attempted": True,
+                "succeeded": False,
+                "error": self._normalize_error(error),
+            }
+
+    def _failure_report(
+        self,
+        sample,
+        paths,
+        capabilities,
+        state,
+        error,
+        started,
+        cancel=None,
+    ):
+        normalized = self._normalize_error(error)
+        report = {
+            "report_version": REPORT_VERSION,
+            "sample_id": sample.sample_id,
+            "input_hash": sample.input_hash,
+            "provider": paths.provider,
+            "artifact_namespace": paths.provider,
+            "report_file": (
+                f"{paths.provider}/reports/{sample.sample_id}.json"
+            ),
+            "provider_job_id": state.get("provider_job_id"),
+            "request_id": state.get("request_id"),
+            "status": "failed",
+            "failure_stage": state.get("stage"),
+            "billing_status": state.get("billing_status", "unknown"),
+            "last_provider_status": state.get("last_provider_status"),
+            "elapsed_ms": round((self.clock() - started) * 1000),
+            "capabilities": capabilities.as_dict(),
+            "provider_error": normalized,
+            "cancel": cancel,
+            "recovery": {
+                "can_resume": bool(state.get("provider_job_id")),
+                "can_refetch": bool(
+                    state.get("provider_job_id")
+                    and capabilities.supports_result_refetch
+                ),
+            },
+            "human_review": self._human_review(paths.report),
+        }
+        atomic_json(paths.report, report)
+        return report
+
+    def _finish(
+        self,
+        sample,
+        paths,
+        capabilities,
+        state,
+        job,
+        started,
+    ):
+        if job.status != ProviderStatus.SUCCEEDED:
+            raise PocRunError(
+                "provider_terminal",
+                f"provider ended in {_status_value(job.status)}",
+            )
+        state = self._write_state(
+            paths.state,
+            state,
+            status="fetching",
+            stage="fetch_result",
+            last_provider_status=_status_value(job.status),
+        )
+        result = self.provider.fetch_result(job.job_id, paths.media)
+        source_video = self.probe(sample.video_path)
+        source_audio = self.probe(sample.audio_path)
+        provider_output = self.probe(result.output_path)
+        expected_dimensions = (
+            {"width": 720, "height": 1280}
+            if sample.ratio == "9:16"
+            else {"width": 1280, "height": 720}
+            if sample.ratio == "16:9"
+            else {"width": 720, "height": 720}
+        )
+        report = {
+            "report_version": REPORT_VERSION,
+            "sample_id": sample.sample_id,
+            "input_hash": sample.input_hash,
+            "provider": paths.provider,
+            "artifact_namespace": paths.provider,
+            "report_file": (
+                f"{paths.provider}/reports/{sample.sample_id}.json"
+            ),
+            "provider_job_id": job.job_id,
+            "request_id": state["request_id"],
+            "status": "succeeded",
+            "billing_status": "provider_succeeded",
+            "duration_ms": sample.duration_ms,
+            "ratio": sample.ratio,
+            "speaking_mode": sample.speaking_mode,
+            "elapsed_ms": round((self.clock() - started) * 1000),
+            "capabilities": capabilities.as_dict(),
+            "media_file": (
+                f"{paths.provider}/media/{sample.sample_id}.mp4"
+            ),
+            "media": {
+                "source_video": source_video,
+                "source_audio": source_audio,
+                "provider_output": provider_output,
+            },
+            "automated_metrics": media_contract_metrics(
+                source_video,
+                provider_output,
+                {
+                    **expected_dimensions,
+                    "fps": sample.fps,
+                },
+            ),
+            "human_review": self._human_review(paths.report),
+            "provider_metadata": redact(dict(result.metadata)),
+        }
+        atomic_json(paths.report, report)
+        self._write_state(
+            paths.state,
+            state,
+            status="succeeded",
+            stage="done",
+            billing_status="provider_succeeded",
+            last_provider_status=_status_value(job.status),
+            media_file=report["media_file"],
+        )
+        return report
+
+    def run(
+        self,
+        sample,
+        output_dir,
+        timeout_seconds=300,
+        poll_seconds=2,
+        resume=False,
+        refetch=False,
+    ):
         if timeout_seconds <= 0 or poll_seconds <= 0:
             raise PocRunError(
                 "invalid_polling",
                 "timeout_seconds and poll_seconds must be positive",
             )
+        if resume and refetch:
+            raise PocRunError(
+                "invalid_recovery_mode",
+                "resume and refetch are mutually exclusive",
+            )
         request = sample.to_request()
         capabilities = self.provider.capabilities()
+        paths = artifact_paths(
+            output_dir,
+            capabilities.provider,
+            sample.sample_id,
+        )
         started = self.clock()
+        state = load_json(paths.state)
+        if not resume and not refetch and state is not None:
+            raise PocRunError(
+                "existing_run_state",
+                "persisted run state exists; use --resume, --refetch, "
+                "or a new output directory",
+            )
+        if resume or refetch:
+            self._validate_recovery_state(
+                state,
+                sample,
+                paths.provider,
+            )
+        job = None
         try:
-            self.provider.validate_input(request)
-            job = self.provider.create_job(request)
-            job = self._wait(job, timeout_seconds, poll_seconds)
-            if job.status != ProviderStatus.SUCCEEDED:
-                raise PocRunError(
-                    "provider_terminal",
-                    f"provider ended in {job.status.value}",
+            if resume or refetch:
+                job = self.provider.get_job(state["provider_job_id"])
+                state = self._write_state(
+                    paths.state,
+                    state,
+                    status="running",
+                    stage="polling",
+                    last_provider_status=_status_value(job.status),
                 )
-            output_dir = Path(output_dir)
-            output_path = output_dir / "media" / f"{sample.sample_id}.mp4"
-            result = self.provider.fetch_result(job.job_id, output_path)
-            source_video = self.probe(sample.video_path)
-            source_audio = self.probe(sample.audio_path)
-            provider_output = self.probe(result.output_path)
-            expected_dimensions = (
-                {"width": 720, "height": 1280}
-                if sample.ratio == "9:16"
-                else {"width": 1280, "height": 720}
-                if sample.ratio == "16:9"
-                else {"width": 720, "height": 720}
-            )
-            report = {
-                "report_version": REPORT_VERSION,
-                "sample_id": sample.sample_id,
-                "input_hash": sample.input_hash,
-                "provider": capabilities.provider,
-                "provider_job_id": job.job_id,
-                "status": "succeeded",
-                "duration_ms": sample.duration_ms,
-                "ratio": sample.ratio,
-                "speaking_mode": sample.speaking_mode,
-                "elapsed_ms": round((self.clock() - started) * 1000),
-                "capabilities": capabilities.as_dict(),
-                "media": {
-                    "source_video": source_video,
-                    "source_audio": source_audio,
-                    "provider_output": provider_output,
-                },
-                "automated_metrics": media_contract_metrics(
-                    source_video,
-                    provider_output,
+            else:
+                self.provider.validate_input(request)
+                now = int(self.wall_clock())
+                state = self._write_state(
+                    paths.state,
                     {
-                        **expected_dimensions,
-                        "fps": sample.fps,
+                        "provider": paths.provider,
+                        "sample_id": sample.sample_id,
+                        "input_hash": sample.input_hash,
+                        "request_id": _request_id(
+                            paths.provider,
+                            sample.input_hash,
+                        ),
+                        "provider_job_id": None,
+                        "status": "submitting",
+                        "stage": "create_job",
+                        "billing_status": "not_submitted",
+                        "created_at": now,
                     },
-                ),
-                "human_review": empty_human_review(),
-                "provider_metadata": redact(dict(result.metadata)),
-            }
-            _atomic_json(
-                output_dir / "reports" / f"{sample.sample_id}.json",
-                report,
+                )
+                job = self.provider.create_job(request)
+                state = self._write_state(
+                    paths.state,
+                    state,
+                    provider_job_id=job.job_id,
+                    status="running",
+                    stage="polling",
+                    billing_status="possibly_billable",
+                    last_provider_status=_status_value(job.status),
+                )
+
+            if refetch:
+                if not capabilities.supports_result_refetch:
+                    raise PocRunError(
+                        "refetch_unsupported",
+                        "provider does not support result refetch",
+                    )
+                if job.status != ProviderStatus.SUCCEEDED:
+                    raise PocRunError(
+                        "provider_not_complete",
+                        "provider job is not ready for result refetch",
+                    )
+            else:
+                job = self._wait(
+                    job,
+                    timeout_seconds,
+                    poll_seconds,
+                    lambda current: self._write_state(
+                        paths.state,
+                        state,
+                        status="running",
+                        stage="polling",
+                        last_provider_status=_status_value(current.status),
+                    ),
+                )
+            return self._finish(
+                sample,
+                paths,
+                capabilities,
+                state,
+                job,
+                started,
             )
-            return report
-        except PocRunError:
-            raise
         except Exception as error:
-            normalized = redact(dict(self.provider.normalize_error(error)))
+            try:
+                persisted = load_json(paths.state)
+            except (OSError, ValueError):
+                persisted = None
+            if persisted:
+                state = persisted
+            if job is not None and not (state or {}).get("provider_job_id"):
+                state = {
+                    **(state or {}),
+                    "provider_job_id": job.job_id,
+                    "last_provider_status": _status_value(job.status),
+                    "billing_status": "possibly_billable",
+                }
+            normalized = self._normalize_error(error)
+            cancel = None
+            if normalized.get("code") == "provider_timeout":
+                cancel = self._cancel_timeout(
+                    (state or {}).get("provider_job_id"),
+                    capabilities,
+                )
+            provider_job_id = (state or {}).get("provider_job_id")
+            billing_status = (
+                "requires_reconciliation"
+                if provider_job_id
+                else "unknown"
+                if (state or {}).get("status") == "submitting"
+                else (state or {}).get("billing_status")
+                or "not_submitted"
+            )
+            state = self._write_state(
+                paths.state,
+                state or {
+                    "provider": paths.provider,
+                    "sample_id": sample.sample_id,
+                    "input_hash": sample.input_hash,
+                    "request_id": _request_id(
+                        paths.provider,
+                        sample.input_hash,
+                    ),
+                    "created_at": int(self.wall_clock()),
+                },
+                status="failed",
+                billing_status=billing_status,
+                error=normalized,
+                cancel=cancel,
+            )
+            report = self._failure_report(
+                sample,
+                paths,
+                capabilities,
+                state,
+                error,
+                started,
+                cancel,
+            )
             raise PocRunError(
                 str(normalized.get("code") or "provider_error"),
-                str(normalized.get("message") or "provider operation failed"),
-                {"provider_error": normalized},
+                str(
+                    normalized.get("message")
+                    or "provider operation failed"
+                ),
+                report,
             ) from error

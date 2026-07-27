@@ -24,6 +24,17 @@ def build_parser():
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--timeout-seconds", type=int, default=300)
     parser.add_argument("--poll-seconds", type=float, default=2)
+    recovery = parser.add_mutually_exclusive_group()
+    recovery.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume polling a persisted provider job without creating a new one.",
+    )
+    recovery.add_argument(
+        "--refetch",
+        action="store_true",
+        help="Download a completed provider result using the persisted job ID.",
+    )
     return parser
 
 
@@ -51,13 +62,30 @@ def main(argv=None):
                 Path(args.output_dir),
                 timeout_seconds=args.timeout_seconds,
                 poll_seconds=args.poll_seconds,
+                resume=args.resume,
+                refetch=args.refetch,
             )
         except PocRunError as error:
-            failures.append({
+            failure = {
                 "sample_id": sample.sample_id,
                 "code": error.code,
                 "message": str(error),
-            })
+            }
+            if error.report:
+                failure.update({
+                    "provider_job_id": error.report.get(
+                        "provider_job_id"
+                    ),
+                    "billing_status": error.report.get(
+                        "billing_status"
+                    ),
+                    "artifact_namespace": error.report.get(
+                        "artifact_namespace"
+                    ),
+                    "report_file": error.report.get("report_file"),
+                    "recovery": error.report.get("recovery"),
+                })
+            failures.append(failure)
     print(json.dumps({
         "provider": args.provider,
         "total": len(samples),

@@ -32,6 +32,16 @@ def _safe_url(value):
 
 def _safe_string(value):
     value = re.sub(
+        (
+            r"(?im)\b("
+            r"proxy-authorization|authorization|set-cookie|cookie|"
+            r"x-api-key|x-auth-token"
+            r")\s*:\s*[^\r\n]*"
+        ),
+        lambda match: f"{match.group(1)}: [REDACTED]",
+        value,
+    )
+    value = re.sub(
         r"(?i)\bBearer\s+[^\s,;]+",
         "Bearer [REDACTED]",
         value,

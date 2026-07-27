@@ -64,7 +64,41 @@ Mock 输出不是口型结果，只用于验证清单、状态机、媒体探测
 
 ## 报告
 
-每个样本生成一份 JSON，包含：
+每个样本按 Provider 隔离生成运行状态、媒体和报告：
+
+```text
+<output-dir>/<provider>/
+  state/<sample-id>.json
+  media/<sample-id>.mp4
+  reports/<sample-id>.json
+```
+
+状态文件会在提交前保存确定性的 `request_id`，并在 `create_job()` 返回后立即
+原子保存 Provider Job ID。进程中断、轮询异常或超时后，不要重新创建付费任务；
+使用原输出目录恢复：
+
+```bash
+python -m tools.lipsync_poc.run_poc \
+  --manifest C:/private-lipsync/manifest.json \
+  --assets-root C:/private-lipsync/assets \
+  --provider mock \
+  --resume
+```
+
+对已完成任务重新下载结果：
+
+```bash
+python -m tools.lipsync_poc.run_poc \
+  --manifest C:/private-lipsync/manifest.json \
+  --assets-root C:/private-lipsync/assets \
+  --provider mock \
+  --refetch
+```
+
+恢复时会校验 Provider、样本 ID 和输入哈希；不一致时拒绝操作。普通运行发现
+已有状态文件时也会停止，避免重复创建可能收费的任务。
+
+每份报告包含：
 
 - 不可变 `input_hash`
 - Provider Job ID 与能力声明
@@ -73,4 +107,9 @@ Mock 输出不是口型结果，只用于验证清单、状态机、媒体探测
 - 待填写的人工盲评字段
 - 已脱敏的 Provider 元数据
 
-报告不保存原始绝对媒体路径，也不记录环境变量或 Provider 密钥。
+失败和超时同样会保存报告，包括 Provider Job ID、最后状态、取消结果、费用
+待核对状态和恢复能力。支持取消的 Provider 在超时时会调用 `cancel_job()`。
+
+报告不保存原始绝对媒体路径，也不记录环境变量或 Provider 密钥。Cookie、
+Set-Cookie、Authorization、Proxy-Authorization、X-API-Key 和 X-Auth-Token
+等 HTTP 头即使出现在异常字符串中也会被统一脱敏。

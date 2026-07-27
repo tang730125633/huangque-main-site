@@ -71,14 +71,23 @@ class LipsyncPocRunnerTests(unittest.TestCase):
         )
         report = runner.run(self.sample, output)
         saved = json.loads(
-            (output / "reports/front-01.json").read_text(encoding="utf-8")
+            (output / "mock/reports/front-01.json").read_text(
+                encoding="utf-8"
+            )
         )
         self.assertEqual(report["input_hash"], saved["input_hash"])
         self.assertEqual("pending", saved["human_review"]["review_status"])
         self.assertFalse(
-            (output / "reports/front-01.json.part").exists()
+            (output / "mock/reports/front-01.json.part").exists()
         )
-        self.assertTrue((output / "media/front-01.mp4").is_file())
+        self.assertTrue((output / "mock/media/front-01.mp4").is_file())
+        state = json.loads(
+            (output / "mock/state/front-01.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(report["provider_job_id"], state["provider_job_id"])
+        self.assertEqual("succeeded", state["status"])
 
     def test_report_does_not_include_absolute_input_paths(self):
         output = self.root / "out"
@@ -114,6 +123,27 @@ class LipsyncPocRunnerTests(unittest.TestCase):
         self.assertNotIn("abc123", result)
         self.assertNotIn("hidden", result)
         self.assertIn("Bearer [REDACTED]", result)
+
+    def test_redaction_scrubs_cookie_and_authorization_headers(self):
+        result = redact(
+            "Cookie: sessionid=topsecret\n"
+            "Set-Cookie: sid=hidden\n"
+            "Authorization: Basic dXNlcjpwYXNz\n"
+            "Proxy-Authorization: Digest secret\n"
+            "X-API-Key: key-secret\n"
+            "X-Auth-Token: token-secret"
+        )
+        for secret in (
+            "topsecret",
+            "hidden",
+            "dXNlcjpwYXNz",
+            "Digest secret",
+            "key-secret",
+            "token-secret",
+        ):
+            self.assertNotIn(secret, result)
+        self.assertIn("Cookie: [REDACTED]", result)
+        self.assertIn("Authorization: [REDACTED]", result)
 
     def test_validate_only_does_not_call_ffprobe_or_provider(self):
         assets = self.root / "assets"

@@ -18,6 +18,9 @@ PR 0-A 只交付统一契约、样本清单、媒体探测、指标模板、脱�
 - Token、密钥、Cookie和 URL查询参数不会进入报告。
 - Mock Provider不访问网络、不收费，并通过合同测试。
 - 真实媒体、报告和供应商响应不会被 Git提交。
+- Provider Job ID在创建后立即原子持久化，失败和超时也会生成报告。
+- 两个Provider的状态、媒体、报告和人工评分目录互相隔离。
+- 超时任务按能力声明执行取消，支持原 Job ID恢复查询和结果重拉。
 
 ## 3. 私有样本集
 
@@ -46,6 +49,20 @@ PR 0-A 只交付统一契约、样本清单、媒体探测、指标模板、脱�
 6. `normalize_error()` 输出统一 code/message/retryable；
 7. 供应商响应进入报告前必须执行统一脱敏；
 8. 不得在 PoC 阶段调用项目扣点服务。
+9. 使用请求的 `input_hash` 作为供应商幂等键或派生稳定幂等键；
+10. Provider名称必须是安全的小写标识，不能包含路径分隔符。
+
+运行产物固定使用以下布局：
+
+```text
+<output-dir>/<provider>/
+  state/<sample-id>.json
+  media/<sample-id>.mp4
+  reports/<sample-id>.json
+```
+
+新运行检测到已有状态时必须停止。进程中断或轮询失败使用 `--resume`，已完成
+结果重新下载使用 `--refetch`；禁止通过删除本地状态绕过费用核对。
 
 ## 5. 评测流程
 
