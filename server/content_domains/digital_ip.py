@@ -929,3 +929,79 @@ def confirm_project(username, project_id, payload):
             raise DigitalIPRevisionConflict("项目已在另一端更新，请刷新后重试")
         updated = conn.execute("SELECT * FROM digital_ip_projects WHERE id=? AND username=?", (project_id, username)).fetchone()
     return {"project": _project_public(updated), "ok": True}
+
+
+def _digital_ip_membership_required(user):
+    return bool(user.get("_membership_enforcement_enabled") and not user.get("membership_active"))
+
+
+def _send_membership_required(handler):
+    handler._send(403, {"detail": "请先开通会员后再使用数字化 IP AI 分析", "code": "membership_required",
+                        "membership_url": "/workbench/recharge", "membership_enforcement_enabled": True})
+
+
+def dispatch_http(handler, method, verify_token, must_change_password):
+    """Thin HTTP adapter; project and AI behavior stays in this domain."""
+    path = handler.path.split("?")[0]
+    root = "/api/gen/digital-ip/projects"
+    legacy = method == "POST" and path in {"/api/gen/digital-ip/diagnose", "/api/gen/digital-ip/guide"}
+    if not legacy and path != root and not path.startswith(root + "/"):
+        return False
+    user = verify_token(handler._token())
+    if not user:
+        handler._send(401, {"detail": "未登录或登录已过期"})
+        return True
+    if method in {"POST", "PATCH"} and must_change_password(user):
+        handler._send(403, {"detail": "请先修改初始密码"})
+        return True
+    try:
+        if legacy:
+            if _digital_ip_membership_required(user):
+                _send_membership_required(handler)
+            else:
+                action = guide if path.endswith("/guide") else diagnose
+                handler._send(200, action(handler._json_body_strict(), user["username"]))
+            return True
+        if method == "GET":
+            if path == root:
+                handler._send(200, {"items": list_projects(user["username"])})
+            else:
+                project_id = path[len(root) + 1:]
+                handler._send(404, {"detail": "not found"}) if not project_id or "/" in project_id else handler._send(200, {"project": get_project(user["username"], project_id)})
+            return True
+        content_length = int(handler.headers.get("Content-Length") or 0)
+        if content_length <= 0:
+            handler._send(400, {"detail": "请求体不能为空"})
+            return True
+        if content_length > MAX_PROJECT_BODY_BYTES:
+            handler._send(413, {"detail": "资料请求不能超过 20 MiB" if method == "POST" else "请求过大"})
+            return True
+        body = handler._json_body_strict()
+        if method == "PATCH":
+            project_id = path[len(root) + 1:]
+            handler._send(404, {"detail": "not found"}) if not project_id or "/" in project_id else handler._send(200, {"project": patch_project(user["username"], project_id, body)})
+            return True
+        if method == "POST" and path == root:
+            handler._send(200, {"project": create_project(user["username"], body)})
+            return True
+        parts = path[len(root) + 1:].split("/")
+        if method != "POST" or len(parts) != 2 or not parts[0]:
+            handler._send(404, {"detail": "not found"})
+            return True
+        project_id, action = parts
+        if action == "analyze":
+            if _digital_ip_membership_required(user):
+                _send_membership_required(handler)
+            else:
+                handler._send(200, analyze_project(user["username"], project_id, body))
+        elif action == "confirm":
+            handler._send(200, confirm_project(user["username"], project_id, body))
+        else:
+            handler._send(404, {"detail": "not found"})
+    except ValueError as exc:
+        handler._send(400, {"detail": str(exc)[:220]})
+    except DigitalIPError as exc:
+        handler._send(exc.status, {"detail": str(exc)})
+    except Exception:
+        handler._send(502, {"detail": "数字化 IP 项目服务暂时不可用，请稍后重试"})
+    return True

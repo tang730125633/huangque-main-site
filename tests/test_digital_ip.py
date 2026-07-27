@@ -344,6 +344,22 @@ class DigitalIPTests(unittest.TestCase):
             with self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "最多保留"):
                 digital_ip.create_project("owner", {})
 
+    def test_http_adapter_blocks_paid_analysis_for_inactive_member(self):
+        class Handler:
+            path = "/api/gen/digital-ip/projects/project-id/analyze"
+            headers = {"Content-Length": "2"}
+            sent = None
+
+            def _token(self): return "token"
+            def _json_body_strict(self): return {}
+            def _send(self, status, body): self.sent = (status, body)
+
+        handler = Handler()
+        user = {"username": "owner", "_membership_enforcement_enabled": True, "membership_active": False}
+        self.assertTrue(digital_ip.dispatch_http(handler, "POST", lambda _: user, lambda _: False))
+        self.assertEqual(handler.sent[0], 403)
+        self.assertEqual(handler.sent[1]["code"], "membership_required")
+
 
 if __name__ == "__main__":
     unittest.main()

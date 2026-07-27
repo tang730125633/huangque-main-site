@@ -52,7 +52,7 @@ class IP12AIUITests(unittest.TestCase):
         self.assertIn('textarea.addEventListener("input",event=>{', html)
 
     def test_paid_ip12_ai_routes_follow_membership_enforcement(self):
-        source = CORE.read_text(encoding="utf-8")
+        source = CORE.read_text(encoding="utf-8") + CORE.with_name("digital_ip.py").read_text(encoding="utf-8")
         self.assertIn("_membership_enforcement_enabled", source)
         self.assertIn("_digital_ip_membership_required(user)", source)
         self.assertIn('"code": "membership_required"', source)
