@@ -3102,8 +3102,26 @@ class ShortDramaStillRouteTests(unittest.TestCase):
 
         self.assertEqual((500, 500), (first_status, replay_status))
         self.assertEqual(first, replay)
+        self.assertIs(first.get("operation_terminal"), True)
         self.assertNotIn("_http_status", replay)
         self.assertEqual(1, create_paid_job.call_count)
+
+    def test_generic_insert_failure_with_pending_refund_is_not_terminal(self):
+        path = "/api/gen/image"
+        body = {
+            "provider": "seedream", "prompt": "rainy doorway",
+            "ratio": "9:16", "count": 1,
+        }
+        failure = jobs_store.PaidJobInsertError("queued", "generic-insert-queued-001")
+        with mock.patch.object(
+            jobs_store, "create_paid_job", side_effect=failure
+        ):
+            status, response = self.request(
+                path, body=body, idempotency_key="generic-insert-queued-001"
+            )
+
+        self.assertEqual(500, status)
+        self.assertNotIn("operation_terminal", response)
 
     def test_generic_queue_refund_replays_429_without_free_retry(self):
         path = "/api/gen/image"

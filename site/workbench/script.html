@@ -1157,7 +1157,7 @@
             scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4a460;">请求已受理，点击“开始”可使用同一凭证继续确认，不会重复扣点</div>';
             return;
           }
-          if(x.s<500) _confirmSubmission(breakdownPending);
+          if(x.s<500||(x.d&&x.d.operation_terminal===true)) _confirmSubmission(breakdownPending);
           scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+esc((x.d&&x.d.detail)||'未知')+'</div>'; return;
         }
         _confirmSubmission(breakdownPending);
@@ -1658,7 +1658,7 @@
             scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4a460;">请求已受理，再次点击将使用同一凭证继续确认，不会重复扣点</div>';
             return;
           }
-          if(x.s<500) _confirmSubmission(imagePending);
+          if(x.s<500||(x.d&&x.d.operation_terminal===true)) _confirmSubmission(imagePending);
           scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+esc((x.d&&x.d.detail)||'未知')+'</div>'; return;
         }
         _confirmSubmission(imagePending);

@@ -1705,6 +1705,11 @@ class H(BaseHTTPRequestHandler):
                     failed_response = {"detail": {"refunded": "任务创建失败，点数已退回",
                         "queued": "任务创建失败，退款正在自动重试"}.get(e.compensation, "任务创建失败，退款需人工核对"),
                         "submission_ref": e.submission_ref}
+                    if e.compensation == "refunded":
+                        # The charge has been compensated, so this failed
+                        # submission is a terminal result.  Clients may discard
+                        # the pending idempotency key and safely try again.
+                        failed_response["operation_terminal"] = True
                     if is_still_route:
                         _short_drama_domain().short_drama_production.consume_failed_quote(
                             jdb, user["username"], prepared["quote_token"], idem_key)

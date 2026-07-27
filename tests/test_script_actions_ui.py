@@ -200,7 +200,13 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("sessionStorage.setItem(storageKey", self.html)
         self.assertIn("saved&&saved.body===body&&saved.key", self.html)
         self.assertIn("code==='idempotency_in_progress'", self.html)
-        self.assertIn("if(x.s<500) _confirmSubmission", self.html)
+        self.assertEqual(
+            2,
+            self.html.count(
+                "if(x.s<500||(x.d&&x.d.operation_terminal===true)) "
+                "_confirmSubmission"
+            ),
+        )
 
     def test_lost_submission_response_reuses_pending_key(self):
         self.assertIn("var _pendingSubmissionMemory={}", self.html)
@@ -219,6 +225,15 @@ class ScriptActionsUiTests(unittest.TestCase):
             ".catch(function(){ _confirmSubmission(imagePending)",
             self.html,
         )
+
+    def test_terminal_500_discards_pending_key_but_uncertain_failures_keep_it(self):
+        confirmation = (
+            "if(x.s<500||(x.d&&x.d.operation_terminal===true)) "
+            "_confirmSubmission"
+        )
+        self.assertEqual(2, self.html.count(confirmation))
+        self.assertIn("code==='idempotency_in_progress'", self.html)
+        self.assertNotIn("x.s>=500) _confirmSubmission", self.html)
 
     def test_breakdown_handles_gateway_html_and_can_resume_polling(self):
         self.assertIn("function _readApiResponse(response)", self.html)
