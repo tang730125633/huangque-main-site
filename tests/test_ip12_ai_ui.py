@@ -66,7 +66,7 @@ console.log(JSON.stringify([
     def test_all_ai_requests_require_the_existing_explicit_consent(self):
         html = PAGE.read_text(encoding="utf-8")
 
-        self.assertIn("本次 AI 教练或分析", html)
+        self.assertIn("仅在我主动发送或分析时", html)
         guide_source = html[html.index("async function askGuide"):html.index("function runGuideAction")]
         self.assertIn('if(!$("aiConsent").checked)', guide_source)
         self.assertIn("consent:true", guide_source)
@@ -89,14 +89,14 @@ console.log(JSON.stringify([
         self.assertIn("delete state.analyses[keyFor()];", html)
         self.assertIn("delete state.profile[module.id];", html)
         self.assertIn("function progressedStepCount(){ return confirmedStepCount()+skippedSteps().length; }", html)
-        self.assertIn('confirmed===totalSteps?"完整档案 · 54 / 54"', html)
+        self.assertIn('confirmed===totalSteps?`当前开放 · ${totalSteps} / ${totalSteps}`', html)
         self.assertIn("首轮已走完", html)
         self.assertIn('id="skippedItems"', html)
         self.assertIn('id="reportUnlock"', html)
         self.assertIn("progressed===totalSteps&&project?.id", html)
         self.assertIn("ip12-report.html?project=", html)
         self.assertIn('id="openReportBtn"', html)
-        report_source = html[html.index('$("openReportBtn")'):html.index('document.querySelectorAll("[data-resume-module]")')]
+        report_source = html[html.index('$("openReportBtn")'):html.index('$("skippedItems").querySelectorAll("[data-resume-module]")')]
         self.assertIn("await flushProjectSave()", report_source)
         self.assertLess(report_source.index("await flushProjectSave()"), report_source.index("location.href=`ip12-report.html"))
         self.assertIn("data-resume-module=", html)
@@ -122,12 +122,12 @@ console.log(JSON.stringify([
         self.assertIn("/api/gen/digital-ip/guide", html)
         self.assertIn("AI 分析本步", html)
         self.assertIn("小黄雀 · IP 成长教练", html)
-        self.assertIn("我不知道怎么填", html)
-        self.assertIn("告诉我下一步", html)
+        self.assertIn("我不知道怎么开始", html)
+        self.assertIn("让 AI 问第一题", html)
         self.assertIn("不会监听输入", html)
         self.assertIn("AI 分析服务 · 结构化分析", html)
         self.assertIn("credentials:\"include\"", html)
-        self.assertIn("AI 只给建议", html)
+        self.assertIn("AI 的提问和整理只形成建议草稿", html)
         self.assertNotIn("OPENAI_API_KEY", html)
 
     def test_brand_and_visible_ai_labels_are_neutral(self):
@@ -143,11 +143,60 @@ console.log(JSON.stringify([
         self.assertIn("const COACH_WELCOME_MESSAGES = [", html)
         self.assertIn("function stopCoachWelcomeRotation()", html)
         self.assertIn("function startCoachWelcomeRotation()", html)
-        self.assertIn("if(document.hidden||state.guideTurns.length)return;", html)
+        self.assertIn("if(document.hidden||currentGuideTurns().length)return;", html)
         self.assertIn('document.addEventListener("visibilitychange"', html)
         self.assertIn("if(turns.length)stopCoachWelcomeRotation();else startCoachWelcomeRotation();", html)
         self.assertIn("@keyframes coachWelcome", html)
         self.assertIn("@keyframes coachWelcomeFade", html)
+
+    def test_coach_keeps_six_messages_and_only_applies_suggested_text_as_a_draft(self):
+        html = PAGE.read_text(encoding="utf-8")
+        self.assertIn("function currentGuideTurns()", html)
+        self.assertIn("turn.stepKey===stepKey", html)
+        self.assertIn("const priorTurns=currentGuideTurns()", html)
+        self.assertIn("].slice(-72);", html)
+        self.assertIn('data-guide-use-draft="${index}"', html)
+        self.assertIn("function applyGuideDraft(value)", html)
+        source = html[html.index("function applyGuideDraft"):html.index("function runGuideAction")]
+        self.assertIn("answer.value=draft", source)
+        self.assertIn("saveDraft();", source)
+        self.assertNotIn("fetch(", source)
+        self.assertNotIn("confirmCurrent", source)
+
+    def test_foundation_outcome_requires_all_module_one_to_four_answers_to_be_confirmed(self):
+        html = PAGE.read_text(encoding="utf-8")
+        self.assertIn('id="foundationOutcome" aria-live="polite" hidden', html)
+        source = html[html.index("function renderFoundationOutcome"):html.index("function render()")]
+        self.assertIn("item.answer?.confirmed||item.answer?.skipped", source)
+        self.assertIn("items.filter(item=>!item.answer?.confirmed)", source)
+        self.assertIn("state.profile[id]", source)
+        self.assertIn("跳过项不会被 AI 当成事实", source)
+        self.assertIn("你的 IP 底座 · 已确认", source)
+        self.assertIn('$("skippedItems").querySelectorAll("[data-resume-module]")', html)
+        listener = html[html.index('$("foundationOutcome").addEventListener'):html.index('$("guideBtn").addEventListener')]
+        self.assertIn('event.target.closest("[data-resume-module]")', listener)
+        for target in ("script_studio", "image_studio", "video_studio"):
+            self.assertIn(f'data-foundation-target="{target}"', source)
+
+    def test_foundation_handoff_is_explicit_and_does_not_generate_or_expose_context_in_url(self):
+        html = PAGE.read_text(encoding="utf-8")
+        source = html[html.index("function foundationHandoff"):html.index("function nextStepTitle")]
+        self.assertIn("foundationItems().some(item=>!item.answer?.confirmed)", source)
+        self.assertIn("sessionStorage.setItem(PRODUCT_HANDOFF_KEY", source)
+        self.assertIn("created_at:Date.now()", source)
+        self.assertIn("?prefill=ip12", source)
+        navigation = source[source.index("location.href"):]
+        self.assertIn('location.href=`${product.url}?prefill=ip12`', navigation)
+        self.assertNotIn("context", navigation)
+        self.assertNotIn("fetch(", source)
+        self.assertNotIn("confirmCurrent", source)
+        self.assertIn("不会自动生成、扣点或发布", html)
+
+    def test_editing_a_confirmed_foundation_answer_relocks_the_outcome(self):
+        html = PAGE.read_text(encoding="utf-8")
+        source = html[html.index("function saveDraft"):html.index("async function confirmCurrent")]
+        self.assertIn("if(changed)delete state.profile[module.id]", source)
+        self.assertIn("if(changed)renderFoundationOutcome();", source)
 
     def test_project_recovery_consent_and_action_links_are_visible(self):
         html = PAGE.read_text(encoding="utf-8")
@@ -166,7 +215,8 @@ console.log(JSON.stringify([
         self.assertIn("state=restoreLocal?draft.state:remote&&typeof remote===\"object\"?{...initialState,...remote,analyses:{}", html)
         self.assertIn("async function flushProjectSave()", html)
         self.assertGreaterEqual(html.count("await flushProjectSave();"), 2)
-        self.assertIn('`${STORAGE_KEY}:${project.id}`', html)
+        self.assertIn('`${prefix}:${project.id}`', html)
+        self.assertIn("LEGACY_STORAGE_KEY", html)
         self.assertIn("let state = structuredClone(initialState);", html)
         self.assertNotIn("localStorage.setItem(STORAGE_KEY,JSON.stringify(state))", html)
         self.assertIn("saveProject(true)", html)
@@ -174,6 +224,52 @@ console.log(JSON.stringify([
         self.assertIn("project.last_analysis?.input", html)
         self.assertIn('step.type==="review"?step.preview.join("\\n")', html)
         self.assertIn('textarea.addEventListener("input",()=>{', html)
+
+    def test_intake_is_conversation_first_and_growth_agents_are_coming_soon(self):
+        html = PAGE.read_text(encoding="utf-8")
+
+        self.assertIn("先聊聊你想打造的 IP", html)
+        self.assertIn("不用按表格回答", html)
+        self.assertIn("让 AI 问第一题", html)
+        self.assertIn("一次只问一个问题", html)
+        self.assertEqual(html.count('id="coachCard"'), 1)
+        self.assertLess(html.index('id="coachCard"'), html.index('id="interaction"'))
+        self.assertNotIn('id="coachFloat"', html)
+        interaction_source = html[html.index("function renderInteraction"):html.index("function saveDraft")]
+        self.assertNotIn("escapeHtml(step.label)", interaction_source)
+        self.assertIn('aria-label="本步确认稿"', interaction_source)
+        self.assertIn('const totalSteps = MODULES.filter(module=>module.availability!=="coming_soon")', html)
+        self.assertIn("if(totalSteps!==34)", html)
+        self.assertIn("if(roadmapSteps!==54)", html)
+        self.assertIn('availability:"coming_soon"', html)
+        self.assertIn('coming?"开发中，敬请期待"', html)
+        self.assertIn('!isOpenModuleIndex(module-1)', html)
+        self.assertNotIn("请写下门店类型与规模", html)
+        self.assertNotIn("美业", html)
+        self.assertNotIn("门店", html)
+
+    def test_invalid_legacy_answer_keys_do_not_count_as_open_steps(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        html = PAGE.read_text(encoding="utf-8")
+        source = re.search(r"const MODULES = \[.*?\n    \];", html, re.S).group(0)
+        source += "\n" + "\n".join(
+            re.search(rf"function {name}\(.*?\n    \}}", html, re.S).group(0)
+            for name in ("isOpenModuleIndex", "isOpenStepKey")
+        )
+        script = source + """
+console.log(JSON.stringify([
+  isOpenStepKey('0-0'),
+  isOpenStepKey('8-0'),
+  isOpenStepKey('99-0'),
+  isOpenStepKey('0-99'),
+  isOpenStepKey('invalid')
+]));
+"""
+        got = json.loads(subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=True,
+        ).stdout)
+        self.assertEqual(got, [True, False, False, False, False])
 
     def test_paid_ip12_ai_routes_follow_membership_enforcement(self):
         source = CORE.read_text(encoding="utf-8") + CORE.with_name("digital_ip.py").read_text(encoding="utf-8")

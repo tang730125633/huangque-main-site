@@ -129,6 +129,9 @@ class DigitalIPTests(unittest.TestCase):
         self.assertFalse(captured["body"]["store"])
         self.assertEqual(captured["body"]["model"], "gpt-5.6-sol")
         self.assertNotIn("beauty-owner", json.dumps(captured["body"], ensure_ascii=False))
+        sent = json.loads(captured["body"]["input"])
+        self.assertEqual(sent["module_rule"], digital_ip.MODULE_PROMPT_RULES[0])
+        self.assertNotIn("industry_preset", sent)
         self.assertEqual(result["analysis"]["recommended_index"], 0)
         self.assertNotIn("model", result)
         self.assertTrue(result["ai_recommendation"])
@@ -142,6 +145,34 @@ class DigitalIPTests(unittest.TestCase):
                 "module": "定位诊断",
                 "step": "第一步",
                 "answer": "美" * 6001,
+            })
+
+    def test_only_the_first_eight_module_agents_are_available(self):
+        self.assertEqual(len(digital_ip.MODULE_PROMPT_RULES), 8)
+        self.assertTrue(all(digital_ip.MODULE_PROMPT_RULES))
+        self.assertEqual(
+            [digital_ip._module_rule(name) for name in digital_ip.ACTIVE_MODULE_NAMES],
+            list(digital_ip.MODULE_PROMPT_RULES),
+        )
+        for module in ("朋友圈运营", "模块 9", "公众号运营", "任意新模块"):
+            with self.subTest(module=module), \
+                    mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), \
+                    mock.patch.object(digital_ip, "_post") as post:
+                with self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "开发中"):
+                    digital_ip.diagnose({
+                        "module": module, "step": "第一步", "answer": "开始",
+                        "confirmed_context": [], "consent": True,
+                    }, "module-guard")
+                with self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "开发中"):
+                    digital_ip.guide({
+                        "module": module, "step": "第一步",
+                        "message": "开始", "consent": True,
+                    }, "module-guard")
+                post.assert_not_called()
+        with self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "问卷步骤无效"):
+            digital_ip._clean_analysis_payload({
+                "revision": 0, "module_index": 8, "step_index": 0,
+                "answer": "绕过页面", "context": {}, "consent": True,
             })
 
     def test_answer_snapshot_ignores_client_metadata_but_detects_text_or_choice_changes(self):
@@ -214,6 +245,9 @@ class DigitalIPTests(unittest.TestCase):
                     {"role": "assistant", "content": "第 2 轮"},
                     {"role": "user", "content": "第 3 轮"},
                     {"role": "assistant", "content": "第 4 轮"},
+                    {"role": "user", "content": "第 5 轮"},
+                    {"role": "assistant", "content": "第 6 轮"},
+                    {"role": "user", "content": "第 7 轮"},
                 ],
             }, "beauty-owner")
 
@@ -222,7 +256,8 @@ class DigitalIPTests(unittest.TestCase):
         self.assertEqual(captured["body"]["model"], "gpt-5.6-terra")
         self.assertLessEqual(captured["body"]["max_output_tokens"], 800)
         self.assertFalse(captured["body"]["store"])
-        self.assertEqual(len(sent["recent_turns"]), 3)
+        self.assertEqual(len(sent["recent_turns"]), 6)
+        self.assertEqual(sent["recent_turns"][0]["content"], "第 2 轮")
         self.assertEqual(len(sent["current_answer"]), 1200)
         self.assertEqual(len(sent["ip_summary"]), 800)
         self.assertNotIn("beauty-owner", json.dumps(captured["body"], ensure_ascii=False))
@@ -313,6 +348,12 @@ class DigitalIPTests(unittest.TestCase):
             self.assertEqual(result["project"]["status"], "candidate_ready")
             self.assertEqual(json.loads(post.call_args.args[1])["max_output_tokens"], 25000)
             self.assertEqual(json.loads(post.call_args.args[1])["text"]["verbosity"], "low")
+            request = json.loads(post.call_args.args[1])
+            self.assertEqual(
+                json.loads(request["input"][0]["content"][0]["text"])["module_rule"],
+                digital_ip.MODULE_PROMPT_RULES[1],
+            )
+            self.assertIn(digital_ip.MODULE_PROMPT_RULES[1], request["instructions"])
             content = json.loads(post.call_args.args[1])["input"][0]["content"]
             self.assertEqual(next(item for item in content if item["type"] == "input_image")["detail"], "high")
             with closing(digital_ip._project_db()) as conn:

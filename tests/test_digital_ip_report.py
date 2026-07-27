@@ -19,7 +19,8 @@ from content_domains import digital_ip
 
 def _complete_state():
     answers = {}
-    for module_index, step_count in enumerate(digital_ip.PROJECT_MODULE_STEPS):
+    for module_index, step_count in enumerate(
+            digital_ip.PROJECT_MODULE_STEPS[:digital_ip.ACTIVE_PROJECT_MODULES]):
         for step_index in range(step_count):
             answers["%d-%d" % (module_index, step_index)] = {
                 "text": "获客成本高，老客复购下降" if (module_index, step_index) == (0, 0) else "",
@@ -59,11 +60,12 @@ def _report(product_id="script_studio"):
             "review_cycle": "每周", "evidence_ids": ["E1"],
         }],
         "material_gaps": [{
-            "gap": "其余 53 步未提供资料", "why_needed": "限制更细的产品匹配",
+            "gap": "其余 33 步未提供资料", "why_needed": "限制更细的产品匹配",
             "how_to_collect": "回到项目补充被跳过步骤", "blocking": False,
             "source_refs": [
                 "answer:%d-%d" % (module_index, step_index)
-                for module_index, step_count in enumerate(digital_ip.PROJECT_MODULE_STEPS)
+                for module_index, step_count in enumerate(
+                    digital_ip.PROJECT_MODULE_STEPS[:digital_ip.ACTIVE_PROJECT_MODULES])
                 for step_index in range(step_count)
                 if (module_index, step_index) != (0, 0)
             ],
@@ -97,12 +99,12 @@ class DigitalIPReportTests(unittest.TestCase):
             "revision": project["revision"], "state": _complete_state(),
         })
 
-    def test_requires_all_54_steps_before_paid_model_call(self):
+    def test_requires_all_34_open_steps_before_paid_model_call(self):
         with tempfile.TemporaryDirectory() as directory, \
                 mock.patch.object(digital_ip, "PROJECT_DB", Path(directory) / "ip.db"):
             project = digital_ip.create_project("owner", {})
             with mock.patch.object(digital_ip, "_post") as post, \
-                    self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "全部 54 步"):
+                    self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "开放的 34 步"):
                 digital_ip.generate_report("owner", project["id"], {"revision": project["revision"], "consent": True})
             post.assert_not_called()
             self.assertEqual(digital_ip.get_project("owner", project["id"])["revision"], project["revision"])
@@ -138,11 +140,11 @@ class DigitalIPReportTests(unittest.TestCase):
             self.assertEqual(captured["body"]["text"]["format"]["type"], "json_schema")
             prompt = json.loads(captured["body"]["input"][0]["content"][0]["text"])
             self.assertEqual(prompt["confirmed_answers"], [{"source_ref": "answer:0-0", "answer": "获客成本高，老客复购下降"}])
-            self.assertEqual(len(prompt["skipped_steps"]), 53)
+            self.assertEqual(len(prompt["skipped_steps"]), 33)
             self.assertEqual({item["id"] for item in prompt["product_catalog"]}, digital_ip.PRODUCT_IDS)
             self.assertFalse(result["stale"])
             self.assertNotIn("model", result["report"])
-            self.assertEqual(result["report"]["progress"], {"total": 54, "confirmed": 1, "skipped": 53, "unresolved": 0})
+            self.assertEqual(result["report"]["progress"], {"total": 34, "confirmed": 1, "skipped": 33, "unresolved": 0})
             loaded_report = digital_ip.get_report("owner", project["id"])["report"]
             self.assertNotIn("model", loaded_report)
             self.assertEqual(loaded_report["report_id"], result["report"]["report_id"])

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>黄雀 · 美业老板数字化 IP 十二模块</title>
+  <title>黄雀 · 数字化 IP 十二模块</title>
   <style>
     :root{
       --bg:#06111f;
@@ -57,6 +57,8 @@
     .module-btn:hover{background:rgba(255,255,255,.04);color:#f4e6bf}
     .module-btn.active{background:linear-gradient(100deg,#efd487,#d6a84c);border-color:#f4d785;color:#0a1929;box-shadow:0 10px 28px rgba(0,0,0,.16)}
     .module-btn.done{color:#c6d6d1}
+    .module-btn:disabled{cursor:not-allowed;opacity:.58;background:rgba(255,255,255,.025)}
+    .module-btn:disabled:hover{color:#9aa5b5;background:rgba(255,255,255,.025)}
     .module-no{
       width:34px;height:34px;border:1px solid #5d6878;border-radius:50%;display:grid;place-items:center;
       color:#aab3bf;font-family:Georgia,serif;font-size:12px;font-weight:800
@@ -119,7 +121,7 @@
     .why span{color:#737984;font-size:12px;line-height:1.55}
     .answer-label{font-size:12px;font-weight:700;display:block;margin:0 0 9px}
     .answer{
-      display:block;width:100%;min-height:230px;resize:vertical;border:1px solid #d4c9b8;border-radius:9px;
+      display:block;width:100%;min-height:120px;resize:vertical;border:1px solid #d4c9b8;border-radius:9px;
       background:rgba(255,255,255,.58);color:#102033;padding:18px 20px;line-height:1.75;outline:none
     }
     .answer::placeholder{color:#aea99f}
@@ -166,6 +168,18 @@
     .handoff-card span{font-size:10px;color:#95702e;letter-spacing:.1em}
     .handoff-card b{display:block;font-size:13px;margin:7px 0 5px;color:#14273a}
     .handoff-card p{margin:0;color:#7d7e7e;font-size:11px;line-height:1.5}
+    .phase-outcome{margin:18px 34px 0;padding:22px;border:1px solid #d7bd7f;border-radius:17px;background:linear-gradient(145deg,#fffdf7,#f3ead8);box-shadow:0 14px 35px rgba(73,54,18,.08)}
+    .phase-outcome[hidden]{display:none}
+    .outcome-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:15px}
+    .outcome-head span{color:#8b682a;font-size:10px;font-weight:800;letter-spacing:.12em}
+    .outcome-head h2{margin:5px 0 4px;color:#132638;font:700 23px/1.25 Georgia,"Songti SC",serif}
+    .outcome-head p{margin:0;color:#70757b;font-size:11px;line-height:1.6}
+    .outcome-head strong{border:1px solid #d7bd7f;border-radius:999px;padding:6px 10px;color:#7d5d22;font-size:10px;white-space:nowrap}
+    .outcome-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+    .outcome-card{padding:13px;border:1px solid #dfd4c4;border-radius:12px;background:rgba(255,255,255,.64)}
+    .outcome-card b{display:block;margin-bottom:5px;color:#16293b;font-size:12px}
+    .outcome-card p{margin:0;color:#6d7379;font-size:11px;line-height:1.55}
+    .outcome-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px}
 
     .memory{
       position:sticky;top:0;height:100vh;border-left:1px solid rgba(216,174,85,.24);background:#081726;
@@ -219,7 +233,7 @@
     .ai-candidate p{margin:0;color:#8f9cad;font-size:10px;line-height:1.55}
     .ai-candidate button{border:1px solid #385068;border-radius:8px;background:#10263a;color:#b8c7d5;font-size:10px;padding:7px 9px;margin-top:8px}
     .ai-follow-up{margin-top:10px;border-left:2px solid #39a99c;padding:8px 10px;background:#0d2235;color:#a7b7c5;font-size:10px;line-height:1.55}
-    .coach-card{border:1px solid rgba(216,174,85,.42);border-radius:15px;padding:15px;background:linear-gradient(145deg,rgba(216,174,85,.09),rgba(22,139,128,.05))}
+    .coach-card{margin-bottom:18px;border:1px solid rgba(216,174,85,.42);border-radius:15px;padding:18px;background:#071525;color:#f4eee2;box-shadow:0 18px 45px rgba(5,16,29,.16)}
     .coach-head{display:grid;grid-template-columns:42px 1fr auto;gap:10px;align-items:center}
     .coach-pet{
       position:relative;width:42px;height:42px;border:1px solid rgba(231,189,96,.58);border-radius:52% 52% 48% 18%;
@@ -227,30 +241,33 @@
       font-family:Georgia,"Songti SC",serif;font-weight:900;transform:rotate(-5deg);box-shadow:0 8px 20px rgba(0,0,0,.2)
     }
     .coach-pet:after{content:"";position:absolute;right:3px;bottom:3px;width:8px;height:8px;border:2px solid #0b1b2c;border-radius:50%;background:#43c2ae}
-    .coach-head b{display:block;color:#f1dfb7;font-size:12px;margin-bottom:3px}
-    .coach-head p{margin:0;color:#8290a2;font-size:9px;line-height:1.45}
+    .coach-head b{display:block;color:#f1dfb7;font-size:14px;margin-bottom:3px}
+    .coach-head p{margin:0;color:#8290a2;font-size:11px;line-height:1.45}
     .coach-model{font-size:9px;color:#65b8aa}
-    .coach-messages{display:grid;gap:8px;margin-top:12px;max-height:220px;overflow:auto}
-    .coach-bubble{border-radius:10px;padding:9px 10px;font-size:10px;line-height:1.6;white-space:pre-wrap}
+    .coach-messages{display:grid;align-content:start;gap:10px;margin-top:14px;min-height:250px;max-height:440px;overflow:auto;padding:14px;border:1px solid #1c3044;border-radius:12px;background:#050d18}
+    .coach-bubble{width:fit-content;max-width:88%;border-radius:12px;padding:11px 13px;font-size:13px;line-height:1.65;white-space:pre-wrap}
     .coach-bubble.assistant{background:#10263a;color:#c8d3dc;border-left:2px solid #d7aa50}
     .coach-welcome{animation:coachWelcome .28s ease-out}
     @keyframes coachWelcome{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:translateX(0)}}
     @media(prefers-reduced-motion:reduce){.coach-welcome{animation:coachWelcomeFade .2s ease-out}@keyframes coachWelcomeFade{from{opacity:0}to{opacity:1}}}
-    .coach-bubble.user{margin-left:22px;background:#17352f;color:#cce6df}
+    .coach-bubble.user{margin-left:auto;background:#17352f;color:#cce6df}
     .coach-quick,.coach-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
     .coach-chip,.coach-action{
-      border:1px solid #344b61;border-radius:999px;background:#0c2032;color:#aebdca;padding:6px 8px;font-size:9px;text-align:left
+      border:1px solid #344b61;border-radius:999px;background:#0c2032;color:#aebdca;padding:7px 10px;font-size:11px;text-align:left
     }
     .coach-action{border-color:#866d39;color:#e6ca8d}
     .coach-answer{margin-top:8px;padding:9px;border:1px dashed #3c665f;border-radius:9px;background:#0b211f;color:#a9c9c2;font-size:10px;line-height:1.55}
-    .coach-form{display:grid;grid-template-columns:1fr auto;gap:7px;margin-top:10px}
-    .coach-input{min-width:0;border:1px solid #31465b;border-radius:9px;background:#071522;color:#d9e2e9;padding:9px 10px;outline:none;font-size:10px}
+    .coach-consent{display:flex;align-items:flex-start;gap:8px;margin-top:12px;color:#aeb9c8;font-size:11px;line-height:1.55}
+    .coach-form{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:10px}
+    .coach-input{min-width:0;border:1px solid #31465b;border-radius:9px;background:#071522;color:#d9e2e9;padding:12px 13px;outline:none;font-size:13px}
     .coach-input:focus{border-color:#4aa89b}
-    .coach-send{border:0;border-radius:9px;background:#d5a94e;color:#102030;padding:8px 11px;font-weight:800;font-size:10px}
+    .coach-send{border:0;border-radius:9px;background:#d5a94e;color:#102030;padding:10px 17px;font-weight:800;font-size:12px}
     .coach-send:disabled{opacity:.5;cursor:wait}
-    .coach-status{margin:7px 0 0;color:#68778b;font-size:9px;line-height:1.45}
-    .coach-float{display:none}
-
+    .coach-status{margin:7px 0 0;color:#68778b;font-size:10px;line-height:1.45}
+    .answer-draft{margin:0 0 18px;border:1px solid #d8cfc0;border-radius:12px;background:rgba(255,255,255,.42)}
+    .answer-draft summary{padding:13px 15px;color:#53606d;font-size:12px;font-weight:700;cursor:pointer}
+    .answer-draft .answer{margin:0 15px 14px;width:calc(100% - 30px)}
+    .answer-draft .helper{margin:0 15px 14px}
     .modal{position:fixed;inset:0;background:rgba(2,4,8,.76);display:none;align-items:center;justify-content:center;padding:24px;z-index:20}
     .modal.open{display:flex}
     .guide{width:min(720px,100%);max-height:88vh;overflow:auto;background:var(--paper);color:var(--ink);border-radius:24px;padding:28px;box-shadow:0 35px 100px rgba(0,0,0,.5)}
@@ -292,18 +309,14 @@
       .hero{padding:32px 22px 17px}
       .hero h1{font-size:38px}
       .step-card{margin:0 14px}
-      .handoff{margin:16px 14px 0}
+      .handoff,.phase-outcome{margin:16px 14px 0}
       .step-head{grid-template-columns:1fr}
       .module-progress{text-align:left}
-      .handoff,.guide-steps{grid-template-columns:1fr}
+      .handoff,.guide-steps,.outcome-grid{grid-template-columns:1fr}
       .step-actions{align-items:flex-start;flex-direction:column}
       .action-group{width:100%}
       .nav-btn{flex:1}
-      .coach-float{
-        display:grid;position:fixed;right:17px;bottom:18px;z-index:12;width:50px;height:50px;border:1px solid #f0cf7c;
-        border-radius:52% 52% 48% 18%;place-items:center;background:linear-gradient(145deg,#efd487,#b98531);
-        color:#0b1928;font-family:Georgia,"Songti SC",serif;font-weight:900;box-shadow:0 14px 35px rgba(0,0,0,.36)
-      }
+      .coach-messages{min-height:220px;max-height:52vh}
     }
   </style>
 </head>
@@ -327,7 +340,7 @@
       <div class="topbar">
         <div class="crumb"><b>数字化 IP</b>　/　初始化</div>
         <div class="overall">
-          <span id="overallText">总进度 0 / 54</span>
+          <span id="overallText">当前开放 0 / 34</span>
           <div class="progress"><i id="overallBar"></i></div>
           <span id="percentText">0%</span>
         </div>
@@ -340,7 +353,7 @@
         <div class="hero-meta">
           <span class="badge gold" id="moduleCount">模块 1 / 12</span>
           <span class="badge" id="stepCount">模块内步骤 1 / 5</span>
-          <span class="badge industry">行业预设 · 美业门店老板</span>
+          <span class="badge industry">不预设行业 · AI 逐步追问</span>
           <span class="badge">所有关键结论都由你确认</span>
         </div>
       </section>
@@ -370,14 +383,36 @@
             <div class="why-mark">?</div>
             <div><b>为什么现在做这一步</b><span id="stepWhy"></span></div>
           </div>
+          <section class="coach-card" id="coachCard" aria-live="polite">
+            <div class="coach-head">
+              <div class="coach-pet" aria-hidden="true">雀</div>
+              <div><b>小黄雀 · IP 成长教练</b><p>AI 会结合当前模块和你的回答动态提问，一次只问一个问题。</p></div>
+              <span class="coach-model" id="guideModel">待命</span>
+            </div>
+            <div class="coach-messages" id="coachMessages"></div>
+            <div class="coach-quick" id="coachQuick">
+              <button class="coach-action" type="button" data-guide-prompt="请开始问我吧。一次只问一个问题。">让 AI 问第一题</button>
+              <button class="coach-chip" type="button" data-guide-prompt="我不知道怎么开始，请用一个简单问题引导我">我不知道怎么开始</button>
+              <button class="coach-chip" type="button" data-guide-prompt="请用更简单的话问我">用简单的话问我</button>
+              <button class="coach-chip" type="button" data-guide-prompt="请根据我的行业和经历，给我一个贴近实际的例子">给我一个贴近我的例子</button>
+              <button class="coach-chip" type="button" data-guide-prompt="帮我整理当前回答，但不要替我确认">帮我整理回答</button>
+              <button class="coach-chip" type="button" data-guide-prompt="检查当前回答是否足够完整">检查是否完整</button>
+            </div>
+            <label class="coach-consent"><input id="aiConsent" type="checkbox">我明确同意：仅在我主动发送或分析时，将当前对话、回答及所选资料发送给 AI 分析服务；原始文件不会保存到项目档案。</label>
+            <div class="coach-form">
+              <input class="coach-input" id="coachInput" maxlength="1200" placeholder="像聊天一样说说你的经历、想法或现在最卡的地方…">
+              <button class="coach-send" id="coachSend" type="button">发送</button>
+            </div>
+            <p class="coach-status" id="coachStatus">不会监听输入；只有你点击发送后才调用 AI。</p>
+            <div class="coach-actions" id="coachActions"></div>
+          </section>
           <div id="interaction"></div>
           <div style="margin:16px 0; padding:12px; border:1px dashed #36506d; border-radius:10px;">
             <label for="projectFiles"><b>补充资料（可选）</b> · 最多 6 份、单份最多 8 MiB、总计 20 MiB</label>
             <input id="projectFiles" type="file" multiple accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.webp" style="display:block; margin-top:8px; max-width:100%;">
             <p id="fileStatus" class="ai-status">支持 PDF、Office、表格、文本与 PNG/JPEG/WebP。PPT/Word 内嵌图表建议先导出为 PDF。</p>
-            <label style="display:flex; gap:8px; align-items:flex-start; font-size:13px;"><input id="aiConsent" type="checkbox">我明确同意仅在本次 AI 教练或分析中将当前回答及所选资料发送给 AI 分析服务；原始文件不会保存到项目档案。</label>
           </div>
-          <div class="note-box">填写提示：填写后可点击右侧“AI 分析本步”。AI 只给建议；你点击“确认并继续”后，结果才写进数字化 IP 档案。</div>
+          <div class="note-box">AI 的提问和整理只形成建议草稿；只有你把草稿带入、检查并点击“确认并继续”，内容才写进数字化 IP 档案。</div>
           <div class="step-actions">
             <span class="save-state" id="saveState">浏览器会自动保存本页内容</span>
             <div class="action-group">
@@ -392,8 +427,9 @@
       <section class="handoff">
         <article class="handoff-card"><span>MODULES 01–04</span><b>形成 IP 底座</b><p>定位、人设、价值和故事被确认后，形成第一版长期档案。</p></article>
         <article class="handoff-card"><span>MODULES 05–08</span><b>进入内容生产</b><p>选题、文案、形象与脚本将连接黄雀编导、图片和视频能力。</p></article>
-        <article class="handoff-card"><span>MODULES 09–12</span><b>进入运营增长</b><p>发布、私域、销售和商业反馈重新回到 IP 档案。</p></article>
+        <article class="handoff-card"><span>MODULES 09–12</span><b>开发中，敬请期待</b><p>私域矩阵、朋友圈运营、销售策略与公众号变现暂不开放。</p></article>
       </section>
+      <section class="phase-outcome" id="foundationOutcome" aria-live="polite" hidden></section>
     </main>
 
     <aside class="memory">
@@ -403,28 +439,6 @@
         <h3 id="ipName">尚未命名的数字化 IP</h3>
         <p id="ipSummary">每次确认都会成为后续内容和视频共同读取的项目记忆。</p>
       </section>
-      <section class="coach-card" id="coachCard" aria-live="polite">
-        <div class="coach-head">
-          <div class="coach-pet" aria-hidden="true">雀</div>
-          <div><b>小黄雀 · IP 成长教练</b><p>只陪你完成当前步骤，不替你做诊断和确认。</p></div>
-          <span class="coach-model" id="guideModel">待命</span>
-        </div>
-        <div class="coach-messages" id="coachMessages"></div>
-        <div class="coach-quick" id="coachQuick">
-          <button class="coach-chip" type="button" data-guide-prompt="我不知道这道题怎么填">我不知道怎么填</button>
-          <button class="coach-chip" type="button" data-guide-prompt="请用更简单的话问我">用简单的话问我</button>
-          <button class="coach-chip" type="button" data-guide-prompt="给我一个贴近美业门店老板的例子">给我一个美业案例</button>
-          <button class="coach-chip" type="button" data-guide-prompt="帮我整理当前回答，但不要替我确认">帮我整理回答</button>
-          <button class="coach-chip" type="button" data-guide-prompt="告诉我完成本题后下一步做什么">告诉我下一步</button>
-          <button class="coach-chip" type="button" data-guide-prompt="检查当前回答是否足够完整">检查是否完整</button>
-        </div>
-        <div class="coach-form">
-          <input class="coach-input" id="coachInput" maxlength="1200" placeholder="也可以直接问小黄雀…">
-          <button class="coach-send" id="coachSend" type="button">发送</button>
-        </div>
-        <p class="coach-status" id="coachStatus">不会监听输入；只有你点击后才调用 AI。</p>
-        <div class="coach-actions" id="coachActions"></div>
-      </section>
       <section class="memory-section" aria-live="polite">
         <div class="memory-title"><b>本步 AI 诊断</b><span id="aiModel">等待调用</span></div>
         <button class="ai-button" id="analyzeBtn" type="button">AI 分析本步</button>
@@ -432,7 +446,7 @@
         <div id="aiResult"></div>
       </section>
       <section class="memory-section">
-        <div class="memory-title"><b>三阶段进度</b><span id="doneModulesText">0 / 12 完成</span></div>
+        <div class="memory-title"><b>路线进度</b><span id="doneModulesText">0 / 8 已走完</span></div>
         <div id="phaseProgress"></div>
       </section>
       <section class="memory-section">
@@ -453,20 +467,18 @@
       </div>
     </aside>
   </div>
-  <button class="coach-float" id="coachFloat" type="button" aria-label="打开小黄雀 IP 成长教练">雀</button>
-
   <div class="modal" id="guideModal" role="dialog" aria-modal="true" aria-labelledby="guideTitle">
     <div class="guide">
       <div class="guide-top">
-        <div><h2 id="guideTitle">如何使用十二模块</h2><p>当前版本预设为美业门店老板，围绕获客、成交、复购、团队和老板 IP 展开 12 个模块、54 个确认步骤。</p></div>
+        <div><h2 id="guideTitle">如何使用十二模块</h2><p>不用一次填完整张问卷。先像聊天一样介绍自己，AI 会根据你的经历和目标逐步追问。</p></div>
         <button class="close" id="closeGuide" type="button" aria-label="关闭">×</button>
       </div>
       <div class="guide-steps">
-        <div class="guide-step"><b>1. 从门店经营底图开始</b><span>先填写门店规模、经营年限、当前痛点、优势能力和目标顾客。</span></div>
+        <div class="guide-step"><b>1. 从一段自由介绍开始</b><span>可以先说经历、擅长的事、想影响的人，或眼下最困扰的问题。</span></div>
         <div class="guide-step"><b>2. 使用示例加速填写</b><span>不想现在填写资料时，点击“带入示例”即可继续。</span></div>
         <div class="guide-step"><b>3. 确认 AI 候选</b><span>遇到候选方案时先选择，再点击“确认并继续”。</span></div>
         <div class="guide-step"><b>4. 查看右侧长期档案</b><span>完成模块后，确认结果会沉淀到 IP 档案中。</span></div>
-        <div class="guide-step"><b>5. 随时切换模块预览</b><span>左侧 12 个模块都可打开，适合快速检查完整产品生命周期。</span></div>
+        <div class="guide-step"><b>5. 查看完整路线</b><span>模块 1–8 当前开放；模块 9–12 标记为开发中，暂不可进入。</span></div>
         <div class="guide-step"><b>6. 跨端继续</b><span>登录后项目保存在账号档案；断网时浏览器保留离线缓存。</span></div>
       </div>
       <div class="guide-note">当前为黄雀 IP12：右侧会调用 AI 分析服务进行结构化分析并返回固定结构的诊断。项目、AI 推荐和用户确认会分开保存到账号档案；图片或视频计划只会带入既有工具，不会自动发起付费生成。</div>
@@ -477,139 +489,107 @@
   <script>
     const MODULES = [
       {
-        id:1,phase:"IP 底座",name:"定位诊断",desc:"从门店经历、经营结果和顾客痛点中，找到美业老板可验证、可持续的定位。",
+        id:1,phase:"IP 底座",name:"定位诊断",desc:"从真实经历、能力、兴趣和目标人群中，形成可验证、可持续的 IP 定位。",
         output:"已确认定位方案",
         steps:[
-          {title:"采集门店经营底图",instruction:"先理解真实门店和老板本人，不急着生成一句漂亮口号。",why:"美业老板的定位必须来自经营经历、真实结果、顾客问题和本人优势的交集。",type:"input",label:"请写下门店类型与规模、经营年限、当前最大痛点、最拿手的能力，以及最想吸引的顾客",sample:"门店：二线城市皮肤管理店，2 家门店、18 名员工，经营 7 年。\n当前痛点：平台流量越来越贵，到店率不稳定；咨询师会推项目但不会建立长期信任，老客复购下降。\n最拿手：问题肌判断、服务流程设计、老客关系维护和员工带教。\n本人特点：愿意讲真实经营，不端着，也不制造容貌焦虑。\n目标顾客：28–45 岁、重视长期改善但害怕被强推项目的女性。"},
-          {title:"提炼 3–5 个经营关键词",instruction:"从门店事实中提炼最稳定、最有证据的关键词。",why:"关键词是后续三套老板 IP 定位共同的事实底座。",type:"multi",options:["问题肌管理","门店增长","老客复购","员工带教","真实经营"],sampleChoice:["问题肌管理","老客复购","真实经营"]},
-          {title:"生成三套差异化定位",instruction:"比较专业、经营和陪伴三种切入角度，而不是让 AI 直接替你决定。",why:"同一家门店可以形成完全不同的老板 IP，必须先比较再确认。",type:"select",options:["问题肌管理主理人｜不卖焦虑，讲清皮肤长期改善","美业门店复购教练｜让服务从一次成交变成长期关系","七年美业老板复盘者｜公开讲获客、员工和经营真问题"],sampleChoice:"问题肌管理主理人｜不卖焦虑，讲清皮肤长期改善"},
-          {title:"比较市场机会与风险",instruction:"检查每套定位能吸引谁、解决什么痛点，以及可能造成的误解。",why:"定位不仅要有传播感，还必须与门店真实交付一致。",type:"review",preview:["问题肌主理人：专业信任强；风险是内容容易只剩知识科普。","复购教练：老板人群商业承接清晰；风险是需要真实经营数据和案例。","经营复盘者：故事和同行共鸣强；风险是不能只输出抱怨和焦虑。"]},
-          {title:"推荐首选并由用户确认",instruction:"系统给出推荐理由，你可以采用、组合或自定义。",why:"只有老板亲自确认的定位，才能写入后续内容和视频共同读取的 IP 档案。",type:"select",options:["采用：问题肌管理主理人","组合：问题肌主理人 + 七年门店经营复盘","自定义：保留关键词，重新命名我的老板 IP"],sampleChoice:"组合：问题肌主理人 + 七年门店经营复盘"}
+          {title:"先聊聊你想打造的 IP",instruction:"不用按表格回答。可以从经历、擅长的事、现在最困扰的问题，或想影响的人随便说起。",why:"先听懂真实的你，再逐步追问；不会预设你属于哪个行业。",type:"input",conversation:true,label:"像聊天一样介绍自己，不完整也没关系",sample:"我做过几年产品和团队管理，后来开始帮助传统行业使用 AI。最擅长把复杂工具讲成可执行步骤，也经历过项目失败和重新开始。我希望帮助想转型却不知道从哪里下手的创业者，做一个既专业又不端着的个人 IP。"},
+          {title:"确认定位关键词",instruction:"从你的原话中提炼 3–5 个最有证据的关键词。",why:"关键词是三套定位方案共同的事实底座，不是模型替你贴的标签。",type:"multi",options:["真实经历","专业能力","长期兴趣","人格优势","目标人群"],sampleChoice:["真实经历","专业能力","目标人群"]},
+          {title:"比较三套差异化定位",instruction:"从专业解决、实践复盘和陪伴引导三种角度比较。",why:"同一段经历可以形成不同定位，先比较再确认更稳妥。",type:"select",options:["专业解决者｜把复杂问题讲清并给出路径","实践复盘者｜用真实经历帮助同类人少走弯路","陪伴型引导者｜用方法和共情推动持续行动"],sampleChoice:"专业解决者｜把复杂问题讲清并给出路径"},
+          {title:"比较机会与风险",instruction:"检查每套定位能吸引谁、解决什么问题，以及可能造成的误解。",why:"定位不仅要有传播感，还必须与你能长期交付的价值一致。",type:"review",preview:["专业解决者：信任建立快；风险是内容容易过于工具化。","实践复盘者：真实感强；风险是需要持续提供可核对的案例。","陪伴型引导者：连接感强；风险是专业边界需要表达清楚。"]},
+          {title:"确认首选定位",instruction:"采用、组合或自定义，形成第一版定位。",why:"只有你亲自确认的定位，才会写入后续内容和视频共同读取的 IP 档案。",type:"select",options:["采用：专业解决者","组合：专业解决者 + 实践复盘者","自定义：保留关键词，重新命名我的 IP"],sampleChoice:"组合：专业解决者 + 实践复盘者"}
         ]
       },
       {
-        id:2,phase:"IP 底座",name:"人设塑造",desc:"把真实人格、价值观和未来目标转化为可信、长期可持续的公开形象。",
+        id:2,phase:"IP 底座",name:"人设塑造",desc:"把真实人格、价值观和未来目标转化为可信、可持续的公开形象。",
         output:"已确认人设画像",
         steps:[
-          {title:"补充经营原则与三年目标",instruction:"复用模块 1 的门店经历，只询问尚未覆盖的价值观。",why:"可信的美业老板人设必须来自真实服务原则和长期经营方向。",type:"input",label:"你最不能妥协的服务原则是什么？未来三年希望顾客和同行怎样评价你？",sample:"原则：不制造容貌焦虑，不为了成交给顾客叠加不需要的项目；所有方案先讲适用边界和真实预期。\n未来三年：让顾客想到问题肌长期管理时先想到我，也让同行知道门店可以不靠强推和低价竞争活下来。"},
-          {title:"确认人格与价值关键词",instruction:"从老板真实行为中提炼，而不是堆砌完美形容词。",why:"关键词会控制以后口播、镜头、员工表达和门店品牌行为。",type:"multi",options:["真诚克制","专业耐心","敢讲经营真话","尊重顾客边界","长期主义"],sampleChoice:["真诚克制","敢讲经营真话","长期主义"]},
-          {title:"生成三套人设画像",instruction:"比较专业、同行和经营者三种人格重心。",why:"老板应该主动选择自己愿意长期坚持的公开角色。",type:"select",options:["专业主理人｜用判断和案例建立信任","门店同行姐姐｜不端着，陪顾客和老板拆真实问题","清醒经营者｜公开反对强推、低价战和容貌焦虑"],sampleChoice:"门店同行姐姐｜不端着，陪顾客和老板拆真实问题"},
-          {title:"比较传播优势与风险",instruction:"检查每套人设的信任来源与表演成本。",why:"好人设必须真实、可持续，也不能让门店老板被角色绑架。",type:"review",preview:["专业主理人：顾客信任强；风险是距离感和科普同质化。","同行姐姐：亲近、适合口播；风险是专业高度需要案例支撑。","清醒经营者：立场鲜明；风险是不能把内容做成行业抱怨。"]},
-          {title:"确认最终人设",instruction:"采用、组合或自定义后，形成第一版美业老板人设。",why:"后续所有 AI 表达和门店内容都必须读取这份已确认人设。",type:"select",options:["采用：门店同行姐姐","组合：专业主理人 + 门店同行姐姐","自定义：保留真实经营感，但弱化“专家”标签"],sampleChoice:"组合：专业主理人 + 门店同行姐姐"}
+          {title:"补充人格与未来目标",instruction:"复用前一步的经历，只追问尚未覆盖的人格、信念和未来方向。",why:"可信人设来自真实选择和长期行为，而不是完美形容词。",type:"input",label:"哪些经历最能说明你的性格？你坚持什么价值观？未来希望别人怎样评价你？",sample:"我遇到复杂问题时会先拆解再行动，也愿意公开失败和修正过程。我相信长期价值比短期热度重要。未来希望别人想到我时，会觉得我讲得清楚、做得真实，而且给的方法能落地。"},
+          {title:"确认人格与价值关键词",instruction:"从真实行为中提炼，而不是堆砌标签。",why:"这些关键词会约束后续口播、镜头和公开表达。",type:"multi",options:["真诚克制","清晰理性","温暖共情","敢讲真话","长期主义"],sampleChoice:["清晰理性","敢讲真话","长期主义"]},
+          {title:"生成三套人设画像",instruction:"比较专业、陪伴和实践者三种人格重心。",why:"你应该主动选择愿意长期坚持的公开角色。",type:"select",options:["专业导师｜用判断和方法建立信任","同行伙伴｜不端着，陪用户拆真实问题","实践者｜公开行动、复盘和持续迭代"],sampleChoice:"同行伙伴｜不端着，陪用户拆真实问题"},
+          {title:"比较传播优势与风险",instruction:"检查每套人设的信任来源、表演成本和潜在误解。",why:"好人设必须真实、可持续，也不能把你绑在角色里。",type:"review",preview:["专业导师：权威感强；风险是距离感和说教感。","同行伙伴：亲近自然；风险是专业高度需要案例支撑。","实践者：真实可信；风险是不能只记录过程而缺少结论。"]},
+          {title:"确认最终人设",instruction:"采用、组合或自定义后，形成第一版人设档案。",why:"后续 AI 表达和内容方案都必须读取这份已确认人设。",type:"select",options:["采用：同行伙伴","组合：专业导师 + 同行伙伴","自定义：保留真实感，调整角色名称"],sampleChoice:"组合：专业导师 + 同行伙伴"}
         ]
       },
       {
         id:3,phase:"IP 底座",name:"价值主张",desc:"说明这个 IP 为谁解决什么问题，并明确能够兑现的变化与能力边界。",
         output:"已确认价值主张",
         steps:[
-          {title:"补齐专业领域和顾客结果",instruction:"把能力翻译成顾客和门店能够感受到的变化。",why:"价值主张不是“我技术很好”，而是顾客为什么信任你、门店为什么选择你。",type:"input",label:"你最擅长解决哪类顾客问题？希望顾客如何介绍你？你最想改变行业里的什么现象？",sample:"领域：敏感肌和痘肌的长期管理。\n第一印象：她不会一上来推套餐，而是先把皮肤问题和预期讲清楚。\n长期影响：让更多顾客不再被容貌焦虑和短期营销绑架，让美业门店靠专业与复购增长。"},
-          {title:"提炼价值关键词",instruction:"确认顾客痛点、独特方法和结果边界。",why:"后续选题、咨询和服务都要回到这些价值关键词。",type:"multi",options:["先诊断再推荐","长期皮肤管理","真实案例","不制造焦虑","复购来自信任"],sampleChoice:["先诊断再推荐","不制造焦虑","复购来自信任"]},
-          {title:"生成三条价值主张",instruction:"每条主张包含一句话金句、优势和适用边界。",why:"用对比找到最能代表门店长期承诺的表达。",type:"select",options:["不急着卖项目，先帮你看懂自己的皮肤。","一次成交不是终点，真正的改善来自长期管理。","不制造容貌焦虑，只提供有边界的专业建议。"],sampleChoice:"不急着卖项目，先帮你看懂自己的皮肤。"},
-          {title:"横向比较三条主张",instruction:"从顾客记忆、专业可信、门店承接和长期扩展比较。",why:"一句金句不能只追求传播，还必须指导真实服务。",type:"review",preview:["“先看懂皮肤”：顾客理解成本低，适合咨询入口。","“长期管理”：复购承接清晰，适合会员体系。","“不制造焦虑”：立场鲜明，但必须用专业判断支撑。"]},
-          {title:"确认首选价值主张",instruction:"选择主张，并允许保留一条辅助表达。",why:"确认后，它会成为内容、咨询和项目设计的判断标准。",type:"select",options:["主张：先看懂皮肤，再决定做什么","主张：专业服务带来长期复购","组合：不制造焦虑 + 长期管理"],sampleChoice:"组合：不制造焦虑 + 长期管理"}
+          {title:"补齐优势与受众结果",instruction:"把能力翻译成目标人群能感受到的具体变化。",why:"价值主张不是“我很专业”，而是别人为什么需要并相信你。",type:"input",label:"你最擅长解决什么问题？目标人群希望得到什么结果？你最想改变行业里的什么现象？",sample:"我擅长把复杂的 AI 工具拆成普通团队能执行的流程。目标人群希望减少试错，真正把工具用进业务。我想改变只追热点、不讲适用边界和实际成本的内容。"},
+          {title:"提炼价值关键词",instruction:"确认目标痛点、独特方法和结果边界。",why:"后续选题、内容和产品建议都要回到这些价值关键词。",type:"multi",options:["复杂问题简单化","真实案例","明确边界","可执行路径","长期陪伴"],sampleChoice:["复杂问题简单化","明确边界","可执行路径"]},
+          {title:"生成三条价值主张",instruction:"每条包含一句话表达、优势和适用边界。",why:"通过对比找到最能代表长期承诺的表达。",type:"select",options:["不只告诉你工具是什么，更陪你把第一步做出来。","把复杂问题拆成一条今天就能开始的路径。","不承诺捷径，只提供有证据、能复盘的方法。"],sampleChoice:"把复杂问题拆成一条今天就能开始的路径。"},
+          {title:"横向比较三条主张",instruction:"从受众记忆、可信度、承接能力和长期扩展比较。",why:"一句金句不能只追求传播，还必须指导真实交付。",type:"review",preview:["“陪你做第一步”：行动感强，适合服务入口。","“拆成路径”：专业清晰，适合方法型内容。","“不承诺捷径”：立场鲜明，但需要真实案例支撑。"]},
+          {title:"确认首选价值主张",instruction:"选择主张，并允许保留一条辅助表达。",why:"确认后，它会成为内容、产品和合作选择的判断标准。",type:"select",options:["主张：陪用户完成第一步","主张：把复杂问题拆成路径","组合：有证据的方法 + 可执行路径"],sampleChoice:"组合：有证据的方法 + 可执行路径"}
         ]
       },
       {
         id:4,phase:"IP 底座",name:"故事资产",desc:"把挫折、成长和愿景整理为可追溯、可复用的信任资产。",
         output:"核心故事资产清单",
         steps:[
-          {title:"补充门店转折和共鸣点",instruction:"从模块 1 的经营经历继续深挖，不重复从头询问。",why:"故事不是履历，而是顾客和同行为什么会相信这位老板的证据。",type:"input",label:"哪次门店低谷或顾客事件真正改变了你的经营方式？它证明了你什么？",sample:"门店第二年我做过一次低价拓客，三天来了很多人，但员工忙乱、顾客体验差，最后几乎没有复购。那次之后我停止追求虚假到店数，重新设计咨询、服务和回访流程。它让我相信：真正的增长不是把人拉进店，而是让顾客愿意再回来。"},
-          {title:"提炼关键故事节点",instruction:"从经历中找到冲突、选择、结果和新认知。",why:"清晰节点能够被复用为口播、长文和门店案例。",type:"multi",options:["低价拓客失败","员工集体焦虑","顾客拒绝强推","重做服务流程","复购开始回升"],sampleChoice:["低价拓客失败","重做服务流程","复购开始回升"]},
-          {title:"划分三类故事",instruction:"将素材放入挫折型、成长型和愿景型。",why:"不同内容场景需要不同情绪和传播目的。",type:"review",preview:["挫折型：低价活动到店很多，却没有留下顾客。","成长型：从追流量转向咨询、服务和回访。","愿景型：让门店不靠强推，也能获得顾客长期信任。"]},
-          {title:"生成故事资产卡",instruction:"为每个故事形成名称、梗概、情绪点和传播场景。",why:"结构化故事卡才能被后续内容系统准确调用。",type:"review",preview:["《那场热闹却失败的拓客活动》｜兴奋到清醒｜品牌故事/口播","《顾客为什么没有回来》｜自责到改变｜案例视频/员工培训","《不靠强推的美业门店》｜责任与愿景｜主页简介/长文"]},
-          {title:"确认核心故事",instruction:"选择最能支撑当前定位的一段真实门店故事。",why:"主故事将成为第一批内容和老板个人介绍的信任入口。",type:"select",options:["核心故事：《那场热闹却失败的拓客活动》","核心故事：《顾客为什么没有回来》","组合：低价拓客失败 + 重做服务流程"],sampleChoice:"组合：低价拓客失败 + 重做服务流程"}
+          {title:"补充关键转折与共鸣",instruction:"从前面的经历继续深挖，不重复从头询问。",why:"故事不是履历，而是目标人群为什么会相信你的证据。",type:"input",label:"哪次挫折、选择或顿悟真正改变了你？它证明了你的什么能力或价值观？",sample:"我曾经花很长时间做一个看起来正确的项目，最后却因为没有理解用户而失败。那次之后，我开始先访谈、做小验证，再扩大投入。它让我相信：真实反馈比漂亮计划更重要。"},
+          {title:"提炼关键故事节点",instruction:"从经历中找到冲突、选择、结果和新认知。",why:"清晰节点可以复用为口播、长文和案例。",type:"multi",options:["遭遇挫折","关键选择","重新学习","第一次验证","形成新方法"],sampleChoice:["遭遇挫折","关键选择","形成新方法"]},
+          {title:"划分三类故事",instruction:"将素材放入挫折型、成长型和愿景型。",why:"不同内容场景需要不同情绪和传播目的。",type:"review",preview:["挫折型：一次失败如何打破原来的认知。","成长型：从混乱到形成方法的关键转折。","愿景型：希望帮助哪类人获得什么改变。"]},
+          {title:"生成故事资产卡",instruction:"为每个故事形成名称、梗概、情绪点和传播场景。",why:"结构化故事卡才能被后续内容系统准确调用。",type:"review",preview:["《那个看似正确却失败的项目》｜自信到反思｜品牌故事/口播","《我开始先听用户说话》｜混乱到清晰｜案例视频/长文","《让普通人少走一点弯路》｜责任与愿景｜主页简介/演讲"]},
+          {title:"确认核心故事",instruction:"选择最能支撑当前定位的一段真实故事。",why:"主故事将成为第一批内容和个人介绍的信任入口。",type:"select",options:["核心故事：一次失败如何改变我的方法","核心故事：从学习者到实践者的转折","组合：失败反思 + 新方法验证"],sampleChoice:"组合：失败反思 + 新方法验证"}
         ]
       },
       {
         id:5,phase:"内容生产",name:"内容选题",desc:"从受众问题、IP 价值和故事资产生成可持续的内容选题库。",
         output:"已确认内容选题库",
         steps:[
-          {title:"提炼顾客与门店高频问题",instruction:"读取目标顾客和已确认档案，找到顾客、员工和老板反复遇到的问题。",why:"美业选题应该回应真实到店、成交和复购问题，而不是只追热点。",type:"input",label:"顾客、员工和你自己最近最常卡在哪三个问题？近期内容希望带来什么结果？",sample:"顾客常问：为什么做了项目还是反复？会不会被强推套餐？\n员工常卡：咨询时只会讲价格，不会讲长期方案。\n老板最痛：平台流量越来越贵，活动到店后复购很低。\n近期目标：通过老板 IP 获得 30 个高意向咨询，并让老客重新理解长期管理价值。"},
-          {title:"生成不少于 15 个具体选题",instruction:"覆盖顾客教育、门店经营、真实故事、争议观点和案例。",why:"先建立足够宽的美业选题池，再做分类和优先级。",type:"multi",options:["顾客不是嫌贵，是没听懂价值","为什么低价拓客留不住人","皮肤管理不是项目堆叠","咨询师越推销顾客越防备","老客不复购真正怪谁","美业老板为什么一定要出镜","员工离职带走顾客怎么办","平台流量越来越贵怎么破","第一次咨询最不该问什么","问题肌改善为什么会反复","门店朋友圈别只发促销","三种制造容貌焦虑的话术","真实顾客方案怎样讲边界","从一次成交到长期管理","一家店不靠低价活下来的过程"],sampleChoice:["为什么低价拓客留不住人","老客不复购真正怪谁","美业老板为什么一定要出镜"]},
-          {title:"形成分类选题库",instruction:"把选题按顾客问题、经营目标和平台分类。",why:"分类后才能形成长期内容支柱和稳定发布节奏。",type:"review",preview:["顾客教育：问题肌、项目边界、长期管理。","门店经营：获客、到店、咨询、复购和员工。","故事型：老板低谷、顾客转折、团队成长。","争议型：反对强推、低价战和容貌焦虑。","案例型：真实顾客与真实经营改变。"]},
-          {title:"确认三个重点选题",instruction:"结合当前经营目标选择第一批最值得生产的内容。",why:"选题库可以很大，但第一批只做最接近顾客痛点的三条。",type:"multi",options:["为什么低价拓客留不住人","老客不复购真正怪谁","美业老板为什么一定要出镜","顾客不是嫌贵，是没听懂价值","咨询师越推销顾客越防备"],sampleChoice:["为什么低价拓客留不住人","老客不复购真正怪谁","美业老板为什么一定要出镜"]}
+          {title:"提炼受众高频问题",instruction:"读取目标人群和已确认档案，找到反复出现的问题、误区和行动阻力。",why:"好选题回应真实需求，而不是只追热点。",type:"input",label:"你的目标人群最近最常问什么、害怕什么、卡在哪里？近期内容希望带来什么结果？",sample:"他们常问从哪个工具开始、投入是否值得，也担心团队学不会。最常卡在试了很多功能，却没有形成稳定流程。近期内容目标是先建立专业信任，让真正需要帮助的人愿意继续了解。"},
+          {title:"生成不少于 15 个具体选题",instruction:"覆盖问题、方法、故事、观点和案例五类。",why:"先建立足够宽的选题池，再做分类和优先级。",type:"multi",options:["新手最容易走错的第一步","为什么工具越多反而越难落地","一次失败让我改掉的方法","把复杂流程拆成三步","什么情况下不适合使用 AI","用户不是不行动，而是路径太模糊","一个真实项目从混乱到清晰","别再用结果承诺替代事实","如何判断建议是否真的适合你","我坚持不做的三件事","从零开始需要准备什么","常见误区背后的真正原因","一份可复用的检查清单","如何低成本验证一个想法","本周最值得复盘的用户问题"],sampleChoice:["新手最容易走错的第一步","为什么工具越多反而越难落地","一次失败让我改掉的方法"]},
+          {title:"形成分类选题库",instruction:"把选题按用户问题、内容类型和传播目标分类。",why:"分类后才能形成长期内容支柱和稳定生产节奏。",type:"review",preview:["问题型：回应高频困惑和行动阻力。","方法型：提供步骤、清单和判断框架。","故事型：展示挫折、选择和成长。","观点型：表达有边界的行业判断。","案例型：用可核对事实说明改变过程。"]},
+          {title:"确认三个重点选题",instruction:"结合当前目标选择第一批最值得生产的内容。",why:"选题库可以很大，第一批只做最接近目标人群的问题。",type:"multi",options:["新手最容易走错的第一步","为什么工具越多反而越难落地","一次失败让我改掉的方法","把复杂流程拆成三步","什么情况下不适合使用 AI"],sampleChoice:["新手最容易走错的第一步","为什么工具越多反而越难落地","一次失败让我改掉的方法"]}
         ]
       },
       {
         id:6,phase:"内容生产",name:"文案口播",desc:"围绕已确认选题生成多种表达方案，并由用户批准最终口播版本。",
         output:"已批准口播文案",
         steps:[
-          {title:"生成 A/B/C 三种口播文案",instruction:"同一美业痛点分别尝试共情型、观点型和门店故事型。",why:"表达风格不同，顾客信任和老板人设感受也会不同。",type:"select",options:["A 共情型｜我知道很多美业老板不是不努力，而是每天都在为下一批顾客从哪里来发愁……","B 观点型｜低价拓客最可怕的，不是利润低，而是你根本不知道顾客为什么没有再回来。","C 故事型｜我做过一次三天爆满的活动，店里很热闹，但一个月后我才发现，几乎没人复购。"],sampleChoice:"C 故事型｜我做过一次三天爆满的活动，店里很热闹，但一个月后我才发现，几乎没人复购。"},
-          {title:"优化口播节奏与字幕点",instruction:"检查前三秒、情绪递进、短句、停顿和 3–4 个字幕重点。",why:"好观点不等于好口播，必须适合美业老板真实出镜。",type:"review",preview:["前三秒：那次活动三天爆满，但一个月后几乎没人回来。","字幕点 1：到店不等于留下。","字幕点 2：第一次咨询决定信任。","字幕点 3：回访不是群发促销。","结尾：说说你店里最难解决的是获客、成交还是复购。"]},
-          {title:"确认最终文案版本",instruction:"选择最符合人设和传播目标的一版，允许继续编辑。",why:"只有批准版本才能进入编导和视频生产。",type:"select",options:["批准故事型版本","故事开场 + 干货中段","保留观点，重新生成更克制的结尾"],sampleChoice:"故事开场 + 干货中段"}
+          {title:"生成 A/B/C 三种口播文案",instruction:"同一主题分别尝试共情型、观点型和故事型。",why:"表达风格不同，受众感受和人设呈现也会不同。",type:"select",options:["A 共情型｜我知道你不是不想开始，而是信息太多，不知道第一步该选什么……","B 观点型｜真正拖慢你的，往往不是工具不够，而是没有一条能验证的路径。","C 故事型｜我也曾连续试了很多工具，直到一次失败让我开始先做最小验证。"],sampleChoice:"C 故事型｜我也曾连续试了很多工具，直到一次失败让我开始先做最小验证。"},
+          {title:"优化口播节奏与字幕点",instruction:"检查前三秒、情绪递进、短句、停顿和 3–4 个字幕重点。",why:"好观点不等于好口播，还必须适合本人真实表达。",type:"review",preview:["前三秒：工具越多，为什么你反而越难开始？","字幕点 1：问题不是工具少。","字幕点 2：先确定一个真实任务。","字幕点 3：用最小结果验证。","结尾：说说你现在最卡在哪一步。"]},
+          {title:"确认最终文案版本",instruction:"选择最符合人设和传播目标的一版，确认前仍可编辑。",why:"只有批准版本才能带入编导和视频生产。",type:"select",options:["批准共情型版本","故事开场 + 方法中段","保留观点，重新生成更克制的结尾"],sampleChoice:"故事开场 + 方法中段"}
         ]
       },
       {
-        id:7,phase:"内容生产",name:"IP 形象设计",desc:"确认可长期使用的外观、灯光、镜头、场景、表情和声音规范。",
+        id:7,phase:"内容生产",name:"IP 形象设计",desc:"结合用户主动提供的照片与回答，确认外观、灯光、镜头、场景、表情和声音规范。",
         output:"已确认视觉与镜头档案",
         steps:[
-          {title:"采集五类形象信息",instruction:"理解老板真实气质、门店审美、最怕被误解的样子和常见出镜场景。",why:"美业视觉不能只追求精致，还要让顾客感到可信、可接近。",type:"input",label:"请描述你的气质、门店风格、最怕被误解的样子、三年关键词和主要出镜场景",sample:"气质：专业、温柔但不讨好。\n门店风格：米白和木色，安静、干净。\n最怕被误解：只会卖套餐、制造焦虑的老板。\n三年关键词：专业、真实、长期陪伴。\n场景：门店咨询区口播、顾客案例复盘、员工晨会和老板经营分享。"},
-          {title:"生成三套差异化形象方案",instruction:"每套包含服装、灯光、机位、门店背景、表情和声调。",why:"视觉选择也需要比较，而不是由模型直接定稿。",type:"select",options:["专业主理人｜门店咨询区、柔和侧光、半身平视","温暖同行姐姐｜米白空间、自然光、近景交流感","清醒美业老板｜深色背景、真实经营现场、直接表达"],sampleChoice:"专业主理人｜门店咨询区、柔和侧光、半身平视"},
-          {title:"确认长期形象规范",instruction:"选择主方案，并确定不能随意变化的视觉要素。",why:"确认档案将共同约束头像、封面、数字人和门店视频模板。",type:"select",options:["采用专业主理人","专业主理人 + 温暖同行辅助场景","暂不确认，先上传本人和门店照片再分析"],sampleChoice:"专业主理人 + 温暖同行辅助场景"}
+          {title:"采集形象信息与参考照片",instruction:"照片可选；请先描述真实气质、最怕被误解的样子和常见出镜场景。",why:"视觉不只追求精致，更要与真实人设和目标受众一致。",type:"input",label:"请描述希望呈现的气质、第一印象、最怕被误解的样子、三年关键词和应用场景",sample:"气质：清晰、克制、可信。\n第一印象：能把复杂问题讲明白的实践者。\n最怕被误解：只会追热点、夸大结果。\n三年关键词：专业、真实、长期主义。\n场景：短视频口播、线上课程和主题演讲。"},
+          {title:"生成三套差异化形象方案",instruction:"每套包含服装、灯光、机位、背景、表情和声调。",why:"视觉选择也需要比较，而不是由模型直接定稿。",type:"select",options:["专业清晰｜简洁服装、柔和侧光、半身平视","温暖陪伴｜自然光、近景交流感、舒缓语速","真实实践｜工作现场、轻纪录感、直接表达"],sampleChoice:"专业清晰｜简洁服装、柔和侧光、半身平视"},
+          {title:"确认长期形象规范",instruction:"选择主方案，并确定不能随意变化的视觉要素。",why:"确认档案将共同约束头像、封面、数字人和视频模板。",type:"select",options:["采用专业清晰方案","专业清晰 + 温暖陪伴辅助场景","暂不确认，先主动上传参考照片再分析"],sampleChoice:"专业清晰 + 温暖陪伴辅助场景"}
         ]
       },
       {
-        id:8,phase:"内容生产",name:"脚本分镜",desc:"把已批准文案转化为可拍摄、可生成、可进入批量视频的镜头计划。",
+        id:8,phase:"内容生产",name:"脚本分镜",desc:"把已批准文案转化为可拍摄、可生成、可进入视频工具的镜头计划。",
         output:"已批准脚本与分镜",
         steps:[
-          {title:"确认视频五项参数",instruction:"明确美业主题、顾客或同行受众、风格、时长和业务目的。",why:"脚本必须服务一个具体的信任或经营目标，不能只追求画面丰富。",type:"input",label:"请填写主题、目标受众、表达风格、时长和视频目的",sample:"主题：为什么低价拓客留不住顾客。\n受众：正在为流量和复购焦虑的美业门店老板。\n风格：真实门店故事 + 三个经营判断。\n时长：60 秒。\n目的：建立老板 IP 信任，获得门店经营诊断咨询。"},
-          {title:"生成三套不同风格脚本",instruction:"每套包含钩子、中段、结尾、分镜和口播。",why:"先比较生产复杂度和传播优势，再决定采用哪套。",type:"select",options:["单人口播｜4 镜头｜最快生产","案例纪录｜6 镜头｜信任感最强","图文解释｜8 镜头｜信息密度最高"],sampleChoice:"案例纪录｜6 镜头｜信任感最强"},
-          {title:"比较传播优势与风险",instruction:"评估真实度、节奏、素材成本和批量复制难度。",why:"脚本不仅要好看，还要适合当前生产能力。",type:"review",preview:["单人口播：生产快；风险是视觉单一。","案例纪录：信任强；风险是需要真实素材。","图文解释：信息清晰；风险是制作成本高、容易像课程。"]},
-          {title:"确认最终脚本和分镜",instruction:"选择方案，并明确进入黄雀现有能力的方式。",why:"批准后才能创建图片、数字人或批量视频任务。",type:"select",options:["批准案例纪录版","先用单人口播做首版验证","案例开场 + 口播主体的混合版"],sampleChoice:"案例开场 + 口播主体的混合版"}
+          {title:"确认视频五项参数",instruction:"明确主题、目标受众、表达风格、时长和视频目的。",why:"脚本必须服务一个具体的传播目标，不能只追求画面丰富。",type:"input",label:"请填写视频主题、目标受众、表达风格、时长和视频目的",sample:"主题：为什么工具越多反而越难落地。\n受众：正在寻找转型路径的创业者和团队负责人。\n风格：真实故事 + 三个可执行判断。\n时长：60 秒。\n目的：建立专业信任，让有同类问题的人愿意继续了解。"},
+          {title:"生成三套不同风格脚本",instruction:"每套包含钩子、中段、结尾、分镜和口播。",why:"先比较生产复杂度和传播优势，再决定采用哪套。",type:"select",options:["单人口播｜4 镜头｜最快生产","案例纪录｜6 镜头｜真实感最强","图文解释｜8 镜头｜信息密度最高"],sampleChoice:"案例纪录｜6 镜头｜真实感最强"},
+          {title:"比较传播优势与风险",instruction:"评估真实度、节奏、素材成本和批量复制难度。",why:"脚本不仅要好看，还要适合当前生产能力。",type:"review",preview:["单人口播：生产快；风险是视觉单一。","案例纪录：真实感强；风险是需要可用素材。","图文解释：信息清晰；风险是制作成本较高。"]},
+          {title:"确认最终脚本和分镜",instruction:"选择方案，并明确进入黄雀现有能力的方式。",why:"批准后只会带入既有工具，不会自动生成、扣点或发布。",type:"select",options:["批准案例纪录版","先用单人口播做首版验证","案例开场 + 口播主体的混合版"],sampleChoice:"案例开场 + 口播主体的混合版"}
         ]
       },
-      {
-        id:9,phase:"运营增长",name:"私域矩阵",desc:"设计从公域认识、私域承接到长期触达的合规运营路径。",
-        output:"已确认私域矩阵方案",
-        steps:[
-          {title:"采集私域五类信息",instruction:"明确顾客、核心项目、现有内容、承接渠道和复购目标。",why:"平台不是越多越好，关键是公域顾客怎样合规进入长期服务。",type:"input",label:"请填写目标顾客、核心项目、现有内容、私域渠道和本月经营目标",sample:"目标顾客：28–45 岁敏感肌和痘肌女性。\n核心服务：皮肤诊断 + 90 天长期管理。\n现有内容：老板口播、真实案例和居家护理清单。\n私域：个人微信 + 企业微信 + 老客群。\n目标：每月新增 30 个高意向咨询，老客复购率提升 15%。"},
-          {title:"设计引流与欢迎路径",instruction:"规划公域入口、欢迎内容和第一次咨询。",why:"顾客第一次进入私域的体验决定她会不会把你当专业主理人。",type:"review",preview:["短视频问题 → 私信领取《问题肌自查清单》。","欢迎消息 → 先问困扰、持续时间和做过的项目，不急着报价。","首批内容 → 一个真实案例、一份护理建议、一次老板公开答疑。"]},
-          {title:"确认矩阵账号角色",instruction:"明确老板号、门店号和顾问号各自承担什么责任。",why:"角色清楚可以避免所有账号只发促销。",type:"select",options:["轻量：老板 IP 主号 + 企业微信承接","标准：老板号 + 门店案例号 + 顾问承接号","第一版只做老板主号，不扩矩阵"],sampleChoice:"轻量：老板 IP 主号 + 企业微信承接"},
-          {title:"制定内容与转化节奏",instruction:"确定每日、每周动作和顾客主动咨询后的承接条件。",why:"私域价值来自稳定信任，不是临时群发活动。",type:"review",preview:["每日：回答一个顾客真实问题或分享服务现场。","每周：一次案例复盘 + 一次老板答疑。","触发：顾客主动描述问题后，再邀请到店诊断，不群发强推套餐。"]},
-          {title:"确认第一执行重点",instruction:"从完整方案中选择最先验证的一条路径。",why:"先跑通一条获客到复购链，再考虑扩大矩阵。",type:"select",options:["老板口播 → 自查清单 → 到店诊断","真实案例 → 顾客答疑 → 90 天管理方案","暂不引流，先积累 10 条高质量内容"],sampleChoice:"老板口播 → 自查清单 → 到店诊断"}
-        ]
-      },
-      {
-        id:10,phase:"运营增长",name:"朋友圈运营",desc:"用专业证明、真实日常和适度转化建立长期信任。",
-        output:"已确认朋友圈运营计划",
-        steps:[
-          {title:"确认身份、项目、顾客和目标",instruction:"优先复用档案，只补充朋友圈承担的门店经营目标。",why:"朋友圈必须和老板公开 IP、门店服务保持一致。",type:"input",label:"你希望朋友圈让顾客形成什么印象？本月最想承接什么项目或关系？",sample:"印象：真实、专业、不强推，能看见老板每天怎样服务顾客和带团队。\n承接：敏感肌 90 天管理、老客复购和顾客转介绍。"},
-          {title:"建立五类内容结构",instruction:"配置专业、故事、证明、日常和转化内容。",why:"只有促销会透支信任，只有科普也不会产生到店行动。",type:"review",preview:["专业价值：皮肤判断、护理边界和常见误区。","故事共鸣：顾客困扰、老板低谷和员工成长。","社交证明：真实反馈与阶段变化，避免夸大疗效。","情感链接：门店现场、学习和老板价值观。","转化引导：诊断、答疑、体验和长期管理说明。"]},
-          {title:"形成七天运营节奏",instruction:"让五类内容在一周内自然分布。",why:"节奏比连续促销更能建立美业长期信任。",type:"review",preview:["周一：皮肤误区｜周二：真实案例｜周三：门店工作现场","周四：顾客问题｜周五：老板经营复盘｜周六：生活与价值观","周日：本周总结 + 下周到店答疑名额"]},
-          {title:"生成文案骨架和配图建议",instruction:"为每类内容准备可复用结构。",why:"骨架降低持续创作成本，但必须保留真实顾客和门店细节。",type:"review",preview:["案例骨架：困扰 → 判断 → 方案 → 阶段变化 → 适用边界。","观点骨架：美业反常识 → 真实经历 → 给顾客或同行的建议。","配图：真实门店、老板和服务细节优先，少用廉价促销海报。"]},
-          {title:"确认 30 天发力重点",instruction:"选择本月最重要的内容比例和业务目标。",why:"运营计划必须服从当前 IP 阶段，而不是平均用力。",type:"select",options:["案例与方法 60%｜建立专业信任","真实故事 50%｜先建立人格连接","方法 40% + 案例 40% + 服务 20%"],sampleChoice:"方法 40% + 案例 40% + 服务 20%"}
-        ]
-      },
-      {
-        id:11,phase:"运营增长",name:"销售与反馈",desc:"把咨询、异议和成交原话变成下一轮内容与产品优化依据。",
-        output:"已确认销售与反馈机制",
-        steps:[
-          {title:"采集项目、顾客、渠道和困境",instruction:"明确门店真实咨询与成交路径，而不是直接生成逼单话术。",why:"销售策略必须建立在顾客问题、专业判断和服务边界上。",type:"input",label:"请填写核心项目、目标顾客、咨询渠道、当前成交困境和目标",sample:"项目：敏感肌 90 天长期管理。\n顾客：反复敏感、做过多个项目但效果不稳定的女性。\n渠道：老板短视频 + 微信咨询 + 到店诊断。\n困境：顾客问完价格就消失，咨询师容易急着推套餐。\n目标：提高有效咨询到店率和首次诊断后的方案接受率。"},
-          {title:"设计完整销售流程",instruction:"从触达、信任、需求、价值、异议、成交到售后。",why:"不能只优化最后一句话，必须看顾客完整体验。",type:"review",preview:["触达：内容回应真实皮肤问题。","信任：老板立场、案例和专业边界。","需求：确认困扰、经历和预期，不先报价。","价值：讲清诊断、阶段方案和长期管理。","异议：价格、时间、曾被强推和效果担忧。","成交：顾客理解方案后自主决定。","售后：记录变化、回访并收集真实反馈。"]},
-          {title:"生成各环节话术候选",instruction:"话术用于帮助顾客理解，不替代专业判断，也不用于逼单。",why:"老板确认后才能使用，禁止自动向顾客发送。",type:"review",preview:["需求：你现在最困扰的是反复、敏感，还是做了很多项目仍不稳定？","价值：我们先完成诊断，再决定你是否需要项目，不适合的我会直接说明。","异议：你可以先理解方案和边界，不需要今天立刻决定。"]},
-          {title:"建立反馈记录机制",instruction:"定义需要回收的顾客原话、异议、成交和未到店原因。",why:"反馈必须回到 IP 档案和内容计划，系统才会持续成长。",type:"input",label:"你准备每周记录哪些顾客与员工反馈？由谁复盘？",sample:"记录评论问题、微信咨询原话、未到店原因、价格异议、成交原因、阶段效果反馈和员工咨询卡点；每周五由老板、店长和咨询负责人共同复盘。"},
-          {title:"确认下一轮优化重点",instruction:"选择最值得反哺定位、内容或门店服务的一项变化。",why:"反馈不是看板终点，而是下一轮内容和经营动作的起点。",type:"select",options:["把首次诊断流程讲得更具体","增加顾客害怕强推的真实内容","减少促销内容，增加服务过程与边界","先收集两周未到店原因再调整"],sampleChoice:"增加顾客害怕强推的真实内容"}
-        ]
-      },
-      {
-        id:12,phase:"运营增长",name:"公众号商业化",desc:"把长期内容、信任和服务承接形成可持续的商业闭环。",
-        output:"已确认公众号商业化方案",
-        steps:[
-          {title:"确认人设、项目、读者和目标",instruction:"读取前面档案，只补充公众号在美业老板 IP 中的主要功能。",why:"公众号不是另一个促销号，而是长期案例和专业信任资产中心。",type:"input",label:"公众号主要服务顾客还是美业同行？承担什么功能？希望实现什么目标？",sample:"读者：重视长期皮肤管理的顾客，以及关注真实经营的美业门店老板。\n功能：沉淀顾客教育、真实案例、老板经营复盘和服务边界。\n目标：形成长期搜索资产，每月带来 10 个高质量到店诊断或经营咨询。"},
-          {title:"设计四类文章结构",instruction:"配置专业价值、顾客故事、经营观点和服务承接文章。",why:"栏目结构能让长期内容既稳定又不变成促销合集。",type:"review",preview:["专业文章：皮肤判断、项目边界和护理清单。","故事文章：顾客转折、员工成长和门店低谷。","观点文章：反对强推、低价战和容貌焦虑。","转化文章：诊断流程、适合谁、不适合谁和真实服务说明。"]},
-          {title:"生成写作建议",instruction:"为每类文章确定标题、正文和结尾结构。",why:"可复用结构能降低长文生产成本并保持人设一致。",type:"review",preview:["标题：具体人群 + 真实问题 + 明确判断。","正文：场景 → 冲突 → 方法 → 案例 → 边界。","结尾：给下一步，不夸大、不强推。"]},
-          {title:"确认公众号运营节奏",instruction:"建议每周 2–3 篇，并和短视频、朋友圈复用同一内容卡。",why:"同一 IP 项目应该一份内容多端表达，而不是重复从零创作。",type:"review",preview:["周二：方法长文｜周四：案例复盘｜周日：观点或服务说明","短视频负责触达，公众号负责深度，私域负责继续对话。"]},
-          {title:"确认商业化路径",instruction:"选择免费价值、信任、到店诊断或同行服务的承接路径。",why:"商业化必须和门店真实可交付价值一致。",type:"select",options:["专业长文 → 自查清单 → 到店诊断 → 长期管理","真实案例 → 老板公开答疑 → 到店体验","经营复盘 → 美业老板小课 → 门店陪跑","先做长期内容资产，暂不设置付费承接"],sampleChoice:"专业长文 → 自查清单 → 到店诊断 → 长期管理"}
-        ]
-      }
+      {id:9,phase:"运营增长",name:"私域矩阵",desc:"开发中，敬请期待",availability:"coming_soon",plannedSteps:5,steps:[]},
+      {id:10,phase:"运营增长",name:"朋友圈运营",desc:"开发中，敬请期待",availability:"coming_soon",plannedSteps:5,steps:[]},
+      {id:11,phase:"运营增长",name:"销售策略",desc:"开发中，敬请期待",availability:"coming_soon",plannedSteps:5,steps:[]},
+      {id:12,phase:"运营增长",name:"公众号变现",desc:"开发中，敬请期待",availability:"coming_soon",plannedSteps:5,steps:[]}
     ];
 
-    const STORAGE_KEY = "huangque-ip12-beauty-ai-pilot-v3";
+    const STORAGE_KEY = "huangque-ip12-conversation-v1";
+    const LEGACY_STORAGE_KEY = "huangque-ip12-beauty-ai-pilot-v3";
     const API_URL = "/api/gen/digital-ip/diagnose";
     const GUIDE_API_URL = "/api/gen/digital-ip/guide";
     const PROJECTS_URL = "/api/gen/digital-ip/projects";
+    const PRODUCT_HANDOFF_KEY = "hq_ip12_product_handoff_v1";
+    const PRODUCT_HANDOFFS = {
+      image_studio:{url:"banana.html",instruction:"请根据以下已确认的 IP 底座，制作一份符合定位、人设、价值与故事的视觉内容草稿："},
+      script_studio:{url:"script.html",instruction:"请根据以下已确认的 IP 底座，策划一条符合定位、人设、价值与故事的内容："},
+      video_studio:{url:"video.html",instruction:"请根据以下已确认的 IP 底座，制作一条符合定位、人设、价值与故事的视频草稿："}
+    };
     const UPLOAD_MIME = {pdf:"application/pdf",doc:"application/msword",docx:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",ppt:"application/vnd.ms-powerpoint",pptx:"application/vnd.openxmlformats-officedocument.presentationml.presentation",xls:"application/vnd.ms-excel",xlsx:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",csv:"text/csv",txt:"text/plain",md:"text/markdown",png:"image/png",jpg:"image/jpeg",jpeg:"image/jpeg",webp:"image/webp"};
-    const totalSteps = MODULES.reduce((sum,module)=>sum+module.steps.length,0);
+    const totalSteps = MODULES.filter(module=>module.availability!=="coming_soon").reduce((sum,module)=>sum+module.steps.length,0);
+    const roadmapSteps = MODULES.reduce((sum,module)=>sum+(module.plannedSteps||module.steps.length),0);
     const initialState = {moduleIndex:0,stepIndex:0,answers:{},completedModules:[],profile:{},analyses:{},guideTurns:[]};
     let state = structuredClone(initialState);
     let selectedChoice = null;
@@ -619,8 +599,8 @@
     let projectSaving = false;
     let projectSavePending = false;
     const COACH_WELCOME_MESSAGES = [
-      "我会陪你从当前这一步开始。想不起例子时，可以点下面的入口。",
-      "先写真实经历和顾客问题，答案不必一次写得完美。",
+      "你好，我是小黄雀。勾选同意后点“让 AI 问第一题”，我会结合当前模块动态提问。",
+      "先说真实经历、能力和目标，答案不必一次写得完美。",
       "每次 AI 分析只给建议，是否确认始终由你决定。",
       "完成这一题后，我会帮你看清下一步该补什么。"
     ];
@@ -634,17 +614,22 @@
       {name:"03 · 运营增长",range:[9,12]}
     ];
 
-    function projectStorageKey(){ return project?.id?`${STORAGE_KEY}:${project.id}`:""; }
+    function projectStorageKey(prefix=STORAGE_KEY){ return project?.id?`${prefix}:${project.id}`:""; }
+    function isOpenModuleIndex(index){ return !!MODULES[index]&&MODULES[index].availability!=="coming_soon"; }
+    function isOpenStepKey(key){
+      const [moduleIndex,stepIndex]=String(key).split("-").map(Number);
+      return Number.isInteger(moduleIndex)&&Number.isInteger(stepIndex)&&isOpenModuleIndex(moduleIndex)&&!!MODULES[moduleIndex].steps[stepIndex];
+    }
     function entryStep(){
       const query=new URLSearchParams(location.search);
       const module=Number(query.get("module")), step=Number(query.get("step"));
-      if(!Number.isInteger(module)||!Number.isInteger(step)||module<1||module>MODULES.length||step<1||step>MODULES[module-1].steps.length)return null;
+      if(!Number.isInteger(module)||!Number.isInteger(step)||module<1||module>MODULES.length||!isOpenModuleIndex(module-1)||step<1||step>MODULES[module-1].steps.length)return null;
       return {moduleIndex:module-1,stepIndex:step-1};
     }
     function localDraft(){
       try{
         const key=projectStorageKey();
-        const saved=key?JSON.parse(localStorage.getItem(key)):null;
+        const saved=key?JSON.parse(localStorage.getItem(key)||localStorage.getItem(projectStorageKey(LEGACY_STORAGE_KEY))):null;
         const draft=saved?.state||saved;
         return {state:draft&&typeof draft==="object"?{...initialState,...draft,analyses:draft.analyses||{},guideTurns:draft.guideTurns||[]}:null,title:saved?.state?String(saved.title||""):"",revision:saved?.state?Number(saved.revision):NaN,savedAt:saved?.state?Number(saved.savedAt):0};
       }catch(_){ return {state:null,title:"",revision:NaN,savedAt:0}; }
@@ -743,10 +728,10 @@
       return String(value??"").replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));
     }
     function confirmedStepCount(){
-      return Object.values(state.answers).filter(answer=>answer?.confirmed).length;
+      return Object.entries(state.answers).filter(([key,answer])=>isOpenStepKey(key)&&answer?.confirmed).length;
     }
     function skippedSteps(){
-      return Object.entries(state.answers).filter(([,answer])=>answer?.skipped).map(([key,answer])=>{
+      return Object.entries(state.answers).filter(([key,answer])=>isOpenStepKey(key)&&answer?.skipped).map(([key,answer])=>{
         const [moduleIndex,stepIndex]=key.split("-").map(Number);
         const module=MODULES[moduleIndex], step=module?.steps[stepIndex];
         return step?{moduleIndex,stepIndex,module,step,answer}:null;
@@ -775,17 +760,18 @@
         `<div class="phase-label">${group.label}</div>`+
         group.modules.map(module=>{
           const index=module.id-1;
-          const active=index===state.moduleIndex;
+          const coming=module.availability==="coming_soon";
+          const active=!coming&&index===state.moduleIndex;
           const done=isModuleDone(module.id);
           const skipped=moduleSkippedCount(index);
-          return `<button class="module-btn ${active?"active":""} ${done?"done":""}" type="button" data-module="${index}">
+          return `<button class="module-btn ${active?"active":""} ${done?"done":""}" type="button" data-module="${index}" ${coming?"disabled":""}>
             <span class="module-no">${String(module.id).padStart(2,"0")}</span>
-            <span class="module-copy"><b>${escapeHtml(module.name)}</b><small>${module.steps.length} 个内部步骤</small></span>
-            <span class="module-state">${done?(skipped?`${skipped} 项待补`:"已确认"):active?"进行中":"可预览"}</span>
+            <span class="module-copy"><b>${escapeHtml(module.name)}</b><small>${coming?`${module.plannedSteps} 个规划步骤`:`${module.steps.length} 个内部步骤`}</small></span>
+            <span class="module-state">${coming?"开发中，敬请期待":done?(skipped?`${skipped} 项待补`:"已确认"):active?"进行中":"可预览"}</span>
           </button>`;
         }).join("")
       ).join("");
-      document.querySelectorAll("[data-module]").forEach(btn=>{
+      document.querySelectorAll("[data-module]:not(:disabled)").forEach(btn=>{
         btn.addEventListener("click",()=>{
           saveDraft();
           state.moduleIndex=Number(btn.dataset.module);
@@ -803,9 +789,11 @@
       let html="";
       if(answer.skipped)html=`<div class="note-box">此步骤已跳过，尚未进入已确认档案。填写后点击“确认并继续”即可回补。</div>`;
       if(step.type==="input"){
-        html+=`<label class="answer-label" for="answer">${escapeHtml(step.label)}</label>
-          <textarea class="answer" id="answer" placeholder="先写最接近真实的一版，不需要追求完美。">${escapeHtml(answer.text||"")}</textarea>
-          <div class="helper"><span>回答越具体，后续候选越准确。</span><button class="example-btn" id="exampleBtn" type="button">带入示例</button></div>`;
+        html+=`<details class="answer-draft" ${answer.text?"open":""}>
+          <summary>本步确认稿 · 对话后可带入，也可以直接填写</summary>
+          <textarea class="answer" id="answer" aria-label="本步确认稿" placeholder="AI 整理出的草稿会带入这里；你也可以直接写自己的版本。">${escapeHtml(answer.text||"")}</textarea>
+          <div class="helper"><span>这里不是固定问卷；请检查内容后再确认。</span><button class="example-btn" id="exampleBtn" type="button">带入一个示例草稿</button></div>
+        </details>`;
       }else if(step.type==="select"||step.type==="multi"){
         html+=`<label class="answer-label">${step.type==="multi"?"可以选择多项":"请选择一项作为当前确认"}</label>
           <div class="suggestions">${step.options.map((option,index)=>{
@@ -878,6 +866,7 @@
       if(changed)delete state.profile[module.id];
       const stale=invalidateStaleAnalysis(answerText(step,next))||changed;
       persist();
+      if(changed)renderFoundationOutcome();
       if(stale)renderAI();
       return stale;
     }
@@ -923,13 +912,14 @@
           const summary=Array.isArray(answer.choice)?answer.choice.join("、"):answer.choice||answer.text||module.output;
           state.profile[module.id]={title:module.name,output:module.output,summary:String(summary).slice(0,180)};
         }
-        if(state.moduleIndex<MODULES.length-1){
-          state.moduleIndex++;
+        const nextIndex=MODULES.findIndex((candidate,index)=>index>state.moduleIndex&&candidate.availability!=="coming_soon");
+        if(nextIndex>=0){
+          state.moduleIndex=nextIndex;
           state.stepIndex=0;
-          showToast(skipped?`已跳过本步，可随时回补；进入模块 ${module.id+1}`:`模块 ${module.id} 已确认，进入模块 ${module.id+1}`);
+          showToast(skipped?`已跳过本步，可随时回补；进入模块 ${MODULES[nextIndex].id}`:`模块 ${module.id} 已确认，进入模块 ${MODULES[nextIndex].id}`);
         }else{
           const waiting=skippedSteps().length;
-          showToast(waiting?`首轮已走完，还有 ${waiting} 项待补`:`十二模块已完整完成`);
+          showToast(waiting?`当前开放模块已走完，还有 ${waiting} 项待补`:`当前开放的 8 个模块已完成`);
         }
       }else{
         state.stepIndex++;
@@ -969,22 +959,41 @@
         const [moduleIndex,stepIndex]=key.split("-").map(Number);
         const module=MODULES[moduleIndex];
         const step=module?.steps[stepIndex];
-        return step?{module:module.name,step:step.title,answer:answerText(step,answer).slice(0,1200)}:null;
+        return step&&module.availability!=="coming_soon"?{module:module.name,step:step.title,answer:answerText(step,answer).slice(0,1200)}:null;
       }).filter(Boolean);
     }
 
     function currentIPSummary(){
-      return Object.values(state.profile).map(item=>`${item.title}：${item.summary}`).join("\n").slice(0,800);
+      return Object.entries(state.profile).filter(([id])=>Number(id)<=8).map(([,item])=>`${item.title}：${item.summary}`).join("\n").slice(0,800);
+    }
+
+    function foundationItems(){
+      return MODULES.slice(0,4).flatMap((module,moduleIndex)=>module.steps.map((step,stepIndex)=>({module,moduleIndex,step,stepIndex,answer:state.answers[`${moduleIndex}-${stepIndex}`]})));
+    }
+
+    function foundationHandoff(target){
+      const product=PRODUCT_HANDOFFS[target];
+      const context=[1,2,3,4].map(id=>state.profile[id]&&`${state.profile[id].title}：${state.profile[id].summary}`).filter(Boolean).join("\n");
+      if(!product||foundationItems().some(item=>!item.answer?.confirmed)||[1,2,3,4].some(id=>!state.profile[id])||!context){ showToast("请先完成 IP 底座的全部确认"); return; }
+      try{
+        sessionStorage.setItem(PRODUCT_HANDOFF_KEY,JSON.stringify({version:1,target,prompt:`${product.instruction}\n\n${context}`.slice(0,1000),created_at:Date.now()}));
+      }catch(_){ showToast("浏览器无法暂存方案，请直接进入产品页"); return; }
+      location.href=`${product.url}?prefill=ip12`;
     }
 
     function nextStepTitle(){
       const module=MODULES[state.moduleIndex];
       if(state.stepIndex<module.steps.length-1)return module.steps[state.stepIndex+1].title;
-      return MODULES[state.moduleIndex+1]?.steps[0]?.title||"完成十二模块并查看数字化 IP 档案";
+      return MODULES.find((candidate,index)=>index>state.moduleIndex&&candidate.availability!=="coming_soon")?.steps[0]?.title||"完成当前开放模块并查看数字化 IP 方案";
+    }
+
+    function currentGuideTurns(){
+      const stepKey=keyFor();
+      return state.guideTurns.filter(turn=>turn.stepKey===stepKey).slice(-6);
     }
 
     function latestGuideReply(){
-      return [...state.guideTurns].reverse().find(turn=>turn.role==="assistant")||{};
+      return [...currentGuideTurns()].reverse().find(turn=>turn.role==="assistant")||{};
     }
 
     function stopCoachWelcomeRotation(){
@@ -993,20 +1002,20 @@
 
     function startCoachWelcomeRotation(){
       stopCoachWelcomeRotation();
-      if(document.hidden||state.guideTurns.length)return;
+      if(document.hidden||currentGuideTurns().length)return;
       coachWelcomeTimer=setInterval(()=>{
-        if(document.hidden||state.guideTurns.length){ stopCoachWelcomeRotation(); return; }
+        if(document.hidden||currentGuideTurns().length){ stopCoachWelcomeRotation(); return; }
         coachWelcomeIndex=(coachWelcomeIndex+1)%COACH_WELCOME_MESSAGES.length;
         renderCoach();
       },4200);
     }
 
     function renderCoach(){
-      const turns=state.guideTurns.slice(-6);
-      $("coachMessages").innerHTML=turns.length?turns.map(turn=>
+      const turns=currentGuideTurns();
+      $("coachMessages").innerHTML=turns.length?turns.map((turn,index)=>
         `<div class="coach-bubble ${turn.role==="user"?"user":"assistant"}">${escapeHtml(turn.content)}${
           turn.role==="assistant"&&turn.suggested_answer
-            ? `<div class="coach-answer"><b>可编辑的回答草稿</b><br>${escapeHtml(turn.suggested_answer)}</div>`
+            ? `<div class="coach-answer"><b>可编辑的回答草稿</b><br>${escapeHtml(turn.suggested_answer)}<br><button class="coach-action" type="button" data-guide-use-draft="${index}">带入当前回答并编辑</button></div>`
             : ""
         }</div>`
       ).join(""):`<div class="coach-bubble assistant coach-welcome">${COACH_WELCOME_MESSAGES[coachWelcomeIndex]}</div>`;
@@ -1036,7 +1045,8 @@
       const module=MODULES[state.moduleIndex];
       const step=module.steps[state.stepIndex];
       const answer=state.answers[keyFor()]||{};
-      const priorTurns=state.guideTurns.slice(-3).map(turn=>({role:turn.role,content:turn.content}));
+      const stepKey=keyFor();
+      const priorTurns=currentGuideTurns().map(turn=>({role:turn.role,content:turn.content}));
       const button=$("coachSend");
       button.disabled=true;
       $("coachStatus").textContent="小黄雀正在理解当前步骤…";
@@ -1066,26 +1076,39 @@
         if(!response.ok||!result.ok)throw new Error(result.detail||"小黄雀暂时无法回复");
         const guide=result.guide||{};
         state.guideTurns=[...state.guideTurns,
-          {role:"user",content:message},
+          {role:"user",content:message,stepKey},
           {
             role:"assistant",
             content:guide.reply||"我们继续完成当前步骤。",
             suggested_answer:guide.suggested_answer||"",
             follow_up_questions:guide.follow_up_questions||[],
             actions:guide.recommended_actions||[],
-            model:result.cached?"已缓存":(result.model||"AI 分析服务")
+            model:result.cached?"已缓存":(result.model||"AI 分析服务"),
+            stepKey
           }
-        ].slice(-6);
+        ].slice(-72);
         persist();
         $("coachInput").value="";
         $("coachStatus").textContent=`已约束为当前步骤${result.usage?.total_tokens?` · ${result.usage.total_tokens} tokens`:""}。`;
         renderCoach();
       }catch(error){
         $("coachStatus").textContent=error.message||"小黄雀暂时无法回复，请稍后重试。";
-        if(!state.guideTurns.length)renderCoach();
+        if(!currentGuideTurns().length)renderCoach();
       }finally{
         button.disabled=false;
       }
+    }
+
+    function applyGuideDraft(value){
+      const answer=$("answer");
+      if(!answer){ showToast("当前不是文字填写题，请使用页面选项"); return; }
+      const draft=String(value||"").trim();
+      if(!draft){ showToast("当前没有可带入的回答草稿"); return; }
+      answer.value=draft;
+      answer.closest("details")?.setAttribute("open","");
+      answer.focus();
+      saveDraft();
+      showToast("已带入草稿，确认前仍可修改");
     }
 
     function runGuideAction(index){
@@ -1093,15 +1116,7 @@
       const action=(latest.actions||[])[index];
       if(!action)return;
       if(action.type==="fill_answer"){
-        const answer=$("answer");
-        if(!answer){
-          showToast("当前不是文字填写题，请使用页面选项");
-          return;
-        }
-        answer.value=action.value||latest.suggested_answer||"";
-        answer.focus();
-        saveDraft();
-        showToast("已带入草稿，确认前仍可修改");
+        applyGuideDraft(action.value||latest.suggested_answer);
       }else if(action.type==="show_example"){
         $("exampleBtn")?.click();
       }else if(action.type==="continue_chat"){
@@ -1150,7 +1165,7 @@
       const button=$("analyzeBtn");
       button.disabled=true;
       button.textContent="AI 正在分析…";
-      $("aiStatus").textContent="正在从美业获客、到店、成交、复购、团队与老板 IP 链路分析。";
+      $("aiStatus").textContent=`正在按“${module.name}”的规则分析事实、缺口与候选方案。`;
       try{
         await flushProjectSave();
         const files=await readProjectFiles();
@@ -1219,8 +1234,8 @@
       $("aiResult").innerHTML=`<p class="ai-summary">${escapeHtml(analysis.summary||"")}</p>
         ${facts?`<div class="ai-label">已确认事实</div><ul class="ai-list">${facts}</ul>`:""}
         ${evidence?`<div class="ai-label">来源证据与定位</div><ul class="ai-list">${evidence}</ul>`:""}
-        ${pains?`<div class="ai-label">经营痛点</div>${pains}`:""}
-        ${candidates?`<div class="ai-label">人设候选</div>${candidates}`:""}
+        ${pains?`<div class="ai-label">关键问题</div>${pains}`:""}
+        ${candidates?`<div class="ai-label">阶段候选</div>${candidates}`:""}
         ${(analysis.gaps||[]).length?`<div class="ai-follow-up"><b>资料缺口</b><br>${escapeHtml(analysis.gaps.join("；"))}</div>`:""}
         ${(analysis.conflicts||[]).length?`<div class="ai-follow-up"><b>待核对冲突</b><br>${escapeHtml(analysis.conflicts.join("；"))}</div>`:""}
         ${analysis.image_plan?`<div class="ai-follow-up"><b>图片行动计划：${escapeHtml(analysis.image_plan.goal||"")}</b><br>${escapeHtml((analysis.image_plan.steps||[]).join(" → "))}<br>${plansConfirmed?'<a href="banana.html">去既有图片工具</a>':'确认候选后可进入既有图片工具。'}</div>`:""}
@@ -1238,11 +1253,12 @@
     }
 
     function renderMemory(){
-      const completed=state.completedModules.length;
+      const completed=state.completedModules.filter(id=>id<=8).length;
       const skipped=skippedSteps();
       const progressed=progressedStepCount(), confirmed=confirmedStepCount();
-      $("doneModulesText").textContent=confirmed===totalSteps?"完整档案 · 54 / 54":progressed===totalSteps?`首轮已走完 · ${skipped.length} 待补`:`${completed} / 12 已走完 · ${skipped.length} 待补`;
+      $("doneModulesText").textContent=confirmed===totalSteps?`当前开放 · ${totalSteps} / ${totalSteps}`:progressed===totalSteps?`首轮已走完 · ${skipped.length} 待补`:`${completed} / 8 已走完 · ${skipped.length} 待补`;
       $("phaseProgress").innerHTML=phaseGroups.map((phase,index)=>{
+        if(index===2)return `<div class="phase-row"><i>${index+1}</i><b>${phase.name}</b><small>开发中，敬请期待</small></div>`;
         const count=state.completedModules.filter(id=>id>=phase.range[0]&&id<=phase.range[1]).length;
         const phaseSkipped=skipped.filter(item=>item.module.id>=phase.range[0]&&item.module.id<=phase.range[1]).length;
         return `<div class="phase-row"><i>${index+1}</i><b>${phase.name}</b><small>${count} / 4${phaseSkipped?` · ${phaseSkipped} 待补`:""}</small></div>`;
@@ -1254,7 +1270,7 @@
       const remaining=totalSteps-progressed;
       $("reportUnlock").innerHTML=progressed===totalSteps&&project?.id
         ?`<button class="coach-action" id="openReportBtn" type="button">${skipped.length?"生成首轮产品方案（含资料缺口）":"生成完整产品方案"}</button><p class="empty-memory">生成前会再次征得同意；方案只匹配黄雀现有产品，不会自动生成、发布或扣费。</p>`
-        :`<p class="empty-memory">还需确认或跳过 ${remaining} 步，完成首轮后即可生成行业痛点与黄雀产品匹配方案。</p>`;
+        :`<p class="empty-memory">还需确认或跳过 ${remaining} 步，完成当前开放模块后即可生成问题诊断与黄雀产品匹配方案。</p>`;
       $("openReportBtn")?.addEventListener("click",async event=>{
         event.currentTarget.disabled=true;
         try{
@@ -1265,12 +1281,12 @@
           showToast(error.message||"项目保存失败，请稍后重试");
         }
       });
-      document.querySelectorAll("[data-resume-module]").forEach(button=>button.addEventListener("click",()=>{
+      $("skippedItems").querySelectorAll("[data-resume-module]").forEach(button=>button.addEventListener("click",()=>{
         state.moduleIndex=Number(button.dataset.resumeModule);
         state.stepIndex=Number(button.dataset.resumeStep);
         persist(); render(); scrollTop();
       }));
-      const items=Object.entries(state.profile).sort((a,b)=>Number(a[0])-Number(b[0]));
+      const items=Object.entries(state.profile).filter(([id])=>Number(id)<=8).sort((a,b)=>Number(a[0])-Number(b[0]));
       $("memoryItems").innerHTML=items.length?items.map(([,item])=>
         `<div class="memory-item"><b>${escapeHtml(item.title)} · ${escapeHtml(item.output)}</b><p>${escapeHtml(item.summary)}</p></div>`
       ).join(""):`<p class="empty-memory">还没有已确认结果。完成任意模块的最后一步后，结果会显示在这里。</p>`;
@@ -1279,10 +1295,30 @@
       $("ipSummary").textContent=first?first.summary:"每次确认都会成为后续内容和视频共同读取的项目记忆。";
     }
 
+    function renderFoundationOutcome(){
+      const section=$("foundationOutcome"),items=foundationItems();
+      if(!items.every(item=>item.answer?.confirmed||item.answer?.skipped)){
+        section.hidden=true;
+        section.replaceChildren();
+        return;
+      }
+      section.hidden=false;
+      const pending=items.filter(item=>!item.answer?.confirmed);
+      const missingProfiles=[1,2,3,4].filter(id=>!state.profile[id]).map(id=>({moduleIndex:id-1,stepIndex:MODULES[id-1].steps.length-1,module:MODULES[id-1],step:MODULES[id-1].steps.at(-1)}));
+      const needs=pending.length?pending:missingProfiles;
+      if(needs.length){
+        section.innerHTML=`<div class="outcome-head"><div><span>FOUNDATION CHECKPOINT</span><h2>IP 底座首轮已走完</h2><p>还有 ${needs.length} 项需要由你确认；跳过项不会被 AI 当成事实。</p></div><strong>待补 ${needs.length} 项</strong></div><div class="outcome-actions">${needs.map(item=>`<button class="nav-btn" type="button" data-resume-module="${item.moduleIndex}" data-resume-step="${item.stepIndex}">回补 · ${escapeHtml(item.step.title)}</button>`).join("")}</div>`;
+        return;
+      }
+      const profiles=[1,2,3,4].map(id=>state.profile[id]);
+      section.innerHTML=`<div class="outcome-head"><div><span>FOUNDATION CHECKPOINT</span><h2>你的 IP 底座 · 已确认</h2><p>定位、人设、价值与故事已形成第一版可用档案，可以带入黄雀产品继续编辑。</p></div><strong>4 / 4 已确认</strong></div><div class="outcome-grid">${profiles.map(item=>`<article class="outcome-card"><b>${escapeHtml(item.title)} · ${escapeHtml(item.output)}</b><p>${escapeHtml(item.summary)}</p></article>`).join("")}</div><div class="outcome-actions"><button class="nav-btn" type="button" data-foundation-target="script_studio">带入文案编导</button><button class="nav-btn" type="button" data-foundation-target="image_studio">带入图片生成</button><button class="nav-btn" type="button" data-foundation-target="video_studio">带入视频创作</button></div><p class="save-state">只预填待编辑内容，不会自动生成、扣点或发布。</p>`;
+    }
+
     function render(){
       const module=MODULES[state.moduleIndex];
-      if(!module){
-        state=structuredClone(initialState);
+      if(!module||module.availability==="coming_soon"){
+        state.moduleIndex=7;
+        state.stepIndex=0;
         persist();
         return render();
       }
@@ -1303,14 +1339,15 @@
       $("stepWhy").textContent=step.why;
       $("moduleStepText").textContent=`${String(state.stepIndex+1).padStart(2,"0")} / ${String(module.steps.length).padStart(2,"0")}`;
       $("moduleBar").style.width=`${(state.stepIndex+1)/module.steps.length*100}%`;
-      $("overallText").textContent=`总进度 ${overall} / ${totalSteps} · 已确认 ${confirmed} · 待补 ${skipped}`;
+      $("overallText").textContent=`当前开放 ${overall} / ${totalSteps} · 完整路线 ${roadmapSteps} 步 · 待补 ${skipped}`;
       $("overallBar").style.width=`${percent}%`;
       $("percentText").textContent=`${percent}%`;
       $("backBtn").disabled=state.moduleIndex===0&&state.stepIndex===0;
       $("skipBtn").textContent="跳过，稍后回补";
-      $("nextBtn").textContent=state.stepIndex===module.steps.length-1?(module.id===12?"完成十二模块":"确认并完成模块"):"确认并继续";
+      $("nextBtn").textContent=state.stepIndex===module.steps.length-1?(module.id===8?"完成当前开放模块":"确认并完成模块"):"确认并继续";
       renderModules();
       renderInteraction(step);
+      renderFoundationOutcome();
       renderMemory();
       renderAI();
       renderCoach();
@@ -1319,8 +1356,10 @@
     function selfCheck(){
       const errors=[];
       if(MODULES.length!==12)errors.push(`模块数量应为 12，实际为 ${MODULES.length}`);
-      if(totalSteps!==54)errors.push(`步骤数量应为 54，实际为 ${totalSteps}`);
-      if(MODULES.some(module=>!module.name||!module.steps.length))errors.push("存在缺少名称或步骤的模块");
+      if(totalSteps!==34)errors.push(`当前开放步骤应为 34，实际为 ${totalSteps}`);
+      if(roadmapSteps!==54)errors.push(`完整路线步骤应为 54，实际为 ${roadmapSteps}`);
+      if(MODULES.some(module=>!module.name||(module.availability!=="coming_soon"&&!module.steps.length)))errors.push("存在缺少名称或步骤的开放模块");
+      if(MODULES.slice(8).some(module=>module.availability!=="coming_soon"))errors.push("模块 9–12 必须保持开发中");
       console.assert(errors.length===0,errors.join("; "));
       if(errors.length){
         $("fatal").style.display="block";
@@ -1343,6 +1382,8 @@
       }
     });
     $("coachCard").addEventListener("click",event=>{
+      const draft=event.target.closest("[data-guide-use-draft]");
+      if(draft)return applyGuideDraft(currentGuideTurns()[Number(draft.dataset.guideUseDraft)]?.suggested_answer);
       const prompt=event.target.closest("[data-guide-prompt]");
       if(prompt)return askGuide(prompt.dataset.guidePrompt);
       const question=event.target.closest("[data-guide-question]");
@@ -1353,14 +1394,25 @@
       const action=event.target.closest("[data-guide-action]");
       if(action)runGuideAction(Number(action.dataset.guideAction));
     });
-    $("coachFloat").addEventListener("click",()=>scrollIntoView($("coachCard")));
+    $("foundationOutcome").addEventListener("click",event=>{
+      const resume=event.target.closest("[data-resume-module]");
+      if(resume){
+        state.moduleIndex=Number(resume.dataset.resumeModule);
+        state.stepIndex=Number(resume.dataset.resumeStep);
+        persist(); render(); scrollTop();
+        return;
+      }
+      const target=event.target.closest("[data-foundation-target]");
+      if(target)foundationHandoff(target.dataset.foundationTarget);
+    });
     $("guideBtn").addEventListener("click",()=>$("guideModal").classList.add("open"));
     $("closeGuide").addEventListener("click",()=>$("guideModal").classList.remove("open"));
     $("guideModal").addEventListener("click",event=>{if(event.target===$("guideModal"))$("guideModal").classList.remove("open")});
-    document.addEventListener("visibilitychange",()=>{if(document.hidden)stopCoachWelcomeRotation();else if(!state.guideTurns.length)renderCoach()});
+    document.addEventListener("visibilitychange",()=>{if(document.hidden)stopCoachWelcomeRotation();else if(!currentGuideTurns().length)renderCoach()});
     $("resetBtn").addEventListener("click",()=>{
       if(confirm("只清除当前浏览器中的离线缓存；云端项目不会删除，确定重置吗？")){
         const key=projectStorageKey(); if(key)localStorage.removeItem(key);
+        const legacyKey=projectStorageKey(LEGACY_STORAGE_KEY); if(legacyKey)localStorage.removeItem(legacyKey);
         state=structuredClone(initialState);
         selectedChoice=null;
         render();
@@ -1377,11 +1429,11 @@
     selfCheck();
     render();
     loadProject();
-    if(!localStorage.getItem("huangque-ip12-beauty-guide-seen-v2")){
+    if(!localStorage.getItem("huangque-ip12-guide-seen-v3")){
       $("guideModal").classList.add("open");
-      localStorage.setItem("huangque-ip12-beauty-guide-seen-v2","1");
+      localStorage.setItem("huangque-ip12-guide-seen-v3","1");
     }
   </script>
-  <script src="cloud-shell.js?v=0bb36799"></script>
+  <script src="cloud-shell.js?v=642453c4"></script>
 </body>
 </html>

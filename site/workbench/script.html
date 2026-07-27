@@ -342,7 +342,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=0bb36799"></script>
+<script src="cloud-shell.js?v=642453c4"></script>
 <script>
 /* 编导页接 /api/gen/copy（format=script）+ /api/gen/breakdown → 脚本/拆解双模式 */
 (function(){
@@ -455,6 +455,17 @@
     var q='?prompt='+encodeURIComponent(prompt||'');
     if(extra) q+=extra;
     return page+q;
+  }
+  function applyIP12Handoff(){
+    try{
+      if(new URLSearchParams(location.search).get('prefill')!=='ip12') return;
+      var raw=sessionStorage.getItem('hq_ip12_product_handoff_v1');
+      sessionStorage.removeItem('hq_ip12_product_handoff_v1');
+      var handoff=JSON.parse(raw||'null'), age=handoff?Date.now()-Number(handoff.created_at):Infinity;
+      if(!handoff||handoff.version!==1||handoff.target!=='script_studio'||!Number.isFinite(age)||age<0||age>600000||!handoff.prompt) return;
+      topic.value=String(handoff.prompt).slice(0,1000);topic.dispatchEvent(new Event('input'));topic.focus();
+      if(window.HQ&&window.HQ.toast) HQ.toast('已带入 IP12 待编辑方案，请检查后再生成');
+    }catch(e){}
   }
   function cardText(card, label){
     var found='';
@@ -1728,6 +1739,7 @@
     e.preventDefault();
     _openMediaLightbox(tag, src);
   });
+  applyIP12Handoff();
   loadHistory();
 })();
 </script>
