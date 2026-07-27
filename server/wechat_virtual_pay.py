@@ -25,6 +25,7 @@ import urllib.request
 API_BASE = "https://api.weixin.qq.com"
 _TOKEN_LOCK = threading.Lock()
 _TOKEN_CACHE = {"value": "", "expires_at": 0}
+TOKEN_INVALID_CODES = {40001, 40014, 42001}
 
 DEFAULT_PRODUCTS = (
     {
@@ -430,6 +431,16 @@ def access_token():
         return _TOKEN_CACHE["value"]
 
 
+def invalidate_access_token(token=""):
+    """Clear only the rejected cached token, preserving a newer concurrent value."""
+    with _TOKEN_LOCK:
+        if token and _TOKEN_CACHE["value"] != token:
+            return False
+        _TOKEN_CACHE["value"] = ""
+        _TOKEN_CACHE["expires_at"] = 0
+        return True
+
+
 def payment_params(product, order_id, session_key, purchase=None):
     env = pay_env()
     purchase = purchase or purchase_for(product)
@@ -459,10 +470,18 @@ def payment_params(product, order_id, session_key, purchase=None):
 
 def _xpay(uri, payload, signed=True):
     post_body = compact_json(payload)
-    query = {"access_token": access_token()}
-    if signed:
-        query["pay_sig"] = calc_pay_sig(uri, post_body, app_key(int(payload.get("env", pay_env()))))
-    result = _json_request(API_BASE + uri + "?" + urllib.parse.urlencode(query), post_body)
+
+    def request_with_token(token):
+        query = {"access_token": token}
+        if signed:
+            query["pay_sig"] = calc_pay_sig(uri, post_body, app_key(int(payload.get("env", pay_env()))))
+        return _json_request(API_BASE + uri + "?" + urllib.parse.urlencode(query), post_body)
+
+    token = access_token()
+    result = request_with_token(token)
+    if int(result.get("errcode") or 0) in TOKEN_INVALID_CODES:
+        invalidate_access_token(token)
+        result = request_with_token(access_token())
     if result.get("errcode"):
         raise VirtualPayError(result.get("errmsg") or "微信虚拟支付接口失败", "xpay_failed", result)
     return result
