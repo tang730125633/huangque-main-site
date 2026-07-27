@@ -3,7 +3,9 @@ import io
 import os
 import random
 import sys
+import threading
 import unittest
+import urllib.parse
 from unittest.mock import patch
 
 try:
@@ -44,8 +46,11 @@ class MiniProgramSecurityTests(unittest.TestCase):
         # 40001/40014/42001 走 _TokenInvalid，由 _with_token_retry 换发重试，
         # 不再直接对用户报 503。
         for code in (40001, 40014, 42001):
-            with self.assertRaises(security._TokenInvalid):
-                security._check_result({"errcode": code, "errmsg": "bad token"})
+            with self.assertRaises(security._TokenInvalid) as caught:
+                security._check_result(
+                    {"errcode": code, "errmsg": "bad token"}, token="used-token"
+                )
+            self.assertEqual(caught.exception.token, "used-token")
 
     def test_other_wechat_error_fails_closed(self):
         with self.assertRaises(security.SecurityUnavailable):
@@ -212,7 +217,10 @@ class StableTokenTests(unittest.TestCase):
     def test_check_text_recovers_from_40001_with_forced_refresh(self):
         self.check_results = [40001, 0]
         security.check_text("今天天气不错")
-        self.assertEqual([p["force_refresh"] for p in self._token_payloads()], [False, True])
+        self.assertEqual(
+            [p["force_refresh"] for p in self._token_payloads()],
+            [False, False, True],
+        )
         self.assertEqual(self._check_count(), 2)
 
     def test_check_text_double_token_failure_becomes_unavailable(self):
@@ -233,6 +241,54 @@ class StableTokenTests(unittest.TestCase):
         security.check_text("第二段文本")
         self.assertEqual(len(self._token_payloads()), 1)
         self.assertEqual(self._check_count(), 2)
+
+    def test_stale_failure_cannot_clear_a_newer_cached_token(self):
+        security._TOKEN_CACHE.update(value="tok-new", expires_at=int(security.time.time()) + 7200)
+        with patch.object(security, "_json_request") as request:
+            self.assertEqual(security._refresh_invalid_token("tok-old"), "tok-new")
+        request.assert_not_called()
+        self.assertEqual(security._TOKEN_CACHE["value"], "tok-new")
+
+    def test_concurrent_invalid_calls_share_one_refresh(self):
+        security._TOKEN_CACHE.update(value="tok-old", expires_at=int(security.time.time()) + 7200)
+        barrier = threading.Barrier(2)
+        calls_lock = threading.Lock()
+        token_requests = []
+
+        def concurrent_request(url, payload=None, headers=None, timeout=15):
+            if "/cgi-bin/stable_token" in url:
+                with calls_lock:
+                    token_requests.append(bool((payload or {}).get("force_refresh")))
+                return {"access_token": "tok-new", "expires_in": 7200}
+            if "msg_sec_check" in url:
+                token = urllib.parse.parse_qs(
+                    urllib.parse.urlparse(url).query
+                )["access_token"][0]
+                if token == "tok-old":
+                    barrier.wait(timeout=3)
+                    return {"errcode": 40001, "errmsg": "expired"}
+                return {"errcode": 0, "errmsg": "ok"}
+            raise AssertionError("unexpected url: " + url)
+
+        errors = []
+
+        def run_check():
+            try:
+                security.check_text("并发安全检测")
+            except Exception as exc:
+                errors.append(exc)
+
+        with patch.object(security, "_json_request", side_effect=concurrent_request):
+            workers = [threading.Thread(target=run_check) for _ in range(2)]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(timeout=5)
+
+        self.assertFalse(errors)
+        self.assertFalse(any(worker.is_alive() for worker in workers))
+        self.assertEqual(token_requests, [False])
+        self.assertEqual(security._TOKEN_CACHE["value"], "tok-new")
 
 
 if __name__ == "__main__":

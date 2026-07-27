@@ -62,6 +62,11 @@ class _TokenInvalid(Exception):
     可失效缓存并换发新 token 重试一次。
     """
 
+    def __init__(self, token="", code=0):
+        super().__init__("access_token 已失效(errcode=%s)" % int(code or 0))
+        self.token = str(token or "")
+        self.code = int(code or 0)
+
 
 _TOKEN_INVALID_CODES = {40001, 40014, 42001}
 
@@ -82,55 +87,86 @@ def _json_request(url, payload=None, headers=None, timeout=15):
         raise SecurityUnavailable("内容安全服务暂时不可用，请稍后重试") from exc
 
 
+def _fetch_token_locked(force_refresh=False):
+    """Fetch and cache a stable token. Caller must hold ``_TOKEN_LOCK``."""
+    appid = (os.environ.get("WX_MP_APPID") or "").strip()
+    secret = (os.environ.get("WX_MP_APPSECRET") or "").strip()
+    if not appid or not secret:
+        raise SecurityUnavailable("内容安全服务尚未配置")
+    result = _json_request(API_BASE + "/cgi-bin/stable_token", {
+        "grant_type": "client_credential",
+        "appid": appid,
+        "secret": secret,
+        "force_refresh": bool(force_refresh),
+    })
+    if result.get("errcode") or not result.get("access_token"):
+        raise SecurityUnavailable("内容安全服务暂时不可用，请稍后重试")
+    _TOKEN_CACHE["value"] = result["access_token"]
+    _TOKEN_CACHE["expires_at"] = int(time.time()) + int(result.get("expires_in") or 7200)
+    return _TOKEN_CACHE["value"]
+
+
 def access_token(force_refresh=False):
     now = int(time.time())
     with _TOKEN_LOCK:
         if not force_refresh and _TOKEN_CACHE["value"] and _TOKEN_CACHE["expires_at"] > now + 60:
             return _TOKEN_CACHE["value"]
-        appid = (os.environ.get("WX_MP_APPID") or "").strip()
-        secret = (os.environ.get("WX_MP_APPSECRET") or "").strip()
-        if not appid or not secret:
-            raise SecurityUnavailable("内容安全服务尚未配置")
         # 稳定版 token（getStableAccessToken）：force_refresh=false 时多实例共享同一个
         # 有效 token、互不挤占；旧的 /cgi-bin/token 每签发一个新 token 就让其他实例的
-        # token 在几分钟后失效——双机/多实例部署互打 40001 的根源（20260727 线上实炸，
-        # 全网提交 503「内容安全服务暂时不可用」约 2 小时）。
-        result = _json_request(API_BASE + "/cgi-bin/stable_token", {
-            "grant_type": "client_credential",
-            "appid": appid,
-            "secret": secret,
-            "force_refresh": bool(force_refresh),
-        })
-        if result.get("errcode") or not result.get("access_token"):
-            raise SecurityUnavailable("内容安全服务暂时不可用，请稍后重试")
-        _TOKEN_CACHE["value"] = result["access_token"]
-        _TOKEN_CACHE["expires_at"] = now + int(result.get("expires_in") or 7200)
-        return _TOKEN_CACHE["value"]
+        # token 在几分钟后失效——双机/多实例部署互打 40001 的根源。
+        return _fetch_token_locked(force_refresh)
 
 
-def _invalidate_token_cache():
+def _invalidate_token_cache(token=""):
     with _TOKEN_LOCK:
+        if token and _TOKEN_CACHE["value"] != token:
+            return False
         _TOKEN_CACHE["value"] = ""
         _TOKEN_CACHE["expires_at"] = 0
+        return True
+
+
+def _refresh_invalid_token(bad_token):
+    """Single-flight refresh without allowing stale failures to erase new state."""
+    with _TOKEN_LOCK:
+        now = int(time.time())
+        cached = _TOKEN_CACHE["value"]
+        if cached and cached != bad_token and _TOKEN_CACHE["expires_at"] > now + 60:
+            return cached
+        if cached == bad_token:
+            _TOKEN_CACHE["value"] = ""
+            _TOKEN_CACHE["expires_at"] = 0
+
+        # First ask for the platform-wide shared stable token.  This lets
+        # another instance's completed refresh win without invalidating it.
+        shared = _fetch_token_locked(False)
+        if shared != bad_token:
+            return shared
+
+        # Only the process single-flight owner reaches force_refresh.  A second
+        # local caller will observe the new cache after acquiring the lock.
+        return _fetch_token_locked(True)
 
 
 def _with_token_retry(fn):
     """执行一次带 token 的微信调用；token 失效时换发新 stable token 重试一次。
 
-    fn(force_refresh) 内部通过 access_token(force_refresh) 取 token。
+    fn(token) 使用传入的 token 调微信接口。
     重试仍失效才报不可用，避免坏缓存导致长时间 503。
     """
+    token = access_token()
     try:
-        return fn(False)
-    except _TokenInvalid:
-        _invalidate_token_cache()
+        return fn(token)
+    except _TokenInvalid as invalid:
+        bad_token = invalid.token or token
+        retry_token = _refresh_invalid_token(bad_token)
         try:
-            return fn(True)
+            return fn(retry_token)
         except _TokenInvalid as exc:
             raise SecurityUnavailable("内容安全服务暂时不可用，请稍后重试") from exc
 
 
-def _check_result(result, image=False):
+def _check_result(result, image=False, token=""):
     code = int(result.get("errcode") or 0)
     if code == 0:
         return
@@ -141,7 +177,7 @@ def _check_result(result, image=False):
     if image and code == 40006:
         raise ContentRejected("图片无法完成安全检测，请重新导出为 JPG 或 PNG 后上传")
     if code in _TOKEN_INVALID_CODES:
-        raise _TokenInvalid("access_token 已失效(errcode=%s)" % code)
+        raise _TokenInvalid(token, code)
     raise SecurityUnavailable("内容安全服务暂时不可用，请稍后重试")
 
 
@@ -153,10 +189,10 @@ def check_text(text):
     if len(raw) > _MAX_TEXT_BYTES:
         raise ContentRejected("文本内容过长，请精简后再提交")
 
-    def _do(force_refresh):
-        token = urllib.parse.quote(access_token(force_refresh), safe="")
-        result = _json_request(API_BASE + "/wxa/msg_sec_check?access_token=" + token, {"content": text})
-        _check_result(result)
+    def _do(token):
+        encoded = urllib.parse.quote(token, safe="")
+        result = _json_request(API_BASE + "/wxa/msg_sec_check?access_token=" + encoded, {"content": text})
+        _check_result(result, token=token)
 
     _with_token_retry(_do)
 
@@ -219,14 +255,14 @@ def check_image(raw, filename="upload.jpg", content_type="image/jpeg"):
     if review_content_type != content_type:
         filename = os.path.splitext(filename)[0] + ".jpg"
 
-    def _do(force_refresh):
-        token = urllib.parse.quote(access_token(force_refresh), safe="")
+    def _do(token):
+        encoded = urllib.parse.quote(token, safe="")
         boundary = "----huangque" + uuid.uuid4().hex
         head = ("--%s\r\nContent-Disposition: form-data; name=\"media\"; filename=\"%s\"\r\n"
                 "Content-Type: %s\r\n\r\n" % (boundary, filename, review_content_type)).encode("utf-8")
         body = head + review + ("\r\n--%s--\r\n" % boundary).encode("utf-8")
         req = urllib.request.Request(
-            API_BASE + "/wxa/img_sec_check?access_token=" + token,
+            API_BASE + "/wxa/img_sec_check?access_token=" + encoded,
             data=body,
             headers={"Content-Type": "multipart/form-data; boundary=" + boundary},
         )
@@ -235,7 +271,7 @@ def check_image(raw, filename="upload.jpg", content_type="image/jpeg"):
                 result = json.loads(response.read().decode("utf-8", "replace") or "{}")
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
             raise SecurityUnavailable("图片安全检测暂时不可用，请稍后重试") from exc
-        _check_result(result, image=True)
+        _check_result(result, image=True, token=token)
 
     _with_token_retry(_do)
 
