@@ -4,7 +4,7 @@
 图片走 img_sec_check；违规内容直接拒绝，微信服务异常时不收单，避免绕过审核。
 
 access_token 走稳定版接口（/cgi-bin/stable_token，force_refresh=false 时多实例
-共享同一 token、互不挤占）；旧版 /cgi-bin/token 每签发即让其他实例 token 失效，
+共享同一 token、互不挤占）；旧版 token 接口每签发即让其他实例 token 失效，
 多实例部署会互打 40001。检测收到 40001/40014/42001 时仅重新获取平台共享
 stable token 后重试一次；请求路径绝不强刷 token，避免双机再次互相作废。
 """
@@ -112,7 +112,7 @@ def access_token(force_refresh=False):
         if not force_refresh and _TOKEN_CACHE["value"] and _TOKEN_CACHE["expires_at"] > now + 60:
             return _TOKEN_CACHE["value"]
         # 稳定版 token（getStableAccessToken）：force_refresh=false 时多实例共享同一个
-        # 有效 token、互不挤占；旧的 /cgi-bin/token 每签发一个新 token 就让其他实例的
+        # 有效 token、互不挤占；旧版 token 接口每签发一个新 token 就让其他实例的
         # token 在几分钟后失效——双机/多实例部署互打 40001 的根源。
         return _fetch_token_locked(force_refresh)
 

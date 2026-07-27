@@ -416,12 +416,13 @@ def access_token():
         secret = (os.environ.get("WX_MP_APPSECRET") or "").strip()
         if not appid or not secret:
             raise VirtualPayError("小程序 AppID/AppSecret 未配置", "not_configured")
-        query = urllib.parse.urlencode({
+        payload = compact_json({
             "grant_type": "client_credential",
             "appid": appid,
             "secret": secret,
+            "force_refresh": False,
         })
-        result = _json_request(API_BASE + "/cgi-bin/token?" + query)
+        result = _json_request(API_BASE + "/cgi-bin/stable_token", payload)
         if result.get("errcode") or not result.get("access_token"):
             raise VirtualPayError(result.get("errmsg") or "微信 access_token 获取失败", "access_token_failed", result)
         _TOKEN_CACHE["value"] = result["access_token"]

@@ -4,6 +4,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 
@@ -43,11 +44,13 @@ class VirtualPaymentTests(unittest.TestCase):
         import server.auth_server as auth_server
 
         self.auth = importlib.reload(auth_server)
+        self.auth.wechat_vpay._TOKEN_CACHE.update(value="", expires_at=0)
         self.auth.DB = os.path.join(self.tmp.name, "users.db")
         self.auth.init_db()
         self.auth.create_user("buyer", "secret123", 5)
 
     def tearDown(self):
+        self.auth.wechat_vpay._TOKEN_CACHE.update(value="", expires_at=0)
         for key, value in self.old_env.items():
             if value is None:
                 os.environ.pop(key, None)
@@ -152,6 +155,34 @@ class VirtualPaymentTests(unittest.TestCase):
         self.assertIn("/xpay/notify_provide_goods?", url)
         self.assertIn("pay_sig=", url)
         self.assertEqual(json.loads(body), {"order_id": "HQ1", "env": 0})
+
+    def test_access_token_uses_shared_stable_endpoint_and_cache(self):
+        client = self.auth.wechat_vpay
+        response = {"access_token": "stable-token", "expires_in": 7200}
+
+        with patch.object(client, "_json_request", return_value=response) as request:
+            self.assertEqual(client.access_token(), "stable-token")
+            self.assertEqual(client.access_token(), "stable-token")
+
+        request.assert_called_once()
+        url, raw = request.call_args.args
+        self.assertEqual(url, client.API_BASE + "/cgi-bin/stable_token")
+        self.assertEqual(json.loads(raw), {
+            "grant_type": "client_credential",
+            "appid": "wx-test",
+            "secret": "test-secret",
+            "force_refresh": False,
+        })
+
+    def test_production_python_has_no_legacy_token_endpoint(self):
+        server_dir = Path(__file__).resolve().parents[1] / "server"
+        legacy = "/cgi-bin/" + "token"
+        offenders = [
+            str(path.relative_to(server_dir))
+            for path in server_dir.rglob("*.py")
+            if legacy in path.read_text(encoding="utf-8")
+        ]
+        self.assertEqual(offenders, [])
 
     def test_create_order_returns_only_client_payment_fields_without_binding_openid(self):
         with patch.object(
