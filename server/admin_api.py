@@ -25,9 +25,14 @@ import urllib.parse
 import urllib.request
 
 try:
-    from content_domains import feature_flags
+    from content_domains import egress, feature_flags, provider_keys
 except ImportError:
-    feature_flags = None
+    try:
+        from .content_domains import egress, feature_flags, provider_keys
+    except ImportError:
+        egress = None
+        feature_flags = None
+        provider_keys = None
 
 AUTH_COOKIE_NAME = os.environ.get("HQ_AUTH_COOKIE_NAME", "hq_session")
 
@@ -108,21 +113,58 @@ SERVICES = [
     },
 ]
 
-# 服务器实际在用的全部外部 API（来源:content.env/runninghub.env 变量盘点 2026-07-09）
+# 服务器实际在用的全部外部 API。
+# 名称按真实 API 提供方统一；features 负责映射用户在前端看到的功能名。
 KEY_GROUPS = [
-    {"key": "openai", "name": "黄雀引擎 2 生图（经泽龙中转）", "env": ["OPENAI_API_KEY"]},
-    {"key": "gemini", "name": "纳米香蕉生图", "env": ["GEMINI_API_KEY"]},
-    {"key": "zelong", "name": "泽龙生图渠道1(小乐AI)", "env": ["ZELONG_KEY"]},
-    {"key": "zelong2", "name": "泽龙生图渠道2(zelong.vip)", "env": ["ZELONG2_KEY"]},
-    {"key": "heygen", "name": "HeyGen 数字人视频(直连)", "env": ["HEYGEN_API_KEY"]},
-    {"key": "heygen_relay", "name": "HeyGen 中转(泽龙 relay)", "env": ["HEYGEN_RELAY_TOKEN"]},
-    {"key": "xiaolevideo", "name": "小乐视频生成", "env": ["XIAOLEVIDEO_API_KEY"]},
-    {"key": "runninghub", "name": "RunningHub 换装/动作模仿(线路一)", "env": ["RUNNINGHUB_API_KEY", "RUNNINGHUB_KEY"]},
-    {"key": "wavespeed", "name": "WaveSpeed 换装(线路二)", "env": ["WAVESPEED_API_KEY"]},
-    {"key": "cosyvoice", "name": "阿里百炼 CosyVoice 配音/声音克隆", "env": ["DASHSCOPE_API_KEY"]},
-    {"key": "tikhub", "name": "TikHub 抖音数据", "env": ["TIKHUB_KEY", "TIKHUB_API_KEY"]},
-    {"key": "cos", "name": "腾讯云 COS 存储", "env": ["COS_SECRET_ID", "COS_SECRET_KEY", "COS_REGION", "COS_BUCKET"]},
+    {"key": "xai", "name": "xAI API", "category": "视频生成",
+     "features": ["视频模块 → 果肉视频生成"], "env_features": [],
+     "pool_features": ["视频模块 → 果肉视频生成"],
+     "pool_base_env": ["XAI_API_BASE"], "pool_base_default": "https://api.x.ai/v1",
+     "env": ["XAI_API_KEY"], "pool_provider": "xai"},
+    {"key": "openai", "name": "OpenAI API", "category": "图片生成 / 视频生成",
+     "features": ["图片生成 → 黄雀引擎 2", "视频模块 → Sora 2"],
+     "env_features": ["图片生成 → 黄雀引擎 2"], "pool_features": ["视频模块 → Sora 2"],
+     "env_base_env": ["OPENAI_OFFICIAL_BASE"], "env_base_default": "https://api.openai.com",
+     "pool_base_env": ["OPENAI_BASE"], "pool_base_default": "https://api.openai.com",
+     "env": ["OPENAI_API_KEY"], "pool_provider": "sora"},
+    {"key": "gemini", "name": "Google Gemini API", "category": "图片生成 / 视频生成",
+     "features": ["图片生成 → 纳米香蕉", "视频模块 → Omni 视频"],
+     "env_features": ["图片生成 → 纳米香蕉"], "pool_features": ["视频模块 → Omni 视频"],
+     "env_base_env": ["GEMINI_OFFICIAL_BASE"], "env_base_default": "https://generativelanguage.googleapis.com",
+     "pool_base_env": ["GEMINI_OMNI_BASE", "GEMINI_BASE"], "pool_base_default": "https://generativelanguage.googleapis.com",
+     "env": ["GEMINI_API_KEY"], "pool_provider": "omni"},
+    {"key": "seedance", "name": "火山方舟 API", "category": "图片生成 / 视频生成",
+     "features": ["图片生成 → 黄雀引擎 1（Seedream）", "视频模块 → Seedance 视频"],
+     "env_features": ["图片生成 → 黄雀引擎 1（Seedream）"], "pool_features": ["视频模块 → Seedance 视频"],
+     "env_base_env": ["ARK_BASE"], "env_base_default": "https://ark.cn-beijing.volces.com/api/v3",
+     "pool_base_env": ["ARK_BASE"], "pool_base_default": "https://ark.cn-beijing.volces.com/api/v3",
+     "env": ["ARK_API_KEY"], "pool_provider": "seedance"},
+    {"key": "zelong", "name": "小乐 AI API", "category": "图片生成",
+     "features": ["图片生成 → 黄雀引擎 2 备用线路"], "env": ["ZELONG_KEY"]},
+    {"key": "zelong2", "name": "泽龙 API", "category": "图片生成",
+     "features": ["图片生成 → 泽龙 2 备用线路（维护中）"], "env": ["ZELONG2_KEY"]},
+    {"key": "heygen", "name": "HeyGen API", "category": "数字化 IP / 视频生成",
+     "features": ["视频模块 → 电影化身", "视频模块 → 数字人口播", "我的资产 → 数字人形象"],
+     "env_base_env": ["HEYGEN_API_BASE"], "env_base_default": "https://api.heygen.com/v3",
+     "env": ["HEYGEN_API_KEY"]},
+    {"key": "heygen_relay", "name": "HeyGen 中转 API", "category": "数字化 IP / 视频生成",
+     "features": ["电影化身 / 数字人口播 → 中转与下载兜底"],
+     "env_base_env": ["HEYGEN_RELAY_BASE"], "env_base_default": "",
+     "env": ["HEYGEN_RELAY_TOKEN"]},
+    {"key": "xiaolevideo", "name": "小乐视频 API", "category": "图片生成 / 视频生成",
+     "features": ["图片生成 → 果肉生图", "视频模块 → 历史兼容线路"], "env": ["XIAOLEVIDEO_API_KEY"]},
+    {"key": "runninghub", "name": "RunningHub API", "category": "视频处理",
+     "features": ["视频模块 → 换装换背景 · 线路一"], "env": ["RUNNINGHUB_API_KEY", "RUNNINGHUB_KEY"]},
+    {"key": "wavespeed", "name": "WaveSpeed API", "category": "视频处理",
+     "features": ["视频模块 → 换装换背景 · 线路二", "视频模块 → Seedance AI 超清"], "env": ["WAVESPEED_API_KEY"]},
+    {"key": "cosyvoice", "name": "阿里百炼 API", "category": "音频生成",
+     "features": ["AI 配音 → 公共音色", "AI 配音 → 声音克隆"], "env": ["DASHSCOPE_API_KEY"]},
+    {"key": "tikhub", "name": "TikHub API", "category": "内容采集 / 获客",
+     "features": ["内容采集 → 抖音 / 小红书 / 视频号", "获客分析 → 评论与线索"], "env": ["TIKHUB_KEY", "TIKHUB_API_KEY"]},
+    {"key": "cos", "name": "腾讯云 COS", "category": "基础设施",
+     "features": ["我的资产 → 生成结果存储", "视频模块 → 参考素材与成片存储"], "env": ["COS_SECRET_ID", "COS_SECRET_KEY", "COS_REGION", "COS_BUCKET"]},
 ]
+KEY_GROUP_MAP = {item["key"]: item for item in KEY_GROUPS}
 
 # 各渠道实际在用的业务接口清单(2026-07-09 全代码扫描产出,展示用;fee=调用计费)
 ENDPOINT_CATALOG = json.loads(r"""
@@ -475,6 +517,11 @@ ENDPOINT_CATALOG = json.loads(r"""
  ]
 }
 """)
+ENDPOINT_CATALOG["xai"] = [
+    {"m": "POST", "p": "/v1/videos/generations", "d": "果肉视频生成", "fee": True},
+    {"m": "POST", "p": "/v1/videos/edits", "d": "果肉视频编辑", "fee": True},
+    {"m": "GET", "p": "/v1/videos/{request_id}", "d": "查询果肉视频状态", "fee": False},
+]
 
 CHANNELS = {
     item["key"]: {
@@ -550,6 +597,16 @@ PROXY_OPENER = (
 )
 
 
+def _xai_proxy_url():
+    """Use the same egress route as paid xAI video requests."""
+    return egress.preferred_proxy(PROXY_URL) if egress is not None else PROXY_URL
+
+
+def _heygen_proxy_url():
+    """Use the same dedicated egress route as direct HeyGen video requests."""
+    return egress.heygen_proxy() if egress is not None else PROXY_URL
+
+
 def db():
     ADMIN_DB.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(ADMIN_DB), timeout=10)
@@ -581,6 +638,8 @@ def init_db():
         c.commit()
     if feature_flags is not None:
         feature_flags.init_db()
+    if provider_keys is not None:
+        provider_keys.init_db()
 
 
 def verify(token):
@@ -677,17 +736,52 @@ def env_sources():
     return sources
 
 
+def _key_group_values(item, sources=None):
+    sources = env_sources() if sources is None else sources
+    found = []
+    for env_name in item["env"]:
+        for src in sources:
+            value = (src["values"].get(env_name) or "").strip()
+            if value:
+                found.append(
+                    {"env": env_name, "source": src["name"], "value": value}
+                )
+                break
+    return found
+
+
+def _key_group_base_host(item, prefix, sources):
+    value = ""
+    for env_name in item.get(prefix + "_base_env", []):
+        for src in sources:
+            value = (src["values"].get(env_name) or "").strip()
+            if value:
+                break
+        if value:
+            break
+    value = value or str(item.get(prefix + "_base_default") or "").strip()
+    if not value:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(
+            value if "://" in value else "https://" + value
+        )
+        host = parsed.hostname or ""
+        return host + ((":" + str(parsed.port)) if parsed.port else "")
+    except (TypeError, ValueError):
+        return ""
+
+
 def key_status():
     sources = env_sources()
     items = []
     for item in KEY_GROUPS:
-        found = []
-        for env_name in item["env"]:
-            for src in sources:
-                value = (src["values"].get(env_name) or "").strip()
-                if value:
-                    found.append({"env": env_name, "source": src["name"]})
-                    break
+        values = _key_group_values(item, sources)
+        found = [
+            {"env": value["env"], "source": value["source"]}
+            for value in values
+        ]
+        last4 = values[0]["value"][-4:] if values else ""
         configured = len(found) == len(item["env"])
         if item["key"] in {"runninghub", "tikhub", "heygen_relay"}:
             configured = bool(found)
@@ -695,9 +789,18 @@ def key_status():
             {
                 "key": item["key"],
                 "name": item["name"],
+                "category": item["category"],
+                "features": list(item["features"]),
+                "env_features": list(item.get("env_features", item["features"])),
+                "pool_features": list(item.get("pool_features", [])),
+                "env_base_host": _key_group_base_host(item, "env", sources),
+                "pool_base_host": _key_group_base_host(item, "pool", sources),
+                "pool_provider": item.get("pool_provider"),
                 "configured": configured,
                 "required_env": item["env"],
                 "sources": found,
+                "last4": last4,
+                "management": "server_env",
                 "pingable": item["key"] in KEY_PINGS,
                 "endpoints": ENDPOINT_CATALOG.get(item["key"], []),
             }
@@ -743,9 +846,17 @@ def _find_balance(detail, depth=0):
     return None
 
 
-def _ping_upstream(method, url, headers=None, body=None, proxied=False, timeout=12):
+def _ping_upstream(method, url, headers=None, body=None, proxied=False, timeout=12,
+                   proxy_url=None):
     """真实调一次上游 API。只返回状态码/耗时/错误摘要，绝不含密钥。"""
-    opener = PROXY_OPENER if proxied else DIRECT_OPENER
+    if proxy_url is None:
+        opener = PROXY_OPENER if proxied else DIRECT_OPENER
+    elif proxy_url:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+        )
+    else:
+        opener = DIRECT_OPENER
     data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
     headers = dict(headers or {})
     # Python-urllib 默认 UA 会被 TikHub 等家的 Cloudflare 拦成 403
@@ -804,12 +915,25 @@ def _key_ping_openai():
     )
 
 
+def _key_ping_xai():
+    key = _env_value(["XAI_API_KEY"])
+    if not key:
+        return {"ok": False, "error": "密钥未配置"}
+    base = (_env_value(["XAI_API_BASE"]) or "https://api.x.ai/v1").rstrip("/")
+    return _ping_upstream(
+        "GET", base + "/models",
+        headers={"Authorization": "Bearer " + key},
+        proxy_url=_xai_proxy_url() if "api.x.ai" in base else "",
+    )
+
+
 def _key_ping_heygen():
     key = _env_value(["HEYGEN_API_KEY"])
     if not key:
         return {"ok": False, "error": "密钥未配置"}
     return _ping_upstream(
-        "GET", "https://api.heygen.com/v2/user/remaining_quota", headers={"X-Api-Key": key}, proxied=True
+        "GET", "https://api.heygen.com/v2/user/remaining_quota",
+        headers={"X-Api-Key": key}, proxy_url=_heygen_proxy_url(),
     )
 
 
@@ -845,6 +969,13 @@ def _key_ping_gemini():
     return _ping_upstream(
         "GET", base + "/v1beta/models", headers={"x-goog-api-key": key}, proxied="googleapis.com" in base
     )
+
+
+def _key_ping_seedance():
+    key = _env_value(["ARK_API_KEY"])
+    if not key:
+        return {"ok": False, "error": "密钥未配置", "mode": "auth"}
+    return probe_provider_secret("seedance", key)
 
 
 def _openai_compat_ping(key_names, base_names, default_base):
@@ -916,8 +1047,10 @@ def _key_ping_cos():
 
 # auth=真调上游验证密钥有效; reach=签名类/未知协议渠道,只测连通与延迟
 KEY_PINGS = {
+    "xai": _key_ping_xai,
     "openai": _key_ping_openai,
     "gemini": _key_ping_gemini,
+    "seedance": _key_ping_seedance,
     "zelong": _key_ping_zelong,
     "zelong2": _key_ping_zelong2,
     "heygen": _key_ping_heygen,
@@ -929,6 +1062,227 @@ KEY_PINGS = {
     "tikhub": _key_ping_tikhub,
     "cos": _key_ping_cos,
 }
+
+PROVIDER_KEY_NAMES = {
+    "xai": "果肉视频",
+    "sora": "OpenAI Sora",
+    "seedance": "火山 Seedance",
+    "omni": "Gemini Omni",
+}
+
+
+def _probe_is_credential_rejection(probe):
+    # 403 也可能只是模型/功能未开通；探针拿不到足够错误细节时宁可保留 Key。
+    return int((probe or {}).get("http_status") or 0) == 401
+
+
+def probe_provider_secret(provider, secret):
+    """Validate a candidate key with a non-generating authenticated GET."""
+    provider = str(provider or "").strip().lower()
+    secret = str(secret or "").strip()
+    if provider not in PROVIDER_KEY_NAMES:
+        raise ValueError("不支持的视频渠道")
+    if len(secret) < 8:
+        raise ValueError("API 密钥格式无效")
+    if provider == "xai":
+        base = (_env_value(["XAI_API_BASE"]) or "https://api.x.ai/v1").rstrip("/")
+        return _ping_upstream(
+            "GET", base + "/models",
+            headers={"Authorization": "Bearer " + secret},
+            proxy_url=_xai_proxy_url() if "api.x.ai" in base else "",
+        )
+    if provider == "sora":
+        base = (_env_value(["OPENAI_BASE"]) or "https://api.openai.com").rstrip("/")
+        url = base + "/videos?limit=1" if base.endswith("/v1") else base + "/v1/videos?limit=1"
+        return _ping_upstream(
+            "GET", url, headers={"Authorization": "Bearer " + secret},
+            proxied="api.openai.com" in base,
+        )
+    if provider == "seedance":
+        base = (
+            _env_value(["ARK_BASE"])
+            or "https://ark.cn-beijing.volces.com/api/v3"
+        ).rstrip("/")
+        return _ping_upstream(
+            "GET",
+            base + "/contents/generations/tasks?page_num=1&page_size=1",
+            headers={"Authorization": "Bearer " + secret},
+            proxied=False,
+        )
+    base = (
+        _env_value(["GEMINI_OMNI_BASE", "GEMINI_BASE"])
+        or "https://generativelanguage.googleapis.com"
+    ).rstrip("/")
+    return _ping_upstream(
+        "GET",
+        base + "/v1beta/models/gemini-omni-flash-preview",
+        headers={"x-goog-api-key": secret},
+        proxied="googleapis.com" in base,
+    )
+
+
+def provider_key_list():
+    if provider_keys is None:
+        return {"configured": False, "items": [], "detail": "密钥池模块不可用"}
+    try:
+        items = provider_keys.list_public()
+        return {
+            "configured": provider_keys.vault_ready(),
+            "items": items,
+        }
+    except Exception as exc:
+        return {"configured": False, "items": [], "detail": str(exc)[:180]}
+
+
+def _admin_audit(actor, action, target, detail, conn=None):
+    now = int(time.time())
+    values = (
+        str(actor or "admin")[:80],
+        str(action)[:80],
+        str(target)[:120],
+        json.dumps(detail or {}, ensure_ascii=False),
+        now,
+    )
+    if conn is not None:
+        conn.execute(
+            "INSERT INTO admin_audit(actor, action, target, detail, created_at) VALUES(?,?,?,?,?)",
+            values,
+        )
+        return
+    with closing(db()) as audit_conn:
+        audit_conn.execute(
+            "INSERT INTO admin_audit(actor, action, target, detail, created_at) VALUES(?,?,?,?,?)",
+            values,
+        )
+        audit_conn.commit()
+
+
+def add_provider_key(actor, body):
+    if provider_keys is None:
+        raise RuntimeError("密钥池模块不可用")
+    provider = str(body.get("provider") or "").strip().lower()
+    label = str(body.get("label") or "").strip()
+    secret = str(body.get("secret") or "").strip()
+    probe = probe_provider_secret(provider, secret)
+    if not probe.get("ok"):
+        status = probe.get("http_status")
+        suffix = "（HTTP %s）" % status if status else ""
+        raise ValueError("API 检测未通过，请更换有效密钥%s" % suffix)
+    item = provider_keys.add_key(provider, label, secret, actor, health=probe)
+    _admin_audit(
+        actor,
+        "provider_key.add",
+        item["id"],
+        {
+            "provider": item["provider"],
+            "label": item["label"],
+            "last4": item["last4"],
+            "latency_ms": probe.get("latency_ms"),
+        },
+    )
+    return {"ok": True, "item": item, "probe": probe}
+
+
+def test_provider_key(actor, body):
+    if provider_keys is None:
+        raise RuntimeError("密钥池模块不可用")
+    key_id = str(body.get("id") or "").strip()
+    provider = str(body.get("provider") or "").strip().lower()
+    if not key_id:
+        raise ValueError("缺少 API 密钥编号")
+    if key_id != "env":
+        item = provider_keys.public_key(key_id)
+        provider = item["provider"]
+    candidates = provider_keys.candidates(provider, preferred_id=key_id)
+    if not candidates:
+        raise ValueError("API 密钥不存在")
+    probe = probe_provider_secret(provider, candidates[0]["secret"])
+    if key_id != "env":
+        if probe.get("ok") or _probe_is_credential_rejection(probe):
+            provider_keys.set_health(
+                key_id,
+                bool(probe.get("ok")),
+                probe.get("latency_ms"),
+                probe.get("error") or ("HTTP %s" % probe.get("http_status") if probe.get("http_status") else ""),
+            )
+    _admin_audit(
+        actor,
+        "provider_key.test",
+        key_id,
+        {
+            "provider": provider,
+            "ok": bool(probe.get("ok")),
+            "http_status": probe.get("http_status"),
+            "latency_ms": probe.get("latency_ms"),
+        },
+    )
+    return {"ok": bool(probe.get("ok")), "probe": probe}
+
+
+def delete_provider_key(actor, body):
+    if provider_keys is None:
+        raise RuntimeError("密钥池模块不可用")
+    key_id = str(body.get("id") or "").strip()
+    item = provider_keys.public_key(key_id)
+    provider_keys.retire_key(key_id)
+    _admin_audit(
+        actor,
+        "provider_key.retire",
+        key_id,
+        {
+            "provider": item["provider"],
+            "label": item["label"],
+            "last4": item["last4"],
+        },
+    )
+    return {"ok": True}
+
+
+def reveal_provider_key(actor, body):
+    if provider_keys is None:
+        raise RuntimeError("密钥池模块不可用")
+    key_id = str(body.get("id") or "").strip()
+    item = provider_keys.public_key(key_id)
+    secret = provider_keys.reveal_key(key_id)
+    _admin_audit(
+        actor,
+        "provider_key.reveal",
+        key_id,
+        {
+            "provider": item["provider"],
+            "label": item["label"],
+            "last4": item["last4"],
+        },
+    )
+    return {"ok": True, "id": key_id, "secret": secret, "expires_in": 5}
+
+
+def reveal_server_key(actor, body):
+    channel = str(body.get("channel") or body.get("key") or "").strip().lower()
+    item = KEY_GROUP_MAP.get(channel)
+    if not item:
+        raise ValueError("API 渠道不存在")
+    values = _key_group_values(item)
+    if not values:
+        raise ValueError("该 API 渠道尚未配置密钥")
+    _admin_audit(
+        actor,
+        "server_key.reveal",
+        channel,
+        {
+            "env": [value["env"] for value in values],
+            "last4": [value["value"][-4:] for value in values],
+        },
+    )
+    return {
+        "ok": True,
+        "key": channel,
+        "secrets": [
+            {"env": value["env"], "secret": value["value"]}
+            for value in values
+        ],
+        "expires_in": 5,
+    }
 
 
 def _sanitize_path(raw):
@@ -1348,7 +1702,7 @@ def job_stats(days=7):
     }
 
 
-_PAYLOAD_FIELD_RE = re.compile(r'"(model|provider|mode|keyword|url|line)"\s*:\s*"([^"]*)"')
+_PAYLOAD_FIELD_RE = re.compile(r'"(model|provider|channel|mode|keyword|url|line)"\s*:\s*"([^"]*)"')
 
 
 def _job_payload(raw):
@@ -1411,6 +1765,77 @@ def call_logs(days=7, limit=200):
     return {"days": days, "limit": limit, "items": items}
 
 
+def user_job_insights(username):
+    username = str(username or "").strip()
+    if not username:
+        raise ValueError("缺少用户账号")
+    if len(username) > 64:
+        raise ValueError("用户账号过长")
+    empty = {
+        "total": 0, "done": 0, "error": 0, "running": 0, "other": 0,
+        "success_rate": 0, "by_function": [], "by_channel": [],
+        "by_model": [], "recent": [],
+    }
+    if not JOB_DB.exists():
+        return empty
+    with closing(sqlite3.connect(str(JOB_DB), timeout=10)) as c:
+        c.row_factory = sqlite3.Row
+        rows = c.execute(
+            """SELECT id,kind,cost,status,substr(payload,1,4096) AS payload,created_at
+               FROM jobs WHERE username=? ORDER BY created_at DESC,id DESC""",
+            (username,),
+        ).fetchall()
+
+    summary = dict(empty)
+    groups = {"by_function": {}, "by_channel": {}, "by_model": {}}
+
+    def add_group(group, name, status):
+        item = group.setdefault(name or "未记录", {
+            "name": name or "未记录", "total": 0, "done": 0, "error": 0,
+        })
+        item["total"] += 1
+        if status in {"done", "error"}:
+            item[status] += 1
+
+    for row in rows:
+        status = str(row["status"] or "unknown").lower()
+        bucket = status if status in {"done", "error"} else (
+            "running" if status in {"pending", "queued", "running"} else "other"
+        )
+        summary["total"] += 1
+        summary[bucket] += 1
+        payload = _job_payload(row["payload"])
+        kind = row["kind"] or "unknown"
+        channel = payload.get("channel") or payload.get("provider")
+        if not channel and payload.get("line"):
+            channel = "线路 " + str(payload["line"])
+        add_group(groups["by_function"], call_func_name(kind, payload), bucket)
+        add_group(groups["by_channel"], str(channel or "未记录"), bucket)
+        add_group(groups["by_model"], str(payload.get("model") or "未记录"), bucket)
+        if len(summary["recent"]) < 20:
+            created_at = int(row["created_at"] or 0)
+            summary["recent"].append({
+                "id": int(row["id"]),
+                "func": call_func_name(kind, payload),
+                "channel": str(channel or "未记录"),
+                "model": str(payload.get("model") or "未记录"),
+                "status": status,
+                "cost": int(row["cost"] or 0),
+                "created_at": created_at,
+            })
+    settled = summary["done"] + summary["error"]
+    summary["success_rate"] = round(
+        summary["done"] / settled, 4,
+    ) if settled else 0
+    for key, values in groups.items():
+        items = list(values.values())
+        for item in items:
+            settled = item["done"] + item["error"]
+            item["success_rate"] = round(item["done"] / settled, 4) if settled else 0
+        summary[key] = sorted(items, key=lambda item: (-item["total"], item["name"]))[:30]
+    return summary
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
@@ -1419,6 +1844,7 @@ class H(BaseHTTPRequestHandler):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1465,6 +1891,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, {"items": service_status()})
         if path == "/api/admin/keys":
             return self._send(200, {"items": key_status()})
+        if path == "/api/admin/provider-keys":
+            return self._send(200, provider_key_list())
         if path == "/api/admin/channels":
             return self._send(200, {"items": load_channels()})
         if path == "/api/admin/features":
@@ -1474,6 +1902,22 @@ class H(BaseHTTPRequestHandler):
             suffix = "/api/auth/admin/users" + (("?" + q) if q else "")
             try:
                 return self._send(200, auth_admin_request(suffix, self._token()))
+            except Exception as e:
+                return auth_error_response(self, e)
+        if path == "/api/admin/users/detail":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            username = (q.get("username") or [""])[0].strip()
+            if not username:
+                return self._send(400, {"detail": "缺少用户账号"})
+            try:
+                data = auth_admin_request(
+                    "/api/auth/admin/user-insights?username=" + urllib.parse.quote(username),
+                    self._token(),
+                )
+                data["tasks"] = user_job_insights(username)
+                return self._send(200, data)
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
             except Exception as e:
                 return auth_error_response(self, e)
         if path == "/api/admin/points/audit":
@@ -1578,6 +2022,7 @@ class H(BaseHTTPRequestHandler):
                     "user": {"username": user.get("username"), "name": user.get("name"), "role": user.get("role")},
                     "services": services,
                     "keys": key_status(),
+                    "provider_keys": provider_key_list(),
                     "channels": load_channels(),
                     "features": load_features(services),
                     "stats": job_stats(days),
@@ -1592,6 +2037,42 @@ class H(BaseHTTPRequestHandler):
         user = self._admin()
         if not user:
             return
+        if path == "/api/admin/server-keys/reveal":
+            try:
+                result = reveal_server_key(
+                    user.get("username") or "admin", self._body()
+                )
+                return self._send(200, result)
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except Exception as exc:
+                return self._send(500, {"detail": str(exc)[:180] or "操作失败"})
+        if path in {
+            "/api/admin/provider-keys/add",
+            "/api/admin/provider-keys/test",
+            "/api/admin/provider-keys/delete",
+            "/api/admin/provider-keys/reveal",
+        }:
+            actor = user.get("username") or "admin"
+            try:
+                body = self._body()
+                if path.endswith("/add"):
+                    result = add_provider_key(actor, body)
+                elif path.endswith("/test"):
+                    result = test_provider_key(actor, body)
+                elif path.endswith("/reveal"):
+                    result = reveal_provider_key(actor, body)
+                else:
+                    result = delete_provider_key(actor, body)
+                return self._send(200, result)
+            except ValueError as exc:
+                return self._send(400, {"detail": str(exc)})
+            except Exception as exc:
+                if provider_keys is not None and isinstance(
+                    exc, provider_keys.KeyStoreUnavailable
+                ):
+                    return self._send(503, {"detail": str(exc)})
+                return self._send(500, {"detail": str(exc)[:180] or "操作失败"})
         if path == "/api/admin/channel":
             try:
                 item = save_channel(user.get("username") or "admin", self._body())
@@ -1614,6 +2095,27 @@ class H(BaseHTTPRequestHandler):
                     200,
                     auth_admin_request("/api/auth/admin/points/adjust", self._token(), method="POST", payload=self._body()),
                 )
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)})
+            except Exception as e:
+                return auth_error_response(self, e)
+        if path == "/api/admin/users/notification":
+            try:
+                body = self._body()
+                result = auth_admin_request(
+                    "/api/auth/admin/notifications", self._token(), method="POST", payload=body,
+                )
+                try:
+                    _admin_audit(
+                        user.get("username") or "admin", "user_notification",
+                        str(body.get("username") or ""), {
+                            "title": str(body.get("title") or "")[:80],
+                            "detail_chars": len(str(body.get("detail") or "")),
+                        },
+                    )
+                except Exception as audit_error:
+                    print("admin notification audit failed:", type(audit_error).__name__)
+                return self._send(200, result)
             except ValueError as e:
                 return self._send(400, {"detail": str(e)})
             except Exception as e:

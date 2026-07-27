@@ -51,6 +51,9 @@ if [ -n "$FAKE_SSH_LOG" ]; then printf '%s\n' "$*" >> "$FAKE_SSH_LOG"; fi
 #   smoke_import         → bash -s -- <svc> <python 路径>
 #   check_restart_effective → bash -s -- <svc> <时间戳>
 case "$*" in
+  *"test -f"*)
+    if [ "$FAKE_REMOTE_FILE_MISSING" = "1" ]; then exit 1; fi
+    ;;
   *"bash -s"*)
     cat >/dev/null 2>&1   # 吞掉 stdin 里的远端脚本
     case "$*" in
@@ -101,7 +104,7 @@ exit 0
         path.write_text(content, encoding="utf-8")
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
-    def _run_ship(self, target="site/index.html", **overrides):
+    def _run_ship(self, target="site/index.html", exact_content_domains=False, **overrides):
         targets = [target] if isinstance(target, str) else target
         env = os.environ.copy()
         env.update({
@@ -111,8 +114,11 @@ exit 0
             "HQ_SERVICE_WAIT_SECONDS": "1",
         })
         env.update(overrides)
+        command = ["bash", str(SHIP)]
+        if exact_content_domains:
+            command.append("--exact-content-domains")
         return subprocess.run(
-            ["bash", str(SHIP), "test deployment", *targets],
+            [*command, "test deployment", *targets],
             cwd=ROOT,
             env=env,
             text=True,
@@ -168,6 +174,24 @@ exit 0
         self.assertIn("未进入 active", result.stdout)
         self.assertNotIn("上线完成", result.stdout)
 
+    def test_systemd_dropin_targets_owning_service(self):
+        rsync_log = Path(self.tmp.name) / "rsync.log"
+        ssh_log = Path(self.tmp.name) / "ssh.log"
+        result = self._run_ship(
+            target="deploy/systemd/huangque-content.service.d/points.conf",
+            FAKE_CURL_CODE="200",
+            FAKE_RSYNC_LOG=str(rsync_log),
+            FAKE_SSH_LOG=str(ssh_log),
+        )
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertIn(
+            "fake-server:/etc/systemd/system/huangque-content.service.d/",
+            rsync_log.read_text(encoding="utf-8"),
+        )
+        ssh = ssh_log.read_text(encoding="utf-8")
+        self.assertRegex(ssh, r"sudo systemctl restart\s+huangque-content(?:\s|$)")
+        self.assertNotIn("huangque-content.service.d.service", ssh)
+
     def test_content_domain_change_syncs_and_verifies_all_tracked_domains(self):
         domain_files = subprocess.check_output(
             ["git", "ls-files", "server/content_domains"],
@@ -192,6 +216,56 @@ exit 0
             command = next(line for line in ssh_lines if marker in line)
             for path in domain_files:
                 self.assertIn(path, command)
+
+    def test_exact_content_domains_only_pushes_requested_existing_files(self):
+        targets = [
+            "server/content_domains/core.py",
+            "server/content_domains/points.py",
+        ]
+        rsync_log = Path(self.tmp.name) / "rsync.log"
+        ssh_log = Path(self.tmp.name) / "ssh.log"
+        result = self._run_ship(
+            target=targets,
+            exact_content_domains=True,
+            FAKE_CURL_CODE="200",
+            FAKE_RSYNC_LOG=str(rsync_log),
+            FAKE_SSH_LOG=str(ssh_log),
+        )
+        self.assertEqual(0, result.returncode, result.stdout)
+        self.assertIn("file-only 模式", result.stdout)
+        lines = rsync_log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(2, len(lines))
+        for path, line in zip(targets, lines):
+            self.assertIn(path, line)
+        self.assertNotIn("server/content_domains/ fake-server:", "\n".join(lines))
+        verify = next(
+            line for line in ssh_log.read_text(encoding="utf-8").splitlines()
+            if "--verify-deploy" in line
+        )
+        for path in targets:
+            self.assertIn(path, verify)
+        self.assertNotIn("server/content_domains/video.py", verify)
+
+    def test_exact_content_domains_refuses_new_remote_module(self):
+        result = self._run_ship(
+            target="server/content_domains/digital_ip.py",
+            exact_content_domains=True,
+            FAKE_REMOTE_FILE_MISSING="1",
+            FAKE_CURL_CODE="200",
+        )
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("只允许覆盖已存在", result.stdout)
+        self.assertNotIn("上线完成", result.stdout)
+
+    def test_exact_content_domains_refuses_content_api(self):
+        result = self._run_ship(
+            target=["server/content_api.py", "server/content_domains/core.py"],
+            exact_content_domains=True,
+            FAKE_CURL_CODE="200",
+        )
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("不能发布 server/content_api.py", result.stdout)
+        self.assertNotIn("发布源已锁定", result.stdout)
 
     def test_canvas_module_directory_keeps_its_relative_deployment_path(self):
         canvas_files = [

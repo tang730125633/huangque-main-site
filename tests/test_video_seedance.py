@@ -141,6 +141,18 @@ class SeedanceVideoTests(unittest.TestCase):
                 video_seedance.generate(prompt="demo")
         self.assertEqual(opener.open.call_count, 1)
 
+    def test_all_submit_5xx_are_unknown_and_not_retried(self):
+        for code in (501, 599):
+            with self.subTest(code=code):
+                opener = Mock()
+                opener.open.side_effect = _http_error(code, "temporary")
+                with patch.object(
+                    video_seedance, "ARK_API_KEY", "test-key"
+                ), patch.object(video_seedance, "_opener", return_value=opener):
+                    with self.assertRaises(video_seedance.CreateOutcomeUnknown):
+                        video_seedance.generate(prompt="demo")
+                self.assertEqual(opener.open.call_count, 1)
+
     def test_transient_poll_retries_get_without_second_post(self):
         opener = Mock()
         opener.open.side_effect = [
@@ -189,6 +201,25 @@ class SeedanceVideoTests(unittest.TestCase):
             ["GET"],
         )
 
+    def test_terminal_failure_never_exposes_pooled_api_key(self):
+        secret = "Pooled-Seedance-Key"
+        opener = Mock()
+        opener.open.return_value = _Response(
+            {
+                "id": "cgt-secret",
+                "status": "failed",
+                "error": {"message": "provider rejected token=" + secret.swapcase()},
+            }
+        )
+        with patch.object(video_seedance, "_opener", return_value=opener):
+            with self.assertRaises(video_seedance.SeedanceProviderFailed) as caught:
+                video_seedance.resume(
+                    "cgt-secret", api_key=secret, now=lambda: 0,
+                    sleep=lambda _delay: None,
+                )
+        self.assertNotIn(secret.lower(), str(caught.exception).lower())
+        self.assertIn("***", str(caught.exception))
+
     def test_http_error_never_exposes_api_key(self):
         secret = "super-secret-key"
         opener = Mock()
@@ -203,17 +234,54 @@ class SeedanceVideoTests(unittest.TestCase):
         self.assertNotIn(secret, str(caught.exception))
         self.assertIn("***", str(caught.exception))
 
+    def test_http_error_redacts_api_key_case_insensitively(self):
+        secret = "CaseSensitive-Key"
+        opener = Mock()
+        opener.open.side_effect = _http_error(
+            403, "invalid api key: " + secret.swapcase()
+        )
+        with patch.object(video_seedance, "ARK_API_KEY", secret), patch.object(
+            video_seedance, "_opener", return_value=opener
+        ):
+            with self.assertRaises(video_seedance.SeedanceCredentialRejected) as caught:
+                video_seedance.generate(prompt="demo")
+        self.assertNotIn(secret.lower(), str(caught.exception).lower())
+        self.assertIn("***", str(caught.exception))
+
     def test_common_provider_errors_are_translated(self):
         cases = [
             (401, "invalid api key", "鉴权失败"),
             (402, "insufficient balance", "余额不足"),
             (429, "rate limit", "并发繁忙"),
             (400, "InputImageSensitiveContentDetected", "安全审核"),
-            (403, "model permission denied", "鉴权失败"),
+            (403, "model permission denied", "模型未开通"),
         ]
         for code, detail, expected in cases:
             with self.subTest(code=code):
                 self.assertIn(expected, video_seedance._human_error(code, detail))
+
+    def test_only_explicit_credentials_are_marked_for_key_isolation(self):
+        cases = [
+            (401, "token invalid", video_seedance.SeedanceCredentialRejected, "token invalid"),
+            (402, "insufficient balance", video_seedance.SeedanceRejected, "insufficient balance"),
+            (402, "insufficient balance; authentication required", video_seedance.SeedanceRejected, "authentication required"),
+            (403, "model permission denied", video_seedance.SeedanceRejected, "model permission denied"),
+            (403, "unauthorized model", video_seedance.SeedanceRejected, "unauthorized model"),
+            (403, "content policy rejected", video_seedance.SeedanceRejected, "content policy rejected"),
+            (403, "invalid api key", video_seedance.SeedanceCredentialRejected, "invalid api key"),
+            (429, "rate limit", video_seedance.SeedanceRejected, "rate limit"),
+        ]
+        for code, detail, expected, summary in cases:
+            with self.subTest(code=code, detail=detail):
+                opener = Mock()
+                opener.open.side_effect = _http_error(code, detail)
+                with patch.object(video_seedance, "ARK_API_KEY", "test-key"), patch.object(
+                    video_seedance, "_opener", return_value=opener
+                ):
+                    with self.assertRaises(video_seedance.SeedanceRejected) as caught:
+                        video_seedance.generate(prompt="demo")
+                self.assertIs(type(caught.exception), expected)
+                self.assertIn(summary, str(caught.exception))
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ from contextlib import closing
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tikhub  # 同目录 TikHub 客户端（抖音/小红书/视频号 采集+获客）
-import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security, inspiration_likes, history  # 领域存储模块均无反向依赖
+import mimetypes; from . import assets_store, jobs_store, startup_recovery, submission_idempotency, miniprogram_security, inspiration_likes, history, notifications  # 领域存储模块均无反向依赖
 try:
     from . import asset_batch, feature_flags
 except ImportError:  # Running core.py directly during local checks.
@@ -181,7 +181,7 @@ def _user_owns_output_file(username, rel):
         row = c.execute("""SELECT 1 FROM audio_voices
             WHERE username=? AND scope='personal' AND preview_file=? LIMIT 1""",
             (username, rel)).fetchone()
-        return bool(row)
+        return bool(row) or _short_drama_domain().short_drama_assembly.user_owns_output_file(jdb, username, rel)
 
 # ---- 能力定义：成本(点数) + 处理函数 ----
 def _env_positive_int(name, default):
@@ -230,13 +230,15 @@ CINEMATIC_REAPER_GRACE = CINEMATIC_GEN_DEADLINE + 300
 # 没登记的 kind 用它 —— 绝不能是 0（见 reaper 里的注释：0 的语义是「立刻杀」）。
 KIND_GRACE_DEFAULT = _env_positive_int("KIND_GRACE_DEFAULT", 900)
 KIND_GRACE = {"tryon": 2400, "xiaole_video": 1200, "sora_video": 1500, "image": 900, "collect": 1200,
-              "cinematic": CINEMATIC_REAPER_GRACE, "avatar": 300, "breakdown": 600}
+              "cinematic": CINEMATIC_REAPER_GRACE, "avatar": 300, "breakdown": 600,
+              "script_to_video": 1200}
 # ⚠️ tryon 【不】跟着 15 分钟走：线上实测线路一中位 909s、**p90 1612s(27 分钟)**。
 #    砍到 15 分钟会把超过一成的换装任务判成失败。要改它得先把那条链路本身提速。
 AVATAR_COST = _env_positive_int("AVATAR_COST", 2)   # 建形象：象征性收费防刷，失败自动退点
 # ⚠️ cost_of() 回落到 COST.get(kind, 0) —— 新增 kind 忘了在这里登记，就是【免费】。
 COST = {"image": 12, "copy": 3, "audio": 10, "video": VIDEO_COST, "tryon": 40,
-        "cinematic": VIDEO_COST, "avatar": AVATAR_COST, "breakdown": 8}  # collect/leads/cinematic 走 cost_of() 动态算
+        "cinematic": VIDEO_COST, "avatar": AVATAR_COST, "breakdown": 8,
+        "script_to_video": VIDEO_COST}  # collect/leads/cinematic 走 cost_of() 动态算
 # cinematic 的这条已经不生效了 —— 电影化身按成片秒数计费（video.cinematic_cost），
 # cost_of() 里有它自己的分支、必定先 return。留在这里只当保险：万一哪天分支被绕过，
 # 也是按 VIDEO_COST 收费，而不是回落到 0（=免费送 $7 一条的视频）。
@@ -287,7 +289,7 @@ def init_db():
         submission_idempotency.ensure_table(c)
         c.commit()
     feature_flags.init_db()
-    init_audio_db(); _short_drama_domain().init_db(jdb)
+    init_audio_db(); _short_drama_domain().init_db(jdb); jobs_store.ensure_video_notification_outbox(jdb)
 
 def init_audio_db():
     now = int(time.time())
@@ -367,6 +369,7 @@ def init_audio_db():
             audio_asset_id TEXT,
             reference_asset_id TEXT,
             provider_video_id TEXT,
+            provider_key_id TEXT,
             provider_avatar_id TEXT,
             provider_avatar_group_id TEXT,
             source_video_url TEXT,
@@ -418,6 +421,7 @@ def init_audio_db():
         _ensure_column(c, "video_assets", "audio_asset_id", "TEXT")
         _ensure_column(c, "video_assets", "reference_asset_id", "TEXT")
         _ensure_column(c, "video_assets", "provider_video_id", "TEXT")
+        _ensure_column(c, "video_assets", "provider_key_id", "TEXT")
         _ensure_column(c, "video_assets", "provider_avatar_id", "TEXT")
         _ensure_column(c, "video_assets", "provider_avatar_group_id", "TEXT")
         _ensure_column(c, "video_assets", "source_video_url", "TEXT")
@@ -736,7 +740,7 @@ def is_shutting_down():
 
 # CAS 抢终态 / 退点幂等：实现在 content_domains/jobs_store.py，三个共写 jobs 表的服务共用一份。
 def _set_terminal(job_id, status, result=None, error=None, from_states=("running",)):
-    return jobs_store.set_terminal(jdb, job_id, status, result, error, from_states)
+    return jobs_store.set_terminal_with_video_outbox(jdb, job_id, status, result, error, from_states)
 def _refund_once(job_id, username, cost, transaction_key=""):
     transaction_key = transaction_key or jobs_store.refund_transaction_key(job_id, username)
     return jobs_store.refund_once(jdb, job_id, username, cost, lambda u, c: (
@@ -778,9 +782,9 @@ def _pick_job_queue(kind, mode=None):
         return _cinematic_job_queue     # HeyGen 剧情视频，约 8 分钟/条，10 个 worker
     if kind == "avatar":
         return _avatar_job_queue        # 建形象，串行 1 个 worker
-    if kind not in {"video", "tryon", "xiaole_video", "sora_video"}:
+    if kind not in {"video", "tryon", "xiaole_video", "sora_video", "script_to_video"}:
         return _fast_job_queue
-    if kind == "video":
+    if kind in {"video", "script_to_video"}:
         return _talking_job_queue
     return _job_queue
 
@@ -860,7 +864,7 @@ def _user_running_talking_count(username):
     if not username:
         return 0
     with closing(jdb()) as c:
-        row = c.execute("SELECT COUNT(*) AS n FROM jobs WHERE username=? AND status='running' AND kind='video'",
+        row = c.execute("SELECT COUNT(*) AS n FROM jobs WHERE username=? AND status='running' AND kind IN ('video','script_to_video')",
                         (username,)).fetchone()
     return row["n"] if row else 0
 
@@ -930,6 +934,8 @@ def _pending_job_scanner():
             _recover_pending_jobs(_PENDING_RECOVERY_LIMIT)
             _short_drama_domain().short_drama_production.retry_attempt_refunds(
                 jdb, _domains()[1], JOB_QUEUE_MAX)
+            _short_drama_domain().short_drama_voice.retry_voice_attempt_refunds(
+                jdb, _domains()[1], JOB_QUEUE_MAX)
             jobs_store.retry_failed_refunds(jdb, _refund_once, JOB_QUEUE_MAX)
         except Exception:
             pass
@@ -952,10 +958,18 @@ def start_job_workers():
                              (AVATAR_JOB_WORKERS, _avatar_job_queue, "content-avatar-worker")):
         for i in range(count):
             threading.Thread(target=_job_worker_loop, args=(q,), name="%s-%d" % (prefix, i + 1), daemon=True).start()
-    threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start()
+    threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start(); threading.Thread(target=notifications.scanner, args=(jdb,), name="content-video-notify", daemon=True).start()
     _recover_pending_jobs(_PENDING_RECOVERY_LIMIT)
     try:
+        retry_breakdown = getattr(_domains()[1], "retry_breakdown_refunds", None)
+        if retry_breakdown:
+            retry_breakdown(JOB_QUEUE_MAX)
+    except Exception:
+        pass
+    try:
         _short_drama_domain().short_drama_production.retry_attempt_refunds(
+            jdb, _domains()[1], JOB_QUEUE_MAX)
+        _short_drama_domain().short_drama_voice.retry_voice_attempt_refunds(
             jdb, _domains()[1], JOB_QUEUE_MAX)
     except Exception:
         pass
@@ -1004,7 +1018,7 @@ def install_signal_handlers():
 
 def _mark_video_asset_failed(job_id, kind, error):
     """判失败时同步 video_asset 到失败终态(否则前端历史卡片读 video_assets 一直「生成中」)。⚠️用 update_video_asset_phase(UPDATE)非 record_video_asset(INSERT):mode 有 NOT NULL，cinematic/xiaole 失败路径无 mode→IntegrityError 被吞→卡 running。"""
-    if kind not in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}:
+    if kind not in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"}:
         return
     try:
         _, _, video_domain = _domains()
@@ -1056,7 +1070,7 @@ def run_job(job_id):
     kind = r["kind"]; payload = json.loads(r["payload"] or "{}")
     username = r["username"]; cost = r["cost"]
     mode = str(payload.get("mode") or "").lower()
-    is_talking = (kind == "video")   # 口播=video(text/audio)
+    is_talking = (kind in {"video", "script_to_video"})
     is_image = (kind == "image")
     stop_heartbeat = None
     is_breakdown = (kind == "breakdown")
@@ -1077,28 +1091,38 @@ def run_job(job_id):
         # 抢到 running 才开心跳（前面几个 return 都还没认领，不该有心跳）。
         # 有了它，reaper 的「没心跳」才真的等于「worker 死了」—— 而不是「正在轮询/烧字幕」。
         stop_heartbeat = _start_job_heartbeat(job_id)
-        if kind in {"audio", "video", "tryon", "xiaole_video", "sora_video", "leads", "cinematic", "avatar", "breakdown"}:
+        if kind in {"audio", "video", "tryon", "xiaole_video", "sora_video", "leads", "cinematic", "avatar", "breakdown", "script_to_video"}:
             payload["_username"] = username   # 少一个 kind，handler 就拿不到用户名/job_id：
             payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
         result = HANDLERS[kind](payload)
+        breakdown_refund_prepared = False
+        if kind == "breakdown":
+            breakdown_refund_prepared = _domains()[1].prepare_breakdown_batch_refund(
+                username, cost, result, job_id)
         # 先 CAS 抢 done 终态：仅当仍是 running 才写 done，防 reaper 已判 error 又被无条件覆盖(既出片又退点)
         if not _set_terminal(job_id, "done", result=result):
+            if breakdown_refund_prepared:
+                _domains()[1].cancel_breakdown_refund(job_id)
             return  # 已被 reaper 接管为 error+退点：放弃成功副作用(不入库、不覆盖状态)
         # 口播按成片真实时长结算：预扣(cost)是 hold，跑完多退少不补。只在抢到 done 后调 —— done CAS
         # 互斥 + reaper/reclaim 不碰 done → 每 job 至多结算一次，不重复退。结算失败不影响出片。
-        if kind == "video":
+        if kind == "video" or (kind == "script_to_video" and (result or {}).get("pipeline") in {"talking", "talking_with_materials"}):
             try:
                 actual = _domains()[2].talking_actual_cost(result)
+                if kind == "script_to_video":
+                    actual += int(((payload.get("cost_breakdown") or {}).get("material_images")) or 0)
                 if actual and int(cost or 0) > actual:
                     _domains()[1].safe_refund_points(username, int(cost) - actual, "job#%d 口播结算" % job_id)
             except Exception:
                 pass
+        if kind == "breakdown":
+            _domains()[1].reconcile_breakdown_refund(job_id)
         # 已确认拿到 done 终态；入库是次要副作用，失败也不改状态、不退点
         try:
             audio_domain, _, video_domain = _domains()
             if kind == "audio":
                 audio_domain.record_audio_asset(job_id, username, result)
-            if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}:
+            if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"}:
                 video_domain.record_video_asset(job_id, username, result)
             assets_store.record_asset(job_id, username, kind, result)  # 只有 copy 会入统一 assets 表；其余 kind 内部忽略
         except Exception:
@@ -1134,6 +1158,12 @@ def run_job(job_id):
 # ============ 超时清道夫：running 超 6 分钟的僵尸任务自动判失败 + 退点 ============
 def reaper():
     while True:
+        try:
+            retry_breakdown = getattr(_domains()[1], "retry_breakdown_refunds", None)
+            if retry_breakdown:
+                retry_breakdown(JOB_QUEUE_MAX)
+        except Exception:
+            pass
         try:
             now = int(time.time()); cutoff = now - 360
             with closing(jdb()) as c:
@@ -1221,9 +1251,9 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
-        if _short_drama_domain().dispatch_http(self, "POST", jdb, verify,
-                getattr(points_domain, "cost_of", None), mutation_lock=_submission_lock,
-                canvas_access_resolver=_short_drama_canvas_access): return
+        if _short_drama_domain().dispatch_http(self, "POST", jdb, verify, getattr(points_domain, "cost_of", None), mutation_lock=_submission_lock, canvas_access_resolver=_short_drama_canvas_access,
+                points_getter=getattr(points_domain, "get_points", None), voice_validator=lambda username, voice_key:
+                audio_domain.resolve_audio_provider_voice(username, voice_key), generation_dependencies=(audio_domain, points_domain, globals())): return
         if p in {"/api/gen/digital-ip/diagnose", "/api/gen/digital-ip/guide"}:
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
@@ -1307,7 +1337,7 @@ class H(BaseHTTPRequestHandler):
             except feature_flags.FeatureDisabled as e: return self._send(503, {"detail": str(e)})
             except audio_domain.VoiceSlotError as e: return self._send(e.status, {"detail": str(e)})
             except points_domain.AuthPointsError as e:
-                return self._send(e.status if e.status in (402, 403) else 502, {"detail": e.detail, "need": audio_domain.VOICE_SLOT_COST})
+                return self._send(e.status if e.status in (402, 403) else 502, points_domain.public_error_body(e, audio_domain.VOICE_SLOT_COST))
             except Exception as e:
                 return self._send(400, {"detail": str(e)[:160]})
         if p == "/api/gen/audio/redeem-slot":
@@ -1410,7 +1440,7 @@ class H(BaseHTTPRequestHandler):
                         video_domain.record_video_pending_asset(jid, user["username"], body)
                 except points_domain.AuthPointsError as e:
                     _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(e.status if e.status in (402, 403) else 502, {"detail": e.detail, "need": total})
+                    return self._send(e.status if e.status in (402, 403) else 502, points_domain.public_error_body(e, total))
                 except jobs_store.PaidJobInsertError as e:
                     _idempotency_abort(user["username"], p, idem_key)
                     return self._send(500, {"detail": {"refunded": "批量任务创建失败，点数已退回",
@@ -1437,6 +1467,12 @@ class H(BaseHTTPRequestHandler):
                         "count": len(job_ids), "cost": total, "cost_per_job": costs[0], "points_left": points_left}
             _idempotency_complete(user["username"], p, idem_key, response)
             return self._send(200, response)
+        if p == "/api/gen/breakdown/local-upload":
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            from . import breakdown as breakdown_domain
+            return breakdown_domain.handle_local_upload(self, user)
         is_still_route = p == "/api/gen/short-drama/generate-stills"
         kind = "image" if is_still_route else None
         if p.startswith("/api/gen/") and p[9:] in HANDLERS:
@@ -1451,7 +1487,7 @@ class H(BaseHTTPRequestHandler):
             still_attempt = None
             still_access = _short_drama_canvas_access(self) if is_still_route else None
             try:
-                body = self._json_body_strict() if is_still_route or kind in {"video", "tryon", "sora_video", "cinematic", "avatar"} else self._json_body()
+                body = self._json_body_strict() if is_still_route or kind in {"video", "tryon", "sora_video", "cinematic", "avatar", "script_to_video", "copy"} else self._json_body()
                 if is_still_route:
                     request_body, still_idem_body = _short_drama_domain().short_drama_production.normalize_still_request(body, require_quote=True); idem_key = _idempotency_key(self.headers.get("Idempotency-Key"))
                     if not idem_key: raise ValueError("关键帧提交必须提供 Idempotency-Key")
@@ -1481,6 +1517,17 @@ class H(BaseHTTPRequestHandler):
                 elif kind == "avatar": body = video_domain.validate_avatar_payload(body)
                 elif kind == "xiaole_video": body = video_domain.validate_xiaole_video_payload(body)
                 elif kind == "sora_video": body = video_domain.validate_sora_video_payload(body)
+                elif kind == "script_to_video":
+                    from . import script_to_video as script_to_video_domain
+                    body = script_to_video_domain.prepare_script_to_video_payload(body, user["username"])
+                elif kind == "breakdown":
+                    if not isinstance(body, dict):
+                        raise ValueError("请求体必须是 JSON 对象")
+                    if body.get("local_path") or body.get("upload_token"):
+                        raise ValueError("本地素材只能通过专用上传接口提交")
+                elif kind == "copy":
+                    from . import text as text_domain
+                    body = text_domain.validate_copy_payload(body)
                 elif kind == "image":
                     from . import image as image_domain
                     body = image_domain.validate_image_payload(body)
@@ -1488,7 +1535,7 @@ class H(BaseHTTPRequestHandler):
                         body.pop("short_drama_references", None)
                 if not is_still_route: request_body = dict(body) if isinstance(body, dict) else body
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
-                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "video", "tryon", "xiaole_video", "sora_video", "cinematic"} else ""
+                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"} else ""
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
                 if kind == "xiaole_video" and str(body.get("channel") or "").lower() in {"micro", "omni"} and not idem_key: raise ValueError("官方视频提交必须提供 Idempotency-Key")
             except miniprogram_security.ContentRejected as e:
@@ -1513,6 +1560,8 @@ class H(BaseHTTPRequestHandler):
             # 熔断器 fail-open，检查自身异常不会阻断提交。
             from . import upstream_guard
             blocked = upstream_guard.exhausted_reason(kind, body)
+            if not blocked and kind == "script_to_video" and int(body.get("material_generate_count") or 0) > 0:
+                blocked = upstream_guard.exhausted_reason("image", {"provider": "openai", "quality": "standard", "count": 1})
             if blocked and not still_attempt:
                 if still_idem_started: _idempotency_abort(user["username"], p, idem_key)
                 return self._send(503, {"detail": blocked, "code": "upstream_exhausted", "retry_after_ms": 60000})
@@ -1648,7 +1697,7 @@ class H(BaseHTTPRequestHandler):
                         return self._send(402, public_rejected)
                     elif not (is_still_route and e.status == 502):
                         _idempotency_abort(user["username"], p, idem_key)
-                    return self._send(e.status if e.status in (402, 403) else 502, {"detail": e.detail, "need": cost})
+                    return self._send(e.status if e.status in (402, 403) else 502, points_domain.public_error_body(e, cost))
                 except jobs_store.PaidJobInsertError as e:
                     failed_response = {"detail": {"refunded": "任务创建失败，点数已退回",
                         "queued": "任务创建失败，退款正在自动重试"}.get(e.compensation, "任务创建失败，退款需人工核对"),
@@ -1679,7 +1728,7 @@ class H(BaseHTTPRequestHandler):
                     else:
                         return self._send(503, _short_drama_domain().short_drama_production.refund_pending_response())
                     return self._send(500, failed_response)
-                if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}:
+                if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"}:
                     try: video_domain.record_video_pending_asset(jid, user["username"], body)
                     except Exception:
                         failed_response = {"detail": "任务创建失败，退款正在自动处理", "job_id": jid}; _reject_pending_job(jid, user["username"], cost, "视频资产登记失败"); _idempotency_complete(user["username"], p, idem_key, dict(failed_response, _http_status=500))
@@ -1687,7 +1736,7 @@ class H(BaseHTTPRequestHandler):
                 if not (is_still_route and is_shutting_down()) and not enqueue_job(jid, kind, body.get("mode")):
                     if not is_still_route:
                         _reject_pending_job(jid, user["username"], cost, "任务队列已满，请稍后再试")
-                    if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic"}:
+                    if kind in {"video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"}:
                         video_domain.update_video_asset_phase(jid, "failed", status="failed", error="任务队列已满，请稍后再试")
                     queue_response = {"detail": "任务队列已满，请稍后再试", "code": "queue_full", "retry_after_ms": 4000, "need": cost}
                     if is_still_route:
@@ -1706,6 +1755,8 @@ class H(BaseHTTPRequestHandler):
                         _idempotency_complete(user["username"], p, idem_key, dict(queue_response, _http_status=429))
                     return self._send(429, queue_response)
             response = {"job_id": jid, "cost": cost, "points_left": points_left}
+            if kind == "script_to_video" and body.get("cost_breakdown"):
+                response["cost_breakdown"] = body["cost_breakdown"]
             if is_still_route:
                 response.update({
                     "project_id": still_attempt["project_id"],
@@ -1923,7 +1974,7 @@ class H(BaseHTTPRequestHandler):
                 points_left = points_domain.deduct_points(user["username"], 1, "search:" + platform)
             except points_domain.AuthPointsError as e:
                 code = e.status if e.status in (402, 403) else 502
-                return self._send(code, {"detail": e.detail, "need": 1})
+                return self._send(code, points_domain.public_error_body(e, 1))
             try:
                 r = tikhub.search(platform, keyword, page=page, video_only=False)  # 含图文
             except tikhub.TikHubError as e:

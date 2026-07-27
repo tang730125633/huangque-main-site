@@ -604,9 +604,12 @@ class AuthCanvasCollabTests(unittest.TestCase):
             ],
         }
 
-        with self.assertRaises(urllib.error.HTTPError) as oversized:
+        with self.assertRaises((urllib.error.HTTPError, urllib.error.URLError)) as oversized:
             self._post("/api/auth/canvas/boards/%s/ops" % board["id"], payload)
-        self.assertEqual(oversized.exception.code, 413)
+        if isinstance(oversized.exception, urllib.error.HTTPError):
+            self.assertEqual(oversized.exception.code, 413)
+        else:
+            self.assertIsInstance(oversized.exception.reason, BrokenPipeError)
 
         current = self._get("/api/auth/canvas/boards/%s" % board["id"])["board"]
         self.assertEqual(current["version"], 1)

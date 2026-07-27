@@ -158,5 +158,19 @@ class PromptAndCountTests(unittest.TestCase):
             image.validate_image_payload("not a dict")
 
 
+class XiaoleMultiReferenceTests(unittest.TestCase):
+    def test_xiaole_accepts_multiple_valid_references(self):
+        out = image.validate_image_payload({
+            "provider": "xiaole", "prompt": "护肤产品海报",
+            "reference_images": [_b64(PNG), "data:image/png;base64," + _b64(PNG)],
+        })
+        self.assertEqual(2, len(out["reference_images"]))
+        self.assertEqual(PNG, base64.b64decode(out["reference_images"][1], validate=True))
+
+    def test_other_engines_do_not_silently_receive_multi_reference(self):
+        with self.assertRaisesRegex(ValueError, "仅支持果肉生图"):
+            image.validate_image_payload({"prompt": "p", "reference_images": [_b64(PNG)]})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -20,6 +20,9 @@ IMAGE_REF_MAX_BYTES = max(1, int(os.environ.get("IMAGE_REF_MAX_BYTES", str(10 * 
 IMAGE_PROMPT_MAX_CHARS = max(1, int(os.environ.get("IMAGE_PROMPT_MAX_CHARS", "8000") or 8000))
 # count 上限取各引擎里最大的 MAX_N（gpt 4；seedream 2 由引擎自己再 cap）。
 IMAGE_MAX_COUNT = max(1, int(os.environ.get("IMAGE_MAX_COUNT", "4") or 4))
+XIAOLE_IMAGE_MAX_REF = max(1, int(os.environ.get("XIAOLE_IMAGE_MAX_REF", "4") or 4))
+XIAOLE_IMAGE_REF_TOTAL_MAX_BYTES = max(IMAGE_REF_MAX_BYTES, int(os.environ.get(
+    "XIAOLE_IMAGE_REF_TOTAL_MAX_BYTES", str(28 * 1024 * 1024)) or (28 * 1024 * 1024)))
 
 # ===== Seedream（火山方舟 Ark）=====
 # 火山在国内，服务器直连即可：不走 VPS 隧道、不走 mihomo、不走 heygen 中转。
@@ -209,28 +212,47 @@ def validate_image_payload(payload):
         body["image"], raw = _decode_image_b64(body.get("image"), "image")
         if raw and not _image_bytes_look_valid(raw):
             raise ValueError("参考图格式不支持，请使用 PNG / JPG / WebP")
+    references = body.get("reference_images")
+    if references is not None:
+        if provider != "xiaole":
+            raise ValueError("多图参考目前仅支持果肉生图")
+        if not isinstance(references, list) or not references:
+            raise ValueError("reference_images 必须是非空图片数组")
+        if len(references) > XIAOLE_IMAGE_MAX_REF:
+            raise ValueError("果肉生图最多支持 %d 张参考图" % XIAOLE_IMAGE_MAX_REF)
+        clean_references, total_bytes = [], 0
+        for index, value in enumerate(references, 1):
+            clean, raw = _decode_image_b64(value, "第%d张参考图" % index)
+            if not raw or not _image_bytes_look_valid(raw):
+                raise ValueError("第%d张参考图格式不支持，请使用 PNG / JPG / WebP" % index)
+            total_bytes += len(raw)
+            clean_references.append(clean)
+        if total_bytes > XIAOLE_IMAGE_REF_TOTAL_MAX_BYTES:
+            raise ValueError("果肉生图的参考图合计不能超过 %dMB" % (XIAOLE_IMAGE_REF_TOTAL_MAX_BYTES // 1024 // 1024))
+        body["reference_images"] = clean_references
     if body.get("mask"):
         body["mask"], raw = _decode_image_b64(body.get("mask"), "mask")
         if raw and not _image_bytes_look_valid(raw):
             raise ValueError("蒙版格式不支持，请使用 PNG")
     return body
 
-def _gen_image_xiaole(prompt, ratio, quality, count, img):
+def _gen_image_xiaole(prompt, ratio, quality, count, img, references=None):
     """并发闸入口：同一时刻在上游飞的果肉图像任务不超过 XIAOLE_IMG_MAX_CONCURRENCY，
     超出的在 worker 里等闸（worker 池只有 10，排队深度天然有界）。"""
     with _XIAOLE_IMG_SEM:
-        return _gen_image_xiaole_locked(prompt, ratio, quality, count, img)
+        return _gen_image_xiaole_locked(prompt, ratio, quality, count, img, references)
 
-def _gen_image_xiaole_locked(prompt, ratio, quality, count, img):
+def _gen_image_xiaole_locked(prompt, ratio, quality, count, img, references=None):
     """果肉生图渠道(xiaolevideo.cn，与果肉/豆姐视频同账号)：gpt-image-2 文生图/图生图。
     统一 generations API：创建 → 轮询 → 落盘，与 video.py 的 generate_xiaole_video 同一套模式。"""
     if not XIAOLEVIDEO_API_KEY:
         raise ValueError("果肉生图未配置（XIAOLEVIDEO_API_KEY）")
     resolution = "2k" if quality == "high" else "1k"
-    input_d = {"prompt": prompt, "mode": ("image_to_image" if img else "text_to_image"),
+    refs = list(references or ([] if not img else [img]))
+    input_d = {"prompt": prompt, "mode": ("image_to_image" if refs else "text_to_image"),
                "resolution": resolution, "aspect_ratio": ratio, "quality": quality, "n": count}
-    if img:
-        input_d["reference_images"] = [{"type": "base64", "value": img}]
+    if refs:
+        input_d["reference_images"] = [{"type": "base64", "value": ref} for ref in refs]
     # 创建限流重试：_xiaole_request 自带的 5 次 429 退避(~120s)压测证明扛不住整批饱和
     # （上游 Key 熔断持续数分钟），这里在 XIAOLE_IMG_CREATE_MAX_WAIT 预算内继续等。
     # 只重试限流（任务未创建未计费，重发安全）；其余错误直接抛，走失败退点。
@@ -311,7 +333,7 @@ def _gen_image_xiaole_locked(prompt, ratio, quality, count, img):
         files_out.append(fn); urls.append(public_url(fn, "image/png"))
     if not files_out:
         raise ValueError("出图返回为空")
-    return {"type": "image", "mode": ("img2img" if img else "text2img"), "provider": "xiaole",
+    return {"type": "image", "mode": ("img2img" if refs else "text2img"), "provider": "xiaole",
             "count": len(files_out), "file": files_out[0], "url": urls[0],
             "files": files_out, "urls": urls, "ratio": ratio, "prompt": prompt}
 
@@ -574,7 +596,7 @@ def gen_image(payload):
     provider = (payload.get("provider") or "openai").strip().lower()
     if provider == "xiaole":
         count = 1 if mask else max(1, min(2, int(payload.get("count") or 1)))
-        return _gen_image_xiaole(prompt, ratio, quality, count, img)
+        return _gen_image_xiaole(prompt, ratio, quality, count, img, payload.get("reference_images"))
     if provider == "seedream":
         if mask:
             raise ValueError("黄雀引擎 1 暂不支持局部修改（蒙版），请改用黄雀引擎 2")

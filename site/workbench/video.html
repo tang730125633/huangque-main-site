@@ -561,9 +561,9 @@
         <div class="row">
           <div>
             <div class="label">果肉视频生成</div>
-            <div class="muted" style="font-size:12px;margin-top:6px;">xAI 官方 Grok Imagine Video · 文生视频或单图生视频</div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">xAI 官方 Grok Imagine Video · 文生视频或最多 7 张参考图生视频</div>
           </div>
-          <span class="faint" style="font-size:11.5px;">文生 / 图生视频</span>
+          <span class="faint" style="font-size:11.5px;">文生 / 多图参考视频</span>
         </div>
         <div class="panel" style="margin-top:14px;">
           <div class="faint" style="font-size:12px;margin-bottom:8px;">操作方式</div>
@@ -577,8 +577,8 @@
           <video id="grokEditPreview" class="hidden" controls muted playsinline style="width:100%;max-height:260px;margin-top:10px;border-radius:12px;"></video>
         </div>
         <div class="panel" style="margin-top:14px;">
-          <div class="faint" style="font-size:12px;margin-bottom:8px;">视频提示词 <span style="color:#5c6b82;">· 点下方示例快速填入，或直接粘贴自己的</span></div>
-          <textarea id="grokPrompt" rows="4" placeholder="例如：一只橘猫在阳光洒落的窗台上慢慢转头，电影级光影，柔和景深，平滑运镜" style="width:100%;min-height:110px;resize:vertical;background:rgba(7,11,19,.5);border:1px solid rgba(148,164,187,.16);border-radius:12px;color:#eaf1fa;padding:12px 14px;font:inherit;font-size:14px;"></textarea>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;"><div class="faint" style="font-size:12px;">视频提示词 <span style="color:#5c6b82;">· 点下方示例快速填入，或直接粘贴自己的</span></div><button id="grokOptimizeBtn" type="button" style="padding:5px 10px;font-size:12px;color:#bfc9d8;background:rgba(148,164,187,.06);border:1px solid rgba(148,164,187,.2);border-radius:8px;cursor:pointer;font-family:inherit;white-space:nowrap;">优化提示词</button></div>
+          <textarea id="grokPrompt" rows="4" placeholder="例如：输入“精华液，高级广告”，点击“优化提示词”自动补全镜头和画面；您只需略加修改。" style="width:100%;min-height:110px;resize:vertical;background:rgba(7,11,19,.5);border:1px solid rgba(148,164,187,.16);border-radius:12px;color:#eaf1fa;padding:12px 14px;font:inherit;font-size:14px;"></textarea>
           <div id="grokExamples" style="display:flex;flex-wrap:wrap;gap:7px;margin-top:10px;"></div>
         </div>
         <div class="panel grok-generate-only" style="margin-top:12px;">
@@ -769,7 +769,7 @@
 <div id="toast" class="toast"></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=df4e00db"></script>
+<script src="cloud-shell.js?v=e836823b"></script>
 <script>
 (function(){
   var token='__cookie__';
@@ -3047,6 +3047,18 @@
       }; probe.onerror=function(){URL.revokeObjectURL(objectUrl);toast('无法读取这个 MP4 视频');}; probe.src=objectUrl;
     };
     var ex=$('grokExamples');
+    var optimize=$('grokOptimizeBtn');
+    if(optimize) optimize.onclick=function(){
+      var prompt=$('grokPrompt'), source=((prompt||{}).value||'').trim();
+      if(!source){toast('先输入几个关键词，再让 AI 帮你补全');if(prompt)prompt.focus();return;}
+      optimize.disabled=true; optimize.textContent='优化中…';
+      fetch('/api/gen/reverse',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({action:'optimize',prompt:source,kind:'video'})})
+        .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});}).then(function(x){
+          if(x.s===401){location.href='../login.html?redirect=workbench/video';return;}
+          if(!x.d.prompt){toast('优化失败：'+((x.d&&x.d.detail)||'请稍后重试'));return;}
+          prompt.value=x.d.prompt; prompt.focus(); toast('提示词已优化，可继续微调');
+        }).catch(function(){toast('网络错误，请稍后重试');}).finally(function(){optimize.disabled=false;optimize.textContent='优化提示词';});
+    };
     if(ex){
       ['护肤精华瓶在水花中缓缓旋转，晶莹剔透，柔光微距，高级广告质感',
        '美妆模特侧脸特写，光影流动，发丝随风轻扬，电影级慢镜头',

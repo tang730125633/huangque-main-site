@@ -2,7 +2,9 @@ import json
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.request
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -13,6 +15,26 @@ from content_domains import core, cos
 
 
 class PrivateAssetsTest(unittest.TestCase):
+    def test_download_proxy_health_endpoint(self):
+        server = dl_service.ThreadingHTTPServer(("127.0.0.1", 0), dl_service.H)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(
+                "http://127.0.0.1:%d/api/gen/dl/health" % server.server_port,
+                timeout=2,
+            ) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(
+                    json.loads(response.read()),
+                    {"ok": True, "service": "huangque-dl"},
+                )
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
     def test_private_cos_upload_sets_object_acl_and_returns_signed_url(self):
         client = Mock()
         client.get_presigned_url.return_value = "https://signed.example/video"

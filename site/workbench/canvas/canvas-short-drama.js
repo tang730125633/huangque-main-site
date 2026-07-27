@@ -626,6 +626,10 @@
       return Object.prototype.hasOwnProperty.call(options,'voiceModule')?
         options.voiceModule:(root&&root.HQCanvas&&root.HQCanvas.shortDramaVoice);
     }
+    function dedicatedVideoModule(){
+      return Object.prototype.hasOwnProperty.call(options,'videoModule')?
+        options.videoModule:(root&&root.HQCanvas&&root.HQCanvas.shortDramaVideo);
+    }
     function dedicatedAssemblyModule(){
       return Object.prototype.hasOwnProperty.call(options,'assemblyModule')?
         options.assemblyModule:(root&&root.HQCanvas&&root.HQCanvas.shortDramaAssembly);
@@ -638,6 +642,7 @@
       var summaryProjectId=summary.project_id||summary.id;
       if(summaryProjectId&&summaryProjectId!==(project.id||project.project_id)) return;
       var wasVoiceStage=project.stage==='voice_review';
+      var wasVideoStage=project.stage==='video_review';
       var wasAssemblyStage=isAssemblyProjectStage(project.stage);
       var next=Object.assign({},project);
       ['revision','stage','ratio','spent_points','point_budget','reserved_points'].forEach(function(key){
@@ -646,16 +651,20 @@
       delete next.progress;
       project=next;
       var isVoiceStage=project.stage==='voice_review';
+      var isVideoStage=project.stage==='video_review';
       var isAssemblyStage=isAssemblyProjectStage(project.stage);
       var voiceModule=dedicatedVoiceModule();
+      var videoModule=dedicatedVideoModule();
       var assemblyModule=dedicatedAssemblyModule();
       var shouldSwitch=(
         wasVoiceStage!==isVoiceStage||
+        wasVideoStage!==isVideoStage||
         wasAssemblyStage!==isAssemblyStage
       )&&!!(
         (isVoiceStage&&voiceModule&&typeof voiceModule.createWorkspace==='function')||
+        isVideoStage||
         (isAssemblyStage&&assemblyModule&&typeof assemblyModule.createWorkspace==='function')||
-        (!isVoiceStage&&!isAssemblyStage)
+        (!isVoiceStage&&!isVideoStage&&!isAssemblyStage)
       );
       state.activeStage=project.stage;
       state.busy=false;state.error='';state.stale=false;state.loadFailed=false;state.loadStatus=0;
@@ -671,7 +680,17 @@
     }
     function confirmProduction(cost,quote,body){
       var points=Math.max(0,Number(cost)||0),message;
-      if(Array.isArray(body)||(quote&&quote.kind==='still-batch')){
+      if(quote&&quote.kind==='voice'){
+        var lineCount=Number(quote.line_count)||(Array.isArray(body)?body.length:1);
+        message='生成 '+lineCount+' 条配音将消耗 '+points+
+          ' 点'+(typeof quote.points_left==='number'?'（账户余额 '+quote.points_left+' 点）':'')+
+          (typeof quote.budget_left==='number'?'，项目可用预算 '+quote.budget_left+' 点':'')+
+          '。每条台词独立生成，失败会自动退款；确认提交吗？';
+      }else if(quote&&quote.kind==='native-audio'){
+        message='首版将直接使用各段视频自带原声，之后仍可升级独立配音。确认进入视频生成吗？';
+      }else if(quote&&quote.kind==='video'){
+        message='使用 '+(quote.model||'当前模型')+' 生成当前镜头将消耗 '+points+' 点，确认提交吗？';
+      }else if(Array.isArray(body)||(quote&&quote.kind==='still-batch')){
         var shotCount=Array.isArray(body)?body.length:Number(quote&&quote.shot_count)||0;
         message='批量生成 '+shotCount+' 个镜头的关键帧（每个镜头 2 张候选）将消耗 '+points+' 点，确认提交吗？';
       }else{
@@ -685,16 +704,19 @@
       var activationGeneration=generation==null?loadGeneration:generation;
       if(activationGeneration!==loadGeneration) return Promise.resolve(null);
       var isVoiceStage=project&&project.stage==='voice_review';
+      var isVideoStage=project&&project.stage==='video_review';
       var isAssemblyStage=project&&isAssemblyProjectStage(project.stage);
       var moduleOption=isVoiceStage?'voiceModule':
-        (isAssemblyStage?'assemblyModule':'productionModule');
+        (isVideoStage?'videoModule':(isAssemblyStage?'assemblyModule':'productionModule'));
       var legacyProductionModule=Object.prototype.hasOwnProperty.call(options,'productionModule')?
         options.productionModule:(root&&root.HQCanvas&&root.HQCanvas.shortDramaProduction);
       var defaultModule=isVoiceStage?
         (dedicatedVoiceModule()||legacyProductionModule):
+        (isVideoStage?
+          (dedicatedVideoModule()||legacyProductionModule):
         (isAssemblyStage?
           (dedicatedAssemblyModule()||legacyProductionModule):
-          legacyProductionModule);
+          legacyProductionModule));
       var productionModule=Object.prototype.hasOwnProperty.call(options,moduleOption)?
         options[moduleOption]:defaultModule;
       if(destroyed) return Promise.reject(new Error('workspace destroyed'));

@@ -78,16 +78,17 @@ class HeygenProxyTests(unittest.TestCase):
 
     def test_explicit_env_override_wins(self):
         v = self._video()
-        with patch.object(v, "_HEYGEN_DIRECT_PROXY", "http://explicit:1"):
+        eg = importlib.import_module("content_domains.egress")
+        with patch.object(eg, "HEYGEN_DIRECT_PROXY", "http://explicit:1"):
             self.assertEqual(v._heygen_proxy(), "http://explicit:1")
 
     def test_delegates_to_egress_preferred_proxy(self):
         v = self._video()
         eg = importlib.import_module("content_domains.egress")
-        with patch.object(v, "_HEYGEN_DIRECT_PROXY", ""), \
+        with patch.object(eg, "HEYGEN_DIRECT_PROXY", ""), \
              patch.object(eg, "preferred_proxy", return_value="http://tunnel:1") as pp:
             self.assertEqual(v._heygen_proxy(), "http://tunnel:1")
-        pp.assert_called_once_with(v._HEYGEN_PROXY_FALLBACK)
+        pp.assert_called_once_with(eg.HEYGEN_PROXY_FALLBACK)
 
     def test_opener_carries_chosen_proxy(self):
         v = self._video()

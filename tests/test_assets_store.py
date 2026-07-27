@@ -2,9 +2,9 @@
 """统一 assets 表：写入幂等、stage 归类、meta 投影、读取过滤。
 
 要点：
-- record_asset 只对 copy/collect/leads 生效（image 走 jobs.result→/api/gen/history；audio/video 走各自旧表）
+- record_asset 对 copy/collect/leads/breakdown 生效（image 走 jobs.result→/api/gen/history；audio/video 走各自旧表）
 - UNIQUE(kind, job_id) + INSERT OR IGNORE → 重复写不产生重复行（回填脚本可反复跑）
-- collect 评论不复制；copy 正文和 leads 查看字段投影到 meta
+- collect 评论不复制；copy / leads / breakdown 只保留资产库展示需要的投影字段
 """
 import importlib, os, sys, tempfile, unittest
 from contextlib import closing
@@ -35,6 +35,7 @@ class AssetsStoreTests(unittest.TestCase):
         self.assertEqual(self.store.KIND_STAGE["collect"], self.store.MATERIAL)
         self.assertEqual(self.store.KIND_STAGE["copy"], self.store.WORK)
         self.assertEqual(self.store.KIND_STAGE["leads"], self.store.DELIVERY)
+        self.assertEqual(self.store.KIND_STAGE["breakdown"], self.store.WORK)
         self.assertNotIn("image", self.store.KIND_STAGE, "image 走 jobs.result，不进 assets 表")
 
     def test_image_is_not_recorded(self):
@@ -98,6 +99,109 @@ class AssetsStoreTests(unittest.TestCase):
         self.assertIn("镜号01（3s）", body)
         self.assertIn("画面：门店外景", body)
         self.assertIn("口播：皮肤透亮", body)
+
+    def test_record_breakdown_projects_asset_fields(self):
+        result = {
+            "type": "breakdown",
+            "source_title": "  新客到店拆解  " * 20,
+            "source_url": "https://example.com/video/9",
+            "source_platform": "douyin",
+            "duration": 27,
+            "scenes": [{"dur": "3s", "scene": "门头特写", "line": "先看招牌"}],
+            "analysis": "前3秒强钩子，后面用价格锚点推进转化",
+            "frame_thumbnails": ["data:image/jpeg;base64,thumb1"],
+        }
+        self.assertTrue(self.store.record_asset(16, "u", "breakdown", result))
+        a = self.store.list_assets("u", kind="breakdown")[0]
+        self.assertEqual(a["stage"], "work")
+        self.assertEqual(a["title"], self.store._clip(result["source_title"]))
+        self.assertEqual(a["url"], "https://example.com/video/9")
+        self.assertEqual(a["meta"]["type"], "breakdown")
+        self.assertEqual(a["meta"]["source_platform"], "douyin")
+        self.assertEqual(a["meta"]["duration"], 27)
+        self.assertEqual(a["meta"]["scenes"][0]["scene"], "门头特写")
+        self.assertEqual(a["meta"]["analysis"], "前3秒强钩子，后面用价格锚点推进转化")
+        self.assertEqual(a["meta"]["frame_thumbnails"], ["data:image/jpeg;base64,thumb1"])
+
+    def test_list_assets_slims_frame_thumbnails(self):
+        """列表视图缩略图每条最多 1 张并带 frame_count（防响应膨胀，批量子项同样瘦身）"""
+        result = {
+            "type": "breakdown",
+            "source_title": "多帧拆解",
+            "source_url": "https://example.com/video/slim",
+            "source_platform": "douyin",
+            "duration": 27,
+            "scenes": [{"dur": "3s", "scene": "门头", "line": "欢迎"}],
+            "frame_thumbnails": ["t1", "t2", "t3"],
+        }
+        self.assertTrue(self.store.record_asset(17, "u", "breakdown", result))
+        a = [x for x in self.store.list_assets("u", kind="breakdown") if x["url"] == result["source_url"]][0]
+        self.assertEqual(a["meta"]["frame_thumbnails"], ["t1"])
+        self.assertEqual(a["meta"]["frame_count"], 3)
+
+    def test_record_breakdown_reverse_keeps_prompt(self):
+        result = {
+            "type": "breakdown_reverse",
+            "source_title": "爆款提示词反推",
+            "source_url": "https://example.com/video/reverse",
+            "source_platform": "xiaohongshu",
+            "duration": 19,
+            "prompt": "暖金美容院场景，女生手持精华，近景推镜",
+            "frame_thumbnails": ["data:image/jpeg;base64,thumb2"],
+        }
+        self.assertTrue(self.store.record_asset(18, "u", "breakdown", result))
+        a = self.store.list_assets("u", kind="breakdown")[0]
+        self.assertEqual(a["meta"]["type"], "breakdown_reverse")
+        self.assertEqual(a["meta"]["prompt"], result["prompt"])
+        self.assertEqual(a["meta"]["frame_thumbnails"], ["data:image/jpeg;base64,thumb2"])
+
+    def test_record_breakdown_batch_keeps_all_results(self):
+        result = {
+            "type": "breakdown_batch",
+            "total": 2,
+            "results": [
+                {
+                    "type": "breakdown",
+                    "source_title": "视频一",
+                    "source_url": "https://example.com/video/1",
+                    "source_platform": "douyin",
+                    "duration": 12,
+                    "scenes": [{"dur": "3s", "scene": "门头", "line": "欢迎"}],
+                },
+                {
+                    "type": "breakdown_reverse",
+                    "source_title": "视频二",
+                    "source_url": "https://example.com/video/2",
+                    "source_platform": "xiaohongshu",
+                    "duration": 18,
+                    "prompt": "女生展示产品，暖调柔光",
+                },
+            ],
+            "errors": [{"url": "https://example.com/video/3", "error": "下载失败"}],
+        }
+        self.assertTrue(self.store.record_asset(19, "u", "breakdown", result))
+        a = self.store.list_assets("u", kind="breakdown")[0]
+        self.assertEqual(a["meta"]["type"], "breakdown_batch")
+        self.assertEqual(a["meta"]["total"], 2)
+        self.assertEqual(len(a["meta"]["results"]), 2)
+        self.assertEqual(a["meta"]["results"][0]["source_title"], "视频一")
+        self.assertEqual(a["meta"]["results"][1]["type"], "breakdown_reverse")
+        self.assertEqual(a["meta"]["results"][1]["prompt"], "女生展示产品，暖调柔光")
+        self.assertEqual(len(a["meta"]["errors"]), 1)
+
+    def test_record_breakdown_tolerates_missing_fields(self):
+        self.assertTrue(self.store.record_asset(17, "u", "breakdown", None))
+        a = self.store.list_assets("u", kind="breakdown")[0]
+        self.assertIsNone(a["title"])
+        self.assertIsNone(a["url"])
+        self.assertEqual(a["meta"]["type"], "breakdown")
+        self.assertIsNone(a["meta"]["source_url"])
+        self.assertIsNone(a["meta"]["source_platform"])
+        self.assertIsNone(a["meta"]["duration"])
+        self.assertIsNone(a["meta"]["scenes"])
+        self.assertIsNone(a["meta"]["analysis"])
+        self.assertIsNone(a["meta"]["prompt"])
+        self.assertEqual(a["meta"]["frame_thumbnails"], [])
 
     # --- 幂等：回填脚本会反复跑 ---
     def test_record_is_idempotent(self):

@@ -502,7 +502,12 @@
           action:'查看明细',points:true,tone:x.refunded?'success':'points'});
       }
     });
-    if(enabled('systemNotices',true)) _systemNotices.forEach(function(x){ items.push(x); });
+    if(enabled('systemNotices',true)){
+      (data&&data.system_notices||[]).forEach(function(x){
+        items.push({id:'server-notice-'+x.id,kind:'system',title:x.title||'系统通知',detail:x.detail||'',time:Number(x.created_at||0)*1000});
+      });
+      _systemNotices.forEach(function(x){ items.push(x); });
+    }
     items.forEach(function(x){ x.read=read.indexOf(x.id)>=0; });
     return items.sort(function(a,b){ return Number(b.time||0)-Number(a.time||0); });
   }
@@ -578,9 +583,13 @@
   function loadNotices(){
     ensureNotificationPanel(); if(_noticeState.loading) return;
     _noticeState.loading=true;
-    fetch('/api/gen/points/history?days=30&page=1&page_size=20',{credentials:'same-origin',cache:'no-store',headers:authHeaders()})
-      .then(function(r){ if(r.status===401) return {items:[]}; return r.ok?r.json():Promise.reject(new Error('读取通知失败')); })
-      .then(function(d){ _noticeState.items=buildNotices(d||{}); renderNotices(); })
+    Promise.all([
+      fetch('/api/gen/points/history?days=30&page=1&page_size=20',{credentials:'same-origin',cache:'no-store',headers:authHeaders()})
+        .then(function(r){ if(r.status===401) return {items:[]}; return r.ok?r.json():Promise.reject(new Error('读取任务通知失败')); }).catch(function(){return {items:[]};}),
+      fetch('/api/auth/notifications?limit=50',{credentials:'same-origin',cache:'no-store',headers:authHeaders()})
+        .then(function(r){ if(r.status===401) return {items:[]}; return r.ok?r.json():Promise.reject(new Error('读取系统通知失败')); }).catch(function(){return {items:[]};})
+    ])
+      .then(function(all){ var d=all[0]||{}; d.system_notices=(all[1]&&all[1].items)||[]; _noticeState.items=buildNotices(d); renderNotices(); })
       .catch(function(){ _noticeState.items=buildNotices({items:[]}); renderNotices(); })
       .finally(function(){ _noticeState.loading=false; });
   }
@@ -643,11 +652,11 @@
       '<div class="hqlt" id="hqTabs" role="tablist" aria-label="登录方式"><button type="button" role="tab" aria-selected="true" class="on" id="hqTP">手机号登录</button><button type="button" role="tab" aria-selected="false" id="hqTW">密码登录</button></div>'+
       '<form id="hqLoginForm">'+
         '<div style="margin-top:20px;display:flex;flex-direction:column;gap:12px;">'+
-          '<div class="hqlf"><span style="'+SI+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span><input id="hqU" name="username" type="text" autocomplete="username" placeholder="请输入手机号 / 账号"></div>'+
-          '<div id="hqRP" style="display:flex;gap:10px;"><div class="hqlf" style="flex:1;"><span style="'+SI+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 11v1a10 10 0 1 1-5.9-9.1"/><path d="M22 4L12 14l-3-3"/></svg></span><input id="hqC" name="one-time-code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="请输入验证码"></div><button type="button" id="hqGc" style="height:48px;padding:0 14px;white-space:nowrap;font-size:13px;color:#e7b24c;background:rgba(231,178,76,.08);border:1px solid rgba(231,178,76,.26);border-radius:13px;cursor:pointer;font-family:inherit;">获取验证码</button></div>'+
-          '<div id="hqRW" class="hqlf" style="display:none;"><span style="'+SI+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><input id="hqP" name="password" type="password" autocomplete="current-password" placeholder="请输入密码" disabled></div>'+
+          '<div class="hqlf"><span style="'+SI+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg></span><input id="hqU" name="username" type="text" autocomplete="username" maxlength="64" placeholder="请输入手机号 / 账号"></div>'+
+          '<div id="hqRP" style="display:flex;gap:10px;"><div class="hqlf" style="flex:1;"><span style="'+SI+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M22 11v1a10 10 0 1 1-5.9-9.1"/><path d="M22 4L12 14l-3-3"/></svg></span><input id="hqC" name="one-time-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="请输入验证码"></div><button type="button" id="hqGc" style="height:48px;padding:0 14px;white-space:nowrap;font-size:13px;color:#e7b24c;background:rgba(231,178,76,.08);border:1px solid rgba(231,178,76,.26);border-radius:13px;cursor:pointer;font-family:inherit;">获取验证码</button></div>'+
+          '<div id="hqRW" class="hqlf" style="display:none;"><span style="'+SI+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><input id="hqP" name="password" type="password" autocomplete="current-password" maxlength="128" placeholder="请输入密码" disabled></div>'+
           '<div id="hqRegFields" style="display:none;flex-direction:column;gap:12px;">'+
-            '<div class="hqlf"><span style="'+SI+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><input id="hqP2" name="password_confirm" type="password" autocomplete="new-password" placeholder="请再次输入密码" disabled></div>'+
+            '<div class="hqlf"><span style="'+SI+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><input id="hqP2" name="password_confirm" type="password" autocomplete="new-password" maxlength="128" placeholder="请再次输入密码" disabled></div>'+
             '<div class="hqlf"><span style="'+SI+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/></svg></span><input id="hqD" name="display_name" type="text" maxlength="32" autocomplete="nickname" placeholder="昵称（可选，最多32字）" disabled></div>'+
           '</div>'+
         '</div>'+

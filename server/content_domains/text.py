@@ -1,5 +1,67 @@
 # -*- coding: utf-8 -*-
-from .core import COPY_API_KEY, COPY_API_STYLE, COPY_BASE, COPY_MODEL, _post, json
+import re
+
+from .core import COPY_API_KEY, COPY_API_STYLE, COPY_BASE, COPY_MODEL, OPENAI_BASE, OPENAI_KEY, _post, json
+
+
+SCRIPT_FACT_GUARD = (
+    "只使用用户明确提供的产品、品牌、参数、检测结果和优惠信息。"
+    "未提供品牌名时不得虚构品牌或安排必须展示品牌文字的镜头；"
+    "未提供功效依据时不得使用“最、第一、顶级、100%、完全、绝对、根治、"
+    "不怕晒黑、超强”等绝对化或无法证实的承诺。"
+    "信息不足时使用中性、可核实的表达，不得自行补造数据。"
+)
+
+
+def validate_copy_payload(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+    cleaned = dict(payload)
+    brief = str(cleaned.get("prompt") or "").strip()
+    if not brief:
+        raise ValueError("请输入文案需求")
+    cleaned["prompt"] = brief
+    return cleaned
+
+
+_SCRIPT_CLAIM_REPLACEMENTS = (
+    ("不必害怕阳光直射", "面对日常通勤光照时"),
+    ("不怕晒黑", "帮助减少日晒影响"),
+    ("全天候守护", "帮助进行日常防护"),
+    ("必不可少", "值得重视"),
+    ("毫无负担", "使用感更轻盈"),
+    ("100%", "尽量"),
+    ("完全不", "不易"),
+    ("超强", "良好"),
+    ("绝对", "相对"),
+    ("顶级", "优质"),
+    ("根治", "改善"),
+)
+_SCRIPT_OFFER_MARKERS = ("活动", "优惠", "折扣", "立减", "到手价", "限时", "名额", "超划算")
+
+
+def sanitize_script_scenes(scenes, brief):
+    brief = str(brief or "")
+    has_offer_facts = any(marker in brief for marker in _SCRIPT_OFFER_MARKERS)
+    has_brand_facts = "品牌" in brief
+    cleaned = []
+    for scene in scenes or []:
+        item = dict(scene) if isinstance(scene, dict) else {}
+        for field in ("scene", "line"):
+            value = str(item.get(field) or "")
+            for source, replacement in _SCRIPT_CLAIM_REPLACEMENTS:
+                value = value.replace(source, replacement)
+            if not has_brand_facts:
+                value = value.replace("品牌名称", "产品包装").replace("品牌标识", "产品包装")
+            if not has_offer_facts:
+                value = re.sub(
+                    r"[^。！？]*(?:活动|优惠|折扣|立减|到手价|限时|名额|超划算)[^。！？]*[。！？]?",
+                    "如需了解更多，请以产品实际信息为准。",
+                    value,
+                )
+            item[field] = value
+        cleaned.append(item)
+    return cleaned
 
 def _chat(sysmsg, usermsg, temp):
     if COPY_API_STYLE == "responses":
@@ -20,10 +82,24 @@ def _chat(sysmsg, usermsg, temp):
     d = _post("/v1/chat/completions", body, "application/json", base=COPY_BASE, key=COPY_API_KEY)
     return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
 
+
+def _chat_multimodal(sysmsg, usermsg, image_data_urls, temp=0.85):
+    """带参考图的 GPT-4o 多模态调用。"""
+    from . import egress
+    content = [{"type": "text", "text": usermsg}]
+    for url in (image_data_urls or []):
+        content.append({"type": "image_url", "image_url": {"url": str(url), "detail": "low"}})
+    body = json.dumps({"model": "gpt-4o", "messages": [
+        {"role": "system", "content": sysmsg},
+        {"role": "user", "content": content}], "temperature": temp}).encode()
+    d = egress.post_json(OPENAI_BASE, OPENAI_BASE, "/v1/chat/completions", body,
+                         {"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": "application/json"})
+    return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+
+
 def gen_copy(payload):
-    brief = (payload.get("prompt") or "").strip()
-    if not brief:
-        raise ValueError("请输入文案需求")
+    payload = validate_copy_payload(payload)
+    brief = payload["prompt"]
     ctype = (payload.get("ctype") or payload.get("type") or "通用").strip()
     if (payload.get("format") or "") == "short_drama":
         from . import short_drama
@@ -42,18 +118,38 @@ def gen_copy(payload):
                              "shot_count": settings["shot_count"]},
                 "prompt": settings["prompt"], "dur": str(settings["target_duration"]) + "s",
                 "ratio": settings["ratio"], "shot_count": settings["shot_count"]}
+    ref_images = payload.get("reference_images") or []
     # 编导：结构化分镜脚本（返回 scenes 数组）
     if (payload.get("format") or "") == "script":
         style = payload.get("style") or "口播"; dur = payload.get("dur") or "30s"; plat = payload.get("platform") or "抖音"
-        raw = _chat("你是黄雀传媒资深短视频编导。只输出 JSON 本身，不要解释、不要 markdown 代码块。",
-                    ("为以下选题生成一套可拍的%s短视频分镜脚本（平台%s，总时长约%s）。\n选题/卖点：%s\n"
-                     "严格输出 JSON：{\"scenes\":[{\"dur\":\"3s\",\"scene\":\"画面描述\",\"line\":\"口播台词\"}]}，"
-                     "3-4 个分镜，各 dur 之和≈总时长，口播口语化有钩子可直接念。" % (style, plat, dur, brief)), 0.85)
+        _STYLE_LINE = {
+            "口播": "口播台词（博主对着镜头说的话，口语化有钩子可直接念）",
+            "剧情": "台词/旁白（人物对话或画外音，推动情节发展）",
+            "种草": "种草文案（产品卖点+使用体验+购买引导，口语化有说服力）",
+        }
+        line_desc = _STYLE_LINE.get(style, _STYLE_LINE["口播"])
+        # 镜数按时长计算：每 8-10 秒 1 镜，最少 3 最多 8
+        try: dur_sec = int((dur or "30s").replace("s","").strip())
+        except: dur_sec = 30
+        n_scenes = max(3, min(8, max(1, dur_sec // 8)))
+        sysmsg = "你是黄雀传媒资深短视频编导。只输出 JSON 本身，不要解释、不要 markdown 代码块。"
+        usermsg = ("为以下选题生成一套可拍的%s短视频分镜脚本（平台%s，总时长约%s）。\n选题/卖点：%s\n"
+                    "严格输出 JSON：{\"scenes\":[{\"dur\":\"3s\",\"scene\":\"画面描述\",\"line\":\"%s\"}]}，"
+                    "生成 %d 个分镜，各 dur 之和≈总时长。"
+                    % (style, plat, dur, brief, line_desc, n_scenes))
+        sysmsg += SCRIPT_FACT_GUARD
+        usermsg += "\n事实约束：" + SCRIPT_FACT_GUARD
+        if ref_images:
+            usermsg += "\n（可参考上传的图片来构思分镜画面）"
+            raw = _chat_multimodal(sysmsg, usermsg, ref_images)
+        else:
+            raw = _chat(sysmsg, usermsg, 0.85)
         s, e = raw.find("{"), raw.rfind("}"); scenes = []
         if s >= 0 and e > s:
             try: scenes = json.loads(raw[s:e+1]).get("scenes", [])
             except Exception: scenes = []
         if not scenes: raise ValueError("脚本解析失败，请重试")
+        scenes = sanitize_script_scenes(scenes, brief)
         return {"type": "copy", "mode": "script", "scenes": scenes, "ctype": ctype,
                 "style": style, "dur": dur, "platform": plat, "prompt": brief}
     # 通用文案（多条，--- 分隔）

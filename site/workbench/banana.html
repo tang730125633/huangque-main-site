@@ -121,12 +121,12 @@
         </div>
       </div>
 
-      <div style="display:flex; align-items:center; justify-content:space-between; margin:22px 0 9px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin:22px 0 9px;">
         <span style="font-size:13.5px; font-weight:600;">提示词</span>
-        <button id="luckyBtn" title="不知道写什么？帮你装一条" style="display:flex; align-items:center; gap:5px; padding:5px 11px; font-size:12px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.24); border-radius:8px; cursor:pointer; font-family:inherit;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 14l.7 1.9L22 17l-2.3.6L19 20l-.7-2.4L16 17l2.3-.5z"/></svg></span>手气不错</button>
+        <div style="display:flex; gap:7px;"><button id="bOptimize" type="button" style="padding:5px 10px; font-size:12px; color:#bfc9d8; background:rgba(148,164,187,.06); border:1px solid rgba(148,164,187,.2); border-radius:8px; cursor:pointer; font-family:inherit;">优化提示词</button><button id="luckyBtn" title="不知道写什么？帮你装一条" style="display:flex; align-items:center; gap:5px; padding:5px 11px; font-size:12px; color:#e7b24c; background:rgba(231,178,76,.08); border:1px solid rgba(231,178,76,.24); border-radius:8px; cursor:pointer; font-family:inherit;"><span style="display:flex; width:13px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 14l.7 1.9L22 17l-2.3.6L19 20l-.7-2.4L16 17l2.3-.5z"/></svg></span>手气不错</button></div>
       </div>
       <div style="position:relative; border:1px solid rgba(148,164,187,.16); background:rgba(7,11,19,.5); border-radius:12px; padding:14px 15px;">
-        <textarea id="bPrompt" rows="3" maxlength="2000" placeholder="科技焕肤 · 逆龄新生，高级感美业海报，金色光效，9:16…" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;">科技焕肤 · 逆龄新生，高级感美业海报，金色光效，9:16 竖版，留白标题区，柔光质感，主体居中，氛围高级，适合朋友圈与门店屏幕投放</textarea>
+        <textarea id="bPrompt" rows="3" maxlength="2000" placeholder="例如：输入关键词（如“敏感肌修护海报”），点击“优化提示词”自动补全；您只需略加修改。" style="width:100%; resize:none; background:transparent; border:none; outline:none; color:#eaf1fa; font-size:13.5px; line-height:1.7; font-family:inherit;"></textarea>
         <div style="display:flex; align-items:center; justify-content:flex-end; gap:12px; font-size:11.5px; color:#5c6b82; margin-top:6px;"><span id="bCount" style="font-family:'JetBrains Mono',monospace;">0 / 2000</span><span id="bClear" style="cursor:pointer;">清空</span></div>
       </div>
 
@@ -193,7 +193,7 @@
       </div>
 
       <div id="refSection">
-      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">参考图 <span id="upHint" style="font-size:12px; color:#5c6b82; font-weight:400;">(可选 · 上传或在提示词框 Ctrl/⌘V 粘贴图片，变「图生图」)</span></div>
+      <div style="font-size:13.5px; font-weight:600; margin:22px 0 10px;">参考图 <span id="upHint" style="font-size:12px; color:#5c6b82; font-weight:400;">(可选 · 果肉生图最多可上传 4 张；其它引擎为单图)</span></div>
       <div style="display:flex; gap:10px;">
         <label id="upBox" class="hv-gold" style="position:relative; width:66px; height:66px; flex:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; border:1px dashed rgba(148,164,187,.26); background:rgba(148,164,187,.04); border-radius:11px; color:#94a4bb; cursor:pointer; transition:.16s; overflow:hidden; background-size:cover; background-position:center;"><input id="upFile" type="file" accept="image/*" style="display:none"><span id="upIcon" style="display:flex; width:18px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width:100%;height:100%"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg></span><span id="upText" style="font-size:10px;">上传</span></label>
       </div>
@@ -231,7 +231,7 @@
 </div></div>
 
 <script src="../assets/cloud.js?v=8"></script>
-<script src="cloud-shell.js?v=df4e00db"></script>
+<script src="cloud-shell.js?v=e836823b"></script>
 <script>
 /* 作图页接后端能力中心 /api/gen/image + /api/gen/banana，点数后端统一扣。 */
 (function(){
@@ -240,7 +240,7 @@
       resultRatio=document.getElementById('resultRatio');
   var collectHandoff=null;
   if(!gen) return;
-  var ratio='9:16', engine='banana', quality='hd', count=1, bananaVariant='nb2', seedreamVariant='std';
+  var ratio='9:16', engine='banana', quality='hd', count=1, bananaVariant='nb2', seedreamVariant='std', xiaoleRefs=[];
   function splitPercent(clientX,left,width){
     return Math.max(35,Math.min(65,Math.round(((clientX-left)/width)*100)));
   }
@@ -406,7 +406,9 @@
     if(bv) bv.style.display = (e==='banana') ? 'grid' : 'none';
     var sv=document.getElementById('seedreamVariantRow');
     if(sv) sv.style.display = (e==='seedream') ? 'grid' : 'none';
+    if(e==='xiaole' && !xiaoleRefs.length && refImg) xiaoleRefs.push(refImg);
     if(refImg) showInp(engine==='gpt');  // 局部修改按钮仅 gpt-image
+    renderXiaoleRefs();
     updateCost();   // Nano Banana 两个型号点数不同，切引擎/切型号都要重算
   }
   document.querySelectorAll('#engineRow > div').forEach(function(c){ c.onclick=function(){ selectEngine(c.getAttribute('data-engine')); }; });
@@ -519,7 +521,18 @@
   }catch(e){}
 
   // 手气不错：不知道写啥 → 从灵感提示词库随机装一条进输入框（复用 inspirations.json，随灵感页自动更新）
-  var luckyBtn=document.getElementById('luckyBtn'), luckyPool=[], luckyLast=-1;
+  var optimizeBtn=document.getElementById('bOptimize'), luckyBtn=document.getElementById('luckyBtn'), luckyPool=[], luckyLast=-1;
+  if(optimizeBtn) optimizeBtn.onclick=function(){
+    var source=(pr.value||'').trim();
+    if(!source){ setNote('先输入几个关键词，再让 AI 帮你补全','#f4708a'); pr.focus(); return; }
+    optimizeBtn.disabled=true; optimizeBtn.textContent='优化中…';
+    fetch('/api/gen/reverse',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({action:'optimize',prompt:source,kind:'image'})})
+      .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});}).then(function(x){
+        if(x.s===401){ HQ.login(); return; }
+        if(!x.d.prompt){ setNote('优化失败：'+((x.d&&x.d.detail)||'请稍后重试'),'#f4708a'); return; }
+        pr.value=x.d.prompt; pr.dispatchEvent(new Event('input')); pr.focus(); setNote('✅ 已优化提示词，可继续微调后生成','#2bd576');
+      }).catch(function(){setNote('网络错误，请稍后重试','#f4708a');}).finally(function(){optimizeBtn.disabled=false; optimizeBtn.textContent='优化提示词';});
+  };
   var LUCKY_FALLBACK=[
     '科技焕肤 · 逆龄新生，高级感美业海报，金色光效，9:16 竖版，留白标题区，柔光质感，主体居中，适合朋友圈与门店屏投放',
     '高端护肤精华玻璃瓶特写，暖金光效，大理石台面，满天星与丝绸点缀，顶部留白放标题，杂志级广告质感，无水印，9:16 竖版',
@@ -782,11 +795,11 @@
   }
 
   // ===== 参考图上传 → 图生图 / 局部修改（inpaint，gpt-image 专属）=====
-  var refImg=null, refW=0, refH=0, inpBtn=null;
+  var refImg=null, refW=0, refH=0, inpBtn=null, XIAOLE_REF_MAX=4;
   var upBox=document.getElementById('upBox'), upFile=document.getElementById('upFile'),
       upIcon=document.getElementById('upIcon'), upText=document.getElementById('upText'), upHint=document.getElementById('upHint');
   function showInp(on){ if(inpBtn) inpBtn.style.display=on?'inline-flex':'none'; }
-  var REF_MAX_SIDE=1280, REF_MAX_BYTES=9*1024*1024;
+  var REF_MAX_SIDE=1280, REF_MAX_BYTES=9*1024*1024, XIAOLE_REF_MAX_BYTES=7*1024*1024;
   function dataUrlBytes(dataUrl){
     var s=(dataUrl||'').split(',')[1]||'';
     return Math.floor(s.length*3/4);
@@ -797,9 +810,10 @@
   // 体积改由尺寸收敛：每轮 0.85 缩放，直到进 REF_MAX_BYTES。
   // ⚠️ 缩放后的尺寸必须跟 dataUrl 一起回传：setRef 存的 refW/refH 会被 inpaint 画布
   //    (cv.width=refW) 复用，尺寸对不上就会让 mask 与 image 错位。
-  function shrinkToBudget(cv){
+  function shrinkToBudget(cv, maxBytes){
+    maxBytes=maxBytes||REF_MAX_BYTES;
     var out=cv.toDataURL('image/png');
-    for(var n=0;n<6 && dataUrlBytes(out)>REF_MAX_BYTES;n++){
+    for(var n=0;n<6 && dataUrlBytes(out)>maxBytes;n++){
       var small=document.createElement('canvas');
       small.width=Math.max(1,Math.round(cv.width*.85));
       small.height=Math.max(1,Math.round(cv.height*.85));
@@ -808,24 +822,24 @@
     }
     return {dataUrl:out, width:cv.width, height:cv.height};
   }
-  function imageToRefDataUrl(im, maxSide){
+  function imageToRefDataUrl(im, maxSide, maxBytes){
     var mx=maxSide||REF_MAX_SIDE, s=Math.min(1,mx/Math.max(im.width,im.height)), cv=document.createElement('canvas');
     cv.width=Math.max(1,Math.round(im.width*s)); cv.height=Math.max(1,Math.round(im.height*s));
     cv.getContext('2d').drawImage(im,0,0,cv.width,cv.height);
-    return shrinkToBudget(cv);
+    return shrinkToBudget(cv, maxBytes);
   }
   // 把一张图片文件/Blob（上传或粘贴）压缩后设为参考图（上传与粘贴共用）
   function refFromFile(f){
     if(!f) return;
     var url=URL.createObjectURL(f), im=new Image();
     im.onload=function(){
-      var ref=imageToRefDataUrl(im);
-      if(dataUrlBytes(ref.dataUrl)>REF_MAX_BYTES){
-        setNote('图片仍超过 9MB，请压缩或更换图片后重试','#f4708a');
+      var fruit=engine==='xiaole', ref=imageToRefDataUrl(im, fruit?1024:REF_MAX_SIDE, fruit?XIAOLE_REF_MAX_BYTES:REF_MAX_BYTES);
+      if(dataUrlBytes(ref.dataUrl)>(fruit?XIAOLE_REF_MAX_BYTES:REF_MAX_BYTES)){
+        setNote('图片仍超过 '+(fruit?'7':'9')+'MB，请压缩或更换图片后重试','#f4708a');
         try{ URL.revokeObjectURL(url); }catch(e){}
         return;
       }
-      setRef(ref.dataUrl, ref.width, ref.height);
+      if(fruit) addXiaoleRef(ref.dataUrl); else setRef(ref.dataUrl, ref.width, ref.height);
       try{ URL.revokeObjectURL(url); }catch(e){}
     };
     im.onerror=function(){ setNote('这张图读取失败，换一张试试','#f4708a'); };
@@ -840,7 +854,7 @@
         if(engine==='zelong2'){ e.preventDefault(); setNote('泽龙专用生图当前只支持纯文生图，请切换其他引擎使用参考图','#f4cd72'); return; }
         var f=items[i].getAsFile();
         if(f){ e.preventDefault(); refFromFile(f);
-          setNote('✅ 已把剪贴板图片设为参考图 · 改下提示词，点生成即走「图生图」','#2bd576'); return; }
+          setNote(engine==='xiaole'?'✅ 已添加果肉生图参考图':'✅ 已把剪贴板图片设为参考图 · 改下提示词，点生成即走「图生图」','#2bd576'); return; }
       }
     }
   }); }
@@ -890,10 +904,10 @@
     if(revImgUrl && typeof setRef==='function') setRef(revImgUrl, revW, revH);
     setNote('✅ 提示词+参考图都已带上，点生成即走「图生图」','#2bd576'); };
 
-  if(upText){ upText.addEventListener('click',function(e){ if(refImg){ e.preventDefault(); e.stopPropagation();
+  if(upText){ upText.addEventListener('click',function(e){ if(refImg&&engine!=='xiaole'){ e.preventDefault(); e.stopPropagation();
     refImg=null; refW=refH=0; upFile.value=''; upBox.style.backgroundImage='none'; upBox.style.borderStyle='dashed'; upBox.style.borderColor='rgba(148,164,187,.26)';
     if(upIcon) upIcon.style.display='flex'; upText.textContent='上传'; upText.style.background='none'; upText.style.padding='0';
-    if(upHint) upHint.textContent='(可选 · 上传或在提示词框 Ctrl/⌘V 粘贴图片，变「图生图」)'; showInp(false);
+    if(upHint) upHint.textContent='(可选 · 果肉生图最多可上传 4 张；其它引擎为单图)'; showInp(false);
   } }); }
   if(upBox){
     inpBtn=document.createElement('button');
@@ -956,6 +970,27 @@
     if(upHint) upHint.textContent='(已就绪 ·「图生图」改全图'+(engine==='gpt'?'，或「局部修改」只改涂抹处':'')+')';
     showInp(engine==='gpt');  // 局部修改(像素蒙版)仅 gpt-image-2
   }
+  function addXiaoleRef(dataUrl){
+    if(xiaoleRefs.length>=XIAOLE_REF_MAX){ setNote('果肉生图最多可上传 '+XIAOLE_REF_MAX+' 张参考图','#f4708a'); return; }
+    xiaoleRefs.push(dataUrl.split(',')[1]||dataUrl); renderXiaoleRefs();
+    setNote('✅ 已添加果肉生图参考图（'+xiaoleRefs.length+'/'+XIAOLE_REF_MAX+'）','#2bd576');
+  }
+  function renderXiaoleRefs(){
+    if(!upBox) return;
+    var row=upBox.parentElement;
+    row.querySelectorAll('.xiaole-ref-thumb').forEach(function(el){el.remove();});
+    if(engine!=='xiaole'){
+      upBox.style.display='flex';
+      if(!refImg){ upBox.style.backgroundImage='none'; upBox.style.borderStyle='dashed'; upBox.style.borderColor='rgba(148,164,187,.26)'; if(upIcon)upIcon.style.display='flex'; if(upText)upText.textContent='上传'; }
+      return;
+    }
+    upBox.style.backgroundImage='none'; upBox.style.borderStyle='dashed'; upBox.style.borderColor='rgba(148,164,187,.26)';
+    if(upIcon)upIcon.style.display='flex'; if(upText)upText.textContent='添加';
+    if(upHint)upHint.textContent='(可选 · 已选 '+xiaoleRefs.length+'/'+XIAOLE_REF_MAX+' 张，上传或在提示词框 Ctrl/⌘V 粘贴)';
+    xiaoleRefs.forEach(function(data,i){ var box=document.createElement('div'); box.className='xiaole-ref-thumb'; box.style.cssText='position:relative;width:66px;height:66px;border:1px solid rgba(231,178,76,.5);border-radius:11px;overflow:hidden;background:#070b13;'; box.innerHTML='<img src="data:image/png;base64,'+data+'" style="width:100%;height:100%;object-fit:cover"><button type="button" style="position:absolute;right:3px;top:3px;width:20px;height:20px;border:0;border-radius:50%;background:rgba(7,11,19,.8);color:#fff;cursor:pointer;">×</button>'; box.querySelector('button').onclick=function(){xiaoleRefs.splice(i,1);renderXiaoleRefs();}; row.insertBefore(box,upBox); });
+    upBox.style.display=xiaoleRefs.length>=XIAOLE_REF_MAX?'none':'flex';
+  }
+  renderXiaoleRefs();
 
   // 灵感页详情弹窗「跟创」带来的粘贴参考图（经 sessionStorage 传递）→ 载入即设为参考图（图生图）
   try{ var _fcref=sessionStorage.getItem('hq_followcreate_ref');
@@ -1010,15 +1045,16 @@
   // 文生图 / 图生图（有参考图）/ nano banana
   gen.onclick=function(){
     var bp={prompt:(pr.value||'').trim(), ratio:ratio, quality:quality, count:count};
-    var usesRef=!!refImg && engine!=='zelong2';
-    if(usesRef) bp.image=refImg;  // 专用低成本通道首期只支持纯文生图
+    var usesRef=(engine==='xiaole'&&xiaoleRefs.length)|| (!!refImg&&engine!=='zelong2');
+    if(engine==='xiaole'&&xiaoleRefs.length) bp.reference_images=xiaoleRefs.slice();
+    else if(usesRef) bp.image=refImg;  // 泽龙专用通道首期只支持纯文生图
     if(engine==='gpt' || engine==='xiaole' || engine==='zelong2' || engine==='seedream'){
       if(engine!=='gpt') bp.provider=engine;              // 果肉/泽龙2/Seedream 各自 provider
       if(engine==='seedream') bp.variant=seedreamVariant; // 5.0 标准 / 5.0 Pro
       var lbl = engine==='xiaole' ? '果肉生图 '
               : engine==='zelong2' ? '泽龙专用生图 '
               : engine==='seedream' ? ('黄雀引擎 1 '+(seedreamVariant==='pro'?'Pro ':'标准 ')) : '';
-      submit(bp, lbl+(usesRef?'图生图中（在参考图上改）':(engine==='gpt'?'文生图中':'生成中')), '/api/gen/image');
+      submit(bp, lbl+((engine==='xiaole'&&xiaoleRefs.length)?'多图参考生图中':(usesRef?'图生图中（在参考图上改）':(engine==='gpt'?'文生图中':'生成中'))), '/api/gen/image');
     } else {
       bp.model=bananaVariant;   // 一张卡两个型号：nb2 / pro，后端 /api/gen/banana 按 model 分流
       submit(bp, (bananaVariant==='pro'?'纳米香蕉 Pro ':'纳米香蕉 2 ')+(refImg?'图生图中（在参考图上改）':'生成中'), '/api/gen/banana');

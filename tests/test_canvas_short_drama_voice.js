@@ -55,6 +55,15 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+function fakeStorage() {
+  const values = new Map();
+  return {
+    getItem(key) { return values.has(key) ? values.get(key) : null; },
+    setItem(key, value) { values.set(key, String(value)); },
+    removeItem(key) { values.delete(key); },
+  };
+}
+
 function fakeHost() {
   const listeners = new Map();
   const added = [];
@@ -85,6 +94,38 @@ function fakeHost() {
   return host;
 }
 
+function c2Snapshot() {
+  const state = JSON.parse(JSON.stringify(snapshot()));
+  state.unlocked_shot_count = 2;
+  state.handoff_blocked = true;
+  state.handoff_blockers = [{
+    code: 'missing_locked_voice_shot', message: '仍有镜头尚未锁定',
+    shot_id: 'shot-1',
+  }];
+  state.shots[0].status = 'ready';
+  state.shots[0].lockable = true;
+  state.shots[0].lock_blockers = [];
+  state.shots[0].lines.forEach((line, index) => {
+    const duration = index ? 1200 : 1000;
+    const start = index ? 1150 : 0;
+    line.current_version = 1;
+    line.start_ms = start;
+    line.end_ms = start + duration;
+    line.suggested_start_ms = start;
+    line.suggested_end_ms = start + duration;
+    line.input_hash = `hash-${index}`;
+    line.versions = [{
+      version: 1, status: 'done', duration_ms: duration,
+      audio_url: `/voice-${index + 1}.mp3`, cost: 10,
+      voice_key: line.voice_key, input_hash: line.input_hash,
+      settings: { speed: line.speed, pitch: line.pitch, volume: line.volume },
+    }];
+  });
+  state.shots[1].lockable = true;
+  state.shots[1].lock_blockers = [];
+  return state;
+}
+
 function testNormalizeRenderAndReadonlyContract() {
   assert.deepEqual(
     Object.keys(voice).sort(),
@@ -99,7 +140,7 @@ function testNormalizeRenderAndReadonlyContract() {
     'narrator character keys force narration even when line_type disagrees');
 
   const html = voice.renderWorkspace(snapshot(), { voices });
-  assert.match(html, /镜头列表[\s\S]*台词与字幕[\s\S]*配音控制台/);
+  assert.match(html, /镜头列表[\s\S]*台词与字幕[\s\S]*验收控制台/);
   assert.match(html, /第一镜[\s\S]*第二镜/);
   assert.match(html, /待配音/);
   assert.match(html, /静音/);
@@ -109,9 +150,18 @@ function testNormalizeRenderAndReadonlyContract() {
   assert.doesNotMatch(html, /<script>|<b>/);
   assert.match(html, /林&lt;script&gt;探长/);
   assert.match(html, /&lt;b&gt;谁在那里？&lt;\/b&gt;/);
-  assert.match(html, /data-action="generate-line"[^>]*disabled/);
+  assert.match(html, /data-action="generate-line"[^>]*>生成配音/);
+  assert.doesNotMatch(html, /data-action="generate-line"[^>]*disabled/);
   assert.match(html, /data-action="save-timeline"[^>]*disabled/);
-  assert.doesNotMatch(html, /data-action="(?:lock|confirm|advance)/);
+  assert.match(html, /data-action="generate-shot"/);
+  assert.match(html, /data-action="generate-all"/);
+  assert.match(html, /data-action="set-shot-lock"/);
+  assert.match(html, /data-action="confirm-voice-stage"/);
+
+  const readonly = voice.renderWorkspace(snapshot(), { voices, canEdit: false });
+  assert.match(readonly, /data-action="generate-line"[^>]*disabled/);
+  assert.match(readonly, /data-action="generate-shot"[^>]*disabled/);
+  assert.match(readonly, /data-field="subtitle_text"[^>]*disabled/);
 }
 
 function testRendererDistinguishesLoadingErrorEmptyPendingAndSilent() {
@@ -324,14 +374,17 @@ async function testHostSelectionAndHandlerRemoval() {
     } },
   });
   await workspace.ready;
-  assert.equal(host.added.length, 1);
+  assert.equal(host.added.length, 6);
   assert.equal(host.dispatchShot('shot-2'), true);
   assert.equal(workspace.getState().selectedShotId, 'shot-2');
   assert.match(host.innerHTML, /当前镜头为静音镜头/);
   workspace.destroy();
-  assert.equal(host.removed.length, 1);
+  assert.equal(host.removed.length, 6);
   assert.equal(host.removed[0].type, 'click');
   assert.equal(host.removed[0].handler, host.added[0].handler);
+  assert.equal(host.removed[1].type, 'change');
+  assert.equal(host.removed[2].type, 'pointerdown');
+  assert.equal(host.removed[5].type, 'play');
   const htmlAfterDestroy = host.innerHTML;
   assert.equal(host.dispatchShot('shot-1'), false);
   assert.equal(host.innerHTML, htmlAfterDestroy);
@@ -367,7 +420,339 @@ async function testDestroyInvalidatesPendingRequestsWithoutHostOrStateMutation()
   assert.deepEqual(workspace.getState(), destroyedState);
   assert.equal(host.innerHTML, loadingHtml);
   assert.doesNotMatch(host.innerHTML, /late-project|迟到音色/);
-  assert.equal(host.removed.length, 1);
+  assert.equal(host.removed.length, 6);
+}
+
+async function testQuoteConfirmGenerateReloadAndVersionSelection() {
+  const calls = [];
+  let voiceLoads = 0;
+  let submitAttempts = 0;
+  const after = snapshot();
+  after.shots[0].lines[0].job = {
+    job_id: 901, status: 'pending', error: '', refunded: 0,
+  };
+  const client = {
+    json(route, options = {}) {
+      calls.push({ route, options });
+      if (route.startsWith('/api/gen/short-drama/voice?')) {
+        voiceLoads += 1;
+        return Promise.resolve(voiceLoads > 1 ? after : snapshot());
+      }
+      if (route === '/api/gen/audio/voices') return Promise.resolve({ items: voices });
+      if (route === '/api/gen/short-drama/voice-quote') {
+        return Promise.resolve({
+          project_id: 'project-1', revision: 8, total_cost: 10,
+          items: [{ line_id: 'voice-1', quote_token: 'quote-1', cost: 10 }],
+        });
+      }
+      if (route === '/api/gen/short-drama/generate-voice') {
+        submitAttempts += 1;
+        if (submitAttempts === 1) {
+          const timeout = new Error('timeout');
+          timeout.code = 'timeout';
+          return Promise.reject(timeout);
+        }
+        return Promise.resolve({ job_id: 901, cost: 10, points_left: 90 });
+      }
+      if (route === '/api/gen/short-drama/select-voice-version') {
+        return Promise.resolve({ project_id: 'project-1', line_id: 'voice-1',
+          current_version: 1, revision: 9 });
+      }
+      throw new Error(`unexpected route ${route}`);
+    },
+  };
+  const confirmations = [];
+  const workspace = voice.createWorkspace({
+    projectId: 'project-1', client, document: null, pollInterval: 60000,
+    confirm(cost, quote, items) {
+      confirmations.push({ cost, quote, items });
+      return true;
+    },
+  });
+  await workspace.ready;
+  const generated = await workspace.generateLine('voice-1');
+  assert.equal(generated.cancelled, false);
+  assert.equal(confirmations.length, 1);
+  assert.equal(confirmations[0].cost, 10);
+  assert.equal(confirmations[0].quote.kind, 'voice');
+  const quoteCall = calls.find((call) =>
+    call.route === '/api/gen/short-drama/voice-quote');
+  assert.deepEqual(quoteCall.options.body.items, [{
+    line_id: 'voice-1', voice_key: 'longwan', speed: 1.2, pitch: 1, volume: 4,
+  }]);
+  const submit = calls.find((call) =>
+    call.route === '/api/gen/short-drama/generate-voice');
+  assert.match(submit.options.headers['Idempotency-Key'], /^sdv-/);
+  assert.equal(submit.options.body.quote_token, 'quote-1');
+  const submits = calls.filter((call) =>
+    call.route === '/api/gen/short-drama/generate-voice');
+  assert.equal(submits.length, 2);
+  assert.equal(submits[0].options.headers['Idempotency-Key'],
+    submits[1].options.headers['Idempotency-Key'],
+    'an ambiguous timeout retries the exact same paid operation');
+  assert.equal(workspace.getState().shots[0].lines[0].job.status, 'pending');
+
+  after.shots[0].lines[0].versions = [{
+    version: 1, status: 'done', audio_url: '/voice-1.mp3',
+    duration_ms: 1200, cost: 10, voice_key: 'longwan',
+    input_hash: after.shots[0].lines[0].input_hash,
+  }];
+  after.shots[0].lines[0].current_version = 1;
+  after.shots[0].lines[0].job = { job_id: 901, status: 'done', error: '', refunded: 0 };
+  const selected = await workspace.selectVersion('voice-1', 1);
+  assert.equal(selected.revision, 9);
+  assert.ok(calls.some((call) =>
+    call.route === '/api/gen/short-drama/select-voice-version'));
+  workspace.destroy();
+}
+
+async function testPreviewStopsPreviousAudioAndReadonlyRejectsWrites() {
+  const players = [];
+  const workspace = voice.createWorkspace({
+    projectId: 'project-1', canEdit: false, document: null,
+    client: { json(route) {
+      if (route.startsWith('/api/gen/short-drama/voice?')) return Promise.resolve(snapshot());
+      return Promise.resolve({ items: voices });
+    } },
+    audioFactory(url) {
+      const player = { url, pauses: 0, plays: 0,
+        play() { this.plays += 1; return Promise.resolve(); },
+        pause() { this.pauses += 1; } };
+      players.push(player);
+      return player;
+    },
+  });
+  await workspace.ready;
+  assert.equal(workspace.preview('/one.mp3'), true);
+  assert.equal(workspace.preview('/two.mp3'), true);
+  assert.equal(players[0].pauses, 1);
+  assert.equal(players[1].plays, 1);
+  await assert.rejects(workspace.generateLine('voice-1'), /只读权限/);
+  workspace.destroy();
+  assert.equal(players[1].pauses, 1);
+}
+
+async function testAmbiguousVoiceSubmissionSurvivesTwoFailuresAndWorkspaceReload() {
+  const storage = fakeStorage();
+  const calls = [];
+  let quoteCalls = 0;
+  let submitCalls = 0;
+  let confirmations = 0;
+  const client = {
+    json(route, options = {}) {
+      calls.push({ route, options });
+      if (route.startsWith('/api/gen/short-drama/voice?')) {
+        return Promise.resolve(snapshot());
+      }
+      if (route === '/api/gen/audio/voices') {
+        return Promise.resolve({ items: voices });
+      }
+      if (route === '/api/gen/short-drama/voice-quote') {
+        quoteCalls += 1;
+        return Promise.resolve({
+          project_id: 'project-1', revision: 8, total_cost: 10,
+          items: [{ line_id: 'voice-1', quote_token: 'durable-quote-1', cost: 10 }],
+        });
+      }
+      if (route === '/api/gen/short-drama/generate-voice') {
+        submitCalls += 1;
+        if (submitCalls === 1) {
+          const timeout = new Error('timeout');
+          timeout.code = 'timeout';
+          return Promise.reject(timeout);
+        }
+        if (submitCalls === 2) {
+          const unavailable = new Error('auth service unavailable');
+          unavailable.status = 502;
+          return Promise.reject(unavailable);
+        }
+        return Promise.resolve({ job_id: 902, cost: 10, points_left: 90 });
+      }
+      throw new Error(`unexpected route ${route}`);
+    },
+  };
+  const firstWorkspace = voice.createWorkspace({
+    projectId: 'project-1', client, storage, document: null,
+    pollInterval: 60000,
+    confirm() { confirmations += 1; return true; },
+  });
+  await firstWorkspace.ready;
+  const firstResult = await firstWorkspace.generateLine('voice-1');
+  assert.equal(firstResult.results[0].ok, false);
+  firstWorkspace.destroy();
+
+  const secondWorkspace = voice.createWorkspace({
+    projectId: 'project-1', client, storage, document: null,
+    pollInterval: 60000,
+    confirm() { confirmations += 1; return true; },
+  });
+  await secondWorkspace.ready;
+  const recovered = await secondWorkspace.generateLine('voice-1');
+  assert.equal(recovered.results[0].ok, true);
+  secondWorkspace.destroy();
+
+  const submits = calls.filter((call) =>
+    call.route === '/api/gen/short-drama/generate-voice');
+  assert.equal(submits.length, 3);
+  assert.equal(quoteCalls, 1, 'manual retry must not request a new quote');
+  assert.equal(confirmations, 1, 'persisted confirmed operation must not reconfirm');
+  assert.equal(new Set(submits.map((call) =>
+    call.options.headers['Idempotency-Key'])).size, 1);
+  assert.equal(new Set(submits.map((call) =>
+    call.options.body.quote_token)).size, 1);
+  assert.deepEqual(submits[0].options.body, submits[2].options.body);
+}
+
+async function testC2TimelineDraftSaveLockAndHandoff() {
+  const calls = [];
+  const changes = [];
+  let current = c2Snapshot();
+  const client = {
+    json(route, options = {}) {
+      calls.push({ route, options });
+      if (route.startsWith('/api/gen/short-drama/voice?')) {
+        return Promise.resolve(JSON.parse(JSON.stringify(current)));
+      }
+      if (route === '/api/gen/audio/voices') {
+        return Promise.resolve({ items: voices });
+      }
+      if (route === '/api/gen/short-drama/save-voice-timeline') {
+        current = JSON.parse(JSON.stringify(current));
+        current.revision += 1;
+        current.shots[0].timeline_revision += 1;
+        options.body.items.forEach((item) => {
+          Object.assign(current.shots[0].lines.find((line) =>
+            line.id === item.line_id), item);
+        });
+        return Promise.resolve(current);
+      }
+      if (route === '/api/gen/short-drama/set-voice-shot-lock') {
+        current = JSON.parse(JSON.stringify(current));
+        current.revision += 1;
+        current.shots.find((shot) => shot.id === options.body.shot_id).locked =
+          options.body.lock;
+        return Promise.resolve(current);
+      }
+      if (route === '/api/gen/short-drama/confirm') {
+        current = JSON.parse(JSON.stringify(current));
+        current.revision += 1;
+        current.stage = 'video_review';
+        return Promise.resolve(current);
+      }
+      throw new Error(`unexpected route ${route}`);
+    },
+  };
+  const workspace = voice.createWorkspace({
+    projectId: 'project-1', client, document: null,
+    onChange(summary) { changes.push(summary); },
+  });
+  await workspace.ready;
+  assert.match(workspace.render(), /data-action="restore-auto-timeline"/);
+  assert.match(workspace.render(), /data-action="play-shot"/);
+  assert.match(workspace.render(), /data-field="subtitle_text"/);
+  workspace.updateTimelineLine('voice-1', {
+    subtitle_text: '修改后的字幕', subtitle_visible: true,
+    start_ms: 100, end_ms: 1100,
+  });
+  assert.equal(workspace.getState().shots[0].lines[0].subtitle_text, '修改后的字幕');
+  assert.equal(workspace.getState().timelineDirty, true);
+  const saved = await workspace.saveTimeline();
+  assert.equal(saved.revision, 9);
+  assert.equal(changes.at(-1).revision, 9);
+  const saveCall = calls.find((call) =>
+    call.route === '/api/gen/short-drama/save-voice-timeline');
+  assert.equal(saveCall.options.body.timeline_revision, 1);
+  assert.equal(saveCall.options.body.items[0].start_ms, 100);
+  assert.equal(workspace.getState().timelineDirty, false);
+  await workspace.setShotLock(true);
+  assert.equal(workspace.getState().shots[0].locked, true);
+  assert.equal(changes.at(-1).revision, 10);
+  current.shots[1].locked = true;
+  current.handoff_blocked = false;
+  current.handoff_blockers = [];
+  current.unlocked_shot_count = 0;
+  await workspace.reload();
+  const advanced = await workspace.confirmVoiceStage();
+  assert.equal(advanced.stage, 'video_review');
+  assert.deepEqual(
+    { revision: changes.at(-1).revision, stage: changes.at(-1).stage },
+    { revision: 11, stage: 'video_review' },
+  );
+  assert.match(workspace.render(), /data-action="save-timeline"[^>]*disabled/);
+  workspace.destroy();
+}
+
+async function testC2TimelineTimeoutRecoversWithoutBlindOldRevisionReplay() {
+  let current = c2Snapshot();
+  let saveCalls = 0;
+  const submitted = [];
+  const client = {
+    json(route, options = {}) {
+      if (route.startsWith('/api/gen/short-drama/voice?')) {
+        return Promise.resolve(JSON.parse(JSON.stringify(current)));
+      }
+      if (route === '/api/gen/audio/voices') {
+        return Promise.resolve({ items: voices });
+      }
+      if (route === '/api/gen/short-drama/save-voice-timeline') {
+        saveCalls += 1;
+        submitted.push(JSON.parse(JSON.stringify(options.body)));
+        current = JSON.parse(JSON.stringify(current));
+        current.revision += 1;
+        current.shots[0].timeline_revision += 1;
+        options.body.items.forEach((item) => Object.assign(
+          current.shots[0].lines.find((line) => line.id === item.line_id), item
+        ));
+        const error = new Error('timeout');
+        error.code = 'timeout';
+        return Promise.reject(error);
+      }
+      throw new Error(`unexpected route ${route}`);
+    },
+  };
+  const workspace = voice.createWorkspace({
+    projectId: 'project-1', client, document: null,
+  });
+  await workspace.ready;
+  workspace.restoreAutoTimeline();
+  const recovered = await workspace.saveTimeline();
+  assert.equal(recovered.revision, 9);
+  assert.equal(saveCalls, 1,
+    'a lost free-write response must be recovered by refresh, not old-revision replay');
+  assert.equal(submitted[0].revision, 8);
+  workspace.destroy();
+}
+
+async function testC2ShotPlaybackStopsOnSelectionAndDestroy() {
+  const players = [];
+  const workspace = voice.createWorkspace({
+    projectId: 'project-1', document: null,
+    client: { json(route) {
+      if (route.startsWith('/api/gen/short-drama/voice?')) {
+        return Promise.resolve(c2Snapshot());
+      }
+      return Promise.resolve({ items: voices });
+    } },
+    audioFactory(url) {
+      const player = {
+        url, currentTime: 0, pauses: 0, plays: 0,
+        play() { this.plays += 1; return Promise.resolve(); },
+        pause() { this.pauses += 1; },
+      };
+      players.push(player);
+      return player;
+    },
+  });
+  await workspace.ready;
+  assert.equal(workspace.playShot(), true);
+  assert.equal(workspace.getState().timelinePlaying, true);
+  workspace.selectShot('shot-2');
+  assert.equal(workspace.getState().timelinePlaying, false);
+  assert.ok(players.every((player) => player.pauses >= 1));
+  workspace.selectShot('shot-1');
+  workspace.playShot();
+  workspace.destroy();
+  assert.ok(players.every((player) => player.pauses >= 1));
 }
 
 async function main() {
@@ -382,6 +767,12 @@ async function main() {
   await testLoadErrorRendersOnlyEscapedErrorState();
   await testHostSelectionAndHandlerRemoval();
   await testDestroyInvalidatesPendingRequestsWithoutHostOrStateMutation();
+  await testQuoteConfirmGenerateReloadAndVersionSelection();
+  await testPreviewStopsPreviousAudioAndReadonlyRejectsWrites();
+  await testAmbiguousVoiceSubmissionSurvivesTwoFailuresAndWorkspaceReload();
+  await testC2TimelineDraftSaveLockAndHandoff();
+  await testC2TimelineTimeoutRecoversWithoutBlindOldRevisionReplay();
+  await testC2ShotPlaybackStopsOnSelectionAndDestroy();
   const css = fs.readFileSync(path.join(
     __dirname, '../site/workbench/canvas/canvas-short-drama-voice.css'
   ), 'utf8');
