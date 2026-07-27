@@ -491,6 +491,16 @@
   }
   // 灵感页「做同款」：从 ?prompt= / ?engine= 预填提示词 + 切引擎，并尽量从提示词里还原比例
   try{ var ip=new URLSearchParams(location.search);
+    if(ip.get('prefill')==='ip12'){
+      try{
+        var rawHandoff=sessionStorage.getItem('hq_ip12_product_handoff_v1');
+        sessionStorage.removeItem('hq_ip12_product_handoff_v1');
+        var handoff=JSON.parse(rawHandoff||'null'), handoffAge=handoff?Date.now()-Number(handoff.created_at):Infinity;
+        if(handoff&&handoff.version===1&&handoff.target==='image_studio'&&Number.isFinite(handoffAge)&&handoffAge>=0&&handoffAge<=600000&&handoff.prompt){
+          pr.value=String(handoff.prompt).slice(0,2000);pr.dispatchEvent(new Event('input'));pr.focus();setNote('✅ 已带入 IP12 待编辑方案，请检查后再生成','#2bd576');
+        }
+      }catch(e){}
+    }
     var pp=ip.get('prompt');
     if(pp){
       pr.value=pp;

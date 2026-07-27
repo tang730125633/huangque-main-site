@@ -96,7 +96,7 @@ console.log(JSON.stringify([
         self.assertIn("progressed===totalSteps&&project?.id", html)
         self.assertIn("ip12-report.html?project=", html)
         self.assertIn('id="openReportBtn"', html)
-        report_source = html[html.index('$("openReportBtn")'):html.index('document.querySelectorAll("[data-resume-module]")')]
+        report_source = html[html.index('$("openReportBtn")'):html.index('$("skippedItems").querySelectorAll("[data-resume-module]")')]
         self.assertIn("await flushProjectSave()", report_source)
         self.assertLess(report_source.index("await flushProjectSave()"), report_source.index("location.href=`ip12-report.html"))
         self.assertIn("data-resume-module=", html)
@@ -148,6 +148,53 @@ console.log(JSON.stringify([
         self.assertIn("if(turns.length)stopCoachWelcomeRotation();else startCoachWelcomeRotation();", html)
         self.assertIn("@keyframes coachWelcome", html)
         self.assertIn("@keyframes coachWelcomeFade", html)
+
+    def test_coach_keeps_six_messages_and_only_applies_suggested_text_as_a_draft(self):
+        html = PAGE.read_text(encoding="utf-8")
+        self.assertIn("const priorTurns=state.guideTurns.slice(-6)", html)
+        self.assertIn("].slice(-6);", html)
+        self.assertIn('data-guide-use-draft="${index}"', html)
+        self.assertIn("function applyGuideDraft(value)", html)
+        source = html[html.index("function applyGuideDraft"):html.index("function runGuideAction")]
+        self.assertIn("answer.value=draft", source)
+        self.assertIn("saveDraft();", source)
+        self.assertNotIn("fetch(", source)
+        self.assertNotIn("confirmCurrent", source)
+
+    def test_foundation_outcome_requires_all_module_one_to_four_answers_to_be_confirmed(self):
+        html = PAGE.read_text(encoding="utf-8")
+        self.assertIn('id="foundationOutcome" aria-live="polite" hidden', html)
+        source = html[html.index("function renderFoundationOutcome"):html.index("function render()")]
+        self.assertIn("item.answer?.confirmed||item.answer?.skipped", source)
+        self.assertIn("items.filter(item=>!item.answer?.confirmed)", source)
+        self.assertIn("state.profile[id]", source)
+        self.assertIn("跳过项不会被 AI 当成事实", source)
+        self.assertIn("你的 IP 底座 · 已确认", source)
+        self.assertIn('$("skippedItems").querySelectorAll("[data-resume-module]")', html)
+        listener = html[html.index('$("foundationOutcome").addEventListener'):html.index('$("coachFloat").addEventListener')]
+        self.assertIn('event.target.closest("[data-resume-module]")', listener)
+        for target in ("script_studio", "image_studio", "video_studio"):
+            self.assertIn(f'data-foundation-target="{target}"', source)
+
+    def test_foundation_handoff_is_explicit_and_does_not_generate_or_expose_context_in_url(self):
+        html = PAGE.read_text(encoding="utf-8")
+        source = html[html.index("function foundationHandoff"):html.index("function nextStepTitle")]
+        self.assertIn("foundationItems().some(item=>!item.answer?.confirmed)", source)
+        self.assertIn("sessionStorage.setItem(PRODUCT_HANDOFF_KEY", source)
+        self.assertIn("created_at:Date.now()", source)
+        self.assertIn("?prefill=ip12", source)
+        navigation = source[source.index("location.href"):]
+        self.assertIn('location.href=`${product.url}?prefill=ip12`', navigation)
+        self.assertNotIn("context", navigation)
+        self.assertNotIn("fetch(", source)
+        self.assertNotIn("confirmCurrent", source)
+        self.assertIn("不会自动生成、扣点或发布", html)
+
+    def test_editing_a_confirmed_foundation_answer_relocks_the_outcome(self):
+        html = PAGE.read_text(encoding="utf-8")
+        source = html[html.index("function saveDraft"):html.index("async function confirmCurrent")]
+        self.assertIn("if(changed)delete state.profile[module.id]", source)
+        self.assertIn("if(changed)renderFoundationOutcome();", source)
 
     def test_project_recovery_consent_and_action_links_are_visible(self):
         html = PAGE.read_text(encoding="utf-8")

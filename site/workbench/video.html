@@ -3278,6 +3278,19 @@
   function _applyPrefillVoice(){
     if(_prefillVoice && applyTemplateVoice(_prefillVoice)) _prefillVoice='';
   }
+  function applyIP12Handoff(){
+    try{
+      if(new URLSearchParams(location.search).get('prefill')!=='ip12') return;
+      var raw=sessionStorage.getItem('hq_ip12_product_handoff_v1');
+      sessionStorage.removeItem('hq_ip12_product_handoff_v1');
+      var handoff=JSON.parse(raw||'null'), age=handoff?Date.now()-Number(handoff.created_at):Infinity;
+      if(!handoff||handoff.version!==1||handoff.target!=='video_studio'||!Number.isFinite(age)||age<0||age>600000||!handoff.prompt) return;
+      updateFunction('talking');updateMode('text');
+      $('scriptText').value=String(handoff.prompt).slice(0,1000);$('scriptText').dispatchEvent(new Event('input'));$('scriptText').focus();
+      setVideoStatus('已带入 IP12 待编辑方案，请检查后再生成','talking');
+      if(typeof toast==='function') toast('已带入 IP12 待编辑方案，请检查后再生成');
+    }catch(e){}
+  }
   // 灵感页「一键跟创（视频）」：?prompt= 预填到果肉/Seedance/Omni 渠道并切到对应 tab
   function applyInspirationPrefill(){
     try{
@@ -3293,6 +3306,7 @@
     }catch(e){}
   }
   applyAssetPrefill();
+  applyIP12Handoff();
   videoHealthReady.then(applyInspirationPrefill);
   loadVoices();
   loadVideoHistory();

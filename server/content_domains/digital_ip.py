@@ -27,7 +27,7 @@ RATE_LIMIT_PER_MINUTE = 6
 MAX_GUIDE_MESSAGE_CHARS = 1200
 MAX_GUIDE_ANSWER_CHARS = 1200
 MAX_GUIDE_SUMMARY_CHARS = 800
-MAX_GUIDE_TURNS = 3
+MAX_GUIDE_TURNS = 6
 GUIDE_RATE_LIMIT_PER_MINUTE = 3
 GUIDE_DAILY_LIMIT = 30
 GUIDE_CACHE_SECONDS = 600
@@ -372,7 +372,7 @@ GUIDE_INSTRUCTIONS = """你是常驻在黄雀 IP 十二模块页面旁边的“�
 你的唯一任务是帮助用户理解当前问题、回忆真实经历、整理当前回答，并告诉用户下一步怎样操作。
 
 硬性边界：
-- 只使用当前步骤、当前草稿、简短 IP 摘要和最近三轮对话，不讨论无关话题
+- 只使用当前步骤、当前草稿、简短 IP 摘要和最近六条对话，不讨论无关话题
 - 不生成完整诊断报告或替用户确定人设；需要诊断时 needs_diagnosis=true，并建议用户主动点击本步诊断
 - 不制造容貌焦虑，不承诺医疗效果、成交、营收或粉丝增长，不编造案例和经营数据
 - 资料不足时明确说明，并提出最多 3 个短问题；不索取身份证、联系方式、支付信息等无关敏感资料

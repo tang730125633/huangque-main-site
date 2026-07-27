@@ -166,6 +166,18 @@
     .handoff-card span{font-size:10px;color:#95702e;letter-spacing:.1em}
     .handoff-card b{display:block;font-size:13px;margin:7px 0 5px;color:#14273a}
     .handoff-card p{margin:0;color:#7d7e7e;font-size:11px;line-height:1.5}
+    .phase-outcome{margin:18px 34px 0;padding:22px;border:1px solid #d7bd7f;border-radius:17px;background:linear-gradient(145deg,#fffdf7,#f3ead8);box-shadow:0 14px 35px rgba(73,54,18,.08)}
+    .phase-outcome[hidden]{display:none}
+    .outcome-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:15px}
+    .outcome-head span{color:#8b682a;font-size:10px;font-weight:800;letter-spacing:.12em}
+    .outcome-head h2{margin:5px 0 4px;color:#132638;font:700 23px/1.25 Georgia,"Songti SC",serif}
+    .outcome-head p{margin:0;color:#70757b;font-size:11px;line-height:1.6}
+    .outcome-head strong{border:1px solid #d7bd7f;border-radius:999px;padding:6px 10px;color:#7d5d22;font-size:10px;white-space:nowrap}
+    .outcome-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+    .outcome-card{padding:13px;border:1px solid #dfd4c4;border-radius:12px;background:rgba(255,255,255,.64)}
+    .outcome-card b{display:block;margin-bottom:5px;color:#16293b;font-size:12px}
+    .outcome-card p{margin:0;color:#6d7379;font-size:11px;line-height:1.55}
+    .outcome-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:15px}
 
     .memory{
       position:sticky;top:0;height:100vh;border-left:1px solid rgba(216,174,85,.24);background:#081726;
@@ -292,10 +304,10 @@
       .hero{padding:32px 22px 17px}
       .hero h1{font-size:38px}
       .step-card{margin:0 14px}
-      .handoff{margin:16px 14px 0}
+      .handoff,.phase-outcome{margin:16px 14px 0}
       .step-head{grid-template-columns:1fr}
       .module-progress{text-align:left}
-      .handoff,.guide-steps{grid-template-columns:1fr}
+      .handoff,.guide-steps,.outcome-grid{grid-template-columns:1fr}
       .step-actions{align-items:flex-start;flex-direction:column}
       .action-group{width:100%}
       .nav-btn{flex:1}
@@ -394,6 +406,7 @@
         <article class="handoff-card"><span>MODULES 05–08</span><b>进入内容生产</b><p>选题、文案、形象与脚本将连接黄雀编导、图片和视频能力。</p></article>
         <article class="handoff-card"><span>MODULES 09–12</span><b>进入运营增长</b><p>发布、私域、销售和商业反馈重新回到 IP 档案。</p></article>
       </section>
+      <section class="phase-outcome" id="foundationOutcome" aria-live="polite" hidden></section>
     </main>
 
     <aside class="memory">
@@ -608,6 +621,12 @@
     const API_URL = "/api/gen/digital-ip/diagnose";
     const GUIDE_API_URL = "/api/gen/digital-ip/guide";
     const PROJECTS_URL = "/api/gen/digital-ip/projects";
+    const PRODUCT_HANDOFF_KEY = "hq_ip12_product_handoff_v1";
+    const PRODUCT_HANDOFFS = {
+      image_studio:{url:"banana.html",instruction:"请根据以下已确认的 IP 底座，制作一份符合定位、人设、价值与故事的视觉内容草稿："},
+      script_studio:{url:"script.html",instruction:"请根据以下已确认的 IP 底座，策划一条符合定位、人设、价值与故事的内容："},
+      video_studio:{url:"video.html",instruction:"请根据以下已确认的 IP 底座，制作一条符合定位、人设、价值与故事的视频草稿："}
+    };
     const UPLOAD_MIME = {pdf:"application/pdf",doc:"application/msword",docx:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",ppt:"application/vnd.ms-powerpoint",pptx:"application/vnd.openxmlformats-officedocument.presentationml.presentation",xls:"application/vnd.ms-excel",xlsx:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",csv:"text/csv",txt:"text/plain",md:"text/markdown",png:"image/png",jpg:"image/jpeg",jpeg:"image/jpeg",webp:"image/webp"};
     const totalSteps = MODULES.reduce((sum,module)=>sum+module.steps.length,0);
     const initialState = {moduleIndex:0,stepIndex:0,answers:{},completedModules:[],profile:{},analyses:{},guideTurns:[]};
@@ -878,6 +897,7 @@
       if(changed)delete state.profile[module.id];
       const stale=invalidateStaleAnalysis(answerText(step,next))||changed;
       persist();
+      if(changed)renderFoundationOutcome();
       if(stale)renderAI();
       return stale;
     }
@@ -977,6 +997,20 @@
       return Object.values(state.profile).map(item=>`${item.title}：${item.summary}`).join("\n").slice(0,800);
     }
 
+    function foundationItems(){
+      return MODULES.slice(0,4).flatMap((module,moduleIndex)=>module.steps.map((step,stepIndex)=>({module,moduleIndex,step,stepIndex,answer:state.answers[`${moduleIndex}-${stepIndex}`]})));
+    }
+
+    function foundationHandoff(target){
+      const product=PRODUCT_HANDOFFS[target];
+      const context=[1,2,3,4].map(id=>state.profile[id]&&`${state.profile[id].title}：${state.profile[id].summary}`).filter(Boolean).join("\n");
+      if(!product||foundationItems().some(item=>!item.answer?.confirmed)||[1,2,3,4].some(id=>!state.profile[id])||!context){ showToast("请先完成 IP 底座的全部确认"); return; }
+      try{
+        sessionStorage.setItem(PRODUCT_HANDOFF_KEY,JSON.stringify({version:1,target,prompt:`${product.instruction}\n\n${context}`.slice(0,1000),created_at:Date.now()}));
+      }catch(_){ showToast("浏览器无法暂存方案，请直接进入产品页"); return; }
+      location.href=`${product.url}?prefill=ip12`;
+    }
+
     function nextStepTitle(){
       const module=MODULES[state.moduleIndex];
       if(state.stepIndex<module.steps.length-1)return module.steps[state.stepIndex+1].title;
@@ -1003,10 +1037,10 @@
 
     function renderCoach(){
       const turns=state.guideTurns.slice(-6);
-      $("coachMessages").innerHTML=turns.length?turns.map(turn=>
+      $("coachMessages").innerHTML=turns.length?turns.map((turn,index)=>
         `<div class="coach-bubble ${turn.role==="user"?"user":"assistant"}">${escapeHtml(turn.content)}${
           turn.role==="assistant"&&turn.suggested_answer
-            ? `<div class="coach-answer"><b>可编辑的回答草稿</b><br>${escapeHtml(turn.suggested_answer)}</div>`
+            ? `<div class="coach-answer"><b>可编辑的回答草稿</b><br>${escapeHtml(turn.suggested_answer)}<br><button class="coach-action" type="button" data-guide-use-draft="${index}">带入当前回答并编辑</button></div>`
             : ""
         }</div>`
       ).join(""):`<div class="coach-bubble assistant coach-welcome">${COACH_WELCOME_MESSAGES[coachWelcomeIndex]}</div>`;
@@ -1036,7 +1070,7 @@
       const module=MODULES[state.moduleIndex];
       const step=module.steps[state.stepIndex];
       const answer=state.answers[keyFor()]||{};
-      const priorTurns=state.guideTurns.slice(-3).map(turn=>({role:turn.role,content:turn.content}));
+      const priorTurns=state.guideTurns.slice(-6).map(turn=>({role:turn.role,content:turn.content}));
       const button=$("coachSend");
       button.disabled=true;
       $("coachStatus").textContent="小黄雀正在理解当前步骤…";
@@ -1088,20 +1122,23 @@
       }
     }
 
+    function applyGuideDraft(value){
+      const answer=$("answer");
+      if(!answer){ showToast("当前不是文字填写题，请使用页面选项"); return; }
+      const draft=String(value||"").trim();
+      if(!draft){ showToast("当前没有可带入的回答草稿"); return; }
+      answer.value=draft;
+      answer.focus();
+      saveDraft();
+      showToast("已带入草稿，确认前仍可修改");
+    }
+
     function runGuideAction(index){
       const latest=latestGuideReply();
       const action=(latest.actions||[])[index];
       if(!action)return;
       if(action.type==="fill_answer"){
-        const answer=$("answer");
-        if(!answer){
-          showToast("当前不是文字填写题，请使用页面选项");
-          return;
-        }
-        answer.value=action.value||latest.suggested_answer||"";
-        answer.focus();
-        saveDraft();
-        showToast("已带入草稿，确认前仍可修改");
+        applyGuideDraft(action.value||latest.suggested_answer);
       }else if(action.type==="show_example"){
         $("exampleBtn")?.click();
       }else if(action.type==="continue_chat"){
@@ -1265,7 +1302,7 @@
           showToast(error.message||"项目保存失败，请稍后重试");
         }
       });
-      document.querySelectorAll("[data-resume-module]").forEach(button=>button.addEventListener("click",()=>{
+      $("skippedItems").querySelectorAll("[data-resume-module]").forEach(button=>button.addEventListener("click",()=>{
         state.moduleIndex=Number(button.dataset.resumeModule);
         state.stepIndex=Number(button.dataset.resumeStep);
         persist(); render(); scrollTop();
@@ -1277,6 +1314,25 @@
       const first=state.profile[1];
       $("ipName").textContent=first?"正在成长的数字化 IP":"尚未命名的数字化 IP";
       $("ipSummary").textContent=first?first.summary:"每次确认都会成为后续内容和视频共同读取的项目记忆。";
+    }
+
+    function renderFoundationOutcome(){
+      const section=$("foundationOutcome"),items=foundationItems();
+      if(!items.every(item=>item.answer?.confirmed||item.answer?.skipped)){
+        section.hidden=true;
+        section.replaceChildren();
+        return;
+      }
+      section.hidden=false;
+      const pending=items.filter(item=>!item.answer?.confirmed);
+      const missingProfiles=[1,2,3,4].filter(id=>!state.profile[id]).map(id=>({moduleIndex:id-1,stepIndex:MODULES[id-1].steps.length-1,module:MODULES[id-1],step:MODULES[id-1].steps.at(-1)}));
+      const needs=pending.length?pending:missingProfiles;
+      if(needs.length){
+        section.innerHTML=`<div class="outcome-head"><div><span>FOUNDATION CHECKPOINT</span><h2>IP 底座首轮已走完</h2><p>还有 ${needs.length} 项需要由你确认；跳过项不会被 AI 当成事实。</p></div><strong>待补 ${needs.length} 项</strong></div><div class="outcome-actions">${needs.map(item=>`<button class="nav-btn" type="button" data-resume-module="${item.moduleIndex}" data-resume-step="${item.stepIndex}">回补 · ${escapeHtml(item.step.title)}</button>`).join("")}</div>`;
+        return;
+      }
+      const profiles=[1,2,3,4].map(id=>state.profile[id]);
+      section.innerHTML=`<div class="outcome-head"><div><span>FOUNDATION CHECKPOINT</span><h2>你的 IP 底座 · 已确认</h2><p>定位、人设、价值与故事已形成第一版可用档案，可以带入黄雀产品继续编辑。</p></div><strong>4 / 4 已确认</strong></div><div class="outcome-grid">${profiles.map(item=>`<article class="outcome-card"><b>${escapeHtml(item.title)} · ${escapeHtml(item.output)}</b><p>${escapeHtml(item.summary)}</p></article>`).join("")}</div><div class="outcome-actions"><button class="nav-btn" type="button" data-foundation-target="script_studio">带入文案编导</button><button class="nav-btn" type="button" data-foundation-target="image_studio">带入图片生成</button><button class="nav-btn" type="button" data-foundation-target="video_studio">带入视频创作</button></div><p class="save-state">只预填待编辑内容，不会自动生成、扣点或发布。</p>`;
     }
 
     function render(){
@@ -1311,6 +1367,7 @@
       $("nextBtn").textContent=state.stepIndex===module.steps.length-1?(module.id===12?"完成十二模块":"确认并完成模块"):"确认并继续";
       renderModules();
       renderInteraction(step);
+      renderFoundationOutcome();
       renderMemory();
       renderAI();
       renderCoach();
@@ -1343,6 +1400,8 @@
       }
     });
     $("coachCard").addEventListener("click",event=>{
+      const draft=event.target.closest("[data-guide-use-draft]");
+      if(draft)return applyGuideDraft(state.guideTurns.slice(-6)[Number(draft.dataset.guideUseDraft)]?.suggested_answer);
       const prompt=event.target.closest("[data-guide-prompt]");
       if(prompt)return askGuide(prompt.dataset.guidePrompt);
       const question=event.target.closest("[data-guide-question]");
@@ -1352,6 +1411,17 @@
       }
       const action=event.target.closest("[data-guide-action]");
       if(action)runGuideAction(Number(action.dataset.guideAction));
+    });
+    $("foundationOutcome").addEventListener("click",event=>{
+      const resume=event.target.closest("[data-resume-module]");
+      if(resume){
+        state.moduleIndex=Number(resume.dataset.resumeModule);
+        state.stepIndex=Number(resume.dataset.resumeStep);
+        persist(); render(); scrollTop();
+        return;
+      }
+      const target=event.target.closest("[data-foundation-target]");
+      if(target)foundationHandoff(target.dataset.foundationTarget);
     });
     $("coachFloat").addEventListener("click",()=>scrollIntoView($("coachCard")));
     $("guideBtn").addEventListener("click",()=>$("guideModal").classList.add("open"));

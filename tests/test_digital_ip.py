@@ -214,6 +214,9 @@ class DigitalIPTests(unittest.TestCase):
                     {"role": "assistant", "content": "第 2 轮"},
                     {"role": "user", "content": "第 3 轮"},
                     {"role": "assistant", "content": "第 4 轮"},
+                    {"role": "user", "content": "第 5 轮"},
+                    {"role": "assistant", "content": "第 6 轮"},
+                    {"role": "user", "content": "第 7 轮"},
                 ],
             }, "beauty-owner")
 
@@ -222,7 +225,8 @@ class DigitalIPTests(unittest.TestCase):
         self.assertEqual(captured["body"]["model"], "gpt-5.6-terra")
         self.assertLessEqual(captured["body"]["max_output_tokens"], 800)
         self.assertFalse(captured["body"]["store"])
-        self.assertEqual(len(sent["recent_turns"]), 3)
+        self.assertEqual(len(sent["recent_turns"]), 6)
+        self.assertEqual(sent["recent_turns"][0]["content"], "第 2 轮")
         self.assertEqual(len(sent["current_answer"]), 1200)
         self.assertEqual(len(sent["ip_summary"]), 800)
         self.assertNotIn("beauty-owner", json.dumps(captured["body"], ensure_ascii=False))
