@@ -2,16 +2,13 @@
 import re
 
 from .core import (
-    COPY_MODEL as FALLBACK_COPY_MODEL, _NOPROXY, _post, json, os, urllib,
+    COPY_MODEL as FALLBACK_COPY_MODEL, OPENAI_BASE, OPENAI_KEY,
+    _NOPROXY, _post, json, os, urllib,
 )
 
 COPY_MODEL = "glm-4-plus"
 ZHIPU_API_BASE = "https://open.bigmodel.cn/api/paas/v4"
 ZHIPU_API_KEY = (os.environ.get("ZHIPU_API_KEY") or "").strip()
-DIRECTOR_ZHIPU_API_KEY = (os.environ.get("REVERSE_ZHIPU_KEY") or "").strip()
-DIRECTOR_ZHIPU_MODEL = (
-    os.environ.get("REVERSE_ZHIPU_MODEL") or "glm-4v-plus"
-).strip()
 
 
 SCRIPT_FACT_GUARD = (
@@ -111,21 +108,38 @@ def _chat(sysmsg, usermsg, temp):
 
 
 def _director_chat(sysmsg, usermsg, temp):
-    return _zhipu_request([
-        {"role": "system", "content": sysmsg},
-        {"role": "user", "content": usermsg},
-    ], temp, DIRECTOR_ZHIPU_API_KEY, DIRECTOR_ZHIPU_MODEL)
+    body = json.dumps({
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "system", "content": sysmsg},
+            {"role": "user", "content": usermsg},
+        ],
+        "temperature": temp,
+    }, ensure_ascii=False).encode("utf-8")
+    d = _post("/v1/chat/completions", body, "application/json")
+    return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
 
 
 def _director_chat_multimodal(sysmsg, usermsg, image_data_urls, temp=0.85):
-    """带参考图的智谱 GLM-4V 多模态调用。"""
+    """带参考图的 GPT-4o 多模态调用。"""
+    from . import egress
+
     content = [{"type": "text", "text": usermsg}]
     for url in (image_data_urls or []):
         content.append({"type": "image_url", "image_url": {"url": str(url), "detail": "low"}})
-    return _zhipu_request([
-        {"role": "system", "content": sysmsg},
-        {"role": "user", "content": content},
-    ], temp, DIRECTOR_ZHIPU_API_KEY, DIRECTOR_ZHIPU_MODEL)
+    body = json.dumps({
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "system", "content": sysmsg},
+            {"role": "user", "content": content},
+        ],
+        "temperature": temp,
+    }, ensure_ascii=False).encode("utf-8")
+    d = egress.post_json(
+        OPENAI_BASE, OPENAI_BASE, "/v1/chat/completions", body,
+        {"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": "application/json"},
+    )
+    return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
 
 
 def gen_copy(payload):
