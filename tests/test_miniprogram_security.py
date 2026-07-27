@@ -43,7 +43,7 @@ class MiniProgramSecurityTests(unittest.TestCase):
             security._check_result({"errcode": 87014, "errmsg": "risky content"})
 
     def test_invalid_token_error_raises_token_invalid(self):
-        # 40001/40014/42001 走 _TokenInvalid，由 _with_token_retry 换发重试，
+        # 40001/40014/42001 走 _TokenInvalid，由 _with_token_retry 获取共享 token 重试，
         # 不再直接对用户报 503。
         for code in (40001, 40014, 42001):
             with self.assertRaises(security._TokenInvalid) as caught:
@@ -168,7 +168,7 @@ class MiniProgramSecurityTests(unittest.TestCase):
 
 
 class StableTokenTests(unittest.TestCase):
-    """稳定版 token + 40001 自动刷新重试（20260727 双机互打 40001 事故的根治）。
+    """稳定版 token + 40001 共享恢复（20260727 双机互打 40001 事故的根治）。
 
     旧版 /cgi-bin/token 每签发新 token 即让其他实例缓存 token 失效；稳定版
     /cgi-bin/stable_token 在 force_refresh=false 时多实例共享同一 token。
@@ -214,16 +214,22 @@ class StableTokenTests(unittest.TestCase):
         self.assertEqual(payloads[0]["force_refresh"], False)
         self.assertEqual(payloads[0]["grant_type"], "client_credential")
 
-    def test_check_text_recovers_from_40001_with_forced_refresh(self):
+    def test_check_text_recovers_from_40001_with_shared_stable_token(self):
+        security._TOKEN_CACHE.update(
+            value="tok-old", expires_at=int(security.time.time()) + 7200
+        )
         self.check_results = [40001, 0]
         security.check_text("今天天气不错")
         self.assertEqual(
             [p["force_refresh"] for p in self._token_payloads()],
-            [False, False, True],
+            [False],
         )
         self.assertEqual(self._check_count(), 2)
 
     def test_check_text_double_token_failure_becomes_unavailable(self):
+        security._TOKEN_CACHE.update(
+            value="tok-old", expires_at=int(security.time.time()) + 7200
+        )
         self.check_results = [40001, 40014]
         with self.assertRaises(security.SecurityUnavailable):
             security.check_text("今天天气不错")
@@ -289,6 +295,21 @@ class StableTokenTests(unittest.TestCase):
         self.assertFalse(any(worker.is_alive() for worker in workers))
         self.assertEqual(token_requests, [False])
         self.assertEqual(security._TOKEN_CACHE["value"], "tok-new")
+
+    def test_same_rejected_shared_token_never_forces_cross_instance_refresh(self):
+        security._TOKEN_CACHE.update(
+            value="tok-shared", expires_at=int(security.time.time()) + 7200
+        )
+        self.check_results = [40001]
+
+        with self.assertRaises(security.SecurityUnavailable):
+            security.check_text("平台仍返回旧 token")
+
+        self.assertEqual(
+            [p["force_refresh"] for p in self._token_payloads()],
+            [False],
+        )
+        self.assertEqual(security._TOKEN_CACHE["value"], "")
 
 
 if __name__ == "__main__":

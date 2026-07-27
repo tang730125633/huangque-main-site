@@ -5,8 +5,8 @@
 
 access_token 走稳定版接口（/cgi-bin/stable_token，force_refresh=false 时多实例
 共享同一 token、互不挤占）；旧版 /cgi-bin/token 每签发即让其他实例 token 失效，
-多实例部署会互打 40001。检测收到 40001/40014/42001 时自动失效缓存、换发新
-token 重试一次，仍失败才报不可用。
+多实例部署会互打 40001。检测收到 40001/40014/42001 时仅重新获取平台共享
+stable token 后重试一次；请求路径绝不强刷 token，避免双机再次互相作废。
 """
 import base64
 import io
@@ -59,7 +59,7 @@ class _TokenInvalid(Exception):
     """微信侧判定当前 access_token 失效（errcode 40001/40014/42001）。
 
     典型诱因：多实例各自刷新普通 token 互相挤占、进程缓存的 token 被外部轮换。
-    可失效缓存并换发新 token 重试一次。
+    可条件失效旧缓存并获取平台共享 stable token 重试一次。
     """
 
     def __init__(self, token="", code=0):
@@ -127,7 +127,7 @@ def _invalidate_token_cache(token=""):
 
 
 def _refresh_invalid_token(bad_token):
-    """Single-flight refresh without allowing stale failures to erase new state."""
+    """Reuse the platform-wide stable token without cross-instance invalidation."""
     with _TOKEN_LOCK:
         now = int(time.time())
         cached = _TOKEN_CACHE["value"]
@@ -143,13 +143,17 @@ def _refresh_invalid_token(bad_token):
         if shared != bad_token:
             return shared
 
-        # Only the process single-flight owner reaches force_refresh.  A second
-        # local caller will observe the new cache after acquiring the lock.
-        return _fetch_token_locked(True)
+        # Never force-refresh from a request handler.  Two servers cannot share
+        # this process lock, and simultaneous force_refresh=true calls would
+        # invalidate each other's freshly issued tokens.  Drop the rejected
+        # value so a later request checks the shared stable token again.
+        _TOKEN_CACHE["value"] = ""
+        _TOKEN_CACHE["expires_at"] = 0
+        raise SecurityUnavailable("内容安全服务暂时不可用，请稍后重试")
 
 
 def _with_token_retry(fn):
-    """执行一次带 token 的微信调用；token 失效时换发新 stable token 重试一次。
+    """执行一次带 token 的微信调用；失效时获取共享 stable token 重试一次。
 
     fn(token) 使用传入的 token 调微信接口。
     重试仍失效才报不可用，避免坏缓存导致长时间 503。
