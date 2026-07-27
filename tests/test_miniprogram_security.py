@@ -4,6 +4,7 @@ import os
 import random
 import sys
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 try:
@@ -153,6 +154,111 @@ class MiniProgramSecurityTests(unittest.TestCase):
             self.assertEqual(security.access_token(), "tok")
             self.assertEqual(security.access_token(), "tok")
         request.assert_called_once()
+        url, payload = request.call_args.args
+        self.assertEqual(url, security.API_BASE + "/cgi-bin/stable_token")
+        self.assertEqual(payload, {
+            "grant_type": "client_credential",
+            "appid": "a",
+            "secret": "s",
+            "force_refresh": False,
+        })
+
+    def test_network_request_retries_twice(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"errcode": 0}'
+
+        request = security.urllib.request.Request("https://example.test")
+        with patch.object(
+                security.urllib.request, "urlopen",
+                side_effect=[urllib.error.URLError("one"), TimeoutError("two"), Response()]) as urlopen, \
+             patch.object(security.time, "sleep") as sleep:
+            self.assertEqual(security._request_json(request), {"errcode": 0})
+
+        self.assertEqual(urlopen.call_count, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [0.2, 0.5])
+
+    def test_text_check_refreshes_rejected_token_once(self):
+        calls = []
+
+        def request(url, payload=None, **_kwargs):
+            calls.append((url, payload))
+            if url.endswith("/cgi-bin/stable_token"):
+                token = "new-token" if payload["force_refresh"] else "old-token"
+                return {"access_token": token, "expires_in": 7200}
+            if "old-token" in url:
+                return {"errcode": 40001, "errmsg": "invalid credential"}
+            return {"errcode": 0, "errmsg": "ok"}
+
+        with patch.dict(os.environ, {"WX_MP_APPID": "a", "WX_MP_APPSECRET": "s"}, clear=True), \
+             patch.object(security, "_json_request", side_effect=request):
+            security.check_text("hello")
+
+        stable_requests = [payload for url, payload in calls if url.endswith("/cgi-bin/stable_token")]
+        self.assertEqual([payload["force_refresh"] for payload in stable_requests], [False, True])
+        check_urls = [url for url, _payload in calls if "/wxa/msg_sec_check" in url]
+        self.assertEqual(len(check_urls), 2)
+        self.assertIn("old-token", check_urls[0])
+        self.assertIn("new-token", check_urls[1])
+        self.assertEqual(security._TOKEN_CACHE["value"], "new-token")
+
+    def test_repeated_rejected_token_fails_closed_after_one_refresh(self):
+        token_calls = []
+        checks = []
+
+        def token(force_refresh=False):
+            token_calls.append(force_refresh)
+            return "new-token" if force_refresh else "old-token"
+
+        def request(url, _payload):
+            checks.append(url)
+            return {"errcode": 40014, "errmsg": "invalid access token"}
+
+        with patch.object(security, "access_token", side_effect=token), \
+             patch.object(security, "_json_request", side_effect=request), \
+             patch.object(security, "_invalidate_access_token") as invalidate:
+            with self.assertRaises(security.SecurityUnavailable):
+                security.check_text("hello")
+
+        self.assertEqual(token_calls, [False, True])
+        self.assertEqual(len(checks), 2)
+        invalidate.assert_called_once_with("old-token")
+
+    def test_image_check_refreshes_rejected_token_once(self):
+        class Response:
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return self.body
+
+        with patch.object(security, "access_token", side_effect=["old-token", "new-token"]) as token, \
+             patch.object(security, "_invalidate_access_token") as invalidate, \
+             patch.object(
+                 security.urllib.request, "urlopen",
+                 side_effect=[
+                     Response(b'{"errcode":40001,"errmsg":"invalid credential"}'),
+                     Response(b'{"errcode":0,"errmsg":"ok"}'),
+                 ]) as urlopen:
+            security.check_image(b"small", "upload.jpg", "image/jpeg")
+
+        self.assertEqual(token.call_args_list[0].kwargs, {})
+        self.assertEqual(token.call_args_list[1].kwargs, {"force_refresh": True})
+        invalidate.assert_called_once_with("old-token")
+        self.assertIn("old-token", urlopen.call_args_list[0].args[0].full_url)
+        self.assertIn("new-token", urlopen.call_args_list[1].args[0].full_url)
 
 
 if __name__ == "__main__":

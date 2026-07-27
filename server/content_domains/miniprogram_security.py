@@ -29,6 +29,8 @@ API_BASE = "https://api.weixin.qq.com"
 _LOG = logging.getLogger(__name__)
 _TOKEN_LOCK = threading.Lock()
 _TOKEN_CACHE = {"value": "", "expires_at": 0}
+_TOKEN_ERROR_CODES = {40001, 40014, 42001}
+_REQUEST_RETRY_DELAYS = (0.2, 0.5)
 _TEXT_KEYS = {
     "prompt", "text", "topic", "selling_points", "style", "title", "name",
     "description", "script", "content", "negative_prompt", "batch_label",
@@ -55,33 +57,68 @@ def configured():
                 (os.environ.get("WX_MP_APPSECRET") or "").strip())
 
 
+def _request_json(request, timeout=15, unavailable_message="内容安全服务暂时不可用，请稍后重试"):
+    last_error = None
+    for attempt in range(len(_REQUEST_RETRY_DELAYS) + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                raw = response.read().decode("utf-8", "replace")
+                return json.loads(raw or "{}")
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+            last_error = exc
+            if attempt < len(_REQUEST_RETRY_DELAYS):
+                time.sleep(_REQUEST_RETRY_DELAYS[attempt])
+    raise SecurityUnavailable(unavailable_message) from last_error
+
+
 def _json_request(url, payload=None, headers=None, timeout=15):
     data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers or {"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            raw = response.read().decode("utf-8", "replace")
-            return json.loads(raw or "{}")
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
-        raise SecurityUnavailable("内容安全服务暂时不可用，请稍后重试") from exc
+    request = urllib.request.Request(
+        url, data=data, headers=headers or {"Content-Type": "application/json"})
+    return _request_json(request, timeout=timeout)
 
 
-def access_token():
+def access_token(force_refresh=False):
     now = int(time.time())
     with _TOKEN_LOCK:
-        if _TOKEN_CACHE["value"] and _TOKEN_CACHE["expires_at"] > now + 60:
+        if (not force_refresh and _TOKEN_CACHE["value"] and
+                _TOKEN_CACHE["expires_at"] > now + 60):
             return _TOKEN_CACHE["value"]
         appid = (os.environ.get("WX_MP_APPID") or "").strip()
         secret = (os.environ.get("WX_MP_APPSECRET") or "").strip()
         if not appid or not secret:
             raise SecurityUnavailable("内容安全服务尚未配置")
-        query = urllib.parse.urlencode({"grant_type": "client_credential", "appid": appid, "secret": secret})
-        result = _json_request(API_BASE + "/cgi-bin/token?" + query)
+        result = _json_request(API_BASE + "/cgi-bin/stable_token", {
+            "grant_type": "client_credential",
+            "appid": appid,
+            "secret": secret,
+            "force_refresh": bool(force_refresh),
+        })
         if result.get("errcode") or not result.get("access_token"):
             raise SecurityUnavailable("内容安全服务暂时不可用，请稍后重试")
         _TOKEN_CACHE["value"] = result["access_token"]
         _TOKEN_CACHE["expires_at"] = now + int(result.get("expires_in") or 7200)
         return _TOKEN_CACHE["value"]
+
+
+def _invalidate_access_token(token):
+    with _TOKEN_LOCK:
+        if not token or _TOKEN_CACHE["value"] == token:
+            _TOKEN_CACHE.update(value="", expires_at=0)
+
+
+def _check_with_token(operation, image=False):
+    """Run a content check, refreshing one stale token before failing closed."""
+    token = access_token()
+    for attempt in range(2):
+        result = operation(urllib.parse.quote(token, safe=""))
+        code = int(result.get("errcode") or 0)
+        if code not in _TOKEN_ERROR_CODES or attempt:
+            _check_result(result, image=image)
+            return
+        _LOG.warning("WeChat access token rejected: errcode=%s; refreshing once", code)
+        _invalidate_access_token(token)
+        token = access_token(force_refresh=True)
 
 
 def _check_result(result, image=False):
@@ -104,9 +141,9 @@ def check_text(text):
     raw = text.encode("utf-8")
     if len(raw) > _MAX_TEXT_BYTES:
         raise ContentRejected("文本内容过长，请精简后再提交")
-    token = urllib.parse.quote(access_token(), safe="")
-    result = _json_request(API_BASE + "/wxa/msg_sec_check?access_token=" + token, {"content": text})
-    _check_result(result)
+    _check_with_token(
+        lambda token: _json_request(
+            API_BASE + "/wxa/msg_sec_check?access_token=" + token, {"content": text}))
 
 
 def _prepare_image_for_security(raw, content_type):
@@ -166,22 +203,21 @@ def check_image(raw, filename="upload.jpg", content_type="image/jpeg"):
     review, review_content_type = _prepare_image_for_security(raw, content_type)
     if review_content_type != content_type:
         filename = os.path.splitext(filename)[0] + ".jpg"
-    token = urllib.parse.quote(access_token(), safe="")
     boundary = "----huangque" + uuid.uuid4().hex
     head = ("--%s\r\nContent-Disposition: form-data; name=\"media\"; filename=\"%s\"\r\n"
             "Content-Type: %s\r\n\r\n" % (boundary, filename, review_content_type)).encode("utf-8")
     body = head + review + ("\r\n--%s--\r\n" % boundary).encode("utf-8")
-    req = urllib.request.Request(
-        API_BASE + "/wxa/img_sec_check?access_token=" + token,
-        data=body,
-        headers={"Content-Type": "multipart/form-data; boundary=" + boundary},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as response:
-            result = json.loads(response.read().decode("utf-8", "replace") or "{}")
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
-        raise SecurityUnavailable("图片安全检测暂时不可用，请稍后重试") from exc
-    _check_result(result, image=True)
+
+    def check(token):
+        request = urllib.request.Request(
+            API_BASE + "/wxa/img_sec_check?access_token=" + token,
+            data=body,
+            headers={"Content-Type": "multipart/form-data; boundary=" + boundary},
+        )
+        return _request_json(
+            request, timeout=20, unavailable_message="图片安全检测暂时不可用，请稍后重试")
+
+    _check_with_token(check, image=True)
 
 
 def _walk(value, key=""):
