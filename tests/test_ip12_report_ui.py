@@ -64,6 +64,16 @@ class IP12ReportUITests(unittest.TestCase):
         self.assertIn("项目内容已在报告生成后发生变化", html)
         self.assertIn("没有直接能力匹配时", html)
 
+    def test_visual_system_explains_the_evidence_chain_and_stays_accessible(self):
+        html = self.html
+        for text in ["真实资料", "痛点诊断", "产品行动", "证据型方案"]:
+            self.assertIn(text, html)
+        self.assertIn('class="evidence-route"', html)
+        self.assertIn(":focus-visible", html)
+        self.assertIn("@media(max-width:520px)", html)
+        self.assertIn("@media(prefers-reduced-motion:reduce)", html)
+        self.assertNotIn('behavior:"smooth"', html)
+
 
 if __name__ == "__main__":
     unittest.main()
