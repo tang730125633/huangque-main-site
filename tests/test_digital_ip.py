@@ -89,6 +89,7 @@ class DigitalIPTests(unittest.TestCase):
         digital_ip._guide_daily_requests.clear()
         digital_ip._project_daily_requests.clear()
         digital_ip._guide_cache.clear()
+        digital_ip._project_inflight.clear()
 
     def test_diagnose_uses_responses_structured_outputs(self):
         captured = {}
@@ -116,6 +117,7 @@ class DigitalIPTests(unittest.TestCase):
                 "step": "采集门店经营底图",
                 "answer": "经营 7 年，平台流量越来越贵，老客复购下降。",
                 "confirmed_context": [],
+                "consent": True,
             }, "beauty-owner")
 
         self.assertEqual(captured["path"], "/v1/responses")
@@ -180,6 +182,7 @@ class DigitalIPTests(unittest.TestCase):
                 "ip_summary": "经营资料" * 300,
                 "next_step": "识别核心经营痛点",
                 "message": "我不知道怎么填",
+                "consent": True,
                 "recent_turns": [
                     {"role": "user", "content": "第 1 轮"},
                     {"role": "assistant", "content": "第 2 轮"},
@@ -213,6 +216,7 @@ class DigitalIPTests(unittest.TestCase):
             "module": "定位诊断",
             "step": "经营底图",
             "message": "请用简单的话问我",
+            "consent": True,
         }
         with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), \
                 mock.patch.object(digital_ip, "_post", return_value=response) as post:
@@ -225,6 +229,15 @@ class DigitalIPTests(unittest.TestCase):
             digital_ip._check_guide_rate_limit("owner")
         with self.assertRaises(digital_ip.DigitalIPRateLimited):
             digital_ip._check_guide_rate_limit("owner")
+
+    def test_legacy_diagnose_and_guide_require_explicit_consent(self):
+        with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), \
+                mock.patch.object(digital_ip, "_post") as post:
+            with self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "明确同意"):
+                digital_ip.diagnose({"module": "定位诊断", "step": "经营底图", "answer": "测试回答"}, "owner")
+            with self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "明确同意"):
+                digital_ip.guide({"module": "定位诊断", "step": "经营底图", "message": "怎么填写"}, "owner")
+        post.assert_not_called()
 
     def test_project_owner_cas_and_no_raw_file_persistence(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(digital_ip, "PROJECT_DB", Path(directory) / "ip.db"):
@@ -298,6 +311,8 @@ class DigitalIPTests(unittest.TestCase):
                         "revision": project["revision"], "module_index": 1, "step_index": 1, "answer": "经营 7 年", "consent": True,
                     })
             self.assertEqual(digital_ip.get_project("owner", project["id"])["revision"], project["revision"])
+            self.assertNotIn("owner", digital_ip._recent_requests)
+            self.assertFalse(digital_ip._project_daily_requests)
             with self.assertRaises(digital_ip.DigitalIPValidationError):
                 digital_ip._clean_project_files([{ "name": "bad.exe", "type": "application/octet-stream", "data_url": "data:application/octet-stream;base64,AA==" }])
 
@@ -320,13 +335,13 @@ class DigitalIPTests(unittest.TestCase):
             })
             self.assertEqual(confirmed["project"]["status"], "confirmed")
 
-    def test_existing_project_db_permissions_are_preserved(self):
+    def test_existing_project_db_permissions_are_tightened(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ip.db"
             path.touch(mode=0o644)
             with mock.patch.object(digital_ip, "PROJECT_DB", path), closing(digital_ip._project_db()):
                 pass
-            self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_project_table_initializes_concurrently_without_touching_jobs(self):
         with tempfile.TemporaryDirectory() as directory:
