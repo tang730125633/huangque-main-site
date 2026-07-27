@@ -31,6 +31,38 @@ def _status_value(status):
     return status.value if isinstance(status, ProviderStatus) else str(status)
 
 
+def recovery_capabilities(state, capabilities):
+    state = state or {}
+    cancel = state.get("cancel")
+    cancel = cancel if isinstance(cancel, dict) else {}
+    effective_status = (
+        cancel.get("provider_status")
+        or state.get("last_provider_status")
+    )
+    if not effective_status and state.get("status") == "succeeded":
+        effective_status = ProviderStatus.SUCCEEDED.value
+    effective_status = str(effective_status or "unknown").lower()
+    if effective_status == "cancelled":
+        effective_status = ProviderStatus.CANCELED.value
+
+    has_job = bool(state.get("provider_job_id"))
+    can_resume = has_job and effective_status in {
+        ProviderStatus.QUEUED.value,
+        ProviderStatus.RUNNING.value,
+        "unknown",
+    }
+    can_refetch = bool(
+        has_job
+        and effective_status == ProviderStatus.SUCCEEDED.value
+        and capabilities.supports_result_refetch
+    )
+    return {
+        "effective_provider_status": effective_status,
+        "can_resume": can_resume,
+        "can_refetch": can_refetch,
+    }
+
+
 class PocRunner:
     def __init__(
         self,
@@ -77,7 +109,14 @@ class PocRunner:
             return existing["human_review"]
         return empty_human_review()
 
-    def _validate_recovery_state(self, state, sample, provider):
+    def _validate_recovery_state(
+        self,
+        state,
+        sample,
+        provider,
+        capabilities,
+        mode,
+    ):
         if not state:
             raise PocRunError(
                 "recovery_state_missing",
@@ -103,6 +142,19 @@ class PocRunner:
                 "ambiguous_submission",
                 "submission state has no provider job id; resolve billing "
                 "before creating another job",
+            )
+        recovery = recovery_capabilities(state, capabilities)
+        if mode == "resume" and not recovery["can_resume"]:
+            raise PocRunError(
+                "resume_not_allowed",
+                "provider job is not in a resumable state",
+                {"recovery": recovery},
+            )
+        if mode == "refetch" and not recovery["can_refetch"]:
+            raise PocRunError(
+                "refetch_not_allowed",
+                "provider job is not in a refetchable state",
+                {"recovery": recovery},
             )
 
     def _normalize_error(self, error):
@@ -161,6 +213,7 @@ class PocRunner:
         cancel=None,
     ):
         normalized = self._normalize_error(error)
+        recovery = recovery_capabilities(state, capabilities)
         report = {
             "report_version": REPORT_VERSION,
             "sample_id": sample.sample_id,
@@ -176,16 +229,16 @@ class PocRunner:
             "failure_stage": state.get("stage"),
             "billing_status": state.get("billing_status", "unknown"),
             "last_provider_status": state.get("last_provider_status"),
+            "effective_provider_status": recovery[
+                "effective_provider_status"
+            ],
             "elapsed_ms": round((self.clock() - started) * 1000),
             "capabilities": capabilities.as_dict(),
             "provider_error": normalized,
             "cancel": cancel,
             "recovery": {
-                "can_resume": bool(state.get("provider_job_id")),
-                "can_refetch": bool(
-                    state.get("provider_job_id")
-                    and capabilities.supports_result_refetch
-                ),
+                "can_resume": recovery["can_resume"],
+                "can_refetch": recovery["can_refetch"],
             },
             "human_review": self._human_review(paths.report),
         }
@@ -224,6 +277,15 @@ class PocRunner:
             if sample.ratio == "16:9"
             else {"width": 720, "height": 720}
         )
+        succeeded_state = {
+            **state,
+            "status": "succeeded",
+            "last_provider_status": ProviderStatus.SUCCEEDED.value,
+        }
+        recovery = recovery_capabilities(
+            succeeded_state,
+            capabilities,
+        )
         report = {
             "report_version": REPORT_VERSION,
             "sample_id": sample.sample_id,
@@ -237,6 +299,13 @@ class PocRunner:
             "request_id": state["request_id"],
             "status": "succeeded",
             "billing_status": "provider_succeeded",
+            "effective_provider_status": recovery[
+                "effective_provider_status"
+            ],
+            "recovery": {
+                "can_resume": recovery["can_resume"],
+                "can_refetch": recovery["can_refetch"],
+            },
             "duration_ms": sample.duration_ms,
             "ratio": sample.ratio,
             "speaking_mode": sample.speaking_mode,
@@ -299,7 +368,6 @@ class PocRunner:
             capabilities.provider,
             sample.sample_id,
         )
-        started = self.clock()
         state = load_json(paths.state)
         if not resume and not refetch and state is not None:
             raise PocRunError(
@@ -312,7 +380,10 @@ class PocRunner:
                 state,
                 sample,
                 paths.provider,
+                capabilities,
+                "resume" if resume else "refetch",
             )
+        started = self.clock()
         job = None
         try:
             if resume or refetch:

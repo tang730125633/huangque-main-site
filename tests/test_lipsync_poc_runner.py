@@ -145,6 +145,19 @@ class LipsyncPocRunnerTests(unittest.TestCase):
         self.assertIn("Cookie: [REDACTED]", result)
         self.assertIn("Authorization: [REDACTED]", result)
 
+    def test_redaction_never_raises_for_malformed_urls(self):
+        values = (
+            "https://provider.test:notaport/result?token=secret",
+            "https://[broken/result?token=secret",
+            "https://provider.test:999999/result?token=secret",
+            "https://user:password@provider.test/result?token=secret",
+        )
+        for value in values:
+            with self.subTest(value=value):
+                result = redact(f"provider failed at {value}")
+                self.assertNotIn("secret", result)
+                self.assertNotIn("password", result)
+
     def test_validate_only_does_not_call_ffprobe_or_provider(self):
         assets = self.root / "assets"
         (assets / "video").mkdir(parents=True)

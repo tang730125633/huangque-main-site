@@ -24,10 +24,23 @@ def _sensitive_key(key):
 def _safe_url(value):
     if not isinstance(value, str) or not value.startswith(("http://", "https://")):
         return value
-    parsed = urlsplit(value)
-    hostname = parsed.hostname or ""
-    port = f":{parsed.port}" if parsed.port else ""
-    return urlunsplit((parsed.scheme, hostname + port, parsed.path, "", ""))
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname or ""
+        port_value = parsed.port
+        if not hostname:
+            return "[REDACTED_URL]"
+        if ":" in hostname and not hostname.startswith("["):
+            hostname = f"[{hostname}]"
+        port = f":{port_value}" if port_value is not None else ""
+        return urlunsplit(
+            (parsed.scheme, hostname + port, parsed.path, "", "")
+        )
+    except Exception:
+        # Provider error strings are untrusted. Redaction must be total:
+        # malformed ports, brackets or Unicode netlocs must never prevent the
+        # failure state/report from being persisted.
+        return "[REDACTED_URL]"
 
 
 def _safe_string(value):

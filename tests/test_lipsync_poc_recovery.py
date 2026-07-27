@@ -37,7 +37,8 @@ class FailOnceProvider(MockLipsyncProvider):
         if self.get_calls == 1:
             raise RuntimeError(
                 "Authorization: Basic dXNlcjpwYXNz\n"
-                "Cookie: sessionid=topsecret"
+                "Cookie: sessionid=topsecret\n"
+                "https://provider.test:notaport/result?token=urlsecret"
             )
         self._jobs[job_id]["status"] = ProviderStatus.SUCCEEDED
         return super().get_job(job_id)
@@ -49,6 +50,7 @@ class TimeoutProvider(MockLipsyncProvider):
     def __init__(self):
         super().__init__()
         self.cancel_calls = 0
+        self.get_calls = 0
 
     def create_job(self, request):
         job = super().create_job(request)
@@ -58,6 +60,35 @@ class TimeoutProvider(MockLipsyncProvider):
     def cancel_job(self, job_id):
         self.cancel_calls += 1
         return super().cancel_job(job_id)
+
+    def get_job(self, job_id):
+        self.get_calls += 1
+        return super().get_job(job_id)
+
+
+class CancelFailureProvider(TimeoutProvider):
+    name = "cancel-failure"
+
+    def cancel_job(self, job_id):
+        self.cancel_calls += 1
+        raise RuntimeError("cancel request failed")
+
+
+class TerminalFailedProvider(MockLipsyncProvider):
+    name = "terminal-failed"
+
+    def __init__(self):
+        super().__init__()
+        self.get_calls = 0
+
+    def create_job(self, request):
+        job = super().create_job(request)
+        self._jobs[job.job_id]["status"] = ProviderStatus.FAILED
+        return ProviderJob(job.job_id, ProviderStatus.FAILED, self.name)
+
+    def get_job(self, job_id):
+        self.get_calls += 1
+        return super().get_job(job_id)
 
 
 class LipsyncPocRecoveryTests(unittest.TestCase):
@@ -103,7 +134,11 @@ class LipsyncPocRecoveryTests(unittest.TestCase):
         encoded = json.dumps(report)
         self.assertNotIn("dXNlcjpwYXNz", encoded)
         self.assertNotIn("topsecret", encoded)
+        self.assertNotIn("urlsecret", encoded)
         self.assertEqual("requires_reconciliation", state["billing_status"])
+        self.assertEqual("running", report["effective_provider_status"])
+        self.assertTrue(report["recovery"]["can_resume"])
+        self.assertFalse(report["recovery"]["can_refetch"])
 
     def test_resume_reuses_persisted_job_without_creating_another(self):
         provider = FailOnceProvider()
@@ -137,8 +172,69 @@ class LipsyncPocRecoveryTests(unittest.TestCase):
         self.assertEqual(1, provider.cancel_calls)
         paths = artifact_paths(output, provider.name, self.sample.sample_id)
         state = json.loads(paths.state.read_text(encoding="utf-8"))
+        report = json.loads(paths.report.read_text(encoding="utf-8"))
         self.assertTrue(state["provider_job_id"])
         self.assertTrue(state["cancel"]["attempted"])
+        self.assertEqual("canceled", report["effective_provider_status"])
+        self.assertFalse(report["recovery"]["can_resume"])
+        self.assertFalse(report["recovery"]["can_refetch"])
+        with self.assertRaises(PocRunError) as resume_error:
+            runner.run(self.sample, output, resume=True)
+        self.assertEqual("resume_not_allowed", resume_error.exception.code)
+        with self.assertRaises(PocRunError) as refetch_error:
+            runner.run(self.sample, output, refetch=True)
+        self.assertEqual(
+            "refetch_not_allowed",
+            refetch_error.exception.code,
+        )
+        self.assertEqual(0, provider.get_calls)
+
+    def test_failed_cancel_leaves_running_job_resumable(self):
+        provider = CancelFailureProvider()
+        output = self.root / "out"
+        ticks = iter((0.0, 2.0, 3.0, 4.0))
+        runner = PocRunner(
+            provider,
+            probe=fake_probe,
+            clock=lambda: next(ticks),
+            sleep=lambda _: None,
+        )
+        with self.assertRaises(PocRunError):
+            runner.run(
+                self.sample,
+                output,
+                timeout_seconds=1,
+                poll_seconds=0.1,
+            )
+        paths = artifact_paths(output, provider.name, self.sample.sample_id)
+        report = json.loads(paths.report.read_text(encoding="utf-8"))
+        self.assertEqual(1, provider.cancel_calls)
+        self.assertEqual("running", report["effective_provider_status"])
+        self.assertTrue(report["recovery"]["can_resume"])
+        self.assertFalse(report["recovery"]["can_refetch"])
+
+    def test_terminal_failed_job_cannot_resume_or_refetch(self):
+        provider = TerminalFailedProvider()
+        output = self.root / "out"
+        runner = PocRunner(provider, probe=fake_probe, clock=lambda: 1.0)
+        with self.assertRaises(PocRunError):
+            runner.run(self.sample, output)
+        paths = artifact_paths(output, provider.name, self.sample.sample_id)
+        report = json.loads(paths.report.read_text(encoding="utf-8"))
+        self.assertEqual("failed", report["effective_provider_status"])
+        self.assertFalse(report["recovery"]["can_resume"])
+        self.assertFalse(report["recovery"]["can_refetch"])
+
+        with self.assertRaises(PocRunError) as resume_error:
+            runner.run(self.sample, output, resume=True)
+        self.assertEqual("resume_not_allowed", resume_error.exception.code)
+        with self.assertRaises(PocRunError) as refetch_error:
+            runner.run(self.sample, output, refetch=True)
+        self.assertEqual(
+            "refetch_not_allowed",
+            refetch_error.exception.code,
+        )
+        self.assertEqual(0, provider.get_calls)
 
     def test_refetch_preserves_existing_human_review(self):
         provider = MockLipsyncProvider()
@@ -154,6 +250,8 @@ class LipsyncPocRecoveryTests(unittest.TestCase):
         refetched = runner.run(self.sample, output, refetch=True)
         self.assertEqual("complete", refetched["human_review"]["review_status"])
         self.assertEqual(5, refetched["human_review"]["lip_sync_score"])
+        self.assertFalse(refetched["recovery"]["can_resume"])
+        self.assertTrue(refetched["recovery"]["can_refetch"])
 
     def test_provider_namespaces_do_not_overwrite_each_other(self):
         output = self.root / "out"

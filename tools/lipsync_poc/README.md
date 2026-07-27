@@ -98,6 +98,11 @@ python -m tools.lipsync_poc.run_poc \
 恢复时会校验 Provider、样本 ID 和输入哈希；不一致时拒绝操作。普通运行发现
 已有状态文件时也会停止，避免重复创建可能收费的任务。
 
+恢复能力以最后确认的 Provider 状态为准：`queued/running/unknown` 只允许
+`--resume`，`succeeded` 只允许 `--refetch`，`failed/canceled` 默认禁止两种
+操作。超时取消成功后按 `canceled` 处理；取消失败且任务仍在运行时允许恢复
+查询。报告中的恢复标记与 CLI 的实际准入使用同一个判定函数。
+
 每份报告包含：
 
 - 不可变 `input_hash`
@@ -113,3 +118,5 @@ python -m tools.lipsync_poc.run_poc \
 报告不保存原始绝对媒体路径，也不记录环境变量或 Provider 密钥。Cookie、
 Set-Cookie、Authorization、Proxy-Authorization、X-API-Key 和 X-Auth-Token
 等 HTTP 头即使出现在异常字符串中也会被统一脱敏。
+非法端口、破损 IPv6 或异常 netloc 等畸形 URL 会整体替换为
+`[REDACTED_URL]`，不得让脱敏、状态持久化或失败报告再次抛出异常。
