@@ -39,6 +39,11 @@ transcribe_out/
 server/content_out/
 .gstack/
 
+# 口型 Provider PoC 的真实媒体、报告和供应商响应（只保留目录占位）
+/tools/lipsync_poc/reports/*
+!/tools/lipsync_poc/reports/.gitkeep
+/.local-content-out/lipsync-poc/
+
 # ===== 临时/派生：截图预览、原始大图、本地工具缓存（不进 git，可重生成）=====
 .playwright-cli/
 .context/
