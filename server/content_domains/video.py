@@ -1691,6 +1691,15 @@ def _strip_audio(ref_path):
     return out_rel
 
 
+def _prepare_cinematic_reference_videos(video_files, cine_mode):
+    """Prepare references without touching audio for open generation."""
+    files = [f for f in (video_files or []) if f]
+    if cine_mode == "open":
+        return files, None
+    source_audio = _extract_reference_audio(files[0]) if files else None
+    return [_strip_audio(f) for f in files], source_audio
+
+
 def _mux_original_audio(video_file, audio_rel):
     """把参考视频的原声合进成片。返回新的相对路径；失败 → 原样返回（成片仍可用，只是无声）。
 
@@ -4152,23 +4161,16 @@ def gen_cinematic(payload):
     if not image_files and payload.get("reference_images"):
         image_files = [_save_data_file(i, "cine_ref", [".jpg", ".png", ".webp"])
                        for i in payload["reference_images"]]
-    # ⚠️ 顺序不能换：先【抽原声】，再【剥音轨】—— 剥完就抽不出来了。
-    #
-    # 为什么剥：HeyGen 的 cinematic_avatar 只看画面，它不会用参考视频的声音。音轨对它是纯浪费，
-    #   却要经过我们那条 ~1.5 MB/s 的出境隧道推上去。剥掉能省 5~15% 的上传量，100% 无损失。
-    # 为什么抽：HeyGen 的成片【本身没有声音】。把参考视频的原声配回成片，观感上才是
-    #   「同一条片子，只是换了个人演」。
-    #
-    # 原声只取【第一个】参考视频的 —— 它同时也是决定成片时长的那一个（_cinematic_duration）。
-    source_audio = _extract_reference_audio(video_files[0]) if video_files else None
-    #
     # ⚠️ 【不压缩】（kongli 的决定，2026-07-14）。原来这里会把 >6MB 的参考视频转码成
     # 720p/2Mbps —— 那是重编码，画质有损，而动作模仿的成片质量直接取决于参考视频。
     # 出境隧道换了新节点后带宽是 ~1.5 MB/s，上传超时也放宽到 600s，压缩省的那点时间
     # 不值得拿画质去换。
     #
-    # 剥音轨【不是】压缩：-c:v copy 只重封装，画面一帧不动，几十毫秒的事。
-    video_files = [_strip_audio(f) for f in video_files if f]
+    # 开放式生成把参考视频原样上传，不提取、剥离或回填音频。动作模仿继续沿用原来的
+    # 原声回填流程；两者共用生成函数，因此在这里按 cine_mode 分流。
+    video_files, source_audio = _prepare_cinematic_reference_videos(
+        video_files, payload.get("cine_mode")
+    )
     image_files = [f for f in image_files if f]
     reference_video_file = video_files[0] if video_files else None   # 资产表只存第一个（列是单值）
 
