@@ -957,7 +957,12 @@ def start_job_workers():
     threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start(); threading.Thread(target=notifications.scanner, args=(jdb,), name="content-video-notify", daemon=True).start()
     _recover_pending_jobs(_PENDING_RECOVERY_LIMIT)
     try:
-        _domains()[1].retry_breakdown_refunds(JOB_QUEUE_MAX)
+        retry_breakdown = getattr(_domains()[1], "retry_breakdown_refunds", None)
+        if retry_breakdown:
+            retry_breakdown(JOB_QUEUE_MAX)
+    except Exception:
+        pass
+    try:
         _short_drama_domain().short_drama_production.retry_attempt_refunds(
             jdb, _domains()[1], JOB_QUEUE_MAX)
         _short_drama_domain().short_drama_voice.retry_voice_attempt_refunds(
@@ -1150,7 +1155,12 @@ def run_job(job_id):
 def reaper():
     while True:
         try:
-            _domains()[1].retry_breakdown_refunds(JOB_QUEUE_MAX)
+            retry_breakdown = getattr(_domains()[1], "retry_breakdown_refunds", None)
+            if retry_breakdown:
+                retry_breakdown(JOB_QUEUE_MAX)
+        except Exception:
+            pass
+        try:
             now = int(time.time()); cutoff = now - 360
             with closing(jdb()) as c:
                 stuck = c.execute("SELECT id, username, cost, kind, payload, updated_at FROM jobs WHERE status='running' AND updated_at < ?", (cutoff,)).fetchall()

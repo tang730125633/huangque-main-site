@@ -91,7 +91,8 @@ class ScriptSubmissionGuardTests(unittest.TestCase):
 
         self.assertLess(prepare_at, done_at)
         self.assertLess(done_at, reconcile_at)
-        self.assertIn("retry_breakdown_refunds(JOB_QUEUE_MAX)", source)
+        self.assertIn('getattr(_domains()[1], "retry_breakdown_refunds", None)', source)
+        self.assertIn("retry_breakdown(JOB_QUEUE_MAX)", source)
 
 
 if __name__ == "__main__":
