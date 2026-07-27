@@ -957,6 +957,7 @@ def start_job_workers():
     threading.Thread(target=_pending_job_scanner, name="content-job-recover", daemon=True).start(); threading.Thread(target=notifications.scanner, args=(jdb,), name="content-video-notify", daemon=True).start()
     _recover_pending_jobs(_PENDING_RECOVERY_LIMIT)
     try:
+        _domains()[1].retry_breakdown_refunds(JOB_QUEUE_MAX)
         _short_drama_domain().short_drama_production.retry_attempt_refunds(
             jdb, _domains()[1], JOB_QUEUE_MAX)
         _short_drama_domain().short_drama_voice.retry_voice_attempt_refunds(
@@ -1085,8 +1086,14 @@ def run_job(job_id):
             payload["_username"] = username   # 少一个 kind，handler 就拿不到用户名/job_id：
             payload["_job_id"] = job_id       # gen_avatar 记不了形象归属，gen_cinematic 查不到用户的形象
         result = HANDLERS[kind](payload)
+        breakdown_refund_prepared = False
+        if kind == "breakdown":
+            breakdown_refund_prepared = _domains()[1].prepare_breakdown_batch_refund(
+                username, cost, result, job_id)
         # 先 CAS 抢 done 终态：仅当仍是 running 才写 done，防 reaper 已判 error 又被无条件覆盖(既出片又退点)
         if not _set_terminal(job_id, "done", result=result):
+            if breakdown_refund_prepared:
+                _domains()[1].cancel_breakdown_refund(job_id)
             return  # 已被 reaper 接管为 error+退点：放弃成功副作用(不入库、不覆盖状态)
         # 口播按成片真实时长结算：预扣(cost)是 hold，跑完多退少不补。只在抢到 done 后调 —— done CAS
         # 互斥 + reaper/reclaim 不碰 done → 每 job 至多结算一次，不重复退。结算失败不影响出片。
@@ -1100,7 +1107,7 @@ def run_job(job_id):
             except Exception:
                 pass
         if kind == "breakdown":
-            _domains()[1].settle_breakdown_batch(username, cost, result, job_id)
+            _domains()[1].reconcile_breakdown_refund(job_id)
         # 已确认拿到 done 终态；入库是次要副作用，失败也不改状态、不退点
         try:
             audio_domain, _, video_domain = _domains()
@@ -1143,6 +1150,7 @@ def run_job(job_id):
 def reaper():
     while True:
         try:
+            _domains()[1].retry_breakdown_refunds(JOB_QUEUE_MAX)
             now = int(time.time()); cutoff = now - 360
             with closing(jdb()) as c:
                 stuck = c.execute("SELECT id, username, cost, kind, payload, updated_at FROM jobs WHERE status='running' AND updated_at < ?", (cutoff,)).fetchall()
@@ -1498,6 +1506,11 @@ class H(BaseHTTPRequestHandler):
                 elif kind == "script_to_video":
                     from . import script_to_video as script_to_video_domain
                     body = script_to_video_domain.prepare_script_to_video_payload(body, user["username"])
+                elif kind == "breakdown":
+                    if not isinstance(body, dict):
+                        raise ValueError("请求体必须是 JSON 对象")
+                    if body.get("local_path") or body.get("upload_token"):
+                        raise ValueError("本地素材只能通过专用上传接口提交")
                 elif kind == "copy":
                     from . import text as text_domain
                     body = text_domain.validate_copy_payload(body)

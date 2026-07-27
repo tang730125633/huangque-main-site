@@ -8,6 +8,24 @@ from . import egress
 
 # 不支持的平台（视频号加密流需要 Isaac64 解密，暂不支持）
 _UNSUPPORTED_PLATFORMS = {"channels", "weixin", "wechat"}
+_UPLOAD_TOKEN_RE = __import__("re").compile(r"^[0-9a-f]{32}$")
+
+
+def _ensure_upload_table(connection):
+    connection.execute("""CREATE TABLE IF NOT EXISTS breakdown_uploads(
+        token TEXT PRIMARY KEY,
+        username TEXT NOT NULL,
+        suffix TEXT NOT NULL,
+        job_id INTEGER NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL
+    )""")
+
+
+def _upload_root():
+    from . import core
+    root = (core.OUT_DIR / "_breakdown_uploads").resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 def handle_local_upload(handler, user):
@@ -49,10 +67,12 @@ def handle_local_upload(handler, user):
         })
 
     temp_path = ""
+    upload_token = __import__("uuid").uuid4().hex
+    suffix = allowed[media_type][content_type]
     try:
-        with tempfile.NamedTemporaryFile(
-                prefix="breakdown_", suffix=allowed[media_type][content_type], delete=False) as uploaded:
-            temp_path = uploaded.name
+        root = _upload_root()
+        temp_path = str(root / (upload_token + suffix))
+        with open(temp_path, "xb") as uploaded:
             remaining = content_length
             while remaining:
                 chunk = handler.rfile.read(min(65536, remaining))
@@ -72,17 +92,27 @@ def handle_local_upload(handler, user):
         }[content_type]
         if not valid_signature:
             raise ValueError("文件内容与声明格式不一致")
-        body = {"local_path": temp_path, "media_type": media_type, "mode": "reverse_prompt"}
+        body = {"upload_token": upload_token, "media_type": media_type, "mode": "reverse_prompt"}
         cost = points_domain.cost_of("breakdown", body)
         with core._submission_lock:
+            with closing(core.jdb()) as connection:
+                _ensure_upload_table(connection)
+                connection.commit()
+            def record_upload(connection, job_id):
+                _ensure_upload_table(connection)
+                connection.execute(
+                    "INSERT INTO breakdown_uploads(token,username,suffix,job_id,created_at)"
+                    " VALUES(?,?,?,?,?)",
+                    (upload_token, user["username"], suffix, job_id, int(time.time())),
+                )
             job_id, points_left = core.jobs_store.create_paid_job(
                 core.jdb, points_domain.deduct_points, points_domain.refund_points,
                 "breakdown", user["username"], cost, body, core.SERVICE_OWNER,
+                before_commit=record_upload,
             )
             if not core.enqueue_job(job_id, "breakdown", "reverse_prompt"):
                 core._reject_pending_job(job_id, user["username"], cost, "任务队列已满，请稍后再试")
-                try: os.unlink(temp_path)
-                except Exception: pass
+                _remove_trusted_upload(upload_token, user["username"], job_id, temp_path)
                 return handler._send(429, {
                     "detail": "任务队列已满，请稍后再试", "code": "queue_full",
                     "retry_after_ms": 4000,
@@ -113,9 +143,11 @@ def _remove_upload(path):
 def gen_breakdown(payload):
     """下载视频 → 抽帧 → ASR → GPT-4o 多模态分析 → 分镜拆解。
     由 run_job 调用，走标准 job 生命周期（扣点/退点/reaper 全自动）。"""
-    local_path = str(payload.get("local_path") or "").strip()
-    if local_path:
-        return _do_local_reverse(payload, local_path)
+    upload_token = str(payload.get("upload_token") or "").strip().lower()
+    if upload_token:
+        return _do_local_reverse(payload, upload_token)
+    if payload.get("local_path"):
+        raise ValueError("禁止提交服务器本地路径")
 
     urls = payload.get("urls")
     if isinstance(urls, list):
@@ -258,14 +290,29 @@ def _reverse_from_frames(payload, frames, source_url="", title="", platform="", 
     }
 
 
-def _do_local_reverse(payload, local_path):
+def _do_local_reverse(payload, upload_token):
     media_type = str(payload.get("media_type") or "").strip().lower()
     job_id = payload.get("_job_id")
-    path = os.path.abspath(local_path)
+    username = str(payload.get("_username") or "").strip()
     if media_type not in {"image", "video"}:
         raise ValueError("不支持的本地素材类型")
-    if not os.path.isfile(path):
+    if not _UPLOAD_TOKEN_RE.fullmatch(upload_token) or not username or not job_id:
+        raise ValueError("无效的上传凭证")
+    from . import core
+    with closing(core.jdb()) as connection:
+        _ensure_upload_table(connection)
+        row = connection.execute(
+            "SELECT suffix FROM breakdown_uploads WHERE token=? AND username=? AND job_id=?",
+            (upload_token, username, int(job_id)),
+        ).fetchone()
+        connection.commit()
+    if not row:
+        raise ValueError("上传凭证不存在或不属于当前任务")
+    root = _upload_root()
+    candidate = (root / (upload_token + str(row["suffix"]))).resolve()
+    if candidate.parent != root or not candidate.is_file():
         raise ValueError("上传文件不存在或已过期")
+    path = str(candidate)
     frame_dir = None
     try:
         _heartbeat(job_id, "extracting_frames")
@@ -285,8 +332,7 @@ def _do_local_reverse(payload, local_path):
         if frame_dir:
             try: shutil.rmtree(frame_dir)
             except Exception: pass
-        try: os.unlink(path)
-        except Exception: pass
+        _remove_trusted_upload(upload_token, username, job_id, path)
 
 
 def _probe_duration(path):
@@ -300,6 +346,24 @@ def _probe_duration(path):
         return max(0.0, float((proc.stdout or "0").strip() or 0))
     except Exception:
         raise ValueError("无法读取视频时长，请上传有效的视频文件")
+
+
+def _remove_trusted_upload(token, username, job_id, path):
+    from . import core
+    try:
+        with closing(core.jdb()) as connection:
+            _ensure_upload_table(connection)
+            connection.execute(
+                "DELETE FROM breakdown_uploads WHERE token=? AND username=? AND job_id=?",
+                (token, username, int(job_id)),
+            )
+            connection.commit()
+    finally:
+        root = _upload_root()
+        candidate = __import__("pathlib").Path(path).resolve()
+        if candidate.parent == root:
+            try: candidate.unlink()
+            except Exception: pass
 
 
 # ============ 辅助函数 ============

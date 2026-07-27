@@ -1317,7 +1317,7 @@
     var selectedDuration=10;
     var submitted=false;
     function updateCost(){
-      var rate=selectedAvatarId===null?12:30;
+      var rate=selectedAvatarId===null?12:10;
       cost.textContent='预计消耗 '+(selectedDuration*rate)+' 点';
       duration.querySelectorAll('[data-reverse-duration]').forEach(function(btn){
         var seconds=Number(btn.getAttribute('data-reverse-duration'));

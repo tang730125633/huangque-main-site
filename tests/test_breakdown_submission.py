@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
 from contextlib import closing
 from http.server import ThreadingHTTPServer
@@ -55,24 +56,18 @@ class BreakdownBatchTests(unittest.TestCase):
             heartbeat.call_args_list,
         )
 
-    def test_local_reverse_deletes_temporary_upload(self):
+    def test_worker_rejects_arbitrary_server_path(self):
         handle = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        handle.close()
         try:
-            handle.write(b"valid-enough-for-mocked-analysis")
-            handle.close()
-            with mock.patch.object(
-                    breakdown, "_reverse_from_frames",
-                    return_value={"type": "breakdown_reverse", "prompt": "demo"}):
-                result = breakdown.gen_breakdown({
-                    "local_path": handle.name, "media_type": "image", "_job_id": 8,
+            with self.assertRaisesRegex(ValueError, "服务器本地路径"):
+                breakdown.gen_breakdown({
+                    "local_path": handle.name, "media_type": "image",
+                    "_job_id": 8, "_username": "fang",
                 })
-            self.assertEqual("breakdown_reverse", result["type"])
-            self.assertFalse(os.path.exists(handle.name))
+            self.assertTrue(os.path.exists(handle.name), "拒绝路径时绝不能删除目标文件")
         finally:
-            try:
-                os.unlink(handle.name)
-            except FileNotFoundError:
-                pass
+            os.unlink(handle.name)
 
 
 class CopyProviderFallbackTests(unittest.TestCase):
@@ -114,22 +109,26 @@ class BreakdownLocalUploadHttpTests(unittest.TestCase):
 
         originals = {
             "JOB_DB": core.JOB_DB,
+            "OUT_DIR": core.OUT_DIR,
             "verify": core.verify,
             "_domains": core._domains,
             "require_enabled": core.feature_flags.require_enabled,
             "queue": core._job_queue,
             "ids": core._queued_job_ids,
+            "handlers": core.HANDLERS,
         }
         fake = FakePoints()
         server = None
         uploaded_path = ""
         with tempfile.TemporaryDirectory() as directory:
             core.JOB_DB = str(pathlib.Path(directory) / "jobs.db")
+            core.OUT_DIR = pathlib.Path(directory) / "out"
             core.verify = lambda token: {"username": "fang", "must_change": False}
             core._domains = lambda: (None, fake, mock.Mock())
             core.feature_flags.require_enabled = lambda kind: None
             core._job_queue = queue.Queue(maxsize=4)
             core._queued_job_ids = set()
+            core.HANDLERS = {"breakdown": lambda payload: payload}
             try:
                 with closing(sqlite3.connect(core.JOB_DB)) as database:
                     database.execute(
@@ -161,12 +160,54 @@ class BreakdownLocalUploadHttpTests(unittest.TestCase):
                         "SELECT kind,username,cost,payload FROM jobs WHERE id=?",
                         (accepted["job_id"],),
                     ).fetchone()
+                    upload = database.execute(
+                        "SELECT token,username,suffix,job_id FROM breakdown_uploads WHERE job_id=?",
+                        (accepted["job_id"],),
+                    ).fetchone()
                 payload = json.loads(row["payload"])
-                uploaded_path = payload["local_path"]
+                self.assertNotIn("local_path", payload)
+                self.assertEqual(payload["upload_token"], upload["token"])
+                self.assertEqual(("fang", accepted["job_id"]), (upload["username"], upload["job_id"]))
+                uploaded_path = str(
+                    core.OUT_DIR / "_breakdown_uploads" / (upload["token"] + upload["suffix"]))
                 self.assertEqual(("breakdown", "fang", 20), tuple(row[:3]))
                 self.assertEqual("image", payload["media_type"])
                 self.assertTrue(os.path.isfile(uploaded_path))
                 self.assertEqual(1, core._job_queue.qsize())
+
+                protected = pathlib.Path(directory) / "must-not-be-read.txt"
+                protected.write_text("secret", encoding="utf-8")
+                unsafe = urllib.request.Request(
+                    "http://127.0.0.1:%d/api/gen/breakdown" % server.server_address[1],
+                    data=json.dumps({
+                        "local_path": str(protected), "media_type": "image",
+                    }).encode(),
+                    method="POST",
+                    headers={"Authorization": "Bearer test", "Content-Type": "application/json"},
+                )
+                with self.assertRaises(urllib.error.HTTPError) as rejected:
+                    urllib.request.urlopen(unsafe, timeout=5)
+                self.assertEqual(400, rejected.exception.code)
+                self.assertTrue(protected.is_file())
+                self.assertEqual([("fang", 20)], fake.deductions)
+
+                with self.assertRaisesRegex(ValueError, "不属于当前任务"):
+                    breakdown.gen_breakdown(dict(
+                        payload, _username="other-user", _job_id=accepted["job_id"]))
+                self.assertTrue(os.path.isfile(uploaded_path))
+                with mock.patch.object(
+                        breakdown, "_reverse_from_frames",
+                        return_value={"type": "breakdown_reverse", "prompt": "demo"}):
+                    result = breakdown.gen_breakdown(dict(
+                        payload, _username="fang", _job_id=accepted["job_id"]))
+                self.assertEqual("breakdown_reverse", result["type"])
+                self.assertFalse(os.path.exists(uploaded_path))
+                with closing(core.jdb()) as database:
+                    self.assertEqual(
+                        0, database.execute(
+                            "SELECT COUNT(*) FROM breakdown_uploads WHERE job_id=?",
+                            (accepted["job_id"],),
+                        ).fetchone()[0])
             finally:
                 if server:
                     server.shutdown()
@@ -177,11 +218,13 @@ class BreakdownLocalUploadHttpTests(unittest.TestCase):
                     except FileNotFoundError:
                         pass
                 core.JOB_DB = originals["JOB_DB"]
+                core.OUT_DIR = originals["OUT_DIR"]
                 core.verify = originals["verify"]
                 core._domains = originals["_domains"]
                 core.feature_flags.require_enabled = originals["require_enabled"]
                 core._job_queue = originals["queue"]
                 core._queued_job_ids = originals["ids"]
+                core.HANDLERS = originals["handlers"]
 
 
 if __name__ == "__main__":

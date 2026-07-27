@@ -160,15 +160,123 @@ def breakdown_batch_refund(cost, total, failed):
 
 
 def settle_breakdown_batch(username, cost, result, job_id):
+    if prepare_breakdown_batch_refund(username, cost, result, job_id):
+        return reconcile_breakdown_refund(job_id)
+    return None
+
+
+def _ensure_breakdown_refund_table(connection):
+    connection.execute("""CREATE TABLE IF NOT EXISTS breakdown_partial_refunds(
+        job_id INTEGER PRIMARY KEY,
+        username TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        transaction_key TEXT NOT NULL UNIQUE,
+        state TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    )""")
+
+
+def prepare_breakdown_batch_refund(username, cost, result, job_id):
+    """Persist partial-refund intent before the job is allowed to become done."""
+    if (result or {}).get("type") != "breakdown_batch":
+        return False
+    amount = breakdown_batch_refund(
+        cost, (result or {}).get("total"), len((result or {}).get("errors") or []))
+    if amount <= 0:
+        return False
+    job_id = int(job_id)
+    username = str(username or "")
+    key = "breakdown-partial-refund:%s:%s" % (job_id, username)
+    now = int(time.time())
+    with closing(jdb()) as connection:
+        _ensure_breakdown_refund_table(connection)
+        connection.execute(
+            """INSERT OR IGNORE INTO breakdown_partial_refunds(
+                job_id,username,amount,transaction_key,state,created_at,updated_at
+            ) VALUES(?,?,?,?,'pending',?,?)""",
+            (job_id, username, amount, key, now, now),
+        )
+        row = connection.execute(
+            "SELECT username,amount FROM breakdown_partial_refunds WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        if not row or row["username"] != username or int(row["amount"]) != amount:
+            raise RuntimeError("批量拆解退款记录冲突")
+        connection.commit()
+    return True
+
+
+def cancel_breakdown_refund(job_id):
+    with closing(jdb()) as connection:
+        _ensure_breakdown_refund_table(connection)
+        connection.execute(
+            "UPDATE breakdown_partial_refunds SET state='cancelled',updated_at=?"
+            " WHERE job_id=? AND state='pending'",
+            (int(time.time()), int(job_id)),
+        )
+        connection.commit()
+
+
+def reconcile_breakdown_refund(job_id):
+    with closing(jdb()) as connection:
+        _ensure_breakdown_refund_table(connection)
+        row = connection.execute(
+            """SELECT r.*,j.status AS job_status
+               FROM breakdown_partial_refunds r
+               LEFT JOIN jobs j ON j.id=r.job_id WHERE r.job_id=?""",
+            (int(job_id),),
+        ).fetchone()
+    if not row or row["state"] != "pending":
+        return row["state"] if row else None
+    if row["job_status"] != "done":
+        if row["job_status"] in {"error", "failed"} or row["job_status"] is None:
+            cancel_breakdown_refund(job_id)
+            return "cancelled"
+        return "pending"
     try:
-        if (result or {}).get("type") != "breakdown_batch":
-            return
-        refund = breakdown_batch_refund(
-            cost, (result or {}).get("total"), len((result or {}).get("errors") or []))
-        if refund:
-            safe_refund_points(username, refund, "job#%d 批量拆解失败退点" % job_id)
-    except Exception:
-        pass
+        refund_points(
+            row["username"], row["amount"],
+            "job#%d 批量拆解失败退点" % int(job_id),
+            transaction_key=row["transaction_key"],
+        )
+    except Exception as exc:
+        with closing(jdb()) as connection:
+            _ensure_breakdown_refund_table(connection)
+            connection.execute(
+                "UPDATE breakdown_partial_refunds SET attempts=attempts+1,last_error=?,updated_at=?"
+                " WHERE job_id=? AND state='pending'",
+                (str(exc)[:240], int(time.time()), int(job_id)),
+            )
+            connection.commit()
+        return "pending"
+    with closing(jdb()) as connection:
+        _ensure_breakdown_refund_table(connection)
+        connection.execute(
+            "UPDATE breakdown_partial_refunds SET state='refunded',attempts=attempts+1,"
+            " last_error=NULL,updated_at=? WHERE job_id=? AND state='pending'",
+            (int(time.time()), int(job_id)),
+        )
+        connection.commit()
+    return "refunded"
+
+
+def retry_breakdown_refunds(limit=100):
+    with closing(jdb()) as connection:
+        _ensure_breakdown_refund_table(connection)
+        rows = connection.execute(
+            "SELECT job_id FROM breakdown_partial_refunds WHERE state='pending'"
+            " ORDER BY updated_at ASC LIMIT ?",
+            (max(1, int(limit or 100)),),
+        ).fetchall()
+        connection.commit()
+    recovered = 0
+    for row in rows:
+        if reconcile_breakdown_refund(row["job_id"]) == "refunded":
+            recovered += 1
+    return recovered
 
 
 class AuthPointsError(Exception):

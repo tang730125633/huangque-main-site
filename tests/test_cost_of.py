@@ -1,7 +1,10 @@
 import importlib
+import sqlite3
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 class CostOfTests(unittest.TestCase):
@@ -82,22 +85,48 @@ class CostOfTests(unittest.TestCase):
         self.assertEqual(self.points.breakdown_batch_refund(0, 5, 5), 0)     # 无费用不退
         self.assertEqual(self.points.breakdown_batch_refund("x", 5, 5), 0)   # 坏参数不抛异常
 
-    def test_settle_breakdown_batch_refunds_only_failed_urls(self):
-        """结算钩子：只对 breakdown_batch 退点；单条拆解/无失败/坏结果一律不动"""
-        calls = []
-        orig = self.points.safe_refund_points
-        self.points.safe_refund_points = lambda u, a, r="": calls.append((u, a)) or a
-        try:
-            self.points.settle_breakdown_batch(
-                "fang", 100, {"type": "breakdown_batch", "total": 5, "errors": [{"url": "a"}, {"url": "b"}]}, 99)
-            self.assertEqual(calls, [("fang", 40)])
-            calls.clear()
-            self.points.settle_breakdown_batch("fang", 24, {"type": "breakdown_batch", "total": 5, "errors": []}, 100)
-            self.points.settle_breakdown_batch("fang", 8, {"type": "breakdown"}, 101)   # 单条不在这结算
-            self.points.settle_breakdown_batch("fang", 8, None, 102)
-            self.assertEqual(calls, [])
-        finally:
-            self.points.safe_refund_points = orig
+    def test_breakdown_partial_refund_is_persistent_idempotent_and_retryable(self):
+        core = importlib.import_module("content_domains.core")
+        original_db = core.JOB_DB
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            core.JOB_DB = str(Path(directory) / "jobs.db")
+            try:
+                with sqlite3.connect(core.JOB_DB) as connection:
+                    connection.execute(
+                        "CREATE TABLE jobs(id INTEGER PRIMARY KEY,status TEXT)")
+                    connection.execute("INSERT INTO jobs(id,status) VALUES(99,'running')")
+                    connection.commit()
+                result = {
+                    "type": "breakdown_batch", "total": 5,
+                    "errors": [{"url": "a"}, {"url": "b"}],
+                }
+                self.assertTrue(
+                    self.points.prepare_breakdown_batch_refund("fang", 100, result, 99))
+                with sqlite3.connect(core.JOB_DB) as connection:
+                    connection.execute("UPDATE jobs SET status='done' WHERE id=99")
+                    connection.commit()
+                calls = []
+                def flaky(username, amount, reason="", transaction_key=""):
+                    calls.append((username, amount, transaction_key))
+                    if len(calls) == 1:
+                        raise RuntimeError("auth unavailable")
+                    return 1040
+                with mock.patch.object(self.points, "refund_points", side_effect=flaky):
+                    self.assertEqual("pending", self.points.reconcile_breakdown_refund(99))
+                    self.assertEqual(1, self.points.retry_breakdown_refunds())
+                    self.assertEqual("refunded", self.points.reconcile_breakdown_refund(99))
+                self.assertEqual(2, len(calls))
+                self.assertEqual(40, calls[0][1])
+                self.assertEqual(calls[0][2], calls[1][2])
+                self.assertEqual(
+                    "breakdown-partial-refund:99:fang", calls[0][2])
+                with sqlite3.connect(core.JOB_DB) as connection:
+                    state, attempts = connection.execute(
+                        "SELECT state,attempts FROM breakdown_partial_refunds WHERE job_id=99"
+                    ).fetchone()
+                self.assertEqual(("refunded", 2), (state, attempts))
+            finally:
+                core.JOB_DB = original_db
 
     def test_breakdown_batch_fixed_per_link_pricing(self):
         """批量拆解：每个有效链接 20 点，封顶 5 条 = 100 点"""
