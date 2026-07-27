@@ -1,11 +1,17 @@
 # -*- coding: utf-8 -*-
 import re
 
-from .core import COPY_MODEL as FALLBACK_COPY_MODEL, OPENAI_BASE, OPENAI_KEY, _NOPROXY, _post, base64, json, os, urllib
+from .core import (
+    COPY_MODEL as FALLBACK_COPY_MODEL, _NOPROXY, _post, json, os, urllib,
+)
 
 COPY_MODEL = "glm-4-plus"
 ZHIPU_API_BASE = "https://open.bigmodel.cn/api/paas/v4"
 ZHIPU_API_KEY = (os.environ.get("ZHIPU_API_KEY") or "").strip()
+DIRECTOR_ZHIPU_API_KEY = (os.environ.get("REVERSE_ZHIPU_KEY") or "").strip()
+DIRECTOR_ZHIPU_MODEL = (
+    os.environ.get("REVERSE_ZHIPU_MODEL") or "glm-4v-plus"
+).strip()
 
 
 SCRIPT_FACT_GUARD = (
@@ -68,22 +74,18 @@ def sanitize_script_scenes(scenes, brief):
     return cleaned
 
 
-def _chat(sysmsg, usermsg, temp):
-    body = json.dumps({"model": COPY_MODEL,
-                       "messages": [{"role": "system", "content": sysmsg}, {"role": "user", "content": usermsg}],
-                       "temperature": temp}).encode()
-    if not ZHIPU_API_KEY:
-        fallback = json.dumps({
-            "model": os.environ.get("COPY_FALLBACK_MODEL", FALLBACK_COPY_MODEL),
-            "messages": [{"role": "system", "content": sysmsg}, {"role": "user", "content": usermsg}],
-            "temperature": temp,
-        }).encode()
-        d = _post("/v1/chat/completions", fallback, "application/json")
-        return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+def _zhipu_request(messages, temp, api_key, model):
+    if not api_key:
+        raise RuntimeError("REVERSE_ZHIPU_KEY is not configured")
+    body = json.dumps({
+        "model": model,
+        "messages": messages,
+        "temperature": temp,
+    }, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         ZHIPU_API_BASE + "/chat/completions",
         data=body,
-        headers={"Authorization": "Bearer " + ZHIPU_API_KEY, "Content-Type": "application/json"},
+        headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
         method="POST",
     )
     with _NOPROXY.open(req, timeout=300) as response:
@@ -91,18 +93,39 @@ def _chat(sysmsg, usermsg, temp):
     return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
 
 
-def _chat_multimodal(sysmsg, usermsg, image_data_urls, temp=0.85):
-    """带参考图的 GPT-4o 多模态调用。"""
-    from . import egress
+def _chat(sysmsg, usermsg, temp):
+    """Legacy shared copy channel for generic copy and short-drama planning."""
+    messages = [
+        {"role": "system", "content": sysmsg},
+        {"role": "user", "content": usermsg},
+    ]
+    if ZHIPU_API_KEY:
+        return _zhipu_request(messages, temp, ZHIPU_API_KEY, COPY_MODEL)
+    fallback = json.dumps({
+        "model": os.environ.get("COPY_FALLBACK_MODEL", FALLBACK_COPY_MODEL),
+        "messages": messages,
+        "temperature": temp,
+    }, ensure_ascii=False).encode("utf-8")
+    d = _post("/v1/chat/completions", fallback, "application/json")
+    return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+
+
+def _director_chat(sysmsg, usermsg, temp):
+    return _zhipu_request([
+        {"role": "system", "content": sysmsg},
+        {"role": "user", "content": usermsg},
+    ], temp, DIRECTOR_ZHIPU_API_KEY, DIRECTOR_ZHIPU_MODEL)
+
+
+def _director_chat_multimodal(sysmsg, usermsg, image_data_urls, temp=0.85):
+    """带参考图的智谱 GLM-4V 多模态调用。"""
     content = [{"type": "text", "text": usermsg}]
     for url in (image_data_urls or []):
         content.append({"type": "image_url", "image_url": {"url": str(url), "detail": "low"}})
-    body = json.dumps({"model": "gpt-4o", "messages": [
+    return _zhipu_request([
         {"role": "system", "content": sysmsg},
-        {"role": "user", "content": content}], "temperature": temp}).encode()
-    d = egress.post_json(OPENAI_BASE, OPENAI_BASE, "/v1/chat/completions", body,
-                         {"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": "application/json"})
-    return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+        {"role": "user", "content": content},
+    ], temp, DIRECTOR_ZHIPU_API_KEY, DIRECTOR_ZHIPU_MODEL)
 
 
 def gen_copy(payload):
@@ -149,9 +172,9 @@ def gen_copy(payload):
         usermsg += "\n事实约束：" + SCRIPT_FACT_GUARD
         if ref_images:
             usermsg += "\n（可参考上传的图片来构思分镜画面）"
-            raw = _chat_multimodal(sysmsg, usermsg, ref_images)
+            raw = _director_chat_multimodal(sysmsg, usermsg, ref_images)
         else:
-            raw = _chat(sysmsg, usermsg, 0.85)
+            raw = _director_chat(sysmsg, usermsg, 0.85)
         s, e = raw.find("{"), raw.rfind("}"); scenes = []
         if s >= 0 and e > s:
             try: scenes = json.loads(raw[s:e+1]).get("scenes", [])

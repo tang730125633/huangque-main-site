@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
-"""爆款拆解：竞品视频链接 → 下载 → 抽帧 → ASR → GPT-4o 多模态 → 分镜脚本"""
+"""爆款拆解：竞品视频链接 → 下载 → 抽帧 → ASR → GLM-4V 多模态 → 分镜脚本"""
 import os, json, time, base64, tempfile, subprocess, shutil, mimetypes, io
 from contextlib import closing
 
-from .core import OPENAI_BASE, OPENAI_KEY, jdb
+from .core import jdb
 from . import egress
+
+ZHIPU_API_BASE = "https://open.bigmodel.cn/api/paas/v4"
+ZHIPU_API_KEY = (os.environ.get("REVERSE_ZHIPU_KEY") or "").strip()
+ZHIPU_MODEL = (os.environ.get("REVERSE_ZHIPU_MODEL") or "glm-4v-plus").strip()
 
 # 不支持的平台（视频号加密流需要 Isaac64 解密，暂不支持）
 _UNSUPPORTED_PLATFORMS = {"channels", "weixin", "wechat"}
@@ -596,8 +600,9 @@ def _extract_frames(video_path, count=6, duration=30):
 
 
 def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7):
-    """GPT-4o 多模态：走 egress 代理链，绕过中转站"""
-    from .image import OPENAI_OFFICIAL_BASE
+    """编导视觉理解统一走智谱 GLM-4V。"""
+    if not ZHIPU_API_KEY:
+        raise RuntimeError("REVERSE_ZHIPU_KEY is not configured")
 
     content = [{"type": "text", "text": usermsg}]
     for path in image_paths:
@@ -612,7 +617,7 @@ def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7):
         })
 
     body = {
-        "model": os.environ.get("BREAKDOWN_MODEL", "gpt-4o"),
+        "model": ZHIPU_MODEL,
         "messages": [
             {"role": "system", "content": sysmsg},
             {"role": "user", "content": content}
@@ -622,10 +627,13 @@ def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7):
 
     try:
         d = egress.post_json_idempotent(
-            OPENAI_OFFICIAL_BASE, OPENAI_BASE,
-            "/v1/chat/completions", json.dumps(body, ensure_ascii=False).encode(),
-            {"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": "application/json"},
-            log=lambda m: print("[breakdown] %s" % m, flush=True),
+            ZHIPU_API_BASE, ZHIPU_API_BASE, "/chat/completions",
+            json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            {
+                "Authorization": "Bearer " + ZHIPU_API_KEY,
+                "Content-Type": "application/json",
+            },
+            log=lambda message: print("[breakdown] %s" % message, flush=True),
             max_attempts=2,
         )
     except Exception as error:

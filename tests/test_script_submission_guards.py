@@ -68,7 +68,7 @@ class ScriptSubmissionGuardTests(unittest.TestCase):
             captured.update(system=system_message, user=user_message, temperature=temperature)
             return '{"scenes":[{"dur":"30s","scene":"通勤补涂防晒霜","line":"日常通勤注意防晒。"}]}'
 
-        with mock.patch.object(text, "_chat", side_effect=fake_chat):
+        with mock.patch.object(text, "_director_chat", side_effect=fake_chat):
             result = text.gen_copy({
                 "prompt": "夏季通勤防晒",
                 "format": "script",
