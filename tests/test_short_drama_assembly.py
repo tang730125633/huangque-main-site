@@ -154,7 +154,7 @@ class ShortDramaAssemblyTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM short_drama_compositions"
             ).fetchone()[0]
         self.assertEqual(before, after)
-        self.assertEqual("renderable", snapshot["implementation_status"])
+        self.assertEqual("formal_export", snapshot["implementation_status"])
         self.assertTrue(snapshot["rendering_enabled"])
         self.assertEqual(6, len(snapshot["shots"]))
         self.assertEqual(

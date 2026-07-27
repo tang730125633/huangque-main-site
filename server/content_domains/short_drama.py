@@ -519,6 +519,8 @@ def _charged_planning_points_by_project(conn, username, project_ids=None):
     wanted = set(project_ids) if project_ids is not None else None
     totals = {}
     job_columns = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    if not job_columns:
+        return totals
     refund_filter = " AND COALESCE(refunded,0)<>1" if "refunded" in job_columns else ""
     rows = _dict_rows(
         conn,
