@@ -11,8 +11,10 @@
   var SELECT_VERSION_PATH='/api/gen/short-drama/select-voice-version';
   var SAVE_TIMELINE_PATH='/api/gen/short-drama/save-voice-timeline';
   var SET_LOCK_PATH='/api/gen/short-drama/set-voice-shot-lock';
+  var ALIGNMENT_JOBS_PATH='/api/gen/short-drama/subtitle-alignment/jobs';
+  var ALIGNMENT_TIMELINE_PATH='/api/gen/short-drama/subtitle-alignment/timeline';
+  var ALIGNMENT_LOCK_PATH='/api/gen/short-drama/subtitle-alignment/lock';
   var CONFIRM_PATH='/api/gen/short-drama/confirm';
-  var NATIVE_AUDIO_PATH='/api/gen/short-drama/use-native-audio';
   var POLL_INTERVAL=1800;
 
   function text(value){ return String(value==null?'':value); }
@@ -120,7 +122,11 @@
       }).length),
       handoff_blocked:input.handoff_blocked!==false,
       handoff_blockers:(Array.isArray(input.handoff_blockers)?
-        input.handoff_blockers:[]).map(clone)
+        input.handoff_blockers:[]).map(clone),
+      alignment:input.alignment&&typeof input.alignment==='object'?
+        clone(input.alignment):null,
+      alignmentDraft:options.alignmentDraft&&typeof options.alignmentDraft==='object'?
+        clone(options.alignmentDraft):null
     };
   }
   function selectedShot(state){
@@ -132,7 +138,6 @@
       case 'silent': return '静音';
       case 'ready': return '待核对';
       case 'done': return '已完成';
-      case 'native': return '使用视频原声';
       case 'failed': return '失败';
       default: return '状态未知';
     }
@@ -287,6 +292,48 @@
     overlaps(subtitles,'subtitle_overlap','可见字幕时间区间发生重叠');
     return result;
   }
+  function analyzeAlignmentDraft(version,draft){
+    var result={dirty:false,blockers:[],byLine:Object.create(null),lines:[]};
+    if(!version||!Array.isArray(version.timeline)) return result;
+    var draftLines=draft&&draft.versionId===version.id&&
+      Array.isArray(draft.lines)?draft.lines:[];
+    var drafts=Object.create(null);
+    draftLines.forEach(function(line){ drafts[text(line.line_id)]=line; });
+    version.timeline.forEach(function(source){
+      var edited=drafts[text(source.line_id)]||source;
+      var line={
+        line_id:text(source.line_id),
+        subtitle_start_ms:Math.round(number(edited.subtitle_start_ms,0)),
+        subtitle_end_ms:Math.round(number(edited.subtitle_end_ms,0))
+      };
+      result.lines.push(line);
+      result.dirty=result.dirty||
+        line.subtitle_start_ms!==number(source.subtitle_start_ms,0)||
+        line.subtitle_end_ms!==number(source.subtitle_end_ms,0);
+      var lineBlockers=[];
+      if(line.subtitle_start_ms<number(source.audio_start_ms,0)||
+          line.subtitle_end_ms>number(source.audio_end_ms,0)||
+          line.subtitle_end_ms<=line.subtitle_start_ms){
+        lineBlockers.push({
+          code:'timeline_boundary_invalid',
+          message:'字幕边界必须位于只读音频区间内'
+        });
+      }
+      result.byLine[line.line_id]=lineBlockers;
+      result.blockers=result.blockers.concat(lineBlockers);
+    });
+    result.lines.slice().sort(function(left,right){
+      return left.subtitle_start_ms-right.subtitle_start_ms||
+        left.subtitle_end_ms-right.subtitle_end_ms;
+    }).forEach(function(line,index,ordered){
+      if(index&&line.subtitle_start_ms<ordered[index-1].subtitle_end_ms){
+        var blocker={code:'subtitle_overlap',message:'字幕时间区间发生重叠'};
+        result.byLine[line.line_id].push(blocker);
+        result.blockers.push(blocker);
+      }
+    });
+    return result;
+  }
   function renderWorkspace(input,options){
     options=options||{};
     var state=normalizeState(input,options.voices,options);
@@ -294,6 +341,121 @@
     var timelineWritable=!!(shot&&state.canEdit&&state.stage==='voice_review'&&
       !shot.locked&&!state.operationBusy&&!state.conflictFrozen);
     var timingAnalysis=analyzeShotTiming(shot);
+    var alignment=state.alignment||{};
+    var alignmentCurrent=alignment.current_version||null;
+    var alignmentReadiness=alignment.readiness||{ready:false,blockers:[]};
+    var alignmentHandoff=alignment.handoff||{
+      required:!!alignmentCurrent,
+      ready:!alignmentCurrent||
+        alignmentCurrent.effective_status==='locked',
+      blockers:[]
+    };
+    var alignmentActions=alignment.actions||{};
+    var alignmentQuality=alignmentCurrent&&alignmentCurrent.quality||{};
+    var alignmentReview=alignmentCurrent&&alignmentCurrent.review||null;
+    var alignmentDraftAnalysis=analyzeAlignmentDraft(
+      alignmentCurrent,state.alignmentDraft
+    );
+    var alignmentEditable=!!(
+      alignmentCurrent&&alignmentActions.save&&state.canEdit&&
+      state.stage==='voice_review'&&!state.operationBusy&&!state.conflictFrozen
+    );
+    var alignmentLines=alignmentCurrent?
+      (alignmentCurrent.timeline||[]).map(function(source){
+        var edited=alignmentDraftAnalysis.lines.find(function(item){
+          return item.line_id===text(source.line_id);
+        })||source;
+        var voiceLine=null;
+        state.shots.some(function(item){
+          voiceLine=(item.lines||[]).find(function(line){
+            return text(line.id)===text(source.line_id);
+          })||null;
+          return !!voiceLine;
+        });
+        var voiceVersion=voiceLine&&currentVersion(voiceLine);
+        var voiceUrl=audioUrl(voiceVersion);
+        var lineBlockers=alignmentDraftAnalysis.byLine[text(source.line_id)]||[];
+        return '<article class="nc-sdv-alignment-line'+
+          (lineBlockers.length?' has-error':'')+'"><strong>'+
+          escapeHtml(source.text||source.line_id)+'</strong>'+
+          '<small>只读音频 '+formatMs(source.audio_start_ms)+' - '+
+          formatMs(source.audio_end_ms)+'</small>'+
+          '<div class="nc-sdv-alignment-boundaries"><label>字幕开始(ms)'+
+          '<input type="number" step="50" data-alignment-field="subtitle_start_ms" '+
+          'data-alignment-line-id="'+escapeHtml(source.line_id)+'" value="'+
+          number(edited.subtitle_start_ms,0)+'"'+
+          (alignmentEditable?'':' disabled')+'></label>'+
+          '<label>字幕结束(ms)<input type="number" step="50" '+
+          'data-alignment-field="subtitle_end_ms" data-alignment-line-id="'+
+          escapeHtml(source.line_id)+'" value="'+number(edited.subtitle_end_ms,0)+'"'+
+          (alignmentEditable?'':' disabled')+'></label></div>'+
+          '<div class="nc-sdv-alignment-line-actions">'+
+          '<button type="button" data-action="nudge-alignment" '+
+          'data-alignment-line-id="'+escapeHtml(source.line_id)+
+          '" data-alignment-field="subtitle_start_ms" data-delta="-50"'+
+          (alignmentEditable?'':' disabled')+'>开始 -50ms</button>'+
+          '<button type="button" data-action="nudge-alignment" '+
+          'data-alignment-line-id="'+escapeHtml(source.line_id)+
+          '" data-alignment-field="subtitle_end_ms" data-delta="50"'+
+          (alignmentEditable?'':' disabled')+'>结束 +50ms</button>'+
+          '<button type="button" data-action="reset-alignment-line" '+
+          'data-alignment-line-id="'+escapeHtml(source.line_id)+'"'+
+          (alignmentEditable?'':' disabled')+'>恢复估算值</button>'+
+          (voiceUrl?'<button type="button" data-action="preview-alignment" '+
+            'data-audio-url="'+escapeHtml(voiceUrl)+'">试听本句</button>':'')+
+          '</div>'+
+          (lineBlockers.length?'<p class="nc-sdv-error">'+
+            escapeHtml(blockerText(lineBlockers))+'</p>':'')+
+          '</article>';
+      }).join(''):'';
+    var alignmentIsSilent=!!(
+      alignmentCurrent&&Array.isArray(alignmentCurrent.timeline)&&
+      !alignmentCurrent.timeline.length
+    );
+    var alignmentPanel='<section class="nc-sdv-alignment"><header><strong>'+
+      '第 4 阶段 · 字幕强制对齐</strong><span>'+
+      escapeHtml(alignmentCurrent?
+        ('V'+alignmentCurrent.version+' · '+(alignmentCurrent.effective_status||alignmentCurrent.status)):
+        '尚未生成')+'</span></header>'+
+      '<dl><div><dt>Provider</dt><dd>'+
+      escapeHtml(alignment.provider&&alignment.provider.name||'--')+
+      '</dd></div><div><dt>覆盖率</dt><dd>'+
+      (alignmentQuality.coverage==null?'--':
+        (number(alignmentQuality.coverage,0)*100).toFixed(1)+'%')+
+      '</dd></div><div><dt>平均置信度</dt><dd>'+
+      (alignmentQuality.mean_confidence==null?'--':
+        number(alignmentQuality.mean_confidence,0).toFixed(2))+
+      '</dd></div></dl>'+
+      '<p class="nc-sdv-alignment-note">音频边界只读；本地估算结果必须人工校对后才能锁定，不扣点。</p>'+
+      (alignmentReview?'<p class="nc-sdv-alignment-review">审核方式：'+
+        escapeHtml(alignmentReview.action==='confirm_unchanged'?
+          '原样确认':'调整后确认')+' · 审核人：'+
+        escapeHtml(alignmentReview.reviewed_by||'--')+' · 审核时间：'+
+        escapeHtml(alignmentReview.reviewed_at?
+          new Date(number(alignmentReview.reviewed_at,0)*1000).toLocaleString():'--')+
+        '</p>':'')+
+      (alignmentLines?'<div class="nc-sdv-alignment-editor">'+alignmentLines+'</div>':
+        alignmentIsSilent?
+          '<p class="nc-sdv-alignment-empty">当前项目没有对白，无需调整字幕边界。'+
+          '请确认无对白结果后锁定。</p>':'')+
+      '<button type="button" data-action="generate-alignment"'+
+      (alignmentActions.generate&&!state.operationBusy?'':' disabled')+
+      '>生成字级对齐</button>'+
+      '<button type="button" data-action="review-alignment"'+
+      (alignmentEditable&&!alignmentDraftAnalysis.blockers.length?'':' disabled')+
+      ' data-review-action="'+
+      (alignmentDraftAnalysis.dirty?'save_adjustments':'confirm_unchanged')+'">'+
+      (alignmentDraftAnalysis.dirty?
+        '保存调整并确认':alignmentIsSilent?
+          '确认当前无对白结果':'确认当前估算结果正确')+'</button>'+
+      '<button type="button" data-action="lock-alignment"'+
+      (alignmentActions.lock&&!state.operationBusy?'':' disabled')+
+      '>锁定对齐版本</button>'+
+      ((alignmentReadiness.blockers||[]).length?
+        '<p class="nc-sdv-error">'+escapeHtml(blockerText(alignmentReadiness.blockers))+'</p>':'')+
+      (alignmentQuality.blockers&&alignmentQuality.blockers.length?
+        '<p class="nc-sdv-error">'+escapeHtml(blockerText(alignmentQuality.blockers))+'</p>':'')+
+      '</section>';
     var visibleBlockers=state.timelineDirty?
       timingAnalysis.blockers:(shot&&shot.lock_blockers||[]);
     var blockedLines=Object.create(null);
@@ -460,6 +622,7 @@
       '>'+(shot&&shot.locked?'解锁当前镜头':'锁定当前镜头')+'</button>'+
       '<button type="button" data-action="confirm-voice-stage"'+
       (state.canEdit&&state.stage==='voice_review'&&!state.handoff_blocked&&
+        alignmentHandoff.ready===true&&
         !state.operationBusy&&!state.timelineDirty&&!state.conflictFrozen?'':' disabled')+
       '>进入视频生成阶段</button>'+
       (visibleBlockers.length?'<div class="nc-sdv-blockers"><strong>'+
@@ -468,12 +631,9 @@
       (state.handoff_blockers.length?'<div class="nc-sdv-blockers"><strong>阶段推进阻塞</strong><p>'+
         escapeHtml(blockerText(state.handoff_blockers))+'</p></div>':'')+
       (state.conflictFrozen?'<p class="nc-sdv-error">检测到版本冲突，请刷新工作区后继续。</p>':'')+
+      alignmentPanel+
       (state.operationError?'<p class="nc-sdv-error" role="alert">'+escapeHtml(state.operationError)+'</p>':'')+
-      '<button type="button" class="is-primary" data-action="use-native-audio"'+
-      ((state.canEdit&&state.stage==='voice_review'&&!state.operationBusy&&
-        !state.timelineDirty&&!state.conflictFrozen)?'':' disabled')+
-      '>先用视频原声继续</button>'+
-      '<p>配音、原声切换和阶段推进均以服务端校验结果为准。</p>'+
+      '<p>时间轴保存、锁定和阶段推进均不扣点；服务端校验结果为准。</p>'+
       '</aside></div>';
   }
   function createWorkspace(options){
@@ -485,6 +645,7 @@
     var pollTimer=null,activeAudio=null,generationBusy=false;
     var ui={busy:true,error:'',operationError:'',selectedShotId:options.selectedShotId};
     var timelineDrafts=Object.create(null),conflictFrozen=false;
+    var alignmentDraft=null;
     var timelinePlaying=false,timelineCursorMs=0,playingLineId='';
     var timelinePlayers=[],timelineTimers=[],timelineClockTimer=null;
     var timelineDrag=null;
@@ -545,7 +706,8 @@
         operationBusy:generationBusy,operationError:ui.operationError,
         timelineDirty:!!timelineDrafts[ui.selectedShotId],
         timelinePlaying:timelinePlaying,timelineCursorMs:timelineCursorMs,
-        playingLineId:playingLineId,conflictFrozen:conflictFrozen
+        playingLineId:playingLineId,conflictFrozen:conflictFrozen,
+        alignmentDraft:alignmentDraft
       });
       if(host&&!destroyed) host.innerHTML=html;
       return html;
@@ -991,34 +1153,113 @@
         }).catch(mutationFailure);
       }).finally(function(){ generationBusy=false;render(); });
     }
-    function useNativeAudio(){
+    function alignmentMutation(path,body,headers){
       try{ requireWritable(); }catch(error){ return Promise.reject(error); }
-      if(!snapshot||snapshot.stage!=='voice_review'||generationBusy){
-        return Promise.reject(new Error('当前不能确认视频原声'));
-      }
-      if(Object.keys(timelineDrafts).length){
-        return Promise.reject(new Error('请先保存或放弃字幕时间轴修改'));
-      }
-      var body={
+      if(generationBusy) return Promise.reject(new Error('操作正在处理中'));
+      generationBusy=true;ui.operationError='';render();
+      return callJson(path,{
+        method:'POST',body:body,headers:headers||{}
+      }).then(function(){
+        return reload(true);
+      }).catch(mutationFailure).finally(function(){
+        generationBusy=false;render();
+      });
+    }
+    function generateAlignment(){
+      return alignmentMutation(ALIGNMENT_JOBS_PATH,{
         project_id:snapshot.project_id,
         revision:number(snapshot.revision,0)
-      };
-      var confirmation=typeof options.confirm==='function'?
-        options.confirm(0,{kind:'native-audio'},body):true;
-      return Promise.resolve(confirmation).then(function(confirmed){
-        if(confirmed===false) return null;
-        generationBusy=true;ui.operationError='';render();
-        return callJson(NATIVE_AUDIO_PATH,{method:'POST',body:body}).then(function(result){
-          return acceptSnapshot(result,null,true);
-        }).catch(function(error){
-          if(!ambiguousFreeWrite(error)) return mutationFailure(error);
-          return reload(true).then(function(){
-            if(snapshot&&snapshot.stage==='video_review'){
-              return acceptSnapshot(snapshot,null,true);
-            }
-            throw error;
-          }).catch(mutationFailure);
-        }).finally(function(){ generationBusy=false;render(); });
+      },{'Idempotency-Key':requestKey('alignment')});
+    }
+    function currentAlignmentVersion(){
+      var alignment=snapshot&&snapshot.alignment;
+      return alignment&&alignment.current_version||null;
+    }
+    function ensureAlignmentDraft(){
+      requireWritable();
+      var version=currentAlignmentVersion();
+      if(!version||snapshot.stage!=='voice_review'||
+          !snapshot.alignment.actions||!snapshot.alignment.actions.save||
+          conflictFrozen){
+        throw new Error('当前字幕对齐版本不能人工校对');
+      }
+      if(!alignmentDraft||alignmentDraft.versionId!==version.id||
+          alignmentDraft.revision!==number(version.revision,0)){
+        alignmentDraft={
+          versionId:version.id,
+          revision:number(version.revision,0),
+          lines:(version.timeline||[]).map(function(line){
+            return {
+              line_id:text(line.line_id),
+              subtitle_start_ms:number(line.subtitle_start_ms,0),
+              subtitle_end_ms:number(line.subtitle_end_ms,0)
+            };
+          })
+        };
+      }
+      return alignmentDraft;
+    }
+    function updateAlignmentLine(lineId,patch){
+      var draft=ensureAlignmentDraft(),version=currentAlignmentVersion();
+      var target=draft.lines.find(function(line){
+        return line.line_id===text(lineId);
+      });
+      var source=(version.timeline||[]).find(function(line){
+        return text(line.line_id)===text(lineId);
+      });
+      if(!target||!source) throw new Error('字幕校对条目不存在');
+      patch=patch||{};
+      ['subtitle_start_ms','subtitle_end_ms'].forEach(function(field){
+        if(Object.prototype.hasOwnProperty.call(patch,field)){
+          target[field]=Math.round(number(patch[field],target[field]));
+        }
+      });
+      render();
+      return clone(target);
+    }
+    function resetAlignmentLine(lineId){
+      var version=currentAlignmentVersion();
+      var source=version&&(version.timeline||[]).find(function(line){
+        return text(line.line_id)===text(lineId);
+      });
+      if(!source) throw new Error('字幕校对条目不存在');
+      return updateAlignmentLine(lineId,{
+        subtitle_start_ms:number(source.subtitle_start_ms,0),
+        subtitle_end_ms:number(source.subtitle_end_ms,0)
+      });
+    }
+    function reviewAlignment(){
+      var alignment=snapshot&&snapshot.alignment;
+      var version=alignment&&alignment.current_version;
+      if(!version) return Promise.reject(new Error('没有可校对的字幕对齐版本'));
+      var draft;
+      try{ draft=ensureAlignmentDraft(); }
+      catch(error){ return Promise.reject(error); }
+      var analysis=analyzeAlignmentDraft(version,draft);
+      if(analysis.blockers.length){
+        return Promise.reject(new Error(analysis.blockers[0].message));
+      }
+      return alignmentMutation(ALIGNMENT_TIMELINE_PATH,{
+        project_id:snapshot.project_id,
+        version_id:version.id,
+        revision:number(version.revision,0),
+        review_action:analysis.dirty?
+          'save_adjustments':'confirm_unchanged',
+        lines:analysis.lines
+      }).then(function(result){
+        alignmentDraft=null;
+        render();
+        return result;
+      });
+    }
+    function lockAlignment(){
+      var alignment=snapshot&&snapshot.alignment;
+      var version=alignment&&alignment.current_version;
+      if(!version) return Promise.reject(new Error('没有可锁定的字幕对齐版本'));
+      return alignmentMutation(ALIGNMENT_LOCK_PATH,{
+        project_id:snapshot.project_id,
+        version_id:version.id,
+        revision:number(version.revision,0)
       });
     }
     function selectVersion(lineId,version){
@@ -1167,7 +1408,32 @@
             node.getAttribute('data-lock')==='true'
           );
           else if(action==='confirm-voice-stage') task=confirmVoiceStage();
-          else if(action==='use-native-audio') task=useNativeAudio();
+          else if(action==='generate-alignment') task=generateAlignment();
+          else if(action==='review-alignment') task=reviewAlignment();
+          else if(action==='lock-alignment') task=lockAlignment();
+          else if(action==='nudge-alignment'){
+            try{
+              var alignmentLineId=node.getAttribute('data-alignment-line-id');
+              var alignmentField=node.getAttribute('data-alignment-field');
+              var alignmentDelta=number(node.getAttribute('data-delta'),0);
+              var draft=ensureAlignmentDraft();
+              var alignmentLine=draft.lines.find(function(item){
+                return item.line_id===text(alignmentLineId);
+              });
+              var alignmentPatch={};
+              alignmentPatch[alignmentField]=
+                number(alignmentLine&&alignmentLine[alignmentField],0)+alignmentDelta;
+              updateAlignmentLine(alignmentLineId,alignmentPatch);
+            }catch(error){ ui.operationError=error.message;render(); }
+          }
+          else if(action==='reset-alignment-line'){
+            try{
+              resetAlignmentLine(node.getAttribute('data-alignment-line-id'));
+            }catch(error){ ui.operationError=error.message;render(); }
+          }
+          else if(action==='preview-alignment'){
+            preview(node.getAttribute('data-audio-url'));
+          }
           else if(action==='restore-auto-timeline'){
             try{ restoreAutoTimeline(); }catch(error){ ui.operationError=error.message;render(); }
           }
@@ -1193,6 +1459,17 @@
     function onChange(event){
       var node=event&&event.target;
       if(!node||!node.getAttribute) return;
+      var alignmentField=node.getAttribute('data-alignment-field');
+      if(alignmentField){
+        var alignmentPatch={};
+        alignmentPatch[alignmentField]=number(node.value,0);
+        try{
+          updateAlignmentLine(
+            node.getAttribute('data-alignment-line-id'),alignmentPatch
+          );
+        }catch(error){ ui.operationError=text(error.message||error);render(); }
+        return;
+      }
       var field=node.getAttribute('data-field'),line=findLine(node.getAttribute('data-line-id'));
       if(!line) return;
       if(['subtitle_text','subtitle_visible','start_ms','end_ms'].indexOf(field)>=0){
@@ -1287,6 +1564,13 @@
           conflictFrozen=false;
         }
         snapshot=results[0];voices=voiceItems(results[1]);
+        var reloadedAlignment=snapshot.alignment&&snapshot.alignment.current_version;
+        if(alignmentDraft&&(
+          !reloadedAlignment||alignmentDraft.versionId!==reloadedAlignment.id||
+          alignmentDraft.revision!==number(reloadedAlignment.revision,0)
+        )){
+          alignmentDraft=null;
+        }
         if(!(snapshot.shots||[]).some(function(shot){
           return shot.id===ui.selectedShotId;
         })){
@@ -1317,9 +1601,12 @@
       generateAll:generateAll,selectVersion:selectVersion,preview:preview,
       updateTimelineLine:updateTimelineLine,restoreAutoTimeline:restoreAutoTimeline,
       applyRecommendedSpeed:applyRecommendedSpeed,
+      updateAlignmentLine:updateAlignmentLine,
+      resetAlignmentLine:resetAlignmentLine,
       saveTimeline:saveTimeline,setShotLock:setShotLock,
-      confirmVoiceStage:confirmVoiceStage,useNativeAudio:useNativeAudio,
-      playShot:playShot,
+      generateAlignment:generateAlignment,reviewAlignment:reviewAlignment,
+      lockAlignment:lockAlignment,
+      confirmVoiceStage:confirmVoiceStage,playShot:playShot,
       pauseShot:pauseShotPlayback,replayShot:replayShot,
       getState:function(){
         return clone(normalizeState(viewSnapshot(),voices,{
@@ -1328,7 +1615,8 @@
           operationBusy:generationBusy,operationError:ui.operationError,
           timelineDirty:!!timelineDrafts[ui.selectedShotId],
           timelinePlaying:timelinePlaying,timelineCursorMs:timelineCursorMs,
-          playingLineId:playingLineId,conflictFrozen:conflictFrozen
+          playingLineId:playingLineId,conflictFrozen:conflictFrozen,
+          alignmentDraft:alignmentDraft
         }));
       },
       destroy:function(){

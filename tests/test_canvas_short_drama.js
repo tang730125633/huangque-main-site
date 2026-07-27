@@ -82,6 +82,15 @@ function testOpenApiContract() {
   }
   const voiceSchema = voiceOperation.responses['200']
     .content['application/json'].schema;
+  const alignmentReviewSchema = spec.paths[
+    '/api/gen/short-drama/subtitle-alignment/timeline'
+  ].post.requestBody.content['application/json'].schema;
+  assert.ok(alignmentReviewSchema.required.includes('review_action'));
+  assert.deepEqual(
+    alignmentReviewSchema.properties.review_action.enum,
+    ['save_adjustments', 'confirm_unchanged'],
+  );
+  assert.equal(alignmentReviewSchema.additionalProperties, false);
   const productionSchema = spec.paths['/api/gen/short-drama/production'].get
     .responses['200'].content['application/json'].schema;
   assert.ok(productionSchema.required.includes('handoff_blocked'));

@@ -2002,6 +2002,13 @@ def confirm_voice_stage(db_factory, owner_username, payload):
         snapshot = build_voice_snapshot(conn, project)
         if snapshot["handoff_blocked"]:
             raise ValueError(snapshot["handoff_blockers"][0]["message"])
+        # The alignment gate and stage CAS must share this write transaction.
+        # A provider job commits its recovery identity before it materializes a
+        # version, so checking only before this transaction leaves a race.
+        from . import short_drama_alignment
+        short_drama_alignment.require_locked_if_started_in_transaction(
+            conn, project
+        )
         now = int(time.time())
         updated = conn.execute(
             "UPDATE short_drama_projects "
