@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -114,7 +115,10 @@ class IP12PDFTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;", document)
 
     def test_real_browser_output_has_pdf_signature_when_available(self):
-        browser = ip12_pdf._browser_path()
+        browser = os.environ.get("DIGITAL_IP_PDF_TEST_BROWSER", "").strip()
+        if os.environ.get("CI") and not browser:
+            self.skipTest("CI browser probe requires DIGITAL_IP_PDF_TEST_BROWSER")
+        browser = browser or ip12_pdf._browser_path()
         if not browser:
             self.skipTest("Chromium-compatible browser unavailable")
         output = ip12_pdf.render_report_pdf(_payload(), browser=browser)
