@@ -3,12 +3,14 @@ import unittest
 
 
 SCRIPT_HTML = pathlib.Path(__file__).resolve().parents[1] / "site/workbench/script.html"
+CORE_PY = pathlib.Path(__file__).resolve().parents[1] / "server/content_domains/core.py"
 
 
 class ScriptActionsUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.html = SCRIPT_HTML.read_text(encoding="utf-8")
+        cls.core = CORE_PY.read_text(encoding="utf-8")
 
     def test_scene_handoffs_keep_prompt_parameters(self):
         self.assertIn("handoffUrl('video.html',a.getAttribute('data-to-video')", self.html)
@@ -190,6 +192,22 @@ class ScriptActionsUiTests(unittest.TestCase):
         # 三处轮询（写脚本、拆解、成片）都已覆盖
         self.assertTrue(self.html.count("pollErrors=0") >= 6)
         self.assertTrue(self.html.count("网络不稳定，正在重试") >= 3)
+
+    def test_breakdown_and_image_submissions_are_idempotent(self):
+        self.assertIn("'Idempotency-Key':breakdownKey", self.html)
+        self.assertIn("'Idempotency-Key':imageKey", self.html)
+        self.assertIn('"script_to_video", "breakdown"}', self.core)
+
+    def test_breakdown_handles_gateway_html_and_can_resume_polling(self):
+        self.assertIn("function _readApiResponse(response)", self.html)
+        self.assertIn("服务返回异常（HTTP ", self.html)
+        self.assertIn("data-resume-breakdown", self.html)
+        self.assertIn("继续查询", self.html)
+        self.assertIn("任务编号：", self.html)
+        self.assertIn("startPolling()", self.html)
+
+    def test_breakdown_batch_phase_regex_matches_digits(self):
+        self.assertIn(r"/^batch_(\d+)_(\d+)$/.exec", self.html)
 
     def test_breakdown_scenes_are_editable(self):
         self.assertIn('id="bdEditBtn"', self.html)

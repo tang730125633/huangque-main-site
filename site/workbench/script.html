@@ -384,6 +384,23 @@
   var BD_REVERSE_LABEL='开始反推（20 点）';
 
   function tok(){ return '__cookie__'; }
+  function _readApiResponse(response){
+    return response.text().then(function(text){
+      var data={};
+      try{ data=text?JSON.parse(text):{}; }
+      catch(e){
+        data={detail:'服务返回异常（HTTP '+response.status+'），请稍后重试'};
+      }
+      return {s:response.status,d:data};
+    });
+  }
+  function _jobRecoveryHtml(message,jobId){
+    return '<div style="padding:24px;text-align:center;color:#f4708a;">'+esc(message)
+      +'<div style="margin-top:8px;color:#94a4bb;font-size:12px;">任务编号：'+esc(String(jobId))+'</div>'
+      +'<div style="display:flex;gap:8px;justify-content:center;margin-top:14px;">'
+      +'<button type="button" class="sc-btn" data-resume-breakdown="'+escAttr(String(jobId))+'">继续查询</button>'
+      +'<a class="sc-btn" href="assets.html">查看资产库</a></div></div>';
+  }
   function currentTheme(){ return window.HQTheme ? window.HQTheme.get() : ((document.documentElement.getAttribute('data-theme')==='light')?'light':'dark'); }
   function renderThemeToggle(theme){
     [themeLightBtn, themeDarkBtn].forEach(function(btn){
@@ -1100,16 +1117,32 @@
     var pollCount=0, lastPhase='downloading', pollErrors=0;
     var maxPolls=isBatch?(100*lines.length):120;  // 批量按条数放宽：每条最长约90s，5条≈450s+，避免后端还在跑前端先报超时
     var reqBody=isBatch?{urls:lines,mode:'scenes'}:{url:lines[0],mode:submitMode};
-    fetch('/api/gen/breakdown',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify(reqBody)})
-      .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
+    var breakdownKey='script-breakdown-'+Date.now()+'-'+Math.random().toString(36).slice(2);
+    fetch('/api/gen/breakdown',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json','Idempotency-Key':breakdownKey},body:JSON.stringify(reqBody)})
+      .then(_readApiResponse)
       .then(function(x){
         if(x.s===401){ resetBdBtn(); if(window.HQ) HQ.login(); return; }
         if(x.s===402){ resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }
         if(!x.d.job_id){ resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">提交失败：'+((x.d&&x.d.detail)||'未知')+'</div>'; return; }
-        var MAX_POLL_ERRORS=10;
-        var iv=setInterval(function(){
+        var MAX_POLL_ERRORS=10, iv=null;
+        function showRecovery(message){
+          resetBdBtn();
+          scenes.innerHTML=_jobRecoveryHtml(message,x.d.job_id);
+          var resume=scenes.querySelector('[data-resume-breakdown]');
+          if(resume) resume.onclick=function(){
+            pollCount=0; pollErrors=0;
+            scenes.innerHTML='<div style="padding:34px;text-align:center;color:#60a5fa;font-size:13px;">正在继续查询任务…</div>';
+            startPolling();
+          };
+        }
+        function startPolling(){
+          if(iv) clearInterval(iv);
+          iv=setInterval(function(){
           pollCount++;
-          fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(function(r){return r.json();}).then(function(d){
+          fetch('/api/gen/job/'+x.d.job_id,{headers:{'Authorization':'Bearer '+tok()}}).then(_readApiResponse).then(function(jobResponse){
+            var d=jobResponse.d||{};
+            if(jobResponse.s===401){ clearInterval(iv); resetBdBtn(); if(window.HQ) HQ.login(); return; }
+            if(jobResponse.s>=500){ throw new Error(d.detail||'任务查询失败'); }
             pollErrors=0;
             if(d.phase && d.phase!==lastPhase){ lastPhase=d.phase; setBdPhase(d.phase,'active'); }
             if(d.status==='done'){
@@ -1137,19 +1170,24 @@
               if(window.HQ&&window.HQ.refreshPoints) window.HQ.refreshPoints();
             } else if(d.status==='error'||d.status==='failed'){
               clearInterval(iv); resetBdBtn();
-              scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">'+(submitMode==='reverse_prompt'?'反推失败：':'拆解失败：')+(d.error||'')+' · 已退点</div>';
+              var failure=String(d.error||'未知错误');
+              scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">'
+                +(submitMode==='reverse_prompt'?'反推失败：':'拆解失败：')+esc(failure)
+                +(failure.indexOf('退')>=0?'':' · 已退点')+'</div>';
             } else if(d.phase){
               var phaseMsg={downloading:'正在下载视频…',extracting_frames:'正在抽取关键帧…',transcribing:'正在转写口播…',analyzing:submitMode==='reverse_prompt'?'AI 正在反推提示词…':'AI 分析拆解中…'};
-              var bm=/^batch_(d+)_(d+)$/.exec(d.phase||'');
+              var bm=/^batch_(\d+)_(\d+)$/.exec(d.phase||'');
               scenes.innerHTML='<div style="padding:34px; text-align:center; color:#60a5fa; font-size:13px;">'+(bm?('批量拆解中（第'+bm[1]+'条/共'+bm[2]+'条）'):(phaseMsg[d.phase]||'处理中…'))+'</div>';
             }
-            if(pollCount>maxPolls){ clearInterval(iv); resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">'+(submitMode==='reverse_prompt'?'反推超时，请稍后重试':'拆解超时，请稍后重试')+'</div>'; }
+            if(pollCount>maxPolls){ clearInterval(iv); showRecovery(submitMode==='reverse_prompt'?'页面等待超时，任务可能仍在处理中':'页面等待超时，任务可能仍在处理中'); }
           }).catch(function(){
             pollErrors++;
             if(pollErrors>=3 && pollErrors<MAX_POLL_ERRORS) scenes.innerHTML='<div style="padding:34px; text-align:center; color:#f4a460; font-size:13px;">网络不稳定，正在重试…（'+pollErrors+'/'+MAX_POLL_ERRORS+'）</div>';
-            if(pollErrors>=MAX_POLL_ERRORS){ clearInterval(iv); resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络连接失败，请检查网络后重试</div>'; }
+            if(pollErrors>=MAX_POLL_ERRORS){ clearInterval(iv); showRecovery('网络连接失败，但任务可能仍在处理中'); }
           });
         },3000);
+        }
+        startPolling();
       }).catch(function(){ resetBdBtn(); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">网络错误，请重试</div>'; });
   }; }
 
@@ -1570,8 +1608,9 @@
     _setGenerateBusy(btn,true);
     scenes.innerHTML='<div style="padding:34px;text-align:center;color:#e7b24c;font-size:13px;">🎨 正在生成图片…</div>';
     var pollCount=0, pollErrors=0;
-    fetch('/api/gen/image',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json'},body:JSON.stringify({prompt:prompt,ratio:'9:16',quality:'standard'})})
-      .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
+    var imageKey='script-image-'+Date.now()+'-'+Math.random().toString(36).slice(2);
+    fetch('/api/gen/image',{method:'POST',headers:{'Authorization':'Bearer '+tok(),'Content-Type':'application/json','Idempotency-Key':imageKey},body:JSON.stringify({prompt:prompt,ratio:'9:16',quality:'standard'})})
+      .then(_readApiResponse)
       .then(function(x){
         if(x.s===401){ _setGenerateBusy(btn,false); if(window.HQ) HQ.login(); return; }
         if(x.s===402){ _setGenerateBusy(btn,false); scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">点数不足 · <a href="recharge.html" style="color:#e7b24c">去充值</a></div>'; return; }

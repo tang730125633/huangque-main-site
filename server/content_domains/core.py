@@ -1097,12 +1097,18 @@ def run_job(job_id):
         result = HANDLERS[kind](payload)
         breakdown_refund_prepared = False
         if kind == "breakdown":
-            breakdown_refund_prepared = _domains()[1].prepare_breakdown_batch_refund(
-                username, cost, result, job_id)
+            prepare_breakdown_refund = getattr(
+                _domains()[1], "prepare_breakdown_batch_refund", None)
+            if prepare_breakdown_refund:
+                breakdown_refund_prepared = prepare_breakdown_refund(
+                    username, cost, result, job_id)
         # 先 CAS 抢 done 终态：仅当仍是 running 才写 done，防 reaper 已判 error 又被无条件覆盖(既出片又退点)
         if not _set_terminal(job_id, "done", result=result):
             if breakdown_refund_prepared:
-                _domains()[1].cancel_breakdown_refund(job_id)
+                cancel_breakdown_refund = getattr(
+                    _domains()[1], "cancel_breakdown_refund", None)
+                if cancel_breakdown_refund:
+                    cancel_breakdown_refund(job_id)
             return  # 已被 reaper 接管为 error+退点：放弃成功副作用(不入库、不覆盖状态)
         # 口播按成片真实时长结算：预扣(cost)是 hold，跑完多退少不补。只在抢到 done 后调 —— done CAS
         # 互斥 + reaper/reclaim 不碰 done → 每 job 至多结算一次，不重复退。结算失败不影响出片。
@@ -1116,7 +1122,10 @@ def run_job(job_id):
             except Exception:
                 pass
         if kind == "breakdown":
-            _domains()[1].reconcile_breakdown_refund(job_id)
+            reconcile_breakdown_refund = getattr(
+                _domains()[1], "reconcile_breakdown_refund", None)
+            if reconcile_breakdown_refund:
+                reconcile_breakdown_refund(job_id)
         # 已确认拿到 done 终态；入库是次要副作用，失败也不改状态、不退点
         try:
             audio_domain, _, video_domain = _domains()
@@ -1522,7 +1531,7 @@ class H(BaseHTTPRequestHandler):
                         body.pop("short_drama_references", None)
                 if not is_still_route: request_body = dict(body) if isinstance(body, dict) else body
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
-                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"} else ""
+                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video", "breakdown"} else ""
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
                 if kind == "xiaole_video" and str(body.get("channel") or "").lower() in {"micro", "omni"} and not idem_key: raise ValueError("官方视频提交必须提供 Idempotency-Key")
             except miniprogram_security.ContentRejected as e:

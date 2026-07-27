@@ -85,13 +85,14 @@ class ScriptSubmissionGuardTests(unittest.TestCase):
 
     def test_breakdown_partial_refund_intent_precedes_done_and_is_recoverable(self):
         source = (SERVER / "content_domains" / "core.py").read_text(encoding="utf-8")
-        prepare_at = source.index("prepare_breakdown_batch_refund(")
+        prepare_at = source.index("prepare_breakdown_refund(")
         done_at = source.index('_set_terminal(job_id, "done"', prepare_at)
         reconcile_at = source.index("reconcile_breakdown_refund(job_id)", done_at)
 
         self.assertLess(prepare_at, done_at)
         self.assertLess(done_at, reconcile_at)
         self.assertIn('getattr(_domains()[1], "retry_breakdown_refunds", None)', source)
+        self.assertIn('getattr(\n                _domains()[1], "prepare_breakdown_batch_refund", None)', source)
         self.assertIn("retry_breakdown(JOB_QUEUE_MAX)", source)
 
 

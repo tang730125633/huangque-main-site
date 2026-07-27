@@ -620,12 +620,21 @@ def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7):
         "temperature": temp,
     }
 
-    d = egress.post_json(
-        OPENAI_OFFICIAL_BASE, OPENAI_BASE,
-        "/v1/chat/completions", json.dumps(body, ensure_ascii=False).encode(),
-        {"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": "application/json"},
-        log=lambda m: print("[breakdown] %s" % m, flush=True)
-    )
+    try:
+        d = egress.post_json_idempotent(
+            OPENAI_OFFICIAL_BASE, OPENAI_BASE,
+            "/v1/chat/completions", json.dumps(body, ensure_ascii=False).encode(),
+            {"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": "application/json"},
+            log=lambda m: print("[breakdown] %s" % m, flush=True),
+            max_attempts=2,
+        )
+    except Exception as error:
+        detail = str(error or "").lower()
+        if isinstance(error, (TimeoutError, OSError)) or "timed out" in detail or "timeout" in detail:
+            message = "AI 分析响应超时，本次未生成结果，点数已自动退回，请稍后重试"
+        else:
+            message = "AI 分析服务暂时不可用，本次未生成结果，点数已自动退回，请稍后重试"
+        raise RuntimeError(message) from error
     return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
 
 
