@@ -3,6 +3,7 @@ import json
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -90,6 +91,8 @@ class DigitalIPTests(unittest.TestCase):
         digital_ip._project_daily_requests.clear()
         digital_ip._guide_cache.clear()
         digital_ip._project_inflight.clear()
+        digital_ip._project_actions.clear()
+        digital_ip._project_mutations.clear()
 
     def test_diagnose_uses_responses_structured_outputs(self):
         captured = {}
@@ -239,6 +242,22 @@ class DigitalIPTests(unittest.TestCase):
                 digital_ip.guide({"module": "定位诊断", "step": "经营底图", "message": "怎么填写"}, "owner")
         post.assert_not_called()
 
+    def test_structured_output_failure_releases_legacy_quotas(self):
+        incomplete = {"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}}
+        with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), \
+                mock.patch.object(digital_ip, "_post", return_value=incomplete):
+            with self.assertRaises(digital_ip.DigitalIPError):
+                digital_ip.diagnose({
+                    "module": "定位诊断", "step": "经营底图", "answer": "门店经营七年", "consent": True,
+                }, "owner")
+            with self.assertRaises(digital_ip.DigitalIPError):
+                digital_ip.guide({
+                    "module": "定位诊断", "step": "经营底图", "message": "请帮我理解", "consent": True,
+                }, "owner")
+        self.assertNotIn("owner", digital_ip._recent_requests)
+        self.assertNotIn("owner", digital_ip._guide_recent_requests)
+        self.assertFalse(digital_ip._guide_daily_requests)
+
     def test_project_owner_cas_and_no_raw_file_persistence(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(digital_ip, "PROJECT_DB", Path(directory) / "ip.db"):
             project = digital_ip.create_project("owner", {"title": "美业 IP"})
@@ -313,8 +332,47 @@ class DigitalIPTests(unittest.TestCase):
             self.assertEqual(digital_ip.get_project("owner", project["id"])["revision"], project["revision"])
             self.assertNotIn("owner", digital_ip._recent_requests)
             self.assertFalse(digital_ip._project_daily_requests)
+            with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), \
+                    mock.patch.object(digital_ip, "_post", return_value={"status": "incomplete"}):
+                with self.assertRaises(digital_ip.DigitalIPError):
+                    digital_ip.analyze_project("owner", project["id"], {
+                        "revision": project["revision"], "module_index": 1, "step_index": 1,
+                        "answer": "经营 7 年", "consent": True,
+                    })
+            self.assertNotIn("owner", digital_ip._recent_requests)
+            self.assertFalse(digital_ip._project_daily_requests)
             with self.assertRaises(digital_ip.DigitalIPValidationError):
                 digital_ip._clean_project_files([{ "name": "bad.exe", "type": "application/octet-stream", "data_url": "data:application/octet-stream;base64,AA==" }])
+
+    def test_project_mutation_is_rejected_while_ai_action_runs(self):
+        entered, release = threading.Event(), threading.Event()
+        response = {"model": "test", "output": [{"type": "message", "content": [
+            {"type": "output_text", "text": json.dumps(_project_analysis(), ensure_ascii=False)},
+        ]}]}
+
+        def slow_post(*_args, **_kwargs):
+            entered.set()
+            self.assertTrue(release.wait(2))
+            return response
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(digital_ip, "PROJECT_DB", Path(directory) / "ip.db"):
+            project = digital_ip.create_project("owner", {})
+            project = digital_ip.patch_project("owner", project["id"], {
+                "revision": project["revision"], "state": {"questionnaire_state": {"answers": {"1-1": {"text": "经营 7 年"}}}},
+            })
+            payload = {"revision": project["revision"], "module_index": 1, "step_index": 1, "answer": "经营 7 年", "consent": True}
+            with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), \
+                    mock.patch.object(digital_ip, "_post", side_effect=slow_post), \
+                    ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(digital_ip.analyze_project, "owner", project["id"], payload)
+                self.assertTrue(entered.wait(2))
+                with self.assertRaises(digital_ip.DigitalIPRevisionConflict):
+                    digital_ip.patch_project("owner", project["id"], {"revision": project["revision"], "title": "不应写入"})
+                with self.assertRaises(digital_ip.DigitalIPRevisionConflict):
+                    digital_ip.confirm_project("owner", project["id"], {"revision": project["revision"], "candidate_index": 0})
+                release.set()
+                self.assertTrue(future.result()["ok"])
+            self.assertEqual(digital_ip.get_project("owner", project["id"])["title"], "未命名数字 IP")
 
     def test_review_step_can_be_analyzed_and_confirmed(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(digital_ip, "PROJECT_DB", Path(directory) / "ip.db"):
