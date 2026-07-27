@@ -70,14 +70,77 @@ class BreakdownBatchTests(unittest.TestCase):
             os.unlink(handle.name)
 
 
-class CopyProviderFallbackTests(unittest.TestCase):
-    def test_copy_uses_existing_openai_channel_without_zhipu_key(self):
-        with mock.patch.object(text, "ZHIPU_API_KEY", ""), \
-             mock.patch.object(text, "_post", return_value={
-                 "choices": [{"message": {"content": "fallback ok"}}],
-             }) as post:
-            self.assertEqual("fallback ok", text._chat("system", "user", 0.5))
-        self.assertEqual("/v1/chat/completions", post.call_args.args[0])
+class CopyZhipuProviderTests(unittest.TestCase):
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        @staticmethod
+        def read():
+            return b'{"choices":[{"message":{"content":"zhipu ok"}}]}'
+
+    def test_copy_uses_reverse_zhipu_key_and_glm_4v_plus(self):
+        with mock.patch.object(text, "ZHIPU_API_KEY", "secret-test-key"), \
+             mock.patch.object(text._NOPROXY, "open", return_value=self._Response()) as opened:
+            self.assertEqual("zhipu ok", text._chat("system", "user", 0.5))
+
+        request = opened.call_args.args[0]
+        body = json.loads(request.data)
+        self.assertEqual("glm-4v-plus", body["model"])
+        self.assertEqual("Bearer secret-test-key", request.headers["Authorization"])
+        self.assertEqual(text.ZHIPU_API_BASE + "/chat/completions", request.full_url)
+
+    def test_copy_fails_closed_without_reverse_zhipu_key(self):
+        with mock.patch.object(text, "ZHIPU_API_KEY", ""):
+            with self.assertRaisesRegex(RuntimeError, "REVERSE_ZHIPU_KEY"):
+                text._chat("system", "user", 0.5)
+
+    def test_reference_script_uses_same_zhipu_multimodal_model(self):
+        with mock.patch.object(text, "ZHIPU_API_KEY", "secret-test-key"), \
+             mock.patch.object(text._NOPROXY, "open", return_value=self._Response()) as opened:
+            text._chat_multimodal(
+                "system", "user", ["data:image/png;base64,YQ=="], 0.5
+            )
+
+        body = json.loads(opened.call_args.args[0].data)
+        self.assertEqual("glm-4v-plus", body["model"])
+        content = body["messages"][1]["content"]
+        self.assertEqual("image_url", content[1]["type"])
+
+
+class BreakdownZhipuProviderTests(unittest.TestCase):
+    def test_breakdown_uses_reverse_zhipu_key_and_glm_4v_plus(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image = pathlib.Path(directory) / "frame.jpg"
+            image.write_bytes(b"jpeg")
+            with mock.patch.object(breakdown, "ZHIPU_API_KEY", "secret-test-key"), \
+                 mock.patch.object(
+                     breakdown.egress,
+                     "post_json_idempotent",
+                     return_value={"choices": [{"message": {"content": "vision ok"}}]},
+                 ) as posted:
+                self.assertEqual(
+                    "vision ok",
+                    breakdown._chat_multimodal("system", "user", [str(image)], 0.2),
+                )
+
+        body = json.loads(posted.call_args.args[3])
+        self.assertEqual("glm-4v-plus", body["model"])
+        self.assertEqual(
+            "Bearer secret-test-key", posted.call_args.args[4]["Authorization"]
+        )
+        self.assertEqual(
+            (breakdown.ZHIPU_API_BASE, breakdown.ZHIPU_API_BASE),
+            posted.call_args.args[:2],
+        )
+
+    def test_breakdown_fails_closed_without_reverse_zhipu_key(self):
+        with mock.patch.object(breakdown, "ZHIPU_API_KEY", ""):
+            with self.assertRaisesRegex(RuntimeError, "REVERSE_ZHIPU_KEY"):
+                breakdown._chat_multimodal("system", "user", [], 0.2)
 
 
 class BreakdownLocalUploadHttpTests(unittest.TestCase):

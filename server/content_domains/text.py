@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 import re
 
-from .core import COPY_MODEL as FALLBACK_COPY_MODEL, OPENAI_BASE, OPENAI_KEY, _NOPROXY, _post, base64, json, os, urllib
+from .core import _NOPROXY, json, os, urllib
 
-COPY_MODEL = "glm-4-plus"
 ZHIPU_API_BASE = "https://open.bigmodel.cn/api/paas/v4"
-ZHIPU_API_KEY = (os.environ.get("ZHIPU_API_KEY") or "").strip()
+ZHIPU_API_KEY = (os.environ.get("REVERSE_ZHIPU_KEY") or "").strip()
+ZHIPU_MODEL = (os.environ.get("REVERSE_ZHIPU_MODEL") or "glm-4v-plus").strip()
 
 
 SCRIPT_FACT_GUARD = (
@@ -68,18 +68,14 @@ def sanitize_script_scenes(scenes, brief):
     return cleaned
 
 
-def _chat(sysmsg, usermsg, temp):
-    body = json.dumps({"model": COPY_MODEL,
-                       "messages": [{"role": "system", "content": sysmsg}, {"role": "user", "content": usermsg}],
-                       "temperature": temp}).encode()
+def _zhipu_chat(messages, temp):
     if not ZHIPU_API_KEY:
-        fallback = json.dumps({
-            "model": os.environ.get("COPY_FALLBACK_MODEL", FALLBACK_COPY_MODEL),
-            "messages": [{"role": "system", "content": sysmsg}, {"role": "user", "content": usermsg}],
-            "temperature": temp,
-        }).encode()
-        d = _post("/v1/chat/completions", fallback, "application/json")
-        return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+        raise RuntimeError("REVERSE_ZHIPU_KEY is not configured")
+    body = json.dumps({
+        "model": ZHIPU_MODEL,
+        "messages": messages,
+        "temperature": temp,
+    }, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         ZHIPU_API_BASE + "/chat/completions",
         data=body,
@@ -91,18 +87,22 @@ def _chat(sysmsg, usermsg, temp):
     return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
 
 
+def _chat(sysmsg, usermsg, temp):
+    return _zhipu_chat([
+        {"role": "system", "content": sysmsg},
+        {"role": "user", "content": usermsg},
+    ], temp)
+
+
 def _chat_multimodal(sysmsg, usermsg, image_data_urls, temp=0.85):
-    """带参考图的 GPT-4o 多模态调用。"""
-    from . import egress
+    """带参考图的智谱 GLM-4V 多模态调用。"""
     content = [{"type": "text", "text": usermsg}]
     for url in (image_data_urls or []):
         content.append({"type": "image_url", "image_url": {"url": str(url), "detail": "low"}})
-    body = json.dumps({"model": "gpt-4o", "messages": [
+    return _zhipu_chat([
         {"role": "system", "content": sysmsg},
-        {"role": "user", "content": content}], "temperature": temp}).encode()
-    d = egress.post_json(OPENAI_BASE, OPENAI_BASE, "/v1/chat/completions", body,
-                         {"Authorization": "Bearer " + OPENAI_KEY, "Content-Type": "application/json"})
-    return (d.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+        {"role": "user", "content": content},
+    ], temp)
 
 
 def gen_copy(payload):
