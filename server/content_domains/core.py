@@ -884,6 +884,13 @@ def _global_running_breakdown_count():   # 全局运行中的爆款拆解数（�
                         (SERVICE_OWNER, SERVICE_OWNER)).fetchone()
     return int(row["n"] if row else 0)
 
+
+def _optional_points_call(name, *args):
+    """Call a points capability only when the loaded module version provides it."""
+    callback = getattr(_domains()[1], name, None)
+    return callback(*args) if callback else None
+
+
 def _reject_pending_job(job_id, username, cost, reason):
     return _fail_job_and_schedule_refund(
         job_id, reason, from_states=("pending",), username=username, cost=cost,
@@ -1097,18 +1104,12 @@ def run_job(job_id):
         result = HANDLERS[kind](payload)
         breakdown_refund_prepared = False
         if kind == "breakdown":
-            prepare_breakdown_refund = getattr(
-                _domains()[1], "prepare_breakdown_batch_refund", None)
-            if prepare_breakdown_refund:
-                breakdown_refund_prepared = prepare_breakdown_refund(
-                    username, cost, result, job_id)
+            breakdown_refund_prepared = _optional_points_call(
+                "prepare_breakdown_batch_refund", username, cost, result, job_id)
         # 先 CAS 抢 done 终态：仅当仍是 running 才写 done，防 reaper 已判 error 又被无条件覆盖(既出片又退点)
         if not _set_terminal(job_id, "done", result=result):
             if breakdown_refund_prepared:
-                cancel_breakdown_refund = getattr(
-                    _domains()[1], "cancel_breakdown_refund", None)
-                if cancel_breakdown_refund:
-                    cancel_breakdown_refund(job_id)
+                _optional_points_call("cancel_breakdown_refund", job_id)
             return  # 已被 reaper 接管为 error+退点：放弃成功副作用(不入库、不覆盖状态)
         # 口播按成片真实时长结算：预扣(cost)是 hold，跑完多退少不补。只在抢到 done 后调 —— done CAS
         # 互斥 + reaper/reclaim 不碰 done → 每 job 至多结算一次，不重复退。结算失败不影响出片。
@@ -1122,10 +1123,7 @@ def run_job(job_id):
             except Exception:
                 pass
         if kind == "breakdown":
-            reconcile_breakdown_refund = getattr(
-                _domains()[1], "reconcile_breakdown_refund", None)
-            if reconcile_breakdown_refund:
-                reconcile_breakdown_refund(job_id)
+            _optional_points_call("reconcile_breakdown_refund", job_id)
         # 已确认拿到 done 终态；入库是次要副作用，失败也不改状态、不退点
         try:
             audio_domain, _, video_domain = _domains()
