@@ -14,6 +14,7 @@ import uuid
 from contextlib import closing
 
 from .core import OPENAI_KEY, _post
+from . import ip12_pdf
 
 
 MODEL = os.environ.get("DIGITAL_IP_MODEL", "gpt-5.6-sol").strip() or "gpt-5.6-sol"
@@ -106,6 +107,9 @@ _project_actions = set()
 _project_mutations = set()
 _project_db_init_lock = threading.Lock()
 _project_db_initialized = set()
+_pdf_lock = threading.Lock()
+_pdf_recent_renders = {}
+_pdf_cache = {}
 
 ANALYSIS_SCHEMA = {
     "type": "object",
@@ -847,6 +851,14 @@ class DigitalIPRevisionConflict(DigitalIPError):
     status = 409
 
 
+class DigitalIPPDFBusy(DigitalIPError):
+    status = 429
+
+
+class DigitalIPPDFUnavailable(DigitalIPError):
+    status = 503
+
+
 def _secure_project_db_files(db_path):
     path = pathlib.Path(db_path)
     try:
@@ -1586,6 +1598,7 @@ def _generate_report(username, project_id, revision):
         updated = conn.execute("SELECT * FROM digital_ip_projects WHERE id=? AND username=?", (project_id, username)).fetchone()
     public_report = dict(envelope)
     public_report.pop("model", None)
+    public_report["pdf_url"] = "/api/gen/digital-ip/projects/%s/report.pdf" % project_id
     return {"ok": True, "project": _project_public(updated), "report": public_report, "stale": False}
 
 
@@ -1608,11 +1621,56 @@ def get_report(username, project_id):
         raise DigitalIPNotFound("报告尚未生成")
     public_report = dict(report)
     public_report.pop("model", None)
+    public_report["pdf_url"] = "/api/gen/digital-ip/projects/%s/report.pdf" % project_id
     return {
         "project": {"id": row["id"], "title": row["title"], "revision": int(row["revision"])},
         "report": public_report,
         "stale": int(row["revision"]) != report.get("project_revision"),
     }
+
+
+def export_report_pdf(username, project_id):
+    payload = get_report(username, project_id)
+    report_id = str(payload["report"].get("report_id") or "report")
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", report_id)[:16] or "report"
+    filename = "huangque-ip12-%s.pdf" % safe_id
+    cache_key = (username, project_id, report_id, int(payload["project"]["revision"]))
+    if not _pdf_lock.acquire(blocking=False):
+        raise DigitalIPPDFBusy("另一份 PDF 正在生成，请稍后重试")
+    try:
+        if _pdf_cache.get("key") == cache_key:
+            return _pdf_cache["data"], filename
+        now = time.monotonic()
+        for owner in [owner for owner, stamp in _pdf_recent_renders.items() if now - stamp >= 60]:
+            _pdf_recent_renders.pop(owner, None)
+        last_render = _pdf_recent_renders.get(username)
+        if last_render is not None and now - last_render < 30:
+            raise DigitalIPPDFBusy("PDF 生成过于频繁，请稍后重试")
+        _pdf_recent_renders[username] = now
+        data = ip12_pdf.render_report_pdf(payload)
+    except DigitalIPPDFBusy:
+        raise
+    except Exception as exc:
+        _pdf_recent_renders.pop(username, None)
+        print("[digital-ip-pdf] render failed: %s" % type(exc).__name__, flush=True)
+        raise DigitalIPPDFUnavailable("PDF 暂时无法生成，请稍后重试") from exc
+    else:
+        # ponytail: single-entry cache caps memory; use a shared bounded cache only if PDF traffic grows.
+        _pdf_cache.update(key=cache_key, data=data)
+    finally:
+        _pdf_lock.release()
+    return data, filename
+
+
+def _send_pdf(handler, data, filename):
+    handler.send_response(200)
+    handler.send_header("Content-Type", "application/pdf")
+    handler.send_header("Content-Disposition", 'attachment; filename="%s"' % filename)
+    handler.send_header("Content-Length", str(len(data)))
+    handler.send_header("Cache-Control", "private, no-store, max-age=0")
+    handler.send_header("X-Content-Type-Options", "nosniff")
+    handler.end_headers()
+    handler.wfile.write(data)
 
 
 def _digital_ip_membership_required(user):
@@ -1651,7 +1709,10 @@ def dispatch_http(handler, method, verify_token, must_change_password):
                 handler._send(200, {"items": list_projects(user["username"])})
             else:
                 parts = path[len(root) + 1:].split("/")
-                if len(parts) == 2 and parts[0] and parts[1] == "report":
+                if len(parts) == 2 and parts[0] and parts[1] == "report.pdf":
+                    data, filename = export_report_pdf(user["username"], parts[0])
+                    _send_pdf(handler, data, filename)
+                elif len(parts) == 2 and parts[0] and parts[1] == "report":
                     handler._send(200, get_report(user["username"], parts[0]))
                 elif len(parts) == 1 and parts[0]:
                     handler._send(200, {"project": get_project(user["username"], parts[0])})
