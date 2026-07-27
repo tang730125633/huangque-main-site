@@ -607,7 +607,10 @@ def verify(token):
         req = urllib.request.Request(AUTH_BASE + "/api/auth/me",
                                      headers={"Authorization": "Bearer " + token})
         with urllib.request.urlopen(req, timeout=6) as r:
-            user = json.loads(r.read()).get("user")
+            auth_result = json.loads(r.read())
+            user = auth_result.get("user")
+            if isinstance(user, dict):
+                user["_membership_enforcement_enabled"] = bool(auth_result.get("membership_enforcement_enabled"))
     except Exception:
         if VERIFY_CACHE_TTL:
             with _verify_cache_lock: _verify_cache.pop(token, None)
@@ -654,6 +657,10 @@ def _leads_domain():
 def _short_drama_domain(): from . import short_drama; return short_drama
 def _must_change_password(user):
     return bool(user and user.get("must_change"))
+def _digital_ip_membership_required(user):
+    return bool(user and user.get("_membership_enforcement_enabled") and not user.get("membership_active"))
+def _send_digital_ip_membership_required(handler):
+    return handler._send(403, {"detail": "请先开通会员后再使用数字化 IP AI 分析", "code": "membership_required", "membership_url": "/workbench/recharge", "membership_enforcement_enabled": True})
 
 _job_public_dict, _idempotency_key = jobs_store.public_dict, submission_idempotency.clean_key
 def _idempotency_begin(username, endpoint, key, body): return submission_idempotency.begin(jdb, username, endpoint, key, body)
@@ -1250,10 +1257,42 @@ class H(BaseHTTPRequestHandler):
         if _short_drama_domain().dispatch_http(self, "POST", jdb, verify, getattr(points_domain, "cost_of", None), mutation_lock=_submission_lock, canvas_access_resolver=_short_drama_canvas_access,
                 points_getter=getattr(points_domain, "get_points", None), voice_validator=lambda username, voice_key:
                 audio_domain.resolve_audio_provider_voice(username, voice_key), generation_dependencies=(audio_domain, points_domain, globals())): return
+        if p == "/api/gen/digital-ip/projects" or p.startswith("/api/gen/digital-ip/projects/"):
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            from . import digital_ip
+            try:
+                content_length = int(self.headers.get("Content-Length") or 0)
+                if content_length <= 0:
+                    return self._send(400, {"detail": "请求体不能为空"})
+                if content_length > digital_ip.MAX_PROJECT_BODY_BYTES:
+                    return self._send(413, {"detail": "资料请求不能超过 20 MiB"})
+                body = self._json_body_strict()
+                if p == "/api/gen/digital-ip/projects":
+                    return self._send(200, {"project": digital_ip.create_project(user["username"], body)})
+                parts = p[len("/api/gen/digital-ip/projects/"):].split("/")
+                if len(parts) != 2 or not parts[0]:
+                    return self._send(404, {"detail": "not found"})
+                project_id, action = parts
+                if action == "analyze":
+                    if _digital_ip_membership_required(user):
+                        return _send_digital_ip_membership_required(self)
+                    return self._send(200, digital_ip.analyze_project(user["username"], project_id, body))
+                if action == "confirm":
+                    return self._send(200, digital_ip.confirm_project(user["username"], project_id, body))
+                return self._send(404, {"detail": "not found"})
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)[:220]})
+            except digital_ip.DigitalIPError as e:
+                return self._send(e.status, {"detail": str(e)})
+            except Exception:
+                return self._send(502, {"detail": "数字化 IP 项目服务暂时不可用，请稍后重试"})
         if p in {"/api/gen/digital-ip/diagnose", "/api/gen/digital-ip/guide"}:
             user = verify(self._token())
             if not user: return self._send(401, {"detail": "未登录或登录已过期"})
             if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            if _digital_ip_membership_required(user): return _send_digital_ip_membership_required(self)
             from . import digital_ip
             try:
                 handler = digital_ip.guide if p.endswith("/guide") else digital_ip.diagnose
@@ -1765,6 +1804,21 @@ class H(BaseHTTPRequestHandler):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
         if _short_drama_domain().dispatch_http(self, "GET", jdb, verify, getattr(points_domain, "cost_of", None), canvas_access_resolver=_short_drama_canvas_access): return
+        if p == "/api/gen/digital-ip/projects" or p.startswith("/api/gen/digital-ip/projects/"):
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录或登录已过期"})
+            from . import digital_ip
+            try:
+                if p == "/api/gen/digital-ip/projects":
+                    return self._send(200, {"items": digital_ip.list_projects(user["username"])})
+                project_id = p[len("/api/gen/digital-ip/projects/"):]
+                if not project_id or "/" in project_id:
+                    return self._send(404, {"detail": "not found"})
+                return self._send(200, {"project": digital_ip.get_project(user["username"], project_id)})
+            except digital_ip.DigitalIPError as e:
+                return self._send(e.status, {"detail": str(e)})
+            except Exception:
+                return self._send(502, {"detail": "数字化 IP 项目服务暂时不可用，请稍后重试"})
         if p == "/api/gen/audio/clone-vip":
             return self._method_not_allowed()
         if p == "/api/gen/inspiration/likes": return inspiration_likes.handle_get(self, verify(self._token()), AUDIO_DB)
@@ -1993,6 +2047,28 @@ class H(BaseHTTPRequestHandler):
         if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
     def do_PATCH(self):
+        p = self.path.split("?")[0]
+        if p.startswith("/api/gen/digital-ip/projects/"):
+            user = verify(self._token())
+            if not user: return self._send(401, {"detail": "未登录或登录已过期"})
+            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
+            from . import digital_ip
+            try:
+                project_id = p[len("/api/gen/digital-ip/projects/"):]
+                if not project_id or "/" in project_id:
+                    return self._send(404, {"detail": "not found"})
+                content_length = int(self.headers.get("Content-Length") or 0)
+                if content_length <= 0:
+                    return self._send(400, {"detail": "请求体不能为空"})
+                if content_length > digital_ip.MAX_PROJECT_BODY_BYTES:
+                    return self._send(413, {"detail": "请求过大"})
+                return self._send(200, {"project": digital_ip.patch_project(user["username"], project_id, self._json_body_strict())})
+            except ValueError as e:
+                return self._send(400, {"detail": str(e)[:220]})
+            except digital_ip.DigitalIPError as e:
+                return self._send(e.status, {"detail": str(e)})
+            except Exception:
+                return self._send(502, {"detail": "数字化 IP 项目服务暂时不可用，请稍后重试"})
         if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
     def do_DELETE(self):
