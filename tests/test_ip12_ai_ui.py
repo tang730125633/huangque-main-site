@@ -89,7 +89,7 @@ console.log(JSON.stringify([
         self.assertIn("delete state.analyses[keyFor()];", html)
         self.assertIn("delete state.profile[module.id];", html)
         self.assertIn("function progressedStepCount(){ return confirmedStepCount()+skippedSteps().length; }", html)
-        self.assertIn('confirmed===totalSteps?"完整档案 · 54 / 54"', html)
+        self.assertIn('confirmed===totalSteps?`当前开放 · ${totalSteps} / ${totalSteps}`', html)
         self.assertIn("首轮已走完", html)
         self.assertIn('id="skippedItems"', html)
         self.assertIn('id="reportUnlock"', html)
@@ -213,7 +213,8 @@ console.log(JSON.stringify([
         self.assertIn("state=restoreLocal?draft.state:remote&&typeof remote===\"object\"?{...initialState,...remote,analyses:{}", html)
         self.assertIn("async function flushProjectSave()", html)
         self.assertGreaterEqual(html.count("await flushProjectSave();"), 2)
-        self.assertIn('`${STORAGE_KEY}:${project.id}`', html)
+        self.assertIn('`${prefix}:${project.id}`', html)
+        self.assertIn("LEGACY_STORAGE_KEY", html)
         self.assertIn("let state = structuredClone(initialState);", html)
         self.assertNotIn("localStorage.setItem(STORAGE_KEY,JSON.stringify(state))", html)
         self.assertIn("saveProject(true)", html)
@@ -221,6 +222,46 @@ console.log(JSON.stringify([
         self.assertIn("project.last_analysis?.input", html)
         self.assertIn('step.type==="review"?step.preview.join("\\n")', html)
         self.assertIn('textarea.addEventListener("input",()=>{', html)
+
+    def test_intake_is_conversation_first_and_growth_agents_are_coming_soon(self):
+        html = PAGE.read_text(encoding="utf-8")
+
+        self.assertIn("先聊聊你想打造的 IP", html)
+        self.assertIn("不用按表格回答", html)
+        self.assertIn("让小黄雀接着问", html)
+        self.assertIn("一次只追问一个问题", html)
+        self.assertIn('const totalSteps = MODULES.filter(module=>module.availability!=="coming_soon")', html)
+        self.assertIn("if(totalSteps!==34)", html)
+        self.assertIn("if(roadmapSteps!==54)", html)
+        self.assertIn('availability:"coming_soon"', html)
+        self.assertIn('coming?"开发中，敬请期待"', html)
+        self.assertIn('!isOpenModuleIndex(module-1)', html)
+        self.assertNotIn("请写下门店类型与规模", html)
+        self.assertNotIn("美业", html)
+        self.assertNotIn("门店", html)
+
+    def test_invalid_legacy_answer_keys_do_not_count_as_open_steps(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        html = PAGE.read_text(encoding="utf-8")
+        source = re.search(r"const MODULES = \[.*?\n    \];", html, re.S).group(0)
+        source += "\n" + "\n".join(
+            re.search(rf"function {name}\(.*?\n    \}}", html, re.S).group(0)
+            for name in ("isOpenModuleIndex", "isOpenStepKey")
+        )
+        script = source + """
+console.log(JSON.stringify([
+  isOpenStepKey('0-0'),
+  isOpenStepKey('8-0'),
+  isOpenStepKey('99-0'),
+  isOpenStepKey('0-99'),
+  isOpenStepKey('invalid')
+]));
+"""
+        got = json.loads(subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=True,
+        ).stdout)
+        self.assertEqual(got, [True, False, False, False, False])
 
     def test_paid_ip12_ai_routes_follow_membership_enforcement(self):
         source = CORE.read_text(encoding="utf-8") + CORE.with_name("digital_ip.py").read_text(encoding="utf-8")

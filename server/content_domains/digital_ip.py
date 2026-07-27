@@ -44,6 +44,21 @@ PROJECT_STATE_MAX = 200000
 PROJECT_MANAGED_STATE_MAX = 500000
 MAX_CONFIRMED_ATTACHMENT_EVIDENCE = 12
 PROJECT_MODULE_STEPS = (5, 5, 5, 5, 4, 3, 3, 4, 5, 5, 5, 5)
+ACTIVE_PROJECT_MODULES = 8
+ACTIVE_MODULE_NAMES = (
+    "定位诊断", "人设塑造", "价值主张", "故事资产",
+    "内容选题", "文案口播", "IP 形象设计", "脚本分镜",
+)
+MODULE_PROMPT_RULES = (
+    "定位诊断：只从用户的生命经历、核心技能、长期兴趣、人格优势和目标人群提炼事实；信息不足时先追问。给出三套差异化定位及各自机会、风险和推荐理由。",
+    "人设塑造：基于已确认经历、人格特质、价值观、目标人群和未来目标，给出三套可长期坚持的人设画像，并比较传播优势、风险和表演成本。",
+    "价值主张：把用户的优势、目标人群痛点、所在领域、期望印象和长期影响力转化为三条可兑现的价值主张；每条都要说明优势与边界。",
+    "故事资产：从用户真实经历中提炼挫折型、成长型和愿景型故事；候选要包含故事主线、情绪点、可用场景和无法核实的缺口。",
+    "内容选题：围绕已确认目标人群、领域、优势、长期标签和近期目标形成选题方向；优先真实高频问题，禁止把趋势或流量效果写成事实。",
+    "文案口播：围绕已确认主题、目标人群、身份、传播目标和风格，比较共情型、观点型和故事型方案；包含三秒钩子、节奏、字幕点和克制的行动引导。",
+    "IP 形象设计：只有用户主动提供照片时才分析照片；无照片时明确列为资料缺口。候选覆盖外观、灯光、机位、背景、表情、声调、传播优势和风险。",
+    "脚本分镜：围绕已确认主题、受众、风格、时长和目的生成三套脚本方向；候选要覆盖钩子、中段、结尾、镜头、口播、素材成本和传播风险。",
+)
 PROJECT_FILE_TYPES = {
     "application/pdf": {"pdf"},
     "application/msword": {"doc"},
@@ -289,6 +304,7 @@ REPORT_INSTRUCTIONS = """你是黄雀数字化 IP 的产品方案审查员。根
 - target 是待用户确认的规划值，不是效果承诺；缺少基线时明确写“待确认”
 - execution_steps 必须包含用户核对或确认环节；不得自动生成素材、发布、投放、支付或联系第三方
 - skipped_steps 必须全部被 material_gaps.source_refs 覆盖，可将同类步骤合并为一个缺口；非跳过型缺口的 source_refs 为空
+- 模块 9–12 尚在开发，不得生成私域矩阵、朋友圈运营、销售策略或公众号变现的 Agent 结论
 - 若没有可信证据，行业痛点和指标数组应为空
 - disclaimer 必须说明报告仅基于用户确认资料、产品可用性以页面实时状态为准、结果不构成经营效果保证
 """
@@ -354,28 +370,28 @@ GUIDE_SCHEMA = {
     ],
 }
 
-INSTRUCTIONS = """你是黄雀数字化 IP 的美业经营诊断教练。
+INSTRUCTIONS = """你是黄雀数字化 IP 的阶段分析教练，不预设用户行业。
 
-目标：根据美业门店老板当前回答和已确认上下文，提炼可追溯的经营事实、痛点与三套差异化定位候选。
+目标：根据当前模块规则、用户回答、已确认上下文和用户主动提供的资料，提炼可追溯事实、关键问题与三套差异化阶段候选。
 
 成功标准：
 - 事实只能来自用户原话；推断必须单独放在 inferred_signals
-- business_pains 优先覆盖获客、到店、咨询成交、服务、复购转介绍、员工带教和老板 IP 信任
-- 输出 3 套真正不同的 positioning_candidates，并说明依据、风险和可持续内容方向
+- business_pains 表示当前模块需要解决的关键问题，不能强行套用某个行业或经营场景
+- 输出 3 套真正不同的 positioning_candidates；字段名仅为兼容接口，内容必须服从当前模块规则，并说明依据、风险和下一步方向
 - 资料不足时不要编造，ready_to_confirm=false，并提出一个最有价值的 follow_up_question
-- 不制造容貌焦虑，不承诺医疗效果或经营结果，不把 AI 推荐写成用户已确认结论
+- 不承诺医疗、流量、粉丝、成交或经营结果，不把 AI 推荐写成用户已确认结论
 - 使用简体中文，表达具体、直接、可执行
 """
 
-GUIDE_INSTRUCTIONS = """你是常驻在黄雀 IP 十二模块页面旁边的“小黄雀”，是一名美业老板的 IP 成长引导助手。
+GUIDE_INSTRUCTIONS = """你是常驻在黄雀 IP 十二模块页面旁边的“小黄雀”，是一名不预设行业的 IP 成长引导助手。
 
 你的唯一任务是帮助用户理解当前问题、回忆真实经历、整理当前回答，并告诉用户下一步怎样操作。
 
 硬性边界：
 - 只使用当前步骤、当前草稿、简短 IP 摘要和最近六条对话，不讨论无关话题
 - 不生成完整诊断报告或替用户确定人设；需要诊断时 needs_diagnosis=true，并建议用户主动点击本步诊断
-- 不制造容貌焦虑，不承诺医疗效果、成交、营收或粉丝增长，不编造案例和经营数据
-- 资料不足时明确说明，并提出最多 3 个短问题；不索取身份证、联系方式、支付信息等无关敏感资料
+- 不承诺医疗、流量、成交、营收或粉丝增长，不编造案例、趋势和经营数据
+- 资料不足时明确说明，每次只提出 1 个最有价值的短问题；不索取身份证、联系方式、支付信息等无关敏感资料
 - recommended_actions 最多 2 个，只能从白名单选择；模型只推荐，不能声称已经填入、确认、跳转、扣费、生成或发布
 - reply 不超过 280 个汉字，suggested_answer 不超过 500 个汉字；使用简体中文，温暖、具体、像陪伴用户的小教练
 """
@@ -411,11 +427,24 @@ def _optional_text(value, limit):
     return str(value or "").strip()[:limit]
 
 
+def _module_rule(module_name):
+    try:
+        return MODULE_PROMPT_RULES[ACTIVE_MODULE_NAMES.index(module_name)]
+    except ValueError:
+        return ""
+
+
+def _require_active_module(module_name):
+    if module_name not in ACTIVE_MODULE_NAMES:
+        raise DigitalIPValidationError("该模块正在开发中，敬请期待")
+
+
 def validate_payload(payload):
     if not isinstance(payload, dict):
         raise DigitalIPValidationError("请求体必须是 JSON 对象")
     answer = _clean_text(payload.get("answer"), MAX_ANSWER_CHARS, "当前回答")
     module = _clean_text(payload.get("module"), 80, "模块名称")
+    _require_active_module(module)
     step = _clean_text(payload.get("step"), 120, "步骤名称")
     context = payload.get("confirmed_context") or []
     if not isinstance(context, list):
@@ -457,8 +486,10 @@ def validate_guide_payload(payload):
             clean_turns.append({"role": item["role"], "content": content})
     if payload.get("consent") is not True:
         raise DigitalIPValidationError("请先明确同意将当前回答发送给 AI 引导")
+    module = _clean_text(payload.get("module"), 80, "模块名称")
+    _require_active_module(module)
     return {
-        "module": _clean_text(payload.get("module"), 80, "模块名称"),
+        "module": module,
         "step": _clean_text(payload.get("step"), 120, "步骤名称"),
         "step_instruction": _optional_text(payload.get("step_instruction"), 500),
         "step_why": _optional_text(payload.get("step_why"), 500),
@@ -717,7 +748,8 @@ def diagnose(payload, username):
     clean = validate_payload(payload)
     rate_stamp = _check_rate_limit(username)
     user_input = {
-        "industry_preset": "美业门店老板",
+        "industry_context": "由用户资料判断，不预设行业",
+        "module_rule": _module_rule(clean["module"]),
         "current_module": clean["module"],
         "current_step": clean["step"],
         "current_answer": clean["answer"],
@@ -793,7 +825,8 @@ def guide(payload, username):
         "model": GUIDE_MODEL,
         "instructions": GUIDE_INSTRUCTIONS,
         "input": json.dumps({
-            "industry_preset": "美业门店老板",
+            "industry_context": "由用户资料判断，不预设行业",
+            "module_rule": _module_rule(clean["module"]),
             **clean,
         }, ensure_ascii=False),
         "reasoning": {"effort": GUIDE_REASONING_EFFORT},
@@ -1259,7 +1292,7 @@ def _clean_analysis_payload(payload):
         raise DigitalIPValidationError("context 过长")
     module_index = _index(payload.get("module_index"), "module_index")
     step_index = _index(payload.get("step_index"), "step_index")
-    if module_index >= len(PROJECT_MODULE_STEPS) or step_index >= PROJECT_MODULE_STEPS[module_index]:
+    if module_index >= ACTIVE_PROJECT_MODULES or step_index >= PROJECT_MODULE_STEPS[module_index]:
         raise DigitalIPValidationError("问卷步骤无效")
     return {
         "revision": _revision(payload.get("revision")),
@@ -1291,8 +1324,10 @@ def _project_analysis(clean, username):
     except Exception:
         _release_rate_limit(username, rate_stamp)
         raise
-    prompt = {"industry_preset": "美业门店老板", "module_index": clean["module_index"],
-              "step_index": clean["step_index"], "answer": clean["answer"], "context": clean["context"]}
+    module_rule = MODULE_PROMPT_RULES[clean["module_index"]]
+    prompt = {"industry_context": "由用户资料判断，不预设行业", "module_index": clean["module_index"],
+              "module_rule": module_rule, "step_index": clean["step_index"],
+              "answer": clean["answer"], "context": clean["context"]}
     content = [{"type": "input_text", "text": json.dumps(prompt, ensure_ascii=False)}]
     for item in clean["files"]:
         if item["type"].startswith("image/"):
@@ -1300,7 +1335,7 @@ def _project_analysis(clean, username):
         else:
             content.append({"type": "input_file", "filename": item["name"], "file_data": item["data_url"]})
     request = {
-        "model": MODEL, "instructions": INSTRUCTIONS + "\n必须逐条标明资料来源 file_name 和位置 location；无附件时 file_name 写“用户当前回答”，无法精确定位写“未定位”，绝不编造页码。必须补齐资料来源证据、缺口/冲突和可执行的图片、视频计划；不得自动生成图片或视频。",
+        "model": MODEL, "instructions": INSTRUCTIONS + "\n当前模块规则：" + module_rule + "\n必须逐条标明资料来源 file_name 和位置 location；无附件时 file_name 写“用户当前回答”，无法精确定位写“未定位”，绝不编造页码。必须补齐资料来源证据、缺口/冲突和可执行的图片、视频计划；不得自动生成图片或视频。",
         "input": [{"role": "user", "content": content}], "reasoning": {"effort": REASONING_EFFORT},
         "text": {"verbosity": "low", "format": {"type": "json_schema", "name": "digital_ip_project_analysis", "strict": True, "schema": PROJECT_ANALYSIS_SCHEMA}},
         "max_output_tokens": 25000, "store": False,
@@ -1424,7 +1459,7 @@ def _report_source(row):
     answers = questionnaire.get("answers")
     answers = answers if isinstance(answers, dict) else {}
     confirmed_answers, skipped_steps, unresolved = [], [], []
-    for module_index, step_count in enumerate(PROJECT_MODULE_STEPS):
+    for module_index, step_count in enumerate(PROJECT_MODULE_STEPS[:ACTIVE_PROJECT_MODULES]):
         for step_index in range(step_count):
             key = "%d-%d" % (module_index, step_index)
             value = answers.get(key)
@@ -1442,7 +1477,7 @@ def _report_source(row):
         "skipped_steps": skipped_steps,
         "unresolved_steps": unresolved,
         "progress": {
-            "total": sum(PROJECT_MODULE_STEPS),
+            "total": sum(PROJECT_MODULE_STEPS[:ACTIVE_PROJECT_MODULES]),
             "confirmed": len(confirmed_answers),
             "skipped": len(skipped_steps),
             "unresolved": len(unresolved),
@@ -1530,6 +1565,7 @@ def _generate_report_content(source, username, project_title):
         "confirmed_answers": source["confirmed_answers"],
         "confirmed_attachment_evidence": source.get("confirmed_attachment_evidence", []),
         "skipped_steps": source["skipped_steps"],
+        "coming_soon_modules": ["私域矩阵", "朋友圈运营", "销售策略", "公众号变现"],
         "product_catalog": list(PRODUCT_CATALOG),
     }
     request = {
@@ -1569,7 +1605,7 @@ def _generate_report(username, project_id, revision):
         raise DigitalIPRevisionConflict("项目已在另一端更新，请刷新后重试")
     source = _report_source(row)
     if source["unresolved_steps"]:
-        raise DigitalIPValidationError("请先完成或跳过全部 54 步，再生成产品报告")
+        raise DigitalIPValidationError("请先完成或跳过当前开放的 34 步，再生成产品报告")
     report, model, usage, _ = _generate_report_content(source, username, row["title"])
     source_hash = hashlib.sha256(json.dumps(source, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     now = int(time.time())
