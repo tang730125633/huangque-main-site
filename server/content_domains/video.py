@@ -13,7 +13,7 @@ from .core import (
 import random   # 429 退避重试的抖动：不加抖动，同一批 worker 退避后又会撞在一起
 
 from .audio import gen_audio
-from . import provider_keys
+from . import provider_keys, short_drama_media_sanitize
 
 VALID_VIDEO_MODES = {"text", "audio"}
 VALID_VIDEO_RATIOS = {"9:16", "16:9", "1:1", "4:5", "5:4"}
@@ -4134,6 +4134,15 @@ def gen_cinematic(payload):
     """
     username = (payload.get("_username") or "").strip()
     job_id = payload.get("_job_id")
+    short_drama_metadata = payload.get("_short_drama_video") or {}
+    visual_only = bool(short_drama_metadata.get("visual_only"))
+    display_prompt = payload.get("prompt") or ""
+    if visual_only:
+        display_prompt = str(
+            short_drama_metadata.get("user_prompt") or ""
+        ).strip()
+        if not display_prompt:
+            raise ValueError("短剧无声画面任务缺少原始用户提示词")
     avatars = [get_video_avatar(username, a) for a in payload["avatar_ids"]]
     look_ids = [a["provider_avatar_id"] for a in avatars]
     if not all(look_ids):
@@ -4160,7 +4169,11 @@ def gen_cinematic(payload):
     #   「同一条片子，只是换了个人演」。
     #
     # 原声只取【第一个】参考视频的 —— 它同时也是决定成片时长的那一个（_cinematic_duration）。
-    source_audio = _extract_reference_audio(video_files[0]) if video_files else None
+    source_audio = (
+        None
+        if visual_only
+        else _extract_reference_audio(video_files[0]) if video_files else None
+    )
     #
     # ⚠️ 【不压缩】（kongli 的决定，2026-07-14）。原来这里会把 >6MB 的参考视频转码成
     # 720p/2Mbps —— 那是重编码，画质有损，而动作模仿的成片质量直接取决于参考视频。
@@ -4216,6 +4229,27 @@ def gen_cinematic(payload):
             info = _heygen_poll_video(video_id, direct=True, deadline_s=HEYGEN_MOTION_DEADLINE)
             update_video_asset_phase(job_id, "downloading_video", source_video_url=info.get("video_url"))
             video_file = _download_video_file_direct(info["video_url"], "cinematic")
+            raw_video_file = video_file
+            source_media_report = None
+            if visual_only:
+                relative = pathlib.PurePosixPath(str(video_file).replace("\\", "/"))
+                silent_relative = relative.with_name(
+                    relative.stem + "_silent" + relative.suffix
+                )
+                source_path = _resolve_out_file(video_file)
+                if source_path is None:
+                    raise short_drama_media_sanitize.MediaSanitizeError(
+                        "missing_source_file", "供应商视频文件不存在"
+                    )
+                sanitized = short_drama_media_sanitize.sanitize_visual_source(
+                    source_path,
+                    _out_path(silent_relative.as_posix()),
+                )
+                video_file = silent_relative.as_posix()
+                source_media_report = {
+                    "source": sanitized["source_report"],
+                    "silent": sanitized["silent_report"],
+                }
             # 把参考视频的原声合回成片（HeyGen 的成片本身是无声的）。
             # 合失败就保留无声成片 —— 宁可无声，也不能因为配音失败把片子丢了。
             if source_audio:
@@ -4238,12 +4272,24 @@ def gen_cinematic(payload):
         "reference_video_file": reference_video_file,
         "avatar_ids": payload["avatar_ids"],
         "avatar_names": [a.get("name") for a in avatars],
-        "text": payload["prompt"],   # video_assets 的文案列叫 text，前端卡片也读它
-        "prompt": payload["prompt"], "resolution": payload["resolution"], "ratio": payload["ratio"],
+        "text": display_prompt,   # video_assets 的文案列叫 text，前端卡片也读它
+        "prompt": display_prompt, "resolution": payload["resolution"], "ratio": payload["ratio"],
         "duration": info.get("duration") or duration,
         "source_video_url": info.get("video_url"), "thumbnail_url": info.get("thumbnail_url"),
         "provider": "heygen_direct", "phase": "done", "message": "剧情视频生成完成",
     }
+    if visual_only:
+        ret.update({
+            "visual_only": True,
+            "raw_video_file": raw_video_file,
+            "source_media_report": source_media_report,
+            "prompt_template_version": short_drama_metadata.get(
+                "prompt_template_version"
+            ),
+            "compiled_prompt_hash": short_drama_metadata.get(
+                "compiled_prompt_hash"
+            ),
+        })
     if cover:
         ret["image_file"] = cover
         ret["image_url"] = public_url(cover, "image/jpeg")

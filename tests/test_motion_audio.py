@@ -81,7 +81,11 @@ class EverythingFallsBackTests(unittest.TestCase):
     def test_a_failed_strip_uploads_the_original(self):
         with patch.object(video.subprocess, "run", side_effect=RuntimeError("ffmpeg 没了")):
             got = video._strip_audio("/tmp/whatever.mp4")
-        self.assertEqual(str(got), str(Path("/tmp/whatever.mp4")), "剥不动就原样上传")
+        self.assertEqual(
+            Path(got),
+            Path("/tmp/whatever.mp4"),
+            "剥不动就原样上传",
+        )
 
     def test_a_reference_without_audio_is_not_an_error(self):
         """参考视频本来就没音轨 —— 很常见，不是错误。成片保持无声，任务照常成功。"""
@@ -96,6 +100,11 @@ class EverythingFallsBackTests(unittest.TestCase):
 
     def test_the_mux_is_skipped_when_there_is_no_audio(self):
         self.assertIn("if source_audio:", GEN)
+
+    def test_short_drama_visual_only_does_not_restore_reference_audio(self):
+        self.assertIn("visual_only", GEN)
+        self.assertIn("if visual_only", GEN)
+        self.assertIn("sanitize_visual_source", GEN)
 
 
 class TheMuxIsWiredCorrectlyTests(unittest.TestCase):
