@@ -272,8 +272,12 @@ class DigitalIPTests(unittest.TestCase):
             with self.assertRaises(digital_ip.DigitalIPRevisionConflict):
                 digital_ip.patch_project("owner", project["id"], {"revision": project["revision"], "title": "旧标签"})
             encoded = base64.b64encode(b"photo").decode()
+            analysis_data = _project_analysis()
+            analysis_data["source_evidence"].append({
+                "claim": "主理人照片", "evidence": "photo", "file_name": "me.png", "location": "图片区域",
+            })
             response = {"model": "test", "output": [{"type": "message", "content": [
-                {"type": "output_text", "text": json.dumps(_project_analysis(), ensure_ascii=False)}]}]}
+                {"type": "output_text", "text": json.dumps(analysis_data, ensure_ascii=False)}]}]}
             with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), mock.patch.object(digital_ip, "_post", return_value=response) as post:
                 result = digital_ip.analyze_project("owner", project["id"], {
                     "revision": updated["revision"], "module_index": 1, "step_index": 1,
@@ -297,13 +301,28 @@ class DigitalIPTests(unittest.TestCase):
                 confirmed_json = conn.execute("SELECT confirmed_json FROM digital_ip_projects").fetchone()[0]
             self.assertIn("经营 7 年", confirmed_json)
             self.assertNotIn("被篡改的回答", confirmed_json)
-            skipped = digital_ip.patch_project("owner", project["id"], {
+            preserved = digital_ip.patch_project("owner", project["id"], {
                 "revision": confirmed["project"]["revision"],
+                "state": {"questionnaire_state": {"answers": {"1-1": {"text": "经营 7 年", "confirmed": True}}}},
+            })
+            self.assertEqual(preserved["status"], "confirmed")
+            self.assertEqual(preserved["confirmed_profile"]["title"], analysis_data["positioning_candidates"][1]["title"])
+            self.assertEqual(preserved["confirmed_plans"]["image_plan"], analysis_data["image_plan"])
+            self.assertEqual(
+                digital_ip._report_source(digital_ip._owned_project("owner", project["id"]))["confirmed_attachment_evidence"][0]["file_name"],
+                "me.png",
+            )
+            skipped = digital_ip.patch_project("owner", project["id"], {
+                "revision": preserved["revision"],
                 "state": {"questionnaire_state": {"answers": {"1-1": {"text": "经营 7 年", "confirmed": False, "skipped": True}}}},
             })
             self.assertEqual(skipped["status"], "draft")
             self.assertNotIn("last_analysis", skipped)
             self.assertNotIn("confirmed_profile", skipped)
+            self.assertEqual(
+                digital_ip._report_source(digital_ip._owned_project("owner", project["id"]))["confirmed_attachment_evidence"],
+                [],
+            )
             next_draft = digital_ip.patch_project("owner", project["id"], {
                 "revision": skipped["revision"], "state": {"questionnaire_state": {"answers": {"0-0": {"text": "更新后的经营资料"}}}},
             })
@@ -313,7 +332,7 @@ class DigitalIPTests(unittest.TestCase):
                 })
             self.assertEqual(newer["project"]["status"], "candidate_ready")
             changed = digital_ip.patch_project("owner", project["id"], {
-                "revision": newer["project"]["revision"], "state": {"questionnaire_state": {"answers": {"0-0": {"text": "分析后又修改的回答"}}}},
+                "revision": newer["project"]["revision"], "state": {"questionnaire_state": {"answers": {"0-0": {"text": "分析后又修改的回答", "confirmed": True}}}},
             })
             with self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "有效分析"):
                 digital_ip.confirm_project("owner", project["id"], {"revision": changed["revision"], "candidate_index": 0})

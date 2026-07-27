@@ -939,6 +939,28 @@ def _confirmed_answers_snapshot(state):
     }
 
 
+def _confirmed_answers_changed(previous_state, next_state, analyzed_input):
+    previous_snapshot = _confirmed_answers_snapshot(previous_state)
+    next_snapshot = _confirmed_answers_snapshot(next_state)
+    if previous_snapshot == next_snapshot:
+        return False
+    module_index, step_index = analyzed_input.get("module_index"), analyzed_input.get("step_index")
+    if isinstance(module_index, bool) or isinstance(step_index, bool) or not isinstance(module_index, int) or not isinstance(step_index, int):
+        return True
+    step_key = "%d-%d" % (module_index, step_index)
+    previous_answers = ((previous_state.get("questionnaire_state") or {}).get("answers") or {}) if isinstance(previous_state, dict) else {}
+    next_answers = ((next_state.get("questionnaire_state") or {}).get("answers") or {}) if isinstance(next_state, dict) else {}
+    before, after = previous_answers.get(step_key), next_answers.get(step_key)
+    if not (isinstance(before, dict) and isinstance(after, dict)
+            and before.get("confirmed") is not True and before.get("skipped") is not True
+            and after.get("confirmed") is True
+            and _answer_content(before) == _answer_content(after)):
+        return True
+    expected_snapshot = dict(previous_snapshot)
+    expected_snapshot[step_key] = _answer_content(after)
+    return next_snapshot != expected_snapshot
+
+
 def _attachment_evidence_source_key(item):
     match = re.fullmatch(r"answer:(\d+)-(\d+):attachment:\d+", str(item.get("source_ref") or "")) if isinstance(item, dict) else None
     return "%s-%s" % (match.group(1), match.group(2)) if match else ""
@@ -1099,7 +1121,7 @@ def _patch_project(username, project_id, revision, has_title, has_state, clean_s
         questionnaire = clean_state.get("questionnaire_state") if isinstance(clean_state, dict) else {}
         answers = questionnaire.get("answers") if isinstance(questionnaire, dict) else {}
         step_state = answers.get("%s-%s" % (module_index, step_index)) if isinstance(answers, dict) else None
-        confirmed_answers_changed = _confirmed_answers_snapshot(previous_state) != _confirmed_answers_snapshot(clean_state)
+        confirmed_answers_changed = _confirmed_answers_changed(previous_state, clean_state, analyzed_input)
         if analysis and (confirmed_answers_changed
                          or (isinstance(step_state, dict) and step_state.get("skipped") is True)
                          or _state_answer(clean_state, module_index, step_index) != str(analyzed_input.get("answer") or "").strip()):
