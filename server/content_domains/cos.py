@@ -75,6 +75,13 @@ def object_url(rel_key, private=False):
     return _url(_object_key(rel_key), private=private)
 
 
+def head(rel_key):
+    """Read object metadata for post-upload length and digest validation."""
+    if not enabled():
+        raise RuntimeError("COS 未配置")
+    return _client().head_object(Bucket=_BUCKET, Key=_object_key(rel_key))
+
+
 def upload(local_path, rel_key, content_type=None, private=False):
     """把本地文件上传到 COS，返回可访问 URL。未启用或失败会抛异常，由调用方回退本地。"""
     if not enabled():

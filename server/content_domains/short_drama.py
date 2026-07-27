@@ -160,6 +160,11 @@ CREATE TABLE IF NOT EXISTS short_drama_characters (
   avatar_id TEXT,
   appearance_prompt TEXT NOT NULL DEFAULT '',
   wardrobe_prompt TEXT NOT NULL DEFAULT '',
+  reference_job_id INTEGER,
+  reference_file TEXT NOT NULL DEFAULT '',
+  reference_url TEXT NOT NULL DEFAULT '',
+  reference_version INTEGER NOT NULL DEFAULT 0,
+  reference_locked INTEGER NOT NULL DEFAULT 0 CHECK (reference_locked IN (0,1)),
   voice_key TEXT,
   voice_settings_json TEXT NOT NULL DEFAULT '{}',
   sort_order INTEGER NOT NULL DEFAULT 0,
@@ -730,6 +735,23 @@ def init_db(db_factory):
         columns = {row[1] for row in conn.execute("PRAGMA table_info(short_drama_projects)")}
         if "board_id" not in columns:
             conn.execute("ALTER TABLE short_drama_projects ADD COLUMN board_id TEXT")
+        character_columns = {
+            row[1] for row in conn.execute(
+                "PRAGMA table_info(short_drama_characters)"
+            )
+        }
+        for name, declaration in {
+            "reference_job_id": "INTEGER",
+            "reference_file": "TEXT NOT NULL DEFAULT ''",
+            "reference_url": "TEXT NOT NULL DEFAULT ''",
+            "reference_version": "INTEGER NOT NULL DEFAULT 0",
+            "reference_locked": "INTEGER NOT NULL DEFAULT 0",
+        }.items():
+            if name not in character_columns:
+                conn.execute(
+                    "ALTER TABLE short_drama_characters ADD COLUMN %s %s"
+                    % (name, declaration)
+                )
         conn.commit()
     finally:
         conn.close()
@@ -1661,6 +1683,7 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/voice",
         "/api/gen/short-drama/subtitle-alignment/workspace",
         "/api/gen/short-drama/video",
+        "/api/gen/short-drama/video-cast/avatars",
         "/api/gen/short-drama/assembly",
         "/api/gen/short-drama/planning-job",
         "/api/gen/short-drama/planning-quote",
@@ -1684,6 +1707,7 @@ _HTTP_ROUTES = {
         "/api/gen/short-drama/select-asset",
         "/api/gen/short-drama/select-voice-version",
         "/api/gen/short-drama/video-quote",
+        "/api/gen/short-drama/video-cast",
         "/api/gen/short-drama/select-asset",
         "/api/gen/short-drama/select-video",
         "/api/gen/short-drama/confirm-production-stage",
@@ -2065,7 +2089,8 @@ def _handle_generate_voice(handler, db_factory, verify_token, canvas_access_reso
 
 def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avatar_lookup=None,
                   mutation_lock=None, canvas_access_resolver=None, voice_validator=None,
-                  points_getter=None, generation_dependencies=None):
+                  points_getter=None, generation_dependencies=None,
+                  avatar_list=None):
     """Handle the domain's synchronous routes inside core.H; return whether matched."""
     path = handler.path.split("?", 1)[0]
     if path not in _HTTP_ROUTES.get(method, ()):
@@ -2082,6 +2107,9 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
     if avatar_lookup is None:
         from . import video
         avatar_lookup = video.get_video_avatar
+    if avatar_list is None:
+        from . import video
+        avatar_list = video.list_video_avatars
     try:
         if method == "GET" and path.endswith("/planning-quote"):
             if not callable(cost_of):
@@ -2175,6 +2203,22 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
             handler._send(200, short_drama_video.prepare_quote(
                 db_factory, username, _request_object(handler), cost_of, access
             ))
+        elif method == "POST" and path.endswith("/video-cast"):
+            body = _request_object(handler)
+            owner = _project_username_for_access(
+                db_factory, username, str(body.get("project_id") or ""),
+                access, write=True,
+            )
+            if mutation_lock is not None:
+                with mutation_lock:
+                    saved = short_drama_video.save_video_cast(
+                        db_factory, owner, body, avatar_lookup
+                    )
+            else:
+                saved = short_drama_video.save_video_cast(
+                    db_factory, owner, body, avatar_lookup
+                )
+            handler._send(200, saved)
         elif method == "POST" and path.endswith("/select-asset"):
             body = _request_object(handler)
             if mutation_lock is not None:
@@ -2343,6 +2387,28 @@ def dispatch_http(handler, method, db_factory, verify_token, cost_of=None, avata
                     db_factory, owner, project_id
                 ),
             )
+        elif method == "GET" and path.endswith("/video-cast/avatars"):
+            project_id = _planning_project_id_from_query(handler)
+            owner = _project_username_for_access(
+                db_factory, username, project_id, access, write=True
+            )
+            items = []
+            for avatar in avatar_list(owner, 120):
+                if (not isinstance(avatar, dict)
+                        or str(avatar.get("status") or "") != "ready"
+                        or not str(avatar.get("provider_avatar_id") or "").strip()):
+                    continue
+                items.append({
+                    key: avatar.get(key)
+                    for key in (
+                        "id", "name", "image_url", "status",
+                        "created_at", "updated_at",
+                    )
+                })
+            handler._send(200, {
+                "items": items,
+                "can_create_avatar": owner == username,
+            })
         elif method == "GET" and path.endswith("/video"):
             project_id = _planning_project_id_from_query(handler)
             owner = _project_username_for_access(
