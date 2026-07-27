@@ -233,6 +233,9 @@
     .coach-messages{display:grid;gap:8px;margin-top:12px;max-height:220px;overflow:auto}
     .coach-bubble{border-radius:10px;padding:9px 10px;font-size:10px;line-height:1.6;white-space:pre-wrap}
     .coach-bubble.assistant{background:#10263a;color:#c8d3dc;border-left:2px solid #d7aa50}
+    .coach-welcome{animation:coachWelcome .28s ease-out}
+    @keyframes coachWelcome{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:translateX(0)}}
+    @media(prefers-reduced-motion:reduce){.coach-welcome{animation:coachWelcomeFade .2s ease-out}@keyframes coachWelcomeFade{from{opacity:0}to{opacity:1}}}
     .coach-bubble.user{margin-left:22px;background:#17352f;color:#cce6df}
     .coach-quick,.coach-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
     .coach-chip,.coach-action{
@@ -308,11 +311,11 @@
   <div id="fatal" class="fatal"></div>
   <div class="app" id="app">
     <aside class="sidebar">
-      <div class="brand">
+      <a class="brand" href="/" aria-label="返回黄雀主站首页">
         <div class="brand-mark">雀</div>
         <div><b>黄雀</b><small>数字化 IP 操作系统</small></div>
-      </div>
-      <div class="privacy"><i></i>黄雀 IP12 · 仅点击小黄雀或“AI 分析本步”时调用 OpenAI，不扣黄雀点数；当前步骤及所选资料会发送给 AI。</div>
+      </a>
+      <div class="privacy"><i></i>黄雀 IP12 · 仅点击小黄雀或“AI 分析本步”时调用 AI 分析服务，不扣黄雀点数；当前步骤及所选资料会发送给 AI。</div>
       <div id="moduleList" class="module-scroll"></div>
       <div class="side-actions">
         <button class="soft-btn" id="guideBtn" type="button">使用说明</button>
@@ -372,7 +375,7 @@
             <label for="projectFiles"><b>补充资料（可选）</b> · 最多 6 份、单份最多 8 MiB、总计 20 MiB</label>
             <input id="projectFiles" type="file" multiple accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.webp" style="display:block; margin-top:8px; max-width:100%;">
             <p id="fileStatus" class="ai-status">支持 PDF、Office、表格、文本与 PNG/JPEG/WebP。PPT/Word 内嵌图表建议先导出为 PDF。</p>
-            <label style="display:flex; gap:8px; align-items:flex-start; font-size:13px;"><input id="aiConsent" type="checkbox">我明确同意仅在本次 AI 教练或分析中将当前回答及所选资料发送给 OpenAI；原始文件不会保存到项目档案。</label>
+            <label style="display:flex; gap:8px; align-items:flex-start; font-size:13px;"><input id="aiConsent" type="checkbox">我明确同意仅在本次 AI 教练或分析中将当前回答及所选资料发送给 AI 分析服务；原始文件不会保存到项目档案。</label>
           </div>
           <div class="note-box">填写提示：填写后可点击右侧“AI 分析本步”。AI 只给建议；你点击“确认并继续”后，结果才写进数字化 IP 档案。</div>
           <div class="step-actions">
@@ -394,7 +397,7 @@
     </main>
 
     <aside class="memory">
-      <div class="memory-head"><b>正在形成的 IP 档案</b><span class="live">OPENAI · STRUCTURED</span></div>
+      <div class="memory-head"><b>正在形成的 IP 档案</b><span class="live">AI 分析服务 · 结构化分析</span></div>
       <section class="ip-card">
         <div class="ip-symbol">IP</div>
         <h3 id="ipName">尚未命名的数字化 IP</h3>
@@ -466,7 +469,7 @@
         <div class="guide-step"><b>5. 随时切换模块预览</b><span>左侧 12 个模块都可打开，适合快速检查完整产品生命周期。</span></div>
         <div class="guide-step"><b>6. 跨端继续</b><span>登录后项目保存在账号档案；断网时浏览器保留离线缓存。</span></div>
       </div>
-      <div class="guide-note">当前为黄雀 IP12：右侧会调用 OpenAI Structured Outputs 返回固定结构的诊断。项目、AI 推荐和用户确认会分开保存到账号档案；图片或视频计划只会带入既有工具，不会自动发起付费生成。</div>
+      <div class="guide-note">当前为黄雀 IP12：右侧会调用 AI 分析服务进行结构化分析并返回固定结构的诊断。项目、AI 推荐和用户确认会分开保存到账号档案；图片或视频计划只会带入既有工具，不会自动发起付费生成。</div>
     </div>
   </div>
   <div class="toast" id="toast"></div>
@@ -615,6 +618,14 @@
     let projectSaveTimer = null;
     let projectSaving = false;
     let projectSavePending = false;
+    const COACH_WELCOME_MESSAGES = [
+      "我会陪你从当前这一步开始。想不起例子时，可以点下面的入口。",
+      "先写真实经历和顾客问题，答案不必一次写得完美。",
+      "每次 AI 分析只给建议，是否确认始终由你决定。",
+      "完成这一题后，我会帮你看清下一步该补什么。"
+    ];
+    let coachWelcomeIndex = 0;
+    let coachWelcomeTimer = null;
 
     const $ = id => document.getElementById(id);
     const phaseGroups = [
@@ -711,7 +722,7 @@
         const analysis=project.last_analysis?.analysis;
         const input=project.last_analysis?.input||{};
         const analysisKey=Number.isInteger(input.module_index)&&Number.isInteger(input.step_index)?`${input.module_index}-${input.step_index}`:keyFor();
-        if(analysis)state.analyses[analysisKey]={analysis,model:project.last_analysis.model||"OpenAI",usage:{}};
+        if(analysis)state.analyses[analysisKey]={analysis,model:project.last_analysis.model||"AI 分析服务",usage:{}};
         persistLocal(); render();
         if(restoreLocal)queueProjectSave();
         $("projectStatus").textContent=`${projectStatusText()} · 已恢复 · 跨端可继续`;
@@ -971,6 +982,20 @@
       return [...state.guideTurns].reverse().find(turn=>turn.role==="assistant")||{};
     }
 
+    function stopCoachWelcomeRotation(){
+      if(coachWelcomeTimer){ clearInterval(coachWelcomeTimer); coachWelcomeTimer=null; }
+    }
+
+    function startCoachWelcomeRotation(){
+      stopCoachWelcomeRotation();
+      if(document.hidden||state.guideTurns.length)return;
+      coachWelcomeTimer=setInterval(()=>{
+        if(document.hidden||state.guideTurns.length){ stopCoachWelcomeRotation(); return; }
+        coachWelcomeIndex=(coachWelcomeIndex+1)%COACH_WELCOME_MESSAGES.length;
+        renderCoach();
+      },4200);
+    }
+
     function renderCoach(){
       const turns=state.guideTurns.slice(-6);
       $("coachMessages").innerHTML=turns.length?turns.map(turn=>
@@ -979,9 +1004,10 @@
             ? `<div class="coach-answer"><b>可编辑的回答草稿</b><br>${escapeHtml(turn.suggested_answer)}</div>`
             : ""
         }</div>`
-      ).join(""):`<div class="coach-bubble assistant">我会守在这里。看不懂问题、想不起例子，或者不知道下一步做什么，都可以点下面的入口问我。</div>`;
+      ).join(""):`<div class="coach-bubble assistant coach-welcome">${COACH_WELCOME_MESSAGES[coachWelcomeIndex]}</div>`;
+      if(turns.length)stopCoachWelcomeRotation();else startCoachWelcomeRotation();
       const latest=latestGuideReply();
-      $("guideModel").textContent=latest.model||"待命";
+      $("guideModel").textContent=latest.content?"AI 分析服务":"待命";
       $("coachActions").innerHTML=[
         ...(latest.follow_up_questions||[]).map((question,index)=>
           `<button class="coach-chip" type="button" data-guide-question="${index}">${escapeHtml(question)}</button>`
@@ -1001,6 +1027,7 @@
         return;
       }
       if(!$("aiConsent").checked){ showToast("请先明确同意发送当前回答给 AI"); return; }
+      stopCoachWelcomeRotation();
       const module=MODULES[state.moduleIndex];
       const step=module.steps[state.stepIndex];
       const answer=state.answers[keyFor()]||{};
@@ -1041,7 +1068,7 @@
             suggested_answer:guide.suggested_answer||"",
             follow_up_questions:guide.follow_up_questions||[],
             actions:guide.recommended_actions||[],
-            model:result.cached?"已缓存":(result.model||"OpenAI")
+            model:result.cached?"已缓存":(result.model||"AI 分析服务")
           }
         ].slice(-6);
         persist();
@@ -1050,6 +1077,7 @@
         renderCoach();
       }catch(error){
         $("coachStatus").textContent=error.message||"小黄雀暂时无法回复，请稍后重试。";
+        if(!state.guideTurns.length)renderCoach();
       }finally{
         button.disabled=false;
       }
@@ -1169,7 +1197,7 @@
       const analysis=saved.analysis||{};
       const current=state.answers[keyFor()]||{};
       const plansConfirmed=project?.status==="confirmed";
-      $("aiModel").textContent=saved.model||"OpenAI";
+      $("aiModel").textContent="AI 分析服务";
       $("aiStatus").textContent=`结构化诊断已返回${saved.usage?.total_tokens?` · ${saved.usage.total_tokens} tokens`:""}。`;
       const facts=(analysis.confirmed_facts||[]).map(item=>`<li>${escapeHtml(item)}</li>`).join("");
       const pains=(analysis.business_pains||[]).map(item=>`<div class="ai-pain"><b>${escapeHtml(item.label)}</b>${escapeHtml(item.evidence)} · ${escapeHtml(item.impact)}</div>`).join("");
@@ -1324,6 +1352,7 @@
     $("guideBtn").addEventListener("click",()=>$("guideModal").classList.add("open"));
     $("closeGuide").addEventListener("click",()=>$("guideModal").classList.remove("open"));
     $("guideModal").addEventListener("click",event=>{if(event.target===$("guideModal"))$("guideModal").classList.remove("open")});
+    document.addEventListener("visibilitychange",()=>{if(document.hidden)stopCoachWelcomeRotation();else if(!state.guideTurns.length)renderCoach()});
     $("resetBtn").addEventListener("click",()=>{
       if(confirm("只清除当前浏览器中的离线缓存；云端项目不会删除，确定重置吗？")){
         const key=projectStorageKey(); if(key)localStorage.removeItem(key);

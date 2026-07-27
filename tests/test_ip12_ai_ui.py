@@ -105,10 +105,29 @@ class IP12AIUITests(unittest.TestCase):
         self.assertIn("我不知道怎么填", html)
         self.assertIn("告诉我下一步", html)
         self.assertIn("不会监听输入", html)
-        self.assertIn("OPENAI · STRUCTURED", html)
+        self.assertIn("AI 分析服务 · 结构化分析", html)
         self.assertIn("credentials:\"include\"", html)
         self.assertIn("AI 只给建议", html)
         self.assertNotIn("OPENAI_API_KEY", html)
+
+    def test_brand_and_visible_ai_labels_are_neutral(self):
+        html = PAGE.read_text(encoding="utf-8")
+        self.assertIn('class="brand" href="/" aria-label="返回黄雀主站首页"', html)
+        self.assertIn("发送给 AI 分析服务", html)
+        self.assertIn("AI 分析服务进行结构化分析", html)
+        self.assertNotIn("OpenAI", html)
+        self.assertNotIn("STRUCTURED", html)
+
+    def test_coach_welcome_rotation_pauses_and_yields_to_real_replies(self):
+        html = PAGE.read_text(encoding="utf-8")
+        self.assertIn("const COACH_WELCOME_MESSAGES = [", html)
+        self.assertIn("function stopCoachWelcomeRotation()", html)
+        self.assertIn("function startCoachWelcomeRotation()", html)
+        self.assertIn("if(document.hidden||state.guideTurns.length)return;", html)
+        self.assertIn('document.addEventListener("visibilitychange"', html)
+        self.assertIn("if(turns.length)stopCoachWelcomeRotation();else startCoachWelcomeRotation();", html)
+        self.assertIn("@keyframes coachWelcome", html)
+        self.assertIn("@keyframes coachWelcomeFade", html)
 
     def test_project_recovery_consent_and_action_links_are_visible(self):
         html = PAGE.read_text(encoding="utf-8")
