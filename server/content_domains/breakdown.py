@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """爆款拆解：竞品视频链接 → 下载 → 抽帧 → ASR → GPT-4o 多模态 → 分镜脚本"""
-import os, json, time, base64, tempfile, subprocess, shutil, mimetypes
+import os, json, time, base64, tempfile, subprocess, shutil, mimetypes, io
 from contextlib import closing
 
 from .core import OPENAI_BASE, OPENAI_KEY, jdb
@@ -9,6 +9,9 @@ from . import egress
 # 不支持的平台（视频号加密流需要 Isaac64 解密，暂不支持）
 _UNSUPPORTED_PLATFORMS = {"channels", "weixin", "wechat"}
 _UPLOAD_TOKEN_RE = __import__("re").compile(r"^[0-9a-f]{32}$")
+_THUMBNAIL_MAX_EDGE = 768
+_THUMBNAIL_MAX_BYTES = 240 * 1024
+_THUMBNAIL_MAX_PIXELS = 40_000_000
 
 
 def _ensure_upload_table(connection):
@@ -223,25 +226,27 @@ def _do_breakdown(payload, info, url):
         if payload.get("mode") == "reverse_prompt":
             return _reverse_from_frames(payload, frames, url, title, platform, duration)
 
-        usermsg = (
+        context = (
             "视频标题：" + str(title) + "\n"
             "时长：" + str(duration) + "s\n"
             "平台：" + str(platform) + "\n\n"
-            "口播文案（带时间轴）：\n" + str(script_text) + "\n\n"
-            '请输出 JSON：{"rhythm":[{"phase":"","time":"","strategy":""}],'
-            '"scenes":[{"dur":"","scale":"","camera":"","scene":"","line":""}],'
-            '"viral_logic":"","template":""}'
+            "口播文案（带时间轴）：\n"
+            + (str(script_text) if script_text else "（无人物口播或转写不可用，请根据画面判断）")
         )
-        raw = _chat_multimodal(
-            "你是黄雀传媒资深短视频编导。分析以下视频的关键帧和口播文案，"
-            "拆解出完整分镜脚本。只输出 JSON，不要解释。",
-            usermsg, frames
+        usermsg = context + (
+            '\n\n请严格输出 JSON：{"rhythm":[{"phase":"","time":"","strategy":""}],'
+            '"scenes":[{"dur":"3s","scale":"","camera":"","scene":"详细画面描述(60-100字)",'
+            '"line":"口播台词"}],"viral_logic":"","template":""}。'
+            "输出 4-6 个分镜，各 dur 之和约等于总时长。每个 scene 必须结合关键帧，至少写清："
+            "主体外观或产品特征、连续动作及道具互动、表情视线和身体姿态、场景前中后景关系、"
+            "景别机位与运镜、光线色调和氛围。不要写“人物出现”“展示产品”等笼统结论。"
+            "没有人物口播时 line 输出空串。只输出 JSON，不要解释或 markdown。"
         )
-
-        s, e = raw.find("{"), raw.rfind("}")
-        if s < 0 or e <= s:
-            raise ValueError("拆解结果解析失败，请重试")
-        result = json.loads(raw[s:e+1])
+        sysmsg = (
+            "你是黄雀传媒资深短视频编导。分析视频关键帧和口播，拆解为可直接拍摄或生成的完整分镜脚本。"
+            "只输出 JSON，不要多余内容。"
+        )
+        result = _request_breakdown_result(sysmsg, usermsg, context, frames)
 
         return {
             "type": "breakdown",
@@ -253,6 +258,7 @@ def _do_breakdown(payload, info, url):
             "scenes": result.get("scenes", []),
             "viral_logic": result.get("viral_logic", ""),
             "template": result.get("template", ""),
+            "frame_thumbnails": _frame_thumbnails(frames),
         }
     finally:
         if tmp_video:
@@ -265,18 +271,18 @@ def _do_breakdown(payload, info, url):
 
 def _reverse_from_frames(payload, frames, source_url="", title="", platform="", duration=0):
     raw = _chat_multimodal(
-        "你是黄雀传媒资深视频生成提示词专家。根据参考画面反推出可用于视频生成模型的中文提示词。"
-        "只输出 JSON，不要解释或 markdown。",
+        "你是黄雀传媒资深短视频复刻编导。根据连续关键帧恢复镜头时间轴、动作节点与空间连续性，"
+        "写成视频生成模型可执行的中文提示词。只输出 JSON，不要解释或 markdown。",
         (
-            "请综合参考画面的主体、环境、构图、镜头运动、光线、色彩、节奏和风格，"
-            "输出 JSON：{\"prompt\":\"一段完整、可直接用于视频生成的中文提示词\"}。"
+            "请严格按照参考画面的时间顺序，输出 JSON："
+            "{\"prompt\":\"一段完整、可直接用于视频生成的中文执行提示词\"}。"
+            "提示词必须按总时长写连续时间轴，逐段说明主体、动作起止、景别、机位、运镜、构图和转场；"
+            "写清场景道具、光线色调、节奏和情绪钩子。仅补充连接相邻关键帧所需的过渡动作，"
+            "不得新增人物、道具、镜头或无关情节；人物具体身份、面部和不可确认的品牌文字不得臆造。"
         ),
         frames,
     )
-    start, end = raw.find("{"), raw.rfind("}")
-    if start < 0 or end <= start:
-        raise ValueError("提示词反推结果解析失败，请重试")
-    prompt = str((json.loads(raw[start:end + 1]) or {}).get("prompt") or "").strip()
+    prompt = str((_parse_breakdown_json(raw) or {}).get("prompt") or "").strip()
     if not prompt:
         raise ValueError("提示词反推结果为空，请重试")
     return {
@@ -286,7 +292,7 @@ def _reverse_from_frames(payload, frames, source_url="", title="", platform="", 
         "source_platform": platform,
         "duration": duration,
         "prompt": prompt,
-        "frame_thumbnails": [],
+        "frame_thumbnails": _frame_thumbnails(frames),
     }
 
 
@@ -367,6 +373,160 @@ def _remove_trusted_upload(token, username, job_id, path):
 
 
 # ============ 辅助函数 ============
+
+def _frame_thumbnails(frames, limit=4):
+    thumbs = []
+    for path in (frames or [])[:max(0, int(limit or 0))]:
+        try:
+            encoded = base64.b64encode(_bounded_thumbnail(path)).decode()
+            thumbs.append("data:image/jpeg;base64," + encoded)
+        except Exception:
+            pass
+    return thumbs
+
+
+def _bounded_thumbnail(path):
+    """Create a small JPEG reference; never persist the original upload bytes."""
+    from PIL import Image, ImageOps, UnidentifiedImageError
+
+    try:
+        with Image.open(path) as source:
+            width, height = source.size
+            if width <= 0 or height <= 0 or width * height > _THUMBNAIL_MAX_PIXELS:
+                raise ValueError("参考图片分辨率过大")
+            source.seek(0)
+            image = ImageOps.exif_transpose(source)
+            if image.mode in {"RGBA", "LA"} or (
+                    image.mode == "P" and "transparency" in image.info):
+                rgba = image.convert("RGBA")
+                background = Image.new("RGB", rgba.size, (255, 255, 255))
+                background.paste(rgba, mask=rgba.getchannel("A"))
+                image = background
+            else:
+                image = image.convert("RGB")
+            image.load()
+    except (UnidentifiedImageError, OSError, ValueError) as error:
+        raise ValueError("参考图片无法生成缩略图") from error
+
+    resampling = getattr(Image, "Resampling", Image).LANCZOS
+    for edge in (_THUMBNAIL_MAX_EDGE, 640, 512, 384):
+        candidate = image.copy()
+        candidate.thumbnail((edge, edge), resampling)
+        for quality in (82, 72, 62, 52, 42):
+            output = io.BytesIO()
+            candidate.save(
+                output, format="JPEG", quality=quality, optimize=True, progressive=True,
+            )
+            thumbnail = output.getvalue()
+            if len(thumbnail) <= _THUMBNAIL_MAX_BYTES:
+                return thumbnail
+    raise ValueError("参考图片压缩后仍然过大")
+
+
+def _strip_json_code_fence(raw):
+    text = str(raw or "").strip()
+    if not text.startswith("```"):
+        return text
+    lines = text.splitlines()
+    if lines and lines[0].strip().lower() in {"```", "```json"}:
+        lines = lines[1:]
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _iter_json_objects(raw):
+    text = str(raw or "")
+    if len(text) > 50000:
+        return
+    for start, opening in enumerate(text):
+        if opening != "{":
+            continue
+        depth, in_string, escaped = 0, False, False
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    yield text[start:index + 1]
+                    break
+
+
+def _parse_breakdown_json(raw):
+    candidates, seen = [], set()
+    for candidate in (str(raw or "").strip(), _strip_json_code_fence(raw)):
+        if candidate and candidate not in seen:
+            candidates.append(candidate)
+            seen.add(candidate)
+    for candidate in list(candidates):
+        for obj in _iter_json_objects(candidate):
+            if obj not in seen:
+                candidates.append(obj)
+                seen.add(obj)
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+    raise ValueError("拆解结果解析失败，请重试")
+
+
+def _validate_scene_breakdown(result):
+    if not isinstance(result, dict) or not isinstance(result.get("scenes"), list):
+        raise ValueError("拆解结果为空，请重试")
+    placeholders = ("画面描述", "具体画面", "口播台词", "对应口播")
+    valid = []
+    for scene in result["scenes"]:
+        if not isinstance(scene, dict):
+            continue
+        scene_text = str(scene.get("scene") or "").strip()
+        line_text = str(scene.get("line") or "").strip()
+        if not scene_text:
+            continue
+        if any(marker in scene_text or marker in line_text for marker in placeholders):
+            raise ValueError("拆解结果包含模板占位内容，请重试")
+        valid.append(scene)
+    if not valid:
+        raise ValueError("拆解结果为空，请重试")
+    result["scenes"] = valid
+    return result
+
+
+def _request_breakdown_result(sysmsg, usermsg, context, frames):
+    attempts = [
+        (usermsg, 0.2),
+        (
+            context + '\n\n上一次输出不完整。请只返回闭合、可解析的 JSON，固定输出 4 个有效分镜；'
+            '每个 scene 50-80 字，写清主体特征、连续动作、场景道具、构图运镜和光影氛围，'
+            '禁止代码围栏、解释和模板占位文字。',
+            0.1,
+        ),
+    ]
+    last_error = None
+    for index, (message, temperature) in enumerate(attempts, 1):
+        raw = _chat_multimodal(sysmsg, message, frames, temp=temperature)
+        try:
+            return _validate_scene_breakdown(_parse_breakdown_json(raw))
+        except ValueError as error:
+            last_error = error
+            print(
+                "[breakdown] attempt %d invalid output: %s raw(%d)=%s"
+                % (index, error, len(raw or ""), str(raw)[:400].replace("\n", " ")),
+                flush=True,
+            )
+    raise last_error or ValueError("拆解结果解析失败，请重试")
 
 def _heartbeat(job_id, phase):
     """刷新 updated_at 防止 reaper 误杀 + 写 phase 供前端展示"""

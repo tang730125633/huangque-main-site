@@ -1117,8 +1117,11 @@
               var result=d.result||{};
               if(result.type==='breakdown_batch'){
                 switchBreakdownTool('scenes');
-                var first=result.results[0];
+                var first=(result.results||[]).find(function(item){
+                  return normalizeBreakdownScenes((item&&item.scenes)||[]).length>0;
+                });
                 if(first) renderBreakdown(first);
+                else scenes.innerHTML='<div style="padding:24px;text-align:center;color:#f4708a;">批量拆解没有生成有效分镜，请重试</div>';
                 (result.results||[]).forEach(function(item){ saveBreakdownHistory(item); });
                 var msg='批量完成：'+result.results.length+'/'+result.total+' 成功';
                 if(result.errors.length) msg+='，'+result.errors.length+' 条失败';
@@ -1317,7 +1320,7 @@
     var selectedDuration=10;
     var submitted=false;
     function updateCost(){
-      var rate=selectedAvatarId===null?12:10;
+      var rate=selectedAvatarId===null?30:10;
       cost.textContent='预计消耗 '+(selectedDuration*rate)+' 点';
       duration.querySelectorAll('[data-reverse-duration]').forEach(function(btn){
         var seconds=Number(btn.getAttribute('data-reverse-duration'));
@@ -1426,7 +1429,7 @@
     hideBreakdownMeta();
     var pollCount=0, lastProgress=-1, pollErrors=0, startTs=Date.now();
     var requestHeaders={'Authorization':'Bearer '+tok(),'Content-Type':'application/json'};
-    if(endpoint==='/api/gen/script_to_video') requestHeaders['Idempotency-Key']='script-video-'+Date.now()+'-'+Math.random().toString(36).slice(2);
+    if(endpoint==='/api/gen/script_to_video'||endpoint==='/api/gen/xiaole_video') requestHeaders['Idempotency-Key']='script-video-'+Date.now()+'-'+Math.random().toString(36).slice(2);
     fetch(endpoint,{method:'POST',headers:requestHeaders,body:JSON.stringify(payload)})
       .then(function(r){return r.json().then(function(d){return {s:r.status,d:d};});})
       .then(function(x){
@@ -1509,17 +1512,20 @@
     if(isReverse){
       var prompt=reversePromptText();
       if(!prompt){ if(window.HQ&&window.HQ.toast) HQ.toast('请先完成提示词反推'); return; }
+      var reverseRefs=((lastBreakdownReverse&&lastBreakdownReverse.frame_thumbnails)||[]).slice(0,4);
       _showReverseVideoPicker(prompt,function(choice){
         if(choice.avatarId){
+          var avatarPrompt='人物身份与面部必须以所选数字人形象为准；参考关键帧仅用于还原动作、镜头、构图、场景和节奏。'+prompt;
           _doGenerate({
-            cine_mode:'open', avatar_ids:[choice.avatarId], prompt:prompt,
-            duration:choice.duration, ratio:'9:16', resolution:'720p', enhance_prompt:false
+            cine_mode:'open', avatar_ids:[choice.avatarId], prompt:avatarPrompt,
+            reference_images:reverseRefs, duration:choice.duration,
+            ratio:'9:16', resolution:'720p', enhance_prompt:false
           },bdRemakeBtn,{endpoint:'/api/gen/cinematic',sceneCount:1});
           return;
         }
-        var reverseScenes=[{scene:prompt,line:'',dur:choice.duration+'s'}];
-        _doGenerate({scenes:reverseScenes,style:'剧情',duration:choice.duration},
-                    bdRemakeBtn,{endpoint:'/api/gen/script_to_video',sceneCount:1});
+        var seedancePrompt='严格按照所附参考关键帧的时间顺序生成，保持动作节点、镜头转换、构图和场景布局。'+prompt;
+        _doGenerate({channel:'micro',prompt:seedancePrompt,reference_images:reverseRefs,duration:choice.duration},
+                    bdRemakeBtn,{endpoint:'/api/gen/xiaole_video',sceneCount:1});
       });
       return;
     } else {
@@ -1669,11 +1675,11 @@
   <div id="reverseVideoAvatarGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:10px;min-height:80px;max-height:230px;overflow-y:auto;padding-right:3px;"></div>
   <div style="font-size:13px;font-weight:600;margin:18px 0 8px;">视频时长</div>
   <div id="reverseVideoDuration" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
-    <button class="sc-opt" type="button" data-reverse-duration="5" aria-pressed="false" style="font-family:inherit;">5 秒 · 60 点</button>
-    <button class="sc-opt on" type="button" data-reverse-duration="10" aria-pressed="true" style="font-family:inherit;">10 秒 · 120 点</button>
-    <button class="sc-opt" type="button" data-reverse-duration="15" aria-pressed="false" style="font-family:inherit;">15 秒 · 180 点</button>
+    <button class="sc-opt" type="button" data-reverse-duration="5" aria-pressed="false" style="font-family:inherit;">5 秒 · 150 点</button>
+    <button class="sc-opt on" type="button" data-reverse-duration="10" aria-pressed="true" style="font-family:inherit;">10 秒 · 300 点</button>
+    <button class="sc-opt" type="button" data-reverse-duration="15" aria-pressed="false" style="font-family:inherit;">15 秒 · 450 点</button>
   </div>
-  <div id="reverseVideoCost" style="text-align:center;color:#e7b24c;font-size:13px;font-weight:600;margin:14px 0;">预计消耗 120 点</div>
+  <div id="reverseVideoCost" style="text-align:center;color:#e7b24c;font-size:13px;font-weight:600;margin:14px 0;">预计消耗 300 点</div>
   <div style="text-align:center;font-size:11.5px;color:#5c6b82;margin-bottom:14px;">没有形象？<a href="video.html" style="color:#60a5fa;">去创建</a></div>
   <button id="reverseVideoConfirm" type="button" style="width:100%;height:46px;border:none;border-radius:12px;cursor:pointer;font-family:inherit;font-size:15px;font-weight:700;color:#111827;background:linear-gradient(135deg,#f4cd72,#e7b24c);">确认生成</button>
 </div>
