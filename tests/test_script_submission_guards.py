@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -9,10 +10,44 @@ SERVER = ROOT / "server"
 if str(SERVER) not in sys.path:
     sys.path.insert(0, str(SERVER))
 
-from content_domains import text
+from content_domains import core, text
 
 
 class ScriptSubmissionGuardTests(unittest.TestCase):
+    def test_mixed_points_version_never_silently_loses_partial_refund(self):
+        partial = {
+            "type": "breakdown_batch", "total": 2,
+            "errors": [{"url": "https://bad.example"}],
+        }
+        with self.assertRaisesRegex(RuntimeError, "自动退回全部点数"):
+            core._prepare_breakdown_refund(
+                SimpleNamespace(), "alice", 40, partial, 88,
+            )
+
+    def test_mixed_points_version_allows_non_batch_and_successful_batch(self):
+        old_points = SimpleNamespace()
+        self.assertFalse(core._prepare_breakdown_refund(
+            old_points, "alice", 20, {"type": "breakdown_reverse"}, 89,
+        ))
+        self.assertFalse(core._prepare_breakdown_refund(
+            old_points, "alice", 40,
+            {"type": "breakdown_batch", "total": 2, "errors": []}, 90,
+        ))
+
+    def test_current_points_version_persists_partial_refund_before_done(self):
+        calls = []
+        current_points = SimpleNamespace(
+            prepare_breakdown_batch_refund=lambda *args: calls.append(args) or True
+        )
+        result = {
+            "type": "breakdown_batch", "total": 2,
+            "errors": [{"url": "https://bad.example"}],
+        }
+        self.assertTrue(core._prepare_breakdown_refund(
+            current_points, "alice", 40, result, 91,
+        ))
+        self.assertEqual(("alice", 40, result, 91), calls[0])
+
     def test_copy_payload_rejects_blank_prompt_before_queueing(self):
         for prompt in ("", "   ", "\n\t"):
             with self.subTest(prompt=repr(prompt)):
@@ -85,13 +120,16 @@ class ScriptSubmissionGuardTests(unittest.TestCase):
 
     def test_breakdown_partial_refund_intent_precedes_done_and_is_recoverable(self):
         source = (SERVER / "content_domains" / "core.py").read_text(encoding="utf-8")
-        prepare_at = source.index("prepare_breakdown_batch_refund(")
+        prepare_at = source.index('"prepare_breakdown_batch_refund"')
         done_at = source.index('_set_terminal(job_id, "done"', prepare_at)
         reconcile_at = source.index("reconcile_breakdown_refund(job_id)", done_at)
 
         self.assertLess(prepare_at, done_at)
         self.assertLess(done_at, reconcile_at)
         self.assertIn('getattr(_domains()[1], "retry_breakdown_refunds", None)', source)
+        self.assertIn("def _prepare_breakdown_refund(", source)
+        self.assertIn('getattr(points_domain, "prepare_breakdown_batch_refund", None)', source)
+        self.assertIn("批量拆解退款组件版本不一致", source)
         self.assertIn("retry_breakdown(JOB_QUEUE_MAX)", source)
 
 

@@ -3,12 +3,14 @@ import unittest
 
 
 SCRIPT_HTML = pathlib.Path(__file__).resolve().parents[1] / "site/workbench/script.html"
+CORE_PY = pathlib.Path(__file__).resolve().parents[1] / "server/content_domains/core.py"
 
 
 class ScriptActionsUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.html = SCRIPT_HTML.read_text(encoding="utf-8")
+        cls.core = CORE_PY.read_text(encoding="utf-8")
 
     def test_scene_handoffs_keep_prompt_parameters(self):
         self.assertIn("handoffUrl('video.html',a.getAttribute('data-to-video')", self.html)
@@ -190,6 +192,59 @@ class ScriptActionsUiTests(unittest.TestCase):
         # 三处轮询（写脚本、拆解、成片）都已覆盖
         self.assertTrue(self.html.count("pollErrors=0") >= 6)
         self.assertTrue(self.html.count("网络不稳定，正在重试") >= 3)
+
+    def test_breakdown_and_image_submissions_are_idempotent(self):
+        self.assertIn("'Idempotency-Key':breakdownPending.key", self.html)
+        self.assertIn("'Idempotency-Key':imagePending.key", self.html)
+        self.assertIn('"script_to_video", "breakdown"}', self.core)
+        self.assertIn("sessionStorage.setItem(storageKey", self.html)
+        self.assertIn("saved&&saved.body===body&&saved.key", self.html)
+        self.assertIn("code==='idempotency_in_progress'", self.html)
+        self.assertEqual(
+            2,
+            self.html.count(
+                "if(x.s<500||(x.d&&x.d.operation_terminal===true)) "
+                "_confirmSubmission"
+            ),
+        )
+
+    def test_lost_submission_response_reuses_pending_key(self):
+        self.assertIn("var _pendingSubmissionMemory={}", self.html)
+        self.assertIn("var storageKey='hq_pending_submit_'+scope", self.html)
+        self.assertIn("saved&&saved.body===body&&saved.key", self.html)
+        self.assertIn("return {storageKey:storageKey,body:body,key:saved.key}", self.html)
+        self.assertIn("fetch('/api/gen/breakdown'", self.html)
+        self.assertIn("body:breakdownPending.body", self.html)
+        self.assertIn("body:imagePending.body", self.html)
+        # Network catches intentionally do not confirm/clear the pending key.
+        self.assertNotIn(
+            ".catch(function(){ _confirmSubmission(breakdownPending)",
+            self.html,
+        )
+        self.assertNotIn(
+            ".catch(function(){ _confirmSubmission(imagePending)",
+            self.html,
+        )
+
+    def test_terminal_500_discards_pending_key_but_uncertain_failures_keep_it(self):
+        confirmation = (
+            "if(x.s<500||(x.d&&x.d.operation_terminal===true)) "
+            "_confirmSubmission"
+        )
+        self.assertEqual(2, self.html.count(confirmation))
+        self.assertIn("code==='idempotency_in_progress'", self.html)
+        self.assertNotIn("x.s>=500) _confirmSubmission", self.html)
+
+    def test_breakdown_handles_gateway_html_and_can_resume_polling(self):
+        self.assertIn("function _readApiResponse(response)", self.html)
+        self.assertIn("服务返回异常（HTTP ", self.html)
+        self.assertIn("data-resume-breakdown", self.html)
+        self.assertIn("继续查询", self.html)
+        self.assertIn("任务编号：", self.html)
+        self.assertIn("startPolling()", self.html)
+
+    def test_breakdown_batch_phase_regex_matches_digits(self):
+        self.assertIn(r"/^batch_(\d+)_(\d+)$/.exec", self.html)
 
     def test_breakdown_scenes_are_editable(self):
         self.assertIn('id="bdEditBtn"', self.html)

@@ -884,6 +884,21 @@ def _global_running_breakdown_count():   # 全局运行中的爆款拆解数（�
                         (SERVICE_OWNER, SERVICE_OWNER)).fetchone()
     return int(row["n"] if row else 0)
 
+
+def _prepare_breakdown_refund(points_domain, username, cost, result, job_id):
+    """Prepare partial refunds, or fail safely during a mixed-version deploy."""
+    if (result or {}).get("type") != "breakdown_batch":
+        return False
+    if not ((result or {}).get("errors") or []):
+        return False
+    callback = getattr(points_domain, "prepare_breakdown_batch_refund", None)
+    if callback:
+        return callback(username, cost, result, job_id)
+    raise RuntimeError(
+        "批量拆解退款组件版本不一致，本次任务已转为失败并自动退回全部点数"
+    )
+
+
 def _reject_pending_job(job_id, username, cost, reason):
     return _fail_job_and_schedule_refund(
         job_id, reason, from_states=("pending",), username=username, cost=cost,
@@ -1097,8 +1112,8 @@ def run_job(job_id):
         result = HANDLERS[kind](payload)
         breakdown_refund_prepared = False
         if kind == "breakdown":
-            breakdown_refund_prepared = _domains()[1].prepare_breakdown_batch_refund(
-                username, cost, result, job_id)
+            breakdown_refund_prepared = _prepare_breakdown_refund(
+                _domains()[1], username, cost, result, job_id)
         # 先 CAS 抢 done 终态：仅当仍是 running 才写 done，防 reaper 已判 error 又被无条件覆盖(既出片又退点)
         if not _set_terminal(job_id, "done", result=result):
             if breakdown_refund_prepared:
@@ -1116,7 +1131,8 @@ def run_job(job_id):
             except Exception:
                 pass
         if kind == "breakdown":
-            _domains()[1].reconcile_breakdown_refund(job_id)
+            if breakdown_refund_prepared:
+                _domains()[1].reconcile_breakdown_refund(job_id)
         # 已确认拿到 done 终态；入库是次要副作用，失败也不改状态、不退点
         try:
             audio_domain, _, video_domain = _domains()
@@ -1522,7 +1538,7 @@ class H(BaseHTTPRequestHandler):
                         body.pop("short_drama_references", None)
                 if not is_still_route: request_body = dict(body) if isinstance(body, dict) else body
                 # cinematic 也纳入：它提交即扣 $7，是最该防重复提交的一档（同一单任务路径，无额外风险）
-                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video"} else ""
+                if not is_still_route: idem_key = _idempotency_key(self.headers.get("Idempotency-Key")) if kind in {"image", "banana", "video", "tryon", "xiaole_video", "sora_video", "cinematic", "script_to_video", "breakdown"} else ""
                 if kind == "sora_video" and not idem_key: raise ValueError("Sora 视频提交必须提供 Idempotency-Key")
                 if kind == "xiaole_video" and str(body.get("channel") or "").lower() in {"micro", "omni"} and not idem_key: raise ValueError("官方视频提交必须提供 Idempotency-Key")
             except miniprogram_security.ContentRejected as e:
@@ -1689,6 +1705,11 @@ class H(BaseHTTPRequestHandler):
                     failed_response = {"detail": {"refunded": "任务创建失败，点数已退回",
                         "queued": "任务创建失败，退款正在自动重试"}.get(e.compensation, "任务创建失败，退款需人工核对"),
                         "submission_ref": e.submission_ref}
+                    if e.compensation == "refunded":
+                        # The charge has been compensated, so this failed
+                        # submission is a terminal result.  Clients may discard
+                        # the pending idempotency key and safely try again.
+                        failed_response["operation_terminal"] = True
                     if is_still_route:
                         _short_drama_domain().short_drama_production.consume_failed_quote(
                             jdb, user["username"], prepared["quote_token"], idem_key)

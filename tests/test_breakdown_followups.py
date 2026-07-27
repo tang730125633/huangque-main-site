@@ -43,6 +43,14 @@ class BreakdownFollowupTests(unittest.TestCase):
         self.assertEqual(len(result["scenes"]), 1)
         self.assertEqual(chat.call_count, 2)
 
+    def test_multimodal_timeout_is_localized_after_safe_retries(self):
+        with mock.patch.object(
+            breakdown.egress, "post_json_idempotent",
+            side_effect=TimeoutError("The read operation timed out"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "AI 分析响应超时"):
+                breakdown._chat_multimodal("system", "user", [])
+
     def test_frame_thumbnails_are_embedded_before_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:
             image = pathlib.Path(directory) / "frame.jpg"
