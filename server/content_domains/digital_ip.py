@@ -35,9 +35,12 @@ MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_FILE_BYTES = 20 * 1024 * 1024
 MAX_PROJECT_BODY_BYTES = 29 * 1024 * 1024
 PROJECT_DAILY_LIMIT = 12
+REPORT_RATE_LIMIT_PER_MINUTE = 2
+REPORT_DAILY_LIMIT = 5
 MAX_PROJECTS_PER_USER = 20
 PROJECT_TITLE_MAX = 120
 PROJECT_STATE_MAX = 200000
+PROJECT_MANAGED_STATE_MAX = 500000
 PROJECT_MODULE_STEPS = (5, 5, 5, 5, 4, 3, 3, 4, 5, 5, 5, 5)
 PROJECT_FILE_TYPES = {
     "application/pdf": {"pdf"},
@@ -51,6 +54,35 @@ PROJECT_FILE_TYPES = {
     "image/png": {"png"}, "image/jpeg": {"jpg", "jpeg"}, "image/webp": {"webp"},
 }
 PROJECT_STATE_KEYS = {"questionnaire_state", "module_index", "step_index", "completed_modules"}
+REPORT_STATE_KEY = "generated_report"
+PRODUCT_CATALOG = (
+    {
+        "id": "image_studio", "name": "图片生成", "page": "banana.html",
+        "capability": "根据文字或用户主动提供的参考图生成营销图片和视觉素材",
+        "limits": "只生成候选素材；发布、投放和效果判断仍需用户确认",
+    },
+    {
+        "id": "script_studio", "name": "文案编导", "page": "script.html",
+        "capability": "生成可拍摄的分镜脚本，并对用户提供的内容做结构拆解后继续创作",
+        "limits": "脚本是创作建议，不代表平台流量或成交结果",
+    },
+    {
+        "id": "voice_studio", "name": "音频创作", "page": "audio.html",
+        "capability": "基于已确认文案，选择页面可用的公共或个人音色生成配音音频",
+        "limits": "可用音色和生成条件以页面当前实际状态为准",
+    },
+    {
+        "id": "video_studio", "name": "视频创作", "page": "video.html",
+        "capability": "根据页面当前开放功能生成口播或其他视频内容",
+        "limits": "具体渠道、模型和可用性以页面当前实际状态为准；不承诺生成效果",
+    },
+    {
+        "id": "workflow_canvas", "name": "创作画布", "page": "canvas.html",
+        "capability": "把文本、图片、反推、作图和视频等页面可用节点组成可复用流程",
+        "limits": "流程仍需用户逐步检查和执行，不代表自动发布或自动经营",
+    },
+)
+PRODUCT_IDS = {item["id"] for item in PRODUCT_CATALOG}
 # 优先独立路径；默认复用已纳入生产备份的内容任务库，只新增独立表、不改 jobs schema。
 PROJECT_DB = pathlib.Path(os.environ.get("DIGITAL_IP_DB") or os.environ.get("CONTENT_JOB_DB") or str(
     pathlib.Path(__file__).resolve().parents[1] / "content_jobs.db"
@@ -61,6 +93,8 @@ _recent_requests = {}
 _guide_recent_requests = {}
 _guide_daily_requests = {}
 _project_daily_requests = {}
+_report_recent_requests = {}
+_report_daily_requests = {}
 _guide_cache = {}
 _rate_lock = threading.Lock()
 _project_db_init_lock = threading.Lock()
@@ -168,6 +202,85 @@ PROJECT_ANALYSIS_SCHEMA = {
                  "conflicts", "image_plan", "video_plan", "next_steps", "follow_up_question",
                  "ready_to_confirm", "uncertainty_note"],
 }
+
+REPORT_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "title": {"type": "string"},
+        "executive_summary": {"type": "string"},
+        "evidence": {"type": "array", "maxItems": 20, "items": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "evidence_id": {"type": "string"}, "claim": {"type": "string"},
+                "source_ref": {"type": "string"}, "source_excerpt": {"type": "string"},
+            },
+            "required": ["evidence_id", "claim", "source_ref", "source_excerpt"],
+        }},
+        "industry_pains": {"type": "array", "maxItems": 6, "items": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "pain": {"type": "string"},
+                "evidence_ids": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
+                "why_it_matters": {"type": "string"},
+                "product_matches": {"type": "array", "maxItems": 4, "items": {
+                    "type": "object", "additionalProperties": False,
+                    "properties": {
+                        "product_id": {"type": "string", "enum": sorted(PRODUCT_IDS)},
+                        "fit_reason": {"type": "string"},
+                        "execution_steps": {"type": "array", "maxItems": 5, "items": {"type": "string"}},
+                    },
+                    "required": ["product_id", "fit_reason", "execution_steps"],
+                }},
+            },
+            "required": ["pain", "evidence_ids", "why_it_matters", "product_matches"],
+        }},
+        "execution_plan": {"type": "array", "maxItems": 5, "items": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "phase": {"type": "string"}, "goal": {"type": "string"},
+                "steps": {"type": "array", "maxItems": 6, "items": {"type": "string"}},
+            },
+            "required": ["phase", "goal", "steps"],
+        }},
+        "metrics": {"type": "array", "maxItems": 8, "items": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "name": {"type": "string"}, "definition": {"type": "string"},
+                "baseline": {"type": "string"}, "target": {"type": "string"},
+                "review_cycle": {"type": "string"},
+                "evidence_ids": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
+            },
+            "required": ["name", "definition", "baseline", "target", "review_cycle", "evidence_ids"],
+        }},
+        "material_gaps": {"type": "array", "maxItems": 12, "items": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "gap": {"type": "string"}, "why_needed": {"type": "string"},
+                "how_to_collect": {"type": "string"}, "blocking": {"type": "boolean"},
+                "source_refs": {"type": "array", "maxItems": 54, "items": {"type": "string"}},
+            },
+            "required": ["gap", "why_needed", "how_to_collect", "blocking", "source_refs"],
+        }},
+        "disclaimer": {"type": "string"},
+    },
+    "required": ["title", "executive_summary", "evidence", "industry_pains", "execution_plan",
+                 "metrics", "material_gaps", "disclaimer"],
+}
+
+REPORT_INSTRUCTIONS = """你是黄雀数字化 IP 的产品方案审查员。根据用户已经确认的问卷事实，生成一份可执行但不夸大的经营报告。
+
+硬性规则：
+- confirmed_answers 中的文字才是事实来源；skipped_steps 只代表资料缺口，不能据此推断事实
+- 每条行业痛点和指标必须引用 evidence 中的 evidence_id；evidence.source_ref 必须来自输入 source_ref
+- evidence.source_excerpt 必须是对应 confirmed_answers.answer 中可逐字核对的短摘录，不得改写
+- 只能推荐 product_catalog 中直接匹配痛点的产品；没有直接匹配时 product_matches 留空，不得硬推产品
+- 不得发明产品功能、渠道、价格、自动发布能力、客户数据或经营结果
+- target 是待用户确认的规划值，不是效果承诺；缺少基线时明确写“待确认”
+- execution_steps 必须包含用户核对或确认环节；不得自动生成素材、发布、投放、支付或联系第三方
+- skipped_steps 必须全部被 material_gaps.source_refs 覆盖，可将同类步骤合并为一个缺口；非跳过型缺口的 source_refs 为空
+- 若没有可信证据，行业痛点和指标数组应为空
+- disclaimer 必须说明报告仅基于用户确认资料、产品可用性以页面实时状态为准、结果不构成经营效果保证
+"""
 
 GUIDE_SCHEMA = {
     "type": "object",
@@ -382,6 +495,23 @@ def _check_project_daily_limit(username):
         if _project_daily_requests.get(key, 0) >= PROJECT_DAILY_LIMIT:
             raise DigitalIPRateLimited("今日分析次数已用完，请明天继续")
         _project_daily_requests[key] = _project_daily_requests.get(key, 0) + 1
+
+
+def _check_report_rate_limit(username):
+    now = time.time()
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    with _rate_lock:
+        for key in [key for key in _report_daily_requests if key[1] != day]:
+            _report_daily_requests.pop(key, None)
+        recent = [stamp for stamp in _report_recent_requests.get(username, []) if now - stamp < 60]
+        if len(recent) >= REPORT_RATE_LIMIT_PER_MINUTE:
+            raise DigitalIPRateLimited("报告生成过于频繁，请一分钟后再试")
+        daily_key = (username, day)
+        if _report_daily_requests.get(daily_key, 0) >= REPORT_DAILY_LIMIT:
+            raise DigitalIPRateLimited("今日报告生成次数已用完，请明天继续")
+        recent.append(now)
+        _report_recent_requests[username] = recent
+        _report_daily_requests[daily_key] = _report_daily_requests.get(daily_key, 0) + 1
 
 
 def _parse_structured_output(response):
@@ -630,10 +760,12 @@ def _json_object(value):
 
 
 def _project_public(row):
+    state = _json_object(row["state_json"])
+    state.pop(REPORT_STATE_KEY, None)
     project = {
         "id": row["id"], "title": row["title"], "revision": int(row["revision"]),
         "created_at": int(row["created_at"]), "updated_at": int(row["updated_at"]),
-        "state": _json_object(row["state_json"]),
+        "state": state,
     }
     analysis = _json_object(row["last_analysis_json"])
     confirmed = _json_object(row["confirmed_json"])
@@ -647,10 +779,10 @@ def _project_public(row):
     return project
 
 
-def _project_state_answer(row, module_index, step_index):
+def _state_answer(state, module_index, step_index):
     if isinstance(module_index, bool) or isinstance(step_index, bool) or not isinstance(module_index, int) or not isinstance(step_index, int):
         return ""
-    questionnaire = _json_object(row["state_json"]).get("questionnaire_state") or {}
+    questionnaire = state.get("questionnaire_state") if isinstance(state, dict) else {}
     answers = questionnaire.get("answers") if isinstance(questionnaire, dict) else {}
     value = answers.get("%d-%d" % (module_index, step_index)) if isinstance(answers, dict) else None
     if isinstance(value, dict):
@@ -659,6 +791,10 @@ def _project_state_answer(row, module_index, step_index):
         choice = value.get("choice")
         return "、".join(str(item) for item in choice).strip() if isinstance(choice, list) else str(choice or "").strip()
     return str(value or "").strip()
+
+
+def _project_state_answer(row, module_index, step_index):
+    return _state_answer(_json_object(row["state_json"]), module_index, step_index)
 
 
 def _owned_project(username, project_id):
@@ -696,6 +832,15 @@ def _clean_state(value):
     if len(encoded.encode()) > PROJECT_STATE_MAX:
         raise DigitalIPValidationError("草稿内容过大")
     return value, encoded
+
+
+def _encode_managed_state(value):
+    if not isinstance(value, dict) or _contains_data_url(value):
+        raise DigitalIPValidationError("项目状态无效")
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded.encode()) > PROJECT_MANAGED_STATE_MAX:
+        raise DigitalIPValidationError("项目状态内容过大")
+    return encoded
 
 
 def _revision(value):
@@ -753,9 +898,9 @@ def patch_project(username, project_id, payload):
     has_title, has_state = "title" in payload, "state" in payload
     if not has_title and not has_state:
         raise DigitalIPValidationError("请提供 title 或 state")
-    state_json = None
+    clean_state = None
     if has_state:
-        _, state_json = _clean_state(payload["state"])
+        clean_state, _ = _clean_state(payload["state"])
     row = _owned_project(username, project_id)
     if int(row["revision"]) != revision:
         raise DigitalIPRevisionConflict("项目已在另一端更新，请刷新后重试")
@@ -763,7 +908,19 @@ def patch_project(username, project_id, payload):
     if has_title:
         fields.extend(["title=?"]); values.append(_clean_project_title(payload["title"]))
     if has_state:
-        fields.extend(["state_json=?"]); values.append(state_json)
+        managed_report = _json_object(row["state_json"]).get(REPORT_STATE_KEY)
+        if isinstance(managed_report, dict):
+            clean_state[REPORT_STATE_KEY] = managed_report
+        fields.extend(["state_json=?"]); values.append(_encode_managed_state(clean_state))
+        analysis = _json_object(row["last_analysis_json"])
+        analyzed_input = analysis.get("input") if isinstance(analysis.get("input"), dict) else {}
+        module_index, step_index = analyzed_input.get("module_index"), analyzed_input.get("step_index")
+        questionnaire = clean_state.get("questionnaire_state") if isinstance(clean_state, dict) else {}
+        answers = questionnaire.get("answers") if isinstance(questionnaire, dict) else {}
+        step_state = answers.get("%s-%s" % (module_index, step_index)) if isinstance(answers, dict) else None
+        if analysis and ((isinstance(step_state, dict) and step_state.get("skipped") is True)
+                         or _state_answer(clean_state, module_index, step_index) != str(analyzed_input.get("answer") or "").strip()):
+            fields.extend(["last_analysis_json=?", "confirmed_json=?"]); values.extend(["{}", "{}"])
     now = int(time.time())
     fields.extend(["revision=revision+1", "updated_at=?"]); values.append(now)
     with closing(_project_db()) as conn:
@@ -931,6 +1088,186 @@ def confirm_project(username, project_id, payload):
     return {"project": _project_public(updated), "ok": True}
 
 
+def _report_answer_text(value):
+    if isinstance(value, dict):
+        text = str(value.get("text") or "").strip()
+        if text:
+            return text[:1600]
+        choice = value.get("choice")
+        if isinstance(choice, list):
+            return "、".join(str(item).strip() for item in choice if str(item).strip())[:1600]
+        return str(choice or "").strip()[:1600]
+    return str(value or "").strip()[:1600]
+
+
+def _report_source(row):
+    state = _json_object(row["state_json"])
+    questionnaire = state.get("questionnaire_state")
+    questionnaire = questionnaire if isinstance(questionnaire, dict) else {}
+    answers = questionnaire.get("answers")
+    answers = answers if isinstance(answers, dict) else {}
+    confirmed_answers, skipped_steps, unresolved = [], [], []
+    for module_index, step_count in enumerate(PROJECT_MODULE_STEPS):
+        for step_index in range(step_count):
+            key = "%d-%d" % (module_index, step_index)
+            value = answers.get(key)
+            if isinstance(value, dict) and value.get("confirmed") is True:
+                confirmed_answers.append({"source_ref": "answer:%s" % key, "answer": _report_answer_text(value)})
+            elif isinstance(value, dict) and value.get("skipped") is True:
+                skipped_steps.append("answer:%s" % key)
+            else:
+                unresolved.append("answer:%s" % key)
+    return {
+        "confirmed_answers": confirmed_answers,
+        "skipped_steps": skipped_steps,
+        "unresolved_steps": unresolved,
+        "progress": {
+            "total": sum(PROJECT_MODULE_STEPS),
+            "confirmed": len(confirmed_answers),
+            "skipped": len(skipped_steps),
+            "unresolved": len(unresolved),
+        },
+    }
+
+
+def _validate_report(report, source):
+    if not isinstance(report, dict):
+        raise DigitalIPError("AI 返回的报告格式异常，请重试")
+    evidence = report.get("evidence")
+    pains = report.get("industry_pains")
+    metrics = report.get("metrics")
+    gaps = report.get("material_gaps")
+    if not isinstance(evidence, list) or not isinstance(pains, list) or not isinstance(metrics, list) or not isinstance(gaps, list):
+        raise DigitalIPError("AI 返回的报告格式异常，请重试")
+    source_texts = {
+        item["source_ref"]: " ".join(item["answer"].split())
+        for item in source["confirmed_answers"] if item.get("answer")
+    }
+    evidence_ids = set()
+    for item in evidence:
+        if not isinstance(item, dict):
+            raise DigitalIPError("AI 返回的报告证据格式异常，请重试")
+        evidence_id = str(item.get("evidence_id") or "").strip()
+        source_ref = str(item.get("source_ref") or "").strip()
+        excerpt = " ".join(str(item.get("source_excerpt") or "").split())
+        if not evidence_id or evidence_id in evidence_ids or source_ref not in source_texts:
+            raise DigitalIPError("AI 返回的报告证据无法追溯，请重试")
+        if not excerpt or excerpt not in source_texts[source_ref]:
+            raise DigitalIPError("AI 返回的报告引用与已确认资料不一致，请重试")
+        evidence_ids.add(evidence_id)
+    for item in pains:
+        refs = item.get("evidence_ids") if isinstance(item, dict) else None
+        matches = item.get("product_matches") if isinstance(item, dict) else None
+        if not isinstance(refs, list) or not refs or not set(refs).issubset(evidence_ids) or not isinstance(matches, list):
+            raise DigitalIPError("AI 返回的行业痛点缺少有效证据，请重试")
+        for match in matches:
+            steps = match.get("execution_steps") if isinstance(match, dict) else None
+            if not isinstance(match, dict) or match.get("product_id") not in PRODUCT_IDS or not isinstance(steps, list) or not steps:
+                raise DigitalIPError("AI 返回了未受控的产品建议，请重试")
+    for item in metrics:
+        refs = item.get("evidence_ids") if isinstance(item, dict) else None
+        if not isinstance(refs, list) or not refs or not set(refs).issubset(evidence_ids):
+            raise DigitalIPError("AI 返回的指标缺少有效证据，请重试")
+    skipped_refs = set(source["skipped_steps"])
+    covered_skips = set()
+    for item in gaps:
+        refs = item.get("source_refs") if isinstance(item, dict) else None
+        if not isinstance(refs, list) or not set(refs).issubset(skipped_refs):
+            raise DigitalIPError("AI 返回的资料缺口无法追溯，请重试")
+        covered_skips.update(refs)
+    if not skipped_refs.issubset(covered_skips):
+        raise DigitalIPError("AI 没有完整标明被跳过的资料缺口，请重试")
+    return report
+
+
+def _generate_report_content(source, username, project_title):
+    if not OPENAI_KEY:
+        raise DigitalIPError("服务端尚未配置 OpenAI")
+    _check_report_rate_limit(username)
+    prompt = {
+        "project_title": project_title,
+        "confirmed_answers": source["confirmed_answers"],
+        "skipped_steps": source["skipped_steps"],
+        "product_catalog": list(PRODUCT_CATALOG),
+    }
+    request = {
+        "model": MODEL,
+        "instructions": REPORT_INSTRUCTIONS,
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": json.dumps(prompt, ensure_ascii=False)}]}],
+        "reasoning": {"effort": REASONING_EFFORT},
+        "text": {"verbosity": "low", "format": {
+            "type": "json_schema", "name": "digital_ip_product_report",
+            "strict": True, "schema": REPORT_SCHEMA,
+        }},
+        "max_output_tokens": 30000,
+        "store": False,
+        "safety_identifier": hashlib.sha256(username.encode()).hexdigest()[:32],
+    }
+    try:
+        response = _post("/v1/responses", json.dumps(request, ensure_ascii=False).encode(), "application/json", timeout=120)
+    except urllib.error.HTTPError as exc:
+        print("[digital-ip-report] OpenAI HTTP %s" % exc.code, flush=True)
+        raise DigitalIPError("报告生成服务暂时不可用，请稍后重试") from exc
+    except Exception as exc:
+        print("[digital-ip-report] OpenAI request failed: %s" % type(exc).__name__, flush=True)
+        raise DigitalIPError("报告生成服务暂时不可用，请稍后重试") from exc
+    report = _validate_report(_parse_structured_output(response), source)
+    return report, str(response.get("model") or MODEL), response.get("usage") or {}, request
+
+
+def generate_report(username, project_id, payload):
+    if not isinstance(payload, dict):
+        raise DigitalIPValidationError("请求体必须是 JSON 对象")
+    if payload.get("consent") is not True:
+        raise DigitalIPValidationError("请先明确同意将已保存的 IP12 回答发送给 OpenAI 生成报告")
+    revision = _revision(payload.get("revision"))
+    row = _owned_project(username, project_id)
+    if int(row["revision"]) != revision:
+        raise DigitalIPRevisionConflict("项目已在另一端更新，请刷新后重试")
+    source = _report_source(row)
+    if source["unresolved_steps"]:
+        raise DigitalIPValidationError("请先完成或跳过全部 54 步，再生成产品报告")
+    report, model, usage, _ = _generate_report_content(source, username, row["title"])
+    source_hash = hashlib.sha256(json.dumps(source, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    now = int(time.time())
+    envelope = {
+        "report_id": uuid.uuid4().hex,
+        "source_revision": revision,
+        "project_revision": revision + 1,
+        "source_hash": source_hash,
+        "generated_at": now,
+        "model": model,
+        "usage": usage,
+        "progress": source["progress"],
+        "content": report,
+    }
+    state = _json_object(row["state_json"])
+    state[REPORT_STATE_KEY] = envelope
+    state_json = _encode_managed_state(state)
+    with closing(_project_db()) as conn:
+        cursor = conn.execute(
+            "UPDATE digital_ip_projects SET state_json=?, revision=revision+1, updated_at=? WHERE id=? AND username=? AND revision=?",
+            (state_json, now, project_id, username, revision),
+        )
+        conn.commit()
+        if cursor.rowcount != 1:
+            raise DigitalIPRevisionConflict("项目已在另一端更新，请刷新后重试")
+        updated = conn.execute("SELECT * FROM digital_ip_projects WHERE id=? AND username=?", (project_id, username)).fetchone()
+    return {"ok": True, "project": _project_public(updated), "report": envelope, "stale": False}
+
+
+def get_report(username, project_id):
+    row = _owned_project(username, project_id)
+    report = _json_object(row["state_json"]).get(REPORT_STATE_KEY)
+    if not isinstance(report, dict) or not isinstance(report.get("content"), dict):
+        raise DigitalIPNotFound("报告尚未生成")
+    return {
+        "project": {"id": row["id"], "title": row["title"], "revision": int(row["revision"])},
+        "report": report,
+        "stale": int(row["revision"]) != report.get("project_revision"),
+    }
+
+
 def _digital_ip_membership_required(user):
     return bool(user.get("_membership_enforcement_enabled") and not user.get("membership_active"))
 
@@ -966,8 +1303,13 @@ def dispatch_http(handler, method, verify_token, must_change_password):
             if path == root:
                 handler._send(200, {"items": list_projects(user["username"])})
             else:
-                project_id = path[len(root) + 1:]
-                handler._send(404, {"detail": "not found"}) if not project_id or "/" in project_id else handler._send(200, {"project": get_project(user["username"], project_id)})
+                parts = path[len(root) + 1:].split("/")
+                if len(parts) == 2 and parts[0] and parts[1] == "report":
+                    handler._send(200, get_report(user["username"], parts[0]))
+                elif len(parts) == 1 and parts[0]:
+                    handler._send(200, {"project": get_project(user["username"], parts[0])})
+                else:
+                    handler._send(404, {"detail": "not found"})
             return True
         content_length = int(handler.headers.get("Content-Length") or 0)
         if content_length <= 0:
@@ -996,6 +1338,11 @@ def dispatch_http(handler, method, verify_token, must_change_password):
                 handler._send(200, analyze_project(user["username"], project_id, body))
         elif action == "confirm":
             handler._send(200, confirm_project(user["username"], project_id, body))
+        elif action == "report":
+            if _digital_ip_membership_required(user):
+                _send_membership_required(handler)
+            else:
+                handler._send(200, generate_report(user["username"], project_id, body))
         else:
             handler._send(404, {"detail": "not found"})
     except ValueError as exc:
