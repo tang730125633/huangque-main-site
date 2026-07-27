@@ -372,7 +372,7 @@
             <label for="projectFiles"><b>补充资料（可选）</b> · 最多 6 份、单份最多 8 MiB、总计 20 MiB</label>
             <input id="projectFiles" type="file" multiple accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.webp" style="display:block; margin-top:8px; max-width:100%;">
             <p id="fileStatus" class="ai-status">支持 PDF、Office、表格、文本与 PNG/JPEG/WebP。PPT/Word 内嵌图表建议先导出为 PDF。</p>
-            <label style="display:flex; gap:8px; align-items:flex-start; font-size:13px;"><input id="aiConsent" type="checkbox">我明确同意仅在本次分析中将当前回答及所选资料发送给 OpenAI；原始文件不会保存到项目档案。</label>
+            <label style="display:flex; gap:8px; align-items:flex-start; font-size:13px;"><input id="aiConsent" type="checkbox">我明确同意仅在本次 AI 教练或分析中将当前回答及所选资料发送给 OpenAI；原始文件不会保存到项目档案。</label>
           </div>
           <div class="note-box">填写提示：填写后可点击右侧“AI 分析本步”。AI 只给建议；你点击“确认并继续”后，结果才写进数字化 IP 档案。</div>
           <div class="step-actions">
@@ -630,21 +630,26 @@
       if(!Number.isInteger(module)||!Number.isInteger(step)||module<1||module>MODULES.length||step<1||step>MODULES[module-1].steps.length)return null;
       return {moduleIndex:module-1,stepIndex:step-1};
     }
-    function loadState(){
+    function localDraft(){
       try{
         const key=projectStorageKey();
-        const saved = key?JSON.parse(localStorage.getItem(key)):null;
-        return saved && typeof saved==="object"
-          ? {...initialState,...saved,analyses:saved.analyses||{},guideTurns:saved.guideTurns||[]}
-          : structuredClone(initialState);
-      }catch(_){ return structuredClone(initialState); }
+        const saved=key?JSON.parse(localStorage.getItem(key)):null;
+        const draft=saved?.state||saved;
+        return {state:draft&&typeof draft==="object"?{...initialState,...draft,analyses:draft.analyses||{},guideTurns:draft.guideTurns||[]}:null,title:saved?.state?String(saved.title||""):"",revision:saved?.state?Number(saved.revision):NaN,savedAt:saved?.state?Number(saved.savedAt):0};
+      }catch(_){ return {state:null,title:"",revision:NaN,savedAt:0}; }
     }
+    function loadState(){ return localDraft().state||structuredClone(initialState); }
     function persist(){
       persistLocal();
       $("saveState").textContent=project?"已保存到本机缓存 · 正在同步账号档案":"账号档案加载中";
       queueProjectSave();
     }
-    function persistLocal(){ const key=projectStorageKey(); if(key)localStorage.setItem(key,JSON.stringify(state)); }
+    function persistLocal(){ const key=projectStorageKey(); if(key)localStorage.setItem(key,JSON.stringify({state,title:$("projectTitle").value,revision:project?.revision,savedAt:Date.now()})); }
+    function projectTime(value){ const number=Number(value); if(Number.isFinite(number))return number>1e12?number:number*1000; const parsed=Date.parse(value); return Number.isFinite(parsed)?parsed:0; }
+    function shouldRestoreLocal(draft){
+      const remoteRevision=Number(project?.revision);
+      return !!draft.state&&draft.savedAt>projectTime(project?.updated_at)&&(!Number.isFinite(remoteRevision)||draft.revision===remoteRevision);
+    }
     function projectStatusText(){ return {draft:"草稿",candidate_ready:"待确认候选",confirmed:"已确认档案"}[project?.status]||"项目"; }
     function uploadMime(file){ const ext=(file.name.split(".").pop()||"").toLowerCase(); return UPLOAD_MIME[ext]||file.type||""; }
     function projectDraft(){ return {questionnaire_state:{moduleIndex:state.moduleIndex,stepIndex:state.stepIndex,answers:state.answers,completedModules:state.completedModules,profile:state.profile,guideTurns:state.guideTurns}}; }
@@ -664,6 +669,7 @@
         if(response.status===409){ if(strict)await loadProject(); throw new Error("项目已在另一端更新，请重新查看后再操作"); }
         if(!response.ok)throw new Error("项目保存失败");
         project=(await response.json()).project;
+        persistLocal();
         $("projectStatus").textContent=`${projectStatusText()} · 已保存 · 跨端可恢复`;
         return true;
       }catch(error){
@@ -696,9 +702,9 @@
           response=await fetch(PROJECTS_URL,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({title:"未命名数字 IP"})});
           result=await response.json(); if(!response.ok)throw new Error(result.detail||"项目创建失败"); project=result.project;
         }
-        $("projectTitle").value=project.title||"";
-        const remote=project.state?.questionnaire_state;
-        state=remote&&typeof remote==="object"?{...initialState,...remote,analyses:{},guideTurns:remote.guideTurns||[]}:loadState();
+        const remote=project.state?.questionnaire_state, draft=localDraft();
+        state=shouldRestoreLocal(draft)?draft.state:remote&&typeof remote==="object"?{...initialState,...remote,analyses:{},guideTurns:remote.guideTurns||[]}:loadState();
+        $("projectTitle").value=shouldRestoreLocal(draft)&&draft.title?draft.title:project.title||"";
         const target=entryStep();
         if(target){ state.moduleIndex=target.moduleIndex; state.stepIndex=target.stepIndex; }
         state.analyses={};
@@ -718,6 +724,9 @@
       if(state.answers[keyFor()])delete state.answers[keyFor()].aiChoice;
       return true;
     }
+    function scrollBehavior(){ return window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"; }
+    function scrollTop(){ window.scrollTo({top:0,behavior:scrollBehavior()}); }
+    function scrollIntoView(element,block="start"){ element.scrollIntoView({behavior:scrollBehavior(),block}); }
     function escapeHtml(value){
       return String(value??"").replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));
     }
@@ -771,7 +780,7 @@
           state.stepIndex=0;
           persist();
           render();
-          window.scrollTo({top:0,behavior:"smooth"});
+          scrollTop();
         });
       });
     }
@@ -799,11 +808,9 @@
       }
       $("interaction").innerHTML=html;
       const textarea=$("answer");
-      if(textarea)textarea.addEventListener("input",event=>{
-        state.answers[keyFor()]={...(state.answers[keyFor()]||{}),text:event.target.value.trim()};
-        const stale=invalidateStaleAnalysis(event.target.value);
-        persist();
-        if(stale){ renderAI(); showToast("回答已修改，请重新分析后再确认"); }
+      if(textarea)textarea.addEventListener("input",()=>{
+        const stale=saveDraft();
+        if(stale){ renderAI(); showToast("回答已修改，请重新分析并确认"); }
       });
 
       const exampleBtn=$("exampleBtn");
@@ -851,8 +858,12 @@
       if(!step)return;
       const current=state.answers[keyFor()]||{};
       const textarea=document.getElementById("answer");
-      state.answers[keyFor()]={...current,text:step.type==="review"?step.preview.join("\n"):textarea?textarea.value.trim():current.text||"",choice:selectedChoice};
-      const stale=invalidateStaleAnalysis(answerText(step,state.answers[keyFor()]));
+      const value=step.type==="review"?step.preview.join("\n"):textarea?textarea.value.trim():current.text||"";
+      const changed=current.confirmed&&current.confirmedValue!==value;
+      const {confirmedValue,...draft}=current;
+      state.answers[keyFor()]=changed?{...draft,text:value,choice:selectedChoice,confirmed:false}:{...current,text:value,choice:selectedChoice};
+      if(changed)delete state.profile[module.id];
+      const stale=invalidateStaleAnalysis(value)||changed;
       persist();
       if(stale)renderAI();
     }
@@ -874,14 +885,14 @@
         try{ await confirmCandidate(answer.aiChoice); }
         catch(error){ showToast(error.message||"确认候选失败"); return; }
       }
-      state.answers[keyFor()]={...answer,confirmed:true,skipped:false};
+      state.answers[keyFor()]={...answer,confirmed:true,confirmedValue:answerText(step,answer),skipped:false};
       advanceCurrent(false);
     }
 
     function skipCurrent(){
       saveDraft();
       const answer=state.answers[keyFor()]||{};
-      const {aiChoice,...draft}=answer;
+      const {aiChoice,confirmedValue,...draft}=answer;
       state.answers[keyFor()]={...draft,confirmed:false,skipped:true};
       delete state.analyses[keyFor()];
       advanceCurrent(true);
@@ -912,7 +923,7 @@
       }
       persist();
       render();
-      window.scrollTo({top:0,behavior:"smooth"});
+      scrollTop();
     }
 
     function goBack(){
@@ -925,7 +936,7 @@
       }
       persist();
       render();
-      window.scrollTo({top:0,behavior:"smooth"});
+      scrollTop();
     }
 
     function answerText(step,answer){
@@ -987,6 +998,7 @@
         showToast("先告诉小黄雀你哪里不清楚");
         return;
       }
+      if(!$("aiConsent").checked){ showToast("请先明确同意发送当前回答给 AI"); return; }
       const module=MODULES[state.moduleIndex];
       const step=module.steps[state.stepIndex];
       const answer=state.answers[keyFor()]||{};
@@ -1008,7 +1020,8 @@
             ip_summary:currentIPSummary(),
             next_step:nextStepTitle(),
             message,
-            recent_turns:priorTurns
+            recent_turns:priorTurns,
+            consent:true
           })
         });
         if(response.status===401){
@@ -1060,11 +1073,11 @@
         $("coachInput").value=action.value||"";
         $("coachInput").focus();
       }else if(action.type==="run_diagnosis"){
-        $("analyzeBtn").scrollIntoView({behavior:"smooth",block:"center"});
+        scrollIntoView($("analyzeBtn"),"center");
         $("analyzeBtn").focus();
         showToast("请检查回答后，再由你点击 AI 诊断");
       }else if(action.type==="open_step"){
-        document.querySelector(".step-card").scrollIntoView({behavior:"smooth",block:"start"});
+        scrollIntoView(document.querySelector(".step-card"));
         showToast(action.value==="next"?"确认当前步骤后即可进入下一步":"已回到当前步骤");
       }
     }
@@ -1220,7 +1233,7 @@
       document.querySelectorAll("[data-resume-module]").forEach(button=>button.addEventListener("click",()=>{
         state.moduleIndex=Number(button.dataset.resumeModule);
         state.stepIndex=Number(button.dataset.resumeStep);
-        persist(); render(); window.scrollTo({top:0,behavior:"smooth"});
+        persist(); render(); scrollTop();
       }));
       const items=Object.entries(state.profile).sort((a,b)=>Number(a[0])-Number(b[0]));
       $("memoryItems").innerHTML=items.length?items.map(([,item])=>
@@ -1285,7 +1298,7 @@
     $("backBtn").addEventListener("click",goBack);
     $("skipBtn").addEventListener("click",skipCurrent);
     $("analyzeBtn").addEventListener("click",analyzeCurrent);
-    $("projectTitle").addEventListener("change",queueProjectSave);
+    $("projectTitle").addEventListener("change",persist);
     $("projectFiles").addEventListener("change",()=>{const files=[...$("projectFiles").files]; $("fileStatus").textContent=files.length?`已选择 ${files.length} 份资料；请勾选同意后由你主动分析。`:"未选择资料；可只分析当前回答。";});
     $("coachSend").addEventListener("click",()=>askGuide());
     $("coachInput").addEventListener("keydown",event=>{
@@ -1305,7 +1318,7 @@
       const action=event.target.closest("[data-guide-action]");
       if(action)runGuideAction(Number(action.dataset.guideAction));
     });
-    $("coachFloat").addEventListener("click",()=>$("coachCard").scrollIntoView({behavior:"smooth",block:"start"}));
+    $("coachFloat").addEventListener("click",()=>scrollIntoView($("coachCard")));
     $("guideBtn").addEventListener("click",()=>$("guideModal").classList.add("open"));
     $("closeGuide").addEventListener("click",()=>$("guideModal").classList.remove("open"));
     $("guideModal").addEventListener("click",event=>{if(event.target===$("guideModal"))$("guideModal").classList.remove("open")});
@@ -1318,7 +1331,13 @@
         showToast("本机离线缓存已重置");
       }
     });
-    window.addEventListener("beforeunload",saveDraft);
+    window.addEventListener("pagehide",()=>{
+      saveDraft();
+      clearTimeout(projectSaveTimer);
+      if(!project||projectSaving)return;
+      projectSavePending=false;
+      fetch(`${PROJECTS_URL}/${encodeURIComponent(project.id)}`,{method:"PATCH",credentials:"include",keepalive:true,headers:{"Content-Type":"application/json"},body:JSON.stringify({revision:project.revision,title:$("projectTitle").value,state:projectDraft()})}).catch(()=>{});
+    });
     selfCheck();
     render();
     loadProject();

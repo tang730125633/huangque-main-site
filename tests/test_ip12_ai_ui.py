@@ -11,13 +11,48 @@ CORE = Path(__file__).resolve().parents[1] / "server" / "content_domains" / "cor
 
 
 class IP12AIUITests(unittest.TestCase):
+    def test_drafts_survive_quick_exit_without_overwriting_newer_remote_state(self):
+        html = PAGE.read_text(encoding="utf-8")
+
+        self.assertIn("function localDraft()", html)
+        self.assertIn("JSON.stringify({state,title:$(\"projectTitle\").value,revision:project?.revision,savedAt:Date.now()})", html)
+        self.assertIn("function shouldRestoreLocal(draft)", html)
+        self.assertIn("draft.revision===remoteRevision", html)
+        self.assertIn("window.addEventListener(\"pagehide\"", html)
+        self.assertIn("keepalive:true", html)
+        self.assertNotIn('window.addEventListener("beforeunload",saveDraft)', html)
+
+    def test_editing_a_confirmed_answer_requires_reconfirmation(self):
+        html = PAGE.read_text(encoding="utf-8")
+
+        self.assertIn("confirmedValue:answerText(step,answer)", html)
+        self.assertIn("const changed=current.confirmed&&current.confirmedValue!==value;", html)
+        self.assertIn("confirmed:false", html)
+        self.assertIn("if(changed)delete state.profile[module.id];", html)
+
+    def test_all_ai_requests_require_the_existing_explicit_consent(self):
+        html = PAGE.read_text(encoding="utf-8")
+
+        self.assertIn("本次 AI 教练或分析", html)
+        guide_source = html[html.index("async function askGuide"):html.index("function runGuideAction")]
+        self.assertIn('if(!$("aiConsent").checked)', guide_source)
+        self.assertIn("consent:true", guide_source)
+        self.assertIn("consent:true", html[html.index("async function analyzeCurrent"):html.index("async function confirmCandidate")])
+
+    def test_scroll_respects_reduced_motion(self):
+        html = PAGE.read_text(encoding="utf-8")
+
+        self.assertIn("function scrollBehavior()", html)
+        self.assertIn("prefers-reduced-motion: reduce", html)
+        self.assertNotIn('behavior:"smooth"', html)
+
     def test_skipped_steps_are_persisted_without_ai_or_profile_and_can_be_resumed(self):
         html = PAGE.read_text(encoding="utf-8")
 
         self.assertIn('id="skipBtn"', html)
         self.assertIn("function skipCurrent()", html)
         self.assertIn("confirmed:false,skipped:true", html)
-        self.assertIn("confirmed:true,skipped:false", html)
+        self.assertIn("confirmed:true,confirmedValue:answerText(step,answer),skipped:false", html)
         self.assertIn("delete state.analyses[keyFor()];", html)
         self.assertIn("delete state.profile[module.id];", html)
         self.assertIn("function progressedStepCount(){ return confirmedStepCount()+skippedSteps().length; }", html)
@@ -76,7 +111,7 @@ class IP12AIUITests(unittest.TestCase):
         self.assertIn("type:mime", html)
         self.assertIn("data_url:`data:${mime};base64,${base64}`", html)
         self.assertIn("profile:state.profile", html)
-        self.assertIn('state=remote&&typeof remote==="object"?{...initialState,...remote,analyses:{}', html)
+        self.assertIn("state=shouldRestoreLocal(draft)?draft.state:remote&&typeof remote===\"object\"?{...initialState,...remote,analyses:{}", html)
         self.assertIn("async function flushProjectSave()", html)
         self.assertGreaterEqual(html.count("await flushProjectSave();"), 2)
         self.assertIn('`${STORAGE_KEY}:${project.id}`', html)
@@ -86,7 +121,7 @@ class IP12AIUITests(unittest.TestCase):
         self.assertIn("项目已在另一端更新，请重新查看后再操作", html)
         self.assertIn("project.last_analysis?.input", html)
         self.assertIn('step.type==="review"?step.preview.join("\\n")', html)
-        self.assertIn('textarea.addEventListener("input",event=>{', html)
+        self.assertIn('textarea.addEventListener("input",()=>{', html)
 
     def test_paid_ip12_ai_routes_follow_membership_enforcement(self):
         source = CORE.read_text(encoding="utf-8") + CORE.with_name("digital_ip.py").read_text(encoding="utf-8")
