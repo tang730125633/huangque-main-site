@@ -27,12 +27,12 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn('id="scGenAudio"', self.html)
         self.assertIn("options.endpoint||'/api/gen/script_to_video'", self.html)
 
-    def test_drama_video_estimate_matches_grok_720p_price(self):
-        self.assertIn("selectedAvatarId===null?12:10", self.html)
+    def test_reverse_video_estimate_matches_seedance_price(self):
+        self.assertIn("selectedAvatarId===null?30:10", self.html)
         self.assertIn("seconds*rate", self.html)
-        self.assertIn("5 秒 · 60 点", self.html)
-        self.assertIn("10 秒 · 120 点", self.html)
-        self.assertIn("15 秒 · 180 点", self.html)
+        self.assertIn("5 秒 · 150 点", self.html)
+        self.assertIn("10 秒 · 300 点", self.html)
+        self.assertIn("15 秒 · 450 点", self.html)
         self.assertIn("_setGenerateBusy", self.html)
         self.assertIn("_doGenerate({scenes:list,style:'剧情',duration:_dramaDuration(list)},genVideoBtn)", self.html)
 
@@ -56,7 +56,7 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn('id="reverseVideoCost"', self.html)
         self.assertIn("selectedDuration=10", self.html)
         self.assertIn("selectedAvatarId=null", self.html)
-        self.assertIn("selectedAvatarId===null?12:10", self.html)
+        self.assertIn("selectedAvatarId===null?30:10", self.html)
 
     def test_reverse_video_picker_load_failure_keeps_no_avatar_available(self):
         self.assertIn("function _showReverseVideoPicker(prompt,onConfirm)", self.html)

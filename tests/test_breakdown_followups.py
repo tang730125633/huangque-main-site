@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import base64
+import io
 import json
 import pathlib
 import sys
@@ -8,6 +10,10 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "server"))
 from content_domains import breakdown
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 
 
 class BreakdownFollowupTests(unittest.TestCase):
@@ -42,8 +48,23 @@ class BreakdownFollowupTests(unittest.TestCase):
             image = pathlib.Path(directory) / "frame.jpg"
             image.write_bytes(b"\xff\xd8\xff\xd9")
             thumbs = breakdown._frame_thumbnails([str(image)])
+        self.assertEqual(thumbs, [])
+
+    @unittest.skipIf(Image is None, "Pillow is not installed")
+    def test_large_source_is_resized_and_bounded_before_persistence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = pathlib.Path(directory) / "large.png"
+            Image.new("RGB", (3000, 2000), (35, 120, 210)).save(source, "PNG")
+            original_size = source.stat().st_size
+            thumbs = breakdown._frame_thumbnails([str(source)])
+
         self.assertEqual(len(thumbs), 1)
         self.assertTrue(thumbs[0].startswith("data:image/jpeg;base64,"))
+        raw = base64.b64decode(thumbs[0].split(",", 1)[1])
+        self.assertLessEqual(len(raw), breakdown._THUMBNAIL_MAX_BYTES)
+        self.assertNotEqual(len(raw), original_size)
+        with Image.open(io.BytesIO(raw)) as thumbnail:
+            self.assertLessEqual(max(thumbnail.size), breakdown._THUMBNAIL_MAX_EDGE)
 
 
 if __name__ == "__main__":

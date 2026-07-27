@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """爆款拆解：竞品视频链接 → 下载 → 抽帧 → ASR → GPT-4o 多模态 → 分镜脚本"""
-import os, json, time, base64, tempfile, subprocess, shutil, mimetypes
+import os, json, time, base64, tempfile, subprocess, shutil, mimetypes, io
 from contextlib import closing
 
 from .core import OPENAI_BASE, OPENAI_KEY, jdb
@@ -9,6 +9,9 @@ from . import egress
 # 不支持的平台（视频号加密流需要 Isaac64 解密，暂不支持）
 _UNSUPPORTED_PLATFORMS = {"channels", "weixin", "wechat"}
 _UPLOAD_TOKEN_RE = __import__("re").compile(r"^[0-9a-f]{32}$")
+_THUMBNAIL_MAX_EDGE = 768
+_THUMBNAIL_MAX_BYTES = 240 * 1024
+_THUMBNAIL_MAX_PIXELS = 40_000_000
 
 
 def _ensure_upload_table(connection):
@@ -375,15 +378,49 @@ def _frame_thumbnails(frames, limit=4):
     thumbs = []
     for path in (frames or [])[:max(0, int(limit or 0))]:
         try:
-            with open(path, "rb") as source:
-                encoded = base64.b64encode(source.read()).decode()
-            media_type = mimetypes.guess_type(path)[0] or "image/jpeg"
-            if media_type not in {"image/jpeg", "image/png", "image/webp"}:
-                media_type = "image/jpeg"
-            thumbs.append("data:" + media_type + ";base64," + encoded)
+            encoded = base64.b64encode(_bounded_thumbnail(path)).decode()
+            thumbs.append("data:image/jpeg;base64," + encoded)
         except Exception:
             pass
     return thumbs
+
+
+def _bounded_thumbnail(path):
+    """Create a small JPEG reference; never persist the original upload bytes."""
+    from PIL import Image, ImageOps, UnidentifiedImageError
+
+    try:
+        with Image.open(path) as source:
+            width, height = source.size
+            if width <= 0 or height <= 0 or width * height > _THUMBNAIL_MAX_PIXELS:
+                raise ValueError("参考图片分辨率过大")
+            source.seek(0)
+            image = ImageOps.exif_transpose(source)
+            if image.mode in {"RGBA", "LA"} or (
+                    image.mode == "P" and "transparency" in image.info):
+                rgba = image.convert("RGBA")
+                background = Image.new("RGB", rgba.size, (255, 255, 255))
+                background.paste(rgba, mask=rgba.getchannel("A"))
+                image = background
+            else:
+                image = image.convert("RGB")
+            image.load()
+    except (UnidentifiedImageError, OSError, ValueError) as error:
+        raise ValueError("参考图片无法生成缩略图") from error
+
+    resampling = getattr(Image, "Resampling", Image).LANCZOS
+    for edge in (_THUMBNAIL_MAX_EDGE, 640, 512, 384):
+        candidate = image.copy()
+        candidate.thumbnail((edge, edge), resampling)
+        for quality in (82, 72, 62, 52, 42):
+            output = io.BytesIO()
+            candidate.save(
+                output, format="JPEG", quality=quality, optimize=True, progressive=True,
+            )
+            thumbnail = output.getvalue()
+            if len(thumbnail) <= _THUMBNAIL_MAX_BYTES:
+                return thumbnail
+    raise ValueError("参考图片压缩后仍然过大")
 
 
 def _strip_json_code_fence(raw):
