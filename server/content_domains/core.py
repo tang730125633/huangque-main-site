@@ -607,7 +607,10 @@ def verify(token):
         req = urllib.request.Request(AUTH_BASE + "/api/auth/me",
                                      headers={"Authorization": "Bearer " + token})
         with urllib.request.urlopen(req, timeout=6) as r:
-            user = json.loads(r.read()).get("user")
+            auth_result = json.loads(r.read())
+            user = auth_result.get("user")
+            if isinstance(user, dict):
+                user["_membership_enforcement_enabled"] = bool(auth_result.get("membership_enforcement_enabled"))
     except Exception:
         if VERIFY_CACHE_TTL:
             with _verify_cache_lock: _verify_cache.pop(token, None)
@@ -652,6 +655,7 @@ def _leads_domain():
     from . import leads
     return leads
 def _short_drama_domain(): from . import short_drama; return short_drama
+def _digital_ip_domain(): from . import digital_ip; return digital_ip
 def _must_change_password(user):
     return bool(user and user.get("must_change"))
 
@@ -1250,20 +1254,7 @@ class H(BaseHTTPRequestHandler):
         if _short_drama_domain().dispatch_http(self, "POST", jdb, verify, getattr(points_domain, "cost_of", None), mutation_lock=_submission_lock, canvas_access_resolver=_short_drama_canvas_access,
                 points_getter=getattr(points_domain, "get_points", None), voice_validator=lambda username, voice_key:
                 audio_domain.resolve_audio_provider_voice(username, voice_key), generation_dependencies=(audio_domain, points_domain, globals())): return
-        if p in {"/api/gen/digital-ip/diagnose", "/api/gen/digital-ip/guide"}:
-            user = verify(self._token())
-            if not user: return self._send(401, {"detail": "未登录或登录已过期"})
-            if _must_change_password(user): return self._send(403, {"detail": "请先修改初始密码"})
-            from . import digital_ip
-            try:
-                handler = digital_ip.guide if p.endswith("/guide") else digital_ip.diagnose
-                return self._send(200, handler(self._json_body_strict(), user["username"]))
-            except digital_ip.DigitalIPError as e:
-                return self._send(e.status, {"detail": str(e)})
-            except ValueError as e:
-                return self._send(400, {"detail": str(e)[:220]})
-            except Exception:
-                return self._send(502, {"detail": "数字化 IP AI 服务暂时不可用，请稍后重试"})
+        if _digital_ip_domain().dispatch_http(self, "POST", verify, _must_change_password): return
         if p == "/api/gen/inspiration/like": return inspiration_likes.handle_post(self, verify(self._token()), AUDIO_DB)
         if p == "/api/gen/asset/favorite":
             user = verify(self._token())
@@ -1765,6 +1756,7 @@ class H(BaseHTTPRequestHandler):
         p = self.path.split("?")[0]
         audio_domain, points_domain, video_domain = _domains()
         if _short_drama_domain().dispatch_http(self, "GET", jdb, verify, getattr(points_domain, "cost_of", None), canvas_access_resolver=_short_drama_canvas_access): return
+        if _digital_ip_domain().dispatch_http(self, "GET", verify, _must_change_password): return
         if p == "/api/gen/audio/clone-vip":
             return self._method_not_allowed()
         if p == "/api/gen/inspiration/likes": return inspiration_likes.handle_get(self, verify(self._token()), AUDIO_DB)
@@ -1993,6 +1985,7 @@ class H(BaseHTTPRequestHandler):
         if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
     def do_PATCH(self):
+        if _digital_ip_domain().dispatch_http(self, "PATCH", verify, _must_change_password): return
         if self.path.split("?")[0] == "/api/gen/audio/clone-vip": return self._method_not_allowed()
         self._send(404, {"detail": "not found"})
     def do_DELETE(self):

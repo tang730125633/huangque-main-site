@@ -312,11 +312,11 @@
         <div class="brand-mark">雀</div>
         <div><b>黄雀</b><small>数字化 IP 操作系统</small></div>
       </div>
-      <div class="privacy"><i></i>泽龙 AI 试点 · 仅点击小黄雀或诊断时调用 OpenAI，不扣黄雀点数；当前步骤内容会发送给 AI。</div>
+      <div class="privacy"><i></i>黄雀 IP12 · 仅点击小黄雀或“AI 分析本步”时调用 OpenAI，不扣黄雀点数；当前步骤及所选资料会发送给 AI。</div>
       <div id="moduleList" class="module-scroll"></div>
       <div class="side-actions">
         <button class="soft-btn" id="guideBtn" type="button">使用说明</button>
-        <button class="soft-btn" id="resetBtn" type="button">重置演示</button>
+        <button class="soft-btn" id="resetBtn" type="button">重置本机缓存</button>
       </div>
     </aside>
 
@@ -342,6 +342,13 @@
         </div>
       </section>
 
+      <section class="step-card" style="padding:16px 22px; margin-top:-10px;">
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+          <b>IP12 成长档案</b><input id="projectTitle" maxlength="120" aria-label="项目名称" placeholder="未命名数字 IP" style="min-width:180px; flex:1; padding:8px 10px; border-radius:8px; border:1px solid #29405b; background:#0d1b2b; color:#edf5ff;">
+          <span class="save-state" id="projectStatus">登录后自动恢复项目</span>
+        </div>
+      </section>
+
       <section class="step-card">
         <header class="step-head">
           <div>
@@ -361,7 +368,13 @@
             <div><b>为什么现在做这一步</b><span id="stepWhy"></span></div>
           </div>
           <div id="interaction"></div>
-          <div class="note-box">体验提示：填写后可点击右侧“AI 分析本步”。AI 只给建议；你点击“确认并继续”后，结果才写进数字化 IP 档案。</div>
+          <div style="margin:16px 0; padding:12px; border:1px dashed #36506d; border-radius:10px;">
+            <label for="projectFiles"><b>补充资料（可选）</b> · 最多 6 份、单份最多 8 MiB、总计 20 MiB</label>
+            <input id="projectFiles" type="file" multiple accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg,.webp" style="display:block; margin-top:8px; max-width:100%;">
+            <p id="fileStatus" class="ai-status">支持 PDF、Office、表格、文本与 PNG/JPEG/WebP。PPT/Word 内嵌图表建议先导出为 PDF。</p>
+            <label style="display:flex; gap:8px; align-items:flex-start; font-size:13px;"><input id="aiConsent" type="checkbox">我明确同意仅在本次分析中将当前回答及所选资料发送给 OpenAI；原始文件不会保存到项目档案。</label>
+          </div>
+          <div class="note-box">填写提示：填写后可点击右侧“AI 分析本步”。AI 只给建议；你点击“确认并继续”后，结果才写进数字化 IP 档案。</div>
           <div class="step-actions">
             <span class="save-state" id="saveState">浏览器会自动保存本页内容</span>
             <div class="action-group">
@@ -433,18 +446,18 @@
   <div class="modal" id="guideModal" role="dialog" aria-modal="true" aria-labelledby="guideTitle">
     <div class="guide">
       <div class="guide-top">
-        <div><h2 id="guideTitle">如何体验十二模块</h2><p>当前版本预设为美业门店老板，围绕获客、成交、复购、团队和老板 IP 展开 12 个模块、54 个确认步骤。</p></div>
+        <div><h2 id="guideTitle">如何使用十二模块</h2><p>当前版本预设为美业门店老板，围绕获客、成交、复购、团队和老板 IP 展开 12 个模块、54 个确认步骤。</p></div>
         <button class="close" id="closeGuide" type="button" aria-label="关闭">×</button>
       </div>
       <div class="guide-steps">
         <div class="guide-step"><b>1. 从门店经营底图开始</b><span>先填写门店规模、经营年限、当前痛点、优势能力和目标顾客。</span></div>
-        <div class="guide-step"><b>2. 使用示例加速体验</b><span>不想现在填写资料时，点击“带入示例”即可继续。</span></div>
+        <div class="guide-step"><b>2. 使用示例加速填写</b><span>不想现在填写资料时，点击“带入示例”即可继续。</span></div>
         <div class="guide-step"><b>3. 确认 AI 候选</b><span>遇到候选方案时先选择，再点击“确认并继续”。</span></div>
         <div class="guide-step"><b>4. 查看右侧长期档案</b><span>完成模块后，确认结果会沉淀到 IP 档案中。</span></div>
         <div class="guide-step"><b>5. 随时切换模块预览</b><span>左侧 12 个模块都可打开，适合快速检查完整产品生命周期。</span></div>
-        <div class="guide-step"><b>6. 刷新后继续</b><span>体验数据保存在浏览器本地；点击“重置演示”可以清空。</span></div>
+        <div class="guide-step"><b>6. 跨端继续</b><span>登录后项目保存在账号档案；断网时浏览器保留离线缓存。</span></div>
       </div>
-      <div class="guide-note">当前是泽龙站点的美业 AI 试点：右侧会调用 OpenAI Structured Outputs 返回固定结构的诊断。AI 推荐与用户确认分开保存，尚未写入黄雀正式数字 IP 项目库，也不会扣黄雀点数。</div>
+      <div class="guide-note">当前为黄雀 IP12：右侧会调用 OpenAI Structured Outputs 返回固定结构的诊断。项目、AI 推荐和用户确认会分开保存到账号档案；图片或视频计划只会带入既有工具，不会自动发起付费生成。</div>
     </div>
   </div>
   <div class="toast" id="toast"></div>
@@ -582,11 +595,17 @@
     const STORAGE_KEY = "huangque-ip12-beauty-ai-pilot-v3";
     const API_URL = "/api/gen/digital-ip/diagnose";
     const GUIDE_API_URL = "/api/gen/digital-ip/guide";
+    const PROJECTS_URL = "/api/gen/digital-ip/projects";
+    const UPLOAD_MIME = {pdf:"application/pdf",doc:"application/msword",docx:"application/vnd.openxmlformats-officedocument.wordprocessingml.document",ppt:"application/vnd.ms-powerpoint",pptx:"application/vnd.openxmlformats-officedocument.presentationml.presentation",xls:"application/vnd.ms-excel",xlsx:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",csv:"text/csv",txt:"text/plain",md:"text/markdown",png:"image/png",jpg:"image/jpeg",jpeg:"image/jpeg",webp:"image/webp"};
     const totalSteps = MODULES.reduce((sum,module)=>sum+module.steps.length,0);
     const initialState = {moduleIndex:0,stepIndex:0,answers:{},completedModules:[],profile:{},analyses:{},guideTurns:[]};
-    let state = loadState();
+    let state = structuredClone(initialState);
     let selectedChoice = null;
     let toastTimer = null;
+    let project = null;
+    let projectSaveTimer = null;
+    let projectSaving = false;
+    let projectSavePending = false;
 
     const $ = id => document.getElementById(id);
     const phaseGroups = [
@@ -595,19 +614,91 @@
       {name:"03 · 运营增长",range:[9,12]}
     ];
 
+    function projectStorageKey(){ return project?.id?`${STORAGE_KEY}:${project.id}`:""; }
     function loadState(){
       try{
-        const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+        const key=projectStorageKey();
+        const saved = key?JSON.parse(localStorage.getItem(key)):null;
         return saved && typeof saved==="object"
           ? {...initialState,...saved,analyses:saved.analyses||{},guideTurns:saved.guideTurns||[]}
           : structuredClone(initialState);
       }catch(_){ return structuredClone(initialState); }
     }
     function persist(){
-      localStorage.setItem(STORAGE_KEY,JSON.stringify(state));
-      $("saveState").textContent="已自动保存 · 刷新后可以继续";
+      persistLocal();
+      $("saveState").textContent=project?"已保存到本机缓存 · 正在同步账号档案":"账号档案加载中";
+      queueProjectSave();
+    }
+    function persistLocal(){ const key=projectStorageKey(); if(key)localStorage.setItem(key,JSON.stringify(state)); }
+    function projectStatusText(){ return {draft:"草稿",candidate_ready:"待确认候选",confirmed:"已确认档案"}[project?.status]||"项目"; }
+    function uploadMime(file){ const ext=(file.name.split(".").pop()||"").toLowerCase(); return UPLOAD_MIME[ext]||file.type||""; }
+    function projectDraft(){ return {questionnaire_state:{moduleIndex:state.moduleIndex,stepIndex:state.stepIndex,answers:state.answers,completedModules:state.completedModules,profile:state.profile,guideTurns:state.guideTurns}}; }
+    function queueProjectSave(){
+      if(!project)return;
+      projectSavePending=true;
+      clearTimeout(projectSaveTimer);
+      projectSaveTimer=setTimeout(()=>saveProject(false),700);
+    }
+    async function saveProject(strict=false){
+      if(!project){ if(strict)throw new Error("账号档案尚未加载"); return false; }
+      if(projectSaving)return false;
+      projectSaving=true;
+      projectSavePending=false;
+      try{
+        const response=await fetch(`${PROJECTS_URL}/${encodeURIComponent(project.id)}`,{method:"PATCH",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({revision:project.revision,title:$("projectTitle").value,state:projectDraft()})});
+        if(response.status===409){ if(strict)await loadProject(); throw new Error("项目已在另一端更新，请重新查看后再操作"); }
+        if(!response.ok)throw new Error("项目保存失败");
+        project=(await response.json()).project;
+        $("projectStatus").textContent=`${projectStatusText()} · 已保存 · 跨端可恢复`;
+        return true;
+      }catch(error){
+        $("projectStatus").textContent=error.message||"网络不可用，暂存本项目缓存";
+        if(strict)throw error;
+        return false;
+      }finally{
+        projectSaving=false;
+        if(projectSavePending)queueProjectSave();
+      }
+    }
+    async function flushProjectSave(){
+      clearTimeout(projectSaveTimer);
+      projectSavePending=false;
+      while(projectSaving)await new Promise(resolve=>setTimeout(resolve,40));
+      clearTimeout(projectSaveTimer);
+      projectSavePending=false;
+      if(!await saveProject(true))throw new Error("项目保存失败");
+    }
+    async function loadProject(){
+      try{
+        let response=await fetch(PROJECTS_URL,{credentials:"include",cache:"no-store"});
+        if(response.status===401){ window.location.href=`/login.html?next=${encodeURIComponent(location.pathname)}`; return; }
+        let result=await response.json();
+        if(!response.ok)throw new Error(result.detail||"项目读取失败");
+        if(result.items&&result.items.length){ project=result.items[0]; }
+        else{
+          response=await fetch(PROJECTS_URL,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({title:"未命名数字 IP"})});
+          result=await response.json(); if(!response.ok)throw new Error(result.detail||"项目创建失败"); project=result.project;
+        }
+        $("projectTitle").value=project.title||"";
+        const remote=project.state?.questionnaire_state;
+        state=remote&&typeof remote==="object"?{...initialState,...remote,analyses:{},guideTurns:remote.guideTurns||[]}:loadState();
+        state.analyses={};
+        const analysis=project.last_analysis?.analysis;
+        const input=project.last_analysis?.input||{};
+        const analysisKey=Number.isInteger(input.module_index)&&Number.isInteger(input.step_index)?`${input.module_index}-${input.step_index}`:keyFor();
+        if(analysis)state.analyses[analysisKey]={analysis,model:project.last_analysis.model||"OpenAI",usage:{}};
+        persistLocal(); render();
+        $("projectStatus").textContent=`${projectStatusText()} · 已恢复 · 跨端可继续`;
+      }catch(_){ state=structuredClone(initialState); render(); $("projectStatus").textContent="网络不可用，未加载账号档案"; }
     }
     function keyFor(mi=state.moduleIndex,si=state.stepIndex){ return `${mi}-${si}`; }
+    function invalidateStaleAnalysis(nextAnswer){
+      const input=project?.last_analysis?.input||{};
+      if(!state.analyses[keyFor()]||input.module_index!==state.moduleIndex||input.step_index!==state.stepIndex||String(input.answer||"").trim()===String(nextAnswer||"").trim())return false;
+      delete state.analyses[keyFor()];
+      if(state.answers[keyFor()])delete state.answers[keyFor()].aiChoice;
+      return true;
+    }
     function escapeHtml(value){
       return String(value??"").replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));
     }
@@ -670,11 +761,18 @@
           }).join("")}</div>
           <div class="helper"><span>${step.type==="multi"?"可多选，确认后形成当前步骤结果。":"你可以先选择系统示例，再继续下一步。"}</span><button class="example-btn" id="exampleBtn" type="button">选择推荐示例</button></div>`;
       }else{
-        html=`<label class="answer-label">系统根据前面资料形成的体验结果</label>
+        html=`<label class="answer-label">系统根据前面资料形成的阶段结果</label>
           <div class="review-list">${step.preview.map((item,index)=>`<div class="review-item"><em>${String(index+1).padStart(2,"0")}</em><div><b>建议 ${index+1}</b><span>${escapeHtml(item)}</span></div></div>`).join("")}</div>
-          <div class="helper"><span>正式版会展示来源、修订号和重新生成入口。</span><button class="example-btn" id="exampleBtn" type="button">确认已阅读</button></div>`;
+          <div class="helper"><span>AI 分析结果会展示来源证据，并在用户确认后进入档案。</span><button class="example-btn" id="exampleBtn" type="button">确认已阅读</button></div>`;
       }
       $("interaction").innerHTML=html;
+      const textarea=$("answer");
+      if(textarea)textarea.addEventListener("input",event=>{
+        state.answers[keyFor()]={...(state.answers[keyFor()]||{}),text:event.target.value.trim()};
+        const stale=invalidateStaleAnalysis(event.target.value);
+        persist();
+        if(stale){ renderAI(); showToast("回答已修改，请重新分析后再确认"); }
+      });
 
       const exampleBtn=$("exampleBtn");
       if(exampleBtn){
@@ -682,6 +780,7 @@
           if(step.type==="input"){
             $("answer").value=step.sample;
             $("answer").focus();
+            saveDraft();
           }else if(step.type==="multi"){
             selectedChoice=[...(step.sampleChoice||[])];
             saveDraft();
@@ -720,11 +819,13 @@
       if(!step)return;
       const current=state.answers[keyFor()]||{};
       const textarea=document.getElementById("answer");
-      state.answers[keyFor()]={...current,text:textarea?textarea.value.trim():current.text||"",choice:selectedChoice};
+      state.answers[keyFor()]={...current,text:step.type==="review"?step.preview.join("\n"):textarea?textarea.value.trim():current.text||"",choice:selectedChoice};
+      const stale=invalidateStaleAnalysis(answerText(step,state.answers[keyFor()]));
       persist();
+      if(stale)renderAI();
     }
 
-    function confirmCurrent(){
+    async function confirmCurrent(){
       saveDraft();
       const module=MODULES[state.moduleIndex];
       const step=module.steps[state.stepIndex];
@@ -737,6 +838,10 @@
         showToast("请先选择一项，或使用推荐示例");
         return;
       }
+      if(Number.isInteger(answer.aiChoice)){
+        try{ await confirmCandidate(answer.aiChoice); }
+        catch(error){ showToast(error.message||"确认候选失败"); return; }
+      }
       state.answers[keyFor()]={...answer,confirmed:true};
       if(state.stepIndex===module.steps.length-1){
         if(!state.completedModules.includes(module.id))state.completedModules.push(module.id);
@@ -747,7 +852,7 @@
           state.stepIndex=0;
           showToast(`模块 ${module.id} 已确认，进入模块 ${module.id+1}`);
         }else{
-          showToast("十二模块体验完成");
+          showToast("十二模块已完成");
         }
       }else{
         state.stepIndex++;
@@ -912,6 +1017,24 @@
       }
     }
 
+    async function readProjectFiles(){
+      const files=[...$("projectFiles").files];
+      if(files.length>6)throw new Error("最多选择 6 份资料");
+      let total=0;
+      for(const file of files){
+        if(file.size>8*1024*1024)throw new Error(`${file.name} 超过 8 MiB`);
+        total+=file.size;
+      }
+      if(total>20*1024*1024)throw new Error("资料总量不能超过 20 MiB");
+      $("fileStatus").textContent=files.length?`已选择 ${files.length} 份资料，共 ${(total/1024/1024).toFixed(1)} MiB；仅本次发送，不保存原文件。`:"未选择资料；可只分析当前回答。";
+      return Promise.all(files.map(file=>new Promise((resolve,reject)=>{
+        const reader=new FileReader();
+        reader.onload=()=>{const mime=uploadMime(file),base64=String(reader.result||"").split(",",2)[1]||""; resolve({name:file.name,type:mime,data_url:`data:${mime};base64,${base64}`});};
+        reader.onerror=()=>reject(new Error("资料读取失败"));
+        reader.readAsDataURL(file);
+      })));
+    }
+
     async function analyzeCurrent(){
       saveDraft();
       const module=MODULES[state.moduleIndex];
@@ -922,16 +1045,20 @@
         showToast("请先填写回答，或带入示例");
         return;
       }
+      if(!project){ showToast("正在恢复项目，请稍后再试"); return; }
+      if(!$("aiConsent").checked){ showToast("请先明确同意发送所选资料给 AI"); return; }
       const button=$("analyzeBtn");
       button.disabled=true;
       button.textContent="AI 正在分析…";
       $("aiStatus").textContent="正在从美业获客、到店、成交、复购、团队与老板 IP 链路分析。";
       try{
-        const response=await fetch(API_URL,{
+        await flushProjectSave();
+        const files=await readProjectFiles();
+        const response=await fetch(`${PROJECTS_URL}/${encodeURIComponent(project.id)}/analyze`,{
           method:"POST",
           credentials:"include",
           headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({module:module.name,step:step.title,answer:text,confirmed_context:confirmedContext()})
+          body:JSON.stringify({revision:project.revision,module_index:state.moduleIndex,step_index:state.stepIndex,answer:text,context:{current_module:module.name,current_step:step.title,confirmed_context:confirmedContext()},files,consent:true})
         });
         if(response.status===401){
           window.location.href=`/login.html?next=${encodeURIComponent(location.pathname)}`;
@@ -939,8 +1066,9 @@
         }
         const result=await response.json().catch(()=>({}));
         if(!response.ok||!result.ok)throw new Error(result.detail||result.error||"AI 分析暂时不可用");
+        project=result.project;
         state.analyses[keyFor()]={analysis:result.analysis,model:result.model,usage:result.usage||{},at:new Date().toISOString()};
-        persist();
+        persistLocal();
         renderAI();
       }catch(error){
         $("aiStatus").textContent=error.message||"AI 分析暂时不可用，请稍后重试。";
@@ -948,6 +1076,17 @@
         button.disabled=false;
         button.textContent="重新分析本步";
       }
+    }
+
+    async function confirmCandidate(index){
+      if(!project)return false;
+      await flushProjectSave();
+      const response=await fetch(`${PROJECTS_URL}/${encodeURIComponent(project.id)}/confirm`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:JSON.stringify({revision:project.revision,candidate_index:index})});
+      if(response.status===409){ await loadProject(); throw new Error("项目已在另一端更新，请重新选择候选"); }
+      const result=await response.json().catch(()=>({}));
+      if(!response.ok||!result.ok)throw new Error(result.detail||"确认候选失败");
+      project=result.project;
+      return true;
     }
 
     function renderAI(){
@@ -962,10 +1101,12 @@
       }
       const analysis=saved.analysis||{};
       const current=state.answers[keyFor()]||{};
+      const plansConfirmed=project?.status==="confirmed";
       $("aiModel").textContent=saved.model||"OpenAI";
       $("aiStatus").textContent=`结构化诊断已返回${saved.usage?.total_tokens?` · ${saved.usage.total_tokens} tokens`:""}。`;
       const facts=(analysis.confirmed_facts||[]).map(item=>`<li>${escapeHtml(item)}</li>`).join("");
       const pains=(analysis.business_pains||[]).map(item=>`<div class="ai-pain"><b>${escapeHtml(item.label)}</b>${escapeHtml(item.evidence)} · ${escapeHtml(item.impact)}</div>`).join("");
+      const evidence=(analysis.source_evidence||[]).map(item=>`<li><b>${escapeHtml(item.file_name||"用户当前回答")}</b> · ${escapeHtml(item.location||"未定位")}：${escapeHtml(item.evidence||item.claim||"")}</li>`).join("");
       const candidates=(analysis.positioning_candidates||[]).map((item,index)=>{
         const recommended=index===analysis.recommended_index;
         const selected=current.aiChoice===index;
@@ -977,15 +1118,21 @@
       }).join("");
       $("aiResult").innerHTML=`<p class="ai-summary">${escapeHtml(analysis.summary||"")}</p>
         ${facts?`<div class="ai-label">已确认事实</div><ul class="ai-list">${facts}</ul>`:""}
+        ${evidence?`<div class="ai-label">来源证据与定位</div><ul class="ai-list">${evidence}</ul>`:""}
         ${pains?`<div class="ai-label">经营痛点</div>${pains}`:""}
         ${candidates?`<div class="ai-label">人设候选</div>${candidates}`:""}
+        ${(analysis.gaps||[]).length?`<div class="ai-follow-up"><b>资料缺口</b><br>${escapeHtml(analysis.gaps.join("；"))}</div>`:""}
+        ${(analysis.conflicts||[]).length?`<div class="ai-follow-up"><b>待核对冲突</b><br>${escapeHtml(analysis.conflicts.join("；"))}</div>`:""}
+        ${analysis.image_plan?`<div class="ai-follow-up"><b>图片行动计划：${escapeHtml(analysis.image_plan.goal||"")}</b><br>${escapeHtml((analysis.image_plan.steps||[]).join(" → "))}<br>${plansConfirmed?'<a href="banana.html">去既有图片工具</a>':'确认候选后可进入既有图片工具。'}</div>`:""}
+        ${analysis.video_plan?`<div class="ai-follow-up"><b>视频行动计划：${escapeHtml(analysis.video_plan.goal||"")}</b><br>${escapeHtml((analysis.video_plan.steps||[]).join(" → "))}<br>${plansConfirmed?'<a href="video.html">去既有视频工具</a>':'确认候选后可进入既有视频工具。'}</div>`:""}
+        ${(analysis.next_steps||[]).length?`<div class="ai-follow-up"><b>下一步</b><br>${escapeHtml(analysis.next_steps.join(" → "))}</div>`:""}
         ${analysis.follow_up_question?`<div class="ai-follow-up"><b>还需要你补充</b><br>${escapeHtml(analysis.follow_up_question)}</div>`:""}`;
       document.querySelectorAll("[data-ai-choice]").forEach(candidate=>{
         candidate.addEventListener("click",()=>{
           state.answers[keyFor()]={...(state.answers[keyFor()]||{}),aiChoice:Number(candidate.dataset.aiChoice)};
           persist();
           renderAI();
-          showToast("已选择 AI 候选，仍需你确认当前步骤");
+          showToast("已选择 AI 候选；点击“确认并继续”才会写入长期档案");
         });
       });
     }
@@ -1032,7 +1179,7 @@
       $("overallBar").style.width=`${percent}%`;
       $("percentText").textContent=`${percent}%`;
       $("backBtn").disabled=state.moduleIndex===0&&state.stepIndex===0;
-      $("nextBtn").textContent=state.stepIndex===module.steps.length-1?(module.id===12?"完成十二模块体验":"确认并完成模块"):"确认并继续";
+      $("nextBtn").textContent=state.stepIndex===module.steps.length-1?(module.id===12?"完成十二模块":"确认并完成模块"):"确认并继续";
       renderModules();
       renderInteraction(step);
       renderMemory();
@@ -1056,6 +1203,8 @@
     $("nextBtn").addEventListener("click",confirmCurrent);
     $("backBtn").addEventListener("click",goBack);
     $("analyzeBtn").addEventListener("click",analyzeCurrent);
+    $("projectTitle").addEventListener("change",queueProjectSave);
+    $("projectFiles").addEventListener("change",()=>{const files=[...$("projectFiles").files]; $("fileStatus").textContent=files.length?`已选择 ${files.length} 份资料；请勾选同意后由你主动分析。`:"未选择资料；可只分析当前回答。";});
     $("coachSend").addEventListener("click",()=>askGuide());
     $("coachInput").addEventListener("keydown",event=>{
       if(event.key==="Enter"&&!event.isComposing){
@@ -1079,17 +1228,18 @@
     $("closeGuide").addEventListener("click",()=>$("guideModal").classList.remove("open"));
     $("guideModal").addEventListener("click",event=>{if(event.target===$("guideModal"))$("guideModal").classList.remove("open")});
     $("resetBtn").addEventListener("click",()=>{
-      if(confirm("只清除当前浏览器中的体验数据，确定重置吗？")){
-        localStorage.removeItem(STORAGE_KEY);
+      if(confirm("只清除当前浏览器中的离线缓存；云端项目不会删除，确定重置吗？")){
+        const key=projectStorageKey(); if(key)localStorage.removeItem(key);
         state=structuredClone(initialState);
         selectedChoice=null;
         render();
-        showToast("演示数据已重置");
+        showToast("本机离线缓存已重置");
       }
     });
     window.addEventListener("beforeunload",saveDraft);
     selfCheck();
     render();
+    loadProject();
     if(!localStorage.getItem("huangque-ip12-beauty-guide-seen-v2")){
       $("guideModal").classList.add("open");
       localStorage.setItem("huangque-ip12-beauty-guide-seen-v2","1");

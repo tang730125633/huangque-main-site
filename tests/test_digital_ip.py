@@ -1,6 +1,11 @@
+import base64
 import json
+import sqlite3
 import sys
+import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
@@ -65,11 +70,24 @@ def _guide_reply():
     }
 
 
+def _project_analysis():
+    result = _analysis()
+    result.update({
+        "source_evidence": [{"claim": "经营 7 年", "evidence": "用户当前回答", "file_name": "用户当前回答", "location": "未定位"}],
+        "gaps": ["缺少复购数据"], "conflicts": [],
+        "image_plan": {"goal": "建立可信头像", "prompt": "真实门店主理人半身像", "references_needed": ["本人照片"], "steps": ["确认风格", "前往作图工具"]},
+        "video_plan": {"goal": "首支口播", "format": "竖版口播", "duration_seconds": 60, "shots": ["开场", "观点", "结尾"], "steps": ["确认脚本", "前往视频工具"]},
+        "next_steps": ["确认一套候选", "准备首条内容"],
+    })
+    return result
+
+
 class DigitalIPTests(unittest.TestCase):
     def setUp(self):
         digital_ip._recent_requests.clear()
         digital_ip._guide_recent_requests.clear()
         digital_ip._guide_daily_requests.clear()
+        digital_ip._project_daily_requests.clear()
         digital_ip._guide_cache.clear()
 
     def test_diagnose_uses_responses_structured_outputs(self):
@@ -128,6 +146,8 @@ class DigitalIPTests(unittest.TestCase):
                     "content": [{"type": "refusal", "refusal": "cannot comply"}],
                 }],
             })
+        with self.assertRaisesRegex(digital_ip.DigitalIPError, "未完成"):
+            digital_ip._extract_output({"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}})
 
     def test_rate_limit_blocks_seventh_request(self):
         for _ in range(6):
@@ -205,6 +225,140 @@ class DigitalIPTests(unittest.TestCase):
             digital_ip._check_guide_rate_limit("owner")
         with self.assertRaises(digital_ip.DigitalIPRateLimited):
             digital_ip._check_guide_rate_limit("owner")
+
+    def test_project_owner_cas_and_no_raw_file_persistence(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(digital_ip, "PROJECT_DB", Path(directory) / "ip.db"):
+            project = digital_ip.create_project("owner", {"title": "美业 IP"})
+            self.assertEqual(project["status"], "draft")
+            self.assertEqual(digital_ip.list_projects("other"), [])
+            with self.assertRaises(digital_ip.DigitalIPNotFound):
+                digital_ip.get_project("other", project["id"])
+            updated = digital_ip.patch_project("owner", project["id"], {
+                "revision": project["revision"], "state": {"questionnaire_state": {"answers": {"1-1": {"text": "经营 7 年"}}, "profile": {"1": {"summary": "可信主理人"}}}},
+            })
+            self.assertEqual(updated["state"]["questionnaire_state"]["profile"]["1"]["summary"], "可信主理人")
+            with self.assertRaises(digital_ip.DigitalIPRevisionConflict):
+                digital_ip.patch_project("owner", project["id"], {"revision": project["revision"], "title": "旧标签"})
+            encoded = base64.b64encode(b"photo").decode()
+            response = {"model": "test", "output": [{"type": "message", "content": [
+                {"type": "output_text", "text": json.dumps(_project_analysis(), ensure_ascii=False)}]}]}
+            with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), mock.patch.object(digital_ip, "_post", return_value=response) as post:
+                result = digital_ip.analyze_project("owner", project["id"], {
+                    "revision": updated["revision"], "module_index": 1, "step_index": 1,
+                    "answer": "经营 7 年", "files": [{"name": "me.png", "type": "image/png", "data_url": "data:image/png;base64," + encoded}], "consent": True,
+                })
+            self.assertEqual(len(result["analysis"]["positioning_candidates"]), 3)
+            self.assertEqual(result["project"]["status"], "candidate_ready")
+            content = json.loads(post.call_args.args[1])["input"][0]["content"]
+            self.assertEqual(next(item for item in content if item["type"] == "input_image")["detail"], "high")
+            with closing(digital_ip._project_db()) as conn:
+                stored = conn.execute("SELECT last_analysis_json FROM digital_ip_projects").fetchone()[0]
+            self.assertNotIn(encoded, stored)
+            confirmed = digital_ip.confirm_project("owner", project["id"], {
+                "revision": result["project"]["revision"], "candidate_index": 1, "answer": "被篡改的回答",
+            })
+            self.assertEqual(confirmed["project"]["confirmed_profile"]["title"], _project_analysis()["positioning_candidates"][1]["title"])
+            self.assertEqual(confirmed["project"]["status"], "confirmed")
+            with closing(digital_ip._project_db()) as conn:
+                confirmed_json = conn.execute("SELECT confirmed_json FROM digital_ip_projects").fetchone()[0]
+            self.assertIn("经营 7 年", confirmed_json)
+            self.assertNotIn("被篡改的回答", confirmed_json)
+            next_draft = digital_ip.patch_project("owner", project["id"], {
+                "revision": confirmed["project"]["revision"], "state": {"questionnaire_state": {"answers": {"0-0": {"text": "更新后的经营资料"}}}},
+            })
+            with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), mock.patch.object(digital_ip, "_post", return_value=response):
+                newer = digital_ip.analyze_project("owner", project["id"], {
+                    "revision": next_draft["revision"], "module_index": 0, "step_index": 0, "answer": "更新后的经营资料", "consent": True,
+                })
+            self.assertEqual(newer["project"]["status"], "candidate_ready")
+            changed = digital_ip.patch_project("owner", project["id"], {
+                "revision": newer["project"]["revision"], "state": {"questionnaire_state": {"answers": {"0-0": {"text": "分析后又修改的回答"}}}},
+            })
+            with self.assertRaisesRegex(digital_ip.DigitalIPRevisionConflict, "重新分析"):
+                digital_ip.confirm_project("owner", project["id"], {"revision": changed["revision"], "candidate_index": 0})
+
+    def test_project_validation_failure_does_not_change_revision(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(digital_ip, "PROJECT_DB", Path(directory) / "ip.db"):
+            project = digital_ip.create_project("owner", {})
+            project = digital_ip.patch_project("owner", project["id"], {
+                "revision": project["revision"], "state": {"questionnaire_state": {"answers": {"1-1": {"text": "经营 7 年"}}}},
+            })
+            with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), mock.patch.object(digital_ip, "_post", side_effect=OSError("offline")):
+                with self.assertRaises(digital_ip.DigitalIPError):
+                    digital_ip.analyze_project("owner", project["id"], {
+                        "revision": project["revision"], "module_index": 1, "step_index": 1, "answer": "经营 7 年", "consent": True,
+                    })
+            self.assertEqual(digital_ip.get_project("owner", project["id"])["revision"], project["revision"])
+            with self.assertRaises(digital_ip.DigitalIPValidationError):
+                digital_ip._clean_project_files([{ "name": "bad.exe", "type": "application/octet-stream", "data_url": "data:application/octet-stream;base64,AA==" }])
+
+    def test_review_step_can_be_analyzed_and_confirmed(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(digital_ip, "PROJECT_DB", Path(directory) / "ip.db"):
+            project = digital_ip.create_project("owner", {})
+            review_text = "专业文章：方法与边界。\n故事文章：顾客转折。"
+            project = digital_ip.patch_project("owner", project["id"], {
+                "revision": project["revision"], "state": {"questionnaire_state": {"answers": {"5-1": {"text": review_text}}}},
+            })
+            response = {"model": "test", "output": [{"type": "message", "content": [
+                {"type": "output_text", "text": json.dumps(_project_analysis(), ensure_ascii=False)}]}]}
+            with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), mock.patch.object(digital_ip, "_post", return_value=response):
+                result = digital_ip.analyze_project("owner", project["id"], {
+                    "revision": project["revision"], "module_index": 5, "step_index": 1,
+                    "answer": review_text, "consent": True,
+                })
+            confirmed = digital_ip.confirm_project("owner", project["id"], {
+                "revision": result["project"]["revision"], "candidate_index": 0,
+            })
+            self.assertEqual(confirmed["project"]["status"], "confirmed")
+
+    def test_existing_project_db_permissions_are_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ip.db"
+            path.touch(mode=0o644)
+            with mock.patch.object(digital_ip, "PROJECT_DB", path), closing(digital_ip._project_db()):
+                pass
+            self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+
+    def test_project_table_initializes_concurrently_without_touching_jobs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "content_jobs.db"
+            with sqlite3.connect(path) as conn:
+                conn.execute("CREATE TABLE jobs(id INTEGER PRIMARY KEY, value TEXT)")
+                conn.execute("INSERT INTO jobs(value) VALUES('kept')")
+            with mock.patch.object(digital_ip, "PROJECT_DB", path), ThreadPoolExecutor(max_workers=4) as pool:
+                projects = list(pool.map(lambda index: digital_ip.create_project("owner-%d" % index, {}), range(4)))
+            self.assertEqual(len(projects), 4)
+            with sqlite3.connect(path) as conn:
+                self.assertEqual(conn.execute("SELECT value FROM jobs").fetchone()[0], "kept")
+
+    def test_project_daily_limit_blocks_thirteenth_request(self):
+        for _ in range(12):
+            digital_ip._check_project_daily_limit("owner")
+        with self.assertRaisesRegex(digital_ip.DigitalIPRateLimited, "今日分析次数已用完"):
+            digital_ip._check_project_daily_limit("owner")
+
+    def test_project_creation_is_limited_per_user(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(digital_ip, "PROJECT_DB", Path(directory) / "ip.db"):
+            for _ in range(digital_ip.MAX_PROJECTS_PER_USER):
+                digital_ip.create_project("owner", {})
+            with self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "最多保留"):
+                digital_ip.create_project("owner", {})
+
+    def test_http_adapter_blocks_paid_analysis_for_inactive_member(self):
+        class Handler:
+            path = "/api/gen/digital-ip/projects/project-id/analyze"
+            headers = {"Content-Length": "2"}
+            sent = None
+
+            def _token(self): return "token"
+            def _json_body_strict(self): return {}
+            def _send(self, status, body): self.sent = (status, body)
+
+        handler = Handler()
+        user = {"username": "owner", "_membership_enforcement_enabled": True, "membership_active": False}
+        self.assertTrue(digital_ip.dispatch_http(handler, "POST", lambda _: user, lambda _: False))
+        self.assertEqual(handler.sent[0], 403)
+        self.assertEqual(handler.sent[1]["code"], "membership_required")
 
 
 if __name__ == "__main__":
