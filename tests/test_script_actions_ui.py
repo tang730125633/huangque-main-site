@@ -118,16 +118,18 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("_showReverseVideoPicker(prompt,function(choice)", self.html)
         self.assertIn("_doGenerate({scenes:scenes,style:'剧情',duration:_dramaDuration(scenes)},bdRemakeBtn)", self.html)
 
-    def test_reverse_video_without_avatar_uses_deployed_script_pipeline(self):
+    def test_reverse_video_without_avatar_uses_seedance_with_references(self):
         self.assertIn("_showReverseVideoPicker(prompt,function(choice)", self.html)
-        self.assertIn("var reverseScenes=[{scene:prompt,line:'',dur:choice.duration+'s'}]", self.html)
-        self.assertIn("{endpoint:'/api/gen/script_to_video',sceneCount:1}", self.html)
+        self.assertIn("{channel:'micro',prompt:seedancePrompt,reference_images:reverseRefs,duration:choice.duration}", self.html)
+        self.assertIn("{endpoint:'/api/gen/xiaole_video',sceneCount:1}", self.html)
+        self.assertIn("endpoint==='/api/gen/xiaole_video'", self.html)
 
     def test_reverse_video_with_avatar_uses_existing_cinematic_api(self):
         self.assertIn("endpoint:'/api/gen/cinematic'", self.html)
         self.assertIn("cine_mode:'open'", self.html)
         self.assertIn("avatar_ids:[choice.avatarId]", self.html)
-        self.assertIn("prompt:prompt", self.html)
+        self.assertIn("prompt:avatarPrompt", self.html)
+        self.assertIn("reference_images:reverseRefs", self.html)
         self.assertIn("duration:choice.duration", self.html)
         self.assertIn("ratio:'9:16'", self.html)
         self.assertIn("resolution:'720p'", self.html)
