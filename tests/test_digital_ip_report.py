@@ -1,8 +1,10 @@
 import json
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from unittest import mock
@@ -85,6 +87,9 @@ class DigitalIPReportTests(unittest.TestCase):
     def setUp(self):
         digital_ip._report_recent_requests.clear()
         digital_ip._report_daily_requests.clear()
+        digital_ip._project_inflight.clear()
+        digital_ip._project_actions.clear()
+        digital_ip._project_mutations.clear()
 
     def _project(self):
         project = digital_ip.create_project("owner", {"title": "门店 IP"})
@@ -136,8 +141,11 @@ class DigitalIPReportTests(unittest.TestCase):
             self.assertEqual(len(prompt["skipped_steps"]), 53)
             self.assertEqual({item["id"] for item in prompt["product_catalog"]}, digital_ip.PRODUCT_IDS)
             self.assertFalse(result["stale"])
+            self.assertNotIn("model", result["report"])
             self.assertEqual(result["report"]["progress"], {"total": 54, "confirmed": 1, "skipped": 53, "unresolved": 0})
-            self.assertEqual(digital_ip.get_report("owner", project["id"])["report"]["report_id"], result["report"]["report_id"])
+            loaded_report = digital_ip.get_report("owner", project["id"])["report"]
+            self.assertNotIn("model", loaded_report)
+            self.assertEqual(loaded_report["report_id"], result["report"]["report_id"])
             with self.assertRaises(digital_ip.DigitalIPNotFound):
                 digital_ip.get_report("other", project["id"])
 
@@ -164,6 +172,142 @@ class DigitalIPReportTests(unittest.TestCase):
                 self.assertEqual(current["revision"], project["revision"])
                 with self.assertRaises(digital_ip.DigitalIPNotFound):
                     digital_ip.get_report("owner", project["id"])
+                self.assertNotIn("owner", digital_ip._report_recent_requests)
+                self.assertFalse(digital_ip._report_daily_requests)
+
+    def test_provider_failure_releases_report_quota(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(digital_ip, "PROJECT_DB", Path(directory) / "ip.db"):
+            project = self._project()
+            with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), \
+                    mock.patch.object(digital_ip, "_post", side_effect=OSError("offline")), \
+                    self.assertRaises(digital_ip.DigitalIPError):
+                digital_ip.generate_report("owner", project["id"], {"revision": project["revision"], "consent": True})
+        self.assertNotIn("owner", digital_ip._report_recent_requests)
+        self.assertFalse(digital_ip._report_daily_requests)
+
+    def test_same_project_revision_uses_one_inflight_report_call(self):
+        entered, release = threading.Event(), threading.Event()
+        calls = []
+
+        def fake_post(*_args, **_kwargs):
+            calls.append(1)
+            entered.set()
+            self.assertTrue(release.wait(2))
+            return _response()
+
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(digital_ip, "PROJECT_DB", Path(directory) / "ip.db"):
+            project = self._project()
+            payload = {"revision": project["revision"], "consent": True}
+            with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), \
+                    mock.patch.object(digital_ip, "_post", side_effect=fake_post):
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    first = pool.submit(digital_ip.generate_report, "owner", project["id"], payload)
+                    self.assertTrue(entered.wait(2))
+                    second = pool.submit(digital_ip.generate_report, "owner", project["id"], payload)
+                    time.sleep(0.05)
+                    self.assertEqual(calls, [1])
+                    release.set()
+                    self.assertEqual(first.result()["report"]["report_id"], second.result()["report"]["report_id"])
+
+    def test_confirmed_attachment_evidence_enters_report_without_raw_file(self):
+        captured = []
+        attachment = "经营资料.pdf"
+        encoded = "cHJvb2Y="
+        analysis = {
+            "positioning_candidates": [{"title": "候选一"}, {"title": "候选二"}, {"title": "候选三"}],
+            "source_evidence": [
+                {"claim": "附件中有复购数据", "evidence": "复购率 35%", "file_name": attachment, "location": "第 2 页"},
+                {"claim": "当前回答", "evidence": "获客成本高", "file_name": "用户当前回答", "location": "未定位"},
+            ],
+        }
+        analysis_response = {"model": "test", "output": [{"type": "message", "content": [
+            {"type": "output_text", "text": json.dumps(analysis, ensure_ascii=False)},
+        ]}]}
+
+        attachment_report = _report()
+        attachment_report["evidence"].append({
+            "evidence_id": "E2", "claim": "附件复购率可核验",
+            "source_ref": "answer:0-0:attachment:1", "source_excerpt": "复购率 35%",
+        })
+        changed_report = _report()
+        changed_report["evidence"][0]["source_excerpt"] = "已变更的原始回答"
+        for report in (attachment_report, changed_report):
+            report["material_gaps"][0]["source_refs"] = [
+                ref for ref in report["material_gaps"][0]["source_refs"] if ref != "answer:0-1"
+            ]
+        report_responses = [_response(attachment_report), _response(changed_report)]
+
+        def report_post(path, body, content_type, timeout):
+            captured.append({"path": path, "body": json.loads(body), "content_type": content_type, "timeout": timeout})
+            return report_responses.pop(0)
+
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(digital_ip, "PROJECT_DB", Path(directory) / "ip.db"):
+            project = self._project()
+            with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), \
+                    mock.patch.object(digital_ip, "_post", return_value=analysis_response):
+                analyzed = digital_ip.analyze_project("owner", project["id"], {
+                    "revision": project["revision"], "module_index": 0, "step_index": 0,
+                    "answer": "获客成本高，老客复购下降", "consent": True,
+                    "files": [{"name": attachment, "type": "application/pdf", "data_url": "data:application/pdf;base64," + encoded}],
+                })
+            self.assertEqual(
+                digital_ip._report_source(digital_ip._owned_project("owner", project["id"]))["confirmed_attachment_evidence"],
+                [],
+            )
+            confirmed = digital_ip.confirm_project("owner", project["id"], {
+                "revision": analyzed["project"]["revision"], "candidate_index": 0,
+            })
+            with closing(digital_ip._project_db()) as conn:
+                persisted = conn.execute("SELECT last_analysis_json,confirmed_json FROM digital_ip_projects WHERE id=?", (project["id"],)).fetchone()
+            self.assertNotIn(encoded, persisted["last_analysis_json"])
+            self.assertNotIn(encoded, persisted["confirmed_json"])
+            self.assertIn(attachment, persisted["confirmed_json"])
+            second_state = _complete_state()
+            second_state["questionnaire_state"]["answers"]["0-1"] = {
+                "text": "第二步已经确认", "confirmed": True, "skipped": False,
+            }
+            second_draft = digital_ip.patch_project("owner", project["id"], {
+                "revision": confirmed["project"]["revision"], "state": second_state,
+            })
+            with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), \
+                    mock.patch.object(digital_ip, "_post", return_value=analysis_response):
+                second_analysis = digital_ip.analyze_project("owner", project["id"], {
+                    "revision": second_draft["revision"], "module_index": 0, "step_index": 1,
+                    "answer": "第二步已经确认", "consent": True,
+                })
+            second_confirmed = digital_ip.confirm_project("owner", project["id"], {
+                "revision": second_analysis["project"]["revision"], "candidate_index": 0,
+            })
+            with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), \
+                    mock.patch.object(digital_ip, "_post", side_effect=report_post):
+                result = digital_ip.generate_report("owner", project["id"], {"revision": second_confirmed["project"]["revision"], "consent": True})
+            changed_state = _complete_state()
+            changed_state["questionnaire_state"]["answers"]["0-1"] = {
+                "text": "第二步已经确认", "confirmed": True, "skipped": False,
+            }
+            changed_state["questionnaire_state"]["answers"]["0-0"] = {
+                "text": "已变更的原始回答", "confirmed": True, "skipped": False,
+            }
+            changed = digital_ip.patch_project("owner", project["id"], {
+                "revision": result["project"]["revision"], "state": changed_state,
+            })
+            with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), \
+                    mock.patch.object(digital_ip, "_post", side_effect=report_post):
+                digital_ip.generate_report("owner", project["id"], {"revision": changed["revision"], "consent": True})
+        prompt = json.loads(captured[0]["body"]["input"][0]["content"][0]["text"])
+        self.assertEqual(prompt["confirmed_attachment_evidence"], [{
+            "source_ref": "answer:0-0:attachment:1", "file_name": attachment,
+            "location": "第 2 页", "claim": "附件中有复购数据", "evidence": "复购率 35%",
+        }])
+        self.assertEqual(result["report"]["content"]["evidence"][0]["source_name"], "已确认问卷回答")
+        self.assertEqual(result["report"]["content"]["evidence"][0]["source_location"], "问卷步骤 0-0")
+        self.assertEqual(result["report"]["content"]["evidence"][1]["source_name"], attachment)
+        self.assertEqual(result["report"]["content"]["evidence"][1]["source_location"], "第 2 页")
+        changed_prompt = json.loads(captured[1]["body"]["input"][0]["content"][0]["text"])
+        self.assertEqual(changed_prompt["confirmed_attachment_evidence"], [])
 
     def test_report_must_cover_every_skipped_step_as_a_material_gap(self):
         report = _report()

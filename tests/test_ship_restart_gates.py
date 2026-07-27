@@ -49,6 +49,12 @@ class SmokeImportTests(unittest.TestCase):
         self.assertIn("systemctl show -p ExecStart", SRC)
         self.assertIn("systemctl show -p WorkingDirectory", SRC)
 
+    def test_content_smoke_checks_the_copy_cross_module_contract(self):
+        self.assertIn('if [ "$svc" = "huangque-content" ]', SRC)
+        self.assertIn("text.validate_copy_payload", SRC)
+        self.assertIn("文案跨模块契约失败", SRC)
+        self.assertLess(_idx("text.validate_copy_payload"), _idx("sudo systemctl restart $RESTART"))
+
 
 class RestartEffectiveTests(unittest.TestCase):
     def test_defined_and_called_after_restart(self):

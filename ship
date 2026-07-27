@@ -142,6 +142,15 @@ else
   printf '%s\n' "$out" | tail -8 | sed 's/^/       /'
   exit 1
 fi
+if [ "$svc" = "huangque-content" ]; then
+  if out=$(cd "$wd" && PYTHONDONTWRITEBYTECODE=1 "$py_bin" -c "from content_domains import text; assert text.validate_copy_payload({'prompt':'ship-contract'})['prompt'] == 'ship-contract'" 2>&1); then
+    echo "    ✓ $svc: 文案跨模块契约通过"
+  else
+    echo "    ❌ $svc: 文案跨模块契约失败 —— 中止，不重启"
+    printf '%s\n' "$out" | tail -8 | sed 's/^/       /'
+    exit 1
+  fi
+fi
 RS
 }
 

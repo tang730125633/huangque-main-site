@@ -18,6 +18,8 @@ class IP12ReportUITests(unittest.TestCase):
         self.assertIn("generateBtn.disabled=!consent.checked", html)
         self.assertIn("if(!consent.checked||!project)return", html)
         self.assertIn("JSON.stringify({revision:project.revision,consent:true})", html)
+        self.assertIn("发送给 AI 分析服务", html)
+        self.assertNotIn("OpenAI", html)
 
     def test_report_uses_owned_api_and_does_not_auto_generate(self):
         html = self.html
@@ -55,6 +57,8 @@ class IP12ReportUITests(unittest.TestCase):
         }.items():
             self.assertIn(product_id, html)
             self.assertIn(page, html)
+        self.assertIn('node("p","product-hint","可点击跳转使用我们的网站功能")', html)
+        self.assertIn('class="brand" href="/" aria-label="返回黄雀主站首页"', html)
 
     def test_evidence_gaps_metrics_and_stale_state_are_visible(self):
         html = self.html
@@ -63,6 +67,11 @@ class IP12ReportUITests(unittest.TestCase):
         self.assertIn('id="stale"', html)
         self.assertIn("项目内容已在报告生成后发生变化", html)
         self.assertIn("没有直接能力匹配时", html)
+
+    def test_evidence_prefers_authoritative_source_name_and_location(self):
+        html = self.html
+        self.assertIn("item.source_name&&item.source_location?`${item.source_name} · ${item.source_location}`:item.source_ref", html)
+        self.assertIn("`来源：${source}`", html)
 
     def test_visual_system_explains_the_evidence_chain_and_stays_accessible(self):
         html = self.html

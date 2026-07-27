@@ -41,6 +41,7 @@ MAX_PROJECTS_PER_USER = 20
 PROJECT_TITLE_MAX = 120
 PROJECT_STATE_MAX = 200000
 PROJECT_MANAGED_STATE_MAX = 500000
+MAX_CONFIRMED_ATTACHMENT_EVIDENCE = 12
 PROJECT_MODULE_STEPS = (5, 5, 5, 5, 4, 3, 3, 4, 5, 5, 5, 5)
 PROJECT_FILE_TYPES = {
     "application/pdf": {"pdf"},
@@ -97,6 +98,12 @@ _report_recent_requests = {}
 _report_daily_requests = {}
 _guide_cache = {}
 _rate_lock = threading.Lock()
+_inflight_lock = threading.Lock()
+# 单进程去重：进程重启或多实例不共享，生产扩容时应迁移到共享锁/队列。
+_project_inflight = {}
+# ponytail: 仅用短暂内存标记拒绝同项目编辑与付费调用并发；不等待模型的 120 秒，扩成多实例时换共享锁。
+_project_actions = set()
+_project_mutations = set()
 _project_db_init_lock = threading.Lock()
 _project_db_initialized = set()
 
@@ -270,9 +277,9 @@ REPORT_SCHEMA = {
 REPORT_INSTRUCTIONS = """你是黄雀数字化 IP 的产品方案审查员。根据用户已经确认的问卷事实，生成一份可执行但不夸大的经营报告。
 
 硬性规则：
-- confirmed_answers 中的文字才是事实来源；skipped_steps 只代表资料缺口，不能据此推断事实
-- 每条行业痛点和指标必须引用 evidence 中的 evidence_id；evidence.source_ref 必须来自输入 source_ref
-- evidence.source_excerpt 必须是对应 confirmed_answers.answer 中可逐字核对的短摘录，不得改写
+- confirmed_answers 和 confirmed_attachment_evidence 是用户确认过的事实来源；skipped_steps 只代表资料缺口，不能据此推断事实
+- 每条行业痛点和指标必须引用 evidence 中的 evidence_id；evidence.source_ref 必须来自输入的 confirmed_answers 或 confirmed_attachment_evidence
+- evidence.source_excerpt 必须是对应来源中可逐字核对的短摘录，不得改写；附件的文件名和位置由服务端按 source_ref 回填，不得自行声称来源
 - 只能推荐 product_catalog 中直接匹配痛点的产品；没有直接匹配时 product_matches 留空，不得硬推产品
 - 不得发明产品功能、渠道、价格、自动发布能力、客户数据或经营结果
 - target 是待用户确认的规划值，不是效果承诺；缺少基线时明确写“待确认”
@@ -421,6 +428,8 @@ def validate_payload(payload):
             "step": str(item.get("step") or "")[:120],
             "answer": prior_answer,
         })
+    if payload.get("consent") is not True:
+        raise DigitalIPValidationError("请先明确同意将当前回答发送给 AI 分析")
     return {
         "module": module,
         "step": step,
@@ -442,6 +451,8 @@ def validate_guide_payload(payload):
         content = _optional_text(item.get("content"), 600)
         if content:
             clean_turns.append({"role": item["role"], "content": content})
+    if payload.get("consent") is not True:
+        raise DigitalIPValidationError("请先明确同意将当前回答发送给 AI 引导")
     return {
         "module": _clean_text(payload.get("module"), 80, "模块名称"),
         "step": _clean_text(payload.get("step"), 120, "步骤名称"),
@@ -463,6 +474,18 @@ def _check_rate_limit(username):
             raise DigitalIPRateLimited("AI 分析过于频繁，请一分钟后再试")
         recent.append(now)
         _recent_requests[username] = recent
+    return now
+
+
+def _release_rate_limit(username, stamp):
+    with _rate_lock:
+        recent = _recent_requests.get(username, [])
+        if stamp in recent:
+            recent.remove(stamp)
+        if recent:
+            _recent_requests[username] = recent
+        else:
+            _recent_requests.pop(username, None)
 
 
 def _check_guide_rate_limit(username):
@@ -484,6 +507,23 @@ def _check_guide_rate_limit(username):
         recent.append(now)
         _guide_recent_requests[username] = recent
         _guide_daily_requests[daily_key] = daily + 1
+    return now, daily_key
+
+
+def _release_guide_rate_limit(username, stamp, daily_key):
+    with _rate_lock:
+        recent = _guide_recent_requests.get(username, [])
+        if stamp in recent:
+            recent.remove(stamp)
+        if recent:
+            _guide_recent_requests[username] = recent
+        else:
+            _guide_recent_requests.pop(username, None)
+        daily = _guide_daily_requests.get(daily_key, 0)
+        if daily <= 1:
+            _guide_daily_requests.pop(daily_key, None)
+        else:
+            _guide_daily_requests[daily_key] = daily - 1
 
 
 def _check_project_daily_limit(username):
@@ -495,6 +535,16 @@ def _check_project_daily_limit(username):
         if _project_daily_requests.get(key, 0) >= PROJECT_DAILY_LIMIT:
             raise DigitalIPRateLimited("今日分析次数已用完，请明天继续")
         _project_daily_requests[key] = _project_daily_requests.get(key, 0) + 1
+    return key
+
+
+def _release_project_daily_limit(key):
+    with _rate_lock:
+        daily = _project_daily_requests.get(key, 0)
+        if daily <= 1:
+            _project_daily_requests.pop(key, None)
+        else:
+            _project_daily_requests[key] = daily - 1
 
 
 def _check_report_rate_limit(username):
@@ -512,6 +562,68 @@ def _check_report_rate_limit(username):
         recent.append(now)
         _report_recent_requests[username] = recent
         _report_daily_requests[daily_key] = _report_daily_requests.get(daily_key, 0) + 1
+    return now, daily_key
+
+
+def _release_report_rate_limit(username, stamp, daily_key):
+    with _rate_lock:
+        recent = _report_recent_requests.get(username, [])
+        if stamp in recent:
+            recent.remove(stamp)
+        if recent:
+            _report_recent_requests[username] = recent
+        else:
+            _report_recent_requests.pop(username, None)
+        daily = _report_daily_requests.get(daily_key, 0)
+        if daily <= 1:
+            _report_daily_requests.pop(daily_key, None)
+        else:
+            _report_daily_requests[daily_key] = daily - 1
+
+
+def _run_project_inflight(kind, username, project_id, revision, action):
+    key = (kind, username, project_id, revision)
+    project_key = (username, project_id)
+    with _inflight_lock:
+        entry = _project_inflight.get(key)
+        if entry is None:
+            if project_key in _project_mutations or project_key in _project_actions:
+                raise DigitalIPRevisionConflict("项目正在进行 AI 处理，请完成后刷新再编辑")
+            entry = {"event": threading.Event(), "result": None, "error": None}
+            _project_inflight[key] = entry
+            _project_actions.add(project_key)
+            owner = True
+        else:
+            owner = False
+    if not owner:
+        entry["event"].wait()
+        if entry["error"] is not None:
+            raise entry["error"]
+        return entry["result"]
+    try:
+        entry["result"] = action()
+        return entry["result"]
+    except BaseException as exc:
+        entry["error"] = exc
+        raise
+    finally:
+        with _inflight_lock:
+            _project_inflight.pop(key, None)
+            _project_actions.discard(project_key)
+        entry["event"].set()
+
+
+def _run_project_mutation(username, project_id, action):
+    project_key = (username, project_id)
+    with _inflight_lock:
+        if project_key in _project_actions or project_key in _project_mutations:
+            raise DigitalIPRevisionConflict("项目正在进行 AI 处理，请完成后刷新再编辑")
+        _project_mutations.add(project_key)
+    try:
+        return action()
+    finally:
+        with _inflight_lock:
+            _project_mutations.discard(project_key)
 
 
 def _parse_structured_output(response):
@@ -597,9 +709,9 @@ def _extract_guide_output(response):
 
 def diagnose(payload, username):
     if not OPENAI_KEY:
-        raise DigitalIPError("泽龙服务端尚未配置 OpenAI")
+        raise DigitalIPError("AI 分析服务尚未配置")
     clean = validate_payload(payload)
-    _check_rate_limit(username)
+    rate_stamp = _check_rate_limit(username)
     user_input = {
         "industry_preset": "美业门店老板",
         "current_module": clean["module"],
@@ -633,15 +745,21 @@ def diagnose(payload, username):
             timeout=120,
         )
     except urllib.error.HTTPError as exc:
+        _release_rate_limit(username, rate_stamp)
         print("[digital-ip] OpenAI HTTP %s" % exc.code, flush=True)
         raise DigitalIPError("AI 分析服务暂时不可用，请稍后重试") from exc
     except Exception as exc:
+        _release_rate_limit(username, rate_stamp)
         print("[digital-ip] OpenAI request failed: %s" % type(exc).__name__, flush=True)
         raise DigitalIPError("AI 分析服务暂时不可用，请稍后重试") from exc
+    try:
+        analysis = _extract_output(response)
+    except DigitalIPError:
+        _release_rate_limit(username, rate_stamp)
+        raise
     return {
         "ok": True,
-        "analysis": _extract_output(response),
-        "model": str(response.get("model") or MODEL),
+        "analysis": analysis,
         "usage": response.get("usage") or {},
         "ai_recommendation": True,
         "user_confirmed": False,
@@ -650,7 +768,7 @@ def diagnose(payload, username):
 
 def guide(payload, username):
     if not OPENAI_KEY:
-        raise DigitalIPError("泽龙服务端尚未配置 OpenAI")
+        raise DigitalIPError("AI 分析服务尚未配置")
     clean = validate_guide_payload(payload)
     now = time.time()
     # ponytail: 试点流量小，按请求清理过期内存缓存；多实例时再换共享 TTL 缓存。
@@ -666,7 +784,7 @@ def guide(payload, username):
         cached = _guide_cache.get(cache_key)
     if cached:
         return {**cached["result"], "cached": True, "usage": {}}
-    _check_guide_rate_limit(username)
+    rate_stamp, daily_key = _check_guide_rate_limit(username)
     request = {
         "model": GUIDE_MODEL,
         "instructions": GUIDE_INSTRUCTIONS,
@@ -696,15 +814,21 @@ def guide(payload, username):
             timeout=60,
         )
     except urllib.error.HTTPError as exc:
+        _release_guide_rate_limit(username, rate_stamp, daily_key)
         print("[digital-ip-guide] OpenAI HTTP %s" % exc.code, flush=True)
         raise DigitalIPError("小黄雀暂时无法回复，请稍后重试") from exc
     except Exception as exc:
+        _release_guide_rate_limit(username, rate_stamp, daily_key)
         print("[digital-ip-guide] OpenAI request failed: %s" % type(exc).__name__, flush=True)
         raise DigitalIPError("小黄雀暂时无法回复，请稍后重试") from exc
+    try:
+        guide_reply = _extract_guide_output(response)
+    except DigitalIPError:
+        _release_guide_rate_limit(username, rate_stamp, daily_key)
+        raise
     result = {
         "ok": True,
-        "guide": _extract_guide_output(response),
-        "model": str(response.get("model") or GUIDE_MODEL),
+        "guide": guide_reply,
         "usage": response.get("usage") or {},
         "cached": False,
         "guide_only": True,
@@ -723,11 +847,25 @@ class DigitalIPRevisionConflict(DigitalIPError):
     status = 409
 
 
+def _secure_project_db_files(db_path):
+    path = pathlib.Path(db_path)
+    try:
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        os.close(descriptor)
+        for candidate in (path, pathlib.Path(str(path) + "-wal"), pathlib.Path(str(path) + "-shm")):
+            try:
+                os.chmod(candidate, 0o600)
+            except FileNotFoundError:
+                pass
+    except OSError as exc:
+        raise DigitalIPError("无法收紧项目档案数据库权限") from exc
+
+
 def _project_db():
     if not PROJECT_DB.parent.exists():
         PROJECT_DB.parent.mkdir(parents=True, mode=0o700)
-    db_existed = PROJECT_DB.exists()
     db_path = str(PROJECT_DB)
+    _secure_project_db_files(PROJECT_DB)
     conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
     if db_path not in _project_db_initialized:
@@ -741,13 +879,12 @@ def _project_db():
                     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)""")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_digital_ip_projects_owner_updated ON digital_ip_projects(username, updated_at DESC)")
                 conn.commit()
-                if not db_existed:
-                    try:
-                        os.chmod(PROJECT_DB, 0o600)
-                    except OSError:
-                        conn.close()
-                        raise
                 _project_db_initialized.add(db_path)
+    try:
+        _secure_project_db_files(PROJECT_DB)
+    except DigitalIPError:
+        conn.close()
+        raise
     return conn
 
 
@@ -771,7 +908,8 @@ def _project_public(row):
     confirmed = _json_object(row["confirmed_json"])
     project["status"] = "confirmed" if (analysis and confirmed and analysis.get("analysis_id") == confirmed.get("analysis_id")) else "candidate_ready" if analysis else "draft"
     if analysis:
-        project["last_analysis"] = analysis
+        project["last_analysis"] = dict(analysis)
+        project["last_analysis"].pop("model", None)
     if confirmed:
         project["confirmed_profile"] = confirmed.get("profile")
         project["confirmed_plans"] = confirmed.get("plans")
@@ -797,6 +935,81 @@ def _project_state_answer(row, module_index, step_index):
     return _state_answer(_json_object(row["state_json"]), module_index, step_index)
 
 
+def _answer_content(value):
+    if not isinstance(value, dict):
+        return str(value or "").strip()
+    text = str(value.get("text") or "").strip()
+    if text:
+        return {"text": text}
+    choice = value.get("choice")
+    if isinstance(choice, list):
+        return {"choice": [str(item).strip() for item in choice]}
+    return {"choice": str(choice or "").strip()}
+
+
+def _confirmed_answers_snapshot(state):
+    questionnaire = state.get("questionnaire_state") if isinstance(state, dict) else {}
+    answers = questionnaire.get("answers") if isinstance(questionnaire, dict) else {}
+    if not isinstance(answers, dict):
+        return {}
+    return {
+        key: _answer_content(value)
+        for key, value in answers.items()
+        if isinstance(value, dict) and value.get("confirmed") is True
+    }
+
+
+def _confirmed_answers_changed(previous_state, next_state, analyzed_input):
+    previous_snapshot = _confirmed_answers_snapshot(previous_state)
+    next_snapshot = _confirmed_answers_snapshot(next_state)
+    if previous_snapshot == next_snapshot:
+        return False
+    module_index, step_index = analyzed_input.get("module_index"), analyzed_input.get("step_index")
+    if isinstance(module_index, bool) or isinstance(step_index, bool) or not isinstance(module_index, int) or not isinstance(step_index, int):
+        return True
+    step_key = "%d-%d" % (module_index, step_index)
+    previous_answers = ((previous_state.get("questionnaire_state") or {}).get("answers") or {}) if isinstance(previous_state, dict) else {}
+    next_answers = ((next_state.get("questionnaire_state") or {}).get("answers") or {}) if isinstance(next_state, dict) else {}
+    before, after = previous_answers.get(step_key), next_answers.get(step_key)
+    if not (isinstance(before, dict) and isinstance(after, dict)
+            and before.get("confirmed") is not True and before.get("skipped") is not True
+            and after.get("confirmed") is True
+            and _answer_content(before) == _answer_content(after)):
+        return True
+    expected_snapshot = dict(previous_snapshot)
+    expected_snapshot[step_key] = _answer_content(after)
+    return next_snapshot != expected_snapshot
+
+
+def _attachment_evidence_source_key(item):
+    match = re.fullmatch(r"answer:(\d+)-(\d+):attachment:\d+", str(item.get("source_ref") or "")) if isinstance(item, dict) else None
+    return "%s-%s" % (match.group(1), match.group(2)) if match else ""
+
+
+def _current_attachment_evidence(evidence, previous_state, next_state):
+    previous_answers = ((previous_state.get("questionnaire_state") or {}).get("answers") or {}) if isinstance(previous_state, dict) else {}
+    next_answers = ((next_state.get("questionnaire_state") or {}).get("answers") or {}) if isinstance(next_state, dict) else {}
+    clean = []
+    for item in evidence or []:
+        step_key = _attachment_evidence_source_key(item)
+        before, after = previous_answers.get(step_key), next_answers.get(step_key)
+        if not step_key or not isinstance(after, dict) or after.get("confirmed") is not True:
+            continue
+        if isinstance(before, dict) and _answer_content(before) != _answer_content(after):
+            continue
+        clean.append(item)
+    return clean[:MAX_CONFIRMED_ATTACHMENT_EVIDENCE]
+
+
+def _merge_attachment_evidence(existing, current, current_step_key=""):
+    current_steps = {_attachment_evidence_source_key(item) for item in current}
+    if current_step_key:
+        current_steps.add(current_step_key)
+    merged = [item for item in existing or [] if _attachment_evidence_source_key(item) not in current_steps]
+    merged.extend(current)
+    return merged[-MAX_CONFIRMED_ATTACHMENT_EVIDENCE:]
+
+
 def _owned_project(username, project_id):
     with closing(_project_db()) as conn:
         row = conn.execute("SELECT * FROM digital_ip_projects WHERE id=? AND username=?", (project_id, username)).fetchone()
@@ -812,7 +1025,7 @@ def _clean_project_title(value):
 
 def _contains_data_url(value):
     if isinstance(value, str):
-        return value.strip().lower().startswith("data:")
+        return bool(re.search(r"(?:^|[^a-z0-9+.-])data:[^,\s\"'<>]*,", value, flags=re.I))
     if isinstance(value, dict):
         return any(_contains_data_url(item) for item in value.values())
     if isinstance(value, list):
@@ -901,6 +1114,13 @@ def patch_project(username, project_id, payload):
     clean_state = None
     if has_state:
         clean_state, _ = _clean_state(payload["state"])
+    return _run_project_mutation(
+        username, project_id,
+        lambda: _patch_project(username, project_id, revision, has_title, has_state, clean_state, payload),
+    )
+
+
+def _patch_project(username, project_id, revision, has_title, has_state, clean_state, payload):
     row = _owned_project(username, project_id)
     if int(row["revision"]) != revision:
         raise DigitalIPRevisionConflict("项目已在另一端更新，请刷新后重试")
@@ -908,19 +1128,32 @@ def patch_project(username, project_id, payload):
     if has_title:
         fields.extend(["title=?"]); values.append(_clean_project_title(payload["title"]))
     if has_state:
+        previous_state = _json_object(row["state_json"])
         managed_report = _json_object(row["state_json"]).get(REPORT_STATE_KEY)
         if isinstance(managed_report, dict):
             clean_state[REPORT_STATE_KEY] = managed_report
         fields.extend(["state_json=?"]); values.append(_encode_managed_state(clean_state))
         analysis = _json_object(row["last_analysis_json"])
+        confirmed = _json_object(row["confirmed_json"])
+        attachment_evidence = _current_attachment_evidence(confirmed.get("attachment_evidence"), previous_state, clean_state)
         analyzed_input = analysis.get("input") if isinstance(analysis.get("input"), dict) else {}
         module_index, step_index = analyzed_input.get("module_index"), analyzed_input.get("step_index")
         questionnaire = clean_state.get("questionnaire_state") if isinstance(clean_state, dict) else {}
         answers = questionnaire.get("answers") if isinstance(questionnaire, dict) else {}
         step_state = answers.get("%s-%s" % (module_index, step_index)) if isinstance(answers, dict) else None
-        if analysis and ((isinstance(step_state, dict) and step_state.get("skipped") is True)
+        confirmed_answers_changed = _confirmed_answers_changed(previous_state, clean_state, analyzed_input)
+        if analysis and (confirmed_answers_changed
+                         or (isinstance(step_state, dict) and step_state.get("skipped") is True)
                          or _state_answer(clean_state, module_index, step_index) != str(analyzed_input.get("answer") or "").strip()):
-            fields.extend(["last_analysis_json=?", "confirmed_json=?"]); values.extend(["{}", "{}"])
+            confirmed = {"attachment_evidence": attachment_evidence} if attachment_evidence else {}
+            fields.extend(["last_analysis_json=?", "confirmed_json=?"]); values.extend(["{}", json.dumps(confirmed, ensure_ascii=False)])
+        elif attachment_evidence != confirmed.get("attachment_evidence", []):
+            confirmed = dict(confirmed)
+            if attachment_evidence:
+                confirmed["attachment_evidence"] = attachment_evidence
+            else:
+                confirmed.pop("attachment_evidence", None)
+            fields.append("confirmed_json=?"); values.append(json.dumps(confirmed, ensure_ascii=False))
     now = int(time.time())
     fields.extend(["revision=revision+1", "updated_at=?"]); values.append(now)
     with closing(_project_db()) as conn:
@@ -960,6 +1193,41 @@ def _clean_project_files(files):
         if total > MAX_TOTAL_FILE_BYTES:
             raise DigitalIPValidationError("资料总量不能超过 20 MiB")
         clean.append({"name": name, "type": mime, "data_url": data_url})
+    return clean
+
+
+def _confirmed_attachment_evidence(analysis_record):
+    if not isinstance(analysis_record, dict):
+        return []
+    input_data = analysis_record.get("input") if isinstance(analysis_record.get("input"), dict) else {}
+    attachment_names = {
+        str(name).strip() for name in (input_data.get("attachment_names") or [])
+        if str(name).strip()
+    }
+    analysis = analysis_record.get("analysis") if isinstance(analysis_record.get("analysis"), dict) else {}
+    source_ref = "answer:%s-%s" % (input_data.get("module_index"), input_data.get("step_index"))
+    clean, seen = [], set()
+    for item in analysis.get("source_evidence") or []:
+        if not isinstance(item, dict):
+            continue
+        file_name = str(item.get("file_name") or "").strip()
+        evidence = _optional_text(item.get("evidence") or item.get("claim"), 1200)
+        if file_name not in attachment_names or not evidence:
+            continue
+        location = _optional_text(item.get("location"), 160) or "未定位"
+        key = (file_name, location, evidence)
+        if key in seen:
+            continue
+        seen.add(key)
+        clean.append({
+            "source_ref": "%s:attachment:%d" % (source_ref, len(clean) + 1),
+            "file_name": file_name,
+            "location": location,
+            "claim": _optional_text(item.get("claim"), 400),
+            "evidence": evidence,
+        })
+        if len(clean) >= MAX_CONFIRMED_ATTACHMENT_EVIDENCE:
+            break
     return clean
 
 
@@ -1004,9 +1272,13 @@ def _extract_project_output(response):
 
 def _project_analysis(clean, username):
     if not OPENAI_KEY:
-        raise DigitalIPError("服务端尚未配置 OpenAI")
-    _check_rate_limit(username)
-    _check_project_daily_limit(username)
+        raise DigitalIPError("AI 分析服务尚未配置")
+    rate_stamp = _check_rate_limit(username)
+    try:
+        daily_key = _check_project_daily_limit(username)
+    except Exception:
+        _release_rate_limit(username, rate_stamp)
+        raise
     prompt = {"industry_preset": "美业门店老板", "module_index": clean["module_index"],
               "step_index": clean["step_index"], "answer": clean["answer"], "context": clean["context"]}
     content = [{"type": "input_text", "text": json.dumps(prompt, ensure_ascii=False)}]
@@ -1025,16 +1297,27 @@ def _project_analysis(clean, username):
     try:
         response = _post("/v1/responses", json.dumps(request, ensure_ascii=False).encode(), "application/json", timeout=120)
     except urllib.error.HTTPError as exc:
+        _release_rate_limit(username, rate_stamp)
+        _release_project_daily_limit(daily_key)
         print("[digital-ip-project] OpenAI HTTP %s" % exc.code, flush=True)
         raise DigitalIPError("AI 分析服务暂时不可用，请稍后重试") from exc
     except Exception as exc:
+        _release_rate_limit(username, rate_stamp)
+        _release_project_daily_limit(daily_key)
         print("[digital-ip-project] OpenAI request failed: %s" % type(exc).__name__, flush=True)
         raise DigitalIPError("AI 分析服务暂时不可用，请稍后重试") from exc
-    return _extract_project_output(response), str(response.get("model") or MODEL), response.get("usage") or {}
+    try:
+        analysis = _extract_project_output(response)
+        if _contains_data_url(analysis):
+            raise DigitalIPError("AI 返回结果包含不可保存的文件内容，请重试")
+    except DigitalIPError:
+        _release_rate_limit(username, rate_stamp)
+        _release_project_daily_limit(daily_key)
+        raise
+    return analysis, str(response.get("model") or MODEL), response.get("usage") or {}
 
 
-def analyze_project(username, project_id, payload):
-    clean = _clean_analysis_payload(payload)
+def _analyze_project(username, project_id, clean):
     row = _owned_project(username, project_id)
     if int(row["revision"]) != clean["revision"]:
         raise DigitalIPRevisionConflict("项目已在另一端更新，请刷新后重试")
@@ -1043,7 +1326,8 @@ def analyze_project(username, project_id, payload):
     analysis, model, usage = _project_analysis(clean, username)
     now = int(time.time())
     stored = json.dumps({"analysis_id": uuid.uuid4().hex, "analysis": analysis, "model": model, "created_at": now,
-                         "input": {"module_index": clean["module_index"], "step_index": clean["step_index"], "answer": clean["answer"]}}, ensure_ascii=False)
+                         "input": {"module_index": clean["module_index"], "step_index": clean["step_index"], "answer": clean["answer"],
+                                   "attachment_names": [item["name"] for item in clean["files"]]}}, ensure_ascii=False)
     with closing(_project_db()) as conn:
         cursor = conn.execute("UPDATE digital_ip_projects SET last_analysis_json=?, revision=revision+1, updated_at=? WHERE id=? AND username=? AND revision=?",
                               (stored, now, project_id, username, clean["revision"]))
@@ -1051,7 +1335,15 @@ def analyze_project(username, project_id, payload):
         if cursor.rowcount != 1:
             raise DigitalIPRevisionConflict("项目已在另一端更新，请刷新后重试")
         updated = conn.execute("SELECT * FROM digital_ip_projects WHERE id=? AND username=?", (project_id, username)).fetchone()
-    return {"project": _project_public(updated), "analysis": analysis, "model": model, "usage": usage, "ok": True}
+    return {"project": _project_public(updated), "analysis": analysis, "usage": usage, "ok": True}
+
+
+def analyze_project(username, project_id, payload):
+    clean = _clean_analysis_payload(payload)
+    return _run_project_inflight(
+        "analyze", username, project_id, clean["revision"],
+        lambda: _analyze_project(username, project_id, clean),
+    )
 
 
 def confirm_project(username, project_id, payload):
@@ -1061,6 +1353,13 @@ def confirm_project(username, project_id, payload):
     candidate_index = payload.get("candidate_index")
     if isinstance(candidate_index, bool) or not isinstance(candidate_index, int) or candidate_index not in range(3):
         raise DigitalIPValidationError("candidate_index 无效")
+    return _run_project_mutation(
+        username, project_id,
+        lambda: _confirm_project(username, project_id, revision, candidate_index),
+    )
+
+
+def _confirm_project(username, project_id, revision, candidate_index):
     row = _owned_project(username, project_id)
     if int(row["revision"]) != revision:
         raise DigitalIPRevisionConflict("项目已在另一端更新，请刷新后重试")
@@ -1072,8 +1371,14 @@ def confirm_project(username, project_id, payload):
     analyzed_input = analysis_record.get("input") if isinstance(analysis_record.get("input"), dict) else {}
     if _project_state_answer(row, analyzed_input.get("module_index"), analyzed_input.get("step_index")) != str(analyzed_input.get("answer") or "").strip():
         raise DigitalIPRevisionConflict("当前回答已经变更，请重新分析后再确认")
+    prior_confirmed = _json_object(row["confirmed_json"])
     confirmed = {"analysis_id": analysis_record.get("analysis_id"), "candidate_index": candidate_index, "profile": candidates[candidate_index],
                  "plans": {"image_plan": analysis.get("image_plan"), "video_plan": analysis.get("video_plan"), "next_steps": analysis.get("next_steps")},
+                 "attachment_evidence": _merge_attachment_evidence(
+                     prior_confirmed.get("attachment_evidence"),
+                     _confirmed_attachment_evidence(analysis_record),
+                     "%s-%s" % (analyzed_input.get("module_index"), analyzed_input.get("step_index")),
+                 ),
                  "confirmed_at": int(time.time())}
     if analyzed_input.get("answer"):
         confirmed["answer"] = analyzed_input["answer"]
@@ -1117,8 +1422,11 @@ def _report_source(row):
                 skipped_steps.append("answer:%s" % key)
             else:
                 unresolved.append("answer:%s" % key)
+    confirmed = _json_object(row["confirmed_json"])
+    attachment_evidence = confirmed.get("attachment_evidence") if isinstance(confirmed.get("attachment_evidence"), list) else []
     return {
         "confirmed_answers": confirmed_answers,
+        "confirmed_attachment_evidence": attachment_evidence,
         "skipped_steps": skipped_steps,
         "unresolved_steps": unresolved,
         "progress": {
@@ -1143,6 +1451,26 @@ def _validate_report(report, source):
         item["source_ref"]: " ".join(item["answer"].split())
         for item in source["confirmed_answers"] if item.get("answer")
     }
+    source_texts.update({
+        str(item.get("source_ref") or ""): " ".join(str(item.get("evidence") or "").split())
+        for item in source.get("confirmed_attachment_evidence", [])
+        if isinstance(item, dict) and item.get("source_ref") and item.get("evidence")
+    })
+    source_display = {
+        item["source_ref"]: {
+            "source_name": "已确认问卷回答",
+            "source_location": "问卷步骤 %s" % item["source_ref"].removeprefix("answer:"),
+        }
+        for item in source["confirmed_answers"] if item.get("source_ref")
+    }
+    source_display.update({
+        str(item["source_ref"]): {
+            "source_name": str(item.get("file_name") or "已确认附件"),
+            "source_location": str(item.get("location") or "未定位"),
+        }
+        for item in source.get("confirmed_attachment_evidence", [])
+        if isinstance(item, dict) and item.get("source_ref")
+    })
     evidence_ids = set()
     for item in evidence:
         if not isinstance(item, dict):
@@ -1154,6 +1482,7 @@ def _validate_report(report, source):
             raise DigitalIPError("AI 返回的报告证据无法追溯，请重试")
         if not excerpt or excerpt not in source_texts[source_ref]:
             raise DigitalIPError("AI 返回的报告引用与已确认资料不一致，请重试")
+        item.update(source_display[source_ref])
         evidence_ids.add(evidence_id)
     for item in pains:
         refs = item.get("evidence_ids") if isinstance(item, dict) else None
@@ -1182,11 +1511,12 @@ def _validate_report(report, source):
 
 def _generate_report_content(source, username, project_title):
     if not OPENAI_KEY:
-        raise DigitalIPError("服务端尚未配置 OpenAI")
-    _check_report_rate_limit(username)
+        raise DigitalIPError("AI 分析服务尚未配置")
+    rate_stamp, daily_key = _check_report_rate_limit(username)
     prompt = {
         "project_title": project_title,
         "confirmed_answers": source["confirmed_answers"],
+        "confirmed_attachment_evidence": source.get("confirmed_attachment_evidence", []),
         "skipped_steps": source["skipped_steps"],
         "product_catalog": list(PRODUCT_CATALOG),
     }
@@ -1206,21 +1536,22 @@ def _generate_report_content(source, username, project_title):
     try:
         response = _post("/v1/responses", json.dumps(request, ensure_ascii=False).encode(), "application/json", timeout=120)
     except urllib.error.HTTPError as exc:
+        _release_report_rate_limit(username, rate_stamp, daily_key)
         print("[digital-ip-report] OpenAI HTTP %s" % exc.code, flush=True)
         raise DigitalIPError("报告生成服务暂时不可用，请稍后重试") from exc
     except Exception as exc:
+        _release_report_rate_limit(username, rate_stamp, daily_key)
         print("[digital-ip-report] OpenAI request failed: %s" % type(exc).__name__, flush=True)
         raise DigitalIPError("报告生成服务暂时不可用，请稍后重试") from exc
-    report = _validate_report(_parse_structured_output(response), source)
+    try:
+        report = _validate_report(_parse_structured_output(response), source)
+    except DigitalIPError:
+        _release_report_rate_limit(username, rate_stamp, daily_key)
+        raise
     return report, str(response.get("model") or MODEL), response.get("usage") or {}, request
 
 
-def generate_report(username, project_id, payload):
-    if not isinstance(payload, dict):
-        raise DigitalIPValidationError("请求体必须是 JSON 对象")
-    if payload.get("consent") is not True:
-        raise DigitalIPValidationError("请先明确同意将已保存的 IP12 回答发送给 OpenAI 生成报告")
-    revision = _revision(payload.get("revision"))
+def _generate_report(username, project_id, revision):
     row = _owned_project(username, project_id)
     if int(row["revision"]) != revision:
         raise DigitalIPRevisionConflict("项目已在另一端更新，请刷新后重试")
@@ -1253,7 +1584,21 @@ def generate_report(username, project_id, payload):
         if cursor.rowcount != 1:
             raise DigitalIPRevisionConflict("项目已在另一端更新，请刷新后重试")
         updated = conn.execute("SELECT * FROM digital_ip_projects WHERE id=? AND username=?", (project_id, username)).fetchone()
-    return {"ok": True, "project": _project_public(updated), "report": envelope, "stale": False}
+    public_report = dict(envelope)
+    public_report.pop("model", None)
+    return {"ok": True, "project": _project_public(updated), "report": public_report, "stale": False}
+
+
+def generate_report(username, project_id, payload):
+    if not isinstance(payload, dict):
+        raise DigitalIPValidationError("请求体必须是 JSON 对象")
+    if payload.get("consent") is not True:
+        raise DigitalIPValidationError("请先明确同意将已保存的 IP12 回答发送给 AI 分析服务生成报告")
+    revision = _revision(payload.get("revision"))
+    return _run_project_inflight(
+        "report", username, project_id, revision,
+        lambda: _generate_report(username, project_id, revision),
+    )
 
 
 def get_report(username, project_id):
@@ -1261,9 +1606,11 @@ def get_report(username, project_id):
     report = _json_object(row["state_json"]).get(REPORT_STATE_KEY)
     if not isinstance(report, dict) or not isinstance(report.get("content"), dict):
         raise DigitalIPNotFound("报告尚未生成")
+    public_report = dict(report)
+    public_report.pop("model", None)
     return {
         "project": {"id": row["id"], "title": row["title"], "revision": int(row["revision"])},
-        "report": report,
+        "report": public_report,
         "stale": int(row["revision"]) != report.get("project_revision"),
     }
 
