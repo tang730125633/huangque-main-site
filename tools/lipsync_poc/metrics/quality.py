@@ -36,5 +36,8 @@ def empty_human_review():
         "identity_score_1_to_5": None,
         "visual_quality_score_1_to_5": None,
         "whole_sentence_offset": None,
+        "av_offset_ms": None,
+        "reviewer_id": None,
+        "reviewed_at": None,
         "notes": "",
     }

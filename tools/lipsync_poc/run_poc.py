@@ -1,15 +1,21 @@
-"""Command-line entry point for the offline PR 0-A PoC framework."""
+"""Command-line entry point for the stage 0-A/0-B lip-sync PoC."""
 
 import argparse
 import json
 from pathlib import Path
 
 from .adapters.mock import MockLipsyncProvider
+from .adapters.fal_latentsync import FalLatentSyncProvider
+from .adapters.sync_labs import SyncLabsProvider
 from .manifest import load_manifest
 from .runner import PocRunError, PocRunner
 
 
-PROVIDERS = {"mock": MockLipsyncProvider}
+PROVIDERS = {
+    "fal-latentsync": FalLatentSyncProvider,
+    "mock": MockLipsyncProvider,
+    "sync-labs": SyncLabsProvider,
+}
 
 
 def build_parser():

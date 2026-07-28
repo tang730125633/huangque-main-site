@@ -5,6 +5,7 @@ import time
 
 from .adapters.base import ProviderStatus, TERMINAL_STATUSES
 from .metrics.media_probe import probe_media
+from .metrics.media_output import ensure_silent_video
 from .metrics.quality import empty_human_review, media_contract_metrics
 from .paths import artifact_paths
 from .redaction import redact
@@ -233,6 +234,28 @@ class PocRunner:
                 "effective_provider_status"
             ],
             "elapsed_ms": round((self.clock() - started) * 1000),
+            "estimated_cost_usd": (
+                round(
+                    capabilities.cost_per_second_usd
+                    * sample.duration_ms
+                    / 1000,
+                    6,
+                )
+                if capabilities.cost_per_second_usd is not None
+                else None
+            ),
+            "cost_basis": {
+                "billing_unit": capabilities.billing_unit,
+                "cost_per_second_usd": (
+                    capabilities.cost_per_second_usd
+                ),
+                "duration_ms": sample.duration_ms,
+                "source": (
+                    "configured"
+                    if capabilities.cost_per_second_usd is not None
+                    else "unconfigured"
+                ),
+            },
             "capabilities": capabilities.as_dict(),
             "provider_error": normalized,
             "cancel": cancel,
@@ -269,7 +292,16 @@ class PocRunner:
         result = self.provider.fetch_result(job.job_id, paths.media)
         source_video = self.probe(sample.video_path)
         source_audio = self.probe(sample.audio_path)
+        output_sanitization = ensure_silent_video(
+            result.output_path,
+            self.probe,
+        )
         provider_output = self.probe(result.output_path)
+        if int(provider_output.get("audio_stream_count") or 0) != 0:
+            raise PocRunError(
+                "provider_audio_not_removed",
+                "provider output still contains an audio stream",
+            )
         expected_dimensions = (
             {"width": 720, "height": 1280}
             if sample.ratio == "9:16"
@@ -310,6 +342,28 @@ class PocRunner:
             "ratio": sample.ratio,
             "speaking_mode": sample.speaking_mode,
             "elapsed_ms": round((self.clock() - started) * 1000),
+            "estimated_cost_usd": (
+                round(
+                    capabilities.cost_per_second_usd
+                    * sample.duration_ms
+                    / 1000,
+                    6,
+                )
+                if capabilities.cost_per_second_usd is not None
+                else None
+            ),
+            "cost_basis": {
+                "billing_unit": capabilities.billing_unit,
+                "cost_per_second_usd": (
+                    capabilities.cost_per_second_usd
+                ),
+                "duration_ms": sample.duration_ms,
+                "source": (
+                    "configured"
+                    if capabilities.cost_per_second_usd is not None
+                    else "unconfigured"
+                ),
+            },
             "capabilities": capabilities.as_dict(),
             "media_file": (
                 f"{paths.provider}/media/{sample.sample_id}.mp4"
@@ -319,6 +373,7 @@ class PocRunner:
                 "source_audio": source_audio,
                 "provider_output": provider_output,
             },
+            "output_sanitization": output_sanitization,
             "automated_metrics": media_contract_metrics(
                 source_video,
                 provider_output,

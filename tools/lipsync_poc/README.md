@@ -1,70 +1,100 @@
 # 短剧口型 Provider PoC 工具
 
-该目录是阶段 0-A 的离线评测框架，不属于生产服务，也不包含任何真实
-Provider、密钥、扣点或用户入口。
+该目录承载阶段 0-A 的离线评测框架和阶段 0-B 的真实 Provider 对比适配器。它只用于受控 PoC，不接入生产画布、项目扣点或用户数据。
 
-## 安全边界
+## 当前候选
 
-- 当前唯一 Provider 是 `mock`，只复制输入视频，不访问网络且不收费。
-- 样本媒体不得提交 Git；清单只能引用 `assets_root` 下的相对路径。
-- API Key、Token、Cookie、Authorization 和带查询参数的 URL 会从报告中脱敏。
-- 默认输出到已被 Git 忽略的 `.local-content-out/lipsync-poc`。
-- `reports/` 只保留目录占位文件，真实报告不得进入提交。
+- `sync-labs`：直接上传无声视频和主音轨，异步查询并下载结果。
+- `fal-latentsync`：通过 fal 队列运行 LatentSync，支持查询、取消和结果重拉。
+- `mock`：离线合同测试，不访问网络、不收费，也不产生真实口型。
 
-## 清单格式
+HeyGen 仍属于现有数字人链路；其公开 Avatar + Audio 合同不等同于“任意短剧画面 + 主音轨”，因此不作为本轮横向候选。
 
-清单必须符合 `sample_manifest.schema.json`。`visible` 样本必须提供
-`character_key`；每条样本必须包含无声源视频、项目主音轨、锁定台词、时长、
-比例和输出规格。
+## 安全与资金边界
 
-```json
-{
-  "manifest_version": "1.0",
-  "dataset_name": "internal-baseline-v1",
-  "samples": [
-    {
-      "sample_id": "front-normal-01",
-      "video_file": "videos/front-normal-01.mp4",
-      "audio_file": "audio/front-normal-01.wav",
-      "transcript": "今天我们开始测试口型同步。",
-      "speaking_mode": "visible",
-      "character_key": "host",
-      "face_target": {"type": "character", "value": "host"},
-      "duration_ms": 5000,
-      "ratio": "9:16",
-      "output_spec": {"resolution": "720p", "fps": 25},
-      "tags": ["front", "normal-speed"]
-    }
-  ]
-}
+- API Key 只从环境变量读取，不得写入清单、日志、报告或 Git。
+- 私有样本、Provider 响应、媒体和报告必须放在仓库外，或默认的 `.local-content-out/lipsync-poc` 忽略目录。
+- 工具不调用项目扣点服务；真实 Provider 可能直接产生供应商费用。
+- 每个样本会先落盘 `submitting` 状态，拿到 Job ID 后立即原子更新。已有状态默认拒绝重复创建任务。
+- 两个候选均未在本实现中假设服务端支持幂等键。提交响应丢失且没有 Job ID 时，报告会标记 `requires_reconciliation`，不得自动重提。
+- 下载结果只接受 HTTPS，限制最大响应体，并使用临时文件原子替换。
+- Provider 输出音轨会被 FFmpeg 移除；最终媒体必须经 FFprobe 确认为零音轨。
+- Token、密钥、Cookie、Authorization、查询参数 URL 和畸形 URL 会在报告中统一脱敏。
+
+## 环境变量
+
+Sync Labs：
+
+```text
+SYNC_API_KEY                 必填
+SYNC_API_BASE                可选，默认 https://api.sync.so
+SYNC_LIPSYNC_MODEL           可选，默认 lipsync-2
+SYNC_LIPSYNC_COST_PER_SECOND_USD
+                             验收前必须配置，用于统一估算成本
 ```
 
-## 运行
+fal.ai LatentSync：
 
-只校验清单、路径和输入哈希，不运行 Provider：
+```text
+FAL_KEY                      必填
+FAL_QUEUE_BASE               可选，默认 https://queue.fal.run
+FAL_LIPSYNC_MODEL            可选，默认 fal-ai/latentsync
+FAL_LIPSYNC_COST_PER_SECOND_USD
+                             验收前必须配置，用于统一估算成本
+```
 
-```bash
-python -m tools.lipsync_poc.run_poc \
-  --manifest C:/private-lipsync/manifest.json \
-  --assets-root C:/private-lipsync/assets \
+成本变量只用于报告估算，不代表供应商最终账单；最终仍需人工对账。
+
+## 样本清单
+
+清单必须符合 `sample_manifest.schema.json`。媒体只允许引用 `assets_root` 下的相对路径。`visible` 样本必须提供 `character_key` 和明确的 `face_target`。
+
+建议先运行：
+
+```powershell
+python -m tools.lipsync_poc.run_poc `
+  --manifest C:\private-lipsync\manifest.json `
+  --assets-root C:\private-lipsync\assets `
   --validate-only
 ```
 
-运行离线 Mock 合同流程：
+## 真实 Provider 冒烟
 
-```bash
-python -m tools.lipsync_poc.run_poc \
-  --manifest C:/private-lipsync/manifest.json \
-  --assets-root C:/private-lipsync/assets \
-  --provider mock
+先对每个 Provider 各运行 5 条样本，确认提交、轮询、下载、静音化、报告和费用归属正确，再扩大到 20～30 条：
+
+```powershell
+python -m tools.lipsync_poc.run_poc `
+  --manifest C:\private-lipsync\manifest.json `
+  --assets-root C:\private-lipsync\assets `
+  --provider sync-labs `
+  --sample-id front-normal-01
 ```
 
-Mock 输出不是口型结果，只用于验证清单、状态机、媒体探测、原子报告和脱敏逻辑。
-阶段 0-B 才允许增加真实 Provider Adapter。
+```powershell
+python -m tools.lipsync_poc.run_poc `
+  --manifest C:\private-lipsync\manifest.json `
+  --assets-root C:\private-lipsync\assets `
+  --provider fal-latentsync `
+  --sample-id front-normal-01
+```
 
-## 报告
+中断或轮询异常时只能使用原 Job ID 恢复：
 
-每个样本按 Provider 隔离生成运行状态、媒体和报告：
+```powershell
+python -m tools.lipsync_poc.run_poc <原参数> --resume
+```
+
+任务已成功、只需重新下载时：
+
+```powershell
+python -m tools.lipsync_poc.run_poc <原参数> --refetch
+```
+
+禁止删除状态文件后重新提交来绕过费用核对。
+
+## 产物与人工评分
+
+每个 Provider 使用独立目录：
 
 ```text
 <output-dir>/<provider>/
@@ -73,50 +103,14 @@ Mock 输出不是口型结果，只用于验证清单、状态机、媒体探测
   reports/<sample-id>.json
 ```
 
-状态文件会在提交前保存确定性的 `request_id`，并在 `create_job()` 返回后立即
-原子保存 Provider Job ID。进程中断、轮询异常或超时后，不要重新创建付费任务；
-使用原输出目录恢复：
+报告包含输入哈希、Job ID、耗时、媒体规格、输出静音化结果、估算成本、恢复能力和脱敏元数据。人工复核需要填写口型、身份、画质、整句错位、AV 偏移、审核人和审核时间；未填写时系统不会伪造评分。
 
-```bash
-python -m tools.lipsync_poc.run_poc \
-  --manifest C:/private-lipsync/manifest.json \
-  --assets-root C:/private-lipsync/assets \
-  --provider mock \
-  --resume
+汇总评测：
+
+```powershell
+python -m tools.lipsync_poc.evaluation `
+  --output-dir .local-content-out\lipsync-poc `
+  --providers sync-labs fal-latentsync
 ```
 
-对已完成任务重新下载结果：
-
-```bash
-python -m tools.lipsync_poc.run_poc \
-  --manifest C:/private-lipsync/manifest.json \
-  --assets-root C:/private-lipsync/assets \
-  --provider mock \
-  --refetch
-```
-
-恢复时会校验 Provider、样本 ID 和输入哈希；不一致时拒绝操作。普通运行发现
-已有状态文件时也会停止，避免重复创建可能收费的任务。
-
-恢复能力以最后确认的 Provider 状态为准：`queued/running/unknown` 只允许
-`--resume`，`succeeded` 只允许 `--refetch`，`failed/canceled` 默认禁止两种
-操作。超时取消成功后按 `canceled` 处理；取消失败且任务仍在运行时允许恢复
-查询。报告中的恢复标记与 CLI 的实际准入使用同一个判定函数。
-
-每份报告包含：
-
-- 不可变 `input_hash`
-- Provider Job ID 与能力声明
-- 输入/输出 FFprobe 结果
-- 时长、帧率、分辨率和输出音轨指标
-- 待填写的人工盲评字段
-- 已脱敏的 Provider 元数据
-
-失败和超时同样会保存报告，包括 Provider Job ID、最后状态、取消结果、费用
-待核对状态和恢复能力。支持取消的 Provider 在超时时会调用 `cancel_job()`。
-
-报告不保存原始绝对媒体路径，也不记录环境变量或 Provider 密钥。Cookie、
-Set-Cookie、Authorization、Proxy-Authorization、X-API-Key 和 X-Auth-Token
-等 HTTP 头即使出现在异常字符串中也会被统一脱敏。
-非法端口、破损 IPv6 或异常 netloc 等畸形 URL 会整体替换为
-`[REDACTED_URL]`，不得让脱敏、状态持久化或失败报告再次抛出异常。
+汇总文件为 `evaluation-summary.json`。只有质量、成功率、成本配置、静音输出、人工复核和费用核对门槛全部通过的候选才会得到 `go` 并参与默认 Provider 选择。

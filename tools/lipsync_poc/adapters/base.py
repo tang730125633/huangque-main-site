@@ -22,6 +22,18 @@ TERMINAL_STATUSES = {
 }
 
 
+def optional_cost(value):
+    if value in (None, ""):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("provider cost must be a non-negative number") from exc
+    if parsed < 0:
+        raise ValueError("provider cost must be a non-negative number")
+    return parsed
+
+
 @dataclass(frozen=True)
 class LipsyncCapabilities:
     provider: str
@@ -36,6 +48,8 @@ class LipsyncCapabilities:
     supports_result_refetch: bool
     output_may_contain_audio: bool
     notes: Tuple[str, ...] = ()
+    cost_per_second_usd: Optional[float] = None
+    billing_unit: str = "output_second"
 
     def as_dict(self):
         return asdict(self)

@@ -35,6 +35,7 @@ class MockLipsyncProvider(LipsyncProvider):
             supports_result_refetch=True,
             output_may_contain_audio=False,
             notes=("offline contract test only", "never billable"),
+            cost_per_second_usd=0.0,
         )
 
     def validate_input(self, request):
