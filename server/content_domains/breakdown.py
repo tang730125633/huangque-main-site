@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """爆款拆解：竞品视频链接 → 下载 → 抽帧 → ASR → GLM-4V 多模态 → 分镜脚本"""
 import os, json, time, base64, tempfile, subprocess, shutil, mimetypes, io
+import http.client
 import urllib.error
 from contextlib import closing
 
@@ -200,11 +201,8 @@ def _do_breakdown(payload, info, url):
     import tikhub
 
     det = tikhub.detail(info["platform"], info["id"], info.get("note_type"))
-    play_url = det.get("play_url")
-    if not play_url:
-        if det.get("images"):
-            raise ValueError("该链接是图文笔记，不是视频，暂不支持拆解")
-        raise ValueError("未找到视频下载地址，可能是私密或已删除")
+    if det.get("images"):
+        raise ValueError("该链接是图文笔记，不是视频，暂不支持拆解")
     job_id = payload.get("_job_id")
     _heartbeat(job_id, "downloading")
     tmp_video = None
@@ -284,13 +282,23 @@ def _do_breakdown(payload, info, url):
 def _download_breakdown_video(tikhub, info, detail, destination):
     """下载失败时刷新一次带时效的播放地址；每次尝试都有独立硬预算。"""
     current = detail
-    retryable = (TimeoutError, ConnectionError, urllib.error.URLError)
+    retryable = (
+        TimeoutError,
+        ConnectionError,
+        urllib.error.URLError,
+        http.client.IncompleteRead,
+    )
     for attempt in range(2):
         play_url = current.get("play_url")
         if not play_url:
             if current.get("images"):
                 raise ValueError("该链接是图文笔记，不是视频，暂不支持拆解")
-            raise ValueError("未找到视频下载地址，可能是私密或已删除")
+            if attempt:
+                raise ValueError("未找到视频下载地址，可能是私密或已删除")
+            current = tikhub.detail(
+                info["platform"], info["id"], info.get("note_type"), fresh=True
+            )
+            continue
         try:
             tikhub.download_to_file(
                 play_url, time.time() + BREAKDOWN_DOWNLOAD_BUDGET, destination
