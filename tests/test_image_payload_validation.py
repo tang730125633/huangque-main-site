@@ -116,8 +116,16 @@ class MagicByteTests(unittest.TestCase):
         self.assertIn("蒙版", str(cm.exception))
 
     def test_real_png_mask_passes_validation(self):
-        """格式校验不该替引擎回答「支不支持蒙版」—— 那由引擎自己拒。"""
-        image.validate_image_payload({"prompt": "p", "mask": _b64(PNG)})
+        image.validate_image_payload({"prompt": "p", "image": _b64(PNG), "mask": _b64(PNG)})
+
+    def test_mask_requires_reference_image(self):
+        with self.assertRaisesRegex(ValueError, "蒙版必须同时提供参考图"):
+            image.validate_image_payload({"prompt": "p", "mask": _b64(PNG)})
+
+    def test_mask_must_be_png(self):
+        with self.assertRaisesRegex(ValueError, "蒙版格式不支持"):
+            image.validate_image_payload({"prompt": "p", "image": _b64(PNG),
+                                          "mask": _b64(b"\xff\xd8\xff" + b"x" * 64)})
 
     def test_oversize_reported_as_size_not_format(self):
         """超大图要报「太大」，而不是被魔数先判成格式不对 —— 错误信息得指向真正的问题。"""
