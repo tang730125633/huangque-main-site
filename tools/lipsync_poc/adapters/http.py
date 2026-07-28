@@ -2,17 +2,19 @@
 
 import base64
 import hashlib
+import http.client
 import ipaddress
 import json
 import mimetypes
 import os
 import secrets
 import socket
+import ssl
 from dataclasses import dataclass
 from pathlib import Path
 from urllib import error as urlerror
 from urllib import request as urlrequest
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 
 JSON_LIMIT_BYTES = 4 * 1024 * 1024
@@ -172,7 +174,17 @@ def file_data_uri(path, max_bytes):
     return f"data:{mime};base64,{encoded}"
 
 
-def _safe_download_url(url, resolver=socket.getaddrinfo):
+@dataclass(frozen=True)
+class ValidatedDownloadTarget:
+    url: str
+    hostname: str
+    port: int
+    host_header: str
+    request_target: str
+    addresses: tuple
+
+
+def _validated_download_target(url, resolver=socket.getaddrinfo):
     try:
         parsed = urlsplit(str(url))
     except Exception as exc:
@@ -194,16 +206,18 @@ def _safe_download_url(url, resolver=socket.getaddrinfo):
         )
     try:
         port = parsed.port or 443
-        addresses = resolver(
+        resolved = resolver(
             parsed.hostname,
             port,
             type=socket.SOCK_STREAM,
         )
-        resolved_ips = {
-            ipaddress.ip_address(item[4][0])
-            for item in addresses
-            if item and len(item) > 4 and item[4]
-        }
+        resolved_ips = []
+        for item in resolved:
+            if not item or len(item) <= 4 or not item[4]:
+                continue
+            address = ipaddress.ip_address(item[4][0])
+            if address not in resolved_ips:
+                resolved_ips.append(address)
     except (OSError, TypeError, ValueError) as exc:
         raise ProviderHttpError(
             0,
@@ -218,23 +232,79 @@ def _safe_download_url(url, resolver=socket.getaddrinfo):
             "provider_result_url_forbidden",
             "provider result URL resolves to a non-public address",
         )
-    return str(url)
-
-
-class _NoRedirectHandler(urlrequest.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise ProviderHttpError(
-            code,
-            "provider_result_redirect_forbidden",
-            "provider result download redirects are not allowed",
-        )
-
-
-def _default_download_opener(request, timeout):
-    return urlrequest.build_opener(_NoRedirectHandler()).open(
-        request,
-        timeout=timeout,
+    request_target = urlunsplit((
+        "",
+        "",
+        parsed.path or "/",
+        parsed.query,
+        "",
+    ))
+    host_header = parsed.hostname
+    if ":" in host_header:
+        host_header = f"[{host_header}]"
+    if port != 443:
+        host_header = f"{host_header}:{port}"
+    return ValidatedDownloadTarget(
+        url=str(url),
+        hostname=parsed.hostname,
+        port=port,
+        host_header=host_header,
+        request_target=request_target,
+        addresses=tuple(str(address) for address in resolved_ips),
     )
+
+
+def _safe_download_url(url, resolver=socket.getaddrinfo):
+    return _validated_download_target(url, resolver=resolver).url
+
+
+class PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """Connect to a validated IP while verifying TLS for the URL host."""
+
+    def __init__(self, host, port, pinned_ip, timeout):
+        super().__init__(
+            host,
+            port=port,
+            timeout=timeout,
+            context=ssl.create_default_context(),
+        )
+        self.pinned_ip = str(pinned_ip)
+
+    def connect(self):
+        sock = None
+        try:
+            sock = socket.create_connection(
+                (self.pinned_ip, self.port),
+                self.timeout,
+                self.source_address,
+            )
+            connected_ip = ipaddress.ip_address(sock.getpeername()[0])
+            if connected_ip != ipaddress.ip_address(self.pinned_ip):
+                raise ProviderHttpError(
+                    0,
+                    "provider_result_peer_mismatch",
+                    "provider result connection did not use the pinned IP",
+                )
+            self.sock = self._context.wrap_socket(
+                sock,
+                server_hostname=self.host,
+            )
+            connected_ip = ipaddress.ip_address(
+                self.sock.getpeername()[0]
+            )
+            if connected_ip != ipaddress.ip_address(self.pinned_ip):
+                raise ProviderHttpError(
+                    0,
+                    "provider_result_peer_mismatch",
+                    "provider result TLS peer did not use the pinned IP",
+                )
+        except Exception:
+            if self.sock is not None:
+                self.sock.close()
+                self.sock = None
+            elif sock is not None:
+                sock.close()
+            raise
 
 
 def download_file(
@@ -244,48 +314,62 @@ def download_file(
     headers=None,
     timeout=180,
     max_bytes=DOWNLOAD_LIMIT_BYTES,
-    opener=None,
     resolver=socket.getaddrinfo,
+    connection_factory=PinnedHTTPSConnection,
 ):
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".download")
-    req = urlrequest.Request(
-        _safe_download_url(url, resolver=resolver),
-        headers=dict(headers or {}),
-        method="GET",
+    target = _validated_download_target(url, resolver=resolver)
+    request_headers = {
+        key: value
+        for key, value in dict(headers or {}).items()
+        if str(key).lower() != "host"
+    }
+    request_headers["Host"] = target.host_header
+    request_headers.setdefault("Accept-Encoding", "identity")
+    connection = connection_factory(
+        target.hostname,
+        target.port,
+        target.addresses[0],
+        timeout,
     )
     digest = hashlib.sha256()
     size = 0
+    response = None
     try:
         try:
-            opener = opener or _default_download_opener
-            response = opener(req, timeout=timeout)
-        except urlerror.HTTPError as exc:
-            raise ProviderHttpError(
-                exc.code,
-                f"provider_download_http_{exc.code}",
-                "provider result download failed",
-            ) from exc
-        except (OSError, urlerror.URLError) as exc:
+            connection.request(
+                "GET",
+                target.request_target,
+                headers=request_headers,
+            )
+            response = connection.getresponse()
+        except ProviderHttpError:
+            raise
+        except (
+            OSError,
+            ssl.SSLError,
+            http.client.HTTPException,
+        ) as exc:
             raise ProviderHttpError(
                 0,
                 "provider_download_network_error",
                 "provider result download failed",
             ) from exc
-        final_url = (
-            response.geturl()
-            if callable(getattr(response, "geturl", None))
-            else req.full_url
-        )
-        _safe_download_url(final_url, resolver=resolver)
-        if final_url != req.full_url:
+        if 300 <= int(response.status) < 400:
             raise ProviderHttpError(
-                0,
+                int(response.status),
                 "provider_result_redirect_forbidden",
                 "provider result download redirects are not allowed",
             )
-        with response, temporary.open("wb") as handle:
+        if int(response.status) < 200 or int(response.status) >= 300:
+            raise ProviderHttpError(
+                int(response.status),
+                f"provider_download_http_{response.status}",
+                "provider result download failed",
+            )
+        with temporary.open("wb") as handle:
             while True:
                 chunk = response.read(1024 * 1024)
                 if not chunk:
@@ -311,5 +395,8 @@ def download_file(
             "sha256": digest.hexdigest(),
         }
     finally:
+        if response is not None:
+            response.close()
+        connection.close()
         if temporary.exists():
             temporary.unlink()

@@ -26,6 +26,8 @@ _STATUS_MAP = {
     "IN_PROGRESS": ProviderStatus.RUNNING,
     "COMPLETED": ProviderStatus.SUCCEEDED,
 }
+_OFFICIAL_COST_PER_SECOND_USD = 0.005
+_OFFICIAL_MINIMUM_CHARGE_USD = 0.20
 
 
 class FalLatentSyncProvider(LipsyncProvider):
@@ -57,6 +59,16 @@ class FalLatentSyncProvider(LipsyncProvider):
         self.downloader = downloader
 
     def capabilities(self):
+        configured_rate = os.environ.get(
+            "FAL_LIPSYNC_COST_PER_SECOND_USD"
+        )
+        configured_minimum = os.environ.get(
+            "FAL_LIPSYNC_MINIMUM_CHARGE_USD"
+        )
+        has_override = any(
+            value not in (None, "")
+            for value in (configured_rate, configured_minimum)
+        )
         return LipsyncCapabilities(
             provider=self.name,
             max_duration_ms=15_000,
@@ -75,7 +87,19 @@ class FalLatentSyncProvider(LipsyncProvider):
                 f"model={self.model}",
             ),
             cost_per_second_usd=optional_cost(
-                os.environ.get("FAL_LIPSYNC_COST_PER_SECOND_USD")
+                configured_rate
+                if configured_rate not in (None, "")
+                else _OFFICIAL_COST_PER_SECOND_USD
+            ),
+            minimum_charge_usd=optional_cost(
+                configured_minimum
+                if configured_minimum not in (None, "")
+                else _OFFICIAL_MINIMUM_CHARGE_USD
+            ),
+            pricing_source=(
+                "environment_override"
+                if has_override
+                else "fal_model_page_2026-07-28"
             ),
         )
 

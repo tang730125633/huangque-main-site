@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from tools.lipsync_poc.adapters import MockLipsyncProvider
@@ -32,6 +33,19 @@ def fake_probe(path):
         "format": path.suffix.lstrip("."),
         "size_bytes": path.stat().st_size,
     }
+
+
+class MinimumChargeMockProvider(MockLipsyncProvider):
+    name = "minimum-charge-mock"
+
+    def capabilities(self):
+        return replace(
+            super().capabilities(),
+            provider=self.name,
+            cost_per_second_usd=0.005,
+            minimum_charge_usd=0.20,
+            pricing_source="test_pricing",
+        )
 
 
 class LipsyncPocRunnerTests(unittest.TestCase):
@@ -98,6 +112,27 @@ class LipsyncPocRunnerTests(unittest.TestCase):
         ).run(self.sample, output)
         encoded = json.dumps(report, ensure_ascii=False)
         self.assertNotIn(str(self.root), encoded)
+
+    def test_report_uses_provider_minimum_charge(self):
+        output = self.root / "out"
+        report = PocRunner(
+            MinimumChargeMockProvider(),
+            probe=fake_probe,
+            clock=lambda: 1.0,
+        ).run(self.sample, output)
+        self.assertEqual(0.2, report["estimated_cost_usd"])
+        self.assertEqual(
+            0.2,
+            report["cost_basis"]["minimum_charge_usd"],
+        )
+        self.assertEqual(
+            0.025,
+            report["cost_basis"]["duration_cost_usd"],
+        )
+        self.assertEqual(
+            "test_pricing",
+            report["cost_basis"]["pricing_source"],
+        )
 
     def test_redaction_scrubs_secrets_and_url_queries(self):
         result = redact({

@@ -36,6 +36,8 @@ class MockLipsyncProvider(LipsyncProvider):
             output_may_contain_audio=False,
             notes=("offline contract test only", "never billable"),
             cost_per_second_usd=0.0,
+            minimum_charge_usd=0.0,
+            pricing_source="offline_mock",
         )
 
     def validate_input(self, request):

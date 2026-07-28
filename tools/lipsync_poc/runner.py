@@ -12,7 +12,7 @@ from .redaction import redact
 from .state import STATE_VERSION, atomic_json, exclusive_lock, load_json
 
 
-REPORT_VERSION = "1.1"
+REPORT_VERSION = "1.2"
 
 
 class PocRunError(RuntimeError):
@@ -30,6 +30,33 @@ def _request_id(provider, input_hash):
 
 def _status_value(status):
     return status.value if isinstance(status, ProviderStatus) else str(status)
+
+
+def _cost_details(capabilities, duration_ms):
+    estimated = capabilities.estimate_cost_usd(duration_ms)
+    duration_cost = (
+        round(
+            capabilities.cost_per_second_usd
+            * duration_ms
+            / 1000,
+            6,
+        )
+        if capabilities.cost_per_second_usd is not None
+        else None
+    )
+    return estimated, {
+        "billing_unit": capabilities.billing_unit,
+        "cost_per_second_usd": capabilities.cost_per_second_usd,
+        "minimum_charge_usd": capabilities.minimum_charge_usd,
+        "duration_ms": duration_ms,
+        "duration_cost_usd": duration_cost,
+        "pricing_source": capabilities.pricing_source,
+        "source": (
+            "configured"
+            if estimated is not None
+            else "unconfigured"
+        ),
+    }
 
 
 def recovery_capabilities(state, capabilities):
@@ -256,6 +283,10 @@ class PocRunner:
     ):
         normalized = self._normalize_error(error)
         recovery = recovery_capabilities(state, capabilities)
+        estimated_cost, cost_basis = _cost_details(
+            capabilities,
+            sample.duration_ms,
+        )
         report = {
             "report_version": REPORT_VERSION,
             "sample_id": sample.sample_id,
@@ -275,28 +306,8 @@ class PocRunner:
                 "effective_provider_status"
             ],
             "elapsed_ms": round((self.clock() - started) * 1000),
-            "estimated_cost_usd": (
-                round(
-                    capabilities.cost_per_second_usd
-                    * sample.duration_ms
-                    / 1000,
-                    6,
-                )
-                if capabilities.cost_per_second_usd is not None
-                else None
-            ),
-            "cost_basis": {
-                "billing_unit": capabilities.billing_unit,
-                "cost_per_second_usd": (
-                    capabilities.cost_per_second_usd
-                ),
-                "duration_ms": sample.duration_ms,
-                "source": (
-                    "configured"
-                    if capabilities.cost_per_second_usd is not None
-                    else "unconfigured"
-                ),
-            },
+            "estimated_cost_usd": estimated_cost,
+            "cost_basis": cost_basis,
             "capabilities": capabilities.as_dict(),
             "provider_error": normalized,
             "cancel": cancel,
@@ -359,6 +370,10 @@ class PocRunner:
             succeeded_state,
             capabilities,
         )
+        estimated_cost, cost_basis = _cost_details(
+            capabilities,
+            sample.duration_ms,
+        )
         report = {
             "report_version": REPORT_VERSION,
             "sample_id": sample.sample_id,
@@ -383,28 +398,8 @@ class PocRunner:
             "ratio": sample.ratio,
             "speaking_mode": sample.speaking_mode,
             "elapsed_ms": round((self.clock() - started) * 1000),
-            "estimated_cost_usd": (
-                round(
-                    capabilities.cost_per_second_usd
-                    * sample.duration_ms
-                    / 1000,
-                    6,
-                )
-                if capabilities.cost_per_second_usd is not None
-                else None
-            ),
-            "cost_basis": {
-                "billing_unit": capabilities.billing_unit,
-                "cost_per_second_usd": (
-                    capabilities.cost_per_second_usd
-                ),
-                "duration_ms": sample.duration_ms,
-                "source": (
-                    "configured"
-                    if capabilities.cost_per_second_usd is not None
-                    else "unconfigured"
-                ),
-            },
+            "estimated_cost_usd": estimated_cost,
+            "cost_basis": cost_basis,
             "capabilities": capabilities.as_dict(),
             "media_file": (
                 f"{paths.provider}/media/{sample.sample_id}.mp4"

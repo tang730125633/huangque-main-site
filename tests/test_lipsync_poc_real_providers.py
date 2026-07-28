@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from tools.lipsync_poc.adapters import (
@@ -173,6 +174,37 @@ class RealProviderContractTests(unittest.TestCase):
                 self.assertNotIn("c2VjcmV0", encoded)
                 self.assertNotIn("token=secret", encoded)
                 self.assertFalse(normalized["retryable"])
+
+    def test_fal_official_minimum_charge_is_applied(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "FAL_LIPSYNC_COST_PER_SECOND_USD": "",
+                "FAL_LIPSYNC_MINIMUM_CHARGE_USD": "",
+            },
+        ):
+            capabilities = FalLatentSyncProvider(
+                api_key="fal-secret"
+            ).capabilities()
+        self.assertEqual(0.2, capabilities.estimate_cost_usd(1_000))
+        self.assertEqual(0.2, capabilities.estimate_cost_usd(40_000))
+        self.assertEqual(0.205, capabilities.estimate_cost_usd(41_000))
+        self.assertEqual(0.2, capabilities.minimum_charge_usd)
+        self.assertEqual(0.005, capabilities.cost_per_second_usd)
+
+    def test_fal_pricing_environment_overrides_are_explicit(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "FAL_LIPSYNC_COST_PER_SECOND_USD": "0.01",
+                "FAL_LIPSYNC_MINIMUM_CHARGE_USD": "0.30",
+            },
+        ):
+            capabilities = FalLatentSyncProvider(
+                api_key="fal-secret"
+            ).capabilities()
+        self.assertEqual(0.3, capabilities.estimate_cost_usd(15_000))
+        self.assertEqual("environment_override", capabilities.pricing_source)
 
 
 if __name__ == "__main__":

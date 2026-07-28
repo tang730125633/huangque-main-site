@@ -49,10 +49,34 @@ class LipsyncCapabilities:
     output_may_contain_audio: bool
     notes: Tuple[str, ...] = ()
     cost_per_second_usd: Optional[float] = None
+    minimum_charge_usd: Optional[float] = None
     billing_unit: str = "output_second"
+    pricing_source: str = "unconfigured"
 
     def as_dict(self):
         return asdict(self)
+
+    def estimate_cost_usd(self, duration_ms):
+        duration_ms = int(duration_ms)
+        if duration_ms < 0:
+            raise ValueError("duration_ms must be non-negative")
+        if (
+            self.cost_per_second_usd is None
+            and self.minimum_charge_usd is None
+        ):
+            return None
+        duration_cost = (
+            float(self.cost_per_second_usd or 0)
+            * duration_ms
+            / 1000
+        )
+        return round(
+            max(
+                duration_cost,
+                float(self.minimum_charge_usd or 0),
+            ),
+            6,
+        )
 
 
 @dataclass(frozen=True)

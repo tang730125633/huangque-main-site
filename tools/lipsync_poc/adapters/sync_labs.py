@@ -59,6 +59,9 @@ class SyncLabsProvider(LipsyncProvider):
         self.downloader = downloader
 
     def capabilities(self):
+        configured_cost = os.environ.get(
+            "SYNC_LIPSYNC_COST_PER_SECOND_USD"
+        )
         return LipsyncCapabilities(
             provider=self.name,
             max_duration_ms=60_000,
@@ -77,7 +80,12 @@ class SyncLabsProvider(LipsyncProvider):
                 f"model={self.model}",
             ),
             cost_per_second_usd=optional_cost(
-                os.environ.get("SYNC_LIPSYNC_COST_PER_SECOND_USD")
+                configured_cost
+            ),
+            pricing_source=(
+                "environment_override"
+                if configured_cost not in (None, "")
+                else "unconfigured"
             ),
         )
 
