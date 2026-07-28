@@ -7,6 +7,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+import urllib.error
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "server"))
@@ -35,6 +36,7 @@ class BreakdownFollowupTests(unittest.TestCase):
             "title": "duration unit regression",
         }
         fake_tikhub.download_to_file.return_value = None
+        fake_tikhub.transcript.return_value = []
         with mock.patch.dict(sys.modules, {"tikhub": fake_tikhub}), \
              mock.patch.object(breakdown, "_probe_duration", return_value=10.034), \
              mock.patch.object(
@@ -53,6 +55,179 @@ class BreakdownFollowupTests(unittest.TestCase):
         self.assertEqual(result["type"], "breakdown_reverse")
         self.assertEqual(extracted.call_args.args[1:], (4, 10.034))
         self.assertEqual(reversed_from_frames.call_args.args[-1], 10.034)
+        self.assertEqual(
+            reversed_from_frames.call_args.kwargs["script_text"],
+            "",
+        )
+
+    def test_reverse_prompt_uses_duration_transcript_and_timeline_sections(self):
+        captured = {}
+
+        def fake_chat(system_message, user_message, frames, temp=0.7):
+            captured.update(
+                system=system_message,
+                user=user_message,
+                frames=frames,
+            )
+            return json.dumps({
+                "prompt": (
+                    "[00:00-00:03] 主体从画面左侧进入。\n"
+                    "[00:03-00:07] 镜头跟随主体向前移动。"
+                )
+            }, ensure_ascii=False)
+
+        with mock.patch.object(
+            breakdown, "_chat_multimodal", side_effect=fake_chat
+        ):
+            result = breakdown._reverse_from_frames(
+                {},
+                ["frame-1.jpg", "frame-2.jpg"],
+                title="测试视频",
+                platform="douyin",
+                duration=7,
+                script_text="[0s-3s] 开场口播",
+            )
+
+        self.assertIn("[00:00-00:03]", result["prompt"])
+        for expected in (
+            "总时长：7 秒",
+            "[0s-3s] 开场口播",
+            "连续、不重叠、无空档",
+            "每段用 80-160 字",
+            "动作起点、连续过程、终点",
+            "各段之间用换行分隔",
+        ):
+            self.assertIn(expected, captured["user"])
+        self.assertIn("不臆造", captured["system"])
+
+    def test_reverse_timeline_accepts_fractional_and_subsecond_duration(self):
+        segments = breakdown._validate_reverse_timeline(
+            (
+                "[00:00-00:00.25] 快速开场。\n"
+                "[00:00.25-00:00.75] 主体完成动作。"
+            ),
+            0.75,
+        )
+        self.assertEqual(segments, [(0.0, 0.25), (0.25, 0.75)])
+
+        segments = breakdown._validate_reverse_timeline(
+            "[00:00-00:01.25] 开场。\n[00:01.25-00:02.5] 收束。",
+            2.5,
+        )
+        self.assertEqual(segments[-1][1], 2.5)
+
+    def test_reverse_timeline_rejects_invalid_boundaries(self):
+        invalid = (
+            (
+                "[00:00.1-00:01] 内容。",
+                1,
+                "从00:00开始",
+            ),
+            (
+                "[00:00-00:01] 内容。\n[00:01.1-00:02] 内容。",
+                2,
+                "空档",
+            ),
+            (
+                "[00:00-00:01.1] 内容。\n[00:01-00:02] 内容。",
+                2,
+                "重叠",
+            ),
+            (
+                (
+                    "[00:00-00:00.5] 内容。\n"
+                    "[00:00.5-00:01] 内容。\n"
+                    "[00:00.4-00:02] 内容。"
+                ),
+                2,
+                "乱序",
+            ),
+            (
+                "[00:00-00:01.1] 内容。",
+                1,
+                "超出",
+            ),
+            (
+                "[00:00-00:00.9] 内容。",
+                1,
+                "未对齐",
+            ),
+        )
+        for prompt, duration, message in invalid:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ValueError, message):
+                    breakdown._validate_reverse_timeline(prompt, duration)
+
+    def test_reverse_timeline_validation_retries_once_with_feedback(self):
+        responses = [
+            json.dumps(
+                {"prompt": "[00:00.5-00:02] 错误开场。"},
+                ensure_ascii=False,
+            ),
+            json.dumps(
+                {
+                    "prompt": (
+                        "[00:00-00:01] 正确开场。\n"
+                        "[00:01-00:02] 正确收束。"
+                    )
+                },
+                ensure_ascii=False,
+            ),
+        ]
+        messages = []
+
+        def fake_chat(system_message, user_message, frames, temp=0.7):
+            messages.append(user_message)
+            return responses.pop(0)
+
+        with mock.patch.object(
+            breakdown, "_chat_multimodal", side_effect=fake_chat,
+        ) as chat:
+            result = breakdown._reverse_from_frames(
+                {}, ["frame.jpg"], duration=2,
+            )
+
+        self.assertEqual(chat.call_count, 2)
+        self.assertIn("上一次时间轴校验失败", messages[1])
+        self.assertIn("必须从00:00开始", messages[1])
+        self.assertIn("[00:00-00:01]", result["prompt"])
+
+    def test_reverse_timeline_validation_fails_after_bounded_retry(self):
+        invalid = json.dumps(
+            {"prompt": "[00:01-00:02] 始终错误。"},
+            ensure_ascii=False,
+        )
+        with mock.patch.object(
+            breakdown, "_chat_multimodal", return_value=invalid,
+        ) as chat:
+            with self.assertRaisesRegex(ValueError, "时间轴校验失败"):
+                breakdown._reverse_from_frames(
+                    {}, ["frame.jpg"], duration=2,
+                )
+        self.assertEqual(chat.call_count, 2)
+
+    def test_static_image_reverse_does_not_require_a_zero_length_timeline(self):
+        captured = {}
+
+        def fake_chat(system_message, user_message, frames, temp=0.7):
+            captured["user"] = user_message
+            return json.dumps(
+                {"prompt": "正面平视构图，人物位于画面中央，柔和侧光。"},
+                ensure_ascii=False,
+            )
+
+        with mock.patch.object(
+            breakdown, "_chat_multimodal", side_effect=fake_chat,
+        ) as chat:
+            result = breakdown._reverse_from_frames(
+                {}, ["image.jpg"], title="portrait.png", duration=0,
+            )
+
+        self.assertEqual(chat.call_count, 1)
+        self.assertEqual(result["duration"], 0)
+        self.assertIn("素材类型：静态图片", captured["user"])
+        self.assertIn("不要编造时间轴", captured["user"])
+        self.assertNotIn("末段结束时间", captured["user"])
 
     def test_download_timeout_refreshes_detail_and_retries_once(self):
         fake_tikhub = mock.Mock()
@@ -237,6 +412,81 @@ class BreakdownFollowupTests(unittest.TestCase):
              ):
             with self.assertRaisesRegex(RuntimeError, "AI 分析响应超时"):
                 breakdown._chat_multimodal("system", "user", [])
+
+    def test_multimodal_http_error_is_not_mislabeled_as_timeout(self):
+        error = urllib.error.HTTPError(
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            413,
+            "Payload Too Large",
+            {},
+            io.BytesIO(b'{"error":"too large"}'),
+        )
+        with mock.patch.object(breakdown, "ZHIPU_API_KEY", "secret-test-key"), \
+             mock.patch.object(
+                 breakdown.egress, "post_json_idempotent", side_effect=error,
+             ), mock.patch("builtins.print") as logged:
+            with self.assertRaisesRegex(RuntimeError, "素材数据过大"):
+                breakdown._chat_multimodal("system", "user", [])
+
+        message = " ".join(str(arg) for arg in logged.call_args.args)
+        self.assertIn("http=413", message)
+        self.assertIn("request_bytes=", message)
+        self.assertNotIn("secret-test-key", message)
+
+    def test_multimodal_connection_reset_is_reported_as_interrupted(self):
+        with mock.patch.object(breakdown, "ZHIPU_API_KEY", "secret-test-key"), \
+             mock.patch.object(
+                 breakdown.egress,
+                 "post_json_idempotent",
+                 side_effect=ConnectionResetError("connection reset by peer"),
+             ):
+            with self.assertRaisesRegex(RuntimeError, "AI 分析连接中断"):
+                breakdown._chat_multimodal("system", "user", [])
+
+    def test_multimodal_ten_frames_share_a_bounded_request_budget(self):
+        budgets = []
+
+        def fake_frame(path, max_bytes):
+            budgets.append((path, max_bytes))
+            return b"x" * max_bytes, "image/jpeg"
+
+        with mock.patch.object(breakdown, "ZHIPU_API_KEY", "secret-test-key"), \
+             mock.patch.object(
+                 breakdown, "_bounded_ai_frame", side_effect=fake_frame,
+             ), mock.patch.object(
+                 breakdown.egress,
+                 "post_json_idempotent",
+                 return_value={"choices": [{"message": {"content": "ok"}}]},
+             ) as posted:
+            result = breakdown._chat_multimodal(
+                "system", "user", ["frame-%d.jpg" % index for index in range(10)]
+            )
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(len(budgets), 10)
+        self.assertLessEqual(
+            sum(item[1] for item in budgets),
+            breakdown._AI_FRAMES_TOTAL_MAX_BYTES,
+        )
+        body = json.loads(posted.call_args.args[3])
+        self.assertEqual(len(body["messages"][1]["content"]) - 1, 10)
+
+    def test_ai_frame_fallback_without_pillow_keeps_a_hard_byte_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            small = pathlib.Path(directory) / "frame.png"
+            small.write_bytes(b"small-png")
+            with mock.patch.object(
+                breakdown,
+                "_bounded_thumbnail",
+                side_effect=ModuleNotFoundError("No module named PIL"),
+            ):
+                frame, media_type = breakdown._bounded_ai_frame(str(small), 32)
+                self.assertEqual(frame, b"small-png")
+                self.assertEqual(media_type, "image/png")
+
+                small.write_bytes(b"x" * 33)
+                with self.assertRaisesRegex(ValueError, "数据过大"):
+                    breakdown._bounded_ai_frame(str(small), 32)
 
     def test_frame_thumbnails_are_embedded_before_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:

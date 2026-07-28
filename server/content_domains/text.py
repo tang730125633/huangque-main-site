@@ -163,10 +163,18 @@ def gen_copy(payload):
         try: dur_sec = int((dur or "30s").replace("s","").strip())
         except: dur_sec = 30
         n_scenes = max(3, min(8, max(1, dur_sec // 8)))
-        sysmsg = "你是黄雀传媒资深短视频编导。只输出 JSON 本身，不要解释、不要 markdown 代码块。"
+        sysmsg = (
+            "你是黄雀传媒资深短视频编导。生成可直接拍摄或输入视频生成模型的执行级分镜，"
+            "确保相邻镜头主体外观、空间位置、动作和道具连续。"
+            "只输出 JSON 本身，不要解释、不要 markdown 代码块。"
+        )
         usermsg = ("为以下选题生成一套可拍的%s短视频分镜脚本（平台%s，总时长约%s）。\n选题/卖点：%s\n"
-                    "严格输出 JSON：{\"scenes\":[{\"dur\":\"3s\",\"scene\":\"画面描述\",\"line\":\"%s\"}]}，"
-                    "生成 %d 个分镜，各 dur 之和≈总时长。"
+                    "严格输出 JSON：{\"scenes\":[{\"dur\":\"3s\",\"scene\":\"80-140字的执行级画面描述\",\"line\":\"%s\"}]}。"
+                    "生成 %d 个分镜，各 dur 之和≈总时长；每个 scene 写 80-140 字并明确："
+                    "主体可见外观与位置、动作起点—过程—终点、表情视线和身体姿态、道具互动、"
+                    "场景前中后景关系、景别与机位、构图、运镜起止路线、光线方向、色温色调、"
+                    "材质质感、环境音/音效、转场依据及与前后镜的连续性。"
+                    "禁止使用“人物出现”“展示产品”“镜头切换”等空泛描述。"
                     % (style, plat, dur, brief, line_desc, n_scenes))
         sysmsg += SCRIPT_FACT_GUARD
         usermsg += "\n事实约束：" + SCRIPT_FACT_GUARD

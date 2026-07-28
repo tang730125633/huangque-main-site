@@ -2,6 +2,9 @@
 """爆款拆解：竞品视频链接 → 下载 → 抽帧 → ASR → GLM-4V 多模态 → 分镜脚本"""
 import os, json, time, base64, tempfile, subprocess, shutil, mimetypes, io
 import http.client
+import re
+import socket
+import ssl
 import urllib.error
 from contextlib import closing
 
@@ -21,6 +24,9 @@ _UPLOAD_TOKEN_RE = __import__("re").compile(r"^[0-9a-f]{32}$")
 _THUMBNAIL_MAX_EDGE = 768
 _THUMBNAIL_MAX_BYTES = 240 * 1024
 _THUMBNAIL_MAX_PIXELS = 40_000_000
+_AI_FRAME_MAX_EDGE = 640
+_AI_FRAME_MAX_BYTES = 128 * 1024
+_AI_FRAMES_TOTAL_MAX_BYTES = 1024 * 1024
 
 
 def _ensure_upload_table(connection):
@@ -234,7 +240,10 @@ def _do_breakdown(payload, info, url):
         _heartbeat(job_id, "analyzing")
         platform = info.get("platform", "")
         if payload.get("mode") == "reverse_prompt":
-            return _reverse_from_frames(payload, frames, url, title, platform, duration)
+            return _reverse_from_frames(
+                payload, frames, url, title, platform, duration,
+                script_text=script_text,
+            )
 
         context = (
             "视频标题：" + str(title) + "\n"
@@ -245,11 +254,14 @@ def _do_breakdown(payload, info, url):
         )
         usermsg = context + (
             '\n\n请严格输出 JSON：{"rhythm":[{"phase":"","time":"","strategy":""}],'
-            '"scenes":[{"dur":"3s","scale":"","camera":"","scene":"详细画面描述(60-100字)",'
+            '"scenes":[{"dur":"3s","scale":"","camera":"","scene":"详细画面描述(80-140字)",'
             '"line":"口播台词"}],"viral_logic":"","template":""}。'
             "输出 4-6 个分镜，各 dur 之和约等于总时长。每个 scene 必须结合关键帧，至少写清："
-            "主体外观或产品特征、连续动作及道具互动、表情视线和身体姿态、场景前中后景关系、"
-            "景别机位与运镜、光线色调和氛围。不要写“人物出现”“展示产品”等笼统结论。"
+            "主体可见外观或产品特征、动作起点—过程—终点及道具互动、表情视线和身体姿态、"
+            "场景前中后景与主体相对位置、景别机位、镜头运动的起止路线、构图、光线方向、"
+            "色温色调、画面质感、环境音/音效、与前后镜的动作或视线衔接。"
+            "每个 scene 写 80-140 字，形成可直接拍摄或输入视频生成模型的执行指令；"
+            "不要写“人物出现”“展示产品”“镜头切换”等笼统结论。"
             "没有人物口播时 line 输出空串。只输出 JSON，不要解释或 markdown。"
         )
         sysmsg = (
@@ -320,22 +332,79 @@ def _download_breakdown_video(tikhub, info, detail, destination):
     raise RuntimeError("视频下载重试状态异常")
 
 
-def _reverse_from_frames(payload, frames, source_url="", title="", platform="", duration=0):
-    raw = _chat_multimodal(
+def _reverse_from_frames(
+    payload, frames, source_url="", title="", platform="", duration=0,
+    script_text="",
+):
+    duration = max(0.0, float(duration or 0))
+    duration_text = ("%.3f" % duration).rstrip("0").rstrip(".")
+    if duration > 0:
+        source_context = (
+            "视频标题：%s\n平台：%s\n总时长：%s 秒\n口播时间轴：\n%s\n\n"
+            % (
+                str(title or "（无）"),
+                str(platform or "（未知）"),
+                duration_text,
+                str(script_text or "（无可靠口播，请仅依据可见画面）"),
+            )
+        )
+    else:
+        source_context = (
+            "素材名称：%s\n素材类型：静态图片\n\n"
+            % str(title or "（无）")
+        )
+    sysmsg = (
         "你是黄雀传媒资深短视频复刻编导。根据连续关键帧恢复镜头时间轴、动作节点与空间连续性，"
-        "写成视频生成模型可执行的中文提示词。只输出 JSON，不要解释或 markdown。",
-        (
-            "请严格按照参考画面的时间顺序，输出 JSON："
-            "{\"prompt\":\"一段完整、可直接用于视频生成的中文执行提示词\"}。"
-            "提示词必须按总时长写连续时间轴，逐段说明主体、动作起止、景别、机位、运镜、构图和转场；"
-            "写清场景道具、光线色调、节奏和情绪钩子。仅补充连接相邻关键帧所需的过渡动作，"
-            "不得新增人物、道具、镜头或无关情节；人物具体身份、面部和不可确认的品牌文字不得臆造。"
-        ),
-        frames,
+        "写成视频生成模型可执行的中文提示词。严格区分可见事实与不确定信息，不臆造身份、"
+        "品牌文字、人物、道具或情节。只输出 JSON，不要解释或 markdown。"
     )
-    prompt = str((_parse_breakdown_json(raw) or {}).get("prompt") or "").strip()
-    if not prompt:
-        raise ValueError("提示词反推结果为空，请重试")
+    if duration > 0:
+        usermsg = (
+            source_context + "请严格按照参考画面的时间顺序，输出 JSON："
+            "{\"prompt\":\"[00:00-00:03] ...\\n[00:03-00:07] ...\"}。"
+            "prompt 必须从 00:00 开始，按真实总时长拆成连续、不重叠、无空档的时间段，"
+            "最后一段结束时间精确等于总时长；不足整秒时保留小数秒。镜头变化处单独分段。"
+            "每段用 80-160 字写清：①主体可见外观与画面位置；"
+            "②动作起点、连续过程、终点及道具互动；③表情、视线和身体姿态；"
+            "④场景前中后景及空间关系；⑤景别、机位高度、视角、构图和运镜起止路线；"
+            "⑥主光方向、色温色调、材质质感和氛围；⑦转场依据、节奏、环境音/音效；"
+            "⑧该时间段对应的口播或字幕（没有则写“无”）。"
+            "仅补充连接相邻关键帧必需的过渡动作；无法确认的细节写“未确认”，不得臆造。"
+            "各段之间用换行分隔，不要合并成一整段概述。"
+        )
+    else:
+        usermsg = (
+            source_context
+            + "请输出 JSON：{\"prompt\":\"一段可直接用于图像生成的中文执行提示词\"}。"
+            "这是静态图片，不要编造时间轴、镜头运动或后续情节。请写清可见主体、姿态、"
+            "场景层次、构图视角、光线方向、色温色调、材质和画面风格；"
+            "无法确认的身份、品牌文字或细节写“未确认”。"
+        )
+    last_error = None
+    for attempt in range(2):
+        message = usermsg
+        if attempt and duration > 0:
+            message += (
+                "\n\n上一次时间轴校验失败：%s。请修正后重新输出完整 JSON；"
+                "必须从 00:00 开始、区间连续且不重叠，末段结束于 %s 秒。"
+                % (last_error, duration_text)
+            )
+        elif attempt:
+            message += "\n\n上一次输出校验失败：%s。请重新输出完整 JSON。" % last_error
+        try:
+            raw = _chat_multimodal(sysmsg, message, frames)
+            prompt = str(
+                (_parse_breakdown_json(raw) or {}).get("prompt") or ""
+            ).strip()
+            if not prompt:
+                raise ValueError("提示词反推结果为空")
+            if duration > 0:
+                _validate_reverse_timeline(prompt, duration)
+            break
+        except ValueError as error:
+            last_error = error
+    else:
+        raise ValueError("提示词时间轴校验失败：%s" % last_error)
     return {
         "type": "breakdown_reverse",
         "source_url": source_url,
@@ -345,6 +414,65 @@ def _reverse_from_frames(payload, frames, source_url="", title="", platform="", 
         "prompt": prompt,
         "frame_thumbnails": _frame_thumbnails(frames),
     }
+
+
+_TIMELINE_LINE_RE = re.compile(
+    r"^\s*\[\s*(?P<start>(?:\d{1,2}:){1,2}\d{1,2}(?:\.\d+)?|\d+(?:\.\d+)?s)"
+    r"\s*[-–—~至]\s*"
+    r"(?P<end>(?:\d{1,2}:){1,2}\d{1,2}(?:\.\d+)?|\d+(?:\.\d+)?s)\s*\]"
+    r"\s*(?P<body>.+?)\s*$"
+)
+
+
+def _timeline_seconds(value):
+    text = str(value or "").strip().lower()
+    if text.endswith("s"):
+        return float(text[:-1])
+    parts = text.split(":")
+    if len(parts) == 2:
+        seconds = float(parts[1])
+        if seconds >= 60:
+            raise ValueError("秒数必须小于60")
+        return int(parts[0]) * 60 + seconds
+    if len(parts) == 3:
+        minutes, seconds = int(parts[1]), float(parts[2])
+        if minutes >= 60 or seconds >= 60:
+            raise ValueError("分和秒必须小于60")
+        return int(parts[0]) * 3600 + minutes * 60 + seconds
+    raise ValueError("无法识别时间格式 %s" % value)
+
+
+def _validate_reverse_timeline(prompt, duration, tolerance=0.01):
+    duration = float(duration)
+    lines = [line.strip() for line in str(prompt or "").splitlines() if line.strip()]
+    if not lines:
+        raise ValueError("时间轴为空")
+    segments = []
+    for index, line in enumerate(lines, 1):
+        match = _TIMELINE_LINE_RE.match(line)
+        if not match:
+            raise ValueError("第%d段缺少合法的[开始-结束]时间范围" % index)
+        start = _timeline_seconds(match.group("start"))
+        end = _timeline_seconds(match.group("end"))
+        if end <= start:
+            raise ValueError("第%d段结束时间必须大于开始时间" % index)
+        if end > duration + tolerance:
+            raise ValueError("第%d段结束时间超出视频总时长" % index)
+        segments.append((start, end))
+    if segments[0][0] != 0:
+        raise ValueError("时间轴必须从00:00开始")
+    previous_start, previous_end = segments[0]
+    for index, (start, end) in enumerate(segments[1:], 2):
+        if start < previous_start - tolerance:
+            raise ValueError("第%d段时间范围乱序" % index)
+        if start < previous_end - tolerance:
+            raise ValueError("第%d段与上一段重叠" % index)
+        if start > previous_end + tolerance:
+            raise ValueError("第%d段与上一段之间存在空档" % index)
+        previous_start, previous_end = start, end
+    if abs(previous_end - duration) > tolerance:
+        raise ValueError("末段结束时间未对齐视频总时长")
+    return segments
 
 
 def _do_local_reverse(payload, upload_token):
@@ -451,7 +579,9 @@ def _frame_thumbnails(frames, limit=4):
     return thumbs
 
 
-def _bounded_thumbnail(path):
+def _bounded_thumbnail(
+    path, max_edge=_THUMBNAIL_MAX_EDGE, max_bytes=_THUMBNAIL_MAX_BYTES,
+):
     """Create a small JPEG reference; never persist the original upload bytes."""
     from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -475,7 +605,12 @@ def _bounded_thumbnail(path):
         raise ValueError("参考图片无法生成缩略图") from error
 
     resampling = getattr(Image, "Resampling", Image).LANCZOS
-    for edge in (_THUMBNAIL_MAX_EDGE, 640, 512, 384):
+    edges = []
+    for edge in (max_edge, 640, 512, 384, 320, 256):
+        edge = min(max(1, int(edge)), max(1, int(max_edge)))
+        if edge not in edges:
+            edges.append(edge)
+    for edge in edges:
         candidate = image.copy()
         candidate.thumbnail((edge, edge), resampling)
         for quality in (82, 72, 62, 52, 42):
@@ -484,9 +619,26 @@ def _bounded_thumbnail(path):
                 output, format="JPEG", quality=quality, optimize=True, progressive=True,
             )
             thumbnail = output.getvalue()
-            if len(thumbnail) <= _THUMBNAIL_MAX_BYTES:
+            if len(thumbnail) <= max_bytes:
                 return thumbnail
     raise ValueError("参考图片压缩后仍然过大")
+
+
+def _bounded_ai_frame(path, max_bytes):
+    """Return bounded image bytes without making Pillow a hard dependency."""
+    try:
+        return _bounded_thumbnail(
+            path, max_edge=_AI_FRAME_MAX_EDGE, max_bytes=max_bytes,
+        ), "image/jpeg"
+    except ModuleNotFoundError:
+        with open(path, "rb") as source:
+            frame = source.read(max_bytes + 1)
+        if len(frame) > max_bytes:
+            raise ValueError("视频关键帧数据过大，请降低素材分辨率")
+        media_type = mimetypes.guess_type(path)[0] or "image/jpeg"
+        if media_type not in {"image/jpeg", "image/png", "image/webp"}:
+            raise ValueError("视频关键帧格式不受支持")
+        return frame, media_type
 
 
 def _strip_json_code_fence(raw):
@@ -670,15 +822,24 @@ def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7):
         raise RuntimeError("REVERSE_ZHIPU_KEY is not configured")
 
     content = [{"type": "text", "text": usermsg}]
+    image_paths = list(image_paths or [])
+    per_frame_budget = min(
+        _AI_FRAME_MAX_BYTES,
+        max(32 * 1024, _AI_FRAMES_TOTAL_MAX_BYTES // max(1, len(image_paths))),
+    )
+    image_bytes = 0
     for path in image_paths:
-        with open(path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode()
-        media_type = mimetypes.guess_type(path)[0] or "image/jpeg"
-        if media_type not in {"image/jpeg", "image/png", "image/webp"}:
-            media_type = "image/jpeg"
+        frame, media_type = _bounded_ai_frame(path, per_frame_budget)
+        if image_bytes + len(frame) > _AI_FRAMES_TOTAL_MAX_BYTES:
+            raise ValueError("视频关键帧压缩后仍然过大，请缩短视频或降低素材分辨率")
+        image_bytes += len(frame)
+        b64 = base64.b64encode(frame).decode()
         content.append({
             "type": "image_url",
-            "image_url": {"url": "data:" + media_type + ";base64," + b64, "detail": "low"}
+            "image_url": {
+                "url": "data:" + media_type + ";base64," + b64,
+                "detail": "low",
+            },
         })
 
     body = {
@@ -690,10 +851,11 @@ def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7):
         "temperature": temp,
     }
 
+    request_data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     try:
         d = egress.post_json_idempotent(
             ZHIPU_API_BASE, ZHIPU_API_BASE, "/chat/completions",
-            json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            request_data,
             {
                 "Authorization": "Bearer " + ZHIPU_API_KEY,
                 "Content-Type": "application/json",
@@ -702,9 +864,43 @@ def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7):
             max_attempts=2,
         )
     except Exception as error:
+        code = int(getattr(error, "code", 0) or 0)
+        reason = getattr(error, "reason", None)
         detail = str(error or "").lower()
-        if isinstance(error, (TimeoutError, OSError)) or "timed out" in detail or "timeout" in detail:
+        timed_out = (
+            isinstance(error, (TimeoutError, socket.timeout))
+            or isinstance(reason, (TimeoutError, socket.timeout))
+            or "timed out" in detail
+            or "timeout" in detail
+        )
+        print(
+            "[breakdown] ai request failed type=%s http=%s request_bytes=%d image_bytes=%d"
+            % (type(error).__name__, code or "-", len(request_data), image_bytes),
+            flush=True,
+        )
+        if code == 413:
+            message = "AI 分析素材数据过大，请缩短视频或降低素材分辨率，本次点数已自动退回"
+        elif code == 429:
+            message = "AI 分析服务请求过多，请稍后重试，本次点数已自动退回"
+        elif code in (401, 403):
+            message = "AI 分析服务鉴权异常，本次点数已自动退回，请联系管理员"
+        elif code == 400:
+            message = "AI 分析请求被上游拒绝，可能是素材格式或内容不兼容，本次点数已自动退回"
+        elif code >= 500:
+            message = "AI 分析服务暂时不可用，本次点数已自动退回，请稍后重试"
+        elif timed_out:
             message = "AI 分析响应超时，本次未生成结果，点数已自动退回，请稍后重试"
+        elif isinstance(
+            error,
+            (
+                urllib.error.URLError,
+                http.client.RemoteDisconnected,
+                http.client.IncompleteRead,
+                ConnectionError,
+                ssl.SSLError,
+            ),
+        ):
+            message = "AI 分析连接中断，本次点数已自动退回，请稍后重试"
         else:
             message = "AI 分析服务暂时不可用，本次未生成结果，点数已自动退回，请稍后重试"
         raise RuntimeError(message) from error

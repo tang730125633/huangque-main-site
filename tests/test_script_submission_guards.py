@@ -81,6 +81,14 @@ class ScriptSubmissionGuardTests(unittest.TestCase):
         for expected in ("未提供品牌名时不得虚构品牌", "不得自行补造数据", "绝对化"):
             self.assertIn(expected, captured["system"])
             self.assertIn(expected, captured["user"])
+        for expected in (
+            "80-140字",
+            "动作起点—过程—终点",
+            "运镜起止路线",
+            "与前后镜的连续性",
+            "禁止使用“人物出现”",
+        ):
+            self.assertIn(expected, captured["user"])
 
     def test_script_result_removes_unsupported_claims_and_offer_details(self):
         scenes = [{
