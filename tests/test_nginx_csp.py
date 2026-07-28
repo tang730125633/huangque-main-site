@@ -56,7 +56,12 @@ class NginxCspTest(unittest.TestCase):
         end = config.index("\n    }", start)
         block = config[start:end]
         self.assertIn("proxy_pass http://127.0.0.1:3101/;", block)
+        self.assertIn('proxy_set_header Accept-Encoding "";', block)
         self.assertIn("'/workbench/ip12/api/", block)
+        self.assertIn(
+            "document.getElementById('sendBtn').disabled=false;",
+            block,
+        )
         self.assertNotIn("auth_basic", block)
 
 
