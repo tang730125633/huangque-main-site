@@ -2,6 +2,7 @@
 """爆款拆解：竞品视频链接 → 下载 → 抽帧 → ASR → GLM-4V 多模态 → 分镜脚本"""
 import os, json, time, base64, tempfile, subprocess, shutil, mimetypes, io
 import http.client
+import re
 import socket
 import ssl
 import urllib.error
@@ -335,37 +336,58 @@ def _reverse_from_frames(
     payload, frames, source_url="", title="", platform="", duration=0,
     script_text="",
 ):
+    duration = max(0.0, float(duration or 0))
+    duration_text = ("%.3f" % duration).rstrip("0").rstrip(".")
     source_context = (
-        "视频标题：%s\n平台：%s\n总时长：%.1f 秒\n口播时间轴：\n%s\n\n"
+        "视频标题：%s\n平台：%s\n总时长：%s 秒\n口播时间轴：\n%s\n\n"
         % (
             str(title or "（无）"),
             str(platform or "（未知）"),
-            float(duration or 0),
+            duration_text or "0",
             str(script_text or "（无可靠口播，请仅依据可见画面）"),
         )
     )
-    raw = _chat_multimodal(
+    sysmsg = (
         "你是黄雀传媒资深短视频复刻编导。根据连续关键帧恢复镜头时间轴、动作节点与空间连续性，"
         "写成视频生成模型可执行的中文提示词。严格区分可见事实与不确定信息，不臆造身份、"
-        "品牌文字、人物、道具或情节。只输出 JSON，不要解释或 markdown。",
-        (
-            source_context + "请严格按照参考画面的时间顺序，输出 JSON："
-            "{\"prompt\":\"[00:00-00:03] ...\\n[00:03-00:07] ...\"}。"
-            "prompt 必须从 00:00 开始，按真实总时长拆成连续、不重叠、无空档的时间段，"
-            "最后一段结束时间等于总时长；镜头变化处单独分段。每段用 80-160 字写清："
-            "①主体可见外观与画面位置；②动作起点、连续过程、终点及道具互动；"
-            "③表情、视线和身体姿态；④场景前中后景及空间关系；"
-            "⑤景别、机位高度、视角、构图和运镜起止路线；"
-            "⑥主光方向、色温色调、材质质感和氛围；⑦转场依据、节奏、环境音/音效；"
-            "⑧该时间段对应的口播或字幕（没有则写“无”）。"
-            "仅补充连接相邻关键帧必需的过渡动作；无法从关键帧确认的细节写“未确认”，不得臆造。"
-            "各段之间用换行分隔，不要合并成一整段概述。"
-        ),
-        frames,
+        "品牌文字、人物、道具或情节。只输出 JSON，不要解释或 markdown。"
     )
-    prompt = str((_parse_breakdown_json(raw) or {}).get("prompt") or "").strip()
-    if not prompt:
-        raise ValueError("提示词反推结果为空，请重试")
+    usermsg = (
+        source_context + "请严格按照参考画面的时间顺序，输出 JSON："
+        "{\"prompt\":\"[00:00-00:03] ...\\n[00:03-00:07] ...\"}。"
+        "prompt 必须从 00:00 开始，按真实总时长拆成连续、不重叠、无空档的时间段，"
+        "最后一段结束时间精确等于总时长；不足整秒时保留小数秒。镜头变化处单独分段。"
+        "每段用 80-160 字写清：①主体可见外观与画面位置；"
+        "②动作起点、连续过程、终点及道具互动；③表情、视线和身体姿态；"
+        "④场景前中后景及空间关系；⑤景别、机位高度、视角、构图和运镜起止路线；"
+        "⑥主光方向、色温色调、材质质感和氛围；⑦转场依据、节奏、环境音/音效；"
+        "⑧该时间段对应的口播或字幕（没有则写“无”）。"
+        "仅补充连接相邻关键帧必需的过渡动作；无法确认的细节写“未确认”，不得臆造。"
+        "各段之间用换行分隔，不要合并成一整段概述。"
+    )
+    last_error = None
+    for attempt in range(2):
+        message = usermsg
+        if attempt:
+            message += (
+                "\n\n上一次时间轴校验失败：%s。请修正后重新输出完整 JSON；"
+                "必须从 00:00 开始、区间连续且不重叠，末段结束于 %s 秒。"
+                % (last_error, duration_text)
+            )
+        try:
+            raw = _chat_multimodal(sysmsg, message, frames)
+            prompt = str(
+                (_parse_breakdown_json(raw) or {}).get("prompt") or ""
+            ).strip()
+            if not prompt:
+                raise ValueError("提示词反推结果为空")
+            if duration > 0:
+                _validate_reverse_timeline(prompt, duration)
+            break
+        except ValueError as error:
+            last_error = error
+    else:
+        raise ValueError("提示词时间轴校验失败：%s" % last_error)
     return {
         "type": "breakdown_reverse",
         "source_url": source_url,
@@ -375,6 +397,65 @@ def _reverse_from_frames(
         "prompt": prompt,
         "frame_thumbnails": _frame_thumbnails(frames),
     }
+
+
+_TIMELINE_LINE_RE = re.compile(
+    r"^\s*\[\s*(?P<start>(?:\d{1,2}:){1,2}\d{1,2}(?:\.\d+)?|\d+(?:\.\d+)?s)"
+    r"\s*[-–—~至]\s*"
+    r"(?P<end>(?:\d{1,2}:){1,2}\d{1,2}(?:\.\d+)?|\d+(?:\.\d+)?s)\s*\]"
+    r"\s*(?P<body>.+?)\s*$"
+)
+
+
+def _timeline_seconds(value):
+    text = str(value or "").strip().lower()
+    if text.endswith("s"):
+        return float(text[:-1])
+    parts = text.split(":")
+    if len(parts) == 2:
+        seconds = float(parts[1])
+        if seconds >= 60:
+            raise ValueError("秒数必须小于60")
+        return int(parts[0]) * 60 + seconds
+    if len(parts) == 3:
+        minutes, seconds = int(parts[1]), float(parts[2])
+        if minutes >= 60 or seconds >= 60:
+            raise ValueError("分和秒必须小于60")
+        return int(parts[0]) * 3600 + minutes * 60 + seconds
+    raise ValueError("无法识别时间格式 %s" % value)
+
+
+def _validate_reverse_timeline(prompt, duration, tolerance=0.01):
+    duration = float(duration)
+    lines = [line.strip() for line in str(prompt or "").splitlines() if line.strip()]
+    if not lines:
+        raise ValueError("时间轴为空")
+    segments = []
+    for index, line in enumerate(lines, 1):
+        match = _TIMELINE_LINE_RE.match(line)
+        if not match:
+            raise ValueError("第%d段缺少合法的[开始-结束]时间范围" % index)
+        start = _timeline_seconds(match.group("start"))
+        end = _timeline_seconds(match.group("end"))
+        if end <= start:
+            raise ValueError("第%d段结束时间必须大于开始时间" % index)
+        if end > duration + tolerance:
+            raise ValueError("第%d段结束时间超出视频总时长" % index)
+        segments.append((start, end))
+    if segments[0][0] != 0:
+        raise ValueError("时间轴必须从00:00开始")
+    previous_start, previous_end = segments[0]
+    for index, (start, end) in enumerate(segments[1:], 2):
+        if start < previous_start - tolerance:
+            raise ValueError("第%d段时间范围乱序" % index)
+        if start < previous_end - tolerance:
+            raise ValueError("第%d段与上一段重叠" % index)
+        if start > previous_end + tolerance:
+            raise ValueError("第%d段与上一段之间存在空档" % index)
+        previous_start, previous_end = start, end
+    if abs(previous_end - duration) > tolerance:
+        raise ValueError("末段结束时间未对齐视频总时长")
+    return segments
 
 
 def _do_local_reverse(payload, upload_token):

@@ -90,7 +90,7 @@ class BreakdownFollowupTests(unittest.TestCase):
 
         self.assertIn("[00:00-00:03]", result["prompt"])
         for expected in (
-            "总时长：7.0 秒",
+            "总时长：7 秒",
             "[0s-3s] 开场口播",
             "连续、不重叠、无空档",
             "每段用 80-160 字",
@@ -99,6 +99,112 @@ class BreakdownFollowupTests(unittest.TestCase):
         ):
             self.assertIn(expected, captured["user"])
         self.assertIn("不臆造", captured["system"])
+
+    def test_reverse_timeline_accepts_fractional_and_subsecond_duration(self):
+        segments = breakdown._validate_reverse_timeline(
+            (
+                "[00:00-00:00.25] 快速开场。\n"
+                "[00:00.25-00:00.75] 主体完成动作。"
+            ),
+            0.75,
+        )
+        self.assertEqual(segments, [(0.0, 0.25), (0.25, 0.75)])
+
+        segments = breakdown._validate_reverse_timeline(
+            "[00:00-00:01.25] 开场。\n[00:01.25-00:02.5] 收束。",
+            2.5,
+        )
+        self.assertEqual(segments[-1][1], 2.5)
+
+    def test_reverse_timeline_rejects_invalid_boundaries(self):
+        invalid = (
+            (
+                "[00:00.1-00:01] 内容。",
+                1,
+                "从00:00开始",
+            ),
+            (
+                "[00:00-00:01] 内容。\n[00:01.1-00:02] 内容。",
+                2,
+                "空档",
+            ),
+            (
+                "[00:00-00:01.1] 内容。\n[00:01-00:02] 内容。",
+                2,
+                "重叠",
+            ),
+            (
+                (
+                    "[00:00-00:00.5] 内容。\n"
+                    "[00:00.5-00:01] 内容。\n"
+                    "[00:00.4-00:02] 内容。"
+                ),
+                2,
+                "乱序",
+            ),
+            (
+                "[00:00-00:01.1] 内容。",
+                1,
+                "超出",
+            ),
+            (
+                "[00:00-00:00.9] 内容。",
+                1,
+                "未对齐",
+            ),
+        )
+        for prompt, duration, message in invalid:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ValueError, message):
+                    breakdown._validate_reverse_timeline(prompt, duration)
+
+    def test_reverse_timeline_validation_retries_once_with_feedback(self):
+        responses = [
+            json.dumps(
+                {"prompt": "[00:00.5-00:02] 错误开场。"},
+                ensure_ascii=False,
+            ),
+            json.dumps(
+                {
+                    "prompt": (
+                        "[00:00-00:01] 正确开场。\n"
+                        "[00:01-00:02] 正确收束。"
+                    )
+                },
+                ensure_ascii=False,
+            ),
+        ]
+        messages = []
+
+        def fake_chat(system_message, user_message, frames, temp=0.7):
+            messages.append(user_message)
+            return responses.pop(0)
+
+        with mock.patch.object(
+            breakdown, "_chat_multimodal", side_effect=fake_chat,
+        ) as chat:
+            result = breakdown._reverse_from_frames(
+                {}, ["frame.jpg"], duration=2,
+            )
+
+        self.assertEqual(chat.call_count, 2)
+        self.assertIn("上一次时间轴校验失败", messages[1])
+        self.assertIn("必须从00:00开始", messages[1])
+        self.assertIn("[00:00-00:01]", result["prompt"])
+
+    def test_reverse_timeline_validation_fails_after_bounded_retry(self):
+        invalid = json.dumps(
+            {"prompt": "[00:01-00:02] 始终错误。"},
+            ensure_ascii=False,
+        )
+        with mock.patch.object(
+            breakdown, "_chat_multimodal", return_value=invalid,
+        ) as chat:
+            with self.assertRaisesRegex(ValueError, "时间轴校验失败"):
+                breakdown._reverse_from_frames(
+                    {}, ["frame.jpg"], duration=2,
+                )
+        self.assertEqual(chat.call_count, 2)
 
     def test_download_timeout_refreshes_detail_and_retries_once(self):
         fake_tikhub = mock.Mock()
