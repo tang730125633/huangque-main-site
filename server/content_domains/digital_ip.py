@@ -1239,12 +1239,15 @@ def _patch_project(username, project_id, revision, has_title, has_state, clean_s
             for module_index, step_count in enumerate(PROJECT_MODULE_STEPS[:FOUNDATION_MODULES])
             for step_index in range(step_count)
         )
-        content_changed = any(
-            previous_answers.get("%d-%d" % (module_index, step_index)) != next_answers.get("%d-%d" % (module_index, step_index))
+        content_answer_keys = tuple(
+            "%d-%d" % (module_index, step_index)
             for module_index in range(FOUNDATION_MODULES, ACTIVE_PROJECT_MODULES)
             for step_index in range(PROJECT_MODULE_STEPS[module_index])
         )
-        if not migrating_to_interview_v2 and content_changed and (foundation_changed or not _foundation_is_confirmed(row)):
+        content_changed = any(previous_answers.get(key) != next_answers.get(key) for key in content_answer_keys)
+        has_content_answers = any(key in next_answers for key in content_answer_keys)
+        if ((has_content_answers and not _foundation_is_confirmed(row))
+                or (not migrating_to_interview_v2 and content_changed and foundation_changed)):
             raise DigitalIPValidationError("请先确认未变更的模块 1–4 阶段报告，再填写模块 5–6")
         managed_report = _json_object(row["state_json"]).get(REPORT_STATE_KEY)
         if isinstance(managed_report, dict):
