@@ -161,7 +161,7 @@
     }
     .step-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:5px}
     .action-group{display:flex;gap:9px}
-    .nav-btn{border:1px solid #cfc4b4;border-radius:9px;padding:12px 19px;background:rgba(255,255,255,.45);color:#53606d}
+    .nav-btn{display:inline-flex;align-items:center;justify-content:center;border:1px solid #cfc4b4;border-radius:9px;padding:12px 19px;background:rgba(255,255,255,.45);color:#53606d;text-decoration:none}
     .nav-btn:hover{border-color:#9b8c74}
     .nav-btn.primary{min-width:150px;border-color:#167f75;background:linear-gradient(135deg,#168f84,#0d726a);color:#fff8e9;font-weight:800;box-shadow:0 10px 25px rgba(22,139,128,.17)}
     .nav-btn:disabled{opacity:.35;cursor:not-allowed}
@@ -558,6 +558,7 @@
     const API_URL = "/api/gen/digital-ip/diagnose";
     const GUIDE_API_URL = "/api/gen/digital-ip/guide";
     const PROJECTS_URL = "/api/gen/digital-ip/projects";
+    const GUIDE_TURN_LIMIT = 240;
     const PRODUCT_HANDOFF_KEY = "hq_ip12_product_handoff_v1";
     const PRODUCT_HANDOFFS = {
       image_studio:{url:"banana.html",instruction:"请根据以下已确认的 IP 底座，制作一份符合定位、人设、价值与故事的视觉内容草稿："},
@@ -586,6 +587,7 @@
     ];
 
     function projectStorageKey(prefix=STORAGE_KEY){ return project?.id?`${prefix}:${project.id}`:""; }
+    function reportPdfUrl(){ return project?.id?`${PROJECTS_URL}/${encodeURIComponent(project.id)}/report.pdf`:""; }
     function isOpenModuleIndex(index){ return !!MODULES[index]&&MODULES[index].availability!=="coming_soon"; }
     function foundationStage(){ return project?.foundation_stage||{status:"missing",stale:false}; }
     function foundationReady(){ const stage=foundationStage(); return !foundationDirty&&stage.status==="confirmed"&&stage.stale!==true; }
@@ -598,6 +600,41 @@
     function isOpenStepKey(key){
       const [moduleIndex,stepIndex]=String(key).split("-").map(Number);
       return Number.isInteger(moduleIndex)&&Number.isInteger(stepIndex)&&isOpenModuleIndex(moduleIndex)&&!!MODULES[moduleIndex].steps[stepIndex];
+    }
+    function firstUnresolvedStep(moduleIndex){
+      const module=MODULES[moduleIndex];
+      if(!module)return 0;
+      const index=module.steps.findIndex((_,stepIndex)=>{
+        const answer=state.answers[`${moduleIndex}-${stepIndex}`]||{};
+        return answer.confirmed!==true&&answer.skipped!==true;
+      });
+      return index<0?0:index;
+    }
+    function nextUnresolvedCursor(moduleIndex=state.moduleIndex,stepIndex=state.stepIndex){
+      const candidates=[];
+      for(let si=stepIndex+1;si<MODULES[moduleIndex].steps.length;si++)candidates.push({moduleIndex,stepIndex:si});
+      for(let si=0;si<stepIndex;si++)candidates.push({moduleIndex,stepIndex:si});
+      for(let mi=moduleIndex+1;mi<MODULES.length;mi++){
+        if(!isUnlockedModuleIndex(mi))continue;
+        for(let si=0;si<MODULES[mi].steps.length;si++)candidates.push({moduleIndex:mi,stepIndex:si});
+      }
+      for(let mi=0;mi<moduleIndex;mi++){
+        if(!isUnlockedModuleIndex(mi))continue;
+        for(let si=0;si<MODULES[mi].steps.length;si++)candidates.push({moduleIndex:mi,stepIndex:si});
+      }
+      return candidates.find(({moduleIndex,stepIndex})=>{
+        const answer=state.answers[`${moduleIndex}-${stepIndex}`]||{};
+        return answer.confirmed!==true&&answer.skipped!==true;
+      })||null;
+    }
+    function navigationCommand(value){
+      const text=String(value||"").replace(/[\s，。！？!?、]/g,"");
+      if(["继续","下一题","下一个","往下","进入下一题"].includes(text))return {type:"next"};
+      if(["上一题","上一个","返回上一题"].includes(text))return {type:"previous"};
+      if(["跳过","暂时跳过","这题跳过"].includes(text))return {type:"skip"};
+      const module=text.match(/^(?:你)?(?:帮我)?(?:跳到|跳一下|进入|切换到)?模块([1-6])(?:吧)?$/)||
+        text.match(/^(?:你)?(?:帮我)?(?:跳到|跳一下|进入|切换到)(?:第)?([1-6])(?:个)?模块(?:吧)?$/);
+      return module?{type:"module",moduleIndex:Number(module[1])-1}:null;
     }
     function entryStep(){
       const query=new URLSearchParams(location.search);
@@ -764,7 +801,7 @@
         btn.addEventListener("click",()=>{
           saveDraft();
           state.moduleIndex=Number(btn.dataset.module);
-          state.stepIndex=0;
+          state.stepIndex=firstUnresolvedStep(state.moduleIndex);
           persist();
           render();
           closeDrawers();
@@ -855,6 +892,8 @@
       const textarea=document.getElementById("answer");
       const value=step.type==="review"?step.preview.join("\n"):textarea?textarea.value.trim():current.text||"";
       const next={...current,text:value,choice:selectedChoice};
+      const hasDraft=!!value||(Array.isArray(selectedChoice)?selectedChoice.length>0:selectedChoice!==null&&selectedChoice!==undefined&&selectedChoice!=="")||current.confirmed===true||current.skipped===true;
+      if(!hasDraft&&!state.answers[keyFor()]){ persist(); return false; }
       const changed=confirmedAnswerChanged(step,current,next);
       const contentChanged=answerText(step,current)!==answerText(step,next);
       if(module.id<=4&&foundationReady()&&contentChanged)foundationDirty=true;
@@ -999,7 +1038,7 @@
     }
 
     function activeGuideTurns(){ return state.guideTurns.filter(turn=>isOpenStepKey(turn.stepKey)); }
-    function visibleGuideTurns(){ return activeGuideTurns().slice(-20); }
+    function visibleGuideTurns(){ return activeGuideTurns().slice(-GUIDE_TURN_LIMIT); }
     function requestGuideTurns(){ return activeGuideTurns().slice(-6); }
     function stepMeta(stepKey){
       const [moduleIndex,stepIndex]=String(stepKey||"").split("-").map(Number);
@@ -1013,6 +1052,49 @@
 
     function latestGuideReply(){
       return [...currentGuideTurns()].reverse().find(turn=>turn.role==="assistant")||{};
+    }
+
+    function handleNavigationMessage(message){
+      const command=navigationCommand(message);
+      if(!command)return false;
+      $("coachInput").value="";
+      if(command.type==="previous"){
+        goBack();
+        $("coachStatus").textContent="已回到上一题。";
+        return true;
+      }
+      if(command.type==="skip"){
+        skipCurrent();
+        $("coachStatus").textContent="本题已标记待补，继续下一题。";
+        return true;
+      }
+      if(command.type==="module"){
+        if(!isUnlockedModuleIndex(command.moduleIndex)){
+          showToast("请先确认模块 1–4 阶段报告");
+          return true;
+        }
+        saveDraft();
+        state.moduleIndex=command.moduleIndex;
+        state.stepIndex=firstUnresolvedStep(command.moduleIndex);
+        persist(); render(); closeDrawers();
+        $("coachStatus").textContent=`已进入模块 ${command.moduleIndex+1} 的首个未完成问题。`;
+        return true;
+      }
+      const answer=state.answers[keyFor()]||{};
+      if(answer.confirmed!==true&&answer.skipped!==true){
+        showToast("请先回答当前问题，或点击“跳过，稍后回补”");
+        return true;
+      }
+      const next=nextUnresolvedCursor();
+      if(!next){
+        showToast(foundationReady()?"当前开放模块已经完成":"请先生成并确认模块 1–4 阶段报告");
+        return true;
+      }
+      state.moduleIndex=next.moduleIndex;
+      state.stepIndex=next.stepIndex;
+      persist(); render();
+      $("coachStatus").textContent="已进入下一个未完成问题。";
+      return true;
     }
 
     function renderCoach(){
@@ -1056,6 +1138,7 @@
         showToast("先告诉小黄雀你哪里不清楚");
         return;
       }
+      if(handleNavigationMessage(message))return;
       if(!$("aiConsent").checked){ showToast("请先明确同意发送当前回答给 AI"); return; }
       const module=MODULES[state.moduleIndex];
       const step=module.steps[state.stepIndex];
@@ -1104,7 +1187,8 @@
             model:result.cached?"已缓存":(result.model||"AI 分析服务"),
             stepKey
           }
-        ].slice(-72);
+        // ponytail: 240 条覆盖当前六模块试点；超过后再迁独立追加式会话表。
+        ].slice(-GUIDE_TURN_LIMIT);
         $("coachInput").value="";
         state.answers[stepKey]={...answer,text:mergedAnswer,keywords:guide.suggested_answer||answer.keywords||"",confirmed:!followUp.length,confirmedValue:!followUp.length?mergedAnswer:answer.confirmedValue||"",skipped:false};
         if(followUp.length){
@@ -1296,11 +1380,12 @@
         `<button class="coach-action" type="button" data-resume-module="${item.moduleIndex}" data-resume-step="${item.stepIndex}">模块 ${item.module.id} · ${escapeHtml(item.step.title)} · 去回补</button>`
       ).join(""):`<p class="empty-memory">暂无待补步骤。</p>`;
       const foundationComplete=foundationItems().every(item=>item.answer?.confirmed||item.answer?.skipped),stage=foundationStage();
+      const pdfAction=stage.report_id?`<a class="coach-action" href="${escapeHtml(reportPdfUrl())}" download>下载 PDF</a>`:"";
       $("reportUnlock").innerHTML=!foundationComplete
         ?`<p class="empty-memory">完成模块 1–4 后生成阶段报告。</p>`
         :foundationReady()
-          ?`<p class="empty-memory">模块 1–4 报告已确认，模块 5–6 已解锁。</p><button class="coach-action" id="openReportBtn" type="button">查看阶段报告</button>`
-          :`<p class="empty-memory">${foundationDirty||stage.stale||stage.status==="stale"?"回答已变化，请重新生成并确认报告。":stage.status==="pending_confirmation"?"阶段报告待本人确认。":"阶段报告尚未生成。"}</p><button class="coach-action" id="openReportBtn" type="button">查看并确认阶段报告</button>`;
+          ?`<p class="empty-memory">模块 1–4 报告已确认，模块 5–6 已解锁。</p><button class="coach-action" id="openReportBtn" type="button">查看阶段报告</button>${pdfAction}`
+          :`<p class="empty-memory">${foundationDirty||stage.stale||stage.status==="stale"?"回答已变化，请重新生成并确认报告。":stage.status==="pending_confirmation"?"阶段报告待本人确认。":"阶段报告尚未生成。"}</p><button class="coach-action" id="openReportBtn" type="button">${stage.report_id?"查看并确认阶段报告":"生成阶段报告"}</button>${pdfAction}`;
       $("openReportBtn")?.addEventListener("click",event=>openFoundationReport(event.currentTarget));
       $("skippedItems").querySelectorAll("[data-resume-module]").forEach(button=>button.addEventListener("click",()=>{
         state.moduleIndex=Number(button.dataset.resumeModule);
@@ -1330,7 +1415,9 @@
       const title=ready?"模块 1–4 报告已确认":stale?"模块 1–4 报告需要更新":stage.status==="pending_confirmation"?"模块 1–4 报告待本人确认":"模块 1–4 初稿已完成";
       const gapNote=pending.length?`其中 ${pending.length} 项已跳过，会作为资料缺口列入报告。`:"";
       const copy=(ready?"定位、人设、价值与故事已经本人确认，可以继续模块 5–6。":stale?"已确认回答发生变化，请重新生成并确认报告后继续。":stage.status==="pending_confirmation"?"请阅读阶段报告并确认，确认后进入模块 5–6。":"请生成阶段报告并确认，确认后进入模块 5–6。")+gapNote;
-      section.innerHTML=`<div class="outcome-head"><div><span>FOUNDATION CHECKPOINT</span><h2>${title}</h2><p>${copy}</p></div><strong>${pending.length?`待补 ${pending.length} 项`:"4 / 4 已确认"}</strong></div><div class="outcome-grid">${profiles.map(item=>`<article class="outcome-card"><b>${escapeHtml(item.title)} · ${escapeHtml(item.output)}</b><p>${escapeHtml(item.summary)}</p></article>`).join("")}</div><div class="outcome-actions">${ready?'<button class="nav-btn primary" type="button" data-continue-content>继续模块 5</button>':'<button class="nav-btn primary" type="button" data-open-foundation-report>查看并确认阶段报告</button>'}</div>`;
+      const pdfAction=stage.report_id?`<a class="nav-btn" href="${escapeHtml(reportPdfUrl())}" download>下载 PDF</a>`:"";
+      const primaryAction=ready?'<button class="nav-btn primary" type="button" data-continue-content>继续模块 5</button>':`<button class="nav-btn primary" type="button" data-open-foundation-report>${stage.report_id?"查看并确认阶段报告":"生成阶段报告"}</button>`;
+      section.innerHTML=`<div class="outcome-head"><div><span>FOUNDATION CHECKPOINT</span><h2>${title}</h2><p>${copy}</p></div><strong>${pending.length?`待补 ${pending.length} 项`:"4 / 4 已确认"}</strong></div><div class="outcome-grid">${profiles.map(item=>`<article class="outcome-card"><b>${escapeHtml(item.title)} · ${escapeHtml(item.output)}</b><p>${escapeHtml(item.summary)}</p></article>`).join("")}</div><div class="outcome-actions">${primaryAction}${pdfAction}</div>`;
     }
 
     async function openFoundationReport(button){
