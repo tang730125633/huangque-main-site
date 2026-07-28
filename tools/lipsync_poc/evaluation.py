@@ -9,7 +9,8 @@ from .paths import provider_slug
 from .state import atomic_json, load_json
 
 
-SUMMARY_VERSION = "1.0"
+SUMMARY_VERSION = "1.1"
+DEFAULT_MIN_SAMPLE_COUNT = 20
 
 
 def _percentile(values, percentile):
@@ -51,7 +52,7 @@ def _is_whole_sentence_offset(value):
     }
 
 
-def _provider_summary(provider, reports):
+def _provider_summary(provider, reports, minimum_sample_count):
     succeeded = [
         report for report in reports if report.get("status") == "succeeded"
     ]
@@ -142,6 +143,9 @@ def _provider_summary(provider, reports):
         if identity_scores else None
     )
     gates = {
+        "sample_count_gte_minimum": (
+            len(reports) >= minimum_sample_count
+        ),
         "success_rate_gte_0_95": success_rate >= 0.95,
         "review_coverage_complete": review_coverage == 1.0,
         "usable_rate_gte_0_85": (
@@ -175,6 +179,7 @@ def _provider_summary(provider, reports):
         "provider": provider,
         "decision": decision,
         "sample_count": len(reports),
+        "minimum_sample_count": minimum_sample_count,
         "succeeded": len(succeeded),
         "success_rate": round(success_rate, 4),
         "elapsed_ms": {
@@ -208,7 +213,14 @@ def _provider_summary(provider, reports):
     }
 
 
-def build_summary(output_dir, providers):
+def build_summary(
+    output_dir,
+    providers,
+    minimum_sample_count=DEFAULT_MIN_SAMPLE_COUNT,
+):
+    minimum_sample_count = int(minimum_sample_count)
+    if minimum_sample_count <= 0:
+        raise ValueError("minimum_sample_count must be positive")
     root = Path(output_dir)
     summaries = []
     for requested_provider in providers:
@@ -220,7 +232,9 @@ def build_summary(output_dir, providers):
                 report = load_json(report_path)
                 if report and report.get("provider") == provider:
                     reports.append(report)
-        summaries.append(_provider_summary(provider, reports))
+        summaries.append(
+            _provider_summary(provider, reports, minimum_sample_count)
+        )
 
     eligible = [
         item for item in summaries if item["decision"] == "go"
@@ -256,6 +270,7 @@ def build_summary(output_dir, providers):
             "whole_sentence_offset_rate_max_exclusive": 0.05,
             "av_offset_ms_p95_max": 120,
             "identity_mean_min": 4,
+            "minimum_sample_count": minimum_sample_count,
         },
     }
 
@@ -270,8 +285,17 @@ def main(argv=None):
         nargs="+",
         default=["sync-labs", "fal-latentsync"],
     )
+    parser.add_argument(
+        "--minimum-sample-count",
+        type=int,
+        default=DEFAULT_MIN_SAMPLE_COUNT,
+    )
     args = parser.parse_args(argv)
-    summary = build_summary(args.output_dir, args.providers)
+    summary = build_summary(
+        args.output_dir,
+        args.providers,
+        minimum_sample_count=args.minimum_sample_count,
+    )
     destination = Path(args.output_dir) / "evaluation-summary.json"
     atomic_json(destination, summary)
     print(json.dumps(summary, ensure_ascii=False))

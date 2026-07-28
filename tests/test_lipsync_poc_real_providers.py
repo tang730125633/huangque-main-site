@@ -144,6 +144,8 @@ class RealProviderContractTests(unittest.TestCase):
         self.assertEqual(ProviderStatus.RUNNING, polled.status)
         canceled = provider.cancel_job(created.job_id)
         self.assertEqual(ProviderStatus.RUNNING, canceled.status)
+        self.assertEqual("PUT", http.calls[3][0])
+        self.assertTrue(http.calls[3][1].endswith("/cancel"))
         self.assertEqual(
             "CANCELLATION_REQUESTED",
             canceled.metadata["cancel_status"],

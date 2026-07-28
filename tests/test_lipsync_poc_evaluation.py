@@ -84,6 +84,18 @@ class LipsyncPocEvaluationTests(unittest.TestCase):
         self.assertIsNone(provider["human_review"]["usable_rate"])
         self.assertIsNone(summary["default_provider"])
 
+    def test_one_perfect_sample_cannot_be_declared_go(self):
+        self._write(
+            "sync-labs",
+            report("sample-01", "sync-labs"),
+        )
+        summary = build_summary(self.root, ["sync-labs"])
+        provider = summary["providers"][0]
+        self.assertEqual("conditional_go", provider["decision"])
+        self.assertFalse(provider["gates"]["sample_count_gte_minimum"])
+        self.assertEqual(20, provider["minimum_sample_count"])
+        self.assertIsNone(summary["default_provider"])
+
 
 if __name__ == "__main__":
     unittest.main()

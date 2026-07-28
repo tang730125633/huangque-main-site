@@ -1,7 +1,9 @@
 import io
 import json
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -89,6 +91,36 @@ class TerminalFailedProvider(MockLipsyncProvider):
     def get_job(self, job_id):
         self.get_calls += 1
         return super().get_job(job_id)
+
+
+class LostCreateResponseProvider(MockLipsyncProvider):
+    name = "lost-create-response"
+
+    def __init__(self):
+        super().__init__()
+        self.create_calls = 0
+
+    def create_job(self, request):
+        self.create_calls += 1
+        super().create_job(request)
+        raise TimeoutError("provider accepted request but response was lost")
+
+
+class BlockingCreateProvider(MockLipsyncProvider):
+    name = "blocking-create"
+
+    def __init__(self):
+        super().__init__()
+        self.create_calls = 0
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def create_job(self, request):
+        self.create_calls += 1
+        self.entered.set()
+        if not self.release.wait(timeout=5):
+            raise TimeoutError("test provider was not released")
+        return super().create_job(request)
 
 
 class LipsyncPocRecoveryTests(unittest.TestCase):
@@ -276,6 +308,51 @@ class LipsyncPocRecoveryTests(unittest.TestCase):
         self.assertNotEqual(first_paths.media, second_paths.media)
         self.assertTrue(first_paths.report.is_file())
         self.assertTrue(second_paths.report.is_file())
+
+    def test_lost_create_response_requires_reconciliation(self):
+        provider = LostCreateResponseProvider()
+        output = self.root / "out"
+        runner = PocRunner(provider, probe=fake_probe)
+        with self.assertRaises(PocRunError):
+            runner.run(self.sample, output)
+
+        paths = artifact_paths(output, provider.name, self.sample.sample_id)
+        state = json.loads(paths.state.read_text(encoding="utf-8"))
+        report = json.loads(paths.report.read_text(encoding="utf-8"))
+        self.assertEqual("reconciliation_required", state["status"])
+        self.assertEqual("reconcile_submission", state["stage"])
+        self.assertEqual(
+            "requires_reconciliation",
+            report["billing_status"],
+        )
+        self.assertIsNone(report["provider_job_id"])
+
+        with self.assertRaises(PocRunError) as repeated:
+            runner.run(self.sample, output)
+        self.assertEqual(
+            "submission_reconciliation_required",
+            repeated.exception.code,
+        )
+        self.assertEqual(1, provider.create_calls)
+
+    def test_concurrent_runs_create_only_one_provider_job(self):
+        provider = BlockingCreateProvider()
+        output = self.root / "out"
+        runner = PocRunner(provider, probe=fake_probe, clock=lambda: 1.0)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(runner.run, self.sample, output)
+            self.assertTrue(provider.entered.wait(timeout=5))
+            with self.assertRaises(PocRunError) as repeated:
+                runner.run(self.sample, output)
+            provider.release.set()
+            report = first.result(timeout=5)
+
+        self.assertEqual(
+            "submission_reconciliation_required",
+            repeated.exception.code,
+        )
+        self.assertEqual("succeeded", report["status"])
+        self.assertEqual(1, provider.create_calls)
 
     def test_recovery_rejects_changed_input_hash(self):
         provider = FailOnceProvider()

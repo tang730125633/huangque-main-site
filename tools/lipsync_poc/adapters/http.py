@@ -2,10 +2,12 @@
 
 import base64
 import hashlib
+import ipaddress
 import json
 import mimetypes
 import os
 import secrets
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 from urllib import error as urlerror
@@ -170,7 +172,7 @@ def file_data_uri(path, max_bytes):
     return f"data:{mime};base64,{encoded}"
 
 
-def _safe_download_url(url):
+def _safe_download_url(url, resolver=socket.getaddrinfo):
     try:
         parsed = urlsplit(str(url))
     except Exception as exc:
@@ -179,13 +181,60 @@ def _safe_download_url(url):
             "provider_result_url_invalid",
             "provider result URL is invalid",
         ) from exc
-    if parsed.scheme != "https" or not parsed.hostname:
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
         raise ProviderHttpError(
             0,
             "provider_result_url_invalid",
             "provider result URL must use HTTPS",
         )
+    try:
+        port = parsed.port or 443
+        addresses = resolver(
+            parsed.hostname,
+            port,
+            type=socket.SOCK_STREAM,
+        )
+        resolved_ips = {
+            ipaddress.ip_address(item[4][0])
+            for item in addresses
+            if item and len(item) > 4 and item[4]
+        }
+    except (OSError, TypeError, ValueError) as exc:
+        raise ProviderHttpError(
+            0,
+            "provider_result_url_invalid",
+            "provider result URL cannot be resolved safely",
+        ) from exc
+    if not resolved_ips or any(
+        not address.is_global for address in resolved_ips
+    ):
+        raise ProviderHttpError(
+            0,
+            "provider_result_url_forbidden",
+            "provider result URL resolves to a non-public address",
+        )
     return str(url)
+
+
+class _NoRedirectHandler(urlrequest.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ProviderHttpError(
+            code,
+            "provider_result_redirect_forbidden",
+            "provider result download redirects are not allowed",
+        )
+
+
+def _default_download_opener(request, timeout):
+    return urlrequest.build_opener(_NoRedirectHandler()).open(
+        request,
+        timeout=timeout,
+    )
 
 
 def download_file(
@@ -195,13 +244,14 @@ def download_file(
     headers=None,
     timeout=180,
     max_bytes=DOWNLOAD_LIMIT_BYTES,
-    opener=urlrequest.urlopen,
+    opener=None,
+    resolver=socket.getaddrinfo,
 ):
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".download")
     req = urlrequest.Request(
-        _safe_download_url(url),
+        _safe_download_url(url, resolver=resolver),
         headers=dict(headers or {}),
         method="GET",
     )
@@ -209,6 +259,7 @@ def download_file(
     size = 0
     try:
         try:
+            opener = opener or _default_download_opener
             response = opener(req, timeout=timeout)
         except urlerror.HTTPError as exc:
             raise ProviderHttpError(
@@ -222,6 +273,18 @@ def download_file(
                 "provider_download_network_error",
                 "provider result download failed",
             ) from exc
+        final_url = (
+            response.geturl()
+            if callable(getattr(response, "geturl", None))
+            else req.full_url
+        )
+        _safe_download_url(final_url, resolver=resolver)
+        if final_url != req.full_url:
+            raise ProviderHttpError(
+                0,
+                "provider_result_redirect_forbidden",
+                "provider result download redirects are not allowed",
+            )
         with response, temporary.open("wb") as handle:
             while True:
                 chunk = response.read(1024 * 1024)

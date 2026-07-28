@@ -9,7 +9,7 @@ from .metrics.media_output import ensure_silent_video
 from .metrics.quality import empty_human_review, media_contract_metrics
 from .paths import artifact_paths
 from .redaction import redact
-from .state import STATE_VERSION, atomic_json, load_json
+from .state import STATE_VERSION, atomic_json, exclusive_lock, load_json
 
 
 REPORT_VERSION = "1.1"
@@ -86,6 +86,47 @@ class PocRunner:
         current["updated_at"] = int(self.wall_clock())
         atomic_json(path, current)
         return current
+
+    def _claim_new_run(self, paths, sample):
+        """Atomically reserve one provider submission for this sample."""
+        try:
+            with exclusive_lock(paths.state):
+                existing = load_json(paths.state)
+                if existing is not None:
+                    code = (
+                        "submission_reconciliation_required"
+                        if existing.get("billing_status")
+                        == "requires_reconciliation"
+                        else "existing_run_state"
+                    )
+                    raise PocRunError(
+                        code,
+                        "persisted run state exists; reconcile, resume, "
+                        "refetch, or use a new output directory",
+                    )
+                now = int(self.wall_clock())
+                return self._write_state(
+                    paths.state,
+                    {
+                        "provider": paths.provider,
+                        "sample_id": sample.sample_id,
+                        "input_hash": sample.input_hash,
+                        "request_id": _request_id(
+                            paths.provider,
+                            sample.input_hash,
+                        ),
+                        "provider_job_id": None,
+                        "status": "submitting",
+                        "stage": "create_job",
+                        "billing_status": "requires_reconciliation",
+                        "created_at": now,
+                    },
+                )
+        except TimeoutError as error:
+            raise PocRunError(
+                "submission_claim_busy",
+                "another process is claiming this provider submission",
+            ) from error
 
     def _wait(self, job, timeout_seconds, poll_seconds, on_status):
         deadline = self.clock() + timeout_seconds
@@ -424,12 +465,6 @@ class PocRunner:
             sample.sample_id,
         )
         state = load_json(paths.state)
-        if not resume and not refetch and state is not None:
-            raise PocRunError(
-                "existing_run_state",
-                "persisted run state exists; use --resume, --refetch, "
-                "or a new output directory",
-            )
         if resume or refetch:
             self._validate_recovery_state(
                 state,
@@ -438,6 +473,9 @@ class PocRunner:
                 capabilities,
                 "resume" if resume else "refetch",
             )
+        else:
+            self.provider.validate_input(request)
+            state = self._claim_new_run(paths, sample)
         started = self.clock()
         job = None
         try:
@@ -451,25 +489,6 @@ class PocRunner:
                     last_provider_status=_status_value(job.status),
                 )
             else:
-                self.provider.validate_input(request)
-                now = int(self.wall_clock())
-                state = self._write_state(
-                    paths.state,
-                    {
-                        "provider": paths.provider,
-                        "sample_id": sample.sample_id,
-                        "input_hash": sample.input_hash,
-                        "request_id": _request_id(
-                            paths.provider,
-                            sample.input_hash,
-                        ),
-                        "provider_job_id": None,
-                        "status": "submitting",
-                        "stage": "create_job",
-                        "billing_status": "not_submitted",
-                        "created_at": now,
-                    },
-                )
                 job = self.provider.create_job(request)
                 state = self._write_state(
                     paths.state,
@@ -535,11 +554,13 @@ class PocRunner:
                     capabilities,
                 )
             provider_job_id = (state or {}).get("provider_job_id")
+            ambiguous_submission = bool(
+                not provider_job_id
+                and (state or {}).get("status") == "submitting"
+            )
             billing_status = (
                 "requires_reconciliation"
-                if provider_job_id
-                else "unknown"
-                if (state or {}).get("status") == "submitting"
+                if provider_job_id or ambiguous_submission
                 else (state or {}).get("billing_status")
                 or "not_submitted"
             )
@@ -555,7 +576,16 @@ class PocRunner:
                     ),
                     "created_at": int(self.wall_clock()),
                 },
-                status="failed",
+                status=(
+                    "reconciliation_required"
+                    if ambiguous_submission
+                    else "failed"
+                ),
+                stage=(
+                    "reconcile_submission"
+                    if ambiguous_submission
+                    else (state or {}).get("stage")
+                ),
                 billing_status=billing_status,
                 error=normalized,
                 cancel=cancel,

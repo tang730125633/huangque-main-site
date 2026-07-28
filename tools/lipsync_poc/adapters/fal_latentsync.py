@@ -217,7 +217,7 @@ class FalLatentSyncProvider(LipsyncProvider):
         if current.status == ProviderStatus.SUCCEEDED:
             return current
         response = self.http(
-            "POST",
+            "PUT",
             self._job_url(job_id, "cancel"),
             headers=self._headers(),
             json_body={},
