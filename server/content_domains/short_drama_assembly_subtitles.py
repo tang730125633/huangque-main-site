@@ -1,10 +1,14 @@
 """Deterministic, injection-safe ASS subtitle generation for D-2."""
 
+import os
 import re
 import subprocess
+from pathlib import Path
 
 
 FONT_NAME = "Noto Sans CJK SC"
+DEFAULT_FONT_PATH = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+REQUIRED_CJK_GLYPHS = "黄雀字幕测试"
 MAX_SUBTITLE_LENGTH = 4000
 MAX_SUBTITLE_EVENTS = 500
 ASS_RESOLUTIONS = {
@@ -150,21 +154,71 @@ def generate_ass(ratio, position, media_plan):
     return "\n".join(header) + "\n"
 
 
-def inspect_font(runner=subprocess.run):
+def _charset_contains(charset, codepoint):
+    for token in str(charset or "").split():
+        try:
+            if "-" in token:
+                start, end = token.split("-", 1)
+                if int(start, 16) <= codepoint <= int(end, 16):
+                    return True
+            elif int(token, 16) == codepoint:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def inspect_font(font_path=None, runner=subprocess.run):
+    configured = Path(
+        font_path
+        or os.environ.get("SHORT_DRAMA_SUBTITLE_FONT")
+        or DEFAULT_FONT_PATH
+    ).resolve()
+    if not configured.is_file():
+        raise SubtitleError(
+            "subtitle_font_unavailable", "指定的中文字幕字体文件不存在"
+        )
     try:
-        result = runner(
-            ["fc-match", "--format=%{family}", FONT_NAME],
+        match = runner(
+            ["fc-match", "--format=%{family}\\n%{file}", FONT_NAME],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        query = runner(
+            ["fc-query", "--format=%{charset}", str(configured)],
             capture_output=True,
             text=True,
             timeout=10,
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as error:
         raise SubtitleError(
-            "subtitle_font_unavailable", "字幕字体环境不可用"
+            "subtitle_font_unavailable", "字幕字体预检工具不可用"
         ) from error
-    family = str(result.stdout or "").strip()
-    if result.returncode != 0 or FONT_NAME.lower() not in family.lower():
+    lines = str(match.stdout or "").splitlines()
+    family = lines[0].strip() if lines else ""
+    matched_file = Path(lines[1].strip()).resolve() if len(lines) > 1 else None
+    if (
+        match.returncode != 0
+        or FONT_NAME.casefold() not in family.casefold()
+        or matched_file != configured
+    ):
         raise SubtitleError(
-            "subtitle_font_unavailable", "指定字幕字体不可用"
+            "subtitle_font_unavailable", "fontconfig 未匹配到指定的 Noto CJK 字体"
         )
-    return family[:200]
+    charset = str(query.stdout or "").strip()
+    if (
+        query.returncode != 0
+        or not all(
+            _charset_contains(charset, ord(char))
+            for char in REQUIRED_CJK_GLYPHS
+        )
+    ):
+        raise SubtitleError(
+            "subtitle_font_unavailable", "指定字体不包含所需的中文字符"
+        )
+    return {
+        "family": family[:200],
+        "file": str(configured),
+        "font_dir": str(configured.parent),
+    }

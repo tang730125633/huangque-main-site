@@ -11,6 +11,30 @@ from server.content_domains import startup_recovery
 
 
 class ShortDramaAssemblyRenderTests(unittest.TestCase):
+    def test_toolchain_requires_strict_noto_font_preflight(self):
+        font = {
+            "family": "Noto Sans CJK SC",
+            "file": "/fonts/noto/NotoSansCJK-Regular.ttc",
+            "font_dir": "/fonts/noto",
+        }
+        with (
+            mock.patch.object(
+                render, "_run",
+                return_value=mock.Mock(stdout="ffmpeg version test\n"),
+            ),
+            mock.patch.object(
+                render.media_plan, "inspect_ffprobe",
+                return_value="ffprobe version test",
+            ),
+            mock.patch.object(
+                render.subtitles, "inspect_font", return_value=font
+            ) as inspect_font,
+        ):
+            tools = render._toolchain()
+        inspect_font.assert_called_once_with()
+        self.assertEqual(font["file"], tools["font"])
+        self.assertEqual(font["font_dir"], tools["font_dir"])
+
     def test_corrupt_reusable_audio_is_staled_then_rebuilt_in_same_job(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -92,13 +116,14 @@ class ShortDramaAssemblyRenderTests(unittest.TestCase):
                 {"file": Path("shot-b.mp4"), "duration_ms": 5000},
             ],
             Path("master.wav"), Path("subtitles.ass"), "9:16",
-            Path("preview.mp4"),
+            Path("preview.mp4"), Path("/fonts/noto"),
         )
         joined = " ".join(str(item) for item in command)
         self.assertIn("scale=720:1280", joined)
         self.assertIn("crop=720:1280", joined)
         self.assertIn("concat=n=2:v=1:a=0", joined)
         self.assertIn("subtitles=filename=", joined)
+        self.assertIn("fontsdir=", joined)
         self.assertIn("-c:v libx264", joined)
         self.assertIn("-pix_fmt yuv420p", joined)
         self.assertIn("-r 30", joined)
@@ -111,6 +136,7 @@ class ShortDramaAssemblyRenderTests(unittest.TestCase):
         command = render.build_preview_command(
             [{"file": "shot.mp4", "duration_ms": 30000}],
             "master.wav", "subtitles.ass", "16:9", "preview.mp4",
+            "/fonts/noto",
         )
         self.assertIsInstance(command, list)
         joined = " ".join(str(item) for item in command)
@@ -121,6 +147,7 @@ class ShortDramaAssemblyRenderTests(unittest.TestCase):
         command = render.build_final_command(
             [{"file": "shot.mp4", "duration_ms": 5000}],
             "master.wav", "subtitles.ass", "9:16", "final.part.mp4",
+            "/fonts/noto",
         )
         joined = " ".join(str(item) for item in command)
         self.assertIn("scale=1080:1920", joined)

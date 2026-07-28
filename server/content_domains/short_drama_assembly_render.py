@@ -10,6 +10,7 @@ from . import short_drama_assembly as assembly
 from . import short_drama_assembly_artifacts as artifacts
 from . import short_drama_assembly_engine as d2_engine
 from . import short_drama_assembly_plan as media_plan
+from . import short_drama_assembly_subtitles as subtitles
 
 
 RENDER_TIMEOUT_SECONDS = 1200
@@ -63,17 +64,13 @@ def _toolchain():
     ffprobe = os.environ.get("FFPROBE_BIN", "ffprobe")
     version = _run([ffmpeg, "-version"], timeout=10)
     probe_version = media_plan.inspect_ffprobe()
-    font_candidates = [
-        Path(os.environ.get("SHORT_DRAMA_SUBTITLE_FONT", "")),
-        Path("C:/Windows/Fonts/msyh.ttc"),
-        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
-        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-    ]
-    font = next((path for path in font_candidates if str(path) and path.is_file()), None)
+    font = subtitles.inspect_font()
     return {
         "ffmpeg": str(version.stdout or "").splitlines()[0][:200],
         "ffprobe": probe_version,
-        "font": str(font or "libass-default"),
+        "font": font["file"],
+        "font_family": font["family"],
+        "font_dir": font["font_dir"],
         "ffmpeg_bin": ffmpeg,
         "ffprobe_bin": ffprobe,
     }
@@ -186,13 +183,19 @@ def _ensure_d2(context, tools):
     return artifacts.ready_files(db_factory, project_id, d2_hash)
 
 
-def _ass_filter(path):
+def _ass_filter(path, font_dir):
     value = Path(path).resolve().as_posix()
     value = value.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
-    return "subtitles=filename='%s'" % value
+    directory = Path(font_dir).resolve().as_posix()
+    directory = directory.replace(
+        "\\", "\\\\"
+    ).replace(":", "\\:").replace("'", "\\'")
+    return "subtitles=filename='%s':fontsdir='%s'" % (value, directory)
 
 
-def build_preview_command(videos, master_audio, subtitles_ass, ratio, output):
+def build_preview_command(
+    videos, master_audio, subtitles_ass, ratio, output, font_dir
+):
     width, height = PREVIEW_PROFILE[ratio]
     ffmpeg = os.environ.get("FFMPEG_BIN", "ffmpeg")
     command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error"]
@@ -218,7 +221,7 @@ def build_preview_command(videos, master_audio, subtitles_ass, ratio, output):
     filters.append(
         "%sconcat=n=%d:v=1:a=0[joined]" % ("".join(labels), len(labels))
     )
-    filters.append("[joined]%s[vout]" % _ass_filter(subtitles_ass))
+    filters.append("[joined]%s[vout]" % _ass_filter(subtitles_ass, font_dir))
     duration = sum(int(item["duration_ms"]) for item in videos) / 1000
     command.extend([
         "-filter_complex", ";".join(filters),
@@ -232,9 +235,11 @@ def build_preview_command(videos, master_audio, subtitles_ass, ratio, output):
     return command
 
 
-def build_final_command(videos, master_audio, subtitles_ass, ratio, output):
+def build_final_command(
+    videos, master_audio, subtitles_ass, ratio, output, font_dir
+):
     command = build_preview_command(
-        videos, master_audio, subtitles_ass, ratio, output
+        videos, master_audio, subtitles_ass, ratio, output, font_dir
     )
     width, height = FINAL_PROFILE[ratio]
     preview_width, preview_height = PREVIEW_PROFILE[ratio]
@@ -376,7 +381,7 @@ def run_preview_job(payload):
         )
         _run(build_preview_command(
             context["videos"], master, subtitles_ass,
-            context["project"]["ratio"], preview,
+            context["project"]["ratio"], preview, tools["font_dir"],
         ))
         assembly.set_preview_progress(db_factory, job_id, "concatenating", 88)
         expected_duration = sum(
@@ -442,7 +447,7 @@ def run_final_job(payload):
         if not final.is_file():
             _run(build_final_command(
                 context["videos"], master, subtitles_ass,
-                context["project"]["ratio"], part,
+                context["project"]["ratio"], part, tools["font_dir"],
             ))
             os.replace(part, final)
         assembly.set_final_progress(db_factory, job_id, "probing", 72)
