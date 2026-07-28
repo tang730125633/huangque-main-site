@@ -539,7 +539,15 @@ def _reverse_from_frames(
             "subject、scene、light 各写至少15字，action 至少25字，camera 至少20字；"
             "action 要写起点、连续过程、终点及道具互动，"
             "camera 要写景别、机位高度、视角和运镜起止路线。"
-            "仅补充连接相邻关键帧必需的过渡动作；无法确认的细节写“未确认”，不得臆造。"
+            "subject、action、scene、camera、light 五个视觉字段都必须依据画面填写具体可见事实，"
+            "不得把“未确认”“无”“没有”“略”“待补充”“占位”或“内容”作为整个字段。"
+            "没有明显动作时，action 要写清主体保持的姿态和“未观察到明显动作变化”；"
+            "没有明显运镜时，camera 要写清景别、视角、构图和“固定镜头，无明显运镜”；"
+            "光线方向不明显时，light 仍要描述整体明暗、色调和对比关系。"
+            "audio 只写可确认的声音、口播或字幕摘要，最多40个有效字符；"
+            "不得把画面中的长段文字、文章或整屏字幕逐字复制到 audio。"
+            "身份、品牌文字、具体地点等无法确认的信息不得猜测，可以在可见事实之后说明无法确认。"
+            "仅补充连接相邻关键帧必需的过渡动作，不得臆造人物、道具或情节。"
             "不得用“略”“待补充”“内容”等占位词，不得复制同一段内容。"
             % (
                 len(timeline_ranges),
@@ -572,6 +580,11 @@ def _reverse_from_frames(
                 "重新观察图片后，确保 segments 恰好包含指定数量的对象；"
                 "每个对象都逐项填写 subject、action、scene、camera、light、audio，"
                 "六个字段合计至少80个中文字符，不要缩短已有描述；"
+                "subject、action、scene、camera、light 不得只写“未确认”“无”“没有”"
+                "“略”“待补充”“占位”或“内容”；必须改写为画面中可见的具体事实。"
+                "无明显动作时描述保持的姿态，无明显运镜时写明景别、视角、构图及"
+                "“固定镜头，无明显运镜”，光线方向不明时描述整体明暗、色调和对比关系；"
+                "audio 最多40个有效字符，只保留声音、口播或字幕摘要，不得复制长段屏幕文字；"
                 "不要返回时间码、序号、示例文字、占位符、解释或 markdown。"
                 "\n上一次草稿如下，请逐段扩写并修正结构：\n%s"
                 % (last_error, last_raw[:5000])
@@ -709,6 +722,11 @@ def _coerce_reverse_segments(
                 raise ValueError(
                     "第%d段视觉字段包含占位内容：%s"
                     % (index, "、".join(placeholder_fields))
+                )
+            audio_text = str(item.get("audio") or "").strip()
+            if len(_reverse_segment_fingerprint(audio_text)) > 40:
+                raise ValueError(
+                    "第%d段声音字幕字段过长，最多允许40个有效字符" % index
                 )
             contents.append("；".join(
                 "%s：%s" % (label, str(item.get(field) or "").strip())

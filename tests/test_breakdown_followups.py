@@ -266,8 +266,9 @@ class BreakdownFollowupTests(unittest.TestCase):
         }
         cases = (
             {field: "无" for field in real},
-            dict(real, action="未确认"),
-            dict(real, scene="待补充"),
+            *(dict(real, **{field: "未确认"}) for field in (
+                "subject", "action", "scene", "camera", "light",
+            )),
         )
         for item in cases:
             with self.subTest(item=item):
@@ -276,6 +277,84 @@ class BreakdownFollowupTests(unittest.TestCase):
                     breakdown._coerce_reverse_segments(
                         raw, 1, allow_duplicates=True, allow_short=True,
                     )
+
+    def test_reverse_visual_placeholder_retry_uses_concrete_field_guidance(self):
+        valid_item = {
+            "subject": "女子位于画面中央并背对镜头，身体轮廓在背景前清晰可见",
+            "action": "女子保持坐姿并抬起双手，未观察到明显位移，动作在抬手后稳定停止",
+            "scene": "林地草坪位于前景，树木和远山依次构成中景与后景空间层次",
+            "camera": "平视中景固定机位，主体位于中央，无明显运镜，画面构图保持稳定",
+            "light": "自然光均匀照亮主体和草地，整体偏暖，明暗对比柔和且背景略亮",
+            "audio": "未识别到明确声音或字幕",
+        }
+        placeholder_item = dict(valid_item, camera="未确认")
+        responses = [
+            json.dumps({"segments": [placeholder_item] * 3}, ensure_ascii=False),
+            json.dumps({"segments": [placeholder_item] * 3}, ensure_ascii=False),
+            json.dumps({"segments": [
+                valid_item,
+                dict(valid_item, action="女子保持坐姿后缓慢放下双手，动作连续并在身体两侧停止"),
+                dict(valid_item, action="女子再次抬起双手并保持背对镜头，动作在画面结束前稳定"),
+            ]}, ensure_ascii=False),
+        ]
+        messages = []
+
+        def fake_chat(
+            system_message, user_message, frames, temp=0.7, max_tokens=None,
+        ):
+            messages.append(user_message)
+            return responses.pop(0)
+
+        with mock.patch.object(
+            breakdown, "_chat_multimodal", side_effect=fake_chat,
+        ) as chat:
+            result = breakdown._reverse_from_frames(
+                {}, ["frame.jpg"], duration=6,
+            )
+
+        self.assertEqual(chat.call_count, 3)
+        self.assertNotIn("无法确认的细节写“未确认”", messages[0])
+        self.assertIn("五个视觉字段都必须依据画面填写具体可见事实", messages[0])
+        self.assertIn("固定镜头，无明显运镜", messages[1])
+        self.assertIn("固定镜头，无明显运镜", messages[2])
+        self.assertEqual(len(result["prompt"].splitlines()), 3)
+
+    def test_reverse_visual_fields_allow_uncertainty_after_visible_facts(self):
+        item = {
+            "subject": "画面中央可见一名背对镜头的女子，具体身份无法确认",
+            "action": "女子保持坐姿并抬起双手，未观察到明显位移，动作在抬手后停止",
+            "scene": "前景可见草地，中后景为树木和山体，具体地点无法确认",
+            "camera": "平视中景固定机位，主体位于中央，无明显运镜",
+            "light": "自然光均匀照亮主体与环境，具体光源位置无法确认",
+            "audio": "未识别到明确声音或字幕",
+        }
+        parsed = breakdown._coerce_reverse_segments(
+            json.dumps({"segments": [item]}, ensure_ascii=False),
+            1,
+            allow_duplicates=True,
+            allow_short=True,
+        )
+        self.assertEqual(len(parsed), 1)
+        self.assertIn("具体身份无法确认", parsed[0])
+        self.assertIn("具体地点无法确认", parsed[0])
+
+    def test_reverse_audio_rejects_long_screen_text_copy(self):
+        item = {
+            "subject": "画面中央可见一名背对镜头的女子，人物轮廓清晰",
+            "action": "女子保持坐姿并抬起双手，动作在抬手后稳定停止",
+            "scene": "前景可见草地，中后景为树木和远山，空间层次清楚",
+            "camera": "平视中景固定机位，主体位于中央，无明显运镜",
+            "light": "自然光均匀照亮主体与环境，整体色调偏暖",
+            "audio": "这是一段被模型从屏幕上逐字复制出来的很长文字内容"
+                     "而且还会继续重复并显著挤占其他视觉字段的输出空间",
+        }
+        with self.assertRaisesRegex(ValueError, "声音字幕字段过长"):
+            breakdown._coerce_reverse_segments(
+                json.dumps({"segments": [item]}, ensure_ascii=False),
+                1,
+                allow_duplicates=True,
+                allow_short=True,
+            )
 
     def test_reverse_segment_objects_allow_real_short_visuals_and_empty_audio(self):
         item = {
