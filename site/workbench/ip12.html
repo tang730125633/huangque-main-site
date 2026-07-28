@@ -576,6 +576,7 @@
     let projectSaving = false;
     let projectSavePending = false;
     let foundationDirty = false;
+    let guideBusy = false;
 
     const $ = id => document.getElementById(id);
     const phaseGroups = [
@@ -1048,6 +1049,7 @@
     }
 
     async function askGuide(rawMessage){
+      if(guideBusy)return;
       const message=String(rawMessage||$("coachInput").value||"").trim();
       if(!message){
         showToast("先告诉小黄雀你哪里不清楚");
@@ -1061,6 +1063,7 @@
       const mergedAnswer=[answer.text,message].filter(Boolean).join("\n").slice(0,6000);
       const priorTurns=requestGuideTurns().map(turn=>({role:turn.role,content:turn.content}));
       const button=$("coachSend");
+      guideBusy=true;
       button.disabled=true;
       $("coachStatus").textContent="小黄雀正在理解当前步骤…";
       try{
@@ -1117,6 +1120,7 @@
         $("coachStatus").textContent=error.message||"小黄雀暂时无法回复，请稍后重试。";
         if(!currentGuideTurns().length)renderCoach();
       }finally{
+        guideBusy=false;
         button.disabled=false;
       }
     }
