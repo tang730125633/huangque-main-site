@@ -1,10 +1,10 @@
 """Post-generation semantic gate for short-drama visual-only footage.
 
-The gate is deliberately adapter based:
+The gate is deliberately adapter based and production opt-in:
 * media/audio inspection is deterministic;
 * ASR and multimodal inspection are best-effort diagnostics;
-* ``shadow`` is the safe default, while ``enforce`` blocks only
-  high-confidence failures.
+* ``off`` is the safe default; ``shadow`` and ``enforce`` must be explicitly
+  enabled after capacity and cost review.
 """
 
 import base64
@@ -29,12 +29,12 @@ _ASR_SEMAPHORE = threading.BoundedSemaphore(_ASR_CONCURRENCY)
 
 def gate_mode():
     value = str(
-        os.environ.get("SHORT_DRAMA_VISUAL_GATE_MODE", "shadow")
+        os.environ.get("SHORT_DRAMA_VISUAL_GATE_MODE", "off")
     ).strip().lower()
-    return value if value in VALID_MODES else "shadow"
+    return value if value in VALID_MODES else "off"
 
 
-def _enabled(name, default="1"):
+def _enabled(name, default="0"):
     return str(os.environ.get(name, default)).strip().lower() not in {
         "", "0", "false", "no", "off",
     }
