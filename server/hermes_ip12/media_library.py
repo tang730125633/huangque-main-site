@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+"""
+media_library.py — 素材库 + 知识库
+/media_library/   素材文件(图/视频)
+/knowledge/       视觉公式/模板/关键词映射
+"""
+import os, json, time, shutil
+from pathlib import Path
+from datetime import datetime
+from runtime_paths import ROOT_DIR
+from werkzeug.utils import secure_filename
+
+BASE = ROOT_DIR
+MEDIA = BASE / "media_library"
+KNOWLEDGE = BASE / "knowledge"
+
+for d in [MEDIA, KNOWLEDGE]:
+    d.mkdir(parents=True, exist_ok=True)
+
+# ── 素材库 ──
+class MediaLibrary:
+    """管理素材文件的存储、搜索、去重"""
+
+    INDEX_FILE = MEDIA / "index.json"
+
+    @staticmethod
+    def _load():
+        if MediaLibrary.INDEX_FILE.exists():
+            return json.loads(MediaLibrary.INDEX_FILE.read_text())
+        return {"entries": {}, "keywords": {}}
+
+    @staticmethod
+    def _save(data):
+        MediaLibrary.INDEX_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+    @staticmethod
+    def search(keyword):
+        """搜素材库，返回匹配的文件列表"""
+        data = MediaLibrary._load()
+        kw = keyword.lower().strip()
+        results = []
+        for entry_id, entry in data["entries"].items():
+            tags = [t.lower() for t in entry.get("tags", [])]
+            if kw in entry.get("keyword", "").lower() or any(kw in t for t in tags):
+                results.append(entry)
+        return results
+
+    @staticmethod
+    def add(keyword, file_path, source="manual", tags=None):
+        """添加素材入库。file_path会被复制到素材库"""
+        data = MediaLibrary._load()
+
+        # 去重：检查是否已有相同文件
+        fhash = str(os.path.getsize(file_path)) + "_" + Path(file_path).name
+        for eid, entry in data["entries"].items():
+            if entry.get("fhash") == fhash:
+                return entry["id"]
+
+        # 归入关键词子目录
+        safe_kw = secure_filename(str(keyword).lower())[:30] or "unknown"
+        kw_dir = (MEDIA / safe_kw).resolve()
+        if kw_dir.parent != MEDIA.resolve():
+            raise ValueError("invalid media keyword")
+        kw_dir.mkdir(exist_ok=True)
+
+        # 复制文件
+        ext = Path(file_path).suffix
+        entry_id = f"{safe_kw}_{int(time.time())}"
+        dest = (kw_dir / f"{entry_id}{ext}").resolve()
+        if dest.parent != kw_dir:
+            raise ValueError("invalid media destination")
+        shutil.copy2(file_path, dest)
+
+        # 记录元数据
+        stat = os.stat(file_path)
+        entry = {
+            "id": entry_id,
+            "keyword": keyword,
+            "file_path": str(dest),
+            "original_name": Path(file_path).name,
+            "source": source,
+            "tags": tags or [keyword],
+            "size_bytes": stat.st_size,
+            "format": ext.lstrip('.'),
+            "added_at": datetime.now().isoformat(),
+            "fhash": fhash,
+            "use_count": 0
+        }
+
+        data["entries"][entry_id] = entry
+
+        # 更新关键词索引
+        if keyword not in data["keywords"]:
+            data["keywords"][keyword] = []
+        data["keywords"][keyword].append(entry_id)
+
+        MediaLibrary._save(data)
+        return entry_id
+
+    @staticmethod
+    def stats():
+        """返回素材库统计"""
+        data = MediaLibrary._load()
+        entries = data["entries"]
+        total_size = sum(e.get("size_bytes", 0) for e in entries.values())
+        return {
+            "total_files": len(entries),
+            "total_keywords": len(data["keywords"]),
+            "total_size_mb": round(total_size / 1024 / 1024, 1),
+            "keywords": sorted(data["keywords"].keys())[:20]
+        }
+
+# ── 知识库 ──
+class KnowledgeBase:
+    """管理视觉公式、脚本模板、关键词映射"""
+
+    @staticmethod
+    def add_formula(video_title, visual_formula, source_url=""):
+        """存储对标视频的视觉公式"""
+        formulas = KnowledgeBase._load_json("visual_formulas.json")
+
+        fid = f"formula_{int(time.time())}"
+        formulas[fid] = {
+            "id": fid,
+            "title": video_title,
+            "source_url": source_url,
+            "formula": visual_formula,
+            "created_at": datetime.now().isoformat()
+        }
+        KnowledgeBase._save_json("visual_formulas.json", formulas)
+        return fid
+
+    @staticmethod
+    def add_script_template(name, template_json, niche="通用"):
+        """存储脚本模板"""
+        templates = KnowledgeBase._load_json("script_templates.json")
+        tid = f"template_{int(time.time())}"
+        templates[tid] = {
+            "id": tid,
+            "name": name,
+            "niche": niche,
+            "template": template_json,
+            "created_at": datetime.now().isoformat()
+        }
+        KnowledgeBase._save_json("script_templates.json", templates)
+        return tid
+
+    @staticmethod
+    def add_keyword_map(chinese_word, english_search_term, best_source="pexels"):
+        """存储中→英关键词映射"""
+        maps = KnowledgeBase._load_json("keyword_map.json")
+        maps[chinese_word] = {
+            "english": english_search_term,
+            "best_source": best_source,
+            "updated_at": datetime.now().isoformat(),
+            "use_count": maps.get(chinese_word, {}).get("use_count", 0)
+        }
+        KnowledgeBase._save_json("keyword_map.json", maps)
+
+    @staticmethod
+    def get_keyword_map(chinese_word):
+        """查询关键词映射"""
+        maps = KnowledgeBase._load_json("keyword_map.json")
+        return maps.get(chinese_word)
+
+    @staticmethod
+    def get_formulas(niche=None):
+        """获取所有视觉公式"""
+        formulas = KnowledgeBase._load_json("visual_formulas.json")
+        if niche:
+            return {k: v for k, v in formulas.items() if niche in v.get("title", "")}
+        return formulas
+
+    @staticmethod
+    def stats():
+        return {
+            "formulas": len(KnowledgeBase._load_json("visual_formulas.json")),
+            "templates": len(KnowledgeBase._load_json("script_templates.json")),
+            "keyword_maps": len(KnowledgeBase._load_json("keyword_map.json"))
+        }
+
+    @staticmethod
+    def _load_json(filename):
+        path = KNOWLEDGE / filename
+        if path.exists():
+            return json.loads(path.read_text())
+        return {}
+
+    @staticmethod
+    def _save_json(filename, data):
+        (KNOWLEDGE / filename).write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+# ── Google Custom Search ──
+GOOGLE_API_KEY = os.environ.get("HERMES_GOOGLE_API_KEY", "")
+GOOGLE_CX = os.environ.get("HERMES_GOOGLE_CX", "e2f1e71d4c78a4617")
+PEXELS_KEY = os.environ.get("PEXELS_API_KEY", "")
+
+def google_search_images(query, num=5):
+    """搜Google图片，返回[{url, title, width, height, thumbnail}]"""
+    import requests as req
+    try:
+        r = req.get("https://www.googleapis.com/customsearch/v1",
+            params={"key": GOOGLE_API_KEY, "cx": GOOGLE_CX, "q": query,
+                    "searchType": "image", "num": num, "imgSize": "medium"},
+            timeout=10)
+        if r.status_code == 200:
+            items = r.json().get("items", [])
+            return [{
+                "url": it.get("link", ""),
+                "title": it.get("title", ""),
+                "width": it.get("image", {}).get("width", 0),
+                "height": it.get("image", {}).get("height", 0),
+                "thumbnail": it.get("image", {}).get("thumbnailLink", "")
+            } for it in items]
+        else:
+            print(f"Google search HTTP {r.status_code}: {r.text[:100]}")
+    except Exception as e:
+        print(f"Google search error: {e}")
+    return []
+
+# ── 一键出图调度器 ──
+def get_best_image(keyword):
+    """
+    为关键词获取最佳配图：
+    1. 查素材库 → 有则直接返回
+    2. 查关键词映射 → 用翻译后的英文搜
+    3. Pexels → Google → 下载入库
+    """
+    import requests as req
+
+    # 1. 查素材库
+    cached = MediaLibrary.search(keyword)
+    if cached:
+        entry = cached[0]
+        data = MediaLibrary._load()
+        if entry["id"] in data["entries"]:
+            data["entries"][entry["id"]]["use_count"] = data["entries"][entry["id"]].get("use_count", 0) + 1
+            MediaLibrary._save(data)
+        return {"source": "library", "path": entry["file_path"], "keyword": keyword}
+
+    # 2. 查关键词映射
+    mapping = KnowledgeBase.get_keyword_map(keyword)
+    search_term = mapping["english"] if mapping else keyword
+
+    # 3. 搜 Pexels（免费素材优先）
+    try:
+        if not PEXELS_KEY:
+            raise RuntimeError("Pexels API key is not configured")
+        r = req.get("https://api.pexels.com/v1/search",
+            headers={"Authorization": PEXELS_KEY},
+            params={"query": search_term, "per_page": 3, "orientation": "portrait"},
+            timeout=10)
+        if r.status_code == 200:
+            photos = r.json().get("photos", [])
+            if photos:
+                photo = photos[0]
+                img_url = photo["src"]["large"]
+                img_data = req.get(img_url, timeout=30).content
+                tmp_path = MEDIA / f"tmp_{int(time.time())}.jpg"
+                tmp_path.write_bytes(img_data)
+                MediaLibrary.add(keyword, str(tmp_path), source="pexels",
+                               tags=[search_term, photo.get("photographer", "")])
+                tmp_path.unlink()
+                return {"source": "pexels", "keyword": keyword, "count": len(photos)}
+    except Exception as e:
+        print(f"Pexels error: {e}")
+
+    # 4. 搜 Google（全网真实素材）
+    google_imgs = google_search_images(search_term, num=5)
+    if google_imgs:
+        for img in google_imgs:
+            try:
+                img_data = req.get(img["url"], timeout=30, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                }).content
+                if len(img_data) > 5000:  # at least 5KB, skip placeholders
+                    tmp_path = MEDIA / f"tmp_{int(time.time())}.jpg"
+                    tmp_path.write_bytes(img_data)
+                    MediaLibrary.add(keyword, str(tmp_path), source="google",
+                                   tags=[search_term, img.get("title", "")])
+                    tmp_path.unlink()
+                    return {"source": "google", "keyword": keyword, "url": img["url"]}
+            except Exception as ie:
+                continue
+
+    # 5. 无结果
+    return {"source": "none", "keyword": keyword}
+
+# ── API routes ──
+def register_media(app):
+    from flask import request, jsonify
+
+    @app.route("/api/media/search")
+    def api_media_search():
+        kw = request.args.get("q", "")
+        results = MediaLibrary.search(kw)
+        return jsonify({"ok": True, "keyword": kw, "results": results})
+
+    @app.route("/api/media/stats")
+    def api_media_stats():
+        return jsonify({
+            "ok": True,
+            "media": MediaLibrary.stats(),
+            "knowledge": KnowledgeBase.stats()
+        })
+
+    @app.route("/api/knowledge/formula", methods=["POST"])
+    def api_add_formula():
+        data = request.get_json() or {}
+        fid = KnowledgeBase.add_formula(
+            data.get("title", ""),
+            data.get("formula", {}),
+            data.get("url", "")
+        )
+        return jsonify({"ok": True, "id": fid})
+
+    print("media_library routes OK")

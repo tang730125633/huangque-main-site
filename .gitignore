@@ -72,3 +72,15 @@ pinterest美女图片/
 secret.local.env
 *.local.env
 server/content.env
+
+# Hermes 运行数据、登录态与第三方凭据
+server/hermes_ip12/data/
+server/hermes_ip12/media_library/
+server/hermes_ip12/knowledge/
+server/hermes_ip12/.agnes_key
+server/hermes_ip12/agnes_key.txt
+server/hermes_ip12/*cookies*.txt
+server/hermes_ip12/backups/
+server/hermes_ip12/*.bak*
+server/hermes_ip12/*_backup.py
+server/hermes_ip12/nohup.out
