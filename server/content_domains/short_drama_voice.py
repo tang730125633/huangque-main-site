@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import sqlite3
 import time
 import uuid
@@ -25,6 +26,14 @@ class VoiceQuoteConsumed(RuntimeError):
 
 class VoiceChargeInProgress(RuntimeError):
     pass
+
+
+class VoiceTimelineValidationError(ValueError):
+    def __init__(self, blocker):
+        self.blocker = dict(blocker or {})
+        super().__init__(
+            self.blocker.get("message") or "字幕时间轴校验失败"
+        )
 
 
 _BLOCKER_MESSAGES = {
@@ -1409,12 +1418,15 @@ def _line_snapshot(row, character_name):
     }
 
 
-def _blocker(code, shot_id=None, line_id=None):
+def _blocker(code, shot_id=None, line_id=None, **details):
     item = {"code": code, "message": _BLOCKER_MESSAGES[code]}
     if shot_id is not None:
         item["shot_id"] = shot_id
     if line_id is not None:
         item["line_id"] = line_id
+    item.update({
+        key: value for key, value in details.items() if value is not None
+    })
     return item
 
 
@@ -1427,20 +1439,36 @@ def _current_version(line):
     )
 
 
-def _append_unique_blocker(blockers, code, shot_id=None, line_id=None):
+def _append_unique_blocker(
+        blockers, code, shot_id=None, line_id=None, **details):
     identity = (code, shot_id, line_id)
     if any(
         (item["code"], item.get("shot_id"), item.get("line_id")) == identity
         for item in blockers
     ):
         return
-    blockers.append(_blocker(code, shot_id, line_id))
+    blockers.append(_blocker(code, shot_id, line_id, **details))
 
 
-def _timeline_suggestions(lines):
-    cursor = 0
-    suggestions = {}
-    for line in sorted(lines, key=lambda item: (item["sort_order"], item["id"])):
+def _recommended_voice_speed(current_speed, duration_ms, available_ms):
+    if (
+        type(current_speed) not in (int, float)
+        or not isinstance(duration_ms, int)
+        or not isinstance(available_ms, int)
+        or not math.isfinite(current_speed)
+        or current_speed < 0.5 or current_speed > 2
+        or duration_ms <= 0 or available_ms <= 0
+    ):
+        return None
+    required = float(current_speed) * duration_ms / available_ms * 1.03
+    recommended = math.ceil(required * 20) / 20
+    return recommended if 0.5 <= recommended <= 2 else None
+
+
+def _timeline_suggestions(lines, duration_limit=None):
+    ordered = sorted(lines, key=lambda item: (item["sort_order"], item["id"]))
+    durations = []
+    for line in ordered:
         version = _current_version(line)
         duration = version.get("duration_ms") if version else None
         if (
@@ -1448,6 +1476,13 @@ def _timeline_suggestions(lines):
             or version.get("input_hash") != line.get("input_hash")
             or type(duration) is not int or duration <= 0
         ):
+            durations.append(None)
+        else:
+            durations.append(duration)
+    cursor = 0
+    suggestions = {}
+    for line, duration in zip(ordered, durations):
+        if duration is None:
             suggestions[line["id"]] = (None, None)
             continue
         suggestions[line["id"]] = (cursor, cursor + duration)
@@ -1502,9 +1537,27 @@ def _timeline_blockers(shot):
                 blockers, "timeline_invalid", shot_id, line_id
             )
             continue
-        if end_ms > duration_limit or start_ms + duration > duration_limit:
+        audio_end_ms = start_ms + duration
+        if end_ms > duration_limit or audio_end_ms > duration_limit:
+            audio_overflow_ms = max(0, audio_end_ms - duration_limit)
+            subtitle_overflow_ms = max(0, end_ms - duration_limit)
+            overflow_ms = max(audio_overflow_ms, subtitle_overflow_ms)
             _append_unique_blocker(
-                blockers, "duration_overflow", shot_id, line_id
+                blockers, "duration_overflow", shot_id, line_id,
+                shot_duration_ms=duration_limit,
+                audio_duration_ms=duration,
+                audio_start_ms=start_ms,
+                audio_end_ms=audio_end_ms,
+                subtitle_end_ms=end_ms,
+                audio_overflow_ms=audio_overflow_ms,
+                subtitle_overflow_ms=subtitle_overflow_ms,
+                overflow_ms=overflow_ms,
+                recommended_speed=(
+                    _recommended_voice_speed(
+                        line.get("speed"), duration, duration_limit - start_ms
+                    )
+                    if audio_overflow_ms > 0 else None
+                ),
             )
         audio_intervals.append((start_ms, start_ms + duration, line_id))
         if line.get("subtitle_visible"):
@@ -1641,7 +1694,9 @@ def build_voice_snapshot(conn, project):
             "lines": shot_lines,
         })
         current_shot = shots[-1]
-        suggestions = _timeline_suggestions(shot_lines)
+        suggestions = _timeline_suggestions(
+            shot_lines, int(current_shot["duration"]) * 1000
+        )
         for line in shot_lines:
             suggested = suggestions[line["id"]]
             line["suggested_start_ms"] = suggested[0]
@@ -1803,7 +1858,7 @@ def save_voice_timeline(db_factory, owner_username, payload):
             line.update(updates[line["id"]])
         blockers = _timeline_blockers(shot)
         if blockers:
-            raise ValueError(blockers[0]["message"])
+            raise VoiceTimelineValidationError(blockers[0])
         now = int(time.time())
         for item in request["items"]:
             conn.execute(
@@ -1947,6 +2002,13 @@ def confirm_voice_stage(db_factory, owner_username, payload):
         snapshot = build_voice_snapshot(conn, project)
         if snapshot["handoff_blocked"]:
             raise ValueError(snapshot["handoff_blockers"][0]["message"])
+        # The alignment gate and stage CAS must share this write transaction.
+        # A provider job commits its recovery identity before it materializes a
+        # version, so checking only before this transaction leaves a race.
+        from . import short_drama_alignment
+        short_drama_alignment.require_locked_if_started_in_transaction(
+            conn, project
+        )
         now = int(time.time())
         updated = conn.execute(
             "UPDATE short_drama_projects "
