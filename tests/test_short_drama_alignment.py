@@ -2,6 +2,7 @@ import sqlite3
 import sys
 import threading
 import time
+import types
 import unittest
 import uuid
 from contextlib import closing
@@ -119,6 +120,167 @@ class ShortDramaAlignmentTests(unittest.TestCase):
             "shots": [],
         }
         return snapshot, silent_contract(project["id"], project["revision"])
+
+    def test_real_word_timestamps_preserve_pause_and_variable_rate(self):
+        current = contract(self.project["id"], self.project["revision"])
+        line = current["shots"][0]["lines"][0]
+        line["text"] = "前慢后快"
+        line["audio_file"] = "audio/variable-rate.wav"
+
+        def transcriber(audio_file):
+            self.assertEqual("audio/variable-rate.wav", audio_file)
+            return [
+                {
+                    "word": "前", "start_ms": 0, "end_ms": 700,
+                    "confidence": 0.97,
+                },
+                {
+                    "word": "慢", "start_ms": 700, "end_ms": 1400,
+                    "confidence": 0.96,
+                },
+                {
+                    "word": "后", "start_ms": 1600, "end_ms": 1750,
+                    "confidence": 0.94,
+                },
+                {
+                    "word": "快", "start_ms": 1750, "end_ms": 1900,
+                    "confidence": 0.93,
+                },
+            ]
+
+        timeline, quality = alignment._align(
+            current, transcriber=transcriber
+        )
+        tokens = timeline[0]["tokens"]
+        self.assertEqual(
+            [700, 700, 150, 150],
+            [item["end_ms"] - item["start_ms"] for item in tokens],
+        )
+        self.assertEqual(200, tokens[0]["start_ms"])
+        self.assertEqual(1800, tokens[2]["start_ms"])
+        self.assertEqual("asr_word_timestamps", quality["provider_mode"])
+        self.assertEqual(1.0, quality["coverage"])
+        self.assertEqual(0, quality["estimated_token_count"])
+        self.assertTrue(all(
+            token["match_type"] == "asr_word" for token in tokens
+        ))
+
+    def test_asr_word_interpolation_retains_real_pause_boundaries(self):
+        current = contract(self.project["id"], self.project["revision"])
+        line = current["shots"][0]["lines"][0]
+        line["text"] = "你好世界"
+        line["audio_file"] = "audio/pause.wav"
+        timeline, quality = alignment._align(
+            current,
+            transcriber=lambda _path: [
+                {
+                    "word": "你好", "start_ms": 100, "end_ms": 500,
+                    "confidence": 0.95,
+                },
+                {
+                    "word": "世界", "start_ms": 1200, "end_ms": 1800,
+                    "confidence": 0.91,
+                },
+            ],
+        )
+        tokens = timeline[0]["tokens"]
+        self.assertEqual(300, tokens[0]["start_ms"])
+        self.assertEqual(700, tokens[1]["end_ms"])
+        self.assertEqual(1400, tokens[2]["start_ms"])
+        self.assertEqual(2000, tokens[3]["end_ms"])
+        self.assertTrue(all(
+            token["match_type"] == "interpolated_within_asr_word"
+            for token in tokens
+        ))
+        self.assertEqual("asr_word_timestamps", quality["provider_mode"])
+
+    def test_unmatched_asr_tokens_are_explicit_estimates_without_confidence(self):
+        current = contract(self.project["id"], self.project["revision"])
+        line = current["shots"][0]["lines"][0]
+        line["text"] = "你好世界"
+        line["audio_file"] = "audio/incomplete.wav"
+        timeline, quality = alignment._align(
+            current,
+            transcriber=lambda _path: [{
+                "word": "你好", "start_ms": 100, "end_ms": 600,
+                "confidence": 0.93,
+            }],
+        )
+        estimated = [
+            token for token in timeline[0]["tokens"]
+            if token["match_type"] == "estimated"
+        ]
+        self.assertEqual(2, len(estimated))
+        self.assertTrue(all(token["confidence"] is None for token in estimated))
+        self.assertEqual("mixed", quality["provider_mode"])
+        self.assertEqual(2, quality["estimated_token_count"])
+        self.assertIn(
+            "estimated_timing_present",
+            {item["code"] for item in quality["blockers"]},
+        )
+
+    def test_provider_failure_is_downgraded_and_never_fakes_confidence(self):
+        current = contract(self.project["id"], self.project["revision"])
+        current["shots"][0]["lines"][0]["audio_file"] = "audio/missing.wav"
+
+        def unavailable(_path):
+            raise alignment.AlignmentProviderUnavailable("model unavailable")
+
+        timeline, quality = alignment._align(
+            current, transcriber=unavailable
+        )
+        self.assertEqual("estimated_fallback", quality["provider_mode"])
+        self.assertIsNone(quality["mean_confidence"])
+        self.assertTrue(all(
+            token["confidence"] is None
+            for token in timeline[0]["tokens"]
+        ))
+        self.assertIn(
+            "forced_alignment_unavailable",
+            {item["code"] for item in quality["blockers"]},
+        )
+
+    def test_faster_whisper_provider_requests_real_word_timestamps(self):
+        calls = {}
+
+        class FakeModel:
+            def __init__(self, model_name, **kwargs):
+                calls["init"] = (model_name, kwargs)
+
+            def transcribe(self, path, **kwargs):
+                calls["transcribe"] = (path, kwargs)
+                word = types.SimpleNamespace(
+                    word="你好", start=0.25, end=0.85, probability=0.91
+                )
+                return [types.SimpleNamespace(words=[word])], object()
+
+        fake_module = types.SimpleNamespace(WhisperModel=FakeModel)
+        source = Path(self.path).with_suffix(".wav")
+        source.write_bytes(b"real-audio-fixture")
+        alignment._WHISPER_MODEL = None
+        alignment._WHISPER_MODEL_NAME = None
+        try:
+            with (
+                mock.patch.dict(
+                    sys.modules, {"faster_whisper": fake_module}
+                ),
+                mock.patch(
+                    "content_domains.core._resolve_out_file",
+                    return_value=source,
+                ),
+            ):
+                words = alignment._transcribe_words("audio/line.wav")
+        finally:
+            alignment._WHISPER_MODEL = None
+            alignment._WHISPER_MODEL_NAME = None
+            source.unlink(missing_ok=True)
+        self.assertEqual("small", calls["init"][0])
+        self.assertEqual(str(source), calls["transcribe"][0])
+        self.assertTrue(calls["transcribe"][1]["word_timestamps"])
+        self.assertTrue(calls["transcribe"][1]["vad_filter"])
+        self.assertEqual("zh", calls["transcribe"][1]["language"])
+        self.assertEqual(250, words[0]["start_ms"])
+        self.assertEqual(850, words[0]["end_ms"])
 
     def test_generate_review_lock_and_replay_without_points(self):
         payload = {

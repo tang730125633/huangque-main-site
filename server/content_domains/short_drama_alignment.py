@@ -1,23 +1,33 @@
-"""Subtitle forced-alignment contracts, versions, and local deterministic provider."""
+"""Subtitle alignment using real local ASR word timestamps with explicit fallback."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
+import threading
 import time
 import unicodedata
 import uuid
+from difflib import SequenceMatcher
 
 from . import short_drama_voice
 
 
 CONTRACT_VERSION = "short_drama_alignment_v1"
-PROVIDER_NAME = "deterministic-local"
-MODEL_VERSION = "estimated-char-v1"
+PROVIDER_NAME = "faster-whisper-local"
+MODEL_VERSION = "word-timestamps-v1"
 WRITABLE_STAGE = "voice_review"
 INTERRUPTED_JOB_SECONDS = 60
 REVIEW_ACTIONS = {"save_adjustments", "confirm_unchanged"}
+_WHISPER_MODEL = None
+_WHISPER_MODEL_NAME = None
+_WHISPER_MODEL_LOCK = threading.Lock()
+_ALIGNMENT_CONCURRENCY = max(
+    1, int(os.environ.get("SHORT_DRAMA_ALIGNMENT_CONCURRENCY", "1") or 1)
+)
+_ALIGNMENT_SEMAPHORE = threading.BoundedSemaphore(_ALIGNMENT_CONCURRENCY)
 
 
 class AlignmentError(ValueError):
@@ -213,6 +223,7 @@ def _input_contract(snapshot):
                 "text": text,
                 "audio_start_ms": audio_start,
                 "audio_end_ms": audio_end,
+                "audio_file": str(version.get("audio_file") or ""),
                 "source_version": version.get("version"),
                 "source_hash": version.get("input_hash"),
             }
@@ -244,6 +255,13 @@ def _input_contract(snapshot):
         "duration_ms": absolute_cursor,
         "audio": audio_identity,
     })
+    identity_shots = [{
+        **{key: value for key, value in shot.items() if key != "lines"},
+        "lines": [{
+            key: value for key, value in line.items()
+            if key != "audio_file"
+        } for line in shot["lines"]],
+    } for shot in shots]
     identity = {
         "contract_version": CONTRACT_VERSION,
         "project_id": snapshot.get("project_id"),
@@ -253,7 +271,7 @@ def _input_contract(snapshot):
         "language": "zh-CN",
         "provider": PROVIDER_NAME,
         "model_version": MODEL_VERSION,
-        "shots": shots,
+        "shots": identity_shots,
     }
     return {
         "input_hash": _hash(identity),
@@ -265,28 +283,226 @@ def _input_contract(snapshot):
     }
 
 
-def _align(contract):
+class AlignmentProviderUnavailable(RuntimeError):
+    pass
+
+
+def _transcribe_words(audio_file):
+    from .core import _resolve_out_file
+
+    path = _resolve_out_file(audio_file)
+    if path is None:
+        raise AlignmentProviderUnavailable("配音音频文件不存在或不在受控目录")
+    model_name = str(
+        os.environ.get("SHORT_DRAMA_ALIGNMENT_MODEL", "small")
+    ).strip() or "small"
+    try:
+        from faster_whisper import WhisperModel
+    except (ImportError, OSError) as error:
+        raise AlignmentProviderUnavailable("faster-whisper 不可用") from error
+    global _WHISPER_MODEL, _WHISPER_MODEL_NAME
+    if _WHISPER_MODEL is None or _WHISPER_MODEL_NAME != model_name:
+        with _WHISPER_MODEL_LOCK:
+            if _WHISPER_MODEL is None or _WHISPER_MODEL_NAME != model_name:
+                try:
+                    _WHISPER_MODEL = WhisperModel(
+                        model_name, device="cpu", compute_type="int8"
+                    )
+                except Exception as error:
+                    raise AlignmentProviderUnavailable(
+                        "字幕对齐 ASR 模型加载失败"
+                    ) from error
+                _WHISPER_MODEL_NAME = model_name
+    try:
+        with _ALIGNMENT_SEMAPHORE:
+            segments, _ = _WHISPER_MODEL.transcribe(
+                str(path),
+                language="zh",
+                vad_filter=True,
+                word_timestamps=True,
+                beam_size=5,
+            )
+            words = []
+            for segment in segments:
+                for word in getattr(segment, "words", None) or []:
+                    text = str(getattr(word, "word", "") or "").strip()
+                    start = getattr(word, "start", None)
+                    end = getattr(word, "end", None)
+                    if (
+                        not text
+                        or not isinstance(start, (int, float))
+                        or not isinstance(end, (int, float))
+                        or end <= start
+                    ):
+                        continue
+                    probability = getattr(word, "probability", None)
+                    words.append({
+                        "word": text,
+                        "start_ms": max(0, round(float(start) * 1000)),
+                        "end_ms": max(1, round(float(end) * 1000)),
+                        "confidence": (
+                            max(0.0, min(1.0, float(probability)))
+                            if isinstance(probability, (int, float))
+                            else None
+                        ),
+                    })
+            return words
+    except AlignmentProviderUnavailable:
+        raise
+    except Exception as error:
+        raise AlignmentProviderUnavailable("字幕对齐 ASR 执行失败") from error
+
+
+def _recognized_tokens(words, audio_start_ms, audio_end_ms):
+    recognized = []
+    duration = audio_end_ms - audio_start_ms
+    for word in words or []:
+        pieces = _tokens(word.get("word"))
+        if not pieces:
+            continue
+        word_start = max(
+            0, min(max(0, duration - 1), int(word.get("start_ms") or 0))
+        )
+        word_end = max(
+            word_start + 1,
+            min(duration, int(word.get("end_ms") or word_start + 1)),
+        )
+        for index, token in enumerate(pieces):
+            start = audio_start_ms + round(
+                word_start + (word_end - word_start) * index / len(pieces)
+            )
+            end = audio_start_ms + round(
+                word_start
+                + (word_end - word_start) * (index + 1) / len(pieces)
+            )
+            recognized.append({
+                "token": token,
+                "start_ms": start,
+                "end_ms": max(start + 1, end),
+                "confidence": word.get("confidence"),
+                "match_type": (
+                    "asr_word" if len(pieces) == 1
+                    else "interpolated_within_asr_word"
+                ),
+            })
+    return recognized
+
+
+def _fill_estimated_ranges(slots, expected, line):
+    index = 0
+    while index < len(slots):
+        if slots[index] is not None:
+            index += 1
+            continue
+        end_index = index
+        while end_index < len(slots) and slots[end_index] is None:
+            end_index += 1
+        left = (
+            line["audio_start_ms"]
+            if index == 0 else slots[index - 1]["end_ms"]
+        )
+        right = (
+            line["audio_end_ms"]
+            if end_index == len(slots) else slots[end_index]["start_ms"]
+        )
+        count = end_index - index
+        if right <= left:
+            left = line["audio_start_ms"]
+            right = line["audio_end_ms"]
+        for offset in range(count):
+            start = round(left + (right - left) * offset / count)
+            end = round(left + (right - left) * (offset + 1) / count)
+            slots[index + offset] = {
+                "token": expected[index + offset],
+                "start_ms": start,
+                "end_ms": max(start + 1, end),
+                "confidence": None,
+                "match_type": "estimated",
+            }
+        index = end_index
+    return slots
+
+
+def _align_line(line, words):
+    expected = _tokens(line["text"])
+    if not expected:
+        return [], 0
+    recognized = _recognized_tokens(
+        words, line["audio_start_ms"], line["audio_end_ms"]
+    )
+    slots = [None] * len(expected)
+    matcher = SequenceMatcher(
+        None,
+        [_normalize_text(token) for token in expected],
+        [_normalize_text(item["token"]) for item in recognized],
+        autojunk=False,
+    )
+    matched = 0
+    for block in matcher.get_matching_blocks():
+        for offset in range(block.size):
+            expected_index = block.a + offset
+            source = recognized[block.b + offset]
+            slots[expected_index] = {
+                **source,
+                "token": expected[expected_index],
+            }
+            matched += 1
+    tokens = _fill_estimated_ranges(slots, expected, line)
+    cursor = line["audio_start_ms"]
+    for token in tokens:
+        token["normalized_token"] = _normalize_text(token["token"])
+        token["start_ms"] = max(cursor, int(token["start_ms"]))
+        token["end_ms"] = max(token["start_ms"] + 1, int(token["end_ms"]))
+        token["end_ms"] = min(line["audio_end_ms"], token["end_ms"])
+        cursor = token["end_ms"]
+    return tokens, matched
+
+
+def _align(contract, transcriber=None):
+    transcriber = transcriber or _transcribe_words
     timeline = []
     token_count = 0
+    matched_count = 0
+    confidences = []
+    low_confidence_ranges = []
+    unmatched_tokens = []
+    line_coverages = []
+    provider_errors = []
     for shot in contract["shots"]:
         for line in shot["lines"]:
-            chars = _tokens(line["text"])
-            duration = line["audio_end_ms"] - line["audio_start_ms"]
-            tokens = []
-            for index, token in enumerate(chars):
-                start = line["audio_start_ms"] + round(duration * index / len(chars))
-                end = line["audio_start_ms"] + round(
-                    duration * (index + 1) / len(chars)
-                )
-                tokens.append({
-                    "token": token,
-                    "normalized_token": _normalize_text(token),
-                    "start_ms": start,
-                    "end_ms": max(start + 1, end),
-                    "confidence": 0.92,
-                    "match_type": "estimated",
+            words = []
+            try:
+                words = transcriber(line.get("audio_file") or "")
+            except AlignmentProviderUnavailable as error:
+                provider_errors.append({
+                    "line_id": line["line_id"],
+                    "message": str(error)[:220],
                 })
+            tokens, matched = _align_line(line, words)
             token_count += len(tokens)
+            matched_count += matched
+            coverage = matched / len(tokens) if tokens else 1.0
+            line_coverages.append({
+                "line_id": line["line_id"],
+                "coverage": round(coverage, 4),
+            })
+            for token in tokens:
+                confidence = token.get("confidence")
+                if isinstance(confidence, (int, float)):
+                    confidences.append(float(confidence))
+                    if confidence < 0.80:
+                        low_confidence_ranges.append({
+                            "line_id": line["line_id"],
+                            "token": token["token"],
+                            "start_ms": token["start_ms"],
+                            "end_ms": token["end_ms"],
+                            "confidence": round(float(confidence), 4),
+                        })
+                if token["match_type"] == "estimated":
+                    unmatched_tokens.append({
+                        "line_id": line["line_id"],
+                        "token": token["token"],
+                    })
             timeline.append({
                 "shot_id": line["shot_id"],
                 "line_id": line["line_id"],
@@ -299,23 +515,72 @@ def _align(contract):
                 "subtitle_end_ms": (
                     tokens[-1]["end_ms"] if tokens else line["audio_end_ms"]
                 ),
+                "alignment_source": (
+                    "asr_word_timestamps"
+                    if matched == len(tokens) and tokens
+                    else "estimated_fallback"
+                ),
                 "tokens": tokens,
             })
+    coverage = matched_count / token_count if token_count else 1.0
+    mean_confidence = (
+        sum(confidences) / len(confidences) if confidences else None
+    )
+    estimated_count = token_count - matched_count
+    blockers = [{
+        "code": "manual_review_required",
+        "message": "字幕时间轴必须经过人工校对后才能锁定",
+    }]
+    if provider_errors:
+        blockers.append({
+            "code": "forced_alignment_unavailable",
+            "message": "真实音频对齐不可用，当前仅提供估算时间轴",
+        })
+    if estimated_count:
+        blockers.append({
+            "code": "estimated_timing_present",
+            "message": "存在没有真实 ASR 时间戳的估算 token",
+        })
+    if coverage < 0.98:
+        blockers.append({
+            "code": "project_coverage_low",
+            "message": "项目真实时间戳覆盖率低于 98%",
+        })
+    if any(item["coverage"] < 0.95 for item in line_coverages):
+        blockers.append({
+            "code": "line_coverage_low",
+            "message": "存在真实时间戳覆盖率低于 95% 的台词",
+        })
+    if mean_confidence is not None and mean_confidence < 0.80:
+        blockers.append({
+            "code": "mean_confidence_low",
+            "message": "真实时间戳平均置信度低于 0.80",
+        })
+    if not token_count:
+        provider_mode = "not_applicable"
+    elif not matched_count:
+        provider_mode = "estimated_fallback"
+    elif estimated_count:
+        provider_mode = "mixed"
+    else:
+        provider_mode = "asr_word_timestamps"
     quality = {
-        "coverage": 1.0 if token_count else 0.0,
-        "mean_confidence": 0.92 if token_count else 0.0,
-        "low_confidence_ranges": [],
-        "unmatched_tokens": [],
-        "estimated_token_count": token_count,
+        "provider_mode": provider_mode,
+        "coverage": round(coverage, 4),
+        "line_coverages": line_coverages,
+        "mean_confidence": (
+            round(mean_confidence, 4) if mean_confidence is not None else None
+        ),
+        "low_confidence_ranges": low_confidence_ranges,
+        "unmatched_tokens": unmatched_tokens,
+        "estimated_token_count": estimated_count,
+        "provider_errors": provider_errors,
         "thresholds": {
             "project_coverage": 0.98,
             "line_coverage": 0.95,
             "mean_confidence": 0.80,
         },
-        "blockers": [{
-            "code": "manual_review_required",
-            "message": "本地 Provider 为估算对齐，必须人工校对后才能锁定",
-        }],
+        "blockers": blockers,
     }
     return timeline, quality
 
@@ -556,7 +821,7 @@ def _workspace(conn, project):
         "provider": {
             "name": PROVIDER_NAME,
             "model_version": MODEL_VERSION,
-            "real_forced_alignment": False,
+            "real_forced_alignment": True,
             "supports_cancel": True,
             "supports_resume": False,
         },

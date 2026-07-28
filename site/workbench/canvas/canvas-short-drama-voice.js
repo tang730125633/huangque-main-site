@@ -412,6 +412,12 @@
       alignmentCurrent&&Array.isArray(alignmentCurrent.timeline)&&
       !alignmentCurrent.timeline.length
     );
+    var alignmentProviderMode=alignmentQuality.provider_mode||'';
+    var alignmentIsEstimated=alignmentProviderMode==='estimated_fallback'||
+      alignmentProviderMode==='mixed';
+    var alignmentNote=alignmentIsEstimated?
+      '真实音频对齐未完整覆盖；当前含估算时间，必须逐句试听并人工确认后才能锁定。':
+      '时间来自真实音频 ASR word timestamps；音频边界只读，锁定前仍须人工确认。';
     var alignmentPanel='<section class="nc-sdv-alignment"><header><strong>'+
       '第 4 阶段 · 字幕强制对齐</strong><span>'+
       escapeHtml(alignmentCurrent?
@@ -426,7 +432,7 @@
       (alignmentQuality.mean_confidence==null?'--':
         number(alignmentQuality.mean_confidence,0).toFixed(2))+
       '</dd></div></dl>'+
-      '<p class="nc-sdv-alignment-note">音频边界只读；本地估算结果必须人工校对后才能锁定，不扣点。</p>'+
+      '<p class="nc-sdv-alignment-note">'+escapeHtml(alignmentNote)+'</p>'+
       (alignmentReview?'<p class="nc-sdv-alignment-review">审核方式：'+
         escapeHtml(alignmentReview.action==='confirm_unchanged'?
           '原样确认':'调整后确认')+' · 审核人：'+
