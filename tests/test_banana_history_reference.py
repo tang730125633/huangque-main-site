@@ -10,7 +10,7 @@ BANANA = (Path(__file__).resolve().parents[1] / "site" / "workbench" / "banana.h
 class HistoryReferenceTests(unittest.TestCase):
     def test_shared_loader_converts_remote_image_into_reference(self):
         match = re.search(
-            r"function loadReferenceFromUrl\(url,targetEngine\)\{(?P<body>.*?)\n  \}",
+            r"function loadReferenceFromUrl\(url\)\{(?P<body>.*?)\n  \}",
             BANANA,
             re.S,
         )
@@ -35,7 +35,7 @@ class HistoryReferenceTests(unittest.TestCase):
     def test_continue_edit_reuses_shared_reference_loader(self):
         block = BANANA[BANANA.index("if(bEdit) bEdit.onclick=function()") :]
         block = block[: block.index("if(bVideo)")]
-        self.assertIn("loadReferenceFromUrl(lastResultUrl,lastResultProvider)", block)
+        self.assertIn("loadReferenceFromUrl(lastResultUrl)", block)
         self.assertNotIn("new Image()", block)
 
 

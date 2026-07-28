@@ -15,14 +15,11 @@
        high 恒为 medium 的 4.00 倍 → ¥1.20 ~ ¥1.50
    取最贵档定价避免倒挂：标准 4 点、高清 15 点（原来高清只收 12 点，1:1 与 3:4 是亏的）。
 """
-import base64
 import importlib
 import re
 import sys
-import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
@@ -36,27 +33,16 @@ image_domain = importlib.import_module("content_domains.image")
 FRONTEND_RATIOS = ["1:1", "9:16", "16:9", "3:4"]
 
 
-class ZelongDedicatedChannelTests(unittest.TestCase):
-    def test_zelong2_card_is_visible_with_mask_edit(self):
-        self.assertRegex(BANANA, r'data-engine="zelong2"[^>]*>.*?局部修改')
+class ChannelShutdownTests(unittest.TestCase):
+    def test_zelong2_is_rejected_before_points_are_deducted(self):
+        with self.assertRaisesRegex(ValueError, "泽龙2生图渠道维护中"):
+            image_domain.validate_image_payload({"provider": "zelong2", "prompt": "demo"})
+        with self.assertRaisesRegex(ValueError, "泽龙2生图渠道维护中"):
+            image_domain.gen_image({"provider": "zelong2", "prompt": "demo"})
 
-    def test_zelong2_mask_edit_uses_dedicated_model(self):
-        png = b"\x89PNG\r\n\x1a\n" + b"x" * 66
-        source = base64.b64encode(png).decode()
-        mask = base64.b64encode(png).decode()
-        response = {"data": [{"b64_json": base64.b64encode(b"result").decode()}]}
-        with tempfile.TemporaryDirectory() as tmp, \
-             patch.object(image_domain, "OUT_DIR", Path(tmp)), \
-             patch.object(image_domain, "public_url", lambda name, _ctype: "/" + name), \
-             patch.object(image_domain, "_zelong2_accounts", return_value=[{"base": "https://example.test", "key": "k"}]), \
-             patch.object(image_domain, "_dispatch_gpt", return_value=response) as dispatch:
-            result = image_domain.gen_image({"provider": "zelong2", "prompt": "demo", "ratio": "1:1",
-                                             "quality": "std", "count": 1, "image": source, "mask": mask})
-        provider, path, body = dispatch.call_args.args[:3]
-        self.assertEqual((provider, path, result["mode"]), ("zelong2", "/v1/images/edits", "inpaint"))
-        self.assertIn(b"zelong-cpa-gpt-image-2", body)
-        self.assertIn(b'name="mask"', body)
-        self.assertIn(b"1K", body)
+    def test_zelong2_card_is_hidden(self):
+        self.assertRegex(BANANA, r'data-engine="zelong2"[^>]*aria-hidden="true"[^>]*display:none')
+        self.assertIn("location.hostname==='zelong.huangquechuanmei.com'", BANANA)
 
 
 def _wh(size):

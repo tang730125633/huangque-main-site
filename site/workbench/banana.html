@@ -136,9 +136,9 @@
         <div data-engine="gpt" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">黄雀引擎 2</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">写实·局部修改 · <span data-engine-cost="gpt">30点</span></div></div>
         <div data-engine="seedream" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">黄雀引擎 1</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">中文字·商用设计 · <span data-engine-cost="seedream">12点</span></div></div>
         <div data-engine="xiaole" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">果肉生图</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">写实·稳定 · <span data-engine-cost="xiaole">8点</span></div></div>
-        <div data-engine="zelong2" style="padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">泽龙2生图</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">专用低成本·局部修改 · <span data-engine-cost="zelong2">8点</span></div></div>
+        <div data-engine="zelong2" aria-hidden="true" style="display:none; padding:11px 10px; text-align:center; font-size:13px; border-radius:11px; cursor:pointer; color:#94a4bb; background:rgba(148,164,187,.05); border:1px solid rgba(148,164,187,.14); transition:.16s; line-height:1.5;"><div style="font-weight:600;">泽龙2生图</div><div style="font-size:11px; margin-top:3px; color:#94a4bb;">专用低成本·纯文生图 · <span data-engine-cost="zelong2">8点</span></div></div>
       </div>
-      <div id="zelongScopeNote" style="display:none;margin-top:10px;padding:9px 11px;border:1px solid rgba(45,212,191,.24);border-radius:10px;background:rgba(45,212,191,.07);color:#8bded2;font-size:11.5px;line-height:1.5;">专用低成本通道 · 支持文生图、参考图与涂抹局部修改 · 1K 方图、标准清晰度、单张生成</div>
+      <div id="zelongScopeNote" style="display:none;margin-top:10px;padding:9px 11px;border:1px solid rgba(45,212,191,.24);border-radius:10px;background:rgba(45,212,191,.07);color:#8bded2;font-size:11.5px;line-height:1.5;">泽龙测试服专用通道 · 当前支持纯文生图、1K 方图、标准清晰度、单张生成</div>
       <!-- Nano Banana 型号子选择：只在选中 Nano Banana 时出现。两档点数不同，切换会重算 -->
       <div id="bananaVariantRow" style="display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-top:10px;">
         <div data-variant="nb2" style="padding:9px 10px; text-align:center; font-size:12.5px; border-radius:10px; cursor:pointer; color:#e7b24c; background:rgba(231,178,76,.1); border:1px solid rgba(231,178,76,.32); transition:.16s; line-height:1.45;"><div style="font-weight:600;">纳米香蕉 2</div><div style="font-size:11px; margin-top:2px;">快 · 约 30-90 秒 · 标15/高25</div></div>
@@ -311,6 +311,10 @@
   var COSTBASE={nb2:{std:18,hd:35}, pro:{std:35,hd:44}, gpt:{std:20,hd:35}, seedream_std:{std:8,hd:12}, seedream_pro:{std:15,hd:20}, xiaole:{std:12,hd:16}, zelong2:{std:8,hd:12}};
   // 数量上限(中转/循环慢→低)。必须与后端 points.cost_of 的 cap 一致，否则按 N 扣点却只出 cap 张。
   var ENGINE_MAXN={banana:4, gpt:4, seedream:2, xiaole:2, zelong2:1};
+  var zelongCard=document.querySelector('#engineRow [data-engine="zelong2"]');
+  if(zelongCard && location.hostname==='zelong.huangquechuanmei.com'){
+    zelongCard.style.display=''; zelongCard.setAttribute('aria-hidden','false');
+  }
   var COUNT_OPTIONS=[1,2,4];
   // 引擎卡 → 计价用的 key。Nano Banana 一张卡两个型号，价格跟型号走。
   function costKey(eng){ return eng==='banana' ? bananaVariant : (eng==='seedream' ? 'seedream_'+seedreamVariant : eng); }
@@ -377,8 +381,9 @@
 
   // 引擎选择
   function syncDedicatedScope(on){
-    var scope=document.getElementById('zelongScopeNote');
+    var scope=document.getElementById('zelongScopeNote'), ref=document.getElementById('refSection');
     if(scope) scope.style.display=on?'block':'none';
+    if(ref) ref.style.display=on?'none':'';
     ['ratioRow','qualityRow','countRow'].forEach(function(id){
       var row=document.getElementById(id); if(!row) return;
       row.style.opacity=on?'.58':'1'; row.style.pointerEvents=on?'none':'auto';
@@ -406,7 +411,7 @@
     var sv=document.getElementById('seedreamVariantRow');
     if(sv) sv.style.display = (e==='seedream') ? 'grid' : 'none';
     if(e==='xiaole' && !xiaoleRefs.length && refImg) xiaoleRefs.push(refImg);
-    if(refImg) showInp(engine==='gpt'||engine==='zelong2');
+    if(refImg) showInp(engine==='gpt');
     renderXiaoleRefs();
     updateCost();   // Nano Banana 两个型号点数不同，切引擎/切型号都要重算
   }
@@ -632,7 +637,7 @@
   };
 
   // 共享：提交 → 轮询 → 显示。任务存 localStorage，切走再回来自动续传（后端不中断）
-  var lastPayload=null,lastLabel='',lastEndpoint='',lastResultUrl=null,lastResultProvider=null;
+  var lastPayload=null,lastLabel='',lastEndpoint='',lastResultUrl=null;
   function showUploadRetry(message){
     setNote((message||'上传失败，请检查网络后重试')+' · <button id="uploadRetryBtn" type="button" style="padding:3px 9px;border:1px solid rgba(244,112,138,.42);border-radius:7px;background:rgba(244,112,138,.1);color:#f4708a;font:inherit;font-size:12px;cursor:pointer;">重新上传</button>','#f4708a');
     var retry=document.getElementById('uploadRetryBtn');
@@ -674,8 +679,6 @@
   function showResult(result){
     var us=(result&&result.urls&&result.urls.length)?result.urls:[result.url];
     setResultRatio(result&&result.ratio);
-    lastResultProvider=(result&&result.provider)||null;
-    try{ localStorage.setItem('hq_last_result_provider',lastResultProvider||''); }catch(e){}
     res.src=us[0]+'?t='+Date.now(); lastResultUrl=us[0]; localStorage.setItem('hq_last_result',us[0]);
     renderThumbs(us);
     setResultView('generated');
@@ -969,7 +972,6 @@
       var ip=(inpModal.querySelector('#inpPrompt').value||'').trim();
       inpModal.style.display='none';
       var payload={prompt:ip, ratio:nearestRatio(), image:refImg, mask:mask, quality:quality};
-      if(engine==='zelong2') payload.provider='zelong2';
       submit(payload, '局部修改中（涂抹处重绘）', '/api/gen/image');
     };
     inpModal.style.display='flex';
@@ -980,8 +982,8 @@
     upBox.style.backgroundImage='url('+dataUrl+')'; upBox.style.borderStyle='solid'; upBox.style.borderColor='rgba(231,178,76,.5)';
     if(upIcon) upIcon.style.display='none';
     if(upText){ upText.textContent='✕ 清除'; upText.style.background='rgba(7,11,19,.65)'; upText.style.padding='1px 5px'; upText.style.borderRadius='4px'; }
-    if(upHint) upHint.textContent='(已就绪 ·「图生图」改全图'+((engine==='gpt'||engine==='zelong2')?'，或「局部修改」只改涂抹处':'')+')';
-    showInp(engine==='gpt'||engine==='zelong2');
+    if(upHint) upHint.textContent='(已就绪 ·「图生图」改全图'+(engine==='gpt'?'，或「局部修改」只改涂抹处':'')+')';
+    showInp(engine==='gpt');
   }
   function addXiaoleRef(dataUrl){
     if(xiaoleRefs.length>=XIAOLE_REF_MAX){ setNote('果肉生图最多可上传 '+XIAOLE_REF_MAX+' 张参考图','#f4708a'); return; }
@@ -1058,15 +1060,16 @@
   // 文生图 / 图生图（有参考图）/ nano banana
   gen.onclick=function(){
     var bp={prompt:(pr.value||'').trim(), ratio:ratio, quality:quality, count:count};
+    var usesRef=(engine==='xiaole'&&xiaoleRefs.length)|| (!!refImg&&engine!=='zelong2');
     if(engine==='xiaole'&&xiaoleRefs.length) bp.reference_images=xiaoleRefs.slice();
-    else if(refImg) bp.image=refImg;  // 有参考图 → 图生图(整图编辑)
+    else if(usesRef) bp.image=refImg;
     if(engine==='gpt' || engine==='xiaole' || engine==='zelong2' || engine==='seedream'){
       if(engine!=='gpt') bp.provider=engine;              // 果肉/泽龙2/Seedream 各自 provider
       if(engine==='seedream') bp.variant=seedreamVariant; // 5.0 标准 / 5.0 Pro
       var lbl = engine==='xiaole' ? '果肉生图 '
               : engine==='zelong2' ? '泽龙2生图 '
               : engine==='seedream' ? ('黄雀引擎 1 '+(seedreamVariant==='pro'?'Pro ':'标准 ')) : '';
-      submit(bp, lbl+((engine==='xiaole'&&xiaoleRefs.length)?'多图参考生图中':(refImg?'图生图中（在参考图上改）':(engine==='gpt'?'文生图中':'生成中'))), '/api/gen/image');
+      submit(bp, lbl+((engine==='xiaole'&&xiaoleRefs.length)?'多图参考生图中':(usesRef?'图生图中（在参考图上改）':(engine==='gpt'?'文生图中':'生成中'))), '/api/gen/image');
     } else {
       bp.model=bananaVariant;   // 一张卡两个型号：nb2 / pro，后端 /api/gen/banana 按 model 分流
       submit(bp, (bananaVariant==='pro'?'纳米香蕉 Pro ':'纳米香蕉 2 ')+(refImg?'图生图中（在参考图上改）':'生成中'), '/api/gen/banana');
@@ -1080,8 +1083,8 @@
       return '/api/gen/dl?url='+encodeURIComponent(parsed.href)+'&name=banana-edit';
     }catch(e){ return url; }
   }
-  function loadReferenceFromUrl(url,targetEngine){
-    selectEngine(targetEngine==='zelong2'?'zelong2':'gpt');
+  function loadReferenceFromUrl(url){
+    selectEngine('gpt');
     setNote('正在把所选图片载入为参考…','#2dd4bf');
     fetch(referenceFetchUrl(url),{cache:'no-store',credentials:'same-origin',headers:{'Authorization':'Bearer '+tok()}})
       .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.blob(); })
@@ -1148,7 +1151,7 @@
   }
   loadHistory();
   // 刷新还原：把上次的结果图放回结果区，刷新后也能直接再生成
-  try{ var lr0=localStorage.getItem('hq_last_result'); if(lr0){ setResultRatio(localStorage.getItem('hq_last_result_ratio')); res.src=lr0+'?t='+Date.now(); lastResultUrl=lr0; lastResultProvider=localStorage.getItem('hq_last_result_provider')||null; } }catch(e){}
+  try{ var lr0=localStorage.getItem('hq_last_result'); if(lr0){ setResultRatio(localStorage.getItem('hq_last_result_ratio')); res.src=lr0+'?t='+Date.now(); lastResultUrl=lr0; } }catch(e){}
   // 续传：切回页面时接上所有进行中的任务（后端没中断）。
   // 兼容旧版的单任务 key：老用户浏览器里可能还存着 hq_active_job，读完即迁移。
   try{
@@ -1163,7 +1166,7 @@
   var bRegen=actBtn('再生成'), bEdit=actBtn('继续改'), bVideo=actBtn('转视频'), bFeishu=actBtn('发飞书'), bDl=actBtn('下载'), bStore=actBtn('入库');
   if(bRegen) bRegen.onclick=function(){ if(!lastPayload){ setNote('先生成一张，再「再生成」','#f4708a'); return; } submit(lastPayload,'重新生成中',lastEndpoint); };
   if(bEdit) bEdit.onclick=function(){ if(!lastResultUrl){ setNote('先生成一张，再「继续改」','#f4708a'); return; }
-    loadReferenceFromUrl(lastResultUrl,lastResultProvider);
+    loadReferenceFromUrl(lastResultUrl);
   };
   if(bVideo) bVideo.onclick=function(e){
     if(!lastResultUrl) return;

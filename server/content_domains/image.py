@@ -15,7 +15,6 @@ from .video import XIAOLEVIDEO_API_KEY, _image_bytes_look_valid, _xiaole_request
 
 # gpt 引擎出境优先级：VPS 隧道 → mihomo → heygen（见 egress.py）。官方 OpenAI 直连地址：
 OPENAI_OFFICIAL_BASE = os.environ.get("OPENAI_OFFICIAL_BASE", "https://api.openai.com").rstrip("/")
-ZELONG2_IMAGE_MODEL = os.environ.get("ZELONG2_IMAGE_MODEL", "zelong-cpa-gpt-image-2").strip()
 IMAGE_REF_MAX_BYTES = max(1, int(os.environ.get("IMAGE_REF_MAX_BYTES", str(10 * 1024 * 1024)) or (10 * 1024 * 1024)))
 # 提示词上限：Ark 实测吃得下 2 万字，2000 是没必要的收紧；8000 对长场景描述够用。
 IMAGE_PROMPT_MAX_CHARS = max(1, int(os.environ.get("IMAGE_PROMPT_MAX_CHARS", "8000") or 8000))
@@ -183,8 +182,8 @@ def validate_image_payload(payload):
         raise ValueError("\u8bf7\u6c42\u4f53\u5fc5\u987b\u662f JSON \u5bf9\u8c61")
     body = dict(payload)
     provider = str(body.get("provider") or "openai").strip().lower()
-    if provider == "seedream" and body.get("mask"):
-        raise ValueError("黄雀引擎 1 暂不支持局部修改（蒙版），请改用黄雀引擎 2")
+    if provider == "zelong2":
+        raise ValueError("泽龙2生图渠道维护中，请使用 Seedream 或果肉生图")
     prompt = (body.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("\u63d0\u793a\u8bcd\u4e0d\u80fd\u4e3a\u7a7a")
@@ -216,11 +215,9 @@ def validate_image_payload(payload):
         if total_bytes > XIAOLE_IMAGE_REF_TOTAL_MAX_BYTES:
             raise ValueError("果肉生图的参考图合计不能超过 %dMB" % (XIAOLE_IMAGE_REF_TOTAL_MAX_BYTES // 1024 // 1024))
         body["reference_images"] = clean_references
-    if body.get("mask") and not body.get("image"):
-        raise ValueError("蒙版必须同时提供参考图")
     if body.get("mask"):
         body["mask"], raw = _decode_image_b64(body.get("mask"), "mask")
-        if raw and not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        if raw and not _image_bytes_look_valid(raw):
             raise ValueError("蒙版格式不支持，请使用 PNG")
     # count \u5fc5\u987b\u5939\u4f4f\u4e0a\u9650\uff1acost_of \u6309 count \u6263\u70b9\uff0ccount=100 \u5c31\u4f1a\u6263\u7206\u70b9\u3002
     # \u5404\u5f15\u64ce\u81ea\u5df1\u8fd8\u6709 MAX_N\uff08seedream 2 / gpt 4\uff09\uff0c\u8fd9\u91cc\u53ea\u6321\u79bb\u8c31\u503c\u3002
@@ -229,16 +226,6 @@ def validate_image_payload(payload):
     except Exception:
         raise ValueError("count \u5fc5\u987b\u662f\u6b63\u6574\u6570")
     body["count"] = max(1, min(IMAGE_MAX_COUNT, count))
-    if provider == "zelong2":
-        if ZELONG2_IMAGE_MODEL != "zelong-cpa-gpt-image-2":
-            raise ValueError("泽龙专用生图渠道未配置")
-        if (body.get("ratio") or "1:1") != "1:1":
-            raise ValueError("泽龙专用生图仅支持 1:1 方图")
-        if (body.get("quality") or "std") != "std":
-            raise ValueError("泽龙专用生图仅支持标准质量")
-        if body["count"] != 1:
-            raise ValueError("泽龙专用生图仅支持单张生成")
-        body["ratio"], body["quality"] = "1:1", "std"
     return body
 
 def _gen_image_xiaole(prompt, ratio, quality, count, img, references=None):
@@ -599,6 +586,8 @@ def gen_image(payload):
     mask  = _clean_b64(payload.get("mask"))   # 蒙版(透明处=要重绘的区域) → 局部修改
     quality = "high" if (payload.get("quality") or "hd") == "hd" else "medium"  # 标准=medium/高清=high
     provider = (payload.get("provider") or "openai").strip().lower()
+    if provider == "zelong2":
+        raise ValueError("泽龙2生图渠道维护中，请使用 Seedream 或果肉生图")
     if provider == "xiaole":
         count = 1 if mask else max(1, min(2, int(payload.get("count") or 1)))
         return _gen_image_xiaole(prompt, ratio, quality, count, img, payload.get("reference_images"))
@@ -625,22 +614,15 @@ def gen_image(payload):
         base, key, proxy = OPENAI_BASE, OPENAI_KEY, True
     cap = 2 if provider in {"zelong", "zelong2"} else 4      # 中转出图慢，数量上限低
     count = 1 if mask else max(1, min(cap, int(payload.get("count") or 1)))  # 局部修改只出 1 张
-    model = ZELONG2_IMAGE_MODEL if provider == "zelong2" else "gpt-image-2"
     if img:
         files = [("image", "in.png", base64.b64decode(img))]
         if mask:
             files.append(("mask", "mask.png", base64.b64decode(mask)))
-        fields = {"model": model, "prompt": prompt, "size": size, "quality": quality, "n": str(count)}
-        if provider == "zelong2":
-            fields.update({"image_size": "1K", "aspect_ratio": "1:1", "response_format": "b64_json"})
-        body, ct = _multipart(fields, files)
+        body, ct = _multipart({"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": quality, "n": str(count)}, files)
         d = _dispatch_gpt(provider, "/v1/images/edits", body, ct, base, key, proxy)
         mode = "inpaint" if mask else "img2img"
     else:
-        request = {"model": model, "prompt": prompt, "size": size, "quality": quality, "n": count}
-        if provider == "zelong2":
-            request.update({"image_size": "1K", "aspect_ratio": "1:1", "response_format": "b64_json"})
-        body = json.dumps(request).encode()
+        body = json.dumps({"model": "gpt-image-2", "prompt": prompt, "size": size, "quality": quality, "n": count}).encode()
         d = _dispatch_gpt(provider, "/v1/images/generations", body, "application/json", base, key, proxy, streaming=True)
         mode = "text2img"
     files_out, urls = [], []
