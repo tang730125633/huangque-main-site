@@ -63,17 +63,21 @@ class BreakdownFollowupTests(unittest.TestCase):
     def test_reverse_prompt_uses_duration_transcript_and_timeline_sections(self):
         captured = {}
 
-        def fake_chat(system_message, user_message, frames, temp=0.7):
+        def fake_chat(
+            system_message, user_message, frames, temp=0.7, max_tokens=None,
+        ):
             captured.update(
                 system=system_message,
                 user=user_message,
                 frames=frames,
+                max_tokens=max_tokens,
             )
             return json.dumps({
-                "prompt": (
-                    "[00:00-00:03] 主体从画面左侧进入。\n"
-                    "[00:03-00:07] 镜头跟随主体向前移动。"
-                )
+                "segments": [
+                    "主体从画面左侧进入室内空间，镜头保持平视中景并缓慢向右跟随，暖色侧光勾勒人物轮廓，前景桌面与后景窗户形成明确层次。人物步伐平稳，身体朝向与视线都指向画面中央，环境音保持安静，镜头移动在人物停步时同步减速。",
+                    "人物走到桌边拿起杯子并转向镜头，动作从伸手开始到握稳结束，视线跟随杯子移动，机位轻微前推，环境光保持柔和。杯壁反光随手腕转动发生变化，中景构图逐渐突出上半身，前后景位置与上一段连续，不增加新的道具或人物。",
+                    "人物放下杯子后自然抬头微笑，镜头从中景收束到近景，背景虚化程度逐渐增加，动作、光线与空间关系均延续上一镜头。主光仍从侧前方照射，人物肩部放松并保持面向镜头，运镜平稳停止，画面在安静环境音中自然结束。",
+                ],
             }, ensure_ascii=False)
 
         with mock.patch.object(
@@ -88,14 +92,18 @@ class BreakdownFollowupTests(unittest.TestCase):
                 script_text="[0s-3s] 开场口播",
             )
 
-        self.assertIn("[00:00-00:03]", result["prompt"])
+        self.assertIn("[00:00-00:02.333]", result["prompt"])
+        self.assertTrue(result["prompt"].splitlines()[-1].startswith(
+            "[00:04.667-00:07]"
+        ))
+        self.assertEqual(captured["max_tokens"], 1800)
         for expected in (
             "总时长：7 秒",
             "[0s-3s] 开场口播",
-            "连续、不重叠、无空档",
-            "每段用 80-160 字",
-            "动作起点、连续过程、终点",
-            "各段之间用换行分隔",
+            "程序已经固定好时间轴",
+            "全部内容必须达到 300-600",
+            "起点、连续过程、终点",
+            "不得复制同一段内容",
         ):
             self.assertIn(expected, captured["user"])
         self.assertIn("不臆造", captured["system"])
@@ -183,59 +191,176 @@ class BreakdownFollowupTests(unittest.TestCase):
                 1,
                 "未找到合法",
             ),
+            (
+                "[00:00-00:01] 无",
+                1,
+                "缺少画面描述",
+            ),
         )
         for prompt, duration, message in invalid:
             with self.subTest(message=message):
                 with self.assertRaisesRegex(ValueError, message):
                     breakdown._validate_reverse_timeline(prompt, duration)
 
-    def test_reverse_timeline_validation_retries_once_with_feedback(self):
+    def test_reverse_segment_content_validation(self):
+        valid = [
+            "主体从画面左侧进入室内空间，镜头保持平视中景并缓慢向右跟随，暖色侧光勾勒人物轮廓，前景桌面与后景窗户形成明确层次。人物步伐平稳，身体朝向与视线都指向画面中央，环境音保持安静，镜头移动在人物停步时同步减速。",
+            "人物走到桌边拿起杯子并转向镜头，动作从伸手开始到握稳结束，视线跟随杯子移动，机位轻微前推，环境光保持柔和。杯壁反光随手腕转动发生变化，中景构图逐渐突出上半身，前后景位置与上一段连续，不增加新的道具或人物。",
+            "人物放下杯子后自然抬头微笑，镜头从中景收束到近景，背景虚化程度逐渐增加，动作、光线与空间关系均延续上一镜头。主光仍从侧前方照射，人物肩部放松并保持面向镜头，运镜平稳停止，画面在安静环境音中自然结束。",
+        ]
+        self.assertEqual(
+            breakdown._validate_reverse_segment_contents(valid, 3),
+            valid,
+        )
+        cases = (
+            (["内容", valid[1], valid[2]], "占位"),
+            ([valid[0], valid[1]], "分段数量"),
+            (["这段太短", valid[1], valid[2]], "内容过短"),
+            ([valid[0], valid[0], valid[2]], "完全重复"),
+        )
+        for contents, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ValueError, message):
+                    breakdown._validate_reverse_segment_contents(contents, 3)
+
+    def test_reverse_segment_objects_are_flattened_with_required_fields(self):
+        item = {
+            "subject": "人物位于画面中央并面向镜头，灰色上衣轮廓清晰",
+            "action": "人物从低头阅读开始，缓慢抬头并在动作结束时保持平视",
+            "scene": "室内桌面位于前景，白色墙面和条形天花板构成后景层次",
+            "camera": "平视中景固定机位，构图以人物上半身为中心并保持稳定",
+            "light": "柔和自然光从画面左侧进入，整体色温中性且材质反光克制",
+            "audio": "没有可确认环境声，画面文字保持原样，不新增口播或字幕",
+        }
+        raw = json.dumps({"segments": [item, item, dict(
+            item, action="人物保持平视后放松肩部，动作自然停止并在画面中央收束",
+        )]}, ensure_ascii=False)
+        with self.assertRaisesRegex(ValueError, "完全重复"):
+            breakdown._coerce_reverse_segments(raw, 3)
+        parsed = breakdown._coerce_reverse_segments(
+            json.dumps({"segments": [
+                item,
+                dict(item, action="人物抬头后转向左侧，动作连续且在转身结束时停下"),
+                dict(item, action="人物回到正面并放松肩部，镜头保持稳定直至自然结束"),
+            ]}, ensure_ascii=False),
+            3,
+        )
+        self.assertEqual(len(parsed), 3)
+        self.assertIn("主体与位置：", parsed[0])
+        self.assertIn("声音字幕：", parsed[0])
+
+        with self.assertRaisesRegex(ValueError, "缺少字段"):
+            breakdown._coerce_reverse_segments(
+                json.dumps({"segments": [dict(item, audio="")]}, ensure_ascii=False),
+                1,
+            )
+
+    def test_reverse_timeline_is_program_generated_and_retries_once(self):
+        first = json.dumps(
+            {"segments": ["内容过短", "内容过短", "内容过短"]},
+            ensure_ascii=False,
+        )
+        contents = [
+            "主体从画面左侧进入室内空间，镜头保持平视中景并缓慢向右跟随，暖色侧光勾勒人物轮廓，前景桌面与后景窗户形成明确层次。人物步伐平稳，身体朝向与视线都指向画面中央，环境音保持安静，镜头移动在人物停步时同步减速。",
+            "人物走到桌边拿起杯子并转向镜头，动作从伸手开始到握稳结束，视线跟随杯子移动，机位轻微前推，环境光保持柔和。杯壁反光随手腕转动发生变化，中景构图逐渐突出上半身，前后景位置与上一段连续，不增加新的道具或人物。",
+            "人物放下杯子后自然抬头微笑，镜头从中景收束到近景，背景虚化程度逐渐增加，动作、光线与空间关系均延续上一镜头。主光仍从侧前方照射，人物肩部放松并保持面向镜头，运镜平稳停止，画面在安静环境音中自然结束。",
+        ]
         responses = [
-            json.dumps(
-                {"prompt": "[00:00.5-00:02] 错误开场。"},
-                ensure_ascii=False,
-            ),
-            json.dumps(
-                {
-                    "prompt": (
-                        "[00:00-00:01] 正确开场。\n"
-                        "[00:01-00:02] 正确收束。"
-                    )
-                },
-                ensure_ascii=False,
-            ),
+            first,
+            json.dumps({"segments": contents}, ensure_ascii=False),
         ]
         messages = []
+        token_limits = []
 
-        def fake_chat(system_message, user_message, frames, temp=0.7):
+        def fake_chat(
+            system_message, user_message, frames, temp=0.7, max_tokens=None,
+        ):
             messages.append(user_message)
+            token_limits.append(max_tokens)
             return responses.pop(0)
 
         with mock.patch.object(
             breakdown, "_chat_multimodal", side_effect=fake_chat,
         ) as chat:
             result = breakdown._reverse_from_frames(
-                {}, ["frame.jpg"], duration=2,
+                {}, ["frame.jpg"], duration=6,
             )
 
         self.assertEqual(chat.call_count, 2)
-        self.assertIn("上一次时间轴校验失败", messages[1])
-        self.assertIn("必须从00:00开始", messages[1])
-        self.assertIn("[00:00-00:01]", result["prompt"])
+        self.assertEqual(token_limits, [1800, 1800])
+        self.assertIn("上一次输出校验失败", messages[1])
+        self.assertEqual(
+            [line.split("]", 1)[0] + "]" for line in result["prompt"].splitlines()],
+            breakdown._fixed_reverse_ranges(6),
+        )
+        breakdown._validate_reverse_timeline(result["prompt"], 6)
 
-    def test_reverse_timeline_validation_fails_after_bounded_retry(self):
-        invalid = json.dumps(
-            {"prompt": "[00:01-00:02] 始终错误。"},
+    def test_reverse_timeline_marks_static_segments_after_one_retry(self):
+        content = (
+            "主体与位置：女子位于画面中央并背对镜头面向海面；"
+            "动作与表情：女子保持站立姿态并手持已有物品，未观察到可确认动作变化；"
+            "场景空间：沙滩位于前景，海面和天空构成中后景；"
+            "镜头构图：平视中景固定机位，主体保持在中央区域；"
+            "光线质感：自然光均匀照亮人物和海面，整体色温中性；"
+            "声音字幕：没有可确认声音或字幕。"
+        )
+        duplicate = json.dumps(
+            {"segments": [content, content, content]},
             ensure_ascii=False,
         )
         with mock.patch.object(
+            breakdown, "_chat_multimodal", return_value=duplicate,
+        ) as chat:
+            result = breakdown._reverse_from_frames(
+                {}, ["frame.jpg"], duration=6,
+            )
+
+        self.assertEqual(chat.call_count, 2)
+        lines = result["prompt"].splitlines()
+        self.assertNotIn("连续性：", lines[0])
+        self.assertIn("未观察到可确认变化", lines[1])
+        self.assertIn("未观察到可确认变化", lines[2])
+        breakdown._validate_reverse_timeline(result["prompt"], 6)
+
+    def test_reverse_timeline_safely_expands_short_second_draft(self):
+        short_item = {
+            "subject": "女子位于街道",
+            "action": "背对镜头站立",
+            "scene": "夜晚街道有落叶",
+            "camera": "固定中景",
+            "light": "柔和环境光",
+            "audio": "无",
+        }
+        short = json.dumps(
+            {"segments": [short_item, short_item, short_item]},
+            ensure_ascii=False,
+        )
+        with mock.patch.object(
+            breakdown, "_chat_multimodal", return_value=short,
+        ) as chat:
+            result = breakdown._reverse_from_frames(
+                {}, ["frame.jpg"], duration=6,
+            )
+
+        self.assertEqual(chat.call_count, 2)
+        self.assertIn("事实边界：", result["prompt"])
+        self.assertIn("不新增人物、物体或情节", result["prompt"])
+        contents = [
+            line.split("] ", 1)[1] for line in result["prompt"].splitlines()
+        ]
+        breakdown._validate_reverse_segment_contents(contents, 3)
+        breakdown._validate_reverse_timeline(result["prompt"], 6)
+
+    def test_reverse_timeline_validation_fails_after_bounded_retry(self):
+        invalid = json.dumps({"segments": ["始终错误。"]}, ensure_ascii=False)
+        with mock.patch.object(
             breakdown, "_chat_multimodal", return_value=invalid,
         ) as chat:
-            with self.assertRaisesRegex(ValueError, "时间轴校验失败"):
+            with self.assertRaisesRegex(ValueError, "内容校验失败"):
                 breakdown._reverse_from_frames(
                     {}, ["frame.jpg"], duration=2,
                 )
-        self.assertEqual(chat.call_count, 3)
+        self.assertEqual(chat.call_count, 2)
 
     def test_reverse_prompt_accepts_array_and_recovers_missing_commas(self):
         array_raw = json.dumps({
@@ -263,6 +388,66 @@ class BreakdownFollowupTests(unittest.TestCase):
         self.assertEqual(len(ranges), 4)
         self.assertEqual(ranges[0].split("-", 1)[0], "[00:00")
         self.assertTrue(ranges[-1].endswith("00:10.034]"))
+        short_ranges = breakdown._fixed_reverse_ranges(2)
+        self.assertEqual(len(short_ranges), 3)
+        self.assertTrue(short_ranges[-1].endswith("00:02]"))
+
+    def test_timeline_labels_carry_rounded_milliseconds_into_minutes(self):
+        expected_labels = {
+            59.9996: "01:00",
+            60: "01:00",
+            119.9996: "02:00",
+            120: "02:00",
+        }
+        for duration, expected in expected_labels.items():
+            with self.subTest(duration=duration):
+                self.assertEqual(
+                    breakdown._timeline_label(duration), expected,
+                )
+
+        expected_ranges = {
+            59.9996: [
+                "[00:00-00:15]",
+                "[00:15-00:30]",
+                "[00:30-00:45]",
+                "[00:45-01:00]",
+            ],
+            60: [
+                "[00:00-00:15]",
+                "[00:15-00:30]",
+                "[00:30-00:45]",
+                "[00:45-01:00]",
+            ],
+            119.9996: [
+                "[00:00-00:30]",
+                "[00:30-01:00]",
+                "[01:00-01:30]",
+                "[01:30-02:00]",
+            ],
+            120: [
+                "[00:00-00:30]",
+                "[00:30-01:00]",
+                "[01:00-01:30]",
+                "[01:30-02:00]",
+            ],
+        }
+        for duration, expected in expected_ranges.items():
+            with self.subTest(duration=duration):
+                ranges = breakdown._fixed_reverse_ranges(duration)
+                self.assertEqual(ranges, expected)
+                self.assertNotIn(":60", "".join(ranges))
+                prompt = "\n".join(
+                    "%s 该段包含可执行的主体、动作、场景、镜头与光线描述。"
+                    % item
+                    for item in ranges
+                )
+                segments = breakdown._validate_reverse_timeline(
+                    prompt, duration,
+                )
+                self.assertEqual(len(segments), 4)
+                self.assertAlmostEqual(
+                    segments[-1][1], round(duration, 3), places=3,
+                )
 
     def test_static_image_reverse_does_not_require_a_zero_length_timeline(self):
         captured = {}
@@ -552,6 +737,19 @@ class BreakdownFollowupTests(unittest.TestCase):
             len(body["messages"][1]["content"]) - 1,
             breakdown._AI_MAX_FRAMES,
         )
+
+    def test_multimodal_optional_max_tokens_is_sent_to_provider(self):
+        with mock.patch.object(breakdown, "ZHIPU_API_KEY", "secret-test-key"), \
+             mock.patch.object(
+                 breakdown.egress,
+                 "post_json_idempotent",
+                 return_value={"choices": [{"message": {"content": "ok"}}]},
+             ) as posted:
+            breakdown._chat_multimodal(
+                "system", "user", [], max_tokens=1800,
+            )
+        body = json.loads(posted.call_args.args[3])
+        self.assertEqual(body["max_tokens"], 1800)
 
     def test_ai_frame_fallback_without_pillow_keeps_a_hard_byte_limit(self):
         with tempfile.TemporaryDirectory() as directory:
