@@ -42,6 +42,7 @@ class ChannelShutdownTests(unittest.TestCase):
 
     def test_zelong2_card_is_hidden(self):
         self.assertRegex(BANANA, r'data-engine="zelong2"[^>]*aria-hidden="true"[^>]*display:none')
+        self.assertIn("location.hostname==='zelong.huangquechuanmei.com'", BANANA)
 
 
 def _wh(size):
