@@ -286,8 +286,10 @@ class DigitalIPTests(unittest.TestCase):
             self.assertTrue(digital_ip.guide(payload, "owner")["cached"])
         self.assertEqual(post.call_count, 1)
 
-    def test_guide_rate_limit_blocks_fourth_uncached_request(self):
-        for _ in range(3):
+    def test_guide_rate_limit_allows_normal_interview_burst(self):
+        self.assertEqual(12, digital_ip.GUIDE_RATE_LIMIT_PER_MINUTE)
+        self.assertGreaterEqual(digital_ip.GUIDE_DAILY_LIMIT, sum(digital_ip.PROJECT_MODULE_STEPS) * 2)
+        for _ in range(digital_ip.GUIDE_RATE_LIMIT_PER_MINUTE):
             digital_ip._check_guide_rate_limit("owner")
         with self.assertRaises(digital_ip.DigitalIPRateLimited):
             digital_ip._check_guide_rate_limit("owner")

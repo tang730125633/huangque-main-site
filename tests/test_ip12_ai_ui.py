@@ -127,6 +127,14 @@ console.log(JSON.stringify([
         self.assertIn("AI 的提问和整理只形成建议草稿", html)
         self.assertNotIn("OPENAI_API_KEY", html)
 
+    def test_coach_ignores_duplicate_send_while_reply_is_pending(self):
+        html = PAGE.read_text(encoding="utf-8")
+        guide = html[html.index("async function askGuide("):html.index("function applyGuideDraft(")]
+
+        self.assertIn("if(guideBusy)return;", guide)
+        self.assertIn("guideBusy=true;", guide)
+        self.assertIn("guideBusy=false;", guide)
+
     def test_brand_and_visible_ai_labels_are_neutral(self):
         html = PAGE.read_text(encoding="utf-8")
         self.assertIn('class="brand" href="/" aria-label="返回黄雀主站首页"', html)
