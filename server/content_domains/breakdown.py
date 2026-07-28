@@ -517,27 +517,43 @@ def _reverse_from_frames(
             "素材名称：%s\n素材类型：静态图片\n\n"
             % str(title or "（无）")
         )
-    sysmsg = (
-        "你是黄雀传媒资深短视频复刻编导。根据连续关键帧恢复镜头时间轴、动作节点与空间连续性，"
-        "写成视频生成模型可执行的中文提示词。严格区分可见事实与不确定信息，不臆造身份、"
-        "品牌文字、人物、道具或情节。只输出 JSON，不要解释或 markdown。"
-    )
     if duration > 0:
+        sysmsg = (
+            "你是黄雀传媒资深短视频复刻编导。程序已经负责时间轴，你只负责依据连续关键帧"
+            "为每个既定分段撰写详细、可执行的中文画面内容。不得输出时间范围或重新划分分段。"
+            "严格区分可见事实与不确定信息，不臆造身份、品牌文字、人物、道具或情节。"
+            "只输出 JSON，不要解释或 markdown。"
+        )
+        timeline_ranges = _fixed_reverse_ranges(duration)
         usermsg = (
-            source_context + "请严格按照参考画面的时间顺序，输出 JSON："
-            "{\"prompt\":\"[00:00-00:03] ...\\n[00:03-00:07] ...\"}。"
-            "prompt 字段必须是一个用换行分段的字符串，严禁返回数组。"
-            "prompt 必须从 00:00 开始，按真实总时长拆成连续、不重叠、无空档的时间段，"
-            "最后一段结束时间精确等于总时长；不足整秒时保留小数秒。镜头变化处单独分段。"
-            "每段用 80-160 字写清：①主体可见外观与画面位置；"
-            "②动作起点、连续过程、终点及道具互动；③表情、视线和身体姿态；"
-            "④场景前中后景及空间关系；⑤景别、机位高度、视角、构图和运镜起止路线；"
-            "⑥主光方向、色温色调、材质质感和氛围；⑦转场依据、节奏、环境音/音效；"
-            "⑧该时间段对应的口播或字幕（没有则写“无”）。"
+            source_context + "程序已经固定好时间轴，不要输出或改写任何时间范围。"
+            "请重新观察全部参考图片，直接输出一个 JSON 对象；这个对象只能有 segments 字段。"
+            "segments 必须是长度恰好为 %d 的对象数组，也就是一共有 %d 个分段对象。"
+            "每个对象必须同时包含 subject、action、scene、camera、light、audio 六个字符串字段，"
+            "六个字段属于同一个分段对象，绝对不能拆成六个数组元素。"
+            "禁止写示例文字，禁止只写时间码、序号或占位符。"
+            "分段对象依次对应这些时间区间（区间仅用于理解画面顺序，绝对不要写进字段中）：%s。"
+            "全部内容必须达到 300-600 个中文字符，每段必须达到 80-150 字，少于要求会被拒绝。"
+            "subject 写主体与位置，action 写动作与表情，scene 写场景空间，"
+            "camera 写镜头构图，light 写光线质感，audio 写声音字幕。"
+            "subject、scene、light 各写至少15字，action 至少25字，camera 至少20字；"
+            "action 要写起点、连续过程、终点及道具互动，"
+            "camera 要写景别、机位高度、视角和运镜起止路线。"
             "仅补充连接相邻关键帧必需的过渡动作；无法确认的细节写“未确认”，不得臆造。"
-            "各段之间用换行分隔，不要合并成一整段概述。"
+            "不得用“略”“待补充”“内容”等占位词，不得复制同一段内容。"
+            % (
+                len(timeline_ranges),
+                len(timeline_ranges),
+                "、".join(timeline_ranges),
+            )
         )
     else:
+        sysmsg = (
+            "你是黄雀传媒资深视觉编导。根据参考图片写成图像生成模型可执行的中文提示词。"
+            "严格区分可见事实与不确定信息，不臆造身份、品牌文字、人物、道具或情节。"
+            "只输出 JSON，不要解释或 markdown。"
+        )
+        timeline_ranges = []
         usermsg = (
             source_context
             + "请输出 JSON：{\"prompt\":\"一段可直接用于图像生成的中文执行提示词\"}。"
@@ -546,31 +562,53 @@ def _reverse_from_frames(
             "无法确认的身份、品牌文字或细节写“未确认”。"
         )
     last_error = None
-    retry_ranges = _fixed_reverse_ranges(duration) if duration > 0 else []
-    for attempt in range(3):
+    last_raw = ""
+    for attempt in range(2):
         raw = ""
         message = usermsg
-        if attempt and duration > 0:
+        if attempt:
             message += (
-                "\n\n上一次时间轴校验失败：%s。请修正后重新输出完整 JSON；"
-                "prompt 必须是字符串，不能是数组。必须逐字使用以下时间区间，"
-                "每个区间恰好出现一次，不得新增、删除或修改边界：%s。"
-                % (last_error, "、".join(retry_ranges))
+                "\n\n上一次输出校验失败：%s。请修正后重新输出完整 JSON，"
+                "重新观察图片后，确保 segments 恰好包含指定数量的对象；"
+                "每个对象都逐项填写 subject、action、scene、camera、light、audio，"
+                "六个字段合计至少80个中文字符，不要缩短已有描述；"
+                "不要返回时间码、序号、示例文字、占位符、解释或 markdown。"
+                "\n上一次草稿如下，请逐段扩写并修正结构：\n%s"
+                % (last_error, last_raw[:5000])
             )
-        elif attempt:
-            message += "\n\n上一次输出校验失败：%s。请重新输出完整 JSON。" % last_error
         try:
-            raw = _chat_multimodal(sysmsg, message, frames)
-            prompt = _coerce_reverse_prompt(raw)
-            if not prompt:
-                raise ValueError("提示词反推结果为空")
             if duration > 0:
+                raw = _chat_multimodal(
+                    sysmsg, message, frames, max_tokens=1800,
+                )
+                contents = _coerce_reverse_segments(
+                    raw,
+                    len(timeline_ranges),
+                    allow_duplicates=bool(attempt),
+                    allow_short=bool(attempt),
+                )
+                if attempt:
+                    contents = _annotate_repeated_reverse_segments(contents)
+                    contents = _expand_short_reverse_segments(contents)
+                    _validate_reverse_segment_contents(
+                        contents, len(timeline_ranges),
+                    )
+                prompt = "\n".join(
+                    "%s %s" % (label, content)
+                    for label, content in zip(timeline_ranges, contents)
+                )
                 _validate_reverse_timeline(prompt, duration)
+            else:
+                raw = _chat_multimodal(sysmsg, message, frames)
+                prompt = _coerce_reverse_prompt(raw)
+                if not prompt:
+                    raise ValueError("提示词反推结果为空")
             break
         except ValueError as error:
             last_error = error
+            last_raw = str(raw or "")
             print(
-                "[breakdown] reverse timeline rejected attempt=%d error=%s raw=%s"
+                "[breakdown] reverse output rejected attempt=%d error=%s raw=%s"
                 % (
                     attempt + 1,
                     str(error)[:180],
@@ -579,7 +617,7 @@ def _reverse_from_frames(
                 flush=True,
             )
     else:
-        raise ValueError("提示词时间轴校验失败：%s" % last_error)
+        raise ValueError("提示词内容校验失败：%s" % last_error)
     return {
         "type": "breakdown_reverse",
         "source_url": source_url,
@@ -591,28 +629,174 @@ def _reverse_from_frames(
     }
 
 
+def _timeline_label(seconds):
+    total_milliseconds = max(
+        0, int(max(0.0, float(seconds or 0)) * 1000 + 0.5),
+    )
+    return _timeline_label_milliseconds(total_milliseconds)
+
+
+def _timeline_label_milliseconds(total_milliseconds):
+    minutes, remaining_milliseconds = divmod(
+        max(0, int(total_milliseconds or 0)), 60_000,
+    )
+    whole_seconds, milliseconds = divmod(remaining_milliseconds, 1000)
+    seconds_text = "%02d" % whole_seconds
+    if milliseconds:
+        seconds_text += (".%03d" % milliseconds).rstrip("0")
+    return "%02d:%s" % (minutes, seconds_text)
+
+
 def _fixed_reverse_ranges(duration, max_segments=4):
     duration = max(0.0, float(duration or 0))
     if duration <= 0:
         return []
+    total_milliseconds = max(1, int(duration * 1000 + 0.5))
     count = min(
         max(1, int(max_segments or 1)),
-        max(1, int((duration + 2.999) // 3)),
+        3 if total_milliseconds <= 9000 else 4,
+        total_milliseconds,
     )
-    values = [index * duration / count for index in range(count + 1)]
-
-    def label(seconds):
-        minutes = int(seconds // 60)
-        remaining = seconds - minutes * 60
-        text = ("%06.3f" % remaining).rstrip("0").rstrip(".")
-        if remaining < 10 and not text.startswith("0"):
-            text = "0" + text
-        return "%02d:%s" % (minutes, text)
+    values = [
+        (index * total_milliseconds + count // 2) // count
+        for index in range(count + 1)
+    ]
 
     return [
-        "[%s-%s]" % (label(values[index]), label(values[index + 1]))
+        "[%s-%s]" % (
+            _timeline_label_milliseconds(values[index]),
+            _timeline_label_milliseconds(values[index + 1]),
+        )
         for index in range(count)
     ]
+
+
+def _coerce_reverse_segments(
+    raw, expected_count, allow_duplicates=False, allow_short=False,
+):
+    try:
+        value = (_parse_breakdown_json(raw) or {}).get("segments")
+    except ValueError as error:
+        raise ValueError("分段内容无法解析") from error
+    if not isinstance(value, list):
+        raise ValueError("segments 必须是数组")
+    field_labels = (
+        ("subject", "主体与位置"),
+        ("action", "动作与表情"),
+        ("scene", "场景空间"),
+        ("camera", "镜头构图"),
+        ("light", "光线质感"),
+        ("audio", "声音字幕"),
+    )
+    visual_fields = {"subject", "action", "scene", "camera", "light"}
+    contents = []
+    for index, item in enumerate(value, 1):
+        if isinstance(item, dict):
+            missing = [
+                field for field, _ in field_labels
+                if not str(item.get(field) or "").strip()
+            ]
+            if missing:
+                raise ValueError(
+                    "第%d段缺少字段：%s" % (index, "、".join(missing))
+                )
+            placeholder_fields = [
+                field for field, _ in field_labels
+                if field in visual_fields
+                and _is_reverse_placeholder(item.get(field))
+            ]
+            if placeholder_fields:
+                raise ValueError(
+                    "第%d段视觉字段包含占位内容：%s"
+                    % (index, "、".join(placeholder_fields))
+                )
+            contents.append("；".join(
+                "%s：%s" % (label, str(item.get(field) or "").strip())
+                for field, label in field_labels
+            ))
+        else:
+            contents.append(str(item or "").strip())
+    return _validate_reverse_segment_contents(
+        contents,
+        expected_count,
+        allow_duplicates=allow_duplicates,
+        allow_short=allow_short,
+    )
+
+
+def _reverse_segment_fingerprint(content):
+    return re.sub(
+        r"[\s，。；：、,.!！?？…~\-—_]+", "", str(content or ""),
+    ).lower()
+
+
+def _is_reverse_placeholder(content):
+    return _reverse_segment_fingerprint(content) in {
+        "", "无", "没有", "未确认", "略", "待补充", "占位", "内容",
+    }
+
+
+def _annotate_repeated_reverse_segments(contents):
+    seen = {}
+    annotated = []
+    for index, content in enumerate(contents, 1):
+        fingerprint = _reverse_segment_fingerprint(content)
+        previous_index = seen.get(fingerprint)
+        if previous_index is not None:
+            content = (
+                str(content).rstrip("；。 ")
+                + "；连续性：与第%d段保持同一主体、动作状态、场景、机位和光线，"
+                "未观察到可确认变化。" % previous_index
+            )
+        annotated.append(content)
+        seen[fingerprint] = index
+    return annotated
+
+
+def _expand_short_reverse_segments(contents):
+    compact_lengths = [
+        len(_reverse_segment_fingerprint(content)) for content in contents
+    ]
+    expand_all = sum(compact_lengths) < 240
+    expanded = []
+    for index, (content, compact_length) in enumerate(
+        zip(contents, compact_lengths), 1,
+    ):
+        if expand_all or compact_length < 40:
+            content = (
+                str(content).rstrip("；。 ")
+                + "；事实边界：仅保留关键帧中可见信息，人物身份、品牌文字及遮挡细节"
+                "均未确认；执行约束：第%d段保持当前主体位置、已有道具、场景层次、"
+                "机位方向和光线状态，不新增人物、物体或情节。" % index
+            )
+        expanded.append(content)
+    return expanded
+
+
+def _validate_reverse_segment_contents(
+    contents, expected_count, allow_duplicates=False, allow_short=False,
+):
+    if len(contents) != int(expected_count):
+        raise ValueError(
+            "分段数量应为%d，实际为%d" % (int(expected_count), len(contents))
+        )
+    normalized = []
+    total_length = 0
+    for index, content in enumerate(contents, 1):
+        compact = _reverse_segment_fingerprint(content)
+        if _is_reverse_placeholder(content):
+            raise ValueError("第%d段是空内容或占位内容" % index)
+        if not allow_short and len(compact) < 40:
+            raise ValueError("第%d段内容过短，至少需要40个有效字符" % index)
+        normalized.append(compact.lower())
+        total_length += len(compact)
+    if not allow_duplicates and len(set(normalized)) != len(normalized):
+        raise ValueError("分段内容存在完全重复")
+    if not allow_short and total_length < 240:
+        raise ValueError("全部分段内容过短，至少需要240个有效字符")
+    if total_length > 800:
+        raise ValueError("全部分段内容过长，最多允许800个有效字符")
+    return contents
 
 
 def _coerce_reverse_prompt(raw):
@@ -691,7 +875,9 @@ def _validate_reverse_timeline(
         raise ValueError("未找到合法的[开始-结束]时间范围")
     segments = []
     for index, item in enumerate(parsed, 1):
-        if not " ".join(item["body"]).strip():
+        body_text = " ".join(item["body"]).strip()
+        meaningful = re.sub(r"[\s。.!！?？]+", "", body_text)
+        if not body_text or meaningful in {"无", "没有", "未确认"}:
             raise ValueError("第%d段缺少画面描述" % index)
         start = _timeline_seconds(item["start"])
         end = _timeline_seconds(item["end"])
@@ -1103,7 +1289,7 @@ def _extract_frames(video_path, count=6, duration=30):
     return outdir, frames
 
 
-def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7):
+def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7, max_tokens=None):
     """编导视觉理解统一走智谱 GLM-4V。"""
     if not ZHIPU_API_KEY:
         raise RuntimeError("REVERSE_ZHIPU_KEY is not configured")
@@ -1137,6 +1323,8 @@ def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7):
         ],
         "temperature": temp,
     }
+    if max_tokens is not None:
+        body["max_tokens"] = int(max_tokens)
 
     request_data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     try:
