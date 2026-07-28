@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """爆款拆解：竞品视频链接 → 下载 → 抽帧 → ASR → GLM-4V 多模态 → 分镜脚本"""
 import os, json, time, base64, tempfile, subprocess, shutil, mimetypes, io
+import urllib.error
 from contextlib import closing
 
 from .core import jdb
@@ -9,6 +10,9 @@ from . import egress
 ZHIPU_API_BASE = "https://open.bigmodel.cn/api/paas/v4"
 ZHIPU_API_KEY = (os.environ.get("REVERSE_ZHIPU_KEY") or "").strip()
 ZHIPU_MODEL = (os.environ.get("REVERSE_ZHIPU_MODEL") or "glm-4v-plus").strip()
+BREAKDOWN_DOWNLOAD_BUDGET = max(
+    30, int(os.environ.get("BREAKDOWN_DOWNLOAD_BUDGET", "180") or "180")
+)
 
 # 不支持的平台（视频号加密流需要 Isaac64 解密，暂不支持）
 _UNSUPPORTED_PLATFORMS = {"channels", "weixin", "wechat"}
@@ -201,17 +205,15 @@ def _do_breakdown(payload, info, url):
         if det.get("images"):
             raise ValueError("该链接是图文笔记，不是视频，暂不支持拆解")
         raise ValueError("未找到视频下载地址，可能是私密或已删除")
-    duration = _normalize_duration_seconds(det.get("duration"), fallback=30)
-    title = det.get("title") or det.get("desc") or ""
-
     job_id = payload.get("_job_id")
     _heartbeat(job_id, "downloading")
     tmp_video = None
     frame_dir = None
     tmp_video = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     try:
-        dl_deadline = time.time() + 180
-        tikhub.download_to_file(play_url, dl_deadline, tmp_video.name)
+        det = _download_breakdown_video(tikhub, info, det, tmp_video.name)
+        duration = _normalize_duration_seconds(det.get("duration"), fallback=30)
+        title = det.get("title") or det.get("desc") or ""
 
         _heartbeat(job_id, "extracting_frames")
         # TikHub 的抖音 duration 有时是毫秒（如 10034），有时是秒。
@@ -277,6 +279,37 @@ def _do_breakdown(payload, info, url):
         if frame_dir:
             try: shutil.rmtree(frame_dir)
             except: pass
+
+
+def _download_breakdown_video(tikhub, info, detail, destination):
+    """下载失败时刷新一次带时效的播放地址；每次尝试都有独立硬预算。"""
+    current = detail
+    retryable = (TimeoutError, ConnectionError, urllib.error.URLError)
+    for attempt in range(2):
+        play_url = current.get("play_url")
+        if not play_url:
+            if current.get("images"):
+                raise ValueError("该链接是图文笔记，不是视频，暂不支持拆解")
+            raise ValueError("未找到视频下载地址，可能是私密或已删除")
+        try:
+            tikhub.download_to_file(
+                play_url, time.time() + BREAKDOWN_DOWNLOAD_BUDGET, destination
+            )
+            return current
+        except retryable as error:
+            if attempt:
+                raise TimeoutError(
+                    "视频源下载过慢或地址已失效，刷新地址后重试仍失败"
+                ) from error
+            print(
+                "[breakdown] 视频下载失败，刷新 TikHub 播放地址后重试: %s"
+                % str(error)[:160],
+                flush=True,
+            )
+            current = tikhub.detail(
+                info["platform"], info["id"], info.get("note_type"), fresh=True
+            )
+    raise RuntimeError("视频下载重试状态异常")
 
 
 def _reverse_from_frames(payload, frames, source_url="", title="", platform="", duration=0):
