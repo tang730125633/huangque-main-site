@@ -526,6 +526,23 @@ def _bounded_thumbnail(
     raise ValueError("参考图片压缩后仍然过大")
 
 
+def _bounded_ai_frame(path, max_bytes):
+    """Return bounded image bytes without making Pillow a hard dependency."""
+    try:
+        return _bounded_thumbnail(
+            path, max_edge=_AI_FRAME_MAX_EDGE, max_bytes=max_bytes,
+        ), "image/jpeg"
+    except ModuleNotFoundError:
+        with open(path, "rb") as source:
+            frame = source.read(max_bytes + 1)
+        if len(frame) > max_bytes:
+            raise ValueError("视频关键帧数据过大，请降低素材分辨率")
+        media_type = mimetypes.guess_type(path)[0] or "image/jpeg"
+        if media_type not in {"image/jpeg", "image/png", "image/webp"}:
+            raise ValueError("视频关键帧格式不受支持")
+        return frame, media_type
+
+
 def _strip_json_code_fence(raw):
     text = str(raw or "").strip()
     if not text.startswith("```"):
@@ -714,9 +731,7 @@ def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7):
     )
     image_bytes = 0
     for path in image_paths:
-        frame = _bounded_thumbnail(
-            path, max_edge=_AI_FRAME_MAX_EDGE, max_bytes=per_frame_budget,
-        )
+        frame, media_type = _bounded_ai_frame(path, per_frame_budget)
         if image_bytes + len(frame) > _AI_FRAMES_TOTAL_MAX_BYTES:
             raise ValueError("视频关键帧压缩后仍然过大，请缩短视频或降低素材分辨率")
         image_bytes += len(frame)
@@ -724,7 +739,7 @@ def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7):
         content.append({
             "type": "image_url",
             "image_url": {
-                "url": "data:image/jpeg;base64," + b64,
+                "url": "data:" + media_type + ";base64," + b64,
                 "detail": "low",
             },
         })

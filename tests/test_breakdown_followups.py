@@ -317,13 +317,13 @@ class BreakdownFollowupTests(unittest.TestCase):
     def test_multimodal_ten_frames_share_a_bounded_request_budget(self):
         budgets = []
 
-        def fake_thumbnail(path, max_edge, max_bytes):
-            budgets.append((path, max_edge, max_bytes))
-            return b"x" * max_bytes
+        def fake_frame(path, max_bytes):
+            budgets.append((path, max_bytes))
+            return b"x" * max_bytes, "image/jpeg"
 
         with mock.patch.object(breakdown, "ZHIPU_API_KEY", "secret-test-key"), \
              mock.patch.object(
-                 breakdown, "_bounded_thumbnail", side_effect=fake_thumbnail,
+                 breakdown, "_bounded_ai_frame", side_effect=fake_frame,
              ), mock.patch.object(
                  breakdown.egress,
                  "post_json_idempotent",
@@ -336,11 +336,28 @@ class BreakdownFollowupTests(unittest.TestCase):
         self.assertEqual(result, "ok")
         self.assertEqual(len(budgets), 10)
         self.assertLessEqual(
-            sum(item[2] for item in budgets),
+            sum(item[1] for item in budgets),
             breakdown._AI_FRAMES_TOTAL_MAX_BYTES,
         )
         body = json.loads(posted.call_args.args[3])
         self.assertEqual(len(body["messages"][1]["content"]) - 1, 10)
+
+    def test_ai_frame_fallback_without_pillow_keeps_a_hard_byte_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            small = pathlib.Path(directory) / "frame.png"
+            small.write_bytes(b"small-png")
+            with mock.patch.object(
+                breakdown,
+                "_bounded_thumbnail",
+                side_effect=ModuleNotFoundError("No module named PIL"),
+            ):
+                frame, media_type = breakdown._bounded_ai_frame(str(small), 32)
+                self.assertEqual(frame, b"small-png")
+                self.assertEqual(media_type, "image/png")
+
+                small.write_bytes(b"x" * 33)
+                with self.assertRaisesRegex(ValueError, "数据过大"):
+                    breakdown._bounded_ai_frame(str(small), 32)
 
     def test_frame_thumbnails_are_embedded_before_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:

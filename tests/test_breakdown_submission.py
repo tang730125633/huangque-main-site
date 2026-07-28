@@ -154,6 +154,11 @@ class BreakdownZhipuProviderTests(unittest.TestCase):
             ))
             with mock.patch.object(breakdown, "ZHIPU_API_KEY", "secret-test-key"), \
                  mock.patch.object(
+                     breakdown,
+                     "_bounded_ai_frame",
+                     return_value=(b"bounded-jpeg", "image/jpeg"),
+                 ), \
+                 mock.patch.object(
                      breakdown.egress,
                      "post_json_idempotent",
                      return_value={"choices": [{"message": {"content": "vision ok"}}]},
