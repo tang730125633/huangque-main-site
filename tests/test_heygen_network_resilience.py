@@ -84,6 +84,20 @@ class NetworkErrorClassificationTests(unittest.TestCase):
             with self.assertRaises(video.HeyGenRateLimited):
                 video._heygen_request_json("POST", "/videos")
 
+    def test_direct_upload_ssl_eof_becomes_network_error(self):
+        """直连上传也必须归类传输层错误，否则建形象的上传重试永远接不到异常。"""
+        error = urllib.error.URLError(
+            ssl.SSLError("UNEXPECTED_EOF_WHILE_READING")
+        )
+        with patch.object(video, "HEYGEN_API_KEY", "k"), \
+             patch.object(video, "_heygen_direct_opener") as opener_factory:
+            opener_factory.return_value.open.side_effect = error
+            with self.assertRaises(video.HeyGenNetworkError):
+                video._heygen_direct_req(
+                    "POST", "https://upload.heygen.com/v1/asset",
+                    body=b"image", ctype="image/jpeg", timeout=10,
+                )
+
 
 class SubmitStillNeverRetriesNetworkTests(unittest.TestCase):
     """提交 POST 遇网络错 = 可能已计费，绝不能重发 —— 这条纪律不许因本次改动松动。"""
