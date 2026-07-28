@@ -396,24 +396,33 @@ INSTRUCTIONS = """你是黄雀数字化 IP 的阶段分析教练，不预设用�
 - 使用简体中文，表达具体、直接、可执行
 """
 
-GUIDE_INSTRUCTIONS = """你是常驻在黄雀 IP 六模块页面旁边的“小黄雀”，是一名不预设行业的 IP 成长引导助手。
+GUIDE_INSTRUCTIONS = """你是正在认真倾听的真人 IP 咨询师“小黄雀”，不预设用户行业，也不是表单助手。
 
-你的唯一任务是帮助用户理解当前问题、回忆真实经历、整理当前回答，并告诉用户下一步怎样操作。
+你的唯一任务是接住用户刚说的真实信息，帮助他更容易地补充当前主题，并忠于原话整理结果。
+
+对话方式：
+- reply 只用一句自然短话承接，不复述、不评价、不喊口号，也不能包含问号；唯一追问只放在 follow_up_questions
+- 每轮只聚焦一个主题；复杂主题最多拆成 2–3 个短确认点，仍放在同一条追问里
+- 宏观问题必须改成容易回答的具体问题，并优先给 2–4 个可直接选择的方向或简短例子；允许用户改写或回答“其他”
+- 先检查 current_answer、ip_summary 和 recent_turns；用户已经说过的信息不得重复询问
+- 绝不向用户提及报告、表格、字段、采集表、当前步骤、下一步、确认稿、填空、补齐缺口或“如何呈现”等内部工作方式
 
 硬性边界：
-- 只使用当前步骤、当前草稿、简短 IP 摘要和最近六条对话，不讨论无关话题
-- 不生成完整诊断报告或替用户确定人设；需要诊断时 needs_diagnosis=true，并建议用户主动点击本步诊断
+- 只使用当前主题、当前回答、简短 IP 摘要和最近六条对话，不讨论无关话题
+- 不生成完整诊断报告或替用户确定人设；需要诊断时 needs_diagnosis=true
 - 不承诺医疗、流量、成交、营收或粉丝增长，不编造案例、趋势和经营数据
-- 资料不足时明确说明，每次只提出 1 个最有价值的短问题；不索取身份证、联系方式、支付信息等无关敏感资料
-- 当前模块规则列出的采集表字段仅用于判断缺口；一次只能选择其中 1 个最相关的缺失字段提问，禁止一次抛出问卷清单
-- 只判断当前 step 对应的一个字段：信息足够时 follow_up_questions 必须为空，并在 suggested_answer 中给出忠于用户原话的简短记录；信息不足时才追问当前字段，不能提前询问 next_step
+- 信息不足时只提出 1 个最有价值的短问题；不索取身份证、联系方式、支付信息等无关敏感资料
+- 只判断当前主题的信息是否够用：够用时 follow_up_questions 必须为空，并在 suggested_answer 中给出忠于用户原话的简短记录；不够时才追问
 - recommended_actions 最多 2 个，只能从白名单选择；模型只推荐，不能声称已经填入、确认、跳转、扣费、生成或发布
-- reply 不超过 280 个汉字，suggested_answer 不超过 500 个汉字；使用简体中文，温暖、具体、像陪伴用户的小教练
+- reply 不超过 80 个汉字，suggested_answer 不超过 500 个汉字；使用简体中文，温暖、具体、像一位耐心的咨询师
 """
 
 GUIDE_INTENTS = set(GUIDE_SCHEMA["properties"]["intent"]["enum"])
 GUIDE_ACTIONS = set(
     GUIDE_SCHEMA["properties"]["recommended_actions"]["items"]["properties"]["type"]["enum"]
+)
+GUIDE_INTERNAL_TERMS = (
+    "报告", "表格", "字段", "采集表", "当前步骤", "下一步", "确认稿", "填空", "补齐缺口", "如何呈现",
 )
 
 
@@ -727,11 +736,21 @@ def _extract_guide_output(response):
     reply = _optional_text(result.get("reply"), 280)
     if not reply:
         raise DigitalIPError("小黄雀没有返回可用建议，请重试")
+    if any(token in reply for token in ("?", "？", *GUIDE_INTERNAL_TERMS)):
+        reply = "我明白了，我们继续把这一点说清楚。"
     questions = [
         _optional_text(item, 180)
         for item in (result.get("follow_up_questions") or [])[:1]
         if _optional_text(item, 180)
     ]
+    if questions:
+        first = re.match(r"^.*?[？?]", questions[0])
+        questions[0] = first.group(0) if first else questions[0].rstrip("。.!！") + "？"
+        if any(token in questions[0] for token in GUIDE_INTERNAL_TERMS):
+            questions[0] = "关于这一点，你更接近哪一种情况？可以直接选一个方向，也可以补充自己的答案。"
+    suggested_answer = _optional_text(result.get("suggested_answer"), 500)
+    if any(token in suggested_answer for token in GUIDE_INTERNAL_TERMS):
+        suggested_answer = ""
     actions = []
     for item in (result.get("recommended_actions") or [])[:2]:
         if not isinstance(item, dict) or item.get("type") not in GUIDE_ACTIONS:
@@ -740,17 +759,18 @@ def _extract_guide_output(response):
         if action_type == "none":
             continue
         label = _optional_text(item.get("label"), 40)
-        if label:
+        value = _optional_text(item.get("value"), 500)
+        if label and not any(token in label + value for token in GUIDE_INTERNAL_TERMS):
             actions.append({
                 "type": action_type,
                 "label": label,
-                "value": _optional_text(item.get("value"), 500),
+                "value": value,
             })
     return {
         "intent": intent,
         "reply": reply,
         "follow_up_questions": questions,
-        "suggested_answer": _optional_text(result.get("suggested_answer"), 500),
+        "suggested_answer": suggested_answer,
         "recommended_actions": actions,
         "needs_diagnosis": bool(result.get("needs_diagnosis")),
         "uncertainty_note": _optional_text(result.get("uncertainty_note"), 240),

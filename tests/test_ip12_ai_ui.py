@@ -206,7 +206,17 @@ console.log(JSON.stringify([
     def test_intake_is_conversation_first_and_growth_agents_are_coming_soon(self):
         html = PAGE.read_text(encoding="utf-8")
 
-        self.assertIn("一次只问一个问题", html)
+        self.assertIn("一次聚焦一个主题", html)
+        self.assertIn("复杂问题也只拆成 2–3 个短确认点", html)
+        self.assertIn("你可以直接选一个、改写，或补充自己的答案", html)
+        self.assertIn("你大概在哪个年龄段？比如 25–30、31–35、36–40", html)
+        self.assertNotIn("你希望报告里如何呈现你的性别和年龄段", html)
+        self.assertIn("<b>我先这样理解</b>", html)
+        self.assertNotIn("<b>采访记录</b>", html)
+        self.assertIn("const answers=confirmedContext()", html)
+        self.assertIn("return [...answers,...profiles]", html)
+        self.assertIn("return source||", html)
+        self.assertNotIn("const firstQuestion=", html)
         self.assertEqual(html.count('id="coachCard"'), 1)
         self.assertNotIn('id="coachFloat"', html)
         if not shutil.which("node"):
@@ -234,6 +244,28 @@ console.log(JSON.stringify({
         self.assertNotIn("请写下门店类型与规模", html)
         for field in ("姓名或昵称", "最强能力", "三个性格词", "记忆金句", "绝境翻身", "一年目标", "首条口播主题"):
             self.assertIn(field, html)
+
+    def test_guide_summary_prioritizes_recent_confirmed_answers(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        html = PAGE.read_text(encoding="utf-8")
+        source = re.search(r"const interviewStep=.*?\n    \];", html, re.S).group(0)
+        source += "\n" + "\n".join(
+            re.search(rf"function {name}\(.*?\n    \}}", html, re.S).group(0)
+            for name in ("answerText", "confirmedContext", "currentIPSummary")
+        )
+        script = source + """
+let state={
+  profile:{1:{title:'旧模块摘要',summary:'旧'.repeat(900)}},
+  answers:{'0-0':{confirmed:true,text:'LATEST-CONFIRMED-ANSWER'}}
+};
+console.log(currentIPSummary());
+"""
+        summary = subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        self.assertTrue(summary.startswith("定位诊断 / 姓名或昵称：LATEST-CONFIRMED-ANSWER"))
+        self.assertLessEqual(len(summary), 800)
 
     def test_invalid_legacy_answer_keys_do_not_count_as_open_steps(self):
         if not shutil.which("node"):
