@@ -59,8 +59,8 @@ def _analysis():
 def _guide_reply():
     return {
         "intent": "fill_help",
-        "reply": "先别追求完整，告诉我门店开了几年、最头疼哪件事就可以。",
-        "follow_up_questions": ["门店经营几年了？", "现在最难的是获客、成交还是复购？"],
+        "reply": "明白了，我们只补一个最关键的信息。",
+        "follow_up_questions": ["现在最难的是获客、成交还是复购？也可以说其他。"],
         "suggested_answer": "我的门店经营了 7 年，现在最头疼的是老客复购下降。",
         "recommended_actions": [
             {"type": "fill_answer", "label": "带入回答草稿", "value": "我的门店经营了 7 年。"},
@@ -261,7 +261,13 @@ class DigitalIPTests(unittest.TestCase):
         self.assertEqual(len(sent["current_answer"]), 1200)
         self.assertEqual(len(sent["ip_summary"]), 800)
         self.assertNotIn("beauty-owner", json.dumps(captured["body"], ensure_ascii=False))
+        self.assertIn("真人 IP 咨询师", captured["body"]["instructions"])
+        self.assertIn("2–3 个短确认点", captured["body"]["instructions"])
+        self.assertIn("2–4 个可直接选择的方向", captured["body"]["instructions"])
+        self.assertIn("用户已经说过的信息不得重复询问", captured["body"]["instructions"])
+        self.assertIn("绝不向用户提及报告、表格、字段", captured["body"]["instructions"])
         self.assertEqual(result["guide"]["recommended_actions"][0]["type"], "fill_answer")
+        self.assertEqual(len(result["guide"]["follow_up_questions"]), 1)
         self.assertNotIn("model", result)
         self.assertTrue(result["guide_only"])
         self.assertFalse(result["user_confirmed"])
@@ -285,6 +291,30 @@ class DigitalIPTests(unittest.TestCase):
             self.assertFalse(digital_ip.guide(payload, "owner")["cached"])
             self.assertTrue(digital_ip.guide(payload, "owner")["cached"])
         self.assertEqual(post.call_count, 1)
+
+    def test_guide_output_hard_stops_double_questions_and_internal_terms(self):
+        unsafe = _guide_reply()
+        unsafe.update({
+            "reply": "为了补齐字段，你现在最想解决什么？",
+            "follow_up_questions": ["请先看采集表好吗？你更在意获客还是成交？"],
+            "suggested_answer": "报告字段：最看重获客",
+            "recommended_actions": [
+                {"type": "fill_answer", "label": "填入表格", "value": "报告里写获客"},
+            ],
+        })
+        result = digital_ip._extract_guide_output({
+            "output": [{
+                "type": "message",
+                "content": [{"type": "output_text", "text": json.dumps(unsafe, ensure_ascii=False)}],
+            }],
+        })
+        self.assertEqual(result["reply"], "我明白了，我们继续把这一点说清楚。")
+        self.assertEqual(len(result["follow_up_questions"]), 1)
+        question = result["follow_up_questions"][0]
+        self.assertEqual(question.count("？") + question.count("?"), 1)
+        self.assertFalse(any(term in result["reply"] + question for term in digital_ip.GUIDE_INTERNAL_TERMS))
+        self.assertEqual(result["suggested_answer"], "")
+        self.assertEqual(result["recommended_actions"], [])
 
     def test_guide_rate_limit_allows_normal_interview_burst(self):
         self.assertEqual(12, digital_ip.GUIDE_RATE_LIMIT_PER_MINUTE)
