@@ -1224,10 +1224,17 @@ def _patch_project(username, project_id, revision, has_title, has_state, clean_s
         next_answers = next_questionnaire.get("answers") if isinstance(next_questionnaire, dict) else {}
         previous_answers = previous_answers if isinstance(previous_answers, dict) else {}
         next_answers = next_answers if isinstance(next_answers, dict) else {}
-        migrating_to_interview_v2 = (
+        previous_interview_v2 = (
+            isinstance(previous_questionnaire, dict)
+            and previous_questionnaire.get("interviewVersion") == 2
+        )
+        upgrading_to_interview_v2 = (
             isinstance(next_questionnaire, dict)
             and next_questionnaire.get("interviewVersion") == 2
-            and (not isinstance(previous_questionnaire, dict) or previous_questionnaire.get("interviewVersion") != 2)
+            and not previous_interview_v2
+        )
+        migrating_to_interview_v2 = (
+            upgrading_to_interview_v2
             and not any(
                 "%d-%d" % (module_index, step_index) in next_answers
                 for module_index in range(FOUNDATION_MODULES, ACTIVE_PROJECT_MODULES)
@@ -1239,12 +1246,16 @@ def _patch_project(username, project_id, revision, has_title, has_state, clean_s
             for module_index, step_count in enumerate(PROJECT_MODULE_STEPS[:FOUNDATION_MODULES])
             for step_index in range(step_count)
         )
-        content_changed = any(
-            previous_answers.get("%d-%d" % (module_index, step_index)) != next_answers.get("%d-%d" % (module_index, step_index))
+        content_answer_keys = tuple(
+            "%d-%d" % (module_index, step_index)
             for module_index in range(FOUNDATION_MODULES, ACTIVE_PROJECT_MODULES)
             for step_index in range(PROJECT_MODULE_STEPS[module_index])
         )
-        if not migrating_to_interview_v2 and content_changed and (foundation_changed or not _foundation_is_confirmed(row)):
+        content_changed = any(previous_answers.get(key) != next_answers.get(key) for key in content_answer_keys)
+        has_content_answers = any(key in next_answers for key in content_answer_keys)
+        if ((has_content_answers and not _foundation_is_confirmed(row)
+             and (content_changed or upgrading_to_interview_v2))
+                or (not migrating_to_interview_v2 and content_changed and foundation_changed)):
             raise DigitalIPValidationError("请先确认未变更的模块 1–4 阶段报告，再填写模块 5–6")
         managed_report = _json_object(row["state_json"]).get(REPORT_STATE_KEY)
         if isinstance(managed_report, dict):

@@ -398,6 +398,13 @@ class DigitalIPReportTests(unittest.TestCase):
                 "revision": accepted["revision"], "state": changed_foundation,
             })
             self.assertEqual(stale["foundation_stage"]["status"], "stale")
+            stale_edit = json.loads(json.dumps(stale["state"], ensure_ascii=False))
+            stale_edit["questionnaire_state"]["answers"]["0-0"]["text"] = "再次更新的经营事实"
+            stale = digital_ip.patch_project("owner", project["id"], {
+                "revision": stale["revision"], "state": stale_edit,
+            })
+            self.assertEqual(stale["foundation_stage"]["status"], "stale")
+            changed_foundation = json.loads(json.dumps(stale["state"], ensure_ascii=False))
             changed_foundation["questionnaire_state"]["answers"]["4-1"] = {"text": "不应绕过"}
             with self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "确认未变更"):
                 digital_ip.patch_project("owner", project["id"], {
@@ -438,6 +445,14 @@ class DigitalIPReportTests(unittest.TestCase):
                 )
                 conn.commit()
             current = digital_ip.get_project("owner", project["id"])
+            unchanged_migration = {"questionnaire_state": {
+                "interviewVersion": 2, "moduleIndex": 4, "stepIndex": 0,
+                "answers": {"4-0": {"text": "旧版内容"}},
+            }}
+            with self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "确认未变更"):
+                digital_ip.patch_project("owner", project["id"], {
+                    "revision": current["revision"], "state": unchanged_migration,
+                })
             forged_migration = {"questionnaire_state": {
                 "interviewVersion": 2, "answers": {"4-0": {"text": "试图绕过关卡"}},
             }}
