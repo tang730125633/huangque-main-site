@@ -32,6 +32,12 @@ def test_extract_url_none_for_kouling():
     assert tikhub._extract_url(txt) is None
 
 
+def test_urls_returns_unique_cdn_candidates():
+    assert tikhub._urls({
+        "url_list": ["https://cdn/one", "https://cdn/two", "https://cdn/one"]
+    }) == ["https://cdn/one", "https://cdn/two"]
+
+
 def test_dy_resolve_from_video_url_offline():
     # 含 /video/<id>：纯正则命中，不触网
     assert tikhub.dy_resolve("https://www.douyin.com/video/7654380745624879025") == "7654380745624879025"

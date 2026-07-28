@@ -6,6 +6,7 @@ import re
 import socket
 import ssl
 import urllib.error
+import urllib.parse
 from contextlib import closing
 
 from .core import jdb
@@ -17,9 +18,18 @@ ZHIPU_MODEL = (os.environ.get("REVERSE_ZHIPU_MODEL") or "glm-4v-plus").strip()
 BREAKDOWN_DOWNLOAD_BUDGET = max(
     30, int(os.environ.get("BREAKDOWN_DOWNLOAD_BUDGET", "180") or "180")
 )
+BREAKDOWN_MAX_DOWNLOAD_BYTES = max(
+    25 * 1024 * 1024,
+    int(os.environ.get("BREAKDOWN_MAX_DOWNLOAD_BYTES", str(200 * 1024 * 1024))
+        or str(200 * 1024 * 1024)),
+)
 
 # 不支持的平台（视频号加密流需要 Isaac64 解密，暂不支持）
 _UNSUPPORTED_PLATFORMS = {"channels", "weixin", "wechat"}
+_SUPPORTED_LINK_HOSTS = (
+    "douyin.com", "iesdouyin.com", "xiaohongshu.com", "xhslink.com",
+)
+_SHARE_URL_RE = re.compile(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+")
 _UPLOAD_TOKEN_RE = __import__("re").compile(r"^[0-9a-f]{32}$")
 _THUMBNAIL_MAX_EDGE = 768
 _THUMBNAIL_MAX_BYTES = 240 * 1024
@@ -27,6 +37,7 @@ _THUMBNAIL_MAX_PIXELS = 40_000_000
 _AI_FRAME_MAX_EDGE = 640
 _AI_FRAME_MAX_BYTES = 128 * 1024
 _AI_FRAMES_TOTAL_MAX_BYTES = 1024 * 1024
+_AI_MAX_FRAMES = 4
 
 
 def _ensure_upload_table(connection):
@@ -44,6 +55,118 @@ def _upload_root():
     root = (core.OUT_DIR / "_breakdown_uploads").resolve()
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _normalize_supported_link(value):
+    match = _SHARE_URL_RE.search(str(value or ""))
+    if not match:
+        raise ValueError("请粘贴抖音或小红书的完整 http(s) 分享链接")
+    url = match.group(0)
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.scheme not in {"http", "https"} or not any(
+            host == suffix or host.endswith("." + suffix)
+            for suffix in _SUPPORTED_LINK_HOSTS):
+        raise ValueError("仅支持抖音或小红书公开视频链接")
+    return url
+
+
+def _resolved_link(url):
+    """Resolve a supported share URL before charging and validate its work ID."""
+    import tikhub
+
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    path = parsed.path or "/"
+    expected_platform = "xhs" if (
+        host == "xhslink.com" or host.endswith(".xhslink.com")
+        or host == "xiaohongshu.com" or host.endswith(".xiaohongshu.com")
+    ) else "douyin"
+
+    if expected_platform == "douyin":
+        direct = re.search(r"/video/(\d{15,21})(?:/|$)", path)
+        if direct:
+            info = {
+                "platform": "douyin",
+                "id": direct.group(1),
+                "note_type": "video",
+            }
+        elif not (
+                host == "v.douyin.com" or host.endswith(".v.douyin.com")):
+            raise ValueError("抖音链接缺少具体作品 ID")
+        else:
+            try:
+                info = tikhub.parse_link(url)
+            except Exception as exc:
+                raise ValueError("抖音短链无法解析，请确认链接公开且未失效") from exc
+    else:
+        direct = re.search(
+            r"/(?:explore|discovery/item|item)/([0-9a-fA-F]{16,64})(?:/|$)",
+            path,
+        )
+        if direct:
+            info = {
+                "platform": "xhs",
+                "id": direct.group(1),
+                "note_type": None,
+            }
+        elif not (host == "xhslink.com" or host.endswith(".xhslink.com")):
+            raise ValueError("小红书链接缺少具体笔记 ID")
+        else:
+            try:
+                info = tikhub.parse_link(url)
+            except Exception as exc:
+                raise ValueError("小红书短链无法解析，请确认链接公开且未失效") from exc
+
+    if not isinstance(info, dict):
+        raise ValueError("无法解析该视频链接，请确认链接公开且未失效")
+    platform = str(info.get("platform") or "").strip().lower()
+    work_id = str(info.get("id") or "").strip()
+    valid_id = (
+        platform == "douyin" and bool(re.fullmatch(r"\d{15,21}", work_id))
+    ) or (
+        platform == "xhs" and bool(re.fullmatch(r"[0-9a-fA-F]{16,64}", work_id))
+    )
+    if platform != expected_platform or not valid_id:
+        raise ValueError("无法解析该视频链接，请确认链接公开且未失效")
+    return {
+        "url": url,
+        "platform": platform,
+        "id": work_id,
+        "note_type": info.get("note_type"),
+    }
+
+
+def validate_breakdown_payload(payload):
+    """在扣点和入队前完成链接及作品 ID 校验。"""
+    if not isinstance(payload, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+    if payload.get("local_path") or payload.get("upload_token"):
+        raise ValueError("本地素材只能通过专用上传接口提交")
+    body = dict(payload)
+    body.pop("_resolved_link", None)
+    body.pop("_resolved_links", None)
+    mode = str(body.get("mode") or "scenes").strip().lower()
+    if mode not in {"scenes", "reverse_prompt"}:
+        raise ValueError("不支持的拆解模式")
+    raw_urls = body.get("urls")
+    if isinstance(raw_urls, list):
+        if not raw_urls:
+            raise ValueError("请至少提供一个视频链接")
+        if len(raw_urls) > 5:
+            raise ValueError("一次最多提交 5 条链接")
+        urls = [_normalize_supported_link(item) for item in raw_urls]
+        if mode == "reverse_prompt" and len(urls) != 1:
+            raise ValueError("提示词反推暂仅支持单条视频链接")
+        body.pop("url", None)
+        body["urls"] = urls
+        body["_resolved_links"] = [_resolved_link(url) for url in urls]
+    else:
+        body["url"] = _normalize_supported_link(body.get("url"))
+        body.pop("urls", None)
+        body["_resolved_link"] = _resolved_link(body["url"])
+    body["mode"] = mode
+    return body
 
 
 def handle_local_upload(handler, user):
@@ -173,11 +296,18 @@ def gen_breakdown(payload):
         if not cleaned:
             raise ValueError("请至少提供一个视频链接")
         results, errors = [], []
+        resolved_links = payload.get("_resolved_links")
         for index, item_url in enumerate(cleaned, 1):
             _heartbeat(payload.get("_job_id"), "batch_%d_%d" % (index, len(cleaned)))
             try:
                 item_payload = dict(payload, url=item_url)
                 item_payload.pop("urls", None)
+                item_payload.pop("_resolved_links", None)
+                if (
+                    isinstance(resolved_links, list)
+                    and len(resolved_links) == len(cleaned)
+                ):
+                    item_payload["_resolved_link"] = resolved_links[index - 1]
                 results.append(gen_breakdown(item_payload))
             except Exception as exc:
                 errors.append({"url": item_url, "detail": str(exc)[:200]})
@@ -194,11 +324,21 @@ def gen_breakdown(payload):
 
     import tikhub
 
-    # ① 解析链接
-    info = tikhub.parse_link(url)
+    # 新任务使用扣点前保存的解析结果；兼容部署前已经排队的旧任务。
+    resolved = payload.get("_resolved_link")
+    if isinstance(resolved, dict) and resolved.get("url") == url:
+        info = {
+            "platform": resolved.get("platform"),
+            "id": resolved.get("id"),
+            "note_type": resolved.get("note_type"),
+        }
+    else:
+        info = tikhub.parse_link(url)
     platform = (info.get("platform") or "").lower()
     if platform in _UNSUPPORTED_PLATFORMS:
         raise ValueError("视频号暂不支持拆解，请粘贴抖音/小红书链接")
+    if not info.get("id"):
+        raise ValueError("无法解析该视频链接，请确认链接公开且未失效")
 
     return _do_breakdown(payload, info, url)
 
@@ -262,7 +402,8 @@ def _do_breakdown(payload, info, url):
             "色温色调、画面质感、环境音/音效、与前后镜的动作或视线衔接。"
             "每个 scene 写 80-140 字，形成可直接拍摄或输入视频生成模型的执行指令；"
             "不要写“人物出现”“展示产品”“镜头切换”等笼统结论。"
-            "没有人物口播时 line 输出空串。只输出 JSON，不要解释或 markdown。"
+            "所有字段必须使用简体中文；没有人物口播时 line 输出空串。"
+            "只输出 JSON，不要解释或 markdown。"
         )
         sysmsg = (
             "你是黄雀传媒资深短视频编导。分析视频关键帧和口播，拆解为可直接拍摄或生成的完整分镜脚本。"
@@ -292,7 +433,7 @@ def _do_breakdown(payload, info, url):
 
 
 def _download_breakdown_video(tikhub, info, detail, destination):
-    """下载失败时刷新一次带时效的播放地址；每次尝试都有独立硬预算。"""
+    """轮换 CDN 播放地址；全部失败时刷新一次详情后再试。"""
     current = detail
     retryable = (
         TimeoutError,
@@ -300,35 +441,58 @@ def _download_breakdown_video(tikhub, info, detail, destination):
         urllib.error.URLError,
         http.client.IncompleteRead,
     )
-    for attempt in range(2):
-        play_url = current.get("play_url")
-        if not play_url:
+    last_error = None
+    for refresh_attempt in range(2):
+        alternate_urls = current.get("play_urls")
+        if not isinstance(alternate_urls, (list, tuple)):
+            alternate_urls = []
+        play_urls = list(dict.fromkeys(
+            [url for url in alternate_urls if url]
+            + ([current.get("play_url")] if current.get("play_url") else [])
+        ))[:4]
+        if not play_urls:
             if current.get("images"):
                 raise ValueError("该链接是图文笔记，不是视频，暂不支持拆解")
-            if attempt:
+            if refresh_attempt:
                 raise ValueError("未找到视频下载地址，可能是私密或已删除")
             current = tikhub.detail(
                 info["platform"], info["id"], info.get("note_type"), fresh=True
             )
             continue
-        try:
-            tikhub.download_to_file(
-                play_url, time.time() + BREAKDOWN_DOWNLOAD_BUDGET, destination
-            )
-            return current
-        except retryable as error:
-            if attempt:
-                raise TimeoutError(
-                    "视频源下载过慢或地址已失效，刷新地址后重试仍失败"
-                ) from error
-            print(
-                "[breakdown] 视频下载失败，刷新 TikHub 播放地址后重试: %s"
-                % str(error)[:160],
-                flush=True,
-            )
+        for play_index, play_url in enumerate(play_urls, 1):
+            try:
+                tikhub.download_to_file(
+                    play_url, time.time() + BREAKDOWN_DOWNLOAD_BUDGET, destination,
+                    max_bytes=BREAKDOWN_MAX_DOWNLOAD_BYTES,
+                )
+                current["play_url"] = play_url
+                return current
+            except ValueError as error:
+                last_error = error
+                if play_index >= len(play_urls):
+                    raise
+                print(
+                    "[breakdown] 视频下载地址 %d/%d 超限，尝试备用地址: %s"
+                    % (play_index, len(play_urls), str(error)[:160]),
+                    flush=True,
+                )
+            except retryable as error:
+                last_error = error
+                print(
+                    "[breakdown] 视频下载地址 %d/%d 失败: %s"
+                    % (play_index, len(play_urls), str(error)[:160]),
+                    flush=True,
+                )
+        if refresh_attempt == 0:
             current = tikhub.detail(
                 info["platform"], info["id"], info.get("note_type"), fresh=True
             )
+    if isinstance(last_error, ValueError):
+        raise last_error
+    if last_error is not None:
+        raise TimeoutError(
+            "视频源下载过慢或地址已失效，切换地址并刷新地址后重试仍失败"
+        ) from last_error
     raise RuntimeError("视频下载重试状态异常")
 
 
@@ -362,6 +526,7 @@ def _reverse_from_frames(
         usermsg = (
             source_context + "请严格按照参考画面的时间顺序，输出 JSON："
             "{\"prompt\":\"[00:00-00:03] ...\\n[00:03-00:07] ...\"}。"
+            "prompt 字段必须是一个用换行分段的字符串，严禁返回数组。"
             "prompt 必须从 00:00 开始，按真实总时长拆成连续、不重叠、无空档的时间段，"
             "最后一段结束时间精确等于总时长；不足整秒时保留小数秒。镜头变化处单独分段。"
             "每段用 80-160 字写清：①主体可见外观与画面位置；"
@@ -381,21 +546,22 @@ def _reverse_from_frames(
             "无法确认的身份、品牌文字或细节写“未确认”。"
         )
     last_error = None
-    for attempt in range(2):
+    retry_ranges = _fixed_reverse_ranges(duration) if duration > 0 else []
+    for attempt in range(3):
+        raw = ""
         message = usermsg
         if attempt and duration > 0:
             message += (
                 "\n\n上一次时间轴校验失败：%s。请修正后重新输出完整 JSON；"
-                "必须从 00:00 开始、区间连续且不重叠，末段结束于 %s 秒。"
-                % (last_error, duration_text)
+                "prompt 必须是字符串，不能是数组。必须逐字使用以下时间区间，"
+                "每个区间恰好出现一次，不得新增、删除或修改边界：%s。"
+                % (last_error, "、".join(retry_ranges))
             )
         elif attempt:
             message += "\n\n上一次输出校验失败：%s。请重新输出完整 JSON。" % last_error
         try:
             raw = _chat_multimodal(sysmsg, message, frames)
-            prompt = str(
-                (_parse_breakdown_json(raw) or {}).get("prompt") or ""
-            ).strip()
+            prompt = _coerce_reverse_prompt(raw)
             if not prompt:
                 raise ValueError("提示词反推结果为空")
             if duration > 0:
@@ -403,6 +569,15 @@ def _reverse_from_frames(
             break
         except ValueError as error:
             last_error = error
+            print(
+                "[breakdown] reverse timeline rejected attempt=%d error=%s raw=%s"
+                % (
+                    attempt + 1,
+                    str(error)[:180],
+                    re.sub(r"\s+", " ", str(raw or ""))[:500],
+                ),
+                flush=True,
+            )
     else:
         raise ValueError("提示词时间轴校验失败：%s" % last_error)
     return {
@@ -416,11 +591,60 @@ def _reverse_from_frames(
     }
 
 
+def _fixed_reverse_ranges(duration, max_segments=4):
+    duration = max(0.0, float(duration or 0))
+    if duration <= 0:
+        return []
+    count = min(
+        max(1, int(max_segments or 1)),
+        max(1, int((duration + 2.999) // 3)),
+    )
+    values = [index * duration / count for index in range(count + 1)]
+
+    def label(seconds):
+        minutes = int(seconds // 60)
+        remaining = seconds - minutes * 60
+        text = ("%06.3f" % remaining).rstrip("0").rstrip(".")
+        if remaining < 10 and not text.startswith("0"):
+            text = "0" + text
+        return "%02d:%s" % (minutes, text)
+
+    return [
+        "[%s-%s]" % (label(values[index]), label(values[index + 1]))
+        for index in range(count)
+    ]
+
+
+def _coerce_reverse_prompt(raw):
+    """兼容模型偶发把 prompt 返回为数组或漏写数组逗号。"""
+    try:
+        value = (_parse_breakdown_json(raw) or {}).get("prompt")
+    except ValueError:
+        value = None
+    if isinstance(value, list):
+        prompt = "\n".join(str(item or "").strip() for item in value if str(item or "").strip())
+    else:
+        prompt = str(value or "").strip()
+    if prompt:
+        return prompt
+    entries = re.findall(
+        r'"(\s*(?:[-*]\s*|\d+[.)]\s*)?\[[^"\]]+\]\s*[^"]+)"',
+        _strip_json_code_fence(raw),
+    )
+    if entries:
+        return "\n".join(
+            item.replace(r"\n", "\n").replace(r"\"", '"').strip()
+            for item in entries
+        )
+    raise ValueError("提示词反推结果无法解析")
+
+
 _TIMELINE_LINE_RE = re.compile(
-    r"^\s*\[\s*(?P<start>(?:\d{1,2}:){1,2}\d{1,2}(?:\.\d+)?|\d+(?:\.\d+)?s)"
+    r"^\s*(?:[-*]\s*|\d+[.)]\s*)?"
+    r"\[\s*(?P<start>(?:\d{1,2}:){1,2}\d{1,2}(?:\.\d+)?|\d+(?:\.\d+)?s)"
     r"\s*[-–—~至]\s*"
     r"(?P<end>(?:\d{1,2}:){1,2}\d{1,2}(?:\.\d+)?|\d+(?:\.\d+)?s)\s*\]"
-    r"\s*(?P<body>.+?)\s*$"
+    r"\s*(?P<body>.*?)\s*$"
 )
 
 
@@ -442,24 +666,41 @@ def _timeline_seconds(value):
     raise ValueError("无法识别时间格式 %s" % value)
 
 
-def _validate_reverse_timeline(prompt, duration, tolerance=0.01):
+def _validate_reverse_timeline(
+    prompt, duration, tolerance=0.05, endpoint_tolerance=0.25,
+):
     duration = float(duration)
     lines = [line.strip() for line in str(prompt or "").splitlines() if line.strip()]
     if not lines:
         raise ValueError("时间轴为空")
-    segments = []
-    for index, line in enumerate(lines, 1):
+    parsed = []
+    for line in lines:
         match = _TIMELINE_LINE_RE.match(line)
         if not match:
-            raise ValueError("第%d段缺少合法的[开始-结束]时间范围" % index)
-        start = _timeline_seconds(match.group("start"))
-        end = _timeline_seconds(match.group("end"))
+            if parsed:
+                if line.startswith("[") and re.search(r"\d", line):
+                    raise ValueError("存在无法识别的[开始-结束]时间范围")
+                parsed[-1]["body"].append(line)
+            continue
+        parsed.append({
+            "start": match.group("start"),
+            "end": match.group("end"),
+            "body": [match.group("body")] if match.group("body") else [],
+        })
+    if not parsed:
+        raise ValueError("未找到合法的[开始-结束]时间范围")
+    segments = []
+    for index, item in enumerate(parsed, 1):
+        if not " ".join(item["body"]).strip():
+            raise ValueError("第%d段缺少画面描述" % index)
+        start = _timeline_seconds(item["start"])
+        end = _timeline_seconds(item["end"])
         if end <= start:
             raise ValueError("第%d段结束时间必须大于开始时间" % index)
-        if end > duration + tolerance:
+        if end > duration + endpoint_tolerance:
             raise ValueError("第%d段结束时间超出视频总时长" % index)
         segments.append((start, end))
-    if segments[0][0] != 0:
+    if abs(segments[0][0]) > tolerance:
         raise ValueError("时间轴必须从00:00开始")
     previous_start, previous_end = segments[0]
     for index, (start, end) in enumerate(segments[1:], 2):
@@ -470,7 +711,7 @@ def _validate_reverse_timeline(prompt, duration, tolerance=0.01):
         if start > previous_end + tolerance:
             raise ValueError("第%d段与上一段之间存在空档" % index)
         previous_start, previous_end = start, end
-    if abs(previous_end - duration) > tolerance:
+    if abs(previous_end - duration) > endpoint_tolerance:
         raise ValueError("末段结束时间未对齐视频总时长")
     return segments
 
@@ -641,6 +882,20 @@ def _bounded_ai_frame(path, max_bytes):
         return frame, media_type
 
 
+def _evenly_spaced_frames(paths, limit=_AI_MAX_FRAMES):
+    paths = list(paths or [])
+    limit = max(1, int(limit or 1))
+    if len(paths) <= limit:
+        return paths
+    if limit == 1:
+        return [paths[len(paths) // 2]]
+    indexes = [
+        round(index * (len(paths) - 1) / float(limit - 1))
+        for index in range(limit)
+    ]
+    return [paths[index] for index in indexes]
+
+
 def _strip_json_code_fence(raw):
     text = str(raw or "").strip()
     if not text.startswith("```"):
@@ -709,13 +964,45 @@ def _validate_scene_breakdown(result):
     for scene in result["scenes"]:
         if not isinstance(scene, dict):
             continue
-        scene_text = str(scene.get("scene") or "").strip()
-        line_text = str(scene.get("line") or "").strip()
+        normalized = dict(scene)
+        scene_text = str(
+            scene.get("scene")
+            or scene.get("description")
+            or scene.get("visual_description")
+            or scene.get("visual")
+            or ""
+        ).strip()
+        if not scene_text:
+            details = [
+                scene.get("action"), scene.get("subject"), scene.get("setting"),
+                scene.get("composition"), scene.get("lighting"),
+                scene.get("color"), scene.get("mood"),
+            ]
+            scene_text = "；".join(
+                str(value).strip() for value in details if str(value or "").strip()
+            )
+        line_text = str(
+            scene.get("line")
+            or scene.get("dialogue")
+            or scene.get("narration")
+            or ""
+        ).strip()
         if not scene_text:
             continue
         if any(marker in scene_text or marker in line_text for marker in placeholders):
             raise ValueError("拆解结果包含模板占位内容，请重试")
-        valid.append(scene)
+        normalized["scene"] = scene_text
+        normalized["line"] = line_text
+        normalized["dur"] = str(
+            scene.get("dur") or scene.get("duration") or "3s"
+        ).strip()
+        normalized["scale"] = str(
+            scene.get("scale") or scene.get("shot_size") or ""
+        ).strip()
+        normalized["camera"] = str(
+            scene.get("camera") or scene.get("composition") or ""
+        ).strip()
+        valid.append(normalized)
     if not valid:
         raise ValueError("拆解结果为空，请重试")
     result["scenes"] = valid
@@ -728,7 +1015,7 @@ def _request_breakdown_result(sysmsg, usermsg, context, frames):
         (
             context + '\n\n上一次输出不完整。请只返回闭合、可解析的 JSON，固定输出 4 个有效分镜；'
             '每个 scene 50-80 字，写清主体特征、连续动作、场景道具、构图运镜和光影氛围，'
-            '禁止代码围栏、解释和模板占位文字。',
+            '所有字段必须使用简体中文，禁止代码围栏、解释和模板占位文字。',
             0.1,
         ),
     ]
@@ -822,7 +1109,7 @@ def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7):
         raise RuntimeError("REVERSE_ZHIPU_KEY is not configured")
 
     content = [{"type": "text", "text": usermsg}]
-    image_paths = list(image_paths or [])
+    image_paths = _evenly_spaced_frames(image_paths, _AI_MAX_FRAMES)
     per_frame_budget = min(
         _AI_FRAME_MAX_BYTES,
         max(32 * 1024, _AI_FRAMES_TOTAL_MAX_BYTES // max(1, len(image_paths))),
@@ -867,6 +1154,12 @@ def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7):
         code = int(getattr(error, "code", 0) or 0)
         reason = getattr(error, "reason", None)
         detail = str(error or "").lower()
+        upstream_detail = ""
+        if isinstance(error, urllib.error.HTTPError):
+            try:
+                upstream_detail = error.read(1024).decode("utf-8", "replace")
+            except Exception:
+                upstream_detail = ""
         timed_out = (
             isinstance(error, (TimeoutError, socket.timeout))
             or isinstance(reason, (TimeoutError, socket.timeout))
@@ -874,8 +1167,11 @@ def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7):
             or "timeout" in detail
         )
         print(
-            "[breakdown] ai request failed type=%s http=%s request_bytes=%d image_bytes=%d"
-            % (type(error).__name__, code or "-", len(request_data), image_bytes),
+            "[breakdown] ai request failed type=%s http=%s request_bytes=%d image_bytes=%d upstream=%s"
+            % (
+                type(error).__name__, code or "-", len(request_data), image_bytes,
+                re.sub(r"\s+", " ", upstream_detail)[:500] or "-",
+            ),
             flush=True,
         )
         if code == 413:

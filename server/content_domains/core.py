@@ -1524,10 +1524,8 @@ class H(BaseHTTPRequestHandler):
                     from . import script_to_video as script_to_video_domain
                     body = script_to_video_domain.prepare_script_to_video_payload(body, user["username"])
                 elif kind == "breakdown":
-                    if not isinstance(body, dict):
-                        raise ValueError("请求体必须是 JSON 对象")
-                    if body.get("local_path") or body.get("upload_token"):
-                        raise ValueError("本地素材只能通过专用上传接口提交")
+                    from . import breakdown as breakdown_domain
+                    body = breakdown_domain.validate_breakdown_payload(body)
                 elif kind == "copy":
                     from . import text as text_domain
                     body = text_domain.validate_copy_payload(body)

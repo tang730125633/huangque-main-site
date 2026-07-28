@@ -123,6 +123,16 @@ def _url0(node):
         return node[0] if node else None
     return node
 
+def _urls(node):
+    """返回播放地址的全部 CDN 候选并去重，供下载失败时切换线路。"""
+    if isinstance(node, dict):
+        values = node.get("url_list") or node.get("urlList") or []
+    elif isinstance(node, list):
+        values = node
+    else:
+        values = [node] if node else []
+    return list(dict.fromkeys(value for value in values if isinstance(value, str) and value))
+
 def _tags_from_text(text):
     return re.findall(r"#([^#\s]{1,20})", text or "")
 
@@ -208,6 +218,8 @@ def dy_detail(id_or_url):
     desc = a.get("desc") or ""
     images = [u for u in (_url0(im) for im in (a.get("images") or [])) if u]
     is_img = bool(images) or a.get("aweme_type") in (68, 2)
+    play_node = vid.get("play_addr") or vid.get("play_addr_h264")
+    play_urls = _urls(play_node)
     sec = au.get("sec_uid") or au.get("uid")
     return {
         "platform": "douyin", "id": aid,
@@ -220,7 +232,8 @@ def dy_detail(id_or_url):
                   "share": stat.get("share_count"), "collect": stat.get("collect_count")},
         "cover": (images[0] if is_img and images else _url0(vid.get("cover"))),
         "images": images,
-        "play_url": None if is_img else _url0(vid.get("play_addr") or vid.get("play_addr_h264")),
+        "play_url": None if is_img else (play_urls[0] if play_urls else None),
+        "play_urls": [] if is_img else play_urls,
         "subtitle_url": None, "decode_key": None,
         "duration": vid.get("duration"), "publish_time": a.get("create_time"),
         "note_type": "image" if is_img else "video",
