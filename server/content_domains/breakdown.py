@@ -512,56 +512,25 @@ def _reverse_from_frames(
                 str(script_text or "（无可靠口播，请仅依据可见画面）"),
             )
         )
+        timeline_ranges = _fixed_reverse_ranges(duration)
+        contents = _collect_reverse_frame_evidence(
+            frames, len(timeline_ranges),
+        )
+        prompt = "\n".join(
+            "%s %s" % (label, content)
+            for label, content in zip(timeline_ranges, contents)
+        )
+        _validate_reverse_timeline(prompt, duration)
     else:
         source_context = (
             "素材名称：%s\n素材类型：静态图片\n\n"
             % str(title or "（无）")
         )
-    if duration > 0:
-        sysmsg = (
-            "你是黄雀传媒资深短视频复刻编导。程序已经负责时间轴，你只负责依据连续关键帧"
-            "为每个既定分段撰写详细、可执行的中文画面内容。不得输出时间范围或重新划分分段。"
-            "严格区分可见事实与不确定信息，不臆造身份、品牌文字、人物、道具或情节。"
-            "只输出 JSON，不要解释或 markdown。"
-        )
-        timeline_ranges = _fixed_reverse_ranges(duration)
-        usermsg = (
-            source_context + "程序已经固定好时间轴，不要输出或改写任何时间范围。"
-            "请重新观察全部参考图片，直接输出一个 JSON 对象；这个对象只能有 segments 字段。"
-            "segments 必须是长度恰好为 %d 的对象数组，也就是一共有 %d 个分段对象。"
-            "每个对象必须同时包含 subject、action、scene、camera、light、audio 六个字符串字段，"
-            "六个字段属于同一个分段对象，绝对不能拆成六个数组元素。"
-            "禁止写示例文字，禁止只写时间码、序号或占位符。"
-            "分段对象依次对应这些时间区间（区间仅用于理解画面顺序，绝对不要写进字段中）：%s。"
-            "全部内容必须达到 300-600 个中文字符，每段必须达到 80-150 字，少于要求会被拒绝。"
-            "subject 写主体与位置，action 写动作与表情，scene 写场景空间，"
-            "camera 写镜头构图，light 写光线质感，audio 写声音字幕。"
-            "subject、scene、light 各写至少15字，action 至少25字，camera 至少20字；"
-            "action 要写起点、连续过程、终点及道具互动，"
-            "camera 要写景别、机位高度、视角和运镜起止路线。"
-            "subject、action、scene、camera、light 五个视觉字段都必须依据画面填写具体可见事实，"
-            "不得把“未确认”“无”“没有”“略”“待补充”“占位”或“内容”作为整个字段。"
-            "没有明显动作时，action 要写清主体保持的姿态和“未观察到明显动作变化”；"
-            "没有明显运镜时，camera 要写清景别、视角、构图和“固定镜头，无明显运镜”；"
-            "光线方向不明显时，light 仍要描述整体明暗、色调和对比关系。"
-            "audio 只写可确认的声音、口播或字幕摘要，最多40个有效字符；"
-            "不得把画面中的长段文字、文章或整屏字幕逐字复制到 audio。"
-            "身份、品牌文字、具体地点等无法确认的信息不得猜测，可以在可见事实之后说明无法确认。"
-            "仅补充连接相邻关键帧必需的过渡动作，不得臆造人物、道具或情节。"
-            "不得用“略”“待补充”“内容”等占位词，不得复制同一段内容。"
-            % (
-                len(timeline_ranges),
-                len(timeline_ranges),
-                "、".join(timeline_ranges),
-            )
-        )
-    else:
         sysmsg = (
             "你是黄雀传媒资深视觉编导。根据参考图片写成图像生成模型可执行的中文提示词。"
             "严格区分可见事实与不确定信息，不臆造身份、品牌文字、人物、道具或情节。"
             "只输出 JSON，不要解释或 markdown。"
         )
-        timeline_ranges = []
         usermsg = (
             source_context
             + "请输出 JSON：{\"prompt\":\"一段可直接用于图像生成的中文执行提示词\"}。"
@@ -569,68 +538,37 @@ def _reverse_from_frames(
             "场景层次、构图视角、光线方向、色温色调、材质和画面风格；"
             "无法确认的身份、品牌文字或细节写“未确认”。"
         )
-    last_error = None
-    last_raw = ""
-    for attempt in range(3):
-        raw = ""
-        message = usermsg
-        if attempt:
-            message += (
-                "\n\n上一次输出校验失败：%s。请修正后重新输出完整 JSON，"
-                "重新观察图片后，确保 segments 恰好包含指定数量的对象；"
-                "每个对象都逐项填写 subject、action、scene、camera、light、audio，"
-                "六个字段合计至少80个中文字符，不要缩短已有描述；"
-                "subject、action、scene、camera、light 不得只写“未确认”“无”“没有”"
-                "“略”“待补充”“占位”或“内容”；必须改写为画面中可见的具体事实。"
-                "无明显动作时描述保持的姿态，无明显运镜时写明景别、视角、构图及"
-                "“固定镜头，无明显运镜”，光线方向不明时描述整体明暗、色调和对比关系；"
-                "audio 最多40个有效字符，只保留声音、口播或字幕摘要，不得复制长段屏幕文字；"
-                "不要返回时间码、序号、示例文字、占位符、解释或 markdown。"
-                "\n上一次草稿如下，请逐段扩写并修正结构：\n%s"
-                % (last_error, last_raw[:5000])
-            )
-        try:
-            if duration > 0:
-                raw = _chat_multimodal(
-                    sysmsg, message, frames, max_tokens=1800,
+        last_error = None
+        last_raw = ""
+        for attempt in range(3):
+            raw = ""
+            message = usermsg
+            if attempt:
+                message += (
+                    "\n上一次输出校验失败：%s。请重新观察图片，只返回完整 JSON。"
+                    "\n上一次草稿：\n%s"
+                    % (last_error, last_raw[:3000])
                 )
-                contents = _coerce_reverse_segments(
-                    raw,
-                    len(timeline_ranges),
-                    allow_duplicates=bool(attempt),
-                    allow_short=bool(attempt),
-                )
-                if attempt:
-                    contents = _annotate_repeated_reverse_segments(contents)
-                    contents = _expand_short_reverse_segments(contents)
-                    _validate_reverse_segment_contents(
-                        contents, len(timeline_ranges),
-                    )
-                prompt = "\n".join(
-                    "%s %s" % (label, content)
-                    for label, content in zip(timeline_ranges, contents)
-                )
-                _validate_reverse_timeline(prompt, duration)
-            else:
-                raw = _chat_multimodal(sysmsg, message, frames)
+            try:
+                raw = _chat_multimodal(sysmsg, message, frames, temp=0.1)
                 prompt = _coerce_reverse_prompt(raw)
                 if not prompt:
                     raise ValueError("提示词反推结果为空")
-            break
-        except ValueError as error:
-            last_error = error
-            last_raw = str(raw or "")
-            print(
-                "[breakdown] reverse output rejected attempt=%d error=%s raw=%s"
-                % (
-                    attempt + 1,
-                    str(error)[:180],
-                    re.sub(r"\s+", " ", str(raw or ""))[:500],
-                ),
-                flush=True,
-            )
-    else:
-        raise ValueError("提示词内容校验失败：%s" % last_error)
+                break
+            except ValueError as error:
+                last_error = error
+                last_raw = str(raw or "")
+                print(
+                    "[breakdown] reverse output rejected attempt=%d error=%s raw=%s"
+                    % (
+                        attempt + 1,
+                        str(error)[:180],
+                        re.sub(r"\s+", " ", str(raw or ""))[:500],
+                    ),
+                    flush=True,
+                )
+        else:
+            raise ValueError("提示词内容校验失败：%s" % last_error)
     return {
         "type": "breakdown_reverse",
         "source_url": source_url,
@@ -640,6 +578,225 @@ def _reverse_from_frames(
         "prompt": prompt,
         "frame_thumbnails": _frame_thumbnails(frames),
     }
+
+
+def _collect_reverse_frame_evidence(frames, expected_count):
+    expected_count = max(1, int(expected_count or 1))
+    selected_frames = _evenly_spaced_frames(frames, expected_count)
+    if not selected_frames:
+        raise ValueError("没有可用于反推的关键帧")
+    while len(selected_frames) < expected_count:
+        selected_frames.append(selected_frames[-1])
+    sysmsg = (
+        "你是单帧视觉观察员，只记录图片中直接可见的事实。"
+        "不要猜测身份、地点、品牌、情绪或未展示的动作。"
+    )
+    contents = []
+    for index, frame in enumerate(selected_frames, 1):
+        usermsg = (
+            "这是视频第%d段的唯一关键帧。写60-120字简体中文可执行画面描述，"
+            "只写图中直接可见事实：主体外观与画面位置、前中后景、景别视角构图、"
+            "明暗色调。只有衣袖或布料轮廓清晰可辨时，才按画面左侧、中央、右侧"
+            "描述其形状和轨迹，不判断人体左右或脸朝向。禁止使用“似乎、仿佛、看起来、"
+            "给人、感觉、营造、可能”等推测词，不描述图片外动作。"
+            "不要JSON、字段名或序号。"
+            % index
+        )
+        last_error = None
+        for attempt in range(2):
+            raw = ""
+            try:
+                raw = _chat_multimodal(
+                    sysmsg, usermsg, [frame], temp=0.1, max_tokens=700,
+                )
+                content = re.sub(
+                    r"\s+", "", str(raw or ""),
+                ).strip("`#* \n\r\t；。")
+                if (
+                    content.startswith(("{", "["))
+                    or '"segments"' in content
+                    or '"prompt"' in content
+                ):
+                    raise ValueError("逐帧结果必须是中文段落，不能是JSON")
+                content, _ = _remove_reverse_speculation(content)
+                compact = _reverse_segment_fingerprint(content)
+                review_added = False
+                if len(compact) < 40:
+                    review = _review_reverse_frame_difference(frame, index)
+                    content = (
+                        content.rstrip("；。 ")
+                        + ("；" if content.strip("；。 ") else "")
+                        + "动作差异复核：" + review.rstrip("；。 ") + "。"
+                    )
+                    compact = _reverse_segment_fingerprint(content)
+                    review_added = True
+                    if len(compact) < 40:
+                        raise ValueError("内容过短，至少需要40个有效字符")
+                if _is_reverse_placeholder(content):
+                    raise ValueError("内容为空或仅包含占位词")
+                if (
+                    not review_added
+                    and _reverse_person_content_needs_action_review(content)
+                ):
+                    review = _review_reverse_frame_difference(frame, index)
+                    content = (
+                        content.rstrip("；。 ")
+                        + "；动作差异复核：" + review.rstrip("；。 ") + "。"
+                    )
+                contents.append(content)
+                break
+            except ValueError as error:
+                last_error = error
+                print(
+                    "[breakdown] reverse frame rejected index=%d "
+                    "attempt=%d error=%s raw=%s"
+                    % (
+                        index,
+                        attempt + 1,
+                        str(error)[:180],
+                        re.sub(r"\s+", " ", str(raw or ""))[:500],
+                    ),
+                    flush=True,
+                )
+        else:
+            raise ValueError(
+                "第%d段逐帧证据失败：%s" % (index, last_error)
+            )
+    contents = _annotate_repeated_reverse_segments(contents)
+    return _validate_reverse_segment_contents(contents, expected_count)
+
+
+def _reverse_person_content_needs_action_review(content):
+    text = str(content or "")
+    subject_prefix = text[:80]
+    person_markers = (
+        "人物", "女性", "女子", "男性", "男子",
+        "男生", "女生", "儿童", "老人", "穿着", "连帽衫", "头发",
+    )
+    action_markers = (
+        "衣袖", "布料", "手臂", "手部", "双手", "抬", "伸", "挥",
+        "走", "跑", "转", "进入", "停止", "拿起",
+        "放下", "移动", "步伐", "弧线", "斜线", "水平",
+    )
+    return (
+        any(marker in subject_prefix for marker in person_markers)
+        and not any(marker in text for marker in action_markers)
+    )
+
+
+def _coerce_reverse_frame_evidence(raw, frames, expected_count):
+    expected_count = max(1, int(expected_count or 1))
+    text = str(raw or "").strip()
+    matches = list(re.finditer(
+        r"图片\s*(\d+)\s*[:：]\s*(.*?)"
+        r"(?=图片\s*\d+\s*[:：]|\Z)",
+        text,
+        re.S,
+    ))
+    indexed = {}
+    review_indexes = set()
+    for match in matches:
+        index = int(match.group(1))
+        content = re.sub(r"\s+", "", match.group(2)).strip("；。 ")
+        if 1 <= index <= expected_count and content:
+            content, removed_speculation = _remove_reverse_speculation(content)
+            indexed[index] = content
+            if (
+                removed_speculation
+                and (
+                    len(_reverse_segment_fingerprint(content)) < 60
+                    or any(
+                        marker in content
+                        for marker in (
+                            "人物", "女性", "女子", "男性", "男子",
+                            "男生", "女生", "儿童", "老人",
+                        )
+                    )
+                )
+            ):
+                review_indexes.add(index - 1)
+    if sorted(indexed) != list(range(1, expected_count + 1)):
+        raise ValueError(
+            "逐帧证据分段应为%d，实际解析为%d"
+            % (expected_count, len(indexed))
+        )
+    contents = [indexed[index] for index in range(1, expected_count + 1)]
+    selected_frames = _evenly_spaced_frames(frames, expected_count)
+    seen = {}
+    repaired = list(contents)
+    for index, content in enumerate(contents):
+        fingerprint = _reverse_segment_fingerprint(content).lower()
+        if fingerprint in seen:
+            review_indexes.add(index)
+        else:
+            seen[fingerprint] = index
+        if len(fingerprint) < 40:
+            review_indexes.add(index)
+    for index in sorted(review_indexes):
+        review = _review_reverse_frame_difference(
+            selected_frames[min(index, len(selected_frames) - 1)],
+            index + 1,
+        )
+        base = repaired[index].rstrip("；。 ")
+        repaired[index] = (
+            (base + "；" if base else "")
+            + "动作差异复核：" + review.rstrip("；。 ") + "。"
+        )
+    repaired = _annotate_repeated_reverse_segments(repaired)
+    return _validate_reverse_segment_contents(repaired, expected_count)
+
+
+def _remove_reverse_speculation(content):
+    text = str(content or "")
+    for source, target in (
+        ("美丽的", ""),
+        ("古色古香的", "传统样式的"),
+        ("增加了画面的动态感", ""),
+        ("增添了画面的动态感", ""),
+    ):
+        text = text.replace(source, target)
+    speculative_markers = (
+        "似乎", "仿佛", "看起来", "给人", "感觉", "营造",
+        "氛围", "可能", "推测", "应该", "像是",
+    )
+    removed = False
+    kept = []
+    for sentence in re.split(r"(?<=[。！？；])", text):
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        if any(marker in sentence for marker in speculative_markers):
+            removed = True
+            continue
+        kept.append(sentence)
+    cleaned = "".join(kept).strip("；。 ")
+    return (cleaned + "。" if cleaned else ""), removed
+
+
+def _review_reverse_frame_difference(frame, index):
+    sysmsg = (
+        "你是单帧布料轨迹校验员，只报告图片中直接可见的位置关系，"
+        "不判断人体左右，不描述背景，不推测前后动作。"
+    )
+    usermsg = (
+        "这是视频第%d段的唯一关键帧。用30-60字简体中文只描述衣袖、布料或"
+        "其他明显运动主体在画面中的可见形状与位置：从哪一侧出现，经过前景或"
+        "主体哪个区域，向哪一侧延伸，形成水平、斜线还是弧线。没有人物或布料时，"
+        "改为说明主要物体的位置和构图。不要JSON、字段名、人体左右或图片外情节。"
+        % int(index)
+    )
+    raw = _chat_multimodal(
+        sysmsg, usermsg, [frame], temp=0.1, max_tokens=500,
+    )
+    review = re.sub(r"\s+", "", str(raw or "")).strip("；。 ")
+    review, _ = _remove_reverse_speculation(review)
+    review = review.strip("；。 ")
+    compact = _reverse_segment_fingerprint(review)
+    if len(compact) < 20:
+        raise ValueError("第%d段差异复核内容过短" % int(index))
+    if _is_reverse_placeholder(review):
+        raise ValueError("第%d段差异复核为空或占位内容" % int(index))
+    return review
 
 
 def _timeline_label(seconds):
@@ -704,36 +861,39 @@ def _coerce_reverse_segments(
     visual_fields = {"subject", "action", "scene", "camera", "light"}
     contents = []
     for index, item in enumerate(value, 1):
-        if isinstance(item, dict):
-            missing = [
-                field for field, _ in field_labels
-                if not str(item.get(field) or "").strip()
-            ]
-            if missing:
-                raise ValueError(
-                    "第%d段缺少字段：%s" % (index, "、".join(missing))
-                )
-            placeholder_fields = [
-                field for field, _ in field_labels
-                if field in visual_fields
-                and _is_reverse_placeholder(item.get(field))
-            ]
-            if placeholder_fields:
-                raise ValueError(
-                    "第%d段视觉字段包含占位内容：%s"
-                    % (index, "、".join(placeholder_fields))
-                )
-            audio_text = str(item.get("audio") or "").strip()
-            if len(_reverse_segment_fingerprint(audio_text)) > 40:
-                raise ValueError(
-                    "第%d段声音字幕字段过长，最多允许40个有效字符" % index
-                )
-            contents.append("；".join(
-                "%s：%s" % (label, str(item.get(field) or "").strip())
-                for field, label in field_labels
-            ))
-        else:
-            contents.append(str(item or "").strip())
+        if not isinstance(item, dict):
+            raise ValueError(
+                "第%d段必须是包含subject、action、scene、camera、light、audio的对象"
+                % index
+            )
+        missing = [
+            field for field, _ in field_labels
+            if not str(item.get(field) or "").strip()
+        ]
+        if missing:
+            raise ValueError(
+                "第%d段缺少字段：%s" % (index, "、".join(missing))
+            )
+        placeholder_fields = [
+            field for field, _ in field_labels
+            if field in visual_fields
+            and _is_reverse_placeholder(item.get(field))
+        ]
+        if placeholder_fields:
+            raise ValueError(
+                "第%d段视觉字段包含占位内容：%s"
+                % (index, "、".join(placeholder_fields))
+            )
+        _validate_reverse_visual_fields(item, index)
+        audio_text = str(item.get("audio") or "").strip()
+        if len(_reverse_segment_fingerprint(audio_text)) > 40:
+            raise ValueError(
+                "第%d段声音字幕字段过长，最多允许40个有效字符" % index
+            )
+        contents.append("；".join(
+            "%s：%s" % (label, str(item.get(field) or "").strip())
+            for field, label in field_labels
+        ))
     return _validate_reverse_segment_contents(
         contents,
         expected_count,
@@ -754,6 +914,60 @@ def _is_reverse_placeholder(content):
     }
 
 
+def _validate_reverse_visual_fields(item, index):
+    field_text = {
+        field: str(item.get(field) or "").strip()
+        for field in ("subject", "action", "scene", "camera", "light")
+    }
+    fingerprints = {
+        field: _reverse_segment_fingerprint(text)
+        for field, text in field_text.items()
+    }
+    generic_only = {
+        "未观察到明显变化",
+        "未观察到可确认变化",
+        "未观察到明显动作变化",
+        "未观察到明显位移",
+        "未观察到明显运镜",
+        "未观察到明显光线方向",
+        "无法确认",
+        "无法判断",
+        "不确定",
+    }
+    minimum_lengths = {
+        "subject": 8,
+        "action": 10,
+        "scene": 8,
+        "camera": 8,
+        "light": 6,
+    }
+    invalid = [
+        field for field, compact in fingerprints.items()
+        if compact in generic_only or len(compact) < minimum_lengths[field]
+    ]
+    if invalid:
+        raise ValueError(
+            "第%d段字段缺少可验证画面事实：%s"
+            % (index, "、".join(invalid))
+        )
+    camera_markers = (
+        "特写", "近景", "中景", "全景", "远景", "平视", "俯拍", "仰拍",
+        "机位", "视角", "构图", "固定镜头",
+    )
+    if not any(marker in field_text["camera"] for marker in camera_markers):
+        raise ValueError(
+            "第%d段camera缺少景别、机位、视角或构图事实" % index
+        )
+    light_markers = (
+        "光", "明", "暗", "色温", "色调", "阴影", "高光", "对比",
+        "冷色", "暖色", "曝光",
+    )
+    if not any(marker in field_text["light"] for marker in light_markers):
+        raise ValueError(
+            "第%d段light缺少明暗、光线或色调事实" % index
+        )
+
+
 def _annotate_repeated_reverse_segments(contents):
     seen = {}
     annotated = []
@@ -769,26 +983,6 @@ def _annotate_repeated_reverse_segments(contents):
         annotated.append(content)
         seen[fingerprint] = index
     return annotated
-
-
-def _expand_short_reverse_segments(contents):
-    compact_lengths = [
-        len(_reverse_segment_fingerprint(content)) for content in contents
-    ]
-    expand_all = sum(compact_lengths) < 240
-    expanded = []
-    for index, (content, compact_length) in enumerate(
-        zip(contents, compact_lengths), 1,
-    ):
-        if expand_all or compact_length < 40:
-            content = (
-                str(content).rstrip("；。 ")
-                + "；事实边界：仅保留关键帧中可见信息，人物身份、品牌文字及遮挡细节"
-                "均未确认；执行约束：第%d段保持当前主体位置、已有道具、场景层次、"
-                "机位方向和光线状态，不新增人物、物体或情节。" % index
-            )
-        expanded.append(content)
-    return expanded
 
 
 def _validate_reverse_segment_contents(
@@ -810,8 +1004,11 @@ def _validate_reverse_segment_contents(
         total_length += len(compact)
     if not allow_duplicates and len(set(normalized)) != len(normalized):
         raise ValueError("分段内容存在完全重复")
-    if not allow_short and total_length < 240:
-        raise ValueError("全部分段内容过短，至少需要240个有效字符")
+    minimum_total = min(240, max(1, int(expected_count)) * 60)
+    if not allow_short and total_length < minimum_total:
+        raise ValueError(
+            "全部分段内容过短，至少需要%d个有效字符" % minimum_total
+        )
     if total_length > 800:
         raise ValueError("全部分段内容过长，最多允许800个有效字符")
     return contents

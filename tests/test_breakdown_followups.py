@@ -60,8 +60,19 @@ class BreakdownFollowupTests(unittest.TestCase):
             "",
         )
 
-    def test_reverse_prompt_uses_duration_transcript_and_timeline_sections(self):
+    def test_reverse_prompt_uses_program_generated_timeline_sections(self):
         captured = {}
+        responses = [
+            "人物从画面左侧进入室内，身体朝向房间中央，前景桌面与后景窗户"
+            "形成清晰层次；平视中景机位向右跟随，暖色侧光照亮人物轮廓，"
+            "人物在桌边停止后镜头同步减速。",
+            "同一人物来到桌边伸手拿起杯子，视线跟随手部移动，桌面和杯子"
+            "位于前景，窗户保持在人物后方；平视中景机位轻微前推，柔和侧光"
+            "在杯壁形成随手腕变化的反光。",
+            "人物放下杯子后自然抬头，肩部放松并位于画面中央，桌面仍在"
+            "前景且后方窗户轻微虚化；画面由中景收束到平视近景，侧前方"
+            "主光保持柔和，人物面部亮度略高于背景。",
+        ]
 
         def fake_chat(
             system_message, user_message, frames, temp=0.7, max_tokens=None,
@@ -72,13 +83,7 @@ class BreakdownFollowupTests(unittest.TestCase):
                 frames=frames,
                 max_tokens=max_tokens,
             )
-            return json.dumps({
-                "segments": [
-                    "主体从画面左侧进入室内空间，镜头保持平视中景并缓慢向右跟随，暖色侧光勾勒人物轮廓，前景桌面与后景窗户形成明确层次。人物步伐平稳，身体朝向与视线都指向画面中央，环境音保持安静，镜头移动在人物停步时同步减速。",
-                    "人物走到桌边拿起杯子并转向镜头，动作从伸手开始到握稳结束，视线跟随杯子移动，机位轻微前推，环境光保持柔和。杯壁反光随手腕转动发生变化，中景构图逐渐突出上半身，前后景位置与上一段连续，不增加新的道具或人物。",
-                    "人物放下杯子后自然抬头微笑，镜头从中景收束到近景，背景虚化程度逐渐增加，动作、光线与空间关系均延续上一镜头。主光仍从侧前方照射，人物肩部放松并保持面向镜头，运镜平稳停止，画面在安静环境音中自然结束。",
-                ],
-            }, ensure_ascii=False)
+            return responses.pop(0)
 
         with mock.patch.object(
             breakdown, "_chat_multimodal", side_effect=fake_chat
@@ -96,17 +101,15 @@ class BreakdownFollowupTests(unittest.TestCase):
         self.assertTrue(result["prompt"].splitlines()[-1].startswith(
             "[00:04.667-00:07]"
         ))
-        self.assertEqual(captured["max_tokens"], 1800)
+        self.assertEqual(captured["max_tokens"], 700)
         for expected in (
-            "总时长：7 秒",
-            "[0s-3s] 开场口播",
-            "程序已经固定好时间轴",
-            "全部内容必须达到 300-600",
-            "起点、连续过程、终点",
-            "不得复制同一段内容",
+            "唯一关键帧",
+            "写60-120字",
+            "景别视角构图",
+            "不要JSON",
         ):
             self.assertIn(expected, captured["user"])
-        self.assertIn("不臆造", captured["system"])
+        self.assertIn("直接可见的事实", captured["system"])
 
     def test_reverse_timeline_accepts_fractional_and_subsecond_duration(self):
         segments = breakdown._validate_reverse_timeline(
@@ -278,45 +281,27 @@ class BreakdownFollowupTests(unittest.TestCase):
                         raw, 1, allow_duplicates=True, allow_short=True,
                     )
 
-    def test_reverse_visual_placeholder_retry_uses_concrete_field_guidance(self):
-        valid_item = {
-            "subject": "女子位于画面中央并背对镜头，身体轮廓在背景前清晰可见",
-            "action": "女子保持坐姿并抬起双手，未观察到明显位移，动作在抬手后稳定停止",
-            "scene": "林地草坪位于前景，树木和远山依次构成中景与后景空间层次",
-            "camera": "平视中景固定机位，主体位于中央，无明显运镜，画面构图保持稳定",
-            "light": "自然光均匀照亮主体和草地，整体偏暖，明暗对比柔和且背景略亮",
-            "audio": "未识别到明确声音或字幕",
-        }
-        placeholder_item = dict(valid_item, camera="未确认")
-        responses = [
-            json.dumps({"segments": [placeholder_item] * 3}, ensure_ascii=False),
-            json.dumps({"segments": [placeholder_item] * 3}, ensure_ascii=False),
-            json.dumps({"segments": [
-                valid_item,
-                dict(valid_item, action="女子保持坐姿后缓慢放下双手，动作连续并在身体两侧停止"),
-                dict(valid_item, action="女子再次抬起双手并保持背对镜头，动作在画面结束前稳定"),
-            ]}, ensure_ascii=False),
+    def test_reverse_evidence_retries_after_invalid_first_result(self):
+        invalid = json.dumps({"segments": ["未确认"] * 3}, ensure_ascii=False)
+        valid = [
+            "画面中央是一名坐在草地上的女子，人物背对镜头，平视中景中"
+            "背景树木和远山形成层次，自然光均匀照亮人物与草地，整体色调偏暖。"
+            "人物双手位于膝前，轮廓与较暗的远景之间保持清楚分离。",
+            "同一女子缓慢放下双手，身体仍位于中央，草地处于前景且树木"
+            "位于后方；固定中景构图保持稳定，环境光柔和且明暗对比清楚。"
+            "人物肩部和手臂均处于画面中部区域。",
+            "女子再次抬起双手并保持背对镜头，前景草地、中景树木与远山"
+            "构成纵深；平视中景中主体轮廓清楚，自然光亮度和暖色色调保持连续。"
+            "人物位置和背景层次与前一张图片相互衔接。",
         ]
-        messages = []
-
-        def fake_chat(
-            system_message, user_message, frames, temp=0.7, max_tokens=None,
-        ):
-            messages.append(user_message)
-            return responses.pop(0)
-
         with mock.patch.object(
-            breakdown, "_chat_multimodal", side_effect=fake_chat,
+            breakdown, "_chat_multimodal", side_effect=[invalid] + valid,
         ) as chat:
             result = breakdown._reverse_from_frames(
                 {}, ["frame.jpg"], duration=6,
             )
 
-        self.assertEqual(chat.call_count, 3)
-        self.assertNotIn("无法确认的细节写“未确认”", messages[0])
-        self.assertIn("五个视觉字段都必须依据画面填写具体可见事实", messages[0])
-        self.assertIn("固定镜头，无明显运镜", messages[1])
-        self.assertIn("固定镜头，无明显运镜", messages[2])
+        self.assertEqual(chat.call_count, 4)
         self.assertEqual(len(result["prompt"].splitlines()), 3)
 
     def test_reverse_visual_fields_allow_uncertainty_after_visible_facts(self):
@@ -358,11 +343,11 @@ class BreakdownFollowupTests(unittest.TestCase):
 
     def test_reverse_segment_objects_allow_real_short_visuals_and_empty_audio(self):
         item = {
-            "subject": "女子位于画面中央",
-            "action": "女子背对镜头站立",
-            "scene": "夜晚街道铺有落叶",
-            "camera": "平视固定中景",
-            "light": "柔和环境光从左侧照入",
+            "subject": "一名女子位于画面中央并背对镜头",
+            "action": "女子保持站立姿态，双手自然垂在身体两侧",
+            "scene": "夜晚街道铺有落叶，路面延伸至画面后方",
+            "camera": "平视中景固定机位，主体位于中央",
+            "light": "柔和环境光从画面左侧照入",
             "audio": "无",
         }
         raw = json.dumps({"segments": [item]}, ensure_ascii=False)
@@ -370,10 +355,10 @@ class BreakdownFollowupTests(unittest.TestCase):
             raw, 1, allow_duplicates=True, allow_short=True,
         )
         self.assertEqual(len(parsed), 1)
-        self.assertIn("主体与位置：女子位于画面中央", parsed[0])
+        self.assertIn("主体与位置：一名女子位于画面中央", parsed[0])
         self.assertIn("声音字幕：无", parsed[0])
 
-    def test_reverse_timeline_never_expands_placeholder_visuals(self):
+    def test_reverse_timeline_rejects_placeholder_visuals_on_all_attempts(self):
         placeholder_item = {
             "subject": "无",
             "action": "没有",
@@ -388,17 +373,145 @@ class BreakdownFollowupTests(unittest.TestCase):
         )
         with mock.patch.object(
             breakdown, "_chat_multimodal", return_value=raw,
-        ) as chat, mock.patch.object(
-            breakdown, "_expand_short_reverse_segments",
-            wraps=breakdown._expand_short_reverse_segments,
-        ) as expand:
-            with self.assertRaisesRegex(ValueError, "视觉字段包含占位内容"):
+        ) as chat:
+            with self.assertRaisesRegex(ValueError, "不能是JSON"):
                 breakdown._reverse_from_frames(
                     {}, ["frame.jpg"], duration=6,
                 )
 
-        self.assertEqual(chat.call_count, 3)
-        expand.assert_not_called()
+        self.assertEqual(chat.call_count, 2)
+
+    def test_reverse_visual_fields_reject_generic_success_content(self):
+        generic = {
+            "subject": "未观察到明显动作变化",
+            "action": "未观察到明显动作变化",
+            "scene": "未观察到明显动作变化",
+            "camera": "未观察到明显运镜",
+            "light": "未观察到明显光线方向",
+            "audio": "未观察到明显声音",
+        }
+        raw = json.dumps({"segments": [generic] * 3}, ensure_ascii=False)
+        with self.assertRaisesRegex(ValueError, "缺少可验证画面事实"):
+            breakdown._coerce_reverse_segments(
+                raw, 3, allow_duplicates=True, allow_short=True,
+            )
+
+    def test_reverse_visual_fields_require_camera_and_light_evidence(self):
+        item = {
+            "subject": "一名女子位于画面中央并背对镜头",
+            "action": "女子保持站立姿态，双手自然垂在身体两侧",
+            "scene": "夜晚街道铺有落叶，路面延伸至画面后方",
+            "camera": "画面保持稳定且没有发生变化",
+            "light": "整体画面状态保持稳定",
+            "audio": "无",
+        }
+        raw = json.dumps({"segments": [item]}, ensure_ascii=False)
+        with self.assertRaisesRegex(ValueError, "camera缺少"):
+            breakdown._coerce_reverse_segments(
+                raw, 1, allow_duplicates=True, allow_short=True,
+            )
+        item["camera"] = "平视中景固定机位，主体位于中央"
+        with self.assertRaisesRegex(ValueError, "light缺少"):
+            breakdown._coerce_reverse_segments(
+                json.dumps({"segments": [item]}, ensure_ascii=False),
+                1,
+                allow_duplicates=True,
+                allow_short=True,
+            )
+
+    def test_repeated_frame_evidence_reviews_only_later_duplicates(self):
+        establishing = (
+            "夜晚古镇的拱桥横跨水面，前景水面倒映暖黄色灯笼，街道和古建筑"
+            "向画面深处延伸；画面采用俯视全景构图，深蓝天空与暖色灯光形成对比。"
+        )
+        repeated = (
+            "穿粉色连帽上衣的女子位于画面中央，背景为虚化的灯笼和古建筑；"
+            "人物处于平视中景，暖黄色环境光照亮面部和衣袖，整体色调柔和，"
+            "画面两侧的栏杆和灯笼共同形成纵深层次，主体轮廓与背景分离清楚。"
+        )
+        raw = (
+            "图片1：" + establishing
+            + "图片2：" + repeated
+            + "图片3：" + repeated
+            + "图片4：" + repeated
+        )
+        reviews = [
+            "女性身体和脸朝向画面左侧，左侧手臂较低，右侧手臂向右上方伸展，粉色衣袖横过前景。",
+            "女性以侧面朝向画面左侧，左臂抬起向左延伸，另一侧手臂下垂，粉色布料在左侧形成弧线。",
+        ]
+        with mock.patch.object(
+            breakdown, "_chat_multimodal", side_effect=reviews,
+        ) as chat:
+            contents = breakdown._coerce_reverse_frame_evidence(
+                raw,
+                ["frame-1.jpg", "frame-2.jpg", "frame-3.jpg", "frame-4.jpg"],
+                4,
+            )
+
+        self.assertEqual(chat.call_count, 2)
+        self.assertNotIn("动作差异复核", contents[1])
+        self.assertIn("右侧手臂向右上方伸展", contents[2])
+        self.assertIn("左臂抬起向左延伸", contents[3])
+        breakdown._validate_reverse_segment_contents(contents, 4)
+
+    def test_reverse_evidence_removes_speculative_sentences(self):
+        content, removed = breakdown._remove_reverse_speculation(
+            "女子穿粉色上衣站在画面中央。"
+            "她似乎在享受夜晚的微风。"
+            "背景灯笼发出暖黄色光线。"
+            "桥下形成美丽的倒影，古色古香的建筑位于后景。"
+            "衣袖向右上方延伸，增加了画面的动态感。"
+            "画面给人一种温馨氛围。"
+        )
+
+        self.assertTrue(removed)
+        self.assertIn("女子穿粉色上衣站在画面中央", content)
+        self.assertIn("背景灯笼发出暖黄色光线", content)
+        self.assertIn("桥下形成倒影，传统样式的建筑位于后景", content)
+        self.assertIn("衣袖向右上方延伸", content)
+        self.assertNotIn("似乎", content)
+        self.assertNotIn("美丽", content)
+        self.assertNotIn("动态感", content)
+        self.assertNotIn("氛围", content)
+
+    def test_person_evidence_rechecks_action_after_speculation_removed(self):
+        raw = (
+            "图片1：一名穿粉色连帽上衣的女性位于画面中央，棕色长发披在肩后，"
+            "夜晚灯笼和建筑在背景中虚化，暖黄色环境光照亮人物轮廓。"
+            "她抬起手臂，似乎在感受夜晚微风。"
+        )
+        review = (
+            "女性身体朝向左侧，左臂位于肩部高度并向画面左侧伸展，"
+            "右臂自然下垂，粉色衣袖在前景形成弧线。"
+        )
+        with mock.patch.object(
+            breakdown, "_chat_multimodal", return_value=review,
+        ) as chat:
+            contents = breakdown._coerce_reverse_frame_evidence(
+                raw, ["frame.jpg"], 1,
+            )
+
+        self.assertEqual(chat.call_count, 1)
+        self.assertIn("动作差异复核", contents[0])
+        self.assertIn("左臂位于肩部高度", contents[0])
+        self.assertNotIn("似乎", contents[0])
+
+    def test_stationary_person_without_visible_action_needs_review(self):
+        self.assertTrue(
+            breakdown._reverse_person_content_needs_action_review(
+                "一名穿粉色上衣的女性站在画面中央，背景灯笼发出暖黄色光线。"
+            )
+        )
+        self.assertFalse(
+            breakdown._reverse_person_content_needs_action_review(
+                "一名穿粉色上衣的女性位于画面中央，手臂抬起，衣袖形成弧线。"
+            )
+        )
+        self.assertTrue(
+            breakdown._reverse_person_content_needs_action_review(
+                "画面中主体穿着粉色连帽衫，位于中央偏左，背景灯光模糊。"
+            )
+        )
 
     def test_repeated_reverse_segments_reference_matching_previous_segment(self):
         contents = [
@@ -418,13 +531,42 @@ class BreakdownFollowupTests(unittest.TestCase):
             ensure_ascii=False,
         )
         contents = [
-            "主体从画面左侧进入室内空间，镜头保持平视中景并缓慢向右跟随，暖色侧光勾勒人物轮廓，前景桌面与后景窗户形成明确层次。人物步伐平稳，身体朝向与视线都指向画面中央，环境音保持安静，镜头移动在人物停步时同步减速。",
-            "人物走到桌边拿起杯子并转向镜头，动作从伸手开始到握稳结束，视线跟随杯子移动，机位轻微前推，环境光保持柔和。杯壁反光随手腕转动发生变化，中景构图逐渐突出上半身，前后景位置与上一段连续，不增加新的道具或人物。",
-            "人物放下杯子后自然抬头微笑，镜头从中景收束到近景，背景虚化程度逐渐增加，动作、光线与空间关系均延续上一镜头。主光仍从侧前方照射，人物肩部放松并保持面向镜头，运镜平稳停止，画面在安静环境音中自然结束。",
+            {
+                "subject": "人物位于画面左侧并朝向室内中央，外观轮廓清晰",
+                "action": "人物从左侧进入，步伐平稳，最后在桌边停止",
+                "scene": "桌面位于前景，窗户和墙面构成中后景空间层次",
+                "camera": "平视中景机位缓慢向右跟随，主体逐渐移向中央",
+                "light": "暖色侧光勾勒人物轮廓，室内明暗对比柔和",
+                "audio": "环境音安静，无明确字幕",
+            },
+            {
+                "subject": "同一人物位于桌边，右手靠近桌面上的杯子",
+                "action": "人物伸手拿起杯子并转向镜头，动作在握稳后结束",
+                "scene": "桌面和杯子位于前景，窗户保持在人物后方",
+                "camera": "平视中景机位轻微前推，构图突出人物上半身",
+                "light": "柔和侧光照亮人物和杯壁，反光随手腕变化",
+                "audio": "环境音保持安静",
+            },
+            {
+                "subject": "同一人物位于画面中央，杯子已经放回桌面",
+                "action": "人物放下杯子后自然抬头，肩部放松并保持正面姿态",
+                "scene": "桌面仍处于前景，背景窗户轻微虚化且位置连续",
+                "camera": "平视近景机位平稳停止，主体面部位于构图中心",
+                "light": "侧前方主光保持柔和，人物面部亮度略高于背景",
+                "audio": "环境音安静，无新增字幕",
+            },
         ]
         responses = [
             first,
-            json.dumps({"segments": contents}, ensure_ascii=False),
+            "人物从画面左侧进入室内，身体朝向房间中央，前景桌面与后景窗户"
+            "形成清晰层次；平视中景机位向右跟随，暖色侧光照亮人物轮廓，"
+            "人物在桌边停止后镜头同步减速，视线始终指向画面中央。",
+            "同一人物来到桌边伸手拿起杯子，视线跟随手部移动，桌面和杯子"
+            "位于前景，窗户保持在人物后方；平视中景机位轻微前推，柔和侧光"
+            "在杯壁形成随手腕变化的反光。",
+            "人物放下杯子后自然抬头，肩部放松并位于画面中央，桌面仍在"
+            "前景且后方窗户轻微虚化；画面由中景收束到平视近景，侧前方主光"
+            "保持柔和，人物面部亮度略高于背景。",
         ]
         messages = []
         token_limits = []
@@ -443,43 +585,40 @@ class BreakdownFollowupTests(unittest.TestCase):
                 {}, ["frame.jpg"], duration=6,
             )
 
-        self.assertEqual(chat.call_count, 2)
-        self.assertEqual(token_limits, [1800, 1800])
-        self.assertIn("上一次输出校验失败", messages[1])
+        self.assertEqual(chat.call_count, 4)
+        self.assertEqual(token_limits, [700, 700, 700, 700])
+        self.assertEqual(
+            [call.kwargs.get("temp") for call in chat.call_args_list],
+            [0.1, 0.1, 0.1, 0.1],
+        )
+        self.assertIn("唯一关键帧", messages[1])
         self.assertEqual(
             [line.split("]", 1)[0] + "]" for line in result["prompt"].splitlines()],
             breakdown._fixed_reverse_ranges(6),
         )
         breakdown._validate_reverse_timeline(result["prompt"], 6)
 
-    def test_reverse_timeline_marks_static_segments_after_one_retry(self):
+    def test_reverse_timeline_reviews_repeated_segments(self):
         content = (
-            "主体与位置：女子位于画面中央并背对镜头面向海面；"
-            "动作与表情：女子保持站立姿态并手持已有物品，未观察到可确认动作变化；"
-            "场景空间：沙滩位于前景，海面和天空构成中后景；"
-            "镜头构图：平视中景固定机位，主体保持在中央区域；"
-            "光线质感：自然光均匀照亮人物和海面，整体色温中性；"
-            "声音字幕：没有可确认声音或字幕。"
-        )
-        duplicate = json.dumps(
-            {"segments": [content, content, content]},
-            ensure_ascii=False,
+            "穿粉色连帽上衣的女子站在画面中央，背景为虚化的灯笼和古建筑；"
+            "人物处于平视中景，暖黄色环境光照亮面部和衣袖，画面两侧栏杆与"
+            "灯笼形成纵深层次，主体轮廓与背景分离清楚，整体色调柔和。"
         )
         with mock.patch.object(
-            breakdown, "_chat_multimodal", return_value=duplicate,
+            breakdown, "_chat_multimodal", side_effect=[content] * 3,
         ) as chat:
             result = breakdown._reverse_from_frames(
                 {}, ["frame.jpg"], duration=6,
             )
 
-        self.assertEqual(chat.call_count, 2)
+        self.assertEqual(chat.call_count, 3)
         lines = result["prompt"].splitlines()
         self.assertNotIn("连续性：", lines[0])
-        self.assertIn("未观察到可确认变化", lines[1])
-        self.assertIn("未观察到可确认变化", lines[2])
+        self.assertIn("与第1段保持同一主体", lines[1])
+        self.assertIn("与第2段保持同一主体", lines[2])
         breakdown._validate_reverse_timeline(result["prompt"], 6)
 
-    def test_reverse_timeline_safely_expands_short_second_draft(self):
+    def test_reverse_timeline_never_pads_short_draft_with_boilerplate(self):
         short_item = {
             "subject": "女子位于街道",
             "action": "背对镜头站立",
@@ -495,34 +634,29 @@ class BreakdownFollowupTests(unittest.TestCase):
         with mock.patch.object(
             breakdown, "_chat_multimodal", return_value=short,
         ) as chat:
-            result = breakdown._reverse_from_frames(
-                {}, ["frame.jpg"], duration=6,
-            )
+            with self.assertRaisesRegex(
+                ValueError, "不能是JSON",
+            ):
+                breakdown._reverse_from_frames(
+                    {}, ["frame.jpg"], duration=6,
+                )
 
         self.assertEqual(chat.call_count, 2)
-        self.assertIn("事实边界：", result["prompt"])
-        self.assertIn("不新增人物、物体或情节", result["prompt"])
-        contents = [
-            line.split("] ", 1)[1] for line in result["prompt"].splitlines()
-        ]
-        breakdown._validate_reverse_segment_contents(contents, 3)
-        breakdown._validate_reverse_timeline(result["prompt"], 6)
 
-    def test_reverse_timeline_succeeds_on_third_attempt(self):
+    def test_reverse_timeline_succeeds_on_second_evidence_attempt(self):
         invalid = json.dumps({"segments": ["始终错误。"]}, ensure_ascii=False)
-        valid_item = {
-            "subject": "女子位于画面中央",
-            "action": "女子背对镜头站立",
-            "scene": "夜晚街道铺有落叶",
-            "camera": "平视固定中景",
-            "light": "柔和环境光从左侧照入",
-            "audio": "无",
-        }
-        valid = json.dumps(
-            {"segments": [valid_item, valid_item, valid_item]},
-            ensure_ascii=False,
-        )
-        responses = [invalid, invalid, valid]
+        valid = [
+            "一名女子位于夜晚街道中央并背对镜头，双手自然垂在身体两侧，"
+            "前景路面铺有落叶且向后延伸；平视中景固定构图中，柔和侧光从左侧"
+            "照亮人物轮廓，背景亮度较低。",
+            "同一女子保持站立后轻微向左转头，身体仍在画面中央，街道与"
+            "落叶位置连续；平视中景机位稳定，左侧环境光照亮肩部并与暗背景"
+            "形成清楚对比。",
+            "女子恢复面向前方的站姿，双手仍自然垂落，路面和街道背景"
+            "保持原有纵深；固定中景构图没有改变，柔和侧光继续勾勒人物边缘，"
+            "整体色调保持偏暖。",
+        ]
+        responses = [invalid] + valid
         messages = []
 
         def fake_chat(
@@ -538,9 +672,8 @@ class BreakdownFollowupTests(unittest.TestCase):
                 {}, ["frame.jpg"], duration=6,
             )
 
-        self.assertEqual(chat.call_count, 3)
-        self.assertIn("上一次输出校验失败", messages[1])
-        self.assertIn("上一次输出校验失败", messages[2])
+        self.assertEqual(chat.call_count, 4)
+        self.assertIn("唯一关键帧", messages[1])
         self.assertEqual(len(result["prompt"].splitlines()), 3)
         breakdown._validate_reverse_timeline(result["prompt"], 6)
 
@@ -549,11 +682,11 @@ class BreakdownFollowupTests(unittest.TestCase):
         with mock.patch.object(
             breakdown, "_chat_multimodal", return_value=invalid,
         ) as chat:
-            with self.assertRaisesRegex(ValueError, "内容校验失败"):
+            with self.assertRaisesRegex(ValueError, "逐帧证据失败"):
                 breakdown._reverse_from_frames(
                     {}, ["frame.jpg"], duration=2,
                 )
-        self.assertEqual(chat.call_count, 3)
+        self.assertEqual(chat.call_count, 2)
 
     def test_reverse_prompt_accepts_array_and_recovers_missing_commas(self):
         array_raw = json.dumps({
