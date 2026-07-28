@@ -43,21 +43,31 @@ PROJECT_TITLE_MAX = 120
 PROJECT_STATE_MAX = 200000
 PROJECT_MANAGED_STATE_MAX = 500000
 MAX_CONFIRMED_ATTACHMENT_EVIDENCE = 12
-PROJECT_MODULE_STEPS = (5, 5, 5, 5, 4, 3, 3, 4, 5, 5, 5, 5)
-ACTIVE_PROJECT_MODULES = 8
+PROJECT_MODULE_STEPS = (18, 4, 3, 5, 5, 3, 0, 0, 0, 0, 0, 0)
+ACTIVE_PROJECT_MODULES = 6
+FOUNDATION_MODULES = 4
+FOUNDATION_STAGE = "foundation_v1"
 ACTIVE_MODULE_NAMES = (
     "定位诊断", "人设塑造", "价值主张", "故事资产",
-    "内容选题", "文案口播", "IP 形象设计", "脚本分镜",
+    "内容选题", "文案口播",
 )
 MODULE_PROMPT_RULES = (
-    "定位诊断：只从用户的生命经历、核心技能、长期兴趣、人格优势和目标人群提炼事实；信息不足时先追问。给出三套差异化定位及各自机会、风险和推荐理由。",
-    "人设塑造：基于已确认经历、人格特质、价值观、目标人群和未来目标，给出三套可长期坚持的人设画像，并比较传播优势、风险和表演成本。",
-    "价值主张：把用户的优势、目标人群痛点、所在领域、期望印象和长期影响力转化为三条可兑现的价值主张；每条都要说明优势与边界。",
-    "故事资产：从用户真实经历中提炼挫折型、成长型和愿景型故事；候选要包含故事主线、情绪点、可用场景和无法核实的缺口。",
-    "内容选题：围绕已确认目标人群、领域、优势、长期标签和近期目标形成选题方向；优先真实高频问题，禁止把趋势或流量效果写成事实。",
-    "文案口播：围绕已确认主题、目标人群、身份、传播目标和风格，比较共情型、观点型和故事型方案；包含三秒钩子、节奏、字幕点和克制的行动引导。",
-    "IP 形象设计：只有用户主动提供照片时才分析照片；无照片时明确列为资料缺口。候选覆盖外观、灯光、机位、背景、表情、声调、传播优势和风险。",
-    "脚本分镜：围绕已确认主题、受众、风格、时长和目的生成三套脚本方向；候选要覆盖钩子、中段、结尾、镜头、口播、素材成本和传播风险。",
+    "定位诊断：参考采集表，逐项关注当前职业身份、从业经历、低谷、成就、被夸与被吐槽、最强能力、赛道、目标受众、所解问题、差异化和已有账号；每轮只追问一个缺失字段。只从用户原话提炼事实，再给三套定位及机会、风险和推荐理由。",
+    "人设塑造：参考采集表，逐项关注三个性格词、说话风格、讨厌的博主风格、朋友圈或聊天习惯；每轮只追问一个缺失字段。基于已确认经历和价值观给三套可长期坚持的人设，并比较传播优势、风险和表演成本。",
+    "价值主张：参考采集表，逐项关注最想让人记住的一句话、一句话自我介绍、客户或朋友为何追随；每轮只追问一个缺失字段。把优势与受众痛点转成可兑现的价值主张，并说明依据与边界。",
+    "故事资产：参考采集表，逐项关注绝境翻身、踩坑、逆袭、戏剧经历、带团队或项目的真实故事；每轮只追问一个缺失字段。只从用户真实经历提炼故事主线、情绪点、可用场景和待核实缺口。",
+    "内容选题：结合已确认的做 IP 目的、可投入时间、现有产品或服务、三个月与一年目标，以及目标人群高频问题形成选题方向；每轮只追问一个缺失字段，禁止把趋势或流量效果写成事实。",
+    "文案口播：围绕已确认主题、目标人群、身份、传播目标和说话风格，比较共情型、观点型和故事型方案；包含三秒钩子、节奏、字幕点和克制的行动引导，不新增未经确认的人生事实。",
+)
+FOUNDATION_STEP_META = (
+    tuple((title, "fact") for title in (
+        "姓名或昵称", "性别与年龄段", "所在城市", "当前职业或身份", "从业年限", "行业与岗位经历",
+        "主要收入来源", "年收入区间", "最大挫折或低谷", "最有成就感的事", "被夸最多的特点",
+        "被吐槽最多的特点", "最强能力", "IP 赛道", "目标受众", "解决的问题", "差异化", "已有内容账号",
+    )),
+    tuple((title, "fact") for title in ("三个性格词", "说话风格", "讨厌的博主风格", "聊天与朋友圈习惯")),
+    tuple((title, "fact") for title in ("记忆金句", "一句话自我介绍", "追随理由")),
+    tuple((title, "fact") for title in ("绝境翻身", "踩过的大坑", "逆袭或突破", "戏剧性经历", "团队或项目故事")),
 )
 PROJECT_FILE_TYPES = {
     "application/pdf": {"pdf"},
@@ -242,41 +252,42 @@ REPORT_SCHEMA = {
             },
             "required": ["evidence_id", "claim", "source_ref", "source_excerpt"],
         }},
-        "industry_pains": {"type": "array", "maxItems": 6, "items": {
+        "modules": {"type": "array", "minItems": 4, "maxItems": 4, "items": {
             "type": "object", "additionalProperties": False,
             "properties": {
-                "pain": {"type": "string"},
-                "evidence_ids": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
-                "why_it_matters": {"type": "string"},
-                "product_matches": {"type": "array", "maxItems": 4, "items": {
+                "module_id": {"type": "integer", "enum": [1, 2, 3, 4]},
+                "title": {"type": "string"}, "summary": {"type": "string"},
+                "findings": {"type": "array", "maxItems": 10, "items": {
                     "type": "object", "additionalProperties": False,
                     "properties": {
-                        "product_id": {"type": "string", "enum": sorted(PRODUCT_IDS)},
-                        "fit_reason": {"type": "string"},
-                        "execution_steps": {"type": "array", "maxItems": 5, "items": {"type": "string"}},
+                        "kind": {"type": "string", "enum": ["fact", "inference", "option", "recommendation"]},
+                        "title": {"type": "string"}, "detail": {"type": "string"},
+                        "evidence_ids": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "string"}},
+                        "risks": {"type": "array", "maxItems": 6, "items": {"type": "string"}},
                     },
-                    "required": ["product_id", "fit_reason", "execution_steps"],
+                    "required": ["kind", "title", "detail", "evidence_ids", "risks"],
                 }},
             },
-            "required": ["pain", "evidence_ids", "why_it_matters", "product_matches"],
+            "required": ["module_id", "title", "summary", "findings"],
         }},
-        "execution_plan": {"type": "array", "maxItems": 5, "items": {
+        "execution_priorities": {"type": "array", "maxItems": 4, "items": {
             "type": "object", "additionalProperties": False,
             "properties": {
-                "phase": {"type": "string"}, "goal": {"type": "string"},
-                "steps": {"type": "array", "maxItems": 6, "items": {"type": "string"}},
+                "priority": {"type": "string", "enum": ["P0", "P1", "P2", "P3"]},
+                "module_id": {"type": "integer", "enum": [1, 2, 3, 4]},
+                "task": {"type": "string"}, "output": {"type": "string"},
+                "evidence_ids": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "string"}},
             },
-            "required": ["phase", "goal", "steps"],
+            "required": ["priority", "module_id", "task", "output", "evidence_ids"],
         }},
-        "metrics": {"type": "array", "maxItems": 8, "items": {
+        "confirmation_items": {"type": "array", "maxItems": 12, "items": {
             "type": "object", "additionalProperties": False,
             "properties": {
-                "name": {"type": "string"}, "definition": {"type": "string"},
-                "baseline": {"type": "string"}, "target": {"type": "string"},
-                "review_cycle": {"type": "string"},
+                "item": {"type": "string"}, "reason": {"type": "string"},
                 "evidence_ids": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
+                "required": {"type": "boolean"},
             },
-            "required": ["name", "definition", "baseline", "target", "review_cycle", "evidence_ids"],
+            "required": ["item", "reason", "evidence_ids", "required"],
         }},
         "material_gaps": {"type": "array", "maxItems": 12, "items": {
             "type": "object", "additionalProperties": False,
@@ -289,24 +300,25 @@ REPORT_SCHEMA = {
         }},
         "disclaimer": {"type": "string"},
     },
-    "required": ["title", "executive_summary", "evidence", "industry_pains", "execution_plan",
-                 "metrics", "material_gaps", "disclaimer"],
+    "required": ["title", "executive_summary", "evidence", "modules", "execution_priorities",
+                 "confirmation_items", "material_gaps", "disclaimer"],
 }
 
-REPORT_INSTRUCTIONS = """你是黄雀数字化 IP 的产品方案审查员。根据用户已经确认的问卷事实，生成一份可执行但不夸大的经营报告。
+REPORT_INSTRUCTIONS = """你是黄雀数字化 IP 的定位报告审查员。根据用户已经确认的模块 1–4 资料，生成一份可追溯的 IP 人设定位阶段报告。
 
 硬性规则：
 - confirmed_answers 和 confirmed_attachment_evidence 是用户确认过的事实来源；skipped_steps 只代表资料缺口，不能据此推断事实
-- 每条行业痛点和指标必须引用 evidence 中的 evidence_id；evidence.source_ref 必须来自输入的 confirmed_answers 或 confirmed_attachment_evidence
-- evidence.source_excerpt 必须是对应来源中可逐字核对的短摘录，不得改写；附件的文件名和位置由服务端按 source_ref 回填，不得自行声称来源
-- 只能推荐 product_catalog 中直接匹配痛点的产品；没有直接匹配时 product_matches 留空，不得硬推产品
-- 不得发明产品功能、渠道、价格、自动发布能力、客户数据或经营结果
-- target 是待用户确认的规划值，不是效果承诺；缺少基线时明确写“待确认”
-- execution_steps 必须包含用户核对或确认环节；不得自动生成素材、发布、投放、支付或联系第三方
+- evidence.source_ref 必须来自输入来源；source_excerpt 必须是可逐字回查的短摘录，不得改写
+- source_kind=fact 才能支持 kind=fact；preference 只表示用户选择偏好，ai_option 只表示用户阅读过系统备选，二者都不得写成个人经历或业绩事实
+- modules 必须按 1 定位诊断、2 人设塑造、3 价值主张、4 故事资产的顺序各出现一次
+- 每条事实、推断、候选和推荐都必须引用 evidence_id，并用 kind 明确区分；AI 推断和创意备选不得写成用户事实
+- 模块 1 覆盖定位关键词、候选定位、机会和风险；模块 2 覆盖三套人设候选、推荐与表演成本；模块 3 覆盖价值主张、场景口径、自我介绍与兑现边界；模块 4 只基于真实经历形成故事卡、叙事风险和推荐主线
+- execution_priorities 只能给 P0–P3 的下一步任务与预计产出，不得承诺流量、粉丝、成交、营收或经营结果
+- 数字、收入、客户或团队规模、敏感经历、第三方评价和公开范围必须进入 confirmation_items 再由本人确认
 - skipped_steps 必须全部被 material_gaps.source_refs 覆盖，可将同类步骤合并为一个缺口；非跳过型缺口的 source_refs 为空
-- 模块 9–12 尚在开发，不得生成私域矩阵、朋友圈运营、销售策略或公众号变现的 Agent 结论
-- 若没有可信证据，行业痛点和指标数组应为空
-- disclaimer 必须说明报告仅基于用户确认资料、产品可用性以页面实时状态为准、结果不构成经营效果保证
+- 不得生成模块 5–12 的执行结论，不得自动生成素材、发布、投放、支付或联系第三方
+- 若没有可信证据，不得为了凑内容补写；应放入 material_gaps
+- disclaimer 必须说明报告仅基于用户确认资料，AI 推断与创意需本人复核，不构成经营效果保证或公开授权
 """
 
 GUIDE_SCHEMA = {
@@ -328,7 +340,7 @@ GUIDE_SCHEMA = {
         "reply": {"type": "string"},
         "follow_up_questions": {
             "type": "array",
-            "maxItems": 3,
+            "maxItems": 1,
             "items": {"type": "string"},
         },
         "suggested_answer": {"type": "string"},
@@ -383,7 +395,7 @@ INSTRUCTIONS = """你是黄雀数字化 IP 的阶段分析教练，不预设用�
 - 使用简体中文，表达具体、直接、可执行
 """
 
-GUIDE_INSTRUCTIONS = """你是常驻在黄雀 IP 十二模块页面旁边的“小黄雀”，是一名不预设行业的 IP 成长引导助手。
+GUIDE_INSTRUCTIONS = """你是常驻在黄雀 IP 六模块页面旁边的“小黄雀”，是一名不预设行业的 IP 成长引导助手。
 
 你的唯一任务是帮助用户理解当前问题、回忆真实经历、整理当前回答，并告诉用户下一步怎样操作。
 
@@ -392,6 +404,8 @@ GUIDE_INSTRUCTIONS = """你是常驻在黄雀 IP 十二模块页面旁边的“�
 - 不生成完整诊断报告或替用户确定人设；需要诊断时 needs_diagnosis=true，并建议用户主动点击本步诊断
 - 不承诺医疗、流量、成交、营收或粉丝增长，不编造案例、趋势和经营数据
 - 资料不足时明确说明，每次只提出 1 个最有价值的短问题；不索取身份证、联系方式、支付信息等无关敏感资料
+- 当前模块规则列出的采集表字段仅用于判断缺口；一次只能选择其中 1 个最相关的缺失字段提问，禁止一次抛出问卷清单
+- 只判断当前 step 对应的一个字段：信息足够时 follow_up_questions 必须为空，并在 suggested_answer 中给出忠于用户原话的简短记录；信息不足时才追问当前字段，不能提前询问 next_step
 - recommended_actions 最多 2 个，只能从白名单选择；模型只推荐，不能声称已经填入、确认、跳转、扣费、生成或发布
 - reply 不超过 280 个汉字，suggested_answer 不超过 500 个汉字；使用简体中文，温暖、具体、像陪伴用户的小教练
 """
@@ -714,7 +728,7 @@ def _extract_guide_output(response):
         raise DigitalIPError("小黄雀没有返回可用建议，请重试")
     questions = [
         _optional_text(item, 180)
-        for item in (result.get("follow_up_questions") or [])[:3]
+        for item in (result.get("follow_up_questions") or [])[:1]
         if _optional_text(item, 180)
     ]
     actions = []
@@ -941,6 +955,35 @@ def _json_object(value):
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _source_hash(source):
+    return hashlib.sha256(json.dumps(source, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def _foundation_stage(row):
+    report = _json_object(row["state_json"]).get(REPORT_STATE_KEY)
+    if not isinstance(report, dict) or not isinstance(report.get("content"), dict):
+        return {"status": "missing", "report_id": "", "stale": False}
+    if report.get("stage") != FOUNDATION_STAGE:
+        return {
+            "status": "legacy", "report_id": str(report.get("report_id") or ""),
+            "stale": int(row["revision"]) != report.get("project_revision"),
+        }
+    current_hash = _source_hash(_report_source(row))
+    stale = current_hash != report.get("source_hash")
+    return {
+        "status": "stale" if stale else str(report.get("status") or "pending_confirmation"),
+        "report_id": str(report.get("report_id") or ""),
+        "stale": stale,
+        "generated_at": report.get("generated_at"),
+        "confirmed_at": report.get("confirmed_at"),
+    }
+
+
+def _foundation_is_confirmed(row):
+    stage = _foundation_stage(row)
+    return stage["status"] == "confirmed" and not stage["stale"]
+
+
 def _project_public(row):
     state = _json_object(row["state_json"])
     state.pop(REPORT_STATE_KEY, None)
@@ -948,6 +991,7 @@ def _project_public(row):
         "id": row["id"], "title": row["title"], "revision": int(row["revision"]),
         "created_at": int(row["created_at"]), "updated_at": int(row["updated_at"]),
         "state": state,
+        "foundation_stage": _foundation_stage(row),
     }
     analysis = _json_object(row["last_analysis_json"])
     confirmed = _json_object(row["confirmed_json"])
@@ -1174,8 +1218,37 @@ def _patch_project(username, project_id, revision, has_title, has_state, clean_s
         fields.extend(["title=?"]); values.append(_clean_project_title(payload["title"]))
     if has_state:
         previous_state = _json_object(row["state_json"])
+        previous_questionnaire = previous_state.get("questionnaire_state")
+        next_questionnaire = clean_state.get("questionnaire_state")
+        previous_answers = previous_questionnaire.get("answers") if isinstance(previous_questionnaire, dict) else {}
+        next_answers = next_questionnaire.get("answers") if isinstance(next_questionnaire, dict) else {}
+        previous_answers = previous_answers if isinstance(previous_answers, dict) else {}
+        next_answers = next_answers if isinstance(next_answers, dict) else {}
+        migrating_to_interview_v2 = (
+            isinstance(next_questionnaire, dict)
+            and next_questionnaire.get("interviewVersion") == 2
+            and (not isinstance(previous_questionnaire, dict) or previous_questionnaire.get("interviewVersion") != 2)
+            and not any(
+                "%d-%d" % (module_index, step_index) in next_answers
+                for module_index in range(FOUNDATION_MODULES, ACTIVE_PROJECT_MODULES)
+                for step_index in range(PROJECT_MODULE_STEPS[module_index])
+            )
+        )
+        foundation_changed = any(
+            previous_answers.get("%d-%d" % (module_index, step_index)) != next_answers.get("%d-%d" % (module_index, step_index))
+            for module_index, step_count in enumerate(PROJECT_MODULE_STEPS[:FOUNDATION_MODULES])
+            for step_index in range(step_count)
+        )
+        content_changed = any(
+            previous_answers.get("%d-%d" % (module_index, step_index)) != next_answers.get("%d-%d" % (module_index, step_index))
+            for module_index in range(FOUNDATION_MODULES, ACTIVE_PROJECT_MODULES)
+            for step_index in range(PROJECT_MODULE_STEPS[module_index])
+        )
+        if not migrating_to_interview_v2 and content_changed and (foundation_changed or not _foundation_is_confirmed(row)):
+            raise DigitalIPValidationError("请先确认未变更的模块 1–4 阶段报告，再填写模块 5–6")
         managed_report = _json_object(row["state_json"]).get(REPORT_STATE_KEY)
         if isinstance(managed_report, dict):
+            clean_state = dict(clean_state)
             clean_state[REPORT_STATE_KEY] = managed_report
         fields.extend(["state_json=?"]); values.append(_encode_managed_state(clean_state))
         analysis = _json_object(row["last_analysis_json"])
@@ -1364,10 +1437,18 @@ def _project_analysis(clean, username):
     return analysis, str(response.get("model") or MODEL), response.get("usage") or {}
 
 
+def _require_content_unlocked(row, module_index):
+    if isinstance(module_index, bool) or not isinstance(module_index, int) or module_index not in range(ACTIVE_PROJECT_MODULES):
+        raise DigitalIPValidationError("当前模块无效")
+    if module_index >= FOUNDATION_MODULES and not _foundation_is_confirmed(row):
+        raise DigitalIPValidationError("请先生成并确认模块 1–4 阶段报告，再进入模块 5–6")
+
+
 def _analyze_project(username, project_id, clean):
     row = _owned_project(username, project_id)
     if int(row["revision"]) != clean["revision"]:
         raise DigitalIPRevisionConflict("项目已在另一端更新，请刷新后重试")
+    _require_content_unlocked(row, clean["module_index"])
     if _project_state_answer(row, clean["module_index"], clean["step_index"]) != clean["answer"]:
         raise DigitalIPRevisionConflict("当前回答尚未保存或已经变更，请保存后重新分析")
     analysis, model, usage = _project_analysis(clean, username)
@@ -1412,10 +1493,11 @@ def _confirm_project(username, project_id, revision, candidate_index):
         raise DigitalIPRevisionConflict("项目已在另一端更新，请刷新后重试")
     analysis_record = _json_object(row["last_analysis_json"])
     analysis = analysis_record.get("analysis") if isinstance(analysis_record.get("analysis"), dict) else {}
+    analyzed_input = analysis_record.get("input") if isinstance(analysis_record.get("input"), dict) else {}
+    _require_content_unlocked(row, analyzed_input.get("module_index", 0))
     candidates = analysis.get("positioning_candidates") if isinstance(analysis.get("positioning_candidates"), list) else []
     if len(candidates) != 3 or candidate_index >= len(candidates):
         raise DigitalIPValidationError("请先完成一次有效分析，再确认候选")
-    analyzed_input = analysis_record.get("input") if isinstance(analysis_record.get("input"), dict) else {}
     if _project_state_answer(row, analyzed_input.get("module_index"), analyzed_input.get("step_index")) != str(analyzed_input.get("answer") or "").strip():
         raise DigitalIPRevisionConflict("当前回答已经变更，请重新分析后再确认")
     prior_confirmed = _json_object(row["confirmed_json"])
@@ -1459,25 +1541,40 @@ def _report_source(row):
     answers = questionnaire.get("answers")
     answers = answers if isinstance(answers, dict) else {}
     confirmed_answers, skipped_steps, unresolved = [], [], []
-    for module_index, step_count in enumerate(PROJECT_MODULE_STEPS[:ACTIVE_PROJECT_MODULES]):
+    for module_index, step_count in enumerate(PROJECT_MODULE_STEPS[:FOUNDATION_MODULES]):
         for step_index in range(step_count):
             key = "%d-%d" % (module_index, step_index)
             value = answers.get(key)
-            if isinstance(value, dict) and value.get("confirmed") is True:
-                confirmed_answers.append({"source_ref": "answer:%s" % key, "answer": _report_answer_text(value)})
+            answer = _report_answer_text(value)
+            if isinstance(value, dict) and value.get("confirmed") is True and answer:
+                step_title, source_kind = FOUNDATION_STEP_META[module_index][step_index]
+                confirmed_answers.append({
+                    "source_ref": "answer:%s" % key,
+                    "module_id": module_index + 1,
+                    "module_name": ACTIVE_MODULE_NAMES[module_index],
+                    "step_index": step_index + 1,
+                    "step_title": step_title,
+                    "source_kind": source_kind,
+                    "answer": answer,
+                })
             elif isinstance(value, dict) and value.get("skipped") is True:
                 skipped_steps.append("answer:%s" % key)
             else:
                 unresolved.append("answer:%s" % key)
     confirmed = _json_object(row["confirmed_json"])
     attachment_evidence = confirmed.get("attachment_evidence") if isinstance(confirmed.get("attachment_evidence"), list) else []
+    attachment_evidence = [
+        item for item in attachment_evidence
+        if _attachment_evidence_source_key(item)
+        and int(_attachment_evidence_source_key(item).split("-", 1)[0]) < FOUNDATION_MODULES
+    ]
     return {
         "confirmed_answers": confirmed_answers,
         "confirmed_attachment_evidence": attachment_evidence,
         "skipped_steps": skipped_steps,
         "unresolved_steps": unresolved,
         "progress": {
-            "total": sum(PROJECT_MODULE_STEPS[:ACTIVE_PROJECT_MODULES]),
+            "total": sum(PROJECT_MODULE_STEPS[:FOUNDATION_MODULES]),
             "confirmed": len(confirmed_answers),
             "skipped": len(skipped_steps),
             "unresolved": len(unresolved),
@@ -1489,10 +1586,11 @@ def _validate_report(report, source):
     if not isinstance(report, dict):
         raise DigitalIPError("AI 返回的报告格式异常，请重试")
     evidence = report.get("evidence")
-    pains = report.get("industry_pains")
-    metrics = report.get("metrics")
+    modules = report.get("modules")
+    priorities = report.get("execution_priorities")
+    confirmation_items = report.get("confirmation_items")
     gaps = report.get("material_gaps")
-    if not isinstance(evidence, list) or not isinstance(pains, list) or not isinstance(metrics, list) or not isinstance(gaps, list):
+    if not all(isinstance(value, list) for value in (evidence, modules, priorities, confirmation_items, gaps)):
         raise DigitalIPError("AI 返回的报告格式异常，请重试")
     source_texts = {
         item["source_ref"]: " ".join(item["answer"].split())
@@ -1506,7 +1604,8 @@ def _validate_report(report, source):
     source_display = {
         item["source_ref"]: {
             "source_name": "已确认问卷回答",
-            "source_location": "问卷步骤 %s" % item["source_ref"].removeprefix("answer:"),
+            "source_location": "模块 %s · %s" % (item.get("module_id"), item.get("step_title")),
+            "source_kind": item.get("source_kind") or "fact",
         }
         for item in source["confirmed_answers"] if item.get("source_ref")
     }
@@ -1514,11 +1613,12 @@ def _validate_report(report, source):
         str(item["source_ref"]): {
             "source_name": str(item.get("file_name") or "已确认附件"),
             "source_location": str(item.get("location") or "未定位"),
+            "source_kind": "fact",
         }
         for item in source.get("confirmed_attachment_evidence", [])
         if isinstance(item, dict) and item.get("source_ref")
     })
-    evidence_ids = set()
+    evidence_ids, evidence_kinds = set(), {}
     for item in evidence:
         if not isinstance(item, dict):
             raise DigitalIPError("AI 返回的报告证据格式异常，请重试")
@@ -1531,19 +1631,28 @@ def _validate_report(report, source):
             raise DigitalIPError("AI 返回的报告引用与已确认资料不一致，请重试")
         item.update(source_display[source_ref])
         evidence_ids.add(evidence_id)
-    for item in pains:
-        refs = item.get("evidence_ids") if isinstance(item, dict) else None
-        matches = item.get("product_matches") if isinstance(item, dict) else None
-        if not isinstance(refs, list) or not refs or not set(refs).issubset(evidence_ids) or not isinstance(matches, list):
-            raise DigitalIPError("AI 返回的行业痛点缺少有效证据，请重试")
-        for match in matches:
-            steps = match.get("execution_steps") if isinstance(match, dict) else None
-            if not isinstance(match, dict) or match.get("product_id") not in PRODUCT_IDS or not isinstance(steps, list) or not steps:
-                raise DigitalIPError("AI 返回了未受控的产品建议，请重试")
-    for item in metrics:
+        evidence_kinds[evidence_id] = source_display[source_ref]["source_kind"]
+    module_ids = [item.get("module_id") for item in modules if isinstance(item, dict)]
+    if module_ids != [1, 2, 3, 4]:
+        raise DigitalIPError("AI 返回的报告模块不完整，请重试")
+    for module in modules:
+        findings = module.get("findings")
+        if not isinstance(findings, list):
+            raise DigitalIPError("AI 返回的报告模块格式异常，请重试")
+        for finding in findings:
+            refs = finding.get("evidence_ids") if isinstance(finding, dict) else None
+            if not isinstance(refs, list) or not refs or not set(refs).issubset(evidence_ids):
+                raise DigitalIPError("AI 返回的报告结论缺少有效证据，请重试")
+            if finding.get("kind") == "fact" and any(evidence_kinds[ref] != "fact" for ref in refs):
+                raise DigitalIPError("AI 把用户偏好或系统备选误写成了事实，请重试")
+    for item in priorities:
         refs = item.get("evidence_ids") if isinstance(item, dict) else None
         if not isinstance(refs, list) or not refs or not set(refs).issubset(evidence_ids):
-            raise DigitalIPError("AI 返回的指标缺少有效证据，请重试")
+            raise DigitalIPError("AI 返回的执行建议缺少有效证据，请重试")
+    for item in confirmation_items:
+        refs = item.get("evidence_ids") if isinstance(item, dict) else None
+        if not isinstance(refs, list) or not set(refs).issubset(evidence_ids):
+            raise DigitalIPError("AI 返回的待确认项缺少有效证据，请重试")
     skipped_refs = set(source["skipped_steps"])
     covered_skips = set()
     for item in gaps:
@@ -1565,8 +1674,7 @@ def _generate_report_content(source, username, project_title):
         "confirmed_answers": source["confirmed_answers"],
         "confirmed_attachment_evidence": source.get("confirmed_attachment_evidence", []),
         "skipped_steps": source["skipped_steps"],
-        "coming_soon_modules": ["私域矩阵", "朋友圈运营", "销售策略", "公众号变现"],
-        "product_catalog": list(PRODUCT_CATALOG),
+        "coming_soon_modules": ["IP 形象设计", "脚本分镜", "私域矩阵", "朋友圈运营", "销售策略", "公众号变现"],
     }
     request = {
         "model": MODEL,
@@ -1574,7 +1682,7 @@ def _generate_report_content(source, username, project_title):
         "input": [{"role": "user", "content": [{"type": "input_text", "text": json.dumps(prompt, ensure_ascii=False)}]}],
         "reasoning": {"effort": REASONING_EFFORT},
         "text": {"verbosity": "low", "format": {
-            "type": "json_schema", "name": "digital_ip_product_report",
+            "type": "json_schema", "name": "digital_ip_foundation_report",
             "strict": True, "schema": REPORT_SCHEMA,
         }},
         "max_output_tokens": 30000,
@@ -1605,16 +1713,20 @@ def _generate_report(username, project_id, revision):
         raise DigitalIPRevisionConflict("项目已在另一端更新，请刷新后重试")
     source = _report_source(row)
     if source["unresolved_steps"]:
-        raise DigitalIPValidationError("请先完成或跳过当前开放的 34 步，再生成产品报告")
+        raise DigitalIPValidationError("请先完成或跳过模块 1–4 的采访问题，再生成阶段报告")
     report, model, usage, _ = _generate_report_content(source, username, row["title"])
-    source_hash = hashlib.sha256(json.dumps(source, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    source_hash = _source_hash(source)
     now = int(time.time())
     envelope = {
+        "stage": FOUNDATION_STAGE,
+        "status": "pending_confirmation",
         "report_id": uuid.uuid4().hex,
         "source_revision": revision,
         "project_revision": revision + 1,
         "source_hash": source_hash,
+        "confirmed_source_hash": "",
         "generated_at": now,
+        "confirmed_at": None,
         "model": model,
         "usage": usage,
         "progress": source["progress"],
@@ -1658,11 +1770,56 @@ def get_report(username, project_id):
     public_report = dict(report)
     public_report.pop("model", None)
     public_report["pdf_url"] = "/api/gen/digital-ip/projects/%s/report.pdf" % project_id
+    stage_status = _foundation_stage(row)
     return {
         "project": {"id": row["id"], "title": row["title"], "revision": int(row["revision"])},
         "report": public_report,
-        "stale": int(row["revision"]) != report.get("project_revision"),
+        "stage_status": stage_status,
+        "stale": stage_status["stale"],
     }
+
+
+def confirm_report(username, project_id, payload):
+    if not isinstance(payload, dict):
+        raise DigitalIPValidationError("请求体必须是 JSON 对象")
+    revision = _revision(payload.get("revision"))
+    report_id = str(payload.get("report_id") or "").strip()
+    if not report_id or len(report_id) > 64:
+        raise DigitalIPValidationError("report_id 无效")
+    return _run_project_mutation(
+        username, project_id,
+        lambda: _confirm_report(username, project_id, revision, report_id),
+    )
+
+
+def _confirm_report(username, project_id, revision, report_id):
+    row = _owned_project(username, project_id)
+    if int(row["revision"]) != revision:
+        raise DigitalIPRevisionConflict("项目已在另一端更新，请刷新后重试")
+    state = _json_object(row["state_json"])
+    report = state.get(REPORT_STATE_KEY)
+    if not isinstance(report, dict) or report.get("stage") != FOUNDATION_STAGE:
+        raise DigitalIPValidationError("请先重新生成模块 1–4 阶段报告")
+    if report.get("report_id") != report_id:
+        raise DigitalIPRevisionConflict("阶段报告已经更新，请刷新后重试")
+    source_hash = _source_hash(_report_source(row))
+    if report.get("source_hash") != source_hash:
+        raise DigitalIPRevisionConflict("模块 1–4 资料已经变化，请重新生成报告")
+    if report.get("status") == "confirmed" and report.get("confirmed_source_hash") == source_hash:
+        return {"ok": True, "project": _project_public(row)}
+    now = int(time.time())
+    report.update(status="confirmed", confirmed_source_hash=source_hash, confirmed_at=now, project_revision=revision + 1)
+    state[REPORT_STATE_KEY] = report
+    with closing(_project_db()) as conn:
+        cursor = conn.execute(
+            "UPDATE digital_ip_projects SET state_json=?, revision=revision+1, updated_at=? WHERE id=? AND username=? AND revision=?",
+            (_encode_managed_state(state), now, project_id, username, revision),
+        )
+        conn.commit()
+        if cursor.rowcount != 1:
+            raise DigitalIPRevisionConflict("项目已在另一端更新，请刷新后重试")
+        updated = conn.execute("SELECT * FROM digital_ip_projects WHERE id=? AND username=?", (project_id, username)).fetchone()
+    return {"ok": True, "project": _project_public(updated)}
 
 
 def export_report_pdf(username, project_id):
@@ -1787,6 +1944,8 @@ def dispatch_http(handler, method, verify_token, must_change_password):
                 _send_membership_required(handler)
             else:
                 handler._send(200, generate_report(user["username"], project_id, body))
+        elif action == "report-confirm":
+            handler._send(200, confirm_report(user["username"], project_id, body))
         else:
             handler._send(404, {"detail": "not found"})
     except ValueError as exc:

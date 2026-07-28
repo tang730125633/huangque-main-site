@@ -59,7 +59,7 @@ def _browser_path():
     return next((item for item in candidates if item and pathlib.Path(item).is_file()), "")
 
 
-def build_report_html(payload):
+def _build_legacy_report_html(payload):
     project = payload.get("project") if isinstance(payload, dict) else {}
     envelope = payload.get("report") if isinstance(payload, dict) else {}
     content = envelope.get("content") if isinstance(envelope, dict) else {}
@@ -154,6 +154,101 @@ def build_report_html(payload):
         "".join(pain_html) or "<p class='empty'>资料不足时不会为了推荐而推荐。</p>",
         execution_html, metrics_html, gaps_html, disclaimer,
     )
+
+
+def _foundation_cards(items):
+    cards = []
+    labels = {"fact": "事实", "inference": "AI 判断", "option": "备选", "recommendation": "推荐"}
+    for item in _list(items):
+        if not isinstance(item, dict):
+            continue
+        refs = "、".join(_escape(ref) for ref in _list(item.get("evidence_ids")))
+        risks = _bullets(item.get("risks"))
+        cards.append(
+            "<article class='finding'><h3><span class='kind'>%s</span>%s</h3><p>%s</p>%s%s</article>" % (
+                _escape(labels.get(item.get("kind"), "待核对")), _escape(item.get("title")),
+                _escape(item.get("detail")),
+                "<p class='source'>依据：%s</p>" % refs if refs else "",
+                risks,
+            )
+        )
+    return "".join(cards) or "<p class='empty'>该模块暂无可引用结论。</p>"
+
+
+def _build_foundation_report_html(payload):
+    project = payload.get("project") if isinstance(payload, dict) else {}
+    envelope = payload.get("report") if isinstance(payload, dict) else {}
+    project = project if isinstance(project, dict) else {}
+    envelope = envelope if isinstance(envelope, dict) else {}
+    content = envelope.get("content") if isinstance(envelope.get("content"), dict) else {}
+    progress = envelope.get("progress") if isinstance(envelope.get("progress"), dict) else {}
+    generated_at = envelope.get("generated_at")
+    try:
+        generated_text = time.strftime("%Y-%m-%d %H:%M", time.localtime(int(generated_at)))
+    except (TypeError, ValueError, OSError):
+        generated_text = "未记录"
+
+    evidence_html = "".join(
+        "<article class='evidence'><h3><span class='evidence-id'>%s</span>%s</h3><blockquote>“%s”</blockquote><p class='source'>来源：%s</p></article>" % (
+            _escape(item.get("evidence_id"), "证据"), _escape(item.get("claim")), _escape(item.get("source_excerpt")),
+            _escape("%s · %s" % (item.get("source_name"), item.get("source_location"))
+                    if item.get("source_name") and item.get("source_location") else item.get("source_ref")),
+        )
+        for item in _list(content.get("evidence")) if isinstance(item, dict)
+    ) or "<p class='empty'>暂无可追溯证据。</p>"
+    module_html = []
+    for index, module in enumerate(sorted(
+            (item for item in _list(content.get("modules")) if isinstance(item, dict)),
+            key=lambda item: item.get("module_id", 0))):
+        module_number = ("一", "二", "三", "四")[index] if index < 4 else str(index + 1)
+        module_html.append("<section class='section module'><div class='section-head'><h2>模块%s｜%s</h2><p class='lead'>%s</p></div><div>%s</div></section>" % (
+            module_number, _escape(module.get("title"), "模块 %s" % (index + 1)),
+            _escape(module.get("summary"), "待本人复核的阶段判断。"), _foundation_cards(module.get("findings")),
+        ))
+    priority_rows = "".join(
+        "<tr><td>%s</td><td>模块 %s</td><td>%s<small>依据：%s</small></td><td>%s</td></tr>" % (
+            _escape(item.get("priority")), _escape(item.get("module_id"), "-"), _escape(item.get("task")),
+            _escape("、".join(str(ref) for ref in _list(item.get("evidence_ids"))), "待补"),
+            _escape(item.get("output")),
+        ) for item in _list(content.get("execution_priorities")) if isinstance(item, dict)
+    )
+    priorities_html = (
+        "<table><thead><tr><th>优先级</th><th>模块</th><th>关键任务</th><th>预计产出</th></tr></thead>"
+        "<tbody>%s</tbody></table>" % priority_rows if priority_rows else "<p class='empty'>暂无下一步优先级。</p>"
+    )
+    confirmations_html = "".join(
+        "<article class='finding'><h3><span class='kind'>%s</span>%s</h3><p>%s</p><p class='source'>依据：%s</p></article>" % (
+            "必须确认" if item.get("required") else "建议确认", _escape(item.get("item")), _escape(item.get("reason")),
+            _escape("、".join(str(ref) for ref in _list(item.get("evidence_ids")))),
+        ) for item in _list(content.get("confirmation_items")) if isinstance(item, dict)
+    ) or "<p class='empty'>报告未列出额外确认项。</p>"
+    gaps_html = "".join(
+        "<article class='finding'><h3><span class='kind %s'>%s</span>%s</h3><p>%s</p><p class='source'>补充方式：%s</p></article>" % (
+            "danger" if item.get("blocking") else "", "阻塞项" if item.get("blocking") else "可后补",
+            _escape(item.get("gap")), _escape(item.get("why_needed")), _escape(item.get("how_to_collect")),
+        ) for item in _list(content.get("material_gaps")) if isinstance(item, dict)
+    ) or "<p class='empty'>报告未识别到额外资料缺口。</p>"
+    stale = "<div class='stale'>模块 1–4 资料已变化；本 PDF 是历史报告快照。</div>" if payload.get("stale") else ""
+    status = "已确认 IP 底座" if envelope.get("status") == "confirmed" else "待本人确认"
+    meta = "确认 %s · 跳过 %s · 共 %s · %s" % (
+        int(progress.get("confirmed") or 0), int(progress.get("skipped") or 0), int(progress.get("total") or 30), status,
+    )
+    return """<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><style>
+@page{size:A4;margin:18mm 18mm 20mm;@top-left{content:"IP 人设定位｜模块 1–4";color:#7a818b;font-size:8pt}@top-right{content:"黄雀";color:#7a818b;font-size:8pt}@bottom-left{content:"";border-top:1.5px solid #173d78}@bottom-center{content:"";border-top:1.5px solid #173d78}@bottom-right{content:counter(page) "/" counter(pages);border-top:1.5px solid #173d78;color:#202631;font-size:8pt;padding-top:2mm}}*{box-sizing:border-box}html,body{margin:0;padding:0;background:#fff;color:#414750;font-family:'Noto Sans SC','WenQuanYi Zen Hei','PingFang SC','Microsoft YaHei',sans-serif;font-size:10.5pt;line-height:1.75;-webkit-print-color-adjust:exact;print-color-adjust:exact}.report-head{padding:2mm 0 8mm;border-bottom:3px solid #e2e5e9}.report-head h1{margin:0 0 3mm;color:#202631;font-size:22pt;line-height:1.35}.summary{margin:0 0 5mm;color:#687280;font-size:11.5pt}.meta{border-left:3px solid #e2e5e9;padding-left:4mm;color:#707987;font-size:9.5pt}.meta p{margin:1mm 0}.stale{margin:5mm 0 0;border-left:3px solid #8b6a2f;padding:2mm 4mm;color:#705829;background:#faf7ed}.section{padding:8mm 0 7mm;border-bottom:3px solid #e2e5e9}.section-head{margin-bottom:4mm;break-inside:avoid-page;break-after:avoid-page;page-break-inside:avoid;page-break-after:avoid}.section-head+div>:first-child{break-before:avoid-page;page-break-before:avoid}.section h2{margin:0;color:#202631;font-size:17pt;line-height:1.35}.lead{margin:1mm 0 0;color:#707987}.finding,.evidence{break-inside:avoid;padding:3mm 0;border-bottom:1px solid #e2e5e9}.finding:last-child,.evidence:last-child{border-bottom:0}.finding h3,.evidence h3{margin:0 0 1mm;color:#282e38;font-size:11.5pt}.finding p,.evidence p{margin:1mm 0}.kind,.evidence-id{display:inline-block;margin-right:2mm;color:#173d78;font-size:8.5pt;font-weight:700;vertical-align:1px}.kind.danger{color:#9b3028}blockquote{margin:2mm 0;padding:1.5mm 0 1.5mm 4mm;border-left:3px solid #e2e5e9;color:#687280}.source{color:#77818e!important;font-size:8.5pt!important}ul{margin:1.5mm 0 0;padding-left:6mm}.empty{margin:2mm 0;color:#77818e}table{width:100%%;border-collapse:collapse;break-inside:avoid;font-size:9.5pt}th,td{border:1px solid #d9e3f4;padding:2.6mm 3mm;text-align:left;vertical-align:top}th{background:#eef3fd;color:#39414c;font-weight:700}td small{display:block;margin-top:1mm;color:#77818e}.disclaimer{break-inside:avoid;border-left:3px solid #e2e5e9;padding:2mm 4mm;color:#687280}.document-status{margin-top:6mm;font-weight:700;color:#4a515c}
+</style></head><body><main><header class='report-head'><h1>%s</h1><p class='summary'>%s</p><div class='meta'><p>项目：%s</p><p>整理日期：%s</p><p>资料进度：%s</p></div>%s</header><section class='section evidence-section'><div class='section-head'><h2>资料依据</h2><p class='lead'>只引用已经确认的回答或资料证据。</p></div>%s</section>%s<section class='section'><div class='section-head'><h2>执行优先级建议</h2><p class='lead'>P0–P3 是待确认的工作顺序，不代表效果承诺。</p></div>%s</section><section class='section'><div class='section-head'><h2>待确认事项</h2><p class='lead'>确认后才可进入模块 5–6。</p></div>%s</section><section class='section'><div class='section-head'><h2>资料缺口</h2></div>%s</section><section class='section'><div class='section-head'><h2>使用边界</h2></div><div class='disclaimer'>%s</div><p class='document-status'>文档状态：模块 1–4 初稿完成，待本人确认后进入模块 5–6 执行。</p></section></main></body></html>""" % (
+        _escape(content.get("title"), "IP 人设定位｜模块 1–4"),
+        _escape(content.get("executive_summary"), "暂无摘要。"),
+        _escape(project.get("title"), "我的数字化 IP"), _escape(generated_text), _escape(meta), stale,
+        evidence_html, "".join(module_html), priorities_html, confirmations_html, gaps_html,
+        _escape(content.get("disclaimer"), "报告仅基于用户确认资料，不构成经营效果保证。"),
+    )
+
+
+def build_report_html(payload):
+    envelope = payload.get("report") if isinstance(payload, dict) else {}
+    if isinstance(envelope, dict) and envelope.get("stage") == "foundation_v1":
+        return _build_foundation_report_html(payload)
+    return _build_legacy_report_html(payload)
 
 
 def render_report_pdf(payload, browser="", timeout=45):

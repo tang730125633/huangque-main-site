@@ -20,7 +20,7 @@ from content_domains import digital_ip
 def _complete_state():
     answers = {}
     for module_index, step_count in enumerate(
-            digital_ip.PROJECT_MODULE_STEPS[:digital_ip.ACTIVE_PROJECT_MODULES]):
+            digital_ip.PROJECT_MODULE_STEPS[:digital_ip.FOUNDATION_MODULES]):
         for step_index in range(step_count):
             answers["%d-%d" % (module_index, step_index)] = {
                 "text": "获客成本高，老客复购下降" if (module_index, step_index) == (0, 0) else "",
@@ -30,47 +30,43 @@ def _complete_state():
     return {"questionnaire_state": {"answers": answers, "profile": {"定位": "真实门店经营者"}}}
 
 
-def _report(product_id="script_studio"):
+def _report():
     return {
-        "title": "美业数字化 IP 产品方案",
-        "executive_summary": "先以真实经营问题建立内容可信度，再验证复购改善路径。",
+        "title": "美业 IP 人设定位阶段报告",
+        "executive_summary": "先以真实经营问题建立可信定位，再补齐人设与故事事实。",
         "evidence": [{
             "evidence_id": "E1",
             "claim": "门店面临获客与复购压力",
             "source_ref": "answer:0-0",
             "source_excerpt": "获客成本高，老客复购下降",
         }],
-        "industry_pains": [{
-            "pain": "获客与复购不稳定",
-            "evidence_ids": ["E1"],
-            "why_it_matters": "内容需先回应真实经营问题。",
-            "product_matches": [{
-                "product_id": product_id,
-                "fit_reason": "可先把已确认问题整理为可拍脚本。",
-                "execution_steps": ["核对事实边界", "生成脚本候选", "用户审阅后再拍摄"],
-            }],
+        "modules": [
+            {
+                "module_id": module_id, "title": title, "summary": "只写已确认事实与待验证建议。",
+                "findings": ([{
+                    "kind": "fact", "title": "真实经营问题",
+                    "detail": "获客成本高，老客复购下降。", "evidence_ids": ["E1"], "risks": [],
+                }] if module_id == 1 else []),
+            }
+            for module_id, title in enumerate(("定位诊断", "人设塑造", "价值主张", "故事资产"), 1)
+        ],
+        "execution_priorities": [{
+            "priority": "P0", "module_id": 1, "task": "核对定位事实",
+            "output": "一版可确认定位", "evidence_ids": ["E1"],
         }],
-        "execution_plan": [{
-            "phase": "第一阶段", "goal": "验证内容方向",
-            "steps": ["整理事实", "生成脚本候选", "人工确认"],
-        }],
-        "metrics": [{
-            "name": "内容咨询率", "definition": "内容带来的有效咨询数/内容触达数",
-            "baseline": "待确认", "target": "由用户完成首轮记录后确认",
-            "review_cycle": "每周", "evidence_ids": ["E1"],
-        }],
+        "confirmation_items": [],
         "material_gaps": [{
-            "gap": "其余 33 步未提供资料", "why_needed": "限制更细的产品匹配",
+            "gap": "其余采访问题未提供资料", "why_needed": "限制完整人设定位",
             "how_to_collect": "回到项目补充被跳过步骤", "blocking": False,
             "source_refs": [
                 "answer:%d-%d" % (module_index, step_index)
                 for module_index, step_count in enumerate(
-                    digital_ip.PROJECT_MODULE_STEPS[:digital_ip.ACTIVE_PROJECT_MODULES])
+                    digital_ip.PROJECT_MODULE_STEPS[:digital_ip.FOUNDATION_MODULES])
                 for step_index in range(step_count)
                 if (module_index, step_index) != (0, 0)
             ],
         }],
-        "disclaimer": "仅基于用户确认资料；产品可用性以页面实时状态为准，不保证经营结果。",
+        "disclaimer": "仅基于用户确认资料；AI 推断需本人复核，不保证经营结果。",
     }
 
 
@@ -99,12 +95,12 @@ class DigitalIPReportTests(unittest.TestCase):
             "revision": project["revision"], "state": _complete_state(),
         })
 
-    def test_requires_all_34_open_steps_before_paid_model_call(self):
+    def test_requires_all_foundation_questions_before_paid_model_call(self):
         with tempfile.TemporaryDirectory() as directory, \
                 mock.patch.object(digital_ip, "PROJECT_DB", Path(directory) / "ip.db"):
             project = digital_ip.create_project("owner", {})
             with mock.patch.object(digital_ip, "_post") as post, \
-                    self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "开放的 34 步"):
+                    self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "模块 1–4 的采访问题"):
                 digital_ip.generate_report("owner", project["id"], {"revision": project["revision"], "consent": True})
             post.assert_not_called()
             self.assertEqual(digital_ip.get_project("owner", project["id"])["revision"], project["revision"])
@@ -139,12 +135,18 @@ class DigitalIPReportTests(unittest.TestCase):
             self.assertTrue(captured["body"]["text"]["format"]["strict"])
             self.assertEqual(captured["body"]["text"]["format"]["type"], "json_schema")
             prompt = json.loads(captured["body"]["input"][0]["content"][0]["text"])
-            self.assertEqual(prompt["confirmed_answers"], [{"source_ref": "answer:0-0", "answer": "获客成本高，老客复购下降"}])
-            self.assertEqual(len(prompt["skipped_steps"]), 33)
-            self.assertEqual({item["id"] for item in prompt["product_catalog"]}, digital_ip.PRODUCT_IDS)
+            self.assertEqual(prompt["confirmed_answers"], [{
+                "source_ref": "answer:0-0", "module_id": 1, "module_name": "定位诊断",
+                "step_index": 1, "step_title": "姓名或昵称", "source_kind": "fact",
+                "answer": "获客成本高，老客复购下降",
+            }])
+            self.assertEqual(len(prompt["skipped_steps"]), 29)
+            self.assertNotIn("product_catalog", prompt)
             self.assertFalse(result["stale"])
             self.assertNotIn("model", result["report"])
-            self.assertEqual(result["report"]["progress"], {"total": 34, "confirmed": 1, "skipped": 33, "unresolved": 0})
+            self.assertEqual(result["report"]["stage"], digital_ip.FOUNDATION_STAGE)
+            self.assertEqual(result["report"]["status"], "pending_confirmation")
+            self.assertEqual(result["report"]["progress"], {"total": 30, "confirmed": 1, "skipped": 29, "unresolved": 0})
             loaded_report = digital_ip.get_report("owner", project["id"])["report"]
             self.assertNotIn("model", loaded_report)
             self.assertEqual(loaded_report["report_id"], result["report"]["report_id"])
@@ -160,8 +162,9 @@ class DigitalIPReportTests(unittest.TestCase):
             with self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "只允许问卷草稿字段"):
                 digital_ip._clean_state({digital_ip.REPORT_STATE_KEY: {"forged": True}})
 
-    def test_provider_failure_and_invalid_product_do_not_persist(self):
-        invalid = _report(product_id="invented_product")
+    def test_provider_failure_and_untraceable_finding_do_not_persist(self):
+        invalid = _report()
+        invalid["modules"][0]["findings"][0]["evidence_ids"] = ["E404"]
         for response in ({"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}}, _response(invalid)):
             with self.subTest(response=response.get("status", "completed")), tempfile.TemporaryDirectory() as directory, \
                     mock.patch.object(digital_ip, "PROJECT_DB", Path(directory) / "ip.db"):
@@ -305,7 +308,7 @@ class DigitalIPReportTests(unittest.TestCase):
             "location": "第 2 页", "claim": "附件中有复购数据", "evidence": "复购率 35%",
         }])
         self.assertEqual(result["report"]["content"]["evidence"][0]["source_name"], "已确认问卷回答")
-        self.assertEqual(result["report"]["content"]["evidence"][0]["source_location"], "问卷步骤 0-0")
+        self.assertEqual(result["report"]["content"]["evidence"][0]["source_location"], "模块 1 · 姓名或昵称")
         self.assertEqual(result["report"]["content"]["evidence"][1]["source_name"], attachment)
         self.assertEqual(result["report"]["content"]["evidence"][1]["source_location"], "第 2 页")
         changed_prompt = json.loads(captured[1]["body"]["input"][0]["content"][0]["text"])
@@ -346,6 +349,136 @@ class DigitalIPReportTests(unittest.TestCase):
             self.assertEqual(current["title"], "另一端更新")
             with self.assertRaises(digital_ip.DigitalIPNotFound):
                 digital_ip.get_report("owner", project["id"])
+
+    def test_report_confirmation_is_the_only_gate_for_modules_five_and_six(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(digital_ip, "PROJECT_DB", Path(directory) / "ip.db"), \
+                mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), \
+                mock.patch.object(digital_ip, "_post", return_value=_response()):
+            project = self._project()
+            generated = digital_ip.generate_report(
+                "owner", project["id"], {"revision": project["revision"], "consent": True},
+            )
+            pending_state = json.loads(json.dumps(generated["project"]["state"], ensure_ascii=False))
+            pending_state["questionnaire_state"]["answers"]["4-0"] = {"text": "客户最近总问怎么获客"}
+            with self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "确认未变更"):
+                digital_ip.patch_project("owner", project["id"], {
+                    "revision": generated["project"]["revision"], "state": pending_state,
+                })
+            with self.assertRaises(digital_ip.DigitalIPRevisionConflict):
+                digital_ip.confirm_report("owner", project["id"], {
+                    "revision": generated["project"]["revision"], "report_id": "wrong-report",
+                })
+            confirmed = digital_ip.confirm_report("owner", project["id"], {
+                "revision": generated["project"]["revision"],
+                "report_id": generated["report"]["report_id"],
+            })["project"]
+            self.assertEqual(confirmed["foundation_stage"]["status"], "confirmed")
+
+            content_state = json.loads(json.dumps(confirmed["state"], ensure_ascii=False))
+            content_state["questionnaire_state"]["answers"]["4-0"] = {"text": "客户最近总问怎么获客"}
+            content_project = digital_ip.patch_project("owner", project["id"], {
+                "revision": confirmed["revision"], "state": content_state,
+            })
+            self.assertFalse(digital_ip.get_report("owner", project["id"])["stale"])
+            analysis = {"positioning_candidates": [{"title": "A"}, {"title": "B"}, {"title": "C"}]}
+            with mock.patch.object(digital_ip, "_project_analysis", return_value=(analysis, "test", {})):
+                analyzed = digital_ip.analyze_project("owner", project["id"], {
+                    "revision": content_project["revision"], "module_index": 4, "step_index": 0,
+                    "answer": "客户最近总问怎么获客", "consent": True,
+                })
+            accepted = digital_ip.confirm_project("owner", project["id"], {
+                "revision": analyzed["project"]["revision"], "candidate_index": 0,
+            })["project"]
+            self.assertEqual(accepted["status"], "confirmed")
+
+            changed_foundation = json.loads(json.dumps(accepted["state"], ensure_ascii=False))
+            changed_foundation["questionnaire_state"]["answers"]["0-0"]["text"] = "已更新的经营事实"
+            stale = digital_ip.patch_project("owner", project["id"], {
+                "revision": accepted["revision"], "state": changed_foundation,
+            })
+            self.assertEqual(stale["foundation_stage"]["status"], "stale")
+            changed_foundation["questionnaire_state"]["answers"]["4-1"] = {"text": "不应绕过"}
+            with self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "确认未变更"):
+                digital_ip.patch_project("owner", project["id"], {
+                    "revision": stale["revision"], "state": changed_foundation,
+                })
+
+    def test_legacy_report_does_not_unlock_content_modules(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(digital_ip, "PROJECT_DB", Path(directory) / "ip.db"):
+            project = self._project()
+            state = project["state"]
+            state[digital_ip.REPORT_STATE_KEY] = {
+                "report_id": "legacy", "project_revision": project["revision"], "content": _report(),
+            }
+            with closing(digital_ip._project_db()) as conn:
+                conn.execute(
+                    "UPDATE digital_ip_projects SET state_json=? WHERE id=?",
+                    (json.dumps(state, ensure_ascii=False), project["id"]),
+                )
+                conn.commit()
+            loaded = digital_ip.get_project("owner", project["id"])
+            self.assertEqual(loaded["foundation_stage"]["status"], "legacy")
+            loaded["state"]["questionnaire_state"]["answers"]["5-0"] = {"text": "不能填写"}
+            with self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "确认未变更"):
+                digital_ip.patch_project("owner", project["id"], {
+                    "revision": loaded["revision"], "state": loaded["state"],
+                })
+
+    def test_legacy_questionnaire_can_migrate_without_unlocking_content_modules(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(digital_ip, "PROJECT_DB", Path(directory) / "ip.db"):
+            project = digital_ip.create_project("owner", {})
+            legacy_state = {"questionnaire_state": {"answers": {"4-0": {"text": "旧版内容"}}}}
+            with closing(digital_ip._project_db()) as conn:
+                conn.execute(
+                    "UPDATE digital_ip_projects SET state_json=? WHERE id=? AND username=?",
+                    (json.dumps(legacy_state, ensure_ascii=False), project["id"], "owner"),
+                )
+                conn.commit()
+            current = digital_ip.get_project("owner", project["id"])
+            forged_migration = {"questionnaire_state": {
+                "interviewVersion": 2, "answers": {"4-0": {"text": "试图绕过关卡"}},
+            }}
+            with self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "确认未变更"):
+                digital_ip.patch_project("owner", project["id"], {
+                    "revision": current["revision"], "state": forged_migration,
+                })
+            migrated = digital_ip.patch_project("owner", project["id"], {
+                "revision": current["revision"],
+                "state": {"questionnaire_state": {
+                    "interviewVersion": 2, "moduleIndex": 0, "stepIndex": 0,
+                    "answers": {"0-0": {"text": "唐老师", "confirmed": True}},
+                    "completedModules": [], "profile": {}, "guideTurns": [],
+                }},
+            })
+            questionnaire = migrated["state"]["questionnaire_state"]
+            self.assertEqual(questionnaire["interviewVersion"], 2)
+            self.assertNotIn("4-0", questionnaire["answers"])
+            blocked = json.loads(json.dumps(migrated["state"], ensure_ascii=False))
+            blocked["questionnaire_state"]["answers"]["4-0"] = {"text": "新版内容"}
+            with self.assertRaisesRegex(digital_ip.DigitalIPValidationError, "确认未变更"):
+                digital_ip.patch_project("owner", project["id"], {
+                    "revision": migrated["revision"], "state": blocked,
+                })
+
+    def test_report_source_ignores_module_five_and_six_attachments(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(digital_ip, "PROJECT_DB", Path(directory) / "ip.db"):
+            project = self._project()
+            evidence = [
+                {"source_ref": "answer:0-0:attachment:1", "evidence": "底座资料"},
+                {"source_ref": "answer:4-0:attachment:1", "evidence": "内容资料"},
+            ]
+            with closing(digital_ip._project_db()) as conn:
+                conn.execute(
+                    "UPDATE digital_ip_projects SET confirmed_json=? WHERE id=?",
+                    (json.dumps({"attachment_evidence": evidence}, ensure_ascii=False), project["id"]),
+                )
+                conn.commit()
+            source = digital_ip._report_source(digital_ip._owned_project("owner", project["id"]))
+            self.assertEqual(source["confirmed_attachment_evidence"], evidence[:1])
 
     def test_report_route_is_membership_gated(self):
         class Handler:

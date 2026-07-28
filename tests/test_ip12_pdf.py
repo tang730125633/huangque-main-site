@@ -15,19 +15,49 @@ if str(SERVER) not in sys.path:
 from content_domains import digital_ip, ip12_pdf
 
 
-def _content():
+def _foundation_content():
     return {
-        "title": "OpenAI GPT-4o 门店 IP 方案",
-        "executive_summary": "用真实资料建立可信内容。",
+        "title": "OpenAI GPT-4o IP 定位阶段报告",
+        "executive_summary": "用真实资料建立可信定位。",
         "evidence": [{
             "evidence_id": "E1", "claim": "复购下降<script>",
             "source_excerpt": "老客复购下降", "source_name": "经营资料.pdf", "source_location": "第 2 页",
         }],
+        "modules": [
+            {
+                "module_id": module_id, "title": title, "summary": f"{title}摘要",
+                "findings": [{
+                    "kind": "fact", "title": "已确认资料", "detail": "仅引用已确认回答",
+                    "evidence_ids": ["E1"], "risks": [],
+                }],
+            }
+            for module_id, title in enumerate(("定位诊断", "人设塑造", "价值主张", "故事资产"), 1)
+        ],
+        "execution_priorities": [{
+            "priority": "P0", "module_id": 1, "task": "核对定位资料", "output": "确认后的定位档案",
+            "evidence_ids": ["E1"],
+        }],
+        "confirmation_items": [{
+            "item": "公开范围", "reason": "敏感经历需本人确认", "evidence_ids": ["E1"], "required": True,
+        }],
+        "material_gaps": [{
+            "gap": "缺少月报", "why_needed": "建立基线", "how_to_collect": "导出月报", "blocking": False,
+        }],
+        "disclaimer": "仅基于已确认资料，AI 推断需本人复核。",
+    }
+
+
+def _legacy_content():
+    return {
+        "title": "历史产品报告",
+        "executive_summary": "用真实资料建立可信内容。",
+        "evidence": [{
+            "evidence_id": "E1", "claim": "复购下降", "source_excerpt": "老客复购下降",
+            "source_name": "经营资料.pdf", "source_location": "第 2 页",
+        }],
         "industry_pains": [{
             "pain": "复购不足", "why_it_matters": "影响长期增长", "evidence_ids": ["E1"],
-            "product_matches": [{
-                "product_id": "image_studio", "fit_reason": "建立统一视觉", "execution_steps": ["确认提示词"],
-            }],
+            "product_matches": [],
         }],
         "execution_plan": [{"phase": "第一阶段", "goal": "验证方向", "steps": ["整理事实"]}],
         "metrics": [{
@@ -41,13 +71,17 @@ def _content():
     }
 
 
-def _payload(stale=True):
+def _payload(stale=True, legacy=False):
+    report = {
+        "report_id": "report-1", "generated_at": 1785150000,
+        "progress": {"total": 54 if legacy else 30, "confirmed": 53 if legacy else 30, "skipped": 1 if legacy else 0},
+        "content": _legacy_content() if legacy else _foundation_content(),
+    }
+    if not legacy:
+        report.update(stage=digital_ip.FOUNDATION_STAGE, status="confirmed")
     return {
-        "project": {"id": "ip12-1", "title": "我的门店 IP", "revision": 3},
-        "report": {
-            "report_id": "report-1", "generated_at": 1785150000,
-            "progress": {"total": 54, "confirmed": 53, "skipped": 1}, "content": _content(),
-        },
+        "project": {"id": "ip12-1", "title": "我的数字化 IP", "revision": 3},
+        "report": report,
         "stale": stale,
     }
 
@@ -90,11 +124,15 @@ class IP12PDFTests(unittest.TestCase):
         patcher = mock.patch.object(digital_ip, "PROJECT_DB", database)
         patcher.start()
         self.addCleanup(patcher.stop)
-        project = digital_ip.create_project(owner, {"title": "我的门店 IP"})
+        project = digital_ip.create_project(owner, {"title": "我的数字化 IP"})
         envelope = _payload(False)["report"]
         envelope["source_revision"] = project["revision"]
         envelope["project_revision"] = project["revision"]
         with digital_ip._project_db() as connection:
+            row = connection.execute(
+                "SELECT * FROM digital_ip_projects WHERE id=? AND username=?", (project["id"], owner),
+            ).fetchone()
+            envelope["source_hash"] = digital_ip._source_hash(digital_ip._report_source(row))
             connection.execute(
                 "UPDATE digital_ip_projects SET state_json=? WHERE id=? AND username=?",
                 (json.dumps({digital_ip.REPORT_STATE_KEY: envelope}, ensure_ascii=False), project["id"], owner),
@@ -102,17 +140,41 @@ class IP12PDFTests(unittest.TestCase):
             connection.commit()
         return project
 
-    def test_html_is_polished_escaped_neutral_and_linked(self):
+    def test_foundation_schema_has_four_modules_and_confirmation_items(self):
+        schema = digital_ip.REPORT_SCHEMA
+        self.assertIn("modules", schema["required"])
+        self.assertIn("execution_priorities", schema["required"])
+        self.assertIn("confirmation_items", schema["required"])
+        modules = schema["properties"]["modules"]
+        self.assertEqual((modules["minItems"], modules["maxItems"]), (4, 4))
+        self.assertEqual(modules["items"]["properties"]["module_id"]["enum"], [1, 2, 3, 4])
+
+    def test_foundation_html_is_polished_escaped_neutral_and_linked(self):
         document = ip12_pdf.build_report_html(_payload())
-        self.assertIn("真实资料", document)
+        for text in ("定位诊断", "人设塑造", "价值主张", "故事资产", "待确认事项"):
+            self.assertIn(text, document)
+        for heading in ("模块一｜定位诊断", "模块二｜人设塑造", "模块三｜价值主张", "模块四｜故事资产"):
+            self.assertIn(heading, document)
         self.assertIn("本 PDF 是历史报告快照", document)
-        self.assertIn("https://huangquechuanmei.com/workbench/banana.html", document)
-        self.assertIn("可点击跳转使用我们的网站功能", document)
-        self.assertIn("AI 服务 门店 IP 方案", document)
+        self.assertIn('@top-left{content:"IP 人设定位｜模块 1–4"', document)
+        self.assertIn("@bottom-right{content:counter(page)", document)
+        self.assertIn("background:#fff", document)
+        self.assertIn("border-bottom:3px solid #e2e5e9", document)
+        self.assertIn("<table>", document)
+        self.assertNotIn("class='cover'", document)
+        self.assertNotIn("class='card'", document)
+        self.assertNotIn("linear-gradient", document)
+        self.assertIn("AI 服务", document)
         self.assertNotIn("OpenAI", document)
         self.assertNotIn("GPT-4o", document)
         self.assertNotIn("<script>", document)
         self.assertIn("&lt;script&gt;", document)
+
+    def test_legacy_report_remains_renderable(self):
+        document = ip12_pdf.build_report_html(_payload(legacy=True))
+        self.assertIn("复购不足", document)
+        self.assertIn("历史产品报告", document)
+        self.assertNotIn("<script>", document)
 
     def test_real_browser_output_has_pdf_signature_when_available(self):
         browser = os.environ.get("DIGITAL_IP_PDF_TEST_BROWSER", "").strip()
