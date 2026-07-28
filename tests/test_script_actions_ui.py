@@ -1,4 +1,7 @@
+import json
 import pathlib
+import shutil
+import subprocess
 import unittest
 
 
@@ -28,6 +31,9 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn('id="scGenVideo"', self.html)
         self.assertIn('id="scGenAudio"', self.html)
         self.assertIn("options.endpoint||'/api/gen/script_to_video'", self.html)
+        self.assertIn("function _confirmDramaVideo(list)", self.html)
+        self.assertIn("预计消耗 '+cost+' 点", self.html)
+        self.assertIn("if(!_confirmDramaVideo(list)) return;", self.html)
 
     def test_reverse_video_estimate_matches_seedance_price(self):
         self.assertIn("selectedAvatarId===null?30:10", self.html)
@@ -91,6 +97,9 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn('id="bdGen"', self.html)
         self.assertIn("fetch('/api/gen/breakdown'", self.html)
         self.assertIn("var reqBody=isBatch?{urls:lines,mode:'scenes'}:{url:lines[0],mode:submitMode};", self.html)
+        self.assertIn("function normalizeBreakdownUrl(text)", self.html)
+        self.assertIn("链接格式不正确", self.html)
+        self.assertIn("链接视频最大 200MB", self.html)
 
     def test_breakdown_progress_and_history_restore_exist(self):
         self.assertIn('id="bdProgress"', self.html)
@@ -196,12 +205,13 @@ class ScriptActionsUiTests(unittest.TestCase):
     def test_breakdown_and_image_submissions_are_idempotent(self):
         self.assertIn("'Idempotency-Key':breakdownPending.key", self.html)
         self.assertIn("'Idempotency-Key':imagePending.key", self.html)
+        self.assertIn("requestHeaders['Idempotency-Key']=videoPending.key", self.html)
         self.assertIn('"script_to_video", "breakdown"}', self.core)
         self.assertIn("sessionStorage.setItem(storageKey", self.html)
         self.assertIn("saved&&saved.body===body&&saved.key", self.html)
         self.assertIn("code==='idempotency_in_progress'", self.html)
         self.assertEqual(
-            2,
+            3,
             self.html.count(
                 "if(x.s<500||(x.d&&x.d.operation_terminal===true)) "
                 "_confirmSubmission"
@@ -216,6 +226,7 @@ class ScriptActionsUiTests(unittest.TestCase):
         self.assertIn("fetch('/api/gen/breakdown'", self.html)
         self.assertIn("body:breakdownPending.body", self.html)
         self.assertIn("body:imagePending.body", self.html)
+        self.assertIn("videoPending?videoPending.body:JSON.stringify(payload)", self.html)
         # Network catches intentionally do not confirm/clear the pending key.
         self.assertNotIn(
             ".catch(function(){ _confirmSubmission(breakdownPending)",
@@ -231,9 +242,174 @@ class ScriptActionsUiTests(unittest.TestCase):
             "if(x.s<500||(x.d&&x.d.operation_terminal===true)) "
             "_confirmSubmission"
         )
-        self.assertEqual(2, self.html.count(confirmation))
+        self.assertEqual(3, self.html.count(confirmation))
         self.assertIn("code==='idempotency_in_progress'", self.html)
         self.assertNotIn("x.s>=500) _confirmSubmission", self.html)
+
+    def test_video_job_survives_refresh_and_blocks_duplicate_submit(self):
+        self.assertIn("ACTIVE_VIDEO_JOB_KEY='hq_script_active_video_job'", self.html)
+        self.assertIn("localStorage.setItem(key,JSON.stringify(value))", self.html)
+        self.assertIn("function _resumeActiveVideoJob()", self.html)
+        self.assertIn("if(_readActiveVideoJob())", self.html)
+        self.assertIn("已恢复任务 ", self.html)
+        self.assertIn("_clearActiveVideoJob(x.d.job_id,activeJobOwner)", self.html)
+        self.assertIn("_resumeActiveVideoJob();", self.html)
+
+    def test_video_job_recovery_is_isolated_by_current_account(self):
+        self.assertIn("function _activeVideoOwner()", self.html)
+        self.assertIn("user.username||user.account_id||user.id", self.html)
+        self.assertIn(
+            "ACTIVE_VIDEO_JOB_KEY+':'+encodeURIComponent(owner)",
+            self.html,
+        )
+        self.assertIn("value=Object.assign({},value,{owner:owner})", self.html)
+        self.assertIn("String(value.owner||'')!==owner", self.html)
+        self.assertIn("localStorage.removeItem(ACTIVE_VIDEO_JOB_KEY)", self.html)
+        self.assertIn("_clearActiveVideoJob(active.jobId,active.owner)", self.html)
+
+    def test_video_job_recovery_clears_404_and_other_terminal_4xx(self):
+        self.assertIn("function _videoLookupDisposition(status)", self.html)
+        self.assertIn("[400,403,404,410].indexOf(status)>=0", self.html)
+        self.assertIn("if(status===401) return 'login'", self.html)
+        self.assertIn("if(status>=400) return 'retry'", self.html)
+        self.assertGreaterEqual(
+            self.html.count("if(disposition==='clear')"),
+            2,
+        )
+        self.assertIn(
+            "_clearActiveVideoJob(active.jobId,active.owner); finishButtons();",
+            self.html,
+        )
+        self.assertIn(
+            "_clearActiveVideoJob(x.d.job_id,activeJobOwner)",
+            self.html,
+        )
+        self.assertIn("该任务已失效或不属于当前账号，请重新提交", self.html)
+        self.assertIn(
+            "if(activeVideoResumeTimer) clearInterval(activeVideoResumeTimer)",
+            self.html,
+        )
+
+    def test_initial_poll_401_preserves_job_and_requests_login(self):
+        direct = self.html[self.html.index("function _doGenerate("):]
+        login_start = direct.index("if(disposition==='login')")
+        login_end = direct.index("if(disposition==='clear')", login_start)
+        login_branch = direct[login_start:login_end]
+        self.assertIn("clearInterval(iv)", login_branch)
+        self.assertIn("HQ.login()", login_branch)
+        self.assertNotIn("_clearActiveVideoJob", login_branch)
+        self.assertNotIn("localStorage.removeItem", login_branch)
+
+    @unittest.skipUnless(shutil.which("node"), "node is required for browser logic test")
+    def test_video_job_account_switch_and_404_behavior(self):
+        start = self.html.index("var ACTIVE_VIDEO_JOB_KEY=")
+        end = self.html.index("function _doGenerate(", start)
+        recovery = self.html[start:end]
+        script = """
+const storage = {};
+var localStorage = {
+  getItem: key => Object.prototype.hasOwnProperty.call(storage,key) ? storage[key] : null,
+  setItem: (key,value) => { storage[key]=String(value); },
+  removeItem: key => { delete storage[key]; }
+};
+var genVideoBtn={}, bdRemakeBtn=null, scenes={innerHTML:''};
+var window={HQ:null}, HQ=null;
+var cleared=[];
+function clearInterval(id){ cleared.push(id); }
+function setInterval(){ return 77; }
+function _setGenerateBusy(btn,busy){ if(btn) btn.busy=busy; }
+function _readApiResponse(response){ return Promise.resolve(response); }
+function tok(){ return '__cookie__'; }
+function esc(value){ return String(value); }
+function loadHistory(){}
+var fetch=()=>Promise.resolve({s:404,d:{detail:'not found'}});
+eval(%s);
+function user(name){ localStorage.setItem('hq_user',JSON.stringify({username:name})); }
+user('account-a');
+_saveActiveVideoJob({jobId:101,startedAt:1});
+user('account-b');
+const bBefore=_readActiveVideoJob();
+_saveActiveVideoJob({jobId:202,startedAt:2});
+user('account-a');
+const aJob=_readActiveVideoJob();
+user('account-b');
+_resumeActiveVideoJob();
+setImmediate(function(){
+  const bKey=_activeVideoJobKey('account-b');
+  const aKey=_activeVideoJobKey('account-a');
+  process.stdout.write(JSON.stringify({
+    bBefore:bBefore,
+    aJob:aJob&&aJob.jobId,
+    aStillStored:!!localStorage.getItem(aKey),
+    bCleared:!localStorage.getItem(bKey),
+    timerStopped:activeVideoResumeTimer===null&&cleared.indexOf(77)>=0,
+    buttonRestored:genVideoBtn.busy===false
+  }));
+});
+""" % json.dumps(recovery)
+        result = subprocess.run(
+            ["node", "-e", script],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        got = json.loads(result.stdout)
+        self.assertIsNone(got["bBefore"])
+        self.assertEqual(101, got["aJob"])
+        self.assertTrue(got["aStillStored"])
+        self.assertTrue(got["bCleared"])
+        self.assertTrue(got["timerStopped"])
+        self.assertTrue(got["buttonRestored"])
+
+    @unittest.skipUnless(shutil.which("node"), "node is required for browser logic test")
+    def test_video_job_429_retries_without_clearing_recovery_state(self):
+        start = self.html.index("var ACTIVE_VIDEO_JOB_KEY=")
+        end = self.html.index("function _doGenerate(", start)
+        recovery = self.html[start:end]
+        script = """
+const storage = {};
+var localStorage = {
+  getItem: key => Object.prototype.hasOwnProperty.call(storage,key) ? storage[key] : null,
+  setItem: (key,value) => { storage[key]=String(value); },
+  removeItem: key => { delete storage[key]; }
+};
+var genVideoBtn={}, bdRemakeBtn=null, scenes={innerHTML:''};
+var window={HQ:null}, HQ=null;
+function clearInterval(){}
+function setInterval(){ return 88; }
+function _setGenerateBusy(btn,busy){ if(btn) btn.busy=busy; }
+function _readApiResponse(response){ return Promise.resolve(response); }
+function tok(){ return '__cookie__'; }
+function esc(value){ return String(value); }
+function loadHistory(){}
+var fetch=()=>Promise.resolve({s:429,d:{detail:'busy'}});
+eval(%s);
+localStorage.setItem('hq_user',JSON.stringify({username:'account-b'}));
+_saveActiveVideoJob({jobId:202,startedAt:2});
+_resumeActiveVideoJob();
+setImmediate(function(){
+  const key=_activeVideoJobKey('account-b');
+  process.stdout.write(JSON.stringify({
+    disposition401:_videoLookupDisposition(401),
+    disposition404:_videoLookupDisposition(404),
+    disposition429:_videoLookupDisposition(429),
+    stillStored:!!localStorage.getItem(key),
+    timerActive:activeVideoResumeTimer===88
+  }));
+});
+""" % json.dumps(recovery)
+        result = subprocess.run(
+            ["node", "-e", script],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        got = json.loads(result.stdout)
+        self.assertEqual("login", got["disposition401"])
+        self.assertEqual("clear", got["disposition404"])
+        self.assertEqual("retry", got["disposition429"])
+        self.assertTrue(got["stillStored"])
+        self.assertTrue(got["timerActive"])
 
     def test_breakdown_handles_gateway_html_and_can_resume_polling(self):
         self.assertIn("function _readApiResponse(response)", self.html)
