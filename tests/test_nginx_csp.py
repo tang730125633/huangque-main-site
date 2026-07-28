@@ -46,6 +46,19 @@ class NginxCspTest(unittest.TestCase):
                 for header in expected:
                     self.assertEqual(config.count(header), 4, header)
 
+    def test_workbench_ip12_only_proxies_to_existing_hermes(self):
+        config = self._config("deploy/nginx-huangquechuanmei.conf")
+        self.assertIn(
+            "location = /workbench/ip12 { return 301 /workbench/ip12/; }",
+            config,
+        )
+        start = config.index("location ^~ /workbench/ip12/")
+        end = config.index("\n    }", start)
+        block = config[start:end]
+        self.assertIn("proxy_pass http://127.0.0.1:3101/;", block)
+        self.assertIn("'/workbench/ip12/api/", block)
+        self.assertNotIn("auth_basic", block)
+
 
 if __name__ == "__main__":
     unittest.main()
