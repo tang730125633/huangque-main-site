@@ -147,8 +147,8 @@ class DigitalIPTests(unittest.TestCase):
                 "answer": "美" * 6001,
             })
 
-    def test_only_the_first_eight_module_agents_are_available(self):
-        self.assertEqual(len(digital_ip.MODULE_PROMPT_RULES), 8)
+    def test_only_the_first_six_module_agents_are_available(self):
+        self.assertEqual(len(digital_ip.MODULE_PROMPT_RULES), 6)
         self.assertTrue(all(digital_ip.MODULE_PROMPT_RULES))
         self.assertEqual(
             [digital_ip._module_rule(name) for name in digital_ip.ACTIVE_MODULE_NAMES],
@@ -468,13 +468,13 @@ class DigitalIPTests(unittest.TestCase):
             project = digital_ip.create_project("owner", {})
             review_text = "专业文章：方法与边界。\n故事文章：顾客转折。"
             project = digital_ip.patch_project("owner", project["id"], {
-                "revision": project["revision"], "state": {"questionnaire_state": {"answers": {"5-1": {"text": review_text}}}},
+                "revision": project["revision"], "state": {"questionnaire_state": {"answers": {"3-1": {"text": review_text}}}},
             })
             response = {"model": "test", "output": [{"type": "message", "content": [
                 {"type": "output_text", "text": json.dumps(_project_analysis(), ensure_ascii=False)}]}]}
             with mock.patch.object(digital_ip, "OPENAI_KEY", "configured"), mock.patch.object(digital_ip, "_post", return_value=response):
                 result = digital_ip.analyze_project("owner", project["id"], {
-                    "revision": project["revision"], "module_index": 5, "step_index": 1,
+                    "revision": project["revision"], "module_index": 3, "step_index": 1,
                     "answer": review_text, "consent": True,
                 })
             confirmed = digital_ip.confirm_project("owner", project["id"], {
