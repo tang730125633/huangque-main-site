@@ -152,7 +152,9 @@ console.log(JSON.stringify([
         self.assertIn("const priorTurns=requestGuideTurns()", ask_source)
         latest_source = html[html.index("function latestGuideReply"):html.index("function renderCoach")]
         self.assertIn("currentGuideTurns()", latest_source)
-        self.assertIn("].slice(-72);", html)
+        self.assertIn("const GUIDE_TURN_LIMIT = 240;", html)
+        self.assertIn("].slice(-GUIDE_TURN_LIMIT);", html)
+        self.assertIn("activeGuideTurns().slice(-GUIDE_TURN_LIMIT)", html)
         self.assertIn("keywords:guide.suggested_answer||answer.keywords", ask_source)
         self.assertIn("confirmed:!followUp.length", ask_source)
         self.assertIn("if(followUp.length)", ask_source)
@@ -174,9 +176,38 @@ console.log(JSON.stringify([
         self.assertIn('data-open-foundation-report', outcome)
         self.assertIn("function openFoundationReport", html)
         self.assertIn("ip12-report.html?project=", html)
+        self.assertIn("function reportPdfUrl()", html)
+        self.assertIn('download>下载 PDF</a>', outcome)
+        self.assertIn("stage.report_id", outcome)
         source = CORE.with_name("digital_ip.py").read_text(encoding="utf-8")
         self.assertIn("FOUNDATION_MODULES = 4", source)
         self.assertIn("请先生成并确认模块 1–4 阶段报告，再进入模块 5–6", source)
+
+    def test_navigation_words_do_not_pollute_answers_and_modules_resume_unfinished_steps(self):
+        if not shutil.which("node"):
+            self.skipTest("node unavailable")
+        html = PAGE.read_text(encoding="utf-8")
+        function = re.search(r"function navigationCommand\(.*?\n    \}", html, re.S).group(0)
+        script = function + """
+console.log(JSON.stringify([
+  navigationCommand('继续'),
+  navigationCommand('上一题'),
+  navigationCommand('暂时跳过'),
+  navigationCommand('你跳一下模块2'),
+  navigationCommand('广州')
+]));
+"""
+        got = json.loads(subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, check=True,
+        ).stdout)
+        self.assertEqual(got[:3], [{"type": "next"}, {"type": "previous"}, {"type": "skip"}])
+        self.assertEqual(got[3], {"type": "module", "moduleIndex": 1})
+        self.assertIsNone(got[4])
+        ask = html[html.index("async function askGuide"):html.index("function applyGuideDraft")]
+        self.assertLess(ask.index("handleNavigationMessage(message)"), ask.index('if(!$("aiConsent").checked)'))
+        self.assertLess(ask.index("handleNavigationMessage(message)"), ask.index("fetch(GUIDE_API_URL"))
+        modules = html[html.index("function renderModules"):html.index("function renderInteraction")]
+        self.assertIn("firstUnresolvedStep(state.moduleIndex)", modules)
 
     def test_editing_a_confirmed_foundation_answer_relocks_the_outcome(self):
         html = PAGE.read_text(encoding="utf-8")
