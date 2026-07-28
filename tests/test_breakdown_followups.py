@@ -255,6 +255,84 @@ class BreakdownFollowupTests(unittest.TestCase):
                 1,
             )
 
+    def test_reverse_segment_objects_reject_visual_placeholder_fields(self):
+        real = {
+            "subject": "女子位于画面中央",
+            "action": "女子背对镜头站立",
+            "scene": "夜晚街道铺有落叶",
+            "camera": "平视固定中景",
+            "light": "柔和环境光从左侧照入",
+            "audio": "无",
+        }
+        cases = (
+            {field: "无" for field in real},
+            dict(real, action="未确认"),
+            dict(real, scene="待补充"),
+        )
+        for item in cases:
+            with self.subTest(item=item):
+                raw = json.dumps({"segments": [item]}, ensure_ascii=False)
+                with self.assertRaisesRegex(ValueError, "视觉字段包含占位内容"):
+                    breakdown._coerce_reverse_segments(
+                        raw, 1, allow_duplicates=True, allow_short=True,
+                    )
+
+    def test_reverse_segment_objects_allow_real_short_visuals_and_empty_audio(self):
+        item = {
+            "subject": "女子位于画面中央",
+            "action": "女子背对镜头站立",
+            "scene": "夜晚街道铺有落叶",
+            "camera": "平视固定中景",
+            "light": "柔和环境光从左侧照入",
+            "audio": "无",
+        }
+        raw = json.dumps({"segments": [item]}, ensure_ascii=False)
+        parsed = breakdown._coerce_reverse_segments(
+            raw, 1, allow_duplicates=True, allow_short=True,
+        )
+        self.assertEqual(len(parsed), 1)
+        self.assertIn("主体与位置：女子位于画面中央", parsed[0])
+        self.assertIn("声音字幕：无", parsed[0])
+
+    def test_reverse_timeline_never_expands_placeholder_visuals(self):
+        placeholder_item = {
+            "subject": "无",
+            "action": "没有",
+            "scene": "未确认",
+            "camera": "略",
+            "light": "待补充",
+            "audio": "占位",
+        }
+        raw = json.dumps(
+            {"segments": [placeholder_item, placeholder_item, placeholder_item]},
+            ensure_ascii=False,
+        )
+        with mock.patch.object(
+            breakdown, "_chat_multimodal", return_value=raw,
+        ) as chat, mock.patch.object(
+            breakdown, "_expand_short_reverse_segments",
+            wraps=breakdown._expand_short_reverse_segments,
+        ) as expand:
+            with self.assertRaisesRegex(ValueError, "视觉字段包含占位内容"):
+                breakdown._reverse_from_frames(
+                    {}, ["frame.jpg"], duration=6,
+                )
+
+        self.assertEqual(chat.call_count, 2)
+        expand.assert_not_called()
+
+    def test_repeated_reverse_segments_reference_matching_previous_segment(self):
+        contents = [
+            "主体A保持静止",
+            "主体B向右移动",
+            "主体A保持静止",
+        ]
+        annotated = breakdown._annotate_repeated_reverse_segments(contents)
+        self.assertNotIn("连续性：", annotated[0])
+        self.assertNotIn("连续性：", annotated[1])
+        self.assertIn("与第1段保持同一主体", annotated[2])
+        self.assertNotIn("与第2段保持同一主体", annotated[2])
+
     def test_reverse_timeline_is_program_generated_and_retries_once(self):
         first = json.dumps(
             {"segments": ["内容过短", "内容过短", "内容过短"]},

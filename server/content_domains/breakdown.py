@@ -688,6 +688,7 @@ def _coerce_reverse_segments(
         ("light", "光线质感"),
         ("audio", "声音字幕"),
     )
+    visual_fields = {"subject", "action", "scene", "camera", "light"}
     contents = []
     for index, item in enumerate(value, 1):
         if isinstance(item, dict):
@@ -698,6 +699,16 @@ def _coerce_reverse_segments(
             if missing:
                 raise ValueError(
                     "第%d段缺少字段：%s" % (index, "、".join(missing))
+                )
+            placeholder_fields = [
+                field for field, _ in field_labels
+                if field in visual_fields
+                and _is_reverse_placeholder(item.get(field))
+            ]
+            if placeholder_fields:
+                raise ValueError(
+                    "第%d段视觉字段包含占位内容：%s"
+                    % (index, "、".join(placeholder_fields))
                 )
             contents.append("；".join(
                 "%s：%s" % (label, str(item.get(field) or "").strip())
@@ -719,20 +730,26 @@ def _reverse_segment_fingerprint(content):
     ).lower()
 
 
+def _is_reverse_placeholder(content):
+    return _reverse_segment_fingerprint(content) in {
+        "", "无", "没有", "未确认", "略", "待补充", "占位", "内容",
+    }
+
+
 def _annotate_repeated_reverse_segments(contents):
     seen = {}
     annotated = []
     for index, content in enumerate(contents, 1):
         fingerprint = _reverse_segment_fingerprint(content)
-        occurrence = seen.get(fingerprint, 0)
-        seen[fingerprint] = occurrence + 1
-        if occurrence:
+        previous_index = seen.get(fingerprint)
+        if previous_index is not None:
             content = (
                 str(content).rstrip("；。 ")
                 + "；连续性：与第%d段保持同一主体、动作状态、场景、机位和光线，"
-                "未观察到可确认变化。" % (index - 1)
+                "未观察到可确认变化。" % previous_index
             )
         annotated.append(content)
+        seen[fingerprint] = index
     return annotated
 
 
@@ -765,10 +782,9 @@ def _validate_reverse_segment_contents(
         )
     normalized = []
     total_length = 0
-    placeholders = {"", "无", "没有", "未确认", "略", "待补充", "占位", "内容"}
     for index, content in enumerate(contents, 1):
         compact = _reverse_segment_fingerprint(content)
-        if compact.lower() in placeholders:
+        if _is_reverse_placeholder(content):
             raise ValueError("第%d段是空内容或占位内容" % index)
         if not allow_short and len(compact) < 40:
             raise ValueError("第%d段内容过短，至少需要40个有效字符" % index)
