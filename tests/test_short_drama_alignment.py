@@ -17,6 +17,7 @@ if SERVER_DIR not in sys.path:
 from content_domains import (
     short_drama,
     short_drama_alignment as alignment,
+    short_drama_assembly_subtitles as assembly_subtitles,
     short_drama_voice,
 )
 
@@ -194,6 +195,56 @@ class ShortDramaAlignmentTests(unittest.TestCase):
         ))
         self.assertEqual("asr_word_timestamps", quality["provider_mode"])
 
+    def test_tiny_asr_word_span_is_redistributed_without_zero_length_tokens(self):
+        current = contract(self.project["id"], self.project["revision"])
+        line = current["shots"][0]["lines"][0]
+        line["text"] = "ABCD"
+        line["audio_start_ms"] = 0
+        line["audio_end_ms"] = 1000
+        timeline, quality = alignment._align(
+            current,
+            transcriber=lambda _path: [{
+                "word": "ABCD",
+                "start_ms": 999,
+                "end_ms": 1000,
+                "confidence": 0.99,
+            }],
+        )
+        tokens = timeline[0]["tokens"]
+        self.assertEqual(4, len(tokens))
+        self.assertTrue(all(
+            token["end_ms"] > token["start_ms"] for token in tokens
+        ))
+        self.assertTrue(all(
+            tokens[index]["end_ms"] <= tokens[index + 1]["start_ms"]
+            for index in range(len(tokens) - 1)
+        ))
+        self.assertEqual(1000, tokens[-1]["end_ms"])
+        self.assertTrue(all(
+            token["match_type"] == "estimated" for token in tokens
+        ))
+        self.assertTrue(all(
+            token["confidence"] is None for token in tokens
+        ))
+        self.assertEqual(4, quality["estimated_token_count"])
+        self.assertIn(
+            "estimated_timing_present",
+            {item["code"] for item in quality["blockers"]},
+        )
+
+    def test_audio_shorter_than_token_resolution_is_rejected(self):
+        current = contract(self.project["id"], self.project["revision"])
+        line = current["shots"][0]["lines"][0]
+        line["text"] = "ABCD"
+        line["audio_start_ms"] = 0
+        line["audio_end_ms"] = 3
+        with self.assertRaises(alignment.AlignmentError) as context:
+            alignment._align(current, transcriber=lambda _path: [])
+        self.assertEqual(
+            "alignment_resolution_insufficient",
+            context.exception.code,
+        )
+
     def test_unmatched_asr_tokens_are_explicit_estimates_without_confidence(self):
         current = contract(self.project["id"], self.project["revision"])
         line = current["shots"][0]["lines"][0]
@@ -363,6 +414,26 @@ class ShortDramaAlignmentTests(unittest.TestCase):
                     )
                 },
             )
+
+    def test_alignment_ass_uses_formally_preflighted_noto_font_contract(self):
+        version = {
+            "alignment_hash": "a" * 64,
+            "master_audio_hash": "m" * 64,
+            "transcript_hash": "t" * 64,
+            "timeline": [{
+                "text": "中文字幕",
+                "subtitle_start_ms": 0,
+                "subtitle_end_ms": 1000,
+            }],
+            "quality": {},
+            "manual_reviewed": False,
+        }
+        ass = alignment._artifact_payloads(version)["ass"]
+        self.assertIn(
+            f"Style: Default,{assembly_subtitles.FONT_NAME},",
+            ass,
+        )
+        self.assertNotIn("Style: Default,Arial,", ass)
 
     def test_legacy_workspace_does_not_require_alignment_for_handoff(self):
         with mock.patch.object(alignment, "_current_contract", self.current):

@@ -12,6 +12,7 @@ import unicodedata
 import uuid
 from difflib import SequenceMatcher
 
+from . import short_drama_assembly_subtitles as assembly_subtitles
 from . import short_drama_voice
 
 
@@ -367,6 +368,17 @@ def _recognized_tokens(words, audio_start_ms, audio_end_ms):
             word_start + 1,
             min(duration, int(word.get("end_ms") or word_start + 1)),
         )
+        timing_estimated = False
+        if word_end - word_start < len(pieces):
+            if duration < len(pieces):
+                raise AlignmentError(
+                    "alignment_resolution_insufficient",
+                    "音频时长不足以生成严格递增的 token 时间轴",
+                    status=422,
+                )
+            word_start = min(word_start, duration - len(pieces))
+            word_end = word_start + len(pieces)
+            timing_estimated = True
         for index, token in enumerate(pieces):
             start = audio_start_ms + round(
                 word_start + (word_end - word_start) * index / len(pieces)
@@ -379,9 +391,12 @@ def _recognized_tokens(words, audio_start_ms, audio_end_ms):
                 "token": token,
                 "start_ms": start,
                 "end_ms": max(start + 1, end),
-                "confidence": word.get("confidence"),
+                "confidence": (
+                    None if timing_estimated else word.get("confidence")
+                ),
                 "match_type": (
-                    "asr_word" if len(pieces) == 1
+                    "estimated" if timing_estimated
+                    else "asr_word" if len(pieces) == 1
                     else "interpolated_within_asr_word"
                 ),
             })
@@ -427,6 +442,13 @@ def _align_line(line, words):
     expected = _tokens(line["text"])
     if not expected:
         return [], 0
+    duration = line["audio_end_ms"] - line["audio_start_ms"]
+    if duration < len(expected):
+        raise AlignmentError(
+            "alignment_resolution_insufficient",
+            "音频时长不足以生成严格递增的 token 时间轴",
+            status=422,
+        )
     recognized = _recognized_tokens(
         words, line["audio_start_ms"], line["audio_end_ms"]
     )
@@ -437,7 +459,6 @@ def _align_line(line, words):
         [_normalize_text(item["token"]) for item in recognized],
         autojunk=False,
     )
-    matched = 0
     for block in matcher.get_matching_blocks():
         for offset in range(block.size):
             expected_index = block.a + offset
@@ -446,15 +467,31 @@ def _align_line(line, words):
                 **source,
                 "token": expected[expected_index],
             }
-            matched += 1
     tokens = _fill_estimated_ranges(slots, expected, line)
     cursor = line["audio_start_ms"]
-    for token in tokens:
+    for index, token in enumerate(tokens):
         token["normalized_token"] = _normalize_text(token["token"])
-        token["start_ms"] = max(cursor, int(token["start_ms"]))
-        token["end_ms"] = max(token["start_ms"] + 1, int(token["end_ms"]))
-        token["end_ms"] = min(line["audio_end_ms"], token["end_ms"])
+        remaining = len(tokens) - index - 1
+        latest_start = line["audio_end_ms"] - remaining - 1
+        original_start = int(token["start_ms"])
+        original_end = int(token["end_ms"])
+        token["start_ms"] = min(
+            latest_start, max(cursor, original_start)
+        )
+        latest_end = line["audio_end_ms"] - remaining
+        token["end_ms"] = min(
+            latest_end, max(token["start_ms"] + 1, original_end)
+        )
+        if (
+            token["start_ms"] != original_start
+            or token["end_ms"] != original_end
+        ):
+            token["confidence"] = None
+            token["match_type"] = "estimated"
         cursor = token["end_ms"]
+    matched = sum(
+        token["match_type"] != "estimated" for token in tokens
+    )
     return tokens, matched
 
 
@@ -621,7 +658,11 @@ def _artifact_payloads(version):
         "[Script Info]", "ScriptType: v4.00+", "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, Alignment",
-        "Style: Default,Arial,42,&H00FFFFFF,2", "",
+        (
+            "Style: Default,"
+            f"{assembly_subtitles.FONT_NAME},42,&H00FFFFFF,2"
+        ),
+        "",
         "[Events]",
         "Format: Layer, Start, End, Style, Text",
     ]
