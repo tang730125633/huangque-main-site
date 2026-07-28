@@ -206,6 +206,29 @@ class BreakdownFollowupTests(unittest.TestCase):
                 )
         self.assertEqual(chat.call_count, 2)
 
+    def test_static_image_reverse_does_not_require_a_zero_length_timeline(self):
+        captured = {}
+
+        def fake_chat(system_message, user_message, frames, temp=0.7):
+            captured["user"] = user_message
+            return json.dumps(
+                {"prompt": "正面平视构图，人物位于画面中央，柔和侧光。"},
+                ensure_ascii=False,
+            )
+
+        with mock.patch.object(
+            breakdown, "_chat_multimodal", side_effect=fake_chat,
+        ) as chat:
+            result = breakdown._reverse_from_frames(
+                {}, ["image.jpg"], title="portrait.png", duration=0,
+            )
+
+        self.assertEqual(chat.call_count, 1)
+        self.assertEqual(result["duration"], 0)
+        self.assertIn("素材类型：静态图片", captured["user"])
+        self.assertIn("不要编造时间轴", captured["user"])
+        self.assertNotIn("末段结束时间", captured["user"])
+
     def test_download_timeout_refreshes_detail_and_retries_once(self):
         fake_tikhub = mock.Mock()
         stale = {
