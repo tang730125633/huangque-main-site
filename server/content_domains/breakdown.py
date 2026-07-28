@@ -201,7 +201,7 @@ def _do_breakdown(payload, info, url):
         if det.get("images"):
             raise ValueError("该链接是图文笔记，不是视频，暂不支持拆解")
         raise ValueError("未找到视频下载地址，可能是私密或已删除")
-    duration = det.get("duration") or 30
+    duration = _normalize_duration_seconds(det.get("duration"), fallback=30)
     title = det.get("title") or det.get("desc") or ""
 
     job_id = payload.get("_job_id")
@@ -214,6 +214,12 @@ def _do_breakdown(payload, info, url):
         tikhub.download_to_file(play_url, dl_deadline, tmp_video.name)
 
         _heartbeat(job_id, "extracting_frames")
+        # TikHub 的抖音 duration 有时是毫秒（如 10034），有时是秒。
+        # 下载后的媒体时长才是抽帧的权威值，避免把 10 秒误当成 10034 秒，
+        # 导致均匀采样间隔超过整段视频并向视觉模型发送 0 张关键帧。
+        probed_duration = _probe_duration(tmp_video.name)
+        if probed_duration > 0:
+            duration = probed_duration
         frame_count = max(4, min(10, int(duration / 5)))
         frame_dir, frames = _extract_frames(tmp_video.name, frame_count, duration)
 
@@ -356,6 +362,21 @@ def _probe_duration(path):
         return max(0.0, float((proc.stdout or "0").strip() or 0))
     except Exception:
         raise ValueError("无法读取视频时长，请上传有效的视频文件")
+
+
+def _normalize_duration_seconds(value, fallback=0):
+    """把上游秒/毫秒混合时长统一成秒；真实媒体时长仍以 ffprobe 为准。"""
+    try:
+        duration = float(value)
+    except (TypeError, ValueError):
+        duration = 0.0
+    if duration <= 0:
+        return float(fallback or 0)
+    # 短视频平台偶尔返回毫秒。超过一小时按毫秒解释，可覆盖
+    # 10034ms 这类已观测值，同时保留常见的长视频秒数。
+    if duration > 3600:
+        duration /= 1000.0
+    return duration
 
 
 def _remove_trusted_upload(token, username, job_id, path):
@@ -596,6 +617,9 @@ def _extract_frames(video_path, count=6, duration=30):
         frames = sorted([os.path.join(outdir, f) for f in os.listdir(outdir)
                          if f.endswith(".jpg")],
                         key=lambda p: int(os.path.splitext(os.path.basename(p))[0].split("_")[-1]))
+    if not frames:
+        shutil.rmtree(outdir, ignore_errors=True)
+        raise ValueError("视频未能提取有效关键帧，请检查视频内容后重试")
     return outdir, frames
 
 

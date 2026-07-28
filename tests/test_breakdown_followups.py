@@ -17,6 +17,53 @@ except ImportError:
 
 
 class BreakdownFollowupTests(unittest.TestCase):
+    def test_tikhub_millisecond_duration_is_normalized_to_seconds(self):
+        self.assertAlmostEqual(
+            breakdown._normalize_duration_seconds(10034), 10.034, places=3
+        )
+        self.assertEqual(breakdown._normalize_duration_seconds(23), 23)
+        self.assertEqual(
+            breakdown._normalize_duration_seconds(None, fallback=30), 30
+        )
+
+    def test_link_reverse_uses_downloaded_media_duration_for_frames(self):
+        fake_tikhub = mock.Mock()
+        fake_tikhub.detail.return_value = {
+            "play_url": "https://cdn.example/video.mp4",
+            "duration": 10034,
+            "title": "duration unit regression",
+        }
+        fake_tikhub.download_to_file.return_value = None
+        with mock.patch.dict(sys.modules, {"tikhub": fake_tikhub}), \
+             mock.patch.object(breakdown, "_probe_duration", return_value=10.034), \
+             mock.patch.object(
+                 breakdown, "_extract_frames", return_value=(None, ["frame.jpg"])
+             ) as extracted, \
+             mock.patch.object(
+                 breakdown, "_reverse_from_frames",
+                 return_value={"type": "breakdown_reverse"},
+             ) as reversed_from_frames:
+            result = breakdown._do_breakdown(
+                {"mode": "reverse_prompt", "_job_id": 7},
+                {"platform": "douyin", "id": "123", "note_type": "video"},
+                "https://www.douyin.com/video/123",
+            )
+
+        self.assertEqual(result["type"], "breakdown_reverse")
+        self.assertEqual(extracted.call_args.args[1:], (4, 10.034))
+        self.assertEqual(reversed_from_frames.call_args.args[-1], 10.034)
+
+    def test_extract_frames_rejects_empty_visual_input(self):
+        first = tempfile.mkdtemp()
+        second = tempfile.mkdtemp()
+        with mock.patch.object(
+            breakdown.tempfile, "mkdtemp", side_effect=[first, second]
+        ), mock.patch.object(
+            breakdown.subprocess, "run", return_value=mock.Mock()
+        ):
+            with self.assertRaisesRegex(ValueError, "关键帧"):
+                breakdown._extract_frames("video.mp4", count=4, duration=10)
+
     def test_parser_recovers_json_from_unclosed_code_fence(self):
         parsed = breakdown._parse_breakdown_json(
             '```json\n{"scenes":[{"scene":"完整镜头","line":""}]}'
