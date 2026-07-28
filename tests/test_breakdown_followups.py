@@ -116,6 +116,32 @@ class BreakdownFollowupTests(unittest.TestCase):
         )
         self.assertEqual(segments[-1][1], 2.5)
 
+        self.assertEqual(
+            breakdown._validate_reverse_timeline(
+                "[00:00-00:02] 按画面帧率取整后的结尾。", 2.08,
+            ),
+            [(0.0, 2.0)],
+        )
+        self.assertEqual(
+            breakdown._validate_reverse_timeline(
+                "[00:00-00:02.08] 按画面帧率取整后的结尾。", 2.0,
+            ),
+            [(0.0, 2.08)],
+        )
+
+        self.assertEqual(
+            breakdown._validate_reverse_timeline(
+                (
+                    "视频复刻提示词：\n"
+                    "1. [00:00-00:01] 主体从画面左侧进入。\n"
+                    "补充说明主体保持平视。\n"
+                    "- [00:01-00:02] 镜头跟随主体并自然收束。"
+                ),
+                2,
+            ),
+            [(0.0, 1.0), (1.0, 2.0)],
+        )
+
     def test_reverse_timeline_rejects_invalid_boundaries(self):
         invalid = (
             (
@@ -143,14 +169,19 @@ class BreakdownFollowupTests(unittest.TestCase):
                 "乱序",
             ),
             (
-                "[00:00-00:01.1] 内容。",
+                "[00:00-00:01.3] 内容。",
                 1,
                 "超出",
             ),
             (
-                "[00:00-00:00.9] 内容。",
+                "[00:00-00:00.7] 内容。",
                 1,
                 "未对齐",
+            ),
+            (
+                "标题\n[错误时间] 内容。",
+                1,
+                "未找到合法",
             ),
         )
         for prompt, duration, message in invalid:
@@ -204,7 +235,34 @@ class BreakdownFollowupTests(unittest.TestCase):
                 breakdown._reverse_from_frames(
                     {}, ["frame.jpg"], duration=2,
                 )
-        self.assertEqual(chat.call_count, 2)
+        self.assertEqual(chat.call_count, 3)
+
+    def test_reverse_prompt_accepts_array_and_recovers_missing_commas(self):
+        array_raw = json.dumps({
+            "prompt": [
+                "[00:00-00:01] 开场。",
+                "[00:01-00:02] 收束。",
+            ],
+        }, ensure_ascii=False)
+        self.assertEqual(
+            breakdown._coerce_reverse_prompt(array_raw),
+            "[00:00-00:01] 开场。\n[00:01-00:02] 收束。",
+        )
+        malformed = (
+            '```json\n{"prompt": ['
+            '"[00:00-00:01] 开场。" '
+            '"[00:01-00:02] 收束。"]}\n```'
+        )
+        self.assertEqual(
+            breakdown._coerce_reverse_prompt(malformed),
+            "[00:00-00:01] 开场。\n[00:01-00:02] 收束。",
+        )
+
+    def test_retry_ranges_are_bounded_by_real_duration(self):
+        ranges = breakdown._fixed_reverse_ranges(10.034)
+        self.assertEqual(len(ranges), 4)
+        self.assertEqual(ranges[0].split("-", 1)[0], "[00:00")
+        self.assertTrue(ranges[-1].endswith("00:10.034]"))
 
     def test_static_image_reverse_does_not_require_a_zero_length_timeline(self):
         captured = {}
@@ -392,6 +450,23 @@ class BreakdownFollowupTests(unittest.TestCase):
                 {"scenes": [{"scene": "具体画面", "line": ""}]}
             )
 
+    def test_validation_normalizes_common_alternative_scene_schema(self):
+        result = breakdown._validate_scene_breakdown({
+            "scenes": [{
+                "duration": "4s",
+                "description": "人物从竞技场入口走向中央，火焰位于后景。",
+                "mood": "紧张",
+                "composition": "广角跟拍",
+                "lighting": "暖色侧光",
+                "dialogue": "准备开始。",
+            }],
+        })
+        scene = result["scenes"][0]
+        self.assertIn("人物从竞技场入口", scene["scene"])
+        self.assertEqual("准备开始。", scene["line"])
+        self.assertEqual("4s", scene["dur"])
+        self.assertEqual("广角跟拍", scene["camera"])
+
     def test_breakdown_retries_malformed_model_output(self):
         valid = json.dumps(
             {"scenes": [{"scene": "人物从桌边起身走向窗前，镜头缓慢跟随", "line": ""}]},
@@ -443,7 +518,7 @@ class BreakdownFollowupTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "AI 分析连接中断"):
                 breakdown._chat_multimodal("system", "user", [])
 
-    def test_multimodal_ten_frames_share_a_bounded_request_budget(self):
+    def test_multimodal_frames_respect_provider_count_and_byte_budgets(self):
         budgets = []
 
         def fake_frame(path, max_bytes):
@@ -463,13 +538,20 @@ class BreakdownFollowupTests(unittest.TestCase):
             )
 
         self.assertEqual(result, "ok")
-        self.assertEqual(len(budgets), 10)
+        self.assertEqual(len(budgets), breakdown._AI_MAX_FRAMES)
+        self.assertEqual(
+            [item[0] for item in budgets],
+            ["frame-0.jpg", "frame-3.jpg", "frame-6.jpg", "frame-9.jpg"],
+        )
         self.assertLessEqual(
             sum(item[1] for item in budgets),
             breakdown._AI_FRAMES_TOTAL_MAX_BYTES,
         )
         body = json.loads(posted.call_args.args[3])
-        self.assertEqual(len(body["messages"][1]["content"]) - 1, 10)
+        self.assertEqual(
+            len(body["messages"][1]["content"]) - 1,
+            breakdown._AI_MAX_FRAMES,
+        )
 
     def test_ai_frame_fallback_without_pillow_keeps_a_hard_byte_limit(self):
         with tempfile.TemporaryDirectory() as directory:
