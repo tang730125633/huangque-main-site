@@ -2,6 +2,8 @@
 """爆款拆解：竞品视频链接 → 下载 → 抽帧 → ASR → GLM-4V 多模态 → 分镜脚本"""
 import os, json, time, base64, tempfile, subprocess, shutil, mimetypes, io
 import http.client
+import socket
+import ssl
 import urllib.error
 from contextlib import closing
 
@@ -21,6 +23,9 @@ _UPLOAD_TOKEN_RE = __import__("re").compile(r"^[0-9a-f]{32}$")
 _THUMBNAIL_MAX_EDGE = 768
 _THUMBNAIL_MAX_BYTES = 240 * 1024
 _THUMBNAIL_MAX_PIXELS = 40_000_000
+_AI_FRAME_MAX_EDGE = 640
+_AI_FRAME_MAX_BYTES = 128 * 1024
+_AI_FRAMES_TOTAL_MAX_BYTES = 1024 * 1024
 
 
 def _ensure_upload_table(connection):
@@ -476,7 +481,9 @@ def _frame_thumbnails(frames, limit=4):
     return thumbs
 
 
-def _bounded_thumbnail(path):
+def _bounded_thumbnail(
+    path, max_edge=_THUMBNAIL_MAX_EDGE, max_bytes=_THUMBNAIL_MAX_BYTES,
+):
     """Create a small JPEG reference; never persist the original upload bytes."""
     from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -500,7 +507,12 @@ def _bounded_thumbnail(path):
         raise ValueError("参考图片无法生成缩略图") from error
 
     resampling = getattr(Image, "Resampling", Image).LANCZOS
-    for edge in (_THUMBNAIL_MAX_EDGE, 640, 512, 384):
+    edges = []
+    for edge in (max_edge, 640, 512, 384, 320, 256):
+        edge = min(max(1, int(edge)), max(1, int(max_edge)))
+        if edge not in edges:
+            edges.append(edge)
+    for edge in edges:
         candidate = image.copy()
         candidate.thumbnail((edge, edge), resampling)
         for quality in (82, 72, 62, 52, 42):
@@ -509,7 +521,7 @@ def _bounded_thumbnail(path):
                 output, format="JPEG", quality=quality, optimize=True, progressive=True,
             )
             thumbnail = output.getvalue()
-            if len(thumbnail) <= _THUMBNAIL_MAX_BYTES:
+            if len(thumbnail) <= max_bytes:
                 return thumbnail
     raise ValueError("参考图片压缩后仍然过大")
 
@@ -695,15 +707,26 @@ def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7):
         raise RuntimeError("REVERSE_ZHIPU_KEY is not configured")
 
     content = [{"type": "text", "text": usermsg}]
+    image_paths = list(image_paths or [])
+    per_frame_budget = min(
+        _AI_FRAME_MAX_BYTES,
+        max(32 * 1024, _AI_FRAMES_TOTAL_MAX_BYTES // max(1, len(image_paths))),
+    )
+    image_bytes = 0
     for path in image_paths:
-        with open(path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode()
-        media_type = mimetypes.guess_type(path)[0] or "image/jpeg"
-        if media_type not in {"image/jpeg", "image/png", "image/webp"}:
-            media_type = "image/jpeg"
+        frame = _bounded_thumbnail(
+            path, max_edge=_AI_FRAME_MAX_EDGE, max_bytes=per_frame_budget,
+        )
+        if image_bytes + len(frame) > _AI_FRAMES_TOTAL_MAX_BYTES:
+            raise ValueError("视频关键帧压缩后仍然过大，请缩短视频或降低素材分辨率")
+        image_bytes += len(frame)
+        b64 = base64.b64encode(frame).decode()
         content.append({
             "type": "image_url",
-            "image_url": {"url": "data:" + media_type + ";base64," + b64, "detail": "low"}
+            "image_url": {
+                "url": "data:image/jpeg;base64," + b64,
+                "detail": "low",
+            },
         })
 
     body = {
@@ -715,10 +738,11 @@ def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7):
         "temperature": temp,
     }
 
+    request_data = json.dumps(body, ensure_ascii=False).encode("utf-8")
     try:
         d = egress.post_json_idempotent(
             ZHIPU_API_BASE, ZHIPU_API_BASE, "/chat/completions",
-            json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            request_data,
             {
                 "Authorization": "Bearer " + ZHIPU_API_KEY,
                 "Content-Type": "application/json",
@@ -727,9 +751,43 @@ def _chat_multimodal(sysmsg, usermsg, image_paths, temp=0.7):
             max_attempts=2,
         )
     except Exception as error:
+        code = int(getattr(error, "code", 0) or 0)
+        reason = getattr(error, "reason", None)
         detail = str(error or "").lower()
-        if isinstance(error, (TimeoutError, OSError)) or "timed out" in detail or "timeout" in detail:
+        timed_out = (
+            isinstance(error, (TimeoutError, socket.timeout))
+            or isinstance(reason, (TimeoutError, socket.timeout))
+            or "timed out" in detail
+            or "timeout" in detail
+        )
+        print(
+            "[breakdown] ai request failed type=%s http=%s request_bytes=%d image_bytes=%d"
+            % (type(error).__name__, code or "-", len(request_data), image_bytes),
+            flush=True,
+        )
+        if code == 413:
+            message = "AI 分析素材数据过大，请缩短视频或降低素材分辨率，本次点数已自动退回"
+        elif code == 429:
+            message = "AI 分析服务请求过多，请稍后重试，本次点数已自动退回"
+        elif code in (401, 403):
+            message = "AI 分析服务鉴权异常，本次点数已自动退回，请联系管理员"
+        elif code == 400:
+            message = "AI 分析请求被上游拒绝，可能是素材格式或内容不兼容，本次点数已自动退回"
+        elif code >= 500:
+            message = "AI 分析服务暂时不可用，本次点数已自动退回，请稍后重试"
+        elif timed_out:
             message = "AI 分析响应超时，本次未生成结果，点数已自动退回，请稍后重试"
+        elif isinstance(
+            error,
+            (
+                urllib.error.URLError,
+                http.client.RemoteDisconnected,
+                http.client.IncompleteRead,
+                ConnectionError,
+                ssl.SSLError,
+            ),
+        ):
+            message = "AI 分析连接中断，本次点数已自动退回，请稍后重试"
         else:
             message = "AI 分析服务暂时不可用，本次未生成结果，点数已自动退回，请稍后重试"
         raise RuntimeError(message) from error

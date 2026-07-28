@@ -1,3 +1,4 @@
+import base64
 import importlib
 import json
 import os
@@ -147,7 +148,10 @@ class BreakdownZhipuProviderTests(unittest.TestCase):
     def test_breakdown_uses_reverse_zhipu_key_and_glm_4v_plus(self):
         with tempfile.TemporaryDirectory() as directory:
             image = pathlib.Path(directory) / "frame.jpg"
-            image.write_bytes(b"jpeg")
+            image.write_bytes(base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+                "AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+            ))
             with mock.patch.object(breakdown, "ZHIPU_API_KEY", "secret-test-key"), \
                  mock.patch.object(
                      breakdown.egress,
@@ -161,6 +165,12 @@ class BreakdownZhipuProviderTests(unittest.TestCase):
 
         body = json.loads(posted.call_args.args[3])
         self.assertEqual("glm-4v-plus", body["model"])
+        image_url = body["messages"][1]["content"][1]["image_url"]["url"]
+        self.assertTrue(image_url.startswith("data:image/jpeg;base64,"))
+        self.assertLessEqual(
+            len(base64.b64decode(image_url.split(",", 1)[1])),
+            breakdown._AI_FRAME_MAX_BYTES,
+        )
         self.assertEqual(
             "Bearer secret-test-key", posted.call_args.args[4]["Authorization"]
         )

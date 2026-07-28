@@ -7,6 +7,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+import urllib.error
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "server"))
@@ -282,6 +283,64 @@ class BreakdownFollowupTests(unittest.TestCase):
              ):
             with self.assertRaisesRegex(RuntimeError, "AI 分析响应超时"):
                 breakdown._chat_multimodal("system", "user", [])
+
+    def test_multimodal_http_error_is_not_mislabeled_as_timeout(self):
+        error = urllib.error.HTTPError(
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            413,
+            "Payload Too Large",
+            {},
+            io.BytesIO(b'{"error":"too large"}'),
+        )
+        with mock.patch.object(breakdown, "ZHIPU_API_KEY", "secret-test-key"), \
+             mock.patch.object(
+                 breakdown.egress, "post_json_idempotent", side_effect=error,
+             ), mock.patch("builtins.print") as logged:
+            with self.assertRaisesRegex(RuntimeError, "素材数据过大"):
+                breakdown._chat_multimodal("system", "user", [])
+
+        message = " ".join(str(arg) for arg in logged.call_args.args)
+        self.assertIn("http=413", message)
+        self.assertIn("request_bytes=", message)
+        self.assertNotIn("secret-test-key", message)
+
+    def test_multimodal_connection_reset_is_reported_as_interrupted(self):
+        with mock.patch.object(breakdown, "ZHIPU_API_KEY", "secret-test-key"), \
+             mock.patch.object(
+                 breakdown.egress,
+                 "post_json_idempotent",
+                 side_effect=ConnectionResetError("connection reset by peer"),
+             ):
+            with self.assertRaisesRegex(RuntimeError, "AI 分析连接中断"):
+                breakdown._chat_multimodal("system", "user", [])
+
+    def test_multimodal_ten_frames_share_a_bounded_request_budget(self):
+        budgets = []
+
+        def fake_thumbnail(path, max_edge, max_bytes):
+            budgets.append((path, max_edge, max_bytes))
+            return b"x" * max_bytes
+
+        with mock.patch.object(breakdown, "ZHIPU_API_KEY", "secret-test-key"), \
+             mock.patch.object(
+                 breakdown, "_bounded_thumbnail", side_effect=fake_thumbnail,
+             ), mock.patch.object(
+                 breakdown.egress,
+                 "post_json_idempotent",
+                 return_value={"choices": [{"message": {"content": "ok"}}]},
+             ) as posted:
+            result = breakdown._chat_multimodal(
+                "system", "user", ["frame-%d.jpg" % index for index in range(10)]
+            )
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(len(budgets), 10)
+        self.assertLessEqual(
+            sum(item[2] for item in budgets),
+            breakdown._AI_FRAMES_TOTAL_MAX_BYTES,
+        )
+        body = json.loads(posted.call_args.args[3])
+        self.assertEqual(len(body["messages"][1]["content"]) - 1, 10)
 
     def test_frame_thumbnails_are_embedded_before_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:
