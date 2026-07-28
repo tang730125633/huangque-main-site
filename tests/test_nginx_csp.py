@@ -46,7 +46,7 @@ class NginxCspTest(unittest.TestCase):
                 for header in expected:
                     self.assertEqual(config.count(header), 4, header)
 
-    def test_workbench_ip12_only_proxies_to_existing_hermes(self):
+    def test_workbench_ip12_proxies_directly_to_git_managed_hermes(self):
         config = self._config("deploy/nginx-huangquechuanmei.conf")
         self.assertIn(
             "location = /workbench/ip12 { return 301 /workbench/ip12/; }",
@@ -55,14 +55,21 @@ class NginxCspTest(unittest.TestCase):
         start = config.index("location ^~ /workbench/ip12/")
         end = config.index("\n    }", start)
         block = config[start:end]
-        self.assertIn("proxy_pass http://127.0.0.1:3101/;", block)
+        self.assertIn("proxy_pass http://127.0.0.1:3102/;", block)
+        self.assertNotIn("127.0.0.1:3101", block)
         self.assertIn('proxy_set_header Accept-Encoding "";', block)
-        self.assertIn("'/workbench/ip12/api/", block)
-        self.assertIn(
-            "document.getElementById('sendBtn').disabled=false;",
-            block,
-        )
+        self.assertIn("proxy_request_buffering off;", block)
+        self.assertIn("proxy_buffering off;", block)
+        self.assertIn("client_max_body_size 200m;", block)
+        self.assertIn("sub_filter '\"/' '\"/workbench/ip12/';", block)
+        self.assertIn("sub_filter \"'/\" \"'/workbench/ip12/\";", block)
         self.assertNotIn("auth_basic", block)
+
+    def test_direct_3101_gateway_uses_the_same_flask_service(self):
+        config = self._config("deploy/nginx-hermes-ip12-direct.conf")
+        self.assertIn("listen 3101;", config)
+        self.assertIn("proxy_pass http://127.0.0.1:3102;", config)
+        self.assertIn("client_max_body_size 200m;", config)
 
 
 if __name__ == "__main__":
