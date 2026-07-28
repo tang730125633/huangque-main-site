@@ -234,7 +234,10 @@ def _do_breakdown(payload, info, url):
         _heartbeat(job_id, "analyzing")
         platform = info.get("platform", "")
         if payload.get("mode") == "reverse_prompt":
-            return _reverse_from_frames(payload, frames, url, title, platform, duration)
+            return _reverse_from_frames(
+                payload, frames, url, title, platform, duration,
+                script_text=script_text,
+            )
 
         context = (
             "视频标题：" + str(title) + "\n"
@@ -245,11 +248,14 @@ def _do_breakdown(payload, info, url):
         )
         usermsg = context + (
             '\n\n请严格输出 JSON：{"rhythm":[{"phase":"","time":"","strategy":""}],'
-            '"scenes":[{"dur":"3s","scale":"","camera":"","scene":"详细画面描述(60-100字)",'
+            '"scenes":[{"dur":"3s","scale":"","camera":"","scene":"详细画面描述(80-140字)",'
             '"line":"口播台词"}],"viral_logic":"","template":""}。'
             "输出 4-6 个分镜，各 dur 之和约等于总时长。每个 scene 必须结合关键帧，至少写清："
-            "主体外观或产品特征、连续动作及道具互动、表情视线和身体姿态、场景前中后景关系、"
-            "景别机位与运镜、光线色调和氛围。不要写“人物出现”“展示产品”等笼统结论。"
+            "主体可见外观或产品特征、动作起点—过程—终点及道具互动、表情视线和身体姿态、"
+            "场景前中后景与主体相对位置、景别机位、镜头运动的起止路线、构图、光线方向、"
+            "色温色调、画面质感、环境音/音效、与前后镜的动作或视线衔接。"
+            "每个 scene 写 80-140 字，形成可直接拍摄或输入视频生成模型的执行指令；"
+            "不要写“人物出现”“展示产品”“镜头切换”等笼统结论。"
             "没有人物口播时 line 输出空串。只输出 JSON，不要解释或 markdown。"
         )
         sysmsg = (
@@ -320,16 +326,35 @@ def _download_breakdown_video(tikhub, info, detail, destination):
     raise RuntimeError("视频下载重试状态异常")
 
 
-def _reverse_from_frames(payload, frames, source_url="", title="", platform="", duration=0):
+def _reverse_from_frames(
+    payload, frames, source_url="", title="", platform="", duration=0,
+    script_text="",
+):
+    source_context = (
+        "视频标题：%s\n平台：%s\n总时长：%.1f 秒\n口播时间轴：\n%s\n\n"
+        % (
+            str(title or "（无）"),
+            str(platform or "（未知）"),
+            float(duration or 0),
+            str(script_text or "（无可靠口播，请仅依据可见画面）"),
+        )
+    )
     raw = _chat_multimodal(
         "你是黄雀传媒资深短视频复刻编导。根据连续关键帧恢复镜头时间轴、动作节点与空间连续性，"
-        "写成视频生成模型可执行的中文提示词。只输出 JSON，不要解释或 markdown。",
+        "写成视频生成模型可执行的中文提示词。严格区分可见事实与不确定信息，不臆造身份、"
+        "品牌文字、人物、道具或情节。只输出 JSON，不要解释或 markdown。",
         (
-            "请严格按照参考画面的时间顺序，输出 JSON："
-            "{\"prompt\":\"一段完整、可直接用于视频生成的中文执行提示词\"}。"
-            "提示词必须按总时长写连续时间轴，逐段说明主体、动作起止、景别、机位、运镜、构图和转场；"
-            "写清场景道具、光线色调、节奏和情绪钩子。仅补充连接相邻关键帧所需的过渡动作，"
-            "不得新增人物、道具、镜头或无关情节；人物具体身份、面部和不可确认的品牌文字不得臆造。"
+            source_context + "请严格按照参考画面的时间顺序，输出 JSON："
+            "{\"prompt\":\"[00:00-00:03] ...\\n[00:03-00:07] ...\"}。"
+            "prompt 必须从 00:00 开始，按真实总时长拆成连续、不重叠、无空档的时间段，"
+            "最后一段结束时间等于总时长；镜头变化处单独分段。每段用 80-160 字写清："
+            "①主体可见外观与画面位置；②动作起点、连续过程、终点及道具互动；"
+            "③表情、视线和身体姿态；④场景前中后景及空间关系；"
+            "⑤景别、机位高度、视角、构图和运镜起止路线；"
+            "⑥主光方向、色温色调、材质质感和氛围；⑦转场依据、节奏、环境音/音效；"
+            "⑧该时间段对应的口播或字幕（没有则写“无”）。"
+            "仅补充连接相邻关键帧必需的过渡动作；无法从关键帧确认的细节写“未确认”，不得臆造。"
+            "各段之间用换行分隔，不要合并成一整段概述。"
         ),
         frames,
     )

@@ -35,6 +35,7 @@ class BreakdownFollowupTests(unittest.TestCase):
             "title": "duration unit regression",
         }
         fake_tikhub.download_to_file.return_value = None
+        fake_tikhub.transcript.return_value = []
         with mock.patch.dict(sys.modules, {"tikhub": fake_tikhub}), \
              mock.patch.object(breakdown, "_probe_duration", return_value=10.034), \
              mock.patch.object(
@@ -53,6 +54,50 @@ class BreakdownFollowupTests(unittest.TestCase):
         self.assertEqual(result["type"], "breakdown_reverse")
         self.assertEqual(extracted.call_args.args[1:], (4, 10.034))
         self.assertEqual(reversed_from_frames.call_args.args[-1], 10.034)
+        self.assertEqual(
+            reversed_from_frames.call_args.kwargs["script_text"],
+            "",
+        )
+
+    def test_reverse_prompt_uses_duration_transcript_and_timeline_sections(self):
+        captured = {}
+
+        def fake_chat(system_message, user_message, frames, temp=0.7):
+            captured.update(
+                system=system_message,
+                user=user_message,
+                frames=frames,
+            )
+            return json.dumps({
+                "prompt": (
+                    "[00:00-00:03] 主体从画面左侧进入。\n"
+                    "[00:03-00:07] 镜头跟随主体向前移动。"
+                )
+            }, ensure_ascii=False)
+
+        with mock.patch.object(
+            breakdown, "_chat_multimodal", side_effect=fake_chat
+        ):
+            result = breakdown._reverse_from_frames(
+                {},
+                ["frame-1.jpg", "frame-2.jpg"],
+                title="测试视频",
+                platform="douyin",
+                duration=7,
+                script_text="[0s-3s] 开场口播",
+            )
+
+        self.assertIn("[00:00-00:03]", result["prompt"])
+        for expected in (
+            "总时长：7.0 秒",
+            "[0s-3s] 开场口播",
+            "连续、不重叠、无空档",
+            "每段用 80-160 字",
+            "动作起点、连续过程、终点",
+            "各段之间用换行分隔",
+        ):
+            self.assertIn(expected, captured["user"])
+        self.assertIn("不臆造", captured["system"])
 
     def test_download_timeout_refreshes_detail_and_retries_once(self):
         fake_tikhub = mock.Mock()
