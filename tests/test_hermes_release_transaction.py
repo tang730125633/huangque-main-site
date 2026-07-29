@@ -75,12 +75,45 @@ class HermesReleaseTransactionTests(unittest.TestCase):
         (self.state / "active").write_text("active\n", encoding="utf-8")
         (self.state / "enabled").write_text("enabled\n", encoding="utf-8")
         self.log = self.state / "commands.log"
+        self.deploy_user = subprocess.check_output(
+            ["id", "-un"], text=True
+        ).strip()
+        self.deploy_group = subprocess.check_output(
+            ["id", "-gn"], text=True
+        ).strip()
+        self.env_file.write_text(
+            "HERMES_LEGACY_OWNER=legacy-user\n"
+            "HERMES_DATA_QUOTA_MB=2048\n"
+            f"HERMES_DEPLOY_USER={self.deploy_user}\n"
+            f"HERMES_DEPLOY_GROUP={self.deploy_group}\n",
+            encoding="utf-8",
+        )
+        self._write_tool(
+            "install",
+            """#!/usr/bin/env bash
+set -eu
+echo "install $*" >> "$FAKE_COMMAND_LOG"
+args=()
+while test "$#" -gt 0; do
+  case "$1" in
+    -o|-g) shift 2 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+exec /usr/bin/install "${args[@]}"
+""",
+        )
         self._write_tool(
             "systemctl",
             """#!/usr/bin/env bash
 set -eu
 echo "$*" >> "$FAKE_COMMAND_LOG"
 cmd="$1"; shift || true
+if test "${HERMES_ROLLBACK_ACTIVE:-}" = 1 \
+    && test "${HERMES_ROLLBACK_FAULT:-}" = systemctl \
+    && test "$cmd" = restart; then
+  exit 91
+fi
 case "$cmd" in
   is-active)
     test "$(cat "$FAKE_STATE/active")" = active
@@ -99,6 +132,11 @@ esac
             "rsync",
             """#!/usr/bin/env bash
 set -eu
+echo "rsync $*" >> "$FAKE_COMMAND_LOG"
+if test "${HERMES_ROLLBACK_ACTIVE:-}" = 1 \
+    && test "${HERMES_ROLLBACK_FAULT:-}" = rsync; then
+  exit 90
+fi
 previous=""; last=""
 for value in "$@"; do previous="$last"; last="$value"; done
 src="${previous%/}"; dest="${last%/}"
@@ -128,13 +166,30 @@ esac
             "curl",
             """#!/usr/bin/env bash
 echo "curl $*" >> "$FAKE_COMMAND_LOG"
+if test "${HERMES_ROLLBACK_ACTIVE:-}" = 1 \
+    && test "${HERMES_ROLLBACK_FAULT:-}" = curl \
+    && test "$*" = "-fsS http://local.test/healthz"; then
+  exit 93
+fi
 case "$*" in
   *public.test*) test "${HERMES_FAULT_AFTER:-}" != health || exit 88 ;;
 esac
 exit 0
 """,
         )
-        for name in ("nginx", "systemd-analyze", "ffmpeg", "ffprobe", "yt-dlp", "edge-tts"):
+        self._write_tool(
+            "nginx",
+            """#!/usr/bin/env bash
+echo "nginx $*" >> "$FAKE_COMMAND_LOG"
+if test "${HERMES_ROLLBACK_ACTIVE:-}" = 1 \
+    && test "${HERMES_ROLLBACK_FAULT:-}" = nginx \
+    && test "$*" = "-t"; then
+  exit 92
+fi
+exit 0
+""",
+        )
+        for name in ("systemd-analyze", "ffmpeg", "ffprobe", "yt-dlp", "edge-tts"):
             self._write_tool(
                 name,
                 f"#!/usr/bin/env bash\necho \"{name} $*\" >> \"$FAKE_COMMAND_LOG\"\nexit 0\n",
@@ -148,7 +203,7 @@ exit 0
         path.write_text(content, encoding="utf-8", newline="\n")
         path.chmod(0o755)
 
-    def _run(self, fault):
+    def _run(self, fault, rollback_fault=""):
         environment = os.environ.copy()
         fake_path = str(self.bin) + os.pathsep + environment.get("PATH", "")
         environment.update(
@@ -170,6 +225,7 @@ exit 0
             HERMES_LOCAL_HEALTH_URL="http://local.test/healthz",
             HERMES_PUBLIC_HEALTH_URLS="http://public.test/healthz",
             HERMES_FAULT_AFTER=fault,
+            HERMES_ROLLBACK_FAULT=rollback_fault,
             FAKE_COMMAND_LOG=str(self.log),
             FAKE_STATE=str(self.state),
             PATH=fake_path,
@@ -185,6 +241,9 @@ exit 0
     def _assert_rolled_back(self, fault):
         result = self._run(fault)
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotEqual(result.returncode, 125, result.stdout + result.stderr)
+        self.assertIn("Hermes rollback completed:", result.stderr)
+        self.assertNotIn("Hermes rollback FAILED", result.stderr)
         self.assertEqual((self.app / "version.txt").read_text(), "old\n")
         self.assertFalse((self.app / "scripts").exists())
         self.assertEqual(self.unit.read_text(), "old unit\n")
@@ -200,6 +259,33 @@ exit 0
         self.assertIn("restart hermes-ip12-preview.service", commands)
         self.assertIn("curl -fsS http://local.test/healthz", commands)
 
+    def _assert_rollback_failure(self, fault, expected_step):
+        result = self._run("rsync", fault)
+        self.assertEqual(result.returncode, 125, result.stdout + result.stderr)
+        self.assertIn("Hermes rollback FAILED", result.stderr)
+        self.assertIn("manual recovery required", result.stderr)
+        self.assertIn(f"failed_steps={expected_step}", result.stderr)
+        self.assertIn(f"backup={self.backups}", result.stderr)
+        self.assertNotIn("Hermes rollback completed:", result.stderr)
+        commands = self.log.read_text(encoding="utf-8")
+        self.assertIn("daemon-reload", commands)
+        self.assertIn("nginx -t", commands)
+        self.assertIn("curl -fsS http://local.test/healthz", commands)
+        return commands
+
+    def test_creates_a_fresh_private_backup_tree_owned_by_deploy_account(self):
+        self.assertFalse(self.backups.exists())
+        result = self._run("")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        backup = Path((self.root / "last-backup").read_text().strip())
+        self.assertTrue((backup / "code").is_dir())
+        commands = self.log.read_text(encoding="utf-8")
+        ownership = (
+            f"install -d -o {self.deploy_user} -g {self.deploy_group} "
+            f"-m 0700 {self.backups}"
+        )
+        self.assertIn(ownership, commands)
+
     def test_rolls_back_when_failure_occurs_after_rsync(self):
         self._assert_rolled_back("rsync")
 
@@ -208,6 +294,28 @@ exit 0
 
     def test_rolls_back_when_health_gate_fails(self):
         self._assert_rolled_back("health")
+
+    def test_reports_manual_recovery_when_rollback_rsync_fails(self):
+        commands = self._assert_rollback_failure(
+            "rsync", "restore application files with rsync"
+        )
+        self.assertIn("restart hermes-ip12-preview.service", commands)
+
+    def test_reports_manual_recovery_when_rollback_systemctl_fails(self):
+        commands = self._assert_rollback_failure(
+            "systemctl", "restart restored service"
+        )
+        self.assertIn("is-active --quiet hermes-ip12-preview.service", commands)
+
+    def test_reports_manual_recovery_when_rollback_nginx_validation_fails(self):
+        commands = self._assert_rollback_failure(
+            "nginx", "validate restored nginx configuration"
+        )
+        self.assertNotIn("reload nginx", commands)
+        self.assertIn("restart hermes-ip12-preview.service", commands)
+
+    def test_reports_manual_recovery_when_rollback_health_probe_fails(self):
+        self._assert_rollback_failure("curl", "verify restored service health")
 
 
 if __name__ == "__main__":

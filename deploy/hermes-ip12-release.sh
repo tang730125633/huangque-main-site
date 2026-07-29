@@ -27,6 +27,7 @@ MIGRATION_MANIFEST="$DATA_DIR/.migrations/hermes-owner-artifacts-v1.json"
 backup="$BACKUP_ROOT/hermes-${HERMES_SHA}-$(date +%Y%m%d%H%M%S)"
 release_committed=0
 rollback_running=0
+ROLLBACK_FAILURE_EXIT=125
 
 privileged() {
   if test -n "$SUDO"; then
@@ -48,16 +49,18 @@ backup_file() {
 }
 
 restore_file() {
-  saved="$1"
-  state="$2"
-  target="$3"
-  privileged mkdir -p "$(dirname "$target")"
+  local saved="$1"
+  local state="$2"
+  local target="$3"
+  local restore_failed=0
+  privileged mkdir -p "$(dirname "$target")" || restore_failed=1
   if test "$(cat "$state")" = present; then
-    privileged rm -f "$target"
-    privileged cp -a "$saved" "$target"
+    privileged rm -f "$target" || restore_failed=1
+    privileged cp -a "$saved" "$target" || restore_failed=1
   else
-    privileged rm -f "$target"
+    privileged rm -f "$target" || restore_failed=1
   fi
+  return "$restore_failed"
 }
 
 fail_if_requested() {
@@ -68,7 +71,7 @@ fail_if_requested() {
 }
 
 rollback_release() {
-  status="$?"
+  local status="$?"
   if test "$status" -eq 0 || test "$release_committed" -eq 1; then
     return
   fi
@@ -78,44 +81,84 @@ rollback_release() {
   rollback_running=1
   trap - EXIT ERR INT TERM
   set +e
+  export HERMES_ROLLBACK_ACTIVE=1
+  local rollback_failed=0
+  local rollback_failures=""
+
+  mark_rollback_failure() {
+    rollback_failed=1
+    if test -n "$rollback_failures"; then
+      rollback_failures="$rollback_failures, $1"
+    else
+      rollback_failures="$1"
+    fi
+    echo "Hermes rollback step failed: $1" >&2
+  }
+
+  rollback_step() {
+    local rollback_label="$1"
+    shift
+    if ! "$@"; then
+      mark_rollback_failure "$rollback_label"
+    fi
+    return 0
+  }
+
   echo "Hermes release failed; restoring $backup" >&2
-  privileged systemctl stop "$SERVICE"
+  rollback_step "stop failed release service" privileged systemctl stop "$SERVICE"
   if test "$(cat "$backup/migration-manifest.state")" = absent \
       && test -f "$MIGRATION_MANIFEST"; then
-    "$PYTHON" "$MIGRATION_SCRIPT" --data-dir "$DATA_DIR" --rollback
+    rollback_step "rollback artifact migration" \
+      "$PYTHON" "$MIGRATION_SCRIPT" --data-dir "$DATA_DIR" --rollback
   fi
-  rsync -a --delete \
-    --exclude data/ --exclude media_library/ --exclude knowledge/ \
-    --exclude .agnes_key --exclude agnes_key.txt --exclude '*cookies*.txt' \
-    --exclude backups/ --exclude '*.log' --exclude nohup.out \
-    --exclude '*.bak*' --exclude '*_backup.py' \
-    --exclude __pycache__/ --exclude '*.pyc' \
-    "$backup/code/" "$APP_DIR/"
-  restore_file "$backup/hermes-ip12-preview.service" \
+  rollback_step "restore application files with rsync" \
+    rsync -a --delete \
+      --exclude data/ --exclude media_library/ --exclude knowledge/ \
+      --exclude .agnes_key --exclude agnes_key.txt --exclude '*cookies*.txt' \
+      --exclude backups/ --exclude '*.log' --exclude nohup.out \
+      --exclude '*.bak*' --exclude '*_backup.py' \
+      --exclude __pycache__/ --exclude '*.pyc' \
+      "$backup/code/" "$APP_DIR/"
+  rollback_step "restore systemd unit" restore_file \
+    "$backup/hermes-ip12-preview.service" \
     "$backup/hermes-ip12-preview.service.state" "$SYSTEMD_TARGET"
-  restore_file "$backup/nginx-hermes-ip12-direct.conf" \
+  rollback_step "restore direct nginx configuration" restore_file \
+    "$backup/nginx-hermes-ip12-direct.conf" \
     "$backup/nginx-hermes-ip12-direct.conf.state" "$NGINX_DIRECT_AVAILABLE"
-  restore_file "$backup/nginx-hermes-ip12-direct-enabled.conf" \
+  rollback_step "restore direct nginx enabled link" restore_file \
+    "$backup/nginx-hermes-ip12-direct-enabled.conf" \
     "$backup/nginx-hermes-ip12-direct-enabled.conf.state" "$NGINX_DIRECT_ENABLED"
-  restore_file "$backup/nginx-huangquechuanmei.conf" \
+  rollback_step "restore site nginx configuration" restore_file \
+    "$backup/nginx-huangquechuanmei.conf" \
     "$backup/nginx-huangquechuanmei.conf.state" "$NGINX_SITE_AVAILABLE"
-  restore_file "$backup/nginx-huangquechuanmei-enabled.conf" \
+  rollback_step "restore site nginx enabled link" restore_file \
+    "$backup/nginx-huangquechuanmei-enabled.conf" \
     "$backup/nginx-huangquechuanmei-enabled.conf.state" "$NGINX_SITE_ENABLED"
-  privileged systemctl daemon-reload
+  rollback_step "reload systemd units" privileged systemctl daemon-reload
   if test "$(cat "$backup/hermes-ip12-preview.enabled")" = enabled; then
-    privileged systemctl enable "$SERVICE"
+    rollback_step "restore service enabled state" privileged systemctl enable "$SERVICE"
   else
-    privileged systemctl disable "$SERVICE"
+    rollback_step "restore service disabled state" privileged systemctl disable "$SERVICE"
   fi
-  privileged nginx -t
-  privileged systemctl reload nginx
+  if privileged nginx -t; then
+    rollback_step "reload nginx" privileged systemctl reload nginx
+  else
+    mark_rollback_failure "validate restored nginx configuration"
+  fi
   if test "$(cat "$backup/hermes-ip12-preview.active")" = active; then
-    privileged systemctl restart "$SERVICE"
-    curl -fsS "$LOCAL_HEALTH_URL" >/dev/null
+    rollback_step "restart restored service" privileged systemctl restart "$SERVICE"
+    rollback_step "verify restored service state" \
+      privileged systemctl is-active --quiet "$SERVICE"
+    rollback_step "verify restored service health" \
+      curl -fsS "$LOCAL_HEALTH_URL" >/dev/null
   else
-    privileged systemctl stop "$SERVICE"
+    rollback_step "restore inactive service state" privileged systemctl stop "$SERVICE"
   fi
-  echo "Hermes rollback completed" >&2
+  if test "$rollback_failed" -ne 0; then
+    echo "Hermes rollback FAILED; manual recovery required; backup=$backup; failed_steps=$rollback_failures" >&2
+    exit "$ROLLBACK_FAILURE_EXIT"
+  fi
+  echo "Hermes rollback completed: $backup" >&2
   exit "$status"
 }
 
@@ -129,9 +172,12 @@ set -a
 . "$ENV_FILE"
 set +a
 : "${HERMES_LEGACY_OWNER:?HERMES_LEGACY_OWNER is required}"
+DEPLOY_USER="${HERMES_DEPLOY_USER:-$(id -un)}"
+DEPLOY_GROUP="${HERMES_DEPLOY_GROUP:-$(id -gn)}"
 
-privileged install -d -m 0700 "$BACKUP_ROOT"
-mkdir -p "$backup/code"
+privileged install -d -o "$DEPLOY_USER" -g "$DEPLOY_GROUP" -m 0700 "$BACKUP_ROOT"
+privileged install -d -o "$DEPLOY_USER" -g "$DEPLOY_GROUP" -m 0700 "$backup"
+install -d -m 0700 "$backup/code"
 mkdir -p "$APP_DIR"
 rsync -a \
   --exclude data/ --exclude media_library/ --exclude knowledge/ \

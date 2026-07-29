@@ -262,6 +262,14 @@ class HermesIP12SourceTests(unittest.TestCase):
         self.assertIn("fail_if_requested rsync", release_script)
         self.assertIn("fail_if_requested pip", release_script)
         self.assertIn("fail_if_requested health", release_script)
+        self.assertIn('DEPLOY_USER="${HERMES_DEPLOY_USER:-$(id -un)}"', release_script)
+        self.assertIn('DEPLOY_GROUP="${HERMES_DEPLOY_GROUP:-$(id -gn)}"', release_script)
+        self.assertIn(
+            'install -d -o "$DEPLOY_USER" -g "$DEPLOY_GROUP" -m 0700',
+            release_script,
+        )
+        self.assertIn("Hermes rollback FAILED; manual recovery required", release_script)
+        self.assertIn('exit "$ROLLBACK_FAILURE_EXIT"', release_script)
         self.assertLess(
             release_script.index('systemctl stop "$SERVICE"'),
             release_script.index("--dry-run"),
@@ -279,6 +287,8 @@ class HermesIP12SourceTests(unittest.TestCase):
         )
         self.assertIn("HERMES_LEGACY_OWNER=", env_example)
         self.assertIn("HERMES_DATA_QUOTA_MB=2048", env_example)
+        self.assertIn("HERMES_DEPLOY_USER=ubuntu", env_example)
+        self.assertIn("HERMES_DEPLOY_GROUP=ubuntu", env_example)
 
     @unittest.skipUnless(shutil.which("node"), "node is required")
     def test_markdown_guard_blocks_script_protocols_and_falls_back(self):
