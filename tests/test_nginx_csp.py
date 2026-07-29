@@ -71,6 +71,20 @@ class NginxCspTest(unittest.TestCase):
         self.assertIn("proxy_pass http://127.0.0.1:3102;", config)
         self.assertIn("client_max_body_size 200m;", config)
 
+    def test_hermes_runbook_updates_the_actively_loaded_main_site_config(self):
+        runbook = self._config("deploy/生产环境清单与还原手册.md")
+        active = "/etc/nginx/sites-enabled/huangquechuanmei"
+        self.assertIn(f"backup_file {active} nginx-huangquechuanmei-enabled.conf", runbook)
+        self.assertIn(
+            f'sudo install -m 0644 "$HERMES_RELEASE_DIR/deploy/nginx-huangquechuanmei.conf" {active}',
+            runbook,
+        )
+        self.assertIn(
+            f'restore_file "$backup/nginx-huangquechuanmei-enabled.conf" '
+            f'"$backup/nginx-huangquechuanmei-enabled.conf.state" {active}',
+            runbook,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
