@@ -13,3 +13,41 @@ python3 -c 'import server; server.app.run(host="127.0.0.1", port=3102, debug=Fal
 
 `/` serves the current v6 workbench. `/classic` preserves the original
 report-and-deliverable interface against the same conversations.
+
+## One-time artifact ownership migration
+
+Before the first deployment that enables owner-isolated artifact storage, map
+all pre-isolation assets to the existing account that created them. Do not guess
+the username: confirm it in the account service first. Stop Hermes while the
+migration runs so the media index cannot change concurrently.
+
+```bash
+sudo systemctl stop hermes-ip12-preview
+python3 scripts/migrate_hermes_artifacts.py \
+  --root-dir /home/ubuntu/hermes-web \
+  --data-dir /home/ubuntu/hermes-web/data \
+  --legacy-owner CONFIRMED_USERNAME \
+  --dry-run
+python3 scripts/migrate_hermes_artifacts.py \
+  --root-dir /home/ubuntu/hermes-web \
+  --data-dir /home/ubuntu/hermes-web/data \
+  --legacy-owner CONFIRMED_USERNAME
+sudo systemctl start hermes-ip12-preview
+```
+
+The migration copies legacy media, knowledge, videos, analyses, and uploads;
+the originals are deliberately retained. It is idempotent and records a
+checksum manifest in `data/.migrations/`. After verifying `/healthz`, media
+search, and historical video URLs, archive the legacy directories according to
+the normal backup policy.
+
+To roll back, stop Hermes first. Rollback refuses to overwrite a media index or
+remove a migrated file that changed after migration.
+
+```bash
+sudo systemctl stop hermes-ip12-preview
+python3 scripts/migrate_hermes_artifacts.py \
+  --data-dir /home/ubuntu/hermes-web/data \
+  --rollback
+sudo systemctl start hermes-ip12-preview
+```

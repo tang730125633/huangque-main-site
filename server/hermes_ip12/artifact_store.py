@@ -18,7 +18,9 @@ from runtime_paths import DATA_DIR
 
 
 ASSET_ID_RE = re.compile(r"[0-9a-f]{10}\Z")
-VIDEO_NAME_RE = re.compile(r"([0-9a-f]{10})\.mp4\Z")
+# New files use ``<id>.mp4``. The two prefixed forms were emitted by the
+# pre-isolation analyzer and replica pipelines and remain valid after migration.
+VIDEO_NAME_RE = re.compile(r"(?:ref_|replica_)?([0-9a-f]{10})\.mp4\Z")
 DATA_QUOTA_BYTES = max(1, int(os.environ.get("HERMES_DATA_QUOTA_MB", "2048"))) * 1024 * 1024
 RESERVATION_TTL_SECONDS = max(
     60, int(os.environ.get("HERMES_RESERVATION_TTL_SECONDS", "3600"))

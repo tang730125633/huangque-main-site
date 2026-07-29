@@ -154,6 +154,7 @@ class HermesIP12SourceTests(unittest.TestCase):
         self.assertIn("too many requests", security)
         self.assertIn("def atomic_write_bytes", artifact_store)
         self.assertIn("def video_work_dir", artifact_store)
+        self.assertIn('(?:ref_|replica_)?([0-9a-f]{10})', artifact_store)
         self.assertIn("owned_video_path(current_username(), filename)", video_factory)
         for filename in (
             "video_factory.py", "video_analyzer.py", "video_pipeline.py", "video_replica.py"
@@ -166,6 +167,16 @@ class HermesIP12SourceTests(unittest.TestCase):
         video_analyzer = (HERMES / "video_analyzer.py").read_text(encoding="utf-8")
         self.assertIn("with storage_transaction():", media_library)
         self.assertIn('entry_id = f"{owner_id}_{new_asset_id()}"', media_library)
+
+        runbook = (ROOT / "deploy" / "生产环境清单与还原手册.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("http://127.0.0.1:3102/healthz", runbook)
+        self.assertIn(
+            "https://huangquechuanmei.com/workbench/ip12/healthz", runbook
+        )
+        self.assertIn("http://129.204.166.13:3101/healthz", runbook)
+        self.assertNotIn("http://127.0.0.1:3102/ >/dev/null", runbook)
         self.assertEqual(
             video_analyzer.count('"--max-filesize", ANALYSIS_MAX_DOWNLOAD_ARG'), 2
         )
@@ -966,12 +977,59 @@ class EmptyPexelsResponse:
     def json(self):
         return {"photos": []}
 
-with patch.object(media_library.MediaLibrary, "search", return_value=[]), \
+with patch.object(media_library.MediaLibrary, "_owner", return_value="admin"), \
+     patch.object(media_library.MediaLibrary, "search", return_value=[]), \
      patch.object(media_library.KnowledgeBase, "get_keyword_map", return_value=None), \
      patch.object(media_library, "google_search_images", return_value=[]), \
      patch("requests.get", return_value=EmptyPexelsResponse()) as pexels_get:
     assert media_library.get_best_image("test") == {"source": "none", "keyword": "test"}
     assert pexels_get.call_args.kwargs["headers"]["Authorization"] == "pexels-dummy"
+
+class ImageResponse:
+    status_code = 200
+    text = ""
+    content = b"image-bytes" * 600
+    def __init__(self, payload=None):
+        self.payload = payload or {}
+    def json(self):
+        return self.payload
+
+pexels_response = ImageResponse({
+    "photos": [{
+        "src": {"large": "https://img.example/pexels.jpg"},
+        "photographer": "Pexels Owner",
+    }],
+})
+with patch.object(media_library.MediaLibrary, "_owner", return_value="admin"), \
+     patch.object(media_library.MediaLibrary, "search", return_value=[]), \
+     patch.object(media_library.KnowledgeBase, "get_keyword_map", return_value=None), \
+     patch("requests.get", side_effect=[pexels_response, ImageResponse()]):
+    result = media_library.get_best_image("pexels-owned")
+assert result["source"] == "pexels", result
+pexels_entries = media_library.MediaLibrary._load()["entries"].values()
+pexels_entry = next(entry for entry in pexels_entries if entry["keyword"] == "pexels-owned")
+assert pexels_entry["owner_username"] == "admin", pexels_entry
+assert Path(pexels_entry["file_path"]).is_relative_to(
+    artifact_store.user_dir("admin", "media")
+), pexels_entry
+
+with patch.object(media_library.MediaLibrary, "_owner", return_value="admin"), \
+     patch.object(media_library.MediaLibrary, "search", return_value=[]), \
+     patch.object(media_library.KnowledgeBase, "get_keyword_map", return_value=None), \
+     patch.object(media_library, "PEXELS_KEY", ""), \
+     patch.object(media_library, "google_search_images", return_value=[{
+         "url": "https://img.example/google.jpg",
+         "title": "Google Owner",
+     }]), \
+     patch("requests.get", return_value=ImageResponse()):
+    result = media_library.get_best_image("google-owned")
+assert result["source"] == "google", result
+google_entries = media_library.MediaLibrary._load()["entries"].values()
+google_entry = next(entry for entry in google_entries if entry["keyword"] == "google-owned")
+assert google_entry["owner_username"] == "admin", google_entry
+assert Path(google_entry["file_path"]).is_relative_to(
+    artifact_store.user_dir("admin", "media")
+), google_entry
 
 with patch.object(video_replica, "PEXELS_KEY", ""), \
      patch("requests.get") as no_key_get:

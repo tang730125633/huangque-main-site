@@ -256,7 +256,6 @@ PEXELS_KEY = os.environ.get("PEXELS_API_KEY", "")
 def google_search_images(query, num=5):
     """搜Google图片，返回[{url, title, width, height, thumbnail}]"""
     import requests as req
-    owner_username = MediaLibrary._owner()
     try:
         r = req.get("https://www.googleapis.com/customsearch/v1",
             params={"key": GOOGLE_API_KEY, "cx": GOOGLE_CX, "q": query,
@@ -286,12 +285,15 @@ def get_best_image(keyword):
     3. Pexels → Google → 下载入库
     """
     import requests as req
+    owner_username = MediaLibrary._owner()
+    if not owner_username:
+        raise ValueError("media owner required")
 
     # 1. 查素材库
-    cached = MediaLibrary.search(keyword)
+    cached = MediaLibrary.search(keyword, owner_username=owner_username)
     if cached:
         entry = cached[0]
-        MediaLibrary.increment_use(entry["id"])
+        MediaLibrary.increment_use(entry["id"], owner_username=owner_username)
         return {"source": "library", "path": entry["file_path"], "keyword": keyword}
 
     # 2. 查关键词映射
