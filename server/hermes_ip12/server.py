@@ -550,6 +550,52 @@ def api_delete_convo(cid):
     (FOUNDATION_REPORTS_DIR / (cid + ".pdf")).unlink(missing_ok=True)
     return jsonify({"ok": True})
 
+def prepare_chat(cid, user_msg):
+    """Store one user turn and build the shared model context for web and mini-program."""
+    convo = owned_conversation(cid)
+    if convo is None:
+        return None, None, None
+    convo["messages"].append({"role": "user", "content": user_msg})
+    if convo["title"] == "新诊断" and len(convo["messages"]) >= 2:
+        for message in convo["messages"]:
+            if message["role"] == "user":
+                title = message["content"][:30].replace("\n", " ")
+                convo["title"] = title if len(title) < 30 else title[:27] + "..."
+                break
+    save_conversation(cid, convo)
+    messages = [{"role": "system", "content": build_system_prompt(cid)}]
+    messages.extend(convo["messages"][-40:])
+    return convo, messages, list(convo.get("coach_state", {}).get("completed_modules", []))
+
+def finish_chat(cid, full, old_completed):
+    """Apply exactly the same coach-state, delivery and PDF rules to every chat client."""
+    convo = load_conversation(cid)
+    convo["messages"].append({"role": "assistant", "content": full})
+    state = parse_coach_state_updates(full, convo.get("coach_state", {}))
+    convo["coach_state"] = state
+    new_completed = [module for module in state.get("completed_modules", []) if module not in old_completed]
+    auto_deliverables = {}
+    for module in new_completed:
+        if module in MODULE_DELIVERABLES:
+            try:
+                deliverable = generate_deliverable(cid, module)
+                if deliverable:
+                    auto_deliverables[str(module)] = deliverable
+            except Exception:
+                pass
+    foundation_report = None
+    if 4 in new_completed:
+        save_conversation(cid, convo)
+        try:
+            foundation_report = generate_foundation_report(cid)
+            convo = load_conversation(cid)
+            state = convo.get("coach_state", state)
+        except Exception as exc:
+            state["foundation_report"] = {"status": "failed", "error": str(exc)[:120]}
+            convo["coach_state"] = state
+    save_conversation(cid, convo)
+    return state, new_completed, auto_deliverables, foundation_report
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """流式聊天 + 自动状态管理 + 模块完成自动生成交付物"""
@@ -559,22 +605,9 @@ def api_chat():
     if not user_msg:
         return jsonify({"error": "empty message"}), 400
 
-    convo = owned_conversation(cid)
+    convo, messages, old_completed = prepare_chat(cid, user_msg)
     if convo is None:
         return jsonify({"ok": False, "error": "诊断不存在"}), 404
-    convo["messages"].append({"role": "user", "content": user_msg})
-    if convo["title"] == "新诊断" and len(convo["messages"]) >= 2:
-        for m in convo["messages"]:
-            if m["role"] == "user":
-                t = m["content"][:30].replace("\n", " ")
-                convo["title"] = t if len(t) < 30 else t[:27] + "..."
-                break
-    save_conversation(cid, convo)
-
-    system_prompt = build_system_prompt(cid)
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(convo["messages"][-40:])
-    old_completed = list(convo.get("coach_state", {}).get("completed_modules", []))
 
     def generate():
         full = ""
@@ -593,36 +626,7 @@ def api_chat():
                         yield f"data: {json.dumps({'content': content})}\n\n"
                 except json.JSONDecodeError: continue
 
-            convo2 = load_conversation(cid)
-            convo2["messages"].append({"role": "assistant", "content": full})
-            new_state = parse_coach_state_updates(full, convo2.get("coach_state", {}))
-            convo2["coach_state"] = new_state
-
-            new_completed = [m for m in new_state.get("completed_modules", []) if m not in old_completed]
-
-            # ── 新：自动生成交付物 ──
-            auto_deliverables = {}
-            for mid in new_completed:
-                if mid in MODULE_DELIVERABLES:
-                    try:
-                        d_result = generate_deliverable(cid, mid)
-                        if d_result:
-                            auto_deliverables[str(mid)] = d_result
-                    except:
-                        pass  # 交付物生成失败不影响主流程
-
-            foundation_report = None
-            if 4 in new_completed:
-                save_conversation(cid, convo2)
-                try:
-                    foundation_report = generate_foundation_report(cid)
-                    convo2 = load_conversation(cid)
-                    new_state = convo2.get("coach_state", new_state)
-                except Exception as exc:
-                    new_state["foundation_report"] = {"status": "failed", "error": str(exc)[:120]}
-                    convo2["coach_state"] = new_state
-
-            save_conversation(cid, convo2)
+            new_state, new_completed, auto_deliverables, foundation_report = finish_chat(cid, full, old_completed)
 
             yield f"data: {json.dumps({'done': True, 'state': new_state, 'new_completed': new_completed, 'auto_deliverables': auto_deliverables, 'foundation_report': foundation_report})}\n\n"
 
@@ -631,6 +635,27 @@ def api_chat():
 
     return Response(generate(), mimetype="text/event-stream",
                     headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
+
+@app.route("/api/chat-complete", methods=["POST"])
+def api_chat_complete():
+    """Non-streaming chat for the native mini-program; web keeps the original SSE endpoint."""
+    body = request.get_json() or {}
+    cid = body.get("conversation_id", "")
+    user_msg = str(body.get("message", "")).strip()
+    if not user_msg:
+        return jsonify({"error": "empty message"}), 400
+    convo, messages, old_completed = prepare_chat(cid, user_msg)
+    if convo is None:
+        return jsonify({"ok": False, "error": "诊断不存在"}), 404
+    try:
+        response = call_ai(messages, stream=False)
+        full = response.json()["choices"][0]["message"]["content"]
+        state, new_completed, auto_deliverables, foundation_report = finish_chat(cid, full, old_completed)
+        return jsonify({"ok": True, "assistant": full, "state": state,
+                        "new_completed": new_completed, "auto_deliverables": auto_deliverables,
+                        "foundation_report": foundation_report})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 @app.route("/api/generate-deliverable", methods=["POST"])
 def api_generate_deliverable():

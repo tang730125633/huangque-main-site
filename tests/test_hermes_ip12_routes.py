@@ -42,7 +42,7 @@ class HermesIP12SourceTests(unittest.TestCase):
         for path in HERMES.glob("*.py"):
             routes.update(pattern.findall(path.read_text(encoding="utf-8")))
 
-        self.assertEqual(len(routes), 74)
+        self.assertEqual(len(routes), 75)
         self.assertTrue(
             {
                 "/api/chat",
@@ -227,7 +227,7 @@ import video_replica
 
 server.current_account_id = lambda: "acct_a"
 routes = {rule.rule for rule in app.url_map.iter_rules() if rule.endpoint != "static"}
-assert len(routes) == 74, len(routes)
+assert len(routes) == 75, len(routes)
 
 transitioned = parse_coach_state_updates(
     "好，我们进入模块2：人设塑造。",
@@ -282,6 +282,22 @@ assert client.post(
     "/api/chat",
     json={"conversation_id": "../../knowledge/visual_formulas", "message": "test"},
 ).status_code == 400
+
+with patch.object(server, "call_ai") as chat_model:
+    chat_model.return_value.json.return_value = {
+        "choices": [{"message": {"content": "请先告诉我，你希望大家如何称呼你？"}}]
+    }
+    mini_cid = client.post("/api/conversations").get_json()["id"]
+    mini_reply = client.post(
+        "/api/chat-complete", json={"conversation_id": mini_cid, "message": "开始"}
+    )
+    assert mini_reply.status_code == 200, mini_reply.get_data(as_text=True)
+    assert mini_reply.get_json()["assistant"]
+server.current_account_id = lambda: "acct_b"
+assert client.post(
+    "/api/chat-complete", json={"conversation_id": mini_cid, "message": "越权"}
+).status_code == 404
+server.current_account_id = lambda: "acct_a"
 
 uploaded = client.post(
     "/api/agnes/upload-image",
