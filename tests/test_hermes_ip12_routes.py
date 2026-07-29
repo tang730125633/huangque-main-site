@@ -128,6 +128,10 @@ class HermesIP12SourceTests(unittest.TestCase):
         source = (HERMES / "server.py").read_text(encoding="utf-8")
         self.assertIn("subprocess.run(", source)
         self.assertIn("timeout=60", source)
+        self.assertLess(
+            source.index("playwright.chromium.executable_path"),
+            source.index('shutil.which("chromium")'),
+        )
         self.assertIn("价值主张诊断表", source)
         self.assertIn("故事库（至少5个）", source)
         self.assertIn("内容资产使用表", source)

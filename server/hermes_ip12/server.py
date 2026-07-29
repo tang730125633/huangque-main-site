@@ -439,7 +439,21 @@ def generate_foundation_report(convo_id):
     messages.append({"role": "user", "content": "交付质检：请完整输出所有标题和表格，不得用‘略’、‘同上’或压缩成摘要。目标约8-10页、6000字左右。每个字段独占一行；策略推导必须建立在已知事实上，未知处清楚标注‘待本人确认’。"})
     content = call_ai(messages, stream=False, temperature=0.4, max_tokens=8500).json()["choices"][0]["message"]["content"]
     FOUNDATION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    browser = next((item for item in (shutil.which("chromium"), shutil.which("chromium-browser"), "/snap/bin/chromium") if item and pathlib.Path(item).is_file()), "")
+    playwright_browser = ""
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as playwright:
+            playwright_browser = playwright.chromium.executable_path
+    except Exception:
+        pass
+    browser = next((item for item in (
+        playwright_browser,
+        shutil.which("google-chrome"),
+        shutil.which("google-chrome-stable"),
+        shutil.which("chromium"),
+        shutil.which("chromium-browser"),
+        "/snap/bin/chromium",
+    ) if item and pathlib.Path(item).is_file()), "")
     if not browser:
         raise RuntimeError("PDF renderer is unavailable")
     with tempfile.TemporaryDirectory(prefix="hermes-foundation-", dir=str(pathlib.Path.home())) as directory:
