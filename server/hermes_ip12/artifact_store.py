@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
 import threading
+import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from runtime_paths import DATA_DIR
@@ -16,11 +19,106 @@ from runtime_paths import DATA_DIR
 ASSET_ID_RE = re.compile(r"[0-9a-f]{10}\Z")
 VIDEO_NAME_RE = re.compile(r"([0-9a-f]{10})\.mp4\Z")
 DATA_QUOTA_BYTES = max(1, int(os.environ.get("HERMES_DATA_QUOTA_MB", "2048"))) * 1024 * 1024
+RESERVATION_TTL_SECONDS = max(
+    60, int(os.environ.get("HERMES_RESERVATION_TTL_SECONDS", "3600"))
+)
+LOCK_FILE = DATA_DIR / ".artifact-store.lock"
+RESERVATIONS_FILE = DATA_DIR / ".quota-reservations.json"
 _storage_lock = threading.RLock()
+_transaction_state = threading.local()
 
 
 class StorageQuotaExceeded(OSError):
     pass
+
+
+def _lock_file(handle):
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+
+
+def _unlock_file(handle):
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def storage_transaction():
+    """Serialize storage read-modify-write operations across threads/processes."""
+    with _storage_lock:
+        depth = getattr(_transaction_state, "depth", 0)
+        if depth:
+            _transaction_state.depth = depth + 1
+            try:
+                yield
+            finally:
+                _transaction_state.depth -= 1
+            return
+
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOCK_FILE, "a+b") as handle:
+            _lock_file(handle)
+            _transaction_state.depth = 1
+            try:
+                yield
+            finally:
+                _transaction_state.depth = 0
+                _unlock_file(handle)
+
+
+def _load_reservations():
+    try:
+        data = json.loads(RESERVATIONS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    cutoff = time.time() - RESERVATION_TTL_SECONDS
+    return {
+        key: value for key, value in data.items()
+        if float(value.get("created_at", 0)) >= cutoff
+    }
+
+
+def _save_reservations(data):
+    RESERVATIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temp = RESERVATIONS_FILE.with_name(
+        f".{RESERVATIONS_FILE.name}.{uuid.uuid4().hex}.tmp"
+    )
+    try:
+        temp.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+        os.replace(temp, RESERVATIONS_FILE)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+@contextmanager
+def reserve_capacity(byte_count):
+    """Persist a quota reservation so concurrent workers cannot overcommit."""
+    byte_count = max(0, int(byte_count))
+    token = uuid.uuid4().hex
+    with storage_transaction():
+        reservations = _load_reservations()
+        reserved = sum(max(0, int(item.get("bytes", 0))) for item in reservations.values())
+        if directory_size() + reserved + byte_count > DATA_QUOTA_BYTES:
+            raise StorageQuotaExceeded("Hermes storage quota exceeded")
+        reservations[token] = {"bytes": byte_count, "created_at": time.time()}
+        _save_reservations(reservations)
+    try:
+        yield token
+    finally:
+        with storage_transaction():
+            reservations = _load_reservations()
+            reservations.pop(token, None)
+            _save_reservations(reservations)
 
 
 def owner_key(username):
@@ -114,23 +212,32 @@ def directory_size(root=DATA_DIR):
     return total
 
 
-def ensure_capacity(extra_bytes, replacing=None):
+def ensure_capacity(extra_bytes, replacing=None, reservation=None):
     replacing_size = 0
     if replacing:
         try:
             replacing_size = Path(replacing).stat().st_size
         except OSError:
             pass
-    if directory_size() - replacing_size + max(0, int(extra_bytes)) > DATA_QUOTA_BYTES:
+    reservations = _load_reservations()
+    own_reserved = 0
+    if reservation in reservations:
+        own_reserved = max(0, int(reservations[reservation].get("bytes", 0)))
+    reserved = sum(max(0, int(item.get("bytes", 0))) for item in reservations.values())
+    projected = (
+        directory_size() - replacing_size + reserved - own_reserved
+        + max(0, int(extra_bytes))
+    )
+    if projected > DATA_QUOTA_BYTES:
         raise StorageQuotaExceeded("Hermes storage quota exceeded")
 
 
-def atomic_write_bytes(destination, content):
+def atomic_write_bytes(destination, content, reservation=None):
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temp = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
-    with _storage_lock:
-        ensure_capacity(len(content), replacing=destination)
+    with storage_transaction():
+        ensure_capacity(len(content), replacing=destination, reservation=reservation)
         try:
             temp.write_bytes(content)
             os.replace(temp, destination)
@@ -139,24 +246,30 @@ def atomic_write_bytes(destination, content):
     return destination
 
 
-def finalize_file(source, destination):
+def finalize_file(source, destination, reservation=None):
     source = Path(source).resolve()
     destination = Path(destination).resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with _storage_lock:
+    with storage_transaction():
         source_inside_data = source.is_relative_to(DATA_DIR.resolve())
-        ensure_capacity(0 if source_inside_data else source.stat().st_size, replacing=destination)
+        ensure_capacity(
+            0 if source_inside_data else source.stat().st_size,
+            replacing=destination,
+            reservation=reservation,
+        )
         os.replace(source, destination)
     return destination
 
 
-def atomic_copy(source, destination):
+def atomic_copy(source, destination, reservation=None):
     source = Path(source).resolve()
     destination = Path(destination).resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     temp = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
-    with _storage_lock:
-        ensure_capacity(source.stat().st_size, replacing=destination)
+    with storage_transaction():
+        ensure_capacity(
+            source.stat().st_size, replacing=destination, reservation=reservation
+        )
         try:
             shutil.copy2(source, temp)
             os.replace(temp, destination)

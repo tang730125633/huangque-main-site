@@ -8,7 +8,14 @@ import os, json, time
 from pathlib import Path
 from datetime import datetime
 from runtime_paths import DATA_DIR
-from artifact_store import atomic_copy, atomic_write_bytes, media_path, new_asset_id, owner_key
+from artifact_store import (
+    atomic_copy,
+    atomic_write_bytes,
+    media_path,
+    new_asset_id,
+    owner_key,
+    storage_transaction,
+)
 from werkzeug.utils import secure_filename
 
 BASE = DATA_DIR
@@ -65,62 +72,79 @@ class MediaLibrary:
     @staticmethod
     def add(keyword, file_path, source="manual", tags=None, owner_username=None, copy_file=True):
         """添加素材入库。file_path会被复制到素材库"""
-        data = MediaLibrary._load()
         owner_username = MediaLibrary._owner(owner_username)
         if not owner_username:
             raise ValueError("media owner required")
+        with storage_transaction():
+            data = MediaLibrary._load()
 
-        # 去重：检查是否已有相同文件
-        fhash = str(os.path.getsize(file_path)) + "_" + Path(file_path).name
-        for eid, entry in data["entries"].items():
-            if entry.get("fhash") == fhash and entry.get("owner_username") == owner_username:
-                return entry["id"]
+            # 去重检查与索引提交必须处于同一个事务，避免并发丢失更新。
+            fhash = str(os.path.getsize(file_path)) + "_" + Path(file_path).name
+            for entry in data["entries"].values():
+                if (
+                    entry.get("fhash") == fhash
+                    and entry.get("owner_username") == owner_username
+                ):
+                    return entry["id"]
 
-        # 归入关键词子目录
-        safe_kw = secure_filename(str(keyword).lower())[:30] or "unknown"
-        owner_dir = (MEDIA / owner_key(owner_username)).resolve()
-        kw_dir = (owner_dir / safe_kw).resolve()
-        if kw_dir.parent != owner_dir:
-            raise ValueError("invalid media keyword")
-        kw_dir.mkdir(parents=True, exist_ok=True)
+            safe_kw = secure_filename(str(keyword).lower())[:30] or "unknown"
+            owner_id = owner_key(owner_username)
+            owner_dir = (MEDIA / owner_id).resolve()
+            kw_dir = (owner_dir / safe_kw).resolve()
+            if kw_dir.parent != owner_dir:
+                raise ValueError("invalid media keyword")
+            kw_dir.mkdir(parents=True, exist_ok=True)
 
-        # 复制文件
-        ext = Path(file_path).suffix
-        entry_id = f"{safe_kw}_{int(time.time())}"
-        if copy_file:
-            dest = (kw_dir / f"{entry_id}{ext}").resolve()
-            if dest.parent != kw_dir:
-                raise ValueError("invalid media destination")
-            atomic_copy(file_path, dest)
-        else:
-            dest = Path(file_path).resolve()
+            ext = Path(file_path).suffix
+            entry_id = f"{owner_id}_{new_asset_id()}"
+            copied = False
+            if copy_file:
+                dest = (kw_dir / f"{entry_id}{ext}").resolve()
+                if dest.parent != kw_dir:
+                    raise ValueError("invalid media destination")
+                atomic_copy(file_path, dest)
+                copied = True
+            else:
+                dest = Path(file_path).resolve()
+                if not dest.is_relative_to(DATA_DIR.resolve()):
+                    raise ValueError("media file must be inside the data directory")
 
-        # 记录元数据
-        stat = os.stat(file_path)
-        entry = {
-            "id": entry_id,
-            "owner_username": owner_username,
-            "keyword": keyword,
-            "file_path": str(dest),
-            "original_name": Path(file_path).name,
-            "source": source,
-            "tags": tags or [keyword],
-            "size_bytes": stat.st_size,
-            "format": ext.lstrip('.'),
-            "added_at": datetime.now().isoformat(),
-            "fhash": fhash,
-            "use_count": 0
-        }
+            stat = os.stat(dest)
+            entry = {
+                "id": entry_id,
+                "owner_username": owner_username,
+                "keyword": keyword,
+                "file_path": str(dest),
+                "original_name": Path(file_path).name,
+                "source": source,
+                "tags": tags or [keyword],
+                "size_bytes": stat.st_size,
+                "format": ext.lstrip('.'),
+                "added_at": datetime.now().isoformat(),
+                "fhash": fhash,
+                "use_count": 0
+            }
+            data["entries"][entry_id] = entry
+            data.setdefault("keywords", {}).setdefault(keyword, []).append(entry_id)
+            try:
+                MediaLibrary._save(data)
+            except Exception:
+                if copied or not copy_file:
+                    dest.unlink(missing_ok=True)
+                raise
+            return entry_id
 
-        data["entries"][entry_id] = entry
-
-        # 更新关键词索引
-        if keyword not in data["keywords"]:
-            data["keywords"][keyword] = []
-        data["keywords"][keyword].append(entry_id)
-
-        MediaLibrary._save(data)
-        return entry_id
+    @staticmethod
+    def increment_use(entry_id, owner_username=None):
+        owner_username = MediaLibrary._owner(owner_username)
+        with storage_transaction():
+            data = MediaLibrary._load()
+            entry = data["entries"].get(entry_id)
+            if not entry or entry.get("owner_username") != owner_username:
+                return False
+            entry["use_count"] = entry.get("use_count", 0) + 1
+            MediaLibrary._save(data)
+            return True
 
     @staticmethod
     def stats(owner_username=None):
@@ -132,11 +156,16 @@ class MediaLibrary:
             if value.get("owner_username") == owner_username
         }
         total_size = sum(e.get("size_bytes", 0) for e in entries.values())
+        keywords = sorted({
+            str(entry.get("keyword", ""))
+            for entry in entries.values()
+            if str(entry.get("keyword", "")).strip()
+        })
         return {
             "total_files": len(entries),
-            "total_keywords": len(data["keywords"]),
+            "total_keywords": len(keywords),
             "total_size_mb": round(total_size / 1024 / 1024, 1),
-            "keywords": sorted(data["keywords"].keys())[:20]
+            "keywords": keywords[:20]
         }
 
 # ── 知识库 ──
@@ -262,10 +291,7 @@ def get_best_image(keyword):
     cached = MediaLibrary.search(keyword)
     if cached:
         entry = cached[0]
-        data = MediaLibrary._load()
-        if entry["id"] in data["entries"]:
-            data["entries"][entry["id"]]["use_count"] = data["entries"][entry["id"]].get("use_count", 0) + 1
-            MediaLibrary._save(data)
+        MediaLibrary.increment_use(entry["id"])
         return {"source": "library", "path": entry["file_path"], "keyword": keyword}
 
     # 2. 查关键词映射

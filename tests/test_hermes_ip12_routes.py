@@ -162,6 +162,14 @@ class HermesIP12SourceTests(unittest.TestCase):
             self.assertIn("video_work_dir(", source, filename)
             self.assertIn("finalize_file(", source, filename)
         self.assertIn("if _is_metered(request.method)", security)
+        media_library = (HERMES / "media_library.py").read_text(encoding="utf-8")
+        video_analyzer = (HERMES / "video_analyzer.py").read_text(encoding="utf-8")
+        self.assertIn("with storage_transaction():", media_library)
+        self.assertIn('entry_id = f"{owner_id}_{new_asset_id()}"', media_library)
+        self.assertEqual(
+            video_analyzer.count('"--max-filesize", ANALYSIS_MAX_DOWNLOAD_ARG'), 2
+        )
+        self.assertIn("with reserve_capacity(ANALYSIS_MAX_DOWNLOAD_BYTES)", video_analyzer)
 
     def test_security_boundaries_and_runtime_ignores_are_kept(self):
         index = (HERMES / "templates/index.html").read_text(encoding="utf-8")
@@ -253,6 +261,9 @@ import json
 import os
 import shutil
 import subprocess
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -605,6 +616,65 @@ assert client.get(
     "/api/media/search?q=outside",
     headers={"Authorization": "Bearer member-b-token"},
 ).get_json()["results"] == []
+
+# Same-second/same-keyword uploads must retain both owners without keyword leakage.
+source_a = media_root / "same-a.bin"
+source_b = media_root / "same-b.bin"
+source_a.write_bytes(b"owner-a")
+source_b.write_bytes(b"owner-b")
+with patch.object(media_library.time, "time", return_value=1234567890):
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future_a = pool.submit(
+            media_library.MediaLibrary.add,
+            "private-campaign", str(source_a),
+            owner_username="member-a",
+        )
+        future_b = pool.submit(
+            media_library.MediaLibrary.add,
+            "private-campaign", str(source_b),
+            owner_username="member-b",
+        )
+        media_id_a, media_id_b = future_a.result(), future_b.result()
+assert media_id_a != media_id_b
+index = json.loads((media_root / "media_library" / "index.json").read_text())
+assert index["entries"][media_id_a]["owner_username"] == "member-a"
+assert index["entries"][media_id_b]["owner_username"] == "member-b"
+assert media_library.MediaLibrary.search(
+    "private-campaign", owner_username="member-a"
+) == [index["entries"][media_id_a]]
+assert media_library.MediaLibrary.search(
+    "private-campaign", owner_username="member-b"
+) == [index["entries"][media_id_b]]
+admin_stats = media_library.MediaLibrary.stats(owner_username="admin")
+member_a_stats = media_library.MediaLibrary.stats(owner_username="member-a")
+assert "private-campaign" not in admin_stats["keywords"]
+assert member_a_stats["total_files"] == 1
+assert member_a_stats["keywords"] == ["private-campaign"]
+
+# The same transaction lock must also protect independent worker processes.
+process_sources = []
+processes = []
+child_code = (
+    "import sys;"
+    "from media_library import MediaLibrary;"
+    "MediaLibrary.add(sys.argv[1],sys.argv[2],owner_username=sys.argv[3])"
+)
+for i in range(4):
+    source = media_root / f"process-{i}.bin"
+    source.write_bytes(f"process-{i}".encode())
+    process_sources.append(source)
+    processes.append(subprocess.Popen(
+        [sys.executable, "-c", child_code, "process-private", str(source), f"process-{i}"],
+        cwd=os.getcwd(),
+        env=os.environ.copy(),
+    ))
+assert all(process.wait(timeout=30) == 0 for process in processes)
+index = json.loads((media_root / "media_library" / "index.json").read_text())
+assert sum(
+    entry.get("keyword") == "process-private"
+    for entry in index["entries"].values()
+) == 4
+
 assert client.post(
     "/api/media/upload",
     json={"filename": "../../probe.py", "data": base64.b64encode(b"bad").decode()},
@@ -716,6 +786,63 @@ with patch.object(video_analyzer, "download_video") as video_download:
 assert client.post(
     "/api/analyze-video", json={"url": "https://example.com/video"}
 ).status_code == 400
+
+# Low quota must reject before any downloader side effect or analysis directory.
+original_analysis_limit = video_analyzer.ANALYSIS_MAX_DOWNLOAD_BYTES
+original_quota = artifact_store.DATA_QUOTA_BYTES
+video_analyzer.ANALYSIS_MAX_DOWNLOAD_BYTES = 400
+analyses_root = artifact_store.user_dir("admin", "analyses")
+before_analyses = {path.name for path in analyses_root.iterdir()}
+artifact_store.DATA_QUOTA_BYTES = artifact_store.directory_size() + 399
+with patch.object(video_analyzer, "is_public_video_url", return_value=True), \
+     patch.object(video_analyzer, "download_video") as quota_download:
+    quota_response = client.post(
+        "/api/analyze-video",
+        json={"url": "https://douyin.com/video/quota"},
+    )
+assert quota_response.status_code == 507, quota_response.get_data(as_text=True)
+quota_download.assert_not_called()
+assert {path.name for path in analyses_root.iterdir()} == before_analyses
+
+# Two analyses competing for the final quota cannot both reserve capacity.
+analysis_started = threading.Event()
+analysis_release = threading.Event()
+artifact_store.DATA_QUOTA_BYTES = artifact_store.directory_size() + 700
+before_analyses = {path.name for path in analyses_root.iterdir()}
+
+def fake_analysis_download(url, work_dir):
+    analysis_started.set()
+    assert analysis_release.wait(timeout=10)
+    path = Path(work_dir) / "source.mp4"
+    path.write_bytes(b"analysis-video")
+    return str(path)
+
+def run_analysis():
+    thread_client = app.test_client()
+    return thread_client.post(
+        "/api/analyze-video",
+        json={"url": "https://douyin.com/video/test"},
+        headers={"Authorization": "Bearer admin-token"},
+    )
+
+with patch.object(video_analyzer, "is_public_video_url", return_value=True), \
+     patch.object(video_analyzer, "download_video", side_effect=fake_analysis_download), \
+     patch.object(video_analyzer, "transcribe_video", return_value="transcript"), \
+     patch.object(video_analyzer, "analyze_transcript", return_value="analysis"):
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_future = pool.submit(run_analysis)
+        assert analysis_started.wait(timeout=10)
+        second = run_analysis()
+        assert second.status_code == 507, second.get_data(as_text=True)
+        analysis_release.set()
+        first = first_future.result(timeout=10)
+assert first.status_code == 200, first.get_data(as_text=True)
+after_analyses = {path.name for path in analyses_root.iterdir()}
+assert len(after_analyses - before_analyses) == 1
+assert artifact_store.directory_size() <= artifact_store.DATA_QUOTA_BYTES
+assert json.loads(artifact_store.RESERVATIONS_FILE.read_text()) == {}
+video_analyzer.ANALYSIS_MAX_DOWNLOAD_BYTES = original_analysis_limit
+artifact_store.DATA_QUOTA_BYTES = original_quota
 
 class EmptyPexelsResponse:
     status_code = 200
