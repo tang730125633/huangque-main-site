@@ -144,6 +144,7 @@ class ZelongDeploymentSafetyTests(unittest.TestCase):
     def test_maps_dependencies_before_entrypoints_and_html(self):
         cases = {
             "server/invites.py": (10, "/home/ubuntu/auth-service/invites.py", "auth", 0),
+            "server/wechat_subscribe.py": (10, "/home/ubuntu/auth-service/wechat_subscribe.py", "auth", 0),
             "server/tikhub.py": (10, "/home/ubuntu/content-api/tikhub.py", "content", 0),
             "server/content_domains/core.py": (20, "/home/ubuntu/content-api/content_domains/core.py", "content", 0),
             "server/content_api.py": (30, "/home/ubuntu/content-api/content_api.py", "content", 0),
