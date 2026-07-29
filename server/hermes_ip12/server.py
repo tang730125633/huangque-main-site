@@ -296,7 +296,8 @@ def generate_foundation_report(convo_id):
     messages = [{"role": "system", "content": """你是IP定位报告编辑。只基于对话中已经出现的信息，写一份可直接交给客户确认的中文Markdown《模块1-4定位初稿》。这不是摘要：信息充分时应形成约8-10页的策略报告，但绝不为凑页数编造。未知、未确认数字或事实必须写‘待本人确认’。\n\n严格按以下结构输出，不写开场客套，也不要输出总标题：\n## 模块一｜定位诊断\n### 核心关键词（5-7个）：每个用编号、关键词和一句解释。\n### 最终定位：名称、一句话定位语、三合一策略。\n### 市场机会：至少3点，写清目标人群共鸣、成交痛点、差异化和可验证资产。\n### 潜在风险：3-5点，给出对应控制建议。\n## 模块二｜人设塑造\n### 三套人设方案：每套包含名称、核心特质、故事基调、传播标签、人设公式、优势与风险。\n### 推荐人设：说明选择理由，并提供账号封面/置顶、引流钩子、成交主张、逆袭故事、个人口头禅五条口径。此处必须用Markdown表格，列为“场景｜建议口径”。\n## 模块三｜价值主张提炼\n### 核心价值主张：主张核心、一句话金句、服务对象、解决问题、可交付结果。\n### 差异化证明：把经历、能力、结果和价值观分别写清。\n### 一句话自我介绍（优化版）：给原始口径、优化口径与3条优化理由。\n## 模块四｜故事资产挖掘\n### 四个故事资产：每个含故事名称、起点、转折、结果/品质、核心情绪点、适用传播场景。\n### 三类传播故事：挫折型、成长型、愿景型各选一个，说明传播目的。\n### 执行优先级建议：必须用Markdown表格，列为“优先级｜模块｜关键任务｜预计产出”。\n## 确认页\n用一句话列出客户要确认的3-5项；最后固定写：‘文档状态：模块1-4初稿完成，待本人确认后进入模块5-6执行。’\n\n不要编造未在对话中出现的金额、人数、经历、客户结果或账号名称。"""}]
     messages.extend(convo.get("messages", [])[-40:])
     messages.append({"role": "user", "content": "生成《IP 人设定位｜模块 1-4 初稿》，直接输出报告。"})
-    content = call_ai(messages, stream=False, temperature=0.35).json()["choices"][0]["message"]["content"]
+    messages.append({"role": "user", "content": "补充硬性要求：这份报告应接近完整策略报告，而非摘要。目标约8-10页、5500字以上；可基于已知事实做清楚标注的策略推导，但绝不编造事实。每个字段独占一行。模块1必须有7个关键词、5个市场机会及5个风险/控制建议；模块2三套人设每套分开写名称、特质、故事基调、标签、公式、优势、风险和适用场景，并给5条口径表与人设边界；模块3给3条完整价值主张方案、最终推荐和变现路径表；模块4每个故事写起点、冲突、转折、结果、情绪、场景、开头句，并补一张至少6行的内容资产使用表。最后列5项确认点。"})
+    content = call_ai(messages, stream=False, temperature=0.4, max_tokens=7000).json()["choices"][0]["message"]["content"]
     FOUNDATION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     target = FOUNDATION_REPORTS_DIR / (convo_id + ".pdf")
     browser = next((item for item in (shutil.which("chromium"), shutil.which("chromium-browser"), "/snap/bin/chromium") if item and pathlib.Path(item).is_file()), "")
@@ -316,10 +317,13 @@ def generate_foundation_report(convo_id):
     convo = load_conversation(convo_id); convo.setdefault("coach_state", {})["foundation_report"] = record; save_conversation(convo_id, convo)
     return record
 
-def call_ai(messages, stream=False, temperature=0.7):
+def call_ai(messages, stream=False, temperature=0.7, max_tokens=None):
+    payload = {"model": MODEL, "messages": messages, "stream": stream, "temperature": temperature}
+    if max_tokens:
+        payload["max_tokens"] = max_tokens
     resp = requests.post(f"{API_BASE}/chat/completions",
         headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-        json={"model": MODEL, "messages": messages, "stream": stream, "temperature": temperature},
+        json=payload,
         timeout=180, stream=stream)
     if resp.status_code != 200:
         raise Exception(f"API {resp.status_code}: {resp.text[:300]}")
