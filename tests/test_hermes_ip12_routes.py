@@ -123,6 +123,11 @@ class HermesIP12SourceTests(unittest.TestCase):
         self.assertIn("EnvironmentFile=/home/ubuntu/.secrets/hermes-openai.env", unit)
         self.assertIn("port=3102", unit)
 
+    def test_foundation_pdf_renderer_waits_for_chromium_exit(self):
+        source = (HERMES / "server.py").read_text(encoding="utf-8")
+        self.assertIn("subprocess.run(", source)
+        self.assertIn("timeout=60", source)
+
     def test_security_boundaries_and_runtime_ignores_are_kept(self):
         index = (HERMES / "templates/index.html").read_text(encoding="utf-8")
         classic = (HERMES / "templates/index_clean.html").read_text(encoding="utf-8")
