@@ -183,10 +183,10 @@ body { font-family:var(--font); background:var(--bg); color:var(--text); height:
   <div class="sidebar-header">
     <button class="sidebar-close" onclick="toggleDrawer()" style="display:none;float:right;background:none;border:none;color:var(--text-dim);font-size:20px;cursor:pointer;padding:0 4px;">✕</button>
     <div class="brand"><span class="icon">🧠</span><h1>IP 孵化教练 v3</h1></div>
-    <div class="subtitle">12模块 · 诊断→交付闭环</div>
+    <div class="subtitle">6 个模块开放 · 后续能力开发中</div>
   </div>
   <div class="progress-wrap">
-    <div class="progress-label"><span>诊断进度</span><span id="progressText">0/12</span></div>
+    <div class="progress-label"><span>诊断进度</span><span id="progressText">0/6</span></div>
     <div class="progress-bar"><div class="progress-fill" id="progressBar" style="width:0%"></div></div>
   </div>
   <div class="module-section-label">诊断模块</div>
@@ -215,7 +215,7 @@ body { font-family:var(--font); background:var(--bg); color:var(--text); height:
     <div class="welcome" id="welcome">
       <div class="big-icon">🧠</div>
       <h2>大鹏 IP 孵化教练 v3</h2>
-      <p>诊断→交付闭环上线<br>模块完成即送：文案包 / 视觉方案 / 选题日历<br><small style="color:var(--text-dim)">新增GEO分析 | Humanizer洗AI味</small></p>
+      <p>完成 6 个开放模块，建立你的 IP 底座<br>模块 7-12 尚未开发，敬请期待</p>
       <button class="start-btn" onclick="newDiagnosis()">开始诊断</button>
     </div>
   </div>
@@ -246,7 +246,8 @@ const MODULES = [
   {id:11,name:"销售策略",icon:"💰",desc:"从信任到成交的完整链路"},
   {id:12,name:"公众号变现",icon:"📝",desc:"长内容到持续变现的闭环"},
 ];
-const DELIVERABLE_MODULES = [5,6,7,10]; // 有自动交付物的模块
+const AVAILABLE_MODULE_COUNT = 6;
+const DELIVERABLE_MODULES = [5,6];
 
 let currentConvoId = null;
 let coachState = { current_module:1, completed_modules:[], module_step:0, ip_profile:{}, intake:{status:'complete'} };
@@ -261,28 +262,30 @@ loadConversations().then(() => { if (conversations.length > 0) selectConversatio
 
 function renderModules() {
   const list = document.getElementById('moduleList');
-  const done = coachState.completed_modules || [];
-  const cur = coachState.current_module || 1;
+  const done = (coachState.completed_modules || []).filter(id=>id<=AVAILABLE_MODULE_COUNT);
+  const cur = Math.min(coachState.current_module || 1, AVAILABLE_MODULE_COUNT);
   const intakePending = coachState.intake?.status === 'collecting';
   const intakeRound = intakePending ? (coachState.intake.round || 1) : 0;
   list.innerHTML = MODULES.map(m => {
     let cls = 'module-item', badge = '', check = '', reportBtn = '';
-    if (intakePending) { cls += ' locked'; if (m.id===1) badge = `<span class="mod-badge">基础信息 ${intakeRound}/3</span>`; }
+    const comingSoon = m.id > AVAILABLE_MODULE_COUNT;
+    if (comingSoon) { cls += ' locked'; badge = '<span class="mod-badge">尚未开发，敬请期待</span>'; }
+    else if (intakePending) { cls += ' locked'; if (m.id===1) badge = `<span class="mod-badge">基础信息 ${intakeRound}/3</span>`; }
     if (done.includes(m.id)) { cls += ' completed'; check = '<span class="mod-check">✓</span>';
       reportBtn = `<span class="mod-report-btn" onclick="event.stopPropagation();viewReport(${m.id})" title="查看报告">📄</span>`; }
     if (!intakePending && m.id === cur && !done.includes(m.id)) { cls += ' current'; badge = '<span class="mod-badge">进行中</span>'; }
     if (intakePending && m.id===1) cls += ' current';
-    return `<div class="${cls}" onclick="closeDrawer();jumpToModule(${m.id})" title="${m.desc}"><div class="mod-num">${done.includes(m.id)?'✓':m.id}</div><div class="mod-info"><div class="mod-name">${m.icon} ${m.name}</div><div class="mod-desc">${m.desc}</div></div>${badge}${reportBtn}${check}</div>`;
+    return `<div class="${cls}" onclick="closeDrawer();${comingSoon?"toast('尚未开发，敬请期待')":`jumpToModule(${m.id})`}" title="${comingSoon?'尚未开发，敬请期待':m.desc}"><div class="mod-num">${done.includes(m.id)?'✓':m.id}</div><div class="mod-info"><div class="mod-name">${m.icon} ${m.name}</div><div class="mod-desc">${m.desc}</div></div>${badge}${reportBtn}${check}</div>`;
   }).join('');
   updateProgress(); renderReportMinis(); renderDeliverableMinis();
 }
 
 function updateProgress() {
-  const done = (coachState.completed_modules || []).length;
+  const done = (coachState.completed_modules || []).filter(id=>id<=AVAILABLE_MODULE_COUNT).length;
   const intakePending = coachState.intake?.status === 'collecting';
-  document.getElementById('progressBar').style.width = Math.round(done/12*100)+'%';
-  document.getElementById('progressText').textContent = done===12?'🎉 全部完成':done+'/12';
-  const cur = coachState.current_module || 1;
+  document.getElementById('progressBar').style.width = Math.round(done/AVAILABLE_MODULE_COUNT*100)+'%';
+  document.getElementById('progressText').textContent = done===AVAILABLE_MODULE_COUNT?'🎉 六步完成':done+'/'+AVAILABLE_MODULE_COUNT;
+  const cur = Math.min(coachState.current_module || 1, AVAILABLE_MODULE_COUNT);
   const mod = MODULES.find(m=>m.id===cur);
   document.getElementById('currentModuleName').textContent = intakePending?`基础信息 · ${coachState.intake.round||1}/3`:(mod?mod.name:'—');
   document.getElementById('stepBadge').textContent = (coachState.module_step||0)>0?` · Step ${coachState.module_step}`:'';
@@ -290,7 +293,7 @@ function updateProgress() {
 
 function renderReportMinis() {
   const section=document.getElementById('reportSection'), mini=document.getElementById('reportMiniList');
-  const keys=Object.keys(reports).filter(k=>reports[k]);
+  const keys=Object.keys(reports).filter(k=>reports[k]&&Number(k)<=AVAILABLE_MODULE_COUNT);
   const foundation=coachState.foundation_report||{},done=coachState.completed_modules||[];
   let foundationRows='';
   if(foundation.status==='awaiting_confirmation'||foundation.status==='confirmed'){
@@ -305,7 +308,7 @@ function renderReportMinis() {
 
 function renderDeliverableMinis() {
   const section=document.getElementById('deliverableSection'), mini=document.getElementById('deliverableMiniList');
-  const keys=Object.keys(deliverables).filter(k=>deliverables[k]);
+  const keys=Object.keys(deliverables).filter(k=>deliverables[k]&&(!/^\d+$/.test(k)||Number(k)<=AVAILABLE_MODULE_COUNT));
   if(keys.length===0){section.style.display='none';return;}
   section.style.display='block';
   mini.innerHTML=keys.map(k=>{const d=deliverables[k],title=typeof d==='object'?d.title:`模块${k}交付物`;
@@ -344,6 +347,7 @@ async function deleteConversation(id) {
 }
 
 async function jumpToModule(modId) {
+  if(modId>AVAILABLE_MODULE_COUNT){toast('尚未开发，敬请期待');return;}
   if(!currentConvoId||streaming)return;
   if(coachState.intake?.status==='collecting'){toast('请先完成 3 轮基础信息');return;}
   const res=await fetch('/api/jump-module',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({conversation_id:currentConvoId,module:modId})});

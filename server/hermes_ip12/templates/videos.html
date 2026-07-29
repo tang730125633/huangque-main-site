@@ -25,48 +25,10 @@ button.go{padding:10px 20px;background:#a78bfa;color:#fff;border:none;border-rad
 </style>
 </head>
 <body>
-<h1>🎬 视频脚本 + 即梦提示词</h1>
-<div class="toolbar">
-  <input id="topic" value="美业拓客" placeholder="输入主题...">
-  <button class="go" onclick="generate()">生成</button>
+<h1>🎬 脚本分镜</h1>
+<div class="video-card" style="display:block;text-align:center;max-width:520px;margin:60px auto">
+  <h2 style="color:#a78bfa;margin-bottom:10px">尚未开发，敬请期待</h2>
+  <p style="color:#737373;line-height:1.7">该能力将在编导系统正式接入生产环境后开放。</p>
 </div>
-<div id="status"><div class="spinner"></div><p style="color:#737373;text-align:center">正在生成...</p></div>
-<div id="results"></div>
-
-<script>
-function esc(s){var d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
-function safeUrl(s){s=String(s||'').trim();return s.startsWith('/')||/^https?:\/\//i.test(s)?s:''}
-function copy(text) {
-  navigator.clipboard.writeText(text).then(function(){
-    alert('已复制到剪贴板');
-  });
-}
-function generate(topic) {
-  topic = topic || document.getElementById('topic').value;
-  document.getElementById('status').style.display='block';
-  document.getElementById('results').innerHTML='';
-  fetch('/api/module8-video',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({topic:topic})})
-  .then(function(r){return r.json()})
-  .then(function(data){
-    document.getElementById('status').style.display='none';
-    if(!data.ok||!data.videos){document.getElementById('results').innerHTML='<p style=color:#ef4444>生成失败</p>';return;}
-    var html='';
-    data.videos.forEach(function(v){
-      html+='<div class="video-card">';
-      html+='<img src="'+esc(safeUrl(v.preview))+'" onerror="this.style.display=\'none\'">';
-      html+='<div class="video-info">';
-      html+='<h3>'+esc(v.name)+'</h3>';
-      html+='<div class="prompt">'+esc(v.prompt)+'</div>';
-      html+='<div class="tools">📋 推荐工具：'+(v.tools||[]).map(esc).join(' / ')+'</div>';
-      html+='<div class="script">'+esc(v.script)+'</div>';
-      html+='<button class="copy-btn" onclick="copy(this.previousElementSibling.previousElementSibling.textContent)">📋 复制提示词</button>';
-      html+='<button class="copy-btn" onclick="copy(this.parentElement.querySelector(\'.script\').textContent)">📝 复制脚本</button>';
-      html+='</div></div>';
-    });
-    document.getElementById('results').innerHTML=html;
-  });
-}
-generate('美业拓客');
-</script>
 </body>
 </html>

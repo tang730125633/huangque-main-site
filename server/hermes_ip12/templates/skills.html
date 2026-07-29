@@ -11,6 +11,7 @@ h1{font-size:22px;margin:16px 0;text-align:center}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin:16px 0}
 .card{background:#171717;border:1px solid #262626;border-radius:10px;padding:14px;cursor:pointer;transition:all .15s}
 .card:hover{border-color:#a78bfa;background:#1a1a1a}
+.card.coming{opacity:.45;cursor:not-allowed}.card.coming:hover{border-color:#262626;background:#171717}
 .card .icon{font-size:24px;margin-bottom:6px}
 .card h3{font-size:14px;color:#c4b5fd;margin-bottom:4px}
 .card p{font-size:11px;color:#737373}
@@ -61,15 +62,16 @@ const skills = [
 let grid = document.getElementById('grid');
 function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 grid.innerHTML = skills.map(s => `
-  <div class="card" onclick="openSkill(${skills.indexOf(s)})">
+  <div class="card${s.m>6?' coming':''}" onclick="${s.m>6?'':`openSkill(${skills.indexOf(s)})`}">
     <div class="icon">${s.icon}</div>
     <h3>${s.title} ${s.m?'<span style="font-size:10px;color:#737373">M'+s.m+'</span>':''}</h3>
-    <p>${s.desc}</p>
+    <p>${s.m>6?'尚未开发，敬请期待':s.desc}</p>
   </div>
 `).join('');
 
 function openSkill(idx) {
   let s = skills[idx];
+  if (s.m > 6) return;
   let mb = document.getElementById('modalBox');
   let fields = s.fields.map(f =>
     f.type === 'textarea'
@@ -90,6 +92,7 @@ function openSkill(idx) {
 function closeModal() { document.getElementById('modal').classList.remove('open'); }
 
 async function runSkill(endpoint, fieldIds) {
+  if (skills.some(s => s.m > 6 && s.endpoint === endpoint)) return;
   let body = {};
   for (let id of fieldIds) {
     let el = document.getElementById('f_'+id);
