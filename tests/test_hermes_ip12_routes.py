@@ -314,6 +314,13 @@ write_test_pdf(valid_pdf)
 assert _validate_foundation_pdf(valid_pdf) == 8
 if shutil.which("pdfinfo"):
     assert subprocess.run(["pdfinfo", str(valid_pdf)], capture_output=True).returncode == 0
+invalid_pdf = Path(os.environ["HERMES_DATA_DIR"]) / "invalid.pdf"
+invalid_pdf.write_bytes(b"%PDF-1.7\n" + b"/Type /Page\n" * 8 + b"0" * 10000 + b"\n%%EOF\n")
+try:
+    _validate_foundation_pdf(invalid_pdf)
+    raise AssertionError("structurally invalid PDF was accepted")
+except RuntimeError:
+    pass
 report_html = _foundation_html("""# 忽略的总标题
 ## 模块一｜定位诊断
 ### 核心关键词
@@ -374,6 +381,18 @@ server.FOUNDATION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 foundation_pdf = server.FOUNDATION_REPORTS_DIR / f"{foundation_cid}.pdf"
 foundation_pdf.unlink(missing_ok=True)
 assert client.get(f"/api/foundation-report/{foundation_cid}.pdf").status_code == 404
+gated = server.load_conversation(foundation_cid)
+assert gated["coach_state"]["foundation_report"]["status"] == "failed"
+gated["coach_state"]["foundation_report"] = {"status": "awaiting_confirmation"}
+server.save_conversation(foundation_cid, gated)
+foundation_pdf.write_bytes(invalid_pdf.read_bytes())
+assert client.get(f"/api/foundation-report/{foundation_cid}.pdf").status_code == 409
+gated = server.load_conversation(foundation_cid)
+assert gated["coach_state"]["foundation_report"]["status"] == "failed"
+gated["coach_state"]["foundation_report"] = {"status": "awaiting_confirmation"}
+server.save_conversation(foundation_cid, gated)
+foundation_pdf.write_bytes(invalid_pdf.read_bytes())
+assert client.post("/api/foundation-report/confirm", json={"conversation_id": foundation_cid}).status_code == 409
 gated = server.load_conversation(foundation_cid)
 assert gated["coach_state"]["foundation_report"]["status"] == "failed"
 gated["coach_state"]["foundation_report"] = {"status": "awaiting_confirmation"}
