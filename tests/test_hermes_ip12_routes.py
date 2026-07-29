@@ -42,9 +42,14 @@ class HermesIP12SourceTests(unittest.TestCase):
     def test_only_six_modules_are_open_in_both_web_views(self):
         for filename in ("index.html", "index_clean.html"):
             page = (HERMES / "templates" / filename).read_text(encoding="utf-8")
-            self.assertIn("AVAILABLE_MODULE_COUNT", page)
-            self.assertIn("尚未开发，敬请期待", page)
-            self.assertIn("0/6", page)
+        self.assertIn("AVAILABLE_MODULE_COUNT", page)
+        self.assertIn("尚未开发，敬请期待", page)
+        self.assertIn("0/6", page)
+        skills = (HERMES / "templates/skills.html").read_text(encoding="utf-8")
+        videos = (HERMES / "templates/videos.html").read_text(encoding="utf-8")
+        self.assertIn("s.m>6?'尚未开发，敬请期待'", skills)
+        self.assertNotIn("fetch('/api/module8-video'", videos)
+        self.assertIn("尚未开发，敬请期待", videos)
 
     def test_complete_original_route_set_is_present(self):
         routes = set()
@@ -165,7 +170,7 @@ class HermesIP12SourceTests(unittest.TestCase):
         self.assertIn("esc(d.report)", skills)
         self.assertIn("function safeUrl(s)", team)
         self.assertIn("const safeUrl=s=>", agnes)
-        self.assertIn("esc(v.prompt)", (HERMES / "templates/videos.html").read_text(encoding="utf-8"))
+        self.assertNotIn("/api/module8-video", (HERMES / "templates/videos.html").read_text(encoding="utf-8"))
         self.assertIn("span.textContent = msg", (HERMES / "templates/video_factory.html").read_text(encoding="utf-8"))
 
         requirements = (HERMES / "requirements.txt").read_text(encoding="utf-8")
@@ -405,12 +410,17 @@ assert client.post("/api/generate-deliverable", json={"conversation_id": foundat
 assert client.post("/api/jump-module", json={"conversation_id": foundation_cid, "module": 7}).status_code == 409
 assert client.post("/api/generate-report", json={"conversation_id": foundation_cid, "module": 7}).status_code == 409
 assert client.post("/api/generate-deliverable", json={"conversation_id": foundation_cid, "module": 7}).status_code == 409
-assert client.post("/api/module7-images", json={}).status_code == 409
+for coming_soon_path in ("/api/module7-images", "/api/module8-video", "/api/m9-funnel", "/api/m11-sales", "/api/m12-calendar"):
+    assert client.post(coming_soon_path, json={}).status_code == 409, coming_soon_path
 
 gated = server.load_conversation(foundation_cid)
 gated["coach_state"] = {"current_module": 8, "completed_modules": list(range(1, 8)),
                          "module_step": 3, "foundation_report": {"status": "awaiting_confirmation"}}
 server.save_conversation(foundation_cid, gated)
+legacy_detail = client.get(f"/api/conversations/{foundation_cid}").get_json()["coach_state"]
+assert legacy_detail["current_module"] == 6, legacy_detail
+assert legacy_detail["completed_modules"] == [1, 2, 3, 4, 5, 6], legacy_detail
+assert legacy_detail["module_step"] == 0, legacy_detail
 server.FOUNDATION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 foundation_pdf = server.FOUNDATION_REPORTS_DIR / f"{foundation_cid}.pdf"
 foundation_pdf.unlink(missing_ok=True)
@@ -442,7 +452,17 @@ assert download.headers["Cache-Control"] == "private, no-store"
 confirmed = client.post("/api/foundation-report/confirm", json={"conversation_id": foundation_cid})
 assert confirmed.status_code == 200, confirmed.get_data(as_text=True)
 assert confirmed.get_json()["state"]["current_module"] == 6
-assert confirmed.get_json()["state"]["module_step"] == 3
+assert confirmed.get_json()["state"]["module_step"] == 0
+
+normal_confirm_cid = client.post("/api/conversations").get_json()["id"]
+normal_confirm = server.load_conversation(normal_confirm_cid)
+normal_confirm["coach_state"] = {"current_module": 4, "completed_modules": [1, 2, 3, 4],
+                                   "module_step": 4, "foundation_report": {"status": "awaiting_confirmation"}}
+server.save_conversation(normal_confirm_cid, normal_confirm)
+(server.FOUNDATION_REPORTS_DIR / f"{normal_confirm_cid}.pdf").write_bytes(valid_pdf.read_bytes())
+confirmed = client.post("/api/foundation-report/confirm", json={"conversation_id": normal_confirm_cid})
+assert confirmed.get_json()["state"]["current_module"] == 5
+assert confirmed.get_json()["state"]["module_step"] == 0
 assert client.post(
     "/api/chat",
     json={"conversation_id": "../../knowledge/visual_formulas", "message": "test"},

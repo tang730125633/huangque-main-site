@@ -160,12 +160,34 @@ def _intake_pending(state):
     intake = state.get("intake")
     return isinstance(intake, dict) and intake.get("status") == "collecting"
 
+
+def normalize_coach_state(state):
+    """Keep legacy sessions usable without deleting their messages or artifacts."""
+    normalized = dict(state or initial_coach_state())
+    try:
+        original_current = int(normalized.get("current_module", 1))
+    except (TypeError, ValueError):
+        original_current = 1
+    normalized["current_module"] = min(AVAILABLE_MODULE_COUNT, max(1, original_current))
+    completed = []
+    for module in normalized.get("completed_modules", []):
+        try:
+            module = int(module)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= module <= AVAILABLE_MODULE_COUNT and module not in completed:
+            completed.append(module)
+    normalized["completed_modules"] = completed
+    if original_current != normalized["current_module"]:
+        normalized["module_step"] = 0
+    return normalized
+
 def build_system_prompt(convo_id):
     convo = load_conversation(convo_id)
-    state = convo.get("coach_state", initial_coach_state())
-    cm = min(AVAILABLE_MODULE_COUNT, max(1, int(state.get("current_module", 1))))
+    state = normalize_coach_state(convo.get("coach_state"))
+    cm = state["current_module"]
     mod = MODULES[cm - 1]
-    done = [m for m in state.get("completed_modules", []) if 1 <= m <= AVAILABLE_MODULE_COUNT]
+    done = state["completed_modules"]
     profile_summary = json.dumps(state.get("ip_profile", {}), ensure_ascii=False)[:300]
 
     module_protocol = f"""
@@ -308,14 +330,12 @@ def list_convos(owner_account_id=None):
                 d = json.loads(f.read_text(encoding="utf-8"))
                 if owner_account_id and d.get("owner_account_id") != owner_account_id:
                     continue
-                cs = d.get("coach_state", {})
-                current_module = min(AVAILABLE_MODULE_COUNT, max(1, int(cs.get("current_module", 1))))
-                completed_modules = [m for m in cs.get("completed_modules", []) if 1 <= m <= AVAILABLE_MODULE_COUNT]
+                cs = normalize_coach_state(d.get("coach_state"))
                 convos.append({"id": f.stem, "title": d.get("title", "新诊断"),
                     "updated": d.get("updated", ""),
                     "message_count": len(d.get("messages", [])),
-                    "current_module": current_module,
-                    "completed_modules": completed_modules,
+                    "current_module": cs["current_module"],
+                    "completed_modules": cs["completed_modules"],
                     "report_count": len(d.get("reports", {})),
                     "deliverable_count": len(d.get("deliverables", {}))})
             except: pass
@@ -323,9 +343,7 @@ def list_convos(owner_account_id=None):
 
 def parse_coach_state_updates(ai_response, current_state):
     text = ai_response
-    updated_state = dict(current_state)
-    updated_state["current_module"] = min(AVAILABLE_MODULE_COUNT, max(1, int(current_state.get("current_module", 1))))
-    updated_state["completed_modules"] = [m for m in current_state.get("completed_modules", []) if 1 <= m <= AVAILABLE_MODULE_COUNT]
+    updated_state = normalize_coach_state(current_state)
     for m in MODULES[:AVAILABLE_MODULE_COUNT]:
         mid = m["id"]
         patterns = [f"模块 {mid} 完成", f"模块{mid} 完成", f"✅ 模块 {mid}", f"模块 {mid} ✅"]
@@ -750,6 +768,7 @@ def api_get_convo(cid):
     convo = owned_conversation(cid)
     if convo is None:
         return jsonify({"ok": False, "error": "诊断不存在"}), 404
+    convo["coach_state"] = normalize_coach_state(convo.get("coach_state"))
     return jsonify(convo)
 
 @app.route("/api/conversations/<cid>", methods=["DELETE"])
@@ -767,7 +786,8 @@ def prepare_chat(cid, user_msg):
         convo = owned_conversation(cid)
         if convo is None:
             return None, None, None
-        state = convo.get("coach_state", {})
+        state = normalize_coach_state(convo.get("coach_state"))
+        convo["coach_state"] = state
         if 4 in state.get("completed_modules", []) and (state.get("foundation_report") or {}).get("status") != "confirmed":
             return convo, None, None
         convo["messages"].append({"role": "user", "content": _redact_mobile_numbers(user_msg)})
@@ -1015,7 +1035,8 @@ def api_confirm_foundation_report():
         convo = owned_conversation(cid)
         if convo is None:
             return jsonify({"ok": False, "error": "诊断不存在"}), 404
-        state = convo.setdefault("coach_state", {})
+        state = normalize_coach_state(convo.get("coach_state"))
+        convo["coach_state"] = state
         report = state.get("foundation_report", {})
         if report.get("status") != "awaiting_confirmation":
             return jsonify({"ok": False, "error": "请先生成并查看模块 1-4 初稿"}), 409
