@@ -29,6 +29,12 @@ def extract_js_function(source, name):
 
 
 class HermesIP12SourceTests(unittest.TestCase):
+    def test_coach_prompt_finishes_ready_outputs_in_the_same_reply(self):
+        prompt = (HERMES / "prompt.md").read_text(encoding="utf-8")
+        self.assertIn("同一条回复", prompt)
+        self.assertIn("绝不说“请稍等”", prompt)
+        self.assertIn("立刻执行 Step 2", prompt)
+
     def test_complete_original_route_set_is_present(self):
         routes = set()
         pattern = re.compile(r'(?:@app\.route|app\.add_url_rule)\(\s*["\']([^"\']+)')
